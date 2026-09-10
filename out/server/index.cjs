@@ -7491,6 +7491,54 @@ async function listTankerQuality(tankerId) {
   });
   return toPlain6(res);
 }
+async function listFfaHistory(productId = 0, limit = 60) {
+  const cid = getActiveCompanyId();
+  const pid = n5(productId);
+  const lim = Math.min(300, Math.max(1, n5(limit) || 60));
+  const res = await getClient().execute({
+    sql: `
+    SELECT * FROM (
+      SELECT 'tanker' AS kind, pt.id AS id, pt.tanker_no AS ref,
+             COALESCE(NULLIF(pt.empty_date, ''), NULLIF(pt.inside_factory_date, ''),
+                      NULLIF(pt.outside_factory_date, ''), NULLIF(pt.transit_date, ''),
+                      pt.loaded_date) AS received_date,
+             pt.status AS status,
+             s.name AS party, p.name AS product, p.code AS product_code,
+             pt.oil_type_id AS product_id,
+             COALESCE(pt.received_qty, pt.loaded_qty) AS qty, pt.uom AS uom,
+             o.invoice_no AS invoice_no, tq.value AS ffa
+        FROM tanker_quality tq
+        JOIN purchase_tankers pt ON pt.id = tq.tanker_id
+        LEFT JOIN suppliers s ON s.id = pt.supplier_id
+        LEFT JOIN products p ON p.id = pt.oil_type_id
+        LEFT JOIN orders o ON o.id = pt.order_id
+       WHERE pt.company_id = ?
+         AND UPPER(TRIM(tq.name)) = 'FFA'
+         AND TRIM(COALESCE(tq.value, '')) <> ''
+      UNION ALL
+      SELECT 'consignment', o.id, o.invoice_no,
+             COALESCE(NULLIF(o.delivered_date, ''), o.order_date),
+             o.status,
+             s.name, p.name, p.code, o.oil_type_id,
+             COALESCE(o.received_qty, o.ordered_qty), o.uom, o.invoice_no, oq.value
+        FROM order_quality oq
+        JOIN orders o ON o.id = oq.order_id
+        LEFT JOIN suppliers s ON s.id = o.supplier_id
+        LEFT JOIN products p ON p.id = o.oil_type_id
+       WHERE o.company_id = ?
+         AND UPPER(TRIM(oq.name)) = 'FFA'
+         AND TRIM(COALESCE(oq.value, '')) <> ''
+    )
+    WHERE (? = 0 OR product_id = ?)
+    ORDER BY received_date DESC, id DESC
+    LIMIT ?`,
+    args: [cid, cid, pid, pid, lim]
+  });
+  return toPlain6(res).map((r) => {
+    const m = String(r.ffa ?? "").match(/-?\d+(\.\d+)?/);
+    return { ...r, ffa_num: m ? Number(m[0]) : null };
+  }).filter((r) => r.ffa_num != null && Number.isFinite(r.ffa_num));
+}
 async function advancePurchaseTanker(id, toStatus, data) {
   const c = getClient();
   const res = await c.execute({ sql: "SELECT * FROM purchase_tankers WHERE id = ?", args: [id] });
@@ -8868,6 +8916,38 @@ function n6(v) {
   const x = Number(v);
   return Number.isFinite(x) ? x : 0;
 }
+async function recipeSnapshot(fid, pinned = 0) {
+  const c = getClient();
+  if (!fid) return { versionId: 0, items: [] };
+  const parse = (raw) => {
+    try {
+      const v = JSON.parse(String(raw || "[]"));
+      return Array.isArray(v) ? v : [];
+    } catch {
+      return [];
+    }
+  };
+  try {
+    if (pinned) {
+      const v = await c.execute({
+        sql: "SELECT id, items_json FROM formulation_versions WHERE id = ? AND formulation_id = ?",
+        args: [n6(pinned), fid]
+      });
+      if (v.rows.length) return { versionId: n6(v.rows[0].id), items: parse(v.rows[0].items_json) };
+    }
+    const latest = await c.execute({
+      sql: "SELECT id, items_json FROM formulation_versions WHERE formulation_id = ? ORDER BY version DESC LIMIT 1",
+      args: [fid]
+    });
+    if (latest.rows.length) return { versionId: n6(latest.rows[0].id), items: parse(latest.rows[0].items_json) };
+  } catch {
+  }
+  const items = await c.execute({
+    sql: "SELECT product_id, qty, kind, auto_calc, ffa_pct, loss_multiplier_pct, moisture_pct, byproduct_product_id FROM formulation_items WHERE formulation_id = ?",
+    args: [fid]
+  });
+  return { versionId: 0, items: toPlain8(items) };
+}
 async function listProduction(forModule) {
   const from = await visibleFromFor("production", forModule);
   const fid = await factoryOfCompanies([getActiveCompanyId()]);
@@ -8880,10 +8960,18 @@ async function listProduction(forModule) {
     sql: `
     SELECT p.*, pr.name AS product_name, pr.category AS product_category, f.name AS formulation_name,
            sc.name AS subcategory_name, f.subcategory_id,
-           co.name AS company_name
+           co.name AS company_name,
+           -- Which version of the recipe this batch was run on, and whether
+           -- that is still the current one. A batch costed on a superseded
+           -- recipe is not wrong; it is history, and the register should be
+           -- able to say so rather than leaving the reader to wonder why two
+           -- runs of the same recipe consumed different amounts.
+           fv.version AS recipe_version, fv.saved_at AS recipe_saved_at,
+           (SELECT MAX(version) FROM formulation_versions WHERE formulation_id = p.formulation_id) AS recipe_latest_version
     FROM production p
     LEFT JOIN products pr ON pr.id = p.product_id
     LEFT JOIN formulations f ON f.id = p.formulation_id
+    LEFT JOIN formulation_versions fv ON fv.id = p.formulation_version_id
     LEFT JOIN formulation_subcategories sc ON sc.id = f.subcategory_id
     LEFT JOIN companies co ON co.id = p.company_id
     WHERE ${where}${from ? " AND p.prod_date >= ?" : ""}
@@ -8926,14 +9014,9 @@ async function createProduction(v) {
     });
     fid = fRes.rows.length ? Number(fRes.rows[0].id) : 0;
   }
+  const snap = await recipeSnapshot(fid);
   const lines = [];
-  if (fid) {
-    const items = await c.execute({
-      sql: "SELECT product_id, qty, kind, auto_calc, ffa_pct, loss_multiplier_pct, moisture_pct, byproduct_product_id FROM formulation_items WHERE formulation_id = ?",
-      args: [fid]
-    });
-    lines.push(...expandRecipe(toPlain8(items), qty));
-  }
+  if (fid) lines.push(...expandRecipe(snap.items, qty));
   const consumption = lines.filter((l) => l.kind === "input");
   if (consumption.length) {
     const [levels, names] = await Promise.all([
@@ -8949,9 +9032,11 @@ async function createProduction(v) {
     }
   }
   const ins = await c.execute({
-    sql: `INSERT INTO production (company_id, factory_id, prod_date, product_id, qty, uom, note, formulation_id)
-          VALUES (?, (SELECT factory_id FROM companies WHERE id = ?), ?, ?, ?, ?, ?, ?)`,
-    args: [getActiveCompanyId(), getActiveCompanyId(), v.prod_date, productId, qty, v.uom || "MT", v.note || null, fid || null]
+    sql: `INSERT INTO production (company_id, factory_id, prod_date, product_id, qty, uom, note, formulation_id, formulation_version_id)
+          VALUES (?, (SELECT factory_id FROM companies WHERE id = ?), ?, ?, ?, ?, ?, ?, ?)`,
+    // The version is stamped now so a later edit to the recipe cannot reach
+    // this batch. See recipeSnapshot.
+    args: [getActiveCompanyId(), getActiveCompanyId(), v.prod_date, productId, qty, v.uom || "MT", v.note || null, fid || null, snap.versionId || null]
   });
   const id = Number(ins.lastInsertRowid);
   for (const l of lines) {
@@ -8964,8 +9049,13 @@ async function createProduction(v) {
 }
 async function updateProduction(id, v) {
   const c = getClient();
-  const cur = await c.execute({ sql: "SELECT id FROM production WHERE id = ?", args: [n6(id)] });
+  const cur = await c.execute({
+    sql: "SELECT id, formulation_id, formulation_version_id FROM production WHERE id = ?",
+    args: [n6(id)]
+  });
   if (!cur.rows.length) throw new Error("Production run not found");
+  const wasFid = n6(cur.rows[0].formulation_id);
+  const wasVersion = n6(cur.rows[0].formulation_version_id);
   const productId = n6(v.product_id);
   const qty = n6(v.qty);
   if (!productId) throw new Error("Select a product to produce");
@@ -8987,18 +9077,13 @@ async function updateProduction(id, v) {
     });
     fid = fRes.rows.length ? Number(fRes.rows[0].id) : 0;
   }
+  const snap = await recipeSnapshot(fid, fid && fid === wasFid ? wasVersion : 0);
   const lines = [];
-  if (fid) {
-    const items = await c.execute({
-      sql: "SELECT product_id, qty, kind, auto_calc, ffa_pct, loss_multiplier_pct, moisture_pct, byproduct_product_id FROM formulation_items WHERE formulation_id = ?",
-      args: [fid]
-    });
-    lines.push(...expandRecipe(toPlain8(items), qty));
-  }
+  if (fid) lines.push(...expandRecipe(snap.items, qty));
   await c.execute({
-    sql: `UPDATE production SET prod_date = ?, product_id = ?, qty = ?, uom = ?, note = ?, formulation_id = ?
+    sql: `UPDATE production SET prod_date = ?, product_id = ?, qty = ?, uom = ?, note = ?, formulation_id = ?, formulation_version_id = ?
            WHERE id = ?`,
-    args: [v.prod_date, productId, qty, v.uom || "MT", v.note || null, fid || null, n6(id)]
+    args: [v.prod_date, productId, qty, v.uom || "MT", v.note || null, fid || null, snap.versionId || null, n6(id)]
   });
   await c.execute({ sql: "DELETE FROM production_items WHERE production_id = ?", args: [n6(id)] });
   for (const l of lines) {
@@ -12548,6 +12633,82 @@ async function runStartupTasks() {
       "CREATE INDEX IF NOT EXISTS idx_tanker_quality_tanker ON tanker_quality(tanker_id)"
     );
   }).catch((e) => console.error("[tankers] quality table failed:", e));
+  await runOnce("formulation_versions_v1", async () => {
+    const c = getClient();
+    await c.execute(`CREATE TABLE IF NOT EXISTS formulation_versions (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      formulation_id INTEGER NOT NULL,
+      version INTEGER NOT NULL DEFAULT 1,
+      saved_at TEXT,
+      saved_by TEXT,
+      product_id INTEGER,
+      name TEXT,
+      uom TEXT,
+      subcategory_id INTEGER,
+      -- The lines as they stood, verbatim. JSON rather than a second items
+      -- table: it is only ever read back whole and handed to expandRecipe,
+      -- and a column added to formulation_items later must not need a
+      -- matching column here to keep old versions readable.
+      items_json TEXT NOT NULL,
+      -- What the lines amount to, for deciding whether a save changed
+      -- anything at all. Opening a recipe and pressing Save must not mint a
+      -- version.
+      fingerprint TEXT NOT NULL,
+      note TEXT
+    )`);
+    await c.execute(
+      "CREATE INDEX IF NOT EXISTS idx_formulation_versions_f ON formulation_versions(formulation_id, version)"
+    );
+    for (const sql of [
+      "ALTER TABLE formulations ADD COLUMN updated_at TEXT",
+      "ALTER TABLE formulations ADD COLUMN updated_by TEXT",
+      "ALTER TABLE production ADD COLUMN formulation_version_id INTEGER"
+    ]) {
+      await c.execute(sql).catch((e) => {
+        if (!/duplicate column/i.test(String(e))) throw e;
+      });
+    }
+    const fs = await c.execute("SELECT * FROM formulations");
+    for (const f of fs.rows) {
+      const fid = Number(f.id);
+      const items = await c.execute({
+        sql: `SELECT product_id, qty, kind, auto_calc, ffa_pct, loss_multiplier_pct, moisture_pct, byproduct_product_id
+              FROM formulation_items WHERE formulation_id = ? ORDER BY id`,
+        args: [fid]
+      });
+      const rows = items.rows.map((r) => ({
+        product_id: Number(r.product_id),
+        qty: Number(r.qty) || 0,
+        kind: String(r.kind || "input"),
+        auto_calc: r.auto_calc ? 1 : 0,
+        ffa_pct: r.ffa_pct == null ? null : Number(r.ffa_pct),
+        loss_multiplier_pct: r.loss_multiplier_pct == null ? null : Number(r.loss_multiplier_pct),
+        moisture_pct: r.moisture_pct == null ? null : Number(r.moisture_pct),
+        byproduct_product_id: r.byproduct_product_id == null ? null : Number(r.byproduct_product_id)
+      }));
+      const json2 = JSON.stringify(rows);
+      const res = await c.execute({
+        sql: `INSERT INTO formulation_versions
+                (formulation_id, version, saved_at, saved_by, product_id, name, uom, subcategory_id, items_json, fingerprint, note)
+              VALUES (?, 1, ?, 'system', ?, ?, ?, ?, ?, ?, 'The recipe as it stood when versioning was switched on')`,
+        args: [
+          fid,
+          String(f.created_at || "").slice(0, 19) || null,
+          f.product_id ?? null,
+          f.name ?? null,
+          f.uom ?? null,
+          f.subcategory_id ?? null,
+          json2,
+          json2
+        ]
+      });
+      const vid = Number(res.lastInsertRowid);
+      await c.execute({
+        sql: "UPDATE production SET formulation_version_id = ? WHERE formulation_id = ? AND formulation_version_id IS NULL",
+        args: [vid, fid]
+      });
+    }
+  }).catch((e) => console.error("[formulations] version table failed:", e));
   startRevisionWatcher();
 }
 
@@ -13481,6 +13642,86 @@ function n14(v) {
   const x = Number(v);
   return Number.isFinite(x) ? x : 0;
 }
+function nowStamp() {
+  const d = /* @__PURE__ */ new Date();
+  const p = (x) => String(x).padStart(2, "0");
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
+}
+function itemShape(it) {
+  return {
+    product_id: n14(it.product_id),
+    qty: n14(it.qty),
+    kind: it.kind === "output" || it.kind === "loss" ? String(it.kind) : "input",
+    auto_calc: it.auto_calc ? 1 : 0,
+    ffa_pct: it.ffa_pct == null || it.ffa_pct === "" ? null : n14(it.ffa_pct),
+    loss_multiplier_pct: it.loss_multiplier_pct == null || it.loss_multiplier_pct === "" ? null : n14(it.loss_multiplier_pct),
+    moisture_pct: it.moisture_pct == null || it.moisture_pct === "" ? null : n14(it.moisture_pct),
+    byproduct_product_id: n14(it.byproduct_product_id) || null
+  };
+}
+async function snapshotFormulation(formulationId, note) {
+  const c = getClient();
+  const id = n14(formulationId);
+  if (!id) return null;
+  const head = await c.execute({ sql: "SELECT * FROM formulations WHERE id = ?", args: [id] });
+  if (!head.rows.length) return null;
+  const f = toPlain16(head)[0];
+  const items = await c.execute({
+    sql: `SELECT product_id, qty, kind, auto_calc, ffa_pct, loss_multiplier_pct, moisture_pct, byproduct_product_id
+          FROM formulation_items WHERE formulation_id = ? ORDER BY id`,
+    args: [id]
+  });
+  const shaped = toPlain16(items).map(itemShape);
+  const json2 = JSON.stringify(shaped);
+  const fingerprint = JSON.stringify({
+    p: n14(f.product_id),
+    nm: String(f.name || ""),
+    u: String(f.uom || ""),
+    s: n14(f.subcategory_id),
+    i: shaped
+  });
+  const last = await c.execute({
+    sql: "SELECT id, version, fingerprint FROM formulation_versions WHERE formulation_id = ? ORDER BY version DESC LIMIT 1",
+    args: [id]
+  });
+  if (last.rows.length && String(last.rows[0].fingerprint) === fingerprint) {
+    return Number(last.rows[0].id);
+  }
+  const version = last.rows.length ? Number(last.rows[0].version) + 1 : 1;
+  const who = getCurrentUser().username || "system";
+  const at = nowStamp();
+  const res = await c.execute({
+    sql: `INSERT INTO formulation_versions
+            (formulation_id, version, saved_at, saved_by, product_id, name, uom, subcategory_id, items_json, fingerprint, note)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    args: [id, version, at, who, n14(f.product_id), f.name ?? null, f.uom ?? null, n14(f.subcategory_id) || null, json2, fingerprint, note || null]
+  });
+  await c.execute({
+    sql: "UPDATE formulations SET updated_at = ?, updated_by = ? WHERE id = ?",
+    args: [at, who, id]
+  });
+  return Number(res.lastInsertRowid);
+}
+async function listFormulationVersions(formulationId) {
+  const res = await getClient().execute({
+    sql: `SELECT v.id, v.version, v.saved_at, v.saved_by, v.name, v.uom, v.note, v.items_json,
+                 (SELECT COUNT(*) FROM production p WHERE p.formulation_version_id = v.id) AS runs
+            FROM formulation_versions v
+           WHERE v.formulation_id = ?
+           ORDER BY v.version DESC`,
+    args: [n14(formulationId)]
+  });
+  return toPlain16(res).map((v) => {
+    let items = [];
+    try {
+      items = JSON.parse(String(v.items_json || "[]"));
+    } catch {
+      items = [];
+    }
+    const { items_json: _drop, ...rest } = v;
+    return { ...rest, tor: recipeTor(items), lines: items.length };
+  });
+}
 async function listFormulations() {
   const res = await getClient().execute(`
     SELECT f.*, p.name AS product_name, p.category AS product_category,
@@ -13489,7 +13730,12 @@ async function listFormulations() {
       (SELECT COALESCE(SUM(qty), 0) FROM formulation_items WHERE formulation_id = f.id AND kind = 'input') AS blend_pct,
       (SELECT COALESCE(SUM(qty), 0) FROM formulation_items WHERE formulation_id = f.id AND kind = 'output') AS byproduct_pct,
       (SELECT COALESCE(SUM(qty), 0) FROM formulation_items WHERE formulation_id = f.id AND kind = 'loss') AS loss_pct,
-      (SELECT COALESCE(SUM(qty), 0) FROM formulation_items WHERE formulation_id = f.id) AS total_qty
+      (SELECT COALESCE(SUM(qty), 0) FROM formulation_items WHERE formulation_id = f.id) AS total_qty,
+      -- When this recipe was last changed, and how many versions of it there
+      -- have been. A recipe that has never been edited shows one version and
+      -- no edit stamp, which is the honest answer rather than a made-up one.
+      (SELECT COUNT(*) FROM formulation_versions v WHERE v.formulation_id = f.id) AS version_count,
+      (SELECT COUNT(*) FROM production p WHERE p.formulation_id = f.id) AS run_count
     FROM formulations f
     LEFT JOIN products p ON p.id = f.product_id
     LEFT JOIN formulation_subcategories sc ON sc.id = f.subcategory_id
@@ -13552,6 +13798,7 @@ async function createFormulation(v) {
   });
   const id = Number(res.lastInsertRowid);
   await writeItems(id, v.items);
+  await snapshotFormulation(id, "Recipe created");
   return { id };
 }
 async function updateFormulation(id, v) {
@@ -13560,6 +13807,7 @@ async function updateFormulation(id, v) {
     args: [n14(v.product_id), v.name || null, v.uom || "MT", n14(v.subcategory_id) || null, id]
   });
   await writeItems(id, v.items);
+  await snapshotFormulation(id, String(v.change_note || "").trim() || "Recipe edited");
   return { id };
 }
 async function deleteFormulation(id) {
@@ -18184,7 +18432,7 @@ async function recordAudit(channel, args, result) {
   );
 }
 function registerIpc() {
-  const READONLY = /:list$|:get$|:items$|:issuances$|:sheet$|:outstanding$|:all$|:summary$|:transfers$|:fyTaxable$|:needs$|:breakdown$|:nextNo$|:liveUsers$|:ips$|:logs$|:dispatchableSales$|:mine$|:pendingCount$|:pending$|:lots$|:unmapped$|:unmappedCount$|:bargainLines$|:bargainNotes$|:bargainInterest$|:consignmentDraws$|^access:heartbeat$|^db:ping$|^db:snapshot$|^app:revision$|^auth:login$|^journal:booksFrom$|^journal:openings$|^journal:opening$|^journal:accounts$|^journal:statement$|^journal:trialBalance$|^journal:groups$|^journal:groupNames$|^journal:pendingRefs$|^journal:billsOutstanding$|^journal:tradingAccount$|^dashboard:stats$|^skuRates:parties$|^skuRates:partyCounts$|^consignment:openingLog$|^consignment:invoices$|^tankers:quality$|^orders:quality$|^gate:partyCategories$|^gate:waivedOuts$|^gate:forRecord$|^notify:rules$|^notify:list$|^notify:run$|^notify:preview$|^notify:people$|^notify:mutes$|^treasury:alerts$|^treasury:paymentTracker$|^facility:exposures$|^facility:headroom$|^company:setActive$|^company:getActive$|^factory:active$|^factory:companies$|^session:setUser$|^lc:repayments$|^lc:allRepayments$|^lc:getLimit$|^lc:bankLimits$|^lc:paymentIns$|^lc:openTradingInvoices$|^files:pickDocument$|^files:openDocument$|^bankRecon:imports$|^bankRecon:list$|^bankRecon:suggest$|^bd:kpis$|^bd:limits$|^skuStock:adjustments$|^skuOpening:list$|^skuOpening:date$|^stockCount:previous$|^stockOpening:list$|^stockOpening:date$|^formulationSubcategory:list$|^bd:allRepayments$|^bd:linkedOrders$|^bd:parties$|^bd:allParties$|^bd:openTradingInvoices$|^bd:paymentIns$|^access:entryWindows$|^access:entityHistory$|^trading:list$|^sales:series$|^sales:invoiceGaps$|^salesBargains:returns$|^salesBargains:unattributedReturns$|^tbill:orphans$/;
+  const READONLY = /:list$|:get$|:items$|:issuances$|:sheet$|:outstanding$|:all$|:summary$|:transfers$|:fyTaxable$|:needs$|:breakdown$|:nextNo$|:liveUsers$|:ips$|:logs$|:dispatchableSales$|:mine$|:pendingCount$|:pending$|:lots$|:unmapped$|:unmappedCount$|:bargainLines$|:bargainNotes$|:bargainInterest$|:consignmentDraws$|^access:heartbeat$|^db:ping$|^db:snapshot$|^app:revision$|^auth:login$|^journal:booksFrom$|^journal:openings$|^journal:opening$|^journal:accounts$|^journal:statement$|^journal:trialBalance$|^journal:groups$|^journal:groupNames$|^journal:pendingRefs$|^journal:billsOutstanding$|^journal:tradingAccount$|^dashboard:stats$|^skuRates:parties$|^skuRates:partyCounts$|^consignment:openingLog$|^consignment:invoices$|^tankers:quality$|^tankers:ffaHistory$|^orders:quality$|^gate:partyCategories$|^gate:waivedOuts$|^gate:forRecord$|^notify:rules$|^notify:list$|^notify:run$|^notify:preview$|^notify:people$|^notify:mutes$|^treasury:alerts$|^treasury:paymentTracker$|^facility:exposures$|^facility:headroom$|^company:setActive$|^company:getActive$|^factory:active$|^factory:companies$|^session:setUser$|^lc:repayments$|^lc:allRepayments$|^lc:getLimit$|^lc:bankLimits$|^lc:paymentIns$|^lc:openTradingInvoices$|^files:pickDocument$|^files:openDocument$|^bankRecon:imports$|^bankRecon:list$|^bankRecon:suggest$|^bd:kpis$|^bd:limits$|^skuStock:adjustments$|^skuOpening:list$|^skuOpening:date$|^stockCount:previous$|^stockOpening:list$|^stockOpening:date$|^formulationSubcategory:list$|^formulations:versions$|^bd:allRepayments$|^bd:linkedOrders$|^bd:parties$|^bd:allParties$|^bd:openTradingInvoices$|^bd:paymentIns$|^access:entryWindows$|^access:entityHistory$|^trading:list$|^sales:series$|^sales:invoiceGaps$|^salesBargains:returns$|^salesBargains:unattributedReturns$|^tbill:orphans$/;
   const AUDIT_SKIP = /* @__PURE__ */ new Set(["config:get", "config:save", "session:setUser"]);
   const handle = (channel, fn) => {
     ipcMain.handle(channel, async (e, args) => {
@@ -18312,6 +18560,10 @@ function registerIpc() {
   handle("tankers:revert", (_e, { id }) => revertPurchaseTanker(id));
   handle("tankers:replace", (_e, { id, values }) => replaceTanker(id, values));
   handle("tankers:quality", (_e, { id }) => listTankerQuality(Number(id)));
+  handle(
+    "tankers:ffaHistory",
+    (_e, a) => listFfaHistory(Number(a?.productId || 0), Number(a?.limit || 60))
+  );
   handle("tankers:saveQuality", async (_e, { id, rows }) => {
     await saveTankerQuality(Number(id), Array.isArray(rows) ? rows : []);
     return { id: Number(id) };
@@ -18456,6 +18708,7 @@ function registerIpc() {
   );
   handle("formulations:list", () => listFormulations());
   handle("formulations:items", (_e, { id }) => getFormulationItems(id));
+  handle("formulations:versions", (_e, { id }) => listFormulationVersions(Number(id)));
   handle("formulations:create", (_e, { values }) => createFormulation(values));
   handle(
     "formulations:update",
