@@ -1,6 +1,6 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { toast } from 'sonner'
-import { AlertTriangle, ArrowRightLeft, BookOpen, Boxes, Building2, CalendarCheck, CalendarRange, ClipboardCheck, Factory, Check, ChevronDown, ChevronLeft, ChevronRight, Copy, Download, Eye, EyeOff, Layers, Plus, SlidersHorizontal, TrendingDown, TrendingUp, Trash2, Upload, X } from 'lucide-react'
+import { AlertTriangle, ArrowRightLeft, BookOpen, Boxes, Building2, CalendarCheck, CalendarRange, ClipboardCheck, Factory, Check, ChevronDown, ChevronLeft, ChevronRight, Copy, Download, Eye, EyeOff, Layers, Loader2, Plus, SlidersHorizontal, TrendingDown, TrendingUp, Trash2, Upload, X } from 'lucide-react'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import {
   Dialog,
@@ -14,6 +14,7 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { DatePicker } from '@/components/ui/date-picker'
+import { ProductionReport } from '@/components/ProductionReport'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Switch } from '@/components/ui/switch'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
@@ -904,64 +905,52 @@ function StockTable({ rows: allRows, breakdown, label = 'stock', range, onRange,
             <Download className="h-4 w-4" />
           </Button>
         </PopoverTrigger>
-        <PopoverContent align="end" className="w-[22rem] p-1.5">
-          <p className="px-2 pb-1.5 pt-1 text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">
-            Download · {periodLabel}
+        {/* A LIST of what can be downloaded, and nothing else.
+            It used to explain each sheet in two lines of prose, which made a
+            four-item menu 22rem wide and taller than the filter row it hangs
+            off — and the explanations were read once and then scrolled past
+            forever. The four icon colours came from four different palettes
+            (emerald, rose, sky, indigo) and none of them was this page's. */}
+        <PopoverContent
+          align="end"
+          className={cn(
+            'w-56 p-1',
+            __WEB__ && '!w-[236px] !rounded-[4px] !border-[#D6E2D6] !p-[5px] !shadow-[0_10px_30px_rgba(11,61,46,0.13)]'
+          )}
+        >
+          <p
+            className={cn(
+              'px-2 pb-1 pt-1 text-[10px] font-semibold uppercase tracking-widest text-muted-foreground',
+              __WEB__ && '!px-[7px] !pb-[5px] !text-[9.5px] !font-extrabold !tracking-[0.1em] !text-[#7C9188]'
+            )}
+          >
+            {periodLabel}
           </p>
           {([
-            {
-              key: 'receipt',
-              icon: TrendingUp,
-              tone: 'text-emerald-700',
-              label: 'Receipt register',
-              hint: 'One line per inward vehicle — loading and receiving dates, party, transporter, bill, vehicle, dispatch and received qty, shortage and deductible.',
-              run: () => downloadMovement('receipt')
-            },
-            {
-              key: 'dispatch',
-              icon: TrendingDown,
-              tone: 'text-rose-700',
-              label: 'Dispatch register',
-              hint: 'The same columns for everything that went out, before any credit-note returns.',
-              run: () => downloadMovement('dispatch')
-            },
-            {
-              key: 'flow',
-              icon: Layers,
-              tone: 'text-sky-700',
-              label: 'Stock flow register',
-              hint: `Opening, movement and closing for each of the ${rows.length} product${rows.length === 1 ? '' : 's'} on screen — one level, no party breakdown.`,
-              run: () => downloadFlow(false)
-            },
-            {
-              key: 'flowparty',
-              icon: Building2,
-              tone: 'text-indigo-700',
-              label: 'Stock flow, by party',
-              hint: 'The same sheet with each product opened up into the parties behind its receipts and dispatches.',
-              run: () => downloadFlow(true)
-            }
+            { key: 'receipt', icon: TrendingUp, label: 'Receipt register', run: () => downloadMovement('receipt') },
+            { key: 'dispatch', icon: TrendingDown, label: 'Dispatch register', run: () => downloadMovement('dispatch') },
+            { key: 'flow', icon: Layers, label: 'Stock flow', run: () => downloadFlow(false) },
+            { key: 'flowparty', icon: Building2, label: 'Stock flow, by party', run: () => downloadFlow(true) }
           ] as const).map((o) => (
             <button
               key={o.key}
               type="button"
               disabled={!!dlBusy}
               onClick={() => void o.run()}
-              className="flex w-full cursor-pointer items-start gap-2.5 rounded-md px-2 py-2 text-left hover:bg-accent disabled:cursor-wait disabled:opacity-60"
+              className={cn(
+                'flex w-full cursor-pointer items-center gap-2 rounded-md px-2 py-[7px] text-left text-[13px] font-semibold hover:bg-accent disabled:cursor-wait disabled:opacity-60',
+                __WEB__ &&
+                  '!gap-[9px] !rounded-[3px] !px-[7px] !py-[7px] !text-[12.5px] !font-bold !text-[#0A1F17] hover:!bg-[#EAF0E9]'
+              )}
             >
-              <o.icon className={cn('mt-0.5 h-4 w-4 shrink-0', o.tone)} />
-              <span className="min-w-0">
-                <span className="block text-[13px] font-semibold">
-                  {o.label}
-                  {dlBusy === o.key && <span className="ml-1.5 text-[11px] font-normal text-muted-foreground">preparing…</span>}
-                </span>
-                <span className="block text-[11px] leading-snug text-muted-foreground">{o.hint}</span>
-              </span>
+              {/* One ink for every row — this page's forest green — so the
+                  menu reads as part of the register it sits on rather than as
+                  four unrelated buttons. */}
+              <o.icon className={cn('h-4 w-4 shrink-0 text-emerald-700', __WEB__ && '!h-[15px] !w-[15px] !text-[#0B3D2E]')} />
+              <span className="min-w-0 flex-1 truncate">{o.label}</span>
+              {dlBusy === o.key && <Loader2 className={cn('h-3.5 w-3.5 shrink-0 animate-spin text-muted-foreground', __WEB__ && '!text-[#0B3D2E]')} />}
             </button>
           ))}
-          <p className="border-t px-2 pb-1 pt-1.5 text-[10px] leading-snug text-muted-foreground">
-            Each file is named with the period and a timestamp, so repeat downloads never overwrite one another.
-          </p>
         </PopoverContent>
       </Popover>
     </div>
@@ -6031,6 +6020,12 @@ export function Stock({ onCompanyChange }: { onCompanyChange?: (id: string) => v
   const [bookView, setBookView] = useState<'register' | 'opening'>(() =>
     readStockView('bookView', ['register', 'opening'] as const, 'register')
   )
+  // Register or the production report, inside Finished Oil. Remembered the
+  // same way every other Stock view is, so leaving the page and coming back
+  // does not throw the reader back to the register they had already left.
+  const [finishedView, setFinishedView] = useState<'register' | 'report'>(() =>
+    readStockView('finishedView', ['register', 'report'] as const, 'register')
+  )
   // Which opening sheet: the tanks, or the packed shelf. The packed one used
   // to hide behind a picker on the Packed SKU strip, which put "where the
   // packed register starts" inside the packed register.
@@ -6038,12 +6033,12 @@ export function Stock({ onCompanyChange }: { onCompanyChange?: (id: string) => v
     readStockView('openingTab', ['products', 'sku'] as const, 'products')
   )
 
-  // Written as one object so the four can never be restored out of step with
+  // Written as one object so the five can never be restored out of step with
   // each other — a saved tab of 'sku' under a saved group of 'book' would show
   // a register with no rows in it.
   useEffect(() => {
-    writeStockView({ group: stockGroup, tab, bookView, openingTab })
-  }, [stockGroup, tab, bookView, openingTab])
+    writeStockView({ group: stockGroup, tab, bookView, openingTab, finishedView })
+  }, [stockGroup, tab, bookView, openingTab, finishedView])
   // Honour the note the opening sheet's company switcher left behind, so a
   // switch made there comes back to the opening sheet for the other company
   // instead of dropping the reader on the register. Runs once, then clears —
@@ -6431,7 +6426,43 @@ export function Stock({ onCompanyChange }: { onCompanyChange?: (id: string) => v
             <StockTable rows={byCat('intermediate')} breakdown={breakdown} label="intermediate" range={range} onRange={setRange} companyPicker={companyPicker} companySplit={companySplit} stagePicker={stagePicker} companyIds={cids} openingFrom={openingFrom} />
           </TabsContent>
           <TabsContent value="finished" className="mt-1">
-            <StockTable rows={byCat('finished')} breakdown={breakdown} label="finished" range={range} onRange={setRange} companyPicker={companyPicker} companySplit={companySplit} stagePicker={stagePicker} companyIds={cids} openingFrom={openingFrom} />
+            {/* Two ways of reading the same tab. The register says what the
+                finished balances ARE; the report says how they came to be —
+                which batch on which day ate what. It lives here rather than
+                on Production because the question it answers is a stock
+                question, and it is the finished sheet somebody is holding
+                when they ask it.
+
+                A view rather than a stage: the report spans every band, raw
+                through by-product, so filtering it to `finished` would empty
+                the grid of the very columns being consumed. */}
+            <div className={cn('mb-3 inline-flex rounded-lg border p-0.5', __WEB__ && SK_SEG)}>
+              {([
+                { key: 'register', label: 'Stock register' },
+                { key: 'report', label: 'Complete Production Report' }
+              ] as const).map((v) => {
+                const on = finishedView === v.key
+                return (
+                  <button
+                    key={v.key}
+                    type="button"
+                    onClick={() => setFinishedView(v.key)}
+                    className={cn(
+                      'rounded-md px-3.5 py-1.5 text-[12.5px] font-semibold transition-colors',
+                      __WEB__ && cn(SK_SEG_ITEM, on ? SK_SEG_ON : SK_SEG_OFF),
+                      !__WEB__ && (on ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:text-foreground')
+                    )}
+                  >
+                    {v.label}
+                  </button>
+                )
+              })}
+            </div>
+            {finishedView === 'report' ? (
+              <ProductionReport companyIds={cids} companyPicker={companyPicker} />
+            ) : (
+              <StockTable rows={byCat('finished')} breakdown={breakdown} label="finished" range={range} onRange={setRange} companyPicker={companyPicker} companySplit={companySplit} stagePicker={stagePicker} companyIds={cids} openingFrom={openingFrom} />
+            )}
           </TabsContent>
           <TabsContent value="sku" className="mt-6">
             <SkuStock />
