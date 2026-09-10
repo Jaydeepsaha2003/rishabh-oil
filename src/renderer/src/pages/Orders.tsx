@@ -7,6 +7,8 @@ import {
 } from 'lucide-react'
 import { PageHeader } from '@/components/PageHeader'
 import { TdsExplainer, type TdsParty } from '@/components/TdsExplainer'
+import { QualityUnit } from '@/components/QualityUnit'
+import { guessUnit } from '@/lib/qualityUnits'
 import { PhotoUpload, checkPhoto, prettyBytes } from '@/components/PhotoUpload'
 import { FyPicker } from '@/components/FyPicker'
 import { ExcelButton } from '@/components/ExcelButton'
@@ -1945,8 +1947,18 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
         {
           tanker: { id: 0, order_level: true, tanker_no: 'This invoice', received_qty: order.ordered_qty, uom: order.uom },
           rows: saved.length
-            ? saved.map((q: Row) => ({ name: String(q.name || ''), value: String(q.value ?? '') }))
-            : TANKER_QUALITY_DEFAULTS.map((name) => ({ name, value: '' }))
+            ? // unit_touched on a SAVED row: the unit it was stored with is a
+              // deliberate answer, so renaming the reading afterwards must not
+              // let the name-guess quietly overwrite it.
+              saved.map((q: Row) => ({
+                name: String(q.name || ''),
+                value: String(q.value ?? ''),
+                unit: q.unit == null ? '%' : String(q.unit),
+                unit_touched: true
+              }))
+            : // A fresh sheet takes the guess for each default parameter, so
+              // Melting point already reads in degrees before anyone types.
+              TANKER_QUALITY_DEFAULTS.map((name) => ({ name, value: '', unit: guessUnit(name) }))
         }
       ])
       return
@@ -1957,8 +1969,18 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
         return {
           tanker: t,
           rows: saved.length
-            ? saved.map((q: Row) => ({ name: String(q.name || ''), value: String(q.value ?? '') }))
-            : TANKER_QUALITY_DEFAULTS.map((name) => ({ name, value: '' }))
+            ? // unit_touched on a SAVED row: the unit it was stored with is a
+              // deliberate answer, so renaming the reading afterwards must not
+              // let the name-guess quietly overwrite it.
+              saved.map((q: Row) => ({
+                name: String(q.name || ''),
+                value: String(q.value ?? ''),
+                unit: q.unit == null ? '%' : String(q.unit),
+                unit_touched: true
+              }))
+            : // A fresh sheet takes the guess for each default parameter, so
+              // Melting point already reads in degrees before anyone types.
+              TANKER_QUALITY_DEFAULTS.map((name) => ({ name, value: '', unit: guessUnit(name) }))
         }
       })
     )
@@ -1966,6 +1988,23 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
   }
 
   function setQualityRow(si: number, ri: number, patch: Row): void {
+    // Typing "Melting point" proposes °C, "Colour" proposes a bare figure.
+    // A guess, not a rule — and abandoned the moment the desk picks a unit
+    // itself, so renaming a reading afterwards cannot undo that choice.
+    if (patch.name !== undefined) {
+      setQualitySets((prev) =>
+        prev.map((x, i) =>
+          i === si
+            ? {
+                ...x,
+                rows: x.rows.map((r: Row, j: number) =>
+                  j === ri && !r.unit_touched ? { ...r, unit: guessUnit(String(patch.name)) } : r
+                )
+              }
+            : x
+        )
+      )
+    }
     setQualitySets((p) =>
       p.map((set, i) => (i === si ? { ...set, rows: set.rows.map((r, j) => (j === ri ? { ...r, ...patch } : r)) } : set))
     )
@@ -6062,7 +6101,7 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
                     variant="outline"
                     className={cn('h-7 gap-1 px-2 text-[11px]', __WEB__ && '!h-8 !rounded-[3px] !text-[11.5px] !font-bold')}
                     onClick={() =>
-                      setQualitySets((p) => p.map((x, i) => (i === si ? { ...x, rows: [...x.rows, { name: '', value: '' }] } : x)))
+                      setQualitySets((p) => p.map((x, i) => (i === si ? { ...x, rows: [...x.rows, { name: '', value: '', unit: '%' }] } : x)))
                     }
                   >
                     <Plus className="h-3.5 w-3.5" /> Add reading
@@ -6079,17 +6118,18 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
                         onChange={(e) => setQualityRow(si, ri, { name: e.target.value })}
                         className={cn('h-9 flex-1 text-[13px]', __WEB__ && '!h-[42px]')}
                       />
-                      <div className="relative w-32 shrink-0">
+                      <div className="relative w-44 shrink-0">
                         <Input
                           value={String(q.value ?? '')}
                           placeholder="—"
                           inputMode="decimal"
                           onChange={(e) => setQualityRow(si, ri, { value: e.target.value })}
-                          className={cn('h-9 pr-7 text-right text-[13px]', __WEB__ && '!h-[42px]')}
+                          className={cn('h-9 pr-[82px] text-right text-[13px]', __WEB__ && '!h-[42px] !pr-[82px]')}
                         />
-                        <span className="pointer-events-none absolute right-2.5 top-1/2 -translate-y-1/2 text-[12px] text-muted-foreground">
-                          %
-                        </span>
+                        <QualityUnit
+                          value={String(q.unit ?? '%')}
+                          onChange={(v) => setQualityRow(si, ri, { unit: v, unit_touched: true })}
+                        />
                       </div>
                       <Button
                         type="button"
@@ -6110,8 +6150,8 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
             ))}
             {__WEB__ && qualitySets.length > 0 && (
               <p className="text-[11.5px] font-semibold leading-[1.5] text-[#5A6B62]">
-                The percentage sign is the usual case; melting point is in degrees, so read that one as the figure
-                the lab gave.
+                Each reading carries its own unit — click the one beside a value to change it between %, degrees, a
+                lab unit, or a bare figure.
               </p>
             )}
           </div>

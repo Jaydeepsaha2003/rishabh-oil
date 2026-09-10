@@ -1774,9 +1774,12 @@ export async function saveTankerQuality(tankerId: number, rows: Row[]): Promise<
     const name = String(r?.name || '').trim()
     const value = String(r?.value ?? '').trim()
     if (!name || !value) continue
+    // An empty string is a real answer here — "a figure with no unit", which
+    // is what a Lovibond colour is — so it is stored rather than defaulted.
+    const unit = r?.unit === undefined || r?.unit === null ? '%' : String(r.unit).trim()
     await c.execute({
-      sql: 'INSERT INTO tanker_quality (tanker_id, name, value, sort_order) VALUES (?, ?, ?, ?)',
-      args: [n(tankerId), name, value, order++]
+      sql: 'INSERT INTO tanker_quality (tanker_id, name, value, sort_order, unit) VALUES (?, ?, ?, ?, ?)',
+      args: [n(tankerId), name, value, order++, unit]
     })
   }
 }
@@ -1791,9 +1794,10 @@ export async function saveOrderQuality(orderId: number, rows: Row[]): Promise<vo
     const value = String(r.value ?? '').trim()
     // Blank is not saved — "not tested" and "tested at nothing" differ.
     if (!name || !value) continue
+    const unit = r?.unit === undefined || r?.unit === null ? '%' : String(r.unit).trim()
     await c.execute({
-      sql: 'INSERT INTO order_quality (order_id, name, value, sort_order) VALUES (?, ?, ?, ?)',
-      args: [n(orderId), name, value, i++]
+      sql: 'INSERT INTO order_quality (order_id, name, value, sort_order, unit) VALUES (?, ?, ?, ?, ?)',
+      args: [n(orderId), name, value, i++, unit]
     })
   }
 }
@@ -1801,7 +1805,7 @@ export async function saveOrderQuality(orderId: number, rows: Row[]): Promise<vo
 export async function listOrderQuality(orderId: number): Promise<Row[]> {
   return toPlain(
     await getClient().execute({
-      sql: 'SELECT id, name, value, sort_order FROM order_quality WHERE order_id = ? ORDER BY sort_order, id',
+      sql: 'SELECT id, name, value, sort_order, unit FROM order_quality WHERE order_id = ? ORDER BY sort_order, id',
       args: [n(orderId)]
     })
   )
@@ -1809,7 +1813,7 @@ export async function listOrderQuality(orderId: number): Promise<Row[]> {
 
 export async function listTankerQuality(tankerId: number): Promise<Row[]> {
   const res = await getClient().execute({
-    sql: 'SELECT id, name, value, sort_order FROM tanker_quality WHERE tanker_id = ? ORDER BY sort_order, id',
+    sql: 'SELECT id, name, value, sort_order, unit FROM tanker_quality WHERE tanker_id = ? ORDER BY sort_order, id',
     args: [n(tankerId)]
   })
   return toPlain(res)

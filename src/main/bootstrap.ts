@@ -928,6 +928,31 @@ export async function runStartupTasks(): Promise<void> {
     await c.execute('UPDATE products SET use_both = 0 WHERE use_both IS NULL')
   }).catch((e) => console.error('[products] use_both column failed:', e))
 
+  // What each lab reading is MEASURED IN.
+  //
+  // The desk printed a fixed "%" beside every reading and carried a footnote
+  // apologising for it — "melting point is in degrees, so read that one as the
+  // figure the lab gave". Which is a note asking the reader to ignore what the
+  // screen says. A tanker's readings are three different kinds of quantity:
+  // FFA and moisture are percentages, melting point is degrees, and colour is
+  // a bare Lovibond figure with no unit at all.
+  //
+  // Defaults to '%' so every reading already on the books keeps exactly the
+  // suffix it is displayed with today — the migration changes nothing on
+  // screen, and a wrong one is now correctable instead of being explained away
+  // in a footnote.
+  await runOnce('quality_unit_v1', async () => {
+    const c = getClient()
+    for (const t of ['tanker_quality', 'order_quality']) {
+      await c
+        .execute(`ALTER TABLE ${t} ADD COLUMN unit TEXT NOT NULL DEFAULT '%'`)
+        .catch((e: unknown) => {
+          if (!/duplicate column/i.test(String((e as Error).message))) throw e
+        })
+      await c.execute(`UPDATE ${t} SET unit = '%' WHERE unit IS NULL`)
+    }
+  }).catch((e) => console.error('[quality] unit column failed:', e))
+
   // The gate supervisor's diary of what is standing OUTSIDE the gate — see
   // outsidetankers.ts for why this is not a flag on gate_entries.
   await runOnce('outside_tankers_v1', async () => {
