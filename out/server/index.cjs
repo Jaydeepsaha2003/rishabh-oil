@@ -12401,6 +12401,42 @@ async function runStartupTasks() {
       if (!/duplicate column/i.test(String(e.message))) throw e;
     });
   }).catch((e) => console.error("[stock] opening adjustment column failed:", e));
+  await runOnce("stock_pp_stages_v1", async () => {
+    const c = getClient();
+    await c.execute(`CREATE TABLE IF NOT EXISTS stock_pp_stages (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      -- 'f<factory_id>' where the site is known, else 'c<company_id>'. The
+      -- opening sheet itself is read by site with a company fallback, and the
+      -- stage list has to be scoped the same way or one company's stages would
+      -- be invisible to another trading through the same tanks.
+      scope TEXT NOT NULL,
+      name TEXT NOT NULL,
+      sort_order INTEGER NOT NULL DEFAULT 0,
+      active INTEGER NOT NULL DEFAULT 1,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      UNIQUE(scope, name)
+    )`);
+    await c.execute(`CREATE TABLE IF NOT EXISTS stock_opening_pp (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      scope TEXT NOT NULL,
+      product_id INTEGER NOT NULL REFERENCES products(id),
+      stage_id INTEGER NOT NULL REFERENCES stock_pp_stages(id),
+      qty REAL NOT NULL DEFAULT 0,
+      -- 'with' | 'without' | NULL. Whether that vessel's contents were
+      -- measured with the free fatty acid still in them. NULL is a real
+      -- answer \u2014 "counted, not yet classified" \u2014 and is reported as such
+      -- rather than quietly folded into one side.
+      ffa TEXT,
+      updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+      UNIQUE(scope, product_id, stage_id)
+    )`);
+    await c.execute(
+      "CREATE INDEX IF NOT EXISTS idx_stock_opening_pp_prod ON stock_opening_pp(scope, product_id)"
+    );
+    await c.execute(
+      "CREATE INDEX IF NOT EXISTS idx_stock_opening_pp_stage ON stock_opening_pp(stage_id)"
+    );
+  }).catch((e) => console.error("[stock] PP stage tables failed:", e));
   await runOnce("products_uom_v1", async () => {
     const c = getClient();
     await c.execute("ALTER TABLE products ADD COLUMN uom TEXT NOT NULL DEFAULT 'MT'").catch((e) => {
@@ -14364,7 +14400,8 @@ async function listStockOpenings(companyId) {
   const asOf = await stockOpeningDate(cid);
   const fid = await factoryOfCompanies([cid]);
   const scope = fid ? await companiesOfFactory(fid) : [cid];
-  const [saved, levels, rates, dupes] = await Promise.all([
+  const ppKey = fid ? `f${fid}` : `c${cid}`;
+  const [saved, levels, rates, dupes, ppStages, ppLines] = await Promise.all([
     c.execute(
       fid ? {
         sql: `SELECT product_id, qty, COALESCE(pp_qty, 0) AS pp_qty,
@@ -14380,7 +14417,12 @@ async function listStockOpenings(companyId) {
     ),
     stockLevels(asOf ? { from: asOf } : void 0, scope),
     productValuationRates().catch(() => /* @__PURE__ */ new Map()),
-    duplicateProductNames()
+    duplicateProductNames(),
+    // The site's stage list and every stored breakdown line. Both tolerate a
+    // database that has not run the migration yet — an empty list simply means
+    // the sheet shows PP as the single figure it has always been.
+    listPpStages(cid).catch(() => []),
+    ppLinesByProduct(ppKey).catch(() => /* @__PURE__ */ new Map())
   ]);
   const savedBy = /* @__PURE__ */ new Map();
   for (const r of toPlain17(saved)) savedBy.set(n15(r.product_id), r);
@@ -14388,7 +14430,9 @@ async function listStockOpenings(companyId) {
     const id = n15(p.id);
     const s = savedBy.get(id);
     const entered = s ? n15(s.qty) : null;
-    const pp = s ? n15(s.pp_qty) : null;
+    const lines = ppLines.get(id) || [];
+    const ppSum = lines.length ? r3(lines.reduce((t, l) => t + n15(l.qty), 0)) : null;
+    const pp = ppSum != null ? ppSum : s ? n15(s.pp_qty) : null;
     const adj = s ? n15(s.adj_qty) : null;
     const fromMovement = r3(n15(p.stock) - n15(p.opening));
     const closing = r3(fromMovement + n15(entered) + n15(pp) + n15(adj));
@@ -14406,6 +14450,10 @@ async function listStockOpenings(companyId) {
       qty: entered,
       pp_qty: pp,
       adj_qty: adj,
+      // What that PP is made of, where somebody has said. An empty list means
+      // PP is a single figure typed straight in, which is what every opening
+      // struck before this feature existed is.
+      pp_lines: lines,
       total: entered == null && pp == null && adj == null ? null : r3(n15(entered) + n15(pp) + n15(adj)),
       rate: s && s.rate != null ? n15(s.rate) : null,
       note: s?.note ?? null,
@@ -14443,7 +14491,10 @@ async function listStockOpenings(companyId) {
     // oil and a finished one — so this is a warning to label them, never a
     // prompt to merge them. Merging would collapse the two into one line and
     // lose the distinction between what is bought and what is made.
-    name_clashes: dupes
+    name_clashes: dupes,
+    // The vessels this site breaks its in-process oil down into — one list for
+    // the whole sheet, because one refinery has one set of them.
+    pp_stages: ppStages
   };
 }
 async function duplicateProductNames() {
@@ -14482,13 +14533,15 @@ async function saveStockOpenings(rows, asOf, companyId) {
   const c = getClient();
   const fid = await factoryOfCompanies([cid]);
   const keyed = (extra) => fid ? { sql: `factory_id = ?${extra}`, args: [fid] } : { sql: `company_id = ?${extra}`, args: [cid] };
+  const ppFromLines = await ppTotalsByProduct(cid).catch(() => /* @__PURE__ */ new Map());
   let saved = 0;
   let cleared = 0;
   for (const raw of Array.isArray(rows) ? rows : []) {
     const pid = n15(raw?.product_id ?? raw?.id);
     if (!pid) continue;
     const rawBlank = raw?.qty === "" || raw?.qty == null;
-    const ppBlank = raw?.pp_qty === "" || raw?.pp_qty == null;
+    const broken = ppFromLines.get(pid);
+    const ppBlank = broken == null && (raw?.pp_qty === "" || raw?.pp_qty == null);
     const adjBlank = raw?.adj_qty === "" || raw?.adj_qty == null;
     const blank = rawBlank && ppBlank && adjBlank;
     if (blank) {
@@ -14501,7 +14554,7 @@ async function saveStockOpenings(rows, asOf, companyId) {
       continue;
     }
     const qty = n15(raw.qty);
-    const pp = n15(raw.pp_qty);
+    const pp = broken == null ? n15(raw.pp_qty) : broken;
     const adj = n15(raw.adj_qty);
     const rate = raw?.rate === "" || raw?.rate == null ? null : n15(raw.rate);
     const note = raw?.note ? String(raw.note).trim() : null;
@@ -14568,6 +14621,153 @@ async function seedOpeningDayCount(companyId, date) {
       ]
     }).catch((e) => console.error("[stock] opening-day count seed failed:", e.message));
   }
+}
+async function ppScope(companyId) {
+  const cid = n15(companyId) || getActiveCompanyId();
+  const fid = await factoryOfCompanies([cid]);
+  return fid ? `f${fid}` : `c${cid}`;
+}
+async function listPpStages(companyId) {
+  const scope = await ppScope(companyId);
+  const res = await getClient().execute({
+    sql: `SELECT id, name, sort_order, active FROM stock_pp_stages
+           WHERE scope = ? ORDER BY sort_order, id`,
+    args: [scope]
+  });
+  return toPlain17(res).map((r) => ({
+    id: n15(r.id),
+    name: String(r.name),
+    sort_order: n15(r.sort_order),
+    active: n15(r.active) === 1
+  }));
+}
+async function ppLinesByProduct(scope) {
+  const res = await getClient().execute({
+    sql: `SELECT l.product_id, l.stage_id, l.qty, l.ffa, s.name, s.sort_order, s.active
+            FROM stock_opening_pp l
+            JOIN stock_pp_stages s ON s.id = l.stage_id
+           WHERE l.scope = ?
+           ORDER BY s.sort_order, s.id`,
+    args: [scope]
+  });
+  const by = /* @__PURE__ */ new Map();
+  for (const r of toPlain17(res)) {
+    const pid = n15(r.product_id);
+    if (!by.has(pid)) by.set(pid, []);
+    by.get(pid).push({
+      stage_id: n15(r.stage_id),
+      name: String(r.name),
+      qty: r3(n15(r.qty)),
+      // Never coerced to a side. A line counted but not yet classified is a
+      // third answer and the screen says so.
+      ffa: r.ffa === "with" || r.ffa === "without" ? String(r.ffa) : null,
+      active: n15(r.active) === 1
+    });
+  }
+  return by;
+}
+async function addPpStage(name, companyId) {
+  const label = String(name || "").trim().replace(/\s+/g, " ");
+  if (!label) throw new Error("Name the stage");
+  if (label.length > 60) throw new Error("Keep the stage name under 60 characters");
+  const scope = await ppScope(companyId);
+  const c = getClient();
+  const found = await c.execute({
+    sql: "SELECT id, name, active FROM stock_pp_stages WHERE scope = ? AND UPPER(name) = UPPER(?)",
+    args: [scope, label]
+  });
+  if (found.rows.length) {
+    const row = toPlain17(found)[0];
+    if (n15(row.active) !== 1) {
+      await c.execute({ sql: "UPDATE stock_pp_stages SET active = 1 WHERE id = ?", args: [n15(row.id)] });
+    }
+    return { id: n15(row.id), name: String(row.name), active: true, revived: n15(row.active) !== 1 };
+  }
+  const next = await c.execute({
+    sql: "SELECT COALESCE(MAX(sort_order), 0) + 10 AS o FROM stock_pp_stages WHERE scope = ?",
+    args: [scope]
+  });
+  const order = n15(next.rows[0]?.o) || 10;
+  const ins = await c.execute({
+    sql: "INSERT INTO stock_pp_stages (scope, name, sort_order) VALUES (?, ?, ?)",
+    args: [scope, label, order]
+  });
+  return { id: Number(ins.lastInsertRowid), name: label, active: true, revived: false };
+}
+async function removePpStage(stageId, companyId) {
+  const id = n15(stageId);
+  if (!id) throw new Error("Which stage?");
+  const scope = await ppScope(companyId);
+  const c = getClient();
+  const st = await c.execute({
+    sql: "SELECT name FROM stock_pp_stages WHERE id = ? AND scope = ?",
+    args: [id, scope]
+  });
+  if (!st.rows.length) throw new Error("That stage is not on this site\u2019s list");
+  const name = String(st.rows[0].name || "");
+  const del = await c.execute({
+    sql: "DELETE FROM stock_opening_pp WHERE scope = ? AND stage_id = ? AND ABS(COALESCE(qty, 0)) < 0.0005",
+    args: [scope, id]
+  });
+  const kept = await c.execute({
+    sql: "SELECT COUNT(*) AS k FROM stock_opening_pp WHERE scope = ? AND stage_id = ?",
+    args: [scope, id]
+  });
+  const keptCount = n15(kept.rows[0]?.k);
+  if (keptCount > 0) {
+    await c.execute({ sql: "UPDATE stock_pp_stages SET active = 0 WHERE id = ?", args: [id] });
+    return { removed: Number(del.rowsAffected) || 0, kept: keptCount, retired: true, name };
+  }
+  await c.execute({ sql: "DELETE FROM stock_pp_stages WHERE id = ? AND scope = ?", args: [id, scope] });
+  return { removed: Number(del.rowsAffected) || 0, kept: 0, retired: false, name };
+}
+async function savePpLines(productId, lines, companyId) {
+  const pid = n15(productId);
+  if (!pid) throw new Error("Which product?");
+  const cid = n15(companyId) || getActiveCompanyId();
+  const scope = await ppScope(cid);
+  const c = getClient();
+  const keep = (Array.isArray(lines) ? lines : []).map((l) => ({
+    stage_id: n15(l?.stage_id),
+    qty: l?.qty === "" || l?.qty == null ? 0 : n15(l.qty),
+    ffa: l?.ffa === "with" || l?.ffa === "without" ? String(l.ffa) : null
+  })).filter((l) => l.stage_id > 0 && Math.abs(l.qty) > 5e-4);
+  await c.execute({
+    sql: "DELETE FROM stock_opening_pp WHERE scope = ? AND product_id = ?",
+    args: [scope, pid]
+  });
+  for (const l of keep) {
+    await c.execute({
+      sql: `INSERT INTO stock_opening_pp (scope, product_id, stage_id, qty, ffa, updated_at)
+            VALUES (?, ?, ?, ?, ?, datetime('now'))`,
+      args: [scope, pid, l.stage_id, r3(l.qty), l.ffa]
+    });
+  }
+  const total = r3(keep.reduce((t, l) => t + l.qty, 0));
+  await writePpTotal(cid, scope, pid, keep.length ? total : null);
+  return { total, lines: keep.length };
+}
+async function writePpTotal(companyId, scope, productId, total) {
+  const c = getClient();
+  const fid = scope.startsWith("f") ? Number(scope.slice(1)) : 0;
+  const where = fid ? "factory_id = ?" : "company_id = ?";
+  const arg = fid || companyId;
+  await c.execute({
+    sql: `UPDATE stock_openings SET pp_qty = ?, updated_at = datetime('now')
+             WHERE ${where} AND product_id = ?`,
+    args: [total == null ? 0 : total, arg, productId]
+  }).catch((e) => console.error("[stock] PP total write failed:", e.message));
+}
+async function ppTotalsByProduct(companyId) {
+  const scope = await ppScope(companyId);
+  const res = await getClient().execute({
+    sql: `SELECT product_id, SUM(qty) AS t FROM stock_opening_pp
+           WHERE scope = ? GROUP BY product_id`,
+    args: [scope]
+  });
+  const m = /* @__PURE__ */ new Map();
+  for (const r of toPlain17(res)) m.set(n15(r.product_id), r3(n15(r.t)));
+  return m;
 }
 
 // src/main/outsidetankers.ts
@@ -18903,7 +19103,7 @@ async function recordAudit(channel, args, result) {
   );
 }
 function registerIpc() {
-  const READONLY = /:list$|:get$|:items$|:issuances$|:sheet$|:outstanding$|:all$|:summary$|:transfers$|:fyTaxable$|:needs$|:breakdown$|:nextNo$|:liveUsers$|:ips$|:logs$|:dispatchableSales$|:mine$|:pendingCount$|:pending$|:lots$|:unmapped$|:unmappedCount$|:bargainLines$|:bargainNotes$|:bargainInterest$|:consignmentDraws$|^access:heartbeat$|^db:ping$|^db:snapshot$|^app:revision$|^auth:login$|^journal:booksFrom$|^journal:openings$|^journal:opening$|^journal:accounts$|^journal:statement$|^journal:trialBalance$|^journal:groups$|^journal:groupNames$|^journal:pendingRefs$|^journal:billsOutstanding$|^journal:tradingAccount$|^dashboard:stats$|^skuRates:parties$|^skuRates:partyCounts$|^consignment:openingLog$|^consignment:invoices$|^tankers:quality$|^tankers:ffaHistory$|^orders:quality$|^gate:partyCategories$|^gate:waivedOuts$|^gate:forRecord$|^notify:rules$|^notify:list$|^notify:run$|^notify:preview$|^notify:people$|^notify:mutes$|^treasury:alerts$|^treasury:paymentTracker$|^facility:exposures$|^facility:headroom$|^company:setActive$|^company:getActive$|^factory:active$|^factory:companies$|^session:setUser$|^lc:repayments$|^lc:allRepayments$|^lc:getLimit$|^lc:bankLimits$|^lc:paymentIns$|^lc:openTradingInvoices$|^files:pickDocument$|^files:openDocument$|^bankRecon:imports$|^bankRecon:list$|^bankRecon:suggest$|^bd:kpis$|^bd:limits$|^skuStock:adjustments$|^skuOpening:list$|^skuOpening:date$|^stockCount:previous$|^stockOpening:list$|^stockOpening:date$|^formulationSubcategory:list$|^formulations:versions$|^bd:allRepayments$|^bd:linkedOrders$|^bd:parties$|^bd:allParties$|^bd:openTradingInvoices$|^bd:paymentIns$|^access:entryWindows$|^access:entityHistory$|^trading:list$|^sales:series$|^sales:invoiceGaps$|^salesBargains:returns$|^salesBargains:unattributedReturns$|^tbill:orphans$|^production:report$/;
+  const READONLY = /:list$|:get$|:items$|:issuances$|:sheet$|:outstanding$|:all$|:summary$|:transfers$|:fyTaxable$|:needs$|:breakdown$|:nextNo$|:liveUsers$|:ips$|:logs$|:dispatchableSales$|:mine$|:pendingCount$|:pending$|:lots$|:unmapped$|:unmappedCount$|:bargainLines$|:bargainNotes$|:bargainInterest$|:consignmentDraws$|^access:heartbeat$|^db:ping$|^db:snapshot$|^app:revision$|^auth:login$|^journal:booksFrom$|^journal:openings$|^journal:opening$|^journal:accounts$|^journal:statement$|^journal:trialBalance$|^journal:groups$|^journal:groupNames$|^journal:pendingRefs$|^journal:billsOutstanding$|^journal:tradingAccount$|^dashboard:stats$|^skuRates:parties$|^skuRates:partyCounts$|^consignment:openingLog$|^consignment:invoices$|^tankers:quality$|^tankers:ffaHistory$|^orders:quality$|^gate:partyCategories$|^gate:waivedOuts$|^gate:forRecord$|^notify:rules$|^notify:list$|^notify:run$|^notify:preview$|^notify:people$|^notify:mutes$|^treasury:alerts$|^treasury:paymentTracker$|^facility:exposures$|^facility:headroom$|^company:setActive$|^company:getActive$|^factory:active$|^factory:companies$|^session:setUser$|^lc:repayments$|^lc:allRepayments$|^lc:getLimit$|^lc:bankLimits$|^lc:paymentIns$|^lc:openTradingInvoices$|^files:pickDocument$|^files:openDocument$|^bankRecon:imports$|^bankRecon:list$|^bankRecon:suggest$|^bd:kpis$|^bd:limits$|^skuStock:adjustments$|^skuOpening:list$|^skuOpening:date$|^stockCount:previous$|^stockOpening:list$|^stockOpening:date$|^stockOpening:ppStages$|^formulationSubcategory:list$|^formulations:versions$|^bd:allRepayments$|^bd:linkedOrders$|^bd:parties$|^bd:allParties$|^bd:openTradingInvoices$|^bd:paymentIns$|^access:entryWindows$|^access:entityHistory$|^trading:list$|^sales:series$|^sales:invoiceGaps$|^salesBargains:returns$|^salesBargains:unattributedReturns$|^tbill:orphans$|^production:report$/;
   const AUDIT_SKIP = /* @__PURE__ */ new Set(["config:get", "config:save", "session:setUser"]);
   const handle = (channel, fn) => {
     ipcMain.handle(channel, async (e, args) => {
@@ -19233,6 +19433,22 @@ function registerIpc() {
   handle(
     "stockOpening:date",
     (_e, { companyId } = {}) => stockOpeningDate(companyId)
+  );
+  handle(
+    "stockOpening:ppStages",
+    (_e, { companyId } = {}) => listPpStages(companyId)
+  );
+  handle(
+    "stockOpening:addPpStage",
+    (_e, { name, companyId }) => addPpStage(name, companyId)
+  );
+  handle(
+    "stockOpening:removePpStage",
+    (_e, { stageId, companyId }) => removePpStage(stageId, companyId)
+  );
+  handle(
+    "stockOpening:savePp",
+    (_e, { productId, lines, companyId }) => savePpLines(productId, lines, companyId)
   );
   handle("stockCount:history", (_e, { from, to }) => stockCountHistory(from, to));
   handle(
