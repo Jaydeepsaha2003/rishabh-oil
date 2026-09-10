@@ -89,14 +89,24 @@ export async function recordNilRound(date: string, slot: string): Promise<{ id: 
   if (n((has.rows[0] as unknown as Row).n))
     throw new Error('This round already has entries — remove them first if nothing was outside after all')
   const res = await c.execute({
-    sql: `INSERT INTO outside_tankers (company_id, log_date, slot, kind, tankers, created_by)
-          VALUES (?, ?, ?, 'nil', 0, ?)`,
+    sql: `INSERT INTO outside_tankers (company_id, log_date, slot, kind, tankers, created_by, entry_time)
+          VALUES (?, ?, ?, 'nil', 0, ?, ?)`,
     // created_by is left null: a NIL is recorded from the round's own button,
     // which carries no form and so no username. The row's timestamp and the
-    // audit log already say who pressed it.
-    args: [cid, day, slot, null]
+    // audit log already say who pressed it. The TIME it was pressed is worth
+    // keeping though — "counted at 4:12, nothing outside" is the whole point
+    // of a NIL round.
+    args: [cid, day, slot, null, nowHHMM()]
   })
   return { id: Number(res.lastInsertRowid || 0) }
+}
+
+// Local wall-clock HH:MM. The diary is read off the gate, and SQLite's
+// datetime('now') is UTC — a line written at 08:07 IST would be stamped 02:37,
+// which is the trap the gate times already fell into once.
+function nowHHMM(): string {
+  const d = new Date()
+  return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
 }
 
 export async function saveOutsideTanker(v: Row): Promise<{ id: number }> {
@@ -124,10 +134,18 @@ export async function saveOutsideTanker(v: Row): Promise<{ id: number }> {
     n(v.party_id) || null,
     tankers,
     String(v.note || '').trim() || null,
-    String(v.created_by || '') || null
+    String(v.created_by || '') || null,
+    // WHEN this line was written, which is what the diary was missing. Note it
+    // is the recording time, not the lorry's arrival — a line added at 11:40
+    // against the 8 AM round now says so instead of hiding inside the round.
+    // An explicit time is honoured so a supervisor can correct one.
+    String(v.entry_time || '').slice(0, 5) || nowHHMM()
   ]
   if (n(v.id)) {
     await c.execute({
+      // entry_time is NOT touched here. It records when the line was first
+      // written; correcting a party or a count later does not change that, and
+      // restamping it would quietly rewrite the diary's own history.
       sql: `UPDATE outside_tankers
                SET log_date = ?, slot = ?, kind = ?, category = ?, product_id = ?, party_id = ?,
                    tankers = ?, note = ?
@@ -144,8 +162,8 @@ export async function saveOutsideTanker(v: Row): Promise<{ id: number }> {
   })
   const res = await c.execute({
     sql: `INSERT INTO outside_tankers
-            (company_id, log_date, slot, kind, category, product_id, party_id, tankers, note, created_by)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            (company_id, log_date, slot, kind, category, product_id, party_id, tankers, note, created_by, entry_time)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     args
   })
   return { id: Number(res.lastInsertRowid || 0) }

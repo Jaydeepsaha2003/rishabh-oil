@@ -378,8 +378,13 @@ function RejectedList({
   onRestore: (row: Row) => Promise<void>
   onPutBack: (group: string) => Promise<void>
 }): React.JSX.Element {
-  const [openRej, setOpenRej] = useState(true)
-  const [openWaived, setOpenWaived] = useState(true)
+  // Both shut on arrival. This page answers a question nobody asks daily —
+  // what was turned away, and which dispatches were taken off the queue — so
+  // the useful first screen is the three counters and two headings, not
+  // twenty-three rows the reader has to scroll past to reach the second
+  // heading. Either opens on a click and stays open while the page is up.
+  const [openRej, setOpenRej] = useState(false)
+  const [openWaived, setOpenWaived] = useState(false)
   const [busy, setBusy] = useState('')
 
   const ago = (iso: unknown): string => {

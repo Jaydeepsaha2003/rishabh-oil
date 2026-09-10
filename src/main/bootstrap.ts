@@ -928,6 +928,41 @@ export async function runStartupTasks(): Promise<void> {
     await c.execute('UPDATE products SET use_both = 0 WHERE use_both IS NULL')
   }).catch((e) => console.error('[products] use_both column failed:', e))
 
+  // WHEN a line was written into the gate diary.
+  //
+  // The diary is counted in rounds — 8 AM, 4 PM, 8 PM — and the round is the
+  // only time it carried. So a line added at 8:07 and one added at 11:40 both
+  // read as "8 AM round", and nothing on the screen said which of two
+  // supervisors wrote what, or how long after the count a lorry was added.
+  //
+  // created_at cannot answer it: SQLite's datetime('now') is UTC, so the row
+  // written at 08:07 IST is stamped 02:37. Same trap as the gate times, and
+  // the same fix — the clock comes from JS, in the zone the app is pinned to.
+  //
+  // Existing rows are backfilled by converting their UTC created_at through
+  // that same pinned zone rather than by adding a hardcoded 5.5 hours, so the
+  // eleven lines already in the diary get their real wall-clock time and the
+  // conversion stays right if the mill is ever read from elsewhere.
+  await runOnce('outside_tanker_entry_time_v1', async () => {
+    const c = getClient()
+    await c.execute('ALTER TABLE outside_tankers ADD COLUMN entry_time TEXT').catch((e: unknown) => {
+      if (!/duplicate column/i.test(String((e as Error).message))) throw e
+    })
+    const rows = await c.execute(
+      "SELECT id, created_at FROM outside_tankers WHERE COALESCE(entry_time, '') = '' AND created_at IS NOT NULL"
+    )
+    let done = 0
+    for (const r of rows.rows) {
+      // 'Z' because the stored stamp is UTC without saying so.
+      const d = new Date(`${String(r.created_at).replace(' ', 'T')}Z`)
+      if (Number.isNaN(d.getTime())) continue
+      const hhmm = `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
+      await c.execute({ sql: 'UPDATE outside_tankers SET entry_time = ? WHERE id = ?', args: [hhmm, Number(r.id)] })
+      done += 1
+    }
+    if (done) console.log(`[outside] entry_time backfilled on ${done} diary line(s) from their UTC created_at`)
+  }).catch((e) => console.error('[outside] entry_time column failed:', e))
+
   // What each lab reading is MEASURED IN.
   //
   // The desk printed a fixed "%" beside every reading and carried a footnote

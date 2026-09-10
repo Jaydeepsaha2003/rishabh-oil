@@ -144,8 +144,13 @@ function RejectedTabWeb({
   onRestore: (row: Row) => void
   onPutBack: (group: string) => void
 }): React.JSX.Element {
-  const [openRej, setOpenRej] = useState(true)
-  const [openWaived, setOpenWaived] = useState(true)
+  // Both shut on arrival. This page answers a question nobody asks daily —
+  // what was turned away, and which dispatches were taken off the queue — so
+  // the useful first screen is the three counters and two headings, not
+  // twenty-three rows the reader has to scroll past to reach the second
+  // heading. Either opens on a click and stays open while the page is up.
+  const [openRej, setOpenRej] = useState(false)
+  const [openWaived, setOpenWaived] = useState(false)
   const today = todayISO()
   const rejectedToday = rejected.filter((r) => String(r.rejected_at || '').slice(0, 10) === today).length
 

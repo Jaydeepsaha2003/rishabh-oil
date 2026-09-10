@@ -342,7 +342,17 @@ export function OutsideTankerLog({
                   // if a lorry turns up that was missed.
                   <div className="flex flex-wrap items-center justify-center gap-2 bg-[#F7FBF4] px-3.5 py-3.5 text-center">
                     <CheckCircle2 className="h-4 w-4 shrink-0 text-[#0B6B45]" />
-                    <span className="text-[12.5px] font-bold text-[#0B6B45]">Counted — nothing was outside.</span>
+                    <span className="text-[12.5px] font-bold text-[#0B6B45]">
+                      Counted — nothing was outside.
+                      {/* On a quiet day this is the only time on the round, and
+                          the most interesting fact about it: somebody walked
+                          out at 16:12 and saw an empty yard. */}
+                      {!!s.nil?.entry_time && (
+                        <span className="doc-ref ml-1.5 font-bold tabular-nums text-[#5A6B62]">
+                          {String(s.nil.entry_time).slice(0, 5)}
+                        </span>
+                      )}
+                    </span>
                     <button
                       type="button"
                       className="text-[11.5px] font-bold text-[#5A6B62] underline-offset-2 hover:underline"
@@ -372,6 +382,11 @@ export function OutsideTankerLog({
                   <TableHeader>
                     <TableRow className="!bg-[#EFF5EC] hover:!bg-[#EFF5EC] [&_th]:!text-[10px] [&_th]:!font-extrabold [&_th]:!uppercase [&_th]:!tracking-[.09em] [&_th]:!text-[#33473E]">
                       <TableHead className="w-[60px]">SL no</TableHead>
+                      {/* WHEN the line was written, next to the SL no that
+                          orders it. The round says which count a line belongs
+                          to — 8 AM — and that is not the same thing as the
+                          hour somebody walked to the gate and wrote it down. */}
+                      <TableHead className="w-[74px]">Time</TableHead>
                       <TableHead>Category</TableHead>
                       <TableHead>Material</TableHead>
                       <TableHead>Party</TableHead>
@@ -383,6 +398,11 @@ export function OutsideTankerLog({
                     {s.rows.map((r, i) => (
                       <TableRow key={String(r.id)}>
                         <TableCell className="font-semibold text-[#5A6B62]">{i + 1}</TableCell>
+                        <TableCell className="doc-ref whitespace-nowrap text-[12px] font-bold tabular-nums text-[#33473E]">
+                          {/* A line written before the column existed has no
+                              time of its own. A dash, not a fabricated one. */}
+                          {String(r.entry_time || '').slice(0, 5) || <span className="font-normal text-[#C3D2C6]">—</span>}
+                        </TableCell>
                         <TableCell>
                           <span
                             className={cn(
