@@ -143,6 +143,14 @@ const COMPANY_COLUMN: ExcelColumn = {
 }
 
 const REGISTER_COLUMNS: ExcelColumn[] = [
+  // The document's own date, and first, because that is what a register is
+  // reconciled by: the bill's date leads, then the lorry's two dates. A
+  // purchase billed on the 27th and received on the 2nd, or an invoice raised
+  // one month and unloaded the next, could not be tied to the ledger from
+  // this sheet at all before — the ledger posts on the invoice date and the
+  // register only carried movement dates. On a return line it is the note's
+  // own date.
+  { header: 'Invoice date', key: 'invoice_date', width: 14, value: (r) => (r.invoice_date ? formatDate(r.invoice_date) : '') },
   { header: 'Loading date', key: 'loaded_date', width: 14, value: (r) => (r.loaded_date ? formatDate(r.loaded_date) : '') },
   { header: 'Receiving date', key: 'received_date', width: 14, value: (r) => (r.received_date ? formatDate(r.received_date) : '') },
   {
