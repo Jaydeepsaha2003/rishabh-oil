@@ -295,6 +295,18 @@ export async function listWaivedGateOuts(): Promise<Row[]> {
            MAX(s.customer) AS customer,
            SUM(s.qty) AS qty,
            MAX(s.uom) AS uom,
+           -- What is on the invoice, not just how much of it. A waived
+           -- dispatch is recognised by what it was carrying — "162 MT" says
+           -- nothing about which oil never had a lorry weighed against it.
+           COUNT(*) AS line_count,
+           (SELECT GROUP_CONCAT(x.nm, ', ') FROM (
+              SELECT DISTINCT COALESCE(pk.name, pr.name, 'Item') AS nm
+                FROM sales s2
+                LEFT JOIN products pr ON pr.id = s2.product_id
+                LEFT JOIN packagings pk ON pk.id = s2.packaging_id
+               WHERE s2.invoice_group = s.invoice_group
+               ORDER BY nm
+            ) x) AS items,
            MAX(s.gate_out_waived_at) AS waived_at,
            MAX(s.gate_out_waived_reason) AS waived_reason
       FROM sales s

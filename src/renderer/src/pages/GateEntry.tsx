@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { toast } from 'sonner'
 import {
-  AlertTriangle, Ban, Check, ChevronDown, ChevronLeft, ChevronRight, ClipboardList, Clock, Hash, Info, Lock,
+  AlertTriangle, Ban, Check, CheckCircle2, ChevronDown, ChevronLeft, ChevronRight, ClipboardList, Clock, Hash, Info, Lock, XCircle,
   RotateCcw, LogIn, LogOut, Pencil, Scale, Trash2, Truck, X , Undo2
 } from 'lucide-react'
 import { PageHeader } from '@/components/PageHeader'
@@ -121,6 +121,279 @@ function shiftDate(iso: string, days: number): string {
   const d = new Date(`${base || todayISO()}T00:00:00`)
   d.setDate(d.getDate() + days)
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+}
+
+// The Rejected tab, as the handoff draws it for the website.
+//
+// Two objects, two sections, because they are NOT the same thing: a rejected
+// gate entry is a visit that was cut and abandoned, a waived invoice is a
+// dispatch that never needed a gate-out at all. Forcing them into one table
+// meant one of them always had columns that made no sense for it.
+//
+// Both fold, and both open by default — the tab exists to be read, and a
+// section you have to open to discover is a section nobody reads. The counts
+// stay on the headers when they are shut.
+function RejectedTabWeb({
+  rejected,
+  waived,
+  onRestore,
+  onPutBack
+}: {
+  rejected: Row[]
+  waived: Row[]
+  onRestore: (row: Row) => void
+  onPutBack: (group: string) => void
+}): React.JSX.Element {
+  const [openRej, setOpenRej] = useState(true)
+  const [openWaived, setOpenWaived] = useState(true)
+  const today = todayISO()
+  const rejectedToday = rejected.filter((r) => String(r.rejected_at || '').slice(0, 10) === today).length
+
+  // How long ago, in the words anyone uses for it. A date alone does not say
+  // whether this is still live or was dealt with months back.
+  const ago = (iso: unknown): string => {
+    const d = String(iso || '').slice(0, 10)
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(d)) return ''
+    const days = Math.round((Date.parse(`${todayISO()}T00:00:00`) - Date.parse(`${d}T00:00:00`)) / 86400000)
+    if (days <= 0) return 'today'
+    if (days === 1) return 'yesterday'
+    if (days < 31) return `${days} days ago`
+    const months = Math.round(days / 30)
+    return months <= 1 ? 'a month ago' : `${months} months ago`
+  }
+
+  const RJ_GRID =
+    'grid grid-cols-[minmax(130px,1fr)_72px_150px_minmax(180px,1.3fr)_minmax(230px,1.7fr)_140px_132px] items-center'
+  const WV_GRID =
+    'grid grid-cols-[minmax(140px,1fr)_minmax(170px,1.3fr)_minmax(200px,1.4fr)_minmax(220px,1.6fr)_130px_140px] items-center'
+
+  return (
+    <div className="flex flex-col gap-3.5">
+      <div className="grid gap-2.5 [grid-template-columns:repeat(auto-fit,minmax(min(100%,200px),1fr))]">
+        {[
+          {
+            k: 'Rejected entries',
+            v: String(rejected.length),
+            sub: 'turned away at the gate',
+            accent: '#B3261E',
+            fg: 'text-[#B3261E]'
+          },
+          {
+            k: 'No gate-out required',
+            v: String(waived.length),
+            sub: 'invoices taken off the queue',
+            accent: '#C2700A',
+            fg: 'text-[#8A5300]'
+          },
+          {
+            k: 'Rejected today',
+            v: String(rejectedToday),
+            sub: rejectedToday === 0 ? 'nothing refused since this morning' : 'refused since this morning',
+            accent: '#0B3D2E',
+            fg: 'text-[#0A1F17]'
+          }
+        ].map((c) => (
+          <div
+            key={c.k}
+            className="rounded-[4px] border border-[#D6E2D6] bg-white px-3.5 py-3"
+            style={{ borderTop: `3px solid ${c.accent}` }}
+          >
+            <div className="text-[9.5px] font-extrabold uppercase tracking-[.13em] text-[#5A6B62]">{c.k}</div>
+            <div className={cn('mt-1 text-[23px] font-bold tracking-[-0.035em] tabular-nums', c.fg)}>{c.v}</div>
+            <div className="mt-0.5 text-[11.5px] font-semibold text-[#5A6B62]">{c.sub}</div>
+          </div>
+        ))}
+      </div>
+
+      {/* Waived invoices first: they are the ones somebody is most likely to
+          have to undo, because "no gate-out needed" is a judgement and the
+          lorry sometimes turns up after all. */}
+      <section className="overflow-hidden rounded-[4px] border border-[#F0E4CB] bg-white">
+        <button
+          type="button"
+          onClick={() => setOpenWaived((v) => !v)}
+          className="w-full border-b border-b-[#F0E4CB] bg-[#FFFBF2] px-[18px] py-3 text-left"
+        >
+          <div className="flex flex-wrap items-center gap-2.5">
+            <Ban className="h-[19px] w-[19px] shrink-0 text-[#C2700A]" />
+            <span className="text-[11.5px] font-extrabold uppercase tracking-[.14em] text-[#8A5300]">
+              No gate-out required · {waived.length}
+            </span>
+            <ChevronDown
+              className={cn('ml-auto h-[22px] w-[22px] shrink-0 text-[#8A5300] transition-transform', !openWaived && '-rotate-90')}
+            />
+          </div>
+        </button>
+        {openWaived ? (
+          waived.length === 0 ? (
+            <div className="flex flex-col items-center gap-2 px-5 py-9">
+              <CheckCircle2 className="h-[30px] w-[30px] text-[#C3D2C6]" />
+              <span className="text-[13px] font-bold text-[#5A6B62]">Nothing waived — every dispatch is on the queue.</span>
+            </div>
+          ) : (
+            <>
+              <div className={cn(WV_GRID, 'min-h-[36px] bg-[#8A5300] text-[9.5px] font-extrabold uppercase tracking-[.11em] text-[#F0E0BE]')}>
+                <span className="px-2.5 pl-[18px] text-white">Invoice</span>
+                <span className="px-2.5">Customer</span>
+                <span className="px-2.5">Items</span>
+                <span className="px-2.5">Reason</span>
+                <span className="px-2.5">Marked on</span>
+                <span className="px-2.5 pr-[18px] text-right text-white">Actions</span>
+              </div>
+              {waived.map((w) => (
+                <div
+                  key={String(w.invoice_group)}
+                  className={cn(WV_GRID, 'min-h-[56px] border-b border-b-[#F5EEE0] bg-white last:border-b-0')}
+                >
+                  <div className="min-w-0 px-2.5 py-2 pl-[18px]">
+                    <div className="text-[13px] font-bold text-[#0A1F17]">{String(w.invoice_no || w.invoice_group)}</div>
+                    <div className="mt-0.5 text-[10.5px] font-semibold tabular-nums text-[#5A6B62]">
+                      {formatDate(w.sale_date)}
+                    </div>
+                  </div>
+                  <div className="min-w-0 truncate px-2.5 text-[12.5px] font-bold text-[#0A1F17]">
+                    {String(w.customer || '—')}
+                  </div>
+                  {/* What the invoice was carrying. A waived dispatch is
+                      recognised by its goods — "162 MT" says nothing about
+                      which oil never had a lorry weighed against it. */}
+                  <div className="min-w-0 px-2.5 py-2">
+                    <div className="text-[12px] font-bold text-[#0A1F17]">
+                      {Number(w.line_count) || 1} item{Number(w.line_count) === 1 ? '' : 's'}
+                    </div>
+                    <div className="mt-0.5 line-clamp-2 text-[11px] font-semibold leading-snug text-[#5A6B62]">
+                      {String(w.items || '—')}
+                    </div>
+                  </div>
+                  <div className="min-w-0 px-2.5 py-2 text-[12px] font-semibold leading-relaxed text-[#33473E]">
+                    {String(w.reason || '—')}
+                  </div>
+                  <div className="whitespace-nowrap px-2.5 text-[11.5px] font-semibold tabular-nums text-[#5A6B62]">
+                    {formatDate(w.waived_at)}
+                  </div>
+                  <div className="flex justify-end px-2.5 pr-[18px]">
+                    <button
+                      type="button"
+                      title="Returns this invoice to the Gate Out queue"
+                      onClick={() => onPutBack(String(w.invoice_group))}
+                      className="flex h-[34px] items-center gap-1.5 whitespace-nowrap rounded-[3px] border-[1.5px] border-[#C3D2C6] px-3 text-[11.5px] font-extrabold text-[#33473E] transition-colors hover:bg-[#EFF5EC]"
+                    >
+                      <Undo2 className="h-4 w-4" /> Put back
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </>
+          )
+        ) : null}
+      </section>
+
+      <section className="overflow-hidden rounded-[4px] border border-[#F0D6D4] bg-white">
+        <button
+          type="button"
+          onClick={() => setOpenRej((v) => !v)}
+          className="w-full border-b border-b-[#F0D6D4] bg-[#FDF3F2] px-[18px] py-3 text-left"
+        >
+          <div className="flex flex-wrap items-center gap-2.5">
+            <XCircle className="h-[19px] w-[19px] shrink-0 text-[#B3261E]" />
+            <span className="text-[11.5px] font-extrabold uppercase tracking-[.14em] text-[#8C2F26]">
+              Rejected gate entries · {rejected.length} {rejected.length === 1 ? 'entry' : 'entries'}
+            </span>
+            <ChevronDown
+              className={cn('ml-auto h-[22px] w-[22px] shrink-0 text-[#8C2F26] transition-transform', !openRej && '-rotate-90')}
+            />
+          </div>
+        </button>
+        {openRej ? (
+          rejected.length === 0 ? (
+            <div className="flex flex-col items-center gap-2 px-5 py-11">
+              <CheckCircle2 className="h-[30px] w-[30px] text-[#C3D2C6]" />
+              <span className="text-[13px] font-bold text-[#5A6B62]">Nothing rejected.</span>
+            </div>
+          ) : (
+            <>
+              <div className={cn(RJ_GRID, 'min-h-[36px] bg-[#8C2F26] text-[9.5px] font-extrabold uppercase tracking-[.11em] text-[#F5D3D0]')}>
+                <span className="px-2.5 pl-[18px] text-white">Gate entry</span>
+                <span className="px-2.5">Dir</span>
+                <span className="px-2.5">Date</span>
+                <span className="px-2.5">Vehicle · party</span>
+                <span className="px-2.5">Reason</span>
+                <span className="px-2.5">Rejected on</span>
+                <span className="px-2.5 pr-[18px] text-right text-white">Actions</span>
+              </div>
+              {rejected.map((r) => {
+                const out = String(r.direction || 'in') === 'out'
+                return (
+                  <div
+                    key={String(r.id)}
+                    className={cn(RJ_GRID, 'min-h-[62px] border-b border-b-[#F7EDEC] border-l-[3px] border-l-[#B3261E] bg-white last:border-b-0')}
+                  >
+                    <div className="min-w-0 px-2.5 py-2 pl-[15px]">
+                      <div className="text-[13px] font-bold tabular-nums text-[#0A1F17]">{String(r.gate_entry_no)}</div>
+                      <div className="mt-0.5 text-[10px] font-extrabold tracking-[.06em] text-[#8C2F26]">
+                        {String(r.rec_type || 'OIL')}
+                      </div>
+                    </div>
+                    <div className="px-2.5">
+                      <span
+                        className={cn(
+                          'rounded-[2px] border px-2 py-1 text-[10.5px] font-extrabold tracking-[.05em]',
+                          out ? 'border-[#C6DAF0] bg-[#EAF0FA] text-[#1B4E82]' : 'border-[#BFE3CB] bg-[#E9F5EE] text-[#0B6B45]'
+                        )}
+                      >
+                        {out ? 'OUT' : 'IN'}
+                      </span>
+                    </div>
+                    <div className="min-w-0 px-2.5 py-2">
+                      <div className="whitespace-nowrap text-[12px] font-semibold tabular-nums text-[#0A1F17]">
+                        {formatDate(r.entry_date)}{' '}
+                        <span className="text-[#5A6B62]">{String(r.entry_time || '').slice(0, 5)}</span>
+                      </div>
+                      {r.out_date ? (
+                        <div className="mt-0.5 whitespace-nowrap text-[10.5px] font-semibold tabular-nums text-[#5A6B62]">
+                          <span className="font-extrabold">OUT </span>
+                          {formatDate(r.out_date)} {String(r.out_time || '').slice(0, 5)}
+                        </div>
+                      ) : null}
+                    </div>
+                    <div className="min-w-0 px-2.5 py-2">
+                      <div className="text-[12.5px] font-bold text-[#0A1F17]">{String(r.tanker_no || '—')}</div>
+                      <div className="mt-0.5 truncate text-[11.5px] font-semibold text-[#5A6B62]">
+                        {out
+                          ? [r.sale_customer, r.sale_invoice].filter(Boolean).join(' · ') || '—'
+                          : String(r.supplier_name || '—')}
+                      </div>
+                    </div>
+                    <div className="min-w-0 px-2.5 py-2 text-[12px] font-bold leading-relaxed text-[#0A1F17]">
+                      {String(r.rejected_reason || '—')}
+                    </div>
+                    <div className="min-w-0 px-2.5 py-2">
+                      <div className="whitespace-nowrap text-[11.5px] font-semibold tabular-nums text-[#5A6B62]">
+                        {formatDate(r.rejected_at)}
+                      </div>
+                      <div className="mt-0.5 whitespace-nowrap text-[10.5px] font-bold text-[#8C2F26]">
+                        {ago(r.rejected_at)}
+                      </div>
+                    </div>
+                    <div className="flex justify-end px-2.5 pr-[18px]">
+                      <button
+                        type="button"
+                        title="Puts this entry back into its queue"
+                        onClick={() => onRestore(r)}
+                        className="flex h-[34px] items-center gap-1.5 whitespace-nowrap rounded-[3px] border-[1.5px] border-[#C3D2C6] px-3 text-[11.5px] font-extrabold text-[#33473E] transition-colors hover:bg-[#EFF5EC]"
+                      >
+                        <RotateCcw className="h-4 w-4" /> Restore
+                      </button>
+                    </div>
+                  </div>
+                )
+              })}
+            </>
+          )
+        ) : null}
+      </section>
+    </div>
+  )
 }
 
 export function GateEntry(): React.JSX.Element {
@@ -3124,6 +3397,15 @@ export function GateEntry(): React.JSX.Element {
         </section>
           </TabsContent>
           <TabsContent value="rejected">
+            {__WEB__ ? (
+              <RejectedTabWeb
+                rejected={rejectedRows}
+                waived={waived}
+                onRestore={(row) => void restoreRejected(row)}
+                onPutBack={(group) => void undoWaiver(group)}
+              />
+            ) : (
+              <>
             {/* Waived invoices sit above the rejected entries. Both answer the
                 same question — what came off the queue and why — but they are
                 different objects: one is a gate entry that was cut and
@@ -3256,6 +3538,8 @@ export function GateEntry(): React.JSX.Element {
                 </TableBody>
               </Table>
             </section>
+              </>
+            )}
           </TabsContent>
         </Tabs>
       </div>

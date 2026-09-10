@@ -605,7 +605,8 @@ function SalesTab({
         // a stage — filtering on its underlying stage instead was hiding rows
         // that visibly said Done.
         of: (inv) => {
-          if (inv.first.rejected_at) return 'Cancelled'
+          // Must read the same as the cell — see the note there.
+          if (inv.first.rejected_at) return 'Rejected'
           if (String(inv.first.freight_term || 'FREIGHT_ON_GOODS') !== 'DLD') return 'Done'
           return String(stageInfo(inv.first).label || '')
         }
@@ -1774,8 +1775,28 @@ function SalesTab({
                 </TableCell>
                 <TableCell />
                 <TableCell />
+                {/* Summed BY UNIT, off the lines rather than the invoices.
+                    A carton is not a tonne, and adding the two gave a
+                    tonnage that was 162 too high the moment one PCS item was
+                    invoiced. Reads as one figure while the book is all MT,
+                    which is nearly always. */}
                 <TableCell className={cn('text-right font-semibold tabular-nums', totalTextClass, __WEB__ && 'text-[14.5px] font-bold')}>
-                  {formatNum(filteredInvoices.reduce((t, inv) => t + (Number(inv.qty) || 0), 0))}
+                  {(() => {
+                    const by = new Map<string, number>()
+                    for (const inv of filteredInvoices)
+                      for (const r of inv.lines) {
+                        const u = String(r.uom || 'MT').toUpperCase()
+                        by.set(u, (by.get(u) || 0) + (Number(r.qty) || 0))
+                      }
+                    const parts = [...by.entries()].sort((a, b) => b[1] - a[1])
+                    if (!parts.length) return formatNum(0)
+                    return parts.map(([u, q]) => (
+                      <span key={u} className="ml-2 whitespace-nowrap first:ml-0">
+                        {formatNum(q)}
+                        <span className="ml-1 text-[10.5px] font-semibold opacity-70">{u}</span>
+                      </span>
+                    ))
+                  })()}
                 </TableCell>
                 <TableCell className={cn('text-right font-semibold tabular-nums', totalTextClass, __WEB__ && 'text-[15px] font-bold tracking-[-0.02em]')}>
                   {formatINR(filteredInvoices.reduce((t, inv) => t + (Number(inv.net) || 0), 0))}
@@ -1909,7 +1930,34 @@ function SalesTab({
                         </>
                       )}
                       <TableCell className="align-top" onClick={(e) => e.stopPropagation()}>
-                        {unloadOnly ? (
+                        {/* A refused consignment has no next stage.
+                            The stepper was still offered on one — In transit,
+                            then Unloaded — so a load the customer had sent
+                            back could be walked forward to "delivered", and
+                            the register would then hold an invoice that was
+                            both Rejected and Unloaded. Whatever stage it had
+                            reached when it was refused is where it stops; the
+                            way out is Restore, on the row menu, which is
+                            deliberate rather than one tap away. */}
+                        {inv.first.rejected_at ? (
+                          <div className="flex items-center justify-end gap-2">
+                            <Badge
+                              variant="destructive"
+                              className={cn('min-w-[76px] justify-center gap-1', __WEB__ && '!rounded-[3px] !border !border-[#F0D6D4] !bg-[#FDF3F2] !px-2 !py-1 !text-[11px] !font-extrabold !text-[#B3261E]')}
+                              title={String(inv.first.rejected_reason || 'Rejected by the customer')}
+                            >
+                              <Ban className="h-3 w-3" /> Rejected
+                            </Badge>
+                            {/* Where it had got to when it was refused — the
+                                fact does not stop being true, it just stops
+                                moving. */}
+                            {!exTerm && stg.value !== 'pending' ? (
+                              <span className="whitespace-nowrap text-[11px] font-semibold text-[#8FA79B]">
+                                stopped at {stg.label.toLowerCase()}
+                              </span>
+                            ) : null}
+                          </div>
+                        ) : unloadOnly ? (
                           // One action, and only once the load has actually left:
                           // an invoice still Pending has not been dispatched, so
                           // there is nothing to receive against it yet.

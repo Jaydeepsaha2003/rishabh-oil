@@ -53,14 +53,22 @@ const baseFields: FieldDef[] = [
 // into what it makes.
 const PRODUCT_DUPE_KEY = ['name', 'category']
 
+// Funnels on the columns whose values REPEAT — the ones a catalogue of forty
+// products is actually narrowed by: which category, which sub-category, what
+// it is counted in, whether it is live, whether it carries a stock balance.
+//
+// Name, Code and Created are left plain on purpose. Each is near enough
+// unique per row, so a funnel there would list the whole catalogue back and
+// be a slower way of doing what the search box above already does in a few
+// keystrokes.
 const columns: ColumnDef[] = [
   { key: 'name', label: 'Name' },
   { key: 'code', label: 'Code' },
-  { key: 'material_type', label: 'Category', type: 'select' },
-  { key: 'category', label: 'Sub-category', type: 'select' },
-  { key: 'uom', label: 'Unit', type: 'select' },
-  { key: 'active', label: 'Active', type: 'switch' },
-  { key: 'show_in_stock', label: 'Show in stock', type: 'switch', toggle: true },
+  { key: 'material_type', label: 'Category', type: 'select', filterable: true },
+  { key: 'category', label: 'Sub-category', type: 'select', filterable: true },
+  { key: 'uom', label: 'Unit', type: 'select', filterable: true },
+  { key: 'active', label: 'Active', type: 'switch', filterable: true },
+  { key: 'show_in_stock', label: 'Show in stock', type: 'switch', toggle: true, filterable: true },
   { key: 'created_at', label: 'Created', type: 'date' }
 ]
 

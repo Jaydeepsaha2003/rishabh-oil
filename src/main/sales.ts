@@ -1219,7 +1219,14 @@ async function resolveSaleAmount(v: Row, qty: number, rate: number): Promise<num
 }
 
 async function resolveSaleQty(v: Row): Promise<{ qty: number; uom: string }> {
-  // The sale's unit follows its bargain (falls back to the entered uom, then MT).
+  // The sale's unit follows its bargain, then what was entered, then THE
+  // PRODUCT'S OWN unit, and only then MT.
+  //
+  // The product step was missing, and MT was the fallback for everything —
+  // so a loose sale of a PCS item with no bargain behind it was stamped MT.
+  // That is how 162 cartons came to be booked as 162 tonnes on KRFL/529: the
+  // money was right (162 x Rs 29.48) and the unit was not, which is worse
+  // than a wrong figure because nothing about it looks wrong.
   let target = String(v.uom || '').trim()
   if (v.sales_bargain_id) {
     const b = await getClient().execute({
@@ -1227,6 +1234,12 @@ async function resolveSaleQty(v: Row): Promise<{ qty: number; uom: string }> {
       args: [n(v.sales_bargain_id)]
     })
     if (b.rows.length && b.rows[0].uom) target = String(b.rows[0].uom)
+  }
+  if (!target && n(v.product_id)) {
+    const p = await getClient()
+      .execute({ sql: 'SELECT uom FROM products WHERE id = ?', args: [n(v.product_id)] })
+      .catch(() => null)
+    if (p?.rows.length && p.rows[0].uom) target = String(p.rows[0].uom)
   }
   if (!target) target = 'MT'
 
@@ -1682,11 +1695,26 @@ export async function setSaleStage(
   const stage = stageOf({ dispatch_stage: stageIn })
   const status = statusForStage(stage)
   const r = await getClient().execute({
-    sql: 'SELECT product_id, qty, uom, status, track_stock, loaded_date, transit_date, unloaded_date, received_qty FROM sales WHERE id = ?',
+    sql: 'SELECT product_id, qty, uom, status, track_stock, loaded_date, transit_date, unloaded_date, received_qty, rejected_at, invoice_no FROM sales WHERE id = ?',
     args: [id]
   })
   if (!r.rows.length) throw new Error('Sale not found')
   const row = r.rows[0]
+  // A refused consignment does not carry on down the road.
+  //
+  // The register no longer offers the stepper on one, but the screen hiding a
+  // button is not the rule — the drawer, the edit form and a stale tab can
+  // all still ask. An invoice that is both Rejected and Unloaded is a
+  // contradiction the books would have to be untangled from later, so it is
+  // refused here, where every path goes through.
+  //
+  // Restore is the way back: it clears the rejection, and then the stage can
+  // move again.
+  if (row.rejected_at) {
+    throw new Error(
+      `${String(row.invoice_no || 'This invoice')} was rejected by the customer — restore it before moving its delivery on`
+    )
+  }
   const pid = n(row.product_id)
   const saleQty = n(row.qty)
   const wasDispatched = String(row.status) === 'done'

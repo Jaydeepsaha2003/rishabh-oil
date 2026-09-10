@@ -32,16 +32,19 @@ import {
   ArrowLeft,
   Ban,
   CheckCircle2,
+  ChevronDown,
   Clock,
   Inbox,
   Loader2,
   LogIn,
   LogOut,
   Plus,
+  RotateCcw,
   Save,
   Scale,
   Search,
   Truck,
+  Undo2,
   X
 } from 'lucide-react'
 import { formatDate, formatNum, todayISO } from '@/lib/format'
@@ -66,6 +69,10 @@ type Tab = 'in' | 'out' | 'view' | 'rejected'
 
 export function GateEntryMobile(): React.JSX.Element {
   const [rows, setRows] = useState<Row[]>([])
+  // Dispatches taken off the Gate Out queue on purpose. Loaded beside the
+  // register because the Rejected tab reports both, and they are two
+  // different objects rather than two shapes of one.
+  const [waived, setWaived] = useState<Row[]>([])
   const [loading, setLoading] = useState(true)
   const [failed, setFailed] = useState('')
   const [tab, setTab] = useState<Tab>('in')
@@ -80,8 +87,12 @@ export function GateEntryMobile(): React.JSX.Element {
     setLoading(true)
     setFailed('')
     try {
-      const r = await window.api.gate.list()
+      const [r, w] = await Promise.all([
+        window.api.gate.list(),
+        window.api.gate.waivedOuts().catch(() => [])
+      ])
       setRows(Array.isArray(r) ? r : [])
+      setWaived(Array.isArray(w) ? w : [])
     } catch (e) {
       setFailed((e as Error).message)
     } finally {
@@ -203,7 +214,7 @@ export function GateEntryMobile(): React.JSX.Element {
     { k: 'in', label: 'Gate in', count: buckets.inQ.length },
     { k: 'out', label: 'Gate out', count: buckets.outQ.length },
     { k: 'view', label: 'Entries', count: register.length },
-    { k: 'rejected', label: 'Rejected', count: buckets.rejected.length }
+    { k: 'rejected', label: 'Rejected', count: buckets.rejected.length + waived.length }
   ]
   const queue = tab === 'in' ? buckets.inQ : tab === 'out' ? buckets.outQ : []
 
@@ -313,10 +324,29 @@ export function GateEntryMobile(): React.JSX.Element {
               ))
             )}
           </>
-        ) : buckets.rejected.length === 0 ? (
-          <Empty icon={<CheckCircle2 className="mx-auto h-7 w-7 text-[#9CCFAE]" />} title="Nothing rejected" note="" />
         ) : (
-          buckets.rejected.map((r) => <RegisterCard key={String(r.id)} row={r} rejected onOpen={() => undefined} />)
+          <RejectedList
+            rejected={buckets.rejected}
+            waived={waived}
+            onRestore={async (row) => {
+              try {
+                await window.api.gate.unreject(n(row.id))
+                toast.success(`${s(row.gate_entry_no)} back in its queue`)
+                await load()
+              } catch (e) {
+                toast.error((e as Error).message)
+              }
+            }}
+            onPutBack={async (group) => {
+              try {
+                await window.api.gate.unwaiveOut(group)
+                toast.success('Back in the gate-out queue')
+                await load()
+              } catch (e) {
+                toast.error((e as Error).message)
+              }
+            }}
+          />
         )}
       </div>
 
@@ -330,6 +360,201 @@ export function GateEntryMobile(): React.JSX.Element {
         </button>
       </div>
     </div>
+  )
+}
+
+
+// The Rejected tab on a phone: two folding sections, the same two the desk
+// shows. A gate entry that was cut and abandoned is not the same object as an
+// invoice that never needed a gate-out, and each carries its own way back.
+function RejectedList({
+  rejected,
+  waived,
+  onRestore,
+  onPutBack
+}: {
+  rejected: Row[]
+  waived: Row[]
+  onRestore: (row: Row) => Promise<void>
+  onPutBack: (group: string) => Promise<void>
+}): React.JSX.Element {
+  const [openRej, setOpenRej] = useState(true)
+  const [openWaived, setOpenWaived] = useState(true)
+  const [busy, setBusy] = useState('')
+
+  const ago = (iso: unknown): string => {
+    const d = String(iso || '').slice(0, 10)
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(d)) return ''
+    const days = Math.round((Date.parse(`${todayISO()}T00:00:00`) - Date.parse(`${d}T00:00:00`)) / 86400000)
+    if (days <= 0) return 'today'
+    if (days === 1) return 'yesterday'
+    if (days < 31) return `${days} days ago`
+    const months = Math.round(days / 30)
+    return months <= 1 ? 'a month ago' : `${months} months ago`
+  }
+
+  return (
+    <>
+      <button
+        type="button"
+        onClick={() => setOpenRej((v) => !v)}
+        className="rounded-[4px] border border-[#F0D6D4] border-l-[3px] border-l-[#B3261E] bg-[#FDF3F2] px-3.5 py-3 text-left"
+      >
+        <div className="flex items-center gap-2.5">
+          <Ban className="h-[19px] w-[19px] shrink-0 text-[#B3261E]" />
+          <span className="min-w-0 flex-1 text-[11px] font-extrabold uppercase tracking-[.12em] text-[#8C2F26]">
+            Rejected · {rejected.length}
+          </span>
+          <ChevronDown className={cn('h-[22px] w-[22px] shrink-0 text-[#8C2F26] transition-transform', !openRej && '-rotate-90')} />
+        </div>
+      </button>
+
+      {openRej ? (
+        rejected.length === 0 ? (
+          <Empty icon={<CheckCircle2 className="mx-auto h-7 w-7 text-[#9CCFAE]" />} title="Nothing rejected" note="" />
+        ) : (
+          rejected.map((r) => {
+            const out = dirOf(r) === 'out'
+            return (
+              <div key={String(r.id)} className="overflow-hidden rounded-[4px] border border-[#F0D6D4] border-l-[3px] border-l-[#B3261E] bg-white">
+                <div className="flex flex-col gap-2.5 px-3.5 pb-3 pt-3">
+                  <div className="flex items-start gap-2.5">
+                    <div className="min-w-0 flex-1">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span className="text-[13px] font-bold tabular-nums text-[#0A1F17]">{s(r.gate_entry_no)}</span>
+                        <span
+                          className={cn(
+                            'rounded-[2px] border px-1.5 py-0.5 text-[10px] font-extrabold tracking-[.05em]',
+                            out ? 'border-[#C6DAF0] bg-[#EAF0FA] text-[#1B4E82]' : 'border-[#BFE3CB] bg-[#E9F5EE] text-[#0B6B45]'
+                          )}
+                        >
+                          {out ? 'OUT' : 'IN'}
+                        </span>
+                      </div>
+                      <div className="mt-1 text-[10px] font-extrabold tracking-[.06em] text-[#8C2F26]">
+                        {s(r.rec_type) || 'OIL'}
+                      </div>
+                    </div>
+                    <div className="shrink-0 text-right">
+                      <div className="whitespace-nowrap text-[11.5px] font-semibold tabular-nums text-[#5A6B62]">
+                        {formatDate(r.rejected_at)}
+                      </div>
+                      <div className="mt-0.5 whitespace-nowrap text-[10.5px] font-bold text-[#8C2F26]">
+                        {ago(r.rejected_at)}
+                      </div>
+                    </div>
+                  </div>
+
+                  <div>
+                    <div className="text-[13px] font-bold tabular-nums text-[#0A1F17]">{s(r.tanker_no) || '—'}</div>
+                    <div className="mt-1 text-[11.5px] font-semibold leading-snug text-[#5A6B62]">{partyOf(r)}</div>
+                  </div>
+
+                  {/* The reason is the whole point of keeping the row. */}
+                  <div className="rounded-[4px] border border-[#F0D6D4] bg-[#FDF3F2] px-3 py-2.5">
+                    <div className="text-[9px] font-extrabold uppercase tracking-[.11em] text-[#8C2F26]">Reason</div>
+                    <div className="mt-1 text-[12px] font-bold leading-relaxed text-[#0A1F17]">
+                      {s(r.rejected_reason) || '—'}
+                    </div>
+                  </div>
+
+                  <div className="flex flex-wrap items-center gap-2.5 text-[11px] font-semibold tabular-nums text-[#5A6B62]">
+                    <span>
+                      in {formatDate(r.entry_date)} {s(r.entry_time).slice(0, 5)}
+                    </span>
+                    {r.out_date ? (
+                      <span>
+                        out {formatDate(r.out_date)} {s(r.out_time).slice(0, 5)}
+                      </span>
+                    ) : null}
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  disabled={busy === `r${r.id}`}
+                  onClick={() => {
+                    setBusy(`r${r.id}`)
+                    void onRestore(r).finally(() => setBusy(''))
+                  }}
+                  className="flex h-12 w-full items-center justify-center gap-2 border-t border-t-[#EAF0E9] bg-[#F7FAF6] text-[12.5px] font-extrabold uppercase tracking-[.03em] text-[#33473E]"
+                >
+                  <RotateCcw className="h-[19px] w-[19px]" /> Restore to queue
+                </button>
+              </div>
+            )
+          })
+        )
+      ) : null}
+
+      <button
+        type="button"
+        onClick={() => setOpenWaived((v) => !v)}
+        className="mt-1 rounded-[4px] border border-[#F0E4CB] border-l-[3px] border-l-[#C2700A] bg-[#FFFBF2] px-3.5 py-3 text-left"
+      >
+        <div className="flex items-center gap-2.5">
+          <Ban className="h-[18px] w-[18px] shrink-0 text-[#C2700A]" />
+          <span className="min-w-0 flex-1 text-[11px] font-extrabold uppercase tracking-[.12em] text-[#8A5300]">
+            No gate-out required · {waived.length}
+          </span>
+          <ChevronDown className={cn('h-[22px] w-[22px] shrink-0 text-[#8A5300] transition-transform', !openWaived && '-rotate-90')} />
+        </div>
+      </button>
+
+      {openWaived ? (
+        waived.length === 0 ? (
+          <Empty icon={<CheckCircle2 className="mx-auto h-7 w-7 text-[#9CCFAE]" />} title="Nothing waived" note="Every dispatch is on the gate-out queue." />
+        ) : (
+          waived.map((w) => (
+            <div
+              key={String(w.invoice_group)}
+              className="overflow-hidden rounded-[4px] border border-[#F0E4CB] border-l-[3px] border-l-[#C2700A] bg-white"
+            >
+              <div className="flex flex-col gap-2.5 px-3.5 pb-3 pt-3">
+                <div className="flex items-start gap-2.5">
+                  <div className="min-w-0 flex-1">
+                    <div className="text-[13px] font-bold tabular-nums text-[#0A1F17]">
+                      {s(w.invoice_no || w.invoice_group)}
+                    </div>
+                    <div className="mt-1 text-[11.5px] font-bold leading-snug text-[#33473E]">
+                      {s(w.customer) || '—'}
+                    </div>
+                  </div>
+                  <div className="shrink-0 text-right">
+                    <div className="whitespace-nowrap text-[11.5px] font-bold text-[#33473E]">
+                      {n(w.line_count) || 1} item{n(w.line_count) === 1 ? '' : 's'}
+                    </div>
+                    <div className="mt-0.5 whitespace-nowrap text-[10.5px] font-semibold tabular-nums text-[#5A6B62]">
+                      {formatDate(w.sale_date)}
+                    </div>
+                  </div>
+                </div>
+                {/* The goods, not the tonnage — the same reason the desk
+                    version shows them. */}
+                <div className="text-[11.5px] font-semibold leading-snug text-[#5A6B62]">{s(w.items) || '—'}</div>
+                <div className="rounded-[4px] border border-[#F0E4CB] bg-[#FFFBF2] px-3 py-2.5">
+                  <div className="text-[9px] font-extrabold uppercase tracking-[.11em] text-[#8A5300]">Reason</div>
+                  <div className="mt-1 text-[12px] font-bold leading-relaxed text-[#0A1F17]">{s(w.reason) || '—'}</div>
+                </div>
+                <div className="text-[11px] font-semibold tabular-nums text-[#5A6B62]">
+                  marked {formatDate(w.waived_at)}
+                </div>
+              </div>
+              <button
+                type="button"
+                disabled={busy === `w${w.invoice_group}`}
+                onClick={() => {
+                  setBusy(`w${w.invoice_group}`)
+                  void onPutBack(String(w.invoice_group)).finally(() => setBusy(''))
+                }}
+                className="flex h-12 w-full items-center justify-center gap-2 border-t border-t-[#F5EEE0] bg-[#F7FAF6] text-[12.5px] font-extrabold uppercase tracking-[.03em] text-[#33473E]"
+              >
+                <Undo2 className="h-[19px] w-[19px]" /> Put back on the queue
+              </button>
+            </div>
+          ))
+        )
+      ) : null}
+    </>
   )
 }
 

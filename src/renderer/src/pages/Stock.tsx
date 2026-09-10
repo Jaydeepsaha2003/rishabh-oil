@@ -28,6 +28,8 @@ import {
 } from '@/components/ui/table'
 import { HelpTip, InfoTip, Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { PageHeader } from '@/components/PageHeader'
+import { useIsMobile } from '@/lib/useIsMobile'
+import { StockMobile } from './StockMobile'
 import { errText, formatDate, formatDateShort, formatINR, formatNum, todayISO } from '@/lib/format'
 import { cn } from '@/lib/utils'
 import { useLiveRefresh } from '@/lib/useLiveRefresh'
@@ -152,7 +154,11 @@ const REGISTER_COLUMNS: ExcelColumn[] = [
   { header: 'Transporter', key: 'transporter', width: 26, value: (r) => r.transporter || '' },
   { header: 'Bill no', key: 'bill_no', width: 18, value: (r) => r.bill_no || '' },
   { header: 'Vehicle no', key: 'vehicle_no', width: 16, value: (r) => r.vehicle_no || '' },
-  { header: 'Oil type', key: 'oil_type', width: 18, divider: true, value: (r) => r.oil_type || '' },
+  // What KIND of goods moved, before which goods they were. Both registers
+  // run to hundreds of lines across oil, husk and packaging, and reading them
+  // by kind meant knowing every product name by heart.
+  { header: 'Category', key: 'category', width: 16, divider: true, value: (r) => r.category || '' },
+  { header: 'Oil type', key: 'oil_type', width: 18, value: (r) => r.oil_type || '' },
   {
     header: 'Dispatch qty', key: 'dispatch_qty', width: 14, align: 'right', numFmt: NUM_QTY, total: 'sum',
     // Returns come through negative, so the column total is the net movement —
@@ -685,8 +691,6 @@ function StockTable({ rows: allRows, breakdown, label = 'stock', range, onRange,
     setDlBusy(kind)
     try {
       const regs = await window.api.stock.registers(companyIds, ranged ? range : undefined)
-      // An empty selection means the active company only, so that is one book.
-      const multiCompany = companyIds.length > 1
       const data = kind === 'receipt' ? regs.receipts : regs.dispatches
       if (!data.length) {
         toast.error(`No ${kind}s in this period`)
@@ -707,9 +711,15 @@ function StockTable({ rows: allRows, breakdown, label = 'stock', range, onRange,
         totalLabel: 'TOTAL',
         columns: (() => {
           const base = [...REGISTER_COLUMNS]
-          // Right after Bill no, as asked — so the company reads next to the
-          // document it belongs to.
-          if (multiCompany) base.splice(base.findIndex((c) => c.key === 'bill_no') + 1, 0, COMPANY_COLUMN)
+          // Always, and before the party — whose book the movement belongs to
+          // is read before whose goods they were.
+          //
+          // It used to appear only when several companies were selected,
+          // which is the case where it is least needed: a sheet exported from
+          // one company still leaves the desk, gets mailed on and printed,
+          // and by then nothing on it says which of the two books it came
+          // from. The column costs one cell per row and settles that.
+          base.splice(base.findIndex((c) => c.key === 'party'), 0, COMPANY_COLUMN)
           return kind === 'receipt' ? [...base, DEDUCTIBLE_COLUMN] : base
         })(),
         rows: data
@@ -1714,6 +1724,12 @@ function OpeningStock({
   }, [asOf, data])
 
   const clashes = (data?.name_clashes as Row[]) || []
+  // Every product caught in one of those clashes, so a row can ask whether
+  // its own name is ambiguous.
+  const clashIds = useMemo(
+    () => new Set<number>(clashes.flatMap((c) => ((c.ids as number[]) || []).map(Number))),
+    [clashes]
+  )
 
   if (loading && !data) {
     return <div className="py-16 text-center text-sm text-muted-foreground">Reading the register…</div>
@@ -2282,10 +2298,18 @@ function OpeningStock({
                               </span>
                             )}
                           </div>
-                          {/* Which product this actually is. RPL appears twice
-                              in this mill — once raw, once finished — so the
-                              name alone does not identify the row. */}
-                          {__WEB__ && (
+                          {/* Only when the name does not identify the row on
+                              its own.
+                              This line used to be under every product —
+                              "CORN OIL · Raw · MT" beside a row already
+                              headed CORN OIL — which is the same fact said
+                              twice on forty rows to disambiguate the two that
+                              need it. RPL appears in this mill once raw and
+                              once finished, and THOSE two cannot be told
+                              apart by name; everything else can. So the line
+                              is kept for a clashing name and dropped for the
+                              rest. */}
+                          {__WEB__ && clashIds.has(Number(r.id)) && (
                             <div className="doc-ref mt-[3px] text-[10.5px] font-semibold text-[#5A6B62]">
                               {[r.code ? String(r.code) : null, CAT_LABEL[String(r.category)] || null, 'MT']
                                 .filter(Boolean)
@@ -3747,6 +3771,24 @@ function SkuStock(): React.JSX.Element {
     return bpp > 0 ? `${formatNum(bpp)} ${r.base_uom || ''}`.trim() : '—'
   }
 
+  // What a full pack of this SKU weighs — the Box, Jar, Pouch or Case
+  // itself, not the stock standing in it.
+  //
+  // base_per_pouch is one COUNTED piece and pouches_per_box is how many of
+  // them a case holds, so the product is the pack. For most SKUs the case
+  // holds one piece and this equals the Pack column beside it; where it does
+  // not — 90 pouches of 200 ML, 12 bottles of 1 L — the pack weight is the
+  // figure nobody can work out in their head, and it is the one a loading
+  // sheet is written from.
+  //
+  // Kept in the SKU's own base unit rather than converted: a KG SKU and an L
+  // SKU do not belong in one column of numbers, and saying which is which is
+  // what stops them being added together.
+  const packTotal = (r: Row): { qty: number; uom: string } => ({
+    qty: (Number(r.base_per_pouch) || 0) * (Number(r.pouches_per_box) || 1),
+    uom: String(r.base_uom || 'KG')
+  })
+
   // Tonnage of one SKU's on-hand pieces (pieces × pack size → MT).
   const skuMT = (r: Row): number => {
     const size = Number(r.unit_size) > 0 ? Number(r.unit_size) : Number(r.base_per_pouch) || 0
@@ -4206,6 +4248,7 @@ function SkuStock(): React.JSX.Element {
                     { header: 'SKU', key: 'name', value: (r) => r.name || '' },
                     { header: 'Pack size', key: 'size', value: (r) => unitLabel(r) },
                     { header: 'Type', key: 'type', value: (r) => pieceLabel(r) },
+                    { header: 'Total', key: 'pack_total', value: (r) => (packTotal(r).qty > 0 ? `${formatNum(packTotal(r).qty)} ${packTotal(r).uom}` : '') },
                     { header: 'Opening (pcs)', key: 'opening', align: 'right' as const, numFmt: '#,##0.000', value: (r) => Number(r.opening) || 0 },
                     { header: 'Packed in', key: 'added_on', align: 'right' as const, numFmt: '#,##0.000', value: (r) => Number(r.added_on) || 0 },
                     { header: 'Dispatch', key: 'sold_on', align: 'right' as const, numFmt: '#,##0.000', value: (r) => Number(r.sold_on) || 0 },
@@ -4216,6 +4259,7 @@ function SkuStock(): React.JSX.Element {
                     { header: 'SKU', key: 'name', value: (r) => r.name || '' },
                     { header: 'Pack size', key: 'size', value: (r) => unitLabel(r) },
                     { header: 'Type', key: 'type', value: (r) => pieceLabel(r) },
+                    { header: 'Total', key: 'pack_total', value: (r) => (packTotal(r).qty > 0 ? `${formatNum(packTotal(r).qty)} ${packTotal(r).uom}` : '') },
                     { header: 'Packed in', key: 'added', align: 'right' as const, numFmt: '#,##0.000', value: (r) => Number(r.added) || 0 },
                     { header: 'Sold (packed)', key: 'sold', align: 'right' as const, numFmt: '#,##0.000', value: (r) => Number(r.sold) || 0 },
                     { header: 'On hand (pcs)', key: 'on_hand', align: 'right' as const, numFmt: '#,##0.000', value: (r) => Number(r.on_hand) || 0 },
@@ -4396,7 +4440,7 @@ function SkuStock(): React.JSX.Element {
                 answer counted twice. */}
             {__WEB__ && (
               <TableRow className="!border-b-0 !bg-[#072B20] hover:!bg-[#072B20] [&>th]:!h-[30px] [&>th]:!p-0 [&>th]:!text-[11px] [&>th]:!font-extrabold [&>th]:!uppercase [&>th]:!tracking-[.1em] [&>th]:!text-[#8FBFA8]">
-                <TableHead colSpan={3} />
+                <TableHead colSpan={4} />
                 {dayMode && <TableHead className={cn('!text-center', SK_RULE, SK_OPEN)}>Open</TableHead>}
                 <TableHead className={cn('!text-center !text-[#9FE3BF]', SK_RULE, SK_IN)}>In</TableHead>
                 <TableHead className={cn('!text-center !text-[#F0AFAA]', SK_RULE, SK_OUT)}>Out</TableHead>
@@ -4407,6 +4451,10 @@ function SkuStock(): React.JSX.Element {
             <TableRow className={cn('bg-slate-200 hover:bg-slate-200', __WEB__ && cn(SK_HEAD, '!border-b-0'))}>
               <TableHead className={cn('text-[10px] font-semibold uppercase tracking-wide text-slate-700', __WEB__ && '!text-white')}>SKU</TableHead>
               <TableHead className="text-[10px] font-semibold uppercase tracking-wide text-slate-700">Pack</TableHead>
+              {/* What a full pack weighs, beside the size of one piece. */}
+              <TableHead className={cn('text-left text-[10px] font-semibold uppercase tracking-wide text-slate-700', __WEB__ && '!text-white')}>
+                Total
+              </TableHead>
               {/* The unit every figure on the row is counted in — the SKU's own
                   Type off the Packed SKU master. Without it the numbers across
                   the row are bare counts of an unnamed thing: Pack size alone
@@ -4436,10 +4484,10 @@ function SkuStock(): React.JSX.Element {
           </TableHeader>
           <TableBody>
             {loading ? (
-              <TableRow><TableCell colSpan={(dayMode ? 9 : 8) - (__WEB__ ? 1 : 0)} className="py-12 text-center text-muted-foreground">Loading…</TableCell></TableRow>
+              <TableRow><TableCell colSpan={(dayMode ? 10 : 9) - (__WEB__ ? 1 : 0)} className="py-12 text-center text-muted-foreground">Loading…</TableCell></TableRow>
             ) : shown.length === 0 ? (
               <TableRow>
-                <TableCell colSpan={(dayMode ? 9 : 8) - (__WEB__ ? 1 : 0)} className="py-12 text-center text-muted-foreground">
+                <TableCell colSpan={(dayMode ? 10 : 9) - (__WEB__ ? 1 : 0)} className="py-12 text-center text-muted-foreground">
                   {rows.length === 0
                     ? 'No SKUs. Add packagings under Masters → Packed SKU first.'
                     : 'No SKU matches this search.'}
@@ -4545,6 +4593,19 @@ function SkuStock(): React.JSX.Element {
                         </div>
                       </TableCell>
                       <TableCell className={cn('whitespace-nowrap text-muted-foreground', __WEB__ && '!text-[11.5px] !font-semibold !text-[#5A6B62]')}>{unitLabel(r)}</TableCell>
+                      {/* A property of the SKU, so it is here whether or not
+                          any is on hand — an empty shelf does not change what
+                          a case weighs. */}
+                      <TableCell className={cn('whitespace-nowrap text-left tabular-nums', __WEB__ && (packTotal(r).qty > 0 ? '!text-[12.5px] !font-bold !text-[#0A1F17]' : '!text-[12.5px] !font-semibold !text-[#C3D2C6]'))}>
+                        {packTotal(r).qty > 0 ? (
+                          <>
+                            {formatNum(packTotal(r).qty)}
+                            <span className="ml-1 text-[10.5px] font-semibold text-[#5A6B62]">{packTotal(r).uom}</span>
+                          </>
+                        ) : (
+                          '—'
+                        )}
+                      </TableCell>
                       <TableCell className="whitespace-nowrap">
                         <span className={cn('rounded bg-slate-100 px-1.5 py-px text-[10px] font-semibold uppercase tracking-wide text-slate-600', __WEB__ && '!rounded-[2px] !border !border-[#DCE7DB] !bg-[#EAF0E9] !px-[7px] !py-[2px] !text-[9.5px] !font-extrabold !tracking-[.09em] !text-[#33473E]')}>
                           {pieceLabel(r)}
@@ -4691,7 +4752,11 @@ function SkuStock(): React.JSX.Element {
                   )
                 })}
                 <TableRow className={cn('border-t-2 border-amber-500 bg-amber-100 hover:bg-amber-100', __WEB__ && '!border-0 !bg-[#0B3D2E] hover:!bg-[#0B3D2E]')}>
-                  <TableCell colSpan={dayMode ? 4 : 3} className={cn('font-bold uppercase tracking-wide text-amber-900', __WEB__ && '!text-[11.5px] !font-extrabold !tracking-[.09em] !text-white')}>
+                  {/* Nothing is summed under Total: adding pack weights
+                      answers no question, and adding KG to L answers a wrong
+                      one. The sheet's tonnage is at Closing, where it has
+                      always been. */}
+                  <TableCell colSpan={dayMode ? 5 : 4} className={cn('font-bold uppercase tracking-wide text-amber-900', __WEB__ && '!text-[11.5px] !font-extrabold !tracking-[.09em] !text-white')}>
                     Total{shown.length !== rows.length ? ' (filtered)' : ''}
                   </TableCell>
                   <TableCell className={cn('text-right font-bold tabular-nums text-amber-900', __WEB__ && cn(SK_NUM, SK_RULE, '!font-bold', '!text-[#9FE3BF]'))}>
@@ -5921,6 +5986,7 @@ function Transfers(): React.JSX.Element {
 }
 
 export function Stock({ onCompanyChange }: { onCompanyChange?: (id: string) => void }): React.JSX.Element {
+  const isMobile = useIsMobile()
   const [stockGroup, setStockGroup] = useState<'book' | 'actual'>(() =>
     readStockView('group', ['book', 'actual'] as const, 'book')
   )
@@ -6103,6 +6169,9 @@ export function Stock({ onCompanyChange }: { onCompanyChange?: (id: string) => v
       </SelectContent>
     </Select>
   )
+
+  // Phone. After every hook, so the order cannot change between renders.
+  if (__WEB__ && isMobile) return <StockMobile />
 
   return (
     <>

@@ -1023,6 +1023,10 @@ export async function stockRegisters(
                  tr.name AS transporter,
                  o.invoice_no AS bill_no,
                  pt.tanker_no AS vehicle_no,
+                 -- The product's own category off the master — OIL, HUSK,
+                 -- PACKAGING. The register was one long list of product names
+                 -- with no way to read it by kind.
+                 p.material_type AS category,
                  p.name AS oil_type,
                  pt.loaded_qty AS dispatch_qty,
                  CASE WHEN pt.status = 'empty' THEN pt.received_qty ELSE NULL END AS received_qty,
@@ -1050,6 +1054,7 @@ export async function stockRegisters(
                  tr.name AS transporter,
                  o.invoice_no AS bill_no,
                  o.tanker_no AS vehicle_no,
+                 p.material_type AS category,
                  p.name AS oil_type,
                  o.ordered_qty AS dispatch_qty,
                  o.received_qty AS received_qty,
@@ -1087,6 +1092,7 @@ export async function stockRegisters(
                                WHERE gs.gate_entry_id = ge.id AND gs.invoice_group = s.invoice_group))
                      AND s.invoice_group IS NOT NULL
                    ORDER BY ge.id DESC LIMIT 1) AS vehicle_no,
+                 p.material_type AS category,
                  p.name AS oil_type,
                  s.qty AS dispatch_qty,
                  -- What the transporter delivered, captured when the invoice was
