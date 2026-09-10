@@ -2449,7 +2449,7 @@ var init_repos = __esm({
       nbfcs: ["name", "finance_type", "tds_pct", "interest_pct", "interest_days", "days_year", "days_incl_start", "sanctioned_limit", "note", "active", "company_id"],
       categories: ["name", "applies_to", "note", "active"],
       oil_types: ["code", "name", "active"],
-      products: ["code", "name", "category", "material_type", "uom", "active", "show_in_stock"],
+      products: ["code", "name", "category", "material_type", "uom", "active", "show_in_stock", "use_both"],
       suppliers: [
         "name",
         "supplier_type",
@@ -8832,6 +8832,11 @@ async function stockRegisters(companyIds, range) {
   const recB = bounds(recDateExpr);
   const recTankers = await c.execute({
     sql: `SELECT ${recDateExpr} AS received_date,
+                 -- The date on the supplier's bill. The register already had
+                 -- the loading and receiving dates, which are the lorry's
+                 -- dates, not the document's; a purchase invoiced on the 27th
+                 -- and received on the 2nd has to be findable by either.
+                 o.order_date AS invoice_date,
                  pt.loaded_date AS loaded_date,
                  COALESCE(sp.name, s2.name, 'Unknown') AS party,
                  tr.name AS transporter,
@@ -8863,6 +8868,7 @@ async function stockRegisters(companyIds, range) {
   });
   const recDirect = await c.execute({
     sql: `SELECT ${recDateExpr} AS received_date,
+                 o.order_date AS invoice_date,
                  o.loaded_date AS loaded_date,
                  COALESCE(s.name, 'Unknown') AS party,
                  tr.name AS transporter,
@@ -8892,6 +8898,7 @@ async function stockRegisters(companyIds, range) {
   const disp = await c.execute({
     sql: `SELECT s.loaded_date AS loaded_date,
                  COALESCE(s.unloaded_date, s.sale_date) AS received_date,
+                 s.sale_date AS invoice_date,
                  COALESCE(cu.name, s.customer, 'Unknown') AS party,
                  tr.name AS transporter,
                  s.invoice_no AS bill_no,
@@ -8949,8 +8956,13 @@ async function stockRegisters(companyIds, range) {
   const noteLines = async (noteType, partyType, master) => {
     const res = await c.execute({
       sql: `SELECT nt.note_date AS received_date, NULL AS loaded_date,
+                   nt.note_date AS invoice_date,
                    COALESCE(m.name, 'Unknown') AS party, NULL AS transporter,
                    nt.note_no AS bill_no, NULL AS vehicle_no,
+                   -- A return line had no category, so the column added for
+                   -- the ordinary lines came out blank on exactly the rows a
+                   -- reader is most likely to stop at.
+                   p.material_type AS category,
                    p.name AS oil_type,
                    -ni.qty AS dispatch_qty, NULL AS received_qty,
                    co.name AS company, nt.against_ref AS against_ref,
@@ -12606,6 +12618,13 @@ async function runStartupTasks() {
     });
     await c.execute("UPDATE products SET show_in_stock = 1 WHERE show_in_stock IS NULL");
   }).catch((e) => console.error("[products] show_in_stock column failed:", e));
+  await runOnce("products_use_both_v1", async () => {
+    const c = getClient();
+    await c.execute("ALTER TABLE products ADD COLUMN use_both INTEGER NOT NULL DEFAULT 0").catch((e) => {
+      if (!/duplicate column/i.test(String(e.message))) throw e;
+    });
+    await c.execute("UPDATE products SET use_both = 0 WHERE use_both IS NULL");
+  }).catch((e) => console.error("[products] use_both column failed:", e));
   await runOnce("outside_tankers_v1", async () => {
     const c = getClient();
     await c.execute(`CREATE TABLE IF NOT EXISTS outside_tankers (
