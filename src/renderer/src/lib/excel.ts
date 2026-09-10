@@ -49,6 +49,11 @@ export type ExcelColumn = {
   // Draw a heavier left rule before this column, to separate a block of
   // columns (e.g. the closing balance from the flows that produced it).
   divider?: boolean
+  // A real Excel comment on the cell — the little red corner triangle. For a
+  // figure that needs its working shown without spending a column on it: the
+  // production report's ratio cell reads "80:15:5" and its comment says which
+  // 80 and which 15. Returning nothing leaves the cell plain.
+  note?: (row: Row) => string | undefined
 }
 
 // One tab of a workbook.
@@ -174,6 +179,12 @@ function writeSheet(wb: ExcelJS.Workbook, spec: ExcelSheet, index: number): void
       const cell = row.getCell(ci + 1)
       cell.value = raw == null ? '' : (raw as ExcelJS.CellValue)
       if (c.numFmt) cell.numFmt = c.numFmt
+      if (c.note) {
+        const text = c.note(r)
+        // Sized so a three-part ratio's explanation is readable without the
+        // reader having to drag the comment box open.
+        if (text) cell.note = { texts: [{ text }], margins: { insetmode: 'auto' } }
+      }
       cell.alignment = { horizontal: c.align ?? 'left', vertical: 'middle' }
       cell.border = thinBorder()
       if (c.divider) cell.border = { ...cell.border, left: { style: 'thin', color: { argb: 'FFB6C2D4' } } }

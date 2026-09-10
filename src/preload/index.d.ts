@@ -264,6 +264,13 @@ export interface Api {
   production: {
     list: (forModule?: string) => Promise<Row[]>
     items: (id: number) => Promise<Row[]>
+    // The Complete Production Report in one call: the product columns with
+    // their opening/receiving, and every batch of the period with its
+    // consumption lines and its recipe ratio.
+    report: (
+      range?: { from?: string; to?: string },
+      companyIds?: number[]
+    ) => Promise<{ from: string; to: string; products: Row[]; batches: Row[] }>
     create: (values: Row) => Promise<{ id: number }>
     update: (id: number, values: Row) => Promise<{ id: number }>
     remove: (id: number) => Promise<{ id: number }>

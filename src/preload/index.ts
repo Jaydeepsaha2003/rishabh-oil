@@ -365,6 +365,14 @@ const api = {
   production: {
     list: (forModule?: string): Promise<Row[]> => ipcRenderer.invoke('production:list', { forModule }),
     items: (id: number): Promise<Row[]> => ipcRenderer.invoke('production:items', { id }),
+    // The whole Complete Production Report in one call — columns, the
+    // opening/receiving band, and every batch of the period with its lines
+    // and its recipe ratio.
+    report: (
+      range?: { from?: string; to?: string },
+      companyIds?: number[]
+    ): Promise<{ from: string; to: string; products: Row[]; batches: Row[] }> =>
+      ipcRenderer.invoke('production:report', { range, companyIds }),
     create: (values: Row): Promise<{ id: number }> =>
       ipcRenderer.invoke('production:create', { values }),
     update: (id: number, values: Row): Promise<{ id: number }> =>

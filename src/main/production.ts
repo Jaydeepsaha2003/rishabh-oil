@@ -1,7 +1,7 @@
 import type { ResultSet } from '@libsql/client'
 import { getClient } from './db'
 import { getActiveCompanyId, companiesOfFactory, factoryOfCompanies } from './company'
-import { stockMap, productStockAvailable } from './stock'
+import { stockMap, productStockAvailable, stockLevels } from './stock'
 import { visibleFromFor } from './access-gate'
 // One copy of the recipe arithmetic, shared with the entry sheet in the
 // renderer. It used to live only here, so the sheet previewed one set of
@@ -51,7 +51,7 @@ export { expandRecipe, recipeTor }
 // Falling back, in order: the recipe's latest version, then its live lines
 // for a recipe saved by a build that had no versions. Wrapped, because a
 // database mid-upgrade must still be able to record production.
-async function recipeSnapshot(
+export async function recipeSnapshot(
   fid: number,
   pinned = 0
 ): Promise<{ versionId: number; items: Row[] }> {
@@ -142,6 +142,279 @@ export async function getProductionItems(productionId: number): Promise<Row[]> {
     args: [productionId]
   })
   return toPlain(res)
+}
+
+// ---------------------------------------------------------------------------
+// The Complete Production Report.
+//
+// The shape the mill already keeps by hand: products across the top in their
+// category bands, days down the side, and in the body what each batch
+// CONSUMED of every material. Beside each batch, what it made, and the recipe
+// ratio it was made on — 85:15 — with the parts named, because a bare ratio
+// says nothing about which 85 and which 15.
+//
+// Assembled in ONE call rather than a batch list plus a fetch per batch: a
+// month is 30-odd batches with five lines each, and 30 round trips through the
+// IPC bridge to draw one screen is what makes a report feel broken.
+//
+// The opening / receiving band comes from stockLevels, not from its own SQL.
+// It has to be the same figure the Book Stock register shows for the same
+// period, and the only way to guarantee that is to ask the same function.
+export async function productionReport(
+  range?: { from?: string; to?: string },
+  companyIds?: number[]
+): Promise<{
+  from: string
+  to: string
+  products: Row[]
+  batches: Row[]
+}> {
+  const c = getClient()
+  const from = String(range?.from || '')
+  const to = String(range?.to || '')
+
+  // Same factory scope listProduction uses: the batch's own factory, falling
+  // back to its company for rows written before the column existed.
+  const fid = await factoryOfCompanies([getActiveCompanyId()])
+  const cids = (companyIds || []).map(Number).filter((x) => x > 0)
+  if (!cids.length) cids.push(...(await companiesOfFactory()))
+  const ph = cids.map(() => '?').join(', ')
+  const scope = fid
+    ? `(p.factory_id = ? OR (p.factory_id IS NULL AND p.company_id IN (${ph})))`
+    : `p.company_id IN (${ph})`
+  const scopeArgs: unknown[] = fid ? [fid, ...cids] : [...cids]
+
+  const bounds: string[] = []
+  if (from) {
+    bounds.push('AND p.prod_date >= ?')
+    scopeArgs.push(from)
+  }
+  if (to) {
+    bounds.push('AND p.prod_date <= ?')
+    scopeArgs.push(to)
+  }
+
+  const prodRes = await c.execute({
+    sql: `SELECT p.id, p.prod_date, p.qty, p.uom, p.note, p.kind, p.product_id, p.sale_id,
+                 p.formulation_id, p.formulation_version_id,
+                 pr.name AS product_name, pr.category AS product_category, pr.uom AS product_uom,
+                 -- A formulation's own name is often null, so the recipe is
+                 -- named by what it makes; the version is what the ratio is
+                 -- read off, and whether it is still current is worth saying
+                 -- next to a ratio somebody may be checking against today's.
+                 f.name AS formulation_name,
+                 fv.version AS recipe_version,
+                 (SELECT MAX(version) FROM formulation_versions WHERE formulation_id = p.formulation_id)
+                   AS recipe_latest_version,
+                 co.name AS company_name
+            FROM production p
+            LEFT JOIN products pr ON pr.id = p.product_id
+            LEFT JOIN formulations f ON f.id = p.formulation_id
+            LEFT JOIN formulation_versions fv ON fv.id = p.formulation_version_id
+            LEFT JOIN companies co ON co.id = p.company_id
+           WHERE ${scope} ${bounds.join(' ')}
+           ORDER BY p.prod_date, p.id`,
+    args: scopeArgs as never[]
+  })
+  const prods = toPlain(prodRes)
+
+  // Every line of every batch in the period, in one query. Keyed by batch so
+  // the assembly below is a lookup rather than a scan per row.
+  const byBatch = new Map<number, Row[]>()
+  if (prods.length) {
+    const ids = prods.map((x) => n(x.id))
+    const iph = ids.map(() => '?').join(', ')
+    const itemsRes = await c.execute({
+      sql: `SELECT i.production_id, i.product_id, i.qty, i.kind,
+                   pr.name AS product_name, pr.category AS product_category
+              FROM production_items i
+              LEFT JOIN products pr ON pr.id = i.product_id
+             WHERE i.production_id IN (${iph})
+             ORDER BY i.id`,
+      args: ids as never[]
+    })
+    for (const it of toPlain(itemsRes)) {
+      const k = n(it.production_id)
+      const list = byBatch.get(k)
+      if (list) list.push(it)
+      else byBatch.set(k, [it])
+    }
+  }
+
+  // The ratio, per recipe VERSION rather than per recipe — two batches of the
+  // same product a month apart can honestly show different ratios, and that is
+  // the whole point of pinning the version. Cached because a month of DALDA is
+  // twenty batches on one version and there is no reason to read it twenty
+  // times.
+  const ratioCache = new Map<string, { ratio: string; parts: Row[] }>()
+  const ratioFor = async (fid2: number, versionId: number): Promise<{ ratio: string; parts: Row[] }> => {
+    if (!fid2) return { ratio: '', parts: [] }
+    const key = `${fid2}|${versionId}`
+    const hit = ratioCache.get(key)
+    if (hit) return hit
+    const snap = await recipeSnapshot(fid2, versionId).catch(() => ({ versionId: 0, items: [] as Row[] }))
+    // Only the INPUTS carry the ratio. A loss line is a percentage of the
+    // batch and a by-product line is what comes off it; neither is part of
+    // "85:15", and including them turns every ratio into nonsense.
+    const inputs = snap.items.filter((x) => String(x.kind || 'input') === 'input')
+    const total = inputs.reduce((a, x) => a + n(x.qty), 0)
+    const names = new Map<number, string>()
+    if (inputs.length) {
+      const pids = inputs.map((x) => n(x.product_id)).filter((x) => x > 0)
+      if (pids.length) {
+        const nres = await c.execute({
+          sql: `SELECT id, name FROM products WHERE id IN (${pids.map(() => '?').join(', ')})`,
+          args: pids as never[]
+        })
+        for (const r of nres.rows) names.set(n(r.id), String(r.name || ''))
+      }
+    }
+    // 85 and 15, not 85.0 and 15.0 — the parts are whole numbers in every
+    // recipe on the books, and a ratio is read, not calculated with.
+    const trim = (v: number): string =>
+      Number.isInteger(v) ? String(v) : String(Math.round(v * 100) / 100)
+    const parts = inputs.map((x) => ({
+      product_id: n(x.product_id),
+      name: names.get(n(x.product_id)) || `#${n(x.product_id)}`,
+      part: n(x.qty),
+      pct: total > 0 ? Math.round((n(x.qty) / total) * 10000) / 100 : 0
+    }))
+    const out = { ratio: parts.map((x) => trim(x.part)).join(':'), parts }
+    ratioCache.set(key, out)
+    return out
+  }
+
+  const batches: Row[] = []
+  for (const b of prods) {
+    const items = byBatch.get(n(b.id)) || []
+    // Recirculation writes no lines on purpose — it is the same oil in and
+    // out — so it has no ratio and no consumption. It still gets a row,
+    // because the report is a record of what the plant DID and a day the
+    // machine only turned over is part of that.
+    const recirc = String(b.kind || 'batch') === 'recirculation'
+    const { ratio, parts } = recirc
+      ? { ratio: '', parts: [] as Row[] }
+      : await ratioFor(n(b.formulation_id), n(b.formulation_version_id))
+
+    // One entry per product this batch touched: what it took and what it gave
+    // back. A loss line counts as consumed — dead loss leaves the floor as
+    // surely as an input does.
+    // `consumed` is inclusive of the loss, because that is the figure the
+    // mill's own sheet totals — 131.499 consumed against 130 made is the
+    // 1.499 that died. `loss` is carried separately anyway so the grid can
+    // tint it and so the row can be checked: inputs = made + by-product +
+    // loss, which is the identity that says a batch was entered honestly.
+    const cells: Record<string, { consumed: number; produced: number; loss: number }> = {}
+    const touch = (pid: number): { consumed: number; produced: number; loss: number } => {
+      const k = String(pid)
+      if (!cells[k]) cells[k] = { consumed: 0, produced: 0, loss: 0 }
+      return cells[k]
+    }
+    let totalConsumed = 0
+    let totalLoss = 0
+    for (const it of items) {
+      const kind = String(it.kind || 'input')
+      const q = n(it.qty)
+      const cell = touch(n(it.product_id))
+      if (kind === 'output') cell.produced += q
+      else {
+        cell.consumed += q
+        totalConsumed += q
+        if (kind === 'loss') {
+          cell.loss += q
+          totalLoss += q
+        }
+      }
+    }
+    // The batch's own output, under its own column, so a FINISHED band cell
+    // shows what was actually made that day rather than only what was eaten.
+    if (!recirc) touch(n(b.product_id)).produced += n(b.qty)
+
+    batches.push({
+      id: n(b.id),
+      date: String(b.prod_date || '').slice(0, 10),
+      kind: String(b.kind || 'batch'),
+      from_sale: !!b.sale_id,
+      product_id: n(b.product_id),
+      product_name: String(b.product_name || ''),
+      product_category: String(b.product_category || ''),
+      qty: n(b.qty),
+      uom: String(b.uom || b.product_uom || 'MT'),
+      note: b.note == null ? '' : String(b.note),
+      company_name: String(b.company_name || ''),
+      recipe_name: String(b.formulation_name || b.product_name || ''),
+      recipe_version: n(b.recipe_version),
+      recipe_latest_version: n(b.recipe_latest_version),
+      ratio,
+      ratio_parts: parts,
+      total_consumed: Math.round(totalConsumed * 1000) / 1000,
+      total_loss: Math.round(totalLoss * 1000) / 1000,
+      cells
+    })
+  }
+
+  // Columns. Every product the register knows for this period, carrying its
+  // opening and receipts so the band above the grid can be drawn — and its
+  // own unit, because a PCS product must never be totalled into a tonnage.
+  const levels = await stockLevels({ from, to }, cids).catch(() => [] as Row[])
+  const products = levels.map((r) => ({
+    id: n(r.id),
+    name: String(r.name || ''),
+    category: String(r.category || ''),
+    material_type: String(r.material_type || ''),
+    uom: String(r.uom || 'MT'),
+    opening: n(r.opening),
+    received: n(r.received),
+    produced: n(r.produced),
+    consumed: n(r.consumed),
+    closing: n(r.stock),
+    // Whether the register carries a balance for it at all — see below.
+    in_stock: true
+  }))
+
+  // A product a batch TOUCHED but the register does not carry.
+  //
+  // stockLevels honours "Show in stock", and DEAD LOSS is switched off there
+  // for good reason — it is a hole, not a tank. But it is a real consumption
+  // line on nearly every batch, so without this its cells landed in the grid
+  // with no column to sit under and read as `#77`. Anything a batch consumed
+  // or produced gets a column here, marked so the band above it can leave the
+  // opening/receiving cells blank rather than print a misleading zero.
+  const known = new Set(products.map((x) => x.id))
+  const extraIds: number[] = []
+  for (const b of batches) {
+    for (const pid of Object.keys(b.cells as Record<string, unknown>)) {
+      const id = n(pid)
+      if (id && !known.has(id)) {
+        known.add(id)
+        extraIds.push(id)
+      }
+    }
+  }
+  if (extraIds.length) {
+    const eres = await c.execute({
+      sql: `SELECT id, name, category, material_type, uom FROM products
+             WHERE id IN (${extraIds.map(() => '?').join(', ')})`,
+      args: extraIds as never[]
+    })
+    for (const r of toPlain(eres)) {
+      products.push({
+        id: n(r.id),
+        name: String(r.name || ''),
+        category: String(r.category || ''),
+        material_type: String(r.material_type || ''),
+        uom: String(r.uom || 'MT'),
+        opening: 0,
+        received: 0,
+        produced: 0,
+        consumed: 0,
+        closing: 0,
+        in_stock: false
+      })
+    }
+  }
+
+  return { from, to, products, batches }
 }
 
 // Create a production run: store output, then consume each formulation component
