@@ -304,7 +304,26 @@ function App(): React.JSX.Element {
     if (name) toast.success(`Working in ${name}`)
   }
 
-  const allowed = user ? MODULES.filter((m) => canAccess(user, m.key)).map((m) => m.key) : []
+  // Which pages this login can actually reach. Note it is built by FILTERING
+  // MODULES, not by asking canAccess about the current page — so a page that is
+  // not in MODULES can never be reached at all: the effect below sends it to
+  // allowed[0] and the `view` fallback sends it there again. That is what took
+  // every click on User Access straight to the Dashboard.
+  //
+  // User Access is deliberately NOT a module. MODULES is the grantable set —
+  // every key in it becomes a row on the rights grid — and user management is
+  // admin-only by design, so a row for it would let one admin hand out the
+  // power to hand out power. It is appended here instead: admins reach it,
+  // nobody else has it in `allowed`, and it stays off the grid.
+  //
+  // Appended rather than prepended, so allowed[0] is still the Dashboard and
+  // the fallback lands where it always did.
+  const allowed = user
+    ? [
+        ...MODULES.filter((m) => canAccess(user, m.key)).map((m) => m.key),
+        ...(__WEB__ && user.role === 'admin' ? ['userAccess'] : [])
+      ]
+    : []
 
   // If the current page isn't permitted, fall back to the first one that is.
   useEffect(() => {
