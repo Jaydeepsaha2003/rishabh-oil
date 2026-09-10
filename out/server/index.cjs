@@ -6388,12 +6388,12 @@ function computeMoney(i) {
   const gstAmount = taxableValue * i.gstPct / 100;
   const roundOff = Number(i.roundOff) || 0;
   const roundedTotal = taxableValue + gstAmount + roundOff;
-  const tdsAmount = round213(tierTds(roundedTotal, prior, threshold, i.tdsPct, abovePct));
+  const tdsAmount = round213(tierTds(taxableValue, prior, threshold, i.tdsPct, abovePct));
   const netAmount = round213(roundedTotal - tdsAmount);
   const finalTaxable = i.bargainRate * i.orderedQty;
   const finalGst = finalTaxable * i.gstPct / 100;
   const finalRounded = finalTaxable + finalGst + roundOff;
-  const finalTds = round213(tierTds(finalRounded, prior, threshold, i.tdsPct, abovePct));
+  const finalTds = round213(tierTds(finalTaxable, prior, threshold, i.tdsPct, abovePct));
   const finalNet = round213(finalRounded - finalTds);
   return {
     interest_pct: interestPct,
@@ -7356,12 +7356,10 @@ async function backfillPurchaseRoundOff() {
     if (n5(r.round_off_manual) === 1) continue;
     const T = round213(n5(r.taxable_value) + n5(r.gst_amount));
     const ro = round213(Math.round(T) - T);
-    const pct = s?.tds_above_only ? 0 : n5(r.tds_pct);
-    const threshold = n5(s?.tds_threshold);
-    const tds = round213(tierTds(T + ro, before, threshold, pct, n5(r.tds_pct)));
+    const tds = round213(n5(r.tds_amount));
     const net = round213(T + ro - tds);
     const fT = round213(n5(r.final_taxable_value) + n5(r.final_gst_amount));
-    const fTds = round213(tierTds(fT + ro, before, threshold, pct, n5(r.tds_pct)));
+    const fTds = round213(n5(r.final_tds_amount));
     const fNet = round213(fT + ro - fTds);
     if (same(ro, n5(r.round_off)) && same(tds, n5(r.tds_amount)) && same(net, n5(r.net_amount))) continue;
     console.log(
@@ -8212,7 +8210,11 @@ async function stockLevels(range, companyIds) {
     // can drift. COALESCE, so a row written before the column existed still
     // shows.
     c.execute(
-      `SELECT id, code, name, category, material_type, active FROM products
+      // uom is selected because every screen that renders a stock figure
+      // needs to say what the figure IS. Without it each of them fell back
+      // to 'MT', so a PCS product's dispatch hovered as "526.04 MT" — the
+      // quantity right, the unit invented.
+      `SELECT id, code, name, category, material_type, uom, active FROM products
         WHERE COALESCE(show_in_stock, 1) = 1
         ORDER BY category, name`
     ),
@@ -8239,6 +8241,9 @@ async function stockLevels(range, companyIds) {
       name: p.name,
       category: p.category,
       material_type: p.material_type,
+      // What this product is COUNTED in. MT for everything weighed, PCS for
+      // a countable item like a carton — and the two must never be added.
+      uom: String(p.uom || "MT"),
       active: p.active,
       opening: open,
       // The part of the opening that was entered as stock brought forward,
