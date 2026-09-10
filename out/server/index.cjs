@@ -7554,9 +7554,10 @@ async function saveTankerQuality(tankerId, rows) {
     const name = String(r?.name || "").trim();
     const value = String(r?.value ?? "").trim();
     if (!name || !value) continue;
+    const unit = r?.unit === void 0 || r?.unit === null ? "%" : String(r.unit).trim();
     await c.execute({
-      sql: "INSERT INTO tanker_quality (tanker_id, name, value, sort_order) VALUES (?, ?, ?, ?)",
-      args: [n5(tankerId), name, value, order++]
+      sql: "INSERT INTO tanker_quality (tanker_id, name, value, sort_order, unit) VALUES (?, ?, ?, ?, ?)",
+      args: [n5(tankerId), name, value, order++, unit]
     });
   }
 }
@@ -7568,23 +7569,24 @@ async function saveOrderQuality(orderId, rows) {
     const name = String(r.name || "").trim();
     const value = String(r.value ?? "").trim();
     if (!name || !value) continue;
+    const unit = r?.unit === void 0 || r?.unit === null ? "%" : String(r.unit).trim();
     await c.execute({
-      sql: "INSERT INTO order_quality (order_id, name, value, sort_order) VALUES (?, ?, ?, ?)",
-      args: [n5(orderId), name, value, i++]
+      sql: "INSERT INTO order_quality (order_id, name, value, sort_order, unit) VALUES (?, ?, ?, ?, ?)",
+      args: [n5(orderId), name, value, i++, unit]
     });
   }
 }
 async function listOrderQuality(orderId) {
   return toPlain6(
     await getClient().execute({
-      sql: "SELECT id, name, value, sort_order FROM order_quality WHERE order_id = ? ORDER BY sort_order, id",
+      sql: "SELECT id, name, value, sort_order, unit FROM order_quality WHERE order_id = ? ORDER BY sort_order, id",
       args: [n5(orderId)]
     })
   );
 }
 async function listTankerQuality(tankerId) {
   const res = await getClient().execute({
-    sql: "SELECT id, name, value, sort_order FROM tanker_quality WHERE tanker_id = ? ORDER BY sort_order, id",
+    sql: "SELECT id, name, value, sort_order, unit FROM tanker_quality WHERE tanker_id = ? ORDER BY sort_order, id",
     args: [n5(tankerId)]
   });
   return toPlain6(res);
@@ -9143,6 +9145,199 @@ async function getProductionItems(productionId) {
     args: [productionId]
   });
   return toPlain8(res);
+}
+async function productionReport(range, companyIds) {
+  const c = getClient();
+  const from = String(range?.from || "");
+  const to = String(range?.to || "");
+  const fid = await factoryOfCompanies([getActiveCompanyId()]);
+  const cids = (companyIds || []).map(Number).filter((x) => x > 0);
+  if (!cids.length) cids.push(...await companiesOfFactory());
+  const ph = cids.map(() => "?").join(", ");
+  const scope = fid ? `(p.factory_id = ? OR (p.factory_id IS NULL AND p.company_id IN (${ph})))` : `p.company_id IN (${ph})`;
+  const scopeArgs = fid ? [fid, ...cids] : [...cids];
+  const bounds = [];
+  if (from) {
+    bounds.push("AND p.prod_date >= ?");
+    scopeArgs.push(from);
+  }
+  if (to) {
+    bounds.push("AND p.prod_date <= ?");
+    scopeArgs.push(to);
+  }
+  const prodRes = await c.execute({
+    sql: `SELECT p.id, p.prod_date, p.qty, p.uom, p.note, p.kind, p.product_id, p.sale_id,
+                 p.formulation_id, p.formulation_version_id,
+                 pr.name AS product_name, pr.category AS product_category, pr.uom AS product_uom,
+                 -- A formulation's own name is often null, so the recipe is
+                 -- named by what it makes; the version is what the ratio is
+                 -- read off, and whether it is still current is worth saying
+                 -- next to a ratio somebody may be checking against today's.
+                 f.name AS formulation_name,
+                 fv.version AS recipe_version,
+                 (SELECT MAX(version) FROM formulation_versions WHERE formulation_id = p.formulation_id)
+                   AS recipe_latest_version,
+                 co.name AS company_name
+            FROM production p
+            LEFT JOIN products pr ON pr.id = p.product_id
+            LEFT JOIN formulations f ON f.id = p.formulation_id
+            LEFT JOIN formulation_versions fv ON fv.id = p.formulation_version_id
+            LEFT JOIN companies co ON co.id = p.company_id
+           WHERE ${scope} ${bounds.join(" ")}
+           ORDER BY p.prod_date, p.id`,
+    args: scopeArgs
+  });
+  const prods = toPlain8(prodRes);
+  const byBatch = /* @__PURE__ */ new Map();
+  if (prods.length) {
+    const ids = prods.map((x) => n6(x.id));
+    const iph = ids.map(() => "?").join(", ");
+    const itemsRes = await c.execute({
+      sql: `SELECT i.production_id, i.product_id, i.qty, i.kind,
+                   pr.name AS product_name, pr.category AS product_category
+              FROM production_items i
+              LEFT JOIN products pr ON pr.id = i.product_id
+             WHERE i.production_id IN (${iph})
+             ORDER BY i.id`,
+      args: ids
+    });
+    for (const it of toPlain8(itemsRes)) {
+      const k = n6(it.production_id);
+      const list2 = byBatch.get(k);
+      if (list2) list2.push(it);
+      else byBatch.set(k, [it]);
+    }
+  }
+  const ratioCache = /* @__PURE__ */ new Map();
+  const ratioFor = async (fid2, versionId) => {
+    if (!fid2) return { ratio: "", parts: [] };
+    const key3 = `${fid2}|${versionId}`;
+    const hit = ratioCache.get(key3);
+    if (hit) return hit;
+    const snap = await recipeSnapshot(fid2, versionId).catch(() => ({ versionId: 0, items: [] }));
+    const inputs = snap.items.filter((x) => String(x.kind || "input") === "input");
+    const total = inputs.reduce((a, x) => a + n6(x.qty), 0);
+    const names = /* @__PURE__ */ new Map();
+    if (inputs.length) {
+      const pids = inputs.map((x) => n6(x.product_id)).filter((x) => x > 0);
+      if (pids.length) {
+        const nres = await c.execute({
+          sql: `SELECT id, name FROM products WHERE id IN (${pids.map(() => "?").join(", ")})`,
+          args: pids
+        });
+        for (const r of nres.rows) names.set(n6(r.id), String(r.name || ""));
+      }
+    }
+    const trim = (v) => Number.isInteger(v) ? String(v) : String(Math.round(v * 100) / 100);
+    const parts = inputs.map((x) => ({
+      product_id: n6(x.product_id),
+      name: names.get(n6(x.product_id)) || `#${n6(x.product_id)}`,
+      part: n6(x.qty),
+      pct: total > 0 ? Math.round(n6(x.qty) / total * 1e4) / 100 : 0
+    }));
+    const out = { ratio: parts.map((x) => trim(x.part)).join(":"), parts };
+    ratioCache.set(key3, out);
+    return out;
+  };
+  const batches = [];
+  for (const b of prods) {
+    const items = byBatch.get(n6(b.id)) || [];
+    const recirc = String(b.kind || "batch") === "recirculation";
+    const { ratio, parts } = recirc ? { ratio: "", parts: [] } : await ratioFor(n6(b.formulation_id), n6(b.formulation_version_id));
+    const cells = {};
+    const touch = (pid) => {
+      const k = String(pid);
+      if (!cells[k]) cells[k] = { consumed: 0, produced: 0, loss: 0 };
+      return cells[k];
+    };
+    let totalConsumed = 0;
+    let totalLoss = 0;
+    for (const it of items) {
+      const kind = String(it.kind || "input");
+      const q = n6(it.qty);
+      const cell = touch(n6(it.product_id));
+      if (kind === "output") cell.produced += q;
+      else {
+        cell.consumed += q;
+        totalConsumed += q;
+        if (kind === "loss") {
+          cell.loss += q;
+          totalLoss += q;
+        }
+      }
+    }
+    if (!recirc) touch(n6(b.product_id)).produced += n6(b.qty);
+    batches.push({
+      id: n6(b.id),
+      date: String(b.prod_date || "").slice(0, 10),
+      kind: String(b.kind || "batch"),
+      from_sale: !!b.sale_id,
+      product_id: n6(b.product_id),
+      product_name: String(b.product_name || ""),
+      product_category: String(b.product_category || ""),
+      qty: n6(b.qty),
+      uom: String(b.uom || b.product_uom || "MT"),
+      note: b.note == null ? "" : String(b.note),
+      company_name: String(b.company_name || ""),
+      recipe_name: String(b.formulation_name || b.product_name || ""),
+      recipe_version: n6(b.recipe_version),
+      recipe_latest_version: n6(b.recipe_latest_version),
+      ratio,
+      ratio_parts: parts,
+      total_consumed: Math.round(totalConsumed * 1e3) / 1e3,
+      total_loss: Math.round(totalLoss * 1e3) / 1e3,
+      cells
+    });
+  }
+  const levels = await stockLevels({ from, to }, cids).catch(() => []);
+  const products = levels.map((r) => ({
+    id: n6(r.id),
+    name: String(r.name || ""),
+    category: String(r.category || ""),
+    material_type: String(r.material_type || ""),
+    uom: String(r.uom || "MT"),
+    opening: n6(r.opening),
+    received: n6(r.received),
+    produced: n6(r.produced),
+    consumed: n6(r.consumed),
+    closing: n6(r.stock),
+    // Whether the register carries a balance for it at all — see below.
+    in_stock: true
+  }));
+  const known = new Set(products.map((x) => x.id));
+  const extraIds = [];
+  for (const b of batches) {
+    for (const pid of Object.keys(b.cells)) {
+      const id = n6(pid);
+      if (id && !known.has(id)) {
+        known.add(id);
+        extraIds.push(id);
+      }
+    }
+  }
+  if (extraIds.length) {
+    const eres = await c.execute({
+      sql: `SELECT id, name, category, material_type, uom FROM products
+             WHERE id IN (${extraIds.map(() => "?").join(", ")})`,
+      args: extraIds
+    });
+    for (const r of toPlain8(eres)) {
+      products.push({
+        id: n6(r.id),
+        name: String(r.name || ""),
+        category: String(r.category || ""),
+        material_type: String(r.material_type || ""),
+        uom: String(r.uom || "MT"),
+        opening: 0,
+        received: 0,
+        produced: 0,
+        consumed: 0,
+        closing: 0,
+        in_stock: false
+      });
+    }
+  }
+  return { from, to, products, batches };
 }
 async function recordRecirculation(v, id = 0) {
   const c = getClient();
@@ -11700,7 +11895,10 @@ var RULES = [
     audience: "admins",
     page: "orders",
     threshold: { label: "Over", question: "Only when it is over the allowance by", unit: "%", def: 0, min: 0, max: 100, step: 0.01 },
-    evaluate: async ({ threshold, companyId }) => {
+    evaluate: async ({ threshold, companyId, today }) => {
+      const SHORTAGE_WINDOW_DAYS = 30;
+      const since = /* @__PURE__ */ new Date(`${today}T00:00:00`);
+      since.setDate(since.getDate() - SHORTAGE_WINDOW_DAYS);
       const res = await getClient().execute({
         sql: `SELECT pt.id, pt.tanker_no, pt.loaded_qty, pt.received_qty, pt.uom,
                      COALESCE(o.allowed_shortage_pct, b.allowed_shortage_pct, 0.2) AS allowed_pct,
@@ -11711,9 +11909,10 @@ var RULES = [
                 LEFT JOIN suppliers s ON s.id = pt.supplier_id
                WHERE pt.status = 'empty' AND pt.received_qty IS NOT NULL
                  AND (pt.company_id = ? OR pt.company_id IS NULL)
+                 AND MAX(COALESCE(pt.empty_date, ''), COALESCE(pt.loaded_date, '')) >= ?
                ORDER BY pt.id DESC
                LIMIT 300`,
-        args: [companyId]
+        args: [companyId, since.toISOString().slice(0, 10)]
       });
       return plain(res).map((t) => {
         const loaded = n8(t.loaded_qty);
@@ -12625,6 +12824,33 @@ async function runStartupTasks() {
     });
     await c.execute("UPDATE products SET use_both = 0 WHERE use_both IS NULL");
   }).catch((e) => console.error("[products] use_both column failed:", e));
+  await runOnce("outside_tanker_entry_time_v1", async () => {
+    const c = getClient();
+    await c.execute("ALTER TABLE outside_tankers ADD COLUMN entry_time TEXT").catch((e) => {
+      if (!/duplicate column/i.test(String(e.message))) throw e;
+    });
+    const rows = await c.execute(
+      "SELECT id, created_at FROM outside_tankers WHERE COALESCE(entry_time, '') = '' AND created_at IS NOT NULL"
+    );
+    let done = 0;
+    for (const r of rows.rows) {
+      const d = /* @__PURE__ */ new Date(`${String(r.created_at).replace(" ", "T")}Z`);
+      if (Number.isNaN(d.getTime())) continue;
+      const hhmm = `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+      await c.execute({ sql: "UPDATE outside_tankers SET entry_time = ? WHERE id = ?", args: [hhmm, Number(r.id)] });
+      done += 1;
+    }
+    if (done) console.log(`[outside] entry_time backfilled on ${done} diary line(s) from their UTC created_at`);
+  }).catch((e) => console.error("[outside] entry_time column failed:", e));
+  await runOnce("quality_unit_v1", async () => {
+    const c = getClient();
+    for (const t of ["tanker_quality", "order_quality"]) {
+      await c.execute(`ALTER TABLE ${t} ADD COLUMN unit TEXT NOT NULL DEFAULT '%'`).catch((e) => {
+        if (!/duplicate column/i.test(String(e.message))) throw e;
+      });
+      await c.execute(`UPDATE ${t} SET unit = '%' WHERE unit IS NULL`);
+    }
+  }).catch((e) => console.error("[quality] unit column failed:", e));
   await runOnce("outside_tankers_v1", async () => {
     const c = getClient();
     await c.execute(`CREATE TABLE IF NOT EXISTS outside_tankers (
@@ -14395,14 +14621,20 @@ async function recordNilRound(date, slot) {
   if (n16(has.rows[0].n))
     throw new Error("This round already has entries \u2014 remove them first if nothing was outside after all");
   const res = await c.execute({
-    sql: `INSERT INTO outside_tankers (company_id, log_date, slot, kind, tankers, created_by)
-          VALUES (?, ?, ?, 'nil', 0, ?)`,
+    sql: `INSERT INTO outside_tankers (company_id, log_date, slot, kind, tankers, created_by, entry_time)
+          VALUES (?, ?, ?, 'nil', 0, ?, ?)`,
     // created_by is left null: a NIL is recorded from the round's own button,
     // which carries no form and so no username. The row's timestamp and the
-    // audit log already say who pressed it.
-    args: [cid, day, slot, null]
+    // audit log already say who pressed it. The TIME it was pressed is worth
+    // keeping though — "counted at 4:12, nothing outside" is the whole point
+    // of a NIL round.
+    args: [cid, day, slot, null, nowHHMM2()]
   });
   return { id: Number(res.lastInsertRowid || 0) };
+}
+function nowHHMM2() {
+  const d = /* @__PURE__ */ new Date();
+  return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
 }
 async function saveOutsideTanker(v) {
   const c = getClient();
@@ -14426,10 +14658,18 @@ async function saveOutsideTanker(v) {
     n16(v.party_id) || null,
     tankers,
     String(v.note || "").trim() || null,
-    String(v.created_by || "") || null
+    String(v.created_by || "") || null,
+    // WHEN this line was written, which is what the diary was missing. Note it
+    // is the recording time, not the lorry's arrival — a line added at 11:40
+    // against the 8 AM round now says so instead of hiding inside the round.
+    // An explicit time is honoured so a supervisor can correct one.
+    String(v.entry_time || "").slice(0, 5) || nowHHMM2()
   ];
   if (n16(v.id)) {
     await c.execute({
+      // entry_time is NOT touched here. It records when the line was first
+      // written; correcting a party or a count later does not change that, and
+      // restamping it would quietly rewrite the diary's own history.
       sql: `UPDATE outside_tankers
                SET log_date = ?, slot = ?, kind = ?, category = ?, product_id = ?, party_id = ?,
                    tankers = ?, note = ?
@@ -14444,8 +14684,8 @@ async function saveOutsideTanker(v) {
   });
   const res = await c.execute({
     sql: `INSERT INTO outside_tankers
-            (company_id, log_date, slot, kind, category, product_id, party_id, tankers, note, created_by)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            (company_id, log_date, slot, kind, category, product_id, party_id, tankers, note, created_by, entry_time)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     args
   });
   return { id: Number(res.lastInsertRowid || 0) };
@@ -18663,7 +18903,7 @@ async function recordAudit(channel, args, result) {
   );
 }
 function registerIpc() {
-  const READONLY = /:list$|:get$|:items$|:issuances$|:sheet$|:outstanding$|:all$|:summary$|:transfers$|:fyTaxable$|:needs$|:breakdown$|:nextNo$|:liveUsers$|:ips$|:logs$|:dispatchableSales$|:mine$|:pendingCount$|:pending$|:lots$|:unmapped$|:unmappedCount$|:bargainLines$|:bargainNotes$|:bargainInterest$|:consignmentDraws$|^access:heartbeat$|^db:ping$|^db:snapshot$|^app:revision$|^auth:login$|^journal:booksFrom$|^journal:openings$|^journal:opening$|^journal:accounts$|^journal:statement$|^journal:trialBalance$|^journal:groups$|^journal:groupNames$|^journal:pendingRefs$|^journal:billsOutstanding$|^journal:tradingAccount$|^dashboard:stats$|^skuRates:parties$|^skuRates:partyCounts$|^consignment:openingLog$|^consignment:invoices$|^tankers:quality$|^tankers:ffaHistory$|^orders:quality$|^gate:partyCategories$|^gate:waivedOuts$|^gate:forRecord$|^notify:rules$|^notify:list$|^notify:run$|^notify:preview$|^notify:people$|^notify:mutes$|^treasury:alerts$|^treasury:paymentTracker$|^facility:exposures$|^facility:headroom$|^company:setActive$|^company:getActive$|^factory:active$|^factory:companies$|^session:setUser$|^lc:repayments$|^lc:allRepayments$|^lc:getLimit$|^lc:bankLimits$|^lc:paymentIns$|^lc:openTradingInvoices$|^files:pickDocument$|^files:openDocument$|^bankRecon:imports$|^bankRecon:list$|^bankRecon:suggest$|^bd:kpis$|^bd:limits$|^skuStock:adjustments$|^skuOpening:list$|^skuOpening:date$|^stockCount:previous$|^stockOpening:list$|^stockOpening:date$|^formulationSubcategory:list$|^formulations:versions$|^bd:allRepayments$|^bd:linkedOrders$|^bd:parties$|^bd:allParties$|^bd:openTradingInvoices$|^bd:paymentIns$|^access:entryWindows$|^access:entityHistory$|^trading:list$|^sales:series$|^sales:invoiceGaps$|^salesBargains:returns$|^salesBargains:unattributedReturns$|^tbill:orphans$/;
+  const READONLY = /:list$|:get$|:items$|:issuances$|:sheet$|:outstanding$|:all$|:summary$|:transfers$|:fyTaxable$|:needs$|:breakdown$|:nextNo$|:liveUsers$|:ips$|:logs$|:dispatchableSales$|:mine$|:pendingCount$|:pending$|:lots$|:unmapped$|:unmappedCount$|:bargainLines$|:bargainNotes$|:bargainInterest$|:consignmentDraws$|^access:heartbeat$|^db:ping$|^db:snapshot$|^app:revision$|^auth:login$|^journal:booksFrom$|^journal:openings$|^journal:opening$|^journal:accounts$|^journal:statement$|^journal:trialBalance$|^journal:groups$|^journal:groupNames$|^journal:pendingRefs$|^journal:billsOutstanding$|^journal:tradingAccount$|^dashboard:stats$|^skuRates:parties$|^skuRates:partyCounts$|^consignment:openingLog$|^consignment:invoices$|^tankers:quality$|^tankers:ffaHistory$|^orders:quality$|^gate:partyCategories$|^gate:waivedOuts$|^gate:forRecord$|^notify:rules$|^notify:list$|^notify:run$|^notify:preview$|^notify:people$|^notify:mutes$|^treasury:alerts$|^treasury:paymentTracker$|^facility:exposures$|^facility:headroom$|^company:setActive$|^company:getActive$|^factory:active$|^factory:companies$|^session:setUser$|^lc:repayments$|^lc:allRepayments$|^lc:getLimit$|^lc:bankLimits$|^lc:paymentIns$|^lc:openTradingInvoices$|^files:pickDocument$|^files:openDocument$|^bankRecon:imports$|^bankRecon:list$|^bankRecon:suggest$|^bd:kpis$|^bd:limits$|^skuStock:adjustments$|^skuOpening:list$|^skuOpening:date$|^stockCount:previous$|^stockOpening:list$|^stockOpening:date$|^formulationSubcategory:list$|^formulations:versions$|^bd:allRepayments$|^bd:linkedOrders$|^bd:parties$|^bd:allParties$|^bd:openTradingInvoices$|^bd:paymentIns$|^access:entryWindows$|^access:entityHistory$|^trading:list$|^sales:series$|^sales:invoiceGaps$|^salesBargains:returns$|^salesBargains:unattributedReturns$|^tbill:orphans$|^production:report$/;
   const AUDIT_SKIP = /* @__PURE__ */ new Set(["config:get", "config:save", "session:setUser"]);
   const handle = (channel, fn) => {
     ipcMain.handle(channel, async (e, args) => {
@@ -19051,6 +19291,10 @@ function registerIpc() {
   handle("notes:delete", (_e, { id, companyId }) => deleteNote(id, companyId));
   handle("production:list", (_e, args) => listProduction(args?.forModule));
   handle("production:items", (_e, { id }) => getProductionItems(id));
+  handle(
+    "production:report",
+    (_e, args) => productionReport(args?.range, args?.companyIds)
+  );
   handle("production:create", (_e, { values }) => createProduction(values));
   handle("production:update", (_e, { id, values }) => updateProduction(id, values));
   handle("production:delete", (_e, { id }) => deleteProduction(id));
