@@ -30,11 +30,12 @@ export type TdsParty = {
   partyId: number
   name: string
   pct: number
-  // 'total' — goods + GST (+ the round-off, which rides the first invoice).
-  // What a PURCHASE withholds on.
-  // 'taxable' — the goods alone. Every SALE withholds on this: GST is the
+  // 'taxable' — the goods alone. BOTH sides withhold on this: GST is the
   // government's money passing through, and withholding on it would be tax on
-  // tax.
+  // tax. Every caller passes it.
+  // 'total' — goods + GST (+ the round-off, which rides the first invoice).
+  // What a purchase used to withhold on, kept only so a figure struck under
+  // the old rule can still be explained rather than silently re-derived.
   on: 'total' | 'taxable'
   gstPct: number
   roundOff: number

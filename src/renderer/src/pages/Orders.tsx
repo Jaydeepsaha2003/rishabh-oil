@@ -2,10 +2,11 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import { toast } from 'sonner'
 import {
   Undo2, ArrowLeft, ArrowRight, AlertTriangle, BarChart3, Boxes, Building2, CalendarDays, CheckCircle2, ChevronDown, ClipboardList, Clock, DoorOpen, Eye, MinusCircle, Package,
-  FileText, FlaskConical, History, IndianRupee, Landmark, Lock, Pencil, Plus, ScrollText, Search, Trash2, Truck, type LucideIcon,
+  FileText, FlaskConical, History, IndianRupee, Info, Landmark, Lock, Pencil, Plus, ScrollText, Search, Trash2, Truck, type LucideIcon,
   Check
 } from 'lucide-react'
 import { PageHeader } from '@/components/PageHeader'
+import { TdsExplainer, type TdsParty } from '@/components/TdsExplainer'
 import { PhotoUpload, checkPhoto, prettyBytes } from '@/components/PhotoUpload'
 import { FyPicker } from '@/components/FyPicker'
 import { ExcelButton } from '@/components/ExcelButton'
@@ -1817,6 +1818,50 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
     }
   }
 
+  // Freight typed on the invoice's own tanker list. Held per tanker id while
+  // it is being typed, then written through the SAME backend call the tanker
+  // dialog saves with — so every guard it carries still applies (the bargain
+  // balance, the gate weighment match, and the transporter-ledger re-post once
+  // a tanker is emptied). Nothing is written unless the number changed.
+  const [tdsOpen, setTdsOpen] = useState(false)
+  const [freightDraft, setFreightDraft] = useState<Record<string, string>>({})
+  const [freightSaving, setFreightSaving] = useState('')
+
+  async function saveFreightRate(t: Row): Promise<void> {
+    const key = String(t.id)
+    const typed = freightDraft[key]
+    if (typed === undefined) return
+    const drop = (): void =>
+      setFreightDraft((prev) => {
+        const next = { ...prev }
+        delete next[key]
+        return next
+      })
+    const want = typed === '' ? 0 : Number(typed)
+    if (!Number.isFinite(want)) return
+    if (Math.abs(want - (Number(t.transport_rate_per_ton) || 0)) < 1e-9) {
+      drop()
+      return
+    }
+    setFreightSaving(key)
+    try {
+      await window.api.tankers.update(Number(t.id), { transport_rate_per_ton: want })
+      drop()
+      await load()
+      toast.success(
+        `Freight on ${t.tanker_no || 'the tanker'} set to ${formatINR(want)}/${t.uom || 'MT'}`
+      )
+    } catch (e) {
+      // What was typed STAYS in the box on a failure, so nothing is lost and
+      // the reason is on screen. The entry window refuses an edit whose tanker
+      // was loaded outside it, and that is worth reading rather than being
+      // silently reverted to the old rate.
+      toast.error((e as Error).message)
+    } finally {
+      setFreightSaving('')
+    }
+  }
+
   function openEditTanker(row: Row): void {
     setEditTanker(row)
     setEditTankerForm({
@@ -2752,6 +2797,37 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
     roundOff: Number(form.round_off) || 0
   }), [form, totalQty, rateAlloc, lineInterestOf])
 
+  // What the explainer needs to redo the arithmetic on screen: where this
+  // supplier stood in the year BEFORE this invoice (orders:fyTaxable already
+  // fetches it into form.tds_prior, pooled across linked parties), the slab off
+  // its master, and this invoice's taxable value. One party, one line — a
+  // purchase invoice has a single supplier, unlike a trading deal.
+  const tdsParties = useMemo<TdsParty[]>(() => {
+    if (!(Number(form.tds_pct) > 0)) return []
+    return [
+      {
+        partyId: Number(form.supplier_id) || 0,
+        name: String(form.supplier_name || 'Supplier'),
+        pct: Number(form.tds_pct) || 0,
+        // Purchases withhold on the goods alone, same as sales. GST is the
+        // government's money passing through; withholding on it is tax on tax.
+        on: 'taxable' as const,
+        gstPct: Number(form.gst_pct) || 0,
+        roundOff: Number(form.round_off) || 0,
+        invoices: [
+          {
+            id: Number(editing?.id) || 0,
+            label: String(form.invoice_no || 'This invoice'),
+            taxable: calc.taxableValue
+          }
+        ],
+        posted: calc.tdsAmount,
+        threshold: Number(form.tds_threshold) || 0,
+        aboveOnly: !!form.tds_above_only
+      }
+    ]
+  }, [form, editing, calc.taxableValue, calc.tdsAmount])
+
   // Default the per-invoice interest toggle: ON when the supplier charges
   // interest AND the purchase is supplier-financed. A manual flip sticks.
   useEffect(() => {
@@ -3247,7 +3323,15 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
                         {chosenTankers.map((t, i) => {
                           const ex = condIsEx(t)
                           const rate = Number(t.transport_rate_per_ton) || 0
-                          const basis = t.received_qty != null ? Number(t.received_qty) : Number(t.loaded_qty) || 0
+                          // Freight is earned on what ARRIVED, so the
+                          // received qty is the basis — but only once there
+                          // IS one. A tanker not yet weighed in carries 0,
+                          // not null, so `!= null` priced a 30.41 MT load at
+                          // zero and showed the freight as about Rs 0.00
+                          // beside a real rate. The loaded qty stands in
+                          // until the weighbridge answers, which is what the
+                          // tanker dialog's own estimate already did.
+                          const basis = Number(t.received_qty) > 0 ? Number(t.received_qty) : Number(t.loaded_qty) || 0
                           return (
                             <div
                               key={String(t.id)}
@@ -3271,18 +3355,58 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
                                 {ex ? 'EX' : 'DLD'}
                               </span>
                               <span className="min-w-0 truncate text-muted-foreground">{t.transporter_name || (ex ? 'No transporter set' : '—')}</span>
-                              <span className="ml-auto shrink-0 tabular-nums">
+                              {/* The rate is edited HERE, not only behind
+                                  the pencil. It was a read-only figure whose
+                                  only way in was a pencil that opens the
+                                  whole tanker — six sections of stage dates
+                                  and weighments, to change one number
+                                  printed right there. Saved on blur or
+                                  Enter through the same guarded backend call
+                                  the dialog uses; Escape puts it back. */}
+                              <span className="ml-auto flex shrink-0 items-center gap-2 tabular-nums">
                                 {ex ? (
-                                  rate > 0 ? (
-                                    <>
-                                      {formatINR(rate)}/{t.uom || 'MT'}
-                                      <span className="ml-2 text-[11px] text-muted-foreground">
-                                        ≈ {formatINR(rate * basis)}
-                                      </span>
-                                    </>
-                                  ) : (
-                                    <span className="font-semibold text-rose-700">Rate not set</span>
-                                  )
+                                  <>
+                                    <Input
+                                      type="number"
+                                      step="any"
+                                      aria-label={`Freight rate for ${t.tanker_no || 'this tanker'}`}
+                                      placeholder="Rate"
+                                      disabled={freightSaving === String(t.id)}
+                                      className={cn(
+                                        'h-7 w-24 text-right',
+                                        !(rate > 0) && 'border-rose-400',
+                                        __WEB__ && '!h-[30px] !w-[92px] !rounded-[4px] !text-[12.5px] !font-bold'
+                                      )}
+                                      value={freightDraft[String(t.id)] ?? (rate > 0 ? String(rate) : '')}
+                                      onChange={(e) =>
+                                        setFreightDraft((prev) => ({ ...prev, [String(t.id)]: e.target.value }))
+                                      }
+                                      onKeyDown={(e) => {
+                                        if (e.key === 'Enter') {
+                                          e.preventDefault()
+                                          void saveFreightRate(t)
+                                        }
+                                        if (e.key === 'Escape') {
+                                          setFreightDraft((prev) => {
+                                            const next = { ...prev }
+                                            delete next[String(t.id)]
+                                            return next
+                                          })
+                                        }
+                                      }}
+                                      onBlur={() => void saveFreightRate(t)}
+                                    />
+                                    <span className="text-[11px] text-muted-foreground">
+                                      /{t.uom || 'MT'}
+                                      {rate > 0 && basis > 0 && (
+                                        <>
+                                          {' '}
+                                          ≈ {formatINR(rate * basis)}
+                                          {!(Number(t.received_qty) > 0) && ' on loaded'}
+                                        </>
+                                      )}
+                                    </span>
+                                  </>
                                 ) : (
                                   <span className="text-muted-foreground">supplier pays</span>
                                 )}
@@ -4082,7 +4206,29 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
                 />
               </div>
               <MoneyRow label="Total after round off" value={formatINR(calc.roundedTotal)} strong />
-              <MoneyRow label="TDS (on the rounded total)" value={`− ${formatINR(calc.tdsAmount)}`} />
+              {/* The label used to read "on the rounded total", which is
+                  what it WAS struck on before the basis was corrected to the
+                  taxable value. The figure has been right since; the caption
+                  was still describing the old rule, so a correct TDS read as
+                  a wrong one — 0.1% of the 44,54,305 total is 4,454.31, and
+                  nothing on the rail explained why 3,047.40 was posted. The
+                  supplier's slab is the reason, and the icon now shows it. */}
+              <div className={cn('flex items-center justify-between py-1.5 text-sm', __WEB__ && '!gap-2.5 !py-[5px]')}>
+                <span className={cn('flex items-center gap-1.5 text-muted-foreground', __WEB__ && '!text-[12.5px] !font-semibold !text-[#33473E]')}>
+                  TDS (on the taxable value)
+                  <button
+                    type="button"
+                    title="How this TDS was worked out"
+                    className="shrink-0 cursor-pointer rounded p-0.5 text-muted-foreground/70 hover:bg-accent hover:text-foreground"
+                    onClick={() => setTdsOpen(true)}
+                  >
+                    <Info className="h-3.5 w-3.5" />
+                  </button>
+                </span>
+                <span className={cn('tabular-nums', __WEB__ && '!text-[12.5px] !font-bold !text-[#0A1F17]')}>
+                  − {formatINR(calc.tdsAmount)}
+                </span>
+              </div>
               </div>
               <div className={cn('my-2 border-t-2 border-[#1a2c56]', __WEB__ && '!hidden')} />
               {/* The answer, on the forest band — the one figure somebody
@@ -6446,6 +6592,19 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      {/* Asked for on the Sales side first — "display nicely the whole
+          calculations of the TDS on a icon click as per threshold or how the
+          calculation is going". The same question gets asked of a purchase,
+          and more often, because the purchase slab is the one that runs out
+          mid-invoice. */}
+      <TdsExplainer
+        open={tdsOpen}
+        onClose={() => setTdsOpen(false)}
+        side="purchase"
+        dealDate={String(form.order_date || '')}
+        parties={tdsParties}
+      />
 
       <Dialog open={!!viewTankerRow} onOpenChange={(open) => !open && setViewTankerRow(null)}>
         <DialogContent className="max-h-[85vh] max-w-2xl overflow-y-auto">

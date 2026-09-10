@@ -31,9 +31,10 @@ export function tierTds(
 
 export type SlabStep = {
   label: string
-  // What the withholding is struck ON for this invoice — the goods alone on a
-  // sale, goods plus GST (plus the round-off, which rides the first invoice)
-  // on a purchase.
+  // What the withholding is struck ON for this invoice: the goods alone, on
+  // both sides. (A purchase was struck on goods plus GST plus the round-off
+  // until that was corrected — the caller decides, and every live caller now
+  // passes the taxable value.)
   base: number
   // Where the party's year-to-date stood as this invoice was posted.
   priorBefore: number
