@@ -278,6 +278,10 @@ function PartyCell({
 }: {
   value: number
   parties: Row[]
+  // The row's own unit. Optional in the type only because the packed-SKU
+  // sheet has its own labelling; every product-register call passes it, and
+  // the 'MT' fallback below is what made a PCS product's dispatch hover as
+  // "526.04 MT".
   uom?: string
   tone?: string
   // The column-group wash. Separate from `tone` because tone is the figure's
@@ -1099,17 +1103,20 @@ function StockTable({ rows: allRows, breakdown, label = 'stock', range, onRange,
                                 </TableCell>
                               )}
                               <PartyCell
+                                uom={String(r.uom || 'MT')}
                                 value={Number(r.received)}
                                 parties={breakdown[r.id as number]?.receipt || []}
                                 wash={cn(SK_NUM, SK_BRULE, SK_BIN)}
                               />
                               <PartyCell
+                                uom={String(r.uom || 'MT')}
                                 value={Number(r.produced)}
                                 parties={breakdown[r.id as number]?.produced || []}
                                 wash={cn(SK_NUM, SK_BIN)}
                                 caption="Produced by"
                               />
                               <PartyCell
+                                uom={String(r.uom || 'MT')}
                                 value={Number(r.consumed)}
                                 parties={breakdown[r.id as number]?.consumed || []}
                                 tone="text-rose-700"
@@ -1117,6 +1124,7 @@ function StockTable({ rows: allRows, breakdown, label = 'stock', range, onRange,
                                 caption="Consumed by"
                               />
                               <PartyCell
+                                uom={String(r.uom || 'MT')}
                                 value={Number(r.packed_out)}
                                 parties={breakdown[r.id as number]?.packed || []}
                                 tone="text-rose-700"
@@ -1124,6 +1132,7 @@ function StockTable({ rows: allRows, breakdown, label = 'stock', range, onRange,
                                 caption="Packed into"
                               />
                               <PartyCell
+                                uom={String(r.uom || 'MT')}
                                 value={Number(r.sold)}
                                 parties={breakdown[r.id as number]?.dispatch || []}
                                 tone="text-rose-700"
@@ -1263,7 +1272,7 @@ function StockTable({ rows: allRows, breakdown, label = 'stock', range, onRange,
                           {Number(r.opening) ? formatNum(r.opening) : '—'}
                         </TableCell>
                       )}
-                      <PartyCell value={Number(r.received)} parties={breakdown[r.id as number]?.receipt || []} wash={__WEB__ ? cn(SK_NUM, SK_BRULE, SK_BIN) : undefined} />
+                      <PartyCell uom={String(r.uom || 'MT')} value={Number(r.received)} parties={breakdown[r.id as number]?.receipt || []} wash={__WEB__ ? cn(SK_NUM, SK_BRULE, SK_BIN) : undefined} />
                       <TableCell className={cn('text-right tabular-nums text-emerald-700', __WEB__ && cn(SK_NUM, SK_BIN))}>
                         {Number(r.produced) ? formatNum(r.produced) : '—'}
                         {/* Oil run back through the plant to keep it turning
@@ -1288,13 +1297,14 @@ function StockTable({ rows: allRows, breakdown, label = 'stock', range, onRange,
                           without the column the tonnage simply vanishes, and
                           without the hover you cannot see which SKUs took it. */}
                       <PartyCell
+                        uom={String(r.uom || 'MT')}
                         value={Number(r.packed_out)}
                         parties={breakdown[r.id as number]?.packed || []}
                         tone="text-rose-700"
                         wash={__WEB__ ? cn(SK_NUM, SK_BOUT) : undefined}
                         caption="Packed into"
                       />
-                      <PartyCell value={Number(r.sold)} parties={breakdown[r.id as number]?.dispatch || []} tone="text-rose-700" wash={__WEB__ ? cn(SK_NUM, SK_BOUT) : undefined} />
+                      <PartyCell uom={String(r.uom || 'MT')} value={Number(r.sold)} parties={breakdown[r.id as number]?.dispatch || []} tone="text-rose-700" wash={__WEB__ ? cn(SK_NUM, SK_BOUT) : undefined} />
                       <TableCell
                         className={cn(
                           'text-right font-bold tabular-nums',
@@ -2509,8 +2519,11 @@ function DayClose(): React.JSX.Element {
   const [saving, setSaving] = useState(false)
   const [section, setSection] = useState<string>(DAY_SECTIONS[0].key)
 
-  const load = useCallback(async () => {
-    setLoading(true)
+  const load = useCallback(async (background = false) => {
+    // Skipped on a live refresh: raising the spinner here is what made the
+    // page blink every few seconds. The rows already on screen stay until the
+    // new ones arrive. See useLiveRefresh.
+    if (!background) setLoading(true)
     setRows(await window.api.stockCount.sheet(date))
     setLoading(false)
   }, [date])
@@ -3327,7 +3340,9 @@ function SkuOpeningStock({ onSaved }: { onSaved: () => void }): React.JSX.Elemen
     }
   }, [])
   useEffect(() => { void load() }, [load])
-  useLiveRefresh(load)
+  // This load takes an as-of date, not the background flag — wrapped so the
+  // hook cannot pass one into it. It raises no spinner, so it never blinked.
+  useLiveRefresh(() => load())
 
   // Moving the date re-asks "what has moved since?" straight away, so the
   // shortfall on every row is the one for the morning actually being counted.
@@ -3741,8 +3756,11 @@ function SkuStock(): React.JSX.Element {
     setSkuRange({ from: globalRangeSku.from, to: globalRangeSku.to })
   }, [globalRangeSku.version]) // eslint-disable-line react-hooks/exhaustive-deps
 
-  const load = useCallback(async () => {
-    setLoading(true)
+  const load = useCallback(async (background = false) => {
+    // Skipped on a live refresh: raising the spinner here is what made the
+    // page blink every few seconds. The rows already on screen stay until the
+    // new ones arrive. See useLiveRefresh.
+    if (!background) setLoading(true)
     // The SAME period object goes to both, so the hover can never cover a
     // different stretch from the cell it explains.
     const when =
@@ -5073,8 +5091,11 @@ function MncStock(): React.JSX.Element {
     if (globalRangeAppliesTo(globalRangeMnc, 'stock')) { setMncFrom(globalRangeMnc.from); setMncTo(globalRangeMnc.to) }
   }, [globalRangeMnc.version]) // eslint-disable-line react-hooks/exhaustive-deps
 
-  const load = useCallback(async () => {
-    setLoading(true)
+  const load = useCallback(async (background = false) => {
+    // Skipped on a live refresh: raising the spinner here is what made the
+    // page blink every few seconds. The rows already on screen stay until the
+    // new ones arrive. See useLiveRefresh.
+    if (!background) setLoading(true)
     const [sm, ls, inv, sup, prd] = await Promise.all([
       window.api.consignment.summary(mncRanged ? { from: mncFrom, to: mncTo } : undefined),
       window.api.consignment.list('stock'),

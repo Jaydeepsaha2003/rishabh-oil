@@ -163,8 +163,11 @@ export function Dashboard({ onNavigate }: Props): React.JSX.Element {
   const [treasury, setTreasury] = useState<Row | null>(null)
   const [checking, setChecking] = useState(false)
 
-  const refresh = useCallback(async () => {
-    setChecking(true)
+  const refresh = useCallback(async (background = false) => {
+    // Skipped on a live refresh: raising the spinner here is what made the
+    // page blink every few seconds. The rows already on screen stay until the
+    // new ones arrive. See useLiveRefresh.
+    if (!background) setChecking(true)
     try {
       const [st, tr] = await Promise.all([window.api.dashboard.stats(), window.api.treasury.alerts().catch(() => null)])
       setStats(st)
@@ -208,8 +211,11 @@ export function Dashboard({ onNavigate }: Props): React.JSX.Element {
         title="Dashboard"
         subtitle="Money, stock and movement at a glance for the active company"
         hint="Every card is live and most are clickable — they take you to the page where the underlying entries live. Payables and receivables come straight from the double-entry books, so they agree with the Trial Balance in Accounting."
+        // refresh is WRAPPED, not passed: as a handler the click event would
+        // arrive as its `background` argument — truthy — and a refresh
+        // somebody asked for would come back without its spinner.
         actions={
-          <Button variant="outline" size="sm" onClick={refresh}>
+          <Button variant="outline" size="sm" onClick={() => void refresh()}>
             <RefreshCw className={cn('h-4 w-4', checking && 'animate-spin')} /> Refresh
           </Button>
         }

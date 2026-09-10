@@ -40,8 +40,11 @@ export function Daybook(): React.JSX.Element {
   const [material, setMaterial] = useState<Row[]>([])
   const [loading, setLoading] = useState(true)
 
-  const load = useCallback(async () => {
-    setLoading(true)
+  const load = useCallback(async (background = false) => {
+    // Skipped on a live refresh: raising the spinner here is what made the
+    // page blink every few seconds. The rows already on screen stay until the
+    // new ones arrive. See useLiveRefresh.
+    if (!background) setLoading(true)
     const f = from <= to ? from : to
     const t = from <= to ? to : from
     const res = await window.api.stock.daybook(f, t)

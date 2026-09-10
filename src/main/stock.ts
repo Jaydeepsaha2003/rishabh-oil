@@ -287,7 +287,11 @@ export async function stockLevels(
     // can drift. COALESCE, so a row written before the column existed still
     // shows.
     c.execute(
-      `SELECT id, code, name, category, material_type, active FROM products
+      // uom is selected because every screen that renders a stock figure
+      // needs to say what the figure IS. Without it each of them fell back
+      // to 'MT', so a PCS product's dispatch hovered as "526.04 MT" — the
+      // quantity right, the unit invented.
+      `SELECT id, code, name, category, material_type, uom, active FROM products
         WHERE COALESCE(show_in_stock, 1) = 1
         ORDER BY category, name`
     ),
@@ -323,6 +327,9 @@ export async function stockLevels(
       name: p.name,
       category: p.category,
       material_type: p.material_type,
+      // What this product is COUNTED in. MT for everything weighed, PCS for
+      // a countable item like a carton — and the two must never be added.
+      uom: String(p.uom || 'MT'),
       active: p.active,
       opening: open,
       // The part of the opening that was entered as stock brought forward,

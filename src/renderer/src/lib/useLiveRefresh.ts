@@ -32,7 +32,23 @@ const COALESCE_MS = 1500
 // back.
 const STALE_MS = 45000
 
-export function useLiveRefresh(reload: () => void | Promise<void>, intervalMs = 3000): void {
+// The reload is told that it is a BACKGROUND one.
+//
+// Every page's load() began by raising its own loading flag, which swaps the
+// table for a "Loading…" row — so each of these ticks blanked whatever was on
+// screen and painted it again. Nobody asked for that: the point of a live
+// refresh is that another desk's entry appears, not that the page announces
+// it is fetching. A page reading its own figures had them flash away every
+// time anyone anywhere saved something.
+//
+// So the callback receives `true` here and each page skips its spinner when
+// it does, replacing the rows in place once the new data arrives. The first
+// load — the one the user is actually waiting on — still shows it, because
+// nothing calls it with the flag.
+export function useLiveRefresh(
+  reload: (background?: boolean) => void | Promise<void>,
+  intervalMs = 3000
+): void {
   const last = useRef<number | null>(null)
   const busy = useRef(false)
   const busySince = useRef(0)
@@ -66,7 +82,7 @@ export function useLiveRefresh(reload: () => void | Promise<void>, intervalMs = 
       busy.current = true
       busySince.current = Date.now()
       try {
-        await cb.current()
+        await cb.current(true)
         last.current = target
       } catch {
         // leave `last` behind the target so the next tick tries again

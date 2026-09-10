@@ -96,8 +96,11 @@ export function Consignment(): React.JSX.Element {
   const [bookError, setBookError] = useState<string | null>(null)
   const [savingBook, setSavingBook] = useState(false)
 
-  const load = useCallback(async () => {
-    setLoading(true)
+  const load = useCallback(async (background = false) => {
+    // Skipped on a live refresh: raising the spinner here is what made the
+    // page blink every few seconds. The rows already on screen stay until the
+    // new ones arrive. See useLiveRefresh.
+    if (!background) setLoading(true)
     const [d, sm, pg, s, p, b, cfg, co, act] = await Promise.all([
       window.api.consignment.list(),
       window.api.consignment.summary(ranged ? { from, to } : undefined),

@@ -528,8 +528,11 @@ export function Formulation(): React.JSX.Element {
   const [items, setItems] = useState<Row[]>([])
   const [saving, setSaving] = useState(false)
 
-  const load = useCallback(async () => {
-    setLoading(true)
+  const load = useCallback(async (background = false) => {
+    // Skipped on a live refresh: raising the spinner here is what made the
+    // page blink every few seconds. The rows already on screen stay until the
+    // new ones arrive. See useLiveRefresh.
+    if (!background) setLoading(true)
     const [f, p] = await Promise.all([
       window.api.formulations.list(),
       window.api.data.list('products')

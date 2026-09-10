@@ -103,12 +103,14 @@ export function computeMoney(i: MoneyInput): MoneyResult {
   // TDS is rounded to paise ONCE and the net derived from that rounded
   // figure, so the summary and the ledger cannot disagree by a paisa.
   const round2 = (v: number): number => Math.round(v * 100) / 100
-  const tdsAmount = round2(tierTds(roundedTotal, prior, threshold, i.tdsPct, abovePct))
+  // On the TAXABLE value, not the GST-inclusive total — see computeOrderMoney
+  // in src/main/orders.ts, which this must agree with to the paisa.
+  const tdsAmount = round2(tierTds(taxableValue, prior, threshold, i.tdsPct, abovePct))
   const netAmount = round2(roundedTotal - tdsAmount)
   const finalTaxableValue = i.bargainRate * i.orderedQty
   const finalGstAmount = (finalTaxableValue * i.gstPct) / 100
   const finalRoundedTotal = finalTaxableValue + finalGstAmount + roundOff
-  const finalTdsAmount = round2(tierTds(finalRoundedTotal, prior, threshold, i.tdsPct, abovePct))
+  const finalTdsAmount = round2(tierTds(finalTaxableValue, prior, threshold, i.tdsPct, abovePct))
   const finalNetAmount = round2(finalRoundedTotal - finalTdsAmount)
   return {
     interestPerUnit,

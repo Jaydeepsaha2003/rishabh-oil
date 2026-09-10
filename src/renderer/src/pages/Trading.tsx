@@ -40,15 +40,15 @@ const round2 = (v: number): number => Math.round(v * 100) / 100
 // the lines in the same order is the only way the preview can agree with what
 // gets saved.
 //
-// `on` is what the withholding is struck on, and the two sides differ:
-//   'total'   — taxable + GST, plus the round off that rides the first invoice.
-//               What the purchase side has always used.
-//   'taxable' — the goods alone. Every SALE withholds on this: GST is the
-//               government's money passing through, so taking a slice of it
-//               would withhold tax on tax, and the rupee round-off is a
-//               presentation artifact with no business moving the figure.
-//               Matches saleTds() in the main process, which is what actually
-//               gets saved.
+// `on` is what the withholding is struck on. BOTH sides now use 'taxable':
+// the goods alone, because GST is the government's money passing through and
+// taking a slice of it withholds tax on tax, while the rupee round-off is a
+// presentation artifact with no business moving the figure.
+//
+// 'total' — taxable + GST + round off — is what the purchase side used to
+// run on, and it deducted Rs 1,47,000 where Rs 1,40,000 was due on a
+// Rs 14 crore invoice at 0.1%. It is kept only so a historical figure can
+// still be reproduced when one needs explaining.
 function slabTdsTotal(
   lines: { qty: number; rate: number }[],
   taxableOf: (l: { qty: number; rate: number }) => number,
@@ -57,7 +57,7 @@ function slabTdsTotal(
   pct: number,
   master: { tds_threshold?: unknown; tds_above_only?: unknown } | undefined,
   priorAtStart: number,
-  on: 'total' | 'taxable' = 'total'
+  on: 'total' | 'taxable' = 'taxable'
 ): number {
   if (pct <= 0 || !lines.length) return 0
   const threshold = n(master?.tds_threshold)
@@ -473,8 +473,7 @@ function DealLineTable({
           __WEB__ && (tone === 'rose' ? '!border-b-[#F0D6D4] !bg-[#FDF3F2] !text-[#8C2F26]' : '!border-b-[#BFE3CB] !bg-[#F4FBF6] !text-[#0B6B45]')
         )}
       >
-        <span className={cn('text-[10px] font-bold uppercase tracking-widest', __WEB__ && '!flex !items-center !gap-1.5 !text-[10.5px] !font-extrabold !tracking-[.11em]')}>
-          {__WEB__ && (tone === 'rose' ? <TrendingDown className="h-4 w-4" /> : <TrendingUp className="h-4 w-4" />)}
+        <span className={cn('text-[10px] font-bold uppercase tracking-widest', __WEB__ && '!text-[10.5px] !font-extrabold !tracking-[.14em]')}>
           {heading}
         </span>
         <span className={cn('truncate text-[11px] font-semibold', __WEB__ && '!text-[11.5px] !font-extrabold')}>{party}</span>
@@ -600,11 +599,10 @@ function InvoicePanel({
       >
         <span
           className={cn(
-            'flex items-center gap-1.5 text-[10.5px] font-extrabold uppercase tracking-[.11em]',
+            'text-[10.5px] font-extrabold uppercase tracking-[.14em]',
             rose ? 'text-[#8C2F26]' : 'text-[#0B6B45]'
           )}
         >
-          {rose ? <TrendingDown className="h-4 w-4" /> : <TrendingUp className="h-4 w-4" />}
           {heading}
         </span>
         <span className={cn('min-w-0 truncate text-[11.5px] font-extrabold', rose ? 'text-[#8C2F26]' : 'text-[#0B6B45]')}>
@@ -1071,11 +1069,10 @@ function TaxCard({
       >
         <span
           className={cn(
-            'flex items-center gap-1.5 text-[10.5px] font-extrabold uppercase tracking-[.11em]',
+            'text-[10.5px] font-extrabold uppercase tracking-[.14em]',
             rose ? 'text-[#8C2F26]' : 'text-[#0B6B45]'
           )}
         >
-          {rose ? <TrendingDown className="h-4 w-4" /> : <TrendingUp className="h-4 w-4" />}
           {head}
         </span>
         {party ? (
@@ -1131,20 +1128,24 @@ function TaxCard({
   )
 }
 
-// The rule that names a column. Arrow, side, hairline, and that side's total
-// at the far end — so each half of the drawer states what it comes to before
-// the invoices under it are read.
+// The rule that names a column: a mark, the side, a hairline, and that
+// side's total at the far end — so each half of the drawer states what it
+// comes to before the invoices under it are read.
+//
+// The trending arrows are gone from here and from every heading below. Four
+// of them in one drawer, on rows that already say PURCHASE and SALE in the
+// colour of their side, were decoration standing in for a distinction the
+// words and the colour make on their own — and a chart arrow beside a list
+// of invoices reads as a change over time, which is not what it meant. The
+// short bar left behind is a printer's rule, matching the coloured edge each
+// card already carries.
 function SideHead({ rose, label, total }: { rose: boolean; label: string; total: number }): React.JSX.Element {
   return (
     <div className="flex items-center gap-2.5 pb-0.5">
-      {rose ? (
-        <TrendingDown className="h-[19px] w-[19px] shrink-0 text-[#8C2F26]" />
-      ) : (
-        <TrendingUp className="h-[19px] w-[19px] shrink-0 text-[#0B6B45]" />
-      )}
+      <span className={cn('h-[15px] w-[3px] shrink-0 rounded-full', rose ? 'bg-[#B3261E]' : 'bg-[#12855A]')} />
       <span
         className={cn(
-          'text-[11.5px] font-extrabold uppercase tracking-[.14em]',
+          'text-[11.5px] font-extrabold uppercase tracking-[.16em]',
           rose ? 'text-[#8C2F26]' : 'text-[#0B6B45]'
         )}
       >
@@ -1236,8 +1237,11 @@ export function Trading(): React.JSX.Element {
     [customers, namedCustomerIds]
   )
 
-  const load = useCallback(async () => {
-    setLoading(true)
+  const load = useCallback(async (background = false) => {
+    // Skipped on a live refresh: raising the spinner here is what made the
+    // page blink every few seconds. The rows already on screen stay until the
+    // new ones arrive. See useLiveRefresh.
+    if (!background) setLoading(true)
     const [d, p, s, c] = await Promise.all([
       window.api.trading.list(),
       window.api.data.list('products'),
@@ -3583,10 +3587,9 @@ export function Trading(): React.JSX.Element {
                         the buyers, each with the party's name under it. */}
                     <div className="grid gap-2.5 [grid-template-columns:repeat(auto-fit,minmax(min(100%,200px),1fr))]">
                       <div className="rounded-[4px] border border-l-4 border-[#F0D6D4] border-l-[#B3261E] bg-white px-3.5 py-3">
-                        <div className="flex items-center gap-1.5">
-                          <TrendingDown className="h-[15px] w-[15px] shrink-0 text-[#8C2F26]" />
-                          <span className="text-[9.5px] font-extrabold uppercase tracking-[.12em] text-[#5A6B62]">Bought for</span>
-                        </div>
+                        <span className="text-[9.5px] font-extrabold uppercase tracking-[.14em] text-[#5A6B62]">
+                          Bought for
+                        </span>
                         <div className="mt-1.5 whitespace-nowrap text-[16px] font-bold tabular-nums">
                           {formatINR(d.purchase_taxable)}
                         </div>
@@ -3595,10 +3598,9 @@ export function Trading(): React.JSX.Element {
                         </div>
                       </div>
                       <div className="rounded-[4px] border border-l-4 border-[#BFE3CB] border-l-[#12855A] bg-white px-3.5 py-3">
-                        <div className="flex items-center gap-1.5">
-                          <TrendingUp className="h-[15px] w-[15px] shrink-0 text-[#0B6B45]" />
-                          <span className="text-[9.5px] font-extrabold uppercase tracking-[.12em] text-[#5A6B62]">Sold for</span>
-                        </div>
+                        <span className="text-[9.5px] font-extrabold uppercase tracking-[.14em] text-[#5A6B62]">
+                          Sold for
+                        </span>
                         <div className="mt-1.5 whitespace-nowrap text-[16px] font-bold tabular-nums">
                           {formatINR(d.sale_amount)}
                         </div>
@@ -3786,9 +3788,9 @@ export function Trading(): React.JSX.Element {
                     partyId: n(d.supplier_id),
                     name: String(d.supplier_name || '—'),
                     pct: n(d.purchase_tds_pct),
-                    // A purchase withholds on the invoice TOTAL — goods plus
-                    // GST, plus the rupee round-off that rides the first one.
-                    on: 'total' as const,
+                    // On the goods alone, the same as the sale side — GST is
+                    // not withheld on.
+                    on: 'taxable' as const,
                     gstPct: n(d.purchase_gst_pct),
                     roundOff: n(d.purchase_round_off),
                     invoices: lines.map((l) => ({

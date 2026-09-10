@@ -1618,15 +1618,20 @@ export function Settings({ user }: { user: AppUser }): React.JSX.Element {
     <>
       <PageHeader title="Settings" subtitle="Master data used across bargains and purchases" hint="Ports/sources (with transit days), the default allowed shortage %, users and access control. Changes here flow through to every module." />
       <div className="px-4 py-6">
-        {/* Ports has its own entry under Masters in the sidebar, so the tab
-            here was a second door to the same list. Dropped on the website;
-            the desktop app still has it. */}
+        {/* Three tabs are desktop-only, each for its own reason.
+            PORTS and COMPANIES both have their own entry in the sidebar — on
+            the website the tab was a second door to the same list.
+            SOFTWARE UPDATE has nothing to talk to in a browser: UpdatePanel
+            drives electron-updater, which is why "Current version" read as a
+            dash there. Updating a website is reloading the page.
+            The desktop app keeps all three: the sidebar is the same, but the
+            updater is the app's only route to a new version. */}
         <Tabs defaultValue={__WEB__ ? 'general' : 'sources'}>
           <TabsList>
             {!__WEB__ && <TabsTrigger value="sources">Ports</TabsTrigger>}
             <TabsTrigger value="general">General</TabsTrigger>
-            <TabsTrigger value="update">Software update</TabsTrigger>
-            {isAdmin && <TabsTrigger value="companies">Companies</TabsTrigger>}
+            {!__WEB__ && <TabsTrigger value="update">Software update</TabsTrigger>}
+            {!__WEB__ && isAdmin && <TabsTrigger value="companies">Companies</TabsTrigger>}
             {isAdmin && <TabsTrigger value="users">Users</TabsTrigger>}
             {isAdmin && <TabsTrigger value="access">Access</TabsTrigger>}
             {isAdmin && <TabsTrigger value="database">Database</TabsTrigger>}
@@ -1647,10 +1652,12 @@ export function Settings({ user }: { user: AppUser }): React.JSX.Element {
           <TabsContent value="general" className="mt-6">
             <GeneralSettings isAdmin={isAdmin} />
           </TabsContent>
-          <TabsContent value="update" className="mt-6">
-            <UpdatePanel />
-          </TabsContent>
-          {isAdmin && (
+          {!__WEB__ && (
+            <TabsContent value="update" className="mt-6">
+              <UpdatePanel />
+            </TabsContent>
+          )}
+          {!__WEB__ && isAdmin && (
             <TabsContent value="companies" className="mt-6">
               <EntityManager
                 table="companies"

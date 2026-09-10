@@ -49,8 +49,11 @@ export function Notes({ kind }: { kind: NoteType }): React.JSX.Element {
   const [error, setError] = useState<string | null>(null)
   const [form, setForm] = useState<Row>({})
 
-  const load = useCallback(async () => {
-    setLoading(true)
+  const load = useCallback(async (background = false) => {
+    // Skipped on a live refresh: raising the spinner here is what made the
+    // page blink every few seconds. The rows already on screen stay until the
+    // new ones arrive. See useLiveRefresh.
+    if (!background) setLoading(true)
     const [nts, sup, cus, trs, prd] = await Promise.all([
       window.api.notes.list(),
       window.api.data.list('suppliers'),

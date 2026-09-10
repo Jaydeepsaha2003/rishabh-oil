@@ -607,8 +607,11 @@ export function GateEntry(): React.JSX.Element {
   const [grossOutPrompt, setGrossOutPrompt] = useState<{ row: Row; tare: number } | null>(null)
   const [grossOutSaving, setGrossOutSaving] = useState(false)
 
-  const load = useCallback(async () => {
-    setLoading(true)
+  const load = useCallback(async (background = false) => {
+    // Skipped on a live refresh: raising the spinner here is what made the
+    // page blink every few seconds. The rows already on screen stay until the
+    // new ones arrive. See useLiveRefresh.
+    if (!background) setLoading(true)
     const [g, pt, sl, wv, nextNo, nextOutNo, sup, prd, cus, pcats] = await Promise.all([
       window.api.gate.list(),
       // the gate serves every company — list tankers across all of them

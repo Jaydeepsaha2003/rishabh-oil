@@ -245,16 +245,28 @@ export function computeMoney(i: MoneyInput): MoneyResult {
   // the base TDS is deducted on — so the rounding flows into TDS and the net.
   const roundOff = Number(i.roundOff) || 0
   const roundedTotal = taxableValue + gstAmount + roundOff
+  // TDS IS STRUCK ON THE TAXABLE VALUE, never on the GST-inclusive total.
+  //
+  // GST is the government's money passing through: withholding a slice of it
+  // takes tax on tax, and the supplier's certificate is issued against the
+  // goods value. This used to run on taxable + GST + round off, which on a
+  // Rs 14,00,00,000 purchase at 0.1% deducted Rs 1,47,000 where Rs 1,40,000
+  // was due — the error scales with the GST rate, so it was never visible as
+  // a rounding difference.
+  //
+  // The round off still lands on the total and the net is still that rounded
+  // total less TDS; only the BASE the percentage is applied to changes.
+  //
   // TDS is rounded to paise ONCE and the net derived from that rounded
   // figure, so the summary and the ledger cannot disagree by a paisa.
-  const tdsAmount = round2(tierTds(roundedTotal, prior, threshold, i.tdsPct, abovePct))
+  const tdsAmount = round2(tierTds(taxableValue, prior, threshold, i.tdsPct, abovePct))
   const netAmount = round2(roundedTotal - tdsAmount)
 
   // Final (bargain rate) block.
   const finalTaxable = i.bargainRate * i.orderedQty
   const finalGst = (finalTaxable * i.gstPct) / 100
   const finalRounded = finalTaxable + finalGst + roundOff
-  const finalTds = round2(tierTds(finalRounded, prior, threshold, i.tdsPct, abovePct))
+  const finalTds = round2(tierTds(finalTaxable, prior, threshold, i.tdsPct, abovePct))
   const finalNet = round2(finalRounded - finalTds)
 
   return {
@@ -1473,12 +1485,20 @@ export async function backfillPurchaseRoundOff(): Promise<void> {
     // total a paisa short of whole.
     const T = round2(n(r.taxable_value) + n(r.gst_amount))
     const ro = round2(Math.round(T) - T)
-    const pct = s?.tds_above_only ? 0 : n(r.tds_pct)
-    const threshold = n(s?.tds_threshold)
-    const tds = round2(tierTds(T + ro, before, threshold, pct, n(r.tds_pct)))
+    // This repair KEEPS the TDS the invoice was posted with; it only fixes
+    // the round-off and the net that follows from it.
+    //
+    // It runs on every boot, not once. Recomputing TDS here on the new
+    // taxable-only basis would therefore restate every historical purchase
+    // the next time the server starts — and it re-posts the journal and the
+    // supplier payable a few lines below, so the ledger would move with it.
+    // Changing a rule going forward is one decision; rewriting sixty posted
+    // invoices and their vouchers is a different one, and it is not this
+    // routine's to take.
+    const tds = round2(n(r.tds_amount))
     const net = round2(T + ro - tds)
     const fT = round2(n(r.final_taxable_value) + n(r.final_gst_amount))
-    const fTds = round2(tierTds(fT + ro, before, threshold, pct, n(r.tds_pct)))
+    const fTds = round2(n(r.final_tds_amount))
     const fNet = round2(fT + ro - fTds)
     if (same(ro, n(r.round_off)) && same(tds, n(r.tds_amount)) && same(net, n(r.net_amount))) continue
 

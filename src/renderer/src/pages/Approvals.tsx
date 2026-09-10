@@ -91,8 +91,11 @@ export function Approvals(): React.JSX.Element {
   const [rejectRow, setRejectRow] = useState<Row | null>(null)
   const [reason, setReason] = useState('')
 
-  const load = useCallback(async () => {
-    setLoading(true)
+  const load = useCallback(async (background = false) => {
+    // Skipped on a live refresh: raising the spinner here is what made the
+    // page blink every few seconds. The rows already on screen stay until the
+    // new ones arrive. See useLiveRefresh.
+    if (!background) setLoading(true)
     try {
       setRows(isAdmin ? await window.api.approvals.list() : await window.api.approvals.mine())
     } catch (e) {

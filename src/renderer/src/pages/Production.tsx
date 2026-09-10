@@ -80,6 +80,17 @@ export function Production(): React.JSX.Element {
   const isMobile = useIsMobile()
   const [recirc, setRecirc] = useState<Row>({ prod_date: todayISO(), product_id: '', qty: '', note: '' })
   const [recircSaving, setRecircSaving] = useState(false)
+  // What the entry will read as, and what is still missing — both shown on
+  // the form rather than discovered after pressing Record.
+  const ledgerPair = (() => {
+    const q = Number(recirc.qty) || 0
+    return q > 0 ? `+${formatNum(q)} −${formatNum(q)}` : '+N −N'
+  })()
+  const recircMissing = !recirc.product_id
+    ? 'the oil'
+    : !(Number(recirc.qty) > 0)
+      ? 'the quantity'
+      : ''
   // No company filter: a batch belongs to the plant floor, and the register is
   // the factory's. Which books it was costed into is not a way anyone wants to
   // read a production log.
@@ -195,6 +206,10 @@ export function Production(): React.JSX.Element {
     })
   }
   const [products, setProducts] = useState<Row[]>([])
+  // The unit the recirculation is entered in — the oil's own, off the master.
+  const recircUom = String(
+    products.find((x) => String(x.id) === String(recirc.product_id))?.uom || 'MT'
+  )
   const [formulations, setFormulations] = useState<Row[]>([])
   const [stock, setStock] = useState<Record<number, number>>({})
   const [loading, setLoading] = useState(true)
@@ -216,8 +231,11 @@ export function Production(): React.JSX.Element {
   const [results, setResults] = useState<Record<number, string>>({})
   const keyRef = useRef(1)
 
-  const load = useCallback(async () => {
-    setLoading(true)
+  const load = useCallback(async (background = false) => {
+    // Skipped on a live refresh: raising the spinner here is what made the
+    // page blink every few seconds. The rows already on screen stay until the
+    // new ones arrive. See useLiveRefresh.
+    if (!background) setLoading(true)
     const [p, pr, f, s, fac] = await Promise.all([
       window.api.production.list(),
       window.api.data.list('products'),
@@ -1581,75 +1599,124 @@ export function Production(): React.JSX.Element {
           <Pagination {...paged} label="runs" className="border-t px-3" />
         </div>
       </div>
-      {/* Recirculation. */}
+      {/* Recirculation, to the handoff's own design.
+          A dialog rather than a page: it asks three things, and the answer to
+          all three is on the shift supervisor's slip. The blue band under the
+          quantity is the point of the whole screen — it says what the register
+          will read BEFORE the button is pressed, because "records something
+          that moves no stock" is a claim worth showing rather than trusting. */}
       <Dialog open={recircOpen} onOpenChange={(o) => !o && setRecircOpen(false)}>
         <DialogContent
           className={cn(
             'max-w-md',
-            __WEB__ && '!gap-0 !overflow-hidden !rounded-[4px] !border-0 !bg-[#F1F5EF] !p-0 [&>button]:!top-[18px] [&>button]:!text-white [&>button]:!opacity-70'
+            __WEB__ &&
+              '!w-[min(94vw,640px)] !max-w-none !gap-0 !overflow-hidden !rounded-[6px] !border-0 !bg-[#F1F5EF] !p-0 !shadow-[0_24px_60px_rgba(10,31,23,.32)] [&>button]:!right-[22px] [&>button]:!top-[22px] [&>button]:!flex [&>button]:!h-9 [&>button]:!w-9 [&>button]:!items-center [&>button]:!justify-center [&>button]:!rounded-[3px] [&>button]:!bg-white/10 [&>button]:!text-white [&>button]:!opacity-100 [&>button]:hover:!bg-white/20 [&>button>svg]:!h-5 [&>button>svg]:!w-5'
           )}
         >
-          <DialogHeader className={cn(__WEB__ && '!block !space-y-0 !bg-[#0B3D2E] !px-5 !py-4 !pr-12 !text-left')}>
+          <DialogHeader className={cn(__WEB__ && '!block !space-y-0 !bg-[#0B3D2E] !px-[22px] !py-[18px] !pr-16 !text-left')}>
             {__WEB__ && (
               <div className="text-[11px] font-extrabold uppercase tracking-[.14em] text-[#8FBFA8]">Production</div>
             )}
-            <DialogTitle className={cn(__WEB__ && '!mt-1 !text-[18px] !font-bold !tracking-[-0.02em] !text-white')}>
+            <DialogTitle className={cn(__WEB__ && '!mt-1 !text-[19px] !font-extrabold !tracking-[-0.02em] !text-white')}>
               Record a recirculation
             </DialogTitle>
-            <p className={cn('mt-1 text-[12px] text-muted-foreground', __WEB__ && '!mt-1.5 !text-[11.5px] !font-semibold !leading-relaxed !text-[#8FBFA8]')}>
-              Oil put through the plant to keep it turning while the mill is idle. It draws no raw
-              material and makes nothing — the register shows it as +{Number(recirc.qty) > 0 ? formatNum(recirc.qty) : 'N'} −
-              {Number(recirc.qty) > 0 ? formatNum(recirc.qty) : 'N'} against the oil, and no balance moves.
+            <p
+              className={cn(
+                'mt-1 text-[12px] text-muted-foreground',
+                __WEB__ && '!mt-2 !max-w-[520px] !text-[11.5px] !font-semibold !leading-relaxed !text-[#8FBFA8]'
+              )}
+            >
+              Oil put through the plant to keep it turning while the mill is idle. It draws no raw material and
+              makes nothing — the register shows it as {ledgerPair} against the oil, and no balance moves.
             </p>
           </DialogHeader>
 
-          <div className={cn('grid gap-3 py-2', __WEB__ && '!gap-3 !bg-[#F1F5EF] !p-3')}>
-            <div className="flex flex-col gap-1.5">
-              <Label>Date</Label>
-              <DatePicker
-                min={minDate}
-                max={todayISO()}
-                value={String(recirc.prod_date || '')}
-                onChange={(v) => setRecirc((p2) => ({ ...p2, prod_date: v }))}
-              />
-            </div>
-            <div className="flex flex-col gap-1.5">
-              <Label>Which oil *</Label>
-              {/* Every product the register can hold stock of, not just the
-                  ones a recipe makes: what goes back through the machine is
-                  whatever is standing in the tank. */}
-              <Select
-                value={String(recirc.product_id || '')}
-                onValueChange={(v) => setRecirc((p2) => ({ ...p2, product_id: v }))}
-              >
-                <SelectTrigger className={cn(__WEB__ && '!h-11')}>
-                  <SelectValue placeholder="Pick the oil" />
-                </SelectTrigger>
-                <SelectContent>
-                  {products
-                    .filter((x) => String(x.category) !== 'raw' || true)
-                    .map((x) => (
+          <div className={cn('grid gap-3 py-2', __WEB__ && '!flex !flex-col !gap-4 !bg-[#F1F5EF] !px-[22px] !py-[18px]')}>
+            {/* Date and oil share a row: one is nearly always today and the
+                other is the only real choice on the form. */}
+            <div className={cn('grid gap-3', __WEB__ && '!flex !flex-wrap !gap-3.5')}>
+              <div className={cn('flex flex-col gap-1.5', __WEB__ && '!min-w-[180px] !flex-1 !gap-0')}>
+                <Label className={cn(__WEB__ && '!mb-[7px] !text-[12.5px] !font-extrabold !text-[#0A1F17]')}>Date</Label>
+                <DatePicker
+                  min={minDate}
+                  max={todayISO()}
+                  value={String(recirc.prod_date || '')}
+                  onChange={(v) => setRecirc((p2) => ({ ...p2, prod_date: v }))}
+                  className={cn(__WEB__ && '!h-[46px] !w-full !rounded-[4px] !border-[#C3D2C6] !bg-white !px-3 !text-[14px] !font-semibold')}
+                />
+              </div>
+              <div className={cn('flex flex-col gap-1.5', __WEB__ && '!min-w-[180px] !flex-1 !gap-0')}>
+                <Label className={cn(__WEB__ && '!mb-[7px] !text-[12.5px] !font-extrabold !text-[#0A1F17]')}>
+                  Which oil <span className="text-[#B3261E]">*</span>
+                </Label>
+                {/* The app's own Select, not the handoff's hand-rolled panel:
+                    this dialog clips its overflow, and an absolutely
+                    positioned list inside it would be cut off at the edge. */}
+                <Select
+                  value={String(recirc.product_id || '')}
+                  onValueChange={(v) => setRecirc((p2) => ({ ...p2, product_id: v }))}
+                >
+                  <SelectTrigger
+                    className={cn(
+                      __WEB__ &&
+                        cn(
+                          '!h-[46px] !rounded-[4px] !bg-white !px-3 !text-[13.5px] !font-bold',
+                          recirc.product_id ? '!border-[#C3D2C6] !text-[#0A1F17]' : '!border-[#F0D9AE] !text-[#8FA79B]'
+                        )
+                    )}
+                  >
+                    <SelectValue placeholder="Pick the oil" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {products.map((x) => (
                       <SelectItem key={String(x.id)} value={String(x.id)}>
                         {String(x.name)} · {CAT_LABEL[String(x.category)] ?? String(x.category)}
                       </SelectItem>
                     ))}
-                </SelectContent>
-              </Select>
+                  </SelectContent>
+                </Select>
+              </div>
             </div>
-            <div className="flex flex-col gap-1.5">
-              <Label>Quantity *</Label>
-              <Input
-                type="number"
-                inputMode="decimal"
-                className={cn('text-right tabular-nums', __WEB__ && '!h-11')}
-                value={String(recirc.qty ?? '')}
-                onChange={(e) => setRecirc((p2) => ({ ...p2, qty: e.target.value }))}
-              />
+
+            <div className={cn('flex flex-col gap-1.5', __WEB__ && '!gap-0')}>
+              <Label className={cn(__WEB__ && '!mb-[7px] !text-[12.5px] !font-extrabold !text-[#0A1F17]')}>
+                Quantity <span className="text-[#B3261E]">*</span>
+              </Label>
+              <div className={cn(__WEB__ && '!flex !items-center !gap-3')}>
+                <Input
+                  type="number"
+                  inputMode="decimal"
+                  placeholder="0.000"
+                  className={cn(
+                    'text-right tabular-nums',
+                    __WEB__ && '!h-[46px] !min-w-0 !flex-1 !rounded-[4px] !border-[#C3D2C6] !bg-white !px-3 !text-[15px] !font-bold'
+                  )}
+                  value={String(recirc.qty ?? '')}
+                  onChange={(e) => setRecirc((p2) => ({ ...p2, qty: e.target.value }))}
+                />
+                {__WEB__ && (
+                  <span className="shrink-0 text-[12.5px] font-extrabold text-[#5A6B62]">{recircUom}</span>
+                )}
+              </div>
+              {/* What the register will say, said first. */}
+              <div
+                className={cn(
+                  'mt-2 flex items-center gap-2.5 rounded-[4px] border border-[#C6DAF0] border-l-4 border-l-[#1B4E82] bg-[#EAF0FA] px-3.5 py-2.5',
+                  __WEB__ && '!mt-2.5'
+                )}
+              >
+                <RefreshCw className="h-[18px] w-[18px] shrink-0 text-[#1B4E82]" />
+                <span className="min-w-0 text-[12px] font-bold leading-snug text-[#1B4E82]">
+                  The register will show <span className="tabular-nums">{ledgerPair}</span> against the oil — the
+                  balance ends exactly where it started.
+                </span>
+              </div>
             </div>
-            <div className="flex flex-col gap-1.5">
-              <Label>Note</Label>
+
+            <div className={cn('flex flex-col gap-1.5', __WEB__ && '!gap-0')}>
+              <Label className={cn(__WEB__ && '!mb-[7px] !text-[12.5px] !font-extrabold !text-[#0A1F17]')}>Note</Label>
               <Input
-                className={cn(__WEB__ && '!h-11')}
+                className={cn(__WEB__ && '!h-[46px] !rounded-[4px] !border-[#C3D2C6] !bg-white !px-3 !text-[13px] !font-semibold')}
                 placeholder="Why the plant was run — e.g. shut down 3 days"
                 value={String(recirc.note ?? '')}
                 onChange={(e) => setRecirc((p2) => ({ ...p2, note: e.target.value }))}
@@ -1657,21 +1724,61 @@ export function Production(): React.JSX.Element {
             </div>
           </div>
 
-          <DialogFooter className={cn(__WEB__ && '!gap-2 !border-t !border-t-[#D6E2D6] !bg-white !px-3 !py-2.5')}>
-            <Button
-              variant="outline"
-              onClick={() => setRecircOpen(false)}
-              className={cn(__WEB__ && '!h-10 !rounded-[4px] !border-[1.5px] !border-[#C3D2C6] !px-4 !text-[12px] !font-extrabold !uppercase !tracking-[.03em] !text-[#33473E]')}
-            >
-              Cancel
-            </Button>
-            <Button
-              disabled={recircSaving}
-              onClick={() => void saveRecirculation()}
-              className={cn('gap-1.5', __WEB__ && '!h-10 !rounded-[4px] !bg-[#0B3D2E] !px-4 !text-[12px] !font-extrabold !uppercase !tracking-[.04em] !text-[#C7F03F] hover:!bg-[#0F4A38]')}
-            >
-              <RefreshCw className="h-4 w-4" /> {recircSaving ? 'Recording…' : 'Record'}
-            </Button>
+          {/* What is still missing, or what is about to be recorded — in the
+              footer beside the button that does it, rather than as a toast
+              after it has been pressed. */}
+          <DialogFooter
+            className={cn(
+              __WEB__ && '!flex-wrap !items-center !gap-3 !border-t !border-t-[#D6E2D6] !bg-white !px-[22px] !py-3.5 sm:!justify-start'
+            )}
+          >
+            {__WEB__ && (
+              <div
+                className={cn(
+                  'flex min-w-0 items-center gap-2 text-[12.5px] font-bold',
+                  recircMissing ? 'text-[#8A5300]' : 'text-[#0B6B45]'
+                )}
+              >
+                {recircMissing ? (
+                  <AlertTriangle className="h-[18px] w-[18px] shrink-0" />
+                ) : (
+                  <CheckCircle2 className="h-[18px] w-[18px] shrink-0" />
+                )}
+                <span className="leading-snug">
+                  {recircMissing
+                    ? `Enter ${recircMissing}.`
+                    : `Records against ${String(products.find((x) => String(x.id) === String(recirc.product_id))?.name || '')} — no stock moves.`}
+                </span>
+              </div>
+            )}
+            <div className={cn(__WEB__ && '!ml-auto !flex !gap-2.5')}>
+              <Button
+                variant="outline"
+                onClick={() => setRecircOpen(false)}
+                className={cn(
+                  __WEB__ &&
+                    '!h-[46px] !rounded-[4px] !border-[1.5px] !border-[#C3D2C6] !bg-white !px-5 !text-[12.5px] !font-extrabold !uppercase !tracking-[.03em] !text-[#33473E]'
+                )}
+              >
+                Cancel
+              </Button>
+              <Button
+                disabled={recircSaving || !!recircMissing}
+                onClick={() => void saveRecirculation()}
+                className={cn(
+                  'gap-1.5',
+                  __WEB__ &&
+                    cn(
+                      '!h-[46px] !gap-2 !rounded-[4px] !px-[22px] !text-[12.5px] !font-extrabold !uppercase !tracking-[.04em]',
+                      recircMissing
+                        ? '!bg-[#C3D2C6] !text-[#F1F5EF]'
+                        : '!bg-[#0B3D2E] !text-[#C7F03F] hover:!bg-[#0F4A38]'
+                    )
+                )}
+              >
+                <RefreshCw className="h-4 w-4" /> {recircSaving ? 'Recording…' : 'Record'}
+              </Button>
+            </div>
           </DialogFooter>
         </DialogContent>
       </Dialog>

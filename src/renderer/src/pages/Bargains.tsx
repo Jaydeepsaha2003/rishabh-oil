@@ -292,8 +292,11 @@ export function Bargains({ onOpenOrder }: { onOpenOrder?: (orderId: number) => v
     : 0
   const editLocked = editConsumed > 1e-4
 
-  const load = useCallback(async () => {
-    setLoading(true)
+  const load = useCallback(async (background = false) => {
+    // Skipped on a live refresh: raising the spinner here is what made the
+    // page blink every few seconds. The rows already on screen stay until the
+    // new ones arrive. See useLiveRefresh.
+    if (!background) setLoading(true)
     const sel = coIds.length ? coIds : undefined
     const [b, s, o, br, pt, settings, cd, cos] = await Promise.all([
       window.api.bargains.list(F, T, sel),

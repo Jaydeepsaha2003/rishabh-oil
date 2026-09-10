@@ -184,8 +184,11 @@ export function TreasuryMobile(): React.JSX.Element {
   const [company, setCompany] = useState('')
   const [loading, setLoading] = useState(true)
 
-  const load = useCallback(async () => {
-    setLoading(true)
+  const load = useCallback(async (background = false) => {
+    // Skipped on a live refresh: raising the spinner here is what made the
+    // page blink every few seconds. The rows already on screen stay until the
+    // new ones arrive. See useLiveRefresh.
+    if (!background) setLoading(true)
     try {
       const [l, bd, lim, act, comps] = await Promise.all([
         window.api.lc.list(),
