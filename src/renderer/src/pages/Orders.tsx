@@ -31,6 +31,14 @@ import { HistoryDialog, useHistoryDialog } from '@/components/HistoryDialog'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { formatDate, formatDateShort, formatINR, formatNum, todayISO } from '@/lib/format'
+
+// Same function under a second name. The Orders component shadows `formatINR`
+// with a masking version for the readings desk (see MONEY_MASK below), and an
+// initializer cannot reference the name it is shadowing — so it reaches the
+// real one through here.
+const rupees = formatINR
+// What the lab sees instead of a value.
+const MONEY_MASK = '*****'
 import { cn } from '@/lib/utils'
 import { computeMoney, computeShortage } from '@/lib/orderCalc'
 import { useLiveRefresh } from '@/lib/useLiveRefresh'
@@ -680,6 +688,25 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
   // rendered. Not disabled: not there. The server refuses the writes anyway
   // (access-gate.ts, scope 'readings'); this keeps the screen honest about it.
   const readingsOnly = moduleScope(loadUser(), 'orders') === 'readings'
+  // EVERY rupee figure on this page goes through this name, and for the
+  // readings desk it prints ***** instead.
+  //
+  // Done by SHADOWING the import rather than by masking at each call site, and
+  // that is deliberate: this page prints money in NINETY places. The register
+  // column and its total, the freight popover, and the whole of the detail
+  // drawer — which opens on a row click, so the readings desk reaches it. A
+  // control that depends on remembering to wrap each of ninety calls leaks the
+  // first time somebody adds the ninety-first. This way a new rupee figure
+  // anywhere in the component is masked without being thought about.
+  //
+  // The quantity columns are left alone: a lab reading is taken against a
+  // weight, and it is the rates and values the desk is not to see.
+  //
+  // NOTE what this is and is not. It is a screen control. The figures are
+  // still in the payload the server sent, so somebody who opens devtools can
+  // read them — withholding them properly means not selecting them for this
+  // user in listOrders, which is a server change and a separate one.
+  const formatINR = readingsOnly ? (): string => MONEY_MASK : rupees
   // Which tab, kept in the URL. A refresh used to land back on Tanker
   // movement whatever you were looking at, which on a page reached by reload
   // rather than by clicking is most of the time. In the address it also means
