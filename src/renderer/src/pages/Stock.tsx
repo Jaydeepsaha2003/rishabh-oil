@@ -14,7 +14,7 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { DatePicker } from '@/components/ui/date-picker'
-import { ProductionReport } from '@/components/ProductionReport'
+import { downloadProductionReport } from '@/lib/productionReportExcel'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Switch } from '@/components/ui/switch'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
@@ -746,6 +746,23 @@ function StockTable({ rows: allRows, breakdown, label = 'stock', range, onRange,
     }
   }
 
+  // The Complete Production Report: one line per batch, every product it
+  // touched as a column. Built in lib/productionReportExcel so this page does
+  // not carry thirty lines of column definitions it never draws.
+  async function downloadProduction(): Promise<void> {
+    setDlBusy('production')
+    try {
+      const written = await downloadProductionReport(ranged ? range : undefined, companyIds, nowStamp())
+      if (!written) toast.error('No production in this period')
+      else toast.success(`Exported ${written} production row${written === 1 ? '' : 's'}`)
+    } catch (e) {
+      toast.error((e as Error).message)
+    } finally {
+      setDlBusy('')
+      setDlOpen(false)
+    }
+  }
+
   // The flow register: one line per product, or the same thing with each
   // product's parties opened up underneath it.
   async function downloadFlow(withParties: boolean): Promise<void> {
@@ -930,7 +947,11 @@ function StockTable({ rows: allRows, breakdown, label = 'stock', range, onRange,
             { key: 'receipt', icon: TrendingUp, label: 'Receipt register', run: () => downloadMovement('receipt') },
             { key: 'dispatch', icon: TrendingDown, label: 'Dispatch register', run: () => downloadMovement('dispatch') },
             { key: 'flow', icon: Layers, label: 'Stock flow', run: () => downloadFlow(false) },
-            { key: 'flowparty', icon: Building2, label: 'Stock flow, by party', run: () => downloadFlow(true) }
+            { key: 'flowparty', icon: Building2, label: 'Stock flow, by party', run: () => downloadFlow(true) },
+            // The production report is a report on the same period as the four
+            // above it, so it belongs on the same menu rather than behind a
+            // view of its own. Thirty-six columns is a spreadsheet's job.
+            { key: 'production', icon: Factory, label: 'Production report', run: () => downloadProduction() }
           ] as const).map((o) => (
             <button
               key={o.key}
@@ -6020,12 +6041,6 @@ export function Stock({ onCompanyChange }: { onCompanyChange?: (id: string) => v
   const [bookView, setBookView] = useState<'register' | 'opening'>(() =>
     readStockView('bookView', ['register', 'opening'] as const, 'register')
   )
-  // Register or the production report, inside Finished Oil. Remembered the
-  // same way every other Stock view is, so leaving the page and coming back
-  // does not throw the reader back to the register they had already left.
-  const [finishedView, setFinishedView] = useState<'register' | 'report'>(() =>
-    readStockView('finishedView', ['register', 'report'] as const, 'register')
-  )
   // Which opening sheet: the tanks, or the packed shelf. The packed one used
   // to hide behind a picker on the Packed SKU strip, which put "where the
   // packed register starts" inside the packed register.
@@ -6033,12 +6048,12 @@ export function Stock({ onCompanyChange }: { onCompanyChange?: (id: string) => v
     readStockView('openingTab', ['products', 'sku'] as const, 'products')
   )
 
-  // Written as one object so the five can never be restored out of step with
+  // Written as one object so the four can never be restored out of step with
   // each other — a saved tab of 'sku' under a saved group of 'book' would show
   // a register with no rows in it.
   useEffect(() => {
-    writeStockView({ group: stockGroup, tab, bookView, openingTab, finishedView })
-  }, [stockGroup, tab, bookView, openingTab, finishedView])
+    writeStockView({ group: stockGroup, tab, bookView, openingTab })
+  }, [stockGroup, tab, bookView, openingTab])
   // Honour the note the opening sheet's company switcher left behind, so a
   // switch made there comes back to the opening sheet for the other company
   // instead of dropping the reader on the register. Runs once, then clears —
@@ -6426,43 +6441,7 @@ export function Stock({ onCompanyChange }: { onCompanyChange?: (id: string) => v
             <StockTable rows={byCat('intermediate')} breakdown={breakdown} label="intermediate" range={range} onRange={setRange} companyPicker={companyPicker} companySplit={companySplit} stagePicker={stagePicker} companyIds={cids} openingFrom={openingFrom} />
           </TabsContent>
           <TabsContent value="finished" className="mt-1">
-            {/* Two ways of reading the same tab. The register says what the
-                finished balances ARE; the report says how they came to be —
-                which batch on which day ate what. It lives here rather than
-                on Production because the question it answers is a stock
-                question, and it is the finished sheet somebody is holding
-                when they ask it.
-
-                A view rather than a stage: the report spans every band, raw
-                through by-product, so filtering it to `finished` would empty
-                the grid of the very columns being consumed. */}
-            <div className={cn('mb-3 inline-flex rounded-lg border p-0.5', __WEB__ && SK_SEG)}>
-              {([
-                { key: 'register', label: 'Stock register' },
-                { key: 'report', label: 'Complete Production Report' }
-              ] as const).map((v) => {
-                const on = finishedView === v.key
-                return (
-                  <button
-                    key={v.key}
-                    type="button"
-                    onClick={() => setFinishedView(v.key)}
-                    className={cn(
-                      'rounded-md px-3.5 py-1.5 text-[12.5px] font-semibold transition-colors',
-                      __WEB__ && cn(SK_SEG_ITEM, on ? SK_SEG_ON : SK_SEG_OFF),
-                      !__WEB__ && (on ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:text-foreground')
-                    )}
-                  >
-                    {v.label}
-                  </button>
-                )
-              })}
-            </div>
-            {finishedView === 'report' ? (
-              <ProductionReport companyIds={cids} companyPicker={companyPicker} />
-            ) : (
-              <StockTable rows={byCat('finished')} breakdown={breakdown} label="finished" range={range} onRange={setRange} companyPicker={companyPicker} companySplit={companySplit} stagePicker={stagePicker} companyIds={cids} openingFrom={openingFrom} />
-            )}
+            <StockTable rows={byCat('finished')} breakdown={breakdown} label="finished" range={range} onRange={setRange} companyPicker={companyPicker} companySplit={companySplit} stagePicker={stagePicker} companyIds={cids} openingFrom={openingFrom} />
           </TabsContent>
           <TabsContent value="sku" className="mt-6">
             <SkuStock />
