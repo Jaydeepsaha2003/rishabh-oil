@@ -1,6 +1,6 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { toast } from 'sonner'
-import { AlertTriangle, ArrowDownLeft, ArrowLeft, Beaker, Boxes, CalendarDays, CheckCircle2, ChevronRight, Factory, Pencil, Plus, Trash2 } from 'lucide-react'
+import { AlertTriangle, ArrowDownLeft, ArrowLeft, Beaker, Boxes, CalendarDays, CheckCircle2, ChevronRight, Factory, Pencil, Plus, RefreshCw, Trash2 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
@@ -25,6 +25,8 @@ import {
 } from '@/components/ui/table'
 import { RowActions } from '@/components/ui/row-actions'
 import { PageHeader } from '@/components/PageHeader'
+import { useIsMobile } from '@/lib/useIsMobile'
+import { ProductionMobile } from './ProductionMobile'
 import { ExcelButton } from '@/components/ExcelButton'
 import { formatDate, formatNum, todayISO } from '@/lib/format'
 import { cn } from '@/lib/utils'
@@ -70,6 +72,14 @@ export function Production(): React.JSX.Element {
   // "which kind of recipe" as the same question asked at two zooms, and two
   // dropdowns for it would take a third of the row.
   const [recipeFilter, setRecipeFilter] = useState('')
+  // Oil run back through the plant to keep it turning. Its own small dialog
+  // rather than a row on the batch sheet: it shares only the date and the
+  // product with a batch, and everything the sheet does around those — the
+  // recipe, the stock draw, the shortfall warning — has no meaning here.
+  const [recircOpen, setRecircOpen] = useState(false)
+  const isMobile = useIsMobile()
+  const [recirc, setRecirc] = useState<Row>({ prod_date: todayISO(), product_id: '', qty: '', note: '' })
+  const [recircSaving, setRecircSaving] = useState(false)
   // No company filter: a batch belongs to the plant floor, and the register is
   // the factory's. Which books it was costed into is not a way anyone wants to
   // read a production log.
@@ -108,7 +118,14 @@ export function Production(): React.JSX.Element {
   const totals = useMemo(() => {
     const byUom = new Map<string, number>()
     const days = new Set<string>()
+    let recirc = 0
     for (const r of visible) {
+      // A recirculation made nothing — the same oil went in and came back
+      // out — so it is counted BESIDE the total, never inside it.
+      if (String(r.kind || 'batch') === 'recirculation') {
+        recirc += 1
+        continue
+      }
       const u = String(r.uom || 'MT')
       byUom.set(u, (byUom.get(u) || 0) + (Number(r.qty) || 0))
       days.add(String(r.prod_date).slice(0, 10))
@@ -116,9 +133,45 @@ export function Production(): React.JSX.Element {
     return {
       byUom: [...byUom.entries()].sort((a, b) => b[1] - a[1]) as [string, number][],
       days: days.size,
-      batches: visible.length
+      batches: visible.length - recirc,
+      recirc
     }
   }, [visible])
+
+  // Record the recirculation. Deliberately the only write on this page that
+  // does not touch stock: createProduction sees kind and takes the short
+  // path — no recipe, no draw, no items.
+  async function saveRecirculation(): Promise<void> {
+    const pid = Number(recirc.product_id)
+    const qty = Number(recirc.qty)
+    if (!pid) {
+      toast.error('Pick the oil that was put through the machine')
+      return
+    }
+    if (!(qty > 0)) {
+      toast.error('Enter how much was recirculated')
+      return
+    }
+    setRecircSaving(true)
+    try {
+      const prod = products.find((x) => Number(x.id) === pid)
+      await window.api.production.create({
+        kind: 'recirculation',
+        prod_date: recirc.prod_date,
+        product_id: pid,
+        qty,
+        uom: String(prod?.uom || 'MT'),
+        note: recirc.note || null
+      })
+      toast.success('Recirculation recorded — no stock moved')
+      setRecircOpen(false)
+      await load()
+    } catch (e) {
+      toast.error((e as Error).message)
+    } finally {
+      setRecircSaving(false)
+    }
+  }
 
   const paged = usePaged(visible)
   // Days the reader has OPENED, by their own date — every day starts folded.
@@ -535,6 +588,10 @@ export function Production(): React.JSX.Element {
     }
   }
 
+
+  // Phone. Below the entry sheet, so a day's batches half-entered are not
+  // thrown away because the window was narrowed mid-entry.
+  if (__WEB__ && isMobile && !building) return <ProductionMobile />
 
   if (building) {
     return (
@@ -1249,6 +1306,9 @@ export function Production(): React.JSX.Element {
               title="Production runs"
               columns={[
                 { header: 'Date', key: 'prod_date', value: (r) => formatDate(r.prod_date) },
+                // Without this a recirculation exports as a 20 MT production
+                // run, which is the one thing it is not.
+                { header: 'Entry', key: 'kind', value: (r) => (String(r.kind || 'batch') === 'recirculation' ? 'Recirculation' : 'Production') },
                 { header: 'Booked by', key: 'company_name', value: (r) => r.company_name || '' },
                 { header: 'Product', key: 'product_name', value: (r) => r.product_name || '' },
                 { header: 'Category', key: 'product_category', value: (r) => CAT_LABEL[r.product_category] ?? r.product_category ?? '' },
@@ -1257,6 +1317,27 @@ export function Production(): React.JSX.Element {
               ]}
               rows={visible}
             />
+            {/* The plant does not stop when the mill does. Blue, because it
+                is the one action on this page that records something which is
+                NOT production — the colour says so before the label is
+                read. The badge counts what is in view. */}
+            <Button
+              size="sm"
+              variant="outline"
+              className={cn('relative gap-1.5', __WEB__ && '!relative !gap-2 !border-[1.5px] !border-[#7FA8D4] !bg-[#EAF0FA] !px-3 !font-extrabold !text-[#1B4E82] hover:!bg-[#DCE8F7]')}
+              onClick={() => {
+                setRecirc({ prod_date: todayISO(), product_id: '', qty: '', note: '' })
+                setRecircOpen(true)
+              }}
+            >
+              <RefreshCw className="h-4 w-4" />
+              Recirculation
+              {__WEB__ && totals.recirc > 0 && (
+                <span className="absolute -right-2 -top-2 flex h-[19px] min-w-[19px] items-center justify-center rounded-full bg-[#1B4E82] px-1.5 text-[10.5px] font-bold tabular-nums text-white">
+                  {totals.recirc}
+                </span>
+              )}
+            </Button>
             <Button
               size="sm"
               className={cn(__WEB__ && '!gap-2 !bg-[#C7F03F] !px-4 !font-extrabold !text-[#12280B] hover:!bg-[#B8E32E]')}
@@ -1297,6 +1378,9 @@ export function Production(): React.JSX.Element {
                           narrower question than the reader thinks is worse than
                           no total at all. */}
                       {anyFilter ? ' · filtered' : ''}
+                      {totals.recirc
+                        ? ` · ${totals.recirc} recirculation${totals.recirc === 1 ? '' : 's'} not counted`
+                        : ''}
                     </span>
                   </TableCell>
                   {/* The figure sits on a lighter ground than the band it is
@@ -1412,6 +1496,14 @@ export function Production(): React.JSX.Element {
                     </TableCell>
                     <TableCell className={cn('font-medium', __WEB__ && '!text-[13.5px] !font-extrabold !text-[#0A1F17]')}>
                       {row.product_name}
+                      {/* Said on the row, because a 20 MT line that moved no
+                          stock is otherwise indistinguishable from a 20 MT
+                          batch that moved a great deal of it. */}
+                      {String(row.kind || 'batch') === 'recirculation' && (
+                        <span className="ml-2 inline-flex items-center gap-1 whitespace-nowrap rounded-[2px] border border-[#C6DAF0] bg-[#EAF0FA] px-1.5 py-0.5 text-[10px] font-extrabold uppercase tracking-[.05em] text-[#1B4E82]">
+                          <RefreshCw className="h-3 w-3" /> Recirculation
+                        </span>
+                      )}
                       {row.formulation_name && (
                         <div className={cn('text-xs font-normal text-muted-foreground', __WEB__ && '!mt-0.5 !flex !flex-wrap !items-center !gap-1.5 !text-[12px] !font-bold !text-[#33473E]')}>
                           {row.formulation_name}
@@ -1489,6 +1581,100 @@ export function Production(): React.JSX.Element {
           <Pagination {...paged} label="runs" className="border-t px-3" />
         </div>
       </div>
+      {/* Recirculation. */}
+      <Dialog open={recircOpen} onOpenChange={(o) => !o && setRecircOpen(false)}>
+        <DialogContent
+          className={cn(
+            'max-w-md',
+            __WEB__ && '!gap-0 !overflow-hidden !rounded-[4px] !border-0 !bg-[#F1F5EF] !p-0 [&>button]:!top-[18px] [&>button]:!text-white [&>button]:!opacity-70'
+          )}
+        >
+          <DialogHeader className={cn(__WEB__ && '!block !space-y-0 !bg-[#0B3D2E] !px-5 !py-4 !pr-12 !text-left')}>
+            {__WEB__ && (
+              <div className="text-[11px] font-extrabold uppercase tracking-[.14em] text-[#8FBFA8]">Production</div>
+            )}
+            <DialogTitle className={cn(__WEB__ && '!mt-1 !text-[18px] !font-bold !tracking-[-0.02em] !text-white')}>
+              Record a recirculation
+            </DialogTitle>
+            <p className={cn('mt-1 text-[12px] text-muted-foreground', __WEB__ && '!mt-1.5 !text-[11.5px] !font-semibold !leading-relaxed !text-[#8FBFA8]')}>
+              Oil put through the plant to keep it turning while the mill is idle. It draws no raw
+              material and makes nothing — the register shows it as +{Number(recirc.qty) > 0 ? formatNum(recirc.qty) : 'N'} −
+              {Number(recirc.qty) > 0 ? formatNum(recirc.qty) : 'N'} against the oil, and no balance moves.
+            </p>
+          </DialogHeader>
+
+          <div className={cn('grid gap-3 py-2', __WEB__ && '!gap-3 !bg-[#F1F5EF] !p-3')}>
+            <div className="flex flex-col gap-1.5">
+              <Label>Date</Label>
+              <DatePicker
+                min={minDate}
+                max={todayISO()}
+                value={String(recirc.prod_date || '')}
+                onChange={(v) => setRecirc((p2) => ({ ...p2, prod_date: v }))}
+              />
+            </div>
+            <div className="flex flex-col gap-1.5">
+              <Label>Which oil *</Label>
+              {/* Every product the register can hold stock of, not just the
+                  ones a recipe makes: what goes back through the machine is
+                  whatever is standing in the tank. */}
+              <Select
+                value={String(recirc.product_id || '')}
+                onValueChange={(v) => setRecirc((p2) => ({ ...p2, product_id: v }))}
+              >
+                <SelectTrigger className={cn(__WEB__ && '!h-11')}>
+                  <SelectValue placeholder="Pick the oil" />
+                </SelectTrigger>
+                <SelectContent>
+                  {products
+                    .filter((x) => String(x.category) !== 'raw' || true)
+                    .map((x) => (
+                      <SelectItem key={String(x.id)} value={String(x.id)}>
+                        {String(x.name)} · {CAT_LABEL[String(x.category)] ?? String(x.category)}
+                      </SelectItem>
+                    ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="flex flex-col gap-1.5">
+              <Label>Quantity *</Label>
+              <Input
+                type="number"
+                inputMode="decimal"
+                className={cn('text-right tabular-nums', __WEB__ && '!h-11')}
+                value={String(recirc.qty ?? '')}
+                onChange={(e) => setRecirc((p2) => ({ ...p2, qty: e.target.value }))}
+              />
+            </div>
+            <div className="flex flex-col gap-1.5">
+              <Label>Note</Label>
+              <Input
+                className={cn(__WEB__ && '!h-11')}
+                placeholder="Why the plant was run — e.g. shut down 3 days"
+                value={String(recirc.note ?? '')}
+                onChange={(e) => setRecirc((p2) => ({ ...p2, note: e.target.value }))}
+              />
+            </div>
+          </div>
+
+          <DialogFooter className={cn(__WEB__ && '!gap-2 !border-t !border-t-[#D6E2D6] !bg-white !px-3 !py-2.5')}>
+            <Button
+              variant="outline"
+              onClick={() => setRecircOpen(false)}
+              className={cn(__WEB__ && '!h-10 !rounded-[4px] !border-[1.5px] !border-[#C3D2C6] !px-4 !text-[12px] !font-extrabold !uppercase !tracking-[.03em] !text-[#33473E]')}
+            >
+              Cancel
+            </Button>
+            <Button
+              disabled={recircSaving}
+              onClick={() => void saveRecirculation()}
+              className={cn('gap-1.5', __WEB__ && '!h-10 !rounded-[4px] !bg-[#0B3D2E] !px-4 !text-[12px] !font-extrabold !uppercase !tracking-[.04em] !text-[#C7F03F] hover:!bg-[#0F4A38]')}
+            >
+              <RefreshCw className="h-4 w-4" /> {recircSaving ? 'Recording…' : 'Record'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </>
   )
 }

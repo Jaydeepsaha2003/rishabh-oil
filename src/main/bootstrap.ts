@@ -1362,5 +1362,26 @@ export async function runStartupTasks(): Promise<void> {
     }
   }).catch((e) => console.error('[formulations] version table failed:', e))
 
+  // Oil put back through the machine to keep it turning.
+  //
+  // When the mill stands idle for a few days the plant is not switched off —
+  // finished oil is run through it and comes back out as the same oil. It is
+  // real work and worth a record, but it is not production: nothing was made,
+  // no raw material was drawn, and the recipe has no part in it. Counted as a
+  // batch it would invent output that never existed and consume inputs that
+  // were never touched.
+  //
+  // A kind on the row rather than a table of its own: it IS a production
+  // entry — same date, same product, same register — differing only in what
+  // it means, and every query that reads production has to make the
+  // distinction anyway.
+  await runOnce('production_kind_v1', async () => {
+    await getClient()
+      .execute("ALTER TABLE production ADD COLUMN kind TEXT NOT NULL DEFAULT 'batch'")
+      .catch((e) => {
+        if (!/duplicate column/i.test(String(e))) throw e
+      })
+  }).catch((e) => console.error('[production] kind column failed:', e))
+
   startRevisionWatcher()
 }

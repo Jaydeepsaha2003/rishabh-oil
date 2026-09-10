@@ -5,6 +5,8 @@ import {
   RotateCcw, LogIn, LogOut, Pencil, Scale, Trash2, Truck, X , Undo2
 } from 'lucide-react'
 import { PageHeader } from '@/components/PageHeader'
+import { useIsMobile } from '@/lib/useIsMobile'
+import { GateEntryMobile } from './GateEntryMobile'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
@@ -234,6 +236,7 @@ export function GateEntry(): React.JSX.Element {
   // The page carried the two entry forms, the weighment queue and the whole
   // register at once; split so recording and reviewing are separate.
   const [tab, setTab] = useState('in')
+  const isMobile = useIsMobile()
   // Rec type is the Categories master, plus whatever the products already use
   // so nothing on an old record becomes unselectable.
   // Every category, both directions. A purchase/sales tag narrows the master
@@ -1876,6 +1879,10 @@ export function GateEntry(): React.JSX.Element {
         </section>
     )
   }
+
+  // Phone. After every hook, so the order cannot change between renders. The
+  // gate is the one desk in the mill that is genuinely not a desk.
+  if (__WEB__ && isMobile) return <GateEntryMobile />
 
   return (
     <>

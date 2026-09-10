@@ -64,8 +64,24 @@ export async function stockLevels(
                   ELSE COALESCE(received_date, order_date) END`,
       group: 'GROUP BY oil_type_id'
     },
+    // Recirculation is excluded from all three production sources.
+    //
+    // It draws nothing and makes nothing — the same oil goes in and comes
+    // back out — so counting it would put a quantity into Produced and the
+    // same quantity into Consumed, two figures that cancel in the closing
+    // balance but overstate what the plant did on both sides of the sheet.
+    // It is reported on its own below, as the paired +/- it actually is.
     produced: {
-      base: `SELECT product_id AS pid, SUM(qty) AS q FROM production WHERE company_id IN (${ph})`,
+      base: `SELECT product_id AS pid, SUM(qty) AS q FROM production
+              WHERE company_id IN (${ph}) AND COALESCE(kind, 'batch') <> 'recirculation'`,
+      date: 'prod_date',
+      group: 'GROUP BY product_id'
+    },
+    // Oil run back through the plant to keep it turning while the mill is
+    // idle. Carried so the register can SAY it happened; it moves no balance.
+    recirculated: {
+      base: `SELECT product_id AS pid, SUM(qty) AS q FROM production
+              WHERE company_id IN (${ph}) AND COALESCE(kind, 'batch') = 'recirculation'`,
       date: 'prod_date',
       group: 'GROUP BY product_id'
     },
@@ -75,14 +91,16 @@ export async function stockLevels(
     byProduct: {
       base: `SELECT i.product_id AS pid, SUM(i.qty) AS q FROM production_items i
              JOIN production p ON p.id = i.production_id
-             WHERE i.kind = 'output' AND p.company_id IN (${ph})`,
+             WHERE i.kind = 'output' AND p.company_id IN (${ph})
+               AND COALESCE(p.kind, 'batch') <> 'recirculation'`,
       date: 'p.prod_date',
       group: 'GROUP BY i.product_id'
     },
     consumed: {
       base: `SELECT i.product_id AS pid, SUM(i.qty) AS q FROM production_items i
              JOIN production p ON p.id = i.production_id
-             WHERE i.kind = 'input' AND p.company_id IN (${ph})`,
+             WHERE i.kind = 'input' AND p.company_id IN (${ph})
+               AND COALESCE(p.kind, 'batch') <> 'recirculation'`,
       date: 'p.prod_date',
       group: 'GROUP BY i.product_id'
     },
@@ -312,6 +330,9 @@ export async function stockLevels(
       opening_brought: brought.get(id) || 0,
       received: rec,
       produced: prod,
+      // Shown beside Produced as the +N -N it is, never added to it. Nothing
+      // in `stock` below reads this.
+      recirculated: g(period, 'recirculated'),
       consumed: cons,
       sold: sld,
       transferred_in: tIn,
@@ -347,7 +368,10 @@ export async function productValuationRates(): Promise<Map<number, number>> {
 
   // Production batches (output product + qty) and the inputs each consumed.
   const batches = await c.execute({
-    sql: 'SELECT id, product_id, qty FROM production WHERE company_id = ?',
+    // Recirculation excluded: it produced nothing, and counting its
+    // quantity would spread the same cost over a larger output and
+    // quietly cheapen every unit the batch actually made.
+    sql: "SELECT id, product_id, qty FROM production WHERE company_id = ? AND COALESCE(kind, 'batch') <> 'recirculation'",
     args: [cid]
   })
   // Only what the batch actually consumed carries cost into the output — a
@@ -395,10 +419,16 @@ async function productStockForCompany(companyId: number, productId: number): Pro
     return Number(r.rows[0]?.q) || 0
   }
   const rec = await one("SELECT COALESCE(SUM(received_qty), 0) AS q FROM orders WHERE status = 'received' AND COALESCE(affects_stock, 1) = 1 AND company_id = ? AND oil_type_id = ?")
-  const prod = await one('SELECT COALESCE(SUM(qty), 0) AS q FROM production WHERE company_id = ? AND product_id = ?')
+  const prod = await one(
+    "SELECT COALESCE(SUM(qty), 0) AS q FROM production WHERE company_id = ? AND product_id = ? AND COALESCE(kind, 'batch') <> 'recirculation'"
+  )
   // By-products of other batches count as produced; only 'input' is consumed.
-  const byProd = await one("SELECT COALESCE(SUM(i.qty), 0) AS q FROM production_items i JOIN production p ON p.id = i.production_id WHERE i.kind = 'output' AND p.company_id = ? AND i.product_id = ?")
-  const cons = await one("SELECT COALESCE(SUM(i.qty), 0) AS q FROM production_items i JOIN production p ON p.id = i.production_id WHERE i.kind = 'input' AND p.company_id = ? AND i.product_id = ?")
+  const byProd = await one(
+    "SELECT COALESCE(SUM(i.qty), 0) AS q FROM production_items i JOIN production p ON p.id = i.production_id WHERE i.kind = 'output' AND p.company_id = ? AND i.product_id = ? AND COALESCE(p.kind, 'batch') <> 'recirculation'"
+  )
+  const cons = await one(
+    "SELECT COALESCE(SUM(i.qty), 0) AS q FROM production_items i JOIN production p ON p.id = i.production_id WHERE i.kind = 'input' AND p.company_id = ? AND i.product_id = ? AND COALESCE(p.kind, 'batch') <> 'recirculation'"
+  )
   const sld = await one("SELECT COALESCE(SUM(qty), 0) AS q FROM sales WHERE status = 'done' AND COALESCE(affects_stock, 1) = 1 AND company_id = ? AND product_id = ?")
   const tIn = await one('SELECT COALESCE(SUM(qty), 0) AS q FROM stock_transfers WHERE to_company_id = ? AND product_id = ?')
   const tOut = await one('SELECT COALESCE(SUM(qty), 0) AS q FROM stock_transfers WHERE from_company_id = ? AND product_id = ?')

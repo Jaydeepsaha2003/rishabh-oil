@@ -146,7 +146,51 @@ export async function getProductionItems(productionId: number): Promise<Row[]> {
 
 // Create a production run: store output, then consume each formulation component
 // (component % of the output qty) — this is what draws down raw/intermediate stock.
+// Oil put back through the plant to keep it turning, and taken off again.
+//
+// Not a batch, and deliberately not built like one: no recipe is resolved, no
+// stock is checked, and no production_items are written. The row exists to
+// SAY the plant ran — the same oil went in and came back out — and every
+// stock query filters it out of Produced and Consumed alike, reporting it
+// instead as the paired +N -N it is.
+//
+// Writing zero items rather than a matching pair is the safer of the two: a
+// pair would cancel only as long as every reader adds both columns, and a
+// report that reads one of them without the other would show output that was
+// never made.
+async function recordRecirculation(v: Row, id = 0): Promise<{ id: number }> {
+  const c = getClient()
+  const productId = n(v.product_id)
+  const qty = n(v.qty)
+  if (!productId) throw new Error('Pick the oil that was put through the machine')
+  if (qty <= 0) throw new Error('Recirculated quantity must be greater than zero')
+  const day = String(v.prod_date || '').slice(0, 10)
+  if (day && day > new Date().toISOString().slice(0, 10)) {
+    throw new Error('Recirculation cannot be dated in the future')
+  }
+  if (id) {
+    await c.execute({
+      sql: `UPDATE production
+               SET prod_date = ?, product_id = ?, qty = ?, uom = ?, note = ?,
+                   formulation_id = NULL, formulation_version_id = NULL
+             WHERE id = ?`,
+      args: [v.prod_date, productId, qty, v.uom || 'MT', v.note || null, n(id)]
+    })
+    // A row that used to be a batch and is being corrected to a recirculation
+    // must lose the lines it drew, or the inputs stay consumed forever.
+    await c.execute({ sql: 'DELETE FROM production_items WHERE production_id = ?', args: [n(id)] })
+    return { id: n(id) }
+  }
+  const ins = await c.execute({
+    sql: `INSERT INTO production (company_id, factory_id, prod_date, product_id, qty, uom, note, kind)
+          VALUES (?, (SELECT factory_id FROM companies WHERE id = ?), ?, ?, ?, ?, ?, 'recirculation')`,
+    args: [getActiveCompanyId(), getActiveCompanyId(), v.prod_date, productId, qty, v.uom || 'MT', v.note || null]
+  })
+  return { id: Number(ins.lastInsertRowid) }
+}
+
 export async function createProduction(v: Row): Promise<{ id: number }> {
+  if (String(v.kind || 'batch') === 'recirculation') return recordRecirculation(v)
   const c = getClient()
   const productId = n(v.product_id)
   const qty = n(v.qty)
@@ -252,10 +296,17 @@ export async function createProduction(v: Row): Promise<{ id: number }> {
 export async function updateProduction(id: number, v: Row): Promise<{ id: number }> {
   const c = getClient()
   const cur = await c.execute({
-    sql: 'SELECT id, formulation_id, formulation_version_id FROM production WHERE id = ?',
+    sql: "SELECT id, formulation_id, formulation_version_id, COALESCE(kind, 'batch') AS kind FROM production WHERE id = ?",
     args: [n(id)]
   })
   if (!cur.rows.length) throw new Error('Production run not found')
+  // A recirculation stays a recirculation on edit unless the caller says
+  // otherwise: it has no recipe to re-apply, and silently turning one back
+  // into a batch would draw raw material for oil that was never made.
+  const wasRecirc = String(cur.rows[0].kind) === 'recirculation'
+  if (String(v.kind || (wasRecirc ? 'recirculation' : 'batch')) === 'recirculation') {
+    return recordRecirculation(v, n(id))
+  }
   const wasFid = n(cur.rows[0].formulation_id)
   const wasVersion = n(cur.rows[0].formulation_version_id)
 

@@ -1254,7 +1254,24 @@ function StockTable({ rows: allRows, breakdown, label = 'stock', range, onRange,
                         </TableCell>
                       )}
                       <PartyCell value={Number(r.received)} parties={breakdown[r.id as number]?.receipt || []} wash={__WEB__ ? cn(SK_NUM, SK_BRULE, SK_BIN) : undefined} />
-                      <TableCell className={cn('text-right tabular-nums text-emerald-700', __WEB__ && cn(SK_NUM, SK_BIN))}>{Number(r.produced) ? formatNum(r.produced) : '—'}</TableCell>
+                      <TableCell className={cn('text-right tabular-nums text-emerald-700', __WEB__ && cn(SK_NUM, SK_BIN))}>
+                        {Number(r.produced) ? formatNum(r.produced) : '—'}
+                        {/* Oil run back through the plant to keep it turning
+                            while the mill was idle. It is NOT part of the
+                            figure above and never moves the closing balance —
+                            the same oil went in and came out — but it did
+                            happen, and a register that shows nothing at all
+                            cannot answer "what was the plant doing that
+                            week". Written as the +N -N it is. */}
+                        {Number(r.recirculated) > 0 ? (
+                          <div
+                            className="mt-0.5 whitespace-nowrap text-[10.5px] font-bold tabular-nums text-[#1B4E82]"
+                            title="Recirculated — put through the plant and taken off again. No stock moved."
+                          >
+                            +{formatNum(r.recirculated)} −{formatNum(r.recirculated)}
+                          </div>
+                        ) : null}
+                      </TableCell>
                       <TableCell className={cn('text-right tabular-nums text-rose-700', __WEB__ && cn(SK_NUM, SK_BRULE, SK_BOUT))}>{Number(r.consumed) ? formatNum(r.consumed) : '—'}</TableCell>
                       {/* Oil drawn out of the tank to be packed into SKUs. It is
                           the answer to "the DALDA left but nobody sold it" —
