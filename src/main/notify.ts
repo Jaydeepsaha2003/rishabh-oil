@@ -265,7 +265,35 @@ export const RULES: RuleDef[] = [
     audience: 'admins',
     page: 'orders',
     threshold: { label: 'Over', question: 'Only when it is over the allowance by', unit: '%', def: 0, min: 0, max: 100, step: 0.01 },
-    evaluate: async ({ threshold, companyId }) => {
+    evaluate: async ({ threshold, companyId, today }) => {
+      // BOUNDED TO THE RECENT PAST, and that bound is the point of this
+      // comment.
+      //
+      // Without it this asked "which tanker was EVER short beyond its
+      // allowance" — every completed tanker on the books, with no date on the
+      // query at all. So on the day the notification engine was first
+      // switched on, nineteen shortages going back to 3 July arrived at once,
+      // every one of them stamped with that day's date. Seven of them were on
+      // the bell as unread alerts about lorries that had emptied two months
+      // earlier, which reads as the system inventing vehicle numbers rather
+      // than as a backlog.
+      //
+      // A shortage alert is a PROMPT: go and raise the deduction. Past a
+      // month it has stopped being a prompt and become a fact, and the fact
+      // already has a permanent home — the Deductible column of the Receipt
+      // register, which is where a deduction is actually reconciled from.
+      // Nothing is lost by the bell letting go of it, and the engine retires
+      // what a rule stops returning, so the stale ones clear themselves on
+      // the next run.
+      //
+      // Dated by when the lorry was EMPTIED, which is when the shortage was
+      // established. MAX of the two dates rather than empty_date alone
+      // because some rows carry an empty_date earlier than their loaded_date
+      // — CG07CR0136 is loaded 13 Jul and emptied 07 Jul — and the earlier of
+      // a bad pair would age a tanker out before its window had run.
+      const SHORTAGE_WINDOW_DAYS = 30
+      const since = new Date(`${today}T00:00:00`)
+      since.setDate(since.getDate() - SHORTAGE_WINDOW_DAYS)
       const res = await getClient().execute({
         sql: `SELECT pt.id, pt.tanker_no, pt.loaded_qty, pt.received_qty, pt.uom,
                      COALESCE(o.allowed_shortage_pct, b.allowed_shortage_pct, 0.2) AS allowed_pct,
@@ -276,9 +304,10 @@ export const RULES: RuleDef[] = [
                 LEFT JOIN suppliers s ON s.id = pt.supplier_id
                WHERE pt.status = 'empty' AND pt.received_qty IS NOT NULL
                  AND (pt.company_id = ? OR pt.company_id IS NULL)
+                 AND MAX(COALESCE(pt.empty_date, ''), COALESCE(pt.loaded_date, '')) >= ?
                ORDER BY pt.id DESC
                LIMIT 300`,
-        args: [companyId]
+        args: [companyId, since.toISOString().slice(0, 10)]
       })
       return plain(res)
         .map((t): Row => {
