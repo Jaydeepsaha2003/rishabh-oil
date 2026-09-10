@@ -324,7 +324,11 @@ async function getSupplier(id: number): Promise<Row | null> {
 }
 
 // Replace the supplier payable ledger entry for an order.
-async function setSupplierPayable(
+//
+// Exported so a one-time repair can restate the payable through the same
+// function that writes it normally — a second copy of this in a script is a
+// second thing to keep in step.
+export async function setSupplierPayable(
   orderId: number,
   supplierId: number,
   amount: number,
@@ -1540,6 +1544,137 @@ export async function backfillPurchaseRoundOff(): Promise<void> {
     "INSERT INTO app_settings (key, value) VALUES ('purchase_round_off_backfilled_3', '1') ON CONFLICT(key) DO UPDATE SET value = '1'"
   )
   if (applied > 0) console.log(`[orders] round-off repair corrected ${applied} purchases`)
+}
+
+// One-time repair: purchase TDS that was struck on the GST-inclusive total.
+//
+// Until the base changed above, a purchase's TDS ran on taxable + GST + round
+// off. The rule is the taxable value alone, so every purchase posted before
+// that withheld too much and paid the supplier too little — on a
+// Rs 14,00,00,000 invoice at 0.1%, Rs 1,47,000 instead of Rs 1,40,000.
+//
+// Recomputed on the taxable base with the SAME slab walk the live code uses:
+// the supplier's threshold, whether the master exempts the slab, and the
+// party's year-to-date taxable BEFORE that invoice — accumulated in posting
+// order, so each invoice's slab starts where the last one left off, exactly
+// as supplierFyTaxable would have answered at the time.
+//
+// The voucher and the payable both mirror net_amount, so both are restated
+// through the same functions that write them normally. Every change is
+// logged: this moves money owed to suppliers, and a repair nobody can read
+// afterwards is not one worth running.
+//
+// Guarded by runOnce in bootstrap. It is idempotent anyway — a second pass
+// finds every row already correct and writes nothing.
+export async function repairPurchaseTdsOnTaxable(): Promise<void> {
+  const c = getClient()
+  const round2 = (v: number): number => Math.round(v * 100) / 100
+  // Linked parties SHARE a slab.
+  //
+  // relatedSupplierIds pools a supplier with its linked root and every other
+  // party linked to that root — two rows for one PAN are one deductee. Keying
+  // the year-to-date on supplier_id alone would have given DIL EXIM
+  // COMMODITIES its own fresh Rs 50,00,000 exemption on GT/4311, exempting
+  // Rs 50 lakh that the group had already used up and under-withholding
+  // Rs 5,000 on that one invoice.
+  const roots = new Map<number, number>()
+  for (const r of toPlain(await c.execute('SELECT id, linked_party_id FROM suppliers')))
+    roots.set(n(r.id), n(r.linked_party_id) || n(r.id))
+  const rootOf = (id: number): number => roots.get(id) || id
+  const res = await c.execute(`
+    SELECT o.id, o.company_id, o.invoice_no, o.order_date, o.supplier_id,
+           o.taxable_value, o.gst_amount, o.round_off, o.tds_pct, o.tds_amount, o.net_amount,
+           o.final_taxable_value, o.final_gst_amount, o.final_tds_amount, o.final_net_amount,
+           o.interest_pct, o.interest_days, o.bargain_rate, o.gst_pct, o.ordered_qty,
+           p.code AS oil_code, p.name AS oil_name,
+           s.name AS supplier_name, s.tds_threshold, s.tds_above_only,
+           s.opening_purchase_amount, s.opening_purchase_date
+      FROM orders o
+      LEFT JOIN products p ON p.id = o.oil_type_id
+      LEFT JOIN suppliers s ON s.id = o.supplier_id
+     WHERE COALESCE(o.tds_pct, 0) > 0
+     -- By DATE across the whole book, not supplier by supplier: the slab is
+     -- walked in the order the invoices were actually raised, which is what
+     -- supplierFyTaxable answers with (everything in the group up to this
+     -- invoice's date). Grouping by supplier first would have let a party's
+     -- own later invoice see a prior that had not happened yet.
+     ORDER BY o.company_id, o.order_date, o.id`)
+
+  const ytd = new Map<string, number>()
+  let fixed = 0
+  let tdsDelta = 0
+  let netDelta = 0
+
+  for (const raw of toPlain(res)) {
+    const T = n(raw.taxable_value)
+    const G = n(raw.gst_amount)
+    const RO = n(raw.round_off)
+    const pctAbove = n(raw.tds_pct)
+    const pctBelow = raw.tds_above_only ? 0 : pctAbove
+    const threshold = n(raw.tds_threshold)
+    const { start } = fyRange(String(raw.order_date))
+    const key = `${n(raw.company_id)}|${rootOf(n(raw.supplier_id))}|${start}`
+    if (!ytd.has(key)) {
+      const od = String(raw.opening_purchase_date || '')
+      ytd.set(key, od && od >= start ? n(raw.opening_purchase_amount) : 0)
+    }
+    const prior = ytd.get(key) as number
+    ytd.set(key, prior + T)
+
+    const tds = round2(tierTds(T, prior, threshold, pctBelow, pctAbove))
+    const net = round2(T + G + RO - tds)
+    const fT = n(raw.final_taxable_value)
+    const fTds = round2(tierTds(fT, prior, threshold, pctBelow, pctAbove))
+    const fNet = round2(fT + n(raw.final_gst_amount) + RO - fTds)
+
+    if (Math.abs(tds - n(raw.tds_amount)) < 0.005 && Math.abs(net - n(raw.net_amount)) < 0.005) continue
+
+    console.log(
+      `[orders] TDS basis repair #${raw.id} ${raw.invoice_no} ${String(raw.order_date).slice(0, 10)}: ` +
+        `taxable ${T.toFixed(2)} | tds ${n(raw.tds_amount).toFixed(2)} -> ${tds.toFixed(2)} | ` +
+        `net ${n(raw.net_amount).toFixed(2)} -> ${net.toFixed(2)}`
+    )
+    await c.execute({
+      sql: `UPDATE orders SET tds_amount = ?, net_amount = ?, final_tds_amount = ?, final_net_amount = ?
+             WHERE id = ?`,
+      args: [tds, net, fTds, fNet, n(raw.id)]
+    })
+    const interest =
+      n(raw.bargain_rate) *
+      (1 + n(raw.gst_pct) / 100) *
+      (n(raw.interest_pct) / 100) *
+      (n(raw.interest_days) / 365) *
+      n(raw.ordered_qty)
+    await postPurchaseJournal({
+      orderId: n(raw.id),
+      date: String(raw.order_date),
+      invoiceNo: String(raw.invoice_no || ''),
+      oilCode: String(raw.oil_code || raw.oil_name || 'OIL').toUpperCase(),
+      supplierName: String(raw.supplier_name || 'SUPPLIER'),
+      taxable: T,
+      gst: G,
+      tds,
+      net,
+      roundOff: RO,
+      interest,
+      companyId: n(raw.company_id) || 1
+    }).catch((e) => console.error(`[orders] TDS repair journal #${raw.id}:`, (e as Error).message))
+    if (n(raw.supplier_id)) {
+      await setSupplierPayable(n(raw.id), n(raw.supplier_id), net, String(raw.order_date)).catch((e) =>
+        console.error(`[orders] TDS repair payable #${raw.id}:`, (e as Error).message)
+      )
+    }
+    fixed++
+    tdsDelta += tds - n(raw.tds_amount)
+    netDelta += net - n(raw.net_amount)
+  }
+
+  if (fixed > 0) {
+    console.log(
+      `[orders] TDS basis repair: ${fixed} purchases restated onto the taxable value — ` +
+        `TDS ${tdsDelta.toFixed(2)}, payable to suppliers ${netDelta.toFixed(2)}`
+    )
+  }
 }
 
 export async function backfillOrderStatuses(): Promise<void> {

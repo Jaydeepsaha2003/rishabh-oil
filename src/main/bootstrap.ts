@@ -1,14 +1,13 @@
 import { getClient, initDb, runDaily, runOnce, startRevisionWatcher } from './db'
 import { backfillJournal } from './journal'
 import { dailyBackup } from './backup'
-import { backfillOrderStatuses, backfillPurchaseRoundOff } from './orders'
+import { backfillOrderStatuses, backfillPurchaseRoundOff, repairPurchaseTdsOnTaxable } from './orders'
 import {
   backfillSalesGst,
   backfillSalesBargainCustomers,
   backfillSalesRoundOff,
   restateStaleSalesRoundOff,
-  backfillExSalesDone
-} from './sales'
+  backfillExSalesDone, repairSaleUnitsFromProduct } from './sales'
 import { seedDefaultAdmin } from './auth'
 import { seedProducts, seedFormulations, seedPackagings } from './seed'
 import { cleanupLogs } from './access'
@@ -64,6 +63,22 @@ export async function runStartupTasks(): Promise<void> {
     console.error('[orders] status backfill failed:', e)
   )
   await backfillPurchaseRoundOff().catch((e) => console.error('[orders] round-off repair failed:', e))
+
+  // Purchases posted while TDS ran on the GST-inclusive total, restated onto
+  // the taxable value. Once, and after the round-off repair above so the
+  // round off each invoice carries is settled before the TDS is struck on it.
+  //
+  // This is the only route to the live data there is: the website's database
+  // is a file on the host, reachable from nothing but the server itself.
+  await runOnce('purchase_tds_taxable_basis_v1', () => repairPurchaseTdsOnTaxable()).catch((e) =>
+    console.error('[orders] TDS basis repair failed:', e)
+  )
+
+  // Sale lines stamped MT for a product counted in pieces. A label, not a
+  // figure: no quantity, rate or ledger entry moves.
+  await runOnce('sale_units_from_product_v1', () => repairSaleUnitsFromProduct()).catch((e) =>
+    console.error('[sales] unit repair failed:', e)
+  )
   await seedDefaultAdmin().catch((e) => console.error('[auth] seed failed:', e))
   await seedProducts().catch((e) => console.error('[seed] products failed:', e))
   await seedFormulations().catch((e) => console.error('[seed] formulations failed:', e))

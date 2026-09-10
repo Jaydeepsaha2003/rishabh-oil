@@ -1683,6 +1683,38 @@ async function recomputeSaleFreight(id: number): Promise<void> {
   )
 }
 
+// One-time repair: sale lines stamped MT for a product counted in pieces.
+//
+// resolveSaleQty used to fall back to MT when neither a bargain nor the form
+// named a unit, without ever asking the product — so packaging and scrap sold
+// by the piece were booked as tonnes. The money was always right (qty x rate);
+// only the unit was wrong, which is worse, because nothing about it looks
+// wrong: a stock register adds those pieces into a tonnage and a hover labels
+// them MT.
+//
+// Only PCS-mastered lines stamped MT are touched, and only the label — no
+// quantity, no rate, no amount, no ledger. A line whose master says MT is left
+// exactly as it is.
+export async function repairSaleUnitsFromProduct(): Promise<void> {
+  const c = getClient()
+  const res = await c.execute(`
+    SELECT s.id, s.invoice_no, s.qty, s.rate, s.uom AS line_uom, p.name, p.uom AS master_uom
+      FROM sales s JOIN products p ON p.id = s.product_id
+     WHERE UPPER(COALESCE(p.uom, 'MT')) = 'PCS'
+       AND UPPER(COALESCE(s.uom, '')) <> 'PCS'
+     ORDER BY s.id`)
+  let fixed = 0
+  for (const r of toPlain(res)) {
+    console.log(
+      `[sales] unit repair #${r.id} ${r.invoice_no}: ${r.name} — ${r.qty} ${r.line_uom} -> PCS ` +
+        `(rate ${r.rate}, unchanged)`
+    )
+    await c.execute({ sql: 'UPDATE sales SET uom = ? WHERE id = ?', args: [String(r.master_uom), n(r.id)] })
+    fixed++
+  }
+  if (fixed > 0) console.log(`[sales] unit repair: ${fixed} lines relabelled to the product's own unit`)
+}
+
 export async function setSaleStage(
   id: number,
   stageIn: string,
