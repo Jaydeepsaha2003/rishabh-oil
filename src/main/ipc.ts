@@ -80,6 +80,21 @@ import {
   deleteStockTransfer
 } from './stock'
 import {
+  addWorkNote,
+  approveWorkTask,
+  assignWorkTask,
+  listWorkBoard,
+  listWorkProcesses,
+  redoWorkTask,
+  removeWorkProcess,
+  removeWorkTask,
+  saveWorkProcess,
+  sendBackWorkTask,
+  setWorkCutoff,
+  tickWorkTask,
+  workCutoff
+} from './work'
+import {
   addPpStage,
   listPpStages,
   listStockOpenings,
@@ -392,7 +407,7 @@ async function recordAudit(channel: string, args: any, result: any): Promise<voi
 export function registerIpc(): void {
   // Read-only channels don't change data, so they must not bump the revision.
   const READONLY =
-    /:list$|:get$|:items$|:issuances$|:sheet$|:outstanding$|:all$|:summary$|:transfers$|:fyTaxable$|:needs$|:breakdown$|:nextNo$|:liveUsers$|:ips$|:logs$|:dispatchableSales$|:mine$|:pendingCount$|:pending$|:lots$|:unmapped$|:unmappedCount$|:bargainLines$|:bargainNotes$|:bargainInterest$|:consignmentDraws$|^access:heartbeat$|^db:ping$|^db:snapshot$|^app:revision$|^auth:login$|^journal:booksFrom$|^journal:openings$|^journal:opening$|^journal:accounts$|^journal:statement$|^journal:trialBalance$|^journal:groups$|^journal:groupNames$|^journal:pendingRefs$|^journal:billsOutstanding$|^journal:tradingAccount$|^dashboard:stats$|^skuRates:parties$|^skuRates:partyCounts$|^consignment:openingLog$|^consignment:invoices$|^tankers:quality$|^tankers:ffaHistory$|^orders:quality$|^gate:partyCategories$|^gate:waivedOuts$|^gate:forRecord$|^notify:rules$|^notify:list$|^notify:run$|^notify:preview$|^notify:people$|^notify:mutes$|^treasury:alerts$|^treasury:paymentTracker$|^facility:exposures$|^facility:headroom$|^company:setActive$|^company:getActive$|^factory:active$|^factory:companies$|^session:setUser$|^lc:repayments$|^lc:allRepayments$|^lc:getLimit$|^lc:bankLimits$|^lc:paymentIns$|^lc:openTradingInvoices$|^files:pickDocument$|^files:openDocument$|^bankRecon:imports$|^bankRecon:list$|^bankRecon:suggest$|^bd:kpis$|^bd:limits$|^skuStock:adjustments$|^skuOpening:list$|^skuOpening:date$|^stockCount:previous$|^stockOpening:list$|^stockOpening:date$|^stockOpening:ppStages$|^formulationSubcategory:list$|^formulations:versions$|^bd:allRepayments$|^bd:linkedOrders$|^bd:parties$|^bd:allParties$|^bd:openTradingInvoices$|^bd:paymentIns$|^access:entryWindows$|^access:entityHistory$|^trading:list$|^sales:series$|^sales:invoiceGaps$|^salesBargains:returns$|^salesBargains:unattributedReturns$|^tbill:orphans$|^production:report$/
+    /:list$|:get$|:items$|:issuances$|:sheet$|:outstanding$|:all$|:summary$|:transfers$|:fyTaxable$|:needs$|:breakdown$|:nextNo$|:liveUsers$|:ips$|:logs$|:dispatchableSales$|:mine$|:pendingCount$|:pending$|:lots$|:unmapped$|:unmappedCount$|:bargainLines$|:bargainNotes$|:bargainInterest$|:consignmentDraws$|^access:heartbeat$|^db:ping$|^db:snapshot$|^app:revision$|^auth:login$|^journal:booksFrom$|^journal:openings$|^journal:opening$|^journal:accounts$|^journal:statement$|^journal:trialBalance$|^journal:groups$|^journal:groupNames$|^journal:pendingRefs$|^journal:billsOutstanding$|^journal:tradingAccount$|^dashboard:stats$|^skuRates:parties$|^skuRates:partyCounts$|^consignment:openingLog$|^consignment:invoices$|^tankers:quality$|^tankers:ffaHistory$|^orders:quality$|^gate:partyCategories$|^gate:waivedOuts$|^gate:forRecord$|^notify:rules$|^notify:list$|^notify:run$|^notify:preview$|^notify:people$|^notify:mutes$|^treasury:alerts$|^treasury:paymentTracker$|^facility:exposures$|^facility:headroom$|^company:setActive$|^company:getActive$|^factory:active$|^factory:companies$|^session:setUser$|^lc:repayments$|^lc:allRepayments$|^lc:getLimit$|^lc:bankLimits$|^lc:paymentIns$|^lc:openTradingInvoices$|^files:pickDocument$|^files:openDocument$|^bankRecon:imports$|^bankRecon:list$|^bankRecon:suggest$|^bd:kpis$|^bd:limits$|^skuStock:adjustments$|^skuOpening:list$|^skuOpening:date$|^stockCount:previous$|^stockOpening:list$|^stockOpening:date$|^stockOpening:ppStages$|^work:board$|^work:cutoff$|^work:processes$|^formulationSubcategory:list$|^formulations:versions$|^bd:allRepayments$|^bd:linkedOrders$|^bd:parties$|^bd:allParties$|^bd:openTradingInvoices$|^bd:paymentIns$|^access:entryWindows$|^access:entityHistory$|^trading:list$|^sales:series$|^sales:invoiceGaps$|^salesBargains:returns$|^salesBargains:unattributedReturns$|^tbill:orphans$|^production:report$/
   // Writes that shouldn't clutter the audit trail (infra / no business meaning).
   const AUDIT_SKIP = new Set(['config:get', 'config:save', 'session:setUser'])
 
@@ -759,6 +774,40 @@ export function registerIpc(): void {
     'stockOpening:savePp',
     (_e, { productId, lines, companyId }: { productId: number; lines: Row[]; companyId?: number }) =>
       savePpLines(productId, lines, companyId)
+  )
+  // The day's work board. Read by everyone — the whole point is that each
+  // person sees their own checklist — and every write names the user making
+  // it, because who ticked and who approved is the record.
+  handle('work:board', (_e, { date }: { date?: string } = {}) => listWorkBoard(date))
+  handle('work:cutoff', () => workCutoff())
+  handle('work:setCutoff', (_e, { cutoff }: { cutoff: string }) => setWorkCutoff(cutoff))
+  handle('work:processes', () => listWorkProcesses())
+  handle('work:saveProcess', (_e, { values }: { values: Row }) => saveWorkProcess(values))
+  handle('work:removeProcess', (_e, { id }: { id: number }) => removeWorkProcess(id))
+  handle('work:tick', (_e, { taskId, userId }: { taskId: number; userId: number }) =>
+    tickWorkTask(taskId, userId)
+  )
+  handle('work:redo', (_e, { taskId, userId }: { taskId: number; userId: number }) =>
+    redoWorkTask(taskId, userId)
+  )
+  handle(
+    'work:approve',
+    (_e, { taskId, userId, note }: { taskId: number; userId: number; note?: string }) =>
+      approveWorkTask(taskId, userId, note)
+  )
+  handle(
+    'work:sendBack',
+    (_e, { taskId, userId, note }: { taskId: number; userId: number; note: string }) =>
+      sendBackWorkTask(taskId, userId, note)
+  )
+  handle('work:note', (_e, { taskId, userId, text }: { taskId: number; userId: number; text: string }) =>
+    addWorkNote(taskId, userId, text)
+  )
+  handle('work:assign', (_e, { values, userId }: { values: Row; userId: number }) =>
+    assignWorkTask(values, userId)
+  )
+  handle('work:removeTask', (_e, { taskId, userId }: { taskId: number; userId: number }) =>
+    removeWorkTask(taskId, userId)
   )
   handle('stockCount:history', (_e, { from, to }: { from: string; to: string }) => stockCountHistory(from, to))
   handle(

@@ -135,6 +135,30 @@ tr.row-answered .pin-col {
 tr.row-answered:hover .pin-col {
   background: #e6f3e9;
 }
+/* The opening sheets wear violet on the WEBSITE; the desktop app keeps the
+   parchment above. A pinned column has to repaint its own background — the
+   cells beside it scroll underneath it — so the tint cannot be inherited from
+   the row and every state has to be stated again. Scoped to a class rather
+   than changed at source because the parchment is still right in the app. */
+.sheet-violet .pin-col {
+  background: #ffffff;
+}
+.sheet-violet thead .pin-col {
+  background: #5b4ba8;
+}
+.sheet-violet tr:hover .pin-col {
+  background: #f8f6fe;
+}
+.sheet-violet tr.row-answered .pin-col {
+  background: #f3faf5;
+}
+.sheet-violet tr.row-answered:hover .pin-col {
+  background: #eaf5ee;
+}
+.sheet-violet .pin-col::after {
+  background: rgba(61, 49, 121, 0.14);
+}
+
 .pin-col::after {
   content: '';
   position: absolute;

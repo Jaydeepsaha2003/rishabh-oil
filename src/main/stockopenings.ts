@@ -561,16 +561,27 @@ export async function savePpLines(
   const scope = await ppScope(cid)
   const c = getClient()
 
+  // A line arrives with a stage id, a stage NAME, or both. The screen now adds
+  // vessels by typing, so the name is the common case: it is resolved against
+  // the site's list and added to it when it is new, which is what keeps the
+  // same tank from being spelled three ways across thirty products.
+  const raw = (Array.isArray(lines) ? lines : []).map((l) => ({
+    stage_id: n(l?.stage_id),
+    stage: String(l?.stage ?? l?.name ?? '').trim(),
+    qty: l?.qty === '' || l?.qty == null ? 0 : n(l.qty),
+    ffa: l?.ffa === 'with' || l?.ffa === 'without' ? String(l.ffa) : null
+  }))
+  for (const l of raw) {
+    if (l.stage_id > 0 || !l.stage) continue
+    // addPpStage matches case-insensitively and revives a retired name, so
+    // this neither duplicates nor resurrects a typo as a second vessel.
+    l.stage_id = n((await addPpStage(l.stage, cid)).id)
+  }
+
   // A line with no quantity is not stored. Blank and nil are the same
-  // statement about a vessel — nothing in it — and storing the blank ones
-  // would leave the cross with rows to keep that say nothing.
-  const keep = (Array.isArray(lines) ? lines : [])
-    .map((l) => ({
-      stage_id: n(l?.stage_id),
-      qty: l?.qty === '' || l?.qty == null ? 0 : n(l.qty),
-      ffa: l?.ffa === 'with' || l?.ffa === 'without' ? String(l.ffa) : null
-    }))
-    .filter((l) => l.stage_id > 0 && Math.abs(l.qty) > 0.0005)
+  // statement about a vessel — nothing in it — so a row somebody added and
+  // left empty is not a count and does not become one.
+  const keep = raw.filter((l) => l.stage_id > 0 && Math.abs(l.qty) > 0.0005)
 
   await c.execute({
     sql: 'DELETE FROM stock_opening_pp WHERE scope = ? AND product_id = ?',

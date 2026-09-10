@@ -203,6 +203,108 @@ export async function runStartupTasks(): Promise<void> {
     )
   }).catch((e) => console.error('[stock] PP stage tables failed:', e))
 
+  // The day's work, per person.
+  //
+  // Three tables. PROCESSES is the catalogue — which daily jobs each page is
+  // responsible for, so the checklist can be built from what somebody can
+  // actually reach instead of being maintained by hand and drifting from it.
+  // TASKS is one row per person per process per day, written rather than
+  // derived on read — today's list grows as access is granted, nothing already
+  // raised is ever removed, and a past day is never touched. NOTES is the conversation on a task
+  // — the admin saying what needs fixing, the answer, and the note that says
+  // what changed.
+  await runOnce('work_assignments_v1', async () => {
+    const c = getClient()
+    await c.execute(`CREATE TABLE IF NOT EXISTS work_processes (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      -- A MODULES key: gateEntry, stock, sales… Whoever holds that page gets
+      -- the processes hanging off it.
+      module TEXT NOT NULL,
+      -- '' means any grant of the module sees it. A value means only a grant
+      -- carrying that scope does — which is what stops the lab desk, whose
+      -- Purchases grant is scoped to 'readings', being asked to confirm rates.
+      scope TEXT NOT NULL DEFAULT '',
+      title TEXT NOT NULL,
+      detail TEXT,
+      sort_order INTEGER NOT NULL DEFAULT 0,
+      active INTEGER NOT NULL DEFAULT 1,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      UNIQUE(module, scope, title)
+    )`)
+    await c.execute(`CREATE TABLE IF NOT EXISTS work_tasks (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      factory_id INTEGER,
+      company_id INTEGER NOT NULL,
+      work_date TEXT NOT NULL,
+      user_id INTEGER NOT NULL,
+      module TEXT NOT NULL,
+      -- NULL for a one-off an admin assigned: it has no catalogue entry, and
+      -- SQLite treats NULLs as distinct in a UNIQUE index, so several of them
+      -- on one day do not collide.
+      process_id INTEGER,
+      title TEXT NOT NULL,
+      detail TEXT,
+      kind TEXT NOT NULL DEFAULT 'auto',
+      state TEXT NOT NULL DEFAULT 'pending',
+      -- Local wall-clock stamps, written by work.ts. Never datetime('now'):
+      -- that is UTC, and a tick at 02:00 IST would stamp the previous evening
+      -- and land on the wrong side of the cut-off.
+      marked_at TEXT,
+      reviewed_at TEXT,
+      reviewed_by INTEGER,
+      assigned_by INTEGER,
+      due_at TEXT,
+      created_at TEXT,
+      updated_at TEXT,
+      UNIQUE(work_date, user_id, process_id)
+    )`)
+    await c.execute(`CREATE TABLE IF NOT EXISTS work_notes (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      task_id INTEGER NOT NULL,
+      user_id INTEGER NOT NULL,
+      -- The role AS IT WAS when the note was written, so a note from somebody
+      -- since promoted still reads as what it was at the time.
+      role TEXT NOT NULL,
+      text TEXT NOT NULL,
+      kind TEXT NOT NULL DEFAULT 'note',
+      created_at TEXT
+    )`)
+    await c.execute('CREATE INDEX IF NOT EXISTS idx_work_tasks_day ON work_tasks(work_date, user_id)')
+    await c.execute('CREATE INDEX IF NOT EXISTS idx_work_tasks_site ON work_tasks(factory_id, work_date)')
+    await c.execute('CREATE INDEX IF NOT EXISTS idx_work_notes_task ON work_notes(task_id, id)')
+
+    // The starting catalogue. Written once — an admin can add to it, retire an
+    // entry or reword one, and this never runs again to undo that.
+    const SEED: [string, string, string, string][] = [
+      ['gateEntry', '', 'Weigh and record every tanker in', 'Gross and tare on each vehicle, both directions.'],
+      ['gateEntry', '', "Close today's gate register", 'No entry left pending a weight at cut-off.'],
+      ['stock', '', 'Enter the day-close count', 'Raw and PP against the book figure, with a note on any difference.'],
+      ['sales', '', "Raise invoices for today's dispatches", 'Every loaded tanker invoiced before cut-off.'],
+      ['sales', 'unload', 'Confirm unloading receipts', 'Received quantity against what was dispatched.'],
+      ['orders', '', "Book today's purchases and confirm rates", 'Every purchase raised today has a rate against it.'],
+      ['orders', 'readings', "Log lab readings against today's tankers", 'FFA and moisture on each tanker before it is emptied.'],
+      ['bargains', '', 'Update open purchase bargains', 'Balance quantity against what was actually drawn.'],
+      ['salesBargains', '', 'Update open sales bargains', 'Every dispatch drawn against the right bargain.'],
+      ['accounts', '', "Post today's vouchers", 'Nothing left unposted at cut-off.'],
+      ['treasury', '', 'Check LCs and bills maturing this week', 'Anything inside seven days needs a plan today.'],
+      ['bankRecon', '', "Reconcile yesterday's bank statement", 'Every credit and debit tied to a voucher.'],
+      ['production', '', "Record today's batches", 'Every batch run, with its formulation and what it consumed.'],
+      ['formulation', '', 'Check the recipes used today', 'Any ratio changed on the floor is recorded against the batch.'],
+      ['consignment', '', 'Update consignment deliveries', 'Received quantity and date against each delivery.'],
+      ['packaging', '', "Enter today's packing", 'Pieces packed against each SKU, and the oil it drew.']
+    ]
+    let order = 0
+    for (const [module, scope, title, detail] of SEED) {
+      order += 10
+      await c.execute({
+        sql: `INSERT INTO work_processes (module, scope, title, detail, sort_order)
+              VALUES (?, ?, ?, ?, ?)
+              ON CONFLICT(module, scope, title) DO NOTHING`,
+        args: [module, scope, title, detail, order]
+      })
+    }
+  }).catch((e) => console.error('[work] work-assignment tables failed:', e))
+
   // How a product is MEASURED.
   //
   // Everything the mill makes is weighed, so MT is the default and every

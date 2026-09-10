@@ -1961,6 +1961,7 @@ function OpeningStock({
         <div
           className={cn(
             'grid grid-cols-2 gap-px border-t border-[#d9d2b8] bg-[#e6dfc4] lg:grid-cols-4',
+            __WEB__ && '!border-t-[#D6CEF5] !bg-[#E7E0F7]',
             __WEB__ &&
               '!grid-cols-[repeat(auto-fit,minmax(min(100%,180px),1fr))] !gap-2.5 !border-t-0 !bg-transparent !p-4'
           )}
@@ -2049,7 +2050,12 @@ function OpeningStock({
               ),
               note: (
                 <span className="block">
-                  <span className="mb-1.5 flex h-1.5 overflow-hidden rounded-full bg-[#e6dfc4]">
+                  <span
+                    className={cn(
+                      'mb-1.5 flex h-1.5 overflow-hidden rounded-full bg-[#e6dfc4]',
+                      __WEB__ && '!bg-[#E7E0F7]'
+                    )}
+                  >
                     <span
                       className={cn(
                         'h-full rounded-full transition-all',
@@ -2246,7 +2252,7 @@ function OpeningStock({
                 slide sideways instead — it still fills a wide screen, and the
                 Note column takes any slack there is. */}
             <div className="overflow-x-auto">
-              <table className={cn('ruled-cols w-full min-w-[1200px] bg-[#fffdf4] text-[13px]', __WEB__ && cn('!bg-white', '[&_input:focus]:!border-[#5B4BA8] [&_input:focus]:!ring-[#5B4BA8]/20 [&_input]:!rounded-[3px] [&_input]:!border-[#DCE7DB]'))}>
+              <table className={cn('ruled-cols w-full min-w-[1200px] bg-[#fffdf4] text-[13px]', __WEB__ && cn('sheet-violet !bg-white', '[&_input:focus]:!border-[#5B4BA8] [&_input:focus]:!ring-[#5B4BA8]/20 [&_input]:!rounded-[3px] [&_input]:!border-[#DCE7DB]'))}>
                 <thead>
                   {/* What the sheet is actually asking, named once above the
                       columns: what has happened since that morning, what was
@@ -2256,7 +2262,7 @@ function OpeningStock({
                       <th className="h-[30px] p-0" />
                       <th className="h-[30px] border-l border-l-white/20 bg-white/[.06] p-0 text-center">Since opening</th>
                       <th colSpan={3} className="h-[30px] border-l border-l-white/20 bg-white/10 p-0 text-center text-white">Counted that morning</th>
-                      <th className="h-[30px] border-l border-l-white/20 bg-[#C7F03F]/[.16] p-0 text-center text-[#DDF58F]">Register opens at</th>
+                      <th className="h-[30px] border-l border-l-white/20 bg-white/[.16] p-0 text-center font-extrabold text-white">Register opens at</th>
                       <th colSpan={3} className="h-[30px] border-l border-l-white/20 p-0" />
                     </tr>
                   )}
@@ -2286,7 +2292,7 @@ function OpeningStock({
                         <InfoTip text="The correction between what was counted and what the stock card says — signed, so −2 takes two off the opening and +2 adds two. It is here so a disagreement can be stated without editing the figure that was actually measured: oil in a line rather than a vessel, a drum counted twice, a dip reading short of the card. It counts into the Total exactly like Raw and PP do." />
                       </span>
                     </th>
-                    <th className="w-[100px] bg-[#f4efdd] px-3 py-2 text-right">
+                    <th className={cn('w-[100px] bg-[#f4efdd] px-3 py-2 text-right', __WEB__ && '!bg-white/[.10]')}>
                       <span className="inline-flex items-center gap-1">
                         Total
                         <InfoTip text="Raw + PP + Adj. This is the figure the register actually opens at, and the same figure the Day close screen shows as the physical count for the opening date." />
@@ -2493,7 +2499,8 @@ function OpeningStock({
                         <td
                           className={cn(
                             'whitespace-nowrap bg-[#faf6e8] px-3 py-1.5 text-right font-semibold tabular-nums',
-                            answered ? 'text-[#1a2c56]' : 'text-muted-foreground/60'
+                            answered ? 'text-[#1a2c56]' : 'text-muted-foreground/60',
+                            __WEB__ && cn('!bg-[#F3F0FC]', answered ? '!text-[#3D3179]' : '!text-[#8CA396]')
                           )}
                         >
                           {answered ? formatNum(rowTotal) : '—'}
@@ -3518,8 +3525,8 @@ function SkuOpeningStock({ onSaved }: { onSaved: () => void }): React.JSX.Elemen
 
   return (
     <div className="space-y-4">
-      <div className="overflow-hidden rounded-xl border border-[#d9d2b8] shadow-sm">
-        <div className="flex flex-wrap items-center gap-x-6 gap-y-4 bg-gradient-to-r from-[#1a2c56] to-[#2c4a8c] px-6 py-5">
+      <div className={cn('overflow-hidden rounded-xl border border-[#d9d2b8] shadow-sm', __WEB__ && '!rounded-[4px] !border-[#D6CEF5] !shadow-none')}>
+        <div className={cn('flex flex-wrap items-center gap-x-6 gap-y-4 bg-gradient-to-r from-[#1a2c56] to-[#2c4a8c] px-6 py-5', __WEB__ && '!from-[#3D3179] !to-[#5B4BA8]')}>
           <span className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-white/15 ring-1 ring-inset ring-white/20">
             <Boxes className="h-5 w-5 text-white" />
           </span>
@@ -3559,7 +3566,7 @@ function SkuOpeningStock({ onSaved }: { onSaved: () => void }): React.JSX.Elemen
           </div>
         </div>
 
-        <div className="grid grid-cols-2 gap-px border-t border-[#d9d2b8] bg-[#e6dfc4] lg:grid-cols-4">
+        <div className={cn('grid grid-cols-2 gap-px border-t border-[#d9d2b8] bg-[#e6dfc4] lg:grid-cols-4', __WEB__ && '!border-t-[#D6CEF5] !bg-[#E7E0F7]')}>
           {[
             {
               label: 'Opening pieces',
@@ -3609,7 +3616,7 @@ function SkuOpeningStock({ onSaved }: { onSaved: () => void }): React.JSX.Elemen
               note: data?.as_of ? 'already struck' : 'not struck yet'
             }
           ].map((k) => (
-            <div key={k.label} className="bg-[#fffdf4] px-5 py-4">
+            <div key={k.label} className={cn('bg-[#fffdf4] px-5 py-4', __WEB__ && '!bg-white !px-3.5 !py-3')}>
               <div className="flex items-center gap-1">
                 <span className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground">
                   {k.label}
@@ -3623,7 +3630,7 @@ function SkuOpeningStock({ onSaved }: { onSaved: () => void }): React.JSX.Elemen
         </div>
       </div>
 
-      <div className="flex flex-wrap items-center gap-3 rounded-xl border border-[#e0d8bd] bg-white px-4 py-3 shadow-sm">
+      <div className={cn('flex flex-wrap items-center gap-3 rounded-xl border border-[#e0d8bd] bg-white px-4 py-3 shadow-sm', __WEB__ && cn(SK_BAR, '!shadow-none'))}>
         <Input
           placeholder="Find an SKU…"
           className="h-10 w-64 text-[13px]"
@@ -3646,9 +3653,9 @@ function SkuOpeningStock({ onSaved }: { onSaved: () => void }): React.JSX.Elemen
         </div>
       </div>
 
-      <div className="overflow-hidden rounded-xl border border-[#d9d2b8] shadow-sm">
+      <div className={cn('overflow-hidden rounded-xl border border-[#d9d2b8] shadow-sm', __WEB__ && '!rounded-[4px] !border-[#D6CEF5] !shadow-none')}>
         <div className="overflow-x-auto">
-          <table className={cn('ruled-cols w-full min-w-[900px] bg-[#fffdf4] text-[13px]', __WEB__ && cn('!bg-white', '[&_input:focus]:!border-[#5B4BA8] [&_input:focus]:!ring-[#5B4BA8]/20 [&_input]:!rounded-[3px] [&_input]:!border-[#DCE7DB]'))}>
+          <table className={cn('ruled-cols w-full min-w-[900px] bg-[#fffdf4] text-[13px]', __WEB__ && cn('sheet-violet !bg-white', '[&_input:focus]:!border-[#5B4BA8] [&_input:focus]:!ring-[#5B4BA8]/20 [&_input]:!rounded-[3px] [&_input]:!border-[#DCE7DB]'))}>
             <thead>
               <tr className={cn('border-b border-[#e0d8bd] bg-[#faf6e8] text-left text-[10px] uppercase tracking-widest text-muted-foreground', __WEB__ && '!border-b-0 !bg-[#5B4BA8] !text-[12px] !font-extrabold !tracking-[.05em] !text-[#DAD2F5]')}>
                 <th className="pin-col min-w-[220px] px-3 py-2">SKU</th>
@@ -3659,7 +3666,7 @@ function SkuOpeningStock({ onSaved }: { onSaved: () => void }): React.JSX.Elemen
                     <InfoTip text="Packed in less dispatched SINCE the counted morning. Movements before it are deliberately left out — that morning is the fresh start. Negative here is exactly the hole this count has to fill." />
                   </span>
                 </th>
-                <th className="w-[130px] bg-[#f4efdd] px-3 py-2 text-right">
+                <th className={cn('w-[130px] bg-[#f4efdd] px-3 py-2 text-right', __WEB__ && '!bg-white/[.10]')}>
                   <span className="inline-flex items-center gap-1">
                     Opening (pcs)
                     <InfoTip text="Pieces physically on the shelf that morning. Leave it blank if the SKU has not been counted; enter 0 to state that it genuinely had none. The two are different, and only the second shows on the register." />
@@ -3691,7 +3698,8 @@ function SkuOpeningStock({ onSaved }: { onSaved: () => void }): React.JSX.Elemen
                     key={id}
                     className={cn(
                       'border-t border-[#f0ead2] transition-colors hover:bg-[#fbf6e4]',
-                      answered && 'row-answered bg-emerald-50/40'
+                      answered && 'row-answered bg-emerald-50/40',
+                      __WEB__ && cn('!border-t-[#D6CEF5] hover:!bg-[#F8F6FE]', answered && '!bg-[#F3FAF5]')
                     )}
                   >
                     <td className="pin-col px-3 py-1.5">
@@ -3703,7 +3711,7 @@ function SkuOpeningStock({ onSaved }: { onSaved: () => void }): React.JSX.Elemen
                         )}
                         <span className="font-medium text-[#1a2c56]">{String(r.name)}</span>
                         {r.product_name ? (
-                          <span className="rounded bg-[#f1ecd9] px-1.5 text-[10.5px] text-muted-foreground">
+                          <span className={cn('rounded bg-[#f1ecd9] px-1.5 text-[10.5px] text-muted-foreground', __WEB__ && '!rounded-[2px] !bg-[#EDE9FB] !text-[#5A4C8F]')}>
                             {String(r.product_name)}
                           </span>
                         ) : null}
@@ -3727,7 +3735,7 @@ function SkuOpeningStock({ onSaved }: { onSaved: () => void }): React.JSX.Elemen
                     >
                       {formatNum(r.movement_closing)}
                     </td>
-                    <td className="bg-[#faf6e8] px-3 py-1.5">
+                    <td className={cn('bg-[#faf6e8] px-3 py-1.5', __WEB__ && '!bg-[#F3F0FC]')}>
                       <div className="flex items-center justify-end gap-1.5">
                         {short > 0.0005 && d.qty === '' && (
                           <button

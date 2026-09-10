@@ -298,6 +298,34 @@ const api = {
       ipcRenderer.invoke('outsideTanker:nil', { date, slot }),
     remove: (id: number): Promise<{ ok: true }> => ipcRenderer.invoke('outsideTanker:remove', { id })
   },
+  // The day's work board: everyone's own checklist, and the admin's review of
+  // it. Every write carries the user making it — the server decides what that
+  // user is allowed to do with it.
+  work: {
+    board: (date?: string): Promise<Row> => ipcRenderer.invoke('work:board', { date }),
+    cutoff: (): Promise<string> => ipcRenderer.invoke('work:cutoff'),
+    setCutoff: (cutoff: string): Promise<{ cutoff: string }> =>
+      ipcRenderer.invoke('work:setCutoff', { cutoff }),
+    processes: (): Promise<Row[]> => ipcRenderer.invoke('work:processes'),
+    saveProcess: (values: Row): Promise<{ id: number }> =>
+      ipcRenderer.invoke('work:saveProcess', { values }),
+    removeProcess: (id: number): Promise<{ id: number; retired: boolean }> =>
+      ipcRenderer.invoke('work:removeProcess', { id }),
+    tick: (taskId: number, userId: number): Promise<{ id: number; state: string }> =>
+      ipcRenderer.invoke('work:tick', { taskId, userId }),
+    redo: (taskId: number, userId: number): Promise<{ id: number; state: string }> =>
+      ipcRenderer.invoke('work:redo', { taskId, userId }),
+    approve: (taskId: number, userId: number, note?: string): Promise<{ id: number; state: string }> =>
+      ipcRenderer.invoke('work:approve', { taskId, userId, note }),
+    sendBack: (taskId: number, userId: number, note: string): Promise<{ id: number; state: string }> =>
+      ipcRenderer.invoke('work:sendBack', { taskId, userId, note }),
+    note: (taskId: number, userId: number, text: string): Promise<{ id: number }> =>
+      ipcRenderer.invoke('work:note', { taskId, userId, text }),
+    assign: (values: Row, userId: number): Promise<{ id: number }> =>
+      ipcRenderer.invoke('work:assign', { values, userId }),
+    removeTask: (taskId: number, userId: number): Promise<{ id: number }> =>
+      ipcRenderer.invoke('work:removeTask', { taskId, userId })
+  },
   stockOpening: {
     list: (companyId?: number): Promise<Row> => ipcRenderer.invoke('stockOpening:list', { companyId }),
     save: (rows: Row[], asOf: string, companyId?: number): Promise<{ saved: number; cleared: number }> =>

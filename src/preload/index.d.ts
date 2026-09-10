@@ -215,6 +215,21 @@ export interface Api {
     nil: (date: string, slot: string) => Promise<{ id: number }>
     remove: (id: number) => Promise<{ ok: true }>
   }
+  work: {
+    board: (date?: string) => Promise<Row>
+    cutoff: () => Promise<string>
+    setCutoff: (cutoff: string) => Promise<{ cutoff: string }>
+    processes: () => Promise<Row[]>
+    saveProcess: (values: Row) => Promise<{ id: number }>
+    removeProcess: (id: number) => Promise<{ id: number; retired: boolean }>
+    tick: (taskId: number, userId: number) => Promise<{ id: number; state: string }>
+    redo: (taskId: number, userId: number) => Promise<{ id: number; state: string }>
+    approve: (taskId: number, userId: number, note?: string) => Promise<{ id: number; state: string }>
+    sendBack: (taskId: number, userId: number, note: string) => Promise<{ id: number; state: string }>
+    note: (taskId: number, userId: number, text: string) => Promise<{ id: number }>
+    assign: (values: Row, userId: number) => Promise<{ id: number }>
+    removeTask: (taskId: number, userId: number) => Promise<{ id: number }>
+  }
   stockOpening: {
     list: (companyId?: number) => Promise<Row>
     save: (rows: Row[], asOf: string, companyId?: number) => Promise<{ saved: number; cleared: number }>

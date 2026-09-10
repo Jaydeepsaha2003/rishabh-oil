@@ -1595,7 +1595,7 @@ export function Bargains({ onOpenOrder }: { onOpenOrder?: (orderId: number) => v
                   with the Products master, so a row of chips only ever gets
                   longer and starts scrolling sideways. */}
               <Select value={typeFilter} onValueChange={setTypeFilter}>
-                <SelectTrigger className="h-9 w-48 shrink-0 text-[13px]">
+                <SelectTrigger className={cn('h-9 w-48 shrink-0 text-[13px]', __WEB__ && '!w-[9rem]')}>
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent className="max-h-72">
@@ -1611,7 +1611,7 @@ export function Bargains({ onOpenOrder }: { onOpenOrder?: (orderId: number) => v
                   value={coIds.length === 1 ? String(coIds[0]) : 'all'}
                   onValueChange={(v) => setCoIds(v === 'all' ? [] : [Number(v)])}
                 >
-                  <SelectTrigger className="h-9 w-[13rem] shrink-0 text-[13px]">
+                  <SelectTrigger className={cn('h-9 w-[13rem] shrink-0 text-[13px]', __WEB__ && '!w-[10.5rem]')}>
                     <span className="flex min-w-0 items-center gap-1.5">
                       <Building2 className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
                       <SelectValue />
@@ -1636,14 +1636,14 @@ export function Bargains({ onOpenOrder }: { onOpenOrder?: (orderId: number) => v
               <div
                 className={cn(
                   'relative min-w-[180px] flex-1 basis-56',
-                  __WEB__ && '!max-w-[20rem] !basis-[20rem]'
+                  __WEB__ && '!min-w-[130px] !max-w-[17rem] !basis-0'
                 )}
               >
                 <Search className="pointer-events-none absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
                 <Input
                   type="search"
                   className="h-9 pl-8"
-                  placeholder="Search bargain no, supplier, oil, broker…"
+                  placeholder={__WEB__ ? 'Search bargain, supplier, oil…' : 'Search bargain no, supplier, oil, broker…'}
                   value={search}
                   onChange={(e) => setSearch(e.target.value)}
                 />
@@ -1661,10 +1661,25 @@ export function Bargains({ onOpenOrder }: { onOpenOrder?: (orderId: number) => v
                 )}
               >
                 <span className={cn('text-muted-foreground', __WEB__ && '!text-[10.5px] !font-extrabold !uppercase !tracking-[.13em] !text-[#5A6B62]')}>Date</span>
-                <FyPicker from={dateFrom} to={dateTo} onRange={(f, t) => { setDateFrom(f); setDateTo(t) }} className="h-9 w-28 text-xs" />
-                <DatePicker value={dateFrom} onChange={(v) => setDateFrom(v || '')} max={dateTo || undefined} className="w-[8.5rem]" />
+                <FyPicker
+                  from={dateFrom}
+                  to={dateTo}
+                  onRange={(f, t) => { setDateFrom(f); setDateTo(t) }}
+                  className="h-9 w-28 text-xs"
+                />
+                <DatePicker
+                  value={dateFrom}
+                  onChange={(v) => setDateFrom(v || '')}
+                  max={dateTo || undefined}
+                  className={cn('w-[8.5rem]', __WEB__ && '!w-[7.25rem]')}
+                />
                 <span className={cn('text-muted-foreground', __WEB__ && '!text-[12px] !font-semibold !text-[#5A6B62]')}>to</span>
-                <DatePicker value={dateTo} onChange={(v) => setDateTo(v || '')} min={dateFrom || undefined} className="w-[8.5rem]" />
+                <DatePicker
+                  value={dateTo}
+                  onChange={(v) => setDateTo(v || '')}
+                  min={dateFrom || undefined}
+                  className={cn('w-[8.5rem]', __WEB__ && '!w-[7.25rem]')}
+                />
                 {(dateFrom || dateTo) && (
                   <Button
                     variant="ghost"
@@ -1676,9 +1691,16 @@ export function Bargains({ onOpenOrder }: { onOpenOrder?: (orderId: number) => v
                   </Button>
                 )}
               </div>
-              <label className={cn('ml-auto flex shrink-0 cursor-pointer items-center gap-2 whitespace-nowrap text-[13px] text-muted-foreground', __WEB__ && '!h-[38px] !gap-2.5 !rounded-[4px] !border !border-[#C3D2C6] !bg-white !px-3 !text-[12.5px] !font-bold !text-[#33473E] hover:!bg-[#F7FAF6]')}>
+              <label
+                title={
+                  __WEB__
+                    ? 'Bargains with no balance left on them. Off, the register lists only what is still open.'
+                    : undefined
+                }
+                className={cn('ml-auto flex shrink-0 cursor-pointer items-center gap-2 whitespace-nowrap text-[13px] text-muted-foreground', __WEB__ && '!h-[38px] !gap-2 !rounded-[4px] !border !border-[#C3D2C6] !bg-white !px-2.5 !text-[12.5px] !font-bold !text-[#33473E] hover:!bg-[#F7FAF6]')}
+              >
                 <Switch checked={showZero} onCheckedChange={setShowZero} />
-                Show settled {__WEB__ ? <span className="font-semibold text-[#7C9188]">(0 balance)</span> : '(0 balance)'}
+                Show settled {__WEB__ ? null : '(0 balance)'}
                 {/* The count, so the switch can be seen to have done something
                     even when the rows it adds are inside collapsed oil bands —
                     and so that "nothing to add" reads as an answer rather than

@@ -20,6 +20,7 @@
 // the header and the body — which is the part of this sheet that makes it
 // readable, because it is what the consumption below is checked against.
 import ExcelJS from 'exceljs'
+import JSZip from 'jszip'
 import { downloadWorkbook } from '@/lib/excel'
 import { formatNum } from '@/lib/format'
 
@@ -33,7 +34,22 @@ const n = (v: unknown): number => (Number.isFinite(Number(v)) ? Number(v) : 0)
 // an untouched cell empty, and on a thirty-column grid that blankness is what
 // lets the eye find the figures. A general format of 0.000 fills the sheet
 // with noughts and hides them.
-const QTY = '#,##0.###;-#,##0.###;'
+//
+// TWO formats, chosen per cell, because Excel prints the decimal separator for
+// an optional-digit placeholder even when no digit follows it: `#,##0.###` puts
+// "2." on screen for the value 2. There is no number format that can say "a
+// point only if something comes after it" — the test has to be made where the
+// value is known, which is here.
+const QTY_DEC = '#,##0.###;-#,##0.###;'
+const QTY_INT = '#,##0;-#,##0;'
+const isWhole = (v: number): boolean => Math.abs(v - Math.round(v)) < 0.0005
+const qtyFmt = (v: number): string => (isWhole(v) ? QTY_INT : QTY_DEC)
+
+// Value and format together, so no call site can set one and forget the other.
+function putQty(cell: ExcelJS.Cell, v: number): void {
+  cell.value = v
+  cell.numFmt = qtyFmt(v)
+}
 
 // One typeface for the whole sheet. Left to Excel's own default a file picks
 // up whatever the reader's template says, and a report that renders in Aptos
@@ -93,38 +109,102 @@ function daysWithWork(batches: Row[]): string[] {
   return [...seen].sort()
 }
 
-// "85 is RPO-N" / "15 is HO-PANGHAT" — one part per line. It had a column of
-// its own until the Ratio cell's comment made it a duplicate; it is reached
-// only through ratioNote below now.
-function ratioLines(b: Row): string {
-  const parts = (b.ratio_parts || []) as Row[]
-  return parts.map((x) => `${formatNum(n(x.part))} is ${String(x.name)}`).join('\n')
-}
+// The formulation, worked out.
+// -----------------------------------------------------------------------------
+// The comment on a Ratio cell used to be three loose sentences — the parts, the
+// percentages, the recipe version — and it read as a footnote. What the reader
+// actually wants from "48:2:50" is the arithmetic: which oils, in what
+// proportion, and how many tonnes of each that came to on THIS batch. So it is
+// laid out as a small table, in a fixed-width face so the columns line up, and
+// footed with the totals the row can be checked against.
+//
+//   DALDA — 48:2:50
+//
+//   PART            %        MT
+//   RPO-N        48.00    62.400
+//   FATTY OIL     2.00     2.600
+//   IVF          50.00    65.000
+//                       --------
+//   consumed              130.000
+//   dead loss               1.499
+//
+//   Recipe DALDA v3 — superseded, latest is v5
+//
+// Returned as rich-text runs so the heading and the totals can carry their own
+// weight, plus the line count and the longest line, which is what sizes the
+// comment box (see resizeNotes — ExcelJS gives every box the same 97.8×59.1pt
+// and long text is simply clipped).
+const NOTE_MONO = 'Consolas'
 
-// The same thing with the arithmetic behind it, for the comment on the ratio
-// cell: the percentages, because 48:2:50 is not obviously a half-and-half
-// blend, and the recipe version, because two batches a month apart can
-// honestly carry different ratios.
-function ratioNote(b: Row): string {
+function ratioNote(b: Row): { texts: ExcelJS.RichText[]; lines: number; cols: number } | null {
   const parts = (b.ratio_parts || []) as Row[]
-  if (!parts.length) return ''
-  const pct = parts.map((x) => `${String(x.name)} ${n(x.pct)}%`).join(' · ')
+  if (!parts.length) return null
+  const cells = (b.cells || {}) as Record<string, { consumed: number }>
+
+  const pad = (v: string, w: number): string => v.padEnd(w, ' ')
+  const num = (v: string, w: number): string => v.padStart(w, ' ')
+  const mt3 = (v: number): string => v.toFixed(3)
+  const W_MT = 9
+  const wName = Math.max(4, ...parts.map((x) => String(x.name).length))
+
+  const head = `${String(b.product_name || '')} — ${String(b.ratio || '')}`
+  const table: string[] = [`${pad('PART', wName)}  ${num('%', 6)}  ${num('MT', W_MT)}`]
+  for (const x of parts) {
+    const mt = n(cells[String(x.product_id)]?.consumed)
+    table.push(
+      `${pad(String(x.name), wName)}  ${num(n(x.pct).toFixed(2), 6)}  ${num(mt ? mt3(mt) : '—', W_MT)}`
+    )
+  }
+  const foot: string[] = [`${pad('', wName)}  ${num('', 6)}  ${num('─'.repeat(W_MT), W_MT)}`]
+  foot.push(`${pad('consumed', wName)}  ${num('', 6)}  ${num(mt3(n(b.total_consumed)), W_MT)}`)
+  if (n(b.total_loss) > 0.0005) {
+    foot.push(`${pad('dead loss', wName)}  ${num('', 6)}  ${num(mt3(n(b.total_loss)), W_MT)}`)
+  }
   const ver = n(b.recipe_version)
-    ? `\n\nRecipe ${String(b.recipe_name || '')} v${n(b.recipe_version)}${
+    ? `Recipe ${String(b.recipe_name || '')} v${n(b.recipe_version)}${
         n(b.recipe_latest_version) > n(b.recipe_version)
           ? ` — superseded, latest is v${n(b.recipe_latest_version)}`
           : ''
       }`
     : ''
-  return `${ratioLines(b)}\n\n${pct}${ver}`
+
+  const texts: ExcelJS.RichText[] = [
+    { text: `${head}\n\n`, font: { name: FONT, size: 10, bold: true, color: { argb: 'FF0B3D2E' } } },
+    {
+      text: `${table[0]}\n`,
+      font: { name: NOTE_MONO, size: 9, bold: true, color: { argb: 'FF5A6B62' } }
+    },
+    {
+      text: `${table.slice(1).join('\n')}\n`,
+      font: { name: NOTE_MONO, size: 9, color: { argb: INK } }
+    },
+    {
+      text: `${foot.join('\n')}\n`,
+      font: { name: NOTE_MONO, size: 9, bold: true, color: { argb: INK } }
+    }
+  ]
+  if (ver) {
+    texts.push({ text: `\n${ver}`, font: { name: FONT, size: 9, italic: true, color: { argb: MUTED } } })
+  }
+
+  const all = [head, '', ...table, ...foot, ...(ver ? ['', ver] : [])]
+  return { texts, lines: all.length, cols: Math.max(...all.map((l) => l.length)) }
 }
 
 // No Formulation column. It spelled the ratio out in a 26-wide column beside
 // a Ratio cell whose comment says the same thing and more — the percentages and
 // the recipe version too — so it was 26 characters of width and a three-line row
 // height spent on a duplicate. The comment is the one place it lives now.
-const LEFT = ['Date', 'Qty', 'Product', 'Ratio', 'Total'] as const
-const LEFT_W = [15, 10, 24, 12, 12]
+// Qty is now Output and Total is now TOR, both the mill's own words for them.
+// Comments is new: a batch carries a note, and recirculation — the same oil
+// round again, no ratio and no consumption — had been squeezed into the Product
+// cell in brackets, which put a remark inside a name.
+const LEFT = ['Date', 'Output', 'Product', 'Ratio', 'TOR', 'Comments'] as const
+const LEFT_W = [13, 11, 24, 13, 11, 26]
+// Which of those are right-aligned. Spelled out rather than tested by index —
+// the old code asked `i === 1 || i === 5` on a five-item list, so Total's
+// heading sat left over a column of right-aligned figures.
+const LEFT_RIGHT = new Set([1, 4])
 
 // Row numbers, named. Computing them inline is how a title block gets added
 // and the freeze pane silently ends up one row out.
@@ -136,6 +216,78 @@ const R_OPEN = 6
 const R_RECV = 7
 const R_AVAIL = 8
 const R_BODY = 10
+
+// The width of a product column, and how many wrapped lines the longest name
+// in the catalogue needs at that width. Excel wraps on spaces, so this does the
+// same rather than dividing by a character count — "COTTON SEED OIL" takes two
+// lines at width 11, not two-and-a-bit.
+const PROD_W = 11.5
+
+function wrapLines(text: string, width: number): number {
+  const cap = Math.max(4, Math.floor(width))
+  let lines = 1
+  let used = 0
+  for (const word of String(text).split(/\s+/).filter(Boolean)) {
+    // A word longer than the column takes as many lines as it needs on its own.
+    const own = Math.ceil(word.length / cap)
+    if (own > 1) {
+      lines += (used ? 1 : 0) + own - 1
+      used = word.length % cap || cap
+      continue
+    }
+    if (!used) used = word.length
+    else if (used + 1 + word.length <= cap) used += 1 + word.length
+    else {
+      lines++
+      used = word.length
+    }
+  }
+  return lines
+}
+
+const headLines = (cols: Row[], width: number): number =>
+  Math.max(2, ...cols.map((p) => wrapLines(`${String(p.name)}${String(p.uom || 'MT') === 'PCS' ? ' (PCS)' : ''}`, width)))
+
+// Give each comment a box that fits what is in it.
+// -----------------------------------------------------------------------------
+// ExcelJS writes every comment shape with the same hard-coded
+// `width:97.8pt;height:59.1pt` (see lib/xlsx/xform/comment/vml-shape-xform.js),
+// which is about four short lines — so a formulation table is simply clipped,
+// and there is no API to say otherwise. The sizes are in the VML drawing, so
+// they are patched in the finished file: unzip, rewrite the one part, zip again.
+//
+// Shapes carry their own 0-based row and column in <x:ClientData>, so each is
+// matched to the note that was put there rather than trusting document order.
+async function resizeNotes(
+  buf: ArrayBuffer,
+  sizes: Map<string, { w: number; h: number }>
+): Promise<ArrayBuffer> {
+  try {
+    const zip = await JSZip.loadAsync(buf)
+    const name = Object.keys(zip.files).find((f) => /vmlDrawing\d*\.vml$/i.test(f))
+    if (!name) return buf
+    const xml = await zip.file(name)!.async('string')
+    let touched = 0
+    const next = xml.replace(/<v:shape\b[\s\S]*?<\/v:shape>/g, (block) => {
+      const row = /<x:Row>(\d+)<\/x:Row>/.exec(block)?.[1]
+      const col = /<x:Column>(\d+)<\/x:Column>/.exec(block)?.[1]
+      const size = row != null && col != null ? sizes.get(`${row}:${col}`) : undefined
+      if (!size) return block
+      touched++
+      return block.replace(
+        /width:[\d.]+pt;height:[\d.]+pt/,
+        `width:${size.w}pt;height:${size.h}pt`
+      )
+    })
+    if (!touched) return buf
+    zip.file(name, next)
+    return (await zip.generateAsync({ type: 'arraybuffer', compression: 'DEFLATE' })) as ArrayBuffer
+  } catch {
+    // A comment at the default size is a great deal better than a download
+    // that failed, so this never takes the report down with it.
+    return buf
+  }
+}
 
 function hair(): Partial<ExcelJS.Borders> {
   const c = { argb: GRID }
@@ -203,7 +355,7 @@ export async function downloadProductionReport(
       printTitlesRow: `${R_BAND}:${R_HEAD}`
     }
   })
-  ws.columns = [...LEFT_W.map((w) => ({ width: w })), ...cols.map(() => ({ width: 11.5 }))]
+  ws.columns = [...LEFT_W.map((w) => ({ width: w })), ...cols.map(() => ({ width: PROD_W }))]
 
   const solid = (cell: ExcelJS.Cell, argb: string): void => {
     cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb } }
@@ -260,7 +412,11 @@ export async function downloadProductionReport(
   // The hand sheet has none over the left block — it does not need them, the
   // reader wrote it — but a generated file does.
   const rHead = ws.getRow(R_HEAD)
-  rHead.height = 64
+  // Sized to the names it actually has to hold, now that they are printed the
+  // right way up. Wrapped at the column's own width, so the tallest name is
+  // what sets the row — a fixed height either clips COTTON SEED OIL or leaves
+  // a band of white above CPO.
+  rHead.height = Math.min(60, 13 * headLines(cols, PROD_W) + 8)
   const headBorder = (left?: boolean): Partial<ExcelJS.Borders> => ({
     ...hair(),
     bottom: { style: 'medium', color: { argb: RULE } },
@@ -271,7 +427,7 @@ export async function downloadProductionReport(
     cell.value = h
     cell.font = { name: FONT, bold: true, size: 10, color: { argb: 'FF33473E' } }
     solid(cell, HEAD_BG)
-    cell.alignment = { horizontal: i === 1 || i === 5 ? 'right' : 'left', vertical: 'bottom' }
+    cell.alignment = { horizontal: LEFT_RIGHT.has(i) ? 'right' : 'left', vertical: 'bottom' }
     cell.border = headBorder()
   })
   cols.forEach((p, i) => {
@@ -280,9 +436,11 @@ export async function downloadProductionReport(
     cell.value = `${String(p.name)}${String(p.uom || 'MT') === 'PCS' ? ' (PCS)' : ''}`
     cell.font = { name: FONT, bold: true, size: 9, color: { argb: INK } }
     solid(cell, band.tint)
-    // Turned on its side, so a 24-character product name does not force a
-    // 24-character column on a sheet thirty columns wide.
-    cell.alignment = { horizontal: 'left', vertical: 'bottom', textRotation: 90 }
+    // Printed horizontally and wrapped, not turned on its side. Rotated text
+    // reads at a tilt and cannot be scanned across a row of thirty columns —
+    // the eye has to travel to each one and turn. Two or three short lines in
+    // an 11-character column costs a taller header row and nothing else.
+    cell.alignment = { horizontal: 'center', vertical: 'middle', wrapText: true }
     cell.border = headBorder(i > 0 && String(cols[i - 1].category) !== String(p.category))
   })
 
@@ -293,12 +451,14 @@ export async function downloadProductionReport(
   // sheet's own shorthand, which is fine in a book somebody keeps themselves
   // and not in a file that gets mailed on. The third says what it is the total
   // OF — what there was to draw on before a single batch ran.
-  const avail: [number, string, (p: Row) => number, boolean][] = [
-    [R_OPEN, 'Opening Stock', (p) => n(p.opening), true],
-    [R_RECV, 'Receipts', (p) => n(p.received), true],
-    [R_AVAIL, 'Total before Pn.', (p) => n(p.opening) + n(p.received), true]
+  // The LABEL is bold; the figures beside it are not. Bold everywhere is bold
+  // nowhere — see the note on the body rows below.
+  const avail: [number, string, (p: Row) => number][] = [
+    [R_OPEN, 'Opening Stock', (p) => n(p.opening)],
+    [R_RECV, 'Receipts', (p) => n(p.received)],
+    [R_AVAIL, 'Total before Pn.', (p) => Math.round((n(p.opening) + n(p.received)) * 1000) / 1000]
   ]
-  for (const [rn, label, pick, bold] of avail) {
+  for (const [rn, label, pick] of avail) {
     const row = ws.getRow(rn)
     row.height = 16
     // "Total before Pn." is wider than the Date column, and Qty carries
@@ -310,7 +470,7 @@ export async function downloadProductionReport(
       const cell = row.getCell(i)
       if (i === 1) {
         cell.value = label
-        cell.font = { name: FONT, bold, size: 10, color: { argb: 'FF33473E' } }
+        cell.font = { name: FONT, bold: true, size: 10, color: { argb: 'FF33473E' } }
       }
       solid(cell, rn === R_AVAIL ? HEAD_BG : 'FFFCFDFB')
       cell.alignment = { horizontal: 'left', vertical: 'middle', indent: i === 1 ? 1 : 0 }
@@ -324,11 +484,8 @@ export async function downloadProductionReport(
       // what lets the eye find the figures on a thirty-column grid.
       const q = pick(p)
       if (p.in_stock === false) cell.value = '—'
-      else if (Math.abs(q) > 0.0005) {
-        cell.value = q
-        cell.numFmt = QTY
-      }
-      cell.font = { name: FONT, bold, size: 10, color: { argb: p.in_stock === false ? MUTED : INK } }
+      else if (Math.abs(q) > 0.0005) putQty(cell, q)
+      cell.font = { name: FONT, size: 10, color: { argb: p.in_stock === false ? MUTED : INK } }
       cell.alignment = { horizontal: p.in_stock === false ? 'center' : 'right', vertical: 'middle' }
       solid(cell, rn === R_AVAIL ? bandOf(String(p.category)).tint : 'FFFCFDFB')
       cell.border = {
@@ -352,6 +509,10 @@ export async function downloadProductionReport(
     else byDay.set(k, [b])
   }
 
+  // Where each comment goes and how big its box has to be, keyed by the VML's
+  // own 0-based row:column. Applied to the finished file by resizeNotes.
+  const noteSizes = new Map<string, { w: number; h: number }>()
+
   let r = R_BODY
   let written = 0
   let dayIndex = 0
@@ -372,6 +533,9 @@ export async function downloadProductionReport(
         opts: Partial<ExcelJS.Font> & { align?: 'left' | 'right'; wrap?: boolean } = {}
       ): void => {
         const cell = row.getCell(i)
+        // Never clears what is already there: the quantity cells are written by
+        // putQty first (value AND format together) and then styled through
+        // here with an empty value.
         if (value !== '' && value != null) cell.value = value as ExcelJS.CellValue
         cell.font = { name: FONT, size: 10, color: { argb: INK }, ...opts }
         cell.alignment = { horizontal: opts.align ?? 'left', vertical: 'top', wrapText: !!opts.wrap, indent: i === 1 ? 1 : 0 }
@@ -379,17 +543,19 @@ export async function downloadProductionReport(
         cell.border = hair()
       }
 
+      // BOLD IS FOR THE DATE AND ITS FIRST LINE, and for nothing else in the
+      // body. Every figure used to be bold — Output, Product, Ratio and TOR on
+      // all of them — which is bold everywhere and therefore emphasis nowhere:
+      // a day with four batches read as four equally shouted rows. Now the eye
+      // finds where each day starts and reads the rest plain.
+      const lead = li === 0
       // Printed once per day, as on the hand sheet — three lines under
       // 01-09-2026, not the date typed three times.
-      put(1, li === 0 ? ddmmyyyy(day) : '', { bold: li === 0 })
-      put(2, b ? n(b.qty) : '', { bold: true, align: 'right' })
-      row.getCell(2).numFmt = QTY
-      put(
-        3,
-        b ? `${String(b.product_name)}${String(b.kind) === 'recirculation' ? '  (recirculation)' : ''}` : '',
-        { bold: !!b }
-      )
-      put(4, b ? String(b.ratio || '') : '', { bold: true })
+      put(1, lead ? ddmmyyyy(day) : '', { bold: lead })
+      if (b) putQty(row.getCell(2), n(b.qty))
+      put(2, '', { bold: lead, align: 'right' })
+      put(3, b ? String(b.product_name) : '', { bold: lead })
+      put(4, b ? String(b.ratio || '') : '', { bold: lead })
       // The comment as well as the cell: the cell carries the ratio, the
       // comment names the parts, their percentages and the recipe version. It
       // is the only place the formulation is written now.
@@ -397,10 +563,28 @@ export async function downloadProductionReport(
       // comment adds the percentages and which recipe version they came off.
       if (b && b.ratio) {
         const note = ratioNote(b)
-        if (note) row.getCell(4).note = { texts: [{ text: note }], margins: { insetmode: 'auto' } }
+        if (note) {
+          row.getCell(4).note = { texts: note.texts, margins: { insetmode: 'auto' } }
+          // Sized from the text itself. 5.1pt a character in 9pt Consolas and
+          // 12.2pt a line, with a margin, then capped so a long recipe cannot
+          // produce a box that covers the sheet.
+          noteSizes.set(`${r - 1}:3`, {
+            w: Math.min(420, Math.max(150, Math.round(note.cols * 5.1 + 22))),
+            h: Math.min(300, Math.max(70, Math.round(note.lines * 12.2 + 16)))
+          })
+        }
       }
-      put(5, b && n(b.total_consumed) ? n(b.total_consumed) : '', { bold: true, align: 'right' })
-      row.getCell(5).numFmt = QTY
+      if (b && n(b.total_consumed)) putQty(row.getCell(5), n(b.total_consumed))
+      put(5, '', { bold: lead, align: 'right' })
+      // Recirculation is the same oil round again — no ratio, no consumption —
+      // and it used to be appended to the product name in brackets, which put a
+      // remark inside a name. It belongs here, beside whatever the operator
+      // typed on the batch.
+      put(
+        6,
+        b ? [String(b.kind) === 'recirculation' ? 'Recirculation' : '', String(b.note || '')].filter(Boolean).join(' · ') : '',
+        { bold: lead, italic: String(b?.kind) === 'recirculation' }
+      )
 
       const cells = (b?.cells || {}) as Record<string, Cell>
       cols.forEach((p, i) => {
@@ -425,14 +609,12 @@ export async function downloadProductionReport(
         const ownOutput = !!b && Number(p.id) === Number(b.product_id)
         let colour = INK
         if (eaten) {
-          cell.value = eaten
-          cell.numFmt = QTY
+          putQty(cell, eaten)
           // Dead loss in red — the one consumption nothing came back from, and
           // on a wide grid it should be findable at a glance.
           if (n(v?.loss) >= eaten - 0.0005) colour = 'FF8C2F26'
         } else if (outp && !ownOutput) {
-          cell.value = -outp
-          cell.numFmt = QTY
+          putQty(cell, -outp)
           colour = 'FF0B6B45'
         }
         cell.font = { name: FONT, size: 10, color: { argb: colour } }
@@ -474,8 +656,7 @@ export async function downloadProductionReport(
   flab.value = 'PRODUCTION TOTAL'
   paint(flab, 'left')
   const fqty = foot.getCell(2)
-  fqty.value = made
-  fqty.numFmt = QTY
+  putQty(fqty, made)
   paint(fqty, 'right')
   fqty.font = { name: FONT, bold: true, size: 11, color: { argb: LIME } }
   // What the Qty beside it is a total OF, so nobody has to count the rows.
@@ -485,10 +666,12 @@ export async function downloadProductionReport(
   // column that the Total needs.
   fcnt.value = `${written} batch${written === 1 ? '' : 'es'}`
   paint(fcnt, 'left')
-  const ftot = foot.getCell(LEFT.length)
-  ftot.value = eatenAll
-  ftot.numFmt = QTY
+  const ftot = foot.getCell(5)
+  putQty(ftot, eatenAll)
   paint(ftot, 'right')
+  // The Comments column carries nothing to total, but it is part of the band
+  // and an unpainted cell would leave a white notch in it.
+  paint(foot.getCell(6), 'left')
   cols.forEach((p, i) => {
     const cell = foot.getCell(LEFT.length + 1 + i)
     let eaten = 0
@@ -501,10 +684,7 @@ export async function downloadProductionReport(
       if (Number(p.id) !== Number(b.product_id)) outp += n(v?.produced)
     }
     const net = eaten - outp
-    if (Math.abs(net) > 0.0005) {
-      cell.value = net
-      cell.numFmt = QTY
-    }
+    if (Math.abs(net) > 0.0005) putQty(cell, net)
     paint(cell, 'right')
   })
 
@@ -515,19 +695,20 @@ export async function downloadProductionReport(
   ws.mergeCells(r + 3, 1, r + 3, Math.min(N, LEFT.length + 10))
   const lc = legend.getCell(1)
   lc.value =
-    'Qty is what the batch MADE; the product columns are what it CONSUMED, and a by-product coming back off a batch ' +
-    'is negative. Total is consumption including dead loss, which is why it exceeds the quantity made. ' +
+    'Output is what the batch MADE; the product columns are what it CONSUMED, and a by-product coming back off a batch ' +
+    'is negative. TOR is consumption including dead loss, which is why it exceeds the quantity made. ' +
     'Opening Stock / Receipts / Total before Pn. are the same figures the Book Stock register shows for this period. ' +
-    'Hover a Ratio cell for its formulation — which parts, their percentages, and the recipe version it was run on. ' +
+    'Hover a Ratio cell for the formulation worked out — each part, its percentage, the tonnes it came to on that batch, ' +
+    'and the recipe version it was run on. ' +
     'Only days with production are listed; a product with no column figure was not drawn on this period.'
   lc.font = { name: FONT, italic: true, size: 9, color: { argb: MUTED } }
   lc.alignment = { horizontal: 'left', vertical: 'top', wrapText: true, indent: 1 }
 
   ws.autoFilter = { from: { row: R_HEAD, column: 1 }, to: { row: r - 1, column: N } }
 
-  downloadWorkbook(
-    await wb.xlsx.writeBuffer(),
-    `production-report-${from || 'start'}-to-${to || 'date'}-${stamp}`
-  )
+  // Written, then the comment boxes are grown to fit their contents — see
+  // resizeNotes for why that cannot be asked for up front.
+  const buf = await resizeNotes((await wb.xlsx.writeBuffer()) as ArrayBuffer, noteSizes)
+  downloadWorkbook(buf, `production-report-${from || 'start'}-to-${to || 'date'}-${stamp}`)
   return written
 }

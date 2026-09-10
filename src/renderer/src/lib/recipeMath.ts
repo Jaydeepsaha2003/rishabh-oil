@@ -118,3 +118,142 @@ export function expandRecipe(
   }
   return lines
 }
+
+// ---------------------------------------------------------------------------
+// Drawing part of an input from PP that carries no free fatty acid.
+// ---------------------------------------------------------------------------
+// PP is the oil already in process, and it comes in two kinds. Oil marked
+// W/O FFA has had its free fatty acid stripped already — it is most of the way
+// to finished — so a batch drawing on it loses nothing to FFA. Oil marked
+// With FFA has not, and sheds its FFA% on the way through exactly as raw oil
+// does.
+//
+// So an input can no longer have ONE multiplier. Needing ten tonnes of usable
+// oil, with four available as W/O-FFA PP, is four tonnes drawn one-for-one plus
+// six tonnes' worth lifted by the FFA yield — and only the second part sheds
+// any fatty acid to recover.
+//
+// Stated as: dead loss applies to everything (it is the recipe's own shared
+// assumption, not a property of the oil), and the FFA uplift applies only to
+// the FFA-bearing part.
+//
+//   need      = output x share / (1 - deadLoss)          <- usable oil wanted
+//   grossFree = the W/O-FFA PP taken, one for one
+//   grossFfa  = (need - grossFree) x (1 - d) / (1 - f - d)
+//
+// With no W/O-FFA PP available this reduces EXACTLY to what the recipe already
+// computed — grossFfa = need x (1-d)/(1-f-d) = output x share / (1-f-d) —
+// which is the property that matters most here: turning the feature on must not
+// move a single existing batch. splitInputDraw is checked against that.
+export type InputDraw = {
+  /** Taken from PP marked W/O FFA — no fatty-acid uplift, none recovered. */
+  fromFree: number
+  /** Taken from everything else — lifted by the FFA yield, and sheds FFA. */
+  fromFfa: number
+  /** Gross oil the batch actually draws: fromFree + fromFfa. */
+  gross: number
+  /** Fatty acid recovered, off the FFA-bearing part alone. */
+  fattyAcid: number
+}
+
+/**
+ * How one input's draw splits, given how much W/O-FFA PP is on hand.
+ *
+ * `freeAvailable` is capped by what the input needs: PP left over is still PP,
+ * and a vessel is never emptied further than the batch requires.
+ */
+export function splitInputDraw(
+  it: Row,
+  outputQty: number,
+  blendShare: number,
+  sharedDeadLossPct: number,
+  freeAvailable: number
+): InputDraw {
+  const share = num(it.qty)
+  const d = sharedDeadLossPct / 100
+  // A recipe claiming to lose everything has no sane answer; fall back to no
+  // uplift rather than dividing by zero or going negative.
+  const need = blendShare > 0 && d < 1 ? (outputQty * share) / 100 / (1 - d) : 0
+  const f = (it.auto_calc ? inputFattyAcidPct(it) : 0) / 100
+  const fromFree = Math.max(0, Math.min(num(freeAvailable), need))
+  const remaining = Math.max(0, need - fromFree)
+  const yieldLeft = 1 - f - d
+  const fromFfa = yieldLeft > 0 ? (remaining * (1 - d)) / yieldLeft : remaining
+  return {
+    fromFree,
+    fromFfa,
+    gross: fromFree + fromFfa,
+    fattyAcid: fromFfa * f
+  }
+}
+
+/**
+ * The same expansion as expandRecipe, but told how much W/O-FFA PP each input
+ * may draw on first — `freeByProduct` maps product id to the quantity
+ * available. An input with none behaves exactly as before.
+ *
+ * Returns the movement lines AND, per input, how the draw was split, so the
+ * entry sheet can show it and the PP balance can be reduced by the right
+ * amount against the right bucket.
+ */
+export function expandRecipeWithPp(
+  items: Row[],
+  outputQty: number,
+  freeByProduct: Record<number, number> = {}
+): {
+  lines: { product_id: number; qty: number; kind: string }[]
+  draws: { product_id: number; fromFree: number; fromFfa: number; gross: number; fattyAcid: number }[]
+} {
+  const inputs = items.filter((it) => kindOf(it) === 'input')
+  const blend = sumOf(items, 'input')
+  const deadLoss = sumOf(items, 'loss')
+  const uniformTor = uniformRecipeTor(items)
+
+  // Each input's own split. A non-auto_calc input has no FFA of its own, so
+  // W/O-FFA PP buys it nothing — its gross is the uniform figure either way,
+  // and it is left exactly where it was.
+  const left = { ...freeByProduct }
+  const draws: { product_id: number; fromFree: number; fromFfa: number; gross: number; fattyAcid: number }[] = []
+  const lines: { product_id: number; qty: number; kind: string }[] = []
+
+  for (const it of inputs) {
+    const pid = Number(it.product_id)
+    if (!it.auto_calc) {
+      const qty = blend > 0 ? (outputQty * num(it.qty) * (uniformTor / 100)) / 100 : 0
+      lines.push({ product_id: pid, qty, kind: 'input' })
+      draws.push({ product_id: pid, fromFree: 0, fromFfa: qty, gross: qty, fattyAcid: 0 })
+      continue
+    }
+    const split = splitInputDraw(it, outputQty, blend, deadLoss, left[pid] || 0)
+    left[pid] = Math.max(0, (left[pid] || 0) - split.fromFree)
+    lines.push({ product_id: pid, qty: split.gross, kind: 'input' })
+    draws.push({ product_id: pid, ...split })
+  }
+
+  // Loss and manual by-product lines are a % OF THE INPUT, so they ride on
+  // what the recipe ACTUALLY draws — which now depends on the split, and is
+  // smaller when part of the oil came from PP that sheds nothing.
+  const torActual = outputQty > 0 ? (lines.reduce((a, l) => a + l.qty, 0) / outputQty) * 100 : 0
+  for (const it of items) {
+    const kind = kindOf(it)
+    if (kind === 'input') continue
+    lines.push({ product_id: Number(it.product_id), qty: (outputQty * ((torActual * num(it.qty)) / 100)) / 100, kind })
+  }
+
+  // The fatty acid each auto-calculated input recovers, pooled by the product
+  // it names — off the FFA-bearing part of the draw only.
+  const adds = new Map<number, number>()
+  for (const it of inputs) {
+    if (!it.auto_calc || !num(it.byproduct_product_id)) continue
+    const d = draws.find((x) => x.product_id === Number(it.product_id))
+    if (!d) continue
+    const pid = num(it.byproduct_product_id)
+    adds.set(pid, (adds.get(pid) || 0) + d.fattyAcid)
+  }
+  for (const [pid, qty] of adds) {
+    const existing = lines.find((l) => l.kind === 'output' && l.product_id === pid)
+    if (existing) existing.qty += qty
+    else lines.push({ product_id: pid, qty, kind: 'output' })
+  }
+  return { lines, draws }
+}

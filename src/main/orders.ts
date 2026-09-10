@@ -14,7 +14,7 @@ import {
   type LotAllocation
 } from './consignment'
 import { deleteJournalByRef, postPurchaseJournal } from './journal'
-import { getActiveCompanyId } from './company'
+import { companiesOfFactory, getActiveCompanyId } from './company'
 import { visibleFromFor } from './access-gate'
 import { assertPurchaseInvoiceNoFree } from './invoiceno'
 
@@ -1836,9 +1836,22 @@ export async function listTankerQuality(tankerId: number): Promise<Row[]> {
 // falling back down the stages so a load still in transit sorts by the most
 // recent thing known about it rather than dropping to the bottom.
 export async function listFfaHistory(productId = 0, limit = 60): Promise<Row[]> {
-  const cid = getActiveCompanyId()
   const pid = n(productId)
   const lim = Math.min(300, Math.max(1, n(limit) || 60))
+  // BY SITE, not by company.
+  //
+  // Oil is received at a factory. Which company's books the invoice was raised
+  // in is an accounting fact about the purchase, not a fact about the tanker
+  // that pulled up at the gate — and a recipe is run on whatever is in the
+  // tanks, whoever bought it. Scoped to the active company this list hid loads
+  // that had physically arrived at the same site, so the FFA offered was an
+  // average of some of the oil rather than of the oil.
+  //
+  // companiesOfFactory falls back to the active company alone where no factory
+  // is assigned, so a database that has not been through that migration
+  // behaves exactly as it did.
+  const cids = await companiesOfFactory()
+  const cph = cids.map(() => '?').join(', ')
   const res = await getClient().execute({
     sql: `
     SELECT * FROM (
@@ -1850,13 +1863,15 @@ export async function listFfaHistory(productId = 0, limit = 60): Promise<Row[]> 
              s.name AS party, p.name AS product, p.code AS product_code,
              pt.oil_type_id AS product_id,
              COALESCE(pt.received_qty, pt.loaded_qty) AS qty, pt.uom AS uom,
-             o.invoice_no AS invoice_no, tq.value AS ffa
+             o.invoice_no AS invoice_no, tq.value AS ffa,
+             co.name AS company
         FROM tanker_quality tq
         JOIN purchase_tankers pt ON pt.id = tq.tanker_id
         LEFT JOIN suppliers s ON s.id = pt.supplier_id
         LEFT JOIN products p ON p.id = pt.oil_type_id
         LEFT JOIN orders o ON o.id = pt.order_id
-       WHERE pt.company_id = ?
+        LEFT JOIN companies co ON co.id = pt.company_id
+       WHERE pt.company_id IN (${cph})
          AND UPPER(TRIM(tq.name)) = 'FFA'
          AND TRIM(COALESCE(tq.value, '')) <> ''
       UNION ALL
@@ -1864,19 +1879,21 @@ export async function listFfaHistory(productId = 0, limit = 60): Promise<Row[]> 
              COALESCE(NULLIF(o.delivered_date, ''), o.order_date),
              o.status,
              s.name, p.name, p.code, o.oil_type_id,
-             COALESCE(o.received_qty, o.ordered_qty), o.uom, o.invoice_no, oq.value
+             COALESCE(o.received_qty, o.ordered_qty), o.uom, o.invoice_no, oq.value,
+             co.name
         FROM order_quality oq
         JOIN orders o ON o.id = oq.order_id
         LEFT JOIN suppliers s ON s.id = o.supplier_id
         LEFT JOIN products p ON p.id = o.oil_type_id
-       WHERE o.company_id = ?
+        LEFT JOIN companies co ON co.id = o.company_id
+       WHERE o.company_id IN (${cph})
          AND UPPER(TRIM(oq.name)) = 'FFA'
          AND TRIM(COALESCE(oq.value, '')) <> ''
     )
     WHERE (? = 0 OR product_id = ?)
     ORDER BY received_date DESC, id DESC
     LIMIT ?`,
-    args: [cid, cid, pid, pid, lim]
+    args: [...cids, ...cids, pid, pid, lim]
   })
   // A reading that is not a number is dropped here rather than in SQL: the
   // column is free text, and "23", "23.4%" and "approx 23" all arrive from the

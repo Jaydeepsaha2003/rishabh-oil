@@ -86,11 +86,19 @@ export function FfaPicker({
     }
   }, [open, scope, productId])
 
+  // Whether the loads on offer came in on more than one company's books.
+  const multiCompany = useMemo(
+    () => new Set(rows.map((r) => String(r.company || '')).filter(Boolean)).size > 1,
+    [rows]
+  )
+
   const visible = useMemo(() => {
     const q = search.trim().toLowerCase()
     if (!q) return rows
     return rows.filter((r) =>
-      [r.party, r.ref, r.product, r.invoice_no, r.ffa].some((v) => String(v ?? '').toLowerCase().includes(q))
+      [r.party, r.ref, r.product, r.invoice_no, r.ffa, r.company].some((v) =>
+        String(v ?? '').toLowerCase().includes(q)
+      )
     )
   }, [rows, search])
 
@@ -287,6 +295,14 @@ export function FfaPicker({
                       {r.kind === 'consignment' ? (
                         <span className="ml-1.5 text-[10.5px] font-extrabold uppercase tracking-[.04em] text-[#8FA79B]">
                           consignment
+                        </span>
+                      ) : null}
+                      {/* Only where there is more than one book at this site to
+                          tell apart — on a single-company site it would be the
+                          same name on every row. */}
+                      {multiCompany && r.company ? (
+                        <span className="ml-1.5 text-[10.5px] font-semibold text-[#8FA79B]">
+                          {String(r.company)}
                         </span>
                       ) : null}
                     </span>

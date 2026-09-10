@@ -7,36 +7,28 @@
 //     BLEACHER          6.000
 //     Deo Feed Tms      2.500
 //     Deo Scr          32.000
-//     OO Tms            3.000
-//     Filter Press      3.000
-//     PLF               3.000
 //     Post Bleacher     3.500
 //     ----------------------
 //     Total            53.000  MT PP
 //
-// This is that sheet. Three things about it are deliberate:
+// Redesigned to the Stock handoff, and one thing changed with it. The first
+// version listed EVERY stage the site knows against every product, so a
+// thirty-product sheet meant thirty dialogs of mostly-blank rows, and a cross
+// had to reach across products to decide whether a stage could go. Now a
+// product's breakdown holds only the vessels that product is actually sitting
+// in: you add the ones it is in, and the cross takes a line off THIS product
+// and touches nothing else. Which gives the rule that was asked for by
+// construction — a stage keeps its quantity wherever one stands against it,
+// because nothing but this product's own list is ever edited here.
 //
-//   THE STAGE LIST BELONGS TO THE SITE. A refinery has one set of vessels, so a
-//   stage added while counting one oil is offered against every other oil on
-//   the sheet. Adding one therefore writes to the database immediately — it is
-//   not part of this product's draft.
+// The names still belong to the site: whatever anybody has typed is offered as
+// a suggestion, so the same vessel is not spelled three ways.
 //
-//   WITH FFA / WITHOUT FFA IS PER LINE, not per vessel. The same tank can hold
-//   oil that still carries its free fatty acid on one product and stripped oil
-//   on another, and the classification is the counter's statement about what
-//   was in it that morning. Left unset it stays unset: "counted, not yet
-//   classified" is a real answer and the total says so rather than quietly
-//   picking a side.
-//
-//   THE CROSS SAVES FIRST. Crossing a stage off keeps it wherever a quantity
-//   stands against it and drops it everywhere it is blank — so if the figure
-//   typed on THIS row has not been saved yet, the cross would be judging a
-//   blank that is not really blank. It saves the breakdown, then removes.
+// EDITED AS A DRAFT, saved in one go. The dialog was writing on every keypress
+// before, which meant Cancel could not put anything back.
 import React, { useCallback, useEffect, useMemo, useState } from 'react'
-import { Plus, X } from 'lucide-react'
+import { Layers, Plus, X } from 'lucide-react'
 import { toast } from 'sonner'
-import { Button } from '@/components/ui/button'
-import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { formatNum } from '@/lib/format'
 import { cn } from '@/lib/utils'
 
@@ -44,10 +36,11 @@ import { cn } from '@/lib/utils'
 type Row = Record<string, any>
 
 export type PpFfa = 'with' | 'without' | null
-export type PpLine = { stage_id: number; name: string; qty: number; ffa: PpFfa; active?: boolean }
-type Draft = Record<number, { qty: string; ffa: PpFfa }>
+export type PpLine = { stage_id?: number; stage?: string; name?: string; qty: number; ffa: PpFfa }
+type Draft = { stage: string; stage_id: number; qty: string; ffa: boolean }
 
 const n = (v: unknown): number => (Number.isFinite(Number(v)) ? Number(v) : 0)
+const r3 = (v: number): number => Math.round(v * 1000) / 1000
 
 // The plant writes 2:50 for two and a half tonnes — a colon where the rest of
 // the app writes a point. Accepted as typed rather than rejected, because the
@@ -59,47 +52,27 @@ export function parsePpQty(v: string): string {
     .replace(/(\..*)\./g, '$1')
 }
 
-// The rows to show for one product: every stage the site currently offers,
-// plus any retired stage this product still carries a quantity against — the
-// latter is what "kept where it is used" looks like on screen.
-export function ppRowsFor(stages: Row[], lines: PpLine[]): { id: number; name: string; retired: boolean }[] {
-  const used = new Map<number, PpLine>()
-  for (const l of lines) used.set(n(l.stage_id), l)
-  const out: { id: number; name: string; retired: boolean }[] = []
-  const seen = new Set<number>()
-  for (const s of stages) {
-    const id = n(s.id)
-    const active = s.active !== false
-    if (!active && !used.has(id)) continue
-    seen.add(id)
-    out.push({ id, name: String(s.name), retired: !active })
-  }
-  // A line whose stage is not in the list at all — a stage deleted outright
-  // while this tab was open. Shown rather than silently dropped, so the
-  // quantity is never lost without the reader seeing it.
-  for (const [id, l] of used) {
-    if (!seen.has(id)) out.push({ id, name: String(l.name || `Stage ${id}`), retired: true })
-  }
-  return out
-}
-
-export function ppTotal(draft: Draft): { total: number; withFfa: number; without: number; unset: number } {
+export function ppTotals(draft: Draft[]): { total: number; withFfa: number; without: number } {
   let total = 0
   let withFfa = 0
-  let without = 0
-  let unset = 0
-  for (const k of Object.keys(draft)) {
-    const d = draft[Number(k)]
-    const q = n(d?.qty)
+  for (const l of draft) {
+    const q = n(l.qty)
     if (!q) continue
     total += q
-    if (d.ffa === 'with') withFfa += q
-    else if (d.ffa === 'without') without += q
-    else unset += q
+    if (l.ffa) withFfa += q
   }
-  const r3 = (v: number): number => Math.round(v * 1000) / 1000
-  return { total: r3(total), withFfa: r3(withFfa), without: r3(without), unset: r3(unset) }
+  return { total: r3(total), withFfa: r3(withFfa), without: r3(total - withFfa) }
 }
+
+const draftFrom = (lines: PpLine[]): Draft[] =>
+  lines.map((l) => ({
+    stage: String(l.stage ?? l.name ?? ''),
+    stage_id: n(l.stage_id),
+    qty: l.qty == null || l.qty === 0 ? '' : String(l.qty),
+    // A line stored before the toggle became two-state reads as W/O FFA — the
+    // side it would have been counted on anyway.
+    ffa: l.ffa === 'with'
+  }))
 
 export function PpBreakdown({
   product,
@@ -107,20 +80,17 @@ export function PpBreakdown({
   onOpenChange,
   onSaved
 }: {
-  // The product being counted: { id, name, uom?, pp_lines }
   product: Row | null
   open: boolean
   onOpenChange: (v: boolean) => void
   // Handed the new total and lines so the sheet can update that one row
-  // without reloading — the sheet holds a draft of forty other rows and a
-  // reload would throw them away.
+  // without reloading — it holds an unsaved draft of every other row.
   onSaved: (productId: number, total: number, lines: PpLine[]) => void
-}): React.JSX.Element {
-  const [stages, setStages] = useState<Row[]>([])
-  const [draft, setDraft] = useState<Draft>({})
+}): React.JSX.Element | null {
+  const [draft, setDraft] = useState<Draft[]>([])
+  const [known, setKnown] = useState<string[]>([])
   const [adding, setAdding] = useState('')
   const [busy, setBusy] = useState(false)
-  const [loading, setLoading] = useState(false)
 
   const lines: PpLine[] = useMemo(
     () => (Array.isArray(product?.pp_lines) ? (product?.pp_lines as PpLine[]) : []),
@@ -129,96 +99,66 @@ export function PpBreakdown({
   const pid = n(product?.id)
   const uom = String(product?.uom || 'MT')
 
-  const loadStages = useCallback(async (): Promise<void> => {
-    setLoading(true)
+  const loadKnown = useCallback(async (): Promise<void> => {
     try {
-      setStages(await window.api.stockOpening.ppStages())
-    } catch (e) {
-      toast.error((e as Error).message)
-    } finally {
-      setLoading(false)
+      const st = await window.api.stockOpening.ppStages()
+      setKnown(st.filter((x) => x.active !== false).map((x) => String(x.name)))
+    } catch {
+      // The suggestions are a convenience. A dialog that will not open because
+      // the dictionary could not be read is worse than one with no dictionary.
+      setKnown([])
     }
   }, [])
 
-  // Opened fresh each time: the stage list may have grown since this tab last
-  // looked, and the draft must start from what is actually saved.
   useEffect(() => {
     if (!open) return
-    const next: Draft = {}
-    for (const l of lines) next[n(l.stage_id)] = { qty: String(l.qty ?? ''), ffa: l.ffa ?? null }
-    setDraft(next)
+    setDraft(draftFrom(lines))
     setAdding('')
-    void loadStages()
-  }, [open, lines, loadStages])
+    void loadKnown()
+  }, [open, lines, loadKnown])
 
-  const shown = useMemo(() => ppRowsFor(stages, lines), [stages, lines])
-  const sums = ppTotal(draft)
+  const sums = ppTotals(draft)
+  const before = r3(lines.reduce((a, l) => a + n(l.qty), 0))
+  const shifted = Math.abs(sums.total - before) > 0.0005
+  const wanted = adding.trim()
+  const dupe = !!wanted && draft.some((l) => l.stage.toLowerCase() === wanted.toLowerCase())
 
-  const payload = (): Row[] =>
-    shown.map((s) => ({ stage_id: s.id, qty: draft[s.id]?.qty ?? '', ffa: draft[s.id]?.ffa ?? null }))
+  // Suggestions the site already knows and this product is not already in.
+  const suggestions = known.filter(
+    (k) => !draft.some((l) => l.stage.toLowerCase() === k.toLowerCase())
+  )
 
-  function setQty(id: number, v: string): void {
-    setDraft((p) => ({ ...p, [id]: { qty: parsePpQty(v), ffa: p[id]?.ffa ?? null } }))
-  }
-  function setFfa(id: number, v: PpFfa): void {
-    setDraft((p) => ({ ...p, [id]: { qty: p[id]?.qty ?? '', ffa: p[id]?.ffa === v ? null : v } }))
-  }
-
-  async function addStage(): Promise<void> {
-    const name = adding.trim()
-    if (!name) return
-    setBusy(true)
-    try {
-      const st = await window.api.stockOpening.addPpStage(name)
-      setAdding('')
-      await loadStages()
-      toast.success(
-        st.revived
-          ? `${st.name} is back on the list — it was crossed off but still in use`
-          : `${st.name} added, and offered against every product on the sheet`
-      )
-    } catch (e) {
-      toast.error((e as Error).message)
-    } finally {
-      setBusy(false)
-    }
-  }
-
-  async function removeStage(id: number, name: string): Promise<void> {
-    setBusy(true)
-    try {
-      // Saved first, so the cross judges this row on what is actually typed
-      // rather than on a blank that only looks blank.
-      const saved = await window.api.stockOpening.savePp(pid, payload())
-      const res = await window.api.stockOpening.removePpStage(id)
-      onSaved(pid, saved.total, linesFromDraft(shown, draft).filter((l) => l.stage_id !== id || res.kept > 0))
-      await loadStages()
-      setDraft((p) => {
-        const next = { ...p }
-        if (!res.kept) delete next[id]
-        return next
-      })
-      toast.success(
-        res.kept > 0
-          ? `${name} kept on ${res.kept} product${res.kept === 1 ? '' : 's'} that has a quantity against it, and dropped everywhere it was blank`
-          : `${name} removed — nothing had a quantity against it`
-      )
-    } catch (e) {
-      toast.error((e as Error).message)
-    } finally {
-      setBusy(false)
-    }
+  function addStage(): void {
+    if (!wanted || dupe) return
+    setDraft((d) => [...d, { stage: wanted, stage_id: 0, qty: '', ffa: false }])
+    setAdding('')
   }
 
   async function save(): Promise<void> {
     setBusy(true)
     try {
-      const res = await window.api.stockOpening.savePp(pid, payload())
-      onSaved(pid, res.total, linesFromDraft(shown, draft))
+      const res = await window.api.stockOpening.savePp(
+        pid,
+        draft
+          .filter((l) => l.stage.trim())
+          .map((l) => ({
+            stage: l.stage.trim(),
+            stage_id: l.stage_id || undefined,
+            qty: l.qty,
+            ffa: l.ffa ? 'with' : 'without'
+          }))
+      )
+      onSaved(
+        pid,
+        res.total,
+        draft
+          .filter((l) => l.stage.trim() && Math.abs(n(l.qty)) > 0.0005)
+          .map((l) => ({ stage: l.stage.trim(), name: l.stage.trim(), qty: r3(n(l.qty)), ffa: l.ffa ? 'with' : 'without' }))
+      )
       toast.success(
         res.lines
-          ? `PP for ${String(product?.name || '')} is ${formatNum(res.total)} ${uom} across ${res.lines} stage${res.lines === 1 ? '' : 's'}`
-          : `Breakdown cleared — PP for ${String(product?.name || '')} is back to a single figure`
+          ? `PP for ${String(product?.name || '')} is ${formatNum(res.total)} ${uom} across ${res.lines} vessel${res.lines === 1 ? '' : 's'}`
+          : `Breakdown cleared — PP for ${String(product?.name || '')} is back to a figure typed on the sheet`
       )
       onOpenChange(false)
     } catch (e) {
@@ -228,164 +168,234 @@ export function PpBreakdown({
     }
   }
 
-  const ffaBtn = (on: boolean, tone: 'with' | 'without'): string =>
-    cn(
-      'h-7 shrink-0 rounded-[3px] border px-2 text-[10.5px] font-bold transition-colors',
-      on
-        ? tone === 'with'
-          ? 'border-amber-300 bg-amber-100 text-amber-900'
-          : 'border-emerald-300 bg-emerald-100 text-emerald-900'
-        : 'border-input bg-white text-muted-foreground hover:bg-muted'
-    )
+  if (!open) return null
+
+  const req = dupe
+    ? `${wanted} is already on this breakdown.`
+    : draft.length === 0
+      ? 'Saving with no stages puts PP back to blank.'
+      : `${draft.length} stage${draft.length === 1 ? '' : 's'} adding up to ${formatNum(sums.total)} ${uom}.`
+  const reqFg = dupe ? '#B3261E' : draft.length === 0 ? '#8A5300' : '#0B6B45'
+
+  const GRID = 'minmax(140px,1fr) 108px 148px 34px'
 
   return (
-    <Dialog open={open} onOpenChange={(o) => !o && onOpenChange(false)}>
-      <DialogContent className="max-h-[88vh] overflow-y-auto sm:max-w-xl">
-        <DialogHeader>
-          <DialogTitle>PP breakdown — {String(product?.name || '')}</DialogTitle>
-        </DialogHeader>
-
-        <p className="text-[11.5px] leading-[1.5] text-muted-foreground">
-          What the in-process figure is made of, vessel by vessel. The stage list belongs to the site, so
-          anything added here is offered against every product on the sheet. PP for this product becomes the
-          total below.
-        </p>
-
-        <div className="rounded-[4px] border">
-          <div className="grid grid-cols-[1fr_92px_128px_28px] items-center gap-2 border-b bg-muted/40 px-2.5 py-1.5 text-[10px] font-extrabold uppercase tracking-[.08em] text-muted-foreground">
-            <span>Stage</span>
-            <span className="text-right">Qty {uom}</span>
-            <span className="text-center">FFA</span>
-            <span />
+    <div
+      className="fixed inset-0 z-[80] flex items-center justify-center p-5"
+      style={{ background: 'rgba(10,31,23,.5)' }}
+      onMouseDown={(e) => {
+        if (e.target === e.currentTarget) onOpenChange(false)
+      }}
+    >
+      <div
+        className="flex max-h-full w-[min(100%,600px)] flex-col overflow-hidden rounded-lg bg-white"
+        style={{ boxShadow: '0 24px 60px rgba(10,31,23,.34)' }}
+      >
+        <div className="flex flex-none items-start justify-between gap-3.5 px-[22px] pt-5">
+          <div className="min-w-0">
+            <div className="text-[18px] font-extrabold tracking-[-0.02em] text-[#0A1F17]">
+              PP breakdown — {String(product?.name || '')}
+            </div>
           </div>
-          {loading && shown.length === 0 && (
-            <p className="px-2.5 py-4 text-center text-[11.5px] text-muted-foreground">Reading the stage list…</p>
-          )}
-          {!loading && shown.length === 0 && (
-            <p className="px-2.5 py-4 text-center text-[11.5px] text-muted-foreground">
-              No stages yet. Add the first one below — BLEACHER, Deo Scr, Filter Press, whatever this refinery
-              calls its vessels.
-            </p>
-          )}
-          {shown.map((s) => {
-            const d = draft[s.id] || { qty: '', ffa: null }
-            return (
-              <div
-                key={s.id}
-                className="grid grid-cols-[1fr_92px_128px_28px] items-center gap-2 border-b px-2.5 py-1.5 last:border-b-0"
-              >
-                <span className="min-w-0 truncate text-[12px] font-semibold">
-                  {s.name}
-                  {s.retired && (
-                    <span
-                      className="ml-1.5 rounded-[2px] bg-muted px-1 py-px text-[9px] font-extrabold uppercase tracking-[.06em] text-muted-foreground"
-                      title="Crossed off the site's list, kept here because this product has a quantity against it"
-                    >
-                      off list
-                    </span>
-                  )}
+          <button
+            type="button"
+            aria-label="Close"
+            onClick={() => onOpenChange(false)}
+            className="flex h-9 w-9 flex-none items-center justify-center rounded-[4px] hover:bg-[#F1F5EF]"
+          >
+            <X className="h-[21px] w-[21px] text-[#5A6B62]" />
+          </button>
+        </div>
+
+        <div className="flex-none px-[22px] pt-2.5 text-[12.5px] font-medium leading-[1.6] text-[#5A6B62]">
+          What the in-process figure is made of, vessel by vessel. The stage names belong to the site, so anything
+          added here is offered against every product on the sheet. PP for this product becomes the total below.
+        </div>
+
+        <div className="min-h-0 flex-1 overflow-y-auto px-[22px] pt-4">
+          <div className="overflow-hidden rounded-md border border-[#E4ECE3]">
+            <div
+              className="grid h-[34px] items-center border-b border-b-[#E4ECE3] bg-[#F7FAF6] text-[9.5px] font-extrabold uppercase tracking-[.11em] text-[#5A6B62]"
+              style={{ gridTemplateColumns: GRID }}
+            >
+              <span className="px-3.5">Stage</span>
+              <span className="px-2 text-right">Qty {uom}</span>
+              <span className="px-2 text-center">FFA</span>
+              <span />
+            </div>
+
+            {draft.length === 0 ? (
+              <div className="flex flex-col items-center gap-2 px-4 py-[26px]">
+                <Layers className="h-[26px] w-[26px] text-[#C3D2C6]" />
+                <span className="text-[12.5px] font-bold text-[#5A6B62]">No stages yet</span>
+                <span className="max-w-[340px] text-center text-[12px] font-medium leading-[1.5] text-[#5A6B62]">
+                  Add the vessels this product is sitting in. With no stages, PP stays a figure typed straight onto
+                  the sheet.
                 </span>
-                <input
-                  inputMode="decimal"
-                  placeholder="0"
-                  className="doc-ref h-8 w-full rounded-md border bg-white px-2 text-right text-[12.5px] tabular-nums outline-none placeholder:text-muted-foreground/50 focus:border-[#1a2c56] focus:ring-1 focus:ring-[#1a2c56]/20"
-                  value={d.qty}
-                  onChange={(e) => setQty(s.id, e.target.value)}
-                />
-                <div className="flex items-center justify-center gap-1">
-                  <button type="button" className={ffaBtn(d.ffa === 'with', 'with')} onClick={() => setFfa(s.id, 'with')}>
-                    With FFA
-                  </button>
-                  <button
-                    type="button"
-                    className={ffaBtn(d.ffa === 'without', 'without')}
-                    onClick={() => setFfa(s.id, 'without')}
-                  >
-                    W/O FFA
-                  </button>
-                </div>
-                <button
-                  type="button"
-                  disabled={busy}
-                  title={`Cross ${s.name} off the site's list — kept wherever a quantity stands against it`}
-                  className="flex h-6 w-6 items-center justify-center rounded-[3px] text-muted-foreground hover:bg-rose-50 hover:text-rose-700 disabled:opacity-40"
-                  onClick={() => void removeStage(s.id, s.name)}
-                >
-                  <X className="h-4 w-4" />
-                </button>
               </div>
-            )
-          })}
-        </div>
-
-        <div className="flex items-center gap-2">
-          <input
-            placeholder="Add a stage — e.g. Post Bleacher"
-            className="h-9 min-w-0 flex-1 rounded-md border bg-white px-2.5 text-[12.5px] outline-none placeholder:text-muted-foreground/50 focus:border-[#1a2c56] focus:ring-1 focus:ring-[#1a2c56]/20"
-            value={adding}
-            maxLength={60}
-            onChange={(e) => setAdding(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter') {
-                e.preventDefault()
-                void addStage()
-              }
-            }}
-          />
-          <Button type="button" variant="outline" size="sm" disabled={busy || !adding.trim()} onClick={() => void addStage()}>
-            <Plus className="h-4 w-4" /> Add stage
-          </Button>
-        </div>
-
-        <div className="rounded-[4px] border bg-muted/30 px-3 py-2.5">
-          <div className="flex items-baseline justify-between gap-3">
-            <span className="text-[12px] font-extrabold uppercase tracking-[.08em] text-muted-foreground">
-              Total PP
-            </span>
-            <span className="doc-ref text-[18px] font-bold tabular-nums">
-              {formatNum(sums.total)} <span className="text-[11px] font-semibold text-muted-foreground">{uom}</span>
-            </span>
-          </div>
-          <div className="mt-1 flex flex-wrap gap-x-3 gap-y-0.5 text-[11px] font-semibold text-muted-foreground">
-            <span>
-              With FFA <span className="doc-ref tabular-nums">{formatNum(sums.withFfa)}</span>
-            </span>
-            <span>
-              W/O FFA <span className="doc-ref tabular-nums">{formatNum(sums.without)}</span>
-            </span>
-            {sums.unset > 0 && (
-              <span className="text-amber-700">
-                not stated <span className="doc-ref tabular-nums">{formatNum(sums.unset)}</span>
-              </span>
+            ) : (
+              draft.map((l, i) => (
+                <div
+                  key={`${l.stage}-${i}`}
+                  className="grid min-h-[45px] items-center border-b border-b-[#EFF3EE] last:border-b-0"
+                  style={{ gridTemplateColumns: GRID }}
+                >
+                  <span className="truncate px-3.5 text-[13px] font-bold text-[#0A1F17]" title={l.stage}>
+                    {l.stage}
+                  </span>
+                  <div className="px-2">
+                    <input
+                      inputMode="decimal"
+                      placeholder="0"
+                      aria-label={`${l.stage} quantity`}
+                      className="doc-ref h-[34px] w-full rounded-[4px] border border-[#DCE7DB] bg-white px-[9px] text-right text-[13px] font-semibold tabular-nums text-[#0A1F17] outline-none placeholder:font-medium placeholder:text-[#C3D2C6] focus:border-[#5B4BA8]"
+                      value={l.qty}
+                      onChange={(e) => {
+                        const v = parsePpQty(e.target.value)
+                        setDraft((d) => d.map((x, k) => (k === i ? { ...x, qty: v } : x)))
+                      }}
+                    />
+                  </div>
+                  {/* Two states, one of them always on. "Not stated" was a
+                      third state nobody chose on purpose — every line is
+                      either carrying its free fatty acid or it is not, and the
+                      counter knows which. */}
+                  <div className="flex justify-center gap-[5px] px-2">
+                    {(
+                      [
+                        { on: l.ffa, label: 'With FFA', bg: '#FFF9E0', bd: '#E8D9A0', fg: '#8A5300', v: true },
+                        { on: !l.ffa, label: 'W/O FFA', bg: '#E9F5EE', bd: '#BFE3CB', fg: '#0B6B45', v: false }
+                      ] as const
+                    ).map((b) => (
+                      <button
+                        key={b.label}
+                        type="button"
+                        onClick={() => setDraft((d) => d.map((x, k) => (k === i ? { ...x, ffa: b.v } : x)))}
+                        className="flex h-8 min-w-[64px] items-center justify-center rounded-[4px] border text-[11px] font-extrabold transition-colors"
+                        style={
+                          b.on
+                            ? { background: b.bg, borderColor: b.bd, color: b.fg }
+                            : { background: '#fff', borderColor: '#DCE7DB', color: '#5A6B62' }
+                        }
+                      >
+                        {b.label}
+                      </button>
+                    ))}
+                  </div>
+                  <div className="flex items-center justify-center pr-2">
+                    <button
+                      type="button"
+                      title={`Take ${l.stage} off this product's breakdown`}
+                      onClick={() => setDraft((d) => d.filter((_, k) => k !== i))}
+                      className="flex h-7 w-7 items-center justify-center rounded-[3px] text-[#8CA396] hover:bg-[#FDF3F2] hover:text-[#B3261E]"
+                    >
+                      <X className="h-[19px] w-[19px]" />
+                    </button>
+                  </div>
+                </div>
+              ))
             )}
+
+            <div className="flex items-center gap-2.5 bg-white px-3.5 py-3">
+              <input
+                list="pp-stage-names"
+                placeholder="Add a vessel — e.g. Post Bleacher"
+                aria-label="Add a stage"
+                maxLength={60}
+                className="h-[42px] min-w-0 flex-1 rounded-md border border-[#DCE7DB] bg-white px-3 text-[13px] font-semibold text-[#0A1F17] outline-none placeholder:font-medium placeholder:text-[#C3D2C6] focus:border-[#5B4BA8]"
+                value={adding}
+                onChange={(e) => setAdding(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') {
+                    e.preventDefault()
+                    addStage()
+                  }
+                }}
+              />
+              {/* Whatever the site has been calling its vessels, so the same
+                  tank is not spelled three ways across thirty products. */}
+              <datalist id="pp-stage-names">
+                {suggestions.map((k) => (
+                  <option key={k} value={k} />
+                ))}
+              </datalist>
+              <button
+                type="button"
+                onClick={addStage}
+                disabled={!wanted || dupe}
+                className="flex h-[42px] flex-none items-center gap-[7px] rounded-md border bg-white px-[15px] text-[12.5px] font-extrabold disabled:cursor-not-allowed"
+                style={{
+                  borderColor: wanted && !dupe ? '#5B4BA8' : '#DCE7DB',
+                  color: wanted && !dupe ? '#3D3179' : '#8CA396'
+                }}
+              >
+                <Plus className="h-[18px] w-[18px]" />
+                Add stage
+              </button>
+            </div>
           </div>
+
+          <div className="mt-3 flex flex-wrap items-center gap-3.5 rounded-md border border-[#E4ECE3] bg-[#F7FAF6] p-[15px]">
+            <div className="min-w-0">
+              <div className="text-[11px] font-extrabold uppercase tracking-[.13em] text-[#3D3179]">Total PP</div>
+              <div className="mt-1.5 text-[12px] font-semibold text-[#5A6B62]">
+                With FFA <span className="doc-ref tabular-nums">{formatNum(sums.withFfa)}</span>
+                &nbsp;&nbsp; W/O FFA <span className="doc-ref tabular-nums">{formatNum(sums.without)}</span>
+              </div>
+            </div>
+            <div className="ml-auto flex flex-none items-baseline gap-1.5">
+              <span className="doc-ref text-[26px] font-bold tracking-[-0.03em] text-[#0A1F17] tabular-nums">
+                {formatNum(sums.total)}
+              </span>
+              <span className="text-[11.5px] font-bold text-[#5A6B62]">{uom}</span>
+            </div>
+          </div>
+
+          {/* What saving will actually move. The figure on the sheet is the
+              opening this product contributes, so a breakdown that changes it
+              changes the register — worth saying before the button is pressed
+              rather than after. */}
+          {shifted && (
+            <div className="mt-3 flex items-start gap-[9px] rounded-[4px] border border-[#D6CEF5] border-l-4 border-l-[#5B4BA8] bg-[#EDE9FB] px-[13px] py-[11px]">
+              <Layers className="mt-px h-[17px] w-[17px] flex-none text-[#5B4BA8]" />
+              <span className="text-[12px] font-semibold leading-[1.5] text-[#3D3179]">
+                {draft.length === 0
+                  ? 'Removing the last stage clears PP back to blank — a figure nobody has stated, which is not the same as nil.'
+                  : `PP for ${String(product?.name || '')} moves from ${formatNum(before)} to ${formatNum(sums.total)} ${uom}, so the opening this product contributes changes with it.`}
+              </span>
+            </div>
+          )}
         </div>
 
-        <DialogFooter>
-          <Button type="button" variant="outline" onClick={() => onOpenChange(false)} disabled={busy}>
+        <div className="flex flex-none flex-wrap items-center gap-3 border-t border-t-[#E4ECE3] bg-white px-[22px] py-4">
+          <span className="min-w-0 flex-1 text-[12px] font-semibold" style={{ color: reqFg }}>
+            {req}
+          </span>
+          <button
+            type="button"
+            onClick={() => onOpenChange(false)}
+            disabled={busy}
+            className="h-[42px] flex-none rounded-[4px] border border-[#C3D2C6] bg-white px-[18px] text-[12.5px] font-bold text-[#33473E] hover:bg-[#F7FAF6]"
+          >
             Cancel
-          </Button>
-          <Button type="button" onClick={() => void save()} disabled={busy || !pid}>
+          </button>
+          <button
+            type="button"
+            onClick={() => void save()}
+            // A duplicate sitting UNSENT in the add box blocks the Add button
+            // and nothing else. The breakdown itself is valid, and refusing to
+            // save it because of text nobody has added yet is the dialog
+            // arguing with the reader about something it has not accepted.
+            disabled={busy || !pid}
+            className={cn(
+              'h-[42px] flex-none rounded-[4px] px-[18px] text-[12.5px] font-extrabold',
+              busy ? 'bg-[#C3D2C6] text-[#F1F5EF]' : 'bg-[#0B3D2E] text-[#C7F03F] hover:bg-[#0A3327]'
+            )}
+          >
             {busy ? 'Saving…' : 'Save breakdown'}
-          </Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
+          </button>
+        </div>
+      </div>
+    </div>
   )
-}
-
-// The lines as the sheet should now see them — used to patch the one row that
-// changed rather than reloading forty.
-function linesFromDraft(
-  shown: { id: number; name: string }[],
-  draft: Draft
-): PpLine[] {
-  return shown
-    .map((s) => ({
-      stage_id: s.id,
-      name: s.name,
-      qty: Math.round(n(draft[s.id]?.qty) * 1000) / 1000,
-      ffa: draft[s.id]?.ffa ?? null
-    }))
-    .filter((l) => Math.abs(l.qty) > 0.0005)
 }
