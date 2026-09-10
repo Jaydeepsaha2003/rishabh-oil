@@ -7,12 +7,12 @@
 //   2    period · batches · made · consumed               <- subtitle
 //   3    (spacer)
 //   4    PRODUCTION | RAW ......... | INTERMEDIATE .... | FINISHED ....
-//   5    Date Qty Product Ratio Formulation Total | one product per column
-//   6    op.        what was in the tanks when the period opened
-//   7    receiving  what came in during it
-//   8    total      what there was to consume
+//   5    Date Qty Product Ratio Total | one column per product
+//   6    Opening Stock      what was in the tanks when the period opened
+//   7    Receipts           what came in during it
+//   8    Total before Pn.   what there was to draw on
 //   9    (spacer)
-//   10+  every DAY of the period, a line per batch, the date printed once
+//   10+  the days that RAN, a line per batch, the date printed once
 //   ..   PRODUCTION TOTAL — what was made, and what each column consumed
 //
 // The generic exporter draws a header and then rows. It has no way to say
@@ -74,30 +74,28 @@ const ddmmyyyy = (iso: string): string => {
   return y ? `${d}-${m}-${y}` : ''
 }
 
-// Every day from..to inclusive, because a blank Tuesday is a fact about the
-// month. Bounded so a range typed by hand as ten years cannot try to write
-// four thousand rows.
-function daysBetween(from: string, to: string): string[] {
-  if (!from || !to || to < from) return []
-  const out: string[] = []
-  const end = new Date(`${to}T00:00:00`)
-  for (let d = new Date(`${from}T00:00:00`); d <= end && out.length < 400; d.setDate(d.getDate() + 1)) {
-    // Built from the LOCAL parts, never toISOString(). The Date is local
-    // midnight, so toISOString converts it to UTC and hands back the day
-    // BEFORE: a September sheet opened on 31-08 and stopped on 29-09, losing
-    // its last day and gaining one that belongs to August. Same trap as the
-    // gate times, one layer further down.
-    out.push(
-      `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
-    )
+// Only the days that carry something.
+//
+// Every day of the range used to get a row, which suits a one-month sheet and
+// falls apart on a financial year: 01-09-2026 to 31-03-2027 drew two hundred
+// blank lines, most of them dates that have not happened yet. A future date on
+// a production report is not a fact about an idle day, it is noise.
+//
+// So the rows come from the batches themselves. Which also means no date
+// arithmetic and no timezone to get wrong — the earlier version built each day
+// with toISOString() and opened a September sheet on 31 August.
+function daysWithWork(batches: Row[]): string[] {
+  const seen = new Set<string>()
+  for (const b of batches) {
+    const d = String(b.date || '').slice(0, 10)
+    if (d) seen.add(d)
   }
-  return out
+  return [...seen].sort()
 }
 
-const isSunday = (iso: string): boolean => new Date(`${iso}T00:00:00`).getDay() === 0
-
-// "85 is RPO-N" / "15 is HO-PANGHAT" — the Formulation column of the hand
-// sheet, one part per line inside the one cell.
+// "85 is RPO-N" / "15 is HO-PANGHAT" — one part per line. It had a column of
+// its own until the Ratio cell's comment made it a duplicate; it is reached
+// only through ratioNote below now.
 function ratioLines(b: Row): string {
   const parts = (b.ratio_parts || []) as Row[]
   return parts.map((x) => `${formatNum(n(x.part))} is ${String(x.name)}`).join('\n')
@@ -121,8 +119,12 @@ function ratioNote(b: Row): string {
   return `${ratioLines(b)}\n\n${pct}${ver}`
 }
 
-const LEFT = ['Date', 'Qty', 'Product', 'Ratio', 'Formulation', 'Total'] as const
-const LEFT_W = [13, 10, 24, 11, 26, 11]
+// No Formulation column. It spelled the ratio out in a 26-wide column beside
+// a Ratio cell whose comment says the same thing and more — the percentages and
+// the recipe version too — so it was 26 characters of width and a three-line row
+// height spent on a duplicate. The comment is the one place it lives now.
+const LEFT = ['Date', 'Qty', 'Product', 'Ratio', 'Total'] as const
+const LEFT_W = [15, 10, 24, 12, 12]
 
 // Row numbers, named. Computing them inline is how a title block gets added
 // and the freeze pane silently ends up one row out.
@@ -156,17 +158,15 @@ export async function downloadProductionReport(
   const batches = data.batches || []
   if (!batches.length) return 0
 
-  // Only what this period moved. The whole catalogue is thirty-six columns and
-  // most of it empty in any one month, and an empty column in a spreadsheet is
-  // a column somebody has to scroll past.
-  const used = new Set<string>()
-  for (const b of batches) {
-    for (const [k, v] of Object.entries((b.cells || {}) as Record<string, Cell>)) {
-      if (n(v.consumed) || n(v.produced)) used.add(k)
-    }
-  }
+  // EVERY product, not only the ones this period touched.
+  //
+  // It used to drop the untouched ones, which read as tidier and was wrong: a
+  // column that is empty this month is the fact that nothing was drawn from
+  // that tank, and two months of the report have to line up column for column
+  // or they cannot be set side by side. The hand sheet lists the whole
+  // catalogue for the same reason.
   const cols = (data.products || [])
-    .filter((p) => used.has(String(p.id)))
+    .slice()
     .sort(
       (a, b) =>
         (BAND_ORDER.indexOf(String(a.category)) + 1 || 99) - (BAND_ORDER.indexOf(String(b.category)) + 1 || 99) ||
@@ -289,22 +289,30 @@ export async function downloadProductionReport(
   // --------------------------------------------- what there was to consume --
   // Straight off stockLevels, so these three lines are the same figures the
   // Book Stock register shows for the period.
+  // Named in full and all three bold. "op." and "receiving" were the hand
+  // sheet's own shorthand, which is fine in a book somebody keeps themselves
+  // and not in a file that gets mailed on. The third says what it is the total
+  // OF — what there was to draw on before a single batch ran.
   const avail: [number, string, (p: Row) => number, boolean][] = [
-    [R_OPEN, 'op.', (p) => n(p.opening), false],
-    [R_RECV, 'receiving', (p) => n(p.received), false],
-    [R_AVAIL, 'total', (p) => n(p.opening) + n(p.received), true]
+    [R_OPEN, 'Opening Stock', (p) => n(p.opening), true],
+    [R_RECV, 'Receipts', (p) => n(p.received), true],
+    [R_AVAIL, 'Total before Pn.', (p) => n(p.opening) + n(p.received), true]
   ]
   for (const [rn, label, pick, bold] of avail) {
     const row = ws.getRow(rn)
     row.height = 16
-    const under = bold ? { bottom: { style: 'medium' as const, color: { argb: RULE } } } : {}
+    // "Total before Pn." is wider than the Date column, and Qty carries
+    // nothing on these three rows, so the label gets both.
+    ws.mergeCells(rn, 1, rn, 2)
+    // Only the last of the three closes the block off.
+    const under = rn === R_AVAIL ? { bottom: { style: 'medium' as const, color: { argb: RULE } } } : {}
     for (let i = 1; i <= LEFT.length; i++) {
       const cell = row.getCell(i)
       if (i === 1) {
         cell.value = label
         cell.font = { name: FONT, bold, size: 10, color: { argb: 'FF33473E' } }
       }
-      solid(cell, bold ? HEAD_BG : 'FFFCFDFB')
+      solid(cell, rn === R_AVAIL ? HEAD_BG : 'FFFCFDFB')
       cell.alignment = { horizontal: 'left', vertical: 'middle', indent: i === 1 ? 1 : 0 }
       cell.border = { ...hair(), ...under }
     }
@@ -322,7 +330,7 @@ export async function downloadProductionReport(
       }
       cell.font = { name: FONT, bold, size: 10, color: { argb: p.in_stock === false ? MUTED : INK } }
       cell.alignment = { horizontal: p.in_stock === false ? 'center' : 'right', vertical: 'middle' }
-      solid(cell, bold ? bandOf(String(p.category)).tint : 'FFFCFDFB')
+      solid(cell, rn === R_AVAIL ? bandOf(String(p.category)).tint : 'FFFCFDFB')
       cell.border = {
         ...hair(),
         ...under,
@@ -347,19 +355,16 @@ export async function downloadProductionReport(
   let r = R_BODY
   let written = 0
   let dayIndex = 0
-  for (const day of daysBetween(from, to)) {
-    const list = byDay.get(day) || []
-    // A day the plant did not run still gets its row, with only the date on
-    // it. That is the point of a month sheet.
-    const lines: (Row | null)[] = list.length ? list : [null]
+  for (const day of daysWithWork(batches)) {
+    const lines = byDay.get(day) || []
     // Banded by DAY and not by row, so a day with three batches reads as one
     // block rather than as a stripe through the middle of one.
     const bg = dayIndex % 2 === 1 ? ZEBRA : 'FFFFFFFF'
-    const sunday = isSunday(day)
     lines.forEach((b, li) => {
       const row = ws.getRow(r)
-      const parts = (b?.ratio_parts || []) as Row[]
-      row.height = Math.max(16, Math.min(4, parts.length) * 12.5)
+      // One line per batch now that Formulation has gone — nothing in the left
+      // block wraps any more.
+      row.height = 16
 
       const put = (
         i: number,
@@ -375,14 +380,8 @@ export async function downloadProductionReport(
       }
 
       // Printed once per day, as on the hand sheet — three lines under
-      // 01-09-2026, not the date typed three times. A day with nothing on it
-      // is greyed, and an idle Sunday is named, so a gap in the month reads as
-      // a closed day rather than as a missing entry.
-      put(1, li === 0 ? `${ddmmyyyy(day)}${!list.length && sunday ? '  (Sun)' : ''}` : '', {
-        bold: li === 0 && !!list.length,
-        color: { argb: list.length ? INK : MUTED },
-        size: list.length ? 10 : 9.5
-      })
+      // 01-09-2026, not the date typed three times.
+      put(1, li === 0 ? ddmmyyyy(day) : '', { bold: li === 0 })
       put(2, b ? n(b.qty) : '', { bold: true, align: 'right' })
       row.getCell(2).numFmt = QTY
       put(
@@ -391,15 +390,17 @@ export async function downloadProductionReport(
         { bold: !!b }
       )
       put(4, b ? String(b.ratio || '') : '', { bold: true })
+      // The comment as well as the cell: the cell carries the ratio, the
+      // comment names the parts, their percentages and the recipe version. It
+      // is the only place the formulation is written now.
       // The comment as well as the column: the column carries the parts, the
       // comment adds the percentages and which recipe version they came off.
       if (b && b.ratio) {
         const note = ratioNote(b)
         if (note) row.getCell(4).note = { texts: [{ text: note }], margins: { insetmode: 'auto' } }
       }
-      put(5, b ? ratioLines(b) : '', { size: 9, color: { argb: 'FF546A5F' }, wrap: true })
-      put(6, b && n(b.total_consumed) ? n(b.total_consumed) : '', { bold: true, align: 'right' })
-      row.getCell(6).numFmt = QTY
+      put(5, b && n(b.total_consumed) ? n(b.total_consumed) : '', { bold: true, align: 'right' })
+      row.getCell(5).numFmt = QTY
 
       const cells = (b?.cells || {}) as Record<string, Cell>
       cols.forEach((p, i) => {
@@ -478,14 +479,13 @@ export async function downloadProductionReport(
   paint(fqty, 'right')
   fqty.font = { name: FONT, bold: true, size: 11, color: { argb: LIME } }
   // What the Qty beside it is a total OF, so nobody has to count the rows.
+  ws.mergeCells(r + 1, 3, r + 1, 4)
   const fcnt = foot.getCell(3)
+  // The period is already on the subtitle line; repeating it here only cost a
+  // column that the Total needs.
   fcnt.value = `${written} batch${written === 1 ? '' : 'es'}`
   paint(fcnt, 'left')
-  ws.mergeCells(r + 1, 4, r + 1, 5)
-  const fper = foot.getCell(4)
-  fper.value = `${ddmmyyyy(from)} to ${ddmmyyyy(to)}`
-  paint(fper, 'left')
-  const ftot = foot.getCell(6)
+  const ftot = foot.getCell(LEFT.length)
   ftot.value = eatenAll
   ftot.numFmt = QTY
   paint(ftot, 'right')
@@ -517,8 +517,9 @@ export async function downloadProductionReport(
   lc.value =
     'Qty is what the batch MADE; the product columns are what it CONSUMED, and a by-product coming back off a batch ' +
     'is negative. Total is consumption including dead loss, which is why it exceeds the quantity made. ' +
-    'op. / receiving / total above the days are the same figures the Book Stock register shows for this period. ' +
-    'The Ratio cell carries its recipe as a comment.'
+    'Opening Stock / Receipts / Total before Pn. are the same figures the Book Stock register shows for this period. ' +
+    'Hover a Ratio cell for its formulation — which parts, their percentages, and the recipe version it was run on. ' +
+    'Only days with production are listed; a product with no column figure was not drawn on this period.'
   lc.font = { name: FONT, italic: true, size: 9, color: { argb: MUTED } }
   lc.alignment = { horizontal: 'left', vertical: 'top', wrapText: true, indent: 1 }
 
