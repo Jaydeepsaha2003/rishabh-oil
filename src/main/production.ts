@@ -39,6 +39,56 @@ function n(v: unknown): number {
 // working; the implementations now live in lib/recipeMath.
 export { expandRecipe, recipeTor }
 
+// Which lines a batch is expanded from, and which saved version they are.
+//
+// `pinned` is the version the batch was RUN on. Honoured whenever it is still
+// there, because a batch is a record of what happened, and re-expanding an
+// old run against a recipe edited last week would rewrite what the mill
+// consumed in a month that is closed. Re-expansion still happens — a
+// corrected quantity has to redistribute — but against the recipe that batch
+// actually used.
+//
+// Falling back, in order: the recipe's latest version, then its live lines
+// for a recipe saved by a build that had no versions. Wrapped, because a
+// database mid-upgrade must still be able to record production.
+async function recipeSnapshot(
+  fid: number,
+  pinned = 0
+): Promise<{ versionId: number; items: Row[] }> {
+  const c = getClient()
+  if (!fid) return { versionId: 0, items: [] }
+  const parse = (raw: unknown): Row[] => {
+    try {
+      const v = JSON.parse(String(raw || '[]'))
+      return Array.isArray(v) ? (v as Row[]) : []
+    } catch {
+      return []
+    }
+  }
+  try {
+    if (pinned) {
+      const v = await c.execute({
+        sql: 'SELECT id, items_json FROM formulation_versions WHERE id = ? AND formulation_id = ?',
+        args: [n(pinned), fid]
+      })
+      if (v.rows.length) return { versionId: n(v.rows[0].id), items: parse(v.rows[0].items_json) }
+    }
+    const latest = await c.execute({
+      sql: 'SELECT id, items_json FROM formulation_versions WHERE formulation_id = ? ORDER BY version DESC LIMIT 1',
+      args: [fid]
+    })
+    if (latest.rows.length) return { versionId: n(latest.rows[0].id), items: parse(latest.rows[0].items_json) }
+  } catch {
+    // No versions table yet. The live lines below are exactly what this
+    // module read before versioning existed.
+  }
+  const items = await c.execute({
+    sql: 'SELECT product_id, qty, kind, auto_calc, ffa_pct, loss_multiplier_pct, moisture_pct, byproduct_product_id FROM formulation_items WHERE formulation_id = ?',
+    args: [fid]
+  })
+  return { versionId: 0, items: toPlain(items) }
+}
+
 export async function listProduction(forModule?: string): Promise<Row[]> {
   // Bounded to what this user may see. The bound goes in the SQL so the older
   // rows are never fetched; `forModule` lets a page that only borrows this
@@ -61,10 +111,18 @@ export async function listProduction(forModule?: string): Promise<Row[]> {
     sql: `
     SELECT p.*, pr.name AS product_name, pr.category AS product_category, f.name AS formulation_name,
            sc.name AS subcategory_name, f.subcategory_id,
-           co.name AS company_name
+           co.name AS company_name,
+           -- Which version of the recipe this batch was run on, and whether
+           -- that is still the current one. A batch costed on a superseded
+           -- recipe is not wrong; it is history, and the register should be
+           -- able to say so rather than leaving the reader to wonder why two
+           -- runs of the same recipe consumed different amounts.
+           fv.version AS recipe_version, fv.saved_at AS recipe_saved_at,
+           (SELECT MAX(version) FROM formulation_versions WHERE formulation_id = p.formulation_id) AS recipe_latest_version
     FROM production p
     LEFT JOIN products pr ON pr.id = p.product_id
     LEFT JOIN formulations f ON f.id = p.formulation_id
+    LEFT JOIN formulation_versions fv ON fv.id = p.formulation_version_id
     LEFT JOIN formulation_subcategories sc ON sc.id = f.subcategory_id
     LEFT JOIN companies co ON co.id = p.company_id
     WHERE ${where}${from ? ' AND p.prod_date >= ?' : ''}
@@ -127,14 +185,9 @@ export async function createProduction(v: Row): Promise<{ id: number }> {
     })
     fid = fRes.rows.length ? Number(fRes.rows[0].id) : 0
   }
+  const snap = await recipeSnapshot(fid)
   const lines: { product_id: number; qty: number; kind: string }[] = []
-  if (fid) {
-    const items = await c.execute({
-      sql: 'SELECT product_id, qty, kind, auto_calc, ffa_pct, loss_multiplier_pct, moisture_pct, byproduct_product_id FROM formulation_items WHERE formulation_id = ?',
-      args: [fid]
-    })
-    lines.push(...expandRecipe(toPlain(items), qty))
-  }
+  if (fid) lines.push(...expandRecipe(snap.items, qty))
   const consumption = lines.filter((l) => l.kind === 'input')
 
   // A batch whose inputs are short is RECORDED, not refused.
@@ -167,9 +220,11 @@ export async function createProduction(v: Row): Promise<{ id: number }> {
   }
 
   const ins = await c.execute({
-    sql: `INSERT INTO production (company_id, factory_id, prod_date, product_id, qty, uom, note, formulation_id)
-          VALUES (?, (SELECT factory_id FROM companies WHERE id = ?), ?, ?, ?, ?, ?, ?)`,
-    args: [getActiveCompanyId(), getActiveCompanyId(), v.prod_date, productId, qty, v.uom || 'MT', v.note || null, fid || null]
+    sql: `INSERT INTO production (company_id, factory_id, prod_date, product_id, qty, uom, note, formulation_id, formulation_version_id)
+          VALUES (?, (SELECT factory_id FROM companies WHERE id = ?), ?, ?, ?, ?, ?, ?, ?)`,
+    // The version is stamped now so a later edit to the recipe cannot reach
+    // this batch. See recipeSnapshot.
+    args: [getActiveCompanyId(), getActiveCompanyId(), v.prod_date, productId, qty, v.uom || 'MT', v.note || null, fid || null, snap.versionId || null]
   })
   const id = Number(ins.lastInsertRowid)
 
@@ -196,8 +251,13 @@ export async function createProduction(v: Row): Promise<{ id: number }> {
 // register shows it in red.
 export async function updateProduction(id: number, v: Row): Promise<{ id: number }> {
   const c = getClient()
-  const cur = await c.execute({ sql: 'SELECT id FROM production WHERE id = ?', args: [n(id)] })
+  const cur = await c.execute({
+    sql: 'SELECT id, formulation_id, formulation_version_id FROM production WHERE id = ?',
+    args: [n(id)]
+  })
   if (!cur.rows.length) throw new Error('Production run not found')
+  const wasFid = n(cur.rows[0].formulation_id)
+  const wasVersion = n(cur.rows[0].formulation_version_id)
 
   const productId = n(v.product_id)
   const qty = n(v.qty)
@@ -231,19 +291,17 @@ export async function updateProduction(id: number, v: Row): Promise<{ id: number
     fid = fRes.rows.length ? Number(fRes.rows[0].id) : 0
   }
 
+  // The version this batch was run on, unless the recipe itself has been
+  // switched to a different one — that is a deliberate re-costing, and takes
+  // the new recipe as it stands today.
+  const snap = await recipeSnapshot(fid, fid && fid === wasFid ? wasVersion : 0)
   const lines: { product_id: number; qty: number; kind: string }[] = []
-  if (fid) {
-    const items = await c.execute({
-      sql: 'SELECT product_id, qty, kind, auto_calc, ffa_pct, loss_multiplier_pct, moisture_pct, byproduct_product_id FROM formulation_items WHERE formulation_id = ?',
-      args: [fid]
-    })
-    lines.push(...expandRecipe(toPlain(items), qty))
-  }
+  if (fid) lines.push(...expandRecipe(snap.items, qty))
 
   await c.execute({
-    sql: `UPDATE production SET prod_date = ?, product_id = ?, qty = ?, uom = ?, note = ?, formulation_id = ?
+    sql: `UPDATE production SET prod_date = ?, product_id = ?, qty = ?, uom = ?, note = ?, formulation_id = ?, formulation_version_id = ?
            WHERE id = ?`,
-    args: [v.prod_date, productId, qty, v.uom || 'MT', v.note || null, fid || null, n(id)]
+    args: [v.prod_date, productId, qty, v.uom || 'MT', v.note || null, fid || null, snap.versionId || null, n(id)]
   })
   await c.execute({ sql: 'DELETE FROM production_items WHERE production_id = ?', args: [n(id)] })
   for (const l of lines) {

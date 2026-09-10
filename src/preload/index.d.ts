@@ -110,6 +110,7 @@ export interface Api {
     revert: (id: number) => Promise<{ id: number; status: string }>
     replace: (id: number, values: Row) => Promise<{ id: number }>
     quality: (id: number) => Promise<Row[]>
+    ffaHistory: (productId?: number, limit?: number) => Promise<Row[]>
     saveQuality: (id: number, rows: Row[]) => Promise<{ id: number }>
   }
   dashboard: {
@@ -181,6 +182,7 @@ export interface Api {
   formulations: {
     list: () => Promise<Row[]>
     items: (id: number) => Promise<Row[]>
+    versions: (id: number) => Promise<Row[]>
     create: (values: Row) => Promise<{ id: number }>
     update: (id: number, values: Row) => Promise<{ id: number }>
     remove: (id: number) => Promise<{ id: number }>

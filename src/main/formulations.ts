@@ -1,5 +1,6 @@
 import type { ResultSet } from '@libsql/client'
 import { getClient } from './db'
+import { getCurrentUser } from './currentUser'
 import { recipeTor } from './production'
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -18,6 +19,118 @@ function n(v: unknown): number {
   return Number.isFinite(x) ? x : 0
 }
 
+// The local clock, to the second.
+//
+// NOT SQLite's datetime('now'), which is always UTC whatever the process
+// timezone is — the same trap that stamped gate entries 09:53 IST as 04:23
+// and put anything entered before 05:30 on the day before. "Edited at" is a
+// human fact and has to read in the mill's own time.
+function nowStamp(): string {
+  const d = new Date()
+  const p = (x: number): string => String(x).padStart(2, '0')
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`
+}
+
+// One line of a recipe, reduced to the fields that decide what a batch
+// consumes. Anything else about the row — its id, the order it was typed in —
+// is not part of what makes two versions the same recipe.
+function itemShape(it: Row): Row {
+  return {
+    product_id: n(it.product_id),
+    qty: n(it.qty),
+    kind: it.kind === 'output' || it.kind === 'loss' ? String(it.kind) : 'input',
+    auto_calc: it.auto_calc ? 1 : 0,
+    ffa_pct: it.ffa_pct == null || it.ffa_pct === '' ? null : n(it.ffa_pct),
+    loss_multiplier_pct:
+      it.loss_multiplier_pct == null || it.loss_multiplier_pct === '' ? null : n(it.loss_multiplier_pct),
+    moisture_pct: it.moisture_pct == null || it.moisture_pct === '' ? null : n(it.moisture_pct),
+    byproduct_product_id: n(it.byproduct_product_id) || null
+  }
+}
+
+// Keep a copy of the recipe as it now stands, and stamp the header with when
+// and by whom.
+//
+// Skipped when nothing actually changed: opening a recipe to look at it and
+// pressing Save should not mint a version, or the history becomes a list of
+// people who pressed a button and the one edit that mattered is lost in it.
+// The header counts as part of the recipe here — renaming it or moving it to
+// another sub-category is a change worth a line in the history, even though
+// it consumes nothing different.
+async function snapshotFormulation(formulationId: number, note: string): Promise<number | null> {
+  const c = getClient()
+  const id = n(formulationId)
+  if (!id) return null
+  const head = await c.execute({ sql: 'SELECT * FROM formulations WHERE id = ?', args: [id] })
+  if (!head.rows.length) return null
+  const f = toPlain(head)[0]
+  const items = await c.execute({
+    sql: `SELECT product_id, qty, kind, auto_calc, ffa_pct, loss_multiplier_pct, moisture_pct, byproduct_product_id
+          FROM formulation_items WHERE formulation_id = ? ORDER BY id`,
+    args: [id]
+  })
+  const shaped = toPlain(items).map(itemShape)
+  const json = JSON.stringify(shaped)
+  const fingerprint = JSON.stringify({
+    p: n(f.product_id),
+    nm: String(f.name || ''),
+    u: String(f.uom || ''),
+    s: n(f.subcategory_id),
+    i: shaped
+  })
+
+  const last = await c.execute({
+    sql: 'SELECT id, version, fingerprint FROM formulation_versions WHERE formulation_id = ? ORDER BY version DESC LIMIT 1',
+    args: [id]
+  })
+  if (last.rows.length && String(last.rows[0].fingerprint) === fingerprint) {
+    return Number(last.rows[0].id)
+  }
+
+  const version = last.rows.length ? Number(last.rows[0].version) + 1 : 1
+  const who = getCurrentUser().username || 'system'
+  const at = nowStamp()
+  const res = await c.execute({
+    sql: `INSERT INTO formulation_versions
+            (formulation_id, version, saved_at, saved_by, product_id, name, uom, subcategory_id, items_json, fingerprint, note)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    args: [id, version, at, who, n(f.product_id), f.name ?? null, f.uom ?? null, n(f.subcategory_id) || null, json, fingerprint, note || null]
+  })
+  await c.execute({
+    sql: 'UPDATE formulations SET updated_at = ?, updated_by = ? WHERE id = ?',
+    args: [at, who, id]
+  })
+  return Number(res.lastInsertRowid)
+}
+
+// The edit history of one recipe, newest first, with what each version cost
+// per 100 of output so two of them can be compared without reading the JSON.
+//
+// runs is why this matters: a version with batches behind it is history, and
+// editing the recipe again cannot reach them.
+export async function listFormulationVersions(formulationId: number): Promise<Row[]> {
+  const res = await getClient().execute({
+    sql: `SELECT v.id, v.version, v.saved_at, v.saved_by, v.name, v.uom, v.note, v.items_json,
+                 (SELECT COUNT(*) FROM production p WHERE p.formulation_version_id = v.id) AS runs
+            FROM formulation_versions v
+           WHERE v.formulation_id = ?
+           ORDER BY v.version DESC`,
+    args: [n(formulationId)]
+  })
+  return toPlain(res).map((v) => {
+    let items: Row[] = []
+    try {
+      items = JSON.parse(String(v.items_json || '[]')) as Row[]
+    } catch {
+      items = []
+    }
+    // items_json is not handed to the UI — it is the machine's copy, and a
+    // recipe's worth of JSON in every row of a history list is noise.
+    const { items_json: _drop, ...rest } = v
+    return { ...rest, tor: recipeTor(items), lines: items.length }
+  })
+}
+
 export async function listFormulations(): Promise<Row[]> {
   // blend_pct is the input mix, which must total 100%. TOR (Total Oil
   // Required) is what actually has to go in for 100 of output — 100% plus
@@ -33,7 +146,12 @@ export async function listFormulations(): Promise<Row[]> {
       (SELECT COALESCE(SUM(qty), 0) FROM formulation_items WHERE formulation_id = f.id AND kind = 'input') AS blend_pct,
       (SELECT COALESCE(SUM(qty), 0) FROM formulation_items WHERE formulation_id = f.id AND kind = 'output') AS byproduct_pct,
       (SELECT COALESCE(SUM(qty), 0) FROM formulation_items WHERE formulation_id = f.id AND kind = 'loss') AS loss_pct,
-      (SELECT COALESCE(SUM(qty), 0) FROM formulation_items WHERE formulation_id = f.id) AS total_qty
+      (SELECT COALESCE(SUM(qty), 0) FROM formulation_items WHERE formulation_id = f.id) AS total_qty,
+      -- When this recipe was last changed, and how many versions of it there
+      -- have been. A recipe that has never been edited shows one version and
+      -- no edit stamp, which is the honest answer rather than a made-up one.
+      (SELECT COUNT(*) FROM formulation_versions v WHERE v.formulation_id = f.id) AS version_count,
+      (SELECT COUNT(*) FROM production p WHERE p.formulation_id = f.id) AS run_count
     FROM formulations f
     LEFT JOIN products p ON p.id = f.product_id
     LEFT JOIN formulation_subcategories sc ON sc.id = f.subcategory_id
@@ -104,6 +222,7 @@ export async function createFormulation(v: Row): Promise<{ id: number }> {
   })
   const id = Number(res.lastInsertRowid)
   await writeItems(id, v.items)
+  await snapshotFormulation(id, 'Recipe created')
   return { id }
 }
 
@@ -113,6 +232,9 @@ export async function updateFormulation(id: number, v: Row): Promise<{ id: numbe
     args: [n(v.product_id), v.name || null, v.uom || 'MT', n(v.subcategory_id) || null, id]
   })
   await writeItems(id, v.items)
+  // After the lines are written, so the copy is of what was actually saved
+  // rather than of what was asked for.
+  await snapshotFormulation(id, String(v.change_note || '').trim() || 'Recipe edited')
   return { id }
 }
 

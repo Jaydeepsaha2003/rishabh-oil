@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { toast } from 'sonner'
-import { AlertTriangle, ArrowLeft, ArrowRight, Beaker, Calculator, CheckCircle2, Flame, Info, Layers, Package, Pencil, Plus, Search, Sparkles, Trash2 } from 'lucide-react'
+import { AlertTriangle, ArrowLeft, ArrowRight, Beaker, Calculator, CheckCircle2, Flame, FlaskConical, History, Info, Layers, Package, Pencil, Plus, Search, Sparkles, Trash2 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
@@ -31,7 +31,10 @@ import {
 import { ColumnFilter } from '@/components/ui/column-filter'
 import { RowActions } from '@/components/ui/row-actions'
 import { PageHeader } from '@/components/PageHeader'
-import { formatNum } from '@/lib/format'
+import { FfaPicker } from '@/components/FfaPicker'
+import { useIsMobile } from '@/lib/useIsMobile'
+import { FormulationMobile } from './FormulationMobile'
+import { formatDateTime, formatNum } from '@/lib/format'
 import { cn } from '@/lib/utils'
 import { useLiveRefresh } from '@/lib/useLiveRefresh'
 
@@ -399,6 +402,16 @@ export function Formulation(): React.JSX.Element {
   // what makes the current list reachable there without adding it to a
   // dependency list that would reload the page.
   const productsRef = useRef<Row[]>([])
+  // Which recipe line is asking for an FFA off the lab register. Holds the
+  // line's index rather than the line itself: the row is edited while the
+  // panel is open (the product can be changed behind it), and the index is
+  // what setItemFormula addresses.
+  const [ffaPick, setFfaPick] = useState<number | null>(null)
+  const isMobile = useIsMobile()
+  // The edit history of the recipe being edited. Loaded when the panel is
+  // opened rather than with the editor: most edits never ask for it.
+  const [historyOpen, setHistoryOpen] = useState(false)
+  const [versions, setVersions] = useState<Row[]>([])
   const [loading, setLoading] = useState(true)
 
   const [editing, setEditing] = useState<Row | null>(null)
@@ -759,6 +772,16 @@ export function Formulation(): React.JSX.Element {
       })
     )
   }
+  async function openHistory(): Promise<void> {
+    setHistoryOpen(true)
+    try {
+      setVersions(await window.api.formulations.versions(Number(editing?.id)))
+    } catch (e) {
+      toast.error((e as Error).message)
+      setVersions([])
+    }
+  }
+
   function setItemFormula(idx: number, key: 'ffa_pct' | 'loss_multiplier_pct', value: string): void {
     setItems((prev) =>
       prev.map((it, i) => {
@@ -1081,6 +1104,11 @@ export function Formulation(): React.JSX.Element {
     </Dialog>
   )
 
+  // Phone. After every hook, and BELOW the editor fork for the same reason
+  // Trading's is: a recipe half-built must not be thrown away because the
+  // window was narrowed.
+  if (__WEB__ && isMobile && !building) return <FormulationMobile />
+
   if (building) {
     return (
       <>
@@ -1132,6 +1160,42 @@ export function Formulation(): React.JSX.Element {
         )}
         <div className={cn('px-4 py-6', __WEB__ && '!px-3 !py-4')}>
           <div className={cn('mx-auto max-w-6xl space-y-5', __WEB__ && '!max-w-none !space-y-3.5')}>
+            {/* What an edit here does, and does not do.
+                A recipe is not a document — batches were run on it, and their
+                consumption is already posted against stock. Saving a change
+                writes a new version and leaves every recorded batch on the
+                one it was run on, so the register does not silently re-cost
+                a closed month. Said out loud because the opposite is what
+                most people expect a save to do. */}
+            {__WEB__ && editing && (
+              <div className="flex flex-wrap items-center gap-x-3 gap-y-2 rounded-[4px] border border-[#D6E2D6] border-l-4 border-l-[#0B6B45] bg-white px-3.5 py-2.5">
+                <History className="h-4 w-4 shrink-0 text-[#0B6B45]" />
+                <span className="text-[12px] font-bold text-[#0A1F17]">
+                  {Number(editing.version_count) > 1
+                    ? `Version ${editing.version_count}`
+                    : 'First version'}
+                  {editing.updated_at ? (
+                    <span className="ml-1.5 font-semibold text-[#5A6B62]">
+                      · edited {formatDateTime(String(editing.updated_at))}
+                      {editing.updated_by ? ` by ${String(editing.updated_by)}` : ''}
+                    </span>
+                  ) : null}
+                </span>
+                <span className="text-[11.5px] font-semibold text-[#5A6B62]">
+                  {Number(editing.run_count) > 0
+                    ? `Changes apply to the next batch — the ${editing.run_count} already recorded keep the recipe they were run on.`
+                    : 'No batches have been run on this recipe yet.'}
+                </span>
+                <button
+                  type="button"
+                  onClick={() => void openHistory()}
+                  className="ml-auto inline-flex h-8 shrink-0 items-center gap-1.5 rounded-[4px] border-[1.5px] border-[#C3D2C6] px-2.5 text-[11.5px] font-extrabold uppercase tracking-[.03em] text-[#33473E] transition-colors hover:bg-[#EFF5EC]"
+                >
+                  <History className="h-3.5 w-3.5" /> History
+                </button>
+              </div>
+            )}
+
             {/* Output product header — no overflow-hidden here: the Output
                 product dropdown opens INSIDE this card, and clipping the
                 card would clip its panel along with it. */}
@@ -1534,12 +1598,31 @@ export function Formulation(): React.JSX.Element {
                                 <Label className={cn('flex items-center gap-1 text-[10px] font-semibold text-amber-800', __WEB__ && '!text-[11.5px] !font-extrabold !uppercase !tracking-[.07em] !text-[#5A6B62]')}>
                                   <span className={cn('h-1.5 w-1.5 shrink-0 rounded-full bg-amber-500', __WEB__ && '!hidden')} /> Oil FFA %
                                 </Label>
-                                <Input
-                                  type="number"
-                                  className={cn('h-8 border-amber-200 bg-amber-50/60 text-right focus-visible:ring-amber-400', __WEB__ && '!h-10 !rounded-[4px] !border-[#C3D2C6] !bg-white !text-[12.5px] !font-semibold !tabular-nums')}
-                                  value={it.ffa_pct ?? ''}
-                                  onChange={(e) => setItemFormula(idx, 'ffa_pct', e.target.value)}
-                                />
+                                {/* The field, and beside it the register it
+                                    could be read off instead of remembered.
+                                    The wrapper is a plain div off the website,
+                                    so the desktop app's field is exactly where
+                                    it was. */}
+                                <div className={cn(__WEB__ && 'flex items-center gap-1.5')}>
+                                  <Input
+                                    type="number"
+                                    className={cn('h-8 border-amber-200 bg-amber-50/60 text-right focus-visible:ring-amber-400', __WEB__ && '!h-10 !min-w-0 !flex-1 !rounded-[4px] !border-[#C3D2C6] !bg-white !text-[12.5px] !font-semibold !tabular-nums')}
+                                    value={it.ffa_pct ?? ''}
+                                    onChange={(e) => setItemFormula(idx, 'ffa_pct', e.target.value)}
+                                  />
+                                  {__WEB__ && (
+                                    <Button
+                                      type="button"
+                                      variant="outline"
+                                      size="icon"
+                                      title="Take it from the loads received — average the lab's FFA readings"
+                                      onClick={() => setFfaPick(idx)}
+                                      className="!h-10 !w-10 !shrink-0 !rounded-[4px] !border-[1.5px] !border-[#C3D2C6] !text-[#0B3D2E] hover:!border-[#0B3D2E] hover:!bg-[#EFF5EC]"
+                                    >
+                                      <FlaskConical className="h-4 w-4" />
+                                    </Button>
+                                  )}
+                                </div>
                               </div>
                               <div className="flex flex-col gap-0.5">
                                 <Label className={cn('flex items-center gap-1 text-[10px] font-semibold text-rose-800', __WEB__ && '!text-[11.5px] !font-extrabold !uppercase !tracking-[.07em] !text-[#5A6B62]')}>
@@ -2080,7 +2163,96 @@ export function Formulation(): React.JSX.Element {
             </div>
           </div>
         </div>
+        {/* Every version this recipe has had. `runs` is the column that
+            matters: a version with batches behind it is history, and no edit
+            made here can reach them. */}
+        {__WEB__ && (
+          <Dialog open={historyOpen} onOpenChange={setHistoryOpen}>
+            <DialogContent className="flex max-h-[80dvh] w-[min(94vw,44rem)] max-w-none flex-col gap-0 overflow-hidden !rounded-[4px] !border-0 p-0 [&>button]:top-5 [&>button]:text-white [&>button]:opacity-70 [&>button]:hover:opacity-100">
+              <DialogHeader className="shrink-0 space-y-0 !bg-[#0B3D2E] px-5 py-4 pr-14 text-left">
+                <div className="text-[11px] font-extrabold uppercase tracking-[.14em] text-[#8FBFA8]">Formulation</div>
+                <DialogTitle className="!mt-1 !text-[19px] !font-bold !tracking-[-0.02em] text-white">
+                  Edit history
+                </DialogTitle>
+                <p className="mt-1.5 text-[11.5px] font-semibold leading-relaxed text-[#8FBFA8]">
+                  Each save that changed something keeps a copy of the recipe. Batches are recorded
+                  against the version they were run on, so an edit here never re-costs one already
+                  entered.
+                </p>
+              </DialogHeader>
+              <div className="min-h-0 flex-1 overflow-y-auto bg-[#F1F5EF] p-3">
+                {versions.length === 0 ? (
+                  <div className="rounded-[4px] border border-[#C3D2C6] bg-white px-4 py-10 text-center text-[12.5px] font-bold text-[#5A6B62]">
+                    No versions recorded yet.
+                  </div>
+                ) : (
+                  <div className="overflow-hidden rounded-[4px] border border-[#C3D2C6] bg-white">
+                    {versions.map((v, i) => (
+                      <div
+                        key={String(v.id)}
+                        className={cn(
+                          'flex flex-wrap items-center gap-x-3 gap-y-1.5 border-b border-[#EAF0E9] px-3.5 py-2.5 last:border-b-0',
+                          i === 0 && 'bg-[#F7FBF4]'
+                        )}
+                      >
+                        <span className="rounded-[2px] bg-[#0B3D2E] px-2 py-1 text-[10.5px] font-extrabold tracking-[.04em] text-[#C7F03F]">
+                          v{String(v.version)}
+                        </span>
+                        <span className="text-[12.5px] font-bold tabular-nums text-[#0A1F17]">
+                          {v.saved_at ? formatDateTime(String(v.saved_at)) : '—'}
+                        </span>
+                        <span className="text-[11.5px] font-semibold text-[#5A6B62]">{String(v.saved_by || 'system')}</span>
+                        <span className="text-[11.5px] font-semibold text-[#33473E]">
+                          {String(v.lines)} line{Number(v.lines) === 1 ? '' : 's'} · TOR {formatNum(v.tor)}%
+                        </span>
+                        {Number(v.runs) > 0 ? (
+                          <span className="rounded-[2px] border border-[#F0D9AE] bg-[#FFFBF2] px-2 py-1 text-[10px] font-extrabold uppercase tracking-[.05em] text-[#8A5300]">
+                            {String(v.runs)} batch{Number(v.runs) === 1 ? '' : 'es'} run on it
+                          </span>
+                        ) : null}
+                        {i === 0 ? (
+                          <span className="rounded-[2px] border border-[#BFE3CB] bg-[#E9F5EE] px-2 py-1 text-[10px] font-extrabold uppercase tracking-[.05em] text-[#0B6B45]">
+                            in use now
+                          </span>
+                        ) : null}
+                        {v.note ? (
+                          <span className="w-full text-[11.5px] font-semibold text-[#5A6B62]">{String(v.note)}</span>
+                        ) : null}
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+              <DialogFooter className="shrink-0 border-t border-[#D6E2D6] bg-white px-3 py-2.5">
+                <Button
+                  variant="outline"
+                  onClick={() => setHistoryOpen(false)}
+                  className="!h-10 !rounded-[4px] !border-[1.5px] !border-[#C3D2C6] !px-4 !text-[12px] !font-extrabold !uppercase !tracking-[.03em] !text-[#33473E]"
+                >
+                  Close
+                </Button>
+              </DialogFooter>
+            </DialogContent>
+          </Dialog>
+        )}
+
         {manageSubcats}
+
+        {/* The lab register, for whichever line asked for it. Mounted once
+            rather than per row: it is one panel, and a row that has been
+            deleted while it is open would take its own copy down with it. */}
+        {__WEB__ && ffaPick != null && (
+          <FfaPicker
+            open
+            onClose={() => setFfaPick(null)}
+            productId={String(items[ffaPick]?.product_id || '')}
+            productName={String(
+              products.find((pr) => String(pr.id) === String(items[ffaPick]?.product_id))?.name || ''
+            )}
+            current={items[ffaPick]?.ffa_pct ?? ''}
+            onUse={(v) => setItemFormula(ffaPick, 'ffa_pct', String(v))}
+          />
+        )}
 
         {/* Leaving with a recipe half-built.
             A browser refresh cannot be caught with a dialog of our own — that
@@ -2351,6 +2523,16 @@ export function Formulation(): React.JSX.Element {
                     </TableCell>
                     <TableCell className={cn('text-muted-foreground', __WEB__ && '!text-[12px] !font-bold !text-[#33473E]')}>
                       {row.name || (__WEB__ ? <span className="!font-semibold !text-[#A8B8AE]">—</span> : '—')}
+                      {/* When it was last changed. A recipe nobody has touched
+                          since it was written says nothing here rather than
+                          inventing a date for itself. */}
+                      {__WEB__ && row.updated_at ? (
+                        <div className="mt-1 text-[11px] font-semibold text-[#5A6B62]">
+                          Edited {formatDateTime(String(row.updated_at))}
+                          {row.updated_by ? ` · ${String(row.updated_by)}` : ''}
+                          {Number(row.version_count) > 1 ? ` · v${row.version_count}` : ''}
+                        </div>
+                      ) : null}
                     </TableCell>
                     <TableCell>
                       {row.subcategory_name ? (

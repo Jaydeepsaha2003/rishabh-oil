@@ -554,7 +554,7 @@ export function Production(): React.JSX.Element {
             title={editingId ? 'Alter production run' : 'Record production'}
             subtitle={
               editingId
-                ? 'The recipe is re-applied from the quantity you set'
+                ? 'The recipe it was run on is re-applied from the quantity you set'
                 : "A day's batches, one row each — stock is drawn from each formula"
             }
           />
@@ -575,7 +575,7 @@ export function Production(): React.JSX.Element {
                 </div>
                 <div className="mt-0.5 text-[12px] font-semibold text-[#8FBFA8]">
                   {editingId
-                    ? 'The recipe is re-applied from the quantity you set'
+                    ? 'The recipe it was run on is re-applied from the quantity you set'
                     : "A day's batches, one row each — stock is drawn from each formula"}
                 </div>
               </div>
@@ -1299,7 +1299,11 @@ export function Production(): React.JSX.Element {
                       {anyFilter ? ' · filtered' : ''}
                     </span>
                   </TableCell>
-                  <TableCell className="!text-right !text-[13.5px] !font-bold !tabular-nums !tracking-[-0.02em] !text-[#0A1F17]">
+                  {/* The figure sits on a lighter ground than the band it is
+                      in — the total is what the row is FOR, and lifting it out
+                      of the wash reads as a figure rather than as more of the
+                      label. */}
+                  <TableCell className="!bg-[#F8FCF5] !text-right !text-[13.5px] !font-bold !tabular-nums !tracking-[-0.02em] !text-[#0A1F17]">
                     {totals.byUom.map(([u, q]) => (
                       <span key={u} className="ml-2 whitespace-nowrap">
                         {formatNum(q)} <span className="text-[10.5px] font-semibold text-[#5A6B62]">{u}</span>
@@ -1409,8 +1413,22 @@ export function Production(): React.JSX.Element {
                     <TableCell className={cn('font-medium', __WEB__ && '!text-[13.5px] !font-extrabold !text-[#0A1F17]')}>
                       {row.product_name}
                       {row.formulation_name && (
-                        <div className={cn('text-xs font-normal text-muted-foreground', __WEB__ && '!mt-0.5 !text-[12px] !font-bold !text-[#33473E]')}>
+                        <div className={cn('text-xs font-normal text-muted-foreground', __WEB__ && '!mt-0.5 !flex !flex-wrap !items-center !gap-1.5 !text-[12px] !font-bold !text-[#33473E]')}>
                           {row.formulation_name}
+                          {/* Only when the recipe has moved on since. A batch
+                              costed on a superseded version is not wrong — it
+                              is what was actually run — but two runs of "the
+                              same" recipe consuming different amounts needs
+                              an explanation on the row, not in someone's
+                              memory. */}
+                          {__WEB__ && Number(row.recipe_version) > 0 && Number(row.recipe_latest_version) > Number(row.recipe_version) ? (
+                            <span
+                              title={`Run on version ${row.recipe_version} of this recipe, saved ${formatDate(String(row.recipe_saved_at || '').slice(0, 10))}. The recipe has since been edited — this batch keeps what it was run on.`}
+                              className="rounded-[2px] border border-[#F0D9AE] bg-[#FFFBF2] px-1.5 py-0.5 text-[10px] font-extrabold uppercase tracking-[.05em] text-[#8A5300]"
+                            >
+                              v{row.recipe_version} of {row.recipe_latest_version}
+                            </span>
+                          ) : null}
                         </div>
                       )}
                     </TableCell>

@@ -153,6 +153,10 @@ const api = {
     revert: (id: number): Promise<{ id: number; status: string }> => ipcRenderer.invoke('tankers:revert', { id }),
     replace: (id: number, values: Row): Promise<{ id: number }> => ipcRenderer.invoke('tankers:replace', { id, values }),
     quality: (id: number): Promise<Row[]> => ipcRenderer.invoke('tankers:quality', { id }),
+    // Every FFA the lab has recorded, newest first. 0 for the product means
+    // "whatever came in", any other id narrows it to that oil.
+    ffaHistory: (productId?: number, limit?: number): Promise<Row[]> =>
+      ipcRenderer.invoke('tankers:ffaHistory', { productId, limit }),
     saveQuality: (id: number, rows: Row[]): Promise<{ id: number }> =>
       ipcRenderer.invoke('tankers:saveQuality', { id, rows })
   },
@@ -246,6 +250,9 @@ const api = {
   formulations: {
     list: (): Promise<Row[]> => ipcRenderer.invoke('formulations:list'),
     items: (id: number): Promise<Row[]> => ipcRenderer.invoke('formulations:items', { id }),
+    // The recipe's edit history — when each version was saved, by whom, and
+    // how many batches were run on it.
+    versions: (id: number): Promise<Row[]> => ipcRenderer.invoke('formulations:versions', { id }),
     create: (values: Row): Promise<{ id: number }> =>
       ipcRenderer.invoke('formulations:create', { values }),
     update: (id: number, values: Row): Promise<{ id: number }> =>

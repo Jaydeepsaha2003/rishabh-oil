@@ -1260,5 +1260,107 @@ export async function runStartupTasks(): Promise<void> {
     )
   }).catch((e) => console.error('[tankers] quality table failed:', e))
 
+  // A recipe is edited; the batches already run on it are not.
+  //
+  // formulation_items is REPLACED on every save — the old lines are deleted
+  // and the new ones written in their place — so the recipe a batch was run
+  // on stopped existing the moment somebody changed it. That was survivable
+  // only because createProduction copies the expanded lines into
+  // production_items, which is a real snapshot. updateProduction does not:
+  // it re-expands from the recipe as it stands NOW, so correcting the note or
+  // the date on a batch from three months ago silently re-costed it on
+  // today's recipe.
+  //
+  // So: every save keeps a full copy of the recipe, stamped with the moment
+  // and the person, and every batch records which copy it was run on. An edit
+  // now applies to the next batch and to nothing already recorded.
+  await runOnce('formulation_versions_v1', async () => {
+    const c = getClient()
+    await c.execute(`CREATE TABLE IF NOT EXISTS formulation_versions (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      formulation_id INTEGER NOT NULL,
+      version INTEGER NOT NULL DEFAULT 1,
+      saved_at TEXT,
+      saved_by TEXT,
+      product_id INTEGER,
+      name TEXT,
+      uom TEXT,
+      subcategory_id INTEGER,
+      -- The lines as they stood, verbatim. JSON rather than a second items
+      -- table: it is only ever read back whole and handed to expandRecipe,
+      -- and a column added to formulation_items later must not need a
+      -- matching column here to keep old versions readable.
+      items_json TEXT NOT NULL,
+      -- What the lines amount to, for deciding whether a save changed
+      -- anything at all. Opening a recipe and pressing Save must not mint a
+      -- version.
+      fingerprint TEXT NOT NULL,
+      note TEXT
+    )`)
+    await c.execute(
+      'CREATE INDEX IF NOT EXISTS idx_formulation_versions_f ON formulation_versions(formulation_id, version)'
+    )
+    for (const sql of [
+      'ALTER TABLE formulations ADD COLUMN updated_at TEXT',
+      'ALTER TABLE formulations ADD COLUMN updated_by TEXT',
+      'ALTER TABLE production ADD COLUMN formulation_version_id INTEGER'
+    ]) {
+      await c.execute(sql).catch((e) => {
+        if (!/duplicate column/i.test(String(e))) throw e
+      })
+    }
+
+    // Version 1 of every recipe that already exists, from its current lines.
+    //
+    // Dated by the recipe's own created_at rather than today: this IS the
+    // recipe as it has been standing, and stamping it with the migration's
+    // clock would claim every recipe in the mill was rewritten this morning.
+    const fs = await c.execute('SELECT * FROM formulations')
+    for (const f of fs.rows) {
+      const fid = Number(f.id)
+      const items = await c.execute({
+        sql: `SELECT product_id, qty, kind, auto_calc, ffa_pct, loss_multiplier_pct, moisture_pct, byproduct_product_id
+              FROM formulation_items WHERE formulation_id = ? ORDER BY id`,
+        args: [fid]
+      })
+      const rows = items.rows.map((r) => ({
+        product_id: Number(r.product_id),
+        qty: Number(r.qty) || 0,
+        kind: String(r.kind || 'input'),
+        auto_calc: r.auto_calc ? 1 : 0,
+        ffa_pct: r.ffa_pct == null ? null : Number(r.ffa_pct),
+        loss_multiplier_pct: r.loss_multiplier_pct == null ? null : Number(r.loss_multiplier_pct),
+        moisture_pct: r.moisture_pct == null ? null : Number(r.moisture_pct),
+        byproduct_product_id: r.byproduct_product_id == null ? null : Number(r.byproduct_product_id)
+      }))
+      const json = JSON.stringify(rows)
+      const res = await c.execute({
+        sql: `INSERT INTO formulation_versions
+                (formulation_id, version, saved_at, saved_by, product_id, name, uom, subcategory_id, items_json, fingerprint, note)
+              VALUES (?, 1, ?, 'system', ?, ?, ?, ?, ?, ?, 'The recipe as it stood when versioning was switched on')`,
+        args: [
+          fid,
+          String(f.created_at || '').slice(0, 19) || null,
+          f.product_id ?? null,
+          f.name ?? null,
+          f.uom ?? null,
+          f.subcategory_id ?? null,
+          json,
+          json
+        ]
+      })
+      const vid = Number(res.lastInsertRowid)
+      // Every batch already recorded against this recipe is pinned to that
+      // version. It changes no figure: re-expanding one of these today would
+      // read exactly these lines, because they ARE the current lines. What it
+      // changes is tomorrow — after the next edit, these batches still expand
+      // from what they were actually run on.
+      await c.execute({
+        sql: 'UPDATE production SET formulation_version_id = ? WHERE formulation_id = ? AND formulation_version_id IS NULL',
+        args: [vid, fid]
+      })
+    }
+  }).catch((e) => console.error('[formulations] version table failed:', e))
+
   startRevisionWatcher()
 }

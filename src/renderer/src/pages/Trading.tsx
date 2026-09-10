@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react'
 import { toast } from 'sonner'
-import { AlertTriangle, ArrowLeft, CalendarClock, Check, CheckCircle2, ChevronDown, Clock, Lock, Zap, ChevronRight, FileSpreadsheet, Inbox, Loader2, Pencil, Plus, Repeat, Search, TrendingDown, TrendingUp, Trash2, Users } from 'lucide-react'
+import { AlertTriangle, ArrowLeft, CalendarClock, Check, CheckCircle2, ChevronDown, Clock, Lock, Zap, ChevronRight, FileSpreadsheet, Inbox, Info, Loader2, Pencil, Plus, Receipt, Repeat, Search, TrendingDown, TrendingUp, Trash2, Users } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Card } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
@@ -20,6 +20,10 @@ import { computeMoney } from '@/lib/orderCalc'
 import { isTradingParty } from '@/lib/constants'
 import { exportTradingDeals } from '@/lib/tradingExcel'
 import { useEntryWindow } from '@/lib/useEntryWindow'
+import { useIsMobile } from '@/lib/useIsMobile'
+import { TradingMobile } from './TradingMobile'
+import { tierTds } from '@/lib/tdsSlab'
+import { TdsExplainer, type TdsParty } from '@/components/TdsExplainer'
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Row = Record<string, any>
@@ -28,14 +32,8 @@ const n = (v: unknown): number => (Number.isFinite(Number(v)) ? Number(v) : 0)
 const round2 = (v: number): number => Math.round(v * 100) / 100
 
 // TDS on one invoice, on the party master's slab — the same tiering the main
-// process applies on save. Below the financial year's threshold the base rate
-// runs (0 when the master says "no TDS below the slab"); the rest is charged
-// at the invoice's own rate.
-function tierTds(base: number, prior: number, threshold: number, basePct: number, abovePct: number): number {
-  if (!threshold || threshold <= 0) return (base * basePct) / 100
-  const below = Math.max(0, Math.min(threshold - prior, base))
-  return (below * basePct) / 100 + ((base - below) * abovePct) / 100
-}
+// process applies on save. Now in lib/tdsSlab, so the explainer that shows the
+// working and the form that previews the figure cannot drift apart.
 
 // Each invoice on a side is posted in turn, so every one moves the party's
 // year-to-date total along and the next one sits further up the slab. Walking
@@ -673,10 +671,13 @@ function BuyerSplit({ parties, uom }: { parties: Row[]; uom: string }): React.JS
       <div className="flex flex-wrap items-center justify-between gap-2.5 border-b border-b-[#E4ECE3] bg-[#F7FAF6] px-4 py-2.5">
         <span className="flex items-center gap-1.5 text-[10.5px] font-extrabold uppercase tracking-[.11em] text-[#0A1F17]">
           <Users className="h-4 w-4 text-[#5A6B62]" />
-          Split between {parties.length} buyers
+          Sale invoices
         </span>
         <span className="text-[12.5px] font-bold tabular-nums text-[#33473E]">
-          {formatNum(total)} {uom} in total
+          {/* The buyer count moved here from the heading. It is a fact about
+              the split, not the name of the card — and the card is the sale
+              side's invoices whether they went to one buyer or five. */}
+          {parties.length} buyers · {formatNum(total)} {uom} in total
         </span>
       </div>
 
@@ -1027,6 +1028,141 @@ const emptyForm = (): Row => ({
   purchase_round_off_manual: false
 })
 
+// One side's tax and what is left owing, as its own card.
+//
+// Lifted out of the drawer body so the purchase card can sit in the seller
+// column and the sale card in the buyer column — under the invoices each
+// belongs to, rather than in a row of their own further down where the
+// reader has to carry the side across from one block to the next.
+function TaxCard({
+  rose,
+  head,
+  party,
+  onExplain,
+  gstPct,
+  gstAmt,
+  tdsPct,
+  tdsAmt,
+  netLabel,
+  net
+}: {
+  rose: boolean
+  head: string
+  // Only when it says something the card does not: "3 buyers" explains the
+  // per-buyer rates below it. A single party's NAME is not that — it is
+  // already the heading of the invoice panel directly above, and repeating it
+  // here just crowds the strip.
+  party: string
+  onExplain?: () => void
+  gstPct: string
+  gstAmt: number
+  tdsPct: string
+  tdsAmt: number
+  netLabel: string
+  net: number
+}): React.JSX.Element {
+  return (
+    <div className={cn('overflow-hidden rounded-[4px] border bg-white', rose ? 'border-[#F0D6D4]' : 'border-[#BFE3CB]')}>
+      <div
+        className={cn(
+          'flex flex-wrap items-center justify-between gap-2 border-b px-3.5 py-2.5',
+          rose ? 'border-b-[#F0D6D4] bg-[#FDF3F2]' : 'border-b-[#BFE3CB] bg-[#F4FBF6]'
+        )}
+      >
+        <span
+          className={cn(
+            'flex items-center gap-1.5 text-[10.5px] font-extrabold uppercase tracking-[.11em]',
+            rose ? 'text-[#8C2F26]' : 'text-[#0B6B45]'
+          )}
+        >
+          {rose ? <TrendingDown className="h-4 w-4" /> : <TrendingUp className="h-4 w-4" />}
+          {head}
+        </span>
+        {party ? (
+          <span className={cn('min-w-0 truncate text-[11px] font-extrabold', rose ? 'text-[#8C2F26]' : 'text-[#0B6B45]')}>
+            {party}
+          </span>
+        ) : null}
+      </div>
+      {/* Rate beside the label, money on the right — the rate explains the
+          figure, so they belong on the same line rather than stacked as a
+          footnote. */}
+      {[
+        { k: 'GST', pct: gstPct, v: gstAmt, tone: '', explain: false },
+        { k: 'TDS', pct: tdsPct, v: tdsAmt, tone: 'text-[#8A5300]', explain: true }
+      ].map((r) => (
+        <div key={r.k} className="flex items-center gap-2.5 border-b border-b-[#EAF0E9] px-3.5 py-2.5">
+          <span className="text-[10px] font-extrabold uppercase tracking-[.1em] text-[#5A6B62]">{r.k}</span>
+          <span className="rounded-[2px] bg-[#EAF0E9] px-1.5 py-0.5 text-[10.5px] font-extrabold tabular-nums text-[#33473E]">
+            {r.pct}
+          </span>
+          {/* The one figure on this card nobody can check by eye — the rate
+              does not run on the whole invoice once the party's yearly slab
+              is in play. */}
+          {r.explain && onExplain ? (
+            <button
+              type="button"
+              onClick={onExplain}
+              title="How this TDS is worked out — the slab, the year to date, and each invoice against it"
+              className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-[3px] text-[#5A6B62] transition-colors hover:bg-[#EAF0E9] hover:text-[#0B3D2E]"
+            >
+              <Info className="h-4 w-4" />
+            </button>
+          ) : null}
+          <span className={cn('ml-auto whitespace-nowrap text-[13px] font-bold tabular-nums', r.tone)}>
+            {formatINR(r.v)}
+          </span>
+        </div>
+      ))}
+      <div className={cn('flex flex-wrap items-baseline gap-x-2.5 gap-y-1 px-3.5 py-3', rose ? 'bg-[#F7EDEC]' : 'bg-[#EAF6EC]')}>
+        <span className={cn('text-[10px] font-extrabold uppercase tracking-[.1em]', rose ? 'text-[#8C2F26]' : 'text-[#0B6B45]')}>
+          {netLabel}
+        </span>
+        <span
+          className={cn(
+            'ml-auto whitespace-nowrap text-[15px] font-bold tabular-nums',
+            rose ? 'text-[#8C2F26]' : 'text-[#0B6B45]'
+          )}
+        >
+          {formatINR(net)}
+        </span>
+      </div>
+    </div>
+  )
+}
+
+// The rule that names a column. Arrow, side, hairline, and that side's total
+// at the far end — so each half of the drawer states what it comes to before
+// the invoices under it are read.
+function SideHead({ rose, label, total }: { rose: boolean; label: string; total: number }): React.JSX.Element {
+  return (
+    <div className="flex items-center gap-2.5 pb-0.5">
+      {rose ? (
+        <TrendingDown className="h-[19px] w-[19px] shrink-0 text-[#8C2F26]" />
+      ) : (
+        <TrendingUp className="h-[19px] w-[19px] shrink-0 text-[#0B6B45]" />
+      )}
+      <span
+        className={cn(
+          'text-[11.5px] font-extrabold uppercase tracking-[.14em]',
+          rose ? 'text-[#8C2F26]' : 'text-[#0B6B45]'
+        )}
+      >
+        {label}
+      </span>
+      <span className={cn('h-px flex-1', rose ? 'bg-[#F0D6D4]' : 'bg-[#BFE3CB]')} />
+      <span
+        className={cn(
+          'whitespace-nowrap text-[12px] font-bold tabular-nums',
+          rose ? 'text-[#8C2F26]' : 'text-[#0B6B45]'
+        )}
+      >
+        {formatINR(total)}
+      </span>
+    </div>
+  )
+}
+
 export function Trading(): React.JSX.Element {
   // How far back this user may date a new entry. The save is refused either
   // way; greying the days out just stops the form offering one it will reject.
@@ -1055,6 +1191,9 @@ export function Trading(): React.JSX.Element {
   // The deal the detail drawer is open on. Website only: the desktop register
   // opens a deal in place, underneath its own row.
   const [detailDeal, setDetailDeal] = useState<Row | null>(null)
+  const isMobile = useIsMobile()
+  // Which side's withholding is being explained, if either.
+  const [tdsSide, setTdsSide] = useState<'purchase' | 'sale' | null>(null)
   function toggleExpanded(id: number): void {
     setExpanded((prev) => {
       const next = new Set(prev)
@@ -1642,6 +1781,14 @@ export function Trading(): React.JSX.Element {
   const totalMargin = filteredDeals.reduce((s, d) => s + n(d.margin), 0)
   const totalPurchase = filteredDeals.reduce((s, d) => s + n(d.purchase_taxable), 0)
   const totalSale = filteredDeals.reduce((s, d) => s + n(d.sale_amount), 0)
+
+  // Phone. Same fork Sales.tsx and Treasury.tsx make, and in the same place:
+  // after every hook, so the order of hooks cannot change between renders.
+  //
+  // Below the new-deal form on purpose — a deal being entered stays in the
+  // form even if the window is narrowed mid-entry, rather than throwing the
+  // work away to show a read-only list.
+  if (__WEB__ && isMobile && !formPage) return <TradingMobile />
 
   if (formPage) {
     return (
@@ -2942,40 +3089,6 @@ export function Trading(): React.JSX.Element {
       </div>
       )}
 
-      {/* Deals sold below cost, said once in a sentence.
-          A pass-through trade is meant to make a margin, so one that did not
-          is the thing to look at first — but the register sorts by date, and
-          finding them means reading down a column of red figures. This counts
-          them, totals the loss and names the worst, so the register is opened
-          knowing what to look for. It renders only when there is a loss to
-          report: a banner that is always there stops being read. */}
-      {__WEB__ && (() => {
-        const losers = filteredDeals.filter((d) => n(d.margin) < 0)
-        if (losers.length === 0) return null
-        const lost = losers.reduce((a, d) => a + n(d.margin), 0)
-        const bought = losers.reduce((a, d) => a + n(d.purchase_taxable), 0)
-        const worst = losers.reduce((a, d) => (n(d.margin) < n(a.margin) ? d : a), losers[0])
-        const all = losers.length === filteredDeals.length
-        return (
-          <div className="flex flex-wrap items-center gap-2.5 rounded-[4px] border border-l-4 border-[#F0D6D4] border-l-[#B3261E] bg-[#FDF3F2] px-4 py-3">
-            <TrendingDown className="h-5 w-5 shrink-0 text-[#B3261E]" />
-            <span className="text-[13px] font-bold text-[#8C2F26]">
-              {all ? 'All ' : ''}
-              {losers.length} deal{losers.length === 1 ? '' : 's'} sold below cost — total{' '}
-              <b className="tabular-nums">{formatINR(lost)}</b> on{' '}
-              <span className="tabular-nums">{formatINR(bought)}</span> bought.
-              {losers.length > 1 && (
-                <>
-                  {' '}Worst: {formatDate(worst.deal_date)}{' '}
-                  {String(worst.product_code || worst.product_name || '')} at{' '}
-                  <span className="tabular-nums">{formatINR(worst.margin)}</span>.
-                </>
-              )}
-            </span>
-          </div>
-        )
-      })()}
-
       <div className={cn('relative w-72', __WEB__ && '!flex !w-full !items-center !gap-2.5')}>
         <div className={cn(__WEB__ && 'relative min-w-[240px] flex-1')}>
           <Search className={cn('pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground', __WEB__ && '!left-3 !h-4 !w-4 !text-[#5A6B62]')} />
@@ -3366,7 +3479,7 @@ export function Trading(): React.JSX.Element {
           desktop register keeps the in-place unfold its users know. */}
       {__WEB__ && (
         <Dialog open={!!detailDeal} onOpenChange={(o) => !o && setDetailDeal(null)}>
-          <DialogContent className="!bottom-0 !left-auto !right-0 !top-0 !grid-rows-[auto_minmax(0,1fr)_auto] !h-screen !max-h-screen !w-[720px] !max-w-[95vw] !min-w-0 !translate-x-0 !translate-y-0 !gap-0 !overflow-hidden !rounded-none !border-0 !bg-[#F1F5EF] !p-0 sm:!rounded-none [&>button]:!right-5 [&>button]:!top-[18px] [&>button]:!text-white [&>button]:!opacity-70 [&>button]:hover:!opacity-100">
+          <DialogContent className="!bottom-0 !left-auto !right-0 !top-0 !grid-rows-[auto_minmax(0,1fr)_auto] !h-screen !max-h-screen !w-[1160px] !max-w-[96vw] !min-w-0 !translate-x-0 !translate-y-0 !gap-0 !overflow-hidden !rounded-none !border-0 !bg-[#F1F5EF] !p-0 sm:!rounded-none [&>button]:!right-5 [&>button]:!top-[18px] [&>button]:!text-white [&>button]:!opacity-70 [&>button]:hover:!opacity-100">
             {detailDeal && (() => {
               const d = detailDeal
               const uom = String(d.purchase_uom || 'MT')
@@ -3374,6 +3487,10 @@ export function Trading(): React.JSX.Element {
               const sl: Row[] = Array.isArray(d.sale_lines) ? d.sale_lines : []
               const sp: Row[] = Array.isArray(d.sale_parties) ? d.sale_parties : []
               const multi = sp.length > 1
+              // A deal with no invoice on either side. Rare, but it renders as
+              // two empty panels facing each other, which reads as a loading
+              // failure rather than as "nothing has been invoiced yet".
+              const noDetail = !pl.length && !sl.length && !sp.length
               const loss = n(d.margin) < 0
               const totalQty = sp.reduce((a, b) => a + n(b.qty), 0)
               return (
@@ -3491,141 +3608,92 @@ export function Trading(): React.JSX.Element {
                       </div>
                     </div>
 
-                    <InvoicePanel
-                      heading="Purchase invoices"
-                      party={String(d.supplier_name || '—')}
-                      lines={pl}
-                      uom={uom}
-                      total={n(d.purchase_taxable)}
-                      tone="rose"
-                    />
+                    {/* A trade has two halves, and they are read against
+                        each other: what it cost on the left, what it fetched
+                        on the right. Stacked in one narrow column the buyer
+                        side began below the fold, so the two sides of the
+                        same deal were never on screen together — which is the
+                        one comparison this drawer exists to make.
 
-                    {multi ? (
-                      <>
-                        <BuyerSplit parties={sp} uom={uom} />
-                        {sp.map((party: Row, pi: number) => (
-                          <BuyerCard key={pi} party={party} index={pi} total={totalQty} uom={uom} />
-                        ))}
-                      </>
+                        auto-fit with a 380px floor, so a narrow window folds
+                        them back into one column rather than crushing both.
+
+                        [&>*]:shrink-0 on each column for the same reason it
+                        is on the scroller: the invoice panels and buyer cards
+                        clip their corners, and an overflow-hidden child of a
+                        flex column has a minimum size of 0 — without it they
+                        collapse to their header strip. */}
+                    {noDetail ? (
+                      <div className="flex flex-col items-center gap-2 rounded-[4px] border border-[#D6E2D6] bg-white px-3.5 py-7">
+                        <Receipt className="h-7 w-7 text-[#C3D2C6]" />
+                        <span className="text-[12.5px] font-semibold text-[#5A6B62]">
+                          No invoices are recorded against this deal yet.
+                        </span>
+                      </div>
                     ) : (
-                      <InvoicePanel
-                        heading="Sale invoices"
-                        party={String(sp[0]?.customer_name || d.customer_name || '—')}
-                        lines={sp.length ? (Array.isArray(sp[0]?.lines) ? sp[0].lines : []) : sl}
-                        uom={uom}
-                        total={n(d.sale_amount)}
-                        tone="emerald"
-                      />
-                    )}
-
-                    {/* The tax on each side, and what is left owing.
-                        This was four cells of slash-pairs — "3% / 5%",
-                        "₹28,158.44 / ₹27,275.14" — which asks the reader to
-                        remember that the left of every slash is the purchase
-                        and the right is the sale, then to hold that while the
-                        row wraps. One column per side removes the slash
-                        entirely: each figure sits under the side it belongs
-                        to, in that side's own colour, in the same red and
-                        green used everywhere else in this drawer. */}
-                    <div className="grid gap-2.5 [grid-template-columns:repeat(auto-fit,minmax(min(100%,260px),1fr))]">
-                      {[
-                        {
-                          rose: true,
-                          head: 'Purchase',
-                          party: String(d.supplier_name || '—'),
-                          gstPct: `${formatNum(d.purchase_gst_pct)}%`,
-                          gstAmt: n(d.purchase_gst_amount),
-                          tdsPct: `${formatNum(d.purchase_tds_pct)}%`,
-                          tdsAmt: n(d.purchase_tds_amount),
-                          netLabel: 'Net payable to supplier',
-                          net: n(d.purchase_net)
-                        },
-                        {
-                          rose: false,
-                          head: 'Sale',
-                          party: multi ? `${sp.length} buyers` : String(d.customer_name || '—'),
-                          // A split deal has no single rate to quote: each
-                          // buyer is invoiced on its own GST and its own TDS
-                          // slab, and the cards above carry the real figures.
-                          gstPct: multi ? 'per buyer' : `${formatNum(d.sale_gst_pct)}%`,
-                          gstAmt: n(d.sale_gst_amount),
-                          tdsPct: multi ? 'per buyer' : `${formatNum(d.sale_tds_pct)}%`,
-                          tdsAmt: n(d.sale_tds_amount),
-                          netLabel: 'Net receivable',
-                          net: n(d.sale_net_receivable)
-                        }
-                      ].map((c) => (
-                        <div
-                          key={c.head}
-                          className={cn(
-                            'overflow-hidden rounded-[4px] border bg-white',
-                            c.rose ? 'border-[#F0D6D4]' : 'border-[#BFE3CB]'
-                          )}
-                        >
-                          <div
-                            className={cn(
-                              'flex flex-wrap items-center justify-between gap-2 border-b px-3.5 py-2.5',
-                              c.rose ? 'border-b-[#F0D6D4] bg-[#FDF3F2]' : 'border-b-[#BFE3CB] bg-[#F4FBF6]'
-                            )}
-                          >
-                            <span
-                              className={cn(
-                                'flex items-center gap-1.5 text-[10.5px] font-extrabold uppercase tracking-[.11em]',
-                                c.rose ? 'text-[#8C2F26]' : 'text-[#0B6B45]'
-                              )}
-                            >
-                              {c.rose ? <TrendingDown className="h-4 w-4" /> : <TrendingUp className="h-4 w-4" />}
-                              {c.head}
-                            </span>
-                            <span
-                              className={cn('min-w-0 truncate text-[11px] font-extrabold', c.rose ? 'text-[#8C2F26]' : 'text-[#0B6B45]')}
-                            >
-                              {c.party}
-                            </span>
-                          </div>
-                          {/* Rate beside the label, money on the right — the
-                              rate explains the figure, so they belong on the
-                              same line rather than stacked as a footnote. */}
-                          {[
-                            { k: 'GST', pct: c.gstPct, v: c.gstAmt, tone: '' },
-                            { k: 'TDS', pct: c.tdsPct, v: c.tdsAmt, tone: 'text-[#8A5300]' }
-                          ].map((r) => (
-                            <div key={r.k} className="flex items-baseline gap-2.5 border-b border-b-[#EAF0E9] px-3.5 py-2.5">
-                              <span className="text-[10px] font-extrabold uppercase tracking-[.1em] text-[#5A6B62]">{r.k}</span>
-                              <span className="rounded-[2px] bg-[#EAF0E9] px-1.5 py-0.5 text-[10.5px] font-extrabold tabular-nums text-[#33473E]">
-                                {r.pct}
-                              </span>
-                              <span className={cn('ml-auto whitespace-nowrap text-[13px] font-bold tabular-nums', r.tone)}>
-                                {formatINR(r.v)}
-                              </span>
-                            </div>
-                          ))}
-                          <div
-                            className={cn(
-                              'flex flex-wrap items-baseline gap-x-2.5 gap-y-1 px-3.5 py-3',
-                              c.rose ? 'bg-[#F7EDEC]' : 'bg-[#EAF6EC]'
-                            )}
-                          >
-                            <span
-                              className={cn(
-                                'text-[10px] font-extrabold uppercase tracking-[.1em]',
-                                c.rose ? 'text-[#8C2F26]' : 'text-[#0B6B45]'
-                              )}
-                            >
-                              {c.netLabel}
-                            </span>
-                            <span
-                              className={cn(
-                                'ml-auto whitespace-nowrap text-[15px] font-bold tabular-nums',
-                                c.rose ? 'text-[#8C2F26]' : 'text-[#0B6B45]'
-                              )}
-                            >
-                              {formatINR(c.net)}
-                            </span>
-                          </div>
+                      <div className="grid items-start gap-3.5 [grid-template-columns:repeat(auto-fit,minmax(min(100%,380px),1fr))]">
+                        <div className="flex min-w-0 flex-col gap-2.5 [&>*]:shrink-0">
+                          <SideHead rose label="Seller side" total={n(d.purchase_taxable)} />
+                          <InvoicePanel
+                            heading="Purchase invoices"
+                            party={String(d.supplier_name || '—')}
+                            lines={pl}
+                            uom={uom}
+                            total={n(d.purchase_taxable)}
+                            tone="rose"
+                          />
+                          <TaxCard
+                            rose
+                            head="Purchase"
+                            party=""
+                            onExplain={() => setTdsSide('purchase')}
+                            gstPct={`${formatNum(d.purchase_gst_pct)}%`}
+                            gstAmt={n(d.purchase_gst_amount)}
+                            tdsPct={`${formatNum(d.purchase_tds_pct)}%`}
+                            tdsAmt={n(d.purchase_tds_amount)}
+                            netLabel="Net payable to supplier"
+                            net={n(d.purchase_net)}
+                          />
                         </div>
-                      ))}
-                    </div>
+
+                        <div className="flex min-w-0 flex-col gap-2.5 [&>*]:shrink-0">
+                          <SideHead rose={false} label="Buyer side" total={n(d.sale_amount)} />
+                          {multi ? (
+                            <>
+                              <BuyerSplit parties={sp} uom={uom} />
+                              {sp.map((party: Row, pi: number) => (
+                                <BuyerCard key={pi} party={party} index={pi} total={totalQty} uom={uom} />
+                              ))}
+                            </>
+                          ) : (
+                            <InvoicePanel
+                              heading="Sale invoices"
+                              party={String(sp[0]?.customer_name || d.customer_name || '—')}
+                              lines={sp.length ? (Array.isArray(sp[0]?.lines) ? sp[0].lines : []) : sl}
+                              uom={uom}
+                              total={n(d.sale_amount)}
+                              tone="emerald"
+                            />
+                          )}
+                          {/* A split deal has no single rate to quote: each
+                              buyer is invoiced on its own GST and its own TDS
+                              slab, and the cards above carry the real
+                              figures. */}
+                          <TaxCard
+                            rose={false}
+                            head="Sale"
+                            party={multi ? `${sp.length} buyers` : ''}
+                            onExplain={() => setTdsSide('sale')}
+                            gstPct={multi ? 'per buyer' : `${formatNum(d.sale_gst_pct)}%`}
+                            gstAmt={n(d.sale_gst_amount)}
+                            tdsPct={multi ? 'per buyer' : `${formatNum(d.sale_tds_pct)}%`}
+                            tdsAmt={n(d.sale_tds_amount)}
+                            netLabel="Net receivable"
+                            net={n(d.sale_net_receivable)}
+                          />
+                        </div>
+                      </div>
+                    )}
 
                     {/* The LC this deal was funded on, and whether the bank
                         has been repaid. Carried over from the in-place panel
@@ -3700,6 +3768,86 @@ export function Trading(): React.JSX.Element {
           </DialogContent>
         </Dialog>
       )}
+
+      {/* The working behind whichever side's TDS was asked about. Built here
+          rather than inside the drawer's IIFE because it outlives a re-render
+          of the drawer body and needs the party masters, which are page
+          state. */}
+      {__WEB__ && tdsSide && detailDeal && (() => {
+        const d = detailDeal
+        const sp: Row[] = Array.isArray(d.sale_parties) ? d.sale_parties : []
+        const parties: TdsParty[] =
+          tdsSide === 'purchase'
+            ? (() => {
+                const master = suppliers.find((x) => String(x.id) === String(d.supplier_id || ''))
+                const lines: Row[] = Array.isArray(d.purchase_lines) ? d.purchase_lines : []
+                return [
+                  {
+                    partyId: n(d.supplier_id),
+                    name: String(d.supplier_name || '—'),
+                    pct: n(d.purchase_tds_pct),
+                    // A purchase withholds on the invoice TOTAL — goods plus
+                    // GST, plus the rupee round-off that rides the first one.
+                    on: 'total' as const,
+                    gstPct: n(d.purchase_gst_pct),
+                    roundOff: n(d.purchase_round_off),
+                    invoices: lines.map((l) => ({
+                      id: n(l.order_id),
+                      label: String(l.invoice_no || `Invoice #${n(l.order_id)}`),
+                      taxable: round2(n(l.qty) * n(l.rate))
+                    })),
+                    posted: n(d.purchase_tds_amount),
+                    threshold: n(master?.tds_threshold),
+                    aboveOnly: !!master?.tds_above_only
+                  }
+                ]
+              })()
+            : (sp.length
+                ? sp
+                : [
+                    {
+                      customer_id: d.customer_id,
+                      customer_name: d.customer_name,
+                      tds_pct: d.sale_tds_pct,
+                      tds_amount: d.sale_tds_amount,
+                      gst_pct: d.sale_gst_pct,
+                      round_off: d.sale_round_off,
+                      lines: Array.isArray(d.sale_lines) ? d.sale_lines : []
+                    } as Row
+                  ]
+              ).map((b: Row) => {
+                const master = customers.find((x) => String(x.id) === String(b.customer_id || ''))
+                const lines: Row[] = Array.isArray(b.lines) ? b.lines : []
+                return {
+                  partyId: n(b.customer_id),
+                  name: String(b.customer_name || '—'),
+                  pct: n(b.tds_pct),
+                  // A sale withholds on the GOODS alone: GST is the
+                  // government's money passing through, and the round-off is
+                  // a presentation artifact.
+                  on: 'taxable' as const,
+                  gstPct: n(b.gst_pct),
+                  roundOff: n(b.round_off),
+                  invoices: lines.map((l) => ({
+                    id: n(l.sale_id),
+                    label: String(l.invoice_no || `Invoice #${n(l.sale_id)}`),
+                    taxable: round2(n(l.qty) * n(l.rate))
+                  })),
+                  posted: n(b.tds_amount),
+                  threshold: n(master?.tds_threshold),
+                  aboveOnly: !!master?.tds_above_only
+                }
+              })
+        return (
+          <TdsExplainer
+            open
+            onClose={() => setTdsSide(null)}
+            side={tdsSide}
+            dealDate={String(d.deal_date || '')}
+            parties={parties}
+          />
+        )
+      })()}
     </div>
   )
 }

@@ -147,31 +147,25 @@ function tankerDelay(row: Row): TankerDelay | null {
     : { label: `ETA ${formatDate(exp)} · ${-days}d`, tone: 'text-muted-foreground', kind: 'eta', eta: exp, inDays: -days }
 }
 
-// The tone of each state as a chip. Every one of them is a chip on the
-// website, including the plain ETA — it used to be the only state rendered as
-// grey text, which put the one line a dispatcher actually reads (when is it
-// getting here) below the four exception states in weight.
+// The tone of each state, as INK rather than as a chip.
 //
-// The three verdicts are FILLED; the two neutral states stay light.
+// The stage badge above it is already a chip, so a second pill directly under
+// it made every cell in this column two stacked boxes — and the one that
+// mattered least, "ETA in 2 days", was drawn as loudly as the one that
+// mattered most. Colour carries the verdict perfectly well without a box
+// around it: dark red reads as late from across the room, and the cell stops
+// competing with the stage it belongs to.
 //
-// Every one of them used to be a pale tint, which put "Arrived 1d early" in
-// almost exactly the wash the stage chip above it already wears — two green
-// pills stacked in one cell, the second reading as a second copy of the first
-// rather than as a different fact about the load. Solid colour separates the
-// verdict from the stage at a glance, and gives the column a proper hierarchy:
-// a filled red row is the loudest thing on the page, which is right, and a
-// filled green one is unmistakably the opposite rather than more of the same.
-//
-// The plain ETA is the one non-verdict, and it is violet — its own colour,
-// distinct from the green/amber/red of the three verdicts AND from the green
-// stage chip stacked above it, so it is findable without shouting. No pill
-// inside it: a box inside a box read as a second control sitting in the chip.
+// Each colour is dark enough to be read as text on white, and each is the
+// tone this palette already uses for that meaning elsewhere — the same green
+// as the stage chip's ink, the same amber as a warning row, the same violet
+// as the neutral ETA had.
 const ETA_TONE: Record<TankerDelay['kind'], string> = {
-  late: 'border-[#8C2F26] bg-[#B3261E] text-white',
-  today: 'border-[#8A5300] bg-[#C2700A] text-white',
-  good: 'border-[#095538] bg-[#0B6B45] text-white',
-  eta: 'border-[#C7BCF0] bg-[#EDE9FB] text-[#3D3179]',
-  unset: 'border-[#E4ECE3] bg-[#F7FAF6] text-[#8FA79B]'
+  late: 'text-[#B3261E]',
+  today: 'text-[#8A5300]',
+  good: 'text-[#0B6B45]',
+  eta: 'text-[#3D3179]',
+  unset: 'text-[#8FA79B] italic'
 }
 
 function StatusBadge({ status }: { status: string }): React.JSX.Element {
@@ -1202,28 +1196,31 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
           if (!d) return null
           if (!__WEB__) return <div className={cn('mt-1 text-[11px] font-medium', d.tone)}>{d.label}</div>
           return (
-            <div className="mt-1.5">
+            <div className="mt-1">
               <span
                 className={cn(
-                  'inline-flex items-center gap-1.5 whitespace-nowrap rounded-[2px] border px-[7px] py-[3px] text-[10.5px] font-extrabold',
+                  'inline-flex items-center gap-1.5 whitespace-nowrap text-[11.5px] font-extrabold tracking-[.01em]',
                   ETA_TONE[d.kind]
                 )}
               >
                 {d.kind === 'late' ? (
-                  <AlertTriangle className="h-3 w-3 shrink-0" />
+                  <AlertTriangle className="h-3.5 w-3.5 shrink-0" />
                 ) : d.kind === 'good' ? (
-                  <CheckCircle2 className="h-3 w-3 shrink-0" />
+                  <CheckCircle2 className="h-3.5 w-3.5 shrink-0" />
                 ) : (
-                  <Clock className="h-3 w-3 shrink-0" />
+                  <Clock className="h-3.5 w-3.5 shrink-0" />
                 )}
                 {d.kind === 'eta' ? (
                   <>
-                    <span className="text-[#5B4BA8]">ETA</span>
+                    {/* The word is the label, the date and the count are the
+                        answer — so the label steps back a shade rather than
+                        being set in a different hue, which would have made
+                        three colours out of one line. */}
+                    <span className="font-bold opacity-70">ETA</span>
                     <span className="doc-ref">{formatDate(d.eta || '')}</span>
                     {/* How many days that is — the date alone makes you count,
-                        and counting is the whole question. Just the bold word:
-                        the chip's colour is the highlight now. */}
-                    <span className="font-extrabold">· {d.inDays}d</span>
+                        and counting is the whole question. */}
+                    <span>· {d.inDays}d</span>
                   </>
                 ) : (
                   d.label

@@ -1660,6 +1660,77 @@ export async function listTankerQuality(tankerId: number): Promise<Row[]> {
   return toPlain(res)
 }
 
+// Every FFA the lab has actually recorded, newest first.
+//
+// A recipe's FFA % is typed in by hand, and the number being typed is a
+// remembered average of what has been coming in — which is a reading the mill
+// already took, load by load, and files against the tanker. This is that
+// history handed back so the recipe can be set from it instead of from
+// memory.
+//
+// Both sources, because "what came in" is not only tankers: a consignment
+// invoice is material received with no tanker at all, and its readings hang
+// on the invoice (order_quality). Leaving those out would quietly answer a
+// narrower question than the one being asked.
+//
+// The date is the day the material was RECEIVED, not the day it loaded —
+// falling back down the stages so a load still in transit sorts by the most
+// recent thing known about it rather than dropping to the bottom.
+export async function listFfaHistory(productId = 0, limit = 60): Promise<Row[]> {
+  const cid = getActiveCompanyId()
+  const pid = n(productId)
+  const lim = Math.min(300, Math.max(1, n(limit) || 60))
+  const res = await getClient().execute({
+    sql: `
+    SELECT * FROM (
+      SELECT 'tanker' AS kind, pt.id AS id, pt.tanker_no AS ref,
+             COALESCE(NULLIF(pt.empty_date, ''), NULLIF(pt.inside_factory_date, ''),
+                      NULLIF(pt.outside_factory_date, ''), NULLIF(pt.transit_date, ''),
+                      pt.loaded_date) AS received_date,
+             pt.status AS status,
+             s.name AS party, p.name AS product, p.code AS product_code,
+             pt.oil_type_id AS product_id,
+             COALESCE(pt.received_qty, pt.loaded_qty) AS qty, pt.uom AS uom,
+             o.invoice_no AS invoice_no, tq.value AS ffa
+        FROM tanker_quality tq
+        JOIN purchase_tankers pt ON pt.id = tq.tanker_id
+        LEFT JOIN suppliers s ON s.id = pt.supplier_id
+        LEFT JOIN products p ON p.id = pt.oil_type_id
+        LEFT JOIN orders o ON o.id = pt.order_id
+       WHERE pt.company_id = ?
+         AND UPPER(TRIM(tq.name)) = 'FFA'
+         AND TRIM(COALESCE(tq.value, '')) <> ''
+      UNION ALL
+      SELECT 'consignment', o.id, o.invoice_no,
+             COALESCE(NULLIF(o.delivered_date, ''), o.order_date),
+             o.status,
+             s.name, p.name, p.code, o.oil_type_id,
+             COALESCE(o.received_qty, o.ordered_qty), o.uom, o.invoice_no, oq.value
+        FROM order_quality oq
+        JOIN orders o ON o.id = oq.order_id
+        LEFT JOIN suppliers s ON s.id = o.supplier_id
+        LEFT JOIN products p ON p.id = o.oil_type_id
+       WHERE o.company_id = ?
+         AND UPPER(TRIM(oq.name)) = 'FFA'
+         AND TRIM(COALESCE(oq.value, '')) <> ''
+    )
+    WHERE (? = 0 OR product_id = ?)
+    ORDER BY received_date DESC, id DESC
+    LIMIT ?`,
+    args: [cid, cid, pid, pid, lim]
+  })
+  // A reading that is not a number is dropped here rather than in SQL: the
+  // column is free text, and "23", "23.4%" and "approx 23" all arrive from the
+  // same field. Anything with no number in it cannot be averaged and would
+  // only sit in the list as a row that can be ticked but not used.
+  return toPlain(res)
+    .map((r) => {
+      const m = String(r.ffa ?? '').match(/-?\d+(\.\d+)?/)
+      return { ...r, ffa_num: m ? Number(m[0]) : null }
+    })
+    .filter((r) => r.ffa_num != null && Number.isFinite(r.ffa_num as number))
+}
+
 export async function advancePurchaseTanker(id: number, toStatus: string, data: Row): Promise<{ id: number }> {
   const c = getClient()
   const res = await c.execute({ sql: 'SELECT * FROM purchase_tankers WHERE id = ?', args: [id] })
