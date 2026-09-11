@@ -15394,6 +15394,24 @@ async function tickWorkTask(taskId, userId) {
   });
   return { id: n16(taskId), state: "done" };
 }
+async function untickWorkTask(taskId, userId) {
+  const t = await loadTask(taskId);
+  const u = await loadUser(userId);
+  assertWorkAccess(u);
+  if (n16(t.user_id) !== n16(u.id)) throw new Error("That task belongs to somebody else");
+  const back = { done: "pending", redone: "fixes" };
+  const to = back[s(t.state)];
+  if (!to) {
+    throw new Error(
+      s(t.state) === "pending" ? "That task is not ticked" : s(t.state) === "approved" ? "That task has been approved \u2014 ask an admin to reopen it" : "That task has been sent back for fixes \u2014 it is not ticked"
+    );
+  }
+  await getClient().execute({
+    sql: "UPDATE work_tasks SET state = ?, marked_at = NULL, updated_at = ? WHERE id = ?",
+    args: [to, localStamp(), n16(taskId)]
+  });
+  return { id: n16(taskId), state: to };
+}
 async function redoWorkTask(taskId, userId) {
   const t = await loadTask(taskId);
   const u = await loadUser(userId);
@@ -20239,6 +20257,10 @@ function registerIpc() {
   handle(
     "work:tick",
     (_e, { taskId, userId }) => tickWorkTask(taskId, userId)
+  );
+  handle(
+    "work:untick",
+    (_e, { taskId, userId }) => untickWorkTask(taskId, userId)
   );
   handle(
     "work:redo",
