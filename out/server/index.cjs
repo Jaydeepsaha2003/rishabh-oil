@@ -9544,6 +9544,9 @@ async function listStockOpenings(companyId) {
     // prompt to merge them. Merging would collapse the two into one line and
     // lose the distinction between what is bought and what is made.
     name_clashes: dupes,
+    // What this page loaded, handed back on save so a stale sheet cannot
+    // overwrite figures it never saw. See openingsVersion.
+    version: await openingsVersion(cid),
     // The vessels this site breaks its in-process oil down into — one list for
     // the whole sheet, because one refinery has one set of them.
     pp_stages: ppStages
@@ -9578,8 +9581,37 @@ async function duplicateProductNames() {
     };
   });
 }
-async function saveStockOpenings(rows, asOf, companyId) {
+async function openingsVersion(companyId) {
   const cid = n7(companyId) || getActiveCompanyId();
+  const fid = await factoryOfCompanies([cid]);
+  const scope = fid ? `f${fid}` : `c${cid}`;
+  const c = getClient();
+  const [o, pp] = await Promise.all([
+    c.execute({
+      sql: fid ? "SELECT COUNT(*) AS n, MAX(updated_at) AS t FROM stock_openings WHERE factory_id = ?" : "SELECT COUNT(*) AS n, MAX(updated_at) AS t FROM stock_openings WHERE company_id = ?",
+      args: [fid || cid]
+    }),
+    c.execute({
+      sql: "SELECT COUNT(*) AS n, MAX(updated_at) AS t FROM stock_opening_pp WHERE scope = ?",
+      args: [scope]
+    })
+  ]);
+  const a = toPlain9(o)[0] || {};
+  const b = toPlain9(pp)[0] || {};
+  return `${n7(a.n)}:${String(a.t || "")}|${n7(b.n)}:${String(b.t || "")}`;
+}
+async function assertOpeningsUnchanged(seen, companyId) {
+  const token = String(seen || "").trim();
+  if (!token) return;
+  const now = await openingsVersion(companyId);
+  if (token === now) return;
+  throw new Error(
+    "This opening sheet was changed somewhere else while you had it open. Reload the page before saving \u2014 saving now would overwrite those changes."
+  );
+}
+async function saveStockOpenings(rows, asOf, companyId, seenVersion) {
+  const cid = n7(companyId) || getActiveCompanyId();
+  await assertOpeningsUnchanged(seenVersion, cid);
   const date = String(asOf || "").slice(0, 10);
   if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) throw new Error("Pick the date this opening is struck on");
   const c = getClient();
@@ -9773,9 +9805,10 @@ async function removePpStage(stageId, companyId) {
   await c.execute({ sql: "DELETE FROM stock_pp_stages WHERE id = ? AND scope = ?", args: [id, scope] });
   return { removed: Number(del.rowsAffected) || 0, kept: 0, retired: false, name };
 }
-async function savePpLines(productId, lines, companyId) {
+async function savePpLines(productId, lines, companyId, seenVersion) {
   const pid = n7(productId);
   if (!pid) throw new Error("Which product?");
+  await assertOpeningsUnchanged(seenVersion, companyId);
   const cid = n7(companyId) || getActiveCompanyId();
   const scope = await ppScope(cid);
   const c = getClient();
@@ -10467,6 +10500,17 @@ async function drawPpForBatch(productionId, draws) {
     if (d.fromFfa > 5e-4) await drawPp(productionId, d.product_id, "with", d.fromFfa);
   }
 }
+var PP_NOTE = /\s*(?:·\s*)?PP Recirculation —[^·]*/g;
+function ppRunNote(typed, ownPp, uom) {
+  const base = String(typed || "").replace(PP_NOTE, "").trim();
+  const f3 = (x) => String(Math.round(x * 1e3) / 1e3);
+  const parts = [];
+  if (ownPp.without > 5e-4) parts.push(`${f3(ownPp.without)} ${uom} W/O FFA`);
+  if (ownPp.with > 5e-4) parts.push(`${f3(ownPp.with)} ${uom} with FFA`);
+  if (!parts.length) return base || null;
+  const marker = `PP Recirculation \u2014 ${parts.join(", ")}`;
+  return base ? `${base} \xB7 ${marker}` : marker;
+}
 async function createProduction(v) {
   if (String(v.kind || "batch") === "recirculation") return recordRecirculation(v);
   const c = getClient();
@@ -10520,7 +10564,7 @@ async function createProduction(v) {
           VALUES (?, (SELECT factory_id FROM companies WHERE id = ?), ?, ?, ?, ?, ?, ?, ?)`,
     // The version is stamped now so a later edit to the recipe cannot reach
     // this batch. See recipeSnapshot.
-    args: [getActiveCompanyId(), getActiveCompanyId(), v.prod_date, productId, qty, v.uom || "MT", v.note || null, fid || null, snap.versionId || null]
+    args: [getActiveCompanyId(), getActiveCompanyId(), v.prod_date, productId, qty, v.uom || "MT", ppRunNote(v.note, ownPp, String(v.uom || "MT")), fid || null, snap.versionId || null]
   });
   const id = Number(ins.lastInsertRowid);
   if (draws.length) await drawPpForBatch(id, draws);
@@ -10582,7 +10626,7 @@ async function updateProduction(id, v) {
   await c.execute({
     sql: `UPDATE production SET prod_date = ?, product_id = ?, qty = ?, uom = ?, note = ?, formulation_id = ?, formulation_version_id = ?
            WHERE id = ?`,
-    args: [v.prod_date, productId, qty, v.uom || "MT", v.note || null, fid || null, snap.versionId || null, n8(id)]
+    args: [v.prod_date, productId, qty, v.uom || "MT", ppRunNote(v.note, ownPp, String(v.uom || "MT")), fid || null, snap.versionId || null, n8(id)]
   });
   if (draws.length) await drawPpForBatch(n8(id), draws);
   if (ownPp.without > 5e-4) await drawPp(n8(id), productId, "without", ownPp.without);
@@ -20611,7 +20655,7 @@ function registerIpc() {
   );
   handle(
     "stockOpening:save",
-    (_e, { rows, asOf, companyId }) => saveStockOpenings(rows, asOf, companyId)
+    (_e, { rows, asOf, companyId, version }) => saveStockOpenings(rows, asOf, companyId, version)
   );
   handle(
     "stockOpening:date",
@@ -20631,7 +20675,7 @@ function registerIpc() {
   );
   handle(
     "stockOpening:savePp",
-    (_e, { productId, lines, companyId }) => savePpLines(productId, lines, companyId)
+    (_e, { productId, lines, companyId, version }) => savePpLines(productId, lines, companyId, version)
   );
   handle(
     "stockOpening:ppFreeTotals",
