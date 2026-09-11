@@ -15976,8 +15976,7 @@ async function saveSkuOpenings(rows, asOf, companyId) {
 async function listSkuAdjustments(packagingId) {
   const pid = n19(packagingId);
   if (!pid) return [];
-  const packQty = "pk.base_per_pouch * MAX(1, COALESCE(pk.pouches_per_box, 1))";
-  const MT = `
+  const perPouchMT = `
     CASE
       WHEN COALESCE(pk.unit_size, 0) > 0 THEN
         CASE UPPER(COALESCE(pk.unit_uom, 'KG'))
@@ -15992,16 +15991,18 @@ async function listSkuAdjustments(packagingId) {
         END
       ELSE
         CASE UPPER(COALESCE(pk.base_uom, 'KG'))
-          WHEN 'GM' THEN (${packQty}) / 1000.0
-          WHEN 'G' THEN (${packQty}) / 1000.0
-          WHEN 'ML' THEN (${packQty}) / 1000.0
-          WHEN 'QUINTAL' THEN (${packQty}) * 100.0
-          WHEN 'MT' THEN (${packQty}) * 1000.0
-          WHEN 'TON' THEN (${packQty}) * 1000.0
-          WHEN 'KL' THEN (${packQty}) * 1000.0
-          ELSE (${packQty})
+          WHEN 'GM' THEN pk.base_per_pouch / 1000.0
+          WHEN 'G' THEN pk.base_per_pouch / 1000.0
+          WHEN 'ML' THEN pk.base_per_pouch / 1000.0
+          WHEN 'QUINTAL' THEN pk.base_per_pouch * 100.0
+          WHEN 'MT' THEN pk.base_per_pouch * 1000.0
+          WHEN 'TON' THEN pk.base_per_pouch * 1000.0
+          WHEN 'KL' THEN pk.base_per_pouch * 1000.0
+          ELSE pk.base_per_pouch
         END
-    END / 1000.0`;
+    END`;
+  const boxMultiplier = "CASE WHEN UPPER(TRIM(COALESCE(pk.pouch_label, ''))) = 'BOX' THEN MAX(1, COALESCE(pk.pouches_per_box, 1)) ELSE 1 END";
+  const MT = `((${perPouchMT}) * (${boxMultiplier})) / 1000.0`;
   const res = await getClient().execute({
     sql: `SELECT a.id, a.delta, a.adj_date, a.note, a.created_by, a.created_at,
                  COALESCE(a.kind, CASE WHEN a.delta < 0 THEN 'correction' ELSE 'packing' END) AS kind,
