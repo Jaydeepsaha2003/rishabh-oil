@@ -782,7 +782,9 @@ export function registerIpc(): void {
     listWorkBoard(date, userId)
   )
   handle('work:cutoff', () => workCutoff())
-  handle('work:setCutoff', (_e, { cutoff }: { cutoff: string }) => setWorkCutoff(cutoff))
+  handle('work:setCutoff', (_e, { cutoff, userId }: { cutoff: string; userId?: number }) =>
+    setWorkCutoff(cutoff, userId)
+  )
   handle('work:processes', () => listWorkProcesses())
   handle('work:saveProcess', (_e, { values }: { values: Row }) => saveWorkProcess(values))
   handle('work:removeProcess', (_e, { id }: { id: number }) => removeWorkProcess(id))

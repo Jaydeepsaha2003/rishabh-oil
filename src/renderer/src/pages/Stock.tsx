@@ -205,6 +205,30 @@ const CAT_LABEL: Record<string, string> = {
 // upper-case; shown title-case here purely for readability.
 const titleCase = (s: string): string => s.replace(/\w\S*/g, (w) => w[0] + w.slice(1).toLowerCase())
 
+// What the register actually COUNTS, per unit — a box of 20 pouches weighs
+// what its 20 pouches add up to, not what one pouch alone weighs.
+//
+// Some SKUs are counted one pouch/jar/tin at a time (pouches_per_box = 1, so
+// this changes nothing for them — DALDA JAR 15 KG × 1 stays 15 KG a unit).
+// Others are counted by the case: VPATI DALDA 1 LTR X20P shows a Type of BOX,
+// its PACK is 0.893 KG (one pouch) and its TOTAL is 17.86 KG (the whole box,
+// 20 × 0.893) — and every tick on this sheet against that SKU is a box, not a
+// pouch. Multiplying pieces by PACK alone read 4,687 boxes as 4,687 pouches
+// and understated the tonnage by a factor of 20.
+//
+// unit_size/unit_uom are an explicit override some packaging masters carry —
+// honoured first, unchanged, for whichever SKU actually needs one. Only the
+// FALLBACK changes: base_per_pouch alone becomes the pack it is actually part
+// of, base_per_pouch × pouches_per_box — which is exactly what the sheet's own
+// Total column already shows (see packTotal below), so this is the number
+// already on screen, not a new one invented for the tonnage.
+function unitMT(r: Row): number {
+  const useOverride = Number(r.unit_size) > 0
+  const size = useOverride ? Number(r.unit_size) : Number(r.base_per_pouch || 0) * Math.max(1, Number(r.pouches_per_box) || 1)
+  const uom = useOverride ? String(r.unit_uom || 'KG') : String(r.base_uom || 'KG')
+  return packSizeMT(size, uom)
+}
+
 // Pack size → MT per piece. Litres are treated 1 L ≈ 1 KG (the mill's dispatch
 // reports total 15 Ltr and 15 Kg SKUs into one MT figure the same way).
 function packSizeMT(size: number, uom: string): number {
@@ -3965,12 +3989,11 @@ function SkuStock(): React.JSX.Element {
     uom: String(r.base_uom || 'KG')
   })
 
-  // Tonnage of one SKU's on-hand pieces (pieces × pack size → MT).
-  const skuMT = (r: Row): number => {
-    const size = Number(r.unit_size) > 0 ? Number(r.unit_size) : Number(r.base_per_pouch) || 0
-    const uom = Number(r.unit_size) > 0 ? String(r.unit_uom || 'KG') : String(r.base_uom || 'KG')
-    return (Number(r.on_hand) || 0) * packSizeMT(size, uom)
-  }
+  // Tonnage of one SKU's on-hand pieces (pieces × the weight of ONE COUNTED
+  // UNIT → MT). Same unitMT the day-register's own Open/Close chips use below,
+  // so this page's TONNAGE summary and the export can never disagree with the
+  // figure printed against each row.
+  const skuMT = (r: Row): number => (Number(r.on_hand) || 0) * unitMT(r)
 
   // Every SKU's tonnage, summed — the sheet's TOTAL (MT).
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -4693,8 +4716,7 @@ function SkuStock(): React.JSX.Element {
                   // means nothing across SKUs of different sizes — 45 boxes of
                   // 8.4kg and 45 tins of 15kg are not comparable quantities —
                   // so every count states what it weighs underneath it.
-                  const mtOf = (pieces: number): number =>
-                    (pieces * Number(r.base_per_pouch || 0)) / 1000
+                  const mtOf = (pieces: number): number => pieces * unitMT(r)
                   // The tonnage as a chip, not a slash.
                   //
                   // "1,548 / 23.22 MT" is one string doing two jobs: the count

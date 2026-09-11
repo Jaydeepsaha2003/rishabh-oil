@@ -100,7 +100,9 @@ export async function workCutoff(): Promise<string> {
   return /^\d{2}:\d{2}$/.test(v) ? v : CUTOFF_DEFAULT
 }
 
-export async function setWorkCutoff(hhmm: string): Promise<{ cutoff: string }> {
+export async function setWorkCutoff(hhmm: string, adminId?: number): Promise<{ cutoff: string }> {
+  const a = await loadUser(n(adminId))
+  if (s(a.role) !== 'admin') throw new Error('Only an admin can change the cut-off')
   const v = s(hhmm).trim()
   if (!/^\d{2}:\d{2}$/.test(v)) throw new Error('Give the cut-off as HH:MM')
   await getClient().execute({

@@ -218,7 +218,7 @@ export interface Api {
   work: {
     board: (date?: string, userId?: number) => Promise<Row>
     cutoff: () => Promise<string>
-    setCutoff: (cutoff: string) => Promise<{ cutoff: string }>
+    setCutoff: (cutoff: string, userId?: number) => Promise<{ cutoff: string }>
     processes: () => Promise<Row[]>
     saveProcess: (values: Row) => Promise<{ id: number }>
     removeProcess: (id: number) => Promise<{ id: number; retired: boolean }>

@@ -305,8 +305,8 @@ const api = {
     board: (date?: string, userId?: number): Promise<Row> =>
       ipcRenderer.invoke('work:board', { date, userId }),
     cutoff: (): Promise<string> => ipcRenderer.invoke('work:cutoff'),
-    setCutoff: (cutoff: string): Promise<{ cutoff: string }> =>
-      ipcRenderer.invoke('work:setCutoff', { cutoff }),
+    setCutoff: (cutoff: string, userId?: number): Promise<{ cutoff: string }> =>
+      ipcRenderer.invoke('work:setCutoff', { cutoff, userId }),
     processes: (): Promise<Row[]> => ipcRenderer.invoke('work:processes'),
     saveProcess: (values: Row): Promise<{ id: number }> =>
       ipcRenderer.invoke('work:saveProcess', { values }),

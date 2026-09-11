@@ -40,6 +40,7 @@ import {
   Check,
   CheckCheck,
   ChevronDown,
+  ChevronLeft,
   ChevronRight,
   ClipboardList,
   Clock,
@@ -1128,23 +1129,35 @@ export function WorkAssignments(): React.JSX.Element {
   const [assignOpen, setAssignOpen] = useState(false)
   const [asForm, setAsForm] = useState<Row>({ user_id: 0, title: '', detail: '', module: 'stock' })
 
+  // Which day's board is on screen. Empty means "today" — the server's own
+  // default — so an ordinary login (who never sees the picker) always reads
+  // as today with no extra state to keep in sync. Only an admin can set this
+  // to anything else; the server still enforces that day's own data, since
+  // ensureDay only ever materialises TODAY's tasks and simply reads back
+  // whatever already exists for any other date.
+  const [viewDate, setViewDate] = useState('')
+  const [cutoffDraft, setCutoffDraft] = useState<string | null>(null)
+
   const myId = n(me?.id)
 
-  const load = useCallback(async (background = false): Promise<void> => {
-    if (!background) setLoading(true)
-    try {
-      // The server scopes what comes back to who is asking: an admin gets the
-      // whole site's board (Review board and Team progress both need it), an
-      // ordinary login gets only its own tasks. The client hiding the Team tab
-      // is not the only thing standing between another desk and this login's
-      // work — the payload itself no longer carries it.
-      setData(await window.api.work.board(undefined, myId))
-    } catch (e) {
-      toast.error((e as Error).message)
-    } finally {
-      setLoading(false)
-    }
-  }, [myId])
+  const load = useCallback(
+    async (background = false): Promise<void> => {
+      if (!background) setLoading(true)
+      try {
+        // The server scopes what comes back to who is asking: an admin gets the
+        // whole site's board (Review board and Team progress both need it), an
+        // ordinary login gets only its own tasks. The client hiding the Team tab
+        // is not the only thing standing between another desk and this login's
+        // work — the payload itself no longer carries it.
+        setData(await window.api.work.board(viewDate || undefined, myId))
+      } catch (e) {
+        toast.error((e as Error).message)
+      } finally {
+        setLoading(false)
+      }
+    },
+    [myId, viewDate]
+  )
   useEffect(() => {
     void load()
   }, [load])
@@ -1223,6 +1236,28 @@ export function WorkAssignments(): React.JSX.Element {
       await window.api.work.note(n(t.id), myId, text)
       setDraft((p) => ({ ...p, [n(t.id)]: '' }))
     })
+
+  function shiftDate(days: number): void {
+    // Anchored to UTC throughout — a local Date parsed at midnight and
+    // re-read via toISOString() rolls back a day in any timezone ahead of
+    // UTC (India included), since local midnight is the PREVIOUS day in UTC.
+    // Reading and writing the same UTC fields keeps the shift a plain
+    // calendar-day step with no timezone conversion in either direction.
+    const base = viewDate || s(data?.date) || new Date().toISOString().slice(0, 10)
+    const d = new Date(`${base}T00:00:00Z`)
+    d.setUTCDate(d.getUTCDate() + days)
+    setViewDate(d.toISOString().slice(0, 10))
+  }
+
+  async function saveCutoff(): Promise<void> {
+    const v = s(cutoffDraft).trim()
+    if (!/^\d{2}:\d{2}$/.test(v)) return
+    await act('change the cut-off', async () => {
+      await window.api.work.setCutoff(v, myId)
+      toast.success(`Cut-off set to ${v}`)
+      setCutoffDraft(null)
+    })
+  }
 
   async function confirmSendBack(): Promise<void> {
     if (!sendBack || !sbNote.trim()) return
@@ -1358,15 +1393,60 @@ export function WorkAssignments(): React.JSX.Element {
           <MobileBar onRefresh={() => load(true)} />
           <div className="text-[20px] font-extrabold tracking-[-0.03em] text-white">Work assignments</div>
           <div className="mt-1 flex flex-wrap items-center gap-2">
-            <span className="doc-ref text-[11px] font-bold text-white/70">{formatDate(s(data?.date))}</span>
-            <span
-              className={cn(
-                'inline-flex items-center gap-1 rounded-full px-2 py-[3px] text-[9.5px] font-extrabold uppercase tracking-[.1em]',
-                afterCutoff ? 'bg-[#8C2F26] text-white' : 'bg-white/[.14] text-[#C7F03F]'
-              )}
-            >
-              <Clock className="h-3 w-3" /> cut-off {cutoff}
-            </span>
+            {isAdmin ? (
+              <label className="relative flex items-center gap-1 rounded-full bg-white/[.14] px-2 py-[3px] text-[11px] font-bold text-white">
+                {formatDate(s(data?.date))}
+                <input
+                  type="date"
+                  value={viewDate || s(data?.date)}
+                  onChange={(e) => setViewDate(e.target.value)}
+                  className="absolute inset-0 h-full w-full cursor-pointer opacity-0"
+                />
+              </label>
+            ) : (
+              <span className="doc-ref text-[11px] font-bold text-white/70">{formatDate(s(data?.date))}</span>
+            )}
+            {viewDate !== '' && (
+              <button
+                type="button"
+                onClick={() => setViewDate('')}
+                className="rounded-full bg-white/[.14] px-2 py-[3px] text-[9.5px] font-extrabold uppercase text-white"
+              >
+                Today
+              </button>
+            )}
+            {isAdmin && cutoffDraft !== null ? (
+              <span className="inline-flex items-center gap-1 rounded-full bg-white/[.14] px-2 py-[3px]">
+                <input
+                  type="time"
+                  value={cutoffDraft}
+                  onChange={(e) => setCutoffDraft(e.target.value)}
+                  className="h-[16px] w-[72px] bg-transparent text-[10px] font-extrabold text-white outline-none"
+                  autoFocus
+                />
+                <button
+                  type="button"
+                  disabled={busy > 0}
+                  onClick={() => void saveCutoff()}
+                  className="rounded-full bg-[#C7F03F] px-1.5 text-[9px] font-extrabold text-[#0B3D2E]"
+                >
+                  Save
+                </button>
+                <button type="button" onClick={() => setCutoffDraft(null)} className="text-white/70">
+                  <X className="h-3 w-3" />
+                </button>
+              </span>
+            ) : (
+              <span
+                onClick={() => isAdmin && setCutoffDraft(cutoff)}
+                className={cn(
+                  'inline-flex items-center gap-1 rounded-full px-2 py-[3px] text-[9.5px] font-extrabold uppercase tracking-[.1em]',
+                  afterCutoff ? 'bg-[#8C2F26] text-white' : 'bg-white/[.14] text-[#C7F03F]'
+                )}
+              >
+                <Clock className="h-3 w-3" /> cut-off {cutoff}
+              </span>
+            )}
             {inbox.length > 0 && (
               <span className="inline-flex items-center gap-1 rounded-full bg-[#F0AFAA] px-2 py-[3px] text-[9.5px] font-extrabold uppercase tracking-[.08em] text-[#4A1512]">
                 <BellRing className="h-3 w-3" /> {inbox.length}
@@ -1443,19 +1523,89 @@ export function WorkAssignments(): React.JSX.Element {
             </p>
           </div>
           <div className="flex flex-wrap items-center gap-2">
-            <span className="doc-ref inline-flex h-9 items-center gap-1.5 rounded-[4px] border border-[#C3D2C6] bg-white px-3 text-[12px] font-bold text-[#33473E]">
-              {formatDate(s(data?.date))}
-            </span>
-            <span
-              className={cn(
-                'inline-flex h-9 items-center gap-1.5 rounded-[4px] border px-3 text-[12px] font-bold',
-                afterCutoff
-                  ? 'border-[#F0D6D4] bg-[#FDF3F2] text-[#B3261E]'
-                  : 'border-[#DCE7DB] bg-[#F7FAF6] text-[#33473E]'
-              )}
-            >
-              <Clock className="h-4 w-4" /> Cut-off {cutoff}
-            </span>
+            {isAdmin ? (
+              <div className="flex h-9 items-center gap-0.5 rounded-[4px] border border-[#C3D2C6] bg-white pl-1 pr-2">
+                <button
+                  type="button"
+                  onClick={() => shiftDate(-1)}
+                  className="flex h-7 w-7 items-center justify-center rounded-[3px] text-[#5A6B62] hover:bg-[#F7FAF6]"
+                  aria-label="Previous day"
+                >
+                  <ChevronLeft className="h-4 w-4" />
+                </button>
+                <label className="doc-ref relative flex cursor-pointer items-center text-[12px] font-bold text-[#33473E]">
+                  {formatDate(s(data?.date))}
+                  <input
+                    type="date"
+                    value={viewDate || s(data?.date)}
+                    onChange={(e) => setViewDate(e.target.value)}
+                    className="absolute inset-0 h-full w-full cursor-pointer opacity-0"
+                  />
+                </label>
+                <button
+                  type="button"
+                  onClick={() => shiftDate(1)}
+                  className="flex h-7 w-7 items-center justify-center rounded-[3px] text-[#5A6B62] hover:bg-[#F7FAF6]"
+                  aria-label="Next day"
+                >
+                  <ChevronRight className="h-4 w-4" />
+                </button>
+                {viewDate !== '' && (
+                  <button
+                    type="button"
+                    onClick={() => setViewDate('')}
+                    className="ml-1 rounded-[3px] bg-[#F7FAF6] px-1.5 py-0.5 text-[10px] font-extrabold uppercase text-[#5A6B62] hover:bg-[#EDF3EC]"
+                  >
+                    Today
+                  </button>
+                )}
+              </div>
+            ) : (
+              <span className="doc-ref inline-flex h-9 items-center gap-1.5 rounded-[4px] border border-[#C3D2C6] bg-white px-3 text-[12px] font-bold text-[#33473E]">
+                {formatDate(s(data?.date))}
+              </span>
+            )}
+            {isAdmin && cutoffDraft !== null ? (
+              <div className="flex h-9 items-center gap-1.5 rounded-[4px] border border-[#C3D2C6] bg-white px-2">
+                <Clock className="h-4 w-4 text-[#5A6B62]" />
+                <input
+                  type="time"
+                  value={cutoffDraft}
+                  onChange={(e) => setCutoffDraft(e.target.value)}
+                  className="h-full w-[92px] text-[12px] font-bold text-[#33473E] outline-none"
+                  autoFocus
+                />
+                <button
+                  type="button"
+                  disabled={busy > 0}
+                  onClick={() => void saveCutoff()}
+                  className="rounded-[3px] bg-[#C7F03F] px-2 py-1 text-[10.5px] font-extrabold text-[#0B3D2E] hover:bg-[#B9E62F] disabled:opacity-60"
+                >
+                  Save
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setCutoffDraft(null)}
+                  className="rounded-[3px] px-1.5 py-1 text-[10.5px] font-bold text-[#5A6B62] hover:bg-[#F7FAF6]"
+                >
+                  <X className="h-3.5 w-3.5" />
+                </button>
+              </div>
+            ) : (
+              <span
+                onClick={() => isAdmin && setCutoffDraft(cutoff)}
+                className={cn(
+                  'inline-flex h-9 items-center gap-1.5 rounded-[4px] border px-3 text-[12px] font-bold',
+                  isAdmin && 'cursor-pointer hover:brightness-95',
+                  afterCutoff
+                    ? 'border-[#F0D6D4] bg-[#FDF3F2] text-[#B3261E]'
+                    : 'border-[#DCE7DB] bg-[#F7FAF6] text-[#33473E]'
+                )}
+                title={isAdmin ? 'Click to change the cut-off' : undefined}
+              >
+                <Clock className="h-4 w-4" /> Cut-off {cutoff}
+              </span>
+            )}
             {isAdmin && (
               <button
                 type="button"

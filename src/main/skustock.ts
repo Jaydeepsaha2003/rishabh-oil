@@ -524,6 +524,17 @@ export async function listSkuAdjustments(packagingId: number): Promise<Row[]> {
   if (!pid) return []
   // The same piece -> MT conversion the stock register uses for packedOut, so
   // the figure here is the one the bulk tank actually saw.
+  //
+  // The FALLBACK branch (no unit_size override set) used to convert one PIECE
+  // as if it weighed base_per_pouch alone — correct only for a SKU counted one
+  // pouch/jar/tin at a time. A SKU counted by the case (pouches_per_box > 1,
+  // the way VPATI DALDA 1 LTR X20P is counted in boxes of 20) had every packing
+  // and correction entry understated by that same factor: 4,687 boxes logged
+  // as 4.185 MT instead of 83.71. base_per_pouch is now multiplied by
+  // pouches_per_box first — exactly the Total column's own arithmetic — before
+  // the unit is converted; a pouches_per_box of 1 leaves a single-unit SKU
+  // untouched.
+  const packQty = 'pk.base_per_pouch * MAX(1, COALESCE(pk.pouches_per_box, 1))'
   const MT = `
     CASE
       WHEN COALESCE(pk.unit_size, 0) > 0 THEN
@@ -539,14 +550,14 @@ export async function listSkuAdjustments(packagingId: number): Promise<Row[]> {
         END
       ELSE
         CASE UPPER(COALESCE(pk.base_uom, 'KG'))
-          WHEN 'GM' THEN pk.base_per_pouch / 1000.0
-          WHEN 'G' THEN pk.base_per_pouch / 1000.0
-          WHEN 'ML' THEN pk.base_per_pouch / 1000.0
-          WHEN 'QUINTAL' THEN pk.base_per_pouch * 100.0
-          WHEN 'MT' THEN pk.base_per_pouch * 1000.0
-          WHEN 'TON' THEN pk.base_per_pouch * 1000.0
-          WHEN 'KL' THEN pk.base_per_pouch * 1000.0
-          ELSE pk.base_per_pouch
+          WHEN 'GM' THEN (${packQty}) / 1000.0
+          WHEN 'G' THEN (${packQty}) / 1000.0
+          WHEN 'ML' THEN (${packQty}) / 1000.0
+          WHEN 'QUINTAL' THEN (${packQty}) * 100.0
+          WHEN 'MT' THEN (${packQty}) * 1000.0
+          WHEN 'TON' THEN (${packQty}) * 1000.0
+          WHEN 'KL' THEN (${packQty}) * 1000.0
+          ELSE (${packQty})
         END
     END / 1000.0`
   const res = await getClient().execute({
