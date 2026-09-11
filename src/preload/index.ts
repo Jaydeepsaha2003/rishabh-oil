@@ -314,6 +314,8 @@ const api = {
       ipcRenderer.invoke('work:removeProcess', { id }),
     tick: (taskId: number, userId: number): Promise<{ id: number; state: string }> =>
       ipcRenderer.invoke('work:tick', { taskId, userId }),
+    untick: (taskId: number, userId: number): Promise<{ id: number; state: string }> =>
+      ipcRenderer.invoke('work:untick', { taskId, userId }),
     redo: (taskId: number, userId: number): Promise<{ id: number; state: string }> =>
       ipcRenderer.invoke('work:redo', { taskId, userId }),
     approve: (taskId: number, userId: number, note?: string): Promise<{ id: number; state: string }> =>

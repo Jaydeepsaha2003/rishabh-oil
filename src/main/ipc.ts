@@ -92,6 +92,7 @@ import {
   sendBackWorkTask,
   setWorkCutoff,
   tickWorkTask,
+  untickWorkTask,
   workCutoff
 } from './work'
 import {
@@ -804,6 +805,9 @@ export function registerIpc(): void {
   handle('work:removeProcess', (_e, { id }: { id: number }) => removeWorkProcess(id))
   handle('work:tick', (_e, { taskId, userId }: { taskId: number; userId: number }) =>
     tickWorkTask(taskId, userId)
+  )
+  handle('work:untick', (_e, { taskId, userId }: { taskId: number; userId: number }) =>
+    untickWorkTask(taskId, userId)
   )
   handle('work:redo', (_e, { taskId, userId }: { taskId: number; userId: number }) =>
     redoWorkTask(taskId, userId)

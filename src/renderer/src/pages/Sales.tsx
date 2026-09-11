@@ -526,7 +526,17 @@ function SalesTab({
           lines.reduce((s, r) => s + (Number(r.amount) || 0) + (Number(r.gst_amount) || 0) + (Number(r.round_off) || 0), 0) -
           (Number(first.deduct_freight) === 1 ? freight : 0)
         const qty = lines.reduce((s, r) => s + (Number(r.qty) || 0), 0)
-        return { group, lines, first, amount, net, qty }
+        // The same figure split by the unit each line is actually in. A
+        // carton is not a tonne, so an invoice carrying both has no single
+        // quantity — `qty` stays for the places that want one number, and the
+        // register column reads this instead, which is what lets it print the
+        // unit beside the figure rather than leaving the reader to assume MT.
+        const qtyByUom = new Map<string, number>()
+        for (const r of lines) {
+          const u = String(r.uom || 'MT').toUpperCase()
+          qtyByUom.set(u, (qtyByUom.get(u) || 0) + (Number(r.qty) || 0))
+        }
+        return { group, lines, first, amount, net, qty, qtyByUom }
       })
       .sort((a, b) => Number(b.first.id) - Number(a.first.id))
   }, [rows, unloadOnly])
@@ -598,7 +608,17 @@ function SalesTab({
             .sort()
             .join(', ')
       },
-      { key: 'qty', label: 'Qty', of: (inv) => formatNum(inv.qty) },
+      {
+        key: 'qty',
+        label: 'Qty',
+        // Units here too — a column of bare numbers taken off this screen is
+        // read away from it, where the unit cannot be guessed back.
+        of: (inv) =>
+          [...(inv.qtyByUom as Map<string, number>).entries()]
+            .sort((a, b) => b[1] - a[1])
+            .map(([u, q]) => `${formatNum(q)} ${u}`)
+            .join(' · ') || formatNum(0)
+      },
       { key: 'net', label: 'Invoice total', of: (inv) => formatINR(inv.net) },
       {
         // Filters on the TERM (the dropdown then lists exactly FOR and Ex)
@@ -833,6 +853,25 @@ function SalesTab({
     return convertQty(perCase, c.packBaseUom, c.saleUom)
   }
 
+  // The unit a line is quoted, billed and stocked in. This MUST follow the
+  // same order the main process uses when it stamps the saved row
+  // (resolveSaleQty): the bargain, then anything the line already carries,
+  // then THE PRODUCT'S OWN unit, and only then MT.
+  //
+  // The screen stopped at the bargain, so a loose sale of a KG product with no
+  // bargain behind it asked for "Qty (MT)" and "Rate /MT" while the row it
+  // saved was stamped KG — the field asked for one unit and the book recorded
+  // another. The main process already resolved this correctly; only the labels
+  // and the on-screen conversions were reading off the wrong unit.
+  function saleUomOf(item: Row, b: Row | undefined): string {
+    const fromBargain = String(b?.uom || '').trim()
+    if (fromBargain) return fromBargain
+    const own = String(item.uom || '').trim()
+    if (own) return own
+    const p = products.find((x) => String(x.id) === String(item.product_id))
+    return String(p?.uom || '').trim() || 'MT'
+  }
+
   // Per-item computed quantity (packaging → sale unit), amount and GST.
   function calc(item: Row): {
     isPacked: boolean; selPack: Row | undefined; saleUom: string; packBaseUom: string
@@ -841,7 +880,7 @@ function SalesTab({
     const isPacked = item.sale_type === 'PACKED'
     const selPack = isPacked && item.packaging_id ? packagings.find((p) => String(p.id) === String(item.packaging_id)) : undefined
     const b = bargains.find((x) => String(x.id) === String(item.sales_bargain_id))
-    const saleUom = b?.uom || 'MT'
+    const saleUom = saleUomOf(item, b)
     const packBaseUom = selPack ? String(selPack.base_uom || 'KG') : saleUom
     const packBaseQty = selPack
       ? (Number(item.boxes) || 0) * (Number(selPack.pouches_per_box) || 0) * (Number(selPack.base_per_pouch) || 0) +
@@ -889,10 +928,18 @@ function SalesTab({
       acc.amount += c.amount
       acc.gst += c.gstAmt
       acc.qty += c.effQty
+      acc.byUom.set(c.saleUom, (acc.byUom.get(c.saleUom) || 0) + c.effQty)
       return acc
     },
-    { amount: 0, gst: 0, qty: 0 }
+    { amount: 0, gst: 0, qty: 0, byUom: new Map<string, number>() }
   )
+
+  // Quantities only add up inside one unit. The strip said "MT" over the sum of
+  // every line, which was true only while every line was in MT — an invoice
+  // carrying a KG item read its kilos as tonnes. One unit prints as one figure;
+  // a mixed invoice prints each unit's own total rather than a meaningless sum.
+  const totalQtyLabel =
+    [...totals.byUom].map(([u, q]) => `${formatNum(q)} ${u}`).join(' · ') || `${formatNum(0)} MT`
 
   // Auto round-off to the nearest rupee, same idiom as the purchase form. The
   // base (taxable + GST) does not depend on the round off, so this cannot
@@ -1885,7 +1932,22 @@ function SalesTab({
                       </TableCell>
                       {!unloadOnly && (
                         <>
-                      <TableCell className={cn('align-top text-right tabular-nums', __WEB__ && 'text-[14px] font-semibold')}>{formatNum(inv.qty)}</TableCell>
+                      {/* The unit beside every figure, not only on the total
+                          row. Read down this column and 33.475 against 162 is
+                          two tonnes and a carton count — identical as bare
+                          numbers, and the one thing that tells them apart was
+                          missing from every row. */}
+                      <TableCell className={cn('align-top text-right tabular-nums', __WEB__ && 'text-[14px] font-semibold')}>
+                        {[...inv.qtyByUom.entries()]
+                          .sort((a, b) => b[1] - a[1])
+                          .map(([u, q]) => (
+                            <span key={u} className="ml-2 whitespace-nowrap first:ml-0">
+                              {formatNum(q)}
+                              <span className="ml-1 text-[10.5px] font-semibold opacity-70">{u}</span>
+                            </span>
+                          ))}
+                        {inv.qtyByUom.size === 0 ? formatNum(0) : null}
+                      </TableCell>
                       <TableCell className={cn('align-top text-right tabular-nums', __WEB__ && 'text-[14.5px] font-bold tracking-[-0.02em]')}>{formatINR(inv.net)}</TableCell>
                       <TableCell className="align-top">
                         {(() => {
@@ -2660,7 +2722,7 @@ function SalesTab({
               <span className="text-[11.5px] font-extrabold uppercase tracking-[.14em]">Particulars</span>
               <span className="flex items-center gap-3.5">
                 <span className="text-[12.5px] font-semibold text-[#8FBFA8]">
-                  {items.length} item{items.length === 1 ? '' : 's'} · {formatNum(totals.qty)} MT
+                  {items.length} item{items.length === 1 ? '' : 's'} · {totalQtyLabel}
                 </span>
                 <button
                   type="button"
@@ -2681,7 +2743,7 @@ function SalesTab({
             <div className="mb-2 flex items-center gap-2 rounded bg-[#f1ecd9] px-3 py-1.5">
               <span className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground">Particulars</span>
               <span className="ml-auto text-[10px] font-bold uppercase tracking-widest text-muted-foreground">
-                {items.length} item{items.length === 1 ? '' : 's'} · {formatNum(totals.qty)} MT
+                {items.length} item{items.length === 1 ? '' : 's'} · {totalQtyLabel}
               </span>
             </div>
           )}
@@ -2735,7 +2797,10 @@ function SalesTab({
                       )}
                     </div>
                     <div className="flex shrink-0 items-center gap-4">
-                      <span className="text-[11.5px] font-semibold text-[#7C9188]">{formatNum(c.effQty)} {String(item.uom || 'MT')}</span>
+                      {/* c.saleUom, not item.uom: a line being entered has no
+                          unit stamped on it yet, so item.uom read MT for a
+                          product sold in KG. */}
+                      <span className="text-[11.5px] font-semibold text-[#7C9188]">{formatNum(c.effQty)} {c.saleUom}</span>
                       <span className="text-[15.5px] font-bold tracking-[-0.02em] tabular-nums">{formatINR(c.net)}</span>
                       {items.length > 1 && (
                         <button
@@ -4051,6 +4116,7 @@ export type BargainDrawLine = {
   uom: string
   company: string
   companyColour: string
+  companyId: number
 }
 
 export function salesBargainDraws(
@@ -4096,7 +4162,8 @@ export function salesBargainDraws(
       amount: g.total,
       uom: String(g.sample.uom || row.uom || 'MT'),
       company: coNameOf(g.sample.company_id),
-      companyColour: coColourOf(g.sample.company_id)
+      companyColour: coColourOf(g.sample.company_id),
+      companyId: Number(g.sample.company_id) || 0
     })),
     ...retLines.map((rl, ri): BargainDrawLine => ({
       key: `r${rl.note_id}-${ri}`,
@@ -4112,7 +4179,8 @@ export function salesBargainDraws(
       amount: -(Number(rl.amount_incl ?? rl.amount) || 0),
       uom: String(row.uom || 'MT'),
       company: coNameOf(rl.company_id),
-      companyColour: coColourOf(rl.company_id)
+      companyColour: coColourOf(rl.company_id),
+      companyId: Number(rl.company_id) || 0
     }))
   ].sort((x, y) => x.date.localeCompare(y.date) || x.key.localeCompare(y.key))
 
@@ -4129,7 +4197,7 @@ export function salesBargainDraws(
   return { lines, net }
 }
 
-function SalesBargainsTab({ onOpenSale }: { onOpenSale?: (id: number) => void } = {}): React.JSX.Element {
+function SalesBargainsTab({ onOpenSale }: { onOpenSale?: (id: number, companyId?: number) => void } = {}): React.JSX.Element {
   const isMobile = useIsMobile()
   // How far back this user may date a new entry. The save is refused either
   // way; greying the days out just stops the form offering one it will reject.
@@ -5464,7 +5532,7 @@ function SalesBargainsTab({ onOpenSale }: { onOpenSale?: (id: number) => void } 
                                     key={l.key}
                                     type="button"
                                     disabled={ret || !onOpenSale}
-                                    onClick={() => onOpenSale?.(l.id)}
+                                    onClick={() => onOpenSale?.(l.id, l.companyId || undefined)}
                                     className="w-full border-t border-t-[#EAF0E9] px-[13px] py-2.5 text-left"
                                     style={{
                                       background: ret ? '#F4FBF6' : '#fff',
@@ -6131,6 +6199,7 @@ function SalesBargainsTab({ onOpenSale }: { onOpenSale?: (id: number) => void } 
                                 uom: string
                                 company: string
                                 companyColour: string
+                                companyId: number
                               }
                               const lines: Line[] = [
                                 ...Array.from(byInvoice.values()).map((g): Line => ({
@@ -6145,7 +6214,8 @@ function SalesBargainsTab({ onOpenSale }: { onOpenSale?: (id: number) => void } 
                                   amount: g.total,
                                   uom: String(g.sample.uom || row.uom || 'MT'),
                                   company: coNameOf(g.sample.company_id),
-                                  companyColour: coColourOf(g.sample.company_id)
+                                  companyColour: coColourOf(g.sample.company_id),
+                                  companyId: Number(g.sample.company_id) || 0
                                 })),
                                 ...retLines.map((rl, ri): Line => ({
                                   key: `r${rl.note_id}-${ri}`,
@@ -6163,7 +6233,8 @@ function SalesBargainsTab({ onOpenSale }: { onOpenSale?: (id: number) => void } 
                                   amount: -(Number(rl.amount_incl ?? rl.amount) || 0),
                                   uom: String(row.uom || 'MT'),
                                   company: coNameOf(rl.company_id),
-                                  companyColour: coColourOf(rl.company_id)
+                                  companyColour: coColourOf(rl.company_id),
+                                  companyId: Number(rl.company_id) || 0
                                 }))
                               ].sort((x, y) => x.date.localeCompare(y.date) || x.key.localeCompare(y.key))
                               const net = lines.reduce(
@@ -6212,7 +6283,7 @@ function SalesBargainsTab({ onOpenSale }: { onOpenSale?: (id: number) => void } 
                                               title={isRet ? 'Returned on a credit note — added back to the balance' : onOpenSale ? 'Open this sale invoice' : undefined}
                                               onClick={(e) => {
                                                 e.stopPropagation()
-                                                if (!isRet) onOpenSale?.(l.id)
+                                                if (!isRet) onOpenSale?.(l.id, l.companyId || undefined)
                                               }}
                                             >
                                               <td className={cn('py-1.5 pr-3 tabular-nums text-muted-foreground', __WEB__ && '!pl-3 !text-[10px] !font-bold !text-[#A8B8AE]')}>{di + 1}</td>
@@ -7115,7 +7186,7 @@ export function Sales({ focusId, onFocusHandled, onBack, backLabel }: { focusId?
   )
 }
 
-export function SalesBargains({ onOpenSale }: { onOpenSale?: (id: number) => void } = {}): React.JSX.Element {
+export function SalesBargains({ onOpenSale }: { onOpenSale?: (id: number, companyId?: number) => void } = {}): React.JSX.Element {
   return (
     <>
       <PageHeader title="Sales Bargain" subtitle="Rate contracts with customers — drawn down as sales are dispatched" hint="Each sales bargain locks a rate and quantity with a customer; dispatches under Sales draw it down. The bargain number is FGCODE/DD-MM/CUSTOMER/SERIAL, resetting monthly." />

@@ -975,6 +975,7 @@ export function EntityManager({
                         {fd.required ? ' *' : ''}
                       </Label>
                       <Popover
+                        modal
                         open={!!searchOpen[fd.key]}
                         onOpenChange={(o) => {
                           setSearchOpen((p) => ({ ...p, [fd.key]: o }))

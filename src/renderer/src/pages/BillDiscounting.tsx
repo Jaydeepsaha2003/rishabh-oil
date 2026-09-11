@@ -1,10 +1,12 @@
 import { Fragment, useCallback, useEffect, useMemo, useState } from 'react'
 import { toast } from 'sonner'
 import {
+  AlertTriangle,
   Banknote,
   Building2,
   CalendarRange,
   ChevronRight,
+  HelpCircle,
   LayoutGrid,
   Landmark,
   List,
@@ -401,10 +403,13 @@ export function BillDiscounting({
   }, [loadBills])
   useLiveRefresh(refresh)
 
-  const filtered = useMemo(() => {
+  // Everything EXCEPT the stage. The stage tabs carry a count each, and a
+  // count taken after the stage filter would read the bucket you are standing
+  // in and zero for every other one — so the tabs count this list, and only
+  // `filtered` below narrows to the stage actually picked.
+  const beforeStage = useMemo(() => {
     let list = rows
     if (nbfcFilter) list = list.filter((r) => String(r.nbfc_id ?? '') === String(nbfcFilter))
-    if (statusFilter !== 'all') list = list.filter((r) => String(r.stage) === statusFilter)
     if (typeFilter) list = list.filter((r) => String(r.finance_type) === typeFilter)
     if (duePeriod !== 'all') {
       const maxDays = DUE_PERIODS.find((p) => p.key === duePeriod)?.maxDays
@@ -427,7 +432,23 @@ export function BillDiscounting({
       )
     }
     return list
-  }, [rows, nbfcFilter, statusFilter, typeFilter, duePeriod, bdQuery])
+  }, [rows, nbfcFilter, typeFilter, duePeriod, bdQuery])
+
+  const filtered = useMemo(
+    () => (statusFilter === 'all' ? beforeStage : beforeStage.filter((r) => String(r.stage) === statusFilter)),
+    [beforeStage, statusFilter]
+  )
+
+  // The stage buckets, in one place: the desktop pills and the website's
+  // underline tabs are the same four buckets and must never drift apart.
+  const STAGES = [
+    { key: 'all', label: 'All bills' },
+    { key: 'awaiting', label: 'Awaiting payment' },
+    { key: 'live', label: 'Open' },
+    { key: 'repaid', label: 'Repaid' }
+  ] as const
+  const stageCount = (k: string): number =>
+    k === 'all' ? beforeStage.length : beforeStage.filter((r) => String(r.stage) === k).length
 
   // The same figures bdKpis returned, off the rows already loaded -- exposure
   // counts only funded bills, since nothing is disbursed on one still awaiting
@@ -1174,6 +1195,99 @@ export function BillDiscounting({
             <Plus className="h-4 w-4" /> Discount a bill
           </Button>
         </div>
+        {/* THE WEBSITE'S SUMMARY BAND.
+            Outstanding is what this section is about, so it leads at a size
+            you can read across the room, with one plain sentence underneath
+            accounting for the gap between the bills and the money: what
+            reached you, after margin, interest and TDS. The available limit
+            is not a sixth statistic — it is the thing that decides whether the
+            next bill can be discounted at all — so it sits apart in its own
+            bordered block, coloured by how much room is left, and opens
+            Manage NBFCs where the ceiling is set.
+            The desktop app keeps its flat six-cell strip below, untouched. */}
+        {__WEB__ && (
+          <div className="flex flex-wrap items-center gap-3.5 px-4 py-3">
+            <div className="min-w-[280px] flex-1">
+              <div className="flex flex-wrap items-baseline gap-2">
+                <span className="text-[9.5px] font-extrabold uppercase tracking-[.13em] text-[#5A6B62]">
+                  Outstanding
+                </span>
+                <span className="doc-ref whitespace-nowrap text-[19px] font-bold tracking-[-0.035em]">
+                  {formatINR(kpis.outstanding_total)}
+                </span>
+                <span className="text-[12px] font-bold text-[#5A6B62]">
+                  on {n(kpis.count)} bill{n(kpis.count) === 1 ? '' : 's'}
+                  {narrowed ? ` of ${formatINR(kpisAll.outstanding_total)}` : ''}
+                </span>
+              </div>
+              <div className="mt-[7px] text-[12px] font-bold text-[#33473E] [text-wrap:pretty]">
+                {formatINR(kpis.receipt_total)} reached you after {formatINR(kpis.margin_total)} margin held,{' '}
+                {formatINR(kpis.interest_total)} interest and {formatINR(kpis.tds_total)} TDS.
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={() => setNbfcOpen(true)}
+              title={
+                availableLimit == null
+                  ? 'No ceiling set — open Manage NBFCs to give each lender a limit, or set a combined one'
+                  : nbfcFilter
+                    ? `${limitBasis?.label} — sanctioned ${formatINR(limitBasis?.ceiling)}, less what is drawn on it`
+                    : `The whole book — ${limits?.effective_basis === 'lines' ? 'the sum of the NBFC lines' : 'the combined ceiling'}, less what is drawn`
+              }
+              className={cn(
+                'min-w-[190px] rounded-[4px] border border-l-4 px-[15px] py-3 text-left transition-colors',
+                availableLimit == null
+                  ? 'border-[#F0E4CB] border-l-[#C2700A] bg-[#FFFBF2] hover:bg-[#FFF6E4]'
+                  : availableLimit < 0
+                    ? 'border-[#F0D6D4] border-l-[#B3261E] bg-[#FDF3F2] hover:bg-[#FBE9E7]'
+                    : 'border-[#BFE3CB] border-l-[#12855A] bg-[#F4FBF6] hover:bg-[#EAF7EE]'
+              )}
+            >
+              <div
+                className={cn(
+                  'text-[9.5px] font-extrabold uppercase tracking-[.13em]',
+                  availableLimit == null ? 'text-[#8A5300]' : availableLimit < 0 ? 'text-[#8C2F26]' : 'text-[#0B6B45]'
+                )}
+              >
+                {nbfcFilter ? 'Available · this NBFC' : 'Available limit'}
+              </div>
+              <div className="mt-[5px] flex items-center gap-[7px]">
+                {availableLimit == null ? (
+                  <HelpCircle className="h-[18px] w-[18px] shrink-0 text-[#C2700A]" />
+                ) : availableLimit < 0 ? (
+                  <AlertTriangle className="h-[18px] w-[18px] shrink-0 text-[#B3261E]" />
+                ) : (
+                  <Landmark className="h-[18px] w-[18px] shrink-0 text-[#12855A]" />
+                )}
+                <span
+                  className={cn(
+                    'doc-ref text-[14px] font-bold tracking-[-0.02em]',
+                    availableLimit == null ? 'text-[#8A5300]' : availableLimit < 0 ? 'text-[#8C2F26]' : 'text-[#0B6B45]'
+                  )}
+                >
+                  {availableLimit == null ? 'not set' : formatINR(availableLimit)}
+                </span>
+              </div>
+              <div
+                className={cn(
+                  'mt-1 text-[11px] font-bold [text-wrap:pretty]',
+                  availableLimit == null ? 'text-[#8A5300]' : availableLimit < 0 ? 'text-[#8C2F26]' : 'text-[#0B6B45]'
+                )}
+              >
+                {availableLimit == null
+                  ? 'set one under Manage NBFCs'
+                  : `of ${formatINR(limitBasis?.ceiling)}${
+                      nbfcFilter
+                        ? ` · ${limitBasis?.label}`
+                        : limits?.effective_basis === 'lines'
+                          ? ' (NBFC lines)'
+                          : ' (combined)'
+                    }${availableLimit < 0 ? ' · over the limit' : ''}`}
+              </div>
+            </button>
+          </div>
+        )}
         {/* One row of cells, not a headline strip above a row of cells.
             The strip restated Outstanding and the available limit in a larger
             type over the top of the same numbers, which cost a band of height
@@ -1186,7 +1300,10 @@ export function BillDiscounting({
             __WEB__ && '!grid-cols-[repeat(auto-fit,minmax(min(100%,180px),1fr))] !gap-px !border-t !border-t-[#E4ECE3] !bg-[#E4ECE3] !p-0'
           )}
         >
-          <div className={cn('bg-[#1a2c56] px-3 py-2.5 text-center', __WEB__ && cn(BD_CELL, '!bg-[#F7FAF6]'))}>
+          {/* Both of these lead the summary band above on the website, so the
+              strip does not say them a second time. The desktop app has no
+              band and still shows all six. */}
+          <div className={cn('bg-[#1a2c56] px-3 py-2.5 text-center', __WEB__ && '!hidden')}>
             <div className={cn('text-[10px] font-semibold uppercase tracking-wide text-white/70', BD_K)}>Outstanding</div>
             <div className={cn('text-[15px] font-bold tabular-nums text-white', __WEB__ && cn(BD_V, 'doc-ref'))}>
               {formatINR(kpis.outstanding_total)}
@@ -1235,7 +1352,7 @@ export function BillDiscounting({
               half is fetched, and only when a limit is edited.
               Nothing sanctioned means there is no headroom to state: it says so
               and points at where to set it, rather than showing a figure. */}
-          <div className={cn('px-3 py-2.5 text-center', availableLimit == null ? 'bg-[#fffdf4]' : availableLimit < 0 ? 'bg-red-50' : 'bg-sky-50', __WEB__ && cn(BD_CELL, availableLimit == null ? '!bg-[#FFFBF2]' : availableLimit < 0 ? '!bg-[#FDF3F2]' : '!bg-[#F4FBF6]'))}>
+          <div className={cn('px-3 py-2.5 text-center', availableLimit == null ? 'bg-[#fffdf4]' : availableLimit < 0 ? 'bg-red-50' : 'bg-sky-50', __WEB__ && '!hidden')}>
             <div
               className={cn(
                 'text-[10px] font-semibold uppercase tracking-wide',
@@ -1314,29 +1431,28 @@ export function BillDiscounting({
         ))}
         </span>
         {!__WEB__ && <div className="h-4 w-px bg-[#e5dfc8]" />}
-        <span className={cn(__WEB__ && cn('inline-flex flex-wrap', BD_TRAY))}>
-        {(
-          [
-            { key: 'all', label: 'All bills' },
-            { key: 'awaiting', label: 'Awaiting payment' },
-            { key: 'live', label: 'Open' },
-            { key: 'repaid', label: 'Repaid' }
-          ] as const
-        ).map((s) => (
-          <button
-            key={s.key}
-            type="button"
-            onClick={() => setStatusFilter(s.key)}
-            className={cn(
-              'rounded-full border px-3 py-1 text-[11px] font-semibold uppercase tracking-wide transition-colors',
-              statusFilter === s.key ? 'border-[#1a2c56] bg-[#1a2c56] text-white' : 'border-[#d9d2b8] bg-white text-[#1a2c56] hover:bg-amber-50',
-              __WEB__ && cn(BD_CHIP, statusFilter === s.key ? BD_CHIP_ON : BD_CHIP_OFF)
-            )}
-          >
-            {s.label}
-          </button>
-        ))}
-        </span>
+        {/* Desktop keeps the stage as a fourth pill tray. The website moves it
+            out of this row entirely — see the tab strip below: the due window
+            and the stage are two different questions, and a single row of
+            identical pills made them look like one list where picking two
+            things from the same tray was the obvious (wrong) reading. */}
+        {!__WEB__ && (
+          <span>
+          {STAGES.map((st) => (
+            <button
+              key={st.key}
+              type="button"
+              onClick={() => setStatusFilter(st.key)}
+              className={cn(
+                'rounded-full border px-3 py-1 text-[11px] font-semibold uppercase tracking-wide transition-colors',
+                statusFilter === st.key ? 'border-[#1a2c56] bg-[#1a2c56] text-white' : 'border-[#d9d2b8] bg-white text-[#1a2c56] hover:bg-amber-50'
+              )}
+            >
+              {st.label}
+            </button>
+          ))}
+          </span>
+        )}
         {/* Type-to-find across the register, the way the handoff draws it —
             flex-1 so the row fills its width instead of leaving a hole, and
             searching the three things anyone actually remembers about a bill. */}
@@ -1370,6 +1486,39 @@ export function BillDiscounting({
           </Button>
         </div>
       </div>
+
+      {/* The stage strip. Cumulative counts, so each tab says what it holds
+          before you spend a click finding out — and "Repaid 0" is an answer,
+          where a tab that silently shows an empty table is not. */}
+      {__WEB__ && (
+        <div className="flex gap-0.5 overflow-x-auto border-b border-b-[#D6E2D6]">
+          {STAGES.map((st) => {
+            const on = statusFilter === st.key
+            const count = stageCount(st.key)
+            return (
+              <button
+                key={st.key}
+                type="button"
+                onClick={() => setStatusFilter(st.key)}
+                className={cn(
+                  'flex h-10 flex-none items-center gap-2 whitespace-nowrap border-b-[3px] px-[15px] text-[12.5px] font-extrabold transition-colors',
+                  on ? 'border-b-[#C7F03F] text-[#0A1F17]' : 'border-b-transparent text-[#5A6B62] hover:text-[#0A1F17]'
+                )}
+              >
+                {st.label}
+                <span
+                  className={cn(
+                    'doc-ref rounded-[2px] px-1.5 py-0.5 text-[10.5px] font-bold',
+                    on ? 'bg-[#0B3D2E] text-[#C7F03F]' : 'bg-[#EAF0E9] text-[#5A6B62]'
+                  )}
+                >
+                  {count}
+                </span>
+              </button>
+            )
+          })}
+        </div>
+      )}
 
       {view === 'cards' ? (
         <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">

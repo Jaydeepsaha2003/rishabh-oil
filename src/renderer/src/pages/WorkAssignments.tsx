@@ -140,6 +140,7 @@ type Ctx = {
   onToggleThread: (id: number) => void
   onDraftChange: (id: number, v: string) => void
   onTick: (t: Row) => void
+  onUntick: (t: Row) => void
   onApprove: (t: Row) => void
   onRedo: (t: Row) => void
   onSend: (t: Row) => void
@@ -272,6 +273,10 @@ function Thread({ t, compact, ctx }: { t: Row; compact?: boolean; ctx: Ctx }): R
 function TaskCard({ t, compact, ctx }: { t: Row; compact?: boolean; ctx: Ctx }): React.JSX.Element {
   const c = st(s(t.state))
   const mineOwn = n(t.user_id) === ctx.myId
+  // Ticked, but nobody has reviewed it yet — the only window in which the
+  // owner can take their own tick back. 'redone' returns to 'fixes', not to
+  // 'pending', so unticking never erases an admin's send-back.
+  const canUntick = mineOwn && (t.state === 'done' || t.state === 'redone')
   const isFixes = t.state === 'fixes'
   const lastAdmin = ((t.thread || []) as Row[]).filter((m) => s(m.role) === 'admin').slice(-1)[0]
   const id = n(t.id)
@@ -281,22 +286,28 @@ function TaskCard({ t, compact, ctx }: { t: Row; compact?: boolean; ctx: Ctx }):
       style={{ borderColor: isFixes ? '#F0D6D4' : '#E4ECE3' }}
     >
       <div className="flex items-start gap-3 px-3.5 py-3">
-        {/* The tick. Only the owner's own pending task is pressable — the
-            state itself is the record and it moves one way. */}
+        {/* The tick, and the way back off it. A tick used to be one-way, so a
+            mis-click could only be undone by an admin SEND BACK — which says
+            the work was wrong, when all that happened was the wrong row got
+            clicked. The owner can now untick their own claim right up until
+            somebody reviews it; after that the reviewer's decision stands and
+            the server refuses. */}
         <button
           type="button"
-          disabled={!mineOwn || t.state !== 'pending' || !!ctx.busy}
-          onClick={() => ctx.onTick(t)}
+          disabled={!mineOwn || !(t.state === 'pending' || canUntick) || !!ctx.busy}
+          onClick={() => (canUntick ? ctx.onUntick(t) : ctx.onTick(t))}
           title={
             !mineOwn
               ? 'This belongs to somebody else'
               : t.state === 'pending'
                 ? 'Tick this off — it goes for review'
-                : c.label
+                : canUntick
+                  ? 'Ticked by mistake? Click to untick it'
+                  : c.label
           }
           className={cn(
             'mt-px flex h-[22px] w-[22px] flex-none items-center justify-center rounded-[4px] border-2 transition-colors',
-            mineOwn && t.state === 'pending' ? 'cursor-pointer hover:bg-[#F1F5EF]' : 'cursor-default'
+            mineOwn && (t.state === 'pending' || canUntick) ? 'cursor-pointer hover:bg-[#F1F5EF]' : 'cursor-default'
           )}
           style={{
             borderColor: c.mark,
@@ -1219,6 +1230,15 @@ export function WorkAssignments(): React.JSX.Element {
       await window.api.work.tick(n(t.id), myId)
       toast.success(`${s(t.title)} — ticked, waiting on review`)
     })
+  const untick = (t: Row): Promise<void> =>
+    act('untick this', async () => {
+      const r = await window.api.work.untick(n(t.id), myId)
+      toast.success(
+        r.state === 'fixes'
+          ? `${s(t.title)} — unticked, back on your fixes list`
+          : `${s(t.title)} — unticked, back on your list`
+      )
+    })
   const redo = (t: Row): Promise<void> =>
     act('mark this redone', async () => {
       await window.api.work.redo(n(t.id), myId)
@@ -1314,6 +1334,7 @@ export function WorkAssignments(): React.JSX.Element {
     onToggleThread: (id) => setOpenThread((p) => ({ ...p, [id]: !p[id] })),
     onDraftChange: (id, v) => setDraft((p) => ({ ...p, [id]: v })),
     onTick: (t) => void tick(t),
+    onUntick: (t) => void untick(t),
     onApprove: (t) => void approve(t),
     onRedo: (t) => void redo(t),
     onSend: (t) => void say(t),

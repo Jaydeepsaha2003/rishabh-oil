@@ -449,6 +449,43 @@ export async function tickWorkTask(taskId: number, userId: number): Promise<{ id
   return { id: n(taskId), state: 'done' }
 }
 
+/**
+ * The owner takes their own tick back — the same button that ticked it.
+ *
+ * Only ever UNDOES the owner's own claim, and only while nobody has acted on
+ * it: `done` returns to `pending`, and `redone` returns to `fixes` (the state
+ * the admin put it in), so a send-back is never erased by the person it was
+ * sent to. Once a reviewer has approved or sent the task back, their decision
+ * stands and this refuses — a tick is the owner's to take back, a review is
+ * not.
+ *
+ * marked_at is cleared with it. Leaving the old stamp would show a task that
+ * is not ticked as having been ticked at a time, and the board reads that
+ * stamp to decide whether the work landed after cut-off.
+ */
+export async function untickWorkTask(taskId: number, userId: number): Promise<{ id: number; state: string }> {
+  const t = await loadTask(taskId)
+  const u = await loadUser(userId)
+  assertWorkAccess(u)
+  if (n(t.user_id) !== n(u.id)) throw new Error('That task belongs to somebody else')
+  const back: Record<string, string> = { done: 'pending', redone: 'fixes' }
+  const to = back[s(t.state)]
+  if (!to) {
+    throw new Error(
+      s(t.state) === 'pending'
+        ? 'That task is not ticked'
+        : s(t.state) === 'approved'
+          ? 'That task has been approved — ask an admin to reopen it'
+          : 'That task has been sent back for fixes — it is not ticked'
+    )
+  }
+  await getClient().execute({
+    sql: 'UPDATE work_tasks SET state = ?, marked_at = NULL, updated_at = ? WHERE id = ?',
+    args: [to, localStamp(), n(taskId)] as never[]
+  })
+  return { id: n(taskId), state: to }
+}
+
 /** Sent back, fixed, ticked again. */
 export async function redoWorkTask(taskId: number, userId: number): Promise<{ id: number; state: string }> {
   const t = await loadTask(taskId)

@@ -295,7 +295,9 @@ export function bargainTankerLines(
   return { isEx, lines, tot }
 }
 
-export function Bargains({ onOpenOrder }: { onOpenOrder?: (orderId: number) => void } = {}): React.JSX.Element {
+export function Bargains({
+  onOpenOrder
+}: { onOpenOrder?: (orderId: number, companyId?: number) => void } = {}): React.JSX.Element {
   // How far back this user may date a new entry. The save is refused either
   // way; greying the days out just stops the form offering one it will reject.
   const minDate = useEntryWindow('bargains')
@@ -1588,14 +1590,34 @@ export function Bargains({ onOpenOrder }: { onOpenOrder?: (orderId: number) => v
                 // One white card, one height for everything on it — the
                 // pickers arrive at 32px, 36px and 40px otherwise.
                 __WEB__ &&
-                  '!mb-3 !gap-x-2.5 !rounded-[5px] !border !border-[#DCE7DB] !bg-[#FBFCFA] !px-4 !py-3 !shadow-[0_1px_2px_rgba(10,31,23,.04)] [&_input]:!h-10 [&_input]:!rounded-[4px] [&_input]:!border-[#C3D2C6] [&_input]:!bg-white [&_input]:!text-[13px] [&_[data-slot=select-trigger]]:!h-10 [&_[data-slot=select-trigger]]:!rounded-[4px] [&_[data-slot=select-trigger]]:!border-[#C3D2C6] [&_[data-slot=select-trigger]]:!bg-white [&_[data-slot=select-trigger]]:!text-[13px] [&_[data-slot=date-picker]]:!h-10 [&_[data-slot=date-picker]]:!rounded-[4px] [&_[data-slot=date-picker]]:!border-[#C3D2C6] [&_[data-slot=date-picker]]:!bg-white [&_[data-slot=date-picker]]:!text-[12.5px] [&>label>button]:!h-auto'
+                  '!mb-3 !flex-nowrap !gap-x-2.5 !rounded-[5px] !border !border-[#DCE7DB] !bg-[#FBFCFA] !px-4 !py-3 !shadow-[0_1px_2px_rgba(10,31,23,.04)] [&_input]:!h-10 [&_input]:!rounded-[4px] [&_input]:!border-[#C3D2C6] [&_input]:!bg-white [&_input]:!text-[13px] [&_[data-slot=select-trigger]]:!h-10 [&_[data-slot=select-trigger]]:!rounded-[4px] [&_[data-slot=select-trigger]]:!border-[#C3D2C6] [&_[data-slot=select-trigger]]:!bg-white [&_[data-slot=select-trigger]]:!text-[13px] [&_[data-slot=date-picker]]:!h-10 [&_[data-slot=date-picker]]:!rounded-[4px] [&_[data-slot=date-picker]]:!border-[#C3D2C6] [&_[data-slot=date-picker]]:!bg-white [&_[data-slot=date-picker]]:!text-[12.5px] [&>label>button]:!h-auto'
               )}
             >
+              {/* The filters are one zone, and the settled switch sits beside
+                  it rather than in the same wrap flow. With everything in one
+                  wrapping row, a narrow screen pushed the switch — the last
+                  item, held right by ml-auto — onto a line of its own with the
+                  whole width empty beside it. As its own zone the filters wrap
+                  among themselves and the switch stays put on the right.
+
+                  `contents` on the desktop build makes this wrapper invisible
+                  to layout, so the app's row is exactly the flat one it was. */}
+              <div
+                className={cn(
+                  'contents',
+                  __WEB__ && '!flex !min-w-0 !flex-1 !flex-wrap !items-center !gap-x-2.5 !gap-y-2'
+                )}
+              >
               {/* One dropdown rather than a chip per category — the list grows
                   with the Products master, so a row of chips only ever gets
                   longer and starts scrolling sideways. */}
               <Select value={typeFilter} onValueChange={setTypeFilter}>
-                <SelectTrigger className={cn('h-9 w-48 shrink-0 text-[13px]', __WEB__ && '!w-[9rem]')}>
+                {/* Sized to its own label rather than to a guessed pixel width:
+                    the categories come from the Products master, so any fixed
+                    width is either padding empty space or clipping a name. */}
+                <SelectTrigger
+                  className={cn('h-9 w-48 shrink-0 text-[13px]', __WEB__ && '!w-auto !min-w-[7.5rem] !max-w-[13rem]')}
+                >
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent className="max-h-72">
@@ -1611,7 +1633,17 @@ export function Bargains({ onOpenOrder }: { onOpenOrder?: (orderId: number) => v
                   value={coIds.length === 1 ? String(coIds[0]) : 'all'}
                   onValueChange={(v) => setCoIds(v === 'all' ? [] : [Number(v)])}
                 >
-                  <SelectTrigger className={cn('h-9 w-[13rem] shrink-0 text-[13px]', __WEB__ && '!w-[10.5rem]')}>
+                  {/* 10.5rem landed a pixel or two short of "ALL COMPANIES"
+                      once the building icon and the chevron took their share,
+                      so the default state read "ALL COMPANIE…". Auto-width fits
+                      whichever company is picked; the cap keeps a long legal
+                      name from eating the search box. */}
+                  <SelectTrigger
+                    className={cn(
+                      'h-9 w-[13rem] shrink-0 text-[13px]',
+                      __WEB__ && '!w-auto !min-w-[9rem] !max-w-[15rem]'
+                    )}
+                  >
                     <span className="flex min-w-0 items-center gap-1.5">
                       <Building2 className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
                       <SelectValue />
@@ -1636,7 +1668,12 @@ export function Bargains({ onOpenOrder }: { onOpenOrder?: (orderId: number) => v
               <div
                 className={cn(
                   'relative min-w-[180px] flex-1 basis-56',
-                  __WEB__ && '!min-w-[130px] !max-w-[17rem] !basis-0'
+                  // 130px let the row stay on one line by crushing the search
+                  // box until its own placeholder was cut off. Held at the
+                  // width of that placeholder instead, so a cramped screen
+                  // wraps the date group onto a second line — which reads far
+                  // better than a search field too small to read.
+                  __WEB__ && '!min-w-[13rem] !max-w-[17rem] !basis-0'
                 )}
               >
                 <Search className="pointer-events-none absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
@@ -1665,7 +1702,11 @@ export function Bargains({ onOpenOrder }: { onOpenOrder?: (orderId: number) => v
                   from={dateFrom}
                   to={dateTo}
                   onRange={(f, t) => { setDateFrom(f); setDateTo(t) }}
-                  className="h-9 w-28 text-xs"
+                  // w-28 was tight enough to clip "FY 2026-27" to "FY 2026…".
+                  // Auto-width instead of a second guessed number: the face of
+                  // this control is either "Choose FY" or "FY 2026-27", and it
+                  // should be exactly as wide as whichever one is showing.
+                  className={cn('h-9 w-28 text-xs', __WEB__ && '!w-auto !min-w-[6.5rem]')}
                 />
                 <DatePicker
                   value={dateFrom}
@@ -1690,6 +1731,7 @@ export function Bargains({ onOpenOrder }: { onOpenOrder?: (orderId: number) => v
                     Clear
                   </Button>
                 )}
+              </div>
               </div>
               <label
                 title={
@@ -2100,7 +2142,7 @@ export function Bargains({ onOpenOrder }: { onOpenOrder?: (orderId: number) => v
                                               key={`${d.order_id}-${d.bargain_id}`}
                                               className={cn('border-b last:border-0', d.order_id && onOpenOrder && 'cursor-pointer hover:bg-sky-50')}
                                               title={d.order_id ? 'Open the purchase invoice' : undefined}
-                                              onClick={() => d.order_id && onOpenOrder?.(Number(d.order_id))}
+                                              onClick={() => d.order_id && onOpenOrder?.(Number(d.order_id), Number(d.company_id) || undefined)}
                                             >
                                               <td className="px-3 py-1 font-medium">{d.invoice_no}</td>
                                               <td className="whitespace-nowrap px-3 py-1">{formatDate(d.order_date)}</td>
@@ -2220,7 +2262,10 @@ export function Bargains({ onOpenOrder }: { onOpenOrder?: (orderId: number) => v
                                                   __WEB__ && t.order_id && onOpenOrder && 'hover:!bg-[#F7FAF6]'
                                                 )}
                                                 title={t.order_id ? 'Open the purchase invoice' : 'Not billed yet'}
-                                                onClick={() => t.order_id && onOpenOrder?.(Number(t.order_id))}
+                                                onClick={() =>
+                                                  t.order_id &&
+                                                  onOpenOrder?.(Number(t.order_id), Number(t.invoice_company_id ?? t.company_id) || undefined)
+                                                }
                                               >
                                                 <td className={cn('py-1.5 pr-3 tabular-nums text-muted-foreground', __WEB__ && '!text-[10px] !font-bold !text-[#5A6B62]')}>{ti + 1}</td>
                                                 <td className={cn('py-1.5 pr-3 font-medium', __WEB__ && '!text-[12.5px] !font-bold')}>

@@ -137,11 +137,16 @@ function App(): React.JSX.Element {
   function openRecord(
     target: 'orders' | 'sales',
     id: number,
-    resume?: { screen: string; ledgerId: number | null; companyId?: number }
+    opts?: { resume?: { screen: string; ledgerId: number | null }; companyId?: number }
   ): void {
     setReturnTo(page)
-    if (resume) setAccountsResume(resume)
-    const want = resume?.companyId
+    if (opts?.resume) setAccountsResume({ ...opts.resume, companyId: opts.companyId })
+    // A bargain draws on invoices across every company at its site — a
+    // tanker billed by a sibling company, say — so the invoice a click opens
+    // is not necessarily one this desk's active company can even see. Switch
+    // first, or the target page opens empty and looks like the click did
+    // nothing.
+    const want = opts?.companyId
     if (want && Number(want) !== Number(companyId)) void switchCompany(String(want))
     setFocus({ page: target, id })
     setPage(target)
@@ -505,7 +510,9 @@ function App(): React.JSX.Element {
       />
       <main key={companyId} className="relative flex-1 overflow-auto">
         {view === 'dashboard' && <Dashboard onNavigate={setPage} />}
-        {view === 'bargains' && <Bargains onOpenOrder={(id) => openRecord('orders', id)} />}
+        {view === 'bargains' && (
+          <Bargains onOpenOrder={(id, orderCompanyId) => openRecord('orders', id, { companyId: orderCompanyId })} />
+        )}
         {view === 'orders' && (
           <Orders
             focusId={focus?.page === 'orders' ? focus.id : null}
@@ -536,7 +543,9 @@ function App(): React.JSX.Element {
         {view === 'formulation' && <Formulation />}
         {view === 'production' && <Production />}
         {view === 'stock' && <Stock onCompanyChange={switchCompany} />}
-        {view === 'salesBargains' && <SalesBargains onOpenSale={(id) => openRecord('sales', id)} />}
+        {view === 'salesBargains' && (
+          <SalesBargains onOpenSale={(id, saleCompanyId) => openRecord('sales', id, { companyId: saleCompanyId })} />
+        )}
         {view === 'sales' && (
           <Sales
             focusId={focus?.page === 'sales' ? focus.id : null}

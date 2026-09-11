@@ -223,6 +223,7 @@ export interface Api {
     saveProcess: (values: Row) => Promise<{ id: number }>
     removeProcess: (id: number) => Promise<{ id: number; retired: boolean }>
     tick: (taskId: number, userId: number) => Promise<{ id: number; state: string }>
+    untick: (taskId: number, userId: number) => Promise<{ id: number; state: string }>
     redo: (taskId: number, userId: number) => Promise<{ id: number; state: string }>
     approve: (taskId: number, userId: number, note?: string) => Promise<{ id: number; state: string }>
     sendBack: (taskId: number, userId: number, note: string) => Promise<{ id: number; state: string }>
