@@ -638,3 +638,185 @@ export async function ppTotalsByProduct(companyId?: number): Promise<Map<number,
   for (const r of toPlain(res)) m.set(n(r.product_id), r3(n(r.t)))
   return m
 }
+
+// -------------------------------------------------------- PP × production --
+// A batch drawing on PP takes it off specific vessels, oldest first — the
+// vessel that has sat longest empties before a fresher one is touched. Stage
+// age is the stage's own `created_at` (when that vessel was first added to
+// the site's list), not when it was last counted, because two vessels last
+// re-counted the same morning still have a real order between them.
+
+async function ppProductTotal(scope: string, productId: number): Promise<number> {
+  const res = await getClient().execute({
+    sql: 'SELECT COALESCE(SUM(qty), 0) AS t FROM stock_opening_pp WHERE scope = ? AND product_id = ?',
+    args: [scope, n(productId)]
+  })
+  return r3(n(toPlain(res)[0]?.t))
+}
+
+// Vessels holding a given FFA class for one product, oldest first, zero
+// balances left out — exactly the order and the set production draws from.
+async function ppVessels(
+  scope: string,
+  productId: number,
+  ffa: 'with' | 'without'
+): Promise<{ stage_id: number; qty: number }[]> {
+  const res = await getClient().execute({
+    sql: `SELECT sop.stage_id, sop.qty
+            FROM stock_opening_pp sop
+            JOIN stock_pp_stages st ON st.id = sop.stage_id
+           WHERE sop.scope = ? AND sop.product_id = ? AND sop.ffa = ? AND sop.qty > 0.0005
+           ORDER BY st.created_at, st.id`,
+    args: [scope, n(productId), ffa]
+  })
+  return toPlain(res).map((r) => ({ stage_id: n(r.stage_id), qty: r3(n(r.qty)) }))
+}
+
+// Total Without-FFA PP standing for one product — what a batch may draw
+// one-for-one before anything starts paying the recipe's FFA loss.
+export async function ppFreeTotal(productId: number, companyId?: number): Promise<number> {
+  const scope = await ppScope(companyId)
+  const vessels = await ppVessels(scope, productId, 'without')
+  return r3(vessels.reduce((t, v) => t + v.qty, 0))
+}
+
+// Every auto-calculated input's Without-FFA PP total, in the shape
+// expandRecipeWithPp wants — one lookup for a whole batch instead of one per
+// input.
+export async function ppFreeByProduct(
+  productIds: number[],
+  companyId?: number
+): Promise<Record<number, number>> {
+  const scope = await ppScope(companyId)
+  const out: Record<number, number> = {}
+  for (const pid of new Set(productIds.filter((x) => n(x) > 0))) {
+    const vessels = await ppVessels(scope, pid, 'without')
+    out[pid] = r3(vessels.reduce((t, v) => t + v.qty, 0))
+  }
+  return out
+}
+
+// Both PP buckets, per product — what the Production entry sheet's preview
+// needs to show a batch's draw split before it is saved, same figures
+// createProduction/updateProduction would actually draw against.
+export async function ppTotalsBothByProduct(
+  productIds: number[],
+  companyId?: number
+): Promise<Record<number, { without: number; with: number }>> {
+  const scope = await ppScope(companyId)
+  const out: Record<number, { without: number; with: number }> = {}
+  for (const pid of new Set(productIds.filter((x) => n(x) > 0))) {
+    const [without, withFfa] = await Promise.all([ppVessels(scope, pid, 'without'), ppVessels(scope, pid, 'with')])
+    out[pid] = {
+      without: r3(without.reduce((t, v) => t + v.qty, 0)),
+      with: r3(withFfa.reduce((t, v) => t + v.qty, 0))
+    }
+  }
+  return out
+}
+
+// One production run's own PP draws — what the entry sheet needs to give
+// back to the pool it is previewing against when that run is being edited,
+// the same way it already gives back the run's own Raw consumption.
+export async function ppDrawsForProduction(
+  productionId: number
+): Promise<{ product_id: number; ffa: string; qty: number }[]> {
+  const res = await getClient().execute({
+    sql: 'SELECT product_id, ffa, qty FROM pp_draws WHERE production_id = ?',
+    args: [n(productionId)]
+  })
+  return toPlain(res).map((r) => ({ product_id: n(r.product_id), ffa: String(r.ffa || ''), qty: r3(n(r.qty)) }))
+}
+
+// Draw `qty` off one product's PP, oldest vessel of the given FFA class
+// first, logging exactly what was taken from where in pp_draws so a later
+// edit or delete can put it back. Returns what was actually drawn — capped by
+// what the vessels held, same as the math that decided how much to ask for.
+export async function drawPp(
+  productionId: number,
+  productId: number,
+  ffa: 'with' | 'without',
+  qty: number,
+  companyId?: number
+): Promise<number> {
+  let need = r3(qty)
+  if (need <= 0.0005 || !n(productId) || !n(productionId)) return 0
+  const cid = n(companyId) || getActiveCompanyId()
+  const scope = await ppScope(cid)
+  const c = getClient()
+  const vessels = await ppVessels(scope, productId, ffa)
+  let drawn = 0
+  for (const v of vessels) {
+    if (need <= 0.0005) break
+    const take = r3(Math.min(v.qty, need))
+    if (take <= 0.0005) continue
+    await c.execute({
+      sql: `UPDATE stock_opening_pp SET qty = qty - ?, updated_at = datetime('now')
+             WHERE scope = ? AND product_id = ? AND stage_id = ?`,
+      args: [take, scope, productId, v.stage_id]
+    })
+    await c.execute({
+      sql: `INSERT INTO pp_draws (production_id, scope, product_id, stage_id, qty, ffa)
+            VALUES (?, ?, ?, ?, ?, ?)`,
+      args: [n(productionId), scope, productId, v.stage_id, take, ffa]
+    })
+    need -= take
+    drawn += take
+  }
+  if (drawn > 0.0005) {
+    // A vessel drawn to (near) nothing is not a vessel with stock in it — the
+    // same rule savePpLines applies to a line typed down to zero.
+    await c.execute({
+      sql: 'DELETE FROM stock_opening_pp WHERE scope = ? AND product_id = ? AND qty <= 0.0005',
+      args: [scope, productId]
+    })
+    await writePpTotal(cid, scope, productId, r3(await ppProductTotal(scope, productId)))
+  }
+  return drawn
+}
+
+// Put back everything one production run took off PP, before that run's
+// lines are rebuilt (an edit) or removed (a delete) — otherwise a vessel this
+// run drew from stays permanently short of what it actually holds, and a
+// second edit on the same run would draw again on top of the first.
+export async function reversePpDraws(productionId: number, companyId?: number): Promise<void> {
+  const c = getClient()
+  const res = await c.execute({
+    sql: 'SELECT scope, product_id, stage_id, qty, ffa FROM pp_draws WHERE production_id = ?',
+    args: [n(productionId)]
+  })
+  const rows = toPlain(res)
+  if (!rows.length) return
+  for (const r of rows) {
+    // The INSERT covers a vessel this draw emptied to zero — drawPp deletes a
+    // vessel's row once nothing is left in it, so putting the draw back has
+    // nowhere to land unless the row is recreated first, WITH the FFA class
+    // it was drawn as (never NULL): a row that came back unclassified would
+    // read as neither With nor Without FFA and vanish from both totals. The
+    // UPDATE that follows is what actually restores the balance, and runs
+    // whether the row just needed recreating or was there all along.
+    await c.execute({
+      sql: `INSERT INTO stock_opening_pp (scope, product_id, stage_id, qty, ffa, updated_at)
+            VALUES (?, ?, ?, 0, ?, datetime('now'))
+            ON CONFLICT(scope, product_id, stage_id) DO NOTHING`,
+      args: [r.scope, n(r.product_id), n(r.stage_id), r.ffa]
+    })
+    await c.execute({
+      sql: `UPDATE stock_opening_pp SET qty = qty + ?, updated_at = datetime('now')
+             WHERE scope = ? AND product_id = ? AND stage_id = ?`,
+      args: [n(r.qty), r.scope, n(r.product_id), n(r.stage_id)]
+    })
+  }
+  await c.execute({ sql: 'DELETE FROM pp_draws WHERE production_id = ?', args: [n(productionId)] })
+  const cid = n(companyId) || getActiveCompanyId()
+  const byScope = new Map<string, Set<number>>()
+  for (const r of rows) {
+    if (!byScope.has(r.scope)) byScope.set(r.scope, new Set())
+    byScope.get(r.scope)!.add(n(r.product_id))
+  }
+  for (const [scope, pids] of byScope) {
+    for (const pid of pids) {
+      await writePpTotal(cid, scope, pid, r3(await ppProductTotal(scope, pid)))
+    }
+  }
+}

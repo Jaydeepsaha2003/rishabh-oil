@@ -241,6 +241,7 @@ export interface Api {
       companyId?: number
     ) => Promise<{ removed: number; kept: number; retired: boolean; name: string }>
     savePp: (productId: number, lines: Row[], companyId?: number) => Promise<{ total: number; lines: number }>
+    ppFreeTotals: (productIds: number[], companyId?: number) => Promise<Record<number, { without: number; with: number }>>
   }
   skuOpening: {
     list: (asOf?: string) => Promise<Row>
@@ -296,6 +297,7 @@ export interface Api {
     create: (values: Row) => Promise<{ id: number }>
     update: (id: number, values: Row) => Promise<{ id: number }>
     remove: (id: number) => Promise<{ id: number }>
+    ppDraws: (productionId: number) => Promise<{ product_id: number; ffa: string; qty: number }[]>
   }
   sales: {
     list: (companyIds?: number[], forModule?: string) => Promise<Row[]>

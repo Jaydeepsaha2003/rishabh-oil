@@ -30,7 +30,7 @@ import { ProductionMobile } from './ProductionMobile'
 import { ExcelButton } from '@/components/ExcelButton'
 import { formatDate, formatNum, todayISO } from '@/lib/format'
 import { cn } from '@/lib/utils'
-import { expandRecipe } from '@/lib/recipeMath'
+import { expandRecipe, expandRecipeWithPp } from '@/lib/recipeMath'
 import { useLiveRefresh } from '@/lib/useLiveRefresh'
 import { Pagination, usePaged } from '@/components/Pagination'
 import { useEntryWindow } from '@/lib/useEntryWindow'
@@ -416,6 +416,68 @@ export function Production(): React.JSX.Element {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [building, sheetDate, editingId])
 
+  // Every auto-calculated input any run on the sheet currently names — what
+  // PP to fetch a balance for. Recomputed as items load in, one recipe at a
+  // time, per row.
+  const ppInputIds = useMemo(() => {
+    const ids = new Set<number>()
+    for (const r of runs) {
+      const items: Row[] = Array.isArray(r.items) ? r.items : []
+      for (const it of items) {
+        if (String(it.kind || 'input') === 'input' && it.auto_calc) ids.add(Number(it.product_id))
+      }
+    }
+    return Array.from(ids)
+      .filter((x) => x > 0)
+      .sort((a, b) => a - b)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [JSON.stringify(runs.map((r) => (Array.isArray(r.items) ? r.items : []).map((it: Row) => it.product_id)))])
+
+  // Both PP buckets, standing right now, for every input the sheet might draw
+  // on — the same figures createProduction/updateProduction actually draw
+  // against. Editing a run that already took some off PP gives that back
+  // here first, exactly as asAtStock gives back the run's own Raw
+  // consumption above, so the preview shows what a SAVE would do, not what
+  // this run already did last time.
+  const [ppPools, setPpPools] = useState<{ without: Record<number, number>; with: Record<number, number> } | null>(
+    null
+  )
+  useEffect(() => {
+    if (!building) {
+      setPpPools(null)
+      return
+    }
+    if (!ppInputIds.length) {
+      setPpPools({ without: {}, with: {} })
+      return
+    }
+    let alive = true
+    void (async () => {
+      try {
+        const totals = await window.api.stockOpening.ppFreeTotals(ppInputIds)
+        const without: Record<number, number> = {}
+        const withFfa: Record<number, number> = {}
+        for (const pid of ppInputIds) {
+          without[pid] = Number(totals[pid]?.without) || 0
+          withFfa[pid] = Number(totals[pid]?.with) || 0
+        }
+        if (editingId) {
+          const draws = await window.api.production.ppDraws(editingId).catch(() => [])
+          for (const d of draws) {
+            if (d.ffa === 'without') without[d.product_id] = (without[d.product_id] || 0) + Number(d.qty)
+            else if (d.ffa === 'with') withFfa[d.product_id] = (withFfa[d.product_id] || 0) + Number(d.qty)
+          }
+        }
+        if (alive) setPpPools({ without, with: withFfa })
+      } catch {
+        if (alive) setPpPools({ without: {}, with: {} })
+      }
+    })()
+    return () => {
+      alive = false
+    }
+  }, [building, editingId, ppInputIds])
+
   // What the whole sheet does to stock, walked IN ORDER so a batch can be fed
   // by one above it. Only 'input' lines consume; 'output' lines (recovered
   // fatty acid) add back, and 'loss' lines are simply gone.
@@ -427,23 +489,39 @@ export function Production(): React.JSX.Element {
     const bal: Record<number, number> = { ...(asAtStock ?? stock) }
     const perRun: { consumes: Row[]; produces: Row[] }[] = []
     const touched = new Set<number>()
+    // Depleted as the sheet's runs are walked, top to bottom — exactly like
+    // `bal` above, and for the same reason: a batch further down the sheet
+    // sees the PP one above it already drew, not the balance as it stood
+    // when the sheet opened. Without-FFA is preferred, oldest vessel first,
+    // then With-FFA, then Raw — see stockopenings' drawPp for why.
+    const ppWithout: Record<number, number> = { ...(ppPools?.without ?? {}) }
+    const ppWith: Record<number, number> = { ...(ppPools?.with ?? {}) }
     for (const r of runs) {
       const q = Number(r.qty) || 0
       const items: Row[] = Array.isArray(r.items) ? r.items : []
       const consumes: Row[] = []
       const produces: Row[] = []
-      // expandRecipe, not the raw percentages.
+      // expandRecipeWithPp, not the raw percentages.
       //
       // This used to be `(q * it.qty) / 100`, which ignored the TOR multiplier,
       // the recipe's dead loss, and the fatty acid an auto-calculated input
       // recovers. A 100 MT batch on a 106.952% recipe previewed as drawing
       // exactly 100 of CPO and recovering nothing, then posted 106.952 and a
       // fatty-acid credit. Same function as the main process now, so the sheet
-      // shows what the save will actually write.
+      // shows what the save will actually write — PP included, once ppPools
+      // has loaded; before that it runs with an empty pool, which is the same
+      // arithmetic expandRecipe always gave.
       const nameOf = (pid: number): string =>
         String(items.find((it) => Number(it.product_id) === pid)?.product_name ?? '') ||
         String(products.find((pp) => Number(pp.id) === pid)?.name ?? `#${pid}`)
-      for (const line of expandRecipe(items, q)) {
+      const freeByProduct: Record<number, number> = {}
+      for (const it of items) {
+        if (String(it.kind || 'input') === 'input' && it.auto_calc) {
+          freeByProduct[Number(it.product_id)] = ppWithout[Number(it.product_id)] || 0
+        }
+      }
+      const { lines, draws } = expandRecipeWithPp(items, q, freeByProduct)
+      for (const line of lines) {
         const pid = Number(line.product_id)
         if (!pid) continue
         const amt = Number(line.qty) || 0
@@ -462,6 +540,20 @@ export function Production(): React.JSX.Element {
         // a balance — showing it here would put DEAD LOSS on the projection
         // sinking further below zero on every run, which is not what the Stock
         // register will say.
+      }
+      // Where each input's draw actually came from — PP before Raw, Without
+      // before With, in the order drawPpForBatch takes it for real. Every
+      // draw is checked against With-FFA PP even where it was not auto-calc
+      // and drew no Without-FFA free share, matching the server exactly.
+      for (const d of draws) {
+        const pid = Number(d.product_id)
+        const cc = consumes.find((x) => x.product_id === pid)
+        if (!cc) continue
+        const fromWithFfa = Math.min(ppWith[pid] || 0, d.fromFfa)
+        const fromRaw = Math.max(0, d.fromFfa - fromWithFfa)
+        cc.pp = { free: d.fromFree, withFfa: fromWithFfa, raw: fromRaw }
+        ppWithout[pid] = Math.max(0, (ppWithout[pid] || 0) - d.fromFree)
+        ppWith[pid] = Math.max(0, (ppWith[pid] || 0) - fromWithFfa)
       }
       const outPid = Number(r.product_id)
       if (outPid && q > 0) {
@@ -945,23 +1037,42 @@ export function Production(): React.JSX.Element {
                             {pr.consumes.map((cc, k) => {
                               const after = projection.net.find((x) => String(x.product_id) === String(cc.product_id))
                               const short = after ? Number(after.after) < -1e-9 : false
+                              // Which stock this draw actually comes from —
+                              // PP before Raw, Without-FFA before With — only
+                              // shown once ppPools has loaded AND some of the
+                              // draw genuinely came off PP; an ordinary batch
+                              // with no PP standing looks exactly as it always
+                              // has.
+                              const pp = cc.pp as { free: number; withFfa: number; raw: number } | undefined
+                              const fromPp = pp ? pp.free + pp.withFfa : 0
+                              const parts: string[] = []
+                              if (pp && pp.free > 0.0005) parts.push(`${formatNum(pp.free)} PP, no FFA`)
+                              if (pp && pp.withFfa > 0.0005) parts.push(`${formatNum(pp.withFfa)} PP, with FFA`)
+                              if (pp && fromPp > 0.0005 && pp.raw > 0.0005) parts.push(`${formatNum(pp.raw)} Raw`)
                               return (
-                                <div key={k} className="flex items-center gap-2.5 py-[3px]">
-                                  <span className="w-[78px] shrink-0 truncate text-[11.5px] font-bold text-[#33473E]" title={cc.name}>
-                                    {cc.name}
-                                  </span>
-                                  <span className="h-[5px] min-w-[24px] flex-1 overflow-hidden rounded-[2px] bg-[#EAF0E9]">
-                                    <span
-                                      className="block h-full"
-                                      style={{
-                                        width: `${((Number(cc.amt) || 0) / maxAmt) * 100}%`,
-                                        background: short ? '#B3261E' : '#12855A'
-                                      }}
-                                    />
-                                  </span>
-                                  <span className="shrink-0 whitespace-nowrap text-[12.5px] font-bold tabular-nums">
-                                    {formatNum(cc.amt)}
-                                  </span>
+                                <div key={k} className="py-[3px]">
+                                  <div className="flex items-center gap-2.5">
+                                    <span className="w-[78px] shrink-0 truncate text-[11.5px] font-bold text-[#33473E]" title={cc.name}>
+                                      {cc.name}
+                                    </span>
+                                    <span className="h-[5px] min-w-[24px] flex-1 overflow-hidden rounded-[2px] bg-[#EAF0E9]">
+                                      <span
+                                        className="block h-full"
+                                        style={{
+                                          width: `${((Number(cc.amt) || 0) / maxAmt) * 100}%`,
+                                          background: short ? '#B3261E' : '#12855A'
+                                        }}
+                                      />
+                                    </span>
+                                    <span className="shrink-0 whitespace-nowrap text-[12.5px] font-bold tabular-nums">
+                                      {formatNum(cc.amt)}
+                                    </span>
+                                  </div>
+                                  {parts.length > 0 && (
+                                    <div className="ml-[90px] mt-[1px] text-[10px] font-semibold text-[#5A6B62]">
+                                      {parts.join(' + ')}
+                                    </div>
+                                  )}
                                 </div>
                               )
                             })}

@@ -348,7 +348,14 @@ const api = {
       lines: Row[],
       companyId?: number
     ): Promise<{ total: number; lines: number }> =>
-      ipcRenderer.invoke('stockOpening:savePp', { productId, lines, companyId })
+      ipcRenderer.invoke('stockOpening:savePp', { productId, lines, companyId }),
+    // Both PP buckets for a set of products — what the Production entry
+    // sheet's preview draws against before a batch is saved.
+    ppFreeTotals: (
+      productIds: number[],
+      companyId?: number
+    ): Promise<Record<number, { without: number; with: number }>> =>
+      ipcRenderer.invoke('stockOpening:ppFreeTotals', { productIds, companyId })
   },
   // The packed shelf's opening count — what was in packs the morning the
   // books began. Mirrors stockOpening, which does the same for the tanks.
@@ -423,7 +430,13 @@ const api = {
     update: (id: number, values: Row): Promise<{ id: number }> =>
       ipcRenderer.invoke('production:update', { id, values }),
     remove: (id: number): Promise<{ id: number }> =>
-      ipcRenderer.invoke('production:delete', { id })
+      ipcRenderer.invoke('production:delete', { id }),
+    // What one run took off PP, vessel by vessel — the entry sheet's preview
+    // gives this back to the pool it is simulating against before showing
+    // that run's own edited amount, the same way the run's Raw consumption
+    // is already given back for the projection.
+    ppDraws: (productionId: number): Promise<{ product_id: number; ffa: string; qty: number }[]> =>
+      ipcRenderer.invoke('production:ppDraws', { productionId })
   },
   sales: {
     list: (companyIds?: number[], forModule?: string): Promise<Row[]> =>

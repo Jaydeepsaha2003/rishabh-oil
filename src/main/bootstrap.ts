@@ -203,6 +203,27 @@ export async function runStartupTasks(): Promise<void> {
     )
   }).catch((e) => console.error('[stock] PP stage tables failed:', e))
 
+  // A record of exactly what one production run took off PP, vessel by
+  // vessel — not a balance (stock_opening_pp.qty already is one, live), but
+  // the undo tape for it. Editing or deleting a run has to put back precisely
+  // what that run drew before it draws again or disappears, and the only way
+  // to do that without guessing is to have written it down at the time.
+  await runOnce('pp_draws_v1', async () => {
+    const c = getClient()
+    await c.execute(`CREATE TABLE IF NOT EXISTS pp_draws (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      production_id INTEGER NOT NULL REFERENCES production(id),
+      scope TEXT NOT NULL,
+      product_id INTEGER NOT NULL REFERENCES products(id),
+      stage_id INTEGER NOT NULL REFERENCES stock_pp_stages(id),
+      qty REAL NOT NULL,
+      ffa TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    )`)
+    await c.execute('CREATE INDEX IF NOT EXISTS idx_pp_draws_production ON pp_draws(production_id)')
+    await c.execute('CREATE INDEX IF NOT EXISTS idx_pp_draws_stage ON pp_draws(stage_id)')
+  }).catch((e) => console.error('[production] pp_draws table failed:', e))
+
   // The day's work, per person.
   //
   // Three tables. PROCESSES is the catalogue — which daily jobs each page is

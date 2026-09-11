@@ -3,10 +3,11 @@ import { getClient } from './db'
 import { getActiveCompanyId, companiesOfFactory, factoryOfCompanies } from './company'
 import { stockMap, productStockAvailable, stockLevels } from './stock'
 import { visibleFromFor } from './access-gate'
+import { ppFreeByProduct, drawPp, reversePpDraws } from './stockopenings'
 // One copy of the recipe arithmetic, shared with the entry sheet in the
 // renderer. It used to live only here, so the sheet previewed one set of
 // numbers and this posted another.
-import { expandRecipe, recipeTor } from '../renderer/src/lib/recipeMath'
+import { expandRecipe, expandRecipeWithPp, recipeTor } from '../renderer/src/lib/recipeMath'
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Row = Record<string, any>
@@ -450,7 +451,10 @@ async function recordRecirculation(v: Row, id = 0): Promise<{ id: number }> {
       args: [v.prod_date, productId, qty, v.uom || 'MT', v.note || null, n(id)]
     })
     // A row that used to be a batch and is being corrected to a recirculation
-    // must lose the lines it drew, or the inputs stay consumed forever.
+    // must lose the lines it drew, or the inputs stay consumed forever — PP
+    // included, or a vessel this run drew from stays short after the batch
+    // that drew it no longer exists.
+    await reversePpDraws(n(id))
     await c.execute({ sql: 'DELETE FROM production_items WHERE production_id = ?', args: [n(id)] })
     return { id: n(id) }
   }
@@ -460,6 +464,47 @@ async function recordRecirculation(v: Row, id = 0): Promise<{ id: number }> {
     args: [getActiveCompanyId(), getActiveCompanyId(), v.prod_date, productId, qty, v.uom || 'MT', v.note || null]
   })
   return { id: Number(ins.lastInsertRowid) }
+}
+
+// Expand a recipe PP-aware: how much of each auto-calculated input is drawn
+// from Without-FFA PP, from With-FFA PP/Raw, and the movement lines either
+// way. Read-only — deciding this needs no production id yet, since it never
+// writes anything; see drawPpForBatch for the part that actually does.
+//
+// PP is used before Raw, Without-FFA before With-FFA: Without-FFA is oil that
+// has already shed its fatty acid at an earlier stage, so drawing on it costs
+// nothing further, while With-FFA PP still owes the recipe's FFA loss exactly
+// as Raw does. A component whose recipe line is not auto-calculated has no
+// FFA of its own to split and never touches PP here, whatever the product's
+// PP holds — the same behaviour expandRecipeWithPp already gives it.
+async function expandRecipeForBatch(
+  items: Row[],
+  outputQty: number
+): Promise<{
+  lines: { product_id: number; qty: number; kind: string }[]
+  draws: { product_id: number; fromFree: number; fromFfa: number; gross: number; fattyAcid: number }[]
+}> {
+  const autoCalcInputs = items
+    .filter((it) => String(it.kind || 'input') === 'input' && it.auto_calc)
+    .map((it) => n(it.product_id))
+  const freeByProduct = autoCalcInputs.length ? await ppFreeByProduct(autoCalcInputs) : {}
+  return expandRecipeWithPp(items, outputQty, freeByProduct)
+}
+
+// The write half: actually take `draws` off PP, oldest vessel first (see
+// stockopenings' drawPp) — called once the production row exists, since each
+// draw is logged against its id for a later edit or delete to reverse.
+// Whatever the FFA-bearing part could not find in With-FFA PP is left to come
+// off Raw exactly as it always has — the shortage check elsewhere reads the
+// combined figure and does not care which sub-bucket a draw came out of.
+async function drawPpForBatch(
+  productionId: number,
+  draws: { product_id: number; fromFree: number; fromFfa: number }[]
+): Promise<void> {
+  for (const d of draws) {
+    if (d.fromFree > 0.0005) await drawPp(productionId, d.product_id, 'without', d.fromFree)
+    if (d.fromFfa > 0.0005) await drawPp(productionId, d.product_id, 'with', d.fromFfa)
+  }
 }
 
 export async function createProduction(v: Row): Promise<{ id: number }> {
@@ -503,8 +548,13 @@ export async function createProduction(v: Row): Promise<{ id: number }> {
     fid = fRes.rows.length ? Number(fRes.rows[0].id) : 0
   }
   const snap = await recipeSnapshot(fid)
-  const lines: { product_id: number; qty: number; kind: string }[] = []
-  if (fid) lines.push(...expandRecipe(snap.items, qty))
+  let lines: { product_id: number; qty: number; kind: string }[] = []
+  let draws: { product_id: number; fromFree: number; fromFfa: number }[] = []
+  if (fid) {
+    const expanded = await expandRecipeForBatch(snap.items, qty)
+    lines = expanded.lines
+    draws = expanded.draws
+  }
   const consumption = lines.filter((l) => l.kind === 'input')
 
   // A batch whose inputs are short is RECORDED, not refused.
@@ -544,6 +594,8 @@ export async function createProduction(v: Row): Promise<{ id: number }> {
     args: [getActiveCompanyId(), getActiveCompanyId(), v.prod_date, productId, qty, v.uom || 'MT', v.note || null, fid || null, snap.versionId || null]
   })
   const id = Number(ins.lastInsertRowid)
+
+  if (draws.length) await drawPpForBatch(id, draws)
 
   for (const l of lines) {
     await c.execute({
@@ -619,14 +671,28 @@ export async function updateProduction(id: number, v: Row): Promise<{ id: number
   // switched to a different one — that is a deliberate re-costing, and takes
   // the new recipe as it stands today.
   const snap = await recipeSnapshot(fid, fid && fid === wasFid ? wasVersion : 0)
-  const lines: { product_id: number; qty: number; kind: string }[] = []
-  if (fid) lines.push(...expandRecipe(snap.items, qty))
+
+  // Put back whatever this run drew off PP BEFORE re-expanding the recipe —
+  // the vessels have to be back at their pre-this-run balance before asking
+  // how much Without-FFA PP is free to draw again, or an edit that keeps the
+  // same quantity would find its own earlier draw and refuse to take it a
+  // second time.
+  await reversePpDraws(n(id))
+
+  let lines: { product_id: number; qty: number; kind: string }[] = []
+  let draws: { product_id: number; fromFree: number; fromFfa: number }[] = []
+  if (fid) {
+    const expanded = await expandRecipeForBatch(snap.items, qty)
+    lines = expanded.lines
+    draws = expanded.draws
+  }
 
   await c.execute({
     sql: `UPDATE production SET prod_date = ?, product_id = ?, qty = ?, uom = ?, note = ?, formulation_id = ?, formulation_version_id = ?
            WHERE id = ?`,
     args: [v.prod_date, productId, qty, v.uom || 'MT', v.note || null, fid || null, snap.versionId || null, n(id)]
   })
+  if (draws.length) await drawPpForBatch(n(id), draws)
   await c.execute({ sql: 'DELETE FROM production_items WHERE production_id = ?', args: [n(id)] })
   for (const l of lines) {
     await c.execute({
@@ -741,6 +807,10 @@ export async function deleteProduction(id: number): Promise<{ id: number }> {
         'Enter the missing production or the opening stock to clear it.'
     )
   }
+  // Put back whatever this run drew off PP — a deleted run means the oil was
+  // never actually taken, so the vessel it came from has to read as if it
+  // never had been.
+  await reversePpDraws(id)
   await c.execute({ sql: 'DELETE FROM production_items WHERE production_id = ?', args: [id] })
   await c.execute({ sql: 'DELETE FROM production WHERE id = ?', args: [id] })
   return { id }
