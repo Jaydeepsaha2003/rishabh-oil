@@ -208,25 +208,27 @@ const titleCase = (s: string): string => s.replace(/\w\S*/g, (w) => w[0] + w.sli
 // What the register actually COUNTS, per unit — a box of 20 pouches weighs
 // what its 20 pouches add up to, not what one pouch alone weighs.
 //
-// Some SKUs are counted one pouch/jar/tin at a time (pouches_per_box = 1, so
-// this changes nothing for them — DALDA JAR 15 KG × 1 stays 15 KG a unit).
-// Others are counted by the case: VPATI DALDA 1 LTR X20P shows a Type of BOX,
-// its PACK is 0.893 KG (one pouch) and its TOTAL is 17.86 KG (the whole box,
-// 20 × 0.893) — and every tick on this sheet against that SKU is a box, not a
-// pouch. Multiplying pieces by PACK alone read 4,687 boxes as 4,687 pouches
-// and understated the tonnage by a factor of 20.
+// unit_size/base_per_pouch always describe ONE POUCH, no matter what the SKU
+// is counted in — the packaging master's "Unit size" field is required and
+// base_per_pouch is only that same figure converted to KG/L (see Packaging.tsx
+// deriveBase), so the two are never in real conflict; unit_size is honoured
+// first purely because it carries the master's own UOM.
 //
-// unit_size/unit_uom are an explicit override some packaging masters carry —
-// honoured first, unchanged, for whichever SKU actually needs one. Only the
-// FALLBACK changes: base_per_pouch alone becomes the pack it is actually part
-// of, base_per_pouch × pouches_per_box — which is exactly what the sheet's own
-// Total column already shows (see packTotal below), so this is the number
-// already on screen, not a new one invented for the tonnage.
+// What that one pouch weighs is not what every SKU is COUNTED in, though.
+// Most SKUs are ticked a pouch/jar/tin at a time, and for those the piece IS
+// the pouch. VPATI DALDA 1 LTR X20P is different: its Pack type is Box, its
+// PACK is 0.893 KG (one pouch) and its TOTAL is 17.86 KG (the whole box, 20 ×
+// 0.893) — and every tick on this sheet against a Box-type SKU is a box, not
+// a pouch, the same way a Jar-type SKU's tick is a jar. Converting a box
+// count by the pouch's own weight read 4,687 boxes as 4,687 pouches and
+// understated the tonnage by a factor of 20 (pouches_per_box).
 function unitMT(r: Row): number {
   const useOverride = Number(r.unit_size) > 0
-  const size = useOverride ? Number(r.unit_size) : Number(r.base_per_pouch || 0) * Math.max(1, Number(r.pouches_per_box) || 1)
+  const size = useOverride ? Number(r.unit_size) : Number(r.base_per_pouch || 0)
   const uom = useOverride ? String(r.unit_uom || 'KG') : String(r.base_uom || 'KG')
-  return packSizeMT(size, uom)
+  const perPouch = packSizeMT(size, uom)
+  const countedByBox = String(r.pouch_label || '').trim().toLowerCase() === 'box'
+  return countedByBox ? perPouch * Math.max(1, Number(r.pouches_per_box) || 1) : perPouch
 }
 
 // Pack size → MT per piece. Litres are treated 1 L ≈ 1 KG (the mill's dispatch

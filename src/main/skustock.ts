@@ -522,20 +522,26 @@ export async function saveSkuOpenings(
 export async function listSkuAdjustments(packagingId: number): Promise<Row[]> {
   const pid = n(packagingId)
   if (!pid) return []
-  // The same piece -> MT conversion the stock register uses for packedOut, so
-  // the figure here is the one the bulk tank actually saw.
+  // The same piece -> MT conversion Stock.tsx's unitMT uses, so the figure
+  // here is the one the day register and the TONNAGE summary agree with.
   //
-  // The FALLBACK branch (no unit_size override set) used to convert one PIECE
-  // as if it weighed base_per_pouch alone — correct only for a SKU counted one
-  // pouch/jar/tin at a time. A SKU counted by the case (pouches_per_box > 1,
-  // the way VPATI DALDA 1 LTR X20P is counted in boxes of 20) had every packing
-  // and correction entry understated by that same factor: 4,687 boxes logged
-  // as 4.185 MT instead of 83.71. base_per_pouch is now multiplied by
-  // pouches_per_box first — exactly the Total column's own arithmetic — before
-  // the unit is converted; a pouches_per_box of 1 leaves a single-unit SKU
-  // untouched.
-  const packQty = 'pk.base_per_pouch * MAX(1, COALESCE(pk.pouches_per_box, 1))'
-  const MT = `
+  // unit_size and base_per_pouch both describe ONE POUCH — the packaging
+  // master's "Unit size" field is required and base_per_pouch is only that
+  // same figure converted to KG/L (see Packaging.tsx's deriveBase), so
+  // unit_size is honoured first purely for its own UOM, not as an override of
+  // a different quantity.
+  //
+  // What a pouch weighs is not what every SKU is COUNTED in, though. Most are
+  // logged a pouch/jar/tin at a time, where the piece IS the pouch. A SKU
+  // whose Pack type is Box (pk.pouch_label) is entered a case at a time —
+  // VPATI DALDA 1 LTR X20P's PACK is 0.893 KG (one pouch), its TOTAL is
+  // 17.86 KG (the whole box, 20 x 0.893), and every entry against it is a
+  // box, not a pouch. Converting by the pouch weight alone logged 4,687 boxes
+  // as 4.185 MT instead of 83.71 — understated by pouches_per_box. Only
+  // Box-type SKUs get that multiplier; a Jar/Tin/Pouch/Bottle SKU's
+  // pouches_per_box describes its case for the master's own "total per case"
+  // display and is not what entries against it count in.
+  const perPouchMT = `
     CASE
       WHEN COALESCE(pk.unit_size, 0) > 0 THEN
         CASE UPPER(COALESCE(pk.unit_uom, 'KG'))
@@ -550,16 +556,19 @@ export async function listSkuAdjustments(packagingId: number): Promise<Row[]> {
         END
       ELSE
         CASE UPPER(COALESCE(pk.base_uom, 'KG'))
-          WHEN 'GM' THEN (${packQty}) / 1000.0
-          WHEN 'G' THEN (${packQty}) / 1000.0
-          WHEN 'ML' THEN (${packQty}) / 1000.0
-          WHEN 'QUINTAL' THEN (${packQty}) * 100.0
-          WHEN 'MT' THEN (${packQty}) * 1000.0
-          WHEN 'TON' THEN (${packQty}) * 1000.0
-          WHEN 'KL' THEN (${packQty}) * 1000.0
-          ELSE (${packQty})
+          WHEN 'GM' THEN pk.base_per_pouch / 1000.0
+          WHEN 'G' THEN pk.base_per_pouch / 1000.0
+          WHEN 'ML' THEN pk.base_per_pouch / 1000.0
+          WHEN 'QUINTAL' THEN pk.base_per_pouch * 100.0
+          WHEN 'MT' THEN pk.base_per_pouch * 1000.0
+          WHEN 'TON' THEN pk.base_per_pouch * 1000.0
+          WHEN 'KL' THEN pk.base_per_pouch * 1000.0
+          ELSE pk.base_per_pouch
         END
-    END / 1000.0`
+    END`
+  const boxMultiplier =
+    "CASE WHEN UPPER(TRIM(COALESCE(pk.pouch_label, ''))) = 'BOX' THEN MAX(1, COALESCE(pk.pouches_per_box, 1)) ELSE 1 END"
+  const MT = `((${perPouchMT}) * (${boxMultiplier})) / 1000.0`
   const res = await getClient().execute({
     sql: `SELECT a.id, a.delta, a.adj_date, a.note, a.created_by, a.created_at,
                  COALESCE(a.kind, CASE WHEN a.delta < 0 THEN 'correction' ELSE 'packing' END) AS kind,
