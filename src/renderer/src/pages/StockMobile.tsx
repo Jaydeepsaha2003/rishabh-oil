@@ -662,7 +662,7 @@ function OpeningProducts(): React.JSX.Element {
         rate: r.rate ?? r.suggested_rate ?? null,
         note: r.note ?? null
       }))
-      const res = await window.api.stockOpening.save(payload, asOf)
+      const res = await window.api.stockOpening.save(payload, asOf, undefined, String(data?.version || ''))
       toast.success(`${res.saved} saved, ${res.cleared} cleared`)
       await load()
     } catch (e) {
@@ -841,6 +841,7 @@ function OpeningProducts(): React.JSX.Element {
       </div>
 
       <PpBreakdown
+        version={String(data?.version || '')}
         product={ppRow}
         open={!!ppRow}
         onOpenChange={(o) => !o && setPpRow(null)}

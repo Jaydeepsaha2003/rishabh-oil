@@ -513,6 +513,26 @@ async function drawPpForBatch(
   }
 }
 
+// WHAT THE RUN TOOK OUT OF ITS OWN VESSELS, written on the run.
+//
+// A batch supplied from PP looks, in the register, like a batch that drew no
+// raw material and moved no balance — which is exactly what it is, and exactly
+// what somebody reading it a month later will query. So it says so on itself.
+//
+// Built by stripping any marker already on the note and adding a fresh one, so
+// re-saving the same run does not stack them up. The typed note is kept.
+const PP_NOTE = /\s*(?:·\s*)?PP Recirculation —[^·]*/g
+function ppRunNote(typed: unknown, ownPp: { without: number; with: number }, uom: string): string | null {
+  const base = String(typed || '').replace(PP_NOTE, '').trim()
+  const f3 = (x: number): string => String(Math.round(x * 1000) / 1000)
+  const parts: string[] = []
+  if (ownPp.without > 0.0005) parts.push(`${f3(ownPp.without)} ${uom} W/O FFA`)
+  if (ownPp.with > 0.0005) parts.push(`${f3(ownPp.with)} ${uom} with FFA`)
+  if (!parts.length) return base || null
+  const marker = `PP Recirculation — ${parts.join(', ')}`
+  return base ? `${base} · ${marker}` : marker
+}
+
 export async function createProduction(v: Row): Promise<{ id: number }> {
   if (String(v.kind || 'batch') === 'recirculation') return recordRecirculation(v)
   const c = getClient()
@@ -602,7 +622,7 @@ export async function createProduction(v: Row): Promise<{ id: number }> {
           VALUES (?, (SELECT factory_id FROM companies WHERE id = ?), ?, ?, ?, ?, ?, ?, ?)`,
     // The version is stamped now so a later edit to the recipe cannot reach
     // this batch. See recipeSnapshot.
-    args: [getActiveCompanyId(), getActiveCompanyId(), v.prod_date, productId, qty, v.uom || 'MT', v.note || null, fid || null, snap.versionId || null]
+    args: [getActiveCompanyId(), getActiveCompanyId(), v.prod_date, productId, qty, v.uom || 'MT', ppRunNote(v.note, ownPp, String(v.uom || 'MT')), fid || null, snap.versionId || null]
   })
   const id = Number(ins.lastInsertRowid)
 
@@ -710,7 +730,7 @@ export async function updateProduction(id: number, v: Row): Promise<{ id: number
   await c.execute({
     sql: `UPDATE production SET prod_date = ?, product_id = ?, qty = ?, uom = ?, note = ?, formulation_id = ?, formulation_version_id = ?
            WHERE id = ?`,
-    args: [v.prod_date, productId, qty, v.uom || 'MT', v.note || null, fid || null, snap.versionId || null, n(id)]
+    args: [v.prod_date, productId, qty, v.uom || 'MT', ppRunNote(v.note, ownPp, String(v.uom || 'MT')), fid || null, snap.versionId || null, n(id)]
   })
   if (draws.length) await drawPpForBatch(n(id), draws)
   // The product's own vessels, drawn after the input ones so both are logged

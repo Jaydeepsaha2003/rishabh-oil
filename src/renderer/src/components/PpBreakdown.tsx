@@ -78,11 +78,17 @@ export function PpBreakdown({
   product,
   open,
   onOpenChange,
-  onSaved
+  onSaved,
+  version
 }: {
   product: Row | null
   open: boolean
   onOpenChange: (v: boolean) => void
+  // The fingerprint the sheet loaded with. Handed to the save so a breakdown
+  // typed on a stale page cannot replace vessel lines it never saw — this
+  // dialog REPLACES a product's vessels wholesale, so a stale save silently
+  // deletes any tank the page does not know about.
+  version?: string
   // Handed the new total and lines so the sheet can update that one row
   // without reloading — it holds an unsaved draft of every other row.
   onSaved: (productId: number, total: number, lines: PpLine[]) => void
@@ -146,7 +152,9 @@ export function PpBreakdown({
             stage_id: l.stage_id || undefined,
             qty: l.qty,
             ffa: l.ffa ? 'with' : 'without'
-          }))
+          })),
+        undefined,
+        version
       )
       onSaved(
         pid,

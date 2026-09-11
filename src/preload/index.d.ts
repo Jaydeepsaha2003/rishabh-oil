@@ -246,7 +246,12 @@ export interface Api {
   }
   stockOpening: {
     list: (companyId?: number) => Promise<Row>
-    save: (rows: Row[], asOf: string, companyId?: number) => Promise<{ saved: number; cleared: number }>
+    save: (
+      rows: Row[],
+      asOf: string,
+      companyId?: number,
+      version?: string
+    ) => Promise<{ saved: number; cleared: number }>
     date: (companyId?: number) => Promise<string>
     ppStages: (companyId?: number) => Promise<Row[]>
     addPpStage: (name: string, companyId?: number) => Promise<Row>
@@ -254,7 +259,12 @@ export interface Api {
       stageId: number,
       companyId?: number
     ) => Promise<{ removed: number; kept: number; retired: boolean; name: string }>
-    savePp: (productId: number, lines: Row[], companyId?: number) => Promise<{ total: number; lines: number }>
+    savePp: (
+      productId: number,
+      lines: Row[],
+      companyId?: number,
+      version?: string
+    ) => Promise<{ total: number; lines: number }>
     ppVessels: (productId: number, companyId?: number) => Promise<Row[]>
     ppWriteoffs: (productId: number, companyId?: number) => Promise<Row[]>
     writeOffPp: (

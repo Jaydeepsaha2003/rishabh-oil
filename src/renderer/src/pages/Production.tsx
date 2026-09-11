@@ -80,7 +80,7 @@ export function Production(): React.JSX.Element {
   // Writing a heel out of a vessel: which product, which vessel, how much and
   // — required — why.
   const [deadOpen, setDeadOpen] = useState(false)
-  const [dead, setDead] = useState<Row>({ product_id: '', stage_id: '', qty: '', note: '' })
+  const [dead, setDead] = useState<Row>({ category: '', product_id: '', stage_id: '', qty: '', note: '' })
   const [deadVessels, setDeadVessels] = useState<Row[]>([])
   const [deadLog, setDeadLog] = useState<Row[]>([])
   const [deadSaving, setDeadSaving] = useState(false)
@@ -1560,7 +1560,7 @@ export function Production(): React.JSX.Element {
               variant="outline"
               className={cn('gap-1.5', __WEB__ && '!gap-2 !border-[1.5px] !border-[#C7BCF0] !bg-[#F1EEFB] !px-3 !font-extrabold !text-[#3D3179] hover:!bg-[#E7E1F8]')}
               onClick={() => {
-                setDead({ product_id: '', stage_id: '', qty: '', note: '' })
+                setDead({ category: '', product_id: '', stage_id: '', qty: '', note: '' })
                 setDeadOpen(true)
               }}
             >
@@ -1837,24 +1837,53 @@ export function Production(): React.JSX.Element {
           </DialogHeader>
 
           <div className={cn('grid gap-3 py-2', __WEB__ && '!flex !flex-col !gap-4 !px-[22px] !py-[18px]')}>
+            {/* SUB-CATEGORY FIRST, then the oil — the same order every other
+                product picker on this page asks in. The full list runs to
+                forty-odd names; narrowing it first is how somebody finds the
+                one they mean without reading all of them. */}
+            <div className={cn('flex flex-col gap-1.5', __WEB__ && '!gap-0')}>
+              <Label className={cn(__WEB__ && '!mb-[7px] !text-[12.5px] !font-extrabold !text-[#0A1F17]')}>
+                Sub-category <span className="text-[#B3261E]">*</span>
+              </Label>
+              <Select
+                value={String(dead.category || '')}
+                onValueChange={(v) => setDead((p2) => ({ ...p2, category: v, product_id: '', stage_id: '', qty: '' }))}
+                panelClassName={__WEB__ ? '!rounded-[4px] !border-[#C3D2C6] !normal-case' : undefined}
+              >
+                <SelectTrigger className={cn(__WEB__ && '!h-[46px] !rounded-[4px] !border-[#C3D2C6] !bg-white !px-3 !text-[13.5px] !font-bold')}>
+                  <SelectValue placeholder="Pick the sub-category" />
+                </SelectTrigger>
+                <SelectContent className={cn(__WEB__ && '!max-h-[180px] !p-1.5')}>
+                  {[...new Set(products.map((x) => String(x.category || '')).filter(Boolean))].sort().map((c) => (
+                    <SelectItem key={c} value={c} className={cn(__WEB__ && '!h-10 !text-[13px] !font-semibold')}>
+                      {CAT_LABEL[c] ?? c}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+
             <div className={cn('flex flex-col gap-1.5', __WEB__ && '!gap-0')}>
               <Label className={cn(__WEB__ && '!mb-[7px] !text-[12.5px] !font-extrabold !text-[#0A1F17]')}>
                 Which oil <span className="text-[#B3261E]">*</span>
               </Label>
               <Select
+                disabled={!dead.category}
                 value={String(dead.product_id || '')}
                 onValueChange={(v) => setDead((p2) => ({ ...p2, product_id: v, stage_id: '', qty: '' }))}
                 panelClassName={__WEB__ ? '!rounded-[4px] !border-[#C3D2C6] !normal-case' : undefined}
               >
                 <SelectTrigger className={cn(__WEB__ && '!h-[46px] !rounded-[4px] !border-[#C3D2C6] !bg-white !px-3 !text-[13.5px] !font-bold')}>
-                  <SelectValue placeholder="Pick the oil" />
+                  <SelectValue placeholder={dead.category ? 'Pick the oil' : 'Pick a sub-category first'} />
                 </SelectTrigger>
                 <SelectContent className={cn(__WEB__ && '!max-h-[180px] !p-1.5')}>
-                  {products.map((x) => (
-                    <SelectItem key={String(x.id)} value={String(x.id)} className={cn(__WEB__ && '!h-10 !text-[13px] !font-semibold')}>
-                      {String(x.name)}
-                    </SelectItem>
-                  ))}
+                  {products
+                    .filter((x) => !dead.category || String(x.category || '') === String(dead.category))
+                    .map((x) => (
+                      <SelectItem key={String(x.id)} value={String(x.id)} className={cn(__WEB__ && '!h-10 !text-[13px] !font-semibold')}>
+                        {String(x.name)}
+                      </SelectItem>
+                    ))}
                 </SelectContent>
               </Select>
             </div>
@@ -1977,7 +2006,11 @@ export function Production(): React.JSX.Element {
             {__WEB__ && (
               <span className="text-[12.5px] font-bold text-[#5A6B62]">
                 {!dead.stage_id
-                  ? 'Pick the oil and the vessel.'
+                  ? !dead.category
+                    ? 'Pick the sub-category.'
+                    : !dead.product_id
+                      ? 'Pick the oil.'
+                      : 'Pick the vessel.'
                   : !(Number(dead.qty) > 0)
                     ? 'Enter a quantity.'
                     : !String(dead.note || '').trim()

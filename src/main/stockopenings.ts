@@ -210,6 +210,9 @@ export async function listStockOpenings(companyId?: number): Promise<Row> {
     // prompt to merge them. Merging would collapse the two into one line and
     // lose the distinction between what is bought and what is made.
     name_clashes: dupes,
+    // What this page loaded, handed back on save so a stale sheet cannot
+    // overwrite figures it never saw. See openingsVersion.
+    version: await openingsVersion(cid),
     // The vessels this site breaks its in-process oil down into — one list for
     // the whole sheet, because one refinery has one set of them.
     pp_stages: ppStages
@@ -253,12 +256,68 @@ export async function duplicateProductNames(): Promise<Row[]> {
 // rather than stored as zero: "nothing brought forward" and "not yet counted"
 // are different statements, and only the first should show as an opening of
 // nil on the register.
+/**
+ * A fingerprint of the openings this sheet is editing.
+ *
+ * The sheet posts what is ON THE PAGE and replaces what it finds — every
+ * quantity, and every vessel line, wholesale. That is fine while one person is
+ * on it; it is a quiet data loss the moment the page is stale, because the
+ * save takes an old screen at its word and deletes anything the screen no
+ * longer knows about. A vessel holding 35 MT has been lost to this twice.
+ *
+ * So the page carries a fingerprint of what it loaded and hands it back. If
+ * the stored figures have moved since, the save is refused and the reader is
+ * told to reload rather than silently winning.
+ *
+ * Deliberately cheap: the row counts and the latest stamp on each side. Two
+ * saves inside the same second by different people would slip through — a
+ * risk worth the simplicity here, where the realistic case is a page left open
+ * for an hour.
+ */
+export async function openingsVersion(companyId?: number): Promise<string> {
+  const cid = n(companyId) || getActiveCompanyId()
+  const fid = await factoryOfCompanies([cid])
+  const scope = fid ? `f${fid}` : `c${cid}`
+  const c = getClient()
+  const [o, pp] = await Promise.all([
+    c.execute({
+      sql: fid
+        ? 'SELECT COUNT(*) AS n, MAX(updated_at) AS t FROM stock_openings WHERE factory_id = ?'
+        : 'SELECT COUNT(*) AS n, MAX(updated_at) AS t FROM stock_openings WHERE company_id = ?',
+      args: [fid || cid]
+    }),
+    c.execute({
+      sql: 'SELECT COUNT(*) AS n, MAX(updated_at) AS t FROM stock_opening_pp WHERE scope = ?',
+      args: [scope]
+    })
+  ])
+  const a = toPlain(o)[0] || {}
+  const b = toPlain(pp)[0] || {}
+  return `${n(a.n)}:${String(a.t || '')}|${n(b.n)}:${String(b.t || '')}`
+}
+
+/** Refuse a save built on a page that has since been overtaken. */
+async function assertOpeningsUnchanged(seen: unknown, companyId?: number): Promise<void> {
+  const token = String(seen || '').trim()
+  // No token at all means an older client, or a caller with nothing to
+  // compare. Those keep working exactly as before rather than being locked
+  // out by a guard they never sent for.
+  if (!token) return
+  const now = await openingsVersion(companyId)
+  if (token === now) return
+  throw new Error(
+    'This opening sheet was changed somewhere else while you had it open. Reload the page before saving — saving now would overwrite those changes.'
+  )
+}
+
 export async function saveStockOpenings(
   rows: Row[],
   asOf: string,
-  companyId?: number
+  companyId?: number,
+  seenVersion?: string
 ): Promise<{ saved: number; cleared: number }> {
   const cid = n(companyId) || getActiveCompanyId()
+  await assertOpeningsUnchanged(seenVersion, cid)
   const date = String(asOf || '').slice(0, 10)
   if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) throw new Error('Pick the date this opening is struck on')
   const c = getClient()
@@ -562,10 +621,12 @@ export async function removePpStage(
 export async function savePpLines(
   productId: number,
   lines: Row[],
-  companyId?: number
+  companyId?: number,
+  seenVersion?: string
 ): Promise<{ total: number; lines: number }> {
   const pid = n(productId)
   if (!pid) throw new Error('Which product?')
+  await assertOpeningsUnchanged(seenVersion, companyId)
   const cid = n(companyId) || getActiveCompanyId()
   const scope = await ppScope(cid)
   const c = getClient()

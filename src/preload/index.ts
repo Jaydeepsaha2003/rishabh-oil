@@ -345,8 +345,13 @@ const api = {
   },
   stockOpening: {
     list: (companyId?: number): Promise<Row> => ipcRenderer.invoke('stockOpening:list', { companyId }),
-    save: (rows: Row[], asOf: string, companyId?: number): Promise<{ saved: number; cleared: number }> =>
-      ipcRenderer.invoke('stockOpening:save', { rows, asOf, companyId }),
+    save: (
+      rows: Row[],
+      asOf: string,
+      companyId?: number,
+      version?: string
+    ): Promise<{ saved: number; cleared: number }> =>
+      ipcRenderer.invoke('stockOpening:save', { rows, asOf, companyId, version }),
     date: (companyId?: number): Promise<string> =>
       ipcRenderer.invoke('stockOpening:date', { companyId }),
     // The site's list of in-process stages, and one product's breakdown.
@@ -362,9 +367,10 @@ const api = {
     savePp: (
       productId: number,
       lines: Row[],
-      companyId?: number
+      companyId?: number,
+      version?: string
     ): Promise<{ total: number; lines: number }> =>
-      ipcRenderer.invoke('stockOpening:savePp', { productId, lines, companyId }),
+      ipcRenderer.invoke('stockOpening:savePp', { productId, lines, companyId, version }),
     // Both PP buckets for a set of products — what the Production entry
     // sheet's preview draws against before a batch is saved.
     ppVessels: (productId: number, companyId?: number): Promise<Row[]> =>

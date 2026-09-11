@@ -785,8 +785,12 @@ export function registerIpc(): void {
   handle('stockOpening:list', (_e, { companyId }: { companyId?: number } = {}) =>
     listStockOpenings(companyId)
   )
-  handle('stockOpening:save', (_e, { rows, asOf, companyId }: { rows: Row[]; asOf: string; companyId?: number }) =>
-    saveStockOpenings(rows, asOf, companyId)
+  handle(
+    'stockOpening:save',
+    (
+      _e,
+      { rows, asOf, companyId, version }: { rows: Row[]; asOf: string; companyId?: number; version?: string }
+    ) => saveStockOpenings(rows, asOf, companyId, version)
   )
   // Just the date, for the app's default period. The full sheet is far too
   // heavy to fetch at startup for one string.
@@ -810,8 +814,10 @@ export function registerIpc(): void {
   )
   handle(
     'stockOpening:savePp',
-    (_e, { productId, lines, companyId }: { productId: number; lines: Row[]; companyId?: number }) =>
-      savePpLines(productId, lines, companyId)
+    (
+      _e,
+      { productId, lines, companyId, version }: { productId: number; lines: Row[]; companyId?: number; version?: string }
+    ) => savePpLines(productId, lines, companyId, version)
   )
   // What the Production entry sheet's preview needs before a batch is saved:
   // both PP buckets for every auto-calculated input on the sheet, and — when

@@ -1835,7 +1835,10 @@ function OpeningStock({
         rate: draft[Number(r.id)]?.rate ?? '',
         note: draft[Number(r.id)]?.note ?? ''
       }))
-      const res = await window.api.stockOpening.save(payload, asOf)
+      // The fingerprint this page loaded with. If the openings have moved
+      // since — somebody else saved, or a batch drew a vessel — the save is
+      // refused rather than overwriting figures this screen never saw.
+      const res = await window.api.stockOpening.save(payload, asOf, undefined, String(data?.version || ''))
       toast.success(
         `Opening stock saved — ${res.saved} ${res.saved === 1 ? 'product' : 'products'}` +
           (res.cleared ? `, ${res.cleared} cleared` : '')
@@ -2670,6 +2673,7 @@ function OpeningStock({
       </p>
 
       <PpBreakdown
+        version={String(data?.version || '')}
         product={ppRow}
         open={!!ppRow}
         onOpenChange={(o) => !o && setPpRow(null)}
