@@ -1,8 +1,35 @@
+import { useEffect, useState } from 'react'
 import { PageHeader } from '@/components/PageHeader'
 import { EntityManager, type ColumnDef, type FieldDef } from '@/components/EntityManager'
 import { loadUser } from '@/lib/session'
 import { canWrite } from '@/lib/modules'
 import { useCategories } from '@/lib/useCategories'
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type Row = Record<string, any>
+
+// A friendlier label for the units every mill actually reaches for. Anything
+// in the shared `uoms` master without an entry here still shows — just under
+// its own name, the same as a UOM typed fresh on a bargain line.
+const UOM_LABELS: Record<string, string> = {
+  MT: 'MT — weighed',
+  PCS: 'PCS — counted',
+  KG: 'KG — kilograms',
+  GM: 'GM — grams',
+  QTL: 'QTL — quintal',
+  LTR: 'LTR — litres',
+  ML: 'ML — millilitres',
+  NOS: 'NOS — numbers',
+  BOX: 'BOX — boxes',
+  BAG: 'BAG — bags',
+  ROLL: 'ROLL — rolls',
+  MTR: 'MTR — metres',
+  SET: 'SET — sets',
+  DOZEN: 'DOZEN — dozens',
+  PACKET: 'PACKET — packets',
+  DRUM: 'DRUM — drums',
+  BALE: 'BALE — bales'
+}
 
 const baseFields: FieldDef[] = [
   { key: 'name', label: 'Name', type: 'text', required: true, placeholder: 'CPO' },
@@ -22,20 +49,26 @@ const baseFields: FieldDef[] = [
       { value: 'waste', label: 'Waste' }
     ]
   },
-  // How this product is counted. MT for anything weighed — which is
-  // everything the mill refines and packs — and PCS for an item that comes in
-  // countable units, like a carton. A PCS product is not offered as a
-  // production output: a recipe yields tonnes, and a carton is not made on the
-  // refining line.
+  // How this product is counted. MT for anything weighed on the tonnage
+  // scale — which is everything the mill refines and packs — and PCS for an
+  // item that comes in countable units, like a carton. A PCS product is not
+  // offered as a production output: a recipe yields tonnes, and a carton is
+  // not made on the refining line.
+  //
+  // Only MT and PCS carry that special handling elsewhere (stock totals,
+  // production outputs). Every other unit below is a label only, for a
+  // product — packaging film, spares, stationery — that is never carried on
+  // the tonnage stock register or made on the line, so widening this list
+  // does not touch that logic. Options are seeded from UOM_LABELS below and
+  // topped up with the shared `uoms` master at render time (see Products()),
+  // the same list Bargains/Sales/Gate Entry's own UOM picker reads — so a
+  // unit typed in on a bargain line shows up here too, and vice versa.
   {
     key: 'uom',
     label: 'Measuring unit',
-    type: 'select',
+    type: 'searchable',
     default: 'MT',
-    options: [
-      { value: 'MT', label: 'MT — weighed' },
-      { value: 'PCS', label: 'PCS — counted' }
-    ]
+    options: []
   },
   { key: 'active', label: 'Active', type: 'switch', default: true },
   // Separate from Active on purpose. Inactive takes a product out of the
@@ -91,11 +124,32 @@ const columns: ColumnDef[] = [
 
 export function Products(): React.JSX.Element {
   const { categories } = useCategories()
+  // The same `uoms` master Bargains/Sales/Gate Entry's own UOM picker reads
+  // (see UomSelect) — kept in step so a unit added on either side shows up on
+  // the other, rather than this page carrying a second, separate list.
+  const [uoms, setUoms] = useState<Row[]>([])
+  useEffect(() => {
+    window.api.data
+      .list('uoms')
+      .then((list: Row[]) => setUoms(list.filter((u) => u.active)))
+      .catch(() => {})
+  }, [])
+  const uomOptions = (() => {
+    const seen = new Map<string, string>()
+    for (const [value, label] of Object.entries(UOM_LABELS)) seen.set(value, label)
+    for (const u of uoms) {
+      const v = String(u.name || '').trim().toUpperCase()
+      if (v && !seen.has(v)) seen.set(v, v)
+    }
+    return Array.from(seen.entries()).map(([value, label]) => ({ value, label }))
+  })()
   // One list, maintained on the Categories page — typing a new one here still
   // works and simply adds it to this product.
-  const fields = baseFields.map((f) =>
-    f.key === 'material_type' ? { ...f, options: categories.map((c) => ({ value: c, label: c })) } : f
-  )
+  const fields = baseFields.map((f) => {
+    if (f.key === 'material_type') return { ...f, options: categories.map((c) => ({ value: c, label: c })) }
+    if (f.key === 'uom') return { ...f, options: uomOptions }
+    return f
+  })
   return (
     <>
       <PageHeader title="Products" subtitle="Raw oils, intermediates and finished products" hint="The master catalog. Raw oils are bought via bargains; intermediates and finished goods are built from formulations and tracked in stock. The measuring unit says how a product is counted — MT for anything weighed, PCS for a countable item like a carton; only MT products can be a production output. Used for both offers a product on the purchase AND the sales side whatever its sub-category says — for something the mill trades rather than refines; it does not change where the product sits in stock." />

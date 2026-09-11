@@ -656,7 +656,14 @@ function StockTable({ rows: allRows, breakdown, label = 'stock', range, onRange,
   )
   const idleCount = useMemo(() => allRows.filter(isIdle).length, [allRows, isIdle])
   const rows = useMemo(() => (hideIdle ? allRows.filter((r) => !isIdle(r)) : allRows), [allRows, hideIdle, isIdle])
-  const sum = (k: string): number => rows.reduce((s, r) => s + (Number(r[k]) || 0), 0)
+  // The footer row is one figure across every category section on the sheet,
+  // so only a product actually counted on the tonnage scale may add to it —
+  // summing a KG or PCS product's real quantity in here is the same "counted
+  // as MT" mistake the per-row uom column exists to prevent. Each row still
+  // shows its own figure in its own unit above the footer; this just keeps
+  // that figure out of the one number that has to stay tonnes.
+  const sum = (k: string): number =>
+    rows.reduce((s, r) => (String(r.uom || 'MT').toUpperCase() === 'MT' ? s + (Number(r[k]) || 0) : s), 0)
   const totals = {
     opening: sum('opening'),
     // The correction inside that opening, totalled separately so the footer
@@ -1783,10 +1790,18 @@ function OpeningStock({
       const d = draft[id]
       if (answeredOf(id)) {
         entered++
-        value += openingOf(id) * (Number(d?.rate) || 0)
-        raw += Number(d?.qty) || 0
-        pp += Number(d?.pp) || 0
-        adj += Number(d?.adj) || 0
+        // "Opens at ... MT" is one figure for every product on the sheet, so
+        // only a product actually counted on the tonnage scale may add to it
+        // — a KG or PCS product's quantity is real, but it is not tonnes, and
+        // summing it in here is exactly the "PCS logged as MT" mistake this
+        // sheet's own uom column exists to prevent. Its own row still shows
+        // its own figure in its own unit; it just does not fold into this one.
+        if (String(r.uom || 'MT').toUpperCase() === 'MT') {
+          value += openingOf(id) * (Number(d?.rate) || 0)
+          raw += Number(d?.qty) || 0
+          pp += Number(d?.pp) || 0
+          adj += Number(d?.adj) || 0
+        }
       }
       if (projected(r) < -0.0005) stillShort++
     }

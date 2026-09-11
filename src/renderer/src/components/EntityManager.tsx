@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { toast } from 'sonner'
-import { AlertCircle, Check, CheckCircle2, Pencil, Plus, Trash2, XCircle } from 'lucide-react'
+import { AlertCircle, Check, CheckCircle2, ChevronsUpDown, Pencil, Plus, Trash2, XCircle } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
@@ -28,6 +28,8 @@ import {
   SelectTrigger,
   SelectValue
 } from '@/components/ui/select'
+import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
+import { Command, CommandEmpty, CommandInput, CommandItem, CommandList } from '@/components/ui/command'
 import { cn } from '@/lib/utils'
 import { useLiveRefresh } from '@/lib/useLiveRefresh'
 import { ExcelButton } from '@/components/ExcelButton'
@@ -36,7 +38,16 @@ import { Pagination, usePaged } from '@/components/Pagination'
 import { ColumnFilter } from '@/components/ui/column-filter'
 import { useIsMobile } from '@/lib/useIsMobile'
 
-export type FieldType = 'text' | 'number' | 'switch' | 'select' | 'date' | 'creatable' | 'color' | 'computed'
+export type FieldType =
+  | 'text'
+  | 'number'
+  | 'switch'
+  | 'select'
+  | 'searchable'
+  | 'date'
+  | 'creatable'
+  | 'color'
+  | 'computed'
 export type ColumnType = FieldType
 
 // Chip colours for the values a master list's select column actually carries.
@@ -222,6 +233,10 @@ export function EntityManager({
   // value already used by an existing record, plus anything added this session.
   const [addedOptions, setAddedOptions] = useState<Record<string, string[]>>({})
   const [newOption, setNewOption] = useState<Record<string, string>>({})
+  // Open state and typed query for a 'searchable' field's popover, keyed by
+  // field so several such fields on one form don't share a dropdown.
+  const [searchOpen, setSearchOpen] = useState<Record<string, boolean>>({})
+  const [searchQuery, setSearchQuery] = useState<Record<string, string>>({})
   function optionsFor(fd: FieldDef): { value: string; label: string }[] {
     const seen = new Map<string, string>()
     for (const o of fd.options ?? []) seen.set(o.value, o.label)
@@ -952,6 +967,65 @@ export function EntityManager({
                           <Plus className="h-4 w-4" />
                         </Button>
                       </div>
+                    </>
+                  ) : fd.type === 'searchable' ? (
+                    <>
+                      <Label>
+                        {fd.label}
+                        {fd.required ? ' *' : ''}
+                      </Label>
+                      <Popover
+                        open={!!searchOpen[fd.key]}
+                        onOpenChange={(o) => {
+                          setSearchOpen((p) => ({ ...p, [fd.key]: o }))
+                          if (!o) setSearchQuery((p) => ({ ...p, [fd.key]: '' }))
+                        }}
+                      >
+                        <PopoverTrigger asChild>
+                          <Button
+                            type="button"
+                            variant="outline"
+                            disabled={fieldDisabled}
+                            className="h-9 w-full justify-between font-normal"
+                          >
+                            <span className={cn('truncate text-left', !form[fd.key] && 'text-muted-foreground')}>
+                              {(fd.options ?? []).find((o) => o.value === String(form[fd.key] ?? ''))?.label ||
+                                `Select ${fd.label.toLowerCase()}`}
+                            </span>
+                            <ChevronsUpDown className="h-3.5 w-3.5 shrink-0 opacity-50" />
+                          </Button>
+                        </PopoverTrigger>
+                        <PopoverContent align="start" className="w-[--radix-popover-trigger-width] p-0">
+                          <Command>
+                            <CommandInput
+                              placeholder={`Search ${fd.label.toLowerCase()}…`}
+                              value={searchQuery[fd.key] ?? ''}
+                              onValueChange={(v) => setSearchQuery((p) => ({ ...p, [fd.key]: v }))}
+                            />
+                            <CommandList className="max-h-64">
+                              <CommandEmpty>No match.</CommandEmpty>
+                              {(fd.options ?? []).map((o) => (
+                                <CommandItem
+                                  key={o.value}
+                                  value={o.label}
+                                  onSelect={() => {
+                                    setField(fd.key, o.value)
+                                    setSearchOpen((p) => ({ ...p, [fd.key]: false }))
+                                  }}
+                                >
+                                  <Check
+                                    className={cn(
+                                      'h-3.5 w-3.5',
+                                      String(form[fd.key] ?? '') === o.value ? 'opacity-100' : 'opacity-0'
+                                    )}
+                                  />
+                                  {o.label}
+                                </CommandItem>
+                              ))}
+                            </CommandList>
+                          </Command>
+                        </PopoverContent>
+                      </Popover>
                     </>
                   ) : fd.type === 'select' ? (
                     <>
