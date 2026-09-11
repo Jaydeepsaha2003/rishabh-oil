@@ -8281,20 +8281,26 @@ async function stockLevels(range, companyIds) {
   };
   const openingBalance = async () => {
     const args = fid ? [fid] : [...cidList];
-    if (fid && !whole) return /* @__PURE__ */ new Map();
+    if (fid && !whole) return { total: /* @__PURE__ */ new Map(), adj: /* @__PURE__ */ new Map() };
     let sql = fid ? `SELECT product_id AS pid,
-                SUM(qty + COALESCE(pp_qty, 0) + COALESCE(adj_qty, 0)) AS q
+                SUM(qty + COALESCE(pp_qty, 0) + COALESCE(adj_qty, 0)) AS q,
+                SUM(COALESCE(adj_qty, 0)) AS a
            FROM stock_openings WHERE factory_id = ?` : `SELECT product_id AS pid,
-                SUM(qty + COALESCE(pp_qty, 0) + COALESCE(adj_qty, 0)) AS q
+                SUM(qty + COALESCE(pp_qty, 0) + COALESCE(adj_qty, 0)) AS q,
+                SUM(COALESCE(adj_qty, 0)) AS a
            FROM stock_openings WHERE company_id IN (${ph})`;
     if (to) {
       sql += " AND as_of <= ?";
       args.push(to);
     }
     const res = await c.execute({ sql: `${sql} GROUP BY product_id`, args });
-    const m = /* @__PURE__ */ new Map();
-    for (const r of res.rows) m.set(Number(r.pid), Number(r.q) || 0);
-    return m;
+    const total = /* @__PURE__ */ new Map();
+    const adj = /* @__PURE__ */ new Map();
+    for (const r of res.rows) {
+      total.set(Number(r.pid), Number(r.q) || 0);
+      adj.set(Number(r.pid), Number(r.a) || 0);
+    }
+    return { total, adj };
   };
   const keys = Object.keys(SOURCES);
   const [products, brought, ...maps] = await Promise.all([
@@ -8322,7 +8328,9 @@ async function stockLevels(range, companyIds) {
   return products.rows.map((p) => {
     const id = Number(p.id);
     const g = (m, k) => m[k].get(id) || 0;
-    const open = (brought.get(id) || 0) + g(opening, "received") + g(opening, "produced") + g(opening, "byProduct") + g(opening, "transferredIn") - g(opening, "consumed") - g(opening, "sold") - g(opening, "transferredOut") - g(opening, "packedOut") + g(opening, "returnedIn") - g(opening, "returnedOut");
+    const open = (brought.total.get(id) || 0) + g(opening, "received") + g(opening, "produced") + g(opening, "byProduct") + g(opening, "transferredIn") - g(opening, "consumed") - g(opening, "sold") - g(opening, "transferredOut") - g(opening, "packedOut") + g(opening, "returnedIn") - g(opening, "returnedOut");
+    const adjPortion = brought.adj.get(id) || 0;
+    const openingShown = Math.round((open - adjPortion) * 1e3) / 1e3;
     const rec = g(period, "received") - g(period, "returnedOut");
     const prod = g(period, "produced") + g(period, "byProduct");
     const cons = g(period, "consumed");
@@ -8340,10 +8348,18 @@ async function stockLevels(range, companyIds) {
       // a countable item like a carton — and the two must never be added.
       uom: String(p.uom || "MT"),
       active: p.active,
-      opening: open,
-      // The part of the opening that was entered as stock brought forward,
-      // rather than derived from movements before the range.
-      opening_brought: brought.get(id) || 0,
+      // Raw + PP only — see openingShown above. The adjustment is its own
+      // column now, so it is held out here rather than folded silently in.
+      opening: openingShown,
+      // The Raw + PP part of what was entered as stock brought forward,
+      // rather than derived from movements before the range — kept on the
+      // same footing as `opening` above so "Brought forward" + "Moved before
+      // this period" still adds up to it on the hover.
+      opening_brought: Math.round(((brought.total.get(id) || 0) - adjPortion) * 1e3) / 1e3,
+      // The correction struck on the count — the difference between what the
+      // dip said and what the card said, rather than oil anybody measured.
+      // Its own column; no longer folded into `opening` above.
+      opening_adj: adjPortion,
       received: rec,
       produced: prod,
       // Shown beside Produced as the +N -N it is, never added to it. Nothing
@@ -8354,6 +8370,9 @@ async function stockLevels(range, companyIds) {
       transferred_in: tIn,
       transferred_out: tOut,
       packed_out: packed,
+      // Still built off the FULL `open` (Raw + PP + adjustment), so Closing
+      // reconciles to the books regardless of how Opening is broken out on
+      // screen — the adjustment has not gone anywhere, it is just labelled.
       stock: open + rec + prod + tIn - cons - sld - tOut - packed
     };
   });
@@ -14457,6 +14476,33 @@ async function deleteFormulationSubcategory(id) {
 // src/main/work.ts
 init_db();
 init_company();
+
+// src/renderer/src/lib/userRights.ts
+function parsePerms(value) {
+  if (!value) return {};
+  if (Array.isArray(value)) {
+    const out = {};
+    for (const k of value) out[String(k)] = "write";
+    return out;
+  }
+  if (typeof value === "object") return { ...value };
+  try {
+    const p = JSON.parse(String(value));
+    if (Array.isArray(p)) {
+      const out = {};
+      for (const k of p) out[String(k)] = "write";
+      return out;
+    }
+    return p && typeof p === "object" ? p : {};
+  } catch {
+    return {};
+  }
+}
+function hasWorkAccess(perms) {
+  return (perms || {}).workAssignments !== false;
+}
+
+// src/main/work.ts
 var n15 = (v) => Number.isFinite(Number(v)) ? Number(v) : 0;
 var s = (v) => v == null ? "" : String(v);
 async function plain2(sql, args = []) {
@@ -14613,29 +14659,36 @@ async function ensureDay(date) {
     }
   }
 }
-async function listWorkBoard(date) {
+async function listWorkBoard(date, viewerId) {
   const day = dayOf(date);
   await ensureDay(day);
   const cid = getActiveCompanyId();
   const fid = await factoryOfCompanies([cid]);
   const scope = fid ? await companiesOfFactory(fid) : [cid];
   const ph = scope.map(() => "?").join(", ");
+  const vid = n15(viewerId);
+  const viewerRow = vid ? (await plain2("SELECT role FROM users WHERE id = ?", [vid]))[0] : null;
+  const viewerIsAdmin = !vid || !viewerRow || s(viewerRow.role) === "admin";
   const [users, tasks, notes, cutoff] = await Promise.all([
+    // Fetched in full regardless of who is asking — needed to resolve names
+    // on notes and tasks (an admin's send-back note on a non-admin's own task
+    // still needs the admin's name), and trimmed to what is actually RETURNED
+    // further down.
     plain2("SELECT id, username, full_name, role, active, permissions FROM users ORDER BY id"),
     plain2(
       `SELECT * FROM work_tasks
-        WHERE work_date = ? AND (${fid ? "factory_id = ?" : `company_id IN (${ph})`})
+        WHERE work_date = ? AND (${fid ? "factory_id = ?" : `company_id IN (${ph})`})${viewerIsAdmin ? "" : " AND user_id = ?"}
         ORDER BY user_id, module, id`,
-      fid ? [day, fid] : [day, ...scope]
+      viewerIsAdmin ? fid ? [day, fid] : [day, ...scope] : fid ? [day, fid, vid] : [day, ...scope, vid]
     ),
     plain2(
       `SELECT wn.*, u.full_name, u.username
          FROM work_notes wn
          JOIN work_tasks wt ON wt.id = wn.task_id
          LEFT JOIN users u ON u.id = wn.user_id
-        WHERE wt.work_date = ?
+        WHERE wt.work_date = ?${viewerIsAdmin ? "" : " AND wt.user_id = ?"}
         ORDER BY wn.id`,
-      [day]
+      viewerIsAdmin ? [day] : [day, vid]
     ),
     workCutoff()
   ]);
@@ -14659,7 +14712,11 @@ async function listWorkBoard(date) {
     date: day,
     cutoff,
     now: clockOf(localStamp()),
-    users: users.map((u) => ({
+    // Roster exposed to the client: the whole active login list for an admin
+    // (Team progress and the Assign dialog both need it), just the asking
+    // login's own row otherwise — enough for My work, and nothing about
+    // anybody else's grants.
+    users: (viewerIsAdmin ? users : users.filter((u) => n15(u.id) === vid)).map((u) => ({
       id: n15(u.id),
       name: s(u.full_name) || s(u.username),
       username: s(u.username),
@@ -14696,9 +14753,15 @@ async function loadTask(taskId) {
   return r[0];
 }
 async function loadUser(userId) {
-  const r = await plain2("SELECT id, username, full_name, role FROM users WHERE id = ?", [n15(userId)]);
+  const r = await plain2("SELECT id, username, full_name, role, permissions FROM users WHERE id = ?", [n15(userId)]);
   if (!r[0]) throw new Error("Who is making this change?");
   return r[0];
+}
+function assertWorkAccess(u) {
+  if (s(u.role) === "admin") return;
+  if (!hasWorkAccess(parsePerms(u.permissions))) {
+    throw new Error("Work Assignments access has been switched off for this login \u2014 ask an admin to turn it back on.");
+  }
 }
 async function say(taskId, user, text, kind) {
   const t = s(text).trim();
@@ -14724,6 +14787,7 @@ async function tell(toUserId, title, body2, severity, tag) {
 async function tickWorkTask(taskId, userId) {
   const t = await loadTask(taskId);
   const u = await loadUser(userId);
+  assertWorkAccess(u);
   if (n15(t.user_id) !== n15(u.id)) throw new Error("That task belongs to somebody else");
   if (s(t.state) !== "pending") throw new Error(`This task is already ${s(t.state)}`);
   await getClient().execute({
@@ -14735,6 +14799,7 @@ async function tickWorkTask(taskId, userId) {
 async function redoWorkTask(taskId, userId) {
   const t = await loadTask(taskId);
   const u = await loadUser(userId);
+  assertWorkAccess(u);
   if (n15(t.user_id) !== n15(u.id)) throw new Error("That task belongs to somebody else");
   if (s(t.state) !== "fixes") throw new Error("Only a task sent back for fixes can be marked redone");
   await getClient().execute({
@@ -14806,6 +14871,7 @@ async function addWorkNote(taskId, userId, text) {
   if (!body2) throw new Error("Nothing to say");
   const owner = n15(t.user_id) === n15(u.id);
   if (!owner && s(u.role) !== "admin") throw new Error("That task belongs to somebody else");
+  if (owner) assertWorkAccess(u);
   await say(n15(taskId), u, body2, "note");
   const who = s(u.full_name) || s(u.username);
   if (owner) {
@@ -19965,7 +20031,10 @@ function registerIpc() {
     "stockOpening:savePp",
     (_e, { productId, lines, companyId }) => savePpLines(productId, lines, companyId)
   );
-  handle("work:board", (_e, { date } = {}) => listWorkBoard(date));
+  handle(
+    "work:board",
+    (_e, { date, userId } = {}) => listWorkBoard(date, userId)
+  );
   handle("work:cutoff", () => workCutoff());
   handle("work:setCutoff", (_e, { cutoff }) => setWorkCutoff(cutoff));
   handle("work:processes", () => listWorkProcesses());
