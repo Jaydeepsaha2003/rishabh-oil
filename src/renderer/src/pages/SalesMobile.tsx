@@ -108,6 +108,8 @@ type Invoice = {
   customerId: number | null
   lines: Row[]
   qty: number
+  // Pre-rendered per unit, e.g. "18.289 MT" or "30 MT · 162 PCS".
+  qtyLabel: string
   total: number
   itemsLabel: string
   itemCount: number
@@ -130,6 +132,19 @@ function groupInvoices(rows: Row[]): Invoice[] {
   for (const [key, lines] of map) {
     const first = lines[0]
     const qty = lines.reduce((a, l) => a + n(l.qty), 0)
+    // The unit each line is actually in. A carton is not a tonne, so an
+    // invoice carrying both has no single quantity — `qty` stays for the one
+    // place that wants one number (the register total), and anything naming a
+    // unit reads this instead of assuming MT.
+    const byUom = new Map<string, number>()
+    for (const l of lines) {
+      const u = s(l.uom || 'MT').toUpperCase()
+      byUom.set(u, (byUom.get(u) || 0) + n(l.qty))
+    }
+    const qtyLabel = [...byUom.entries()]
+      .sort((a, b) => b[1] - a[1])
+      .map(([u, q]) => `${fmtQty(q)} ${u}`)
+      .join(' · ')
     const total = lines.reduce((a, l) => a + n(l.amount) + n(l.gst_amount) + n(l.round_off) - n(l.tds_amount), 0)
     const items = lines.map((l) => s(l.product_name)).filter(Boolean)
     out.push({
@@ -141,6 +156,7 @@ function groupInvoices(rows: Row[]): Invoice[] {
       customerId: first.customer_id ? n(first.customer_id) : null,
       lines,
       qty,
+      qtyLabel,
       total,
       itemsLabel: items.join(', '),
       itemCount: lines.length,
@@ -387,7 +403,10 @@ function ListScreen(props: {
         <div style={{ display: 'flex', gap: 8, marginTop: 11 }}>
           {[
             { k: 'Invoices', v: String(totals.count), lime: false },
-            { k: 'Quantity', v: `${fmtQty(totals.qty)} MT`, lime: false },
+            // Unlabelled on purpose: this adds every invoice in view and they
+            // are not all in one unit, so no single unit is true of it. Same
+            // rule as the desktop register's total.
+            { k: 'Quantity', v: fmtQty(totals.qty), lime: false },
             { k: 'Value', v: fmtINRShort(totals.value), lime: true }
           ].map((c) => (
             <div
@@ -659,7 +678,7 @@ function InvoiceCard({ r, onOpen }: { r: Invoice; onOpen: () => void }): React.J
       >
         <div style={{ display: 'flex', alignItems: 'center', gap: 5, flexWrap: 'wrap' }}>
           <span style={{ fontSize: 11, fontWeight: 700, background: T.chipFill, color: '#33473E', borderRadius: 2, padding: '4px 6px', ...mono }}>
-            QTY {fmtQty(r.qty)}
+            QTY {r.qtyLabel}
           </span>
           <span style={{ fontSize: 11, fontWeight: 800, background: T.chipFill, color: '#33473E', borderRadius: 2, padding: '4px 6px', letterSpacing: '.05em' }}>
             {r.freightTerm}
@@ -794,7 +813,7 @@ function DetailScreen({
         {/* Three cards, same set the desktop drawer shows. */}
         <div style={{ display: 'flex', gap: 7 }}>
           {[
-            { k: 'Qty', v: fmtQty(inv.qty) },
+            { k: 'Qty', v: inv.qtyLabel },
             { k: 'Freight', v: inv.freightTerm },
             { k: 'Items', v: `${inv.itemCount} item${inv.itemCount > 1 ? 's' : ''}` }
           ].map((st) => (

@@ -611,13 +611,13 @@ function SalesTab({
       {
         key: 'qty',
         label: 'Qty',
-        // Units here too — a column of bare numbers taken off this screen is
-        // read away from it, where the unit cannot be guessed back.
+        // What this column FILTERS on is the unit, not the quantity. A funnel
+        // offering 149 distinct quantities is a list nobody can use — one
+        // offering MT / PCS / KG answers the question actually asked of a
+        // mixed register: show me only the tonnage, or only the piece counts.
+        // The cell still prints the figures; this is the filter key alone.
         of: (inv) =>
-          [...(inv.qtyByUom as Map<string, number>).entries()]
-            .sort((a, b) => b[1] - a[1])
-            .map(([u, q]) => `${formatNum(q)} ${u}`)
-            .join(' · ') || formatNum(0)
+          [...(inv.qtyByUom as Map<string, number>).keys()].sort().join(' · ') || 'MT'
       },
       { key: 'net', label: 'Invoice total', of: (inv) => formatINR(inv.net) },
       {
@@ -1839,23 +1839,33 @@ function SalesTab({
                     tonnage that was 162 too high the moment one PCS item was
                     invoiced. Reads as one figure while the book is all MT,
                     which is nearly always. */}
-                <TableCell className={cn('text-right font-semibold tabular-nums', totalTextClass, __WEB__ && 'text-[14.5px] font-bold')}>
-                  {(() => {
+                {/* One plain figure, deliberately unlabelled. Three unit
+                    groups side by side (11,179.44 MT · 2,297.18 PCS · 526.04
+                    KG) crowded the cell and still answered no question anyone
+                    asks of a total row. The unit belongs on the ROWS, where it
+                    is true, and on the Qty funnel, which narrows the register
+                    to one unit when a single-unit total is what is wanted. */}
+                <TableCell
+                  className={cn('text-right font-semibold tabular-nums', totalTextClass, __WEB__ && 'text-[14.5px] font-bold')}
+                  title={(() => {
                     const by = new Map<string, number>()
                     for (const inv of filteredInvoices)
                       for (const r of inv.lines) {
                         const u = String(r.uom || 'MT').toUpperCase()
                         by.set(u, (by.get(u) || 0) + (Number(r.qty) || 0))
                       }
-                    const parts = [...by.entries()].sort((a, b) => b[1] - a[1])
-                    if (!parts.length) return formatNum(0)
-                    return parts.map(([u, q]) => (
-                      <span key={u} className="ml-2 whitespace-nowrap first:ml-0">
-                        {formatNum(q)}
-                        <span className="ml-1 text-[10.5px] font-semibold opacity-70">{u}</span>
-                      </span>
-                    ))
+                    return [...by.entries()]
+                      .sort((a, b) => b[1] - a[1])
+                      .map(([u, q]) => `${formatNum(q)} ${u}`)
+                      .join(' · ')
                   })()}
+                >
+                  {formatNum(
+                    filteredInvoices.reduce(
+                      (t, inv) => t + inv.lines.reduce((s2, r) => s2 + (Number(r.qty) || 0), 0),
+                      0
+                    )
+                  )}
                 </TableCell>
                 <TableCell className={cn('text-right font-semibold tabular-nums', totalTextClass, __WEB__ && 'text-[15px] font-bold tracking-[-0.02em]')}>
                   {formatINR(filteredInvoices.reduce((t, inv) => t + (Number(inv.net) || 0), 0))}
