@@ -14535,7 +14535,9 @@ async function workCutoff() {
   const v = s(r[0]?.value).trim();
   return /^\d{2}:\d{2}$/.test(v) ? v : CUTOFF_DEFAULT;
 }
-async function setWorkCutoff(hhmm) {
+async function setWorkCutoff(hhmm, adminId) {
+  const a = await loadUser(n15(adminId));
+  if (s(a.role) !== "admin") throw new Error("Only an admin can change the cut-off");
   const v = s(hhmm).trim();
   if (!/^\d{2}:\d{2}$/.test(v)) throw new Error("Give the cut-off as HH:MM");
   await getClient().execute({
@@ -15974,6 +15976,7 @@ async function saveSkuOpenings(rows, asOf, companyId) {
 async function listSkuAdjustments(packagingId) {
   const pid = n19(packagingId);
   if (!pid) return [];
+  const packQty = "pk.base_per_pouch * MAX(1, COALESCE(pk.pouches_per_box, 1))";
   const MT = `
     CASE
       WHEN COALESCE(pk.unit_size, 0) > 0 THEN
@@ -15989,14 +15992,14 @@ async function listSkuAdjustments(packagingId) {
         END
       ELSE
         CASE UPPER(COALESCE(pk.base_uom, 'KG'))
-          WHEN 'GM' THEN pk.base_per_pouch / 1000.0
-          WHEN 'G' THEN pk.base_per_pouch / 1000.0
-          WHEN 'ML' THEN pk.base_per_pouch / 1000.0
-          WHEN 'QUINTAL' THEN pk.base_per_pouch * 100.0
-          WHEN 'MT' THEN pk.base_per_pouch * 1000.0
-          WHEN 'TON' THEN pk.base_per_pouch * 1000.0
-          WHEN 'KL' THEN pk.base_per_pouch * 1000.0
-          ELSE pk.base_per_pouch
+          WHEN 'GM' THEN (${packQty}) / 1000.0
+          WHEN 'G' THEN (${packQty}) / 1000.0
+          WHEN 'ML' THEN (${packQty}) / 1000.0
+          WHEN 'QUINTAL' THEN (${packQty}) * 100.0
+          WHEN 'MT' THEN (${packQty}) * 1000.0
+          WHEN 'TON' THEN (${packQty}) * 1000.0
+          WHEN 'KL' THEN (${packQty}) * 1000.0
+          ELSE (${packQty})
         END
     END / 1000.0`;
   const res = await getClient().execute({
@@ -20036,7 +20039,10 @@ function registerIpc() {
     (_e, { date, userId } = {}) => listWorkBoard(date, userId)
   );
   handle("work:cutoff", () => workCutoff());
-  handle("work:setCutoff", (_e, { cutoff }) => setWorkCutoff(cutoff));
+  handle(
+    "work:setCutoff",
+    (_e, { cutoff, userId }) => setWorkCutoff(cutoff, userId)
+  );
   handle("work:processes", () => listWorkProcesses());
   handle("work:saveProcess", (_e, { values }) => saveWorkProcess(values));
   handle("work:removeProcess", (_e, { id }) => removeWorkProcess(id));
