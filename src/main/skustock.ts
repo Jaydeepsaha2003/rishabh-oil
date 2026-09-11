@@ -19,6 +19,29 @@ function n(v: unknown): number {
   return Number.isFinite(x) ? x : 0
 }
 
+// A dispatch, COUNTED IN THE UNIT THE SKU IS ENTERED IN.
+//
+// A sale stores boxes (cases) and loose pouches, so boxes x pouches_per_box +
+// pouches gives the pouch count -- right for the SKUs that ARE logged a pouch,
+// jar, tin or bottle at a time. It is wrong for a Box-type SKU, which is
+// counted a CASE at a time: VPATI DALDA 1 LTR X20P is entered, opened and
+// valued in cases of 17.86 KG, so an invoice for 1,024 cases has to read as
+// 1,024 against it, not as its 20,480 pouches.
+//
+// Both units were live in the same column at once. The opening was in cases
+// and the dispatch in pouches, then BOTH were valued at the case weight -- so
+// one invoice for 1,024 cases showed 20,480 dispatched and 708.685 MT against
+// a true 35.434 MT, twenty times over, and drove the closing balance deeply
+// negative. Dividing by the same multiplier the tonnage uses puts the count
+// back in the SKU's own unit and leaves the tonnage (count x case weight)
+// exactly where it was.
+//
+// `* 1.0` because SQLite divides integers into integers: without it a part
+// case would silently floor away.
+const SOLD_UNITS =
+  "(s.boxes * pk.pouches_per_box + s.pouches) * 1.0 / " +
+  "(CASE WHEN UPPER(TRIM(COALESCE(pk.pouch_label, ''))) = 'BOX' THEN MAX(1, COALESCE(pk.pouches_per_box, 1)) ELSE 1 END)"
+
 // A period, however it was asked for.
 //
 // A single date is just the period from that day to that day, so the day sheet
@@ -167,21 +190,21 @@ export async function listSkuStock(when?: SkuWhen): Promise<Row[]> {
            COALESCE((SELECT SUM(delta) FROM sku_adjustments
                      WHERE packaging_id = pk.id AND company_id IN (${cph})
                        ${sinceAdj}), 0) AS added,
-           COALESCE((SELECT SUM(s.boxes * pk.pouches_per_box + s.pouches) FROM sales s
+           COALESCE((SELECT SUM(${SOLD_UNITS}) FROM sales s
                      WHERE s.packaging_id = pk.id AND s.sale_type = 'PACKED'
                        AND s.status = 'done' AND s.company_id IN (${cph})
                        ${sinceSale}), 0) AS sold,
            COALESCE((SELECT SUM(delta) FROM sku_adjustments
                      WHERE packaging_id = pk.id AND company_id IN (${cph})
                        ${beforeAdj}), 0) AS added_before,
-           COALESCE((SELECT SUM(s.boxes * pk.pouches_per_box + s.pouches) FROM sales s
+           COALESCE((SELECT SUM(${SOLD_UNITS}) FROM sales s
                      WHERE s.packaging_id = pk.id AND s.sale_type = 'PACKED'
                        AND s.status = 'done' AND s.company_id IN (${cph})
                        ${beforeSale}), 0) AS sold_before,
            COALESCE((SELECT SUM(delta) FROM sku_adjustments
                      WHERE packaging_id = pk.id AND company_id IN (${cph})
                        ${withinAdj}), 0) AS added_on,
-           COALESCE((SELECT SUM(s.boxes * pk.pouches_per_box + s.pouches) FROM sales s
+           COALESCE((SELECT SUM(${SOLD_UNITS}) FROM sales s
                      WHERE s.packaging_id = pk.id AND s.sale_type = 'PACKED'
                        AND s.status = 'done' AND s.company_id IN (${cph})
                        ${withinSale}), 0) AS sold_on
@@ -247,7 +270,7 @@ async function negativeRuns(cids: number[], upto: string | null): Promise<Map<nu
        GROUP BY packaging_id, d
       UNION ALL
       SELECT s.packaging_id, substr(s.sale_date, 1, 10), 0,
-             SUM(s.boxes * pk.pouches_per_box + s.pouches)
+             SUM(${SOLD_UNITS})
         FROM sales s JOIN packagings pk ON pk.id = s.packaging_id
        WHERE s.sale_type = 'PACKED' AND s.status = 'done' AND s.company_id IN (${cph})
          AND (? IS NULL OR substr(s.sale_date, 1, 10) <= ?)
@@ -333,7 +356,7 @@ export async function skuMovementBreakdown(when?: SkuWhen): Promise<Row[]> {
   // Dispatches, by SKU and by customer. Pieces are boxes x per-box + loose.
   const disp = await c.execute({
     sql: `SELECT s.packaging_id AS sku, s.invoice_no, s.sale_date, s.customer,
-                 SUM(s.boxes * pk.pouches_per_box + s.pouches) AS pieces, SUM(s.boxes) AS boxes
+                 SUM(${SOLD_UNITS}) AS pieces, SUM(s.boxes) AS boxes
           FROM sales s JOIN packagings pk ON pk.id = s.packaging_id
           WHERE s.sale_type = 'PACKED' AND s.status = 'done' AND s.company_id IN (${cph})
             ${dispB.sql}
@@ -408,7 +431,7 @@ export async function listSkuOpenings(companyId?: number, asOfIn?: string): Prom
                  COALESCE((SELECT SUM(a.delta) FROM sku_adjustments a
                            WHERE a.packaging_id = pk.id AND a.company_id IN (${cphL})
                              AND (? = '' OR substr(a.adj_date, 1, 10) >= ?)), 0) AS packed_in,
-                 COALESCE((SELECT SUM(s.boxes * pk.pouches_per_box + s.pouches) FROM sales s
+                 COALESCE((SELECT SUM(${SOLD_UNITS}) FROM sales s
                            WHERE s.packaging_id = pk.id AND s.sale_type = 'PACKED'
                              AND s.status = 'done' AND s.company_id IN (${cphL})
                              AND (? = '' OR substr(s.sale_date, 1, 10) >= ?)), 0) AS dispatched

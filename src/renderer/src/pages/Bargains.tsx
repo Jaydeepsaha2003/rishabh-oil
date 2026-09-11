@@ -1668,12 +1668,14 @@ export function Bargains({
               <div
                 className={cn(
                   'relative min-w-[180px] flex-1 basis-56',
-                  // 130px let the row stay on one line by crushing the search
-                  // box until its own placeholder was cut off. Held at the
-                  // width of that placeholder instead, so a cramped screen
-                  // wraps the date group onto a second line — which reads far
-                  // better than a search field too small to read.
-                  __WEB__ && '!min-w-[13rem] !max-w-[17rem] !basis-0'
+                  // A FLOOR, not a width: the box is flex-1, so it takes
+                  // whatever the row has spare and only falls back to this when
+                  // there is nothing spare left. 13rem held the row hostage —
+                  // being the one !important minimum on the strip, no other
+                  // control could give up space while it stood, and the row
+                  // broke to a second line at widths where it did not need to.
+                  // 9rem still shows the placeholder's first few words.
+                  __WEB__ && '!min-w-[9rem] !max-w-[17rem] !basis-0'
                 )}
               >
                 <Search className="pointer-events-none absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
@@ -1694,10 +1696,21 @@ export function Bargains({
                   // The date window as one group with its own edge, so "from"
                   // and "to" are visibly two ends of one control rather than
                   // two more boxes in a row of boxes.
-                  __WEB__ && '!gap-2 !rounded-[4px] !border !border-[#DCE7DB] !bg-white !px-2.5 !py-[5px]'
+                  // The chip this group used to paint for itself — white fill
+                  // and a #DCE7DB edge — sat inside a bar with that same edge
+                  // and its own fill, while OIL / ALL COMPANIES / the search
+                  // box stood bare beside it. It read as a box within a box for
+                  // no gain the word "to" between the two dates was not already
+                  // making, and its padding cost 22px on a strip that is short
+                  // of them.
+                  __WEB__ && '!gap-2'
                 )}
               >
-                <span className={cn('text-muted-foreground', __WEB__ && '!text-[10.5px] !font-extrabold !uppercase !tracking-[.13em] !text-[#5A6B62]')}>Date</span>
+                {/* Dropped on the website: the two calendar icons beside it
+                    already say what these fields are, and the word cost 41px
+                    with its gap — enough on its own to push the strip onto a
+                    second line on a 13" screen. The desktop app keeps it. */}
+                {!__WEB__ && <span className="text-muted-foreground">Date</span>}
                 <FyPicker
                   from={dateFrom}
                   to={dateTo}
@@ -1725,7 +1738,7 @@ export function Bargains({
                   <Button
                     variant="ghost"
                     size="sm"
-                    className={cn('h-8 text-muted-foreground', __WEB__ && '!px-2.5 !font-extrabold !uppercase !tracking-[.05em] !text-[#0B6B45]')}
+                    className={cn('h-8 text-muted-foreground', __WEB__ && '!h-10 !px-2.5 !font-extrabold !uppercase !tracking-[.05em] !text-[#0B6B45]')}
                     onClick={() => { setDateFrom(''); setDateTo('') }}
                   >
                     Clear
