@@ -17193,6 +17193,7 @@ function toPlain22(res) {
   });
 }
 var n22 = (v) => Number.isFinite(Number(v)) ? Number(v) : 0;
+var MT_ONLY = (col, uom = "uom") => `SUM(CASE WHEN UPPER(COALESCE(${uom}, 'MT')) = 'MT' THEN ${col} ELSE 0 END)`;
 async function dashboardStats() {
   const c = getClient();
   const cid = getActiveCompanyId();
@@ -17213,15 +17214,15 @@ async function dashboardStats() {
     consignment,
     levels
   ] = await Promise.all([
-    q(`SELECT substr(order_date, 1, 7) AS m, SUM(taxable_value + gst_amount + round_off) AS v, SUM(ordered_qty) AS qty, COUNT(*) AS cnt
+    q(`SELECT substr(order_date, 1, 7) AS m, SUM(taxable_value + gst_amount + round_off) AS v, ${MT_ONLY("ordered_qty")} AS qty, COUNT(*) AS cnt
        FROM orders WHERE company_id = ? GROUP BY m ORDER BY m DESC LIMIT 6`),
-    q(`SELECT substr(sale_date, 1, 7) AS m, SUM(amount + gst_amount + round_off) AS v, SUM(qty) AS qty, COUNT(DISTINCT COALESCE(invoice_group, 'L' || id)) AS cnt
+    q(`SELECT substr(sale_date, 1, 7) AS m, SUM(amount + gst_amount + round_off) AS v, ${MT_ONLY("qty")} AS qty, COUNT(DISTINCT COALESCE(invoice_group, 'L' || id)) AS cnt
        FROM sales WHERE company_id = ? GROUP BY m ORDER BY m DESC LIMIT 6`),
     q(`SELECT order_date AS d, SUM(taxable_value + gst_amount + round_off) AS v
        FROM orders WHERE company_id = ? AND order_date >= date('now', '-29 days') GROUP BY d`),
     q(`SELECT sale_date AS d, SUM(amount + gst_amount + round_off) AS v
        FROM sales WHERE company_id = ? AND sale_date >= date('now', '-29 days') GROUP BY d`),
-    q(`SELECT s.name, SUM(o.taxable_value + o.gst_amount + o.round_off) AS v, SUM(o.ordered_qty) AS qty
+    q(`SELECT s.name, SUM(o.taxable_value + o.gst_amount + o.round_off) AS v, ${MT_ONLY("o.ordered_qty", "o.uom")} AS qty
        FROM orders o JOIN suppliers s ON s.id = o.supplier_id
        WHERE o.company_id = ? GROUP BY o.supplier_id ORDER BY v DESC LIMIT 5`),
     // The MASTER's name first, then the free text, and only then CASH.
@@ -17232,7 +17233,7 @@ async function dashboardStats() {
     // customer that does not exist, while the real ones were understated. The
     // supplier query beside it has always joined its master; this now matches.
     q(`SELECT COALESCE(NULLIF(TRIM(cu.name), ''), NULLIF(TRIM(s.customer), ''), 'CASH') AS name,
-              SUM(s.amount + s.gst_amount + s.round_off) AS v, SUM(s.qty) AS qty
+              SUM(s.amount + s.gst_amount + s.round_off) AS v, ${MT_ONLY("s.qty", "s.uom")} AS qty
        FROM sales s LEFT JOIN customers cu ON cu.id = s.customer_id
        WHERE s.company_id = ? GROUP BY name ORDER BY v DESC LIMIT 5`),
     q(`SELECT a.name, SUM(jl.cr) - SUM(jl.dr) AS bal
@@ -17250,10 +17251,10 @@ async function dashboardStats() {
        JOIN ledger_accounts a ON a.id = jl.account_id
        WHERE je.company_id = ? AND a.name IN ('TDS PAYABLE A/C', 'GST INPUT A/C', 'GST OUTPUT A/C')
        GROUP BY a.id`),
-    q(`SELECT COUNT(*) AS cnt, COALESCE(SUM(qty), 0) AS qty FROM bargains WHERE company_id = ? AND status != 'settled'`).catch(
+    q(`SELECT COUNT(*) AS cnt, COALESCE(${MT_ONLY("qty")}, 0) AS qty FROM bargains WHERE company_id = ? AND status != 'settled'`).catch(
       () => []
     ),
-    q(`SELECT COUNT(*) AS cnt, SUM(qty) AS qty FROM sales_bargains WHERE company_id = ? AND status != 'settled'`).catch(
+    q(`SELECT COUNT(*) AS cnt, ${MT_ONLY("qty")} AS qty FROM sales_bargains WHERE company_id = ? AND status != 'settled'`).catch(
       () => []
     ),
     q(`SELECT pt.status, COUNT(*) AS cnt FROM purchase_tankers pt
