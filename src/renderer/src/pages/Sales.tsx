@@ -220,7 +220,12 @@ function BargainSection({ title, children }: { title: string; children: React.Re
   return (
     <div>
       <div className="mb-2.5 text-[10px] font-extrabold uppercase tracking-[.14em] text-[#7C9188]">{title}</div>
-      <div className="grid grid-cols-2 gap-3.5 rounded-[4px] border border-[#D6E2D6] bg-white p-4 [&_[data-slot=date-picker]]:!h-10 [&_[data-slot=select-trigger]]:!h-10 [&_input]:!h-10 [&_label]:!text-[11.5px] [&_label]:!font-extrabold [&_label]:!text-[#33473E]">
+      {/* Squared to the theme. Every control in the app stands 40px tall in a
+          4px-radius box on a #C3D2C6 edge; these were inheriting the component
+          default — a 6px radius on the muted border — so the one dialog on the
+          page looked softer than the page it opened from. Set on the group
+          rather than on each field, so a field added later cannot miss it. */}
+      <div className="grid grid-cols-2 gap-3.5 rounded-[4px] border border-[#D6E2D6] bg-white p-4 [&_[data-slot=date-picker]]:!h-10 [&_[data-slot=date-picker]]:!rounded-[4px] [&_[data-slot=date-picker]]:!border-[#C3D2C6] [&_[data-slot=date-picker]]:!bg-white [&_[data-slot=select-trigger]]:!h-10 [&_[data-slot=select-trigger]]:!rounded-[4px] [&_[data-slot=select-trigger]]:!border-[#C3D2C6] [&_[data-slot=select-trigger]]:!bg-white [&_input]:!h-10 [&_input]:!rounded-[4px] [&_input]:!border-[#C3D2C6] [&_input]:!bg-white [&_textarea]:!rounded-[4px] [&_textarea]:!border-[#C3D2C6] [&_label]:!text-[11.5px] [&_label]:!font-extrabold [&_label]:!text-[#33473E]">
         {children}
       </div>
     </div>
@@ -263,6 +268,8 @@ function sbBar(opening: number, addition: number, adjusted: number, dispatch: nu
 // Whether a bargain belongs in the register for [from,to]: created on/before the
 // period, and either still open at period end OR finished within the period.
 // A bargain shows in the register when it still has an open balance, or when
+const SALES_SHOW_SETTLED_KEY = 'salesBargains.showSettled'
+
 // `showZero` is on — in which case the settled ones come too, regardless of
 // which period is selected.
 function inRegister(r: Row, from: string, to: string, showZero = false): boolean {
@@ -1839,34 +1846,34 @@ function SalesTab({
                     tonnage that was 162 too high the moment one PCS item was
                     invoiced. Reads as one figure while the book is all MT,
                     which is nearly always. */}
-                {/* One plain figure, deliberately unlabelled. Three unit
-                    groups side by side (11,179.44 MT · 2,297.18 PCS · 526.04
-                    KG) crowded the cell and still answered no question anyone
-                    asks of a total row. The unit belongs on the ROWS, where it
-                    is true, and on the Qty funnel, which narrows the register
-                    to one unit when a single-unit total is what is wanted. */}
-                <TableCell
-                  className={cn('text-right font-semibold tabular-nums', totalTextClass, __WEB__ && 'text-[14.5px] font-bold')}
-                  title={(() => {
-                    const by = new Map<string, number>()
-                    for (const inv of filteredInvoices)
-                      for (const r of inv.lines) {
-                        const u = String(r.uom || 'MT').toUpperCase()
-                        by.set(u, (by.get(u) || 0) + (Number(r.qty) || 0))
-                      }
-                    return [...by.entries()]
-                      .sort((a, b) => b[1] - a[1])
-                      .map(([u, q]) => `${formatNum(q)} ${u}`)
-                      .join(' · ')
-                  })()}
-                >
-                  {formatNum(
-                    filteredInvoices.reduce(
-                      (t, inv) => t + inv.lines.reduce((s2, r) => s2 + (Number(r.qty) || 0), 0),
-                      0
-                    )
-                  )}
-                </TableCell>
+                {/* Mixed units: one plain figure, deliberately unlabelled —
+                    three groups side by side (11,179.44 MT · 2,297.18 PCS ·
+                    526.04 KG) crowded the cell, and no single unit is true of
+                    a sum across units anyway. The breakdown stays on hover.
+
+                    ONE unit in view — because the register holds only that
+                    unit, or because the Qty funnel was narrowed to it — and
+                    the total says so, since then the unit IS true of it. */}
+                {(() => {
+                  const by = new Map<string, number>()
+                  for (const inv of filteredInvoices)
+                    for (const r of inv.lines) {
+                      const u = String(r.uom || 'MT').toUpperCase()
+                      by.set(u, (by.get(u) || 0) + (Number(r.qty) || 0))
+                    }
+                  const parts = [...by.entries()].sort((a, b) => b[1] - a[1])
+                  const total = parts.reduce((t, [, q]) => t + q, 0)
+                  const only = parts.length === 1 ? parts[0][0] : ''
+                  return (
+                    <TableCell
+                      className={cn('text-right font-semibold tabular-nums', totalTextClass, __WEB__ && 'text-[14.5px] font-bold')}
+                      title={parts.map(([u, q]) => `${formatNum(q)} ${u}`).join(' · ')}
+                    >
+                      {formatNum(total)}
+                      {!!only && <span className="ml-1 text-[10.5px] font-semibold opacity-70">{only}</span>}
+                    </TableCell>
+                  )
+                })()}
                 <TableCell className={cn('text-right font-semibold tabular-nums', totalTextClass, __WEB__ && 'text-[15px] font-bold tracking-[-0.02em]')}>
                   {formatINR(filteredInvoices.reduce((t, inv) => t + (Number(inv.net) || 0), 0))}
                 </TableCell>
@@ -4221,7 +4228,26 @@ function SalesBargainsTab({ onOpenSale }: { onOpenSale?: (id: number, companyId?
   // and whether to also show fully-settled (0-balance) bargains.
   const [sectionCategory, setSectionCategory] = useState<string>('ALL')
   const [sectionType, setSectionType] = useState<'LOOSE' | 'PACKED'>('LOOSE')
-  const [showZero, setShowZero] = useState(false)
+  // Remembered, like the purchase register's own. This is a way of LOOKING at
+  // the book, not a one-off action: somebody who turns settled bargains on is
+  // reconciling and wants them there until they say otherwise. The page
+  // reloads on a timer and on every company switch, and each of those put the
+  // switch back to off underneath whoever was working.
+  const [showZero, setShowZero] = useState(() => {
+    try {
+      return localStorage.getItem(SALES_SHOW_SETTLED_KEY) === '1'
+    } catch {
+      // Private windows and locked-down browsers throw on the accessor itself.
+      return false
+    }
+  })
+  useEffect(() => {
+    try {
+      localStorage.setItem(SALES_SHOW_SETTLED_KEY, showZero ? '1' : '0')
+    } catch {
+      // Nothing to do — the switch simply stops being remembered.
+    }
+  }, [showZero])
   const [search, setSearch] = useState('')
   const [openGroups, setOpenGroups] = useState<Set<string>>(new Set())
   // Summary tiles start closed: the register underneath carries the same
@@ -5217,8 +5243,10 @@ function SalesBargainsTab({ onOpenSale }: { onOpenSale?: (id: number, companyId?
       }
     }
 
+    // No negative margins here: the wrapper no longer pads on a phone, so
+    // pulling back out of it would drag the layout off the screen edge.
     return (
-      <div className="-mx-4 -my-4 flex min-h-[100dvh] flex-col bg-[#F1F5EF]">
+      <div className="flex min-h-[100dvh] flex-col bg-[#F1F5EF]">
         <div className="flex-none bg-[#0B3D2E] px-4 pb-3.5 pt-2.5 text-white">
           <MobileBar onRefresh={() => load()} />
           <div className="min-w-0">
@@ -7197,10 +7225,21 @@ export function Sales({ focusId, onFocusHandled, onBack, backLabel }: { focusId?
 }
 
 export function SalesBargains({ onOpenSale }: { onOpenSale?: (id: number, companyId?: number) => void } = {}): React.JSX.Element {
+  // ONE HEADER ON A PHONE, not two.
+  //
+  // The page header and the phone layout's own forest bar were both rendering:
+  // the title "Sales Bargain" twice, the company picker twice, one above the
+  // other. Every other mobile page returns its phone layout INSTEAD of the
+  // desktop one (see Bargains), and this is the same rule — the page header and
+  // the desktop padding both belong to the desktop reading.
+  const isMobile = useIsMobile()
+  const mobile = __WEB__ && isMobile
   return (
     <>
-      <PageHeader title="Sales Bargain" subtitle="Rate contracts with customers — drawn down as sales are dispatched" hint="Each sales bargain locks a rate and quantity with a customer; dispatches under Sales draw it down. The bargain number is FGCODE/DD-MM/CUSTOMER/SERIAL, resetting monthly." />
-      <div className="px-4 py-4">
+      {!mobile && (
+        <PageHeader title="Sales Bargain" subtitle="Rate contracts with customers — drawn down as sales are dispatched" hint="Each sales bargain locks a rate and quantity with a customer; dispatches under Sales draw it down. The bargain number is FGCODE/DD-MM/CUSTOMER/SERIAL, resetting monthly." />
+      )}
+      <div className={cn(!mobile && 'px-4 py-4')}>
         <SalesBargainsTab onOpenSale={onOpenSale} />
       </div>
     </>

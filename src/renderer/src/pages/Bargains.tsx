@@ -13,6 +13,8 @@ import {
   ChevronDown,
   ChevronRight,
   FileSpreadsheet,
+  History,
+  Minus,
   MinusCircle,
   Pencil,
   Plus,
@@ -20,6 +22,8 @@ import {
   SlidersHorizontal,
   Trash2,
   Truck
+,
+  ArrowRight
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { RowActions } from '@/components/ui/row-actions'
@@ -57,6 +61,7 @@ import { DatePicker } from '@/components/ui/date-picker'
 import { formatDate, formatINR, formatNum, todayISO } from '@/lib/format'
 import { exportRowsToExcel } from '@/lib/excel'
 import { cn, inkOn } from '@/lib/utils'
+import { ChangeHistory } from '@/components/ChangeHistory'
 import { useIsMobile } from '@/lib/useIsMobile'
 import { useLiveRefresh } from '@/lib/useLiveRefresh'
 import { useCategories } from '@/lib/useCategories'
@@ -135,6 +140,8 @@ function bargainRegister(r: Row, from: string, to: string): { opening: number; a
 }
 
 // A bargain shows in the register when it still has an open balance, or when
+const SHOW_SETTLED_KEY = 'bargains.showSettled'
+
 // `showZero` is on — in which case the settled ones come too, regardless of
 // which period is selected.
 function inRegister(r: Row, from: string, to: string, showZero = false): boolean {
@@ -318,7 +325,28 @@ export function Bargains({
   const [expanded, setExpanded] = useState<Set<number>>(new Set())
   const [defaultUom, setDefaultUom] = useState('MT')
   const [typeFilter, setTypeFilter] = useState('OIL')
-  const [showZero, setShowZero] = useState(false)
+  // Remembered, not reset.
+  //
+  // This is a way of LOOKING at the register, not a one-off action: somebody
+  // who turns settled bargains on is reconciling and wants them there until
+  // they say otherwise. The board reloads itself on a timer and on every
+  // company switch, and each of those put the switch back to off underneath
+  // whoever was working — so the choice is kept and read back on the way in.
+  const [showZero, setShowZero] = useState(() => {
+    try {
+      return localStorage.getItem(SHOW_SETTLED_KEY) === '1'
+    } catch {
+      // Private windows and locked-down browsers throw on the accessor itself.
+      return false
+    }
+  })
+  useEffect(() => {
+    try {
+      localStorage.setItem(SHOW_SETTLED_KEY, showZero ? '1' : '0')
+    } catch {
+      // Nothing to do — the switch simply stops being remembered.
+    }
+  }, [showZero])
   const [search, setSearch] = useState('')
   // Period register range — defaults to the current month.
   const [dateFrom, setDateFrom] = useState(monthStartISO())
@@ -333,12 +361,40 @@ export function Bargains({
 
   const [open, setOpen] = useState(false)
   const [editing, setEditing] = useState<Row | null>(null)
+  // Set when a save actually moved the rate — drives the dialog listing every
+  // invoice already raised against this bargain.
+  const [rateChange, setRateChange] = useState<{
+    bargain_no: string
+    from: number
+    to: number
+    uom: string
+    invoices: Row[]
+  } | null>(null)
   const [form, setForm] = useState<Row>(emptyForm('MT'))
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
   // Add/remove balance quantity on a bargain.
   const [adjustRow, setAdjustRow] = useState<Row | null>(null)
+  // What has already been added or removed on the bargain being adjusted. A
+  // correction is nearly always made against the ones before it, so they are
+  // on the same panel rather than a page away.
+  const [adjustLog, setAdjustLog] = useState<Row[]>([])
+  useEffect(() => {
+    const id = adjustRow?.id
+    if (!id) {
+      setAdjustLog([])
+      return
+    }
+    let live = true
+    void window.api.bargains
+      .adjustments(Number(id))
+      .then((rows) => live && setAdjustLog(rows))
+      .catch(() => live && setAdjustLog([]))
+    return () => {
+      live = false
+    }
+  }, [adjustRow?.id])
   const [adjustForm, setAdjustForm] = useState<{ mode: 'add' | 'remove'; amount: string; note: string; date: string }>({
     mode: 'add',
     amount: '',
@@ -568,8 +624,22 @@ export function Bargains({
         remarks: form.remarks || null
       }
       if (editing) {
-        await window.api.bargains.update(editing.id as number, payload)
+        const res = await window.api.bargains.update(editing.id as number, payload)
         toast.success('Bargain updated')
+        // A rate correction is the one bargain edit that reaches money already
+        // booked. Nothing is re-priced — every invoice keeps what it was
+        // billed at — so the person making the change is shown exactly which
+        // invoices now sit on a different rate, to go and settle deliberately.
+        if (res?.rate_changed_from != null) {
+          const linked = await window.api.bargains.linkedInvoices(editing.id as number).catch(() => [] as Row[])
+          setRateChange({
+            bargain_no: String(res.bargain_no || editing.bargain_no || ''),
+            from: Number(res.rate_changed_from),
+            to: Number(res.rate),
+            uom: String(payload.uom || 'MT'),
+            invoices: linked
+          })
+        }
       } else {
         const res = await window.api.bargains.create(payload)
         toast.success(`Bargain ${res.bargain_no} created`)
@@ -1693,24 +1763,37 @@ export function Bargains({
               <div
                 className={cn(
                   'flex shrink-0 flex-wrap items-center gap-1.5 text-[13px]',
-                  // The date window as one group with its own edge, so "from"
-                  // and "to" are visibly two ends of one control rather than
-                  // two more boxes in a row of boxes.
-                  // The chip this group used to paint for itself — white fill
-                  // and a #DCE7DB edge — sat inside a bar with that same edge
-                  // and its own fill, while OIL / ALL COMPANIES / the search
-                  // box stood bare beside it. It read as a box within a box for
-                  // no gain the word "to" between the two dates was not already
-                  // making, and its padding cost 22px on a strip that is short
-                  // of them.
+                  // ONE ROW, ONE KIND OF CONTROL.
+                  //
+                  // This group has been through a chip (a white box with the
+                  // card's own border, drawn inside the card — a box within a
+                  // box), then nothing at all (three controls and the word
+                  // "to" floating unattached), then a tint (a coloured band
+                  // that nothing else on the strip had). Each of those tried to
+                  // GROUP the dates by drawing something around them, and every
+                  // one of them made the date fields look unlike the OIL, the
+                  // company picker and the search box sitting beside them.
+                  //
+                  // They are grouped by a LABEL and a rule instead — the
+                  // divider to their left, then the word DATE — so the fields
+                  // themselves are plain white 40px boxes with the same
+                  // #C3D2C6 edge as every other control on the bar. Nothing is
+                  // drawn around them, and nothing about them is special.
                   __WEB__ && '!gap-2'
                 )}
               >
-                {/* Dropped on the website: the two calendar icons beside it
-                    already say what these fields are, and the word cost 41px
-                    with its gap — enough on its own to push the strip onto a
-                    second line on a 13" screen. The desktop app keeps it. */}
-                {!__WEB__ && <span className="text-muted-foreground">Date</span>}
+                {/* The group's name, and the only thing marking it out. It
+                    was dropped when the strip was fighting for width; the
+                    search box's floor now gives that width back, and without
+                    the word the dates read as two unexplained boxes. */}
+                <span
+                  className={cn(
+                    'text-muted-foreground',
+                    __WEB__ && '!text-[10.5px] !font-extrabold !uppercase !tracking-[.13em] !text-[#5A6B62]'
+                  )}
+                >
+                  Date
+                </span>
                 <FyPicker
                   from={dateFrom}
                   to={dateTo}
@@ -1725,14 +1808,36 @@ export function Bargains({
                   value={dateFrom}
                   onChange={(v) => setDateFrom(v || '')}
                   max={dateTo || undefined}
-                  className={cn('w-[8.5rem]', __WEB__ && '!w-[7.25rem]')}
+                  // SIZED TO THE DATE, not to a guess about it.
+                  //
+                  // 7.25rem is 116px and the content measures 114 — the date
+                  // ended two pixels from its own border, which is why it read
+                  // as spilling out of the box. Two pixels is not a margin:
+                  // a different font, a longer locale, a browser that rounds
+                  // the other way, and it genuinely overflows.
+                  //
+                  // Auto width with a floor instead, so the box is always as
+                  // wide as the date inside it plus real padding, and the
+                  // question cannot come back.
+                  className={cn('w-[8.5rem]', __WEB__ && '!w-auto !min-w-[7.25rem] !px-2.5')}
                 />
                 <span className={cn('text-muted-foreground', __WEB__ && '!text-[12px] !font-semibold !text-[#5A6B62]')}>to</span>
                 <DatePicker
                   value={dateTo}
                   onChange={(v) => setDateTo(v || '')}
                   min={dateFrom || undefined}
-                  className={cn('w-[8.5rem]', __WEB__ && '!w-[7.25rem]')}
+                  // SIZED TO THE DATE, not to a guess about it.
+                  //
+                  // 7.25rem is 116px and the content measures 114 — the date
+                  // ended two pixels from its own border, which is why it read
+                  // as spilling out of the box. Two pixels is not a margin:
+                  // a different font, a longer locale, a browser that rounds
+                  // the other way, and it genuinely overflows.
+                  //
+                  // Auto width with a floor instead, so the box is always as
+                  // wide as the date inside it plus real padding, and the
+                  // question cannot come back.
+                  className={cn('w-[8.5rem]', __WEB__ && '!w-auto !min-w-[7.25rem] !px-2.5')}
                 />
                 {(dateFrom || dateTo) && (
                   <Button
@@ -2431,19 +2536,82 @@ export function Bargains({
       </div>
 
       <Dialog open={open} onOpenChange={setOpen}>
-        <DialogContent className="max-h-[90vh] w-[calc(100vw-2rem)] max-w-xl overflow-y-auto">
-          <DialogHeader>
-            <DialogTitle>{editing ? `Edit ${editing.bargain_no}` : 'New bargain'}</DialogTitle>
+        <DialogContent
+          className={cn(
+            'max-h-[90vh] w-[calc(100vw-2rem)] max-w-xl overflow-y-auto',
+            // A right-hand drawer on the website, the same shape the balance
+            // panel next door uses: a fixed header naming the bargain, one
+            // scrolling column of sections, and the actions pinned at the
+            // bottom where they stay reachable however long the form runs.
+            __WEB__ &&
+              '!bottom-0 !left-auto !right-0 !top-0 !h-screen !max-h-screen !w-[660px] !max-w-[95vw] !translate-x-0 !translate-y-0 !grid !grid-rows-[auto_minmax(0,1fr)_auto] !gap-0 !overflow-hidden !rounded-none !border-0 !bg-[#F1F5EF] !p-0 sm:!rounded-none [&>button]:!right-5 [&>button]:!top-5 [&>button]:!text-white [&>button]:!opacity-70 [&>button]:hover:!opacity-100'
+          )}
+        >
+          <DialogHeader className={cn(__WEB__ && '!block !space-y-0 !bg-[#0B3D2E] !px-[22px] !py-[18px] !text-left')}>
+            {__WEB__ && (
+              <div className="text-[11px] font-extrabold uppercase tracking-[.14em] text-[#8FBFA8]">Purchase bargain</div>
+            )}
+            <DialogTitle
+              className={cn(
+                __WEB__ && '!doc-ref !mt-1.5 !break-all !text-[19px] !font-bold !tracking-[-0.02em] !text-white'
+              )}
+            >
+              {__WEB__ ? (editing ? String(editing.bargain_no) : 'New bargain') : editing ? `Edit ${editing.bargain_no}` : 'New bargain'}
+            </DialogTitle>
+            {__WEB__ && (
+              <div className="mt-1.5 text-[12.5px] font-semibold text-[#8FBFA8]">
+                {editing
+                  ? `${formatNum(Number(editing.qty) || 0)} ${editing.uom || 'MT'} contracted · ${formatNum(editConsumed)} loaded`
+                  : 'The number is struck from the product, the party and the date.'}
+              </div>
+            )}
           </DialogHeader>
 
+          <div className={cn(__WEB__ && 'min-h-0 overflow-y-auto px-[22px] py-4')}>
+          <div className={cn(__WEB__ && 'flex flex-col gap-3')}>
+
           {editLocked && (
-            <div className="rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-900">
-              {formatNum(editConsumed)} {editing?.uom || 'MT'} is already loaded/consumed on this bargain — supplier and oil are
-              locked, and the quantity can&apos;t go below {formatNum(editConsumed)}.
+            <div
+              className={cn(
+                'rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-900',
+                __WEB__ &&
+                  '!flex !gap-2.5 !rounded-[4px] !border-[#F0E4CB] !border-l-4 !border-l-[#C2700A] !bg-[#FFF4E0] !px-3.5 !py-3'
+              )}
+            >
+              {__WEB__ && <Truck className="mt-0.5 h-[19px] w-[19px] shrink-0 text-[#C2700A]" />}
+              <div className={cn(__WEB__ && 'min-w-0')}>
+                {__WEB__ && (
+                  <div className="text-[12.5px] font-extrabold text-[#8A5300]">
+                    {formatNum(editConsumed)} {editing?.uom || 'MT'} already loaded on this bargain
+                  </div>
+                )}
+                <div className={cn(__WEB__ && 'mt-1 text-[11.5px] font-semibold leading-[1.55] text-[#8A5300] [text-wrap:pretty]')}>
+                  {__WEB__ ? (
+                    <>
+                      Supplier and product are locked — tankers already point at them — and the quantity cannot go below{' '}
+                      {formatNum(editConsumed)}.
+                    </>
+                  ) : (
+                    <>
+                      {formatNum(editConsumed)} {editing?.uom || 'MT'} is already loaded/consumed on this bargain — supplier and
+                      oil are locked, and the quantity can&apos;t go below {formatNum(editConsumed)}.
+                    </>
+                  )}
+                </div>
+              </div>
             </div>
           )}
 
-          <div className="grid grid-cols-1 gap-3 py-1 sm:grid-cols-2">
+          {/* One card per question the form asks, rather than a single grid of
+              fourteen boxes: who and what, then how much and at what rate,
+              then anything else worth saying. */}
+          <div className={cn(__WEB__ && 'overflow-hidden rounded-[4px] border border-[#D6E2D6] bg-white')}>
+            {__WEB__ && (
+              <div className="border-b border-b-[#E4ECE3] bg-[#F7FAF6] px-4 py-3 text-[11px] font-extrabold uppercase tracking-[.13em] text-[#33473E]">
+                Who and what
+              </div>
+            )}
+          <div className={cn('grid grid-cols-1 gap-3 py-1 sm:grid-cols-2', __WEB__ && '!gap-3.5 !p-4')}>
             <div className="flex flex-col gap-1.5">
               <Label>Bargain date *</Label>
               <DatePicker
@@ -2568,6 +2736,16 @@ export function Bargains({
                 </SelectContent>
               </Select>
             </div>
+          </div>
+          </div>
+
+          <div className={cn(__WEB__ && 'overflow-hidden rounded-[4px] border border-[#D6E2D6] bg-white')}>
+            {__WEB__ && (
+              <div className="border-b border-b-[#E4ECE3] bg-[#F7FAF6] px-4 py-3 text-[11px] font-extrabold uppercase tracking-[.13em] text-[#33473E]">
+                Quantity and rate
+              </div>
+            )}
+          <div className={cn('grid grid-cols-1 gap-3 py-1 sm:grid-cols-2', __WEB__ && '!gap-3.5 !p-4')}>
             <div className="flex flex-col gap-1.5">
               <Label>UOM</Label>
               <UomSelect value={form.uom} onChange={(v) => setField('uom', v)} />
@@ -2609,22 +2787,58 @@ export function Bargains({
               {expiryProblem && <div className="text-[11px] font-medium text-destructive">{expiryProblem}</div>}
             </div>
 
-            <div className="flex content-end flex-col gap-1.5">
-              <Label>Bargain rate (base + duty)</Label>
-              <div className="flex h-9 items-center rounded-md bg-muted px-3 text-sm font-medium tabular-nums">
-                {formatINR(bgRate)}
+            {/* What the two typed figures come to, shown as the sum it is —
+                base plus duty makes the rate, rate times quantity makes the
+                contract — rather than as two more boxes that happen to be
+                greyed out. */}
+            {__WEB__ ? (
+              <div className="col-span-full flex flex-wrap items-center gap-x-3.5 gap-y-3 rounded-[4px] border border-[#E5DFC8] bg-[#F7F4E8] px-3.5 py-3">
+                {[
+                  { k: 'Base rate', v: formatINR(Number(form.base_rate) || 0), op: '', size: 'text-[13px]', fg: 'text-[#0A1F17]' },
+                  { k: `Duty / ${form.uom || 'MT'}`, v: formatINR(Number(form.duty) || 0), op: '+', size: 'text-[13px]', fg: 'text-[#0A1F17]' },
+                  { k: 'Bargain rate', v: formatINR(bgRate), op: '=', size: 'text-[15px]', fg: 'text-[#0A1F17]' },
+                  { k: `× ${formatNum(Number(form.qty) || 0)} ${form.uom || 'MT'}`, v: formatINR(total), op: '=', size: 'text-[15px]', fg: 'text-[#0B6B45]' }
+                ].map((d) => (
+                  <div key={d.k} className="flex min-w-0 items-center gap-3">
+                    {!!d.op && <span className="doc-ref flex-none text-[15px] font-bold text-[#8A8471]">{d.op}</span>}
+                    <div className="min-w-0">
+                      <div className="whitespace-nowrap text-[9.5px] font-extrabold uppercase tracking-[.11em] text-[#5A6B62]">
+                        {d.k}
+                      </div>
+                      <div className={cn('doc-ref mt-1 whitespace-nowrap font-bold tracking-[-0.02em]', d.size, d.fg)}>
+                        {d.v}
+                      </div>
+                    </div>
+                  </div>
+                ))}
               </div>
-            </div>
-            <div className="flex content-end flex-col gap-1.5">
-              <Label>Total bargain amount</Label>
-              <div className="flex h-9 items-center rounded-md bg-muted px-3 text-sm font-semibold tabular-nums">
-                {formatINR(total)}
-              </div>
-            </div>
+            ) : (
+              <>
+                <div className="flex content-end flex-col gap-1.5">
+                  <Label>Bargain rate (base + duty)</Label>
+                  <div className="flex h-9 items-center rounded-md bg-muted px-3 text-sm font-medium tabular-nums">
+                    {formatINR(bgRate)}
+                  </div>
+                </div>
+                <div className="flex content-end flex-col gap-1.5">
+                  <Label>Total bargain amount</Label>
+                  <div className="flex h-9 items-center rounded-md bg-muted px-3 text-sm font-semibold tabular-nums">
+                    {formatINR(total)}
+                  </div>
+                </div>
+              </>
+            )}
+          </div>
           </div>
 
-          <div className="flex flex-col gap-1.5">
-            <Label>Remarks</Label>
+          <div className={cn(__WEB__ && 'overflow-hidden rounded-[4px] border border-[#D6E2D6] bg-white')}>
+            {__WEB__ && (
+              <div className="border-b border-b-[#E4ECE3] bg-[#F7FAF6] px-4 py-3 text-[11px] font-extrabold uppercase tracking-[.13em] text-[#33473E]">
+                Remarks
+              </div>
+            )}
+          <div className={cn('flex flex-col gap-1.5', __WEB__ && '!p-4')}>
+            {!__WEB__ && <Label>Remarks</Label>}
             <textarea
               rows={2}
               className="w-full resize-none rounded-md border border-input bg-transparent px-3 py-2 text-sm shadow-sm placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-ring"
@@ -2634,15 +2848,83 @@ export function Bargains({
             />
           </div>
 
-          {error && <p className="text-sm text-destructive">{error}</p>}
+          </div>
 
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setOpen(false)} disabled={saving}>
-              Cancel
-            </Button>
-            <Button onClick={save} disabled={saving}>
-              {saving ? 'Saving…' : 'Save bargain'}
-            </Button>
+          {/* What has been changed on this bargain since it was struck —
+              beside the fields it was changed on, which is where the question
+              gets asked. */}
+          {__WEB__ && !!editing?.id && <ChangeHistory entity="bargains" id={Number(editing.id)} />}
+
+          {error && (
+            <p
+              className={cn(
+                'text-sm text-destructive',
+                __WEB__ &&
+                  '!rounded-[4px] !border !border-[#F0D6D4] !border-l-4 !border-l-[#B3261E] !bg-[#FDF3F2] !px-3.5 !py-2.5 !text-[12.5px] !font-semibold !text-[#8C2F26]'
+              )}
+            >
+              {error}
+            </p>
+          )}
+          </div>
+          </div>
+
+          {/* The footer says what is still missing before it offers to save,
+              so a refused save is not the first news of it. */}
+          <DialogFooter
+            className={cn(
+              __WEB__ &&
+                '!flex !flex-wrap !items-center !gap-3 !border-t !border-t-[#D6E2D6] !bg-white !px-[22px] !py-[15px] sm:!justify-start'
+            )}
+          >
+            {__WEB__ &&
+              (() => {
+                const missing: string[] = []
+                if (!form.supplier_id) missing.push('a supplier')
+                if (!form.oil_type_id) missing.push('a product')
+                if (!(Number(form.qty) > 0)) missing.push('a quantity')
+                if (!(bgRate > 0)) missing.push('a rate')
+                const ready = missing.length === 0 && !expiryProblem
+                return (
+                  <div
+                    className={cn(
+                      'flex min-w-0 items-center gap-2 text-[12.5px] font-bold',
+                      ready ? 'text-[#0B6B45]' : 'text-[#8A5300]'
+                    )}
+                  >
+                    {ready ? (
+                      <CheckCircle2 className="h-[18px] w-[18px] shrink-0" />
+                    ) : (
+                      <AlertTriangle className="h-[18px] w-[18px] shrink-0" />
+                    )}
+                    <span className="leading-[1.45] [text-wrap:pretty]">
+                      {expiryProblem
+                        ? expiryProblem
+                        : ready
+                          ? `${formatINR(total)} contracted`
+                          : `Still needs ${missing.join(', ')}.`}
+                    </span>
+                  </div>
+                )
+              })()}
+            <div className={cn(__WEB__ && 'ml-auto flex gap-2.5')}>
+              <Button
+                variant="outline"
+                onClick={() => setOpen(false)}
+                disabled={saving}
+                className={cn(__WEB__ && '!h-12 !rounded-[4px] !border-[1.5px] !border-[#C3D2C6] !px-5 !text-[13px] !font-extrabold !uppercase !text-[#33473E]')}
+              >
+                Cancel
+              </Button>
+              <Button
+                onClick={save}
+                disabled={saving}
+                className={cn(__WEB__ && '!h-12 !gap-1.5 !rounded-[4px] !bg-[#0B3D2E] !px-6 !text-[13px] !font-extrabold !uppercase !text-[#C7F03F] hover:!bg-[#0F4A38]')}
+              >
+                {__WEB__ && <Check className="h-[19px] w-[19px]" />}
+                {saving ? 'Saving…' : __WEB__ ? 'Save changes' : 'Save bargain'}
+              </Button>
+            </div>
           </DialogFooter>
         </DialogContent>
       </Dialog>
@@ -2658,13 +2940,29 @@ export function Bargains({
               '!bottom-0 !left-auto !right-0 !top-0 !h-screen !max-h-screen !w-[560px] !max-w-[95vw] !translate-x-0 !translate-y-0 !grid !grid-rows-[auto_minmax(0,1fr)_auto] !gap-0 !overflow-hidden !rounded-none !border-0 !bg-[#F1F5EF] !p-0 sm:!rounded-none [&>button]:!right-5 [&>button]:!top-5 [&>button]:!text-white [&>button]:!opacity-70 [&>button]:hover:!opacity-100'
           )}
         >
-          <DialogHeader className={cn(__WEB__ && '!block !space-y-0 !bg-[#0B3D2E] !px-[22px] !py-4 !text-left')}>
+          {/* Violet, not the register's green. This panel does not record a
+              movement of oil — it corrects what was contracted — and the
+              colour is the first thing that says so, before the words do. */}
+          <DialogHeader className={cn(__WEB__ && '!block !space-y-0 !bg-[#3D3179] !px-[22px] !py-[18px] !text-left')}>
             {__WEB__ && (
-              <div className="text-[11.5px] font-extrabold uppercase tracking-[.14em] text-[#8FBFA8]">Adjust balance</div>
+              <div className="text-[11px] font-extrabold uppercase tracking-[.14em] text-[#C7BCF0]">
+                Balance adjustment
+              </div>
             )}
-            <DialogTitle className={cn(__WEB__ && '!mt-1.5 !break-all !text-[15px] !font-bold !leading-[1.35] !tracking-[-0.01em] !text-white')}>
-              {__WEB__ ? adjustRow?.bargain_no : `Adjust balance — ${adjustRow?.bargain_no}`}
+            <DialogTitle className={cn(__WEB__ && '!mt-1.5 !text-[19px] !font-extrabold !tracking-[-0.02em] !text-white')}>
+              {__WEB__ ? 'Add or remove quantity' : `Adjust balance — ${adjustRow?.bargain_no}`}
             </DialogTitle>
+            {__WEB__ && (
+              <>
+                <div className="doc-ref mt-1.5 break-all text-[12.5px] font-semibold text-[#C7BCF0]">
+                  {adjustRow?.bargain_no}
+                </div>
+                <p className="mt-2.5 text-[11.5px] font-semibold leading-[1.6] text-[#C7BCF0] [text-wrap:pretty]">
+                  A correction to what was contracted, not a dispatch. It is dated, so it lands in that month&apos;s
+                  Adjusted column and leaves Addition reading as what was originally struck.
+                </p>
+              </>
+            )}
           </DialogHeader>
           {adjustRow && (() => {
             const qty = Number(adjustRow.qty) || 0
@@ -2834,6 +3132,68 @@ export function Bargains({
                           {adjustError}
                         </div>
                       )}
+
+                      {/* WHAT WAS ALREADY CHANGED HERE.
+                          A correction is nearly always made against the ones
+                          before it — a quantity topped up twice, or removed and
+                          put back. Having them on the same panel is what stops
+                          the same correction being made a second time. */}
+                      <div className="overflow-hidden rounded-[4px] border border-[#D6E2D6] bg-white">
+                        <div className="flex items-center gap-2.5 border-b border-[#E4ECE3] bg-[#F7FAF6] px-4 py-2.5">
+                          <History className="h-[17px] w-[17px] text-[#3D3179]" />
+                          <span className="text-[11px] font-extrabold uppercase tracking-[.13em] text-[#33473E]">
+                            Earlier adjustments
+                          </span>
+                          <span className="doc-ref ml-auto rounded-[2px] bg-[#EAF0E9] px-1.5 py-0.5 text-[10.5px] font-bold text-[#5A6B62]">
+                            {adjustLog.length}
+                          </span>
+                        </div>
+                        {adjustLog.length === 0 ? (
+                          <div className="px-4 py-5 text-center text-[12px] font-semibold text-[#5A6B62] [text-wrap:pretty]">
+                            Nothing has been added or removed on this bargain. What was contracted is what was struck.
+                          </div>
+                        ) : (
+                          <div className="max-h-[220px] overflow-y-auto">
+                            {adjustLog.map((e) => {
+                              const d = Number(e.delta) || 0
+                              const up = d >= 0
+                              return (
+                                <div
+                                  key={String(e.id)}
+                                  className={cn(
+                                    'flex items-start gap-2.5 border-b border-b-[#EFF3EE] border-l-[3px] px-4 py-3 last:border-b-0',
+                                    up ? 'border-l-[#0B6B45] bg-[#F7FBF4]' : 'border-l-[#8A5300] bg-[#FFFBF2]'
+                                  )}
+                                >
+                                  {up ? (
+                                    <Plus className="mt-px h-[17px] w-[17px] shrink-0 text-[#0B6B45]" />
+                                  ) : (
+                                    <Minus className="mt-px h-[17px] w-[17px] shrink-0 text-[#8A5300]" />
+                                  )}
+                                  <div className="min-w-0 flex-1">
+                                    <div className="flex flex-wrap items-baseline gap-x-2.5">
+                                      <span
+                                        className={cn(
+                                          'doc-ref text-[13px] font-bold',
+                                          up ? 'text-[#0B6B45]' : 'text-[#8A5300]'
+                                        )}
+                                      >
+                                        {up ? '+' : '−'}{formatNum(Math.abs(d))} {uom}
+                                      </span>
+                                      <span className="doc-ref ml-auto whitespace-nowrap text-[11px] font-semibold text-[#5A6B62]">
+                                        {formatDate(e.adj_date)}
+                                      </span>
+                                    </div>
+                                    <div className="mt-1 text-[11.5px] font-semibold leading-[1.45] text-[#33473E] [text-wrap:pretty]">
+                                      {String(e.note || '').trim() || 'No reason recorded.'}
+                                    </div>
+                                  </div>
+                                </div>
+                              )
+                            })}
+                          </div>
+                        )}
+                      </div>
                     </div>
                   </div>
                   <div className="flex items-center justify-end gap-2.5 border-t border-[#D6E2D6] bg-white px-[22px] py-3.5">
@@ -2928,6 +3288,78 @@ export function Bargains({
               <Button onClick={saveAdjust} disabled={adjustSaving}>{adjustSaving ? 'Saving…' : 'Apply'}</Button>
             </DialogFooter>
           )}
+        </DialogContent>
+      </Dialog>
+
+      {/* WHAT A RATE CORRECTION TOUCHES.
+          Nothing here changes a figure — every invoice keeps the rate it was
+          billed at. This exists so the change is not silent: the person who
+          made it sees, at that moment, every invoice sitting on the old rate,
+          and can open each one and settle it deliberately. */}
+      <Dialog open={!!rateChange} onOpenChange={(o) => !o && setRateChange(null)}>
+        <DialogContent className="max-w-[640px]">
+          <DialogHeader>
+            <DialogTitle>Rate changed on {rateChange?.bargain_no}</DialogTitle>
+          </DialogHeader>
+          {!!rateChange && (
+            <div className="space-y-3">
+              <div className="flex flex-wrap items-center gap-2 rounded-[4px] border border-[#DCE7DB] bg-[#F7FAF6] px-3.5 py-2.5 text-[13px]">
+                <span className="doc-ref font-bold text-[#5A6B62] line-through">{formatINR(rateChange.from)}</span>
+                <ArrowRight className="h-4 w-4 text-[#5A6B62]" />
+                <span className="doc-ref text-[15px] font-bold text-[#0B6B45]">{formatINR(rateChange.to)}</span>
+                <span className="text-[12px] font-semibold text-[#5A6B62]">per {rateChange.uom}</span>
+              </div>
+              {rateChange.invoices.length === 0 ? (
+                <p className="text-[13px] font-semibold text-[#33473E]">
+                  No purchase invoice has been raised against this bargain yet, so nothing is affected.
+                </p>
+              ) : (
+                <>
+                  <p className="text-[12.5px] font-semibold leading-[1.5] text-[#33473E] [text-wrap:pretty]">
+                    {rateChange.invoices.length} invoice{rateChange.invoices.length === 1 ? '' : 's'} already raised
+                    against this bargain. None of them has changed — each keeps the rate it was billed at. Open any one
+                    to bring it onto the new rate.
+                  </p>
+                  <div className="max-h-[320px] overflow-y-auto rounded-[4px] border border-[#DCE7DB]">
+                    <table className="w-full text-[12.5px]">
+                      <thead className="bg-[#F7FAF6] text-[10px] font-extrabold uppercase tracking-[.1em] text-[#5A6B62]">
+                        <tr>
+                          <th className="px-3 py-2 text-left">Invoice</th>
+                          <th className="px-3 py-2 text-left">Date</th>
+                          <th className="px-3 py-2 text-right">Qty</th>
+                          <th className="px-3 py-2 text-right">Billed at</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {rateChange.invoices.map((iv) => {
+                          const billed = Number(iv.billed_rate) || 0
+                          const stale = billed > 0 && Math.abs(billed - rateChange.to) > 0.005
+                          return (
+                            <tr key={String(iv.id)} className="border-t border-t-[#EAF0E9]">
+                              <td className="px-3 py-2 font-bold">{String(iv.invoice_no || '—')}</td>
+                              <td className="px-3 py-2 text-[#5A6B62]">{formatDate(iv.order_date)}</td>
+                              <td className="px-3 py-2 text-right tabular-nums">{formatNum(Number(iv.qty) || 0)}</td>
+                              <td
+                                className={cn(
+                                  'px-3 py-2 text-right font-bold tabular-nums',
+                                  stale ? 'text-[#8A5300]' : 'text-[#5A6B62]'
+                                )}
+                              >
+                                {formatINR(billed)}
+                              </td>
+                            </tr>
+                          )
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                </>
+              )}
+            </div>
+          )}
+          <DialogFooter>
+            <Button onClick={() => setRateChange(null)}>Got it</Button>
+          </DialogFooter>
         </DialogContent>
       </Dialog>
     </>

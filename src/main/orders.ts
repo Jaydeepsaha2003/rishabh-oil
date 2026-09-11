@@ -16,6 +16,7 @@ import {
 import { deleteJournalByRef, postPurchaseJournal } from './journal'
 import { companiesOfFactory, getActiveCompanyId } from './company'
 import { visibleFromFor } from './access-gate'
+import { recordChanges, ORDER_FIELDS } from './history'
 import { assertPurchaseInvoiceNoFree } from './invoiceno'
 
 const STAGES = [
@@ -220,7 +221,14 @@ export function computeMoney(i: MoneyInput): MoneyResult {
   // silently drop it on every re-save. The paisa guard stops the blended
   // average's OWN rounding from reading as a premium and pushing each line's
   // ceil() up by a whole rupee.
-  const blendedRate = lineQty > 0 ? round2(lines.reduce((s, l) => s + n(l.rate) * n(l.qty), 0) / lineQty) : 0
+  // The plain average of the bargain rates on this invoice — rate 1 plus rate
+  // 2 divided by two — which is what the mill means by the invoice rate. It was
+  // weighted by quantity, which is the true average PRICE but not the desk's
+  // convention. Must stay identical to the renderer's own blend: the gap
+  // between the invoice rate and this is booked as supplier freight, so half a
+  // rupee of disagreement invents half a rupee of carriage on every tonne.
+  const blendRates = lines.filter((l) => n(l.qty) > 0 && n(l.rate) > 0).map((l) => n(l.rate))
+  const blendedRate = blendRates.length ? round2(blendRates.reduce((s, r) => s + r, 0) / blendRates.length) : 0
   const rawPremium = round2(i.invoiceRate - blendedRate)
   const ratePremium = Math.abs(rawPremium) < 0.01 ? 0 : rawPremium
   // What the supplier actually bills per unit. Left unstated (NULL) this is the
@@ -832,6 +840,9 @@ export async function createOrder(v: Row): Promise<{ id: number }> {
   await saveOrderBargainInterest(id, v.bargain_interest)
   await setSupplierPayable(id, n(v.supplier_id), m.net_amount, String(v.order_date))
   await postOrderJournal(id, v, m, supplier, roundOff)
+  // Raised. Kept as an event in its own right so the history starts where the
+  // invoice does, rather than at whatever was edited first.
+  await recordChanges('orders', id, String(v.invoice_no || ''), null, null, ORDER_FIELDS, 'raised')
   return { id }
 }
 
@@ -895,6 +906,12 @@ export async function updateOrder(id: number, v: Row): Promise<{ id: number }> {
     args: [id]
   })
   const wasConsignment = !!cur.rows[0]?.is_consignment
+  // The whole row as it stands, so the save can say what it moved. Taken
+  // before anything is written and never allowed to fail the save.
+  const beforeRow = await getClient()
+    .execute({ sql: 'SELECT * FROM orders WHERE id = ? LIMIT 1', args: [id] })
+    .then((r) => (r.rows.length ? (toPlain(r)[0] as Row) : null))
+    .catch(() => null)
   // Against the company the purchase is actually booked in, not the one on
   // screen — a register can be open in one book while the invoice lives in the
   // other, and the number must be unique where it is filed.
@@ -1035,6 +1052,11 @@ export async function updateOrder(id: number, v: Row): Promise<{ id: number }> {
   }
   await setSupplierPayable(id, n(v.supplier_id), m.net_amount, String(v.order_date))
   await postOrderJournal(id, v, m, supplier, roundOff)
+  const afterRow = await getClient()
+    .execute({ sql: 'SELECT * FROM orders WHERE id = ? LIMIT 1', args: [id] })
+    .then((r) => (r.rows.length ? (toPlain(r)[0] as Row) : null))
+    .catch(() => null)
+  await recordChanges('orders', id, String(v.invoice_no || beforeRow?.invoice_no || ''), beforeRow, afterRow, ORDER_FIELDS)
   return { id }
 }
 
@@ -1127,9 +1149,20 @@ async function assignTankers(
     await c.execute({
       // A tanker belongs to whichever company its invoice was booked in, so a
       // clerical mix-up is corrected by re-billing rather than by editing rows.
+      //
+      // The bargain rate is FROZEN here, the first time the tanker is billed,
+      // and never touched again — correcting a bargain rate afterwards leaves
+      // every invoice already raised exactly as it was billed. Only an
+      // explicit per-bargain edit on the invoice screen moves it.
       sql: `UPDATE purchase_tankers SET order_id = ?,
             company_id = CASE WHEN ? > 0 THEN ? ELSE company_id END,
-            transporter_id = CASE WHEN ? > 0 THEN ? ELSE transporter_id END WHERE id = ?`,
+            transporter_id = CASE WHEN ? > 0 THEN ? ELSE transporter_id END,
+            bargain_rate = COALESCE(bargain_rate,
+              (SELECT b.rate_per_uom FROM bargains b WHERE b.id = purchase_tankers.bargain_id)),
+            extra_bargain_rate = CASE WHEN extra_bargain_id IS NULL THEN extra_bargain_rate
+              ELSE COALESCE(extra_bargain_rate,
+                (SELECT b.rate_per_uom FROM bargains b WHERE b.id = purchase_tankers.extra_bargain_id)) END
+            WHERE id = ?`,
       args: [orderId, companyId, companyId, transporterId, transporterId, tankerId]
     })
   }
@@ -1147,12 +1180,19 @@ export async function listPurchaseTankers(allCompanies = false, forModule?: stri
     sql: `
     SELECT pt.*, o.invoice_no, o.order_date AS invoice_date, o.company_id AS invoice_company_id,
            o.allowed_shortage_pct AS order_allowed_shortage_pct,
-           b.bargain_no, b.bargain_type, b.rate_per_uom AS bargain_rate,
+           b.bargain_no, b.bargain_type,
+           -- pt.bargain_rate (from pt.* above) is THE RATE THIS TANKER WAS
+           -- BILLED AT, frozen when the invoice was saved. bargain_live_rate
+           -- is what its bargain says TODAY. These used to be one name meaning
+           -- two things -- the live rate here, the frozen one on the order --
+           -- so a screen holding both showed two different numbers under one
+           -- label and nobody could tell which was which.
+           b.rate_per_uom AS bargain_live_rate,
            b.allowed_shortage_pct, s.name AS supplier_name,
            p.code AS oil_code, p.name AS oil_name, src.name AS source_name,
            p.material_type AS product_category,
            tr.name AS transporter_name, xb.bargain_no AS extra_bargain_no,
-           xb.rate_per_uom AS extra_bargain_rate,
+           xb.rate_per_uom AS extra_bargain_live_rate,
            -- what the gate recorded for this tanker: its own entry number and
            -- the vehicle number written down there, which is the number the
            -- yard actually saw.

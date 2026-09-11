@@ -264,14 +264,19 @@ export function SalesMobile(): React.JSX.Element {
     })
   }, [invoices, range, ptype, missingOnly, query])
 
-  const totals = useMemo(
-    () => ({
+  const totals = useMemo(() => {
+    // The unit is printed only when ONE unit is in view — then it is true of
+    // the total. Across units the figure stays unlabelled, the same rule the
+    // desktop register's total follows.
+    const units = new Set<string>()
+    for (const i of filtered) for (const l of i.lines) units.add(s(l.uom || 'MT').toUpperCase())
+    return {
       count: filtered.length,
       qty: filtered.reduce((a, i) => a + i.qty, 0),
+      qtyUnit: units.size === 1 ? [...units][0] : '',
       value: filtered.reduce((a, i) => a + i.total, 0)
-    }),
-    [filtered]
-  )
+    }
+  }, [filtered])
 
   const selected = filtered.find((i) => i.key === selectedKey) || invoices.find((i) => i.key === selectedKey) || null
 
@@ -332,7 +337,9 @@ export function SalesMobile(): React.JSX.Element {
 function ListScreen(props: {
   loading: boolean
   rows: Invoice[]
-  totals: { count: number; qty: number; value: number }
+  // qtyUnit is set only when every invoice in view shares one unit; blank
+  // across units, where no single unit is true of the total.
+  totals: { count: number; qty: number; qtyUnit: string; value: number }
   categories: string[]
   query: string
   setQuery: (v: string) => void
@@ -406,7 +413,7 @@ function ListScreen(props: {
             // Unlabelled on purpose: this adds every invoice in view and they
             // are not all in one unit, so no single unit is true of it. Same
             // rule as the desktop register's total.
-            { k: 'Quantity', v: fmtQty(totals.qty), lime: false },
+            { k: 'Quantity', v: `${fmtQty(totals.qty)}${totals.qtyUnit ? ` ${totals.qtyUnit}` : ''}`, lime: false },
             { k: 'Value', v: fmtINRShort(totals.value), lime: true }
           ].map((c) => (
             <div

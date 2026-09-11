@@ -52,10 +52,23 @@ export interface Api {
     markUnread: (userId: number, id: number) => Promise<{ id: number }>
     clear: (userId: number, isAdmin: boolean) => Promise<{ read: number }>
   }
+  history: {
+    list: (entity: string, id: number) => Promise<Row[]>
+  }
   bargains: {
     list: (from?: string, to?: string, companyIds?: number[], forModule?: string) => Promise<Row[]>
     create: (values: Row) => Promise<{ id: number; bargain_no: string }>
-    update: (id: number, values: Row) => Promise<{ id: number }>
+    update: (
+      id: number,
+      values: Row
+    ) => Promise<{ id: number; bargain_no: string; rate_changed_from: number | null; rate: number }>
+    linkedInvoices: (id: number) => Promise<Row[]>
+    adjustments: (id: number) => Promise<Row[]>
+    setInvoiceRate: (
+      orderId: number,
+      bargainId: number,
+      rate: number
+    ) => Promise<{ order_id: number; bargain_id: number; rate: number }>
     remove: (id: number) => Promise<{ id: number }>
     adjust: (id: number, delta: number, note?: string, date?: string) => Promise<{ id: number; qty: number }>
   }
@@ -242,6 +255,15 @@ export interface Api {
       companyId?: number
     ) => Promise<{ removed: number; kept: number; retired: boolean; name: string }>
     savePp: (productId: number, lines: Row[], companyId?: number) => Promise<{ total: number; lines: number }>
+    ppVessels: (productId: number, companyId?: number) => Promise<Row[]>
+    ppWriteoffs: (productId: number, companyId?: number) => Promise<Row[]>
+    writeOffPp: (
+      productId: number,
+      stageId: number,
+      qty: number,
+      note: string,
+      companyId?: number
+    ) => Promise<{ product_id: number; stage_id: number; qty: number }>
     ppFreeTotals: (productIds: number[], companyId?: number) => Promise<Record<number, { without: number; with: number }>>
   }
   skuOpening: {

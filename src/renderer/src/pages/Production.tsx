@@ -1,6 +1,6 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { toast } from 'sonner'
-import { AlertTriangle, ArrowDownLeft, ArrowLeft, Beaker, Boxes, CalendarDays, CheckCircle2, ChevronRight, Factory, Pencil, Plus, RefreshCw, Trash2 } from 'lucide-react'
+import { AlertTriangle, ArrowDownLeft, ArrowLeft, Beaker, Boxes, CalendarDays, CheckCircle2, ChevronRight, Factory, Layers, Pencil, Plus, RefreshCw, Trash2 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
@@ -28,9 +28,9 @@ import { PageHeader } from '@/components/PageHeader'
 import { useIsMobile } from '@/lib/useIsMobile'
 import { ProductionMobile } from './ProductionMobile'
 import { ExcelButton } from '@/components/ExcelButton'
-import { formatDate, formatNum, todayISO } from '@/lib/format'
+import { errText, formatDate, formatNum, todayISO } from '@/lib/format'
 import { cn } from '@/lib/utils'
-import { expandRecipe, expandRecipeWithPp } from '@/lib/recipeMath'
+import { expandBatchWithOutputPp, expandRecipe, expandRecipeWithPp } from '@/lib/recipeMath'
 import { useLiveRefresh } from '@/lib/useLiveRefresh'
 import { Pagination, usePaged } from '@/components/Pagination'
 import { useEntryWindow } from '@/lib/useEntryWindow'
@@ -77,6 +77,35 @@ export function Production(): React.JSX.Element {
   // product with a batch, and everything the sheet does around those — the
   // recipe, the stock draw, the shortfall warning — has no meaning here.
   const [recircOpen, setRecircOpen] = useState(false)
+  // Writing a heel out of a vessel: which product, which vessel, how much and
+  // — required — why.
+  const [deadOpen, setDeadOpen] = useState(false)
+  const [dead, setDead] = useState<Row>({ product_id: '', stage_id: '', qty: '', note: '' })
+  const [deadVessels, setDeadVessels] = useState<Row[]>([])
+  const [deadLog, setDeadLog] = useState<Row[]>([])
+  const [deadSaving, setDeadSaving] = useState(false)
+  // The vessels standing for whichever product is picked, and what has already
+  // been written off it.
+  useEffect(() => {
+    const pid = Number(dead.product_id) || 0
+    if (!deadOpen || !pid) {
+      setDeadVessels([])
+      setDeadLog([])
+      return
+    }
+    let alive = true
+    void Promise.all([
+      window.api.stockOpening.ppVessels(pid).catch(() => [] as Row[]),
+      window.api.stockOpening.ppWriteoffs(pid).catch(() => [] as Row[])
+    ]).then(([v, w]) => {
+      if (!alive) return
+      setDeadVessels(v)
+      setDeadLog(w)
+    })
+    return () => {
+      alive = false
+    }
+  }, [deadOpen, dead.product_id])
   const isMobile = useIsMobile()
   const [recirc, setRecirc] = useState<Row>({ prod_date: todayISO(), product_id: '', qty: '', note: '' })
   const [recircSaving, setRecircSaving] = useState(false)
@@ -422,6 +451,14 @@ export function Production(): React.JSX.Element {
   const ppInputIds = useMemo(() => {
     const ids = new Set<number>()
     for (const r of runs) {
+      // THE PRODUCT BEING MADE, as well as what the recipe consumes.
+      //
+      // This collected inputs only, which is right for PP used as an input
+      // substitute — shea in a vessel saving shea from the yard. It misses the
+      // commoner case entirely: the vessels holding the thing being MADE. RPO
+      // part-way through the plant is RPO, and its own balances were never
+      // fetched, so the sheet drew the full recipe against oil it already had.
+      if (Number(r.product_id) > 0) ids.add(Number(r.product_id))
       const items: Row[] = Array.isArray(r.items) ? r.items : []
       for (const it of items) {
         if (String(it.kind || 'input') === 'input' && it.auto_calc) ids.add(Number(it.product_id))
@@ -431,7 +468,10 @@ export function Production(): React.JSX.Element {
       .filter((x) => x > 0)
       .sort((a, b) => a - b)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [JSON.stringify(runs.map((r) => (Array.isArray(r.items) ? r.items : []).map((it: Row) => it.product_id)))])
+  }, [
+    JSON.stringify(runs.map((r) => (Array.isArray(r.items) ? r.items : []).map((it: Row) => it.product_id))),
+    JSON.stringify(runs.map((r) => r.product_id))
+  ])
 
   // Both PP buckets, standing right now, for every input the sheet might draw
   // on — the same figures createProduction/updateProduction actually draw
@@ -520,14 +560,40 @@ export function Production(): React.JSX.Element {
           freeByProduct[Number(it.product_id)] = ppWithout[Number(it.product_id)] || 0
         }
       }
-      const { lines, draws } = expandRecipeWithPp(items, q, freeByProduct)
+      // THE PRODUCT'S OWN PP FIRST.
+      //
+      // PP is part of the product's own stock — RPO opening at 75.15 is 22.15
+      // in tanks plus 53 standing in vessels — so finishing oil that is
+      // already in that figure makes nothing new. expandBatchWithOutputPp
+      // takes what the vessels can supply, gives the recipe only what is left,
+      // and returns the consuming half of the pair as an input line against
+      // the product itself. The projection then nets to zero on its own,
+      // because it is reading the very lines the save will write.
+      const outPidForPp = Number(r.product_id) || 0
+      const ownPools = outPidForPp
+        ? { without: ppWithout[outPidForPp] || 0, with: ppWith[outPidForPp] || 0 }
+        : {}
+      const { lines, draws, plan } = expandBatchWithOutputPp(items, q, ownPools, freeByProduct, outPidForPp)
+      if (outPidForPp) {
+        ppWithout[outPidForPp] = Math.max(0, (ppWithout[outPidForPp] || 0) - plan.fromPpFree)
+        ppWith[outPidForPp] = Math.max(0, (ppWith[outPidForPp] || 0) - plan.ppWithUsed)
+      }
       for (const line of lines) {
         const pid = Number(line.product_id)
         if (!pid) continue
         const amt = Number(line.qty) || 0
         if (line.kind === 'input') {
           const src = items.find((it) => Number(it.product_id) === pid && String(it.kind) === 'input')
-          consumes.push({ product_id: pid, name: nameOf(pid), pct: Number(src?.qty) || 0, amt })
+          consumes.push({
+            product_id: pid,
+            name: nameOf(pid),
+            pct: Number(src?.qty) || 0,
+            amt,
+            // The product consuming itself is not a recipe component — it is
+            // the oil coming out of its own vessels, and saying so stops it
+            // reading as a strange new ingredient.
+            fromOwnPp: pid === Number(r.product_id)
+          })
           bal[pid] = (bal[pid] ?? 0) - amt
           touched.add(pid)
         } else if (line.kind === 'output') {
@@ -1052,15 +1118,24 @@ export function Production(): React.JSX.Element {
                               return (
                                 <div key={k} className="py-[3px]">
                                   <div className="flex items-center gap-2.5">
-                                    <span className="w-[78px] shrink-0 truncate text-[11.5px] font-bold text-[#33473E]" title={cc.name}>
-                                      {cc.name}
+                                    <span
+                                      className={cn(
+                                        'w-[78px] shrink-0 truncate text-[11.5px] font-bold',
+                                        // The product's own vessels, not a
+                                        // component: violet, the colour PP
+                                        // carries on the opening sheet.
+                                        cc.fromOwnPp ? 'text-[#3D3179]' : 'text-[#33473E]'
+                                      )}
+                                      title={cc.fromOwnPp ? `${cc.name} — finished out of its own PP vessels` : cc.name}
+                                    >
+                                      {cc.fromOwnPp ? `${cc.name} · PP` : cc.name}
                                     </span>
                                     <span className="h-[5px] min-w-[24px] flex-1 overflow-hidden rounded-[2px] bg-[#EAF0E9]">
                                       <span
                                         className="block h-full"
                                         style={{
                                           width: `${((Number(cc.amt) || 0) / maxAmt) * 100}%`,
-                                          background: short ? '#B3261E' : '#12855A'
+                                          background: short ? '#B3261E' : cc.fromOwnPp ? '#3D3179' : '#12855A'
                                         }}
                                       />
                                     </span>
@@ -1071,6 +1146,16 @@ export function Production(): React.JSX.Element {
                                   {parts.length > 0 && (
                                     <div className="ml-[90px] mt-[1px] text-[10px] font-semibold text-[#5A6B62]">
                                       {parts.join(' + ')}
+                                    </div>
+                                  )}
+                                  {/* The pair, said out loud. Oil finished out
+                                      of its own vessels is already inside the
+                                      product's stock, so the batch adds it and
+                                      takes it back and the balance does not
+                                      move — the same +/- a recirculation is. */}
+                                  {cc.fromOwnPp && (
+                                    <div className="ml-[90px] mt-[1px] text-[10px] font-semibold text-[#3D3179]">
+                                      already in stock as PP — produced and drawn back, so the balance does not move
                                     </div>
                                   )}
                                 </div>
@@ -1467,6 +1552,21 @@ export function Production(): React.JSX.Element {
                 </span>
               )}
             </Button>
+            {/* A heel that is never coming back. Violet, the colour PP
+                carries everywhere else, because this acts on a vessel rather
+                than on a batch. */}
+            <Button
+              size="sm"
+              variant="outline"
+              className={cn('gap-1.5', __WEB__ && '!gap-2 !border-[1.5px] !border-[#C7BCF0] !bg-[#F1EEFB] !px-3 !font-extrabold !text-[#3D3179] hover:!bg-[#E7E1F8]')}
+              onClick={() => {
+                setDead({ product_id: '', stage_id: '', qty: '', note: '' })
+                setDeadOpen(true)
+              }}
+            >
+              <Layers className="h-4 w-4" />
+              Write off PP
+            </Button>
             <Button
               size="sm"
               className={cn(__WEB__ && '!gap-2 !bg-[#C7F03F] !px-4 !font-extrabold !text-[#12280B] hover:!bg-[#B8E32E]')}
@@ -1710,6 +1810,214 @@ export function Production(): React.JSX.Element {
           <Pagination {...paged} label="runs" className="border-t px-3" />
         </div>
       </div>
+      {/* WRITE A HEEL OUT OF A VESSEL.
+          Not a batch and not a loss on a recipe — oil that is simply never
+          coming back, taken out of PP so no future run is offered stock that
+          does not exist. The reason is required: a quantity that vanished with
+          no explanation is the one an auditor always asks about. */}
+      <Dialog open={deadOpen} onOpenChange={(o) => !o && setDeadOpen(false)}>
+        <DialogContent
+          className={cn(
+            'max-w-md',
+            __WEB__ &&
+              '!w-[min(94vw,620px)] !max-w-none !gap-0 !overflow-hidden !rounded-[6px] !border-0 !bg-[#F1F5EF] !p-0 [&>button]:!right-[22px] [&>button]:!top-[22px] [&>button]:!text-white [&>button]:!opacity-80'
+          )}
+        >
+          <DialogHeader className={cn(__WEB__ && '!block !space-y-0 !bg-[#3D3179] !px-[22px] !py-[18px] !pr-16 !text-left')}>
+            {__WEB__ && (
+              <div className="text-[11px] font-extrabold uppercase tracking-[.14em] text-[#C7BCF0]">Partly processed</div>
+            )}
+            <DialogTitle className={cn(__WEB__ && '!mt-1 !text-[19px] !font-extrabold !tracking-[-0.02em] !text-white')}>
+              Write off dead stock
+            </DialogTitle>
+            <p className={cn('mt-1 text-[12px] text-muted-foreground', __WEB__ && '!mt-2 !text-[11.5px] !font-semibold !leading-relaxed !text-[#C7BCF0]')}>
+              A heel that cannot be finished — settled sludge, a tank bottom, oil gone off. It leaves PP for good and
+              the oil&apos;s stock falls by it. Nothing is produced and no recipe runs.
+            </p>
+          </DialogHeader>
+
+          <div className={cn('grid gap-3 py-2', __WEB__ && '!flex !flex-col !gap-4 !px-[22px] !py-[18px]')}>
+            <div className={cn('flex flex-col gap-1.5', __WEB__ && '!gap-0')}>
+              <Label className={cn(__WEB__ && '!mb-[7px] !text-[12.5px] !font-extrabold !text-[#0A1F17]')}>
+                Which oil <span className="text-[#B3261E]">*</span>
+              </Label>
+              <Select
+                value={String(dead.product_id || '')}
+                onValueChange={(v) => setDead((p2) => ({ ...p2, product_id: v, stage_id: '', qty: '' }))}
+                panelClassName={__WEB__ ? '!rounded-[4px] !border-[#C3D2C6] !normal-case' : undefined}
+              >
+                <SelectTrigger className={cn(__WEB__ && '!h-[46px] !rounded-[4px] !border-[#C3D2C6] !bg-white !px-3 !text-[13.5px] !font-bold')}>
+                  <SelectValue placeholder="Pick the oil" />
+                </SelectTrigger>
+                <SelectContent className={cn(__WEB__ && '!max-h-[180px] !p-1.5')}>
+                  {products.map((x) => (
+                    <SelectItem key={String(x.id)} value={String(x.id)} className={cn(__WEB__ && '!h-10 !text-[13px] !font-semibold')}>
+                      {String(x.name)}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+
+            {/* ALWAYS PRESENT, so the sheet keeps its height.
+                Rendering this only after an oil was picked left the dialog two
+                fields tall, with nothing under the dropdown to open into — so
+                the list flipped up and covered the header. A form that changes
+                height as it is filled also moves the buttons under the
+                cursor. */}
+            <div className={cn('flex flex-col gap-1.5', __WEB__ && '!gap-0')}>
+                <Label className={cn(__WEB__ && '!mb-[7px] !text-[12.5px] !font-extrabold !text-[#0A1F17]')}>
+                  Which vessel <span className="text-[#B3261E]">*</span>
+                </Label>
+                {!dead.product_id ? (
+                  <div className="flex min-h-[92px] items-center rounded-[4px] border border-dashed border-[#C3D2C6] bg-white px-3.5 text-[12.5px] font-semibold text-[#8FA79B]">
+                    Pick the oil above and its vessels appear here.
+                  </div>
+                ) : deadVessels.length === 0 ? (
+                  <div className="flex min-h-[92px] items-center rounded-[4px] border border-[#DCE7DB] bg-white px-3.5 text-[12.5px] font-semibold text-[#5A6B62]">
+                    Nothing is standing in PP for this oil.
+                  </div>
+                ) : (
+                  <div className="flex flex-col gap-1.5">
+                    {deadVessels.map((v) => {
+                      const on = String(dead.stage_id) === String(v.stage_id)
+                      return (
+                        <button
+                          key={String(v.stage_id)}
+                          type="button"
+                          onClick={() => setDead((p2) => ({ ...p2, stage_id: String(v.stage_id) }))}
+                          className={cn(
+                            'flex items-center gap-2.5 rounded-[4px] border px-3.5 py-2.5 text-left transition-colors',
+                            on ? 'border-[#3D3179] bg-[#F1EEFB]' : 'border-[#C3D2C6] bg-white hover:bg-[#F7FAF6]'
+                          )}
+                        >
+                          <span className="text-[13px] font-bold text-[#0A1F17]">{String(v.vessel)}</span>
+                          <span className="rounded-[2px] bg-[#EAF0E9] px-1.5 py-0.5 text-[10px] font-extrabold uppercase tracking-[.06em] text-[#5A6B62]">
+                            {String(v.ffa) === 'without' ? 'no FFA' : 'with FFA'}
+                          </span>
+                          <span className="doc-ref ml-auto text-[13.5px] font-bold tabular-nums">
+                            {formatNum(Number(v.qty) || 0)}
+                          </span>
+                        </button>
+                      )
+                    })}
+                  </div>
+                )}
+            </div>
+
+            {!!dead.stage_id && (
+              <>
+                <div className={cn('flex flex-col gap-1.5', __WEB__ && '!gap-0')}>
+                  <Label className={cn(__WEB__ && '!mb-[7px] !text-[12.5px] !font-extrabold !text-[#0A1F17]')}>
+                    Quantity to write off <span className="text-[#B3261E]">*</span>
+                  </Label>
+                  <div className="flex items-center gap-2.5">
+                    <Input
+                      type="number"
+                      inputMode="decimal"
+                      placeholder="0.000"
+                      value={String(dead.qty ?? '')}
+                      onChange={(e) => setDead((p2) => ({ ...p2, qty: e.target.value }))}
+                      className={cn(__WEB__ && '!h-[46px] !flex-1 !rounded-[4px] !border-[#C3D2C6] !bg-white !text-[14px] !font-bold')}
+                    />
+                    {/* Closing a vessel out is commoner than trimming it. */}
+                    <Button
+                      type="button"
+                      variant="outline"
+                      className={cn(__WEB__ && '!h-[46px] !rounded-[4px] !border-[#C3D2C6] !px-3.5 !text-[12px] !font-extrabold !text-[#3D3179]')}
+                      onClick={() =>
+                        setDead((p2) => ({
+                          ...p2,
+                          qty: String(deadVessels.find((v) => String(v.stage_id) === String(p2.stage_id))?.qty ?? '')
+                        }))
+                      }
+                    >
+                      All of it
+                    </Button>
+                  </div>
+                </div>
+                <div className={cn('flex flex-col gap-1.5', __WEB__ && '!gap-0')}>
+                  <Label className={cn(__WEB__ && '!mb-[7px] !text-[12.5px] !font-extrabold !text-[#0A1F17]')}>
+                    Why <span className="text-[#B3261E]">*</span>
+                  </Label>
+                  <Input
+                    placeholder="e.g. settled sludge at the bottom of the vessel, not recoverable"
+                    value={String(dead.note ?? '')}
+                    onChange={(e) => setDead((p2) => ({ ...p2, note: e.target.value }))}
+                    className={cn(__WEB__ && '!h-[46px] !rounded-[4px] !border-[#C3D2C6] !bg-white !text-[13.5px] !font-semibold')}
+                  />
+                </div>
+              </>
+            )}
+
+            {deadLog.length > 0 && (
+              <div className="overflow-hidden rounded-[4px] border border-[#D6E2D6] bg-white">
+                <div className="border-b border-b-[#E4ECE3] bg-[#F7FAF6] px-4 py-2.5 text-[11px] font-extrabold uppercase tracking-[.13em] text-[#33473E]">
+                  Already written off
+                </div>
+                <div className="max-h-[150px] overflow-y-auto">
+                  {deadLog.map((w) => (
+                    <div key={String(w.id)} className="border-b border-b-[#EFF3EE] px-4 py-2.5 last:border-b-0">
+                      <div className="flex flex-wrap items-baseline gap-x-2.5 text-[12px]">
+                        <span className="doc-ref font-bold text-[#8C2F26]">-{formatNum(Number(w.qty) || 0)}</span>
+                        <span className="font-bold text-[#33473E]">{String(w.vessel || '')}</span>
+                        <span className="ml-auto whitespace-nowrap text-[11px] font-semibold text-[#5A6B62]">
+                          {String(w.written_by_name || 'system')} · {String(w.created_at || '').slice(0, 10)}
+                        </span>
+                      </div>
+                      <div className="mt-1 text-[11.5px] font-semibold text-[#33473E]">{String(w.note || '')}</div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+
+          <DialogFooter className={cn(__WEB__ && '!flex !items-center !gap-3 !border-t !border-t-[#D6E2D6] !bg-white !px-[22px] !py-[15px] sm:!justify-start')}>
+            {__WEB__ && (
+              <span className="text-[12.5px] font-bold text-[#5A6B62]">
+                {!dead.stage_id
+                  ? 'Pick the oil and the vessel.'
+                  : !(Number(dead.qty) > 0)
+                    ? 'Enter a quantity.'
+                    : !String(dead.note || '').trim()
+                      ? 'Say why.'
+                      : `${formatNum(Number(dead.qty))} leaves PP for good.`}
+              </span>
+            )}
+            <div className={cn(__WEB__ && 'ml-auto flex gap-2.5')}>
+              <Button variant="outline" onClick={() => setDeadOpen(false)} disabled={deadSaving}>
+                Cancel
+              </Button>
+              <Button
+                disabled={deadSaving || !dead.stage_id || !(Number(dead.qty) > 0) || !String(dead.note || '').trim()}
+                className={cn(__WEB__ && '!bg-[#3D3179] !font-extrabold !text-white hover:!bg-[#332968]')}
+                onClick={async () => {
+                  setDeadSaving(true)
+                  try {
+                    await window.api.stockOpening.writeOffPp(
+                      Number(dead.product_id),
+                      Number(dead.stage_id),
+                      Number(dead.qty),
+                      String(dead.note)
+                    )
+                    toast.success(`${formatNum(Number(dead.qty))} written off`)
+                    setDeadOpen(false)
+                    await load()
+                  } catch (e) {
+                    toast.error(errText(e))
+                  } finally {
+                    setDeadSaving(false)
+                  }
+                }}
+              >
+                {deadSaving ? 'Writing off…' : 'Write off'}
+              </Button>
+            </div>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
       {/* Recirculation, to the handoff's own design.
           A dialog rather than a page: it asks three things, and the answer to
           all three is on the shift supervisor's slip. The blue band under the
@@ -1766,6 +2074,14 @@ export function Production(): React.JSX.Element {
                 <Select
                   value={String(recirc.product_id || '')}
                   onValueChange={(v) => setRecirc((p2) => ({ ...p2, product_id: v }))}
+                  // Dressed like the dialog it opens in: square corners, the
+                  // form's own border, and a lift that reads as floating above
+                  // the sheet rather than as another box drawn on it.
+                  panelClassName={
+                    __WEB__
+                      ? '!rounded-[4px] !border-[#C3D2C6] !normal-case !shadow-[0_16px_36px_rgba(10,31,23,.22)]'
+                      : undefined
+                  }
                 >
                   <SelectTrigger
                     className={cn(
@@ -1778,9 +2094,18 @@ export function Production(): React.JSX.Element {
                   >
                     <SelectValue placeholder="Pick the oil" />
                   </SelectTrigger>
-                  <SelectContent>
+                  {/* Capped so the list stays inside the sheet. The panel
+                      escapes the dialog's clipping on purpose — otherwise it
+                      would be cut off at the edge — but a products list this
+                      long then ran past the bottom of the dialog and over the
+                      backdrop, which reads as the dropdown having got loose. */}
+                  <SelectContent className={cn(__WEB__ && '!max-h-[210px] !p-1.5')}>
                     {products.map((x) => (
-                      <SelectItem key={String(x.id)} value={String(x.id)}>
+                      <SelectItem
+                        key={String(x.id)}
+                        value={String(x.id)}
+                        className={cn(__WEB__ && '!h-10 !rounded-[3px] !text-[13px] !font-semibold')}
+                      >
                         {String(x.name)} · {CAT_LABEL[String(x.category)] ?? String(x.category)}
                       </SelectItem>
                     ))}

@@ -71,13 +71,27 @@ const api = {
     clear: (userId: number, isAdmin: boolean): Promise<{ read: number }> =>
       ipcRenderer.invoke('notify:clear', { userId, isAdmin })
   },
+  history: {
+    list: (entity: string, id: number): Promise<Row[]> => ipcRenderer.invoke('history:list', { entity, id })
+  },
   bargains: {
     list: (from?: string, to?: string, companyIds?: number[], forModule?: string): Promise<Row[]> =>
       ipcRenderer.invoke('bargains:list', { from, to, companyIds, forModule }),
     create: (values: Row): Promise<{ id: number; bargain_no: string }> =>
       ipcRenderer.invoke('bargains:create', { values }),
-    update: (id: number, values: Row): Promise<{ id: number }> =>
+    update: (
+      id: number,
+      values: Row
+    ): Promise<{ id: number; bargain_no: string; rate_changed_from: number | null; rate: number }> =>
       ipcRenderer.invoke('bargains:update', { id, values }),
+    linkedInvoices: (id: number): Promise<Row[]> => ipcRenderer.invoke('bargains:linkedInvoices', { id }),
+    adjustments: (id: number): Promise<Row[]> => ipcRenderer.invoke('bargains:adjustments', { id }),
+    setInvoiceRate: (
+      orderId: number,
+      bargainId: number,
+      rate: number
+    ): Promise<{ order_id: number; bargain_id: number; rate: number }> =>
+      ipcRenderer.invoke('bargains:setInvoiceRate', { orderId, bargainId, rate }),
     remove: (id: number): Promise<{ id: number }> => ipcRenderer.invoke('bargains:delete', { id }),
     adjust: (id: number, delta: number, note?: string, date?: string): Promise<{ id: number; qty: number }> =>
       ipcRenderer.invoke('bargains:adjust', { id, delta, note, date })
@@ -353,6 +367,18 @@ const api = {
       ipcRenderer.invoke('stockOpening:savePp', { productId, lines, companyId }),
     // Both PP buckets for a set of products — what the Production entry
     // sheet's preview draws against before a batch is saved.
+    ppVessels: (productId: number, companyId?: number): Promise<Row[]> =>
+      ipcRenderer.invoke('stockOpening:ppVessels', { productId, companyId }),
+    ppWriteoffs: (productId: number, companyId?: number): Promise<Row[]> =>
+      ipcRenderer.invoke('stockOpening:ppWriteoffs', { productId, companyId }),
+    writeOffPp: (
+      productId: number,
+      stageId: number,
+      qty: number,
+      note: string,
+      companyId?: number
+    ): Promise<{ product_id: number; stage_id: number; qty: number }> =>
+      ipcRenderer.invoke('stockOpening:writeOffPp', { productId, stageId, qty, note, companyId }),
     ppFreeTotals: (
       productIds: number[],
       companyId?: number

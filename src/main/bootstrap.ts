@@ -208,6 +208,91 @@ export async function runStartupTasks(): Promise<void> {
   // the undo tape for it. Editing or deleting a run has to put back precisely
   // what that run drew before it draws again or disappears, and the only way
   // to do that without guessing is to have written it down at the time.
+  // THE RATE AN INVOICE WAS BILLED AT, HELD BY THE INVOICE.
+  //
+  // A purchase invoice used to keep only ONE rate: a single-bargain invoice
+  // kept the bargain's rate, a split one kept the quantity-weighted blend. The
+  // per-bargain rates behind that blend were never stored, so a split invoice
+  // had to re-read them from the bargains every time it was opened — and
+  // therefore silently re-priced itself whenever a bargain rate was later
+  // corrected, while a single-bargain invoice beside it did not.
+  //
+  // The rate now lives on the tanker, next to the bargain it was loaded
+  // against, frozen when the invoice is saved. A bargain rate corrected
+  // afterwards changes nothing that has already been billed; the invoice
+  // screen SHOWS the difference and offers to adopt it, one bargain at a time.
+  //
+  // Backfilled from each bargain's rate as it stands today, which is what
+  // those invoices are already priced on — the blend stored on every existing
+  // split invoice reproduces exactly from these figures.
+  // WHAT CHANGED, not just who was here.
+  //
+  // The activity log records that somebody saved an invoice. It cannot say the
+  // rate went from 1,30,000 to 1,27,000, which is the thing actually asked
+  // about a month later. One row per field that moved, with the pair.
+  // OIL THAT IS NEVER COMING BACK.
+  //
+  // A vessel holds a heel that cannot be finished — settled sludge, a tank
+  // bottom, oil gone off. Leaving it in PP means every future batch is offered
+  // stock that does not exist and the same question gets asked forever. Writing
+  // it off takes it out of PP for good, and the reason is kept with it: a
+  // quantity that vanished with no explanation is the one thing an auditor
+  // always asks about.
+  await runOnce('pp_writeoffs_v1', async () => {
+    const c = getClient()
+    await c.execute(`CREATE TABLE IF NOT EXISTS pp_writeoffs (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      scope TEXT NOT NULL,
+      product_id INTEGER NOT NULL REFERENCES products(id),
+      stage_id INTEGER NOT NULL REFERENCES stock_pp_stages(id),
+      qty REAL NOT NULL,
+      ffa TEXT,
+      note TEXT,
+      written_by INTEGER,
+      written_by_name TEXT,
+      company_id INTEGER,
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    )`)
+    await c.execute('CREATE INDEX IF NOT EXISTS idx_pp_writeoffs_product ON pp_writeoffs(product_id, id)')
+  }).catch((e) => console.error('[stock] pp write-offs failed:', e))
+
+  await runOnce('change_log_v1', async () => {
+    const c = getClient()
+    await c.execute(`CREATE TABLE IF NOT EXISTS change_log (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      entity TEXT NOT NULL,
+      entity_id INTEGER NOT NULL,
+      -- What the record is CALLED, kept beside the id: an invoice number read
+      -- back years later means something where a row id does not.
+      entity_key TEXT,
+      action TEXT NOT NULL DEFAULT 'updated',
+      field TEXT,
+      label TEXT,
+      old_value TEXT,
+      new_value TEXT,
+      changed_by INTEGER,
+      changed_by_name TEXT,
+      company_id INTEGER,
+      changed_at TEXT NOT NULL DEFAULT (datetime('now'))
+    )`)
+    await c.execute('CREATE INDEX IF NOT EXISTS idx_change_log_rec ON change_log(entity, entity_id, id)')
+  }).catch((e) => console.error('[history] change log failed:', e))
+
+  await runOnce('tanker_frozen_bargain_rate_v1', async () => {
+    const c = getClient()
+    for (const col of ['bargain_rate', 'extra_bargain_rate']) {
+      await c.execute(`ALTER TABLE purchase_tankers ADD COLUMN ${col} REAL`).catch((e) => {
+        if (!/duplicate column/i.test(String((e as Error).message))) throw e
+      })
+    }
+    await c.execute(`UPDATE purchase_tankers SET bargain_rate =
+      (SELECT b.rate_per_uom FROM bargains b WHERE b.id = purchase_tankers.bargain_id)
+      WHERE bargain_rate IS NULL AND bargain_id IS NOT NULL`)
+    await c.execute(`UPDATE purchase_tankers SET extra_bargain_rate =
+      (SELECT b.rate_per_uom FROM bargains b WHERE b.id = purchase_tankers.extra_bargain_id)
+      WHERE extra_bargain_rate IS NULL AND extra_bargain_id IS NOT NULL`)
+  }).catch((e) => console.error('[orders] tanker frozen bargain rate failed:', e))
+
   await runOnce('pp_draws_v1', async () => {
     const c = getClient()
     await c.execute(`CREATE TABLE IF NOT EXISTS pp_draws (

@@ -3,6 +3,7 @@ import { getClient } from './db'
 import { getActiveCompanyId, companiesOfFactory, factoryOfCompanies } from './company'
 import { getBooksFrom } from './openings'
 import { stockLevels } from './stock'
+import { getCurrentUser } from './currentUser'
 import { productValuationRates } from './stock'
 
 // Stock brought forward on the day the books begin.
@@ -114,13 +115,21 @@ export async function listStockOpenings(companyId?: number): Promise<Row> {
     const id = n(p.id)
     const s = savedBy.get(id)
     const entered = s ? n(s.qty) : null
-    // PP comes from the stage breakdown wherever there is one, and from the
-    // typed figure otherwise. This is what lets a breakdown entered against a
-    // product whose opening has never been struck show its total, its Closes
-    // at, and get written by the next Save.
+    // WHAT WAS COUNTED THAT MORNING, not what is standing in the vessels now.
+    //
+    // This used to prefer the live vessel sum, which was right while the
+    // vessels were only a breakdown of the counted figure and nothing drew on
+    // them. Production now does: finishing 35 out of a vessel leaves 18, and
+    // the sheet then showed the opening as 18 — an opening that shrank weeks
+    // after the morning it records, taking the register down with it.
+    //
+    // The stored figure wins wherever an opening has been struck. The vessel
+    // sum remains the fallback for a product whose opening never was, which is
+    // what lets a breakdown typed against it show a total and be saved.
     const lines = ppLines.get(id) || []
     const ppSum = lines.length ? r3(lines.reduce((t, l) => t + n(l.qty), 0)) : null
-    const pp = ppSum != null ? ppSum : s ? n(s.pp_qty) : null
+    const stored = s && s.pp_qty != null ? n(s.pp_qty) : null
+    const pp = stored != null ? stored : ppSum
     // Signed: a correction that takes stock OFF the count is the ordinary case.
     const adj = s ? n(s.adj_qty) : null
     // Movements SINCE the opening date, and nothing else.
@@ -718,6 +727,97 @@ export async function ppTotalsBothByProduct(
 // One production run's own PP draws — what the entry sheet needs to give
 // back to the pool it is previewing against when that run is being edited,
 // the same way it already gives back the run's own Raw consumption.
+/**
+ * Every vessel standing for one product, with what is in it — the list the
+ * write-off screen offers. Empty vessels are left out: there is nothing to
+ * write off in them.
+ */
+export async function ppVesselBalances(productId: number, companyId?: number): Promise<Row[]> {
+  const scope = await ppScope(companyId)
+  const res = await getClient().execute({
+    sql: `SELECT sop.stage_id, st.name AS vessel, sop.ffa, sop.qty
+            FROM stock_opening_pp sop
+            JOIN stock_pp_stages st ON st.id = sop.stage_id
+           WHERE sop.scope = ? AND sop.product_id = ? AND sop.qty > 0.0005
+           ORDER BY st.created_at, st.id`,
+    args: [scope, n(productId)]
+  })
+  return toPlain(res).map((r) => ({ ...r, qty: r3(n(r.qty)) }))
+}
+
+/**
+ * Take a heel out of a vessel for good.
+ *
+ * TWO balances move, because PP is counted twice over by design: the vessel
+ * row says WHERE the oil is, and the opening's pp_qty says it is part of the
+ * product's stock. A write-off has to come off both, or the vessel empties
+ * while the register still carries the oil — which is the same double-count
+ * the production pair exists to avoid, in the other direction.
+ *
+ * DEAD LOSS is not stocked: the recipe's own dead loss is a 'loss' line and
+ * the register deliberately counts neither consumption nor production for it
+ * (see stock.ts). So this reduces PP and keeps the reason; it does not invent
+ * a pile of dead loss somewhere else.
+ */
+export async function writeOffPp(
+  productId: number,
+  stageId: number,
+  qty: number,
+  note: string,
+  companyId?: number
+): Promise<{ product_id: number; stage_id: number; qty: number }> {
+  const want = r3(qty)
+  if (!(want > 0.0005)) throw new Error('Enter a quantity to write off')
+  const reason = String(note || '').trim()
+  if (!reason) throw new Error('Say why this oil is being written off')
+  const cid = n(companyId) || getActiveCompanyId()
+  const scope = await ppScope(cid)
+  const c = getClient()
+  const cur = await c.execute({
+    sql: 'SELECT qty, ffa FROM stock_opening_pp WHERE scope = ? AND product_id = ? AND stage_id = ?',
+    args: [scope, n(productId), n(stageId)]
+  })
+  const have = r3(n(cur.rows[0]?.qty))
+  if (!cur.rows.length || have <= 0.0005) throw new Error('That vessel is already empty')
+  if (want > have + 0.0005) {
+    throw new Error(`Only ${have} is standing in that vessel — cannot write off ${want}`)
+  }
+  await c.execute({
+    sql: `UPDATE stock_opening_pp SET qty = qty - ?, updated_at = datetime('now')
+           WHERE scope = ? AND product_id = ? AND stage_id = ?`,
+    args: [want, scope, n(productId), n(stageId)]
+  })
+  // The other half: the product's own opening carries this oil as pp_qty, so
+  // it leaves there too and the register falls by exactly what was written off.
+  await c.execute({
+    sql: `UPDATE stock_openings SET pp_qty = MAX(0, COALESCE(pp_qty, 0) - ?), updated_at = datetime('now')
+           WHERE product_id = ? AND company_id IN (SELECT id FROM companies WHERE id = ?)`,
+    args: [want, n(productId), cid]
+  })
+  const u = getCurrentUser()
+  await c.execute({
+    sql: `INSERT INTO pp_writeoffs (scope, product_id, stage_id, qty, ffa, note, written_by, written_by_name, company_id)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    args: [scope, n(productId), n(stageId), want, String(cur.rows[0]?.ffa || ''), reason, u.id, u.username, cid]
+  })
+  return { product_id: n(productId), stage_id: n(stageId), qty: want }
+}
+
+/** What has been written off a product's vessels, newest first. */
+export async function listPpWriteoffs(productId: number, companyId?: number): Promise<Row[]> {
+  const scope = await ppScope(n(companyId) || getActiveCompanyId())
+  const res = await getClient().execute({
+    sql: `SELECT w.id, w.qty, w.ffa, w.note, w.written_by_name, w.created_at, st.name AS vessel
+            FROM pp_writeoffs w
+            LEFT JOIN stock_pp_stages st ON st.id = w.stage_id
+           WHERE w.scope = ? AND w.product_id = ?
+           ORDER BY w.id DESC
+           LIMIT 100`,
+    args: [scope, n(productId)]
+  })
+  return toPlain(res)
+}
+
 export async function ppDrawsForProduction(
   productionId: number
 ): Promise<{ product_id: number; ffa: string; qty: number }[]> {

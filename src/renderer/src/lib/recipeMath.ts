@@ -257,3 +257,156 @@ export function expandRecipeWithPp(
   }
   return { lines, draws }
 }
+
+// -----------------------------------------------------------------------------
+// PP OF THE PRODUCT ITSELF
+// -----------------------------------------------------------------------------
+// The PP handled above is an INPUT substitute: shea in a vessel saves shea from
+// the yard. This is the other case, and the commoner one — the vessel holds the
+// thing being MADE. RPO part-way through the plant is already RPO; finishing it
+// draws no shea, no RPS and no formulation at all, because none of that happens
+// to it a second time.
+//
+// So a batch is supplied in three steps, and only what is left over is a
+// recipe problem:
+//
+//   1. PP of the product, W/O FFA  — one for one, straight to finished.
+//   2. PP of the product, WITH FFA — still has to shed it, so it yields less
+//      than it holds, and the difference comes back as fatty acid.
+//   3. Whatever remains                — the formulation, exactly as before.
+//
+// With both vessels empty this collapses to step 3 and nothing changes.
+
+/**
+ * The FFA rate to apply to the product's own PP.
+ *
+ * The recipe states FFA per INPUT, and a blend has several — 23% on shea, 0.1%
+ * on RPS. What is in the vessel came overwhelmingly from the input that
+ * dominates the blend, so that is the rate: the largest share, and the first
+ * listed where two are equal.
+ */
+export function dominantInputFfaPct(items: Row[]): number {
+  const inputs = items.filter((it) => kindOf(it) === 'input' && it.auto_calc)
+  if (!inputs.length) return 0
+  let best = inputs[0]
+  for (const it of inputs) if (num(it.qty) > num(best.qty)) best = it
+  return inputFattyAcidPct(best)
+}
+
+/** The by-product the dominant input recovers, so PP sheds FFA to the same place. */
+export function dominantByproductId(items: Row[]): number {
+  const inputs = items.filter((it) => kindOf(it) === 'input' && it.auto_calc)
+  if (!inputs.length) return 0
+  let best = inputs[0]
+  for (const it of inputs) if (num(it.qty) > num(best.qty)) best = it
+  return num(best.byproduct_product_id)
+}
+
+export type OutputPpPlan = {
+  /** Vessel oil taken 1:1 — finished, no inputs, no fatty acid. */
+  fromPpFree: number
+  /** Vessel oil taken out of the WITH-FFA vessels. */
+  ppWithUsed: number
+  /** What that oil yields once the FFA is off it. */
+  finishedFromWith: number
+  /** The FFA it sheds on the way. */
+  fattyAcidFromWith: number
+  /** Output still to be made from raw, through the formulation. */
+  fromRecipe: number
+  /** The rate used on the with-FFA part, for the screen to show. */
+  ffaPct: number
+}
+
+/**
+ * How much of a batch its own PP can supply, and what is left for the recipe.
+ *
+ * `pools` is what stands in the product's own vessels. Nothing here reads or
+ * writes stock — the caller draws against the plan.
+ */
+export function planOutputPp(
+  items: Row[],
+  outputQty: number,
+  pools: { without?: number; with?: number } = {}
+): OutputPpPlan {
+  const want = Math.max(0, num(outputQty))
+  const f = dominantInputFfaPct(items) / 100
+  const freeHave = Math.max(0, num(pools.without))
+  const withHave = Math.max(0, num(pools.with))
+
+  // 1. One for one, and never more than the batch needs — PP left over is
+  //    still PP, and a vessel is not emptied further than the run requires.
+  const fromPpFree = Math.min(freeHave, want)
+  const afterFree = want - fromPpFree
+
+  // 2. A tonne in the vessel is not a tonne of output: (1 - f) of it survives.
+  //    So supplying `afterFree` needs afterFree / (1 - f) of vessel oil — and a
+  //    recipe claiming to lose everything gets no uplift rather than a divide
+  //    by zero.
+  const survives = 1 - f
+  const needFromWith = survives > 0 ? afterFree / survives : 0
+  const ppWithUsed = Math.min(withHave, needFromWith)
+  const finishedFromWith = ppWithUsed * survives
+  const fattyAcidFromWith = ppWithUsed * f
+
+  return {
+    fromPpFree,
+    ppWithUsed,
+    finishedFromWith,
+    fattyAcidFromWith,
+    fromRecipe: Math.max(0, want - fromPpFree - finishedFromWith),
+    ffaPct: f * 100
+  }
+}
+
+/**
+ * A whole batch: its own PP first, then the formulation for the remainder.
+ *
+ * The returned lines are the movements to write. The output product itself is
+ * NOT a line — the production row carries it — so a batch supplied entirely
+ * from PP returns only the fatty acid it shed.
+ */
+export function expandBatchWithOutputPp(
+  items: Row[],
+  outputQty: number,
+  outputPools: { without?: number; with?: number } = {},
+  freeByProduct: Record<number, number> = {},
+  outputProductId = 0
+): {
+  lines: { product_id: number; qty: number; kind: string }[]
+  draws: { product_id: number; fromFree: number; fromFfa: number; gross: number; fattyAcid: number }[]
+  plan: OutputPpPlan
+} {
+  const plan = planOutputPp(items, outputQty, outputPools)
+  // Only the part still to be MADE goes through the recipe. With empty vessels
+  // this is the whole batch and the result is identical to before.
+  const base = expandRecipeWithPp(items, plan.fromRecipe, freeByProduct)
+  const lines = base.lines
+
+  // THE MINUS HALF OF THE PAIR.
+  //
+  // PP is already inside the product's own stock figure — an opening of 75.15
+  // RPO is 22.15 in tanks plus 53 standing in vessels. So finishing 35 of it
+  // makes nothing NEW: booking the batch as +35 without taking the same 35 out
+  // of PP would count that oil twice.
+  //
+  // The batch is therefore recorded as the paired +/- a recirculation already
+  // is — produced 35, consumed 35, closing unmoved — except that here the pair
+  // runs through the real movement lines, so the vessel it came out of comes
+  // down with it. For the WITH-FFA half the two sides differ by exactly the
+  // fatty acid it shed, which is what leaves the product's balance.
+  const fromOwnPp = plan.fromPpFree + plan.ppWithUsed
+  if (outputProductId && fromOwnPp > 0.0005) {
+    lines.push({ product_id: Number(outputProductId), qty: fromOwnPp, kind: 'input' })
+  }
+
+  // The FFA the vessel oil shed, to the same by-product the recipe names.
+  if (plan.fattyAcidFromWith > 0.0005) {
+    const pid = dominantByproductId(items)
+    if (pid) {
+      const existing = lines.find((l) => l.kind === 'output' && l.product_id === pid)
+      if (existing) existing.qty += plan.fattyAcidFromWith
+      else lines.push({ product_id: pid, qty: plan.fattyAcidFromWith, kind: 'output' })
+    }
+  }
+  return { lines, draws: base.draws, plan }
+}

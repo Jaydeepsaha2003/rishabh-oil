@@ -49,6 +49,7 @@ import {
 } from 'lucide-react'
 import { formatDate, formatNum, todayISO } from '@/lib/format'
 import { MobileBar } from '@/components/MobileBar'
+import { OutsideTankerLog } from '@/components/OutsideTankerLog'
 import { cn } from '@/lib/utils'
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -84,16 +85,33 @@ export function GateEntryMobile(): React.JSX.Element {
   const [draft, setDraft] = useState<Record<string, { gross?: string; tare?: string }>>({})
   const [savingId, setSavingId] = useState(0)
 
+  // The masters the outside-tanker diary needs to name what is standing
+  // outside. Fetched with the register rather than on opening the diary, so
+  // the dialog has its lists the moment it appears.
+  const [masters, setMasters] = useState<{ products: Row[]; suppliers: Row[]; customers: Row[] }>({
+    products: [],
+    suppliers: [],
+    customers: []
+  })
+
   async function load(): Promise<void> {
     setLoading(true)
     setFailed('')
     try {
-      const [r, w] = await Promise.all([
+      const [r, w, pr, su, cu] = await Promise.all([
         window.api.gate.list(),
-        window.api.gate.waivedOuts().catch(() => [])
+        window.api.gate.waivedOuts().catch(() => []),
+        window.api.data.list('products').catch(() => [] as Row[]),
+        window.api.data.list('suppliers').catch(() => [] as Row[]),
+        window.api.data.list('customers').catch(() => [] as Row[])
       ])
       setRows(Array.isArray(r) ? r : [])
       setWaived(Array.isArray(w) ? w : [])
+      setMasters({
+        products: Array.isArray(pr) ? pr : [],
+        suppliers: Array.isArray(su) ? su : [],
+        customers: Array.isArray(cu) ? cu : []
+      })
     } catch (e) {
       setFailed((e as Error).message)
     } finally {
@@ -223,9 +241,22 @@ export function GateEntryMobile(): React.JSX.Element {
     <div className="flex min-h-[100dvh] flex-col bg-[#F1F5EF]">
       <div className="shrink-0 bg-[#0B3D2E] px-4 pb-3 pt-2.5 text-white">
         <MobileBar onRefresh={load} />
-        <div className="min-w-0">
-          <div className="text-[19px] font-extrabold tracking-[-0.02em]">Gate entry</div>
-          <div className="mt-0.5 text-[11.5px] font-bold text-[#8FBFA8]">{formatDate(todayISO())}</div>
+        <div className="flex items-start justify-between gap-3">
+          <div className="min-w-0">
+            <div className="text-[19px] font-extrabold tracking-[-0.02em]">Gate entry</div>
+            <div className="mt-0.5 text-[11.5px] font-bold text-[#8FBFA8]">{formatDate(todayISO())}</div>
+          </div>
+          {/* The gate's other half — what has NOT come in. It was a page
+              action on the desktop header, and the phone returns a different
+              component entirely, so there was no way to reach it here at all.
+              The button dresses itself for the forest band it now sits on. */}
+          <div className="flex-none [&_button]:!h-9 [&_button]:!border-white/25 [&_button]:!bg-white/10 [&_button]:!text-white [&_button]:hover:!bg-white/20 [&_button>svg]:!text-[#C7F03F]">
+            <OutsideTankerLog
+              products={masters.products}
+              suppliers={masters.suppliers}
+              customers={masters.customers}
+            />
+          </div>
         </div>
         <div className="mt-3 grid grid-cols-2 gap-2">
           {kpis.map((c) => (

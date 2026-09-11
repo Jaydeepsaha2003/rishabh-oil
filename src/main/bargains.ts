@@ -2,6 +2,8 @@ import type { ResultSet } from '@libsql/client'
 import { getClient, todayISO } from './db'
 import { getActiveCompanyId } from './company'
 import { visibleFromFor } from './access-gate'
+import { logEvent } from './access'
+import { recordChanges, BARGAIN_FIELDS } from './history'
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Row = Record<string, any>
@@ -227,17 +229,30 @@ export async function createBargain(v: Row): Promise<{ id: number; bargain_no: s
       v.remarks ? String(v.remarks).trim() : null
     ]
   })
-  return { id: Number(res.lastInsertRowid), bargain_no }
+  const newId = Number(res.lastInsertRowid)
+  await recordChanges('bargains', newId, bargain_no, null, null, BARGAIN_FIELDS, 'struck')
+  return { id: newId, bargain_no }
 }
 
-export async function updateBargain(id: number, v: Row): Promise<{ id: number; bargain_no: string }> {
+export async function updateBargain(
+  id: number,
+  v: Row
+): Promise<{ id: number; bargain_no: string; rate_changed_from: number | null; rate: number }> {
   const { qty, rate } = validateBargainInput(v)
   const total = qty * rate
   // Once anything has been loaded/consumed against the bargain, its supplier
   // and oil are locked (linked tankers/purchases depend on them) and the
   // quantity can't drop below what's already committed.
-  const cur = await getClient().execute({ sql: 'SELECT bargain_no, supplier_id, oil_type_id FROM bargains WHERE id = ?', args: [id] })
+  const cur = await getClient().execute({
+    sql: 'SELECT bargain_no, supplier_id, oil_type_id, rate_per_uom FROM bargains WHERE id = ?',
+    args: [id]
+  })
   if (!cur.rows.length) throw new Error('Bargain not found')
+  // The whole row before anything is written, so the save can say what moved.
+  const beforeRow = await getClient()
+    .execute({ sql: 'SELECT * FROM bargains WHERE id = ? LIMIT 1', args: [id] })
+    .then((r) => (r.rows.length ? toPlain(r)[0] : null))
+    .catch(() => null)
   const consumed = await bargainConsumed(id)
   const supplierChanged = Number(v.supplier_id) !== Number(cur.rows[0].supplier_id)
   const oilChanged = Number(v.oil_type_id) !== Number(cur.rows[0].oil_type_id)
@@ -295,7 +310,89 @@ export async function updateBargain(id: number, v: Row): Promise<{ id: number; b
       id
     ]
   })
-  return { id, bargain_no }
+  // A rate correction is the one bargain edit that reaches money already
+  // booked, so it is recorded and the caller is told exactly what it touches.
+  // Nothing is re-priced here: every invoice keeps the rate it was billed at
+  // (see the frozen rate on purchase_tankers) and the invoice screen offers
+  // the new figure per bargain, for a person to accept.
+  const oldRate = Number(cur.rows[0].rate_per_uom) || 0
+  if (Math.abs(oldRate - rate) > 0.005) {
+    await logEvent(
+      v.user_id ? Number(v.user_id) : null,
+      String(v.username || ''),
+      '',
+      'Rate changed',
+      `${bargain_no} — ${oldRate} → ${rate} per ${v.uom || 'MT'}`,
+      getActiveCompanyId(),
+      'bargains',
+      id,
+      bargain_no
+    ).catch((e) => console.error('[bargains] rate-change log failed:', (e as Error).message))
+  }
+  const afterRow = await getClient()
+    .execute({ sql: 'SELECT * FROM bargains WHERE id = ? LIMIT 1', args: [id] })
+    .then((r) => (r.rows.length ? toPlain(r)[0] : null))
+    .catch(() => null)
+  await recordChanges('bargains', id, bargain_no, beforeRow, afterRow, BARGAIN_FIELDS)
+  return { id, bargain_no, rate_changed_from: Math.abs(oldRate - rate) > 0.005 ? oldRate : null, rate }
+}
+
+/**
+ * Every purchase invoice that draws on this bargain, with the rate each one is
+ * actually billed at — so a rate correction can say what it affects instead of
+ * leaving somebody to find out later.
+ *
+ * The billed rate is the tanker's frozen one where there is a tanker, and the
+ * invoice's own stored rate for a direct/consignment purchase that has none.
+ */
+export async function bargainLinkedInvoices(id: number): Promise<Row[]> {
+  const res = await getClient().execute({
+    sql: `SELECT o.id, o.invoice_no, o.order_date, o.company_id, o.uom,
+                 co.name AS company_name, s.name AS supplier_name,
+                 COALESCE((SELECT SUM(CASE WHEN pt.bargain_id = ? THEN pt.loaded_qty - COALESCE(pt.extra_qty, 0)
+                                           ELSE COALESCE(pt.extra_qty, 0) END)
+                             FROM purchase_tankers pt
+                            WHERE pt.order_id = o.id AND (pt.bargain_id = ? OR pt.extra_bargain_id = ?)),
+                          o.ordered_qty) AS qty,
+                 COALESCE((SELECT MAX(CASE WHEN pt.bargain_id = ? THEN pt.bargain_rate ELSE pt.extra_bargain_rate END)
+                             FROM purchase_tankers pt
+                            WHERE pt.order_id = o.id AND (pt.bargain_id = ? OR pt.extra_bargain_id = ?)),
+                          o.bargain_rate) AS billed_rate
+          FROM orders o
+          LEFT JOIN companies co ON co.id = o.company_id
+          LEFT JOIN suppliers s ON s.id = o.supplier_id
+          WHERE o.bargain_id = ?
+             OR EXISTS (SELECT 1 FROM purchase_tankers pt
+                         WHERE pt.order_id = o.id AND (pt.bargain_id = ? OR pt.extra_bargain_id = ?))
+          ORDER BY o.order_date, o.id`,
+    args: [id, id, id, id, id, id, id, id, id]
+  })
+  return toPlain(res)
+}
+
+/**
+ * Adopt a new rate for ONE bargain on ONE invoice. Nothing else moves: the
+ * other bargains on a split invoice keep their own rates, and every other
+ * invoice on this bargain is untouched. The caller re-saves the invoice, which
+ * is what re-prices it and re-posts the ledger.
+ */
+export async function setInvoiceBargainRate(
+  orderId: number,
+  bargainId: number,
+  rate: number
+): Promise<{ order_id: number; bargain_id: number; rate: number }> {
+  const r = Number(rate)
+  if (!Number.isFinite(r) || r <= 0) throw new Error('Enter a rate greater than zero')
+  const c = getClient()
+  await c.execute({
+    sql: 'UPDATE purchase_tankers SET bargain_rate = ? WHERE order_id = ? AND bargain_id = ?',
+    args: [r, Number(orderId), Number(bargainId)]
+  })
+  await c.execute({
+    sql: 'UPDATE purchase_tankers SET extra_bargain_rate = ? WHERE order_id = ? AND extra_bargain_id = ?',
+    args: [r, Number(orderId), Number(bargainId)]
+  })
+  return { order_id: Number(orderId), bargain_id: Number(bargainId), rate: r }
 }
 
 // Add to (delta > 0) or remove from (delta < 0) a bargain's quantity, which
@@ -339,6 +436,22 @@ export async function adjustBargainQty(
     args: [id, d, adjDate, note ? String(note).trim() : null]
   })
   return { id, qty: newQty }
+}
+
+/**
+ * What has been added to or taken off this bargain since it was struck, newest
+ * first. The panel that makes the next adjustment shows these, so a correction
+ * is made against the ones already there rather than blind.
+ */
+export async function bargainAdjustments(id: number): Promise<Row[]> {
+  const res = await getClient().execute({
+    sql: `SELECT id, delta, adj_date, note, created_at
+          FROM bargain_adjustments
+          WHERE kind = 'purchase' AND bargain_id = ?
+          ORDER BY adj_date DESC, id DESC`,
+    args: [Number(id)]
+  })
+  return toPlain(res)
 }
 
 export async function deleteBargain(id: number): Promise<{ id: number }> {

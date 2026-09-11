@@ -76,9 +76,23 @@ interface SelectProps {
   // one is picked — closing after every tick would make choosing three
   // invoices three separate trips through the dropdown.
   selected?: string[]
+  // Styling for the open panel itself — the box, not the list inside it, which
+  // takes SelectContent's own className. A dialog drawn to a theme can bring
+  // its dropdown with it (4px corners, the form's own border) instead of the
+  // component default standing out against everything around it.
+  panelClassName?: string
 }
 
-function Select({ value, onValueChange, disabled, children, searchable, showCheckbox = false, selected }: SelectProps): React.JSX.Element {
+function Select({
+  value,
+  onValueChange,
+  disabled,
+  children,
+  searchable,
+  showCheckbox = false,
+  selected,
+  panelClassName
+}: SelectProps): React.JSX.Element {
   const [open, setOpen] = React.useState(false)
   const [query, setQuery] = React.useState('')
   const [highlight, setHighlight] = React.useState(0)
@@ -311,7 +325,8 @@ function Select({ value, onValueChange, disabled, children, searchable, showChec
           ? 'z-[70]'
           : inlineFlip?.openUp
             ? 'absolute left-0 bottom-full z-50 mb-1 w-max min-w-full max-w-[min(26rem,90vw)]'
-            : 'absolute left-0 top-full z-50 mt-1 w-max min-w-full max-w-[min(26rem,90vw)]'
+            : 'absolute left-0 top-full z-50 mt-1 w-max min-w-full max-w-[min(26rem,90vw)]',
+        panelClassName
       )}
     >
       {showSearch && (

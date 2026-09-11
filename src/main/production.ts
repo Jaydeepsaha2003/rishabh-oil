@@ -3,11 +3,11 @@ import { getClient } from './db'
 import { getActiveCompanyId, companiesOfFactory, factoryOfCompanies } from './company'
 import { stockMap, productStockAvailable, stockLevels } from './stock'
 import { visibleFromFor } from './access-gate'
-import { ppFreeByProduct, drawPp, reversePpDraws } from './stockopenings'
+import { ppFreeByProduct, ppTotalsBothByProduct, drawPp, reversePpDraws } from './stockopenings'
 // One copy of the recipe arithmetic, shared with the entry sheet in the
 // renderer. It used to live only here, so the sheet previewed one set of
 // numbers and this posted another.
-import { expandRecipe, expandRecipeWithPp, recipeTor } from '../renderer/src/lib/recipeMath'
+import { expandBatchWithOutputPp, expandRecipe, expandRecipeWithPp, recipeTor } from '../renderer/src/lib/recipeMath'
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Row = Record<string, any>
@@ -479,16 +479,22 @@ async function recordRecirculation(v: Row, id = 0): Promise<{ id: number }> {
 // PP holds — the same behaviour expandRecipeWithPp already gives it.
 async function expandRecipeForBatch(
   items: Row[],
-  outputQty: number
+  outputQty: number,
+  outputProductId = 0
 ): Promise<{
   lines: { product_id: number; qty: number; kind: string }[]
   draws: { product_id: number; fromFree: number; fromFfa: number; gross: number; fattyAcid: number }[]
+  ownPp: { without: number; with: number }
 }> {
   const autoCalcInputs = items
     .filter((it) => String(it.kind || 'input') === 'input' && it.auto_calc)
     .map((it) => n(it.product_id))
   const freeByProduct = autoCalcInputs.length ? await ppFreeByProduct(autoCalcInputs) : {}
-  return expandRecipeWithPp(items, outputQty, freeByProduct)
+  // The product's OWN vessels come first — oil already made, standing part-way
+  // through the plant. Only what they cannot supply is a recipe problem.
+  const pools = outputProductId ? (await ppTotalsBothByProduct([outputProductId]))[outputProductId] : undefined
+  const r = expandBatchWithOutputPp(items, outputQty, pools || {}, freeByProduct, outputProductId)
+  return { lines: r.lines, draws: r.draws, ownPp: { without: r.plan.fromPpFree, with: r.plan.ppWithUsed } }
 }
 
 // The write half: actually take `draws` off PP, oldest vessel first (see
@@ -550,10 +556,15 @@ export async function createProduction(v: Row): Promise<{ id: number }> {
   const snap = await recipeSnapshot(fid)
   let lines: { product_id: number; qty: number; kind: string }[] = []
   let draws: { product_id: number; fromFree: number; fromFfa: number }[] = []
+  // What this batch took out of the PRODUCT'S OWN vessels, drawn down after
+  // the row exists so each take is logged against it and an edit can put it
+  // back.
+  let ownPp = { without: 0, with: 0 }
   if (fid) {
-    const expanded = await expandRecipeForBatch(snap.items, qty)
+    const expanded = await expandRecipeForBatch(snap.items, qty, productId)
     lines = expanded.lines
     draws = expanded.draws
+    ownPp = expanded.ownPp
   }
   const consumption = lines.filter((l) => l.kind === 'input')
 
@@ -596,6 +607,10 @@ export async function createProduction(v: Row): Promise<{ id: number }> {
   const id = Number(ins.lastInsertRowid)
 
   if (draws.length) await drawPpForBatch(id, draws)
+  // The product's own vessels, drawn after the input ones so both are logged
+  // against this run and reverse together.
+  if (ownPp.without > 0.0005) await drawPp(id, productId, 'without', ownPp.without)
+  if (ownPp.with > 0.0005) await drawPp(id, productId, 'with', ownPp.with)
 
   for (const l of lines) {
     await c.execute({
@@ -681,10 +696,15 @@ export async function updateProduction(id: number, v: Row): Promise<{ id: number
 
   let lines: { product_id: number; qty: number; kind: string }[] = []
   let draws: { product_id: number; fromFree: number; fromFfa: number }[] = []
+  // What this batch took out of the PRODUCT'S OWN vessels, drawn down after
+  // the row exists so each take is logged against it and an edit can put it
+  // back.
+  let ownPp = { without: 0, with: 0 }
   if (fid) {
-    const expanded = await expandRecipeForBatch(snap.items, qty)
+    const expanded = await expandRecipeForBatch(snap.items, qty, productId)
     lines = expanded.lines
     draws = expanded.draws
+    ownPp = expanded.ownPp
   }
 
   await c.execute({
@@ -693,6 +713,10 @@ export async function updateProduction(id: number, v: Row): Promise<{ id: number
     args: [v.prod_date, productId, qty, v.uom || 'MT', v.note || null, fid || null, snap.versionId || null, n(id)]
   })
   if (draws.length) await drawPpForBatch(n(id), draws)
+  // The product's own vessels, drawn after the input ones so both are logged
+  // against this run and reverse together.
+  if (ownPp.without > 0.0005) await drawPp(n(id), productId, 'without', ownPp.without)
+  if (ownPp.with > 0.0005) await drawPp(n(id), productId, 'with', ownPp.with)
   await c.execute({ sql: 'DELETE FROM production_items WHERE production_id = ?', args: [n(id)] })
   for (const l of lines) {
     await c.execute({

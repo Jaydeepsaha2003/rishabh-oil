@@ -19,7 +19,16 @@ import {
   setSetting,
   allSettings
 } from './repos'
-import { listBargains, createBargain, updateBargain, deleteBargain, adjustBargainQty } from './bargains'
+import {
+  listBargains,
+  createBargain,
+  updateBargain,
+  deleteBargain,
+  adjustBargainQty,
+  bargainLinkedInvoices,
+  setInvoiceBargainRate,
+  bargainAdjustments
+} from './bargains'
 import {
   listOrders,
   createOrder,
@@ -62,6 +71,7 @@ import {
 import { login, listUsers, createUser, updateUser, deleteUser } from './auth'
 import { heartbeat, liveUsers, listIps, setIpActive, listLogs, logEvent, machineIp, type LogFilter, entityHistory } from './access'
 import { getCurrentUser, setCurrentUser } from './currentUser'
+import { listChanges } from './history'
 import { getBooksFrom, setBooksFrom, listOpenings, saveOpenings, ledgerOpening } from './openings'
 import {
   listFormulations,
@@ -101,6 +111,9 @@ import {
   listStockOpenings,
   ppDrawsForProduction,
   ppTotalsBothByProduct,
+  ppVesselBalances,
+  writeOffPp,
+  listPpWriteoffs,
   removePpStage,
   savePpLines,
   saveStockOpenings,
@@ -410,7 +423,7 @@ async function recordAudit(channel: string, args: any, result: any): Promise<voi
 export function registerIpc(): void {
   // Read-only channels don't change data, so they must not bump the revision.
   const READONLY =
-    /:list$|:get$|:items$|:issuances$|:sheet$|:outstanding$|:all$|:summary$|:transfers$|:fyTaxable$|:needs$|:breakdown$|:nextNo$|:liveUsers$|:ips$|:logs$|:dispatchableSales$|:mine$|:pendingCount$|:pending$|:lots$|:unmapped$|:unmappedCount$|:bargainLines$|:bargainNotes$|:bargainInterest$|:consignmentDraws$|^access:heartbeat$|^db:ping$|^db:snapshot$|^app:revision$|^auth:login$|^journal:booksFrom$|^journal:openings$|^journal:opening$|^journal:accounts$|^journal:statement$|^journal:trialBalance$|^journal:groups$|^journal:groupNames$|^journal:pendingRefs$|^journal:billsOutstanding$|^journal:tradingAccount$|^dashboard:stats$|^skuRates:parties$|^skuRates:partyCounts$|^consignment:openingLog$|^consignment:invoices$|^tankers:quality$|^tankers:ffaHistory$|^orders:quality$|^gate:partyCategories$|^gate:waivedOuts$|^gate:forRecord$|^notify:rules$|^notify:list$|^notify:run$|^notify:preview$|^notify:people$|^notify:mutes$|^treasury:alerts$|^treasury:paymentTracker$|^facility:exposures$|^facility:headroom$|^company:setActive$|^company:getActive$|^factory:active$|^factory:companies$|^session:setUser$|^lc:repayments$|^lc:allRepayments$|^lc:getLimit$|^lc:bankLimits$|^lc:paymentIns$|^lc:openTradingInvoices$|^files:pickDocument$|^files:openDocument$|^bankRecon:imports$|^bankRecon:list$|^bankRecon:suggest$|^bd:kpis$|^bd:limits$|^skuStock:adjustments$|^skuOpening:list$|^skuOpening:date$|^stockCount:previous$|^stockOpening:list$|^stockOpening:date$|^stockOpening:ppStages$|^stockOpening:ppFreeTotals$|^production:ppDraws$|^work:board$|^work:cutoff$|^work:processes$|^formulationSubcategory:list$|^formulations:versions$|^bd:allRepayments$|^bd:linkedOrders$|^bd:parties$|^bd:allParties$|^bd:openTradingInvoices$|^bd:paymentIns$|^access:entryWindows$|^access:entityHistory$|^trading:list$|^sales:series$|^sales:invoiceGaps$|^salesBargains:returns$|^salesBargains:unattributedReturns$|^tbill:orphans$|^production:report$/
+    /:list$|:get$|:items$|:issuances$|:sheet$|:outstanding$|:all$|:summary$|:transfers$|:fyTaxable$|:needs$|:breakdown$|:nextNo$|:liveUsers$|:ips$|:logs$|:dispatchableSales$|:mine$|:pendingCount$|:pending$|:lots$|:unmapped$|:unmappedCount$|:bargainLines$|:bargainNotes$|:bargainInterest$|:consignmentDraws$|^access:heartbeat$|^db:ping$|^db:snapshot$|^app:revision$|^auth:login$|^journal:booksFrom$|^journal:openings$|^journal:opening$|^journal:accounts$|^journal:statement$|^journal:trialBalance$|^journal:groups$|^journal:groupNames$|^journal:pendingRefs$|^journal:billsOutstanding$|^journal:tradingAccount$|^dashboard:stats$|^skuRates:parties$|^skuRates:partyCounts$|^consignment:openingLog$|^consignment:invoices$|^tankers:quality$|^tankers:ffaHistory$|^orders:quality$|^gate:partyCategories$|^gate:waivedOuts$|^gate:forRecord$|^notify:rules$|^notify:list$|^notify:run$|^notify:preview$|^notify:people$|^notify:mutes$|^treasury:alerts$|^treasury:paymentTracker$|^facility:exposures$|^facility:headroom$|^company:setActive$|^company:getActive$|^factory:active$|^factory:companies$|^session:setUser$|^lc:repayments$|^lc:allRepayments$|^lc:getLimit$|^lc:bankLimits$|^lc:paymentIns$|^lc:openTradingInvoices$|^files:pickDocument$|^files:openDocument$|^bankRecon:imports$|^bankRecon:list$|^bankRecon:suggest$|^bd:kpis$|^bd:limits$|^skuStock:adjustments$|^skuOpening:list$|^skuOpening:date$|^stockCount:previous$|^stockOpening:list$|^stockOpening:date$|^stockOpening:ppStages$|^stockOpening:ppFreeTotals$|^production:ppDraws$|^bargains:linkedInvoices$|^bargains:adjustments$|^history:list$|^stockOpening:ppVessels$|^stockOpening:ppWriteoffs$|^work:board$|^work:cutoff$|^work:processes$|^formulationSubcategory:list$|^formulations:versions$|^bd:allRepayments$|^bd:linkedOrders$|^bd:parties$|^bd:allParties$|^bd:openTradingInvoices$|^bd:paymentIns$|^access:entryWindows$|^access:entityHistory$|^trading:list$|^sales:series$|^sales:invoiceGaps$|^salesBargains:returns$|^salesBargains:unattributedReturns$|^tbill:orphans$|^production:report$/
   // Writes that shouldn't clutter the audit trail (infra / no business meaning).
   const AUDIT_SKIP = new Set(['config:get', 'config:save', 'session:setUser'])
 
@@ -529,6 +542,28 @@ export function registerIpc(): void {
   handle('bargains:create', (_e, { values }: { values: Row }) => createBargain(values))
   handle('bargains:update', (_e, { id, values }: { id: number; values: Row }) =>
     updateBargain(id, values)
+  )
+  handle('bargains:linkedInvoices', (_e, { id }: { id: number }) => bargainLinkedInvoices(id))
+  handle('bargains:adjustments', (_e, { id }: { id: number }) => bargainAdjustments(id))
+  handle('history:list', (_e, { entity, id }: { entity: string; id: number }) => listChanges(entity, id))
+  handle('stockOpening:ppVessels', (_e, { productId, companyId }: { productId: number; companyId?: number }) =>
+    ppVesselBalances(productId, companyId)
+  )
+  handle('stockOpening:ppWriteoffs', (_e, { productId, companyId }: { productId: number; companyId?: number }) =>
+    listPpWriteoffs(productId, companyId)
+  )
+  handle(
+    'stockOpening:writeOffPp',
+    (
+      _e,
+      { productId, stageId, qty, note, companyId }:
+        { productId: number; stageId: number; qty: number; note: string; companyId?: number }
+    ) => writeOffPp(productId, stageId, qty, note, companyId)
+  )
+  handle(
+    'bargains:setInvoiceRate',
+    (_e, { orderId, bargainId, rate }: { orderId: number; bargainId: number; rate: number }) =>
+      setInvoiceBargainRate(orderId, bargainId, rate)
   )
   handle('bargains:delete', (_e, { id }: { id: number }) => deleteBargain(id))
   handle('bargains:adjust', (_e, { id, delta, note, date }: { id: number; delta: number; note?: string; date?: string }) =>

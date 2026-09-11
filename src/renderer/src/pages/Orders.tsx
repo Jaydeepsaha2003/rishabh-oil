@@ -30,7 +30,7 @@ import { GateEntriesDialog } from '@/components/GateEntriesDialog'
 import { HistoryDialog, useHistoryDialog } from '@/components/HistoryDialog'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
-import { formatDate, formatDateShort, formatINR, formatNum, todayISO } from '@/lib/format'
+import { errText, formatDate, formatDateShort, formatINR, formatNum, todayISO } from '@/lib/format'
 
 // Same function under a second name. The Orders component shadows `formatINR`
 // with a masking version for the readings desk (see MONEY_MASK below), and an
@@ -40,6 +40,7 @@ const rupees = formatINR
 // What the lab sees instead of a value.
 const MONEY_MASK = '*****'
 import { cn } from '@/lib/utils'
+import { ChangeHistory } from '@/components/ChangeHistory'
 import { computeMoney, computeShortage } from '@/lib/orderCalc'
 import { useLiveRefresh } from '@/lib/useLiveRefresh'
 import { useGlobalDateRange, globalRangeAppliesTo } from '@/lib/globalDateRange'
@@ -580,6 +581,15 @@ function Fact({ label, value }: { label: string; value: string }): React.JSX.Ele
 // CATEGORY and the receipt-date toggle — a label a shade off its neighbours
 // is the thing that makes a filter bar look assembled rather than designed.
 // ---------------------------------------------------------------------------
+// A rate as money: to the paise, and blank left blank. Rates reach the form
+// from a weighted average that can carry a dozen decimals.
+function paise(v: unknown): string {
+  if (v == null || v === '') return ''
+  const n = Number(v)
+  if (!Number.isFinite(n)) return ''
+  return String(Math.round(n * 100) / 100)
+}
+
 // New purchase / Alter purchase invoice, on the website.
 //
 // The page was the app's oldest surface and still wore it: a cornflower title
@@ -2275,7 +2285,14 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
       supplier_id: row.supplier_id,
       oil_type_id: row.oil_type_id,
       bargain_type: row.bargain_type,
-      bargain_rate: row.bargain_rate,
+      // TO THE PAISE.
+      //
+      // A blended rate is a weighted average and almost never lands on a round
+      // figure: 132643.55581127733 was what the field offered for editing, a
+      // number nobody can read, check or retype. Only the DISPLAY is rounded
+      // here -- the money is summed from each bargain's own line rate, never
+      // from this average, so the invoice bills exactly as it did.
+      bargain_rate: paise(row.bargain_rate),
       supplier_name: row.supplier_name,
       oil_label: String(row.oil_code || row.oil_name || ''),
       uom: row.uom,
@@ -2283,7 +2300,7 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
       ordered_qty: row.ordered_qty,
       invoice_no: row.invoice_no,
       order_date: row.order_date,
-      invoice_rate: row.invoice_rate,
+      invoice_rate: paise(row.invoice_rate),
       gst_pct: row.gst_pct,
       gst_type: row.gst_type || 'CGST_SGST',
       tds_pct: supplier?.tds_pct ?? row.tds_pct,
@@ -2383,6 +2400,9 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
   // no tanker, and (on the backend) never counted in stock — a standalone mode,
   // not a variant of the direct/consignment flow above (that one still assumes
   // real consignment stock, which a Trading purchase has none of).
+  // Raising a new invoice, as against amending one already booked. The rate
+  // fills itself only while raising; once booked it is the invoice's own.
+  const isNewInvoice = !editing?.id
   const isTrading = !!(editing ? editing.is_trading : form.is_trading)
   // Consignment tankers logged for this supplier that no purchase has drawn yet
   // — the purchase form offers these first, then a bargain is assigned to them.
@@ -2727,6 +2747,99 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
     }
     return Array.from(m.values())
   }, [chosenTankers, directMode, chosenLots, lotAlloc, bgAlloc])
+  // Where a bargain has been corrected SINCE this invoice was billed.
+  //
+  // Nothing here changes a figure. The invoice keeps what it was billed at;
+  // this only says what the bargain reads now, so the difference is visible
+  // instead of being discovered a month later in a ledger.
+  const rateDrift = useMemo(() => {
+    const m = new Map<string, { bargain_id: number; bargain_no: string; billed: number; live: number }>()
+    const add = (id: unknown, no: unknown, billed: unknown, live: unknown): void => {
+      if (!id) return
+      const b = Number(billed) || 0
+      const l = Number(live) || 0
+      if (b <= 0 || l <= 0 || Math.abs(b - l) < 0.005) return
+      m.set(String(id), { bargain_id: Number(id), bargain_no: String(no || '—'), billed: b, live: l })
+    }
+    for (const t of chosenTankers) {
+      add(t.bargain_id, t.bargain_no, t.bargain_rate, t.bargain_live_rate)
+      if (t.extra_bargain_id) add(t.extra_bargain_id, t.extra_bargain_no, t.extra_bargain_rate, t.extra_bargain_live_rate)
+    }
+    return Array.from(m.values())
+  }, [chosenTankers])
+  // Every bargain this invoice draws on, with the rate it is billed at and
+  // the rate its bargain reads today — the drift list above is this, narrowed
+  // to the ones that disagree. The rate panel lists all of them, because
+  // changing a rate that has NOT drifted is just as legitimate.
+  const rateLines = useMemo(() => {
+    const m = new Map<string, { bargain_id: number; bargain_no: string; billed: number; live: number }>()
+    const add = (id: unknown, no: unknown, billed: unknown, live: unknown): void => {
+      if (!id) return
+      m.set(String(id), {
+        bargain_id: Number(id),
+        bargain_no: String(no || '—'),
+        billed: Number(billed) || 0,
+        live: Number(live) || 0
+      })
+    }
+    for (const t of chosenTankers) {
+      add(t.bargain_id, t.bargain_no, t.bargain_rate, t.bargain_live_rate)
+      if (t.extra_bargain_id) add(t.extra_bargain_id, t.extra_bargain_no, t.extra_bargain_rate, t.extra_bargain_live_rate)
+    }
+    return Array.from(m.values())
+  }, [chosenTankers])
+  const [driftEdit, setDriftEdit] = useState<{ id: number; value: string } | null>(null)
+  // The panel opens by itself when a bargain has moved — that needs answering —
+  // and on request otherwise, from the pencil beside the invoice rate.
+  const [ratePanelOpen, setRatePanelOpen] = useState(false)
+  const [driftBusy, setDriftBusy] = useState(false)
+
+  // Adopt a rate for ONE bargain on THIS invoice. Every other bargain on the
+  // invoice, and every other invoice on this bargain, is left alone.
+  async function applyBargainRate(bargainId: number, rate: number): Promise<void> {
+    if (!editing?.id) return
+    setDriftBusy(true)
+    try {
+      await window.api.bargains.setInvoiceRate(Number(editing.id), bargainId, rate)
+      // THE INVOICE RATE MOVES WITH THE BARGAIN RATE.
+      //
+      // Anything the invoice rate carries ABOVE the blended bargain rate is
+      // read as supplier freight billed inside the rate. Leaving the invoice
+      // rate where it was while a bargain line moved beneath it therefore did
+      // not leave it alone at all: the gap the edit opened up was booked as
+      // freight, and lowering one bargain by Rs 1,000 invented Rs 881.19/MT of
+      // carriage that nobody agreed.
+      //
+      // The new blend is worked out here rather than read back after the
+      // reload, so the figure is exact and lands in the same render. Any
+      // premium that was ALREADY on the invoice is carried across untouched —
+      // a genuine freight-in-rate survives the edit, and an invoice that had
+      // none still has none.
+      const edited = rateAlloc
+        .filter((a) => a.qty > 0 && a.rate > 0)
+        .map((a) => (a.bargain_id === bargainId ? rate : a.rate))
+      const newBlend = edited.length
+        ? Math.round((edited.reduce((sum, r) => sum + r, 0) / edited.length) * 100) / 100
+        : rate
+      const premium = Math.round(((Number(form.invoice_rate) || 0) - blendedRate) * 100) / 100
+      const keptPremium = Math.abs(premium) < 0.01 ? 0 : premium
+      const nextInvoiceRate = Math.round((newBlend + keptPremium) * 100) / 100
+      setForm((p) => ({
+        ...p,
+        bargain_rate: newBlend,
+        invoice_rate: nextInvoiceRate,
+        invoice_rate_touched: true
+      }))
+      await load(true)
+      setDriftEdit(null)
+      toast.success('Rate updated on this invoice — press Save changes to re-post it')
+    } catch (e) {
+      toast.error(errText(e))
+    } finally {
+      setDriftBusy(false)
+    }
+  }
+
   const bgRemaining = (Number(form.ordered_qty) || 0) - bgAllocated
   const directBalance = useMemo(() => {
     if (!directMode || !form.bargain_id) return null
@@ -2743,15 +2856,38 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
   // something like 128781.58844765343 in front of the user. The taxable value
   // is summed from each bargain's own line rate, not from this, so rounding
   // it changes nothing that is actually billed.
+  //
+  // THE PLAIN AVERAGE OF THE BARGAIN RATES, per the mill's own convention:
+  // rate 1 plus rate 2 divided by two, however much was loaded on each. It was
+  // weighted by quantity before, which is the true average PRICE but not what
+  // the desk calls the invoice rate.
+  //
+  // It must match computeMoney's own blend in the main process exactly. The
+  // gap between the invoice rate and the blend is booked as supplier freight,
+  // so the two halves disagreeing by a rupee invents a rupee of carriage on
+  // every tonne.
   const blendedRate = useMemo(() => {
-    const q = rateAlloc.reduce((s, a) => s + a.qty, 0)
-    if (q <= 0) return 0
-    return Math.round((rateAlloc.reduce((s, a) => s + a.rate * a.qty, 0) / q) * 100) / 100
+    const rates = rateAlloc.filter((a) => a.qty > 0 && a.rate > 0).map((a) => a.rate)
+    if (!rates.length) return 0
+    return Math.round((rates.reduce((s, r) => s + r, 0) / rates.length) * 100) / 100
   }, [rateAlloc])
   // Multi-bargain invoices price at the blended (weighted-average) rate — both
   // the bargain rate (interest/final basis) and the default invoice rate.
+  //
+  // ONLY WHILE THE INVOICE IS BEING RAISED. This used to run on an amend too,
+  // so opening a split invoice for any reason at all — to fix a remark — had
+  // it silently re-read the bargains, adopt whatever rates they carried that
+  // day, and re-post the ledger on Save. The guard against that was
+  // `invoice_rate_touched`, which is never stored, so it was false again the
+  // next time the invoice was opened and even a hand-typed rate was
+  // overwritten. A single-bargain invoice never did any of this, which is why
+  // two invoices raised a minute apart behaved in opposite ways.
+  //
+  // An invoice now keeps the rate it was billed at. Where a bargain has since
+  // been corrected, the banner above the form says so and offers the new
+  // figure per bargain, for a person to accept.
   useEffect(() => {
-    if (!formPage || rateAlloc.length < 2 || blendedRate <= 0) return
+    if (!formPage || !isNewInvoice || rateAlloc.length < 2 || blendedRate <= 0) return
     setForm((p) => {
       const next: Row = { ...p }
       let changed = false
@@ -2765,7 +2901,7 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
       }
       return changed ? next : p
     })
-  }, [formPage, rateAlloc.length, blendedRate])
+  }, [formPage, isNewInvoice, rateAlloc.length, blendedRate])
   const financedCount = chosenTankers.filter((x) => x.payment_mode === 'supplier_finance').length
   // Transporter is already chosen during tanker movement — reuse it here.
   const tankerTransporterIds = Array.from(
@@ -2809,6 +2945,29 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
     },
     [form.bargain_interest, form.additional_interest, form.interest_days]
   )
+  // NO FREIGHT NOBODY AGREED.
+  //
+  // A gap between the invoice rate and the blended bargain rate is read as
+  // supplier freight billed inside the rate. On a booked invoice that gap can
+  // no longer be TYPED — the field is read-only — so any gap that appears is
+  // one that opened up underneath it: a bargain line moved and the stored
+  // invoice rate stayed where it was. Every "freight in invoice rate" figure
+  // in the book arose exactly that way, none of them from an agreement.
+  //
+  // So on the website the invoice rate is held to the blend of the invoice's
+  // OWN frozen line rates. That is not the auto-repricing that was removed:
+  // those frozen rates never move on their own, so nothing re-prices behind
+  // anybody — this only keeps the stated invoice rate honest about the lines
+  // it is the average of.
+  useEffect(() => {
+    if (!__WEB__ || !formPage || isNewInvoice || rateAlloc.length < 2 || blendedRate <= 0) return
+    setForm((p) =>
+      Math.abs((Number(p.invoice_rate) || 0) - blendedRate) < 0.005
+        ? p
+        : { ...p, invoice_rate: blendedRate, bargain_rate: blendedRate }
+    )
+  }, [formPage, isNewInvoice, rateAlloc.length, blendedRate])
+
   // Anything the invoice rate carries above the blended bargain rate is
   // supplier freight billed inside the rate — it lands on every bargain line.
   // Mirrors computeMoney, paisa guard included.
@@ -3195,6 +3354,142 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
                   {__WEB__ && <ScrollText className="h-[19px] w-[19px] text-[#33473E]" />}
                   Invoice details
                 </h3>
+
+                {/* THE BARGAIN HAS MOVED SINCE THIS INVOICE WAS BILLED.
+                    Stated, never applied. The invoice keeps the rate it was
+                    raised at — that is what was billed and what is posted —
+                    and the new figure is offered one bargain at a time, behind
+                    a pencil, so adopting it is somebody's decision rather than
+                    something that happened while the screen was open. */}
+                {(rateDrift.length > 0 || ratePanelOpen) && (
+                  <div
+                    className={cn(
+                      'mb-3 rounded-[4px] border px-3.5 py-2.5',
+                      rateDrift.length > 0 ? 'border-[#F0E4CB] bg-[#FFFBF2]' : 'border-[#DCE7DB] bg-[#F7FAF6]'
+                    )}
+                  >
+                    <div className="flex items-center gap-2">
+                      {rateDrift.length > 0 ? (
+                        <>
+                          <AlertTriangle className="h-4 w-4 flex-none text-[#C2700A]" />
+                          <span className="text-[11.5px] font-extrabold uppercase tracking-[.1em] text-[#8A5300]">
+                            Bargain rate changed
+                          </span>
+                          <span className="text-[11.5px] font-semibold text-[#8A5300]">
+                            — this invoice keeps what it was billed at
+                          </span>
+                        </>
+                      ) : (
+                        <>
+                          <IndianRupee className="h-4 w-4 flex-none text-[#0B6B45]" />
+                          <span className="text-[11.5px] font-extrabold uppercase tracking-[.1em] text-[#33473E]">
+                            Rate per bargain
+                          </span>
+                          <span className="text-[11.5px] font-semibold text-[#5A6B62]">
+                            — what this invoice is billed at
+                          </span>
+                          <button
+                            type="button"
+                            onClick={() => setRatePanelOpen(false)}
+                            className="ml-auto text-[11px] font-extrabold uppercase tracking-[.05em] text-[#5A6B62] hover:text-[#0A1F17]"
+                          >
+                            Close
+                          </button>
+                        </>
+                      )}
+                    </div>
+                    <div className="mt-2 flex flex-col gap-1.5">
+                      {(rateDrift.length > 0 ? rateDrift : rateLines).map((d) => (
+                        <div key={d.bargain_id} className="flex flex-wrap items-center gap-x-2.5 gap-y-1 text-[12px]">
+                          {/* Named, in the order they are read: what the
+                              BARGAIN says, then what this INVOICE carries.
+                              "billed / bargain now" left the reader to work out
+                              which figure belonged to which, on a panel whose
+                              whole job is telling the two apart.
+
+                              The live rate only appears when there IS one — a
+                              missing one arrives as 0, and "Bargain Rate Rs 0"
+                              reads as a bargain priced at nothing rather than
+                              as an unknown. */}
+                          {/* THE BARGAIN is the thing that changed — it is the
+                              one somebody edited — and the invoice rate is the
+                              one standing still. Putting "Changed" on the
+                              invoice half said the opposite of what happened,
+                              and read as the panel accusing the invoice of
+                              something it had not done. The word follows the
+                              figure that actually moved, and so does the amber.
+                              Once the invoice adopts the new rate the two agree
+                              and this whole banner goes. */}
+                          {(() => {
+                            const moved = d.live > 0 && Math.abs(d.billed - d.live) > 0.005
+                            return (
+                              <>
+                                <span className="font-bold text-[#33473E]">{d.bargain_no}</span>
+                                {d.live > 0 && (
+                                  <>
+                                    <span className="text-[#5A6B62]">{moved ? 'Changed Bargain Rate :' : 'Bargain Rate :'}</span>
+                                    <span className={cn('doc-ref font-bold', moved ? 'text-[#8A5300]' : 'text-[#0A1F17]')}>
+                                      {formatINR(d.live)}
+                                    </span>
+                                    <span className="text-[#5A6B62]">·</span>
+                                  </>
+                                )}
+                                <span className="text-[#5A6B62]">Invoice Rate :</span>
+                                <span className="doc-ref font-bold text-[#0A1F17]">{formatINR(d.billed)}</span>
+                              </>
+                            )
+                          })()}
+                          {driftEdit?.id === d.bargain_id ? (
+                            <span className="flex items-center gap-1.5">
+                              <Input
+                                type="number"
+                                step="0.01"
+                                autoFocus
+                                className="h-8 w-[120px] text-[12px]"
+                                value={driftEdit.value}
+                                onChange={(e) => setDriftEdit({ id: d.bargain_id, value: e.target.value })}
+                              />
+                              <Button
+                                type="button"
+                                size="sm"
+                                className="h-8 bg-[#0B3D2E] px-2.5 text-[11px] font-extrabold text-[#C7F03F] hover:bg-[#0F4A38]"
+                                disabled={driftBusy || !(Number(driftEdit.value) > 0)}
+                                onClick={() => void applyBargainRate(d.bargain_id, Number(driftEdit.value))}
+                              >
+                                Apply
+                              </Button>
+                              <Button
+                                type="button"
+                                size="sm"
+                                variant="ghost"
+                                className="h-8 px-2 text-[11px] font-bold"
+                                disabled={driftBusy}
+                                onClick={() => setDriftEdit(null)}
+                              >
+                                Cancel
+                              </Button>
+                            </span>
+                          ) : (
+                            <button
+                              type="button"
+                              title={`Change this invoice's rate for ${d.bargain_no}`}
+                              disabled={!editing?.id}
+                              onClick={() =>
+                                setDriftEdit({
+                                  id: d.bargain_id,
+                                  value: String(d.live > 0 && Math.abs(d.billed - d.live) > 0.005 ? d.live : d.billed)
+                                })
+                              }
+                              className="flex h-7 items-center gap-1.5 rounded-[3px] border border-[#C3D2C6] bg-white px-2 text-[11px] font-bold text-[#0B6B45] hover:bg-[#F7FAF6] disabled:opacity-50"
+                            >
+                              <Pencil className="h-3.5 w-3.5" /> Edit rate
+                            </button>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
                 <div className={cn('grid gap-4 md:grid-cols-3', NP_CARD_BODY)}>
                   <div className="flex flex-col gap-1.5">
                     <Label>Book into company *</Label>
@@ -3332,8 +3627,59 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
                     <DatePicker min={minDate} value={form.order_date || ''} onChange={(v) => setForm((p) => ({ ...p, order_date: v }))} />
                   </div>
                   <div className="flex flex-col gap-1.5">
-                    <Label>Bargain rate *</Label>
-                    <Input type="number" step="0.01" value={form.invoice_rate ?? ''} onChange={(e) => setForm((p) => ({ ...p, invoice_rate: e.target.value, invoice_rate_touched: true }))} />
+                    {/* This box has always edited the INVOICE rate — what is
+                        being billed — while the summary beside it showed the
+                        BARGAIN's rate under the same words. Two different
+                        figures, one label, and no way to tell them apart.
+                        
+                        On a booked invoice it is now READ-ONLY. Typing over it
+                        set one blended figure across an invoice that may be
+                        carrying two bargains at two different rates, which is
+                        how a rate got changed without anybody being able to say
+                        which bargain it belonged to. The pencil edits the rate
+                        where it actually lives — per bargain — and this field
+                        states what those rates come to. While the invoice is
+                        still being raised there is nothing booked to protect,
+                        so it stays typable. */}
+                    <Label>Invoice rate *</Label>
+                    {/* The pencil sits ON the row it acts on — beside the
+                        field, not stacked above it in the label, where it read
+                        as a heading rather than a control. */}
+                    <div className={cn(__WEB__ && 'flex items-center gap-2')}>
+                      <Input
+                        type="number"
+                        step="0.01"
+                        readOnly={__WEB__ && !isNewInvoice}
+                        title={
+                          __WEB__ && !isNewInvoice
+                            ? 'The rates live on the bargains behind this invoice — use Edit to change one'
+                            : undefined
+                        }
+                        className={cn(__WEB__ && 'min-w-0 flex-1', __WEB__ && !isNewInvoice && '!bg-[#F4F7F3] !text-[#33473E]')}
+                        value={form.invoice_rate ?? ''}
+                        onChange={(e) => setForm((p) => ({ ...p, invoice_rate: e.target.value, invoice_rate_touched: true }))}
+                      />
+                      {/* The icon alone. The word beside a field already
+                          labelled "Invoice rate" only said again what the
+                          pencil says, and cost the field the width. It keeps
+                          its name for anyone hovering or reading it out. */}
+                      {__WEB__ && !isNewInvoice && rateLines.length > 0 && (
+                        <button
+                          type="button"
+                          title="Change the rate on a bargain behind this invoice"
+                          aria-label="Edit the rate on a bargain behind this invoice"
+                          onClick={() => setRatePanelOpen((v) => !v)}
+                          className={cn(
+                            'flex h-10 w-10 flex-none items-center justify-center rounded-[4px] border transition-colors',
+                            ratePanelOpen
+                              ? 'border-[#0B3D2E] bg-[#0B3D2E] text-[#C7F03F]'
+                              : 'border-[#C3D2C6] bg-white text-[#0B6B45] hover:bg-[#F7FAF6]'
+                          )}
+                        >
+                          <Pencil className="h-[18px] w-[18px]" strokeWidth={2.5} />
+                        </button>
+                      )}
+                    </div>
                   </div>
                   <div className="flex flex-col gap-1.5">
                     <Label>GST %</Label>
@@ -3665,6 +4011,12 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
                   Saving the purchase automatically posts its payable amount to the supplier ledger.
                 </div>
               </section>
+
+              {/* Every amend this invoice has had, field by field. An invoice
+                  gets re-saved for a dozen reasons over its life and the
+                  ledger only ever shows the latest one; this is where the
+                  earlier ones stay. */}
+              {__WEB__ && !!editing?.id && <ChangeHistory entity="orders" id={Number(editing.id)} />}
 
               {isTrading ? (
                 <section className="rounded border border-teal-300 bg-teal-50/40 p-4 [&_label]:text-[10px] [&_label]:uppercase [&_label]:tracking-wide [&_label]:text-muted-foreground">
@@ -4089,7 +4441,11 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
                   />
                 ))
               ) : (
-                <MoneyRow label="Bargain rate" value={formatINR(Number(form.bargain_rate) || 0)} />
+                <MoneyRow
+                  label="Bargain rate"
+                  title="The rate this invoice was billed against. Where the bargain has since been corrected, the banner at the top of the form says so."
+                  value={formatINR(Number(form.bargain_rate) || 0)}
+                />
               )}
               {/* Interest, per bargain when the invoice spans more than one.
                   Quoted PER UNIT like every other rate row in this block — the
@@ -4133,10 +4489,17 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
                     )
                   })
                 : Number(form.additional_interest) > 0 && (
+                    /* Built on the INVOICE rate, which is what the adjusted
+                       rate below is built on and what the invoice is actually
+                       priced at. It used to add the interest to the bargain's
+                       stored rate instead: on an invoice billed at 1,27,000
+                       against a bargain reading 1,30,000 this row said
+                       1,33,000 while the adjusted rate two lines down said
+                       1,30,000, and only the lower one was real. */
                     <MoneyRow
                       label={`Additional interest (${formatINR(Number(form.additional_interest))}/${form.uom || 'MT'})`}
-                      title={`Bargain rate ${formatINR(Number(form.bargain_rate) || 0)} plus ${formatINR(Number(form.additional_interest))}/${form.uom || 'MT'}`}
-                      value={formatINR((Number(form.bargain_rate) || 0) + (Number(form.additional_interest) || 0))}
+                      title={`Invoice rate ${formatINR(Number(form.invoice_rate) || 0)} plus ${formatINR(Number(form.additional_interest))}/${form.uom || 'MT'}`}
+                      value={formatINR((Number(form.invoice_rate) || 0) + (Number(form.additional_interest) || 0))}
                     />
                   )}
               {/* Freight the supplier billed inside the rate — shown on its own
@@ -4183,15 +4546,33 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
                   adjustment, and one click away if they did round up. */}
               {(() => {
                 const r2 = (v: number): number => Math.round(v * 100) / 100
+                // The rate before any rounding — built the SAME way the lines
+                // are. It used to take the invoice-wide additional interest,
+                // which is nil on an invoice whose interest is set per bargain
+                // instead; the per-bargain figure then fell outside `exact` and
+                // surfaced below as "rounded up, +Rs 3,000.00" — naming a
+                // whole interest charge as a rounding.
                 const exact = r2(
-                  (Number(form.bargain_rate) || 0) +
-                    (Number(calc.interestPerUnit) || 0) +
-                    (Number(form.additional_interest) || 0) +
-                    ratePremium
+                  rateAlloc.length > 1
+                    ? rateAlloc.reduce((sum, a) => {
+                        const f = lineFiguresOf(a.bargain_id, a.rate)
+                        return sum + a.rate + f.perUnitInterest + f.additionalInterest + ratePremium
+                      }, 0) / rateAlloc.length
+                    : (Number(form.bargain_rate) || 0) +
+                        (Number(calc.interestPerUnit) || 0) +
+                        (Number(form.additional_interest) || 0) +
+                        ratePremium
                 )
                 if (exact <= 0) return null
                 const toWhole = r2(Math.ceil(exact) - exact)
-                const applied = r2((Number(calc.adjustedRate) || 0) - exact)
+                const billedAvg =
+                  rateAlloc.length > 1
+                    ? r2(
+                        rateAlloc.reduce((sum, a) => sum + lineFiguresOf(a.bargain_id, a.rate).lineRate, 0) /
+                          rateAlloc.length
+                      )
+                    : Number(calc.adjustedRate) || 0
+                const applied = r2(billedAvg - exact)
                 const legacy = rateRoundOff == null
                 return (
                   <div className={cn('flex items-center justify-between gap-2 py-1.5 text-sm', __WEB__ && '!items-start !gap-2.5 !py-[5px]')}>
@@ -4229,14 +4610,31 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
                   </div>
                 )
               })()}
+              {/* THE PLAIN AVERAGE OF THE LINE RATES above it — T1 plus T2
+                  divided by two — which is what the desk means by the invoice
+                  rate, and what the two lines it sits under add up to.
+                  
+                  It read taxable / quantity before, the true average PRICE:
+                  with 30.63 MT on one bargain and 4.13 on the other that came
+                  to 1,31,762.37 against line rates of 1,32,000 and 1,30,000,
+                  a figure matching neither and derivable from nothing on the
+                  panel. The money is unchanged either way — the taxable value
+                  is summed from each line's own rate, never from this. */}
               <MoneyRow
                 label={rateAlloc.length > 1 ? 'Adjusted invoice rate (avg)' : 'Adjusted invoice rate'}
                 title={
                   rateAlloc.length > 1
-                    ? `Quantity-weighted average across ${rateAlloc.length} bargains`
+                    ? `The average of the ${rateAlloc.length} line rates above. The invoice is billed on each line's own rate — ${formatINR(calc.taxableValue)} in total.`
                     : `x ${formatNum(totalQty)} ${form.uom || 'MT'} = ${formatINR(calc.taxableValue)}`
                 }
-                value={formatINR(calc.adjustedRate)}
+                value={formatINR(
+                  rateAlloc.length > 1
+                    ? (() => {
+                        const rates = rateAlloc.map((a) => lineFiguresOf(a.bargain_id, a.rate).lineRate)
+                        return Math.round((rates.reduce((sum, r) => sum + r, 0) / rates.length) * 100) / 100
+                      })()
+                    : calc.adjustedRate
+                )}
                 strong
               />
               </div>
