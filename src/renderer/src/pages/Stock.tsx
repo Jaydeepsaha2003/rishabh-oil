@@ -633,6 +633,9 @@ function StockTable({ rows: allRows, breakdown, label = 'stock', range, onRange,
   const sum = (k: string): number => rows.reduce((s, r) => s + (Number(r[k]) || 0), 0)
   const totals = {
     opening: sum('opening'),
+    // The correction inside that opening, totalled separately so the footer
+    // can show it without anybody adding the two together.
+    opening_adj: sum('opening_adj'),
     received: sum('received'),
     produced: sum('produced'),
     transferred_in: sum('transferred_in'),
@@ -670,10 +673,23 @@ function StockTable({ rows: allRows, breakdown, label = 'stock', range, onRange,
   const flowColumns: ExcelColumn[] = [
     { header: 'Product', key: 'name', width: 26, value: (r) => r.name || '' },
     ...(ranged
-      ? [{
-          header: 'Opening', key: 'opening', align: 'right' as const, numFmt: NUM_QTY,
-          total: 'sum' as const, divider: true, value: (r: Row) => Number(r.opening) || 0
-        }]
+      ? [
+          {
+            header: 'Opening', key: 'opening', align: 'right' as const, numFmt: NUM_QTY,
+            total: 'sum' as const, divider: true, value: (r: Row) => Number(r.opening) || 0
+          },
+          {
+            // Part of the Opening beside it, not a column to add to it. The
+            // note says so in the file as well as on the screen, because a
+            // spreadsheet gets forwarded to people who never saw either.
+            header: 'Adjusted', key: 'opening_adj', align: 'right' as const, numFmt: NUM_QTY,
+            total: 'sum' as const, value: (r: Row) => Number(r.opening_adj) || 0,
+            note: (r: Row) =>
+              Math.abs(Number(r.opening_adj) || 0) > 1e-9
+                ? 'The correction struck on the opening count — included in the Opening beside it, not additional to it.'
+                : undefined
+          }
+        ]
       : []),
     { header: 'Receipt', key: 'received', align: 'right', numFmt: NUM_QTY, total: 'sum', divider: !ranged, value: (r) => Number(r.received) || 0 },
     { header: 'Produced', key: 'produced', align: 'right', numFmt: NUM_QTY, total: 'sum', value: (r) => Number(r.produced) || 0 },
@@ -1012,7 +1028,11 @@ function StockTable({ rows: allRows, breakdown, label = 'stock', range, onRange,
               <TableHeader className="sticky top-0 z-10">
                 <TableRow className="!border-b-0 !bg-[#072B20] hover:!bg-[#072B20] [&>th]:!h-[30px] [&>th]:!p-0 [&>th]:!text-[11px] [&>th]:!font-extrabold [&>th]:!uppercase [&>th]:!tracking-[.1em] [&>th]:!text-[#8FBFA8]">
                   <TableHead />
-                  {ranged && <TableHead className={cn('!text-center', SK_RULE, SK_OPEN)}>Open</TableHead>}
+                  {ranged && (
+                    <TableHead colSpan={2} className={cn('!text-center', SK_RULE, SK_OPEN)}>
+                      Open
+                    </TableHead>
+                  )}
                   <TableHead colSpan={2} className={cn('!text-center !text-[#9FE3BF]', SK_RULE, SK_IN)}>In</TableHead>
                   <TableHead colSpan={3} className={cn('!text-center !text-[#F0AFAA]', SK_RULE, SK_OUT)}>Out</TableHead>
                   <TableHead className={cn('!text-center !text-[#C7F03F]', SK_RULE, SK_CLOSE)}>Close</TableHead>
@@ -1057,6 +1077,7 @@ function StockTable({ rows: allRows, breakdown, label = 'stock', range, onRange,
                           </span>
                         </TableCell>
                         {ranged && <TableCell className={cn('text-right font-bold', SK_BRULE)}>{fig(gSum('opening'), '#33473E')}</TableCell>}
+                        {ranged && <TableCell className="text-right font-bold">{fig(gSum('opening_adj'), '#7C9188')}</TableCell>}
                         <TableCell className={cn('text-right font-bold', SK_BRULE)}>{fig(gSum('received'), IN_FG)}</TableCell>
                         <TableCell className="text-right font-bold">{fig(gSum('produced'), IN_FG)}</TableCell>
                         <TableCell className={cn('text-right font-bold', SK_BRULE)}>{fig(gSum('consumed'), OUT_FG)}</TableCell>
@@ -1080,7 +1101,8 @@ function StockTable({ rows: allRows, breakdown, label = 'stock', range, onRange,
                           // A bar rather than a second figure: the question it
                           // answers — is this tank nearly empty — is a shape.
                           const inflow =
-                            (Number(r.opening) || 0) + (Number(r.received) || 0) + (Number(r.produced) || 0)
+                            (Number(r.opening) || 0) + (Number(r.opening_adj) || 0) +
+                            (Number(r.received) || 0) + (Number(r.produced) || 0)
                           const pct = inflow > 0 ? Math.max(0, Math.min(100, (closing / inflow) * 100)) : 0
                           const mark = neg ? '#B3261E' : pct < 12 && inflow > 0 ? '#C2700A' : 'transparent'
                           return (
@@ -1097,17 +1119,19 @@ function StockTable({ rows: allRows, breakdown, label = 'stock', range, onRange,
                               {ranged && (
                                 <TableCell className={cn('text-right', SK_NUM, SK_BRULE, SK_BOPEN)}>
                                   {/* Opening is two different things added
-                                      together — the count struck on the
+                                      together — Raw + PP as counted on the
                                       opening morning, and everything that
                                       moved between then and the From date —
-                                      and the row could not say which. */}
+                                      and the row could not say which. The
+                                      adjustment struck on the same count is
+                                      its own column now, not folded in here. */}
                                   {Math.abs(Number(r.opening) || 0) > 1e-9 ? (
                                     <CellWithWorkings
                                       value={formatNum(r.opening)}
                                       className="!text-[#33473E]"
                                       title="What this product opened the period at"
                                       lines={[
-                                        { left: 'Brought forward', mid: 'the counted opening', right: formatNum(r.opening_brought) },
+                                        { left: 'Brought forward', mid: 'Raw + PP as counted', right: formatNum(r.opening_brought) },
                                         {
                                           left: 'Moved before this period',
                                           mid: 'received, produced, consumed, dispatched',
@@ -1119,6 +1143,14 @@ function StockTable({ rows: allRows, breakdown, label = 'stock', range, onRange,
                                   ) : (
                                     dash
                                   )}
+                                </TableCell>
+                              )}
+                              {ranged && (
+                                <TableCell
+                                  title="Part of the Opening beside it — the correction struck on the count, not a movement of its own"
+                                  className={cn('text-right', SK_NUM, SK_BOPEN, '!text-[#7C9188]')}
+                                >
+                                  {Math.abs(Number(r.opening_adj) || 0) > 1e-9 ? formatNum(r.opening_adj) : dash}
                                 </TableCell>
                               )}
                               <PartyCell
@@ -1198,6 +1230,7 @@ function StockTable({ rows: allRows, breakdown, label = 'stock', range, onRange,
                     Grand total <span className="font-bold text-[#8FBFA8]">· {rows.length} {rows.length === 1 ? 'product' : 'products'}</span>
                   </TableCell>
                   {ranged && <TableCell className={cn('text-right font-bold !text-[#C3D2C6]', SK_RULE)}>{formatNum(totals.opening)}</TableCell>}
+                  {ranged && <TableCell className="text-right font-bold !text-[#8FA79B]">{totals.opening_adj ? formatNum(totals.opening_adj) : '—'}</TableCell>}
                   <TableCell className={cn('text-right font-bold !text-[#9FE3BF]', SK_RULE)}>{formatNum(totals.received)}</TableCell>
                   <TableCell className="text-right font-bold !text-[#9FE3BF]">{formatNum(totals.produced)}</TableCell>
                   <TableCell className={cn('text-right font-bold !text-[#F0AFAA]', SK_RULE)}>{formatNum(totals.consumed)}</TableCell>
@@ -1242,7 +1275,11 @@ function StockTable({ rows: allRows, breakdown, label = 'stock', range, onRange,
                   {__WEB__ && (
                     <TableRow className="!border-b-0 !bg-[#072B20] hover:!bg-[#072B20] [&>th]:!h-[30px] [&>th]:!p-0 [&>th]:!text-[11px] [&>th]:!font-extrabold [&>th]:!uppercase [&>th]:!tracking-[.1em] [&>th]:!text-[#8FBFA8]">
                       <TableHead />
-                      {ranged && <TableHead className={cn('!text-center', SK_RULE, SK_OPEN)}>Open</TableHead>}
+                      {ranged && (
+                        <TableHead colSpan={2} className={cn('!text-center', SK_RULE, SK_OPEN)}>
+                          Open
+                        </TableHead>
+                      )}
                       <TableHead colSpan={2} className={cn('!text-center !text-[#9FE3BF]', SK_RULE, SK_IN)}>In</TableHead>
                       <TableHead colSpan={3} className={cn('!text-center !text-[#F0AFAA]', SK_RULE, SK_OUT)}>Out</TableHead>
                       <TableHead className={cn('!text-center !text-[#C7F03F]', SK_RULE, SK_CLOSE)}>Close</TableHead>
@@ -1289,6 +1326,14 @@ function StockTable({ rows: allRows, breakdown, label = 'stock', range, onRange,
                       {ranged && (
                         <TableCell className={cn('text-right tabular-nums text-slate-700', __WEB__ && cn(SK_NUM, SK_BRULE, SK_BOPEN))}>
                           {Number(r.opening) ? formatNum(r.opening) : '—'}
+                        </TableCell>
+                      )}
+                      {ranged && (
+                        <TableCell
+                          title="Part of the Opening beside it — the correction struck on the count, not a movement of its own"
+                          className={cn('text-right tabular-nums text-slate-500', __WEB__ && cn(SK_NUM, SK_BOPEN, '!text-[#7C9188]'))}
+                        >
+                          {Number(r.opening_adj) ? formatNum(r.opening_adj) : '—'}
                         </TableCell>
                       )}
                       <PartyCell uom={String(r.uom || 'MT')} value={Number(r.received)} parties={breakdown[r.id as number]?.receipt || []} wash={__WEB__ ? cn(SK_NUM, SK_BRULE, SK_BIN) : undefined} />
@@ -1350,6 +1395,7 @@ function StockTable({ rows: allRows, breakdown, label = 'stock', range, onRange,
                       {titleCase(grp.label)} total
                     </TableCell>
                     {ranged && <TableCell className={cn('text-right font-bold tabular-nums text-teal-900', __WEB__ && cn(SK_NUM, SK_BRULE, '!font-bold !text-[#33473E]'))}>{formatNum(gSum('opening'))}</TableCell>}
+                    {ranged && <TableCell className={cn('text-right font-bold tabular-nums text-slate-500', __WEB__ && cn(SK_NUM, '!font-bold !text-[#7C9188]'))}>{gSum('opening_adj') ? formatNum(gSum('opening_adj')) : '—'}</TableCell>}
                     <TableCell className={cn('text-right font-bold tabular-nums text-teal-900', __WEB__ && cn(SK_NUM, SK_BRULE, '!font-bold !text-[#0B6B45]'))}>{formatNum(gSum('received'))}</TableCell>
                     <TableCell className={cn('text-right font-bold tabular-nums text-teal-900', __WEB__ && cn(SK_NUM, '!font-bold !text-[#0B6B45]'))}>{formatNum(gSum('produced'))}</TableCell>
                     <TableCell className={cn('text-right font-bold tabular-nums text-teal-900', __WEB__ && cn(SK_NUM, SK_BRULE, '!font-bold !text-[#8C2F26]'))}>{formatNum(gSum('consumed'))}</TableCell>
@@ -1371,6 +1417,7 @@ function StockTable({ rows: allRows, breakdown, label = 'stock', range, onRange,
                     Grand total across every category
                   </TableCell>
                   {ranged && <TableCell className={cn('text-right font-bold tabular-nums text-amber-900', __WEB__ && cn(SK_NUM, SK_RULE, '!font-bold', '!text-[#C3D2C6]'))}>{formatNum(totals.opening)}</TableCell>}
+                  {ranged && <TableCell className={cn('text-right font-bold tabular-nums text-slate-500', __WEB__ && cn(SK_NUM, '!font-bold', '!text-[#8FA79B]'))}>{totals.opening_adj ? formatNum(totals.opening_adj) : '—'}</TableCell>}
                   <TableCell className={cn('text-right font-bold tabular-nums text-amber-900', __WEB__ && cn(SK_NUM, SK_RULE, '!font-bold', '!text-[#9FE3BF]'))}>{formatNum(totals.received)}</TableCell>
                   <TableCell className={cn('text-right font-bold tabular-nums text-amber-900', __WEB__ && cn(SK_NUM, SK_RULE, '!font-bold', '!text-[#9FE3BF]'))}>{formatNum(totals.produced)}</TableCell>
                   <TableCell className={cn('text-right font-bold tabular-nums text-amber-900', __WEB__ && cn(SK_NUM, SK_RULE, '!font-bold', '!text-[#F0AFAA]'))}>{formatNum(totals.consumed)}</TableCell>
@@ -1503,7 +1550,17 @@ function STOCK_TABLE_COLS(
 ): { l: string; r?: boolean; tone?: string; wash?: string; fg?: string }[] {
   return [
     { l: 'Product' },
-    ...(ranged ? [{ l: 'Opening', r: true, tone: 'text-slate-700', wash: cn(SK_RULE, SK_OPEN) }] : []),
+    ...(ranged
+      ? [
+          { l: 'Opening', r: true, tone: 'text-slate-700', wash: cn(SK_RULE, SK_OPEN) },
+          // A COMPONENT of the Opening beside it, not a column to add to it:
+          // how much of what the register opens at was the correction struck
+          // on the count rather than oil somebody dipped. Kept in the Open
+          // band for that reason — moved anywhere else it would read as a
+          // movement.
+          { l: 'Adjusted', r: true, tone: 'text-slate-500', wash: SK_OPEN }
+        ]
+      : []),
     { l: 'Receipt', r: true, tone: 'text-emerald-700', wash: cn(SK_RULE, SK_IN) },
     { l: 'Produced', r: true, tone: 'text-emerald-700', wash: SK_IN },
     { l: 'Consumed', r: true, tone: 'text-rose-700', wash: cn(SK_RULE, SK_OUT) },

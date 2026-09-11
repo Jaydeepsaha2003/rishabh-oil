@@ -778,7 +778,9 @@ export function registerIpc(): void {
   // The day's work board. Read by everyone — the whole point is that each
   // person sees their own checklist — and every write names the user making
   // it, because who ticked and who approved is the record.
-  handle('work:board', (_e, { date }: { date?: string } = {}) => listWorkBoard(date))
+  handle('work:board', (_e, { date, userId }: { date?: string; userId?: number } = {}) =>
+    listWorkBoard(date, userId)
+  )
   handle('work:cutoff', () => workCutoff())
   handle('work:setCutoff', (_e, { cutoff }: { cutoff: string }) => setWorkCutoff(cutoff))
   handle('work:processes', () => listWorkProcesses())

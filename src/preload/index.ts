@@ -302,7 +302,8 @@ const api = {
   // it. Every write carries the user making it — the server decides what that
   // user is allowed to do with it.
   work: {
-    board: (date?: string): Promise<Row> => ipcRenderer.invoke('work:board', { date }),
+    board: (date?: string, userId?: number): Promise<Row> =>
+      ipcRenderer.invoke('work:board', { date, userId }),
     cutoff: (): Promise<string> => ipcRenderer.invoke('work:cutoff'),
     setCutoff: (cutoff: string): Promise<{ cutoff: string }> =>
       ipcRenderer.invoke('work:setCutoff', { cutoff }),

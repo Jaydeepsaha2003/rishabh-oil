@@ -68,6 +68,7 @@ import { useLiveRefresh } from '@/lib/useLiveRefresh'
 import { cn } from '@/lib/utils'
 import {
   FLAGS,
+  hasWorkAccess,
   parsePerms,
   rightsOf,
   scopeOf,
@@ -75,6 +76,7 @@ import {
   setAllPerms,
   setColumn,
   setDesk,
+  setWorkAccess,
   toggleFlag,
   windowsOf,
   writeRights,
@@ -271,6 +273,9 @@ export function UserAccess(): React.JSX.Element {
 
   const unloadOn = rights('sales').scope === 'unload'
   const readingsOn = rights('orders').scope === 'readings'
+  // The one default-ON permission on this page: every login gets today's
+  // checklist unless this is switched off for them by name.
+  const workOn = hasWorkAccess(perms)
 
   // What the login actually gets, in words. Recomputed from the same rights the
   // grid draws, so the two cannot disagree.
@@ -401,6 +406,13 @@ export function UserAccess(): React.JSX.Element {
       sub: 'kept on record, cannot sign in',
       accent: '#B3261E',
       fg: '#B3261E'
+    },
+    {
+      k: 'Work access off',
+      v: String(rows.filter((u) => u.role !== 'admin' && !hasWorkAccess(parsePerms(u.permissions))).length),
+      sub: 'on by default — off is the exception',
+      accent: '#8C2F26',
+      fg: '#8C2F26'
     }
   ]
 
@@ -410,7 +422,10 @@ export function UserAccess(): React.JSX.Element {
     const p = parsePerms(u.permissions)
     const all = u.role === 'admin'
     const scope = all ? '' : scopeOf(p)
-    const count = Object.keys(p).length
+    // workAssignments is not a page in the grid, so it must not count as one —
+    // otherwise switching it off for somebody would make the list say they
+    // gained a page rather than lost the one thing that was actually taken.
+    const count = Object.keys(p).filter((k) => k !== 'workAssignments').length
     const t = roleTone(String(u.role))
     return {
       ...u,
@@ -424,7 +439,8 @@ export function UserAccess(): React.JSX.Element {
       scopeFg: scope === 'Unloading desk' ? '#8A5300' : '#1B4E82',
       scopeBd: scope === 'Unloading desk' ? '#F0E4CB' : '#C6DAF0',
       windows: all ? 'no limit' : windowsOf(p, GRID_KEYS),
-      winFg: all ? '#5A6B62' : '#0A1F17'
+      winFg: all ? '#5A6B62' : '#0A1F17',
+      workBlocked: !all && !hasWorkAccess(p)
     }
   }
 
@@ -526,6 +542,8 @@ export function UserAccess(): React.JSX.Element {
             </div>
           </div>
         </div>
+
+        <WorkAccessToggle on={workOn} admin={admin} onToggle={() => setPerms(setWorkAccess(perms, !workOn))} />
 
         {admin ? (
           <div className="flex flex-none items-start gap-2.5 rounded-[4px] border border-[#D6CEF5] bg-[#EDE9FB] px-3.5 py-4" style={{ borderLeft: '4px solid #5B4BA8' }}>
@@ -832,6 +850,15 @@ export function UserAccess(): React.JSX.Element {
                         {u.scope}
                       </span>
                     )}
+                    {!!u.workBlocked && (
+                      <span
+                        className="inline-flex items-center gap-[5px] rounded-[2px] border border-[#F0D6D4] bg-[#FDF3F2] px-[7px] py-1 text-[9.5px] font-extrabold uppercase tracking-[.05em] text-[#8C2F26]"
+                        title="Work Assignments has been switched off for this login"
+                      >
+                        <ClipboardCheck className="h-3 w-3" />
+                        No work access
+                      </span>
+                    )}
                   </div>
                 </div>
                 <div className="flex items-center gap-2.5 border-t border-t-[#EAF0E9] bg-[#F7FAF6] px-[13px] py-2.5">
@@ -999,6 +1026,15 @@ export function UserAccess(): React.JSX.Element {
                           >
                             <ShieldCheck className="h-3 w-3" />
                             {u.scope}
+                          </div>
+                        )}
+                        {!!u.workBlocked && (
+                          <div
+                            className="mt-[5px] inline-flex items-center gap-[5px] whitespace-nowrap rounded-[2px] border border-[#F0D6D4] bg-[#FDF3F2] px-1.5 py-[3px] text-[9.5px] font-extrabold uppercase tracking-[.05em] text-[#8C2F26]"
+                            title="Work Assignments has been switched off for this login"
+                          >
+                            <ClipboardCheck className="h-3 w-3" />
+                            No work access
                           </div>
                         )}
                       </div>
@@ -1215,6 +1251,8 @@ export function UserAccess(): React.JSX.Element {
               </div>
             </div>
           </div>
+
+          <WorkAccessToggle on={workOn} admin={admin} onToggle={() => setPerms(setWorkAccess(perms, !workOn))} />
 
           {admin ? (
             <div className="flex flex-none items-start gap-3 rounded-[4px] border border-[#D6CEF5] bg-[#EDE9FB] px-[18px] py-5" style={{ borderLeft: '4px solid #5B4BA8' }}>
@@ -1665,6 +1703,65 @@ export function UserAccess(): React.JSX.Element {
         </div>
       </div>
     </div>
+  )
+}
+
+// The one default-ON switch on this page. Everything else here starts at
+// nothing and is granted; this starts at everything and can be taken away —
+// which is why it is drawn apart from the module grid and the special-access
+// desks rather than folded into either. Admin is shown locked ON, because an
+// admin is never blockable and a switch that cannot move should not look like
+// one that can.
+function WorkAccessToggle({
+  on,
+  admin,
+  onToggle
+}: {
+  on: boolean
+  admin: boolean
+  onToggle: () => void
+}): React.JSX.Element {
+  const active = admin || on
+  return (
+    <button
+      type="button"
+      disabled={admin}
+      onClick={onToggle}
+      className="flex flex-none items-start gap-3 rounded-[4px] border-[1.5px] px-3.5 py-3 text-left disabled:cursor-default"
+      style={{
+        borderColor: active ? '#0B6B45' : '#F0D6D480',
+        borderStyle: active ? 'solid' : 'dashed',
+        background: active ? '#E9F5EE' : '#fff'
+      }}
+    >
+      <span
+        className="flex h-[26px] w-11 flex-none rounded-[3px] p-[3px]"
+        style={{ background: active ? '#0B6B45' : '#C3D2C6', justifyContent: active ? 'flex-end' : 'flex-start' }}
+      >
+        <span className="h-5 w-5 rounded-[2px] bg-white" />
+      </span>
+      <div className="min-w-0 flex-1">
+        <div className="flex flex-wrap items-center gap-[9px]">
+          <ClipboardCheck className="h-[19px] w-[19px] flex-none" style={{ color: active ? '#0B6B45' : '#8C2F26' }} />
+          <span className="text-[13px] font-extrabold" style={{ color: active ? '#0B6B45' : '#8C2F26' }}>
+            Work Assignments
+          </span>
+          <span
+            className="rounded-[2px] px-2 py-[3px] text-[9.5px] font-extrabold uppercase tracking-[.09em]"
+            style={active ? { background: '#0B6B45', color: '#fff' } : { background: '#DCE7DB', color: '#5A6B62' }}
+          >
+            {admin ? 'ALWAYS ON' : on ? 'ON' : 'OFF'}
+          </span>
+        </div>
+        <div className="mt-[7px] text-[12px] font-semibold leading-[1.6]" style={{ color: active ? '#0B6B45' : '#8C2F26' }}>
+          {admin
+            ? 'Admins always see every page, this one included — nothing to switch.'
+            : on
+              ? "This login sees today's checklist by default, ticks off what it owes, and answers what an admin sends back. Turn it off to take the page away from this login alone."
+              : 'Removed from this login. They will not see Work Assignments in the sidebar and cannot open it, even by a direct link.'}
+        </div>
+      </div>
+    </button>
   )
 }
 

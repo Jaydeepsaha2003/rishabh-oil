@@ -74,6 +74,7 @@ export type Page =
   | 'notifications'
   | 'userAccess'
   | 'userActivity'
+  | 'workAssignments'
 
 const ITEMS: Record<string, { label: string; icon: LucideIcon }> = {
   dashboard: { label: 'Dashboard', icon: LayoutDashboard },
@@ -105,6 +106,7 @@ const ITEMS: Record<string, { label: string; icon: LucideIcon }> = {
   notifications: { label: 'Notifications', icon: BellRing },
   userAccess: { label: 'User Access', icon: UserCog },
   userActivity: { label: 'User Activity', icon: History },
+  workAssignments: { label: 'Work Assignments', icon: ClipboardCheck },
   settings: { label: 'Settings', icon: SettingsIcon }
 }
 
@@ -127,7 +129,13 @@ const GROUPS: { label: string; ids: string[] }[] = [
       'factories',
       'approvals',
       'notifications',
-      ...(__WEB__ ? ['userAccess', 'userActivity'] : []),
+      // Reachable by DEFAULT, unlike its neighbours here — the checklist is
+      // built from access rather than gated by it, so a login should not have
+      // to wait for a grant to see today's work. Still filtered by canAccess
+      // below like everything else: modules.ts special-cases the key to
+      // default-allow, and an admin can flip a single login's flag off from
+      // User Access, at which point this list correctly stops naming it.
+      ...(__WEB__ ? ['workAssignments', 'userAccess', 'userActivity'] : []),
       'settings'
     ]
   }

@@ -205,3 +205,25 @@ export function windowsOf(perms: Perms, keys: string[]): string {
     arr.length === 0 ? none : arr.length === 1 ? `${arr[0]}d` : 'mixed'
   return `${one(vd, 'all')} · ${one(ed, 'no limit')}`
 }
+
+// Work Assignments access. Deliberately the ONE default-ALLOW permission in
+// this file — everyone gets today's checklist without an admin having to grant
+// it page by page — so it cannot share rightsOf/writeRights, whose whole
+// contract is default-DENY (no entry = no access). An explicit `false` is the
+// only thing that removes it; absence, `true`, or any other stored shape all
+// read as allowed, which is what keeps every login that predates this feature
+// unaffected.
+export function hasWorkAccess(perms: Perms): boolean {
+  return (perms || {}).workAssignments !== false
+}
+
+export function setWorkAccess(perms: Perms, on: boolean): Perms {
+  const out = { ...(perms || {}) }
+  // Turning it back on DELETES the flag rather than storing `true` — "on" and
+  // "never touched" are the same state for a default-allow permission, and
+  // leaving a stray key behind is one more thing a future reader has to know
+  // is safe to ignore.
+  if (on) delete out.workAssignments
+  else out.workAssignments = false
+  return out
+}

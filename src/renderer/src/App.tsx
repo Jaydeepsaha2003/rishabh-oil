@@ -9,6 +9,7 @@ import { Dashboard } from './pages/Dashboard'
 import { Settings } from './pages/Settings'
 import { UserAccess } from './pages/UserAccess'
 import { UserActivity } from './pages/UserActivity'
+import { WorkAssignments } from './pages/WorkAssignments'
 import { MobileMenuProvider } from './lib/mobileMenu'
 import { Bargains } from './pages/Bargains'
 import { Orders } from './pages/Orders'
@@ -323,6 +324,14 @@ function App(): React.JSX.Element {
   const allowed = user
     ? [
         ...MODULES.filter((m) => canAccess(user, m.key)).map((m) => m.key),
+        // Work assignments is the one page every login reaches BY DEFAULT. It
+        // is still not in MODULES — a row on the rights grid would come with
+        // create/edit/delete flags that make no sense for it — but it is no
+        // longer unconditional: modules.ts special-cases it exactly like
+        // Approvals and Notifications, default-allow, with a single stored
+        // `false` (set from User Access) the only thing that takes it away
+        // from one person.
+        ...(__WEB__ && canAccess(user, 'workAssignments') ? ['workAssignments'] : []),
         ...(__WEB__ && user.role === 'admin' ? ['userAccess', 'userActivity'] : [])
       ]
     : []
@@ -549,6 +558,7 @@ function App(): React.JSX.Element {
         {view === 'notifications' && <Notifications />}
         {view === 'userAccess' && <UserAccess />}
         {view === 'userActivity' && <UserActivity />}
+        {view === 'workAssignments' && <WorkAssignments />}
         {view === 'settings' && <Settings user={user} />}
       </main>
       </div>

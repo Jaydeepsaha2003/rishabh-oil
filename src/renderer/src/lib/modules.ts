@@ -104,6 +104,18 @@ function directLevel(user: PermUser, key: string): 'none' | 'read' | 'write' {
   // being hidden: a notification you receive but cannot find the setting for
   // is worse than a read-only page.
   if (key === 'notifications') return user.role === 'admin' ? 'write' : 'read'
+  // Work Assignments is the one page every login reaches by default — the
+  // checklist is built from access, not gated by it, so it cannot wait for
+  // somebody to grant it. An admin can still take it away from one person: a
+  // stored `permissions.workAssignments === false` is the only thing that
+  // removes it, set from the toggle on User Access (never from a grid row —
+  // this is not a page with create/edit/delete to parcel out).
+  if (key === 'workAssignments') {
+    if (user.role === 'admin') return 'write'
+    const p = user.permissions
+    const blocked = !!p && typeof p === 'object' && !Array.isArray(p) && (p as Record<string, unknown>).workAssignments === false
+    return blocked ? 'none' : 'write'
+  }
   if (user.role === 'admin') return 'write'
   const p = user.permissions
   if (Array.isArray(p)) return p.includes(key) ? 'write' : 'none'

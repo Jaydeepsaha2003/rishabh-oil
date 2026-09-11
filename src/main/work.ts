@@ -33,6 +33,7 @@
 // happen to be selected.
 import { getClient, todayISO } from './db'
 import { companiesOfFactory, factoryOfCompanies, getActiveCompanyId } from './company'
+import { hasWorkAccess, parsePerms } from '../renderer/src/lib/userRights'
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Row = Record<string, any>
@@ -265,7 +266,7 @@ async function ensureDay(date: string): Promise<void> {
 }
 
 /** The whole board for one day: people, their tasks, and every note on them. */
-export async function listWorkBoard(date?: string): Promise<Row> {
+export async function listWorkBoard(date?: string, viewerId?: number): Promise<Row> {
   const day = dayOf(date)
   await ensureDay(day)
   const cid = getActiveCompanyId()
@@ -273,22 +274,38 @@ export async function listWorkBoard(date?: string): Promise<Row> {
   const scope = fid ? await companiesOfFactory(fid) : [cid]
   const ph = scope.map(() => '?').join(', ')
 
+  // Who is asking, and whether they see the whole site's board or only their
+  // own row. The client already hides Review board and Team progress from
+  // anyone but an admin — this is what keeps another desk's outstanding work
+  // out of the PAYLOAD as well, not merely off the screen. No viewerId at all
+  // (an internal caller) reads as admin: generous rather than silently empty,
+  // which would be the worse failure to ship unnoticed.
+  const vid = n(viewerId)
+  const viewerRow = vid ? (await plain('SELECT role FROM users WHERE id = ?', [vid]))[0] : null
+  const viewerIsAdmin = !vid || !viewerRow || s(viewerRow.role) === 'admin'
+
   const [users, tasks, notes, cutoff] = await Promise.all([
+    // Fetched in full regardless of who is asking — needed to resolve names
+    // on notes and tasks (an admin's send-back note on a non-admin's own task
+    // still needs the admin's name), and trimmed to what is actually RETURNED
+    // further down.
     plain('SELECT id, username, full_name, role, active, permissions FROM users ORDER BY id'),
     plain(
       `SELECT * FROM work_tasks
-        WHERE work_date = ? AND (${fid ? 'factory_id = ?' : `company_id IN (${ph})`})
+        WHERE work_date = ? AND (${fid ? 'factory_id = ?' : `company_id IN (${ph})`})${
+          viewerIsAdmin ? '' : ' AND user_id = ?'
+        }
         ORDER BY user_id, module, id`,
-      fid ? [day, fid] : [day, ...scope]
+      viewerIsAdmin ? (fid ? [day, fid] : [day, ...scope]) : (fid ? [day, fid, vid] : [day, ...scope, vid])
     ),
     plain(
       `SELECT wn.*, u.full_name, u.username
          FROM work_notes wn
          JOIN work_tasks wt ON wt.id = wn.task_id
          LEFT JOIN users u ON u.id = wn.user_id
-        WHERE wt.work_date = ?
+        WHERE wt.work_date = ?${viewerIsAdmin ? '' : ' AND wt.user_id = ?'}
         ORDER BY wn.id`,
-      [day]
+      viewerIsAdmin ? [day] : [day, vid]
     ),
     workCutoff()
   ])
@@ -314,7 +331,11 @@ export async function listWorkBoard(date?: string): Promise<Row> {
     date: day,
     cutoff,
     now: clockOf(localStamp()),
-    users: users.map((u) => ({
+    // Roster exposed to the client: the whole active login list for an admin
+    // (Team progress and the Assign dialog both need it), just the asking
+    // login's own row otherwise — enough for My work, and nothing about
+    // anybody else's grants.
+    users: (viewerIsAdmin ? users : users.filter((u) => n(u.id) === vid)).map((u) => ({
       id: n(u.id),
       name: s(u.full_name) || s(u.username),
       username: s(u.username),
@@ -354,9 +375,21 @@ async function loadTask(taskId: number): Promise<Row> {
 }
 
 async function loadUser(userId: number): Promise<Row> {
-  const r = await plain('SELECT id, username, full_name, role FROM users WHERE id = ?', [n(userId)])
+  const r = await plain('SELECT id, username, full_name, role, permissions FROM users WHERE id = ?', [n(userId)])
   if (!r[0]) throw new Error('Who is making this change?')
   return r[0]
+}
+
+// Defence in depth for the one default-ALLOW permission in the app: the
+// client already hides the page and the sidebar entry once an admin flips
+// this off (see modules.ts), so a normal user never reaches these calls with
+// it set — this exists for whatever reaches the channel directly. Admin is
+// never blockable, same as everywhere else this flag is read.
+function assertWorkAccess(u: Row): void {
+  if (s(u.role) === 'admin') return
+  if (!hasWorkAccess(parsePerms(u.permissions))) {
+    throw new Error('Work Assignments access has been switched off for this login — ask an admin to turn it back on.')
+  }
 }
 
 async function say(taskId: number, user: Row, text: string, kind: string): Promise<void> {
@@ -404,6 +437,7 @@ async function tell(
 export async function tickWorkTask(taskId: number, userId: number): Promise<{ id: number; state: string }> {
   const t = await loadTask(taskId)
   const u = await loadUser(userId)
+  assertWorkAccess(u)
   if (n(t.user_id) !== n(u.id)) throw new Error('That task belongs to somebody else')
   if (s(t.state) !== 'pending') throw new Error(`This task is already ${s(t.state)}`)
   await getClient().execute({
@@ -417,6 +451,7 @@ export async function tickWorkTask(taskId: number, userId: number): Promise<{ id
 export async function redoWorkTask(taskId: number, userId: number): Promise<{ id: number; state: string }> {
   const t = await loadTask(taskId)
   const u = await loadUser(userId)
+  assertWorkAccess(u)
   if (n(t.user_id) !== n(u.id)) throw new Error('That task belongs to somebody else')
   if (s(t.state) !== 'fixes') throw new Error('Only a task sent back for fixes can be marked redone')
   await getClient().execute({
@@ -510,6 +545,9 @@ export async function addWorkNote(taskId: number, userId: number, text: string):
   if (!body) throw new Error('Nothing to say')
   const owner = n(t.user_id) === n(u.id)
   if (!owner && s(u.role) !== 'admin') throw new Error('That task belongs to somebody else')
+  // Only the owner's own side of the check applies here — an admin replying
+  // on somebody else's task is never blocked by that other person's flag.
+  if (owner) assertWorkAccess(u)
   await say(n(taskId), u, body, 'note')
   const who = s(u.full_name) || s(u.username)
   if (owner) {

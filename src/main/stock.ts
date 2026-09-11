@@ -253,29 +253,39 @@ export async function stockLevels(
   //
   // Bounded by `to` only: a range that ends before the books began has no
   // opening to bring forward yet.
-  const openingBalance = async (): Promise<Map<number, number>> => {
+  // Returns two figures per product: the whole counted opening, and the part
+  // of it that was the ADJUSTMENT rather than oil anybody dipped. The second is
+  // a component of the first, never an addition to it — see the Adjusted column
+  // on the register, which says so where somebody might otherwise add them up.
+  const openingBalance = async (): Promise<{ total: Map<number, number>; adj: Map<number, number> }> => {
     const args: (string | number)[] = fid ? [fid] : [...cidList]
     // Raw + PP (work in process) + the count's own adjustment: the register
     // opens at the TOTAL that was counted, not at the tank figure alone.
     // Keyed to the FACTORY: the opening is the oil standing in the tank, and
     // the tank is not divided between companies. Filtering the register down
     // to one company narrows the movements, not the opening it starts from.
-    if (fid && !whole) return new Map()
+    if (fid && !whole) return { total: new Map(), adj: new Map() }
     let sql = fid
       ? `SELECT product_id AS pid,
-                SUM(qty + COALESCE(pp_qty, 0) + COALESCE(adj_qty, 0)) AS q
+                SUM(qty + COALESCE(pp_qty, 0) + COALESCE(adj_qty, 0)) AS q,
+                SUM(COALESCE(adj_qty, 0)) AS a
            FROM stock_openings WHERE factory_id = ?`
       : `SELECT product_id AS pid,
-                SUM(qty + COALESCE(pp_qty, 0) + COALESCE(adj_qty, 0)) AS q
+                SUM(qty + COALESCE(pp_qty, 0) + COALESCE(adj_qty, 0)) AS q,
+                SUM(COALESCE(adj_qty, 0)) AS a
            FROM stock_openings WHERE company_id IN (${ph})`
     if (to) {
       sql += ' AND as_of <= ?'
       args.push(to)
     }
     const res = await c.execute({ sql: `${sql} GROUP BY product_id`, args })
-    const m = new Map<number, number>()
-    for (const r of res.rows) m.set(Number(r.pid), Number(r.q) || 0)
-    return m
+    const total = new Map<number, number>()
+    const adj = new Map<number, number>()
+    for (const r of res.rows) {
+      total.set(Number(r.pid), Number(r.q) || 0)
+      adj.set(Number(r.pid), Number(r.a) || 0)
+    }
+    return { total, adj }
   }
 
   const keys = Object.keys(SOURCES) as (keyof typeof SOURCES)[]
@@ -305,11 +315,21 @@ export async function stockLevels(
   return products.rows.map((p) => {
     const id = Number(p.id)
     const g = (m: Record<string, Map<number, number>>, k: string): number => m[k].get(id) || 0
+    // `open` stays the FULL counted total (raw + PP + the adjustment) plus
+    // whatever moved before the period starts — Closing has to reconcile to
+    // the books whether or not the adjustment is shown on its own line, so
+    // nothing here may drop it.
     const open =
-      (brought.get(id) || 0) +
+      (brought.total.get(id) || 0) +
       g(opening, 'received') + g(opening, 'produced') + g(opening, 'byProduct') + g(opening, 'transferredIn') -
       g(opening, 'consumed') - g(opening, 'sold') - g(opening, 'transferredOut') - g(opening, 'packedOut') +
       g(opening, 'returnedIn') - g(opening, 'returnedOut')
+    // What actually gets shown as "Opening" — Raw + PP, the adjustment held
+    // out and given its own column instead. Subtracted from the full `open`
+    // rather than rebuilt from Raw + PP alone, so a period that starts after
+    // the count still gets its "moved before the period" component right.
+    const adjPortion = brought.adj.get(id) || 0
+    const openingShown = Math.round((open - adjPortion) * 1000) / 1000
     const rec = g(period, 'received') - g(period, 'returnedOut')
     // A by-product of someone else's batch is produced stock all the same, so
     // it lands in the same column rather than needing one of its own.
@@ -331,10 +351,18 @@ export async function stockLevels(
       // a countable item like a carton — and the two must never be added.
       uom: String(p.uom || 'MT'),
       active: p.active,
-      opening: open,
-      // The part of the opening that was entered as stock brought forward,
-      // rather than derived from movements before the range.
-      opening_brought: brought.get(id) || 0,
+      // Raw + PP only — see openingShown above. The adjustment is its own
+      // column now, so it is held out here rather than folded silently in.
+      opening: openingShown,
+      // The Raw + PP part of what was entered as stock brought forward,
+      // rather than derived from movements before the range — kept on the
+      // same footing as `opening` above so "Brought forward" + "Moved before
+      // this period" still adds up to it on the hover.
+      opening_brought: Math.round(((brought.total.get(id) || 0) - adjPortion) * 1000) / 1000,
+      // The correction struck on the count — the difference between what the
+      // dip said and what the card said, rather than oil anybody measured.
+      // Its own column; no longer folded into `opening` above.
+      opening_adj: adjPortion,
       received: rec,
       produced: prod,
       // Shown beside Produced as the +N -N it is, never added to it. Nothing
@@ -345,6 +373,9 @@ export async function stockLevels(
       transferred_in: tIn,
       transferred_out: tOut,
       packed_out: packed,
+      // Still built off the FULL `open` (Raw + PP + adjustment), so Closing
+      // reconciles to the books regardless of how Opening is broken out on
+      // screen — the adjustment has not gone anywhere, it is just labelled.
       stock: open + rec + prod + tIn - cons - sld - tOut - packed
     }
   })
