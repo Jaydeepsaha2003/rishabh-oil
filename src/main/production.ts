@@ -1,5 +1,5 @@
 import type { ResultSet } from '@libsql/client'
-import { getClient } from './db'
+import { getClient, todayISO } from './db'
 import { getActiveCompanyId, companiesOfFactory, factoryOfCompanies } from './company'
 import { stockMap, productStockAvailable, stockLevels } from './stock'
 import { visibleFromFor } from './access-gate'
@@ -439,7 +439,7 @@ async function recordRecirculation(v: Row, id = 0): Promise<{ id: number }> {
   if (!productId) throw new Error('Pick the oil that was put through the machine')
   if (qty <= 0) throw new Error('Recirculated quantity must be greater than zero')
   const day = String(v.prod_date || '').slice(0, 10)
-  if (day && day > new Date().toISOString().slice(0, 10)) {
+  if (day && day > todayISO()) {
     throw new Error('Recirculation cannot be dated in the future')
   }
   if (id) {
@@ -550,7 +550,7 @@ export async function createProduction(v: Row): Promise<{ id: number }> {
   // courtesy — this is the rule, and it applies to an edit as much as to a
   // new batch, or a saved run could simply be moved forward afterwards.
   const prodDay = String(v.prod_date || '').slice(0, 10)
-  if (prodDay && prodDay > new Date().toISOString().slice(0, 10)) {
+  if (prodDay && prodDay > todayISO()) {
     throw new Error('Production cannot be dated in the future')
   }
 
@@ -684,7 +684,7 @@ export async function updateProduction(id: number, v: Row): Promise<{ id: number
   // courtesy — this is the rule, and it applies to an edit as much as to a
   // new batch, or a saved run could simply be moved forward afterwards.
   const prodDay = String(v.prod_date || '').slice(0, 10)
-  if (prodDay && prodDay > new Date().toISOString().slice(0, 10)) {
+  if (prodDay && prodDay > todayISO()) {
     throw new Error('Production cannot be dated in the future')
   }
 

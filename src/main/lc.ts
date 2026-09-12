@@ -613,6 +613,32 @@ async function assertHasLinkedInvoice(v: Row): Promise<void> {
   )
 }
 
+// THE DATES A STAGE STANDS ON.
+//
+// A stage is a claim about what has already happened, and each claim carries
+// its own facts. Open says the bank opened the credit — on a day. Payment
+// received says the money arrived and the credit falls due — two more days,
+// and the interest is the gap between them, so an LC left at Payment received
+// without them has no interest, no maturity and nothing to preclose against.
+//
+// The form asks for the same set and names the stage while doing it; this is
+// the side a script or a second window cannot go around.
+function assertStageDates(v: Row): void {
+  const stage = String(v.stage || 'application')
+  const has = (k: string): boolean => !!String(v[k] ?? '').trim()
+  if ((stage === 'open' || stage === 'payment_received') && !has('opened_date')) {
+    throw new Error('Open date is required once the LC is Open — the day the bank opened the credit')
+  }
+  if (stage === 'payment_received') {
+    if (!has('payment_received_date')) {
+      throw new Error('Payment received date is required once payment has been received')
+    }
+    if (!has('expiry_date')) {
+      throw new Error('Maturity date is required once payment has been received — it is what the interest days are counted to')
+    }
+  }
+}
+
 // The bank can't have paid the beneficiary before it even opened the LC.
 function assertPaymentReceivedNotBeforeOpen(v: Row): void {
   if (
@@ -733,6 +759,7 @@ export async function createLC(v: Row): Promise<{ id: number; warning?: string }
   if (!v.bank) throw new Error('Bank is required')
   if (!String(v.open_date || '').trim()) throw new Error('Application date is required')
   assertLcNoIfPastApplication(v)
+  assertStageDates(v)
   await assertLcNoNotTaken(v)
   await assertHasLinkedInvoice(v)
   await assertOwnBankBelongsToCompany(v)
@@ -758,6 +785,7 @@ export async function updateLC(id: number, v: Row): Promise<{ id: number; warnin
   if (!v.bank) throw new Error('Bank is required')
   if (!String(v.open_date || '').trim()) throw new Error('Application date is required')
   assertLcNoIfPastApplication(v)
+  assertStageDates(v)
   await assertLcNoNotTaken(v, id)
   await assertHasLinkedInvoice(v)
   await assertOwnBankBelongsToCompany(v)

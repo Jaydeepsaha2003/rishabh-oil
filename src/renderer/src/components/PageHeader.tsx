@@ -17,6 +17,14 @@ interface Props {
   // page, where "back" belongs at the start of the line the eye reads first,
   // not filed among the actions on the right.
   leading?: React.ReactNode
+  // A page whose work belongs to the PLANT, not to a set of books.
+  //
+  // Production is the clearest case: a batch is run on the factory floor and
+  // its output lands in one set of tanks, whichever company happens to be
+  // selected. Offering a company picker there invites a choice that changes
+  // nothing about the page and implies the run is filed under whichever
+  // company is showing — so the picker is left off entirely.
+  factoryScoped?: boolean
 }
 
 // The active company, switchable from any page's header — not just the
@@ -45,7 +53,7 @@ function HeaderCompanySwitcher(): React.JSX.Element | null {
   )
 }
 
-export function PageHeader({ title, subtitle, hint, actions, leading }: Props): React.JSX.Element {
+export function PageHeader({ title, subtitle, hint, actions, leading, factoryScoped }: Props): React.JSX.Element {
   const { bell } = useHeaderExtras()
   const isMobile = useIsMobile()
   return (
@@ -104,7 +112,7 @@ export function PageHeader({ title, subtitle, hint, actions, leading }: Props): 
         <LiveVersionBadge />
         <UpdateBadge />
         <DbStatus dotOnly className={cn(__WEB__ && '!h-9 !w-9')} />
-        <HeaderCompanySwitcher />
+        {!factoryScoped && <HeaderCompanySwitcher />}
         {actions}
         {bell}
       </div>

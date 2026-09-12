@@ -104,6 +104,27 @@ export async function stockLevels(
       date: 'p.prod_date',
       group: 'GROUP BY i.product_id'
     },
+    // WHAT A PP BATCH USED WITHOUT TAKING IT.
+    //
+    // A batch finished out of the product's own vessels draws no shea, no RPS
+    // and no fatty oil — the vessel already holds them, blended — so their
+    // rows sat blank and the register said the recipe had done nothing. It
+    // had: the PP was drawn at the recipe's own TOR, and 'pp_equiv' is the
+    // split of that draw (see recipeMath).
+    //
+    // It is shown TWICE and on purpose: once in Adjusted and once in
+    // Consumed, where the two cancel. The register then states what the
+    // formulation used while every balance stays exactly where it was, which
+    // is the truth — that oil left the tanks when the PP was made.
+    // `stock` below never reads it.
+    ppEquiv: {
+      base: `SELECT i.product_id AS pid, SUM(i.qty) AS q FROM production_items i
+             JOIN production p ON p.id = i.production_id
+             WHERE i.kind = 'pp_equiv' AND p.company_id IN (${ph})
+               AND COALESCE(p.kind, 'batch') <> 'recirculation'`,
+      date: 'p.prod_date',
+      group: 'GROUP BY i.product_id'
+    },
     // Stock leaves on the INVOICE date, and the quantity is the dispatched one.
     //
     // The mill invoices as the lorry goes, so the invoice date IS the dispatch:
@@ -335,6 +356,9 @@ export async function stockLevels(
     // it lands in the same column rather than needing one of its own.
     const prod = g(period, 'produced') + g(period, 'byProduct')
     const cons = g(period, 'consumed')
+    // The restatement, on both columns at once. Deliberately kept out of every
+    // figure that feeds Closing.
+    const ppEq = g(period, 'ppEquiv')
     const sld = g(period, 'sold') - g(period, 'returnedIn')
     const tIn = g(period, 'transferredIn')
     const tOut = g(period, 'transferredOut')
@@ -362,13 +386,19 @@ export async function stockLevels(
       // The correction struck on the count — the difference between what the
       // dip said and what the card said, rather than oil anybody measured.
       // Its own column; no longer folded into `opening` above.
-      opening_adj: adjPortion,
+      opening_adj: Math.round((adjPortion + ppEq) * 1000) / 1000,
+      // The part of the Adjusted column that is a restatement of a PP batch
+      // rather than a correction to the count, so the hover can tell them
+      // apart and the two are never confused for one another.
+      pp_equiv: ppEq,
       received: rec,
       produced: prod,
       // Shown beside Produced as the +N -N it is, never added to it. Nothing
       // in `stock` below reads this.
       recirculated: g(period, 'recirculated'),
-      consumed: cons,
+      // Consumed carries the PP equivalence too — the other half of the pair
+      // that Adjusted above holds. They cancel; `stock` uses the raw `cons`.
+      consumed: Math.round((cons + ppEq) * 1000) / 1000,
       sold: sld,
       transferred_in: tIn,
       transferred_out: tOut,
@@ -595,6 +625,20 @@ export async function stockPartyBreakdown(
   const ensure = (pid: number): { receipt: Row[]; dispatch: Row[]; packed: Row[]; produced: Row[]; consumed: Row[] } =>
     (out[pid] ??= { receipt: [], dispatch: [], packed: [], produced: [], consumed: [] })
 
+  // A RUN IS NAMED BY ITS PLANT, NOT BY THE BOOKS IT WAS FILED UNDER.
+  //
+  // Buying and selling belong to a company — there is a supplier, an invoice
+  // and a ledger behind them — so those rows lead with the company. Production
+  // does not: a batch is work on the plant floor and its output lands in one
+  // set of tanks, whichever company happened to be selected when it was
+  // recorded. Reading "KR FINMARK PVT LTD · SHEA-BASED" against 35 MT said the
+  // oil was made by a company, which is not a thing that happened.
+  //
+  // The company name is still the fallback, for a site that has no factory
+  // assigned yet — a nameless row would be worse than a wrong one.
+  const site = (plant: unknown, party: unknown): string =>
+    multi ? `${plant || '—'} · ${party}` : String(party)
+
   // With more than one company in view, the party rows say whose books each
   // figure belongs to — COMPANY first, then the party. Reading a factory-wise
   // register the question is "which of my two companies bought this", and the
@@ -651,27 +695,29 @@ export async function stockPartyBreakdown(
   // Output of a run, plus by-product lines, exactly as the register's own
   // `produced` and `byProduct` sources add them together.
   const made = await c.execute({
-    sql: `SELECT pid, party, company, SUM(qty) AS qty FROM (
+    sql: `SELECT pid, party, plant, SUM(qty) AS qty FROM (
             SELECT p.product_id AS pid, COALESCE(r.name, 'Production run') AS party,
-                   co.name AS company, p.qty AS qty
+                   COALESCE(f.name, co.name) AS plant, p.qty AS qty
               FROM production p
               LEFT JOIN formulations r ON r.id = p.formulation_id
               LEFT JOIN companies co ON co.id = p.company_id
+              LEFT JOIN factories f ON f.id = co.factory_id
              WHERE p.company_id IN (${ph}) ${prodB.sql}
             UNION ALL
             SELECT i.product_id AS pid, COALESCE(r.name, 'Production run') || ' · by-product' AS party,
-                   co.name AS company, i.qty AS qty
+                   COALESCE(f.name, co.name) AS plant, i.qty AS qty
               FROM production_items i
               JOIN production p ON p.id = i.production_id
               LEFT JOIN formulations r ON r.id = p.formulation_id
               LEFT JOIN companies co ON co.id = p.company_id
+              LEFT JOIN factories f ON f.id = co.factory_id
              WHERE i.kind = 'output' AND p.company_id IN (${ph}) ${prodB.sql}
-          ) GROUP BY pid, party, company HAVING SUM(qty) > 0 ORDER BY qty DESC`,
+          ) GROUP BY pid, party, plant HAVING SUM(qty) > 0 ORDER BY qty DESC`,
     args: [...cidList, ...prodB.args, ...cidList, ...prodB.args]
   })
   for (const r of made.rows)
     ensure(Number(r.pid)).produced.push({
-      party: multi ? `${r.company || '—'} · ${r.party}` : String(r.party),
+      party: site(r.plant, r.party),
       qty: Number(r.qty) || 0
     })
 
@@ -680,19 +726,20 @@ export async function stockPartyBreakdown(
   // hover would out-total the cell it explains.
   const used = await c.execute({
     sql: `SELECT i.product_id AS pid, COALESCE(r.name, 'Production run') AS party,
-                 co.name AS company, SUM(i.qty) AS qty
+                 COALESCE(f.name, co.name) AS plant, SUM(i.qty) AS qty
             FROM production_items i
             JOIN production p ON p.id = i.production_id
             LEFT JOIN formulations r ON r.id = p.formulation_id
             LEFT JOIN companies co ON co.id = p.company_id
+            LEFT JOIN factories f ON f.id = co.factory_id
            WHERE i.kind = 'input' AND p.company_id IN (${ph}) ${prodB.sql}
-           GROUP BY i.product_id, r.name, p.company_id
+           GROUP BY i.product_id, r.name, f.name
           HAVING SUM(i.qty) > 0 ORDER BY qty DESC`,
     args: [...cidList, ...prodB.args]
   })
   for (const r of used.rows)
     ensure(Number(r.pid)).consumed.push({
-      party: multi ? `${r.company || '—'} · ${r.party}` : String(r.party),
+      party: site(r.plant, r.party),
       qty: Number(r.qty) || 0
     })
 

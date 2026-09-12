@@ -61,7 +61,7 @@ import { DatePicker } from '@/components/ui/date-picker'
 import { formatDate, formatINR, formatNum, todayISO } from '@/lib/format'
 import { exportRowsToExcel } from '@/lib/excel'
 import { cn, inkOn } from '@/lib/utils'
-import { ChangeHistory } from '@/components/ChangeHistory'
+import { RecordHistory, useRecordHistory } from '@/components/RecordHistory'
 import { useIsMobile } from '@/lib/useIsMobile'
 import { useLiveRefresh } from '@/lib/useLiveRefresh'
 import { useCategories } from '@/lib/useCategories'
@@ -370,6 +370,12 @@ export function Bargains({
     uom: string
     invoices: Row[]
   } | null>(null)
+  // Which of the affected invoices the user wants brought onto the new rate.
+  const [rerate, setRerate] = useState<Record<number, boolean>>({})
+  const [rerateBusy, setRerateBusy] = useState(false)
+  // An invoice already billed at the new rate has nothing to rectify.
+  const stale = (iv: Row): boolean =>
+    !!rateChange && Math.abs((Number(iv.billed_rate) || 0) - rateChange.to) > 0.005
   const [form, setForm] = useState<Row>(emptyForm('MT'))
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -496,6 +502,19 @@ export function Bargains({
     setError(null)
     setOpen(true)
   }
+
+  // Who changed what on one bargain — the field diff and the activity trail,
+  // read as one story. Behind the ⋮, because it is asked for when a figure is
+  // being questioned rather than while the bargain is being struck.
+  const hist = useRecordHistory()
+  const openHistory = (row: Row): void =>
+    hist.open({
+      changes: { entity: 'bargains', id: Number(row.id) },
+      activity: { entity: 'bargains', id: Number(row.id) },
+      kicker: 'Purchase bargain',
+      title: String(row.bargain_no || 'this bargain'),
+      subtitle: `${row.supplier_name || '—'} · ${formatDate(row.bargain_date)} · ${formatNum(Number(row.qty) || 0)} ${row.uom || 'MT'}`
+    })
 
   function openEdit(row: Row): void {
     setEditing(row)
@@ -2207,6 +2226,7 @@ export function Bargains({
                                 actions={[
                                   { label: 'Add / remove balance qty', icon: SlidersHorizontal, onClick: () => openAdjust(row) },
                                   { label: 'Edit bargain', icon: Pencil, onClick: () => openEdit(row) },
+                                  { label: 'History — who changed what', icon: History, onClick: () => openHistory(row) },
                                   { label: 'Delete bargain', icon: Trash2, danger: true, onClick: () => del(row) }
                                 ]}
                               />
@@ -2565,6 +2585,19 @@ export function Bargains({
                   : 'The number is struck from the product, the party and the date.'}
               </div>
             )}
+            {/* Beside the close button, clear of it. The trail is read while
+                looking at the bargain it is about, so it opens from here
+                rather than sending anyone back to the register. */}
+            {__WEB__ && !!editing?.id && (
+              <div className="absolute right-[52px] top-[15px] [&_button]:!text-[#8FBFA8] [&_button:hover]:!bg-white/10 [&_button:hover]:!text-white">
+                <RowActions
+                  label="More"
+                  actions={[
+                    { label: 'History — who changed what', icon: History, onClick: () => openHistory(editing) }
+                  ]}
+                />
+              </div>
+            )}
           </DialogHeader>
 
           <div className={cn(__WEB__ && 'min-h-0 overflow-y-auto px-[22px] py-4')}>
@@ -2849,11 +2882,6 @@ export function Bargains({
           </div>
 
           </div>
-
-          {/* What has been changed on this bargain since it was struck —
-              beside the fields it was changed on, which is where the question
-              gets asked. */}
-          {__WEB__ && !!editing?.id && <ChangeHistory entity="bargains" id={Number(editing.id)} />}
 
           {error && (
             <p
@@ -3291,6 +3319,8 @@ export function Bargains({
         </DialogContent>
       </Dialog>
 
+      <RecordHistory target={hist.target} onClose={hist.close} />
+
       {/* WHAT A RATE CORRECTION TOUCHES.
           Nothing here changes a figure — every invoice keeps the rate it was
           billed at. This exists so the change is not silent: the person who
@@ -3317,13 +3347,31 @@ export function Bargains({
                 <>
                   <p className="text-[12.5px] font-semibold leading-[1.5] text-[#33473E] [text-wrap:pretty]">
                     {rateChange.invoices.length} invoice{rateChange.invoices.length === 1 ? '' : 's'} already raised
-                    against this bargain. None of them has changed — each keeps the rate it was billed at. Open any one
-                    to bring it onto the new rate.
+                    against this bargain. None of them has changed — each keeps the rate it was billed at. Tick the
+                    ones that should come onto the new rate and they are re-rated and re-posted together.
                   </p>
                   <div className="max-h-[320px] overflow-y-auto rounded-[4px] border border-[#DCE7DB]">
                     <table className="w-full text-[12.5px]">
                       <thead className="bg-[#F7FAF6] text-[10px] font-extrabold uppercase tracking-[.1em] text-[#5A6B62]">
                         <tr>
+                          <th className="w-9 px-3 py-2">
+                            {/* All or none. The commonest answer to "which of
+                                these five" is "all of them". */}
+                            <input
+                              type="checkbox"
+                              className="h-4 w-4 accent-[#0B3D2E]"
+                              checked={
+                                rateChange.invoices.filter((iv) => stale(iv)).length > 0 &&
+                                rateChange.invoices.filter((iv) => stale(iv)).every((iv) => rerate[Number(iv.id)])
+                              }
+                              onChange={(e) => {
+                                const on = e.target.checked
+                                const next: Record<number, boolean> = {}
+                                for (const iv of rateChange.invoices) if (stale(iv)) next[Number(iv.id)] = on
+                                setRerate(next)
+                              }}
+                            />
+                          </th>
                           <th className="px-3 py-2 text-left">Invoice</th>
                           <th className="px-3 py-2 text-left">Date</th>
                           <th className="px-3 py-2 text-right">Qty</th>
@@ -3333,19 +3381,35 @@ export function Bargains({
                       <tbody>
                         {rateChange.invoices.map((iv) => {
                           const billed = Number(iv.billed_rate) || 0
-                          const stale = billed > 0 && Math.abs(billed - rateChange.to) > 0.005
+                          const off = stale(iv)
                           return (
                             <tr key={String(iv.id)} className="border-t border-t-[#EAF0E9]">
+                              <td className="px-3 py-2">
+                                {/* An invoice already on the new rate has
+                                    nothing to rectify, so it cannot be
+                                    picked — a tick that changes nothing is
+                                    just a way of worrying somebody. */}
+                                <input
+                                  type="checkbox"
+                                  className="h-4 w-4 accent-[#0B3D2E] disabled:opacity-30"
+                                  disabled={!off}
+                                  checked={!!rerate[Number(iv.id)]}
+                                  onChange={(e) =>
+                                    setRerate((p) => ({ ...p, [Number(iv.id)]: e.target.checked }))
+                                  }
+                                />
+                              </td>
                               <td className="px-3 py-2 font-bold">{String(iv.invoice_no || '—')}</td>
                               <td className="px-3 py-2 text-[#5A6B62]">{formatDate(iv.order_date)}</td>
                               <td className="px-3 py-2 text-right tabular-nums">{formatNum(Number(iv.qty) || 0)}</td>
                               <td
                                 className={cn(
                                   'px-3 py-2 text-right font-bold tabular-nums',
-                                  stale ? 'text-[#8A5300]' : 'text-[#5A6B62]'
+                                  off ? 'text-[#8A5300]' : 'text-[#5A6B62]'
                                 )}
                               >
                                 {formatINR(billed)}
+                                {!off && <span className="ml-1.5 text-[10px] font-bold uppercase">on rate</span>}
                               </td>
                             </tr>
                           )
@@ -3357,8 +3421,60 @@ export function Bargains({
               )}
             </div>
           )}
-          <DialogFooter>
-            <Button onClick={() => setRateChange(null)}>Got it</Button>
+          <DialogFooter className={cn(__WEB__ && '!flex !items-center !gap-3 sm:!justify-start')}>
+            {(() => {
+              const picked = (rateChange?.invoices ?? []).filter((iv) => rerate[Number(iv.id)] && stale(iv))
+              return (
+                <>
+                  <span className="text-[12.5px] font-bold text-[#5A6B62]">
+                    {picked.length
+                      ? `${picked.length} invoice${picked.length === 1 ? '' : 's'} will be re-rated and re-posted`
+                      : 'Nothing selected — the invoices keep the rate they were billed at'}
+                  </span>
+                  <div className={cn(__WEB__ && 'ml-auto flex gap-2.5')}>
+                    <Button variant="outline" onClick={() => setRateChange(null)} disabled={rerateBusy}>
+                      {picked.length ? 'Not now' : 'Got it'}
+                    </Button>
+                    {picked.length > 0 && (
+                      <Button
+                        disabled={rerateBusy}
+                        className={cn(__WEB__ && '!bg-[#0B3D2E] !font-extrabold !text-[#C7F03F] hover:!bg-[#0F4A38]')}
+                        onClick={async () => {
+                          if (!rateChange) return
+                          setRerateBusy(true)
+                          try {
+                            const res = await window.api.bargains.rerateInvoices(
+                              Number(editing?.id ?? 0),
+                              rateChange.to,
+                              picked.map((iv) => Number(iv.id))
+                            )
+                            if (res.updated.length) {
+                              toast.success(
+                                `${res.updated.length} invoice${res.updated.length === 1 ? '' : 's'} brought onto ${formatINR(rateChange.to)}`
+                              )
+                            }
+                            // A bulk action that half-worked has to say so, by
+                            // name — silence would read as success.
+                            for (const f of res.failed) {
+                              toast.error(`${String(f.invoice_no || f.id)} — ${String(f.reason)}`)
+                            }
+                            setRateChange(null)
+                            setRerate({})
+                            await load()
+                          } catch (e) {
+                            toast.error((e as Error).message)
+                          } finally {
+                            setRerateBusy(false)
+                          }
+                        }}
+                      >
+                        {rerateBusy ? 'Re-rating…' : `Re-rate ${picked.length}`}
+                      </Button>
+                    )}
+                  </div>
+                </>
+              )
+            })()}
           </DialogFooter>
         </DialogContent>
       </Dialog>

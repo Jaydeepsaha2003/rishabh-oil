@@ -221,14 +221,15 @@ export function computeMoney(i: MoneyInput): MoneyResult {
   // silently drop it on every re-save. The paisa guard stops the blended
   // average's OWN rounding from reading as a premium and pushing each line's
   // ceil() up by a whole rupee.
-  // The plain average of the bargain rates on this invoice — rate 1 plus rate
-  // 2 divided by two — which is what the mill means by the invoice rate. It was
-  // weighted by quantity, which is the true average PRICE but not the desk's
-  // convention. Must stay identical to the renderer's own blend: the gap
-  // between the invoice rate and this is booked as supplier freight, so half a
-  // rupee of disagreement invents half a rupee of carriage on every tonne.
-  const blendRates = lines.filter((l) => n(l.qty) > 0 && n(l.rate) > 0).map((l) => n(l.rate))
-  const blendedRate = blendRates.length ? round2(blendRates.reduce((s, r) => s + r, 0) / blendRates.length) : 0
+  // The rate the invoice AVERAGES OUT AT, weighted by how much came on each
+  // bargain: (T1 x T1 qty + T2 x T2 qty) / total qty. 30 MT at 1,33,000 and
+  // 4 MT at 1,30,000 is not an invoice at 1,31,500 — almost all of the oil
+  // came at the higher rate, and a plain mean says otherwise.
+  //
+  // Must stay identical to the renderer'''s own blend: the gap between the
+  // invoice rate and this is booked as supplier freight, so half a rupee of
+  // disagreement invents half a rupee of carriage on every tonne.
+  const blendedRate = lineQty > 0 ? round2(lines.reduce((s, l) => s + n(l.rate) * n(l.qty), 0) / lineQty) : 0
   const rawPremium = round2(i.invoiceRate - blendedRate)
   const ratePremium = Math.abs(rawPremium) < 0.01 ? 0 : rawPremium
   // What the supplier actually bills per unit. Left unstated (NULL) this is the
@@ -491,8 +492,15 @@ async function bargainLinesForTankers(
   const ids = (Array.isArray(tankerIds) ? tankerIds : []).map((x) => n(x)).filter((x) => x > 0)
   if (ids.length === 0) return []
   const res = await getClient().execute({
+    // THE RATE THE TANKER WAS BILLED AT, falling back to its bargain'''s only
+    // for a tanker that predates the frozen column. Reading the live bargain
+    // rate here defeated the freeze entirely: the invoice screen showed what it
+    // was billed at, then saving it re-priced every line off whatever the
+    // bargain says today — so a rate corrected on the master silently re-rated
+    // any invoice that was opened and saved afterwards.
     sql: `SELECT pt.loaded_qty, pt.extra_qty, pt.bargain_id, pt.extra_bargain_id,
-                 b.rate_per_uom AS rate, xb.rate_per_uom AS extra_rate
+                 COALESCE(pt.bargain_rate, b.rate_per_uom) AS rate,
+                 COALESCE(pt.extra_bargain_rate, xb.rate_per_uom) AS extra_rate
           FROM purchase_tankers pt
           LEFT JOIN bargains b ON b.id = pt.bargain_id
           LEFT JOIN bargains xb ON xb.id = pt.extra_bargain_id
@@ -1099,6 +1107,160 @@ async function assertOrderNotInUse(id: number): Promise<void> {
   }
 }
 
+/**
+ * Bring chosen invoices onto a bargain's new rate, and re-post them.
+ *
+ * Correcting a bargain rate leaves every invoice already raised on it holding
+ * the rate it was billed at — deliberately, because a rate is money and an
+ * invoice must not re-price itself because a master changed. But often the
+ * correction IS meant to reach them: a rate typed wrong on the day, found a
+ * week later. Doing that one invoice at a time, through the form, is how a
+ * page gets missed.
+ *
+ * So the invoices are named and the person picks. Re-rating is not a field
+ * update: the line rate decides the taxable value, which decides GST, which
+ * decides TDS and the net, and the supplier ledger and the journal are posted
+ * from those. All of it is recomputed from the invoice's OWN stored terms —
+ * its GST rate, its TDS, its interest, its round off — so nothing changes
+ * except what the rate implies.
+ *
+ * Each invoice is done in full or not at all, and one that fails is reported
+ * rather than aborting the rest: a bulk action that stops halfway leaves the
+ * book in a state nobody chose.
+ */
+export async function rerateInvoicesForBargain(
+  bargainId: number,
+  rate: number,
+  orderIds: number[]
+): Promise<{ updated: Row[]; failed: Row[] }> {
+  const bid = n(bargainId)
+  const newRate = Number(rate)
+  if (!bid) throw new Error('Which bargain?')
+  if (!Number.isFinite(newRate) || newRate <= 0) throw new Error('Enter a rate greater than zero')
+  const ids = (Array.isArray(orderIds) ? orderIds : []).map((x) => n(x)).filter((x) => x > 0)
+  if (!ids.length) throw new Error('Pick at least one invoice to bring onto the new rate')
+
+  const c = getClient()
+  const updated: Row[] = []
+  const failed: Row[] = []
+
+  for (const id of ids) {
+    try {
+      const cur = await c.execute({ sql: 'SELECT * FROM orders WHERE id = ? LIMIT 1', args: [id] })
+      if (!cur.rows.length) {
+        failed.push({ id, invoice_no: '', reason: 'That invoice no longer exists' })
+        continue
+      }
+      const o = toPlain(cur)[0]
+      const before = { net: n(o.net_amount), taxable: n(o.taxable_value) }
+
+      // 1. The rate, where it lives — on the tanker lines this bargain supplied.
+      await c.execute({
+        sql: 'UPDATE purchase_tankers SET bargain_rate = ? WHERE order_id = ? AND bargain_id = ?',
+        args: [newRate, id, bid]
+      })
+      await c.execute({
+        sql: 'UPDATE purchase_tankers SET extra_bargain_rate = ? WHERE order_id = ? AND extra_bargain_id = ?',
+        args: [newRate, id, bid]
+      })
+
+      // 2. The money, from the invoice's own terms and its newly-rated lines.
+      const tankerIds = toPlain(
+        await c.execute({ sql: 'SELECT id FROM purchase_tankers WHERE order_id = ?', args: [id] })
+      ).map((t) => n(t.id))
+      if (!tankerIds.length) {
+        failed.push({
+          id,
+          invoice_no: String(o.invoice_no || ''),
+          reason: 'No tankers on this invoice — open it and save it instead'
+        })
+        continue
+      }
+      const supplier = await getSupplier(n(o.supplier_id))
+      const prior = await supplierFyTaxable(n(o.supplier_id), String(o.order_date), id)
+      const lines = applyBargainInterestOverrides(
+        await bargainLinesForTankers(tankerIds),
+        await listOrderBargainInterest(id)
+      )
+      const blended = lines.reduce((t, l) => t + l.qty, 0) > 0
+        ? Math.round((lines.reduce((t, l) => t + l.rate * l.qty, 0) / lines.reduce((t, l) => t + l.qty, 0)) * 100) / 100
+        : newRate
+      // The invoice rate follows the blend, carrying across whatever premium
+      // it already had — a genuine freight-in-rate survives, and an invoice
+      // with none does not acquire one.
+      const oldPremium = Math.round((n(o.invoice_rate) - n(o.bargain_rate)) * 100) / 100
+      const premium = Math.abs(oldPremium) < 0.01 ? 0 : oldPremium
+      const invoiceRate = Math.round((blended + premium) * 100) / 100
+      const m = computeMoney({
+        orderedQty: n(o.ordered_qty),
+        invoiceRate,
+        bargainRate: blended,
+        gstPct: n(o.gst_pct),
+        tdsPct: supplier?.tds_above_only ? 0 : n(o.tds_pct),
+        addsInterest: n(o.interest_pct) > 0,
+        interestPct: n(o.interest_pct),
+        interestDays: n(o.interest_days),
+        additionalInterest: n(o.additional_interest),
+        rateRoundOff: o.rate_round_off == null ? null : n(o.rate_round_off),
+        tdsThreshold: n(supplier?.tds_threshold),
+        tdsPctAbove: n(o.tds_pct),
+        tdsPrior: prior,
+        roundOff: n(o.round_off),
+        lines
+      })
+
+      await c.execute({
+        sql: `UPDATE orders SET bargain_rate = ?, invoice_rate = ?, adjusted_rate = ?, taxable_value = ?,
+                gst_amount = ?, tds_amount = ?, net_amount = ?,
+                final_taxable_value = ?, final_gst_amount = ?, final_tds_amount = ?, final_net_amount = ?
+              WHERE id = ?`,
+        args: [
+          blended,
+          invoiceRate,
+          m.adjusted_rate,
+          m.taxable_value,
+          m.gst_amount,
+          m.tds_amount,
+          m.net_amount,
+          m.final_taxable_value,
+          m.final_gst_amount,
+          m.final_tds_amount,
+          m.final_net_amount,
+          id
+        ]
+      })
+
+      // 3. The ledger and the journal, from the figures just written.
+      const v: Row = { ...o, bargain_rate: blended, invoice_rate: invoiceRate }
+      await setSupplierPayable(id, n(o.supplier_id), m.net_amount, String(o.order_date))
+      await postOrderJournal(id, v, m, supplier, n(o.round_off))
+
+      // 4. And it goes in the invoice's own history, like any other change.
+      await recordChanges(
+        'orders',
+        id,
+        String(o.invoice_no || ''),
+        o,
+        { ...o, bargain_rate: blended, invoice_rate: invoiceRate, taxable_value: m.taxable_value, net_amount: m.net_amount },
+        ORDER_FIELDS
+      )
+
+      updated.push({
+        id,
+        invoice_no: String(o.invoice_no || ''),
+        rate: blended,
+        taxable_before: before.taxable,
+        taxable_after: m.taxable_value,
+        net_before: before.net,
+        net_after: m.net_amount
+      })
+    } catch (e) {
+      failed.push({ id, invoice_no: '', reason: (e as Error).message })
+    }
+  }
+  return { updated, failed }
+}
+
 export async function deleteOrder(id: number): Promise<{ id: number }> {
   const c = getClient()
   await assertOrderNotInUse(id)
@@ -1406,7 +1568,8 @@ export async function updateTankerDetails(id: number, v: Row): Promise<{ id: num
       outside_factory_date = ?, inside_factory_date = ?, empty_date = ?,
       received_qty = ?, transporter_id = ?, transport_rate_per_ton = ?,
       transport_amount = ?, shortage_charge_amount = ?,
-      krfl_weighment_doc_no = ?, outside_weighment_doc_no = ?, condition = ?
+      krfl_weighment_doc_no = ?, outside_weighment_doc_no = ?, condition = ?,
+      lr_no = ?
       WHERE id = ?`,
     args: [
       String(pick('tanker_no') || t.tanker_no).trim(),
@@ -1430,6 +1593,7 @@ export async function updateTankerDetails(id: number, v: Row): Promise<{ id: num
       (pick('krfl_weighment_doc_no') as string) || null,
       (pick('outside_weighment_doc_no') as string) || null,
       normCondition(pick('condition')),
+      (String(pick('lr_no') ?? '').trim() || null) as string | null,
       id
     ]
   })
@@ -2113,8 +2277,14 @@ export async function advancePurchaseTanker(id: number, toStatus: string, data: 
         `Tanker ${tanker.tanker_no} is on EX terms. Enter the transporter rate per ${String(tanker.uom || 'MT')}, or put 0 and say why there is no freight.`
       )
     }
-    const sets = ["status = 'transit'", 'transit_date = ?', 'source_id = ?', 'expected_delivery_date = ?']
-    const args: (string | number | null)[] = [transitDate || null, sourceId, expected]
+    // The lorry receipt. Issued with the consignment, so it is captured here
+    // with the transit date rather than asked for again at the gate. Same rule
+    // as the source above: a field the caller left out keeps what it had, so a
+    // step that does not mention it cannot erase it.
+    const lrNo =
+      data.lr_no !== undefined ? String(data.lr_no || '').trim() || null : (tanker.lr_no ?? null)
+    const sets = ["status = 'transit'", 'transit_date = ?', 'source_id = ?', 'expected_delivery_date = ?', 'lr_no = ?']
+    const args: (string | number | null)[] = [transitDate || null, sourceId, expected, lrNo]
     if (isEx) {
       sets.push('transport_rate_per_ton = ?', 'transporter_id = ?', 'freight_remark = ?')
       args.push(rate, transporterId, rate > 0 ? null : freightRemark || null)

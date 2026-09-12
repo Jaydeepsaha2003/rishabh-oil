@@ -1,5 +1,5 @@
 import type { ResultSet } from '@libsql/client'
-import { getClient, bumpRevision } from './db'
+import { getClient, bumpRevision, todayISO } from './db'
 import { getActiveCompanyId } from './company'
 import { postJournal } from './journal'
 import { createNote, deleteNote } from './notes'
@@ -18,7 +18,6 @@ function toPlain(res: ResultSet): Row[] {
 
 const n = (v: unknown): number => Number(v) || 0
 const round2 = (v: number): number => Math.round(v * 100) / 100
-const todayISO = (): string => new Date().toISOString().slice(0, 10)
 
 // ---------------------------------------------------------------------------
 // Transporter freight, kept off the transporter's own ledger until they bill.

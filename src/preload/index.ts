@@ -86,6 +86,12 @@ const api = {
       ipcRenderer.invoke('bargains:update', { id, values }),
     linkedInvoices: (id: number): Promise<Row[]> => ipcRenderer.invoke('bargains:linkedInvoices', { id }),
     adjustments: (id: number): Promise<Row[]> => ipcRenderer.invoke('bargains:adjustments', { id }),
+    rerateInvoices: (
+      bargainId: number,
+      rate: number,
+      orderIds: number[]
+    ): Promise<{ updated: Row[]; failed: Row[] }> =>
+      ipcRenderer.invoke('bargains:rerateInvoices', { bargainId, rate, orderIds }),
     setInvoiceRate: (
       orderId: number,
       bargainId: number,
@@ -385,6 +391,26 @@ const api = {
       companyId?: number
     ): Promise<{ product_id: number; stage_id: number; qty: number }> =>
       ipcRenderer.invoke('stockOpening:writeOffPp', { productId, stageId, qty, note, companyId }),
+    ppReceivers: (productId: number, companyId?: number): Promise<Row[]> =>
+      ipcRenderer.invoke('stockOpening:ppReceivers', { productId, companyId }),
+    movePp: (
+      productId: number,
+      stageId: number,
+      qty: number,
+      toProductId: number,
+      toStageId: number,
+      note: string,
+      companyId?: number
+    ): Promise<{ product_id: number; to_product_id: number; qty: number }> =>
+      ipcRenderer.invoke('stockOpening:movePp', {
+        productId,
+        stageId,
+        qty,
+        toProductId,
+        toStageId,
+        note,
+        companyId
+      }),
     ppFreeTotals: (
       productIds: number[],
       companyId?: number

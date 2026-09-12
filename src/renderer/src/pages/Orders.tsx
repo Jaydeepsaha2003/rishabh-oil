@@ -27,7 +27,7 @@ import { MultiSelectFilter } from '@/components/ui/multi-select-filter'
 import { ColumnFilter } from '@/components/ui/column-filter'
 import { RowActions } from '@/components/ui/row-actions'
 import { GateEntriesDialog } from '@/components/GateEntriesDialog'
-import { HistoryDialog, useHistoryDialog } from '@/components/HistoryDialog'
+import { RecordHistory, useRecordHistory } from '@/components/RecordHistory'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { errText, formatDate, formatDateShort, formatINR, formatNum, todayISO } from '@/lib/format'
@@ -40,7 +40,6 @@ const rupees = formatINR
 // What the lab sees instead of a value.
 const MONEY_MASK = '*****'
 import { cn } from '@/lib/utils'
-import { ChangeHistory } from '@/components/ChangeHistory'
 import { computeMoney, computeShortage } from '@/lib/orderCalc'
 import { useLiveRefresh } from '@/lib/useLiveRefresh'
 import { useGlobalDateRange, globalRangeAppliesTo } from '@/lib/globalDateRange'
@@ -341,6 +340,7 @@ function stageFacts(row: Row, key: string): { k: string; v: string }[] {
     add('Extra bargain', txt(row.extra_bargain_no))
   } else if (key === 'transit') {
     add('In transit on', row.transit_date ? formatDate(row.transit_date) : '')
+    add('LR no.', txt(row.lr_no))
     add('Source / port', txt(row.source_name))
     add('Transporter', txt(row.transporter_name))
     if (Number(row.transport_rate_per_ton) > 0) {
@@ -1782,7 +1782,10 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
         transport_rate_per_ton:
           row.transport_rate_per_ton ??
           transporters.find((x) => x.id === row.transporter_id)?.default_rate_per_ton ??
-          ''
+          '',
+        // Carried in on a re-advance, so moving a tanker back and forward does
+        // not lose the number the transporter gave it.
+        lr_no: String(row.lr_no || '')
       })
     if (target === 'outside_factory') next.outside_factory_date = todayISO()
     if (target === 'inside_factory') next.inside_factory_date = todayISO()
@@ -1911,6 +1914,7 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
       payment_mode: row.payment_mode || 'pending',
       transit_date: row.transit_date || '',
       source_id: row.source_id ? String(row.source_id) : '',
+      lr_no: row.lr_no || '',
       outside_factory_date: row.outside_factory_date || '',
       inside_factory_date: row.inside_factory_date || '',
       empty_date: row.empty_date || '',
@@ -2243,6 +2247,7 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
     setBgLines([{ bargain_id: '', qty: '' }])
     setBgTouched(false)
     setError(null)
+    setPendingRates({})
     setFormPage(true)
     setTab('purchases')
   }
@@ -2266,12 +2271,14 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
     return () => { live = false }
   }, [detailRow?.id])
 
-  // Who did what to one purchase invoice.
-  const hist = useHistoryDialog()
+  // Who changed what on one purchase invoice — the field diff and the activity
+  // trail read as one story, because they are one story.
+  const hist = useRecordHistory()
   const openHistory = (row: Row): void =>
     hist.open({
-      entity: 'Purchase',
-      id: Number(row.id),
+      changes: { entity: 'orders', id: Number(row.id) },
+      activity: { entity: 'Purchase', id: Number(row.id) },
+      kicker: 'Purchase invoice',
       title: String(row.invoice_no || 'this purchase'),
       subtitle: `${row.supplier_name || '—'} · ${formatDate(row.invoice_date || row.order_date)} · ${formatINR(row.total_amount ?? row.amount)}`
     })
@@ -2336,6 +2343,7 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
     })
     setSelected(tankers.filter((x) => x.order_id === row.id).map((x) => Number(x.id)))
     setError(null)
+    setPendingRates({})
     setFormPage(true)
     setTab('purchases')
   }
@@ -2726,6 +2734,15 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
   // Per-bargain quantity shares across the selected tankers — a split tanker
   // contributes to BOTH its primary and its excess bargain. More than one entry
   // means the invoice spans multiple bargain rates.
+  // RATE EDITS WAIT FOR SAVE CHANGES.
+  //
+  // The pencil used to write straight to the database the moment Apply was
+  // pressed — the invoice was re-rated before the reader had seen what it did
+  // to the totals, and Cancel could not take it back. A rate is money: it goes
+  // in when the invoice is saved, with everything else on the form, or not at
+  // all. Held here by bargain until then, and the whole summary is computed
+  // through them so the figures on screen are the ones that will be written.
+  const [pendingRates, setPendingRates] = useState<Record<number, number>>({})
   const rateAlloc = useMemo(() => {
     // Consignment tankers carry their own per-bargain split; a typed-quantity
     // invoice carries it on the invoice itself.
@@ -2742,11 +2759,17 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
     for (const t of chosenTankers) {
       const loaded = Number(t.loaded_qty) || 0
       const extra = t.extra_bargain_id ? Number(t.extra_qty) || 0 : 0
-      add(t.bargain_id, t.bargain_no, Number(t.bargain_rate) || 0, loaded - extra)
-      if (extra > 0) add(t.extra_bargain_id, t.extra_bargain_no, Number(t.extra_bargain_rate) || 0, extra)
+      // An unsaved edit prices the line, so every figure below it — the blend,
+      // the taxable value, the net — is what pressing Save would write.
+      const own = pendingRates[Number(t.bargain_id)] ?? (Number(t.bargain_rate) || 0)
+      add(t.bargain_id, t.bargain_no, own, loaded - extra)
+      if (extra > 0) {
+        const ex = pendingRates[Number(t.extra_bargain_id)] ?? (Number(t.extra_bargain_rate) || 0)
+        add(t.extra_bargain_id, t.extra_bargain_no, ex, extra)
+      }
     }
     return Array.from(m.values())
-  }, [chosenTankers, directMode, chosenLots, lotAlloc, bgAlloc])
+  }, [chosenTankers, directMode, chosenLots, lotAlloc, bgAlloc, pendingRates])
   // Where a bargain has been corrected SINCE this invoice was billed.
   //
   // Nothing here changes a figure. The invoice keeps what it was billed at;
@@ -2794,51 +2817,33 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
   const [ratePanelOpen, setRatePanelOpen] = useState(false)
   const [driftBusy, setDriftBusy] = useState(false)
 
-  // Adopt a rate for ONE bargain on THIS invoice. Every other bargain on the
-  // invoice, and every other invoice on this bargain, is left alone.
-  async function applyBargainRate(bargainId: number, rate: number): Promise<void> {
-    if (!editing?.id) return
-    setDriftBusy(true)
-    try {
-      await window.api.bargains.setInvoiceRate(Number(editing.id), bargainId, rate)
-      // THE INVOICE RATE MOVES WITH THE BARGAIN RATE.
-      //
-      // Anything the invoice rate carries ABOVE the blended bargain rate is
-      // read as supplier freight billed inside the rate. Leaving the invoice
-      // rate where it was while a bargain line moved beneath it therefore did
-      // not leave it alone at all: the gap the edit opened up was booked as
-      // freight, and lowering one bargain by Rs 1,000 invented Rs 881.19/MT of
-      // carriage that nobody agreed.
-      //
-      // The new blend is worked out here rather than read back after the
-      // reload, so the figure is exact and lands in the same render. Any
-      // premium that was ALREADY on the invoice is carried across untouched —
-      // a genuine freight-in-rate survives the edit, and an invoice that had
-      // none still has none.
-      const edited = rateAlloc
-        .filter((a) => a.qty > 0 && a.rate > 0)
-        .map((a) => (a.bargain_id === bargainId ? rate : a.rate))
-      const newBlend = edited.length
-        ? Math.round((edited.reduce((sum, r) => sum + r, 0) / edited.length) * 100) / 100
+  // Adopt a rate for ONE bargain on THIS invoice — on the FORM, not in the
+  // database. Every other bargain on the invoice, and every other invoice on
+  // this bargain, is left alone; nothing is written until Save changes.
+  function applyBargainRate(bargainId: number, rate: number): void {
+    setPendingRates((p) => ({ ...p, [bargainId]: rate }))
+    setDriftEdit(null)
+    // invoice_rate follows the blend so no gap opens up that would read as
+    // supplier freight — the blend itself recomputes from rateAlloc, which
+    // already sees the pending rate.
+    const qtyTotal = rateAlloc.reduce((sum, a) => sum + a.qty, 0)
+    const newBlend =
+      qtyTotal > 0
+        ? Math.round(
+            (rateAlloc.reduce((sum, a) => sum + (a.bargain_id === bargainId ? rate : a.rate) * a.qty, 0) / qtyTotal) *
+              100
+          ) / 100
         : rate
-      const premium = Math.round(((Number(form.invoice_rate) || 0) - blendedRate) * 100) / 100
-      const keptPremium = Math.abs(premium) < 0.01 ? 0 : premium
-      const nextInvoiceRate = Math.round((newBlend + keptPremium) * 100) / 100
-      setForm((p) => ({
-        ...p,
-        bargain_rate: newBlend,
-        invoice_rate: nextInvoiceRate,
-        invoice_rate_touched: true
-      }))
-      await load(true)
-      setDriftEdit(null)
-      toast.success('Rate updated on this invoice — press Save changes to re-post it')
-    } catch (e) {
-      toast.error(errText(e))
-    } finally {
-      setDriftBusy(false)
-    }
+    const premium = Math.round(((Number(form.invoice_rate) || 0) - blendedRate) * 100) / 100
+    const keptPremium = Math.abs(premium) < 0.01 ? 0 : premium
+    setForm((p) => ({
+      ...p,
+      bargain_rate: newBlend,
+      invoice_rate: Math.round((newBlend + keptPremium) * 100) / 100,
+      invoice_rate_touched: true
+    }))
   }
+
 
   const bgRemaining = (Number(form.ordered_qty) || 0) - bgAllocated
   const directBalance = useMemo(() => {
@@ -2857,19 +2862,18 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
   // is summed from each bargain's own line rate, not from this, so rounding
   // it changes nothing that is actually billed.
   //
-  // THE PLAIN AVERAGE OF THE BARGAIN RATES, per the mill's own convention:
-  // rate 1 plus rate 2 divided by two, however much was loaded on each. It was
-  // weighted by quantity before, which is the true average PRICE but not what
-  // the desk calls the invoice rate.
+  // WEIGHTED BY QUANTITY: (T1 x T1 qty + T2 x T2 qty) / total qty. 30 MT at
+  // 1,33,000 and 4 MT at 1,30,000 is not an invoice at 1,31,500 — nearly all
+  // of the oil came at the higher rate, and a plain mean says otherwise.
   //
   // It must match computeMoney's own blend in the main process exactly. The
   // gap between the invoice rate and the blend is booked as supplier freight,
   // so the two halves disagreeing by a rupee invents a rupee of carriage on
   // every tonne.
   const blendedRate = useMemo(() => {
-    const rates = rateAlloc.filter((a) => a.qty > 0 && a.rate > 0).map((a) => a.rate)
-    if (!rates.length) return 0
-    return Math.round((rates.reduce((s, r) => s + r, 0) / rates.length) * 100) / 100
+    const q = rateAlloc.reduce((s, a) => s + a.qty, 0)
+    if (q <= 0) return 0
+    return Math.round((rateAlloc.reduce((s, a) => s + a.rate * a.qty, 0) / q) * 100) / 100
   }, [rateAlloc])
   // Multi-bargain invoices price at the blended (weighted-average) rate — both
   // the bargain rate (interest/final basis) and the default invoice rate.
@@ -3186,7 +3190,14 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
     }
     try {
       if (editing) {
+        // The rates the pencil changed go in FIRST: the main process prices
+        // each line off the tanker'''s own frozen rate, so the invoice has to
+        // be saved against the new ones, not the old.
+        for (const [bid, rate] of Object.entries(pendingRates)) {
+          await window.api.bargains.setInvoiceRate(Number(editing.id), Number(bid), Number(rate))
+        }
         await window.api.orders.update(editing.id, payload)
+        setPendingRates({})
         toast.success('Purchase updated')
       } else {
         await window.api.orders.create(payload)
@@ -3271,6 +3282,7 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
                   { header: 'Loaded date', key: 'loaded_date', value: (r) => formatDate(r.loaded_date) },
                   { header: 'Supplier', key: 'supplier_name', value: (r) => r.supplier_name || '' },
                   { header: 'Bargain', key: 'bargain_no', value: (r) => r.bargain_no || '' },
+                  { header: 'LR no.', key: 'lr_no', value: (r) => r.lr_no || '' },
                   { header: 'Loaded qty', key: 'loaded_qty', align: 'right', numFmt: '#,##0.000', value: (r) => Number(r.loaded_qty) || 0 },
                   { header: 'Received qty', key: 'received_qty', align: 'right', numFmt: '#,##0.000', value: (r) => Number(r.received_qty) || 0 },
                   { header: 'UOM', key: 'uom', value: (r) => r.uom || '' },
@@ -3311,7 +3323,7 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
           <div className={cn('flex flex-wrap items-center gap-x-3 gap-y-1 rounded-t-md bg-[#dce6f5] px-4 py-2 text-[#1a2c56]', NP_BAR)}>
             <button
               className={cn('inline-flex cursor-pointer items-center gap-1.5 text-[12px] font-medium hover:underline', NP_BACK)}
-              onClick={() => { if (onBack) { onBack() } else { setFormPage(false) } }}
+              onClick={() => { setPendingRates({}); if (onBack) { onBack() } else { setFormPage(false) } }}
             >
               <ArrowLeft className={cn('h-3.5 w-3.5', __WEB__ && '!h-[18px] !w-[18px]')} />{' '}
               {__WEB__ ? 'BACK' : onBack ? `Back to ${backLabel || 'previous page'}` : 'Back'}
@@ -3335,6 +3347,24 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
               {form.order_date ? ` · ${formatDate(form.order_date)}` : ''}
               {isTrading ? ' · trading, no bargain/stock' : directMode ? ' · direct, no tanker movement' : ''}
             </span>
+            {/* The trail lives behind the ⋮, not down the middle of the form.
+                It is read when a figure is being questioned — which is rarely,
+                and never while the form is being filled in — so it costs the
+                page nothing until it is asked for. */}
+            {__WEB__ && !!editing?.id && (
+              <div className="-my-1 shrink-0 [&_button]:!text-[#8FBFA8] [&_button:hover]:!bg-white/10 [&_button:hover]:!text-white">
+                <RowActions
+                  label="More"
+                  actions={[
+                    {
+                      label: 'History — who changed what',
+                      icon: History,
+                      onClick: () => openHistory(editing)
+                    }
+                  ]}
+                />
+              </div>
+            )}
           </div>
 
           <div className={cn('grid gap-4 p-4 xl:grid-cols-[1fr_360px]', NP_GRID)}>
@@ -3435,7 +3465,21 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
                                   </>
                                 )}
                                 <span className="text-[#5A6B62]">Invoice Rate :</span>
-                                <span className="doc-ref font-bold text-[#0A1F17]">{formatINR(d.billed)}</span>
+                                <span
+                                  className={cn(
+                                    'doc-ref font-bold',
+                                    pendingRates[d.bargain_id] != null ? 'text-[#0B6B45]' : 'text-[#0A1F17]'
+                                  )}
+                                >
+                                  {formatINR(pendingRates[d.bargain_id] ?? d.billed)}
+                                </span>
+                                {/* Changed on the form and not yet written —
+                                    Cancel still undoes it. */}
+                                {pendingRates[d.bargain_id] != null && (
+                                  <span className="rounded-[2px] bg-[#E9F5EE] px-1.5 py-0.5 text-[10px] font-extrabold uppercase tracking-[.05em] text-[#0B6B45]">
+                                    unsaved
+                                  </span>
+                                )}
                               </>
                             )
                           })()}
@@ -3454,7 +3498,7 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
                                 size="sm"
                                 className="h-8 bg-[#0B3D2E] px-2.5 text-[11px] font-extrabold text-[#C7F03F] hover:bg-[#0F4A38]"
                                 disabled={driftBusy || !(Number(driftEdit.value) > 0)}
-                                onClick={() => void applyBargainRate(d.bargain_id, Number(driftEdit.value))}
+                                onClick={() => applyBargainRate(d.bargain_id, Number(driftEdit.value))}
                               >
                                 Apply
                               </Button>
@@ -4011,12 +4055,6 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
                   Saving the purchase automatically posts its payable amount to the supplier ledger.
                 </div>
               </section>
-
-              {/* Every amend this invoice has had, field by field. An invoice
-                  gets re-saved for a dozen reasons over its life and the
-                  ledger only ever shows the latest one; this is where the
-                  earlier ones stay. */}
-              {__WEB__ && !!editing?.id && <ChangeHistory entity="orders" id={Number(editing.id)} />}
 
               {isTrading ? (
                 <section className="rounded border border-teal-300 bg-teal-50/40 p-4 [&_label]:text-[10px] [&_label]:uppercase [&_label]:tracking-wide [&_label]:text-muted-foreground">
@@ -4610,31 +4648,19 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
                   </div>
                 )
               })()}
-              {/* THE PLAIN AVERAGE OF THE LINE RATES above it — T1 plus T2
-                  divided by two — which is what the desk means by the invoice
-                  rate, and what the two lines it sits under add up to.
-                  
-                  It read taxable / quantity before, the true average PRICE:
-                  with 30.63 MT on one bargain and 4.13 on the other that came
-                  to 1,31,762.37 against line rates of 1,32,000 and 1,30,000,
-                  a figure matching neither and derivable from nothing on the
-                  panel. The money is unchanged either way — the taxable value
-                  is summed from each line's own rate, never from this. */}
+              {/* WEIGHTED BY QUANTITY, the way the invoice is actually
+                  priced: (T1 x T1 qty + T2 x T2 qty) / total qty, which is the
+                  taxable value over the tonnage. A plain mean of the two line
+                  rates would read the same whether 30 MT came on the first
+                  bargain or 3 did. */}
               <MoneyRow
                 label={rateAlloc.length > 1 ? 'Adjusted invoice rate (avg)' : 'Adjusted invoice rate'}
                 title={
                   rateAlloc.length > 1
-                    ? `The average of the ${rateAlloc.length} line rates above. The invoice is billed on each line's own rate — ${formatINR(calc.taxableValue)} in total.`
+                    ? `Weighted across ${rateAlloc.length} bargains — each line'''s own rate times its quantity, over ${formatNum(totalQty)} ${form.uom || 'MT'} = ${formatINR(calc.taxableValue)}`
                     : `x ${formatNum(totalQty)} ${form.uom || 'MT'} = ${formatINR(calc.taxableValue)}`
                 }
-                value={formatINR(
-                  rateAlloc.length > 1
-                    ? (() => {
-                        const rates = rateAlloc.map((a) => lineFiguresOf(a.bargain_id, a.rate).lineRate)
-                        return Math.round((rates.reduce((sum, r) => sum + r, 0) / rates.length) * 100) / 100
-                      })()
-                    : calc.adjustedRate
-                )}
+                value={formatINR(calc.adjustedRate)}
                 strong
               />
               </div>
@@ -6195,6 +6221,24 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
                       </SelectContent>
                     </Select>
                   </div>
+                  {/* THE LORRY RECEIPT. The transporter's own document for
+                      this consignment, handed over when the tanker sets off —
+                      which is this step, not the gate. It is the reference a
+                      dispute about what left the port is argued on, and the
+                      number the transporter's bill will quote, so it is worth
+                      having on the tanker rather than on a slip of paper. Not
+                      compulsory: some loads move on a delivery challan alone,
+                      and refusing the stage over it would only get a dash
+                      typed in. */}
+                  <div className="col-span-2 flex min-w-0 flex-col gap-1.5">
+                    <Label>LR no.</Label>
+                    <Input
+                      className={cn(__WEB__ && 'max-w-[300px]')}
+                      value={actionForm.lr_no ?? ''}
+                      placeholder="Lorry receipt number, as the transporter issued it"
+                      onChange={(e) => setActionForm((p) => ({ ...p, lr_no: e.target.value }))}
+                    />
+                  </div>
                 </div>
                 <div className={cn('grid grid-cols-2 gap-3 rounded-lg border p-3', __WEB__ && cn(TK_SECT, '!gap-4'))}>
                   {/* Who pays. On the website it is a banded strip across the
@@ -6811,7 +6855,7 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
         </DialogContent>
       </Dialog>
 
-      <HistoryDialog target={hist.target} onClose={hist.close} />
+      <RecordHistory target={hist.target} onClose={hist.close} />
 
       {/* Edit all stage entries of a tanker */}
       <Dialog open={!!editTanker} onOpenChange={(open) => !open && setEditTanker(null)}>
@@ -6957,6 +7001,17 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
                         </SelectContent>
                       </Select>
                     </div>
+                    {/* Correctable here like every other transit entry — an LR
+                        number is read off a paper docket and mistyped like
+                        one. */}
+                    <div className="flex flex-col gap-1.5">
+                      <Label>LR no.</Label>
+                      <Input
+                        value={editTankerForm.lr_no ?? ''}
+                        placeholder="Lorry receipt number"
+                        onChange={(e) => setEditTankerForm((p) => ({ ...p, lr_no: e.target.value }))}
+                      />
+                    </div>
                   </div>
                 )}
 
@@ -7095,6 +7150,12 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
                     value={t.bargain_no ? `${t.bargain_no}${t.extra_bargain_no ? ` + ${t.extra_bargain_no}` : ''}` : '—'}
                   />
                   <InfoTile icon={CalendarDays} label="Source" value={t.source_name || '—'} />
+                  {/* The transporter's own reference for this consignment.
+                      Beside the source rather than down in Transport, because
+                      it is what the load IS, not what it cost. */}
+                  {!!String(t.lr_no || '').trim() && (
+                    <InfoTile icon={Truck} label="LR no." value={String(t.lr_no)} />
+                  )}
                 </div>
 
                 <div className="rounded-xl border">
@@ -7801,11 +7862,12 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
               <GateEntriesDialog open inline query={{ orderId: Number(detailRow.id) || 0 }} />
             </DrawerSection>
             <DrawerSection icon={History} title="History">
-              <HistoryDialog
+              <RecordHistory
                 inline
                 target={{
-                  entity: 'Purchase',
-                  id: Number(detailRow.id),
+                  changes: { entity: 'orders', id: Number(detailRow.id) },
+                  activity: { entity: 'Purchase', id: Number(detailRow.id) },
+                  kicker: 'Purchase invoice',
                   title: String(detailRow.invoice_no || 'this purchase')
                 }}
               />

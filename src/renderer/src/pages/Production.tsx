@@ -31,6 +31,7 @@ import { ExcelButton } from '@/components/ExcelButton'
 import { errText, formatDate, formatNum, todayISO } from '@/lib/format'
 import { cn } from '@/lib/utils'
 import { expandBatchWithOutputPp, expandRecipe, expandRecipeWithPp } from '@/lib/recipeMath'
+import { InfoTip } from '@/components/ui/tooltip'
 import { useLiveRefresh } from '@/lib/useLiveRefresh'
 import { Pagination, usePaged } from '@/components/Pagination'
 import { useEntryWindow } from '@/lib/useEntryWindow'
@@ -80,8 +81,25 @@ export function Production(): React.JSX.Element {
   // Writing a heel out of a vessel: which product, which vessel, how much and
   // — required — why.
   const [deadOpen, setDeadOpen] = useState(false)
-  const [dead, setDead] = useState<Row>({ category: '', product_id: '', stage_id: '', qty: '', note: '' })
+  const [dead, setDead] = useState<Row>({
+    // 'writeoff' — the oil is gone. 'move' — it is still oil, just not this
+    // oil: a shea heel that will never finish as RPO is often good feedstock
+    // for something else, and saying so used to mean writing it off here and
+    // re-counting it there, two corrections with nothing joining them.
+    mode: 'writeoff',
+    category: '',
+    product_id: '',
+    stage_id: '',
+    qty: '',
+    note: '',
+    to_category: '',
+    to_product_id: '',
+    to_stage_id: ''
+  })
   const [deadVessels, setDeadVessels] = useState<Row[]>([])
+  // Where a moved heel can land. Empty vessels are kept — an empty one is the
+  // commonest destination — so this is a different list from the one above.
+  const [deadReceivers, setDeadReceivers] = useState<Row[]>([])
   const [deadLog, setDeadLog] = useState<Row[]>([])
   const [deadSaving, setDeadSaving] = useState(false)
   // The vessels standing for whichever product is picked, and what has already
@@ -106,6 +124,21 @@ export function Production(): React.JSX.Element {
       alive = false
     }
   }, [deadOpen, dead.product_id])
+  useEffect(() => {
+    const pid = Number(dead.to_product_id) || 0
+    if (!deadOpen || dead.mode !== 'move' || !pid) {
+      setDeadReceivers([])
+      return
+    }
+    let alive = true
+    void window.api.stockOpening
+      .ppReceivers(pid)
+      .catch(() => [] as Row[])
+      .then((v) => alive && setDeadReceivers(v))
+    return () => {
+      alive = false
+    }
+  }, [deadOpen, dead.mode, dead.to_product_id])
   const isMobile = useIsMobile()
   const [recirc, setRecirc] = useState<Row>({ prod_date: todayISO(), product_id: '', qty: '', note: '' })
   const [recircSaving, setRecircSaving] = useState(false)
@@ -527,6 +560,21 @@ export function Production(): React.JSX.Element {
     short: Row[]
   } => {
     const bal: Record<number, number> = { ...(asAtStock ?? stock) }
+    // WHAT THE PP STANDS FOR, AS AN ADJUSTMENT.
+    //
+    // Borrowed from the Book Register's Adjusted column, which sits beside the
+    // opening rather than inside it: a restatement of a figure, not a movement
+    // of its own. Here it says what oil the vessel draw IS — the formulation's
+    // shea, RPS and fatty oil on the plus side, the product's own PP on the
+    // minus — so the column always nets to zero. Nothing in it touches a
+    // balance; `bal` never sees it.
+    const adj: Record<number, number> = {}
+    // The other side of the same pair: the finished oil the vessel gave back.
+    // It is no more a real production than the draw was a real consumption —
+    // the oil was already inside the product's stock figure, standing in a
+    // vessel — so it belongs in the adjustment beside the minus, not on its
+    // own as though the plant had made something new.
+    const adjBack: Record<number, number> = {}
     const perRun: { consumes: Row[]; produces: Row[] }[] = []
     const touched = new Set<number>()
     // Depleted as the sheet's runs are walked, top to bottom — exactly like
@@ -574,6 +622,44 @@ export function Production(): React.JSX.Element {
         ? { without: ppWithout[outPidForPp] || 0, with: ppWith[outPidForPp] || 0 }
         : {}
       const { lines, draws, plan } = expandBatchWithOutputPp(items, q, ownPools, freeByProduct, outPidForPp)
+      // WHAT THE VESSEL OIL STANDS FOR.
+      //
+      // A batch supplied out of the product's own PP draws none of the
+      // formulation's components — the vessel already holds them, blended —
+      // so their rows sat at a bare 0 and the recipe looked ignored. It was
+      // not: the PP was drawn at the recipe's own TOR, and this is the split
+      // of that draw, the shea, RPS and fatty oil the vessel oil IS. Shown,
+      // never moved: the stock came out when the PP was made, and taking it a
+      // second time would be counting the same oil twice.
+      const viaPp: Record<number, number> = {}
+      {
+        // Read off the batch's OWN lines rather than expanded a second time,
+        // so the sheet cannot show one split and the save write another.
+        for (const l of lines) {
+          if (l.kind !== 'pp_equiv') continue
+          const pid = Number(l.product_id)
+          const qty = Number(l.qty) || 0
+          viaPp[pid] = (viaPp[pid] || 0) + qty
+          adj[pid] = (adj[pid] || 0) + qty
+          touched.add(pid)
+        }
+        // The other half of the restatement: the vessel oil those components
+        // are standing in for. The two cancel exactly — the same oil, said
+        // two ways.
+        if (outPidForPp && plan.ppWithUsed > 0.0005) {
+          adj[outPidForPp] = (adj[outPidForPp] || 0) - plan.ppWithUsed
+          touched.add(outPidForPp)
+        }
+      }
+      // And what came back out of the vessel as finished oil — both the
+      // one-for-one W/O-FFA draw and whatever the with-FFA oil yielded.
+      if (outPidForPp) {
+        const back = plan.fromPpFree + plan.finishedFromWith
+        if (back > 0.0005) {
+          adjBack[outPidForPp] = (adjBack[outPidForPp] || 0) + back
+          touched.add(outPidForPp)
+        }
+      }
       if (outPidForPp) {
         ppWithout[outPidForPp] = Math.max(0, (ppWithout[outPidForPp] || 0) - plan.fromPpFree)
         ppWith[outPidForPp] = Math.max(0, (ppWith[outPidForPp] || 0) - plan.ppWithUsed)
@@ -589,6 +675,9 @@ export function Production(): React.JSX.Element {
             name: nameOf(pid),
             pct: Number(src?.qty) || 0,
             amt,
+            // What this component would have been, had the oil not already
+            // been standing in the vessel. Display only — see viaPp above.
+            via_pp: pid === Number(r.product_id) ? 0 : viaPp[pid] || 0,
             // The product consuming itself is not a recipe component — it is
             // the oil coming out of its own vessels, and saying so stops it
             // reading as a strange new ingredient.
@@ -639,11 +728,19 @@ export function Production(): React.JSX.Element {
       // (which already contains the run) and `after` was the run reversed out
       // and re-applied, so the two landed on the same number.
       before: (asAtStock ?? stock)[pid] ?? 0,
-      after: bal[pid] ?? 0
+      after: bal[pid] ?? 0,
+      adj: adj[pid] ?? 0,
+      adj_back: adjBack[pid] ?? 0
     }))
     net.sort((a, b) => String(a.name).localeCompare(String(b.name)))
     return { perRun, net, short: net.filter((x) => x.after < -1e-9) }
   })()
+
+  // Nothing to restate on an ordinary sheet, so the Adj. column is not there
+  // at all rather than a row of dashes on every batch that never touched PP.
+  const anyAdj = projection.net.some(
+    (x) => Math.abs(Number(x.adj) || 0) > 0.0005 || Math.abs(Number(x.adj_back) || 0) > 0.0005
+  )
 
   // ------------------------------------------------------- unsaved changes
   //
@@ -1115,6 +1212,16 @@ export function Production(): React.JSX.Element {
                               if (pp && pp.free > 0.0005) parts.push(`${formatNum(pp.free)} PP, no FFA`)
                               if (pp && pp.withFfa > 0.0005) parts.push(`${formatNum(pp.withFfa)} PP, with FFA`)
                               if (pp && fromPp > 0.0005 && pp.raw > 0.0005) parts.push(`${formatNum(pp.raw)} Raw`)
+                              const via = Number(cc.via_pp) || 0
+                              // The component is not drawn, but the recipe did
+                              // apply to it — so the row shows what the vessel
+                              // oil stands for rather than a bare zero, in the
+                              // violet PP carries everywhere else. Not struck
+                              // through: a figure with a line through it reads
+                              // as cancelled, and this one is the recipe doing
+                              // its work. What it is NOT is a draw, and the
+                              // Adj. column below is where that is settled.
+                              const standsFor = via > 0.0005 && Math.abs(Number(cc.amt) || 0) < 0.0005
                               return (
                                 <div key={k} className="py-[3px]">
                                   <div className="flex items-center gap-2.5">
@@ -1132,15 +1239,20 @@ export function Production(): React.JSX.Element {
                                     </span>
                                     <span className="h-[5px] min-w-[24px] flex-1 overflow-hidden rounded-[2px] bg-[#EAF0E9]">
                                       <span
-                                        className="block h-full"
+                                        className={cn('block h-full', standsFor && 'opacity-55')}
                                         style={{
-                                          width: `${((Number(cc.amt) || 0) / maxAmt) * 100}%`,
-                                          background: short ? '#B3261E' : cc.fromOwnPp ? '#3D3179' : '#12855A'
+                                          width: `${(((standsFor ? via : Number(cc.amt)) || 0) / maxAmt) * 100}%`,
+                                          background: short ? '#B3261E' : standsFor || cc.fromOwnPp ? '#3D3179' : '#12855A'
                                         }}
                                       />
                                     </span>
-                                    <span className="shrink-0 whitespace-nowrap text-[12.5px] font-bold tabular-nums">
-                                      {formatNum(cc.amt)}
+                                    <span
+                                      className={cn(
+                                        'shrink-0 whitespace-nowrap text-[12.5px] font-bold tabular-nums',
+                                        standsFor && '!text-[#3D3179]'
+                                      )}
+                                    >
+                                      {formatNum(standsFor ? via : cc.amt)}
                                     </span>
                                   </div>
                                   {parts.length > 0 && (
@@ -1148,14 +1260,23 @@ export function Production(): React.JSX.Element {
                                       {parts.join(' + ')}
                                     </div>
                                   )}
+                                  {standsFor && (
+                                    <div className="ml-[90px] mt-[1px] text-[10px] font-semibold text-[#3D3179]">
+                                      what the PP holds — an adjustment, not a draw
+                                    </div>
+                                  )}
                                   {/* The pair, said out loud. Oil finished out
                                       of its own vessels is already inside the
                                       product's stock, so the batch adds it and
-                                      takes it back and the balance does not
-                                      move — the same +/- a recirculation is. */}
+                                      takes it back — the same +/- a recirculation
+                                      is. Oil out of a W/O-FFA vessel nets to
+                                      nothing; oil still carrying its FFA goes
+                                      through the recipe on the way, so the
+                                      balance falls by what it sheds and no
+                                      more. */}
                                   {cc.fromOwnPp && (
                                     <div className="ml-[90px] mt-[1px] text-[10px] font-semibold text-[#3D3179]">
-                                      already in stock as PP — produced and drawn back, so the balance does not move
+                                      already in stock as PP — produced and drawn back, so only what it sheds leaves the balance
                                     </div>
                                   )}
                                 </div>
@@ -1285,6 +1406,22 @@ export function Production(): React.JSX.Element {
                         — what a batch draws out AND what it puts back, the
                         recovered fatty acid and the output itself included. */}
                     <TableHead className="text-right">{__WEB__ ? 'Effect' : 'Change'}</TableHead>
+                    {/* The Book Register's Adjusted column, in the same role it
+                        plays there: a restatement beside the figure, not a
+                        movement of its own. Only present when a batch is
+                        supplied from the product's own PP — an ordinary sheet
+                        has nothing to restate and keeps the three columns it
+                        always had. */}
+                    {anyAdj && (
+                      <TableHead className="text-right">
+                        <span className="inline-flex items-center gap-1.5">
+                          Adj. ({runs[0]?.uom || 'MT'})
+                          {__WEB__ && (
+                            <InfoTip text="The batch restated, not moved. The PP drawn shows minus and the finished oil it gave back shows plus — neither is real, because the oil was already inside the product's stock, standing in a vessel. Beside them, what that PP IS by the formulation: the shea, RPS and fatty oil it already holds. Those cancel the PP drawn exactly — the same oil, said two ways — and they left the tanks when the PP was made." />
+                          )}
+                        </span>
+                      </TableHead>
+                    )}
                     <TableHead className="text-right">{__WEB__ ? 'After production' : 'After'}</TableHead>
                   </TableRow>
                 </TableHeader>
@@ -1312,6 +1449,53 @@ export function Production(): React.JSX.Element {
                           {change > 0 ? '+' : ''}
                           {formatNum(change)}
                         </TableCell>
+                        {anyAdj &&
+                          (() => {
+                            // Both halves of the pair, stacked: the vessel oil
+                            // drawn and the finished oil it gave back. Neither
+                            // is a movement — the batch produced nothing new,
+                            // it finished oil the balance already held — so
+                            // they sit here together rather than one of them
+                            // passing for a real production.
+                            const out = Number(x.adj) || 0
+                            const back = Number(x.adj_back) || 0
+                            const hasOut = Math.abs(out) > 0.0005
+                            const hasBack = Math.abs(back) > 0.0005
+                            return (
+                              <TableCell
+                                className={cn(
+                                  'text-right tabular-nums',
+                                  __WEB__ && '!whitespace-nowrap !text-[13px] !font-bold !text-[#3D3179]'
+                                )}
+                              >
+                                {!hasOut && !hasBack ? (
+                                  <span className="font-semibold text-[#B3C0B8]">—</span>
+                                ) : (
+                                  <div className="flex flex-col items-end gap-[2px]">
+                                    {hasBack && (
+                                      <span className="flex items-baseline justify-end gap-1.5">
+                                        <span className="text-[9.5px] font-extrabold uppercase tracking-[.08em] text-[#8478C4]">
+                                          produced
+                                        </span>
+                                        +{formatNum(back)}
+                                      </span>
+                                    )}
+                                    {hasOut && (
+                                      <span className="flex items-baseline justify-end gap-1.5">
+                                        {hasBack && (
+                                          <span className="text-[9.5px] font-extrabold uppercase tracking-[.08em] text-[#8478C4]">
+                                            from PP
+                                          </span>
+                                        )}
+                                        {out > 0 ? '+' : ''}
+                                        {formatNum(out)}
+                                      </span>
+                                    )}
+                                  </div>
+                                )}
+                              </TableCell>
+                            )
+                          })()}
                         <TableCell
                           className={cn(
                             'text-right font-semibold tabular-nums',
@@ -1453,9 +1637,14 @@ export function Production(): React.JSX.Element {
   return (
     <>
       <PageHeader
+        // No company picker: a batch is run on the plant floor and its output
+        // lands in one set of tanks, whichever books happen to be selected.
+        // Offering the choice there implied the run was filed under whichever
+        // company was showing, which is not what the page records.
+        factoryScoped
         title="Production"
         subtitle={factoryName ? `Daily production runs — ${factoryName}` : 'Daily production runs'}
-        hint="Every batch run at this factory, whichever company booked it — production is work on the plant floor, and its output lands in one set of tanks. Recording a run consumes the formula's input products from stock and adds the produced output. The formula must total 100%."
+        hint="Every batch run at this plant, whichever company booked it — production is work on the plant floor, and its output lands in one set of tanks. Recording a run consumes the formula's input products from stock and adds the produced output. The formula must total 100%."
         actions={
           <div className="flex items-center gap-2">
             {__WEB__ && prodOptions.length > 1 && (
@@ -1523,7 +1712,10 @@ export function Production(): React.JSX.Element {
                 // Without this a recirculation exports as a 20 MT production
                 // run, which is the one thing it is not.
                 { header: 'Entry', key: 'kind', value: (r) => (String(r.kind || 'batch') === 'recirculation' ? 'Recirculation' : 'Production') },
-                { header: 'Booked by', key: 'company_name', value: (r) => r.company_name || '' },
+                // The PLANT, not the books. A run belongs to the floor it was
+                // run on; which company happened to be selected when it was
+                // recorded says nothing about the batch.
+                { header: 'Plant', key: 'plant', value: () => factoryName || '' },
                 { header: 'Product', key: 'product_name', value: (r) => r.product_name || '' },
                 { header: 'Category', key: 'product_category', value: (r) => CAT_LABEL[r.product_category] ?? r.product_category ?? '' },
                 { header: 'Qty', key: 'qty', align: 'right', numFmt: '#,##0.000', value: (r) => Number(r.qty) || 0 },
@@ -1828,15 +2020,45 @@ export function Production(): React.JSX.Element {
               <div className="text-[11px] font-extrabold uppercase tracking-[.14em] text-[#C7BCF0]">Partly processed</div>
             )}
             <DialogTitle className={cn(__WEB__ && '!mt-1 !text-[19px] !font-extrabold !tracking-[-0.02em] !text-white')}>
-              Write off dead stock
+              {dead.mode === 'move' ? 'Move a heel to another oil' : 'Write off dead stock'}
             </DialogTitle>
             <p className={cn('mt-1 text-[12px] text-muted-foreground', __WEB__ && '!mt-2 !text-[11.5px] !font-semibold !leading-relaxed !text-[#C7BCF0]')}>
-              A heel that cannot be finished — settled sludge, a tank bottom, oil gone off. It leaves PP for good and
-              the oil&apos;s stock falls by it. Nothing is produced and no recipe runs.
+              {dead.mode === 'move'
+                ? 'Oil that will not finish as this product but is still good feedstock for another. It leaves one oil’s PP and arrives in the other’s, unchanged — the site holds the same tonnage either way. Nothing is produced and no recipe runs.'
+                : 'A heel that cannot be finished — settled sludge, a tank bottom, oil gone off. It leaves PP for good and the oil’s stock falls by it. Nothing is produced and no recipe runs.'}
             </p>
           </DialogHeader>
 
           <div className={cn('grid gap-3 py-2', __WEB__ && '!flex !flex-col !gap-4 !px-[22px] !py-[18px]')}>
+            {/* WHICH OF THE TWO THINGS THIS IS.
+                Everything below is the same until the end — pick the vessel,
+                pick how much — and only the last step differs: gone, or gone
+                somewhere. Asking first means the form never has to be re-read
+                after the choice is made. */}
+            <div className="inline-flex gap-[3px] self-start rounded-[4px] border border-[#DCE7DB] bg-[#EAF0E9] p-[3px]">
+              {[
+                { v: 'writeoff', label: 'Write off' },
+                { v: 'move', label: 'Move to another oil' }
+              ].map((o) => {
+                const on = String(dead.mode || 'writeoff') === o.v
+                return (
+                  <button
+                    key={o.v}
+                    type="button"
+                    onClick={() =>
+                      setDead((p2) => ({ ...p2, mode: o.v, to_category: '', to_product_id: '', to_stage_id: '' }))
+                    }
+                    className={cn(
+                      'flex h-9 items-center rounded-[2px] px-4 text-[12.5px] font-extrabold transition-colors',
+                      on ? 'bg-[#3D3179] text-white' : 'text-[#5A6B62] hover:text-[#0A1F17]'
+                    )}
+                  >
+                    {o.label}
+                  </button>
+                )
+              })}
+            </div>
+
             {/* SUB-CATEGORY FIRST, then the oil — the same order every other
                 product picker on this page asks in. The full list runs to
                 forty-odd names; narrowing it first is how somebody finds the
@@ -1965,12 +2187,137 @@ export function Production(): React.JSX.Element {
                     </Button>
                   </div>
                 </div>
+                {dead.mode === 'move' && (
+                  <>
+                    <div className={cn('flex flex-col gap-1.5', __WEB__ && '!gap-0')}>
+                      <Label className={cn(__WEB__ && '!mb-[7px] !text-[12.5px] !font-extrabold !text-[#0A1F17]')}>
+                        Into which oil <span className="text-[#B3261E]">*</span>
+                      </Label>
+                      <div className="grid grid-cols-2 gap-2.5">
+                        <Select
+                          value={String(dead.to_category || '')}
+                          onValueChange={(v) =>
+                            setDead((p2) => ({ ...p2, to_category: v, to_product_id: '', to_stage_id: '' }))
+                          }
+                          panelClassName={__WEB__ ? '!rounded-[4px] !border-[#C3D2C6] !normal-case' : undefined}
+                        >
+                          <SelectTrigger className={cn(__WEB__ && '!h-[46px] !rounded-[4px] !border-[#C3D2C6] !bg-white !px-3 !text-[13.5px] !font-bold')}>
+                            <SelectValue placeholder="Sub-category" />
+                          </SelectTrigger>
+                          <SelectContent className={cn(__WEB__ && '!max-h-[180px] !p-1.5')}>
+                            {[...new Set(products.map((x) => String(x.category || '')).filter(Boolean))].sort().map((c) => (
+                              <SelectItem key={c} value={c} className={cn(__WEB__ && '!h-10 !text-[13px] !font-semibold')}>
+                                {CAT_LABEL[c] ?? c}
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                        <Select
+                          disabled={!dead.to_category}
+                          value={String(dead.to_product_id || '')}
+                          onValueChange={(v) => setDead((p2) => ({ ...p2, to_product_id: v, to_stage_id: '' }))}
+                          panelClassName={__WEB__ ? '!rounded-[4px] !border-[#C3D2C6] !normal-case' : undefined}
+                        >
+                          <SelectTrigger className={cn(__WEB__ && '!h-[46px] !rounded-[4px] !border-[#C3D2C6] !bg-white !px-3 !text-[13.5px] !font-bold')}>
+                            <SelectValue placeholder={dead.to_category ? 'The oil' : 'Sub-category first'} />
+                          </SelectTrigger>
+                          <SelectContent className={cn(__WEB__ && '!max-h-[180px] !p-1.5')}>
+                            {products
+                              .filter(
+                                (x) =>
+                                  String(x.category || '') === String(dead.to_category) &&
+                                  String(x.id) !== String(dead.product_id)
+                              )
+                              .map((x) => (
+                                <SelectItem key={String(x.id)} value={String(x.id)} className={cn(__WEB__ && '!h-10 !text-[13px] !font-semibold')}>
+                                  {String(x.name)}
+                                </SelectItem>
+                              ))}
+                          </SelectContent>
+                        </Select>
+                      </div>
+                    </div>
+
+                    {/* WHERE IT LANDS. A vessel row carries one FFA class, so
+                        one already holding the other kind is shown disabled
+                        rather than left to fail on save — tipping with-FFA oil
+                        into a without-FFA vessel would relabel what was
+                        already standing there. */}
+                    {!!dead.to_product_id && (
+                      <div className={cn('flex flex-col gap-1.5', __WEB__ && '!gap-0')}>
+                        <Label className={cn(__WEB__ && '!mb-[7px] !text-[12.5px] !font-extrabold !text-[#0A1F17]')}>
+                          Into which vessel <span className="text-[#B3261E]">*</span>
+                        </Label>
+                        {deadReceivers.length === 0 ? (
+                          <div className="flex min-h-[60px] items-center rounded-[4px] border border-[#DCE7DB] bg-white px-3.5 text-[12.5px] font-semibold text-[#5A6B62]">
+                            This site has no vessels set up yet.
+                          </div>
+                        ) : (
+                          <div className="flex max-h-[176px] flex-col gap-1.5 overflow-y-auto">
+                            {deadReceivers.map((v) => {
+                              const srcFfa = String(
+                                deadVessels.find((x) => String(x.stage_id) === String(dead.stage_id))?.ffa || ''
+                              )
+                              const held = Number(v.qty) || 0
+                              const clash = held > 0.0005 && String(v.ffa || '') !== srcFfa
+                              const on = String(dead.to_stage_id) === String(v.stage_id)
+                              return (
+                                <button
+                                  key={String(v.stage_id)}
+                                  type="button"
+                                  disabled={clash}
+                                  title={
+                                    clash
+                                      ? 'That vessel already holds oil of the other FFA class — pick an empty one, or one holding the same kind'
+                                      : undefined
+                                  }
+                                  onClick={() => setDead((p2) => ({ ...p2, to_stage_id: String(v.stage_id) }))}
+                                  className={cn(
+                                    'flex items-center gap-2.5 rounded-[4px] border px-3.5 py-2.5 text-left transition-colors',
+                                    clash
+                                      ? 'cursor-not-allowed border-[#E4ECE3] bg-[#F7FAF6] opacity-55'
+                                      : on
+                                        ? 'border-[#3D3179] bg-[#F1EEFB]'
+                                        : 'border-[#C3D2C6] bg-white hover:bg-[#F7FAF6]'
+                                  )}
+                                >
+                                  <span className="text-[13px] font-bold text-[#0A1F17]">{String(v.vessel)}</span>
+                                  {held > 0.0005 ? (
+                                    <span className="rounded-[2px] bg-[#EAF0E9] px-1.5 py-0.5 text-[10px] font-extrabold uppercase tracking-[.06em] text-[#5A6B62]">
+                                      {String(v.ffa) === 'without' ? 'no FFA' : String(v.ffa) === 'with' ? 'with FFA' : 'unclassified'}
+                                    </span>
+                                  ) : (
+                                    <span className="rounded-[2px] bg-[#E9F5EE] px-1.5 py-0.5 text-[10px] font-extrabold uppercase tracking-[.06em] text-[#0B6B45]">
+                                      empty
+                                    </span>
+                                  )}
+                                  <span className="doc-ref ml-auto text-[13.5px] font-bold tabular-nums text-[#5A6B62]">
+                                    {held > 0.0005 ? formatNum(held) : '—'}
+                                  </span>
+                                </button>
+                              )
+                            })}
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </>
+                )}
                 <div className={cn('flex flex-col gap-1.5', __WEB__ && '!gap-0')}>
                   <Label className={cn(__WEB__ && '!mb-[7px] !text-[12.5px] !font-extrabold !text-[#0A1F17]')}>
-                    Why <span className="text-[#B3261E]">*</span>
+                    Why{' '}
+                    {dead.mode === 'move' ? (
+                      <span className="font-semibold text-[#5A6B62]">(optional)</span>
+                    ) : (
+                      <span className="text-[#B3261E]">*</span>
+                    )}
                   </Label>
                   <Input
-                    placeholder="e.g. settled sludge at the bottom of the vessel, not recoverable"
+                    placeholder={
+                      dead.mode === 'move'
+                        ? 'e.g. will not finish as RPO — good feedstock for the RPS line'
+                        : 'e.g. settled sludge at the bottom of the vessel, not recoverable'
+                    }
                     value={String(dead.note ?? '')}
                     onChange={(e) => setDead((p2) => ({ ...p2, note: e.target.value }))}
                     className={cn(__WEB__ && '!h-[46px] !rounded-[4px] !border-[#C3D2C6] !bg-white !text-[13.5px] !font-semibold')}
@@ -1982,14 +2329,24 @@ export function Production(): React.JSX.Element {
             {deadLog.length > 0 && (
               <div className="overflow-hidden rounded-[4px] border border-[#D6E2D6] bg-white">
                 <div className="border-b border-b-[#E4ECE3] bg-[#F7FAF6] px-4 py-2.5 text-[11px] font-extrabold uppercase tracking-[.13em] text-[#33473E]">
-                  Already written off
+                  What has left these vessels
                 </div>
                 <div className="max-h-[150px] overflow-y-auto">
                   {deadLog.map((w) => (
                     <div key={String(w.id)} className="border-b border-b-[#EFF3EE] px-4 py-2.5 last:border-b-0">
                       <div className="flex flex-wrap items-baseline gap-x-2.5 text-[12px]">
-                        <span className="doc-ref font-bold text-[#8C2F26]">-{formatNum(Number(w.qty) || 0)}</span>
+                        <span className={cn('doc-ref font-bold', w.to_product_id ? 'text-[#3D3179]' : 'text-[#8C2F26]')}>
+                          -{formatNum(Number(w.qty) || 0)}
+                        </span>
                         <span className="font-bold text-[#33473E]">{String(w.vessel || '')}</span>
+                        {/* A row carrying a destination is a move, not a loss
+                            — the oil is still on site, under another name. */}
+                        {!!w.to_product_id && (
+                          <span className="rounded-[2px] bg-[#F1EEFB] px-1.5 py-0.5 text-[10px] font-extrabold uppercase tracking-[.06em] text-[#3D3179]">
+                            moved to {String(w.to_product || 'another oil')}
+                            {w.to_vessel ? ` · ${String(w.to_vessel)}` : ''}
+                          </span>
+                        )}
                         <span className="ml-auto whitespace-nowrap text-[11px] font-semibold text-[#5A6B62]">
                           {String(w.written_by_name || 'system')} · {String(w.created_at || '').slice(0, 10)}
                         </span>
@@ -2013,9 +2370,17 @@ export function Production(): React.JSX.Element {
                       : 'Pick the vessel.'
                   : !(Number(dead.qty) > 0)
                     ? 'Enter a quantity.'
-                    : !String(dead.note || '').trim()
-                      ? 'Say why.'
-                      : `${formatNum(Number(dead.qty))} leaves PP for good.`}
+                    : dead.mode === 'move'
+                      ? !dead.to_product_id
+                        ? 'Pick the oil it is going into.'
+                        : !dead.to_stage_id
+                          ? 'Pick the vessel it is going into.'
+                          : `${formatNum(Number(dead.qty))} moves to ${
+                              products.find((x) => String(x.id) === String(dead.to_product_id))?.name || 'the other oil'
+                            } — the site's total PP does not change.`
+                      : !String(dead.note || '').trim()
+                        ? 'Say why.'
+                        : `${formatNum(Number(dead.qty))} leaves PP for good.`}
               </span>
             )}
             <div className={cn(__WEB__ && 'ml-auto flex gap-2.5')}>
@@ -2023,18 +2388,41 @@ export function Production(): React.JSX.Element {
                 Cancel
               </Button>
               <Button
-                disabled={deadSaving || !dead.stage_id || !(Number(dead.qty) > 0) || !String(dead.note || '').trim()}
+                disabled={
+                  deadSaving ||
+                  !dead.stage_id ||
+                  !(Number(dead.qty) > 0) ||
+                  (dead.mode === 'move'
+                    ? !dead.to_product_id || !dead.to_stage_id
+                    : !String(dead.note || '').trim())
+                }
                 className={cn(__WEB__ && '!bg-[#3D3179] !font-extrabold !text-white hover:!bg-[#332968]')}
                 onClick={async () => {
                   setDeadSaving(true)
                   try {
-                    await window.api.stockOpening.writeOffPp(
-                      Number(dead.product_id),
-                      Number(dead.stage_id),
-                      Number(dead.qty),
-                      String(dead.note)
-                    )
-                    toast.success(`${formatNum(Number(dead.qty))} written off`)
+                    if (dead.mode === 'move') {
+                      await window.api.stockOpening.movePp(
+                        Number(dead.product_id),
+                        Number(dead.stage_id),
+                        Number(dead.qty),
+                        Number(dead.to_product_id),
+                        Number(dead.to_stage_id),
+                        String(dead.note || '')
+                      )
+                      toast.success(
+                        `${formatNum(Number(dead.qty))} moved to ${
+                          products.find((x) => String(x.id) === String(dead.to_product_id))?.name || 'the other oil'
+                        }`
+                      )
+                    } else {
+                      await window.api.stockOpening.writeOffPp(
+                        Number(dead.product_id),
+                        Number(dead.stage_id),
+                        Number(dead.qty),
+                        String(dead.note)
+                      )
+                      toast.success(`${formatNum(Number(dead.qty))} written off`)
+                    }
                     setDeadOpen(false)
                     await load()
                   } catch (e) {
@@ -2044,7 +2432,13 @@ export function Production(): React.JSX.Element {
                   }
                 }}
               >
-                {deadSaving ? 'Writing off…' : 'Write off'}
+                {deadSaving
+                  ? dead.mode === 'move'
+                    ? 'Moving…'
+                    : 'Writing off…'
+                  : dead.mode === 'move'
+                    ? 'Move'
+                    : 'Write off'}
               </Button>
             </div>
           </DialogFooter>

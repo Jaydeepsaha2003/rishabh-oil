@@ -263,43 +263,45 @@ export function expandRecipeWithPp(
 // -----------------------------------------------------------------------------
 // The PP handled above is an INPUT substitute: shea in a vessel saves shea from
 // the yard. This is the other case, and the commoner one — the vessel holds the
-// thing being MADE. RPO part-way through the plant is already RPO; finishing it
-// draws no shea, no RPS and no formulation at all, because none of that happens
-// to it a second time.
+// thing being MADE. RPO part-way through the plant is already RPO, already
+// blended, so finishing it draws no shea, no RPS and no fatty oil: the vessel
+// supplies what all three would have, and none of them is bought a second time.
+//
+// The rest of the formulation still applies to it, though. The oil in the
+// vessel has not shed its free fatty acid, and it has the plant's dead loss
+// still ahead of it, so putting it through costs exactly what the recipe says
+// oil costs — its TOR — and gives back exactly what the recipe says comes back.
 //
 // So a batch is supplied in three steps, and only what is left over is a
 // recipe problem:
 //
-//   1. PP of the product, W/O FFA  — one for one, straight to finished.
-//   2. PP of the product, WITH FFA — still has to shed it, so it yields less
-//      than it holds, and the difference comes back as fatty acid.
+//   1. PP of the product, W/O FFA  — one for one, straight to finished. It has
+//      already shed everything it was going to; no recipe touches it again.
+//   2. PP of the product, WITH FFA — the recipe's own arithmetic over oil that
+//      is already blended: TOR in, finished out, fatty acid and dead loss off.
 //   3. Whatever remains                — the formulation, exactly as before.
 //
 // With both vessels empty this collapses to step 3 and nothing changes.
 
 /**
- * The FFA rate to apply to the product's own PP.
+ * How much vessel oil one unit of finished output costs, WITH-FFA.
  *
- * The recipe states FFA per INPUT, and a blend has several — 23% on shea, 0.1%
- * on RPS. What is in the vessel came overwhelmingly from the input that
- * dominates the blend, so that is the rate: the largest share, and the first
- * listed where two are equal.
+ * Not the dominant input's FFA, which is what this used to be. What stands in
+ * an RPO vessel is not shea — it is the whole blend, part-way through: shea,
+ * RPS and fatty oil already mixed, still carrying the free fatty acid none of
+ * them has shed yet. Finishing it is therefore the recipe's own arithmetic run
+ * once more over oil that is already blended: the same total oil required, the
+ * same by-product yield, the same dead loss. Only the INPUT side differs — the
+ * vessel supplies what shea, RPS and fatty oil would have, so none of the
+ * three is drawn a second time.
+ *
+ * So the rate is the recipe's own TOR: 127.052 of oil in for 100 out, and the
+ * 27.052 that does not survive leaves as fatty acid and dead loss in exactly
+ * the proportions the recipe states.
  */
-export function dominantInputFfaPct(items: Row[]): number {
-  const inputs = items.filter((it) => kindOf(it) === 'input' && it.auto_calc)
-  if (!inputs.length) return 0
-  let best = inputs[0]
-  for (const it of inputs) if (num(it.qty) > num(best.qty)) best = it
-  return inputFattyAcidPct(best)
-}
-
-/** The by-product the dominant input recovers, so PP sheds FFA to the same place. */
-export function dominantByproductId(items: Row[]): number {
-  const inputs = items.filter((it) => kindOf(it) === 'input' && it.auto_calc)
-  if (!inputs.length) return 0
-  let best = inputs[0]
-  for (const it of inputs) if (num(it.qty) > num(best.qty)) best = it
-  return num(best.byproduct_product_id)
+export function outputPpTorFraction(items: Row[]): number {
+  const tor = recipeTor(items)
+  return tor > 0 ? tor / 100 : 1
 }
 
 export type OutputPpPlan = {
@@ -307,13 +309,13 @@ export type OutputPpPlan = {
   fromPpFree: number
   /** Vessel oil taken out of the WITH-FFA vessels. */
   ppWithUsed: number
-  /** What that oil yields once the FFA is off it. */
+  /** What that oil yields once the recipe has had it. */
   finishedFromWith: number
-  /** The FFA it sheds on the way. */
+  /** What it gives back — every by-product the recipe names, pooled. */
   fattyAcidFromWith: number
   /** Output still to be made from raw, through the formulation. */
   fromRecipe: number
-  /** The rate used on the with-FFA part, for the screen to show. */
+  /** That recovery as a % of the vessel oil, for the screen to show. */
   ffaPct: number
 }
 
@@ -329,32 +331,40 @@ export function planOutputPp(
   pools: { without?: number; with?: number } = {}
 ): OutputPpPlan {
   const want = Math.max(0, num(outputQty))
-  const f = dominantInputFfaPct(items) / 100
   const freeHave = Math.max(0, num(pools.without))
   const withHave = Math.max(0, num(pools.with))
 
   // 1. One for one, and never more than the batch needs — PP left over is
   //    still PP, and a vessel is not emptied further than the run requires.
+  //    Oil marked W/O FFA has already shed everything it was going to: no
+  //    recipe applies to it a second time, no by-product, no dead loss.
   const fromPpFree = Math.min(freeHave, want)
   const afterFree = want - fromPpFree
 
-  // 2. A tonne in the vessel is not a tonne of output: (1 - f) of it survives.
-  //    So supplying `afterFree` needs afterFree / (1 - f) of vessel oil — and a
-  //    recipe claiming to lose everything gets no uplift rather than a divide
-  //    by zero.
-  const survives = 1 - f
-  const needFromWith = survives > 0 ? afterFree / survives : 0
+  // 2. The WITH-FFA vessels, at the recipe's own rate. A tonne in the vessel
+  //    is not a tonne of output — it still has to go through the plant — so
+  //    supplying `afterFree` costs afterFree x TOR of vessel oil, the same as
+  //    it would cost in raw material.
+  const tor = outputPpTorFraction(items)
+  const needFromWith = afterFree * tor
   const ppWithUsed = Math.min(withHave, needFromWith)
-  const finishedFromWith = ppWithUsed * survives
-  const fattyAcidFromWith = ppWithUsed * f
+  const finishedFromWith = tor > 0 ? ppWithUsed / tor : ppWithUsed
+
+  // What that oil gives back, by the recipe's own reckoning. Kept on the plan
+  // so the screen can say it without expanding the recipe a second time; the
+  // lines themselves are built in expandBatchWithOutputPp, from this same
+  // expansion, so the two cannot disagree.
+  const recovered = expandRecipe(items, finishedFromWith)
+    .filter((l) => l.kind === 'output')
+    .reduce((s, l) => s + l.qty, 0)
 
   return {
     fromPpFree,
     ppWithUsed,
     finishedFromWith,
-    fattyAcidFromWith,
+    fattyAcidFromWith: recovered,
     fromRecipe: Math.max(0, want - fromPpFree - finishedFromWith),
-    ffaPct: f * 100
+    ffaPct: ppWithUsed > 0 ? (recovered / ppWithUsed) * 100 : 0
   }
 }
 
@@ -399,13 +409,37 @@ export function expandBatchWithOutputPp(
     lines.push({ product_id: Number(outputProductId), qty: fromOwnPp, kind: 'input' })
   }
 
-  // The FFA the vessel oil shed, to the same by-product the recipe names.
-  if (plan.fattyAcidFromWith > 0.0005) {
-    const pid = dominantByproductId(items)
-    if (pid) {
-      const existing = lines.find((l) => l.kind === 'output' && l.product_id === pid)
-      if (existing) existing.qty += plan.fattyAcidFromWith
-      else lines.push({ product_id: pid, qty: plan.fattyAcidFromWith, kind: 'output' })
+  // WHAT THE VESSEL OIL GIVES BACK — the recipe's own lines, not just its FFA.
+  //
+  // The with-FFA half is the recipe run over oil that is already blended, so
+  // everything the recipe produces for that much output it produces here too:
+  // the fatty acid each input recovers, pooled where the recipe pools it, any
+  // by-product line struck by hand, and the dead loss. Only the input side is
+  // replaced — by the vessel draw pushed above.
+  //
+  // This used to add the dominant input's FFA and nothing else, which quietly
+  // dropped the dead loss and every by-product but one.
+  if (plan.finishedFromWith > 0.0005) {
+    for (const l of expandRecipe(items, plan.finishedFromWith)) {
+      if (l.kind === 'input') {
+        // WHAT THE VESSEL OIL IS, kept as a line of its own.
+        //
+        // 'pp_equiv' is not a movement and nothing may treat it as one: the
+        // shea, RPS and fatty oil it names left the tanks when this PP was
+        // MADE, and taking them again now would count the same oil twice. It
+        // is recorded so the registers can SAY what was used without moving
+        // anything — the stock register shows it in Adjusted and in Consumed
+        // at once, where the two cancel to nothing.
+        if (l.qty > 0.0000005) {
+          const had = lines.find((x) => x.kind === 'pp_equiv' && x.product_id === l.product_id)
+          if (had) had.qty += l.qty
+          else lines.push({ product_id: l.product_id, qty: l.qty, kind: 'pp_equiv' })
+        }
+        continue
+      }
+      const existing = lines.find((x) => x.kind === l.kind && x.product_id === l.product_id)
+      if (existing) existing.qty += l.qty
+      else lines.push({ product_id: l.product_id, qty: l.qty, kind: l.kind })
     }
   }
   return { lines, draws: base.draws, plan }

@@ -1,12 +1,12 @@
 import { Fragment, useCallback, useEffect, useMemo, useState } from 'react'
 import { toast } from 'sonner'
 import {
-  AlertTriangle,
   Banknote,
   Building2,
   CalendarRange,
+  CheckCircle2,
   ChevronRight,
-  HelpCircle,
+  CircleAlert,
   LayoutGrid,
   Landmark,
   List,
@@ -269,6 +269,109 @@ const BD_CHIP_OFF = __WEB__
   : ''
 
 const BD_W = __WEB__ ? '!bg-[#FCFDFB]' : ''
+// EVERY TREASURY FORM ARRIVES FROM THE RIGHT.
+// ---------------------------------------------------------------------------
+// A centred modal covers the register it was opened from and floats with no
+// fixed edge, so a long form reads as a slab dropped over the page. A panel
+// hinged on the right edge keeps the list it belongs to in view down the left,
+// always opens in the same place, and gives the form a full column of height —
+// header pinned at the top, actions pinned at the bottom, only the middle
+// scrolling. It is the shape the bargain drawer and the history panel already
+// use, so Treasury now matches them rather than being the one screen that
+// behaves differently.
+//
+// Width is per-form: `w` is whatever that form's densest row needs.
+// TWO CHOICES ARE A SEGMENT, NOT A DROPDOWN.
+// ---------------------------------------------------------------------------
+// The canvas states both of this form's binary choices as a pair of buttons,
+// and it is right to: a dropdown hides half the answer behind a click, and at
+// this width it could not even show the half it had — "PID — PURCH…",
+// "MANUFACTUR…". Both options fit side by side and the choice is readable
+// without opening anything.
+function Seg({
+  value,
+  options,
+  onChange,
+  className
+}: {
+  value: string
+  options: { v: string; label: string }[]
+  onChange: (v: string) => void
+  className?: string
+}): React.JSX.Element {
+  return (
+    <div
+      className={cn(
+        'inline-flex gap-[3px] self-start rounded-[4px] border border-[#DCE7DB] bg-[#EAF0E9] p-[3px]',
+        className
+      )}
+    >
+      {options.map((o) => {
+        const on = String(value) === o.v
+        return (
+          <button
+            key={o.v}
+            type="button"
+            onClick={() => onChange(o.v)}
+            className={cn(
+              'flex h-[38px] min-w-0 items-center justify-center rounded-[2px] px-4 text-[12.5px] font-extrabold transition-colors',
+              on ? 'bg-[#0B3D2E] text-white' : 'text-[#5A6B62] hover:text-[#0A1F17]'
+            )}
+          >
+            {o.label}
+          </button>
+        )
+      })}
+    </div>
+  )
+}
+
+// A SWITCH WITH ROOM TO SAY WHAT IT DOES.
+// The two term toggles were 40px-high strips with the label already
+// truncating — "Count the re…" — and the explanation locked inside a tooltip.
+// The canvas gives each a full-width card: the switch, the name in bold, and
+// the sentence underneath, because both of these change what the interest
+// figure means and neither is guessable from three words.
+function TermSwitch({
+  on,
+  onChange,
+  title,
+  note
+}: {
+  on: boolean
+  onChange: (v: boolean) => void
+  title: string
+  note: string
+}): React.JSX.Element {
+  return (
+    <label className="col-span-full flex cursor-pointer items-start gap-3 rounded-[4px] border border-[#E4ECE3] bg-[#F7FAF6] px-3.5 py-3">
+      <span className="mt-[1px] shrink-0">
+        <Switch checked={on} onCheckedChange={onChange} />
+      </span>
+      <span className="min-w-0">
+        <span className="block text-[12.5px] font-extrabold text-[#0A1F17]">{title}</span>
+        <span className="mt-[3px] block text-[11.5px] font-semibold leading-[1.5] text-[#5A6B62] [text-wrap:pretty]">
+          {note}
+        </span>
+      </span>
+    </label>
+  )
+}
+
+// The small print under a field, in the site's own muted type.
+const HINT = __WEB__ ? '!rounded-[4px] !border !border-dashed !border-[#C3D2C6] !bg-white !px-3 !py-2.5 !text-[12px] !font-semibold !text-[#5A6B62]' : ''
+
+const bdDrawer = (w: string): string =>
+  __WEB__
+    ? [
+        '!bottom-0 !left-auto !right-0 !top-0 !h-screen !max-h-screen !max-w-[96vw]',
+        w,
+        '!translate-x-0 !translate-y-0 !grid !grid-rows-[auto_minmax(0,1fr)_auto] !gap-0',
+        '!overflow-hidden !rounded-none !border-0 !bg-[#F1F5EF] !p-0 sm:!rounded-none',
+        '[&>button]:!right-5 [&>button]:!top-5 [&>button]:!text-white [&>button]:!opacity-70 [&>button]:hover:!opacity-100'
+      ].join(' ')
+    : ''
+
 const BD_WR = __WEB__ ? '!bg-[#F7FBF4]' : ''
 const BD_RULE = __WEB__ ? '!border-l !border-l-[#EAF0E9]' : ''
 const BD_NUM = __WEB__ ? 'doc-ref !text-[12.5px] !font-bold' : ''
@@ -1195,115 +1298,22 @@ export function BillDiscounting({
             <Plus className="h-4 w-4" /> Discount a bill
           </Button>
         </div>
-        {/* THE WEBSITE'S SUMMARY BAND.
-            Outstanding is what this section is about, so it leads at a size
-            you can read across the room, with one plain sentence underneath
-            accounting for the gap between the bills and the money: what
-            reached you, after margin, interest and TDS. The available limit
-            is not a sixth statistic — it is the thing that decides whether the
-            next bill can be discounted at all — so it sits apart in its own
-            bordered block, coloured by how much room is left, and opens
-            Manage NBFCs where the ceiling is set.
-            The desktop app keeps its flat six-cell strip below, untouched. */}
-        {__WEB__ && (
-          <div className="flex flex-wrap items-center gap-3.5 px-4 py-3">
-            <div className="min-w-[280px] flex-1">
-              <div className="flex flex-wrap items-baseline gap-2">
-                <span className="text-[9.5px] font-extrabold uppercase tracking-[.13em] text-[#5A6B62]">
-                  Outstanding
-                </span>
-                <span className="doc-ref whitespace-nowrap text-[19px] font-bold tracking-[-0.035em]">
-                  {formatINR(kpis.outstanding_total)}
-                </span>
-                <span className="text-[12px] font-bold text-[#5A6B62]">
-                  on {n(kpis.count)} bill{n(kpis.count) === 1 ? '' : 's'}
-                  {narrowed ? ` of ${formatINR(kpisAll.outstanding_total)}` : ''}
-                </span>
-              </div>
-              <div className="mt-[7px] text-[12px] font-bold text-[#33473E] [text-wrap:pretty]">
-                {formatINR(kpis.receipt_total)} reached you after {formatINR(kpis.margin_total)} margin held,{' '}
-                {formatINR(kpis.interest_total)} interest and {formatINR(kpis.tds_total)} TDS.
-              </div>
-            </div>
-            <button
-              type="button"
-              onClick={() => setNbfcOpen(true)}
-              title={
-                availableLimit == null
-                  ? 'No ceiling set — open Manage NBFCs to give each lender a limit, or set a combined one'
-                  : nbfcFilter
-                    ? `${limitBasis?.label} — sanctioned ${formatINR(limitBasis?.ceiling)}, less what is drawn on it`
-                    : `The whole book — ${limits?.effective_basis === 'lines' ? 'the sum of the NBFC lines' : 'the combined ceiling'}, less what is drawn`
-              }
-              className={cn(
-                'min-w-[190px] rounded-[4px] border border-l-4 px-[15px] py-3 text-left transition-colors',
-                availableLimit == null
-                  ? 'border-[#F0E4CB] border-l-[#C2700A] bg-[#FFFBF2] hover:bg-[#FFF6E4]'
-                  : availableLimit < 0
-                    ? 'border-[#F0D6D4] border-l-[#B3261E] bg-[#FDF3F2] hover:bg-[#FBE9E7]'
-                    : 'border-[#BFE3CB] border-l-[#12855A] bg-[#F4FBF6] hover:bg-[#EAF7EE]'
-              )}
-            >
-              <div
-                className={cn(
-                  'text-[9.5px] font-extrabold uppercase tracking-[.13em]',
-                  availableLimit == null ? 'text-[#8A5300]' : availableLimit < 0 ? 'text-[#8C2F26]' : 'text-[#0B6B45]'
-                )}
-              >
-                {nbfcFilter ? 'Available · this NBFC' : 'Available limit'}
-              </div>
-              <div className="mt-[5px] flex items-center gap-[7px]">
-                {availableLimit == null ? (
-                  <HelpCircle className="h-[18px] w-[18px] shrink-0 text-[#C2700A]" />
-                ) : availableLimit < 0 ? (
-                  <AlertTriangle className="h-[18px] w-[18px] shrink-0 text-[#B3261E]" />
-                ) : (
-                  <Landmark className="h-[18px] w-[18px] shrink-0 text-[#12855A]" />
-                )}
-                <span
-                  className={cn(
-                    'doc-ref text-[14px] font-bold tracking-[-0.02em]',
-                    availableLimit == null ? 'text-[#8A5300]' : availableLimit < 0 ? 'text-[#8C2F26]' : 'text-[#0B6B45]'
-                  )}
-                >
-                  {availableLimit == null ? 'not set' : formatINR(availableLimit)}
-                </span>
-              </div>
-              <div
-                className={cn(
-                  'mt-1 text-[11px] font-bold [text-wrap:pretty]',
-                  availableLimit == null ? 'text-[#8A5300]' : availableLimit < 0 ? 'text-[#8C2F26]' : 'text-[#0B6B45]'
-                )}
-              >
-                {availableLimit == null
-                  ? 'set one under Manage NBFCs'
-                  : `of ${formatINR(limitBasis?.ceiling)}${
-                      nbfcFilter
-                        ? ` · ${limitBasis?.label}`
-                        : limits?.effective_basis === 'lines'
-                          ? ' (NBFC lines)'
-                          : ' (combined)'
-                    }${availableLimit < 0 ? ' · over the limit' : ''}`}
-              </div>
-            </button>
-          </div>
-        )}
-        {/* One row of cells, not a headline strip above a row of cells.
-            The strip restated Outstanding and the available limit in a larger
-            type over the top of the same numbers, which cost a band of height
-            to say twice what the cells below already said once. Outstanding
-            leads the row now — it is what the section is about — and the
-            available limit closes it, after what was received. */}
+        {/* ONE ROW OF CELLS, AND NOTHING ABOVE IT.
+            There was a summary band over this strip restating Outstanding and
+            the available limit in larger type — a band of height spent saying
+            twice what the cells below already said once. Outstanding leads the
+            row instead, because it is what the section is about, and the
+            available limit closes it, after what was received. Both are cells
+            like the rest now rather than a headline. */}
         <div
           className={cn(
             'grid grid-cols-2 gap-px bg-[#e5dfc8] p-px sm:grid-cols-3 lg:grid-cols-6',
             __WEB__ && '!grid-cols-[repeat(auto-fit,minmax(min(100%,180px),1fr))] !gap-px !border-t !border-t-[#E4ECE3] !bg-[#E4ECE3] !p-0'
           )}
         >
-          {/* Both of these lead the summary band above on the website, so the
-              strip does not say them a second time. The desktop app has no
-              band and still shows all six. */}
-          <div className={cn('bg-[#1a2c56] px-3 py-2.5 text-center', __WEB__ && '!hidden')}>
+          {/* Outstanding, first. It was hidden here while the band above
+              carried it; with the band gone it is a cell like the others. */}
+          <div className={cn('bg-[#1a2c56] px-3 py-2.5 text-center', BD_CELL)}>
             <div className={cn('text-[10px] font-semibold uppercase tracking-wide text-white/70', BD_K)}>Outstanding</div>
             <div className={cn('text-[15px] font-bold tabular-nums text-white', __WEB__ && cn(BD_V, 'doc-ref'))}>
               {formatINR(kpis.outstanding_total)}
@@ -1352,7 +1362,15 @@ export function BillDiscounting({
               half is fetched, and only when a limit is edited.
               Nothing sanctioned means there is no headroom to state: it says so
               and points at where to set it, rather than showing a figure. */}
-          <div className={cn('px-3 py-2.5 text-center', availableLimit == null ? 'bg-[#fffdf4]' : availableLimit < 0 ? 'bg-red-50' : 'bg-sky-50', __WEB__ && '!hidden')}>
+          <div
+            className={cn(
+              'px-3 py-2.5 text-center',
+              availableLimit == null ? 'bg-[#fffdf4]' : availableLimit < 0 ? 'bg-red-50' : 'bg-sky-50',
+              BD_CELL,
+              __WEB__ &&
+                (availableLimit == null ? '!bg-[#FFFBF2]' : availableLimit < 0 ? '!bg-[#FDF3F2]' : '!bg-[#F4FBF6]')
+            )}
+          >
             <div
               className={cn(
                 'text-[10px] font-semibold uppercase tracking-wide',
@@ -2046,10 +2064,10 @@ export function BillDiscounting({
         <DialogContent
           className={cn(
             'max-h-[92vh] w-[calc(100vw-2rem)] max-w-6xl overflow-y-auto border-[#d9d2b8] bg-[#fffdf4]',
-            // Header and footer pinned, only the middle scrolls: this form is
-            // three sections deep and Save sat at the bottom of all of them.
-            __WEB__ &&
-              '!grid-rows-[auto_minmax(0,1fr)_auto] !gap-0 !overflow-hidden !rounded-[4px] !border-0 !bg-[#F1F5EF] !p-0 [&>button]:!right-5 [&>button]:!top-5 [&>button]:!text-white [&>button]:!opacity-90'
+            // Wide for a drawer, because the terms row is seven fields that
+            // belong side by side — split over two lines they stop reading as
+            // one calculation.
+            bdDrawer('!w-[880px]')
           )}
         >
           <DialogHeader className={cn('-mx-6 -mt-6 mb-1 rounded-t-lg bg-[#dce6f5] px-6 py-2.5', __WEB__ && '!m-0 !block !space-y-0 !rounded-none !bg-[#0B3D2E] !px-5 !py-4 !text-left')}>
@@ -2086,30 +2104,67 @@ export function BillDiscounting({
             </div>
           </DialogHeader>
           {form && (
+            // A SCROLLING COLUMN WHOSE CHILDREN MAY NOT SHRINK.
+            //
+            // This was `grid`, and a grid with a definite height does not
+            // overflow — it SQUASHES its tracks to fit. scrollHeight came back
+            // equal to clientHeight, so the panel reported nothing to scroll
+            // while the last two sections were quietly compressed and clipped.
+            // Flex has the same trap by default (flex-shrink: 1), which is why
+            // every child is pinned with shrink-0: the canvas marks each of its
+            // sections `flex:none` for exactly this reason.
             <div
               className={cn(
                 'grid gap-3',
                 __WEB__ &&
-                  '!min-h-0 !content-start !gap-3.5 !overflow-y-auto !p-4 [&_label]:!text-[11px] [&_label]:!font-extrabold [&_label]:!tracking-[.09em] [&_label]:!text-[#5A6B62] [&_input]:!h-11 [&_input]:!rounded-[4px] [&_input]:!border-[#C3D2C6] [&_input]:!text-[13px] [&_input]:!font-semibold [&_[data-slot=select-trigger]]:!h-11 [&_[data-slot=select-trigger]]:!rounded-[4px] [&_[data-slot=select-trigger]]:!border-[#C3D2C6] [&_[data-slot=select-trigger]]:!text-[13px] [&_[data-slot=date-picker]]:!h-11 [&_[data-slot=date-picker]]:!rounded-[4px] [&_[data-slot=date-picker]]:!border-[#C3D2C6] [&_[data-slot=date-picker]]:!text-[13.5px]'
+                  '!flex !min-h-0 !flex-col !gap-3.5 !overflow-y-auto !p-4 [&>*]:!shrink-0 [&_label]:!text-[11px] [&_label]:!font-extrabold [&_label]:!tracking-[.09em] [&_label]:!text-[#5A6B62] [&_input]:!h-11 [&_input]:!rounded-[4px] [&_input]:!border-[#C3D2C6] [&_input]:!text-[13px] [&_input]:!font-semibold [&_[data-slot=select-trigger]]:!h-11 [&_[data-slot=select-trigger]]:!rounded-[4px] [&_[data-slot=select-trigger]]:!border-[#C3D2C6] [&_[data-slot=select-trigger]]:!text-[13px] [&_[data-slot=date-picker]]:!h-11 [&_[data-slot=date-picker]]:!rounded-[4px] [&_[data-slot=date-picker]]:!border-[#C3D2C6] [&_[data-slot=date-picker]]:!text-[13.5px]'
               )}
             >
               <section className={cn('rounded border border-[#e5dfc8] bg-white p-4', __WEB__ && '!overflow-hidden !rounded-[4px] !border-[#D6E2D6] !p-0')}>
                 <h3 className={cn('mb-3 border-b border-dotted border-[#e5dfc8] pb-1.5 text-[11px] font-bold uppercase tracking-widest text-[#1a2c56]', __WEB__ && '!mb-0 !border-b-[#E4ECE3] !border-solid !bg-[#F7FAF6] !px-4 !py-3 !text-[11.5px] !font-extrabold !tracking-[.14em] !text-[#0A1F17]')}>
-                  Facility
+                  The bill
                 </h3>
-                <div className={cn('grid gap-4 md:grid-cols-3 xl:grid-cols-5', __WEB__ && '!gap-3.5 !p-4')}>
+                {/* AUTO-FIT, NOT A FIXED COUNT.
+                    Five hard columns in an 880px drawer gave every field 160px
+                    and the labels went to ellipses — "PID — PURCH…",
+                    "MANUFACTUR…", "SELECT THE P…". The design canvas sizes
+                    these by the narrowest a field may be (190px) and lets the
+                    row fit as many as it can, so a field is never squeezed
+                    below what its own content needs. */}
+                <div
+                  className={cn(
+                    'grid gap-4 md:grid-cols-3 xl:grid-cols-5',
+                    __WEB__ && '!grid-cols-[repeat(auto-fit,minmax(min(100%,190px),1fr))] !gap-3.5 !p-4'
+                  )}
+                >
                   <div className="flex flex-col gap-1.5">
                     <Label className="flex items-center gap-1">
                       Finance type *
                       <InfoTip text="PID — Purchase Invoice Discounting, drawn against a supplier. SID — Sales Invoice Discounting, drawn against a customer." />
                     </Label>
-                    <Select value={String(form.finance_type || '')} onValueChange={chooseFinanceType}>
-                      <SelectTrigger><SelectValue /></SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="PID">PID — Purchase Invoice Discounting</SelectItem>
-                        <SelectItem value="SID">SID — Sales Invoice Discounting</SelectItem>
-                      </SelectContent>
-                    </Select>
+                    {__WEB__ ? (
+                      <>
+                        <Seg
+                          value={String(form.finance_type || '')}
+                          onChange={chooseFinanceType}
+                          options={[
+                            { v: 'PID', label: 'PID' },
+                            { v: 'SID', label: 'SID' }
+                          ]}
+                        />
+                        <span className="text-[11.5px] font-semibold leading-[1.5] text-[#5A6B62] [text-wrap:pretty]">
+                          PID discounts a supplier bill; SID discounts one you have raised on a customer.
+                        </span>
+                      </>
+                    ) : (
+                      <Select value={String(form.finance_type || '')} onValueChange={chooseFinanceType}>
+                        <SelectTrigger><SelectValue /></SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="PID">PID — Purchase Invoice Discounting</SelectItem>
+                          <SelectItem value="SID">SID — Sales Invoice Discounting</SelectItem>
+                        </SelectContent>
+                      </Select>
+                    )}
                   </div>
                   <div className="flex flex-col gap-1.5">
                     <Label>NBFC *</Label>
@@ -2135,16 +2190,27 @@ export function BillDiscounting({
                   </div>
                   <div className="flex flex-col gap-1.5">
                     <Label>Purpose *</Label>
-                    <Select
-                      value={String(form.purpose || '')}
-                      onValueChange={(v) => setForm((p) => ({ ...p, purpose: v, party_id: '', party_ids: [] }))}
-                    >
-                      <SelectTrigger><SelectValue /></SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="manufacturing">Manufacturing</SelectItem>
-                        <SelectItem value="trading">Trading</SelectItem>
-                      </SelectContent>
-                    </Select>
+                    {__WEB__ ? (
+                      <Seg
+                        value={String(form.purpose || '')}
+                        onChange={(v) => setForm((p) => ({ ...p, purpose: v, party_id: '', party_ids: [] }))}
+                        options={[
+                          { v: 'manufacturing', label: 'Manufacturing' },
+                          { v: 'trading', label: 'Trading' }
+                        ]}
+                      />
+                    ) : (
+                      <Select
+                        value={String(form.purpose || '')}
+                        onValueChange={(v) => setForm((p) => ({ ...p, purpose: v, party_id: '', party_ids: [] }))}
+                      >
+                        <SelectTrigger><SelectValue /></SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="manufacturing">Manufacturing</SelectItem>
+                          <SelectItem value="trading">Trading</SelectItem>
+                        </SelectContent>
+                      </Select>
+                    )}
                   </div>
                   <div
                     className={cn(
@@ -2152,8 +2218,8 @@ export function BillDiscounting({
                       // One party is an ordinary field; several need the width to
                       // list them with their amounts, so the cell takes the row.
                       (Array.isArray(form.party_ids) ? form.party_ids : []).length > 1
-                        ? 'md:col-span-3 xl:col-span-4'
-                        : 'md:col-span-2 xl:col-span-1'
+                        ? cn('md:col-span-3 xl:col-span-4', __WEB__ && '!col-span-full')
+                        : cn('md:col-span-2 xl:col-span-1', __WEB__ && '![grid-column:span_2]')
                     )}
                   >
                     <Label className="flex items-center gap-1">
@@ -2242,27 +2308,42 @@ export function BillDiscounting({
                       const total = round2(n(preview?.sanctionedAmount))
                       const gap = round2(total - sum)
                       return (
-                        <div className="overflow-hidden rounded-lg border border-[#e5dfc8] bg-white">
+                        <div
+                          className={cn(
+                            'overflow-hidden rounded-lg border border-[#e5dfc8] bg-white',
+                            __WEB__ && '!rounded-[4px] !border-[#D6E2D6]'
+                          )}
+                        >
                           {ids.map((pid, i) => (
                             <div
                               key={String(pid)}
-                              className="flex items-center gap-2 border-b border-dashed border-[#e5dfc8] px-2.5 py-1.5 last:border-b-0"
+                              className={cn(
+                                'flex items-center gap-2 border-b border-dashed border-[#e5dfc8] px-2.5 py-1.5 last:border-b-0',
+                                __WEB__ && '!gap-2.5 !border-b-[#EFF3EE] !border-solid !px-3 !py-2'
+                              )}
                             >
                               <span
                                 className={cn(
                                   'shrink-0 rounded px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wide',
-                                  i === 0 ? 'bg-[#1a2c56] text-white' : 'bg-slate-200 text-slate-600'
+                                  i === 0 ? 'bg-[#1a2c56] text-white' : 'bg-slate-200 text-slate-600',
+                                  __WEB__ &&
+                                    cn(
+                                      '!rounded-[2px] !px-[7px] !py-[3px] !text-[9.5px] !font-extrabold !tracking-[.08em]',
+                                      i === 0 ? '!bg-[#0B3D2E] !text-[#C7F03F]' : '!bg-[#EAF0E9] !text-[#5A6B62]'
+                                    )
                                 )}
                                 title={i === 0 ? 'Primary — the party this bill is filed under' : undefined}
                               >
                                 {i === 0 ? 'Primary' : i + 1}
                               </span>
-                              <span className="min-w-0 flex-1 truncate text-[13px]">{nameOf(pid)}</span>
+                              <span className={cn('min-w-0 flex-1 truncate text-[13px]', __WEB__ && '!text-[12.5px] !font-bold !text-[#0A1F17]')}>
+                                {nameOf(pid)}
+                              </span>
                               {many && (
                                 <Input
                                   type="number"
                                   placeholder="Sanctioned amt"
-                                  className="h-7 w-40 text-[12px] tabular-nums"
+                                  className={cn('h-7 w-40 text-[12px] tabular-nums', __WEB__ && '!h-9 !w-36 !rounded-[4px] !border-[#C3D2C6] !text-[12.5px] !font-bold')}
                                   value={String((form.party_amounts || {})[String(pid)] ?? '')}
                                   onChange={(e) =>
                                     setForm((prev) => ({
@@ -2293,7 +2374,14 @@ export function BillDiscounting({
                                 'flex flex-wrap items-center gap-2 border-t px-2.5 py-1.5 text-[11px]',
                                 total > 0 && Math.abs(gap) < 0.05
                                   ? 'bg-emerald-50 text-emerald-800'
-                                  : 'bg-amber-50 text-amber-900'
+                                  : 'bg-amber-50 text-amber-900',
+                                __WEB__ &&
+                                  cn(
+                                    '!gap-2.5 !px-3 !py-2.5 !text-[11.5px] !font-bold',
+                                    total > 0 && Math.abs(gap) < 0.05
+                                      ? '!border-t-[#BFE3CB] !bg-[#F4FBF6] !text-[#0B6B45]'
+                                      : '!border-t-[#F0E4CB] !bg-[#FFFBF2] !text-[#8A5300]'
+                                  )
                               )}
                             >
                               <span className="font-medium">
@@ -2355,9 +2443,16 @@ export function BillDiscounting({
 
               <section className={cn('rounded border border-[#e5dfc8] bg-white p-4', __WEB__ && '!overflow-hidden !rounded-[4px] !border-[#D6E2D6] !p-0')}>
                 <h3 className={cn('mb-3 border-b border-dotted border-[#e5dfc8] pb-1.5 text-[11px] font-bold uppercase tracking-widest text-[#1a2c56]', __WEB__ && '!mb-0 !border-b-[#E4ECE3] !border-solid !bg-[#F7FAF6] !px-4 !py-3 !text-[11.5px] !font-extrabold !tracking-[.14em] !text-[#0A1F17]')}>
-                  Bill &amp; terms
+                  Amount and terms
                 </h3>
-                <div className="grid gap-4 md:grid-cols-3 xl:grid-cols-4">
+                <div
+                  className={cn(
+                    'grid gap-4 md:grid-cols-3 xl:grid-cols-4',
+                    // Terms are shorter figures than the bill's names, so they
+                    // take the canvas's narrower floor and pack tighter.
+                    __WEB__ && '!grid-cols-[repeat(auto-fit,minmax(min(100%,150px),1fr))] !gap-3.5 !p-4'
+                  )}
+                >
                   {/* The invoice behind the bill, and the part of it actually
                       being discounted. They are often not the same figure, and
                       only the second one is priced — the invoice value is kept
@@ -2427,7 +2522,7 @@ export function BillDiscounting({
                       user at the moment it is decided, instead of only in the
                       summary further down the form. */}
                   {n(form.invoice_amount) > 0 && preview && (
-                    <div className="md:col-span-3 xl:col-span-4">
+                    <div className={cn('md:col-span-3 xl:col-span-4', __WEB__ && '!col-span-full')}>
                       <div className="flex flex-wrap items-stretch gap-x-3 gap-y-2 rounded-lg border border-[#e5dfc8] bg-[#f7f4e8] px-3 py-2">
                         <Derived label="Invoice" value={formatINR(form.invoice_amount)} />
                         <Op>−</Op>
@@ -2497,28 +2592,52 @@ export function BillDiscounting({
                       <InfoTip text="The day-count basis interest is worked out on. Bill discounting conventionally uses 360, not the calendar 365 — it comes from the NBFC's terms and is negotiated like the rate is." />
                     </Label>
                     <Input type="number" value={form.days_year ?? 360} onChange={(e) => setForm((p) => ({ ...p, days_year: e.target.value }))} />
+                    {__WEB__ && (
+                      <span className="text-[11px] font-semibold leading-[1.45] text-[#5A6B62] [text-wrap:pretty]">
+                        Bill discounting conventionally uses 360, not the calendar 365.
+                      </span>
+                    )}
                   </div>
-                  <div className="flex flex-col justify-end gap-1.5">
-                    <label className="flex h-10 cursor-pointer items-center gap-2.5 rounded-md border px-3">
-                      <Switch
-                        checked={!!form.days_incl_start}
-                        onCheckedChange={(v) => setForm((p) => ({ ...p, days_incl_start: v }))}
+                  {__WEB__ ? (
+                    <>
+                      <TermSwitch
+                        on={!!form.days_incl_start}
+                        onChange={(v) => setForm((p) => ({ ...p, days_incl_start: v }))}
+                        title="Count the receipt date"
+                        note="Whether the day the money lands earns interest too. Off, interest runs from the day after to maturity — 1 to 30 September is 29 days. On, both ends count and the same dates are 30. It comes from the NBFC's terms and is copied onto the bill when the NBFC is picked, so changing an NBFC never moves a bill already recorded."
                       />
-                      <span className="flex min-w-0 items-center gap-1.5">
-                        <span className="truncate text-sm font-medium">Count the receipt date</span>
-                        <InfoTip text="Whether the payment received date itself earns interest. Off, interest runs from the day after the money lands to maturity — 1 to 30 September is 29 days. On, both ends count and the same dates are 30 days. It is one of the NBFC's terms, set under Manage NBFCs and copied onto the bill when the NBFC is picked, so changing an NBFC never moves a bill already recorded." />
-                      </span>
-                    </label>
-                  </div>
-                  <div className="flex flex-col justify-end gap-1.5">
-                    <label className="flex h-10 cursor-pointer items-center gap-2.5 rounded-md border px-3">
-                      <Switch checked={!!form.interest_upfront} onCheckedChange={(v) => setForm((p) => ({ ...p, interest_upfront: v }))} />
-                      <span className="flex items-center gap-1.5">
-                        <span className="text-sm font-medium">Interest upfront</span>
-                        <InfoTip text="The interest is paid separately from the bank rather than deducted from the bill — the opening voucher then leaves it out, and it posts once the matching bank line is reconciled." />
-                      </span>
-                    </label>
-                  </div>
+                      <TermSwitch
+                        on={!!form.interest_upfront}
+                        onChange={(v) => setForm((p) => ({ ...p, interest_upfront: v }))}
+                        title="Interest settled upfront"
+                        note="The interest is paid separately from the bank rather than deducted from the bill. The opening voucher then leaves it out, and it posts once the matching bank line is reconciled."
+                      />
+                    </>
+                  ) : (
+                    <>
+                      <div className="flex flex-col justify-end gap-1.5">
+                        <label className="flex h-10 cursor-pointer items-center gap-2.5 rounded-md border px-3">
+                          <Switch
+                            checked={!!form.days_incl_start}
+                            onCheckedChange={(v) => setForm((p) => ({ ...p, days_incl_start: v }))}
+                          />
+                          <span className="flex min-w-0 items-center gap-1.5">
+                            <span className="truncate text-sm font-medium">Count the receipt date</span>
+                            <InfoTip text="Whether the payment received date itself earns interest. Off, interest runs from the day after the money lands to maturity — 1 to 30 September is 29 days. On, both ends count and the same dates are 30 days." />
+                          </span>
+                        </label>
+                      </div>
+                      <div className="flex flex-col justify-end gap-1.5">
+                        <label className="flex h-10 cursor-pointer items-center gap-2.5 rounded-md border px-3">
+                          <Switch checked={!!form.interest_upfront} onCheckedChange={(v) => setForm((p) => ({ ...p, interest_upfront: v }))} />
+                          <span className="flex items-center gap-1.5">
+                            <span className="text-sm font-medium">Interest upfront</span>
+                            <InfoTip text="The interest is paid separately from the bank rather than deducted from the bill — the opening voucher then leaves it out, and it posts once the matching bank line is reconciled." />
+                          </span>
+                        </label>
+                      </div>
+                    </>
+                  )}
                 </div>
               </section>
 
@@ -2561,13 +2680,18 @@ export function BillDiscounting({
                         <InfoTip text="Each invoice is its own pick. One invoice funds one bill, so an invoice already on another bill is shown but cannot be taken. Picking one also fills in who pays back, from that deal's customer." />
                       </Label>
                       {!form.party_id ? (
-                        <p className="text-[11px] text-muted-foreground">Choose the party above first.</p>
+                        <p className={cn('text-[11px] text-muted-foreground', __WEB__ && HINT)}>Choose the party above first.</p>
                       ) : !tradingLoaded ? (
-                        <p className="text-[11px] text-muted-foreground">Loading trading deals…</p>
+                        <p className={cn('text-[11px] text-muted-foreground', __WEB__ && HINT)}>Loading trading deals…</p>
                       ) : formTradingInvoices.length === 0 ? (
-                        <p className="text-[11px] text-muted-foreground">No open trading invoices for this party.</p>
+                        <p className={cn('text-[11px] text-muted-foreground', __WEB__ && HINT)}>No open trading invoices for this party.</p>
                       ) : (
-                        <div className="max-h-40 space-y-1 overflow-y-auto rounded-md border bg-white p-1.5">
+                        <div
+                          className={cn(
+                            'max-h-40 space-y-1 overflow-y-auto rounded-md border bg-white p-1.5',
+                            __WEB__ && '!max-h-[196px] !rounded-[4px] !border-[#DCE7DB]'
+                          )}
+                        >
                           {formTradingInvoices.map((r) => {
                             const ids: number[] = Array.isArray(form.linked_order_ids) ? form.linked_order_ids : []
                             const checked = ids.map(Number).includes(Number(r.order_id))
@@ -2578,12 +2702,17 @@ export function BillDiscounting({
                                 className={cn(
                                   'flex items-center gap-2 rounded px-2 py-1.5 text-[12px]',
                                   claim ? 'cursor-not-allowed opacity-60' : 'cursor-pointer',
-                                  checked ? 'bg-teal-100' : !claim && 'hover:bg-muted/40'
+                                  checked ? 'bg-teal-100' : !claim && 'hover:bg-muted/40',
+                                  __WEB__ &&
+                                    cn(
+                                      '!gap-2.5 !rounded-[3px] !px-2.5 !py-2 !text-[12.5px] !font-semibold',
+                                      checked ? '!bg-[#E9F5EE] !text-[#0B6B45]' : !claim && 'hover:!bg-[#F7FAF6]'
+                                    )
                                 )}
                               >
                                 <input
                                   type="checkbox"
-                                  className="h-3.5 w-3.5"
+                                  className={cn('h-3.5 w-3.5', __WEB__ && '!h-4 !w-4 !accent-[#0B3D2E]')}
                                   checked={checked}
                                   disabled={!!claim}
                                   onChange={(e) => {
@@ -2637,14 +2766,39 @@ export function BillDiscounting({
                   shown as zeroes. Margin is, since it is a straight percentage
                   of the open amount. */}
               {preview && n(form.amount) > 0 && !form.payment_received_date && (
-                <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-center text-[11px] font-medium text-amber-800">
-                  Interest, TDS and payout are worked out on{' '}
-                  <b className="font-semibold">Mark payment received</b> — interest runs from the day the money
-                  lands, and that date is not known yet.
+                <div
+                  className={cn(
+                    'rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-center text-[11px] font-medium text-amber-800',
+                    __WEB__ &&
+                      '!flex !items-start !gap-2.5 !rounded-[4px] !border-[#F0E4CB] !border-l-4 !border-l-[#C2700A] !bg-[#FFFBF2] !px-[14px] !py-3 !text-left !text-[12.5px] !font-semibold !leading-[1.5] !text-[#8A5300]'
+                  )}
+                >
+                  {__WEB__ && <CircleAlert className="mt-[1px] h-[18px] w-[18px] shrink-0 text-[#C2700A]" />}
+                  <span>
+                    Interest, TDS and payout are worked out on{' '}
+                    <b className="font-extrabold">Mark payment received</b> — interest runs from the day the money
+                    lands, and that date is not known yet.
+                  </span>
                 </div>
               )}
               {preview && n(form.amount) > 0 && !!form.payment_received_date && (
-                <div className="grid grid-cols-2 gap-px rounded-lg border border-[#e5dfc8] bg-[#e5dfc8] p-px sm:grid-cols-4 md:grid-cols-8">
+                <div
+                  className={cn(
+                    'grid grid-cols-2 gap-px rounded-lg border border-[#e5dfc8] bg-[#e5dfc8] p-px sm:grid-cols-4 md:grid-cols-8',
+                    // EIGHT MONEY CELLS DO NOT FIT A DRAWER.
+                    // md:grid-cols-8 is keyed to the VIEWPORT, not to this
+                    // panel, so on any ordinary screen it laid eight cells
+                    // across 840px — 105px each, and every figure over a lakh
+                    // wrapped or clipped.
+                    //
+                    // 190px is deliberate rather than the smallest that fits:
+                    // at the drawer's width it gives FOUR columns, and eight
+                    // cells is then two full rows with no half-empty tail
+                    // showing the grid's own background through it.
+                    __WEB__ &&
+                      '!grid-cols-[repeat(auto-fit,minmax(min(100%,190px),1fr))] !rounded-[4px] !border-[#DCE7DB] !bg-[#DCE7DB]'
+                  )}
+                >
                   {([
                     {
                       label: form.days_incl_start ? 'Int. days (incl.)' : 'Int. days',
@@ -2658,14 +2812,47 @@ export function BillDiscounting({
                     { label: 'TDS', value: formatINR(preview.tdsAmount), tone: 'text-[#1a2c56]' },
                     { label: 'Net int.', value: formatINR(preview.netInterest), tone: 'text-[#1a2c56]' }
                   ] as const).map((c) => (
-                    <div key={c.label} className="bg-white px-3 py-2 text-center">
-                      <div className="text-[10px] uppercase tracking-wide text-muted-foreground">{c.label}</div>
-                      <div className={cn('text-[13px] font-semibold tabular-nums', c.tone)}>{c.value}</div>
+                    <div key={c.label} className={cn('bg-white px-3 py-2 text-center', __WEB__ && '!px-3 !py-2.5 !text-left')}>
+                      <div
+                        className={cn(
+                          'text-[10px] uppercase tracking-wide text-muted-foreground',
+                          __WEB__ && '!whitespace-nowrap !text-[9.5px] !font-extrabold !tracking-[.11em] !text-[#5A6B62]'
+                        )}
+                      >
+                        {c.label}
+                      </div>
+                      <div
+                        className={cn(
+                          'text-[13px] font-semibold tabular-nums',
+                          c.tone,
+                          __WEB__ &&
+                            cn(
+                              'doc-ref !mt-1 !whitespace-nowrap !text-[13px] !font-bold !tracking-[-0.02em]',
+                              c.tone === 'text-rose-700' ? '!text-[#8C2F26]' : '!text-[#0A1F17]'
+                            )
+                        )}
+                      >
+                        {c.value}
+                      </div>
                     </div>
                   ))}
-                  <div className="bg-emerald-50 px-3 py-2 text-center">
-                    <div className="text-[10px] uppercase tracking-wide text-muted-foreground">Net payout</div>
-                    <div className="text-[13px] font-bold tabular-nums text-emerald-700">{formatINR(preview.receiptAmount)}</div>
+                  <div className={cn('bg-emerald-50 px-3 py-2 text-center', __WEB__ && '!bg-[#F4FBF6] !px-3 !py-2.5 !text-left')}>
+                    <div
+                      className={cn(
+                        'text-[10px] uppercase tracking-wide text-muted-foreground',
+                        __WEB__ && '!whitespace-nowrap !text-[9.5px] !font-extrabold !tracking-[.11em] !text-[#0B6B45]'
+                      )}
+                    >
+                      Net payout
+                    </div>
+                    <div
+                      className={cn(
+                        'text-[13px] font-bold tabular-nums text-emerald-700',
+                        __WEB__ && 'doc-ref !mt-1 !whitespace-nowrap !text-[13px] !font-bold !tracking-[-0.02em] !text-[#0B6B45]'
+                      )}
+                    >
+                      {formatINR(preview.receiptAmount)}
+                    </div>
                   </div>
                 </div>
               )}
@@ -2676,7 +2863,48 @@ export function BillDiscounting({
               </div>
             </div>
           )}
-          <DialogFooter className={cn(__WEB__ && '!border-t !border-t-[#D6E2D6] !bg-white !px-5 !py-3.5')}>
+          <DialogFooter
+            className={cn(
+              __WEB__ && '!flex !items-center !gap-3 !border-t !border-t-[#D6E2D6] !bg-white !px-5 !py-3.5 sm:!justify-start'
+            )}
+          >
+            {/* WHAT THE FORM IS STILL WAITING FOR, from the canvas.
+                A long form should say so while there is something to do about
+                it, rather than letting the answer arrive as a toast after the
+                button is pressed. Display only: Save stays clickable, because
+                the fields below the fold are the ones people forget and a
+                dead button explains nothing. */}
+            {__WEB__ && !!form && (() => {
+              const miss = [
+                !String(form.bd_no ?? '').trim() && 'BD no',
+                !form.nbfc_id && 'NBFC',
+                !(Array.isArray(form.party_ids) ? form.party_ids : []).length &&
+                  (String(form.finance_type) === 'SID' ? 'Customer' : 'Supplier'),
+                !(n(form.amount) > 0) && 'Open amount',
+                !form.maturity_date && 'Maturity date'
+              ].filter((x): x is string => typeof x === 'string')
+              return (
+                <span
+                  className={cn(
+                    'flex min-w-0 items-center gap-2 text-[12.5px] font-bold',
+                    miss.length ? 'text-[#8A5300]' : 'text-[#0B6B45]'
+                  )}
+                >
+                  {miss.length ? (
+                    <>
+                      <CircleAlert className="h-[17px] w-[17px] shrink-0 text-[#C2700A]" />
+                      <span className="min-w-0">Still needed: {miss.join(', ')}</span>
+                    </>
+                  ) : (
+                    <>
+                      <CheckCircle2 className="h-[17px] w-[17px] shrink-0 text-[#12855A]" />
+                      <span>Ready to discount.</span>
+                    </>
+                  )}
+                </span>
+              )
+            })()}
+            <div className={cn(__WEB__ && 'ml-auto flex shrink-0 gap-2.5')}>
             <Button
               variant="outline"
               onClick={() => setForm(null)}
@@ -2692,6 +2920,7 @@ export function BillDiscounting({
             >
               {saving ? 'Saving…' : form?.id ? 'Save changes' : 'Discount bill'}
             </Button>
+            </div>
           </DialogFooter>
         </DialogContent>
       </Dialog>
@@ -2933,15 +3162,46 @@ export function BillDiscounting({
 
       {/* Repay dialog */}
       <Dialog open={!!repayRow} onOpenChange={(o) => !o && setRepayRow(null)}>
-        <DialogContent className="border-[#d9d2b8] bg-[#fffdf4]">
-          <DialogHeader className="-mx-6 -mt-6 mb-1 rounded-t-lg bg-[#dce6f5] px-6 py-2.5">
-            <DialogTitle className="text-[13px] font-bold uppercase tracking-widest text-[#1a2c56]">
-              Repay {repayRow?.bd_no || 'bill'}
+        <DialogContent className={cn('border-[#d9d2b8] bg-[#fffdf4]', bdDrawer('!w-[520px]'))}>
+          <DialogHeader
+            className={cn(
+              '-mx-6 -mt-6 mb-1 rounded-t-lg bg-[#dce6f5] px-6 py-2.5',
+              __WEB__ && '!m-0 !block !space-y-0 !rounded-none !bg-[#0B3D2E] !px-[22px] !py-[18px] !text-left'
+            )}
+          >
+            {__WEB__ && (
+              <div className="text-[11px] font-extrabold uppercase tracking-[.14em] text-[#8FBFA8]">
+                Bill discounting · repay
+              </div>
+            )}
+            <DialogTitle
+              className={cn(
+                'text-[13px] font-bold uppercase tracking-widest text-[#1a2c56]',
+                __WEB__ && '!doc-ref !mt-1.5 !break-all !text-[19px] !font-bold !normal-case !tracking-[-0.02em] !text-white'
+              )}
+            >
+              {__WEB__ ? repayRow?.bd_no || 'Repay bill' : `Repay ${repayRow?.bd_no || 'bill'}`}
             </DialogTitle>
+            {__WEB__ && !!repayRow && (
+              <div className="mt-1.5 text-[12.5px] font-semibold text-[#8FBFA8]">
+                {formatINR(dueOn(repayRow))} outstanding to {repayRow.nbfc_name || 'the NBFC'}
+              </div>
+            )}
           </DialogHeader>
           {repayRow && (
-            <div className="grid gap-4">
-              <div className="rounded-md bg-muted px-3 py-2 text-sm">
+            <div
+              className={cn(
+                'grid gap-4',
+                __WEB__ &&
+                  '!flex !min-h-0 !flex-col !gap-3.5 !overflow-y-auto !p-[22px] [&>*]:!shrink-0 [&_label]:!text-[11px] [&_label]:!font-extrabold [&_label]:!tracking-[.09em] [&_label]:!text-[#5A6B62] [&_input]:!h-11 [&_input]:!rounded-[4px] [&_input]:!border-[#C3D2C6] [&_input]:!text-[13px] [&_input]:!font-semibold [&_[data-slot=select-trigger]]:!h-11 [&_[data-slot=select-trigger]]:!rounded-[4px] [&_[data-slot=select-trigger]]:!border-[#C3D2C6] [&_[data-slot=select-trigger]]:!text-[13px] [&_[data-slot=date-picker]]:!h-11 [&_[data-slot=date-picker]]:!rounded-[4px] [&_[data-slot=date-picker]]:!border-[#C3D2C6] [&_[data-slot=date-picker]]:!text-[13.5px]'
+              )}
+            >
+              <div
+                className={cn(
+                  'rounded-md bg-muted px-3 py-2 text-sm',
+                  __WEB__ && '!rounded-[4px] !border !border-[#D6E2D6] !bg-white !px-4 !py-3 !text-[12.5px] !font-bold !text-[#33473E]'
+                )}
+              >
                 {repayRow.nbfc_name} · {repayRow.party_name}
                 <div className="mt-1.5 grid grid-cols-3 gap-2 text-[11px]">
                   <div>
@@ -3113,9 +3373,30 @@ export function BillDiscounting({
               )}
             </div>
           )}
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setRepayRow(null)} disabled={repaySaving}>Cancel</Button>
-            <Button className="bg-[#1a2c56] hover:bg-[#24407e]" onClick={() => void saveRepay()} disabled={repaySaving}>
+          {/* Pinned at the foot of the column, where a drawer's actions
+              belong — reachable however far the repayment history runs. */}
+          <DialogFooter
+            className={cn(
+              __WEB__ &&
+                '!m-0 !flex !items-center !gap-2.5 !border-t !border-t-[#D6E2D6] !bg-white !px-[22px] !py-3.5 sm:!justify-end'
+            )}
+          >
+            <Button
+              variant="outline"
+              onClick={() => setRepayRow(null)}
+              disabled={repaySaving}
+              className={cn(__WEB__ && '!h-11 !rounded-[4px] !border-[1.5px] !border-[#C3D2C6] !px-5 !font-extrabold !text-[#33473E]')}
+            >
+              Cancel
+            </Button>
+            <Button
+              className={cn(
+                'bg-[#1a2c56] hover:bg-[#24407e]',
+                __WEB__ && '!h-11 !rounded-[4px] !bg-[#0B3D2E] !px-6 !font-extrabold !text-[#C7F03F] hover:!bg-[#0F4A38]'
+              )}
+              onClick={() => void saveRepay()}
+              disabled={repaySaving}
+            >
               {repaySaving
                 ? 'Saving…'
                 : repayRow && round2(n(repayForm.amount)) > 0 && round2(n(repayForm.amount)) < dueOn(repayRow)

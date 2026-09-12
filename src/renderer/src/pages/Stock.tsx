@@ -595,7 +595,7 @@ function FactoryPicker({
   factoryName: string
 }): React.JSX.Element {
   const current = value.length === 0 || value.length === companies.length ? 'factory' : String(value[0])
-  const site = factoryName || 'Factory'
+  const site = factoryName || 'Plant'
   return (
     <Select
       value={current}
@@ -1180,7 +1180,11 @@ function StockTable({ rows: allRows, breakdown, label = 'stock', range, onRange,
                               )}
                               {ranged && (
                                 <TableCell
-                                  title="Part of the Opening beside it — the correction struck on the count, not a movement of its own"
+                                  title={
+                                    Math.abs(Number(r.pp_equiv) || 0) > 1e-9
+                                      ? `Part of the Opening beside it — the correction struck on the count, not a movement of its own. Of this, ${formatNum(r.pp_equiv)} is what a batch finished out of PP used by the formulation: it shows here and in Consumed at once, and the two cancel, because that oil left the tanks when the PP was made.`
+                                      : 'Part of the Opening beside it — the correction struck on the count, not a movement of its own'
+                                  }
                                   className={cn('text-right', SK_NUM, SK_BOPEN, '!text-[#7C9188]')}
                                 >
                                   {Math.abs(Number(r.opening_adj) || 0) > 1e-9 ? formatNum(r.opening_adj) : dash}
@@ -1946,7 +1950,7 @@ function OpeningStock({
                       Counting for
                       <InfoTip
                         className={cn('text-white/45 hover:text-white', __WEB__ && '!text-[#8478C4] hover:!text-[#3D3179]')}
-                        text="Which plant's tanks are being counted. Opening stock belongs to the factory, not to a company: every company trading through this site reads and writes the same sheet, because there is one set of tanks. Purchases, sales and the ledgers stay with the company that booked them."
+                        text="Which plant's tanks are being counted. Opening stock belongs to the plant, not to a company: every company trading through this site reads and writes the same sheet, because there is one set of tanks. Purchases, sales and the ledgers stay with the company that booked them."
                       />
                     </div>
                     <div className={cn('flex h-10 w-[15rem] items-center gap-2 rounded-md border border-white/20 bg-white/10 px-3 text-[13px] font-semibold text-white', __WEB__ && '!h-9 !w-auto !min-w-[130px] !rounded-[4px] !border-[#C7BCF0] !bg-white !px-3 !text-[12.5px] !font-bold !text-[#3D3179]')}>

@@ -1245,6 +1245,12 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
         'This LC has no purchase invoice linked. Close this, press Edit and tick the invoice(s) it covers before moving it past Application.'
       )
     }
+    // The date the stage stands on. Open says the bank opened the credit, and
+    // the day it did is the fact behind the claim — the field was starred here
+    // all along without anything checking it.
+    if (next === 'open' && !String(stageForm.opened_date || '').trim()) {
+      return setStageError('The open date is needed — the day the bank actually opened the credit')
+    }
     if (next === 'payment_received' && (!stageForm.payment_received_date || !stageForm.expiry_date)) {
       return setStageError('Both the payment received date and the maturity date are needed')
     }
@@ -1518,34 +1524,83 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
     )
   }
 
+  // WHAT EACH STAGE OBLIGES YOU TO KNOW.
+  // ---------------------------------------------------------------------------
+  // A stage is a claim about what has already happened, and each claim carries
+  // its own facts. Saying an LC is Open asserts the bank opened it — on a day,
+  // which is a date somebody has. Saying payment was received asserts the money
+  // arrived and the credit falls due — two more dates, and the interest days
+  // are the gap between them, so an LC sitting at Payment received without them
+  // has no interest, no maturity and nothing to preclose against.
+  //
+  // The dates were only ever ENABLED by stage, never required by it, so a stage
+  // could be advanced past the facts that justify it and the gap showed up
+  // later as a blank column in the register.
+  //
+  // One list, read by the footer and by the save, so what the form says it is
+  // waiting for is exactly what the save refuses on. The main process refuses
+  // the same set (assertStageDates in lc.ts) — it has to, being the only side a
+  // script cannot go around.
+  function lcRequired(row: Row | null): { key: string; label: string; ok: boolean }[] {
+    if (!row) return []
+    const stage = String(row.stage || 'application')
+    const open = stage === 'open' || stage === 'payment_received'
+    const paid = stage === 'payment_received'
+    const has = (k: string): boolean => !!String(row[k] ?? '').trim()
+    return [
+      { key: 'lc_no', label: 'LC no', ok: !open || has('lc_no') },
+      { key: 'bank', label: 'Bank', ok: has('bank') },
+      { key: 'fd_no', label: 'FD no', ok: has('fd_no') },
+      { key: 'party_id', label: 'Supplier', ok: !!row.party_id },
+      { key: 'purpose', label: 'Purpose', ok: has('purpose') },
+      { key: 'amount', label: 'Open amount', ok: (Number(row.amount) || 0) > 0 },
+      { key: 'open_date', label: 'Application date', ok: has('open_date') },
+      { key: 'opened_date', label: 'Open date', ok: !open || has('opened_date') },
+      { key: 'payment_received_date', label: 'Payment received date', ok: !paid || has('payment_received_date') },
+      { key: 'expiry_date', label: 'Maturity date', ok: !paid || has('expiry_date') },
+      { key: 'invoice', label: 'A linked invoice', ok: !needsLinkedInvoice(row) }
+    ]
+  }
+
   // The same conditions saveLc refuses on, as a list rather than a toast —
   // a long form should say what it is still waiting for while there is
   // something to do about it. Display only: nothing here gates the Save
   // button, which stays clickable so its toast can still explain.
   const lcMissing = useMemo(() => {
-    if (!lcForm) return [] as string[]
-    const past = String(lcForm.stage || 'application') !== 'application'
-    return [
-      !String(lcForm.open_date || '').trim() && 'Application date',
-      !String(lcForm.fd_no || '').trim() && 'FD no',
-      !String(lcForm.purpose || '').trim() && 'Purpose',
-      !lcForm.party_id && 'Supplier',
-      past && !String(lcForm.lc_no || '').trim() && 'LC no',
-      needsLinkedInvoice(lcForm) && 'A linked invoice'
-    ].filter((x): x is string => typeof x === 'string')
+    return lcRequired(lcForm)
+      .filter((r) => !r.ok)
+      .map((r) => r.label)
     // needsLinkedInvoice reads only the form, and orders is what the invoice
     // picker itself is built from.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [lcForm])
 
+  // What a stage is called, where the message has to name it.
+  const STAGE_WORD: Record<string, string> = {
+    application: 'Application',
+    open: 'Open',
+    payment_received: 'Payment received'
+  }
+
   async function saveLc(): Promise<void> {
     if (!lcForm) return
-    if (!String(lcForm.open_date || '').trim()) return void toast.error('Application date is required')
-    if (!String(lcForm.fd_no || '').trim()) return void toast.error('FD No is required')
-    if (!String(lcForm.purpose || '').trim()) return void toast.error('Purpose is required')
-    if (!lcForm.party_id) return void toast.error('Supplier is required')
-    if (String(lcForm.stage || 'application') !== 'application' && !String(lcForm.lc_no || '').trim()) {
-      return void toast.error('LC number is required once the LC is Open')
+    {
+      // Refused against the very list the footer has been showing, so the save
+      // cannot ask for something the form never mentioned. The stage is named
+      // in the message: the field is only obligatory BECAUSE of it, and a
+      // person who set the stage by accident should be told which choice is
+      // doing the asking.
+      // The linked invoice keeps its own sentence, a few lines down — it
+      // explains WHY, which a name in a list cannot.
+      const short = lcRequired(lcForm).filter((r) => !r.ok && r.key !== 'invoice')
+      if (short.length) {
+        const stage = STAGE_WORD[String(lcForm.stage || 'application')] || 'Application'
+        return void toast.error(
+          short.length === 1
+            ? `${short[0]} is required at stage ${stage}`
+            : `Still needed at stage ${stage}: ${short.map((r) => r.label).join(', ')}`
+        )
+      }
     }
     {
       // The main process refuses this too — it has to, since it is the only
@@ -5149,7 +5204,10 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                         <div className="flex flex-col gap-1.5">
                           <Label className="flex items-center gap-1.5">
                             Open date
-                            {__WEB__ && <InfoTip text="The day the bank actually opened the credit. Set once the stage moves to Open." />}
+                            {/* Obligatory from the moment the stage claims the
+                                bank opened it — the claim is the reason. */}
+                            {stage !== 'application' && <span className="text-red-600">*</span>}
+                            {__WEB__ && <InfoTip text="The day the bank actually opened the credit. Required once the stage is Open." />}
                           </Label>
                           <DatePicker
                             value={String(lcForm.opened_date || '')}
@@ -5162,7 +5220,8 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                         <div className="flex flex-col gap-1.5">
                           <Label className="flex items-center gap-1.5">
                             Payment received date
-                            {__WEB__ && <InfoTip text="The day payment was received against the credit. Set once the stage moves to Payment received — the interest days run from here to maturity." />}
+                            {stage === 'payment_received' && <span className="text-red-600">*</span>}
+                            {__WEB__ && <InfoTip text="The day payment was received against the credit. Required once the stage is Payment received — the interest days run from here to maturity." />}
                           </Label>
                           <DatePicker
                             value={String(lcForm.payment_received_date || '')}
@@ -5178,7 +5237,8 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                         <div className="flex flex-col gap-1.5">
                           <Label className="flex items-center gap-1.5">
                             Maturity date
-                            {__WEB__ && <InfoTip text="The day the credit falls due. Set together with the payment received date — the two of them give the interest days." />}
+                            {stage === 'payment_received' && <span className="text-red-600">*</span>}
+                            {__WEB__ && <InfoTip text="The day the credit falls due. Required together with the payment received date — the two of them give the interest days." />}
                           </Label>
                           <DatePicker
                             value={String(lcForm.expiry_date || '')}

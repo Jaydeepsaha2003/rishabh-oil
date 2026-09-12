@@ -64,6 +64,11 @@ export interface Api {
     ) => Promise<{ id: number; bargain_no: string; rate_changed_from: number | null; rate: number }>
     linkedInvoices: (id: number) => Promise<Row[]>
     adjustments: (id: number) => Promise<Row[]>
+    rerateInvoices: (
+      bargainId: number,
+      rate: number,
+      orderIds: number[]
+    ) => Promise<{ updated: Row[]; failed: Row[] }>
     setInvoiceRate: (
       orderId: number,
       bargainId: number,
@@ -274,6 +279,16 @@ export interface Api {
       note: string,
       companyId?: number
     ) => Promise<{ product_id: number; stage_id: number; qty: number }>
+    ppReceivers: (productId: number, companyId?: number) => Promise<Row[]>
+    movePp: (
+      productId: number,
+      stageId: number,
+      qty: number,
+      toProductId: number,
+      toStageId: number,
+      note: string,
+      companyId?: number
+    ) => Promise<{ product_id: number; to_product_id: number; qty: number }>
     ppFreeTotals: (productIds: number[], companyId?: number) => Promise<Record<number, { without: number; with: number }>>
   }
   skuOpening: {

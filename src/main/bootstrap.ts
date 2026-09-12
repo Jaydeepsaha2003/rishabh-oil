@@ -11,6 +11,7 @@ import {
 import { seedDefaultAdmin } from './auth'
 import { seedProducts, seedFormulations, seedPackagings } from './seed'
 import { cleanupLogs } from './access'
+import { expandRecipe, recipeTor } from '../renderer/src/lib/recipeMath'
 import { applyGateTimeFix } from './gateTimeFix'
 import { startNotificationWatcher, pruneNotifications } from './notify'
 
@@ -238,6 +239,48 @@ export async function runStartupTasks(): Promise<void> {
   // it off takes it out of PP for good, and the reason is kept with it: a
   // quantity that vanished with no explanation is the one thing an auditor
   // always asks about.
+  // GIVE THE COUNTED OPENING ITS DRAWS BACK.
+  //
+  // Production used to take its PP straight off the vessel row, so consuming
+  // 35 of a counted 53 rewrote the count to 18 and deleted any vessel it
+  // emptied. The count is the record of what a tank held that morning; it is
+  // not a statement about today, and it must not move because the oil was
+  // later used. What is AVAILABLE is derived now — counted less drawn — but
+  // every row the old code reduced is short by exactly what pp_draws says was
+  // taken out of it.
+  //
+  // So: add each vessel's recorded draws back onto its line, rebuild the lines
+  // that were deleted outright, and restate the opening total from the
+  // repaired lines. Runs once. pp_draws is the evidence and is left alone.
+  await runOnce('pp_counted_restore_v1', async () => {
+    const c = getClient()
+    // A vessel emptied to nothing lost its row — rebuild it from the draw.
+    await c.execute(
+      "INSERT INTO stock_opening_pp (scope, product_id, stage_id, qty, ffa, updated_at) " +
+        "SELECT d.scope, d.product_id, d.stage_id, 0, MAX(d.ffa), datetime('now') " +
+        "FROM pp_draws d " +
+        "WHERE NOT EXISTS (SELECT 1 FROM stock_opening_pp p " +
+        "WHERE p.scope = d.scope AND p.product_id = d.product_id AND p.stage_id = d.stage_id) " +
+        "GROUP BY d.scope, d.product_id, d.stage_id"
+    )
+    await c.execute(
+      "UPDATE stock_opening_pp SET " +
+        "qty = qty + COALESCE((SELECT SUM(d.qty) FROM pp_draws d " +
+        "WHERE d.scope = stock_opening_pp.scope AND d.product_id = stock_opening_pp.product_id " +
+        "AND d.stage_id = stock_opening_pp.stage_id), 0), updated_at = datetime('now') " +
+        "WHERE EXISTS (SELECT 1 FROM pp_draws d WHERE d.scope = stock_opening_pp.scope " +
+        "AND d.product_id = stock_opening_pp.product_id AND d.stage_id = stock_opening_pp.stage_id)"
+    )
+    // The opening total follows its own lines, for every product that has any.
+    await c.execute(
+      "UPDATE stock_openings SET pp_qty = COALESCE((SELECT ROUND(SUM(p.qty), 3) FROM stock_opening_pp p " +
+        "WHERE p.product_id = stock_openings.product_id AND p.scope = " +
+        "CASE WHEN stock_openings.factory_id IS NOT NULL THEN 'f' || stock_openings.factory_id " +
+        "ELSE 'c' || stock_openings.company_id END), pp_qty) " +
+        "WHERE EXISTS (SELECT 1 FROM stock_opening_pp p WHERE p.product_id = stock_openings.product_id)"
+    )
+  }).catch((e) => console.error('[stock] pp counted restore failed:', e))
+
   await runOnce('pp_writeoffs_v1', async () => {
     const c = getClient()
     await c.execute(`CREATE TABLE IF NOT EXISTS pp_writeoffs (
@@ -1456,6 +1499,75 @@ export async function runStartupTasks(): Promise<void> {
       if (!/duplicate column/i.test(String(e))) throw e
     })
   }).catch((e) => console.error('[tankers] freight remark column failed:', e))
+
+  // The lorry receipt number, taken when the tanker sets off. It is the
+  // transporter's own document for the consignment, and the one reference a
+  // dispute over what left the port is argued on — so it belongs on the
+  // tanker, beside the transit date it was issued with.
+  await runOnce('tanker_lr_no_v1', async () => {
+    await getClient().execute('ALTER TABLE purchase_tankers ADD COLUMN lr_no TEXT').catch((e) => {
+      if (!/duplicate column/i.test(String(e))) throw e
+    })
+  }).catch((e) => console.error('[tankers] LR no column failed:', e))
+
+  // What a PP batch used without taking it, for the runs recorded before the
+  // line existed. 'pp_equiv' is the formulation's split of a with-FFA vessel
+  // draw — shown in the register's Adjusted and Consumed columns at once,
+  // where the two cancel. It moves nothing; a run missing it simply reads as
+  // though the recipe had done nothing, which is exactly how it did read.
+  await runOnce('pp_equiv_backfill_v1', async () => {
+    const c = getClient()
+    const runs = await c.execute(`
+      SELECT p.id AS id, p.formulation_id AS fid, SUM(d.qty) AS drawn
+        FROM production p
+        JOIN pp_draws d ON d.production_id = p.id AND d.ffa = 'with'
+       WHERE p.formulation_id IS NOT NULL
+         AND NOT EXISTS (SELECT 1 FROM production_items i
+                          WHERE i.production_id = p.id AND i.kind = 'pp_equiv')
+       GROUP BY p.id`)
+    for (const r of runs.rows) {
+      const row = r as unknown as Record<string, unknown>
+      const drawn = Number(row.drawn) || 0
+      if (!(drawn > 0.0005)) continue
+      const res = await c.execute({
+        sql: 'SELECT * FROM formulation_items WHERE formulation_id = ?',
+        args: [Number(row.fid)]
+      })
+      const items = res.rows.map((x) => {
+        const o: Record<string, unknown> = {}
+        for (const col of res.columns) o[col] = (x as unknown as Record<string, unknown>)[col]
+        return o
+      })
+      if (!items.length) continue
+      const tor = recipeTor(items)
+      if (!(tor > 0)) continue
+      // The output that much vessel oil yielded, then the recipe's own input
+      // split of it — the same two steps expandBatchWithOutputPp takes.
+      const finished = drawn / (tor / 100)
+      for (const l of expandRecipe(items, finished)) {
+        if (l.kind !== 'input' || !(l.qty > 0.0000005)) continue
+        await c.execute({
+          sql: 'INSERT INTO production_items (production_id, product_id, qty, kind) VALUES (?, ?, ?, ?)',
+          args: [Number(row.id), Number(l.product_id), l.qty, 'pp_equiv']
+        })
+      }
+      console.log(`[stock] pp_equiv backfilled on production ${row.id} (${drawn} drawn)`)
+    }
+  }).catch((e) => console.error('[stock] pp_equiv backfill failed:', e))
+
+  // Where a heel went, when it did not go for good. A write-off row carrying
+  // a destination is a MOVE — the oil left one oil's PP and arrived in
+  // another's — and the log answers both questions in one place rather than
+  // leaving a transfer looking like a loss.
+  await runOnce('pp_writeoffs_move_v1', async () => {
+    for (const col of ['to_product_id INTEGER', 'to_stage_id INTEGER']) {
+      await getClient()
+        .execute('ALTER TABLE pp_writeoffs ADD COLUMN ' + col)
+        .catch((e) => {
+          if (!/duplicate column/i.test(String(e))) throw e
+        })
+    }
+  }).catch((e) => console.error('[stock] PP move columns failed:', e))
 
   // The gate times the website wrote while the server ran in UTC — 09:53 IST
   // stored as 04:23, and anything entered before 05:30 IST filed under the
