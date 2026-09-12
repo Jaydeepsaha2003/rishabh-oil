@@ -8836,8 +8836,43 @@ async function stockLevels(range, companyIds) {
     }
     return { total, adj };
   };
+  const ppRestate = async () => {
+    const out = /* @__PURE__ */ new Map();
+    const scope = fid ? `f${fid}` : `c${cidList[0] || getActiveCompanyId()}`;
+    const res = await c.execute({
+      sql: `SELECT sop.product_id AS pid, sop.qty AS qty, sop.formulation_id AS fid
+              FROM stock_opening_pp sop
+             WHERE sop.scope = ? AND sop.ffa = 'with'
+               AND sop.formulation_id IS NOT NULL AND sop.qty > 0.0005`,
+      args: [scope]
+    });
+    if (!res.rows.length) return out;
+    const add = (pid, q) => {
+      out.set(pid, (out.get(pid) || 0) + q);
+    };
+    for (const raw of res.rows) {
+      const r = raw;
+      const qty = Number(r.qty) || 0;
+      const items = await c.execute({
+        sql: `SELECT product_id, qty FROM formulation_items
+               WHERE formulation_id = ? AND COALESCE(kind, 'input') = 'input'`,
+        args: [Number(r.fid)]
+      });
+      const share = items.rows.reduce((t, x) => t + (Number(x.qty) || 0), 0);
+      if (!(share > 0)) continue;
+      add(Number(r.pid), -qty);
+      let placed = 0;
+      const inputs = items.rows.map((x) => x);
+      inputs.forEach((x, i) => {
+        const part = i === inputs.length - 1 ? Math.round((qty - placed) * 1e3) / 1e3 : Math.round(qty * (Number(x.qty) || 0) / share * 1e3) / 1e3;
+        placed = Math.round((placed + part) * 1e3) / 1e3;
+        add(Number(x.product_id), part);
+      });
+    }
+    return out;
+  };
   const keys = Object.keys(SOURCES);
-  const [products, brought, ...maps] = await Promise.all([
+  const [products, brought, restated, ...maps] = await Promise.all([
     // show_in_stock is the switch on the Products page. Filtered here rather
     // than in the page, because stockLevels() is what BOTH stock sheets are
     // built from — Book Stock reads it directly and the opening sheet maps
@@ -8854,6 +8889,7 @@ async function stockLevels(range, companyIds) {
         ORDER BY category, name`
     ),
     openingBalance(),
+    ppRestate(),
     ...keys.map((k) => slice(SOURCES[k], "period")),
     ...keys.map((k) => slice(SOURCES[k], "opening"))
   ]);
@@ -8862,8 +8898,9 @@ async function stockLevels(range, companyIds) {
   return products.rows.map((p) => {
     const id = Number(p.id);
     const g = (m, k) => m[k].get(id) || 0;
-    const open = (brought.total.get(id) || 0) + g(opening, "received") + g(opening, "produced") + g(opening, "byProduct") + g(opening, "transferredIn") - g(opening, "consumed") - g(opening, "sold") - g(opening, "transferredOut") - g(opening, "packedOut") + g(opening, "returnedIn") - g(opening, "returnedOut");
-    const adjPortion = brought.adj.get(id) || 0;
+    const restate = Math.round((restated.get(id) || 0) * 1e3) / 1e3;
+    const open = restate + (brought.total.get(id) || 0) + g(opening, "received") + g(opening, "produced") + g(opening, "byProduct") + g(opening, "transferredIn") - g(opening, "consumed") - g(opening, "sold") - g(opening, "transferredOut") - g(opening, "packedOut") + g(opening, "returnedIn") - g(opening, "returnedOut");
+    const adjPortion = (brought.adj.get(id) || 0) + restate;
     const openingShown = Math.round((open - adjPortion) * 1e3) / 1e3;
     const rec = g(period, "received") - g(period, "returnedOut");
     const prod = g(period, "produced") + g(period, "byProduct");
@@ -8899,6 +8936,9 @@ async function stockLevels(range, companyIds) {
       // rather than a correction to the count, so the hover can tell them
       // apart and the two are never confused for one another.
       pp_equiv: ppEq,
+      // The part of Adjusted that is a with-FFA vessel reported as the oils it
+      // is made of, rather than a correction to the count.
+      pp_restated: restate,
       received: rec,
       produced: prod,
       // Shown beside Produced as the +N -N it is, never added to it. Nothing
@@ -9968,7 +10008,10 @@ async function savePpLines(productId, lines, companyId, seenVersion) {
     stage_id: n7(l?.stage_id),
     stage: String(l?.stage ?? l?.name ?? "").trim(),
     qty: l?.qty === "" || l?.qty == null ? 0 : n7(l.qty),
-    ffa: l?.ffa === "with" || l?.ffa === "without" ? String(l.ffa) : null
+    ffa: l?.ffa === "with" || l?.ffa === "without" ? String(l.ffa) : null,
+    // Only a WITH-FFA line can carry one: oil that has already shed its FFA is
+    // the finished product, and there is nothing left to restate it as.
+    formulation_id: l?.ffa === "with" && n7(l?.formulation_id) > 0 ? n7(l.formulation_id) : null
   }));
   for (const l of raw) {
     if (l.stage_id > 0 || !l.stage) continue;
@@ -9981,9 +10024,9 @@ async function savePpLines(productId, lines, companyId, seenVersion) {
   });
   for (const l of keep) {
     await c.execute({
-      sql: `INSERT INTO stock_opening_pp (scope, product_id, stage_id, qty, ffa, updated_at)
-            VALUES (?, ?, ?, ?, ?, datetime('now'))`,
-      args: [scope, pid, l.stage_id, r3(l.qty), l.ffa]
+      sql: `INSERT INTO stock_opening_pp (scope, product_id, stage_id, qty, ffa, formulation_id, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, datetime('now'))`,
+      args: [scope, pid, l.stage_id, r3(l.qty), l.ffa, l.formulation_id]
     });
   }
   const total = r3(keep.reduce((t, l) => t + l.qty, 0));
@@ -10051,7 +10094,7 @@ async function ppTotalsBothByProduct(productIds, companyId) {
 async function ppVesselBalances(productId, companyId) {
   const scope = await ppScope(companyId);
   const res = await getClient().execute({
-    sql: `SELECT sop.stage_id, st.name AS vessel, sop.ffa,
+    sql: `SELECT sop.stage_id, st.name AS vessel, sop.ffa, sop.formulation_id,
                  sop.qty AS counted,
                  sop.qty - COALESCE((SELECT SUM(d.qty) FROM pp_draws d
                                       WHERE d.scope = sop.scope AND d.product_id = sop.product_id
@@ -11160,6 +11203,25 @@ async function postSaleEntry(saleId, v, taxable, gst, roundOff = 0, freightAmoun
     (e) => console.error("[journal] sale post failed:", e.message)
   );
 }
+async function repostSaleJournal(saleId) {
+  const r = await getClient().execute({
+    sql: `SELECT s.*, cu.name AS customer_master FROM sales s
+            LEFT JOIN customers cu ON cu.id = s.customer_id WHERE s.id = ?`,
+    args: [n9(saleId)]
+  });
+  if (!r.rows.length) throw new Error("Sale not found");
+  const row = r.rows[0];
+  await postSaleEntry(
+    n9(saleId),
+    row,
+    n9(row.amount),
+    n9(row.gst_amount),
+    n9(row.round_off),
+    n9(row.transport_amount),
+    n9(row.tds_amount)
+  );
+  return { id: n9(saleId), party: String(row.customer_master || row.customer || "CASH CUSTOMER A/C") };
+}
 async function listCustomerLedger() {
   const res = await getClient().execute({
     args: [getActiveCompanyId()],
@@ -11582,10 +11644,11 @@ async function createSalesBargain(v) {
 async function updateSalesBargain(id, v) {
   validateSalesBargainInput(v);
   const cur = await getClient().execute({
-    sql: "SELECT customer, customer_id, product_id FROM sales_bargains WHERE id = ?",
+    sql: "SELECT bargain_no, customer, customer_id, product_id, rate FROM sales_bargains WHERE id = ?",
     args: [id]
   });
   if (!cur.rows.length) throw new Error("Sales bargain not found");
+  const oldRate = n9(cur.rows[0].rate);
   const sold = await salesBargainSold(id);
   if (sold > 1e-6) {
     const curId = n9(cur.rows[0].customer_id);
@@ -11625,7 +11688,92 @@ async function updateSalesBargain(id, v) {
       id
     ]
   });
-  return { id };
+  const newRate = n9(v.rate);
+  return {
+    id,
+    bargain_no: String(cur.rows[0].bargain_no || ""),
+    rate_changed_from: Math.abs(oldRate - newRate) > 5e-3 ? oldRate : null,
+    rate: newRate
+  };
+}
+async function salesBargainLinkedInvoices(id) {
+  const res = await getClient().execute({
+    sql: `SELECT s.id, s.invoice_no, s.sale_date, s.company_id, s.uom, s.qty,
+                 s.rate AS billed_rate, s.amount, s.status,
+                 co.name AS company_name,
+                 COALESCE(cu.name, s.customer) AS customer_name
+            FROM sales s
+            LEFT JOIN companies co ON co.id = s.company_id
+            LEFT JOIN customers cu ON cu.id = s.customer_id
+           WHERE s.sales_bargain_id = ?
+           ORDER BY s.sale_date, s.id`,
+    args: [n9(id)]
+  });
+  return toPlain11(res);
+}
+async function rerateSalesForBargain(bargainId, rate, saleIds) {
+  const bid = n9(bargainId);
+  const newRate = Number(rate);
+  if (!bid) throw new Error("Which bargain?");
+  if (!Number.isFinite(newRate) || newRate <= 0) throw new Error("Enter a rate greater than zero");
+  const ids = (Array.isArray(saleIds) ? saleIds : []).map((x) => n9(x)).filter((x) => x > 0);
+  if (!ids.length) throw new Error("Pick at least one invoice to bring onto the new rate");
+  const c = getClient();
+  const updated = [];
+  const failed = [];
+  for (const id of ids) {
+    try {
+      const cur = await c.execute({ sql: "SELECT * FROM sales WHERE id = ? LIMIT 1", args: [id] });
+      if (!cur.rows.length) {
+        failed.push({ id, invoice_no: "", reason: "That invoice no longer exists" });
+        continue;
+      }
+      const s2 = toPlain11(cur)[0];
+      if (n9(s2.sales_bargain_id) !== bid) {
+        failed.push({ id, invoice_no: String(s2.invoice_no || ""), reason: "No longer on this bargain" });
+        continue;
+      }
+      const before = { amount: n9(s2.amount), rate: n9(s2.rate) };
+      if (String(s2.sale_type || "LOOSE") === "PACKED" && n9(s2.rate_per_case) > 0) {
+        failed.push({
+          id,
+          invoice_no: String(s2.invoice_no || ""),
+          reason: "Priced per case \u2014 open it and set the case rate yourself"
+        });
+        continue;
+      }
+      const qty = n9(s2.qty);
+      const amount = round23(qty * newRate);
+      const gstPct = n9(s2.gst_pct);
+      const gstAmount = round23(amount * (gstPct / 100));
+      const roundOff = round23(n9(s2.round_off));
+      const tdsAmount = await saleTds(
+        s2.customer_id ? n9(s2.customer_id) : null,
+        n9(s2.tds_pct),
+        amount,
+        String(s2.sale_date),
+        id
+      );
+      const net = round23(amount + gstAmount + roundOff - tdsAmount);
+      await c.execute({
+        sql: "UPDATE sales SET rate = ?, amount = ?, gst_amount = ?, tds_amount = ? WHERE id = ?",
+        args: [newRate, amount, gstAmount, tdsAmount, id]
+      });
+      await postCustomerReceivable(id, s2.customer_id ? n9(s2.customer_id) : null, net, String(s2.sale_date));
+      await repostSaleJournal(id);
+      updated.push({
+        id,
+        invoice_no: String(s2.invoice_no || ""),
+        rate: newRate,
+        rate_before: before.rate,
+        amount_before: before.amount,
+        amount_after: amount
+      });
+    } catch (e) {
+      failed.push({ id, invoice_no: "", reason: e.message });
+    }
+  }
+  return { updated, failed };
 }
 async function deleteSalesBargain(id) {
   if (await salesBargainSold(id) > 1e-6) {
@@ -14439,6 +14587,40 @@ async function runStartupTasks() {
       console.log(`[stock] pp_equiv backfilled on production ${row.id} (${drawn} drawn)`);
     }
   }).catch((e) => console.error("[stock] pp_equiv backfill failed:", e));
+  await runOnce("pp_formulation_v1", async () => {
+    await getClient().execute("ALTER TABLE stock_opening_pp ADD COLUMN formulation_id INTEGER").catch((e) => {
+      if (!/duplicate column/i.test(String(e))) throw e;
+    });
+  }).catch((e) => console.error("[stock] PP formulation column failed:", e));
+  await runOnce("bd_serviced_interest_v1", async () => {
+    const c = getClient();
+    for (const col of ["interest_mode TEXT", "interest_freq TEXT"]) {
+      await c.execute("ALTER TABLE bill_discountings ADD COLUMN " + col).catch((e) => {
+        if (!/duplicate column/i.test(String(e))) throw e;
+      });
+    }
+    await c.execute(
+      "UPDATE bill_discountings SET interest_mode = CASE WHEN COALESCE(interest_upfront, 0) = 1 THEN 'upfront' ELSE 'discounted' END WHERE interest_mode IS NULL"
+    );
+    await c.execute(`CREATE TABLE IF NOT EXISTS bd_interest_payments (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      bd_id INTEGER NOT NULL REFERENCES bill_discountings(id),
+      -- The stretch of days this payment covers. from_date is the morning
+      -- after the previous one ended, so no day is charged twice and none is
+      -- skipped between them.
+      from_date TEXT NOT NULL,
+      to_date TEXT NOT NULL,
+      days INTEGER NOT NULL DEFAULT 0,
+      paid_date TEXT NOT NULL,
+      gross REAL NOT NULL DEFAULT 0,
+      tds REAL NOT NULL DEFAULT 0,
+      net REAL NOT NULL DEFAULT 0,
+      note TEXT,
+      journal_entry_id INTEGER,
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    )`);
+    await c.execute("CREATE INDEX IF NOT EXISTS idx_bd_interest_bd ON bd_interest_payments(bd_id)");
+  }).catch((e) => console.error("[bd] serviced interest setup failed:", e));
   await runOnce("pp_writeoffs_move_v1", async () => {
     for (const col of ["to_product_id INTEGER", "to_stage_id INTEGER"]) {
       await getClient().execute("ALTER TABLE pp_writeoffs ADD COLUMN " + col).catch((e) => {
@@ -19391,7 +19573,8 @@ function bdCalc(bd) {
   const interestAmount = round211(openAmount * n27(bd.interest_pct) * intDays / (100 * daysYear));
   const tdsAmount = round211(interestAmount * n27(bd.tds_pct) / 100);
   const netInterest = round211(interestAmount - tdsAmount);
-  const receiptAmount = bd.interest_upfront ? openAmount : round211(openAmount - interestAmount);
+  const deducted = !bd.interest_upfront && String(bd.interest_mode || "") !== "serviced";
+  const receiptAmount = deducted ? round211(openAmount - interestAmount) : openAmount;
   return {
     intDays,
     marginAmount,
@@ -19470,7 +19653,8 @@ async function postBdOpening(bdId) {
   }
   const calc = bdCalc(bd);
   const upfront = !!bd.interest_upfront;
-  const interest = upfront ? 0 : calc.interestAmount;
+  const serviced = String(bd.interest_mode || "") === "serviced";
+  const interest = upfront || serviced ? 0 : calc.interestAmount;
   const amount = n27(bd.amount);
   if (calc.marginAmount < 5e-3 && interest < 5e-3 && amount < 5e-3) {
     await c.execute({ sql: "UPDATE bill_discountings SET journal_entry_id = NULL WHERE id = ?", args: [bdId] });
@@ -19485,7 +19669,7 @@ async function postBdOpening(bdId) {
     date: String(bd.payment_received_date || todayISO6()).slice(0, 10),
     vchType: "RECEIPT",
     vchNo: String(bd.bd_no || ""),
-    narration: `Bill Discounting ${bd.bd_no || ""} (${bd.finance_type}) opened with ${bd.nbfc_name || "the NBFC"} \u2014 margin ${calc.marginAmount.toFixed(2)}, interest ${interest.toFixed(2)}` + (upfront ? " (interest settled separately on reconciliation)" : ""),
+    narration: `Bill Discounting ${bd.bd_no || ""} (${bd.finance_type}) opened with ${bd.nbfc_name || "the NBFC"} \u2014 margin ${calc.marginAmount.toFixed(2)}, interest ${interest.toFixed(2)}` + (serviced ? ` (interest serviced ${String(bd.interest_freq || "monthly").replace("_", "-")} over the tenor)` : upfront ? " (interest settled separately on reconciliation)" : ""),
     companyId: n27(bd.company_id) || void 0,
     lines
   });
@@ -19550,11 +19734,23 @@ var BD_COLS = [
   "interest_pct",
   "tds_pct",
   "interest_upfront",
+  // How the interest is charged: 'discounted' (netted out of the
+  // disbursement), 'upfront' (settled separately at the start) or 'serviced'
+  // (paid as it runs, on the rest below). interest_upfront is kept in step
+  // with it so every older reader still behaves.
+  "interest_mode",
+  "interest_freq",
   "note"
 ];
 function bdArgs(v) {
+  const mode = ["discounted", "upfront", "serviced"].includes(String(v.interest_mode || "")) ? String(v.interest_mode) : v.interest_upfront ? "upfront" : "discounted";
   return BD_COLS.map((k) => {
-    if (k === "interest_upfront" || k === "days_incl_start") return v[k] ? 1 : 0;
+    if (k === "interest_upfront") return mode === "upfront" ? 1 : 0;
+    if (k === "interest_mode") return mode;
+    if (k === "interest_freq") {
+      return mode === "serviced" ? ["fortnightly", "monthly", "quarterly", "half_yearly", "maturity"].includes(String(v.interest_freq || "")) ? String(v.interest_freq) : "monthly" : null;
+    }
+    if (k === "days_incl_start") return v[k] ? 1 : 0;
     if (k === "days_year") return n27(v[k]) || 360;
     if (["amount", "margin_pct", "interest_pct", "tds_pct"].includes(k)) return n27(v[k]);
     if (k === "invoice_amount") {
@@ -19873,6 +20069,145 @@ async function repayBd(id, v) {
     await postBdMarginRelease(fresh);
   }
   return { id, amount: asked, outstanding: left, closed };
+}
+var BD_REST = {
+  fortnightly: { days: 14 },
+  monthly: { months: 1 },
+  quarterly: { months: 3 },
+  half_yearly: { months: 6 }
+};
+function addDays(iso, d) {
+  const t = /* @__PURE__ */ new Date(`${String(iso).slice(0, 10)}T00:00:00Z`);
+  t.setUTCDate(t.getUTCDate() + d);
+  return t.toISOString().slice(0, 10);
+}
+function addMonths(iso, m) {
+  const d = String(iso).slice(0, 10);
+  const y = Number(d.slice(0, 4));
+  const mo = Number(d.slice(5, 7)) - 1;
+  const day = Number(d.slice(8, 10));
+  const first = new Date(Date.UTC(y, mo + m, 1));
+  const lastDay = new Date(Date.UTC(first.getUTCFullYear(), first.getUTCMonth() + 1, 0)).getUTCDate();
+  return new Date(Date.UTC(first.getUTCFullYear(), first.getUTCMonth(), Math.min(day, lastDay))).toISOString().slice(0, 10);
+}
+async function bdInterestSchedule(bdId) {
+  const bd = await loadBd(bdId);
+  const calc = bdCalc(bd);
+  const from = String(bd.payment_received_date || "").slice(0, 10);
+  const to = String(bd.maturity_date || "").slice(0, 10);
+  if (String(bd.interest_mode || "") !== "serviced" || !from || !to || calc.intDays <= 0) return [];
+  const rest = BD_REST[String(bd.interest_freq || "monthly")];
+  const marks = [];
+  if (rest) {
+    for (let i = 1; ; i++) {
+      const d = rest.months ? addMonths(from, rest.months * i) : addDays(from, (rest.days || 0) * i);
+      if (d >= to) break;
+      marks.push(d);
+    }
+  }
+  marks.push(to);
+  const daysYear = n27(bd.days_year) || 360;
+  const rate = n27(bd.interest_pct);
+  const paid = await listBdInterestPayments(bdId);
+  const out = [];
+  let start = from;
+  let charged = 0;
+  marks.forEach((end, i) => {
+    const last = i === marks.length - 1;
+    const days = Math.max(0, daysBetween4(start, end) + (i === 0 && bd.days_incl_start ? 1 : 0));
+    const gross = last ? round211(calc.interestAmount - charged) : round211(calc.openAmount * rate * days / (100 * daysYear));
+    charged = round211(charged + gross);
+    const tds = round211(gross * n27(bd.tds_pct) / 100);
+    const done = paid.find((p) => String(p.to_date).slice(0, 10) === end);
+    out.push({
+      seq: i + 1,
+      from_date: start,
+      to_date: end,
+      days,
+      gross,
+      tds,
+      net: round211(gross - tds),
+      last,
+      paid_id: done ? n27(done.id) : null,
+      paid_date: done ? String(done.paid_date).slice(0, 10) : null,
+      paid_gross: done ? n27(done.gross) : 0,
+      paid_net: done ? n27(done.net) : 0
+    });
+    start = end;
+  });
+  return out;
+}
+async function listBdInterestPayments(bdId) {
+  const res = await getClient().execute({
+    sql: `SELECT p.*, je.vch_no FROM bd_interest_payments p
+          LEFT JOIN journal_entries je ON je.id = p.journal_entry_id
+          WHERE p.bd_id = ? ORDER BY p.to_date, p.id`,
+    args: [n27(bdId)]
+  });
+  return toPlain27(res);
+}
+async function payBdInterest(bdId, v) {
+  const bd = await loadBd(bdId);
+  if (String(bd.interest_mode || "") !== "serviced") {
+    throw new Error("This bill does not service its interest \u2014 its interest was settled when the bill was opened");
+  }
+  const to = String(v.to_date || "").slice(0, 10);
+  const sched = await bdInterestSchedule(bdId);
+  const slice = sched.find((r) => String(r.to_date) === to);
+  if (!slice) throw new Error("That is not one of this bill\u2019s interest rests");
+  if (slice.paid_id) throw new Error("That rest has already been paid");
+  const earlier = sched.find((r) => String(r.to_date) < to && !r.paid_id);
+  if (earlier) {
+    throw new Error(`Pay the rest to ${String(earlier.to_date)} first \u2014 interest is serviced in order`);
+  }
+  const date = String(v.paid_date || todayISO6()).slice(0, 10);
+  if (date > todayISO6()) throw new Error("Interest cannot be dated in the future");
+  const asked = v.amount == null || String(v.amount).trim() === "" ? n27(slice.gross) : round211(n27(v.amount));
+  if (!(asked > 4e-3)) throw new Error("Enter the interest being paid");
+  if (asked > n27(slice.gross) + 4e-3) {
+    throw new Error(`That rest is ${inr2(n27(slice.gross))} \u2014 it cannot take ${inr2(asked)}`);
+  }
+  const tds = round211(asked * n27(bd.tds_pct) / 100);
+  const net = round211(asked - tds);
+  const lines = [
+    { account: "INTEREST ON BILL DISCOUNTING A/C", group: "Indirect Expenses", dr: asked }
+  ];
+  if (tds > 4e-3) lines.push({ account: "TDS ON INTEREST PAYABLE A/C", group: "Duties & Taxes", cr: tds });
+  lines.push({ account: "BANK A/C", group: "Bank Accounts", cr: net });
+  const je = await postJournal({
+    date,
+    vchType: "PAYMENT",
+    vchNo: String(bd.bd_no || ""),
+    narration: `Bill Discounting ${bd.bd_no} \u2014 interest ${inr2(asked)} for ${n27(slice.days)} days (${String(slice.from_date)} to ${to}) paid to ${bd.nbfc_name || "the NBFC"}` + (tds > 4e-3 ? `, TDS ${inr2(tds)} withheld` : ""),
+    companyId: n27(bd.company_id) || void 0,
+    lines
+  });
+  const res = await getClient().execute({
+    sql: `INSERT INTO bd_interest_payments (bd_id, from_date, to_date, days, paid_date, gross, tds, net, note, journal_entry_id)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    args: [
+      n27(bdId),
+      String(slice.from_date),
+      to,
+      n27(slice.days),
+      date,
+      asked,
+      tds,
+      net,
+      v.note ? String(v.note) : null,
+      je.id
+    ]
+  });
+  return { id: Number(res.lastInsertRowid), gross: asked, net };
+}
+async function deleteBdInterestPayment(payId) {
+  const c = getClient();
+  const res = await c.execute({ sql: "SELECT * FROM bd_interest_payments WHERE id = ?", args: [n27(payId)] });
+  if (!res.rows.length) throw new Error("That interest payment no longer exists");
+  const row = toPlain27(res)[0];
+  await dropEntry2(n27(row.journal_entry_id) || null);
+  await c.execute({ sql: "DELETE FROM bd_interest_payments WHERE id = ?", args: [n27(payId)] });
+  return { id: n27(payId) };
 }
 async function listBdRepayments(bdId) {
   const bd = await loadBd(bdId);
@@ -20624,7 +20959,7 @@ async function recordAudit(channel, args, result) {
   );
 }
 function registerIpc() {
-  const READONLY = /:list$|:get$|:items$|:issuances$|:sheet$|:outstanding$|:all$|:summary$|:transfers$|:fyTaxable$|:needs$|:breakdown$|:nextNo$|:liveUsers$|:ips$|:logs$|:dispatchableSales$|:mine$|:pendingCount$|:pending$|:lots$|:unmapped$|:unmappedCount$|:bargainLines$|:bargainNotes$|:bargainInterest$|:consignmentDraws$|^access:heartbeat$|^db:ping$|^db:snapshot$|^app:revision$|^auth:login$|^journal:booksFrom$|^journal:openings$|^journal:opening$|^journal:accounts$|^journal:statement$|^journal:trialBalance$|^journal:groups$|^journal:groupNames$|^journal:pendingRefs$|^journal:billsOutstanding$|^journal:tradingAccount$|^dashboard:stats$|^skuRates:parties$|^skuRates:partyCounts$|^consignment:openingLog$|^consignment:invoices$|^tankers:quality$|^tankers:ffaHistory$|^orders:quality$|^gate:partyCategories$|^gate:waivedOuts$|^gate:forRecord$|^notify:rules$|^notify:list$|^notify:run$|^notify:preview$|^notify:people$|^notify:mutes$|^treasury:alerts$|^treasury:paymentTracker$|^facility:exposures$|^facility:headroom$|^company:setActive$|^company:getActive$|^factory:active$|^factory:companies$|^session:setUser$|^lc:repayments$|^lc:allRepayments$|^lc:getLimit$|^lc:bankLimits$|^lc:paymentIns$|^lc:openTradingInvoices$|^files:pickDocument$|^files:openDocument$|^bankRecon:imports$|^bankRecon:list$|^bankRecon:suggest$|^bd:kpis$|^bd:limits$|^skuStock:adjustments$|^skuOpening:list$|^skuOpening:date$|^stockCount:previous$|^stockOpening:list$|^stockOpening:date$|^stockOpening:ppStages$|^stockOpening:ppFreeTotals$|^production:ppDraws$|^bargains:linkedInvoices$|^bargains:adjustments$|^history:list$|^stockOpening:ppVessels$|^stockOpening:ppReceivers$|^stockOpening:ppWriteoffs$|^work:board$|^work:cutoff$|^work:processes$|^formulationSubcategory:list$|^formulations:versions$|^bd:allRepayments$|^bd:linkedOrders$|^bd:parties$|^bd:allParties$|^bd:openTradingInvoices$|^bd:paymentIns$|^access:entryWindows$|^access:entityHistory$|^trading:list$|^sales:series$|^sales:invoiceGaps$|^salesBargains:returns$|^salesBargains:unattributedReturns$|^tbill:orphans$|^production:report$/;
+  const READONLY = /:list$|:get$|:items$|:issuances$|:sheet$|:outstanding$|:all$|:summary$|:transfers$|:fyTaxable$|:needs$|:breakdown$|:nextNo$|:liveUsers$|:ips$|:logs$|:dispatchableSales$|:mine$|:pendingCount$|:pending$|:lots$|:unmapped$|:unmappedCount$|:bargainLines$|:bargainNotes$|:bargainInterest$|:consignmentDraws$|^access:heartbeat$|^db:ping$|^db:snapshot$|^app:revision$|^auth:login$|^journal:booksFrom$|^journal:openings$|^journal:opening$|^journal:accounts$|^journal:statement$|^journal:trialBalance$|^journal:groups$|^journal:groupNames$|^journal:pendingRefs$|^journal:billsOutstanding$|^journal:tradingAccount$|^dashboard:stats$|^skuRates:parties$|^skuRates:partyCounts$|^consignment:openingLog$|^consignment:invoices$|^tankers:quality$|^tankers:ffaHistory$|^orders:quality$|^gate:partyCategories$|^gate:waivedOuts$|^gate:forRecord$|^notify:rules$|^notify:list$|^notify:run$|^notify:preview$|^notify:people$|^notify:mutes$|^treasury:alerts$|^treasury:paymentTracker$|^facility:exposures$|^facility:headroom$|^company:setActive$|^company:getActive$|^factory:active$|^factory:companies$|^session:setUser$|^lc:repayments$|^lc:allRepayments$|^lc:getLimit$|^lc:bankLimits$|^lc:paymentIns$|^lc:openTradingInvoices$|^files:pickDocument$|^files:openDocument$|^bankRecon:imports$|^bankRecon:list$|^bankRecon:suggest$|^bd:kpis$|^bd:limits$|^skuStock:adjustments$|^skuOpening:list$|^skuOpening:date$|^stockCount:previous$|^stockOpening:list$|^stockOpening:date$|^stockOpening:ppStages$|^stockOpening:ppFreeTotals$|^production:ppDraws$|^bargains:linkedInvoices$|^bargains:adjustments$|^history:list$|^stockOpening:ppVessels$|^stockOpening:ppReceivers$|^stockOpening:ppWriteoffs$|^work:board$|^work:cutoff$|^work:processes$|^formulationSubcategory:list$|^formulations:versions$|^bd:allRepayments$|^bd:interestSchedule$|^bd:interestPayments$|^bd:linkedOrders$|^bd:parties$|^bd:allParties$|^bd:openTradingInvoices$|^bd:paymentIns$|^access:entryWindows$|^access:entityHistory$|^trading:list$|^sales:series$|^sales:invoiceGaps$|^salesBargains:returns$|^salesBargains:linkedInvoices$|^salesBargains:unattributedReturns$|^tbill:orphans$|^production:report$/;
   const AUDIT_SKIP = /* @__PURE__ */ new Set(["config:get", "config:save", "session:setUser"]);
   const handle = (channel, fn) => {
     ipcMain.handle(channel, async (e, args) => {
@@ -21165,6 +21500,11 @@ function registerIpc() {
     "salesBargains:update",
     (_e, { id, values }) => updateSalesBargain(id, values)
   );
+  handle("salesBargains:linkedInvoices", (_e, { id }) => salesBargainLinkedInvoices(id));
+  handle(
+    "salesBargains:rerateInvoices",
+    (_e, { id, rate, saleIds }) => rerateSalesForBargain(id, rate, saleIds)
+  );
   handle("salesBargains:delete", (_e, { id }) => deleteSalesBargain(id));
   handle(
     "salesBargains:adjust",
@@ -21284,6 +21624,13 @@ function registerIpc() {
       values
     }) => repayBd(id, values)
   );
+  handle("bd:interestSchedule", (_e, { id }) => bdInterestSchedule(id));
+  handle("bd:interestPayments", (_e, { id }) => listBdInterestPayments(id));
+  handle(
+    "bd:payInterest",
+    (_e, { id, values }) => payBdInterest(id, values)
+  );
+  handle("bd:deleteInterest", (_e, { id }) => deleteBdInterestPayment(id));
   handle("bd:repayments", (_e, { id }) => listBdRepayments(id));
   handle("bd:allRepayments", () => listAllBdRepayments());
   handle("bd:linkedOrders", (_e, { id }) => listBdLinkedOrders(id));
