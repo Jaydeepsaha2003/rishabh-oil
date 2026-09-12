@@ -6744,8 +6744,7 @@ function computeMoney(i) {
   const round213 = (v) => Math.round(v * 100) / 100;
   const lines = (i.lines || []).filter((l) => n6(l.qty) > 0);
   const lineQty = lines.reduce((s2, l) => s2 + n6(l.qty), 0);
-  const blendRates = lines.filter((l) => n6(l.qty) > 0 && n6(l.rate) > 0).map((l) => n6(l.rate));
-  const blendedRate = blendRates.length ? round213(blendRates.reduce((s2, r) => s2 + r, 0) / blendRates.length) : 0;
+  const blendedRate = lineQty > 0 ? round213(lines.reduce((s2, l) => s2 + n6(l.rate) * n6(l.qty), 0) / lineQty) : 0;
   const rawPremium = round213(i.invoiceRate - blendedRate);
   const ratePremium = Math.abs(rawPremium) < 0.01 ? 0 : rawPremium;
   const billedRate = (raw) => i.rateRoundOff == null ? Math.ceil(raw) : round213(raw + n6(i.rateRoundOff));
@@ -6937,8 +6936,15 @@ async function bargainLinesForTankers(tankerIds) {
   const ids = (Array.isArray(tankerIds) ? tankerIds : []).map((x) => n6(x)).filter((x) => x > 0);
   if (ids.length === 0) return [];
   const res = await getClient().execute({
+    // THE RATE THE TANKER WAS BILLED AT, falling back to its bargain'''s only
+    // for a tanker that predates the frozen column. Reading the live bargain
+    // rate here defeated the freeze entirely: the invoice screen showed what it
+    // was billed at, then saving it re-priced every line off whatever the
+    // bargain says today — so a rate corrected on the master silently re-rated
+    // any invoice that was opened and saved afterwards.
     sql: `SELECT pt.loaded_qty, pt.extra_qty, pt.bargain_id, pt.extra_bargain_id,
-                 b.rate_per_uom AS rate, xb.rate_per_uom AS extra_rate
+                 COALESCE(pt.bargain_rate, b.rate_per_uom) AS rate,
+                 COALESCE(pt.extra_bargain_rate, xb.rate_per_uom) AS extra_rate
           FROM purchase_tankers pt
           LEFT JOIN bargains b ON b.id = pt.bargain_id
           LEFT JOIN bargains xb ON xb.id = pt.extra_bargain_id
@@ -7407,6 +7413,117 @@ async function assertOrderNotInUse(id) {
     );
   }
 }
+async function rerateInvoicesForBargain(bargainId, rate, orderIds) {
+  const bid = n6(bargainId);
+  const newRate = Number(rate);
+  if (!bid) throw new Error("Which bargain?");
+  if (!Number.isFinite(newRate) || newRate <= 0) throw new Error("Enter a rate greater than zero");
+  const ids = (Array.isArray(orderIds) ? orderIds : []).map((x) => n6(x)).filter((x) => x > 0);
+  if (!ids.length) throw new Error("Pick at least one invoice to bring onto the new rate");
+  const c = getClient();
+  const updated = [];
+  const failed = [];
+  for (const id of ids) {
+    try {
+      const cur = await c.execute({ sql: "SELECT * FROM orders WHERE id = ? LIMIT 1", args: [id] });
+      if (!cur.rows.length) {
+        failed.push({ id, invoice_no: "", reason: "That invoice no longer exists" });
+        continue;
+      }
+      const o = toPlain7(cur)[0];
+      const before = { net: n6(o.net_amount), taxable: n6(o.taxable_value) };
+      await c.execute({
+        sql: "UPDATE purchase_tankers SET bargain_rate = ? WHERE order_id = ? AND bargain_id = ?",
+        args: [newRate, id, bid]
+      });
+      await c.execute({
+        sql: "UPDATE purchase_tankers SET extra_bargain_rate = ? WHERE order_id = ? AND extra_bargain_id = ?",
+        args: [newRate, id, bid]
+      });
+      const tankerIds = toPlain7(
+        await c.execute({ sql: "SELECT id FROM purchase_tankers WHERE order_id = ?", args: [id] })
+      ).map((t) => n6(t.id));
+      if (!tankerIds.length) {
+        failed.push({
+          id,
+          invoice_no: String(o.invoice_no || ""),
+          reason: "No tankers on this invoice \u2014 open it and save it instead"
+        });
+        continue;
+      }
+      const supplier = await getSupplier(n6(o.supplier_id));
+      const prior = await supplierFyTaxable(n6(o.supplier_id), String(o.order_date), id);
+      const lines = applyBargainInterestOverrides(
+        await bargainLinesForTankers(tankerIds),
+        await listOrderBargainInterest(id)
+      );
+      const blended = lines.reduce((t, l) => t + l.qty, 0) > 0 ? Math.round(lines.reduce((t, l) => t + l.rate * l.qty, 0) / lines.reduce((t, l) => t + l.qty, 0) * 100) / 100 : newRate;
+      const oldPremium = Math.round((n6(o.invoice_rate) - n6(o.bargain_rate)) * 100) / 100;
+      const premium = Math.abs(oldPremium) < 0.01 ? 0 : oldPremium;
+      const invoiceRate = Math.round((blended + premium) * 100) / 100;
+      const m = computeMoney({
+        orderedQty: n6(o.ordered_qty),
+        invoiceRate,
+        bargainRate: blended,
+        gstPct: n6(o.gst_pct),
+        tdsPct: supplier?.tds_above_only ? 0 : n6(o.tds_pct),
+        addsInterest: n6(o.interest_pct) > 0,
+        interestPct: n6(o.interest_pct),
+        interestDays: n6(o.interest_days),
+        additionalInterest: n6(o.additional_interest),
+        rateRoundOff: o.rate_round_off == null ? null : n6(o.rate_round_off),
+        tdsThreshold: n6(supplier?.tds_threshold),
+        tdsPctAbove: n6(o.tds_pct),
+        tdsPrior: prior,
+        roundOff: n6(o.round_off),
+        lines
+      });
+      await c.execute({
+        sql: `UPDATE orders SET bargain_rate = ?, invoice_rate = ?, adjusted_rate = ?, taxable_value = ?,
+                gst_amount = ?, tds_amount = ?, net_amount = ?,
+                final_taxable_value = ?, final_gst_amount = ?, final_tds_amount = ?, final_net_amount = ?
+              WHERE id = ?`,
+        args: [
+          blended,
+          invoiceRate,
+          m.adjusted_rate,
+          m.taxable_value,
+          m.gst_amount,
+          m.tds_amount,
+          m.net_amount,
+          m.final_taxable_value,
+          m.final_gst_amount,
+          m.final_tds_amount,
+          m.final_net_amount,
+          id
+        ]
+      });
+      const v = { ...o, bargain_rate: blended, invoice_rate: invoiceRate };
+      await setSupplierPayable(id, n6(o.supplier_id), m.net_amount, String(o.order_date));
+      await postOrderJournal(id, v, m, supplier, n6(o.round_off));
+      await recordChanges(
+        "orders",
+        id,
+        String(o.invoice_no || ""),
+        o,
+        { ...o, bargain_rate: blended, invoice_rate: invoiceRate, taxable_value: m.taxable_value, net_amount: m.net_amount },
+        ORDER_FIELDS
+      );
+      updated.push({
+        id,
+        invoice_no: String(o.invoice_no || ""),
+        rate: blended,
+        taxable_before: before.taxable,
+        taxable_after: m.taxable_value,
+        net_before: before.net,
+        net_after: m.net_amount
+      });
+    } catch (e) {
+      failed.push({ id, invoice_no: "", reason: e.message });
+    }
+  }
+  return { updated, failed };
+}
 async function deleteOrder(id) {
   const c = getClient();
   await assertOrderNotInUse(id);
@@ -7654,7 +7771,8 @@ async function updateTankerDetails(id, v) {
       outside_factory_date = ?, inside_factory_date = ?, empty_date = ?,
       received_qty = ?, transporter_id = ?, transport_rate_per_ton = ?,
       transport_amount = ?, shortage_charge_amount = ?,
-      krfl_weighment_doc_no = ?, outside_weighment_doc_no = ?, condition = ?
+      krfl_weighment_doc_no = ?, outside_weighment_doc_no = ?, condition = ?,
+      lr_no = ?
       WHERE id = ?`,
     args: [
       String(pick("tanker_no") || t.tanker_no).trim(),
@@ -7678,6 +7796,7 @@ async function updateTankerDetails(id, v) {
       pick("krfl_weighment_doc_no") || null,
       pick("outside_weighment_doc_no") || null,
       normCondition(pick("condition")),
+      String(pick("lr_no") ?? "").trim() || null,
       id
     ]
   });
@@ -8165,8 +8284,9 @@ async function advancePurchaseTanker(id, toStatus, data) {
         `Tanker ${tanker.tanker_no} is on EX terms. Enter the transporter rate per ${String(tanker.uom || "MT")}, or put 0 and say why there is no freight.`
       );
     }
-    const sets = ["status = 'transit'", "transit_date = ?", "source_id = ?", "expected_delivery_date = ?"];
-    const args = [transitDate || null, sourceId, expected];
+    const lrNo = data.lr_no !== void 0 ? String(data.lr_no || "").trim() || null : tanker.lr_no ?? null;
+    const sets = ["status = 'transit'", "transit_date = ?", "source_id = ?", "expected_delivery_date = ?", "lr_no = ?"];
+    const args = [transitDate || null, sourceId, expected, lrNo];
     if (isEx) {
       sets.push("transport_rate_per_ton = ?", "transporter_id = ?", "freight_remark = ?");
       args.push(rate, transporterId, rate > 0 ? null : freightRemark || null);
@@ -8545,6 +8665,27 @@ async function stockLevels(range, companyIds) {
       date: "p.prod_date",
       group: "GROUP BY i.product_id"
     },
+    // WHAT A PP BATCH USED WITHOUT TAKING IT.
+    //
+    // A batch finished out of the product's own vessels draws no shea, no RPS
+    // and no fatty oil — the vessel already holds them, blended — so their
+    // rows sat blank and the register said the recipe had done nothing. It
+    // had: the PP was drawn at the recipe's own TOR, and 'pp_equiv' is the
+    // split of that draw (see recipeMath).
+    //
+    // It is shown TWICE and on purpose: once in Adjusted and once in
+    // Consumed, where the two cancel. The register then states what the
+    // formulation used while every balance stays exactly where it was, which
+    // is the truth — that oil left the tanks when the PP was made.
+    // `stock` below never reads it.
+    ppEquiv: {
+      base: `SELECT i.product_id AS pid, SUM(i.qty) AS q FROM production_items i
+             JOIN production p ON p.id = i.production_id
+             WHERE i.kind = 'pp_equiv' AND p.company_id IN (${ph})
+               AND COALESCE(p.kind, 'batch') <> 'recirculation'`,
+      date: "p.prod_date",
+      group: "GROUP BY i.product_id"
+    },
     // Stock leaves on the INVOICE date, and the quantity is the dispatched one.
     //
     // The mill invoices as the lorry goes, so the invoice date IS the dispatch:
@@ -8727,6 +8868,7 @@ async function stockLevels(range, companyIds) {
     const rec = g(period, "received") - g(period, "returnedOut");
     const prod = g(period, "produced") + g(period, "byProduct");
     const cons = g(period, "consumed");
+    const ppEq = g(period, "ppEquiv");
     const sld = g(period, "sold") - g(period, "returnedIn");
     const tIn = g(period, "transferredIn");
     const tOut = g(period, "transferredOut");
@@ -8752,13 +8894,19 @@ async function stockLevels(range, companyIds) {
       // The correction struck on the count — the difference between what the
       // dip said and what the card said, rather than oil anybody measured.
       // Its own column; no longer folded into `opening` above.
-      opening_adj: adjPortion,
+      opening_adj: Math.round((adjPortion + ppEq) * 1e3) / 1e3,
+      // The part of the Adjusted column that is a restatement of a PP batch
+      // rather than a correction to the count, so the hover can tell them
+      // apart and the two are never confused for one another.
+      pp_equiv: ppEq,
       received: rec,
       produced: prod,
       // Shown beside Produced as the +N -N it is, never added to it. Nothing
       // in `stock` below reads this.
       recirculated: g(period, "recirculated"),
-      consumed: cons,
+      // Consumed carries the PP equivalence too — the other half of the pair
+      // that Adjusted above holds. They cancel; `stock` uses the raw `cons`.
+      consumed: Math.round((cons + ppEq) * 1e3) / 1e3,
       sold: sld,
       transferred_in: tIn,
       transferred_out: tOut,
@@ -8898,6 +9046,7 @@ async function stockPartyBreakdown(companyIds, range) {
   const dispB = bounds("s.sale_date");
   const out = {};
   const ensure = (pid) => out[pid] ??= { receipt: [], dispatch: [], packed: [], produced: [], consumed: [] };
+  const site = (plant, party) => multi ? `${plant || "\u2014"} \xB7 ${party}` : String(party);
   const rec = await c.execute({
     sql: `SELECT o.oil_type_id AS pid, COALESCE(s.name, 'Unknown') AS party, co.name AS company, SUM(o.received_qty) AS qty
           FROM orders o
@@ -8935,44 +9084,47 @@ async function stockPartyBreakdown(companyIds, range) {
     });
   const prodB = bounds("p.prod_date");
   const made = await c.execute({
-    sql: `SELECT pid, party, company, SUM(qty) AS qty FROM (
+    sql: `SELECT pid, party, plant, SUM(qty) AS qty FROM (
             SELECT p.product_id AS pid, COALESCE(r.name, 'Production run') AS party,
-                   co.name AS company, p.qty AS qty
+                   COALESCE(f.name, co.name) AS plant, p.qty AS qty
               FROM production p
               LEFT JOIN formulations r ON r.id = p.formulation_id
               LEFT JOIN companies co ON co.id = p.company_id
+              LEFT JOIN factories f ON f.id = co.factory_id
              WHERE p.company_id IN (${ph}) ${prodB.sql}
             UNION ALL
             SELECT i.product_id AS pid, COALESCE(r.name, 'Production run') || ' \xB7 by-product' AS party,
-                   co.name AS company, i.qty AS qty
+                   COALESCE(f.name, co.name) AS plant, i.qty AS qty
               FROM production_items i
               JOIN production p ON p.id = i.production_id
               LEFT JOIN formulations r ON r.id = p.formulation_id
               LEFT JOIN companies co ON co.id = p.company_id
+              LEFT JOIN factories f ON f.id = co.factory_id
              WHERE i.kind = 'output' AND p.company_id IN (${ph}) ${prodB.sql}
-          ) GROUP BY pid, party, company HAVING SUM(qty) > 0 ORDER BY qty DESC`,
+          ) GROUP BY pid, party, plant HAVING SUM(qty) > 0 ORDER BY qty DESC`,
     args: [...cidList, ...prodB.args, ...cidList, ...prodB.args]
   });
   for (const r of made.rows)
     ensure(Number(r.pid)).produced.push({
-      party: multi ? `${r.company || "\u2014"} \xB7 ${r.party}` : String(r.party),
+      party: site(r.plant, r.party),
       qty: Number(r.qty) || 0
     });
   const used = await c.execute({
     sql: `SELECT i.product_id AS pid, COALESCE(r.name, 'Production run') AS party,
-                 co.name AS company, SUM(i.qty) AS qty
+                 COALESCE(f.name, co.name) AS plant, SUM(i.qty) AS qty
             FROM production_items i
             JOIN production p ON p.id = i.production_id
             LEFT JOIN formulations r ON r.id = p.formulation_id
             LEFT JOIN companies co ON co.id = p.company_id
+            LEFT JOIN factories f ON f.id = co.factory_id
            WHERE i.kind = 'input' AND p.company_id IN (${ph}) ${prodB.sql}
-           GROUP BY i.product_id, r.name, p.company_id
+           GROUP BY i.product_id, r.name, f.name
           HAVING SUM(i.qty) > 0 ORDER BY qty DESC`,
     args: [...cidList, ...prodB.args]
   });
   for (const r of used.rows)
     ensure(Number(r.pid)).consumed.push({
-      party: multi ? `${r.company || "\u2014"} \xB7 ${r.party}` : String(r.party),
+      party: site(r.plant, r.party),
       qty: Number(r.qty) || 0
     });
   const noteB = bounds("nt.note_date");
@@ -9860,23 +10012,20 @@ async function ppTotalsByProduct(companyId) {
   for (const r of toPlain9(res)) m.set(n7(r.product_id), r3(n7(r.t)));
   return m;
 }
-async function ppProductTotal(scope, productId) {
-  const res = await getClient().execute({
-    sql: "SELECT COALESCE(SUM(qty), 0) AS t FROM stock_opening_pp WHERE scope = ? AND product_id = ?",
-    args: [scope, n7(productId)]
-  });
-  return r3(n7(toPlain9(res)[0]?.t));
-}
 async function ppVessels(scope, productId, ffa) {
   const res = await getClient().execute({
-    sql: `SELECT sop.stage_id, sop.qty
+    sql: `SELECT sop.stage_id,
+                 sop.qty - COALESCE((SELECT SUM(d.qty) FROM pp_draws d
+                                      WHERE d.scope = sop.scope
+                                        AND d.product_id = sop.product_id
+                                        AND d.stage_id = sop.stage_id), 0) AS qty
             FROM stock_opening_pp sop
             JOIN stock_pp_stages st ON st.id = sop.stage_id
-           WHERE sop.scope = ? AND sop.product_id = ? AND sop.ffa = ? AND sop.qty > 0.0005
+           WHERE sop.scope = ? AND sop.product_id = ? AND sop.ffa = ?
            ORDER BY st.created_at, st.id`,
     args: [scope, n7(productId), ffa]
   });
-  return toPlain9(res).map((r) => ({ stage_id: n7(r.stage_id), qty: r3(n7(r.qty)) }));
+  return toPlain9(res).map((r) => ({ stage_id: n7(r.stage_id), qty: r3(n7(r.qty)) })).filter((v) => v.qty > 5e-4);
 }
 async function ppFreeByProduct(productIds, companyId) {
   const scope = await ppScope(companyId);
@@ -9902,12 +10051,30 @@ async function ppTotalsBothByProduct(productIds, companyId) {
 async function ppVesselBalances(productId, companyId) {
   const scope = await ppScope(companyId);
   const res = await getClient().execute({
-    sql: `SELECT sop.stage_id, st.name AS vessel, sop.ffa, sop.qty
+    sql: `SELECT sop.stage_id, st.name AS vessel, sop.ffa,
+                 sop.qty AS counted,
+                 sop.qty - COALESCE((SELECT SUM(d.qty) FROM pp_draws d
+                                      WHERE d.scope = sop.scope AND d.product_id = sop.product_id
+                                        AND d.stage_id = sop.stage_id), 0) AS qty
             FROM stock_opening_pp sop
             JOIN stock_pp_stages st ON st.id = sop.stage_id
-           WHERE sop.scope = ? AND sop.product_id = ? AND sop.qty > 0.0005
+           WHERE sop.scope = ? AND sop.product_id = ?
            ORDER BY st.created_at, st.id`,
     args: [scope, n7(productId)]
+  });
+  return toPlain9(res).map((r) => ({ ...r, qty: r3(n7(r.qty)), counted: r3(n7(r.counted)) })).filter((r) => n7(r.qty) > 5e-4);
+}
+async function ppVesselsForReceiving(productId, companyId) {
+  const scope = await ppScope(companyId);
+  const res = await getClient().execute({
+    sql: `SELECT st.id AS stage_id, st.name AS vessel,
+                 COALESCE(sop.qty, 0) AS qty, sop.ffa
+            FROM stock_pp_stages st
+            LEFT JOIN stock_opening_pp sop
+                   ON sop.stage_id = st.id AND sop.scope = ? AND sop.product_id = ?
+           WHERE st.scope = ? AND st.active = 1
+           ORDER BY st.created_at, st.id`,
+    args: [scope, n7(productId), scope]
   });
   return toPlain9(res).map((r) => ({ ...r, qty: r3(n7(r.qty)) }));
 }
@@ -9946,12 +10113,96 @@ async function writeOffPp(productId, stageId, qty, note, companyId) {
   });
   return { product_id: n7(productId), stage_id: n7(stageId), qty: want };
 }
+async function movePp(productId, stageId, qty, toProductId, toStageId, note, companyId) {
+  const want = r3(qty);
+  const from = n7(productId);
+  const to = n7(toProductId);
+  const fromStage = n7(stageId);
+  const toStage = n7(toStageId);
+  if (!(want > 5e-4)) throw new Error("Enter a quantity to move");
+  if (!from || !fromStage) throw new Error("Pick the vessel the oil is coming out of");
+  if (!to || !toStage) throw new Error("Pick the oil and the vessel it is going into");
+  if (from === to && fromStage === toStage) throw new Error("That is the same vessel \u2014 nothing to move");
+  const cid = n7(companyId) || getActiveCompanyId();
+  const scope = await ppScope(cid);
+  const c = getClient();
+  const src = await c.execute({
+    sql: `SELECT sop.ffa,
+                 sop.qty AS counted,
+                 sop.qty - COALESCE((SELECT SUM(d.qty) FROM pp_draws d
+                                      WHERE d.scope = sop.scope AND d.product_id = sop.product_id
+                                        AND d.stage_id = sop.stage_id), 0) AS avail
+            FROM stock_opening_pp sop
+           WHERE sop.scope = ? AND sop.product_id = ? AND sop.stage_id = ?`,
+    args: [scope, from, fromStage]
+  });
+  if (!src.rows.length) throw new Error("There is nothing standing in that vessel");
+  const ffa = String(toPlain9(src)[0].ffa || "");
+  const avail = r3(n7(toPlain9(src)[0].avail));
+  if (avail <= 5e-4) throw new Error("That vessel is already empty");
+  if (want > avail + 5e-4) {
+    throw new Error(`Only ${avail} is left in that vessel \u2014 cannot move ${want}`);
+  }
+  const dst = await c.execute({
+    sql: "SELECT qty, ffa FROM stock_opening_pp WHERE scope = ? AND product_id = ? AND stage_id = ?",
+    args: [scope, to, toStage]
+  });
+  if (dst.rows.length) {
+    const dq = r3(n7(dst.rows[0].qty));
+    const dffa = String(dst.rows[0].ffa || "");
+    if (dq > 5e-4 && dffa !== ffa) {
+      throw new Error(
+        `That vessel already holds oil counted ${dffa === "with" ? "WITH" : dffa === "without" ? "W/O" : "un-classified for"} FFA, and this heel is ${ffa === "with" ? "WITH" : ffa === "without" ? "W/O" : "un-classified for"} FFA. Pick an empty vessel, or one holding the same kind.`
+      );
+    }
+  }
+  await c.execute({
+    sql: `UPDATE stock_opening_pp SET qty = qty - ?, updated_at = datetime('now')
+           WHERE scope = ? AND product_id = ? AND stage_id = ?`,
+    args: [want, scope, from, fromStage]
+  });
+  if (dst.rows.length) {
+    await c.execute({
+      sql: `UPDATE stock_opening_pp SET qty = qty + ?, ffa = ?, updated_at = datetime('now')
+             WHERE scope = ? AND product_id = ? AND stage_id = ?`,
+      args: [want, ffa || null, scope, to, toStage]
+    });
+  } else {
+    await c.execute({
+      sql: `INSERT INTO stock_opening_pp (scope, product_id, stage_id, qty, ffa, updated_at)
+            VALUES (?, ?, ?, ?, ?, datetime('now'))`,
+      args: [scope, to, toStage, want, ffa || null]
+    });
+  }
+  await c.execute({
+    sql: `UPDATE stock_openings SET pp_qty = MAX(0, COALESCE(pp_qty, 0) - ?), updated_at = datetime('now')
+           WHERE product_id = ? AND company_id IN (SELECT id FROM companies WHERE id = ?)`,
+    args: [want, from, cid]
+  });
+  await c.execute({
+    sql: `UPDATE stock_openings SET pp_qty = COALESCE(pp_qty, 0) + ?, updated_at = datetime('now')
+           WHERE product_id = ? AND company_id IN (SELECT id FROM companies WHERE id = ?)`,
+    args: [want, to, cid]
+  });
+  const u = getCurrentUser();
+  await c.execute({
+    sql: `INSERT INTO pp_writeoffs (scope, product_id, stage_id, qty, ffa, note,
+                                    to_product_id, to_stage_id,
+                                    written_by, written_by_name, company_id)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    args: [scope, from, fromStage, want, ffa, String(note || "").trim(), to, toStage, u.id, u.username, cid]
+  });
+  return { product_id: from, to_product_id: to, qty: want };
+}
 async function listPpWriteoffs(productId, companyId) {
   const scope = await ppScope(n7(companyId) || getActiveCompanyId());
   const res = await getClient().execute({
-    sql: `SELECT w.id, w.qty, w.ffa, w.note, w.written_by_name, w.created_at, st.name AS vessel
+    sql: `SELECT w.id, w.qty, w.ffa, w.note, w.written_by_name, w.created_at, st.name AS vessel,
+                 w.to_product_id, p.name AS to_product, ts.name AS to_vessel
             FROM pp_writeoffs w
             LEFT JOIN stock_pp_stages st ON st.id = w.stage_id
+            LEFT JOIN products p ON p.id = w.to_product_id
+            LEFT JOIN stock_pp_stages ts ON ts.id = w.to_stage_id
            WHERE w.scope = ? AND w.product_id = ?
            ORDER BY w.id DESC
            LIMIT 100`,
@@ -9979,11 +10230,6 @@ async function drawPp(productionId, productId, ffa, qty, companyId) {
     const take = r3(Math.min(v.qty, need));
     if (take <= 5e-4) continue;
     await c.execute({
-      sql: `UPDATE stock_opening_pp SET qty = qty - ?, updated_at = datetime('now')
-             WHERE scope = ? AND product_id = ? AND stage_id = ?`,
-      args: [take, scope, productId, v.stage_id]
-    });
-    await c.execute({
       sql: `INSERT INTO pp_draws (production_id, scope, product_id, stage_id, qty, ffa)
             VALUES (?, ?, ?, ?, ?, ?)`,
       args: [n7(productionId), scope, productId, v.stage_id, take, ffa]
@@ -9991,48 +10237,10 @@ async function drawPp(productionId, productId, ffa, qty, companyId) {
     need -= take;
     drawn += take;
   }
-  if (drawn > 5e-4) {
-    await c.execute({
-      sql: "DELETE FROM stock_opening_pp WHERE scope = ? AND product_id = ? AND qty <= 0.0005",
-      args: [scope, productId]
-    });
-    await writePpTotal(cid, scope, productId, r3(await ppProductTotal(scope, productId)));
-  }
   return drawn;
 }
-async function reversePpDraws(productionId, companyId) {
-  const c = getClient();
-  const res = await c.execute({
-    sql: "SELECT scope, product_id, stage_id, qty, ffa FROM pp_draws WHERE production_id = ?",
-    args: [n7(productionId)]
-  });
-  const rows = toPlain9(res);
-  if (!rows.length) return;
-  for (const r of rows) {
-    await c.execute({
-      sql: `INSERT INTO stock_opening_pp (scope, product_id, stage_id, qty, ffa, updated_at)
-            VALUES (?, ?, ?, 0, ?, datetime('now'))
-            ON CONFLICT(scope, product_id, stage_id) DO NOTHING`,
-      args: [r.scope, n7(r.product_id), n7(r.stage_id), r.ffa]
-    });
-    await c.execute({
-      sql: `UPDATE stock_opening_pp SET qty = qty + ?, updated_at = datetime('now')
-             WHERE scope = ? AND product_id = ? AND stage_id = ?`,
-      args: [n7(r.qty), r.scope, n7(r.product_id), n7(r.stage_id)]
-    });
-  }
-  await c.execute({ sql: "DELETE FROM pp_draws WHERE production_id = ?", args: [n7(productionId)] });
-  const cid = n7(companyId) || getActiveCompanyId();
-  const byScope = /* @__PURE__ */ new Map();
-  for (const r of rows) {
-    if (!byScope.has(r.scope)) byScope.set(r.scope, /* @__PURE__ */ new Set());
-    byScope.get(r.scope).add(n7(r.product_id));
-  }
-  for (const [scope, pids] of byScope) {
-    for (const pid of pids) {
-      await writePpTotal(cid, scope, pid, r3(await ppProductTotal(scope, pid)));
-    }
-  }
+async function reversePpDraws(productionId) {
+  await getClient().execute({ sql: "DELETE FROM pp_draws WHERE production_id = ?", args: [n7(productionId)] });
 }
 
 // src/renderer/src/lib/recipeMath.ts
@@ -10065,6 +10273,38 @@ function recipeTor(items) {
     const mult = it.auto_calc ? inputTorMultiplier(it, deadLoss) : uniformTor / 100;
     return s2 + num(it.qty) * mult;
   }, 0);
+}
+function expandRecipe(items, outputQty) {
+  const blend = sumOf(items, "input");
+  const uniformTor = uniformRecipeTor(items);
+  const tor = recipeTor(items);
+  const deadLoss = sumOf(items, "loss");
+  const lines = items.map((it) => {
+    const kind = kindOf(it);
+    let pct;
+    if (kind === "input") {
+      const mult = it.auto_calc ? inputTorMultiplier(it, deadLoss) : uniformTor / 100;
+      pct = blend > 0 ? num(it.qty) * mult : 0;
+    } else {
+      pct = tor * num(it.qty) / 100;
+    }
+    return { product_id: Number(it.product_id), qty: outputQty * pct / 100, kind };
+  });
+  const byproductAdds = /* @__PURE__ */ new Map();
+  for (const it of items) {
+    if (kindOf(it) !== "input" || !it.auto_calc || !num(it.byproduct_product_id)) continue;
+    const mult = inputTorMultiplier(it, deadLoss);
+    const pct = blend > 0 ? num(it.qty) * mult : 0;
+    const inputQty = outputQty * pct / 100;
+    const pid = num(it.byproduct_product_id);
+    byproductAdds.set(pid, (byproductAdds.get(pid) || 0) + inputQty * inputFattyAcidPct(it) / 100);
+  }
+  for (const [pid, qty] of byproductAdds) {
+    const existing = lines.find((l) => l.kind === "output" && l.product_id === pid);
+    if (existing) existing.qty += qty;
+    else lines.push({ product_id: pid, qty, kind: "output" });
+  }
+  return lines;
 }
 function splitInputDraw(it, outputQty, blendShare, sharedDeadLossPct, freeAvailable) {
   const share = num(it.qty);
@@ -10124,39 +10364,28 @@ function expandRecipeWithPp(items, outputQty, freeByProduct = {}) {
   }
   return { lines, draws };
 }
-function dominantInputFfaPct(items) {
-  const inputs = items.filter((it) => kindOf(it) === "input" && it.auto_calc);
-  if (!inputs.length) return 0;
-  let best = inputs[0];
-  for (const it of inputs) if (num(it.qty) > num(best.qty)) best = it;
-  return inputFattyAcidPct(best);
-}
-function dominantByproductId(items) {
-  const inputs = items.filter((it) => kindOf(it) === "input" && it.auto_calc);
-  if (!inputs.length) return 0;
-  let best = inputs[0];
-  for (const it of inputs) if (num(it.qty) > num(best.qty)) best = it;
-  return num(best.byproduct_product_id);
+function outputPpTorFraction(items) {
+  const tor = recipeTor(items);
+  return tor > 0 ? tor / 100 : 1;
 }
 function planOutputPp(items, outputQty, pools = {}) {
   const want = Math.max(0, num(outputQty));
-  const f = dominantInputFfaPct(items) / 100;
   const freeHave = Math.max(0, num(pools.without));
   const withHave = Math.max(0, num(pools.with));
   const fromPpFree = Math.min(freeHave, want);
   const afterFree = want - fromPpFree;
-  const survives = 1 - f;
-  const needFromWith = survives > 0 ? afterFree / survives : 0;
+  const tor = outputPpTorFraction(items);
+  const needFromWith = afterFree * tor;
   const ppWithUsed = Math.min(withHave, needFromWith);
-  const finishedFromWith = ppWithUsed * survives;
-  const fattyAcidFromWith = ppWithUsed * f;
+  const finishedFromWith = tor > 0 ? ppWithUsed / tor : ppWithUsed;
+  const recovered = expandRecipe(items, finishedFromWith).filter((l) => l.kind === "output").reduce((s2, l) => s2 + l.qty, 0);
   return {
     fromPpFree,
     ppWithUsed,
     finishedFromWith,
-    fattyAcidFromWith,
+    fattyAcidFromWith: recovered,
     fromRecipe: Math.max(0, want - fromPpFree - finishedFromWith),
-    ffaPct: f * 100
+    ffaPct: ppWithUsed > 0 ? recovered / ppWithUsed * 100 : 0
   };
 }
 function expandBatchWithOutputPp(items, outputQty, outputPools = {}, freeByProduct = {}, outputProductId = 0) {
@@ -10167,12 +10396,19 @@ function expandBatchWithOutputPp(items, outputQty, outputPools = {}, freeByProdu
   if (outputProductId && fromOwnPp > 5e-4) {
     lines.push({ product_id: Number(outputProductId), qty: fromOwnPp, kind: "input" });
   }
-  if (plan.fattyAcidFromWith > 5e-4) {
-    const pid = dominantByproductId(items);
-    if (pid) {
-      const existing = lines.find((l) => l.kind === "output" && l.product_id === pid);
-      if (existing) existing.qty += plan.fattyAcidFromWith;
-      else lines.push({ product_id: pid, qty: plan.fattyAcidFromWith, kind: "output" });
+  if (plan.finishedFromWith > 5e-4) {
+    for (const l of expandRecipe(items, plan.finishedFromWith)) {
+      if (l.kind === "input") {
+        if (l.qty > 5e-7) {
+          const had = lines.find((x) => x.kind === "pp_equiv" && x.product_id === l.product_id);
+          if (had) had.qty += l.qty;
+          else lines.push({ product_id: l.product_id, qty: l.qty, kind: "pp_equiv" });
+        }
+        continue;
+      }
+      const existing = lines.find((x) => x.kind === l.kind && x.product_id === l.product_id);
+      if (existing) existing.qty += l.qty;
+      else lines.push({ product_id: l.product_id, qty: l.qty, kind: l.kind });
     }
   }
   return { lines, draws: base.draws, plan };
@@ -10465,7 +10701,7 @@ async function recordRecirculation(v, id = 0) {
   if (!productId) throw new Error("Pick the oil that was put through the machine");
   if (qty <= 0) throw new Error("Recirculated quantity must be greater than zero");
   const day = String(v.prod_date || "").slice(0, 10);
-  if (day && day > (/* @__PURE__ */ new Date()).toISOString().slice(0, 10)) {
+  if (day && day > todayISO()) {
     throw new Error("Recirculation cannot be dated in the future");
   }
   if (id) {
@@ -10519,7 +10755,7 @@ async function createProduction(v) {
   if (!productId) throw new Error("Select a product to produce");
   if (qty <= 0) throw new Error("Production quantity must be greater than zero");
   const prodDay = String(v.prod_date || "").slice(0, 10);
-  if (prodDay && prodDay > (/* @__PURE__ */ new Date()).toISOString().slice(0, 10)) {
+  if (prodDay && prodDay > todayISO()) {
     throw new Error("Production cannot be dated in the future");
   }
   let fid = n8(v.formulation_id);
@@ -10596,7 +10832,7 @@ async function updateProduction(id, v) {
   if (!productId) throw new Error("Select a product to produce");
   if (qty <= 0) throw new Error("Production quantity must be greater than zero");
   const prodDay = String(v.prod_date || "").slice(0, 10);
-  if (prodDay && prodDay > (/* @__PURE__ */ new Date()).toISOString().slice(0, 10)) {
+  if (prodDay && prodDay > todayISO()) {
     throw new Error("Production cannot be dated in the future");
   }
   let fid = n8(v.formulation_id);
@@ -13412,6 +13648,18 @@ async function runStartupTasks() {
       "CREATE INDEX IF NOT EXISTS idx_stock_opening_pp_stage ON stock_opening_pp(stage_id)"
     );
   }).catch((e) => console.error("[stock] PP stage tables failed:", e));
+  await runOnce("pp_counted_restore_v1", async () => {
+    const c = getClient();
+    await c.execute(
+      "INSERT INTO stock_opening_pp (scope, product_id, stage_id, qty, ffa, updated_at) SELECT d.scope, d.product_id, d.stage_id, 0, MAX(d.ffa), datetime('now') FROM pp_draws d WHERE NOT EXISTS (SELECT 1 FROM stock_opening_pp p WHERE p.scope = d.scope AND p.product_id = d.product_id AND p.stage_id = d.stage_id) GROUP BY d.scope, d.product_id, d.stage_id"
+    );
+    await c.execute(
+      "UPDATE stock_opening_pp SET qty = qty + COALESCE((SELECT SUM(d.qty) FROM pp_draws d WHERE d.scope = stock_opening_pp.scope AND d.product_id = stock_opening_pp.product_id AND d.stage_id = stock_opening_pp.stage_id), 0), updated_at = datetime('now') WHERE EXISTS (SELECT 1 FROM pp_draws d WHERE d.scope = stock_opening_pp.scope AND d.product_id = stock_opening_pp.product_id AND d.stage_id = stock_opening_pp.stage_id)"
+    );
+    await c.execute(
+      "UPDATE stock_openings SET pp_qty = COALESCE((SELECT ROUND(SUM(p.qty), 3) FROM stock_opening_pp p WHERE p.product_id = stock_openings.product_id AND p.scope = CASE WHEN stock_openings.factory_id IS NOT NULL THEN 'f' || stock_openings.factory_id ELSE 'c' || stock_openings.company_id END), pp_qty) WHERE EXISTS (SELECT 1 FROM stock_opening_pp p WHERE p.product_id = stock_openings.product_id)"
+    );
+  }).catch((e) => console.error("[stock] pp counted restore failed:", e));
   await runOnce("pp_writeoffs_v1", async () => {
     const c = getClient();
     await c.execute(`CREATE TABLE IF NOT EXISTS pp_writeoffs (
@@ -14149,6 +14397,55 @@ async function runStartupTasks() {
       if (!/duplicate column/i.test(String(e))) throw e;
     });
   }).catch((e) => console.error("[tankers] freight remark column failed:", e));
+  await runOnce("tanker_lr_no_v1", async () => {
+    await getClient().execute("ALTER TABLE purchase_tankers ADD COLUMN lr_no TEXT").catch((e) => {
+      if (!/duplicate column/i.test(String(e))) throw e;
+    });
+  }).catch((e) => console.error("[tankers] LR no column failed:", e));
+  await runOnce("pp_equiv_backfill_v1", async () => {
+    const c = getClient();
+    const runs = await c.execute(`
+      SELECT p.id AS id, p.formulation_id AS fid, SUM(d.qty) AS drawn
+        FROM production p
+        JOIN pp_draws d ON d.production_id = p.id AND d.ffa = 'with'
+       WHERE p.formulation_id IS NOT NULL
+         AND NOT EXISTS (SELECT 1 FROM production_items i
+                          WHERE i.production_id = p.id AND i.kind = 'pp_equiv')
+       GROUP BY p.id`);
+    for (const r of runs.rows) {
+      const row = r;
+      const drawn = Number(row.drawn) || 0;
+      if (!(drawn > 5e-4)) continue;
+      const res = await c.execute({
+        sql: "SELECT * FROM formulation_items WHERE formulation_id = ?",
+        args: [Number(row.fid)]
+      });
+      const items = res.rows.map((x) => {
+        const o = {};
+        for (const col of res.columns) o[col] = x[col];
+        return o;
+      });
+      if (!items.length) continue;
+      const tor = recipeTor(items);
+      if (!(tor > 0)) continue;
+      const finished = drawn / (tor / 100);
+      for (const l of expandRecipe(items, finished)) {
+        if (l.kind !== "input" || !(l.qty > 5e-7)) continue;
+        await c.execute({
+          sql: "INSERT INTO production_items (production_id, product_id, qty, kind) VALUES (?, ?, ?, ?)",
+          args: [Number(row.id), Number(l.product_id), l.qty, "pp_equiv"]
+        });
+      }
+      console.log(`[stock] pp_equiv backfilled on production ${row.id} (${drawn} drawn)`);
+    }
+  }).catch((e) => console.error("[stock] pp_equiv backfill failed:", e));
+  await runOnce("pp_writeoffs_move_v1", async () => {
+    for (const col of ["to_product_id INTEGER", "to_stage_id INTEGER"]) {
+      await getClient().execute("ALTER TABLE pp_writeoffs ADD COLUMN " + col).catch((e) => {
+        if (!/duplicate column/i.test(String(e))) throw e;
+      });
+    }
+  }).catch((e) => console.error("[stock] PP move columns failed:", e));
   await runOnce("gate_time_utc_fix_v1", async () => {
     const rep = await applyGateTimeFix();
     console.log(
@@ -18394,6 +18691,21 @@ async function assertHasLinkedInvoice(v) {
     "Link at least one purchase invoice before the LC leaves Application \u2014 an LC that is Open or has received payment must name the invoice(s) it covers."
   );
 }
+function assertStageDates(v) {
+  const stage = String(v.stage || "application");
+  const has = (k) => !!String(v[k] ?? "").trim();
+  if ((stage === "open" || stage === "payment_received") && !has("opened_date")) {
+    throw new Error("Open date is required once the LC is Open \u2014 the day the bank opened the credit");
+  }
+  if (stage === "payment_received") {
+    if (!has("payment_received_date")) {
+      throw new Error("Payment received date is required once payment has been received");
+    }
+    if (!has("expiry_date")) {
+      throw new Error("Maturity date is required once payment has been received \u2014 it is what the interest days are counted to");
+    }
+  }
+}
 function assertPaymentReceivedNotBeforeOpen(v) {
   if (String(v.stage || "application") === "payment_received" && v.opened_date && v.payment_received_date && String(v.payment_received_date) < String(v.opened_date)) {
     throw new Error("Payment received date cannot be before the date the LC was opened");
@@ -18468,6 +18780,7 @@ async function createLC(v) {
   if (!v.bank) throw new Error("Bank is required");
   if (!String(v.open_date || "").trim()) throw new Error("Application date is required");
   assertLcNoIfPastApplication(v);
+  assertStageDates(v);
   await assertLcNoNotTaken(v);
   await assertHasLinkedInvoice(v);
   await assertOwnBankBelongsToCompany(v);
@@ -18491,6 +18804,7 @@ async function updateLC(id, v) {
   if (!v.bank) throw new Error("Bank is required");
   if (!String(v.open_date || "").trim()) throw new Error("Application date is required");
   assertLcNoIfPastApplication(v);
+  assertStageDates(v);
   await assertLcNoNotTaken(v, id);
   await assertHasLinkedInvoice(v);
   await assertOwnBankBelongsToCompany(v);
@@ -19788,7 +20102,6 @@ function toPlain28(res) {
 }
 var n28 = (v) => Number(v) || 0;
 var round212 = (v) => Math.round(v * 100) / 100;
-var todayISO7 = () => (/* @__PURE__ */ new Date()).toISOString().slice(0, 10);
 async function listTransporterFreight(side, opts = {}) {
   const c = getClient();
   const cid = opts.companyId ? n28(opts.companyId) : getActiveCompanyId();
@@ -19943,7 +20256,7 @@ async function createTransporterBill(v, existingId) {
   const raw = round212(taxable + gst - tds);
   const total = Math.round(raw);
   const roundOff = round212(total - raw);
-  const billDate = String(v.bill_date || todayISO7()).slice(0, 10);
+  const billDate = String(v.bill_date || todayISO()).slice(0, 10);
   const billNo = v.bill_no ? String(v.bill_no).trim() : null;
   const note = v.note ? String(v.note).trim() : null;
   const partyRes = await c.execute({ sql: "SELECT name FROM transporters WHERE id = ?", args: [transporterId] });
@@ -20070,7 +20383,7 @@ async function raiseFreightShortageNote(lineId, v = {}) {
     note_type: "debit",
     party_type: "transporter",
     party_id: n28(line.transporter_id),
-    note_date: String(v.date || line.entry_date || todayISO7()).slice(0, 10),
+    note_date: String(v.date || line.entry_date || todayISO()).slice(0, 10),
     against_account: inward ? "FREIGHT INWARD A/C" : "FREIGHT OUTWARD A/C",
     base_amount: amount,
     gst_pct: 0,
@@ -20112,7 +20425,7 @@ async function waiveFreightShortage(lineId, v) {
   const goods = inward ? `${String(line.oil_code || line.oil_name || "OIL").toUpperCase()} PUR A/C` : `${String(line.sale_code || line.sale_name || "FG").toUpperCase()} SALE A/C`;
   const inv = String(line.order_invoice || line.sale_invoice || "");
   const je = await postJournal({
-    date: String(v.date || line.entry_date || todayISO7()).slice(0, 10),
+    date: String(v.date || line.entry_date || todayISO()).slice(0, 10),
     vchType: "JOURNAL",
     vchNo: null,
     narration: `Oil shortage written off${inv ? ` on ${inv}` : ""} \u2014 not the transporter's: ${reason}`,
@@ -20126,7 +20439,7 @@ async function waiveFreightShortage(lineId, v) {
     sql: `UPDATE transporter_ledger
              SET waived_at = ?, waived_by = ?, waived_reason = ?, waived_entry_id = ?
            WHERE id = ?`,
-    args: [todayISO7(), getCurrentUser().username || null, reason, je.id ?? null, n28(lineId)]
+    args: [todayISO(), getCurrentUser().username || null, reason, je.id ?? null, n28(lineId)]
   });
   await bumpRevision();
   return { id: n28(lineId), entry_id: je.id ?? null };
@@ -20311,7 +20624,7 @@ async function recordAudit(channel, args, result) {
   );
 }
 function registerIpc() {
-  const READONLY = /:list$|:get$|:items$|:issuances$|:sheet$|:outstanding$|:all$|:summary$|:transfers$|:fyTaxable$|:needs$|:breakdown$|:nextNo$|:liveUsers$|:ips$|:logs$|:dispatchableSales$|:mine$|:pendingCount$|:pending$|:lots$|:unmapped$|:unmappedCount$|:bargainLines$|:bargainNotes$|:bargainInterest$|:consignmentDraws$|^access:heartbeat$|^db:ping$|^db:snapshot$|^app:revision$|^auth:login$|^journal:booksFrom$|^journal:openings$|^journal:opening$|^journal:accounts$|^journal:statement$|^journal:trialBalance$|^journal:groups$|^journal:groupNames$|^journal:pendingRefs$|^journal:billsOutstanding$|^journal:tradingAccount$|^dashboard:stats$|^skuRates:parties$|^skuRates:partyCounts$|^consignment:openingLog$|^consignment:invoices$|^tankers:quality$|^tankers:ffaHistory$|^orders:quality$|^gate:partyCategories$|^gate:waivedOuts$|^gate:forRecord$|^notify:rules$|^notify:list$|^notify:run$|^notify:preview$|^notify:people$|^notify:mutes$|^treasury:alerts$|^treasury:paymentTracker$|^facility:exposures$|^facility:headroom$|^company:setActive$|^company:getActive$|^factory:active$|^factory:companies$|^session:setUser$|^lc:repayments$|^lc:allRepayments$|^lc:getLimit$|^lc:bankLimits$|^lc:paymentIns$|^lc:openTradingInvoices$|^files:pickDocument$|^files:openDocument$|^bankRecon:imports$|^bankRecon:list$|^bankRecon:suggest$|^bd:kpis$|^bd:limits$|^skuStock:adjustments$|^skuOpening:list$|^skuOpening:date$|^stockCount:previous$|^stockOpening:list$|^stockOpening:date$|^stockOpening:ppStages$|^stockOpening:ppFreeTotals$|^production:ppDraws$|^bargains:linkedInvoices$|^bargains:adjustments$|^history:list$|^stockOpening:ppVessels$|^stockOpening:ppWriteoffs$|^work:board$|^work:cutoff$|^work:processes$|^formulationSubcategory:list$|^formulations:versions$|^bd:allRepayments$|^bd:linkedOrders$|^bd:parties$|^bd:allParties$|^bd:openTradingInvoices$|^bd:paymentIns$|^access:entryWindows$|^access:entityHistory$|^trading:list$|^sales:series$|^sales:invoiceGaps$|^salesBargains:returns$|^salesBargains:unattributedReturns$|^tbill:orphans$|^production:report$/;
+  const READONLY = /:list$|:get$|:items$|:issuances$|:sheet$|:outstanding$|:all$|:summary$|:transfers$|:fyTaxable$|:needs$|:breakdown$|:nextNo$|:liveUsers$|:ips$|:logs$|:dispatchableSales$|:mine$|:pendingCount$|:pending$|:lots$|:unmapped$|:unmappedCount$|:bargainLines$|:bargainNotes$|:bargainInterest$|:consignmentDraws$|^access:heartbeat$|^db:ping$|^db:snapshot$|^app:revision$|^auth:login$|^journal:booksFrom$|^journal:openings$|^journal:opening$|^journal:accounts$|^journal:statement$|^journal:trialBalance$|^journal:groups$|^journal:groupNames$|^journal:pendingRefs$|^journal:billsOutstanding$|^journal:tradingAccount$|^dashboard:stats$|^skuRates:parties$|^skuRates:partyCounts$|^consignment:openingLog$|^consignment:invoices$|^tankers:quality$|^tankers:ffaHistory$|^orders:quality$|^gate:partyCategories$|^gate:waivedOuts$|^gate:forRecord$|^notify:rules$|^notify:list$|^notify:run$|^notify:preview$|^notify:people$|^notify:mutes$|^treasury:alerts$|^treasury:paymentTracker$|^facility:exposures$|^facility:headroom$|^company:setActive$|^company:getActive$|^factory:active$|^factory:companies$|^session:setUser$|^lc:repayments$|^lc:allRepayments$|^lc:getLimit$|^lc:bankLimits$|^lc:paymentIns$|^lc:openTradingInvoices$|^files:pickDocument$|^files:openDocument$|^bankRecon:imports$|^bankRecon:list$|^bankRecon:suggest$|^bd:kpis$|^bd:limits$|^skuStock:adjustments$|^skuOpening:list$|^skuOpening:date$|^stockCount:previous$|^stockOpening:list$|^stockOpening:date$|^stockOpening:ppStages$|^stockOpening:ppFreeTotals$|^production:ppDraws$|^bargains:linkedInvoices$|^bargains:adjustments$|^history:list$|^stockOpening:ppVessels$|^stockOpening:ppReceivers$|^stockOpening:ppWriteoffs$|^work:board$|^work:cutoff$|^work:processes$|^formulationSubcategory:list$|^formulations:versions$|^bd:allRepayments$|^bd:linkedOrders$|^bd:parties$|^bd:allParties$|^bd:openTradingInvoices$|^bd:paymentIns$|^access:entryWindows$|^access:entityHistory$|^trading:list$|^sales:series$|^sales:invoiceGaps$|^salesBargains:returns$|^salesBargains:unattributedReturns$|^tbill:orphans$|^production:report$/;
   const AUDIT_SKIP = /* @__PURE__ */ new Set(["config:get", "config:save", "session:setUser"]);
   const handle = (channel, fn) => {
     ipcMain.handle(channel, async (e, args) => {
@@ -20409,6 +20722,10 @@ function registerIpc() {
   );
   handle("bargains:linkedInvoices", (_e, { id }) => bargainLinkedInvoices(id));
   handle("bargains:adjustments", (_e, { id }) => bargainAdjustments(id));
+  handle(
+    "bargains:rerateInvoices",
+    (_e, { bargainId, rate, orderIds }) => rerateInvoicesForBargain(bargainId, rate, orderIds)
+  );
   handle("history:list", (_e, { entity, id }) => listChanges(entity, id));
   handle(
     "stockOpening:ppVessels",
@@ -20421,6 +20738,14 @@ function registerIpc() {
   handle(
     "stockOpening:writeOffPp",
     (_e, { productId, stageId, qty, note, companyId }) => writeOffPp(productId, stageId, qty, note, companyId)
+  );
+  handle(
+    "stockOpening:ppReceivers",
+    (_e, { productId, companyId }) => ppVesselsForReceiving(productId, companyId)
+  );
+  handle(
+    "stockOpening:movePp",
+    (_e, { productId, stageId, qty, toProductId, toStageId, note, companyId }) => movePp(productId, stageId, qty, toProductId, toStageId, note, companyId)
   );
   handle(
     "bargains:setInvoiceRate",
