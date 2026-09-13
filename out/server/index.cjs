@@ -8659,6 +8659,7 @@ init_repos();
 init_db();
 init_company();
 init_repos();
+var SKU_BOX_MULT = "CASE WHEN UPPER(TRIM(COALESCE(pk.pouch_label, ''))) = 'BOX' THEN MAX(1, COALESCE(pk.pouches_per_box, 1)) ELSE 1 END";
 async function stockLevels(range, companyIds) {
   const c = getClient();
   const cidList = (companyIds || []).map(Number).filter((x) => x > 0);
@@ -8800,7 +8801,7 @@ async function stockLevels(range, companyIds) {
                             ELSE pk.base_per_pouch
                           END
                       END
-                    ) / 1000.0) AS q
+                    ) * (${SKU_BOX_MULT}) / 1000.0) AS q
              FROM sku_adjustments a
              JOIN packagings pk ON pk.id = a.packaging_id
              WHERE pk.product_id IS NOT NULL
@@ -9326,7 +9327,7 @@ async function stockPartyBreakdown(companyIds, range) {
           WHEN 'KL' THEN pk.base_per_pouch * 1000.0
           ELSE pk.base_per_pouch
         END
-    END / 1000.0`;
+    END * (${SKU_BOX_MULT}) / 1000.0`;
   const packed = await c.execute({
     sql: `SELECT pk.product_id AS pid, pk.name AS sku, co.name AS company,
                  SUM(a.delta) AS pieces, SUM(a.delta * (${packMT})) AS qty
@@ -17707,7 +17708,18 @@ async function listVouchers(from, to, vchType, companyId) {
                  (SELECT a.name FROM journal_lines jl JOIN ledger_accounts a ON a.id = jl.account_id
                   WHERE jl.entry_id = je.id AND jl.dr > 0 ORDER BY jl.dr DESC LIMIT 1) AS dr_account,
                  (SELECT a.name FROM journal_lines jl JOIN ledger_accounts a ON a.id = jl.account_id
-                  WHERE jl.entry_id = je.id AND jl.cr > 0 ORDER BY jl.cr DESC LIMIT 1) AS cr_account
+                  WHERE jl.entry_id = je.id AND jl.cr > 0 ORDER BY jl.cr DESC LIMIT 1) AS cr_account,
+                 -- EVERY account on each side, not only the principal one.
+                 -- A day book line reads "Dr these \u2192 Cr those", and a voucher
+                 -- that splits a side across two ledgers \u2014 interest and bank
+                 -- charges out of one bank, say \u2014 was showing only the larger
+                 -- of them, which reads as a different entry from the one that
+                 -- was posted. The single-name fields stay for the callers
+                 -- that want the principal.
+                 (SELECT GROUP_CONCAT(a.name, ', ') FROM journal_lines jl JOIN ledger_accounts a ON a.id = jl.account_id
+                  WHERE jl.entry_id = je.id AND jl.dr > 0) AS dr_accounts,
+                 (SELECT GROUP_CONCAT(a.name, ', ') FROM journal_lines jl JOIN ledger_accounts a ON a.id = jl.account_id
+                  WHERE jl.entry_id = je.id AND jl.cr > 0) AS cr_accounts
           FROM journal_entries je
           WHERE ${conds.join(" AND ")}
           ORDER BY je.entry_date DESC, je.id DESC`,
