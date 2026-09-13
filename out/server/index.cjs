@@ -16020,28 +16020,49 @@ var clockOf = (stamp3) => {
   return /^\d{2}:\d{2}$/.test(t) ? t : "";
 };
 var DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
-var dayOf = (date) => {
+var namedDay = (date) => {
   const d = s(date).slice(0, 10);
-  return DATE_RE.test(d) ? d : todayISO();
+  return DATE_RE.test(d) ? d : "";
 };
 var REVIEWABLE = /* @__PURE__ */ new Set(["done", "redone"]);
 var CUTOFF_KEY = "work.cutoff";
+var CUTOFF_DAY_KEY = "work.cutoff_day";
 var CUTOFF_DEFAULT = "18:30";
 async function workCutoff() {
   const r = await plain2("SELECT value FROM app_settings WHERE key = ?", [CUTOFF_KEY]);
   const v = s(r[0]?.value).trim();
   return /^\d{2}:\d{2}$/.test(v) ? v : CUTOFF_DEFAULT;
 }
-async function setWorkCutoff(hhmm, adminId) {
+async function workCutoffDay() {
+  const r = await plain2("SELECT value FROM app_settings WHERE key = ?", [CUTOFF_DAY_KEY]);
+  return s(r[0]?.value).trim() === "next" ? "next" : "same";
+}
+async function workingDayISO() {
+  if (await workCutoffDay() !== "next") return todayISO();
+  const cut = await workCutoff();
+  const clock = localStamp().slice(11, 16);
+  if (clock >= cut) return todayISO();
+  const d = /* @__PURE__ */ new Date(`${todayISO()}T00:00:00`);
+  d.setDate(d.getDate() - 1);
+  const p = (x) => String(x).padStart(2, "0");
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
+}
+async function setWorkCutoff(hhmm, adminId, day) {
   const a = await loadUser(n17(adminId));
   if (s(a.role) !== "admin") throw new Error("Only an admin can change the cut-off");
   const v = s(hhmm).trim();
   if (!/^\d{2}:\d{2}$/.test(v)) throw new Error("Give the cut-off as HH:MM");
-  await getClient().execute({
+  const c = getClient();
+  await c.execute({
     sql: "INSERT INTO app_settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
     args: [CUTOFF_KEY, v]
   });
-  return { cutoff: v };
+  const d = day === void 0 ? await workCutoffDay() : s(day) === "next" ? "next" : "same";
+  await c.execute({
+    sql: "INSERT INTO app_settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+    args: [CUTOFF_DAY_KEY, d]
+  });
+  return { cutoff: v, cutoff_day: d };
 }
 function grantsOf(user) {
   if (s(user.role) === "admin") return "ALL";
@@ -16159,7 +16180,7 @@ async function ensureDay(date) {
   }
 }
 async function listWorkBoard(date, viewerId) {
-  const day = dayOf(date);
+  const day = namedDay(date) || await workingDayISO();
   await ensureDay(day);
   const cid = getActiveCompanyId();
   const fid = await factoryOfCompanies([cid]);
@@ -16168,7 +16189,7 @@ async function listWorkBoard(date, viewerId) {
   const vid = n17(viewerId);
   const viewerRow = vid ? (await plain2("SELECT role FROM users WHERE id = ?", [vid]))[0] : null;
   const viewerIsAdmin = !vid || !viewerRow || s(viewerRow.role) === "admin";
-  const [users, tasks, notes, cutoff] = await Promise.all([
+  const [users, tasks, notes, cutoff, cutoffDay] = await Promise.all([
     // Fetched in full regardless of who is asking — needed to resolve names
     // on notes and tasks (an admin's send-back note on a non-admin's own task
     // still needs the admin's name), and trimmed to what is actually RETURNED
@@ -16189,7 +16210,8 @@ async function listWorkBoard(date, viewerId) {
         ORDER BY wn.id`,
       viewerIsAdmin ? [day] : [day, vid]
     ),
-    workCutoff()
+    workCutoff(),
+    workCutoffDay()
   ]);
   const nameOf = new Map(users.map((u) => [n17(u.id), s(u.full_name) || s(u.username)]));
   const byTask = /* @__PURE__ */ new Map();
@@ -16210,7 +16232,13 @@ async function listWorkBoard(date, viewerId) {
   return {
     date: day,
     cutoff,
+    // Which day the cut-off falls on, so the screen can judge a tick against
+    // the right deadline rather than against a bare clock reading.
+    cutoff_day: cutoffDay,
+    // The whole stamp, not just the clock: with a next-day cut-off, "is it
+    // past the deadline yet" cannot be answered by a time alone.
     now: clockOf(localStamp()),
+    now_stamp: localStamp(),
     // Roster exposed to the client: the whole active login list for an admin
     // (Team progress and the Assign dialog both need it), just the asking
     // login's own row otherwise — enough for My work, and nothing about
@@ -16409,7 +16437,7 @@ async function assignWorkTask(v, adminId) {
   const title = s(v.title).trim();
   if (!title) throw new Error("Say what needs doing");
   const target = await loadUser(uid);
-  const day = dayOf(s(v.work_date));
+  const day = namedDay(s(v.work_date)) || await workingDayISO();
   const cid = getActiveCompanyId();
   const fid = await factoryOfCompanies([cid]);
   const res = await getClient().execute({
@@ -21352,7 +21380,7 @@ function registerIpc() {
   handle("work:cutoff", () => workCutoff());
   handle(
     "work:setCutoff",
-    (_e, { cutoff, userId }) => setWorkCutoff(cutoff, userId)
+    (_e, { cutoff, userId, day }) => setWorkCutoff(cutoff, userId, day)
   );
   handle("work:processes", () => listWorkProcesses());
   handle("work:saveProcess", (_e, { values }) => saveWorkProcess(values));
