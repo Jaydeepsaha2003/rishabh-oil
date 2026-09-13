@@ -5559,6 +5559,27 @@ var BARGAIN_FIELDS = [
   { key: "broker_id", label: "Broker" },
   { key: "remarks", label: "Remarks", kind: "text" }
 ];
+var SALES_BARGAIN_FIELDS = [
+  { key: "bargain_no", label: "Bargain no" },
+  { key: "manual_bargain_no", label: "Their bargain no" },
+  { key: "bargain_date", label: "Bargain date" },
+  { key: "customer_id", label: "Customer" },
+  { key: "customer", label: "Customer name", kind: "text" },
+  { key: "product_id", label: "Product" },
+  { key: "sale_category", label: "Category" },
+  { key: "sale_type", label: "Sale type" },
+  { key: "packaging_id", label: "Packed SKU" },
+  { key: "qty", label: "Quantity", kind: "qty" },
+  { key: "uom", label: "Unit" },
+  { key: "rate", label: "Bargain rate", kind: "money" },
+  { key: "rate_expiry_date", label: "Rate expiry" },
+  { key: "freight_term", label: "Freight term" },
+  { key: "gst_pct", label: "GST %" },
+  { key: "gst_type", label: "GST type" },
+  { key: "allowed_shortage_pct", label: "Allowed shortage %" },
+  { key: "status", label: "Status" },
+  { key: "note", label: "Remarks", kind: "text" }
+];
 var n4 = (v) => Number.isFinite(Number(v)) ? Number(v) : 0;
 function shown(v, kind) {
   if (v == null || v === "") return "\u2014";
@@ -9085,7 +9106,7 @@ async function stockPartyBreakdown(companyIds, range) {
   const recB = bounds(recDateExpr);
   const dispB = bounds("s.sale_date");
   const out = {};
-  const ensure = (pid) => out[pid] ??= { receipt: [], dispatch: [], packed: [], produced: [], consumed: [] };
+  const ensure = (pid) => out[pid] ??= { receipt: [], dispatch: [], packed: [], produced: [], consumed: [], recirculated: [] };
   const site = (plant, party) => multi ? `${plant || "\u2014"} \xB7 ${party}` : String(party);
   const rec = await c.execute({
     sql: `SELECT o.oil_type_id AS pid, COALESCE(s.name, 'Unknown') AS party, co.name AS company, SUM(o.received_qty) AS qty
@@ -9131,7 +9152,7 @@ async function stockPartyBreakdown(companyIds, range) {
               LEFT JOIN formulations r ON r.id = p.formulation_id
               LEFT JOIN companies co ON co.id = p.company_id
               LEFT JOIN factories f ON f.id = co.factory_id
-             WHERE p.company_id IN (${ph}) ${prodB.sql}
+             WHERE p.company_id IN (${ph}) AND COALESCE(p.kind, 'batch') <> 'recirculation' ${prodB.sql}
             UNION ALL
             SELECT i.product_id AS pid, COALESCE(r.name, 'Production run') || ' \xB7 by-product' AS party,
                    COALESCE(f.name, co.name) AS plant, i.qty AS qty
@@ -9140,13 +9161,39 @@ async function stockPartyBreakdown(companyIds, range) {
               LEFT JOIN formulations r ON r.id = p.formulation_id
               LEFT JOIN companies co ON co.id = p.company_id
               LEFT JOIN factories f ON f.id = co.factory_id
-             WHERE i.kind = 'output' AND p.company_id IN (${ph}) ${prodB.sql}
+             WHERE i.kind = 'output' AND p.company_id IN (${ph})
+               AND COALESCE(p.kind, 'batch') <> 'recirculation' ${prodB.sql}
           ) GROUP BY pid, party, plant HAVING SUM(qty) > 0 ORDER BY qty DESC`,
     args: [...cidList, ...prodB.args, ...cidList, ...prodB.args]
   });
   for (const r of made.rows)
     ensure(Number(r.pid)).produced.push({
       party: site(r.plant, r.party),
+      qty: Number(r.qty) || 0
+    });
+  const recircRuns = await c.execute({
+    sql: `SELECT p.product_id AS pid, p.prod_date AS d,
+                 COALESCE(f.name, co.name) AS plant, r.name AS recipe, SUM(p.qty) AS qty
+            FROM production p
+            LEFT JOIN formulations r ON r.id = p.formulation_id
+            LEFT JOIN companies co ON co.id = p.company_id
+            LEFT JOIN factories f ON f.id = co.factory_id
+           WHERE COALESCE(p.kind, 'batch') = 'recirculation'
+             AND p.company_id IN (${ph}) ${prodB.sql}
+           GROUP BY p.product_id, p.prod_date, plant, recipe
+           HAVING SUM(p.qty) > 0
+           ORDER BY p.prod_date DESC`,
+    args: [...cidList, ...prodB.args]
+  });
+  for (const r of recircRuns.rows)
+    ensure(Number(r.pid)).recirculated.push({
+      // Sent in pieces, so the label is assembled where dates are formatted.
+      // `party` is the same line pre-joined, for anything reading this list
+      // without knowing what is in it.
+      date: String(r.d || ""),
+      plant: String(r.plant || ""),
+      recipe: String(r.recipe || ""),
+      party: [String(r.d || ""), String(r.plant || ""), String(r.recipe || "")].filter(Boolean).join(" \xB7 "),
       qty: Number(r.qty) || 0
     });
   const used = await c.execute({
@@ -9919,7 +9966,15 @@ async function listPpStages(companyId) {
 }
 async function ppLinesByProduct(scope) {
   const res = await getClient().execute({
-    sql: `SELECT l.product_id, l.stage_id, l.qty, l.ffa, s.name, s.sort_order, s.active
+    // formulation_id travels with the line.
+    //
+    // It was written on save and read by the register's restatement, but never
+    // selected HERE — so the breakdown dialog, which is fed from this query,
+    // opened on "Not stated" however many times a recipe had been chosen. The
+    // adjustment in the register was right the whole time, which is what made
+    // it look like the recipe had been forgotten rather than merely unread.
+    sql: `SELECT l.product_id, l.stage_id, l.qty, l.ffa, l.formulation_id,
+                 s.name, s.sort_order, s.active
             FROM stock_opening_pp l
             JOIN stock_pp_stages s ON s.id = l.stage_id
            WHERE l.scope = ?
@@ -9937,6 +9992,10 @@ async function ppLinesByProduct(scope) {
       // Never coerced to a side. A line counted but not yet classified is a
       // third answer and the screen says so.
       ffa: r.ffa === "with" || r.ffa === "without" ? String(r.ffa) : null,
+      // Only a with-FFA line can carry one; anything else is a stale value
+      // from before a line was switched sides and must not read back as a
+      // choice somebody made.
+      formulation_id: r.ffa === "with" && n7(r.formulation_id) > 0 ? n7(r.formulation_id) : null,
       active: n7(r.active) === 1
     });
   }
@@ -10065,6 +10124,7 @@ async function ppVessels(scope, productId, ffa) {
             FROM stock_opening_pp sop
             JOIN stock_pp_stages st ON st.id = sop.stage_id
            WHERE sop.scope = ? AND sop.product_id = ? AND sop.ffa = ?
+             AND (sop.ffa <> 'with' OR sop.formulation_id IS NULL)
            ORDER BY st.created_at, st.id`,
     args: [scope, n7(productId), ffa]
   });
@@ -10091,6 +10151,14 @@ async function ppTotalsBothByProduct(productIds, companyId) {
   }
   return out;
 }
+var RESTATED = "sop.ffa = 'with' AND sop.formulation_id IS NOT NULL";
+function assertNotRestated(row, verb) {
+  if (row && String(row.ffa || "") === "with" && n7(row.formulation_id) > 0) {
+    throw new Error(
+      `That vessel is with FFA and has a recipe against it, so its oil is already reported as the products it consists of. It cannot be ${verb} as well \u2014 clear the recipe on the PP breakdown first.`
+    );
+  }
+}
 async function ppVesselBalances(productId, companyId) {
   const scope = await ppScope(companyId);
   const res = await getClient().execute({
@@ -10102,6 +10170,7 @@ async function ppVesselBalances(productId, companyId) {
             FROM stock_opening_pp sop
             JOIN stock_pp_stages st ON st.id = sop.stage_id
            WHERE sop.scope = ? AND sop.product_id = ?
+             AND NOT (${RESTATED})
            ORDER BY st.created_at, st.id`,
     args: [scope, n7(productId)]
   });
@@ -10116,6 +10185,7 @@ async function ppVesselsForReceiving(productId, companyId) {
             LEFT JOIN stock_opening_pp sop
                    ON sop.stage_id = st.id AND sop.scope = ? AND sop.product_id = ?
            WHERE st.scope = ? AND st.active = 1
+             AND NOT (COALESCE(${RESTATED}, 0))
            ORDER BY st.created_at, st.id`,
     args: [scope, n7(productId), scope]
   });
@@ -10130,11 +10200,13 @@ async function writeOffPp(productId, stageId, qty, note, companyId) {
   const scope = await ppScope(cid);
   const c = getClient();
   const cur = await c.execute({
-    sql: "SELECT qty, ffa FROM stock_opening_pp WHERE scope = ? AND product_id = ? AND stage_id = ?",
+    sql: `SELECT qty, ffa, formulation_id FROM stock_opening_pp
+           WHERE scope = ? AND product_id = ? AND stage_id = ?`,
     args: [scope, n7(productId), n7(stageId)]
   });
   const have = r3(n7(cur.rows[0]?.qty));
   if (!cur.rows.length || have <= 5e-4) throw new Error("That vessel is already empty");
+  assertNotRestated(cur.rows[0], "written off");
   if (want > have + 5e-4) {
     throw new Error(`Only ${have} is standing in that vessel \u2014 cannot write off ${want}`);
   }
@@ -10170,7 +10242,7 @@ async function movePp(productId, stageId, qty, toProductId, toStageId, note, com
   const scope = await ppScope(cid);
   const c = getClient();
   const src = await c.execute({
-    sql: `SELECT sop.ffa,
+    sql: `SELECT sop.ffa, sop.formulation_id,
                  sop.qty AS counted,
                  sop.qty - COALESCE((SELECT SUM(d.qty) FROM pp_draws d
                                       WHERE d.scope = sop.scope AND d.product_id = sop.product_id
@@ -10180,6 +10252,12 @@ async function movePp(productId, stageId, qty, toProductId, toStageId, note, com
     args: [scope, from, fromStage]
   });
   if (!src.rows.length) throw new Error("There is nothing standing in that vessel");
+  assertNotRestated(toPlain9(src)[0], "moved");
+  const dstRestate = await c.execute({
+    sql: "SELECT ffa, formulation_id FROM stock_opening_pp WHERE scope = ? AND product_id = ? AND stage_id = ?",
+    args: [scope, to, toStage]
+  });
+  if (dstRestate.rows.length) assertNotRestated(toPlain9(dstRestate)[0], "moved into");
   const ffa = String(toPlain9(src)[0].ffa || "");
   const avail = r3(n7(toPlain9(src)[0].avail));
   if (avail <= 5e-4) throw new Error("That vessel is already empty");
@@ -11639,15 +11717,26 @@ async function createSalesBargain(v) {
       shortagePct(v)
     ]
   });
-  return { id: Number(res.lastInsertRowid), bargain_no };
+  const newId = Number(res.lastInsertRowid);
+  await recordChanges(
+    "sales_bargains",
+    newId,
+    bargain_no,
+    null,
+    { ...v, bargain_no, qty: n9(v.qty), rate: n9(v.rate) },
+    SALES_BARGAIN_FIELDS,
+    "created"
+  );
+  return { id: newId, bargain_no };
 }
 async function updateSalesBargain(id, v) {
   validateSalesBargainInput(v);
   const cur = await getClient().execute({
-    sql: "SELECT bargain_no, customer, customer_id, product_id, rate FROM sales_bargains WHERE id = ?",
+    sql: "SELECT * FROM sales_bargains WHERE id = ?",
     args: [id]
   });
   if (!cur.rows.length) throw new Error("Sales bargain not found");
+  const beforeRow = toPlain11(cur)[0];
   const oldRate = n9(cur.rows[0].rate);
   const sold = await salesBargainSold(id);
   if (sold > 1e-6) {
@@ -11688,6 +11777,14 @@ async function updateSalesBargain(id, v) {
       id
     ]
   });
+  await recordChanges(
+    "sales_bargains",
+    n9(id),
+    String(beforeRow.bargain_no || ""),
+    beforeRow,
+    { ...v, qty: n9(v.qty), rate: n9(v.rate) },
+    SALES_BARGAIN_FIELDS
+  );
   const newRate = n9(v.rate);
   return {
     id,
@@ -11779,7 +11876,20 @@ async function deleteSalesBargain(id) {
   if (await salesBargainSold(id) > 1e-6) {
     throw new Error("This sales bargain has sales linked to it. Delete those sales first.");
   }
+  const cur = await getClient().execute({ sql: "SELECT * FROM sales_bargains WHERE id = ?", args: [id] });
+  const gone = cur.rows.length ? toPlain11(cur)[0] : null;
   await getClient().execute({ sql: "DELETE FROM sales_bargains WHERE id = ?", args: [id] });
+  if (gone) {
+    await recordChanges(
+      "sales_bargains",
+      n9(id),
+      String(gone.bargain_no || ""),
+      gone,
+      null,
+      SALES_BARGAIN_FIELDS,
+      "deleted"
+    );
+  }
   return { id };
 }
 async function adjustSalesBargainQty(id, delta, note, date) {
@@ -15859,9 +15969,16 @@ async function listFormulations() {
 }
 async function getFormulationItems(formulationId) {
   const res = await getClient().execute({
-    sql: `SELECT i.*, p.name AS product_name, p.category AS product_category
+    // The by-product's NAME travels too. An auto-calculated input names the
+    // product its fatty acid is recovered into by id alone, so anything
+    // showing that line had either to look the id up itself or print the
+    // input's own name against it — which reads as SHEA being recovered when
+    // it is the fatty acid off the shea.
+    sql: `SELECT i.*, p.name AS product_name, p.category AS product_category,
+                 bp.name AS byproduct_product_name
           FROM formulation_items i
           LEFT JOIN products p ON p.id = i.product_id
+          LEFT JOIN products bp ON bp.id = i.byproduct_product_id
           WHERE i.formulation_id = ?
           ORDER BY i.id`,
     args: [formulationId]
