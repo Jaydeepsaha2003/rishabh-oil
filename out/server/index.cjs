@@ -8963,6 +8963,14 @@ async function stockLevels(range, companyIds) {
       // dip said and what the card said, rather than oil anybody measured.
       // Its own column; no longer folded into `opening` above.
       opening_adj: Math.round((adjPortion + ppEq) * 1e3) / 1e3,
+      // WHAT THE ADJUSTED COLUMN IS MADE OF, in three named parts.
+      //
+      // It carries three unlike things that happen to land in one column, and
+      // a figure that is the sum of three unlike things cannot be checked. So
+      // each travels on its own and the hover names it: the correction struck
+      // on the count, the with-FFA vessel restated as its own oils, and the
+      // batch finished out of PP. They add to `opening_adj` exactly.
+      opening_adj_count: Math.round((brought.adj.get(id) || 0) * 1e3) / 1e3,
       // The part of the Adjusted column that is a restatement of a PP batch
       // rather than a correction to the count, so the hover can tell them
       // apart and the two are never confused for one another.
