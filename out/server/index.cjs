@@ -8948,7 +8948,17 @@ async function stockLevels(range, companyIds) {
       // rather than derived from movements before the range — kept on the
       // same footing as `opening` above so "Brought forward" + "Moved before
       // this period" still adds up to it on the hover.
-      opening_brought: Math.round(((brought.total.get(id) || 0) - adjPortion) * 1e3) / 1e3,
+      //
+      // `brought.adj`, NOT `adjPortion`. The two differ by the restatement,
+      // and the restatement is not inside `brought.total` — it is added to
+      // `open` separately, two lines up. Taking it off here subtracted
+      // something that was never in the figure, so an oil restated by 18
+      // reported its counted Raw + PP as 93.15 when 75.15 was what the sheet
+      // actually held, and the hover's own arithmetic then invented 18 MT of
+      // movement to bridge the gap. It cancels correctly in `openingShown`
+      // because `open` carries the restatement to cancel against; this
+      // figure has nothing to cancel.
+      opening_brought: Math.round(((brought.total.get(id) || 0) - (brought.adj.get(id) || 0)) * 1e3) / 1e3,
       // The correction struck on the count — the difference between what the
       // dip said and what the card said, rather than oil anybody measured.
       // Its own column; no longer folded into `opening` above.
