@@ -37,3 +37,19 @@ self.addEventListener('activate', (event) => {
 // browser untouched, which is what "network only" was always meant to be. The
 // listener still counts for installability.
 self.addEventListener('fetch', () => {})
+
+// Tapping a notification brings the app back rather than opening a second copy.
+//
+// Android insists a page notification be shown through this worker rather than
+// through `new Notification()` — so the click lands here, and without a
+// handler it does nothing at all, which reads as a broken notification. Focus
+// a tab that is already open; failing that, open one.
+self.addEventListener('notificationclick', (event) => {
+  event.notification.close()
+  event.waitUntil(
+    self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then((list) => {
+      for (const c of list) if ('focus' in c) return c.focus()
+      return self.clients.openWindow ? self.clients.openWindow('/') : undefined
+    })
+  )
+})
