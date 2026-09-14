@@ -9204,19 +9204,21 @@ async function stockPartyBreakdown(companyIds, range) {
   const prodB = bounds("p.prod_date");
   const made = await c.execute({
     sql: `SELECT pid, party, plant, SUM(qty) AS qty FROM (
-            SELECT p.product_id AS pid, COALESCE(r.name, 'Production run') AS party,
+            SELECT p.product_id AS pid, COALESCE(NULLIF(TRIM(r.name), ''), rp.name || ' recipe', 'Production run') AS party,
                    COALESCE(f.name, co.name) AS plant, p.qty AS qty
               FROM production p
               LEFT JOIN formulations r ON r.id = p.formulation_id
+              LEFT JOIN products rp ON rp.id = r.product_id
               LEFT JOIN companies co ON co.id = p.company_id
               LEFT JOIN factories f ON f.id = co.factory_id
              WHERE p.company_id IN (${ph}) AND COALESCE(p.kind, 'batch') <> 'recirculation' ${prodB.sql}
             UNION ALL
-            SELECT i.product_id AS pid, COALESCE(r.name, 'Production run') || ' \xB7 by-product' AS party,
+            SELECT i.product_id AS pid, COALESCE(NULLIF(TRIM(r.name), ''), rp.name || ' recipe', 'Production run') || ' \xB7 by-product' AS party,
                    COALESCE(f.name, co.name) AS plant, i.qty AS qty
               FROM production_items i
               JOIN production p ON p.id = i.production_id
               LEFT JOIN formulations r ON r.id = p.formulation_id
+              LEFT JOIN products rp ON rp.id = r.product_id
               LEFT JOIN companies co ON co.id = p.company_id
               LEFT JOIN factories f ON f.id = co.factory_id
              WHERE i.kind = 'output' AND p.company_id IN (${ph})
@@ -9234,6 +9236,7 @@ async function stockPartyBreakdown(companyIds, range) {
                  COALESCE(f.name, co.name) AS plant, r.name AS recipe, SUM(p.qty) AS qty
             FROM production p
             LEFT JOIN formulations r ON r.id = p.formulation_id
+            LEFT JOIN products rp ON rp.id = r.product_id
             LEFT JOIN companies co ON co.id = p.company_id
             LEFT JOIN factories f ON f.id = co.factory_id
            WHERE COALESCE(p.kind, 'batch') = 'recirculation'
@@ -9255,17 +9258,31 @@ async function stockPartyBreakdown(companyIds, range) {
       qty: Number(r.qty) || 0
     });
   const used = await c.execute({
-    sql: `SELECT i.product_id AS pid, COALESCE(r.name, 'Production run') AS party,
-                 COALESCE(f.name, co.name) AS plant, SUM(i.qty) AS qty
-            FROM production_items i
-            JOIN production p ON p.id = i.production_id
-            LEFT JOIN formulations r ON r.id = p.formulation_id
-            LEFT JOIN companies co ON co.id = p.company_id
-            LEFT JOIN factories f ON f.id = co.factory_id
-           WHERE i.kind = 'input' AND p.company_id IN (${ph}) ${prodB.sql}
-           GROUP BY i.product_id, r.name, f.name
-          HAVING SUM(i.qty) > 0 ORDER BY qty DESC`,
-    args: [...cidList, ...prodB.args]
+    sql: `SELECT pid, party, plant, SUM(qty) AS qty FROM (
+            SELECT i.product_id AS pid, COALESCE(NULLIF(TRIM(r.name), ''), rp.name || ' recipe', 'Production run') AS party,
+                   COALESCE(f.name, co.name) AS plant, i.qty AS qty
+              FROM production_items i
+              JOIN production p ON p.id = i.production_id
+              LEFT JOIN formulations r ON r.id = p.formulation_id
+              LEFT JOIN products rp ON rp.id = r.product_id
+              LEFT JOIN companies co ON co.id = p.company_id
+              LEFT JOIN factories f ON f.id = co.factory_id
+             WHERE i.kind = 'input' AND p.company_id IN (${ph})
+               AND COALESCE(p.kind, 'batch') <> 'recirculation' ${prodB.sql}
+            UNION ALL
+            SELECT i.product_id AS pid,
+                   COALESCE(NULLIF(TRIM(r.name), ''), rp.name || ' recipe', 'Production run') || ' (Op. Stock PP, Finished)' AS party,
+                   COALESCE(f.name, co.name) AS plant, i.qty AS qty
+              FROM production_items i
+              JOIN production p ON p.id = i.production_id
+              LEFT JOIN formulations r ON r.id = p.formulation_id
+              LEFT JOIN products rp ON rp.id = r.product_id
+              LEFT JOIN companies co ON co.id = p.company_id
+              LEFT JOIN factories f ON f.id = co.factory_id
+             WHERE i.kind = 'pp_equiv' AND p.company_id IN (${ph})
+               AND COALESCE(p.kind, 'batch') <> 'recirculation' ${prodB.sql}
+          ) GROUP BY pid, party, plant HAVING SUM(qty) > 0 ORDER BY qty DESC`,
+    args: [...cidList, ...prodB.args, ...cidList, ...prodB.args]
   });
   for (const r of used.rows)
     ensure(Number(r.pid)).consumed.push({
