@@ -533,6 +533,10 @@ CREATE TABLE IF NOT EXISTS users (
   role TEXT NOT NULL DEFAULT 'viewer',
   active INTEGER NOT NULL DEFAULT 1,
   permissions TEXT,
+  -- A deadline of this login's own, where the site's does not fit its shift.
+  -- NULL means it follows whatever the site is set to, now and later.
+  work_cutoff TEXT,
+  work_cutoff_day TEXT,
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
@@ -2534,6 +2538,16 @@ function assertScopedSales(op, args) {
     );
   }
 }
+function assertScopedBargainTopUp(op, args) {
+  if (op !== "adjust") {
+    throw new Error(
+      "Your access to Sales bargains covers adding to a bargain quantity only \u2014 nothing else on this page can be changed."
+    );
+  }
+  if (!(Number(args?.delta) > 0)) {
+    throw new Error("This login can add to a bargain quantity, but not take any back off it.");
+  }
+}
 async function assertAllowed(channel, args) {
   const [ns, op] = String(channel).split(":");
   const rule = CHANNEL_RULES[ns];
@@ -2550,6 +2564,10 @@ async function assertAllowed(channel, args) {
   }
   if (moduleScope(user, rule.module) === "readings" && rule.module === "orders") {
     assertScopedReadings(op);
+    return;
+  }
+  if (moduleScope(user, rule.module) === "topup" && rule.module === "salesBargains") {
+    assertScopedBargainTopUp(op, args);
     return;
   }
   let action = actionFor(op);
@@ -2602,6 +2620,12 @@ var init_access_gate = __esm({
         table: "sales_bargains",
         dateCol: "bargain_date"
       },
+      // The SKU rate card hangs off a sales bargain — it is opened from a bargain
+      // row and prices that bargain's packs — so it answers to the same grant.
+      // Without a rule here its writes were reaching the database on nothing but
+      // a login, which a desk narrowed to one job made plain: the rate card was
+      // off its menu and still open to it.
+      skuRates: { module: "salesBargains", label: "SKU rate card" },
       consignment: {
         module: "consignment",
         label: "Consignment stock",
@@ -2670,7 +2694,13 @@ var init_access_gate = __esm({
       "transporters",
       "customers",
       "returns",
-      "unattributedReturns"
+      "unattributedReturns",
+      // The rate card's own reads: which packs a customer is priced for, and how
+      // many customers a pack is priced for. Both are lookups — without them here
+      // every unknown op reads as an edit, and merely OPENING the card would need
+      // the right to change it.
+      "parties",
+      "partyCounts"
     ]);
     GATE_FINISH_OPS = /* @__PURE__ */ new Set(["complete", "weights", "skipWeighment"]);
     cache = null;
@@ -5985,6 +6015,26 @@ async function saveOrderQuality(orderId, rows) {
     });
   }
 }
+function stampNow() {
+  const d = /* @__PURE__ */ new Date();
+  const p2 = (x) => String(x).padStart(2, "0");
+  return `${d.getFullYear()}-${p2(d.getMonth() + 1)}-${p2(d.getDate())} ${p2(d.getHours())}:${p2(d.getMinutes())}:${p2(d.getSeconds())}`;
+}
+async function waiveOrderQuality(orderId, waived, note) {
+  const id = n4(orderId);
+  if (!id) throw new Error("Which invoice?");
+  const on = waived !== false;
+  await getClient().execute({
+    sql: `UPDATE orders SET quality_waived = ?, quality_waived_note = ?, quality_waived_at = ? WHERE id = ?`,
+    args: [
+      on ? 1 : 0,
+      on ? String(note ?? "").trim().slice(0, 500) || null : null,
+      on ? stampNow() : null,
+      id
+    ]
+  });
+  return { id, waived: on };
+}
 async function listOrderQuality(orderId) {
   return toPlain6(
     await getClient().execute({
@@ -6543,7 +6593,8 @@ var init_orders = __esm({
 async function ensureCompanyParties() {
   const c = getClient();
   const companies = await c.execute(
-    `SELECT id, name, gstin, state, gst_pct, tds_pct, tds_threshold, tds_above_only, credit_period_days
+    `SELECT id, name, gstin, state, gst_pct, tds_pct, tds_threshold, tds_above_only, credit_period_days,
+            opening_purchase_amount, opening_purchase_date
        FROM companies WHERE COALESCE(active, 1) = 1`
   );
   for (const co of companies.rows) {
@@ -6557,7 +6608,12 @@ async function ensureCompanyParties() {
       tds_pct: n5(co.tds_pct),
       tds_threshold: n5(co.tds_threshold),
       tds_above_only: n5(co.tds_above_only) ? 1 : 0,
-      credit_period_days: n5(co.credit_period_days)
+      credit_period_days: n5(co.credit_period_days),
+      // Only the supplier side carries this: the slab it feeds is counted on
+      // what was BOUGHT from a party, and the company's supplier row is the
+      // one a purchase is booked against.
+      opening_purchase_amount: n5(co.opening_purchase_amount),
+      opening_purchase_date: s(co.opening_purchase_date) || null
     };
     for (const table of ["customers", "suppliers"]) {
       const existing = await c.execute({
@@ -6567,11 +6623,27 @@ async function ensureCompanyParties() {
       if (existing.rows.length) {
         const partyId = n5(existing.rows[0].id);
         await c.execute({
-          sql: `UPDATE ${table}
-                   SET name = ?, gstin = ?, state = ?, gst_pct = ?, tds_pct = ?,
-                       tds_threshold = ?, tds_above_only = ?, credit_period_days = ?
-                 WHERE id = ?`,
-          args: [
+          sql: table === "suppliers" ? `UPDATE suppliers
+                    SET name = ?, gstin = ?, state = ?, gst_pct = ?, tds_pct = ?,
+                        tds_threshold = ?, tds_above_only = ?, credit_period_days = ?,
+                        opening_purchase_amount = ?, opening_purchase_date = ?
+                  WHERE id = ?` : `UPDATE customers
+                    SET name = ?, gstin = ?, state = ?, gst_pct = ?, tds_pct = ?,
+                        tds_threshold = ?, tds_above_only = ?, credit_period_days = ?
+                  WHERE id = ?`,
+          args: table === "suppliers" ? [
+            name,
+            terms.gstin,
+            terms.state,
+            terms.gst_pct,
+            terms.tds_pct,
+            terms.tds_threshold,
+            terms.tds_above_only,
+            terms.credit_period_days,
+            terms.opening_purchase_amount,
+            terms.opening_purchase_date,
+            partyId
+          ] : [
             name,
             terms.gstin,
             terms.state,
@@ -6598,11 +6670,24 @@ async function ensureCompanyParties() {
       }
       await c.execute({
         sql: table === "suppliers" ? `INSERT INTO suppliers (name, company_link_id, active, skip_tanker_stages,
-                 gstin, state, gst_pct, tds_pct, tds_threshold, tds_above_only, credit_period_days)
-               VALUES (?, ?, 1, 1, ?, ?, ?, ?, ?, ?, ?)` : `INSERT INTO customers (name, company_link_id, active,
+                 gstin, state, gst_pct, tds_pct, tds_threshold, tds_above_only, credit_period_days,
+                 opening_purchase_amount, opening_purchase_date)
+               VALUES (?, ?, 1, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?)` : `INSERT INTO customers (name, company_link_id, active,
                  gstin, state, gst_pct, tds_pct, tds_threshold, tds_above_only, credit_period_days)
                VALUES (?, ?, 1, ?, ?, ?, ?, ?, ?, ?)`,
-        args: [
+        args: table === "suppliers" ? [
+          name,
+          cid,
+          terms.gstin,
+          terms.state,
+          terms.gst_pct,
+          terms.tds_pct,
+          terms.tds_threshold,
+          terms.tds_above_only,
+          terms.credit_period_days,
+          terms.opening_purchase_amount,
+          terms.opening_purchase_date
+        ] : [
           name,
           cid,
           terms.gstin,
@@ -6972,7 +7057,9 @@ var init_repos = __esm({
         "tds_pct",
         "tds_threshold",
         "tds_above_only",
-        "credit_period_days"
+        "credit_period_days",
+        "opening_purchase_amount",
+        "opening_purchase_date"
       ],
       factories: ["name", "location", "active"],
       packagings: ["name", "box_label", "pouch_label", "pouches_per_box", "unit_size", "unit_uom", "base_per_pouch", "base_uom", "product_id", "product_label", "active"]
@@ -10728,7 +10815,7 @@ function uniformRecipeTor(items) {
   return 100 * 100 / (100 - lossPct);
 }
 function inputFattyAcidPct(it) {
-  return num(it.ffa_pct) * (1 + num(it.loss_multiplier_pct) / 100);
+  return num(it.ffa_pct) * (1 + num(it.loss_multiplier_pct) / 100) + num(it.moisture_pct);
 }
 function inputTorMultiplier(it, sharedDeadLossPct) {
   const yieldPct = 100 - inputFattyAcidPct(it) - sharedDeadLossPct;
@@ -10930,6 +11017,42 @@ async function recipeSnapshot(fid, pinned = 0) {
   });
   return { versionId: 0, items: toPlain11(items) };
 }
+var MIX_FIELDS = [
+  "product_id",
+  "qty",
+  "kind",
+  "auto_calc",
+  "ffa_pct",
+  "loss_multiplier_pct",
+  "moisture_pct",
+  "byproduct_product_id"
+];
+function customMixOf(v) {
+  const raw = v?.custom_items;
+  const list2 = Array.isArray(raw) ? raw : typeof raw === "string" ? safeParse(raw) : null;
+  if (!Array.isArray(list2)) return null;
+  const out = [];
+  for (const it of list2) {
+    if (!it || typeof it !== "object") continue;
+    const pid = n11(it.product_id);
+    const qty = n11(it.qty);
+    if (!pid || !(qty > 0)) continue;
+    const row = {};
+    for (const f of MIX_FIELDS) row[f] = it[f] ?? null;
+    row.product_id = pid;
+    row.qty = qty;
+    row.kind = String(it.kind || "input");
+    out.push(row);
+  }
+  return out.length ? out : null;
+}
+function safeParse(raw) {
+  try {
+    return JSON.parse(raw || "null");
+  } catch {
+    return null;
+  }
+}
 async function listProduction(forModule) {
   const from = await visibleFromFor("production", forModule);
   const fid = await factoryOfCompanies([getActiveCompanyId()]);
@@ -11036,12 +11159,8 @@ async function productionReport(range, companyIds) {
     }
   }
   const ratioCache = /* @__PURE__ */ new Map();
-  const ratioFor = async (fid2, versionId) => {
-    if (!fid2) return { ratio: "", parts: [] };
-    const key3 = `${fid2}|${versionId}`;
-    const hit = ratioCache.get(key3);
-    if (hit) return hit;
-    const snap = await recipeSnapshot(fid2, versionId).catch(() => ({ versionId: 0, items: [] }));
+  const ratioFromItems = async (items) => {
+    const snap = { items };
     const inputs = snap.items.filter((x) => String(x.kind || "input") === "input");
     const total = inputs.reduce((a, x) => a + n11(x.qty), 0);
     const names = /* @__PURE__ */ new Map();
@@ -11062,7 +11181,15 @@ async function productionReport(range, companyIds) {
       part: n11(x.qty),
       pct: total > 0 ? Math.round(n11(x.qty) / total * 1e4) / 100 : 0
     }));
-    const out = { ratio: parts.map((x) => trim(x.part)).join(":"), parts };
+    return { ratio: parts.map((x) => trim(x.part)).join(":"), parts };
+  };
+  const ratioFor = async (fid2, versionId) => {
+    if (!fid2) return { ratio: "", parts: [] };
+    const key3 = `${fid2}|${versionId}`;
+    const hit = ratioCache.get(key3);
+    if (hit) return hit;
+    const snap = await recipeSnapshot(fid2, versionId).catch(() => ({ versionId: 0, items: [] }));
+    const out = await ratioFromItems(snap.items);
     ratioCache.set(key3, out);
     return out;
   };
@@ -11070,7 +11197,8 @@ async function productionReport(range, companyIds) {
   for (const b of prods) {
     const items = byBatch.get(n11(b.id)) || [];
     const recirc = String(b.kind || "batch") === "recirculation";
-    const { ratio, parts } = recirc ? { ratio: "", parts: [] } : await ratioFor(n11(b.formulation_id), n11(b.formulation_version_id));
+    const ownMix = customMixOf({ custom_items: b.custom_items_json });
+    const { ratio, parts } = recirc ? { ratio: "", parts: [] } : ownMix ? await ratioFromItems(ownMix) : await ratioFor(n11(b.formulation_id), n11(b.formulation_version_id));
     const cells = {};
     const touch = (pid) => {
       const k = String(pid);
@@ -11230,24 +11358,25 @@ async function createProduction(v) {
   if (prodDay && prodDay > todayISO()) {
     throw new Error("Production cannot be dated in the future");
   }
-  let fid = n11(v.formulation_id);
+  const mix = customMixOf(v);
+  let fid = mix ? 0 : n11(v.formulation_id);
   if (fid) {
     const owner = await c.execute({ sql: "SELECT product_id FROM formulations WHERE id = ?", args: [fid] });
     if (!owner.rows.length || Number(owner.rows[0].product_id) !== productId) {
       throw new Error("That recipe doesn't belong to the selected product");
     }
-  } else {
+  } else if (!mix) {
     const fRes = await c.execute({
       sql: "SELECT id FROM formulations WHERE product_id = ? ORDER BY id DESC LIMIT 1",
       args: [productId]
     });
     fid = fRes.rows.length ? Number(fRes.rows[0].id) : 0;
   }
-  const snap = await recipeSnapshot(fid);
+  const snap = mix ? { versionId: 0, items: mix } : await recipeSnapshot(fid);
   let lines = [];
   let draws = [];
   let ownPp = { without: 0, with: 0 };
-  if (fid) {
+  if (fid || mix) {
     const expanded = await expandRecipeForBatch(snap.items, qty, productId);
     lines = expanded.lines;
     draws = expanded.draws;
@@ -11268,11 +11397,12 @@ async function createProduction(v) {
     }
   }
   const ins = await c.execute({
-    sql: `INSERT INTO production (company_id, factory_id, prod_date, product_id, qty, uom, note, formulation_id, formulation_version_id)
-          VALUES (?, (SELECT factory_id FROM companies WHERE id = ?), ?, ?, ?, ?, ?, ?, ?)`,
+    sql: `INSERT INTO production (company_id, factory_id, prod_date, product_id, qty, uom, note, formulation_id, formulation_version_id, custom_items_json)
+          VALUES (?, (SELECT factory_id FROM companies WHERE id = ?), ?, ?, ?, ?, ?, ?, ?, ?)`,
     // The version is stamped now so a later edit to the recipe cannot reach
-    // this batch. See recipeSnapshot.
-    args: [getActiveCompanyId(), getActiveCompanyId(), v.prod_date, productId, qty, v.uom || "MT", ppRunNote(v.note, ownPp, String(v.uom || "MT")), fid || null, snap.versionId || null]
+    // this batch. See recipeSnapshot. A one-off mix is kept whole for the same
+    // reason — there is no master to go back to.
+    args: [getActiveCompanyId(), getActiveCompanyId(), v.prod_date, productId, qty, v.uom || "MT", ppRunNote(v.note, ownPp, String(v.uom || "MT")), fid || null, snap.versionId || null, mix ? JSON.stringify(mix) : null]
   });
   const id = Number(ins.lastInsertRowid);
   if (draws.length) await drawPpForBatch(id, draws);
@@ -11307,34 +11437,36 @@ async function updateProduction(id, v) {
   if (prodDay && prodDay > todayISO()) {
     throw new Error("Production cannot be dated in the future");
   }
-  let fid = n11(v.formulation_id);
+  const mix = customMixOf(v);
+  let fid = mix ? 0 : n11(v.formulation_id);
   if (fid) {
     const owner = await c.execute({ sql: "SELECT product_id FROM formulations WHERE id = ?", args: [fid] });
     if (!owner.rows.length || Number(owner.rows[0].product_id) !== productId) {
       throw new Error("That recipe doesn't belong to the selected product");
     }
-  } else {
+  } else if (!mix) {
     const fRes = await c.execute({
       sql: "SELECT id FROM formulations WHERE product_id = ? ORDER BY id DESC LIMIT 1",
       args: [productId]
     });
     fid = fRes.rows.length ? Number(fRes.rows[0].id) : 0;
   }
-  const snap = await recipeSnapshot(fid, fid && fid === wasFid ? wasVersion : 0);
+  const snap = mix ? { versionId: 0, items: mix } : await recipeSnapshot(fid, fid && fid === wasFid ? wasVersion : 0);
   await reversePpDraws(n11(id));
   let lines = [];
   let draws = [];
   let ownPp = { without: 0, with: 0 };
-  if (fid) {
+  if (fid || mix) {
     const expanded = await expandRecipeForBatch(snap.items, qty, productId);
     lines = expanded.lines;
     draws = expanded.draws;
     ownPp = expanded.ownPp;
   }
   await c.execute({
-    sql: `UPDATE production SET prod_date = ?, product_id = ?, qty = ?, uom = ?, note = ?, formulation_id = ?, formulation_version_id = ?
+    sql: `UPDATE production SET prod_date = ?, product_id = ?, qty = ?, uom = ?, note = ?, formulation_id = ?, formulation_version_id = ?,
+                custom_items_json = ?
            WHERE id = ?`,
-    args: [v.prod_date, productId, qty, v.uom || "MT", ppRunNote(v.note, ownPp, String(v.uom || "MT")), fid || null, snap.versionId || null, n11(id)]
+    args: [v.prod_date, productId, qty, v.uom || "MT", ppRunNote(v.note, ownPp, String(v.uom || "MT")), fid || null, snap.versionId || null, mix ? JSON.stringify(mix) : null, n11(id)]
   });
   if (draws.length) await drawPpForBatch(n11(id), draws);
   if (ownPp.without > 5e-4) await drawPp(n11(id), productId, "without", ownPp.without);
@@ -14204,6 +14336,243 @@ async function clearNotifications(userId, isAdmin2) {
   return markNotificationsRead(userId, rows.filter((r) => !r.is_read).map((r) => Number(r.id)));
 }
 
+// src/main/webpush.ts
+var import_node_crypto = require("node:crypto");
+init_db();
+init_repos();
+var b64url = (b) => b.toString("base64url");
+var unb64url = (s3) => Buffer.from(String(s3 || ""), "base64url");
+var PUB_KEY = "push.vapid_public";
+var PRIV_KEY = "push.vapid_private";
+var SUBJECT_KEY = "push.vapid_subject";
+async function vapidKeys() {
+  let pub = String(await getSetting(PUB_KEY) || "");
+  let priv = String(await getSetting(PRIV_KEY) || "");
+  if (!pub || !priv) {
+    const { publicKey, privateKey } = (0, import_node_crypto.generateKeyPairSync)("ec", { namedCurve: "prime256v1" });
+    const der = publicKey.export({ type: "spki", format: "der" });
+    pub = b64url(der.subarray(der.length - 65));
+    priv = privateKey.export({ type: "pkcs8", format: "pem" }).toString();
+    await setSetting(PUB_KEY, pub);
+    await setSetting(PRIV_KEY, priv);
+  }
+  const subject = String(await getSetting(SUBJECT_KEY) || "") || "mailto:admin@rrbridge.in";
+  return { publicKey: pub, privateKey: priv, subject };
+}
+function vapidToken(audience, privatePem, subject) {
+  const header = b64url(Buffer.from(JSON.stringify({ typ: "JWT", alg: "ES256" })));
+  const claims = b64url(
+    Buffer.from(
+      JSON.stringify({
+        aud: audience,
+        // Twelve hours. The spec caps it at 24; a shorter life costs nothing
+        // because a token is made per send.
+        exp: Math.floor(Date.now() / 1e3) + 12 * 3600,
+        sub: subject
+      })
+    )
+  );
+  const signer = (0, import_node_crypto.createSign)("SHA256");
+  signer.update(`${header}.${claims}`);
+  const sig = signer.sign({ key: privatePem, dsaEncoding: "ieee-p1363" });
+  return `${header}.${claims}.${b64url(sig)}`;
+}
+function encryptPayload(payload, p256dh, auth, opts = {}) {
+  const uaPublic = unb64url(p256dh);
+  const authSecret = unb64url(auth);
+  const salt = opts.salt || (0, import_node_crypto.randomBytes)(16);
+  const ecdh = (0, import_node_crypto.createECDH)("prime256v1");
+  if (opts.ephemeralPrivate) ecdh.setPrivateKey(opts.ephemeralPrivate);
+  else ecdh.generateKeys();
+  const asPublic = ecdh.getPublicKey();
+  const shared = ecdh.computeSecret(uaPublic);
+  const keyInfo = Buffer.concat([Buffer.from("WebPush: info\0"), uaPublic, asPublic]);
+  const prk = Buffer.from((0, import_node_crypto.hkdfSync)("sha256", shared, authSecret, keyInfo, 32));
+  const cek = Buffer.from((0, import_node_crypto.hkdfSync)("sha256", prk, salt, Buffer.from("Content-Encoding: aes128gcm\0"), 16));
+  const nonce = Buffer.from((0, import_node_crypto.hkdfSync)("sha256", prk, salt, Buffer.from("Content-Encoding: nonce\0"), 12));
+  const plaintext = Buffer.concat([Buffer.from(payload, "utf8"), Buffer.from([2])]);
+  const cipher = (0, import_node_crypto.createCipheriv)("aes-128-gcm", cek, nonce);
+  const body2 = Buffer.concat([cipher.update(plaintext), cipher.final(), cipher.getAuthTag()]);
+  const header = Buffer.alloc(21);
+  salt.copy(header, 0);
+  header.writeUInt32BE(4096, 16);
+  header.writeUInt8(asPublic.length, 20);
+  return Buffer.concat([header, asPublic, body2]);
+}
+async function saveSubscription(sub, userId, ua) {
+  const endpoint = String(sub?.endpoint || "").trim();
+  const p256dh = String(sub?.keys?.p256dh || "").trim();
+  const auth = String(sub?.keys?.auth || "").trim();
+  if (!endpoint || !p256dh || !auth) throw new Error("That subscription is missing its endpoint or its keys");
+  await getClient().execute({
+    sql: `INSERT INTO push_subscriptions (user_id, endpoint, p256dh, auth, user_agent, created_at, last_ok_at)
+          VALUES (?, ?, ?, ?, ?, datetime('now'), NULL)
+          ON CONFLICT(endpoint) DO UPDATE SET
+            user_id = excluded.user_id, p256dh = excluded.p256dh, auth = excluded.auth,
+            user_agent = excluded.user_agent, failed_at = NULL`,
+    args: [Number(userId) || 0, endpoint, p256dh, auth, String(ua || "").slice(0, 300) || null]
+  });
+  return { ok: true };
+}
+async function dropSubscription(endpoint) {
+  await getClient().execute({
+    sql: "DELETE FROM push_subscriptions WHERE endpoint = ?",
+    args: [String(endpoint || "")]
+  });
+  return { ok: true };
+}
+async function subscriptionsFor(userIds) {
+  const c = getClient();
+  if (userIds === "all") {
+    const r4 = await c.execute("SELECT * FROM push_subscriptions");
+    return r4.rows.map((x) => ({ ...x }));
+  }
+  const ids = userIds.map((x) => Number(x) || 0).filter(Boolean);
+  if (!ids.length) return [];
+  const r = await c.execute({
+    sql: `SELECT * FROM push_subscriptions WHERE user_id IN (${ids.map(() => "?").join(",")})`,
+    args: ids
+  });
+  return r.rows.map((x) => ({ ...x }));
+}
+async function sendOne(sub, payload) {
+  try {
+    const { privateKey, subject } = await vapidKeys();
+    const endpoint = String(sub.endpoint || "");
+    const audience = new URL(endpoint).origin;
+    const body2 = encryptPayload(JSON.stringify(payload), String(sub.p256dh), String(sub.auth));
+    const res = await fetch(endpoint, {
+      method: "POST",
+      headers: {
+        TTL: "86400",
+        "Content-Encoding": "aes128gcm",
+        "Content-Type": "application/octet-stream",
+        Authorization: `vapid t=${vapidToken(audience, privateKey, subject)}, k=${(await vapidKeys()).publicKey}`
+      },
+      // A Buffer is a Uint8Array; the DOM's BodyInit type does not know that
+      // about node's own class, so it is handed over as the view it already is.
+      body: new Uint8Array(body2)
+    });
+    if (res.status === 404 || res.status === 410) {
+      await dropSubscription(endpoint);
+      return "gone";
+    }
+    if (!res.ok) {
+      console.error("[push] endpoint refused:", res.status, (await res.text()).slice(0, 200));
+      await getClient().execute({ sql: "UPDATE push_subscriptions SET failed_at = datetime('now') WHERE endpoint = ?", args: [endpoint] }).catch(() => {
+      });
+      return "failed";
+    }
+    await getClient().execute({ sql: "UPDATE push_subscriptions SET last_ok_at = datetime('now'), failed_at = NULL WHERE endpoint = ?", args: [endpoint] }).catch(() => {
+    });
+    return "sent";
+  } catch (e) {
+    console.error("[push] send failed:", e.message);
+    return "failed";
+  }
+}
+async function pushTo(userIds, payload) {
+  const subs = await subscriptionsFor(userIds);
+  const out = { sent: 0, gone: 0, failed: 0, devices: subs.length };
+  for (const sub of subs) {
+    const r = await sendOne(sub, {
+      title: String(payload.title || "Rishabh Oil"),
+      body: String(payload.body || ""),
+      page: String(payload.page || ""),
+      tag: String(payload.tag || `rishabhoil-${Date.now()}`)
+    });
+    out[r === "sent" ? "sent" : r === "gone" ? "gone" : "failed"] += 1;
+  }
+  return out;
+}
+async function pushStatus() {
+  const c = getClient();
+  const r = await c.execute(
+    `SELECT COUNT(*) AS devices, COUNT(DISTINCT user_id) AS people,
+            SUM(CASE WHEN failed_at IS NOT NULL THEN 1 ELSE 0 END) AS failing
+       FROM push_subscriptions`
+  );
+  const row = r.rows[0] || {};
+  return {
+    devices: Number(row.devices) || 0,
+    people: Number(row.people) || 0,
+    failing: Number(row.failing) || 0,
+    public_key: (await vapidKeys()).publicKey
+  };
+}
+var LAST_KEY = "push.last_id";
+var pushWatcher = null;
+async function recipientsOfRow(row) {
+  const c = getClient();
+  const audience = String(row.audience || "admins");
+  const muteFilter = async (ids) => {
+    if (!ids.length) return ids;
+    const r4 = await c.execute({
+      sql: `SELECT user_id FROM notification_mutes WHERE rule_key = ? AND user_id IN (${ids.map(() => "?").join(",")})`,
+      args: [String(row.rule_key || ""), ...ids]
+    });
+    const muted = new Set(r4.rows.map((x) => Number(x.user_id)));
+    return ids.filter((id) => !muted.has(id));
+  };
+  if (audience === "named") {
+    let ids = [];
+    try {
+      const parsed = JSON.parse(String(row.recipients || "[]"));
+      if (Array.isArray(parsed)) ids = parsed.map((x) => Number(x) || 0).filter(Boolean);
+    } catch {
+      ids = [];
+    }
+    return muteFilter(ids);
+  }
+  const r = await c.execute(
+    audience === "admins" ? "SELECT id FROM users WHERE active = 1 AND role = 'admin'" : "SELECT id FROM users WHERE active = 1"
+  );
+  return muteFilter(r.rows.map((x) => Number(x.id)).filter(Boolean));
+}
+async function pushPendingNotifications() {
+  const c = getClient();
+  const marker = Number(await getSetting(LAST_KEY) || 0);
+  if (!marker) {
+    const m = await c.execute("SELECT COALESCE(MAX(id), 0) AS m FROM notifications");
+    await setSetting(LAST_KEY, String(Number(m.rows[0]?.m) || 0));
+    return { rows: 0, sent: 0 };
+  }
+  const res = await c.execute({
+    sql: `SELECT id, rule_key, severity, audience, recipients, title, body, page
+            FROM notifications
+           WHERE id > ? AND resolved_at IS NULL
+           ORDER BY id
+           LIMIT 40`,
+    args: [marker]
+  });
+  const rows = res.rows.map((x) => ({ ...x }));
+  let sent = 0;
+  let last = marker;
+  for (const row of rows) {
+    last = Math.max(last, Number(row.id) || 0);
+    const ids = await recipientsOfRow(row);
+    if (!ids.length) continue;
+    const out = await pushTo(ids, {
+      title: String(row.title || "Rishabh Oil"),
+      body: String(row.body || ""),
+      page: String(row.page || ""),
+      tag: `rishabhoil-${Number(row.id)}`
+    });
+    sent += out.sent;
+  }
+  if (last !== marker) await setSetting(LAST_KEY, String(last));
+  return { rows: rows.length, sent };
+}
+function startPushWatcher(intervalMs = 2e4) {
+  if (pushWatcher) return;
+  const tick = () => {
+    pushPendingNotifications().catch((e) => console.error("[push] watcher failed:", e.message));
+  };
+  setTimeout(tick, 6e3);
+  pushWatcher = setInterval(tick, Math.max(5e3, intervalMs));
+  if (typeof pushWatcher.unref === "function") pushWatcher.unref();
+}
+
 // src/main/bootstrap.ts
 async function runStartupTasks() {
   await initDb();
@@ -14233,6 +14602,7 @@ async function runStartupTasks() {
   await runDaily("cleanup_logs", () => cleanupLogs()).catch(() => {
   });
   startNotificationWatcher();
+  startPushWatcher();
   await runDaily("notify_retention", async () => {
     await pruneNotifications();
   }).catch(() => {
@@ -14439,7 +14809,7 @@ async function runStartupTasks() {
     const SEED = [
       ["gateEntry", "", "Weigh and record every tanker in", "Gross and tare on each vehicle, both directions."],
       ["gateEntry", "", "Close today's gate register", "No entry left pending a weight at cut-off."],
-      ["stock", "", "Enter the day-close count", "Raw and PP against the book figure, with a note on any difference."],
+      ["stock", "", "View the receiving stocks", "What came in today against the book figure, with a note on any difference."],
       ["sales", "", "Raise invoices for today's dispatches", "Every loaded tanker invoiced before cut-off."],
       ["sales", "unload", "Confirm unloading receipts", "Received quantity against what was dispatched."],
       ["orders", "", "Book today's purchases and confirm rates", "Every purchase raised today has a rate against it."],
@@ -14447,7 +14817,10 @@ async function runStartupTasks() {
       ["bargains", "", "Update open purchase bargains", "Balance quantity against what was actually drawn."],
       ["salesBargains", "", "Update open sales bargains", "Every dispatch drawn against the right bargain."],
       ["accounts", "", "Post today's vouchers", "Nothing left unposted at cut-off."],
-      ["treasury", "", "Check LCs and bills maturing this week", "Anything inside seven days needs a plan today."],
+      // The LC desk and the discounting desk are granted separately and are
+      // often not the same person, so they are asked separately.
+      ["treasuryLc", "", "Check LCs maturing this week", "Anything inside seven days needs a plan today."],
+      ["treasuryBd", "", "Check bills maturing this week", "Anything inside seven days needs a plan today."],
       ["bankRecon", "", "Reconcile yesterday's bank statement", "Every credit and debit tied to a voucher."],
       ["production", "", "Record today's batches", "Every batch run, with its formulation and what it consumed."],
       ["formulation", "", "Check the recipes used today", "Any ratio changed on the floor is recorded against the batch."],
@@ -14944,7 +15317,132 @@ async function runStartupTasks() {
     await add("ALTER TABLE companies ADD COLUMN tds_above_only INTEGER NOT NULL DEFAULT 1");
     await add("ALTER TABLE companies ADD COLUMN credit_period_days INTEGER NOT NULL DEFAULT 0");
   }).catch((e) => console.error("[intercompany] company terms failed:", e));
+  await runOnce("intercompany_opening_purchase_v1", async () => {
+    const c = getClient();
+    const add = async (sql) => {
+      await c.execute(sql).catch((e) => {
+        if (!/duplicate column/i.test(String(e.message))) throw e;
+      });
+    };
+    await add("ALTER TABLE companies ADD COLUMN opening_purchase_amount REAL NOT NULL DEFAULT 0");
+    await add("ALTER TABLE companies ADD COLUMN opening_purchase_date TEXT");
+  }).catch((e) => console.error("[intercompany] opening purchase failed:", e));
   await ensureCompanyParties().catch((e) => console.error("[intercompany] party rows failed:", e));
+  await runOnce("push_subscriptions_v1", async () => {
+    const c = getClient();
+    await c.execute(`CREATE TABLE IF NOT EXISTS push_subscriptions (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id INTEGER NOT NULL,
+      endpoint TEXT NOT NULL UNIQUE,
+      p256dh TEXT NOT NULL,
+      auth TEXT NOT NULL,
+      user_agent TEXT,
+      created_at TEXT,
+      last_ok_at TEXT,
+      failed_at TEXT
+    )`);
+    await c.execute("CREATE INDEX IF NOT EXISTS idx_push_user ON push_subscriptions(user_id)");
+  }).catch((e) => console.error("[push] subscriptions table failed:", e));
+  await runOnce("production_custom_mix_v1", async () => {
+    const c = getClient();
+    await c.execute("ALTER TABLE production ADD COLUMN custom_items_json TEXT").catch((e) => {
+      if (!/duplicate column/i.test(String(e.message))) throw e;
+    });
+  }).catch((e) => console.error("[production] custom mix column failed:", e));
+  await runOnce("work_day_requests_v1", async () => {
+    const c = getClient();
+    await c.execute(`CREATE TABLE IF NOT EXISTS work_day_requests (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id INTEGER NOT NULL,
+      work_date TEXT NOT NULL,
+      reason TEXT,
+      -- pending | approved | refused
+      state TEXT NOT NULL DEFAULT 'pending',
+      decided_by INTEGER,
+      decided_at TEXT,
+      decided_note TEXT,
+      created_at TEXT,
+      -- One live ask per person per day: asking twice is the same ask, and a
+      -- day already open must not be shut by re-asking.
+      UNIQUE(user_id, work_date)
+    )`);
+    await c.execute("CREATE INDEX IF NOT EXISTS idx_work_day_req ON work_day_requests(state, work_date)");
+  }).catch((e) => console.error("[work] day requests failed:", e));
+  await runOnce("orders_quality_waived_v1", async () => {
+    const c = getClient();
+    const add = async (sql) => {
+      await c.execute(sql).catch((e) => {
+        if (!/duplicate column/i.test(String(e.message))) throw e;
+      });
+    };
+    await add("ALTER TABLE orders ADD COLUMN quality_waived INTEGER NOT NULL DEFAULT 0");
+    await add("ALTER TABLE orders ADD COLUMN quality_waived_note TEXT");
+    await add("ALTER TABLE orders ADD COLUMN quality_waived_at TEXT");
+  }).catch((e) => console.error("[orders] quality waiver failed:", e));
+  await runOnce("work_treasury_sections_v1", async () => {
+    const c = getClient();
+    const OLD = "Check LCs and bills maturing this week";
+    const old = await c.execute({
+      sql: "SELECT id, detail, sort_order FROM work_processes WHERE module = 'treasury' AND scope = '' AND title = ?",
+      args: [OLD]
+    });
+    const row = old.rows[0];
+    if (!row) return;
+    const detail = String(row.detail ?? "") || "Anything inside seven days needs a plan today.";
+    const base = Number(row.sort_order) || 110;
+    const parts = [
+      ["treasuryLc", "Check LCs maturing this week", base],
+      ["treasuryBd", "Check bills maturing this week", base + 1]
+    ];
+    for (const [module2, title, order] of parts) {
+      await c.execute({
+        sql: `INSERT INTO work_processes (module, scope, title, detail, sort_order, active)
+              VALUES (?, '', ?, ?, ?, 1)
+              ON CONFLICT(module, scope, title) DO NOTHING`,
+        args: [module2, title, detail, order]
+      });
+    }
+    await c.execute({ sql: "UPDATE work_processes SET active = 0 WHERE id = ?", args: [Number(row.id)] });
+    await c.execute({
+      sql: `DELETE FROM work_tasks
+             WHERE process_id = ? AND kind = 'auto' AND state = 'pending' AND work_date >= ?
+               AND id NOT IN (SELECT task_id FROM work_notes)`,
+      // TODAY ONWARDS. A past day is a record of what was asked of somebody
+      // that day, ticked or not — the split changes what is asked from now on,
+      // never what was.
+      args: [Number(row.id), todayISO()]
+    });
+  }).catch((e) => console.error("[work] treasury section split failed:", e));
+  await runOnce("work_user_cutoff_v1", async () => {
+    const c = getClient();
+    const add = async (sql) => {
+      await c.execute(sql).catch((e) => {
+        if (!/duplicate column/i.test(String(e.message))) throw e;
+      });
+    };
+    await add("ALTER TABLE users ADD COLUMN work_cutoff TEXT");
+    await add("ALTER TABLE users ADD COLUMN work_cutoff_day TEXT");
+  }).catch((e) => console.error("[work] per-user cut-off failed:", e));
+  await runOnce("work_stock_receiving_title_v1", async () => {
+    const c = getClient();
+    const OLD = "Enter the day-close count";
+    const NEW = "View the receiving stocks";
+    const DETAIL = "What came in today against the book figure, with a note on any difference.";
+    const taken = await c.execute({
+      sql: "SELECT COUNT(*) AS k FROM work_processes WHERE module = 'stock' AND scope = '' AND title = ?",
+      args: [NEW]
+    });
+    if (Number(taken.rows[0]?.k) > 0) return;
+    await c.execute({
+      sql: "UPDATE work_processes SET title = ?, detail = ? WHERE module = 'stock' AND scope = '' AND title = ?",
+      args: [NEW, DETAIL, OLD]
+    });
+    await c.execute({
+      sql: `UPDATE work_tasks SET title = ?, detail = ?
+             WHERE title = ? AND kind = 'auto' AND state = 'pending' AND work_date >= ?`,
+      args: [NEW, DETAIL, OLD, todayISO()]
+    });
+  }).catch((e) => console.error("[work] stock process rename failed:", e));
   await runOnce("quality_parts_v1", async () => {
     const c = getClient();
     for (const t of ["tanker_quality", "order_quality"]) {
@@ -16618,6 +17116,29 @@ async function workCutoffDay() {
   const r = await plain2("SELECT value FROM app_settings WHERE key = ?", [CUTOFF_DAY_KEY]);
   return s2(r[0]?.value).trim() === "next" ? "next" : "same";
 }
+function resolveCutoff(u, siteCutoff, siteDay) {
+  const own = s2(u?.work_cutoff).trim();
+  if (!/^\d{2}:\d{2}$/.test(own)) return { cutoff: siteCutoff, day: siteDay, own: false };
+  return { cutoff: own, day: s2(u?.work_cutoff_day) === "next" ? "next" : "same", own: true };
+}
+async function setUserWorkCutoff(targetId, hhmm, day, adminId) {
+  const a = await loadUser(n18(adminId));
+  if (s2(a.role) !== "admin") throw new Error("Only an admin can change a cut-off");
+  const uid = n18(targetId);
+  if (!uid) throw new Error("Whose cut-off?");
+  await loadUser(uid);
+  const v = s2(hhmm).trim();
+  if (v && !/^\d{2}:\d{2}$/.test(v)) throw new Error("Give the cut-off as HH:MM");
+  const d = s2(day) === "next" ? "next" : "same";
+  await getClient().execute({
+    sql: "UPDATE users SET work_cutoff = ?, work_cutoff_day = ? WHERE id = ?",
+    args: [v || null, v ? d : null, uid]
+  });
+  const site = await workCutoff();
+  const siteDay = await workCutoffDay();
+  const r = resolveCutoff({ work_cutoff: v, work_cutoff_day: v ? d : null }, site, siteDay);
+  return { id: uid, cutoff: r.cutoff, cutoff_day: r.day, own: r.own };
+}
 async function workingDayISO() {
   if (await workCutoffDay() !== "next") return todayISO();
   const cut = await workCutoff();
@@ -16645,6 +17166,11 @@ async function setWorkCutoff(hhmm, adminId, day) {
   });
   return { cutoff: v, cutoff_day: d };
 }
+var SECTION_PARENT2 = {
+  treasuryLc: "treasury",
+  treasuryBd: "treasury",
+  treasuryTracker: "treasury"
+};
 function grantsOf(user) {
   if (s2(user.role) === "admin") return "ALL";
   let perms = {};
@@ -16659,7 +17185,7 @@ function grantsOf(user) {
       const [mod, scope] = s2(k).split(":");
       if (mod) out.push({ module: mod, scope: s2(scope) });
     }
-    return out;
+    return withSections(out);
   }
   if (!perms || typeof perms !== "object") return [];
   for (const [key3, v] of Object.entries(perms)) {
@@ -16673,6 +17199,15 @@ function grantsOf(user) {
       out.push({ module: key3, scope: s2(o.scope) });
     }
   }
+  return withSections(out);
+}
+function withSections(list2) {
+  const held = new Set(list2.map((g) => g.module));
+  const out = [...list2];
+  for (const [section, parent] of Object.entries(SECTION_PARENT2)) {
+    if (held.has(parent) && !held.has(section)) out.push({ module: section, scope: "" });
+    if (held.has(section) && !held.has(parent)) out.push({ module: parent, scope: "" });
+  }
   return out;
 }
 async function listWorkProcesses() {
@@ -16681,33 +17216,68 @@ async function listWorkProcesses() {
          FROM work_processes ORDER BY module, sort_order, id`
   )).map((r) => ({ ...r, id: n18(r.id), active: n18(r.active) === 1 }));
 }
-async function saveWorkProcess(v) {
+async function carryToOpenTasks(processId, title, detail) {
+  await getClient().execute({
+    sql: `UPDATE work_tasks SET title = ?, detail = ?, updated_at = ?
+           WHERE process_id = ? AND kind = 'auto' AND state = 'pending' AND work_date >= ?`,
+    args: [title, detail, localStamp(), n18(processId), todayISO()]
+  });
+}
+async function withdrawUntouched(processId) {
+  await getClient().execute({
+    sql: `DELETE FROM work_tasks
+           WHERE process_id = ? AND kind = 'auto' AND state = 'pending' AND work_date >= ?
+             AND id NOT IN (SELECT task_id FROM work_notes)`,
+    args: [n18(processId), todayISO()]
+  });
+}
+async function saveWorkProcess(v, adminId) {
+  const a = await loadUser(n18(adminId));
+  if (s2(a.role) !== "admin") throw new Error("Only an admin can change the task list");
   const module2 = s2(v.module).trim();
-  const title = s2(v.title).trim();
-  if (!module2) throw new Error("Which page is this process for?");
-  if (!title) throw new Error("Name the process");
+  const title = s2(v.title).trim().slice(0, 300);
+  if (!module2) throw new Error("Which page is this line for?");
+  if (!title) throw new Error("Say what needs doing");
+  const scope = s2(v.scope).trim();
+  const detail = s2(v.detail).trim().slice(0, 2e3) || null;
+  const active = v.active == null ? 1 : v.active === false || n18(v.active) === 0 ? 0 : 1;
   const id = n18(v.id);
-  const args = [module2, s2(v.scope).trim(), title, s2(v.detail).trim() || null, n18(v.sort_order), v.active === false ? 0 : 1];
+  const clash = await plain2(
+    "SELECT id FROM work_processes WHERE module = ? AND scope = ? AND title = ? AND id <> ?",
+    [module2, scope, title, id]
+  );
+  if (clash.length) throw new Error("That line is already on this page");
   if (id) {
+    const cur = (await plain2("SELECT sort_order, module, scope FROM work_processes WHERE id = ?", [id]))[0];
+    if (!cur) throw new Error("That line is no longer on the list");
+    const order2 = v.sort_order == null ? n18(cur.sort_order) : n18(v.sort_order);
+    const moved = s2(cur.module) !== module2 || s2(cur.scope) !== scope;
     await getClient().execute({
       sql: `UPDATE work_processes SET module = ?, scope = ?, title = ?, detail = ?, sort_order = ?, active = ?
              WHERE id = ?`,
-      args: [...args, id]
+      args: [module2, scope, title, detail, order2, active, id]
     });
+    await carryToOpenTasks(id, title, detail);
+    if (moved || !active) await withdrawUntouched(id);
     return { id };
   }
+  const last = await plain2("SELECT MAX(sort_order) AS m FROM work_processes WHERE module = ?", [module2]);
+  const order = v.sort_order == null ? n18(last[0]?.m) + 10 : n18(v.sort_order);
   const res = await getClient().execute({
     sql: `INSERT INTO work_processes (module, scope, title, detail, sort_order, active)
           VALUES (?, ?, ?, ?, ?, ?)
           ON CONFLICT(module, scope, title) DO UPDATE SET
             detail = excluded.detail, sort_order = excluded.sort_order, active = excluded.active`,
-    args
+    args: [module2, scope, title, detail, order, active]
   });
   return { id: Number(res.lastInsertRowid) || 0 };
 }
-async function removeWorkProcess(id) {
+async function removeWorkProcess(id, adminId) {
+  const a = await loadUser(n18(adminId));
+  if (s2(a.role) !== "admin") throw new Error("Only an admin can change the task list");
   const pid = n18(id);
-  if (!pid) throw new Error("Which process?");
+  if (!pid) throw new Error("Which line?");
+  await withdrawUntouched(pid);
   const used = await plain2("SELECT COUNT(*) AS k FROM work_tasks WHERE process_id = ?", [pid]);
   if (n18(used[0]?.k) > 0) {
     await getClient().execute({ sql: "UPDATE work_processes SET active = 0 WHERE id = ?", args: [pid] });
@@ -16715,6 +17285,20 @@ async function removeWorkProcess(id) {
   }
   await getClient().execute({ sql: "DELETE FROM work_processes WHERE id = ?", args: [pid] });
   return { id: pid, retired: false };
+}
+async function reorderWorkProcesses(ids, adminId) {
+  const a = await loadUser(n18(adminId));
+  if (s2(a.role) !== "admin") throw new Error("Only an admin can change the task list");
+  const list2 = (Array.isArray(ids) ? ids : []).map(n18).filter(Boolean);
+  let order = 0;
+  for (const id of list2) {
+    order += 10;
+    await getClient().execute({
+      sql: "UPDATE work_processes SET sort_order = ? WHERE id = ?",
+      args: [order, id]
+    });
+  }
+  return { ok: true };
 }
 async function ensureDay(date) {
   if (date !== todayISO()) return;
@@ -16775,7 +17359,10 @@ async function listWorkBoard(date, viewerId) {
     // on notes and tasks (an admin's send-back note on a non-admin's own task
     // still needs the admin's name), and trimmed to what is actually RETURNED
     // further down.
-    plain2("SELECT id, username, full_name, role, active, permissions FROM users ORDER BY id"),
+    plain2(
+      `SELECT id, username, full_name, role, active, permissions, work_cutoff, work_cutoff_day
+         FROM users ORDER BY id`
+    ),
     plain2(
       `SELECT * FROM work_tasks
         WHERE work_date = ? AND (${fid ? "factory_id = ?" : `company_id IN (${ph})`})${viewerIsAdmin ? "" : " AND user_id = ?"}
@@ -16793,6 +17380,11 @@ async function listWorkBoard(date, viewerId) {
     ),
     workCutoff(),
     workCutoffDay()
+  ]);
+  const [dayRequests, myOpenDays, openDay] = await Promise.all([
+    dayRequestsFor(viewerIsAdmin, vid),
+    vid ? openDays(vid) : Promise.resolve([]),
+    workingDayISO()
   ]);
   const nameOf = new Map(users.map((u) => [n18(u.id), s2(u.full_name) || s2(u.username)]));
   const byTask = /* @__PURE__ */ new Map();
@@ -16812,6 +17404,14 @@ async function listWorkBoard(date, viewerId) {
   }
   return {
     date: day,
+    // The day the board is CURRENTLY on, which after a next-day cut-off is not
+    // always today — everything that asks "is this day still open" compares
+    // against this rather than against the calendar.
+    open_day: openDay,
+    // Closed days this login has been let back into, and every request the
+    // viewer is entitled to see.
+    open_days: myOpenDays,
+    day_requests: dayRequests,
     cutoff,
     // Which day the cut-off falls on, so the screen can judge a tick against
     // the right deadline rather than against a bare clock reading.
@@ -16830,6 +17430,12 @@ async function listWorkBoard(date, viewerId) {
       username: s2(u.username),
       role: s2(u.role),
       active: n18(u.active) === 1,
+      // The deadline THIS login is judged against, already resolved — the
+      // screen should never have to know which of the two it came from to
+      // print it, only to say whose it is.
+      cutoff: resolveCutoff(u, cutoff, cutoffDay).cutoff,
+      cutoff_day: resolveCutoff(u, cutoff, cutoffDay).day,
+      cutoff_own: resolveCutoff(u, cutoff, cutoffDay).own,
       // What the checklist was built from, so the screen can say why somebody
       // has no tasks rather than showing an empty list with no explanation.
       grants: grantsOf(u) === "ALL" ? "ALL" : grantsOf(u).map((g) => g.scope ? `${g.module}:${g.scope}` : g.module)
@@ -16892,11 +17498,110 @@ async function tell(toUserId, title, body2, severity, tag) {
     console.error("[work] notification failed:", e.message);
   });
 }
+async function openDays(userId) {
+  const rows = await plain2(
+    "SELECT work_date FROM work_day_requests WHERE user_id = ? AND state = 'approved' ORDER BY work_date DESC",
+    [n18(userId)]
+  );
+  return rows.map((r) => s2(r.work_date));
+}
+async function assertDayOpen(user, workDate) {
+  if (s2(user.role) === "admin") return;
+  const day = s2(workDate).slice(0, 10);
+  if (!day || day === await workingDayISO()) return;
+  const ok = await plain2(
+    "SELECT id FROM work_day_requests WHERE user_id = ? AND work_date = ? AND state = 'approved'",
+    [n18(user.id), day]
+  );
+  if (!ok.length) {
+    throw new Error(
+      "That day is closed. Ask an admin to open it \u2014 the button is on the board, beside the date."
+    );
+  }
+}
+async function requestWorkDay(workDate, userId, reason) {
+  const u = await loadUser(n18(userId));
+  assertWorkAccess(u);
+  const day = namedDay(s2(workDate));
+  if (!day) throw new Error("Which day?");
+  const open = await workingDayISO();
+  if (day === open) throw new Error("That day is already open \u2014 it is the board in front of you");
+  if (day > open) throw new Error("That day has not happened yet");
+  const why = s2(reason).trim().slice(0, 500) || null;
+  await getClient().execute({
+    sql: `INSERT INTO work_day_requests (user_id, work_date, reason, state, created_at)
+          VALUES (?, ?, ?, 'pending', ?)
+          ON CONFLICT(user_id, work_date) DO UPDATE SET
+            reason = excluded.reason,
+            -- Asking again after a refusal is a fresh ask, not a second row.
+            -- A day already open is left alone: re-asking must not shut it.
+            state = CASE WHEN work_day_requests.state = 'approved' THEN 'approved' ELSE 'pending' END,
+            created_at = excluded.created_at,
+            decided_by = NULL, decided_at = NULL, decided_note = NULL`,
+    args: [n18(u.id), day, why, localStamp()]
+  });
+  const row = (await plain2("SELECT id, state FROM work_day_requests WHERE user_id = ? AND work_date = ?", [
+    n18(u.id),
+    day
+  ]))[0];
+  const admins = await plain2("SELECT id FROM users WHERE role = 'admin' AND active = 1");
+  for (const a of admins) {
+    await tell(
+      n18(a.id),
+      `${s2(u.full_name) || s2(u.username)} is asking to fill in a closed day`,
+      `${day}${why ? ` \u2014 ${why}` : ""}`,
+      "normal",
+      `dayreq:${n18(row?.id)}:${Date.now()}`
+    );
+  }
+  return { id: n18(row?.id), work_date: day, state: s2(row?.state) || "pending" };
+}
+async function decideWorkDay(requestId, approve, adminId, note) {
+  const a = await loadUser(n18(adminId));
+  if (s2(a.role) !== "admin") throw new Error("Only an admin can open a closed day");
+  const req = (await plain2("SELECT * FROM work_day_requests WHERE id = ?", [n18(requestId)]))[0];
+  if (!req) throw new Error("That request is no longer there");
+  const state = approve ? "approved" : "refused";
+  await getClient().execute({
+    sql: `UPDATE work_day_requests SET state = ?, decided_by = ?, decided_at = ?, decided_note = ? WHERE id = ?`,
+    args: [state, n18(a.id), localStamp(), s2(note).trim().slice(0, 500) || null, n18(requestId)]
+  });
+  await tell(
+    n18(req.user_id),
+    approve ? `${s2(req.work_date)} is open for you` : `${s2(req.work_date)} was not opened`,
+    approve ? "Pick the date on your board and tick off what you finished that day." : `${s2(a.full_name) || s2(a.username)} did not open it${s2(note).trim() ? ` \u2014 ${s2(note).trim()}` : ""}.`,
+    "normal",
+    `dayreq:${n18(requestId)}:${state}:${Date.now()}`
+  );
+  return { id: n18(requestId), state };
+}
+async function dayRequestsFor(viewerIsAdmin, viewerId) {
+  const rows = await plain2(
+    `SELECT r.*, u.full_name, u.username
+       FROM work_day_requests r
+       LEFT JOIN users u ON u.id = r.user_id
+      ${viewerIsAdmin ? "" : "WHERE r.user_id = ?"}
+      ORDER BY r.state = 'pending' DESC, r.work_date DESC, r.id DESC
+      LIMIT 60`,
+    viewerIsAdmin ? [] : [n18(viewerId)]
+  );
+  return rows.map((r) => ({
+    id: n18(r.id),
+    user_id: n18(r.user_id),
+    user_name: s2(r.full_name) || s2(r.username) || `#${n18(r.user_id)}`,
+    work_date: s2(r.work_date),
+    reason: s2(r.reason),
+    state: s2(r.state) || "pending",
+    decided_at: s2(r.decided_at),
+    decided_note: s2(r.decided_note)
+  }));
+}
 async function tickWorkTask(taskId, userId) {
   const t = await loadTask(taskId);
   const u = await loadUser(userId);
   assertWorkAccess(u);
   if (n18(t.user_id) !== n18(u.id)) throw new Error("That task belongs to somebody else");
+  await assertDayOpen(u, s2(t.work_date));
   if (s2(t.state) !== "pending") throw new Error(`This task is already ${s2(t.state)}`);
   await getClient().execute({
     sql: "UPDATE work_tasks SET state = 'done', marked_at = ?, updated_at = ? WHERE id = ?",
@@ -16909,6 +17614,7 @@ async function untickWorkTask(taskId, userId) {
   const u = await loadUser(userId);
   assertWorkAccess(u);
   if (n18(t.user_id) !== n18(u.id)) throw new Error("That task belongs to somebody else");
+  await assertDayOpen(u, s2(t.work_date));
   const back = { done: "pending", redone: "fixes" };
   const to = back[s2(t.state)];
   if (!to) {
@@ -16927,6 +17633,7 @@ async function redoWorkTask(taskId, userId) {
   const u = await loadUser(userId);
   assertWorkAccess(u);
   if (n18(t.user_id) !== n18(u.id)) throw new Error("That task belongs to somebody else");
+  await assertDayOpen(u, s2(t.work_date));
   if (s2(t.state) !== "fixes") throw new Error("Only a task sent back for fixes can be marked redone");
   await getClient().execute({
     sql: "UPDATE work_tasks SET state = 'redone', marked_at = ?, updated_at = ? WHERE id = ?",
@@ -21849,6 +22556,10 @@ function registerIpc() {
     return { id: Number(id) };
   });
   handle("orders:quality", (_e, { id }) => listOrderQuality(Number(id)));
+  handle(
+    "orders:waiveQuality",
+    (_e, { id, waived, note }) => waiveOrderQuality(Number(id), waived !== false, note)
+  );
   handle("orders:saveQuality", async (_e, { id, rows }) => {
     await saveOrderQuality(Number(id), Array.isArray(rows) ? rows : []);
     return { id: Number(id) };
@@ -22071,14 +22782,36 @@ function registerIpc() {
     "work:board",
     (_e, { date, userId } = {}) => listWorkBoard(date, userId)
   );
+  handle(
+    "work:requestDay",
+    (_e, { date, userId, reason }) => requestWorkDay(date, userId, reason)
+  );
+  handle(
+    "work:decideDay",
+    (_e, { id, approve, userId, note }) => decideWorkDay(id, approve !== false, userId, note)
+  );
   handle("work:cutoff", () => workCutoff());
+  handle(
+    "work:setUserCutoff",
+    (_e, { targetId, cutoff, day, userId }) => setUserWorkCutoff(targetId, cutoff, day, userId)
+  );
   handle(
     "work:setCutoff",
     (_e, { cutoff, userId, day }) => setWorkCutoff(cutoff, userId, day)
   );
   handle("work:processes", () => listWorkProcesses());
-  handle("work:saveProcess", (_e, { values }) => saveWorkProcess(values));
-  handle("work:removeProcess", (_e, { id }) => removeWorkProcess(id));
+  handle(
+    "work:saveProcess",
+    (_e, { values, userId }) => saveWorkProcess(values, userId)
+  );
+  handle(
+    "work:removeProcess",
+    (_e, { id, userId }) => removeWorkProcess(id, userId)
+  );
+  handle(
+    "work:reorderProcesses",
+    (_e, { ids, userId }) => reorderWorkProcesses(ids, userId)
+  );
   handle(
     "work:tick",
     (_e, { taskId, userId }) => tickWorkTask(taskId, userId)
@@ -22236,6 +22969,40 @@ function registerIpc() {
   handle("gate:nextNo", (_e, args) => nextGateEntryNo(args?.direction));
   handle("gate:dispatchableSales", () => listDispatchableSales());
   handle("gate:waivedOuts", () => listWaivedGateOuts());
+  handle("push:key", async () => ({ key: (await vapidKeys()).publicKey }));
+  handle("push:status", () => pushStatus());
+  handle(
+    "push:subscribe",
+    (_e, { subscription, userId, ua }) => saveSubscription(subscription, userId, ua)
+  );
+  handle("push:unsubscribe", (_e, { endpoint }) => dropSubscription(endpoint));
+  handle(
+    "push:test",
+    async (_e, { userId }) => pushTo([Number(userId) || 0], {
+      title: "Rishabh Oil \u2014 test",
+      body: "Push is working on this device. Real notifications will arrive the same way.",
+      tag: `rishabhoil-test-${Date.now()}`
+    })
+  );
+  handle(
+    "push:broadcast",
+    async (_e, { title, body: body2, userId }) => {
+      const who = await getClient().execute({
+        sql: "SELECT role FROM users WHERE id = ?",
+        args: [Number(userId) || 0]
+      });
+      if (String(who.rows[0]?.role || "") !== "admin") {
+        throw new Error("Only an admin can send to every device");
+      }
+      const t = String(title || "").trim();
+      if (!t) throw new Error("Say what the notification should say");
+      return pushTo("all", {
+        title: t.slice(0, 120),
+        body: String(body2 || "").trim().slice(0, 300),
+        tag: `rishabhoil-bcast-${Date.now()}`
+      });
+    }
+  );
   handle("notify:rules", () => listNotificationRules());
   handle("notify:saveRule", (_e, a) => saveNotificationRule(a));
   handle("notify:resetRule", (_e, a) => resetNotificationRule(String(a.key)));
@@ -22412,7 +23179,7 @@ function registerIpc() {
 var import_node_http = require("node:http");
 var import_node_fs4 = require("node:fs");
 var import_node_path4 = require("node:path");
-var import_node_crypto = require("node:crypto");
+var import_node_crypto2 = require("node:crypto");
 init_electron_shim();
 init_requestContext();
 init_db();
@@ -22889,7 +23656,7 @@ function startHttpServer({ port, webRoot }) {
       let sid = readCookie(req, "sid");
       let cookie;
       if (!sid || !sessions.has(sid)) {
-        sid = (0, import_node_crypto.randomBytes)(24).toString("hex");
+        sid = (0, import_node_crypto2.randomBytes)(24).toString("hex");
         sessions.set(sid, { userId: null, username: "system", companyId: 1, seen: Date.now() });
         cookie = `sid=${sid}; HttpOnly; SameSite=Lax; Path=/; Max-Age=${SESSION_TTL_MS / 1e3}`;
       }
