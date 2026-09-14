@@ -6542,23 +6542,47 @@ var init_orders = __esm({
 // src/main/intercompany.ts
 async function ensureCompanyParties() {
   const c = getClient();
-  const companies = await c.execute("SELECT id, name FROM companies WHERE COALESCE(active, 1) = 1");
+  const companies = await c.execute(
+    `SELECT id, name, gstin, state, gst_pct, tds_pct, tds_threshold, tds_above_only, credit_period_days
+       FROM companies WHERE COALESCE(active, 1) = 1`
+  );
   for (const co of companies.rows) {
     const cid = n5(co.id);
     const name = s(co.name).trim();
     if (!cid || !name) continue;
+    const terms = {
+      gstin: s(co.gstin) || null,
+      state: s(co.state) || null,
+      gst_pct: n5(co.gst_pct),
+      tds_pct: n5(co.tds_pct),
+      tds_threshold: n5(co.tds_threshold),
+      tds_above_only: n5(co.tds_above_only) ? 1 : 0,
+      credit_period_days: n5(co.credit_period_days)
+    };
     for (const table of ["customers", "suppliers"]) {
       const existing = await c.execute({
         sql: `SELECT id, name FROM ${table} WHERE company_link_id = ?`,
         args: [cid]
       });
       if (existing.rows.length) {
-        if (s(existing.rows[0].name) !== name) {
-          await c.execute({
-            sql: `UPDATE ${table} SET name = ? WHERE id = ?`,
-            args: [name, n5(existing.rows[0].id)]
-          });
-        }
+        const partyId = n5(existing.rows[0].id);
+        await c.execute({
+          sql: `UPDATE ${table}
+                   SET name = ?, gstin = ?, state = ?, gst_pct = ?, tds_pct = ?,
+                       tds_threshold = ?, tds_above_only = ?, credit_period_days = ?
+                 WHERE id = ?`,
+          args: [
+            name,
+            terms.gstin,
+            terms.state,
+            terms.gst_pct,
+            terms.tds_pct,
+            terms.tds_threshold,
+            terms.tds_above_only,
+            terms.credit_period_days,
+            partyId
+          ]
+        });
         continue;
       }
       const byName = await c.execute({
@@ -6573,8 +6597,22 @@ async function ensureCompanyParties() {
         continue;
       }
       await c.execute({
-        sql: table === "suppliers" ? `INSERT INTO suppliers (name, company_link_id, active, skip_tanker_stages) VALUES (?, ?, 1, 1)` : `INSERT INTO customers (name, company_link_id, active) VALUES (?, ?, 1)`,
-        args: [name, cid]
+        sql: table === "suppliers" ? `INSERT INTO suppliers (name, company_link_id, active, skip_tanker_stages,
+                 gstin, state, gst_pct, tds_pct, tds_threshold, tds_above_only, credit_period_days)
+               VALUES (?, ?, 1, 1, ?, ?, ?, ?, ?, ?, ?)` : `INSERT INTO customers (name, company_link_id, active,
+                 gstin, state, gst_pct, tds_pct, tds_threshold, tds_above_only, credit_period_days)
+               VALUES (?, ?, 1, ?, ?, ?, ?, ?, ?, ?)`,
+        args: [
+          name,
+          cid,
+          terms.gstin,
+          terms.state,
+          terms.gst_pct,
+          terms.tds_pct,
+          terms.tds_threshold,
+          terms.tds_above_only,
+          terms.credit_period_days
+        ]
       });
     }
   }
@@ -6603,11 +6641,11 @@ async function supplierForCompany(companyId) {
 }
 async function companyTerms(companyId) {
   const r = await getClient().execute({
-    sql: "SELECT gst_pct, tds_pct FROM companies WHERE id = ?",
+    sql: "SELECT gst_pct, tds_pct, tds_above_only FROM companies WHERE id = ?",
     args: [n5(companyId)]
   });
   const row = r.rows[0];
-  return { gst: n5(row?.gst_pct), tds: n5(row?.tds_pct) };
+  return { gst: n5(row?.gst_pct), tds: n5(row?.tds_pct), aboveOnly: !!n5(row?.tds_above_only) };
 }
 async function pairedPurchaseOf(saleId) {
   const r = await getClient().execute({
@@ -6922,7 +6960,20 @@ var init_repos = __esm({
       sources: ["name", "transit_days", "active"],
       uoms: ["name", "active"],
       brokers: ["name", "contact_person", "phone", "brokerage_pct", "address", "note", "active"],
-      companies: ["name", "company_type", "colour", "active", "factory_id", "gst_pct", "tds_pct"],
+      companies: [
+        "name",
+        "company_type",
+        "colour",
+        "active",
+        "factory_id",
+        "gstin",
+        "state",
+        "gst_pct",
+        "tds_pct",
+        "tds_threshold",
+        "tds_above_only",
+        "credit_period_days"
+      ],
       factories: ["name", "location", "active"],
       packagings: ["name", "box_label", "pouch_label", "pouches_per_box", "unit_size", "unit_uom", "base_per_pouch", "base_uom", "product_id", "product_label", "active"]
     };
@@ -12729,7 +12780,14 @@ function mergeInvoiceItem(header, item, group) {
     is_trading: header.is_trading,
     deduct_freight: header.deduct_freight,
     // Agreed for the whole delivery, not per line — one tanker, one tolerance.
-    allowed_shortage_pct: header.allowed_shortage_pct
+    allowed_shortage_pct: header.allowed_shortage_pct,
+    // The other half of an inter-company invoice. This function names every
+    // header field a line inherits, so a field missing from the list simply
+    // never arrives — which is what happened: the form asked for the purchase
+    // invoice number, the desk typed it, and the line that reached createSale
+    // had never heard of it.
+    purchase_invoice_no: header.purchase_invoice_no,
+    purchase_rate: header.purchase_rate
   };
 }
 async function createSaleInvoice(v) {
@@ -14873,6 +14931,19 @@ async function runStartupTasks() {
       "CREATE INDEX IF NOT EXISTS idx_orders_intercompany ON orders(intercompany_sale_id)"
     );
   }).catch((e) => console.error("[intercompany] columns failed:", e));
+  await runOnce("intercompany_company_terms_v1", async () => {
+    const c = getClient();
+    const add = async (sql) => {
+      await c.execute(sql).catch((e) => {
+        if (!/duplicate column/i.test(String(e.message))) throw e;
+      });
+    };
+    await add("ALTER TABLE companies ADD COLUMN gstin TEXT");
+    await add("ALTER TABLE companies ADD COLUMN state TEXT");
+    await add("ALTER TABLE companies ADD COLUMN tds_threshold REAL NOT NULL DEFAULT 5000000");
+    await add("ALTER TABLE companies ADD COLUMN tds_above_only INTEGER NOT NULL DEFAULT 1");
+    await add("ALTER TABLE companies ADD COLUMN credit_period_days INTEGER NOT NULL DEFAULT 0");
+  }).catch((e) => console.error("[intercompany] company terms failed:", e));
   await ensureCompanyParties().catch((e) => console.error("[intercompany] party rows failed:", e));
   await runOnce("quality_parts_v1", async () => {
     const c = getClient();
