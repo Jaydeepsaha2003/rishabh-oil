@@ -4635,14 +4635,14 @@ async function assertPurchaseInvoiceNoFree(v, companyId, id) {
     const own = await c.execute({ sql: "SELECT invoice_no FROM orders WHERE id = ?", args: [id] });
     if (own.rows.length && key(own.rows[0].invoice_no) === want) return;
   }
-  const group = String(v?.intercompany_group || "").trim();
+  const group = String(v?.bill_group || "").trim();
   const mine = group ? group : id ? `row:${id}` : "row:0";
   const skip = excluded(v, id);
   const res = await c.execute({
     sql: `SELECT o.id, o.invoice_no, o.order_date, s.name AS party
             FROM orders o LEFT JOIN suppliers s ON s.id = o.supplier_id
            WHERE o.company_id = ? AND UPPER(TRIM(COALESCE(o.invoice_no,''))) = ?
-             AND COALESCE(NULLIF(TRIM(o.intercompany_group), ''), 'row:' || o.id) <> ?
+             AND COALESCE(NULLIF(TRIM(o.bill_group), ''), 'row:' || o.id) <> ?
                  ${notIn("o.id", skip)}
            ORDER BY o.id LIMIT 1`,
     args: [companyId, want, mine, ...skip]
@@ -4712,6 +4712,9 @@ function toPlain6(res) {
 function n4(v) {
   const x = Number(v);
   return Number.isFinite(x) ? x : 0;
+}
+function billSiblings(v) {
+  return Array.isArray(v?.bill_sibling_ids) ? v.bill_sibling_ids.map((x) => Number(x)).filter((x) => x > 0) : [];
 }
 function isDelivered(v) {
   const s3 = String(v || "").toUpperCase();
@@ -5217,6 +5220,13 @@ async function createOrder(v) {
     ]
   });
   const id = Number(res.lastInsertRowid);
+  const billGroup = String(v.bill_group || "").trim();
+  if (billGroup) {
+    await getClient().execute({
+      sql: "UPDATE orders SET bill_group = ? WHERE id = ?",
+      args: [billGroup, id]
+    });
+  }
   if (isConsignment) {
     if (picks.length) {
       const alloc = await assignConsignmentLots(id, picks, n4(v.supplier_id), n4(v.oil_type_id), bookInCompany);
@@ -5229,7 +5239,7 @@ async function createOrder(v) {
       await autoAssignConsignmentLots(id, n4(v.supplier_id), n4(v.oil_type_id), n4(v.ordered_qty), n4(v.bargain_id), bookInCompany);
     }
   } else {
-    await assignTankers(id, v.tanker_ids, n4(v.bargain_id), n4(v.transporter_id), bookInCompany);
+    await assignTankers(id, v.tanker_ids, n4(v.bargain_id), n4(v.transporter_id), bookInCompany, billSiblings(v));
     await applySupplierFreight(id, v);
   }
   await saveOrderBargainInterest(id, v.bargain_interest);
@@ -5273,6 +5283,89 @@ async function postOrderJournal(orderId, v, m, supplier, roundOff = 0) {
     roundOff,
     interest: m.interest_per_unit * n4(v.ordered_qty)
   }).catch((e) => console.error("[journal] purchase post failed:", e.message));
+}
+function newBillGroup() {
+  billSeq += 1;
+  return `PB-${Date.now().toString(36)}-${billSeq}`;
+}
+function toBillItems(v) {
+  const items = Array.isArray(v.items) ? v.items : [];
+  if (!items.length) throw new Error("Add at least one product to the invoice");
+  const seen = /* @__PURE__ */ new Set();
+  for (const it of items) {
+    const pid = n4(it.oil_type_id);
+    if (!pid) throw new Error("Every line needs a product");
+    if (seen.has(pid)) throw new Error("The same product is on this invoice twice \u2014 put its tankers on one line");
+    seen.add(pid);
+    const ids = Array.isArray(it.tanker_ids) ? it.tanker_ids.map(Number).filter((x) => x > 0) : [];
+    if (!ids.length) throw new Error("Every line needs at least one loaded tanker");
+  }
+  return items;
+}
+function billLine(header, item, group, first) {
+  return {
+    ...header,
+    ...item,
+    bill_group: group,
+    tanker_ids: item.tanker_ids,
+    // Invoice-level money rides on the FIRST line only, exactly as a sales
+    // invoice carries its round off. Charged twice it would be charged once
+    // per product.
+    round_off: first ? header.round_off : 0,
+    round_off_manual: first ? header.round_off_manual : 0,
+    items: void 0
+  };
+}
+async function createTankerInvoice(v) {
+  const items = toBillItems(v);
+  const group = newBillGroup();
+  const ids = [];
+  try {
+    for (let i = 0; i < items.length; i++) {
+      const res = await createOrder(billLine(v, items[i], group, i === 0));
+      ids.push(n4(res?.id));
+    }
+  } catch (e) {
+    for (const id of ids.reverse()) {
+      await deleteOrder(id).catch(
+        (x) => console.error("[orders] could not unwind line", id, "of a refused invoice:", x.message)
+      );
+    }
+    throw e;
+  }
+  return { group, ids };
+}
+async function updateTankerInvoice(group, v) {
+  const items = toBillItems(v);
+  const g = String(group || "").trim();
+  if (!g) throw new Error("This invoice has no bill reference to edit");
+  const existing = toPlain6(
+    await getClient().execute({
+      sql: "SELECT id, oil_type_id, invoice_no FROM orders WHERE bill_group = ? ORDER BY id",
+      args: [g]
+    })
+  );
+  if (!existing.length) throw new Error("That invoice is no longer in the books");
+  const held = existing.map((r) => n4(r.id));
+  const byProduct = /* @__PURE__ */ new Map();
+  for (const r of existing) byProduct.set(n4(r.oil_type_id), r);
+  const ids = [];
+  for (let i = 0; i < items.length; i++) {
+    const line = billLine(v, items[i], g, i === 0);
+    line.invoice_dup_exclude_ids = held;
+    line.bill_sibling_ids = held;
+    const standing = byProduct.get(n4(items[i].oil_type_id));
+    if (standing) {
+      await updateOrder(n4(standing.id), line);
+      ids.push(n4(standing.id));
+      byProduct.delete(n4(items[i].oil_type_id));
+    } else {
+      const res = await createOrder(line);
+      ids.push(n4(res?.id));
+    }
+  }
+  for (const gone of byProduct.values()) await deleteOrder(n4(gone.id));
+  return { group: g, ids };
 }
 async function updateOrder(id, v) {
   await ensureOilType(n4(v.oil_type_id));
@@ -5400,7 +5493,7 @@ async function updateOrder(id, v) {
     if (moveTo) {
       await getClient().execute({ sql: "UPDATE orders SET company_id = ? WHERE id = ?", args: [moveTo, id] });
     }
-    await assignTankers(id, v.tanker_ids, n4(v.bargain_id), n4(v.transporter_id), moveTo);
+    await assignTankers(id, v.tanker_ids, n4(v.bargain_id), n4(v.transporter_id), moveTo, billSiblings(v));
     await applySupplierFreight(id, v);
   }
   await setSupplierPayable(id, n4(v.supplier_id), m.net_amount, String(v.order_date));
@@ -5571,7 +5664,7 @@ async function deleteOrder(id) {
   await c.execute({ sql: "DELETE FROM orders WHERE id = ?", args: [id] });
   return { id };
 }
-async function assignTankers(orderId, tankerIds, bargainId, transporterId, companyId = 0) {
+async function assignTankers(orderId, tankerIds, bargainId, transporterId, companyId = 0, siblingIds = []) {
   const ids = Array.isArray(tankerIds) ? tankerIds.map(Number).filter((x) => x > 0) : [];
   if (!ids.length) throw new Error("Select at least one loaded tanker");
   const c = getClient();
@@ -5582,7 +5675,7 @@ async function assignTankers(orderId, tankerIds, bargainId, transporterId, compa
     });
     if (!res.rows.length) throw new Error("A selected tanker no longer exists");
     const row = res.rows[0];
-    if (row.order_id != null && Number(row.order_id) !== orderId) {
+    if (row.order_id != null && Number(row.order_id) !== orderId && !siblingIds.includes(Number(row.order_id))) {
       throw new Error("A selected tanker is already attached to another purchase");
     }
     if (Number(row.bargain_id) !== bargainId) {
@@ -6665,7 +6758,7 @@ async function deleteLedgerEntry(partyType, id) {
   });
   return { id };
 }
-var STAGES, TANKER_STAGES, GATE_MATCH_BUFFER, STAGE_DATE_FIELDS;
+var STAGES, TANKER_STAGES, GATE_MATCH_BUFFER, STAGE_DATE_FIELDS, billSeq;
 var init_orders = __esm({
   "src/main/orders.ts"() {
     init_db();
@@ -6696,6 +6789,7 @@ var init_orders = __esm({
       ["inside_factory_date", "Inside factory date"],
       ["empty_date", "Receipt (empty) date"]
     ];
+    billSeq = 0;
   }
 });
 
@@ -6945,12 +7039,12 @@ function purchasePayload(sale, v, buyer, supplierId, terms) {
     // The sales invoice these all belong to. One transfer of three products is
     // three purchase rows under ONE number, and this is what tells the
     // Purchases form they are one bill rather than three clashing ones.
-    intercompany_group: s(sale.invoice_group) || null
+    bill_group: s(sale.invoice_group) || null
   };
 }
 async function stampPair(orderId, saleId, group) {
   await getClient().execute({
-    sql: "UPDATE orders SET intercompany_sale_id = ?, intercompany_group = ? WHERE id = ?",
+    sql: "UPDATE orders SET intercompany_sale_id = ?, bill_group = ? WHERE id = ?",
     args: [saleId, group || null, orderId]
   });
 }
@@ -15925,6 +16019,16 @@ async function runStartupTasks() {
       if (!/duplicate column/i.test(String(e?.message || e))) throw e;
     });
   }).catch((e) => console.error("[intercompany] invoice group failed:", e));
+  await runOnce("orders_bill_group_v1", async () => {
+    const c = getClient();
+    await c.execute("ALTER TABLE orders ADD COLUMN bill_group TEXT").catch((e) => {
+      if (!/duplicate column/i.test(String(e?.message || e))) throw e;
+    });
+    await c.execute(
+      `UPDATE orders SET bill_group = intercompany_group
+          WHERE bill_group IS NULL AND TRIM(COALESCE(intercompany_group,'')) <> ''`
+    ).catch((e) => console.error("[orders] bill group backfill:", e));
+  }).catch((e) => console.error("[orders] bill group failed:", e));
   await runOnce("broker_rupee_rate_v1", async () => {
     await getClient().execute("ALTER TABLE brokers ADD COLUMN brokerage_rate REAL NOT NULL DEFAULT 0").catch((e) => {
       if (!/duplicate column/i.test(String(e?.message || e))) throw e;
@@ -23389,6 +23493,11 @@ function registerIpc() {
     return { id: Number(id) };
   });
   handle("orders:create", (_e, { values }) => createOrder(values));
+  handle("orders:createInvoice", (_e, { values }) => createTankerInvoice(values));
+  handle(
+    "orders:updateInvoice",
+    (_e, { group, values }) => updateTankerInvoice(group, values)
+  );
   handle(
     "orders:update",
     (_e, { id, values }) => updateOrder(id, values)
