@@ -6938,7 +6938,11 @@ function purchasePayload(sale, v, buyer, supplierId, terms) {
     gst_pct: terms.gst,
     tds_pct: terms.tds,
     is_consignment: true,
-    intercompany_sale_id: n5(sale.id)
+    intercompany_sale_id: n5(sale.id),
+    // The sales invoice these all belong to. One transfer of three products is
+    // three purchase rows under ONE number, and this is what tells the
+    // Purchases form they are one bill rather than three clashing ones.
+    intercompany_group: s(sale.invoice_group) || null
   };
 }
 async function raisePairedPurchase(sale, v) {
@@ -13117,6 +13121,7 @@ async function createSale(v) {
       rate,
       amount,
       sale_type: v.sale_type === "PACKED" ? "PACKED" : "LOOSE",
+      invoice_group: v.invoice_group,
       sale_date: v.sale_date
     },
     v
@@ -13225,6 +13230,7 @@ async function updateSale(id, v) {
       rate,
       amount,
       sale_type: v.sale_type === "PACKED" ? "PACKED" : "LOOSE",
+      invoice_group: v.invoice_group,
       sale_date: v.sale_date
     },
     v
@@ -13373,10 +13379,9 @@ function mergeInvoiceItem(header, item, group) {
     // never arrives — which is what happened: the form asked for the purchase
     // invoice number, the desk typed it, and the line that reached createSale
     // had never heard of it.
-    // The LINE's own number wins: an inter-company invoice raises one
-    // purchase per item over there, and each carries its own number. The
-    // header value is the fallback for an older client that only sent one.
-    purchase_invoice_no: item.purchase_invoice_no ?? header.purchase_invoice_no
+    // One invoice, one number — the header's. A line may still carry its own
+    // where a desk really does book them separately, but nothing asks for one.
+    purchase_invoice_no: item.purchase_invoice_no || header.purchase_invoice_no
   };
 }
 async function createSaleInvoice(v) {
@@ -15901,6 +15906,11 @@ async function runStartupTasks() {
     )`);
     await c.execute("CREATE INDEX IF NOT EXISTS idx_work_day_req ON work_day_requests(state, work_date)");
   }).catch((e) => console.error("[work] day requests failed:", e));
+  await runOnce("intercompany_invoice_group_v1", async () => {
+    await getClient().execute("ALTER TABLE orders ADD COLUMN intercompany_group TEXT").catch((e) => {
+      if (!/duplicate column/i.test(String(e?.message || e))) throw e;
+    });
+  }).catch((e) => console.error("[intercompany] invoice group failed:", e));
   await runOnce("broker_rupee_rate_v1", async () => {
     await getClient().execute("ALTER TABLE brokers ADD COLUMN brokerage_rate REAL NOT NULL DEFAULT 0").catch((e) => {
       if (!/duplicate column/i.test(String(e?.message || e))) throw e;
