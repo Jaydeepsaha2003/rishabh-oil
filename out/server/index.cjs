@@ -4635,14 +4635,17 @@ async function assertPurchaseInvoiceNoFree(v, companyId, id) {
     const own = await c.execute({ sql: "SELECT invoice_no FROM orders WHERE id = ?", args: [id] });
     if (own.rows.length && key(own.rows[0].invoice_no) === want) return;
   }
+  const group = String(v?.intercompany_group || "").trim();
+  const mine = group ? group : id ? `row:${id}` : "row:0";
   const skip = excluded(v, id);
   const res = await c.execute({
     sql: `SELECT o.id, o.invoice_no, o.order_date, s.name AS party
             FROM orders o LEFT JOIN suppliers s ON s.id = o.supplier_id
            WHERE o.company_id = ? AND UPPER(TRIM(COALESCE(o.invoice_no,''))) = ?
+             AND COALESCE(NULLIF(TRIM(o.intercompany_group), ''), 'row:' || o.id) <> ?
                  ${notIn("o.id", skip)}
            ORDER BY o.id LIMIT 1`,
-    args: [companyId, want, ...skip]
+    args: [companyId, want, mine, ...skip]
   });
   if (!res.rows.length) return;
   const hit = res.rows[0];
@@ -6945,6 +6948,12 @@ function purchasePayload(sale, v, buyer, supplierId, terms) {
     intercompany_group: s(sale.invoice_group) || null
   };
 }
+async function stampPair(orderId, saleId, group) {
+  await getClient().execute({
+    sql: "UPDATE orders SET intercompany_sale_id = ?, intercompany_group = ? WHERE id = ?",
+    args: [saleId, group || null, orderId]
+  });
+}
 async function raisePairedPurchase(sale, v) {
   const buyer = await companyOfCustomer(n5(sale.customer_id));
   if (!buyer || buyer === n5(sale.company_id)) return 0;
@@ -6958,12 +6967,7 @@ async function raisePairedPurchase(sale, v) {
   const terms = await companyTerms(buyer);
   const res = await createOrder(purchasePayload(sale, v, buyer, supplierId, terms));
   const orderId = n5(res?.id);
-  if (orderId) {
-    await getClient().execute({
-      sql: "UPDATE orders SET intercompany_sale_id = ? WHERE id = ?",
-      args: [n5(sale.id), orderId]
-    });
-  }
+  if (orderId) await stampPair(orderId, n5(sale.id), s(sale.invoice_group));
   return orderId;
 }
 async function syncPairedPurchase(sale, v) {
@@ -6990,6 +6994,7 @@ async function syncPairedPurchase(sale, v) {
   if (!s(payload.invoice_no)) payload.invoice_no = s(cur?.invoice_no);
   if (!n5(payload.invoice_rate)) payload.invoice_rate = n5(cur?.invoice_rate);
   await updateOrder(existing, payload);
+  await stampPair(existing, n5(sale.id), s(sale.invoice_group));
 }
 async function removePairedPurchase(saleId) {
   const id = await pairedPurchaseOf(n5(saleId));
@@ -13389,9 +13394,18 @@ async function createSaleInvoice(v) {
   if (!items.length) throw new Error("Add at least one item to the invoice");
   const group = newInvoiceGroup();
   const ids = [];
-  for (let i = 0; i < items.length; i++) {
-    const res = await createSale({ ...mergeInvoiceItem(v, items[i], group), round_off: i === 0 ? v.round_off : 0, round_off_manual: i === 0 ? v.round_off_manual : 0 });
-    ids.push(res.id);
+  try {
+    for (let i = 0; i < items.length; i++) {
+      const res = await createSale({ ...mergeInvoiceItem(v, items[i], group), round_off: i === 0 ? v.round_off : 0, round_off_manual: i === 0 ? v.round_off_manual : 0 });
+      ids.push(res.id);
+    }
+  } catch (e) {
+    for (const id of ids.reverse()) {
+      await deleteSale(id).catch(
+        (x) => console.error("[sales] could not unwind line", id, "of a refused invoice:", x.message)
+      );
+    }
+    throw e;
   }
   return { group, ids };
 }
