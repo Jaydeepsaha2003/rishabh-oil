@@ -24039,6 +24039,28 @@ function livePath() {
   if (!url.startsWith("file:")) return null;
   return url.slice("file:".length);
 }
+async function liveDbFile() {
+  const live = livePath();
+  if (!live) {
+    throw new Error(
+      "This build reads a cloud database, which has no file to copy. Use Download snapshot instead."
+    );
+  }
+  const out = (0, import_node_path3.join)((0, import_node_path3.dirname)(live), `.download-${process.pid}-${Date.now()}.db`);
+  try {
+    (0, import_node_fs3.rmSync)(out, { force: true });
+    await getClient().execute(`VACUUM INTO '${out.replace(/'/g, "''")}'`);
+    const bytes = (0, import_node_fs3.readFileSync)(out);
+    return { bytes, fileName: `rishabh-${stampName()}.db` };
+  } finally {
+    (0, import_node_fs3.rmSync)(out, { force: true });
+  }
+}
+function stampName() {
+  const d = /* @__PURE__ */ new Date();
+  const p = (v) => String(v).padStart(2, "0");
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}`;
+}
 function sizeOf(path) {
   let total = 0;
   for (const suffix of ["", "-wal", "-shm"]) {
@@ -24445,6 +24467,35 @@ function startHttpServer({ port, webRoot }) {
           "cache-control": "no-store"
         });
         return res.end(body2);
+      } catch (e) {
+        return json(res, 200, { ok: false, error: e.message });
+      }
+    }
+    if (path === "/api/db/file") {
+      const s22 = currentSession(req);
+      if (!await isAdmin(s22)) return json(res, 403, { error: "Administrators only" });
+      try {
+        const file = await liveDbFile();
+        await logEvent(
+          s22.userId,
+          s22.username,
+          clientIp(req),
+          "Downloaded the database file",
+          `${(file.bytes.length / 1048576).toFixed(2)} MB \xB7 ${file.fileName}`,
+          s22.companyId,
+          "Database",
+          null,
+          null
+        ).catch(() => {
+        });
+        console.log(`[web] database file downloaded by ${s22.username}: ${file.fileName}`);
+        res.writeHead(200, {
+          "content-type": "application/vnd.sqlite3",
+          "content-length": file.bytes.length,
+          "content-disposition": `attachment; filename="${file.fileName}"`,
+          "cache-control": "no-store"
+        });
+        return res.end(file.bytes);
       } catch (e) {
         return json(res, 200, { ok: false, error: e.message });
       }
