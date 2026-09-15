@@ -18998,6 +18998,14 @@ async function listSkuStock(when) {
            COALESCE((SELECT SUM(delta) FROM sku_adjustments
                      WHERE packaging_id = pk.id AND company_id IN (${cph})
                        ${sinceAdj}), 0) AS added,
+           COALESCE((SELECT SUM(delta) FROM sku_adjustments
+                     WHERE packaging_id = pk.id AND company_id IN (${cph})
+                       AND COALESCE(kind, CASE WHEN delta < 0 THEN 'correction' ELSE 'packing' END) = 'packing'
+                       ${sinceAdj}), 0) AS packed_in,
+           COALESCE((SELECT SUM(delta) FROM sku_adjustments
+                     WHERE packaging_id = pk.id AND company_id IN (${cph})
+                       AND COALESCE(kind, CASE WHEN delta < 0 THEN 'correction' ELSE 'packing' END) = 'correction'
+                       ${sinceAdj}), 0) AS adj_in,
            COALESCE((SELECT SUM(${SOLD_UNITS}) FROM sales s
                      WHERE s.packaging_id = pk.id AND s.sale_type = 'PACKED'
                        AND s.status = 'done' AND s.company_id IN (${cph})
@@ -19012,6 +19020,14 @@ async function listSkuStock(when) {
            COALESCE((SELECT SUM(delta) FROM sku_adjustments
                      WHERE packaging_id = pk.id AND company_id IN (${cph})
                        ${withinAdj}), 0) AS added_on,
+           COALESCE((SELECT SUM(delta) FROM sku_adjustments
+                     WHERE packaging_id = pk.id AND company_id IN (${cph})
+                       AND COALESCE(kind, CASE WHEN delta < 0 THEN 'correction' ELSE 'packing' END) = 'packing'
+                       ${withinAdj}), 0) AS packed_on,
+           COALESCE((SELECT SUM(delta) FROM sku_adjustments
+                     WHERE packaging_id = pk.id AND company_id IN (${cph})
+                       AND COALESCE(kind, CASE WHEN delta < 0 THEN 'correction' ELSE 'packing' END) = 'correction'
+                       ${withinAdj}), 0) AS adj_on,
            COALESCE((SELECT SUM(${SOLD_UNITS}) FROM sales s
                      WHERE s.packaging_id = pk.id AND s.sale_type = 'PACKED'
                        AND s.status = 'done' AND s.company_id IN (${cph})
