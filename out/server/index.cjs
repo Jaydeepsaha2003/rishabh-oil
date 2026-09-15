@@ -15887,6 +15887,11 @@ async function runStartupTasks() {
     )`);
     await c.execute("CREATE INDEX IF NOT EXISTS idx_work_day_req ON work_day_requests(state, work_date)");
   }).catch((e) => console.error("[work] day requests failed:", e));
+  await runOnce("work_process_person_v1", async () => {
+    await getClient().execute("ALTER TABLE work_processes ADD COLUMN user_id INTEGER").catch((e) => {
+      if (!/duplicate column/i.test(String(e?.message || e))) throw e;
+    });
+  }).catch((e) => console.error("[work] per-person line failed:", e));
   await runOnce("work_day_admin_open_v1", async () => {
     await getClient().execute("ALTER TABLE work_day_requests ADD COLUMN opened_by_admin INTEGER NOT NULL DEFAULT 0").catch((e) => {
       if (!/duplicate column/i.test(String(e?.message || e))) throw e;
@@ -17740,7 +17745,7 @@ function lineCase(text) {
 }
 async function listWorkProcesses() {
   return (await plain2(
-    `SELECT id, module, scope, title, detail, sort_order, active
+    `SELECT id, module, scope, title, detail, sort_order, active, user_id
          FROM work_processes ORDER BY module, sort_order, id`
   )).map((r) => ({
     ...r,
@@ -17750,6 +17755,8 @@ async function listWorkProcesses() {
     title: lineCase(s2(r.title)),
     // The note is left exactly as it was written — see lineCase.
     detail: s2(r.detail),
+    // 0 means everyone who can open the page, which is nearly every line.
+    user_id: n18(r.user_id) || 0,
     active: n18(r.active) === 1
   }));
 }
@@ -17757,7 +17764,9 @@ async function carryToOpenTasks(processId, title, detail) {
   await getClient().execute({
     sql: `UPDATE work_tasks SET title = ?, detail = ?, updated_at = ?
            WHERE process_id = ? AND kind = 'auto' AND state = 'pending' AND work_date >= ?`,
-    args: [title, detail, localStamp(), n18(processId), todayISO()]
+    // Not today: the earliest day anybody could still have open — see
+    // openFloorISO. A next-day cut-off is still working yesterday.
+    args: [title, detail, localStamp(), n18(processId), await openFloorISO()]
   });
 }
 async function withdrawUntouched(processId) {
@@ -17765,7 +17774,7 @@ async function withdrawUntouched(processId) {
     sql: `DELETE FROM work_tasks
            WHERE process_id = ? AND kind = 'auto' AND state = 'pending' AND work_date >= ?
              AND id NOT IN (SELECT task_id FROM work_notes)`,
-    args: [n18(processId), todayISO()]
+    args: [n18(processId), await openFloorISO()]
   });
 }
 async function saveWorkProcess(v, adminId) {
@@ -17778,6 +17787,17 @@ async function saveWorkProcess(v, adminId) {
   const scope = s2(v.scope).trim();
   const detail = s2(v.detail).trim().slice(0, 2e3) || null;
   const active = v.active == null ? 1 : v.active === false || n18(v.active) === 0 ? 0 : 1;
+  const owner = n18(v.user_id) || 0;
+  if (owner) {
+    const u = await loadUser(owner);
+    const held = grantsOf(u);
+    const ok = held === "ALL" || held.some((g) => g.module === module2 && (scope ? g.scope === scope : g.scope === ""));
+    if (!ok) {
+      throw new Error(
+        `${s2(u.full_name) || s2(u.username)} cannot open that page, so this line would reach nobody`
+      );
+    }
+  }
   const id = n18(v.id);
   const clash = await plain2(
     "SELECT id FROM work_processes WHERE module = ? AND scope = ? AND UPPER(title) = UPPER(?) AND id <> ?",
@@ -17785,14 +17805,14 @@ async function saveWorkProcess(v, adminId) {
   );
   if (clash.length) throw new Error("That line is already on this page");
   if (id) {
-    const cur = (await plain2("SELECT sort_order, module, scope FROM work_processes WHERE id = ?", [id]))[0];
+    const cur = (await plain2("SELECT sort_order, module, scope, user_id FROM work_processes WHERE id = ?", [id]))[0];
     if (!cur) throw new Error("That line is no longer on the list");
     const order2 = v.sort_order == null ? n18(cur.sort_order) : n18(v.sort_order);
-    const moved = s2(cur.module) !== module2 || s2(cur.scope) !== scope;
+    const moved = s2(cur.module) !== module2 || s2(cur.scope) !== scope || n18(cur.user_id) !== owner;
     await getClient().execute({
-      sql: `UPDATE work_processes SET module = ?, scope = ?, title = ?, detail = ?, sort_order = ?, active = ?
+      sql: `UPDATE work_processes SET module = ?, scope = ?, title = ?, detail = ?, sort_order = ?, active = ?, user_id = ?
              WHERE id = ?`,
-      args: [module2, scope, title, detail, order2, active, id]
+      args: [module2, scope, title, detail, order2, active, owner || null, id]
     });
     await carryToOpenTasks(id, title, detail);
     if (moved || !active) await withdrawUntouched(id);
@@ -17801,11 +17821,12 @@ async function saveWorkProcess(v, adminId) {
   const last = await plain2("SELECT MAX(sort_order) AS m FROM work_processes WHERE module = ?", [module2]);
   const order = v.sort_order == null ? n18(last[0]?.m) + 10 : n18(v.sort_order);
   const res = await getClient().execute({
-    sql: `INSERT INTO work_processes (module, scope, title, detail, sort_order, active)
-          VALUES (?, ?, ?, ?, ?, ?)
+    sql: `INSERT INTO work_processes (module, scope, title, detail, sort_order, active, user_id)
+          VALUES (?, ?, ?, ?, ?, ?, ?)
           ON CONFLICT(module, scope, title) DO UPDATE SET
-            detail = excluded.detail, sort_order = excluded.sort_order, active = excluded.active`,
-    args: [module2, scope, title, detail, order, active]
+            detail = excluded.detail, sort_order = excluded.sort_order, active = excluded.active,
+            user_id = excluded.user_id`,
+    args: [module2, scope, title, detail, order, active, owner || null]
   });
   return { id: Number(res.lastInsertRowid) || 0 };
 }
@@ -17837,16 +17858,42 @@ async function reorderWorkProcesses(ids, adminId) {
   }
   return { ok: true };
 }
+function dayStillOpenFor(u, date, siteCutoff, siteDay) {
+  const day = s2(date).slice(0, 10);
+  const today = todayISO();
+  if (!day || day > today) return false;
+  if (day === today) return true;
+  const r = resolveCutoff(u, siteCutoff, siteDay);
+  const dueDate = r.day === "next" ? dayPlusISO(day, 1) : day;
+  const now = localStamp().slice(0, 16).replace("T", " ");
+  return `${dueDate} ${r.cutoff}` >= now;
+}
+function dayPlusISO(date, k) {
+  const d = /* @__PURE__ */ new Date(`${s2(date)}T00:00:00`);
+  d.setDate(d.getDate() + k);
+  const p2 = (x) => String(x).padStart(2, "0");
+  return `${d.getFullYear()}-${p2(d.getMonth() + 1)}-${p2(d.getDate())}`;
+}
+async function openFloorISO() {
+  const anyNext = await plain2(
+    "SELECT 1 AS k FROM users WHERE active = 1 AND work_cutoff_day = 'next' LIMIT 1"
+  );
+  const siteNext = await workCutoffDay() === "next";
+  return anyNext.length || siteNext ? dayPlusISO(todayISO(), -1) : todayISO();
+}
 async function ensureDay(date) {
-  if (date !== todayISO()) return;
+  if (!date || date > todayISO()) return;
   const c = getClient();
   const cid = getActiveCompanyId();
   const fid = await factoryOfCompanies([cid]);
   const users = await plain2(
-    "SELECT id, username, full_name, role, permissions FROM users WHERE active = 1 ORDER BY id"
+    "SELECT id, username, full_name, role, permissions, work_cutoff, work_cutoff_day FROM users WHERE active = 1 ORDER BY id"
   );
   const procs = (await listWorkProcesses()).filter((p) => p.active);
+  const siteCutoff = await workCutoff();
+  const siteDay = await workCutoffDay();
   for (const u of users) {
+    if (!dayStillOpenFor(u, date, siteCutoff, siteDay)) continue;
     const grants = grantsOf(u);
     if (grants === "ALL") continue;
     const byModule = /* @__PURE__ */ new Map();
@@ -17855,6 +17902,8 @@ async function ensureDay(date) {
       byModule.get(g.module).add(g.scope);
     }
     for (const p of procs) {
+      const only = n18(p.user_id);
+      if (only && only !== n18(u.id)) continue;
       const scopes = byModule.get(s2(p.module));
       if (!scopes) continue;
       const want = s2(p.scope);
@@ -17876,7 +17925,11 @@ async function ensureDay(date) {
           s2(p.detail) || null,
           localStamp()
         ]
-      }).catch(() => {
+      }).catch((e) => {
+        console.error(
+          `[work] could not put line ${n18(p.id)} "${s2(p.title)}" on ${date} for user ${n18(u.id)}:`,
+          e?.message || e
+        );
       });
     }
   }
