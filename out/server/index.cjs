@@ -6841,6 +6841,85 @@ async function pairedPurchaseOf(saleId) {
   });
   return n5(r.rows[0]?.id);
 }
+async function intercompanySource(orderId) {
+  const c = getClient();
+  const own = (await c.execute({
+    sql: "SELECT id, intercompany_sale_id, company_id, invoice_no FROM orders WHERE id = ? LIMIT 1",
+    args: [n5(orderId)]
+  })).rows[0];
+  const saleId = n5(own?.intercompany_sale_id);
+  if (!saleId) return null;
+  const mine = (await c.execute({
+    sql: "SELECT id, invoice_no, invoice_group, company_id, sale_date FROM sales WHERE id = ? LIMIT 1",
+    args: [saleId]
+  })).rows[0];
+  if (!mine) return null;
+  const grp = s(mine.invoice_group);
+  const rows = (await c.execute(
+    grp ? {
+      sql: `SELECT s.id, s.product_id, s.qty, s.uom, s.rate, s.amount, s.sale_type, s.is_rate_adj,
+                         p.name AS product_name, pk.name AS packaging_name
+                    FROM sales s
+                    LEFT JOIN products p ON p.id = s.product_id
+                    LEFT JOIN packagings pk ON pk.id = s.packaging_id
+                   WHERE s.invoice_group = ? ORDER BY s.id`,
+      args: [grp]
+    } : {
+      sql: `SELECT s.id, s.product_id, s.qty, s.uom, s.rate, s.amount, s.sale_type, s.is_rate_adj,
+                         p.name AS product_name, pk.name AS packaging_name
+                    FROM sales s
+                    LEFT JOIN products p ON p.id = s.product_id
+                    LEFT JOIN packagings pk ON pk.id = s.packaging_id
+                   WHERE s.id = ?`,
+      args: [saleId]
+    }
+  )).rows;
+  const lines = [];
+  for (const r of rows) {
+    const paired = (await c.execute({
+      sql: "SELECT id, invoice_no, company_id FROM orders WHERE intercompany_sale_id = ? LIMIT 1",
+      args: [n5(r.id)]
+    })).rows[0];
+    lines.push({
+      sale_id: n5(r.id),
+      product_id: n5(r.product_id),
+      product_name: s(r.product_name) || `#${n5(r.product_id)}`,
+      packaging_name: s(r.packaging_name),
+      sale_type: s(r.sale_type) || "LOOSE",
+      is_rate_adj: n5(r.is_rate_adj) === 1,
+      qty: n5(r.qty),
+      uom: s(r.uom) || "MT",
+      rate: n5(r.rate),
+      amount: n5(r.amount),
+      // The line this very purchase was raised from.
+      is_this_one: n5(r.id) === saleId,
+      paired_order_id: n5(paired?.id) || null,
+      paired_invoice_no: s(paired?.invoice_no)
+    });
+  }
+  const nameOf = async (cid) => {
+    if (!cid) return "";
+    const r = await c.execute({ sql: "SELECT name FROM companies WHERE id = ? LIMIT 1", args: [cid] });
+    return s(r.rows[0]?.name);
+  };
+  return {
+    sale_id: saleId,
+    sale_invoice_no: s(mine.invoice_no),
+    sale_date: s(mine.sale_date).slice(0, 10),
+    seller_company_id: n5(mine.company_id),
+    seller_company: await nameOf(n5(mine.company_id)),
+    buyer_company: await nameOf(n5(own?.company_id)),
+    lines
+  };
+}
+function pairedRate(sale) {
+  const qty = n5(sale.qty);
+  const amount = n5(sale.amount);
+  if (s(sale.sale_type) === "PACKED" && qty > 0 && amount > 0) {
+    return Math.round(amount / qty * 1e6) / 1e6;
+  }
+  return n5(sale.rate);
+}
 function purchasePayload(sale, v, buyer, supplierId, terms) {
   return {
     company_id: buyer,
@@ -6849,7 +6928,7 @@ function purchasePayload(sale, v, buyer, supplierId, terms) {
     ordered_qty: n5(sale.qty),
     uom: s(sale.uom || "MT"),
     invoice_no: s(v.purchase_invoice_no).trim(),
-    invoice_rate: n5(v.purchase_rate),
+    invoice_rate: pairedRate(sale),
     order_date: s(sale.sale_date).slice(0, 10),
     gst_pct: terms.gst,
     tds_pct: terms.tds,
@@ -6862,7 +6941,9 @@ async function raisePairedPurchase(sale, v) {
   if (!buyer || buyer === n5(sale.company_id)) return 0;
   const invoiceNo = s(v.purchase_invoice_no).trim();
   if (!invoiceNo) throw new Error("Enter the purchase invoice number the other company books this under");
-  if (n5(v.purchase_rate) <= 0) throw new Error("Enter the purchase rate for the other company");
+  if (pairedRate(sale) <= 0) {
+    throw new Error("This sale has no rate yet \u2014 the transfer is booked at the same rate on both sides");
+  }
   const supplierId = await supplierForCompany(n5(sale.company_id));
   if (!supplierId) throw new Error("No supplier record stands for the selling company");
   const terms = await companyTerms(buyer);
@@ -13022,6 +13103,9 @@ async function createSale(v) {
       product_id: productId,
       qty,
       uom,
+      rate,
+      amount,
+      sale_type: v.sale_type === "PACKED" ? "PACKED" : "LOOSE",
       sale_date: v.sale_date
     },
     v
@@ -13127,6 +13211,9 @@ async function updateSale(id, v) {
       product_id: productId,
       qty,
       uom,
+      rate,
+      amount,
+      sale_type: v.sale_type === "PACKED" ? "PACKED" : "LOOSE",
       sale_date: v.sale_date
     },
     v
@@ -13275,8 +13362,7 @@ function mergeInvoiceItem(header, item, group) {
     // never arrives — which is what happened: the form asked for the purchase
     // invoice number, the desk typed it, and the line that reached createSale
     // had never heard of it.
-    purchase_invoice_no: header.purchase_invoice_no,
-    purchase_rate: header.purchase_rate
+    purchase_invoice_no: header.purchase_invoice_no
   };
 }
 async function createSaleInvoice(v) {
@@ -16312,6 +16398,7 @@ async function runStartupTasks() {
 
 // src/main/ipc.ts
 init_electron_shim();
+init_intercompany();
 init_db();
 init_config();
 init_repos();
@@ -22907,7 +22994,7 @@ async function recordAudit(channel, args, result) {
   );
 }
 function registerIpc() {
-  const READONLY = /:list$|:get$|:items$|:issuances$|:sheet$|:outstanding$|:all$|:summary$|:transfers$|:fyTaxable$|:needs$|:breakdown$|:nextNo$|:liveUsers$|:ips$|:logs$|:dispatchableSales$|:mine$|:pendingCount$|:pending$|:lots$|:unmapped$|:unmappedCount$|:bargainLines$|:bargainNotes$|:bargainInterest$|:consignmentDraws$|^access:heartbeat$|^db:ping$|^db:snapshot$|^app:revision$|^auth:login$|^journal:booksFrom$|^journal:openings$|^journal:opening$|^journal:accounts$|^journal:statement$|^journal:trialBalance$|^journal:groups$|^journal:groupNames$|^journal:pendingRefs$|^journal:billsOutstanding$|^journal:tradingAccount$|^dashboard:stats$|^skuRates:parties$|^skuRates:partyCounts$|^consignment:openingLog$|^consignment:invoices$|^tankers:quality$|^tankers:ffaHistory$|^orders:quality$|^gate:partyCategories$|^gate:waivedOuts$|^gate:forRecord$|^notify:rules$|^notify:list$|^notify:run$|^notify:preview$|^notify:people$|^notify:mutes$|^treasury:alerts$|^treasury:paymentTracker$|^facility:exposures$|^facility:headroom$|^company:setActive$|^company:getActive$|^factory:active$|^factory:companies$|^session:setUser$|^lc:repayments$|^lc:allRepayments$|^lc:getLimit$|^lc:bankLimits$|^lc:paymentIns$|^lc:openTradingInvoices$|^files:pickDocument$|^files:openDocument$|^bankRecon:imports$|^bankRecon:list$|^bankRecon:suggest$|^bd:kpis$|^bd:limits$|^skuStock:adjustments$|^skuOpening:list$|^skuOpening:date$|^stockCount:previous$|^stockOpening:list$|^stockOpening:date$|^stockOpening:sets$|^stockOpening:setLines$|^stockOpening:ppStages$|^stockOpening:ppFreeTotals$|^production:ppDraws$|^bargains:linkedInvoices$|^bargains:adjustments$|^history:list$|^stockOpening:ppVessels$|^stockOpening:ppReceivers$|^stockOpening:ppWriteoffs$|^work:board$|^work:cutoff$|^work:processes$|^formulationSubcategory:list$|^formulations:versions$|^bd:allRepayments$|^bd:interestSchedule$|^bd:interestWindow$|^bd:interestPayments$|^bd:linkedOrders$|^bd:parties$|^bd:allParties$|^bd:openTradingInvoices$|^bd:paymentIns$|^access:entryWindows$|^access:entityHistory$|^trading:list$|^sales:series$|^sales:invoiceGaps$|^salesBargains:returns$|^salesBargains:linkedInvoices$|^salesBargains:unattributedReturns$|^tbill:orphans$|^production:report$/;
+  const READONLY = /:list$|:get$|:items$|:issuances$|:sheet$|:outstanding$|:all$|:summary$|:transfers$|:fyTaxable$|:needs$|:breakdown$|:nextNo$|:liveUsers$|:ips$|:logs$|:dispatchableSales$|:mine$|:pendingCount$|:pending$|:lots$|:unmapped$|:unmappedCount$|:bargainLines$|:bargainNotes$|:bargainInterest$|:consignmentDraws$|^access:heartbeat$|^db:ping$|^db:snapshot$|^app:revision$|^auth:login$|^journal:booksFrom$|^journal:openings$|^journal:opening$|^journal:accounts$|^journal:statement$|^journal:trialBalance$|^journal:groups$|^journal:groupNames$|^journal:pendingRefs$|^journal:billsOutstanding$|^journal:tradingAccount$|^dashboard:stats$|^skuRates:parties$|^skuRates:partyCounts$|^consignment:openingLog$|^consignment:invoices$|^tankers:quality$|^tankers:ffaHistory$|^orders:quality$|^gate:partyCategories$|^gate:waivedOuts$|^gate:forRecord$|^notify:rules$|^notify:list$|^notify:run$|^notify:preview$|^notify:people$|^notify:mutes$|^treasury:alerts$|^treasury:paymentTracker$|^facility:exposures$|^facility:headroom$|^company:setActive$|^company:getActive$|^factory:active$|^factory:companies$|^session:setUser$|^lc:repayments$|^lc:allRepayments$|^lc:getLimit$|^lc:bankLimits$|^lc:paymentIns$|^lc:openTradingInvoices$|^files:pickDocument$|^files:openDocument$|^bankRecon:imports$|^bankRecon:list$|^bankRecon:suggest$|^bd:kpis$|^bd:limits$|^skuStock:adjustments$|^skuOpening:list$|^skuOpening:date$|^stockCount:previous$|^orders:intercompanySource$|^stockOpening:list$|^stockOpening:date$|^stockOpening:sets$|^stockOpening:setLines$|^stockOpening:ppStages$|^stockOpening:ppFreeTotals$|^production:ppDraws$|^bargains:linkedInvoices$|^bargains:adjustments$|^history:list$|^stockOpening:ppVessels$|^stockOpening:ppReceivers$|^stockOpening:ppWriteoffs$|^work:board$|^work:cutoff$|^work:processes$|^formulationSubcategory:list$|^formulations:versions$|^bd:allRepayments$|^bd:interestSchedule$|^bd:interestWindow$|^bd:interestPayments$|^bd:linkedOrders$|^bd:parties$|^bd:allParties$|^bd:openTradingInvoices$|^bd:paymentIns$|^access:entryWindows$|^access:entityHistory$|^trading:list$|^sales:series$|^sales:invoiceGaps$|^salesBargains:returns$|^salesBargains:linkedInvoices$|^salesBargains:unattributedReturns$|^tbill:orphans$|^production:report$/;
   const AUDIT_SKIP = /* @__PURE__ */ new Set(["config:get", "config:save", "session:setUser"]);
   const handle = (channel, fn) => {
     ipcMain.handle(channel, async (e, args) => {
@@ -23041,6 +23128,7 @@ function registerIpc() {
   );
   handle("orders:bargainNotes", (_e, { id }) => purchaseBargainNotes(id));
   handle("orders:list", (_e, args) => listOrders(args?.forModule));
+  handle("orders:intercompanySource", (_e, { id }) => intercompanySource(Number(id)));
   handle("skuRates:list", (_e, { id }) => listSkuRates(id));
   handle("skuRates:partyCounts", () => packagingPartyCounts());
   handle("skuRates:parties", (_e, { packagingId }) => listPackagingParties(packagingId));
