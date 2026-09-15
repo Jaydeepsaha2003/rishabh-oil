@@ -8041,6 +8041,7 @@ var init_lcInterest = __esm({
 // src/main/treasury.ts
 var treasury_exports = {};
 __export(treasury_exports, {
+  PAYMENT_IN_METHODS: () => PAYMENT_IN_METHODS,
   deleteBdPaymentIn: () => deleteBdPaymentIn,
   deleteLcPaymentIn: () => deleteLcPaymentIn,
   deleteLcRepayment: () => deleteLcRepayment,
@@ -8569,7 +8570,13 @@ async function listBdOpenTradingInvoices(bdId) {
     return [];
   }
 }
-async function postBdPaymentIn(bdId, amount, dateIn, selectedKeys) {
+function payMethod(v) {
+  const want = String(v ?? "").trim();
+  if (!want) return null;
+  const hit = PAYMENT_IN_METHODS.find((m) => m.toLowerCase() === want.toLowerCase());
+  return hit || "Other";
+}
+async function postBdPaymentIn(bdId, amount, dateIn, selectedKeys, method) {
   const { bd, customerName, refs } = await outstandingSaleRefsForBd(bdId);
   const wanted = Array.isArray(selectedKeys) && selectedKeys.length ? new Set(selectedKeys.map(String)) : null;
   const outstanding = wanted ? refs.filter((r) => wanted.has(r.key)) : refs;
@@ -8586,11 +8593,14 @@ async function postBdPaymentIn(bdId, amount, dateIn, selectedKeys) {
   const date = String(dateIn || todayISO2()).slice(0, 10);
   assertNotFuture(date, "The date the payment was received");
   const { takes, byParty } = planReceipt(outstanding, value, customerName);
+  const how = payMethod(method);
   const je = await postJournal({
     date,
     vchType: "RECEIPT",
     vchNo: String(bd.bd_no || ""),
-    narration: `Bill Discounting ${bd.bd_no} \u2014 payment IN of ${value.toFixed(2)} received from ` + (byParty.length > 1 ? byParty.map((b) => `${b.party} ${b.amount.toFixed(2)}`).join(", ") : byParty[0]?.party || customerName),
+    // The method goes in the narration too, so the voucher says how the money
+    // arrived without anyone having to come back to this screen for it.
+    narration: `Bill Discounting ${bd.bd_no} \u2014 payment IN of ${value.toFixed(2)} received from ` + (byParty.length > 1 ? byParty.map((b) => `${b.party} ${b.amount.toFixed(2)}`).join(", ") : byParty[0]?.party || customerName) + (how ? ` by ${how}` : ""),
     companyId: n9(bd.company_id) || void 0,
     lines: [
       { account: "BANK A/C", group: "Bank Accounts", dr: value },
@@ -8599,8 +8609,8 @@ async function postBdPaymentIn(bdId, amount, dateIn, selectedKeys) {
   });
   for (const t of takes) await allocAgainst(je.id, t.party, t.key, t.amount);
   await c.execute({
-    sql: "INSERT INTO bd_payment_ins (bd_id, pay_date, amount, journal_entry_id) VALUES (?, ?, ?, ?)",
-    args: [bdId, date, value, je.id]
+    sql: "INSERT INTO bd_payment_ins (bd_id, pay_date, amount, journal_entry_id, method) VALUES (?, ?, ?, ?, ?)",
+    args: [bdId, date, value, je.id, how]
   });
   return { id: je.id, date };
 }
@@ -9098,7 +9108,7 @@ async function listPaymentTracker() {
   });
   return all;
 }
-var round24, LC_PAYABLE_GROUP;
+var round24, LC_PAYABLE_GROUP, PAYMENT_IN_METHODS;
 var init_treasury = __esm({
   "src/main/treasury.ts"() {
     init_db();
@@ -9107,6 +9117,7 @@ var init_treasury = __esm({
     init_lcInterest();
     round24 = (v) => Math.round(v * 100) / 100;
     LC_PAYABLE_GROUP = "Current Liabilities";
+    PAYMENT_IN_METHODS = ["RTGS", "NEFT", "IMPS", "UPI", "Cheque", "Cash", "Adjustment", "Other"];
   }
 });
 
@@ -10669,6 +10680,14 @@ async function snapshotOpeningSet(cid, fid, date) {
            WHERE ${scope} AND as_of = ?`,
     args: [sid, key3, date]
   });
+  await c.execute({ sql: "DELETE FROM stock_opening_set_pp WHERE set_id = ?", args: [sid] }).catch(() => {
+  });
+  await c.execute({
+    sql: `INSERT INTO stock_opening_set_pp (set_id, product_id, stage_id, qty, ffa, formulation_id)
+            SELECT ?, product_id, stage_id, qty, ffa, formulation_id FROM stock_opening_pp
+             WHERE scope = ?`,
+    args: [sid, fid ? `f${fid}` : `c${cid}`]
+  }).catch((e) => console.error("[stock] opening PP snapshot failed:", e));
   await c.execute({
     sql: `UPDATE stock_opening_sets SET is_current = CASE WHEN id = ? THEN 1 ELSE 0 END WHERE ${scope}`,
     args: [sid, key3]
@@ -16019,6 +16038,27 @@ async function runStartupTasks() {
       if (!/duplicate column/i.test(String(e?.message || e))) throw e;
     });
   }).catch((e) => console.error("[intercompany] invoice group failed:", e));
+  await runOnce("stock_opening_set_pp_v1", async () => {
+    await getClient().execute(
+      `CREATE TABLE IF NOT EXISTS stock_opening_set_pp (
+         id INTEGER PRIMARY KEY AUTOINCREMENT,
+         set_id INTEGER NOT NULL,
+         product_id INTEGER,
+         stage_id INTEGER,
+         qty REAL,
+         ffa REAL,
+         formulation_id INTEGER
+       )`
+    );
+    await getClient().execute(
+      "CREATE INDEX IF NOT EXISTS idx_opening_set_pp ON stock_opening_set_pp(set_id)"
+    );
+  }).catch((e) => console.error("[stock] opening PP history failed:", e));
+  await runOnce("bd_payment_in_method_v1", async () => {
+    await getClient().execute("ALTER TABLE bd_payment_ins ADD COLUMN method TEXT").catch((e) => {
+      if (!/duplicate column/i.test(String(e?.message || e))) throw e;
+    });
+  }).catch((e) => console.error("[bd] payment-in method failed:", e));
   await runOnce("orders_bill_group_v1", async () => {
     const c = getClient();
     await c.execute("ALTER TABLE orders ADD COLUMN bill_group TEXT").catch((e) => {
@@ -22162,7 +22202,16 @@ async function listBd(filter) {
                  (SELECT GROUP_CONCAT(bo.order_id) FROM bd_linked_orders bo WHERE bo.bd_id = bd.id) AS linked_order_ids_csv,
                  -- What the customer has already paid back on the resale.
                  COALESCE((SELECT SUM(pi.amount) FROM bd_payment_ins pi WHERE pi.bd_id = bd.id), 0) AS payment_in_total,
-                 (SELECT COUNT(*) FROM bd_payment_ins pi WHERE pi.bd_id = bd.id) AS payment_in_count
+                 (SELECT COUNT(*) FROM bd_payment_ins pi WHERE pi.bd_id = bd.id) AS payment_in_count,
+                 -- HOW it came back, so the register can say so without a
+                 -- query per row. Distinct, because three RTGS receipts are
+                 -- one method, and ordered so the chip does not reshuffle
+                 -- itself between loads.
+                 (SELECT GROUP_CONCAT(m, ', ') FROM (
+                    SELECT DISTINCT COALESCE(NULLIF(TRIM(pi.method), ''), 'Not stated') AS m
+                      FROM bd_payment_ins pi WHERE pi.bd_id = bd.id ORDER BY m
+                  )) AS payment_in_methods,
+                 (SELECT MAX(pi.pay_date) FROM bd_payment_ins pi WHERE pi.bd_id = bd.id) AS payment_in_last_date
           FROM bill_discountings bd
           LEFT JOIN nbfcs nb ON nb.id = bd.nbfc_id
           LEFT JOIN suppliers s ON bd.party_type = 'supplier' AND s.id = bd.party_id
@@ -24084,7 +24133,13 @@ function registerIpc() {
   handle("bd:paymentIns", (_e, { id }) => listBdPaymentIns(id));
   handle(
     "bd:paymentIn",
-    (_e, { id, amount, date, keys }) => postBdPaymentIn(id, amount, date, keys)
+    (_e, {
+      id,
+      amount,
+      date,
+      keys,
+      method
+    }) => postBdPaymentIn(id, amount, date, keys, method)
   );
   handle("bd:deletePaymentIn", (_e, { id }) => deleteBdPaymentIn(id));
   handle("bd:deleteRepayment", (_e, { id }) => deleteBdRepayment(id));
