@@ -12157,6 +12157,12 @@ async function listSales(companyIds, forModule) {
            co.name AS company_name,
            COALESCE((SELECT SUM(cl.amount) FROM customer_ledger cl
                       WHERE cl.sale_id = s.id AND cl.entry_type = 'payment'), 0) AS received_amount,
+           -- The number the other company books THIS line under, for an
+           -- inter-company transfer. It lives on the purchase this sale
+           -- raised, and the form needs it back when the invoice is reopened \u2014
+           -- without it every line would reopen blank and the save would be
+           -- refused for a number that already exists.
+           (SELECT o2.invoice_no FROM orders o2 WHERE o2.intercompany_sale_id = s.id LIMIT 1) AS paired_invoice_no,
            -- The vehicle that actually carried this invoice out, from the
            -- gate register \u2014 Gate Out already links to a sale by invoice
            -- group; this is that link read back onto the invoice itself.
@@ -13362,7 +13368,10 @@ function mergeInvoiceItem(header, item, group) {
     // never arrives — which is what happened: the form asked for the purchase
     // invoice number, the desk typed it, and the line that reached createSale
     // had never heard of it.
-    purchase_invoice_no: header.purchase_invoice_no
+    // The LINE's own number wins: an inter-company invoice raises one
+    // purchase per item over there, and each carries its own number. The
+    // header value is the fallback for an older client that only sent one.
+    purchase_invoice_no: item.purchase_invoice_no ?? header.purchase_invoice_no
   };
 }
 async function createSaleInvoice(v) {
