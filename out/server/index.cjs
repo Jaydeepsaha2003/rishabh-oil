@@ -7227,7 +7227,7 @@ var init_repos = __esm({
       ],
       sources: ["name", "transit_days", "active"],
       uoms: ["name", "active"],
-      brokers: ["name", "contact_person", "phone", "brokerage_pct", "address", "note", "active"],
+      brokers: ["name", "contact_person", "phone", "brokerage_pct", "brokerage_rate", "address", "note", "active"],
       companies: [
         "name",
         "company_type",
@@ -15887,6 +15887,23 @@ async function runStartupTasks() {
     )`);
     await c.execute("CREATE INDEX IF NOT EXISTS idx_work_day_req ON work_day_requests(state, work_date)");
   }).catch((e) => console.error("[work] day requests failed:", e));
+  await runOnce("broker_rupee_rate_v1", async () => {
+    await getClient().execute("ALTER TABLE brokers ADD COLUMN brokerage_rate REAL NOT NULL DEFAULT 0").catch((e) => {
+      if (!/duplicate column/i.test(String(e?.message || e))) throw e;
+    });
+  }).catch((e) => console.error("[brokers] rupee brokerage failed:", e));
+  await runOnce("journal_line_splits_v1", async () => {
+    const c = getClient();
+    await c.execute(`CREATE TABLE IF NOT EXISTS journal_line_splits (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      line_id INTEGER NOT NULL,
+      name TEXT NOT NULL,
+      amount REAL NOT NULL DEFAULT 0,
+      note TEXT,
+      sort_order INTEGER NOT NULL DEFAULT 0
+    )`);
+    await c.execute("CREATE INDEX IF NOT EXISTS idx_jl_splits ON journal_line_splits(line_id)");
+  }).catch((e) => console.error("[accounts] line breakdown table failed:", e));
   await runOnce("work_process_person_v1", async () => {
     await getClient().execute("ALTER TABLE work_processes ADD COLUMN user_id INTEGER").catch((e) => {
       if (!/duplicate column/i.test(String(e?.message || e))) throw e;
@@ -19222,12 +19239,32 @@ async function accountGroupOf(name) {
   });
   return String(res.rows[0]?.acc_group || "");
 }
+function assertSplitsAddUp(lines) {
+  for (const l of lines) {
+    if (!l.splits.length) continue;
+    const total = l.splits.reduce((t, sp) => t + n22(sp.amount), 0);
+    const line = n22(l.dr) || n22(l.cr);
+    if (Math.abs(total - line) > 0.01) {
+      throw new Error(
+        `The breakdown on ${l.account} comes to ${total.toFixed(2)}, but the line is ${line.toFixed(2)} \u2014 ${Math.abs(line - total).toFixed(2)} ${total < line ? "is unaccounted for" : "too much"}`
+      );
+    }
+    if (l.splits.some((sp) => !sp.name)) {
+      throw new Error(`Every line of the breakdown on ${l.account} needs a description`);
+    }
+  }
+}
 async function validateVoucher(v) {
   const lines = (v.lines || []).map((l) => ({
     account: String(l.account || "").trim(),
     group: l.group,
     dr: n22(l.dr),
     cr: n22(l.cr),
+    splits: (l.splits || []).map((sp) => ({
+      name: String(sp?.name || "").trim().slice(0, 200),
+      amount: n22(sp?.amount),
+      note: sp?.note ? String(sp.note).trim().slice(0, 500) : null
+    })).filter((sp) => !!sp.name || sp.amount !== 0),
     allocs: (l.allocs || []).map((a) => ({
       method: a.method,
       ref_name: a.ref_name ? String(a.ref_name).trim() : null,
@@ -19291,6 +19328,7 @@ async function validateVoucher(v) {
       }
     }
   }
+  assertSplitsAddUp(lines);
   return lines;
 }
 async function resolveRefIds(refName, companyId, side) {
@@ -19310,6 +19348,25 @@ async function resolveRefIds(refName, companyId, side) {
     args: [companyId, ref.toUpperCase()]
   });
   return { order_id: null, sale_invoice_group: r.rows.length ? String(r.rows[0].grp) : null };
+}
+async function writeSplits(entryId, lines) {
+  const c = getClient();
+  const saved = await c.execute({
+    sql: "SELECT id FROM journal_lines WHERE entry_id = ? ORDER BY id ASC",
+    args: [entryId]
+  });
+  for (let i = 0; i < lines.length && i < saved.rows.length; i++) {
+    const lineId = n22(saved.rows[i].id);
+    let order = 0;
+    for (const sp of lines[i].splits) {
+      order += 10;
+      await c.execute({
+        sql: `INSERT INTO journal_line_splits (line_id, name, amount, note, sort_order)
+              VALUES (?, ?, ?, ?, ?)`,
+        args: [lineId, sp.name, n22(sp.amount), sp.note || null, order]
+      });
+    }
+  }
 }
 async function writeAllocs(entryId, lines) {
   const c = getClient();
@@ -19358,6 +19415,7 @@ async function createVoucher(v) {
     lines
   });
   await writeAllocs(res.id, lines);
+  await writeSplits(res.id, lines);
   return res;
 }
 async function updateVoucher(id, v) {
@@ -19384,6 +19442,10 @@ async function updateVoucher(id, v) {
     sql: "DELETE FROM journal_bill_allocs WHERE line_id IN (SELECT id FROM journal_lines WHERE entry_id = ?)",
     args: [id]
   });
+  await c.execute({
+    sql: "DELETE FROM journal_line_splits WHERE line_id IN (SELECT id FROM journal_lines WHERE entry_id = ?)",
+    args: [id]
+  });
   await c.execute({ sql: "DELETE FROM journal_lines WHERE entry_id = ?", args: [id] });
   for (const l of lines) {
     const accountId = await getOrCreateAccount(l.account, l.group);
@@ -19393,6 +19455,7 @@ async function updateVoucher(id, v) {
     });
   }
   await writeAllocs(id, lines);
+  await writeSplits(id, lines);
   return { id };
 }
 async function getVoucher(id) {
@@ -19421,6 +19484,11 @@ async function getVoucher(id) {
       args: [Number(l.id)]
     });
     l.allocs = toPlain19(al);
+    const sp = await c.execute({
+      sql: "SELECT name, amount, note FROM journal_line_splits WHERE line_id = ? ORDER BY sort_order, id",
+      args: [Number(l.id)]
+    });
+    l.splits = toPlain19(sp);
   }
   entry.manual = entry.order_id == null && entry.sale_id == null && entry.payment_id == null && entry.note_id == null;
   return entry;
@@ -20205,7 +20273,14 @@ var APPROVAL_TABLES = /* @__PURE__ */ new Set([
   "sources",
   "uoms",
   "brokers",
-  "packagings"
+  "packagings",
+  // Three that were left out and had no business being: a category, a bank
+  // account and an NBFC are masters a desk can add like any other, and an
+  // unreviewed one is the same problem as an unreviewed supplier — it turns
+  // up in every dropdown and gets used before anybody has looked at it.
+  "categories",
+  "banks",
+  "nbfcs"
 ]);
 async function actingIsAdmin() {
   const u = getCurrentUser();
@@ -20213,6 +20288,38 @@ async function actingIsAdmin() {
   const r = await getClient().execute({ sql: "SELECT role FROM users WHERE id = ?", args: [u.id] });
   return r.rows.length ? String(r.rows[0].role) === "admin" : false;
 }
+async function notify(toUserIds, title, body2, tag) {
+  const ids = toUserIds.map((x) => Number(x)).filter((x) => x > 0);
+  if (!ids.length) return;
+  await getClient().execute({
+    sql: `INSERT INTO notifications
+              (company_id, rule_key, severity, audience, recipients, title, body, page, dedupe_key, created_at)
+            VALUES ((SELECT COALESCE(MIN(id), 1) FROM companies), 'master:approval', 'normal', 'named', ?, ?, ?, 'approvals', ?, datetime('now'))
+            ON CONFLICT(dedupe_key) WHERE resolved_at IS NULL DO NOTHING`,
+    args: [JSON.stringify(ids), title, body2, `approval:${tag}`]
+  }).catch((e) => {
+    console.error("[approvals] notification failed:", e.message);
+  });
+}
+async function adminIds() {
+  const r = await getClient().execute("SELECT id FROM users WHERE role = 'admin' AND active = 1");
+  return r.rows.map((x) => Number(x.id)).filter(Boolean);
+}
+var TABLE_WORD = {
+  oil_types: "oil type",
+  products: "product",
+  suppliers: "supplier",
+  transporters: "transporter",
+  customers: "customer",
+  sources: "source",
+  uoms: "unit",
+  brokers: "broker",
+  packagings: "packed SKU",
+  categories: "category",
+  banks: "bank account",
+  nbfcs: "NBFC"
+};
+var wordFor = (t) => TABLE_WORD[t] || String(t).replace(/_/g, " ");
 async function needsApproval(table) {
   if (!APPROVAL_TABLES.has(table)) return false;
   return !await actingIsAdmin();
@@ -20225,7 +20332,14 @@ async function submitApprovalRequest(table, values) {
           VALUES (?, 'create', ?, ?, ?, ?, 'pending')`,
     args: [table, JSON.stringify(values), label2 || null, u.id ?? null, u.username || null]
   });
-  return { pending: true, requestId: Number(res.lastInsertRowid) };
+  const requestId = Number(res.lastInsertRowid);
+  await notify(
+    await adminIds(),
+    `A new ${wordFor(table)} is waiting for you`,
+    `${u.username || "Somebody"} added ${label2 || `a ${wordFor(table)}`}. It stays off the list until you let it through.`,
+    `new:${requestId}`
+  );
+  return { pending: true, requestId };
 }
 async function listApprovalRequests() {
   const res = await getClient().execute(
@@ -20267,19 +20381,31 @@ async function approveRequest(id) {
           decided_at = datetime('now'), created_id = ? WHERE id = ?`,
     args: [u.id ?? null, u.username || null, created.id, id]
   });
+  await notify(
+    [Number(req.requested_by)],
+    `Your ${wordFor(String(req.table_name))} was approved`,
+    `${String(req.label || "").trim() || `The ${wordFor(String(req.table_name))} you added`} is on the list now.`,
+    `done:${id}`
+  );
   return { id, createdId: created.id };
 }
 async function rejectRequest(id, reason) {
   await assertAdmin();
   const clean = String(reason || "").trim();
   if (!clean) throw new Error("A reason is required to reject");
-  await loadPending(id);
+  const req = await loadPending(id);
   const u = getCurrentUser();
   await getClient().execute({
     sql: `UPDATE approval_requests SET status = 'rejected', decided_by = ?, decided_by_name = ?,
           decided_at = datetime('now'), reason = ? WHERE id = ?`,
     args: [u.id ?? null, u.username || null, clean, id]
   });
+  await notify(
+    [Number(req.requested_by)],
+    `Your ${wordFor(String(req.table_name))} was not added`,
+    `${String(req.label || "").trim() || `The ${wordFor(String(req.table_name))} you added`} \u2014 ${clean}`,
+    `done:${id}`
+  );
   return { id };
 }
 
