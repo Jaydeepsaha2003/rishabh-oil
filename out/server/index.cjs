@@ -2382,29 +2382,29 @@ function alterDays(user, moduleKey) {
   return v == null ? e : Math.min(e, v);
 }
 function can(user, moduleKey, action, opts = { today: "" }) {
-  const label = opts.moduleLabel || moduleKey;
+  const label2 = opts.moduleLabel || moduleKey;
   const perm = modulePerm(user, moduleKey);
   if (!perm.view && !perm.create && !perm.edit && !perm.delete) {
-    return { allowed: false, reason: `You do not have access to ${label}` };
+    return { allowed: false, reason: `You do not have access to ${label2}` };
   }
   if (action === "view") {
-    return perm.view ? OK : { allowed: false, reason: `You cannot view ${label}` };
+    return perm.view ? OK : { allowed: false, reason: `You cannot view ${label2}` };
   }
   if (action === "create") {
-    if (!perm.create) return { allowed: false, reason: `You cannot add new entries in ${label}` };
+    if (!perm.create) return { allowed: false, reason: `You cannot add new entries in ${label2}` };
     const limit2 = entryDays(user, moduleKey);
     if (limit2 == null || opts.entryDate == null) return OK;
     if (withinWindow(opts.entryDate, limit2, opts.today)) return OK;
     return {
       allowed: false,
       lockedByAge: true,
-      reason: `You can only date a new ${label} entry ${limit2 <= 1 ? "today" : `from ${windowStart(limit2, opts.today)} onwards`}`
+      reason: `You can only date a new ${label2} entry ${limit2 <= 1 ? "today" : `from ${windowStart(limit2, opts.today)} onwards`}`
     };
   }
   if (!perm[action]) {
     return {
       allowed: false,
-      reason: action === "edit" ? `You cannot edit entries in ${label}` : `You cannot delete entries in ${label}`
+      reason: action === "edit" ? `You cannot edit entries in ${label2}` : `You cannot delete entries in ${label2}`
     };
   }
   const limit = alterDays(user, moduleKey);
@@ -4400,8 +4400,8 @@ async function createConsignment(v) {
   const ok = await validateLot({ ...v, tanker_no: tankerNo }, null, bookCompany);
   const res = await c.execute({
     sql: `INSERT INTO consignment_stock (company_id, supplier_id, product_id, qty, uom, deposit_date, note,
-            gate_entry_id, tanker_no, is_opening, weighed_qty, shortage_pct)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            gate_entry_id, tanker_no, is_opening, weighed_qty, shortage_pct, lot_no, terminal_no)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     args: [
       bookCompany,
       ok.supplierId,
@@ -4414,7 +4414,9 @@ async function createConsignment(v) {
       tankerNo,
       v.is_opening ? 1 : 0,
       v.weighed_qty != null && v.weighed_qty !== "" ? n3(v.weighed_qty) : null,
-      v.shortage_pct != null && v.shortage_pct !== "" ? n3(v.shortage_pct) : null
+      v.shortage_pct != null && v.shortage_pct !== "" ? n3(v.shortage_pct) : null,
+      label(v.lot_no),
+      label(v.terminal_no)
     ]
   });
   return { id: Number(res.lastInsertRowid) };
@@ -4451,7 +4453,7 @@ async function updateConsignment(id, v) {
   await c.execute({
     sql: `UPDATE consignment_stock
           SET company_id = ?, supplier_id = ?, product_id = ?, qty = ?, uom = ?, deposit_date = ?, note = ?,
-              weighed_qty = ?, shortage_pct = ?, tanker_no = ?
+              weighed_qty = ?, shortage_pct = ?, tanker_no = ?, lot_no = ?, terminal_no = ?
           WHERE id = ?`,
     args: [
       newCompany,
@@ -4467,6 +4469,11 @@ async function updateConsignment(id, v) {
       // path into this function (booking, allocation) leaves it alone rather
       // than blanking the vehicle the gate weighed.
       v.tanker_no !== void 0 ? String(v.tanker_no ?? "").trim() || null : row.tanker_no,
+      // Same rule as the tanker: only a caller that NAMED the field may change
+      // it, so booking a lot into a purchase cannot quietly strip the labels
+      // that say which cargo it came off.
+      v.lot_no !== void 0 ? label(v.lot_no) : row.lot_no,
+      v.terminal_no !== void 0 ? label(v.terminal_no) : row.terminal_no,
       id
     ]
   });
@@ -4505,13 +4512,108 @@ async function deleteConsignment(id) {
   await c.execute({ sql: "DELETE FROM consignment_stock WHERE id = ?", args: [id] });
   return { id };
 }
-var n3, CONSIGNMENT_UOMS, GATE_BUFFER;
+async function assignConsignmentGroup(ids, v) {
+  const list2 = (Array.isArray(ids) ? ids : []).map(n3).filter(Boolean);
+  if (!list2.length) throw new Error("Pick at least one tanker to assign");
+  const setLot = v.lot_no !== void 0;
+  const setTerm = v.terminal_no !== void 0;
+  if (!setLot && !setTerm) throw new Error("Give a lot number, a terminal number, or both");
+  const lot = setLot ? label(v.lot_no) : null;
+  const term = setTerm ? label(v.terminal_no) : null;
+  const c = getClient();
+  const sets = [];
+  const args = [];
+  if (setLot) {
+    sets.push("lot_no = ?");
+    args.push(lot);
+  }
+  if (setTerm) {
+    sets.push("terminal_no = ?");
+    args.push(term);
+  }
+  const res = await c.execute({
+    sql: `UPDATE consignment_stock SET ${sets.join(", ")}
+           WHERE company_id = ? AND id IN (${list2.map(() => "?").join(",")})`,
+    args: [...args, getActiveCompanyId(), ...list2]
+  });
+  return { updated: Number(res.rowsAffected || 0), lot_no: lot, terminal_no: term };
+}
+function plateOf(no) {
+  return String(no ?? "").toUpperCase().split(/-(?=[A-Z]{4})/)[0].replace(/[^A-Z0-9]/g, "");
+}
+function tankerParts(no) {
+  const raw = plateOf(no);
+  if (!raw) return null;
+  const m = raw.match(/^(.*?)(\d+)$/);
+  if (!m) return { key: raw, tail: NaN };
+  return { key: m[1], tail: Number(m[2]) };
+}
+function tankerKin(a, b) {
+  const x = tankerParts(a);
+  const y = tankerParts(b);
+  if (!x || !y) return { kin: false, why: "" };
+  const rawA = plateOf(a);
+  const rawB = plateOf(b);
+  if (rawA === rawB) return { kin: true, why: "same vehicle, another trip" };
+  if (!x.key || x.key !== y.key) return { kin: false, why: "" };
+  if (!Number.isFinite(x.tail) || !Number.isFinite(y.tail)) return { kin: false, why: "" };
+  const gap = Math.abs(x.tail - y.tail);
+  if (gap > 0 && gap <= 10) return { kin: true, why: "consecutive number, same fleet" };
+  return { kin: false, why: "" };
+}
+async function consignmentKin(id) {
+  const c = getClient();
+  const cur = await c.execute({ sql: "SELECT * FROM consignment_stock WHERE id = ?", args: [n3(id)] });
+  if (!cur.rows.length) throw new Error("That tanker is no longer on the register");
+  const row = toPlain5(cur)[0];
+  const near = await c.execute({
+    sql: `SELECT cs.*, ge.gate_entry_no, o.invoice_no
+            FROM consignment_stock cs
+            LEFT JOIN gate_entries ge ON ge.id = cs.gate_entry_id
+            LEFT JOIN orders o ON o.id = cs.order_id
+           WHERE cs.company_id = ? AND cs.supplier_id = ? AND cs.product_id = ?
+             AND cs.id <> ? AND COALESCE(cs.is_opening, 0) = 0
+             AND ABS(JULIANDAY(cs.deposit_date) - JULIANDAY(?)) <= 7
+           ORDER BY cs.deposit_date DESC, cs.id DESC
+           LIMIT 40`,
+    args: [n3(row.company_id), n3(row.supplier_id), n3(row.product_id), n3(row.id), String(row.deposit_date)]
+  });
+  const mine = String(row.lot_no || "");
+  const out = [];
+  for (const r of toPlain5(near)) {
+    const theirs = String(r.lot_no || "");
+    if (mine && theirs && theirs !== mine) continue;
+    const k = tankerKin(row.tanker_no, r.tanker_no);
+    const days = Math.abs(
+      (Date.parse(`${String(r.deposit_date).slice(0, 10)}T00:00:00Z`) - Date.parse(`${String(row.deposit_date).slice(0, 10)}T00:00:00Z`)) / 864e5
+    );
+    const near2 = `arrived ${days === 0 ? "the same day" : `within ${days} day${days === 1 ? "" : "s"}`}`;
+    if (k.kin) {
+      out.push({ ...r, why: theirs ? `${k.why} \u2014 already on ${theirs}` : k.why, rank: theirs ? 1 : 2 });
+    } else if (theirs && days <= 3) {
+      out.push({ ...r, why: `${near2} \u2014 already on ${theirs}`, rank: 3 });
+    } else if (!theirs && days <= 3) {
+      out.push({ ...r, why: near2, rank: 4 });
+    }
+  }
+  out.sort((a, b) => n3(a.rank) - n3(b.rank) || String(b.deposit_date).localeCompare(String(a.deposit_date)));
+  const fromKin = out.find((r) => n3(r.rank) === 1) || out.find((r) => n3(r.rank) === 3);
+  return {
+    row,
+    suggested_lot: mine || String(fromKin?.lot_no || ""),
+    suggested_terminal: String(row.terminal_no || "") || String(fromKin?.terminal_no || ""),
+    suggested_from: fromKin ? String(fromKin.tanker_no || "") : "",
+    kin: out.slice(0, 12)
+  };
+}
+var n3, label, CONSIGNMENT_UOMS, GATE_BUFFER;
 var init_consignment = __esm({
   "src/main/consignment.ts"() {
     init_db();
     init_company();
     init_access_gate();
     n3 = (v) => Number(v) || 0;
+    label = (v) => String(v ?? "").trim().toUpperCase().slice(0, 40) || null;
     CONSIGNMENT_UOMS = ["MT", "KG", "L"];
     GATE_BUFFER = 1;
   }
@@ -4716,16 +4818,16 @@ function ddmmyyyy(iso) {
 function assertStageDateOrder(t) {
   let prevVal = "";
   let prevLabel = "";
-  for (const [key3, label] of STAGE_DATE_FIELDS) {
+  for (const [key3, label2] of STAGE_DATE_FIELDS) {
     const val = String(t[key3] || "").slice(0, 10);
     if (!val) continue;
     if (prevVal && val < prevVal) {
       throw new Error(
-        `${label} (${ddmmyyyy(val)}) cannot be before the ${prevLabel.toLowerCase()} (${ddmmyyyy(prevVal)})`
+        `${label2} (${ddmmyyyy(val)}) cannot be before the ${prevLabel.toLowerCase()} (${ddmmyyyy(prevVal)})`
       );
     }
     prevVal = val;
-    prevLabel = label;
+    prevLabel = label2;
   }
 }
 async function getSupplier(id) {
@@ -10108,17 +10210,17 @@ async function stockOpeningDate(companyId) {
   const fid0 = await factoryOfCompanies([cid]);
   if (fid0) {
     const fr = await getClient().execute({
-      sql: "SELECT as_of FROM stock_openings WHERE factory_id = ? ORDER BY as_of LIMIT 1",
+      sql: "SELECT MAX(as_of) AS as_of FROM stock_openings WHERE factory_id = ?",
       args: [fid0]
     });
     const d0 = fr.rows[0] ? fr.rows[0].as_of : null;
     if (d0) return String(d0).slice(0, 10);
   }
   const existing = await getClient().execute({
-    sql: "SELECT as_of FROM stock_openings WHERE company_id = ? ORDER BY as_of LIMIT 1",
+    sql: "SELECT MAX(as_of) AS as_of FROM stock_openings WHERE company_id = ?",
     args: [cid]
   });
-  if (existing.rows.length) return String(existing.rows[0].as_of).slice(0, 10);
+  if (existing.rows[0]?.as_of) return String(existing.rows[0].as_of).slice(0, 10);
   const books = await getBooksFrom(cid);
   return books ? String(books).slice(0, 10) : "";
 }
@@ -10338,7 +10440,103 @@ async function saveStockOpenings(rows, asOf, companyId, seenVersion) {
     saved++;
   }
   await seedOpeningDayCount(cid, date);
+  await snapshotOpeningSet(cid, fid, date).catch((e) => {
+    console.error("[stock] could not file the opening in history:", e);
+  });
   return { saved, cleared };
+}
+async function snapshotOpeningSet(cid, fid, date) {
+  const c = getClient();
+  const who = getCurrentUser();
+  const name = String(who?.username || "") || null;
+  const scope = fid ? "factory_id = ?" : "factory_id IS NULL AND company_id = ?";
+  const key3 = fid ? fid : cid;
+  const found = await c.execute({
+    sql: `SELECT id FROM stock_opening_sets WHERE ${scope} AND as_of = ?`,
+    args: [key3, date]
+  });
+  let sid = n10(found.rows[0]?.id);
+  if (sid) {
+    await c.execute({
+      sql: `UPDATE stock_opening_sets
+               SET revisions = revisions + 1, updated_at = datetime('now'), updated_by_name = ?
+             WHERE id = ?`,
+      args: [name, sid]
+    });
+    await c.execute({ sql: "DELETE FROM stock_opening_set_lines WHERE set_id = ?", args: [sid] });
+  } else {
+    const res = await c.execute({
+      sql: `INSERT INTO stock_opening_sets
+              (factory_id, company_id, as_of, created_at, created_by, created_by_name, updated_at, revisions, is_current)
+            VALUES (?, ?, ?, datetime('now'), ?, ?, datetime('now'), 1, 0)`,
+      args: [fid || null, cid, date, n10(who?.id) || null, name]
+    });
+    sid = Number(res.lastInsertRowid) || 0;
+  }
+  if (!sid) return;
+  await c.execute({
+    sql: `INSERT INTO stock_opening_set_lines (set_id, product_id, qty, pp_qty, adj_qty, rate, note)
+          SELECT ?, product_id, qty, pp_qty, adj_qty, rate, note FROM stock_openings
+           WHERE ${scope} AND as_of = ?`,
+    args: [sid, key3, date]
+  });
+  await c.execute({
+    sql: `UPDATE stock_opening_sets SET is_current = CASE WHEN id = ? THEN 1 ELSE 0 END WHERE ${scope}`,
+    args: [sid, key3]
+  });
+}
+async function listOpeningSets(companyId) {
+  const cid = n10(companyId) || getActiveCompanyId();
+  const fid = await factoryOfCompanies([cid]);
+  const scope = fid ? "factory_id = ?" : "factory_id IS NULL AND company_id = ?";
+  const rows = toPlain10(
+    await getClient().execute({
+      sql: `SELECT s.*,
+                   (SELECT COUNT(*) FROM stock_opening_set_lines l WHERE l.set_id = s.id) AS products,
+                   (SELECT COALESCE(SUM(l.qty + l.pp_qty + l.adj_qty), 0)
+                      FROM stock_opening_set_lines l WHERE l.set_id = s.id) AS total_qty
+              FROM stock_opening_sets s
+             WHERE ${scope}
+             ORDER BY s.as_of DESC, s.id DESC`,
+      args: [fid ? fid : cid]
+    })
+  );
+  return rows.map((r) => ({
+    id: n10(r.id),
+    as_of: String(r.as_of || "").slice(0, 10),
+    note: r.note == null ? "" : String(r.note),
+    created_at: String(r.created_at || ""),
+    created_by_name: r.created_by_name == null ? "" : String(r.created_by_name),
+    updated_at: String(r.updated_at || ""),
+    updated_by_name: r.updated_by_name == null ? "" : String(r.updated_by_name),
+    revisions: n10(r.revisions),
+    is_current: n10(r.is_current) === 1,
+    products: n10(r.products),
+    total_qty: r2(n10(r.total_qty))
+  }));
+}
+async function openingSetLines(setId) {
+  const rows = toPlain10(
+    await getClient().execute({
+      sql: `SELECT l.*, p.name AS product_name, p.uom, p.category
+              FROM stock_opening_set_lines l
+              LEFT JOIN products p ON p.id = l.product_id
+             WHERE l.set_id = ?
+             ORDER BY p.category, p.name`,
+      args: [n10(setId)]
+    })
+  );
+  return rows.map((r) => ({
+    product_id: n10(r.product_id),
+    product_name: String(r.product_name || `#${n10(r.product_id)}`),
+    uom: String(r.uom || "MT"),
+    category: String(r.category || ""),
+    qty: n10(r.qty),
+    pp_qty: n10(r.pp_qty),
+    adj_qty: n10(r.adj_qty),
+    rate: r.rate == null ? null : n10(r.rate),
+    note: r.note == null ? "" : String(r.note)
+  }));
 }
 async function seedOpeningDayCount(companyId, date) {
   const c = getClient();
@@ -10440,14 +10638,14 @@ async function ppLinesByProduct(scope) {
   return by;
 }
 async function addPpStage(name, companyId) {
-  const label = String(name || "").trim().replace(/\s+/g, " ");
-  if (!label) throw new Error("Name the stage");
-  if (label.length > 60) throw new Error("Keep the stage name under 60 characters");
+  const label2 = String(name || "").trim().replace(/\s+/g, " ");
+  if (!label2) throw new Error("Name the stage");
+  if (label2.length > 60) throw new Error("Keep the stage name under 60 characters");
   const scope = await ppScope(companyId);
   const c = getClient();
   const found = await c.execute({
     sql: "SELECT id, name, active FROM stock_pp_stages WHERE scope = ? AND UPPER(name) = UPPER(?)",
-    args: [scope, label]
+    args: [scope, label2]
   });
   if (found.rows.length) {
     const row = toPlain10(found)[0];
@@ -10463,9 +10661,9 @@ async function addPpStage(name, companyId) {
   const order = n10(next.rows[0]?.o) || 10;
   const ins = await c.execute({
     sql: "INSERT INTO stock_pp_stages (scope, name, sort_order) VALUES (?, ?, ?)",
-    args: [scope, label, order]
+    args: [scope, label2, order]
   });
-  return { id: Number(ins.lastInsertRowid), name: label, active: true, revived: false };
+  return { id: Number(ins.lastInsertRowid), name: label2, active: true, revived: false };
 }
 async function removePpStage(stageId, companyId) {
   const id = n10(stageId);
@@ -11503,9 +11701,9 @@ async function deleteProduction(id) {
   const without = await productStockAvailable(productId, { excludeProductionId: id });
   if (without < -1e-6) {
     const nameRow = await c.execute({ sql: "SELECT name FROM products WHERE id = ?", args: [productId] });
-    const label = String(nameRow.rows[0]?.name || "product");
+    const label2 = String(nameRow.rows[0]?.name || "product");
     console.warn(
-      `[production] run ${id} deleted \u2014 ${label} is now short by ${(Math.round(-without * 1e3) / 1e3).toFixed(3)}. Enter the missing production or the opening stock to clear it.`
+      `[production] run ${id} deleted \u2014 ${label2} is now short by ${(Math.round(-without * 1e3) / 1e3).toFixed(3)}. Enter the missing production or the opening stock to clear it.`
     );
   }
   await reversePpDraws(id);
@@ -12572,10 +12770,168 @@ async function postSaleFreight(saleId, v, qty) {
   }
   return amount;
 }
+function rateAdjAmount(v) {
+  const raw = v.rate !== "" && v.rate != null ? n12(v.rate) : n12(v.amount);
+  return round25(raw);
+}
+function rateAdjColumns(v) {
+  return {
+    qty: 0,
+    uom: String(v.uom || "MT"),
+    boxes: 0,
+    pouches: 0,
+    rate_per_case: null,
+    affects_stock: 0,
+    track_stock: 0,
+    // No journey: nothing is being delivered, so the line is done the moment
+    // it is raised and lands in the ledger with the rest of the invoice.
+    stage: "unloaded",
+    status: "done",
+    // A bill line cannot also be a freight contract.
+    freight_term: "FREIGHT_ON_GOODS",
+    transporter_id: null,
+    transport_rate: 0,
+    transport_amount: 0
+  };
+}
+async function createRateAdjustment(v, productId) {
+  const amount = rateAdjAmount(v);
+  if (!amount) throw new Error("Give the amount of the adjustment \u2014 a rate adjustment of nothing is not a line");
+  const k = rateAdjColumns(v);
+  const gstPct = n12(v.gst_pct);
+  const gstAmount = round25(amount * (gstPct / 100));
+  const roundOff = round25(n12(v.round_off) || 0);
+  const customerId = v.customer_id ? n12(v.customer_id) : null;
+  const tdsPct = n12(v.tds_pct);
+  const tdsAmount = await saleTds(customerId, tdsPct, amount, String(v.sale_date), 0);
+  const net = amount + gstAmount + roundOff - tdsAmount;
+  const dates = resolveStageDates(k.stage, v, String(v.sale_date || "") || todayLocal());
+  const res = await getClient().execute({
+    sql: `INSERT INTO sales (company_id, sale_date, invoice_no, invoice_group, customer, customer_id, product_id, sales_bargain_id,
+            qty, uom, rate, amount, gst_pct, gst_amount, gst_type, round_off, round_off_manual, tds_pct, tds_amount, status,
+            dispatch_stage, track_stock, loaded_date, transit_date, unloaded_date, note, sale_type, packaging_id, boxes, pouches,
+            freight_term, transporter_id, transport_rate, transport_amount, is_trading, affects_stock, deduct_freight,
+            rate_per_case, allowed_shortage_pct, is_rate_adj)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)`,
+    args: [
+      getActiveCompanyId(),
+      v.sale_date,
+      v.invoice_no || null,
+      v.invoice_group || null,
+      v.customer || null,
+      customerId,
+      productId,
+      // No bargain balance is consumed: nothing was delivered against it.
+      null,
+      k.qty,
+      k.uom,
+      amount,
+      amount,
+      gstPct,
+      gstAmount,
+      v.gst_type === "IGST" ? "IGST" : "CGST_SGST",
+      roundOff,
+      v.round_off_manual ? 1 : 0,
+      tdsPct,
+      tdsAmount,
+      k.status,
+      k.stage,
+      k.track_stock,
+      dates.loaded_date,
+      dates.transit_date,
+      dates.unloaded_date,
+      v.note || null,
+      v.sale_type === "PACKED" ? "PACKED" : "LOOSE",
+      v.packaging_id ? n12(v.packaging_id) : null,
+      k.boxes,
+      k.pouches,
+      k.freight_term,
+      k.transporter_id,
+      k.transport_rate,
+      k.transport_amount,
+      v.is_trading ? 1 : 0,
+      k.affects_stock,
+      0,
+      k.rate_per_case,
+      0
+    ]
+  });
+  const id = Number(res.lastInsertRowid);
+  await postCustomerReceivable(id, customerId, net, String(v.sale_date));
+  await postSaleEntry(id, v, amount, gstAmount, roundOff, k.transport_amount, tdsAmount);
+  return { id };
+}
+async function updateRateAdjustment(id, v, productId) {
+  const amount = rateAdjAmount(v);
+  if (!amount) throw new Error("Give the amount of the adjustment \u2014 a rate adjustment of nothing is not a line");
+  const k = rateAdjColumns(v);
+  const gstPct = n12(v.gst_pct);
+  const gstAmount = round25(amount * (gstPct / 100));
+  const roundOff = round25(n12(v.round_off) || 0);
+  const customerId = v.customer_id ? n12(v.customer_id) : null;
+  const tdsPct = n12(v.tds_pct);
+  const tdsAmount = await saleTds(customerId, tdsPct, amount, String(v.sale_date), id);
+  const net = amount + gstAmount + roundOff - tdsAmount;
+  const dates = resolveStageDates(k.stage, v, String(v.sale_date || "") || todayLocal());
+  await getClient().execute({
+    sql: `UPDATE sales SET sale_date = ?, invoice_no = ?, customer = ?, customer_id = ?, product_id = ?, sales_bargain_id = NULL,
+            qty = ?, uom = ?, rate = ?, amount = ?, gst_pct = ?, gst_amount = ?, gst_type = ?, round_off = ?, round_off_manual = ?,
+            tds_pct = ?, tds_amount = ?, status = ?, dispatch_stage = ?, track_stock = ?, loaded_date = ?, transit_date = ?,
+            unloaded_date = ?, note = ?, sale_type = ?, packaging_id = ?, boxes = ?, pouches = ?, freight_term = ?,
+            transporter_id = ?, transport_rate = ?, transport_amount = ?, affects_stock = ?, deduct_freight = 0,
+            rate_per_case = ?, allowed_shortage_pct = 0, is_rate_adj = 1
+          WHERE id = ?`,
+    args: [
+      v.sale_date,
+      v.invoice_no || null,
+      v.customer || null,
+      customerId,
+      productId,
+      k.qty,
+      k.uom,
+      amount,
+      amount,
+      gstPct,
+      gstAmount,
+      v.gst_type === "IGST" ? "IGST" : "CGST_SGST",
+      roundOff,
+      v.round_off_manual ? 1 : 0,
+      tdsPct,
+      tdsAmount,
+      k.status,
+      k.stage,
+      k.track_stock,
+      dates.loaded_date,
+      dates.transit_date,
+      dates.unloaded_date,
+      v.note || null,
+      v.sale_type === "PACKED" ? "PACKED" : "LOOSE",
+      v.packaging_id ? n12(v.packaging_id) : null,
+      k.boxes,
+      k.pouches,
+      k.freight_term,
+      k.transporter_id,
+      k.transport_rate,
+      k.transport_amount,
+      k.affects_stock,
+      k.rate_per_case,
+      id
+    ]
+  });
+  await postCustomerReceivable(id, customerId, net, String(v.sale_date));
+  await postSaleEntry(id, v, amount, gstAmount, roundOff, k.transport_amount, tdsAmount);
+  await getClient().execute({ sql: "DELETE FROM transporter_ledger WHERE sale_id = ?", args: [id] });
+  await getClient().execute({
+    sql: "DELETE FROM customer_ledger WHERE sale_id = ? AND entry_type = 'freight'",
+    args: [id]
+  });
+  return { id };
+}
 async function createSale(v) {
   const productId = n12(v.product_id);
   if (!productId) throw new Error("Select a product");
   await assertSalesInvoiceNoFree(v, getActiveCompanyId(), void 0, !!v.invoice_no_grandfathered);
+  if (v.is_rate_adj) return createRateAdjustment(v, productId);
   const { qty, uom } = await resolveSaleQty(v);
   if (qty <= 0) throw new Error("Quantity must be greater than zero");
   const rate = n12(v.rate);
@@ -12684,6 +13040,7 @@ async function updateSale(id, v) {
     const grp = v.invoice_group || own.rows[0]?.invoice_group || null;
     await assertSalesInvoiceNoFree({ ...v, invoice_group: grp }, cid, id, !!v.invoice_no_grandfathered);
   }
+  if (v.is_rate_adj) return updateRateAdjustment(id, v, productId);
   const { qty, uom } = await resolveSaleQty(v);
   if (qty <= 0) throw new Error("Quantity must be greater than zero");
   const rate = n12(v.rate);
@@ -14622,6 +14979,70 @@ async function runStartupTasks() {
     )`);
     await c.execute("CREATE INDEX IF NOT EXISTS idx_stock_openings_co ON stock_openings(company_id)");
   }).catch((e) => console.error("[stock] opening-stock table failed:", e));
+  await runOnce("sales_rate_adjustment_v1", async () => {
+    await getClient().execute("ALTER TABLE sales ADD COLUMN is_rate_adj INTEGER NOT NULL DEFAULT 0").catch((e) => {
+      if (!/duplicate column/i.test(String(e?.message || e))) throw e;
+    });
+  }).catch((e) => console.error("[sales] rate-adjustment flag failed:", e));
+  await runOnce("stock_opening_sets_v1", async () => {
+    const c = getClient();
+    await c.execute(`CREATE TABLE IF NOT EXISTS stock_opening_sets (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      factory_id INTEGER,
+      company_id INTEGER NOT NULL,
+      as_of TEXT NOT NULL,
+      note TEXT,
+      created_at TEXT NOT NULL,
+      created_by INTEGER,
+      created_by_name TEXT,
+      updated_at TEXT,
+      updated_by_name TEXT,
+      -- How many times this morning's count has been corrected. A set that
+      -- reads 1 was typed once and never touched again.
+      revisions INTEGER NOT NULL DEFAULT 1,
+      -- Exactly one set per site is in force; the rest are what it replaced.
+      is_current INTEGER NOT NULL DEFAULT 0
+    )`);
+    await c.execute(`CREATE TABLE IF NOT EXISTS stock_opening_set_lines (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      set_id INTEGER NOT NULL,
+      product_id INTEGER NOT NULL,
+      qty REAL NOT NULL DEFAULT 0,
+      pp_qty REAL NOT NULL DEFAULT 0,
+      adj_qty REAL NOT NULL DEFAULT 0,
+      rate REAL,
+      note TEXT,
+      UNIQUE(set_id, product_id)
+    )`);
+    await c.execute("CREATE INDEX IF NOT EXISTS idx_opening_sets ON stock_opening_sets(factory_id, company_id, as_of)");
+    const live = await c.execute(
+      `SELECT factory_id, company_id, as_of, COUNT(*) AS n, MIN(updated_at) AS first_at, MAX(updated_at) AS last_at
+         FROM stock_openings GROUP BY factory_id, company_id, as_of`
+    );
+    for (const g of live.rows) {
+      const fid = g.factory_id;
+      const cid = g.company_id;
+      const asOf = String(g.as_of || "").slice(0, 10);
+      if (!asOf) continue;
+      const first = String(g.first_at || "");
+      const last = String(g.last_at || "");
+      const res = await c.execute({
+        sql: `INSERT INTO stock_opening_sets
+                (factory_id, company_id, as_of, note, created_at, created_by_name, updated_at, revisions, is_current)
+              VALUES (?, ?, ?, 'The count in force when history began', ?, NULL, ?, 1, 1)`,
+        args: [fid ?? null, cid ?? 1, asOf, first || last, last || first]
+      });
+      const sid = Number(res.lastInsertRowid) || 0;
+      if (!sid) continue;
+      await c.execute({
+        sql: `INSERT INTO stock_opening_set_lines (set_id, product_id, qty, pp_qty, adj_qty, rate, note)
+              SELECT ?, product_id, qty, pp_qty, adj_qty, rate, note
+                FROM stock_openings
+               WHERE as_of = ? AND ${fid == null ? "factory_id IS NULL AND company_id = ?" : "factory_id = ?"}`,
+        args: [sid, asOf, fid == null ? cid ?? 1 : fid]
+      });
+    }
+  }).catch((e) => console.error("[stock] opening-stock history failed:", e));
   await runOnce("stock_openings_pp_v1", async () => {
     await getClient().execute("ALTER TABLE stock_openings ADD COLUMN pp_qty REAL NOT NULL DEFAULT 0").catch((e) => {
       if (!/duplicate column/i.test(String(e.message))) throw e;
@@ -15328,6 +15749,18 @@ async function runStartupTasks() {
     await add("ALTER TABLE companies ADD COLUMN opening_purchase_date TEXT");
   }).catch((e) => console.error("[intercompany] opening purchase failed:", e));
   await ensureCompanyParties().catch((e) => console.error("[intercompany] party rows failed:", e));
+  await runOnce("consignment_lot_terminal_v1", async () => {
+    const c = getClient();
+    const add = async (sql) => {
+      await c.execute(sql).catch((e) => {
+        if (!/duplicate column/i.test(String(e.message))) throw e;
+      });
+    };
+    await add("ALTER TABLE consignment_stock ADD COLUMN lot_no TEXT");
+    await add("ALTER TABLE consignment_stock ADD COLUMN terminal_no TEXT");
+    await c.execute("CREATE INDEX IF NOT EXISTS idx_consign_lot ON consignment_stock(company_id, lot_no)").catch(() => {
+    });
+  }).catch((e) => console.error("[consignment] lot/terminal failed:", e));
   await runOnce("push_subscriptions_v1", async () => {
     const c = getClient();
     await c.execute(`CREATE TABLE IF NOT EXISTS push_subscriptions (
@@ -15368,6 +15801,11 @@ async function runStartupTasks() {
     )`);
     await c.execute("CREATE INDEX IF NOT EXISTS idx_work_day_req ON work_day_requests(state, work_date)");
   }).catch((e) => console.error("[work] day requests failed:", e));
+  await runOnce("work_day_admin_open_v1", async () => {
+    await getClient().execute("ALTER TABLE work_day_requests ADD COLUMN opened_by_admin INTEGER NOT NULL DEFAULT 0").catch((e) => {
+      if (!/duplicate column/i.test(String(e?.message || e))) throw e;
+    });
+  }).catch((e) => console.error("[work] admin-opened day flag failed:", e));
   await runOnce("orders_quality_waived_v1", async () => {
     const c = getClient();
     const add = async (sql) => {
@@ -16429,9 +16867,9 @@ function toSaleParties(v) {
   if (!live.length) throw new Error("Pick the customer");
   const multi = live.length > 1;
   const parties = live.map((g, gi) => {
-    const label = multi ? `Buyer ${gi + 1}` : "Sale";
+    const label2 = multi ? `Buyer ${gi + 1}` : "Sale";
     if (!n15(g?.customer_id)) {
-      throw new Error(multi ? `${label}: pick the customer` : "Pick the customer");
+      throw new Error(multi ? `${label2}: pick the customer` : "Pick the customer");
     }
     return {
       customerId: n15(g.customer_id),
@@ -16439,7 +16877,7 @@ function toSaleParties(v) {
       gstType: g.gst_type === "IGST" ? "IGST" : "CGST_SGST",
       tdsPct: n15(g.tds_pct),
       roundOff: n15(g.round_off),
-      lines: toLines(g.lines, (i) => `${label} invoice ${i + 1}`, `${label}: add at least one sale invoice`)
+      lines: toLines(g.lines, (i) => `${label2} invoice ${i + 1}`, `${label2}: add at least one sale invoice`)
     };
   });
   const seen = /* @__PURE__ */ new Set();
@@ -17210,11 +17648,23 @@ function withSections(list2) {
   }
   return out;
 }
+function lineCase(text) {
+  return s2(text).toUpperCase();
+}
 async function listWorkProcesses() {
   return (await plain2(
     `SELECT id, module, scope, title, detail, sort_order, active
          FROM work_processes ORDER BY module, sort_order, id`
-  )).map((r) => ({ ...r, id: n18(r.id), active: n18(r.active) === 1 }));
+  )).map((r) => ({
+    ...r,
+    id: n18(r.id),
+    // Read out in the case the board reads in. The row itself is left as it
+    // was typed — this is how it is shown, not a rewrite of what was said.
+    title: lineCase(s2(r.title)),
+    // The note is left exactly as it was written — see lineCase.
+    detail: s2(r.detail),
+    active: n18(r.active) === 1
+  }));
 }
 async function carryToOpenTasks(processId, title, detail) {
   await getClient().execute({
@@ -17235,7 +17685,7 @@ async function saveWorkProcess(v, adminId) {
   const a = await loadUser(n18(adminId));
   if (s2(a.role) !== "admin") throw new Error("Only an admin can change the task list");
   const module2 = s2(v.module).trim();
-  const title = s2(v.title).trim().slice(0, 300);
+  const title = lineCase(s2(v.title).trim()).slice(0, 300);
   if (!module2) throw new Error("Which page is this line for?");
   if (!title) throw new Error("Say what needs doing");
   const scope = s2(v.scope).trim();
@@ -17243,7 +17693,7 @@ async function saveWorkProcess(v, adminId) {
   const active = v.active == null ? 1 : v.active === false || n18(v.active) === 0 ? 0 : 1;
   const id = n18(v.id);
   const clash = await plain2(
-    "SELECT id FROM work_processes WHERE module = ? AND scope = ? AND title = ? AND id <> ?",
+    "SELECT id FROM work_processes WHERE module = ? AND scope = ? AND UPPER(title) = UPPER(?) AND id <> ?",
     [module2, scope, title, id]
   );
   if (clash.length) throw new Error("That line is already on this page");
@@ -17446,7 +17896,7 @@ async function listWorkBoard(date, viewerId) {
       user_name: nameOf.get(n18(t.user_id)) || `#${n18(t.user_id)}`,
       module: s2(t.module),
       process_id: n18(t.process_id) || null,
-      title: s2(t.title),
+      title: lineCase(s2(t.title)),
       detail: s2(t.detail),
       kind: s2(t.kind) || "auto",
       state: s2(t.state) || "pending",
@@ -17575,6 +18025,71 @@ async function decideWorkDay(requestId, approve, adminId, note) {
   );
   return { id: n18(requestId), state };
 }
+async function setWorkDayOpen(userIds, workDate, open, adminId, note) {
+  const a = await loadUser(n18(adminId));
+  if (s2(a.role) !== "admin") throw new Error("Only an admin can open a closed day");
+  const day = namedDay(s2(workDate));
+  if (!day) throw new Error("Which day?");
+  const today = await workingDayISO();
+  if (day === today) throw new Error("That day is already open \u2014 it is the board in front of you");
+  if (day > today) throw new Error("That day has not happened yet");
+  const ids = Array.from(new Set((userIds || []).map((x) => n18(x)).filter((x) => x > 0)));
+  if (!ids.length) throw new Error("Whose day?");
+  const why = s2(note).trim().slice(0, 500) || null;
+  const stamp3 = localStamp();
+  let opened = 0;
+  let closed = 0;
+  for (const id of ids) {
+    const u = await loadUser(id);
+    if (s2(u.role) === "admin") continue;
+    if (open) {
+      await getClient().execute({
+        sql: `INSERT INTO work_day_requests (user_id, work_date, reason, state, decided_by, decided_at, decided_note, created_at, opened_by_admin)
+              VALUES (?, ?, NULL, 'approved', ?, ?, ?, ?, 1)
+              ON CONFLICT(user_id, work_date) DO UPDATE SET
+                state = 'approved',
+                decided_by = excluded.decided_by,
+                decided_at = excluded.decided_at,
+                decided_note = excluded.decided_note`,
+        args: [id, day, n18(a.id), stamp3, why, stamp3]
+      });
+      opened += 1;
+      await tell(
+        id,
+        `${day} is open for you`,
+        `${s2(a.full_name) || s2(a.username)} opened it without being asked${why ? ` \u2014 ${why}` : ""}. Pick the date on your board and tick off what you finished that day.`,
+        "normal",
+        `dayopen:${id}:${day}:${Date.now()}`
+      );
+    } else {
+      const cur = (await plain2(
+        "SELECT id, opened_by_admin FROM work_day_requests WHERE user_id = ? AND work_date = ?",
+        [id, day]
+      ))[0];
+      if (!cur) continue;
+      if (n18(cur.opened_by_admin) === 1) {
+        await getClient().execute({
+          sql: "DELETE FROM work_day_requests WHERE id = ?",
+          args: [n18(cur.id)]
+        });
+      } else {
+        await getClient().execute({
+          sql: `UPDATE work_day_requests SET state = 'refused', decided_by = ?, decided_at = ?, decided_note = ? WHERE id = ?`,
+          args: [n18(a.id), stamp3, why, n18(cur.id)]
+        });
+      }
+      closed += 1;
+      await tell(
+        id,
+        `${day} is closed again`,
+        `${s2(a.full_name) || s2(a.username)} shut it${why ? ` \u2014 ${why}` : ""}. Anything already ticked stays ticked.`,
+        "normal",
+        `dayshut:${id}:${day}:${Date.now()}`
+      );
+    }
+  }
+  return { opened, closed, work_date: day };
+}
 async function dayRequestsFor(viewerIsAdmin, viewerId) {
   const rows = await plain2(
     `SELECT r.*, u.full_name, u.username
@@ -17593,7 +18108,8 @@ async function dayRequestsFor(viewerIsAdmin, viewerId) {
     reason: s2(r.reason),
     state: s2(r.state) || "pending",
     decided_at: s2(r.decided_at),
-    decided_note: s2(r.decided_note)
+    decided_note: s2(r.decided_note),
+    opened_by_admin: n18(r.opened_by_admin) === 1 ? 1 : 0
   }));
 }
 async function tickWorkTask(taskId, userId) {
@@ -17722,39 +18238,42 @@ async function assignWorkTask(v, adminId) {
   if (s2(a.role) !== "admin") throw new Error("Only an admin can assign a task");
   const uid = n18(v.user_id);
   if (!uid) throw new Error("Who is this for?");
-  const title = s2(v.title).trim();
-  if (!title) throw new Error("Say what needs doing");
+  const raw = Array.isArray(v.lines) && v.lines.length ? v.lines : [{ title: v.title, detail: v.detail }];
+  const lines = raw.map((l) => ({
+    title: lineCase(s2(l?.title).trim()).slice(0, 300),
+    detail: s2(l?.detail).trim().slice(0, 2e3) || null
+  })).filter((l) => !!l.title);
+  if (!lines.length) throw new Error("Say what needs doing");
   const target = await loadUser(uid);
   const day = namedDay(s2(v.work_date)) || await workingDayISO();
   const cid = getActiveCompanyId();
   const fid = await factoryOfCompanies([cid]);
-  const res = await getClient().execute({
-    sql: `INSERT INTO work_tasks
-            (factory_id, company_id, work_date, user_id, module, process_id, title, detail,
-             kind, state, assigned_by, due_at, created_at)
-          VALUES (?, ?, ?, ?, ?, NULL, ?, ?, 'assigned', 'pending', ?, ?, ?)`,
-    args: [
-      fid || null,
-      cid,
-      day,
-      uid,
-      s2(v.module).trim() || "workAssignments",
-      title.slice(0, 300),
-      s2(v.detail).trim().slice(0, 2e3) || null,
-      n18(a.id),
-      s2(v.due_at).trim() || null,
-      localStamp()
-    ]
-  });
-  const id = Number(res.lastInsertRowid) || 0;
+  const mod = s2(v.module).trim() || "workAssignments";
+  const due = s2(v.due_at).trim() || null;
+  const stamp3 = localStamp();
+  const ids = [];
+  for (const l of lines) {
+    const res = await getClient().execute({
+      sql: `INSERT INTO work_tasks
+              (factory_id, company_id, work_date, user_id, module, process_id, title, detail,
+               kind, state, assigned_by, due_at, created_at)
+            VALUES (?, ?, ?, ?, ?, NULL, ?, ?, 'assigned', 'pending', ?, ?, ?)`,
+      args: [fid || null, cid, day, uid, mod, l.title, l.detail, n18(a.id), due, stamp3]
+    });
+    const id = Number(res.lastInsertRowid) || 0;
+    if (id) ids.push(id);
+  }
+  if (!ids.length) throw new Error("Nothing could be assigned");
+  const from = s2(a.full_name) || s2(a.username);
+  const one = lines.length === 1;
   await tell(
     uid,
-    "A task has been assigned to you",
-    `${title}${s2(v.detail).trim() ? ` \u2014 ${s2(v.detail).trim()}` : ""}`,
+    one ? "A task has been assigned to you" : `${lines.length} tasks have been assigned to you`,
+    one ? `${from}: ${lines[0].title}${lines[0].detail ? ` \u2014 ${lines[0].detail}` : ""}` : `${from}: ${lines.map((l) => l.title).join(" \xB7 ")}`,
     "normal",
-    `assigned:${id}`
+    `assigned:${ids.join("-")}`
   );
-  return { id };
+  return { id: ids[0], ids };
 }
 async function removeWorkTask(taskId, adminId) {
   const t = await loadTask(taskId);
@@ -19560,11 +20079,11 @@ async function needsApproval(table) {
 }
 async function submitApprovalRequest(table, values) {
   const u = getCurrentUser();
-  const label = String(values.name ?? values.code ?? "").trim();
+  const label2 = String(values.name ?? values.code ?? "").trim();
   const res = await getClient().execute({
     sql: `INSERT INTO approval_requests (table_name, action, payload, label, requested_by, requested_by_name, status)
           VALUES (?, 'create', ?, ?, ?, ?, 'pending')`,
-    args: [table, JSON.stringify(values), label || null, u.id ?? null, u.username || null]
+    args: [table, JSON.stringify(values), label2 || null, u.id ?? null, u.username || null]
   });
   return { pending: true, requestId: Number(res.lastInsertRowid) };
 }
@@ -22352,8 +22871,8 @@ function tableLabel(table) {
 function summarizeArgs(args) {
   const v = args?.values || args?.data || args || {};
   const parts = [];
-  const add = (label, val) => {
-    if (val != null && val !== "") parts.push(label ? `${label} ${val}` : String(val));
+  const add = (label2, val) => {
+    if (val != null && val !== "") parts.push(label2 ? `${label2} ${val}` : String(val));
   };
   add("", v.name);
   add("Inv", v.invoice_no);
@@ -22388,7 +22907,7 @@ async function recordAudit(channel, args, result) {
   );
 }
 function registerIpc() {
-  const READONLY = /:list$|:get$|:items$|:issuances$|:sheet$|:outstanding$|:all$|:summary$|:transfers$|:fyTaxable$|:needs$|:breakdown$|:nextNo$|:liveUsers$|:ips$|:logs$|:dispatchableSales$|:mine$|:pendingCount$|:pending$|:lots$|:unmapped$|:unmappedCount$|:bargainLines$|:bargainNotes$|:bargainInterest$|:consignmentDraws$|^access:heartbeat$|^db:ping$|^db:snapshot$|^app:revision$|^auth:login$|^journal:booksFrom$|^journal:openings$|^journal:opening$|^journal:accounts$|^journal:statement$|^journal:trialBalance$|^journal:groups$|^journal:groupNames$|^journal:pendingRefs$|^journal:billsOutstanding$|^journal:tradingAccount$|^dashboard:stats$|^skuRates:parties$|^skuRates:partyCounts$|^consignment:openingLog$|^consignment:invoices$|^tankers:quality$|^tankers:ffaHistory$|^orders:quality$|^gate:partyCategories$|^gate:waivedOuts$|^gate:forRecord$|^notify:rules$|^notify:list$|^notify:run$|^notify:preview$|^notify:people$|^notify:mutes$|^treasury:alerts$|^treasury:paymentTracker$|^facility:exposures$|^facility:headroom$|^company:setActive$|^company:getActive$|^factory:active$|^factory:companies$|^session:setUser$|^lc:repayments$|^lc:allRepayments$|^lc:getLimit$|^lc:bankLimits$|^lc:paymentIns$|^lc:openTradingInvoices$|^files:pickDocument$|^files:openDocument$|^bankRecon:imports$|^bankRecon:list$|^bankRecon:suggest$|^bd:kpis$|^bd:limits$|^skuStock:adjustments$|^skuOpening:list$|^skuOpening:date$|^stockCount:previous$|^stockOpening:list$|^stockOpening:date$|^stockOpening:ppStages$|^stockOpening:ppFreeTotals$|^production:ppDraws$|^bargains:linkedInvoices$|^bargains:adjustments$|^history:list$|^stockOpening:ppVessels$|^stockOpening:ppReceivers$|^stockOpening:ppWriteoffs$|^work:board$|^work:cutoff$|^work:processes$|^formulationSubcategory:list$|^formulations:versions$|^bd:allRepayments$|^bd:interestSchedule$|^bd:interestWindow$|^bd:interestPayments$|^bd:linkedOrders$|^bd:parties$|^bd:allParties$|^bd:openTradingInvoices$|^bd:paymentIns$|^access:entryWindows$|^access:entityHistory$|^trading:list$|^sales:series$|^sales:invoiceGaps$|^salesBargains:returns$|^salesBargains:linkedInvoices$|^salesBargains:unattributedReturns$|^tbill:orphans$|^production:report$/;
+  const READONLY = /:list$|:get$|:items$|:issuances$|:sheet$|:outstanding$|:all$|:summary$|:transfers$|:fyTaxable$|:needs$|:breakdown$|:nextNo$|:liveUsers$|:ips$|:logs$|:dispatchableSales$|:mine$|:pendingCount$|:pending$|:lots$|:unmapped$|:unmappedCount$|:bargainLines$|:bargainNotes$|:bargainInterest$|:consignmentDraws$|^access:heartbeat$|^db:ping$|^db:snapshot$|^app:revision$|^auth:login$|^journal:booksFrom$|^journal:openings$|^journal:opening$|^journal:accounts$|^journal:statement$|^journal:trialBalance$|^journal:groups$|^journal:groupNames$|^journal:pendingRefs$|^journal:billsOutstanding$|^journal:tradingAccount$|^dashboard:stats$|^skuRates:parties$|^skuRates:partyCounts$|^consignment:openingLog$|^consignment:invoices$|^tankers:quality$|^tankers:ffaHistory$|^orders:quality$|^gate:partyCategories$|^gate:waivedOuts$|^gate:forRecord$|^notify:rules$|^notify:list$|^notify:run$|^notify:preview$|^notify:people$|^notify:mutes$|^treasury:alerts$|^treasury:paymentTracker$|^facility:exposures$|^facility:headroom$|^company:setActive$|^company:getActive$|^factory:active$|^factory:companies$|^session:setUser$|^lc:repayments$|^lc:allRepayments$|^lc:getLimit$|^lc:bankLimits$|^lc:paymentIns$|^lc:openTradingInvoices$|^files:pickDocument$|^files:openDocument$|^bankRecon:imports$|^bankRecon:list$|^bankRecon:suggest$|^bd:kpis$|^bd:limits$|^skuStock:adjustments$|^skuOpening:list$|^skuOpening:date$|^stockCount:previous$|^stockOpening:list$|^stockOpening:date$|^stockOpening:sets$|^stockOpening:setLines$|^stockOpening:ppStages$|^stockOpening:ppFreeTotals$|^production:ppDraws$|^bargains:linkedInvoices$|^bargains:adjustments$|^history:list$|^stockOpening:ppVessels$|^stockOpening:ppReceivers$|^stockOpening:ppWriteoffs$|^work:board$|^work:cutoff$|^work:processes$|^formulationSubcategory:list$|^formulations:versions$|^bd:allRepayments$|^bd:interestSchedule$|^bd:interestWindow$|^bd:interestPayments$|^bd:linkedOrders$|^bd:parties$|^bd:allParties$|^bd:openTradingInvoices$|^bd:paymentIns$|^access:entryWindows$|^access:entityHistory$|^trading:list$|^sales:series$|^sales:invoiceGaps$|^salesBargains:returns$|^salesBargains:linkedInvoices$|^salesBargains:unattributedReturns$|^tbill:orphans$|^production:report$/;
   const AUDIT_SKIP = /* @__PURE__ */ new Set(["config:get", "config:save", "session:setUser"]);
   const handle = (channel, fn) => {
     ipcMain.handle(channel, async (e, args) => {
@@ -22605,6 +23124,11 @@ function registerIpc() {
     (_e, { id, values }) => updateConsignment(id, values)
   );
   handle("consignment:delete", (_e, { id }) => deleteConsignment(id));
+  handle(
+    "consignment:assignGroup",
+    (_e, { ids, lot_no, terminal_no }) => assignConsignmentGroup(ids, { lot_no, terminal_no })
+  );
+  handle("consignment:kin", (_e, { id }) => consignmentKin(id));
   handle("consignment:saveOpening", (_e, { values }) => saveOpeningStock(values));
   handle(
     "consignment:openingLog",
@@ -22755,6 +23279,11 @@ function registerIpc() {
     (_e, { companyId } = {}) => stockOpeningDate(companyId)
   );
   handle(
+    "stockOpening:sets",
+    (_e, { companyId } = {}) => listOpeningSets(companyId)
+  );
+  handle("stockOpening:setLines", (_e, { setId }) => openingSetLines(Number(setId)));
+  handle(
     "stockOpening:ppStages",
     (_e, { companyId } = {}) => listPpStages(companyId)
   );
@@ -22789,6 +23318,10 @@ function registerIpc() {
   handle(
     "work:decideDay",
     (_e, { id, approve, userId, note }) => decideWorkDay(id, approve !== false, userId, note)
+  );
+  handle(
+    "work:setDayOpen",
+    (_e, { userIds, date, open, userId, note }) => setWorkDayOpen(userIds, date, open !== false, userId, note)
   );
   handle("work:cutoff", () => workCutoff());
   handle(
