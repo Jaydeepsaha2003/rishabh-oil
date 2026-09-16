@@ -4430,26 +4430,154 @@ async function validateConsignmentLots(picks, supplierId, productId, orderId = 0
   const primary = list2.find((p) => p.bargain_id)?.bargain_id || list2.find((p) => p.extra_bargain_id)?.extra_bargain_id;
   return { total, lines: Array.from(alloc.values()), primaryBargainId: Number(primary) || 0 };
 }
-async function assignConsignmentLots(orderId, picks, supplierId, productId, companyId) {
+async function planConsignmentDraw(picks, supplierId, productId, wantQty, orderId = 0, companyId, fallbackBargainId = 0) {
   const list2 = toLotPicks(picks);
-  if (!list2.length) return { total: 0, lines: [], primaryBargainId: 0 };
-  const alloc = await validateConsignmentLots(list2, supplierId, productId, orderId, companyId);
+  const cid = companyId || getActiveCompanyId();
+  const picked = await validateConsignmentLots(list2, supplierId, productId, orderId, cid);
+  const ticked = round3(picked.total);
+  const want = round3(wantQty > 1e-6 ? wantQty : ticked);
+  if (want <= 1e-6) throw new Error("Enter the quantity to invoice");
+  const byId = /* @__PURE__ */ new Map();
+  if (list2.length) {
+    const res = await getClient().execute({
+      sql: `SELECT id, qty FROM consignment_stock WHERE id IN (${list2.map(() => "?").join(",")})`,
+      args: list2.map((x) => x.id)
+    });
+    for (const r of toPlain8(res)) byId.set(n5(r.id), r);
+  }
+  const steps = [];
+  let left = want;
+  const eat = (id, have, pick) => {
+    if (left <= 1e-6 || have <= 1e-6) return;
+    const take = round3(Math.min(left, have));
+    const extra = pick?.extra_bargain_id ? Math.min(n5(pick.extra_qty), take) : 0;
+    steps.push({
+      id,
+      take,
+      whole: take >= have - 1e-6,
+      bargain_id: pick?.bargain_id || fallbackBargainId || null,
+      extra_bargain_id: extra > 1e-9 ? pick?.extra_bargain_id || null : null,
+      extra_qty: extra
+    });
+    left = round3(left - take);
+  };
+  for (const pick of list2) eat(pick.id, n5(byId.get(pick.id)?.qty), pick);
+  if (left > 1e-6) {
+    const mine = new Set(list2.map((x) => x.id));
+    const free = await getClient().execute({
+      sql: `SELECT id, qty FROM consignment_stock
+            WHERE company_id = ? AND supplier_id = ? AND product_id = ?
+              AND (order_id IS NULL${orderId ? " OR order_id = ?" : ""})
+            ORDER BY deposit_date, id`,
+      args: orderId ? [cid, supplierId, productId, orderId] : [cid, supplierId, productId]
+    });
+    for (const r of toPlain8(free)) {
+      if (left <= 1e-6) break;
+      if (mine.has(n5(r.id))) continue;
+      eat(n5(r.id), n5(r.qty));
+    }
+  }
+  if (left > 1e-6) {
+    throw new Error(
+      `Only ${round3(want - left).toFixed(3)} of consigned stock is available for this supplier and product`
+    );
+  }
+  const bargainIds = Array.from(
+    new Set(steps.flatMap((x) => [x.bargain_id, x.extra_bargain_id]).filter((x) => !!x))
+  );
+  const named = /* @__PURE__ */ new Map();
+  if (bargainIds.length) {
+    const bres = await getClient().execute({
+      sql: `SELECT id, bargain_no, rate_per_uom FROM bargains WHERE id IN (${bargainIds.map(() => "?").join(",")})`,
+      args: bargainIds
+    });
+    for (const b of toPlain8(bres)) named.set(n5(b.id), b);
+  }
+  const lines = /* @__PURE__ */ new Map();
+  const add = (bid, qty) => {
+    if (!bid || qty <= 1e-9) return;
+    const b = named.get(bid);
+    const cur = lines.get(bid) || {
+      bargain_id: bid,
+      bargain_no: String(b?.bargain_no || ""),
+      rate: n5(b?.rate_per_uom),
+      qty: 0
+    };
+    cur.qty = round3(cur.qty + qty);
+    lines.set(bid, cur);
+  };
+  for (const x of steps) {
+    add(x.bargain_id, round3(x.take - x.extra_qty));
+    add(x.extra_bargain_id, x.extra_qty);
+  }
+  const drawnFromPicks = steps.filter((x) => list2.some((pk) => pk.id === x.id)).reduce((t, x) => t + x.take, 0);
+  return {
+    total: want,
+    steps,
+    lines: Array.from(lines.values()),
+    primaryBargainId: picked.primaryBargainId,
+    ticked,
+    fromPool: round3(want - drawnFromPicks)
+  };
+}
+async function applyConsignmentDraw(orderId, plan, companyId) {
   const c = getClient();
-  for (const p of list2) {
+  for (const step of plan.steps) {
+    if (step.whole) {
+      await c.execute({
+        sql: `UPDATE consignment_stock
+              SET order_id = ?, bargain_id = ?, extra_bargain_id = ?, extra_qty = ?
+              WHERE id = ?`,
+        args: [
+          orderId,
+          step.bargain_id || null,
+          step.extra_bargain_id || null,
+          step.extra_bargain_id ? step.extra_qty : null,
+          step.id
+        ]
+      });
+      continue;
+    }
+    const res = await c.execute({
+      sql: "SELECT * FROM consignment_stock WHERE id = ? LIMIT 1",
+      args: [step.id]
+    });
+    const parent = toPlain8(res)[0] || null;
+    if (!parent) continue;
     await c.execute({
-      sql: `UPDATE consignment_stock
-            SET order_id = ?, bargain_id = ?, extra_bargain_id = ?, extra_qty = ?
-            WHERE id = ?`,
+      sql: `INSERT INTO consignment_stock
+              (company_id, supplier_id, product_id, qty, uom, deposit_date, note, gate_entry_id,
+               tanker_no, order_id, bargain_id, extra_bargain_id, extra_qty, is_opening,
+               lot_no, terminal_no, split_from)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       args: [
+        companyId || n5(parent.company_id),
+        n5(parent.supplier_id),
+        n5(parent.product_id),
+        step.take,
+        String(parent.uom || "MT"),
+        String(parent.deposit_date || ""),
+        parent.note ? String(parent.note) : null,
+        parent.gate_entry_id ? n5(parent.gate_entry_id) : null,
+        parent.tanker_no ? String(parent.tanker_no) : null,
         orderId,
-        p.bargain_id || null,
-        p.extra_bargain_id || null,
-        p.extra_bargain_id ? n5(p.extra_qty) : null,
-        p.id
+        step.bargain_id || null,
+        step.extra_bargain_id || null,
+        step.extra_bargain_id ? step.extra_qty : null,
+        n5(parent.is_opening) === 1 ? 1 : 0,
+        parent.lot_no ? String(parent.lot_no) : null,
+        parent.terminal_no ? String(parent.terminal_no) : null,
+        step.id
       ]
     });
+    await c.execute({
+      sql: "UPDATE consignment_stock SET qty = ? WHERE id = ?",
+      args: [round3(n5(parent.qty) - step.take), step.id]
+    });
   }
-  return alloc;
+}
+function round3(x) {
+  return Math.round((Number(x) || 0) * 1e3) / 1e3;
 }
 async function autoAssignConsignmentLots(orderId, supplierId, productId, qty, bargainId = 0, companyId) {
   const free = await getClient().execute({
@@ -4474,7 +4602,26 @@ async function autoAssignConsignmentLots(orderId, supplierId, productId, qty, ba
   return used;
 }
 async function releaseConsignmentLots(orderId) {
-  await getClient().execute({
+  const c = getClient();
+  const slices = toPlain8(
+    await c.execute({
+      sql: "SELECT id, qty, split_from FROM consignment_stock WHERE order_id = ? AND split_from IS NOT NULL",
+      args: [orderId]
+    })
+  );
+  for (const sl of slices) {
+    const parent = await c.execute({
+      sql: "SELECT id, qty FROM consignment_stock WHERE id = ? LIMIT 1",
+      args: [n5(sl.split_from)]
+    });
+    if (!parent.rows.length) continue;
+    await c.execute({
+      sql: "UPDATE consignment_stock SET qty = ? WHERE id = ?",
+      args: [round3(n5(toPlain8(parent)[0].qty) + n5(sl.qty)), n5(sl.split_from)]
+    });
+    await c.execute({ sql: "DELETE FROM consignment_stock WHERE id = ?", args: [n5(sl.id)] });
+  }
+  await c.execute({
     sql: `UPDATE consignment_stock
           SET order_id = NULL, bargain_id = NULL, extra_bargain_id = NULL, extra_qty = NULL
           WHERE order_id = ?`,
@@ -5412,13 +5559,25 @@ async function createOrder(v) {
   const bookInCompany = v.company_id ? n6(v.company_id) : getActiveCompanyId();
   await assertPurchaseInvoiceNoFree(v, bookInCompany);
   const picks = toLotPicks(v.consignment_lot_ids);
+  let drawPlan = null;
   let lotAlloc = { total: 0, lines: [], primaryBargainId: 0 };
   if (picks.length) {
-    lotAlloc = await validateConsignmentLots(picks, n6(v.supplier_id), n6(v.oil_type_id), 0, bookInCompany);
-    v.ordered_qty = lotAlloc.total;
-    if (lotAlloc.primaryBargainId) v.bargain_id = lotAlloc.primaryBargainId;
+    drawPlan = await planConsignmentDraw(
+      picks,
+      n6(v.supplier_id),
+      n6(v.oil_type_id),
+      n6(v.ordered_qty),
+      0,
+      bookInCompany,
+      n6(v.bargain_id)
+    );
+    lotAlloc = drawPlan;
+    v.ordered_qty = drawPlan.total;
+    if (drawPlan.primaryBargainId) v.bargain_id = drawPlan.primaryBargainId;
   }
-  const obLines = picks.length ? [] : toBargainLines(v.bargain_lines);
+  const typedBgLines = toBargainLines(v.bargain_lines);
+  const typedBgTotal = typedBgLines.reduce((t, l) => t + n6(l.qty), 0);
+  const obLines = !picks.length || typedBgLines.length && Math.abs(typedBgTotal - n6(v.ordered_qty)) <= 1e-3 ? typedBgLines : [];
   let obPriced = { lines: [], primaryBargainId: 0 };
   if (obLines.length) {
     obPriced = await priceBargainLines(
@@ -5529,9 +5688,12 @@ async function createOrder(v) {
     });
   }
   if (isConsignment) {
-    if (picks.length) {
-      const alloc = await assignConsignmentLots(id, picks, n6(v.supplier_id), n6(v.oil_type_id), bookInCompany);
-      await saveOrderBargains(id, alloc.lines.map((l) => ({ bargain_id: l.bargain_id, qty: l.qty })));
+    if (drawPlan) {
+      await applyConsignmentDraw(id, drawPlan, bookInCompany);
+      await saveOrderBargains(
+        id,
+        obLines.length ? obLines : drawPlan.lines.map((l) => ({ bargain_id: l.bargain_id, qty: l.qty }))
+      );
     } else {
       await saveOrderBargains(
         id,
@@ -5680,14 +5842,28 @@ async function updateOrder(id, v) {
   const wasConsignment = !!cur.rows[0]?.is_consignment;
   const beforeRow = await getClient().execute({ sql: "SELECT * FROM orders WHERE id = ? LIMIT 1", args: [id] }).then((r) => r.rows.length ? toPlain9(r)[0] : null).catch(() => null);
   await assertPurchaseInvoiceNoFree(v, n6(cur.rows[0]?.company_id) || getActiveCompanyId(), id);
+  const lotCompany = n6(cur.rows[0]?.company_id) || getActiveCompanyId();
   const picks = toLotPicks(v.consignment_lot_ids);
+  if (wasConsignment) await releaseConsignmentLots(id);
+  let drawPlan = null;
   let lotAlloc = { total: 0, lines: [], primaryBargainId: 0 };
   if (wasConsignment && picks.length) {
-    lotAlloc = await validateConsignmentLots(picks, n6(v.supplier_id), n6(v.oil_type_id), id);
-    v.ordered_qty = lotAlloc.total;
-    if (lotAlloc.primaryBargainId) v.bargain_id = lotAlloc.primaryBargainId;
+    drawPlan = await planConsignmentDraw(
+      picks,
+      n6(v.supplier_id),
+      n6(v.oil_type_id),
+      n6(v.ordered_qty),
+      id,
+      lotCompany,
+      n6(v.bargain_id)
+    );
+    lotAlloc = drawPlan;
+    v.ordered_qty = drawPlan.total;
+    if (drawPlan.primaryBargainId) v.bargain_id = drawPlan.primaryBargainId;
   }
-  const obLines = wasConsignment && !picks.length ? toBargainLines(v.bargain_lines) : [];
+  const typedBgLinesU = wasConsignment ? toBargainLines(v.bargain_lines) : [];
+  const typedBgTotalU = typedBgLinesU.reduce((t, l) => t + n6(l.qty), 0);
+  const obLines = wasConsignment && (!picks.length || typedBgLinesU.length && Math.abs(typedBgTotalU - n6(v.ordered_qty)) <= 1e-3) ? typedBgLinesU : [];
   let obPriced = {
     lines: [],
     primaryBargainId: 0
@@ -5779,16 +5955,25 @@ async function updateOrder(id, v) {
       sql: "UPDATE orders SET received_qty = ?, status = 'received' WHERE id = ?",
       args: [n6(v.ordered_qty), id]
     });
-    await releaseConsignmentLots(id);
-    if (picks.length) {
-      const alloc = await assignConsignmentLots(id, picks, n6(v.supplier_id), n6(v.oil_type_id));
-      await saveOrderBargains(id, alloc.lines.map((l) => ({ bargain_id: l.bargain_id, qty: l.qty })));
+    if (drawPlan) {
+      await applyConsignmentDraw(id, drawPlan, lotCompany);
+      await saveOrderBargains(
+        id,
+        obLines.length ? obLines : drawPlan.lines.map((l) => ({ bargain_id: l.bargain_id, qty: l.qty }))
+      );
     } else {
       await saveOrderBargains(
         id,
         obLines.length ? obLines : v.bargain_id ? [{ bargain_id: n6(v.bargain_id), qty: n6(v.ordered_qty) }] : []
       );
-      await autoAssignConsignmentLots(id, n6(v.supplier_id), n6(v.oil_type_id), n6(v.ordered_qty), n6(v.bargain_id));
+      await autoAssignConsignmentLots(
+        id,
+        n6(v.supplier_id),
+        n6(v.oil_type_id),
+        n6(v.ordered_qty),
+        n6(v.bargain_id),
+        lotCompany
+      );
     }
   } else {
     await getClient().execute({ sql: "UPDATE purchase_tankers SET order_id = NULL WHERE order_id = ?", args: [id] });
@@ -17697,7 +17882,10 @@ var REQUIRED_COLUMNS = [
   { table: "letters_of_credit", column: "payment_in_days", type: "INTEGER" },
   { table: "bd_repayments", column: "comm_charges", type: "REAL" },
   { table: "bd_repayments", column: "bank_charges", type: "REAL" },
-  { table: "orders", column: "bill_group", type: "TEXT" }
+  { table: "orders", column: "bill_group", type: "TEXT" },
+  // The parcel a part-withdrawal was cut from, so releasing the invoice can
+  // put the two halves back together (see applyConsignmentDraw).
+  { table: "consignment_stock", column: "split_from", type: "INTEGER" }
 ];
 async function ensureRequiredColumns() {
   const c = getClient();
