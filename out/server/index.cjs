@@ -7365,6 +7365,7 @@ __export(treasury_exports, {
   postLcPrematureInterestRebate: () => postLcPrematureInterestRebate,
   postLcRepaymentEntry: () => postLcRepaymentEntry,
   postLcUpfrontInterest: () => postLcUpfrontInterest,
+  postSimplePaymentIn: () => postSimplePaymentIn,
   refreshLcUpfrontInterest: () => refreshLcUpfrontInterest,
   reopenLcBill: () => reopenLcBill,
   resyncLcSettlement: () => resyncLcSettlement,
@@ -7733,7 +7734,15 @@ async function listLcOpenTradingInvoices(lcId) {
   return refs;
 }
 async function postLcPaymentIn(lcId, amount, dateIn, selectedKeys) {
-  const { lc, customerName, refs } = await outstandingSaleRefsForLc(lcId);
+  let lc;
+  let customerName;
+  let refs;
+  try {
+    ;
+    ({ lc, customerName, refs } = await outstandingSaleRefsForLc(lcId));
+  } catch {
+    return postSimplePaymentIn("lc", lcId, amount, dateIn);
+  }
   const bankAcc = await bankAccountFor(lc);
   const wanted = Array.isArray(selectedKeys) && selectedKeys.length ? new Set(selectedKeys.map(String)) : null;
   const outstanding = wanted ? refs.filter((r) => wanted.has(r.key)) : refs;
@@ -7764,6 +7773,62 @@ async function postLcPaymentIn(lcId, amount, dateIn, selectedKeys) {
     sql: "INSERT INTO lc_payment_ins (lc_id, pay_date, amount, journal_entry_id) VALUES (?, ?, ?, ?)",
     args: [lcId, date, value, je.id]
   });
+  return { id: je.id, date };
+}
+async function facilityParty(row) {
+  const c = getClient();
+  const rid = n8(row.receivable_party_id);
+  if (rid) {
+    const r = await c.execute({ sql: "SELECT name FROM customers WHERE id = ?", args: [rid] });
+    const nm = String(r.rows[0]?.name || "").trim();
+    if (nm) return { name: nm, group: "Sundry Debtors" };
+  }
+  const pid = n8(row.party_id);
+  const kind = String(row.party_type || "").trim().toLowerCase();
+  if (pid && (kind === "customer" || kind === "supplier")) {
+    const table = kind === "customer" ? "customers" : "suppliers";
+    const r = await c.execute({ sql: `SELECT name FROM ${table} WHERE id = ?`, args: [pid] });
+    const nm = String(r.rows[0]?.name || "").trim();
+    if (nm) return { name: nm, group: kind === "customer" ? "Sundry Debtors" : "Sundry Creditors" };
+  }
+  throw new Error("This facility names no party for the money to come back from \u2014 set one on it first");
+}
+async function postSimplePaymentIn(kind, facilityId, amount, dateIn, method) {
+  const c = getClient();
+  const table = kind === "lc" ? "letters_of_credit" : "bill_discountings";
+  const res = await c.execute({ sql: `SELECT * FROM ${table} WHERE id = ?`, args: [n8(facilityId)] });
+  if (!res.rows.length) throw new Error(kind === "lc" ? "LC not found" : "Discounted bill not found");
+  const row = toPlain9(res)[0];
+  const value = round22(n8(amount));
+  if (value < 5e-3) throw new Error("Enter the amount received");
+  const date = String(dateIn || todayISO2()).slice(0, 10);
+  assertNotFuture(date, "The date the payment was received");
+  const party = await facilityParty(row);
+  const bankAcc = kind === "lc" ? await bankAccountFor(row) : "BANK A/C";
+  const no = String(kind === "lc" ? row.lc_no : row.bd_no || "");
+  const how = payMethod(method);
+  const je = await postJournal({
+    date,
+    vchType: "RECEIPT",
+    vchNo: no,
+    narration: `${kind === "lc" ? "LC" : "Bill Discounting"} ${no} \u2014 payment IN of ${value.toFixed(2)} received from ` + party.name + (how ? ` by ${how}` : ""),
+    companyId: n8(row.company_id) || void 0,
+    lines: [
+      { account: bankAcc, group: "Bank Accounts", dr: value },
+      { account: party.name, group: party.group, cr: value }
+    ]
+  });
+  if (kind === "lc") {
+    await c.execute({
+      sql: "INSERT INTO lc_payment_ins (lc_id, pay_date, amount, journal_entry_id) VALUES (?, ?, ?, ?)",
+      args: [n8(facilityId), date, value, je.id]
+    });
+  } else {
+    await c.execute({
+      sql: "INSERT INTO bd_payment_ins (bd_id, pay_date, amount, journal_entry_id, method) VALUES (?, ?, ?, ?, ?)",
+      args: [n8(facilityId), date, value, je.id, how]
+    });
+  }
   return { id: je.id, date };
 }
 async function outstandingSaleRefsForBd(bdId) {
@@ -7852,7 +7917,15 @@ function payMethod(v) {
   return hit || "Other";
 }
 async function postBdPaymentIn(bdId, amount, dateIn, selectedKeys, method) {
-  const { bd, customerName, refs } = await outstandingSaleRefsForBd(bdId);
+  let bd;
+  let customerName;
+  let refs;
+  try {
+    ;
+    ({ bd, customerName, refs } = await outstandingSaleRefsForBd(bdId));
+  } catch {
+    return postSimplePaymentIn("bd", bdId, amount, dateIn, method);
+  }
   const wanted = Array.isArray(selectedKeys) && selectedKeys.length ? new Set(selectedKeys.map(String)) : null;
   const outstanding = wanted ? refs.filter((r) => wanted.has(r.key)) : refs;
   if (!outstanding.length) throw new Error("Every sale invoice on this deal is already fully paid");
@@ -17348,6 +17421,14 @@ async function runStartupTasks() {
     }
     console.log(`[lc] margin taken off the ledger \u2014 ${whole} voucher(s) removed, ${trimmed} trimmed`);
   }).catch((e) => console.error("[lc] margin off-ledger failed:", e));
+  await runOnce("facility_payment_in_days_v1", async () => {
+    const c = getClient();
+    for (const t of ["letters_of_credit", "bill_discountings"]) {
+      await c.execute(`ALTER TABLE ${t} ADD COLUMN payment_in_days INTEGER`).catch((e) => {
+        if (!/duplicate column/i.test(String(e?.message || e))) throw e;
+      });
+    }
+  }).catch((e) => console.error("[facility] payment-in days failed:", e));
   startRevisionWatcher();
 }
 
@@ -21801,6 +21882,10 @@ async function listLCs() {
       COALESCE((SELECT COUNT(CASE WHEN order_id IS NOT NULL THEN 1 END) FROM lc_issuances WHERE lc_id = l.id), 0) AS linked_bill_count,
       l.amount - COALESCE((SELECT SUM(amount) FROM lc_issuances WHERE lc_id = l.id), 0) AS available,
       COALESCE((SELECT SUM(amount) FROM lc_repayments WHERE lc_id = l.id AND posted = 1), 0) AS repaid,
+      -- What has actually come back, so the countdown chip can stand down and
+      -- the Payment IN action knows there is nothing left to receive.
+      COALESCE((SELECT SUM(amount) FROM lc_payment_ins WHERE lc_id = l.id), 0) AS payment_in_total,
+      (SELECT COUNT(*) FROM lc_payment_ins WHERE lc_id = l.id) AS payment_in_count,
       (SELECT MIN(due_date) FROM lc_issuances WHERE lc_id = l.id AND COALESCE(status, 'outstanding') != 'settled') AS next_due_date
     FROM letters_of_credit l
     LEFT JOIN suppliers s ON l.party_type = 'supplier' AND s.id = l.party_id
@@ -22080,7 +22165,14 @@ var LC_COLS = [
   "opened_date",
   "interest_upfront",
   "interest_excl_charges",
-  "interest_adj"
+  "interest_adj",
+  // HOW LONG BEFORE THE MONEY COMES BACK.
+  //
+  // Optional, and a plain number of days rather than a date, because that is
+  // how the terms are agreed — "60 days from the LC" — and a date typed by
+  // hand drifts from whatever the LC was actually opened on. Counted from the
+  // opening; the register turns it into a date and says whether it is due.
+  "payment_in_days"
 ];
 function lcArgs(v) {
   return LC_COLS.map((k) => {
@@ -22096,7 +22188,9 @@ function lcArgs(v) {
     }
     if (k === "our_bank_id" || k === "party_id" || k === "amount" || k === "blocked_amount" || k === "interest_pct" || k === "charges" || k === "usance_days" || k === "margin_pct" || k === "facility_id" || k === "receivable_party_id" || k === "interest_upfront" || // Signed: a negative adjustment is the ordinary case, so this must not
     // be floored or read as a string.
-    k === "interest_adj") {
+    k === "interest_adj" || // A number of days, kept as one — blank has already fallen through to
+    // null above, which is "no term agreed" rather than nought days.
+    k === "payment_in_days") {
       return n29(val);
     }
     return val;
@@ -23041,6 +23135,10 @@ var BD_COLS = [
   // with it so every older reader still behaves.
   "interest_mode",
   "interest_freq",
+  // HOW LONG BEFORE THE MONEY COMES BACK. Optional, and a number of days
+  // rather than a date: the terms are agreed in days, and a date typed by hand
+  // drifts from whatever the bill was actually discounted on. See lc.ts.
+  "payment_in_days",
   "note"
 ];
 function bdArgs(v) {
@@ -23059,6 +23157,10 @@ function bdArgs(v) {
       return val2 === "" || val2 === void 0 || val2 === null ? null : n31(val2);
     }
     if (k === "nbfc_id" || k === "receivable_party_id") return v[k] ? n31(v[k]) : null;
+    if (k === "payment_in_days") {
+      const val2 = v[k];
+      return val2 === "" || val2 === void 0 || val2 === null ? null : n31(val2);
+    }
     const val = v[k];
     return val === "" || val === void 0 || val === null ? null : String(val);
   });
