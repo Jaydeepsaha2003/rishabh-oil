@@ -10596,6 +10596,18 @@ async function saveStockOpenings(rows, asOf, companyId, seenVersion) {
   const c = getClient();
   const fid = await factoryOfCompanies([cid]);
   const keyed = (extra) => fid ? { sql: `factory_id = ?${extra}`, args: [fid] } : { sql: `company_id = ?${extra}`, args: [cid] };
+  const wasOn = String(
+    (await c.execute({ sql: `SELECT MAX(as_of) AS d FROM stock_openings WHERE ${keyed("").sql}`, args: keyed("").args }).catch(() => ({ rows: [] }))).rows[0]?.d || ""
+  ).slice(0, 10);
+  if (wasOn && wasOn !== date) {
+    await snapshotOpeningSet(cid, fid, wasOn).catch(
+      (e) => console.error("[stock] could not file the outgoing opening:", e)
+    );
+    await c.execute({
+      sql: "DELETE FROM stock_opening_pp WHERE scope = ?",
+      args: [fid ? `f${fid}` : `c${cid}`]
+    }).catch((e) => console.error("[stock] could not clear the PP breakdown:", e));
+  }
   const ppFromLines = await ppTotalsByProduct(cid).catch(() => /* @__PURE__ */ new Map());
   let saved = 0;
   let cleared = 0;
