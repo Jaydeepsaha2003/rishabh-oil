@@ -3883,8 +3883,8 @@ async function nextBargainNo(oilTypeId, supplierId, bargainDate) {
   let maxSeq = 0;
   for (const r of existing.rows) {
     const parts = String(r.bargain_no).split("/");
-    const n36 = parseInt(parts[parts.length - 1] ?? "0", 10);
-    if (!Number.isNaN(n36) && n36 > maxSeq) maxSeq = n36;
+    const n37 = parseInt(parts[parts.length - 1] ?? "0", 10);
+    if (!Number.isNaN(n37) && n37 > maxSeq) maxSeq = n37;
   }
   const serial = String(maxSeq + 1).padStart(2, "0");
   return `${oil}/${dayMonth(bargainDate)}/${party}/${serial}`;
@@ -5226,13 +5226,13 @@ function computeMoney(i) {
   const threshold = i.tdsThreshold || 0;
   const abovePct = i.tdsPctAbove || 0;
   const prior = i.tdsPrior || 0;
-  const round215 = (v) => Math.round(v * 100) / 100;
+  const round216 = (v) => Math.round(v * 100) / 100;
   const lines = (i.lines || []).filter((l) => n6(l.qty) > 0);
   const lineQty = lines.reduce((s4, l) => s4 + n6(l.qty), 0);
-  const blendedRate = lineQty > 0 ? round215(lines.reduce((s4, l) => s4 + n6(l.rate) * n6(l.qty), 0) / lineQty) : 0;
-  const rawPremium = round215(i.invoiceRate - blendedRate);
+  const blendedRate = lineQty > 0 ? round216(lines.reduce((s4, l) => s4 + n6(l.rate) * n6(l.qty), 0) / lineQty) : 0;
+  const rawPremium = round216(i.invoiceRate - blendedRate);
   const ratePremium = Math.abs(rawPremium) < 0.01 ? 0 : rawPremium;
-  const billedRate = (raw) => i.rateRoundOff == null ? Math.ceil(raw) : round215(raw + n6(i.rateRoundOff));
+  const billedRate = (raw) => i.rateRoundOff == null ? Math.ceil(raw) : round216(raw + n6(i.rateRoundOff));
   const taxableValue = lines.length > 1 && lineQty > 0 ? lines.reduce((s4, l) => {
     const days = l.interestDays != null ? n6(l.interestDays) : interestDays;
     const addl = l.additionalInterest != null ? n6(l.additionalInterest) : i.additionalInterest || 0;
@@ -5243,13 +5243,13 @@ function computeMoney(i) {
   const gstAmount = taxableValue * i.gstPct / 100;
   const roundOff = Number(i.roundOff) || 0;
   const roundedTotal = taxableValue + gstAmount + roundOff;
-  const tdsAmount = round215(tierTds(taxableValue, prior, threshold, i.tdsPct, abovePct));
-  const netAmount = round215(roundedTotal - tdsAmount);
+  const tdsAmount = round216(tierTds(taxableValue, prior, threshold, i.tdsPct, abovePct));
+  const netAmount = round216(roundedTotal - tdsAmount);
   const finalTaxable = i.bargainRate * i.orderedQty;
   const finalGst = finalTaxable * i.gstPct / 100;
   const finalRounded = finalTaxable + finalGst + roundOff;
-  const finalTds = round215(tierTds(finalTaxable, prior, threshold, i.tdsPct, abovePct));
-  const finalNet = round215(finalRounded - finalTds);
+  const finalTds = round216(tierTds(finalTaxable, prior, threshold, i.tdsPct, abovePct));
+  const finalNet = round216(finalRounded - finalTds);
   return {
     interest_pct: interestPct,
     interest_days: interestDays,
@@ -6460,7 +6460,7 @@ async function backfillPurchaseRoundOff() {
            pr.code AS oil_code, pr.name AS oil_name
     FROM orders o LEFT JOIN products pr ON pr.id = o.oil_type_id
     ORDER BY o.order_date ASC, o.id ASC`);
-  const round215 = (v) => Math.round(v * 100) / 100;
+  const round216 = (v) => Math.round(v * 100) / 100;
   const same2 = (a, b) => Math.abs(a - b) < 5e-3;
   const prior = /* @__PURE__ */ new Map();
   let applied = 0;
@@ -6475,13 +6475,13 @@ async function backfillPurchaseRoundOff() {
     const before = prior.get(key3);
     prior.set(key3, before + n6(r.taxable_value));
     if (n6(r.round_off_manual) === 1) continue;
-    const T = round215(n6(r.taxable_value) + n6(r.gst_amount));
-    const ro = round215(Math.round(T) - T);
-    const tds = round215(n6(r.tds_amount));
-    const net = round215(T + ro - tds);
-    const fT = round215(n6(r.final_taxable_value) + n6(r.final_gst_amount));
-    const fTds = round215(n6(r.final_tds_amount));
-    const fNet = round215(fT + ro - fTds);
+    const T = round216(n6(r.taxable_value) + n6(r.gst_amount));
+    const ro = round216(Math.round(T) - T);
+    const tds = round216(n6(r.tds_amount));
+    const net = round216(T + ro - tds);
+    const fT = round216(n6(r.final_taxable_value) + n6(r.final_gst_amount));
+    const fTds = round216(n6(r.final_tds_amount));
+    const fNet = round216(fT + ro - fTds);
     if (same2(ro, n6(r.round_off)) && same2(tds, n6(r.tds_amount)) && same2(net, n6(r.net_amount))) continue;
     console.log(
       `[orders] round-off repair #${r.id} ${r.invoice_no} ${r.order_date}: ro ${n6(r.round_off).toFixed(2)} -> ${ro.toFixed(2)} | tds ${n6(r.tds_amount).toFixed(2)} -> ${tds.toFixed(2)} | net ${n6(r.net_amount).toFixed(2)} -> ${net.toFixed(2)}`
@@ -6521,7 +6521,7 @@ async function backfillPurchaseRoundOff() {
 }
 async function repairPurchaseTdsOnTaxable() {
   const c = getClient();
-  const round215 = (v) => Math.round(v * 100) / 100;
+  const round216 = (v) => Math.round(v * 100) / 100;
   const roots = /* @__PURE__ */ new Map();
   for (const r of toPlain9(await c.execute("SELECT id, linked_party_id FROM suppliers")))
     roots.set(n6(r.id), n6(r.linked_party_id) || n6(r.id));
@@ -6563,11 +6563,11 @@ async function repairPurchaseTdsOnTaxable() {
     }
     const prior = ytd.get(key3);
     ytd.set(key3, prior + T);
-    const tds = round215(tierTds(T, prior, threshold, pctBelow, pctAbove));
-    const net = round215(T + G + RO - tds);
+    const tds = round216(tierTds(T, prior, threshold, pctBelow, pctAbove));
+    const net = round216(T + G + RO - tds);
     const fT = n6(raw.final_taxable_value);
-    const fTds = round215(tierTds(fT, prior, threshold, pctBelow, pctAbove));
-    const fNet = round215(fT + n6(raw.final_gst_amount) + RO - fTds);
+    const fTds = round216(tierTds(fT, prior, threshold, pctBelow, pctAbove));
+    const fNet = round216(fT + n6(raw.final_gst_amount) + RO - fTds);
     if (Math.abs(tds - n6(raw.tds_amount)) < 5e-3 && Math.abs(net - n6(raw.net_amount)) < 5e-3) continue;
     console.log(
       `[orders] TDS basis repair #${raw.id} ${raw.invoice_no} ${String(raw.order_date).slice(0, 10)}: taxable ${T.toFixed(2)} | tds ${n6(raw.tds_amount).toFixed(2)} -> ${tds.toFixed(2)} | net ${n6(raw.net_amount).toFixed(2)} -> ${net.toFixed(2)}`
@@ -9149,8 +9149,8 @@ async function assertNotInUse(table, id) {
   const held = [];
   for (const d of deps) {
     const r = await c.execute({ sql: `SELECT COUNT(*) AS n FROM ${d.table} WHERE ${d.column} = ?`, args: [id] }).catch(() => null);
-    const n36 = r ? Number(r.rows[0].n) : 0;
-    if (n36 > 0) held.push(`${n36} ${d.label}${n36 === 1 ? "" : "s"}`);
+    const n37 = r ? Number(r.rows[0].n) : 0;
+    if (n37 > 0) held.push(`${n37} ${d.label}${n37 === 1 ? "" : "s"}`);
   }
   if (!held.length) return;
   const who = await c.execute({ sql: `SELECT name FROM ${table} WHERE id = ?`, args: [id] });
@@ -10239,16 +10239,16 @@ async function groupTree(companyId) {
     guard.add(id);
     const me = byId.get(id);
     const o = own.get(String(me?.name || "")) || { n: 0, bal: 0 };
-    let n36 = o.n;
+    let n37 = o.n;
     let bal = o.bal;
     let groups = 0;
     for (const k of kids.get(id) || []) {
       const sub = roll(k, guard);
-      n36 += sub.n;
+      n37 += sub.n;
       bal += sub.bal;
       groups += 1 + sub.groups;
     }
-    const out = { n: n36, bal, groups };
+    const out = { n: n37, bal, groups };
     totals.set(id, out);
     return out;
   };
@@ -10604,7 +10604,7 @@ async function dumpSql(from) {
 }
 function stamp() {
   const d = /* @__PURE__ */ new Date();
-  const p = (n36) => String(n36).padStart(2, "0");
+  const p = (n37) => String(n37).padStart(2, "0");
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}`;
 }
 async function snapshotGz() {
@@ -17080,9 +17080,9 @@ async function runStartupTasks() {
     const cols = new Set(info.rows.map((r) => String(r.name)));
     if (cols.size === 0 || cols.has("bd_id")) return;
     const count = await c.execute("SELECT COUNT(*) AS n FROM bd_parties");
-    const n36 = Number(count.rows[0].n);
-    if (n36 > 0) {
-      console.error(`[bd] bd_parties has the retired party+entries shape AND ${n36} row(s) \u2014 leaving it for a human`);
+    const n37 = Number(count.rows[0].n);
+    if (n37 > 0) {
+      console.error(`[bd] bd_parties has the retired party+entries shape AND ${n37} row(s) \u2014 leaving it for a human`);
       return;
     }
     await c.execute("DROP TABLE IF EXISTS bd_entries");
@@ -25771,6 +25771,223 @@ async function deleteTransporterBill(id, companyId) {
 
 // src/main/ipc.ts
 init_facilityLimits();
+
+// src/main/tallyLedgers.ts
+var import_exceljs2 = __toESM(require("exceljs"));
+init_db();
+init_company();
+init_openings();
+function toPlain35(res) {
+  return res.rows.map((r) => ({ ...r }));
+}
+function n36(v) {
+  const x = Number(String(v ?? "").replace(/,/g, ""));
+  return Number.isFinite(x) ? x : 0;
+}
+function round215(x) {
+  return Math.round((Number(x) || 0) * 100) / 100;
+}
+function ledgerKey(v) {
+  return String(v ?? "").toUpperCase().replace(/\bA\/C\b/g, " ").replace(/[^A-Z0-9]+/g, " ").trim();
+}
+async function ensureTallyTables() {
+  const c = getClient();
+  await c.execute(`CREATE TABLE IF NOT EXISTS tally_ledgers (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    company_id INTEGER NOT NULL,
+    name TEXT NOT NULL,
+    name_key TEXT NOT NULL,
+    dr REAL NOT NULL DEFAULT 0,
+    cr REAL NOT NULL DEFAULT 0,
+    account_id INTEGER,
+    file_name TEXT,
+    imported_at TEXT NOT NULL DEFAULT (datetime('now'))
+  )`);
+  await c.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_tally_ledgers_key ON tally_ledgers(company_id, name_key)").catch(() => {
+  });
+}
+function parseTallyRows(rows) {
+  let start = -1;
+  for (let i = 0; i < rows.length; i++) {
+    if (String(rows[i]?.[0] ?? "").trim().toLowerCase() === "particulars") {
+      start = i + 1;
+      break;
+    }
+  }
+  if (start < 0) start = 0;
+  const out = [];
+  const seen = /* @__PURE__ */ new Set();
+  for (let i = start; i < rows.length; i++) {
+    const name = String(rows[i]?.[0] ?? "").trim();
+    if (!name) continue;
+    const low = name.toLowerCase();
+    if (low === "grand total" || low === "total") continue;
+    const key3 = ledgerKey(name);
+    if (!key3 || seen.has(key3)) continue;
+    seen.add(key3);
+    out.push({ name, dr: round215(n36(rows[i]?.[1])), cr: round215(n36(rows[i]?.[2])) });
+  }
+  return out;
+}
+async function sheetRows(buf) {
+  const wb = new import_exceljs2.default.Workbook();
+  await wb.xlsx.load(buf);
+  const ws = wb.worksheets[0];
+  if (!ws) return [];
+  const rows = [];
+  ws.eachRow({ includeEmpty: true }, (row) => {
+    const cells = [];
+    row.eachCell({ includeEmpty: true }, (cell) => {
+      const v = cell.value;
+      cells.push(
+        v == null ? "" : typeof v === "object" && v !== null && "result" in v ? String(v.result ?? "") : String(cell.text ?? "")
+      );
+    });
+    rows.push(cells);
+  });
+  return rows;
+}
+async function importTallyLedgers(v) {
+  await ensureTallyTables();
+  const c = getClient();
+  const cid = getActiveCompanyId();
+  const b64 = String(v.data_base64 || "");
+  if (!b64) throw new Error("Choose the Tally trial balance file to upload");
+  const rows = await sheetRows(Buffer.from(b64, "base64"));
+  const parsed = parseTallyRows(rows);
+  if (!parsed.length) {
+    throw new Error(
+      "No ledgers found in that file \u2014 a Tally trial balance export has a Particulars column with one ledger a row"
+    );
+  }
+  const kept = /* @__PURE__ */ new Map();
+  for (const r of toPlain35(
+    await c.execute({
+      sql: "SELECT name_key, account_id FROM tally_ledgers WHERE company_id = ? AND account_id IS NOT NULL",
+      args: [cid]
+    })
+  )) {
+    kept.set(String(r.name_key), n36(r.account_id));
+  }
+  await c.execute({ sql: "DELETE FROM tally_ledgers WHERE company_id = ?", args: [cid] });
+  const fileName = String(v.file_name || "tally.xlsx");
+  for (const r of parsed) {
+    const key3 = ledgerKey(r.name);
+    await c.execute({
+      sql: `INSERT INTO tally_ledgers (company_id, name, name_key, dr, cr, account_id, file_name)
+            VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      args: [cid, r.name, key3, r.dr, r.cr, kept.get(key3) ?? null, fileName]
+    });
+  }
+  return { imported: parsed.length, file_name: fileName };
+}
+async function tallyLedgerMap() {
+  await ensureTallyTables();
+  const c = getClient();
+  const cid = getActiveCompanyId();
+  const tally = toPlain35(
+    await c.execute({
+      sql: `SELECT id, name, name_key, dr, cr, account_id, file_name, imported_at
+              FROM tally_ledgers WHERE company_id = ? ORDER BY name COLLATE NOCASE`,
+      args: [cid]
+    })
+  );
+  const ours = toPlain35(
+    await c.execute({
+      sql: `SELECT a.id, a.name, a.acc_group,
+                   COALESCE((SELECT o.dr FROM ledger_openings o WHERE o.account_id = a.id AND o.company_id = ?), 0) AS open_dr,
+                   COALESCE((SELECT o.cr FROM ledger_openings o WHERE o.account_id = a.id AND o.company_id = ?), 0) AS open_cr
+              FROM ledger_accounts a
+             WHERE EXISTS (SELECT 1 FROM journal_lines jl JOIN journal_entries je ON je.id = jl.entry_id
+                            WHERE jl.account_id = a.id AND je.company_id = ?)
+                OR EXISTS (SELECT 1 FROM ledger_openings o WHERE o.account_id = a.id AND o.company_id = ?)
+             ORDER BY a.name COLLATE NOCASE`,
+      args: [cid, cid, cid, cid]
+    })
+  );
+  const byKey = /* @__PURE__ */ new Map();
+  const byId = /* @__PURE__ */ new Map();
+  for (const a of ours) {
+    byId.set(n36(a.id), a);
+    const k = ledgerKey(a.name);
+    if (k && !byKey.has(k)) byKey.set(k, a);
+  }
+  const matched = [];
+  const onlyTally = [];
+  const takenIds = /* @__PURE__ */ new Set();
+  for (const t of tally) {
+    const hand = n36(t.account_id) ? byId.get(n36(t.account_id)) : void 0;
+    const hit = hand || byKey.get(String(t.name_key));
+    if (hit) {
+      takenIds.add(n36(hit.id));
+      matched.push({
+        ...t,
+        account_id: n36(hit.id),
+        our_name: String(hit.name),
+        acc_group: String(hit.acc_group || ""),
+        open_dr: round215(n36(hit.open_dr)),
+        open_cr: round215(n36(hit.open_cr)),
+        by_hand: !!hand,
+        // Whether this book already carries the figure Tally does.
+        in_step: Math.abs(round215(n36(hit.open_dr)) - round215(n36(t.dr))) < 5e-3 && Math.abs(round215(n36(hit.open_cr)) - round215(n36(t.cr))) < 5e-3
+      });
+    } else {
+      onlyTally.push(t);
+    }
+  }
+  const onlyOurs = ours.filter((a) => !takenIds.has(n36(a.id)));
+  return {
+    file_name: tally.length ? String(tally[0].file_name || "") : "",
+    imported_at: tally.length ? String(tally[0].imported_at || "") : "",
+    counts: {
+      tally: tally.length,
+      ours: ours.length,
+      matched: matched.length,
+      only_tally: onlyTally.length,
+      only_ours: onlyOurs.length,
+      out_of_step: matched.filter((m) => !m.in_step).length
+    },
+    matched,
+    only_tally: onlyTally,
+    only_ours: onlyOurs
+  };
+}
+async function mapTallyLedger(v) {
+  await ensureTallyTables();
+  const id = n36(v.id);
+  if (!id) throw new Error("Which Tally ledger?");
+  const acc = v.account_id == null || String(v.account_id) === "" ? null : n36(v.account_id);
+  await getClient().execute({
+    sql: "UPDATE tally_ledgers SET account_id = ? WHERE id = ? AND company_id = ?",
+    args: [acc, id, getActiveCompanyId()]
+  });
+  return { id };
+}
+async function applyTallyOpenings(v) {
+  await ensureTallyTables();
+  const want = Array.isArray(v?.ids) ? v.ids.map((x) => n36(x)).filter((x) => x > 0) : [];
+  if (!want.length) throw new Error("Pick the ledgers whose opening balances should be written");
+  const all = (await tallyLedgerMap()).matched;
+  const pick = all.filter((m) => want.includes(n36(m.id)));
+  if (!pick.length) throw new Error("None of those are matched to a ledger in this book");
+  return saveOpenings(
+    pick.map((m) => ({ account_id: n36(m.account_id), dr: n36(m.dr), cr: n36(m.cr) })),
+    getActiveCompanyId()
+  );
+}
+async function clearTallyLedgers() {
+  await ensureTallyTables();
+  const c = getClient();
+  const cid = getActiveCompanyId();
+  const before = await c.execute({
+    sql: "SELECT COUNT(*) AS n FROM tally_ledgers WHERE company_id = ?",
+    args: [cid]
+  });
+  await c.execute({ sql: "DELETE FROM tally_ledgers WHERE company_id = ?", args: [cid] });
+  return { cleared: n36(before.rows[0]?.n) };
+}
+
+// src/main/ipc.ts
 var NS_ENTITY = {
   bargains: "Bargain",
   orders: "Purchase",
@@ -25885,7 +26102,7 @@ async function recordAudit(channel, args, result) {
   );
 }
 function registerIpc() {
-  const READONLY = /:list$|:get$|:items$|:issuances$|:sheet$|:outstanding$|:all$|:summary$|:transfers$|:fyTaxable$|:needs$|:breakdown$|:nextNo$|:liveUsers$|:ips$|:logs$|:dispatchableSales$|:mine$|:pendingCount$|:pending$|:lots$|:unmapped$|:unmappedCount$|:bargainLines$|:bargainNotes$|:bargainInterest$|:consignmentDraws$|^access:heartbeat$|^db:ping$|^db:snapshot$|^app:revision$|^auth:login$|^journal:booksFrom$|^journal:openings$|^journal:opening$|^journal:accounts$|^journal:statement$|^journal:trialBalance$|^journal:groups$|^journal:groupNames$|^journal:groupTree$|^journal:ledgerMap$|^journal:pendingRefs$|^journal:billsOutstanding$|^journal:tradingAccount$|^dashboard:stats$|^skuRates:parties$|^skuRates:partyCounts$|^consignment:openingLog$|^tags:list$|^tags:for$|^tags:contents$|^consignment:openingLots$|^consignment:invoices$|^tankers:quality$|^tankers:ffaHistory$|^orders:quality$|^gate:partyCategories$|^gate:waivedOuts$|^gate:forRecord$|^notify:rules$|^notify:list$|^notify:run$|^notify:preview$|^notify:people$|^notify:mutes$|^treasury:alerts$|^treasury:paymentTracker$|^facility:exposures$|^facility:headroom$|^company:setActive$|^company:getActive$|^factory:active$|^factory:companies$|^session:setUser$|^lc:repayments$|^lc:allRepayments$|^lc:getLimit$|^lc:bankLimits$|^lc:paymentIns$|^lc:openTradingInvoices$|^files:pickDocument$|^files:openDocument$|^bankRecon:imports$|^bankRecon:list$|^bankRecon:suggest$|^bd:kpis$|^bd:limits$|^skuStock:adjustments$|^skuOpening:list$|^skuOpening:date$|^stockCount:previous$|^orders:intercompanySource$|^stockOpening:list$|^stockOpening:date$|^stockOpening:sets$|^stockOpening:setLines$|^stockOpening:ppStages$|^stockOpening:ppFreeTotals$|^production:ppDraws$|^bargains:linkedInvoices$|^bargains:adjustments$|^history:list$|^stockOpening:ppVessels$|^stockOpening:ppReceivers$|^stockOpening:ppWriteoffs$|^work:board$|^work:cutoff$|^work:processes$|^formulationSubcategory:list$|^formulations:versions$|^facility:limitHistory$|^bd:limitReductions$|^bd:allRepayments$|^bd:interestSchedule$|^bd:interestWindow$|^bd:interestPayments$|^bd:linkedOrders$|^bd:parties$|^bd:allParties$|^bd:openTradingInvoices$|^bd:paymentIns$|^access:entryWindows$|^access:entityHistory$|^trading:list$|^sales:series$|^sales:invoiceGaps$|^salesBargains:returns$|^salesBargains:linkedInvoices$|^salesBargains:unattributedReturns$|^tbill:orphans$|^production:report$/;
+  const READONLY = /:list$|:get$|:items$|:issuances$|:sheet$|:outstanding$|:all$|:summary$|:transfers$|:fyTaxable$|:needs$|:breakdown$|:nextNo$|:liveUsers$|:ips$|:logs$|:dispatchableSales$|:mine$|:pendingCount$|:pending$|:lots$|:unmapped$|:unmappedCount$|:bargainLines$|:bargainNotes$|:bargainInterest$|:consignmentDraws$|^access:heartbeat$|^db:ping$|^db:snapshot$|^app:revision$|^auth:login$|^journal:booksFrom$|^tally:map$|^journal:openings$|^journal:opening$|^journal:accounts$|^journal:statement$|^journal:trialBalance$|^journal:groups$|^journal:groupNames$|^journal:groupTree$|^journal:ledgerMap$|^journal:pendingRefs$|^journal:billsOutstanding$|^journal:tradingAccount$|^dashboard:stats$|^skuRates:parties$|^skuRates:partyCounts$|^consignment:openingLog$|^tags:list$|^tags:for$|^tags:contents$|^consignment:openingLots$|^consignment:invoices$|^tankers:quality$|^tankers:ffaHistory$|^orders:quality$|^gate:partyCategories$|^gate:waivedOuts$|^gate:forRecord$|^notify:rules$|^notify:list$|^notify:run$|^notify:preview$|^notify:people$|^notify:mutes$|^treasury:alerts$|^treasury:paymentTracker$|^facility:exposures$|^facility:headroom$|^company:setActive$|^company:getActive$|^factory:active$|^factory:companies$|^session:setUser$|^lc:repayments$|^lc:allRepayments$|^lc:getLimit$|^lc:bankLimits$|^lc:paymentIns$|^lc:openTradingInvoices$|^files:pickDocument$|^files:openDocument$|^bankRecon:imports$|^bankRecon:list$|^bankRecon:suggest$|^bd:kpis$|^bd:limits$|^skuStock:adjustments$|^skuOpening:list$|^skuOpening:date$|^stockCount:previous$|^orders:intercompanySource$|^stockOpening:list$|^stockOpening:date$|^stockOpening:sets$|^stockOpening:setLines$|^stockOpening:ppStages$|^stockOpening:ppFreeTotals$|^production:ppDraws$|^bargains:linkedInvoices$|^bargains:adjustments$|^history:list$|^stockOpening:ppVessels$|^stockOpening:ppReceivers$|^stockOpening:ppWriteoffs$|^work:board$|^work:cutoff$|^work:processes$|^formulationSubcategory:list$|^formulations:versions$|^facility:limitHistory$|^bd:limitReductions$|^bd:allRepayments$|^bd:interestSchedule$|^bd:interestWindow$|^bd:interestPayments$|^bd:linkedOrders$|^bd:parties$|^bd:allParties$|^bd:openTradingInvoices$|^bd:paymentIns$|^access:entryWindows$|^access:entityHistory$|^trading:list$|^sales:series$|^sales:invoiceGaps$|^salesBargains:returns$|^salesBargains:linkedInvoices$|^salesBargains:unattributedReturns$|^tbill:orphans$|^production:report$/;
   const AUDIT_SKIP = /* @__PURE__ */ new Set(["config:get", "config:save", "session:setUser"]);
   const handle = (channel, fn) => {
     ipcMain.handle(channel, async (e, args) => {
@@ -26144,6 +26361,11 @@ function registerIpc() {
     (_e, { date, companyId }) => setBooksFrom(date, companyId)
   );
   handle("journal:openings", (_e, args) => listOpenings(args?.companyId));
+  handle("tally:import", (_e, { values }) => importTallyLedgers(values));
+  handle("tally:map", () => tallyLedgerMap());
+  handle("tally:link", (_e, { values }) => mapTallyLedger(values));
+  handle("tally:applyOpenings", (_e, { values }) => applyTallyOpenings(values));
+  handle("tally:clear", () => clearTallyLedgers());
   handle(
     "journal:saveOpenings",
     (_e, { rows, companyId }) => saveOpenings(rows, companyId)
@@ -26844,7 +27066,7 @@ function stamp2() {
 async function countAll(c) {
   const names = await userTables(c);
   if (!names.length) return { tables: 0, rows: 0 };
-  const union = names.map((n36) => `SELECT COUNT(*) AS k FROM "${n36}"`).join(" UNION ALL ");
+  const union = names.map((n37) => `SELECT COUNT(*) AS k FROM "${n37}"`).join(" UNION ALL ");
   const res = await c.execute(union);
   let rows = 0;
   for (const r of res.rows) rows += Number(r.k) || 0;
