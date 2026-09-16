@@ -7654,6 +7654,7 @@ __export(treasury_exports, {
   postSimplePaymentIn: () => postSimplePaymentIn,
   refreshLcUpfrontInterest: () => refreshLcUpfrontInterest,
   reopenLcBill: () => reopenLcBill,
+  repairLcRepaymentAccount: () => repairLcRepaymentAccount,
   resyncLcSettlement: () => resyncLcSettlement,
   saveLcRepayment: () => saveLcRepayment,
   settleLcBill: () => settleLcBill,
@@ -8531,6 +8532,41 @@ async function postLcRepaymentEntry(repaymentId) {
     sql: "UPDATE lc_repayments SET journal_entry_id = ?, fee_journal_entry_id = ? WHERE id = ?",
     args: [je.id, feeJe, repaymentId]
   });
+}
+async function repairLcRepaymentAccount() {
+  const c = getClient();
+  const bad = toPlain10(
+    await c.execute(`SELECT jl.id AS line_id, jl.entry_id, r.lc_id
+                       FROM journal_lines jl
+                       JOIN ledger_accounts a ON a.id = jl.account_id
+                       JOIN lc_repayments r ON r.journal_entry_id = jl.entry_id
+                      WHERE TRIM(UPPER(a.name)) = 'LC REPAYMENT A/C'`)
+  );
+  if (!bad.length) return 0;
+  let moved = 0;
+  for (const row of bad) {
+    const lcRes = await c.execute({
+      sql: "SELECT * FROM letters_of_credit WHERE id = ? LIMIT 1",
+      args: [n9(row.lc_id)]
+    });
+    if (!lcRes.rows.length) continue;
+    const want = (await lcPayable(toPlain10(lcRes)[0])).trim().toUpperCase();
+    const acc = await c.execute({
+      sql: "SELECT id FROM ledger_accounts WHERE TRIM(UPPER(name)) = ? LIMIT 1",
+      args: [want]
+    });
+    if (!acc.rows.length) {
+      console.error(`[lc] repayment line ${n9(row.line_id)}: no ${want} account to move it onto`);
+      continue;
+    }
+    await c.execute({
+      sql: "UPDATE journal_lines SET account_id = ? WHERE id = ?",
+      args: [n9(acc.rows[0].id), n9(row.line_id)]
+    });
+    moved++;
+  }
+  if (moved) console.log(`[lc] ${moved} repayment line(s) moved onto the payable they clear`);
+  return moved;
 }
 async function saveLcRepayment(v) {
   const c = getClient();
@@ -16320,6 +16356,7 @@ function startPushWatcher(intervalMs = 2e4) {
 async function runStartupTasks() {
   await initDb();
   await ensureRequiredColumns().catch((e) => console.error("[schema] column check failed:", e));
+  await repairLcRepaymentAccount().catch((e) => console.error("[lc] repayment repair failed:", e));
   await runOnce("journal_backfill_v1", () => backfillJournal()).catch(
     (e) => console.error("[journal] backfill failed:", e)
   );
@@ -16903,6 +16940,18 @@ async function runStartupTasks() {
     });
     await c.execute(`INSERT OR IGNORE INTO bd_parties (bd_id, party_type, party_id)
       SELECT id, party_type, party_id FROM bill_discountings WHERE party_id IS NOT NULL`).catch(() => {
+    });
+    await c.execute(`CREATE TABLE IF NOT EXISTS bd_limit_reductions (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      company_id INTEGER NOT NULL,
+      nbfc_id INTEGER NOT NULL REFERENCES nbfcs(id),
+      bd_id INTEGER REFERENCES bill_discountings(id),
+      amount REAL NOT NULL DEFAULT 0,
+      reduce_date TEXT NOT NULL,
+      note TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    )`);
+    await c.execute("CREATE INDEX IF NOT EXISTS idx_bd_limit_red_nbfc ON bd_limit_reductions(company_id, nbfc_id)").catch(() => {
     });
     console.log("[bd] tables checked/restored");
   })().catch((e) => console.error("[bd] table repair failed:", e));
@@ -24810,12 +24859,85 @@ async function reopenBd(id) {
   });
   return { id };
 }
+async function listBdLimitReductions(nbfcId) {
+  const where = ["lr.company_id = ?"];
+  const args = [getActiveCompanyId()];
+  if (nbfcId) {
+    where.push("lr.nbfc_id = ?");
+    args.push(nbfcId);
+  }
+  const res = await getClient().execute({
+    sql: `SELECT lr.*, nb.name AS nbfc_name, bd.bd_no
+          FROM bd_limit_reductions lr
+          LEFT JOIN nbfcs nb ON nb.id = lr.nbfc_id
+          LEFT JOIN bill_discountings bd ON bd.id = lr.bd_id
+          WHERE ${where.join(" AND ")}
+          ORDER BY lr.reduce_date DESC, lr.id DESC`,
+    args
+  });
+  return toPlain32(res);
+}
+async function addBdLimitReduction(v) {
+  const c = getClient();
+  const cid = getActiveCompanyId();
+  let nbfcId = n33(v.nbfc_id);
+  const bdId = n33(v.bd_id);
+  if (!nbfcId && bdId) {
+    const own = await c.execute({ sql: "SELECT nbfc_id FROM bill_discountings WHERE id = ? LIMIT 1", args: [bdId] });
+    nbfcId = n33(own.rows[0]?.nbfc_id);
+  }
+  if (!nbfcId) throw new Error("Choose the NBFC whose limit is coming down");
+  const nb = await c.execute({
+    sql: "SELECT id, name, COALESCE(sanctioned_limit, 0) AS sanctioned FROM nbfcs WHERE id = ? AND company_id = ? LIMIT 1",
+    args: [nbfcId, cid]
+  });
+  if (!nb.rows.length) throw new Error("That NBFC is not in this company");
+  const sanctioned = round212(n33(toPlain32(nb)[0].sanctioned));
+  if (sanctioned <= 0) {
+    throw new Error(
+      `No sanctioned limit is recorded for ${String(toPlain32(nb)[0].name || "this NBFC")} \u2014 set it first, or there is nothing to reduce`
+    );
+  }
+  const amount = round212(n33(v.amount));
+  if (amount <= 0) throw new Error("Enter the principal being repaid");
+  const date = String(v.reduce_date || todayISO6()).slice(0, 10);
+  assertNotFuture2(date, "The principal repayment date");
+  const done = await c.execute({
+    sql: "SELECT COALESCE(SUM(amount), 0) AS q FROM bd_limit_reductions WHERE company_id = ? AND nbfc_id = ?",
+    args: [cid, nbfcId]
+  });
+  const already = round212(n33(done.rows[0]?.q));
+  if (round212(already + amount) - sanctioned > 4e-3) {
+    throw new Error(
+      `${inr2(sanctioned)} is sanctioned and ${inr2(already)} of principal has already been repaid \u2014 only ${inr2(round212(sanctioned - already))} is left to reduce`
+    );
+  }
+  const res = await c.execute({
+    sql: `INSERT INTO bd_limit_reductions (company_id, nbfc_id, bd_id, amount, reduce_date, note)
+          VALUES (?, ?, ?, ?, ?, ?)`,
+    args: [cid, nbfcId, bdId || null, amount, date, v.note ? String(v.note).trim() : null]
+  });
+  return {
+    id: Number(res.lastInsertRowid),
+    sanctioned,
+    limit_now: round212(sanctioned - already - amount)
+  };
+}
+async function deleteBdLimitReduction(id) {
+  await getClient().execute({
+    sql: "DELETE FROM bd_limit_reductions WHERE id = ? AND company_id = ?",
+    args: [id, getActiveCompanyId()]
+  });
+  return { id };
+}
 async function bdLimits() {
   const c = getClient();
   const cid = getActiveCompanyId();
   const res = await c.execute({
     sql: `SELECT nb.id, nb.name, nb.finance_type, nb.active,
-                 COALESCE(nb.sanctioned_limit, 0) AS sanctioned,
+                 COALESCE(nb.sanctioned_limit, 0) AS sanctioned_original,
+                 COALESCE((SELECT SUM(lr.amount) FROM bd_limit_reductions lr
+                           WHERE lr.nbfc_id = nb.id AND lr.company_id = ?), 0) AS principal_repaid,
                  COALESCE((SELECT SUM(bd.amount - COALESCE((SELECT SUM(r.amount) FROM bd_repayments r
                             WHERE r.bd_id = bd.id), 0))
                            FROM bill_discountings bd
@@ -24829,13 +24951,17 @@ async function bdLimits() {
           FROM nbfcs nb
           WHERE nb.company_id = ?
           ORDER BY nb.active DESC, nb.name COLLATE NOCASE`,
-    args: [cid, cid, cid, cid]
+    args: [cid, cid, cid, cid, cid]
   });
   const perNbfc = toPlain32(res).map((r) => {
-    const sanctioned = round212(n33(r.sanctioned));
+    const original = round212(n33(r.sanctioned_original));
+    const repaid = round212(n33(r.principal_repaid));
+    const sanctioned = round212(Math.max(0, original - repaid));
     const utilised = round212(n33(r.utilised));
     return {
       ...r,
+      sanctioned_original: original,
+      principal_repaid: repaid,
       sanctioned,
       utilised,
       committed: round212(n33(r.committed)),
@@ -24854,6 +24980,10 @@ async function bdLimits() {
     // The sum of what each NBFC has sanctioned. Not the same thing as the
     // combined ceiling: a group limit can sit below the sum of its lines.
     sanctioned_sum: sanctionedTotal,
+    // Before any principal was repaid, and what has been repaid against it, so
+    // a screen can show the step down rather than only its result.
+    sanctioned_original_sum: round212(perNbfc.reduce((t, r) => t + n33(r.sanctioned_original), 0)),
+    principal_repaid_total: round212(perNbfc.reduce((t, r) => t + n33(r.principal_repaid), 0)),
     utilised_total: utilisedTotal,
     committed_total: round212(perNbfc.reduce((t, r) => t + n33(r.committed), 0)),
     combined_limit: combined,
@@ -25453,7 +25583,7 @@ async function recordAudit(channel, args, result) {
   );
 }
 function registerIpc() {
-  const READONLY = /:list$|:get$|:items$|:issuances$|:sheet$|:outstanding$|:all$|:summary$|:transfers$|:fyTaxable$|:needs$|:breakdown$|:nextNo$|:liveUsers$|:ips$|:logs$|:dispatchableSales$|:mine$|:pendingCount$|:pending$|:lots$|:unmapped$|:unmappedCount$|:bargainLines$|:bargainNotes$|:bargainInterest$|:consignmentDraws$|^access:heartbeat$|^db:ping$|^db:snapshot$|^app:revision$|^auth:login$|^journal:booksFrom$|^journal:openings$|^journal:opening$|^journal:accounts$|^journal:statement$|^journal:trialBalance$|^journal:groups$|^journal:groupNames$|^journal:groupTree$|^journal:ledgerMap$|^journal:pendingRefs$|^journal:billsOutstanding$|^journal:tradingAccount$|^dashboard:stats$|^skuRates:parties$|^skuRates:partyCounts$|^consignment:openingLog$|^tags:list$|^tags:for$|^tags:contents$|^consignment:openingLots$|^consignment:invoices$|^tankers:quality$|^tankers:ffaHistory$|^orders:quality$|^gate:partyCategories$|^gate:waivedOuts$|^gate:forRecord$|^notify:rules$|^notify:list$|^notify:run$|^notify:preview$|^notify:people$|^notify:mutes$|^treasury:alerts$|^treasury:paymentTracker$|^facility:exposures$|^facility:headroom$|^company:setActive$|^company:getActive$|^factory:active$|^factory:companies$|^session:setUser$|^lc:repayments$|^lc:allRepayments$|^lc:getLimit$|^lc:bankLimits$|^lc:paymentIns$|^lc:openTradingInvoices$|^files:pickDocument$|^files:openDocument$|^bankRecon:imports$|^bankRecon:list$|^bankRecon:suggest$|^bd:kpis$|^bd:limits$|^skuStock:adjustments$|^skuOpening:list$|^skuOpening:date$|^stockCount:previous$|^orders:intercompanySource$|^stockOpening:list$|^stockOpening:date$|^stockOpening:sets$|^stockOpening:setLines$|^stockOpening:ppStages$|^stockOpening:ppFreeTotals$|^production:ppDraws$|^bargains:linkedInvoices$|^bargains:adjustments$|^history:list$|^stockOpening:ppVessels$|^stockOpening:ppReceivers$|^stockOpening:ppWriteoffs$|^work:board$|^work:cutoff$|^work:processes$|^formulationSubcategory:list$|^formulations:versions$|^bd:allRepayments$|^bd:interestSchedule$|^bd:interestWindow$|^bd:interestPayments$|^bd:linkedOrders$|^bd:parties$|^bd:allParties$|^bd:openTradingInvoices$|^bd:paymentIns$|^access:entryWindows$|^access:entityHistory$|^trading:list$|^sales:series$|^sales:invoiceGaps$|^salesBargains:returns$|^salesBargains:linkedInvoices$|^salesBargains:unattributedReturns$|^tbill:orphans$|^production:report$/;
+  const READONLY = /:list$|:get$|:items$|:issuances$|:sheet$|:outstanding$|:all$|:summary$|:transfers$|:fyTaxable$|:needs$|:breakdown$|:nextNo$|:liveUsers$|:ips$|:logs$|:dispatchableSales$|:mine$|:pendingCount$|:pending$|:lots$|:unmapped$|:unmappedCount$|:bargainLines$|:bargainNotes$|:bargainInterest$|:consignmentDraws$|^access:heartbeat$|^db:ping$|^db:snapshot$|^app:revision$|^auth:login$|^journal:booksFrom$|^journal:openings$|^journal:opening$|^journal:accounts$|^journal:statement$|^journal:trialBalance$|^journal:groups$|^journal:groupNames$|^journal:groupTree$|^journal:ledgerMap$|^journal:pendingRefs$|^journal:billsOutstanding$|^journal:tradingAccount$|^dashboard:stats$|^skuRates:parties$|^skuRates:partyCounts$|^consignment:openingLog$|^tags:list$|^tags:for$|^tags:contents$|^consignment:openingLots$|^consignment:invoices$|^tankers:quality$|^tankers:ffaHistory$|^orders:quality$|^gate:partyCategories$|^gate:waivedOuts$|^gate:forRecord$|^notify:rules$|^notify:list$|^notify:run$|^notify:preview$|^notify:people$|^notify:mutes$|^treasury:alerts$|^treasury:paymentTracker$|^facility:exposures$|^facility:headroom$|^company:setActive$|^company:getActive$|^factory:active$|^factory:companies$|^session:setUser$|^lc:repayments$|^lc:allRepayments$|^lc:getLimit$|^lc:bankLimits$|^lc:paymentIns$|^lc:openTradingInvoices$|^files:pickDocument$|^files:openDocument$|^bankRecon:imports$|^bankRecon:list$|^bankRecon:suggest$|^bd:kpis$|^bd:limits$|^skuStock:adjustments$|^skuOpening:list$|^skuOpening:date$|^stockCount:previous$|^orders:intercompanySource$|^stockOpening:list$|^stockOpening:date$|^stockOpening:sets$|^stockOpening:setLines$|^stockOpening:ppStages$|^stockOpening:ppFreeTotals$|^production:ppDraws$|^bargains:linkedInvoices$|^bargains:adjustments$|^history:list$|^stockOpening:ppVessels$|^stockOpening:ppReceivers$|^stockOpening:ppWriteoffs$|^work:board$|^work:cutoff$|^work:processes$|^formulationSubcategory:list$|^formulations:versions$|^bd:limitReductions$|^bd:allRepayments$|^bd:interestSchedule$|^bd:interestWindow$|^bd:interestPayments$|^bd:linkedOrders$|^bd:parties$|^bd:allParties$|^bd:openTradingInvoices$|^bd:paymentIns$|^access:entryWindows$|^access:entityHistory$|^trading:list$|^sales:series$|^sales:invoiceGaps$|^salesBargains:returns$|^salesBargains:linkedInvoices$|^salesBargains:unattributedReturns$|^tbill:orphans$|^production:report$/;
   const AUDIT_SKIP = /* @__PURE__ */ new Set(["config:get", "config:save", "session:setUser"]);
   const handle = (channel, fn) => {
     ipcMain.handle(channel, async (e, args) => {
@@ -26293,6 +26423,9 @@ function registerIpc() {
   handle("bd:kpis", () => bdKpis());
   handle("bd:limits", () => bdLimits());
   handle("bd:setCombinedLimit", (_e, { value }) => setBdCombinedLimit(value));
+  handle("bd:limitReductions", (_e, { nbfcId }) => listBdLimitReductions(nbfcId));
+  handle("bd:addLimitReduction", (_e, { values }) => addBdLimitReduction(values));
+  handle("bd:deleteLimitReduction", (_e, { id }) => deleteBdLimitReduction(id));
   handle(
     "access:entityHistory",
     (_e, {
