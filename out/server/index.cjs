@@ -3942,26 +3942,49 @@ function toPlain6(res) {
     return o;
   });
 }
+function openingLines(v) {
+  const raw = Array.isArray(v.lines) ? v.lines : null;
+  if (!raw) return [{ lot_no: label(v.lot_no), terminal_no: label(v.terminal_no), qty: n3(v.qty) }];
+  const out = [];
+  for (const l of raw) {
+    const qty = n3(l?.qty);
+    if (qty <= 0) continue;
+    out.push({ lot_no: label(l?.lot_no), terminal_no: label(l?.terminal_no), qty });
+  }
+  return out;
+}
 async function saveOpeningStock(v) {
   const c = getClient();
   const cid = getActiveCompanyId();
   const supplierId = n3(v.supplier_id);
   const productId = n3(v.product_id);
-  const qty = n3(v.qty);
   const uom = String(v.uom || "MT");
   const date = String(v.deposit_date || "").slice(0, 10);
   if (!supplierId) throw new Error("Choose the MNC / party");
   if (!productId) throw new Error("Choose the product");
-  if (qty <= 0) throw new Error("Enter an opening quantity greater than zero \u2014 use the history to restore an older figure");
   if (!date) throw new Error("Enter the opening date");
   if (date > todayISO()) throw new Error("The opening date cannot be in the future");
+  const merged = /* @__PURE__ */ new Map();
+  for (const l of openingLines(v)) {
+    const k = lotKey(l);
+    const cur = merged.get(k);
+    if (cur) cur.qty = Math.round((cur.qty + l.qty) * 1e3) / 1e3;
+    else merged.set(k, { ...l });
+  }
+  const lines = Array.from(merged.values());
+  const qty = Math.round(lines.reduce((t, l) => t + l.qty, 0) * 1e3) / 1e3;
+  if (qty <= 0) {
+    throw new Error("Enter an opening quantity greater than zero \u2014 use the history to restore an older figure");
+  }
   const existing = await c.execute({
     sql: `SELECT * FROM consignment_stock
-          WHERE company_id = ? AND supplier_id = ? AND product_id = ? AND is_opening = 1 AND order_id IS NULL
-          ORDER BY id DESC`,
+          WHERE company_id = ? AND supplier_id = ? AND product_id = ? AND is_opening = 1
+          ORDER BY id`,
     args: [cid, supplierId, productId]
   });
   const lots = toPlain6(existing);
+  const free = lots.filter((l) => l.order_id == null);
+  const drawn = lots.filter((l) => l.order_id != null);
   const oldTotal = lots.reduce((s22, l) => s22 + n3(l.qty), 0);
   const available = await consignmentAvailable(supplierId, productId);
   const minOpening = Math.max(0, Math.round((oldTotal - available) * 1e3) / 1e3);
@@ -3970,26 +3993,62 @@ async function saveOpeningStock(v) {
       `${minOpening.toFixed(3)} ${uom} of this opening is already drawn into purchases \u2014 the opening cannot go below that`
     );
   }
+  const drawnTotal = drawn.reduce((t, l) => t + n3(l.qty), 0);
+  if (drawn.length && qty < drawnTotal - 1e-6) {
+    throw new Error(
+      `${drawnTotal.toFixed(3)} ${uom} of this opening is booked on purchases \u2014 the opening cannot go below that`
+    );
+  }
   await c.execute({
     sql: `INSERT INTO consignment_opening_log (company_id, supplier_id, product_id, action, old_qty, new_qty, uom, deposit_date, note)
           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     args: [cid, supplierId, productId, lots.length ? "restate" : "create", lots.length ? oldTotal : null, qty, uom, date, v.note ? String(v.note) : null]
   });
-  const payload = {
+  const spare = [...free];
+  const takeMatching = (l) => {
+    const i = spare.findIndex((x) => lotKey({ lot_no: label(x.lot_no), terminal_no: label(x.terminal_no) }) === lotKey(l));
+    return i >= 0 ? spare.splice(i, 1)[0] : void 0;
+  };
+  const base = {
     supplier_id: supplierId,
     product_id: productId,
-    qty,
     uom,
     deposit_date: date,
     note: v.note ? String(v.note).trim() : "Opening stock",
     is_opening: true
   };
-  if (lots.length) {
-    await updateConsignment(n3(lots[0].id), payload);
-    for (const extra of lots.slice(1)) await deleteConsignment(n3(extra.id));
-    return { id: n3(lots[0].id) };
+  let firstId = 0;
+  const keep = [];
+  for (const l of lines) {
+    const isDrawn = drawn.some(
+      (d) => lotKey({ lot_no: label(d.lot_no), terminal_no: label(d.terminal_no) }) === lotKey(l)
+    );
+    if (isDrawn) continue;
+    keep.push(l);
   }
-  return createConsignment(payload);
+  for (const l of keep) {
+    const row = takeMatching(l);
+    const payload = { ...base, qty: l.qty, lot_no: l.lot_no, terminal_no: l.terminal_no };
+    if (row) {
+      await updateConsignment(n3(row.id), payload);
+      if (!firstId) firstId = n3(row.id);
+    } else {
+      const made = await createConsignment(payload);
+      if (!firstId) firstId = made.id;
+    }
+  }
+  for (const gone of spare) await deleteConsignment(n3(gone.id));
+  return { id: firstId || n3(lots[0]?.id) || 0 };
+}
+async function listOpeningLots(supplierId, productId) {
+  const res = await getClient().execute({
+    sql: `SELECT id, qty, uom, lot_no, terminal_no, deposit_date, note, order_id
+          FROM consignment_stock
+          WHERE company_id = ? AND supplier_id = ? AND product_id = ? AND is_opening = 1
+          ORDER BY (order_id IS NOT NULL), lot_no, terminal_no, id`,
+    args: [getActiveCompanyId(), supplierId, productId]
+  });
+  return toPlain6(res);
 }
 async function listOpeningLog(supplierId, productId) {
   const res = await getClient().execute({
@@ -4054,6 +4113,9 @@ async function listUnbookedLots(supplierId, productId) {
   const res = await getClient().execute({
     sql: `SELECT cs.id, cs.supplier_id, cs.product_id, cs.qty, cs.uom, cs.deposit_date, cs.note,
                  cs.tanker_no, cs.gate_entry_id, cs.bargain_id, cs.extra_bargain_id, cs.extra_qty, cs.is_opening,
+                 -- The parcel this row is, which is what a withdrawal is picked
+                 -- by: a lot at a terminal, not a row id.
+                 cs.lot_no, cs.terminal_no,
                  s.name AS supplier_name, p.code AS product_code, p.name AS product_name,
                  ge.gate_entry_no, ge.entry_date AS gate_date, ge.received_qty AS gate_qty
           FROM consignment_stock cs
@@ -4366,16 +4428,19 @@ async function validateLot(v, existing, companyId) {
     }
   }
   if (!existing && v.is_opening) {
+    const lot = label(v.lot_no);
+    const term = label(v.terminal_no);
     const dup = await c.execute({
       sql: `SELECT id, qty, uom FROM consignment_stock
             WHERE company_id = ? AND supplier_id = ? AND product_id = ?
-              AND is_opening = 1 AND order_id IS NULL LIMIT 1`,
-      args: [cid, supplierId, productId]
+              AND is_opening = 1 AND order_id IS NULL
+              AND COALESCE(lot_no, '') = ? AND COALESCE(terminal_no, '') = ? LIMIT 1`,
+      args: [cid, supplierId, productId, lot || "", term || ""]
     });
     if (dup.rows.length) {
       const d = dup.rows[0];
       throw new Error(
-        `Opening stock for ${sup.rows[0].name} \xB7 ${prod.rows[0].code || prod.rows[0].name} is already recorded (${n3(d.qty).toFixed(3)} ${d.uom || "MT"}) \u2014 update that entry instead of adding another`
+        `${lot || term ? `Parcel ${[lot, term].filter(Boolean).join(" at ")} of the opening` : "Opening stock"} for ${sup.rows[0].name} \xB7 ${prod.rows[0].code || prod.rows[0].name} is already recorded (${n3(d.qty).toFixed(3)} ${d.uom || "MT"}) \u2014 update that entry instead of adding another`
       );
     }
   }
@@ -4621,7 +4686,7 @@ async function consignmentKin(id) {
     kin: out.slice(0, 12)
   };
 }
-var n3, label, CONSIGNMENT_UOMS, GATE_BUFFER;
+var n3, label, lotKey, CONSIGNMENT_UOMS, GATE_BUFFER;
 var init_consignment = __esm({
   "src/main/consignment.ts"() {
     init_db();
@@ -4629,6 +4694,7 @@ var init_consignment = __esm({
     init_access_gate();
     n3 = (v) => Number(v) || 0;
     label = (v) => String(v ?? "").trim().toUpperCase().slice(0, 40) || null;
+    lotKey = (l) => `${l.lot_no || ""}@@${l.terminal_no || ""}`;
     CONSIGNMENT_UOMS = ["MT", "KG", "L"];
     GATE_BUFFER = 1;
   }
@@ -23817,7 +23883,7 @@ async function recordAudit(channel, args, result) {
   );
 }
 function registerIpc() {
-  const READONLY = /:list$|:get$|:items$|:issuances$|:sheet$|:outstanding$|:all$|:summary$|:transfers$|:fyTaxable$|:needs$|:breakdown$|:nextNo$|:liveUsers$|:ips$|:logs$|:dispatchableSales$|:mine$|:pendingCount$|:pending$|:lots$|:unmapped$|:unmappedCount$|:bargainLines$|:bargainNotes$|:bargainInterest$|:consignmentDraws$|^access:heartbeat$|^db:ping$|^db:snapshot$|^app:revision$|^auth:login$|^journal:booksFrom$|^journal:openings$|^journal:opening$|^journal:accounts$|^journal:statement$|^journal:trialBalance$|^journal:groups$|^journal:groupNames$|^journal:groupTree$|^journal:pendingRefs$|^journal:billsOutstanding$|^journal:tradingAccount$|^dashboard:stats$|^skuRates:parties$|^skuRates:partyCounts$|^consignment:openingLog$|^consignment:invoices$|^tankers:quality$|^tankers:ffaHistory$|^orders:quality$|^gate:partyCategories$|^gate:waivedOuts$|^gate:forRecord$|^notify:rules$|^notify:list$|^notify:run$|^notify:preview$|^notify:people$|^notify:mutes$|^treasury:alerts$|^treasury:paymentTracker$|^facility:exposures$|^facility:headroom$|^company:setActive$|^company:getActive$|^factory:active$|^factory:companies$|^session:setUser$|^lc:repayments$|^lc:allRepayments$|^lc:getLimit$|^lc:bankLimits$|^lc:paymentIns$|^lc:openTradingInvoices$|^files:pickDocument$|^files:openDocument$|^bankRecon:imports$|^bankRecon:list$|^bankRecon:suggest$|^bd:kpis$|^bd:limits$|^skuStock:adjustments$|^skuOpening:list$|^skuOpening:date$|^stockCount:previous$|^orders:intercompanySource$|^stockOpening:list$|^stockOpening:date$|^stockOpening:sets$|^stockOpening:setLines$|^stockOpening:ppStages$|^stockOpening:ppFreeTotals$|^production:ppDraws$|^bargains:linkedInvoices$|^bargains:adjustments$|^history:list$|^stockOpening:ppVessels$|^stockOpening:ppReceivers$|^stockOpening:ppWriteoffs$|^work:board$|^work:cutoff$|^work:processes$|^formulationSubcategory:list$|^formulations:versions$|^bd:allRepayments$|^bd:interestSchedule$|^bd:interestWindow$|^bd:interestPayments$|^bd:linkedOrders$|^bd:parties$|^bd:allParties$|^bd:openTradingInvoices$|^bd:paymentIns$|^access:entryWindows$|^access:entityHistory$|^trading:list$|^sales:series$|^sales:invoiceGaps$|^salesBargains:returns$|^salesBargains:linkedInvoices$|^salesBargains:unattributedReturns$|^tbill:orphans$|^production:report$/;
+  const READONLY = /:list$|:get$|:items$|:issuances$|:sheet$|:outstanding$|:all$|:summary$|:transfers$|:fyTaxable$|:needs$|:breakdown$|:nextNo$|:liveUsers$|:ips$|:logs$|:dispatchableSales$|:mine$|:pendingCount$|:pending$|:lots$|:unmapped$|:unmappedCount$|:bargainLines$|:bargainNotes$|:bargainInterest$|:consignmentDraws$|^access:heartbeat$|^db:ping$|^db:snapshot$|^app:revision$|^auth:login$|^journal:booksFrom$|^journal:openings$|^journal:opening$|^journal:accounts$|^journal:statement$|^journal:trialBalance$|^journal:groups$|^journal:groupNames$|^journal:groupTree$|^journal:pendingRefs$|^journal:billsOutstanding$|^journal:tradingAccount$|^dashboard:stats$|^skuRates:parties$|^skuRates:partyCounts$|^consignment:openingLog$|^consignment:openingLots$|^consignment:invoices$|^tankers:quality$|^tankers:ffaHistory$|^orders:quality$|^gate:partyCategories$|^gate:waivedOuts$|^gate:forRecord$|^notify:rules$|^notify:list$|^notify:run$|^notify:preview$|^notify:people$|^notify:mutes$|^treasury:alerts$|^treasury:paymentTracker$|^facility:exposures$|^facility:headroom$|^company:setActive$|^company:getActive$|^factory:active$|^factory:companies$|^session:setUser$|^lc:repayments$|^lc:allRepayments$|^lc:getLimit$|^lc:bankLimits$|^lc:paymentIns$|^lc:openTradingInvoices$|^files:pickDocument$|^files:openDocument$|^bankRecon:imports$|^bankRecon:list$|^bankRecon:suggest$|^bd:kpis$|^bd:limits$|^skuStock:adjustments$|^skuOpening:list$|^skuOpening:date$|^stockCount:previous$|^orders:intercompanySource$|^stockOpening:list$|^stockOpening:date$|^stockOpening:sets$|^stockOpening:setLines$|^stockOpening:ppStages$|^stockOpening:ppFreeTotals$|^production:ppDraws$|^bargains:linkedInvoices$|^bargains:adjustments$|^history:list$|^stockOpening:ppVessels$|^stockOpening:ppReceivers$|^stockOpening:ppWriteoffs$|^work:board$|^work:cutoff$|^work:processes$|^formulationSubcategory:list$|^formulations:versions$|^bd:allRepayments$|^bd:interestSchedule$|^bd:interestWindow$|^bd:interestPayments$|^bd:linkedOrders$|^bd:parties$|^bd:allParties$|^bd:openTradingInvoices$|^bd:paymentIns$|^access:entryWindows$|^access:entityHistory$|^trading:list$|^sales:series$|^sales:invoiceGaps$|^salesBargains:returns$|^salesBargains:linkedInvoices$|^salesBargains:unattributedReturns$|^tbill:orphans$|^production:report$/;
   const AUDIT_SKIP = /* @__PURE__ */ new Set(["config:get", "config:save", "session:setUser"]);
   const handle = (channel, fn) => {
     ipcMain.handle(channel, async (e, args) => {
@@ -24046,6 +24112,10 @@ function registerIpc() {
   );
   handle("consignment:kin", (_e, { id }) => consignmentKin(id));
   handle("consignment:saveOpening", (_e, { values }) => saveOpeningStock(values));
+  handle(
+    "consignment:openingLots",
+    (_e, { supplierId, productId }) => listOpeningLots(supplierId, productId)
+  );
   handle(
     "consignment:openingLog",
     (_e, { supplierId, productId }) => listOpeningLog(supplierId, productId)
