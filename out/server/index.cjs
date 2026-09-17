@@ -24719,13 +24719,10 @@ async function repayBd(id, v) {
   const already = await repaidSoFar(bd);
   const due = round213(face - already);
   if (due <= 4e-3) throw new Error("There is nothing left to repay on this bill");
-  const asked = v.amount === void 0 || v.amount === null || String(v.amount).trim() === "" ? due : round213(n34(v.amount));
-  if (asked <= 0) throw new Error("Enter the amount being repaid");
-  if (asked - due > 4e-3) {
-    throw new Error(
-      already > 0 ? `Only ${inr2(due)} is still outstanding on this bill \u2014 ${inr2(already)} has already been repaid` : `That is more than the ${inr2(due)} this bill is for`
-    );
-  }
+  const typed = v.amount === void 0 || v.amount === null || String(v.amount).trim() === "" ? due : round213(n34(v.amount));
+  if (typed <= 0) throw new Error("Enter the amount being repaid");
+  const asked = round213(Math.min(typed, due));
+  const spill = round213(typed - asked);
   const date = String(v.repay_date || todayISO7()).slice(0, 10);
   assertNotFuture2(date, "The repayment date");
   if (v.settle_via === "party" && String(bd.finance_type) === "SID") {
@@ -24746,8 +24743,39 @@ async function repayBd(id, v) {
   const comm = round213(n34(v.comm_charges));
   const bankCharges = round213(n34(v.bank_charges));
   if (comm < 0 || bankCharges < 0) throw new Error("Charges cannot be negative");
-  const paidOut = round213(asked + comm + bankCharges);
-  const lines = [{ account: "BILLS DISCOUNTED A/C", group: "Loans (Liability)", dr: asked }];
+  const others = [];
+  for (const o of v.also || []) {
+    const oid = n34(o?.bd_id);
+    const amt = round213(n34(o?.amount));
+    if (!oid || amt <= 4e-3) continue;
+    if (oid === id) throw new Error("A bill cannot also settle itself");
+    const ob = await loadBd(oid);
+    if (String(ob.status) === "repaid") throw new Error(`${ob.bd_no || "That bill"} is already repaid`);
+    if (!ob.payment_received_date) {
+      throw new Error(`${ob.bd_no || "That bill"} has not been funded yet \u2014 there is nothing to repay on it`);
+    }
+    if (n34(ob.nbfc_id) !== n34(bd.nbfc_id)) {
+      throw new Error(`${ob.bd_no || "That bill"} is with a different NBFC \u2014 one debit cannot settle both`);
+    }
+    const odue = round213(n34(ob.amount) - await repaidSoFar(ob));
+    if (amt - odue > 4e-3) {
+      throw new Error(`${ob.bd_no || "That bill"} has only ${inr2(odue)} outstanding`);
+    }
+    others.push({ bd: ob, amount: amt, due: odue });
+  }
+  const toOthers = round213(others.reduce((t, o) => t + o.amount, 0));
+  if (spill > 4e-3 || others.length) {
+    const explained = round213(comm + bankCharges + toOthers);
+    if (Math.abs(spill - explained) > 4e-3) {
+      throw new Error(
+        spill > explained ? `${inr2(round213(spill - explained))} of the ${inr2(typed)} is not accounted for \u2014 add it to the charges or to another bill` : `${inr2(round213(explained - spill))} more is allocated than the ${inr2(typed)} being repaid`
+      );
+    }
+  }
+  const paidOut = spill > 4e-3 || others.length ? typed : round213(asked + comm + bankCharges);
+  const lines = [
+    { account: "BILLS DISCOUNTED A/C", group: "Loans (Liability)", dr: round213(asked + toOthers) }
+  ];
   if (comm > 4e-3) lines.push({ account: "COMM. CHARGES A/C", group: "Indirect Expenses", dr: comm });
   if (bankCharges > 4e-3) lines.push({ account: "BANK CHARGES A/C", group: "Indirect Expenses", dr: bankCharges });
   if (settleVia === "party") {
@@ -24765,7 +24793,7 @@ async function repayBd(id, v) {
     vchNo: String(bd.bd_no || ""),
     narration: `Bill Discounting ${bd.bd_no} ${closed && already <= 4e-3 ? "repaid" : closed ? "closed \u2014 final part repayment" : "part repayment"} to ${bd.nbfc_name || "the NBFC"}` + (closed ? "" : ` \u2014 ${inr2(left)} still outstanding`) + // Said on the voucher, because a debit larger than the principal is the
     // first thing anybody querying a bank statement asks about.
-    (comm > 4e-3 || bankCharges > 4e-3 ? ` \u2014 ${inr2(paidOut)} debited, including ${[comm > 4e-3 ? `${inr2(comm)} commission` : "", bankCharges > 4e-3 ? `${inr2(bankCharges)} bank charges` : ""].filter(Boolean).join(" and ")}` : "") + (settleVia === "party" ? ` \u2014 settled against ${party}` : ""),
+    (comm > 4e-3 || bankCharges > 4e-3 ? ` \u2014 ${inr2(paidOut)} debited, including ${[comm > 4e-3 ? `${inr2(comm)} commission` : "", bankCharges > 4e-3 ? `${inr2(bankCharges)} bank charges` : ""].filter(Boolean).join(" and ")}` : "") + (others.length ? ` \u2014 one debit of ${inr2(paidOut)} also settling ${others.map((o) => `${o.bd.bd_no || o.bd.id} ${inr2(o.amount)}`).join(", ")}` : "") + (settleVia === "party" ? ` \u2014 settled against ${party}` : ""),
     companyId: n34(bd.company_id) || void 0,
     lines
   });
@@ -24785,6 +24813,29 @@ async function repayBd(id, v) {
       v.note ? String(v.note) : null
     ]
   });
+  for (const o of others) {
+    await c.execute({
+      sql: `INSERT INTO bd_repayments (bd_id, repay_date, amount, comm_charges, bank_charges, settle_via, ref, journal_entry_id, note)
+            VALUES (?, ?, ?, NULL, NULL, ?, ?, ?, ?)`,
+      args: [
+        n34(o.bd.id),
+        date,
+        o.amount,
+        settleVia,
+        v.ref ? String(v.ref) : null,
+        je.id,
+        `Part of one ${inr2(paidOut)} debit with ${bd.bd_no || id}`
+      ]
+    });
+    const oPaid = round213(n34(o.bd.amount) - o.due + o.amount);
+    const oClosed = round213(o.due - o.amount) <= 4e-3;
+    await c.execute({
+      sql: `UPDATE bill_discountings
+            SET status = ?, repaid_date = ?, repaid_amount = ?, repay_journal_entry_id = NULL
+            WHERE id = ?`,
+      args: [oClosed ? "repaid" : "open", oClosed ? date : null, oPaid, n34(o.bd.id)]
+    });
+  }
   const paid = round213(already + asked);
   await c.execute({
     sql: `UPDATE bill_discountings
@@ -25098,26 +25149,40 @@ async function deleteBdRepayment(repaymentId) {
   if (!res.rows.length) throw new Error("That repayment no longer exists");
   const part = toPlain33(res)[0];
   const bdId = Number(part.bd_id);
-  await dropEntry2(n34(part.journal_entry_id) || null);
-  await c.execute({ sql: "DELETE FROM bd_repayments WHERE id = ?", args: [repaymentId] });
-  const bd = await loadBd(bdId);
-  const paid = await repaidSoFar({ ...bd, status: "open" });
-  const closed = n34(bd.amount) - paid <= 4e-3;
-  if (!closed && n34(bd.margin_release_journal_entry_id)) {
-    await dropEntry2(n34(bd.margin_release_journal_entry_id));
+  const je = n34(part.journal_entry_id) || 0;
+  const siblings = je ? toPlain33(
+    await c.execute({
+      sql: "SELECT id, bd_id FROM bd_repayments WHERE journal_entry_id = ?",
+      args: [je]
+    })
+  ) : [{ id: repaymentId, bd_id: bdId }];
+  const touched = Array.from(new Set(siblings.map((x) => n34(x.bd_id)).filter((x) => x > 0)));
+  await dropEntry2(je || null);
+  if (je) {
+    await c.execute({ sql: "DELETE FROM bd_repayments WHERE journal_entry_id = ?", args: [je] });
+  } else {
+    await c.execute({ sql: "DELETE FROM bd_repayments WHERE id = ?", args: [repaymentId] });
   }
-  await c.execute({
-    sql: `UPDATE bill_discountings
-          SET status = ?, repaid_date = ?, repaid_amount = ?, margin_release_journal_entry_id = ?
-          WHERE id = ?`,
-    args: [
-      closed ? "repaid" : "open",
-      closed ? String(bd.repaid_date || "").slice(0, 10) || null : null,
-      paid > 0 ? paid : null,
-      closed ? n34(bd.margin_release_journal_entry_id) || null : null,
-      bdId
-    ]
-  });
+  for (const oneId of touched.length ? touched : [bdId]) {
+    const bd = await loadBd(oneId);
+    const paid = await repaidSoFar({ ...bd, status: "open" });
+    const closed = n34(bd.amount) - paid <= 4e-3;
+    if (!closed && n34(bd.margin_release_journal_entry_id)) {
+      await dropEntry2(n34(bd.margin_release_journal_entry_id));
+    }
+    await c.execute({
+      sql: `UPDATE bill_discountings
+            SET status = ?, repaid_date = ?, repaid_amount = ?, margin_release_journal_entry_id = ?
+            WHERE id = ?`,
+      args: [
+        closed ? "repaid" : "open",
+        closed ? String(bd.repaid_date || "").slice(0, 10) || null : null,
+        paid > 0 ? paid : null,
+        closed ? n34(bd.margin_release_journal_entry_id) || null : null,
+        oneId
+      ]
+    });
+  }
   return { id: repaymentId, bd_id: bdId };
 }
 async function markBdPaymentReceived(id, dateIn) {
