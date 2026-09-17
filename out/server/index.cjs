@@ -8114,7 +8114,7 @@ async function facilityParty(row) {
   }
   throw new Error("This facility names no party for the money to come back from \u2014 set one on it first");
 }
-async function postSimplePaymentIn(kind, facilityId, amount, dateIn, method) {
+async function postSimplePaymentIn(kind, facilityId, amount, dateIn, method, account, ref) {
   const c = getClient();
   const table = kind === "lc" ? "letters_of_credit" : "bill_discountings";
   const res = await c.execute({ sql: `SELECT * FROM ${table} WHERE id = ?`, args: [n9(facilityId)] });
@@ -8125,14 +8125,16 @@ async function postSimplePaymentIn(kind, facilityId, amount, dateIn, method) {
   const date = String(dateIn || todayISO2()).slice(0, 10);
   assertNotFuture(date, "The date the payment was received");
   const party = await facilityParty(row);
-  const bankAcc = kind === "lc" ? await bankAccountFor(row) : "BANK A/C";
+  const named = String(account || "").trim();
+  const bankAcc = named || (kind === "lc" ? await bankAccountFor(row) : "BANK A/C");
+  const refNo = String(ref || "").trim();
   const no = String(kind === "lc" ? row.lc_no : row.bd_no || "");
   const how = payMethod(method);
   const je = await postJournal({
     date,
     vchType: "RECEIPT",
     vchNo: no,
-    narration: `${kind === "lc" ? "LC" : "Bill Discounting"} ${no} \u2014 payment IN of ${value.toFixed(2)} received from ` + party.name + (how ? ` by ${how}` : ""),
+    narration: `${kind === "lc" ? "LC" : "Bill Discounting"} ${no} \u2014 payment IN of ${value.toFixed(2)} received from ` + party.name + (how ? ` by ${how}` : "") + (named ? ` into ${named}` : "") + (refNo ? `, ref ${refNo}` : ""),
     companyId: n9(row.company_id) || void 0,
     lines: [
       { account: bankAcc, group: "Bank Accounts", dr: value },
@@ -8146,8 +8148,9 @@ async function postSimplePaymentIn(kind, facilityId, amount, dateIn, method) {
     });
   } else {
     await c.execute({
-      sql: "INSERT INTO bd_payment_ins (bd_id, pay_date, amount, journal_entry_id, method) VALUES (?, ?, ?, ?, ?)",
-      args: [n9(facilityId), date, value, je.id, how]
+      sql: `INSERT INTO bd_payment_ins (bd_id, pay_date, amount, journal_entry_id, method, account, ref_no)
+            VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      args: [n9(facilityId), date, value, je.id, how, named || null, refNo || null]
     });
   }
   return { id: je.id, date };
@@ -8237,7 +8240,7 @@ function payMethod(v) {
   const hit = PAYMENT_IN_METHODS.find((m) => m.toLowerCase() === want.toLowerCase());
   return hit || "Other";
 }
-async function postBdPaymentIn(bdId, amount, dateIn, selectedKeys, method) {
+async function postBdPaymentIn(bdId, amount, dateIn, selectedKeys, method, account, ref) {
   let bd;
   let customerName;
   let refs;
@@ -8245,7 +8248,7 @@ async function postBdPaymentIn(bdId, amount, dateIn, selectedKeys, method) {
     ;
     ({ bd, customerName, refs } = await outstandingSaleRefsForBd(bdId));
   } catch {
-    return postSimplePaymentIn("bd", bdId, amount, dateIn, method);
+    return postSimplePaymentIn("bd", bdId, amount, dateIn, method, account, ref);
   }
   const wanted = Array.isArray(selectedKeys) && selectedKeys.length ? new Set(selectedKeys.map(String)) : null;
   const outstanding = wanted ? refs.filter((r) => wanted.has(r.key)) : refs;
@@ -8263,23 +8266,26 @@ async function postBdPaymentIn(bdId, amount, dateIn, selectedKeys, method) {
   assertNotFuture(date, "The date the payment was received");
   const { takes, byParty } = planReceipt(outstanding, value, customerName);
   const how = payMethod(method);
+  const named = String(account || "").trim();
+  const refNo = String(ref || "").trim();
   const je = await postJournal({
     date,
     vchType: "RECEIPT",
     vchNo: String(bd.bd_no || ""),
     // The method goes in the narration too, so the voucher says how the money
     // arrived without anyone having to come back to this screen for it.
-    narration: `Bill Discounting ${bd.bd_no} \u2014 payment IN of ${value.toFixed(2)} received from ` + (byParty.length > 1 ? byParty.map((b) => `${b.party} ${b.amount.toFixed(2)}`).join(", ") : byParty[0]?.party || customerName) + (how ? ` by ${how}` : ""),
+    narration: `Bill Discounting ${bd.bd_no} \u2014 payment IN of ${value.toFixed(2)} received from ` + (byParty.length > 1 ? byParty.map((b) => `${b.party} ${b.amount.toFixed(2)}`).join(", ") : byParty[0]?.party || customerName) + (how ? ` by ${how}` : "") + (named ? ` into ${named}` : "") + (refNo ? `, ref ${refNo}` : ""),
     companyId: n9(bd.company_id) || void 0,
     lines: [
-      { account: "BANK A/C", group: "Bank Accounts", dr: value },
+      { account: named || "BANK A/C", group: "Bank Accounts", dr: value },
       ...byParty.map((b) => ({ account: b.party, group: "Sundry Debtors", cr: b.amount }))
     ]
   });
   for (const t of takes) await allocAgainst(je.id, t.party, t.key, t.amount);
   await c.execute({
-    sql: "INSERT INTO bd_payment_ins (bd_id, pay_date, amount, journal_entry_id, method) VALUES (?, ?, ?, ?, ?)",
-    args: [bdId, date, value, je.id, how]
+    sql: `INSERT INTO bd_payment_ins (bd_id, pay_date, amount, journal_entry_id, method, account, ref_no)
+          VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    args: [bdId, date, value, je.id, how, named || null, refNo || null]
   });
   return { id: je.id, date };
 }
@@ -17539,6 +17545,16 @@ async function runStartupTasks() {
       "CREATE INDEX IF NOT EXISTS idx_opening_set_pp ON stock_opening_set_pp(set_id)"
     );
   }).catch((e) => console.error("[stock] opening PP history failed:", e));
+  await runOnce("bd_payment_in_account_ref_v1", async () => {
+    for (const sql of [
+      "ALTER TABLE bd_payment_ins ADD COLUMN account TEXT",
+      "ALTER TABLE bd_payment_ins ADD COLUMN ref_no TEXT"
+    ]) {
+      await getClient().execute(sql).catch((e) => {
+        if (!/duplicate column/i.test(String(e?.message || e))) throw e;
+      });
+    }
+  }).catch((e) => console.error("[bd] payment-in account/ref failed:", e));
   await runOnce("bd_payment_in_method_v1", async () => {
     await getClient().execute("ALTER TABLE bd_payment_ins ADD COLUMN method TEXT").catch((e) => {
       if (!/duplicate column/i.test(String(e?.message || e))) throw e;
@@ -24660,7 +24676,24 @@ async function listBd(filter) {
                     SELECT DISTINCT COALESCE(NULLIF(TRIM(pi.method), ''), 'Not stated') AS m
                       FROM bd_payment_ins pi WHERE pi.bd_id = bd.id ORDER BY m
                   )) AS payment_in_methods,
-                 (SELECT MAX(pi.pay_date) FROM bd_payment_ins pi WHERE pi.bd_id = bd.id) AS payment_in_last_date
+                 (SELECT MAX(pi.pay_date) FROM bd_payment_ins pi WHERE pi.bd_id = bd.id) AS payment_in_last_date,
+                 -- WHERE IT LANDED. The latest receipt's account and reference,
+                 -- so the chip on the row can say the money is in and which
+                 -- bank has it without a query per row.
+                 (SELECT pi.account FROM bd_payment_ins pi WHERE pi.bd_id = bd.id
+                   ORDER BY pi.pay_date DESC, pi.id DESC LIMIT 1) AS payment_in_account,
+                 (SELECT pi.ref_no FROM bd_payment_ins pi WHERE pi.bd_id = bd.id
+                   ORDER BY pi.pay_date DESC, pi.id DESC LIMIT 1) AS payment_in_ref,
+                 -- HOW FAR THE INTEREST HAS BEEN SERVICED. A bill whose interest
+                 -- is paid across the tenor has a second clock running, and the
+                 -- register could not see it: a bill could be settled with the
+                 -- NBFC and still owe the last stretch of interest.
+                 COALESCE((SELECT SUM(ip.gross) FROM bd_interest_payments ip
+                            WHERE ip.bd_id = bd.id), 0) AS interest_paid_total,
+                 (SELECT MAX(ip.to_date) FROM bd_interest_payments ip
+                   WHERE ip.bd_id = bd.id) AS interest_paid_to,
+                 (SELECT MAX(rr.repay_date) FROM bd_repayments rr
+                   WHERE rr.bd_id = bd.id) AS last_repay_date
           FROM bill_discountings bd
           LEFT JOIN nbfcs nb ON nb.id = bd.nbfc_id
           LEFT JOIN suppliers s ON bd.party_type = 'supplier' AND s.id = bd.party_id
@@ -24967,7 +25000,11 @@ async function bdInterestSchedule(bdId) {
       paid_id: done ? n34(done.id) : null,
       paid_date: done ? String(done.paid_date).slice(0, 10) : null,
       paid_gross: done ? n34(done.gross) : 0,
-      paid_net: done ? n34(done.net) : 0
+      paid_net: done ? n34(done.net) : 0,
+      // Whether a payment recorded against this slice actually reached the
+      // ledger. A slice can be serviced without being posted, when the desk
+      // chose to record it and post later — see payBdInterest's `post` flag.
+      posted: done ? !!done.journal_entry_id : false
     });
     start = end;
   });
@@ -25049,19 +25086,19 @@ async function payBdInterestUpto(bdId, v) {
   const gross = n34(w.gross);
   const tds = n34(w.tds);
   const net = n34(w.net);
-  const lines = [
-    { account: "INTEREST ON BILL DISCOUNTING A/C", group: "Indirect Expenses", dr: gross }
-  ];
-  if (tds > 4e-3) lines.push({ account: "TDS ON INTEREST PAYABLE A/C", group: "Duties & Taxes", cr: tds });
-  lines.push({ account: "BANK A/C", group: "Bank Accounts", cr: net });
-  const je = await postJournal({
+  const post = v.post !== false;
+  const jeId = post ? (await postJournal({
     date: to,
     vchType: "PAYMENT",
     vchNo: String(bd.bd_no || ""),
     narration: `Bill Discounting ${bd.bd_no} \u2014 interest ${inr2(gross)} for ${n34(w.days)} days (${String(w.from_date)} to ${to}) paid to ${bd.nbfc_name || "the NBFC"}` + (tds > 4e-3 ? `, TDS ${inr2(tds)} withheld` : ""),
     companyId: n34(bd.company_id) || void 0,
-    lines
-  });
+    lines: [
+      { account: "INTEREST ON BILL DISCOUNTING A/C", group: "Indirect Expenses", dr: gross },
+      ...tds > 4e-3 ? [{ account: "TDS ON INTEREST PAYABLE A/C", group: "Duties & Taxes", cr: tds }] : [],
+      { account: "BANK A/C", group: "Bank Accounts", cr: net }
+    ]
+  })).id : null;
   const res = await getClient().execute({
     sql: `INSERT INTO bd_interest_payments (bd_id, from_date, to_date, days, paid_date, gross, tds, net, note, journal_entry_id)
           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -25075,10 +25112,10 @@ async function payBdInterestUpto(bdId, v) {
       tds,
       net,
       v.note ? String(v.note) : null,
-      je.id
+      jeId
     ]
   });
-  return { id: Number(res.lastInsertRowid), gross, tds, net, days: n34(w.days) };
+  return { id: Number(res.lastInsertRowid), gross, tds, net, days: n34(w.days), posted: post };
 }
 async function payBdInterest(bdId, v) {
   const bd = await loadBd(bdId);
@@ -25103,19 +25140,19 @@ async function payBdInterest(bdId, v) {
   }
   const tds = round213(asked * n34(bd.tds_pct) / 100);
   const net = round213(asked - tds);
-  const lines = [
-    { account: "INTEREST ON BILL DISCOUNTING A/C", group: "Indirect Expenses", dr: asked }
-  ];
-  if (tds > 4e-3) lines.push({ account: "TDS ON INTEREST PAYABLE A/C", group: "Duties & Taxes", cr: tds });
-  lines.push({ account: "BANK A/C", group: "Bank Accounts", cr: net });
-  const je = await postJournal({
+  const post = v.post !== false;
+  const jeId = post ? (await postJournal({
     date,
     vchType: "PAYMENT",
     vchNo: String(bd.bd_no || ""),
     narration: `Bill Discounting ${bd.bd_no} \u2014 interest ${inr2(asked)} for ${n34(slice.days)} days (${String(slice.from_date)} to ${to}) paid to ${bd.nbfc_name || "the NBFC"}` + (tds > 4e-3 ? `, TDS ${inr2(tds)} withheld` : ""),
     companyId: n34(bd.company_id) || void 0,
-    lines
-  });
+    lines: [
+      { account: "INTEREST ON BILL DISCOUNTING A/C", group: "Indirect Expenses", dr: asked },
+      ...tds > 4e-3 ? [{ account: "TDS ON INTEREST PAYABLE A/C", group: "Duties & Taxes", cr: tds }] : [],
+      { account: "BANK A/C", group: "Bank Accounts", cr: net }
+    ]
+  })).id : null;
   const res = await getClient().execute({
     sql: `INSERT INTO bd_interest_payments (bd_id, from_date, to_date, days, paid_date, gross, tds, net, note, journal_entry_id)
           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -25129,10 +25166,38 @@ async function payBdInterest(bdId, v) {
       tds,
       net,
       v.note ? String(v.note) : null,
-      je.id
+      jeId
     ]
   });
-  return { id: Number(res.lastInsertRowid), gross: asked, net };
+  return { id: Number(res.lastInsertRowid), gross: asked, net, posted: post };
+}
+async function postBdInterestPayment(payId) {
+  const c = getClient();
+  const res = await c.execute({ sql: "SELECT * FROM bd_interest_payments WHERE id = ?", args: [n34(payId)] });
+  if (!res.rows.length) throw new Error("That interest payment no longer exists");
+  const row = toPlain33(res)[0];
+  if (row.journal_entry_id) throw new Error("This payment is already posted");
+  const bd = await loadBd(n34(row.bd_id));
+  const gross = n34(row.gross);
+  const tds = n34(row.tds);
+  const net = n34(row.net);
+  const je = await postJournal({
+    date: String(row.paid_date).slice(0, 10),
+    vchType: "PAYMENT",
+    vchNo: String(bd.bd_no || ""),
+    narration: `Bill Discounting ${bd.bd_no} \u2014 interest ${inr2(gross)} for ${n34(row.days)} days (${String(row.from_date)} to ${String(row.to_date)}) paid to ${bd.nbfc_name || "the NBFC"}` + (tds > 4e-3 ? `, TDS ${inr2(tds)} withheld` : ""),
+    companyId: n34(bd.company_id) || void 0,
+    lines: [
+      { account: "INTEREST ON BILL DISCOUNTING A/C", group: "Indirect Expenses", dr: gross },
+      ...tds > 4e-3 ? [{ account: "TDS ON INTEREST PAYABLE A/C", group: "Duties & Taxes", cr: tds }] : [],
+      { account: "BANK A/C", group: "Bank Accounts", cr: net }
+    ]
+  });
+  await c.execute({
+    sql: "UPDATE bd_interest_payments SET journal_entry_id = ? WHERE id = ?",
+    args: [je.id, n34(payId)]
+  });
+  return { id: n34(payId), journal_entry_id: je.id };
 }
 async function deleteBdInterestPayment(payId) {
   const c = getClient();
@@ -27172,9 +27237,13 @@ function registerIpc() {
   handle("bd:interestPayments", (_e, { id }) => listBdInterestPayments(id));
   handle(
     "bd:payInterest",
-    (_e, { id, values }) => payBdInterest(id, values)
+    (_e, {
+      id,
+      values
+    }) => payBdInterest(id, values)
   );
   handle("bd:deleteInterest", (_e, { id }) => deleteBdInterestPayment(id));
+  handle("bd:postInterest", (_e, { id }) => postBdInterestPayment(id));
   handle("bd:repayments", (_e, { id }) => listBdRepayments(id));
   handle("bd:allRepayments", () => listAllBdRepayments());
   handle("bd:linkedOrders", (_e, { id }) => listBdLinkedOrders(id));
@@ -27189,8 +27258,10 @@ function registerIpc() {
       amount,
       date,
       keys,
-      method
-    }) => postBdPaymentIn(id, amount, date, keys, method)
+      method,
+      account,
+      ref
+    }) => postBdPaymentIn(id, amount, date, keys, method, account, ref)
   );
   handle("bd:deletePaymentIn", (_e, { id }) => deleteBdPaymentIn(id));
   handle("bd:deleteRepayment", (_e, { id }) => deleteBdRepayment(id));
