@@ -6747,11 +6747,6 @@ function stampNow() {
 async function waiveOrderQuality(orderId, waived, note) {
   const id = n6(orderId);
   if (!id) throw new Error("Which invoice?");
-  if (await currentScope("orders") === "readings") {
-    throw new Error(
-      "The readings desk records what was measured \u2014 whether a reading is needed at all is not its call"
-    );
-  }
   const on = waived !== false;
   await getClient().execute({
     sql: `UPDATE orders SET quality_waived = ?, quality_waived_note = ?, quality_waived_at = ? WHERE id = ?`,
