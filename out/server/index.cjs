@@ -4984,6 +4984,40 @@ async function assignConsignmentGroup(ids, v) {
   });
   return { updated: Number(res.rowsAffected || 0), lot_no: lot, terminal_no: term };
 }
+async function backfillConsignmentDraws() {
+  const c = getClient();
+  const res = await c.execute(`SELECT o.id, o.company_id, o.supplier_id, o.oil_type_id, o.ordered_qty,
+                 o.bargain_id, o.invoice_no, o.order_date
+            FROM orders o
+           WHERE o.is_consignment = 1
+             AND COALESCE(o.is_trading, 0) = 0
+             AND COALESCE(o.ordered_qty, 0) > 0
+             AND NOT EXISTS (SELECT 1 FROM consignment_stock cs WHERE cs.order_id = o.id)
+           ORDER BY o.order_date, o.id`);
+  const orders = toPlain8(res);
+  let linked = 0;
+  let skipped = 0;
+  const notes = [];
+  for (const o of orders) {
+    try {
+      const plan = await planConsignmentDraw(
+        [],
+        n5(o.supplier_id),
+        n5(o.oil_type_id),
+        n5(o.ordered_qty),
+        n5(o.id),
+        n5(o.company_id),
+        n5(o.bargain_id)
+      );
+      await applyConsignmentDraw(n5(o.id), plan, n5(o.company_id));
+      linked += 1;
+    } catch (e) {
+      skipped += 1;
+      notes.push(`${String(o.invoice_no || o.id)}: ${e.message}`);
+    }
+  }
+  return { linked, skipped, notes };
+}
 function plateOf(no) {
   return String(no ?? "").toUpperCase().split(/-(?=[A-Z]{4})/)[0].replace(/[^A-Z0-9]/g, "");
 }
@@ -15649,6 +15683,9 @@ async function applyGateTimeFix() {
   return plan;
 }
 
+// src/main/bootstrap.ts
+init_consignment();
+
 // src/main/notify.ts
 init_db();
 init_company();
@@ -17020,6 +17057,14 @@ async function runStartupTasks() {
       await c.execute(`ALTER TABLE ${table} ADD COLUMN days_incl_start INTEGER NOT NULL DEFAULT 0`);
     }
   }).catch((e) => console.error("[bd] receipt-date basis column failed:", e));
+  await runOnce("consignment_draw_fifo_v1", async () => {
+    const out = await backfillConsignmentDraws();
+    if (out.linked || out.skipped) {
+      console.log(
+        `[consignment] linked ${out.linked} invoice(s) to their parcels FIFO` + (out.skipped ? `, left ${out.skipped} alone: ${out.notes.join("; ")}` : "")
+      );
+    }
+  }).catch((e) => console.warn("[consignment] FIFO draw backfill skipped:", e.message));
   await runOnce("ulogs_entity_index_v1", async () => {
     const c = getClient();
     await c.execute("CREATE INDEX IF NOT EXISTS idx_ulogs_entity_id ON user_logs(entity, entity_id)");
