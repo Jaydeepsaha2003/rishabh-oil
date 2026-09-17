@@ -5186,6 +5186,18 @@ async function randomPurchaseInvoiceNo(companyId) {
   }
   throw new Error("Could not find a free invoice number \u2014 try again");
 }
+async function randomSalesInvoiceNo(companyId) {
+  const c = getClient();
+  for (let tries = 0; tries < 40; tries++) {
+    const candidate = String(1e6 + Math.floor(Math.random() * 9e6));
+    const hit = await c.execute({
+      sql: "SELECT id FROM sales WHERE company_id = ? AND UPPER(TRIM(invoice_no)) = ? LIMIT 1",
+      args: [companyId, candidate]
+    });
+    if (!hit.rows.length) return candidate;
+  }
+  throw new Error("Could not find a free invoice number \u2014 try again");
+}
 var key;
 var init_invoiceno = __esm({
   "src/main/invoiceno.ts"() {
@@ -27045,6 +27057,10 @@ function registerIpc() {
     (_e, args) => salesInvoiceGaps(args?.companyId, { from: args?.from, to: args?.to })
   );
   handle("sales:create", (_e, { values }) => createSale(values));
+  handle(
+    "sales:randomInvoiceNo",
+    (_e, { companyId }) => randomSalesInvoiceNo(companyId || getActiveCompanyId())
+  );
   handle("sales:update", (_e, { id, values }) => updateSale(id, values));
   handle("sales:createInvoice", (_e, { values }) => createSaleInvoice(values));
   handle("sales:updateInvoice", (_e, { group, values }) => updateSaleInvoice(group, values));
