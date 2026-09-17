@@ -5174,6 +5174,18 @@ function assertNoRepeatsWithin(numbers, what) {
     seen.set(k, i);
   }
 }
+async function randomPurchaseInvoiceNo(companyId) {
+  const c = getClient();
+  for (let tries = 0; tries < 40; tries++) {
+    const candidate = String(1e6 + Math.floor(Math.random() * 9e6));
+    const hit = await c.execute({
+      sql: "SELECT id FROM orders WHERE company_id = ? AND UPPER(TRIM(invoice_no)) = ? LIMIT 1",
+      args: [companyId, candidate]
+    });
+    if (!hit.rows.length) return candidate;
+  }
+  throw new Error("Could not find a free invoice number \u2014 try again");
+}
 var key;
 var init_invoiceno = __esm({
   "src/main/invoiceno.ts"() {
@@ -18259,6 +18271,7 @@ async function ensureRequiredColumns() {
 // src/main/ipc.ts
 init_electron_shim();
 init_intercompany();
+init_invoiceno();
 init_db();
 init_config();
 init_repos();
@@ -24817,11 +24830,14 @@ async function repayBd(id, v) {
   const bankCharges = round213(n34(v.bank_charges));
   if (comm < 0 || bankCharges < 0) throw new Error("Charges cannot be negative");
   const others = [];
+  const alsoSeen = /* @__PURE__ */ new Set();
   for (const o of v.also || []) {
     const oid = n34(o?.bd_id);
     const amt = round213(n34(o?.amount));
     if (!oid || amt <= 4e-3) continue;
     if (oid === id) throw new Error("A bill cannot also settle itself");
+    if (alsoSeen.has(oid)) throw new Error("The same bill is named twice \u2014 one line per bill");
+    alsoSeen.add(oid);
     const ob = await loadBd(oid);
     if (String(ob.status) === "repaid") throw new Error(`${ob.bd_no || "That bill"} is already repaid`);
     if (!ob.payment_received_date) {
@@ -26592,6 +26608,10 @@ function registerIpc() {
     return { id: Number(id) };
   });
   handle("orders:create", (_e, { values }) => createOrder(values));
+  handle(
+    "orders:randomInvoiceNo",
+    (_e, { companyId }) => randomPurchaseInvoiceNo(companyId || getActiveCompanyId())
+  );
   handle("orders:createInvoice", (_e, { values }) => createTankerInvoice(values));
   handle(
     "orders:updateInvoice",
