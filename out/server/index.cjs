@@ -25777,6 +25777,7 @@ var import_exceljs2 = __toESM(require("exceljs"));
 init_db();
 init_company();
 init_openings();
+init_journal();
 function toPlain35(res) {
   return res.rows.map((r) => ({ ...r }));
 }
@@ -25803,6 +25804,13 @@ async function ensureTallyTables() {
     file_name TEXT,
     imported_at TEXT NOT NULL DEFAULT (datetime('now'))
   )`);
+  for (const sql of [
+    "ALTER TABLE tally_ledgers ADD COLUMN period_from TEXT",
+    "ALTER TABLE tally_ledgers ADD COLUMN period_to TEXT"
+  ]) {
+    await c.execute(sql).catch(() => {
+    });
+  }
   await c.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_tally_ledgers_key ON tally_ledgers(company_id, name_key)").catch(() => {
   });
 }
@@ -25829,6 +25837,39 @@ function parseTallyRows(rows) {
   }
   return out;
 }
+var MONTHS = {
+  JAN: "01",
+  FEB: "02",
+  MAR: "03",
+  APR: "04",
+  MAY: "05",
+  JUN: "06",
+  JUL: "07",
+  AUG: "08",
+  SEP: "09",
+  OCT: "10",
+  NOV: "11",
+  DEC: "12"
+};
+function parseTallyPeriod(rows) {
+  const re = /(\d{1,2})-([A-Za-z]{3})-(\d{2,4})\s+to\s+(\d{1,2})-([A-Za-z]{3})-(\d{2,4})/;
+  const iso = (d, mon, y) => {
+    const m = MONTHS[mon.toUpperCase()];
+    if (!m) return "";
+    const year = y.length <= 2 ? `20${y.padStart(2, "0")}` : y;
+    return `${year}-${m}-${d.padStart(2, "0")}`;
+  };
+  for (const r of rows.slice(0, 30)) {
+    for (const cell of r || []) {
+      const hit = re.exec(String(cell || ""));
+      if (!hit) continue;
+      const from = iso(hit[1], hit[2], hit[3]);
+      const to = iso(hit[4], hit[5], hit[6]);
+      if (from) return { from, to };
+    }
+  }
+  return { from: "", to: "" };
+}
 async function sheetRows(buf) {
   const wb = new import_exceljs2.default.Workbook();
   await wb.xlsx.load(buf);
@@ -25854,6 +25895,7 @@ async function importTallyLedgers(v) {
   const b64 = String(v.data_base64 || "");
   if (!b64) throw new Error("Choose the Tally trial balance file to upload");
   const rows = await sheetRows(Buffer.from(b64, "base64"));
+  const period = parseTallyPeriod(rows);
   const parsed = parseTallyRows(rows);
   if (!parsed.length) {
     throw new Error(
@@ -25874,12 +25916,12 @@ async function importTallyLedgers(v) {
   for (const r of parsed) {
     const key3 = ledgerKey(r.name);
     await c.execute({
-      sql: `INSERT INTO tally_ledgers (company_id, name, name_key, dr, cr, account_id, file_name)
-            VALUES (?, ?, ?, ?, ?, ?, ?)`,
-      args: [cid, r.name, key3, r.dr, r.cr, kept.get(key3) ?? null, fileName]
+      sql: `INSERT INTO tally_ledgers (company_id, name, name_key, dr, cr, account_id, file_name, period_from, period_to)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      args: [cid, r.name, key3, r.dr, r.cr, kept.get(key3) ?? null, fileName, period.from || null, period.to || null]
     });
   }
-  return { imported: parsed.length, file_name: fileName };
+  return { imported: parsed.length, file_name: fileName, opening_date: period.from };
 }
 async function tallyLedgerMap() {
   await ensureTallyTables();
@@ -25887,7 +25929,7 @@ async function tallyLedgerMap() {
   const cid = getActiveCompanyId();
   const tally = toPlain35(
     await c.execute({
-      sql: `SELECT id, name, name_key, dr, cr, account_id, file_name, imported_at
+      sql: `SELECT id, name, name_key, dr, cr, account_id, file_name, imported_at, period_from, period_to
               FROM tally_ledgers WHERE company_id = ? ORDER BY name COLLATE NOCASE`,
       args: [cid]
     })
@@ -25901,8 +25943,17 @@ async function tallyLedgerMap() {
              WHERE EXISTS (SELECT 1 FROM journal_lines jl JOIN journal_entries je ON je.id = jl.entry_id
                             WHERE jl.account_id = a.id AND je.company_id = ?)
                 OR EXISTS (SELECT 1 FROM ledger_openings o WHERE o.account_id = a.id AND o.company_id = ?)
+                -- AND ANY LEDGER THIS UPLOAD HAS ALREADY CLAIMED.
+                -- Postings and an opening are what make a ledger this
+                -- company's, and a ledger created from Tally with a nil
+                -- opening has neither yet. Without this it fell straight back
+                -- out of "in both" into "only in Tally" the moment it was
+                -- made \u2014 216 of 840 on the real file \u2014 and the next press of
+                -- Create would have offered to make them all over again.
+                OR EXISTS (SELECT 1 FROM tally_ledgers tl
+                            WHERE tl.account_id = a.id AND tl.company_id = ?)
              ORDER BY a.name COLLATE NOCASE`,
-      args: [cid, cid, cid, cid]
+      args: [cid, cid, cid, cid, cid]
     })
   );
   const byKey = /* @__PURE__ */ new Map();
@@ -25932,13 +25983,20 @@ async function tallyLedgerMap() {
         in_step: Math.abs(round215(n36(hit.open_dr)) - round215(n36(t.dr))) < 5e-3 && Math.abs(round215(n36(hit.open_cr)) - round215(n36(t.cr))) < 5e-3
       });
     } else {
-      onlyTally.push(t);
+      onlyTally.push({ ...t, suggested_group: suggestGroup(String(t.name), n36(t.dr), n36(t.cr)) });
     }
   }
   const onlyOurs = ours.filter((a) => !takenIds.has(n36(a.id)));
   return {
     file_name: tally.length ? String(tally[0].file_name || "") : "",
     imported_at: tally.length ? String(tally[0].imported_at || "") : "",
+    // The date these figures are an opening ON, off the file, beside the date
+    // this book says it begins. When the two disagree the openings are being
+    // written as at a day the ledgers do not start on, which is worth saying
+    // before it is done rather than discovering in a trial balance.
+    opening_date: tally.length ? String(tally[0].period_from || "") : "",
+    period_to: tally.length ? String(tally[0].period_to || "") : "",
+    books_from: await getBooksFrom(cid) || "",
     counts: {
       tally: tally.length,
       ours: ours.length,
@@ -25967,13 +26025,97 @@ async function applyTallyOpenings(v) {
   await ensureTallyTables();
   const want = Array.isArray(v?.ids) ? v.ids.map((x) => n36(x)).filter((x) => x > 0) : [];
   if (!want.length) throw new Error("Pick the ledgers whose opening balances should be written");
-  const all = (await tallyLedgerMap()).matched;
+  const map = await tallyLedgerMap();
+  const all = map.matched;
   const pick = all.filter((m) => want.includes(n36(m.id)));
   if (!pick.length) throw new Error("None of those are matched to a ledger in this book");
-  return saveOpenings(
+  const cid = getActiveCompanyId();
+  const out = await saveOpenings(
     pick.map((m) => ({ account_id: n36(m.account_id), dr: n36(m.dr), cr: n36(m.cr) })),
-    getActiveCompanyId()
+    cid
   );
+  const date = String(map.opening_date || "");
+  if (v.set_books_from && date) await setBooksFrom(date, cid);
+  return { ...out, books_from: v.set_books_from && date ? date : String(map.books_from || "") };
+}
+var GROUP_HINTS = [
+  { re: /\bCASH\b/, group: "Cash-in-hand" },
+  { re: /\bBANK\b|\bA\/C\s*NO\b|\bCC\s*A\/C\b|\bOD\s*A\/C\b/, group: "Bank Accounts" },
+  { re: /\bGST\b|\bCGST\b|\bSGST\b|\bIGST\b|\bTDS\b|\bTCS\b|\bDUTY\b|\bDUTIES\b|\bCESS\b/, group: "Duties & Taxes" },
+  { re: /\bSALES?\b/, group: "Sales Accounts" },
+  { re: /\bPURCHASES?\b|\bPUR\s*A\/C\b/, group: "Purchase Accounts" },
+  { re: /\bSTOCK\b/, group: "Stock-in-hand" },
+  { re: /\bCAPITAL\b|\bPARTNER/, group: "Capital Account" },
+  { re: /\bLOAN\b|\bBORROW/, group: "Loans (Liability)" },
+  { re: /\bDEPRECIATION\b|\bMACHINER|\bBUILDING\b|\bVEHICLE|\bFURNITURE|\bPLANT\b|\bLAND\b/, group: "Fixed Assets" },
+  { re: /\bFD\b|\bFIXED\s+DEPOSIT\b|\bINVESTMENT/, group: "Investments" },
+  { re: /\bFREIGHT\s+INWARD\b|\bWAGES\b|\bPOWER\b|\bFUEL\b|\bLABOUR\b/, group: "Direct Expenses" },
+  { re: /\bINTEREST\s+(RECEIVED|INCOME)\b|\bCOMMISSION\s+RECEIVED\b|\bDISCOUNT\s+RECEIVED\b/, group: "Indirect Incomes" },
+  { re: /\bCHARGES?\b|\bEXPENSES?\b|\bEXP\b|\bSALARY\b|\bRENT\b|\bINSURANCE\b|\bINTEREST\b|\bFEES?\b|\bAUDIT\b|\bTELEPHONE\b|\bPRINTING\b|\bTRAVEL|\bFREIGHT\b|\bTRANSPORT/, group: "Indirect Expenses" },
+  { re: /\bADVANCE\b|\bDEPOSIT\b|\bPREPAID\b|\bRECEIVABLE\b|\bACCRUED\b/, group: "Current Assets" },
+  { re: /\bPAYABLE\b|\bPROVISION\b|\bOUTSTANDING\b|\bACCUMULATED\b/, group: "Current Liabilities" }
+];
+function suggestGroup(name, dr, cr) {
+  const up = String(name || "").toUpperCase();
+  for (const h of GROUP_HINTS) if (h.re.test(up)) return h.group;
+  if (round215(cr) > 4e-3) return "Sundry Creditors";
+  if (round215(dr) > 4e-3) return "Sundry Debtors";
+  return "Suspense A/C";
+}
+async function createTallyLedgers(v) {
+  await ensureTallyTables();
+  const c = getClient();
+  const cid = getActiveCompanyId();
+  const want = Array.isArray(v?.rows) ? v.rows : [];
+  if (!want.length) throw new Error("Pick the ledgers to create");
+  const ids = want.map((r) => n36(r.id)).filter((x) => x > 0);
+  if (!ids.length) throw new Error("Pick the ledgers to create");
+  const rows = toPlain35(
+    await c.execute({
+      sql: `SELECT id, name, dr, cr, account_id FROM tally_ledgers
+             WHERE company_id = ? AND id IN (${ids.map(() => "?").join(",")})`,
+      args: [cid, ...ids]
+    })
+  );
+  const groupOf = /* @__PURE__ */ new Map();
+  for (const r of want) {
+    const g = String(r.group || "").trim();
+    if (n36(r.id) && g) groupOf.set(n36(r.id), g);
+  }
+  const openings = [];
+  let created = 0;
+  for (const r of rows) {
+    if (n36(r.account_id)) continue;
+    const name = String(r.name || "").trim();
+    if (!name) continue;
+    const group = groupOf.get(n36(r.id)) || suggestGroup(name, n36(r.dr), n36(r.cr));
+    const made = await createAccount(name.toUpperCase(), group);
+    await c.execute({
+      sql: "UPDATE tally_ledgers SET account_id = ? WHERE id = ? AND company_id = ?",
+      args: [made.id, n36(r.id), cid]
+    });
+    created++;
+    if (v.with_openings) openings.push({ account_id: made.id, dr: n36(r.dr), cr: n36(r.cr) });
+  }
+  const saved = openings.length ? await saveOpenings(openings, cid) : { saved: 0 };
+  if (v.set_books_from && openings.length) {
+    const date = String((await tallyLedgerMap()).opening_date || "");
+    if (date) await setBooksFrom(date, cid);
+  }
+  return { created, openings: saved.saved };
+}
+async function regroupTallyLedger(v) {
+  const many = Array.isArray(v.account_ids) ? v.account_ids.map((x) => n36(x)).filter((x) => x > 0) : [];
+  const ids = many.length ? many : n36(v.account_id) ? [n36(v.account_id)] : [];
+  const group = String(v.group || "").trim();
+  if (!ids.length) throw new Error("Which ledger?");
+  if (!group) throw new Error("Pick the group it belongs under");
+  let moved = 0;
+  for (const id of ids) {
+    await setAccountGroup(id, group);
+    moved++;
+  }
+  return { moved };
 }
 async function clearTallyLedgers() {
   await ensureTallyTables();
@@ -26366,6 +26508,8 @@ function registerIpc() {
   handle("tally:link", (_e, { values }) => mapTallyLedger(values));
   handle("tally:applyOpenings", (_e, { values }) => applyTallyOpenings(values));
   handle("tally:clear", () => clearTallyLedgers());
+  handle("tally:create", (_e, { values }) => createTallyLedgers(values));
+  handle("tally:regroup", (_e, { values }) => regroupTallyLedger(values));
   handle(
     "journal:saveOpenings",
     (_e, { rows, companyId }) => saveOpenings(rows, companyId)
