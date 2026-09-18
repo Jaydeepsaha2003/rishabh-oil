@@ -4628,6 +4628,53 @@ async function releaseConsignmentLots(orderId) {
     args: [orderId]
   });
 }
+async function unlinkConsignmentDraw(orderId) {
+  const id = n5(orderId);
+  if (!id) throw new Error("Which invoice?");
+  const before = await getClient().execute({
+    sql: "SELECT COUNT(*) AS c FROM consignment_stock WHERE order_id = ?",
+    args: [id]
+  });
+  const freed = n5(toPlain8(before)[0]?.c);
+  if (!freed) throw new Error("This invoice is not holding any parcel");
+  await releaseConsignmentLots(id);
+  return { id, freed };
+}
+async function unlinkConsignmentDrawsFor(supplierId, productId) {
+  const c = getClient();
+  const orders = toPlain8(
+    await c.execute({
+      sql: `SELECT DISTINCT cs.order_id AS id
+              FROM consignment_stock cs
+             WHERE cs.company_id = ? AND cs.supplier_id = ? AND cs.product_id = ?
+               AND cs.order_id IS NOT NULL`,
+      args: [getActiveCompanyId(), n5(supplierId), n5(productId)]
+    })
+  );
+  let freed = 0;
+  for (const o of orders) {
+    const one = await unlinkConsignmentDraw(n5(o.id)).catch(() => null);
+    if (one) freed += one.freed;
+  }
+  return { invoices: orders.length, freed };
+}
+async function renameConsignmentLot(v) {
+  const c = getClient();
+  const cid = getActiveCompanyId();
+  const fromLot = label(v.from_lot);
+  const fromTerm = label(v.from_terminal);
+  const toLot = label(v.to_lot);
+  const toTerm = label(v.to_terminal);
+  if (!toLot && !toTerm) throw new Error("Give the combination a lot number, a terminal number, or both");
+  const res = await c.execute({
+    sql: `UPDATE consignment_stock SET lot_no = ?, terminal_no = ?
+           WHERE company_id = ? AND supplier_id = ? AND product_id = ?
+             AND COALESCE(lot_no, '') = COALESCE(?, '')
+             AND COALESCE(terminal_no, '') = COALESCE(?, '')`,
+    args: [toLot, toTerm, cid, n5(v.supplier_id), n5(v.product_id), fromLot, fromTerm]
+  });
+  return { updated: Number(res.rowsAffected || 0), lot_no: toLot, terminal_no: toTerm };
+}
 async function consignmentSummary(range) {
   const cid = getActiveCompanyId();
   const c = getClient();
@@ -26673,6 +26720,15 @@ function registerIpc() {
     "consignment:assignGroup",
     (_e, { ids, lot_no, terminal_no }) => assignConsignmentGroup(ids, { lot_no, terminal_no })
   );
+  handle(
+    "consignment:unlinkDraw",
+    (_e, { orderId }) => unlinkConsignmentDraw(orderId)
+  );
+  handle(
+    "consignment:unlinkDrawsFor",
+    (_e, { supplierId, productId }) => unlinkConsignmentDrawsFor(supplierId, productId)
+  );
+  handle("consignment:renameLot", (_e, { values }) => renameConsignmentLot(values));
   handle("consignment:kin", (_e, { id }) => consignmentKin(id));
   handle("consignment:saveOpening", (_e, { values }) => saveOpeningStock(values));
   handle("tags:list", (_e, args) => listTags(args?.companyId));
