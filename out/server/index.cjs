@@ -2699,7 +2699,7 @@ async function assertOnOrAfterBooksStart(rule, op, args) {
   );
 }
 function assertScopedReadings(op) {
-  if (op !== "saveQuality") {
+  if (op !== "saveQuality" && op !== "waiveQuality") {
     throw new Error(
       "Your access to Purchases covers recording technical parameters only \u2014 nothing else on this page can be changed."
     );
