@@ -15241,18 +15241,23 @@ async function salesInvoiceGaps(companyId, range) {
     if (!voided.has(pfx)) voided.set(pfx, /* @__PURE__ */ new Map());
     voided.get(pfx).set(n17(r.number), r);
   }
+  const RANDOM_FLOOR = 1e6;
   const series = /* @__PURE__ */ new Map();
   const unparsed = [];
   for (const r of toPlain17(res)) {
     const inv = String(r.invoice_no || "").trim();
     const m = inv.match(/^(.*?)[/\\-]?(\d+)$/);
     if (!m || !m[1]) {
+      const bare2 = m ? Number(m[2]) : NaN;
+      if (Number.isFinite(bare2) && bare2 >= RANDOM_FLOOR) continue;
       unparsed.push(inv);
       continue;
     }
+    const num2 = Number(m[2]);
+    if (num2 >= RANDOM_FLOOR) continue;
     const prefix = m[1].replace(/[/\\-]+$/, "");
     if (!series.has(prefix)) series.set(prefix, /* @__PURE__ */ new Map());
-    series.get(prefix).set(Number(m[2]), String(r.first_date || "").slice(0, 10));
+    series.get(prefix).set(num2, String(r.first_date || "").slice(0, 10));
   }
   const bare = (v) => v.replace(/[^A-Za-z0-9]/g, "").toUpperCase();
   const rows = [];
