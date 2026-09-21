@@ -15277,14 +15277,18 @@ async function salesInvoiceGaps(companyId, range) {
     }
     const missing = [];
     const cancelled = [];
-    for (let i = lo; i <= hi; i++) {
-      if (held.has(i)) continue;
-      const v = voidHere.get(i);
-      if (v) {
-        cancelled.push({ number: i, reason: v.reason ?? null, cancelled_on: v.cancelled_on ?? null });
-        continue;
+    const TOO_WIDE = 2e4;
+    const rangeTooWide = hi - lo + 1 > TOO_WIDE;
+    if (!rangeTooWide) {
+      for (let i = lo; i <= hi; i++) {
+        if (held.has(i)) continue;
+        const v = voidHere.get(i);
+        if (v) {
+          cancelled.push({ number: i, reason: v.reason ?? null, cancelled_on: v.cancelled_on ?? null });
+          continue;
+        }
+        missing.push(i);
       }
-      missing.push(i);
     }
     rows.push({
       prefix,
@@ -15294,6 +15298,9 @@ async function salesInvoiceGaps(companyId, range) {
       from: lo,
       to: hi,
       expected: hi - lo + 1,
+      // A range so wide it is not a real book (a random-placeholder or a
+      // mistyped number pushed the top up); we did not enumerate it.
+      range_too_wide: rangeTooWide,
       missing,
       missing_count: missing.length,
       // Numbers that exist, but keyed under a misspelt prefix — a typo to fix,
