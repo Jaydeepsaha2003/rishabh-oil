@@ -12302,13 +12302,16 @@ async function stockLevels(range, companyIds) {
   };
   const openingBalance = async () => {
     const args = fid ? [fid] : [...cidList];
-    if (fid && !whole) return { total: /* @__PURE__ */ new Map(), adj: /* @__PURE__ */ new Map() };
+    if (fid && !whole) return { total: /* @__PURE__ */ new Map(), adj: /* @__PURE__ */ new Map(), adjNote: /* @__PURE__ */ new Map() };
+    const noteExpr = `GROUP_CONCAT(CASE WHEN COALESCE(adj_qty, 0) <> 0 AND note IS NOT NULL AND TRIM(note) <> '' THEN TRIM(note) END, ' \xB7 ')`;
     let sql = fid ? `SELECT product_id AS pid,
                 SUM(qty + COALESCE(pp_qty, 0) + COALESCE(adj_qty, 0)) AS q,
-                SUM(COALESCE(adj_qty, 0)) AS a
+                SUM(COALESCE(adj_qty, 0)) AS a,
+                ${noteExpr} AS nt
            FROM stock_openings WHERE factory_id = ?` : `SELECT product_id AS pid,
                 SUM(qty + COALESCE(pp_qty, 0) + COALESCE(adj_qty, 0)) AS q,
-                SUM(COALESCE(adj_qty, 0)) AS a
+                SUM(COALESCE(adj_qty, 0)) AS a,
+                ${noteExpr} AS nt
            FROM stock_openings WHERE company_id IN (${ph})`;
     if (to) {
       sql += " AND as_of <= ?";
@@ -12317,11 +12320,13 @@ async function stockLevels(range, companyIds) {
     const res = await c.execute({ sql: `${sql} GROUP BY product_id`, args });
     const total = /* @__PURE__ */ new Map();
     const adj = /* @__PURE__ */ new Map();
+    const adjNote = /* @__PURE__ */ new Map();
     for (const r of res.rows) {
       total.set(Number(r.pid), Number(r.q) || 0);
       adj.set(Number(r.pid), Number(r.a) || 0);
+      if (r.nt != null && String(r.nt).trim()) adjNote.set(Number(r.pid), String(r.nt).trim());
     }
-    return { total, adj };
+    return { total, adj, adjNote };
   };
   const ppRestate = async () => {
     const out = /* @__PURE__ */ new Map();
@@ -12437,6 +12442,9 @@ async function stockLevels(range, companyIds) {
       // on the count, the with-FFA vessel restated as its own oils, and the
       // batch finished out of PP. They add to `opening_adj` exactly.
       opening_adj_count: Math.round((brought.adj.get(id) || 0) * 1e3) / 1e3,
+      // The count's own note, in the person's words — shown by the Adjusted
+      // hover in place of a generic description when they wrote one.
+      opening_adj_note: brought.adjNote.get(id) || "",
       // The part of the Adjusted column that is a restatement of a PP batch
       // rather than a correction to the count, so the hover can tell them
       // apart and the two are never confused for one another.
@@ -12630,21 +12638,23 @@ async function stockPartyBreakdown(companyIds, range) {
   const prodB = bounds("p.prod_date");
   const made = await c.execute({
     sql: `SELECT pid, party, plant, SUM(qty) AS qty FROM (
-            SELECT p.product_id AS pid, COALESCE(NULLIF(TRIM(r.name), ''), rp.name || ' recipe', 'Production run') AS party,
+            SELECT p.product_id AS pid, COALESCE(NULLIF(TRIM(r.name), ''), rp.name || ' recipe', NULLIF(TRIM(op.name), '') || ' run', 'Production run') AS party,
                    COALESCE(f.name, co.name) AS plant, p.qty AS qty
               FROM production p
               LEFT JOIN formulations r ON r.id = p.formulation_id
               LEFT JOIN products rp ON rp.id = r.product_id
+              LEFT JOIN products op ON op.id = p.product_id
               LEFT JOIN companies co ON co.id = p.company_id
               LEFT JOIN factories f ON f.id = co.factory_id
              WHERE p.company_id IN (${ph}) AND COALESCE(p.kind, 'batch') <> 'recirculation' ${prodB.sql}
             UNION ALL
-            SELECT i.product_id AS pid, COALESCE(NULLIF(TRIM(r.name), ''), rp.name || ' recipe', 'Production run') || ' \xB7 by-product' AS party,
+            SELECT i.product_id AS pid, COALESCE(NULLIF(TRIM(r.name), ''), rp.name || ' recipe', NULLIF(TRIM(op.name), '') || ' run', 'Production run') || ' \xB7 by-product' AS party,
                    COALESCE(f.name, co.name) AS plant, i.qty AS qty
               FROM production_items i
               JOIN production p ON p.id = i.production_id
               LEFT JOIN formulations r ON r.id = p.formulation_id
               LEFT JOIN products rp ON rp.id = r.product_id
+              LEFT JOIN products op ON op.id = p.product_id
               LEFT JOIN companies co ON co.id = p.company_id
               LEFT JOIN factories f ON f.id = co.factory_id
              WHERE i.kind = 'output' AND p.company_id IN (${ph})
@@ -12686,7 +12696,7 @@ async function stockPartyBreakdown(companyIds, range) {
   const used = await c.execute({
     sql: `SELECT pid, party, plant, SUM(qty) AS qty FROM (
             SELECT i.product_id AS pid,
-                   COALESCE(NULLIF(TRIM(r.name), ''), rp.name || ' recipe', 'Production run')
+                   COALESCE(NULLIF(TRIM(r.name), ''), rp.name || ' recipe', NULLIF(TRIM(op.name), '') || ' run', 'Production run')
                      -- OIL THAT CAME OUT OF A VESSEL, NOT A TANK.
                      -- A batch that drew this product from its own partly
                      -- processed stock records the draw in pp_draws. The
@@ -12702,18 +12712,20 @@ async function stockPartyBreakdown(companyIds, range) {
               JOIN production p ON p.id = i.production_id
               LEFT JOIN formulations r ON r.id = p.formulation_id
               LEFT JOIN products rp ON rp.id = r.product_id
+              LEFT JOIN products op ON op.id = p.product_id
               LEFT JOIN companies co ON co.id = p.company_id
               LEFT JOIN factories f ON f.id = co.factory_id
              WHERE i.kind = 'input' AND p.company_id IN (${ph})
                AND COALESCE(p.kind, 'batch') <> 'recirculation' ${prodB.sql}
             UNION ALL
             SELECT i.product_id AS pid,
-                   COALESCE(NULLIF(TRIM(r.name), ''), rp.name || ' recipe', 'Production run') || ' (Op. Stock PP, Finished)' AS party,
+                   COALESCE(NULLIF(TRIM(r.name), ''), rp.name || ' recipe', NULLIF(TRIM(op.name), '') || ' run', 'Production run') || ' (Op. Stock PP, Finished)' AS party,
                    COALESCE(f.name, co.name) AS plant, i.qty AS qty
               FROM production_items i
               JOIN production p ON p.id = i.production_id
               LEFT JOIN formulations r ON r.id = p.formulation_id
               LEFT JOIN products rp ON rp.id = r.product_id
+              LEFT JOIN products op ON op.id = p.product_id
               LEFT JOIN companies co ON co.id = p.company_id
               LEFT JOIN factories f ON f.id = co.factory_id
              WHERE i.kind = 'pp_equiv' AND p.company_id IN (${ph})
@@ -18413,6 +18425,14 @@ async function runStartupTasks() {
       });
     }
   }).catch((e) => console.error("[formulations] subcategory setup failed:", e));
+  await runOnce("formulation_hidden_v1", async () => {
+    const c = getClient();
+    try {
+      await c.execute("ALTER TABLE formulations ADD COLUMN hidden INTEGER NOT NULL DEFAULT 0");
+    } catch (e) {
+      if (!/duplicate column/i.test(e.message)) throw e;
+    }
+  }).catch((e) => console.error("[formulations] hidden column setup failed:", e));
   await runOnce("cancelled_invoice_nos_v1", async () => {
     const c = getClient();
     await c.execute(`CREATE TABLE IF NOT EXISTS cancelled_invoice_nos (
@@ -21282,7 +21302,7 @@ async function listFormulationVersions(formulationId) {
     return { ...rest, tor: recipeTor(items), lines: items.length };
   });
 }
-async function listFormulations() {
+async function listFormulations(opts) {
   const res = await getClient().execute(`
     SELECT f.*, p.name AS product_name, p.category AS product_category,
       sc.name AS subcategory_name,
@@ -21299,6 +21319,7 @@ async function listFormulations() {
     FROM formulations f
     LEFT JOIN products p ON p.id = f.product_id
     LEFT JOIN formulation_subcategories sc ON sc.id = f.subcategory_id
+    ${opts?.includeHidden ? "" : "WHERE COALESCE(f.hidden, 0) = 0"}
     ORDER BY f.id DESC
   `);
   const rows = toPlain24(res);
@@ -21359,9 +21380,10 @@ async function writeItems(formulationId, items) {
   }
 }
 async function createFormulation(v) {
+  const hidden = v.hidden ? 1 : 0;
   const res = await getClient().execute({
-    sql: "INSERT INTO formulations (product_id, name, uom, subcategory_id, active) VALUES (?, ?, ?, ?, 1)",
-    args: [n24(v.product_id), v.name || null, v.uom || "MT", n24(v.subcategory_id) || null]
+    sql: "INSERT INTO formulations (product_id, name, uom, subcategory_id, active, hidden) VALUES (?, ?, ?, ?, 1, ?)",
+    args: [n24(v.product_id), v.name || null, v.uom || "MT", n24(v.subcategory_id) || null, hidden]
   });
   const id = Number(res.lastInsertRowid);
   await writeItems(id, v.items);
@@ -23868,7 +23890,14 @@ async function createNote(v, existingId) {
   const requested = String(v.party_type || "").trim().toLowerCase();
   const partyType = requested in PARTY_KINDS ? requested : type === "debit" ? "supplier" : "customer";
   const kind = PARTY_KINDS[partyType];
-  const partyId = n30(v.party_id);
+  let partyId = n30(v.party_id);
+  if (!partyId && v.party_name) {
+    const byName = await c.execute({
+      sql: `SELECT id FROM ${kind.master} WHERE UPPER(TRIM(name)) = UPPER(TRIM(?)) LIMIT 1`,
+      args: [String(v.party_name)]
+    });
+    if (byName.rows.length) partyId = n30(byName.rows[0].id);
+  }
   if (!partyId) throw new Error(`Select the ${partyType}`);
   const rawItems = Array.isArray(v.items) ? v.items : [];
   const items = rawItems.map((it) => {
@@ -26989,7 +27018,7 @@ function registerIpc() {
     "session:setUser",
     (_e, { id, username }) => setCurrentUser(id, username)
   );
-  handle("formulations:list", () => listFormulations());
+  handle("formulations:list", (_e, opts) => listFormulations(opts));
   handle("formulations:items", (_e, { id }) => getFormulationItems(id));
   handle("formulations:versions", (_e, { id }) => listFormulationVersions(Number(id)));
   handle("formulations:create", (_e, { values }) => createFormulation(values));
