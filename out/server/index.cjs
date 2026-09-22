@@ -18469,6 +18469,14 @@ async function runStartupTasks() {
       );
     }
   }).catch((e) => console.warn("[consignment] FIFO draw backfill skipped:", e.message));
+  await runOnce("consignment_draw_fifo_v2", async () => {
+    const out = await backfillConsignmentDraws();
+    if (out.linked || out.skipped) {
+      console.log(
+        `[consignment] FIFO relink: linked ${out.linked} invoice(s) to their parcels` + (out.skipped ? `, left ${out.skipped} alone: ${out.notes.join("; ")}` : "")
+      );
+    }
+  }).catch((e) => console.warn("[consignment] FIFO draw relink skipped:", e.message));
   await runOnce("ulogs_entity_index_v1", async () => {
     const c = getClient();
     await c.execute("CREATE INDEX IF NOT EXISTS idx_ulogs_entity_id ON user_logs(entity, entity_id)");
@@ -23863,13 +23871,18 @@ async function createNote(v, existingId) {
   const partyId = n30(v.party_id);
   if (!partyId) throw new Error(`Select the ${partyType}`);
   const rawItems = Array.isArray(v.items) ? v.items : [];
-  const items = rawItems.map((it) => ({
-    product_id: it.product_id ? n30(it.product_id) : null,
-    description: it.description ? String(it.description).trim() : null,
-    qty: n30(it.qty),
-    rate: n30(it.rate),
-    amount: round211(n30(it.qty) * n30(it.rate))
-  })).filter((it) => it.amount > 0 || it.qty > 0);
+  const items = rawItems.map((it) => {
+    const qty = n30(it.qty);
+    const rate = n30(it.rate);
+    const amount = qty > 0 ? round211(qty * rate) : round211(n30(it.amount));
+    return {
+      product_id: it.product_id ? n30(it.product_id) : null,
+      description: it.description ? String(it.description).trim() : null,
+      qty,
+      rate,
+      amount
+    };
+  }).filter((it) => it.amount > 0 || it.qty > 0);
   const base = items.length ? round211(items.reduce((s4, it) => s4 + it.amount, 0)) : round211(n30(v.base_amount));
   const gstPct = n30(v.gst_pct);
   if (base <= 0) throw new Error("Enter a base amount (or item lines) greater than zero");
