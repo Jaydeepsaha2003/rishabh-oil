@@ -9907,7 +9907,34 @@ async function accountStatement(accountId, companyId) {
                    (SELECT tdo.deal_id FROM trading_deal_orders tdo WHERE tdo.order_id = je.order_id LIMIT 1),
                    (SELECT ds.deal_id FROM trading_deal_sales ds WHERE ds.sale_id = je.sale_id LIMIT 1),
                    (SELECT td.id FROM trading_deals td WHERE td.order_id = je.order_id OR td.sale_id = je.sale_id LIMIT 1)
-                 ) AS trading_deal_id
+                 ) AS trading_deal_id,
+                 -- THE DEAL BEHIND THE POSTING, for the columnar view.
+                 -- A purchase voucher is struck on a bargain and a sale on a
+                 -- sales bargain; each carries that bargain's number, its rate
+                 -- and its quantity. A voucher with no purchase or sale link \u2014
+                 -- a receipt, a journal \u2014 carries none, and the column stays
+                 -- blank on its row.
+                 COALESCE(
+                   (SELECT b.bargain_no FROM bargains b JOIN orders o ON o.bargain_id = b.id WHERE o.id = je.order_id LIMIT 1),
+                   (SELECT COALESCE(NULLIF(TRIM(sb.manual_bargain_no), ''), sb.bargain_no)
+                      FROM sales_bargains sb JOIN sales sl ON sl.sales_bargain_id = sb.id WHERE sl.id = je.sale_id LIMIT 1)
+                 ) AS bargain_no,
+                 COALESCE(
+                   (SELECT o.bargain_rate FROM orders o WHERE o.id = je.order_id),
+                   (SELECT sl.rate FROM sales sl WHERE sl.id = je.sale_id)
+                 ) AS deal_rate,
+                 COALESCE(
+                   (SELECT o.ordered_qty FROM orders o WHERE o.id = je.order_id),
+                   (SELECT sl.qty FROM sales sl WHERE sl.id = je.sale_id)
+                 ) AS deal_qty,
+                 -- Interest this voucher carries: a bill-discounting interest
+                 -- payment posts its gross here, and a purchase on credit the
+                 -- interest worked out for its terms.
+                 COALESCE(
+                   (SELECT ip.gross FROM bd_interest_payments ip WHERE ip.journal_entry_id = je.id LIMIT 1),
+                   (SELECT NULLIF(COALESCE(o.credit_interest_amount, 0) + COALESCE(o.additional_interest, 0), 0)
+                      FROM orders o WHERE o.id = je.order_id)
+                 ) AS interest_amt
           FROM journal_lines jl
           JOIN journal_entries je ON je.id = jl.entry_id
           WHERE jl.account_id = ? AND je.company_id = ?
