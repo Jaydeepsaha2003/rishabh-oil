@@ -9645,9 +9645,21 @@ async function listAccounts(companyId) {
       -- The party behind this ledger runs a Trading or a Manufacturing book;
       -- read off the master that names it (a debtor is a customer, a creditor a
       -- supplier). A ledger no party claims \u2014 a purchase head, a bank \u2014 has none.
+      --
+      -- A RENAMED LEDGER STILL HAS A PARTY. Renaming the ledger does not rename
+      -- the customer or supplier, so the master keeps the old name while the
+      -- ledger wears the new one; the rename records the two in ledger_map
+      -- (posts_as = the old name, use_name = this ledger). So when the name on
+      -- the ledger finds no master, the redirected-from name is tried too.
       COALESCE(
         (SELECT m.business_type FROM customers m WHERE TRIM(UPPER(m.name)) = TRIM(UPPER(a.name)) LIMIT 1),
-        (SELECT m.business_type FROM suppliers m WHERE TRIM(UPPER(m.name)) = TRIM(UPPER(a.name)) LIMIT 1)
+        (SELECT m.business_type FROM suppliers m WHERE TRIM(UPPER(m.name)) = TRIM(UPPER(a.name)) LIMIT 1),
+        (SELECT m.business_type FROM customers m
+           JOIN ledger_map lm ON TRIM(UPPER(lm.posts_as)) = TRIM(UPPER(m.name))
+          WHERE TRIM(UPPER(lm.use_name)) = TRIM(UPPER(a.name)) LIMIT 1),
+        (SELECT m.business_type FROM suppliers m
+           JOIN ledger_map lm ON TRIM(UPPER(lm.posts_as)) = TRIM(UPPER(m.name))
+          WHERE TRIM(UPPER(lm.use_name)) = TRIM(UPPER(a.name)) LIMIT 1)
       ) AS business_type
     FROM ledger_accounts a ORDER BY a.name
   `
