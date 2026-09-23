@@ -9641,7 +9641,14 @@ async function listAccounts(companyId) {
       (SELECT COUNT(*) FROM customers m WHERE TRIM(UPPER(m.name)) = TRIM(UPPER(a.name))) +
       (SELECT COUNT(*) FROM suppliers m WHERE TRIM(UPPER(m.name)) = TRIM(UPPER(a.name))) +
       (SELECT COUNT(*) FROM transporters m WHERE TRIM(UPPER(m.name)) = TRIM(UPPER(a.name))) +
-      (SELECT COUNT(*) FROM brokers m WHERE TRIM(UPPER(m.name)) = TRIM(UPPER(a.name))) AS claimed_by_master
+      (SELECT COUNT(*) FROM brokers m WHERE TRIM(UPPER(m.name)) = TRIM(UPPER(a.name))) AS claimed_by_master,
+      -- The party behind this ledger runs a Trading or a Manufacturing book;
+      -- read off the master that names it (a debtor is a customer, a creditor a
+      -- supplier). A ledger no party claims \u2014 a purchase head, a bank \u2014 has none.
+      COALESCE(
+        (SELECT m.business_type FROM customers m WHERE TRIM(UPPER(m.name)) = TRIM(UPPER(a.name)) LIMIT 1),
+        (SELECT m.business_type FROM suppliers m WHERE TRIM(UPPER(m.name)) = TRIM(UPPER(a.name)) LIMIT 1)
+      ) AS business_type
     FROM ledger_accounts a ORDER BY a.name
   `
   });
