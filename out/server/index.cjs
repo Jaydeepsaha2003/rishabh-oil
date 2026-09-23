@@ -2504,11 +2504,11 @@ function modulePerm(user, moduleKey) {
     }
     const parent = SECTION_PARENT[moduleKey];
     if (parent) {
-      const up = p[parent];
-      if (up === "write") return { view: true, create: true, edit: true, delete: true, editDays: null };
-      if (up === "read") return { view: true };
-      if (up && typeof up === "object") {
-        const e = up;
+      const up2 = p[parent];
+      if (up2 === "write") return { view: true, create: true, edit: true, delete: true, editDays: null };
+      if (up2 === "read") return { view: true };
+      if (up2 && typeof up2 === "object") {
+        const e = up2;
         const view = e.view ?? !!(e.create || e.edit || e.delete);
         return { ...e, view };
       }
@@ -20949,6 +20949,282 @@ async function deleteTradingDeal(id) {
   for (const oid of orders.get(id) ?? []) await deleteOrder(oid);
   return { id };
 }
+async function entryOwners(cid) {
+  const c = getClient();
+  const m = /* @__PURE__ */ new Map();
+  const add = async (kind, sql) => {
+    const res = await c.execute({ sql, args: [cid] }).catch(() => null);
+    if (!res) return;
+    for (const r of toPlain21(res)) {
+      const eid = n21(r.eid);
+      if (eid && !m.has(eid)) m.set(eid, { kind, id: n21(r.iid), ref: String(r.ref || "") });
+    }
+  };
+  const LC = "letters_of_credit";
+  for (const col of [
+    "journal_entry_id",
+    "interest_journal_entry_id",
+    "preclose_journal_entry_id",
+    "preclose_interest_journal_entry_id",
+    "preclose_payout_journal_entry_id",
+    "charges_journal_entry_id",
+    "fee_adjust_journal_entry_id",
+    "payment_in_journal_entry_id"
+  ]) {
+    await add("lc", `SELECT ${col} AS eid, id AS iid, lc_no AS ref FROM ${LC} WHERE company_id = ? AND ${col} IS NOT NULL`);
+  }
+  await add("lc", `SELECT i.journal_entry_id AS eid, l.id AS iid, l.lc_no AS ref FROM lc_issuances i JOIN ${LC} l ON l.id = i.lc_id WHERE l.company_id = ? AND i.journal_entry_id IS NOT NULL`);
+  await add("lc", `SELECT p.journal_entry_id AS eid, l.id AS iid, l.lc_no AS ref FROM lc_payment_ins p JOIN ${LC} l ON l.id = p.lc_id WHERE l.company_id = ? AND p.journal_entry_id IS NOT NULL`);
+  await add("lc", `SELECT r.journal_entry_id AS eid, l.id AS iid, l.lc_no AS ref FROM lc_repayments r JOIN ${LC} l ON l.id = r.lc_id WHERE l.company_id = ? AND r.journal_entry_id IS NOT NULL`);
+  const BD = "bill_discountings";
+  for (const col of ["journal_entry_id", "repay_journal_entry_id", "margin_release_journal_entry_id"]) {
+    await add("bd", `SELECT ${col} AS eid, id AS iid, bd_no AS ref FROM ${BD} WHERE company_id = ? AND ${col} IS NOT NULL`);
+  }
+  await add("bd", `SELECT r.journal_entry_id AS eid, b.id AS iid, b.bd_no AS ref FROM bd_repayments r JOIN ${BD} b ON b.id = r.bd_id WHERE b.company_id = ? AND r.journal_entry_id IS NOT NULL`);
+  await add("bd", `SELECT x.journal_entry_id AS eid, b.id AS iid, b.bd_no AS ref FROM bd_interest_payments x JOIN ${BD} b ON b.id = x.bd_id WHERE b.company_id = ? AND x.journal_entry_id IS NOT NULL`);
+  await add("bd", `SELECT p.journal_entry_id AS eid, b.id AS iid, b.bd_no AS ref FROM bd_payment_ins p JOIN ${BD} b ON b.id = p.bd_id WHERE b.company_id = ? AND p.journal_entry_id IS NOT NULL`);
+  return m;
+}
+var up = (v) => String(v ?? "").trim().toUpperCase();
+function addDays2(iso, days) {
+  const d = /* @__PURE__ */ new Date(`${iso.slice(0, 10)}T00:00:00`);
+  d.setDate(d.getDate() + days);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
+function daysFromToday(iso) {
+  const a = (/* @__PURE__ */ new Date(`${todayISO6()}T00:00:00`)).getTime();
+  const b = (/* @__PURE__ */ new Date(`${iso.slice(0, 10)}T00:00:00`)).getTime();
+  return Math.round((b - a) / 864e5);
+}
+async function listTradingPayments() {
+  const from = await visibleFromFor("trading");
+  const cid = getActiveCompanyId();
+  const c = getClient();
+  const dealRes = await c.execute({
+    sql: `SELECT td.*, p.code AS product_code, p.name AS product_name, l.lc_no AS lc_no
+          FROM trading_deals td
+          LEFT JOIN products p ON p.id = td.product_id
+          LEFT JOIN letters_of_credit l ON l.id = td.lc_id
+          WHERE td.company_id = ?${from ? " AND td.deal_date >= ?" : ""}
+          ORDER BY td.deal_date DESC, td.id DESC`,
+    args: from ? [cid, from] : [cid]
+  });
+  const deals = toPlain21(dealRes);
+  if (!deals.length) return [];
+  const dealIds = deals.map((d) => n21(d.id)).filter(Boolean);
+  const { orders, sales } = await dealLineIds(dealIds, deals);
+  const orderIds = Array.from(new Set(Array.from(orders.values()).flat()));
+  const saleIds = Array.from(new Set(Array.from(sales.values()).flat()));
+  const [orderRows, saleRows, owners] = await Promise.all([
+    fetchOrderLines(orderIds),
+    fetchSaleLines(saleIds),
+    entryOwners(cid)
+  ]);
+  const allocRes = await c.execute({
+    sql: `SELECT ba.id, ba.amount, ba.order_id, ba.ref_name, ba.sale_invoice_group,
+                 UPPER(TRIM(a.name)) AS acct, je.id AS eid, je.vch_type, je.vch_no, je.entry_date
+          FROM journal_bill_allocs ba
+          JOIN journal_lines jl ON jl.id = ba.line_id
+          JOIN journal_entries je ON je.id = jl.entry_id
+          LEFT JOIN ledger_accounts a ON a.id = COALESCE(ba.account_id, jl.account_id)
+          WHERE ba.method = 'agst_ref' AND je.company_id = ?`,
+    args: [cid]
+  });
+  const allocs = toPlain21(allocRes);
+  const byOrder = /* @__PURE__ */ new Map();
+  const byAcctRef = /* @__PURE__ */ new Map();
+  const byKey = /* @__PURE__ */ new Map();
+  const push = (m, k, r) => {
+    m.set(k, [...m.get(k) ?? [], r]);
+  };
+  for (const a of allocs) {
+    if (n21(a.order_id)) push(byOrder, n21(a.order_id), a);
+    if (a.ref_name) push(byAcctRef, `${a.acct}|${up(a.ref_name)}`, a);
+    const key3 = up(a.sale_invoice_group || a.ref_name);
+    if (key3) push(byKey, key3, a);
+  }
+  const redirects = /* @__PURE__ */ new Map();
+  const mapRes = await c.execute({ sql: "SELECT posts_as, use_name FROM ledger_map WHERE company_id = ? OR company_id IS NULL", args: [cid] }).catch(() => null);
+  for (const r of mapRes ? toPlain21(mapRes) : []) {
+    const k = up(r.posts_as);
+    redirects.set(k, [...redirects.get(k) ?? [], up(r.use_name)]);
+  }
+  const ledgerNames = (party) => {
+    const p = up(party);
+    return p ? [p, ...redirects.get(p) ?? []] : [];
+  };
+  const lcByOrder = /* @__PURE__ */ new Map();
+  const bdByOrder = /* @__PURE__ */ new Map();
+  if (orderIds.length) {
+    const list2 = orderIds.join(",");
+    const addFin = (m, oid, x) => {
+      const cur = m.get(oid) ?? [];
+      if (!cur.some((y) => y.kind === x.kind && y.id === x.id)) m.set(oid, [...cur, x]);
+    };
+    const lcRows = await c.execute(
+      `SELECT lo.order_id AS oid, l.id AS iid, l.lc_no AS ref FROM lc_linked_orders lo JOIN letters_of_credit l ON l.id = lo.lc_id WHERE lo.order_id IN (${list2})
+         UNION ALL
+         SELECT i.order_id AS oid, l.id AS iid, l.lc_no AS ref FROM lc_issuances i JOIN letters_of_credit l ON l.id = i.lc_id WHERE i.order_id IN (${list2})`
+    ).catch(() => null);
+    for (const r of lcRows ? toPlain21(lcRows) : []) addFin(lcByOrder, n21(r.oid), { kind: "lc", id: n21(r.iid), ref: String(r.ref || "") });
+    const bdRows = await c.execute(`SELECT bo.order_id AS oid, b.id AS iid, b.bd_no AS ref FROM bd_linked_orders bo JOIN bill_discountings b ON b.id = bo.bd_id WHERE bo.order_id IN (${list2})`).catch(() => null);
+    for (const r of bdRows ? toPlain21(bdRows) : []) addFin(bdByOrder, n21(r.oid), { kind: "bd", id: n21(r.iid), ref: String(r.ref || "") });
+  }
+  const [supTerms, cusTerms] = await Promise.all([
+    c.execute("SELECT id, credit_period_days FROM suppliers").then(toPlain21).catch(() => []),
+    c.execute("SELECT id, credit_period_days FROM customers").then(toPlain21).catch(() => [])
+  ]);
+  const supDays = new Map(supTerms.map((r) => [n21(r.id), n21(r.credit_period_days)]));
+  const cusDays = new Map(cusTerms.map((r) => [n21(r.id), n21(r.credit_period_days)]));
+  const settle = (list2) => {
+    const by = { lc: 0, bd: 0, bank: 0, adjustment: 0 };
+    const via = [];
+    const movements = list2.map((a) => {
+      const owner = owners.get(n21(a.eid));
+      const vt = up(a.vch_type);
+      const channel = owner ? owner.kind : vt === "PAYMENT" || vt === "RECEIPT" || vt === "CONTRA" ? "bank" : "adjustment";
+      const amount = round29(n21(a.amount));
+      by[channel] = round29(by[channel] + amount);
+      if (owner && !via.some((x) => x.kind === owner.kind && x.id === owner.id)) via.push(owner);
+      return {
+        channel,
+        amount,
+        date: a.entry_date ? String(a.entry_date).slice(0, 10) : null,
+        vch_type: a.vch_type ?? null,
+        vch_no: a.vch_no ?? null,
+        entry_id: n21(a.eid),
+        instrument: owner ?? null
+      };
+    }).sort((x, y) => String(x.date || "").localeCompare(String(y.date || "")));
+    return { by, movements, via };
+  };
+  const status = (amount, settled) => amount > 5e-3 && settled >= amount - 5e-3 ? "settled" : settled > 5e-3 ? "part" : "pending";
+  const due = (dateIso, days) => {
+    const d = String(dateIso || "").slice(0, 10);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(d) || !(days > 0)) return { due_date: null, days_left: null };
+    const dd = addDays2(d, days);
+    return { due_date: dd, days_left: daysFromToday(dd) };
+  };
+  const out = [];
+  const claimed = /* @__PURE__ */ new Set();
+  const saleWork = [];
+  for (const d of deals) {
+    const id = n21(d.id);
+    const dealInfo = {
+      deal_id: id,
+      deal_date: d.deal_date ?? null,
+      product_code: d.product_code ?? null,
+      product_name: d.product_name ?? null,
+      deal_lc: n21(d.lc_id) ? { kind: "lc", id: n21(d.lc_id), ref: String(d.lc_no || "") } : null
+    };
+    for (const oid of orders.get(id) ?? []) {
+      const o = orderRows.get(oid);
+      if (!o) continue;
+      const seen = /* @__PURE__ */ new Set();
+      const hits = [];
+      const take = (rows) => {
+        for (const r of rows ?? []) {
+          if (seen.has(n21(r.id))) continue;
+          seen.add(n21(r.id));
+          claimed.add(n21(r.id));
+          hits.push(r);
+        }
+      };
+      take(byOrder.get(oid));
+      const inv = up(o.invoice_no);
+      if (inv) for (const nm of ledgerNames(o.supplier_name)) take(byAcctRef.get(`${nm}|${inv}`));
+      const { by, movements, via } = settle(hits);
+      const amount = round29(n21(o.net_amount));
+      const settled = round29(by.lc + by.bd + by.bank + by.adjustment);
+      const financed = [
+        ...dealInfo.deal_lc ? [dealInfo.deal_lc] : [],
+        ...lcByOrder.get(oid) ?? [],
+        ...bdByOrder.get(oid) ?? []
+      ].filter((x, i, arr) => arr.findIndex((y) => y.kind === x.kind && y.id === x.id) === i);
+      const st = status(amount, settled);
+      const dd = due(o.order_date, supDays.get(n21(o.supplier_id)) ?? 0);
+      out.push({
+        ...dealInfo,
+        side: "purchase",
+        key: `p:${oid}`,
+        order_id: oid,
+        invoice_no: o.invoice_no ?? "",
+        invoice_date: o.order_date ?? null,
+        party_id: o.supplier_id ?? null,
+        party_name: o.supplier_name ?? null,
+        amount,
+        settled_lc: by.lc,
+        settled_bd: by.bd,
+        settled_bank: by.bank,
+        settled_adjustment: by.adjustment,
+        settled_total: settled,
+        pending: Math.max(0, round29(amount - settled)),
+        excess: Math.max(0, round29(settled - amount)),
+        status: st,
+        ...dd,
+        overdue: st !== "settled" && dd.days_left != null && dd.days_left < 0,
+        financed_by: financed,
+        settled_via: via,
+        movements
+      });
+    }
+    const groups = /* @__PURE__ */ new Map();
+    for (const sid of sales.get(id) ?? []) {
+      const l = saleRows.get(sid);
+      if (!l) continue;
+      const k = saleRefKey(l);
+      if (!k) continue;
+      groups.set(k, [...groups.get(k) ?? [], l]);
+    }
+    const dealBds = Array.from(
+      new Map(
+        (orders.get(id) ?? []).flatMap((oid) => bdByOrder.get(oid) ?? []).map((x) => [x.id, x])
+      ).values()
+    );
+    for (const [k, ls] of groups) saleWork.push(() => {
+      const first = ls[0];
+      const amount = round29(ls.reduce((a, l) => a + n21(l.amount) + n21(l.gst_amount) + n21(l.round_off) - n21(l.tds_amount), 0));
+      const { by, movements, via } = settle((byKey.get(up(k)) ?? []).filter((a) => !claimed.has(n21(a.id))));
+      const settled = round29(by.lc + by.bd + by.bank + by.adjustment);
+      const st = status(amount, settled);
+      const dd = due(first.sale_date, cusDays.get(n21(first.customer_id)) ?? 0);
+      out.push({
+        ...dealInfo,
+        side: "sale",
+        key: `s:${k}`,
+        sale_ids: ls.map((l) => n21(l.id)),
+        // What the invoice is printed as; `ref_key` is what receipts are
+        // allocated against, which for a grouped invoice is its group.
+        invoice_no: Array.from(new Set(ls.map((l) => String(l.invoice_no || "").trim()).filter(Boolean))).join(", ") || k,
+        ref_key: k,
+        invoice_date: first.sale_date ?? null,
+        party_id: first.customer_id ?? null,
+        party_name: first.customer_name ?? null,
+        amount,
+        settled_lc: by.lc,
+        settled_bd: by.bd,
+        settled_bank: by.bank,
+        settled_adjustment: by.adjustment,
+        settled_total: settled,
+        pending: Math.max(0, round29(amount - settled)),
+        excess: Math.max(0, round29(settled - amount)),
+        status: st,
+        ...dd,
+        overdue: st !== "settled" && dd.days_left != null && dd.days_left < 0,
+        // The instruments this receivable repays: the deal's own LC and any BD
+        // that financed its purchase side.
+        financed_by: [...dealInfo.deal_lc ? [dealInfo.deal_lc] : [], ...dealBds],
+        settled_via: via,
+        movements
+      });
+    });
+  }
+  for (const run of saleWork) run();
+  const rank = new Map(deals.map((d, i) => [n21(d.id), i]));
+  return out.sort(
+    (a, b) => (rank.get(n21(a.deal_id)) ?? 0) - (rank.get(n21(b.deal_id)) ?? 0) || (a.side === b.side ? 0 : a.side === "purchase" ? -1 : 1)
+  );
+}
 
 // src/main/ipc.ts
 init_access_gate();
@@ -26490,8 +26766,8 @@ var GROUP_HINTS = [
   { re: /\bPAYABLE\b|\bPROVISION\b|\bOUTSTANDING\b|\bACCUMULATED\b/, group: "Current Liabilities" }
 ];
 function suggestGroup(name, dr, cr) {
-  const up = String(name || "").toUpperCase();
-  for (const h of GROUP_HINTS) if (h.re.test(up)) return h.group;
+  const up2 = String(name || "").toUpperCase();
+  for (const h of GROUP_HINTS) if (h.re.test(up2)) return h.group;
   if (round215(cr) > 4e-3) return "Sundry Creditors";
   if (round215(dr) > 4e-3) return "Sundry Debtors";
   return "Suspense A/C";
@@ -27568,6 +27844,7 @@ function registerIpc() {
     }) => entityHistory(entity, { id, key: key3, detail, limit })
   );
   handle("trading:list", (_e, args) => listTradingDeals(args?.forModule));
+  handle("tradingPayments:list", () => listTradingPayments());
   handle("trading:create", (_e, { values }) => createTradingDeal(values));
   handle("trading:update", (_e, { id, values }) => updateTradingDeal(id, values));
   handle("trading:delete", (_e, { id }) => deleteTradingDeal(id));
