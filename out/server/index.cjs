@@ -7862,6 +7862,20 @@ async function ensureVoucherNumbers() {
     }
   });
 }
+async function nextVoucherCode(companyId, vchType) {
+  await ensureVoucherNumbers();
+  const p = prefix(String(vchType || ""));
+  const r = await getClient().execute({
+    sql: "SELECT COALESCE(MAX(serial), 0) + 1 AS nx FROM voucher_numbers WHERE company_id = ? AND prefix = ?",
+    args: [Number(companyId) || 1, p]
+  });
+  return `${p}/${Number(r.rows[0]?.nx) || 1}`;
+}
+async function voucherCodeOf(entryId) {
+  await ensureTable();
+  const r = await getClient().execute({ sql: "SELECT prefix, serial FROM voucher_numbers WHERE entry_id = ?", args: [entryId] });
+  return r.rows.length ? `${r.rows[0].prefix}/${r.rows[0].serial}` : null;
+}
 async function permanentVoucherCodes(companyId) {
   await ensureVoucherNumbers();
   const result = await getClient().execute({
@@ -9400,7 +9414,18 @@ async function create(table, values) {
     args: keys.map((k) => toArg(values[k], k))
   });
   if (table === "companies") await ensureCompanyParties().catch(() => void 0);
+  if (table === "banks") await ensureBankLedger(values).catch((e) => console.error("[banks] ledger not created:", e));
   return { id: Number(res.lastInsertRowid) };
+}
+async function ensureBankLedger(v) {
+  const want = bankLedgerName(v.name, v.account_no);
+  if (!want) return;
+  const name = String(await resolveAccountName(want, n11(v.company_id) || void 0)).trim().toUpperCase();
+  if (!name) return;
+  await getClient().execute({
+    sql: "INSERT OR IGNORE INTO ledger_accounts (name, acc_group) VALUES (?, 'Bank Accounts')",
+    args: [name]
+  });
 }
 async function followLedgerMap(from, to) {
   await ensureLedgerMap().catch(() => void 0);
@@ -9510,7 +9535,10 @@ async function update(table, id, values) {
       sql: "SELECT name, account_no, company_id FROM banks WHERE id = ?",
       args: [id]
     });
-    if (now.rows.length) await syncBankLedgerName(id, priorBank, now.rows[0]);
+    if (now.rows.length) {
+      await syncBankLedgerName(id, priorBank, now.rows[0]);
+      await ensureBankLedger(now.rows[0]).catch(() => void 0);
+    }
   }
   return { id };
 }
@@ -24871,6 +24899,7 @@ async function getVoucher(id) {
   }
   entry.manual = !(await ownedVoucherIds()).has(id);
   entry.owner = entry.manual ? null : await voucherOwner(id).catch(() => null);
+  entry.code = await voucherCodeOf(id).catch(() => null);
   return entry;
 }
 async function listVouchers(from, to, vchType, companyId) {
@@ -25761,6 +25790,7 @@ async function dashboardStats() {
 
 // src/main/ipc.ts
 init_treasury();
+init_voucherNumbers();
 init_ledgerMap();
 init_gate();
 init_company();
@@ -28469,6 +28499,10 @@ function registerIpc() {
     "vouchers:update",
     (_e, { id, values }) => updateVoucher(id, values)
   );
+  handle(
+    "vouchers:nextCode",
+    (_e, a) => nextVoucherCode(Number(a?.companyId) || getActiveCompanyId(), String(a?.vchType || ""))
+  );
   handle("vouchers:delete", (_e, { id }) => deleteManualEntry(id));
   handle("journal:deleteEntry", (_e, { id }) => deleteManualEntry(id));
   handle("ledger:suppliers", () => listSupplierLedger());
@@ -29596,6 +29630,17 @@ function startHttpServer({ port, webRoot }) {
       }
       const s4 = sessions.get(sid);
       s4.seen = Date.now();
+      if (!s4.userId) {
+        const hid = Number(req.headers["x-user-id"]);
+        if (hid > 0) {
+          const u = await getClient().execute({ sql: "SELECT id, username FROM users WHERE id = ? AND COALESCE(active, 1) = 1", args: [hid] }).catch(() => null);
+          const row = u?.rows[0];
+          if (row) {
+            s4.userId = Number(row.id);
+            s4.username = String(row.username || "");
+          }
+        }
+      }
       const ctx = {
         userId: s4.userId,
         username: s4.username,
