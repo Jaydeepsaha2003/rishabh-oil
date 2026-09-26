@@ -4258,7 +4258,7 @@ async function saveOpeningStock(v) {
   if (date > todayISO()) throw new Error("The opening date cannot be in the future");
   const merged = /* @__PURE__ */ new Map();
   for (const l of openingLines(v)) {
-    const k = lotKey(l);
+    const k = lotKey2(l);
     const cur = merged.get(k);
     if (cur) cur.qty = Math.round((cur.qty + l.qty) * 1e3) / 1e3;
     else merged.set(k, { ...l });
@@ -4298,7 +4298,7 @@ async function saveOpeningStock(v) {
   });
   const spare = [...free];
   const takeMatching = (l) => {
-    const i = spare.findIndex((x) => lotKey({ lot_no: label(x.lot_no), terminal_no: label(x.terminal_no) }) === lotKey(l));
+    const i = spare.findIndex((x) => lotKey2({ lot_no: label(x.lot_no), terminal_no: label(x.terminal_no) }) === lotKey2(l));
     return i >= 0 ? spare.splice(i, 1)[0] : void 0;
   };
   const base = {
@@ -4313,7 +4313,7 @@ async function saveOpeningStock(v) {
   const keep = [];
   for (const l of lines) {
     const isDrawn = drawn.some(
-      (d) => lotKey({ lot_no: label(d.lot_no), terminal_no: label(d.terminal_no) }) === lotKey(l)
+      (d) => lotKey2({ lot_no: label(d.lot_no), terminal_no: label(d.terminal_no) }) === lotKey2(l)
     );
     if (isDrawn) continue;
     keep.push(l);
@@ -5206,7 +5206,7 @@ async function consignmentKin(id) {
     kin: out.slice(0, 12)
   };
 }
-var n5, label, lotKey, CONSIGNMENT_UOMS, GATE_BUFFER;
+var n5, label, lotKey2, CONSIGNMENT_UOMS, GATE_BUFFER;
 var init_consignment = __esm({
   "src/main/consignment.ts"() {
     init_db();
@@ -5214,7 +5214,7 @@ var init_consignment = __esm({
     init_access_gate();
     n5 = (v) => Number(v) || 0;
     label = (v) => String(v ?? "").trim().toUpperCase().slice(0, 40) || null;
-    lotKey = (l) => `${l.lot_no || ""}@@${l.terminal_no || ""}`;
+    lotKey2 = (l) => `${l.lot_no || ""}@@${l.terminal_no || ""}`;
     CONSIGNMENT_UOMS = ["MT", "KG", "L"];
     GATE_BUFFER = 1;
   }
@@ -9857,6 +9857,50 @@ async function assertManualVoucher(id) {
     throw new Error("This voucher belongs to a source document \u2014 change or reverse it from that document");
   }
 }
+async function voucherOwner(entryId) {
+  const c = getClient();
+  const id = Number(entryId);
+  if (!id) return null;
+  const e = await c.execute({ sql: "SELECT order_id, sale_id, payment_id FROM journal_entries WHERE id = ?", args: [id] });
+  const er = e.rows[0];
+  if (er?.order_id != null) return { kind: "order", id: Number(er.order_id), label: "Purchase" };
+  if (er?.sale_id != null) return { kind: "sale", id: Number(er.sale_id), label: "Sale" };
+  if (er?.payment_id != null) return { kind: "payment", id: Number(er.payment_id), label: "Payment" };
+  const schema = await c.execute(`SELECT m.name AS table_name, p.name AS column_name
+    FROM sqlite_master m JOIN pragma_table_info(m.name) p WHERE m.type='table'`);
+  const has = (table, col) => schema.rows.some((r) => r.table_name === table && r.column_name === col);
+  const first = async (table, cols, pick) => {
+    const usable = cols.filter((col) => has(table, col));
+    if (!usable.length || !has(table, pick)) return null;
+    const r = await c.execute({
+      sql: `SELECT ${pick} AS owner FROM ${table} WHERE ${usable.map((col) => `${col} = ?`).join(" OR ")} LIMIT 1`,
+      args: usable.map(() => id)
+    });
+    return r.rows.length ? Number(r.rows[0].owner) || null : null;
+  };
+  const lcNo = async (lcId) => {
+    const r = await c.execute({ sql: "SELECT lc_no FROM letters_of_credit WHERE id = ?", args: [lcId] });
+    return `LC ${String(r.rows[0]?.lc_no || lcId)}`;
+  };
+  const bdNo = async (bdId) => {
+    const r = await c.execute({ sql: "SELECT bd_no FROM bill_discountings WHERE id = ?", args: [bdId] });
+    return `BD ${String(r.rows[0]?.bd_no || bdId)}`;
+  };
+  let hit;
+  if (hit = await first("bill_discountings", sources.bill_discountings, "id")) return { kind: "bd", id: hit, label: await bdNo(hit) };
+  for (const t of ["bd_repayments", "bd_interest_payments", "bd_payment_ins"]) {
+    if (hit = await first(t, sources[t], "bd_id")) return { kind: "bd", id: hit, label: await bdNo(hit) };
+  }
+  if (hit = await first("letters_of_credit", sources.letters_of_credit, "id")) return { kind: "lc", id: hit, label: await lcNo(hit) };
+  for (const t of ["lc_issuances", "lc_repayments", "lc_payment_ins"]) {
+    if (hit = await first(t, sources[t], "lc_id")) return { kind: "lc", id: hit, label: await lcNo(hit) };
+  }
+  if (hit = await first("notes", sources.notes, "id")) return { kind: "note", id: hit, label: "Debit / Credit note" };
+  if (hit = await first("transporter_bills", sources.transporter_bills, "id")) return { kind: "freight", id: hit, label: "Transporter bill" };
+  if (hit = await first("bill_discounts", sources.bill_discounts, "id")) return { kind: "discount", id: hit, label: "Discounted bill" };
+  if (hit = await first("transporter_ledger", sources.transporter_ledger, "id")) return { kind: "transporter", id: hit, label: "Transporter ledger" };
+  return null;
+}
 var sources;
 var init_voucherOwnership = __esm({
   "src/main/voucherOwnership.ts"() {
@@ -10562,6 +10606,158 @@ function serverClock() {
 // src/server/index.ts
 var import_node_path5 = require("node:path");
 init_db();
+
+// src/main/ppTrace.ts
+init_db();
+init_dbTransaction();
+var ppReference = (id) => Number(id) > 0 ? `PP-${String(id).padStart(4, "0")}` : "";
+async function ensurePpTraceSchema() {
+  const c = getClient();
+  await c.execute(`CREATE TABLE IF NOT EXISTS pp_lots (
+    id INTEGER PRIMARY KEY AUTOINCREMENT CHECK(id BETWEEN 1 AND 9999),
+    scope TEXT NOT NULL, opening_date TEXT NOT NULL, product_id INTEGER NOT NULL,
+    stage_id INTEGER NOT NULL, snapshot_json TEXT NOT NULL,
+    UNIQUE(scope, opening_date, product_id, stage_id))`);
+  await c.execute(`CREATE TABLE IF NOT EXISTS pp_opening_dates (scope TEXT PRIMARY KEY, opening_date TEXT NOT NULL)`);
+  await c.execute(`CREATE TABLE IF NOT EXISTS pp_draw_sources (
+    draw_id INTEGER PRIMARY KEY, lot_id INTEGER NOT NULL, snapshot_json TEXT NOT NULL)`);
+}
+async function syncPpLots(scope, refreshProduct) {
+  return withDbTransaction(async () => {
+    const c = getClient();
+    const factory = scope.startsWith("f");
+    const dateResult = await c.execute({
+      sql: `SELECT MAX(as_of) AS d FROM stock_openings WHERE ${factory ? "factory_id" : "company_id"} = ?`,
+      args: [Number(scope.slice(1))]
+    });
+    const pending = await c.execute({ sql: "SELECT opening_date FROM pp_opening_dates WHERE scope=?", args: [scope] });
+    const date = String(pending.rows[0]?.opening_date || dateResult.rows[0]?.d || "");
+    const lines = await c.execute({
+      sql: `SELECT l.*, p.name AS product_name, p.uom, s.name AS vessel,
+                   f.name AS formulation_name
+              FROM stock_opening_pp l JOIN products p ON p.id=l.product_id
+              JOIN stock_pp_stages s ON s.id=l.stage_id
+              LEFT JOIN formulations f ON f.id=l.formulation_id
+             WHERE l.scope=? ORDER BY l.product_id, l.stage_id`,
+      args: [scope]
+    });
+    const result = /* @__PURE__ */ new Map();
+    for (const line of lines.rows) {
+      const found = await c.execute({
+        sql: "SELECT id,snapshot_json FROM pp_lots WHERE scope=? AND opening_date=? AND product_id=? AND stage_id=?",
+        args: [scope, date, Number(line.product_id), Number(line.stage_id)]
+      });
+      let id = Number(found.rows[0]?.id || 0);
+      let snapshot = id ? JSON.parse(String(found.rows[0].snapshot_json)) : {};
+      if (!id || refreshProduct === Number(line.product_id)) {
+        const sameRecipe = id && Number(snapshot.formulation_id || 0) === Number(line.formulation_id || 0);
+        const items = sameRecipe ? snapshot.items : (await c.execute({
+          sql: `SELECT i.*,p.name AS product_name FROM formulation_items i JOIN products p ON p.id=i.product_id
+                WHERE i.formulation_id=? AND COALESCE(i.kind,'input')='input' ORDER BY i.id`,
+          args: [Number(line.formulation_id || 0)]
+        })).rows;
+        snapshot = {
+          ...line,
+          counted_qty: Number(line.qty),
+          opening_date: date,
+          items: items || [],
+          formulation_name: sameRecipe ? snapshot.formulation_name : line.formulation_name,
+          captured_at: (/* @__PURE__ */ new Date()).toISOString()
+        };
+        if (!id) {
+          const max = await c.execute("SELECT COALESCE(MAX(id),0) AS n FROM pp_lots");
+          if (Number(max.rows[0].n) >= 9999) throw new Error("PP references have reached PP-9999. Extend the reference series before adding another opening lot.");
+          const insert = await c.execute({
+            sql: "INSERT INTO pp_lots(scope,opening_date,product_id,stage_id,snapshot_json) VALUES(?,?,?,?,?)",
+            args: [scope, date, Number(line.product_id), Number(line.stage_id), JSON.stringify(snapshot)]
+          });
+          id = Number(insert.lastInsertRowid);
+        } else {
+          await c.execute({ sql: "UPDATE pp_lots SET snapshot_json=? WHERE id=?", args: [JSON.stringify(snapshot), id] });
+        }
+      }
+      result.set(lotKey(Number(line.product_id), Number(line.stage_id)), { ...snapshot, lot_id: id, reference: ppReference(id) });
+    }
+    return result;
+  });
+}
+var lotKey = (productId, stageId) => `${productId}:${stageId}`;
+async function recordPpDrawSource(drawId, lot) {
+  const batch = await getClient().execute({ sql: `SELECT p.formulation_id,p.formulation_version_id,COALESCE(v.name,f.name) AS batch_formulation_name,COALESCE(p.custom_items_json,v.items_json) AS batch_items_json FROM pp_draws d JOIN production p ON p.id=d.production_id LEFT JOIN formulations f ON f.id=p.formulation_id LEFT JOIN formulation_versions v ON v.id=p.formulation_version_id WHERE d.id=?`, args: [drawId] });
+  lot = { ...lot, ...batch.rows[0], batch_items: batch.rows[0]?.batch_items_json ? JSON.parse(String(batch.rows[0].batch_items_json)) : [] };
+  await getClient().execute({
+    sql: "INSERT INTO pp_draw_sources(draw_id,lot_id,snapshot_json) VALUES(?,?,?)",
+    args: [drawId, Number(lot.lot_id), JSON.stringify(lot)]
+  });
+}
+async function ppFinishedDetails(companyIds, from, to) {
+  const c = getClient();
+  const ph = companyIds.map(() => "?").join(",");
+  const lines = await c.execute({
+    sql: `SELECT i.product_id,i.qty,p.id AS production_id,p.prod_date,p.product_id AS pp_product_id,
+                 COALESCE(fv.name,f.name) AS formulation_name,p.formulation_id,p.formulation_version_id,
+                 pr.name AS pp_product_name
+          FROM production_items i JOIN production p ON p.id=i.production_id
+          JOIN products pr ON pr.id=p.product_id LEFT JOIN formulations f ON f.id=p.formulation_id
+          LEFT JOIN formulation_versions fv ON fv.id=p.formulation_version_id
+          WHERE i.kind='pp_equiv' AND COALESCE(p.kind,'batch')<>'recirculation'
+            AND p.company_id IN (${ph}) AND (?='' OR p.prod_date>=?) AND (?='' OR p.prod_date<=?)`,
+    args: [...companyIds, from, from, to, to]
+  });
+  const draws = await c.execute({
+    sql: `SELECT d.*,s.snapshot_json,st.name AS vessel FROM pp_draws d
+         JOIN production p ON p.id=d.production_id LEFT JOIN pp_draw_sources s ON s.draw_id=d.id
+         LEFT JOIN stock_pp_stages st ON st.id=d.stage_id
+         WHERE p.company_id IN (${ph}) AND d.ffa='with' AND d.product_id=p.product_id
+           AND (?='' OR p.prod_date>=?) AND (?='' OR p.prod_date<=?) ORDER BY d.id`,
+    args: [...companyIds, from, from, to, to]
+  });
+  const out = /* @__PURE__ */ new Map();
+  for (const line of lines.rows) {
+    const sources2 = draws.rows.filter((d) => Number(d.production_id) === Number(line.production_id));
+    const total = sources2.reduce((sum, d) => sum + Number(d.qty), 0);
+    const details = out.get(Number(line.product_id)) || [];
+    if (!sources2.length || total <= 0) details.push({
+      ...line,
+      kind: "PP finished",
+      reference: "",
+      product_name: line.pp_product_name,
+      basis: "Legacy PP source not recorded",
+      qty: Number(line.qty)
+    });
+    else for (const draw of sources2) {
+      const snap = draw.snapshot_json ? JSON.parse(String(draw.snapshot_json)) : {};
+      details.push({
+        ...snap,
+        kind: "PP finished",
+        qty: Number(line.qty) * Number(draw.qty) / total,
+        product_name: snap.product_name || line.pp_product_name,
+        vessel: snap.vessel || draw.vessel,
+        reference: snap.reference || "",
+        production_id: Number(line.production_id),
+        prod_date: line.prod_date,
+        formulation_name: snap.batch_formulation_name || line.formulation_name || "Custom formulation",
+        formulation_id: line.formulation_id,
+        formulation_version_id: line.formulation_version_id,
+        drawn_qty: Number(draw.qty),
+        basis: `${draw.snapshot_json ? "Recorded vessel draw" : "Legacy draw; opening reference not recorded"}; ${Number(draw.qty)} / ${total} of batch PP; offsets Consumed`
+      });
+    }
+    out.set(Number(line.product_id), details);
+  }
+  return out;
+}
+function roundAdjustmentDetails(details) {
+  let exact = 0;
+  let displayed = 0;
+  return details.map((detail) => {
+    exact += Number(detail.qty) || 0;
+    const next = Math.round(exact * 1e3) / 1e3;
+    const qty = Math.round((next - displayed) * 1e3) / 1e3;
+    displayed = next;
+    return { ...detail, unrounded_qty: detail.qty, qty };
+  });
+}
 
 // src/main/bootstrap.ts
 init_db();
@@ -12821,11 +13017,16 @@ async function stockLevels(range, companyIds) {
     }
     return { total, adj, adjNote };
   };
+  const ppDetails = /* @__PURE__ */ new Map();
+  const ppScopeKey = fid ? `f${fid}` : `c${cidList[0] || getActiveCompanyId()}`;
+  const ppLots = await syncPpLots(ppScopeKey);
+  const finishedDetails = await ppFinishedDetails(cidList, floor && (!from || from < floor) ? floor : from, to);
   const ppRestate = async () => {
     const out = /* @__PURE__ */ new Map();
+    if (fid && !whole || to && floor && to < floor) return out;
     const scope = fid ? `f${fid}` : `c${cidList[0] || getActiveCompanyId()}`;
     const res = await c.execute({
-      sql: `SELECT sop.product_id AS pid, sop.qty AS qty, sop.formulation_id AS fid
+      sql: `SELECT sop.product_id AS pid, sop.qty AS qty, sop.formulation_id AS fid, sop.stage_id
               FROM stock_opening_pp sop
              WHERE sop.scope = ? AND sop.ffa = 'with'
                AND sop.formulation_id IS NOT NULL AND sop.qty > 0.0005`,
@@ -12838,13 +13039,20 @@ async function stockLevels(range, companyIds) {
     for (const raw of res.rows) {
       const r = raw;
       const qty = Number(r.qty) || 0;
-      const items = await c.execute({
+      const lot = ppLots.get(lotKey(Number(r.pid), Number(r.stage_id)));
+      const items = lot?.items?.length ? { rows: lot.items } : await c.execute({
         sql: `SELECT product_id, qty FROM formulation_items
                WHERE formulation_id = ? AND COALESCE(kind, 'input') = 'input'`,
         args: [Number(r.fid)]
       });
       const share = items.rows.reduce((t, x) => t + (Number(x.qty) || 0), 0);
       if (!(share > 0)) continue;
+      const detail = (pid, q, basis) => {
+        const rows = ppDetails.get(pid) || [];
+        rows.push({ ...lot, kind: "PP restated", qty: q, basis });
+        ppDetails.set(pid, rows);
+      };
+      detail(Number(r.pid), -qty, "Opening PP reclassified into its formulation ingredients");
       add(Number(r.pid), -qty);
       let placed = 0;
       const inputs = items.rows.map((x) => x);
@@ -12852,6 +13060,7 @@ async function stockLevels(range, companyIds) {
         const part = i === inputs.length - 1 ? Math.round((qty - placed) * 1e3) / 1e3 : Math.round(qty * (Number(x.qty) || 0) / share * 1e3) / 1e3;
         placed = Math.round((placed + part) * 1e3) / 1e3;
         add(Number(x.product_id), part);
+        detail(Number(x.product_id), part, `${qty} \xD7 ${Number(x.qty)} / ${share}; final ingredient carries rounding`);
       });
     }
     return out;
@@ -12927,6 +13136,11 @@ async function stockLevels(range, companyIds) {
       // dip said and what the card said, rather than oil anybody measured.
       // Its own column; no longer folded into `opening` above.
       opening_adj: Math.round((adjPortion + ppEq) * 1e3) / 1e3,
+      adjustment_details: roundAdjustmentDetails([
+        ...brought.adj.get(id) || 0 ? [{ kind: "Count correction", qty: brought.adj.get(id), basis: brought.adjNote.get(id) || "Opening count correction" }] : [],
+        ...ppDetails.get(id) || [],
+        ...finishedDetails.get(id) || []
+      ]),
       // WHAT THE ADJUSTED COLUMN IS MADE OF, in three named parts.
       //
       // It carries three unlike things that happen to land in one column, and
@@ -13670,6 +13884,7 @@ init_company();
 init_access_gate();
 
 // src/main/stockopenings.ts
+init_dbTransaction();
 init_db();
 init_company();
 init_openings();
@@ -13868,104 +14083,119 @@ async function assertOpeningsUnchanged(seen, companyId) {
   );
 }
 async function saveStockOpenings(rows, asOf, companyId, seenVersion) {
-  const cid = n15(companyId) || getActiveCompanyId();
-  await assertOpeningsUnchanged(seenVersion, cid);
-  const date = String(asOf || "").slice(0, 10);
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) throw new Error("Pick the date this opening is struck on");
-  const c = getClient();
-  const fid = await factoryOfCompanies([cid]);
-  const keyed = (extra) => fid ? { sql: `factory_id = ?${extra}`, args: [fid] } : { sql: `company_id = ?${extra}`, args: [cid] };
-  const ppFromLines = await ppTotalsByProduct(cid).catch(() => /* @__PURE__ */ new Map());
-  let saved = 0;
-  let cleared = 0;
-  for (const raw of Array.isArray(rows) ? rows : []) {
-    const pid = n15(raw?.product_id ?? raw?.id);
-    if (!pid) continue;
-    const rawBlank = raw?.qty === "" || raw?.qty == null;
-    const broken = ppFromLines.get(pid);
-    const ppBlank = broken == null && (raw?.pp_qty === "" || raw?.pp_qty == null);
-    const adjBlank = raw?.adj_qty === "" || raw?.adj_qty == null;
-    const blank = rawBlank && ppBlank && adjBlank;
-    if (blank) {
-      const k2 = keyed(" AND product_id = ?");
-      const res = await c.execute({
-        sql: `DELETE FROM stock_openings WHERE ${k2.sql}`,
-        args: [...k2.args, pid]
-      });
-      if (Number(res.rowsAffected) > 0) cleared++;
-      continue;
-    }
-    const qty = n15(raw.qty);
-    const pp = broken == null ? n15(raw.pp_qty) : broken;
-    const adj = n15(raw.adj_qty);
-    const rate = raw?.rate === "" || raw?.rate == null ? null : n15(raw.rate);
-    const note = raw?.note ? String(raw.note).trim() : null;
-    const k = keyed(" AND product_id = ?");
-    const upd = await c.execute({
-      sql: `UPDATE stock_openings
+  return withDbTransaction(async () => {
+    const cid = n15(companyId) || getActiveCompanyId();
+    await assertOpeningsUnchanged(seenVersion, cid);
+    const date = String(asOf || "").slice(0, 10);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) throw new Error("Pick the date this opening is struck on");
+    const c = getClient();
+    const fid = await factoryOfCompanies([cid]);
+    await syncPpLots(fid ? `f${fid}` : `c${cid}`);
+    const keyed = (extra) => fid ? { sql: `factory_id = ?${extra}`, args: [fid] } : { sql: `company_id = ?${extra}`, args: [cid] };
+    const ppFromLines = await ppTotalsByProduct(cid).catch(() => /* @__PURE__ */ new Map());
+    let saved = 0;
+    let cleared = 0;
+    for (const raw of Array.isArray(rows) ? rows : []) {
+      const pid = n15(raw?.product_id ?? raw?.id);
+      if (!pid) continue;
+      const rawBlank = raw?.qty === "" || raw?.qty == null;
+      const broken = ppFromLines.get(pid);
+      const ppBlank = broken == null && (raw?.pp_qty === "" || raw?.pp_qty == null);
+      const adjBlank = raw?.adj_qty === "" || raw?.adj_qty == null;
+      const blank = rawBlank && ppBlank && adjBlank;
+      if (blank) {
+        const k2 = keyed(" AND product_id = ?");
+        const res = await c.execute({
+          sql: `DELETE FROM stock_openings WHERE ${k2.sql}`,
+          args: [...k2.args, pid]
+        });
+        if (Number(res.rowsAffected) > 0) cleared++;
+        continue;
+      }
+      const qty = n15(raw.qty);
+      const pp = broken == null ? n15(raw.pp_qty) : broken;
+      const adj = n15(raw.adj_qty);
+      const rate = raw?.rate === "" || raw?.rate == null ? null : n15(raw.rate);
+      const note = raw?.note ? String(raw.note).trim() : null;
+      const k = keyed(" AND product_id = ?");
+      const upd = await c.execute({
+        sql: `UPDATE stock_openings
                SET factory_id = COALESCE(factory_id, (SELECT factory_id FROM companies WHERE id = ?)),
                    as_of = ?, qty = ?, pp_qty = ?, adj_qty = ?, rate = ?, note = ?,
                    updated_at = datetime('now')
              WHERE ${k.sql}`,
-      args: [cid, date, qty, pp, adj, rate, note, ...k.args, pid]
-    });
-    if (!Number(upd.rowsAffected)) {
-      await c.execute({
-        sql: `INSERT INTO stock_openings (company_id, factory_id, product_id, as_of, qty, pp_qty, adj_qty, rate, note, updated_at)
-              VALUES (?, (SELECT factory_id FROM companies WHERE id = ?), ?, ?, ?, ?, ?, ?, ?, datetime('now'))`,
-        args: [cid, cid, pid, date, qty, pp, adj, rate, note]
+        args: [cid, date, qty, pp, adj, rate, note, ...k.args, pid]
       });
+      if (!Number(upd.rowsAffected)) {
+        await c.execute({
+          sql: `INSERT INTO stock_openings (company_id, factory_id, product_id, as_of, qty, pp_qty, adj_qty, rate, note, updated_at)
+              VALUES (?, (SELECT factory_id FROM companies WHERE id = ?), ?, ?, ?, ?, ?, ?, ?, datetime('now'))`,
+          args: [cid, cid, pid, date, qty, pp, adj, rate, note]
+        });
+      }
+      saved++;
     }
-    saved++;
-  }
-  await seedOpeningDayCount(cid, date);
-  await snapshotOpeningSet(cid, fid, date).catch((e) => {
-    console.error("[stock] could not file the opening in history:", e);
+    await c.execute({ sql: "INSERT INTO pp_opening_dates(scope,opening_date) VALUES(?,?) ON CONFLICT(scope) DO UPDATE SET opening_date=excluded.opening_date", args: [fid ? `f${fid}` : `c${cid}`, date] });
+    await syncPpLots(fid ? `f${fid}` : `c${cid}`);
+    await seedOpeningDayCount(cid, date);
+    await snapshotOpeningSet(cid, fid, date).catch((e) => {
+      console.error("[stock] could not file the opening in history:", e);
+    });
+    return { saved, cleared };
   });
-  return { saved, cleared };
 }
 async function handOverOpeningPp(date, companyId) {
-  const cid = n15(companyId) || getActiveCompanyId();
-  const to = String(date || "").slice(0, 10);
-  const c = getClient();
-  const fid = await factoryOfCompanies([cid]);
-  const scope = fid ? `f${fid}` : `c${cid}`;
-  const where = fid ? { sql: "factory_id = ?", args: [fid] } : { sql: "company_id = ?", args: [cid] };
-  const wasOn = String(
-    (await c.execute({ sql: `SELECT MAX(as_of) AS d FROM stock_openings WHERE ${where.sql}`, args: where.args }).catch(() => ({ rows: [] }))).rows[0]?.d || ""
-  ).slice(0, 10);
-  if (!wasOn || wasOn === to) return { from: wasOn, moved: 0, rows: [] };
-  const live = toPlain15(
-    await c.execute({
-      sql: "SELECT product_id, stage_id, qty, ffa, formulation_id FROM stock_opening_pp WHERE scope = ?",
-      args: [scope]
-    })
-  );
-  if (!live.length) return { from: wasOn, moved: 0, rows: [] };
-  await snapshotOpeningSet(cid, fid, wasOn).catch(
-    (e) => console.error("[stock] could not file the outgoing opening:", e)
-  );
-  await c.execute({ sql: "DELETE FROM stock_opening_pp WHERE scope = ?", args: [scope] });
-  return { from: wasOn, moved: live.length, rows: live };
+  return withDbTransaction(async () => {
+    const cid = n15(companyId) || getActiveCompanyId();
+    const to = String(date || "").slice(0, 10);
+    const c = getClient();
+    const fid = await factoryOfCompanies([cid]);
+    const scope = fid ? `f${fid}` : `c${cid}`;
+    const where = fid ? { sql: "factory_id = ?", args: [fid] } : { sql: "company_id = ?", args: [cid] };
+    const wasOn = String(
+      (await c.execute({ sql: `SELECT MAX(as_of) AS d FROM stock_openings WHERE ${where.sql}`, args: where.args }).catch(() => ({ rows: [] }))).rows[0]?.d || ""
+    ).slice(0, 10);
+    if (!wasOn || wasOn === to) return { from: wasOn, moved: 0, rows: [] };
+    const live = toPlain15(
+      await c.execute({
+        sql: "SELECT product_id, stage_id, qty, ffa, formulation_id FROM stock_opening_pp WHERE scope = ?",
+        args: [scope]
+      })
+    );
+    if (!live.length) {
+      await c.execute({ sql: "INSERT INTO pp_opening_dates(scope,opening_date) VALUES(?,?) ON CONFLICT(scope) DO UPDATE SET opening_date=excluded.opening_date", args: [scope, to] });
+      return { from: wasOn, moved: 0, rows: [] };
+    }
+    await syncPpLots(scope);
+    await snapshotOpeningSet(cid, fid, wasOn).catch(
+      (e) => console.error("[stock] could not file the outgoing opening:", e)
+    );
+    await c.execute({ sql: "DELETE FROM stock_opening_pp WHERE scope = ?", args: [scope] });
+    await c.execute({ sql: "INSERT INTO pp_opening_dates(scope,opening_date) VALUES(?,?) ON CONFLICT(scope) DO UPDATE SET opening_date=excluded.opening_date", args: [scope, to] });
+    return { from: wasOn, moved: live.length, rows: live };
+  });
 }
 async function putBackOpeningPp(rows, companyId) {
-  const cid = n15(companyId) || getActiveCompanyId();
-  const c = getClient();
-  const fid = await factoryOfCompanies([cid]);
-  const scope = fid ? `f${fid}` : `c${cid}`;
-  let restored = 0;
-  for (const r of Array.isArray(rows) ? rows : []) {
-    const pid = n15(r?.product_id);
-    const sid = n15(r?.stage_id);
-    if (!pid || !sid) continue;
-    await c.execute({
-      sql: `INSERT OR IGNORE INTO stock_opening_pp (scope, product_id, stage_id, qty, ffa, formulation_id, updated_at)
+  return withDbTransaction(async () => {
+    const cid = n15(companyId) || getActiveCompanyId();
+    const c = getClient();
+    const fid = await factoryOfCompanies([cid]);
+    const scope = fid ? `f${fid}` : `c${cid}`;
+    let restored = 0;
+    for (const r of Array.isArray(rows) ? rows : []) {
+      const pid = n15(r?.product_id);
+      const sid = n15(r?.stage_id);
+      if (!pid || !sid) continue;
+      await c.execute({
+        sql: `INSERT OR IGNORE INTO stock_opening_pp (scope, product_id, stage_id, qty, ffa, formulation_id, updated_at)
               VALUES (?, ?, ?, ?, ?, ?, datetime('now'))`,
-      args: [scope, pid, sid, n15(r?.qty), r?.ffa == null ? null : String(r.ffa), r?.formulation_id == null ? null : n15(r.formulation_id)]
-    }).catch((e) => console.error("[stock] could not put a PP vessel back:", e));
-    restored += 1;
-  }
-  return { restored };
+        args: [scope, pid, sid, n15(r?.qty), r?.ffa == null ? null : String(r.ffa), r?.formulation_id == null ? null : n15(r.formulation_id)]
+      }).catch((e) => console.error("[stock] could not put a PP vessel back:", e));
+      restored += 1;
+    }
+    await c.execute({ sql: "DELETE FROM pp_opening_dates WHERE scope=?", args: [scope] });
+    return { restored };
+  });
 }
 async function snapshotOpeningSet(cid, fid, date) {
   const c = getClient();
@@ -14059,8 +14289,11 @@ async function openingSetLines(setId) {
   );
   const pp = toPlain15(
     await c.execute({
-      sql: `SELECT sp.product_id, sp.stage_id, sp.qty, sp.ffa, st.name AS stage_name
+      sql: `SELECT sp.product_id, sp.stage_id, sp.qty, sp.ffa, st.name AS stage_name, lot.id AS lot_id
                 FROM stock_opening_set_pp sp
+                JOIN stock_opening_sets os ON os.id=sp.set_id
+                LEFT JOIN pp_lots lot ON lot.product_id=sp.product_id AND lot.stage_id=sp.stage_id
+                  AND lot.opening_date=os.as_of AND lot.scope=CASE WHEN os.factory_id IS NOT NULL THEN 'f'||os.factory_id ELSE 'c'||os.company_id END
                 LEFT JOIN stock_pp_stages st ON st.id = sp.stage_id
                WHERE sp.set_id = ?
                ORDER BY st.sort_order, st.id`,
@@ -14073,6 +14306,7 @@ async function openingSetLines(setId) {
     if (!byProduct.has(k)) byProduct.set(k, []);
     byProduct.get(k).push({
       stage_id: n15(v.stage_id),
+      reference: v.lot_id ? `PP-${String(v.lot_id).padStart(4, "0")}` : "",
       stage_name: String(v.stage_name || `#${n15(v.stage_id)}`),
       qty: n15(v.qty),
       ffa: v.ffa == null ? null : String(v.ffa)
@@ -14154,6 +14388,7 @@ async function listPpStages(companyId) {
   }));
 }
 async function ppLinesByProduct(scope) {
+  const lots = await syncPpLots(scope);
   const res = await getClient().execute({
     // formulation_id travels with the line.
     //
@@ -14175,6 +14410,7 @@ async function ppLinesByProduct(scope) {
     const pid = n15(r.product_id);
     if (!by.has(pid)) by.set(pid, []);
     by.get(pid).push({
+      reference: lots.get(lotKey(pid, n15(r.stage_id)))?.reference || "",
       stage_id: n15(r.stage_id),
       name: String(r.name),
       qty: r3(n15(r.qty)),
@@ -14246,40 +14482,50 @@ async function removePpStage(stageId, companyId) {
   return { removed: Number(del.rowsAffected) || 0, kept: 0, retired: false, name };
 }
 async function savePpLines(productId, lines, companyId, seenVersion) {
-  const pid = n15(productId);
-  if (!pid) throw new Error("Which product?");
-  await assertOpeningsUnchanged(seenVersion, companyId);
-  const cid = n15(companyId) || getActiveCompanyId();
-  const scope = await ppScope(cid);
-  const c = getClient();
-  const raw = (Array.isArray(lines) ? lines : []).map((l) => ({
-    stage_id: n15(l?.stage_id),
-    stage: String(l?.stage ?? l?.name ?? "").trim(),
-    qty: l?.qty === "" || l?.qty == null ? 0 : n15(l.qty),
-    ffa: l?.ffa === "with" || l?.ffa === "without" ? String(l.ffa) : null,
-    // Only a WITH-FFA line can carry one: oil that has already shed its FFA is
-    // the finished product, and there is nothing left to restate it as.
-    formulation_id: l?.ffa === "with" && n15(l?.formulation_id) > 0 ? n15(l.formulation_id) : null
-  }));
-  for (const l of raw) {
-    if (l.stage_id > 0 || !l.stage) continue;
-    l.stage_id = n15((await addPpStage(l.stage, cid)).id);
-  }
-  const keep = raw.filter((l) => l.stage_id > 0 && Math.abs(l.qty) > 5e-4);
-  await c.execute({
-    sql: "DELETE FROM stock_opening_pp WHERE scope = ? AND product_id = ?",
-    args: [scope, pid]
-  });
-  for (const l of keep) {
+  return withDbTransaction(async () => {
+    const pid = n15(productId);
+    if (!pid) throw new Error("Which product?");
+    await assertOpeningsUnchanged(seenVersion, companyId);
+    const cid = n15(companyId) || getActiveCompanyId();
+    const scope = await ppScope(cid);
+    const c = getClient();
+    await syncPpLots(scope);
+    const raw = (Array.isArray(lines) ? lines : []).map((l) => ({
+      stage_id: n15(l?.stage_id),
+      stage: String(l?.stage ?? l?.name ?? "").trim(),
+      qty: l?.qty === "" || l?.qty == null ? 0 : n15(l.qty),
+      ffa: l?.ffa === "with" || l?.ffa === "without" ? String(l.ffa) : null,
+      // Only a WITH-FFA line can carry one: oil that has already shed its FFA is
+      // the finished product, and there is nothing left to restate it as.
+      formulation_id: l?.ffa === "with" && n15(l?.formulation_id) > 0 ? n15(l.formulation_id) : null
+    }));
+    for (const l of raw) {
+      if (l.stage_id > 0 || !l.stage) continue;
+      l.stage_id = n15((await addPpStage(l.stage, cid)).id);
+    }
+    const keep = raw.filter((l) => l.stage_id > 0 && Math.abs(l.qty) > 5e-4);
+    if (new Set(keep.map((l) => l.stage_id)).size !== keep.length) throw new Error("Each vessel may appear only once per product");
+    const stages = await c.execute({ sql: "SELECT id FROM stock_pp_stages WHERE scope=?", args: [scope] });
+    const valid = new Set(stages.rows.map((r) => Number(r.id)));
+    if (keep.some((l) => !valid.has(l.stage_id) || l.qty < 0)) throw new Error("Choose a vessel from this site and enter a positive quantity");
     await c.execute({
-      sql: `INSERT INTO stock_opening_pp (scope, product_id, stage_id, qty, ffa, formulation_id, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, datetime('now'))`,
-      args: [scope, pid, l.stage_id, r3(l.qty), l.ffa, l.formulation_id]
+      sql: `DELETE FROM stock_opening_pp WHERE scope=? AND product_id=?${keep.length ? ` AND stage_id NOT IN (${keep.map(() => "?").join(",")})` : ""}`,
+      args: [scope, pid, ...keep.map((l) => l.stage_id)]
     });
-  }
-  const total = r3(keep.reduce((t, l) => t + l.qty, 0));
-  await writePpTotal(cid, scope, pid, keep.length ? total : null);
-  return { total, lines: keep.length };
+    for (const l of keep) {
+      await c.execute({
+        sql: `INSERT INTO stock_opening_pp (scope, product_id, stage_id, qty, ffa, formulation_id, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, datetime('now'))
+            ON CONFLICT(scope,product_id,stage_id) DO UPDATE SET qty=excluded.qty,ffa=excluded.ffa,
+              formulation_id=excluded.formulation_id,updated_at=excluded.updated_at`,
+        args: [scope, pid, l.stage_id, r3(l.qty), l.ffa, l.formulation_id]
+      });
+    }
+    const total = r3(keep.reduce((t, l) => t + l.qty, 0));
+    await writePpTotal(cid, scope, pid, keep.length ? total : null);
+    await syncPpLots(scope, pid);
+    return { total, lines: keep.length, saved_lines: (await ppLinesByProduct(scope)).get(pid) || [] };
+  });
 }
 async function writePpTotal(companyId, scope, productId, total) {
   const c = getClient();
@@ -14290,7 +14536,7 @@ async function writePpTotal(companyId, scope, productId, total) {
     sql: `UPDATE stock_openings SET pp_qty = ?, updated_at = datetime('now')
              WHERE ${where} AND product_id = ?`,
     args: [total == null ? 0 : total, arg, productId]
-  }).catch((e) => console.error("[stock] PP total write failed:", e.message));
+  });
 }
 async function ppTotalsByProduct(companyId) {
   const scope = await ppScope(companyId);
@@ -14528,26 +14774,31 @@ async function ppDrawsForProduction(productionId) {
   return toPlain15(res).map((r) => ({ product_id: n15(r.product_id), ffa: String(r.ffa || ""), qty: r3(n15(r.qty)) }));
 }
 async function drawPp(productionId, productId, ffa, qty, companyId) {
-  let need = r3(qty);
-  if (need <= 5e-4 || !n15(productId) || !n15(productionId)) return 0;
-  const cid = n15(companyId) || getActiveCompanyId();
-  const scope = await ppScope(cid);
-  const c = getClient();
-  const vessels = await ppVessels(scope, productId, ffa);
-  let drawn = 0;
-  for (const v of vessels) {
-    if (need <= 5e-4) break;
-    const take = r3(Math.min(v.qty, need));
-    if (take <= 5e-4) continue;
-    await c.execute({
-      sql: `INSERT INTO pp_draws (production_id, scope, product_id, stage_id, qty, ffa)
+  return withDbTransaction(async () => {
+    let need = r3(qty);
+    if (need <= 5e-4 || !n15(productId) || !n15(productionId)) return 0;
+    const cid = n15(companyId) || getActiveCompanyId();
+    const scope = await ppScope(cid);
+    const c = getClient();
+    const lots = await syncPpLots(scope);
+    const vessels = await ppVessels(scope, productId, ffa);
+    let drawn = 0;
+    for (const v of vessels) {
+      if (need <= 5e-4) break;
+      const take = r3(Math.min(v.qty, need));
+      if (take <= 5e-4) continue;
+      const inserted = await c.execute({
+        sql: `INSERT INTO pp_draws (production_id, scope, product_id, stage_id, qty, ffa)
             VALUES (?, ?, ?, ?, ?, ?)`,
-      args: [n15(productionId), scope, productId, v.stage_id, take, ffa]
-    });
-    need -= take;
-    drawn += take;
-  }
-  return drawn;
+        args: [n15(productionId), scope, productId, v.stage_id, take, ffa]
+      });
+      const lot = lots.get(lotKey(productId, v.stage_id));
+      if (lot) await recordPpDrawSource(Number(inserted.lastInsertRowid), lot);
+      need -= take;
+      drawn += take;
+    }
+    return drawn;
+  });
 }
 async function reversePpDraws(productionId) {
   await getClient().execute({ sql: "DELETE FROM pp_draws WHERE production_id = ?", args: [n15(productionId)] });
@@ -20164,6 +20415,7 @@ async function runStartupTasks() {
   await runOnce("gst_rate_ledgers_v1", splitGstLedgersByRate).catch(
     (e) => console.error("[gst] rate ledgers failed:", e)
   );
+  await ensurePpTraceSchema();
   startRevisionWatcher();
 }
 var REQUIRED_COLUMNS = [
@@ -24408,6 +24660,7 @@ async function getVoucher(id) {
     l.splits = toPlain26(sp);
   }
   entry.manual = !(await ownedVoucherIds()).has(id);
+  entry.owner = entry.manual ? null : await voucherOwner(id).catch(() => null);
   return entry;
 }
 async function listVouchers(from, to, vchType, companyId) {
@@ -24964,6 +25217,7 @@ async function createNote(v, existingId) {
   const date = String(v.note_date || todayISO()).slice(0, 10);
   const narration = v.narration ? String(v.narration).trim() : null;
   const noteGstType = await (async () => {
+    if (v.gst_type === "IGST" || v.gst_type === "CGST_SGST") return v.gst_type;
     const ref = String(againstRef || "").trim();
     if (!ref) return DEFAULT_GST_TYPE;
     const table2 = partyType === "customer" ? "sales" : "orders";
