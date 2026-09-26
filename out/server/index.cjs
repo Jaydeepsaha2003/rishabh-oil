@@ -11239,6 +11239,11 @@ async function ensureBdPostingFields() {
   })) {
     if (!cols.has(name)) await c.execute(`ALTER TABLE bill_discountings ADD COLUMN ${name} ${type}`);
   }
+  if (!cols.has("margin_release_account")) await c.execute("ALTER TABLE bill_discountings ADD COLUMN margin_release_account TEXT");
+  for (const table of ["bd_repayments", "bd_interest_payments"]) {
+    const have = new Set((await c.execute(`PRAGMA table_info(${table})`)).rows.map((r) => String(r.name)));
+    if (have.size && !have.has("bank_account")) await c.execute(`ALTER TABLE ${table} ADD COLUMN bank_account TEXT`);
+  }
 }
 
 // src/main/bootstrap.ts
@@ -11530,6 +11535,66 @@ async function dropRepayEntries(bd) {
 function partyName(bd) {
   return String(bd.party_type === "supplier" ? bd.supplier_name : bd.customer_name || "").trim();
 }
+async function bdBankFor(bd, asked) {
+  const named = String(asked ?? "").trim();
+  if (named) return named;
+  if (String(bd.disbursement_route || "") === "bank" && String(bd.disbursement_account || "").trim()) {
+    return String(bd.disbursement_account).trim();
+  }
+  if (n14(bd.journal_entry_id)) {
+    const r = await getClient().execute({
+      sql: `SELECT a.name FROM journal_lines l JOIN ledger_accounts a ON a.id = l.account_id
+            WHERE l.entry_id = ? AND a.acc_group IN ('Bank Accounts','Bank OD A/c','Cash-in-Hand')
+            ORDER BY l.dr DESC LIMIT 1`,
+      args: [n14(bd.journal_entry_id)]
+    });
+    if (r.rows.length) return String(r.rows[0].name);
+  }
+  return "BANK A/C";
+}
+var CASH_BANK_GROUPS = ["Bank Accounts", "Bank OD A/c", "Cash-in-Hand"];
+async function setBdVoucherBank(bdId, entryId, account) {
+  return withDbTransaction(async () => {
+    const c = getClient();
+    const bd = await loadBd(bdId);
+    const eid = n14(entryId);
+    const owned = new Set(
+      [bd.journal_entry_id, bd.margin_release_journal_entry_id, bd.upfront_interest_journal_entry_id, bd.repay_journal_entry_id].map(n14).filter(Boolean)
+    );
+    for (const t of ["bd_repayments", "bd_interest_payments", "bd_payment_ins"]) {
+      const r = await c.execute({ sql: `SELECT journal_entry_id FROM ${t} WHERE bd_id = ?`, args: [n14(bdId)] }).catch(() => null);
+      for (const row of r?.rows || []) if (n14(row.journal_entry_id)) owned.add(n14(row.journal_entry_id));
+    }
+    if (!owned.has(eid)) throw new Error("That voucher is not one of this bill\u2019s");
+    const target = String(account || "").trim().toUpperCase();
+    const acct = await c.execute({ sql: "SELECT id, name, acc_group FROM ledger_accounts WHERE UPPER(TRIM(name)) = ?", args: [target] });
+    if (!acct.rows.length || !CASH_BANK_GROUPS.includes(String(acct.rows[0].acc_group))) {
+      throw new Error("Pick a bank or cash ledger");
+    }
+    const banks = await c.execute({
+      sql: `SELECT l.id FROM journal_lines l JOIN ledger_accounts a ON a.id = l.account_id
+            WHERE l.entry_id = ? AND a.acc_group IN ('Bank Accounts','Bank OD A/c','Cash-in-Hand')`,
+      args: [eid]
+    });
+    if (!banks.rows.length) throw new Error("This voucher does not go through a bank \u2014 it settles a party directly");
+    if (banks.rows.length > 1) throw new Error("This voucher has more than one bank line \u2014 change it from Accounting");
+    await c.execute({ sql: "UPDATE journal_lines SET account_id = ? WHERE id = ?", args: [n14(acct.rows[0].id), n14(banks.rows[0].id)] });
+    const name = String(acct.rows[0].name);
+    if (eid === n14(bd.journal_entry_id)) {
+      await c.execute({ sql: "UPDATE bill_discountings SET disbursement_route = 'bank', disbursement_account = ? WHERE id = ?", args: [name, n14(bdId)] });
+    }
+    if (eid === n14(bd.margin_release_journal_entry_id)) {
+      await c.execute({ sql: "UPDATE bill_discountings SET margin_release_account = ? WHERE id = ?", args: [name, n14(bdId)] });
+    }
+    if (eid === n14(bd.upfront_interest_journal_entry_id)) {
+      await c.execute({ sql: "UPDATE bill_discountings SET upfront_interest_account = ? WHERE id = ?", args: [name, n14(bdId)] });
+    }
+    await c.execute({ sql: "UPDATE bd_repayments SET bank_account = ? WHERE journal_entry_id = ?", args: [name, eid] }).catch(() => void 0);
+    await c.execute({ sql: "UPDATE bd_interest_payments SET bank_account = ? WHERE journal_entry_id = ?", args: [name, eid] }).catch(() => void 0);
+    await c.execute({ sql: "UPDATE bd_payment_ins SET account = ? WHERE journal_entry_id = ?", args: [name, eid] }).catch(() => void 0);
+    return { id: eid, account: name };
+  });
+}
 async function postBdOpening(bdId) {
   return withDbTransaction(async () => {
     const c = getClient();
@@ -11620,8 +11685,9 @@ async function reverseBdUpfrontInterest(bdId) {
     return { id: bdId };
   });
 }
-async function postBdMarginRelease(bd) {
+async function postBdMarginRelease(bd, bankIn) {
   const calc = bdCalc(bd);
+  const bank = await bdBankFor(bd, bankIn || bd.margin_release_account);
   if (n14(bd.invoice_amount) > 0) return null;
   if (calc.marginAmount < 5e-3) return null;
   const je = await postJournal({
@@ -11631,13 +11697,13 @@ async function postBdMarginRelease(bd) {
     narration: `Bill Discounting ${bd.bd_no} repaid \u2014 margin of ${calc.marginAmount.toFixed(2)} refunded by ${bd.nbfc_name || "the NBFC"}`,
     companyId: n14(bd.company_id) || void 0,
     lines: [
-      { account: "BANK A/C", group: "Bank Accounts", dr: calc.marginAmount },
+      { account: bank, group: "Bank Accounts", dr: calc.marginAmount },
       { account: "BD MARGIN A/C", group: "Deposits (Asset)", cr: calc.marginAmount }
     ]
   });
   await getClient().execute({
-    sql: "UPDATE bill_discountings SET margin_release_journal_entry_id = ? WHERE id = ?",
-    args: [je.id, n14(bd.id)]
+    sql: "UPDATE bill_discountings SET margin_release_journal_entry_id = ?, margin_release_account = ? WHERE id = ?",
+    args: [je.id, bank, n14(bd.id)]
   });
   return { id: je.id };
 }
@@ -12020,6 +12086,7 @@ async function repayBd(id, v) {
     const closed = left <= 4e-3;
     const comm = round26(n14(v.comm_charges));
     const bankCharges = round26(n14(v.bank_charges));
+    const repayBank = settleVia === "bank" ? await bdBankFor(bd, v.bank_account) : null;
     if (comm < 0 || bankCharges < 0) throw new Error("Charges cannot be negative");
     const others = [];
     const alsoSeen = /* @__PURE__ */ new Set();
@@ -12066,7 +12133,7 @@ async function repayBd(id, v) {
         cr: paidOut
       });
     } else {
-      lines.push({ account: "BANK A/C", group: "Bank Accounts", cr: paidOut });
+      lines.push({ account: repayBank || "BANK A/C", group: "Bank Accounts", cr: paidOut });
     }
     const je = await postJournal({
       date,
@@ -12080,8 +12147,8 @@ async function repayBd(id, v) {
     });
     if (settleVia === "party") await allocAgainst2(je.id, party, v.ref || null, paidOut);
     await c.execute({
-      sql: `INSERT INTO bd_repayments (bd_id, repay_date, amount, comm_charges, bank_charges, settle_via, ref, journal_entry_id, note)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      sql: `INSERT INTO bd_repayments (bd_id, repay_date, amount, comm_charges, bank_charges, settle_via, ref, journal_entry_id, note, bank_account)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       args: [
         id,
         date,
@@ -12091,13 +12158,14 @@ async function repayBd(id, v) {
         settleVia,
         v.ref ? String(v.ref) : null,
         je.id,
-        v.note ? String(v.note) : null
+        v.note ? String(v.note) : null,
+        repayBank
       ]
     });
     for (const o of others) {
       await c.execute({
-        sql: `INSERT INTO bd_repayments (bd_id, repay_date, amount, comm_charges, bank_charges, settle_via, ref, journal_entry_id, note)
-            VALUES (?, ?, ?, NULL, NULL, ?, ?, ?, ?)`,
+        sql: `INSERT INTO bd_repayments (bd_id, repay_date, amount, comm_charges, bank_charges, settle_via, ref, journal_entry_id, note, bank_account)
+            VALUES (?, ?, ?, NULL, NULL, ?, ?, ?, ?, ?)`,
         args: [
           n14(o.bd.id),
           date,
@@ -12105,7 +12173,8 @@ async function repayBd(id, v) {
           settleVia,
           v.ref ? String(v.ref) : null,
           je.id,
-          `Part of one ${inr(paidOut)} debit with ${bd.bd_no || id}`
+          `Part of one ${inr(paidOut)} debit with ${bd.bd_no || id}`,
+          repayBank
         ]
       });
       const oPaid = round26(n14(o.bd.amount) - o.due + o.amount);
@@ -12126,7 +12195,7 @@ async function repayBd(id, v) {
     });
     if (v.release_margin && closed) {
       const fresh = await loadBd(id);
-      await postBdMarginRelease(fresh);
+      await postBdMarginRelease(fresh, repayBank);
     }
     return { id, amount: asked, outstanding: left, closed };
   });
@@ -12291,6 +12360,7 @@ async function payBdInterestUpto(bdId, v) {
     const gross = n14(w.gross);
     const tds = n14(w.tds);
     const net = n14(w.net);
+    const bank = await bdBankFor(bd, v.bank_account);
     const post = v.post !== false;
     const jeId = post ? (await postJournal({
       date: to,
@@ -12301,12 +12371,12 @@ async function payBdInterestUpto(bdId, v) {
       lines: [
         { account: "INTEREST ON BILL DISCOUNTING A/C", group: "Indirect Expenses", dr: gross },
         ...tds > 4e-3 ? [{ account: "TDS ON INTEREST PAYABLE A/C", group: "Duties & Taxes", cr: tds }] : [],
-        { account: "BANK A/C", group: "Bank Accounts", cr: net }
+        { account: bank, group: "Bank Accounts", cr: net }
       ]
     })).id : null;
     const res = await getClient().execute({
-      sql: `INSERT INTO bd_interest_payments (bd_id, from_date, to_date, days, paid_date, gross, tds, net, note, journal_entry_id)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      sql: `INSERT INTO bd_interest_payments (bd_id, from_date, to_date, days, paid_date, gross, tds, net, note, journal_entry_id, bank_account)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       args: [
         n14(bdId),
         String(w.from_date),
@@ -12317,7 +12387,8 @@ async function payBdInterestUpto(bdId, v) {
         tds,
         net,
         v.note ? String(v.note) : null,
-        jeId
+        jeId,
+        bank
       ]
     });
     return { id: Number(res.lastInsertRowid), gross, tds, net, days: n14(w.days), posted: post };
@@ -12347,6 +12418,7 @@ async function payBdInterest(bdId, v) {
     }
     const tds = round26(asked * n14(bd.tds_pct) / 100);
     const net = round26(asked - tds);
+    const bank = await bdBankFor(bd, v.bank_account);
     const post = v.post !== false;
     const jeId = post ? (await postJournal({
       date,
@@ -12357,12 +12429,12 @@ async function payBdInterest(bdId, v) {
       lines: [
         { account: "INTEREST ON BILL DISCOUNTING A/C", group: "Indirect Expenses", dr: asked },
         ...tds > 4e-3 ? [{ account: "TDS ON INTEREST PAYABLE A/C", group: "Duties & Taxes", cr: tds }] : [],
-        { account: "BANK A/C", group: "Bank Accounts", cr: net }
+        { account: bank, group: "Bank Accounts", cr: net }
       ]
     })).id : null;
     const res = await getClient().execute({
-      sql: `INSERT INTO bd_interest_payments (bd_id, from_date, to_date, days, paid_date, gross, tds, net, note, journal_entry_id)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      sql: `INSERT INTO bd_interest_payments (bd_id, from_date, to_date, days, paid_date, gross, tds, net, note, journal_entry_id, bank_account)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       args: [
         n14(bdId),
         String(slice.from_date),
@@ -12373,7 +12445,8 @@ async function payBdInterest(bdId, v) {
         tds,
         net,
         v.note ? String(v.note) : null,
-        jeId
+        jeId,
+        bank
       ]
     });
     return { id: Number(res.lastInsertRowid), gross: asked, net, posted: post };
@@ -12399,7 +12472,7 @@ async function postBdInterestPayment(payId) {
       lines: [
         { account: "INTEREST ON BILL DISCOUNTING A/C", group: "Indirect Expenses", dr: gross },
         ...tds > 4e-3 ? [{ account: "TDS ON INTEREST PAYABLE A/C", group: "Duties & Taxes", cr: tds }] : [],
-        { account: "BANK A/C", group: "Bank Accounts", cr: net }
+        { account: await bdBankFor(bd, row.bank_account), group: "Bank Accounts", cr: net }
       ]
     });
     await c.execute({
@@ -12509,10 +12582,21 @@ async function deleteBdRepayment(repaymentId) {
     return { id: repaymentId, bd_id: bdId };
   });
 }
-async function markBdPaymentReceived(id, dateIn) {
+async function markBdPaymentReceived(id, dateIn, opts) {
   return withDbTransaction(async () => {
     const c = getClient();
     const bd = await loadBd(id);
+    const route = String(opts?.route || "").trim();
+    if (route) {
+      if (!["bank", "supplier"].includes(route)) throw new Error("Choose who received the NBFC disbursement");
+      if (route === "supplier" && String(bd.finance_type) !== "PID") throw new Error("Only a PID can be paid straight to the supplier");
+      const account = route === "bank" ? String(opts?.account || "").trim() : "";
+      if (route === "bank" && !account) throw new Error("Choose the bank the money landed in");
+      await c.execute({
+        sql: "UPDATE bill_discountings SET disbursement_route = ?, disbursement_account = ? WHERE id = ?",
+        args: [route, account || null, id]
+      });
+    }
     if (String(bd.status) === "repaid") throw new Error("This bill is already repaid \u2014 reopen it first if the receipt date needs correcting");
     const date = String(dateIn || todayISO5()).slice(0, 10);
     assertNotFuture2(date, "The payment received date");
@@ -20859,7 +20943,7 @@ async function loadEntries(ids) {
               FROM journal_lines jl
               JOIN ledger_accounts a ON a.id = jl.account_id
              WHERE jl.entry_id IN (${marks})
-             ORDER BY jl.id`,
+             ORDER BY CASE WHEN jl.dr > 0 THEN 0 ELSE 1 END, jl.id`,
       args: uniq
     })
   );
@@ -22008,6 +22092,7 @@ init_access_gate();
 init_db();
 init_dbTransaction();
 init_voucherNumbers();
+init_treasury();
 var TOL = 0.011;
 async function ensureLog() {
   await getClient().execute(`CREATE TABLE IF NOT EXISTS accounting_repair_log (
@@ -22218,6 +22303,100 @@ async function accountingChecks(companyId) {
     });
   }
   return { bd_route_unconfirmed, bd_upfront_unposted, lc_residuals };
+}
+var GENERIC_BANK = "BANK A/C";
+var CASH_BANK_GROUPS2 = ["Bank Accounts", "Bank OD A/c", "Cash-in-Hand"];
+async function genericBankPostings() {
+  const c = getClient();
+  const acct = await c.execute({ sql: "SELECT id FROM ledger_accounts WHERE UPPER(TRIM(name)) = ?", args: [GENERIC_BANK] });
+  if (!acct.rows.length) return [];
+  const aid = Number(acct.rows[0].id);
+  const byCo = await c.execute({
+    sql: `SELECT e.company_id, co.name AS company_name, COUNT(*) AS lines, COUNT(DISTINCT e.id) AS vouchers,
+                 ROUND(SUM(l.dr), 2) AS dr, ROUND(SUM(l.cr), 2) AS cr
+            FROM journal_lines l JOIN journal_entries e ON e.id = l.entry_id
+            LEFT JOIN companies co ON co.id = e.company_id
+           WHERE l.account_id = ?
+           GROUP BY e.company_id ORDER BY e.company_id`,
+    args: [aid]
+  });
+  const out = [];
+  for (const r of byCo.rows.map((x) => ({ ...x }))) {
+    const banks = await c.execute({
+      sql: "SELECT name, account_no FROM banks WHERE company_id = ? AND COALESCE(active, 1) = 1",
+      args: [Number(r.company_id)]
+    }).catch(() => null);
+    const names = (banks?.rows || []).map((b) => bankLedgerName(b.name, b.account_no));
+    out.push({ ...r, suggested: names.length === 1 ? names[0] : "", company_banks: names });
+  }
+  return out;
+}
+async function moveGenericBankPostings(companyId, target) {
+  const cid = Number(companyId);
+  if (!cid) throw new Error("Pick the company");
+  return withDbTransaction(async () => {
+    const c = getClient();
+    await ensureLog();
+    const from = await c.execute({ sql: "SELECT id FROM ledger_accounts WHERE UPPER(TRIM(name)) = ?", args: [GENERIC_BANK] });
+    if (!from.rows.length) return { lines: 0, vouchers: 0, account: target };
+    const fromId = Number(from.rows[0].id);
+    const to = await c.execute({
+      sql: "SELECT id, name, acc_group FROM ledger_accounts WHERE UPPER(TRIM(name)) = ?",
+      args: [String(target || "").trim().toUpperCase()]
+    });
+    if (!to.rows.length || !CASH_BANK_GROUPS2.includes(String(to.rows[0].acc_group))) {
+      throw new Error("Pick a real bank ledger to move them to");
+    }
+    const toId = Number(to.rows[0].id);
+    const toName = String(to.rows[0].name);
+    if (toId === fromId) throw new Error("That is BANK A/C itself");
+    const lines = (await c.execute({
+      sql: `SELECT l.id, l.entry_id, l.dr, l.cr FROM journal_lines l JOIN journal_entries e ON e.id = l.entry_id
+               WHERE l.account_id = ? AND e.company_id = ? ORDER BY l.id`,
+      args: [fromId, cid]
+    })).rows.map((x) => ({ ...x }));
+    if (!lines.length) return { lines: 0, vouchers: 0, account: toName };
+    const entryIds = [...new Set(lines.map((l) => Number(l.entry_id)))];
+    const stamp3 = (/* @__PURE__ */ new Date()).toISOString();
+    await c.execute({
+      sql: "INSERT INTO accounting_repair_log(repair_key, entry_id, before_json) VALUES (?, ?, ?)",
+      args: [`bank-ac-move-v1:${cid}:${stamp3}`, entryIds[0], JSON.stringify({ from: GENERIC_BANK, to: toName, company_id: cid, lines })]
+    });
+    await c.execute({
+      sql: "UPDATE journal_lines SET account_id = ? WHERE account_id = ? AND entry_id IN (SELECT id FROM journal_entries WHERE company_id = ?)",
+      args: [toId, fromId, cid]
+    });
+    await c.execute({
+      sql: `UPDATE journal_bill_allocs SET account_id = ? WHERE account_id = ?
+                AND line_id IN (SELECT l.id FROM journal_lines l JOIN journal_entries e ON e.id = l.entry_id WHERE e.company_id = ?)`,
+      args: [toId, fromId, cid]
+    }).catch(() => void 0);
+    const list2 = entryIds.join(",");
+    await c.execute({
+      sql: `UPDATE bill_discountings SET disbursement_route = 'bank', disbursement_account = ?
+               WHERE company_id = ? AND journal_entry_id IN (${list2})
+                 AND COALESCE(disbursement_route, 'unconfirmed') IN ('unconfirmed', 'bank')`,
+      args: [toName, cid]
+    }).catch(() => void 0);
+    await c.execute({
+      sql: `UPDATE bill_discountings SET margin_release_account = ? WHERE company_id = ? AND margin_release_journal_entry_id IN (${list2})`,
+      args: [toName, cid]
+    }).catch(() => void 0);
+    for (const [table, col] of [
+      ["bd_repayments", "bank_account"],
+      ["bd_interest_payments", "bank_account"],
+      ["bd_payment_ins", "account"]
+    ]) {
+      await c.execute({ sql: `UPDATE ${table} SET ${col} = ? WHERE journal_entry_id IN (${list2})`, args: [toName] }).catch(() => void 0);
+    }
+    await c.execute({
+      sql: `INSERT INTO ledger_map (company_id, posts_as, use_name, note, created_by)
+              VALUES (?, ?, ?, ?, 'accounting check')
+              ON CONFLICT(COALESCE(company_id, 0), posts_as) DO UPDATE SET use_name = excluded.use_name, note = excluded.note`,
+      args: [cid, GENERIC_BANK, toName, `BANK A/C postings moved to ${toName}`]
+    }).catch(() => void 0);
+    return { lines: lines.length, vouchers: entryIds.length, account: toName };
+  });
 }
 
 // src/main/skurates.ts
@@ -24666,7 +24845,9 @@ async function getVoucher(id) {
   const lines = await c.execute({
     sql: `SELECT jl.id, jl.dr, jl.cr, a.name AS account, a.acc_group
           FROM journal_lines jl JOIN ledger_accounts a ON a.id = jl.account_id
-          WHERE jl.entry_id = ? ORDER BY jl.id`,
+          -- Debits first, then credits \u2014 the way a voucher is read (Tally
+          -- lists it by side too). Within a side, the order it was written.
+          WHERE jl.entry_id = ? ORDER BY CASE WHEN jl.dr > 0 THEN 0 ELSE 1 END, jl.id`,
     args: [id]
   });
   const entry = toPlain26(e)[0];
@@ -28802,7 +28983,10 @@ function registerIpc() {
   );
   handle("bd:deletePaymentIn", (_e, { id }) => deleteBdPaymentIn(id));
   handle("bd:deleteRepayment", (_e, { id }) => deleteBdRepayment(id));
-  handle("bd:markReceived", (_e, { id, date }) => markBdPaymentReceived(id, date));
+  handle(
+    "bd:markReceived",
+    (_e, { id, date, route, account }) => markBdPaymentReceived(id, date, { route, account })
+  );
   handle("bd:unmarkReceived", (_e, { id }) => unmarkBdPaymentReceived(id));
   handle("bd:reopen", (_e, { id }) => reopenBd(id));
   handle(
@@ -28810,6 +28994,10 @@ function registerIpc() {
     (_e, { id, date, account }) => postBdUpfrontInterest(id, date, account)
   );
   handle("bd:reverseUpfrontInterest", (_e, { id }) => reverseBdUpfrontInterest(id));
+  handle(
+    "bd:setVoucherBank",
+    (_e, { id, entryId, account }) => setBdVoucherBank(id, entryId, account)
+  );
   handle("repairs:duplicateSales:list", async (_e, a) => {
     await assertAdmin("The books repair");
     return previewDuplicateInvoicePostings(a?.companyId);
@@ -28817,6 +29005,14 @@ function registerIpc() {
   handle("repairs:checks:list", async (_e, a) => {
     await assertAdmin("The accounting checks");
     return accountingChecks(a?.companyId);
+  });
+  handle("repairs:genericBank:list", async () => {
+    await assertAdmin("The accounting checks");
+    return genericBankPostings();
+  });
+  handle("repairs:genericBankMove", async (_e, a) => {
+    await assertAdmin("Moving BANK A/C postings");
+    return moveGenericBankPostings(a?.companyId, a?.account);
   });
   handle("repairs:duplicateSalesRemove", async (_e, a) => {
     await assertAdmin("The books repair");
