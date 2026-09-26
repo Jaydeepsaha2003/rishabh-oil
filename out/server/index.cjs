@@ -25349,6 +25349,7 @@ async function tradingAccount(from, to, companyId) {
 }
 
 // src/main/notes.ts
+init_ledgerMap();
 function toPlain27(res) {
   return res.rows.map((r) => {
     const o = {};
@@ -25408,22 +25409,55 @@ var PARTY_KINDS = {
   customer: { master: "customers", ledger: "customer_ledger", idCol: "customer_id", refCol: "sale_id", group: "Sundry Debtors", gst: "OUTPUT" },
   transporter: { master: "transporters", ledger: "transporter_ledger", idCol: "transporter_id", refCol: "order_id", group: "Sundry Creditors", gst: "INPUT" }
 };
+async function partyByLedgerName(name, cid, preferred, group) {
+  const c = getClient();
+  const want = String(name || "").trim().toUpperCase();
+  if (!want) return null;
+  const aliases = [want];
+  const map = await c.execute({
+    sql: `SELECT posts_as FROM ledger_map
+             WHERE UPPER(TRIM(use_name)) = ? AND (company_id = ? OR company_id IS NULL)
+             ORDER BY company_id IS NULL, id`,
+    args: [want, cid]
+  }).catch(() => null);
+  for (const r of map?.rows || []) {
+    const a = String(r.posts_as || "").trim().toUpperCase();
+    if (a && !aliases.includes(a)) aliases.push(a);
+  }
+  const g = String(group || "").trim();
+  const kinds = g === "Sundry Debtors" ? ["customer"] : g === "Sundry Creditors" ? preferred === "transporter" ? ["transporter", "supplier"] : ["supplier", "transporter"] : [preferred, ...["supplier", "customer", "transporter"].filter((k) => k !== preferred)];
+  for (const k of kinds) {
+    for (const a of aliases) {
+      const hit = await c.execute({
+        sql: `SELECT id FROM ${PARTY_KINDS[k].master} WHERE UPPER(TRIM(name)) = ? LIMIT 1`,
+        args: [a]
+      });
+      if (hit.rows.length) return { id: n30(hit.rows[0].id), kind: k };
+    }
+  }
+  return null;
+}
 async function createNote(v, existingId) {
   const c = getClient();
   const cid = v.company_id ? n30(v.company_id) : getActiveCompanyId();
   const type = v.note_type === "credit" ? "credit" : "debit";
   const requested = String(v.party_type || "").trim().toLowerCase();
-  const partyType = requested in PARTY_KINDS ? requested : type === "debit" ? "supplier" : "customer";
-  const kind = PARTY_KINDS[partyType];
+  let partyType = requested in PARTY_KINDS ? requested : type === "debit" ? "supplier" : "customer";
+  let kind = PARTY_KINDS[partyType];
   let partyId = n30(v.party_id);
   if (!partyId && v.party_name) {
-    const byName = await c.execute({
-      sql: `SELECT id FROM ${kind.master} WHERE UPPER(TRIM(name)) = UPPER(TRIM(?)) LIMIT 1`,
-      args: [String(v.party_name)]
-    });
-    if (byName.rows.length) partyId = n30(byName.rows[0].id);
+    const hit = await partyByLedgerName(String(v.party_name), cid, partyType, v.party_group ? String(v.party_group) : void 0);
+    if (hit) {
+      partyId = hit.id;
+      partyType = hit.kind;
+      kind = PARTY_KINDS[partyType];
+    }
   }
-  if (!partyId) throw new Error(`Select the ${partyType}`);
+  if (!partyId) {
+    throw new Error(
+      v.party_name ? `${String(v.party_name).trim()} is not linked to any ${partyType === "customer" ? "customer" : "supplier or transporter"} in the masters. Add it there (or rename that party's ledger from Masters so the two are linked), then save again.` : `Select the ${partyType}`
+    );
+  }
   const rawItems = Array.isArray(v.items) ? v.items : [];
   const items = rawItems.map((it) => {
     const qty = n30(it.qty);
@@ -25507,11 +25541,12 @@ async function createNote(v, existingId) {
       { account: partyName2 || "CASH CUSTOMER A/C", group: kind.group, cr: total }
     ]
   });
+  const partyAccount = (await resolveAccountName(partyName2, cid)).trim().toUpperCase();
   const partyLine = await c.execute({
     sql: `SELECT jl.id, jl.account_id FROM journal_lines jl
           JOIN ledger_accounts a ON a.id = jl.account_id
-          WHERE jl.entry_id = ? AND a.name = ? LIMIT 1`,
-    args: [je.id, partyName2.toUpperCase()]
+          WHERE jl.entry_id = ? AND UPPER(TRIM(a.name)) IN (?, ?) LIMIT 1`,
+    args: [je.id, partyAccount, partyName2.toUpperCase()]
   });
   if (partyLine.rows.length) {
     const ids = againstRef ? await resolveRefIds(againstRef, cid, partyType === "customer" ? "customer" : "supplier") : { order_id: null, sale_invoice_group: null };
