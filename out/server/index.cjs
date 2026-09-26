@@ -10712,6 +10712,35 @@ async function ppFinishedDetails(companyIds, from, to) {
            AND (?='' OR p.prod_date>=?) AND (?='' OR p.prod_date<=?) ORDER BY d.id`,
     args: [...companyIds, from, from, to, to]
   });
+  const scopesOf = /* @__PURE__ */ new Map();
+  const co = await c.execute({ sql: `SELECT id, factory_id FROM companies WHERE id IN (${ph})`, args: [...companyIds] }).catch(() => null);
+  for (const r of co?.rows || []) {
+    scopesOf.set(Number(r.id), [...Number(r.factory_id) ? [`f${Number(r.factory_id)}`] : [], `c${Number(r.id)}`]);
+  }
+  const companyOf = /* @__PURE__ */ new Map();
+  const pc = await c.execute({ sql: `SELECT id, company_id FROM production WHERE company_id IN (${ph})`, args: [...companyIds] }).catch(() => null);
+  for (const r of pc?.rows || []) companyOf.set(Number(r.id), Number(r.company_id));
+  const lotCache = /* @__PURE__ */ new Map();
+  const matchLot = async (draw, prodDate) => {
+    const scopes = scopesOf.get(companyOf.get(Number(draw.production_id)) || 0) || [];
+    const key3 = `${scopes.join(",")}|${draw.product_id}|${draw.stage_id}|${prodDate}`;
+    if (lotCache.has(key3)) return lotCache.get(key3) || null;
+    let hit = null;
+    for (const scope of scopes) {
+      const r = await c.execute({
+        sql: `SELECT id, snapshot_json FROM pp_lots WHERE scope = ? AND product_id = ? AND stage_id = ? AND opening_date <= ?
+              ORDER BY opening_date DESC LIMIT 1`,
+        args: [scope, Number(draw.product_id), Number(draw.stage_id), prodDate]
+      }).catch(() => null);
+      const row = r?.rows[0];
+      if (row) {
+        hit = { ...JSON.parse(String(row.snapshot_json)), lot_id: Number(row.id), reference: ppReference(row.id), reference_matched: true };
+        break;
+      }
+    }
+    lotCache.set(key3, hit);
+    return hit;
+  };
   const out = /* @__PURE__ */ new Map();
   for (const line of lines.rows) {
     const sources2 = draws.rows.filter((d) => Number(d.production_id) === Number(line.production_id));
@@ -10726,7 +10755,7 @@ async function ppFinishedDetails(companyIds, from, to) {
       qty: Number(line.qty)
     });
     else for (const draw of sources2) {
-      const snap = draw.snapshot_json ? JSON.parse(String(draw.snapshot_json)) : {};
+      const snap = draw.snapshot_json ? JSON.parse(String(draw.snapshot_json)) : await matchLot(draw, String(line.prod_date || "").slice(0, 10)) || {};
       details.push({
         ...snap,
         kind: "PP finished",
