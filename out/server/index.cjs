@@ -14646,6 +14646,28 @@ async function savePpLines(productId, lines, companyId, seenVersion) {
     }
     const keep = raw.filter((l) => l.stage_id > 0 && Math.abs(l.qty) > 5e-4);
     if (new Set(keep.map((l) => l.stage_id)).size !== keep.length) throw new Error("Each vessel may appear only once per product");
+    for (const l of keep) {
+      if (l.ffa !== "with" || !l.formulation_id) continue;
+      const before = await c.execute({
+        sql: "SELECT formulation_id FROM stock_opening_pp WHERE scope = ? AND product_id = ? AND stage_id = ?",
+        args: [scope, pid, l.stage_id]
+      });
+      if (before.rows.length && n15(before.rows[0].formulation_id) > 0) continue;
+      const used = await c.execute({
+        sql: `SELECT d.production_id, pr.prod_date, st.name AS vessel, ROUND(SUM(d.qty), 3) AS qty
+              FROM pp_draws d
+              JOIN production pr ON pr.id = d.production_id
+              LEFT JOIN stock_pp_stages st ON st.id = d.stage_id
+             WHERE d.scope = ? AND d.product_id = ? AND d.stage_id = ? AND d.ffa = 'with'
+             GROUP BY d.production_id ORDER BY pr.prod_date, d.production_id`,
+        args: [scope, pid, l.stage_id]
+      });
+      if (!used.rows.length) continue;
+      const runs = used.rows.map((r) => `run #${n15(r.production_id)} of ${String(r.prod_date || "").split("-").reverse().join("-")} (${r3(n15(r.qty))} MT)`).join(", ");
+      throw new Error(
+        `${String(used.rows[0].vessel || "That vessel")} has already been used as PP by production ${runs}. Open that run in Production, Alter it and Save changes so it gives the oil back, then name the formulation here.`
+      );
+    }
     const stages = await c.execute({ sql: "SELECT id FROM stock_pp_stages WHERE scope=?", args: [scope] });
     const valid = new Set(stages.rows.map((r) => Number(r.id)));
     if (keep.some((l) => !valid.has(l.stage_id) || l.qty < 0)) throw new Error("Choose a vessel from this site and enter a positive quantity");
@@ -15470,7 +15492,7 @@ async function expandRecipeForBatch(items, outputQty, outputProductId = 0) {
   const autoCalcInputs = items.filter((it) => String(it.kind || "input") === "input" && it.auto_calc).map((it) => n16(it.product_id));
   const freeByProduct = autoCalcInputs.length ? await ppFreeByProduct(autoCalcInputs) : {};
   const pools = outputProductId ? (await ppTotalsBothByProduct([outputProductId]))[outputProductId] : void 0;
-  const r = expandBatchWithOutputPp(items, outputQty, pools || {}, freeByProduct, outputProductId);
+  const r = expandBatchWithOutputPp(items, outputQty, { without: pools?.without || 0, with: 0 }, freeByProduct, outputProductId);
   return { lines: r.lines, draws: r.draws, ownPp: { without: r.plan.fromPpFree, with: r.plan.ppWithUsed } };
 }
 async function drawPpForBatch(productionId, draws) {
