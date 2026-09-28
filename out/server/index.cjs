@@ -2895,6 +2895,14 @@ async function assertAllowed(channel, args) {
     moduleLabel: rule.label
   });
   if (!verdict.allowed) throw new Error(verdict.reason || "You are not allowed to do that");
+  if (op === "moveBalance") {
+    const made = can(user, rule.module, "create", {
+      entryDate: args?.values?.date || todayISO(),
+      today: todayISO(),
+      moduleLabel: rule.label
+    });
+    if (!made.allowed) throw new Error(made.reason || "You are not allowed to do that");
+  }
 }
 var CHANNEL_RULES, READ_OPS, GATE_FINISH_OPS, cache, INTERCO_SALE_OPS, INTERCO_SALES_REFUSAL;
 var init_access_gate = __esm({
@@ -3997,7 +4005,7 @@ function validateBargainInput(v) {
   }
   return { qty, rate };
 }
-async function createBargain(v) {
+async function createBargain(v, opts) {
   const { qty, rate } = validateBargainInput(v);
   const total = qty * rate;
   const bargain_no = await nextBargainNo(
@@ -4012,7 +4020,7 @@ async function createBargain(v) {
        base_rate, duty, rate_per_uom, allowed_shortage_pct, rate_expiry_date, total_amount, remarks, status)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'open')`,
     args: [
-      getActiveCompanyId(),
+      opts?.companyId || getActiveCompanyId(),
       bargain_no,
       v.bargain_date,
       Number(v.supplier_id),
@@ -4177,6 +4185,61 @@ async function adjustBargainQty(id, delta, note, date) {
   });
   return { id, qty: newQty };
 }
+async function moveBargainBalance(id, v) {
+  return withDbTransaction(async () => {
+    const c = getClient();
+    const res = await c.execute({ sql: "SELECT * FROM bargains WHERE id = ?", args: [Number(id)] });
+    if (!res.rows.length) throw new Error("Bargain not found");
+    const b = toPlain7(res)[0];
+    const toOil = Number(v.oil_type_id) || 0;
+    if (!toOil) throw new Error("Pick the product to move the balance to");
+    if (toOil === Number(b.oil_type_id)) throw new Error("That is this bargain's own product \u2014 pick another");
+    const qty = Math.round((Number(v.qty) || 0) * 1e3) / 1e3;
+    if (qty <= 0) throw new Error("Enter a quantity greater than zero");
+    const uom = String(b.uom || "MT");
+    const balance = Math.round((Number(b.qty) - await bargainConsumed(Number(id))) * 1e3) / 1e3;
+    if (qty > balance + 1e-6) {
+      throw new Error(`Only ${balance} ${uom} is open on ${String(b.bargain_no)} \u2014 that is the most that can be moved`);
+    }
+    const date = v.date && String(v.date).slice(0, 10) || todayISO();
+    const oldRate = Number(b.rate_per_uom) || 0;
+    const rate = Number(v.rate) > 0 ? Number(v.rate) : oldRate;
+    const duty = Number(b.duty) || 0;
+    const same2 = Math.abs(rate - oldRate) < 5e-3;
+    const base = same2 ? Number(b.base_rate) || rate - duty : rate > duty ? rate - duty : rate;
+    const names = await c.execute({ sql: "SELECT id, name FROM products WHERE id IN (?, ?)", args: [Number(b.oil_type_id), toOil] });
+    const nameOf = (pid) => String(names.rows.find((r) => Number(r.id) === pid)?.name || "product");
+    const note = String(v.note || "").trim();
+    const expiry = String(b.rate_expiry_date || "").slice(0, 10);
+    const made = await createBargain(
+      {
+        supplier_id: b.supplier_id,
+        broker_id: b.broker_id,
+        oil_type_id: toOil,
+        bargain_type: b.bargain_type,
+        qty,
+        uom,
+        base_rate: base,
+        duty: same2 || rate > duty ? duty : 0,
+        bargain_date: date,
+        allowed_shortage_pct: b.allowed_shortage_pct,
+        // An expiry the new date has already passed would refuse the save.
+        rate_expiry_date: expiry && expiry > date ? expiry : null,
+        remarks: `Moved from ${String(b.bargain_no)}${note ? ` \u2014 ${note}` : ""}`
+      },
+      { companyId: Number(b.company_id) || void 0 }
+    );
+    await adjustBargainQty(
+      Number(id),
+      -qty,
+      `Moved ${qty} ${uom} to ${made.bargain_no} (${nameOf(toOil)})${note ? ` \u2014 ${note}` : ""}`,
+      date
+    );
+    await recordChanges("bargains", Number(id), String(b.bargain_no), { moved: "" }, { moved: `${qty} ${uom} to ${made.bargain_no} \xB7 ${nameOf(toOil)}` }, MOVED_OUT);
+    await recordChanges("bargains", made.id, made.bargain_no, { moved: "" }, { moved: `${qty} ${uom} from ${String(b.bargain_no)} \xB7 ${nameOf(Number(b.oil_type_id))}` }, MOVED_IN);
+    return { id: made.id, bargain_no: made.bargain_no, moved: qty };
+  });
+}
 async function bargainAdjustments(id) {
   const res = await getClient().execute({
     sql: `SELECT id, delta, adj_date, note, created_at
@@ -4221,6 +4284,7 @@ async function deleteBargain(id) {
   await c.execute({ sql: "DELETE FROM bargains WHERE id = ?", args: [id] });
   return { id };
 }
+var MOVED_OUT, MOVED_IN;
 var init_bargains = __esm({
   "src/main/bargains.ts"() {
     init_db();
@@ -4228,6 +4292,9 @@ var init_bargains = __esm({
     init_access_gate();
     init_access();
     init_history();
+    init_dbTransaction();
+    MOVED_OUT = [{ key: "moved", label: "Balance moved out", kind: "text" }];
+    MOVED_IN = [{ key: "moved", label: "Balance moved in", kind: "text" }];
   }
 });
 
@@ -16367,7 +16434,7 @@ function validateSalesBargainInput(v) {
     );
   }
 }
-async function createSalesBargain(v) {
+async function createSalesBargain(v, opts) {
   validateSalesBargainInput(v);
   const bargain_no = await nextSalesBargainNo(
     n17(v.product_id),
@@ -16378,7 +16445,7 @@ async function createSalesBargain(v) {
     sql: `INSERT INTO sales_bargains (company_id, bargain_no, manual_bargain_no, bargain_date, customer, customer_id, product_id, qty, uom, rate, rate_expiry_date, status, note, sale_type, sale_category, packaging_id, freight_term, gst_pct, gst_type, allowed_shortage_pct)
           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, ?, ?, ?, ?, ?, ?, ?)`,
     args: [
-      getActiveCompanyId(),
+      opts?.companyId || getActiveCompanyId(),
       bargain_no,
       v.manual_bargain_no ? String(v.manual_bargain_no).trim() : null,
       v.bargain_date,
@@ -16598,6 +16665,61 @@ async function adjustSalesBargainQty(id, delta, note, date) {
     args: [id, d, adjDate, note ? String(note).trim() : null]
   });
   return { id, qty: newQty };
+}
+async function moveSalesBargainBalance(id, v) {
+  return withDbTransaction(async () => {
+    const c = getClient();
+    const res = await c.execute({ sql: "SELECT * FROM sales_bargains WHERE id = ?", args: [Number(id)] });
+    if (!res.rows.length) throw new Error("Sales bargain not found");
+    const b = toPlain17(res)[0];
+    if (String(b.sale_type || "LOOSE") === "PACKED") {
+      throw new Error("A packed bargain is priced on its own SKU rate card, so its balance cannot move to another product \u2014 reduce it and strike a new bargain instead");
+    }
+    const toProd = n17(v.product_id);
+    if (!toProd) throw new Error("Pick the product to move the balance to");
+    if (toProd === n17(b.product_id)) throw new Error("That is this bargain's own product \u2014 pick another");
+    const qty = Math.round(n17(v.qty) * 1e3) / 1e3;
+    if (qty <= 0) throw new Error("Enter a quantity greater than zero");
+    const uom = String(b.uom || "MT");
+    const sold = Math.round(await salesBargainSold(Number(id)) * 1e3) / 1e3;
+    const open = Math.round(await salesBargainBalanceFor(Number(id), 0) * 1e3) / 1e3;
+    const movable = Math.max(0, Math.min(open, Math.round((n17(b.qty) - sold) * 1e3) / 1e3));
+    if (qty > movable + 1e-6) {
+      throw new Error(`Only ${movable} ${uom} can move off ${String(b.bargain_no)} \u2014 that is the most that can be moved`);
+    }
+    const date = v.date && String(v.date).slice(0, 10) || todayISO();
+    const prods = await c.execute({ sql: "SELECT id, name, material_type FROM products WHERE id IN (?, ?)", args: [n17(b.product_id), toProd] });
+    const prodOf = (pid) => toPlain17(prods).find((r) => n17(r.id) === pid);
+    const cat = String(prodOf(toProd)?.material_type || "OIL").trim().toUpperCase().replace(/\s+/g, "_").replace(/^MISCELLANEOUS$/, "MISC");
+    const note = String(v.note || "").trim();
+    const expiry = String(b.rate_expiry_date || "").slice(0, 10);
+    const made = await createSalesBargain(
+      {
+        customer: b.customer,
+        customer_id: b.customer_id,
+        product_id: toProd,
+        qty,
+        uom,
+        rate: n17(v.rate) > 0 ? n17(v.rate) : n17(b.rate),
+        bargain_date: date,
+        rate_expiry_date: expiry && expiry > date ? expiry : null,
+        note: `Moved from ${String(b.bargain_no)}${note ? ` \u2014 ${note}` : ""}`,
+        sale_type: "LOOSE",
+        sale_category: cat === "OIL" ? "FINISHED_OIL" : cat,
+        freight_term: b.freight_term,
+        gst_pct: b.gst_pct,
+        gst_type: b.gst_type,
+        allowed_shortage_pct: b.allowed_shortage_pct
+      },
+      { companyId: n17(b.company_id) || void 0 }
+    );
+    const toName = String(prodOf(toProd)?.name || "product");
+    await adjustSalesBargainQty(Number(id), -qty, `Moved ${qty} ${uom} to ${made.bargain_no} (${toName})${note ? ` \u2014 ${note}` : ""}`, date);
+    const spec = (label2) => [{ key: "moved", label: label2, kind: "text" }];
+    await recordChanges("sales_bargains", Number(id), String(b.bargain_no), { moved: "" }, { moved: `${qty} ${uom} to ${made.bargain_no} \xB7 ${toName}` }, spec("Balance moved out"));
+    await recordChanges("sales_bargains", made.id, made.bargain_no, { moved: "" }, { moved: `${qty} ${uom} from ${String(b.bargain_no)} \xB7 ${String(prodOf(n17(b.product_id))?.name || "product")}` }, spec("Balance moved in"));
+    return { id: made.id, bargain_no: made.bargain_no, moved: qty };
+  });
 }
 async function salesBargainBalanceFor(bargainId, excludeSaleId) {
   const c = getClient();
@@ -28553,6 +28675,10 @@ function registerIpc() {
     "bargains:adjust",
     (_e, { id, delta, note, date }) => adjustBargainQty(id, delta, note, date)
   );
+  handle(
+    "bargains:moveBalance",
+    (_e, { id, values }) => moveBargainBalance(id, values)
+  );
   handle("orders:bargainNotes", (_e, { id }) => purchaseBargainNotes(id));
   handle("orders:list", (_e, args) => listOrders(args?.forModule));
   handle("orders:intercompanySource", (_e, { id }) => intercompanySource(Number(id)));
@@ -29112,6 +29238,10 @@ function registerIpc() {
   handle(
     "salesBargains:adjust",
     (_e, { id, delta, note, date }) => adjustSalesBargainQty(id, delta, note, date)
+  );
+  handle(
+    "salesBargains:moveBalance",
+    (_e, { id, values }) => moveSalesBargainBalance(id, values)
   );
   handle("gate:list", () => listGateEntries());
   handle("gate:nextNo", (_e, args) => nextGateEntryNo(args?.direction));
