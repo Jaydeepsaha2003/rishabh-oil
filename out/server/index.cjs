@@ -15290,6 +15290,32 @@ function safeParse(raw) {
     return null;
   }
 }
+var dayNoReady = false;
+async function ensureDayNo() {
+  if (dayNoReady) return;
+  try {
+    await getClient().execute("ALTER TABLE production ADD COLUMN day_no INTEGER");
+  } catch (e) {
+    if (!/duplicate column/i.test(String(e.message))) throw e;
+  }
+  dayNoReady = true;
+}
+function dayNoOf(v) {
+  const x = Math.round(Number(v));
+  return Number.isFinite(x) && x >= 1 && x <= 9999 ? x : null;
+}
+async function nextDayNo(day) {
+  const fid = await factoryOfCompanies([getActiveCompanyId()]);
+  const cids = await companiesOfFactory();
+  const ph = cids.map(() => "?").join(", ");
+  const where = fid ? `(p.factory_id = ? OR (p.factory_id IS NULL AND p.company_id IN (${ph})))` : `p.company_id IN (${ph})`;
+  const r = await getClient().execute({
+    sql: `SELECT COALESCE(MAX(p.day_no), 0) AS mx, COUNT(*) AS n FROM production p
+           WHERE substr(p.prod_date, 1, 10) = ? AND ${where}`,
+    args: [String(day).slice(0, 10), ...fid ? [fid, ...cids] : cids]
+  });
+  return Math.max(n16(r.rows[0]?.mx), n16(r.rows[0]?.n)) + 1;
+}
 async function listProduction(forModule) {
   const from = await visibleFromFor("production", forModule);
   const fid = await factoryOfCompanies([getActiveCompanyId()]);
@@ -15549,14 +15575,15 @@ async function recordRecirculation(v, id = 0) {
              WHERE id = ?`,
       args: [v.prod_date, productId, qty, v.uom || "MT", v.note || null, n16(id)]
     });
+    if ("day_no" in v) await c.execute({ sql: "UPDATE production SET day_no = ? WHERE id = ?", args: [dayNoOf(v.day_no), n16(id)] });
     await reversePpDraws(n16(id));
     await c.execute({ sql: "DELETE FROM production_items WHERE production_id = ?", args: [n16(id)] });
     return { id: n16(id) };
   }
   const ins = await c.execute({
-    sql: `INSERT INTO production (company_id, factory_id, prod_date, product_id, qty, uom, note, kind)
-          VALUES (?, (SELECT factory_id FROM companies WHERE id = ?), ?, ?, ?, ?, ?, 'recirculation')`,
-    args: [getActiveCompanyId(), getActiveCompanyId(), v.prod_date, productId, qty, v.uom || "MT", v.note || null]
+    sql: `INSERT INTO production (company_id, factory_id, prod_date, product_id, qty, uom, note, kind, day_no)
+          VALUES (?, (SELECT factory_id FROM companies WHERE id = ?), ?, ?, ?, ?, ?, 'recirculation', ?)`,
+    args: [getActiveCompanyId(), getActiveCompanyId(), v.prod_date, productId, qty, v.uom || "MT", v.note || null, dayNoOf(v.day_no) ?? await nextDayNo(String(v.prod_date || todayISO()))]
   });
   return { id: Number(ins.lastInsertRowid) };
 }
@@ -15585,6 +15612,7 @@ function ppRunNote(typed, ownPp, uom) {
   return base ? `${base} \xB7 ${marker}` : marker;
 }
 async function createProduction(v) {
+  await ensureDayNo();
   if (String(v.kind || "batch") === "recirculation") return recordRecirculation(v);
   const c = getClient();
   const productId = n16(v.product_id);
@@ -15634,12 +15662,12 @@ async function createProduction(v) {
     }
   }
   const ins = await c.execute({
-    sql: `INSERT INTO production (company_id, factory_id, prod_date, product_id, qty, uom, note, formulation_id, formulation_version_id, custom_items_json)
-          VALUES (?, (SELECT factory_id FROM companies WHERE id = ?), ?, ?, ?, ?, ?, ?, ?, ?)`,
+    sql: `INSERT INTO production (company_id, factory_id, prod_date, product_id, qty, uom, note, formulation_id, formulation_version_id, custom_items_json, day_no)
+          VALUES (?, (SELECT factory_id FROM companies WHERE id = ?), ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     // The version is stamped now so a later edit to the recipe cannot reach
     // this batch. See recipeSnapshot. A one-off mix is kept whole for the same
     // reason — there is no master to go back to.
-    args: [getActiveCompanyId(), getActiveCompanyId(), v.prod_date, productId, qty, v.uom || "MT", ppRunNote(v.note, ownPp, String(v.uom || "MT")), fid || null, snap.versionId || null, mix ? JSON.stringify(mix) : null]
+    args: [getActiveCompanyId(), getActiveCompanyId(), v.prod_date, productId, qty, v.uom || "MT", ppRunNote(v.note, ownPp, String(v.uom || "MT")), fid || null, snap.versionId || null, mix ? JSON.stringify(mix) : null, dayNoOf(v.day_no) ?? await nextDayNo(prodDay || todayISO())]
   });
   const id = Number(ins.lastInsertRowid);
   if (draws.length) await drawPpForBatch(id, draws);
@@ -15654,6 +15682,7 @@ async function createProduction(v) {
   return { id };
 }
 async function updateProduction(id, v) {
+  await ensureDayNo();
   const c = getClient();
   const cur = await c.execute({
     sql: "SELECT id, formulation_id, formulation_version_id, COALESCE(kind, 'batch') AS kind FROM production WHERE id = ?",
@@ -15705,6 +15734,7 @@ async function updateProduction(id, v) {
            WHERE id = ?`,
     args: [v.prod_date, productId, qty, v.uom || "MT", ppRunNote(v.note, ownPp, String(v.uom || "MT")), fid || null, snap.versionId || null, mix ? JSON.stringify(mix) : null, n16(id)]
   });
+  if ("day_no" in v) await c.execute({ sql: "UPDATE production SET day_no = ? WHERE id = ?", args: [dayNoOf(v.day_no), n16(id)] });
   if (draws.length) await drawPpForBatch(n16(id), draws);
   if (ownPp.without > 5e-4) await drawPp(n16(id), productId, "without", ownPp.without);
   if (ownPp.with > 5e-4) await drawPp(n16(id), productId, "with", ownPp.with);
