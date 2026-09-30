@@ -11924,7 +11924,14 @@ var BD_COLS = [
   "invoice_amount",
   // + or − on the invoice value (see bdCalc). Added lazily; 0 on every bill
   // recorded before it existed, which is why none of their figures move.
+  // No longer entered — the adjustment moved to the open amount (open_adj) —
+  // but still honoured on the few bills that carry one.
   "invoice_adj",
+  // + or − on the OPEN amount: what the form's Open ₹ came to, adjusted. The
+  // `amount` stored IS the adjusted figure — the drawn amount everything is
+  // priced on — so no reader of `amount` has to know about this; it is kept
+  // so the form can show the open figure and the adjustment separately.
+  "open_adj",
   "payment_received_date",
   "maturity_date",
   "margin_pct",
@@ -11949,10 +11956,15 @@ var BD_COLS = [
 var invoiceAdjReady = false;
 async function ensureInvoiceAdj() {
   if (invoiceAdjReady) return;
-  try {
-    await getClient().execute("ALTER TABLE bill_discountings ADD COLUMN invoice_adj REAL NOT NULL DEFAULT 0");
-  } catch (e) {
-    if (!/duplicate column/i.test(String(e.message))) throw e;
+  for (const sql of [
+    "ALTER TABLE bill_discountings ADD COLUMN invoice_adj REAL NOT NULL DEFAULT 0",
+    "ALTER TABLE bill_discountings ADD COLUMN open_adj REAL NOT NULL DEFAULT 0"
+  ]) {
+    try {
+      await getClient().execute(sql);
+    } catch (e) {
+      if (!/duplicate column/i.test(String(e.message))) throw e;
+    }
   }
   invoiceAdjReady = true;
 }
@@ -11967,7 +11979,7 @@ function bdArgs(v) {
     if (k === "days_incl_start") return v[k] ? 1 : 0;
     if (k === "days_year") return n14(v[k]) || 360;
     if (["amount", "margin_pct", "interest_pct", "tds_pct"].includes(k)) return n14(v[k]);
-    if (k === "invoice_adj") return round26(n14(v[k]));
+    if (k === "invoice_adj" || k === "open_adj") return round26(n14(v[k]));
     if (k === "invoice_amount") {
       const val2 = v[k];
       return val2 === "" || val2 === void 0 || val2 === null ? null : n14(val2);
@@ -12214,8 +12226,9 @@ async function updateBd(id, v) {
   return withDbTransaction(async () => {
     const cur = await loadBd(id);
     if (!("invoice_adj" in v)) v = { ...v, invoice_adj: cur.invoice_adj ?? 0 };
+    if (!("open_adj" in v)) v = { ...v, open_adj: cur.open_adj ?? 0 };
     if (n14(cur.upfront_interest_journal_entry_id)) {
-      for (const key3 of ["amount", "invoice_amount", "invoice_adj", "margin_pct", "interest_pct", "tds_pct", "days_year", "days_incl_start", "interest_upfront", "interest_mode", "payment_received_date", "maturity_date", "nbfc_id"]) {
+      for (const key3 of ["amount", "invoice_amount", "invoice_adj", "open_adj", "margin_pct", "interest_pct", "tds_pct", "days_year", "days_incl_start", "interest_upfront", "interest_mode", "payment_received_date", "maturity_date", "nbfc_id"]) {
         if (String(v[key3] ?? "") !== String(cur[key3] ?? "") && Number(v[key3]) !== Number(cur[key3])) throw new Error("Reverse the recorded upfront interest payment before changing its terms");
       }
     }
