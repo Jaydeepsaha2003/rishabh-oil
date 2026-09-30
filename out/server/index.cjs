@@ -2244,6 +2244,30 @@ var init_requestContext = __esm({
   }
 });
 
+// src/main/currentUser.ts
+function setCurrentUser(id, username) {
+  const ctx = currentRequestContext();
+  if (ctx) {
+    ctx.userId = id ?? null;
+    ctx.username = username || "system";
+    return { ok: true };
+  }
+  current = { id: id ?? null, username: username || "system" };
+  return { ok: true };
+}
+function getCurrentUser() {
+  const ctx = currentRequestContext();
+  if (ctx) return { id: ctx.userId, username: ctx.username };
+  return current;
+}
+var current;
+var init_currentUser = __esm({
+  "src/main/currentUser.ts"() {
+    init_requestContext();
+    current = { id: null, username: "system" };
+  }
+});
+
 // src/main/company.ts
 function toPlain(res) {
   return res.rows.map((r) => {
@@ -2251,6 +2275,16 @@ function toPlain(res) {
     for (const col of res.columns) o[col] = r[col];
     return o;
   });
+}
+async function allCompanyIds() {
+  const r = await getClient().execute("SELECT id FROM companies ORDER BY id");
+  const ids = r.rows.map((x) => Number(x.id)).filter((x) => x > 0);
+  return ids.length ? ids : [getActiveCompanyId()];
+}
+function withCompany(companyId, fn) {
+  const ctx = currentRequestContext();
+  const u = getCurrentUser();
+  return runInRequestContext({ userId: ctx?.userId ?? u.id, username: ctx?.username ?? u.username, companyId, ip: ctx?.ip }, fn);
 }
 function getActiveCompanyId() {
   const ctx = currentRequestContext();
@@ -2352,6 +2386,7 @@ var init_company = __esm({
   "src/main/company.ts"() {
     init_db();
     init_requestContext();
+    init_currentUser();
     activeCompanyId = 1;
   }
 });
@@ -2389,30 +2424,6 @@ var DEFAULT_GST_TYPE;
 var init_gstLedgers = __esm({
   "src/main/gstLedgers.ts"() {
     DEFAULT_GST_TYPE = "CGST_SGST";
-  }
-});
-
-// src/main/currentUser.ts
-function setCurrentUser(id, username) {
-  const ctx = currentRequestContext();
-  if (ctx) {
-    ctx.userId = id ?? null;
-    ctx.username = username || "system";
-    return { ok: true };
-  }
-  current = { id: id ?? null, username: username || "system" };
-  return { ok: true };
-}
-function getCurrentUser() {
-  const ctx = currentRequestContext();
-  if (ctx) return { id: ctx.userId, username: ctx.username };
-  return current;
-}
-var current;
-var init_currentUser = __esm({
-  "src/main/currentUser.ts"() {
-    init_requestContext();
-    current = { id: null, username: "system" };
   }
 });
 
@@ -9215,7 +9226,19 @@ async function deleteLcRepayment(id) {
     return { id };
   });
 }
-async function treasuryAlerts() {
+async function treasuryAlerts(opts = {}) {
+  if (!opts.all) return treasuryAlertsOne();
+  const parts = [];
+  for (const id of await allCompanyIds()) parts.push(await withCompany(id, treasuryAlertsOne));
+  const byDays = (a, b) => (Number(a.days_left) || 0) - (Number(b.days_left) || 0);
+  return {
+    lcExpiring: parts.flatMap((p) => p.lcExpiring || []).sort(byDays),
+    lcBillsDue: parts.flatMap((p) => p.lcBillsDue || []).sort(byDays),
+    billsDue: parts.flatMap((p) => p.billsDue || []).sort(byDays),
+    overdue: parts.reduce((s4, p) => s4 + (Number(p.overdue) || 0), 0)
+  };
+}
+async function treasuryAlertsOne() {
   const c = getClient();
   const cid = getActiveCompanyId();
   const today = todayISO2();
@@ -26627,10 +26650,16 @@ function openOf(rows2, partOf) {
     parts: [...parts.values()].map((p) => ({ ...p, qty: r35(p.qty) })).sort((a, b) => b.qty - a.qty || b.cnt - a.cnt)
   };
 }
-async function dashboardStats() {
+async function dashboardStats(opts = {}) {
   const c = getClient();
   const cid = getActiveCompanyId();
-  const q = async (sql, args = []) => toPlain29(await c.execute({ sql, args: [cid, ...args] }));
+  const all = !!opts.all;
+  const ids = all ? await allCompanyIds() : [cid];
+  const q = async (sql, args = []) => {
+    if (!all) return toPlain29(await c.execute({ sql, args: [cid, ...args] }));
+    const list2 = ids.join(",");
+    return toPlain29(await c.execute({ sql: sql.replace(/(\b[a-z]+\.)?company_id = \?/g, (_m, a) => `${a || ""}company_id IN (${list2})`), args: [] }));
+  };
   const [
     purchaseMonths,
     saleMonths,
@@ -26713,18 +26742,25 @@ async function dashboardStats() {
     q(`SELECT pt.status, COUNT(*) AS cnt FROM purchase_tankers pt
        WHERE pt.company_id = ? AND pt.status NOT IN ('received', 'empty') GROUP BY pt.status`).catch(() => []),
     q(`SELECT COALESCE(SUM(qty), 0) AS bal FROM consignment_stock WHERE company_id = ?`).catch(() => []),
-    stockLevels()
+    // Stock is kept company by company; for all of them, each company's levels.
+    Promise.all(ids.map((id) => (all ? withCompany(id, () => stockLevels()) : stockLevels()).then((rows2) => ({ id, rows: rows2 }))))
   ]);
+  const coNames = /* @__PURE__ */ new Map();
+  if (all) {
+    for (const r of toPlain29(await c.execute("SELECT id, name FROM companies"))) coNames.set(n32(r.id), String(r.name || ""));
+  }
   const stockCats = {};
   const negatives = [];
-  for (const r of levels) {
-    const cat = String(r.category || "other");
-    if (!stockCats[cat]) stockCats[cat] = { qty: 0, products: 0 };
-    if (Math.abs(n32(r.stock)) > 1e-9) {
-      stockCats[cat].qty += n32(r.stock);
-      stockCats[cat].products++;
+  for (const { id, rows: rows2 } of levels) {
+    for (const r of rows2) {
+      const cat = String(r.category || "other");
+      if (!stockCats[cat]) stockCats[cat] = { qty: 0, products: 0 };
+      if (Math.abs(n32(r.stock)) > 1e-9) {
+        stockCats[cat].qty += n32(r.stock);
+        stockCats[cat].products++;
+      }
+      if (n32(r.stock) < -1e-9) negatives.push({ name: all ? `${r.name} \xB7 ${coNames.get(id) || id}` : r.name, category: r.category, stock: n32(r.stock) });
     }
-    if (n32(r.stock) < -1e-9) negatives.push({ name: r.name, category: r.category, stock: n32(r.stock) });
   }
   return {
     purchaseMonths: purchaseMonths.reverse(),
@@ -27756,7 +27792,39 @@ async function tradingDue(kind, id) {
     return 0;
   }
 }
-async function dailyPosition() {
+async function dailyPosition(opts = {}) {
+  if (!opts.all) return positionOne();
+  const parts = [];
+  for (const id of await allCompanyIds()) parts.push(await withCompany(id, positionOne));
+  const r35 = (x) => Math.round(x * 1e3) / 1e3;
+  const seen = /* @__PURE__ */ new Set();
+  const movement = [];
+  for (const p of parts) {
+    for (const m of p.movement || []) {
+      const k = String(m.id);
+      if (seen.has(k)) continue;
+      seen.add(k);
+      movement.push(m);
+    }
+  }
+  const byDue = (a, b) => String(a.due_date || "9999").localeCompare(String(b.due_date || "9999"));
+  return {
+    asOf: parts[0]?.asOf,
+    yesterday: parts[0]?.yesterday,
+    dispatch: {
+      mt: r35(parts.reduce((t, p) => t + n35(p.dispatch?.mt), 0)),
+      count: parts.reduce((t, p) => t + n35(p.dispatch?.count), 0)
+    },
+    receipts: {
+      mt: r35(parts.reduce((t, p) => t + n35(p.receipts?.mt), 0)),
+      count: parts.reduce((t, p) => t + n35(p.receipts?.count), 0)
+    },
+    payIn: parts.flatMap((p) => p.payIn || []).sort(byDue),
+    trading: parts.flatMap((p) => p.trading || []).sort(byDue),
+    movement
+  };
+}
+async function positionOne() {
   const today = todayISO();
   const yesterday = shiftDay(today, -1);
   const cid = getActiveCompanyId();
@@ -30285,8 +30353,8 @@ function registerIpc() {
     "journal:tradingAccount",
     (_e, { from, to, companyId }) => tradingAccount(from, to, companyId)
   );
-  handle("dashboard:stats", () => dashboardStats());
-  handle("dashboard:position", () => dailyPosition());
+  handle("dashboard:stats", (_e, a) => dashboardStats({ all: !!a?.all }));
+  handle("dashboard:position", (_e, a) => dailyPosition({ all: !!a?.all }));
   handle("dashboard:layout", () => getDashLayout());
   handle("dashboard:saveLayout", (_e, { hidden }) => saveDashLayout(hidden));
   handle("productMerge:preview", (_e, { fromId, toId }) => previewProductMerge(fromId, toId));
@@ -30742,7 +30810,7 @@ function registerIpc() {
   handle("gate:reject", (_e, { id, reason }) => rejectGateEntry(id, reason));
   handle("gate:unreject", (_e, { id }) => unrejectGateEntry(id));
   handle("lc:list", () => listLCs());
-  handle("treasury:alerts", () => treasuryAlerts());
+  handle("treasury:alerts", (_e, a) => treasuryAlerts({ all: !!a?.all }));
   handle("treasury:paymentTracker", () => listPaymentTracker());
   handle("treasury:settleLcBill", (_e, { id, date }) => settleLcBill(id, date));
   handle("treasury:reopenLcBill", (_e, { id }) => reopenLcBill(id));
