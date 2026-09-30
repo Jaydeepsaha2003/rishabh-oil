@@ -2549,6 +2549,45 @@ var init_ledgerMap = __esm({
   }
 });
 
+// src/renderer/src/lib/accessSections.ts
+var ACCOUNTS_SECTIONS, VOUCHER_SECTION, SECTION_PARENT;
+var init_accessSections = __esm({
+  "src/renderer/src/lib/accessSections.ts"() {
+    ACCOUNTS_SECTIONS = [
+      { key: "accountsPayment", label: "Accounting \xB7 Payment voucher" },
+      { key: "accountsReceipt", label: "Accounting \xB7 Receipt voucher" },
+      { key: "accountsContra", label: "Accounting \xB7 Contra voucher" },
+      { key: "accountsJournal", label: "Accounting \xB7 Journal voucher" },
+      { key: "accountsDebitNote", label: "Accounting \xB7 Debit Note" },
+      { key: "accountsCreditNote", label: "Accounting \xB7 Credit Note" },
+      { key: "accountsDaybook", label: "Accounting \xB7 Day Book" },
+      { key: "accountsLedgers", label: "Accounting \xB7 Ledgers" },
+      { key: "accountsTrial", label: "Accounting \xB7 Trial Balance" },
+      { key: "accountsPurchReg", label: "Accounting \xB7 Purchase Register" },
+      { key: "accountsSalesReg", label: "Accounting \xB7 Sales Register" },
+      { key: "accountsNotesReg", label: "Accounting \xB7 Dr / Cr Notes register" },
+      { key: "accountsFrInward", label: "Accounting \xB7 Fr. Inward Working" },
+      { key: "accountsFrOutward", label: "Accounting \xB7 Fr. Outward Working" },
+      { key: "accountsOpenings", label: "Accounting \xB7 Opening Balances" },
+      { key: "accountsMasters", label: "Accounting \xB7 Masters (ledgers & groups)" }
+    ];
+    VOUCHER_SECTION = {
+      CONTRA: "accountsContra",
+      PAYMENT: "accountsPayment",
+      RECEIPT: "accountsReceipt",
+      JOURNAL: "accountsJournal",
+      "DEBIT NOTE": "accountsDebitNote",
+      "CREDIT NOTE": "accountsCreditNote"
+    };
+    SECTION_PARENT = {
+      treasuryLc: "treasury",
+      treasuryBd: "treasury",
+      treasuryTracker: "treasury",
+      ...Object.fromEntries(ACCOUNTS_SECTIONS.map((s4) => [s4.key, "accounts"]))
+    };
+  }
+});
+
 // src/main/access-rules.ts
 function modulePerm(user, moduleKey) {
   if (!user) return {};
@@ -2560,10 +2599,12 @@ function modulePerm(user, moduleKey) {
   }
   const p = user.permissions;
   if (Array.isArray(p)) {
-    return p.includes(moduleKey) ? { view: true, create: true, edit: true, delete: true, editDays: null } : {};
+    const parent = SECTION_PARENT[moduleKey];
+    return p.includes(moduleKey) || !!parent && p.includes(parent) ? { view: true, create: true, edit: true, delete: true, editDays: null } : {};
   }
   if (p && typeof p === "object") {
     const entry = p[moduleKey];
+    if (entry === false) return {};
     if (entry === "write") return { view: true, create: true, edit: true, delete: true, editDays: null };
     if (entry === "read") return { view: true };
     if (entry && typeof entry === "object") {
@@ -2663,16 +2704,12 @@ function can(user, moduleKey, action, opts = { today: "" }) {
     reason: `This entry is dated ${days} days ago and can only be ${action === "edit" ? "edited" : "deleted"} within ${window}`
   };
 }
-var OK, ALWAYS_OPEN, SECTION_PARENT;
+var OK, ALWAYS_OPEN;
 var init_access_rules = __esm({
   "src/main/access-rules.ts"() {
+    init_accessSections();
     OK = { allowed: true };
     ALWAYS_OPEN = /* @__PURE__ */ new Set(["approvals"]);
-    SECTION_PARENT = {
-      treasuryLc: "treasury",
-      treasuryBd: "treasury",
-      treasuryTracker: "treasury"
-    };
   }
 });
 
@@ -2842,11 +2879,52 @@ async function assertAdmin(what = "This") {
   const user = await currentAccessUser();
   if (!user || user.role !== "admin") throw new Error(`${what} is for an administrator only`);
 }
+async function accountsRule(ns, op, args) {
+  const a = args || {};
+  const c = getClient();
+  const one = async (sql, id) => {
+    const n41 = Number(id) || 0;
+    if (!n41) return null;
+    const r = await c.execute({ sql, args: [n41] }).catch(() => null);
+    return r?.rows[0] || null;
+  };
+  const section = (key3, extra = {}) => ({ module: key3, label: SECTION_LABEL[key3] || "Accounting", ...extra });
+  if (ns === "vouchers" && (op === "create" || op === "update" || op === "delete")) {
+    const stored = op === "create" ? null : await one("SELECT vch_type FROM journal_entries WHERE id = ?", a.id);
+    const type = String((op === "create" ? a.values?.vchType : stored?.vch_type ?? a.values?.vchType) || "").toUpperCase();
+    const key3 = VOUCHER_SECTION[type];
+    return key3 ? section(key3, { table: "journal_entries", dateCol: "entry_date", createDateKey: "date" }) : { module: "accounts", label: "Accounting", table: "journal_entries", dateCol: "entry_date", createDateKey: "date" };
+  }
+  if (ns === "notes" && (op === "create" || op === "update" || op === "delete")) {
+    const stored = op === "create" ? null : await one("SELECT note_type FROM notes WHERE id = ?", a.id);
+    const kind = String((op === "delete" ? stored?.note_type : a.values?.note_type ?? stored?.note_type) || "").toLowerCase();
+    return section(kind === "credit" ? "accountsCreditNote" : "accountsDebitNote", { table: "notes", dateCol: "note_date" });
+  }
+  if (ns === "journal") {
+    if (JOURNAL_MASTERS_OPS.has(op)) {
+      const action = op === "createAccount" || op === "createGroup" ? "create" : op === "deleteGroup" ? "delete" : "edit";
+      return section("accountsMasters", { action });
+    }
+    if (JOURNAL_OPENINGS_OPS.has(op)) return section("accountsOpenings");
+    return null;
+  }
+  if (ns === "tbill" && (op === "create" || op === "update" || op === "delete")) {
+    const stored = op === "create" ? null : await one("SELECT side FROM transporter_bills WHERE id = ?", a.id);
+    const side = String((op === "delete" ? stored?.side : a.values?.side ?? stored?.side) || "").toLowerCase();
+    return section(side === "sale" ? "accountsFrOutward" : "accountsFrInward", { table: "transporter_bills", dateCol: "bill_date" });
+  }
+  if (ns === "tfreight" && ["raiseNote", "unraiseNote", "waive", "unwaive"].includes(op)) {
+    const line = await one("SELECT sale_id FROM transporter_ledger WHERE id = ?", a.lineId);
+    return section(line && Number(line.sale_id) ? "accountsFrOutward" : "accountsFrInward");
+  }
+  return null;
+}
 async function assertAllowed(channel, args) {
   const [ns, op] = String(channel).split(":");
-  const rule = CHANNEL_RULES[ns];
-  if (!rule || !op) return;
+  if (!op) return;
   if (READ_OPS.has(op)) return;
+  const rule = CHANNEL_RULES[ns] ?? await accountsRule(ns, op, args);
+  if (!rule) return;
   if (ns === "stockOpening" || ns === "skuOpening") return;
   await assertOnOrAfterBooksStart(rule, op, args);
   const user = await currentAccessUser();
@@ -2868,7 +2946,7 @@ async function assertAllowed(channel, args) {
     assertScopedBargainTopUp(op, args);
     return;
   }
-  let action = actionFor(op);
+  let action = rule.action ?? actionFor(op);
   if (ns === "gate" && action === "edit" && GATE_FINISH_OPS.has(op) && await gateEntryUnfinished(Number(args?.id) || 0)) {
     action = "create";
   }
@@ -2876,7 +2954,8 @@ async function assertAllowed(channel, args) {
   const id = Number(args?.id) || 0;
   if (action === "create" && rule.dateCol) {
     const a = args;
-    entryDate = a?.values?.[rule.dateCol] ?? a?.[rule.dateCol];
+    const key3 = rule.createDateKey || rule.dateCol;
+    entryDate = a?.values?.[key3] ?? a?.[key3];
   }
   if ((action === "edit" || action === "delete") && rule.table && rule.dateCol && id) {
     try {
@@ -2904,13 +2983,14 @@ async function assertAllowed(channel, args) {
     if (!made.allowed) throw new Error(made.reason || "You are not allowed to do that");
   }
 }
-var CHANNEL_RULES, READ_OPS, GATE_FINISH_OPS, cache, INTERCO_SALE_OPS, INTERCO_SALES_REFUSAL;
+var CHANNEL_RULES, READ_OPS, GATE_FINISH_OPS, cache, INTERCO_SALE_OPS, INTERCO_SALES_REFUSAL, JOURNAL_MASTERS_OPS, JOURNAL_OPENINGS_OPS, SECTION_LABEL;
 var init_access_gate = __esm({
   "src/main/access-gate.ts"() {
     init_db();
     init_openings();
     init_currentUser();
     init_access_rules();
+    init_accessSections();
     CHANNEL_RULES = {
       // module keys MUST match MODULES in src/renderer/src/lib/modules.ts — a key
       // that is not grantable there would read as "no access" and refuse every
@@ -2945,12 +3025,9 @@ var init_access_gate = __esm({
       // `payments` used to name a module key that is not grantable anywhere, which
       // read as "no access" and refused every payment a non-admin tried to make.
       payments: { module: "treasuryTracker", label: "Payment Tracker", table: "payments", dateCol: "payment_date" },
-      // Transporter bills are raised and removed on the Accounting page (its
-      // Transporter freight tab) and nowhere else, so they answer to the
-      // Accounting grant. They were filed under Payment Tracker, which refused an
-      // accountant who held Accounting but not that — "You do not have access to
-      // Payment Tracker" on a page they were plainly allowed on.
-      tbill: { module: "accounts", label: "Accounting (transporter bills)" },
+      // Transporter bills (tbill) and debit/credit notes (notes) are Accounting
+      // sections now, resolved per call in accountsRule below — a freight bill by
+      // its side, a note by its type.
       lc: { module: "treasuryLc", label: "Letters of Credit" },
       bd: { module: "treasuryBd", label: "Bill Discounting" },
       billDiscounts: { module: "treasuryBd", label: "Bill discounts" },
@@ -2958,11 +3035,6 @@ var init_access_gate = __esm({
       // The day's plan, set from the Dashboard. It is the plant's own schedule, so
       // it answers to the Production grant — saving a day's plan counts as an edit.
       productionPlan: { module: "production", label: "Production plan" },
-      // Debit and credit notes are posted from the Accounting page — the separate
-      // Debit/Credit menus are gone. They were gated on a 'debitNotes' key that
-      // the User Access grid no longer offers, so no non-admin could ever be given
-      // it and every note an accountant tried to post was refused.
-      notes: { module: "accounts", label: "Accounting (debit/credit notes)", table: "notes", dateCol: "note_date" },
       trading: { module: "trading", label: "Trading", table: "trading_deals", dateCol: "deal_date" },
       stockCount: { module: "stock", label: "Stock" },
       skuStock: { module: "stock", label: "Stock" },
@@ -3035,6 +3107,9 @@ var init_access_gate = __esm({
       "deleteInvoice"
     ]);
     INTERCO_SALES_REFUSAL = "Your access to Sales covers inter-company transfer invoices only \u2014 an invoice to an outside customer cannot be raised or changed here.";
+    JOURNAL_MASTERS_OPS = /* @__PURE__ */ new Set(["createAccount", "renameLedger", "createGroup", "renameGroup", "moveGroup", "deleteGroup", "setAccountGroup"]);
+    JOURNAL_OPENINGS_OPS = /* @__PURE__ */ new Set(["saveOpenings", "setBooksFrom"]);
+    SECTION_LABEL = Object.fromEntries(ACCOUNTS_SECTIONS.map((s4) => [s4.key, s4.label]));
   }
 });
 
@@ -7011,6 +7086,21 @@ async function listTankerQuality(tankerId) {
   });
   return toPlain9(res);
 }
+async function listTankerQualityMany(ids) {
+  const list2 = [...new Set((Array.isArray(ids) ? ids : []).map((x) => n6(x)).filter((x) => x > 0))];
+  const out = [];
+  for (let i = 0; i < list2.length; i += 400) {
+    const chunk = list2.slice(i, i + 400);
+    const res = await getClient().execute({
+      sql: `SELECT tanker_id, name, value, sort_order, unit, part_no, part_qty FROM tanker_quality
+             WHERE tanker_id IN (${chunk.map(() => "?").join(", ")})
+             ORDER BY tanker_id, part_no, sort_order, id`,
+      args: chunk
+    });
+    out.push(...toPlain9(res));
+  }
+  return out;
+}
 async function listFfaHistory(productId = 0, limit = 60) {
   const pid = n6(productId);
   const lim = Math.min(300, Math.max(1, n6(limit) || 60));
@@ -9746,6 +9836,7 @@ var init_repos = __esm({
         "colour",
         "active",
         "factory_id",
+        "priority",
         "gstin",
         "state",
         "gst_pct",
@@ -11552,7 +11643,7 @@ function daysBetween2(a, b) {
 }
 function bdCalc(bd) {
   const amount2 = n14(bd.amount);
-  const invoice = n14(bd.invoice_amount);
+  const invoice = n14(bd.invoice_amount) > 0 ? Math.max(0, round26(n14(bd.invoice_amount) + n14(bd.invoice_adj))) : 0;
   const from = String(bd.payment_received_date || "").slice(0, 10);
   const to = String(bd.maturity_date || "").slice(0, 10);
   const inclStart = bd.days_incl_start ? 1 : 0;
@@ -11831,6 +11922,9 @@ var BD_COLS = [
   "receivable_party_id",
   "amount",
   "invoice_amount",
+  // + or − on the invoice value (see bdCalc). Added lazily; 0 on every bill
+  // recorded before it existed, which is why none of their figures move.
+  "invoice_adj",
   "payment_received_date",
   "maturity_date",
   "margin_pct",
@@ -11852,6 +11946,16 @@ var BD_COLS = [
   "payment_in_days",
   "note"
 ];
+var invoiceAdjReady = false;
+async function ensureInvoiceAdj() {
+  if (invoiceAdjReady) return;
+  try {
+    await getClient().execute("ALTER TABLE bill_discountings ADD COLUMN invoice_adj REAL NOT NULL DEFAULT 0");
+  } catch (e) {
+    if (!/duplicate column/i.test(String(e.message))) throw e;
+  }
+  invoiceAdjReady = true;
+}
 function bdArgs(v) {
   const mode = ["discounted", "upfront", "serviced"].includes(String(v.interest_mode || "")) ? String(v.interest_mode) : v.interest_upfront ? "upfront" : "discounted";
   return BD_COLS.map((k) => {
@@ -11863,6 +11967,7 @@ function bdArgs(v) {
     if (k === "days_incl_start") return v[k] ? 1 : 0;
     if (k === "days_year") return n14(v[k]) || 360;
     if (["amount", "margin_pct", "interest_pct", "tds_pct"].includes(k)) return n14(v[k]);
+    if (k === "invoice_adj") return round26(n14(v[k]));
     if (k === "invoice_amount") {
       const val2 = v[k];
       return val2 === "" || val2 === void 0 || val2 === null ? null : n14(val2);
@@ -12087,6 +12192,7 @@ async function listBd(filter) {
   });
 }
 async function createBd(v) {
+  await ensureInvoiceAdj();
   return withDbTransaction(async () => {
     await validateBd(v);
     v = withPrimaryParty(v);
@@ -12104,10 +12210,12 @@ async function createBd(v) {
   });
 }
 async function updateBd(id, v) {
+  await ensureInvoiceAdj();
   return withDbTransaction(async () => {
     const cur = await loadBd(id);
+    if (!("invoice_adj" in v)) v = { ...v, invoice_adj: cur.invoice_adj ?? 0 };
     if (n14(cur.upfront_interest_journal_entry_id)) {
-      for (const key3 of ["amount", "invoice_amount", "margin_pct", "interest_pct", "tds_pct", "days_year", "days_incl_start", "interest_upfront", "interest_mode", "payment_received_date", "maturity_date", "nbfc_id"]) {
+      for (const key3 of ["amount", "invoice_amount", "invoice_adj", "margin_pct", "interest_pct", "tds_pct", "days_year", "days_incl_start", "interest_upfront", "interest_mode", "payment_received_date", "maturity_date", "nbfc_id"]) {
         if (String(v[key3] ?? "") !== String(cur[key3] ?? "") && Number(v[key3]) !== Number(cur[key3])) throw new Error("Reverse the recorded upfront interest payment before changing its terms");
       }
     }
@@ -19664,7 +19772,10 @@ async function runStartupTasks() {
     const c = getClient();
     for (const sql of [
       "ALTER TABLE companies ADD COLUMN company_type TEXT NOT NULL DEFAULT 'manufacturing'",
-      "ALTER TABLE companies ADD COLUMN colour TEXT"
+      "ALTER TABLE companies ADD COLUMN colour TEXT",
+      // The order companies are offered in (Accounting's Select Company). Nullable
+      // and never backfilled: a company with none sorts after the numbered ones.
+      "ALTER TABLE companies ADD COLUMN priority INTEGER"
     ]) {
       await c.execute(sql).catch((e) => {
         if (!/duplicate column/i.test(String(e.message))) throw e;
@@ -23172,6 +23283,7 @@ init_db();
 init_company();
 
 // src/renderer/src/lib/userRights.ts
+init_accessSections();
 function parsePerms(value) {
   if (!value) return {};
   if (Array.isArray(value)) {
@@ -24169,6 +24281,8 @@ async function stockCountSheet(date) {
       code: l.code,
       name: l.name,
       category: l.category,
+      // What the product is counted in, for the rate label (₹/MT, ₹/PCS…).
+      uom: l.uom || "MT",
       book_qty: l.stock,
       rate,
       book_value: (Number(l.stock) || 0) * rate,
@@ -25209,10 +25323,16 @@ async function listVouchers(from, to, vchType, companyId) {
                  -- of them, which reads as a different entry from the one that
                  -- was posted. The single-name fields stay for the callers
                  -- that want the principal.
-                 (SELECT GROUP_CONCAT(a.name, ', ') FROM journal_lines jl JOIN ledger_accounts a ON a.id = jl.account_id
-                  WHERE jl.entry_id = je.id AND jl.dr > 0) AS dr_accounts,
-                 (SELECT GROUP_CONCAT(a.name, ', ') FROM journal_lines jl JOIN ledger_accounts a ON a.id = jl.account_id
-                  WHERE jl.entry_id = je.id AND jl.cr > 0) AS cr_accounts
+                 -- Biggest first on each side, the order a voucher's own lines
+                 -- are shown in: the party or the goods leads, the taxes and
+                 -- round off follow. Ordered in a subquery because a bare
+                 -- GROUP_CONCAT takes the rows in whatever order they are read.
+                 (SELECT GROUP_CONCAT(nm, ', ') FROM (
+                    SELECT a.name AS nm FROM journal_lines jl JOIN ledger_accounts a ON a.id = jl.account_id
+                     WHERE jl.entry_id = je.id AND jl.dr > 0 ORDER BY jl.dr DESC, jl.id)) AS dr_accounts,
+                 (SELECT GROUP_CONCAT(nm, ', ') FROM (
+                    SELECT a.name AS nm FROM journal_lines jl JOIN ledger_accounts a ON a.id = jl.account_id
+                     WHERE jl.entry_id = je.id AND jl.cr > 0 ORDER BY jl.cr DESC, jl.id)) AS cr_accounts
           FROM journal_entries je
           WHERE ${conds.join(" AND ")}
           ORDER BY je.entry_date DESC, je.id DESC`,
@@ -25313,6 +25433,15 @@ async function listPendingRefs(accountName, companyId, side) {
     });
     for (const b of toPlain26(r)) {
       bills.push({ ref: String(b.ref), bill_date: String(b.bill_date || ""), amount: n29(b.amount), order_id: n29(b.order_id), sale_invoice_group: null });
+    }
+    const tb = await c.execute({
+      sql: `SELECT tb.bill_no AS ref, tb.bill_date, tb.total AS amount
+              FROM transporter_bills tb JOIN transporters t ON t.id = tb.transporter_id
+              WHERE tb.company_id = ? AND TRIM(UPPER(t.name)) = ? AND tb.bill_no IS NOT NULL AND TRIM(tb.bill_no) != ''`,
+      args: [cid, name]
+    }).catch(() => null);
+    for (const b of tb ? toPlain26(tb) : []) {
+      bills.push({ ref: String(b.ref).trim(), bill_date: String(b.bill_date || ""), amount: n29(b.amount), order_id: null, sale_invoice_group: null });
     }
   } else if (group === "Sundry Debtors") {
     const r = await c.execute({
@@ -25646,7 +25775,15 @@ async function createNote(v, existingId) {
   const rawTotal = round212(base + gst);
   const total = Math.round(rawTotal);
   const roundOff = round212(total - rawTotal);
-  const againstRef = v.against_invoice ? String(v.against_invoice).trim() : null;
+  const METHODS = ["agst_ref", "advance", "on_account", "new_ref"];
+  const splitIn = (Array.isArray(v.allocs) ? v.allocs : []).filter((a) => Number(a?.amount) > 0);
+  for (const a of splitIn) {
+    if (!METHODS.includes(String(a.method))) throw new Error(`Unknown bill-wise method "${String(a.method)}"`);
+    if (String(a.method) !== "on_account" && !String(a.ref_name || "").trim()) {
+      throw new Error("Every bill-wise line except On Account needs a reference");
+    }
+  }
+  const againstRef = v.against_invoice ? String(v.against_invoice).trim() : String(splitIn.find((a) => String(a.method) === "agst_ref")?.ref_name || "").trim() || null;
   const wantsBargain = type === "credit" && partyType === "customer";
   const bargainId = wantsBargain && v.bargain_id ? n30(v.bargain_id) : 0;
   const partyRes = await c.execute({
@@ -25716,7 +25853,33 @@ async function createNote(v, existingId) {
           WHERE jl.entry_id = ? AND UPPER(TRIM(a.name)) IN (?, ?) LIMIT 1`,
     args: [je.id, partyAccount, partyName2.toUpperCase()]
   });
-  if (partyLine.rows.length) {
+  if (partyLine.rows.length && splitIn.length) {
+    const sum = Math.round(splitIn.reduce((s4, a) => s4 + Number(a.amount), 0) * 100) / 100;
+    if (Math.abs(sum - total) > 0.01) {
+      throw new Error(`The bill-wise split (${sum.toFixed(2)}) must add up to the note total (${total.toFixed(2)})`);
+    }
+    for (const a of splitIn) {
+      const method = String(a.method);
+      const ref = method === "on_account" ? null : String(a.ref_name || "").trim();
+      let ids = { order_id: a.order_id ? Number(a.order_id) : null, sale_invoice_group: a.sale_invoice_group ? String(a.sale_invoice_group) : null };
+      if (method === "agst_ref" && ref && !ids.order_id && !ids.sale_invoice_group) {
+        ids = await resolveRefIds(ref, cid, partyType === "customer" ? "customer" : "supplier");
+      }
+      await c.execute({
+        sql: `INSERT INTO journal_bill_allocs (line_id, account_id, method, ref_name, amount, order_id, sale_invoice_group)
+              VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        args: [
+          Number(partyLine.rows[0].id),
+          Number(partyLine.rows[0].account_id),
+          method,
+          ref,
+          Math.round(Number(a.amount) * 100) / 100,
+          ids.order_id,
+          ids.sale_invoice_group
+        ]
+      });
+    }
+  } else if (partyLine.rows.length) {
     const ids = againstRef ? await resolveRefIds(againstRef, cid, partyType === "customer" ? "customer" : "supplier") : { order_id: null, sale_invoice_group: null };
     await c.execute({
       sql: `INSERT INTO journal_bill_allocs (line_id, account_id, method, ref_name, amount, order_id, sale_invoice_group)
@@ -29200,7 +29363,7 @@ async function recordAudit(channel, args, result) {
   );
 }
 function registerIpc() {
-  const READONLY = /:list$|:get$|:items$|:issuances$|:sheet$|:outstanding$|:all$|:summary$|:transfers$|:fyTaxable$|:needs$|:breakdown$|:nextNo$|:liveUsers$|:ips$|:logs$|:dispatchableSales$|:mine$|:pendingCount$|:pending$|:lots$|:unmapped$|:unmappedCount$|:bargainLines$|:bargainNotes$|:bargainInterest$|:consignmentDraws$|^access:heartbeat$|^db:ping$|^db:snapshot$|^app:revision$|^auth:login$|^journal:booksFrom$|^tally:map$|^journal:openings$|^journal:opening$|^journal:accounts$|^journal:statement$|^journal:trialBalance$|^journal:groups$|^journal:groupNames$|^journal:groupTree$|^journal:ledgerMap$|^journal:pendingRefs$|^journal:billsOutstanding$|^journal:tradingAccount$|^dashboard:stats$|^tfreight:kpis$|^dashboard:position$|^dashboard:layout$|^dashboard:saveLayout$|^productMerge:preview$|^skuRates:parties$|^skuRates:partyCounts$|^consignment:openingLog$|^tags:list$|^tags:for$|^tags:contents$|^consignment:openingLots$|^consignment:invoices$|^tankers:quality$|^tankers:ffaHistory$|^orders:quality$|^gate:partyCategories$|^gate:waivedOuts$|^gate:forRecord$|^notify:rules$|^notify:list$|^notify:run$|^notify:preview$|^notify:people$|^notify:mutes$|^treasury:alerts$|^treasury:paymentTracker$|^facility:exposures$|^facility:headroom$|^company:setActive$|^company:getActive$|^factory:active$|^factory:companies$|^session:setUser$|^lc:repayments$|^lc:allRepayments$|^lc:getLimit$|^lc:bankLimits$|^lc:paymentIns$|^lc:openTradingInvoices$|^files:pickDocument$|^files:openDocument$|^bankRecon:imports$|^bankRecon:list$|^bankRecon:suggest$|^bd:kpis$|^bd:limits$|^skuStock:adjustments$|^skuOpening:list$|^skuOpening:date$|^stockCount:previous$|^orders:intercompanySource$|^stockOpening:list$|^stockOpening:date$|^stockOpening:sets$|^stockOpening:setLines$|^stockOpening:ppStages$|^stockOpening:ppFreeTotals$|^production:ppDraws$|^bargains:linkedInvoices$|^bargains:linkedVouchers$|^bargains:voucherChoices$|^salesBargains:linkedVouchers$|^salesBargains:voucherChoices$|^bargains:adjustments$|^history:list$|^stockOpening:ppVessels$|^stockOpening:ppReceivers$|^stockOpening:ppWriteoffs$|^work:board$|^work:cutoff$|^work:processes$|^formulationSubcategory:list$|^formulations:versions$|^facility:limitHistory$|^bd:limitReductions$|^bd:allRepayments$|^bd:interestSchedule$|^bd:interestWindow$|^bd:interestPayments$|^bd:linkedOrders$|^bd:parties$|^bd:allParties$|^bd:openTradingInvoices$|^bd:paymentIns$|^access:entryWindows$|^access:entityHistory$|^trading:list$|^sales:series$|^sales:invoiceGaps$|^salesBargains:returns$|^salesBargains:linkedInvoices$|^salesBargains:unattributedReturns$|^tbill:orphans$|^production:report$/;
+  const READONLY = /:list$|:get$|:items$|:issuances$|:sheet$|:outstanding$|:all$|:summary$|:transfers$|:fyTaxable$|:needs$|:breakdown$|:nextNo$|:liveUsers$|:ips$|:logs$|:dispatchableSales$|:mine$|:pendingCount$|:pending$|:lots$|:unmapped$|:unmappedCount$|:bargainLines$|:bargainNotes$|:bargainInterest$|:consignmentDraws$|^access:heartbeat$|^db:ping$|^db:snapshot$|^app:revision$|^auth:login$|^journal:booksFrom$|^tally:map$|^journal:openings$|^journal:opening$|^journal:accounts$|^journal:statement$|^journal:trialBalance$|^journal:groups$|^journal:groupNames$|^journal:groupTree$|^journal:ledgerMap$|^journal:pendingRefs$|^journal:billsOutstanding$|^journal:tradingAccount$|^dashboard:stats$|^vouchers:nextCode$|^vouchers:forDocument$|^tfreight:kpis$|^dashboard:position$|^dashboard:layout$|^dashboard:saveLayout$|^productMerge:preview$|^skuRates:parties$|^skuRates:partyCounts$|^consignment:openingLog$|^tags:list$|^tags:for$|^tags:contents$|^consignment:openingLots$|^consignment:invoices$|^tankers:quality$|^tankers:qualityMany$|^tankers:ffaHistory$|^orders:quality$|^gate:partyCategories$|^gate:waivedOuts$|^gate:forRecord$|^notify:rules$|^notify:list$|^notify:run$|^notify:preview$|^notify:people$|^notify:mutes$|^treasury:alerts$|^treasury:paymentTracker$|^facility:exposures$|^facility:headroom$|^company:setActive$|^company:getActive$|^factory:active$|^factory:companies$|^session:setUser$|^lc:repayments$|^lc:allRepayments$|^lc:getLimit$|^lc:bankLimits$|^lc:paymentIns$|^lc:openTradingInvoices$|^files:pickDocument$|^files:openDocument$|^bankRecon:imports$|^bankRecon:list$|^bankRecon:suggest$|^bd:kpis$|^bd:limits$|^skuStock:adjustments$|^skuOpening:list$|^skuOpening:date$|^stockCount:previous$|^orders:intercompanySource$|^stockOpening:list$|^stockOpening:date$|^stockOpening:sets$|^stockOpening:setLines$|^stockOpening:ppStages$|^stockOpening:ppFreeTotals$|^production:ppDraws$|^bargains:linkedInvoices$|^bargains:linkedVouchers$|^bargains:voucherChoices$|^salesBargains:linkedVouchers$|^salesBargains:voucherChoices$|^bargains:adjustments$|^history:list$|^stockOpening:ppVessels$|^stockOpening:ppReceivers$|^stockOpening:ppWriteoffs$|^work:board$|^work:cutoff$|^work:processes$|^formulationSubcategory:list$|^formulations:versions$|^facility:limitHistory$|^bd:limitReductions$|^bd:allRepayments$|^bd:interestSchedule$|^bd:interestWindow$|^bd:interestPayments$|^bd:linkedOrders$|^bd:parties$|^bd:allParties$|^bd:openTradingInvoices$|^bd:paymentIns$|^access:entryWindows$|^access:entityHistory$|^trading:list$|^sales:series$|^sales:invoiceGaps$|^salesBargains:returns$|^salesBargains:linkedInvoices$|^salesBargains:unattributedReturns$|^tbill:orphans$|^production:report$/;
   const AUDIT_SKIP = /* @__PURE__ */ new Set(["config:get", "config:save", "session:setUser"]);
   const handle = (channel, fn) => {
     ipcMain.handle(channel, async (e, args) => {
@@ -29377,6 +29540,7 @@ function registerIpc() {
   handle("tankers:revert", (_e, { id }) => revertPurchaseTanker(id));
   handle("tankers:replace", (_e, { id, values }) => replaceTanker(id, values));
   handle("tankers:quality", (_e, { id }) => listTankerQuality(Number(id)));
+  handle("tankers:qualityMany", (_e, { ids }) => listTankerQualityMany(ids));
   handle(
     "tankers:ffaHistory",
     (_e, a) => listFfaHistory(Number(a?.productId || 0), Number(a?.limit || 60))
