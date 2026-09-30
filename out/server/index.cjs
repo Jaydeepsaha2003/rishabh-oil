@@ -19852,6 +19852,51 @@ async function fixLcCharges(repaymentIds) {
     return { fixed: wanted.size, charges: round28(charges) };
   });
 }
+async function autoFixDuplicateSales() {
+  const { findings } = await previewDuplicateInvoicePostings();
+  if (!findings.length) return { removed: 0, revenue: 0, reposted: [] };
+  const plainIds = findings.flatMap((f) => f.duplicates.map((d) => d.entry_id));
+  let removed = 0;
+  let revenue = 0;
+  if (plainIds.length) {
+    const r = await repairDuplicateInvoicePostings(plainIds);
+    removed = r.removed;
+    revenue = r.revenue;
+  }
+  const reposted = [];
+  for (const f of findings.filter((x) => x.review)) {
+    await withDbTransaction(async () => {
+      const c = getClient();
+      await ensureVoucherNumbers();
+      await ensureLog();
+      const saleRows = (await c.execute({
+        sql: `SELECT id FROM sales WHERE company_id = ? AND COALESCE(invoice_group, 'L' || id) = ? ORDER BY id`,
+        args: [f.company_id, f.invoice_key]
+      })).rows.map((r) => Number(r.id));
+      if (!saleRows.length) return;
+      const entries = (await c.execute(`SELECT * FROM journal_entries WHERE sale_id IN (${saleRows.join(",")}) ORDER BY id`)).rows.map((x) => ({ ...x }));
+      const lines = entries.length ? (await c.execute(`SELECT * FROM journal_lines WHERE entry_id IN (${entries.map((e) => Number(e.id)).join(",")}) ORDER BY id`)).rows.map(
+        (x) => ({ ...x })
+      ) : [];
+      await c.execute({
+        sql: "INSERT INTO accounting_repair_log(repair_key, entry_id, before_json) VALUES (?, ?, ?)",
+        args: [
+          `sales-invoice-repost-v1:${f.company_id}:${f.invoice_key}:${(/* @__PURE__ */ new Date()).toISOString()}`,
+          Number(entries[0]?.id || 0),
+          JSON.stringify({ invoice: f.invoice_no, review: f.review, entries, lines })
+        ]
+      });
+      await postSaleInvoiceJournal(saleRows[0]);
+    });
+    reposted.push(f.invoice_no);
+  }
+  if (reposted.length) {
+    const tds = await previewSaleTds();
+    const keys = tds.findings.filter((t) => !t.review && findings.some((f) => f.review && f.company_id === t.company_id && f.invoice_key === t.invoice_key)).map((t) => `${t.company_id}:${t.invoice_key}`);
+    if (keys.length) await clearSaleTds(keys);
+  }
+  return { removed, revenue: round28(revenue), reposted };
+}
 
 // src/main/bootstrap.ts
 async function runStartupTasks() {
@@ -21480,6 +21525,14 @@ async function runStartupTasks() {
     const r = await fixLcCharges(ids);
     console.log(`[lc] folded bank charges onto ${r.fixed} repayment voucher(s) \u2014 ${r.charges.toFixed(2)} in all`);
   }).catch((e) => console.error("[lc] repayment charges fold failed:", e));
+  await runOnce("sales_duplicate_vouchers_v1", async () => {
+    const r = await autoFixDuplicateSales();
+    if (r.removed || r.reposted.length) {
+      console.log(
+        `[sales] removed ${r.removed} duplicate sale voucher(s) (${r.revenue.toFixed(2)} of revenue counted twice)` + (r.reposted.length ? `; re-posted from their lines: ${r.reposted.join(", ")}` : "")
+      );
+    }
+  }).catch((e) => console.error("[sales] duplicate voucher repair failed:", e));
   await ensurePpTraceSchema();
   startRevisionWatcher();
 }
@@ -22968,6 +23021,11 @@ function daysFromToday(iso) {
   const b = (/* @__PURE__ */ new Date(`${iso.slice(0, 10)}T00:00:00`)).getTime();
   return Math.round((b - a) / 864e5);
 }
+function pendingQty(qty, uom, amount2, settled) {
+  const pending = Math.max(0, amount2 - settled);
+  const r35 = (x) => Math.round(x * 1e3) / 1e3;
+  return { qty: r35(qty), uom, pending_qty: amount2 > 5e-3 && qty > 0 ? r35(qty * pending / amount2) : 0 };
+}
 async function listTradingPayments() {
   const from = await visibleFromFor("trading");
   const cid = getActiveCompanyId();
@@ -23115,9 +23173,11 @@ async function listTradingPayments() {
       ].filter((x, i, arr) => arr.findIndex((y) => y.kind === x.kind && y.id === x.id) === i);
       const st = status(amount2, settled);
       const dd = due(o.order_date, supDays.get(n22(o.supplier_id)) ?? 0);
+      const qty = n22(o.ordered_qty);
       out.push({
         ...dealInfo,
         side: "purchase",
+        ...pendingQty(qty, String(o.uom || d.uom || "MT"), amount2, settled),
         key: `p:${oid}`,
         order_id: oid,
         invoice_no: o.invoice_no ?? "",
@@ -23160,9 +23220,11 @@ async function listTradingPayments() {
       const settled = round211(by.lc + by.bd + by.bank + by.adjustment);
       const st = status(amount2, settled);
       const dd = due(first.sale_date, cusDays.get(n22(first.customer_id)) ?? 0);
+      const qty = ls.reduce((a, l) => a + n22(l.qty), 0);
       out.push({
         ...dealInfo,
         side: "sale",
+        ...pendingQty(qty, String(first.uom || d.uom || "MT"), amount2, settled),
         key: `s:${k}`,
         sale_ids: ls.map((l) => n22(l.id)),
         // What the invoice is printed as; `ref_key` is what receipts are
