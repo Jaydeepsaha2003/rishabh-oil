@@ -10531,7 +10531,9 @@ async function accountStatement(accountId, companyId) {
   for (const l of lines) {
     const rest = byEntry.get(Number(l.entry_id)) || [];
     const opposite = Number(l.dr) > 0 ? rest.filter((r) => n13(r.cr) > 0).sort((a, b) => n13(b.cr) - n13(a.cr)) : rest.filter((r) => n13(r.dr) > 0).sort((a, b) => n13(b.dr) - n13(a.dr));
-    l.particulars = String((opposite[0] || rest[0])?.name || "");
+    const own = n13(l.dr) > 0 ? n13(l.dr) : n13(l.cr);
+    const exact = opposite.filter((r) => Math.abs((n13(l.dr) > 0 ? n13(r.cr) : n13(r.dr)) - own) < 5e-3);
+    l.particulars = String((exact.length === 1 ? exact[0] : opposite[0] || rest[0])?.name || "");
     l.voucher_code = codes.get(Number(l.entry_id)) || "";
     l.legs = rest.map((r) => ({ name: String(r.name), dr: n13(r.dr), cr: n13(r.cr) }));
     l.allocs = allocsByLine.get(Number(l.id)) || [];
@@ -11468,7 +11470,7 @@ function idempotent(sql) {
   );
 }
 function internal(name) {
-  return name.startsWith("sqlite_") || name.startsWith("libsql_") || name === "_litestream_seq";
+  return name.startsWith("sqlite_") || name.startsWith("libsql_") || name === "_litestream_seq" || name === "web_sessions";
 }
 var ROWS_PER_INSERT = 200;
 var READ_PAGE = 2e3;
@@ -12254,6 +12256,48 @@ async function updateBd(id, v) {
     await postBdOpening(id);
     return { id };
   });
+}
+async function convertOpenAdjToCharge() {
+  await ensureInvoiceAdj();
+  const c = getClient();
+  await c.execute(`CREATE TABLE IF NOT EXISTS accounting_repair_log (
+      repair_key TEXT PRIMARY KEY, entry_id INTEGER NOT NULL, before_json TEXT NOT NULL,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')))`);
+  const res = await c.execute(
+    `SELECT id, bd_no, amount, open_adj, journal_entry_id FROM bill_discountings
+      WHERE ABS(COALESCE(open_adj, 0)) > 0.004 AND COALESCE(open_adj_charge, 0) = 0 AND status = 'open'
+        AND upfront_interest_journal_entry_id IS NULL
+        AND NOT EXISTS (SELECT 1 FROM bd_repayments r WHERE r.bd_id = bill_discountings.id)
+        AND NOT EXISTS (SELECT 1 FROM bd_interest_payments p WHERE p.bd_id = bill_discountings.id)`
+  );
+  const done = [];
+  for (const r of toPlain13(res)) {
+    const id = n14(r.id);
+    await withDbTransaction(async () => {
+      const tx = getClient();
+      const je = n14(r.journal_entry_id);
+      if (je) {
+        const entry = toPlain13(await tx.execute({ sql: "SELECT * FROM journal_entries WHERE id = ?", args: [je] }))[0] || null;
+        const lines = toPlain13(
+          await tx.execute({
+            sql: `SELECT jl.*, la.name AS account FROM journal_lines jl JOIN ledger_accounts la ON la.id = jl.account_id WHERE jl.entry_id = ?`,
+            args: [je]
+          })
+        );
+        await tx.execute({
+          sql: "INSERT OR IGNORE INTO accounting_repair_log(repair_key, entry_id, before_json) VALUES (?, ?, ?)",
+          args: [`bd-open-adj-charge-v1:${id}`, je, JSON.stringify({ bill: r, entry, lines })]
+        });
+      }
+      await tx.execute({
+        sql: "UPDATE bill_discountings SET amount = ROUND(amount - open_adj, 2), open_adj_charge = 1 WHERE id = ?",
+        args: [id]
+      });
+      await postBdOpening(id);
+    });
+    done.push(`${String(r.bd_no || id)} ${round26(n14(r.amount) - n14(r.open_adj)).toFixed(2)}`);
+  }
+  return done;
 }
 async function deleteBd(id) {
   return withDbTransaction(async () => {
@@ -21490,6 +21534,41 @@ async function runStartupTasks() {
       );
     }
   }).catch((e) => console.error("[sales] duplicate voucher repair failed:", e));
+  await runOnce("freight_accrued_flag_v1", async () => {
+    const c = getClient();
+    const map = await c.execute("SELECT use_name FROM ledger_map WHERE UPPER(posts_as) = 'FREIGHT PAYABLE A/C'").catch(() => ({ rows: [] }));
+    const names = ["FREIGHT PAYABLE A/C", ...map.rows.map((r) => String(r.use_name || "").toUpperCase())].filter(Boolean);
+    const cand = await c.execute(
+      `SELECT tl.id, tl.amount, s.id AS sale_id, s.invoice_no, s.invoice_group, s.company_id
+         FROM transporter_ledger tl
+         JOIN sales s ON s.id = tl.sale_id
+        WHERE tl.entry_type = 'freight' AND COALESCE(tl.accrued, 0) = 0 AND tl.bill_id IS NULL
+          AND COALESCE(s.deduct_freight, 0) = 0`
+    );
+    const fixed = [];
+    for (const r of cand.rows) {
+      const hit = await c.execute({
+        sql: `SELECT 1 FROM journal_entries je
+                JOIN journal_lines jl ON jl.entry_id = je.id
+                JOIN ledger_accounts la ON la.id = jl.account_id
+               WHERE je.vch_type = 'SALE' AND jl.cr > 0
+                 AND UPPER(la.name) IN (${names.map(() => "?").join(",")})
+                 AND je.sale_id IN (SELECT s2.id FROM sales s2
+                                     WHERE s2.company_id = ?
+                                       AND COALESCE(s2.invoice_group, 'id:' || s2.id) = COALESCE(?, 'id:' || ?))
+               LIMIT 1`,
+        args: [...names, Number(r.company_id) || 1, r.invoice_group == null ? null : String(r.invoice_group), Number(r.sale_id)]
+      });
+      if (!hit.rows.length) continue;
+      await c.execute({ sql: "UPDATE transporter_ledger SET accrued = 1 WHERE id = ?", args: [Number(r.id)] });
+      fixed.push(`${String(r.invoice_no || r.sale_id)} ${Number(r.amount).toFixed(2)}`);
+    }
+    if (fixed.length) console.log(`[freight] marked ${fixed.length} delivery freight line(s) as already accrued: ${fixed.join(", ")}`);
+  }).catch((e) => console.error("[freight] accrued flag repair failed:", e));
+  await runOnce("bd_open_adj_charge_v1", async () => {
+    const done = await convertOpenAdjToCharge();
+    if (done.length) console.log(`[bd] moved ${done.length} bill(s) to the Open amount with the Adj. as a charge: ${done.join(", ")}`);
+  }).catch((e) => console.error("[bd] open adjustment conversion failed:", e));
   await ensurePpTraceSchema();
   startRevisionWatcher();
 }
@@ -22488,7 +22567,10 @@ function saleRefKey(l) {
 }
 async function saleReceiptsByKey(companyId) {
   const res = await getClient().execute({
-    sql: `SELECT COALESCE(ba.sale_invoice_group, ba.ref_name) AS key, SUM(ba.amount) AS amount
+    // A credit on the customer settles the bill; a debit against the same
+    // ref (a journal raising it) adds to it — the rule bill-wise follows.
+    sql: `SELECT COALESCE(ba.sale_invoice_group, ba.ref_name) AS key,
+                 SUM(CASE WHEN jl.dr > 0 THEN -ba.amount ELSE ba.amount END) AS amount
           FROM journal_bill_allocs ba
           JOIN journal_lines jl ON jl.id = ba.line_id
           JOIN journal_entries je ON je.id = jl.entry_id
@@ -23009,6 +23091,7 @@ async function listTradingPayments() {
   ]);
   const allocRes = await c.execute({
     sql: `SELECT ba.id, ba.amount, ba.order_id, ba.ref_name, ba.sale_invoice_group,
+                 CASE WHEN jl.dr > 0 THEN 'dr' ELSE 'cr' END AS side,
                  UPPER(TRIM(a.name)) AS acct, je.id AS eid, je.vch_type, je.vch_no, je.entry_date
           FROM journal_bill_allocs ba
           JOIN journal_lines jl ON jl.id = ba.line_id
@@ -23063,14 +23146,14 @@ async function listTradingPayments() {
   ]);
   const supDays = new Map(supTerms.map((r) => [n22(r.id), n22(r.credit_period_days)]));
   const cusDays = new Map(cusTerms.map((r) => [n22(r.id), n22(r.credit_period_days)]));
-  const settle = (list2) => {
+  const settle = (list2, billSide) => {
     const by = { lc: 0, bd: 0, bank: 0, adjustment: 0 };
     const via = [];
     const movements = list2.map((a) => {
       const owner = owners.get(n22(a.eid));
       const vt = up(a.vch_type);
       const channel = owner ? owner.kind : vt === "PAYMENT" || vt === "RECEIPT" || vt === "CONTRA" ? "bank" : "adjustment";
-      const amount2 = round211(n22(a.amount));
+      const amount2 = round211(String(a.side) === billSide ? -n22(a.amount) : n22(a.amount));
       by[channel] = round211(by[channel] + amount2);
       if (owner && !via.some((x) => x.kind === owner.kind && x.id === owner.id)) via.push(owner);
       return {
@@ -23120,7 +23203,7 @@ async function listTradingPayments() {
       take(byOrder.get(oid));
       const inv = up(o.invoice_no);
       if (inv) for (const nm of ledgerNames(o.supplier_name)) take(byAcctRef.get(`${nm}|${inv}`));
-      const { by, movements, via } = settle(hits);
+      const { by, movements, via } = settle(hits, "cr");
       const amount2 = round211(n22(o.net_amount));
       const settled = round211(by.lc + by.bd + by.bank + by.adjustment);
       const financed = [
@@ -23173,7 +23256,7 @@ async function listTradingPayments() {
     for (const [k, ls] of groups) saleWork.push(() => {
       const first = ls[0];
       const amount2 = round211(ls.reduce((a, l) => a + n22(l.amount) + n22(l.gst_amount) + n22(l.round_off) - n22(l.tds_amount), 0));
-      const { by, movements, via } = settle((byKey.get(up(k)) ?? []).filter((a) => !claimed.has(n22(a.id))));
+      const { by, movements, via } = settle((byKey.get(up(k)) ?? []).filter((a) => !claimed.has(n22(a.id))), "dr");
       const settled = round211(by.lc + by.bd + by.bank + by.adjustment);
       const st = status(amount2, settled);
       const dd = due(first.sale_date, cusDays.get(n22(first.customer_id)) ?? 0);
@@ -31530,10 +31613,116 @@ COMMIT;`);
 
 // src/server/http.ts
 var sessions = /* @__PURE__ */ new Map();
-var SESSION_TTL_MS = 12 * 60 * 60 * 1e3;
+var SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1e3;
+var SESSION_SAVE_MS = 30 * 60 * 1e3;
+var PUBLIC = /* @__PURE__ */ new Set(["auth:login", "db:ping", "app:revision"]);
+var hashSid = (sid) => (0, import_node_crypto2.createHash)("sha256").update(sid).digest("hex");
+var sessionCookie = (sid) => `sid=${sid}; HttpOnly; SameSite=Lax; Path=/; Max-Age=${SESSION_TTL_MS / 1e3}`;
+var CLEAR_COOKIE = "sid=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0";
+async function ensureSessionTable() {
+  await getClient().execute(
+    `CREATE TABLE IF NOT EXISTS web_sessions (
+       sid_hash TEXT PRIMARY KEY,
+       user_id INTEGER NOT NULL,
+       username TEXT,
+       company_id INTEGER NOT NULL DEFAULT 1,
+       created_at TEXT NOT NULL DEFAULT (datetime('now')),
+       seen_at INTEGER NOT NULL
+     )`
+  );
+}
+async function saveSession(sid, s4) {
+  try {
+    await ensureSessionTable();
+    if (!s4.userId) {
+      await getClient().execute({ sql: "DELETE FROM web_sessions WHERE sid_hash = ?", args: [hashSid(sid)] });
+      return;
+    }
+    const now = Date.now();
+    await getClient().execute({
+      sql: `INSERT INTO web_sessions (sid_hash, user_id, username, company_id, seen_at) VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(sid_hash) DO UPDATE SET user_id = excluded.user_id, username = excluded.username,
+              company_id = excluded.company_id, seen_at = excluded.seen_at`,
+      args: [hashSid(sid), s4.userId, s4.username, s4.companyId, now]
+    });
+    s4.savedAt = now;
+  } catch (e) {
+    console.error("[web] could not save a session:", e.message);
+  }
+}
+async function dropSession(sid) {
+  sessions.delete(sid);
+  try {
+    await ensureSessionTable();
+    await getClient().execute({ sql: "DELETE FROM web_sessions WHERE sid_hash = ?", args: [hashSid(sid)] });
+  } catch {
+  }
+}
+async function loadSession(sid) {
+  try {
+    await ensureSessionTable();
+    const r = await getClient().execute({
+      sql: `SELECT ws.user_id, ws.company_id, ws.seen_at, u.username
+              FROM web_sessions ws
+              JOIN users u ON u.id = ws.user_id AND COALESCE(u.active, 1) = 1
+             WHERE ws.sid_hash = ?`,
+      args: [hashSid(sid)]
+    });
+    const row = r.rows[0];
+    if (!row) return null;
+    if (Date.now() - Number(row.seen_at) > SESSION_TTL_MS) {
+      await dropSession(sid);
+      return null;
+    }
+    return {
+      userId: Number(row.user_id),
+      username: String(row.username || ""),
+      companyId: Number(row.company_id) || 1,
+      seen: Date.now(),
+      savedAt: Number(row.seen_at)
+    };
+  } catch {
+    return null;
+  }
+}
+var lastTableSweep = 0;
 function sweepSessions() {
   const cutoff = Date.now() - SESSION_TTL_MS;
   for (const [k, v] of sessions) if (v.seen < cutoff) sessions.delete(k);
+  if (Date.now() - lastTableSweep > 60 * 60 * 1e3) {
+    lastTableSweep = Date.now();
+    void ensureSessionTable().then(() => getClient().execute({ sql: "DELETE FROM web_sessions WHERE seen_at < ?", args: [cutoff] })).catch(() => {
+    });
+  }
+}
+async function resolveSession(req, create2) {
+  sweepSessions();
+  let sid = readCookie(req, "sid");
+  let s4 = sid ? sessions.get(sid) : void 0;
+  if (!s4 && sid) {
+    const loaded = await loadSession(sid);
+    if (loaded) {
+      sessions.set(sid, loaded);
+      s4 = loaded;
+    }
+  }
+  let cookie;
+  if (!s4) {
+    if (!create2) return null;
+    sid = (0, import_node_crypto2.randomBytes)(24).toString("hex");
+    s4 = { userId: null, username: "system", companyId: 1, seen: Date.now() };
+    sessions.set(sid, s4);
+    cookie = sessionCookie(sid);
+  }
+  s4.seen = Date.now();
+  if (s4.userId && Date.now() - (s4.savedAt || 0) > SESSION_SAVE_MS) {
+    await saveSession(sid, s4);
+    cookie = cookie || sessionCookie(sid);
+  }
+  return { sid, s: s4, cookie };
+}
+function signedOut(res, cookie) {
+  json(res, 401, { ok: false, code: "signed_out", error: "You are signed out \u2014 please sign in again." }, cookie);
 }
 function readCookie(req, name) {
   const raw = String(req.headers.cookie || "");
@@ -31650,14 +31839,9 @@ function applySessionEffect(channel, args, result, s4) {
     if (Number.isFinite(id) && id > 0) s4.companyId = id;
   }
 }
-function currentSession(req) {
-  sweepSessions();
-  const sid = readCookie(req, "sid");
-  if (!sid) return null;
-  const s4 = sessions.get(sid);
-  if (!s4) return null;
-  s4.seen = Date.now();
-  return s4;
+async function currentSession(req) {
+  const got = await resolveSession(req, false);
+  return got && got.s.userId ? got.s : null;
 }
 async function isAdmin(s4) {
   if (!s4 || !s4.userId) return false;
@@ -31703,7 +31887,7 @@ function startHttpServer({ port, webRoot }) {
       return json(res, 404, { error: "No brand icon set" });
     }
     if (path === "/api/db/info") {
-      const s4 = currentSession(req);
+      const s4 = await currentSession(req);
       if (!await isAdmin(s4)) return json(res, 403, { error: "Administrators only" });
       try {
         return json(res, 200, { ok: true, result: await dbStatus() });
@@ -31712,7 +31896,7 @@ function startHttpServer({ port, webRoot }) {
       }
     }
     if (path === "/api/db/snapshot") {
-      const s4 = currentSession(req);
+      const s4 = await currentSession(req);
       if (!await isAdmin(s4)) return json(res, 403, { error: "Administrators only" });
       try {
         const fn = handlers.get("db:snapshot");
@@ -31740,7 +31924,7 @@ function startHttpServer({ port, webRoot }) {
       }
     }
     if (path === "/api/db/file") {
-      const s22 = currentSession(req);
+      const s22 = await currentSession(req);
       if (!await isAdmin(s22)) return json(res, 403, { error: "Administrators only" });
       try {
         const file = await liveDbFile();
@@ -31770,7 +31954,7 @@ function startHttpServer({ port, webRoot }) {
     }
     if (path === "/api/db/restore") {
       if (req.method !== "POST") return json(res, 405, { error: "Use POST" });
-      const s4 = currentSession(req);
+      const s4 = await currentSession(req);
       if (!await isAdmin(s4)) return json(res, 403, { error: "Administrators only" });
       try {
         const buf = await readBinary(req, RESTORE_LIMIT);
@@ -31806,30 +31990,24 @@ function startHttpServer({ port, webRoot }) {
         return json(res, 400, { error: e.message });
       }
       const channel = String(payload?.channel || "");
-      const args = payload?.args ?? {};
+      let args = payload?.args ?? {};
       const fn = handlers.get(channel);
       if (!fn) return json(res, 404, { error: `Unknown channel: ${channel}` });
-      sweepSessions();
-      let sid = readCookie(req, "sid");
-      let cookie;
-      if (!sid || !sessions.has(sid)) {
-        sid = (0, import_node_crypto2.randomBytes)(24).toString("hex");
-        sessions.set(sid, { userId: null, username: "system", companyId: 1, seen: Date.now() });
-        cookie = `sid=${sid}; HttpOnly; SameSite=Lax; Path=/; Max-Age=${SESSION_TTL_MS / 1e3}`;
-      }
-      const s4 = sessions.get(sid);
-      s4.seen = Date.now();
-      if (!s4.userId) {
-        const hid = Number(req.headers["x-user-id"]);
-        if (hid > 0) {
-          const u = await getClient().execute({ sql: "SELECT id, username FROM users WHERE id = ? AND COALESCE(active, 1) = 1", args: [hid] }).catch(() => null);
-          const row = u?.rows[0];
-          if (row) {
-            s4.userId = Number(row.id);
-            s4.username = String(row.username || "");
-          }
+      const got = await resolveSession(req, true);
+      let { sid } = got;
+      const { s: s4 } = got;
+      let cookie = got.cookie;
+      if (channel === "session:setUser") {
+        const want = Number(args?.id) || 0;
+        if (!want) {
+          await dropSession(sid);
+          return json(res, 200, { ok: true, result: { ok: true } }, CLEAR_COOKIE);
         }
+        if (want !== s4.userId) return signedOut(res, cookie);
       }
+      if (!s4.userId && !PUBLIC.has(channel)) return signedOut(res, cookie);
+      if (channel === "access:heartbeat") args = { ...args, userId: s4.userId, username: s4.username };
+      const before = { userId: s4.userId, companyId: s4.companyId };
       const ctx = {
         userId: s4.userId,
         username: s4.username,
@@ -31842,6 +32020,15 @@ function startHttpServer({ port, webRoot }) {
         s4.username = ctx.username;
         s4.companyId = ctx.companyId;
         applySessionEffect(channel, args, result, s4);
+        if (channel === "auth:login" && s4.userId) {
+          sessions.delete(sid);
+          sid = (0, import_node_crypto2.randomBytes)(24).toString("hex");
+          sessions.set(sid, s4);
+          cookie = sessionCookie(sid);
+          await saveSession(sid, s4);
+        } else if (s4.userId !== before.userId || s4.companyId !== before.companyId) {
+          await saveSession(sid, s4);
+        }
         return json(res, 200, { ok: true, result: result ?? null }, cookie);
       } catch (e) {
         return json(res, 200, { ok: false, error: e.message || "Request failed" }, cookie);
