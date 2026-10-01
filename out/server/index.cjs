@@ -10611,12 +10611,7 @@ async function postSaleJournal(v) {
       ...gstLines({ side: "OUTPUT", pct: n13(v.gstPct), type: asGstType(v.gstType), cr: gst }),
       { account: "ROUND OFF A/C", group: "Indirect Expenses", cr: ro > 0 ? ro : 0, dr: ro < 0 ? -ro : 0 }
     ];
-    if (hasFreight) {
-      lines.push({ account: "FREIGHT OUTWARD A/C", group: "Direct Expenses", dr: freight });
-      if (!deducted) {
-        lines.push({ account: "FREIGHT PAYABLE A/C", group: "Current Liabilities", cr: freight });
-      }
-    }
+    if (deducted) lines.push({ account: "FREIGHT OUTWARD A/C", group: "Direct Expenses", dr: freight });
     const args = {
       date: v.date,
       vchType: "SALE",
@@ -16118,8 +16113,8 @@ async function postSaleInvoiceJournal(saleId, reuseEntryId) {
   }
   const saleLines = Array.from(bySaleAcc, ([account, cr]) => ({ account, group: "Sales Accounts", cr }));
   const saleAccounts = round27(saleLines.reduce((t, l) => t + l.cr, 0));
-  const freightOutward = hasFreight ? freight : 0;
-  const freightPayable = hasFreight && !deducted ? freight : 0;
+  const freightOutward = deducted ? freight : 0;
+  const freightPayable = 0;
   const roCr = ro > 0 ? ro : 0;
   const roDr = ro < 0 ? -ro : 0;
   const custDr = round27(
@@ -16131,10 +16126,7 @@ async function postSaleInvoiceJournal(saleId, reuseEntryId) {
     ...gstLines({ side: "OUTPUT", pct: n17(first.gst_pct), type: asGstType(first.gst_type), cr: gst }),
     { account: "ROUND OFF A/C", group: "Indirect Expenses", cr: roCr, dr: roDr }
   ];
-  if (hasFreight) {
-    lines.push({ account: "FREIGHT OUTWARD A/C", group: "Direct Expenses", dr: freightOutward });
-    if (!deducted) lines.push({ account: "FREIGHT PAYABLE A/C", group: "Current Liabilities", cr: freightPayable });
-  }
+  if (deducted) lines.push({ account: "FREIGHT OUTWARD A/C", group: "Direct Expenses", dr: freightOutward });
   const args = {
     date: String(first.sale_date),
     vchType: "SALE",
@@ -17041,11 +17033,11 @@ async function postSaleFreight(saleId, v, qty) {
   const companyId = getActiveCompanyId();
   if (v.deduct_freight) return amount2;
   await c.execute({
-    // accrued = 1: the sale voucher already carried Dr FREIGHT OUTWARD /
-    // Cr FREIGHT PAYABLE for this, so the transporter's bill must debit the
-    // payable rather than book the expense a second time.
+    // accrued = 0: the sale voucher no longer carries this freight (see
+    // postSaleInvoiceJournal), so it is in no ledger yet — the transporter's
+    // bill books it as the expense when it is entered.
     sql: `INSERT INTO transporter_ledger (transporter_id, sale_id, entry_date, entry_type, amount, note, company_id, accrued)
-          VALUES (?, ?, ?, 'freight', ?, 'Delivery freight', ?, 1)`,
+          VALUES (?, ?, ?, 'freight', ?, 'Delivery freight', ?, 0)`,
     args: [transporterId, saleId, v.sale_date, amount2, companyId]
   });
   const customerId = v.customer_id ? n17(v.customer_id) : null;
@@ -19897,6 +19889,142 @@ async function autoFixDuplicateSales() {
     if (keys.length) await clearSaleTds(keys);
   }
   return { removed, revenue: round28(revenue), reposted };
+}
+async function payableNames() {
+  const map = await getClient().execute("SELECT use_name FROM ledger_map WHERE UPPER(posts_as) = 'FREIGHT PAYABLE A/C'").catch(() => null);
+  return ["FREIGHT PAYABLE A/C", ...map ? map.rows.map((r) => String(r.use_name || "").toUpperCase()) : []].filter(Boolean);
+}
+async function scanOutwardFreight() {
+  const c = getClient();
+  const payable = await payableNames();
+  const res = await c.execute({
+    sql: `SELECT je.id AS entry_id, je.company_id, co.name AS company_name, je.entry_date, je.sale_id,
+                 COALESCE(je.vch_no, '') AS vch_no, jl.cr AS freight
+            FROM journal_entries je
+            JOIN journal_lines jl ON jl.entry_id = je.id
+            JOIN ledger_accounts la ON la.id = jl.account_id
+            LEFT JOIN companies co ON co.id = je.company_id
+           WHERE je.vch_type = 'SALE' AND je.sale_id IS NOT NULL AND jl.cr > 0
+             AND UPPER(la.name) IN (${payable.map(() => "?").join(",")})
+           ORDER BY je.company_id, je.entry_date, je.id`,
+    args: payable
+  });
+  const out = [];
+  for (const r of res.rows.map((x) => ({ ...x }))) {
+    const entryId = Number(r.entry_id);
+    const sale = (await c.execute({
+      sql: `SELECT s.id, s.invoice_no, s.invoice_group, s.company_id, COALESCE(cu.name, s.customer) AS customer, t.name AS transporter
+                FROM sales s LEFT JOIN customers cu ON cu.id = s.customer_id LEFT JOIN transporters t ON t.id = s.transporter_id
+               WHERE s.id = ?`,
+      args: [Number(r.sale_id)]
+    })).rows[0];
+    let review = null;
+    const freight = round28(Number(r.freight) || 0);
+    if (!sale) review = "its sale line no longer exists";
+    const ids = sale ? (await c.execute({
+      sql: `SELECT id FROM sales WHERE company_id = ? AND COALESCE(invoice_group, 'id:' || id) = COALESCE(?, 'id:' || ?)`,
+      args: [Number(sale.company_id), sale.invoice_group == null ? null : String(sale.invoice_group), Number(sale.id)]
+    })).rows.map((x) => Number(x.id)) : [];
+    if (!review) {
+      const fo = await c.execute({
+        sql: `SELECT COUNT(*) AS n, COALESCE(SUM(jl.dr), 0) AS dr, COALESCE(SUM(jl.cr), 0) AS cr FROM journal_lines jl JOIN ledger_accounts la ON la.id = jl.account_id
+               WHERE jl.entry_id = ? AND UPPER(la.name) LIKE 'FREIGHT OUTWARD%'`,
+        args: [entryId]
+      });
+      const pc = await c.execute({
+        sql: `SELECT COUNT(*) AS n FROM journal_lines jl JOIN ledger_accounts la ON la.id = jl.account_id
+               WHERE jl.entry_id = ? AND UPPER(la.name) IN (${payable.map(() => "?").join(",")})`,
+        args: [entryId, ...payable]
+      });
+      if (Number(fo.rows[0]?.n || 0) !== 1 || Number(pc.rows[0]?.n || 0) !== 1) review = "the voucher has more than one freight line";
+      else if (Number(fo.rows[0]?.cr || 0) > TOL || Math.abs(Number(fo.rows[0]?.dr || 0) - freight) > TOL)
+        review = "Freight Outward and Freight Payable are not the same amount";
+    }
+    if (!review && ids.length) {
+      const billed = await c.execute({
+        sql: `SELECT COUNT(*) AS n FROM transporter_ledger
+               WHERE entry_type = 'freight' AND bill_id IS NOT NULL AND COALESCE(accrued, 0) = 1
+                 AND sale_id IN (${ids.join(",")})`,
+        args: []
+      });
+      if (Number(billed.rows[0]?.n || 0) > 0) review = "its freight is already on a booked transporter bill";
+    }
+    out.push({
+      entry_id: entryId,
+      company_id: Number(r.company_id),
+      company_name: String(r.company_name || ""),
+      invoice_no: String(sale?.invoice_no || r.vch_no || ""),
+      sale_date: String(r.entry_date || ""),
+      customer: String(sale?.customer || ""),
+      transporter: String(sale?.transporter || ""),
+      freight,
+      sale_id: Number(sale?.id || r.sale_id),
+      review
+    });
+  }
+  return out;
+}
+async function previewOutwardFreight() {
+  const findings = await scanOutwardFreight();
+  const ok = findings.filter((f) => !f.review);
+  return { findings, fixable: ok.length, freight: round28(ok.reduce((s4, f) => s4 + f.freight, 0)) };
+}
+async function fixOutwardFreight(entryIds) {
+  const wanted = new Set((entryIds || []).map(Number).filter(Boolean));
+  if (!wanted.size) throw new Error("Pick the sale vouchers to fix");
+  return withDbTransaction(async () => {
+    const c = getClient();
+    await ensureLog();
+    const findings = await scanOutwardFreight();
+    const allowed = new Map(findings.filter((f) => !f.review).map((f) => [f.entry_id, f]));
+    const stale = [...wanted].filter((id) => !allowed.has(id));
+    if (stale.length) throw new Error(`${stale.length} voucher${stale.length === 1 ? " has" : "s have"} changed since the list was shown \u2014 check again`);
+    const payable = new Set(await payableNames());
+    const isFreight = (name) => payable.has(name) || name.startsWith("FREIGHT OUTWARD");
+    const linesOf = async (entryId) => (await c.execute({
+      sql: `SELECT jl.*, UPPER(TRIM(la.name)) AS account FROM journal_lines jl JOIN ledger_accounts la ON la.id = jl.account_id WHERE jl.entry_id = ? ORDER BY jl.id`,
+      args: [entryId]
+    })).rows.map((x) => ({ ...x }));
+    const net = (ls) => {
+      const m = /* @__PURE__ */ new Map();
+      for (const l of ls) if (!isFreight(String(l.account))) m.set(String(l.account), round28((m.get(String(l.account)) || 0) + Number(l.dr) - Number(l.cr)));
+      return m;
+    };
+    let freight = 0;
+    for (const id of wanted) {
+      const f = allowed.get(id);
+      const before = await linesOf(id);
+      const entry = (await c.execute({ sql: "SELECT * FROM journal_entries WHERE id = ?", args: [id] })).rows.map((x) => ({ ...x }))[0] || null;
+      await c.execute({
+        sql: "INSERT OR IGNORE INTO accounting_repair_log(repair_key, entry_id, before_json) VALUES (?, ?, ?)",
+        args: [`outward-freight-v1:${id}`, id, JSON.stringify({ entry, lines: before, invoice: f.invoice_no, freight: f.freight })]
+      });
+      const sale = (await c.execute({ sql: "SELECT company_id, invoice_group FROM sales WHERE id = ?", args: [f.sale_id] })).rows[0];
+      if (sale) {
+        await c.execute({
+          sql: `UPDATE transporter_ledger SET accrued = 0
+                 WHERE entry_type = 'freight' AND bill_id IS NULL
+                   AND sale_id IN (SELECT id FROM sales WHERE company_id = ? AND COALESCE(invoice_group, 'id:' || id) = COALESCE(?, 'id:' || ?))`,
+          args: [Number(sale.company_id), sale.invoice_group == null ? null : String(sale.invoice_group), f.sale_id]
+        });
+      }
+      const gone = before.filter((l) => isFreight(String(l.account))).map((l) => Number(l.id));
+      if (gone.length !== 2) throw new Error(`${f.invoice_no} no longer has exactly one freight pair \u2014 nothing was changed`);
+      await c.execute({ sql: `DELETE FROM journal_bill_allocs WHERE line_id IN (${gone.join(",")})`, args: [] });
+      await c.execute({ sql: `DELETE FROM journal_lines WHERE id IN (${gone.join(",")})`, args: [] });
+      const after = await linesOf(id);
+      const a = net(before);
+      const b = net(after);
+      const keys = /* @__PURE__ */ new Set([...a.keys(), ...b.keys()]);
+      for (const k of keys) {
+        if (Math.abs((a.get(k) || 0) - (b.get(k) || 0)) > TOL) throw new Error(`${f.invoice_no} would change on ${k} \u2014 nothing was changed`);
+      }
+      const diff = after.reduce((t, l) => t + Number(l.dr) - Number(l.cr), 0);
+      if (Math.abs(diff) > TOL) throw new Error(`${f.invoice_no} would no longer balance \u2014 nothing was changed`);
+      freight = round28(freight + f.freight);
+    }
+    return { fixed: wanted.size, freight };
+  });
 }
 
 // src/main/bootstrap.ts
@@ -31316,6 +31444,14 @@ function registerIpc() {
   handle("repairs:lcChargesFix", async (_e, a) => {
     await assertAdmin("Re-posting LC repayment charges");
     return fixLcCharges(a?.ids || []);
+  });
+  handle("repairs:outwardFreight:list", async () => {
+    await assertAdmin("The accounting checks");
+    return previewOutwardFreight();
+  });
+  handle("repairs:outwardFreightFix", async (_e, a) => {
+    await assertAdmin("Taking delivery freight off sale vouchers");
+    return fixOutwardFreight(a?.ids || []);
   });
   handle("bd:kpis", () => bdKpis());
   handle("bd:limits", () => bdLimits());
