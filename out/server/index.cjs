@@ -11639,7 +11639,8 @@ function bdCalc(bd) {
   const undrawnAmount = round26(sanctionedAmount - drawn);
   const daysYear = n14(bd.days_year) || 360;
   const openAmount = drawn;
-  const interestAmount = round26(openAmount * n14(bd.interest_pct) * intDays / (100 * daysYear));
+  const interestBase = bd.interest_after_adj && bd.open_adj_charge ? Math.max(0, round26(openAmount + n14(bd.open_adj))) : openAmount;
+  const interestAmount = round26(interestBase * n14(bd.interest_pct) * intDays / (100 * daysYear));
   const tdsAmount = round26(interestAmount * n14(bd.tds_pct) / 100);
   const netInterest = round26(interestAmount - tdsAmount);
   const deducted = !bd.interest_upfront && String(bd.interest_mode || "") !== "serviced";
@@ -11651,6 +11652,7 @@ function bdCalc(bd) {
     sanctionedAmount,
     undrawnAmount,
     openAmount,
+    interestBase,
     interestAmount,
     tdsAmount,
     netInterest,
@@ -11819,15 +11821,16 @@ async function postBdOpening(bdId) {
     const lines = [{ account: destination, group: route === "supplier" ? "Sundry Creditors" : "Bank Accounts", dr: calc.receiptAmount }];
     if (marginWithheld > 5e-3) lines.push({ account: "BD MARGIN A/C", group: "Deposits (Asset)", dr: marginWithheld });
     if (interest > 5e-3) lines.push({ account: "INTEREST ON BILL DISCOUNTING A/C", group: "Indirect Expenses", dr: interest });
-    if (calc.adjCharge < -4e-3) lines.push({ account: "BD CHARGES A/C", group: "Indirect Expenses", dr: round26(-calc.adjCharge) });
-    if (calc.adjCharge > 4e-3) lines.push({ account: "BD CHARGES A/C", group: "Indirect Expenses", cr: calc.adjCharge });
+    const adjLedger = String(bd.open_adj_ledger || "").trim().toUpperCase() || BD_ADJ_DEFAULT;
+    if (calc.adjCharge < -4e-3) lines.push({ account: adjLedger, group: "Indirect Expenses", dr: round26(-calc.adjCharge) });
+    if (calc.adjCharge > 4e-3) lines.push({ account: adjLedger, group: "Indirect Expenses", cr: calc.adjCharge });
     lines.push({ account: bdPayable(bd), group: BD_PAYABLE_GROUP, cr: amount2 });
     const write = n14(bd.journal_entry_id) ? (args) => repostJournal(n14(bd.journal_entry_id), args) : postJournal;
     const je = await write({
       date: String(bd.payment_received_date || todayISO5()).slice(0, 10),
       vchType: route === "supplier" ? "JOURNAL" : "RECEIPT",
       vchNo: String(bd.bd_no || ""),
-      narration: `Bill Discounting ${bd.bd_no || ""} (${bd.finance_type}) opened with ${bd.nbfc_name || "the NBFC"} \u2014 margin ${calc.marginAmount.toFixed(2)}, interest ${interest.toFixed(2)}` + (Math.abs(calc.adjCharge) > 4e-3 ? `, adj. ${calc.adjCharge.toFixed(2)} (BD charges)` : "") + (serviced ? ` (interest serviced ${String(bd.interest_freq || "monthly").replace("_", "-")} over the tenor)` : upfront ? " (interest settled separately on reconciliation)" : ""),
+      narration: `Bill Discounting ${bd.bd_no || ""} (${bd.finance_type}) opened with ${bd.nbfc_name || "the NBFC"} \u2014 margin ${calc.marginAmount.toFixed(2)}, interest ${interest.toFixed(2)}` + (Math.abs(calc.adjCharge) > 4e-3 ? `, adj. ${calc.adjCharge.toFixed(2)} (${bdAdjLabel(adjLedger)})` : "") + (serviced ? ` (interest serviced ${String(bd.interest_freq || "monthly").replace("_", "-")} over the tenor)` : upfront ? " (interest settled separately on reconciliation)" : ""),
       companyId: n14(bd.company_id) || void 0,
       lines
     });
@@ -11923,6 +11926,12 @@ var BD_COLS = [
   //     priced on; kept so the form can show the two separately.
   "open_adj",
   "open_adj_charge",
+  // WHAT KIND OF CHARGE the Adj. is — its ledger. Blank on every bill saved
+  // before the choice existed, which reads as BD CHARGES A/C, so none moves.
+  "open_adj_ledger",
+  // 1 = the NBFC charges interest on the Open amount AFTER the Adj. (see
+  // bdCalc's interestBase). 0 on every bill before the switch existed.
+  "interest_after_adj",
   "payment_received_date",
   "maturity_date",
   "margin_pct",
@@ -11944,13 +11953,62 @@ var BD_COLS = [
   "payment_in_days",
   "note"
 ];
+var BD_ADJ_DEFAULT = "BD CHARGES A/C";
+var BD_ADJ_PRESETS = [
+  { label: "BD charges", ledger: BD_ADJ_DEFAULT },
+  { label: "Processing fees", ledger: "PROCESSING FEES A/C" },
+  { label: "Documentation charges", ledger: "DOCUMENTATION CHARGES A/C" },
+  { label: "Stamp duty", ledger: "STAMP DUTY A/C" },
+  { label: "Bank charges", ledger: "BANK CHARGES A/C" },
+  { label: "Commission", ledger: "COMM. CHARGES A/C" },
+  { label: "Insurance charges", ledger: "INSURANCE CHARGES A/C" }
+];
+var BD_ADJ_KEY = "bd_adj_charge_types";
+async function customChargeTypes() {
+  try {
+    const raw = await getSetting(BD_ADJ_KEY);
+    const list2 = raw ? JSON.parse(raw) : [];
+    return Array.isArray(list2) ? list2.map((x) => ({ label: String(x?.label || "").trim(), ledger: String(x?.ledger || "").trim().toUpperCase() })).filter((x) => x.label && x.ledger) : [];
+  } catch {
+    return [];
+  }
+}
+async function listBdChargeTypes() {
+  const custom = await customChargeTypes();
+  const seen = new Set(BD_ADJ_PRESETS.map((p) => p.ledger));
+  return [
+    ...BD_ADJ_PRESETS.map((p) => ({ ...p, preset: true })),
+    ...custom.filter((c) => !seen.has(c.ledger)).map((c) => ({ ...c, preset: false }))
+  ];
+}
+async function addBdChargeType(labelIn) {
+  const label2 = String(labelIn || "").replace(/\s+/g, " ").trim();
+  if (label2.length < 2) throw new Error("Give the charge a name");
+  if (label2.length > 40) throw new Error("Keep the name under 40 characters");
+  if (!/^[A-Za-z0-9 .&()/-]+$/.test(label2)) throw new Error("Use letters, numbers and . & ( ) / - only");
+  const up2 = label2.toUpperCase();
+  const ledger = /\bA\/C$/.test(up2) ? up2 : `${up2} A/C`;
+  const all = await listBdChargeTypes();
+  const hit = all.find((x) => x.ledger === ledger || x.label.toUpperCase() === up2);
+  if (hit) return hit;
+  const custom = await customChargeTypes();
+  custom.push({ label: label2, ledger });
+  await setSetting(BD_ADJ_KEY, JSON.stringify(custom));
+  return { label: label2, ledger, preset: false };
+}
+function bdAdjLabel(ledger) {
+  const p = BD_ADJ_PRESETS.find((x) => x.ledger === ledger);
+  return p ? p.label : ledger.replace(/\s*A\/C$/, "").toLowerCase();
+}
 var invoiceAdjReady = false;
 async function ensureInvoiceAdj() {
   if (invoiceAdjReady) return;
   for (const sql of [
     "ALTER TABLE bill_discountings ADD COLUMN invoice_adj REAL NOT NULL DEFAULT 0",
     "ALTER TABLE bill_discountings ADD COLUMN open_adj REAL NOT NULL DEFAULT 0",
-    "ALTER TABLE bill_discountings ADD COLUMN open_adj_charge INTEGER NOT NULL DEFAULT 0"
+    "ALTER TABLE bill_discountings ADD COLUMN open_adj_charge INTEGER NOT NULL DEFAULT 0",
+    "ALTER TABLE bill_discountings ADD COLUMN open_adj_ledger TEXT",
+    "ALTER TABLE bill_discountings ADD COLUMN interest_after_adj INTEGER NOT NULL DEFAULT 0"
   ]) {
     try {
       await getClient().execute(sql);
@@ -11973,6 +12031,11 @@ function bdArgs(v) {
     if (["amount", "margin_pct", "interest_pct", "tds_pct"].includes(k)) return n14(v[k]);
     if (k === "invoice_adj" || k === "open_adj") return round26(n14(v[k]));
     if (k === "open_adj_charge") return v[k] ? 1 : 0;
+    if (k === "interest_after_adj") return v[k] ? 1 : 0;
+    if (k === "open_adj_ledger") {
+      const led = String(v[k] ?? "").trim().toUpperCase();
+      return led && led !== BD_ADJ_DEFAULT ? led : null;
+    }
     if (k === "invoice_amount") {
       const val2 = v[k];
       return val2 === "" || val2 === void 0 || val2 === null ? null : n14(val2);
@@ -12221,8 +12284,10 @@ async function updateBd(id, v) {
     if (!("invoice_adj" in v)) v = { ...v, invoice_adj: cur.invoice_adj ?? 0 };
     if (!("open_adj" in v)) v = { ...v, open_adj: cur.open_adj ?? 0 };
     if (!("open_adj_charge" in v)) v = { ...v, open_adj_charge: cur.open_adj_charge ?? 0 };
+    if (!("open_adj_ledger" in v)) v = { ...v, open_adj_ledger: cur.open_adj_ledger ?? null };
+    if (!("interest_after_adj" in v)) v = { ...v, interest_after_adj: cur.interest_after_adj ?? 0 };
     if (n14(cur.upfront_interest_journal_entry_id)) {
-      for (const key3 of ["amount", "invoice_amount", "invoice_adj", "open_adj", "open_adj_charge", "margin_pct", "interest_pct", "tds_pct", "days_year", "days_incl_start", "interest_upfront", "interest_mode", "payment_received_date", "maturity_date", "nbfc_id"]) {
+      for (const key3 of ["amount", "invoice_amount", "invoice_adj", "open_adj", "open_adj_charge", "interest_after_adj", "margin_pct", "interest_pct", "tds_pct", "days_year", "days_incl_start", "interest_upfront", "interest_mode", "payment_received_date", "maturity_date", "nbfc_id"]) {
         if (String(v[key3] ?? "") !== String(cur[key3] ?? "") && Number(v[key3]) !== Number(cur[key3])) throw new Error("Reverse the recorded upfront interest payment before changing its terms");
       }
     }
@@ -12519,7 +12584,7 @@ async function bdInterestSchedule(bdId) {
   marks.forEach((end, i) => {
     const last = i === marks.length - 1;
     const days = Math.max(0, daysBetween2(start, end) + (i === 0 && bd.days_incl_start ? 1 : 0));
-    const gross = last ? round26(calc.interestAmount - charged) : round26(calc.openAmount * rate * days / (100 * daysYear));
+    const gross = last ? round26(calc.interestAmount - charged) : round26(calc.interestBase * rate * days / (100 * daysYear));
     charged = round26(charged + gross);
     const tds = round26(gross * n14(bd.tds_pct) / 100);
     const done = paid.find((p) => String(p.to_date).slice(0, 10) === end);
@@ -12582,7 +12647,7 @@ async function bdInterestWindow(bdId, toDate) {
   const inclStart = first && bd.days_incl_start ? 1 : 1;
   const span2 = first ? Math.max(0, daysBetween2(from, to) + (bd.days_incl_start ? 1 : 0)) : Math.max(0, daysBetween2(from, to) + 1);
   const daysYear = n14(bd.days_year) || 360;
-  const gross = round26(calc.openAmount * n14(bd.interest_pct) * span2 / (100 * daysYear));
+  const gross = round26(calc.interestBase * n14(bd.interest_pct) * span2 / (100 * daysYear));
   const tds = round26(gross * n14(bd.tds_pct) / 100);
   return {
     bd_id: n14(bdId),
@@ -12598,6 +12663,9 @@ async function bdInterestWindow(bdId, toDate) {
     incl_start: inclStart,
     days: span2,
     open_amount: calc.openAmount,
+    // What the interest runs on — the Open amount, or Open + Adj. when the
+    // bill charges interest after its adjustment.
+    interest_base: calc.interestBase,
     interest_pct: n14(bd.interest_pct),
     tds_pct: n14(bd.tds_pct),
     days_year: daysYear,
@@ -28308,7 +28376,7 @@ async function bdItems() {
       const sched = await bdInterestSchedule(id).catch(() => []);
       const pays = sched.length ? await listBdInterestPayments(id).catch(() => []) : [];
       const paidTo = day102(b.interest_paid_to);
-      const open = n36(calc.openAmount);
+      const open = n36(calc.interestBase);
       const rate = n36(b.interest_pct);
       const year = n36(b.days_year) || 360;
       const tdsPct = n36(b.tds_pct);
@@ -31454,6 +31522,8 @@ function registerIpc() {
     return fixOutwardFreight(a?.ids || []);
   });
   handle("bd:kpis", () => bdKpis());
+  handle("bd:chargeTypes:list", () => listBdChargeTypes());
+  handle("bd:addChargeType", (_e, a) => addBdChargeType(a?.label));
   handle("bd:limits", () => bdLimits());
   handle("bd:setCombinedLimit", (_e, { value }) => setBdCombinedLimit(value));
   handle(
