@@ -16133,7 +16133,7 @@ async function updateProduction(id, v) {
   await ensureDayNo();
   const c = getClient();
   const cur = await c.execute({
-    sql: "SELECT id, formulation_id, formulation_version_id, COALESCE(kind, 'batch') AS kind FROM production WHERE id = ?",
+    sql: "SELECT id, formulation_id, formulation_version_id, COALESCE(kind, 'batch') AS kind, note FROM production WHERE id = ?",
     args: [n17(id)]
   });
   if (!cur.rows.length) throw new Error("Production run not found");
@@ -16180,7 +16180,9 @@ async function updateProduction(id, v) {
     sql: `UPDATE production SET prod_date = ?, product_id = ?, qty = ?, uom = ?, note = ?, formulation_id = ?, formulation_version_id = ?,
                 custom_items_json = ?
            WHERE id = ?`,
-    args: [v.prod_date, productId, qty, v.uom || "MT", ppRunNote(v.note, ownPp, String(v.uom || "MT")), fid || null, snap.versionId || null, mix ? JSON.stringify(mix) : null, n17(id)]
+    // An edit that does not send a note (the phone layout) keeps the one the
+    // batch has; ppRunNote strips the PP line from it and writes it fresh.
+    args: [v.prod_date, productId, qty, v.uom || "MT", ppRunNote("note" in v ? v.note : cur.rows[0].note, ownPp, String(v.uom || "MT")), fid || null, snap.versionId || null, mix ? JSON.stringify(mix) : null, n17(id)]
   });
   if ("day_no" in v) await c.execute({ sql: "UPDATE production SET day_no = ? WHERE id = ?", args: [dayNoOf(v.day_no), n17(id)] });
   if (draws.length) await drawPpForBatch(n17(id), draws);
