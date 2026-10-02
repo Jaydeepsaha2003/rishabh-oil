@@ -15731,6 +15731,13 @@ function customMixOf(v) {
   }
   return out.length ? out : null;
 }
+function assertMixBlend(mix) {
+  if (!mix) return;
+  const blend = mix.filter((l) => String(l.kind || "input") === "input").reduce((t2, l) => t2 + n17(l.qty), 0);
+  if (blend > 100.0005) {
+    throw new Error(`The mix's inputs come to ${Math.round(blend * 1e3) / 1e3} parts \u2014 they cannot be more than 100`);
+  }
+}
 function safeParse(raw) {
   try {
     return JSON.parse(raw || "null");
@@ -16072,6 +16079,7 @@ async function createProduction(v) {
     throw new Error("Production cannot be dated in the future");
   }
   const mix = customMixOf(v);
+  assertMixBlend(mix);
   let fid = mix ? 0 : n17(v.formulation_id);
   if (fid) {
     const owner = await c.execute({ sql: "SELECT product_id FROM formulations WHERE id = ?", args: [fid] });
@@ -16152,6 +16160,7 @@ async function updateProduction(id, v) {
     throw new Error("Production cannot be dated in the future");
   }
   const mix = customMixOf(v);
+  assertMixBlend(mix);
   let fid = mix ? 0 : n17(v.formulation_id);
   if (fid) {
     const owner = await c.execute({ sql: "SELECT product_id FROM formulations WHERE id = ?", args: [fid] });
