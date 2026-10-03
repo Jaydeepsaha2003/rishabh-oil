@@ -10363,11 +10363,35 @@ async function getOrCreateAccount(name, group = "General", companyId) {
   });
   return Number(res.rows[0].id);
 }
+async function ensureLedgerHomes() {
+  if (homesReady) return;
+  await getClient().execute(`CREATE TABLE IF NOT EXISTS ledger_homes (
+    account_id INTEGER NOT NULL,
+    company_id INTEGER NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (account_id, company_id)
+  )`);
+  homesReady = true;
+}
 async function listAccounts(companyId) {
+  await ensureLedgerHomes();
+  const cid = companyId || getActiveCompanyId();
   const res = await getClient().execute({
-    args: [companyId || getActiveCompanyId()],
+    args: [cid, cid, cid, cid],
     sql: `
     SELECT a.*,
+      -- Whether this ledger belongs to the company in view (see ensureLedgerHomes).
+      CASE
+        WHEN EXISTS (SELECT 1 FROM journal_lines jl JOIN journal_entries je ON je.id = jl.entry_id
+                      WHERE jl.account_id = a.id AND je.company_id = ?) THEN 1
+        WHEN EXISTS (SELECT 1 FROM ledger_openings lo
+                      WHERE lo.account_id = a.id AND lo.company_id = ? AND (ABS(lo.dr) > 0.004 OR ABS(lo.cr) > 0.004)) THEN 1
+        WHEN EXISTS (SELECT 1 FROM ledger_homes lh WHERE lh.account_id = a.id AND lh.company_id = ?) THEN 1
+        WHEN NOT EXISTS (SELECT 1 FROM journal_lines jl WHERE jl.account_id = a.id)
+         AND NOT EXISTS (SELECT 1 FROM ledger_openings lo WHERE lo.account_id = a.id AND (ABS(lo.dr) > 0.004 OR ABS(lo.cr) > 0.004))
+         AND NOT EXISTS (SELECT 1 FROM ledger_homes lh WHERE lh.account_id = a.id) THEN 1
+        ELSE 0
+      END AS in_company,
       COALESCE((SELECT SUM(jl.dr) - SUM(jl.cr)
                 FROM journal_lines jl JOIN journal_entries je ON je.id = jl.entry_id
                 WHERE jl.account_id = a.id AND je.company_id = ?), 0) AS balance,
@@ -10407,8 +10431,14 @@ async function listAccounts(companyId) {
   });
   return toPlain12(res);
 }
-async function createAccount(name, group = "General") {
-  return { id: await getOrCreateAccount(name, group) };
+async function createAccount(name, group = "General", companyId) {
+  const id = await getOrCreateAccount(name, group);
+  await ensureLedgerHomes();
+  await getClient().execute({
+    sql: "INSERT OR IGNORE INTO ledger_homes (account_id, company_id) VALUES (?, ?)",
+    args: [id, companyId || getActiveCompanyId()]
+  });
+  return { id };
 }
 async function postJournal(a) {
   return withDbTransaction(async () => {
@@ -10937,6 +10967,7 @@ async function addManualJournal(d) {
     ]
   });
 }
+var homesReady;
 var init_journal = __esm({
   "src/main/journal.ts"() {
     init_dbTransaction();
@@ -10948,6 +10979,7 @@ var init_journal = __esm({
     init_voucherOwnership();
     init_voucherNumbers();
     init_voucherValidation();
+    homesReady = false;
   }
 });
 
@@ -30636,7 +30668,7 @@ async function createTallyLedgers(v) {
     const name = String(r.name || "").trim();
     if (!name) continue;
     const group = groupOf.get(n43(r.id)) || suggestGroup(name, n43(r.dr), n43(r.cr));
-    const made = await createAccount(name.toUpperCase(), group);
+    const made = await createAccount(name.toUpperCase(), group, cid);
     await c.execute({
       sql: "UPDATE tally_ledgers SET account_id = ? WHERE id = ? AND company_id = ?",
       args: [made.id, n43(r.id), cid]
@@ -31101,7 +31133,10 @@ function registerIpc() {
     (_e, { accountId, companyId }) => ledgerOpening(accountId, companyId)
   );
   handle("journal:accounts", (_e, args) => listAccounts(args?.companyId));
-  handle("journal:createAccount", (_e, { name, group }) => createAccount(name, group));
+  handle(
+    "journal:createAccount",
+    (_e, { name, group, companyId }) => createAccount(name, group, companyId)
+  );
   handle(
     "journal:statement",
     (_e, { accountId, companyId }) => accountStatement(accountId, companyId)
