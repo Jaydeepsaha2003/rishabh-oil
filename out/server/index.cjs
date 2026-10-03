@@ -30766,6 +30766,9 @@ function summarizeArgs(args) {
   add("LC", v.lc_no);
   add("Qty", v.qty ?? v.ordered_qty);
   add("\u20B9", v.amount);
+  add("Date", v.prod_date);
+  if (Array.isArray(v.custom_items) && v.custom_items.length) parts.push(`own mix (${v.custom_items.length} lines)`);
+  if (typeof v.note === "string" && v.note.trim()) add("Note", v.note.trim().slice(0, 80));
   if (args?.toStatus) parts.push(`\u2192 ${args.toStatus}`);
   if (args?.key) parts.push(`${args.key} = ${args.value}`);
   return parts.join(" \xB7 ").slice(0, 220);
