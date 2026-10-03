@@ -26376,7 +26376,14 @@ async function listVouchers(from, to, vchType, companyId) {
                  (SELECT GROUP_CONCAT(ln, char(30)) FROM (
                     SELECT jl.account_id || char(31) || a.name || char(31) || jl.cr AS ln
                       FROM journal_lines jl JOIN ledger_accounts a ON a.id = jl.account_id
-                     WHERE jl.entry_id = je.id AND jl.cr > 0 ORDER BY jl.cr DESC, jl.id)) AS cr_lines
+                     WHERE jl.entry_id = je.id AND jl.cr > 0 ORDER BY jl.cr DESC, jl.id)) AS cr_lines,
+                 -- The bills the voucher was set against (Agst Ref), and
+                 -- whether any of it went on account \u2014 what a note entered on
+                 -- the voucher screen was raised against.
+                 (SELECT GROUP_CONCAT(DISTINCT ba.ref_name) FROM journal_bill_allocs ba JOIN journal_lines jl ON jl.id = ba.line_id
+                   WHERE jl.entry_id = je.id AND ba.method = 'agst_ref' AND COALESCE(TRIM(ba.ref_name), '') <> '') AS agst_refs,
+                 (SELECT COUNT(*) FROM journal_bill_allocs ba JOIN journal_lines jl ON jl.id = ba.line_id
+                   WHERE jl.entry_id = je.id AND ba.method = 'on_account') AS on_account_allocs
           FROM journal_entries je
           WHERE ${conds.join(" AND ")}
           ORDER BY je.entry_date DESC, je.id DESC`,
@@ -26384,7 +26391,11 @@ async function listVouchers(from, to, vchType, companyId) {
   });
   const rows2 = toPlain26(res);
   const owned = await ownedVoucherIds();
-  for (const r of rows2) r.manual = !owned.has(Number(r.id));
+  const codes = await voucherCodeMap(cid).catch(() => /* @__PURE__ */ new Map());
+  for (const r of rows2) {
+    r.manual = !owned.has(Number(r.id));
+    r.voucher_code = codes.get(Number(r.id)) || "";
+  }
   return rows2;
 }
 async function trialBalance(from, to, companyId) {
