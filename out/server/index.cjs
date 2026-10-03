@@ -2746,6 +2746,69 @@ var init_ledgerMap = __esm({
   }
 });
 
+// src/main/partyLedgers.ts
+var partyLedgers_exports = {};
+__export(partyLedgers_exports, {
+  partyAccountName: () => partyAccountName,
+  partyNameClashes: () => partyNameClashes,
+  partySideOfGroup: () => partySideOfGroup
+});
+async function partySideOfGroup(group) {
+  const g = String(group || "").trim().toUpperCase();
+  if (!g) return null;
+  if (SIDE_ROOT[g]) return SIDE_ROOT[g];
+  try {
+    const res = await getClient().execute({
+      sql: `WITH RECURSIVE up(id, name, parent_id, d) AS (
+              SELECT id, name, parent_id, 0 FROM ledger_groups WHERE TRIM(UPPER(name)) = ?
+              UNION ALL
+              SELECT g.id, g.name, g.parent_id, up.d + 1 FROM ledger_groups g JOIN up ON g.id = up.parent_id WHERE up.d < 12
+            )
+            SELECT UPPER(TRIM(name)) AS name FROM up`,
+      args: [g]
+    });
+    for (const r of res.rows) {
+      const nm = String(r.name || "");
+      if (SIDE_ROOT[nm]) return SIDE_ROOT[nm];
+    }
+  } catch {
+  }
+  return null;
+}
+async function partyAccountName(name, group, companyId) {
+  const side = await partySideOfGroup(group);
+  if (!side) return name;
+  const asked = String(name || "").trim().toUpperCase();
+  if (!asked || /\s\((DR|CR)\)$/.test(asked)) return name;
+  const resolved = String(await resolveAccountName(asked, companyId) || asked).trim().toUpperCase();
+  const r = await getClient().execute({ sql: "SELECT acc_group FROM ledger_accounts WHERE name = ?", args: [resolved] });
+  if (!r.rows.length) return name;
+  const existingSide = await partySideOfGroup(r.rows[0].acc_group);
+  if (!existingSide || existingSide === side) return name;
+  return `${asked} (${side === "SUNDRY DEBTORS" ? "DR" : "CR"})`;
+}
+async function partyNameClashes(name, side) {
+  const asked = String(name || "").trim().toUpperCase();
+  if (!asked) return [];
+  const other = side === "customer" ? "suppliers" : "customers";
+  const res = await getClient().execute({
+    sql: `SELECT id, name FROM ${other} WHERE TRIM(UPPER(name)) = ?`,
+    args: [asked]
+  });
+  return res.rows.map((r) => ({ id: Number(r.id), name: String(r.name), side: side === "customer" ? "supplier" : "customer" }));
+}
+var SIDE_ROOT;
+var init_partyLedgers = __esm({
+  "src/main/partyLedgers.ts"() {
+    init_db();
+    init_ledgerMap();
+    SIDE_ROOT = {
+      "SUNDRY DEBTORS": "SUNDRY DEBTORS",
+      "SUNDRY CREDITORS": "SUNDRY CREDITORS"
+    };
+  }
+});
+
 // src/renderer/src/lib/accessSections.ts
 var ACCOUNTS_SECTIONS, VOUCHER_SECTION, SECTION_PARENT;
 var init_accessSections = __esm({
@@ -10386,6 +10449,24 @@ var init_voucherValidation = __esm({
 });
 
 // src/main/journal.ts
+var journal_exports = {};
+__export(journal_exports, {
+  accountStatement: () => accountStatement,
+  addManualJournal: () => addManualJournal,
+  backfillJournal: () => backfillJournal,
+  createAccount: () => createAccount,
+  deleteJournalByRef: () => deleteJournalByRef,
+  deleteManualEntry: () => deleteManualEntry,
+  ensureLedgerHomes: () => ensureLedgerHomes,
+  getOrCreateAccount: () => getOrCreateAccount,
+  listAccounts: () => listAccounts,
+  postJournal: () => postJournal,
+  postPaymentJournal: () => postPaymentJournal,
+  postPurchaseJournal: () => postPurchaseJournal,
+  postSaleJournal: () => postSaleJournal,
+  repostJournal: () => repostJournal,
+  voucherCodeMap: () => voucherCodeMap
+});
 function toPlain12(res) {
   return res.rows.map((r) => {
     const o = {};
@@ -10517,7 +10598,7 @@ async function postJournal(a) {
     });
     const entryId = Number(ins.lastInsertRowid);
     for (const l of lines) {
-      const accountId = await getOrCreateAccount(l.account, l.group, a.companyId);
+      const accountId = await getOrCreateAccount(await partyAccountName(l.account, l.group, a.companyId), l.group, a.companyId);
       await c.execute({
         sql: "INSERT INTO journal_lines (entry_id, account_id, dr, cr) VALUES (?, ?, ?, ?)",
         args: [entryId, accountId, n13(l.dr), n13(l.cr)]
@@ -10568,7 +10649,7 @@ async function repostJournal(entryId, a) {
     await c.execute({ sql: "DELETE FROM journal_line_splits WHERE line_id IN (SELECT id FROM journal_lines WHERE entry_id = ?)", args: [id] });
     await c.execute({ sql: "DELETE FROM journal_lines WHERE entry_id = ?", args: [id] });
     for (const l of lines) {
-      const accountId = await getOrCreateAccount(l.account, l.group, a.companyId);
+      const accountId = await getOrCreateAccount(await partyAccountName(l.account, l.group, a.companyId), l.group, a.companyId);
       await c.execute({
         sql: "INSERT INTO journal_lines (entry_id, account_id, dr, cr) VALUES (?, ?, ?, ?)",
         args: [id, accountId, n13(l.dr), n13(l.cr)]
@@ -11023,6 +11104,7 @@ var init_journal = __esm({
     init_db();
     init_company();
     init_ledgerMap();
+    init_partyLedgers();
     init_openings();
     init_gstLedgers();
     init_voucherOwnership();
@@ -20397,6 +20479,141 @@ async function fixOutwardFreight(entryIds) {
       freight = round28(freight + f.freight);
     }
     return { fixed: wanted.size, freight };
+  });
+}
+async function scanSharedLedgers() {
+  const c = getClient();
+  const { partySideOfGroup: partySideOfGroup2, partyAccountName: partyAccountName2 } = await Promise.resolve().then(() => (init_partyLedgers(), partyLedgers_exports));
+  const accts = (await c.execute("SELECT id, name, acc_group FROM ledger_accounts")).rows;
+  const sideOf = /* @__PURE__ */ new Map();
+  const groupSide = /* @__PURE__ */ new Map();
+  for (const a of accts) {
+    const g = String(a.acc_group || "");
+    if (!groupSide.has(g)) {
+      const s5 = await partySideOfGroup2(g);
+      groupSide.set(g, s5 ? s5 === "SUNDRY DEBTORS" ? "debtor" : "creditor" : null);
+    }
+    const s4 = groupSide.get(g);
+    if (s4) sideOf.set(Number(a.id), s4);
+  }
+  if (!sideOf.size) return [];
+  const nameOf = new Map(accts.map((a) => [Number(a.id), String(a.name)]));
+  const rows2 = (await c.execute(`
+      SELECT jl.id AS line_id, jl.entry_id, jl.account_id, jl.dr, jl.cr,
+             je.sale_id, je.order_id,
+             (SELECT TRIM(cu.name) FROM sales s JOIN customers cu ON cu.id = s.customer_id WHERE s.id = je.sale_id) AS sale_party,
+             (SELECT TRIM(su.name) FROM orders o JOIN suppliers su ON su.id = o.supplier_id WHERE o.id = je.order_id) AS order_party,
+             (SELECT nt.party_type FROM notes nt WHERE nt.journal_entry_id = je.id LIMIT 1) AS note_kind,
+             (SELECT CASE nt.party_type WHEN 'customer' THEN (SELECT TRIM(name) FROM customers WHERE id = nt.party_id)
+                                        WHEN 'supplier' THEN (SELECT TRIM(name) FROM suppliers WHERE id = nt.party_id) END
+                FROM notes nt WHERE nt.journal_entry_id = je.id LIMIT 1) AS note_party
+        FROM journal_lines jl JOIN journal_entries je ON je.id = jl.entry_id`)).rows;
+  const groups = /* @__PURE__ */ new Map();
+  const staying = /* @__PURE__ */ new Map();
+  const touched = /* @__PURE__ */ new Set();
+  for (const r of rows2) {
+    const lid = Number(r.account_id);
+    const side = sideOf.get(lid);
+    if (!side) continue;
+    let moving = null;
+    let party = "";
+    if (side === "creditor" && r.sale_id != null && Number(r.dr) > 0 && r.sale_party) {
+      moving = "customer";
+      party = String(r.sale_party);
+    } else if (side === "debtor" && r.order_id != null && Number(r.cr) > 0 && r.order_party) {
+      moving = "supplier";
+      party = String(r.order_party);
+    } else if (side === "creditor" && r.note_kind === "customer" && r.note_party) {
+      moving = "customer";
+      party = String(r.note_party);
+    } else if (side === "debtor" && r.note_kind === "supplier" && r.note_party) {
+      moving = "supplier";
+      party = String(r.note_party);
+    }
+    if (!moving) continue;
+    touched.add(lid);
+    const key3 = `${lid}|${moving}|${party.toUpperCase()}`;
+    const g = groups.get(key3) || { ledger: lid, moving, party, lines: [], entries: /* @__PURE__ */ new Set(), net: 0 };
+    g.lines.push(Number(r.line_id));
+    g.entries.add(Number(r.entry_id));
+    g.net = round28(g.net + Number(r.dr) - Number(r.cr));
+    groups.set(key3, g);
+  }
+  if (!groups.size) return [];
+  const moved = new Set([...groups.values()].flatMap((g) => g.lines));
+  for (const r of rows2) {
+    const lid = Number(r.account_id);
+    if (!touched.has(lid) || moved.has(Number(r.line_id))) continue;
+    if (r.sale_id != null || r.order_id != null || r.note_kind) continue;
+    const s4 = staying.get(lid) || { entries: /* @__PURE__ */ new Set(), net: 0 };
+    s4.entries.add(Number(r.entry_id));
+    s4.net = round28(s4.net + Number(r.dr) - Number(r.cr));
+    staying.set(lid, s4);
+  }
+  const out = [];
+  for (const [key3, g] of groups) {
+    const group = g.moving === "customer" ? "Sundry Debtors" : "Sundry Creditors";
+    const target = String(await partyAccountName2(g.party, group)).trim().toUpperCase();
+    const tgt = (await c.execute({ sql: "SELECT id FROM ledger_accounts WHERE name = ?", args: [target] })).rows[0];
+    const ledgerName = String(nameOf.get(g.ledger) || "");
+    const st = staying.get(g.ledger);
+    out.push({
+      key: key3,
+      ledger_id: g.ledger,
+      ledger: ledgerName,
+      ledger_side: sideOf.get(g.ledger),
+      moving: g.moving,
+      party: g.party,
+      target,
+      target_exists: !!tgt,
+      entries: g.entries.size,
+      line_ids: g.lines,
+      net: g.net,
+      staying: { entries: st ? st.entries.size : 0, net: st ? st.net : 0 },
+      review: target === ledgerName.trim().toUpperCase() ? "Its own ledger would be this same one \u2014 rename one of the two masters first" : void 0
+    });
+  }
+  return out.sort((a, b) => a.ledger.localeCompare(b.ledger) || a.party.localeCompare(b.party));
+}
+async function previewSharedLedgers() {
+  const findings = await scanSharedLedgers();
+  const ok = findings.filter((f) => !f.review);
+  return { findings, fixable: ok.length, lines: ok.reduce((t, f) => t + f.line_ids.length, 0) };
+}
+async function fixSharedLedgers(keys) {
+  const wanted = new Set((keys || []).map(String).filter(Boolean));
+  if (!wanted.size) throw new Error("Pick the ledgers to split");
+  return withDbTransaction(async () => {
+    const c = getClient();
+    await ensureLog();
+    const findings = await scanSharedLedgers();
+    const allowed = new Map(findings.filter((f) => !f.review).map((f) => [f.key, f]));
+    const stale = [...wanted].filter((k) => !allowed.has(k));
+    if (stale.length) throw new Error(`${stale.length} ${stale.length === 1 ? "ledger has" : "ledgers have"} changed since the list was shown \u2014 check again`);
+    const { getOrCreateAccount: getOrCreateAccount2 } = await Promise.resolve().then(() => (init_journal(), journal_exports));
+    let lines = 0;
+    const made = [];
+    for (const k of wanted) {
+      const f = allowed.get(k);
+      const group = f.moving === "customer" ? "Sundry Debtors" : "Sundry Creditors";
+      const targetId = await getOrCreateAccount2(f.target, group);
+      if (targetId === f.ledger_id) throw new Error(`${f.party} would move into the ledger it is already in \u2014 nothing was changed`);
+      const ids = f.line_ids.map(Number).join(",");
+      const before = (await c.execute(`SELECT * FROM journal_lines WHERE id IN (${ids})`)).rows.map((x) => ({ ...x }));
+      await c.execute({
+        sql: "INSERT OR IGNORE INTO accounting_repair_log(repair_key, entry_id, before_json) VALUES (?, ?, ?)",
+        args: [
+          `shared-ledger-v1:${f.ledger_id}:${f.moving}:${f.party.toUpperCase()}:${Date.now()}`,
+          Number(before[0]?.entry_id || 0),
+          JSON.stringify({ finding: f, target_id: targetId, lines: before })
+        ]
+      });
+      await c.execute(`UPDATE journal_lines SET account_id = ${Number(targetId)} WHERE id IN (${ids}) AND account_id = ${Number(f.ledger_id)}`);
+      await c.execute(`UPDATE journal_bill_allocs SET account_id = ${Number(targetId)} WHERE line_id IN (${ids})`);
+      lines += f.line_ids.length;
+      if (!made.includes(f.target)) made.push(f.target);
+    }
+    return { fixed: wanted.size, lines, ledgers: made };
   });
 }
 
@@ -31871,6 +32088,18 @@ function registerIpc() {
   handle("repairs:outwardFreightFix", async (_e, a) => {
     await assertAdmin("Taking delivery freight off sale vouchers");
     return fixOutwardFreight(a?.ids || []);
+  });
+  handle("repairs:sharedLedgers:list", async () => {
+    await assertAdmin("The accounting checks");
+    return previewSharedLedgers();
+  });
+  handle("repairs:sharedLedgersFix", async (_e, a) => {
+    await assertAdmin("Splitting shared party ledgers");
+    return fixSharedLedgers(a?.keys || []);
+  });
+  handle("parties:clashes:list", async (_e, a) => {
+    const { partyNameClashes: partyNameClashes2 } = await Promise.resolve().then(() => (init_partyLedgers(), partyLedgers_exports));
+    return partyNameClashes2(a?.name || "", a?.side === "supplier" ? "supplier" : "customer");
   });
   handle("bd:kpis", () => bdKpis());
   handle("bd:chargeTypes:list", () => listBdChargeTypes());
