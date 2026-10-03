@@ -3306,7 +3306,7 @@ var init_access_gate = __esm({
     ]);
     INTERCO_SALES_REFUSAL = "Your access to Sales covers inter-company transfer invoices only \u2014 an invoice to an outside customer cannot be raised or changed here.";
     JOURNAL_MASTERS_OPS = /* @__PURE__ */ new Set(["createAccount", "renameLedger", "createGroup", "renameGroup", "moveGroup", "deleteGroup", "setAccountGroup", "setAccountsGroup"]);
-    JOURNAL_OPENINGS_OPS = /* @__PURE__ */ new Set(["saveOpenings", "setBooksFrom"]);
+    JOURNAL_OPENINGS_OPS = /* @__PURE__ */ new Set(["saveOpenings", "setBooksFrom", "moveOpenings"]);
     SECTION_LABEL = Object.fromEntries(ACCOUNTS_SECTIONS.map((s4) => [s4.key, s4.label]));
   }
 });
@@ -10161,6 +10161,54 @@ async function saveOpenings(rows2, companyId) {
   }
   return { saved };
 }
+async function moveOpenings(accountIds, fromCompanyId, toCompanyId) {
+  const from = n12(fromCompanyId);
+  const to = n12(toCompanyId);
+  if (!from || !to) throw new Error("Pick the company to move the openings to");
+  if (from === to) throw new Error("That is the company they are already in");
+  const ids = [...new Set((accountIds || []).map(n12).filter((x) => x > 0))];
+  if (!ids.length) throw new Error("Tick the ledgers whose openings are to move");
+  return withDbTransaction(async () => {
+    const c = getClient();
+    const out = [];
+    const held = [];
+    for (const id of ids) {
+      const t2 = (await c.execute({
+        sql: `SELECT a.name, lo.dr, lo.cr FROM ledger_openings lo JOIN ledger_accounts a ON a.id = lo.account_id
+               WHERE lo.company_id = ? AND lo.account_id = ?`,
+        args: [to, id]
+      })).rows[0];
+      if (t2 && Math.abs(n12(t2.dr) - n12(t2.cr)) >= 5e-3) held.push(String(t2.name));
+    }
+    if (held.length) {
+      throw new Error(
+        `The other company already holds an opening for ${held.slice(0, 5).join(", ")}${held.length > 5 ? ` and ${held.length - 5} more` : ""} \u2014 clear it there first`
+      );
+    }
+    for (const id of ids) {
+      const src = (await c.execute({ sql: "SELECT dr, cr FROM ledger_openings WHERE company_id = ? AND account_id = ?", args: [from, id] })).rows[0];
+      const sNet = src ? round24(n12(src.dr) - n12(src.cr)) : 0;
+      if (Math.abs(sNet) < 5e-3) continue;
+      const tgt = (await c.execute({ sql: "SELECT dr, cr FROM ledger_openings WHERE company_id = ? AND account_id = ?", args: [to, id] })).rows[0];
+      const tNet = tgt ? round24(n12(tgt.dr) - n12(tgt.cr)) : 0;
+      const net = round24(sNet + tNet);
+      if (Math.abs(net) < 5e-3) {
+        await c.execute({ sql: "DELETE FROM ledger_openings WHERE company_id = ? AND account_id = ?", args: [to, id] });
+      } else {
+        await c.execute({
+          sql: `INSERT INTO ledger_openings (company_id, account_id, dr, cr, updated_at)
+                VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(company_id, account_id)
+                DO UPDATE SET dr = excluded.dr, cr = excluded.cr, updated_at = excluded.updated_at`,
+          args: [to, id, net > 0 ? net : 0, net < 0 ? -net : 0, todayISO()]
+        });
+      }
+      await c.execute({ sql: "DELETE FROM ledger_openings WHERE company_id = ? AND account_id = ?", args: [from, id] });
+      out.push({ account_id: id, moved: sNet, had: tNet, now: net });
+    }
+    return { moved: out.length, rows: out };
+  });
+}
 async function ledgerOpening(accountId, companyId) {
   const c = getClient();
   const cid = companyId || getActiveCompanyId();
@@ -10192,6 +10240,7 @@ var n12, round24;
 var init_openings = __esm({
   "src/main/openings.ts"() {
     init_db();
+    init_dbTransaction();
     init_company();
     init_repos();
     n12 = (v) => Number(v ?? 0) || 0;
@@ -31135,6 +31184,10 @@ function registerIpc() {
   handle("tally:clear", () => clearTallyLedgers());
   handle("tally:create", (_e, { values }) => createTallyLedgers(values));
   handle("tally:regroup", (_e, { values }) => regroupTallyLedger(values));
+  handle(
+    "journal:moveOpenings",
+    (_e, a) => moveOpenings(a.accountIds, a.fromCompanyId, a.toCompanyId)
+  );
   handle(
     "journal:saveOpenings",
     (_e, { rows: rows2, companyId }) => saveOpenings(rows2, companyId)
