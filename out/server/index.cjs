@@ -10039,6 +10039,7 @@ var init_repos = __esm({
         "tds_pct_above",
         "default_rate_per_ton",
         "reverse_charge",
+        "gst_registration",
         "active"
       ],
       customers: [
@@ -21167,6 +21168,15 @@ async function runStartupTasks() {
       });
     }
   })().catch((e) => console.error("[companies] column repair failed:", e));
+  for (const sql of [
+    "ALTER TABLE transporters ADD COLUMN gst_registration TEXT",
+    "ALTER TABLE transporter_bills ADD COLUMN others_amount REAL NOT NULL DEFAULT 0",
+    "ALTER TABLE transporter_bills ADD COLUMN others_ledger TEXT"
+  ]) {
+    await getClient().execute(sql).catch((e) => {
+      if (!/duplicate column/i.test(String(e.message))) console.error("[transporters] column failed:", e);
+    });
+  }
   await getClient().execute("ALTER TABLE lc_issuances ADD COLUMN installment_no INTEGER").catch((e) => {
     if (!/duplicate column/i.test(String(e.message))) console.error("[lc] installment column failed:", e);
   });
@@ -30402,7 +30412,7 @@ async function listTransporterFreight(side, opts = {}) {
   }
   if (opts.state === "unbilled") where.push("l.bill_id IS NULL");
   if (opts.state === "billed") where.push("l.bill_id IS NOT NULL");
-  const doc = side === "purchase" ? `o.invoice_no AS doc_no, o.order_date AS doc_date, s.name AS party_name,
+  const doc = side === "purchase" ? `o.invoice_no AS doc_no, o.order_date AS doc_date, s.name AS party_name, o.gst_pct AS oil_gst_pct,
          p.name AS product_name,
          -- Purchase freight is booked per TANKER (one ledger row each) under a
          -- single oil invoice, and the tanker number lives in the note the
@@ -30413,7 +30423,7 @@ async function listTransporterFreight(side, opts = {}) {
          ) AS vehicle_no,
          o.ordered_qty AS dispatch_qty, o.received_qty AS received_qty,
          o.status AS dispatch_stage,
-         CASE WHEN o.status != 'received' THEN 1 ELSE 0 END AS provisional` : `sa.invoice_no AS doc_no, sa.sale_date AS doc_date, COALESCE(cu.name, sa.customer) AS party_name,
+         CASE WHEN o.status != 'received' THEN 1 ELSE 0 END AS provisional` : `sa.invoice_no AS doc_no, sa.sale_date AS doc_date, COALESCE(cu.name, sa.customer) AS party_name, sa.gst_pct AS oil_gst_pct,
          p.name AS product_name,
          -- A sale has no tanker record of its own; the vehicle that carried it
          -- is whatever the gate wrote against the invoice group on the way out.
@@ -30440,7 +30450,7 @@ async function listTransporterFreight(side, opts = {}) {
     sql: `SELECT l.id, l.transporter_id, l.entry_date, l.entry_type, l.amount, l.note,
                  l.accrued, l.bill_id, l.note_id, l.waived_at, l.waived_by, l.waived_reason,
                  nt.note_no, nt.note_date,
-                 t.name AS transporter_name,
+                 t.name AS transporter_name, COALESCE(t.gst_registration, 'registered') AS gst_registration,
                  b.bill_no, b.bill_date, ${doc}
           FROM transporter_ledger l
           LEFT JOIN transporters t ON t.id = l.transporter_id
@@ -30451,7 +30461,16 @@ async function listTransporterFreight(side, opts = {}) {
           ORDER BY COALESCE(l.entry_date, '') DESC, l.id DESC`,
     args
   });
-  return toPlain35(res);
+  return toPlain35(res).map(
+    (r) => String(r.entry_type) === "shortage_penalty" && String(r.gst_registration) === "unregistered" ? { ...r, amount_base: n42(r.amount), amount: shortageRecovered(n42(r.amount), n42(r.oil_gst_pct)) } : r
+  );
+}
+function shortageRecovered(base, gstPct) {
+  return round216(base * (1 + Math.max(0, gstPct) / 100));
+}
+async function transporterRegistration(transporterId) {
+  const r = await getClient().execute({ sql: "SELECT gst_registration FROM transporters WHERE id = ?", args: [n42(transporterId)] });
+  return String(r.rows[0]?.gst_registration || "") === "unregistered" ? "unregistered" : "registered";
 }
 async function transporterFreightKpis(side, opts = {}) {
   const rows2 = await listTransporterFreight(side, { ...opts, state: "all" });
@@ -30504,11 +30523,18 @@ async function createTransporterBill(v, existingId) {
   if (!lineIds.length) throw new Error("Tick at least one freight line for this bill");
   const ph = lineIds.map(() => "?").join(", ");
   const linesRes = await c.execute({
-    sql: `SELECT id, transporter_id, amount, accrued, bill_id FROM transporter_ledger
-          WHERE id IN (${ph}) AND company_id = ?`,
+    sql: `SELECT l.id, l.transporter_id, l.amount, l.accrued, l.bill_id, l.note_id, l.waived_at, l.entry_type,
+                 COALESCE(o.gst_pct, sa.gst_pct, 0) AS oil_gst_pct
+          FROM transporter_ledger l
+          LEFT JOIN orders o ON o.id = l.order_id
+          LEFT JOIN sales sa ON sa.id = l.sale_id
+          WHERE l.id IN (${ph}) AND l.company_id = ?`,
     args: [...lineIds, cid]
   });
-  const picked = toPlain35(linesRes);
+  const reg = await transporterRegistration(transporterId);
+  const picked = toPlain35(linesRes).map(
+    (l) => reg === "unregistered" && String(l.entry_type) === "shortage_penalty" ? { ...l, amount: shortageRecovered(n42(l.amount), n42(l.oil_gst_pct)) } : l
+  );
   if (picked.length !== lineIds.length) throw new Error("Some of those freight lines no longer exist");
   for (const l of picked) {
     if (n42(l.transporter_id) !== transporterId) throw new Error("Every line on one bill must belong to the same transporter");
@@ -30519,6 +30545,9 @@ async function createTransporterBill(v, existingId) {
     if (l.waived_at != null) {
       throw new Error("That shortage was written off \u2014 leave it off the bill, which books the freight in full");
     }
+    if (reg === "registered" && String(l.entry_type) === "shortage_penalty" && !(existingId && n42(l.bill_id) === n42(existingId))) {
+      throw new Error("This transporter is GST registered \u2014 raise a debit note (NOTE) for the shortage instead of netting it into the bill");
+    }
   }
   const accrued = round216(picked.filter((l) => n42(l.accrued) === 1).reduce((t, l) => t + n42(l.amount), 0));
   const unaccrued = round216(picked.filter((l) => n42(l.accrued) !== 1).reduce((t, l) => t + n42(l.amount), 0));
@@ -30526,11 +30555,15 @@ async function createTransporterBill(v, existingId) {
   const adjustment = round216(n42(v.adjustment));
   const taxable = round216(lineTotal + adjustment);
   if (taxable <= 0) throw new Error("The bill nets to zero or less \u2014 check the adjustment");
-  const gstPct = n42(v.gst_pct);
+  const gstPct = reg === "unregistered" ? 0 : n42(v.gst_pct);
   const gst = round216(taxable * gstPct / 100);
   const tdsPct = n42(v.tds_pct);
   const tds = round216(taxable * tdsPct / 100);
-  const raw = round216(taxable + gst - tds);
+  const othersAmt = round216(Math.max(0, n42(v.others_amount)));
+  const frAccount = side === "purchase" ? "FREIGHT INWARD A/C" : "FREIGHT OUTWARD A/C";
+  const othersLedger = othersAmt > 4e-3 ? (String(v.others_ledger || "").trim() || frAccount).toUpperCase() : null;
+  const raw = round216(taxable + gst - tds - othersAmt);
+  if (raw <= 0) throw new Error("After the deductions nothing is left to pay the transporter \u2014 check the Others amount");
   const total = Math.round(raw);
   const roundOff = round216(total - raw);
   const billDate = String(v.bill_date || todayISO()).slice(0, 10);
@@ -30549,9 +30582,11 @@ async function createTransporterBill(v, existingId) {
     date: billDate,
     // A freight bill IS a purchase of a service, so it belongs in the purchase
     // series and reads as PUR in the ledger — not as an unexplained JV.
-    vchType: side === "purchase" ? "PURCHASE FREIGHT INWARD" : "PURCHASE FREIGHT OUTWARD",
+    // An unregistered transporter's freight is booked as a JV (no GST bill to
+    // record against); a registered one's stays in the purchase series.
+    vchType: reg === "unregistered" ? "JOURNAL" : side === "purchase" ? "PURCHASE FREIGHT INWARD" : "PURCHASE FREIGHT OUTWARD",
     vchNo: billNo,
-    narration: `Transporter bill ${billNo || ""} \u2014 ${partyName2} (${side === "purchase" ? "inward" : "outward"} freight, ${picked.length} line${picked.length === 1 ? "" : "s"}` + (adjustment ? `, adjusted by ${adjustment > 0 ? "+" : ""}${adjustment.toFixed(2)}` : "") + ")" + (v.adjustment_note ? ` \u2014 ${String(v.adjustment_note).trim()}` : ""),
+    narration: `Transporter bill ${billNo || ""} \u2014 ${partyName2} (${side === "purchase" ? "inward" : "outward"} freight, ${picked.length} line${picked.length === 1 ? "" : "s"}` + (adjustment ? `, adjusted by ${adjustment > 0 ? "+" : ""}${adjustment.toFixed(2)}` : "") + ")" + (v.adjustment_note ? ` \u2014 ${String(v.adjustment_note).trim()}` : "") + (othersAmt > 4e-3 ? `; others ${othersAmt.toFixed(2)} recovered${v.others_note ? ` (${String(v.others_note).trim()})` : ""}` : "") + (reg === "unregistered" ? " \u2014 unregistered transporter, RCM applicable" : ""),
     companyId: cid,
     lines: [
       { account: "FREIGHT PAYABLE A/C", group: "Current Liabilities", dr: accrued },
@@ -30570,6 +30605,7 @@ async function createTransporterBill(v, existingId) {
       ...gstLines({ side: "INPUT", pct: n42(v.gst_pct), type: DEFAULT_GST_TYPE, dr: gst }),
       { account: "ROUND OFF A/C", group: "Indirect Expenses", dr: roundOff > 0 ? roundOff : 0, cr: roundOff < 0 ? -roundOff : 0 },
       { account: "TDS PAYABLE A/C", group: "Duties & Taxes", cr: tds },
+      ...othersLedger ? [{ account: othersLedger, group: othersLedger === frAccount ? "Direct Expenses" : "Indirect Incomes", cr: othersAmt }] : [],
       { account: partyName2, group: "Sundry Creditors", cr: total }
     ]
   });
@@ -30578,7 +30614,8 @@ async function createTransporterBill(v, existingId) {
     await c.execute({
       sql: `UPDATE transporter_bills SET transporter_id = ?, side = ?, bill_no = ?, bill_date = ?,
               taxable = ?, gst_pct = ?, gst_amount = ?, tds_pct = ?, tds_amount = ?, round_off = ?,
-              total = ?, journal_entry_id = ?, note = ?, adjustment = ?, adjustment_note = ?
+              total = ?, journal_entry_id = ?, note = ?, adjustment = ?, adjustment_note = ?,
+              others_amount = ?, others_ledger = ?
             WHERE id = ? AND company_id = ?`,
       args: [
         transporterId,
@@ -30596,6 +30633,8 @@ async function createTransporterBill(v, existingId) {
         note,
         adjustment,
         v.adjustment_note ? String(v.adjustment_note).trim() : null,
+        othersAmt,
+        othersLedger,
         existingId,
         cid
       ]
@@ -30605,8 +30644,9 @@ async function createTransporterBill(v, existingId) {
     const ins = await c.execute({
       sql: `INSERT INTO transporter_bills
               (company_id, transporter_id, side, bill_no, bill_date, taxable, gst_pct, gst_amount,
-               tds_pct, tds_amount, round_off, total, journal_entry_id, note, adjustment, adjustment_note)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+               tds_pct, tds_amount, round_off, total, journal_entry_id, note, adjustment, adjustment_note,
+               others_amount, others_ledger)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       args: [
         cid,
         transporterId,
@@ -30623,7 +30663,9 @@ async function createTransporterBill(v, existingId) {
         je.id,
         note,
         adjustment,
-        v.adjustment_note ? String(v.adjustment_note).trim() : null
+        v.adjustment_note ? String(v.adjustment_note).trim() : null,
+        othersAmt,
+        othersLedger
       ]
     });
     billId = Number(ins.lastInsertRowid);
@@ -30635,7 +30677,8 @@ async function raiseFreightShortageNote(lineId, v = {}) {
   const c = getClient();
   const cid = v.companyId ? n42(v.companyId) : getActiveCompanyId();
   const r = await c.execute({
-    sql: `SELECT l.*, s.invoice_no AS sale_invoice, o.invoice_no AS order_invoice
+    sql: `SELECT l.*, s.invoice_no AS sale_invoice, o.invoice_no AS order_invoice,
+                 o.gst_pct AS order_gst_pct, s.gst_pct AS sale_gst_pct
             FROM transporter_ledger l
             LEFT JOIN sales s ON s.id = l.sale_id
             LEFT JOIN orders o ON o.id = l.order_id
@@ -30657,6 +30700,10 @@ async function raiseFreightShortageNote(lineId, v = {}) {
   const amount2 = round216(Math.abs(n42(line.amount)));
   if (amount2 <= 0) throw new Error("Nothing to claim on this line");
   if (!line.transporter_id) throw new Error("This line has no transporter to raise a note against");
+  if (await transporterRegistration(n42(line.transporter_id)) === "unregistered") {
+    throw new Error("This transporter is unregistered \u2014 no debit note; the shortage is deducted on their freight bill (with GST) when you book it");
+  }
+  const oilGst = n42(line.order_id != null ? line.order_gst_pct : line.sale_gst_pct);
   const inv = String(line.sale_invoice || line.order_invoice || "");
   const inward = line.order_id != null;
   const note = await createNote({
@@ -30667,7 +30714,7 @@ async function raiseFreightShortageNote(lineId, v = {}) {
     note_date: String(v.date || line.entry_date || todayISO()).slice(0, 10),
     against_account: inward ? "FREIGHT INWARD A/C" : "FREIGHT OUTWARD A/C",
     base_amount: amount2,
-    gst_pct: 0,
+    gst_pct: oilGst,
     against_invoice: inv || null,
     narration: `Oil shortage recovery${inv ? ` on ${inv}` : ""}${line.note ? ` \u2014 ${String(line.note)}` : ""}`
   });
