@@ -5936,6 +5936,11 @@ async function listOrders(forModule) {
            t.name AS transporter_name,
            (SELECT COUNT(*) FROM purchase_tankers pt WHERE pt.order_id = o.id) AS tanker_count,
            (SELECT GROUP_CONCAT(pt.tanker_no, ', ') FROM purchase_tankers pt WHERE pt.order_id = o.id) AS tanker_nos,
+           -- The gate's entry numbers for those tankers, for the Accounts
+           -- purchase register's Vehicle column (the sales register shows its
+           -- gate pass the same way).
+           (SELECT GROUP_CONCAT(ge.gate_entry_no, ', ') FROM gate_entries ge JOIN purchase_tankers pt ON pt.id = ge.tanker_id
+             WHERE pt.order_id = o.id AND ge.direction = 'in') AS gate_entry_nos,
            -- The lab readings, as two counts: how many of this invoice's tankers
            -- have been emptied, and how many of those carry a reading. The
            -- register draws one glyph from the pair \u2014 green when they match,
@@ -28558,6 +28563,25 @@ async function deleteLCIssuance(id) {
     return { id };
   });
 }
+async function assertLcNotClosed(lcId, what = "edited") {
+  if (!lcId) return;
+  const r = await getClient().execute({ sql: "SELECT lc_no, preclosed_date FROM letters_of_credit WHERE id = ?", args: [lcId] });
+  const row = r.rows[0];
+  const closed = String(row?.preclosed_date || "").slice(0, 10);
+  if (!closed) return;
+  const [y, m, d] = closed.split("-");
+  throw new Error(
+    `LC ${String(row?.lc_no || "")} was repaid on ${d}-${m}-${y} and is closed, so it can no longer be ${what}. If a figure is wrong, use \u22EE \u2192 Undo preclosure first, correct it, then repay it again.`
+  );
+}
+async function lcIdOfRepayment(id) {
+  const r = await getClient().execute({ sql: "SELECT lc_id FROM lc_repayments WHERE id = ?", args: [id] });
+  return Number(r.rows[0]?.lc_id || 0);
+}
+async function lcIdOfIssuance(id) {
+  const r = await getClient().execute({ sql: "SELECT lc_id FROM lc_issuances WHERE id = ?", args: [id] });
+  return Number(r.rows[0]?.lc_id || 0);
+}
 
 // src/main/dailyPosition.ts
 init_orders();
@@ -31933,10 +31957,19 @@ function registerIpc() {
   handle("treasury:reopenLcBill", (_e, { id }) => reopenLcBill(id));
   handle("lc:issuances", (_e, { lcId }) => listLCIssuances(lcId));
   handle("lc:create", (_e, { values }) => createLC(values));
-  handle("lc:update", (_e, { id, values }) => updateLC(id, values));
+  handle("lc:update", async (_e, { id, values }) => {
+    await assertLcNotClosed(Number(id));
+    return updateLC(id, values);
+  });
   handle("lc:delete", (_e, { id }) => deleteLC(id));
-  handle("lc:issue", (_e, { values }) => issueLC(values));
-  handle("lc:deleteIssuance", (_e, { id }) => deleteLCIssuance(id));
+  handle("lc:issue", async (_e, { values }) => {
+    await assertLcNotClosed(Number(values?.lc_id), "drawn on");
+    return issueLC(values);
+  });
+  handle("lc:deleteIssuance", async (_e, { id }) => {
+    await assertLcNotClosed(await lcIdOfIssuance(Number(id)), "changed");
+    return deleteLCIssuance(id);
+  });
   handle("lc:unpreclose", (_e, { id }) => unPrecloseLC(id));
   handle(
     "lc:preclose",
@@ -31954,8 +31987,14 @@ function registerIpc() {
   handle("lc:deletePaymentIn", (_e, { id }) => deleteLcPaymentIn(id));
   handle("lc:openTradingInvoices", (_e, { lcId }) => listLcOpenTradingInvoices(lcId));
   handle("lc:repayments", (_e, { lcId }) => listLcRepayments(lcId));
-  handle("lc:saveRepayment", (_e, { values }) => saveLcRepayment(values));
-  handle("lc:deleteRepayment", (_e, { id }) => deleteLcRepayment(id));
+  handle("lc:saveRepayment", async (_e, { values }) => {
+    await assertLcNotClosed(Number(values?.lc_id) || (values?.id ? await lcIdOfRepayment(Number(values.id)) : 0), "changed");
+    return saveLcRepayment(values);
+  });
+  handle("lc:deleteRepayment", async (_e, { id }) => {
+    await assertLcNotClosed(await lcIdOfRepayment(Number(id)), "changed");
+    return deleteLcRepayment(id);
+  });
   handle(
     "lc:getLimit",
     (_e, args) => getLcLimit(args?.bankId, args?.from, args?.to)
