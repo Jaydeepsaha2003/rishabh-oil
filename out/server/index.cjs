@@ -2979,7 +2979,7 @@ function actionFor(op) {
   if (op === "delete" || op === "remove" || op === "removeInvoice" || op === "deleteEntry" || op === "deleteTransfer" || // Removing a packed-stock entry is a deletion, not an edit. Without this
   // it fell through to 'edit' and anyone who could enter packing could also
   // delete somebody else's.
-  op === "deleteAdjustment" || op === "deleteIssuance" || op === "removeIssuance") return "delete";
+  op === "deleteAdjustment" || op === "deleteIssuance" || op === "removeIssuance" || op === "deleteInstallment") return "delete";
   return "edit";
 }
 async function gateEntryUnfinished(id) {
@@ -21167,6 +21167,9 @@ async function runStartupTasks() {
       });
     }
   })().catch((e) => console.error("[companies] column repair failed:", e));
+  await getClient().execute("ALTER TABLE lc_issuances ADD COLUMN installment_no INTEGER").catch((e) => {
+    if (!/duplicate column/i.test(String(e.message))) console.error("[lc] installment column failed:", e);
+  });
   await (async () => {
     await getClient().execute("ALTER TABLE letters_of_credit ADD COLUMN blocked_amount REAL").catch((e) => {
       if (!/duplicate column/i.test(String(e.message))) throw e;
@@ -27810,6 +27813,9 @@ async function listLCs() {
       COALESCE((SELECT SUM(COALESCE(comm_charges, 0) + COALESCE(bank_charges, 0))
                   FROM lc_repayments WHERE lc_id = l.id AND posted = 1), 0) AS repaid_charges,
       (SELECT COUNT(*) FROM lc_repayments WHERE lc_id = l.id) AS repayment_count,
+      -- Parts the bank has paid the supplier in; 0 for an LC paid in one go.
+      (SELECT COUNT(DISTINCT installment_no) FROM lc_issuances WHERE lc_id = l.id AND installment_no IS NOT NULL) AS installment_count,
+      (SELECT MAX(settled_date) FROM lc_issuances WHERE lc_id = l.id AND installment_no IS NOT NULL) AS last_installment_date,
       -- What has actually come back, so the countdown chip can stand down and
       -- the Payment IN action knows there is nothing left to receive.
       COALESCE((SELECT SUM(amount) FROM lc_payment_ins WHERE lc_id = l.id), 0) AS payment_in_total,
@@ -28041,7 +28047,15 @@ async function syncPaymentReceivedIssuance(lcId, v) {
   if (!paymentDate) return;
   const c = getClient();
   const existing = await c.execute({ sql: "SELECT COUNT(*) AS n FROM lc_issuances WHERE lc_id = ?", args: [lcId] });
-  if (n35(existing.rows[0]?.n) === 0) {
+  const firstPart = round214(n35(v.first_installment));
+  if (n35(existing.rows[0]?.n) === 0 && firstPart > 5e-3) {
+    const full = netAvailable(v, 0);
+    if (firstPart > full + 5e-3) {
+      throw new Error(`The first installment (${firstPart.toFixed(2)}) is more than the ${full.toFixed(2)} the bank releases on this LC`);
+    }
+    const ids = Array.isArray(v.linked_order_ids) ? v.linked_order_ids.map((x) => n35(x)).filter((x) => x > 0) : [];
+    await insertInstallmentBills(lcId, firstPart, paymentDate, String(v.expiry_date || paymentDate).slice(0, 10), 1, ids);
+  } else if (n35(existing.rows[0]?.n) === 0) {
     const issueDate = String(v.open_date || paymentDate).slice(0, 10);
     const dueDate = String(v.expiry_date || paymentDate).slice(0, 10);
     const ids = Array.isArray(v.linked_order_ids) ? v.linked_order_ids.map((x) => n35(x)).filter((x) => x > 0) : [];
@@ -28246,12 +28260,13 @@ async function resizeAutoLcBill(lcId) {
   if (!lcRes.rows.length) return;
   const lc = toPlain31(lcRes)[0];
   const res = await c.execute({
-    sql: "SELECT id, amount, order_id, bill_no FROM lc_issuances WHERE lc_id = ?",
+    sql: "SELECT id, amount, order_id, bill_no, installment_no FROM lc_issuances WHERE lc_id = ?",
     args: [n35(lcId)]
   });
   if (res.rows.length !== 1) return;
   const bill = toPlain31(res)[0];
   if (n35(bill.order_id)) return;
+  if (n35(bill.installment_no)) return;
   if (String(bill.bill_no || "").trim()) return;
   const want = netAvailable(lc, 0);
   if (want <= 5e-3) return;
@@ -28354,6 +28369,10 @@ async function updateLC(id, v) {
     const warning = await syncLcVouchers(id);
     return { id, warning };
   });
+}
+function todayISO8() {
+  const d = /* @__PURE__ */ new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
 }
 function daysBetween4(a, b) {
   return Math.round(((/* @__PURE__ */ new Date(`${b}T00:00:00`)).getTime() - (/* @__PURE__ */ new Date(`${a}T00:00:00`)).getTime()) / 864e5);
@@ -28571,7 +28590,7 @@ async function assertLcNotClosed(lcId, what = "edited") {
   if (!closed) return;
   const [y, m, d] = closed.split("-");
   throw new Error(
-    `LC ${String(row?.lc_no || "")} was repaid on ${d}-${m}-${y} and is closed, so it can no longer be ${what}. If a figure is wrong, use \u22EE \u2192 Undo preclosure first, correct it, then repay it again.`
+    `LC ${String(row?.lc_no || "")} was repaid on ${d}-${m}-${y} and is closed, so it can no longer be ${what}. To change how it was closed, use \u22EE \u2192 Edit preclosure; to change the LC itself, Undo preclosure first.`
   );
 }
 async function lcIdOfRepayment(id) {
@@ -28581,6 +28600,128 @@ async function lcIdOfRepayment(id) {
 async function lcIdOfIssuance(id) {
   const r = await getClient().execute({ sql: "SELECT lc_id FROM lc_issuances WHERE id = ?", args: [id] });
   return Number(r.rows[0]?.lc_id || 0);
+}
+async function insertInstallmentBills(lcId, amount2, date, dueDate, instNo, orderIds) {
+  const c = getClient();
+  const ids = [];
+  let left = round214(amount2);
+  for (const oid of orderIds) {
+    if (left <= 5e-3) break;
+    const o = await c.execute({ sql: "SELECT invoice_no, net_amount FROM orders WHERE id = ?", args: [oid] });
+    if (!o.rows.length) continue;
+    const used = await c.execute({
+      sql: "SELECT COALESCE(SUM(amount), 0) AS u FROM lc_issuances WHERE lc_id = ? AND order_id = ?",
+      args: [lcId, oid]
+    });
+    const room = round214(n35(o.rows[0].net_amount) - n35(used.rows[0]?.u));
+    const part = round214(Math.min(left, room));
+    if (part <= 5e-3) continue;
+    const ins = await c.execute({
+      sql: `INSERT INTO lc_issuances (lc_id, issue_date, amount, order_id, bill_no, due_date, status, installment_no)
+            VALUES (?, ?, ?, ?, ?, ?, 'outstanding', ?)`,
+      args: [lcId, date, part, oid, String(o.rows[0].invoice_no || ""), dueDate, instNo]
+    });
+    ids.push(Number(ins.lastInsertRowid));
+    left = round214(left - part);
+  }
+  if (left > 5e-3) {
+    const ins = await c.execute({
+      sql: `INSERT INTO lc_issuances (lc_id, issue_date, amount, bill_no, due_date, status, installment_no)
+            VALUES (?, ?, ?, NULL, ?, 'outstanding', ?)`,
+      args: [lcId, date, left, dueDate, instNo]
+    });
+    ids.push(Number(ins.lastInsertRowid));
+  }
+  return ids;
+}
+function dmy2(iso) {
+  return iso.slice(0, 10).split("-").reverse().join("-");
+}
+async function payLcParty(lcId, v) {
+  return withDbTransaction(async () => {
+    const c = getClient();
+    const res = await c.execute({ sql: "SELECT * FROM letters_of_credit WHERE id = ?", args: [n35(lcId)] });
+    if (!res.rows.length) throw new Error("LC not found");
+    const lc = toPlain31(res)[0];
+    if (String(lc.stage || "") !== "payment_received") {
+      throw new Error("Mark Payment received first \u2014 that records the first part the bank paid");
+    }
+    const amount2 = round214(n35(v.amount));
+    if (amount2 <= 5e-3) throw new Error("Enter the amount the bank paid the supplier");
+    const date = String(v.date || "").slice(0, 10);
+    if (!date) throw new Error("Pick the date the bank paid it");
+    if (date > todayISO8()) throw new Error("The payment date cannot be in the future");
+    const paidFrom = String(lc.payment_received_date || "").slice(0, 10);
+    if (paidFrom && date < paidFrom) throw new Error(`An installment cannot be dated before the first payment on ${dmy2(paidFrom)}`);
+    const bills = toPlain31(
+      await c.execute({
+        sql: "SELECT amount, installment_no, settled_date FROM lc_issuances WHERE lc_id = ?",
+        args: [n35(lcId)]
+      })
+    );
+    if (bills.length && !bills.some((b) => n35(b.installment_no))) {
+      throw new Error("This LC was paid to the supplier in one go \u2014 there is nothing left to pay in installments");
+    }
+    const last = bills.reduce((m, b) => String(b.settled_date || "") > m ? String(b.settled_date) : m, "");
+    if (last && date < last.slice(0, 10)) {
+      throw new Error(`The last installment was paid on ${dmy2(last)} \u2014 this one cannot be dated before it`);
+    }
+    const paid = round214(bills.reduce((s4, b) => s4 + n35(b.amount), 0));
+    const left = round214(netAvailable(lc, paid));
+    if (left <= 5e-3) throw new Error("The supplier has already been paid everything this LC releases");
+    if (amount2 > left + 5e-3) throw new Error(`Only ${left.toFixed(2)} is still to be paid to the supplier on this LC`);
+    const instNo = bills.reduce((m, b) => Math.max(m, n35(b.installment_no)), 0) + 1;
+    const linked = await c.execute({
+      sql: "SELECT order_id FROM lc_linked_orders WHERE lc_id = ? ORDER BY order_id",
+      args: [n35(lcId)]
+    });
+    const ids = await insertInstallmentBills(
+      n35(lcId),
+      amount2,
+      date,
+      String(lc.expiry_date || date).slice(0, 10),
+      instNo,
+      linked.rows.map((r) => n35(r.order_id)).filter((x) => x > 0)
+    );
+    const memo = String(v.note || "").trim();
+    if (memo) {
+      await c.execute({
+        sql: `UPDATE lc_issuances SET note = ? WHERE id IN (${ids.map(() => "?").join(",")})`,
+        args: [memo, ...ids]
+      });
+    }
+    const je = await settleLcBillsCombined(ids, date);
+    if (!je) throw new Error("The installment could not be posted");
+    return { id: je.id, installment_no: instNo };
+  });
+}
+async function deleteLastLcInstallment(lcId) {
+  return withDbTransaction(async () => {
+    const c = getClient();
+    const r = await c.execute({ sql: "SELECT MAX(installment_no) AS m FROM lc_issuances WHERE lc_id = ?", args: [n35(lcId)] });
+    const instNo = n35(r.rows[0]?.m);
+    if (!instNo) throw new Error("This LC has no installments");
+    if (instNo === 1) throw new Error("The first installment is the Payment received itself \u2014 it cannot be removed here");
+    const rows2 = toPlain31(
+      await c.execute({
+        sql: "SELECT id, journal_entry_id FROM lc_issuances WHERE lc_id = ? AND installment_no = ?",
+        args: [n35(lcId), instNo]
+      })
+    );
+    const entries = [...new Set(rows2.map((x) => n35(x.journal_entry_id)).filter(Boolean))];
+    for (const e of entries) await dropTreasuryEntry(e);
+    await c.execute({ sql: "DELETE FROM lc_issuances WHERE lc_id = ? AND installment_no = ?", args: [n35(lcId), instNo] });
+    return { installment_no: instNo };
+  });
+}
+async function editPreclosure(id, v) {
+  return withDbTransaction(async () => {
+    const res = await getClient().execute({ sql: "SELECT preclosed_date FROM letters_of_credit WHERE id = ?", args: [n35(id)] });
+    if (!res.rows.length) throw new Error("LC not found");
+    if (!res.rows[0].preclosed_date) throw new Error("This LC is not closed \u2014 use Preclose instead");
+    await unPrecloseLC(n35(id));
+    return precloseLC(n35(id), v);
+  });
 }
 
 // src/main/dailyPosition.ts
@@ -31966,11 +32107,23 @@ function registerIpc() {
     await assertLcNotClosed(Number(values?.lc_id), "drawn on");
     return issueLC(values);
   });
+  handle("lc:payParty", async (_e, { id, values }) => {
+    await assertLcNotClosed(Number(id), "paid on");
+    return payLcParty(Number(id), values);
+  });
+  handle("lc:deleteInstallment", async (_e, { id }) => {
+    await assertLcNotClosed(Number(id), "changed");
+    return deleteLastLcInstallment(Number(id));
+  });
   handle("lc:deleteIssuance", async (_e, { id }) => {
     await assertLcNotClosed(await lcIdOfIssuance(Number(id)), "changed");
     return deleteLCIssuance(id);
   });
   handle("lc:unpreclose", (_e, { id }) => unPrecloseLC(id));
+  handle(
+    "lc:editPreclosure",
+    (_e, { id, values }) => editPreclosure(Number(id), values)
+  );
   handle(
     "lc:preclose",
     (_e, {
