@@ -2749,6 +2749,8 @@ var init_ledgerMap = __esm({
 // src/main/partyLedgers.ts
 var partyLedgers_exports = {};
 __export(partyLedgers_exports, {
+  ensureAllPartyMasterLedgers: () => ensureAllPartyMasterLedgers,
+  ensurePartyMasterLedger: () => ensurePartyMasterLedger,
   partyAccountName: () => partyAccountName,
   partyNameClashes: () => partyNameClashes,
   partySideOfGroup: () => partySideOfGroup
@@ -2796,6 +2798,33 @@ async function partyNameClashes(name, side) {
     args: [asked]
   });
   return res.rows.map((r) => ({ id: Number(r.id), name: String(r.name), side: side === "customer" ? "supplier" : "customer" }));
+}
+async function ensurePartyMasterLedger(table, name) {
+  const nm = String(name || "").trim();
+  if (!nm) return false;
+  const group = table === "customers" ? "Sundry Debtors" : "Sundry Creditors";
+  const { getOrCreateAccount: getOrCreateAccount2 } = await Promise.resolve().then(() => (init_journal(), journal_exports));
+  const asName = String(await partyAccountName(nm.toUpperCase(), group)).trim().toUpperCase();
+  const before = await getClient().execute({ sql: "SELECT id FROM ledger_accounts WHERE name = ?", args: [asName] });
+  const resolved = String(await resolveAccountName(asName) || asName).trim().toUpperCase();
+  const viaRedirect = resolved !== asName ? await getClient().execute({ sql: "SELECT id FROM ledger_accounts WHERE name = ?", args: [resolved] }) : null;
+  if (before.rows.length || viaRedirect && viaRedirect.rows.length) return false;
+  await getOrCreateAccount2(asName, group);
+  return true;
+}
+async function ensureAllPartyMasterLedgers() {
+  let made = 0;
+  for (const table of ["customers", "suppliers", "transporters", "brokers"]) {
+    const rows2 = await getClient().execute(`SELECT name FROM ${table}`).catch(() => null);
+    for (const r of rows2?.rows || []) {
+      try {
+        if (await ensurePartyMasterLedger(table, r.name)) made += 1;
+      } catch (e) {
+        console.error(`[party ledgers] ${table} "${String(r.name)}":`, e.message);
+      }
+    }
+  }
+  return made;
 }
 var SIDE_ROOT;
 var init_partyLedgers = __esm({
@@ -9829,6 +9858,10 @@ async function create(table, values) {
   });
   if (table === "companies") await ensureCompanyParties().catch(() => void 0);
   if (table === "banks") await ensureBankLedger(values).catch((e) => console.error("[banks] ledger not created:", e));
+  if (table === "customers" || table === "suppliers" || table === "transporters" || table === "brokers") {
+    const { ensurePartyMasterLedger: ensurePartyMasterLedger2 } = await Promise.resolve().then(() => (init_partyLedgers(), partyLedgers_exports));
+    await ensurePartyMasterLedger2(table, values.name).catch((e) => console.error(`[${table}] ledger not created:`, e));
+  }
   return { id: Number(res.lastInsertRowid) };
 }
 async function ensureBankLedger(v) {
@@ -22310,6 +22343,11 @@ async function runStartupTasks() {
     }
     if (fixed.length) console.log(`[freight] marked ${fixed.length} delivery freight line(s) as already accrued: ${fixed.join(", ")}`);
   }).catch((e) => console.error("[freight] accrued flag repair failed:", e));
+  await runOnce("party_master_ledgers_v1", async () => {
+    const { ensureAllPartyMasterLedgers: ensureAllPartyMasterLedgers2 } = await Promise.resolve().then(() => (init_partyLedgers(), partyLedgers_exports));
+    const made = await ensureAllPartyMasterLedgers2();
+    console.log(`[party ledgers] created ${made} ledger(s) for masters that had none`);
+  }).catch((e) => console.error("[party ledgers] backfill failed:", e));
   await runOnce("bd_open_adj_charge_v1", async () => {
     const done = await convertOpenAdjToCharge();
     if (done.length) console.log(`[bd] moved ${done.length} bill(s) to the Open amount with the Adj. as a charge: ${done.join(", ")}`);
