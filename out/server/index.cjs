@@ -3173,7 +3173,9 @@ async function accountsRule(ns, op, args) {
     if (op === "createLedger") return section("accountsMasters", { action: "create" });
     const kind = String(a.values?.kind || "").toLowerCase();
     if (op === "post") return section(kind === "debit" ? "accountsDebitNote" : "accountsCreditNote", { action: "create" });
-    return section("accountsTallyImport", { action: op === "preview" || op === "salesCheck" ? "view" : "edit" });
+    return section("accountsTallyImport", {
+      action: ["preview", "salesCheck", "drafts", "saveDraft", "clearDraft"].includes(op) ? "view" : "edit"
+    });
   }
   if (ns === "tbill" && (op === "create" || op === "update" || op === "delete")) {
     const stored = op === "create" ? null : await one("SELECT side FROM transporter_bills WHERE id = ?", a.id);
@@ -23190,6 +23192,7 @@ async function tradingAccount(from, to, companyId) {
 
 // src/main/tallyNotes.ts
 init_journal();
+init_currentUser();
 function toPlain20(res) {
   return res.rows.map((r) => ({ ...r }));
 }
@@ -23904,6 +23907,81 @@ function explainRows(rows2, tallySales, books, ownCompany = "") {
     r.explain = say2;
     r.fix = fix;
   }
+}
+async function ensureDraftTable() {
+  await getClient().execute(`CREATE TABLE IF NOT EXISTS tally_import_drafts (
+    company_id INTEGER NOT NULL,
+    username TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    file_name TEXT,
+    data_base64 TEXT NOT NULL,
+    picked_json TEXT,
+    allow_maybe INTEGER NOT NULL DEFAULT 0,
+    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (company_id, username, kind)
+  )`);
+}
+function draftOwner() {
+  return String(getCurrentUser().username || "").trim() || "local";
+}
+function draftKind(v) {
+  return v === "debit" ? "debit" : v === "sales" ? "sales" : "credit";
+}
+async function saveTallyDraft(v) {
+  await ensureDraftTable();
+  const c = getClient();
+  const kind = draftKind(v.kind);
+  const cid = getActiveCompanyId();
+  const who = draftOwner();
+  const picked = JSON.stringify(Array.isArray(v.picked) ? v.picked.map(String) : []);
+  if (v.data_base64) {
+    if (String(v.data_base64).length > 12e6) throw new Error("That file is too large to keep as a draft");
+    await c.execute({
+      sql: `INSERT INTO tally_import_drafts (company_id, username, kind, file_name, data_base64, picked_json, allow_maybe, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'))
+            ON CONFLICT(company_id, username, kind) DO UPDATE SET
+              file_name = excluded.file_name, data_base64 = excluded.data_base64,
+              picked_json = excluded.picked_json, allow_maybe = excluded.allow_maybe, updated_at = excluded.updated_at`,
+      args: [cid, who, kind, String(v.file_name || ""), String(v.data_base64), picked, v.allow_maybe ? 1 : 0]
+    });
+  } else {
+    await c.execute({
+      sql: `UPDATE tally_import_drafts SET picked_json = ?, allow_maybe = ?, updated_at = datetime('now')
+             WHERE company_id = ? AND username = ? AND kind = ?`,
+      args: [picked, v.allow_maybe ? 1 : 0, cid, who, kind]
+    });
+  }
+  const r = await c.execute({
+    sql: "SELECT updated_at FROM tally_import_drafts WHERE company_id = ? AND username = ? AND kind = ?",
+    args: [cid, who, kind]
+  });
+  return { saved_at: String(r.rows[0]?.updated_at || "") };
+}
+async function listTallyDrafts() {
+  await ensureDraftTable();
+  return toPlain20(
+    await getClient().execute({
+      sql: `SELECT kind, file_name, data_base64, picked_json, allow_maybe, updated_at
+              FROM tally_import_drafts WHERE company_id = ? AND username = ?`,
+      args: [getActiveCompanyId(), draftOwner()]
+    })
+  ).map((r) => {
+    let picked = [];
+    try {
+      picked = JSON.parse(String(r.picked_json || "[]"));
+    } catch {
+      picked = [];
+    }
+    return { kind: String(r.kind), file_name: String(r.file_name || ""), data_base64: String(r.data_base64), picked, allow_maybe: !!Number(r.allow_maybe), saved_at: String(r.updated_at || "") };
+  });
+}
+async function clearTallyDraft(v) {
+  await ensureDraftTable();
+  const r = await getClient().execute({
+    sql: "DELETE FROM tally_import_drafts WHERE company_id = ? AND username = ? AND kind = ?",
+    args: [getActiveCompanyId(), draftOwner(), draftKind(v.kind)]
+  });
+  return { cleared: r.rowsAffected > 0 };
 }
 
 // src/main/ipc.ts
@@ -32344,6 +32422,9 @@ function registerIpc() {
   handle("tallyNotes:post", (_e, { values }) => postTallyNotes(values));
   handle("tallyNotes:salesCheck", (_e, { values }) => reconcileTallySales(values));
   handle("tallyNotes:linkParty", (_e, { values }) => linkTallyParty(values));
+  handle("tallyNotes:saveDraft", (_e, { values }) => saveTallyDraft(values));
+  handle("tallyNotes:drafts", () => listTallyDrafts());
+  handle("tallyNotes:clearDraft", (_e, { values }) => clearTallyDraft(values));
   handle("tally:map", () => tallyLedgerMap());
   handle("tally:link", (_e, { values }) => mapTallyLedger(values));
   handle("tally:applyOpenings", (_e, { values }) => applyTallyOpenings(values));
