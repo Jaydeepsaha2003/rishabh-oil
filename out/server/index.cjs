@@ -3009,7 +3009,7 @@ function actionFor(op) {
   if (op === "delete" || op === "remove" || op === "removeInvoice" || op === "deleteEntry" || op === "deleteTransfer" || // Removing a packed-stock entry is a deletion, not an edit. Without this
   // it fell through to 'edit' and anyone who could enter packing could also
   // delete somebody else's.
-  op === "deleteAdjustment" || op === "deleteIssuance" || op === "removeIssuance" || op === "deleteInstallment") return "delete";
+  op === "deleteAdjustment" || op === "deleteIssuance" || op === "removeIssuance" || op === "deleteInstallment" || op === "deletePartyPayment") return "delete";
   return "edit";
 }
 async function gateEntryUnfinished(id) {
@@ -3393,7 +3393,9 @@ var init_access_gate = __esm({
       // them must not need the right to change them — linkVoucher/unlinkVoucher
       // still count as edits of the bargain.
       "linkedVouchers",
-      "voucherChoices"
+      "voucherChoices",
+      // The parts an NBFC has paid a supplier on a discounted bill.
+      "partyPayments"
     ]);
     GATE_FINISH_OPS = /* @__PURE__ */ new Set(["complete", "weights", "skipWeighment"]);
     cache = null;
@@ -5799,6 +5801,47 @@ var init_invoiceno = __esm({
 });
 
 // src/main/orders.ts
+var orders_exports = {};
+__export(orders_exports, {
+  addLedgerEntry: () => addLedgerEntry,
+  advanceOrder: () => advanceOrder,
+  advancePurchaseTanker: () => advancePurchaseTanker,
+  backfillOrderStatuses: () => backfillOrderStatuses,
+  backfillPurchaseRoundOff: () => backfillPurchaseRoundOff,
+  computeMoney: () => computeMoney,
+  createOrder: () => createOrder,
+  createPurchaseTanker: () => createPurchaseTanker,
+  createTankerInvoice: () => createTankerInvoice,
+  deleteLedgerEntry: () => deleteLedgerEntry,
+  deleteOrder: () => deleteOrder,
+  deletePurchaseTanker: () => deletePurchaseTanker,
+  listConsignmentDraws: () => listConsignmentDraws,
+  listFfaHistory: () => listFfaHistory,
+  listOrderBargainInterest: () => listOrderBargainInterest,
+  listOrderBargains: () => listOrderBargains,
+  listOrderQuality: () => listOrderQuality,
+  listOrders: () => listOrders,
+  listPurchaseTankers: () => listPurchaseTankers,
+  listSupplierLedger: () => listSupplierLedger,
+  listTankerQuality: () => listTankerQuality,
+  listTankerQualityMany: () => listTankerQualityMany,
+  listTransporterLedger: () => listTransporterLedger,
+  orderInterestAmounts: () => orderInterestAmounts,
+  purchaseBargainNotes: () => purchaseBargainNotes,
+  recordSupplierPayment: () => recordSupplierPayment,
+  repairPurchaseTdsOnTaxable: () => repairPurchaseTdsOnTaxable,
+  replaceTanker: () => replaceTanker,
+  rerateInvoicesForBargain: () => rerateInvoicesForBargain,
+  revertPurchaseTanker: () => revertPurchaseTanker,
+  saveOrderQuality: () => saveOrderQuality,
+  saveTankerQuality: () => saveTankerQuality,
+  setSupplierPayable: () => setSupplierPayable,
+  supplierFyTaxable: () => supplierFyTaxable,
+  updateOrder: () => updateOrder,
+  updateTankerDetails: () => updateTankerDetails,
+  updateTankerInvoice: () => updateTankerInvoice,
+  waiveOrderQuality: () => waiveOrderQuality
+});
 function toPlain9(res) {
   return res.rows.map((r) => {
     const o = {};
@@ -7924,6 +7967,77 @@ async function deleteLedgerEntry(partyType, id) {
     args: [id]
   });
   return { id };
+}
+async function recordSupplierPayment(data) {
+  const res = await getClient().execute({
+    sql: `INSERT INTO supplier_ledger (supplier_id, order_id, entry_date, entry_type, amount, note, company_id)
+          VALUES (?, ?, ?, 'payment', ?, ?, ?)`,
+    args: [
+      n6(data.supplier_id),
+      data.order_id ? n6(data.order_id) : null,
+      data.entry_date,
+      -Math.abs(n6(data.amount)),
+      data.note || "Payment",
+      getActiveCompanyId()
+    ]
+  });
+  return { id: Number(res.lastInsertRowid) };
+}
+async function orderInterestAmounts(orderIds) {
+  const out = /* @__PURE__ */ new Map();
+  const ids = [...new Set(orderIds.map((x) => n6(x)).filter((x) => x > 0))];
+  if (!ids.length) return out;
+  const c = getClient();
+  const ph = ids.map(() => "?").join(",");
+  const orders = toPlain9(
+    await c.execute({
+      sql: `SELECT o.id, o.bargain_id, o.bargain_rate, o.ordered_qty, o.gst_pct, o.interest_pct, o.interest_days,
+                   o.additional_interest, o.credit_interest_amount, COALESCE(s.adds_interest, 0) AS adds_interest
+              FROM orders o LEFT JOIN suppliers s ON s.id = o.supplier_id
+             WHERE o.id IN (${ph})`,
+      args: ids
+    })
+  );
+  const overrides = toPlain9(
+    await c.execute({ sql: `SELECT order_id, bargain_id, additional_interest, interest_days FROM order_bargain_interest WHERE order_id IN (${ph})`, args: ids })
+  );
+  const tankers = toPlain9(await c.execute({ sql: `SELECT id, order_id FROM purchase_tankers WHERE order_id IN (${ph})`, args: ids }));
+  const split2 = toPlain9(
+    await c.execute({
+      sql: `SELECT ob.order_id, ob.bargain_id, ob.qty, b.rate_per_uom AS rate
+              FROM order_bargains ob LEFT JOIN bargains b ON b.id = ob.bargain_id WHERE ob.order_id IN (${ph})`,
+      args: ids
+    })
+  );
+  for (const o of orders) {
+    const id = n6(o.id);
+    let lines = [];
+    const tIds = tankers.filter((t) => n6(t.order_id) === id).map((t) => n6(t.id));
+    if (tIds.length) lines = await bargainLinesForTankers(tIds);
+    if (!lines.length) {
+      lines = split2.filter((s4) => n6(s4.order_id) === id).map((s4) => ({ rate: n6(s4.rate), qty: n6(s4.qty), bargainId: n6(s4.bargain_id) }));
+    }
+    if (!lines.length) lines = [{ rate: n6(o.bargain_rate), qty: n6(o.ordered_qty), bargainId: n6(o.bargain_id) }];
+    const pct = n6(o.adds_interest) ? n6(o.interest_pct) : 0;
+    const k = (1 + n6(o.gst_pct) / 100) * (pct / 100);
+    let amt = 0;
+    if (lines.length === 1) {
+      const ov = overrides.find((x) => n6(x.order_id) === id);
+      const addl = n6(o.additional_interest) || (ov ? n6(ov.additional_interest) : 0);
+      const days = n6(o.interest_days);
+      amt = (addl + n6(o.bargain_rate) * k * (days / 365)) * n6(o.ordered_qty);
+    } else {
+      for (const l of lines) {
+        const ov = overrides.find((x) => n6(x.order_id) === id && n6(x.bargain_id) === l.bargainId);
+        const addl = ov && ov.additional_interest != null ? n6(ov.additional_interest) : n6(o.additional_interest);
+        const days = ov && n6(ov.interest_days) ? n6(ov.interest_days) : n6(o.interest_days);
+        amt += (addl + l.rate * k * (days / 365)) * l.qty;
+      }
+    }
+    amt += n6(o.credit_interest_amount);
+    out.set(id, Math.round(amt * 100) / 100);
+  }
+  return out;
 }
 var STAGES, TANKER_STAGES, GATE_MATCH_BUFFER, STAGE_DATE_FIELDS, billSeq;
 var init_orders = __esm({
@@ -10897,6 +11011,15 @@ async function accountStatement(accountId, companyId) {
   });
   const lines = toPlain12(res);
   if (!lines.length) return lines;
+  {
+    const { orderInterestAmounts: orderInterestAmounts2 } = await Promise.resolve().then(() => (init_orders(), orders_exports));
+    const amounts = await orderInterestAmounts2(lines.map((l) => Number(l.order_id)).filter((x) => x > 0));
+    for (const l of lines) {
+      if (!Number(l.order_id)) continue;
+      const a = amounts.get(Number(l.order_id));
+      l.interest_amt = a && Math.abs(a) > 4e-3 ? a : null;
+    }
+  }
   const others = await c.execute({
     sql: `SELECT jl.entry_id, jl.dr, jl.cr, a.name
           FROM journal_lines jl
@@ -13304,7 +13427,10 @@ async function postBdOpening(bdId) {
       return;
     }
     const marginWithheld = n14(bd.invoice_amount) > 0 ? 0 : calc.marginAmount;
-    const lines = [{ account: destination, group: route === "supplier" ? "Sundry Creditors" : "Bank Accounts", dr: calc.receiptAmount }];
+    const firstPart = route === "supplier" && n14(bd.first_party_part) > 5e-3 ? Math.min(round26(n14(bd.first_party_part)), calc.receiptAmount) : 0;
+    const toParty = firstPart > 0 ? firstPart : calc.receiptAmount;
+    const notYet = round26(calc.receiptAmount - toParty);
+    const lines = [{ account: destination, group: route === "supplier" ? "Sundry Creditors" : "Bank Accounts", dr: toParty }];
     if (marginWithheld > 5e-3) lines.push({ account: "BD MARGIN A/C", group: "Deposits (Asset)", dr: marginWithheld });
     if (interest > 5e-3) lines.push({ account: "INTEREST ON BILL DISCOUNTING A/C", group: "Indirect Expenses", dr: interest });
     const adjLedger = String(bd.open_adj_ledger || "").trim().toUpperCase() || BD_ADJ_DEFAULT;
@@ -13314,7 +13440,7 @@ async function postBdOpening(bdId) {
       if (calc.adjCharge < -4e-3) lines.push({ account: p.ledger, group: "Indirect Expenses", dr: round26(p.amount) });
       if (calc.adjCharge > 4e-3) lines.push({ account: p.ledger, group: "Indirect Expenses", cr: round26(p.amount) });
     }
-    lines.push({ account: bdPayable(bd), group: BD_PAYABLE_GROUP, cr: amount2 });
+    lines.push({ account: bdPayable(bd), group: BD_PAYABLE_GROUP, cr: round26(amount2 - notYet) });
     const write = n14(bd.journal_entry_id) ? (args) => repostJournal(n14(bd.journal_entry_id), args) : postJournal;
     const je = await write({
       date: String(bd.payment_received_date || todayISO5()).slice(0, 10),
@@ -13325,7 +13451,7 @@ async function postBdOpening(bdId) {
       lines
     });
     await c.execute({ sql: "UPDATE bill_discountings SET journal_entry_id = ? WHERE id = ?", args: [je.id, bdId] });
-    if (route === "supplier") await allocAgainst2(je.id, destination, null, calc.receiptAmount);
+    if (route === "supplier") await allocAgainst2(je.id, destination, null, toParty);
   });
 }
 async function postBdUpfrontInterest(bdId, dateIn, account) {
@@ -13752,7 +13878,10 @@ async function listBd(filter) {
                  (SELECT MAX(ip.to_date) FROM bd_interest_payments ip
                    WHERE ip.bd_id = bd.id) AS interest_paid_to,
                  (SELECT MAX(rr.repay_date) FROM bd_repayments rr
-                   WHERE rr.bd_id = bd.id) AS last_repay_date
+                   WHERE rr.bd_id = bd.id) AS last_repay_date,
+                 -- The later parts the NBFC paid the supplier (the first is on the bill).
+                 COALESCE((SELECT SUM(pp.amount) FROM bd_party_payments pp WHERE pp.bd_id = bd.id), 0) AS party_parts_paid,
+                 (SELECT COUNT(*) FROM bd_party_payments pp WHERE pp.bd_id = bd.id) AS party_parts_count
           FROM bill_discountings bd
           LEFT JOIN nbfcs nb ON nb.id = bd.nbfc_id
           LEFT JOIN suppliers s ON bd.party_type = 'supplier' AND s.id = bd.party_id
@@ -13769,10 +13898,17 @@ async function listBd(filter) {
     const repaidTotal = round26(
       parts > 0 ? n14(bd.parts_paid) : String(bd.status) === "repaid" ? n14(bd.repaid_amount) : 0
     );
+    const calcRow = bdCalc(bd);
+    const inParts = String(bd.disbursement_route || "") === "supplier" && n14(bd.first_party_part) > 5e-3;
+    const partyPaid = inParts ? round26(n14(bd.first_party_part) + n14(bd.party_parts_paid)) : null;
     return {
       ...bd,
       party_name: partyName(bd),
-      ...bdCalc(bd),
+      ...calcRow,
+      party_in_parts: inParts,
+      party_paid: partyPaid,
+      party_left: inParts ? round26(Math.max(0, calcRow.receiptAmount - (partyPaid || 0))) : 0,
+      party_part_count: inParts ? 1 + n14(bd.party_parts_count) : 0,
       repaid_total: repaidTotal,
       outstanding_amount: round26(Math.max(0, n14(bd.amount) - repaidTotal)),
       repay_parts: parts,
@@ -13897,6 +14033,9 @@ async function deleteBd(id) {
     const ins = await c.execute({ sql: "SELECT journal_entry_id FROM bd_payment_ins WHERE bd_id = ?", args: [id] });
     for (const r of ins.rows) await dropEntry2(n14(r.journal_entry_id) || null);
     await c.execute({ sql: "DELETE FROM bd_payment_ins WHERE bd_id = ?", args: [id] });
+    const pp = await c.execute({ sql: "SELECT journal_entry_id FROM bd_party_payments WHERE bd_id = ?", args: [id] }).catch(() => null);
+    for (const r of pp?.rows || []) await dropEntry2(n14(r.journal_entry_id) || null);
+    await c.execute({ sql: "DELETE FROM bd_party_payments WHERE bd_id = ?", args: [id] }).catch(() => void 0);
     await c.execute({ sql: "DELETE FROM bd_linked_orders WHERE bd_id = ?", args: [id] });
     await c.execute({ sql: "DELETE FROM bd_parties WHERE bd_id = ?", args: [id] });
     await c.execute({ sql: "DELETE FROM bill_discountings WHERE id = ?", args: [id] });
@@ -14448,6 +14587,23 @@ async function markBdPaymentReceived(id, dateIn, opts) {
   return withDbTransaction(async () => {
     const c = getClient();
     const bd = await loadBd(id);
+    if (opts && "firstPart" in opts) {
+      const later = await c.execute({ sql: "SELECT COUNT(*) AS k FROM bd_party_payments WHERE bd_id = ?", args: [id] });
+      const fp = round26(n14(opts.firstPart));
+      const routeNow = String(opts.route || bd.disbursement_route || "");
+      const net = round26(bdCalc(bd).receiptAmount);
+      if (fp > 5e-3) {
+        if (routeNow !== "supplier") throw new Error("Only a bill the NBFC pays straight to the supplier can be paid in parts");
+        if (fp > net + 5e-3) throw new Error(`The first part (${inr(fp)}) is more than the ${inr(net)} the NBFC releases on this bill`);
+      }
+      if (n14(later.rows[0]?.k) > 0 && Math.abs(fp - n14(bd.first_party_part)) > 5e-3) {
+        throw new Error("Later parts have been paid on this bill \u2014 take them back before changing the first part");
+      }
+      await c.execute({
+        sql: "UPDATE bill_discountings SET first_party_part = ? WHERE id = ?",
+        args: [fp > 5e-3 && fp < net - 5e-3 ? fp : null, id]
+      });
+    }
     const route = String(opts?.route || "").trim();
     if (route) {
       if (!["bank", "supplier"].includes(route)) throw new Error("Choose who received the NBFC disbursement");
@@ -14480,9 +14636,11 @@ async function unmarkBdPaymentReceived(id) {
     if (paid > 4e-3) {
       throw new Error(`${inr(paid)} has already been repaid on this bill \u2014 remove the repayments before undoing the receipt`);
     }
+    const later = await c.execute({ sql: "SELECT COUNT(*) AS k FROM bd_party_payments WHERE bd_id = ?", args: [id] });
+    if (n14(later.rows[0]?.k) > 0) throw new Error("Later parts have been paid to the supplier on this bill \u2014 take them back before undoing the receipt");
     await dropEntry2(n14(bd.journal_entry_id) || null);
     await c.execute({
-      sql: "UPDATE bill_discountings SET payment_received_date = NULL, journal_entry_id = NULL WHERE id = ?",
+      sql: "UPDATE bill_discountings SET payment_received_date = NULL, journal_entry_id = NULL, first_party_part = NULL WHERE id = ?",
       args: [id]
     });
     return { id };
@@ -14732,6 +14890,83 @@ async function bdKpis() {
     awaiting_count: awaiting.length,
     awaiting_total: round26(awaiting.reduce((s4, r) => s4 + n14(r.amount), 0))
   };
+}
+async function bdPartyState(bd) {
+  const c = getClient();
+  const calc = bdCalc(bd);
+  const net = round26(calc.receiptAmount);
+  const parts = toPlain13(
+    await c.execute({ sql: "SELECT * FROM bd_party_payments WHERE bd_id = ? ORDER BY part_no", args: [n14(bd.id)] })
+  );
+  const first = n14(bd.first_party_part);
+  const paid = round26((first > 0 ? first : 0) + parts.reduce((t, p) => t + n14(p.amount), 0));
+  const dates = [String(bd.payment_received_date || "").slice(0, 10), ...parts.map((p) => String(p.pay_date || "").slice(0, 10))].filter(Boolean).sort();
+  return { net, paid, left: round26(Math.max(0, net - paid)), parts, lastDate: dates[dates.length - 1] || "" };
+}
+async function listBdPartyPayments(bdId) {
+  const bd = await loadBd(bdId);
+  const st = await bdPartyState(bd);
+  const first = n14(bd.first_party_part);
+  const out = [];
+  if (bd.payment_received_date && String(bd.disbursement_route || "") === "supplier") {
+    out.push({ part_no: 1, pay_date: String(bd.payment_received_date).slice(0, 10), amount: first > 0 ? first : st.net, note: null, journal_entry_id: bd.journal_entry_id });
+  }
+  for (const p of st.parts) out.push({ part_no: n14(p.part_no), pay_date: p.pay_date, amount: n14(p.amount), note: p.note, journal_entry_id: p.journal_entry_id });
+  return out;
+}
+async function payBdParty(bdId, v) {
+  return withDbTransaction(async () => {
+    const c = getClient();
+    const bd = await loadBd(bdId);
+    if (String(bd.disbursement_route || "") !== "supplier") throw new Error("Only a bill the NBFC pays straight to the supplier is paid in parts");
+    if (!bd.payment_received_date) throw new Error("Mark Payment received first \u2014 that records the first part the NBFC paid");
+    if (!(n14(bd.first_party_part) > 0)) throw new Error("This bill was paid to the supplier in one go \u2014 there is nothing left to pay in parts");
+    if (String(bd.status) === "repaid") throw new Error("This bill is repaid \u2014 no more parts can be paid on it");
+    const amount2 = round26(n14(v.amount));
+    if (amount2 <= 5e-3) throw new Error("Enter the amount the NBFC paid the supplier");
+    const date = String(v.date || "").slice(0, 10);
+    if (!date) throw new Error("Pick the date the NBFC paid it");
+    assertNotFuture2(date, "The payment date");
+    const st = await bdPartyState(bd);
+    if (st.lastDate && date < st.lastDate) {
+      throw new Error(`The last part was paid on ${st.lastDate.split("-").reverse().join("-")} \u2014 this one cannot be dated before it`);
+    }
+    if (st.left <= 5e-3) throw new Error("The supplier has already been paid everything this bill releases");
+    if (amount2 > st.left + 5e-3) throw new Error(`Only ${inr(st.left)} is still to be paid to the supplier on this bill`);
+    const party = partyName(bd);
+    if (!party) throw new Error("This bill has no supplier to pay");
+    const partNo = st.parts.reduce((m, p) => Math.max(m, n14(p.part_no)), 1) + 1;
+    const je = await postJournal({
+      date,
+      vchType: "JOURNAL",
+      vchNo: String(bd.bd_no || ""),
+      narration: `Bill Discounting ${bd.bd_no || ""} \u2014 ${bd.nbfc_name || "the NBFC"} paid ${party} part ${partNo}: ${amount2.toFixed(2)}${v.note ? ` (${String(v.note).trim()})` : ""}`,
+      companyId: n14(bd.company_id) || void 0,
+      lines: [
+        { account: party, group: "Sundry Creditors", dr: amount2 },
+        { account: bdPayable(bd), group: BD_PAYABLE_GROUP, cr: amount2 }
+      ]
+    });
+    await allocAgainst2(je.id, party, null, amount2);
+    await c.execute({
+      sql: "INSERT INTO bd_party_payments (bd_id, part_no, pay_date, amount, note, journal_entry_id) VALUES (?, ?, ?, ?, ?, ?)",
+      args: [n14(bdId), partNo, date, amount2, String(v.note || "").trim() || null, je.id]
+    });
+    return { id: je.id, part_no: partNo };
+  });
+}
+async function deleteLastBdPartyPayment(bdId) {
+  return withDbTransaction(async () => {
+    const c = getClient();
+    const bd = await loadBd(bdId);
+    if (String(bd.status) === "repaid") throw new Error("This bill is repaid \u2014 reopen it first");
+    const r = await c.execute({ sql: "SELECT id, part_no, journal_entry_id FROM bd_party_payments WHERE bd_id = ? ORDER BY part_no DESC LIMIT 1", args: [n14(bdId)] });
+    if (!r.rows.length) throw new Error("The first part is the Payment received itself \u2014 undo the receipt to change it");
+    const row = r.rows[0];
+    await dropEntry2(n14(row.journal_entry_id) || null);
+    await c.execute({ sql: "DELETE FROM bd_party_payments WHERE id = ?", args: [n14(row.id)] });
+    return { part_no: n14(row.part_no) };
+  });
 }
 
 // src/main/bootstrap.ts
@@ -21219,6 +21454,19 @@ async function runStartupTasks() {
       if (!/duplicate column/i.test(String(e.message))) console.error("[transporters] column failed:", e);
     });
   }
+  await getClient().execute("ALTER TABLE bill_discountings ADD COLUMN first_party_part REAL").catch((e) => {
+    if (!/duplicate column/i.test(String(e.message))) console.error("[bd] first_party_part column failed:", e);
+  });
+  await getClient().execute(`CREATE TABLE IF NOT EXISTS bd_party_payments (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      bd_id INTEGER NOT NULL,
+      part_no INTEGER NOT NULL,
+      pay_date TEXT NOT NULL,
+      amount REAL NOT NULL,
+      note TEXT,
+      journal_entry_id INTEGER,
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    )`).catch((e) => console.error("[bd] party payments table failed:", e));
   await getClient().execute("ALTER TABLE lc_issuances ADD COLUMN installment_no INTEGER").catch((e) => {
     if (!/duplicate column/i.test(String(e.message))) console.error("[lc] installment column failed:", e);
   });
@@ -23033,19 +23281,29 @@ async function listPendingRefs(accountName, companyId, side, all = false) {
                         FROM journal_lines jl WHERE jl.entry_id = je.id AND jl.account_id = ?) AS side`;
     const res = await vnum(
       () => c.execute({
-        sql: `SELECT je.id, je.entry_date, je.vch_type, je.vch_no, ${sideSql},
+        sql: `SELECT je.id, je.entry_date, je.vch_type, je.vch_no, je.order_id, je.sale_id, ${sideSql},
                        (SELECT vn.prefix || '/' || vn.serial FROM voucher_numbers vn WHERE vn.entry_id = je.id) AS code
                   FROM journal_entries je WHERE je.id IN (${list2})`,
         args: [accountId]
       }),
-      () => c.execute({ sql: `SELECT je.id, je.entry_date, je.vch_type, je.vch_no, ${sideSql} FROM journal_entries je WHERE je.id IN (${list2})`, args: [accountId] })
+      () => c.execute({ sql: `SELECT je.id, je.entry_date, je.vch_type, je.vch_no, je.order_id, je.sale_id, ${sideSql} FROM journal_entries je WHERE je.id IN (${list2})`, args: [accountId] })
     );
     for (const r of toPlain19(res)) {
-      origins.set(n20(r.id), { entry_id: n20(r.id), entry_date: r.entry_date, vch_type: r.vch_type, vch_no: r.vch_no ?? null, code: r.code ?? null, side: r.side || null });
+      origins.set(n20(r.id), {
+        entry_id: n20(r.id),
+        entry_date: r.entry_date,
+        vch_type: r.vch_type,
+        vch_no: r.vch_no ?? null,
+        code: r.code ?? null,
+        side: r.side || null,
+        order_id: n20(r.order_id) || null,
+        sale_id: n20(r.sale_id) || null
+      });
     }
   }
   const settledSql = (withCode) => `SELECT ba.ref_name AS ref, ba.order_id AS order_id, ba.sale_invoice_group AS sale_invoice_group,
                  ba.amount AS amount, je.id AS entry_id, je.entry_date, je.vch_type, je.vch_no, je.narration,
+                 je.order_id AS doc_order_id, je.sale_id AS doc_sale_id,
                  CASE WHEN jl.dr > 0 THEN 'dr' ELSE 'cr' END AS side
                  ${withCode ? ", (SELECT vn.prefix || '/' || vn.serial FROM voucher_numbers vn WHERE vn.entry_id = je.id) AS code" : ""}
           FROM journal_bill_allocs ba
@@ -23080,7 +23338,9 @@ async function listPendingRefs(accountName, companyId, side, all = false) {
           code: s4.code ?? null,
           side: s4.side || null,
           narration: s4.narration,
-          amount: round29(n20(s4.amount))
+          amount: round29(n20(s4.amount)),
+          order_id: n20(s4.doc_order_id) || null,
+          sale_id: n20(s4.doc_sale_id) || null
         });
       }
     }
@@ -32160,7 +32420,7 @@ async function recordAudit(channel, args, result) {
   );
 }
 function registerIpc() {
-  const READONLY = /:list$|:get$|:items$|:issuances$|:sheet$|:outstanding$|:all$|:summary$|:transfers$|:fyTaxable$|:needs$|:breakdown$|:nextNo$|:liveUsers$|:ips$|:logs$|:dispatchableSales$|:mine$|:pendingCount$|:pending$|:lots$|:unmapped$|:unmappedCount$|:bargainLines$|:bargainNotes$|:bargainInterest$|:consignmentDraws$|^access:heartbeat$|^db:ping$|^db:snapshot$|^app:revision$|^auth:login$|^journal:booksFrom$|^tally:map$|^journal:openings$|^journal:opening$|^journal:accounts$|^journal:statement$|^journal:trialBalance$|^journal:groups$|^journal:groupNames$|^journal:groupTree$|^journal:ledgerMap$|^journal:pendingRefs$|^journal:billsOutstanding$|^journal:tradingAccount$|^dashboard:stats$|^vouchers:nextCode$|^vouchers:forDocument$|^vouchers:alterInfo$|^tfreight:kpis$|^dashboard:position$|^dashboard:layout$|^dashboard:saveLayout$|^productMerge:preview$|^skuRates:parties$|^skuRates:partyCounts$|^consignment:openingLog$|^tags:list$|^tags:for$|^tags:contents$|^consignment:openingLots$|^consignment:invoices$|^tankers:quality$|^tankers:qualityMany$|^tankers:ffaHistory$|^orders:quality$|^gate:partyCategories$|^gate:waivedOuts$|^gate:forRecord$|^notify:rules$|^notify:list$|^notify:run$|^notify:preview$|^notify:people$|^notify:mutes$|^treasury:alerts$|^treasury:paymentTracker$|^facility:exposures$|^facility:headroom$|^company:setActive$|^company:getActive$|^factory:active$|^factory:companies$|^session:setUser$|^lc:repayments$|^lc:allRepayments$|^lc:getLimit$|^lc:bankLimits$|^lc:paymentIns$|^lc:openTradingInvoices$|^files:pickDocument$|^files:openDocument$|^bankRecon:imports$|^bankRecon:list$|^bankRecon:suggest$|^bd:kpis$|^bd:limits$|^skuStock:adjustments$|^skuOpening:list$|^skuOpening:date$|^stockCount:previous$|^orders:intercompanySource$|^stockOpening:list$|^stockOpening:date$|^stockOpening:sets$|^stockOpening:setLines$|^stockOpening:ppStages$|^stockOpening:ppFreeTotals$|^production:ppDraws$|^bargains:linkedInvoices$|^bargains:linkedVouchers$|^bargains:voucherChoices$|^salesBargains:linkedVouchers$|^salesBargains:voucherChoices$|^bargains:adjustments$|^history:list$|^stockOpening:ppVessels$|^stockOpening:ppReceivers$|^stockOpening:ppWriteoffs$|^work:board$|^work:cutoff$|^work:processes$|^formulationSubcategory:list$|^formulations:versions$|^facility:limitHistory$|^bd:limitReductions$|^bd:allRepayments$|^bd:interestSchedule$|^bd:interestWindow$|^bd:interestPayments$|^bd:linkedOrders$|^bd:parties$|^bd:allParties$|^bd:openTradingInvoices$|^bd:paymentIns$|^access:entryWindows$|^access:entityHistory$|^trading:list$|^sales:series$|^sales:invoiceGaps$|^salesBargains:returns$|^salesBargains:linkedInvoices$|^salesBargains:unattributedReturns$|^tbill:orphans$|^production:report$/;
+  const READONLY = /:list$|:get$|:items$|:issuances$|:sheet$|:outstanding$|:all$|:summary$|:transfers$|:fyTaxable$|:needs$|:breakdown$|:nextNo$|:liveUsers$|:ips$|:logs$|:dispatchableSales$|:mine$|:pendingCount$|:pending$|:lots$|:unmapped$|:unmappedCount$|:bargainLines$|:bargainNotes$|:bargainInterest$|:consignmentDraws$|^access:heartbeat$|^db:ping$|^db:snapshot$|^app:revision$|^auth:login$|^journal:booksFrom$|^tally:map$|^journal:openings$|^journal:opening$|^journal:accounts$|^journal:statement$|^journal:trialBalance$|^journal:groups$|^journal:groupNames$|^journal:groupTree$|^journal:ledgerMap$|^journal:pendingRefs$|^journal:billsOutstanding$|^journal:tradingAccount$|^dashboard:stats$|^vouchers:nextCode$|^vouchers:forDocument$|^vouchers:alterInfo$|^tfreight:kpis$|^dashboard:position$|^dashboard:layout$|^dashboard:saveLayout$|^productMerge:preview$|^skuRates:parties$|^skuRates:partyCounts$|^consignment:openingLog$|^tags:list$|^tags:for$|^tags:contents$|^consignment:openingLots$|^consignment:invoices$|^tankers:quality$|^tankers:qualityMany$|^tankers:ffaHistory$|^orders:quality$|^gate:partyCategories$|^gate:waivedOuts$|^gate:forRecord$|^notify:rules$|^notify:list$|^notify:run$|^notify:preview$|^notify:people$|^notify:mutes$|^treasury:alerts$|^treasury:paymentTracker$|^facility:exposures$|^facility:headroom$|^company:setActive$|^company:getActive$|^factory:active$|^factory:companies$|^session:setUser$|^lc:repayments$|^lc:allRepayments$|^lc:getLimit$|^lc:bankLimits$|^lc:paymentIns$|^lc:openTradingInvoices$|^files:pickDocument$|^files:openDocument$|^bankRecon:imports$|^bankRecon:list$|^bankRecon:suggest$|^bd:kpis$|^bd:limits$|^skuStock:adjustments$|^skuOpening:list$|^skuOpening:date$|^stockCount:previous$|^orders:intercompanySource$|^stockOpening:list$|^stockOpening:date$|^stockOpening:sets$|^stockOpening:setLines$|^stockOpening:ppStages$|^stockOpening:ppFreeTotals$|^production:ppDraws$|^bargains:linkedInvoices$|^bargains:linkedVouchers$|^bargains:voucherChoices$|^salesBargains:linkedVouchers$|^salesBargains:voucherChoices$|^bargains:adjustments$|^history:list$|^stockOpening:ppVessels$|^stockOpening:ppReceivers$|^stockOpening:ppWriteoffs$|^work:board$|^work:cutoff$|^work:processes$|^formulationSubcategory:list$|^formulations:versions$|^facility:limitHistory$|^bd:limitReductions$|^bd:allRepayments$|^bd:interestSchedule$|^bd:interestWindow$|^bd:interestPayments$|^bd:linkedOrders$|^bd:parties$|^bd:allParties$|^bd:openTradingInvoices$|^bd:paymentIns$|^bd:partyPayments$|^access:entryWindows$|^access:entityHistory$|^trading:list$|^sales:series$|^sales:invoiceGaps$|^salesBargains:returns$|^salesBargains:linkedInvoices$|^salesBargains:unattributedReturns$|^tbill:orphans$|^production:report$/;
   const AUDIT_SKIP = /* @__PURE__ */ new Set(["config:get", "config:save", "session:setUser"]);
   const handle = (channel, fn) => {
     ipcMain.handle(channel, async (e, args) => {
@@ -33127,8 +33387,11 @@ function registerIpc() {
   handle("bd:deleteRepayment", (_e, { id }) => deleteBdRepayment(id));
   handle(
     "bd:markReceived",
-    (_e, { id, date, route, account }) => markBdPaymentReceived(id, date, { route, account })
+    (_e, { id, date, route, account, firstPart }) => markBdPaymentReceived(id, date, firstPart === void 0 ? { route, account } : { route, account, firstPart })
   );
+  handle("bd:partyPayments", (_e, { id }) => listBdPartyPayments(Number(id)));
+  handle("bd:payParty", (_e, { id, values }) => payBdParty(Number(id), values));
+  handle("bd:deletePartyPayment", (_e, { id }) => deleteLastBdPartyPayment(Number(id)));
   handle("bd:unmarkReceived", (_e, { id }) => unmarkBdPaymentReceived(id));
   handle("bd:reopen", (_e, { id }) => reopenBd(id));
   handle(
