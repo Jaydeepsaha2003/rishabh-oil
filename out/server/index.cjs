@@ -2335,12 +2335,12 @@ async function ppFinishedDetails(companyIds, from, to) {
   for (const r of co?.rows || []) {
     scopesOf.set(Number(r.id), [...Number(r.factory_id) ? [`f${Number(r.factory_id)}`] : [], `c${Number(r.id)}`]);
   }
-  const companyOf = /* @__PURE__ */ new Map();
+  const companyOf2 = /* @__PURE__ */ new Map();
   const pc = await c.execute({ sql: `SELECT id, company_id FROM production WHERE company_id IN (${ph})`, args: [...companyIds] }).catch(() => null);
-  for (const r of pc?.rows || []) companyOf.set(Number(r.id), Number(r.company_id));
+  for (const r of pc?.rows || []) companyOf2.set(Number(r.id), Number(r.company_id));
   const lotCache = /* @__PURE__ */ new Map();
   const matchLot = async (draw, prodDate) => {
-    const scopes = scopesOf.get(companyOf.get(Number(draw.production_id)) || 0) || [];
+    const scopes = scopesOf.get(companyOf2.get(Number(draw.production_id)) || 0) || [];
     const key3 = `${scopes.join(",")}|${draw.product_id}|${draw.stage_id}|${prodDate}`;
     if (lotCache.has(key3)) return lotCache.get(key3) || null;
     let hit = null;
@@ -3004,6 +3004,16 @@ var init_access_rules = __esm({
 });
 
 // src/main/access-gate.ts
+var access_gate_exports = {};
+__export(access_gate_exports, {
+  assertAdmin: () => assertAdmin,
+  assertAllowed: () => assertAllowed,
+  clearAccessCache: () => clearAccessCache,
+  currentScope: () => currentScope,
+  entryWindows: () => entryWindows,
+  visibleFrom: () => visibleFrom,
+  visibleFromFor: () => visibleFromFor
+});
 function actionFor(op) {
   if (op === "create" || op === "record" || op === "issue" || op === "transfer" || op === "createInvoice") return "create";
   if (op === "delete" || op === "remove" || op === "removeInvoice" || op === "deleteEntry" || op === "deleteTransfer" || // Removing a packed-stock entry is a deletion, not an edit. Without this
@@ -3202,8 +3212,9 @@ async function accountsRule(ns, op, args) {
     if (op === "createLedger") return section("accountsMasters", { action: "create" });
     const kind = String(a.values?.kind || "").toLowerCase();
     if (op === "post") return section(kind === "debit" ? "accountsDebitNote" : "accountsCreditNote", { action: "create" });
+    if (op === "postSales") return section("accountsTallyImport", { action: "create" });
     return section("accountsTallyImport", {
-      action: ["preview", "salesCheck", "drafts", "saveDraft", "clearDraft"].includes(op) ? "view" : "edit"
+      action: ["preview", "salesCheck", "salesPreview", "drafts", "saveDraft", "clearDraft"].includes(op) ? "view" : "edit"
     });
   }
   if (ns === "tbill" && (op === "create" || op === "update" || op === "delete")) {
@@ -3272,6 +3283,10 @@ async function assertAllowed(channel, args) {
     moduleLabel: rule.label
   });
   if (!verdict.allowed) throw new Error(verdict.reason || "You are not allowed to do that");
+  if (ns === "sales" && op === "fixDate") {
+    const moved = can(user, rule.module, "edit", { entryDate: args?.date, today: todayISO(), moduleLabel: rule.label });
+    if (!moved.allowed) throw new Error(moved.reason || "You are not allowed to do that");
+  }
   if (op === "moveBalance") {
     const made = can(user, rule.module, "create", {
       entryDate: args?.values?.date || todayISO(),
@@ -8076,6 +8091,17 @@ var init_orders = __esm({
 });
 
 // src/main/intercompany.ts
+var intercompany_exports = {};
+__export(intercompany_exports, {
+  companyOfCustomer: () => companyOfCustomer,
+  ensureCompanyParties: () => ensureCompanyParties,
+  intercompanySource: () => intercompanySource,
+  pairedPurchaseOf: () => pairedPurchaseOf,
+  pairedRate: () => pairedRate,
+  raisePairedPurchase: () => raisePairedPurchase,
+  removePairedPurchase: () => removePairedPurchase,
+  syncPairedPurchase: () => syncPairedPurchase
+});
 async function ensureCompanyParties() {
   const c = getClient();
   const companies = await c.execute(
@@ -10300,6 +10326,16 @@ var init_repos = __esm({
 });
 
 // src/main/openings.ts
+var openings_exports = {};
+__export(openings_exports, {
+  getBooksFrom: () => getBooksFrom,
+  ledgerOpening: () => ledgerOpening,
+  listOpenings: () => listOpenings,
+  moveOpenings: () => moveOpenings,
+  openingMap: () => openingMap,
+  saveOpenings: () => saveOpenings,
+  setBooksFrom: () => setBooksFrom
+});
 function key2(companyId) {
   return `books_from:${companyId}`;
 }
@@ -18344,6 +18380,13 @@ async function updateSaleInvoice(group, v) {
     const heldBefore = String(existing.rows[0]?.invoice_no || "").trim().toUpperCase();
     const keepsItsNumber = !!heldBefore && heldBefore === String(v.invoice_no || "").trim().toUpperCase();
     const weighed = toPlain17(existing).filter((r) => r.received_qty != null).map((r) => ({ product_id: n18(r.product_id), packaging_id: n18(r.packaging_id), qty: n18(r.received_qty), used: false }));
+    const oldIds = existing.rows.map((r) => Number(r.id));
+    const dealRefs = oldIds.length ? await getClient().execute(
+      `SELECT (SELECT COUNT(*) FROM trading_deals WHERE sale_id IN (${oldIds.join(",")}))
+              + (SELECT COUNT(*) FROM trading_deal_sales WHERE sale_id IN (${oldIds.join(",")})) AS n`
+    ) : null;
+    const onDeal = n18(dealRefs?.rows[0]?.n) > 0;
+    if (onDeal) await getClient().execute("PRAGMA defer_foreign_keys = ON");
     for (const r of existing.rows) await deleteSale(Number(r.id));
     const ids = [];
     for (let i = 0; i < items.length; i++) {
@@ -18366,7 +18409,68 @@ async function updateSaleInvoice(group, v) {
         await recomputeSaleFreight(res.id);
       }
     }
+    if (onDeal) {
+      for (let i = 0; i < oldIds.length; i++) {
+        const to = ids[Math.min(i, ids.length - 1)];
+        await getClient().execute({ sql: "UPDATE trading_deals SET sale_id = ? WHERE sale_id = ?", args: [to, oldIds[i]] });
+        await getClient().execute({ sql: "UPDATE trading_deal_sales SET sale_id = ? WHERE sale_id = ?", args: [to, oldIds[i]] });
+      }
+    }
     return { group, ids };
+  });
+}
+async function setSaleInvoiceDate(id, date) {
+  return withDbTransaction(async () => {
+    const c = getClient();
+    const to = String(date || "").slice(0, 10);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(to)) throw new Error("Pick a valid date");
+    if (to > todayISO()) throw new Error("An invoice date cannot be in the future");
+    {
+      const { getBooksFrom: getBooksFrom2 } = await Promise.resolve().then(() => (init_openings(), openings_exports));
+      const start = await getBooksFrom2();
+      if (start && to < start) throw new Error(`These books begin on ${start}; an invoice cannot be moved to ${to}, before them.`);
+    }
+    const own = await c.execute({ sql: "SELECT id, invoice_group, sale_date FROM sales WHERE id = ?", args: [n18(id)] });
+    if (!own.rows.length) throw new Error("That sale no longer exists \u2014 check the file again");
+    const head = own.rows[0];
+    const from = String(head.sale_date || "").slice(0, 10);
+    const lines = toPlain17(
+      head.invoice_group ? await c.execute({ sql: "SELECT * FROM sales WHERE invoice_group = ? ORDER BY id", args: [String(head.invoice_group)] }) : await c.execute({ sql: "SELECT * FROM sales WHERE id = ?", args: [n18(id)] })
+    );
+    if (from === to) return { id: n18(lines[0]?.id) || n18(id), from, to };
+    for (const l of lines) {
+      const { pairedPurchaseOf: pairedPurchaseOf2 } = await Promise.resolve().then(() => (init_intercompany(), intercompany_exports));
+      if (await pairedPurchaseOf2(n18(l.id))) {
+        throw new Error(
+          "This invoice is a transfer to another of our companies, and their purchase carries the same date. Change it from Sales \u2192 Edit so both sides move together."
+        );
+      }
+    }
+    for (const l of lines) {
+      const move = (d) => d == null || d === "" ? null : String(d).slice(0, 10) === from ? to : String(d);
+      const ex = String(l.freight_term) !== "DLD";
+      const loaded = ex && l.loaded_date ? to : move(l.loaded_date);
+      const transit = ex && l.transit_date ? to : move(l.transit_date);
+      const unloaded = ex && l.unloaded_date ? to : move(l.unloaded_date);
+      try {
+        assertStageDateOrder2(loaded, transit, unloaded);
+      } catch (e) {
+        throw new Error(`${e.message} Open the invoice from Sales and set its dates there.`);
+      }
+      await c.execute({
+        sql: "UPDATE sales SET sale_date = ?, loaded_date = ?, transit_date = ?, unloaded_date = ? WHERE id = ?",
+        args: [to, loaded, transit, unloaded, n18(l.id)]
+      });
+      await c.execute({
+        sql: "UPDATE customer_ledger SET entry_date = ? WHERE sale_id = ? AND entry_type = 'sale'",
+        args: [to, n18(l.id)]
+      });
+      const row = { ...l, sale_date: to, loaded_date: loaded, transit_date: transit, unloaded_date: unloaded };
+      await postSaleFreight(n18(l.id), row, await resolveFreightQty(row, n18(l.qty)));
+      await postSaleShortageDebit(n18(l.id));
+    }
+    await postSaleInvoiceJournal(n18(lines[0].id));
+    return { id: n18(lines[0].id), from, to };
   });
 }
 async function setInvoiceStage(group, stage, force = false, date, received) {
@@ -23673,23 +23777,7 @@ function statusOf(note, existing) {
   if (twin) return { status: "maybe", match: twin };
   return { status: "new" };
 }
-async function previewTallyNotes(v) {
-  const kind = v.kind === "debit" ? "debit" : "credit";
-  const cid = getActiveCompanyId();
-  const reg = await parseRegister(String(v.data_base64 || ""), kind);
-  const existing = await existingNotes(kind, cid);
-  const roles = /* @__PURE__ */ new Map();
-  const note = (nm, role, amt) => {
-    const k = tallyKey(nm);
-    const g = roles.get(k) || { name: nm, role, count: 0, amount: 0 };
-    g.count += 1;
-    g.amount = round210(g.amount + Math.abs(amt));
-    roles.set(k, g);
-  };
-  for (const x of reg.notes) {
-    note(x.party, "party", x.gross);
-    for (const c of x.cols) note(c.name, "ledger", c.amount);
-  }
+async function mappingRows(roles, groupFor) {
   const mapped = await resolveNames([...roles.values()].map((r) => r.name));
   const accts = toPlain20(await getClient().execute("SELECT id, name, acc_group FROM ledger_accounts ORDER BY name"));
   const ledgers = [...roles.entries()].map(([key3, r]) => {
@@ -23714,10 +23802,30 @@ async function previewTallyNotes(v) {
       account_name: m?.account_name ?? null,
       how: m?.how ?? null,
       suggest,
-      suggested_group: suggestGroupFor(r.name, r.role, kind)
+      suggested_group: groupFor(r.name, r.role)
     };
   });
   ledgers.sort((a, b) => (a.account_id ? 1 : 0) - (b.account_id ? 1 : 0) || (a.role === b.role ? 0 : a.role === "party" ? -1 : 1) || a.tally_name.localeCompare(b.tally_name));
+  return ledgers;
+}
+async function previewTallyNotes(v) {
+  const kind = v.kind === "debit" ? "debit" : "credit";
+  const cid = await companyOf(v);
+  const reg = await parseRegister(String(v.data_base64 || ""), kind);
+  const existing = await existingNotes(kind, cid);
+  const roles = /* @__PURE__ */ new Map();
+  const note = (nm, role, amt) => {
+    const k = tallyKey(nm);
+    const g = roles.get(k) || { name: nm, role, count: 0, amount: 0 };
+    g.count += 1;
+    g.amount = round210(g.amount + Math.abs(amt));
+    roles.set(k, g);
+  };
+  for (const x of reg.notes) {
+    note(x.party, "party", x.gross);
+    for (const c of x.cols) note(c.name, "ledger", c.amount);
+  }
+  const ledgers = await mappingRows(roles, (nm, role) => suggestGroupFor(nm, role, kind));
   const companyName = String(
     (await getClient().execute({ sql: "SELECT name FROM companies WHERE id = ?", args: [cid] })).rows[0]?.name || ""
   );
@@ -23768,13 +23876,13 @@ async function createTallyNoteLedger(v) {
   const c = getClient();
   const clash = await c.execute({ sql: "SELECT id FROM ledger_accounts WHERE name = ?", args: [name] });
   if (clash.rows.length) throw new Error(`A ledger called ${name} already exists \u2014 pick it from the list instead`);
-  const { id } = await createAccount(name, group, getActiveCompanyId());
+  const { id } = await createAccount(name, group, await companyOf(v));
   await saveTallyNoteMap({ tally_name: v.tally_name, account_id: id });
   return { id, name };
 }
 async function postTallyNotes(v) {
   const kind = v.kind === "debit" ? "debit" : "credit";
-  const cid = getActiveCompanyId();
+  const cid = await companyOf(v);
   const reg = await parseRegister(String(v.data_base64 || ""), kind);
   const wanted = new Set((v.vch_nos || []).map(vchKey));
   if (!wanted.size) throw new Error("Tick the notes to create");
@@ -23921,6 +24029,7 @@ async function parseSalesRegister(b64) {
       round_off: round210(gross - taxable - gst),
       gross,
       ledgers,
+      cols: parts.map((c) => ({ name: c.name, amount: c.amount, tax: c.tax })),
       deducted,
       gst_heads: gstHeads
     });
@@ -23935,7 +24044,7 @@ async function bookSales(companyId) {
   const c = getClient();
   const lines = toPlain20(
     await c.execute({
-      sql: `SELECT je.id, je.vch_no, je.entry_date, jl.dr, jl.cr, a.id AS account_id, a.name AS account, a.acc_group
+      sql: `SELECT je.id, je.vch_no, je.entry_date, je.sale_id, jl.dr, jl.cr, a.id AS account_id, a.name AS account, a.acc_group
               FROM journal_entries je
               JOIN journal_lines jl ON jl.entry_id = je.id
               JOIN ledger_accounts a ON a.id = jl.account_id
@@ -23988,6 +24097,7 @@ async function bookSales(companyId) {
     if (!sideOf.has(grp)) sideOf.set(grp, await partySideOfGroup2(grp));
     out.push({
       id,
+      sale_id: Number(ls[0].sale_id) || 0,
       vch_no: vchNo,
       date: String(ls[0].entry_date || "").slice(0, 10),
       party: party ? String(party.account) : "",
@@ -24006,7 +24116,7 @@ async function bookSales(companyId) {
   return out;
 }
 async function reconcileTallySales(v) {
-  const cid = getActiveCompanyId();
+  const cid = await companyOf(v);
   const reg = await parseSalesRegister(String(v.data_base64 || ""));
   const books = await bookSales(cid);
   const byNo = /* @__PURE__ */ new Map();
@@ -24206,6 +24316,129 @@ function explainRows(rows2, tallySales, books, ownCompany = "") {
     r.fix = fix;
   }
 }
+function salesGroupFor(name, role) {
+  const s4 = name.toUpperCase();
+  if (role === "party") return "Sundry Debtors";
+  if (GST_COL.test(s4)) return "Duties & Taxes";
+  if (/ROUND\s*OFF/.test(s4)) return "Indirect Expenses";
+  if (/FREIGHT|CARTAGE/.test(s4)) return "Direct Expenses";
+  return "Sales Accounts";
+}
+async function existingSaleNos(companyId) {
+  const r = await getClient().execute({
+    sql: "SELECT vch_no FROM journal_entries WHERE company_id = ? AND UPPER(vch_type) IN ('SALE', 'SALES') AND vch_no IS NOT NULL",
+    args: [companyId]
+  });
+  return new Set(toPlain20(r).map((x) => vchKey(x.vch_no)));
+}
+async function previewTallySalesVouchers(v) {
+  const reg = await parseSalesRegister(String(v.data_base64 || ""));
+  const wanted = new Set((v.vch_nos || []).map(vchKey));
+  const have = await existingSaleNos(await companyOf(v));
+  const picked = reg.sales.filter((x) => wanted.has(vchKey(x.vch_no)) && !x.cancelled && !have.has(vchKey(x.vch_no)));
+  const roles = /* @__PURE__ */ new Map();
+  const note = (nm, role, amt) => {
+    const k = tallyKey(nm);
+    const g = roles.get(k) || { name: nm, role, count: 0, amount: 0 };
+    g.count += 1;
+    g.amount = round210(g.amount + Math.abs(amt));
+    roles.set(k, g);
+  };
+  for (const x of picked) {
+    note(x.party, "party", x.gross);
+    for (const c of x.cols) note(c.name, "ledger", c.amount);
+  }
+  return {
+    sales: picked.map((x) => ({
+      vch_no: x.vch_no,
+      date: x.date,
+      party: x.party,
+      party_key: tallyKey(x.party),
+      gross: x.gross,
+      taxable: x.taxable,
+      gst: x.gst,
+      round_off: x.round_off,
+      cols: x.cols.map((c) => ({ ...c, key: tallyKey(c.name) }))
+    })),
+    ledgers: await mappingRows(roles, salesGroupFor)
+  };
+}
+async function postTallySalesVouchers(v) {
+  const cid = await companyOf(v);
+  const reg = await parseSalesRegister(String(v.data_base64 || ""));
+  const wanted = new Set((v.vch_nos || []).map(vchKey));
+  if (!wanted.size) throw new Error("Pick the invoices to book");
+  const names = /* @__PURE__ */ new Set();
+  for (const x of reg.sales) {
+    if (!wanted.has(vchKey(x.vch_no))) continue;
+    names.add(x.party);
+    for (const c of x.cols) names.add(c.name);
+  }
+  const mapped = await resolveNames([...names]);
+  const { getBooksFrom: getBooksFrom2 } = await Promise.resolve().then(() => (init_openings(), openings_exports));
+  const booksFrom = await getBooksFrom2(cid);
+  const { entryWindows: entryWindows2 } = await Promise.resolve().then(() => (init_access_gate(), access_gate_exports));
+  const win = await entryWindows2();
+  const windowFrom = [win.accountsTallyImport, win.accounts].filter(Boolean).sort().pop() || "";
+  const created = [];
+  const skipped = [];
+  const fileLabel = String(v.file_name || "").trim();
+  for (const x of reg.sales) {
+    if (!wanted.has(vchKey(x.vch_no))) continue;
+    if (x.cancelled) {
+      skipped.push({ vch_no: x.vch_no, reason: "Tally shows it cancelled" });
+      continue;
+    }
+    if ((await existingSaleNos(cid)).has(vchKey(x.vch_no))) {
+      skipped.push({ vch_no: x.vch_no, reason: "a sale with this number is already in the books" });
+      continue;
+    }
+    if (booksFrom && x.date < booksFrom) {
+      skipped.push({ vch_no: x.vch_no, reason: `dated before these books begin (${booksFrom})` });
+      continue;
+    }
+    if (windowFrom && x.date < windowFrom) {
+      skipped.push({ vch_no: x.vch_no, reason: `dated before your working window (${windowFrom})` });
+      continue;
+    }
+    if (x.gross <= 0) {
+      skipped.push({ vch_no: x.vch_no, reason: "it has no gross total" });
+      continue;
+    }
+    const party = mapped.get(tallyKey(x.party));
+    const missing = [x.party, ...x.cols.map((c) => c.name)].filter((nm) => !mapped.get(tallyKey(nm)));
+    if (!party || missing.length) {
+      skipped.push({ vch_no: x.vch_no, reason: `not mapped yet: ${[...new Set(missing)].join(", ")}` });
+      continue;
+    }
+    const lines = [{ account: party.account_name, dr: x.gross }];
+    for (const c of x.cols) {
+      const m = mapped.get(tallyKey(c.name));
+      lines.push({ account: m.account_name, [c.amount >= 0 ? "cr" : "dr"]: round210(Math.abs(c.amount)) });
+    }
+    if (Math.abs(x.round_off) > 4e-3) {
+      if (Math.abs(x.round_off) > 1) {
+        skipped.push({ vch_no: x.vch_no, reason: `its columns do not add up to the gross total (out by ${Math.abs(x.round_off).toFixed(2)})` });
+        continue;
+      }
+      lines.push({ account: "ROUND OFF A/C", [x.round_off > 0 ? "cr" : "dr"]: round210(Math.abs(x.round_off)) });
+    }
+    try {
+      const res = await createVoucher({
+        date: x.date,
+        vchType: "SALE",
+        vchNo: x.vch_no,
+        narration: `Imported from Tally \u2014 ${reg.title || "Sales Register"}${fileLabel ? ` (${fileLabel})` : ""}`,
+        companyId: cid,
+        lines
+      });
+      created.push({ vch_no: x.vch_no, id: res.id });
+    } catch (e) {
+      skipped.push({ vch_no: x.vch_no, reason: e.message });
+    }
+  }
+  return { created, skipped };
+}
 async function ensureDraftTable() {
   await getClient().execute(`CREATE TABLE IF NOT EXISTS tally_import_drafts (
     company_id INTEGER NOT NULL,
@@ -24219,6 +24452,13 @@ async function ensureDraftTable() {
     PRIMARY KEY (company_id, username, kind)
   )`);
 }
+async function companyOf(v) {
+  const id = Number(v?.company_id) || 0;
+  if (!id) return getActiveCompanyId();
+  const r = await getClient().execute({ sql: "SELECT id FROM companies WHERE id = ?", args: [id] });
+  if (!r.rows.length) throw new Error("That company no longer exists \u2014 pick it again with F3");
+  return id;
+}
 function draftOwner() {
   return String(getCurrentUser().username || "").trim() || "local";
 }
@@ -24229,7 +24469,7 @@ async function saveTallyDraft(v) {
   await ensureDraftTable();
   const c = getClient();
   const kind = draftKind(v.kind);
-  const cid = getActiveCompanyId();
+  const cid = await companyOf(v);
   const who = draftOwner();
   const picked = JSON.stringify(Array.isArray(v.picked) ? v.picked.map(String) : []);
   if (v.data_base64) {
@@ -24255,13 +24495,14 @@ async function saveTallyDraft(v) {
   });
   return { saved_at: String(r.rows[0]?.updated_at || "") };
 }
-async function listTallyDrafts() {
+async function listTallyDrafts(v) {
   await ensureDraftTable();
+  const cid = await companyOf(v);
   return toPlain20(
     await getClient().execute({
       sql: `SELECT kind, file_name, data_base64, picked_json, allow_maybe, updated_at
               FROM tally_import_drafts WHERE company_id = ? AND username = ?`,
-      args: [getActiveCompanyId(), draftOwner()]
+      args: [cid, draftOwner()]
     })
   ).map((r) => {
     let picked = [];
@@ -24275,9 +24516,10 @@ async function listTallyDrafts() {
 }
 async function clearTallyDraft(v) {
   await ensureDraftTable();
+  const cid = await companyOf(v);
   const r = await getClient().execute({
     sql: "DELETE FROM tally_import_drafts WHERE company_id = ? AND username = ? AND kind = ?",
-    args: [getActiveCompanyId(), draftOwner(), draftKind(v.kind)]
+    args: [cid, draftOwner(), draftKind(v.kind)]
   });
   return { cleared: r.rowsAffected > 0 };
 }
@@ -32719,9 +32961,17 @@ function registerIpc() {
   );
   handle("tallyNotes:post", (_e, { values }) => postTallyNotes(values));
   handle("tallyNotes:salesCheck", (_e, { values }) => reconcileTallySales(values));
+  handle(
+    "tallyNotes:salesPreview",
+    (_e, { values }) => previewTallySalesVouchers(values)
+  );
+  handle(
+    "tallyNotes:postSales",
+    (_e, { values }) => postTallySalesVouchers(values)
+  );
   handle("tallyNotes:linkParty", (_e, { values }) => linkTallyParty(values));
   handle("tallyNotes:saveDraft", (_e, { values }) => saveTallyDraft(values));
-  handle("tallyNotes:drafts", () => listTallyDrafts());
+  handle("tallyNotes:drafts", (_e, a) => listTallyDrafts(a?.values));
   handle("tallyNotes:clearDraft", (_e, { values }) => clearTallyDraft(values));
   handle("tally:map", () => tallyLedgerMap());
   handle("tally:link", (_e, { values }) => mapTallyLedger(values));
@@ -33109,6 +33359,7 @@ function registerIpc() {
   handle("sales:update", (_e, { id, values }) => updateSale(id, values));
   handle("sales:createInvoice", (_e, { values }) => createSaleInvoice(values));
   handle("sales:updateInvoice", (_e, { group, values }) => updateSaleInvoice(group, values));
+  handle("sales:fixDate", (_e, { id, date }) => setSaleInvoiceDate(id, date));
   handle(
     "sales:setInvoiceStage",
     (_e, { group, stage, force, date, received }) => setInvoiceStage(group, stage, force, date, received)
