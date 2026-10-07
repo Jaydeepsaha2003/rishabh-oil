@@ -2431,6 +2431,11 @@ var init_requestContext = __esm({
 });
 
 // src/main/currentUser.ts
+var currentUser_exports = {};
+__export(currentUser_exports, {
+  getCurrentUser: () => getCurrentUser,
+  setCurrentUser: () => setCurrentUser
+});
 function setCurrentUser(id, username) {
   const ctx = currentRequestContext();
   if (ctx) {
@@ -19344,7 +19349,8 @@ var RULES = [
                 FROM letters_of_credit l
                 LEFT JOIN suppliers s ON l.party_type = 'supplier' AND s.id = l.party_id
                WHERE l.company_id = ? AND l.status != 'closed'
-                 AND l.preclosed_date IS NULL AND l.expiry_date IS NOT NULL`,
+                 AND l.preclosed_date IS NULL AND l.expiry_date IS NOT NULL
+                 AND COALESCE(l.workflow_status, '') <> 'rejected'`,
         args: [companyId]
       });
       return plain(res).map((l) => ({ ...l, left: daysBetween3(today, String(l.expiry_date)) })).filter((l) => l.left <= threshold).map((l) => ({
@@ -21601,6 +21607,15 @@ async function runStartupTasks() {
   ]) {
     await getClient().execute(sql).catch((e) => {
       if (!/duplicate column/i.test(String(e.message))) console.error("[transporters] column failed:", e);
+    });
+  }
+  for (const sql of [
+    "ALTER TABLE letters_of_credit ADD COLUMN rejected_date TEXT",
+    "ALTER TABLE letters_of_credit ADD COLUMN rejected_reason TEXT",
+    "ALTER TABLE letters_of_credit ADD COLUMN rejected_by TEXT"
+  ]) {
+    await getClient().execute(sql).catch((e) => {
+      if (!/duplicate column/i.test(String(e.message))) console.error("[lc] rejected column failed:", e);
     });
   }
   for (const sql of [
@@ -29033,7 +29048,8 @@ async function listFacilities() {
             -- when the bill came in for less. Same rule as getLcLimit in lc.ts.
             COALESCE((SELECT SUM(COALESCE(NULLIF(l.blocked_amount, 0), l.amount) - COALESCE((SELECT SUM(r.amount) FROM lc_repayments r
                        WHERE r.lc_id = l.id AND r.posted = 1), 0)) FROM letters_of_credit l
-                       WHERE l.facility_id = f.id AND l.status != 'closed'), 0) AS lc_committed,
+                       WHERE l.facility_id = f.id AND l.status != 'closed'
+                         AND COALESCE(l.workflow_status, '') <> 'rejected'), 0) AS lc_committed,
             COALESCE((SELECT SUM(i.amount) FROM lc_issuances i
                        JOIN letters_of_credit l2 ON l2.id = i.lc_id
                       WHERE l2.facility_id = f.id), 0) AS lc_utilized,
@@ -29145,7 +29161,8 @@ async function facilityHeadroom(facilityId, excludeLcId = 0) {
   const lc = await c.execute({
     sql: `SELECT COALESCE(SUM(COALESCE(NULLIF(l.blocked_amount, 0), l.amount) - COALESCE((SELECT SUM(r.amount) FROM lc_repayments r
                  WHERE r.lc_id = l.id AND r.posted = 1), 0)), 0) AS a
-          FROM letters_of_credit l WHERE l.facility_id = ? AND l.status != 'closed' AND l.id != ?`,
+          FROM letters_of_credit l WHERE l.facility_id = ? AND l.status != 'closed' AND l.id != ?
+            AND COALESCE(l.workflow_status, '') <> 'rejected'`,
     args: [facilityId, excludeLcId]
   });
   const other = await c.execute({
@@ -29283,7 +29300,8 @@ async function listLCs() {
       // Against the limit, so the blocked figure less what has been repaid.
       // Never below nothing: an LC repaid in full is repaid in full, and the
       // charges that shared its debit are an expense, not an overpayment.
-      outstanding: round215(Math.max(0, (n36(l.blocked_amount) || n36(l.amount)) - n36(l.repaid_principal))),
+      // A rejected application never became a credit: nothing outstanding.
+      outstanding: String(l.workflow_status || "") === "rejected" ? 0 : round215(Math.max(0, (n36(l.blocked_amount) || n36(l.amount)) - n36(l.repaid_principal))),
       repaid_principal: round215(n36(l.repaid_principal)),
       repaid_charges: round215(n36(l.repaid_charges)),
       // Resolved once here so the register and the forms never have to repeat
@@ -29295,7 +29313,7 @@ async function listLCs() {
       margin_amount: margin,
       interest_amount: round215(interest),
       compliant,
-      display_status: !compliant ? "non_compliant" : String(l.workflow_status || "in_progress")
+      display_status: String(l.workflow_status || "") === "rejected" ? "rejected" : !compliant ? "non_compliant" : String(l.workflow_status || "in_progress")
     };
   });
 }
@@ -29334,6 +29352,7 @@ async function getLcLimit(bankId, from, to) {
     // amount, which is why only the limit sums coalesce this way.
     sql: `SELECT stage, COALESCE(SUM(COALESCE(NULLIF(blocked_amount, 0), amount)), 0) AS total, COUNT(*) AS cnt FROM letters_of_credit
           WHERE company_id = ? AND COALESCE(facility_type, 'lc') = 'lc' AND preclosed_date IS NULL
+            AND COALESCE(workflow_status, '') <> 'rejected'
             ${bank ? "AND our_bank_id = ?" : ""}
             ${f ? "AND open_date >= ?" : ""}
             ${t ? "AND open_date <= ?" : ""}
@@ -29350,6 +29369,7 @@ async function getLcLimit(bankId, from, to) {
   const totalCountRes = await c.execute({
     sql: `SELECT COUNT(*) AS cnt FROM letters_of_credit
           WHERE company_id = ? AND COALESCE(facility_type, 'lc') = 'lc' AND preclosed_date IS NULL
+            AND COALESCE(workflow_status, '') <> 'rejected'
             ${bank ? "AND our_bank_id = ?" : ""}`,
     args: bank ? [cid, bank] : [cid]
   });
@@ -29380,10 +29400,12 @@ async function listBankLcLimits() {
                  COALESCE(l.fixed_limit, 0) AS fixed_limit,
                  COALESCE(l.convertible_limit, 0) AS convertible_limit,
                  COALESCE(l.convertible_enabled, 0) AS convertible_enabled,
-                 (SELECT COUNT(*) FROM letters_of_credit x WHERE x.company_id = ? AND x.our_bank_id = b.id) AS lc_count,
+                 (SELECT COUNT(*) FROM letters_of_credit x WHERE x.company_id = ? AND x.our_bank_id = b.id
+                     AND COALESCE(x.workflow_status, '') <> 'rejected') AS lc_count,
                  COALESCE((SELECT SUM(COALESCE(NULLIF(x.blocked_amount, 0), x.amount)) FROM letters_of_credit x
                            WHERE x.company_id = ? AND x.our_bank_id = b.id
-                             AND COALESCE(x.facility_type, 'lc') = 'lc' AND x.preclosed_date IS NULL), 0) AS utilized
+                             AND COALESCE(x.facility_type, 'lc') = 'lc' AND x.preclosed_date IS NULL
+                             AND COALESCE(x.workflow_status, '') <> 'rejected'), 0) AS utilized
           FROM banks b
           LEFT JOIN bank_lc_limits l ON l.bank_id = b.id AND l.company_id = ?
           WHERE b.company_id = ?
@@ -29993,14 +30015,78 @@ async function deleteLCIssuance(id) {
 }
 async function assertLcNotClosed(lcId, what = "edited") {
   if (!lcId) return;
-  const r = await getClient().execute({ sql: "SELECT lc_no, preclosed_date FROM letters_of_credit WHERE id = ?", args: [lcId] });
+  const r = await getClient().execute({
+    sql: "SELECT lc_no, preclosed_date, workflow_status, rejected_date FROM letters_of_credit WHERE id = ?",
+    args: [lcId]
+  });
   const row = r.rows[0];
+  if (String(row?.workflow_status || "") === "rejected") {
+    const [ry, rm, rd] = String(row?.rejected_date || "").slice(0, 10).split("-");
+    throw new Error(
+      `This LC application was rejected${ry ? ` on ${rd}-${rm}-${ry}` : ""}, so it can no longer be ${what}. Use \u22EE \u2192 Reinstate application first if the rejection was a mistake.`
+    );
+  }
   const closed = String(row?.preclosed_date || "").slice(0, 10);
   if (!closed) return;
   const [y, m, d] = closed.split("-");
   throw new Error(
     `LC ${String(row?.lc_no || "")} was repaid on ${d}-${m}-${y} and is closed, so it can no longer be ${what}. To change how it was closed, use \u22EE \u2192 Edit preclosure; to change the LC itself, Undo preclosure first.`
   );
+}
+async function rejectLC(id, v) {
+  return withDbTransaction(async () => {
+    const c = getClient();
+    const r = await c.execute({ sql: "SELECT * FROM letters_of_credit WHERE id = ?", args: [n36(id)] });
+    if (!r.rows.length) throw new Error("That LC no longer exists");
+    const lc = toPlain32(r)[0];
+    if (String(lc.workflow_status || "") === "rejected") throw new Error("This application is already rejected");
+    if (String(lc.stage || "application") !== "application") {
+      throw new Error("Only an LC still at Application can be rejected \u2014 this one has been opened by the bank.");
+    }
+    if (lc.preclosed_date) throw new Error("This LC is closed");
+    const counts = toPlain32(
+      await c.execute({
+        sql: `SELECT (SELECT COUNT(*) FROM lc_issuances WHERE lc_id = ?) AS bills,
+                     (SELECT COUNT(*) FROM lc_repayments WHERE lc_id = ?) AS repayments,
+                     (SELECT COUNT(*) FROM lc_payment_ins WHERE lc_id = ?) AS ins`,
+        args: [n36(id), n36(id), n36(id)]
+      })
+    )[0];
+    if (n36(counts.bills) || n36(counts.repayments) || n36(counts.ins) || n36(lc.interest_journal_entry_id)) {
+      throw new Error("This application already has bills, repayments or vouchers against it, so it cannot simply be rejected.");
+    }
+    const date = String(v?.date || "").slice(0, 10) || todayISO8();
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) throw new Error("Pick the date the bank rejected it");
+    if (date > todayISO8()) throw new Error("The rejection date cannot be in the future");
+    const applied = String(lc.open_date || "").slice(0, 10);
+    if (applied && date < applied) throw new Error(`The bank cannot have rejected it before it was applied for (${applied})`);
+    const reason = String(v?.reason || "").trim();
+    if (!reason) throw new Error("Say why the bank rejected it");
+    await c.execute({
+      sql: `UPDATE letters_of_credit
+               SET workflow_status = 'rejected', rejected_date = ?, rejected_reason = ?, rejected_by = ?
+             WHERE id = ?`,
+      args: [date, reason.slice(0, 500), String((await Promise.resolve().then(() => (init_currentUser(), currentUser_exports))).getCurrentUser()?.username || "") || null, n36(id)]
+    });
+    return { id: n36(id) };
+  });
+}
+async function reinstateLC(id) {
+  return withDbTransaction(async () => {
+    const c = getClient();
+    const r = await c.execute({ sql: "SELECT * FROM letters_of_credit WHERE id = ?", args: [n36(id)] });
+    if (!r.rows.length) throw new Error("That LC no longer exists");
+    const lc = toPlain32(r)[0];
+    if (String(lc.workflow_status || "") !== "rejected") throw new Error("This LC is not rejected");
+    await assertWithinFacility(lc, n36(id));
+    await c.execute({
+      sql: `UPDATE letters_of_credit
+               SET workflow_status = 'in_progress', rejected_date = NULL, rejected_reason = NULL, rejected_by = NULL
+             WHERE id = ?`,
+      args: [n36(id)]
+    });
+    return { id: n36(id) };
+  });
 }
 async function lcIdOfRepayment(id) {
   const r = await getClient().execute({ sql: "SELECT lc_id FROM lc_repayments WHERE id = ?", args: [id] });
@@ -33570,6 +33656,8 @@ function registerIpc() {
     return updateLC(id, values);
   });
   handle("lc:delete", (_e, { id }) => deleteLC(id));
+  handle("lc:reject", (_e, { id, values }) => rejectLC(Number(id), values || {}));
+  handle("lc:reinstate", (_e, { id }) => reinstateLC(Number(id)));
   handle("lc:issue", async (_e, { values }) => {
     await assertLcNotClosed(Number(values?.lc_id), "drawn on");
     return issueLC(values);
