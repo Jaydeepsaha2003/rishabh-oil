@@ -3024,7 +3024,7 @@ function actionFor(op) {
   if (op === "delete" || op === "remove" || op === "removeInvoice" || op === "deleteEntry" || op === "deleteTransfer" || // Removing a packed-stock entry is a deletion, not an edit. Without this
   // it fell through to 'edit' and anyone who could enter packing could also
   // delete somebody else's.
-  op === "deleteAdjustment" || op === "deleteIssuance" || op === "removeIssuance" || op === "deleteInstallment" || op === "deletePartyPayment") return "delete";
+  op === "deleteAdjustment" || op === "deleteIssuance" || op === "removeIssuance" || op === "deleteInstallment" || op === "deletePartyPayment" || op === "undoPartRepayment") return "delete";
   return "edit";
 }
 async function gateEntryUnfinished(id) {
@@ -3375,6 +3375,7 @@ var init_access_gate = __esm({
       "get",
       "items",
       "issuances",
+      "parts",
       "sheet",
       "outstanding",
       "all",
@@ -9300,6 +9301,21 @@ async function settleLcBillsCombined(issuanceIds, dateIn, reuseEntryId) {
     const feeLines = [];
     let fees = 0;
     const seen = /* @__PURE__ */ new Set();
+    const partNos = [...new Set(bills.map((b) => n9(b.installment_no)).filter((x) => x > 0))];
+    const partRows = partNos.length ? toPlain10(
+      await c.execute({
+        sql: `SELECT part_no, interest, charges FROM lc_parts WHERE lc_id = ? AND part_no IN (${partNos.map(() => "?").join(",")})`,
+        args: [n9(first.lc_id), ...partNos]
+      }).catch(() => ({ rows: [], columns: [] }))
+    ) : [];
+    if (partRows.length) {
+      const interest = round22(partRows.reduce((s4, p) => s4 + n9(p.interest), 0));
+      const charges = round22(partRows.reduce((s4, p) => s4 + n9(p.charges), 0));
+      if (interest > 5e-3) feeLines.push({ account: "INTEREST A/C", group: "Indirect Expenses", dr: interest });
+      if (charges > 5e-3) feeLines.push({ account: "BANK CHARGES A/C", group: "Indirect Expenses", dr: charges });
+      fees = round22(interest + charges);
+      for (const b of bills) seen.add(n9(b.lc_id));
+    }
     for (const b of bills) {
       const lcId = n9(b.lc_id);
       if (seen.has(lcId)) continue;
@@ -11694,7 +11710,9 @@ async function stockLevels(range, companyIds) {
       sql: `SELECT sop.product_id AS pid, sop.qty AS qty, sop.formulation_id AS fid, sop.stage_id
               FROM stock_opening_pp sop
              WHERE sop.scope = ? AND sop.ffa = 'with'
-               AND sop.formulation_id IS NOT NULL AND sop.qty > 0.0005`,
+               AND sop.formulation_id IS NOT NULL AND sop.qty > 0.0005
+               -- N on the breakdown: held as the finished oil's PP, not restated.
+               AND COALESCE(sop.in_use, 1) = 1`,
       args: [scope2]
     });
     if (!res.rows.length) return out;
@@ -15335,7 +15353,7 @@ async function handOverOpeningPp(date, companyId) {
     if (!wasOn || wasOn === to) return { from: wasOn, moved: 0, rows: [] };
     const live = toPlain15(
       await c.execute({
-        sql: "SELECT product_id, stage_id, qty, ffa, formulation_id FROM stock_opening_pp WHERE scope = ?",
+        sql: "SELECT product_id, stage_id, qty, ffa, formulation_id, COALESCE(in_use, 1) AS in_use FROM stock_opening_pp WHERE scope = ?",
         args: [scope2]
       })
     );
@@ -15364,9 +15382,9 @@ async function putBackOpeningPp(rows2, companyId) {
       const sid = n16(r?.stage_id);
       if (!pid || !sid) continue;
       await c.execute({
-        sql: `INSERT OR IGNORE INTO stock_opening_pp (scope, product_id, stage_id, qty, ffa, formulation_id, updated_at)
-              VALUES (?, ?, ?, ?, ?, ?, datetime('now'))`,
-        args: [scope2, pid, sid, n16(r?.qty), r?.ffa == null ? null : String(r.ffa), r?.formulation_id == null ? null : n16(r.formulation_id)]
+        sql: `INSERT OR IGNORE INTO stock_opening_pp (scope, product_id, stage_id, qty, ffa, formulation_id, in_use, updated_at)
+              VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'))`,
+        args: [scope2, pid, sid, n16(r?.qty), r?.ffa == null ? null : String(r.ffa), r?.formulation_id == null ? null : n16(r.formulation_id), r?.in_use === 0 || r?.in_use === false ? 0 : 1]
       }).catch((e) => console.error("[stock] could not put a PP vessel back:", e));
       restored += 1;
     }
@@ -15412,8 +15430,8 @@ async function snapshotOpeningSet(cid, fid, date) {
   await c.execute({ sql: "DELETE FROM stock_opening_set_pp WHERE set_id = ?", args: [sid] }).catch(() => {
   });
   await c.execute({
-    sql: `INSERT INTO stock_opening_set_pp (set_id, product_id, stage_id, qty, ffa, formulation_id)
-            SELECT ?, product_id, stage_id, qty, ffa, formulation_id FROM stock_opening_pp
+    sql: `INSERT INTO stock_opening_set_pp (set_id, product_id, stage_id, qty, ffa, formulation_id, in_use)
+            SELECT ?, product_id, stage_id, qty, ffa, formulation_id, COALESCE(in_use, 1) FROM stock_opening_pp
              WHERE scope = ?`,
     args: [sid, fid ? `f${fid}` : `c${cid}`]
   }).catch((e) => console.error("[stock] opening PP snapshot failed:", e));
@@ -15575,7 +15593,7 @@ async function ppLinesByProduct(scope2) {
     // opened on "Not stated" however many times a recipe had been chosen. The
     // adjustment in the register was right the whole time, which is what made
     // it look like the recipe had been forgotten rather than merely unread.
-    sql: `SELECT l.product_id, l.stage_id, l.qty, l.ffa, l.formulation_id,
+    sql: `SELECT l.product_id, l.stage_id, l.qty, l.ffa, l.formulation_id, COALESCE(l.in_use, 1) AS in_use,
                  s.name, s.sort_order, s.active
             FROM stock_opening_pp l
             JOIN stock_pp_stages s ON s.id = l.stage_id
@@ -15599,6 +15617,8 @@ async function ppLinesByProduct(scope2) {
       // from before a line was switched sides and must not read back as a
       // choice somebody made.
       formulation_id: r.ffa === "with" && n16(r.formulation_id) > 0 ? n16(r.formulation_id) : null,
+      // Y/N: does production use this vessel? N keeps it standing as PP.
+      in_use: n16(r.in_use) !== 0,
       active: n16(r.active) === 1
     });
   }
@@ -15675,7 +15695,9 @@ async function savePpLines(productId, lines, companyId, seenVersion) {
       ffa: l?.ffa === "with" || l?.ffa === "without" ? String(l.ffa) : null,
       // Only a WITH-FFA line can carry one: oil that has already shed its FFA is
       // the finished product, and there is nothing left to restate it as.
-      formulation_id: l?.ffa === "with" && n16(l?.formulation_id) > 0 ? n16(l.formulation_id) : null
+      formulation_id: l?.ffa === "with" && n16(l?.formulation_id) > 0 ? n16(l.formulation_id) : null,
+      // Y unless the line says N: every vessel counted before this was in use.
+      in_use: l?.in_use === false || l?.in_use === 0 || l?.in_use === "N" ? 0 : 1
     }));
     for (const l of raw) {
       if (l.stage_id > 0 || !l.stage) continue;
@@ -15714,11 +15736,11 @@ async function savePpLines(productId, lines, companyId, seenVersion) {
     });
     for (const l of keep) {
       await c.execute({
-        sql: `INSERT INTO stock_opening_pp (scope, product_id, stage_id, qty, ffa, formulation_id, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, datetime('now'))
+        sql: `INSERT INTO stock_opening_pp (scope, product_id, stage_id, qty, ffa, formulation_id, in_use, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'))
             ON CONFLICT(scope,product_id,stage_id) DO UPDATE SET qty=excluded.qty,ffa=excluded.ffa,
-              formulation_id=excluded.formulation_id,updated_at=excluded.updated_at`,
-        args: [scope2, pid, l.stage_id, r3(l.qty), l.ffa, l.formulation_id]
+              formulation_id=excluded.formulation_id,in_use=excluded.in_use,updated_at=excluded.updated_at`,
+        args: [scope2, pid, l.stage_id, r3(l.qty), l.ffa, l.formulation_id, l.in_use]
       });
     }
     const total = r3(keep.reduce((t, l) => t + l.qty, 0));
@@ -15774,6 +15796,8 @@ async function ppVessels(scope2, productId, ffa) {
             JOIN stock_pp_stages st ON st.id = sop.stage_id
            WHERE sop.scope = ? AND sop.product_id = ? AND sop.ffa = ?
              AND (sop.ffa <> 'with' OR sop.formulation_id IS NULL)
+             -- N on the breakdown: held back, no batch draws on it.
+             AND COALESCE(sop.in_use, 1) = 1
            ORDER BY st.created_at, st.id`,
     args: [scope2, n16(productId), ffa]
   });
@@ -15804,9 +15828,9 @@ async function ppTotalsBothByProduct(productIds, companyId, asOf) {
   }
   return out;
 }
-var RESTATED = "sop.ffa = 'with' AND sop.formulation_id IS NOT NULL";
+var RESTATED = "sop.ffa = 'with' AND sop.formulation_id IS NOT NULL AND COALESCE(sop.in_use, 1) = 1";
 function assertNotRestated(row, verb) {
-  if (row && String(row.ffa || "") === "with" && n16(row.formulation_id) > 0) {
+  if (row && String(row.ffa || "") === "with" && n16(row.formulation_id) > 0 && (row.in_use == null || n16(row.in_use) !== 0)) {
     throw new Error(
       `That vessel is with FFA and has a recipe against it, so its oil is already reported as the products it consists of. It cannot be ${verb} as well \u2014 clear the recipe on the PP breakdown first.`
     );
@@ -15851,7 +15875,7 @@ async function writeOffPp(productId, stageId, qty, note, companyId) {
   const scope2 = await ppScope(cid);
   const c = getClient();
   const cur = await c.execute({
-    sql: `SELECT qty, ffa, formulation_id FROM stock_opening_pp
+    sql: `SELECT qty, ffa, formulation_id, in_use FROM stock_opening_pp
            WHERE scope = ? AND product_id = ? AND stage_id = ?`,
     args: [scope2, n16(productId), n16(stageId)]
   });
@@ -15903,7 +15927,7 @@ async function movePp(productId, stageId, qty, toProductId, toStageId, note, com
   if (!src.rows.length) throw new Error("There is nothing standing in that vessel");
   assertNotRestated(toPlain15(src)[0], "moved");
   const dstRestate = await c.execute({
-    sql: "SELECT ffa, formulation_id FROM stock_opening_pp WHERE scope = ? AND product_id = ? AND stage_id = ?",
+    sql: "SELECT ffa, formulation_id, in_use FROM stock_opening_pp WHERE scope = ? AND product_id = ? AND stage_id = ?",
     args: [scope2, to, toStage]
   });
   if (dstRestate.rows.length) assertNotRestated(toPlain15(dstRestate)[0], "moved into");
@@ -22037,6 +22061,37 @@ async function runStartupTasks() {
       "CREATE INDEX IF NOT EXISTS idx_opening_set_pp ON stock_opening_set_pp(set_id)"
     );
   }).catch((e) => console.error("[stock] opening PP history failed:", e));
+  await getClient().execute(`CREATE TABLE IF NOT EXISTS lc_parts (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      lc_id INTEGER NOT NULL,
+      part_no INTEGER NOT NULL,
+      pay_date TEXT NOT NULL,
+      amount REAL NOT NULL,
+      maturity_date TEXT NOT NULL,
+      days INTEGER NOT NULL DEFAULT 0,
+      interest REAL NOT NULL DEFAULT 0,
+      charges REAL NOT NULL DEFAULT 0,
+      net REAL NOT NULL DEFAULT 0,
+      repayment_id INTEGER,
+      repaid_date TEXT,
+      rebate REAL NOT NULL DEFAULT 0,
+      rebate_route TEXT,
+      rebate_journal_entry_id INTEGER,
+      rebate_payout_journal_entry_id INTEGER,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      UNIQUE (lc_id, part_no)
+    )`).catch((e) => console.error("[lc] lc_parts table failed:", e));
+  await getClient().execute("ALTER TABLE letters_of_credit ADD COLUMN preclose_parts_repayment_id INTEGER").catch((e) => {
+    if (!/duplicate column/i.test(String(e.message))) console.error("[lc] parts closure column failed:", e);
+  });
+  for (const sql of [
+    "ALTER TABLE stock_opening_pp ADD COLUMN in_use INTEGER NOT NULL DEFAULT 1",
+    "ALTER TABLE stock_opening_set_pp ADD COLUMN in_use INTEGER NOT NULL DEFAULT 1"
+  ]) {
+    await getClient().execute(sql).catch((e) => {
+      if (!/duplicate column/i.test(String(e.message))) console.error("[stock] in_use column failed:", e);
+    });
+  }
   await runOnce("bd_payment_in_account_ref_v1", async () => {
     for (const sql of [
       "ALTER TABLE bd_payment_ins ADD COLUMN account TEXT",
@@ -29246,7 +29301,18 @@ async function listLCs() {
       -- the Payment IN action knows there is nothing left to receive.
       COALESCE((SELECT SUM(amount) FROM lc_payment_ins WHERE lc_id = l.id), 0) AS payment_in_total,
       (SELECT COUNT(*) FROM lc_payment_ins WHERE lc_id = l.id) AS payment_in_count,
-      (SELECT MIN(due_date) FROM lc_issuances WHERE lc_id = l.id AND COALESCE(status, 'outstanding') != 'settled') AS next_due_date
+      COALESCE(
+        (SELECT MIN(p.maturity_date) FROM lc_parts p WHERE p.lc_id = l.id AND p.repaid_date IS NULL),
+        (SELECT MIN(due_date) FROM lc_issuances WHERE lc_id = l.id AND COALESCE(status, 'outstanding') != 'settled')
+      ) AS next_due_date,
+      -- Paid in parts: how many, their LC amounts, the interest each kept, and
+      -- what is still owed to the bank.
+      (SELECT COUNT(*) FROM lc_parts p WHERE p.lc_id = l.id) AS parts_count,
+      COALESCE((SELECT SUM(p.amount) FROM lc_parts p WHERE p.lc_id = l.id), 0) AS parts_amount,
+      COALESCE((SELECT SUM(p.interest) FROM lc_parts p WHERE p.lc_id = l.id), 0) AS parts_interest,
+      COALESCE((SELECT SUM(p.net) FROM lc_parts p WHERE p.lc_id = l.id), 0) AS parts_net,
+      COALESCE((SELECT SUM(p.amount) FROM lc_parts p WHERE p.lc_id = l.id AND p.repaid_date IS NOT NULL), 0) AS parts_repaid,
+      (SELECT COUNT(*) FROM lc_parts p WHERE p.lc_id = l.id AND p.repaid_date IS NULL) AS parts_open
     FROM letters_of_credit l
     LEFT JOIN suppliers s ON l.party_type = 'supplier' AND s.id = l.party_id
     LEFT JOIN banks ob ON ob.id = l.our_bank_id
@@ -29301,7 +29367,10 @@ async function listLCs() {
       // Never below nothing: an LC repaid in full is repaid in full, and the
       // charges that shared its debit are an expense, not an overpayment.
       // A rejected application never became a credit: nothing outstanding.
-      outstanding: String(l.workflow_status || "") === "rejected" ? 0 : round215(Math.max(0, (n36(l.blocked_amount) || n36(l.amount)) - n36(l.repaid_principal))),
+      outstanding: String(l.workflow_status || "") === "rejected" ? 0 : (
+        // Closed by repaying its parts: what was never drawn is not owed.
+        n36(l.parts_count) > 0 && l.preclosed_date ? 0 : round215(Math.max(0, (n36(l.blocked_amount) || n36(l.amount)) - n36(l.repaid_principal)))
+      ),
       repaid_principal: round215(n36(l.repaid_principal)),
       repaid_charges: round215(n36(l.repaid_charges)),
       // Resolved once here so the register and the forms never have to repeat
@@ -29311,7 +29380,9 @@ async function listLCs() {
       // of a figure the reader has to go and find. Computed here already; it
       // was simply never handed out.
       margin_amount: margin,
-      interest_amount: round215(interest),
+      interest_amount: n36(l.parts_count) > 0 ? round215(n36(l.parts_interest)) : round215(interest),
+      // Paid in parts: what of the LC is still undrawn, as an LC amount.
+      parts_left: n36(l.parts_count) > 0 ? round215(Math.max(0, n36(l.amount) - n36(l.parts_amount))) : null,
       compliant,
       display_status: String(l.workflow_status || "") === "rejected" ? "rejected" : !compliant ? "non_compliant" : String(l.workflow_status || "in_progress")
     };
@@ -29350,7 +29421,9 @@ async function getLcLimit(bankId, from, to) {
     // opened: the bank is holding the figure it blocked whether or not the bill
     // came in for that much. Interest and margin still work off the open
     // amount, which is why only the limit sums coalesce this way.
-    sql: `SELECT stage, COALESCE(SUM(COALESCE(NULLIF(blocked_amount, 0), amount)), 0) AS total, COUNT(*) AS cnt FROM letters_of_credit
+    sql: `SELECT stage, COALESCE(SUM(COALESCE(NULLIF(blocked_amount, 0), amount)
+                - COALESCE((SELECT SUM(p.amount) FROM lc_parts p WHERE p.lc_id = letters_of_credit.id AND p.repaid_date IS NOT NULL), 0)), 0) AS total,
+                 COUNT(*) AS cnt FROM letters_of_credit
           WHERE company_id = ? AND COALESCE(facility_type, 'lc') = 'lc' AND preclosed_date IS NULL
             AND COALESCE(workflow_status, '') <> 'rejected'
             ${bank ? "AND our_bank_id = ?" : ""}
@@ -29473,6 +29546,32 @@ async function syncLinkedOrders(lcId, orderIds) {
     });
   }
 }
+async function lcParts(lcId) {
+  const r = await getClient().execute({ sql: "SELECT * FROM lc_parts WHERE lc_id = ? ORDER BY part_no", args: [n36(lcId)] }).catch(() => null);
+  return r ? toPlain32(r) : [];
+}
+function partFigures(lc, amount2, payDate, maturity, first) {
+  const days = Math.max(0, daysBetween4(payDate, maturity));
+  const charges = first ? round215(n36(lc.charges)) : 0;
+  const base = Math.max(0, round215(amount2 - (lc.interest_excl_charges ? charges : 0)));
+  const interest = round215(base * n36(lc.interest_pct) * days / (100 * 365));
+  return { days, interest, charges, net: round215(amount2 - interest - charges) };
+}
+async function insertLcPart(lcId, partNo, lc, amount2, payDate, maturity) {
+  if (lc.interest_upfront) {
+    throw new Error("This LC's interest is paid upfront from the bank account, so it cannot be split into parts with their own maturities.");
+  }
+  if (!maturity) throw new Error(`Pick the maturity of part ${partNo}`);
+  if (maturity < payDate) throw new Error(`Part ${partNo} cannot mature (${dmy2(maturity)}) before it was paid (${dmy2(payDate)})`);
+  const f = partFigures(lc, amount2, payDate, maturity, partNo === 1);
+  if (f.net <= 5e-3) throw new Error(`Part ${partNo}'s interest and charges are more than its amount`);
+  await getClient().execute({
+    sql: `INSERT INTO lc_parts (lc_id, part_no, pay_date, amount, maturity_date, days, interest, charges, net)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    args: [n36(lcId), partNo, payDate, round215(amount2), maturity, f.days, f.interest, f.charges, f.net]
+  });
+  return { net: f.net, interest: f.interest };
+}
 async function syncPaymentReceivedIssuance(lcId, v) {
   const paymentDate = String(v.payment_received_date || "").slice(0, 10);
   if (!paymentDate) return;
@@ -29480,12 +29579,14 @@ async function syncPaymentReceivedIssuance(lcId, v) {
   const existing = await c.execute({ sql: "SELECT COUNT(*) AS n FROM lc_issuances WHERE lc_id = ?", args: [lcId] });
   const firstPart = round215(n36(v.first_installment));
   if (n36(existing.rows[0]?.n) === 0 && firstPart > 5e-3) {
-    const full = netAvailable(v, 0);
-    if (firstPart > full + 5e-3) {
-      throw new Error(`The first installment (${firstPart.toFixed(2)}) is more than the ${full.toFixed(2)} the bank releases on this LC`);
+    if (firstPart > n36(v.amount) + 5e-3) {
+      throw new Error(`Part 1 (${firstPart.toFixed(2)}) is more than the LC's ${n36(v.amount).toFixed(2)}`);
     }
+    const maturity = String(v.first_installment_maturity || v.expiry_date || "").slice(0, 10);
+    await c.execute({ sql: "DELETE FROM lc_parts WHERE lc_id = ?", args: [lcId] });
+    const p1 = await insertLcPart(lcId, 1, v, firstPart, paymentDate, maturity);
     const ids = Array.isArray(v.linked_order_ids) ? v.linked_order_ids.map((x) => n36(x)).filter((x) => x > 0) : [];
-    await insertInstallmentBills(lcId, firstPart, paymentDate, String(v.expiry_date || paymentDate).slice(0, 10), 1, ids);
+    await insertInstallmentBills(lcId, p1.net, paymentDate, maturity, 1, ids);
   } else if (n36(existing.rows[0]?.n) === 0) {
     const issueDate = String(v.open_date || paymentDate).slice(0, 10);
     const dueDate = String(v.expiry_date || paymentDate).slice(0, 10);
@@ -29815,6 +29916,9 @@ async function precloseLC(id, v) {
     if (!res.rows.length) throw new Error("LC not found");
     const lc = toPlain32(res)[0];
     if (lc.preclosed_date) throw new Error("This LC is already preclosed");
+    if ((await lcParts(id)).length) {
+      throw new Error("This LC was paid in parts \u2014 repay it part by part from \u22EE \u2192 Parts (each part has its own maturity and rebate).");
+    }
     if (String(lc.stage || "application") !== "payment_received") {
       throw new Error(
         String(lc.stage || "application") === "application" ? "This LC is still an application \u2014 the bank has not opened it, so there is nothing to wind up. Mark it Open first." : "The bank has not paid the beneficiary under this LC yet, so there is nothing to repay. Mark Payment received first."
@@ -29871,6 +29975,9 @@ async function unPrecloseLC(id) {
     if (!res.rows.length) throw new Error("LC not found");
     const lc = toPlain32(res)[0];
     if (!lc.preclosed_date) throw new Error("This LC is not preclosed, so there is nothing to undo");
+    if ((await lcParts(id)).length) {
+      throw new Error("This LC was closed by repaying its parts \u2014 undo the last part repayment from \u22EE \u2192 Parts instead.");
+    }
     const removed = [];
     if (lc.preclose_payout_journal_entry_id) {
       await dropTreasuryEntry(n36(lc.preclose_payout_journal_entry_id));
@@ -30029,6 +30136,11 @@ async function assertLcNotClosed(lcId, what = "edited") {
   const closed = String(row?.preclosed_date || "").slice(0, 10);
   if (!closed) return;
   const [y, m, d] = closed.split("-");
+  if ((await lcParts(lcId)).length) {
+    throw new Error(
+      `LC ${String(row?.lc_no || "")} was closed on ${d}-${m}-${y} by repaying its last part, so it can no longer be ${what}. Use \u22EE \u2192 Parts \u2192 Undo last repayment to reopen it.`
+    );
+  }
   throw new Error(
     `LC ${String(row?.lc_no || "")} was repaid on ${d}-${m}-${y} and is closed, so it can no longer be ${what}. To change how it was closed, use \u22EE \u2192 Edit preclosure; to change the LC itself, Undo preclosure first.`
   );
@@ -30088,6 +30200,117 @@ async function reinstateLC(id) {
     return { id: n36(id) };
   });
 }
+async function repayLcParts(lcId, v) {
+  return withDbTransaction(async () => {
+    const c = getClient();
+    const r = await c.execute({ sql: "SELECT * FROM letters_of_credit WHERE id = ?", args: [n36(lcId)] });
+    if (!r.rows.length) throw new Error("LC not found");
+    const lc = toPlain32(r)[0];
+    if (lc.preclosed_date) throw new Error("This LC is already closed");
+    const all = await lcParts(n36(lcId));
+    if (!all.length) throw new Error("This LC was not paid in parts \u2014 use Repay / Preclose");
+    const want = new Set((v.parts || []).map((x) => n36(x)).filter((x) => x > 0));
+    const pick = all.filter((p) => want.has(n36(p.part_no)));
+    if (!pick.length) throw new Error("Tick the parts this repayment clears");
+    const done = pick.find((p) => p.repaid_date);
+    if (done) throw new Error(`Part ${done.part_no} was already repaid on ${dmy2(String(done.repaid_date))}`);
+    const date = String(v.date || "").slice(0, 10);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) throw new Error("Pick the repayment date");
+    if (date > todayISO8()) throw new Error("The repayment date cannot be in the future");
+    const early = pick.find((p) => date < String(p.pay_date).slice(0, 10));
+    if (early) throw new Error(`Part ${early.part_no} was only paid on ${dmy2(String(early.pay_date))} \u2014 it cannot be repaid before that`);
+    const comm = round215(n36(v.comm_charges));
+    const bankCh = round215(n36(v.bank_charges));
+    const principal = round215(pick.reduce((s4, p) => s4 + n36(p.amount), 0));
+    const label2 = pick.map((p) => p.part_no).join(", ");
+    const route = v.rebate_route === "pay_to_party" ? "pay_to_party" : "credit_to_us";
+    const rebates = pick.map((p) => {
+      const left = Math.max(0, daysBetween4(date, String(p.maturity_date)));
+      return n36(p.days) > 0 && left > 0 ? round215(n36(p.interest) * left / n36(p.days)) : 0;
+    });
+    const rebateTotal = round215(rebates.reduce((s4, x) => s4 + x, 0));
+    const ins = await c.execute({
+      sql: `INSERT INTO lc_repayments (lc_id, party_id, amount, maturity_charges, comm_charges, bank_charges, repay_date, posted, document_path, note)
+            VALUES (?, NULL, ?, ?, ?, ?, ?, 1, NULL, ?)`,
+      args: [
+        n36(lcId),
+        round215(principal - rebateTotal + comm + bankCh),
+        round215(comm + bankCh),
+        comm,
+        bankCh,
+        date,
+        `Part repayment \u2014 part${pick.length === 1 ? "" : "s"} ${label2}${String(v.note || "").trim() ? ` \xB7 ${String(v.note).trim()}` : ""}`
+      ]
+    });
+    const repId = Number(ins.lastInsertRowid);
+    const { postLcRepaymentEntry: postLcRepaymentEntry2 } = await Promise.resolve().then(() => (init_treasury(), treasury_exports));
+    await postLcRepaymentEntry2(repId);
+    for (let i = 0; i < pick.length; i++) {
+      const p = pick[i];
+      const rebate = rebates[i];
+      let je = null;
+      if (rebate > 5e-3) je = await postLcPrematureInterestRebate(n36(lcId), route, rebate, date);
+      await c.execute({
+        sql: `UPDATE lc_parts SET repaid_date = ?, repayment_id = ?, rebate = ?, rebate_route = ?,
+                     rebate_journal_entry_id = ?, rebate_payout_journal_entry_id = ? WHERE id = ?`,
+        args: [date, repId, rebate, rebate > 5e-3 ? route : null, je?.id ?? null, je?.payoutId ?? null, n36(p.id)]
+      });
+    }
+    const open = all.filter((p) => !p.repaid_date && !want.has(n36(p.part_no)));
+    let closed = false;
+    if (!open.length) {
+      closed = true;
+      await c.execute({
+        sql: `UPDATE letters_of_credit SET preclosed_date = ?, workflow_status = 'preclosed', preclose_parts_repayment_id = ? WHERE id = ?`,
+        args: [date, repId, n36(lcId)]
+      });
+      if (v.release_margin) {
+        const margin = round215(n36(lc.amount) * n36(lc.margin_pct) / 100);
+        const settlement = await postLcMarginRelease(n36(lcId), margin, date);
+        await c.execute({
+          sql: `UPDATE letters_of_credit SET preclose_settlement_direction = 'margin_released',
+                preclose_settlement_amount = ?, preclose_journal_entry_id = ? WHERE id = ?`,
+          args: [margin, settlement ? settlement.id : null, n36(lcId)]
+        });
+      }
+    }
+    return { repayment_id: repId, closed, rebate: rebateTotal };
+  });
+}
+async function undoLcPartRepayment(lcId) {
+  return withDbTransaction(async () => {
+    const c = getClient();
+    const parts = (await lcParts(n36(lcId))).filter((p) => n36(p.repayment_id) > 0);
+    if (!parts.length) throw new Error("No part of this LC has been repaid yet");
+    const repId = Math.max(...parts.map((p) => n36(p.repayment_id)));
+    const mine = parts.filter((p) => n36(p.repayment_id) === repId);
+    for (const p of mine) {
+      const row = toPlain32(await c.execute({ sql: "SELECT rebate_journal_entry_id, rebate_payout_journal_entry_id FROM lc_parts WHERE id = ?", args: [n36(p.id)] }))[0] || {};
+      if (n36(row.rebate_payout_journal_entry_id)) await dropTreasuryEntry(n36(row.rebate_payout_journal_entry_id));
+      if (n36(row.rebate_journal_entry_id)) await dropTreasuryEntry(n36(row.rebate_journal_entry_id));
+      await c.execute({
+        sql: `UPDATE lc_parts SET repaid_date = NULL, repayment_id = NULL, rebate = 0, rebate_route = NULL,
+                     rebate_journal_entry_id = NULL, rebate_payout_journal_entry_id = NULL WHERE id = ?`,
+        args: [n36(p.id)]
+      });
+    }
+    const rep = toPlain32(await c.execute({ sql: "SELECT journal_entry_id, fee_journal_entry_id FROM lc_repayments WHERE id = ?", args: [repId] }))[0] || {};
+    if (n36(rep.journal_entry_id)) await dropTreasuryEntry(n36(rep.journal_entry_id));
+    if (n36(rep.fee_journal_entry_id)) await dropTreasuryEntry(n36(rep.fee_journal_entry_id));
+    await c.execute({ sql: "DELETE FROM lc_repayments WHERE id = ?", args: [repId] });
+    const lc = toPlain32(await c.execute({ sql: "SELECT preclose_parts_repayment_id, preclose_journal_entry_id FROM letters_of_credit WHERE id = ?", args: [n36(lcId)] }))[0] || {};
+    if (n36(lc.preclose_parts_repayment_id) === repId) {
+      if (n36(lc.preclose_journal_entry_id)) await dropTreasuryEntry(n36(lc.preclose_journal_entry_id));
+      await c.execute({
+        sql: `UPDATE letters_of_credit SET preclosed_date = NULL, workflow_status = 'in_progress', preclose_parts_repayment_id = NULL,
+                     preclose_settlement_direction = NULL, preclose_settlement_amount = NULL, preclose_journal_entry_id = NULL
+               WHERE id = ?`,
+        args: [n36(lcId)]
+      });
+    }
+    return { parts: mine.map((p) => n36(p.part_no)) };
+  });
+}
 async function lcIdOfRepayment(id) {
   const r = await getClient().execute({ sql: "SELECT lc_id FROM lc_repayments WHERE id = ?", args: [id] });
   return Number(r.rows[0]?.lc_id || 0);
@@ -30142,7 +30365,7 @@ async function payLcParty(lcId, v) {
       throw new Error("Mark Payment received first \u2014 that records the first part the bank paid");
     }
     const amount2 = round215(n36(v.amount));
-    if (amount2 <= 5e-3) throw new Error("Enter the amount the bank paid the supplier");
+    if (amount2 <= 5e-3) throw new Error("Enter this part's LC amount");
     const date = String(v.date || "").slice(0, 10);
     if (!date) throw new Error("Pick the date the bank paid it");
     if (date > todayISO8()) throw new Error("The payment date cannot be in the future");
@@ -30161,20 +30384,24 @@ async function payLcParty(lcId, v) {
     if (last && date < last.slice(0, 10)) {
       throw new Error(`The last installment was paid on ${dmy2(last)} \u2014 this one cannot be dated before it`);
     }
-    const paid = round215(bills.reduce((s4, b) => s4 + n36(b.amount), 0));
-    const left = round215(netAvailable(lc, paid));
-    if (left <= 5e-3) throw new Error("The supplier has already been paid everything this LC releases");
-    if (amount2 > left + 5e-3) throw new Error(`Only ${left.toFixed(2)} is still to be paid to the supplier on this LC`);
-    const instNo = bills.reduce((m, b) => Math.max(m, n36(b.installment_no)), 0) + 1;
+    const parts = await lcParts(n36(lcId));
+    if (!parts.length) throw new Error("This LC was not paid in parts \u2014 there is no next part to record");
+    const used = round215(parts.reduce((s4, p) => s4 + n36(p.amount), 0));
+    const left = round215(n36(lc.amount) - used);
+    if (left <= 5e-3) throw new Error("This LC has been drawn in full \u2014 there is nothing left for another part");
+    if (amount2 > left + 5e-3) throw new Error(`Only ${left.toFixed(2)} of this LC is still undrawn`);
+    const instNo = parts.reduce((m, p) => Math.max(m, n36(p.part_no)), 0) + 1;
+    const maturity = String(v.maturity || "").slice(0, 10);
+    const fig = await insertLcPart(n36(lcId), instNo, lc, amount2, date, maturity);
     const linked = await c.execute({
       sql: "SELECT order_id FROM lc_linked_orders WHERE lc_id = ? ORDER BY order_id",
       args: [n36(lcId)]
     });
     const ids = await insertInstallmentBills(
       n36(lcId),
-      amount2,
+      fig.net,
       date,
-      String(lc.expiry_date || date).slice(0, 10),
+      maturity,
       instNo,
       linked.rows.map((r) => n36(r.order_id)).filter((x) => x > 0)
     );
@@ -30197,6 +30424,8 @@ async function deleteLastLcInstallment(lcId) {
     const instNo = n36(r.rows[0]?.m);
     if (!instNo) throw new Error("This LC has no installments");
     if (instNo === 1) throw new Error("The first installment is the Payment received itself \u2014 it cannot be removed here");
+    const part = (await lcParts(n36(lcId))).find((p) => n36(p.part_no) === instNo);
+    if (part?.repaid_date) throw new Error(`Part ${instNo} has already been repaid to the bank \u2014 undo that repayment first`);
     const rows2 = toPlain32(
       await c.execute({
         sql: "SELECT id, journal_entry_id FROM lc_issuances WHERE lc_id = ? AND installment_no = ?",
@@ -30206,6 +30435,7 @@ async function deleteLastLcInstallment(lcId) {
     const entries = [...new Set(rows2.map((x) => n36(x.journal_entry_id)).filter(Boolean))];
     for (const e of entries) await dropTreasuryEntry(e);
     await c.execute({ sql: "DELETE FROM lc_issuances WHERE lc_id = ? AND installment_no = ?", args: [n36(lcId), instNo] });
+    await c.execute({ sql: "DELETE FROM lc_parts WHERE lc_id = ? AND part_no = ?", args: [n36(lcId), instNo] });
     return { installment_no: instNo };
   });
 }
@@ -32801,7 +33031,7 @@ async function recordAudit(channel, args, result) {
   );
 }
 function registerIpc() {
-  const READONLY = /:list$|:get$|:items$|:issuances$|:sheet$|:outstanding$|:all$|:summary$|:transfers$|:fyTaxable$|:needs$|:breakdown$|:nextNo$|:liveUsers$|:ips$|:logs$|:dispatchableSales$|:mine$|:pendingCount$|:pending$|:lots$|:unmapped$|:unmappedCount$|:bargainLines$|:bargainNotes$|:bargainInterest$|:consignmentDraws$|^access:heartbeat$|^db:ping$|^db:snapshot$|^app:revision$|^auth:login$|^journal:booksFrom$|^tally:map$|^journal:openings$|^journal:opening$|^journal:accounts$|^journal:statement$|^journal:trialBalance$|^journal:groups$|^journal:groupNames$|^journal:groupTree$|^journal:ledgerMap$|^journal:pendingRefs$|^journal:billsOutstanding$|^journal:tradingAccount$|^dashboard:stats$|^vouchers:nextCode$|^vouchers:forDocument$|^vouchers:alterInfo$|^tfreight:kpis$|^dashboard:position$|^dashboard:layout$|^dashboard:saveLayout$|^productMerge:preview$|^skuRates:parties$|^skuRates:partyCounts$|^consignment:openingLog$|^tags:list$|^tags:for$|^tags:contents$|^consignment:openingLots$|^consignment:invoices$|^tankers:quality$|^tankers:qualityMany$|^tankers:ffaHistory$|^orders:quality$|^gate:partyCategories$|^gate:waivedOuts$|^gate:forRecord$|^notify:rules$|^notify:list$|^notify:run$|^notify:preview$|^notify:people$|^notify:mutes$|^treasury:alerts$|^treasury:paymentTracker$|^facility:exposures$|^facility:headroom$|^company:setActive$|^company:getActive$|^factory:active$|^factory:companies$|^session:setUser$|^lc:repayments$|^lc:allRepayments$|^lc:getLimit$|^lc:bankLimits$|^lc:paymentIns$|^lc:openTradingInvoices$|^files:pickDocument$|^files:openDocument$|^bankRecon:imports$|^bankRecon:list$|^bankRecon:suggest$|^bd:kpis$|^bd:limits$|^skuStock:adjustments$|^skuOpening:list$|^skuOpening:date$|^stockCount:previous$|^orders:intercompanySource$|^stockOpening:list$|^stockOpening:date$|^stockOpening:sets$|^stockOpening:setLines$|^stockOpening:ppStages$|^stockOpening:ppFreeTotals$|^production:ppDraws$|^bargains:linkedInvoices$|^bargains:linkedVouchers$|^bargains:voucherChoices$|^salesBargains:linkedVouchers$|^salesBargains:voucherChoices$|^bargains:adjustments$|^history:list$|^stockOpening:ppVessels$|^stockOpening:ppReceivers$|^stockOpening:ppWriteoffs$|^work:board$|^work:cutoff$|^work:processes$|^formulationSubcategory:list$|^formulations:versions$|^facility:limitHistory$|^bd:limitReductions$|^bd:allRepayments$|^bd:interestSchedule$|^bd:interestWindow$|^bd:interestPayments$|^bd:linkedOrders$|^bd:parties$|^bd:allParties$|^bd:openTradingInvoices$|^bd:paymentIns$|^bd:partyPayments$|^access:entryWindows$|^access:entityHistory$|^trading:list$|^sales:series$|^sales:invoiceGaps$|^salesBargains:returns$|^salesBargains:linkedInvoices$|^salesBargains:unattributedReturns$|^tbill:orphans$|^production:report$/;
+  const READONLY = /:list$|:get$|:items$|:issuances$|:sheet$|:outstanding$|:all$|:summary$|:transfers$|:fyTaxable$|:needs$|:breakdown$|:nextNo$|:liveUsers$|:ips$|:logs$|:dispatchableSales$|:mine$|:pendingCount$|:pending$|:lots$|:unmapped$|:unmappedCount$|:bargainLines$|:bargainNotes$|:bargainInterest$|:consignmentDraws$|^access:heartbeat$|^db:ping$|^db:snapshot$|^app:revision$|^auth:login$|^journal:booksFrom$|^tally:map$|^journal:openings$|^journal:opening$|^journal:accounts$|^journal:statement$|^journal:trialBalance$|^journal:groups$|^journal:groupNames$|^journal:groupTree$|^journal:ledgerMap$|^journal:pendingRefs$|^journal:billsOutstanding$|^journal:tradingAccount$|^dashboard:stats$|^vouchers:nextCode$|^vouchers:forDocument$|^vouchers:alterInfo$|^tfreight:kpis$|^dashboard:position$|^dashboard:layout$|^dashboard:saveLayout$|^productMerge:preview$|^skuRates:parties$|^skuRates:partyCounts$|^consignment:openingLog$|^tags:list$|^tags:for$|^tags:contents$|^consignment:openingLots$|^consignment:invoices$|^tankers:quality$|^tankers:qualityMany$|^tankers:ffaHistory$|^orders:quality$|^gate:partyCategories$|^gate:waivedOuts$|^gate:forRecord$|^notify:rules$|^notify:list$|^notify:run$|^notify:preview$|^notify:people$|^notify:mutes$|^treasury:alerts$|^treasury:paymentTracker$|^facility:exposures$|^facility:headroom$|^company:setActive$|^company:getActive$|^factory:active$|^factory:companies$|^session:setUser$|^lc:repayments$|^lc:parts$|^lc:parts$|^lc:allRepayments$|^lc:getLimit$|^lc:bankLimits$|^lc:paymentIns$|^lc:openTradingInvoices$|^files:pickDocument$|^files:openDocument$|^bankRecon:imports$|^bankRecon:list$|^bankRecon:suggest$|^bd:kpis$|^bd:limits$|^skuStock:adjustments$|^skuOpening:list$|^skuOpening:date$|^stockCount:previous$|^orders:intercompanySource$|^stockOpening:list$|^stockOpening:date$|^stockOpening:sets$|^stockOpening:setLines$|^stockOpening:ppStages$|^stockOpening:ppFreeTotals$|^production:ppDraws$|^bargains:linkedInvoices$|^bargains:linkedVouchers$|^bargains:voucherChoices$|^salesBargains:linkedVouchers$|^salesBargains:voucherChoices$|^bargains:adjustments$|^history:list$|^stockOpening:ppVessels$|^stockOpening:ppReceivers$|^stockOpening:ppWriteoffs$|^work:board$|^work:cutoff$|^work:processes$|^formulationSubcategory:list$|^formulations:versions$|^facility:limitHistory$|^bd:limitReductions$|^bd:allRepayments$|^bd:interestSchedule$|^bd:interestWindow$|^bd:interestPayments$|^bd:linkedOrders$|^bd:parties$|^bd:allParties$|^bd:openTradingInvoices$|^bd:paymentIns$|^bd:partyPayments$|^access:entryWindows$|^access:entityHistory$|^trading:list$|^sales:series$|^sales:invoiceGaps$|^salesBargains:returns$|^salesBargains:linkedInvoices$|^salesBargains:unattributedReturns$|^tbill:orphans$|^production:report$/;
   const AUDIT_SKIP = /* @__PURE__ */ new Set(["config:get", "config:save", "session:setUser"]);
   const handle = (channel, fn) => {
     ipcMain.handle(channel, async (e, args) => {
@@ -33666,6 +33896,12 @@ function registerIpc() {
     await assertLcNotClosed(Number(id), "paid on");
     return payLcParty(Number(id), values);
   });
+  handle("lc:parts", (_e, { id }) => lcParts(Number(id)));
+  handle("lc:repayParts", async (_e, { id, values }) => {
+    await assertLcNotClosed(Number(id), "repaid");
+    return repayLcParts(Number(id), values);
+  });
+  handle("lc:undoPartRepayment", (_e, { id }) => undoLcPartRepayment(Number(id)));
   handle("lc:deleteInstallment", async (_e, { id }) => {
     await assertLcNotClosed(Number(id), "changed");
     return deleteLastLcInstallment(Number(id));
