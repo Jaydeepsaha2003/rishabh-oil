@@ -15061,6 +15061,20 @@ async function stockOpeningDate(companyId) {
   const books = await getBooksFrom(cid);
   return books ? String(books).slice(0, 10) : "";
 }
+function parseRawTanks(v) {
+  if (v == null || v === "") return [];
+  let arr = v;
+  if (typeof v === "string") {
+    try {
+      arr = JSON.parse(v);
+    } catch {
+      return [];
+    }
+  }
+  if (!Array.isArray(arr)) return [];
+  return arr.map((x) => ({ tank: String(x?.tank ?? "").trim().slice(0, 60), qty: r3(n16(x?.qty)) })).filter((x) => x.tank !== "" || Math.abs(x.qty) > 5e-4);
+}
+var tankSum = (lines) => r3(lines.reduce((t, l) => t + n16(l.qty), 0));
 async function listStockOpenings(companyId) {
   const cid = n16(companyId) || getActiveCompanyId();
   const c = getClient();
@@ -15072,12 +15086,12 @@ async function listStockOpenings(companyId) {
     c.execute(
       fid ? {
         sql: `SELECT product_id, qty, COALESCE(pp_qty, 0) AS pp_qty,
-                         COALESCE(adj_qty, 0) AS adj_qty, rate, as_of, note
+                         COALESCE(adj_qty, 0) AS adj_qty, rate, as_of, note, raw_tanks
                   FROM stock_openings WHERE factory_id = ?`,
         args: [fid]
       } : {
         sql: `SELECT product_id, qty, COALESCE(pp_qty, 0) AS pp_qty,
-                         COALESCE(adj_qty, 0) AS adj_qty, rate, as_of, note
+                         COALESCE(adj_qty, 0) AS adj_qty, rate, as_of, note, raw_tanks
                   FROM stock_openings WHERE company_id = ?`,
         args: [cid]
       }
@@ -15116,6 +15130,8 @@ async function listStockOpenings(companyId) {
       // tank, what is already in process, and the correction between the dip
       // and the card. The register opens at the total of all three.
       qty: entered,
+      // Which tanks that Raw stood in; empty = one figure typed straight in.
+      raw_tanks: parseRawTanks(s4?.raw_tanks),
       pp_qty: pp,
       adj_qty: adj,
       // What that PP is made of, where somebody has said. An empty list means
@@ -15236,12 +15252,24 @@ async function saveStockOpenings(rows2, asOf, companyId, seenVersion) {
     await syncPpLots(fid ? `f${fid}` : `c${cid}`);
     const keyed = (extra) => fid ? { sql: `factory_id = ?${extra}`, args: [fid] } : { sql: `company_id = ?${extra}`, args: [cid] };
     const ppFromLines = await ppTotalsByProduct(cid).catch(() => /* @__PURE__ */ new Map());
+    const tanksOnFile = /* @__PURE__ */ new Map();
+    {
+      const k = keyed("");
+      const r = await c.execute({ sql: `SELECT product_id, raw_tanks FROM stock_openings WHERE ${k.sql}`, args: k.args });
+      for (const x of toPlain15(r)) tanksOnFile.set(n16(x.product_id), parseRawTanks(x.raw_tanks));
+    }
     let saved = 0;
     let cleared = 0;
     for (const raw of Array.isArray(rows2) ? rows2 : []) {
       const pid = n16(raw?.product_id ?? raw?.id);
       if (!pid) continue;
-      const rawBlank = raw?.qty === "" || raw?.qty == null;
+      let tanks = [];
+      if (Array.isArray(raw?.raw_tanks)) tanks = parseRawTanks(raw.raw_tanks);
+      else {
+        const prev = tanksOnFile.get(pid) || [];
+        if (prev.length && raw?.qty !== "" && raw?.qty != null && Math.abs(tankSum(prev) - n16(raw.qty)) < 5e-4) tanks = prev;
+      }
+      const rawBlank = !tanks.length && (raw?.qty === "" || raw?.qty == null);
       const broken = ppFromLines.get(pid);
       const ppBlank = broken == null && (raw?.pp_qty === "" || raw?.pp_qty == null);
       const adjBlank = raw?.adj_qty === "" || raw?.adj_qty == null;
@@ -15255,7 +15283,8 @@ async function saveStockOpenings(rows2, asOf, companyId, seenVersion) {
         if (Number(res.rowsAffected) > 0) cleared++;
         continue;
       }
-      const qty = n16(raw.qty);
+      const qty = tanks.length ? tankSum(tanks) : n16(raw.qty);
+      const tanksJson = tanks.length ? JSON.stringify(tanks) : null;
       const pp = broken == null ? n16(raw.pp_qty) : broken;
       const adj = n16(raw.adj_qty);
       const rate = raw?.rate === "" || raw?.rate == null ? null : n16(raw.rate);
@@ -15264,16 +15293,16 @@ async function saveStockOpenings(rows2, asOf, companyId, seenVersion) {
       const upd = await c.execute({
         sql: `UPDATE stock_openings
                SET factory_id = COALESCE(factory_id, (SELECT factory_id FROM companies WHERE id = ?)),
-                   as_of = ?, qty = ?, pp_qty = ?, adj_qty = ?, rate = ?, note = ?,
+                   as_of = ?, qty = ?, pp_qty = ?, adj_qty = ?, rate = ?, note = ?, raw_tanks = ?,
                    updated_at = datetime('now')
              WHERE ${k.sql}`,
-        args: [cid, date, qty, pp, adj, rate, note, ...k.args, pid]
+        args: [cid, date, qty, pp, adj, rate, note, tanksJson, ...k.args, pid]
       });
       if (!Number(upd.rowsAffected)) {
         await c.execute({
-          sql: `INSERT INTO stock_openings (company_id, factory_id, product_id, as_of, qty, pp_qty, adj_qty, rate, note, updated_at)
-              VALUES (?, (SELECT factory_id FROM companies WHERE id = ?), ?, ?, ?, ?, ?, ?, ?, datetime('now'))`,
-          args: [cid, cid, pid, date, qty, pp, adj, rate, note]
+          sql: `INSERT INTO stock_openings (company_id, factory_id, product_id, as_of, qty, pp_qty, adj_qty, rate, note, raw_tanks, updated_at)
+              VALUES (?, (SELECT factory_id FROM companies WHERE id = ?), ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))`,
+          args: [cid, cid, pid, date, qty, pp, adj, rate, note, tanksJson]
         });
       }
       saved++;
@@ -15370,8 +15399,8 @@ async function snapshotOpeningSet(cid, fid, date) {
   }
   if (!sid) return;
   await c.execute({
-    sql: `INSERT INTO stock_opening_set_lines (set_id, product_id, qty, pp_qty, adj_qty, rate, note)
-          SELECT ?, product_id, qty, pp_qty, adj_qty, rate, note FROM stock_openings
+    sql: `INSERT INTO stock_opening_set_lines (set_id, product_id, qty, pp_qty, adj_qty, rate, note, raw_tanks)
+          SELECT ?, product_id, qty, pp_qty, adj_qty, rate, note, raw_tanks FROM stock_openings
            WHERE ${scope2} AND as_of = ?`,
     args: [sid, key3, date]
   });
@@ -15461,6 +15490,7 @@ async function openingSetLines(setId) {
     uom: String(r.uom || "MT"),
     category: String(r.category || ""),
     qty: n16(r.qty),
+    raw_tanks: parseRawTanks(r.raw_tanks),
     pp_qty: n16(r.pp_qty),
     adj_qty: n16(r.adj_qty),
     rate: r.rate == null ? null : n16(r.rate),
@@ -21556,6 +21586,14 @@ async function runStartupTasks() {
   ]) {
     await getClient().execute(sql).catch((e) => {
       if (!/duplicate column/i.test(String(e.message))) console.error("[transporters] column failed:", e);
+    });
+  }
+  for (const sql of [
+    "ALTER TABLE stock_openings ADD COLUMN raw_tanks TEXT",
+    "ALTER TABLE stock_opening_set_lines ADD COLUMN raw_tanks TEXT"
+  ]) {
+    await getClient().execute(sql).catch((e) => {
+      if (!/duplicate column/i.test(String(e.message))) console.error("[stock] raw_tanks column failed:", e);
     });
   }
   await getClient().execute("ALTER TABLE bill_discountings ADD COLUMN first_party_part REAL").catch((e) => {
