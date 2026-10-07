@@ -15744,13 +15744,27 @@ async function ppTotalsByProduct(companyId) {
   for (const r of toPlain15(res)) m.set(n16(r.product_id), r3(n16(r.t)));
   return m;
 }
+var LIVE_DRAWS = `COALESCE((SELECT SUM(d.qty) FROM pp_draws d
+                                 JOIN production pr ON pr.id = d.production_id
+                                WHERE d.scope = sop.scope AND d.product_id = sop.product_id
+                                  AND d.stage_id = sop.stage_id
+                                  AND pr.prod_date >= COALESCE((SELECT od.opening_date FROM pp_opening_dates od
+                                                                 WHERE od.scope = sop.scope), '')), 0)`;
+async function ppOpeningDate(companyId) {
+  const scope2 = await ppScope(companyId);
+  const r = await getClient().execute({ sql: "SELECT opening_date FROM pp_opening_dates WHERE scope = ?", args: [scope2] }).catch(() => null);
+  return String(r?.rows?.[0]?.opening_date || "").slice(0, 10);
+}
+async function ppCountCovers(day, companyId) {
+  const d = String(day || "").slice(0, 10);
+  if (!d) return true;
+  const from = await ppOpeningDate(companyId);
+  return !from || d >= from;
+}
 async function ppVessels(scope2, productId, ffa) {
   const res = await getClient().execute({
     sql: `SELECT sop.stage_id,
-                 sop.qty - COALESCE((SELECT SUM(d.qty) FROM pp_draws d
-                                      WHERE d.scope = sop.scope
-                                        AND d.product_id = sop.product_id
-                                        AND d.stage_id = sop.stage_id), 0) AS qty
+                 sop.qty - ${LIVE_DRAWS} AS qty
             FROM stock_opening_pp sop
             JOIN stock_pp_stages st ON st.id = sop.stage_id
            WHERE sop.scope = ? AND sop.product_id = ? AND sop.ffa = ?
@@ -15769,9 +15783,13 @@ async function ppFreeByProduct(productIds, companyId) {
   }
   return out;
 }
-async function ppTotalsBothByProduct(productIds, companyId) {
+async function ppTotalsBothByProduct(productIds, companyId, asOf) {
   const scope2 = await ppScope(companyId);
   const out = {};
+  if (asOf && !await ppCountCovers(asOf, companyId)) {
+    for (const pid of new Set(productIds.filter((x) => n16(x) > 0))) out[pid] = { without: 0, with: 0 };
+    return out;
+  }
   for (const pid of new Set(productIds.filter((x) => n16(x) > 0))) {
     const [without, withFfa] = await Promise.all([ppVessels(scope2, pid, "without"), ppVessels(scope2, pid, "with")]);
     out[pid] = {
@@ -15794,9 +15812,7 @@ async function ppVesselBalances(productId, companyId) {
   const res = await getClient().execute({
     sql: `SELECT sop.stage_id, st.name AS vessel, sop.ffa, sop.formulation_id,
                  sop.qty AS counted,
-                 sop.qty - COALESCE((SELECT SUM(d.qty) FROM pp_draws d
-                                      WHERE d.scope = sop.scope AND d.product_id = sop.product_id
-                                        AND d.stage_id = sop.stage_id), 0) AS qty
+                 sop.qty - ${LIVE_DRAWS} AS qty
             FROM stock_opening_pp sop
             JOIN stock_pp_stages st ON st.id = sop.stage_id
            WHERE sop.scope = ? AND sop.product_id = ?
@@ -15874,9 +15890,7 @@ async function movePp(productId, stageId, qty, toProductId, toStageId, note, com
   const src = await c.execute({
     sql: `SELECT sop.ffa, sop.formulation_id,
                  sop.qty AS counted,
-                 sop.qty - COALESCE((SELECT SUM(d.qty) FROM pp_draws d
-                                      WHERE d.scope = sop.scope AND d.product_id = sop.product_id
-                                        AND d.stage_id = sop.stage_id), 0) AS avail
+                 sop.qty - ${LIVE_DRAWS} AS avail
             FROM stock_opening_pp sop
            WHERE sop.scope = ? AND sop.product_id = ? AND sop.stage_id = ?`,
     args: [scope2, from, fromStage]
@@ -16554,10 +16568,11 @@ async function recordRecirculation(v, id = 0) {
   });
   return { id: Number(ins.lastInsertRowid) };
 }
-async function expandRecipeForBatch(items, outputQty, outputProductId = 0) {
-  const autoCalcInputs = items.filter((it) => String(it.kind || "input") === "input" && it.auto_calc).map((it) => n17(it.product_id));
+async function expandRecipeForBatch(items, outputQty, outputProductId = 0, prodDay = "") {
+  const covered = await ppCountCovers(prodDay);
+  const autoCalcInputs = covered ? items.filter((it) => String(it.kind || "input") === "input" && it.auto_calc).map((it) => n17(it.product_id)) : [];
   const freeByProduct = autoCalcInputs.length ? await ppFreeByProduct(autoCalcInputs) : {};
-  const pools = outputProductId ? (await ppTotalsBothByProduct([outputProductId]))[outputProductId] : void 0;
+  const pools = outputProductId && covered ? (await ppTotalsBothByProduct([outputProductId]))[outputProductId] : void 0;
   const r = expandBatchWithOutputPp(items, outputQty, { without: pools?.without || 0, with: 0 }, freeByProduct, outputProductId);
   return { lines: r.lines, draws: r.draws, ownPp: { without: r.plan.fromPpFree, with: r.plan.ppWithUsed } };
 }
@@ -16609,8 +16624,8 @@ async function createProduction(v) {
   let lines = [];
   let draws = [];
   let ownPp = { without: 0, with: 0 };
-  if (fid || mix) {
-    const expanded = await expandRecipeForBatch(snap.items, qty, productId);
+  {
+    const expanded = await expandRecipeForBatch(fid || mix ? snap.items : [], qty, productId, prodDay);
     lines = expanded.lines;
     draws = expanded.draws;
     ownPp = expanded.ownPp;
@@ -16691,8 +16706,8 @@ async function updateProduction(id, v) {
   let lines = [];
   let draws = [];
   let ownPp = { without: 0, with: 0 };
-  if (fid || mix) {
-    const expanded = await expandRecipeForBatch(snap.items, qty, productId);
+  {
+    const expanded = await expandRecipeForBatch(fid || mix ? snap.items : [], qty, productId, prodDay);
     lines = expanded.lines;
     draws = expanded.draws;
     ownPp = expanded.ownPp;
@@ -33234,7 +33249,7 @@ function registerIpc() {
   );
   handle(
     "stockOpening:ppFreeTotals",
-    (_e, { productIds, companyId }) => ppTotalsBothByProduct(productIds, companyId)
+    (_e, { productIds, companyId, asOf }) => ppTotalsBothByProduct(productIds, companyId, asOf)
   );
   handle(
     "production:ppDraws",
