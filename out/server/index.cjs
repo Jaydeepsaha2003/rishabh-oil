@@ -24061,7 +24061,7 @@ async function postTallyNotes(v) {
         vchNo: x.vch_no,
         narration: `Imported from Tally \u2014 ${reg.title || (kind === "credit" ? "Credit Note Register" : "Debit Note Register")}${fileLabel ? ` (${fileLabel})` : ""}`,
         companyId: cid,
-        lines
+        lines: drFirst(lines)
       });
       created.push({ vch_no: x.vch_no, id: res.id });
     } catch (e) {
@@ -24454,10 +24454,35 @@ async function existingSaleNos(companyId) {
   });
   return new Set(toPlain20(r).map((x) => vchKey(x.vch_no)));
 }
+async function saleDateLimits(cid) {
+  const { getBooksFrom: getBooksFrom2 } = await Promise.resolve().then(() => (init_openings(), openings_exports));
+  const booksFrom = String(await getBooksFrom2(cid) || "");
+  const { entryWindows: entryWindows2 } = await Promise.resolve().then(() => (init_access_gate(), access_gate_exports));
+  const win = await entryWindows2();
+  const windowFrom = [win.accountsTallyImport, win.accounts].filter(Boolean).sort().pop() || "";
+  return { booksFrom, windowFrom };
+}
+function saleBlock(x, lim) {
+  if (lim.booksFrom && x.date < lim.booksFrom) return `dated before these books begin (${lim.booksFrom})`;
+  if (lim.windowFrom && x.date < lim.windowFrom) return `dated before your working window (${lim.windowFrom})`;
+  if (!(x.gross > 0)) return "it has no gross total";
+  if (Math.abs(x.round_off) > 1) return `its columns do not add up to the gross total (out by ${Math.abs(x.round_off).toFixed(2)})`;
+  return null;
+}
+function drFirst(lines) {
+  return lines.map((l, i) => ({ l, i })).sort((a, b) => {
+    const ad = (a.l.dr || 0) > 0 ? 1 : 0;
+    const bd = (b.l.dr || 0) > 0 ? 1 : 0;
+    if (ad !== bd) return bd - ad;
+    return (b.l.dr || b.l.cr || 0) - (a.l.dr || a.l.cr || 0) || a.i - b.i;
+  }).map((x) => x.l);
+}
 async function previewTallySalesVouchers(v) {
   const reg = await parseSalesRegister(String(v.data_base64 || ""));
   const wanted = new Set((v.vch_nos || []).map(vchKey));
-  const have = await existingSaleNos(await companyOf(v));
+  const cid = await companyOf(v);
+  const have = await existingSaleNos(cid);
+  const lim = await saleDateLimits(cid);
   const picked = reg.sales.filter((x) => wanted.has(vchKey(x.vch_no)) && !x.cancelled && !have.has(vchKey(x.vch_no)));
   const roles = /* @__PURE__ */ new Map();
   const note = (nm, role, amt) => {
@@ -24481,7 +24506,8 @@ async function previewTallySalesVouchers(v) {
       taxable: x.taxable,
       gst: x.gst,
       round_off: x.round_off,
-      cols: x.cols.map((c) => ({ ...c, key: tallyKey(c.name) }))
+      cols: x.cols.map((c) => ({ ...c, key: tallyKey(c.name) })),
+      blocked: saleBlock(x, lim)
     })),
     ledgers: await mappingRows(roles, salesGroupFor)
   };
@@ -24498,11 +24524,7 @@ async function postTallySalesVouchers(v) {
     for (const c of x.cols) names.add(c.name);
   }
   const mapped = await resolveNames([...names]);
-  const { getBooksFrom: getBooksFrom2 } = await Promise.resolve().then(() => (init_openings(), openings_exports));
-  const booksFrom = await getBooksFrom2(cid);
-  const { entryWindows: entryWindows2 } = await Promise.resolve().then(() => (init_access_gate(), access_gate_exports));
-  const win = await entryWindows2();
-  const windowFrom = [win.accountsTallyImport, win.accounts].filter(Boolean).sort().pop() || "";
+  const lim = await saleDateLimits(cid);
   const created = [];
   const skipped = [];
   const fileLabel = String(v.file_name || "").trim();
@@ -24516,16 +24538,9 @@ async function postTallySalesVouchers(v) {
       skipped.push({ vch_no: x.vch_no, reason: "a sale with this number is already in the books" });
       continue;
     }
-    if (booksFrom && x.date < booksFrom) {
-      skipped.push({ vch_no: x.vch_no, reason: `dated before these books begin (${booksFrom})` });
-      continue;
-    }
-    if (windowFrom && x.date < windowFrom) {
-      skipped.push({ vch_no: x.vch_no, reason: `dated before your working window (${windowFrom})` });
-      continue;
-    }
-    if (x.gross <= 0) {
-      skipped.push({ vch_no: x.vch_no, reason: "it has no gross total" });
+    const block = saleBlock(x, lim);
+    if (block) {
+      skipped.push({ vch_no: x.vch_no, reason: block });
       continue;
     }
     const party = mapped.get(tallyKey(x.party));
@@ -24540,10 +24555,6 @@ async function postTallySalesVouchers(v) {
       lines.push({ account: m.account_name, [c.amount >= 0 ? "cr" : "dr"]: round210(Math.abs(c.amount)) });
     }
     if (Math.abs(x.round_off) > 4e-3) {
-      if (Math.abs(x.round_off) > 1) {
-        skipped.push({ vch_no: x.vch_no, reason: `its columns do not add up to the gross total (out by ${Math.abs(x.round_off).toFixed(2)})` });
-        continue;
-      }
       lines.push({ account: "ROUND OFF A/C", [x.round_off > 0 ? "cr" : "dr"]: round210(Math.abs(x.round_off)) });
     }
     try {
@@ -24553,7 +24564,7 @@ async function postTallySalesVouchers(v) {
         vchNo: x.vch_no,
         narration: `Imported from Tally \u2014 ${reg.title || "Sales Register"}${fileLabel ? ` (${fileLabel})` : ""}`,
         companyId: cid,
-        lines
+        lines: drFirst(lines)
       });
       created.push({ vch_no: x.vch_no, id: res.id });
     } catch (e) {
@@ -28881,8 +28892,9 @@ async function daybook(from, to) {
       SELECT je.id, je.entry_date, je.vch_type, je.vch_no, je.narration,
              je.order_id, je.sale_id, je.payment_id,
              COALESCE((SELECT SUM(dr) FROM journal_lines WHERE entry_id = je.id), 0) AS amount,
-             (SELECT GROUP_CONCAT(a.name, ' + ') FROM journal_lines jl JOIN ledger_accounts a ON a.id = jl.account_id WHERE jl.entry_id = je.id AND jl.dr > 0) AS dr_accounts,
-             (SELECT GROUP_CONCAT(a.name, ' + ') FROM journal_lines jl JOIN ledger_accounts a ON a.id = jl.account_id WHERE jl.entry_id = je.id AND jl.cr > 0) AS cr_accounts
+             -- Biggest first on each side, as a voucher is read.
+             (SELECT GROUP_CONCAT(nm, ' + ') FROM (SELECT a.name AS nm FROM journal_lines jl JOIN ledger_accounts a ON a.id = jl.account_id WHERE jl.entry_id = je.id AND jl.dr > 0 ORDER BY jl.dr DESC, jl.id)) AS dr_accounts,
+             (SELECT GROUP_CONCAT(nm, ' + ') FROM (SELECT a.name AS nm FROM journal_lines jl JOIN ledger_accounts a ON a.id = jl.account_id WHERE jl.entry_id = je.id AND jl.cr > 0 ORDER BY jl.cr DESC, jl.id)) AS cr_accounts
       FROM journal_entries je
       WHERE je.company_id = ? AND substr(je.entry_date, 1, 10) >= ? AND substr(je.entry_date, 1, 10) <= ?
       ORDER BY je.entry_date ASC, je.id ASC`,
@@ -31464,10 +31476,10 @@ async function bargainHead(kind, id) {
 var VOUCHER_COLS = `je.id, je.entry_date, je.vch_type, je.vch_no, je.narration, je.company_id,
   (SELECT n.prefix || '/' || n.serial FROM voucher_numbers n WHERE n.entry_id = je.id) AS code,
   (SELECT SUM(jl.dr) FROM journal_lines jl WHERE jl.entry_id = je.id) AS amount,
-  (SELECT GROUP_CONCAT(a.name, ', ') FROM journal_lines jl JOIN ledger_accounts a ON a.id = jl.account_id
-    WHERE jl.entry_id = je.id AND jl.dr > 0) AS dr_accounts,
-  (SELECT GROUP_CONCAT(a.name, ', ') FROM journal_lines jl JOIN ledger_accounts a ON a.id = jl.account_id
-    WHERE jl.entry_id = je.id AND jl.cr > 0) AS cr_accounts`;
+  (SELECT GROUP_CONCAT(nm, ', ') FROM (SELECT a.name AS nm FROM journal_lines jl JOIN ledger_accounts a ON a.id = jl.account_id
+    WHERE jl.entry_id = je.id AND jl.dr > 0 ORDER BY jl.dr DESC, jl.id)) AS dr_accounts,
+  (SELECT GROUP_CONCAT(nm, ', ') FROM (SELECT a.name AS nm FROM journal_lines jl JOIN ledger_accounts a ON a.id = jl.account_id
+    WHERE jl.entry_id = je.id AND jl.cr > 0 ORDER BY jl.cr DESC, jl.id)) AS cr_accounts`;
 function linkLabel(v) {
   const d = String(v.entry_date || "").slice(0, 10);
   const shown2 = /^\d{4}-\d{2}-\d{2}$/.test(d) ? d.split("-").reverse().join("-") : d;
