@@ -3220,7 +3220,7 @@ async function accountsRule(ns, op, args) {
     if (op === "postSales" || op === "postRegister" || op === "postBank") return section("accountsTallyImport", { action: "create" });
     if (op === "undoBatch") return section("accountsTallyImport", { action: "delete" });
     return section("accountsTallyImport", {
-      action: ["preview", "salesCheck", "salesPreview", "registerCheck", "registerPreview", "bankSuggest", "bankCheck", "bankPreview", "health", "batches", "drafts", "saveDraft", "clearDraft"].includes(op) ? "view" : "edit"
+      action: ["preview", "salesCheck", "salesPreview", "registerCheck", "registerPreview", "bankSuggest", "bankCheck", "bankPreview", "health", "batches", "companyBanks", "drafts", "saveDraft", "clearDraft"].includes(op) ? "view" : "edit"
     });
   }
   if (ns === "tbill" && (op === "create" || op === "update" || op === "delete")) {
@@ -26640,6 +26640,61 @@ async function postTallyBankVouchers(v) {
   await recordTallyBatch({ company_id: cid, kind: "bank", scope: `bank:${Number(state.account.id)}`, file_name: fileLabel, entry_ids: created.map((x) => x.id) });
   return { created, skipped };
 }
+var ownTable = false;
+async function ensureOwnBanks() {
+  if (ownTable) return;
+  await getClient().execute(`CREATE TABLE IF NOT EXISTS company_bank_accounts (
+    company_id INTEGER NOT NULL,
+    account_id INTEGER NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (company_id, account_id)
+  )`);
+  ownTable = true;
+}
+async function listCompanyBanks(v) {
+  await ensureOwnBanks();
+  const cid = await companyOf(v);
+  const c = getClient();
+  const own = new Set(
+    (await c.execute({ sql: "SELECT account_id FROM company_bank_accounts WHERE company_id = ?", args: [cid] })).rows.map((r) => Number(r.account_id))
+  );
+  const rows2 = toPlain20(
+    await c.execute({
+      sql: `SELECT a.id, a.name, a.acc_group,
+                   (SELECT COUNT(*) FROM journal_lines jl JOIN journal_entries je ON je.id = jl.entry_id WHERE jl.account_id = a.id AND je.company_id = ?) AS lines,
+                   (SELECT o.dr - o.cr FROM ledger_openings o WHERE o.account_id = a.id AND o.company_id = ?) AS opening
+              FROM ledger_accounts a
+             WHERE a.acc_group IN ('Bank Accounts', 'Bank OD A/c')
+             ORDER BY a.name`,
+      args: [cid, cid]
+    })
+  );
+  const banks = [];
+  for (const r of rows2) {
+    const id = Number(r.id);
+    const used = Number(r.lines) > 0 || Math.abs(n24(r.opening)) > 4e-3;
+    banks.push({
+      id,
+      name: String(r.name),
+      acc_group: String(r.acc_group),
+      business: own.has(id),
+      used,
+      generic: /^BANK A\/C$/i.test(String(r.name).trim()),
+      lines: Number(r.lines) || 0,
+      balance: used ? await bankBalanceBefore(cid, id, "9999-12-31") : 0
+    });
+  }
+  return { chosen: own.size > 0, banks };
+}
+async function setCompanyBank(v) {
+  await ensureOwnBanks();
+  const cid = await companyOf(v);
+  const id = Number(v.account_id) || 0;
+  await bankAccount(id);
+  if (v.on) await getClient().execute({ sql: "INSERT OR IGNORE INTO company_bank_accounts (company_id, account_id) VALUES (?, ?)", args: [cid, id] });
+  else await getClient().execute({ sql: "DELETE FROM company_bank_accounts WHERE company_id = ? AND account_id = ?", args: [cid, id] });
+  return { ok: true };
+}
 
 // src/main/tallyDesk.ts
 init_tallyLinks();
@@ -35117,6 +35172,8 @@ function registerIpc() {
   handle("tallyNotes:unlink", (_e, { values }) => removeTallyLink(values));
   handle("tallyNotes:batches", (_e, { values }) => listTallyBatches(values));
   handle("tallyNotes:undoBatch", (_e, { values }) => undoTallyBatch(values));
+  handle("tallyNotes:companyBanks", (_e, { values }) => listCompanyBanks(values));
+  handle("tallyNotes:setCompanyBank", (_e, { values }) => setCompanyBank(values));
   handle("tallyNotes:bankSuggest", (_e, { values }) => suggestTallyBank(values));
   handle("tallyNotes:bankCheck", (_e, { values }) => checkTallyBank(values));
   handle(
