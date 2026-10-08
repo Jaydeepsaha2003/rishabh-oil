@@ -24612,6 +24612,55 @@ async function billsOutstanding(accountName, companyId, opts = {}) {
       sale_invoice_group: b.sale_invoice_group
     };
   });
+  const emptyOf = /* @__PURE__ */ new Map();
+  const orderIds = [...new Set(rows2.map((r) => n20(r.order_id)).filter((x) => x > 0))];
+  if (orderIds.length) {
+    const er = await c.execute({
+      sql: `SELECT o.id, o.status, o.received_date,
+                   (SELECT COUNT(*) FROM purchase_tankers pt WHERE pt.order_id = o.id) AS tk,
+                   (SELECT COUNT(*) FROM purchase_tankers pt WHERE pt.order_id = o.id AND COALESCE(pt.empty_date, '') != '') AS tk_empty,
+                   (SELECT MAX(pt.empty_date) FROM purchase_tankers pt WHERE pt.order_id = o.id AND COALESCE(pt.empty_date, '') != '') AS last_empty
+              FROM orders o WHERE o.id IN (${orderIds.map(() => "?").join(", ")})`,
+      args: orderIds
+    });
+    for (const o of toPlain19(er)) {
+      const tk = n20(o.tk);
+      const on = tk > 0 ? n20(o.tk_empty) >= tk ? String(o.last_empty || "").slice(0, 10) : "" : String(o.status) === "received" ? String(o.received_date || "").slice(0, 10) : "";
+      emptyOf.set(`o${n20(o.id)}`, on ? { on, state: "empty" } : { on: null, state: "awaiting" });
+    }
+  }
+  const groups = [...new Set(rows2.map((r) => String(r.sale_invoice_group || "")).filter(Boolean))];
+  if (groups.length) {
+    const sr = await c.execute({
+      sql: `SELECT COALESCE(invoice_group, invoice_no) AS grp, COUNT(*) AS k,
+                   SUM(CASE WHEN dispatch_stage = 'unloaded' AND COALESCE(unloaded_date, '') != '' THEN 1 ELSE 0 END) AS done,
+                   MAX(unloaded_date) AS last_unloaded
+              FROM sales
+             WHERE company_id = ? AND COALESCE(invoice_group, invoice_no) IN (${groups.map(() => "?").join(", ")})
+             GROUP BY grp`,
+      args: [cid, ...groups]
+    });
+    for (const s4 of toPlain19(sr)) {
+      const on = n20(s4.done) >= n20(s4.k) && n20(s4.k) > 0 ? String(s4.last_unloaded || "").slice(0, 10) : "";
+      emptyOf.set(`s${String(s4.grp)}`, on ? { on, state: "empty" } : { on: null, state: "awaiting" });
+    }
+  }
+  for (const r of rows2) {
+    const e = r.order_id ? emptyOf.get(`o${n20(r.order_id)}`) : r.sale_invoice_group ? emptyOf.get(`s${String(r.sale_invoice_group)}`) : void 0;
+    r.empty_state = e ? e.state : null;
+    r.empty_on = e?.on || null;
+    if (e?.on) {
+      const d = /* @__PURE__ */ new Date(`${e.on}T00:00:00Z`);
+      if (creditDays > 0) d.setUTCDate(d.getUTCDate() + creditDays);
+      const due = d.toISOString().slice(0, 10);
+      const dueMs = Date.parse(`${due}T00:00:00Z`);
+      r.due_on_empty = due;
+      r.overdue_days_empty = asOfMs > dueMs ? Math.floor((asOfMs - dueMs) / dayMs) : 0;
+    } else {
+      r.due_on_empty = null;
+      r.overdue_days_empty = 0;
+    }
+  }
   const balRes = accountId ? await c.execute({
     sql: `SELECT ROUND(COALESCE(SUM(jl.dr), 0) - COALESCE(SUM(jl.cr), 0), 2) AS bal
               FROM journal_lines jl JOIN journal_entries je ON je.id = jl.entry_id
