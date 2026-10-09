@@ -27460,7 +27460,7 @@ async function listUnmappedOrders() {
   const res = await getClient().execute({
     sql: `SELECT o.id, o.invoice_no, o.order_date, o.supplier_id, o.oil_type_id, o.ordered_qty, o.uom,
                  o.bargain_rate, o.invoice_rate, o.adjusted_rate, o.taxable_value, o.net_amount,
-                 o.gst_pct, o.is_consignment, o.status, o.bargain_id, o.remarks,
+                 o.gst_pct, o.is_consignment, o.status, o.bargain_id, o.remarks, o.bill_group,
                  s.name AS supplier_name, p.code AS product_code, p.name AS product_name,
                  (SELECT COUNT(*) FROM purchase_tankers pt WHERE pt.order_id = o.id) AS tanker_count,
                  (SELECT COALESCE(SUM(pt.loaded_qty), 0) FROM purchase_tankers pt WHERE pt.order_id = o.id) AS tanker_qty,
