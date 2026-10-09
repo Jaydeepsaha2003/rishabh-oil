@@ -15860,6 +15860,9 @@ function assertMixBlend(mix) {
   if (blend > 100.0005) {
     throw new Error(`The mix's inputs come to ${Math.round(blend * 1e3) / 1e3} parts \u2014 they cannot be more than 100`);
   }
+  if (blend < 99.9995) {
+    throw new Error(`The mix's inputs come to ${Math.round(blend * 1e3) / 1e3} parts \u2014 a batch's mix must come to exactly 100`);
+  }
 }
 function safeParse(raw) {
   try {
