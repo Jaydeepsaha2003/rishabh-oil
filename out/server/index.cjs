@@ -5858,6 +5858,7 @@ __export(orders_exports, {
   recordSupplierPayment: () => recordSupplierPayment,
   repairPurchaseTdsOnTaxable: () => repairPurchaseTdsOnTaxable,
   replaceTanker: () => replaceTanker,
+  repriceSplitTankerInvoices: () => repriceSplitTankerInvoices,
   rerateInvoicesForBargain: () => rerateInvoicesForBargain,
   revertPurchaseTanker: () => revertPurchaseTanker,
   saveOrderQuality: () => saveOrderQuality,
@@ -5915,14 +5916,14 @@ async function relatedSupplierIds(supplierId) {
   const linked = await c.execute({ sql: "SELECT id FROM suppliers WHERE linked_party_id = ?", args: [root] });
   return Array.from(/* @__PURE__ */ new Set([root, supplierId, ...linked.rows.map((r) => Number(r.id))]));
 }
-async function supplierFyTaxable(supplierId, dateStr, excludeId) {
+async function supplierFyTaxable(supplierId, dateStr, excludeId, companyId) {
   const { start, end } = fyRange(dateStr);
   const c = getClient();
   const ids = await relatedSupplierIds(supplierId);
   const res = await c.execute({
     sql: `SELECT COALESCE(SUM(taxable_value), 0) AS t FROM orders
           WHERE supplier_id IN (${ids.map(() => "?").join(",")}) AND order_date BETWEEN ? AND ? AND id != ? AND company_id = ?`,
-    args: [...ids, start, dateStr, excludeId || 0, getActiveCompanyId()]
+    args: [...ids, start, dateStr, excludeId || 0, companyId || getActiveCompanyId()]
   });
   const sup = await c.execute({
     sql: `SELECT opening_purchase_amount, opening_purchase_date FROM suppliers WHERE id IN (${ids.map(() => "?").join(",")})`,
@@ -6867,6 +6868,124 @@ async function rerateInvoicesForBargain(bargainId, rate, orderIds) {
     }
   }
   return { updated, failed };
+}
+async function repriceSplitTankerInvoices(apply = false, onlyIds) {
+  const c = getClient();
+  const round222 = (v) => Math.round(v * 100) / 100;
+  const pick = onlyIds ? new Set(onlyIds.map((x) => n6(x))) : null;
+  const cand = toPlain9(
+    await c.execute(`SELECT o.* FROM orders o
+                      WHERE EXISTS (SELECT 1 FROM purchase_tankers pt
+                                     WHERE pt.order_id = o.id AND COALESCE(pt.extra_bargain_id, 0) > 0 AND COALESCE(pt.extra_qty, 0) > 0)
+                        AND COALESCE(o.is_trading, 0) = 0
+                      ORDER BY o.order_date ASC, o.id ASC`)
+  );
+  const findings = [];
+  let changed = 0;
+  for (const o of cand) {
+    const id = n6(o.id);
+    if (pick && !pick.has(id)) continue;
+    const tankerIds = toPlain9(await c.execute({ sql: "SELECT id FROM purchase_tankers WHERE order_id = ?", args: [id] })).map((t) => n6(t.id));
+    const lines = applyBargainInterestOverrides(await bargainLinesForTankers(tankerIds), await listOrderBargainInterest(id));
+    const qty = lines.reduce((t, l) => t + l.qty, 0);
+    if (!(qty > 0) || new Set(lines.map((l) => round222(l.rate))).size < 2) continue;
+    const supplier = await getSupplier(n6(o.supplier_id));
+    const prior = await supplierFyTaxable(n6(o.supplier_id), String(o.order_date), id, n6(o.company_id) || void 0);
+    const blended = round222(lines.reduce((t, l) => t + l.rate * l.qty, 0) / qty);
+    const oldPremium = round222(n6(o.invoice_rate) - n6(o.bargain_rate));
+    const invoiceRate = round222(blended + (Math.abs(oldPremium) < 0.01 ? 0 : oldPremium));
+    const money = (roundOff2) => computeMoney({
+      orderedQty: n6(o.ordered_qty),
+      invoiceRate,
+      bargainRate: blended,
+      gstPct: n6(o.gst_pct),
+      tdsPct: supplier?.tds_above_only ? 0 : n6(o.tds_pct),
+      addsInterest: n6(o.interest_pct) > 0,
+      interestPct: n6(o.interest_pct),
+      interestDays: n6(o.interest_days),
+      additionalInterest: n6(o.additional_interest),
+      rateRoundOff: o.rate_round_off == null ? null : n6(o.rate_round_off),
+      tdsThreshold: n6(supplier?.tds_threshold),
+      tdsPctAbove: n6(o.tds_pct),
+      tdsPrior: prior,
+      roundOff: roundOff2,
+      lines
+    });
+    let roundOff = n6(o.round_off);
+    if (n6(o.round_off_manual) !== 1) {
+      const first = money(0);
+      const T = round222(first.taxable_value + first.gst_amount);
+      roundOff = round222(Math.round(T) - T);
+    }
+    const m = money(roundOff);
+    if (Math.abs(m.taxable_value - n6(o.taxable_value)) < 1) continue;
+    const siblings = String(o.bill_group || "").trim() ? n6((await c.execute({ sql: "SELECT COUNT(*) AS k FROM orders WHERE bill_group = ?", args: [String(o.bill_group)] })).rows[0]?.k) : 1;
+    const comp = await c.execute({ sql: "SELECT name FROM companies WHERE id = ?", args: [n6(o.company_id)] }).catch(() => null);
+    const review = o.intercompany_sale_id != null || String(o.intercompany_group || "").trim() ? "Inter-company purchase \u2014 open it and save it, with its sale" : siblings > 1 ? "One line of a multi-product bill \u2014 open the bill and save it" : null;
+    const row = {
+      id,
+      invoice_no: String(o.invoice_no || ""),
+      order_date: String(o.order_date || "").slice(0, 10),
+      company: String(comp?.rows[0]?.name || ""),
+      supplier: String(supplier?.name || ""),
+      qty: round222(qty),
+      lines: lines.map((l) => ({ qty: round222(l.qty), rate: l.rate })),
+      taxable_before: round222(n6(o.taxable_value)),
+      taxable_after: round222(m.taxable_value),
+      tds_before: round222(n6(o.tds_amount)),
+      tds_after: round222(m.tds_amount),
+      net_before: round222(n6(o.net_amount)),
+      net_after: round222(m.net_amount),
+      review
+    };
+    findings.push(row);
+    if (!apply || review) continue;
+    await withDbTransaction(async () => {
+      const c2 = getClient();
+      const je = await c2.execute({ sql: "SELECT id FROM journal_entries WHERE order_id = ? ORDER BY id LIMIT 1", args: [id] });
+      await c2.execute(`CREATE TABLE IF NOT EXISTS accounting_repair_log (
+          repair_key TEXT PRIMARY KEY, entry_id INTEGER NOT NULL, before_json TEXT NOT NULL,
+          created_at TEXT NOT NULL DEFAULT (datetime('now')))`);
+      await c2.execute({
+        sql: "INSERT OR REPLACE INTO accounting_repair_log(repair_key, entry_id, before_json) VALUES (?, ?, ?)",
+        args: [`split_tanker_reprice:${id}:${Date.now()}`, n6(je.rows[0]?.id), JSON.stringify(o)]
+      });
+      await c2.execute({
+        sql: `UPDATE orders SET bargain_rate = ?, invoice_rate = ?, adjusted_rate = ?, taxable_value = ?,
+                gst_amount = ?, tds_amount = ?, round_off = ?, net_amount = ?,
+                final_taxable_value = ?, final_gst_amount = ?, final_tds_amount = ?, final_net_amount = ?
+              WHERE id = ?`,
+        args: [
+          blended,
+          invoiceRate,
+          m.adjusted_rate,
+          m.taxable_value,
+          m.gst_amount,
+          m.tds_amount,
+          roundOff,
+          m.net_amount,
+          m.final_taxable_value,
+          m.final_gst_amount,
+          m.final_tds_amount,
+          m.final_net_amount,
+          id
+        ]
+      });
+      const v = { ...o, bargain_rate: blended, invoice_rate: invoiceRate };
+      await setSupplierPayable(id, n6(o.supplier_id), m.net_amount, String(o.order_date));
+      await postOrderJournal(id, v, m, supplier, roundOff);
+      await recordChanges(
+        "orders",
+        id,
+        String(o.invoice_no || ""),
+        o,
+        { ...o, bargain_rate: blended, invoice_rate: invoiceRate, taxable_value: m.taxable_value, gst_amount: m.gst_amount, tds_amount: m.tds_amount, round_off: roundOff, net_amount: m.net_amount },
+        ORDER_FIELDS
+      );
+    });
+    changed++;
+  }
+  return { findings, changed };
 }
 async function deleteOrder(id) {
   return withDbTransaction(async () => {
@@ -35329,7 +35448,7 @@ async function recordAudit(channel, args, result) {
   );
 }
 function registerIpc() {
-  const READONLY = /:list$|:get$|:items$|:issuances$|:sheet$|:outstanding$|:all$|:summary$|:transfers$|:fyTaxable$|:needs$|:breakdown$|:nextNo$|:liveUsers$|:ips$|:logs$|:dispatchableSales$|:mine$|:pendingCount$|:pending$|:lots$|:unmapped$|:unmappedCount$|:bargainLines$|:bargainNotes$|:bargainInterest$|:consignmentDraws$|^access:heartbeat$|^db:ping$|^db:snapshot$|^app:revision$|^auth:login$|^journal:booksFrom$|^tally:map$|^journal:openings$|^journal:opening$|^journal:accounts$|^journal:statement$|^journal:trialBalance$|^journal:groups$|^journal:groupNames$|^journal:groupTree$|^journal:ledgerMap$|^journal:pendingRefs$|^journal:billsOutstanding$|^journal:tradingAccount$|^dashboard:stats$|^vouchers:nextCode$|^vouchers:forDocument$|^vouchers:alterInfo$|^tfreight:kpis$|^dashboard:position$|^dashboard:layout$|^dashboard:saveLayout$|^productMerge:preview$|^skuRates:parties$|^skuRates:partyCounts$|^consignment:openingLog$|^tags:list$|^tags:for$|^tags:contents$|^consignment:openingLots$|^consignment:invoices$|^tankers:quality$|^tankers:qualityMany$|^tankers:ffaHistory$|^orders:quality$|^gate:partyCategories$|^gate:waivedOuts$|^gate:forRecord$|^notify:rules$|^notify:list$|^notify:run$|^notify:preview$|^notify:people$|^notify:mutes$|^treasury:alerts$|^treasury:paymentTracker$|^facility:exposures$|^facility:headroom$|^company:setActive$|^company:getActive$|^factory:active$|^factory:companies$|^session:setUser$|^lc:repayments$|^lc:parts$|^lc:parts$|^lc:allRepayments$|^lc:getLimit$|^lc:bankLimits$|^lc:paymentIns$|^lc:openTradingInvoices$|^files:pickDocument$|^files:openDocument$|^bankRecon:imports$|^bankRecon:list$|^bankRecon:suggest$|^bd:kpis$|^bd:limits$|^skuStock:adjustments$|^skuOpening:list$|^skuOpening:date$|^stockCount:previous$|^orders:intercompanySource$|^stockOpening:list$|^stockOpening:date$|^stockOpening:sets$|^stockOpening:setLines$|^stockOpening:ppStages$|^stockOpening:ppFreeTotals$|^production:ppDraws$|^bargains:linkedInvoices$|^bargains:linkedVouchers$|^bargains:voucherChoices$|^salesBargains:linkedVouchers$|^salesBargains:voucherChoices$|^bargains:adjustments$|^history:list$|^stockOpening:ppVessels$|^stockOpening:ppReceivers$|^stockOpening:ppWriteoffs$|^work:board$|^work:cutoff$|^work:processes$|^formulationSubcategory:list$|^formulations:versions$|^facility:limitHistory$|^bd:limitReductions$|^bd:allRepayments$|^bd:interestSchedule$|^bd:interestWindow$|^bd:interestPayments$|^bd:linkedOrders$|^bd:parties$|^bd:allParties$|^bd:openTradingInvoices$|^bd:paymentIns$|^bd:partyPayments$|^bd:receiptParts$|^access:entryWindows$|^access:entityHistory$|^trading:list$|^sales:series$|^sales:invoiceGaps$|^salesBargains:returns$|^salesBargains:linkedInvoices$|^salesBargains:unattributedReturns$|^tbill:orphans$|^production:report$|^production:mix$/;
+  const READONLY = /:list$|:get$|:items$|:issuances$|:sheet$|:outstanding$|:all$|:summary$|:transfers$|:fyTaxable$|:needs$|:breakdown$|:nextNo$|:liveUsers$|:ips$|:logs$|:dispatchableSales$|:mine$|:pendingCount$|:pending$|:lots$|:unmapped$|:unmappedCount$|:bargainLines$|:bargainNotes$|:bargainInterest$|:consignmentDraws$|^access:heartbeat$|^db:ping$|^db:snapshot$|^app:revision$|^auth:login$|^journal:booksFrom$|^tally:map$|^journal:openings$|^journal:opening$|^journal:accounts$|^journal:statement$|^journal:trialBalance$|^journal:groups$|^journal:groupNames$|^journal:groupTree$|^journal:ledgerMap$|^journal:pendingRefs$|^journal:billsOutstanding$|^journal:tradingAccount$|^dashboard:stats$|^vouchers:nextCode$|^vouchers:forDocument$|^vouchers:alterInfo$|^tfreight:kpis$|^dashboard:position$|^dashboard:layout$|^dashboard:saveLayout$|^productMerge:preview$|^skuRates:parties$|^skuRates:partyCounts$|^consignment:openingLog$|^tags:list$|^tags:for$|^tags:contents$|^consignment:openingLots$|^consignment:invoices$|^tankers:quality$|^tankers:qualityMany$|^tankers:ffaHistory$|^orders:quality$|^gate:partyCategories$|^gate:waivedOuts$|^gate:forRecord$|^notify:rules$|^notify:list$|^notify:run$|^notify:preview$|^notify:people$|^notify:mutes$|^treasury:alerts$|^treasury:paymentTracker$|^facility:exposures$|^facility:headroom$|^company:setActive$|^company:getActive$|^factory:active$|^factory:companies$|^session:setUser$|^lc:repayments$|^lc:parts$|^lc:parts$|^lc:allRepayments$|^lc:getLimit$|^lc:bankLimits$|^lc:paymentIns$|^lc:openTradingInvoices$|^files:pickDocument$|^files:openDocument$|^bankRecon:imports$|^bankRecon:list$|^bankRecon:suggest$|^bd:kpis$|^bd:limits$|^skuStock:adjustments$|^skuOpening:list$|^skuOpening:date$|^stockCount:previous$|^orders:intercompanySource$|^stockOpening:list$|^stockOpening:date$|^stockOpening:sets$|^stockOpening:setLines$|^stockOpening:ppStages$|^stockOpening:ppFreeTotals$|^production:ppDraws$|^bargains:linkedInvoices$|^bargains:linkedVouchers$|^bargains:voucherChoices$|^salesBargains:linkedVouchers$|^salesBargains:voucherChoices$|^bargains:adjustments$|^history:list$|^stockOpening:ppVessels$|^stockOpening:ppReceivers$|^stockOpening:ppWriteoffs$|^work:board$|^work:cutoff$|^work:processes$|^formulationSubcategory:list$|^formulations:versions$|^facility:limitHistory$|^bd:limitReductions$|^bd:allRepayments$|^bd:interestSchedule$|^bd:interestWindow$|^bd:interestPayments$|^bd:linkedOrders$|^bd:parties$|^bd:allParties$|^bd:openTradingInvoices$|^bd:paymentIns$|^bd:partyPayments$|^bd:receiptParts$|^access:entryWindows$|^access:entityHistory$|^trading:list$|^sales:series$|^sales:invoiceGaps$|^salesBargains:returns$|^salesBargains:linkedInvoices$|^salesBargains:unattributedReturns$|^tbill:orphans$|^production:report$|^production:mix$|^repairs:splitTanker:list$/;
   const AUDIT_SKIP = /* @__PURE__ */ new Set(["config:get", "config:save", "session:setUser"]);
   const handle = (channel, fn) => {
     ipcMain.handle(channel, async (e, args) => {
@@ -36418,6 +36537,18 @@ function registerIpc() {
     await assertAdmin("Moving vouchers to their own company");
     const { moveWrongCompany: moveWrongCompany2 } = await Promise.resolve().then(() => (init_accountingRepairs(), accountingRepairs_exports));
     return moveWrongCompany2(a?.ids || []);
+  });
+  handle("repairs:splitTanker:list", async () => {
+    await assertAdmin("The accounting checks");
+    const { repriceSplitTankerInvoices: repriceSplitTankerInvoices2 } = await Promise.resolve().then(() => (init_orders(), orders_exports));
+    return repriceSplitTankerInvoices2(false);
+  });
+  handle("repairs:splitTankerFix", async (_e, a) => {
+    await assertAdmin("Re-pricing split-tanker purchases");
+    const ids = (a?.ids || []).map((x) => Number(x)).filter((x) => x > 0);
+    if (!ids.length) throw new Error("Pick at least one purchase");
+    const { repriceSplitTankerInvoices: repriceSplitTankerInvoices2 } = await Promise.resolve().then(() => (init_orders(), orders_exports));
+    return repriceSplitTankerInvoices2(true, ids);
   });
   handle("repairs:sharedLedgers:list", async () => {
     await assertAdmin("The accounting checks");
