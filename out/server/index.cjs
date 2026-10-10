@@ -23622,7 +23622,36 @@ async function stockFifoMap(v) {
               ) WHERE 1 = 1 ${dateCut}`,
     args: [pid, ...ids, pid, ...ids, ...asOf ? [asOf] : []]
   }).catch(() => ({ rows: [] }))).rows;
-  const inflows = [...purchases, ...made].map((r) => ({ ...r })).sort((a, b) => String(b.d).localeCompare(String(a.d)) || n49(b.id) - n49(a.id) || String(a.kind).localeCompare(String(b.kind)));
+  const oids = purchases.map((r) => n49(r.id));
+  const oph = oids.map(() => "?").join(", ");
+  const tankerRows = oids.length ? (await c.execute({
+    sql: `SELECT order_id, id, tanker_no, COALESCE(NULLIF(received_qty, 0), loaded_qty) AS q, COALESCE(empty_date, '') AS td, 'pt' AS src
+                    FROM purchase_tankers WHERE order_id IN (${oph})
+                  UNION ALL
+                  SELECT order_id, id, tanker_no, qty AS q, COALESCE(deposit_date, '') AS td, 'cs' AS src
+                    FROM consignment_stock WHERE order_id IN (${oph})`,
+    args: [...oids, ...oids]
+  }).catch(() => ({ rows: [] }))).rows : [];
+  const byOrder = /* @__PURE__ */ new Map();
+  for (const t of tankerRows) {
+    if (n49(t.q) <= 0 || !String(t.tanker_no || "").trim()) continue;
+    byOrder.set(n49(t.order_id), [...byOrder.get(n49(t.order_id)) || [], t]);
+  }
+  const perTanker = purchases.flatMap((r) => {
+    const all = byOrder.get(n49(r.id)) || [];
+    const ts = all.some((t) => t.src === "pt") ? all.filter((t) => t.src === "pt") : all;
+    if (!ts.length) return [r];
+    const total = ts.reduce((s5, t) => s5 + n49(t.q), 0);
+    let given = 0;
+    return ts.map((t, i) => {
+      const share = i === ts.length - 1 ? r35(n49(r.qty) - given) : r35(n49(r.qty) * n49(t.q) / total);
+      given = r35(given + share);
+      return { ...r, qty: share, tanker_no: t.tanker_no, tanker_id: n49(t.id), td: t.td };
+    });
+  });
+  const inflows = [...perTanker, ...made].map((r) => ({ ...r })).sort(
+    (a, b) => String(b.d).localeCompare(String(a.d)) || n49(b.id) - n49(a.id) || String(a.kind).localeCompare(String(b.kind)) || String(b.td || "").localeCompare(String(a.td || "")) || n49(b.tanker_id) - n49(a.tanker_id)
+  );
   const lines = [];
   let left = want;
   let cum = 0;
@@ -23642,6 +23671,7 @@ async function stockFifoMap(v) {
     lines.push({
       kind: r.kind,
       id: n49(r.id),
+      tanker_id: r.tanker_id ?? null,
       date: String(r.d || "").slice(0, 10),
       invoice_date: r.order_date ? String(r.order_date).slice(0, 10) : null,
       invoice_no: r.invoice_no ?? null,
@@ -27381,6 +27411,51 @@ async function bookVouchers(companyId, kind, from, to) {
       round_off: ro,
       lines
     });
+  }
+  return kind === "purchase" ? mergeBills(out) : out;
+}
+async function mergeBills(vs) {
+  const orderIds = [...new Set(vs.map((v) => v.order_id).filter((x) => x > 0))];
+  if (!orderIds.length) return vs;
+  const groupOf = /* @__PURE__ */ new Map();
+  for (let i = 0; i < orderIds.length; i += 400) {
+    const chunk = orderIds.slice(i, i + 400);
+    const rs = await getClient().execute({
+      sql: `SELECT id, bill_group FROM orders WHERE id IN (${chunk.map(() => "?").join(",")}) AND COALESCE(bill_group, '') <> ''`,
+      args: chunk
+    });
+    for (const r of rs.rows) groupOf.set(Number(r.id), String(r.bill_group));
+  }
+  if (!groupOf.size) return vs;
+  const out = [];
+  const byGroup = /* @__PURE__ */ new Map();
+  for (const v of vs) {
+    const g = groupOf.get(v.order_id);
+    if (!g) {
+      out.push(v);
+      continue;
+    }
+    const into = byGroup.get(g);
+    if (!into) {
+      const copy = { ...v, lines: v.lines.map((l) => ({ ...l })) };
+      byGroup.set(g, copy);
+      out.push(copy);
+      continue;
+    }
+    for (const l of v.lines) {
+      const side = l.dr > 0 ? "dr" : "cr";
+      const hit = into.lines.find((x) => x.account_id === l.account_id && (side === "dr" ? x.dr > 0 : x.cr > 0));
+      if (hit) {
+        hit.dr = round211(hit.dr + l.dr);
+        hit.cr = round211(hit.cr + l.cr);
+      } else into.lines.push({ ...l });
+    }
+    into.gross = round211(into.gross + v.gross);
+    into.total = round211(into.total + v.total);
+    into.taxable = round211(into.taxable + v.taxable);
+    into.gst = round211(into.gst + v.gst);
+    into.tds = round211(into.tds + v.tds);
+    into.round_off = round211(into.round_off + v.round_off);
   }
   return out;
 }
