@@ -3208,7 +3208,8 @@ var init_accessSections = __esm({
       { key: "accountsOpenings", label: "Accounting \xB7 Opening Balances" },
       { key: "accountsMasters", label: "Accounting \xB7 Masters (ledgers & groups)" },
       { key: "accountsTallyImport", label: "Accounting \xB7 Tally file updation" },
-      { key: "accountsCashflow", label: "Accounting \xB7 Cashflow Register" }
+      { key: "accountsCashflow", label: "Accounting \xB7 Cashflow Register" },
+      { key: "accountsPayReg", label: "Accounting \xB7 Payment / Receipt Register" }
     ];
     VOUCHER_SECTION = {
       CONTRA: "accountsContra",
@@ -11657,11 +11658,14 @@ async function postSaleJournal(v) {
     const hasFreight = freight > 0 && !!transporterName;
     const deducted = !!v.deductFreight && hasFreight;
     const customerDr = round25(taxable + gst + ro - (deducted ? freight : 0));
+    const gstL = gstLines({ side: "OUTPUT", pct: n13(v.gstPct), type: asGstType(v.gstType), cr: gst });
+    const gstStored = round25(gstL.reduce((t, l) => t + round25(n13(l.cr)), 0));
+    const roNet = round25(customerDr + (deducted ? freight : 0) - round25(taxable) - gstStored);
     const lines = [
       { account: v.customerName || "CASH CUSTOMER A/C", group: "Sundry Debtors", dr: customerDr },
       { account: `${v.productCode} SALE A/C`, group: "Sales Accounts", cr: taxable },
-      ...gstLines({ side: "OUTPUT", pct: n13(v.gstPct), type: asGstType(v.gstType), cr: gst }),
-      { account: "ROUND OFF A/C", group: "Indirect Expenses", cr: ro > 0 ? ro : 0, dr: ro < 0 ? -ro : 0 }
+      ...gstL,
+      { account: "ROUND OFF A/C", group: "Indirect Expenses", cr: roNet > 0 ? roNet : 0, dr: roNet < 0 ? -roNet : 0 }
     ];
     if (deducted) lines.push({ account: "FREIGHT OUTWARD A/C", group: "Direct Expenses", dr: freight });
     const args = {
@@ -17075,11 +17079,14 @@ async function postSaleInvoiceJournal(saleId, reuseEntryId) {
   const custDr = round27(
     saleAccounts + gst + roCr + freightPayable - roDr - freightOutward
   );
+  const gstL = gstLines({ side: "OUTPUT", pct: n18(first.gst_pct), type: asGstType(first.gst_type), cr: gst });
+  const gstStored = round27(gstL.reduce((t, l) => t + round27(n18(l.cr)), 0));
+  const roNet = round27(custDr + freightOutward - freightPayable - saleAccounts - gstStored);
   const lines = [
     { account: customerName, group: "Sundry Debtors", dr: custDr },
     ...saleLines,
-    ...gstLines({ side: "OUTPUT", pct: n18(first.gst_pct), type: asGstType(first.gst_type), cr: gst }),
-    { account: "ROUND OFF A/C", group: "Indirect Expenses", cr: roCr, dr: roDr }
+    ...gstL,
+    { account: "ROUND OFF A/C", group: "Indirect Expenses", cr: roNet > 0 ? roNet : 0, dr: roNet < 0 ? -roNet : 0 }
   ];
   if (deducted) lines.push({ account: "FREIGHT OUTWARD A/C", group: "Direct Expenses", dr: freightOutward });
   const args = {
@@ -18997,6 +19004,7 @@ __export(accountingRepairs_exports, {
   clearSaleTds: () => clearSaleTds,
   fixLcCharges: () => fixLcCharges,
   fixOutwardFreight: () => fixOutwardFreight,
+  fixPaisaImbalance: () => fixPaisaImbalance,
   fixSharedLedgers: () => fixSharedLedgers,
   genericBankPostings: () => genericBankPostings,
   moveGenericBankPostings: () => moveGenericBankPostings,
@@ -19004,6 +19012,7 @@ __export(accountingRepairs_exports, {
   previewDuplicateInvoicePostings: () => previewDuplicateInvoicePostings,
   previewLcCharges: () => previewLcCharges,
   previewOutwardFreight: () => previewOutwardFreight,
+  previewPaisaImbalance: () => previewPaisaImbalance,
   previewSaleTds: () => previewSaleTds,
   previewSharedLedgers: () => previewSharedLedgers,
   previewWrongCompany: () => previewWrongCompany,
@@ -19986,6 +19995,72 @@ async function moveWrongCompany(entryIds) {
     }
     return { moved: wanted.size, codes };
   });
+}
+async function previewPaisaImbalance() {
+  const c = getClient();
+  const res = await c.execute(`
+    SELECT je.id, je.company_id, je.entry_date, je.vch_type, je.vch_no,
+           ROUND(SUM(jl.dr), 2) AS dr, ROUND(SUM(jl.cr), 2) AS cr,
+           (SELECT name FROM companies WHERE id = je.company_id) AS company
+      FROM journal_entries je JOIN journal_lines jl ON jl.entry_id = je.id
+     GROUP BY je.id
+    HAVING ABS(ROUND(SUM(jl.dr), 2) - ROUND(SUM(jl.cr), 2)) >= 0.005
+     ORDER BY je.entry_date, je.id`);
+  const findings = res.rows.map((r) => {
+    const diff = Math.round((Number(r.dr) - Number(r.cr)) * 100) / 100;
+    return {
+      entry_id: Number(r.id),
+      company: String(r.company || ""),
+      date: String(r.entry_date || "").slice(0, 10),
+      type: String(r.vch_type || ""),
+      vch_no: String(r.vch_no || ""),
+      dr: Number(r.dr),
+      cr: Number(r.cr),
+      diff,
+      review: Math.abs(diff) > 0.05 ? `Out by ${Math.abs(diff).toFixed(2)} \u2014 more than rounding; open the voucher and correct it` : null
+    };
+  });
+  return { findings };
+}
+async function fixPaisaImbalance(ids) {
+  const pick = new Set((ids || []).map((x) => Number(x)).filter((x) => x > 0));
+  if (!pick.size) throw new Error("Pick at least one voucher");
+  const { findings } = await previewPaisaImbalance();
+  const todo = findings.filter((f) => pick.has(Number(f.entry_id)) && !f.review);
+  await ensureLog();
+  let fixed = 0;
+  for (const f of todo) {
+    await withDbTransaction(async () => {
+      const c = getClient();
+      const id = Number(f.entry_id);
+      const lines = await c.execute({
+        sql: `SELECT jl.id, jl.dr, jl.cr, a.name FROM journal_lines jl JOIN ledger_accounts a ON a.id = jl.account_id WHERE jl.entry_id = ? ORDER BY jl.id`,
+        args: [id]
+      });
+      await c.execute({
+        sql: "INSERT OR REPLACE INTO accounting_repair_log(repair_key, entry_id, before_json) VALUES (?, ?, ?)",
+        args: [`paisa_balance:${id}:${Date.now()}`, id, JSON.stringify(lines.rows)]
+      });
+      const d = Math.round((Number(f.dr) - Number(f.cr)) * 100) / 100;
+      const ro = lines.rows.find((l) => String(l.name).trim().toUpperCase() === "ROUND OFF A/C");
+      if (ro) {
+        const net = Math.round((Number(ro.cr) - Number(ro.dr) + d) * 100) / 100;
+        await c.execute({
+          sql: "UPDATE journal_lines SET cr = ?, dr = ? WHERE id = ?",
+          args: [net > 0 ? net : 0, net < 0 ? -net : 0, Number(ro.id)]
+        });
+      } else {
+        const { getOrCreateAccount: getOrCreateAccount2 } = await Promise.resolve().then(() => (init_journal(), journal_exports));
+        const acct = await getOrCreateAccount2("ROUND OFF A/C", "Indirect Expenses");
+        await c.execute({
+          sql: "INSERT INTO journal_lines (entry_id, account_id, dr, cr) VALUES (?, ?, ?, ?)",
+          args: [id, acct, d < 0 ? -d : 0, d > 0 ? d : 0]
+        });
+      }
+    });
+    fixed++;
+  }
+  return { fixed };
 }
 var TOL, GENERIC_BANK, CASH_BANK_GROUPS2, TDS_LEDGER, SALE_OTHER_DEBITS, CHARGE_LEDGERS, plainRows;
 var init_accountingRepairs = __esm({
@@ -21075,6 +21150,961 @@ var init_tallyLinks = __esm({
   }
 });
 
+// src/main/tallyNotes.ts
+function toPlain20(res) {
+  return res.rows.map((r) => ({ ...r }));
+}
+function settleSigns(gross, cols, fixed = 0) {
+  const total = (cs) => cs.reduce((s4, c) => s4 + c.amount, 0) + fixed;
+  if (Math.abs(gross - total(cols)) <= 1) return cols;
+  const flip = (idx) => cols.map((c, i) => idx.includes(i) ? { ...c, amount: -c.amount } : c);
+  for (let i = 0; i < cols.length; i++) {
+    const tryIt = flip([i]);
+    if (Math.abs(gross - total(tryIt)) <= 1) return tryIt;
+  }
+  for (let i = 0; i < cols.length; i++) {
+    for (let j = i + 1; j < cols.length; j++) {
+      const tryIt = flip([i, j]);
+      if (Math.abs(gross - total(tryIt)) <= 1) return tryIt;
+    }
+  }
+  return cols;
+}
+function tallyKey(v) {
+  return String(v ?? "").toUpperCase().replace(/\bA\s*\/\s*C\b/g, " ").replace(/@/g, " ").replace(/\d+(?:\.\d+)?/g, (m) => String(Number(m))).replace(/[^A-Z0-9]+/g, " ").trim();
+}
+function vchKey(v) {
+  return String(v ?? "").toUpperCase().replace(/\s+/g, "").replace(/(^|[^0-9])0+(\d)/g, "$1$2");
+}
+function companyKey(v) {
+  return tallyKey(v).split(" ").filter((t) => !["LTD", "LIMITED", "PVT", "PRIVATE", "THE", "CO", "COMPANY"].includes(t)).join("");
+}
+function tokens(v) {
+  return new Set(tallyKey(v).split(" ").filter((t) => t.length >= 2 && !STOP.has(t)));
+}
+async function ensureMapTable() {
+  await getClient().execute(`CREATE TABLE IF NOT EXISTS tally_import_map (
+    name_key TEXT PRIMARY KEY,
+    tally_name TEXT NOT NULL,
+    account_id INTEGER NOT NULL,
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+  )`);
+}
+function cellValue(v) {
+  if (v && typeof v === "object") {
+    const o = v;
+    if ("result" in o) return o.result;
+    if ("richText" in o) return o.richText.map((t) => t.text).join("");
+    if ("text" in o) return o.text;
+  }
+  return v;
+}
+function isoDate(v) {
+  if (v instanceof Date) {
+    return `${v.getUTCFullYear()}-${String(v.getUTCMonth() + 1).padStart(2, "0")}-${String(v.getUTCDate()).padStart(2, "0")}`;
+  }
+  const s4 = String(v ?? "").trim();
+  const m = /^(\d{1,2})[-/ ]([A-Za-z]{3}|\d{1,2})[-/ ](\d{2,4})$/.exec(s4);
+  if (m) {
+    const months = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"];
+    const mon = /\d/.test(m[2]) ? Number(m[2]) : months.indexOf(m[2].toLowerCase()) + 1;
+    const yr = m[3].length === 2 ? 2e3 + Number(m[3]) : Number(m[3]);
+    if (mon >= 1) return `${yr}-${String(mon).padStart(2, "0")}-${String(Number(m[1])).padStart(2, "0")}`;
+  }
+  if (/^\d{4}-\d{2}-\d{2}/.test(s4)) return s4.slice(0, 10);
+  return "";
+}
+async function parseRegister(b64, kind) {
+  if (!b64) throw new Error("Choose the Tally register file to upload");
+  const wb = new import_exceljs.default.Workbook();
+  try {
+    await wb.xlsx.load(Buffer.from(b64, "base64"));
+  } catch {
+    throw new Error("That file could not be read \u2014 export the register from Tally as Excel (.xlsx)");
+  }
+  const ws = wb.worksheets[0];
+  if (!ws) throw new Error("That workbook has no sheet in it");
+  const grid = [];
+  ws.eachRow({ includeEmpty: true }, (row, i) => {
+    const cells = [];
+    row.eachCell({ includeEmpty: true }, (cell, c) => {
+      cells[c - 1] = cellValue(cell.value);
+    });
+    grid[i - 1] = cells;
+  });
+  const txt = (v) => String(v ?? "").trim();
+  const headAt = grid.findIndex((r) => (r || []).some((c) => /^date$/i.test(txt(c))) && (r || []).some((c) => /^particulars$/i.test(txt(c))));
+  if (headAt < 0) throw new Error("No Date / Particulars header found \u2014 upload the register exactly as Tally exports it");
+  const head = (grid[headAt] || []).map(txt);
+  const at = (re) => head.findIndex((h) => re.test(h));
+  const iDate = at(/^date$/i);
+  const iParty = at(/^particulars$/i);
+  const iNo = at(/^voucher\s*no\.?$/i);
+  const iGross = at(/^gross\s*total$/i);
+  if (iNo < 0 || iGross < 0) throw new Error("The sheet needs its Voucher No. and Gross Total columns");
+  const title = txt(grid[1]?.[0]);
+  if (kind === "credit" && /debit/i.test(title)) throw new Error(`This is a ${title} \u2014 upload it under Debit Notes`);
+  if (kind === "debit" && /credit/i.test(title)) throw new Error(`This is a ${title} \u2014 upload it under Credit Notes`);
+  const ledgerCols = head.map((h, i) => ({ h, i })).filter(({ h, i }) => !!h && !SUMMARY_COLS.test(h) && i !== iDate && i !== iParty && i !== iNo && i !== iGross);
+  const notes = [];
+  for (let r = headAt + 1; r < grid.length; r++) {
+    const row = grid[r] || [];
+    const party = txt(row[iParty]);
+    if (!party || /^grand\s*total$/i.test(party)) continue;
+    const date = isoDate(row[iDate]);
+    const vchNo = txt(row[iNo]);
+    if (!date || !vchNo) continue;
+    const gross = round210(n21(row[iGross]));
+    const cols = settleSigns(
+      gross,
+      ledgerCols.filter(({ h }) => !ROUND_OFF.test(h)).map(({ h, i }) => ({ name: h, amount: round210(n21(row[i])) })).filter((c) => Math.abs(c.amount) > 4e-3)
+    );
+    const roundOff = round210(gross - cols.reduce((t, c) => t + c.amount, 0));
+    notes.push({ row: r + 1, date, party, vch_no: vchNo, gross, cols, round_off: roundOff, balanced: Math.abs(roundOff) <= 1 && gross > 0 });
+  }
+  if (!notes.length) throw new Error("No notes found under the header row");
+  return { company: txt(grid[0]?.[0]), title, period: txt(grid[2]?.[0]), notes };
+}
+async function resolveNames(names) {
+  await ensureMapTable();
+  const c = getClient();
+  const accts = toPlain20(await c.execute("SELECT id, name FROM ledger_accounts"));
+  const byId = new Map(accts.map((a) => [Number(a.id), String(a.name)]));
+  const byKey = /* @__PURE__ */ new Map();
+  for (const a of accts) {
+    const k = tallyKey(a.name);
+    if (k && !byKey.has(k)) byKey.set(k, Number(a.id));
+  }
+  const redirects = await c.execute("SELECT posts_as, use_name FROM ledger_map").catch(() => null);
+  for (const r of toPlain20(redirects || { rows: [] })) {
+    const to = byKey.get(tallyKey(r.use_name));
+    const k = tallyKey(r.posts_as);
+    if (to && k && !byKey.has(k)) byKey.set(k, to);
+  }
+  const saved = new Map(toPlain20(await c.execute("SELECT name_key, account_id FROM tally_import_map")).map((r) => [String(r.name_key), Number(r.account_id)]));
+  const out = /* @__PURE__ */ new Map();
+  for (const nm of names) {
+    const k = tallyKey(nm);
+    const s4 = saved.get(k);
+    if (s4 && byId.has(s4)) {
+      out.set(k, { account_id: s4, account_name: byId.get(s4), how: "saved" });
+      continue;
+    }
+    const a = byKey.get(k);
+    if (a && byId.has(a)) out.set(k, { account_id: a, account_name: byId.get(a), how: "auto" });
+  }
+  return out;
+}
+function suggestGroupFor(name, role, kind) {
+  const s4 = name.toUpperCase();
+  if (role === "party") return kind === "credit" ? "Sundry Debtors" : "Sundry Creditors";
+  if (/\b(C|S|I)GST\b|\bGST\b|\bTDS\b|\bTCS\b/.test(s4)) return "Duties & Taxes";
+  if (/ROUND\s*OFF/.test(s4)) return "Indirect Expenses";
+  if (/FREIGHT|CARTAGE/.test(s4)) return "Direct Expenses";
+  if (/EXPENSE|INSURANCE|TRAVEL|BROKER|BROKRAGE|BROKERAGE|SERVICE|COMMISSION|RENT|REPAIR|MATERIAL|MATRIEL/.test(s4)) return "Indirect Expenses";
+  if (/SALE|SETTLEMENT|SETTELMENT|STORAGE/.test(s4)) return kind === "credit" ? "Sales Accounts" : "Indirect Incomes";
+  return kind === "credit" ? "Sales Accounts" : "Purchase Accounts";
+}
+async function existingNotes(kind, companyId) {
+  return toPlain20(
+    await getClient().execute({
+      sql: `SELECT je.id, je.vch_no, je.entry_date,
+                   ROUND(COALESCE((SELECT SUM(jl.dr) FROM journal_lines jl WHERE jl.entry_id = je.id), 0), 2) AS total
+              FROM journal_entries je
+             WHERE je.company_id = ? AND UPPER(je.vch_type) = ?`,
+      args: [companyId, kind === "credit" ? "CREDIT NOTE" : "DEBIT NOTE"]
+    })
+  );
+}
+function statusOf(note, existing) {
+  if (!note.balanced) return { status: "unbalanced" };
+  const k = vchKey(note.vch_no);
+  const same2 = existing.find((e) => vchKey(e.vch_no) === k);
+  if (same2) return { status: Math.abs(n21(same2.total) - note.gross) <= 1 ? "exists" : "clash", match: same2 };
+  const twin = existing.find((e) => String(e.entry_date).slice(0, 10) === note.date && Math.abs(n21(e.total) - note.gross) <= 1);
+  if (twin) return { status: "maybe", match: twin };
+  return { status: "new" };
+}
+async function mappingRows(roles, groupFor2) {
+  const mapped = await resolveNames([...roles.values()].map((r) => r.name));
+  const accts = toPlain20(await getClient().execute("SELECT id, name, acc_group FROM ledger_accounts ORDER BY name"));
+  const ledgers = [...roles.entries()].map(([key3, r]) => {
+    const m = mapped.get(key3);
+    let suggest = [];
+    if (!m) {
+      const want = tokens(r.name);
+      suggest = accts.map((a) => {
+        const have = tokens(String(a.name));
+        const both = [...want].filter((t) => have.has(t)).length;
+        const score = want.size && have.size ? both / Math.max(want.size, have.size) : 0;
+        return { id: Number(a.id), name: String(a.name), group: String(a.acc_group || ""), score: Math.round(score * 100) / 100 };
+      }).filter((a) => a.score >= 0.34).sort((a, b) => b.score - a.score).slice(0, 3);
+    }
+    return {
+      key: key3,
+      tally_name: r.name,
+      role: r.role,
+      used_in: r.count,
+      amount: r.amount,
+      account_id: m?.account_id ?? null,
+      account_name: m?.account_name ?? null,
+      how: m?.how ?? null,
+      suggest,
+      suggested_group: groupFor2(r.name, r.role)
+    };
+  });
+  ledgers.sort((a, b) => (a.account_id ? 1 : 0) - (b.account_id ? 1 : 0) || (a.role === b.role ? 0 : a.role === "party" ? -1 : 1) || a.tally_name.localeCompare(b.tally_name));
+  return ledgers;
+}
+async function previewTallyNotes(v) {
+  const kind = v.kind === "debit" ? "debit" : "credit";
+  const cid = await companyOf(v);
+  const reg = await parseRegister(String(v.data_base64 || ""), kind);
+  const existing = await existingNotes(kind, cid);
+  const roles = /* @__PURE__ */ new Map();
+  const note = (nm, role, amt) => {
+    const k = tallyKey(nm);
+    const g = roles.get(k) || { name: nm, role, count: 0, amount: 0 };
+    g.count += 1;
+    g.amount = round210(g.amount + Math.abs(amt));
+    roles.set(k, g);
+  };
+  for (const x of reg.notes) {
+    note(x.party, "party", x.gross);
+    for (const c of x.cols) note(c.name, "ledger", c.amount);
+  }
+  const ledgers = await mappingRows(roles, (nm, role) => suggestGroupFor(nm, role, kind));
+  const companyName = String(
+    (await getClient().execute({ sql: "SELECT name FROM companies WHERE id = ?", args: [cid] })).rows[0]?.name || ""
+  );
+  return {
+    kind,
+    file_name: String(v.file_name || ""),
+    file_company: reg.company,
+    company: companyName,
+    company_mismatch: !!reg.company && !!companyName && companyKey(reg.company) !== companyKey(companyName),
+    title: reg.title,
+    period: reg.period,
+    notes: reg.notes.map((x) => {
+      const st = statusOf(x, existing);
+      return {
+        ...x,
+        party_key: tallyKey(x.party),
+        cols: x.cols.map((c) => ({ ...c, key: tallyKey(c.name) })),
+        status: st.status,
+        match: st.match ? { id: Number(st.match.id), vch_no: String(st.match.vch_no || ""), date: String(st.match.entry_date || ""), total: n21(st.match.total) } : null
+      };
+    }),
+    ledgers
+  };
+}
+async function saveTallyNoteMap(v) {
+  await ensureMapTable();
+  const key3 = tallyKey(v.tally_name);
+  if (!key3) throw new Error("No Tally name to map");
+  const c = getClient();
+  if (!v.account_id) {
+    await c.execute({ sql: "DELETE FROM tally_import_map WHERE name_key = ?", args: [key3] });
+    return { key: key3 };
+  }
+  const a = await c.execute({ sql: "SELECT id FROM ledger_accounts WHERE id = ?", args: [Number(v.account_id)] });
+  if (!a.rows.length) throw new Error("That ledger no longer exists");
+  await c.execute({
+    sql: `INSERT INTO tally_import_map (name_key, tally_name, account_id) VALUES (?, ?, ?)
+          ON CONFLICT(name_key) DO UPDATE SET tally_name = excluded.tally_name, account_id = excluded.account_id, updated_at = datetime('now')`,
+    args: [key3, String(v.tally_name).trim(), Number(v.account_id)]
+  });
+  return { key: key3 };
+}
+async function createTallyNoteLedger(v) {
+  const name = String(v.name || v.tally_name || "").trim().toUpperCase();
+  if (!name) throw new Error("Give the new ledger a name");
+  const group = String(v.group || "").trim();
+  if (!group) throw new Error("Pick the group the new ledger belongs to");
+  const c = getClient();
+  const clash = await c.execute({ sql: "SELECT id FROM ledger_accounts WHERE name = ?", args: [name] });
+  if (clash.rows.length) throw new Error(`A ledger called ${name} already exists \u2014 pick it from the list instead`);
+  const { id } = await createAccount(name, group, await companyOf(v));
+  await saveTallyNoteMap({ tally_name: v.tally_name, account_id: id });
+  return { id, name };
+}
+async function postTallyNotes(v) {
+  const kind = v.kind === "debit" ? "debit" : "credit";
+  const cid = await companyOf(v);
+  const reg = await parseRegister(String(v.data_base64 || ""), kind);
+  const wanted = new Set((v.vch_nos || []).map(vchKey));
+  if (!wanted.size) throw new Error("Tick the notes to create");
+  const names = /* @__PURE__ */ new Set();
+  for (const x of reg.notes) {
+    names.add(x.party);
+    for (const c of x.cols) names.add(c.name);
+  }
+  const mapped = await resolveNames([...names]);
+  const created = [];
+  const skipped = [];
+  const fileLabel = String(v.file_name || "").trim();
+  for (const x of reg.notes) {
+    if (!wanted.has(vchKey(x.vch_no))) continue;
+    const st = statusOf(x, await existingNotes(kind, cid));
+    if (st.status === "exists") {
+      skipped.push({ vch_no: x.vch_no, reason: "already in the books" });
+      continue;
+    }
+    if (st.status === "clash") {
+      skipped.push({ vch_no: x.vch_no, reason: `the number ${x.vch_no} is already used by a different note here` });
+      continue;
+    }
+    if (st.status === "unbalanced") {
+      skipped.push({ vch_no: x.vch_no, reason: `its ledgers do not add up to the gross total (out by ${Math.abs(x.round_off).toFixed(2)})` });
+      continue;
+    }
+    if (st.status === "maybe" && !v.allow_maybe) {
+      skipped.push({ vch_no: x.vch_no, reason: 'a note of the same date and amount is already here \u2014 tick "create anyway" if it is a different one' });
+      continue;
+    }
+    const party = mapped.get(tallyKey(x.party));
+    const missing = [x.party, ...x.cols.map((c) => c.name)].filter((nm) => !mapped.get(tallyKey(nm)));
+    if (!party || missing.length) {
+      skipped.push({ vch_no: x.vch_no, reason: `not mapped yet: ${[...new Set(missing)].join(", ")}` });
+      continue;
+    }
+    const partySide = kind === "credit" ? "cr" : "dr";
+    const colSide = kind === "credit" ? "dr" : "cr";
+    const lines = [{ account: party.account_name, [partySide]: x.gross }];
+    for (const c of x.cols) {
+      const m = mapped.get(tallyKey(c.name));
+      const amt = round210(Math.abs(c.amount));
+      lines.push({ account: m.account_name, [c.amount >= 0 ? colSide : partySide]: amt });
+    }
+    if (Math.abs(x.round_off) > 4e-3) {
+      lines.push({ account: "ROUND OFF A/C", [x.round_off > 0 ? colSide : partySide]: round210(Math.abs(x.round_off)) });
+    }
+    try {
+      const res = await createVoucher({
+        date: x.date,
+        vchType: kind === "credit" ? "CREDIT NOTE" : "DEBIT NOTE",
+        vchNo: x.vch_no,
+        narration: `Imported from Tally \u2014 ${reg.title || (kind === "credit" ? "Credit Note Register" : "Debit Note Register")}${fileLabel ? ` (${fileLabel})` : ""}`,
+        companyId: cid,
+        lines: drFirst(lines)
+      });
+      created.push({ vch_no: x.vch_no, id: res.id });
+    } catch (e) {
+      skipped.push({ vch_no: x.vch_no, reason: e.message });
+    }
+  }
+  return { created, skipped };
+}
+function periodOf(s4) {
+  const m = /(\d{1,2}-[A-Za-z]{3}-\d{2,4})\s*to\s*(\d{1,2}-[A-Za-z]{3}-\d{2,4})/.exec(s4);
+  return m ? { from: isoDate(m[1]), to: isoDate(m[2]) } : { from: "", to: "" };
+}
+async function parseSalesRegister(b64) {
+  if (!b64) throw new Error("Choose the Tally Sales Register file to upload");
+  const wb = new import_exceljs.default.Workbook();
+  try {
+    await wb.xlsx.load(Buffer.from(b64, "base64"));
+  } catch {
+    throw new Error("That file could not be read \u2014 export the register from Tally as Excel (.xlsx)");
+  }
+  const ws = wb.worksheets[0];
+  if (!ws) throw new Error("That workbook has no sheet in it");
+  const grid = [];
+  ws.eachRow({ includeEmpty: true }, (row, i) => {
+    const cells = [];
+    row.eachCell({ includeEmpty: true }, (cell, c) => {
+      cells[c - 1] = cellValue(cell.value);
+    });
+    grid[i - 1] = cells;
+  });
+  const txt = (v) => String(v ?? "").trim();
+  const title = txt(grid[1]?.[0]);
+  if (title && !/sales/i.test(title)) throw new Error(`This is a ${title} \u2014 upload a Sales Register here`);
+  const headAt = grid.findIndex((r) => (r || []).some((c) => /^date$/i.test(txt(c))) && (r || []).some((c) => /^particulars$/i.test(txt(c))));
+  if (headAt < 0) throw new Error("No Date / Particulars header found \u2014 upload the register exactly as Tally exports it");
+  const head = (grid[headAt] || []).map(txt);
+  const at = (re) => head.findIndex((h) => re.test(h));
+  const iDate = at(/^date$/i);
+  const iParty = at(/^particulars$/i);
+  const iNo = at(/^voucher\s*no\.?$/i);
+  const iGross = at(/^gross\s*total$/i);
+  const iQty = at(/^quantity$/i);
+  const iGw = at(/^gross\s*weight$/i);
+  if (iNo < 0 || iGross < 0) throw new Error("The sheet needs its Voucher No. and Gross Total columns");
+  const cols = head.map((h, i) => ({ h, i })).filter(({ h }) => !!h && !SALES_SUMMARY.test(h));
+  const sales = [];
+  for (let r = headAt + 1; r < grid.length; r++) {
+    const row = grid[r] || [];
+    const party = txt(row[iParty]);
+    if (!party || /^grand\s*total$/i.test(party)) continue;
+    const vchNo = txt(row[iNo]);
+    const date = isoDate(row[iDate]);
+    if (!vchNo || !date) continue;
+    const cancelled = /\(\s*cancel+ed\s*\)/i.test(party) || !n21(row[iGross]) && cols.every(({ i }) => !n21(row[i]));
+    const gross = round210(n21(row[iGross]));
+    const parts = settleSigns(
+      gross,
+      cols.filter(({ h }) => !/round\s*off/i.test(h)).map(({ h, i }) => ({ name: h, amount: round210(n21(row[i])), tax: GST_COL.test(h) })).filter((c) => Math.abs(c.amount) > 4e-3)
+    );
+    let taxable = 0;
+    let gst = 0;
+    const ledgers = [];
+    const deducted = [];
+    const gstHeads = [];
+    for (const c of parts) {
+      if (c.tax) {
+        gst = round210(gst + c.amount);
+        gstHeads.push({ name: c.name, amount: c.amount });
+      } else {
+        taxable = round210(taxable + c.amount);
+        ledgers.push(c.amount < 0 ? `${c.name} (less)` : c.name);
+        if (c.amount < 0) deducted.push({ name: c.name, amount: -c.amount });
+      }
+    }
+    sales.push({
+      row: r + 1,
+      date,
+      party: cancelled ? party.replace(/\(\s*cancel+ed\s*\)/i, "").trim() : party,
+      vch_no: vchNo,
+      cancelled,
+      qty: iQty >= 0 && txt(row[iQty]) !== "" ? n21(row[iQty]) : null,
+      gross_weight: iGw >= 0 ? txt(row[iGw]) : "",
+      taxable,
+      gst,
+      // Whatever makes the invoice balance — Tally prints its sign either way.
+      round_off: round210(gross - taxable - gst),
+      gross,
+      ledgers,
+      cols: parts.map((c) => ({ name: c.name, amount: c.amount, tax: c.tax })),
+      deducted,
+      gst_heads: gstHeads
+    });
+  }
+  if (!sales.length) throw new Error("No invoices found under the header row");
+  const period = txt(grid[2]?.[0]);
+  const p = periodOf(period);
+  const dates = sales.map((s4) => s4.date).sort();
+  return { company: txt(grid[0]?.[0]), title, period, from: p.from || dates[0], to: p.to || dates[dates.length - 1], sales };
+}
+async function bookSales(companyId) {
+  const c = getClient();
+  const lines = toPlain20(
+    await c.execute({
+      sql: `SELECT je.id, je.vch_no, je.entry_date, je.sale_id, jl.dr, jl.cr, a.id AS account_id, a.name AS account, a.acc_group
+              FROM journal_entries je
+              JOIN journal_lines jl ON jl.entry_id = je.id
+              JOIN ledger_accounts a ON a.id = jl.account_id
+             WHERE je.company_id = ? AND UPPER(je.vch_type) IN ('SALE', 'SALES')
+             ORDER BY je.id, jl.id`,
+      args: [companyId]
+    })
+  );
+  const qty = new Map(
+    toPlain20(
+      await c.execute({
+        sql: `SELECT TRIM(UPPER(invoice_no)) AS k, SUM(qty) AS qty, SUM(COALESCE(boxes, 0)) AS boxes
+                FROM sales WHERE company_id = ? AND invoice_no IS NOT NULL GROUP BY TRIM(UPPER(invoice_no))`,
+        args: [companyId]
+      })
+    ).map((r) => [String(r.k), { qty: n21(r.qty), boxes: n21(r.boxes) }])
+  );
+  const byEntry = /* @__PURE__ */ new Map();
+  for (const l of lines) {
+    const id = Number(l.id);
+    if (!byEntry.has(id)) byEntry.set(id, []);
+    byEntry.get(id).push(l);
+  }
+  const { partySideOfGroup: partySideOfGroup2 } = await Promise.resolve().then(() => (init_partyLedgers(), partyLedgers_exports));
+  const sideOf = /* @__PURE__ */ new Map();
+  const out = [];
+  for (const [id, ls] of byEntry) {
+    const party = ls.filter((l) => n21(l.dr) > 0).sort((a, b) => n21(b.dr) - n21(a.dr))[0];
+    let gst = 0;
+    let ro = 0;
+    let taxable = 0;
+    const deducted = [];
+    const gstHeads = [];
+    for (const l of ls) {
+      if (l === party) continue;
+      const v = round210(n21(l.cr) - n21(l.dr));
+      const name = String(l.account);
+      if (GST_COL.test(name)) {
+        gst = round210(gst + v);
+        gstHeads.push({ name, amount: v });
+      } else if (/round\s*off/i.test(name)) ro = round210(ro + v);
+      else {
+        taxable = round210(taxable + v);
+        if (v < 0) deducted.push({ name, amount: -v });
+      }
+    }
+    const vchNo = String(ls[0].vch_no || "");
+    const q = qty.get(vchNo.trim().toUpperCase());
+    const grp = String(party?.acc_group || "");
+    if (!sideOf.has(grp)) sideOf.set(grp, await partySideOfGroup2(grp));
+    out.push({
+      id,
+      sale_id: Number(ls[0].sale_id) || 0,
+      vch_no: vchNo,
+      date: String(ls[0].entry_date || "").slice(0, 10),
+      party: party ? String(party.account) : "",
+      party_id: party ? Number(party.account_id) : 0,
+      gross: party ? round210(n21(party.dr)) : 0,
+      gst,
+      round_off: ro,
+      taxable,
+      qty: q ? round210(q.qty * 1e3) / 1e3 : null,
+      boxes: q && q.boxes ? q.boxes : null,
+      party_is_creditor: sideOf.get(grp) === "SUNDRY CREDITORS",
+      deducted,
+      gst_heads: gstHeads
+    });
+  }
+  return out;
+}
+async function reconcileTallySales(v) {
+  const cid = await companyOf(v);
+  const reg = await parseSalesRegister(String(v.data_base64 || ""));
+  const books = await bookSales(cid);
+  const byNo = /* @__PURE__ */ new Map();
+  for (const b of books) {
+    const k = vchKey(b.vch_no);
+    if (!byNo.has(k)) byNo.set(k, []);
+    byNo.get(k).push(b);
+  }
+  const partyMap = await resolveNames([...new Set(reg.sales.map((s4) => s4.party))]);
+  const used = /* @__PURE__ */ new Set();
+  const close = (a, b, tol = 1) => Math.abs(a - b) <= tol;
+  const rows2 = [];
+  for (const t of reg.sales) {
+    const hits = byNo.get(vchKey(t.vch_no)) || [];
+    const b = hits[0];
+    if (b) hits.forEach((h) => used.add(h.id));
+    if (t.cancelled) {
+      rows2.push({ vch_no: t.vch_no, status: b ? "cancelled_here" : "cancelled", tally: t, books: b || null, diffs: [] });
+      continue;
+    }
+    if (!b) {
+      rows2.push({ vch_no: t.vch_no, status: "missing_here", tally: t, books: null, diffs: [] });
+      continue;
+    }
+    const diffs = [];
+    if (t.date !== b.date) diffs.push({ field: "date", tally: t.date, books: b.date });
+    const pm = partyMap.get(tallyKey(t.party));
+    const samePartyByName = companyKey(t.party) === companyKey(b.party);
+    if (!samePartyByName && (!pm || pm.account_id !== b.party_id)) diffs.push({ field: "party", tally: t.party, books: b.party });
+    for (const f of ["taxable", "gst", "round_off", "gross"]) {
+      if (!close(t[f], b[f], f === "round_off" ? 1 : 1)) diffs.push({ field: f, tally: t[f], books: b[f], diff: round210(t[f] - b[f]) });
+    }
+    if (t.qty != null) {
+      const packed = !!t.gross_weight;
+      const here = packed ? b.boxes : b.qty;
+      const sameInKg = !packed && here != null && close(t.qty, here * 1e3, 0.5);
+      if (here != null && !sameInKg && !close(t.qty, here, packed ? 0.5 : 1e-3)) {
+        diffs.push({ field: "qty", tally: t.qty, books: here, unit: packed ? "boxes" : "MT", diff: round210((t.qty - here) * 1e3) / 1e3 });
+      }
+    }
+    if (hits.length > 1) diffs.push({ field: "duplicate", tally: 1, books: hits.length });
+    rows2.push({ vch_no: t.vch_no, status: diffs.length ? "mismatch" : "matched", tally: t, books: b, diffs });
+  }
+  for (const b of books) {
+    if (used.has(b.id)) continue;
+    if (b.date < reg.from || b.date > reg.to) continue;
+    rows2.push({ vch_no: b.vch_no || "(no number)", status: "missing_tally", tally: null, books: b, diffs: [] });
+  }
+  const ownName = String(
+    (await getClient().execute({ sql: "SELECT name FROM companies WHERE id = ?", args: [cid] })).rows[0]?.name || ""
+  );
+  explainRows(rows2, reg.sales, books, ownName);
+  const count = (s4) => rows2.filter((r) => r.status === s4).length;
+  const sum = (arr, side) => round210(arr.reduce((t, r) => t + n21(r[side]?.gross), 0));
+  const companyName = String(
+    (await getClient().execute({ sql: "SELECT name FROM companies WHERE id = ?", args: [cid] })).rows[0]?.name || ""
+  );
+  return {
+    file_name: String(v.file_name || ""),
+    file_company: reg.company,
+    company: companyName,
+    company_mismatch: !!reg.company && !!companyName && companyKey(reg.company) !== companyKey(companyName),
+    title: reg.title,
+    period: reg.period,
+    from: reg.from,
+    to: reg.to,
+    counts: {
+      matched: count("matched"),
+      mismatch: count("mismatch"),
+      missing_here: count("missing_here"),
+      missing_tally: count("missing_tally"),
+      cancelled: count("cancelled"),
+      cancelled_here: count("cancelled_here")
+    },
+    totals: {
+      tally: sum(rows2.filter((r) => r.tally && !r.tally.cancelled), "tally"),
+      books: sum(rows2.filter((r) => r.books && r.status !== "cancelled_here"), "books")
+    },
+    rows: rows2.sort((a, b) => String((a.tally || a.books).date).localeCompare(String((b.tally || b.books).date)) || String(a.vch_no).localeCompare(String(b.vch_no), void 0, { numeric: true }))
+  };
+}
+async function linkTallyParty(v) {
+  return saveTallyNoteMap({ tally_name: v.tally_name, account_id: v.account_id });
+}
+function daysApart(a, b) {
+  return Math.round(((/* @__PURE__ */ new Date(`${b}T00:00:00`)).getTime() - (/* @__PURE__ */ new Date(`${a}T00:00:00`)).getTime()) / 864e5);
+}
+function explainRows(rows2, tallySales, books, ownCompany = "") {
+  const tallyLoose = /* @__PURE__ */ new Map();
+  for (const s4 of tallySales) tallyLoose.set(looseKey(s4.vch_no), s4);
+  const booksLoose = /* @__PURE__ */ new Map();
+  for (const b of books) booksLoose.set(looseKey(b.vch_no), b);
+  for (const r of rows2) {
+    const t = r.tally;
+    const b = r.books;
+    const say2 = [];
+    let fix = "";
+    if (r.status === "matched") {
+      say2.push(`Agrees with Tally \u2014 ${dmyOf(t?.date || "")}, ${inr3(t?.gross || 0)}, same party, quantity and tax.`);
+    } else if (r.status === "cancelled") {
+      say2.push("Tally shows this invoice as cancelled, and these books have no sale under this number either.");
+      fix = "Nothing to do.";
+    } else if (r.status === "cancelled_here") {
+      say2.push(`Tally shows this invoice as cancelled, but these books still carry it \u2014 ${dmyOf(b?.date || "")}, ${b?.party}, ${inr3(b?.gross || 0)}.`);
+      fix = "Cancel or delete the sale here, or reinstate it in Tally \u2014 the two books cannot both be right.";
+    } else if (r.status === "missing_here" && t) {
+      say2.push(`In Tally on ${dmyOf(t.date)} for ${t.party}, ${inr3(t.gross)} (${t.ledgers.join(", ") || "no ledger"}), but no sale numbered ${t.vch_no} is in these books.`);
+      const twin = booksLoose.get(looseKey(t.vch_no));
+      const sameDay = books.find((x) => x.date === t.date && Math.abs(x.gross - t.gross) <= 1);
+      if (twin && vchKey(twin.vch_no) !== vchKey(t.vch_no)) {
+        say2.push(`A sale numbered "${twin.vch_no}" is here${Math.abs(twin.gross - t.gross) <= 1 ? " for the same amount" : ` for ${inr3(twin.gross)}`} \u2014 most likely this invoice with its number typed differently.`);
+        fix = `Correct the invoice number here to ${t.vch_no}.`;
+      } else if (sameDay) {
+        say2.push(`A sale of the same date and amount is here as "${sameDay.vch_no}" \u2014 possibly this invoice under another number.`);
+        fix = `Check ${sameDay.vch_no} here; if it is this invoice, renumber it ${t.vch_no}.`;
+      } else if (/^SER\//i.test(t.vch_no)) {
+        fix = "A service invoice \u2014 enter it here as a sale (or journal) if these books should carry it.";
+      } else {
+        fix = "Enter this sale here, or check whether it was booked in the other company.";
+      }
+    } else if (r.status === "missing_tally" && b) {
+      say2.push(`In these books on ${dmyOf(b.date)} for ${b.party}, ${inr3(b.gross)}, but Tally has no invoice numbered ${b.vch_no || "(blank)"} in this period.`);
+      const twin = tallyLoose.get(looseKey(b.vch_no));
+      const sameDay = tallySales.find((x) => !x.cancelled && x.date === b.date && Math.abs(x.gross - b.gross) <= 1);
+      if (twin && vchKey(twin.vch_no) !== vchKey(b.vch_no)) {
+        say2.push(`Tally has "${twin.vch_no}"${Math.abs(twin.gross - b.gross) <= 1 ? " for the same amount" : ""} \u2014 the number here looks mistyped.`);
+        fix = `Renumber this sale ${twin.vch_no}.`;
+      } else if (sameDay) {
+        say2.push(`Tally has ${sameDay.vch_no} on the same date for the same amount \u2014 possibly this sale under another number.`);
+        fix = `Check it against ${sameDay.vch_no}.`;
+      } else if (ownCompany && companyKey(b.party).startsWith(companyKey(ownCompany).slice(0, 6)) && companyKey(b.party).includes("FOOD") === companyKey(ownCompany).includes("FOOD")) {
+        say2.push(`The party here is ${b.party} \u2014 this company itself. It looks like the other company's sale entered in these books.`);
+        fix = "Check which company this invoice belongs to, and move it there.";
+      } else if (!/\d/.test(String(b.vch_no || "")) || !/[\/]/.test(String(b.vch_no || ""))) {
+        say2.push(`The number "${b.vch_no || ""}" does not look like an invoice number.`);
+        fix = "Open the sale here and give it its proper invoice number, or delete it if it was a test entry.";
+      } else {
+        fix = "Enter it in Tally, or remove it here if it should not be in these books.";
+      }
+    } else if (t && b) {
+      const d = (f) => r.diffs.find((x) => x.field === f);
+      if (d("date")) {
+        const gap = daysApart(t.date, b.date);
+        say2.push(`Dated ${dmyOf(t.date)} in Tally but ${dmyOf(b.date)} here \u2014 ${Math.abs(gap)} day${Math.abs(gap) === 1 ? "" : "s"} ${gap > 0 ? "later" : "earlier"} here.`);
+      }
+      if (d("party")) {
+        if (b.party_is_creditor) {
+          say2.push(`Tally bills ${t.party}; here the sale is posted to ${b.party}, which is a SUPPLIER ledger \u2014 what the customer owes is netting off against what we owe them.`);
+          fix = `Settings \u2192 Accounting checks \u2192 "Customers and suppliers sharing a ledger" moves these sales to the customer's own ledger.`;
+        } else {
+          say2.push(`Tally bills ${t.party}; here it is posted to ${b.party}.`);
+        }
+      }
+      const tFr = t.deducted.reduce((s4, x) => s4 + x.amount, 0);
+      const bFr = b.deducted.reduce((s4, x) => s4 + x.amount, 0);
+      const dGross = d("gross");
+      const dTax = d("taxable");
+      const dGst = d("gst");
+      if (tFr > 0.5 && bFr < 0.5 && dGross && Math.abs(Math.abs(dGross.diff) - tFr) <= Math.max(10, tFr * 0.01) + Math.abs(t.gst - b.gst) + 1) {
+        say2.push(`Tally deducts ${inr3(tFr)} ${t.deducted.map((x) => x.name).join(" + ")} from this invoice; here nothing is deducted, so the customer is charged ${inr3(dGross.diff)} more here (${inr3(b.gross)} against Tally's ${inr3(t.gross)}).`);
+        fix = fix || 'Tick "freight deducted by customer" on the sale here (or enter the freight), so the party is charged what Tally charges.';
+      } else if (bFr > 0.5 && tFr < 0.5 && dGross) {
+        say2.push(`Here ${inr3(bFr)} ${b.deducted.map((x) => x.name).join(" + ")} is deducted from the invoice; Tally deducts nothing, so Tally charges ${inr3(dGross.diff)} more.`);
+      } else {
+        if (dTax) say2.push(`Taxable value ${inr3(t.taxable)} in Tally, ${inr3(b.taxable)} here \u2014 ${inr3(dTax.diff)} ${dTax.diff > 0 ? "more in Tally" : "more here"}.`);
+      }
+      if (dGst) {
+        if (Math.abs(b.gst) < 0.5 && t.gst > 0.5) {
+          say2.push(`Tally charges GST of ${inr3(t.gst)} (${t.gst_heads.map((x) => x.name.trim()).join(" + ")}); here no GST was posted on this sale.`);
+          fix = fix || "Re-post the sale here with its GST, so the output tax and the party balance match Tally.";
+        } else if (Math.abs(t.gst) < 0.5 && b.gst > 0.5) {
+          say2.push(`Here GST of ${inr3(b.gst)} is posted; Tally charges none.`);
+        } else {
+          say2.push(`GST ${inr3(t.gst)} in Tally, ${inr3(b.gst)} here \u2014 ${inr3(dGst.diff)} ${dGst.diff > 0 ? "more in Tally" : "more here"}.`);
+        }
+      }
+      if (dGross && !say2.some((s4) => s4.includes("charged") || s4.includes("charges"))) {
+        say2.push(`Invoice total ${inr3(t.gross)} in Tally, ${inr3(b.gross)} here \u2014 the party's balance differs by ${inr3(dGross.diff)}.`);
+      }
+      if (d("round_off") && !dGross) say2.push(`Round off ${inr3(t.round_off)} in Tally, ${inr3(b.round_off)} here.`);
+      const dq = d("qty");
+      if (dq) {
+        say2.push(`Quantity ${dq.tally} ${dq.unit === "boxes" ? "cartons" : "MT"} in Tally, ${dq.books} here.`);
+      }
+      const dd = d("duplicate");
+      if (dd) {
+        say2.push(`This invoice number is posted ${dd.books} times here \u2014 the extra voucher doubles the sale in the books.`);
+        fix = fix || `Delete the duplicate ${t.vch_no} here.`;
+      }
+      if (d("date") && !fix) fix = "Correct the date on whichever side is wrong \u2014 usually the sale here was entered later and kept the entry date.";
+      if (d("party") && !fix) fix = 'If these are the same party, click "Same party" \u2014 it is remembered from then on.';
+    }
+    r.explain = say2;
+    r.fix = fix;
+  }
+}
+function salesGroupFor(name, role) {
+  const s4 = name.toUpperCase();
+  if (role === "party") return "Sundry Debtors";
+  if (GST_COL.test(s4)) return "Duties & Taxes";
+  if (/ROUND\s*OFF/.test(s4)) return "Indirect Expenses";
+  if (/FREIGHT|CARTAGE/.test(s4)) return "Direct Expenses";
+  return "Sales Accounts";
+}
+async function existingSaleNos(companyId) {
+  const r = await getClient().execute({
+    sql: "SELECT vch_no FROM journal_entries WHERE company_id = ? AND UPPER(vch_type) IN ('SALE', 'SALES') AND vch_no IS NOT NULL",
+    args: [companyId]
+  });
+  return new Set(toPlain20(r).map((x) => vchKey(x.vch_no)));
+}
+async function saleDateLimits(cid) {
+  const { getBooksFrom: getBooksFrom2 } = await Promise.resolve().then(() => (init_openings(), openings_exports));
+  const booksFrom = String(await getBooksFrom2(cid) || "");
+  const { entryWindows: entryWindows2 } = await Promise.resolve().then(() => (init_access_gate(), access_gate_exports));
+  const win = await entryWindows2();
+  const windowFrom = [win.accountsTallyImport, win.accounts].filter(Boolean).sort().pop() || "";
+  return { booksFrom, windowFrom };
+}
+function saleBlock(x, lim) {
+  if (lim.booksFrom && x.date < lim.booksFrom) return `dated before these books begin (${lim.booksFrom})`;
+  if (lim.windowFrom && x.date < lim.windowFrom) return `dated before your working window (${lim.windowFrom})`;
+  if (!(x.gross > 0)) return "it has no gross total";
+  if (Math.abs(x.round_off) > 1) return `its columns do not add up to the gross total (out by ${Math.abs(x.round_off).toFixed(2)})`;
+  return null;
+}
+function drFirst(lines) {
+  return lines.map((l, i) => ({ l, i })).sort((a, b) => {
+    const ad = (a.l.dr || 0) > 0 ? 1 : 0;
+    const bd = (b.l.dr || 0) > 0 ? 1 : 0;
+    if (ad !== bd) return bd - ad;
+    return (b.l.dr || b.l.cr || 0) - (a.l.dr || a.l.cr || 0) || a.i - b.i;
+  }).map((x) => x.l);
+}
+async function previewTallySalesVouchers(v) {
+  const reg = await parseSalesRegister(String(v.data_base64 || ""));
+  const wanted = new Set((v.vch_nos || []).map(vchKey));
+  const cid = await companyOf(v);
+  const have = await existingSaleNos(cid);
+  const lim = await saleDateLimits(cid);
+  const picked = reg.sales.filter((x) => wanted.has(vchKey(x.vch_no)) && !x.cancelled && !have.has(vchKey(x.vch_no)));
+  const roles = /* @__PURE__ */ new Map();
+  const note = (nm, role, amt) => {
+    const k = tallyKey(nm);
+    const g = roles.get(k) || { name: nm, role, count: 0, amount: 0 };
+    g.count += 1;
+    g.amount = round210(g.amount + Math.abs(amt));
+    roles.set(k, g);
+  };
+  for (const x of picked) {
+    note(x.party, "party", x.gross);
+    for (const c of x.cols) note(c.name, "ledger", c.amount);
+  }
+  return {
+    sales: picked.map((x) => ({
+      vch_no: x.vch_no,
+      date: x.date,
+      party: x.party,
+      party_key: tallyKey(x.party),
+      gross: x.gross,
+      taxable: x.taxable,
+      gst: x.gst,
+      round_off: x.round_off,
+      cols: x.cols.map((c) => ({ ...c, key: tallyKey(c.name) })),
+      blocked: saleBlock(x, lim)
+    })),
+    ledgers: await mappingRows(roles, salesGroupFor)
+  };
+}
+async function postTallySalesVouchers(v) {
+  const cid = await companyOf(v);
+  const reg = await parseSalesRegister(String(v.data_base64 || ""));
+  const wanted = new Set((v.vch_nos || []).map(vchKey));
+  if (!wanted.size) throw new Error("Pick the invoices to book");
+  const names = /* @__PURE__ */ new Set();
+  for (const x of reg.sales) {
+    if (!wanted.has(vchKey(x.vch_no))) continue;
+    names.add(x.party);
+    for (const c of x.cols) names.add(c.name);
+  }
+  const mapped = await resolveNames([...names]);
+  const lim = await saleDateLimits(cid);
+  const created = [];
+  const skipped = [];
+  const fileLabel = String(v.file_name || "").trim();
+  for (const x of reg.sales) {
+    if (!wanted.has(vchKey(x.vch_no))) continue;
+    if (x.cancelled) {
+      skipped.push({ vch_no: x.vch_no, reason: "Tally shows it cancelled" });
+      continue;
+    }
+    if ((await existingSaleNos(cid)).has(vchKey(x.vch_no))) {
+      skipped.push({ vch_no: x.vch_no, reason: "a sale with this number is already in the books" });
+      continue;
+    }
+    const block = saleBlock(x, lim);
+    if (block) {
+      skipped.push({ vch_no: x.vch_no, reason: block });
+      continue;
+    }
+    const party = mapped.get(tallyKey(x.party));
+    const missing = [x.party, ...x.cols.map((c) => c.name)].filter((nm) => !mapped.get(tallyKey(nm)));
+    if (!party || missing.length) {
+      skipped.push({ vch_no: x.vch_no, reason: `not mapped yet: ${[...new Set(missing)].join(", ")}` });
+      continue;
+    }
+    const lines = [{ account: party.account_name, dr: x.gross }];
+    for (const c of x.cols) {
+      const m = mapped.get(tallyKey(c.name));
+      lines.push({ account: m.account_name, [c.amount >= 0 ? "cr" : "dr"]: round210(Math.abs(c.amount)) });
+    }
+    if (Math.abs(x.round_off) > 4e-3) {
+      lines.push({ account: "ROUND OFF A/C", [x.round_off > 0 ? "cr" : "dr"]: round210(Math.abs(x.round_off)) });
+    }
+    try {
+      const res = await createVoucher({
+        date: x.date,
+        vchType: "SALE",
+        vchNo: x.vch_no,
+        narration: `Imported from Tally \u2014 ${reg.title || "Sales Register"}${fileLabel ? ` (${fileLabel})` : ""}`,
+        companyId: cid,
+        lines: drFirst(lines)
+      });
+      created.push({ vch_no: x.vch_no, id: res.id });
+    } catch (e) {
+      skipped.push({ vch_no: x.vch_no, reason: e.message });
+    }
+  }
+  const { recordTallyBatch: recordTallyBatch2 } = await Promise.resolve().then(() => (init_tallyLinks(), tallyLinks_exports));
+  await recordTallyBatch2({ company_id: cid, kind: "sales", scope: "sales", file_name: fileLabel, entry_ids: created.map((x) => x.id) });
+  return { created, skipped };
+}
+async function ensureDraftTable() {
+  await getClient().execute(`CREATE TABLE IF NOT EXISTS tally_import_drafts (
+    company_id INTEGER NOT NULL,
+    username TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    file_name TEXT,
+    data_base64 TEXT NOT NULL,
+    picked_json TEXT,
+    allow_maybe INTEGER NOT NULL DEFAULT 0,
+    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (company_id, username, kind)
+  )`);
+}
+async function companyOf(v) {
+  const id = Number(v?.company_id) || 0;
+  if (!id) return getActiveCompanyId();
+  const r = await getClient().execute({ sql: "SELECT id FROM companies WHERE id = ?", args: [id] });
+  if (!r.rows.length) throw new Error("That company no longer exists \u2014 pick it again with F3");
+  return id;
+}
+function draftOwner() {
+  return String(getCurrentUser().username || "").trim() || "local";
+}
+function draftKind(v) {
+  if (typeof v === "string" && /^bank(stmt)?:\d+$/.test(v)) return v;
+  return v === "debit" || v === "sales" || v === "journal" || v === "purchase" ? v : "credit";
+}
+async function saveTallyDraft(v) {
+  await ensureDraftTable();
+  const c = getClient();
+  const kind = draftKind(v.kind);
+  const cid = await companyOf(v);
+  const who2 = draftOwner();
+  const picked = JSON.stringify(Array.isArray(v.picked) ? v.picked.map(String) : []);
+  if (v.data_base64) {
+    if (String(v.data_base64).length > 12e6) throw new Error("That file is too large to keep as a draft");
+    await c.execute({
+      sql: `INSERT INTO tally_import_drafts (company_id, username, kind, file_name, data_base64, picked_json, allow_maybe, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'))
+            ON CONFLICT(company_id, username, kind) DO UPDATE SET
+              file_name = excluded.file_name, data_base64 = excluded.data_base64,
+              picked_json = excluded.picked_json, allow_maybe = excluded.allow_maybe, updated_at = excluded.updated_at`,
+      args: [cid, who2, kind, String(v.file_name || ""), String(v.data_base64), picked, v.allow_maybe ? 1 : 0]
+    });
+  } else {
+    await c.execute({
+      sql: `UPDATE tally_import_drafts SET picked_json = ?, allow_maybe = ?, updated_at = datetime('now')
+             WHERE company_id = ? AND username = ? AND kind = ?`,
+      args: [picked, v.allow_maybe ? 1 : 0, cid, who2, kind]
+    });
+  }
+  const r = await c.execute({
+    sql: "SELECT updated_at FROM tally_import_drafts WHERE company_id = ? AND username = ? AND kind = ?",
+    args: [cid, who2, kind]
+  });
+  return { saved_at: String(r.rows[0]?.updated_at || "") };
+}
+async function listTallyDrafts(v) {
+  await ensureDraftTable();
+  const cid = await companyOf(v);
+  return toPlain20(
+    await getClient().execute({
+      sql: `SELECT kind, file_name, data_base64, picked_json, allow_maybe, updated_at
+              FROM tally_import_drafts WHERE company_id = ? AND username = ?`,
+      args: [cid, draftOwner()]
+    })
+  ).map((r) => {
+    let picked = [];
+    try {
+      picked = JSON.parse(String(r.picked_json || "[]"));
+    } catch {
+      picked = [];
+    }
+    return { kind: String(r.kind), file_name: String(r.file_name || ""), data_base64: String(r.data_base64), picked, allow_maybe: !!Number(r.allow_maybe), saved_at: String(r.updated_at || "") };
+  });
+}
+async function clearTallyDraft(v) {
+  await ensureDraftTable();
+  const cid = await companyOf(v);
+  const r = await getClient().execute({
+    sql: "DELETE FROM tally_import_drafts WHERE company_id = ? AND username = ? AND kind = ?",
+    args: [cid, draftOwner(), draftKind(v.kind)]
+  });
+  return { cleared: r.rowsAffected > 0 };
+}
+var import_exceljs, n21, round210, STOP, SUMMARY_COLS, ROUND_OFF, SALES_SUMMARY, GST_COL, inr3, dmyOf, looseKey;
+var init_tallyNotes = __esm({
+  "src/main/tallyNotes.ts"() {
+    import_exceljs = __toESM(require("exceljs"));
+    init_db();
+    init_company();
+    init_accounting();
+    init_journal();
+    init_currentUser();
+    n21 = (v) => {
+      const x = Number(String(v ?? "").replace(/,/g, ""));
+      return Number.isFinite(x) ? x : 0;
+    };
+    round210 = (x) => Math.round((Number(x) || 0) * 100) / 100;
+    STOP = /* @__PURE__ */ new Set(["PVT", "PRIVATE", "LTD", "LIMITED", "CO", "THE", "AND", "OF", "M", "S", "CR", "DR", "R"]);
+    SUMMARY_COLS = /^(date|particulars|voucher\s*type|voucher\s*no\.?|value|addl\.?\s*cost|gross\s*total|narration)$/i;
+    ROUND_OFF = /round\s*off/i;
+    SALES_SUMMARY = /^(date|particulars|voucher\s*type|voucher\s*no\.?|quantity|gross\s*weight|rate|value|addl\.?\s*cost|gross\s*total|narration)$/i;
+    GST_COL = /\b(C|S|I|U)?GST\b|\bTCS\b|\bCESS\b/i;
+    inr3 = (v) => `\u20B9${Math.abs(v).toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+    dmyOf = (iso) => iso ? iso.slice(0, 10).split("-").reverse().join("-") : "\u2014";
+    looseKey = (v) => String(v ?? "").toUpperCase().replace(/[^A-Z0-9]/g, "").replace(/^([A-Z]+)0+/, "$1");
+  }
+});
+
 // src/main/bankRecon.ts
 var bankRecon_exports = {};
 __export(bankRecon_exports, {
@@ -21442,6 +22472,672 @@ var init_bankRecon = __esm({
   }
 });
 
+// src/main/tallyBank.ts
+var tallyBank_exports = {};
+__export(tallyBank_exports, {
+  bankBalanceBefore: () => bankBalanceBefore,
+  checkTallyBank: () => checkTallyBank,
+  listCompanyBanks: () => listCompanyBanks,
+  postTallyBankVouchers: () => postTallyBankVouchers,
+  previewTallyBankVouchers: () => previewTallyBankVouchers,
+  setCompanyBank: () => setCompanyBank,
+  suggestTallyBank: () => suggestTallyBank
+});
+function daysApart3(a, b) {
+  const x = Date.parse(`${a.slice(0, 10)}T00:00:00Z`);
+  const y = Date.parse(`${b.slice(0, 10)}T00:00:00Z`);
+  return Number.isFinite(x) && Number.isFinite(y) ? Math.round(Math.abs(x - y) / 864e5) : 9999;
+}
+function shiftDays2(iso, d) {
+  const t = Date.parse(`${iso.slice(0, 10)}T00:00:00Z`);
+  return Number.isFinite(t) ? new Date(t + d * 864e5).toISOString().slice(0, 10) : iso;
+}
+function acctDigits(s4) {
+  const runs = String(s4 || "").match(/\d{4,}/g) || [];
+  return runs.sort((a, b) => b.length - a.length)[0] || "";
+}
+async function parseBankBook(b64) {
+  if (!b64) throw new Error("Choose the Tally bank book to upload");
+  const wb = new import_exceljs4.default.Workbook();
+  try {
+    await wb.xlsx.load(Buffer.from(b64, "base64"));
+  } catch {
+    throw new Error("That file could not be read \u2014 export the bank book from Tally as Excel (.xlsx)");
+  }
+  const ws = wb.worksheets[0];
+  if (!ws) throw new Error("That workbook has no sheet in it");
+  const grid = [];
+  ws.eachRow({ includeEmpty: true }, (row, i) => {
+    const cells = [];
+    row.eachCell({ includeEmpty: true }, (cell, c) => {
+      cells[c - 1] = cellValue(cell.value);
+    });
+    grid[i - 1] = cells;
+  });
+  const txt = (v) => String(v ?? "").trim();
+  const headAt = grid.findIndex(
+    (r) => (r || []).some((c) => /^date$/i.test(txt(c))) && (r || []).some((c) => /^debit$/i.test(txt(c))) && (r || []).some((c) => /^credit$/i.test(txt(c)))
+  );
+  if (headAt < 0) throw new Error("No Date / Debit / Credit header found \u2014 export the bank book from Tally exactly as it shows");
+  const head = (grid[headAt] || []).map(txt);
+  const at = (re) => head.findIndex((h) => re.test(h));
+  const iDate = at(/^date$/i);
+  const iPart = at(/^particulars$/i);
+  const iType = at(/^vch\.?\s*type$|^voucher\s*type$/i);
+  const iNo = at(/^vch\.?\s*no\.?$|^voucher\s*no\.?$/i);
+  const iDr = at(/^debit$/i);
+  const iCr = at(/^credit$/i);
+  if (iType < 0 || iNo < 0) throw new Error("The book needs its Vch Type and Vch No. columns \u2014 export it with them shown");
+  let bank = "";
+  let period = "";
+  for (let r = 0; r < headAt; r++) {
+    const s4 = txt(grid[r]?.[0]);
+    if (!bank && /\bbook\s*$/i.test(s4)) bank = s4.replace(/\s*book\s*$/i, "").trim();
+    if (/\d{1,2}-[A-Za-z]{3}-\d{2,4}\s*to\s*\d{1,2}-[A-Za-z]{3}-\d{2,4}/.test(s4)) period = s4;
+  }
+  if (!bank) bank = txt(grid[1]?.[0]);
+  const partOf = (row) => {
+    let side = "";
+    let name = "";
+    const last = iType > iPart ? iType : row.length;
+    for (let i = Math.max(0, iPart); i < last; i++) {
+      const s4 = txt(row[i]);
+      if (!s4) continue;
+      if (!side && /^(dr|cr|to|by)$/i.test(s4)) side = s4;
+      else if (!name && typeof row[i] === "string") name = s4;
+    }
+    return { side, name };
+  };
+  const out = { company: txt(grid[0]?.[0]), bank, period, from: "", to: "", opening: 0, closing: 0, closing_stated: null, lines: [] };
+  const seen = /* @__PURE__ */ new Map();
+  for (let r = headAt + 1; r < grid.length; r++) {
+    const row = grid[r] || [];
+    const { side, name } = partOf(row);
+    const dr = round213(n24(row[iDr]));
+    const cr = round213(n24(row[iCr]));
+    if (/^opening\s*balance$/i.test(name)) {
+      out.opening = round213(dr - cr);
+      continue;
+    }
+    if (/^closing\s*balance$/i.test(name)) {
+      const amt = [...row].map((c) => n24(c)).find((x) => Math.abs(x) > 0) || 0;
+      out.closing_stated = round213(/^(cr|by)$/i.test(side) ? -Math.abs(amt) : Math.abs(amt));
+      continue;
+    }
+    const date = isoDate(row[iDate]);
+    const vchNo = txt(row[iNo]);
+    const vchType = txt(row[iType]);
+    if (!date || !vchNo || !vchType) continue;
+    const cancelled = /\(\s*cancel+ed\s*\)/i.test(name) || dr === 0 && cr === 0;
+    const party = name.replace(/\(\s*cancel+ed\s*\)/i, "").trim();
+    let key3 = `${vchType.toUpperCase()}|${vchNo}`;
+    const dup = seen.get(key3) || 0;
+    seen.set(key3, dup + 1);
+    if (dup) key3 = `${key3}#${r + 1}`;
+    out.lines.push({
+      key: key3,
+      row: r + 1,
+      date,
+      party,
+      party_key: tallyKey(party),
+      vch_type: vchType,
+      vch_no: vchNo,
+      dir: dr > 0 ? "in" : "out",
+      amount: dr > 0 ? dr : cr,
+      multi: /as\s*per\s*details/i.test(party),
+      cancelled
+    });
+  }
+  if (!out.lines.length) throw new Error("No vouchers found in the book \u2014 check it is the bank book exported from Tally");
+  const p = periodOf(period);
+  const dates = out.lines.map((x) => x.date).sort();
+  out.from = p.from || dates[0];
+  out.to = p.to || dates[dates.length - 1];
+  out.closing = round213(out.opening + out.lines.filter((l) => !l.cancelled).reduce((t, l) => t + (l.dir === "in" ? l.amount : -l.amount), 0));
+  return out;
+}
+async function bankAccount(accountId) {
+  const r = (await getClient().execute({ sql: "SELECT id, name, acc_group FROM ledger_accounts WHERE id = ?", args: [accountId] })).rows[0];
+  if (!r) throw new Error("Pick the bank this book is for");
+  if (!MONEY_GROUPS.includes(String(r.acc_group))) throw new Error(`${String(r.name)} is not a bank or cash ledger \u2014 pick the bank this book is for`);
+  return r;
+}
+async function bankEntries(cid, accountId, from, to) {
+  const rows2 = toPlain20(
+    await getClient().execute({
+      sql: `SELECT je.id, je.entry_date, je.vch_type, je.vch_no, je.narration, je.payment_id,
+                   (SELECT nn.prefix || '/' || nn.serial FROM voucher_numbers nn WHERE nn.entry_id = je.id) AS code,
+                   jl.account_id, jl.dr, jl.cr, a.name, a.acc_group
+              FROM journal_entries je
+              JOIN journal_lines jl ON jl.entry_id = je.id
+              JOIN ledger_accounts a ON a.id = jl.account_id
+             WHERE je.company_id = ? AND substr(je.entry_date, 1, 10) BETWEEN ? AND ?
+               AND je.id IN (SELECT entry_id FROM journal_lines WHERE account_id = ?)
+             ORDER BY je.id, jl.id`,
+      args: [cid, shiftDays2(from, -NEAR_DAYS2 - 3), shiftDays2(to, NEAR_DAYS2 + 3), accountId]
+    })
+  );
+  const by = /* @__PURE__ */ new Map();
+  for (const r of rows2) {
+    const id = Number(r.id);
+    if (!by.has(id)) by.set(id, []);
+    by.get(id).push(r);
+  }
+  const out = [];
+  for (const [id, ls] of by) {
+    const mine = ls.filter((l) => Number(l.account_id) === accountId);
+    const net = round213(mine.reduce((t, l) => t + n24(l.dr) - n24(l.cr), 0));
+    if (Math.abs(net) < 5e-3) continue;
+    const dir = net > 0 ? "in" : "out";
+    const counter = ls.filter((l) => Number(l.account_id) !== accountId && (dir === "in" ? n24(l.cr) > 0 : n24(l.dr) > 0)).map((l) => ({ account_id: Number(l.account_id), name: String(l.name), group: String(l.acc_group || ""), amount: round213(n24(dir === "in" ? l.cr : l.dr)) })).sort((a, b) => b.amount - a.amount);
+    out.push({
+      id,
+      code: String(ls[0].code || ""),
+      vch_type: String(ls[0].vch_type || ""),
+      vch_no: String(ls[0].vch_no || ""),
+      date: String(ls[0].entry_date || "").slice(0, 10),
+      narration: String(ls[0].narration || ""),
+      payment_id: Number(ls[0].payment_id) || 0,
+      dir,
+      amount: Math.abs(net),
+      counter
+    });
+  }
+  return out;
+}
+async function bankBalanceBefore(cid, accountId, day) {
+  const { getBooksFrom: getBooksFrom2 } = await Promise.resolve().then(() => (init_openings(), openings_exports));
+  const booksFrom = String(await getBooksFrom2(cid) || "");
+  const op = (await getClient().execute({ sql: "SELECT dr, cr FROM ledger_openings WHERE company_id = ? AND account_id = ?", args: [cid, accountId] })).rows[0];
+  const r = (await getClient().execute({
+    sql: `SELECT COALESCE(SUM(jl.dr - jl.cr), 0) AS v FROM journal_lines jl JOIN journal_entries je ON je.id = jl.entry_id
+             WHERE jl.account_id = ? AND je.company_id = ? AND substr(je.entry_date, 1, 10) < ?${booksFrom ? " AND substr(je.entry_date, 1, 10) >= ?" : ""}`,
+    args: booksFrom ? [accountId, cid, day, booksFrom] : [accountId, cid, day]
+  })).rows[0];
+  return round213((op ? n24(op.dr) - n24(op.cr) : 0) + n24(r?.v));
+}
+function samePartyLine(t, b, mapped) {
+  const m = mapped.get(t.party_key);
+  return b.counter.some((c) => m ? c.account_id === m.account_id : tallyKey(c.name) === t.party_key || companyKey(c.name) === companyKey(t.party));
+}
+async function readStatement(b64, name) {
+  if (!b64) return null;
+  const { parseStatementFile: parseStatementFile2 } = await Promise.resolve().then(() => (init_bankRecon(), bankRecon_exports));
+  const raw = await parseStatementFile2(b64, name);
+  if (!raw.length) throw new Error("No transactions found in the bank's statement \u2014 it needs Date and Withdrawal/Deposit (or Debit/Credit) columns");
+  const newestFirst = raw.length > 1 && raw[0].txn_date > raw[raw.length - 1].txn_date;
+  const chrono = newestFirst ? [...raw].reverse() : raw;
+  const lines = chrono.map((l) => ({
+    date: l.txn_date,
+    narration: l.narration,
+    dir: n24(l.credit) > 0 ? "in" : "out",
+    amount: round213(n24(l.credit) > 0 ? n24(l.credit) : n24(l.debit)),
+    balance: l.balance == null ? null : round213(n24(l.balance))
+  }));
+  const first = lines[0];
+  const last = lines[lines.length - 1];
+  return {
+    name,
+    lines,
+    from: first.date,
+    to: last.date,
+    opening: first.balance == null ? null : round213(first.balance - (first.dir === "in" ? first.amount : -first.amount)),
+    closing: last.balance
+  };
+}
+async function reconcileBank(v) {
+  const cid = await companyOf(v);
+  const account = await bankAccount(Number(v.account_id) || 0);
+  const book = await parseBankBook(String(v.data_base64 || ""));
+  const entries = await bankEntries(cid, Number(account.id), book.from, book.to);
+  const mapped = await resolveNames([...new Set(book.lines.map((l) => l.party).filter(Boolean))]);
+  const used = /* @__PURE__ */ new Set();
+  const rows2 = [];
+  const short = (b) => ({ id: b.id, code: b.code, vch_type: b.vch_type, vch_no: b.vch_no, date: b.date, dir: b.dir, amount: b.amount, payment_id: b.payment_id, party: b.counter[0]?.name || "", counter: b.counter, narration: b.narration });
+  const tal = (t) => ({ ...t });
+  const linked = await linksFor(cid, `bank:${Number(account.id)}`);
+  const handled = /* @__PURE__ */ new Set();
+  for (const t of book.lines) {
+    const id = linked.get(t.key);
+    const b = id ? entries.find((e) => e.id === id && !used.has(e.id)) : void 0;
+    if (!b) continue;
+    used.add(b.id);
+    handled.add(t.key);
+    const diffs = [];
+    if (b.date !== t.date) diffs.push({ field: "date", tally: t.date, books: b.date });
+    if (Math.abs(b.amount - t.amount) > 1 || b.dir !== t.dir) diffs.push({ field: "amount", tally: t.amount, books: b.amount, diff: round213(t.amount - b.amount) });
+    rows2.push({ key: t.key, status: t.cancelled ? "cancelled_here" : diffs.length ? "mismatch" : "matched", tally: tal(t), books: short(b), diffs: t.cancelled ? [] : diffs, linked: true });
+  }
+  const rest = [];
+  for (const t of book.lines) {
+    if (handled.has(t.key)) continue;
+    const head = narrationHead(book.bank, t);
+    const b = entries.find((e) => !used.has(e.id) && (e.narration === head || e.narration.startsWith(`${head} (`)));
+    if (b) {
+      used.add(b.id);
+      const diffs = [];
+      if (t.cancelled) {
+        rows2.push({ key: t.key, status: "cancelled_here", tally: tal(t), books: short(b), diffs });
+        continue;
+      }
+      if (b.date !== t.date) diffs.push({ field: "date", tally: t.date, books: b.date });
+      if (Math.abs(b.amount - t.amount) > 1 || b.dir !== t.dir) diffs.push({ field: "amount", tally: t.amount, books: b.amount, diff: round213(t.amount - b.amount) });
+      rows2.push({ key: t.key, status: diffs.length ? "mismatch" : "matched", tally: tal(t), books: short(b), diffs });
+    } else rest.push(t);
+  }
+  const pairs = [];
+  for (const t of rest) {
+    if (t.cancelled) continue;
+    for (const b of entries) {
+      if (used.has(b.id) || b.dir !== t.dir || Math.abs(b.amount - t.amount) > 1) continue;
+      const gap = daysApart3(b.date, t.date);
+      const party = samePartyLine(t, b, mapped);
+      if (gap > (party ? NEAR_DAYS2 : 3)) continue;
+      pairs.push({ t, b, party, gap });
+    }
+  }
+  pairs.sort((x, y) => Number(y.party) - Number(x.party) || x.gap - y.gap);
+  const found = /* @__PURE__ */ new Map();
+  for (const p of pairs) {
+    if (found.has(p.t.key) || used.has(p.b.id)) continue;
+    used.add(p.b.id);
+    found.set(p.t.key, { b: p.b, party: p.party });
+  }
+  for (const t of rest) {
+    if (t.cancelled) {
+      rows2.push({ key: t.key, status: "cancelled", tally: tal(t), books: null, diffs: [] });
+      continue;
+    }
+    const f = found.get(t.key);
+    if (!f) {
+      rows2.push({ key: t.key, status: "missing_here", tally: tal(t), books: null, diffs: [] });
+      continue;
+    }
+    const diffs = [];
+    if (f.b.date !== t.date) diffs.push({ field: "date", tally: t.date, books: f.b.date });
+    if (!f.party) diffs.push({ field: "party", tally: t.party, books: f.b.counter.map((c) => c.name).join(", ") });
+    rows2.push({ key: t.key, status: f.party ? diffs.length ? "mismatch" : "matched" : "possible", tally: tal(t), books: short(f.b), diffs });
+  }
+  for (const b of entries) {
+    if (used.has(b.id) || b.date < book.from || b.date > book.to) continue;
+    rows2.push({ key: `BOOKS|${b.id}`, status: "missing_tally", tally: null, books: short(b), diffs: [] });
+  }
+  const statement = await readStatement(String(v.statement_base64 || ""), String(v.statement_name || ""));
+  if (statement) {
+    const cand = [];
+    statement.lines.forEach((s4, i) => {
+      for (const r of rows2) {
+        const lead = r.tally || r.books;
+        if (!lead || lead.dir !== s4.dir || Math.abs(n24(lead.amount) - s4.amount) > 1) continue;
+        const gap = Math.min(r.tally ? daysApart3(r.tally.date, s4.date) : 99, r.books ? daysApart3(r.books.date, s4.date) : 99);
+        if (gap <= 5) cand.push({ r, i, gap });
+      }
+    });
+    cand.sort((a, b) => a.gap - b.gap);
+    const takenLine = /* @__PURE__ */ new Set();
+    for (const c of cand) {
+      if (takenLine.has(c.i) || c.r.stmt) continue;
+      takenLine.add(c.i);
+      const s4 = statement.lines[c.i];
+      c.r.stmt = { date: s4.date, narration: s4.narration, amount: s4.amount };
+    }
+    for (const r of rows2) {
+      const lead = r.tally || r.books;
+      if (!r.stmt && lead && (lead.date < statement.from || lead.date > statement.to)) r.stmt_out = true;
+    }
+    statement.lines.forEach((s4, i) => {
+      if (takenLine.has(i) || s4.date < book.from || s4.date > book.to) return;
+      rows2.push({ key: `STMT|${i}`, status: "statement_only", tally: null, books: null, stmt: { date: s4.date, narration: s4.narration, amount: s4.amount, dir: s4.dir }, diffs: [] });
+    });
+  }
+  explainBank(rows2, !!statement);
+  return { statement, book, account, mapped, rows: rows2, entries };
+}
+function explainBank(rows2, hasStatement = false) {
+  for (const r of rows2) {
+    const t = r.tally;
+    const b = r.books;
+    const st = r.stmt;
+    const say2 = [];
+    let fix = "";
+    const way = (d) => d === "in" ? "received into the bank" : "paid out of the bank";
+    const tName = t ? `${t.vch_type} No. ${t.vch_no}` : "";
+    const bName = b ? `${b.code || b.vch_type}${b.vch_no ? ` \xB7 ${b.vch_no}` : ""}` : "";
+    if (r.status === "missing_here" && t) {
+      say2.push(`In Tally on ${dmy2(t.date)}: ${inr5(t.amount)} ${way(t.dir)}${t.party ? `, ${t.dir === "in" ? "from" : "to"} ${t.party}` : ""} (${tName}) \u2014 not in this bank here.`);
+      fix = t.multi ? 'Tally shows it "as per details" \u2014 a voucher of several ledgers. Enter it here by hand from the voucher in Tally.' : `Book it from Tally \u2014 it posts as a ${t.dir === "in" ? "RECEIPT" : "PAYMENT"} (or CONTRA, between banks and cash) on this bank under Tally's number.`;
+    } else if (r.status === "possible" && t && b) {
+      say2.push(
+        `Tally has ${inr5(t.amount)} ${way(t.dir)} on ${dmy2(t.date)}${t.party ? ` for ${t.party}` : ""}. These books have ${bName} on ${dmy2(b.date)} for the same amount, ${b.party ? `against ${b.party}` : ""} \u2014 very likely the same entry.`
+      );
+      fix = `If it is the same entry, map "${t.party}" to ${b.party || "that ledger"} (Book from Tally \u2192 Ledgers) and check again. If it is a different one, book it and tick "Book anyway".`;
+    } else if (r.status === "mismatch" && t && b) {
+      for (const d of r.diffs) {
+        if (d.field === "date") say2.push(`Dated ${dmy2(d.tally)} in Tally, ${dmy2(d.books)} here (${bName}).`);
+        if (d.field === "amount") say2.push(`${inr5(d.tally)} in Tally, ${inr5(d.books)} here.`);
+        if (d.field === "party") say2.push(`${t.party} in Tally, ${d.books} here.`);
+      }
+      fix = r.diffs.every((d) => d.field === "date") ? "Correct the date on whichever side is wrong \u2014 the bank\u2019s own statement says which." : "Open the voucher here and correct it to Tally \u2014 or correct Tally.";
+    } else if (r.status === "missing_tally" && b) {
+      say2.push(`In this bank here (${bName}, ${dmy2(b.date)}${b.party ? `, ${b.party}` : ""}, ${inr5(b.amount)} ${way(b.dir)}) but not in Tally's book for the period.`);
+      fix = "Enter it in Tally \u2014 or, if it never went through the bank, correct it here.";
+    } else if (r.status === "cancelled_here" && t && b) {
+      say2.push(`Tally shows ${tName} cancelled, but these books still carry ${bName}.`);
+      fix = "Delete it here if the cancellation in Tally is right.";
+    } else if (r.status === "cancelled") say2.push("Cancelled in Tally, and not in these books either.");
+    else if (r.status === "statement_only" && st) {
+      say2.push(`On the bank's statement on ${dmy2(st.date)}: ${inr5(st.amount)} ${way(st.dir)}${st.narration ? ` (${st.narration})` : ""} \u2014 in neither Tally nor these books.`);
+      fix = "Find what it was \u2014 bank charges, interest, a transfer, a cheque \u2014 and enter it in Tally and here.";
+    }
+    if (hasStatement && r.status !== "statement_only" && r.status !== "cancelled") {
+      const lead = t || b;
+      if (st) {
+        const dd = (r.diffs || []).find((d) => d.field === "date");
+        if (dd && t && b) {
+          const right = st.date === t.date ? "Tally is right" : st.date === b.date ? "these books are right" : "neither date is the bank\u2019s";
+          say2.push(`The bank's statement has it on ${dmy2(st.date)} \u2014 ${right}.`);
+        } else if (r.status === "missing_here") say2.push(`The bank's statement shows it on ${dmy2(st.date)}${st.narration ? ` (${st.narration})` : ""} \u2014 it did go through the bank.`);
+        else if (r.status === "missing_tally") say2.push(`The bank's statement shows it on ${dmy2(st.date)} \u2014 Tally is the one missing it.`);
+      } else if (lead && !r.stmt_out && (r.status === "missing_here" || r.status === "missing_tally")) {
+        say2.push("It is not on the bank's statement either \u2014 check it ever went through the bank before booking or entering it.");
+      }
+    }
+    r.explain = say2;
+    r.fix = fix;
+  }
+}
+async function suggestBank(bank) {
+  const banks = toPlain20(await getClient().execute({ sql: `SELECT id, name, acc_group FROM ledger_accounts WHERE acc_group IN ('Bank Accounts', 'Bank OD A/c') ORDER BY name`, args: [] }));
+  const m = (await resolveNames([bank])).get(tallyKey(bank));
+  if (m && banks.some((b) => Number(b.id) === m.account_id)) return banks.find((b) => Number(b.id) === m.account_id) || null;
+  const dg = acctDigits(bank);
+  if (dg) {
+    const hit = banks.find((b) => String(b.name).replace(/\s+/g, "").includes(dg) || acctDigits(String(b.name)).endsWith(dg.slice(-6)));
+    if (hit) return hit;
+  }
+  return banks.find((b) => companyKey(String(b.name)) === companyKey(bank)) || null;
+}
+async function suggestTallyBank(v) {
+  const book = await parseBankBook(String(v.data_base64 || ""));
+  const s4 = await suggestBank(book.bank);
+  return { bank: book.bank, period: book.period, suggested: s4 ? { id: Number(s4.id), name: String(s4.name) } : null };
+}
+async function checkTallyBank(v) {
+  const cid = await companyOf(v);
+  const { book, account, rows: rows2, statement } = await reconcileBank({ ...v, company_id: cid });
+  const { ownedVoucherIds: ownedVoucherIds2 } = await Promise.resolve().then(() => (init_voucherOwnership(), voucherOwnership_exports));
+  const owned = await ownedVoucherIds2();
+  for (const r of rows2) {
+    r.bookable = (r.status === "missing_here" || r.status === "possible") && !!r.tally && !r.tally.cancelled && !r.tally.multi;
+    if (r.status === "mismatch" && r.books?.id && r.diffs.length === 1 && r.diffs[0].field === "date") {
+      r.redate = owned.has(Number(r.books.id)) ? "owned" : "yes";
+    }
+  }
+  const openHere = await bankBalanceBefore(cid, Number(account.id), book.from);
+  const closeHere = await bankBalanceBefore(cid, Number(account.id), shiftDays2(book.to, 1));
+  const count = (s4) => rows2.filter((r) => r.status === s4).length;
+  const sum = (side, dir) => round213(
+    rows2.filter((r) => r[side] && r[side].dir === dir && (side === "books" ? r.status !== "cancelled_here" : !r.tally.cancelled)).filter((r) => side === "tally" || r.books.date >= book.from && r.books.date <= book.to).reduce((t, r) => t + n24(r[side].amount), 0)
+  );
+  const fileDigits = acctDigits(book.bank);
+  const companyName = String((await getClient().execute({ sql: "SELECT name FROM companies WHERE id = ?", args: [cid] })).rows[0]?.name || "");
+  return {
+    file_name: String(v.file_name || ""),
+    file_company: book.company,
+    company: companyName,
+    company_mismatch: !!book.company && !!companyName && companyKey(book.company) !== companyKey(companyName),
+    bank: book.bank,
+    account: { id: Number(account.id), name: String(account.name), group: String(account.acc_group) },
+    // The book's bank and the ledger picked do not share an account number.
+    bank_mismatch: !!fileDigits && !String(account.name).replace(/\s+/g, "").includes(fileDigits) && companyKey(String(account.name)) !== companyKey(book.bank),
+    period: book.period,
+    from: book.from,
+    to: book.to,
+    balances: {
+      tally: { opening: book.opening, in: sum("tally", "in"), out: sum("tally", "out"), closing: book.closing, closing_stated: book.closing_stated },
+      // The bank's own figures. A positive running balance is money in the
+      // bank — the same sign as a debit balance here.
+      bank: statement ? {
+        opening: statement.opening,
+        in: round213(statement.lines.filter((s4) => s4.dir === "in" && s4.date >= book.from && s4.date <= book.to).reduce((x, s4) => x + s4.amount, 0)),
+        out: round213(statement.lines.filter((s4) => s4.dir === "out" && s4.date >= book.from && s4.date <= book.to).reduce((x, s4) => x + s4.amount, 0)),
+        closing: statement.closing,
+        from: statement.from,
+        to: statement.to
+      } : null,
+      books: { opening: openHere, in: sum("books", "in"), out: sum("books", "out"), closing: closeHere }
+    },
+    counts: {
+      matched: count("matched"),
+      mismatch: count("mismatch"),
+      possible: count("possible"),
+      missing_here: count("missing_here"),
+      missing_tally: count("missing_tally"),
+      cancelled: count("cancelled"),
+      cancelled_here: count("cancelled_here"),
+      statement_only: count("statement_only")
+    },
+    statement: statement ? { name: statement.name, lines: statement.lines.length, from: statement.from, to: statement.to } : null,
+    vch_types: [...new Set(book.lines.map((l) => l.vch_type))].sort(),
+    rows: rows2.sort(
+      (a, b) => String((a.tally || a.books || a.stmt).date).localeCompare(String((b.tally || b.books || b.stmt).date)) || String(a.tally?.vch_no || a.books?.code || "").localeCompare(String(b.tally?.vch_no || b.books?.code || ""), void 0, { numeric: true })
+    )
+  };
+}
+function bankGroupFor(name) {
+  const s4 = name.toUpperCase();
+  if (/\bCASH\b/.test(s4)) return "Cash-in-Hand";
+  if (/\bHDFC\b|\bBANK\b|\bSBI\b|\bICICI\b|\bAXIS\b|\bKOTAK\b|\bYES\b/.test(s4) && /\d{6,}/.test(s4)) return "Bank Accounts";
+  if (/\bTDS\b|\bTCS\b|\bGST\b/.test(s4)) return "Duties & Taxes";
+  if (/INCOME|RECEIVED|WRITTEN BACK/.test(s4)) return "Indirect Incomes";
+  if (/SALARY|WAGES|EXP|CHARGES|INTEREST|FEE|WELFARE|RENT|REPAIR|TRAVEL|CONVEYANCE|ELECTRICITY|PENALTY|MEDICAL|LEGAL/.test(s4)) return "Indirect Expenses";
+  return "";
+}
+function blockOf2(t, lim) {
+  if (t.multi) return 'Tally shows it "as per details" \u2014 several ledgers; enter it by hand';
+  if (!t.party) return "Tally names no ledger on it";
+  if (lim.booksFrom && t.date < lim.booksFrom) return `dated before these books begin (${lim.booksFrom})`;
+  if (lim.windowFrom && t.date < lim.windowFrom) return `dated before your working window (${lim.windowFrom})`;
+  if (!(t.amount > 0)) return "it has no amount";
+  return null;
+}
+async function previewTallyBankVouchers(v) {
+  const cid = await companyOf(v);
+  const { book, account, rows: rows2 } = await reconcileBank({ ...v, company_id: cid });
+  const lim = await saleDateLimits(cid);
+  const statusOf2 = new Map(rows2.filter((r) => r.tally).map((r) => [String(r.tally.key), r]));
+  const wanted = new Set((v.keys || []).map(String));
+  const picked = book.lines.filter((t) => wanted.has(t.key) && !t.cancelled && ["missing_here", "possible"].includes(String(statusOf2.get(t.key)?.status)));
+  const roles = /* @__PURE__ */ new Map();
+  for (const t of picked) {
+    if (!t.party || t.multi) continue;
+    const g = roles.get(t.party_key) || { name: t.party, role: "ledger", count: 0, amount: 0 };
+    g.count += 1;
+    g.amount = round213(g.amount + t.amount);
+    roles.set(t.party_key, g);
+  }
+  const bankName = String(account.name);
+  return {
+    vouchers: picked.map((t) => {
+      const r = statusOf2.get(t.key);
+      return {
+        key: t.key,
+        vch_no: t.vch_no,
+        ref_no: "",
+        type: `${t.vch_type}`,
+        date: t.date,
+        party: t.party,
+        amount: t.amount,
+        lines: t.dir === "in" ? [
+          { name: bankName, key: null, fixed: bankName, dr: t.amount, cr: 0 },
+          { name: t.party, key: t.party_key, dr: 0, cr: t.amount }
+        ] : [
+          { name: t.party, key: t.party_key, dr: t.amount, cr: 0 },
+          { name: bankName, key: null, fixed: bankName, dr: 0, cr: t.amount }
+        ],
+        round_off: 0,
+        blocked: blockOf2(t, lim),
+        possible: r.status === "possible" && r.books ? { code: r.books.code, type: r.books.vch_type, vch_no: r.books.vch_no, date: r.books.date, amount: r.books.amount, party: r.books.party } : null
+      };
+    }),
+    ledgers: await mappingRows(roles, bankGroupFor)
+  };
+}
+async function postTallyBankVouchers(v) {
+  const cid = await companyOf(v);
+  const wanted = new Set((v.keys || []).map(String));
+  if (!wanted.size) throw new Error("Pick the entries to book");
+  const force = new Set((v.force_keys || []).map(String));
+  const lim = await saleDateLimits(cid);
+  const fileLabel = String(v.file_name || "").trim();
+  const state = await reconcileBank({ ...v, company_id: cid });
+  const bankName = String(state.account.name);
+  const groups = new Map(
+    toPlain20(await getClient().execute("SELECT id, acc_group FROM ledger_accounts")).map((r) => [Number(r.id), String(r.acc_group || "")])
+  );
+  const created = [];
+  const skipped = [];
+  for (const t of state.book.lines.filter((x) => wanted.has(x.key))) {
+    const label2 = `${t.vch_type} ${t.vch_no}`;
+    const row = state.rows.find((r) => r.tally?.key === t.key);
+    const status = String(row?.status || "");
+    if (t.cancelled) {
+      skipped.push({ vch_no: label2, reason: "Tally shows it cancelled" });
+      continue;
+    }
+    if (status !== "missing_here" && status !== "possible") {
+      skipped.push({ vch_no: label2, reason: `it is already in this bank here${row?.books?.code ? ` (${row.books.code})` : ""}` });
+      continue;
+    }
+    if (status === "possible" && !force.has(t.key)) {
+      skipped.push({ vch_no: label2, reason: `it looks like ${row?.books?.code || "an entry"} already here \u2014 tick "Book anyway" if it is a different one` });
+      continue;
+    }
+    const block = blockOf2(t, lim);
+    if (block) {
+      skipped.push({ vch_no: label2, reason: block });
+      continue;
+    }
+    const m = state.mapped.get(t.party_key);
+    if (!m) {
+      skipped.push({ vch_no: label2, reason: `not mapped yet: ${t.party}` });
+      continue;
+    }
+    if (m.account_id === Number(state.account.id)) {
+      skipped.push({ vch_no: label2, reason: `${t.party} is mapped to this same bank` });
+      continue;
+    }
+    const head = narrationHead(state.book.bank, t);
+    const again = await getClient().execute({
+      sql: "SELECT 1 FROM journal_entries WHERE company_id = ? AND (narration = ? OR narration LIKE ?) LIMIT 1",
+      args: [cid, head, `${head.replace(/[%_]/g, "")} (%`]
+    });
+    if (again.rows.length) {
+      skipped.push({ vch_no: label2, reason: "it was booked a moment ago" });
+      continue;
+    }
+    const contra = MONEY_GROUPS.includes(groups.get(m.account_id) || "");
+    const vchType = contra ? "CONTRA" : t.dir === "in" ? "RECEIPT" : "PAYMENT";
+    const lines = t.dir === "in" ? [
+      { account: bankName, dr: t.amount },
+      { account: m.account_name, cr: t.amount }
+    ] : [
+      { account: m.account_name, dr: t.amount },
+      { account: bankName, cr: t.amount }
+    ];
+    try {
+      const res = await createVoucher({
+        date: t.date,
+        vchType,
+        vchNo: t.vch_no,
+        narration: `${head}${fileLabel ? ` (${fileLabel})` : ""}`,
+        companyId: cid,
+        lines
+      });
+      created.push({ vch_no: label2, id: res.id });
+    } catch (e) {
+      skipped.push({ vch_no: label2, reason: e.message });
+    }
+  }
+  await recordTallyBatch({ company_id: cid, kind: "bank", scope: `bank:${Number(state.account.id)}`, file_name: fileLabel, entry_ids: created.map((x) => x.id) });
+  return { created, skipped };
+}
+async function ensureOwnBanks() {
+  if (ownTable) return;
+  await getClient().execute(`CREATE TABLE IF NOT EXISTS company_bank_accounts (
+    company_id INTEGER NOT NULL,
+    account_id INTEGER NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (company_id, account_id)
+  )`);
+  ownTable = true;
+}
+async function listCompanyBanks(v) {
+  await ensureOwnBanks();
+  const cid = await companyOf(v);
+  const c = getClient();
+  const own = new Set(
+    (await c.execute({ sql: "SELECT account_id FROM company_bank_accounts WHERE company_id = ?", args: [cid] })).rows.map((r) => Number(r.account_id))
+  );
+  const rows2 = toPlain20(
+    await c.execute({
+      sql: `SELECT a.id, a.name, a.acc_group,
+                   (SELECT COUNT(*) FROM journal_lines jl JOIN journal_entries je ON je.id = jl.entry_id WHERE jl.account_id = a.id AND je.company_id = ?) AS lines,
+                   (SELECT o.dr - o.cr FROM ledger_openings o WHERE o.account_id = a.id AND o.company_id = ?) AS opening
+              FROM ledger_accounts a
+             WHERE a.acc_group IN ('Bank Accounts', 'Bank OD A/c')
+             ORDER BY a.name`,
+      args: [cid, cid]
+    })
+  );
+  const banks = [];
+  for (const r of rows2) {
+    const id = Number(r.id);
+    const used = Number(r.lines) > 0 || Math.abs(n24(r.opening)) > 4e-3;
+    banks.push({
+      id,
+      name: String(r.name),
+      acc_group: String(r.acc_group),
+      business: own.has(id),
+      used,
+      generic: /^BANK A\/C$/i.test(String(r.name).trim()),
+      lines: Number(r.lines) || 0,
+      balance: used ? await bankBalanceBefore(cid, id, "9999-12-31") : 0
+    });
+  }
+  return { chosen: own.size > 0, banks };
+}
+async function setCompanyBank(v) {
+  await ensureOwnBanks();
+  const cid = await companyOf(v);
+  const id = Number(v.account_id) || 0;
+  await bankAccount(id);
+  if (v.on) await getClient().execute({ sql: "INSERT OR IGNORE INTO company_bank_accounts (company_id, account_id) VALUES (?, ?)", args: [cid, id] });
+  else await getClient().execute({ sql: "DELETE FROM company_bank_accounts WHERE company_id = ? AND account_id = ?", args: [cid, id] });
+  return { ok: true };
+}
+var import_exceljs4, n24, round213, inr5, dmy2, NEAR_DAYS2, MONEY_GROUPS, narrationHead, ownTable;
+var init_tallyBank = __esm({
+  "src/main/tallyBank.ts"() {
+    import_exceljs4 = __toESM(require("exceljs"));
+    init_db();
+    init_accounting();
+    init_tallyLinks();
+    init_tallyNotes();
+    n24 = (v) => {
+      const x = Number(String(v ?? "").replace(/,/g, ""));
+      return Number.isFinite(x) ? x : 0;
+    };
+    round213 = (x) => Math.round((Number(x) || 0) * 100) / 100;
+    inr5 = (v) => `\u20B9${Math.abs(v).toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+    dmy2 = (iso) => iso ? iso.slice(0, 10).split("-").reverse().join("-") : "\u2014";
+    NEAR_DAYS2 = 7;
+    MONEY_GROUPS = ["Bank Accounts", "Bank OD A/c", "Cash-in-Hand"];
+    narrationHead = (bank, t) => `Imported from Tally \u2014 ${bank} Book \xB7 ${t.vch_type} No. ${t.vch_no}`;
+    ownTable = false;
+  }
+});
+
 // src/main/cashflowRegister.ts
 var cashflowRegister_exports = {};
 __export(cashflowRegister_exports, {
@@ -21487,7 +23183,7 @@ async function cashflowRegister(from, to, companyId) {
   };
   const lines = toPlain38(
     await c.execute({
-      sql: `SELECT jl.id, jl.entry_id, jl.dr, jl.cr, a.name AS account, a.acc_group AS acc_group
+      sql: `SELECT jl.id, jl.entry_id, jl.dr, jl.cr, jl.account_id, a.name AS account, a.acc_group AS acc_group
               FROM journal_lines jl JOIN ledger_accounts a ON a.id = jl.account_id
              WHERE jl.entry_id IN (${inPeriod})
              ORDER BY jl.entry_id, jl.id`,
@@ -21532,6 +23228,7 @@ async function cashflowRegister(from, to, companyId) {
     const cr = round222(n47(l.cr));
     linesOf.get(k).push({
       id: n47(l.id),
+      account_id: n47(l.account_id),
       account: String(l.account || ""),
       group: String(l.acc_group || ""),
       kind: kindOf3(String(l.acc_group || "")),
@@ -21592,7 +23289,14 @@ async function cashflowRegister(from, to, companyId) {
       sale_company_id: h.sale_company_id ?? null
     };
   });
-  return { from: from || null, to: to || null, vouchers };
+  const moneyIds = /* @__PURE__ */ new Map();
+  for (const ls of linesOf.values()) for (const l of ls) if (l.kind === "money") moneyIds.set(n47(l.account_id), String(l.account));
+  const openings = {};
+  if (from) {
+    const { bankBalanceBefore: bankBalanceBefore2 } = await Promise.resolve().then(() => (init_tallyBank(), tallyBank_exports));
+    for (const [aid, name] of moneyIds) openings[name] = await bankBalanceBefore2(cid, aid, from).catch(() => 0);
+  }
+  return { from: from || null, to: to || null, vouchers, openings };
 }
 var n47, round222, toPlain38;
 var init_cashflowRegister = __esm({
@@ -25022,956 +26726,7 @@ async function ensureRequiredColumns() {
 
 // src/main/tallyDesk.ts
 init_db();
-
-// src/main/tallyNotes.ts
-var import_exceljs = __toESM(require("exceljs"));
-init_db();
-init_company();
-init_accounting();
-init_journal();
-init_currentUser();
-function toPlain20(res) {
-  return res.rows.map((r) => ({ ...r }));
-}
-var n21 = (v) => {
-  const x = Number(String(v ?? "").replace(/,/g, ""));
-  return Number.isFinite(x) ? x : 0;
-};
-var round210 = (x) => Math.round((Number(x) || 0) * 100) / 100;
-function settleSigns(gross, cols, fixed = 0) {
-  const total = (cs) => cs.reduce((s4, c) => s4 + c.amount, 0) + fixed;
-  if (Math.abs(gross - total(cols)) <= 1) return cols;
-  const flip = (idx) => cols.map((c, i) => idx.includes(i) ? { ...c, amount: -c.amount } : c);
-  for (let i = 0; i < cols.length; i++) {
-    const tryIt = flip([i]);
-    if (Math.abs(gross - total(tryIt)) <= 1) return tryIt;
-  }
-  for (let i = 0; i < cols.length; i++) {
-    for (let j = i + 1; j < cols.length; j++) {
-      const tryIt = flip([i, j]);
-      if (Math.abs(gross - total(tryIt)) <= 1) return tryIt;
-    }
-  }
-  return cols;
-}
-function tallyKey(v) {
-  return String(v ?? "").toUpperCase().replace(/\bA\s*\/\s*C\b/g, " ").replace(/@/g, " ").replace(/\d+(?:\.\d+)?/g, (m) => String(Number(m))).replace(/[^A-Z0-9]+/g, " ").trim();
-}
-function vchKey(v) {
-  return String(v ?? "").toUpperCase().replace(/\s+/g, "").replace(/(^|[^0-9])0+(\d)/g, "$1$2");
-}
-function companyKey(v) {
-  return tallyKey(v).split(" ").filter((t) => !["LTD", "LIMITED", "PVT", "PRIVATE", "THE", "CO", "COMPANY"].includes(t)).join("");
-}
-var STOP = /* @__PURE__ */ new Set(["PVT", "PRIVATE", "LTD", "LIMITED", "CO", "THE", "AND", "OF", "M", "S", "CR", "DR", "R"]);
-function tokens(v) {
-  return new Set(tallyKey(v).split(" ").filter((t) => t.length >= 2 && !STOP.has(t)));
-}
-async function ensureMapTable() {
-  await getClient().execute(`CREATE TABLE IF NOT EXISTS tally_import_map (
-    name_key TEXT PRIMARY KEY,
-    tally_name TEXT NOT NULL,
-    account_id INTEGER NOT NULL,
-    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
-  )`);
-}
-var SUMMARY_COLS = /^(date|particulars|voucher\s*type|voucher\s*no\.?|value|addl\.?\s*cost|gross\s*total|narration)$/i;
-var ROUND_OFF = /round\s*off/i;
-function cellValue(v) {
-  if (v && typeof v === "object") {
-    const o = v;
-    if ("result" in o) return o.result;
-    if ("richText" in o) return o.richText.map((t) => t.text).join("");
-    if ("text" in o) return o.text;
-  }
-  return v;
-}
-function isoDate(v) {
-  if (v instanceof Date) {
-    return `${v.getUTCFullYear()}-${String(v.getUTCMonth() + 1).padStart(2, "0")}-${String(v.getUTCDate()).padStart(2, "0")}`;
-  }
-  const s4 = String(v ?? "").trim();
-  const m = /^(\d{1,2})[-/ ]([A-Za-z]{3}|\d{1,2})[-/ ](\d{2,4})$/.exec(s4);
-  if (m) {
-    const months = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"];
-    const mon = /\d/.test(m[2]) ? Number(m[2]) : months.indexOf(m[2].toLowerCase()) + 1;
-    const yr = m[3].length === 2 ? 2e3 + Number(m[3]) : Number(m[3]);
-    if (mon >= 1) return `${yr}-${String(mon).padStart(2, "0")}-${String(Number(m[1])).padStart(2, "0")}`;
-  }
-  if (/^\d{4}-\d{2}-\d{2}/.test(s4)) return s4.slice(0, 10);
-  return "";
-}
-async function parseRegister(b64, kind) {
-  if (!b64) throw new Error("Choose the Tally register file to upload");
-  const wb = new import_exceljs.default.Workbook();
-  try {
-    await wb.xlsx.load(Buffer.from(b64, "base64"));
-  } catch {
-    throw new Error("That file could not be read \u2014 export the register from Tally as Excel (.xlsx)");
-  }
-  const ws = wb.worksheets[0];
-  if (!ws) throw new Error("That workbook has no sheet in it");
-  const grid = [];
-  ws.eachRow({ includeEmpty: true }, (row, i) => {
-    const cells = [];
-    row.eachCell({ includeEmpty: true }, (cell, c) => {
-      cells[c - 1] = cellValue(cell.value);
-    });
-    grid[i - 1] = cells;
-  });
-  const txt = (v) => String(v ?? "").trim();
-  const headAt = grid.findIndex((r) => (r || []).some((c) => /^date$/i.test(txt(c))) && (r || []).some((c) => /^particulars$/i.test(txt(c))));
-  if (headAt < 0) throw new Error("No Date / Particulars header found \u2014 upload the register exactly as Tally exports it");
-  const head = (grid[headAt] || []).map(txt);
-  const at = (re) => head.findIndex((h) => re.test(h));
-  const iDate = at(/^date$/i);
-  const iParty = at(/^particulars$/i);
-  const iNo = at(/^voucher\s*no\.?$/i);
-  const iGross = at(/^gross\s*total$/i);
-  if (iNo < 0 || iGross < 0) throw new Error("The sheet needs its Voucher No. and Gross Total columns");
-  const title = txt(grid[1]?.[0]);
-  if (kind === "credit" && /debit/i.test(title)) throw new Error(`This is a ${title} \u2014 upload it under Debit Notes`);
-  if (kind === "debit" && /credit/i.test(title)) throw new Error(`This is a ${title} \u2014 upload it under Credit Notes`);
-  const ledgerCols = head.map((h, i) => ({ h, i })).filter(({ h, i }) => !!h && !SUMMARY_COLS.test(h) && i !== iDate && i !== iParty && i !== iNo && i !== iGross);
-  const notes = [];
-  for (let r = headAt + 1; r < grid.length; r++) {
-    const row = grid[r] || [];
-    const party = txt(row[iParty]);
-    if (!party || /^grand\s*total$/i.test(party)) continue;
-    const date = isoDate(row[iDate]);
-    const vchNo = txt(row[iNo]);
-    if (!date || !vchNo) continue;
-    const gross = round210(n21(row[iGross]));
-    const cols = settleSigns(
-      gross,
-      ledgerCols.filter(({ h }) => !ROUND_OFF.test(h)).map(({ h, i }) => ({ name: h, amount: round210(n21(row[i])) })).filter((c) => Math.abs(c.amount) > 4e-3)
-    );
-    const roundOff = round210(gross - cols.reduce((t, c) => t + c.amount, 0));
-    notes.push({ row: r + 1, date, party, vch_no: vchNo, gross, cols, round_off: roundOff, balanced: Math.abs(roundOff) <= 1 && gross > 0 });
-  }
-  if (!notes.length) throw new Error("No notes found under the header row");
-  return { company: txt(grid[0]?.[0]), title, period: txt(grid[2]?.[0]), notes };
-}
-async function resolveNames(names) {
-  await ensureMapTable();
-  const c = getClient();
-  const accts = toPlain20(await c.execute("SELECT id, name FROM ledger_accounts"));
-  const byId = new Map(accts.map((a) => [Number(a.id), String(a.name)]));
-  const byKey = /* @__PURE__ */ new Map();
-  for (const a of accts) {
-    const k = tallyKey(a.name);
-    if (k && !byKey.has(k)) byKey.set(k, Number(a.id));
-  }
-  const redirects = await c.execute("SELECT posts_as, use_name FROM ledger_map").catch(() => null);
-  for (const r of toPlain20(redirects || { rows: [] })) {
-    const to = byKey.get(tallyKey(r.use_name));
-    const k = tallyKey(r.posts_as);
-    if (to && k && !byKey.has(k)) byKey.set(k, to);
-  }
-  const saved = new Map(toPlain20(await c.execute("SELECT name_key, account_id FROM tally_import_map")).map((r) => [String(r.name_key), Number(r.account_id)]));
-  const out = /* @__PURE__ */ new Map();
-  for (const nm of names) {
-    const k = tallyKey(nm);
-    const s4 = saved.get(k);
-    if (s4 && byId.has(s4)) {
-      out.set(k, { account_id: s4, account_name: byId.get(s4), how: "saved" });
-      continue;
-    }
-    const a = byKey.get(k);
-    if (a && byId.has(a)) out.set(k, { account_id: a, account_name: byId.get(a), how: "auto" });
-  }
-  return out;
-}
-function suggestGroupFor(name, role, kind) {
-  const s4 = name.toUpperCase();
-  if (role === "party") return kind === "credit" ? "Sundry Debtors" : "Sundry Creditors";
-  if (/\b(C|S|I)GST\b|\bGST\b|\bTDS\b|\bTCS\b/.test(s4)) return "Duties & Taxes";
-  if (/ROUND\s*OFF/.test(s4)) return "Indirect Expenses";
-  if (/FREIGHT|CARTAGE/.test(s4)) return "Direct Expenses";
-  if (/EXPENSE|INSURANCE|TRAVEL|BROKER|BROKRAGE|BROKERAGE|SERVICE|COMMISSION|RENT|REPAIR|MATERIAL|MATRIEL/.test(s4)) return "Indirect Expenses";
-  if (/SALE|SETTLEMENT|SETTELMENT|STORAGE/.test(s4)) return kind === "credit" ? "Sales Accounts" : "Indirect Incomes";
-  return kind === "credit" ? "Sales Accounts" : "Purchase Accounts";
-}
-async function existingNotes(kind, companyId) {
-  return toPlain20(
-    await getClient().execute({
-      sql: `SELECT je.id, je.vch_no, je.entry_date,
-                   ROUND(COALESCE((SELECT SUM(jl.dr) FROM journal_lines jl WHERE jl.entry_id = je.id), 0), 2) AS total
-              FROM journal_entries je
-             WHERE je.company_id = ? AND UPPER(je.vch_type) = ?`,
-      args: [companyId, kind === "credit" ? "CREDIT NOTE" : "DEBIT NOTE"]
-    })
-  );
-}
-function statusOf(note, existing) {
-  if (!note.balanced) return { status: "unbalanced" };
-  const k = vchKey(note.vch_no);
-  const same2 = existing.find((e) => vchKey(e.vch_no) === k);
-  if (same2) return { status: Math.abs(n21(same2.total) - note.gross) <= 1 ? "exists" : "clash", match: same2 };
-  const twin = existing.find((e) => String(e.entry_date).slice(0, 10) === note.date && Math.abs(n21(e.total) - note.gross) <= 1);
-  if (twin) return { status: "maybe", match: twin };
-  return { status: "new" };
-}
-async function mappingRows(roles, groupFor2) {
-  const mapped = await resolveNames([...roles.values()].map((r) => r.name));
-  const accts = toPlain20(await getClient().execute("SELECT id, name, acc_group FROM ledger_accounts ORDER BY name"));
-  const ledgers = [...roles.entries()].map(([key3, r]) => {
-    const m = mapped.get(key3);
-    let suggest = [];
-    if (!m) {
-      const want = tokens(r.name);
-      suggest = accts.map((a) => {
-        const have = tokens(String(a.name));
-        const both = [...want].filter((t) => have.has(t)).length;
-        const score = want.size && have.size ? both / Math.max(want.size, have.size) : 0;
-        return { id: Number(a.id), name: String(a.name), group: String(a.acc_group || ""), score: Math.round(score * 100) / 100 };
-      }).filter((a) => a.score >= 0.34).sort((a, b) => b.score - a.score).slice(0, 3);
-    }
-    return {
-      key: key3,
-      tally_name: r.name,
-      role: r.role,
-      used_in: r.count,
-      amount: r.amount,
-      account_id: m?.account_id ?? null,
-      account_name: m?.account_name ?? null,
-      how: m?.how ?? null,
-      suggest,
-      suggested_group: groupFor2(r.name, r.role)
-    };
-  });
-  ledgers.sort((a, b) => (a.account_id ? 1 : 0) - (b.account_id ? 1 : 0) || (a.role === b.role ? 0 : a.role === "party" ? -1 : 1) || a.tally_name.localeCompare(b.tally_name));
-  return ledgers;
-}
-async function previewTallyNotes(v) {
-  const kind = v.kind === "debit" ? "debit" : "credit";
-  const cid = await companyOf(v);
-  const reg = await parseRegister(String(v.data_base64 || ""), kind);
-  const existing = await existingNotes(kind, cid);
-  const roles = /* @__PURE__ */ new Map();
-  const note = (nm, role, amt) => {
-    const k = tallyKey(nm);
-    const g = roles.get(k) || { name: nm, role, count: 0, amount: 0 };
-    g.count += 1;
-    g.amount = round210(g.amount + Math.abs(amt));
-    roles.set(k, g);
-  };
-  for (const x of reg.notes) {
-    note(x.party, "party", x.gross);
-    for (const c of x.cols) note(c.name, "ledger", c.amount);
-  }
-  const ledgers = await mappingRows(roles, (nm, role) => suggestGroupFor(nm, role, kind));
-  const companyName = String(
-    (await getClient().execute({ sql: "SELECT name FROM companies WHERE id = ?", args: [cid] })).rows[0]?.name || ""
-  );
-  return {
-    kind,
-    file_name: String(v.file_name || ""),
-    file_company: reg.company,
-    company: companyName,
-    company_mismatch: !!reg.company && !!companyName && companyKey(reg.company) !== companyKey(companyName),
-    title: reg.title,
-    period: reg.period,
-    notes: reg.notes.map((x) => {
-      const st = statusOf(x, existing);
-      return {
-        ...x,
-        party_key: tallyKey(x.party),
-        cols: x.cols.map((c) => ({ ...c, key: tallyKey(c.name) })),
-        status: st.status,
-        match: st.match ? { id: Number(st.match.id), vch_no: String(st.match.vch_no || ""), date: String(st.match.entry_date || ""), total: n21(st.match.total) } : null
-      };
-    }),
-    ledgers
-  };
-}
-async function saveTallyNoteMap(v) {
-  await ensureMapTable();
-  const key3 = tallyKey(v.tally_name);
-  if (!key3) throw new Error("No Tally name to map");
-  const c = getClient();
-  if (!v.account_id) {
-    await c.execute({ sql: "DELETE FROM tally_import_map WHERE name_key = ?", args: [key3] });
-    return { key: key3 };
-  }
-  const a = await c.execute({ sql: "SELECT id FROM ledger_accounts WHERE id = ?", args: [Number(v.account_id)] });
-  if (!a.rows.length) throw new Error("That ledger no longer exists");
-  await c.execute({
-    sql: `INSERT INTO tally_import_map (name_key, tally_name, account_id) VALUES (?, ?, ?)
-          ON CONFLICT(name_key) DO UPDATE SET tally_name = excluded.tally_name, account_id = excluded.account_id, updated_at = datetime('now')`,
-    args: [key3, String(v.tally_name).trim(), Number(v.account_id)]
-  });
-  return { key: key3 };
-}
-async function createTallyNoteLedger(v) {
-  const name = String(v.name || v.tally_name || "").trim().toUpperCase();
-  if (!name) throw new Error("Give the new ledger a name");
-  const group = String(v.group || "").trim();
-  if (!group) throw new Error("Pick the group the new ledger belongs to");
-  const c = getClient();
-  const clash = await c.execute({ sql: "SELECT id FROM ledger_accounts WHERE name = ?", args: [name] });
-  if (clash.rows.length) throw new Error(`A ledger called ${name} already exists \u2014 pick it from the list instead`);
-  const { id } = await createAccount(name, group, await companyOf(v));
-  await saveTallyNoteMap({ tally_name: v.tally_name, account_id: id });
-  return { id, name };
-}
-async function postTallyNotes(v) {
-  const kind = v.kind === "debit" ? "debit" : "credit";
-  const cid = await companyOf(v);
-  const reg = await parseRegister(String(v.data_base64 || ""), kind);
-  const wanted = new Set((v.vch_nos || []).map(vchKey));
-  if (!wanted.size) throw new Error("Tick the notes to create");
-  const names = /* @__PURE__ */ new Set();
-  for (const x of reg.notes) {
-    names.add(x.party);
-    for (const c of x.cols) names.add(c.name);
-  }
-  const mapped = await resolveNames([...names]);
-  const created = [];
-  const skipped = [];
-  const fileLabel = String(v.file_name || "").trim();
-  for (const x of reg.notes) {
-    if (!wanted.has(vchKey(x.vch_no))) continue;
-    const st = statusOf(x, await existingNotes(kind, cid));
-    if (st.status === "exists") {
-      skipped.push({ vch_no: x.vch_no, reason: "already in the books" });
-      continue;
-    }
-    if (st.status === "clash") {
-      skipped.push({ vch_no: x.vch_no, reason: `the number ${x.vch_no} is already used by a different note here` });
-      continue;
-    }
-    if (st.status === "unbalanced") {
-      skipped.push({ vch_no: x.vch_no, reason: `its ledgers do not add up to the gross total (out by ${Math.abs(x.round_off).toFixed(2)})` });
-      continue;
-    }
-    if (st.status === "maybe" && !v.allow_maybe) {
-      skipped.push({ vch_no: x.vch_no, reason: 'a note of the same date and amount is already here \u2014 tick "create anyway" if it is a different one' });
-      continue;
-    }
-    const party = mapped.get(tallyKey(x.party));
-    const missing = [x.party, ...x.cols.map((c) => c.name)].filter((nm) => !mapped.get(tallyKey(nm)));
-    if (!party || missing.length) {
-      skipped.push({ vch_no: x.vch_no, reason: `not mapped yet: ${[...new Set(missing)].join(", ")}` });
-      continue;
-    }
-    const partySide = kind === "credit" ? "cr" : "dr";
-    const colSide = kind === "credit" ? "dr" : "cr";
-    const lines = [{ account: party.account_name, [partySide]: x.gross }];
-    for (const c of x.cols) {
-      const m = mapped.get(tallyKey(c.name));
-      const amt = round210(Math.abs(c.amount));
-      lines.push({ account: m.account_name, [c.amount >= 0 ? colSide : partySide]: amt });
-    }
-    if (Math.abs(x.round_off) > 4e-3) {
-      lines.push({ account: "ROUND OFF A/C", [x.round_off > 0 ? colSide : partySide]: round210(Math.abs(x.round_off)) });
-    }
-    try {
-      const res = await createVoucher({
-        date: x.date,
-        vchType: kind === "credit" ? "CREDIT NOTE" : "DEBIT NOTE",
-        vchNo: x.vch_no,
-        narration: `Imported from Tally \u2014 ${reg.title || (kind === "credit" ? "Credit Note Register" : "Debit Note Register")}${fileLabel ? ` (${fileLabel})` : ""}`,
-        companyId: cid,
-        lines: drFirst(lines)
-      });
-      created.push({ vch_no: x.vch_no, id: res.id });
-    } catch (e) {
-      skipped.push({ vch_no: x.vch_no, reason: e.message });
-    }
-  }
-  return { created, skipped };
-}
-var SALES_SUMMARY = /^(date|particulars|voucher\s*type|voucher\s*no\.?|quantity|gross\s*weight|rate|value|addl\.?\s*cost|gross\s*total|narration)$/i;
-var GST_COL = /\b(C|S|I|U)?GST\b|\bTCS\b|\bCESS\b/i;
-function periodOf(s4) {
-  const m = /(\d{1,2}-[A-Za-z]{3}-\d{2,4})\s*to\s*(\d{1,2}-[A-Za-z]{3}-\d{2,4})/.exec(s4);
-  return m ? { from: isoDate(m[1]), to: isoDate(m[2]) } : { from: "", to: "" };
-}
-async function parseSalesRegister(b64) {
-  if (!b64) throw new Error("Choose the Tally Sales Register file to upload");
-  const wb = new import_exceljs.default.Workbook();
-  try {
-    await wb.xlsx.load(Buffer.from(b64, "base64"));
-  } catch {
-    throw new Error("That file could not be read \u2014 export the register from Tally as Excel (.xlsx)");
-  }
-  const ws = wb.worksheets[0];
-  if (!ws) throw new Error("That workbook has no sheet in it");
-  const grid = [];
-  ws.eachRow({ includeEmpty: true }, (row, i) => {
-    const cells = [];
-    row.eachCell({ includeEmpty: true }, (cell, c) => {
-      cells[c - 1] = cellValue(cell.value);
-    });
-    grid[i - 1] = cells;
-  });
-  const txt = (v) => String(v ?? "").trim();
-  const title = txt(grid[1]?.[0]);
-  if (title && !/sales/i.test(title)) throw new Error(`This is a ${title} \u2014 upload a Sales Register here`);
-  const headAt = grid.findIndex((r) => (r || []).some((c) => /^date$/i.test(txt(c))) && (r || []).some((c) => /^particulars$/i.test(txt(c))));
-  if (headAt < 0) throw new Error("No Date / Particulars header found \u2014 upload the register exactly as Tally exports it");
-  const head = (grid[headAt] || []).map(txt);
-  const at = (re) => head.findIndex((h) => re.test(h));
-  const iDate = at(/^date$/i);
-  const iParty = at(/^particulars$/i);
-  const iNo = at(/^voucher\s*no\.?$/i);
-  const iGross = at(/^gross\s*total$/i);
-  const iQty = at(/^quantity$/i);
-  const iGw = at(/^gross\s*weight$/i);
-  if (iNo < 0 || iGross < 0) throw new Error("The sheet needs its Voucher No. and Gross Total columns");
-  const cols = head.map((h, i) => ({ h, i })).filter(({ h }) => !!h && !SALES_SUMMARY.test(h));
-  const sales = [];
-  for (let r = headAt + 1; r < grid.length; r++) {
-    const row = grid[r] || [];
-    const party = txt(row[iParty]);
-    if (!party || /^grand\s*total$/i.test(party)) continue;
-    const vchNo = txt(row[iNo]);
-    const date = isoDate(row[iDate]);
-    if (!vchNo || !date) continue;
-    const cancelled = /\(\s*cancel+ed\s*\)/i.test(party) || !n21(row[iGross]) && cols.every(({ i }) => !n21(row[i]));
-    const gross = round210(n21(row[iGross]));
-    const parts = settleSigns(
-      gross,
-      cols.filter(({ h }) => !/round\s*off/i.test(h)).map(({ h, i }) => ({ name: h, amount: round210(n21(row[i])), tax: GST_COL.test(h) })).filter((c) => Math.abs(c.amount) > 4e-3)
-    );
-    let taxable = 0;
-    let gst = 0;
-    const ledgers = [];
-    const deducted = [];
-    const gstHeads = [];
-    for (const c of parts) {
-      if (c.tax) {
-        gst = round210(gst + c.amount);
-        gstHeads.push({ name: c.name, amount: c.amount });
-      } else {
-        taxable = round210(taxable + c.amount);
-        ledgers.push(c.amount < 0 ? `${c.name} (less)` : c.name);
-        if (c.amount < 0) deducted.push({ name: c.name, amount: -c.amount });
-      }
-    }
-    sales.push({
-      row: r + 1,
-      date,
-      party: cancelled ? party.replace(/\(\s*cancel+ed\s*\)/i, "").trim() : party,
-      vch_no: vchNo,
-      cancelled,
-      qty: iQty >= 0 && txt(row[iQty]) !== "" ? n21(row[iQty]) : null,
-      gross_weight: iGw >= 0 ? txt(row[iGw]) : "",
-      taxable,
-      gst,
-      // Whatever makes the invoice balance — Tally prints its sign either way.
-      round_off: round210(gross - taxable - gst),
-      gross,
-      ledgers,
-      cols: parts.map((c) => ({ name: c.name, amount: c.amount, tax: c.tax })),
-      deducted,
-      gst_heads: gstHeads
-    });
-  }
-  if (!sales.length) throw new Error("No invoices found under the header row");
-  const period = txt(grid[2]?.[0]);
-  const p = periodOf(period);
-  const dates = sales.map((s4) => s4.date).sort();
-  return { company: txt(grid[0]?.[0]), title, period, from: p.from || dates[0], to: p.to || dates[dates.length - 1], sales };
-}
-async function bookSales(companyId) {
-  const c = getClient();
-  const lines = toPlain20(
-    await c.execute({
-      sql: `SELECT je.id, je.vch_no, je.entry_date, je.sale_id, jl.dr, jl.cr, a.id AS account_id, a.name AS account, a.acc_group
-              FROM journal_entries je
-              JOIN journal_lines jl ON jl.entry_id = je.id
-              JOIN ledger_accounts a ON a.id = jl.account_id
-             WHERE je.company_id = ? AND UPPER(je.vch_type) IN ('SALE', 'SALES')
-             ORDER BY je.id, jl.id`,
-      args: [companyId]
-    })
-  );
-  const qty = new Map(
-    toPlain20(
-      await c.execute({
-        sql: `SELECT TRIM(UPPER(invoice_no)) AS k, SUM(qty) AS qty, SUM(COALESCE(boxes, 0)) AS boxes
-                FROM sales WHERE company_id = ? AND invoice_no IS NOT NULL GROUP BY TRIM(UPPER(invoice_no))`,
-        args: [companyId]
-      })
-    ).map((r) => [String(r.k), { qty: n21(r.qty), boxes: n21(r.boxes) }])
-  );
-  const byEntry = /* @__PURE__ */ new Map();
-  for (const l of lines) {
-    const id = Number(l.id);
-    if (!byEntry.has(id)) byEntry.set(id, []);
-    byEntry.get(id).push(l);
-  }
-  const { partySideOfGroup: partySideOfGroup2 } = await Promise.resolve().then(() => (init_partyLedgers(), partyLedgers_exports));
-  const sideOf = /* @__PURE__ */ new Map();
-  const out = [];
-  for (const [id, ls] of byEntry) {
-    const party = ls.filter((l) => n21(l.dr) > 0).sort((a, b) => n21(b.dr) - n21(a.dr))[0];
-    let gst = 0;
-    let ro = 0;
-    let taxable = 0;
-    const deducted = [];
-    const gstHeads = [];
-    for (const l of ls) {
-      if (l === party) continue;
-      const v = round210(n21(l.cr) - n21(l.dr));
-      const name = String(l.account);
-      if (GST_COL.test(name)) {
-        gst = round210(gst + v);
-        gstHeads.push({ name, amount: v });
-      } else if (/round\s*off/i.test(name)) ro = round210(ro + v);
-      else {
-        taxable = round210(taxable + v);
-        if (v < 0) deducted.push({ name, amount: -v });
-      }
-    }
-    const vchNo = String(ls[0].vch_no || "");
-    const q = qty.get(vchNo.trim().toUpperCase());
-    const grp = String(party?.acc_group || "");
-    if (!sideOf.has(grp)) sideOf.set(grp, await partySideOfGroup2(grp));
-    out.push({
-      id,
-      sale_id: Number(ls[0].sale_id) || 0,
-      vch_no: vchNo,
-      date: String(ls[0].entry_date || "").slice(0, 10),
-      party: party ? String(party.account) : "",
-      party_id: party ? Number(party.account_id) : 0,
-      gross: party ? round210(n21(party.dr)) : 0,
-      gst,
-      round_off: ro,
-      taxable,
-      qty: q ? round210(q.qty * 1e3) / 1e3 : null,
-      boxes: q && q.boxes ? q.boxes : null,
-      party_is_creditor: sideOf.get(grp) === "SUNDRY CREDITORS",
-      deducted,
-      gst_heads: gstHeads
-    });
-  }
-  return out;
-}
-async function reconcileTallySales(v) {
-  const cid = await companyOf(v);
-  const reg = await parseSalesRegister(String(v.data_base64 || ""));
-  const books = await bookSales(cid);
-  const byNo = /* @__PURE__ */ new Map();
-  for (const b of books) {
-    const k = vchKey(b.vch_no);
-    if (!byNo.has(k)) byNo.set(k, []);
-    byNo.get(k).push(b);
-  }
-  const partyMap = await resolveNames([...new Set(reg.sales.map((s4) => s4.party))]);
-  const used = /* @__PURE__ */ new Set();
-  const close = (a, b, tol = 1) => Math.abs(a - b) <= tol;
-  const rows2 = [];
-  for (const t of reg.sales) {
-    const hits = byNo.get(vchKey(t.vch_no)) || [];
-    const b = hits[0];
-    if (b) hits.forEach((h) => used.add(h.id));
-    if (t.cancelled) {
-      rows2.push({ vch_no: t.vch_no, status: b ? "cancelled_here" : "cancelled", tally: t, books: b || null, diffs: [] });
-      continue;
-    }
-    if (!b) {
-      rows2.push({ vch_no: t.vch_no, status: "missing_here", tally: t, books: null, diffs: [] });
-      continue;
-    }
-    const diffs = [];
-    if (t.date !== b.date) diffs.push({ field: "date", tally: t.date, books: b.date });
-    const pm = partyMap.get(tallyKey(t.party));
-    const samePartyByName = companyKey(t.party) === companyKey(b.party);
-    if (!samePartyByName && (!pm || pm.account_id !== b.party_id)) diffs.push({ field: "party", tally: t.party, books: b.party });
-    for (const f of ["taxable", "gst", "round_off", "gross"]) {
-      if (!close(t[f], b[f], f === "round_off" ? 1 : 1)) diffs.push({ field: f, tally: t[f], books: b[f], diff: round210(t[f] - b[f]) });
-    }
-    if (t.qty != null) {
-      const packed = !!t.gross_weight;
-      const here = packed ? b.boxes : b.qty;
-      const sameInKg = !packed && here != null && close(t.qty, here * 1e3, 0.5);
-      if (here != null && !sameInKg && !close(t.qty, here, packed ? 0.5 : 1e-3)) {
-        diffs.push({ field: "qty", tally: t.qty, books: here, unit: packed ? "boxes" : "MT", diff: round210((t.qty - here) * 1e3) / 1e3 });
-      }
-    }
-    if (hits.length > 1) diffs.push({ field: "duplicate", tally: 1, books: hits.length });
-    rows2.push({ vch_no: t.vch_no, status: diffs.length ? "mismatch" : "matched", tally: t, books: b, diffs });
-  }
-  for (const b of books) {
-    if (used.has(b.id)) continue;
-    if (b.date < reg.from || b.date > reg.to) continue;
-    rows2.push({ vch_no: b.vch_no || "(no number)", status: "missing_tally", tally: null, books: b, diffs: [] });
-  }
-  const ownName = String(
-    (await getClient().execute({ sql: "SELECT name FROM companies WHERE id = ?", args: [cid] })).rows[0]?.name || ""
-  );
-  explainRows(rows2, reg.sales, books, ownName);
-  const count = (s4) => rows2.filter((r) => r.status === s4).length;
-  const sum = (arr, side) => round210(arr.reduce((t, r) => t + n21(r[side]?.gross), 0));
-  const companyName = String(
-    (await getClient().execute({ sql: "SELECT name FROM companies WHERE id = ?", args: [cid] })).rows[0]?.name || ""
-  );
-  return {
-    file_name: String(v.file_name || ""),
-    file_company: reg.company,
-    company: companyName,
-    company_mismatch: !!reg.company && !!companyName && companyKey(reg.company) !== companyKey(companyName),
-    title: reg.title,
-    period: reg.period,
-    from: reg.from,
-    to: reg.to,
-    counts: {
-      matched: count("matched"),
-      mismatch: count("mismatch"),
-      missing_here: count("missing_here"),
-      missing_tally: count("missing_tally"),
-      cancelled: count("cancelled"),
-      cancelled_here: count("cancelled_here")
-    },
-    totals: {
-      tally: sum(rows2.filter((r) => r.tally && !r.tally.cancelled), "tally"),
-      books: sum(rows2.filter((r) => r.books && r.status !== "cancelled_here"), "books")
-    },
-    rows: rows2.sort((a, b) => String((a.tally || a.books).date).localeCompare(String((b.tally || b.books).date)) || String(a.vch_no).localeCompare(String(b.vch_no), void 0, { numeric: true }))
-  };
-}
-async function linkTallyParty(v) {
-  return saveTallyNoteMap({ tally_name: v.tally_name, account_id: v.account_id });
-}
-var inr3 = (v) => `\u20B9${Math.abs(v).toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
-var dmyOf = (iso) => iso ? iso.slice(0, 10).split("-").reverse().join("-") : "\u2014";
-var looseKey = (v) => String(v ?? "").toUpperCase().replace(/[^A-Z0-9]/g, "").replace(/^([A-Z]+)0+/, "$1");
-function daysApart(a, b) {
-  return Math.round(((/* @__PURE__ */ new Date(`${b}T00:00:00`)).getTime() - (/* @__PURE__ */ new Date(`${a}T00:00:00`)).getTime()) / 864e5);
-}
-function explainRows(rows2, tallySales, books, ownCompany = "") {
-  const tallyLoose = /* @__PURE__ */ new Map();
-  for (const s4 of tallySales) tallyLoose.set(looseKey(s4.vch_no), s4);
-  const booksLoose = /* @__PURE__ */ new Map();
-  for (const b of books) booksLoose.set(looseKey(b.vch_no), b);
-  for (const r of rows2) {
-    const t = r.tally;
-    const b = r.books;
-    const say2 = [];
-    let fix = "";
-    if (r.status === "matched") {
-      say2.push(`Agrees with Tally \u2014 ${dmyOf(t?.date || "")}, ${inr3(t?.gross || 0)}, same party, quantity and tax.`);
-    } else if (r.status === "cancelled") {
-      say2.push("Tally shows this invoice as cancelled, and these books have no sale under this number either.");
-      fix = "Nothing to do.";
-    } else if (r.status === "cancelled_here") {
-      say2.push(`Tally shows this invoice as cancelled, but these books still carry it \u2014 ${dmyOf(b?.date || "")}, ${b?.party}, ${inr3(b?.gross || 0)}.`);
-      fix = "Cancel or delete the sale here, or reinstate it in Tally \u2014 the two books cannot both be right.";
-    } else if (r.status === "missing_here" && t) {
-      say2.push(`In Tally on ${dmyOf(t.date)} for ${t.party}, ${inr3(t.gross)} (${t.ledgers.join(", ") || "no ledger"}), but no sale numbered ${t.vch_no} is in these books.`);
-      const twin = booksLoose.get(looseKey(t.vch_no));
-      const sameDay = books.find((x) => x.date === t.date && Math.abs(x.gross - t.gross) <= 1);
-      if (twin && vchKey(twin.vch_no) !== vchKey(t.vch_no)) {
-        say2.push(`A sale numbered "${twin.vch_no}" is here${Math.abs(twin.gross - t.gross) <= 1 ? " for the same amount" : ` for ${inr3(twin.gross)}`} \u2014 most likely this invoice with its number typed differently.`);
-        fix = `Correct the invoice number here to ${t.vch_no}.`;
-      } else if (sameDay) {
-        say2.push(`A sale of the same date and amount is here as "${sameDay.vch_no}" \u2014 possibly this invoice under another number.`);
-        fix = `Check ${sameDay.vch_no} here; if it is this invoice, renumber it ${t.vch_no}.`;
-      } else if (/^SER\//i.test(t.vch_no)) {
-        fix = "A service invoice \u2014 enter it here as a sale (or journal) if these books should carry it.";
-      } else {
-        fix = "Enter this sale here, or check whether it was booked in the other company.";
-      }
-    } else if (r.status === "missing_tally" && b) {
-      say2.push(`In these books on ${dmyOf(b.date)} for ${b.party}, ${inr3(b.gross)}, but Tally has no invoice numbered ${b.vch_no || "(blank)"} in this period.`);
-      const twin = tallyLoose.get(looseKey(b.vch_no));
-      const sameDay = tallySales.find((x) => !x.cancelled && x.date === b.date && Math.abs(x.gross - b.gross) <= 1);
-      if (twin && vchKey(twin.vch_no) !== vchKey(b.vch_no)) {
-        say2.push(`Tally has "${twin.vch_no}"${Math.abs(twin.gross - b.gross) <= 1 ? " for the same amount" : ""} \u2014 the number here looks mistyped.`);
-        fix = `Renumber this sale ${twin.vch_no}.`;
-      } else if (sameDay) {
-        say2.push(`Tally has ${sameDay.vch_no} on the same date for the same amount \u2014 possibly this sale under another number.`);
-        fix = `Check it against ${sameDay.vch_no}.`;
-      } else if (ownCompany && companyKey(b.party).startsWith(companyKey(ownCompany).slice(0, 6)) && companyKey(b.party).includes("FOOD") === companyKey(ownCompany).includes("FOOD")) {
-        say2.push(`The party here is ${b.party} \u2014 this company itself. It looks like the other company's sale entered in these books.`);
-        fix = "Check which company this invoice belongs to, and move it there.";
-      } else if (!/\d/.test(String(b.vch_no || "")) || !/[\/]/.test(String(b.vch_no || ""))) {
-        say2.push(`The number "${b.vch_no || ""}" does not look like an invoice number.`);
-        fix = "Open the sale here and give it its proper invoice number, or delete it if it was a test entry.";
-      } else {
-        fix = "Enter it in Tally, or remove it here if it should not be in these books.";
-      }
-    } else if (t && b) {
-      const d = (f) => r.diffs.find((x) => x.field === f);
-      if (d("date")) {
-        const gap = daysApart(t.date, b.date);
-        say2.push(`Dated ${dmyOf(t.date)} in Tally but ${dmyOf(b.date)} here \u2014 ${Math.abs(gap)} day${Math.abs(gap) === 1 ? "" : "s"} ${gap > 0 ? "later" : "earlier"} here.`);
-      }
-      if (d("party")) {
-        if (b.party_is_creditor) {
-          say2.push(`Tally bills ${t.party}; here the sale is posted to ${b.party}, which is a SUPPLIER ledger \u2014 what the customer owes is netting off against what we owe them.`);
-          fix = `Settings \u2192 Accounting checks \u2192 "Customers and suppliers sharing a ledger" moves these sales to the customer's own ledger.`;
-        } else {
-          say2.push(`Tally bills ${t.party}; here it is posted to ${b.party}.`);
-        }
-      }
-      const tFr = t.deducted.reduce((s4, x) => s4 + x.amount, 0);
-      const bFr = b.deducted.reduce((s4, x) => s4 + x.amount, 0);
-      const dGross = d("gross");
-      const dTax = d("taxable");
-      const dGst = d("gst");
-      if (tFr > 0.5 && bFr < 0.5 && dGross && Math.abs(Math.abs(dGross.diff) - tFr) <= Math.max(10, tFr * 0.01) + Math.abs(t.gst - b.gst) + 1) {
-        say2.push(`Tally deducts ${inr3(tFr)} ${t.deducted.map((x) => x.name).join(" + ")} from this invoice; here nothing is deducted, so the customer is charged ${inr3(dGross.diff)} more here (${inr3(b.gross)} against Tally's ${inr3(t.gross)}).`);
-        fix = fix || 'Tick "freight deducted by customer" on the sale here (or enter the freight), so the party is charged what Tally charges.';
-      } else if (bFr > 0.5 && tFr < 0.5 && dGross) {
-        say2.push(`Here ${inr3(bFr)} ${b.deducted.map((x) => x.name).join(" + ")} is deducted from the invoice; Tally deducts nothing, so Tally charges ${inr3(dGross.diff)} more.`);
-      } else {
-        if (dTax) say2.push(`Taxable value ${inr3(t.taxable)} in Tally, ${inr3(b.taxable)} here \u2014 ${inr3(dTax.diff)} ${dTax.diff > 0 ? "more in Tally" : "more here"}.`);
-      }
-      if (dGst) {
-        if (Math.abs(b.gst) < 0.5 && t.gst > 0.5) {
-          say2.push(`Tally charges GST of ${inr3(t.gst)} (${t.gst_heads.map((x) => x.name.trim()).join(" + ")}); here no GST was posted on this sale.`);
-          fix = fix || "Re-post the sale here with its GST, so the output tax and the party balance match Tally.";
-        } else if (Math.abs(t.gst) < 0.5 && b.gst > 0.5) {
-          say2.push(`Here GST of ${inr3(b.gst)} is posted; Tally charges none.`);
-        } else {
-          say2.push(`GST ${inr3(t.gst)} in Tally, ${inr3(b.gst)} here \u2014 ${inr3(dGst.diff)} ${dGst.diff > 0 ? "more in Tally" : "more here"}.`);
-        }
-      }
-      if (dGross && !say2.some((s4) => s4.includes("charged") || s4.includes("charges"))) {
-        say2.push(`Invoice total ${inr3(t.gross)} in Tally, ${inr3(b.gross)} here \u2014 the party's balance differs by ${inr3(dGross.diff)}.`);
-      }
-      if (d("round_off") && !dGross) say2.push(`Round off ${inr3(t.round_off)} in Tally, ${inr3(b.round_off)} here.`);
-      const dq = d("qty");
-      if (dq) {
-        say2.push(`Quantity ${dq.tally} ${dq.unit === "boxes" ? "cartons" : "MT"} in Tally, ${dq.books} here.`);
-      }
-      const dd = d("duplicate");
-      if (dd) {
-        say2.push(`This invoice number is posted ${dd.books} times here \u2014 the extra voucher doubles the sale in the books.`);
-        fix = fix || `Delete the duplicate ${t.vch_no} here.`;
-      }
-      if (d("date") && !fix) fix = "Correct the date on whichever side is wrong \u2014 usually the sale here was entered later and kept the entry date.";
-      if (d("party") && !fix) fix = 'If these are the same party, click "Same party" \u2014 it is remembered from then on.';
-    }
-    r.explain = say2;
-    r.fix = fix;
-  }
-}
-function salesGroupFor(name, role) {
-  const s4 = name.toUpperCase();
-  if (role === "party") return "Sundry Debtors";
-  if (GST_COL.test(s4)) return "Duties & Taxes";
-  if (/ROUND\s*OFF/.test(s4)) return "Indirect Expenses";
-  if (/FREIGHT|CARTAGE/.test(s4)) return "Direct Expenses";
-  return "Sales Accounts";
-}
-async function existingSaleNos(companyId) {
-  const r = await getClient().execute({
-    sql: "SELECT vch_no FROM journal_entries WHERE company_id = ? AND UPPER(vch_type) IN ('SALE', 'SALES') AND vch_no IS NOT NULL",
-    args: [companyId]
-  });
-  return new Set(toPlain20(r).map((x) => vchKey(x.vch_no)));
-}
-async function saleDateLimits(cid) {
-  const { getBooksFrom: getBooksFrom2 } = await Promise.resolve().then(() => (init_openings(), openings_exports));
-  const booksFrom = String(await getBooksFrom2(cid) || "");
-  const { entryWindows: entryWindows2 } = await Promise.resolve().then(() => (init_access_gate(), access_gate_exports));
-  const win = await entryWindows2();
-  const windowFrom = [win.accountsTallyImport, win.accounts].filter(Boolean).sort().pop() || "";
-  return { booksFrom, windowFrom };
-}
-function saleBlock(x, lim) {
-  if (lim.booksFrom && x.date < lim.booksFrom) return `dated before these books begin (${lim.booksFrom})`;
-  if (lim.windowFrom && x.date < lim.windowFrom) return `dated before your working window (${lim.windowFrom})`;
-  if (!(x.gross > 0)) return "it has no gross total";
-  if (Math.abs(x.round_off) > 1) return `its columns do not add up to the gross total (out by ${Math.abs(x.round_off).toFixed(2)})`;
-  return null;
-}
-function drFirst(lines) {
-  return lines.map((l, i) => ({ l, i })).sort((a, b) => {
-    const ad = (a.l.dr || 0) > 0 ? 1 : 0;
-    const bd = (b.l.dr || 0) > 0 ? 1 : 0;
-    if (ad !== bd) return bd - ad;
-    return (b.l.dr || b.l.cr || 0) - (a.l.dr || a.l.cr || 0) || a.i - b.i;
-  }).map((x) => x.l);
-}
-async function previewTallySalesVouchers(v) {
-  const reg = await parseSalesRegister(String(v.data_base64 || ""));
-  const wanted = new Set((v.vch_nos || []).map(vchKey));
-  const cid = await companyOf(v);
-  const have = await existingSaleNos(cid);
-  const lim = await saleDateLimits(cid);
-  const picked = reg.sales.filter((x) => wanted.has(vchKey(x.vch_no)) && !x.cancelled && !have.has(vchKey(x.vch_no)));
-  const roles = /* @__PURE__ */ new Map();
-  const note = (nm, role, amt) => {
-    const k = tallyKey(nm);
-    const g = roles.get(k) || { name: nm, role, count: 0, amount: 0 };
-    g.count += 1;
-    g.amount = round210(g.amount + Math.abs(amt));
-    roles.set(k, g);
-  };
-  for (const x of picked) {
-    note(x.party, "party", x.gross);
-    for (const c of x.cols) note(c.name, "ledger", c.amount);
-  }
-  return {
-    sales: picked.map((x) => ({
-      vch_no: x.vch_no,
-      date: x.date,
-      party: x.party,
-      party_key: tallyKey(x.party),
-      gross: x.gross,
-      taxable: x.taxable,
-      gst: x.gst,
-      round_off: x.round_off,
-      cols: x.cols.map((c) => ({ ...c, key: tallyKey(c.name) })),
-      blocked: saleBlock(x, lim)
-    })),
-    ledgers: await mappingRows(roles, salesGroupFor)
-  };
-}
-async function postTallySalesVouchers(v) {
-  const cid = await companyOf(v);
-  const reg = await parseSalesRegister(String(v.data_base64 || ""));
-  const wanted = new Set((v.vch_nos || []).map(vchKey));
-  if (!wanted.size) throw new Error("Pick the invoices to book");
-  const names = /* @__PURE__ */ new Set();
-  for (const x of reg.sales) {
-    if (!wanted.has(vchKey(x.vch_no))) continue;
-    names.add(x.party);
-    for (const c of x.cols) names.add(c.name);
-  }
-  const mapped = await resolveNames([...names]);
-  const lim = await saleDateLimits(cid);
-  const created = [];
-  const skipped = [];
-  const fileLabel = String(v.file_name || "").trim();
-  for (const x of reg.sales) {
-    if (!wanted.has(vchKey(x.vch_no))) continue;
-    if (x.cancelled) {
-      skipped.push({ vch_no: x.vch_no, reason: "Tally shows it cancelled" });
-      continue;
-    }
-    if ((await existingSaleNos(cid)).has(vchKey(x.vch_no))) {
-      skipped.push({ vch_no: x.vch_no, reason: "a sale with this number is already in the books" });
-      continue;
-    }
-    const block = saleBlock(x, lim);
-    if (block) {
-      skipped.push({ vch_no: x.vch_no, reason: block });
-      continue;
-    }
-    const party = mapped.get(tallyKey(x.party));
-    const missing = [x.party, ...x.cols.map((c) => c.name)].filter((nm) => !mapped.get(tallyKey(nm)));
-    if (!party || missing.length) {
-      skipped.push({ vch_no: x.vch_no, reason: `not mapped yet: ${[...new Set(missing)].join(", ")}` });
-      continue;
-    }
-    const lines = [{ account: party.account_name, dr: x.gross }];
-    for (const c of x.cols) {
-      const m = mapped.get(tallyKey(c.name));
-      lines.push({ account: m.account_name, [c.amount >= 0 ? "cr" : "dr"]: round210(Math.abs(c.amount)) });
-    }
-    if (Math.abs(x.round_off) > 4e-3) {
-      lines.push({ account: "ROUND OFF A/C", [x.round_off > 0 ? "cr" : "dr"]: round210(Math.abs(x.round_off)) });
-    }
-    try {
-      const res = await createVoucher({
-        date: x.date,
-        vchType: "SALE",
-        vchNo: x.vch_no,
-        narration: `Imported from Tally \u2014 ${reg.title || "Sales Register"}${fileLabel ? ` (${fileLabel})` : ""}`,
-        companyId: cid,
-        lines: drFirst(lines)
-      });
-      created.push({ vch_no: x.vch_no, id: res.id });
-    } catch (e) {
-      skipped.push({ vch_no: x.vch_no, reason: e.message });
-    }
-  }
-  const { recordTallyBatch: recordTallyBatch2 } = await Promise.resolve().then(() => (init_tallyLinks(), tallyLinks_exports));
-  await recordTallyBatch2({ company_id: cid, kind: "sales", scope: "sales", file_name: fileLabel, entry_ids: created.map((x) => x.id) });
-  return { created, skipped };
-}
-async function ensureDraftTable() {
-  await getClient().execute(`CREATE TABLE IF NOT EXISTS tally_import_drafts (
-    company_id INTEGER NOT NULL,
-    username TEXT NOT NULL,
-    kind TEXT NOT NULL,
-    file_name TEXT,
-    data_base64 TEXT NOT NULL,
-    picked_json TEXT,
-    allow_maybe INTEGER NOT NULL DEFAULT 0,
-    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
-    PRIMARY KEY (company_id, username, kind)
-  )`);
-}
-async function companyOf(v) {
-  const id = Number(v?.company_id) || 0;
-  if (!id) return getActiveCompanyId();
-  const r = await getClient().execute({ sql: "SELECT id FROM companies WHERE id = ?", args: [id] });
-  if (!r.rows.length) throw new Error("That company no longer exists \u2014 pick it again with F3");
-  return id;
-}
-function draftOwner() {
-  return String(getCurrentUser().username || "").trim() || "local";
-}
-function draftKind(v) {
-  if (typeof v === "string" && /^bank(stmt)?:\d+$/.test(v)) return v;
-  return v === "debit" || v === "sales" || v === "journal" || v === "purchase" ? v : "credit";
-}
-async function saveTallyDraft(v) {
-  await ensureDraftTable();
-  const c = getClient();
-  const kind = draftKind(v.kind);
-  const cid = await companyOf(v);
-  const who2 = draftOwner();
-  const picked = JSON.stringify(Array.isArray(v.picked) ? v.picked.map(String) : []);
-  if (v.data_base64) {
-    if (String(v.data_base64).length > 12e6) throw new Error("That file is too large to keep as a draft");
-    await c.execute({
-      sql: `INSERT INTO tally_import_drafts (company_id, username, kind, file_name, data_base64, picked_json, allow_maybe, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'))
-            ON CONFLICT(company_id, username, kind) DO UPDATE SET
-              file_name = excluded.file_name, data_base64 = excluded.data_base64,
-              picked_json = excluded.picked_json, allow_maybe = excluded.allow_maybe, updated_at = excluded.updated_at`,
-      args: [cid, who2, kind, String(v.file_name || ""), String(v.data_base64), picked, v.allow_maybe ? 1 : 0]
-    });
-  } else {
-    await c.execute({
-      sql: `UPDATE tally_import_drafts SET picked_json = ?, allow_maybe = ?, updated_at = datetime('now')
-             WHERE company_id = ? AND username = ? AND kind = ?`,
-      args: [picked, v.allow_maybe ? 1 : 0, cid, who2, kind]
-    });
-  }
-  const r = await c.execute({
-    sql: "SELECT updated_at FROM tally_import_drafts WHERE company_id = ? AND username = ? AND kind = ?",
-    args: [cid, who2, kind]
-  });
-  return { saved_at: String(r.rows[0]?.updated_at || "") };
-}
-async function listTallyDrafts(v) {
-  await ensureDraftTable();
-  const cid = await companyOf(v);
-  return toPlain20(
-    await getClient().execute({
-      sql: `SELECT kind, file_name, data_base64, picked_json, allow_maybe, updated_at
-              FROM tally_import_drafts WHERE company_id = ? AND username = ?`,
-      args: [cid, draftOwner()]
-    })
-  ).map((r) => {
-    let picked = [];
-    try {
-      picked = JSON.parse(String(r.picked_json || "[]"));
-    } catch {
-      picked = [];
-    }
-    return { kind: String(r.kind), file_name: String(r.file_name || ""), data_base64: String(r.data_base64), picked, allow_maybe: !!Number(r.allow_maybe), saved_at: String(r.updated_at || "") };
-  });
-}
-async function clearTallyDraft(v) {
-  await ensureDraftTable();
-  const cid = await companyOf(v);
-  const r = await getClient().execute({
-    sql: "DELETE FROM tally_import_drafts WHERE company_id = ? AND username = ? AND kind = ?",
-    args: [cid, draftOwner(), draftKind(v.kind)]
-  });
-  return { cleared: r.rowsAffected > 0 };
-}
+init_tallyNotes();
 
 // src/main/tallyRegisters.ts
 var import_exceljs2 = __toESM(require("exceljs"));
@@ -25979,6 +26734,7 @@ init_db();
 init_tallyLinks();
 init_dbTransaction();
 init_accounting();
+init_tallyNotes();
 var n22 = (v) => {
   const x = Number(String(v ?? "").replace(/,/g, ""));
   return Number.isFinite(x) ? x : 0;
@@ -26808,657 +27564,8 @@ async function setRegisterVoucherDate(v) {
   });
 }
 
-// src/main/tallyBank.ts
-var import_exceljs4 = __toESM(require("exceljs"));
-init_db();
-init_accounting();
-init_tallyLinks();
-var n24 = (v) => {
-  const x = Number(String(v ?? "").replace(/,/g, ""));
-  return Number.isFinite(x) ? x : 0;
-};
-var round213 = (x) => Math.round((Number(x) || 0) * 100) / 100;
-var inr5 = (v) => `\u20B9${Math.abs(v).toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
-var dmy2 = (iso) => iso ? iso.slice(0, 10).split("-").reverse().join("-") : "\u2014";
-var NEAR_DAYS2 = 7;
-var MONEY_GROUPS = ["Bank Accounts", "Bank OD A/c", "Cash-in-Hand"];
-function daysApart3(a, b) {
-  const x = Date.parse(`${a.slice(0, 10)}T00:00:00Z`);
-  const y = Date.parse(`${b.slice(0, 10)}T00:00:00Z`);
-  return Number.isFinite(x) && Number.isFinite(y) ? Math.round(Math.abs(x - y) / 864e5) : 9999;
-}
-function shiftDays2(iso, d) {
-  const t = Date.parse(`${iso.slice(0, 10)}T00:00:00Z`);
-  return Number.isFinite(t) ? new Date(t + d * 864e5).toISOString().slice(0, 10) : iso;
-}
-function acctDigits(s4) {
-  const runs = String(s4 || "").match(/\d{4,}/g) || [];
-  return runs.sort((a, b) => b.length - a.length)[0] || "";
-}
-async function parseBankBook(b64) {
-  if (!b64) throw new Error("Choose the Tally bank book to upload");
-  const wb = new import_exceljs4.default.Workbook();
-  try {
-    await wb.xlsx.load(Buffer.from(b64, "base64"));
-  } catch {
-    throw new Error("That file could not be read \u2014 export the bank book from Tally as Excel (.xlsx)");
-  }
-  const ws = wb.worksheets[0];
-  if (!ws) throw new Error("That workbook has no sheet in it");
-  const grid = [];
-  ws.eachRow({ includeEmpty: true }, (row, i) => {
-    const cells = [];
-    row.eachCell({ includeEmpty: true }, (cell, c) => {
-      cells[c - 1] = cellValue(cell.value);
-    });
-    grid[i - 1] = cells;
-  });
-  const txt = (v) => String(v ?? "").trim();
-  const headAt = grid.findIndex(
-    (r) => (r || []).some((c) => /^date$/i.test(txt(c))) && (r || []).some((c) => /^debit$/i.test(txt(c))) && (r || []).some((c) => /^credit$/i.test(txt(c)))
-  );
-  if (headAt < 0) throw new Error("No Date / Debit / Credit header found \u2014 export the bank book from Tally exactly as it shows");
-  const head = (grid[headAt] || []).map(txt);
-  const at = (re) => head.findIndex((h) => re.test(h));
-  const iDate = at(/^date$/i);
-  const iPart = at(/^particulars$/i);
-  const iType = at(/^vch\.?\s*type$|^voucher\s*type$/i);
-  const iNo = at(/^vch\.?\s*no\.?$|^voucher\s*no\.?$/i);
-  const iDr = at(/^debit$/i);
-  const iCr = at(/^credit$/i);
-  if (iType < 0 || iNo < 0) throw new Error("The book needs its Vch Type and Vch No. columns \u2014 export it with them shown");
-  let bank = "";
-  let period = "";
-  for (let r = 0; r < headAt; r++) {
-    const s4 = txt(grid[r]?.[0]);
-    if (!bank && /\bbook\s*$/i.test(s4)) bank = s4.replace(/\s*book\s*$/i, "").trim();
-    if (/\d{1,2}-[A-Za-z]{3}-\d{2,4}\s*to\s*\d{1,2}-[A-Za-z]{3}-\d{2,4}/.test(s4)) period = s4;
-  }
-  if (!bank) bank = txt(grid[1]?.[0]);
-  const partOf = (row) => {
-    let side = "";
-    let name = "";
-    const last = iType > iPart ? iType : row.length;
-    for (let i = Math.max(0, iPart); i < last; i++) {
-      const s4 = txt(row[i]);
-      if (!s4) continue;
-      if (!side && /^(dr|cr|to|by)$/i.test(s4)) side = s4;
-      else if (!name && typeof row[i] === "string") name = s4;
-    }
-    return { side, name };
-  };
-  const out = { company: txt(grid[0]?.[0]), bank, period, from: "", to: "", opening: 0, closing: 0, closing_stated: null, lines: [] };
-  const seen = /* @__PURE__ */ new Map();
-  for (let r = headAt + 1; r < grid.length; r++) {
-    const row = grid[r] || [];
-    const { side, name } = partOf(row);
-    const dr = round213(n24(row[iDr]));
-    const cr = round213(n24(row[iCr]));
-    if (/^opening\s*balance$/i.test(name)) {
-      out.opening = round213(dr - cr);
-      continue;
-    }
-    if (/^closing\s*balance$/i.test(name)) {
-      const amt = [...row].map((c) => n24(c)).find((x) => Math.abs(x) > 0) || 0;
-      out.closing_stated = round213(/^(cr|by)$/i.test(side) ? -Math.abs(amt) : Math.abs(amt));
-      continue;
-    }
-    const date = isoDate(row[iDate]);
-    const vchNo = txt(row[iNo]);
-    const vchType = txt(row[iType]);
-    if (!date || !vchNo || !vchType) continue;
-    const cancelled = /\(\s*cancel+ed\s*\)/i.test(name) || dr === 0 && cr === 0;
-    const party = name.replace(/\(\s*cancel+ed\s*\)/i, "").trim();
-    let key3 = `${vchType.toUpperCase()}|${vchNo}`;
-    const dup = seen.get(key3) || 0;
-    seen.set(key3, dup + 1);
-    if (dup) key3 = `${key3}#${r + 1}`;
-    out.lines.push({
-      key: key3,
-      row: r + 1,
-      date,
-      party,
-      party_key: tallyKey(party),
-      vch_type: vchType,
-      vch_no: vchNo,
-      dir: dr > 0 ? "in" : "out",
-      amount: dr > 0 ? dr : cr,
-      multi: /as\s*per\s*details/i.test(party),
-      cancelled
-    });
-  }
-  if (!out.lines.length) throw new Error("No vouchers found in the book \u2014 check it is the bank book exported from Tally");
-  const p = periodOf(period);
-  const dates = out.lines.map((x) => x.date).sort();
-  out.from = p.from || dates[0];
-  out.to = p.to || dates[dates.length - 1];
-  out.closing = round213(out.opening + out.lines.filter((l) => !l.cancelled).reduce((t, l) => t + (l.dir === "in" ? l.amount : -l.amount), 0));
-  return out;
-}
-async function bankAccount(accountId) {
-  const r = (await getClient().execute({ sql: "SELECT id, name, acc_group FROM ledger_accounts WHERE id = ?", args: [accountId] })).rows[0];
-  if (!r) throw new Error("Pick the bank this book is for");
-  if (!MONEY_GROUPS.includes(String(r.acc_group))) throw new Error(`${String(r.name)} is not a bank or cash ledger \u2014 pick the bank this book is for`);
-  return r;
-}
-async function bankEntries(cid, accountId, from, to) {
-  const rows2 = toPlain20(
-    await getClient().execute({
-      sql: `SELECT je.id, je.entry_date, je.vch_type, je.vch_no, je.narration, je.payment_id,
-                   (SELECT nn.prefix || '/' || nn.serial FROM voucher_numbers nn WHERE nn.entry_id = je.id) AS code,
-                   jl.account_id, jl.dr, jl.cr, a.name, a.acc_group
-              FROM journal_entries je
-              JOIN journal_lines jl ON jl.entry_id = je.id
-              JOIN ledger_accounts a ON a.id = jl.account_id
-             WHERE je.company_id = ? AND substr(je.entry_date, 1, 10) BETWEEN ? AND ?
-               AND je.id IN (SELECT entry_id FROM journal_lines WHERE account_id = ?)
-             ORDER BY je.id, jl.id`,
-      args: [cid, shiftDays2(from, -NEAR_DAYS2 - 3), shiftDays2(to, NEAR_DAYS2 + 3), accountId]
-    })
-  );
-  const by = /* @__PURE__ */ new Map();
-  for (const r of rows2) {
-    const id = Number(r.id);
-    if (!by.has(id)) by.set(id, []);
-    by.get(id).push(r);
-  }
-  const out = [];
-  for (const [id, ls] of by) {
-    const mine = ls.filter((l) => Number(l.account_id) === accountId);
-    const net = round213(mine.reduce((t, l) => t + n24(l.dr) - n24(l.cr), 0));
-    if (Math.abs(net) < 5e-3) continue;
-    const dir = net > 0 ? "in" : "out";
-    const counter = ls.filter((l) => Number(l.account_id) !== accountId && (dir === "in" ? n24(l.cr) > 0 : n24(l.dr) > 0)).map((l) => ({ account_id: Number(l.account_id), name: String(l.name), group: String(l.acc_group || ""), amount: round213(n24(dir === "in" ? l.cr : l.dr)) })).sort((a, b) => b.amount - a.amount);
-    out.push({
-      id,
-      code: String(ls[0].code || ""),
-      vch_type: String(ls[0].vch_type || ""),
-      vch_no: String(ls[0].vch_no || ""),
-      date: String(ls[0].entry_date || "").slice(0, 10),
-      narration: String(ls[0].narration || ""),
-      payment_id: Number(ls[0].payment_id) || 0,
-      dir,
-      amount: Math.abs(net),
-      counter
-    });
-  }
-  return out;
-}
-async function bankBalanceBefore(cid, accountId, day) {
-  const { getBooksFrom: getBooksFrom2 } = await Promise.resolve().then(() => (init_openings(), openings_exports));
-  const booksFrom = String(await getBooksFrom2(cid) || "");
-  const op = (await getClient().execute({ sql: "SELECT dr, cr FROM ledger_openings WHERE company_id = ? AND account_id = ?", args: [cid, accountId] })).rows[0];
-  const r = (await getClient().execute({
-    sql: `SELECT COALESCE(SUM(jl.dr - jl.cr), 0) AS v FROM journal_lines jl JOIN journal_entries je ON je.id = jl.entry_id
-             WHERE jl.account_id = ? AND je.company_id = ? AND substr(je.entry_date, 1, 10) < ?${booksFrom ? " AND substr(je.entry_date, 1, 10) >= ?" : ""}`,
-    args: booksFrom ? [accountId, cid, day, booksFrom] : [accountId, cid, day]
-  })).rows[0];
-  return round213((op ? n24(op.dr) - n24(op.cr) : 0) + n24(r?.v));
-}
-function samePartyLine(t, b, mapped) {
-  const m = mapped.get(t.party_key);
-  return b.counter.some((c) => m ? c.account_id === m.account_id : tallyKey(c.name) === t.party_key || companyKey(c.name) === companyKey(t.party));
-}
-var narrationHead = (bank, t) => `Imported from Tally \u2014 ${bank} Book \xB7 ${t.vch_type} No. ${t.vch_no}`;
-async function readStatement(b64, name) {
-  if (!b64) return null;
-  const { parseStatementFile: parseStatementFile2 } = await Promise.resolve().then(() => (init_bankRecon(), bankRecon_exports));
-  const raw = await parseStatementFile2(b64, name);
-  if (!raw.length) throw new Error("No transactions found in the bank's statement \u2014 it needs Date and Withdrawal/Deposit (or Debit/Credit) columns");
-  const newestFirst = raw.length > 1 && raw[0].txn_date > raw[raw.length - 1].txn_date;
-  const chrono = newestFirst ? [...raw].reverse() : raw;
-  const lines = chrono.map((l) => ({
-    date: l.txn_date,
-    narration: l.narration,
-    dir: n24(l.credit) > 0 ? "in" : "out",
-    amount: round213(n24(l.credit) > 0 ? n24(l.credit) : n24(l.debit)),
-    balance: l.balance == null ? null : round213(n24(l.balance))
-  }));
-  const first = lines[0];
-  const last = lines[lines.length - 1];
-  return {
-    name,
-    lines,
-    from: first.date,
-    to: last.date,
-    opening: first.balance == null ? null : round213(first.balance - (first.dir === "in" ? first.amount : -first.amount)),
-    closing: last.balance
-  };
-}
-async function reconcileBank(v) {
-  const cid = await companyOf(v);
-  const account = await bankAccount(Number(v.account_id) || 0);
-  const book = await parseBankBook(String(v.data_base64 || ""));
-  const entries = await bankEntries(cid, Number(account.id), book.from, book.to);
-  const mapped = await resolveNames([...new Set(book.lines.map((l) => l.party).filter(Boolean))]);
-  const used = /* @__PURE__ */ new Set();
-  const rows2 = [];
-  const short = (b) => ({ id: b.id, code: b.code, vch_type: b.vch_type, vch_no: b.vch_no, date: b.date, dir: b.dir, amount: b.amount, payment_id: b.payment_id, party: b.counter[0]?.name || "", counter: b.counter, narration: b.narration });
-  const tal = (t) => ({ ...t });
-  const linked = await linksFor(cid, `bank:${Number(account.id)}`);
-  const handled = /* @__PURE__ */ new Set();
-  for (const t of book.lines) {
-    const id = linked.get(t.key);
-    const b = id ? entries.find((e) => e.id === id && !used.has(e.id)) : void 0;
-    if (!b) continue;
-    used.add(b.id);
-    handled.add(t.key);
-    const diffs = [];
-    if (b.date !== t.date) diffs.push({ field: "date", tally: t.date, books: b.date });
-    if (Math.abs(b.amount - t.amount) > 1 || b.dir !== t.dir) diffs.push({ field: "amount", tally: t.amount, books: b.amount, diff: round213(t.amount - b.amount) });
-    rows2.push({ key: t.key, status: t.cancelled ? "cancelled_here" : diffs.length ? "mismatch" : "matched", tally: tal(t), books: short(b), diffs: t.cancelled ? [] : diffs, linked: true });
-  }
-  const rest = [];
-  for (const t of book.lines) {
-    if (handled.has(t.key)) continue;
-    const head = narrationHead(book.bank, t);
-    const b = entries.find((e) => !used.has(e.id) && (e.narration === head || e.narration.startsWith(`${head} (`)));
-    if (b) {
-      used.add(b.id);
-      const diffs = [];
-      if (t.cancelled) {
-        rows2.push({ key: t.key, status: "cancelled_here", tally: tal(t), books: short(b), diffs });
-        continue;
-      }
-      if (b.date !== t.date) diffs.push({ field: "date", tally: t.date, books: b.date });
-      if (Math.abs(b.amount - t.amount) > 1 || b.dir !== t.dir) diffs.push({ field: "amount", tally: t.amount, books: b.amount, diff: round213(t.amount - b.amount) });
-      rows2.push({ key: t.key, status: diffs.length ? "mismatch" : "matched", tally: tal(t), books: short(b), diffs });
-    } else rest.push(t);
-  }
-  const pairs = [];
-  for (const t of rest) {
-    if (t.cancelled) continue;
-    for (const b of entries) {
-      if (used.has(b.id) || b.dir !== t.dir || Math.abs(b.amount - t.amount) > 1) continue;
-      const gap = daysApart3(b.date, t.date);
-      const party = samePartyLine(t, b, mapped);
-      if (gap > (party ? NEAR_DAYS2 : 3)) continue;
-      pairs.push({ t, b, party, gap });
-    }
-  }
-  pairs.sort((x, y) => Number(y.party) - Number(x.party) || x.gap - y.gap);
-  const found = /* @__PURE__ */ new Map();
-  for (const p of pairs) {
-    if (found.has(p.t.key) || used.has(p.b.id)) continue;
-    used.add(p.b.id);
-    found.set(p.t.key, { b: p.b, party: p.party });
-  }
-  for (const t of rest) {
-    if (t.cancelled) {
-      rows2.push({ key: t.key, status: "cancelled", tally: tal(t), books: null, diffs: [] });
-      continue;
-    }
-    const f = found.get(t.key);
-    if (!f) {
-      rows2.push({ key: t.key, status: "missing_here", tally: tal(t), books: null, diffs: [] });
-      continue;
-    }
-    const diffs = [];
-    if (f.b.date !== t.date) diffs.push({ field: "date", tally: t.date, books: f.b.date });
-    if (!f.party) diffs.push({ field: "party", tally: t.party, books: f.b.counter.map((c) => c.name).join(", ") });
-    rows2.push({ key: t.key, status: f.party ? diffs.length ? "mismatch" : "matched" : "possible", tally: tal(t), books: short(f.b), diffs });
-  }
-  for (const b of entries) {
-    if (used.has(b.id) || b.date < book.from || b.date > book.to) continue;
-    rows2.push({ key: `BOOKS|${b.id}`, status: "missing_tally", tally: null, books: short(b), diffs: [] });
-  }
-  const statement = await readStatement(String(v.statement_base64 || ""), String(v.statement_name || ""));
-  if (statement) {
-    const cand = [];
-    statement.lines.forEach((s4, i) => {
-      for (const r of rows2) {
-        const lead = r.tally || r.books;
-        if (!lead || lead.dir !== s4.dir || Math.abs(n24(lead.amount) - s4.amount) > 1) continue;
-        const gap = Math.min(r.tally ? daysApart3(r.tally.date, s4.date) : 99, r.books ? daysApart3(r.books.date, s4.date) : 99);
-        if (gap <= 5) cand.push({ r, i, gap });
-      }
-    });
-    cand.sort((a, b) => a.gap - b.gap);
-    const takenLine = /* @__PURE__ */ new Set();
-    for (const c of cand) {
-      if (takenLine.has(c.i) || c.r.stmt) continue;
-      takenLine.add(c.i);
-      const s4 = statement.lines[c.i];
-      c.r.stmt = { date: s4.date, narration: s4.narration, amount: s4.amount };
-    }
-    for (const r of rows2) {
-      const lead = r.tally || r.books;
-      if (!r.stmt && lead && (lead.date < statement.from || lead.date > statement.to)) r.stmt_out = true;
-    }
-    statement.lines.forEach((s4, i) => {
-      if (takenLine.has(i) || s4.date < book.from || s4.date > book.to) return;
-      rows2.push({ key: `STMT|${i}`, status: "statement_only", tally: null, books: null, stmt: { date: s4.date, narration: s4.narration, amount: s4.amount, dir: s4.dir }, diffs: [] });
-    });
-  }
-  explainBank(rows2, !!statement);
-  return { statement, book, account, mapped, rows: rows2, entries };
-}
-function explainBank(rows2, hasStatement = false) {
-  for (const r of rows2) {
-    const t = r.tally;
-    const b = r.books;
-    const st = r.stmt;
-    const say2 = [];
-    let fix = "";
-    const way = (d) => d === "in" ? "received into the bank" : "paid out of the bank";
-    const tName = t ? `${t.vch_type} No. ${t.vch_no}` : "";
-    const bName = b ? `${b.code || b.vch_type}${b.vch_no ? ` \xB7 ${b.vch_no}` : ""}` : "";
-    if (r.status === "missing_here" && t) {
-      say2.push(`In Tally on ${dmy2(t.date)}: ${inr5(t.amount)} ${way(t.dir)}${t.party ? `, ${t.dir === "in" ? "from" : "to"} ${t.party}` : ""} (${tName}) \u2014 not in this bank here.`);
-      fix = t.multi ? 'Tally shows it "as per details" \u2014 a voucher of several ledgers. Enter it here by hand from the voucher in Tally.' : `Book it from Tally \u2014 it posts as a ${t.dir === "in" ? "RECEIPT" : "PAYMENT"} (or CONTRA, between banks and cash) on this bank under Tally's number.`;
-    } else if (r.status === "possible" && t && b) {
-      say2.push(
-        `Tally has ${inr5(t.amount)} ${way(t.dir)} on ${dmy2(t.date)}${t.party ? ` for ${t.party}` : ""}. These books have ${bName} on ${dmy2(b.date)} for the same amount, ${b.party ? `against ${b.party}` : ""} \u2014 very likely the same entry.`
-      );
-      fix = `If it is the same entry, map "${t.party}" to ${b.party || "that ledger"} (Book from Tally \u2192 Ledgers) and check again. If it is a different one, book it and tick "Book anyway".`;
-    } else if (r.status === "mismatch" && t && b) {
-      for (const d of r.diffs) {
-        if (d.field === "date") say2.push(`Dated ${dmy2(d.tally)} in Tally, ${dmy2(d.books)} here (${bName}).`);
-        if (d.field === "amount") say2.push(`${inr5(d.tally)} in Tally, ${inr5(d.books)} here.`);
-        if (d.field === "party") say2.push(`${t.party} in Tally, ${d.books} here.`);
-      }
-      fix = r.diffs.every((d) => d.field === "date") ? "Correct the date on whichever side is wrong \u2014 the bank\u2019s own statement says which." : "Open the voucher here and correct it to Tally \u2014 or correct Tally.";
-    } else if (r.status === "missing_tally" && b) {
-      say2.push(`In this bank here (${bName}, ${dmy2(b.date)}${b.party ? `, ${b.party}` : ""}, ${inr5(b.amount)} ${way(b.dir)}) but not in Tally's book for the period.`);
-      fix = "Enter it in Tally \u2014 or, if it never went through the bank, correct it here.";
-    } else if (r.status === "cancelled_here" && t && b) {
-      say2.push(`Tally shows ${tName} cancelled, but these books still carry ${bName}.`);
-      fix = "Delete it here if the cancellation in Tally is right.";
-    } else if (r.status === "cancelled") say2.push("Cancelled in Tally, and not in these books either.");
-    else if (r.status === "statement_only" && st) {
-      say2.push(`On the bank's statement on ${dmy2(st.date)}: ${inr5(st.amount)} ${way(st.dir)}${st.narration ? ` (${st.narration})` : ""} \u2014 in neither Tally nor these books.`);
-      fix = "Find what it was \u2014 bank charges, interest, a transfer, a cheque \u2014 and enter it in Tally and here.";
-    }
-    if (hasStatement && r.status !== "statement_only" && r.status !== "cancelled") {
-      const lead = t || b;
-      if (st) {
-        const dd = (r.diffs || []).find((d) => d.field === "date");
-        if (dd && t && b) {
-          const right = st.date === t.date ? "Tally is right" : st.date === b.date ? "these books are right" : "neither date is the bank\u2019s";
-          say2.push(`The bank's statement has it on ${dmy2(st.date)} \u2014 ${right}.`);
-        } else if (r.status === "missing_here") say2.push(`The bank's statement shows it on ${dmy2(st.date)}${st.narration ? ` (${st.narration})` : ""} \u2014 it did go through the bank.`);
-        else if (r.status === "missing_tally") say2.push(`The bank's statement shows it on ${dmy2(st.date)} \u2014 Tally is the one missing it.`);
-      } else if (lead && !r.stmt_out && (r.status === "missing_here" || r.status === "missing_tally")) {
-        say2.push("It is not on the bank's statement either \u2014 check it ever went through the bank before booking or entering it.");
-      }
-    }
-    r.explain = say2;
-    r.fix = fix;
-  }
-}
-async function suggestBank(bank) {
-  const banks = toPlain20(await getClient().execute({ sql: `SELECT id, name, acc_group FROM ledger_accounts WHERE acc_group IN ('Bank Accounts', 'Bank OD A/c') ORDER BY name`, args: [] }));
-  const m = (await resolveNames([bank])).get(tallyKey(bank));
-  if (m && banks.some((b) => Number(b.id) === m.account_id)) return banks.find((b) => Number(b.id) === m.account_id) || null;
-  const dg = acctDigits(bank);
-  if (dg) {
-    const hit = banks.find((b) => String(b.name).replace(/\s+/g, "").includes(dg) || acctDigits(String(b.name)).endsWith(dg.slice(-6)));
-    if (hit) return hit;
-  }
-  return banks.find((b) => companyKey(String(b.name)) === companyKey(bank)) || null;
-}
-async function suggestTallyBank(v) {
-  const book = await parseBankBook(String(v.data_base64 || ""));
-  const s4 = await suggestBank(book.bank);
-  return { bank: book.bank, period: book.period, suggested: s4 ? { id: Number(s4.id), name: String(s4.name) } : null };
-}
-async function checkTallyBank(v) {
-  const cid = await companyOf(v);
-  const { book, account, rows: rows2, statement } = await reconcileBank({ ...v, company_id: cid });
-  const { ownedVoucherIds: ownedVoucherIds2 } = await Promise.resolve().then(() => (init_voucherOwnership(), voucherOwnership_exports));
-  const owned = await ownedVoucherIds2();
-  for (const r of rows2) {
-    r.bookable = (r.status === "missing_here" || r.status === "possible") && !!r.tally && !r.tally.cancelled && !r.tally.multi;
-    if (r.status === "mismatch" && r.books?.id && r.diffs.length === 1 && r.diffs[0].field === "date") {
-      r.redate = owned.has(Number(r.books.id)) ? "owned" : "yes";
-    }
-  }
-  const openHere = await bankBalanceBefore(cid, Number(account.id), book.from);
-  const closeHere = await bankBalanceBefore(cid, Number(account.id), shiftDays2(book.to, 1));
-  const count = (s4) => rows2.filter((r) => r.status === s4).length;
-  const sum = (side, dir) => round213(
-    rows2.filter((r) => r[side] && r[side].dir === dir && (side === "books" ? r.status !== "cancelled_here" : !r.tally.cancelled)).filter((r) => side === "tally" || r.books.date >= book.from && r.books.date <= book.to).reduce((t, r) => t + n24(r[side].amount), 0)
-  );
-  const fileDigits = acctDigits(book.bank);
-  const companyName = String((await getClient().execute({ sql: "SELECT name FROM companies WHERE id = ?", args: [cid] })).rows[0]?.name || "");
-  return {
-    file_name: String(v.file_name || ""),
-    file_company: book.company,
-    company: companyName,
-    company_mismatch: !!book.company && !!companyName && companyKey(book.company) !== companyKey(companyName),
-    bank: book.bank,
-    account: { id: Number(account.id), name: String(account.name), group: String(account.acc_group) },
-    // The book's bank and the ledger picked do not share an account number.
-    bank_mismatch: !!fileDigits && !String(account.name).replace(/\s+/g, "").includes(fileDigits) && companyKey(String(account.name)) !== companyKey(book.bank),
-    period: book.period,
-    from: book.from,
-    to: book.to,
-    balances: {
-      tally: { opening: book.opening, in: sum("tally", "in"), out: sum("tally", "out"), closing: book.closing, closing_stated: book.closing_stated },
-      // The bank's own figures. A positive running balance is money in the
-      // bank — the same sign as a debit balance here.
-      bank: statement ? {
-        opening: statement.opening,
-        in: round213(statement.lines.filter((s4) => s4.dir === "in" && s4.date >= book.from && s4.date <= book.to).reduce((x, s4) => x + s4.amount, 0)),
-        out: round213(statement.lines.filter((s4) => s4.dir === "out" && s4.date >= book.from && s4.date <= book.to).reduce((x, s4) => x + s4.amount, 0)),
-        closing: statement.closing,
-        from: statement.from,
-        to: statement.to
-      } : null,
-      books: { opening: openHere, in: sum("books", "in"), out: sum("books", "out"), closing: closeHere }
-    },
-    counts: {
-      matched: count("matched"),
-      mismatch: count("mismatch"),
-      possible: count("possible"),
-      missing_here: count("missing_here"),
-      missing_tally: count("missing_tally"),
-      cancelled: count("cancelled"),
-      cancelled_here: count("cancelled_here"),
-      statement_only: count("statement_only")
-    },
-    statement: statement ? { name: statement.name, lines: statement.lines.length, from: statement.from, to: statement.to } : null,
-    vch_types: [...new Set(book.lines.map((l) => l.vch_type))].sort(),
-    rows: rows2.sort(
-      (a, b) => String((a.tally || a.books || a.stmt).date).localeCompare(String((b.tally || b.books || b.stmt).date)) || String(a.tally?.vch_no || a.books?.code || "").localeCompare(String(b.tally?.vch_no || b.books?.code || ""), void 0, { numeric: true })
-    )
-  };
-}
-function bankGroupFor(name) {
-  const s4 = name.toUpperCase();
-  if (/\bCASH\b/.test(s4)) return "Cash-in-Hand";
-  if (/\bHDFC\b|\bBANK\b|\bSBI\b|\bICICI\b|\bAXIS\b|\bKOTAK\b|\bYES\b/.test(s4) && /\d{6,}/.test(s4)) return "Bank Accounts";
-  if (/\bTDS\b|\bTCS\b|\bGST\b/.test(s4)) return "Duties & Taxes";
-  if (/INCOME|RECEIVED|WRITTEN BACK/.test(s4)) return "Indirect Incomes";
-  if (/SALARY|WAGES|EXP|CHARGES|INTEREST|FEE|WELFARE|RENT|REPAIR|TRAVEL|CONVEYANCE|ELECTRICITY|PENALTY|MEDICAL|LEGAL/.test(s4)) return "Indirect Expenses";
-  return "";
-}
-function blockOf2(t, lim) {
-  if (t.multi) return 'Tally shows it "as per details" \u2014 several ledgers; enter it by hand';
-  if (!t.party) return "Tally names no ledger on it";
-  if (lim.booksFrom && t.date < lim.booksFrom) return `dated before these books begin (${lim.booksFrom})`;
-  if (lim.windowFrom && t.date < lim.windowFrom) return `dated before your working window (${lim.windowFrom})`;
-  if (!(t.amount > 0)) return "it has no amount";
-  return null;
-}
-async function previewTallyBankVouchers(v) {
-  const cid = await companyOf(v);
-  const { book, account, rows: rows2 } = await reconcileBank({ ...v, company_id: cid });
-  const lim = await saleDateLimits(cid);
-  const statusOf2 = new Map(rows2.filter((r) => r.tally).map((r) => [String(r.tally.key), r]));
-  const wanted = new Set((v.keys || []).map(String));
-  const picked = book.lines.filter((t) => wanted.has(t.key) && !t.cancelled && ["missing_here", "possible"].includes(String(statusOf2.get(t.key)?.status)));
-  const roles = /* @__PURE__ */ new Map();
-  for (const t of picked) {
-    if (!t.party || t.multi) continue;
-    const g = roles.get(t.party_key) || { name: t.party, role: "ledger", count: 0, amount: 0 };
-    g.count += 1;
-    g.amount = round213(g.amount + t.amount);
-    roles.set(t.party_key, g);
-  }
-  const bankName = String(account.name);
-  return {
-    vouchers: picked.map((t) => {
-      const r = statusOf2.get(t.key);
-      return {
-        key: t.key,
-        vch_no: t.vch_no,
-        ref_no: "",
-        type: `${t.vch_type}`,
-        date: t.date,
-        party: t.party,
-        amount: t.amount,
-        lines: t.dir === "in" ? [
-          { name: bankName, key: null, fixed: bankName, dr: t.amount, cr: 0 },
-          { name: t.party, key: t.party_key, dr: 0, cr: t.amount }
-        ] : [
-          { name: t.party, key: t.party_key, dr: t.amount, cr: 0 },
-          { name: bankName, key: null, fixed: bankName, dr: 0, cr: t.amount }
-        ],
-        round_off: 0,
-        blocked: blockOf2(t, lim),
-        possible: r.status === "possible" && r.books ? { code: r.books.code, type: r.books.vch_type, vch_no: r.books.vch_no, date: r.books.date, amount: r.books.amount, party: r.books.party } : null
-      };
-    }),
-    ledgers: await mappingRows(roles, bankGroupFor)
-  };
-}
-async function postTallyBankVouchers(v) {
-  const cid = await companyOf(v);
-  const wanted = new Set((v.keys || []).map(String));
-  if (!wanted.size) throw new Error("Pick the entries to book");
-  const force = new Set((v.force_keys || []).map(String));
-  const lim = await saleDateLimits(cid);
-  const fileLabel = String(v.file_name || "").trim();
-  const state = await reconcileBank({ ...v, company_id: cid });
-  const bankName = String(state.account.name);
-  const groups = new Map(
-    toPlain20(await getClient().execute("SELECT id, acc_group FROM ledger_accounts")).map((r) => [Number(r.id), String(r.acc_group || "")])
-  );
-  const created = [];
-  const skipped = [];
-  for (const t of state.book.lines.filter((x) => wanted.has(x.key))) {
-    const label2 = `${t.vch_type} ${t.vch_no}`;
-    const row = state.rows.find((r) => r.tally?.key === t.key);
-    const status = String(row?.status || "");
-    if (t.cancelled) {
-      skipped.push({ vch_no: label2, reason: "Tally shows it cancelled" });
-      continue;
-    }
-    if (status !== "missing_here" && status !== "possible") {
-      skipped.push({ vch_no: label2, reason: `it is already in this bank here${row?.books?.code ? ` (${row.books.code})` : ""}` });
-      continue;
-    }
-    if (status === "possible" && !force.has(t.key)) {
-      skipped.push({ vch_no: label2, reason: `it looks like ${row?.books?.code || "an entry"} already here \u2014 tick "Book anyway" if it is a different one` });
-      continue;
-    }
-    const block = blockOf2(t, lim);
-    if (block) {
-      skipped.push({ vch_no: label2, reason: block });
-      continue;
-    }
-    const m = state.mapped.get(t.party_key);
-    if (!m) {
-      skipped.push({ vch_no: label2, reason: `not mapped yet: ${t.party}` });
-      continue;
-    }
-    if (m.account_id === Number(state.account.id)) {
-      skipped.push({ vch_no: label2, reason: `${t.party} is mapped to this same bank` });
-      continue;
-    }
-    const head = narrationHead(state.book.bank, t);
-    const again = await getClient().execute({
-      sql: "SELECT 1 FROM journal_entries WHERE company_id = ? AND (narration = ? OR narration LIKE ?) LIMIT 1",
-      args: [cid, head, `${head.replace(/[%_]/g, "")} (%`]
-    });
-    if (again.rows.length) {
-      skipped.push({ vch_no: label2, reason: "it was booked a moment ago" });
-      continue;
-    }
-    const contra = MONEY_GROUPS.includes(groups.get(m.account_id) || "");
-    const vchType = contra ? "CONTRA" : t.dir === "in" ? "RECEIPT" : "PAYMENT";
-    const lines = t.dir === "in" ? [
-      { account: bankName, dr: t.amount },
-      { account: m.account_name, cr: t.amount }
-    ] : [
-      { account: m.account_name, dr: t.amount },
-      { account: bankName, cr: t.amount }
-    ];
-    try {
-      const res = await createVoucher({
-        date: t.date,
-        vchType,
-        vchNo: t.vch_no,
-        narration: `${head}${fileLabel ? ` (${fileLabel})` : ""}`,
-        companyId: cid,
-        lines
-      });
-      created.push({ vch_no: label2, id: res.id });
-    } catch (e) {
-      skipped.push({ vch_no: label2, reason: e.message });
-    }
-  }
-  await recordTallyBatch({ company_id: cid, kind: "bank", scope: `bank:${Number(state.account.id)}`, file_name: fileLabel, entry_ids: created.map((x) => x.id) });
-  return { created, skipped };
-}
-var ownTable = false;
-async function ensureOwnBanks() {
-  if (ownTable) return;
-  await getClient().execute(`CREATE TABLE IF NOT EXISTS company_bank_accounts (
-    company_id INTEGER NOT NULL,
-    account_id INTEGER NOT NULL,
-    created_at TEXT NOT NULL DEFAULT (datetime('now')),
-    PRIMARY KEY (company_id, account_id)
-  )`);
-  ownTable = true;
-}
-async function listCompanyBanks(v) {
-  await ensureOwnBanks();
-  const cid = await companyOf(v);
-  const c = getClient();
-  const own = new Set(
-    (await c.execute({ sql: "SELECT account_id FROM company_bank_accounts WHERE company_id = ?", args: [cid] })).rows.map((r) => Number(r.account_id))
-  );
-  const rows2 = toPlain20(
-    await c.execute({
-      sql: `SELECT a.id, a.name, a.acc_group,
-                   (SELECT COUNT(*) FROM journal_lines jl JOIN journal_entries je ON je.id = jl.entry_id WHERE jl.account_id = a.id AND je.company_id = ?) AS lines,
-                   (SELECT o.dr - o.cr FROM ledger_openings o WHERE o.account_id = a.id AND o.company_id = ?) AS opening
-              FROM ledger_accounts a
-             WHERE a.acc_group IN ('Bank Accounts', 'Bank OD A/c')
-             ORDER BY a.name`,
-      args: [cid, cid]
-    })
-  );
-  const banks = [];
-  for (const r of rows2) {
-    const id = Number(r.id);
-    const used = Number(r.lines) > 0 || Math.abs(n24(r.opening)) > 4e-3;
-    banks.push({
-      id,
-      name: String(r.name),
-      acc_group: String(r.acc_group),
-      business: own.has(id),
-      used,
-      generic: /^BANK A\/C$/i.test(String(r.name).trim()),
-      lines: Number(r.lines) || 0,
-      balance: used ? await bankBalanceBefore(cid, id, "9999-12-31") : 0
-    });
-  }
-  return { chosen: own.size > 0, banks };
-}
-async function setCompanyBank(v) {
-  await ensureOwnBanks();
-  const cid = await companyOf(v);
-  const id = Number(v.account_id) || 0;
-  await bankAccount(id);
-  if (v.on) await getClient().execute({ sql: "INSERT OR IGNORE INTO company_bank_accounts (company_id, account_id) VALUES (?, ?)", args: [cid, id] });
-  else await getClient().execute({ sql: "DELETE FROM company_bank_accounts WHERE company_id = ? AND account_id = ?", args: [cid, id] });
-  return { ok: true };
-}
-
 // src/main/tallyDesk.ts
+init_tallyBank();
 init_tallyLinks();
 var round214 = (x) => Math.round((Number(x) || 0) * 100) / 100;
 async function tallyHealth(v) {
@@ -27555,6 +27662,8 @@ async function tallyHealth(v) {
 
 // src/main/ipc.ts
 init_tallyLinks();
+init_tallyBank();
+init_tallyNotes();
 init_stockAdjust();
 init_electron_shim();
 
@@ -35630,7 +35739,7 @@ async function recordAudit(channel, args, result) {
   );
 }
 function registerIpc() {
-  const READONLY = /:list$|:get$|:items$|:issuances$|:sheet$|:outstanding$|:all$|:summary$|:transfers$|:fyTaxable$|:needs$|:breakdown$|:nextNo$|:liveUsers$|:ips$|:logs$|:dispatchableSales$|:mine$|:pendingCount$|:pending$|:lots$|:unmapped$|:unmappedCount$|:bargainLines$|:bargainNotes$|:bargainInterest$|:consignmentDraws$|^access:heartbeat$|^db:ping$|^db:snapshot$|^app:revision$|^auth:login$|^journal:booksFrom$|^tally:map$|^journal:openings$|^journal:opening$|^journal:accounts$|^journal:statement$|^journal:trialBalance$|^journal:groups$|^journal:groupNames$|^journal:groupTree$|^journal:ledgerMap$|^journal:pendingRefs$|^journal:billsOutstanding$|^journal:tradingAccount$|^dashboard:stats$|^vouchers:nextCode$|^vouchers:forDocument$|^vouchers:alterInfo$|^tfreight:kpis$|^dashboard:position$|^dashboard:layout$|^dashboard:saveLayout$|^productMerge:preview$|^skuRates:parties$|^skuRates:partyCounts$|^consignment:openingLog$|^tags:list$|^tags:for$|^tags:contents$|^consignment:openingLots$|^consignment:invoices$|^tankers:quality$|^tankers:qualityMany$|^tankers:ffaHistory$|^orders:quality$|^gate:partyCategories$|^gate:waivedOuts$|^gate:forRecord$|^notify:rules$|^notify:list$|^notify:run$|^notify:preview$|^notify:people$|^notify:mutes$|^treasury:alerts$|^treasury:paymentTracker$|^facility:exposures$|^facility:headroom$|^company:setActive$|^company:getActive$|^factory:active$|^factory:companies$|^session:setUser$|^lc:repayments$|^lc:parts$|^lc:parts$|^lc:allRepayments$|^lc:getLimit$|^lc:bankLimits$|^lc:paymentIns$|^lc:openTradingInvoices$|^files:pickDocument$|^files:openDocument$|^bankRecon:imports$|^bankRecon:list$|^bankRecon:suggest$|^bd:kpis$|^bd:limits$|^skuStock:adjustments$|^skuOpening:list$|^skuOpening:date$|^stockCount:previous$|^orders:intercompanySource$|^stockOpening:list$|^stockOpening:date$|^stockOpening:sets$|^stockOpening:setLines$|^stockOpening:ppStages$|^stockOpening:ppFreeTotals$|^production:ppDraws$|^bargains:linkedInvoices$|^bargains:linkedVouchers$|^bargains:voucherChoices$|^salesBargains:linkedVouchers$|^salesBargains:voucherChoices$|^bargains:adjustments$|^history:list$|^stockOpening:ppVessels$|^stockOpening:ppReceivers$|^stockOpening:ppWriteoffs$|^work:board$|^work:cutoff$|^work:processes$|^formulationSubcategory:list$|^formulations:versions$|^facility:limitHistory$|^bd:limitReductions$|^bd:allRepayments$|^bd:interestSchedule$|^bd:interestWindow$|^bd:interestPayments$|^bd:linkedOrders$|^bd:parties$|^bd:allParties$|^bd:openTradingInvoices$|^bd:paymentIns$|^bd:partyPayments$|^bd:receiptParts$|^access:entryWindows$|^access:entityHistory$|^trading:list$|^sales:series$|^sales:invoiceGaps$|^salesBargains:returns$|^salesBargains:linkedInvoices$|^salesBargains:unattributedReturns$|^tbill:orphans$|^production:report$|^production:mix$|^repairs:splitTanker:list$|^vouchers:cashflow$/;
+  const READONLY = /:list$|:get$|:items$|:issuances$|:sheet$|:outstanding$|:all$|:summary$|:transfers$|:fyTaxable$|:needs$|:breakdown$|:nextNo$|:liveUsers$|:ips$|:logs$|:dispatchableSales$|:mine$|:pendingCount$|:pending$|:lots$|:unmapped$|:unmappedCount$|:bargainLines$|:bargainNotes$|:bargainInterest$|:consignmentDraws$|^access:heartbeat$|^db:ping$|^db:snapshot$|^app:revision$|^auth:login$|^journal:booksFrom$|^tally:map$|^journal:openings$|^journal:opening$|^journal:accounts$|^journal:statement$|^journal:trialBalance$|^journal:groups$|^journal:groupNames$|^journal:groupTree$|^journal:ledgerMap$|^journal:pendingRefs$|^journal:billsOutstanding$|^journal:tradingAccount$|^dashboard:stats$|^vouchers:nextCode$|^vouchers:forDocument$|^vouchers:alterInfo$|^tfreight:kpis$|^dashboard:position$|^dashboard:layout$|^dashboard:saveLayout$|^productMerge:preview$|^skuRates:parties$|^skuRates:partyCounts$|^consignment:openingLog$|^tags:list$|^tags:for$|^tags:contents$|^consignment:openingLots$|^consignment:invoices$|^tankers:quality$|^tankers:qualityMany$|^tankers:ffaHistory$|^orders:quality$|^gate:partyCategories$|^gate:waivedOuts$|^gate:forRecord$|^notify:rules$|^notify:list$|^notify:run$|^notify:preview$|^notify:people$|^notify:mutes$|^treasury:alerts$|^treasury:paymentTracker$|^facility:exposures$|^facility:headroom$|^company:setActive$|^company:getActive$|^factory:active$|^factory:companies$|^session:setUser$|^lc:repayments$|^lc:parts$|^lc:parts$|^lc:allRepayments$|^lc:getLimit$|^lc:bankLimits$|^lc:paymentIns$|^lc:openTradingInvoices$|^files:pickDocument$|^files:openDocument$|^bankRecon:imports$|^bankRecon:list$|^bankRecon:suggest$|^bd:kpis$|^bd:limits$|^skuStock:adjustments$|^skuOpening:list$|^skuOpening:date$|^stockCount:previous$|^orders:intercompanySource$|^stockOpening:list$|^stockOpening:date$|^stockOpening:sets$|^stockOpening:setLines$|^stockOpening:ppStages$|^stockOpening:ppFreeTotals$|^production:ppDraws$|^bargains:linkedInvoices$|^bargains:linkedVouchers$|^bargains:voucherChoices$|^salesBargains:linkedVouchers$|^salesBargains:voucherChoices$|^bargains:adjustments$|^history:list$|^stockOpening:ppVessels$|^stockOpening:ppReceivers$|^stockOpening:ppWriteoffs$|^work:board$|^work:cutoff$|^work:processes$|^formulationSubcategory:list$|^formulations:versions$|^facility:limitHistory$|^bd:limitReductions$|^bd:allRepayments$|^bd:interestSchedule$|^bd:interestWindow$|^bd:interestPayments$|^bd:linkedOrders$|^bd:parties$|^bd:allParties$|^bd:openTradingInvoices$|^bd:paymentIns$|^bd:partyPayments$|^bd:receiptParts$|^access:entryWindows$|^access:entityHistory$|^trading:list$|^sales:series$|^sales:invoiceGaps$|^salesBargains:returns$|^salesBargains:linkedInvoices$|^salesBargains:unattributedReturns$|^tbill:orphans$|^production:report$|^production:mix$|^repairs:splitTanker:list$|^vouchers:cashflow$|^repairs:paisa:list$/;
   const AUDIT_SKIP = /* @__PURE__ */ new Set(["config:get", "config:save", "session:setUser"]);
   const handle = (channel, fn) => {
     ipcMain.handle(channel, async (e, args) => {
@@ -36723,6 +36832,16 @@ function registerIpc() {
     await assertAdmin("Moving vouchers to their own company");
     const { moveWrongCompany: moveWrongCompany2 } = await Promise.resolve().then(() => (init_accountingRepairs(), accountingRepairs_exports));
     return moveWrongCompany2(a?.ids || []);
+  });
+  handle("repairs:paisa:list", async () => {
+    await assertAdmin("The accounting checks");
+    const { previewPaisaImbalance: previewPaisaImbalance2 } = await Promise.resolve().then(() => (init_accountingRepairs(), accountingRepairs_exports));
+    return previewPaisaImbalance2();
+  });
+  handle("repairs:paisaFix", async (_e, a) => {
+    await assertAdmin("Balancing vouchers a paisa out");
+    const { fixPaisaImbalance: fixPaisaImbalance2 } = await Promise.resolve().then(() => (init_accountingRepairs(), accountingRepairs_exports));
+    return fixPaisaImbalance2(a?.ids || []);
   });
   handle("repairs:splitTanker:list", async () => {
     await assertAdmin("The accounting checks");
