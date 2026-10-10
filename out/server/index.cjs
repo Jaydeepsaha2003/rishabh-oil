@@ -32501,7 +32501,7 @@ async function dashboardStats(opts = {}) {
     //
     // GST is kept head by head and rate by rate now (see gstLedgers.ts), which
     // is what a return is filed from and emphatically not what a tile on a
-    // dashboard should carry â€” six figures where one belongs. So the tiles are
+    // dashboard should carry — six figures where one belongs. So the tiles are
     // handed one input and one output figure, summed here, and the names they
     // ask for are unchanged. The old single ledgers are still in the sum: a
     // book that has not run the split yet reads exactly as it did.
@@ -32563,7 +32563,7 @@ async function dashboardStats(opts = {}) {
         stockCats[cat].qty += n38(r.stock);
         stockCats[cat].products++;
       }
-      if (n38(r.stock) < -1e-9) negatives.push({ name: `${r.name} \xC2\xB7 ${label2}`, factory: label2, category: r.category, stock: n38(r.stock) });
+      if (n38(r.stock) < -1e-9) negatives.push({ name: `${r.name} \xB7 ${label2}`, factory: label2, category: r.category, stock: n38(r.stock) });
     }
   }
   return {
