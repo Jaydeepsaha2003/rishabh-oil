@@ -11894,26 +11894,43 @@ function bdCalc(bd) {
   const receiptAmount = round26((deducted ? openAmount - interestAmount : openAmount) + adjCharge);
   const firstLeg = round26(n14(bd.first_receipt_part));
   if (firstLeg > 5e-3 && from) {
+    const ownRate = (v) => v == null || String(v).trim() === "" ? null : n14(v);
     const raw = [
-      { part_no: 1, date: from, amount: firstLeg },
+      {
+        part_no: 1,
+        date: from,
+        amount: firstLeg,
+        maturity: String(bd.first_receipt_maturity || "").slice(0, 10),
+        rate: ownRate(bd.first_receipt_interest_pct),
+        mpct: ownRate(bd.first_receipt_margin_pct)
+      },
       ...(Array.isArray(bd.receipt_parts) ? bd.receipt_parts : []).map((p) => ({
         part_no: n14(p.part_no),
         date: String(p.receipt_date || "").slice(0, 10),
-        amount: round26(n14(p.amount))
+        amount: round26(n14(p.amount)),
+        maturity: String(p.maturity_date || "").slice(0, 10),
+        rate: ownRate(p.interest_pct),
+        mpct: ownRate(p.margin_pct)
       }))
     ];
+    const shareMargin = (amt) => openAmount > 0 ? marginAmount * amt / openAmount : 0;
     const legs = raw.map((l, i) => {
-      const days = to && l.date ? Math.max(0, daysBetween2(l.date, to) + inclStart) : 0;
+      const due = l.maturity || to;
+      const days = due && l.date ? Math.max(0, daysBetween2(l.date, due) + inclStart) : 0;
+      const rate = l.rate == null ? n14(bd.interest_pct) : l.rate;
       const base = i === 0 && bd.interest_after_adj && bd.open_adj_charge ? Math.max(0, round26(l.amount + n14(bd.open_adj))) : l.amount;
-      const interest = round26(base * n14(bd.interest_pct) * days / (100 * daysYear));
-      return { ...l, days, base, interest, net: round26(deducted ? l.amount - interest : l.amount) };
+      const interest = round26(base * rate * days / (100 * daysYear));
+      const margin = round26(l.mpct == null ? shareMargin(l.amount) : l.amount * l.mpct / 100);
+      return { ...l, maturity: due, interest_pct: rate, margin_pct: l.mpct, margin, days, base, interest, net: round26(deducted ? l.amount - interest : l.amount) };
     });
     const received = round26(legs.reduce((s4, l) => s4 + l.amount, 0));
     const legInterest = round26(legs.reduce((s4, l) => s4 + l.interest, 0));
     const legTds = round26(legInterest * n14(bd.tds_pct) / 100);
+    const ownMargin = legs.some((l) => l.margin_pct != null);
+    const legMargin = ownMargin ? round26(legs.reduce((s4, l) => s4 + l.margin, 0) + shareMargin(Math.max(0, openAmount - received))) : marginAmount;
     return {
       intDays: legs[0].days,
-      marginAmount,
+      marginAmount: legMargin,
       sanctionedAmount,
       undrawnAmount,
       openAmount,
@@ -11925,7 +11942,18 @@ function bdCalc(bd) {
       adjCharge,
       received,
       toReceive: round26(Math.max(0, openAmount - received)),
-      legs: legs.map(({ part_no, date, amount: amount3, days, interest, net }) => ({ part_no, date, amount: amount3, days, interest, net }))
+      legs: legs.map(({ part_no, date, amount: amount3, days, interest, net, maturity, interest_pct, margin_pct, margin }) => ({
+        part_no,
+        date,
+        amount: amount3,
+        days,
+        interest,
+        net,
+        maturity,
+        interest_pct,
+        margin_pct,
+        margin
+      }))
     };
   }
   const got = from ? openAmount : 0;
@@ -12119,7 +12147,7 @@ async function postBdOpening(bdId) {
     const firstPart = route === "supplier" && n14(bd.first_party_part) > 5e-3 ? Math.min(round26(n14(bd.first_party_part)), calc.receiptAmount) : 0;
     const toParty = firstPart > 0 ? firstPart : calc.receiptAmount;
     const notYet = round26(calc.receiptAmount - toParty);
-    const leg1 = route === "bank" && calc.legs.length ? calc.legs[0] : null;
+    const leg1 = calc.legs.length && !(route === "supplier" && firstPart > 0) ? calc.legs[0] : null;
     const interestHere = leg1 ? upfront || serviced ? 0 : leg1.interest : interest;
     const bankHere = leg1 ? round26((upfront || serviced ? leg1.amount : leg1.net) + calc.adjCharge) : toParty;
     const payableHere = leg1 ? leg1.amount : round26(amount2 - notYet);
@@ -12144,7 +12172,7 @@ async function postBdOpening(bdId) {
       lines
     });
     await c.execute({ sql: "UPDATE bill_discountings SET journal_entry_id = ? WHERE id = ?", args: [je.id, bdId] });
-    if (route === "supplier") await allocAgainst2(je.id, destination, null, toParty);
+    if (route === "supplier") await allocAgainst2(je.id, destination, null, leg1 ? bankHere : toParty);
   });
 }
 async function postBdUpfrontInterest(bdId, dateIn, account) {
@@ -13225,12 +13253,36 @@ async function markBdPaymentReceived(id, dateIn, opts) {
   return withDbTransaction(async () => {
     const c = getClient();
     const bd = await loadBd(id);
+    const plan = Array.isArray(opts?.legs) ? (opts?.legs).filter((l) => round26(n14(l?.amount)) > 5e-3) : [];
+    if (plan.length) {
+      if (bd.receipt_parts.length && plan.length > 1) {
+        throw new Error("Later parts have already been received on this bill \u2014 add more from Receive part");
+      }
+      const total = round26(plan.reduce((s4, l) => s4 + round26(n14(l.amount)), 0));
+      if (total > n14(bd.amount) + 5e-3) throw new Error(`The parts come to ${inr(total)}, more than the ${inr(n14(bd.amount))} drawn on this bill`);
+      opts = { ...opts, firstReceipt: round26(n14(plan[0].amount)) };
+      const rate = (v) => {
+        if (v == null || String(v).trim() === "") return null;
+        const x = Number(v);
+        if (!Number.isFinite(x) || x < 0) throw new Error("A part's interest or margin % must be a number, 0 or more");
+        return x;
+      };
+      const m12 = String(plan[0].maturity || "").slice(0, 10) || null;
+      await c.execute({
+        sql: "UPDATE bill_discountings SET first_receipt_maturity = ?, first_receipt_interest_pct = ?, first_receipt_margin_pct = ? WHERE id = ?",
+        args: [m12, rate(plan[0].interest_pct), rate(plan[0].margin_pct), id]
+      });
+      bd.first_receipt_maturity = m12;
+      const last = plan.reduce((m, l) => String(l.maturity || "").slice(0, 10) > m ? String(l.maturity).slice(0, 10) : m, "");
+      if (last && last !== String(bd.maturity_date || "").slice(0, 10)) {
+        await c.execute({ sql: "UPDATE bill_discountings SET maturity_date = ? WHERE id = ?", args: [last, id] });
+        bd.maturity_date = last;
+      }
+    }
     if (opts && "firstReceipt" in opts) {
       const fr = round26(n14(opts.firstReceipt));
       const later = bd.receipt_parts.length;
       if (fr > 5e-3) {
-        if (String(bd.finance_type) !== "SID") throw new Error("Only a SID bill is received from the NBFC in parts");
-        if (String(opts.route || bd.disbursement_route || "") === "supplier") throw new Error("A bill paid straight to the supplier is not received in parts");
         if (!(n14(bd.invoice_amount) > 0)) throw new Error("Enter the invoice amount on the bill first \u2014 receiving in parts needs it");
         if (String(bd.interest_mode || "") === "serviced") throw new Error("A bill whose interest is serviced month by month is received in one go");
         if (fr > n14(bd.amount) + 5e-3) throw new Error(`The first part (${inr(fr)}) is more than the ${inr(n14(bd.amount))} drawn on this bill`);
@@ -13238,9 +13290,17 @@ async function markBdPaymentReceived(id, dateIn, opts) {
       if (later > 0 && Math.abs(fr - n14(bd.first_receipt_part)) > 5e-3) {
         throw new Error("Later parts have been received on this bill \u2014 take them back before changing the first part");
       }
-      const keep = fr > 5e-3 && fr < n14(bd.amount) - 5e-3 ? fr : null;
+      const ownTerms = plan.length > 0 && (plan[0].maturity || String(plan[0].interest_pct ?? "").trim() !== "" || String(plan[0].margin_pct ?? "").trim() !== "");
+      const keep = fr > 5e-3 && (fr < n14(bd.amount) - 5e-3 || ownTerms) ? fr : null;
       await c.execute({ sql: "UPDATE bill_discountings SET first_receipt_part = ? WHERE id = ?", args: [keep, id] });
       bd.first_receipt_part = keep;
+      if (keep) await c.execute({ sql: "UPDATE bill_discountings SET first_party_part = NULL WHERE id = ?", args: [id] });
+      if (!keep) {
+        await c.execute({
+          sql: "UPDATE bill_discountings SET first_receipt_maturity = NULL, first_receipt_interest_pct = NULL, first_receipt_margin_pct = NULL WHERE id = ?",
+          args: [id]
+        });
+      }
     }
     if (opts && "firstPart" in opts) {
       const later = await c.execute({ sql: "SELECT COUNT(*) AS k FROM bd_party_payments WHERE bd_id = ?", args: [id] });
@@ -13281,8 +13341,22 @@ async function markBdPaymentReceived(id, dateIn, opts) {
     if (nextLeg && date > String(nextLeg.receipt_date).slice(0, 10)) {
       throw new Error(`Part 2 was received on ${String(nextLeg.receipt_date).slice(0, 10).split("-").reverse().join("-")} \u2014 the first part cannot be dated after it`);
     }
+    const m1 = String(bd.first_receipt_maturity || "").slice(0, 10);
+    if (m1 && m1 < date) throw new Error("Part 1 cannot mature before it was received");
     await c.execute({ sql: "UPDATE bill_discountings SET payment_received_date = ? WHERE id = ?", args: [date, id] });
     await postBdOpening(id);
+    for (let i = 1; i < plan.length; i++) {
+      const l = plan[i];
+      await addReceiptLeg(id, {
+        date: String(l.date || "").slice(0, 10),
+        amount: l.amount,
+        account: opts?.account ?? null,
+        note: l.note ?? null,
+        maturity: l.maturity,
+        interest_pct: l.interest_pct,
+        margin_pct: l.margin_pct
+      });
+    }
     return { id, date };
   });
 }
@@ -13300,7 +13374,8 @@ async function unmarkBdPaymentReceived(id) {
     if (bd.receipt_parts.length) throw new Error("Later parts have been received on this bill \u2014 take them back before undoing the receipt");
     await dropEntry2(n14(bd.journal_entry_id) || null);
     await c.execute({
-      sql: "UPDATE bill_discountings SET payment_received_date = NULL, journal_entry_id = NULL, first_party_part = NULL, first_receipt_part = NULL WHERE id = ?",
+      sql: `UPDATE bill_discountings SET payment_received_date = NULL, journal_entry_id = NULL, first_party_part = NULL, first_receipt_part = NULL,
+            first_receipt_maturity = NULL, first_receipt_interest_pct = NULL, first_receipt_margin_pct = NULL WHERE id = ?`,
       args: [id]
     });
     return { id };
@@ -13648,55 +13723,80 @@ async function listBdReceiptParts(bdId) {
   });
 }
 async function receiveBdPart(bdId, v) {
-  return withDbTransaction(async () => {
-    const c = getClient();
-    const bd = await loadBd(bdId);
-    if (!bd.payment_received_date) throw new Error("Mark Payment received first \u2014 that records the first part the NBFC released");
-    if (!(n14(bd.first_receipt_part) > 5e-3)) throw new Error("This bill was received in one go \u2014 there is nothing left to receive in parts");
-    if (String(bd.status) === "repaid") throw new Error("This bill is repaid \u2014 no more parts can be received on it");
-    if (n14(bd.upfront_interest_journal_entry_id)) {
-      throw new Error("The upfront interest has already been settled on this bill \u2014 take that back first, so the new part\u2019s interest is in it");
-    }
-    const amount2 = round26(n14(v.amount));
-    if (amount2 <= 5e-3) throw new Error("Enter the amount the NBFC released");
-    const date = String(v.date || "").slice(0, 10);
-    if (!date) throw new Error("Pick the date the money landed");
-    assertNotFuture2(date, "The receipt date");
-    const maturity = String(bd.maturity_date || "").slice(0, 10);
-    if (maturity && date > maturity) throw new Error("A part cannot be received after the maturity date");
-    const calc = bdCalc(bd);
-    const last = calc.legs[calc.legs.length - 1];
-    if (last && date < last.date) {
-      throw new Error(`Part ${last.part_no} was received on ${last.date.split("-").reverse().join("-")} \u2014 this one cannot be dated before it`);
-    }
-    if (calc.toReceive <= 5e-3) throw new Error("Everything drawn on this bill has already been received");
-    if (amount2 > calc.toReceive + 5e-3) throw new Error(`Only ${inr(calc.toReceive)} is still to come on this bill`);
-    const account = String(v.account || bd.disbursement_account || "").trim();
-    if (!account) throw new Error("Choose the bank the money landed in");
-    const partNo = (last?.part_no || 1) + 1;
-    const ref = receiptRef(bd, partNo);
-    const days = maturity ? Math.max(0, daysBetween2(date, maturity) + (bd.days_incl_start ? 1 : 0)) : 0;
-    const daysYear = n14(bd.days_year) || 360;
-    const interest = round26(amount2 * n14(bd.interest_pct) * days / (100 * daysYear));
-    const deducted = !bd.interest_upfront && String(bd.interest_mode || "") !== "serviced";
-    const lines = [{ account, group: "Bank Accounts", dr: round26(deducted ? amount2 - interest : amount2) }];
-    if (deducted && interest > 5e-3) lines.push({ account: "INTEREST ON BILL DISCOUNTING A/C", group: "Indirect Expenses", dr: interest });
-    lines.push({ account: bdPayable(bd), group: BD_PAYABLE_GROUP, cr: amount2 });
-    const je = await postJournal({
-      date,
-      vchType: "RECEIPT",
-      vchNo: ref,
-      narration: `Bill Discounting ${bd.bd_no || ""} (SID) \u2014 ${bd.nbfc_name || "the NBFC"} released part ${partNo} (${ref}): ${amount2.toFixed(2)}` + (deducted ? `, interest ${interest.toFixed(2)} for ${days} days` : "") + (v.note ? ` (${String(v.note).trim()})` : ""),
-      companyId: n14(bd.company_id) || void 0,
-      lines
-    });
-    await c.execute({
-      sql: `INSERT INTO bd_receipt_parts (bd_id, part_no, receipt_date, amount, interest, account, ref, note, journal_entry_id)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      args: [n14(bdId), partNo, date, amount2, interest, account, ref, String(v.note || "").trim() || null, je.id]
-    });
-    return { id: je.id, part_no: partNo, ref, interest };
+  return withDbTransaction(async () => addReceiptLeg(bdId, v));
+}
+async function addReceiptLeg(bdId, v) {
+  const c = getClient();
+  const bd = await loadBd(bdId);
+  if (!bd.payment_received_date) throw new Error("Mark Payment received first \u2014 that records the first part the NBFC released");
+  if (!(n14(bd.first_receipt_part) > 5e-3)) throw new Error("This bill was received in one go \u2014 there is nothing left to receive in parts");
+  if (String(bd.status) === "repaid") throw new Error("This bill is repaid \u2014 no more parts can be received on it");
+  if (n14(bd.upfront_interest_journal_entry_id)) {
+    throw new Error("The upfront interest has already been settled on this bill \u2014 take that back first, so the new part\u2019s interest is in it");
+  }
+  const amount2 = round26(n14(v.amount));
+  if (amount2 <= 5e-3) throw new Error("Enter the amount the NBFC released");
+  const date = String(v.date || "").slice(0, 10);
+  if (!date) throw new Error("Pick the date the money landed");
+  assertNotFuture2(date, "The receipt date");
+  const maturity = String(v.maturity || "").slice(0, 10) || String(bd.maturity_date || "").slice(0, 10);
+  if (maturity && date > maturity) throw new Error("A part cannot be received after its maturity date");
+  const own = (x) => {
+    if (x == null || String(x).trim() === "") return null;
+    const k = Number(x);
+    if (!Number.isFinite(k) || k < 0) throw new Error("A part's interest or margin % must be a number, 0 or more");
+    return k;
+  };
+  const ratePct = own(v.interest_pct);
+  const marginPct = own(v.margin_pct);
+  const calc = bdCalc(bd);
+  const last = calc.legs[calc.legs.length - 1];
+  if (last && date < last.date) {
+    throw new Error(`Part ${last.part_no} was received on ${last.date.split("-").reverse().join("-")} \u2014 this one cannot be dated before it`);
+  }
+  if (calc.toReceive <= 5e-3) throw new Error("Everything drawn on this bill has already been received");
+  if (amount2 > calc.toReceive + 5e-3) throw new Error(`Only ${inr(calc.toReceive)} is still to come on this bill`);
+  const toSupplier = String(bd.disbursement_route || "") === "supplier";
+  const account = toSupplier ? partyName(bd) : String(v.account || bd.disbursement_account || "").trim();
+  if (!account) throw new Error(toSupplier ? "Choose the funded supplier" : "Choose the bank the money landed in");
+  const partNo = (last?.part_no || 1) + 1;
+  const ref = receiptRef(bd, partNo);
+  const days = maturity ? Math.max(0, daysBetween2(date, maturity) + (bd.days_incl_start ? 1 : 0)) : 0;
+  const daysYear = n14(bd.days_year) || 360;
+  const interest = round26(amount2 * (ratePct == null ? n14(bd.interest_pct) : ratePct) * days / (100 * daysYear));
+  const deducted = !bd.interest_upfront && String(bd.interest_mode || "") !== "serviced";
+  const net = round26(deducted ? amount2 - interest : amount2);
+  const lines = [{ account, group: toSupplier ? "Sundry Creditors" : "Bank Accounts", dr: net }];
+  if (deducted && interest > 5e-3) lines.push({ account: "INTEREST ON BILL DISCOUNTING A/C", group: "Indirect Expenses", dr: interest });
+  lines.push({ account: bdPayable(bd), group: BD_PAYABLE_GROUP, cr: amount2 });
+  const je = await postJournal({
+    date,
+    vchType: toSupplier ? "JOURNAL" : "RECEIPT",
+    vchNo: ref,
+    narration: `Bill Discounting ${bd.bd_no || ""} (${bd.finance_type}) \u2014 ${bd.nbfc_name || "the NBFC"} ${toSupplier ? `paid ${account}` : "released"} part ${partNo} (${ref}): ${amount2.toFixed(2)}` + (deducted ? `, interest ${interest.toFixed(2)} for ${days} days` : "") + (v.note ? ` (${String(v.note).trim()})` : ""),
+    companyId: n14(bd.company_id) || void 0,
+    lines
   });
+  if (toSupplier) await allocAgainst2(je.id, account, null, net);
+  await c.execute({
+    sql: `INSERT INTO bd_receipt_parts (bd_id, part_no, receipt_date, amount, interest, account, ref, note, journal_entry_id, maturity_date, interest_pct, margin_pct)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    args: [
+      n14(bdId),
+      partNo,
+      date,
+      amount2,
+      interest,
+      account,
+      ref,
+      String(v.note || "").trim() || null,
+      je.id,
+      String(v.maturity || "").slice(0, 10) || null,
+      ratePct,
+      marginPct
+    ]
+  });
+  return { id: je.id, part_no: partNo, ref, interest };
 }
 async function deleteLastBdReceiptPart(bdId) {
   return withDbTransaction(async () => {
@@ -25517,6 +25617,18 @@ async function runStartupTasks() {
       journal_entry_id INTEGER,
       created_at TEXT NOT NULL DEFAULT (datetime('now'))
     )`).catch((e) => console.error("[bd] receipt parts table failed:", e));
+  for (const [table, col] of [
+    ["bill_discountings", "first_receipt_maturity TEXT"],
+    ["bill_discountings", "first_receipt_interest_pct REAL"],
+    ["bill_discountings", "first_receipt_margin_pct REAL"],
+    ["bd_receipt_parts", "maturity_date TEXT"],
+    ["bd_receipt_parts", "interest_pct REAL"],
+    ["bd_receipt_parts", "margin_pct REAL"]
+  ]) {
+    await getClient().execute(`ALTER TABLE ${table} ADD COLUMN ${col}`).catch((e) => {
+      if (!/duplicate column/i.test(String(e.message))) console.error(`[bd] ${table} ${col} failed:`, e);
+    });
+  }
   await getClient().execute("ALTER TABLE lc_issuances ADD COLUMN installment_no INTEGER").catch((e) => {
     if (!/duplicate column/i.test(String(e.message))) console.error("[lc] installment column failed:", e);
   });
@@ -25935,6 +26047,11 @@ async function runStartupTasks() {
       created_at TEXT NOT NULL DEFAULT (datetime('now')),
       UNIQUE (lc_id, part_no)
     )`).catch((e) => console.error("[lc] lc_parts table failed:", e));
+  for (const col of ["interest_pct REAL", "margin_pct REAL"]) {
+    await getClient().execute(`ALTER TABLE lc_parts ADD COLUMN ${col}`).catch((e) => {
+      if (!/duplicate column/i.test(String(e.message))) console.error("[lc] lc_parts rate column failed:", e);
+    });
+  }
   await getClient().execute("ALTER TABLE letters_of_credit ADD COLUMN preclose_parts_repayment_id INTEGER").catch((e) => {
     if (!/duplicate column/i.test(String(e.message))) console.error("[lc] parts closure column failed:", e);
   });
@@ -32342,7 +32459,11 @@ async function listLCs() {
       COALESCE((SELECT SUM(p.interest) FROM lc_parts p WHERE p.lc_id = l.id), 0) AS parts_interest,
       COALESCE((SELECT SUM(p.net) FROM lc_parts p WHERE p.lc_id = l.id), 0) AS parts_net,
       COALESCE((SELECT SUM(p.amount) FROM lc_parts p WHERE p.lc_id = l.id AND p.repaid_date IS NOT NULL), 0) AS parts_repaid,
-      (SELECT COUNT(*) FROM lc_parts p WHERE p.lc_id = l.id AND p.repaid_date IS NULL) AS parts_open
+      (SELECT COUNT(*) FROM lc_parts p WHERE p.lc_id = l.id AND p.repaid_date IS NULL) AS parts_open,
+      -- A part with its own margin % moves the LC's margin by the difference
+      -- on that part's amount; 0 for every LC whose parts use the LC's rate.
+      COALESCE((SELECT SUM(p.amount * (p.margin_pct - COALESCE(l.margin_pct, 0)) / 100) FROM lc_parts p
+                 WHERE p.lc_id = l.id AND p.margin_pct IS NOT NULL), 0) AS parts_margin_adj
     FROM letters_of_credit l
     LEFT JOIN suppliers s ON l.party_type = 'supplier' AND s.id = l.party_id
     LEFT JOIN banks ob ON ob.id = l.our_bank_id
@@ -32354,7 +32475,7 @@ async function listLCs() {
   });
   return toPlain33(res).map((l) => {
     const linkedCount = n39(l.linked_invoice_count);
-    const margin = Math.round(n39(l.amount) * n39(l.margin_pct) / 100 * 100) / 100;
+    const margin = Math.round((n39(l.amount) * n39(l.margin_pct) / 100 + n39(l.parts_margin_adj)) * 100) / 100;
     const interest = lcInterest(l);
     const rawCharges = Math.round(n39(l.charges) * 100) / 100;
     const chargedInterest = l.interest_upfront ? 0 : interest;
@@ -32576,29 +32697,43 @@ async function syncLinkedOrders(lcId, orderIds) {
     });
   }
 }
+function lcPartsMargin(lc, parts) {
+  const rate = n39(lc.margin_pct);
+  const drawn = parts.reduce((s4, p) => s4 + n39(p.amount), 0);
+  const onParts = parts.reduce((s4, p) => s4 + n39(p.amount) * (p.margin_pct == null ? rate : n39(p.margin_pct)) / 100, 0);
+  return round219(onParts + Math.max(0, n39(lc.amount) - drawn) * rate / 100);
+}
+var partRate = (v) => {
+  if (v == null || String(v).trim() === "") return null;
+  const x = Number(v);
+  if (!Number.isFinite(x) || x < 0) throw new Error("A part's interest or margin % must be a number, 0 or more");
+  return x;
+};
 async function lcParts(lcId) {
   const r = await getClient().execute({ sql: "SELECT * FROM lc_parts WHERE lc_id = ? ORDER BY part_no", args: [n39(lcId)] }).catch(() => null);
   return r ? toPlain33(r) : [];
 }
-function partFigures(lc, amount2, payDate, maturity, first) {
+function partFigures(lc, amount2, payDate, maturity, first, ratePct) {
   const days = Math.max(0, daysBetween4(payDate, maturity));
   const charges = first ? round219(n39(lc.charges)) : 0;
   const base = Math.max(0, round219(amount2 - (lc.interest_excl_charges ? charges : 0)));
-  const interest = round219(base * n39(lc.interest_pct) * days / (100 * 365));
+  const interest = round219(base * n39(ratePct == null ? lc.interest_pct : ratePct) * days / (100 * 365));
   return { days, interest, charges, net: round219(amount2 - interest - charges) };
 }
-async function insertLcPart(lcId, partNo, lc, amount2, payDate, maturity) {
+async function insertLcPart(lcId, partNo, lc, amount2, payDate, maturity, rates = {}) {
   if (lc.interest_upfront) {
     throw new Error("This LC's interest is paid upfront from the bank account, so it cannot be split into parts with their own maturities.");
   }
   if (!maturity) throw new Error(`Pick the maturity of part ${partNo}`);
   if (maturity < payDate) throw new Error(`Part ${partNo} cannot mature (${dmy4(maturity)}) before it was paid (${dmy4(payDate)})`);
-  const f = partFigures(lc, amount2, payDate, maturity, partNo === 1);
+  const ip = partRate(rates.interest_pct);
+  const mp = partRate(rates.margin_pct);
+  const f = partFigures(lc, amount2, payDate, maturity, partNo === 1, ip);
   if (f.net <= 5e-3) throw new Error(`Part ${partNo}'s interest and charges are more than its amount`);
   await getClient().execute({
-    sql: `INSERT INTO lc_parts (lc_id, part_no, pay_date, amount, maturity_date, days, interest, charges, net)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    args: [n39(lcId), partNo, payDate, round219(amount2), maturity, f.days, f.interest, f.charges, f.net]
+    sql: `INSERT INTO lc_parts (lc_id, part_no, pay_date, amount, maturity_date, days, interest, charges, net, interest_pct, margin_pct)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    args: [n39(lcId), partNo, payDate, round219(amount2), maturity, f.days, f.interest, f.charges, f.net, ip, mp]
   });
   return { net: f.net, interest: f.interest };
 }
@@ -32608,7 +32743,36 @@ async function syncPaymentReceivedIssuance(lcId, v) {
   const c = getClient();
   const existing = await c.execute({ sql: "SELECT COUNT(*) AS n FROM lc_issuances WHERE lc_id = ?", args: [lcId] });
   const firstPart = round219(n39(v.first_installment));
-  if (n39(existing.rows[0]?.n) === 0 && firstPart > 5e-3) {
+  const plan = Array.isArray(v.parts_plan) ? v.parts_plan.filter((p) => round219(n39(p?.amount)) > 5e-3) : [];
+  if (n39(existing.rows[0]?.n) === 0 && plan.length) {
+    const total = round219(plan.reduce((s4, p) => s4 + round219(n39(p.amount)), 0));
+    if (total > n39(v.amount) + 5e-3) {
+      throw new Error(`The parts come to ${total.toFixed(2)}, more than the LC's ${n39(v.amount).toFixed(2)}`);
+    }
+    await c.execute({ sql: "DELETE FROM lc_parts WHERE lc_id = ?", args: [lcId] });
+    const ids = Array.isArray(v.linked_order_ids) ? v.linked_order_ids.map((x) => n39(x)).filter((x) => x > 0) : [];
+    let prev = paymentDate;
+    for (let i = 0; i < plan.length; i++) {
+      const p = plan[i];
+      const no = i + 1;
+      const payOn = i === 0 ? paymentDate : String(p.pay_date || "").slice(0, 10);
+      if (!payOn) throw new Error(`Pick the day part ${no} was paid`);
+      if (payOn > todayISO8()) throw new Error(`Part ${no} cannot be paid on a future date`);
+      if (payOn < prev) throw new Error(`Part ${no} cannot be paid (${dmy4(payOn)}) before part ${no - 1} (${dmy4(prev)})`);
+      prev = payOn;
+      const maturity = String(p.maturity || "").slice(0, 10);
+      const fig = await insertLcPart(lcId, no, v, round219(n39(p.amount)), payOn, maturity, p);
+      const billIds = await insertInstallmentBills(lcId, fig.net, payOn, maturity, no, ids);
+      const memo = String(p.note || "").trim();
+      if (memo && billIds.length) {
+        await c.execute({
+          sql: `UPDATE lc_issuances SET note = ? WHERE id IN (${billIds.map(() => "?").join(",")})`,
+          args: [memo, ...billIds]
+        });
+      }
+      await settleLcBillsCombined(billIds, payOn);
+    }
+  } else if (n39(existing.rows[0]?.n) === 0 && firstPart > 5e-3) {
     if (firstPart > n39(v.amount) + 5e-3) {
       throw new Error(`Part 1 (${firstPart.toFixed(2)}) is more than the LC's ${n39(v.amount).toFixed(2)}`);
     }
@@ -33295,7 +33459,7 @@ async function repayLcParts(lcId, v) {
         args: [date, repId, n39(lcId)]
       });
       if (v.release_margin) {
-        const margin = round219(n39(lc.amount) * n39(lc.margin_pct) / 100);
+        const margin = lcPartsMargin(lc, all);
         const settlement = await postLcMarginRelease(n39(lcId), margin, date);
         await c.execute({
           sql: `UPDATE letters_of_credit SET preclose_settlement_direction = 'margin_released',
@@ -33422,7 +33586,7 @@ async function payLcParty(lcId, v) {
     if (amount2 > left + 5e-3) throw new Error(`Only ${left.toFixed(2)} of this LC is still undrawn`);
     const instNo = parts.reduce((m, p) => Math.max(m, n39(p.part_no)), 0) + 1;
     const maturity = String(v.maturity || "").slice(0, 10);
-    const fig = await insertLcPart(n39(lcId), instNo, lc, amount2, date, maturity);
+    const fig = await insertLcPart(n39(lcId), instNo, lc, amount2, date, maturity, v);
     const linked = await c.execute({
       sql: "SELECT order_id FROM lc_linked_orders WHERE lc_id = ? ORDER BY order_id",
       args: [n39(lcId)]
@@ -36163,6 +36327,14 @@ function registerIpc() {
     "vouchers:list",
     (_e, args) => listVouchers(args?.from, args?.to, args?.vchType, args?.companyId)
   );
+  handle("suppliers:purchases:summary", async () => {
+    const rs = await getClient().execute(
+      "SELECT supplier_id, COUNT(*) AS n FROM orders WHERE supplier_id IS NOT NULL GROUP BY supplier_id"
+    );
+    const out = {};
+    for (const r of rs.rows) out[String(r.supplier_id)] = Number(r.n) || 0;
+    return out;
+  });
   handle("vouchers:cashflow", async (_e, args) => {
     const { cashflowRegister: cashflowRegister2 } = await Promise.resolve().then(() => (init_cashflowRegister(), cashflowRegister_exports));
     return cashflowRegister2(args?.from, args?.to, args?.companyId);
@@ -36759,9 +36931,10 @@ function registerIpc() {
   handle("bd:deleteRepayment", (_e, { id }) => deleteBdRepayment(id));
   handle(
     "bd:markReceived",
-    (_e, { id, date, route, account, firstPart, firstReceipt }) => markBdPaymentReceived(id, date, {
+    (_e, { id, date, route, account, firstPart, firstReceipt, legs }) => markBdPaymentReceived(id, date, {
       route,
       account,
+      ...Array.isArray(legs) ? { legs } : {},
       ...firstPart === void 0 ? {} : { firstPart },
       ...firstReceipt === void 0 ? {} : { firstReceipt }
     })
