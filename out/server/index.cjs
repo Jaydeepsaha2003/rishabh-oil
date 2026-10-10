@@ -27314,6 +27314,10 @@ async function checkTallyRegister(v) {
       r.redate = Number(r.books.order_id) > 0 || !owned.has(id) ? "yes" : "owned";
     }
   }
+  const famSheet = new Map(reg.sheets.filter((s4) => !s4.skipped).map((s4) => [family(s4.type), s4.type]));
+  for (const r of rows2) {
+    r.reg_type = r.tally ? String(r.tally.type || "") : r.books ? famSheet.get(family(String(r.books.type || ""))) || "" : "";
+  }
   for (const r of rows2) {
     r.route = route(r);
     r.bookable = (r.status === "missing_here" || r.status === "possible") && !!r.tally && !r.tally.cancelled && !r.route && Math.abs(n22(r.tally.out_by)) <= 1;
