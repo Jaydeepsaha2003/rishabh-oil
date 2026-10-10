@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { Factory, Loader2, Truck } from 'lucide-react'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
-import { formatDate, formatINR, formatNum, todayISO } from '@/lib/format'
+import { formatDate, formatINR, formatNum } from '@/lib/format'
 import { cn } from '@/lib/utils'
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -20,7 +20,7 @@ function dayBefore(iso: string): string {
 // STOCK MAPPING — a product's balance read back to the entries it came from,
 // first in first out: the newest tanker's whole quantity, then the one
 // before, until the balance is covered (the last one reached only partly).
-// The Opening of the period or its Closing, whichever is picked.
+// The Opening of the period: the stock as the day before the From date closed.
 export function StockFifoMap({
   product,
   range,
@@ -33,21 +33,15 @@ export function StockFifoMap({
   onClose: () => void
 }): React.JSX.Element {
   const canOpening = !!range.from
-  const [which, setWhich] = useState<'opening' | 'closing'>('opening')
   const [data, setData] = useState<Row | null>(null)
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState<string | null>(null)
   const [picked, setPicked] = useState<Set<string>>(new Set())
 
   const openingQty = n(product?.opening) + n(product?.opening_adj)
-  const closingQty = n(product?.stock)
-  const qty = which === 'opening' ? openingQty : closingQty
-  const asOf = which === 'opening' ? (range.from ? dayBefore(range.from) : '') : range.to || todayISO()
-
-  useEffect(() => {
-    if (product) setWhich(canOpening && Math.abs(openingQty) > 1e-9 ? 'opening' : 'closing')
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [product?.id])
+  // Without a From date there is no opening to trace.
+  const qty = canOpening ? openingQty : 0
+  const asOf = canOpening ? dayBefore(range.from) : ''
 
   useEffect(() => {
     if (!product) return
@@ -62,7 +56,7 @@ export function StockFifoMap({
       .catch((e) => setErr((e as Error).message))
       .finally(() => setBusy(false))
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [product?.id, which, qty, asOf, companyIds.join(',')])
+  }, [product?.id, qty, asOf, companyIds.join(',')])
 
   const lines = (data?.lines as Row[]) || []
   const keyOf = (l: Row): string => `${l.kind}-${l.id}-${l.tanker_id ?? ''}`
@@ -91,34 +85,21 @@ export function StockFifoMap({
           </p>
         </DialogHeader>
         <div className="grid gap-3.5 p-4">
-          {/* Which balance */}
-          <div className="grid grid-cols-2 gap-1 rounded-[5px] border border-[#D6E2D6] bg-white p-1">
-            {[
-              { k: 'opening' as const, t: 'Opening', s: range.from ? `as ${formatDate(dayBefore(range.from))} closed` : 'pick a From date', v: openingQty, off: !canOpening },
-              { k: 'closing' as const, t: 'Closing', s: `as on ${formatDate(range.to || todayISO())}`, v: closingQty, off: false }
-            ].map((o) => (
-              <button
-                key={o.k}
-                type="button"
-                disabled={o.off}
-                onClick={() => setWhich(o.k)}
-                className={cn(
-                  'rounded-[4px] px-3 py-2 text-left transition-colors disabled:cursor-not-allowed disabled:opacity-50',
-                  which === o.k ? 'bg-[#0B3D2E] text-white' : 'text-[#33473E] hover:bg-[#F7FAF6]'
-                )}
-              >
-                <div className="flex items-baseline justify-between gap-2">
-                  <span className="text-[12px] font-extrabold uppercase tracking-[.06em]">{o.t}</span>
-                  <span className="text-[14px] font-bold tabular-nums">{formatNum(o.v)} MT</span>
-                </div>
-                <div className={cn('text-[11px] font-semibold', which === o.k ? 'text-[#8FBFA8]' : 'text-[#5A6B62]')}>{o.s}</div>
-              </button>
-            ))}
+          <div className="rounded-[5px] bg-[#0B3D2E] px-4 py-2.5 text-white">
+            <div className="flex items-baseline justify-between gap-2">
+              <span className="text-[12px] font-extrabold uppercase tracking-[.06em]">Opening</span>
+              <span className="text-[14px] font-bold tabular-nums">{formatNum(openingQty)} MT</span>
+            </div>
+            <div className="text-[11px] font-semibold text-[#8FBFA8]">
+              {canOpening ? `as ${formatDate(asOf)} closed` : 'pick a From date'}
+            </div>
           </div>
 
           {qty <= 1e-9 ? (
             <div className="rounded-[6px] border border-[#D6E2D6] bg-white px-4 py-6 text-center text-[13px] font-semibold text-[#5A6B62]">
-              {qty < -1e-9
+              {!canOpening
+                ? 'Pick a From date to trace the opening stock.'
+                : qty < -1e-9
                 ? 'This balance is below nil — there is nothing in the tanks to trace back.'
                 : 'Nothing in stock here to trace back.'}
             </div>
