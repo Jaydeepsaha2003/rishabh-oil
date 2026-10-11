@@ -2962,6 +2962,16 @@ var init_gstLedgers = __esm({
 });
 
 // src/main/ledgerMap.ts
+var ledgerMap_exports = {};
+__export(ledgerMap_exports, {
+  dropLedgerMap: () => dropLedgerMap,
+  ensureLedgerMap: () => ensureLedgerMap,
+  listLedgerMap: () => listLedgerMap,
+  renameLedger: () => renameLedger,
+  resolveAccountName: () => resolveAccountName,
+  setLedgerMap: () => setLedgerMap,
+  widenRenameRedirects: () => widenRenameRedirects
+});
 function toPlain4(res) {
   return res.rows.map((r) => {
     const o = {};
@@ -33061,6 +33071,13 @@ async function syncLinkedOrders(lcId, orderIds) {
     });
   }
 }
+async function syncPartsCharges(lcId) {
+  await getClient().execute({
+    sql: `UPDATE letters_of_credit SET charges = (SELECT ROUND(COALESCE(SUM(charges), 0), 2) FROM lc_parts WHERE lc_id = ?)
+           WHERE id = ? AND EXISTS (SELECT 1 FROM lc_parts WHERE lc_id = ?)`,
+    args: [n40(lcId), n40(lcId), n40(lcId)]
+  });
+}
 function lcPartsMargin(lc, parts) {
   const rate = n40(lc.margin_pct);
   const drawn = parts.reduce((s5, p) => s5 + n40(p.amount), 0);
@@ -33077,9 +33094,9 @@ async function lcParts(lcId) {
   const r = await getClient().execute({ sql: "SELECT * FROM lc_parts WHERE lc_id = ? ORDER BY part_no", args: [n40(lcId)] }).catch(() => null);
   return r ? toPlain33(r) : [];
 }
-function partFigures(lc, amount2, payDate, maturity, first, ratePct) {
+function partFigures(lc, amount2, payDate, maturity, first, ratePct, ownCharges) {
   const days = Math.max(0, daysBetween4(payDate, maturity));
-  const charges = first ? round219(n40(lc.charges)) : 0;
+  const charges = ownCharges != null ? round219(ownCharges) : first ? round219(n40(lc.charges)) : 0;
   const base = Math.max(0, round219(amount2 - (lc.interest_excl_charges ? charges : 0)));
   const interest = round219(base * n40(ratePct == null ? lc.interest_pct : ratePct) * days / (100 * 365));
   return { days, interest, charges, net: round219(amount2 - interest - charges) };
@@ -33092,7 +33109,8 @@ async function insertLcPart(lcId, partNo, lc, amount2, payDate, maturity, rates 
   if (maturity < payDate) throw new Error(`Part ${partNo} cannot mature (${dmy4(maturity)}) before it was paid (${dmy4(payDate)})`);
   const ip = partRate(rates.interest_pct);
   const mp = partRate(rates.margin_pct);
-  const f = partFigures(lc, amount2, payDate, maturity, partNo === 1, ip);
+  const ch = partRate(rates.charges);
+  const f = partFigures(lc, amount2, payDate, maturity, partNo === 1, ip, ch);
   if (f.net <= 5e-3) throw new Error(`Part ${partNo}'s interest and charges are more than its amount`);
   await getClient().execute({
     sql: `INSERT INTO lc_parts (lc_id, part_no, pay_date, amount, maturity_date, days, interest, charges, net, interest_pct, margin_pct)
@@ -33136,6 +33154,7 @@ async function syncPaymentReceivedIssuance(lcId, v) {
       }
       await settleLcBillsCombined(billIds, payOn);
     }
+    await syncPartsCharges(lcId);
   } else if (n40(existing.rows[0]?.n) === 0 && firstPart > 5e-3) {
     if (firstPart > n40(v.amount) + 5e-3) {
       throw new Error(`Part 1 (${firstPart.toFixed(2)}) is more than the LC's ${n40(v.amount).toFixed(2)}`);
@@ -33972,6 +33991,7 @@ async function payLcParty(lcId, v) {
     }
     const je = await settleLcBillsCombined(ids, date);
     if (!je) throw new Error("The installment could not be posted");
+    await syncPartsCharges(n40(lcId));
     return { id: je.id, installment_no: instNo };
   });
 }
@@ -33994,6 +34014,7 @@ async function deleteLastLcInstallment(lcId) {
     for (const e of entries) await dropTreasuryEntry(e);
     await c.execute({ sql: "DELETE FROM lc_issuances WHERE lc_id = ? AND installment_no = ?", args: [n40(lcId), instNo] });
     await c.execute({ sql: "DELETE FROM lc_parts WHERE lc_id = ? AND part_no = ?", args: [n40(lcId), instNo] });
+    await syncPartsCharges(n40(lcId));
     return { installment_no: instNo };
   });
 }
@@ -36694,6 +36715,17 @@ function registerIpc() {
     "vouchers:list",
     (_e, args) => listVouchers(args?.from, args?.to, args?.vchType, args?.companyId)
   );
+  handle("banks:ledgers:summary", async () => {
+    const { bankLedgerName: bankLedgerName2 } = await Promise.resolve().then(() => (init_treasury(), treasury_exports));
+    const { resolveAccountName: resolveAccountName2 } = await Promise.resolve().then(() => (init_ledgerMap(), ledgerMap_exports));
+    const rs = await getClient().execute("SELECT id, name, account_no, company_id FROM banks");
+    const out = {};
+    for (const r of rs.rows) {
+      const posts = bankLedgerName2(r.name, r.account_no);
+      out[String(r.id)] = await resolveAccountName2(posts, Number(r.company_id) || void 0).catch(() => posts);
+    }
+    return out;
+  });
   handle("suppliers:purchases:summary", async () => {
     const rs = await getClient().execute(
       "SELECT supplier_id, COUNT(*) AS n FROM orders WHERE supplier_id IS NOT NULL GROUP BY supplier_id"
