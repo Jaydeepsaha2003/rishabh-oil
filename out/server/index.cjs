@@ -8393,7 +8393,12 @@ async function listPpWriteoffs(productId, companyId) {
 }
 async function ppDrawsForProduction(productionId) {
   const res = await getClient().execute({
-    sql: "SELECT product_id, ffa, qty FROM pp_draws WHERE production_id = ?",
+    sql: `SELECT d.product_id, d.ffa, d.qty FROM pp_draws d
+           WHERE d.production_id = ?
+             AND NOT EXISTS (
+               SELECT 1 FROM stock_opening_pp sop
+                WHERE sop.scope = d.scope AND sop.product_id = d.product_id AND sop.stage_id = d.stage_id
+                  AND (COALESCE(sop.in_use, 1) = 0 OR (sop.ffa = 'with' AND sop.formulation_id IS NOT NULL)))`,
     args: [n7(productionId)]
   });
   return toPlain10(res).map((r) => ({ product_id: n7(r.product_id), ffa: String(r.ffa || ""), qty: r3(n7(r.qty)) }));
@@ -11429,8 +11434,9 @@ async function ensureColumns() {
 }
 async function isTradingCompany(companyId) {
   if (!n10(companyId)) return false;
-  const r = await getClient().execute({ sql: "SELECT company_type FROM companies WHERE id = ?", args: [n10(companyId)] });
-  return s(r.rows[0]?.company_type).toLowerCase() === "trading";
+  const r = await getClient().execute({ sql: "SELECT company_type, onward_sale_at_empty FROM companies WHERE id = ?", args: [n10(companyId)] }).catch(() => getClient().execute({ sql: "SELECT company_type, 1 AS onward_sale_at_empty FROM companies WHERE id = ?", args: [n10(companyId)] }));
+  const row = r.rows[0];
+  return s(row?.company_type).toLowerCase() === "trading" && n10(row?.onward_sale_at_empty ?? 1) !== 0;
 }
 async function assertOnwardSale(tanker, v) {
   if (!await isTradingCompany(n10(tanker.company_id))) return;
@@ -16109,7 +16115,8 @@ var init_repos = __esm({
         "tds_above_only",
         "credit_period_days",
         "opening_purchase_amount",
-        "opening_purchase_date"
+        "opening_purchase_date",
+        "onward_sale_at_empty"
       ],
       factories: ["name", "location", "active"],
       packagings: ["name", "box_label", "pouch_label", "pouches_per_box", "unit_size", "unit_uom", "base_per_pouch", "base_uom", "product_id", "product_label", "active"]
@@ -23656,7 +23663,7 @@ async function stockFifoMap(v) {
     return ts.map((t, i) => {
       const share = i === ts.length - 1 ? r35(n49(r.qty) - given) : r35(n49(r.qty) * n49(t.q) / total);
       given = r35(given + share);
-      return { ...r, qty: share, tanker_no: t.tanker_no, tanker_id: n49(t.id), td: t.td };
+      return { ...r, qty: share, r_qty: r35(n49(t.q)), tanker_no: t.tanker_no, tanker_id: n49(t.id), td: t.td };
     });
   });
   const inflows = [...perTanker, ...made].map((r) => ({ ...r })).sort(
@@ -23667,12 +23674,16 @@ async function stockFifoMap(v) {
   let cum = 0;
   let value = 0;
   let valuedQty = 0;
+  let running = 0;
+  const cap = v.all ? 400 : Infinity;
   for (const r of inflows) {
-    if (left <= 5e-4) break;
+    if (left <= 5e-4 && !v.all) break;
+    if (lines.length >= cap) break;
     const qty = r35(n49(r.qty));
-    const taken = r35(Math.min(qty, left));
-    left = r35(left - taken);
+    const taken = r35(Math.max(0, Math.min(qty, left)));
+    left = r35(Math.max(0, left - taken));
     cum = r35(cum + taken);
+    running = r35(running + qty);
     const rate = r.kind === "purchase" ? r24(n49(r.rate)) : null;
     if (rate != null && rate > 0) {
       value += taken * rate;
@@ -23683,6 +23694,10 @@ async function stockFifoMap(v) {
       id: n49(r.id),
       tanker_id: r.tanker_id ?? null,
       date: String(r.d || "").slice(0, 10),
+      // The tanker's own receipt: the day it was emptied (or deposited, for a
+      // consignment) and what it brought — R.Date and R.Qty on the screen.
+      r_date: String(r.td || r.d || "").slice(0, 10),
+      r_qty: r.r_qty != null ? n49(r.r_qty) : qty,
       invoice_date: r.order_date ? String(r.order_date).slice(0, 10) : null,
       invoice_no: r.invoice_no ?? null,
       // Each tanker once — a consignment draw can name the same one twice.
@@ -23694,8 +23709,11 @@ async function stockFifoMap(v) {
       rate,
       qty,
       taken,
-      partly: taken < qty - 5e-4,
+      partly: taken > 5e-4 && taken < qty - 5e-4,
+      fifo: taken > 5e-4,
       cumulative: cum,
+      // Every receipt's quantity added up from the newest down.
+      running,
       value: rate != null ? r24(taken * rate) : null
     });
   }
@@ -26360,6 +26378,9 @@ async function runStartupTasks() {
       created_at TEXT NOT NULL DEFAULT (datetime('now')),
       UNIQUE (lc_id, part_no)
     )`).catch((e) => console.error("[lc] lc_parts table failed:", e));
+  await getClient().execute("ALTER TABLE companies ADD COLUMN onward_sale_at_empty INTEGER NOT NULL DEFAULT 1").catch((e) => {
+    if (!/duplicate column/i.test(String(e.message))) console.error("[companies] onward_sale_at_empty failed:", e);
+  });
   for (const col of ["interest_pct REAL", "margin_pct REAL"]) {
     await getClient().execute(`ALTER TABLE lc_parts ADD COLUMN ${col}`).catch((e) => {
       if (!/duplicate column/i.test(String(e.message))) console.error("[lc] lc_parts rate column failed:", e);
@@ -27566,7 +27587,18 @@ async function reconcile(v) {
   const mapped = await resolveNames([...names]);
   const used = /* @__PURE__ */ new Set();
   const rows2 = [];
-  const close = (a, b) => Math.abs(a - b) <= 1;
+  const tol = Math.min(1e3, Math.max(1, Number(v.tolerance) || 1));
+  const close = (a, b) => Math.abs(a - b) <= tol + 1e-9;
+  const sameBill = (t, b) => close(b.gross, t.gross) || close(b.gross, t.gross + t.tds) || close(b.gross + b.tds, t.gross) || close(b.gross + b.tds, t.gross + t.tds);
+  const looseParty = (t, b) => {
+    const words = (s5) => String(s5 || "").toUpperCase().replace(/[^A-Z0-9 ]/g, " ").split(/\s+/).filter((w) => w.length >= 2 && !["PVT", "PRIVATE", "LTD", "LIMITED", "CO", "THE", "AND", "OF", "CR", "DR", "MS"].includes(w));
+    const a = words(t.party);
+    const bb = words(b.party);
+    if (!a.length || !bb.length || a[0] !== bb[0]) return false;
+    const set = new Set(bb);
+    return a.filter((w) => set.has(w)).length >= Math.min(2, a.length, bb.length);
+  };
+  const partyLike = (t, b, m) => sameParty(t, b, m) || looseParty(t, b);
   const linked = await linksFor(cid, kind);
   const handled = /* @__PURE__ */ new Set();
   for (const t of reg.vouchers) {
@@ -27593,8 +27625,12 @@ async function reconcile(v) {
     const pending = [];
     for (const t of reg.vouchers) {
       if (handled.has(t.key)) continue;
-      const hits = (byInv.get(invKey(t.ref_no || t.vch_no)) || []).filter((b2) => !used.has(b2.id) && (sameParty(t, b2, mapped) || close(b2.gross, t.gross)));
-      hits.sort((a, b2) => Number(sameParty(t, b2, mapped)) - Number(sameParty(t, a, mapped)) || daysApart2(a.date, t.date) - daysApart2(b2.date, t.date));
+      const byRef = (byInv.get(invKey(t.ref_no || t.vch_no)) || []).filter(
+        (b2) => !used.has(b2.id) && (partyLike(t, b2, mapped) || sameBill(t, b2))
+      );
+      const byVch = byRef.length || !t.ref_no || !t.vch_no ? [] : (byInv.get(invKey(t.vch_no)) || []).filter((b2) => !used.has(b2.id) && partyLike(t, b2, mapped) && sameBill(t, b2));
+      const hits = byRef.length ? byRef : byVch;
+      hits.sort((a, b2) => Number(partyLike(t, b2, mapped)) - Number(partyLike(t, a, mapped)) || daysApart2(a.date, t.date) - daysApart2(b2.date, t.date));
       const b = hits[0];
       if (!b) {
         pending.push(t);
@@ -27607,7 +27643,7 @@ async function reconcile(v) {
       }
       const diffs = [];
       if (t.date !== b.date) diffs.push({ field: "date", tally: t.date, books: b.date });
-      if (!sameParty(t, b, mapped)) diffs.push({ field: "party", tally: t.party, books: b.party });
+      if (!partyLike(t, b, mapped)) diffs.push({ field: "party", tally: t.party, books: b.party });
       if (family(t.type) !== family(b.type)) diffs.push({ field: "type", tally: purchaseTypeOf(t.type), books: b.type });
       for (const f of ["taxable", "gst", "tds", "gross"]) {
         if (!close(t[f], b[f])) diffs.push({ field: f, tally: t[f], books: b[f], diff: round211(t[f] - b[f]) });
@@ -27622,7 +27658,7 @@ async function reconcile(v) {
         rows2.push({ key: t.key, status: "cancelled", tally: shortTally(t), books: null, diffs: [] });
         continue;
       }
-      const look = books.filter((b) => !used.has(b.id) && close(b.gross, t.gross) && daysApart2(b.date, t.date) <= NEAR_DAYS && sameParty(t, b, mapped)).sort((a, b) => daysApart2(a.date, t.date) - daysApart2(b.date, t.date))[0];
+      const look = books.filter((b) => !used.has(b.id) && sameBill(t, b) && daysApart2(b.date, t.date) <= NEAR_DAYS && partyLike(t, b, mapped)).sort((a, b) => daysApart2(a.date, t.date) - daysApart2(b.date, t.date))[0];
       if (look) {
         used.add(look.id);
         rows2.push({ key: t.key, status: "possible", tally: shortTally(t), books: shortBook(look), diffs: [] });
