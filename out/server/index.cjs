@@ -11553,6 +11553,7 @@ __export(orders_exports, {
   orderInterestAmounts: () => orderInterestAmounts,
   purchaseBargainNotes: () => purchaseBargainNotes,
   recordSupplierPayment: () => recordSupplierPayment,
+  refreshStalePurchaseTds: () => refreshStalePurchaseTds,
   repairPurchaseTdsOnTaxable: () => repairPurchaseTdsOnTaxable,
   replaceTanker: () => replaceTanker,
   repriceSplitTankerInvoices: () => repriceSplitTankerInvoices,
@@ -12679,6 +12680,112 @@ async function repriceSplitTankerInvoices(apply = false, onlyIds) {
         { ...o, bargain_rate: blended, invoice_rate: invoiceRate, taxable_value: m.taxable_value, gst_amount: m.gst_amount, tds_amount: m.tds_amount, round_off: roundOff, net_amount: m.net_amount },
         ORDER_FIELDS
       );
+    });
+    changed++;
+  }
+  return { findings, changed };
+}
+async function refreshStalePurchaseTds(apply = false, onlyIds) {
+  const round223 = (v) => Math.round(v * 100) / 100;
+  const pick = onlyIds ? new Set(onlyIds.map((x) => n11(x))) : null;
+  const tier = (taxable, prior, threshold, basePct, abovePct) => {
+    if (!threshold || threshold <= 0) return taxable * basePct / 100;
+    const below = Math.max(0, Math.min(threshold - prior, taxable));
+    return below * basePct / 100 + (taxable - below) * abovePct / 100;
+  };
+  const cand = toPlain13(
+    await getClient().execute(`SELECT o.* FROM orders o WHERE COALESCE(o.is_trading, 0) = 0 ORDER BY o.order_date ASC, o.id ASC`)
+  );
+  const findings = [];
+  let changed = 0;
+  for (const o of cand) {
+    const id = n11(o.id);
+    const supplier = await getSupplier(n11(o.supplier_id));
+    if (!supplier) continue;
+    const prior = await supplierFyTaxable(n11(o.supplier_id), String(o.order_date), id, n11(o.company_id) || void 0);
+    const basePct = supplier.tds_above_only ? 0 : n11(o.tds_pct);
+    const tds = round223(tier(n11(o.taxable_value), prior, n11(supplier.tds_threshold), basePct, n11(o.tds_pct)));
+    const finalTds = round223(tier(n11(o.final_taxable_value), prior, n11(supplier.tds_threshold), basePct, n11(o.tds_pct)));
+    if (Math.abs(tds - n11(o.tds_amount)) < 0.5) continue;
+    if (pick && !pick.has(id)) continue;
+    const comp = await getClient().execute({ sql: "SELECT name FROM companies WHERE id = ?", args: [n11(o.company_id)] }).catch(() => null);
+    const net = round223(n11(o.net_amount) + n11(o.tds_amount) - tds);
+    const finalNet = round223(n11(o.final_net_amount) + n11(o.final_tds_amount) - finalTds);
+    findings.push({
+      id,
+      invoice_no: String(o.invoice_no || ""),
+      order_date: String(o.order_date || "").slice(0, 10),
+      company: String(comp?.rows[0]?.name || ""),
+      supplier: String(supplier.name || ""),
+      taxable: round223(n11(o.taxable_value)),
+      prior: round223(prior),
+      threshold: n11(supplier.tds_threshold),
+      tds_before: round223(n11(o.tds_amount)),
+      tds_after: tds,
+      net_before: round223(n11(o.net_amount)),
+      net_after: net
+    });
+    if (!apply) continue;
+    await withDbTransaction(async () => {
+      const c = getClient();
+      const je = await c.execute({
+        sql: "SELECT id FROM journal_entries WHERE order_id = ? AND UPPER(vch_type) LIKE 'PURCHASE%' ORDER BY id LIMIT 1",
+        args: [id]
+      });
+      await c.execute(`CREATE TABLE IF NOT EXISTS accounting_repair_log (
+          repair_key TEXT PRIMARY KEY, entry_id INTEGER NOT NULL, before_json TEXT NOT NULL,
+          created_at TEXT NOT NULL DEFAULT (datetime('now')))`);
+      await c.execute({
+        sql: "INSERT OR REPLACE INTO accounting_repair_log(repair_key, entry_id, before_json) VALUES (?, ?, ?)",
+        args: [`stale_tds:${id}:${Date.now()}`, n11(je.rows[0]?.id), JSON.stringify(o)]
+      });
+      await c.execute({
+        sql: "UPDATE orders SET tds_amount = ?, net_amount = ?, final_tds_amount = ?, final_net_amount = ? WHERE id = ?",
+        args: [tds, net, finalTds, finalNet, id]
+      });
+      await setSupplierPayable(id, n11(o.supplier_id), net, String(o.order_date));
+      const entry = je.rows.length ? n11(je.rows[0]?.id) : 0;
+      const vLines = entry ? toPlain13(
+        await c.execute({
+          sql: `SELECT jl.id, jl.account_id, jl.dr, jl.cr, a.name, a.acc_group FROM journal_lines jl
+                      JOIN ledger_accounts a ON a.id = jl.account_id WHERE jl.entry_id = ? ORDER BY jl.id`,
+          args: [entry]
+        })
+      ) : [];
+      const tdsLine = vLines.find((l) => String(l.name).toUpperCase() === "TDS PAYABLE A/C" && n11(l.cr) > 0);
+      const partyLine = vLines.filter((l) => String(l.acc_group) === "Sundry Creditors" && n11(l.cr) > 0).sort((a, b) => n11(b.cr) - n11(a.cr))[0];
+      const tdsAcct = tdsLine ? n11(tdsLine.account_id) : n11((await c.execute("SELECT id FROM ledger_accounts WHERE UPPER(name) = 'TDS PAYABLE A/C' LIMIT 1")).rows[0]?.id);
+      if (entry && partyLine && tdsAcct) {
+        const delta = round223(tds - (tdsLine ? n11(tdsLine.cr) : 0));
+        if (tdsLine) {
+          if (tds < 5e-3) await c.execute({ sql: "DELETE FROM journal_lines WHERE id = ?", args: [n11(tdsLine.id)] });
+          else await c.execute({ sql: "UPDATE journal_lines SET cr = ? WHERE id = ?", args: [tds, n11(tdsLine.id)] });
+        } else if (tds > 5e-3) {
+          await c.execute({ sql: "INSERT INTO journal_lines (entry_id, account_id, dr, cr) VALUES (?, ?, 0, ?)", args: [entry, tdsAcct, tds] });
+        }
+        await c.execute({ sql: "UPDATE journal_lines SET cr = ? WHERE id = ?", args: [round223(n11(partyLine.cr) - delta), n11(partyLine.id)] });
+        const bal = toPlain13(await c.execute({ sql: "SELECT ROUND(SUM(dr), 2) AS dr, ROUND(SUM(cr), 2) AS cr FROM journal_lines WHERE entry_id = ?", args: [entry] }))[0];
+        if (Math.abs(n11(bal?.dr) - n11(bal?.cr)) > 5e-3) throw new Error(`${String(o.invoice_no)}: the voucher would not balance after the TDS change \u2014 left as it was`);
+        await recordChanges("orders", id, String(o.invoice_no || ""), o, { ...o, tds_amount: tds, net_amount: net }, ORDER_FIELDS);
+        return;
+      }
+      const interestPerUnit = n11(o.interest_pct) > 0 ? n11(o.bargain_rate) * (1 + n11(o.gst_pct) / 100) * (n11(o.interest_pct) / 100) * (n11(o.interest_days) / 365) : 0;
+      const m = {
+        interest_pct: n11(o.interest_pct),
+        interest_days: n11(o.interest_days),
+        interest_per_unit: interestPerUnit,
+        adjusted_rate: n11(o.adjusted_rate),
+        taxable_value: n11(o.taxable_value),
+        gst_amount: n11(o.gst_amount),
+        tds_amount: tds,
+        net_amount: net,
+        final_taxable_value: n11(o.final_taxable_value),
+        final_gst_amount: n11(o.final_gst_amount),
+        final_tds_amount: finalTds,
+        final_net_amount: finalNet
+      };
+      await postOrderJournal(id, o, m, supplier, n11(o.round_off));
+      await recordChanges("orders", id, String(o.invoice_no || ""), o, { ...o, tds_amount: tds, net_amount: net }, ORDER_FIELDS);
     });
     changed++;
   }
@@ -37458,6 +37565,18 @@ function registerIpc() {
     await assertAdmin("Balancing vouchers a paisa out");
     const { fixPaisaImbalance: fixPaisaImbalance2 } = await Promise.resolve().then(() => (init_accountingRepairs(), accountingRepairs_exports));
     return fixPaisaImbalance2(a?.ids || []);
+  });
+  handle("repairs:staleTds:list", async () => {
+    await assertAdmin("The accounting checks");
+    const { refreshStalePurchaseTds: refreshStalePurchaseTds2 } = await Promise.resolve().then(() => (init_orders(), orders_exports));
+    return refreshStalePurchaseTds2(false);
+  });
+  handle("repairs:staleTdsFix", async (_e, a) => {
+    await assertAdmin("Re-working purchase TDS");
+    const ids = (a?.ids || []).map((x) => Number(x)).filter((x) => x > 0);
+    if (!ids.length) throw new Error("Pick at least one purchase");
+    const { refreshStalePurchaseTds: refreshStalePurchaseTds2 } = await Promise.resolve().then(() => (init_orders(), orders_exports));
+    return refreshStalePurchaseTds2(true, ids);
   });
   handle("repairs:splitTanker:list", async () => {
     await assertAdmin("The accounting checks");
