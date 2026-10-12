@@ -23711,6 +23711,7 @@ async function stockFifoMap(v) {
   if (!ids.length) ids.push(...await companiesOfFactory());
   const ph = ids.map(() => "?").join(", ");
   const dateCut = asOf ? "AND d <= ?" : "";
+  const purchaseCut = asOf ? "AND (consignment = 1 OR d <= ?)" : "";
   const purchases = (await c.execute({
     sql: `SELECT * FROM (
               SELECT o.id, 'purchase' AS kind, o.invoice_no,
@@ -23730,7 +23731,7 @@ async function stockFifoMap(v) {
                WHERE o.status = 'received' AND COALESCE(o.affects_stock, 1) = 1
                  AND o.oil_type_id = ? AND o.company_id IN (${ph})
                  AND COALESCE(o.received_qty, 0) > 0
-            ) WHERE 1 = 1 ${dateCut}`,
+            ) WHERE 1 = 1 ${purchaseCut}`,
     args: [pid, ...ids, ...asOf ? [asOf] : []]
   })).rows;
   const made = (await c.execute({
@@ -23766,16 +23767,46 @@ async function stockFifoMap(v) {
   const perTanker = purchases.flatMap((r) => {
     const all = byOrder.get(n49(r.id)) || [];
     const ts = all.some((t) => t.src === "pt") ? all.filter((t) => t.src === "pt") : all;
-    if (!ts.length) return [r];
+    if (!ts.length) return [{ ...r, inv_d: r.d }];
     const total = ts.reduce((s5, t) => s5 + n49(t.q), 0);
     let given = 0;
     return ts.map((t, i) => {
       const share = i === ts.length - 1 ? r35(n49(r.qty) - given) : r35(n49(r.qty) * n49(t.q) / total);
       given = r35(given + share);
-      return { ...r, qty: share, r_qty: r35(n49(t.q)), tanker_no: t.tanker_no, tanker_id: n49(t.id), td: t.td };
+      const d = n49(r.consignment) === 1 && t.src === "cs" && String(t.td || "").trim() ? String(t.td) : r.d;
+      return { ...r, d, inv_d: r.d, qty: share, r_qty: r35(n49(t.q)), tanker_no: t.tanker_no, tanker_id: n49(t.id), td: t.td };
     });
-  });
-  const inflows = [...perTanker, ...made].map((r) => ({ ...r })).sort(
+  }).filter((r) => !asOf || String(r.d).slice(0, 10) <= asOf);
+  const undrawn = (await c.execute({
+    sql: `SELECT cs.id, cs.qty, cs.tanker_no, cs.deposit_date AS d, cs.company_id, s.name AS party, co.name AS company, b.bargain_no
+                FROM consignment_stock cs
+                LEFT JOIN suppliers s ON s.id = cs.supplier_id
+                LEFT JOIN companies co ON co.id = cs.company_id
+                LEFT JOIN bargains b ON b.id = cs.bargain_id
+               WHERE cs.order_id IS NULL AND cs.product_id = ? AND cs.company_id IN (${ph})
+                 AND COALESCE(cs.qty, 0) > 0 ${asOf ? "AND cs.deposit_date <= ?" : ""}`,
+    args: [pid, ...ids, ...asOf ? [asOf] : []]
+  }).catch(() => ({ rows: [] }))).rows;
+  const undrawnLines = undrawn.map((u) => ({
+    id: 0,
+    kind: "purchase",
+    invoice_no: null,
+    tanker_no: u.tanker_no,
+    consignment: 1,
+    uninvoiced: true,
+    qty: r35(n49(u.qty)),
+    r_qty: r35(n49(u.qty)),
+    rate: null,
+    order_date: null,
+    company_id: u.company_id,
+    party: u.party,
+    company: u.company,
+    bargain_no: u.bargain_no,
+    d: u.d,
+    td: u.d,
+    tanker_id: n49(u.id)
+  }));
+  const inflows = [...perTanker, ...undrawnLines, ...made].map((r) => ({ ...r })).sort(
     (a, b) => String(b.d).localeCompare(String(a.d)) || n49(b.id) - n49(a.id) || String(a.kind).localeCompare(String(b.kind)) || String(b.td || "").localeCompare(String(a.td || "")) || n49(b.tanker_id) - n49(a.tanker_id)
   );
   const lines = [];
@@ -23789,7 +23820,9 @@ async function stockFifoMap(v) {
     if (left <= 5e-4 && !v.all) break;
     if (lines.length >= cap) break;
     const qty = r35(n49(r.qty));
-    const taken = r35(Math.max(0, Math.min(qty, left)));
+    const invoicedLater = !!asOf && !r.uninvoiced && String(r.inv_d || r.d).slice(0, 10) > asOf;
+    const outside = !!r.uninvoiced || invoicedLater;
+    const taken = outside ? 0 : r35(Math.max(0, Math.min(qty, left)));
     left = r35(Math.max(0, left - taken));
     cum = r35(cum + taken);
     running = r35(running + qty);
@@ -23812,6 +23845,8 @@ async function stockFifoMap(v) {
       // Each tanker once — a consignment draw can name the same one twice.
       tanker_no: r.tanker_no ? [...new Set(String(r.tanker_no).split(",").map((x) => x.trim()).filter(Boolean))].join(", ") : null,
       consignment: n49(r.consignment) === 1,
+      uninvoiced: !!r.uninvoiced,
+      invoiced_later: invoicedLater,
       bargain_no: r.bargain_no ?? null,
       party: r.party ?? null,
       company: r.company ?? null,
