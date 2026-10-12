@@ -12694,7 +12694,9 @@ async function refreshStalePurchaseTds(apply = false, onlyIds) {
     return below * basePct / 100 + (taxable - below) * abovePct / 100;
   };
   const cand = toPlain13(
-    await getClient().execute(`SELECT o.* FROM orders o WHERE COALESCE(o.is_trading, 0) = 0 ORDER BY o.order_date ASC, o.id ASC`)
+    // Trading purchases too — their TDS is tiered on the same slab at save
+    // (GT/1061, Legacy, sat ₹5,000.30 short of Tally until this included them).
+    await getClient().execute(`SELECT o.* FROM orders o ORDER BY o.order_date ASC, o.id ASC`)
   );
   const findings = [];
   let changed = 0;
