@@ -17057,6 +17057,23 @@ async function accountStatement(accountId, companyId) {
       l.interest_amt = a && Math.abs(a) > 4e-3 ? a : null;
     }
   }
+  {
+    const ids = [...new Set(lines.map((l) => Number(l.entry_id)))];
+    const split2 = ids.length ? await c.execute({
+      sql: `SELECT r.journal_entry_id AS je, b.bd_no, r.amount FROM bd_repayments r JOIN bill_discountings b ON b.id = r.bd_id
+                   WHERE r.journal_entry_id IN (${ids.map(() => "?").join(",")}) ORDER BY r.amount DESC, r.id`,
+      args: ids
+    }).catch(() => null) : null;
+    const byJe = /* @__PURE__ */ new Map();
+    for (const x of split2 ? toPlain16(split2) : []) {
+      const k = Number(x.je);
+      byJe.set(k, [...byJe.get(k) || [], { bd_no: String(x.bd_no || ""), amount: Number(x.amount) || 0 }]);
+    }
+    for (const l of lines) {
+      const parts = byJe.get(Number(l.entry_id));
+      if (parts && parts.length > 1) l.bd_split = parts;
+    }
+  }
   const others = await c.execute({
     sql: `SELECT jl.entry_id, jl.dr, jl.cr, a.name
           FROM journal_lines jl
@@ -20883,6 +20900,20 @@ async function getVoucher(id) {
       args: [Number(l.id)]
     });
     l.splits = toPlain19(sp);
+  }
+  {
+    const parts = toPlain19(
+      await c.execute({
+        sql: `SELECT b.bd_no, r.amount FROM bd_repayments r JOIN bill_discountings b ON b.id = r.bd_id
+                 WHERE r.journal_entry_id = ? ORDER BY r.amount DESC, r.id`,
+        args: [id]
+      }).catch(() => ({ rows: [], columns: [] }))
+    );
+    if (parts.length > 1) {
+      const sum = parts.reduce((t, p) => t + (Number(p.amount) || 0), 0);
+      const line = entry.lines.find((l) => Number(l.dr) > 0 && !l.splits?.length && Math.abs(Number(l.dr) - sum) < 0.01);
+      if (line) line.splits = parts.map((p) => ({ name: `${String(p.bd_no)} repaid`, amount: Number(p.amount) || 0, note: null, derived: true }));
+    }
   }
   entry.manual = !(await ownedVoucherIds()).has(id);
   entry.owner = entry.manual ? null : await voucherOwner(id).catch(() => null);
