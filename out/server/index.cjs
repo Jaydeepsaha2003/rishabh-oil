@@ -18690,7 +18690,7 @@ async function listBdRepayments(bdId) {
 }
 async function listAllBdRepayments() {
   const res = await getClient().execute({
-    sql: `SELECT r.*, bd.bd_no, bd.finance_type, bd.amount AS bill_amount,
+    sql: `SELECT r.*, bd.bd_no, bd.finance_type, bd.amount AS bill_amount, bd.nbfc_id,
                  nb.name AS nbfc_name, s.name AS supplier_name, cu.name AS customer_name,
                  bd.party_type
           FROM bd_repayments r
@@ -18776,7 +18776,22 @@ async function editBdRepayment(repaymentId, v) {
     const primary = siblings.find((x) => n19(x.comm_charges) > 0 || n19(x.bank_charges) > 0) || row;
     const primaryId = n19(primary.bd_id);
     const oldHead = oldJe ? toPlain17(await c.execute({ sql: "SELECT vch_type FROM journal_entries WHERE id = ?", args: [oldJe] }))[0] : null;
-    const touched = Array.from(new Set(siblings.map((x) => n19(x.bd_id))));
+    const mergeRows = [];
+    const seenJe = /* @__PURE__ */ new Set([oldJe]);
+    for (const mid of (v.merge_ids || []).map((x) => n19(x)).filter(Boolean)) {
+      const m = toPlain17(await c.execute({ sql: "SELECT * FROM bd_repayments WHERE id = ?", args: [mid] }))[0];
+      if (!m) throw new Error("A repayment picked to combine no longer exists \u2014 refresh and try again");
+      if (String(m.settle_via) === "party") throw new Error("A repayment settled against a party cannot be combined into a bank debit");
+      const mb = await loadBd(n19(m.bd_id));
+      const pb = await loadBd(bdId);
+      if (n19(mb.nbfc_id) !== n19(pb.nbfc_id)) throw new Error(`${mb.bd_no || "That bill"} is with a different NBFC \u2014 one debit cannot settle both`);
+      const mje = n19(m.journal_entry_id);
+      if (mje && seenJe.has(mje)) continue;
+      if (mje) seenJe.add(mje);
+      const group = mje ? toPlain17(await c.execute({ sql: "SELECT * FROM bd_repayments WHERE journal_entry_id = ?", args: [mje] })) : [m];
+      mergeRows.push(m, ...group.filter((g) => n19(g.id) !== n19(m.id)));
+    }
+    const touched = Array.from(new Set([...siblings, ...mergeRows].map((x) => n19(x.bd_id))));
     const oldMargins = /* @__PURE__ */ new Map();
     for (const id of touched) {
       const b = await loadBd(id);
@@ -18788,7 +18803,12 @@ async function editBdRepayment(repaymentId, v) {
         throw new Error(`${b.bd_no || "Another bill"} on this debit has had its margin released \u2014 remove and re-enter the repayment instead`);
       }
     }
-    const shares = (v.shares && v.shares.length ? v.shares : siblings.map((x) => ({ bd_id: x.bd_id, amount: x.amount }))).map((x) => ({ bd_id: n19(x.bd_id), amount: round27(n19(x.amount)) })).filter((x) => x.bd_id && x.amount > 4e-3);
+    const byBill = /* @__PURE__ */ new Map();
+    for (const x of v.shares && v.shares.length ? v.shares : [...siblings, ...mergeRows].map((y) => ({ bd_id: y.bd_id, amount: y.amount }))) {
+      const id = n19(x.bd_id);
+      if (id) byBill.set(id, round27((byBill.get(id) || 0) + n19(x.amount)));
+    }
+    const shares = [...byBill].map(([bd_id, amount2]) => ({ bd_id, amount: amount2 })).filter((x) => x.amount > 4e-3);
     const own = shares.find((x) => x.bd_id === primaryId);
     if (!own) throw new Error("Keep an amount against the bill this repayment was entered on");
     const also = shares.filter((x) => x.bd_id !== primaryId);
@@ -18800,9 +18820,12 @@ async function editBdRepayment(repaymentId, v) {
         created_at TEXT NOT NULL DEFAULT (datetime('now')))`);
     await c.execute({
       sql: "INSERT OR REPLACE INTO accounting_repair_log(repair_key, entry_id, before_json) VALUES (?, ?, ?)",
-      args: [`bd_repayment_edit:${repaymentId}:${Date.now()}`, oldJe, JSON.stringify({ siblings })]
+      args: [`bd_repayment_edit:${repaymentId}:${Date.now()}`, oldJe, JSON.stringify({ siblings, merged: mergeRows })]
     });
     await deleteBdRepayment(repaymentId);
+    for (const m of mergeRows) {
+      if ((await c.execute({ sql: "SELECT 1 FROM bd_repayments WHERE id = ?", args: [n19(m.id)] })).rows.length) await deleteBdRepayment(n19(m.id));
+    }
     await repayBd(primaryId, {
       repay_date: String(v.repay_date || primary.repay_date).slice(0, 10),
       settle_via: "bank",
