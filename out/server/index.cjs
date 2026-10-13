@@ -18665,7 +18665,12 @@ async function deleteBdInterestPayment(payId) {
 async function listBdRepayments(bdId) {
   const bd = await loadBd(bdId);
   const res = await getClient().execute({
-    sql: `SELECT r.*, je.vch_no, je.entry_date AS voucher_date
+    sql: `SELECT r.*, je.vch_no, je.entry_date AS voucher_date,
+                 -- Every bill the same bank debit settled, this one included,
+                 -- so an edit can show (and change) the whole debit.
+                 (SELECT json_group_array(json_object('id', r2.id, 'bd_id', r2.bd_id, 'bd_no', b2.bd_no, 'amount', r2.amount, 'comm_charges', r2.comm_charges, 'bank_charges', r2.bank_charges))
+                    FROM bd_repayments r2 JOIN bill_discountings b2 ON b2.id = r2.bd_id
+                   WHERE r.journal_entry_id IS NOT NULL AND r2.journal_entry_id = r.journal_entry_id) AS group_json
           FROM bd_repayments r
           LEFT JOIN journal_entries je ON je.id = r.journal_entry_id
           WHERE r.bd_id = ? ORDER BY r.repay_date, r.id`,
@@ -18674,7 +18679,13 @@ async function listBdRepayments(bdId) {
   let left = principalDrawn(bd);
   return toPlain17(res).map((r) => {
     left = round27(left - n19(r.amount));
-    return { ...r, balance_after: left };
+    let group = [];
+    try {
+      group = r.group_json ? JSON.parse(String(r.group_json)) : [];
+    } catch {
+      group = [];
+    }
+    return { ...r, group_json: void 0, debit_group: group, balance_after: left };
   });
 }
 async function listAllBdRepayments() {
@@ -18749,6 +18760,96 @@ async function deleteBdRepayment(repaymentId) {
       });
     }
     return { id: repaymentId, bd_id: bdId };
+  });
+}
+async function editBdRepayment(repaymentId, v) {
+  return withDbTransaction(async () => {
+    const c = getClient();
+    const row = toPlain17(await c.execute({ sql: "SELECT * FROM bd_repayments WHERE id = ?", args: [repaymentId] }))[0];
+    if (!row) throw new Error("That repayment no longer exists");
+    if (String(row.settle_via) === "party") {
+      throw new Error("A repayment settled against a party is changed by removing it and entering it again");
+    }
+    const bdId = n19(row.bd_id);
+    const oldJe = n19(row.journal_entry_id);
+    const siblings = oldJe ? toPlain17(await c.execute({ sql: "SELECT * FROM bd_repayments WHERE journal_entry_id = ? ORDER BY id", args: [oldJe] })) : [row];
+    const primary = siblings.find((x) => n19(x.comm_charges) > 0 || n19(x.bank_charges) > 0) || row;
+    const primaryId = n19(primary.bd_id);
+    const oldHead = oldJe ? toPlain17(await c.execute({ sql: "SELECT vch_type FROM journal_entries WHERE id = ?", args: [oldJe] }))[0] : null;
+    const touched = Array.from(new Set(siblings.map((x) => n19(x.bd_id))));
+    const oldMargins = /* @__PURE__ */ new Map();
+    for (const id of touched) {
+      const b = await loadBd(id);
+      if (n19(b.margin_release_journal_entry_id)) oldMargins.set(id, n19(b.margin_release_journal_entry_id));
+    }
+    for (const id of oldMargins.keys()) {
+      if (id !== primaryId) {
+        const b = await loadBd(id);
+        throw new Error(`${b.bd_no || "Another bill"} on this debit has had its margin released \u2014 remove and re-enter the repayment instead`);
+      }
+    }
+    const shares = (v.shares && v.shares.length ? v.shares : siblings.map((x) => ({ bd_id: x.bd_id, amount: x.amount }))).map((x) => ({ bd_id: n19(x.bd_id), amount: round27(n19(x.amount)) })).filter((x) => x.bd_id && x.amount > 4e-3);
+    const own = shares.find((x) => x.bd_id === primaryId);
+    if (!own) throw new Error("Keep an amount against the bill this repayment was entered on");
+    const also = shares.filter((x) => x.bd_id !== primaryId);
+    const comm = v.comm_charges === void 0 ? round27(n19(primary.comm_charges)) : round27(n19(v.comm_charges));
+    const bankCh = v.bank_charges === void 0 ? round27(n19(primary.bank_charges)) : round27(n19(v.bank_charges));
+    const debit = round27(own.amount + also.reduce((t, x) => t + x.amount, 0) + (also.length ? comm + bankCh : 0));
+    await c.execute(`CREATE TABLE IF NOT EXISTS accounting_repair_log (
+        repair_key TEXT PRIMARY KEY, entry_id INTEGER NOT NULL, before_json TEXT NOT NULL,
+        created_at TEXT NOT NULL DEFAULT (datetime('now')))`);
+    await c.execute({
+      sql: "INSERT OR REPLACE INTO accounting_repair_log(repair_key, entry_id, before_json) VALUES (?, ?, ?)",
+      args: [`bd_repayment_edit:${repaymentId}:${Date.now()}`, oldJe, JSON.stringify({ siblings })]
+    });
+    await deleteBdRepayment(repaymentId);
+    await repayBd(primaryId, {
+      repay_date: String(v.repay_date || primary.repay_date).slice(0, 10),
+      settle_via: "bank",
+      bank_account: v.bank_account === void 0 ? primary.bank_account ? String(primary.bank_account) : null : v.bank_account,
+      comm_charges: comm || null,
+      bank_charges: bankCh || null,
+      amount: debit,
+      note: v.note === void 0 ? primary.note ? String(primary.note) : null : v.note,
+      release_margin: oldMargins.has(primaryId) || void 0,
+      also
+    });
+    const moveEntry = async (from, to, typeWas) => {
+      if (!from || !to || from === to) return from;
+      const head = toPlain17(await c.execute({ sql: "SELECT vch_type FROM journal_entries WHERE id = ?", args: [from] }))[0];
+      if (!head || typeWas && String(head.vch_type) !== typeWas) {
+        await c.execute({ sql: "DELETE FROM voucher_numbers WHERE entry_id = ?", args: [to] }).catch(() => {
+        });
+        return from;
+      }
+      await c.execute({
+        sql: `INSERT INTO journal_entries (id, company_id, entry_date, vch_type, vch_no, narration, order_id, sale_id, payment_id)
+              SELECT ?, company_id, entry_date, vch_type, vch_no, narration, order_id, sale_id, payment_id FROM journal_entries WHERE id = ?`,
+        args: [to, from]
+      });
+      await c.execute({ sql: "UPDATE journal_lines SET entry_id = ? WHERE entry_id = ?", args: [to, from] });
+      await c.execute({ sql: "UPDATE bd_repayments SET journal_entry_id = ? WHERE journal_entry_id = ?", args: [to, from] });
+      await c.execute({ sql: "UPDATE bill_discountings SET margin_release_journal_entry_id = ? WHERE margin_release_journal_entry_id = ?", args: [to, from] });
+      await c.execute({ sql: "DELETE FROM voucher_numbers WHERE entry_id = ?", args: [from] }).catch(() => {
+      });
+      await c.execute({ sql: "DELETE FROM journal_entries WHERE id = ?", args: [from] });
+      return to;
+    };
+    const fresh = toPlain17(
+      await c.execute({ sql: "SELECT journal_entry_id FROM bd_repayments WHERE bd_id = ? ORDER BY id DESC LIMIT 1", args: [primaryId] })
+    )[0];
+    const entry = await moveEntry(n19(fresh?.journal_entry_id), oldJe, oldHead ? String(oldHead.vch_type) : null);
+    for (const [id, oldM] of oldMargins) {
+      const b = await loadBd(id);
+      const now = n19(b.margin_release_journal_entry_id);
+      if (now && now !== oldM && !(await c.execute({ sql: "SELECT 1 FROM journal_entries WHERE id = ?", args: [oldM] })).rows.length) {
+        await moveEntry(now, oldM, null);
+      }
+    }
+    const mine = toPlain17(
+      await c.execute({ sql: "SELECT id FROM bd_repayments WHERE bd_id = ? AND journal_entry_id = ? ORDER BY id DESC LIMIT 1", args: [bdId, entry] })
+    )[0];
+    return { id: n19(mine?.id) || repaymentId, bd_id: bdId, entry_id: entry };
   });
 }
 async function markBdPaymentReceived(id, dateIn, opts) {
@@ -37551,6 +37652,7 @@ function registerIpc() {
   );
   handle("bd:deletePaymentIn", (_e, { id }) => deleteBdPaymentIn(id));
   handle("bd:deleteRepayment", (_e, { id }) => deleteBdRepayment(id));
+  handle("bd:editRepayment", (_e, { id, values }) => editBdRepayment(id, values));
   handle(
     "bd:markReceived",
     (_e, { id, date, route, account, firstPart, firstReceipt, legs }) => markBdPaymentReceived(id, date, {
