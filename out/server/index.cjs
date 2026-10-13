@@ -2661,7 +2661,9 @@ function decorate(rows2) {
       cur = cur.parent_id == null ? void 0 : byId.get(Number(cur.parent_id));
     }
     const root = chain[0] || r;
+    const base = [...chain].reverse().find((x) => Number(x.is_system) === 1) || root;
     return {
+      base: String(base.name || ""),
       depth: chain.length - 1,
       path: chain.map((x) => String(x.name)).join(" \u203A "),
       nature: String(root.nature || "asset") || "asset",
@@ -2683,8 +2685,27 @@ async function listGroupNames() {
     root: r.root,
     depth: r.depth,
     path: r.path,
+    base: r.base,
     is_system: Number(r.is_system) ? 1 : 0
   })).sort((a, b) => a.path.localeCompare(b.path));
+}
+async function groupBaseMap() {
+  const m = /* @__PURE__ */ new Map();
+  try {
+    for (const r of decorate(await rawGroups())) m.set(String(r.name), String(r.base));
+  } catch {
+  }
+  return m;
+}
+async function baseGroupOf(group) {
+  const g = String(group || "").trim();
+  if (!g) return "";
+  return (await groupBaseMap()).get(g) || g;
+}
+async function groupsUnder(base) {
+  const out = [base];
+  for (const [name, b] of await groupBaseMap()) if (b === base && name !== base) out.push(name);
+  return out;
 }
 async function groupNatureMap() {
   const m = /* @__PURE__ */ new Map();
@@ -2860,6 +2881,13 @@ async function setAccountsGroup(accountIds, group) {
     await c.execute({ sql: `UPDATE ledger_accounts SET acc_group = ? WHERE id IN (${ids.join(",")})`, args: [String(g.name)] });
     return { moved: ids.length, group: String(g.name) };
   });
+}
+async function setAccountsHidden(accountIds, hidden) {
+  const ids = Array.from(new Set((accountIds || []).map(Number).filter((x) => x > 0)));
+  if (!ids.length) throw new Error("Pick the ledgers to hide");
+  const c = getClient();
+  const r = await c.execute({ sql: `UPDATE ledger_accounts SET is_hidden = ? WHERE id IN (${ids.join(",")})`, args: [hidden ? 1 : 0] });
+  return { changed: Number(r.rowsAffected) || 0, hidden: !!hidden };
 }
 async function setAccountGroup(accountId, group) {
   const c = getClient();
@@ -3790,7 +3818,7 @@ var init_access_gate = __esm({
       "deleteInvoice"
     ]);
     INTERCO_SALES_REFUSAL = "Your access to Sales covers inter-company transfer invoices only \u2014 an invoice to an outside customer cannot be raised or changed here.";
-    JOURNAL_MASTERS_OPS = /* @__PURE__ */ new Set(["createAccount", "renameLedger", "createGroup", "renameGroup", "moveGroup", "deleteGroup", "setAccountGroup", "setAccountsGroup"]);
+    JOURNAL_MASTERS_OPS = /* @__PURE__ */ new Set(["createAccount", "renameLedger", "createGroup", "renameGroup", "moveGroup", "deleteGroup", "setAccountGroup", "setAccountsGroup", "setAccountsHidden"]);
     JOURNAL_OPENINGS_OPS = /* @__PURE__ */ new Set(["saveOpenings", "setBooksFrom", "moveOpenings"]);
     SECTION_LABEL = Object.fromEntries(ACCOUNTS_SECTIONS.map((s5) => [s5.key, s5.label]));
   }
@@ -12747,6 +12775,7 @@ async function refreshStalePurchaseTds(apply = false, onlyIds) {
       });
       await setSupplierPayable(id, n11(o.supplier_id), net, String(o.order_date));
       const entry = je.rows.length ? n11(je.rows[0]?.id) : 0;
+      const creditorGroups = await groupsUnder("Sundry Creditors");
       const vLines = entry ? toPlain13(
         await c.execute({
           sql: `SELECT jl.id, jl.account_id, jl.dr, jl.cr, a.name, a.acc_group FROM journal_lines jl
@@ -12755,7 +12784,7 @@ async function refreshStalePurchaseTds(apply = false, onlyIds) {
         })
       ) : [];
       const tdsLine = vLines.find((l) => String(l.name).toUpperCase() === "TDS PAYABLE A/C" && n11(l.cr) > 0);
-      const partyLine = vLines.filter((l) => String(l.acc_group) === "Sundry Creditors" && n11(l.cr) > 0).sort((a, b) => n11(b.cr) - n11(a.cr))[0];
+      const partyLine = vLines.filter((l) => creditorGroups.includes(String(l.acc_group)) && n11(l.cr) > 0).sort((a, b) => n11(b.cr) - n11(a.cr))[0];
       const tdsAcct = tdsLine ? n11(tdsLine.account_id) : n11((await c.execute("SELECT id FROM ledger_accounts WHERE UPPER(name) = 'TDS PAYABLE A/C' LIMIT 1")).rows[0]?.id);
       if (entry && partyLine && tdsAcct) {
         const delta = round223(tds - (tdsLine ? n11(tdsLine.cr) : 0));
@@ -14017,6 +14046,7 @@ var init_orders = __esm({
     init_access_gate();
     init_history();
     init_invoiceno();
+    init_ledgerGroups();
     STAGES = [
       "ordered",
       "at_port",
@@ -20612,7 +20642,7 @@ async function writeAllocs(entryId, lines) {
       let orderId = a.order_id || null;
       let saleGroup = a.sale_invoice_group || null;
       if (a.method === "agst_ref" && a.ref_name && !orderId && !saleGroup) {
-        const grp = String(lines[i].group || "");
+        const grp = await baseGroupOf(lines[i].group);
         const side = grp === "Sundry Debtors" ? "customer" : grp === "Sundry Creditors" ? "supplier" : null;
         if (side) {
           const ids = await resolveRefIds(String(a.ref_name), cid, side);
@@ -20983,7 +21013,7 @@ async function listPendingRefs(accountName, companyId, side, all = false) {
   const acc = await c.execute({ sql: "SELECT id, acc_group FROM ledger_accounts WHERE TRIM(UPPER(name)) = ?", args: [name] });
   const accountId = acc.rows.length ? Number(acc.rows[0].id) : 0;
   if (!accountId && !side) return [];
-  const group = side === "customer" ? "Sundry Debtors" : side === "supplier" ? "Sundry Creditors" : String(acc.rows[0]?.acc_group || "");
+  const group = side === "customer" ? "Sundry Debtors" : side === "supplier" ? "Sundry Creditors" : await baseGroupOf(acc.rows[0]?.acc_group);
   const bills = [];
   if (group === "Sundry Creditors") {
     const r = await c.execute({
@@ -21158,7 +21188,7 @@ async function billsOutstanding(accountName, companyId, opts = {}) {
     args: [name]
   });
   const accountId = acc.rows.length ? Number(acc.rows[0].id) : 0;
-  const group = String(acc.rows[0]?.acc_group || "");
+  const group = await baseGroupOf(acc.rows[0]?.acc_group);
   const debtor = opts.side === "customer" || group === "Sundry Debtors";
   const master = debtor ? "customers" : "suppliers";
   const cp = await c.execute({
@@ -25550,6 +25580,11 @@ async function runStartupTasks() {
     )`);
     await c.execute("CREATE INDEX IF NOT EXISTS idx_stock_openings_co ON stock_openings(company_id)");
   }).catch((e) => console.error("[stock] opening-stock table failed:", e));
+  await runOnce("ledger_hidden_v1", async () => {
+    await getClient().execute("ALTER TABLE ledger_accounts ADD COLUMN is_hidden INTEGER NOT NULL DEFAULT 0").catch((e) => {
+      if (!/duplicate column/i.test(String(e?.message || e))) throw e;
+    });
+  }).catch((e) => console.error("[ledgers] hidden flag failed:", e));
   await runOnce("sales_rate_adjustment_v1", async () => {
     await getClient().execute("ALTER TABLE sales ADD COLUMN is_rate_adj INTEGER NOT NULL DEFAULT 0").catch((e) => {
       if (!/duplicate column/i.test(String(e?.message || e))) throw e;
@@ -32196,6 +32231,7 @@ init_journal();
 init_gstLedgers();
 init_accounting();
 init_ledgerMap();
+init_ledgerGroups();
 function toPlain29(res) {
   return res.rows.map((r) => {
     const o = {};
@@ -32270,7 +32306,7 @@ async function partyByLedgerName(name, cid, preferred, group) {
     const a = String(r.posts_as || "").trim().toUpperCase();
     if (a && !aliases.includes(a)) aliases.push(a);
   }
-  const g = String(group || "").trim();
+  const g = await baseGroupOf(group);
   const kinds = g === "Sundry Debtors" ? ["customer"] : g === "Sundry Creditors" ? preferred === "transporter" ? ["transporter", "supplier"] : ["supplier", "transporter"] : [preferred, ...["supplier", "customer", "transporter"].filter((k) => k !== preferred)];
   for (const k of kinds) {
     for (const a of aliases) {
@@ -32680,12 +32716,14 @@ async function dashboardStats(opts = {}) {
     q(`SELECT a.name, SUM(jl.cr) - SUM(jl.dr) AS bal
        FROM journal_lines jl JOIN journal_entries je ON je.id = jl.entry_id
        JOIN ledger_accounts a ON a.id = jl.account_id
-       WHERE je.company_id = ? AND a.acc_group = 'Sundry Creditors'
+       WHERE je.company_id = ? AND a.acc_group IN (WITH RECURSIVE t(id, name) AS (SELECT id, name FROM ledger_groups WHERE name = 'Sundry Creditors'
+                       UNION ALL SELECT g.id, g.name FROM ledger_groups g JOIN t ON g.parent_id = t.id) SELECT name FROM t)
        GROUP BY a.id HAVING ABS(bal) > 0.005 ORDER BY bal DESC LIMIT 6`),
     q(`SELECT a.name, SUM(jl.dr) - SUM(jl.cr) AS bal
        FROM journal_lines jl JOIN journal_entries je ON je.id = jl.entry_id
        JOIN ledger_accounts a ON a.id = jl.account_id
-       WHERE je.company_id = ? AND a.acc_group = 'Sundry Debtors'
+       WHERE je.company_id = ? AND a.acc_group IN (WITH RECURSIVE t(id, name) AS (SELECT id, name FROM ledger_groups WHERE name = 'Sundry Debtors'
+                       UNION ALL SELECT g.id, g.name FROM ledger_groups g JOIN t ON g.parent_id = t.id) SELECT name FROM t)
        GROUP BY a.id HAVING ABS(bal) > 0.005 ORDER BY bal DESC LIMIT 6`),
     // THE BOARD WANTS THE TOTAL, NOT THE HEADS.
     //
@@ -36870,6 +36908,7 @@ function registerIpc() {
   handle("journal:deleteGroup", (_e, { id }) => deleteGroup(id));
   handle("journal:setAccountGroup", (_e, { id, group }) => setAccountGroup(id, group));
   handle("journal:setAccountsGroup", (_e, { ids, group }) => setAccountsGroup(ids, group));
+  handle("journal:setAccountsHidden", (_e, { ids, hidden }) => setAccountsHidden(ids, hidden));
   handle(
     "journal:billsOutstanding",
     (_e, a) => billsOutstanding(a.account, a.companyId, { asOf: a.asOf, side: a.side })
