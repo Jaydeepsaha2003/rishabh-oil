@@ -20639,6 +20639,39 @@ var init_accountingRepairs = __esm({
   }
 });
 
+// src/main/tallyCache.ts
+function remember(key3, value) {
+  store2.delete(key3);
+  store2.set(key3, value);
+  while (store2.size > LIMIT) store2.delete(store2.keys().next().value);
+}
+async function cached(key3, make) {
+  if (store2.has(key3)) {
+    const hit = store2.get(key3);
+    remember(key3, hit);
+    return structuredClone(hit);
+  }
+  const value = await make();
+  remember(key3, value);
+  return structuredClone(value);
+}
+function parsedFile(tag, b64, make) {
+  return cached(`file:${tag}:${hashOf(String(b64 || ""))}`, make);
+}
+function booksRead(key3, make) {
+  return cached(`books:${getRevision()}:${key3}`, make);
+}
+var import_crypto2, LIMIT, store2, hashOf;
+var init_tallyCache = __esm({
+  "src/main/tallyCache.ts"() {
+    import_crypto2 = require("crypto");
+    init_db();
+    LIMIT = 8;
+    store2 = /* @__PURE__ */ new Map();
+    hashOf = (b64) => (0, import_crypto2.createHash)("sha1").update(b64).digest("hex");
+  }
+});
+
 // src/main/accounting.ts
 function toPlain19(res) {
   return res.rows.map((r) => {
@@ -22235,7 +22268,7 @@ async function bookSales(companyId) {
 }
 async function reconcileTallySales(v) {
   const cid = await companyOf(v);
-  const reg = await parseSalesRegister(String(v.data_base64 || ""));
+  const reg = await parsedFile("sales", String(v.data_base64 || ""), () => parseSalesRegister(String(v.data_base64 || "")));
   const books = await bookSales(cid);
   const byNo = /* @__PURE__ */ new Map();
   for (const b of books) {
@@ -22470,7 +22503,7 @@ function drFirst(lines) {
   }).map((x) => x.l);
 }
 async function previewTallySalesVouchers(v) {
-  const reg = await parseSalesRegister(String(v.data_base64 || ""));
+  const reg = await parsedFile("sales", String(v.data_base64 || ""), () => parseSalesRegister(String(v.data_base64 || "")));
   const wanted = new Set((v.vch_nos || []).map(vchKey));
   const cid = await companyOf(v);
   const have = await existingSaleNos(cid);
@@ -22506,7 +22539,7 @@ async function previewTallySalesVouchers(v) {
 }
 async function postTallySalesVouchers(v) {
   const cid = await companyOf(v);
-  const reg = await parseSalesRegister(String(v.data_base64 || ""));
+  const reg = await parsedFile("sales", String(v.data_base64 || ""), () => parseSalesRegister(String(v.data_base64 || "")));
   const wanted = new Set((v.vch_nos || []).map(vchKey));
   if (!wanted.size) throw new Error("Pick the invoices to book");
   const names = /* @__PURE__ */ new Set();
@@ -22656,6 +22689,7 @@ var import_exceljs, n22, round210, STOP, SUMMARY_COLS, ROUND_OFF, SALES_SUMMARY,
 var init_tallyNotes = __esm({
   "src/main/tallyNotes.ts"() {
     import_exceljs = __toESM(require("exceljs"));
+    init_tallyCache();
     init_db();
     init_company();
     init_accounting();
@@ -23068,6 +23102,13 @@ function acctDigits(s5) {
   const runs = String(s5 || "").match(/\d{4,}/g) || [];
   return runs.sort((a, b) => b.length - a.length)[0] || "";
 }
+function detailsReady(t) {
+  const d = t.details || [];
+  if (!d.length || d.some((x) => !x.name || !(x.amount > 0))) return false;
+  const towardsBank = t.dir === "out" ? "dr" : "cr";
+  const net = d.reduce((sum, x) => sum + (x.side === towardsBank ? x.amount : -x.amount), 0);
+  return Math.abs(round213(net) - t.amount) < 0.02;
+}
 async function parseBankBook(b64) {
   if (!b64) throw new Error("Choose the Tally bank book to upload");
   const wb = new import_exceljs4.default.Workbook();
@@ -23079,11 +23120,15 @@ async function parseBankBook(b64) {
   const ws = wb.worksheets[0];
   if (!ws) throw new Error("That workbook has no sheet in it");
   const grid = [];
+  const fmts = [];
   ws.eachRow({ includeEmpty: true }, (row, i) => {
     const cells = [];
+    const f = [];
     row.eachCell({ includeEmpty: true }, (cell, c) => {
       cells[c - 1] = cellValue(cell.value);
+      f[c - 1] = String(cell.numFmt || "");
     });
+    fmts[i - 1] = f;
     grid[i - 1] = cells;
   });
   const txt = (v) => String(v ?? "").trim();
@@ -23111,8 +23156,8 @@ async function parseBankBook(b64) {
   const partOf = (row) => {
     let side = "";
     let name = "";
-    const last = iType > iPart ? iType : row.length;
-    for (let i = Math.max(0, iPart); i < last; i++) {
+    const last2 = iType > iPart ? iType : row.length;
+    for (let i = Math.max(0, iPart); i < last2; i++) {
       const s5 = txt(row[i]);
       if (!s5) continue;
       if (!side && /^(dr|cr|to|by)$/i.test(s5)) side = s5;
@@ -23122,9 +23167,38 @@ async function parseBankBook(b64) {
   };
   const out = { company: txt(grid[0]?.[0]), bank, period, from: "", to: "", opening: 0, closing: 0, closing_stated: null, lines: [] };
   const seen = /* @__PURE__ */ new Map();
+  const detailOf = (row, dir, fmt2 = []) => {
+    for (let i = 0; i < row.length; i++) {
+      const m = /^(-?[\d,]+(?:\.\d+)?)\s*(Dr|Cr)\.?$/i.exec(txt(row[i]));
+      if (m) return { amount: round213(Math.abs(n25(m[1].replace(/,/g, "")))), side: m[2].toLowerCase() === "dr" ? "dr" : "cr" };
+    }
+    for (let i = 0; i < row.length; i++) {
+      if (i === iDate || i === iNo) continue;
+      const v = row[i];
+      if (typeof v === "number" && Math.abs(v) > 4e-3) {
+        const f = String(fmt2[i] || "");
+        const fDr = /"?\bDr\b/i.test(f);
+        const fCr = /"?\bCr\b/i.test(f);
+        let side = fDr && !fCr ? "dr" : fCr && !fDr ? "cr" : i === iDr ? "dr" : i === iCr ? "cr" : dir === "out" ? "dr" : "cr";
+        if (fDr && fCr && v < 0) side = "cr";
+        else if (fDr && fCr) side = "dr";
+        else if (!fDr && !fCr && v < 0) side = side === "dr" ? "cr" : "dr";
+        return { amount: round213(Math.abs(v)), side };
+      }
+    }
+    return null;
+  };
+  let last = null;
   for (let r = headAt + 1; r < grid.length; r++) {
     const row = grid[r] || [];
     const { side, name } = partOf(row);
+    if (last && !isoDate(row[iDate]) && !txt(row[iNo]) && name && !/^(opening|closing)\s*balance$/i.test(name)) {
+      const d = detailOf(row, last.dir, fmts[r] || []);
+      if (d) {
+        last.details = [...last.details || [], { name, party_key: tallyKey(name), amount: d.amount, side: d.side }];
+        continue;
+      }
+    }
     const dr = round213(n25(row[iDr]));
     const cr = round213(n25(row[iCr]));
     if (/^opening\s*balance$/i.test(name)) {
@@ -23146,7 +23220,7 @@ async function parseBankBook(b64) {
     const dup = seen.get(key3) || 0;
     seen.set(key3, dup + 1);
     if (dup) key3 = `${key3}#${r + 1}`;
-    out.lines.push({
+    const line = {
       key: key3,
       row: r + 1,
       date,
@@ -23158,8 +23232,11 @@ async function parseBankBook(b64) {
       amount: dr > 0 ? dr : cr,
       multi: /as\s*per\s*details/i.test(party),
       cancelled
-    });
+    };
+    out.lines.push(line);
+    last = line;
   }
+  for (const l of out.lines) if (!l.multi) delete l.details;
   if (!out.lines.length) throw new Error("No vouchers found in the book \u2014 check it is the bank book exported from Tally");
   const p = periodOf(period);
   const dates = out.lines.map((x) => x.date).sort();
@@ -23260,9 +23337,11 @@ async function readStatement(b64, name) {
 async function reconcileBank(v) {
   const cid = await companyOf(v);
   const account = await bankAccount(Number(v.account_id) || 0);
-  const book = await parseBankBook(String(v.data_base64 || ""));
-  const entries = await bankEntries(cid, Number(account.id), book.from, book.to);
-  const mapped = await resolveNames([...new Set(book.lines.map((l) => l.party).filter(Boolean))]);
+  const book = await parsedFile("bank", String(v.data_base64 || ""), () => parseBankBook(String(v.data_base64 || "")));
+  const entries = await booksRead(`bank:${cid}:${Number(account.id)}:${book.from}:${book.to}`, () => bankEntries(cid, Number(account.id), book.from, book.to));
+  const mapped = await resolveNames([
+    ...new Set([...book.lines.map((l) => l.party), ...book.lines.flatMap((l) => (l.details || []).map((d) => d.name))].filter(Boolean))
+  ]);
   const used = /* @__PURE__ */ new Set();
   const rows2 = [];
   const short = (b) => ({ id: b.id, code: b.code, vch_type: b.vch_type, vch_no: b.vch_no, date: b.date, dir: b.dir, amount: b.amount, payment_id: b.payment_id, party: b.counter[0]?.name || "", counter: b.counter, narration: b.narration });
@@ -23377,7 +23456,10 @@ function explainBank(rows2, hasStatement = false) {
     const bName = b ? `${b.code || b.vch_type}${b.vch_no ? ` \xB7 ${b.vch_no}` : ""}` : "";
     if (r.status === "missing_here" && t) {
       say2.push(`In Tally on ${dmy2(t.date)}: ${inr5(t.amount)} ${way(t.dir)}${t.party ? `, ${t.dir === "in" ? "from" : "to"} ${t.party}` : ""} (${tName}) \u2014 not in this bank here.`);
-      fix = t.multi ? 'Tally shows it "as per details" \u2014 a voucher of several ledgers. Enter it here by hand from the voucher in Tally.' : `Book it from Tally \u2014 it posts as a ${t.dir === "in" ? "RECEIPT" : "PAYMENT"} (or CONTRA, between banks and cash) on this bank under Tally's number.`;
+      if (t.multi && Array.isArray(t.details) && t.details.length) {
+        say2.push(`Its ledgers: ${t.details.map((d) => `${d.name} ${inr5(d.amount)} ${d.side === "dr" ? "Dr" : "Cr"}`).join(", ")}.`);
+      }
+      fix = t.multi ? detailsReady(t) ? "Book it from Tally \u2014 every ledger under it is in the detailed book, and it posts with all of them." : 'Tally shows it "as per details" \u2014 a voucher of several ledgers. Export the bank book from Tally in Detailed view (Alt+F1) so its ledgers come with it, or enter it here by hand.' : `Book it from Tally \u2014 it posts as a ${t.dir === "in" ? "RECEIPT" : "PAYMENT"} (or CONTRA, between banks and cash) on this bank under Tally's number.`;
     } else if (r.status === "possible" && t && b) {
       say2.push(
         `Tally has ${inr5(t.amount)} ${way(t.dir)} on ${dmy2(t.date)}${t.party ? ` for ${t.party}` : ""}. These books have ${bName} on ${dmy2(b.date)} for the same amount, ${b.party ? `against ${b.party}` : ""} \u2014 very likely the same entry.`
@@ -23430,7 +23512,7 @@ async function suggestBank(bank) {
   return banks.find((b) => companyKey(String(b.name)) === companyKey(bank)) || null;
 }
 async function suggestTallyBank(v) {
-  const book = await parseBankBook(String(v.data_base64 || ""));
+  const book = await parsedFile("bank", String(v.data_base64 || ""), () => parseBankBook(String(v.data_base64 || "")));
   const s5 = await suggestBank(book.bank);
   return { bank: book.bank, period: book.period, suggested: s5 ? { id: Number(s5.id), name: String(s5.name) } : null };
 }
@@ -23440,7 +23522,7 @@ async function checkTallyBank(v) {
   const { ownedVoucherIds: ownedVoucherIds2 } = await Promise.resolve().then(() => (init_voucherOwnership(), voucherOwnership_exports));
   const owned = await ownedVoucherIds2();
   for (const r of rows2) {
-    r.bookable = (r.status === "missing_here" || r.status === "possible") && !!r.tally && !r.tally.cancelled && !r.tally.multi;
+    r.bookable = (r.status === "missing_here" || r.status === "possible") && !!r.tally && !r.tally.cancelled && (!r.tally.multi || detailsReady(r.tally));
     if (r.status === "mismatch" && r.books?.id && r.diffs.length === 1 && r.diffs[0].field === "date") {
       r.redate = owned.has(Number(r.books.id)) ? "owned" : "yes";
     }
@@ -23506,8 +23588,8 @@ function bankGroupFor(name) {
   return "";
 }
 function blockOf2(t, lim) {
-  if (t.multi) return 'Tally shows it "as per details" \u2014 several ledgers; enter it by hand';
-  if (!t.party) return "Tally names no ledger on it";
+  if (t.multi && !detailsReady(t)) return 'Tally shows it "as per details" \u2014 export the detailed book (Alt+F1) or enter it by hand';
+  if (!t.party && !t.multi) return "Tally names no ledger on it";
   if (lim.booksFrom && t.date < lim.booksFrom) return `dated before these books begin (${lim.booksFrom})`;
   if (lim.windowFrom && t.date < lim.windowFrom) return `dated before your working window (${lim.windowFrom})`;
   if (!(t.amount > 0)) return "it has no amount";
@@ -23522,7 +23604,17 @@ async function previewTallyBankVouchers(v) {
   const picked = book.lines.filter((t) => wanted.has(t.key) && !t.cancelled && ["missing_here", "possible"].includes(String(statusOf2.get(t.key)?.status)));
   const roles = /* @__PURE__ */ new Map();
   for (const t of picked) {
-    if (!t.party || t.multi) continue;
+    if (t.multi) {
+      if (!detailsReady(t)) continue;
+      for (const d of t.details || []) {
+        const g2 = roles.get(d.party_key) || { name: d.name, role: "ledger", count: 0, amount: 0 };
+        g2.count += 1;
+        g2.amount = round213(g2.amount + d.amount);
+        roles.set(d.party_key, g2);
+      }
+      continue;
+    }
+    if (!t.party) continue;
     const g = roles.get(t.party_key) || { name: t.party, role: "ledger", count: 0, amount: 0 };
     g.count += 1;
     g.amount = round213(g.amount + t.amount);
@@ -23540,7 +23632,11 @@ async function previewTallyBankVouchers(v) {
         date: t.date,
         party: t.party,
         amount: t.amount,
-        lines: t.dir === "in" ? [
+        lines: t.multi ? [
+          // The detailed book's ledgers, then the bank for the whole amount.
+          ...(t.details || []).map((d) => ({ name: d.name, key: d.party_key, dr: d.side === "dr" ? d.amount : 0, cr: d.side === "cr" ? d.amount : 0 })),
+          t.dir === "in" ? { name: bankName, key: null, fixed: bankName, dr: t.amount, cr: 0 } : { name: bankName, key: null, fixed: bankName, dr: 0, cr: t.amount }
+        ] : t.dir === "in" ? [
           { name: bankName, key: null, fixed: bankName, dr: t.amount, cr: 0 },
           { name: t.party, key: t.party_key, dr: 0, cr: t.amount }
         ] : [
@@ -23590,15 +23686,18 @@ async function postTallyBankVouchers(v) {
       skipped.push({ vch_no: label2, reason: block });
       continue;
     }
-    const m = state.mapped.get(t.party_key);
-    if (!m) {
-      skipped.push({ vch_no: label2, reason: `not mapped yet: ${t.party}` });
+    const legs = t.multi ? (t.details || []).map((d) => ({ name: d.name, key: d.party_key, amount: d.amount, side: d.side })) : [{ name: t.party, key: t.party_key, amount: t.amount, side: t.dir === "in" ? "cr" : "dr" }];
+    const unmapped = legs.filter((g) => !state.mapped.get(g.key));
+    if (unmapped.length) {
+      skipped.push({ vch_no: label2, reason: `not mapped yet: ${unmapped.map((g) => g.name).join(", ")}` });
       continue;
     }
-    if (m.account_id === Number(state.account.id)) {
-      skipped.push({ vch_no: label2, reason: `${t.party} is mapped to this same bank` });
+    const sameBank = legs.find((g) => state.mapped.get(g.key)?.account_id === Number(state.account.id));
+    if (sameBank) {
+      skipped.push({ vch_no: label2, reason: `${sameBank.name} is mapped to this same bank` });
       continue;
     }
+    const m = state.mapped.get(legs[0].key);
     const head = narrationHead(state.book.bank, t);
     const again = await getClient().execute({
       sql: "SELECT 1 FROM journal_entries WHERE company_id = ? AND (narration = ? OR narration LIKE ?) LIMIT 1",
@@ -23608,15 +23707,13 @@ async function postTallyBankVouchers(v) {
       skipped.push({ vch_no: label2, reason: "it was booked a moment ago" });
       continue;
     }
-    const contra = MONEY_GROUPS.includes(groups.get(m.account_id) || "");
+    const contra = legs.every((g) => MONEY_GROUPS.includes(groups.get(state.mapped.get(g.key).account_id) || ""));
     const vchType = contra ? "CONTRA" : t.dir === "in" ? "RECEIPT" : "PAYMENT";
-    const lines = t.dir === "in" ? [
-      { account: bankName, dr: t.amount },
-      { account: m.account_name, cr: t.amount }
-    ] : [
-      { account: m.account_name, dr: t.amount },
-      { account: bankName, cr: t.amount }
-    ];
+    const legLines = legs.map((g) => {
+      const acc = state.mapped.get(g.key).account_name;
+      return g.side === "dr" ? { account: acc, dr: g.amount } : { account: acc, cr: g.amount };
+    });
+    const lines = t.dir === "in" ? [{ account: bankName, dr: t.amount }, ...legLines] : [...legLines, { account: bankName, cr: t.amount }];
     try {
       const res = await createVoucher({
         date: t.date,
@@ -23692,6 +23789,7 @@ var import_exceljs4, n25, round213, inr5, dmy2, NEAR_DAYS2, MONEY_GROUPS, narrat
 var init_tallyBank = __esm({
   "src/main/tallyBank.ts"() {
     import_exceljs4 = __toESM(require("exceljs"));
+    init_tallyCache();
     init_db();
     init_accounting();
     init_tallyLinks();
@@ -27515,6 +27613,7 @@ init_tallyNotes();
 
 // src/main/tallyRegisters.ts
 var import_exceljs2 = __toESM(require("exceljs"));
+init_tallyCache();
 init_db();
 init_tallyLinks();
 init_dbTransaction();
@@ -27914,8 +28013,8 @@ function purchaseRoute(t) {
 async function reconcile(v) {
   const kind = v.kind === "journal" ? "journal" : "purchase";
   const cid = await companyOf(v);
-  const reg = await parseTallyRegister(String(v.data_base64 || ""), kind);
-  const books = await bookVouchers(cid, kind, reg.from, reg.to);
+  const reg = await parsedFile(`register:${kind}`, String(v.data_base64 || ""), () => parseTallyRegister(String(v.data_base64 || ""), kind));
+  const books = await booksRead(`register:${kind}:${cid}:${reg.from}:${reg.to}`, () => bookVouchers(cid, kind, reg.from, reg.to));
   const names = /* @__PURE__ */ new Set();
   for (const t of reg.vouchers) for (const l of t.lines) names.add(l.name);
   const mapped = await resolveNames([...names]);
@@ -36665,7 +36764,7 @@ async function recordAudit(channel, args, result) {
   );
 }
 function registerIpc() {
-  const READONLY = /:list$|:get$|:items$|:issuances$|:sheet$|:outstanding$|:all$|:summary$|:transfers$|:fyTaxable$|:needs$|:breakdown$|:nextNo$|:liveUsers$|:ips$|:logs$|:dispatchableSales$|:mine$|:pendingCount$|:pending$|:lots$|:unmapped$|:unmappedCount$|:bargainLines$|:bargainNotes$|:bargainInterest$|:consignmentDraws$|^access:heartbeat$|^db:ping$|^db:snapshot$|^app:revision$|^auth:login$|^journal:booksFrom$|^tally:map$|^journal:openings$|^journal:opening$|^journal:accounts$|^journal:statement$|^journal:trialBalance$|^journal:groups$|^journal:groupNames$|^journal:groupTree$|^journal:ledgerMap$|^journal:pendingRefs$|^journal:billsOutstanding$|^journal:tradingAccount$|^dashboard:stats$|^vouchers:nextCode$|^vouchers:forDocument$|^vouchers:alterInfo$|^tfreight:kpis$|^dashboard:position$|^dashboard:layout$|^dashboard:saveLayout$|^productMerge:preview$|^skuRates:parties$|^skuRates:partyCounts$|^consignment:openingLog$|^tags:list$|^tags:for$|^tags:contents$|^consignment:openingLots$|^consignment:invoices$|^tankers:quality$|^tankers:qualityMany$|^tankers:ffaHistory$|^orders:quality$|^gate:partyCategories$|^gate:waivedOuts$|^gate:forRecord$|^notify:rules$|^notify:list$|^notify:run$|^notify:preview$|^notify:people$|^notify:mutes$|^treasury:alerts$|^treasury:paymentTracker$|^facility:exposures$|^facility:headroom$|^company:setActive$|^company:getActive$|^factory:active$|^factory:companies$|^session:setUser$|^lc:repayments$|^lc:parts$|^lc:parts$|^lc:allRepayments$|^lc:getLimit$|^lc:bankLimits$|^lc:paymentIns$|^lc:openTradingInvoices$|^files:pickDocument$|^files:openDocument$|^bankRecon:imports$|^bankRecon:list$|^bankRecon:suggest$|^bd:kpis$|^bd:limits$|^skuStock:adjustments$|^skuOpening:list$|^skuOpening:date$|^stockCount:previous$|^orders:intercompanySource$|^stockOpening:list$|^stockOpening:date$|^stockOpening:sets$|^stockOpening:setLines$|^stockOpening:ppStages$|^stockOpening:ppFreeTotals$|^production:ppDraws$|^bargains:linkedInvoices$|^bargains:linkedVouchers$|^bargains:voucherChoices$|^salesBargains:linkedVouchers$|^salesBargains:voucherChoices$|^bargains:adjustments$|^history:list$|^stockOpening:ppVessels$|^stockOpening:ppReceivers$|^stockOpening:ppWriteoffs$|^work:board$|^work:cutoff$|^work:processes$|^formulationSubcategory:list$|^formulations:versions$|^facility:limitHistory$|^bd:limitReductions$|^bd:allRepayments$|^bd:interestSchedule$|^bd:interestWindow$|^bd:interestPayments$|^bd:linkedOrders$|^bd:parties$|^bd:allParties$|^bd:openTradingInvoices$|^bd:paymentIns$|^bd:partyPayments$|^bd:receiptParts$|^access:entryWindows$|^access:entityHistory$|^trading:list$|^sales:series$|^sales:invoiceGaps$|^salesBargains:returns$|^salesBargains:linkedInvoices$|^salesBargains:unattributedReturns$|^tbill:orphans$|^production:report$|^production:mix$|^repairs:splitTanker:list$|^vouchers:cashflow$|^repairs:paisa:list$/;
+  const READONLY = /:list$|:get$|:items$|:issuances$|:sheet$|:outstanding$|:all$|:summary$|:transfers$|:fyTaxable$|:needs$|:breakdown$|:nextNo$|:liveUsers$|:ips$|:logs$|:dispatchableSales$|:mine$|:pendingCount$|:pending$|:lots$|:unmapped$|:unmappedCount$|:bargainLines$|:bargainNotes$|:bargainInterest$|:consignmentDraws$|^access:heartbeat$|^db:ping$|^db:snapshot$|^app:revision$|^auth:login$|^journal:booksFrom$|^tally:map$|^journal:openings$|^journal:opening$|^journal:accounts$|^journal:statement$|^journal:trialBalance$|^journal:groups$|^journal:groupNames$|^journal:groupTree$|^journal:ledgerMap$|^journal:pendingRefs$|^journal:billsOutstanding$|^journal:tradingAccount$|^dashboard:stats$|^vouchers:nextCode$|^vouchers:forDocument$|^vouchers:alterInfo$|^tfreight:kpis$|^dashboard:position$|^dashboard:layout$|^dashboard:saveLayout$|^productMerge:preview$|^skuRates:parties$|^skuRates:partyCounts$|^consignment:openingLog$|^tags:list$|^tags:for$|^tags:contents$|^consignment:openingLots$|^consignment:invoices$|^tankers:quality$|^tankers:qualityMany$|^tankers:ffaHistory$|^orders:quality$|^gate:partyCategories$|^gate:waivedOuts$|^gate:forRecord$|^notify:rules$|^notify:list$|^notify:run$|^notify:preview$|^notify:people$|^notify:mutes$|^treasury:alerts$|^treasury:paymentTracker$|^facility:exposures$|^facility:headroom$|^company:setActive$|^company:getActive$|^factory:active$|^factory:companies$|^session:setUser$|^lc:repayments$|^lc:parts$|^lc:parts$|^lc:allRepayments$|^lc:getLimit$|^lc:bankLimits$|^lc:paymentIns$|^lc:openTradingInvoices$|^files:pickDocument$|^files:openDocument$|^bankRecon:imports$|^bankRecon:list$|^bankRecon:suggest$|^bd:kpis$|^bd:limits$|^skuStock:adjustments$|^skuOpening:list$|^skuOpening:date$|^stockCount:previous$|^orders:intercompanySource$|^stockOpening:list$|^stockOpening:date$|^stockOpening:sets$|^stockOpening:setLines$|^stockOpening:ppStages$|^stockOpening:ppFreeTotals$|^production:ppDraws$|^bargains:linkedInvoices$|^bargains:linkedVouchers$|^bargains:voucherChoices$|^salesBargains:linkedVouchers$|^salesBargains:voucherChoices$|^bargains:adjustments$|^history:list$|^stockOpening:ppVessels$|^stockOpening:ppReceivers$|^stockOpening:ppWriteoffs$|^work:board$|^work:cutoff$|^work:processes$|^formulationSubcategory:list$|^formulations:versions$|^facility:limitHistory$|^bd:limitReductions$|^bd:allRepayments$|^bd:interestSchedule$|^bd:interestWindow$|^bd:interestPayments$|^bd:linkedOrders$|^bd:parties$|^bd:allParties$|^bd:openTradingInvoices$|^bd:paymentIns$|^bd:partyPayments$|^bd:receiptParts$|^access:entryWindows$|^access:entityHistory$|^trading:list$|^sales:series$|^sales:invoiceGaps$|^salesBargains:returns$|^salesBargains:linkedInvoices$|^salesBargains:unattributedReturns$|^tbill:orphans$|^production:report$|^production:mix$|^repairs:splitTanker:list$|^vouchers:cashflow$|^repairs:paisa:list$|^tallyNotes:(preview|salesCheck|salesPreview|registerCheck|registerPreview|health|batches|companyBanks|bankSuggest|bankCheck|bankPreview|drafts)$/;
   const AUDIT_SKIP = /* @__PURE__ */ new Set(["config:get", "config:save", "session:setUser"]);
   const handle = (channel, fn) => {
     ipcMain.handle(channel, async (e, args) => {
