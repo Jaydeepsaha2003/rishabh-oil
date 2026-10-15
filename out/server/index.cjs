@@ -16352,22 +16352,24 @@ async function listOpenings(companyId) {
   const cid = companyId || getActiveCompanyId();
   const from = await getBooksFrom(cid);
   const res = await c.execute({
-    sql: `SELECT a.id, a.name, a.acc_group,
+    sql: `WITH mv AS (
+            SELECT jl.account_id,
+                   SUM(CASE WHEN ${from ? "je.entry_date >= ?" : "1"} THEN jl.dr - jl.cr ELSE 0 END) AS movement,
+                   SUM(CASE WHEN ${from ? "je.entry_date < ?" : "0"} THEN jl.dr - jl.cr ELSE 0 END) AS before_cutoff
+              FROM journal_lines jl
+              JOIN journal_entries je ON je.id = jl.entry_id
+             WHERE je.company_id = ?
+             GROUP BY jl.account_id
+          )
+          SELECT a.id, a.name, a.acc_group,
                  COALESCE(o.dr, 0) AS dr, COALESCE(o.cr, 0) AS cr,
-                 COALESCE((SELECT SUM(jl.dr) - SUM(jl.cr)
-                             FROM journal_lines jl
-                             JOIN journal_entries je ON je.id = jl.entry_id
-                            WHERE jl.account_id = a.id AND je.company_id = ?
-                              ${from ? "AND je.entry_date >= ?" : ""}), 0) AS movement,
-                 COALESCE((SELECT SUM(jl.dr) - SUM(jl.cr)
-                             FROM journal_lines jl
-                             JOIN journal_entries je ON je.id = jl.entry_id
-                            WHERE jl.account_id = a.id AND je.company_id = ?
-                              ${from ? "AND je.entry_date < ?" : "AND 0"}), 0) AS before_cutoff
+                 COALESCE(mv.movement, 0) AS movement,
+                 COALESCE(mv.before_cutoff, 0) AS before_cutoff
             FROM ledger_accounts a
             LEFT JOIN ledger_openings o ON o.account_id = a.id AND o.company_id = ?
+            LEFT JOIN mv ON mv.account_id = a.id
            ORDER BY a.acc_group, a.name`,
-    args: from ? [cid, from, cid, from, cid] : [cid, cid, cid]
+    args: from ? [from, from, cid, cid] : [cid, cid]
   });
   const rows2 = res.rows.map((r) => {
     const o = {};
@@ -20673,6 +20675,22 @@ var init_tallyCache = __esm({
 });
 
 // src/main/accounting.ts
+var accounting_exports = {};
+__export(accounting_exports, {
+  TALLY_GROUPS: () => TALLY_GROUPS,
+  billsOutstanding: () => billsOutstanding,
+  createVoucher: () => createVoucher,
+  getVoucher: () => getVoucher,
+  groupNature: () => groupNature,
+  listGroups: () => listGroups,
+  listPendingRefs: () => listPendingRefs,
+  listVouchers: () => listVouchers,
+  resolveRefIds: () => resolveRefIds,
+  tradingAccount: () => tradingAccount,
+  trialBalance: () => trialBalance,
+  updateVoucher: () => updateVoucher,
+  voucherSummary: () => voucherSummary
+});
 function toPlain19(res) {
   return res.rows.map((r) => {
     const o = {};
@@ -20983,71 +21001,10 @@ async function listVouchers(from, to, vchType, companyId) {
                  (SELECT sl.invoice_no FROM sales sl WHERE sl.id = je.sale_id) AS sale_invoice_no,
                  (SELECT o.company_id FROM orders o WHERE o.id = je.order_id) AS order_company_id,
                  (SELECT sl.company_id FROM sales sl WHERE sl.id = je.sale_id) AS sale_company_id,
-                 -- WHICH LETTER OF CREDIT POSTED THIS VOUCHER.
-                 --
-                 -- Every LC voucher is already named exactly, by the LC itself
-                 -- or by one of its issuances, repayments or payment-ins \u2014
-                 -- each of those rows holds the journal_entry_id it wrote. So
-                 -- the link is looked up, not guessed at from the narration.
-                 --
-                 -- It has to be looked up, because an LC NUMBER does not
-                 -- identify an LC: this book has LC-1 through LC-8 twice over
-                 -- in one company, and matching by number opened whichever the
-                 -- register happened to return first.
-                 COALESCE(
-                   (SELECT lc.id FROM letters_of_credit lc
-                     WHERE lc.journal_entry_id = je.id
-                        OR lc.interest_journal_entry_id = je.id
-                        OR lc.preclose_journal_entry_id = je.id
-                        OR lc.preclose_interest_journal_entry_id = je.id
-                        OR lc.preclose_payout_journal_entry_id = je.id
-                        OR lc.charges_journal_entry_id = je.id
-                        OR lc.fee_adjust_journal_entry_id = je.id
-                        OR lc.payment_in_journal_entry_id = je.id
-                     LIMIT 1),
-                   (SELECT i.lc_id FROM lc_issuances i WHERE i.journal_entry_id = je.id LIMIT 1),
-                   (SELECT pi.lc_id FROM lc_payment_ins pi WHERE pi.journal_entry_id = je.id LIMIT 1),
-                   (SELECT r.lc_id FROM lc_repayments r
-                     WHERE r.journal_entry_id = je.id OR r.fee_journal_entry_id = je.id LIMIT 1)
-                 ) AS lc_id,
-                 (SELECT l3.lc_no FROM letters_of_credit l3 WHERE l3.id = COALESCE(
-                   (SELECT lc.id FROM letters_of_credit lc
-                     WHERE lc.journal_entry_id = je.id
-                        OR lc.interest_journal_entry_id = je.id
-                        OR lc.preclose_journal_entry_id = je.id
-                        OR lc.preclose_interest_journal_entry_id = je.id
-                        OR lc.preclose_payout_journal_entry_id = je.id
-                        OR lc.charges_journal_entry_id = je.id
-                        OR lc.fee_adjust_journal_entry_id = je.id
-                        OR lc.payment_in_journal_entry_id = je.id
-                     LIMIT 1),
-                   (SELECT i.lc_id FROM lc_issuances i WHERE i.journal_entry_id = je.id LIMIT 1),
-                   (SELECT pi.lc_id FROM lc_payment_ins pi WHERE pi.journal_entry_id = je.id LIMIT 1),
-                   (SELECT r.lc_id FROM lc_repayments r
-                     WHERE r.journal_entry_id = je.id OR r.fee_journal_entry_id = je.id LIMIT 1)
-                 )) AS lc_no,
-                 -- WHICH DISCOUNTED BILL POSTED THIS VOUCHER, and which
-                 -- trading deal, by the same rule as the LC above: the row
-                 -- that wrote the voucher holds its id, so the link is read
-                 -- rather than matched on a number that repeats.
-                 COALESCE(
-                   (SELECT bd.id FROM bill_discountings bd
-                     WHERE bd.journal_entry_id = je.id
-                        OR bd.repay_journal_entry_id = je.id
-                        OR bd.margin_release_journal_entry_id = je.id
-                     LIMIT 1),
-                   (SELECT r2.bd_id FROM bd_repayments r2 WHERE r2.journal_entry_id = je.id LIMIT 1),
-                   (SELECT ip.bd_id FROM bd_interest_payments ip WHERE ip.journal_entry_id = je.id LIMIT 1)
-                 ) AS bd_id,
-                 (SELECT b3.bd_no FROM bill_discountings b3 WHERE b3.id = COALESCE(
-                   (SELECT bd.id FROM bill_discountings bd
-                     WHERE bd.journal_entry_id = je.id
-                        OR bd.repay_journal_entry_id = je.id
-                        OR bd.margin_release_journal_entry_id = je.id
-                     LIMIT 1),
-                   (SELECT r2.bd_id FROM bd_repayments r2 WHERE r2.journal_entry_id = je.id LIMIT 1),
-                   (SELECT ip.bd_id FROM bd_interest_payments ip WHERE ip.journal_entry_id = je.id LIMIT 1)
-                 )) AS bd_no,
+                 -- WHICH LETTER OF CREDIT / DISCOUNTED BILL POSTED THIS
+                 -- VOUCHER is read once for the whole list (docLinks below),
+                 -- not looked up voucher by voucher: those lookups were three
+                 -- quarters of the Day Book's time.
                  -- A TRADING DEAL IS TWO INVOICES, so its vouchers are their
                  -- vouchers. A purchase or sale that belongs to one opens the
                  -- deal, where both sides and the margin are, rather than one
@@ -21107,11 +21064,98 @@ async function listVouchers(from, to, vchType, companyId) {
   const rows2 = toPlain19(res);
   const owned = await ownedVoucherIds();
   const codes = await voucherCodeMap(cid).catch(() => /* @__PURE__ */ new Map());
+  const links = await docLinks();
   for (const r of rows2) {
     r.manual = !owned.has(Number(r.id));
     r.voucher_code = codes.get(Number(r.id)) || "";
+    const lc = links.lc.get(Number(r.id));
+    const bd = links.bd.get(Number(r.id));
+    r.lc_id = lc ? lc.id : null;
+    r.lc_no = lc ? lc.no : null;
+    r.bd_id = bd ? bd.id : null;
+    r.bd_no = bd ? bd.no : null;
   }
   return rows2;
+}
+async function docLinks() {
+  const c = getClient();
+  const lc = /* @__PURE__ */ new Map();
+  const bd = /* @__PURE__ */ new Map();
+  const put = (m, je, id, no) => {
+    const k = Number(je) || 0;
+    if (k && !m.has(k)) m.set(k, { id, no });
+  };
+  const safe = async (sql) => {
+    try {
+      return toPlain19(await c.execute({ sql, args: [] }));
+    } catch {
+      return [];
+    }
+  };
+  const lcs = await safe(`SELECT id, lc_no, journal_entry_id, interest_journal_entry_id, preclose_journal_entry_id, preclose_interest_journal_entry_id,
+                                 preclose_payout_journal_entry_id, charges_journal_entry_id, fee_adjust_journal_entry_id, payment_in_journal_entry_id
+                            FROM letters_of_credit ORDER BY id`);
+  const lcNo = new Map(lcs.map((l) => [Number(l.id), l.lc_no == null ? "" : String(l.lc_no)]));
+  for (const l of lcs)
+    for (const col of ["journal_entry_id", "interest_journal_entry_id", "preclose_journal_entry_id", "preclose_interest_journal_entry_id", "preclose_payout_journal_entry_id", "charges_journal_entry_id", "fee_adjust_journal_entry_id", "payment_in_journal_entry_id"])
+      put(lc, l[col], Number(l.id), lcNo.get(Number(l.id)) || "");
+  for (const sql of [
+    "SELECT lc_id, journal_entry_id AS je FROM lc_issuances ORDER BY rowid",
+    "SELECT lc_id, journal_entry_id AS je FROM lc_payment_ins ORDER BY rowid",
+    "SELECT lc_id, journal_entry_id AS je, fee_journal_entry_id AS je2 FROM lc_repayments ORDER BY rowid"
+  ]) {
+    const rs = await safe(sql);
+    for (const r of rs) {
+      const id = Number(r.lc_id);
+      if (!id) continue;
+      put(lc, r.je, id, lcNo.get(id) ?? "");
+      if (r.je2 != null) put(lc, r.je2, id, lcNo.get(id) ?? "");
+    }
+  }
+  const bds = await safe("SELECT id, bd_no, journal_entry_id, repay_journal_entry_id, margin_release_journal_entry_id FROM bill_discountings ORDER BY id");
+  const bdNo = new Map(bds.map((x) => [Number(x.id), x.bd_no == null ? "" : String(x.bd_no)]));
+  for (const x of bds)
+    for (const col of ["journal_entry_id", "repay_journal_entry_id", "margin_release_journal_entry_id"]) put(bd, x[col], Number(x.id), bdNo.get(Number(x.id)) || "");
+  for (const sql of ["SELECT bd_id, journal_entry_id AS je FROM bd_repayments ORDER BY rowid", "SELECT bd_id, journal_entry_id AS je FROM bd_interest_payments ORDER BY rowid"]) {
+    const rs = await safe(sql);
+    for (const r of rs) {
+      const id = Number(r.bd_id);
+      if (id) put(bd, r.je, id, bdNo.get(id) ?? "");
+    }
+  }
+  return { lc, bd };
+}
+async function voucherSummary(from, to, companyId) {
+  const cid = companyId || getActiveCompanyId();
+  const conds = ["je.company_id = ?"];
+  const args = [cid];
+  if (from) {
+    conds.push("je.entry_date >= ?");
+    args.push(from);
+  }
+  if (to) {
+    conds.push("je.entry_date <= ?");
+    args.push(to);
+  }
+  const rows2 = toPlain19(
+    await getClient().execute({
+      sql: `SELECT UPPER(je.vch_type) AS vch_type, COUNT(*) AS n, COALESCE(SUM(t.amt), 0) AS amount
+              FROM journal_entries je
+              LEFT JOIN (SELECT entry_id, SUM(dr) AS amt FROM journal_lines GROUP BY entry_id) t ON t.entry_id = je.id
+             WHERE ${conds.join(" AND ")}
+             GROUP BY UPPER(je.vch_type)`,
+      args
+    })
+  );
+  const byType = {};
+  let count = 0;
+  let amount2 = 0;
+  for (const r of rows2) {
+    byType[String(r.vch_type || "")] = Number(r.n) || 0;
+    count += Number(r.n) || 0;
+    amount2 += Number(r.amount) || 0;
+  }
+  return { count, amount: Math.round(amount2 * 100) / 100, by_type: byType };
 }
 async function trialBalance(from, to, companyId) {
   const c = getClient();
@@ -23253,7 +23297,7 @@ async function reconcile(v) {
         if (t.cancelled || partTaken.has(t.key) || t.total > b.total + tol || daysApart2(t.date, b.date) > NEAR_DAYS) return false;
         const tDr = top(t.lines, "dr");
         const tCr = top(t.lines, "cr");
-        return !!tDr && !!tCr && kin(tDr, bDr) && kin(tCr, bCr);
+        return !!tDr && !!tCr && kin(tCr, bCr) && b.lines.some((l) => l.dr > 0 && kin(tDr, l));
       };
       const loose = rest.filter((t) => fits(t));
       const copies = [...byNumber.values()].filter((x) => fits(x.t)).map((x) => x.t);
@@ -24587,7 +24631,8 @@ function explainBank(rows2, hasStatement = false) {
       say2.push(
         `Tally has ${inr5(t.amount)} ${way(t.dir)} on ${dmy2(t.date)}${t.party ? ` for ${t.party}` : ""}. These books have ${bName} on ${dmy2(b.date)} for the same amount, ${b.party ? `against ${b.party}` : ""} \u2014 very likely the same entry.`
       );
-      fix = `If it is the same entry, map "${t.party}" to ${b.party || "that ledger"} (Book from Tally \u2192 Ledgers) and check again. If it is a different one, book it and tick "Book anyway".`;
+      const detailed = !!t.multi || /as per details/i.test(String(t.party || ""));
+      fix = detailed ? `If it is the same entry, press "Same entry \u2014 remember" \u2014 it then reads as matched in every check. If it is a different one, book it and tick "Book anyway".` : `If it is the same entry, press "Same entry \u2014 remember", or map "${t.party}" to ${b.party || "that ledger"} (Book from Tally \u2192 Ledgers) and check again. If it is a different one, book it and tick "Book anyway".`;
     } else if (r.status === "mismatch" && t && b) {
       for (const d of r.diffs) {
         if (d.field === "date") say2.push(`Dated ${dmy2(d.tally)} in Tally, ${dmy2(d.books)} here (${bName}).`);
@@ -24684,11 +24729,18 @@ async function checkTallyBank(v) {
   const fromTally = (b) => /^imported from tally/i.test(String(b?.narration || ""));
   const extra = rows2.filter((r) => r.status === "missing_tally" && r.books?.id && owned.has(Number(r.books.id)) && !fromTally(r.books));
   const takenCopy = /* @__PURE__ */ new Set();
+  const overBy = (copy, own) => round213(copy - own);
+  const chargesFit = (copy, own) => {
+    const d = overBy(copy, own);
+    return Math.abs(d) <= 1 || d > 0 && d <= Math.min(1e4, own * 1e-3 + 1);
+  };
   for (const x of extra) {
     const xb = x.books;
     const twin = rows2.filter(
-      (r) => (r.status === "matched" || r.status === "mismatch") && !takenCopy.has(String(r.key)) && fromTally(r.books) && r.books.dir === xb.dir && Math.abs(n25(r.books.amount) - n25(xb.amount)) <= 1 && daysApart3(String(r.books.date), String(xb.date)) <= 3
-    ).sort((a, b) => daysApart3(String(a.books.date), String(xb.date)) - daysApart3(String(b.books.date), String(xb.date)))[0];
+      (r) => (r.status === "matched" || r.status === "mismatch") && !takenCopy.has(String(r.key)) && fromTally(r.books) && r.books.dir === xb.dir && chargesFit(n25(r.books.amount), n25(xb.amount)) && daysApart3(String(r.books.date), String(xb.date)) <= 3
+    ).sort(
+      (a, b) => Math.abs(overBy(n25(a.books.amount), n25(xb.amount))) - Math.abs(overBy(n25(b.books.amount), n25(xb.amount))) || daysApart3(String(a.books.date), String(xb.date)) - daysApart3(String(b.books.date), String(xb.date))
+    )[0];
     if (!twin) continue;
     takenCopy.add(String(twin.key));
     const copy = String(twin.books.code || "the voucher booked from Tally");
@@ -24701,6 +24753,14 @@ async function checkTallyBank(v) {
       `This is very likely Tally's ${tName}, which was also booked from Tally as ${copy} \u2014 the same ${inr5(n25(xb.amount))} is in these books twice.`
     ];
     x.fix = `Reverse ${copy} (the copy booked from Tally, on ${tName}). This one, ${own}, then matches Tally on the next check.`;
+    const extraCharges = overBy(n25(twin.books.amount), n25(xb.amount));
+    if (extraCharges > 1) {
+      x.duplicate_of.charges = extraCharges;
+      x.explain.push(
+        `Tally's ${inr5(n25(twin.books.amount))} carries ${inr5(extraCharges)} of bank charges that ${own} (${inr5(n25(xb.amount))}) does not.`
+      );
+      x.fix = `Reverse ${copy} (the copy booked from Tally, on ${tName}). Then add the ${inr5(extraCharges)} as Bank charges on the repayment behind ${own} (Edit on that repayment) \u2014 it then matches Tally's ${inr5(n25(twin.books.amount))} on the next check.`;
+    }
     const chain = await clearingJournal(cid, Number(account.id), Number(twin.books.id), Number(xb.id), String(twin.books.date));
     if (chain) {
       x.duplicate_of.chain = chain;
@@ -37479,6 +37539,10 @@ function registerIpc() {
   handle("productMerge:list", () => listProductMerges());
   handle("productionPlan:get", (_e, { date }) => getProductionPlan(date));
   handle("productionPlan:save", (_e, { date, rows: rows2 }) => saveProductionPlan(date, rows2));
+  handle("vouchers:summary", async (_e, args) => {
+    const { voucherSummary: voucherSummary2 } = await Promise.resolve().then(() => (init_accounting(), accounting_exports));
+    return voucherSummary2(args?.from, args?.to, args?.companyId);
+  });
   handle(
     "vouchers:list",
     (_e, args) => listVouchers(args?.from, args?.to, args?.vchType, args?.companyId)
