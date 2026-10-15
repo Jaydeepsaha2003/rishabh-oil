@@ -21756,6 +21756,34 @@ var init_tallyLinks = __esm({
 });
 
 // src/main/tallyNotes.ts
+var tallyNotes_exports = {};
+__export(tallyNotes_exports, {
+  cellValue: () => cellValue,
+  clearTallyDraft: () => clearTallyDraft,
+  companyKey: () => companyKey,
+  companyOf: () => companyOf,
+  createTallyNoteLedger: () => createTallyNoteLedger,
+  drFirst: () => drFirst,
+  getBankBook: () => getBankBook,
+  isoDate: () => isoDate,
+  linkTallyParty: () => linkTallyParty,
+  listBankBooks: () => listBankBooks,
+  listTallyDrafts: () => listTallyDrafts,
+  mappingRows: () => mappingRows,
+  periodOf: () => periodOf,
+  postTallyNotes: () => postTallyNotes,
+  postTallySalesVouchers: () => postTallySalesVouchers,
+  previewTallyNotes: () => previewTallyNotes,
+  previewTallySalesVouchers: () => previewTallySalesVouchers,
+  reconcileTallySales: () => reconcileTallySales,
+  resolveNames: () => resolveNames,
+  saleDateLimits: () => saleDateLimits,
+  saveTallyDraft: () => saveTallyDraft,
+  saveTallyNoteMap: () => saveTallyNoteMap,
+  tallyKey: () => tallyKey,
+  toPlain: () => toPlain20,
+  vchKey: () => vchKey
+});
 function toPlain20(res) {
   return res.rows.map((r) => ({ ...r }));
 }
@@ -22675,6 +22703,37 @@ async function listTallyDrafts(v) {
     }
     return { kind: String(r.kind), file_name: String(r.file_name || ""), data_base64: String(r.data_base64), picked, allow_maybe: !!Number(r.allow_maybe), saved_at: String(r.updated_at || "") };
   });
+}
+async function listBankBooks(v) {
+  await ensureDraftTable();
+  const cid = await companyOf(v);
+  return toPlain20(
+    await getClient().execute({
+      sql: `SELECT kind, username, file_name, updated_at FROM tally_import_drafts
+             WHERE company_id = ? AND kind LIKE 'bank:%' ORDER BY updated_at DESC`,
+      args: [cid]
+    })
+  ).map((r) => ({
+    kind: String(r.kind),
+    account_id: Number(String(r.kind).slice(5)) || 0,
+    username: String(r.username),
+    mine: String(r.username) === draftOwner(),
+    file_name: String(r.file_name || ""),
+    saved_at: String(r.updated_at || "")
+  }));
+}
+async function getBankBook(v) {
+  await ensureDraftTable();
+  const cid = await companyOf(v);
+  const kind = `bank:${Number(v.account_id) || 0}`;
+  const who2 = String(v.username || "").trim();
+  const r = await getClient().execute({
+    sql: who2 ? "SELECT kind, username, file_name, data_base64, updated_at FROM tally_import_drafts WHERE company_id = ? AND kind = ? AND username = ?" : "SELECT kind, username, file_name, data_base64, updated_at FROM tally_import_drafts WHERE company_id = ? AND kind = ? ORDER BY updated_at DESC LIMIT 1",
+    args: who2 ? [cid, kind, who2] : [cid, kind]
+  });
+  const x = r.rows[0];
+  if (!x) return null;
+  return { kind: String(x.kind), username: String(x.username), file_name: String(x.file_name || ""), data_base64: String(x.data_base64), saved_at: String(x.updated_at || "") };
 }
 async function clearTallyDraft(v) {
   await ensureDraftTable();
@@ -36863,7 +36922,7 @@ async function recordAudit(channel, args, result) {
   );
 }
 function registerIpc() {
-  const READONLY = /:list$|:get$|:items$|:issuances$|:sheet$|:outstanding$|:all$|:summary$|:transfers$|:fyTaxable$|:needs$|:breakdown$|:nextNo$|:liveUsers$|:ips$|:logs$|:dispatchableSales$|:mine$|:pendingCount$|:pending$|:lots$|:unmapped$|:unmappedCount$|:bargainLines$|:bargainNotes$|:bargainInterest$|:consignmentDraws$|^access:heartbeat$|^db:ping$|^db:snapshot$|^app:revision$|^auth:login$|^journal:booksFrom$|^tally:map$|^journal:openings$|^journal:opening$|^journal:accounts$|^journal:statement$|^journal:trialBalance$|^journal:groups$|^journal:groupNames$|^journal:groupTree$|^journal:ledgerMap$|^journal:pendingRefs$|^journal:billsOutstanding$|^journal:tradingAccount$|^dashboard:stats$|^vouchers:nextCode$|^vouchers:forDocument$|^vouchers:alterInfo$|^tfreight:kpis$|^dashboard:position$|^dashboard:layout$|^dashboard:saveLayout$|^productMerge:preview$|^skuRates:parties$|^skuRates:partyCounts$|^consignment:openingLog$|^tags:list$|^tags:for$|^tags:contents$|^consignment:openingLots$|^consignment:invoices$|^tankers:quality$|^tankers:qualityMany$|^tankers:ffaHistory$|^orders:quality$|^gate:partyCategories$|^gate:waivedOuts$|^gate:forRecord$|^notify:rules$|^notify:list$|^notify:run$|^notify:preview$|^notify:people$|^notify:mutes$|^treasury:alerts$|^treasury:paymentTracker$|^facility:exposures$|^facility:headroom$|^company:setActive$|^company:getActive$|^factory:active$|^factory:companies$|^session:setUser$|^lc:repayments$|^lc:parts$|^lc:parts$|^lc:allRepayments$|^lc:getLimit$|^lc:bankLimits$|^lc:paymentIns$|^lc:openTradingInvoices$|^files:pickDocument$|^files:openDocument$|^bankRecon:imports$|^bankRecon:list$|^bankRecon:suggest$|^bd:kpis$|^bd:limits$|^skuStock:adjustments$|^skuOpening:list$|^skuOpening:date$|^stockCount:previous$|^orders:intercompanySource$|^stockOpening:list$|^stockOpening:date$|^stockOpening:sets$|^stockOpening:setLines$|^stockOpening:ppStages$|^stockOpening:ppFreeTotals$|^production:ppDraws$|^bargains:linkedInvoices$|^bargains:linkedVouchers$|^bargains:voucherChoices$|^salesBargains:linkedVouchers$|^salesBargains:voucherChoices$|^bargains:adjustments$|^history:list$|^stockOpening:ppVessels$|^stockOpening:ppReceivers$|^stockOpening:ppWriteoffs$|^work:board$|^work:cutoff$|^work:processes$|^formulationSubcategory:list$|^formulations:versions$|^facility:limitHistory$|^bd:limitReductions$|^bd:allRepayments$|^bd:interestSchedule$|^bd:interestWindow$|^bd:interestPayments$|^bd:linkedOrders$|^bd:parties$|^bd:allParties$|^bd:openTradingInvoices$|^bd:paymentIns$|^bd:partyPayments$|^bd:receiptParts$|^access:entryWindows$|^access:entityHistory$|^trading:list$|^sales:series$|^sales:invoiceGaps$|^salesBargains:returns$|^salesBargains:linkedInvoices$|^salesBargains:unattributedReturns$|^tbill:orphans$|^production:report$|^production:mix$|^repairs:splitTanker:list$|^vouchers:cashflow$|^repairs:paisa:list$|^tallyNotes:(preview|salesCheck|salesPreview|registerCheck|registerPreview|health|batches|companyBanks|bankSuggest|bankCheck|bankPreview|drafts)$/;
+  const READONLY = /:list$|:get$|:items$|:issuances$|:sheet$|:outstanding$|:all$|:summary$|:transfers$|:fyTaxable$|:needs$|:breakdown$|:nextNo$|:liveUsers$|:ips$|:logs$|:dispatchableSales$|:mine$|:pendingCount$|:pending$|:lots$|:unmapped$|:unmappedCount$|:bargainLines$|:bargainNotes$|:bargainInterest$|:consignmentDraws$|^access:heartbeat$|^db:ping$|^db:snapshot$|^app:revision$|^auth:login$|^journal:booksFrom$|^tally:map$|^journal:openings$|^journal:opening$|^journal:accounts$|^journal:statement$|^journal:trialBalance$|^journal:groups$|^journal:groupNames$|^journal:groupTree$|^journal:ledgerMap$|^journal:pendingRefs$|^journal:billsOutstanding$|^journal:tradingAccount$|^dashboard:stats$|^vouchers:nextCode$|^vouchers:forDocument$|^vouchers:alterInfo$|^tfreight:kpis$|^dashboard:position$|^dashboard:layout$|^dashboard:saveLayout$|^productMerge:preview$|^skuRates:parties$|^skuRates:partyCounts$|^consignment:openingLog$|^tags:list$|^tags:for$|^tags:contents$|^consignment:openingLots$|^consignment:invoices$|^tankers:quality$|^tankers:qualityMany$|^tankers:ffaHistory$|^orders:quality$|^gate:partyCategories$|^gate:waivedOuts$|^gate:forRecord$|^notify:rules$|^notify:list$|^notify:run$|^notify:preview$|^notify:people$|^notify:mutes$|^treasury:alerts$|^treasury:paymentTracker$|^facility:exposures$|^facility:headroom$|^company:setActive$|^company:getActive$|^factory:active$|^factory:companies$|^session:setUser$|^lc:repayments$|^lc:parts$|^lc:parts$|^lc:allRepayments$|^lc:getLimit$|^lc:bankLimits$|^lc:paymentIns$|^lc:openTradingInvoices$|^files:pickDocument$|^files:openDocument$|^bankRecon:imports$|^bankRecon:list$|^bankRecon:suggest$|^bd:kpis$|^bd:limits$|^skuStock:adjustments$|^skuOpening:list$|^skuOpening:date$|^stockCount:previous$|^orders:intercompanySource$|^stockOpening:list$|^stockOpening:date$|^stockOpening:sets$|^stockOpening:setLines$|^stockOpening:ppStages$|^stockOpening:ppFreeTotals$|^production:ppDraws$|^bargains:linkedInvoices$|^bargains:linkedVouchers$|^bargains:voucherChoices$|^salesBargains:linkedVouchers$|^salesBargains:voucherChoices$|^bargains:adjustments$|^history:list$|^stockOpening:ppVessels$|^stockOpening:ppReceivers$|^stockOpening:ppWriteoffs$|^work:board$|^work:cutoff$|^work:processes$|^formulationSubcategory:list$|^formulations:versions$|^facility:limitHistory$|^bd:limitReductions$|^bd:allRepayments$|^bd:interestSchedule$|^bd:interestWindow$|^bd:interestPayments$|^bd:linkedOrders$|^bd:parties$|^bd:allParties$|^bd:openTradingInvoices$|^bd:paymentIns$|^bd:partyPayments$|^bd:receiptParts$|^access:entryWindows$|^access:entityHistory$|^trading:list$|^sales:series$|^sales:invoiceGaps$|^salesBargains:returns$|^salesBargains:linkedInvoices$|^salesBargains:unattributedReturns$|^tbill:orphans$|^production:report$|^production:mix$|^repairs:splitTanker:list$|^vouchers:cashflow$|^repairs:paisa:list$|^tallyNotes:(preview|salesCheck|salesPreview|registerCheck|registerPreview|health|batches|companyBanks|bankSuggest|bankCheck|bankPreview|drafts|bankBooks|bankBook)$/;
   const AUDIT_SKIP = /* @__PURE__ */ new Set(["config:get", "config:save", "session:setUser"]);
   const handle = (channel, fn) => {
     ipcMain.handle(channel, async (e, args) => {
@@ -37190,6 +37249,14 @@ function registerIpc() {
   handle("tallyNotes:companyBanks", (_e, { values }) => listCompanyBanks(values));
   handle("tallyNotes:setCompanyBank", (_e, { values }) => setCompanyBank(values));
   handle("tallyNotes:bankSuggest", (_e, { values }) => suggestTallyBank(values));
+  handle("tallyNotes:bankBooks", async (_e, { values } = {}) => {
+    const { listBankBooks: listBankBooks2 } = await Promise.resolve().then(() => (init_tallyNotes(), tallyNotes_exports));
+    return listBankBooks2(values);
+  });
+  handle("tallyNotes:bankBook", async (_e, { values }) => {
+    const { getBankBook: getBankBook2 } = await Promise.resolve().then(() => (init_tallyNotes(), tallyNotes_exports));
+    return getBankBook2(values);
+  });
   handle("tallyNotes:bankCheck", (_e, { values }) => checkTallyBank(values));
   handle(
     "tallyNotes:bankPreview",
