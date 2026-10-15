@@ -24501,6 +24501,32 @@ async function checkTallyBank(v) {
       r.redate = owned.has(Number(r.books.id)) && !bdMovable.has(Number(r.books.id)) ? "owned" : "yes";
     }
   }
+  const fromTally = (b) => /^imported from tally/i.test(String(b?.narration || ""));
+  const extra = rows2.filter((r) => r.status === "missing_tally" && r.books?.id && owned.has(Number(r.books.id)) && !fromTally(r.books));
+  const takenCopy = /* @__PURE__ */ new Set();
+  for (const x of extra) {
+    const xb = x.books;
+    const twin = rows2.filter(
+      (r) => (r.status === "matched" || r.status === "mismatch") && !takenCopy.has(String(r.key)) && fromTally(r.books) && r.books.dir === xb.dir && Math.abs(n25(r.books.amount) - n25(xb.amount)) <= 1 && daysApart3(String(r.books.date), String(xb.date)) <= 3
+    ).sort((a, b) => daysApart3(String(a.books.date), String(xb.date)) - daysApart3(String(b.books.date), String(xb.date)))[0];
+    if (!twin) continue;
+    takenCopy.add(String(twin.key));
+    const copy = String(twin.books.code || "the voucher booked from Tally");
+    const own = String(xb.code || "the document voucher");
+    const tName = `${String(twin.tally?.vch_type || "")} No. ${String(twin.tally?.vch_no || "")}`.trim();
+    x.duplicate_of = { id: Number(twin.books.id), code: copy };
+    twin.duplicate = { id: Number(xb.id), code: own };
+    x.explain = [
+      ...x.explain || [],
+      `This is very likely Tally's ${tName}, which was also booked from Tally as ${copy} \u2014 the same ${inr5(n25(xb.amount))} is in these books twice.`
+    ];
+    x.fix = `Reverse ${copy} (the copy booked from Tally, on ${tName}). This one, ${own}, then matches Tally on the next check.`;
+    twin.explain = [
+      ...twin.explain || [],
+      `${copy} was booked from Tally, and ${own} \u2014 posted by its own document \u2014 is the same ${inr5(n25(xb.amount))} ${xb.dir === "in" ? "received" : "paid"} on ${dmy2(String(xb.date))}. One of the two is a copy.`
+    ];
+    twin.fix = `Reverse ${copy} here \u2014 ${own} stays, and matches this Tally line instead.`;
+  }
   const openHere = await bankBalanceBefore(cid, Number(account.id), book.from);
   const closeHere = await bankBalanceBefore(cid, Number(account.id), shiftDays2(book.to, 1));
   const count = (s5) => rows2.filter((r) => r.status === s5).length;
