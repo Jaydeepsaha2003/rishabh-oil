@@ -23218,6 +23218,7 @@ async function reconcile(v) {
     const byNo = /* @__PURE__ */ new Map();
     for (const b of journals) if (b.vch_no) byNo.set(b.vch_no.trim().toUpperCase(), b);
     const rest = [];
+    const byNumber = /* @__PURE__ */ new Map();
     for (const t of reg.vouchers) {
       if (handled.has(t.key)) continue;
       const b = byNo.get(t.vch_no.trim().toUpperCase());
@@ -23231,8 +23232,83 @@ async function reconcile(v) {
         const diffs = [];
         if (t.date !== b.date) diffs.push({ field: "date", tally: t.date, books: b.date });
         if (ld.length) diffs.push({ field: "lines", tally: t.total, books: b.total, lines: ld });
-        rows2.push({ key: t.key, status: diffs.length ? "mismatch" : "matched", tally: shortTally(t), books: shortBook(b), diffs });
+        const row = { key: t.key, status: diffs.length ? "mismatch" : "matched", tally: shortTally(t), books: shortBook(b), diffs };
+        rows2.push(row);
+        if (!ld.length) byNumber.set(t.key, { t, row, copy: b });
       } else rest.push(t);
+    }
+    const fromTally = (b) => /imported from tally/i.test(b.narration);
+    const NOISE = /* @__PURE__ */ new Set(["M", "S", "MS", "THE", "SHRI", "SRI", "NEW"]);
+    const firstWord = (v2) => String(v2 || "").toUpperCase().replace(/[^A-Z0-9 ]/g, " ").split(/\s+/).filter((w) => w && !NOISE.has(w))[0] || "";
+    const kin = (l, p) => sameLedger(l, p, mapped) || !!firstWord(l.name) && firstWord(l.name) === firstWord(p.account);
+    const top = (ls, side) => ls.filter((l) => l[side] > 0).sort((a, b) => b[side] - a[side])[0];
+    const owners = books.filter((b) => !used.has(b.id) && !fromTally(b) && b.total > 0 && b.date >= shiftDays(reg.from, -NEAR_DAYS) && b.date <= shiftDays(reg.to, NEAR_DAYS));
+    const partTaken = /* @__PURE__ */ new Set();
+    const coveredBy = /* @__PURE__ */ new Map();
+    for (const b of owners.sort((x, y) => y.total - x.total)) {
+      const bDr = top(b.lines, "dr");
+      const bCr = top(b.lines, "cr");
+      if (!bDr || !bCr) continue;
+      const fits = (t) => {
+        if (t.cancelled || partTaken.has(t.key) || t.total > b.total + tol || daysApart2(t.date, b.date) > NEAR_DAYS) return false;
+        const tDr = top(t.lines, "dr");
+        const tCr = top(t.lines, "cr");
+        return !!tDr && !!tCr && kin(tDr, bDr) && kin(tCr, bCr);
+      };
+      const loose = rest.filter((t) => fits(t));
+      const copies = [...byNumber.values()].filter((x) => fits(x.t)).map((x) => x.t);
+      const cands = [...loose, ...copies].sort((x, y) => daysApart2(x.date, b.date) - daysApart2(y.date, b.date)).slice(0, 14);
+      if (!cands.length) continue;
+      let best = 0;
+      let bestScore = Infinity;
+      for (let m = 1; m < 1 << cands.length; m++) {
+        let sum = 0;
+        let k = 0;
+        let gap = 0;
+        for (let i = 0; i < cands.length; i++)
+          if (m & 1 << i) {
+            sum += cands[i].total;
+            k++;
+            gap += daysApart2(cands[i].date, b.date);
+          }
+        if (!close(sum, b.total)) continue;
+        const score = k * 100 + gap;
+        if (score < bestScore) {
+          bestScore = score;
+          best = m;
+        }
+      }
+      if (!best) continue;
+      const parts0 = cands.filter((_, i) => best & 1 << i);
+      if (parts0.length === 1) {
+        const tDr = top(parts0[0].lines, "dr");
+        if (Math.abs(tDr.dr - bDr.dr) > Math.max(1, tol)) continue;
+      }
+      used.add(b.id);
+      const parts = cands.filter((_, i) => best & 1 << i);
+      const of = { id: b.id, code: b.code, vch_no: b.vch_no, total: b.total, date: b.date, parts: parts.length, one_day: new Set(parts.map((t) => t.date)).size === 1 };
+      for (const t of parts) {
+        partTaken.add(t.key);
+        const copy = byNumber.get(t.key);
+        if (copy) {
+          copy.row.copy_of = of;
+          copy.row.status = "mismatch";
+          copy.row.diffs.push({ field: "copy", tally: 1, books: 2 });
+          continue;
+        }
+        coveredBy.set(t.key, b);
+        rows2.push({
+          key: t.key,
+          status: t.date === b.date ? "matched" : "mismatch",
+          tally: shortTally(t),
+          books: shortBook(b),
+          diffs: t.date === b.date ? [] : [{ field: "date", tally: t.date, books: b.date }],
+          part_of: of
+        });
+      }
+    }
+    if (coveredBy.size) {
+      for (let i = rest.length - 1; i >= 0; i--) if (coveredBy.has(rest[i].key)) rest.splice(i, 1);
     }
     const pairs = [];
     for (const t of rest) {
@@ -23321,6 +23397,7 @@ function explain(rows2, kind) {
         if (d.field === "date") say2.push(`Dated ${dmy(d.tally)} in Tally, ${dmy(d.books)} here.`);
         else if (d.field === "party") say2.push(`Supplier ${d.tally} in Tally, ${d.books} here.`);
         else if (d.field === "type") say2.push(`Booked as ${d.books} here; Tally has it under ${d.tally}.`);
+        else if (d.field === "copy") continue;
         else if (d.field === "duplicate") say2.push(`This bill is in these books ${d.books} times \u2014 the extra voucher doubles it.`);
         else if (d.field === "lines") {
           const ld = d.lines || [];
@@ -23336,6 +23413,21 @@ function explain(rows2, kind) {
       fix = "Delete it here if the cancellation in Tally is right.";
     } else if (r.status === "cancelled") {
       say2.push("Cancelled in Tally, and not in these books either.");
+    }
+    const of = r.part_of || r.copy_of;
+    if (of && t) {
+      const ofName = `${String(of.code || "the voucher")}${of.vch_no ? ` \xB7 ${String(of.vch_no)}` : ""}`;
+      if (r.part_of) {
+        say2.unshift(
+          n23(of.parts) > 1 ? `One of ${n23(of.parts)} journals in Tally that together make ${ofName} here (${inr4(n23(of.total))}, ${dmy(String(of.date))}) \u2014 the same entry, split in Tally.` : `The same entry as ${ofName} here (${inr4(n23(of.total))}, ${dmy(String(of.date))}), posted by its own document \u2014 Tally names its ledgers differently.`
+        );
+        fix = r.diffs.some((d) => d.field === "date") && of.one_day ? fix : "";
+      } else {
+        say2.unshift(
+          `${String(b?.code || "This voucher")} was booked from Tally, but ${ofName} \u2014 posted by its own document \u2014 already carries it: ${n23(of.parts) > 1 ? `Tally's ${n23(of.parts)} journals together make its ${inr4(n23(of.total))}` : `the same ${inr4(n23(of.total))} on ${dmy(String(of.date))}`}. The same money is in these books twice.`
+        );
+        fix = `Reverse ${String(b?.code || "this copy")} (booked from Tally). ${String(of.code || "The document voucher")} stays, and stands for Tally's No. ${String(t.vch_no)} on the next check.`;
+      }
     }
     r.explain = say2;
     r.fix = fix;
@@ -23356,7 +23448,7 @@ async function checkTallyRegister(v) {
   const bdMovable = await bdMovableEntryIds();
   for (const r of rows2) {
     const dateDiff = (r.diffs || []).some((d) => d.field === "date");
-    if (r.status === "mismatch" && dateDiff && r.books?.id && r.tally?.date) {
+    if (r.status === "mismatch" && dateDiff && r.books?.id && r.tally?.date && !(r.part_of && !r.part_of.one_day)) {
       const id = Number(r.books.id);
       r.redate = Number(r.books.order_id) > 0 || !owned.has(id) || bdMovable.has(id) ? "yes" : "owned";
     }
@@ -24547,6 +24639,35 @@ async function suggestTallyBank(v) {
   const s5 = await suggestBank(book.bank);
   return { bank: book.bank, period: book.period, suggested: s5 ? { id: Number(s5.id), name: String(s5.name) } : null };
 }
+async function clearingJournal(cid, bankId, copyId, ownId, date) {
+  const linesOf = async (id) => toPlain20(
+    await getClient().execute({
+      sql: `SELECT jl.account_id, a.name, a.acc_group, jl.dr, jl.cr FROM journal_lines jl JOIN ledger_accounts a ON a.id = jl.account_id WHERE jl.entry_id = ?`,
+      args: [id]
+    })
+  );
+  const bankish = (l) => Number(l.account_id) === bankId || /^bank (accounts|od)/i.test(String(l.acc_group || ""));
+  const word = (v) => String(v || "").toUpperCase().replace(/[^A-Z0-9 ]/g, " ").split(/\s+/).filter(Boolean)[0] || "";
+  const copyOther = (await linesOf(copyId)).filter((l) => !bankish(l));
+  if (copyOther.length !== 1) return null;
+  const via = copyOther[0];
+  const own = (await linesOf(ownId)).filter((l) => !bankish(l));
+  if (own.some((l) => Number(l.account_id) === Number(via.account_id) || word(String(l.name)) === word(String(via.name)))) return null;
+  const side = n25(via.dr) > 0 ? "cr" : "dr";
+  const amt = n25(via.dr) || n25(via.cr);
+  const r = await getClient().execute({
+    sql: `SELECT je.id, je.vch_no, je.entry_date, (SELECT nn.prefix || '/' || nn.serial FROM voucher_numbers nn WHERE nn.entry_id = je.id) AS code
+            FROM journal_entries je JOIN journal_lines jl ON jl.entry_id = je.id
+           WHERE je.company_id = ? AND UPPER(je.vch_type) = 'JOURNAL' AND je.narration LIKE 'Imported from Tally%'
+             AND jl.account_id = ? AND ABS(jl.${side} - ?) <= 1
+             AND julianday(substr(je.entry_date, 1, 10)) BETWEEN julianday(?) - 7 AND julianday(?) + 7
+           ORDER BY ABS(julianday(substr(je.entry_date, 1, 10)) - julianday(?)) LIMIT 1`,
+    args: [cid, Number(via.account_id), amt, date, date, date]
+  });
+  const j = r.rows[0];
+  if (!j) return null;
+  return { id: Number(j.id), code: String(j.code || "the journal"), vch_no: String(j.vch_no || ""), date: String(j.entry_date).slice(0, 10), via: String(via.name) };
+}
 async function checkTallyBank(v) {
   const cid = await companyOf(v);
   const { book, account, rows: rows2, statement } = await reconcileBank({ ...v, company_id: cid });
@@ -24580,6 +24701,14 @@ async function checkTallyBank(v) {
       `This is very likely Tally's ${tName}, which was also booked from Tally as ${copy} \u2014 the same ${inr5(n25(xb.amount))} is in these books twice.`
     ];
     x.fix = `Reverse ${copy} (the copy booked from Tally, on ${tName}). This one, ${own}, then matches Tally on the next check.`;
+    const chain = await clearingJournal(cid, Number(account.id), Number(twin.books.id), Number(xb.id), String(twin.books.date));
+    if (chain) {
+      x.duplicate_of.chain = chain;
+      x.explain.push(
+        `Tally pays it into ${chain.via} and moves it on by journal No. ${chain.vch_no} (${chain.code}, also booked from Tally) \u2014 ${own} does both in one voucher.`
+      );
+      x.fix = `Reverse ${copy} and ${chain.code} together (Tally's payment and the journal that clears ${chain.via}). ${own} stays, and stands for both Tally's ${tName} and journal No. ${chain.vch_no}.`;
+    }
     twin.explain = [
       ...twin.explain || [],
       `${copy} was booked from Tally, and ${own} \u2014 posted by its own document \u2014 is the same ${inr5(n25(xb.amount))} ${xb.dir === "in" ? "received" : "paid"} on ${dmy2(String(xb.date))}. One of the two is a copy.`
