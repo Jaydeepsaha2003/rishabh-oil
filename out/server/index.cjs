@@ -14682,7 +14682,8 @@ async function postLcUpfrontInterest(lcId, dateIn) {
     if (!res.rows.length) throw new Error("LC not found");
     const lc = toPlain14(res)[0];
     const bankAcc = await bankAccountFor(lc);
-    await dropEntry(n14(lc.interest_journal_entry_id) || null);
+    const oldId = n14(lc.interest_journal_entry_id);
+    await dropEntry(oldId || null);
     const interest = lcInterest(lc);
     const charges = round23(n14(lc.charges));
     const total = round23(interest + charges);
@@ -14707,6 +14708,21 @@ async function postLcUpfrontInterest(lcId, dateIn) {
         { account: bankAcc, group: "Bank Accounts", cr: total }
       ]
     });
+    if (oldId && oldId !== je.id && !(await c.execute({ sql: "SELECT 1 FROM journal_entries WHERE id = ?", args: [oldId] })).rows.length) {
+      await c.execute({
+        sql: `INSERT INTO journal_entries (id, company_id, entry_date, vch_type, vch_no, narration, order_id, sale_id, payment_id)
+            SELECT ?, company_id, entry_date, vch_type, vch_no, narration, order_id, sale_id, payment_id FROM journal_entries WHERE id = ?`,
+        args: [oldId, je.id]
+      });
+      await c.execute({ sql: "UPDATE journal_lines SET entry_id = ? WHERE entry_id = ?", args: [oldId, je.id] });
+      const keptNo = (await c.execute({ sql: "SELECT 1 FROM voucher_numbers WHERE entry_id = ?", args: [oldId] }).catch(() => ({ rows: [] }))).rows.length;
+      if (keptNo) await c.execute({ sql: "DELETE FROM voucher_numbers WHERE entry_id = ?", args: [je.id] }).catch(() => {
+      });
+      else await c.execute({ sql: "UPDATE voucher_numbers SET entry_id = ? WHERE entry_id = ?", args: [oldId, je.id] }).catch(() => {
+      });
+      await c.execute({ sql: "DELETE FROM journal_entries WHERE id = ?", args: [je.id] });
+      je.id = oldId;
+    }
     await c.execute({ sql: "UPDATE letters_of_credit SET interest_journal_entry_id = ? WHERE id = ?", args: [je.id, lcId] });
     await resyncLcSettlement(lcId);
     return { id: je.id };
@@ -21677,7 +21693,7 @@ async function saveTallyLink(v) {
   if (!e.rows.length) throw new Error("That voucher no longer exists \u2014 check the file again");
   if (Number(e.rows[0].company_id) !== Number(v.company_id)) throw new Error("That voucher belongs to another company");
   if (!String(v.scope || "").trim() || !String(v.tally_key || "").trim()) throw new Error("Nothing to link");
-  await c.execute({ sql: "DELETE FROM tally_links WHERE company_id = ? AND scope = ? AND entry_id = ?", args: [v.company_id, v.scope, v.entry_id] });
+  if (!v.also) await c.execute({ sql: "DELETE FROM tally_links WHERE company_id = ? AND scope = ? AND entry_id = ?", args: [v.company_id, v.scope, v.entry_id] });
   await c.execute({
     sql: `INSERT INTO tally_links (company_id, scope, tally_key, entry_id, created_by) VALUES (?, ?, ?, ?, ?)
           ON CONFLICT(company_id, scope, tally_key) DO UPDATE SET entry_id = excluded.entry_id, created_by = excluded.created_by, created_at = datetime('now')`,
@@ -24515,7 +24531,39 @@ async function reconcileBank(v) {
   const tal = (t) => ({ ...t });
   const linked = await linksFor(cid, `bank:${Number(account.id)}`);
   const handled = /* @__PURE__ */ new Set();
+  const byEntry = /* @__PURE__ */ new Map();
   for (const t of book.lines) {
+    const id = linked.get(t.key);
+    if (!id) continue;
+    if (!byEntry.has(id)) byEntry.set(id, []);
+    byEntry.get(id).push(t);
+  }
+  for (const [id, ts] of byEntry) {
+    if (ts.length < 2) continue;
+    const b = entries.find((e) => e.id === id && !used.has(e.id));
+    if (!b) continue;
+    used.add(b.id);
+    const sign = (dir, amt) => dir === "in" ? amt : -amt;
+    const net = round213(ts.reduce((s5, t) => s5 + sign(t.dir, t.amount), 0));
+    const ok = Math.abs(net - sign(b.dir, b.amount)) <= 1;
+    for (const t of ts) {
+      handled.add(t.key);
+      const diffs = [];
+      if (b.date !== t.date) diffs.push({ field: "date", tally: t.date, books: b.date });
+      if (!ok) diffs.push({ field: "amount", tally: Math.abs(net), books: b.amount, diff: round213(Math.abs(net) - b.amount) });
+      rows2.push({
+        key: t.key,
+        status: t.cancelled ? "cancelled_here" : diffs.length ? "mismatch" : "matched",
+        tally: tal(t),
+        books: short(b),
+        diffs: t.cancelled ? [] : diffs,
+        linked: true,
+        net_of: ts.length
+      });
+    }
+  }
+  for (const t of book.lines) {
+    if (handled.has(t.key)) continue;
     const id = linked.get(t.key);
     const b = id ? entries.find((e) => e.id === id && !used.has(e.id)) : void 0;
     if (!b) continue;
@@ -24713,6 +24761,28 @@ async function clearingJournal(cid, bankId, copyId, ownId, date) {
   if (!j) return null;
   return { id: Number(j.id), code: String(j.code || "the journal"), vch_no: String(j.vch_no || ""), date: String(j.entry_date).slice(0, 10), via: String(via.name) };
 }
+async function linesOfEntry(id) {
+  return toPlain20(
+    await getClient().execute({
+      sql: `SELECT jl.account_id, a.name, a.acc_group, jl.dr, jl.cr FROM journal_lines jl JOIN ledger_accounts a ON a.id = jl.account_id WHERE jl.entry_id = ?`,
+      args: [id]
+    })
+  );
+}
+async function clearingBy(cid, accountId, side, amt, date, via) {
+  const r = await getClient().execute({
+    sql: `SELECT je.id, je.vch_no, je.entry_date, (SELECT nn.prefix || '/' || nn.serial FROM voucher_numbers nn WHERE nn.entry_id = je.id) AS code
+            FROM journal_entries je JOIN journal_lines jl ON jl.entry_id = je.id
+           WHERE je.company_id = ? AND UPPER(je.vch_type) = 'JOURNAL' AND je.narration LIKE 'Imported from Tally%'
+             AND jl.account_id = ? AND ABS(jl.${side} - ?) <= 1
+             AND julianday(substr(je.entry_date, 1, 10)) BETWEEN julianday(?) - 14 AND julianday(?) + 14
+           ORDER BY ABS(julianday(substr(je.entry_date, 1, 10)) - julianday(?)) LIMIT 1`,
+    args: [cid, accountId, amt, date, date, date]
+  });
+  const j = r.rows[0];
+  if (!j) return null;
+  return { id: Number(j.id), code: String(j.code || "the journal"), vch_no: String(j.vch_no || ""), date: String(j.entry_date).slice(0, 10), via };
+}
 async function checkTallyBank(v) {
   const cid = await companyOf(v);
   const { book, account, rows: rows2, statement } = await reconcileBank({ ...v, company_id: cid });
@@ -24734,6 +24804,57 @@ async function checkTallyBank(v) {
     const d = overBy(copy, own);
     return Math.abs(d) <= 1 || d > 0 && d <= Math.min(1e4, own * 1e-3 + 1);
   };
+  const nettedParking = async (x) => {
+    const xb = x.books;
+    const xLines = (await linesOfEntry(Number(xb.id))).filter((l) => Number(l.account_id) !== Number(account.id));
+    const word = (v2) => String(v2 || "").toUpperCase().replace(/[^A-Z0-9 ]/g, " ").split(/\s+/).filter(Boolean)[0] || "";
+    const pool = [];
+    for (const r of rows2) {
+      if (!(r.status === "matched" || r.status === "mismatch") || takenCopy.has(String(r.key)) || !fromTally(r.books) || !r.books?.id) continue;
+      if (daysApart3(String(r.books.date), String(xb.date)) > 14) continue;
+      const other = (await linesOfEntry(Number(r.books.id))).filter((l) => Number(l.account_id) !== Number(account.id));
+      if (other.length !== 1) continue;
+      const via = other[0];
+      if (xLines.some((l) => Number(l.account_id) === Number(via.account_id) || word(String(l.name)) === word(String(via.name)))) continue;
+      pool.push({ r, via });
+    }
+    const sign = (dir, amt) => dir === "in" ? amt : -amt;
+    const want = sign(String(xb.dir), n25(xb.amount));
+    for (const o of pool.filter((p) => p.r.books.dir === xb.dir)) {
+      const back = pool.filter((p) => p !== o && p.r.books.dir !== xb.dir && Number(p.via.account_id) === Number(o.via.account_id));
+      const tries = [[]];
+      for (const a of back) tries.push([a]);
+      for (let i = 0; i < back.length; i++) for (let j = i + 1; j < back.length; j++) tries.push([back[i], back[j]]);
+      for (const ins of tries) {
+        if (!ins.length) continue;
+        const net = round213(sign(o.r.books.dir, n25(o.r.books.amount)) + ins.reduce((s5, p) => s5 + sign(p.r.books.dir, n25(p.r.books.amount)), 0));
+        if (Math.abs(net - want) > 1) continue;
+        const chain = await clearingBy(cid, Number(o.via.account_id), n25(o.via.dr) > 0 ? "cr" : "dr", n25(xb.amount), String(xb.date), String(o.via.name));
+        const own = String(xb.code || "the document voucher");
+        const copies = [o, ...ins];
+        for (const p of copies) {
+          takenCopy.add(String(p.r.key));
+          p.r.duplicate = { id: Number(xb.id), code: own };
+          p.r.explain = [...p.r.explain || [], `${String(p.r.books.code)} was booked from Tally, and ${own} \u2014 posted by its own document \u2014 already carries this money.`];
+          p.r.fix = `Reverse the copies from ${own}'s row \u2014 ${own} stays.`;
+        }
+        const codes = copies.map((p) => String(p.r.books.code));
+        x.duplicate_of = {
+          id: Number(o.r.books.id),
+          code: codes[0],
+          extra: ins.map((p) => ({ id: Number(p.r.books.id), code: String(p.r.books.code) })),
+          links: copies.map((p) => String(p.r.key)),
+          ...chain ? { chain } : {}
+        };
+        x.explain = [
+          ...x.explain || [],
+          `Tally paid ${inr5(n25(o.r.books.amount))} into ${String(o.via.name)} (${codes[0]}) and took ${inr5(ins.reduce((s5, p) => s5 + n25(p.r.books.amount), 0))} back (${codes.slice(1).join(", ")})${chain ? `, then journaled it on (${chain.code}, No. ${chain.vch_no})` : ""} \u2014 all booked from Tally. Net, that is ${own}'s ${inr5(n25(xb.amount))}: the same money twice.`
+        ];
+        x.fix = `Reverse ${[...codes, ...chain ? [chain.code] : []].join(", ")} together. ${own} stays, and stands for Tally's ${copies.length} bank lines${chain ? ` and journal No. ${chain.vch_no}` : ""}.`;
+        return;
+      }
+    }
+  };
   for (const x of extra) {
     const xb = x.books;
     const twin = rows2.filter(
@@ -24741,7 +24862,10 @@ async function checkTallyBank(v) {
     ).sort(
       (a, b) => Math.abs(overBy(n25(a.books.amount), n25(xb.amount))) - Math.abs(overBy(n25(b.books.amount), n25(xb.amount))) || daysApart3(String(a.books.date), String(xb.date)) - daysApart3(String(b.books.date), String(xb.date))
     )[0];
-    if (!twin) continue;
+    if (!twin) {
+      await nettedParking(x);
+      continue;
+    }
     takenCopy.add(String(twin.key));
     const copy = String(twin.books.code || "the voucher booked from Tally");
     const own = String(xb.code || "the document voucher");
@@ -24759,7 +24883,7 @@ async function checkTallyBank(v) {
       x.explain.push(
         `Tally's ${inr5(n25(twin.books.amount))} carries ${inr5(extraCharges)} of bank charges that ${own} (${inr5(n25(xb.amount))}) does not.`
       );
-      x.fix = `Reverse ${copy} (the copy booked from Tally, on ${tName}). Then add the ${inr5(extraCharges)} as Bank charges on the repayment behind ${own} (Edit on that repayment) \u2014 it then matches Tally's ${inr5(n25(twin.books.amount))} on the next check.`;
+      x.fix = `Reverse ${copy} (the copy booked from Tally, on ${tName}). Then add the ${inr5(extraCharges)} as Bank charges on the LC behind ${own} \u2014 \u22EE \u2192 Edit preclosure when the LC is closed, Edit on the repayment when it is not \u2014 and it matches Tally's ${inr5(n25(twin.books.amount))} on the next check.`;
     }
     const chain = await clearingJournal(cid, Number(account.id), Number(twin.books.id), Number(xb.id), String(twin.books.date));
     if (chain) {
