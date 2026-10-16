@@ -14753,7 +14753,9 @@ __export(treasury_exports, {
   postLcRepaymentEntry: () => postLcRepaymentEntry,
   postLcUpfrontInterest: () => postLcUpfrontInterest,
   postSimplePaymentIn: () => postSimplePaymentIn,
+  previewPaymentInVouchers: () => previewPaymentInVouchers,
   refreshLcUpfrontInterest: () => refreshLcUpfrontInterest,
+  removePaymentInVouchers: () => removePaymentInVouchers,
   reopenLcBill: () => reopenLcBill,
   repairLcRepaymentAccount: () => repairLcRepaymentAccount,
   resyncLcSettlement: () => resyncLcSettlement,
@@ -15176,25 +15178,25 @@ async function postLcPaymentIn(lcId, amount2, dateIn, selectedKeys) {
     const c = getClient();
     const date = String(dateIn || todayISO2()).slice(0, 10);
     assertNotFuture(date, "The date the payment was received");
-    const { takes, byParty } = planReceipt(outstanding, value, customerName);
-    const je = await postJournal({
-      date,
-      vchType: "RECEIPT",
-      vchNo: String(lc.lc_no || ""),
-      narration: `LC ${lc.lc_no} \u2014 payment IN of ${value.toFixed(2)} received from ` + (byParty.length > 1 ? byParty.map((b) => `${b.party} ${b.amount.toFixed(2)}`).join(", ") : byParty[0]?.party || customerName),
-      companyId: n15(lc.company_id) || void 0,
-      lines: [
-        { account: bankAcc, group: "Bank Accounts", dr: value },
-        ...byParty.map((b) => ({ account: b.party, group: "Sundry Debtors", cr: b.amount }))
-      ]
+    const already = await recordedPaymentIns("lc", lcId);
+    if (value > round23(totalDue - already) + 5e-3) {
+      throw new Error(`Only ${round23(totalDue - already).toFixed(2)} is still expected on this LC after what is already recorded`);
+    }
+    const ins = await c.execute({
+      sql: "INSERT INTO lc_payment_ins (lc_id, pay_date, amount, journal_entry_id) VALUES (?, ?, ?, NULL)",
+      args: [lcId, date, value]
     });
-    for (const t of takes) await allocAgainst(je.id, t.party, t.key, t.amount);
-    await c.execute({
-      sql: "INSERT INTO lc_payment_ins (lc_id, pay_date, amount, journal_entry_id) VALUES (?, ?, ?, ?)",
-      args: [lcId, date, value, je.id]
-    });
-    return { id: je.id, date };
+    return { id: Number(ins.lastInsertRowid || 0), date };
   });
+}
+async function recordedPaymentIns(kind, id) {
+  const table = kind === "lc" ? "lc_payment_ins" : "bd_payment_ins";
+  const col = kind === "lc" ? "lc_id" : "bd_id";
+  const r = await getClient().execute({
+    sql: `SELECT COALESCE(SUM(amount), 0) AS t FROM ${table} WHERE ${col} = ? AND journal_entry_id IS NULL`,
+    args: [n15(id)]
+  });
+  return round23(n15(r.rows[0]?.t));
 }
 async function facilityParty(row) {
   const c = getClient();
@@ -15225,36 +15227,19 @@ async function postSimplePaymentIn(kind, facilityId, amount2, dateIn, method, ac
     if (value < 5e-3) throw new Error("Enter the amount received");
     const date = String(dateIn || todayISO2()).slice(0, 10);
     assertNotFuture(date, "The date the payment was received");
-    const party = await facilityParty(row);
     const named = String(account || "").trim();
-    const side = await receivingSide(method, named, () => kind === "lc" ? bankAccountFor(row) : "BANK A/C");
     const refNo = String(ref || "").trim();
-    const no = String(kind === "lc" ? row.lc_no : row.bd_no || "");
     const how = payMethod(method);
-    const je = await postJournal({
-      date,
-      vchType: side.vchType,
-      vchNo: no,
-      narration: `${kind === "lc" ? "LC" : "Bill Discounting"} ${no} \u2014 payment IN of ${value.toFixed(2)} received from ` + party.name + (how ? ` by ${how}` : "") + (named ? ` into ${named}` : "") + (refNo ? `, ref ${refNo}` : ""),
-      companyId: n15(row.company_id) || void 0,
-      lines: [
-        { account: side.account, group: side.group, dr: value },
-        { account: party.name, group: party.group, cr: value }
-      ]
+    if (how === "Adjustment" && !named) throw new Error("Name the ledger this adjustment is set off against");
+    const ins = kind === "lc" ? await c.execute({
+      sql: "INSERT INTO lc_payment_ins (lc_id, pay_date, amount, journal_entry_id) VALUES (?, ?, ?, NULL)",
+      args: [n15(facilityId), date, value]
+    }) : await c.execute({
+      sql: `INSERT INTO bd_payment_ins (bd_id, pay_date, amount, journal_entry_id, method, account, ref_no)
+                VALUES (?, ?, ?, NULL, ?, ?, ?)`,
+      args: [n15(facilityId), date, value, how, named || null, refNo || null]
     });
-    if (kind === "lc") {
-      await c.execute({
-        sql: "INSERT INTO lc_payment_ins (lc_id, pay_date, amount, journal_entry_id) VALUES (?, ?, ?, ?)",
-        args: [n15(facilityId), date, value, je.id]
-      });
-    } else {
-      await c.execute({
-        sql: `INSERT INTO bd_payment_ins (bd_id, pay_date, amount, journal_entry_id, method, account, ref_no)
-            VALUES (?, ?, ?, ?, ?, ?, ?)`,
-        args: [n15(facilityId), date, value, je.id, how, named || null, refNo || null]
-      });
-    }
-    return { id: je.id, date };
+    return { id: Number(ins.lastInsertRowid || 0), date };
   });
 }
 async function outstandingSaleRefsForBd(bdId) {
@@ -15378,31 +15363,80 @@ async function postBdPaymentIn(bdId, amount2, dateIn, selectedKeys, method, acco
     const c = getClient();
     const date = String(dateIn || todayISO2()).slice(0, 10);
     assertNotFuture(date, "The date the payment was received");
-    const { takes, byParty } = planReceipt(outstanding, value, customerName);
     const how = payMethod(method);
     const named = String(account || "").trim();
-    const side = await receivingSide(method, named, () => "BANK A/C");
     const refNo = String(ref || "").trim();
-    const je = await postJournal({
-      date,
-      vchType: side.vchType,
-      vchNo: String(bd.bd_no || ""),
-      // The method goes in the narration too, so the voucher says how the money
-      // arrived without anyone having to come back to this screen for it.
-      narration: `Bill Discounting ${bd.bd_no} \u2014 payment IN of ${value.toFixed(2)} received from ` + (byParty.length > 1 ? byParty.map((b) => `${b.party} ${b.amount.toFixed(2)}`).join(", ") : byParty[0]?.party || customerName) + (how ? ` by ${how}` : "") + (named ? ` into ${named}` : "") + (refNo ? `, ref ${refNo}` : ""),
-      companyId: n15(bd.company_id) || void 0,
-      lines: [
-        { account: side.account, group: side.group, dr: value },
-        ...byParty.map((b) => ({ account: b.party, group: "Sundry Debtors", cr: b.amount }))
-      ]
-    });
-    for (const t of takes) await allocAgainst(je.id, t.party, t.key, t.amount);
-    await c.execute({
+    const already = await recordedPaymentIns("bd", bdId);
+    if (value > round23(totalDue - already) + 5e-3) {
+      throw new Error(`Only ${round23(totalDue - already).toFixed(2)} is still expected on this bill after what is already recorded`);
+    }
+    const ins = await c.execute({
       sql: `INSERT INTO bd_payment_ins (bd_id, pay_date, amount, journal_entry_id, method, account, ref_no)
-          VALUES (?, ?, ?, ?, ?, ?, ?)`,
-      args: [bdId, date, value, je.id, how, named || null, refNo || null]
+          VALUES (?, ?, ?, NULL, ?, ?, ?)`,
+      args: [bdId, date, value, how, named || null, refNo || null]
     });
-    return { id: je.id, date };
+    return { id: Number(ins.lastInsertRowid || 0), date };
+  });
+}
+async function previewPaymentInVouchers() {
+  const c = getClient();
+  const rows2 = [];
+  for (const kind of ["bd", "lc"]) {
+    const sql = kind === "bd" ? `SELECT pi.id, pi.pay_date, pi.amount, pi.journal_entry_id, bd.bd_no AS facility, bd.company_id, co.name AS company
+             FROM bd_payment_ins pi JOIN bill_discountings bd ON bd.id = pi.bd_id LEFT JOIN companies co ON co.id = bd.company_id
+            WHERE pi.journal_entry_id IS NOT NULL` : `SELECT pi.id, pi.pay_date, pi.amount, pi.journal_entry_id, l.lc_no AS facility, l.company_id, co.name AS company
+             FROM lc_payment_ins pi JOIN letters_of_credit l ON l.id = pi.lc_id LEFT JOIN companies co ON co.id = l.company_id
+            WHERE pi.journal_entry_id IS NOT NULL`;
+    for (const r of toPlain15(await c.execute(sql))) {
+      const eid = n15(r.journal_entry_id);
+      const head = toPlain15(
+        await c.execute({
+          sql: `SELECT je.entry_date, je.narration, (SELECT nn.prefix || '/' || nn.serial FROM voucher_numbers nn WHERE nn.entry_id = je.id) AS code
+                  FROM journal_entries je WHERE je.id = ?`,
+          args: [eid]
+        })
+      )[0];
+      if (!head) continue;
+      const lines = toPlain15(
+        await c.execute({
+          sql: "SELECT a.name, jl.dr, jl.cr FROM journal_lines jl JOIN ledger_accounts a ON a.id = jl.account_id WHERE jl.entry_id = ? ORDER BY jl.dr DESC",
+          args: [eid]
+        })
+      );
+      rows2.push({
+        key: `${kind}:${n15(r.id)}`,
+        kind,
+        facility: String(r.facility || ""),
+        company: String(r.company || ""),
+        date: String(r.pay_date || head.entry_date || "").slice(0, 10),
+        amount: round23(n15(r.amount)),
+        code: String(head.code || ""),
+        entry_id: eid,
+        bank: String(lines.find((l) => n15(l.dr) > 0)?.name || ""),
+        party: String(lines.find((l) => n15(l.cr) > 0)?.name || "")
+      });
+    }
+  }
+  return { findings: rows2.sort((a, b) => String(a.date).localeCompare(String(b.date))) };
+}
+async function removePaymentInVouchers(keys) {
+  const want = new Set((keys || []).map(String));
+  if (!want.size) throw new Error("Pick at least one payment in");
+  return withDbTransaction(async () => {
+    const c = getClient();
+    const { findings } = await previewPaymentInVouchers();
+    let removed = 0;
+    for (const f of findings) {
+      if (!want.has(String(f.key))) continue;
+      const eid = n15(f.entry_id);
+      const old = toPlain15(await c.execute({ sql: "SELECT a.name, jl.dr, jl.cr FROM journal_lines jl JOIN ledger_accounts a ON a.id = jl.account_id WHERE jl.entry_id = ?", args: [eid] }));
+      console.log(`[repairs] payment-in voucher ${String(f.code)} (${String(f.kind)} ${String(f.facility)}, ${String(f.date)}, ${String(f.amount)}) removed \u2014 lines ${JSON.stringify(old)}`);
+      await dropEntry(eid);
+      const table = f.kind === "lc" ? "lc_payment_ins" : "bd_payment_ins";
+      await c.execute({ sql: `UPDATE ${table} SET journal_entry_id = NULL WHERE id = ?`, args: [n15(String(f.key).split(":")[1])] });
+      removed++;
+    }
+    return { removed };
   });
 }
 async function listBdPaymentIns(bdId) {
@@ -17596,6 +17630,55 @@ var init_accountingSchema = __esm({
 });
 
 // src/main/billDiscounting.ts
+var billDiscounting_exports = {};
+__export(billDiscounting_exports, {
+  BD_ADJ_DEFAULT: () => BD_ADJ_DEFAULT,
+  addBdChargeType: () => addBdChargeType,
+  addBdLimitReduction: () => addBdLimitReduction,
+  bdAdjParts: () => bdAdjParts,
+  bdCalc: () => bdCalc,
+  bdInterestSchedule: () => bdInterestSchedule,
+  bdInterestWindow: () => bdInterestWindow,
+  bdKpis: () => bdKpis,
+  bdLimits: () => bdLimits,
+  convertOpenAdjToCharge: () => convertOpenAdjToCharge,
+  createBd: () => createBd,
+  deleteBd: () => deleteBd,
+  deleteBdInterestPayment: () => deleteBdInterestPayment,
+  deleteBdLimitReduction: () => deleteBdLimitReduction,
+  deleteBdRepayment: () => deleteBdRepayment,
+  deleteLastBdPartyPayment: () => deleteLastBdPartyPayment,
+  deleteLastBdReceiptPart: () => deleteLastBdReceiptPart,
+  editBdRepayment: () => editBdRepayment,
+  listAllBdParties: () => listAllBdParties,
+  listAllBdRepayments: () => listAllBdRepayments,
+  listBd: () => listBd,
+  listBdChargeTypes: () => listBdChargeTypes,
+  listBdInterestPayments: () => listBdInterestPayments,
+  listBdLimitReductions: () => listBdLimitReductions,
+  listBdLinkedOrders: () => listBdLinkedOrders,
+  listBdParties: () => listBdParties,
+  listBdPartyPayments: () => listBdPartyPayments,
+  listBdReceiptParts: () => listBdReceiptParts,
+  listBdRepayments: () => listBdRepayments,
+  markBdPaymentReceived: () => markBdPaymentReceived,
+  migrateBdPerNbfcLedgers: () => migrateBdPerNbfcLedgers,
+  payBdInterest: () => payBdInterest,
+  payBdInterestUpto: () => payBdInterestUpto,
+  payBdParty: () => payBdParty,
+  postBdInterestPayment: () => postBdInterestPayment,
+  postBdOpening: () => postBdOpening,
+  postBdUpfrontInterest: () => postBdUpfrontInterest,
+  receiveBdPart: () => receiveBdPart,
+  reopenBd: () => reopenBd,
+  repayBd: () => repayBd,
+  reverseBdUpfrontInterest: () => reverseBdUpfrontInterest,
+  setBdCombinedLimit: () => setBdCombinedLimit,
+  setBdDisbursementRoute: () => setBdDisbursementRoute,
+  setBdVoucherBank: () => setBdVoucherBank,
+  unmarkBdPaymentReceived: () => unmarkBdPaymentReceived,
+  updateBd: () => updateBd
+});
 function bdPayable(bd) {
   const nb = String(bd.nbfc_name || "").trim().replace(/\s+/g, " ").toUpperCase();
   return nb ? `BILLS DISCOUNTED - ${nb}` : "BILLS DISCOUNTED A/C";
@@ -17856,6 +17939,38 @@ async function setBdVoucherBank(bdId, entryId, account) {
     await c.execute({ sql: "UPDATE bd_interest_payments SET bank_account = ? WHERE journal_entry_id = ?", args: [name, eid] }).catch(() => void 0);
     await c.execute({ sql: "UPDATE bd_payment_ins SET account = ? WHERE journal_entry_id = ?", args: [name, eid] }).catch(() => void 0);
     return { id: eid, account: name };
+  });
+}
+async function setBdDisbursementRoute(bdId, routeIn, accountIn) {
+  return withDbTransaction(async () => {
+    const c = getClient();
+    const bd = await loadBd(bdId);
+    const route = String(routeIn || "").trim();
+    if (!["bank", "supplier"].includes(route)) throw new Error("Choose Our bank or Supplier direct");
+    let account = null;
+    if (route === "supplier") {
+      if (String(bd.finance_type) !== "PID") throw new Error("Only a PID bill can be paid straight to the supplier");
+      if (String(bd.party_type) !== "supplier" || !partyName(bd)) throw new Error("This bill names no supplier for the NBFC to have paid");
+      const parties = await c.execute({ sql: "SELECT COUNT(*) AS k FROM bd_parties WHERE bd_id = ?", args: [n20(bdId)] }).catch(() => null);
+      if (n20(parties?.rows[0]?.k) > 1) {
+        throw new Error("This bill names more than one supplier \u2014 supplier direct needs one supplier per bill. Split it into one bill per supplier first");
+      }
+    } else {
+      account = String(accountIn || "").trim();
+      if (!account) throw new Error("Pick the bank the money landed in");
+      const a = await c.execute({ sql: "SELECT acc_group FROM ledger_accounts WHERE UPPER(TRIM(name)) = UPPER(TRIM(?))", args: [account] });
+      if (!a.rows.length || !CASH_BANK_GROUPS.includes(String(a.rows[0].acc_group))) throw new Error("Pick a bank or cash ledger");
+      const parts = await c.execute({ sql: "SELECT COUNT(*) AS k FROM bd_party_payments WHERE bd_id = ?", args: [n20(bdId)] }).catch(() => null);
+      if (n20(parts?.rows[0]?.k) > 0 || n20(bd.first_party_part) > 5e-3) {
+        throw new Error("This bill was paid to the supplier in parts \u2014 take the later parts back before moving it to a bank");
+      }
+    }
+    await c.execute({
+      sql: "UPDATE bill_discountings SET disbursement_route = ?, disbursement_account = ? WHERE id = ?",
+      args: [route, account, n20(bdId)]
+    });
+    if (bd.payment_received_date) await postBdOpening(n20(bdId));
+    return { id: n20(bdId), route };
   });
 }
 async function postBdOpening(bdId) {
@@ -38365,6 +38480,10 @@ function registerIpc() {
     (_e, { id, date, account }) => postBdUpfrontInterest(id, date, account)
   );
   handle("bd:reverseUpfrontInterest", (_e, { id }) => reverseBdUpfrontInterest(id));
+  handle("bd:setRoute", async (_e, { id, route, account }) => {
+    const { setBdDisbursementRoute: setBdDisbursementRoute2 } = await Promise.resolve().then(() => (init_billDiscounting(), billDiscounting_exports));
+    return setBdDisbursementRoute2(Number(id), String(route || ""), account);
+  });
   handle(
     "bd:setVoucherBank",
     (_e, { id, entryId, account }) => setBdVoucherBank(id, entryId, account)
@@ -38432,6 +38551,16 @@ function registerIpc() {
     await assertAdmin("Balancing vouchers a paisa out");
     const { fixPaisaImbalance: fixPaisaImbalance2 } = await Promise.resolve().then(() => (init_accountingRepairs(), accountingRepairs_exports));
     return fixPaisaImbalance2(a?.ids || []);
+  });
+  handle("repairs:paymentIns:list", async () => {
+    await assertAdmin("The accounting checks");
+    const { previewPaymentInVouchers: previewPaymentInVouchers2 } = await Promise.resolve().then(() => (init_treasury(), treasury_exports));
+    return previewPaymentInVouchers2();
+  });
+  handle("repairs:paymentInsFix", async (_e, a) => {
+    await assertAdmin("Removing payment-in vouchers");
+    const { removePaymentInVouchers: removePaymentInVouchers2 } = await Promise.resolve().then(() => (init_treasury(), treasury_exports));
+    return removePaymentInVouchers2((a?.keys || []).map(String));
   });
   handle("repairs:staleTds:list", async () => {
     await assertAdmin("The accounting checks");
