@@ -7,7 +7,7 @@ import { ensureBdPostingFields } from './accountingSchema'
 import { ensureVoucherNumbers, realignVoucherSeries } from './voucherNumbers'
 import { widenRenameRedirects } from './ledgerMap'
 import { ensureCompanyParties } from './intercompany'
-import { refreshLcUpfrontInterest, repairLcRepaymentAccount } from './treasury'
+import { fileLcRepaymentsAsPayments, refreshLcUpfrontInterest, repairLcRepaymentAccount } from './treasury'
 import { ensureFacilityLimitLog } from './facilityLimits'
 import { dailyBackup } from './backup'
 import { migrateBdPerNbfcLedgers, convertOpenAdjToCharge } from './billDiscounting'
@@ -3132,6 +3132,13 @@ export async function runStartupTasks(): Promise<void> {
   // journals, still read RCP/5 … RCP/34. Each moves to the next number of its
   // own series in date order; the old code is logged. New changes renumber as
   // they happen (renumberOnTypeChange).
+  // LC REPAYMENTS FILED AS JOURNALS — once, at start (asked for on 2026-10-17):
+  // JV/33, LC-7's repayment of 29-08, becomes a Payment with the next PAY number.
+  await runOnce('lc_repay_as_payment_v1', async () => {
+    const moved = await fileLcRepaymentsAsPayments()
+    if (moved.length) console.log(`[lc] repayments filed as payments: ${moved.join(', ')}`)
+  }).catch((e) => console.error('[lc] repayment voucher type fix failed:', e))
+
   await runOnce('voucher_series_realign_v1', async () => {
     const moved = await realignVoucherSeries()
     if (moved.length) console.log(`[vouchers] renumbered ${moved.length}: ${moved.join(', ')}`)

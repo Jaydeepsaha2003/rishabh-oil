@@ -4,7 +4,7 @@ import { getClient } from './db'
 import { allCompanyIds, getActiveCompanyId, withCompany } from './company'
 import { postJournal, repostJournal } from './journal'
 import { lcInterest, lcInterestBasis, lcInterestBaseIsCustom } from './lcInterest'
-import { ensureVoucherNumbers } from './voucherNumbers'
+import { ensureVoucherNumbers, renumberOnTypeChange, voucherCodeOf } from './voucherNumbers'
 import { resolveAccountName } from './ledgerMap'
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -1711,6 +1711,46 @@ export async function postLcRepaymentEntry(repaymentId: number): Promise<void> {
  * put the bad line back long after a one-shot migration has been marked
  * finished, and this costs one query to find nothing.
  */
+/**
+ * AN LC REPAYMENT FILED AS A JOURNAL.
+ *
+ * Repaying an LC is money out of our bank, so it is a Payment — every repayment
+ * posts as one (postLcRepaymentEntry). LC-7's of 29-08 (JV/33, KR Foods) was
+ * left a Journal by the 31-08 reposting, so it sat in the JV register and out
+ * of the payment totals. Only a repayment voucher that credits a bank is
+ * touched; it becomes a Payment and takes the next PAY number, the old code
+ * logged to accounting_repair_log. Lines, date and amounts do not change.
+ */
+export async function fileLcRepaymentsAsPayments(): Promise<string[]> {
+  await ensureVoucherNumbers()
+  const found = await getClient().execute(`SELECT DISTINCT e.id FROM journal_entries e
+      JOIN lc_repayments rp ON rp.journal_entry_id = e.id
+     WHERE e.vch_type = 'JOURNAL'
+       AND EXISTS (SELECT 1 FROM journal_lines jl JOIN ledger_accounts a ON a.id = jl.account_id
+                    WHERE jl.entry_id = e.id AND jl.cr > 0.004 AND a.acc_group IN ('Bank Accounts', 'Bank OD A/c'))
+     ORDER BY e.entry_date, e.id`)
+  if (!found.rows.length) return []
+  const moved: string[] = []
+  await withDbTransaction(async () => {
+    const c = getClient()
+    await c.execute(`CREATE TABLE IF NOT EXISTS accounting_repair_log (
+        repair_key TEXT PRIMARY KEY, entry_id INTEGER NOT NULL, before_json TEXT NOT NULL,
+        created_at TEXT NOT NULL DEFAULT (datetime('now')))`)
+    for (const r of found.rows) {
+      const id = Number(r.id)
+      const was = await voucherCodeOf(id)
+      await c.execute({
+        sql: 'INSERT OR REPLACE INTO accounting_repair_log (repair_key, entry_id, before_json) VALUES (?, ?, ?)',
+        args: [`lc-repay-as-payment:${id}`, id, JSON.stringify({ code: was, vch_type: 'JOURNAL' })]
+      })
+      await c.execute({ sql: "UPDATE journal_entries SET vch_type = 'PAYMENT' WHERE id = ?", args: [id] })
+      await renumberOnTypeChange(id, 'PAYMENT')
+      moved.push(`${was} → ${await voucherCodeOf(id)}`)
+    }
+  })
+  return moved
+}
+
 export async function repairLcRepaymentAccount(): Promise<number> {
   const c = getClient()
   const bad = toPlain(
