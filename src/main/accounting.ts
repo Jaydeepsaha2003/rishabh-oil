@@ -1,4 +1,5 @@
 import { withDbTransaction } from './dbTransaction'
+import { ALLOC } from './tankerAlloc'
 import type { ResultSet } from '@libsql/client'
 import { getClient } from './db'
 import { getActiveCompanyId } from './company'
@@ -1146,9 +1147,9 @@ export async function billsOutstanding(
   if (orderIds.length) {
     const er = await c.execute({
       sql: `SELECT o.id, o.status, o.received_date,
-                   (SELECT COUNT(*) FROM purchase_tankers pt WHERE pt.order_id = o.id) AS tk,
-                   (SELECT COUNT(*) FROM purchase_tankers pt WHERE pt.order_id = o.id AND COALESCE(pt.empty_date, '') != '') AS tk_empty,
-                   (SELECT MAX(pt.empty_date) FROM purchase_tankers pt WHERE pt.order_id = o.id AND COALESCE(pt.empty_date, '') != '') AS last_empty
+                   (SELECT COUNT(*) FROM ${ALLOC} a JOIN purchase_tankers pt ON pt.id = a.tanker_id WHERE a.order_id = o.id) AS tk,
+                   (SELECT COUNT(*) FROM ${ALLOC} a JOIN purchase_tankers pt ON pt.id = a.tanker_id WHERE a.order_id = o.id AND COALESCE(pt.empty_date, '') != '') AS tk_empty,
+                   (SELECT MAX(pt.empty_date) FROM ${ALLOC} a JOIN purchase_tankers pt ON pt.id = a.tanker_id WHERE a.order_id = o.id AND COALESCE(pt.empty_date, '') != '') AS last_empty
               FROM orders o WHERE o.id IN (${orderIds.map(() => '?').join(', ')})`,
       args: orderIds
     })

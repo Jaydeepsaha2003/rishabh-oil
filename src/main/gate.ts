@@ -1,4 +1,5 @@
 import type { ResultSet } from '@libsql/client'
+import { ALLOC } from './tankerAlloc'
 import { getClient, todayISO } from './db'
 import { visibleFrom } from './access-gate'
 
@@ -97,7 +98,7 @@ export async function gateEntriesFor(args: {
   const where: string[] = []
   const bind: (string | number)[] = []
   if (orderId) {
-    where.push('g.tanker_id IN (SELECT id FROM purchase_tankers WHERE order_id = ?)')
+    where.push(`g.tanker_id IN (SELECT a.tanker_id FROM ${ALLOC} a WHERE a.order_id = ?)`)
     bind.push(orderId)
   }
   if (saleIds.length) {

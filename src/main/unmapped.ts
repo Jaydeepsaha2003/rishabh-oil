@@ -2,6 +2,7 @@
 // bargain they pointed at was deleted, or because the invoice was entered before
 // its bargain existed. They sit in their own list until someone maps them onto
 // one or more bargains.
+import { ALLOC } from './tankerAlloc'
 import type { ResultSet } from '@libsql/client'
 import { getClient } from './db'
 import { getActiveCompanyId } from './company'
@@ -36,10 +37,11 @@ export interface MapLine {
 // even though the invoice's own bargain_id still points somewhere valid. For a
 // consignment invoice the quantity rides on its logged tankers, or failing that
 // on its own bargain_id.
+// A tanker shared with another invoice covers only this invoice's share of it.
 const COVERED = `
-  COALESCE((SELECT SUM(pt.loaded_qty) FROM purchase_tankers pt
+  COALESCE((SELECT SUM(a.qty) FROM ${ALLOC} a JOIN purchase_tankers pt ON pt.id = a.tanker_id
             JOIN bargains b2 ON b2.id = pt.bargain_id
-            WHERE pt.order_id = o.id), 0)`
+            WHERE a.order_id = o.id), 0)`
 // A trading purchase is bought and sold straight through and never draws on a
 // bargain, so it is not an invoice anyone can map — it is simply not in scope
 // here. (It rides the consignment booking path, which is why it would

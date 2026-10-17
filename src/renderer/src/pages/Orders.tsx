@@ -22,6 +22,7 @@ import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
+import { LrNumbersInput } from '@/components/LrNumbersInput'
 import { Label } from '@/components/ui/label'
 import { Switch } from '@/components/ui/switch'
 import { DatePicker } from '@/components/ui/date-picker'
@@ -639,6 +640,30 @@ function Fact({ label, value }: { label: string; value: string }): React.JSX.Ele
  * the condition chip, the lab panel — is handed a total belonging to two
  * products. Only the cells that SHOW the bill add the lines up.
  */
+// ONE TANKER, SEVERAL INVOICES (src/main/tankerAlloc.ts). A supplier can bill
+// one lorry on two or more invoices; each invoice books its own share of the
+// load. The tanker list carries every invoice it is on as invoices_json.
+type TankerInvoice = { order_id: number; invoice_no: string; qty: number }
+function tankerInvoices(t: Row): TankerInvoice[] {
+  try {
+    const a = JSON.parse(String(t.invoices_json || '[]'))
+    return Array.isArray(a)
+      ? a.map((x) => ({ order_id: Number(x?.order_id) || 0, invoice_no: String(x?.invoice_no || ''), qty: Number(x?.qty) || 0 })).filter((x) => x.order_id > 0)
+      : []
+  } catch {
+    return []
+  }
+}
+/** Is this tanker on any of these invoices — as its own, or as a share? */
+function tankerOnOrders(t: Row, ids: number[]): boolean {
+  return ids.includes(Number(t.order_id)) || tankerInvoices(t).some((i) => ids.includes(i.order_id))
+}
+/** What of the load is still free for these invoices — the load less what the OTHER invoices took. */
+function tankerLeftFor(t: Row, mine: number[]): number {
+  const others = tankerInvoices(t).filter((i) => !mine.includes(i.order_id)).reduce((a, i) => a + i.qty, 0)
+  return Math.max(0, Math.round(((Number(t.loaded_qty) || 0) - others) * 1000) / 1000)
+}
+
 function asBills(rows: Row[]): Row[] {
   const out: Row[] = []
   const at = new Map<string, number>()
@@ -1138,6 +1163,10 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
   const [form, setForm] = useState<Row>({})
   const [products, setProducts] = useState<Row[]>([])
   const [selected, setSelected] = useState<number[]>([])
+  // How much of each ticked tanker THIS invoice books, by tanker id. Blank is
+  // everything still free on it — the whole lorry, unless another invoice
+  // already took part of it.
+  const [tankerQty, setTankerQty] = useState<Record<string, string>>({})
   // THE BILL BEING EDITED, when it is one bill in several rows.
   //
   // `editing` is still the row the form's header is filled from; these are all
@@ -1516,7 +1545,18 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
       </TableCell>
       <TableCell>{row.payment_mode === 'pending' ? <span className={cn('text-muted-foreground', __WEB__ && '!text-[11px] !font-extrabold !text-[#A8B8AE]')}>Not decided</span> : row.payment_mode === 'supplier_finance' ? <Badge variant="warning" className={cn(__WEB__ && '!whitespace-nowrap !rounded-[2px] !border-0 !bg-[#FFEDD0] !px-2 !py-1 !text-[11px] !font-extrabold !tracking-[.03em] !text-[#8A5300]')}>Supplier financed</Badge> : <Badge variant="muted" className={cn(__WEB__ && '!whitespace-nowrap !rounded-[2px] !border-0 !bg-[#EAF0E9] !px-2 !py-1 !text-[11px] !font-extrabold !tracking-[.03em] !text-[#33473E]')}>Paid by us</Badge>}</TableCell>
       <TableCell className={cn(__WEB__ && (row.invoice_no ? '!whitespace-nowrap !text-[12.5px] !font-bold' : ''))}>
-        {row.invoice_no || <span className={cn('text-muted-foreground', __WEB__ && '!text-[12.5px] !text-[#A8B8AE]')}>Not entered</span>}
+        {tankerInvoices(row).length > 1 ? (
+          // One lorry on several invoices: each with its share of the load.
+          <div className="grid gap-0.5">
+            {tankerInvoices(row).map((i) => (
+              <div key={i.order_id} className="whitespace-nowrap">
+                {i.invoice_no || '—'} <span className="text-[11px] font-semibold text-muted-foreground">{formatNum(i.qty)}</span>
+              </div>
+            ))}
+          </div>
+        ) : (
+          row.invoice_no || <span className={cn('text-muted-foreground', __WEB__ && '!text-[12.5px] !text-[#A8B8AE]')}>Not entered</span>
+        )}
       </TableCell>
       <TableCell>
         <StatusBadge status={row.status} />
@@ -2860,7 +2900,10 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
       interest_pct: supplier?.interest_pct ?? 0,
       interest_days: supplier?.interest_days ?? 0
     }))
-    if (!keepSelection) setSelected([])
+    if (!keepSelection) {
+      setSelected([])
+      setTankerQty({})
+    }
   }
 
   function openNewPurchase(): void {
@@ -3005,13 +3048,24 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
     // purchase has none and opens as itself, exactly as before.
     const group = String(row.bill_group || '').trim()
     const billRows = group ? rows.filter((r) => String(r.bill_group || '') === group) : [row]
-    const billLorries = tankers.filter((x) => billRows.some((r) => Number(r.id) === Number(x.order_id)))
+    const billIds = billRows.map((r) => Number(r.id))
+    const billLorries = (allTankers.length ? allTankers : tankers).filter((x) => tankerOnOrders(x, billIds))
     setEditingBill(
       group && billRows.length > 1 && billLorries.length > 0
         ? { group, ids: billRows.map((r) => Number(r.id)) }
         : { group: '', ids: [] }
     )
     setSelected(billLorries.map((x) => Number(x.id)))
+    // A lorry shared with another invoice opens at the share this bill took.
+    setTankerQty(
+      Object.fromEntries(
+        billLorries.flatMap((x) => {
+          const mine = tankerInvoices(x).filter((i) => billIds.includes(i.order_id))
+          const q = mine.reduce((a, i) => a + i.qty, 0)
+          return mine.length && Math.abs(q - (Number(x.loaded_qty) || 0)) > 0.0005 ? [[String(x.id), String(Math.round(q * 1000) / 1000)]] : []
+        })
+      )
+    )
     // Each product's own rate and GST, read off the row that holds it, so
     // reopening shows what was billed rather than one figure for both.
     setLineRates(
@@ -3044,14 +3098,24 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
   // genuinely unbilled ones cross over.
   const tankersForBooking = allTankers.length ? allTankers : tankers
 
+  // The invoice(s) being edited — a tanker's share on these is this form's own.
+  const myOrderIds = useMemo(
+    () => (editingBill.ids.length ? editingBill.ids : editing?.id ? [Number(editing.id)] : []),
+    [editing, editingBill]
+  )
   const selectableTankers = useMemo(
     () => tankersForBooking.filter((x) =>
       String(x.supplier_id) === String(form.supplier_id || '') &&
       x.status !== 'supplier_factory' &&
       Number(x.loaded_qty) > 0 &&
-      (x.order_id == null || x.order_id === editing?.id || editingBill.ids.includes(Number(x.order_id)))
+      (x.order_id == null ||
+        x.order_id === editing?.id ||
+        editingBill.ids.includes(Number(x.order_id)) ||
+        tankerOnOrders(x, myOrderIds) ||
+        // Part of it is billed on another invoice and part is still free.
+        tankerLeftFor(x, myOrderIds) > 0.0005)
     ),
-    [tankersForBooking, form.supplier_id, editing, editingBill]
+    [tankersForBooking, form.supplier_id, editing, editingBill, myOrderIds]
   )
   // Only suppliers that actually have billable tankers appear in the picker
   // (plus the invoice's own supplier when editing). Trading suppliers are left
@@ -3064,7 +3128,11 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
         .filter((x) =>
           x.status !== 'supplier_factory' &&
           Number(x.loaded_qty) > 0 &&
-          (x.order_id == null || x.order_id === editing?.id || editingBill.ids.includes(Number(x.order_id))))
+          (x.order_id == null ||
+            x.order_id === editing?.id ||
+            editingBill.ids.includes(Number(x.order_id)) ||
+            // Part of the lorry is still free for another invoice.
+            tankerLeftFor(x, myOrderIds) > 0.0005))
         .map((x) => String(x.supplier_id))
     )
     return suppliers.filter((s) => {
@@ -3072,7 +3140,7 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
       if (!isCurrent && !isManufacturingParty(s)) return false
       return billable.has(String(s.id)) || !!s.skip_tanker_stages || isCurrent
     })
-  }, [suppliers, tankersForBooking, editing, form.supplier_id])
+  }, [suppliers, tankersForBooking, editing, form.supplier_id, myOrderIds])
   // A supplier flagged "Direct purchase" in the master keeps its goods at our
   // site already, so there is no send-to-supplier → transit → outside → inside
   // → empty cycle: the invoice is booked in one step against a bargain with the
@@ -3565,9 +3633,28 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
   // Total loaded quantity stayed 0 MT, the bargain never followed the first
   // tanker, so the rate never auto-filled, and every figure below it — taxable
   // value, GST, net — was struck on a quantity of zero.
+  //
+  // A tanker shared with another invoice comes in at THIS invoice's share:
+  // loaded_qty (and its excess-bargain part, in proportion) is what this
+  // invoice books, and tanker_loaded_qty keeps the lorry's own load.
   const chosenTankers = useMemo(
-    () => tankersForBooking.filter((x) => selected.includes(Number(x.id))),
-    [tankersForBooking, selected]
+    () =>
+      tankersForBooking
+        .filter((x) => selected.includes(Number(x.id)))
+        .map((x) => {
+          const loaded = Number(x.loaded_qty) || 0
+          const typed = Number(tankerQty[String(x.id)])
+          const share = typed > 0 ? typed : tankerLeftFor(x, myOrderIds)
+          if (!(loaded > 0) || Math.abs(share - loaded) < 0.0005) return x
+          const f = share / loaded
+          return {
+            ...x,
+            tanker_loaded_qty: loaded,
+            loaded_qty: share,
+            extra_qty: x.extra_qty != null ? (Number(x.extra_qty) || 0) * f : x.extra_qty
+          }
+        }),
+    [tankersForBooking, selected, tankerQty, myOrderIds]
   )
   // The invoice's bargain follows the first selected tanker automatically.
   useEffect(() => {
@@ -4248,6 +4335,8 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
       tds_pct: Number(form.tds_pct) || 0,
       company_id: Number(form.company_id) || undefined,
       tanker_ids: directMode || isTrading ? [] : selected,
+      // Each tanker's share on this invoice (the whole load when it is not shared).
+      tanker_qtys: directMode || isTrading ? {} : Object.fromEntries(chosenTankers.map((t) => [String(t.id), Number(t.loaded_qty) || 0])),
       is_consignment: !isTrading && directMode,
       is_trading: isTrading,
       bargain_id: isTrading ? null : form.bargain_id,
@@ -4315,6 +4404,7 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
         oil_type_id: l.product_id,
         bargain_id: l.bargain_id,
         tanker_ids: l.tankers.map((t: Row) => Number(t.id)),
+        tanker_qtys: Object.fromEntries(l.tankers.map((t: Row) => [String(t.id), Number(t.loaded_qty) || 0])),
         ordered_qty: l.qty,
         uom: l.uom,
         invoice_rate: rate,
@@ -4698,7 +4788,9 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
                   },
                   {
                     k: 'Invoice',
-                    v: String(row.invoice_no || 'Not entered'),
+                    v: tankerInvoices(row).length > 1
+                      ? tankerInvoices(row).map((i) => `${i.invoice_no || '—'} (${formatNum(i.qty)})`).join(', ')
+                      : String(row.invoice_no || 'Not entered'),
                     amber: !row.invoice_no,
                     mono: !!row.invoice_no
                   }
@@ -5846,7 +5938,7 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
                           // beside a real rate. The loaded qty stands in
                           // until the weighbridge answers, which is what the
                           // tanker dialog's own estimate already did.
-                          const basis = Number(t.received_qty) > 0 ? Number(t.received_qty) : Number(t.loaded_qty) || 0
+                          const basis = Number(t.received_qty) > 0 ? Number(t.received_qty) : Number(t.tanker_loaded_qty ?? t.loaded_qty) || 0
                           return (
                             <div
                               key={String(t.id)}
@@ -6916,6 +7008,11 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
                     )}
                     {selectableTankers.map((tanker) => {
                       const checked = selected.includes(Number(tanker.id))
+                      const loadedQ = Number(tanker.loaded_qty) || 0
+                      const left = tankerLeftFor(tanker, myOrderIds)
+                      const elsewhere = tankerInvoices(tanker).filter((i) => !myOrderIds.includes(i.order_id))
+                      const typedQ = tankerQty[String(tanker.id)] ?? ''
+                      const over = Number(typedQ) > left + 0.0005
                       return (
                         <label
                           key={tanker.id}
@@ -6945,7 +7042,34 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
                             <div className={cn('text-xs text-muted-foreground', __WEB__ && '!mt-1 !truncate !text-[11.5px] !font-semibold !text-[#5A6B62]')}>
                               {tanker.bargain_no} · {tanker.oil_code || tanker.oil_name} · Loaded {formatDate(tanker.loaded_date)} · {tanker.payment_mode === 'supplier_finance' ? 'Supplier financed' : 'Paid by us'}
                             </div>
+                            {elsewhere.length > 0 && (
+                              <div className="mt-1 text-[11.5px] font-semibold text-[#8A5A00]">
+                                Also billed on {elsewhere.map((i) => `${i.invoice_no || 'invoice'} (${formatNum(i.qty)})`).join(', ')} · {formatNum(left)} {tanker.uom} left
+                              </div>
+                            )}
                           </div>
+                          {/* SPLIT A LORRY OVER INVOICES. Ticked, the tanker
+                              asks how much of its load THIS invoice bills —
+                              blank is all that is still free. */}
+                          {checked && (
+                            <div className="flex shrink-0 flex-col items-end gap-0.5" onClick={(e) => e.preventDefault()}>
+                              <span className="text-[10.5px] font-bold uppercase tracking-wide text-[#5A6B62]">Qty on this invoice</span>
+                              <Input
+                                inputMode="decimal"
+                                aria-label={`Qty of ${tanker.tanker_no} on this invoice`}
+                                className={cn('h-9 w-[120px] text-right tabular-nums', over && 'border-[#B3261E] text-[#B3261E]')}
+                                placeholder={formatNum(left)}
+                                value={typedQ}
+                                onChange={(e) => {
+                                  const v = e.target.value.replace(/[^0-9.]/g, '')
+                                  setTankerQty((p) => ({ ...p, [String(tanker.id)]: v }))
+                                }}
+                              />
+                              <span className={cn('text-[10.5px] font-semibold', over ? 'text-[#B3261E]' : 'text-[#5A6B62]')}>
+                                {over ? `Only ${formatNum(left)} left` : `of ${formatNum(loadedQ)} ${tanker.uom} loaded`}
+                              </span>
+                            </div>
+                          )}
                           <div className={cn('font-medium tabular-nums', __WEB__ && 'doc-ref !shrink-0 !text-[14.5px] !font-bold !tracking-[-0.02em] !text-[#0A1F17]')}>{formatNum(tanker.loaded_qty)} {tanker.uom}</div>
                         </label>
                       )
@@ -9174,11 +9298,12 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
                       typed in. */}
                   <div className="col-span-2 flex min-w-0 flex-col gap-1.5">
                     <Label>LR no.</Label>
-                    <Input
+                    {/* One lorry billed on two invoices can travel on two LRs. */}
+                    <LrNumbersInput
                       className={cn(__WEB__ && 'max-w-[300px]')}
-                      value={actionForm.lr_no ?? ''}
+                      value={String(actionForm.lr_no ?? '')}
                       placeholder="Lorry receipt number, as the transporter issued it"
-                      onChange={(e) => setActionForm((p) => ({ ...p, lr_no: e.target.value }))}
+                      onChange={(v) => setActionForm((p) => ({ ...p, lr_no: v }))}
                     />
                   </div>
                 </div>
@@ -10266,10 +10391,9 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
                         one. */}
                     <div className="flex flex-col gap-1.5">
                       <Label>LR no.</Label>
-                      <Input
-                        value={editTankerForm.lr_no ?? ''}
-                        placeholder="Lorry receipt number"
-                        onChange={(e) => setEditTankerForm((p) => ({ ...p, lr_no: e.target.value }))}
+                      <LrNumbersInput
+                        value={String(editTankerForm.lr_no ?? '')}
+                        onChange={(v) => setEditTankerForm((p) => ({ ...p, lr_no: v }))}
                       />
                     </div>
                   </div>

@@ -1,4 +1,5 @@
 import { withDbTransaction } from './dbTransaction'
+import { ALLOC, ensureTankerInvoices } from './tankerAlloc'
 import type { InValue, ResultSet } from '@libsql/client'
 import { getClient, todayISO } from './db'
 import { getSetting } from './repos'
@@ -401,21 +402,24 @@ export async function listOrders(forModule?: string): Promise<Row[]> {
            pr.category AS product_sub_category,
            src.name AS source_name,
            t.name AS transporter_name,
-           (SELECT COUNT(*) FROM purchase_tankers pt WHERE pt.order_id = o.id) AS tanker_count,
-           (SELECT GROUP_CONCAT(pt.tanker_no, ', ') FROM purchase_tankers pt WHERE pt.order_id = o.id) AS tanker_nos,
+           (SELECT COUNT(*) FROM ${ALLOC} a WHERE a.order_id = o.id) AS tanker_count,
+           (SELECT GROUP_CONCAT(pt.tanker_no, ', ') FROM ${ALLOC} a JOIN purchase_tankers pt ON pt.id = a.tanker_id WHERE a.order_id = o.id) AS tanker_nos,
+           -- How much of the tankers this invoice took — less than they loaded
+           -- when a tanker is shared with another invoice.
+           (SELECT COALESCE(SUM(a.qty), 0) FROM ${ALLOC} a WHERE a.order_id = o.id) AS tanker_booked_qty,
            -- The gate's entry numbers for those tankers, for the Accounts
            -- purchase register's Vehicle column (the sales register shows its
            -- gate pass the same way).
-           (SELECT GROUP_CONCAT(ge.gate_entry_no, ', ') FROM gate_entries ge JOIN purchase_tankers pt ON pt.id = ge.tanker_id
-             WHERE pt.order_id = o.id AND ge.direction = 'in') AS gate_entry_nos,
+           (SELECT GROUP_CONCAT(ge.gate_entry_no, ', ') FROM gate_entries ge JOIN ${ALLOC} a ON a.tanker_id = ge.tanker_id
+             WHERE a.order_id = o.id AND ge.direction = 'in') AS gate_entry_nos,
            -- The lab readings, as two counts: how many of this invoice's tankers
            -- have been emptied, and how many of those carry a reading. The
            -- register draws one glyph from the pair — green when they match,
            -- amber when they do not — without loading a single value.
-           (SELECT COUNT(*) FROM purchase_tankers pt
-             WHERE pt.order_id = o.id AND pt.status = 'empty') AS empty_tankers,
-           (SELECT COUNT(*) FROM purchase_tankers pt
-             WHERE pt.order_id = o.id AND pt.status = 'empty'
+           (SELECT COUNT(*) FROM ${ALLOC} a JOIN purchase_tankers pt ON pt.id = a.tanker_id
+             WHERE a.order_id = o.id AND pt.status = 'empty') AS empty_tankers,
+           (SELECT COUNT(*) FROM ${ALLOC} a JOIN purchase_tankers pt ON pt.id = a.tanker_id
+             WHERE a.order_id = o.id AND pt.status = 'empty'
                AND EXISTS (SELECT 1 FROM tanker_quality tq
                             WHERE tq.tanker_id = pt.id AND TRIM(COALESCE(tq.value, '')) <> '')) AS quality_tankers,
            (SELECT COUNT(*) FROM order_quality oq
@@ -423,18 +427,19 @@ export async function listOrders(forModule?: string): Promise<Row[]> {
            -- Shortage rolled up from the tankers. The order's own
            -- actual_shortage_qty columns are only written on the tanker-less
            -- receipt path, so a tanker purchase showed nothing at all.
-           (SELECT COALESCE(SUM(MAX(0, pt.loaded_qty - pt.received_qty)), 0)
-              FROM purchase_tankers pt
-             WHERE pt.order_id = o.id AND pt.status = 'empty' AND pt.received_qty IS NOT NULL) AS tanker_shortage_qty,
+           -- A shared tanker gives each invoice its share (see tankerAlloc.ts).
+           (SELECT COALESCE(SUM(MAX(0, pt.loaded_qty - pt.received_qty) * CASE WHEN pt.loaded_qty > 0 THEN MIN(1.0, a.qty / pt.loaded_qty) ELSE 1.0 END), 0)
+              FROM ${ALLOC} a JOIN purchase_tankers pt ON pt.id = a.tanker_id
+             WHERE a.order_id = o.id AND pt.status = 'empty' AND pt.received_qty IS NOT NULL) AS tanker_shortage_qty,
            -- Already recovered by docking the transporter's freight, so the part
            -- still open is what a debit note would be raised for.
-           (SELECT COALESCE(SUM(pt.shortage_charge_amount), 0)
-              FROM purchase_tankers pt WHERE pt.order_id = o.id) AS tanker_shortage_charged,
+           (SELECT COALESCE(SUM(pt.shortage_charge_amount * CASE WHEN pt.loaded_qty > 0 THEN MIN(1.0, a.qty / pt.loaded_qty) ELSE 1.0 END), 0)
+              FROM ${ALLOC} a JOIN purchase_tankers pt ON pt.id = a.tanker_id WHERE a.order_id = o.id) AS tanker_shortage_charged,
            -- Freight earned on this invoice, before the shortage deduction.
-           (SELECT COALESCE(SUM(pt.transport_amount), 0)
-              FROM purchase_tankers pt WHERE pt.order_id = o.id) AS tanker_freight_total,
-           (SELECT COUNT(*) FROM purchase_tankers pt
-             WHERE pt.order_id = o.id AND pt.status = 'empty' AND pt.received_qty IS NOT NULL) AS tanker_weighed_count,
+           (SELECT COALESCE(SUM(pt.transport_amount * CASE WHEN pt.loaded_qty > 0 THEN MIN(1.0, a.qty / pt.loaded_qty) ELSE 1.0 END), 0)
+              FROM ${ALLOC} a JOIN purchase_tankers pt ON pt.id = a.tanker_id WHERE a.order_id = o.id) AS tanker_freight_total,
+           (SELECT COUNT(*) FROM ${ALLOC} a JOIN purchase_tankers pt ON pt.id = a.tanker_id
+             WHERE a.order_id = o.id AND pt.status = 'empty' AND pt.received_qty IS NOT NULL) AS tanker_weighed_count,
            -- How this purchase is being funded, if through an LC. A purchase is
            -- tagged by issuing a bill under an LC against it, so the LC comes
            -- back through lc_issuances rather than sitting on the order itself.
@@ -514,10 +519,15 @@ export async function purchaseBargainNotes(orderId: number): Promise<Row[]> {
 // contributes to BOTH its primary and its excess bargain, so an invoice spanning
 // two bargains is priced line-wise (each at its own rate) like the supplier does.
 async function bargainLinesForTankers(
-  tankerIds: unknown
+  tankerIds: unknown,
+  // ONE TANKER, SEVERAL INVOICES: how much of each tanker THIS invoice takes —
+  // typed on the form (qtys), or as already booked for orderId. Neither, and
+  // it is the whole tanker, as it always was.
+  opts: { orderId?: number; qtys?: unknown } = {}
 ): Promise<{ rate: number; qty: number; bargainId: number }[]> {
   const ids = (Array.isArray(tankerIds) ? tankerIds : []).map((x) => n(x)).filter((x) => x > 0)
   if (ids.length === 0) return []
+  const share = await tankerShares(ids, opts)
   const res = await getClient().execute({
     // THE RATE THE TANKER WAS BILLED AT, falling back to its bargain'''s only
     // for a tanker that predates the frozen column. Reading the live bargain
@@ -545,10 +555,69 @@ async function bargainLinesForTankers(
   for (const r of toPlain(res)) {
     const loaded = n(r.loaded_qty)
     const extra = r.extra_bargain_id ? n(r.extra_qty) : 0
-    add(r.bargain_id, n(r.rate), loaded - extra)
-    if (extra > 0) add(r.extra_bargain_id, n(r.extra_rate), extra)
+    // This invoice's share of the tanker, spread over its two bargains in the
+    // tanker's own proportion.
+    const f = loaded > 0 ? Math.min(1, (share.get(n(r.id)) ?? loaded) / loaded) : 1
+    add(r.bargain_id, n(r.rate), (loaded - extra) * f)
+    if (extra > 0) add(r.extra_bargain_id, n(r.extra_rate), extra * f)
   }
   return Array.from(m.values())
+}
+
+/** How much of each tanker an invoice takes: typed, else as booked for the order, else none given (whole). */
+async function tankerShares(ids: number[], opts: { orderId?: number; qtys?: unknown }): Promise<Map<number, number>> {
+  const out = new Map<number, number>()
+  const typed = (opts.qtys && typeof opts.qtys === 'object' ? opts.qtys : {}) as Record<string, unknown>
+  for (const id of ids) if (n(typed[String(id)]) > 0) out.set(id, round3(n(typed[String(id)])))
+  const rest = ids.filter((id) => !out.has(id))
+  if (rest.length && n(opts.orderId)) {
+    await ensureTankerInvoices()
+    const r = await getClient().execute({
+      sql: `SELECT tanker_id, qty FROM ${ALLOC} a WHERE a.order_id = ? AND a.tanker_id IN (${rest.map(() => '?').join(',')})`,
+      args: [n(opts.orderId), ...rest]
+    })
+    for (const x of toPlain(r)) out.set(n(x.tanker_id), n(x.qty))
+  }
+  return out
+}
+
+const round3 = (v: number): number => Math.round(v * 1000) / 1000
+
+/**
+ * TAKE AN INVOICE OFF ITS TANKERS — before it is re-assigned on an edit, or
+ * when it is deleted. A tanker it shared with another invoice stays on that
+ * one (which becomes its primary); a tanker left with a single invoice for its
+ * whole load goes back to the plain one-invoice form. Returns the tankers left
+ * with no invoice at all.
+ */
+async function unlinkOrderTankers(orderId: number): Promise<number[]> {
+  await ensureTankerInvoices()
+  const c = getClient()
+  const touched = new Set<number>([
+    ...toPlain(await c.execute({ sql: 'SELECT id FROM purchase_tankers WHERE order_id = ?', args: [orderId] })).map((r) => n(r.id)),
+    ...toPlain(await c.execute({ sql: 'SELECT tanker_id FROM tanker_invoices WHERE order_id = ?', args: [orderId] })).map((r) => n(r.tanker_id))
+  ])
+  await c.execute({ sql: 'DELETE FROM tanker_invoices WHERE order_id = ?', args: [orderId] })
+  const freed: number[] = []
+  for (const tid of touched) {
+    const t = toPlain(await c.execute({ sql: 'SELECT order_id, loaded_qty FROM purchase_tankers WHERE id = ?', args: [tid] }))[0]
+    if (!t) continue
+    const rows = toPlain(await c.execute({ sql: 'SELECT order_id, qty FROM tanker_invoices WHERE tanker_id = ? ORDER BY id', args: [tid] }))
+    if (!rows.length) {
+      if (n(t.order_id) === orderId) {
+        await c.execute({ sql: 'UPDATE purchase_tankers SET order_id = NULL WHERE id = ?', args: [tid] })
+        freed.push(tid)
+      }
+      continue
+    }
+    const primary = rows.some((r) => n(r.order_id) === n(t.order_id)) ? n(t.order_id) : n(rows[0].order_id)
+    await c.execute({ sql: 'UPDATE purchase_tankers SET order_id = ? WHERE id = ?', args: [primary, tid] })
+    // One invoice left, for the whole load: the plain form again.
+    if (rows.length === 1 && Math.abs(n(rows[0].qty) - n(t.loaded_qty)) < 0.001) {
+      await c.execute({ sql: 'DELETE FROM tanker_invoices WHERE tanker_id = ?', args: [tid] })
+    }
+  }
+  return freed
 }
 
 // Per-bargain additional-interest / interest-days overrides typed on the
@@ -804,7 +873,7 @@ export async function createOrder(v: Row): Promise<{ id: number }> {
     ? obPriced.lines
     : lotAlloc.lines.length
       ? lotAlloc.lines.map((l) => ({ rate: l.rate, qty: l.qty, bargainId: l.bargain_id }))
-      : await bargainLinesForTankers(v.tanker_ids)
+      : await bargainLinesForTankers(v.tanker_ids, { qtys: v.tanker_qtys })
   const pricedLines = applyBargainInterestOverrides(bargainLines, v.bargain_interest)
   const m = computeMoney({
     orderedQty: n(v.ordered_qty),
@@ -912,7 +981,7 @@ export async function createOrder(v: Row): Promise<{ id: number }> {
       await autoAssignConsignmentLots(id, n(v.supplier_id), n(v.oil_type_id), n(v.ordered_qty), n(v.bargain_id), bookInCompany)
     }
   } else {
-    await assignTankers(id, v.tanker_ids, n(v.bargain_id), n(v.transporter_id), bookInCompany, billSiblings(v))
+    await assignTankers(id, v.tanker_ids, n(v.bargain_id), n(v.transporter_id), bookInCompany, billSiblings(v), v.tanker_qtys)
     await applySupplierFreight(id, v)
   }
   await saveOrderBargainInterest(id, v.bargain_interest)
@@ -1207,7 +1276,7 @@ export async function updateOrder(id: number, v: Row): Promise<{ id: number }> {
     ? obPriced.lines
     : lotAlloc.lines.length
       ? lotAlloc.lines.map((l) => ({ rate: l.rate, qty: l.qty, bargainId: l.bargain_id }))
-      : await bargainLinesForTankers(v.tanker_ids)
+      : await bargainLinesForTankers(v.tanker_ids, { qtys: v.tanker_qtys, orderId: id })
   const pricedLines = applyBargainInterestOverrides(bargainLines, v.bargain_interest)
   const m = computeMoney({
     orderedQty: n(v.ordered_qty),
@@ -1314,12 +1383,12 @@ export async function updateOrder(id: number, v: Row): Promise<{ id: number }> {
       )
     }
   } else {
-    await getClient().execute({ sql: 'UPDATE purchase_tankers SET order_id = NULL WHERE order_id = ?', args: [id] })
+    await unlinkOrderTankers(id)
     const moveTo = v.company_id ? n(v.company_id) : 0
     if (moveTo) {
       await getClient().execute({ sql: 'UPDATE orders SET company_id = ? WHERE id = ?', args: [moveTo, id] })
     }
-    await assignTankers(id, v.tanker_ids, n(v.bargain_id), n(v.transporter_id), moveTo, billSiblings(v))
+    await assignTankers(id, v.tanker_ids, n(v.bargain_id), n(v.transporter_id), moveTo, billSiblings(v), v.tanker_qtys)
     await applySupplierFreight(id, v)
   }
   await setSupplierPayable(id, n(v.supplier_id), m.net_amount, String(v.order_date))
@@ -1430,8 +1499,9 @@ export async function rerateInvoicesForBargain(
       })
 
       // 2. The money, from the invoice's own terms and its newly-rated lines.
+      await ensureTankerInvoices()
       const tankerIds = toPlain(
-        await c.execute({ sql: 'SELECT id FROM purchase_tankers WHERE order_id = ?', args: [id] })
+        await c.execute({ sql: `SELECT tanker_id AS id FROM ${ALLOC} a WHERE a.order_id = ?`, args: [id] })
       ).map((t) => n(t.id))
       if (!tankerIds.length) {
         failed.push({
@@ -1444,7 +1514,7 @@ export async function rerateInvoicesForBargain(
       const supplier = await getSupplier(n(o.supplier_id))
       const prior = await supplierFyTaxable(n(o.supplier_id), String(o.order_date), id)
       const lines = applyBargainInterestOverrides(
-        await bargainLinesForTankers(tankerIds),
+        await bargainLinesForTankers(tankerIds, { orderId: id }),
         await listOrderBargainInterest(id)
       )
       const blended = lines.reduce((t, l) => t + l.qty, 0) > 0
@@ -1551,8 +1621,8 @@ export async function repriceSplitTankerInvoices(apply = false, onlyIds?: number
   const pick = onlyIds ? new Set(onlyIds.map((x) => n(x))) : null
   const cand = toPlain(
     await c.execute(`SELECT o.* FROM orders o
-                      WHERE EXISTS (SELECT 1 FROM purchase_tankers pt
-                                     WHERE pt.order_id = o.id AND COALESCE(pt.extra_bargain_id, 0) > 0 AND COALESCE(pt.extra_qty, 0) > 0)
+                      WHERE EXISTS (SELECT 1 FROM ${ALLOC} a JOIN purchase_tankers pt ON pt.id = a.tanker_id
+                                     WHERE a.order_id = o.id AND COALESCE(pt.extra_bargain_id, 0) > 0 AND COALESCE(pt.extra_qty, 0) > 0)
                         AND COALESCE(o.is_trading, 0) = 0
                       ORDER BY o.order_date ASC, o.id ASC`)
   )
@@ -1561,8 +1631,9 @@ export async function repriceSplitTankerInvoices(apply = false, onlyIds?: number
   for (const o of cand) {
     const id = n(o.id)
     if (pick && !pick.has(id)) continue
-    const tankerIds = toPlain(await c.execute({ sql: 'SELECT id FROM purchase_tankers WHERE order_id = ?', args: [id] })).map((t) => n(t.id))
-    const lines = applyBargainInterestOverrides(await bargainLinesForTankers(tankerIds), await listOrderBargainInterest(id))
+    await ensureTankerInvoices()
+    const tankerIds = toPlain(await c.execute({ sql: `SELECT tanker_id AS id FROM ${ALLOC} a WHERE a.order_id = ?`, args: [id] })).map((t) => n(t.id))
+    const lines = applyBargainInterestOverrides(await bargainLinesForTankers(tankerIds, { orderId: id }), await listOrderBargainInterest(id))
     const qty = lines.reduce((t, l) => t + l.qty, 0)
     if (!(qty > 0) || new Set(lines.map((l) => round2(l.rate))).size < 2) continue
     const supplier = await getSupplier(n(o.supplier_id))
@@ -1823,16 +1894,34 @@ export async function deleteOrder(id: number): Promise<{ id: number }> {
   await assertOrderNotInUse(id)
   await deleteJournalByRef('order_id', id)
   await c.execute({ sql: 'DELETE FROM supplier_ledger WHERE order_id = ?', args: [id] })
-  await c.execute({ sql: 'DELETE FROM transporter_ledger WHERE order_id = ?', args: [id] })
   // Honour what the delete promises: the tankers return to the loaded queue, so
   // the stages walked after loading are cleared along with the invoice link.
-  await c.execute({
-    sql: `UPDATE purchase_tankers
-          SET order_id = NULL, status = 'loaded', transit_date = NULL, outside_factory_date = NULL,
-              inside_factory_date = NULL, empty_date = NULL, received_qty = NULL
-          WHERE order_id = ?`,
-    args: [id]
-  })
+  // A tanker shared with another invoice stays on it, stages and all.
+  const own = toPlain(await c.execute({ sql: 'SELECT id, tanker_no FROM purchase_tankers WHERE order_id = ?', args: [id] }))
+  const freed = await unlinkOrderTankers(id)
+  // ...and so does its freight: the transporter's entry for a lorry that is
+  // still billed on another invoice moves to that invoice instead of going
+  // with this one.
+  for (const t of own) {
+    if (freed.includes(n(t.id))) continue
+    await c.execute({
+      sql: `UPDATE transporter_ledger
+               SET order_id = (SELECT order_id FROM purchase_tankers WHERE id = ?),
+                   company_id = (SELECT o.company_id FROM orders o JOIN purchase_tankers pt ON pt.order_id = o.id WHERE pt.id = ?)
+             WHERE order_id = ? AND note LIKE ?`,
+      args: [n(t.id), n(t.id), id, `Tanker ${String(t.tanker_no)}:%`]
+    })
+  }
+  await c.execute({ sql: 'DELETE FROM transporter_ledger WHERE order_id = ?', args: [id] })
+  for (const tid of freed) {
+    await c.execute({
+      sql: `UPDATE purchase_tankers
+            SET order_id = NULL, status = 'loaded', transit_date = NULL, outside_factory_date = NULL,
+                inside_factory_date = NULL, empty_date = NULL, received_qty = NULL
+            WHERE id = ?`,
+      args: [tid]
+    })
+  }
   // Consignment tankers this invoice drew go back to pending, and its bargain
   // allocation goes with it.
   await releaseConsignmentLots(id)
@@ -1856,28 +1945,60 @@ async function assignTankers(
   // between the lines of the bill it is already on — which is what happens the
   // moment a product is taken off a multi-product invoice, or two lines swap a
   // lorry. Those rows are named here so the check can tell the two apart.
-  siblingIds: number[] = []
+  siblingIds: number[] = [],
+  // How much of each tanker this invoice takes, by tanker id. Left out (or the
+  // whole load) and the tanker is on this invoice alone, as before.
+  tankerQtys?: unknown
 ): Promise<void> {
   const ids = Array.isArray(tankerIds) ? tankerIds.map(Number).filter((x) => x > 0) : []
   if (!ids.length) throw new Error('Select at least one loaded tanker')
   const c = getClient()
+  await ensureTankerInvoices()
+  const typed = (tankerQtys && typeof tankerQtys === 'object' ? tankerQtys : {}) as Record<string, unknown>
+  const mine = new Set<number>([orderId, ...siblingIds])
   for (const tankerId of ids) {
     const res = await c.execute({
-      sql: 'SELECT order_id, bargain_id FROM purchase_tankers WHERE id = ?',
+      sql: 'SELECT order_id, bargain_id, loaded_qty, tanker_no FROM purchase_tankers WHERE id = ?',
       args: [tankerId]
     })
     if (!res.rows.length) throw new Error('A selected tanker no longer exists')
     const row = res.rows[0]
-    if (
-      row.order_id != null &&
-      Number(row.order_id) !== orderId &&
-      !siblingIds.includes(Number(row.order_id))
-    ) {
-      throw new Error('A selected tanker is already attached to another purchase')
-    }
     if (Number(row.bargain_id) !== bargainId) {
       throw new Error('All tankers on one purchase must belong to the selected bargain')
     }
+    // ONE TANKER, SEVERAL INVOICES. What the OTHER invoices already took of
+    // this load, and so what is left for this one.
+    const loaded = round3(n(row.loaded_qty))
+    const others = toPlain(
+      await c.execute({ sql: `SELECT order_id, qty FROM ${ALLOC} a WHERE a.tanker_id = ?`, args: [tankerId] })
+    ).filter((a) => !mine.has(n(a.order_id)))
+    const otherQty = round3(others.reduce((t, a) => t + n(a.qty), 0))
+    const left = round3(loaded - otherQty)
+    const want = n(typed[String(tankerId)]) > 0 ? round3(n(typed[String(tankerId)])) : left
+    if (left <= 0.0005) throw new Error(`Tanker ${String(row.tanker_no || '')} is fully booked on other invoices`)
+    if (want > left + 0.001) {
+      throw new Error(`Only ${left} of tanker ${String(row.tanker_no || '')} is left to book — the rest is on another invoice`)
+    }
+    await c.execute({
+      sql: `DELETE FROM tanker_invoices WHERE tanker_id = ? AND order_id IN (${[...mine].map(() => '?').join(',')})`,
+      args: [tankerId, ...mine]
+    })
+    const whole = !others.length && Math.abs(want - loaded) < 0.001
+    if (!whole) {
+      // Shared: every invoice on the tanker holds its own row, the one it was
+      // first billed on included.
+      if (row.order_id != null && !mine.has(Number(row.order_id))) {
+        const has = await c.execute({ sql: 'SELECT 1 FROM tanker_invoices WHERE tanker_id = ? AND order_id = ?', args: [tankerId, Number(row.order_id)] })
+        if (!has.rows.length) {
+          await c.execute({ sql: 'INSERT INTO tanker_invoices (tanker_id, order_id, qty) VALUES (?, ?, ?)', args: [tankerId, Number(row.order_id), otherQty] })
+        }
+      }
+      await c.execute({ sql: 'INSERT INTO tanker_invoices (tanker_id, order_id, qty) VALUES (?, ?, ?)', args: [tankerId, orderId, want] })
+    } else {
+      await c.execute({ sql: 'DELETE FROM tanker_invoices WHERE tanker_id = ?', args: [tankerId] })
+    }
+    // The tanker's own invoice stays the one it was first billed on.
+    const primary = row.order_id != null && !mine.has(Number(row.order_id)) ? Number(row.order_id) : orderId
     await c.execute({
       // A tanker belongs to whichever company its invoice was booked in, so a
       // clerical mix-up is corrected by re-billing rather than by editing rows.
@@ -1895,9 +2016,19 @@ async function assignTankers(
               ELSE COALESCE(extra_bargain_rate,
                 (SELECT b.rate_per_uom FROM bargains b WHERE b.id = purchase_tankers.extra_bargain_id)) END
             WHERE id = ?`,
-      args: [orderId, companyId, companyId, transporterId, transporterId, tankerId]
+      args: [primary, companyId, companyId, transporterId, transporterId, tankerId]
     })
   }
+  // A SHARED lorry that has already moved on: every invoice on it takes its
+  // (new) share of what arrived, the freight and the shortage. A tanker on one
+  // invoice alone is left exactly as it always was.
+  const shared = toPlain(
+    await c.execute({
+      sql: `SELECT DISTINCT tanker_id FROM tanker_invoices WHERE tanker_id IN (${ids.map(() => '?').join(',')})`,
+      args: ids
+    })
+  )
+  for (const r of shared) await syncTankerOrders(n(r.tanker_id))
 }
 
 // allCompanies = true is used by the (shared) Gate Entry screen.
@@ -1911,6 +2042,11 @@ export async function listPurchaseTankers(allCompanies = false, forModule?: stri
     args: from ? [...base, from] : base,
     sql: `
     SELECT pt.*, o.invoice_no, o.order_date AS invoice_date, o.company_id AS invoice_company_id,
+           -- ONE TANKER, SEVERAL INVOICES: each invoice it is on, with its
+           -- share, and how much of the load is booked so far.
+           (SELECT json_group_array(json_object('order_id', a.order_id, 'invoice_no', oa.invoice_no, 'qty', a.qty))
+              FROM ${ALLOC} a JOIN orders oa ON oa.id = a.order_id WHERE a.tanker_id = pt.id) AS invoices_json,
+           (SELECT COALESCE(SUM(a.qty), 0) FROM ${ALLOC} a WHERE a.tanker_id = pt.id) AS booked_qty,
            o.allowed_shortage_pct AS order_allowed_shortage_pct,
            b.bargain_no, b.bargain_type,
            -- pt.bargain_rate (from pt.* above) is THE RATE THIS TANKER WAS
@@ -2168,7 +2304,7 @@ export async function updateTankerDetails(id: number, v: Row): Promise<{ id: num
     ]
   })
 
-  if (t.order_id) await syncPurchaseFromTankers(n(t.order_id))
+  if (t.order_id) await syncTankerOrders(n(t.id), t.order_id)
   return { id }
 }
 
@@ -2182,13 +2318,18 @@ export async function deletePurchaseTanker(id: number): Promise<{ id: number }> 
 
 async function syncPurchaseFromTankers(orderId: number): Promise<void> {
   const c = getClient()
+  await ensureTankerInvoices()
+  // A tanker shared with another invoice brings this one its SHARE of what
+  // arrived, of the freight and of any shortage — in proportion to what this
+  // invoice took of the load. A tanker on this invoice alone brings all of it.
+  const f = 'CASE WHEN pt.loaded_qty > 0 THEN MIN(1.0, a.qty / pt.loaded_qty) ELSE 1.0 END'
   const res = await c.execute({
     sql: `SELECT COUNT(*) AS total,
-                 SUM(CASE WHEN status = 'empty' THEN 1 ELSE 0 END) AS empty_count,
-                 SUM(COALESCE(received_qty, 0)) AS received_qty,
-                 SUM(COALESCE(transport_amount, 0)) AS transport_amount,
-                 SUM(COALESCE(shortage_charge_amount, 0)) AS shortage_amount
-          FROM purchase_tankers WHERE order_id = ?`,
+                 SUM(CASE WHEN pt.status = 'empty' THEN 1 ELSE 0 END) AS empty_count,
+                 SUM(COALESCE(pt.received_qty, 0) * ${f}) AS received_qty,
+                 SUM(COALESCE(pt.transport_amount, 0) * ${f}) AS transport_amount,
+                 SUM(COALESCE(pt.shortage_charge_amount, 0) * ${f}) AS shortage_amount
+          FROM ${ALLOC} a JOIN purchase_tankers pt ON pt.id = a.tanker_id WHERE a.order_id = ?`,
     args: [orderId]
   })
   const x = res.rows[0]
@@ -2200,12 +2341,22 @@ async function syncPurchaseFromTankers(orderId: number): Promise<void> {
           shortage_charge_amount = ?,
           received_date = CASE WHEN ? = 'received' THEN COALESCE(
             (SELECT MAX(COALESCE(pt.empty_date, pt.inside_factory_date, pt.outside_factory_date, pt.transit_date, pt.loaded_date))
-             FROM purchase_tankers pt WHERE pt.order_id = orders.id),
+             FROM ${ALLOC} a JOIN purchase_tankers pt ON pt.id = a.tanker_id WHERE a.order_id = orders.id),
             orders.received_date, orders.order_date, date('now'))
           ELSE received_date END
           WHERE id = ?`,
-    args: [status, n(x.received_qty), n(x.transport_amount), n(x.shortage_amount), status, orderId]
+    args: [status, Math.round(n(x.received_qty) * 1000) / 1000, Math.round(n(x.transport_amount) * 100) / 100, Math.round(n(x.shortage_amount) * 100) / 100, status, orderId]
   })
+}
+
+/** Every invoice a tanker is on, brought up to date after the tanker moves. */
+async function syncTankerOrders(tankerId: number, primary?: unknown): Promise<void> {
+  await ensureTankerInvoices()
+  const ids = new Set<number>(
+    toPlain(await getClient().execute({ sql: `SELECT DISTINCT order_id FROM ${ALLOC} a WHERE a.tanker_id = ?`, args: [n(tankerId)] })).map((r) => n(r.order_id))
+  )
+  if (n(primary)) ids.add(n(primary))
+  for (const id of ids) if (id) await syncPurchaseFromTankers(id)
 }
 
 // Startup backfill: recompute each purchase's status/received totals from its
@@ -2457,9 +2608,8 @@ export async function repairPurchaseTdsOnTaxable(): Promise<void> {
 
 export async function backfillOrderStatuses(): Promise<void> {
   const c = getClient()
-  const res = await c.execute(
-    'SELECT DISTINCT order_id FROM purchase_tankers WHERE order_id IS NOT NULL'
-  )
+  await ensureTankerInvoices()
+  const res = await c.execute(`SELECT DISTINCT order_id FROM ${ALLOC} a`)
   for (const r of res.rows) {
     await syncPurchaseFromTankers(n(r.order_id)).catch(() => {})
   }
@@ -2538,7 +2688,7 @@ export async function revertPurchaseTanker(id: number): Promise<{ id: number; st
     sql: `UPDATE purchase_tankers SET status = ?${clear ? `, ${clear} = NULL` : ''}${String(tanker.status) === 'empty' ? ', received_qty = NULL' : ''}${clearQty} WHERE id = ?`,
     args: [prev, id]
   })
-  if (tanker.order_id) await syncPurchaseFromTankers(n(tanker.order_id)).catch(() => {})
+  if (tanker.order_id) await syncTankerOrders(n(tanker.id), tanker.order_id).catch(() => {})
   return { id, status: prev }
 }
 
@@ -3084,7 +3234,7 @@ export async function advancePurchaseTanker(id: number, toStatus: string, data: 
       })
     }
   }
-  if (tanker.order_id) await syncPurchaseFromTankers(n(tanker.order_id))
+  if (tanker.order_id) await syncTankerOrders(n(tanker.id), tanker.order_id)
   if (toStatus === 'empty') {
     const { raiseOnwardSale } = await import('./onwardSale')
     await raiseOnwardSale(id, data)
@@ -3401,7 +3551,8 @@ export async function orderInterestAmounts(orderIds: number[]): Promise<Map<numb
   const overrides = toPlain(
     await c.execute({ sql: `SELECT order_id, bargain_id, additional_interest, interest_days FROM order_bargain_interest WHERE order_id IN (${ph})`, args: ids })
   )
-  const tankers = toPlain(await c.execute({ sql: `SELECT id, order_id FROM purchase_tankers WHERE order_id IN (${ph})`, args: ids }))
+  await ensureTankerInvoices()
+  const tankers = toPlain(await c.execute({ sql: `SELECT a.tanker_id AS id, a.order_id FROM ${ALLOC} a WHERE a.order_id IN (${ph})`, args: ids }))
   const split = toPlain(
     await c.execute({
       sql: `SELECT ob.order_id, ob.bargain_id, ob.qty, b.rate_per_uom AS rate
@@ -3413,7 +3564,7 @@ export async function orderInterestAmounts(orderIds: number[]): Promise<Map<numb
     const id = n(o.id)
     let lines: { rate: number; qty: number; bargainId: number }[] = []
     const tIds = tankers.filter((t) => n(t.order_id) === id).map((t) => n(t.id))
-    if (tIds.length) lines = await bargainLinesForTankers(tIds)
+    if (tIds.length) lines = await bargainLinesForTankers(tIds, { orderId: id })
     if (!lines.length) {
       lines = split.filter((s) => n(s.order_id) === id).map((s) => ({ rate: n(s.rate), qty: n(s.qty), bargainId: n(s.bargain_id) }))
     }

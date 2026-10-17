@@ -1,4 +1,5 @@
 import { ensurePpTraceSchema } from './ppTrace'
+import { ensureTankerInvoices } from './tankerAlloc'
 import { getClient, initDb, runDaily, runOnce, startRevisionWatcher, todayISO } from './db'
 import { seedDefaultGroups } from './ledgerGroups'
 import { splitGstLedgersByRate } from './gstBackfill'
@@ -45,6 +46,9 @@ import { previewLcCharges, fixLcCharges, autoFixDuplicateSales } from './account
 // with no separate code path for either case.
 export async function runStartupTasks(): Promise<void> {
   await initDb()
+  // One tanker billed on several invoices (tankerAlloc.ts). Idempotent, and on
+  // every start so a database restored from an older snapshot has it too.
+  await ensureTankerInvoices().catch((e) => console.error('[tankers] tanker_invoices table failed:', e))
   await ensureBdPostingFields()
   // Permanent voucher numbers: the first fill numbers every existing voucher
   // exactly as the ledgers already show it. Additive — a new table only.

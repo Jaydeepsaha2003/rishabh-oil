@@ -1,4 +1,5 @@
 import type { ResultSet } from '@libsql/client'
+import { ALLOC } from './tankerAlloc'
 import { getClient, todayISO } from './db'
 import { getActiveCompanyId } from './company'
 import { visibleFromFor } from './access-gate'
@@ -353,21 +354,21 @@ export async function bargainLinkedInvoices(id: number): Promise<Row[]> {
   const res = await getClient().execute({
     sql: `SELECT o.id, o.invoice_no, o.order_date, o.company_id, o.uom,
                  co.name AS company_name, s.name AS supplier_name,
-                 COALESCE((SELECT SUM(CASE WHEN pt.bargain_id = ? THEN pt.loaded_qty - COALESCE(pt.extra_qty, 0)
-                                           ELSE COALESCE(pt.extra_qty, 0) END)
-                             FROM purchase_tankers pt
-                            WHERE pt.order_id = o.id AND (pt.bargain_id = ? OR pt.extra_bargain_id = ?)),
+                 COALESCE((SELECT SUM((CASE WHEN pt.bargain_id = ? THEN pt.loaded_qty - COALESCE(pt.extra_qty, 0)
+                                           ELSE COALESCE(pt.extra_qty, 0) END) * CASE WHEN pt.loaded_qty > 0 THEN MIN(1.0, a.qty / pt.loaded_qty) ELSE 1.0 END)
+                             FROM ${ALLOC} a JOIN purchase_tankers pt ON pt.id = a.tanker_id
+                            WHERE a.order_id = o.id AND (pt.bargain_id = ? OR pt.extra_bargain_id = ?)),
                           o.ordered_qty) AS qty,
                  COALESCE((SELECT MAX(CASE WHEN pt.bargain_id = ? THEN pt.bargain_rate ELSE pt.extra_bargain_rate END)
-                             FROM purchase_tankers pt
-                            WHERE pt.order_id = o.id AND (pt.bargain_id = ? OR pt.extra_bargain_id = ?)),
+                             FROM ${ALLOC} a JOIN purchase_tankers pt ON pt.id = a.tanker_id
+                            WHERE a.order_id = o.id AND (pt.bargain_id = ? OR pt.extra_bargain_id = ?)),
                           o.bargain_rate) AS billed_rate
           FROM orders o
           LEFT JOIN companies co ON co.id = o.company_id
           LEFT JOIN suppliers s ON s.id = o.supplier_id
           WHERE o.bargain_id = ?
-             OR EXISTS (SELECT 1 FROM purchase_tankers pt
-                         WHERE pt.order_id = o.id AND (pt.bargain_id = ? OR pt.extra_bargain_id = ?))
+             OR EXISTS (SELECT 1 FROM ${ALLOC} a JOIN purchase_tankers pt ON pt.id = a.tanker_id
+                         WHERE a.order_id = o.id AND (pt.bargain_id = ? OR pt.extra_bargain_id = ?))
           ORDER BY o.order_date, o.id`,
     args: [id, id, id, id, id, id, id, id, id]
   })

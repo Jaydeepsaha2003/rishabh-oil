@@ -1,4 +1,5 @@
 import { getClient } from './db'
+import { ALLOC } from './tankerAlloc'
 import { companiesOfFactory } from './company'
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -46,7 +47,7 @@ export async function stockFifoMap(v: { productId: number; companyIds?: number[]
     await c.execute({
       sql: `SELECT * FROM (
               SELECT o.id, 'purchase' AS kind, o.invoice_no,
-                     COALESCE(NULLIF(TRIM(o.tanker_no), ''), (SELECT GROUP_CONCAT(pt.tanker_no, ', ') FROM purchase_tankers pt WHERE pt.order_id = o.id),
+                     COALESCE(NULLIF(TRIM(o.tanker_no), ''), (SELECT GROUP_CONCAT(pt.tanker_no, ', ') FROM ${ALLOC} a JOIN purchase_tankers pt ON pt.id = a.tanker_id WHERE a.order_id = o.id),
                               (SELECT GROUP_CONCAT(cs.tanker_no, ', ') FROM consignment_stock cs WHERE cs.order_id = o.id AND cs.tanker_no IS NOT NULL)) AS tanker_no,
                      COALESCE(o.is_consignment, 0) AS consignment,
                      o.received_qty AS qty,
@@ -97,8 +98,10 @@ export async function stockFifoMap(v: { productId: number; companyIds?: number[]
     ? ((
         await c
           .execute({
-            sql: `SELECT order_id, id, tanker_no, COALESCE(NULLIF(received_qty, 0), loaded_qty) AS q, COALESCE(empty_date, '') AS td, 'pt' AS src
-                    FROM purchase_tankers WHERE order_id IN (${oph})
+            sql: `SELECT a.order_id, pt.id, pt.tanker_no,
+                         COALESCE(NULLIF(pt.received_qty, 0), pt.loaded_qty) * CASE WHEN pt.loaded_qty > 0 THEN MIN(1.0, a.qty / pt.loaded_qty) ELSE 1.0 END AS q,
+                         COALESCE(pt.empty_date, '') AS td, 'pt' AS src
+                    FROM ${ALLOC} a JOIN purchase_tankers pt ON pt.id = a.tanker_id WHERE a.order_id IN (${oph})
                   UNION ALL
                   SELECT order_id, id, tanker_no, qty AS q, COALESCE(deposit_date, '') AS td, 'cs' AS src
                     FROM consignment_stock WHERE order_id IN (${oph})`,

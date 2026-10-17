@@ -1,4 +1,5 @@
 import { syncPpLots, lotKey, ppFinishedDetails, roundAdjustmentDetails } from './ppTrace'
+import { ALLOC } from './tankerAlloc'
 import type { ResultSet } from '@libsql/client'
 import { getClient } from './db'
 import {
@@ -1403,15 +1404,19 @@ export async function stockRegisters(
                  -- with no way to read it by kind.
                  p.material_type AS category,
                  p.name AS oil_type,
-                 pt.loaded_qty AS dispatch_qty,
-                 CASE WHEN pt.status = 'empty' THEN pt.received_qty ELSE NULL END AS received_qty,
+                 -- This invoice's share of the tanker, when it is shared.
+                 a.qty AS dispatch_qty,
+                 CASE WHEN pt.status = 'empty'
+                      THEN pt.received_qty * CASE WHEN pt.loaded_qty > 0 THEN MIN(1.0, a.qty / pt.loaded_qty) ELSE 1.0 END
+                      ELSE NULL END AS received_qty,
                  pt.condition AS tanker_condition,
                  b.bargain_type AS bargain_type,
                  o.allowed_shortage_pct AS order_pct,
                  b.allowed_shortage_pct AS bargain_pct,
                  co.name AS company
-          FROM purchase_tankers pt
-          JOIN orders o ON o.id = pt.order_id
+          FROM ${ALLOC} a
+          JOIN purchase_tankers pt ON pt.id = a.tanker_id
+          JOIN orders o ON o.id = a.order_id
           LEFT JOIN bargains b ON b.id = pt.bargain_id
           LEFT JOIN suppliers sp ON sp.id = pt.supplier_id
           LEFT JOIN suppliers s2 ON s2.id = o.supplier_id
@@ -1447,7 +1452,7 @@ export async function stockRegisters(
           LEFT JOIN companies co ON co.id = o.company_id
           WHERE o.status = 'received' AND COALESCE(o.affects_stock, 1) = 1
             AND o.company_id IN (${ph}) ${recB.sql}
-            AND NOT EXISTS (SELECT 1 FROM purchase_tankers pt WHERE pt.order_id = o.id)`,
+            AND NOT EXISTS (SELECT 1 FROM ${ALLOC} a WHERE a.order_id = o.id)`,
     args: [...cidList, ...recB.args]
   })
 
