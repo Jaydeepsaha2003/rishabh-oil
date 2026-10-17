@@ -146,7 +146,13 @@ export async function previewParkingCopies(): Promise<{ findings: Finding[] }> {
       const d = cands[0]
       if (!d) continue
       const diff = round2(d.paid - x)
-      const fixable = Math.abs(diff) <= 1
+      // An LC's upfront interest voucher can be set to the bank's own debit
+      // in the same step, so a few rupees apart is still one click.
+      const lc = toPlain(
+        await getClient().execute({ sql: 'SELECT id, lc_no FROM letters_of_credit WHERE interest_journal_entry_id = ?', args: [d.d.id] })
+      )[0]
+      const matchLc = Math.abs(diff) > 1 && lc ? n(lc.id) : 0
+      const fixable = Math.abs(diff) <= 1 || matchLc > 0
       taken.add(o.e.id)
       taken.add(j.id)
       for (const r of refunds) taken.add(r.e.id)
@@ -168,9 +174,13 @@ export async function previewParkingCopies(): Promise<{ findings: Finding[] }> {
           to: j.lines.filter((l) => l.dr > 0).map((l) => l.name).join(', ')
         },
         diff,
-        note: fixable
-          ? `Tally paid ${x} net through ${o.viaName}; ${d.d.code} already pays it. Removing Tally's copies leaves ${d.d.code}.`
-          : `${d.d.code} pays ${d.paid}, Tally ${x} — ${Math.abs(diff)} apart. Correct ${d.d.code} to ${x} first (Edit on the LC/BD), then Check again.`
+        match_lc: matchLc,
+        match_to: x,
+        note: matchLc
+          ? `${d.d.code} pays ${d.paid}, the bank and Tally ${x}. ${d.d.code} is set to the bank's ${x} (LC ${String(lc.lc_no)}: its charges stay, the interest is the rest) and Tally's copies removed.`
+          : fixable
+            ? `Tally paid ${x} net through ${o.viaName}; ${d.d.code} already pays it. Removing Tally's copies leaves ${d.d.code}.`
+            : `${d.d.code} pays ${d.paid}, Tally ${x} — ${Math.abs(diff)} apart. Correct ${d.d.code} to ${x} first (Edit on the LC/BD), then Check again.`
       })
       break
     }
@@ -189,6 +199,12 @@ export async function removeParkingCopies(keys: string[]): Promise<{ removed: nu
     for (const f of findings) {
       if (!want.has(f.key) || !f.fixable) continue
       const ownId = n((f.own as Row).id)
+      if (n(f.match_lc)) {
+        const { postLcUpfrontInterest } = await import('./treasury')
+        await c.execute({ sql: 'UPDATE letters_of_credit SET upfront_debited = ? WHERE id = ?', args: [round2(n(f.match_to)), n(f.match_lc)] })
+        await postLcUpfrontInterest(n(f.match_lc), String((f.own as Row).date))
+        console.log(`[repairs] LC ${n(f.match_lc)} upfront set to the bank's ${n(f.match_to)} (was ${n((f.own as Row).amount)}) — ${String((f.own as Row).code)} keeps its id`)
+      }
       const head = toPlain(await c.execute({ sql: 'SELECT company_id FROM journal_entries WHERE id = ?', args: [ownId] }))[0]
       const cid = n(head?.company_id)
       const bankSteps = [f.payment as Row, ...((f.refunds as Row[]) || [])]

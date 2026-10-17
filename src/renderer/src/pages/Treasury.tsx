@@ -76,6 +76,35 @@ const round2 = (v: number): number => Math.round(v * 100) / 100
 const partyLeft = (l: Row): number =>
   n(l?.parts_count) > 0 ? round2(n(l.parts_left)) : round2(Math.max(0, n(l.paid_expected) - n(l.utilized)))
 const isPartsLc = (l: Row | null | undefined): boolean => n(l?.parts_count) > 0
+// The parts of an LC paid in parts, in order — for the register's per-part lines.
+type LcPart = { part_no: number; amount: number; pay_date: string; maturity_date: string; days: number; interest: number; repaid_date: string | null }
+function lcPartsOf(l: Row | null | undefined): LcPart[] {
+  try {
+    const a = JSON.parse(String(l?.parts_json || '[]'))
+    return Array.isArray(a)
+      ? a.map((x) => ({
+          part_no: Number(x?.part_no) || 0,
+          amount: Number(x?.amount) || 0,
+          pay_date: String(x?.pay_date || ''),
+          maturity_date: String(x?.maturity_date || ''),
+          days: Number(x?.days) || 0,
+          interest: Number(x?.interest) || 0,
+          repaid_date: x?.repaid_date ? String(x.repaid_date) : null
+        }))
+      : []
+  } catch {
+    return []
+  }
+}
+// One line per part, the part number leading — the same rhythm in every column
+// so a reader can go across a row and stay on the same part.
+function PartTag({ p }: { p: LcPart }): React.JSX.Element {
+  return (
+    <span className="inline-flex w-[22px] flex-none justify-center rounded-[2px] bg-[#0B3D2E] px-1 text-[9.5px] font-extrabold leading-[16px] text-white">
+      P{p.part_no}
+    </span>
+  )
+}
 const dayGap = (a: string, b: string): number => {
   const x = Date.parse(`${String(a).slice(0, 10)}T00:00:00`)
   const y = Date.parse(`${String(b).slice(0, 10)}T00:00:00`)
@@ -3779,9 +3808,39 @@ function TreasuryDesk({ onCompanyChange, focusLcId, focusBdId, onFocusHandled }:
                               title={String(l.supplier_name || '')}
                             >
                               {l.supplier_name || '—'}
+                              {/* Paid in parts: says so where the eye lands,
+                                  beside the party, with how many. */}
+                              {isPartsLc(l) && (
+                                <div className="mt-1">
+                                  <span
+                                    className="inline-flex items-center gap-1 rounded-[2px] bg-[#C7F03F] px-1.5 py-[1px] text-[10.5px] font-extrabold uppercase tracking-[.05em] text-[#0A1F17]"
+                                    title={lcPartsOf(l)
+                                      .map((p) => `Part ${p.part_no}: ${formatINR(p.amount)} · matures ${formatDate(p.maturity_date)}${p.repaid_date ? ` · repaid ${formatDate(p.repaid_date)}` : ''}`)
+                                      .join('\n')}
+                                  >
+                                    {n(l.parts_count)} parts
+                                    {n(l.parts_open) > 0 && n(l.parts_open) < n(l.parts_count) && (
+                                      <span className="font-bold normal-case text-[#33473E]">· {n(l.parts_open)} open</span>
+                                    )}
+                                  </span>
+                                </div>
+                              )}
                             </TableCell>
                             <TableCell className={cn('doc-ref whitespace-nowrap py-2', __WEB__ && '!py-2')}>
-                              {__WEB__ ? (
+                              {isPartsLc(l) ? (
+                                <div className="flex flex-col gap-[3px] leading-[1.35]">
+                                  <DateLine tag={l.opened_date ? 'Op' : 'App'} date={l.opened_date || l.open_date} title="Opened by the bank" />
+                                  {lcPartsOf(l).map((p) => (
+                                    <div key={p.part_no} className="flex items-center gap-1.5" title={`Part ${p.part_no}: paid ${formatDate(p.pay_date)}, matures ${formatDate(p.maturity_date)}`}>
+                                      <PartTag p={p} />
+                                      <span className="text-[9.5px] font-extrabold uppercase tracking-[.08em] text-[#5A6B62]">Mat</span>
+                                      <span className={cn('text-[12px] font-semibold', p.repaid_date ? 'text-[#A8B8AE] line-through' : 'text-[#0A1F17]')}>
+                                        {formatDateShort(p.maturity_date)}
+                                      </span>
+                                    </div>
+                                  ))}
+                                </div>
+                              ) : __WEB__ ? (
                                 <ValidityInline l={l} />
                               ) : (
                               <>
@@ -3830,7 +3889,23 @@ function TreasuryDesk({ onCompanyChange, focusLcId, focusBdId, onFocusHandled }:
                             </TableCell>
                             <TableCell className="whitespace-nowrap">
                               {/* Repaid means wound up — no live countdown. */}
-                              {l.preclosed_date ? (
+                              {isPartsLc(l) ? (
+                                <div className="flex flex-col gap-[3px]">
+                                  {/* Lined up with the parts in Validity, one
+                                      row below its opening date. */}
+                                  <div className="h-[16px]" />
+                                  {lcPartsOf(l).map((p) => (
+                                    <div key={p.part_no} className="flex items-center gap-1.5">
+                                      <PartTag p={p} />
+                                      {p.repaid_date ? (
+                                        <Badge variant="muted" title={`Repaid ${formatDate(p.repaid_date)}`}>Repaid</Badge>
+                                      ) : (
+                                        <DueBadge date={p.maturity_date} l={{ ...l, opened_date: p.pay_date, open_date: p.pay_date }} />
+                                      )}
+                                    </div>
+                                  ))}
+                                </div>
+                              ) : l.preclosed_date ? (
                                 <Badge variant="muted" title={`Repaid ${formatDate(l.preclosed_date)}`}>Repaid</Badge>
                               ) : l.expiry_date ? (
                                 <DueBadge date={l.expiry_date} l={l} />
@@ -3844,7 +3919,25 @@ function TreasuryDesk({ onCompanyChange, focusLcId, focusBdId, onFocusHandled }:
                                 __WEB__ && '!text-[12px] !font-semibold !text-[#33473E]'
                               )}
                             >
-                              {n(l.usance_days) > 0 ? n(l.usance_days) : '—'}
+                              {isPartsLc(l) ? (
+                                <div className="flex flex-col items-end gap-[3px]">
+                                  <div className="h-[16px]" />
+                                  {lcPartsOf(l).map((p) => (
+                                    <div
+                                      key={p.part_no}
+                                      className={cn('flex items-center gap-1.5 leading-[16px]', p.repaid_date && 'text-[#A8B8AE]')}
+                                      title={`Part ${p.part_no}: ${p.days} days · interest ${formatINR(p.interest)}`}
+                                    >
+                                      <PartTag p={p} />
+                                      <span>{p.days > 0 ? p.days : '—'}</span>
+                                    </div>
+                                  ))}
+                                </div>
+                              ) : n(l.usance_days) > 0 ? (
+                                n(l.usance_days)
+                              ) : (
+                                '—'
+                              )}
                             </TableCell>
                             <TableCell className="whitespace-nowrap border-l border-[#1a2c56]/10 text-right tabular-nums">
                               {n(l.preclose_premature_interest) > 0.004 ? (

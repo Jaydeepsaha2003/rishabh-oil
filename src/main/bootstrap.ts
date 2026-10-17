@@ -810,6 +810,17 @@ export async function runStartupTasks(): Promise<void> {
   // Interest paid in the same debit as a discounted bill's repayment — gross,
   // posted to the interest ledger on the repayment voucher (repayBd). Nil on
   // every repayment already entered, so nothing moves.
+  // What the bank ACTUALLY debited for an LC's upfront interest and charges,
+  // when its statement differs from the worked figure (PAY/18: worked
+  // 2,76,523.51, bank and Tally 2,76,288). Nil on every LC, so nothing moves.
+  await runOnce('lc_upfront_debited_v1', async () => {
+    const c = getClient()
+    const info = await c.execute({ sql: "PRAGMA table_info('letters_of_credit')", args: [] })
+    const cols = new Set(info.rows.map((r) => String((r as unknown as Record<string, unknown>).name)))
+    if (cols.has('upfront_debited')) return
+    await c.execute('ALTER TABLE letters_of_credit ADD COLUMN upfront_debited REAL')
+  }).catch((e) => console.error('[lc] upfront-debited column failed:', e))
+
   await runOnce('bd_repay_interest_v1', async () => {
     const c = getClient()
     const info = await c.execute({ sql: "PRAGMA table_info('bd_repayments')", args: [] })

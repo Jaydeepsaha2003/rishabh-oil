@@ -284,8 +284,11 @@ export async function postLcUpfrontInterest(lcId: number, dateIn?: string): Prom
   const oldId = n(lc.interest_journal_entry_id)
   const L = await lcLedgerNames()
   await dropEntry(oldId || null)
-  const interest = lcInterest(lc)
   const charges = round2(n(lc.charges))
+  // The bank's own debit, when one was recorded against the worked figure:
+  // the charges stand, and the interest is what the debit leaves.
+  const debited = round2(n(lc.upfront_debited))
+  const interest = debited > 0 ? round2(Math.max(0, debited - charges)) : lcInterest(lc)
   const total = round2(interest + charges)
   if (total < 0.005) {
     await c.execute({ sql: 'UPDATE letters_of_credit SET interest_journal_entry_id = NULL WHERE id = ?', args: [lcId] })

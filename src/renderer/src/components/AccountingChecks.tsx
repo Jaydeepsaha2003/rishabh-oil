@@ -1108,7 +1108,7 @@ export function AccountingChecks(): React.JSX.Element {
                     <div>
                       Journal {String(j.vch_no)} · {formatDate(String(j.date))} · {formatINR(Number(j.amount))} to {String(j.to)}
                     </div>
-                    {!x.fixable && <div className="mt-1 text-[11.5px] font-semibold text-amber-700">{String(x.note)}</div>}
+                    {(!x.fixable || !!x.match_lc) && <div className="mt-1 text-[11.5px] font-semibold text-amber-700">{String(x.note)}</div>}
                   </td>
                   <td className={cn(td, 'text-right tabular-nums font-semibold')}>{formatINR(Number(j.amount))}</td>
                 </tr>

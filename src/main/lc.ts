@@ -96,6 +96,10 @@ export async function listLCs(): Promise<Row[]> {
       -- Paid in parts: how many, their LC amounts, the interest each kept, and
       -- what is still owed to the bank.
       (SELECT COUNT(*) FROM lc_parts p WHERE p.lc_id = l.id) AS parts_count,
+      -- Each part on its own, for the register: its maturity, days and state.
+      (SELECT json_group_array(json_object('part_no', p.part_no, 'amount', p.amount, 'pay_date', p.pay_date,
+                'maturity_date', p.maturity_date, 'days', p.days, 'interest', p.interest, 'repaid_date', p.repaid_date))
+         FROM (SELECT * FROM lc_parts WHERE lc_id = l.id ORDER BY part_no) p) AS parts_json,
       COALESCE((SELECT SUM(p.amount) FROM lc_parts p WHERE p.lc_id = l.id), 0) AS parts_amount,
       COALESCE((SELECT SUM(p.interest) FROM lc_parts p WHERE p.lc_id = l.id), 0) AS parts_interest,
       COALESCE((SELECT SUM(p.net) FROM lc_parts p WHERE p.lc_id = l.id), 0) AS parts_net,
