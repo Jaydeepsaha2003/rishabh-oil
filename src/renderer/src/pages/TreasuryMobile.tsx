@@ -3627,8 +3627,17 @@ function RepayScreen({
   const [via, setVia] = useState<'bank' | 'party'>('bank')
   const [ref, setRef] = useState('')
   const [release, setRelease] = useState(true)
-  const [comm, setComm] = useState('')
-  const [bankChg, setBankChg] = useState('')
+  // The same as the desktop Repay form: interest, then a row per ledger the
+  // debit carried — as many as it carried.
+  const [intr, setIntr] = useState('')
+  const [chg, setChg] = useState<{ account: string; amount: string }[]>([])
+  const [ledgerNames, setLedgerNames] = useState<string[]>([])
+  useEffect(() => {
+    void window.api.journal
+      .accounts()
+      .then((a: Row[]) => setLedgerNames(a.filter((x) => !x.is_hidden).map((x) => String(x.name))))
+      .catch(() => setLedgerNames([]))
+  }, [])
   const [reps, setReps] = useState<Row[]>([])
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState<string | null>(null)
@@ -3668,6 +3677,8 @@ function RepayScreen({
     const amt = round2(n(amount))
     if (amt <= 0) return setErr('Enter the amount being repaid')
     if (amt - due > 0.004) return setErr(`Only ${inrFull(due)} is still outstanding on this bill`)
+    const bad = chg.find((c) => (c.account.trim() || n(c.amount)) && !(c.account.trim() && n(c.amount) > 0))
+    if (bad) return setErr(bad.account.trim() ? `Enter the amount charged to ${bad.account}` : 'Pick the ledger for each charge')
     setBusy(true)
     setErr(null)
     try {
@@ -3678,8 +3689,8 @@ function RepayScreen({
         release_margin: release,
         amount: amt,
         also: [],
-        comm_charges: comm.trim() === '' ? null : Number(comm),
-        bank_charges: bankChg.trim() === '' ? null : Number(bankChg),
+        interest: intr.trim() === '' ? null : Number(intr),
+        charges: chg.filter((c) => c.account.trim() && round2(n(c.amount)) > 0).map((c) => ({ account: c.account.trim(), amount: round2(n(c.amount)) })),
         party_id: via === 'party' && row.party_id ? Number(row.party_id) : null
       })
       toast.success(res.closed ? 'Bill repaid in full — posted to the books' : `${inrFull(res.amount)} repaid — ${inrFull(res.outstanding)} still outstanding`)
@@ -3920,14 +3931,55 @@ function RepayScreen({
                 <TextIn value={ref} onChange={setRef} placeholder="Invoice / bill no to settle against" />
               </Field>
             )}
-            <div className="grid grid-cols-2 gap-[13px]">
-              <Field label="Comm. charges (₹)">
-                <TextIn value={comm} onChange={(v) => setComm(num(v))} placeholder="0.00" mono inputMode="decimal" />
-              </Field>
-              <Field label="Bank charges (₹)">
-                <TextIn value={bankChg} onChange={(v) => setBankChg(num(v))} placeholder="0.00" mono inputMode="decimal" />
-              </Field>
-            </div>
+            <Field label="Interest in this debit (₹)">
+              <TextIn value={intr} onChange={(v) => setIntr(num(v))} placeholder="0.00" mono inputMode="decimal" />
+            </Field>
+            <Field label="Charges in this debit">
+              <datalist id="bd-phone-charge-ledgers">
+                {ledgerNames.map((nm) => (
+                  <option key={nm} value={nm} />
+                ))}
+              </datalist>
+              <div className="grid gap-2">
+                {chg.map((c, i) => (
+                  <div key={i} className="flex items-center gap-2">
+                    <input
+                      list="bd-phone-charge-ledgers"
+                      value={c.account}
+                      placeholder="Ledger"
+                      onChange={(e) => setChg((p) => p.map((x, j) => (j === i ? { ...x, account: e.target.value } : x)))}
+                      className="h-[44px] min-w-0 flex-1 rounded-[4px] border bg-white px-[11px] text-[13px] font-bold outline-none"
+                      style={{ borderColor: T.field, color: T.ink }}
+                    />
+                    <input
+                      value={c.amount}
+                      inputMode="decimal"
+                      placeholder="0.00"
+                      onChange={(e) => setChg((p) => p.map((x, j) => (j === i ? { ...x, amount: num(e.target.value) } : x)))}
+                      className="h-[44px] w-[110px] rounded-[4px] border bg-white px-[11px] text-right text-[14px] font-bold outline-none"
+                      style={{ borderColor: T.field, color: T.ink, fontFamily: MONO }}
+                    />
+                    <button
+                      type="button"
+                      aria-label="Remove this charge"
+                      onClick={() => setChg((p) => p.filter((_, j) => j !== i))}
+                      className="flex h-[44px] w-[40px] flex-none items-center justify-center rounded-[4px]"
+                      style={{ color: T.inkSoft }}
+                    >
+                      <X className="h-4 w-4" />
+                    </button>
+                  </div>
+                ))}
+                <button
+                  type="button"
+                  onClick={() => setChg((p) => [...p, { account: '', amount: '' }])}
+                  className="flex h-[40px] items-center justify-center gap-1.5 rounded-[4px] border text-[12.5px] font-bold"
+                  style={{ borderColor: T.field, color: T.ink }}
+                >
+                  <Plus className="h-4 w-4" /> Add a ledger
+                </button>
+              </div>
+            </Field>
             {n(row.margin_pct) > 0 && (
               <div className="rounded-[4px] border px-[13px]" style={{ borderColor: release ? T.blueRule : T.border, background: release ? T.blueBg : '#fff' }}>
                 <Toggle
