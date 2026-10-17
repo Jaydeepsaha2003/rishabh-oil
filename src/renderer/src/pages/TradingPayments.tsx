@@ -548,6 +548,14 @@ export function TradingPayments({
                                             <td className="whitespace-nowrap px-3 py-1.5">
                                               <span className="font-semibold capitalize text-[#33473E]">{String(m.vch_type || '').toLowerCase()}</span>
                                               {m.vch_no ? <span className="text-[#5A6B62]"> · {m.vch_no}</span> : null}
+                                              {m.fifo ? (
+                                                <span
+                                                  className="ml-1.5 rounded-[2px] bg-[#EAF0FA] px-1 py-px text-[9.5px] font-extrabold uppercase tracking-[.06em] text-[#1B4E82]"
+                                                  title="Paid with no Agst Ref — applied to this party's oldest open bills first"
+                                                >
+                                                  FIFO
+                                                </span>
+                                              ) : null}
                                             </td>
                                             <td className="px-3 py-1.5">
                                               <span className="inline-flex items-center gap-1.5">

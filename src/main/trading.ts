@@ -1,4 +1,5 @@
 import type { ResultSet } from '@libsql/client'
+import { fifoSettlement } from './fifoSettle'
 import { getClient } from './db'
 import { assertNoRepeatsWithin, assertPurchaseInvoiceNoFree, assertSalesInvoiceNoFree } from './invoiceno'
 import { getActiveCompanyId } from './company'
@@ -833,6 +834,32 @@ export async function listTradingPayments(): Promise<Row[]> {
     entryOwners(cid)
   ])
 
+  // FIFO FOR MONEY WITH NO AGST REF (fifoSettle.ts). The vouchers these bills
+  // posted, the party ledgers on them, and what each bill's FIFO share is —
+  // worked out now, so a receipt deleted in between moves it on the next look.
+  const billEids = new Map<string, number[]>()
+  if (orderIds.length || saleIds.length) {
+    const conds: string[] = []
+    if (orderIds.length) conds.push(`order_id IN (${orderIds.join(',')})`)
+    if (saleIds.length) conds.push(`sale_id IN (${saleIds.join(',')})`)
+    const er = await c.execute({ sql: `SELECT id, order_id, sale_id FROM journal_entries WHERE company_id = ? AND (${conds.join(' OR ')})`, args: [cid] })
+    for (const r of toPlain(er)) {
+      const k = n(r.order_id) ? `o:${n(r.order_id)}` : `s:${n(r.sale_id)}`
+      billEids.set(k, [...(billEids.get(k) ?? []), n(r.id)])
+    }
+  }
+  const allBillEids = Array.from(new Set(Array.from(billEids.values()).flat()))
+  const partyAccts = allBillEids.length
+    ? toPlain(await c.execute(`SELECT DISTINCT account_id FROM journal_lines WHERE entry_id IN (${allBillEids.join(',')})`)).map((r) => n(r.account_id))
+    : []
+  const fifo = await fifoSettlement(cid, partyAccts)
+  let fifoSeq = 0
+  const fifoRows = (keys: string[]): Row[] =>
+    keys
+      .flatMap((k) => billEids.get(k) ?? [])
+      .flatMap((eid) => fifo.get(eid) ?? [])
+      .map((x) => ({ id: -++fifoSeq, amount: x.amount, side: x.side, eid: x.eid, vch_type: x.vch_type, vch_no: x.vch_no, entry_date: x.entry_date, fifo: true }))
+
   // Every Agst Ref allocation in this company's books. The account it sits on
   // travels with it: a purchase invoice number is the SUPPLIER's own number, and
   // two suppliers can both have issued a bill "1".
@@ -932,6 +959,8 @@ export async function listTradingPayments(): Promise<Row[]> {
         return {
           channel,
           amount,
+          // Settled oldest-bill-first because it was paid with no Agst Ref.
+          fifo: !!a.fifo,
           date: a.entry_date ? String(a.entry_date).slice(0, 10) : null,
           vch_type: a.vch_type ?? null,
           vch_no: a.vch_no ?? null,
@@ -944,7 +973,8 @@ export async function listTradingPayments(): Promise<Row[]> {
   }
 
   const status = (amount: number, settled: number): 'settled' | 'part' | 'pending' =>
-    amount > 0.005 && settled >= amount - 0.005 ? 'settled' : settled > 0.005 ? 'part' : 'pending'
+    // Under a rupee short is settled: Tally rounds a bill's paise off when it is paid.
+    amount > 0.005 && settled >= amount - 0.995 ? 'settled' : settled > 0.005 ? 'part' : 'pending'
 
   const due = (dateIso: unknown, days: number): { due_date: string | null; days_left: number | null } => {
     const d = String(dateIso || '').slice(0, 10)
@@ -985,7 +1015,7 @@ export async function listTradingPayments(): Promise<Row[]> {
       take(byOrder.get(oid))
       const inv = up(o.invoice_no)
       if (inv) for (const nm of ledgerNames(o.supplier_name)) take(byAcctRef.get(`${nm}|${inv}`))
-      const { by, movements, via } = settle(hits, 'cr')
+      const { by, movements, via } = settle([...hits, ...fifoRows([`o:${oid}`])], 'cr')
       const amount = round2(n(o.net_amount))
       const settled = round2(by.lc + by.bd + by.bank + by.adjustment)
       const financed = [
@@ -1012,7 +1042,7 @@ export async function listTradingPayments(): Promise<Row[]> {
         settled_bank: by.bank,
         settled_adjustment: by.adjustment,
         settled_total: settled,
-        pending: Math.max(0, round2(amount - settled)),
+        pending: amount - settled < 0.995 ? 0 : round2(amount - settled),
         excess: Math.max(0, round2(settled - amount)),
         status: st,
         ...dd,
@@ -1045,7 +1075,10 @@ export async function listTradingPayments(): Promise<Row[]> {
       // so the two screens always agree — an imported ledger whose name drifted
       // from the customer master still counts. Only what a purchase bill has
       // already taken is left out.
-      const { by, movements, via } = settle((byKey.get(up(k)) ?? []).filter((a) => !claimed.has(n(a.id))), 'dr')
+      const { by, movements, via } = settle(
+        [...(byKey.get(up(k)) ?? []).filter((a) => !claimed.has(n(a.id))), ...fifoRows(ls.map((l) => `s:${n(l.id)}`))],
+        'dr'
+      )
       const settled = round2(by.lc + by.bd + by.bank + by.adjustment)
       const st = status(amount, settled)
       const dd = due(first.sale_date, cusDays.get(n(first.customer_id)) ?? 0)
@@ -1069,7 +1102,7 @@ export async function listTradingPayments(): Promise<Row[]> {
         settled_bank: by.bank,
         settled_adjustment: by.adjustment,
         settled_total: settled,
-        pending: Math.max(0, round2(amount - settled)),
+        pending: amount - settled < 0.995 ? 0 : round2(amount - settled),
         excess: Math.max(0, round2(settled - amount)),
         status: st,
         ...dd,
