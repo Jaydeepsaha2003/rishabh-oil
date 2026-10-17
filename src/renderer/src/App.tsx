@@ -1,5 +1,15 @@
 import { useCallback, useEffect, useState } from 'react'
+import { hasOpenOverlay } from '@/lib/escape'
 import { Toaster, toast } from 'sonner'
+
+// An error says what went wrong and what to do about it — longer than the
+// two seconds a confirmation needs. Set once here so every toast.error in the
+// app gets it, unless a call asks for its own duration.
+{
+  const plainError = toast.error
+  toast.error = ((message: Parameters<typeof plainError>[0], data?: Parameters<typeof plainError>[1]) =>
+    plainError(message, { duration: 4500, ...(data || {}) })) as typeof toast.error
+}
 import { Download, LogOut, RefreshCw, WifiOff } from 'lucide-react'
 import { Sidebar, type Page } from './components/Sidebar'
 import { LoginScreen } from './components/LoginScreen'
@@ -37,6 +47,7 @@ import { Notifications } from './pages/Notifications'
 import { Companies } from './pages/Companies'
 import { Factories } from './pages/Factories'
 import { NotificationBell } from './components/NotificationBell'
+import { DailyWorkPopup } from './components/DailyWorkPopup'
 import { GlobalDateRangeDialog } from './components/GlobalDateRangeDialog'
 import { GlobalDateRangeProvider } from './lib/globalDateRange'
 import { CompanyProvider, HeaderExtrasProvider } from './lib/companyContext'
@@ -114,14 +125,16 @@ function App(): React.JSX.Element {
   const [companyId, setCompanyId] = useState<number>(0)
   const [companyReady, setCompanyReady] = useState(false)
   // Deep-link from the Ledgers page to a specific source document.
-  const [focus, setFocus] = useState<{ page: Page; id: number } | null>(null)
+  // 'lc' is not a page — it is a register inside Treasury — but it is a drill
+  // -through target like any other, so it rides here beside the pages.
+  const [focus, setFocus] = useState<{ page: Page | 'lc' | 'bd'; id: number } | null>(null)
   // Where "Back" returns to after a drill-through (e.g. Ledgers → the source
   // document → Back → Ledgers, with the ledger it opened from still showing).
   const [returnTo, setReturnTo] = useState<Page | null>(null)
   // Accounts unmounts when you drill out of it, so it would come back on the
   // Gateway with the ledger you were reading forgotten. It hands over where it
   // was on the way out, and gets it back on the way in.
-  const [accountsResume, setAccountsResume] = useState<{ screen: string; ledgerId: number | null; companyId?: number } | null>(null)
+  const [accountsResume, setAccountsResume] = useState<{ screen: string; ledgerId: number | null; companyId?: number; voucherId?: number | null } | null>(null)
   // On the website at phone width, Sidebar renders a tap-to-open trigger
   // instead of the desktop hover-to-expand rail — see its `mobile` prop.
   const isMobile = useIsMobile()
@@ -134,22 +147,36 @@ function App(): React.JSX.Element {
   // into a purchase then landed on a page loading the OTHER company's invoices,
   // where the one being asked for does not exist and nothing opened at all.
   // So the book follows the document.
+  //
+  // WHERE THE CLICK CAME FROM, IN THE SHAPE THE CALLER SENDS IT.
+  //
+  // This used to take { resume: {...}, companyId } while Accounting — the only
+  // caller that HAS a place to come back to — passed { screen, ledgerId,
+  // companyId } flat. Assignable either way, so it typechecked and silently
+  // did nothing: opts.resume was always undefined, no resume was ever kept,
+  // and Back from a drilled-into bill landed on the Gateway with the ledger
+  // you were reading forgotten. One shape now, and a screen is what marks a
+  // caller as having somewhere to return to.
   function openRecord(
-    target: 'orders' | 'sales',
+    target: 'orders' | 'sales' | 'lc' | 'bd' | 'trading',
     id: number,
-    opts?: { resume?: { screen: string; ledgerId: number | null }; companyId?: number }
+    from?: { screen?: string; ledgerId?: number | null; companyId?: number; voucherId?: number | null }
   ): void {
     setReturnTo(page)
-    if (opts?.resume) setAccountsResume({ ...opts.resume, companyId: opts.companyId })
+    if (from?.screen)
+      setAccountsResume({ screen: from.screen, ledgerId: from.ledgerId ?? null, companyId: from.companyId, voucherId: from.voucherId ?? null })
     // A bargain draws on invoices across every company at its site — a
     // tanker billed by a sibling company, say — so the invoice a click opens
     // is not necessarily one this desk's active company can even see. Switch
     // first, or the target page opens empty and looks like the click did
     // nothing.
-    const want = opts?.companyId
+    const want = from?.companyId
     if (want && Number(want) !== Number(companyId)) void switchCompany(String(want))
     setFocus({ page: target, id })
-    setPage(target)
+    // Neither a letter of credit nor a discounted bill is a page of its own —
+    // both are registers inside Treasury, which opens the one it is handed on
+    // the right tab. Everything else is named the same as the page it lives on.
+    setPage(target === 'lc' || target === 'bd' ? 'treasury' : target)
   }
 
   // Esc returns from a drill-through, because that is what Esc means
@@ -161,7 +188,11 @@ function App(): React.JSX.Element {
   useEffect(() => {
     function onKey(e: KeyboardEvent): void {
       if (e.key !== 'Escape' || !returnTo) return
-      if (document.querySelector('[role="dialog"],[role="alertdialog"]')) return
+      if (hasOpenOverlay()) return
+      // Spent by something else — unless all that took it was a window that
+      // has already closed and is only still fading out (data-state closed):
+      // that one must not keep the desk from going back.
+      if (e.defaultPrevented && !document.querySelector('[role="dialog"][data-state="closed"]')) return
       // Two stages, because a voucher form is nothing but inputs and the first
       // version of this refused to fire in any of them — which is exactly where
       // you are when you want to leave.
@@ -230,7 +261,11 @@ function App(): React.JSX.Element {
   useEffect(() => {
     function onKey(e: KeyboardEvent): void {
       if (e.altKey && e.key === 'F2') {
+        // Caught on the way DOWN and kept to itself, so no page's own key
+        // handling — a voucher's F2 (its date), a cell that keeps its keys —
+        // can either swallow the period or act on it as well.
         e.preventDefault()
+        e.stopPropagation()
         setPeriodOpen(true)
       }
     }
@@ -241,10 +276,10 @@ function App(): React.JSX.Element {
     function onOpen(): void {
       setPeriodOpen(true)
     }
-    window.addEventListener('keydown', onKey)
+    window.addEventListener('keydown', onKey, true)
     window.addEventListener('open-period', onOpen)
     return () => {
-      window.removeEventListener('keydown', onKey)
+      window.removeEventListener('keydown', onKey, true)
       window.removeEventListener('open-period', onOpen)
     }
   }, [])
@@ -348,6 +383,26 @@ function App(): React.JSX.Element {
     }
   }, [user, allowed, page])
 
+  // A — straight to Accounting, as Tally's gateway key would. Only a bare A
+  // pressed with nothing to type into: a field, a dropdown or an open dialog
+  // keeps the letter, and a page that already handled the key wins.
+  const mayAccounts = allowed.includes('accounts')
+  useEffect(() => {
+    if (!mayAccounts || page === 'accounts') return
+    function onKey(e: KeyboardEvent): void {
+      if (e.defaultPrevented || e.repeat || e.ctrlKey || e.metaKey || e.altKey) return
+      if (e.key !== 'a' && e.key !== 'A') return
+      const t = e.target as HTMLElement | null
+      if (t && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName) || t.closest('[role="combobox"],[role="listbox"],[role="menu"]'))) return
+      if (document.querySelector('[role="dialog"],[role="alertdialog"],[role="menu"],[role="listbox"]')) return
+      e.preventDefault()
+      navigate('accounts')
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mayAccounts, page])
+
   // Tell the main process who is acting on this device, so the audit trail can
   // attribute every write. Runs on login and whenever the user is restored.
   useEffect(() => {
@@ -435,6 +490,9 @@ function App(): React.JSX.Element {
   }
 
   function handleLogout(): void {
+    // The server's session too — otherwise the cookie stays signed in after
+    // the page has forgotten who it was.
+    window.api.session.setUser(null, '').catch(() => {})
     clearUser()
     setUser(null)
     setPage('dashboard')
@@ -490,12 +548,25 @@ function App(): React.JSX.Element {
 
   return (
     <CompanyProvider value={{ companies, companyId, onCompanyChange: switchCompany }}>
-    <HeaderExtrasProvider value={{ bell: <NotificationBell user={user} onNavigate={(p) => navigate(p as Page)} /> }}>
+    <HeaderExtrasProvider
+      value={{
+        bell: <NotificationBell user={user} onNavigate={(p) => navigate(p as Page)} />,
+        // The phone's copy. Same component, same data, same read state — only
+        // the shape of the button and the panel differ.
+        mobileBell: <NotificationBell mobile user={user} onNavigate={(p) => navigate(p as Page)} />
+      }}
+    >
     <GlobalDateRangeProvider>
     {/* The phone's menu: opened from each mobile page's own top bar rather
         than from a button the sidebar floats over the page. */}
     <MobileMenuProvider>
     <div className="flex h-screen flex-col overflow-hidden bg-muted/30 text-foreground">
+      {/* Work Assignments is web-only (see `allowed` above) and asks nothing
+          of a login it is switched off for — the same gate the sidebar entry
+          itself uses, so a popup never points at a page that is not there. */}
+      {__WEB__ && canAccess(user, 'workAssignments') && (
+        <DailyWorkPopup user={user} onOpen={() => navigate('workAssignments')} />
+      )}
       <UpdateTopBar />
       <div className="flex flex-1 overflow-hidden">
       <Sidebar
@@ -508,7 +579,12 @@ function App(): React.JSX.Element {
         onCompanyChange={switchCompany}
         mobile={__WEB__ && isMobile}
       />
-      <main key={companyId} className="relative flex-1 overflow-auto">
+      {/* Opaque, the same colour as the page behind it. A see-through
+          scrolling pane cannot be handed to the GPU on an ordinary (100%
+          scaling) screen — the browser keeps it on the main thread to protect
+          sharp text — so every scroll repainted the register in script's
+          time. With a background of its own it scrolls on the compositor. */}
+      <main key={companyId} className="relative flex-1 overflow-auto bg-background">
         {view === 'dashboard' && <Dashboard onNavigate={setPage} />}
         {view === 'bargains' && (
           <Bargains onOpenOrder={(id, orderCompanyId) => openRecord('orders', id, { companyId: orderCompanyId })} />
@@ -523,7 +599,13 @@ function App(): React.JSX.Element {
         )}
         {view === 'consignment' && <Consignment />}
         {view === 'gateEntry' && <GateEntry />}
-        {view === 'trading' && <Trading />}
+        {view === 'trading' && (
+          <Trading
+            // Arrived from a trading voucher on a ledger: open that deal.
+            focusId={focus?.page === 'trading' ? focus.id : null}
+            onFocusHandled={() => setFocus(null)}
+          />
+        )}
         {view === 'accounts' && (
           <Accounts
             onExit={() => setPage('dashboard')}
@@ -536,7 +618,16 @@ function App(): React.JSX.Element {
             onOpenRecord={openRecord}
           />
         )}
-        {view === 'treasury' && <Treasury onCompanyChange={switchCompany} />}
+        {view === 'treasury' && (
+          <Treasury
+            onCompanyChange={switchCompany}
+            // Arrived here from an LC posting on a ledger: open that one.
+            focusLcId={focus?.page === 'lc' ? focus.id : null}
+            // Same from a discounted bill, which lives on the other tab.
+            focusBdId={focus?.page === 'bd' ? focus.id : null}
+            onFocusHandled={() => setFocus(null)}
+          />
+        )}
         {view === 'bankRecon' && <BankReconciliation />}
         {view === 'products' && <Products />}
         {view === 'categories' && <Categories />}
@@ -572,7 +663,10 @@ function App(): React.JSX.Element {
       </main>
       </div>
       <GlobalDateRangeDialog open={periodOpen} onOpenChange={setPeriodOpen} currentPage={page} />
-      <Toaster richColors position="bottom-right" />
+      {/* Gone in two seconds — a confirmation is read at a glance, and a
+          card lingering over the corner of the page gets in the way. Errors
+          stay longer (see below): a refusal has to be read. */}
+      <Toaster richColors position="bottom-right" duration={2000} />
     </div>
     </MobileMenuProvider>
     </GlobalDateRangeProvider>

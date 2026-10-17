@@ -1,3 +1,4 @@
+import { SECTION_PARENT } from '../renderer/src/lib/accessSections'
 // The access decision, in one place, so the main process and the UI can never
 // disagree about what a user is allowed to do.
 //
@@ -38,7 +39,8 @@ export interface ModulePerm {
   // null/undefined = no limit on reading.
   viewDays?: number | null
   // A narrowed job inside the module, for a user who needs one task and must
-  // not see the rest of the page. Currently only 'unload' on the sales module:
+  // not see the rest of the page. 'unload' and 'intercompany' on sales,
+  // 'readings' and 'intercompany' on orders, 'topup' on salesBargains:
   // the unloading desk, which sees FOR invoices still out for delivery and may
   // record nothing but the received quantity. Absent = the whole module.
   scope?: string | null
@@ -67,12 +69,9 @@ const OK: Verdict = { allowed: true }
 const ALWAYS_OPEN = new Set(['approvals'])
 
 // A section falls back to the page it belongs to when it has no grant of its
-// own — the split must not silently revoke access that already existed.
-const SECTION_PARENT: Record<string, string> = {
-  treasuryLc: 'treasury',
-  treasuryBd: 'treasury',
-  treasuryTracker: 'treasury'
-}
+// own — the split must not silently revoke access that already existed. The
+// list is shared with the screens (Treasury's three, and every Accounting
+// voucher type and screen).
 
 // Read whichever permission shape this user was saved with.
 export function modulePerm(user: AccessUser | null | undefined, moduleKey: string): ModulePerm {
@@ -86,12 +85,16 @@ export function modulePerm(user: AccessUser | null | undefined, moduleKey: strin
   const p = user.permissions
   // Legacy: a flat list of module keys meant full access to each.
   if (Array.isArray(p)) {
-    return p.includes(moduleKey)
+    const parent = SECTION_PARENT[moduleKey]
+    return p.includes(moduleKey) || (!!parent && p.includes(parent))
       ? { view: true, create: true, edit: true, delete: true, editDays: null }
       : {}
   }
   if (p && typeof p === 'object') {
     const entry = (p as Record<string, unknown>)[moduleKey]
+    // A section switched off on its own row, although its page is granted:
+    // that is a refusal, and must not fall back to the page below.
+    if (entry === false) return {}
     // Legacy: 'write' | 'read' per module.
     if (entry === 'write') return { view: true, create: true, edit: true, delete: true, editDays: null }
     if (entry === 'read') return { view: true }

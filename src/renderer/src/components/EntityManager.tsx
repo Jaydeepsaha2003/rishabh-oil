@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { toast } from 'sonner'
-import { AlertCircle, Check, CheckCircle2, ChevronsUpDown, Pencil, Plus, Trash2, XCircle } from 'lucide-react'
+import { AlertCircle, ArrowDown, ArrowUp, Check, CheckCircle2, ChevronsUpDown, Pencil, Plus, Trash2, XCircle } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
@@ -31,8 +31,10 @@ import {
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { Command, CommandEmpty, CommandInput, CommandItem, CommandList } from '@/components/ui/command'
 import { cn } from '@/lib/utils'
+import { useTableSort } from '@/lib/tableSort'
 import { useLiveRefresh } from '@/lib/useLiveRefresh'
 import { ExcelButton } from '@/components/ExcelButton'
+import { MasterImport } from '@/components/MasterImport'
 import { todayISO } from '@/lib/format'
 import { Pagination, usePaged } from '@/components/Pagination'
 import { ColumnFilter } from '@/components/ui/column-filter'
@@ -125,6 +127,17 @@ export interface ColumnDef {
   // should let you do in passing. A column says for itself whether it is
   // cheap enough to undo.
   toggle?: boolean
+  // A small figure drawn after a chip cell — e.g. a supplier's purchase count
+  // beside its Trading / Manufacturing tag. Display only; filters and sorting
+  // still read the cell's own value.
+  badge?: (row: Row) => string | number | null | undefined
+  badgeTitle?: string
+  // A switch column drawn as an ON / OFF switch rather than Yes / No text —
+  // for a setting the row carries, flipped from the list with `toggle`.
+  onOff?: boolean
+  // Rows the column does not apply to read "—" and offer no switch (a
+  // Trading-only setting on a Manufacturing company).
+  showWhen?: (row: Row) => boolean
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -151,6 +164,27 @@ interface Props {
   // Which fields together identify one record, for the duplicate warning.
   // Defaults to ['name'].
   dupeKey?: string[]
+  // A MASTER THAT IS READ AS CARDS, NOT AS A REGISTER.
+  //
+  // Some masters are a handful of records with several figures each — an NBFC
+  // is chosen BY its terms, not by its name — and a six-column table makes
+  // those figures something to scan across rather than read. A caller can hand
+  // over the row's presentation here and keep everything else: the search, the
+  // add/edit/delete, the duplicate check, the paging. `edit` and `remove` are
+  // this component's own, so a card cannot drift out of step with the register
+  // it replaces.
+  renderCard?: (row: Row, api: { edit: () => void; remove: () => void; duplicate: boolean }) => React.ReactNode
+  // An Upload button beside Download: the downloaded sheet, edited, updates
+  // the records (MasterImport) — checked and previewed before anything saves.
+  importable?: boolean
+}
+
+/** What clicking this header will do next, in words. */
+function sortTitle(label: string, active: boolean, dir: 'asc' | 'desc'): string {
+  if (!active) return `Sort by ${label}`
+  return dir === 'asc'
+    ? `${label} — smallest first. Click to turn it round`
+    : `${label} — largest first. Click to clear the sort`
 }
 
 export function EntityManager({
@@ -162,7 +196,9 @@ export function EntityManager({
   readOnly = false,
   dupeKey,
   onFieldChange,
-  rowAction
+  rowAction,
+  renderCard,
+  importable = false
 }: Props): React.JSX.Element {
   const [rows, setRows] = useState<Row[]>([])
   // Phone width on the website swaps the register for cards — see below.
@@ -227,8 +263,27 @@ export function EntityManager({
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [shownRows, colFilters, columns]
   )
-  // 10 per page with page numbers underneath, shared by every master list.
-  const paged = usePaged(filteredRows)
+  // CLICK A HEADER, SORT THE COLUMN — on every master list at once, because
+  // they are all this one component.
+  //
+  // Sorted on the value UNDERNEATH the cell, not on what the cell shows: a
+  // switch column reads "Yes"/"No" and a date column reads dd-mm-yyyy, and
+  // both sort wrongly as text. `col.value` still wins where a column derives
+  // its own text (an id resolved to a name), because then the derived text IS
+  // the value.
+  const sortRead = useCallback(
+    (row: Row, key: string): unknown => {
+      const col = columns.find((c) => c.key === key)
+      if (!col) return row[key]
+      if (col.value) return col.value(row)
+      return row[key]
+    },
+    [columns]
+  )
+  const sort = useTableSort(filteredRows, sortRead)
+  // Sorted before paging: page 1 must be the top of the ORDER, not the top of
+  // the list the order was applied to.
+  const paged = usePaged(sort.sorted)
   // Options a creatable field offers: whatever the field declares, plus every
   // value already used by an existing record, plus anything added this session.
   const [addedOptions, setAddedOptions] = useState<Record<string, string[]>>({})
@@ -313,6 +368,24 @@ export function EntityManager({
       if (fd.required && (form[fd.key] === '' || form[fd.key] == null)) {
         setError(`${fd.label} is required`)
         return
+      }
+    }
+    // A CUSTOMER NAMED LIKE A SUPPLIER (or the other way round). Their entries
+    // are kept apart by the posting rule — the customer's go to "NAME (DR)", the
+    // supplier's to "NAME (CR)" — but whoever is typing it should know, and a
+    // different name is usually the better answer.
+    if ((table === 'customers' || table === 'suppliers') && String(form.name || '').trim()) {
+      const side = table === 'customers' ? 'customer' : 'supplier'
+      const clashes = await window.api.repairs.partyClashes(String(form.name), side).catch(() => [] as Row[])
+      if (clashes.length) {
+        const other = side === 'customer' ? 'supplier' : 'customer'
+        const ok = window.confirm(
+          `A ${other} is already named "${String(clashes[0].name).trim()}".`+'\n\n' +
+            'Their entries will still be kept in separate ledgers — the customer’s under Sundry Debtors, the supplier’s under Sundry Creditors, the second one marked (DR) or (CR) — so sales and purchases never net against each other.' +
+            '\n\n' +
+            'Save with this name anyway?'
+        )
+        if (!ok) return
       }
     }
     setSaving(true)
@@ -410,7 +483,8 @@ export function EntityManager({
 
   function renderCell(row: Row, col: ColumnDef): string {
     const v = col.value ? col.value(row) : row[col.key]
-    if (col.type === 'switch') return v ? 'Yes' : 'No'
+    if (col.showWhen && !col.showWhen(row)) return '—'
+    if (col.type === 'switch') return v ? (col.onOff ? 'On' : 'Yes') : col.onOff ? 'Off' : 'No'
     if (col.type === 'date') return fmtDate(v)
     if (v == null || v === '') return '—'
     return String(v)
@@ -422,6 +496,41 @@ export function EntityManager({
   function renderCellNode(row: Row, col: ColumnDef): React.ReactNode {
     const text = renderCell(row, col)
     if (!__WEB__) return text
+    if (col.showWhen && !col.showWhen(row)) return <span className="text-[#8CA396]">—</span>
+    if (col.type === 'switch' && col.onOff) {
+      const on = text === 'On'
+      const busy = toggling === `${row.id}:${col.key}`
+      const canFlip = !!col.toggle && !readOnly
+      return (
+        <button
+          type="button"
+          role="switch"
+          aria-checked={on}
+          disabled={!canFlip || busy}
+          title={canFlip ? `${on ? 'Turn off' : 'Turn on'} — ${col.label}` : col.label}
+          onClick={(e) => {
+            e.stopPropagation()
+            if (canFlip) void toggleField(row, col.key, !on)
+          }}
+          className={cn(
+            'inline-flex h-7 items-center gap-2 rounded-full border px-1 pr-3 text-[11px] font-extrabold uppercase tracking-[.06em] transition-colors disabled:cursor-default',
+            on ? 'border-[#0B3D2E] bg-[#0B3D2E] text-[#C7F03F]' : 'border-[#D6E2D6] bg-[#F2F5F1] text-[#5A6B62]',
+            canFlip && !busy && (on ? 'hover:bg-[#0F4A38]' : 'hover:bg-[#E8EEE6]'),
+            busy && 'opacity-60'
+          )}
+        >
+          <span
+            className={cn(
+              'flex h-5 w-9 items-center rounded-full p-0.5 transition-colors',
+              on ? 'justify-end bg-[#C7F03F]' : 'justify-start bg-[#C3D2C6]'
+            )}
+          >
+            <span className={cn('h-4 w-4 rounded-full shadow-sm', on ? 'bg-[#0B3D2E]' : 'bg-white')} />
+          </span>
+          {on ? 'On' : 'Off'}
+        </button>
+      )
+    }
     if (col.type === 'switch') {
       const on = text === 'Yes'
       const body = (
@@ -451,12 +560,19 @@ export function EntityManager({
       // select value still gets a chip, just a neutral one.
       const tone =
         CHIP_TONES[String(row[col.key] ?? '').trim().toLowerCase()] ?? { bg: '#EAF0E9', fg: '#33473E' }
-      return (
+      const chip = (
         <span
           className="inline-block rounded-[2px] px-[9px] py-1 text-[11.5px] font-extrabold uppercase tracking-[.05em]"
           style={{ background: tone.bg, color: tone.fg }}
         >
           {text}
+        </span>
+      )
+      const badge = col.badge?.(row)
+      return badge == null || badge === '' ? chip : (
+        <span className="inline-flex items-center gap-1.5">
+          {chip}
+          <span title={col.badgeTitle} className="rounded-full bg-[#0B3D2E] px-2 py-0.5 text-[11px] font-extrabold tabular-nums text-[#C7F03F]">{badge}</span>
         </span>
       )
     }
@@ -523,21 +639,47 @@ export function EntityManager({
             filename={`${table}-${todayISO()}`}
             sheetName={title}
             title={title}
-            columns={columns.map((c) => ({
-              header: c.label,
-              key: c.key,
-              align: c.align,
-              value: (r: Row) => {
-                // Keep real numbers numeric in the sheet; format switch/date as text.
-                if (c.type !== 'switch' && c.type !== 'date' && c.align === 'right') {
-                  const num = Number(r[c.key])
-                  if (r[c.key] !== '' && r[c.key] != null && Number.isFinite(num)) return num
-                }
-                return renderCell(r, c)
-              }
-            }))}
+            // EVERYTHING ON THE RECORD, not only what the list has room for:
+            // the ID (so an edited sheet finds its way back through Upload),
+            // every field of the form under its own label, then any column the
+            // list adds of its own (Created and the like).
+            columns={[
+              { header: 'ID', key: 'id', value: (r: Row) => Number(r.id) || '' },
+              ...fields
+                .filter((f) => f.type !== 'computed')
+                .map((f) => ({
+                  header: f.label,
+                  key: f.key,
+                  align: (f.type === 'number' ? 'right' : undefined) as 'right' | undefined,
+                  value: (r: Row) => {
+                    const v = r[f.key]
+                    if (f.type === 'number') return v === '' || v == null || !Number.isFinite(Number(v)) ? '' : Number(v)
+                    if (f.type === 'switch') return Number(v) ? 'Yes' : 'No'
+                    if (f.type === 'date') return String(v ?? '').slice(0, 10) ? fmtDate(v) : ''
+                    if ((f.type === 'select' || f.type === 'searchable') && f.options?.length) {
+                      return f.options.find((o) => String(o.value) === String(v))?.label ?? (v == null ? '' : String(v))
+                    }
+                    return v == null ? '' : String(v)
+                  }
+                })),
+              ...columns
+                .filter((c) => !fields.some((f) => f.key === c.key))
+                .map((c) => ({
+                  header: c.label,
+                  key: c.key,
+                  align: c.align,
+                  value: (r: Row) => {
+                    if (c.type !== 'switch' && c.type !== 'date' && c.align === 'right') {
+                      const num = Number(r[c.key])
+                      if (r[c.key] !== '' && r[c.key] != null && Number.isFinite(num)) return num
+                    }
+                    return renderCell(r, c)
+                  }
+                }))
+            ]}
             rows={rows}
           />
+          {importable && !readOnly && <MasterImport table={table} title={title} fields={fields} rows={rows} onDone={load} />}
           {!readOnly && (
             <Button
               size="sm"
@@ -557,7 +699,35 @@ export function EntityManager({
       {/* Phone width: a six-column register does not fit, and a sideways
           scroll makes a master list unusable. One card per record instead —
           the name as the heading, every other column as a labelled line. */}
-      {__WEB__ && isMobile ? (
+      {/* A caller's own cards win over both the register and the phone
+          fallback — it asked for this shape at every width. */}
+      {__WEB__ && renderCard ? (
+        <div className="bg-[#F1F5EF] p-3">
+          {loading ? (
+            <div className="py-10 text-center text-[13px] text-[#7C9188]">Loading…</div>
+          ) : paged.pageRows.length === 0 ? (
+            <div className="py-10 text-center text-[13px] text-[#7C9188]">
+              {rows.length === 0
+                ? 'No records yet.'
+                : search
+                  ? 'Nothing matches that search.'
+                  : 'Nothing matches these filters.'}
+            </div>
+          ) : (
+            <div className="flex flex-col gap-2.5">
+              {paged.pageRows.map((row) => (
+                <div key={row.id as number}>
+                  {renderCard(row, {
+                    edit: () => openEdit(row),
+                    remove: () => void del(row),
+                    duplicate: isDuplicated(row)
+                  })}
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      ) : __WEB__ && isMobile ? (
         <div className="bg-[#F1F5EF] p-3">
           {loading ? (
             <div className="py-10 text-center text-[13px] text-[#7C9188]">Loading…</div>
@@ -642,23 +812,75 @@ export function EntityManager({
               {columns.map((c) => (
                 <TableHead
                   key={c.key}
+                  aria-sort={sort.ariaSort(c.key)}
                   className={cn(
                     'h-8 text-[10px] font-semibold uppercase tracking-widest text-muted-foreground',
                     __WEB__ && '!h-[42px] !text-[11px] !font-extrabold !tracking-[.12em] !text-[#33473E]',
                     c.align === 'right' && 'text-right'
                   )}
                 >
-                  {c.filterable ? (
-                    <ColumnFilter
-                      label={c.label}
-                      options={filterOptions[c.key] || []}
-                      value={colFilters[c.key] || []}
-                      onApply={(vals) => setColFilters((prev) => ({ ...prev, [c.key]: vals }))}
-                      align={c.align === 'right' ? 'end' : 'start'}
-                    />
-                  ) : (
-                    c.label
-                  )}
+                  {/* SORTING AND FILTERING ARE TWO QUESTIONS, SO TWO CONTROLS.
+                      "Put this column in order" and "show me only these
+                      values" are not the same ask, and one click cannot mean
+                      both. A filterable column keeps its funnel and gains a
+                      small arrow beside it; a plain column turns its whole
+                      label into the sort. They sit next to each other rather
+                      than nested — a control inside a control is invalid and
+                      would have made the funnel sort as well. */}
+                  <span
+                    className={cn(
+                      'inline-flex items-center gap-1',
+                      c.align === 'right' && 'flex-row-reverse'
+                    )}
+                  >
+                    {c.filterable ? (
+                      <>
+                        <ColumnFilter
+                          label={c.label}
+                          options={filterOptions[c.key] || []}
+                          value={colFilters[c.key] || []}
+                          onApply={(vals) => setColFilters((prev) => ({ ...prev, [c.key]: vals }))}
+                          align={c.align === 'right' ? 'end' : 'start'}
+                        />
+                        <button
+                          type="button"
+                          aria-label={`Sort by ${c.label}`}
+                          title={sortTitle(c.label, sort.key === c.key, sort.dir)}
+                          onClick={() => sort.toggle(c.key)}
+                          className={cn(
+                            'inline-flex h-4 w-4 shrink-0 items-center justify-center rounded-[2px] hover:bg-black/5',
+                            sort.key === c.key ? 'text-[#0B3D2E]' : 'text-[#8CA396]'
+                          )}
+                        >
+                          {sort.key === c.key ? (
+                            sort.dir === 'asc' ? <ArrowUp className="h-3 w-3" /> : <ArrowDown className="h-3 w-3" />
+                          ) : (
+                            <ChevronsUpDown className="h-3 w-3" />
+                          )}
+                        </button>
+                      </>
+                    ) : (
+                      <button
+                        type="button"
+                        title={sortTitle(c.label, sort.key === c.key, sort.dir)}
+                        onClick={() => sort.toggle(c.key)}
+                        className={cn(
+                          'inline-flex items-center gap-1 uppercase tracking-[inherit] hover:text-[#0B3D2E]',
+                          sort.key === c.key && 'text-[#0B3D2E]'
+                        )}
+                      >
+                        {c.label}
+                        {/* Only the sorted column carries an arrow. One on
+                            every header is noise that says nothing. */}
+                        {sort.key === c.key &&
+                          (sort.dir === 'asc' ? (
+                            <ArrowUp className="h-3 w-3 shrink-0" />
+                          ) : (
+                            <ArrowDown className="h-3 w-3 shrink-0" />
+                          ))}
+                      </button>
+                    )}
+                  </span>
                 </TableHead>
               ))}
               <TableHead
@@ -841,7 +1063,7 @@ export function EntityManager({
           </DialogHeader>
           <div
             className={cn(
-              'grid max-h-[60vh] gap-3 overflow-y-auto py-2 pr-1',
+              'grid max-h-[60vh] grid-cols-[minmax(0,1fr)] gap-3 overflow-y-auto overflow-x-hidden py-2 pr-1 [&_label]:whitespace-normal',
               __WEB__ &&
                 '!max-h-none min-h-0 flex-1 content-start !gap-[18px] bg-[#F1F5EF] !p-[22px] [&_input]:!h-[50px] [&_input]:!rounded-[4px] [&_input]:!border-[#C3D2C6] [&_input]:!bg-white [&_input]:!text-[15px] [&_[data-slot=select-trigger]]:!h-[50px] [&_[data-slot=select-trigger]]:!rounded-[4px] [&_[data-slot=select-trigger]]:!border-[#C3D2C6] [&_[data-slot=select-trigger]]:!bg-white [&_[data-slot=date-picker]]:!h-[50px] [&_[data-slot=date-picker]]:!rounded-[4px] [&_[data-slot=date-picker]]:!border-[#C3D2C6] [&_[data-slot=date-picker]]:!bg-white [&_label]:!text-[9.5px] [&_label]:!font-extrabold [&_label]:!uppercase [&_label]:!tracking-[.13em] [&_label]:!text-[#5A6B62]'
             )}
@@ -849,7 +1071,7 @@ export function EntityManager({
             {fields.map((fd) => {
               const fieldDisabled = fd.enabledWhen ? !fd.enabledWhen(form) : false
               return (
-                <div key={fd.key} className={cn('flex flex-col gap-1.5', fieldDisabled && 'opacity-50')}>
+                <div key={fd.key} className={cn('flex min-w-0 flex-col gap-1.5', fieldDisabled && 'opacity-50')}>
                   {fd.type === 'computed' ? (
                     <>
                       <Label>{fd.label}</Label>

@@ -1,6 +1,7 @@
 import type { ResultSet } from '@libsql/client'
 import { getClient } from './db'
-import { currentRequestContext } from './requestContext'
+import { currentRequestContext, runInRequestContext } from './requestContext'
+import { getCurrentUser } from './currentUser'
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Row = Record<string, any>
@@ -20,6 +21,24 @@ function toPlain(res: ResultSet): Row[] {
 // variable there would let one person's company switch redirect everybody
 // else's writes into the wrong books.
 let activeCompanyId = 1
+
+// Every company in the books, for the views that read them all at once (the
+// dashboard's All companies).
+export async function allCompanyIds(): Promise<number[]> {
+  const r = await getClient().execute('SELECT id FROM companies ORDER BY id')
+  const ids = r.rows.map((x) => Number(x.id)).filter((x) => x > 0)
+  return ids.length ? ids : [getActiveCompanyId()]
+}
+
+// Run `fn` AS a given company — every getActiveCompanyId() inside it answers
+// that company — without touching the active company anyone else sees. A
+// context of its own, carrying the same user, so rights and the audit trail
+// are unchanged; on the desktop the module variable is left alone too.
+export function withCompany<T>(companyId: number, fn: () => Promise<T>): Promise<T> {
+  const ctx = currentRequestContext()
+  const u = getCurrentUser()
+  return runInRequestContext({ userId: ctx?.userId ?? u.id, username: ctx?.username ?? u.username, companyId, ip: ctx?.ip }, fn)
+}
 
 export function getActiveCompanyId(): number {
   const ctx = currentRequestContext()

@@ -11,10 +11,10 @@
 // exists to prevent. The save payload is the desktop's, field for field, and
 // so are its refusals.
 //
-// One field from the handoff is deliberately absent: Moisture %. It was taken
-// out of the formula on the desktop (save() writes moisture_pct: null for
-// every line), so a moisture box here would collect a number that changes
-// nothing and is thrown away on save.
+// Moisture % has no box here, but it is CARRIED: the desktop keeps it in the
+// formula (it adds into TOR), so a line's moisture is read in and sent back
+// untouched. Writing null over it — as this screen once did — lowered the
+// recipe's TOR on every phone save, and every later batch drew less.
 import { useEffect, useMemo, useState } from 'react'
 import { toast } from 'sonner'
 import {
@@ -36,6 +36,7 @@ import {
 } from 'lucide-react'
 import { formatNum } from '@/lib/format'
 import { MobileBar } from '@/components/MobileBar'
+import { SerialNo } from '@/components/SerialNo'
 import { cn } from '@/lib/utils'
 import { inputFattyAcidPct, inputTorMultiplier, recipeTor, uniformRecipeTor } from '@/lib/recipeMath'
 
@@ -259,7 +260,7 @@ export function FormulationMobile(): React.JSX.Element {
             </p>
           </div>
         ) : (
-          shown.map((r) => {
+          shown.map((r, ri) => {
             const balanced = isBalanced(n(r.blend_pct))
             return (
               <button
@@ -273,6 +274,7 @@ export function FormulationMobile(): React.JSX.Element {
               >
                 <div className="flex flex-col gap-2.5 px-3.5 pb-2.5 pt-3">
                   <div className="flex items-start gap-2.5">
+                    <SerialNo n={ri + 1} />
                     <div className="min-w-0 flex-1">
                       <div className="text-[13.5px] font-extrabold leading-snug tracking-[-0.01em] text-[#0A1F17]">
                         {s(r.product_name) || '—'}
@@ -430,6 +432,8 @@ type Item = {
   ffa_pct: string
   loss_multiplier_pct: string
   byproduct_product_id: string
+  // Carried, not edited — see the note at the top.
+  moisture_pct?: string
 }
 
 const toItem = (i: Row): Item => ({
@@ -439,7 +443,8 @@ const toItem = (i: Row): Item => ({
   auto_calc: !!i.auto_calc,
   ffa_pct: i.ffa_pct == null ? '' : s(i.ffa_pct),
   loss_multiplier_pct: i.loss_multiplier_pct == null ? '' : s(i.loss_multiplier_pct),
-  byproduct_product_id: i.byproduct_product_id ? s(i.byproduct_product_id) : ''
+  byproduct_product_id: i.byproduct_product_id ? s(i.byproduct_product_id) : '',
+  moisture_pct: i.moisture_pct == null ? '' : s(i.moisture_pct)
 })
 
 function RecipeEditor({
@@ -497,6 +502,7 @@ function RecipeEditor({
         auto_calc: it.auto_calc,
         ffa_pct: it.ffa_pct === '' ? null : n(it.ffa_pct),
         loss_multiplier_pct: it.loss_multiplier_pct === '' ? null : n(it.loss_multiplier_pct),
+        moisture_pct: it.moisture_pct == null || it.moisture_pct === '' ? null : n(it.moisture_pct),
         byproduct_product_id: it.byproduct_product_id ? n(it.byproduct_product_id) : null
       })),
     [items]
@@ -569,8 +575,9 @@ function RecipeEditor({
           auto_calc: !!it.auto_calc,
           ffa_pct: it.auto_calc ? it.ffa_pct : null,
           loss_multiplier_pct: it.auto_calc ? it.loss_multiplier_pct : null,
-          // Dropped from the formula on the desktop; nothing new carries one.
-          moisture_pct: null,
+          // Sent back as it came in, as the desktop's save does (auto-calc
+          // lines only) — never nulled out from under the recipe.
+          moisture_pct: it.auto_calc ? it.moisture_pct : null,
           byproduct_product_id: it.auto_calc && it.kind === 'input' ? it.byproduct_product_id : null
         }))
         .filter((it) => it.product_id && it.qty > 0)

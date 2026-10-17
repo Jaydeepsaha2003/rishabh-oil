@@ -26,9 +26,31 @@ const TABLE_LABEL: Record<string, string> = {
   sources: 'Port',
   uoms: 'UOM',
   brokers: 'Broker',
-  packagings: 'Packed SKU'
+  packagings: 'Packed SKU',
+  // Three that were brought under approval later — without these the queue
+  // would print the raw table name at the desk of whoever has to decide it.
+  categories: 'Category',
+  banks: 'Bank account',
+  nbfcs: 'NBFC'
 }
 const labelFor = (t: string): string => TABLE_LABEL[t] || t
+
+/**
+ * HOW LONG SOMEBODY HAS BEEN WAITING.
+ *
+ * A queue of five is not the same as a queue of five where one has sat since
+ * Tuesday, and the difference is the whole reason to look at the page today.
+ * Said in days, because that is the unit that matters: an hour old is fine,
+ * three days old is somebody blocked.
+ */
+function waitedFor(at: unknown): { days: number; text: string } {
+  const t = Date.parse(String(at || '').replace(' ', 'T'))
+  if (!Number.isFinite(t)) return { days: 0, text: '' }
+  const days = Math.floor((Date.now() - t) / 86400000)
+  if (days <= 0) return { days: 0, text: 'today' }
+  if (days === 1) return { days, text: 'since yesterday' }
+  return { days, text: `${days} days waiting` }
+}
 
 function statusBadge(status: string): React.JSX.Element {
   if (status === 'approved') return <Badge variant="success">Approved</Badge>
@@ -43,7 +65,8 @@ const FIELD_LABEL: Record<string, string> = {
   tds_pct_above: 'TDS % above', tds_above_only: 'TDS above only', credit_period_days: 'Credit days',
   adds_interest: 'Adds interest', interest_pct: 'Interest %', interest_days: 'Interest days',
   opening_purchase_amount: 'Opening purchase', opening_purchase_date: 'Opening date',
-  transit_days: 'Transit days', brokerage_pct: 'Brokerage %', contact_person: 'Contact person',
+  transit_days: 'Transit days', brokerage_pct: 'Brokerage %', brokerage_rate: 'Brokerage ₹ / MT',
+  contact_person: 'Contact person',
   phone: 'Phone', contact: 'Contact', address: 'Address', note: 'Note',
   box_label: 'Case label', pouch_label: 'Pack type', pouches_per_box: 'Per case',
   unit_size: 'Unit size', unit_uom: 'Unit UOM', base_per_pouch: 'Base / unit', base_uom: 'Base unit',
@@ -142,6 +165,25 @@ export function Approvals(): React.JSX.Element {
   const decided = rows.filter((r) => r.status !== 'pending')
   const pendingPaged = usePaged(pending)
   const decidedPaged = usePaged(decided)
+  // WHAT THE QUEUE IS MADE OF.
+  //
+  // A flat list of fourteen is read one row at a time; the same fourteen
+  // grouped is "four suppliers, two brokers, the rest products", which is a
+  // thing an admin can clear in three decisions instead of fourteen.
+  const byType = ((): { table: string; rows: Row[] }[] => {
+    const m = new Map<string, Row[]>()
+    for (const r of pendingPaged.pageRows) {
+      const k = String(r.table_name)
+      if (!m.has(k)) m.set(k, [])
+      m.get(k)!.push(r)
+    }
+    return [...m.entries()]
+      .map(([table, list]) => ({ table, rows: list }))
+      .sort((a, b) => b.rows.length - a.rows.length || labelFor(a.table).localeCompare(labelFor(b.table)))
+  })()
+  const oldest = pending.reduce((worst, r) => Math.max(worst, waitedFor(r.requested_at).days), 0)
+  const approvedCount = decided.filter((r) => r.status === 'approved').length
+  const rejectedCount = decided.filter((r) => r.status === 'rejected').length
 
   return (
     <>
@@ -171,58 +213,114 @@ export function Approvals(): React.JSX.Element {
         }
       />
       <div className="w-full space-y-4 p-5">
-        {/* Pending */}
+        {/* WHAT THE PAGE AMOUNTS TO, BEFORE ANY OF THE ROWS.
+            Four figures, and the one that decides whether to open this today is
+            the fourth: a queue of five is not a queue of five where one has sat
+            since Tuesday. */}
+        <div className="grid grid-cols-2 gap-2.5 sm:grid-cols-4">
+          {[
+            { k: 'Waiting on you', v: String(pending.length), fg: pending.length ? '#8A5300' : '#5A6B62', bg: pending.length ? '#FFF9EC' : '#F7FAF6', bd: pending.length ? '#F0E4CB' : '#DCE7DB' },
+            { k: 'Longest wait', v: oldest > 0 ? `${oldest}d` : '—', fg: oldest >= 3 ? '#8C2F26' : '#5A6B62', bg: oldest >= 3 ? '#FDF3F2' : '#F7FAF6', bd: oldest >= 3 ? '#F0D6D4' : '#DCE7DB' },
+            { k: 'Let through', v: String(approvedCount), fg: '#0B6B45', bg: '#E9F5EE', bd: '#BFE3CB' },
+            { k: 'Turned down', v: String(rejectedCount), fg: '#5A6B62', bg: '#F7FAF6', bd: '#DCE7DB' }
+          ].map((c) => (
+            <div key={c.k} className="rounded-[4px] border px-3.5 py-2.5" style={{ background: c.bg, borderColor: c.bd }}>
+              <div className="text-[10px] font-extrabold uppercase tracking-[.11em] text-[#8CA396]">{c.k}</div>
+              <div className="mt-0.5 text-[21px] font-extrabold tabular-nums" style={{ color: c.fg }}>{c.v}</div>
+            </div>
+          ))}
+        </div>
+
+        {/* Pending, grouped by what it is */}
         <section>
           <div className="mb-2 flex items-center gap-2">
             <Clock className="h-4 w-4 text-amber-600" />
-            <h3 className="text-sm font-semibold">On hold</h3>
+            <h3 className="text-sm font-semibold">Waiting</h3>
             <Badge variant={pending.length ? 'warning' : 'muted'}>{pending.length}</Badge>
+            {byType.length > 1 && (
+              <span className="text-[11.5px] font-medium text-muted-foreground">
+                {byType.map((g) => `${g.rows.length} ${labelFor(g.table).toLowerCase()}`).join(' · ')}
+              </span>
+            )}
           </div>
-          <div className="overflow-x-auto rounded-lg border bg-card">
-            <Table className="min-w-[640px] text-[13px] [&_td]:py-2 [&_th]:h-9">
-              <TableHeader>
-                <TableRow>
-                  <TableHead className="w-[120px]">Type</TableHead>
-                  <TableHead>Item</TableHead>
-                  <TableHead className="w-[150px]">Requested by</TableHead>
-                  <TableHead className="w-[110px]">When</TableHead>
-                  {isAdmin && <TableHead className="w-[110px] text-right">Decision</TableHead>}
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {loading ? (
-                  <TableRow><TableCell colSpan={isAdmin ? 5 : 4} className="py-10 text-center text-muted-foreground">Loading…</TableCell></TableRow>
-                ) : pending.length === 0 ? (
-                  <TableRow><TableCell colSpan={isAdmin ? 5 : 4} className="py-10 text-center text-muted-foreground">Nothing waiting for approval.</TableCell></TableRow>
-                ) : (
-                  pendingPaged.pageRows.map((row) => (
-                    <TableRow key={row.id}>
-                      <TableCell><Badge variant="secondary">{labelFor(row.table_name)}</Badge></TableCell>
-                      <TableCell>
-                        <div className="font-medium">{row.label || '—'}</div>
-                        <PayloadChips payload={row.payload} />
-                      </TableCell>
-                      <TableCell>{row.requested_by_name || '—'}</TableCell>
-                      <TableCell className="whitespace-nowrap text-muted-foreground">{formatDateTime(row.requested_at)}</TableCell>
-                      {isAdmin && (
-                        <TableCell className="text-right">
-                          <div className="flex justify-end gap-1">
-                            <Button size="icon" variant="ghost" className="h-8 w-8 text-emerald-600 hover:bg-emerald-50" title="Approve" disabled={busy === row.id} onClick={() => approve(row)}>
-                              <Check className="h-4 w-4" />
+
+          {loading ? (
+            <div className="rounded-lg border bg-card py-10 text-center text-muted-foreground">Loading…</div>
+          ) : pending.length === 0 ? (
+            <div className="rounded-lg border border-dashed bg-card py-12 text-center">
+              <div className="text-[13px] font-semibold text-[#0B6B45]">Nothing is waiting.</div>
+              <div className="mt-1 text-[12px] text-muted-foreground">
+                A master added by anyone but an admin lands here, and stays off every list until it is let through.
+              </div>
+            </div>
+          ) : (
+            <div className="space-y-3">
+              {byType.map((g) => (
+                <div key={g.table} className="overflow-hidden rounded-lg border bg-card">
+                  {/* One heading a kind, so four suppliers read as four
+                      suppliers rather than as four of fourteen rows. */}
+                  <div className="flex items-center gap-2 border-b bg-muted/40 px-3 py-2">
+                    <span className="text-[11px] font-extrabold uppercase tracking-[.09em] text-[#33473E]">
+                      {labelFor(g.table)}
+                    </span>
+                    <Badge variant="secondary">{g.rows.length}</Badge>
+                  </div>
+                  {g.rows.map((row) => {
+                    const waited = waitedFor(row.requested_at)
+                    return (
+                      <div
+                        key={row.id}
+                        className="flex flex-wrap items-start gap-3 border-b px-3 py-2.5 last:border-b-0"
+                      >
+                        <div className="min-w-[200px] flex-1">
+                          <div className="text-[13px] font-semibold text-foreground">{row.label || '—'}</div>
+                          <div className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[11.5px] text-muted-foreground">
+                            <span>{row.requested_by_name || 'somebody'}</span>
+                            <span>·</span>
+                            <span>{formatDateTime(row.requested_at)}</span>
+                            {/* Three days is where a wait stops being a wait
+                                and starts being somebody blocked. */}
+                            {waited.days >= 3 && (
+                              <span className="rounded-[2px] bg-[#FDF3F2] px-1.5 py-[1px] text-[10.5px] font-extrabold text-[#8C2F26]">
+                                {waited.text}
+                              </span>
+                            )}
+                          </div>
+                          <PayloadChips payload={row.payload} />
+                        </div>
+                        {isAdmin && (
+                          <div className="flex flex-none items-center gap-1.5">
+                            {/* Words, not bare icons. Turning somebody's work
+                                down is not a thing to do by hitting an
+                                unlabelled cross. */}
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              className="h-8 border-emerald-300 text-emerald-700 hover:bg-emerald-50"
+                              disabled={busy === row.id}
+                              onClick={() => approve(row)}
+                            >
+                              <Check className="h-3.5 w-3.5" /> Let through
                             </Button>
-                            <Button size="icon" variant="ghost" className="h-8 w-8 text-destructive hover:bg-red-50" title="Reject" disabled={busy === row.id} onClick={() => { setRejectRow(row); setReason('') }}>
-                              <X className="h-4 w-4" />
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              className="h-8 border-red-200 text-destructive hover:bg-red-50"
+                              disabled={busy === row.id}
+                              onClick={() => { setRejectRow(row); setReason('') }}
+                            >
+                              <X className="h-3.5 w-3.5" /> Turn down
                             </Button>
                           </div>
-                        </TableCell>
-                      )}
-                    </TableRow>
-                  ))
-                )}
-              </TableBody>
-            </Table>
-            <Pagination {...pendingPaged} label="requests" className="border-t px-3" />
-          </div>
+                        )}
+                      </div>
+                    )
+                  })}
+                </div>
+              ))}
+              <Pagination {...pendingPaged} label="requests" className="px-1" />
+            </div>
+          )}
         </section>
 
         {/* Decided history */}

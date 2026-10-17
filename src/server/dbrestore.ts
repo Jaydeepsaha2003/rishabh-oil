@@ -25,7 +25,7 @@
 // can be undone even after it has committed.
 import { createClient, type Client } from '@libsql/client'
 import { gunzipSync } from 'node:zlib'
-import { copyFileSync, existsSync, mkdirSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { basename, dirname, join } from 'node:path'
 import { getClient } from '../main/db'
 import { dumpSql } from '../main/dbsnapshot'
@@ -53,6 +53,58 @@ export function livePath(): string | null {
   const url = configuredUrl()
   if (!url.startsWith('file:')) return null
   return url.slice('file:'.length)
+}
+
+/**
+ * THE LIVE DATABASE AS A REAL .db FILE, TAKEN WHILE THE SITE IS RUNNING.
+ *
+ * The .sql.gz snapshot beside this is for RESTORING — portable text that
+ * replays into Turso or into a file. This is for LOOKING: a genuine SQLite
+ * file that opens in any viewer, so a question about what the books actually
+ * contain can be answered by reading them rather than by guessing from a
+ * screenshot.
+ *
+ * VACUUM INTO rather than copying the file off disk. A running site keeps
+ * recent writes in the -wal sidecar, so the .db on disk is missing whatever
+ * has not been checkpointed yet — copy it alone and you get a database that
+ * is minutes stale and possibly torn mid-write. VACUUM INTO asks SQLite
+ * itself for a consistent copy of the database AS OF NOW, sidecar included,
+ * and writes it as a single clean file with no -wal of its own.
+ *
+ * Only ever for a file: deployment. Against Turso there is no local file and
+ * VACUUM INTO has nowhere to write, so the caller is told to use the SQL
+ * snapshot instead rather than being handed a confusing failure.
+ */
+export async function liveDbFile(): Promise<{ bytes: Buffer; fileName: string }> {
+  const live = livePath()
+  if (!live) {
+    throw new Error(
+      'This build reads a cloud database, which has no file to copy. Use Download snapshot instead.'
+    )
+  }
+  // Written beside the live database: the same filesystem (so no cross-device
+  // surprises) and one already known to be writable, since the -wal lives
+  // there. The name carries the process id and the clock so two admins asking
+  // at once cannot collide — VACUUM INTO refuses an existing target.
+  const out = join(dirname(live), `.download-${process.pid}-${Date.now()}.db`)
+  try {
+    rmSync(out, { force: true })
+    // A SQL string literal, so a quote in the path would end it early. Paths
+    // like this are chosen by whoever deploys, not typed here.
+    await getClient().execute(`VACUUM INTO '${out.replace(/'/g, "''")}'`)
+    const bytes = readFileSync(out)
+    return { bytes, fileName: `rishabh-${stampName()}.db` }
+  } finally {
+    // The copy has been read into memory; leaving it on the host would grow a
+    // pile of whole databases in the same folder as the live one.
+    rmSync(out, { force: true })
+  }
+}
+
+function stampName(): string {
+  const d = new Date()
+  const p = (v: number): string => String(v).padStart(2, '0')
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}`
 }
 
 function sizeOf(path: string): number {

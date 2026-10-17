@@ -17,7 +17,10 @@ import { cn } from '@/lib/utils'
 // deliberate and pre-date this file — folding them together would change what
 // clicking a row does on every screen that uses them.
 
-export const FILTER_PANEL_CLASS = 'w-[262px] overflow-hidden rounded-[4px] border-[#C3D2C6] p-0'
+// As wide as its longest value needs — a ledger name is the thing being
+// picked, and a cut-off one cannot be told from its neighbour — within reason:
+// never narrower than it was, never wider than the screen allows.
+export const FILTER_PANEL_CLASS = 'w-max min-w-[262px] max-w-[min(92vw,560px)] overflow-hidden rounded-[4px] border-[#C3D2C6] p-0'
 
 export function FilterPanelHeader({
   label,

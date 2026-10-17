@@ -14,12 +14,14 @@
 // no bargain picker yet) — the common case, not every case the desktop form
 // handles. See the comments on NewSaleScreen for exactly what that excludes.
 import { useEffect, useMemo, useState } from 'react'
+import { takePageIntent } from '@/lib/pageIntent'
+import { activityStamp, utcStampLocal } from '@/lib/format'
 import { MobileBar } from '@/components/MobileBar'
+import { SerialNo } from '@/components/SerialNo'
 import type { LucideIcon } from 'lucide-react'
 import {
   Search,
   SlidersHorizontal,
-  Bell,
   AlertTriangle,
   Calendar,
   Package,
@@ -114,10 +116,42 @@ type Invoice = {
   itemsLabel: string
   itemCount: number
   category: string
-  dispatched: boolean
+  // The dispatch stage as the register states it, not a yes/no. An EX invoice
+  // has no dispatch of ours to follow, so it reads Done; a FOR one reads the
+  // stage it has actually reached.
+  stage: string
+  stageDone: boolean
   offStock: boolean
-  freightTerm: 'EX' | 'DLD'
+  // FOR / Ex — the words the desktop register prints. The database stores
+  // 'DLD' for a delivered term and the desktop has always shown it as FOR;
+  // printing the stored code here made the same invoice read differently on
+  // the two screens.
+  freightTerm: 'FOR' | 'Ex'
+  // Trading is a pass-through deal booked on its own page. The desktop
+  // register excludes it and so must this one, or the two disagree on how
+  // many invoices there even are.
+  isTrading: boolean
+  // Every category on the invoice, not just the first line's — the type
+  // filter matches an invoice when ANY line is of that type.
+  categories: string[]
   bargainId: number | null
+}
+
+// Dispatch lifecycle, worded exactly as the desktop register words it.
+const STAGE_LABEL: Record<string, string> = {
+  pending: 'Pending',
+  loaded: 'Loaded',
+  transit: 'In transit',
+  unloaded: 'Unloaded'
+}
+function stageOf(first: Row): { stage: string; done: boolean } {
+  if (first.rejected_at) return { stage: 'Rejected', done: false }
+  // An Ex sale is lifted by the customer. There is no movement of ours to
+  // track, so the register calls it Done rather than leaving it at a stage
+  // that would never advance.
+  if (s(first.freight_term || 'FREIGHT_ON_GOODS') !== 'DLD') return { stage: 'Done', done: true }
+  const k = s(first.dispatch_stage || (s(first.status) === 'done' ? 'unloaded' : 'pending'))
+  return { stage: STAGE_LABEL[k] || 'Pending', done: k === 'unloaded' }
 }
 
 function groupInvoices(rows: Row[]): Invoice[] {
@@ -145,7 +179,17 @@ function groupInvoices(rows: Row[]): Invoice[] {
       .sort((a, b) => b[1] - a[1])
       .map(([u, q]) => `${fmtQty(q)} ${u}`)
       .join(' · ')
-    const total = lines.reduce((a, l) => a + n(l.amount) + n(l.gst_amount) + n(l.round_off) - n(l.tds_amount), 0)
+    // THE INVOICE TOTAL, which is what the invoice is FOR — goods, GST, the
+    // round-off, less freight when the customer settles the transporter
+    // direct. TDS is not part of it: the customer withholds that when they
+    // pay, and taking it off here made every figure on this screen smaller
+    // than the same invoice on the desktop. Same arithmetic as the register's
+    // `net`, so the two cannot drift again.
+    const freight = lines.reduce((a, l) => a + n(l.transport_amount), 0)
+    const total =
+      lines.reduce((a, l) => a + n(l.amount) + n(l.gst_amount) + n(l.round_off), 0) -
+      (n(first.deduct_freight) === 1 ? freight : 0)
+    const st = stageOf(first)
     const items = lines.map((l) => s(l.product_name)).filter(Boolean)
     out.push({
       key,
@@ -161,9 +205,12 @@ function groupInvoices(rows: Row[]): Invoice[] {
       itemsLabel: items.join(', '),
       itemCount: lines.length,
       category: s(first.product_category),
-      dispatched: lines.every((l) => s(l.status) === 'done'),
+      stage: st.stage,
+      stageDone: st.done,
       offStock: lines.some((l) => !l.is_trading && n(l.track_stock) === 0),
-      freightTerm: s(first.freight_term) === 'DLD' ? 'DLD' : 'EX',
+      freightTerm: s(first.freight_term || 'FREIGHT_ON_GOODS') === 'DLD' ? 'FOR' : 'Ex',
+      isTrading: n(first.is_trading) === 1,
+      categories: [...new Set(lines.map((l) => s(l.product_category)).filter(Boolean))],
       bargainId: first.sales_bargain_id ? n(first.sales_bargain_id) : null
     })
   }
@@ -178,11 +225,16 @@ function fyBounds(d = new Date()): { from: string; to: string; label: string } {
   return { from: `${y}-04-01`, to: `${y + 1}-03-31`, label: `FY ${short(y)}-${short(y + 1)}` }
 }
 
-type RangeKey = 'Today' | 'This week' | 'This month' | string
+type RangeKey = 'Yesterday' | 'Today' | 'This week' | 'This month' | string
 function rangeBounds(key: RangeKey): { from: string; to: string } {
   const now = new Date()
   const iso = (d: Date): string => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
   if (key === 'Today') return { from: iso(now), to: iso(now) }
+  if (key === 'Yesterday') {
+    const y = new Date(now)
+    y.setDate(now.getDate() - 1)
+    return { from: iso(y), to: iso(y) }
+  }
   if (key === 'This week') {
     const day = (now.getDay() + 6) % 7 // Monday = 0
     const start = new Date(now)
@@ -216,7 +268,18 @@ export function SalesMobile(): React.JSX.Element {
 
   const [query, setQuery] = useState('')
   const [filtersOpen, setFiltersOpen] = useState(false)
-  const [range, setRange] = useState<RangeKey>(fy.label)
+  // Opened from the dashboard's "Yesterday dispatch" tile: yesterday, and only
+  // what that tile counts — invoices that left and moved stock.
+  const [openIntent] = useState(() => takePageIntent('sales'))
+  const [dispatchedOn, setDispatchedOn] = useState<string | null>(
+    openIntent?.kind === 'dispatched' ? String(openIntent.date) : null
+  )
+  const [range, setRangeState] = useState<RangeKey>(dispatchedOn ? 'Yesterday' : fy.label)
+  // Picking another period is leaving the dashboard's view.
+  const setRange = (r: RangeKey): void => {
+    setRangeState(r)
+    setDispatchedOn(null)
+  }
   const [ptype, setPtype] = useState('All')
   const [missingOnly, setMissingOnly] = useState(false)
 
@@ -246,7 +309,7 @@ export function SalesMobile(): React.JSX.Element {
 
   const categories = useMemo(() => {
     const set = new Set<string>()
-    for (const r of rows) if (r.product_category) set.add(s(r.product_category))
+    for (const r of rows) if (r.product_category && n(r.is_trading) !== 1) set.add(s(r.product_category))
     return ['All', ...Array.from(set).sort()]
   }, [rows])
 
@@ -254,15 +317,30 @@ export function SalesMobile(): React.JSX.Element {
     const { from, to } = rangeBounds(range)
     const q = query.trim().toLowerCase()
     return invoices.filter((inv) => {
-      if (inv.date && (inv.date < from || inv.date > to)) return false
-      if (ptype !== 'All' && inv.category !== ptype) return false
+      // Trading is a pass-through deal tracked on its own page — it never
+      // touches the customer's regular sales relationship, so it does not
+      // belong in this register. The desktop has always left it out; counting
+      // it here is what put 172 invoices on the phone against 155 on the desk.
+      if (inv.isTrading) return false
+      if (inv.date && (inv.date.slice(0, 10) < from || inv.date.slice(0, 10) > to)) return false
+      if (
+        dispatchedOn &&
+        !inv.lines.some(
+          (l) => s(l.status) === 'done' && Number(l.affects_stock ?? 1) !== 0 && s(l.sale_date).slice(0, 10) === dispatchedOn
+        )
+      ) {
+        return false
+      }
+      // ANY line of that type, not just the first — a mixed invoice belongs
+      // under every type it carries.
+      if (ptype !== 'All' && !inv.categories.includes(ptype)) return false
       if (missingOnly && inv.hasInvoiceNo) return false
       if (q && !(inv.invoiceNo.toLowerCase().includes(q) || inv.customer.toLowerCase().includes(q) || inv.itemsLabel.toLowerCase().includes(q))) {
         return false
       }
       return true
     })
-  }, [invoices, range, ptype, missingOnly, query])
+  }, [invoices, range, ptype, missingOnly, query, dispatchedOn])
 
   const totals = useMemo(() => {
     // The unit is printed only when ONE unit is in view — then it is true of
@@ -322,6 +400,8 @@ export function SalesMobile(): React.JSX.Element {
       setPtype={setPtype}
       missingOnly={missingOnly}
       setMissingOnly={setMissingOnly}
+      dispatchedOn={dispatchedOn}
+      clearDispatched={() => setDispatchedOn(null)}
       totalCount={invoices.length}
       onOpen={(key) => {
         setSelectedKey(key)
@@ -352,13 +432,15 @@ function ListScreen(props: {
   setPtype: (v: string) => void
   missingOnly: boolean
   setMissingOnly: (v: boolean) => void
+  dispatchedOn: string | null
+  clearDispatched: () => void
   totalCount: number
   onOpen: (key: string) => void
   onNew: () => void
   onRefresh: () => void | Promise<void>
 }): React.JSX.Element {
   const { rows, totals } = props
-  const quickRanges = ['Today', 'This week', 'This month', props.fyLabel]
+  const quickRanges = ['Yesterday', 'Today', 'This week', 'This month', props.fyLabel]
 
   return (
     <div style={{ ...sans, height: '100%', display: 'flex', flexDirection: 'column', background: T.surface, color: T.ink, overflow: 'hidden' }}>
@@ -389,21 +471,9 @@ function ListScreen(props: {
             >
               <Icon as={Plus} size={21} color={T.forest} />
             </div>
-            <div
-              style={{
-                width: 34,
-                height: 34,
-                borderRadius: 3,
-                background: 'rgba(255,255,255,.11)',
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                position: 'relative'
-              }}
-            >
-              <Icon as={Bell} size={20} color="#DCEFE4" />
-              <span style={{ position: 'absolute', top: 7, right: 8, width: 6, height: 6, borderRadius: '50%', background: T.lime }} />
-            </div>
+            {/* The bell that was here was a picture of one: no click, and a
+                dot that was lit whether or not anything had happened. The real
+                one is on MobileBar above, where every mobile page has it. */}
           </div>
         </div>
 
@@ -511,6 +581,29 @@ function ListScreen(props: {
               </div>
             )
           })}
+          {props.dispatchedOn && (
+            <div
+              onClick={props.clearDispatched}
+              style={{
+                flex: 'none',
+                height: 32,
+                display: 'flex',
+                alignItems: 'center',
+                gap: 6,
+                padding: '0 10px',
+                borderRadius: 3,
+                fontSize: 12,
+                fontWeight: 800,
+                cursor: 'pointer',
+                background: '#EAF0FA',
+                color: '#1B4E82',
+                border: '1px solid #C6DAF0'
+              }}
+            >
+              Dispatched only
+              <Icon as={X} size={14} color="#1B4E82" />
+            </div>
+          )}
         </div>
 
         {props.filtersOpen && (
@@ -611,8 +704,8 @@ function ListScreen(props: {
           <div style={{ textAlign: 'center', padding: '32px 0', color: T.inkFaint, fontSize: 13 }}>No invoices in this range.</div>
         ) : (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 9 }}>
-            {rows.map((r) => (
-              <InvoiceCard key={r.key} r={r} onOpen={() => props.onOpen(r.key)} />
+            {rows.map((r, i) => (
+              <InvoiceCard key={r.key} r={r} sno={i + 1} onOpen={() => props.onOpen(r.key)} />
             ))}
           </div>
         )}
@@ -630,24 +723,27 @@ function ListScreen(props: {
   )
 }
 
-function InvoiceCard({ r, onOpen }: { r: Invoice; onOpen: () => void }): React.JSX.Element {
+function InvoiceCard({ r, sno, onOpen }: { r: Invoice; sno: number; onOpen: () => void }): React.JSX.Element {
   return (
     <div
       onClick={onOpen}
       style={{ background: T.card, border: `1px solid ${T.border}`, borderLeft: `4px solid ${T.green}`, borderRadius: 4, padding: '12px 13px', cursor: 'pointer' }}
     >
       <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 10 }}>
-        <div style={{ minWidth: 0 }}>
-          <div style={{ fontSize: 13.5, fontWeight: 700, ...mono, letterSpacing: '-0.01em' }}>{r.invoiceNo}</div>
-          <div style={{ fontSize: 11.5, color: T.inkMuted, marginTop: 2, ...mono }}>{fmtDate(r.date)}</div>
+        <div style={{ minWidth: 0, display: 'flex', alignItems: 'flex-start', gap: 9 }}>
+          <SerialNo n={sno} />
+          <div style={{ minWidth: 0 }}>
+            <div style={{ fontSize: 13.5, fontWeight: 700, ...mono, letterSpacing: '-0.01em' }}>{r.invoiceNo}</div>
+            <div style={{ fontSize: 11.5, color: T.inkMuted, marginTop: 2, ...mono }}>{fmtDate(r.date)}</div>
+          </div>
         </div>
         <div
           style={{
             display: 'flex',
             alignItems: 'center',
             gap: 4,
-            background: T.forest,
-            color: T.lime,
+            background: r.stage === 'Rejected' ? '#FDECEE' : r.stageDone ? T.forest : T.warnFill,
+            color: r.stage === 'Rejected' ? T.alert : r.stageDone ? T.lime : T.warnText,
             borderRadius: 3,
             padding: '5px 9px',
             fontSize: 11,
@@ -657,8 +753,12 @@ function InvoiceCard({ r, onOpen }: { r: Invoice; onOpen: () => void }): React.J
             flex: 'none'
           }}
         >
-          <Icon as={Truck} size={15} color={T.lime} />
-          {r.dispatched ? 'Done' : 'Pending'}
+          <Icon
+            as={Truck}
+            size={15}
+            color={r.stage === 'Rejected' ? T.alert : r.stageDone ? T.lime : T.warnText}
+          />
+          {r.stage}
         </div>
       </div>
 
@@ -739,17 +839,22 @@ function DetailScreen({
         const action = s(h.action)
         out.push({
           what: `${action}${h.username ? ` by ${s(h.username)}` : ''}`,
-          when: s(h.created_at),
+          // The audit stamp is UTC; the gate's is Indian time — one clock.
+          when: utcStampLocal(h.created_at),
           kind: /^created/i.test(action) ? 'created' : 'edit'
         })
       }
+      // ONE GATE ROW IS THE WHOLE VISIT: entry_date/entry_time is when the
+      // vehicle came in, out_date/out_time when it left. `direction` only
+      // says which way the goods moved — a dispatch is 'out' from the moment
+      // it arrives — so labelling the arrival time "gate out" put a lorry
+      // that came in at 13:11 and left at 22:06 out of the gate at 13:11.
       for (const g of ((gate?.rows || []) as Row[])) {
-        const dir = s(g.direction) === 'out' ? 'out' : 'in'
-        out.push({
-          what: `Tanker gate ${dir}${g.tanker_no ? ` — ${s(g.tanker_no)}` : ''}`,
-          when: [s(g.entry_date), s(g.entry_time)].filter(Boolean).join(' '),
-          kind: dir
-        })
+        const veh = g.tanker_no ? ` — ${s(g.tanker_no)}` : ''
+        const inAt = [s(g.entry_date), s(g.entry_time)].filter(Boolean).join(' ')
+        if (inAt) out.push({ what: `Tanker gate in${veh}`, when: inAt, kind: 'in' })
+        const outAt = [s(g.out_date), s(g.out_time)].filter(Boolean).join(' ')
+        if (outAt) out.push({ what: `Tanker gate out${veh}`, when: outAt, kind: 'out' })
       }
       out.sort((a, b) => a.when.localeCompare(b.when))
       setActivity(out)
@@ -796,8 +901,8 @@ function DetailScreen({
                 display: 'flex',
                 alignItems: 'center',
                 gap: 4,
-                background: T.lime,
-                color: T.limeText,
+                background: inv.stage === 'Rejected' ? '#FDECEE' : inv.stageDone ? T.lime : T.warnFill,
+                color: inv.stage === 'Rejected' ? T.alert : inv.stageDone ? T.limeText : T.warnText,
                 borderRadius: 3,
                 padding: '3px 7px',
                 fontSize: 10,
@@ -806,8 +911,12 @@ function DetailScreen({
                 letterSpacing: '.05em'
               }}
             >
-              <Icon as={Truck} size={14} color={T.limeText} />
-              {inv.dispatched ? 'Dispatched' : 'Pending'}
+              <Icon
+                as={Truck}
+                size={14}
+                color={inv.stage === 'Rejected' ? T.alert : inv.stageDone ? T.limeText : T.warnText}
+              />
+              {inv.stage}
             </div>
           </div>
           <div style={{ fontSize: 12.5, color: T.greenMuted, marginTop: 3, fontWeight: 600 }}>
@@ -854,7 +963,10 @@ function DetailScreen({
                 </div>
               </div>
               <div style={{ fontSize: 12.5, fontWeight: 700, ...mono, flex: 'none' }}>
-                {fmtINR(n(li.amount) + n(li.gst_amount) + n(li.round_off) - n(li.tds_amount))}
+                {/* Goods + GST (+ the round-off it carries), as the desktop shows
+                    a line — TDS is the customer's withholding, never taken off
+                    here, so the lines add up to the invoice total below. */}
+                {fmtINR(n(li.amount) + n(li.gst_amount) + n(li.round_off))}
               </div>
             </div>
           ))}
@@ -913,7 +1025,7 @@ function DetailScreen({
                 />
                 <div style={{ minWidth: 0 }}>
                   <div style={{ fontSize: 12, fontWeight: 700 }}>{a.what}</div>
-                  <div style={{ fontSize: 10.5, color: T.inkFaint, fontWeight: 600, marginTop: 1, ...mono }}>{a.when || '—'}</div>
+                  <div style={{ fontSize: 10.5, color: T.inkFaint, fontWeight: 600, marginTop: 1, ...mono }}>{activityStamp(a.when) || '—'}</div>
                 </div>
               </div>
             ))
@@ -968,6 +1080,16 @@ function NewSaleScreen({
   const customer = customers.find((c) => n(c.id) === customerId) || null
   const cartTotal = cart.reduce((a, i) => a + i.qty * i.rate, 0)
   const cartQty = cart.reduce((a, i) => a + i.qty, 0)
+  // What the invoice will actually book: goods + GST at the customer's rate,
+  // rounded to the rupee the way the desktop form auto-rounds (paise first,
+  // so a half-paisa of GST cannot leave the total a paisa off). The review
+  // showed goods alone, and the save sent no round-off at all.
+  const gstPctOf = n(customer?.gst_pct) || 0
+  const cartGst = cart.reduce((a, i) => a + Math.round(i.qty * i.rate * gstPctOf) / 100, 0)
+  const rawTotal = Math.round((cartTotal + cartGst) * 100) / 100
+  const autoRound = Math.round(rawTotal) - rawTotal
+  const roundOff = Math.abs(autoRound) < 0.005 ? 0 : Math.round(autoRound * 100) / 100
+  const invoiceTotal = Math.round((rawTotal + roundOff) * 100) / 100
 
   const steps = [
     { label: 'Customer', icon: User },
@@ -989,6 +1111,8 @@ function NewSaleScreen({
         freight_term: 'EX',
         gst_type: 'CGST_SGST',
         sale_type: 'LOOSE',
+        round_off: roundOff,
+        round_off_manual: 0,
         force_no_stock: force,
         items: cart.map((it) => ({
           product_id: it.productId,
@@ -1223,7 +1347,10 @@ function NewSaleScreen({
               { k: 'Invoice date', v: fmtDate(invoiceDate) },
               { k: 'Items', v: `${cart.length} items` },
               { k: 'Total qty', v: String(cartQty) },
-              { k: 'Freight', v: 'EX works' }
+              { k: 'Freight', v: 'EX works' },
+              { k: 'Taxable value', v: fmtINR(cartTotal) },
+              { k: `GST ${gstPctOf}%`, v: fmtINR(cartGst) },
+              ...(roundOff ? [{ k: 'Round off', v: `${roundOff > 0 ? '+' : '−'} ${fmtINR(Math.abs(roundOff))}` }] : [])
             ].map((rr) => (
               <div key={rr.k} style={{ display: 'flex', justifyContent: 'space-between', gap: 12, padding: 13, borderBottom: `1px solid ${T.divider}` }}>
                 <span style={{ fontSize: 12, color: T.inkMuted, fontWeight: 600 }}>{rr.k}</span>
@@ -1232,7 +1359,7 @@ function NewSaleScreen({
             ))}
             <div style={{ padding: 14, background: T.lime, display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }}>
               <span style={{ fontSize: 10.5, fontWeight: 800, color: T.limeTextAlt, textTransform: 'uppercase', letterSpacing: '.08em' }}>Invoice total</span>
-              <span style={{ fontSize: 21, fontWeight: 700, color: T.limeText, ...mono, letterSpacing: '-0.03em' }}>{fmtINR(cartTotal)}</span>
+              <span style={{ fontSize: 21, fontWeight: 700, color: T.limeText, ...mono, letterSpacing: '-0.03em' }}>{fmtINR(invoiceTotal)}</span>
             </div>
           </div>
         )}

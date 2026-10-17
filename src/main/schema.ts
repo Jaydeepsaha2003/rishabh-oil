@@ -401,6 +401,21 @@ CREATE TABLE IF NOT EXISTS ledger_accounts (
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
+-- The chart of accounts as a tree: a group sits UNDER another group, to any
+-- depth. A ledger still names its group by NAME (ledger_accounts.acc_group),
+-- so nothing about an existing posting changes; this table is what makes the
+-- name mean a position. See src/main/ledgerGroups.ts.
+CREATE TABLE IF NOT EXISTS ledger_groups (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  name TEXT NOT NULL UNIQUE,
+  parent_id INTEGER REFERENCES ledger_groups(id),
+  nature TEXT NOT NULL DEFAULT 'asset',
+  is_system INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_ledger_groups_parent ON ledger_groups(parent_id);
+
 CREATE TABLE IF NOT EXISTS journal_entries (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   entry_date TEXT NOT NULL,
@@ -503,6 +518,10 @@ CREATE TABLE IF NOT EXISTS users (
   role TEXT NOT NULL DEFAULT 'viewer',
   active INTEGER NOT NULL DEFAULT 1,
   permissions TEXT,
+  -- A deadline of this login's own, where the site's does not fit its shift.
+  -- NULL means it follows whatever the site is set to, now and later.
+  work_cutoff TEXT,
+  work_cutoff_day TEXT,
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 

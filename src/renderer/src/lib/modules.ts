@@ -1,4 +1,5 @@
 import type { AppUser } from './session'
+import { ACCOUNTS_SECTIONS, SECTION_PARENT } from './accessSections'
 
 export interface ModuleDef {
   key: string
@@ -14,7 +15,10 @@ export interface ModuleDef {
 // Sections that stand in for a derived page: holding any one of them opens the
 // page, and the strongest of them is the access the page carries.
 export const DERIVED_FROM: Record<string, string[]> = {
-  treasury: ['treasuryLc', 'treasuryBd', 'treasuryTracker']
+  treasury: ['treasuryLc', 'treasuryBd', 'treasuryTracker'],
+  // Accounting keeps a row of its own (it is the default every section below
+  // follows), but holding any one section is also enough to open the page.
+  accounts: ACCOUNTS_SECTIONS.map((s) => s.key)
 }
 
 // Modules an admin can grant per user. (User management stays admin-only.)
@@ -26,6 +30,9 @@ export const MODULES: ModuleDef[] = [
   { key: 'gateEntry', label: 'Gate Entry' },
   { key: 'trading', label: 'Trading' },
   { key: 'accounts', label: 'Accounting' },
+  // Each voucher type and screen of the Accounting page, grantable on its own.
+  // See accessSections.ts — the list lives there so the server shares it.
+  ...ACCOUNTS_SECTIONS.map((s) => ({ key: s.key, label: s.label })),
   { key: 'treasury', label: 'Treasury', derived: true },
   // Treasury holds three quite separate jobs, and the people who do them are
   // rarely the same person: the LC desk deals with the bank, bill discounting
@@ -58,6 +65,48 @@ export const MODULES: ModuleDef[] = [
   { key: 'notifications', label: 'Notifications' },
   { key: 'settings', label: 'Settings' }
 ]
+
+// WHICH FAMILY A PAGE BELONGS TO.
+//
+// Thirty-odd pages is a list nobody reads; five families is one they can. Kept
+// here rather than on the rights screen because the work-assignment catalogue
+// asks the same question of the same pages, and two copies of this map would
+// answer it differently within a month.
+export const MODULE_GROUP: Record<string, string> = {
+  dashboard: 'Daily work',
+  bargains: 'Daily work',
+  orders: 'Daily work',
+  consignment: 'Daily work',
+  gateEntry: 'Daily work',
+  trading: 'Daily work',
+  salesBargains: 'Daily work',
+  sales: 'Daily work',
+  accounts: 'Money',
+  ...Object.fromEntries(ACCOUNTS_SECTIONS.map((s) => [s.key, 'Money'])),
+  treasury: 'Money',
+  treasuryLc: 'Money',
+  treasuryBd: 'Money',
+  treasuryTracker: 'Money',
+  bankRecon: 'Money',
+  formulation: 'Plant',
+  production: 'Plant',
+  stock: 'Plant',
+  categories: 'Masters',
+  products: 'Masters',
+  suppliers: 'Masters',
+  transporters: 'Masters',
+  customers: 'Masters',
+  ports: 'Masters',
+  banks: 'Masters',
+  brokers: 'Masters',
+  packaging: 'Masters',
+  companies: 'Masters',
+  factories: 'Masters',
+  approvals: 'System',
+  notifications: 'System',
+  settings: 'System'
+}
+export const MODULE_GROUPS = ['Daily work', 'Money', 'Plant', 'Masters', 'System', 'Other']
 
 type PermUser = Pick<AppUser, 'role' | 'permissions'> | null | undefined
 
@@ -118,9 +167,12 @@ function directLevel(user: PermUser, key: string): 'none' | 'read' | 'write' {
   }
   if (user.role === 'admin') return 'write'
   const p = user.permissions
-  if (Array.isArray(p)) return p.includes(key) ? 'write' : 'none'
+  const parent = SECTION_PARENT[key]
+  if (Array.isArray(p)) return p.includes(key) || (!!parent && p.includes(parent)) ? 'write' : 'none'
   if (p && typeof p === 'object') {
     const v = (p as Record<string, unknown>)[key]
+    // A section switched off on its own row, although its page is granted.
+    if (v === false) return 'none'
     if (v === 'write') return 'write'
     if (v === 'read') return 'read'
     if (v && typeof v === 'object') {
@@ -129,6 +181,9 @@ function directLevel(user: PermUser, key: string): 'none' | 'read' | 'write' {
       if (o.view) return 'read'
       return 'none'
     }
+    // No setting of its own: a section follows the page it belongs to, the
+    // same rule the server's write gate applies (modulePerm in access-rules).
+    if (v === undefined && parent) return directLevel(user, parent)
   }
   return 'none'
 }

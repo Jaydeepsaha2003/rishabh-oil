@@ -138,7 +138,7 @@ export function TdsExplainer({
 
   return (
     <Dialog open={open} onOpenChange={(o) => !o && onClose()}>
-      <DialogContent className="flex max-h-[86dvh] w-[min(96vw,50rem)] max-w-none flex-col gap-0 overflow-hidden !rounded-[4px] !border-0 p-0 [&>button]:top-5 [&>button]:text-white [&>button]:opacity-70 [&>button]:hover:opacity-100">
+      <DialogContent readOnly className="flex max-h-[86dvh] w-[min(96vw,50rem)] max-w-none flex-col gap-0 overflow-hidden !rounded-[4px] !border-0 p-0 [&>button]:top-5 [&>button]:text-white [&>button]:opacity-70 [&>button]:hover:opacity-100">
         <DialogHeader
           className={cn('shrink-0 space-y-0 px-5 py-4 pr-14 text-left', rose ? '!bg-[#6E211B]' : '!bg-[#0B3D2E]')}
         >

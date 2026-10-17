@@ -1,3 +1,5 @@
+import { syncPpLots, lotKey, recordPpDrawSource } from './ppTrace'
+import { withDbTransaction } from './dbTransaction'
 import type { ResultSet } from '@libsql/client'
 import { getClient } from './db'
 import { getActiveCompanyId, companiesOfFactory, factoryOfCompanies } from './company'
@@ -41,20 +43,51 @@ export async function stockOpeningDate(companyId?: number): Promise<string> {
   const fid0 = await factoryOfCompanies([cid])
   if (fid0) {
     const fr = await getClient().execute({
-      sql: 'SELECT as_of FROM stock_openings WHERE factory_id = ? ORDER BY as_of LIMIT 1',
+      sql: 'SELECT MAX(as_of) AS as_of FROM stock_openings WHERE factory_id = ?',
       args: [fid0]
     })
     const d0 = fr.rows[0] ? (fr.rows[0] as unknown as Row).as_of : null
     if (d0) return String(d0).slice(0, 10)
   }
   const existing = await getClient().execute({
-    sql: 'SELECT as_of FROM stock_openings WHERE company_id = ? ORDER BY as_of LIMIT 1',
+    sql: 'SELECT MAX(as_of) AS as_of FROM stock_openings WHERE company_id = ?',
     args: [cid]
   })
-  if (existing.rows.length) return String(existing.rows[0].as_of).slice(0, 10)
+  if (existing.rows[0]?.as_of) return String(existing.rows[0].as_of).slice(0, 10)
   const books = await getBooksFrom(cid)
   return books ? String(books).slice(0, 10) : ''
 }
+
+// RAW, TANK BY TANK.
+//
+// One product's oil can stand in several tanks on the opening morning — T-3
+// holding 120, T-7 holding 85 — and the sheet used to take only the sum. The
+// lines are kept on the opening row itself (raw_tanks, JSON), so they belong
+// to the same morning as the figure they add up to, go into history with it,
+// and are cleared by the same re-dating that clears it. Where lines exist,
+// Raw IS their sum; the server makes it so, whatever the screen sent.
+export interface RawTank {
+  tank: string
+  qty: number
+}
+
+export function parseRawTanks(v: unknown): RawTank[] {
+  if (v == null || v === '') return []
+  let arr: unknown = v
+  if (typeof v === 'string') {
+    try {
+      arr = JSON.parse(v)
+    } catch {
+      return []
+    }
+  }
+  if (!Array.isArray(arr)) return []
+  return arr
+    .map((x) => ({ tank: String((x as Row)?.tank ?? '').trim().slice(0, 60), qty: r3(n((x as Row)?.qty)) }))
+    .filter((x) => x.tank !== '' || Math.abs(x.qty) > 0.0005)
+}
+
+const tankSum = (lines: RawTank[]): number => r3(lines.reduce((t, l) => t + n(l.qty), 0))
 
 // Every product, with what it opens at today, what the book says it closes at,
 // and what that closing would become once the opening is applied.
@@ -87,13 +120,13 @@ export async function listStockOpenings(companyId?: number): Promise<Row> {
       fid
         ? {
             sql: `SELECT product_id, qty, COALESCE(pp_qty, 0) AS pp_qty,
-                         COALESCE(adj_qty, 0) AS adj_qty, rate, as_of, note
+                         COALESCE(adj_qty, 0) AS adj_qty, rate, as_of, note, raw_tanks
                   FROM stock_openings WHERE factory_id = ?`,
             args: [fid]
           }
         : {
             sql: `SELECT product_id, qty, COALESCE(pp_qty, 0) AS pp_qty,
-                         COALESCE(adj_qty, 0) AS adj_qty, rate, as_of, note
+                         COALESCE(adj_qty, 0) AS adj_qty, rate, as_of, note, raw_tanks
                   FROM stock_openings WHERE company_id = ?`,
             args: [cid]
           }
@@ -155,6 +188,8 @@ export async function listStockOpenings(companyId?: number): Promise<Row> {
       // tank, what is already in process, and the correction between the dip
       // and the card. The register opens at the total of all three.
       qty: entered,
+      // Which tanks that Raw stood in; empty = one figure typed straight in.
+      raw_tanks: parseRawTanks(s?.raw_tanks),
       pp_qty: pp,
       adj_qty: adj,
       // What that PP is made of, where somebody has said. An empty list means
@@ -316,6 +351,7 @@ export async function saveStockOpenings(
   companyId?: number,
   seenVersion?: string
 ): Promise<{ saved: number; cleared: number }> {
+  return withDbTransaction(async () => {
   const cid = n(companyId) || getActiveCompanyId()
   await assertOpeningsUnchanged(seenVersion, cid)
   const date = String(asOf || '').slice(0, 10)
@@ -325,6 +361,7 @@ export async function saveStockOpenings(
   // factory however many companies trade through it. company_id is still
   // stamped, as a record of who struck it.
   const fid = await factoryOfCompanies([cid])
+  await syncPpLots(fid ? `f${fid}` : `c${cid}`)
   // Matched by hand rather than with ON CONFLICT: the table's unique key is
   // still (company_id, product_id) from before factories existed, and adding a
   // second one would mean merging any rows that collide — a delete, on opening
@@ -340,7 +377,22 @@ export async function saveStockOpenings(
   // from the phone, whose draft never saw the stage detail, would flatten a
   // seven-vessel count back to the total it was last shown, and a stale tab
   // would flatten it to an older one.
+  //
+  // The breakdown standing here is the one belonging to THIS sheet: moving the
+  // opening to a new morning hands the old one into history and empties the
+  // live table at that moment (handOverOpeningPp), not at save. It has to be
+  // that way round — the whole point of emptying it is so the floor can set
+  // the new morning's vessels before saving, and a clear at save time would
+  // delete exactly what they had just entered.
   const ppFromLines = await ppTotalsByProduct(cid).catch(() => new Map<number, number>())
+  // The tank lines already on file, for a save that does not carry any (the
+  // phone, an Excel upload): they stand only while Raw still equals their sum.
+  const tanksOnFile = new Map<number, RawTank[]>()
+  {
+    const k = keyed('')
+    const r = await c.execute({ sql: `SELECT product_id, raw_tanks FROM stock_openings WHERE ${k.sql}`, args: k.args })
+    for (const x of toPlain(r)) tanksOnFile.set(n(x.product_id), parseRawTanks(x.raw_tanks))
+  }
 
   let saved = 0
   let cleared = 0
@@ -350,7 +402,15 @@ export async function saveStockOpenings(
     // Blank means EVERY part blank. A tank counted at nothing with work in
     // process, or an adjustment on its own, is still a real answer — so one
     // figure alone keeps the row.
-    const rawBlank = raw?.qty === '' || raw?.qty == null
+    // Tank lines sent with the row are the answer. None sent at all: keep what
+    // is on file if this Raw is still their sum, else they no longer describe it.
+    let tanks: RawTank[] = []
+    if (Array.isArray(raw?.raw_tanks)) tanks = parseRawTanks(raw.raw_tanks)
+    else {
+      const prev = tanksOnFile.get(pid) || []
+      if (prev.length && raw?.qty !== '' && raw?.qty != null && Math.abs(tankSum(prev) - n(raw.qty)) < 0.0005) tanks = prev
+    }
+    const rawBlank = !tanks.length && (raw?.qty === '' || raw?.qty == null)
     const broken = ppFromLines.get(pid)
     // A breakdown IS an answer about PP, so a row carrying one is never blank
     // — otherwise clearing the tank figure would delete the opening and take
@@ -367,7 +427,8 @@ export async function saveStockOpenings(
       if (Number(res.rowsAffected) > 0) cleared++
       continue
     }
-    const qty = n(raw.qty)
+    const qty = tanks.length ? tankSum(tanks) : n(raw.qty)
+    const tanksJson = tanks.length ? JSON.stringify(tanks) : null
     const pp = broken == null ? n(raw.pp_qty) : broken
     const adj = n(raw.adj_qty)
     const rate = raw?.rate === '' || raw?.rate == null ? null : n(raw.rate)
@@ -379,16 +440,16 @@ export async function saveStockOpenings(
     const upd = await c.execute({
       sql: `UPDATE stock_openings
                SET factory_id = COALESCE(factory_id, (SELECT factory_id FROM companies WHERE id = ?)),
-                   as_of = ?, qty = ?, pp_qty = ?, adj_qty = ?, rate = ?, note = ?,
+                   as_of = ?, qty = ?, pp_qty = ?, adj_qty = ?, rate = ?, note = ?, raw_tanks = ?,
                    updated_at = datetime('now')
              WHERE ${k.sql}`,
-      args: [cid, date, qty, pp, adj, rate, note, ...k.args, pid]
+      args: [cid, date, qty, pp, adj, rate, note, tanksJson, ...k.args, pid]
     })
     if (!Number(upd.rowsAffected)) {
       await c.execute({
-        sql: `INSERT INTO stock_openings (company_id, factory_id, product_id, as_of, qty, pp_qty, adj_qty, rate, note, updated_at)
-              VALUES (?, (SELECT factory_id FROM companies WHERE id = ?), ?, ?, ?, ?, ?, ?, ?, datetime('now'))`,
-        args: [cid, cid, pid, date, qty, pp, adj, rate, note]
+        sql: `INSERT INTO stock_openings (company_id, factory_id, product_id, as_of, qty, pp_qty, adj_qty, rate, note, raw_tanks, updated_at)
+              VALUES (?, (SELECT factory_id FROM companies WHERE id = ?), ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))`,
+        args: [cid, cid, pid, date, qty, pp, adj, rate, note, tanksJson]
       })
     }
     saved++
@@ -400,8 +461,276 @@ export async function saveStockOpenings(
   // reconciliation would read as a variance on day one.
   //
   // Only the opening date is touched, and only the products on this sheet.
+  await c.execute({sql:'INSERT INTO pp_opening_dates(scope,opening_date) VALUES(?,?) ON CONFLICT(scope) DO UPDATE SET opening_date=excluded.opening_date',args:[fid ? `f${fid}` : `c${cid}`,date]})
+  await syncPpLots(fid ? `f${fid}` : `c${cid}`)
   await seedOpeningDayCount(cid, date)
+  // …and the count is kept, whole, under the morning it was struck on. Written
+  // AFTER the live rows and read back off them, so the set is a copy of what
+  // the register is actually standing on rather than of what was sent.
+  await snapshotOpeningSet(cid, fid, date).catch((e) => {
+    // A history that cannot be written must not lose the count itself. The
+    // save has already landed; this is the record of it.
+    console.error('[stock] could not file the opening in history:', e)
+  })
   return { saved, cleared }
+  })
+}
+
+/**
+ * MOVING THE OPENING TO A NEW MORNING, AS FAR AS THE VESSELS ARE CONCERNED.
+ *
+ * stock_opening_pp says which vessel is holding what, and at what FFA. It has
+ * no date on it: it describes whichever opening is in force. So when the
+ * opening is re-struck on a later day, that description belongs to the day
+ * before — the vessels have been drawn on, blended and refilled since, and
+ * carrying it forward states as fact something nobody has looked at. Worse, it
+ * OVERRULES the sheet: a product's PP is read from its breakdown whatever
+ * figure is typed, so on a re-dated sheet the PP box could not be set at all.
+ *
+ * Done when the date is CHOSEN rather than when the sheet is saved, for one
+ * reason: the floor has to be able to enter the new morning's vessels, and
+ * anything entered before a save that cleared the table would be deleted by
+ * it. Choose the date, the old breakdown goes to history, the panel is blank,
+ * and what is set from then on is the new morning's.
+ *
+ * Nothing is lost. The outgoing opening is filed into its own set first, with
+ * its vessels and their FFA, and the rows are handed back so that Put back can
+ * undo the whole thing.
+ */
+export async function handOverOpeningPp(
+  date: string,
+  companyId?: number
+): Promise<{ from: string; moved: number; rows: Row[] }> {
+  return withDbTransaction(async () => {
+  const cid = n(companyId) || getActiveCompanyId()
+  const to = String(date || '').slice(0, 10)
+  const c = getClient()
+  const fid = await factoryOfCompanies([cid])
+  const scope = fid ? `f${fid}` : `c${cid}`
+  const where = fid ? { sql: 'factory_id = ?', args: [fid] } : { sql: 'company_id = ?', args: [cid] }
+  const wasOn = String(
+    (
+      await c
+        .execute({ sql: `SELECT MAX(as_of) AS d FROM stock_openings WHERE ${where.sql}`, args: where.args })
+        .catch(() => ({ rows: [] as Row[] }))
+    ).rows[0]?.d || ''
+  ).slice(0, 10)
+  if (!wasOn || wasOn === to) return { from: wasOn, moved: 0, rows: [] }
+
+  const live = toPlain(
+    await c.execute({
+      sql: 'SELECT product_id, stage_id, qty, ffa, formulation_id, COALESCE(in_use, 1) AS in_use FROM stock_opening_pp WHERE scope = ?',
+      args: [scope]
+    })
+  )
+  // NOTHING TO HAND OVER, SO HAND NOTHING OVER.
+  //
+  // Not a formality. Changing the date twice would otherwise re-file the
+  // outgoing set from a table this call had already emptied — and
+  // snapshotOpeningSet rewrites a set's breakdown wholesale, so the second
+  // pass would replace the history it had just written with nothing.
+  if (!live.length) {
+    await c.execute({sql:'INSERT INTO pp_opening_dates(scope,opening_date) VALUES(?,?) ON CONFLICT(scope) DO UPDATE SET opening_date=excluded.opening_date',args:[scope,to]})
+    return { from: wasOn, moved: 0, rows: [] }
+  }
+  await syncPpLots(scope)
+
+  await snapshotOpeningSet(cid, fid, wasOn).catch((e) =>
+    console.error('[stock] could not file the outgoing opening:', e)
+  )
+  await c.execute({ sql: 'DELETE FROM stock_opening_pp WHERE scope = ?', args: [scope] })
+  await c.execute({sql:'INSERT INTO pp_opening_dates(scope,opening_date) VALUES(?,?) ON CONFLICT(scope) DO UPDATE SET opening_date=excluded.opening_date',args:[scope,to]})
+  return { from: wasOn, moved: live.length, rows: live }
+  })
+}
+
+/** Put back what handOverOpeningPp took, when the re-dating is abandoned. */
+export async function putBackOpeningPp(rows: Row[], companyId?: number): Promise<{ restored: number }> {
+  return withDbTransaction(async () => {
+  const cid = n(companyId) || getActiveCompanyId()
+  const c = getClient()
+  const fid = await factoryOfCompanies([cid])
+  const scope = fid ? `f${fid}` : `c${cid}`
+  let restored = 0
+  for (const r of Array.isArray(rows) ? rows : []) {
+    const pid = n(r?.product_id)
+    const sid = n(r?.stage_id)
+    if (!pid || !sid) continue
+    // OR IGNORE, not REPLACE: if a vessel has been set for the new morning
+    // already, that is a deliberate answer about today and outranks an undo of
+    // yesterday's.
+    await c
+      .execute({
+        sql: `INSERT OR IGNORE INTO stock_opening_pp (scope, product_id, stage_id, qty, ffa, formulation_id, in_use, updated_at)
+              VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'))`,
+        args: [scope, pid, sid, n(r?.qty), r?.ffa == null ? null : String(r.ffa), r?.formulation_id == null ? null : n(r.formulation_id), r?.in_use === 0 || r?.in_use === false ? 0 : 1]
+      })
+      .catch((e) => console.error('[stock] could not put a PP vessel back:', e))
+    restored += 1
+  }
+  await c.execute({sql:'DELETE FROM pp_opening_dates WHERE scope=?',args:[scope]})
+  return { restored }
+  })
+}
+
+// ------------------------------------------------------------- the history --
+// WHAT AN OPENING WAS BEFORE IT WAS STRUCK AGAIN.
+//
+// One set per morning. Saving the same date again corrects that set and counts
+// a revision; saving a new date files the old one away and takes over. Nothing
+// is ever deleted — a previous count is the evidence behind every closing
+// balance that was read off it.
+async function snapshotOpeningSet(cid: number, fid: number | null, date: string): Promise<void> {
+  const c = getClient()
+  const who = getCurrentUser()
+  const name = String(who?.username || '') || null
+  const scope = fid ? 'factory_id = ?' : 'factory_id IS NULL AND company_id = ?'
+  const key = fid ? fid : cid
+
+  const found = await c.execute({
+    sql: `SELECT id FROM stock_opening_sets WHERE ${scope} AND as_of = ?`,
+    args: [key, date]
+  })
+  let sid = n((found.rows[0] as unknown as Row | undefined)?.id)
+  if (sid) {
+    await c.execute({
+      sql: `UPDATE stock_opening_sets
+               SET revisions = revisions + 1, updated_at = datetime('now'), updated_by_name = ?
+             WHERE id = ?`,
+      args: [name, sid]
+    })
+    await c.execute({ sql: 'DELETE FROM stock_opening_set_lines WHERE set_id = ?', args: [sid] })
+  } else {
+    const res = await c.execute({
+      sql: `INSERT INTO stock_opening_sets
+              (factory_id, company_id, as_of, created_at, created_by, created_by_name, updated_at, revisions, is_current)
+            VALUES (?, ?, ?, datetime('now'), ?, ?, datetime('now'), 1, 0)`,
+      args: [fid || null, cid, date, n(who?.id) || null, name]
+    })
+    sid = Number(res.lastInsertRowid) || 0
+  }
+  if (!sid) return
+
+  // Copied off the live rows, so the set says what the register says.
+  await c.execute({
+    sql: `INSERT INTO stock_opening_set_lines (set_id, product_id, qty, pp_qty, adj_qty, rate, note, raw_tanks)
+          SELECT ?, product_id, qty, pp_qty, adj_qty, rate, note, raw_tanks FROM stock_openings
+           WHERE ${scope} AND as_of = ?`,
+    args: [sid, key, date]
+  })
+  // The PP breakdown as it stands at this moment: which vessel holds what,
+  // and at what FFA. Rewritten with the set, because re-striking the same date
+  // re-strikes its breakdown too.
+  await c.execute({ sql: 'DELETE FROM stock_opening_set_pp WHERE set_id = ?', args: [sid] }).catch(() => {})
+  await c
+    .execute({
+      sql: `INSERT INTO stock_opening_set_pp (set_id, product_id, stage_id, qty, ffa, formulation_id, in_use)
+            SELECT ?, product_id, stage_id, qty, ffa, formulation_id, COALESCE(in_use, 1) FROM stock_opening_pp
+             WHERE scope = ?`,
+      args: [sid, fid ? `f${fid}` : `c${cid}`]
+    })
+    .catch((e) => console.error('[stock] opening PP snapshot failed:', e))
+
+  // Exactly one in force. The one just saved is it — that is what the live
+  // table now holds — and every other set on this site is what it replaced.
+  await c.execute({
+    sql: `UPDATE stock_opening_sets SET is_current = CASE WHEN id = ? THEN 1 ELSE 0 END WHERE ${scope}`,
+    args: [sid, key]
+  })
+}
+
+/** Every opening ever struck on this site, newest first. */
+export async function listOpeningSets(companyId?: number): Promise<Row[]> {
+  const cid = n(companyId) || getActiveCompanyId()
+  const fid = await factoryOfCompanies([cid])
+  const scope = fid ? 'factory_id = ?' : 'factory_id IS NULL AND company_id = ?'
+  const rows = toPlain(
+    await getClient().execute({
+      sql: `SELECT s.*,
+                   (SELECT COUNT(*) FROM stock_opening_set_lines l WHERE l.set_id = s.id) AS products,
+                   (SELECT COALESCE(SUM(l.qty + l.pp_qty + l.adj_qty), 0)
+                      FROM stock_opening_set_lines l WHERE l.set_id = s.id) AS total_qty
+              FROM stock_opening_sets s
+             WHERE ${scope}
+             ORDER BY s.as_of DESC, s.id DESC`,
+      args: [fid ? fid : cid]
+    })
+  )
+  return rows.map((r) => ({
+    id: n(r.id),
+    as_of: String(r.as_of || '').slice(0, 10),
+    note: r.note == null ? '' : String(r.note),
+    created_at: String(r.created_at || ''),
+    created_by_name: r.created_by_name == null ? '' : String(r.created_by_name),
+    updated_at: String(r.updated_at || ''),
+    updated_by_name: r.updated_by_name == null ? '' : String(r.updated_by_name),
+    revisions: n(r.revisions),
+    is_current: n(r.is_current) === 1,
+    products: n(r.products),
+    total_qty: r2(n(r.total_qty))
+  }))
+}
+
+/** One set, line by line, with the product names it was counted against. */
+export async function openingSetLines(setId: number): Promise<Row[]> {
+  const c = getClient()
+  const rows = toPlain(
+    await c.execute({
+      sql: `SELECT l.*, p.name AS product_name, p.uom, p.category
+              FROM stock_opening_set_lines l
+              LEFT JOIN products p ON p.id = l.product_id
+             WHERE l.set_id = ?
+             ORDER BY p.category, p.name`,
+      args: [n(setId)]
+    })
+  )
+  // THE VESSELS THAT MORNING WAS COUNTED IN, read back out.
+  //
+  // stock_opening_set_pp has been written on every save for a while and never
+  // once read. That was survivable while the live breakdown stayed put; it is
+  // not now, because re-dating an opening empties the live table by design and
+  // this is the only place those vessels and their FFA still exist. A history
+  // that holds the answer and cannot show it is not a history.
+  const pp = toPlain(
+    await c
+      .execute({
+        sql: `SELECT sp.product_id, sp.stage_id, sp.qty, sp.ffa, st.name AS stage_name, lot.id AS lot_id
+                FROM stock_opening_set_pp sp
+                JOIN stock_opening_sets os ON os.id=sp.set_id
+                LEFT JOIN pp_lots lot ON lot.product_id=sp.product_id AND lot.stage_id=sp.stage_id
+                  AND lot.opening_date=os.as_of AND lot.scope=CASE WHEN os.factory_id IS NOT NULL THEN 'f'||os.factory_id ELSE 'c'||os.company_id END
+                LEFT JOIN stock_pp_stages st ON st.id = sp.stage_id
+               WHERE sp.set_id = ?
+               ORDER BY st.sort_order, st.id`,
+        args: [n(setId)]
+      })
+      .catch(() => ({ rows: [], columns: [] }) as unknown as ResultSet)
+  )
+  const byProduct = new Map<number, Row[]>()
+  for (const v of pp) {
+    const k = n(v.product_id)
+    if (!byProduct.has(k)) byProduct.set(k, [])
+    byProduct.get(k)!.push({
+      stage_id: n(v.stage_id),
+      reference: v.lot_id ? `PP-${String(v.lot_id).padStart(4, '0')}` : '',
+      stage_name: String(v.stage_name || `#${n(v.stage_id)}`),
+      qty: n(v.qty),
+      ffa: v.ffa == null ? null : String(v.ffa)
+    })
+  }
+  return rows.map((r) => ({
+    product_id: n(r.product_id),
+    product_name: String(r.product_name || `#${n(r.product_id)}`),
+    uom: String(r.uom || 'MT'),
+    category: String(r.category || ''),
+    qty: n(r.qty),
+    raw_tanks: parseRawTanks(r.raw_tanks),
+    pp_qty: n(r.pp_qty),
+    adj_qty: n(r.adj_qty),
+    rate: r.rate == null ? null : n(r.rate),
+    note: r.note == null ? '' : String(r.note),
+    pp_lines: byProduct.get(n(r.product_id)) || []
+  }))
 }
 
 // Mirror the opening into stock_counts for the opening date: actual = book on
@@ -504,8 +833,17 @@ export async function listPpStages(companyId?: number): Promise<Row[]> {
 // per row: the sheet is forty products long and forty round trips to fill in a
 // column most of them leave blank is not a trade worth making.
 async function ppLinesByProduct(scope: string): Promise<Map<number, Row[]>> {
+  const lots = await syncPpLots(scope)
   const res = await getClient().execute({
-    sql: `SELECT l.product_id, l.stage_id, l.qty, l.ffa, s.name, s.sort_order, s.active
+    // formulation_id travels with the line.
+    //
+    // It was written on save and read by the register's restatement, but never
+    // selected HERE — so the breakdown dialog, which is fed from this query,
+    // opened on "Not stated" however many times a recipe had been chosen. The
+    // adjustment in the register was right the whole time, which is what made
+    // it look like the recipe had been forgotten rather than merely unread.
+    sql: `SELECT l.product_id, l.stage_id, l.qty, l.ffa, l.formulation_id, COALESCE(l.in_use, 1) AS in_use,
+                 s.name, s.sort_order, s.active
             FROM stock_opening_pp l
             JOIN stock_pp_stages s ON s.id = l.stage_id
            WHERE l.scope = ?
@@ -517,12 +855,19 @@ async function ppLinesByProduct(scope: string): Promise<Map<number, Row[]>> {
     const pid = n(r.product_id)
     if (!by.has(pid)) by.set(pid, [])
     by.get(pid)!.push({
+      reference: lots.get(lotKey(pid, n(r.stage_id)))?.reference || '',
       stage_id: n(r.stage_id),
       name: String(r.name),
       qty: r3(n(r.qty)),
       // Never coerced to a side. A line counted but not yet classified is a
       // third answer and the screen says so.
       ffa: r.ffa === 'with' || r.ffa === 'without' ? String(r.ffa) : null,
+      // Only a with-FFA line can carry one; anything else is a stale value
+      // from before a line was switched sides and must not read back as a
+      // choice somebody made.
+      formulation_id: r.ffa === 'with' && n(r.formulation_id) > 0 ? n(r.formulation_id) : null,
+      // Y/N: does production use this vessel? N keeps it standing as PP.
+      in_use: n(r.in_use) !== 0,
       active: n(r.active) === 1
     })
   }
@@ -623,13 +968,15 @@ export async function savePpLines(
   lines: Row[],
   companyId?: number,
   seenVersion?: string
-): Promise<{ total: number; lines: number }> {
+): Promise<{ total: number; lines: number; saved_lines: Row[] }> {
+  return withDbTransaction(async () => {
   const pid = n(productId)
   if (!pid) throw new Error('Which product?')
   await assertOpeningsUnchanged(seenVersion, companyId)
   const cid = n(companyId) || getActiveCompanyId()
   const scope = await ppScope(cid)
   const c = getClient()
+  await syncPpLots(scope)
 
   // A line arrives with a stage id, a stage NAME, or both. The screen now adds
   // vessels by typing, so the name is the common case: it is resolved against
@@ -639,7 +986,12 @@ export async function savePpLines(
     stage_id: n(l?.stage_id),
     stage: String(l?.stage ?? l?.name ?? '').trim(),
     qty: l?.qty === '' || l?.qty == null ? 0 : n(l.qty),
-    ffa: l?.ffa === 'with' || l?.ffa === 'without' ? String(l.ffa) : null
+    ffa: l?.ffa === 'with' || l?.ffa === 'without' ? String(l.ffa) : null,
+    // Only a WITH-FFA line can carry one: oil that has already shed its FFA is
+    // the finished product, and there is nothing left to restate it as.
+    formulation_id: l?.ffa === 'with' && n(l?.formulation_id) > 0 ? n(l.formulation_id) : null,
+    // Y unless the line says N: every vessel counted before this was in use.
+    in_use: l?.in_use === false || l?.in_use === 0 || l?.in_use === 'N' ? 0 : 1
   }))
   for (const l of raw) {
     if (l.stage_id > 0 || !l.stage) continue
@@ -653,20 +1005,60 @@ export async function savePpLines(
   // left empty is not a count and does not become one.
   const keep = raw.filter((l) => l.stage_id > 0 && Math.abs(l.qty) > 0.0005)
 
+  if (new Set(keep.map(l => l.stage_id)).size !== keep.length) throw new Error('Each vessel may appear only once per product')
+  // NAMING A RECIPE ON OIL A BATCH HAS ALREADY USED WOULD COUNT IT TWICE.
+  //
+  // A named recipe restates the vessel's COUNTED figure as the oils it is made
+  // of. If a production run has already drawn that vessel as PP, the same
+  // tonnage would leave the finished oil once through the run and again
+  // through the restatement. So the run has to give the oil back first — an
+  // Alter and Save on it does that now, since batches no longer draw with-FFA
+  // oil — and only then can the recipe be named.
+  for (const l of keep) {
+    if (l.ffa !== 'with' || !l.formulation_id) continue
+    const before = await c.execute({
+      sql: 'SELECT formulation_id FROM stock_opening_pp WHERE scope = ? AND product_id = ? AND stage_id = ?',
+      args: [scope, pid, l.stage_id]
+    })
+    if (before.rows.length && n(before.rows[0].formulation_id) > 0) continue
+    const used = await c.execute({
+      sql: `SELECT d.production_id, pr.prod_date, st.name AS vessel, ROUND(SUM(d.qty), 3) AS qty
+              FROM pp_draws d
+              JOIN production pr ON pr.id = d.production_id
+              LEFT JOIN stock_pp_stages st ON st.id = d.stage_id
+             WHERE d.scope = ? AND d.product_id = ? AND d.stage_id = ? AND d.ffa = 'with'
+             GROUP BY d.production_id ORDER BY pr.prod_date, d.production_id`,
+      args: [scope, pid, l.stage_id]
+    })
+    if (!used.rows.length) continue
+    const runs = used.rows
+      .map((r) => `run #${n(r.production_id)} of ${String(r.prod_date || '').split('-').reverse().join('-')} (${r3(n(r.qty))} MT)`)
+      .join(', ')
+    throw new Error(
+      `${String(used.rows[0].vessel || 'That vessel')} has already been used as PP by production ${runs}. Open that run in Production, Alter it and Save changes so it gives the oil back, then name the formulation here.`
+    )
+  }
+  const stages = await c.execute({sql:'SELECT id FROM stock_pp_stages WHERE scope=?',args:[scope]})
+  const valid = new Set(stages.rows.map(r => Number(r.id)))
+  if (keep.some(l => !valid.has(l.stage_id) || l.qty < 0)) throw new Error('Choose a vessel from this site and enter a positive quantity')
   await c.execute({
-    sql: 'DELETE FROM stock_opening_pp WHERE scope = ? AND product_id = ?',
-    args: [scope, pid]
+    sql: `DELETE FROM stock_opening_pp WHERE scope=? AND product_id=?${keep.length ? ` AND stage_id NOT IN (${keep.map(() => '?').join(',')})` : ''}`,
+    args: [scope,pid,...keep.map(l => l.stage_id)]
   })
   for (const l of keep) {
     await c.execute({
-      sql: `INSERT INTO stock_opening_pp (scope, product_id, stage_id, qty, ffa, updated_at)
-            VALUES (?, ?, ?, ?, ?, datetime('now'))`,
-      args: [scope, pid, l.stage_id, r3(l.qty), l.ffa]
+      sql: `INSERT INTO stock_opening_pp (scope, product_id, stage_id, qty, ffa, formulation_id, in_use, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'))
+            ON CONFLICT(scope,product_id,stage_id) DO UPDATE SET qty=excluded.qty,ffa=excluded.ffa,
+              formulation_id=excluded.formulation_id,in_use=excluded.in_use,updated_at=excluded.updated_at`,
+      args: [scope, pid, l.stage_id, r3(l.qty), l.ffa, l.formulation_id, l.in_use]
     })
   }
   const total = r3(keep.reduce((t, l) => t + l.qty, 0))
   await writePpTotal(cid, scope, pid, keep.length ? total : null)
-  return { total, lines: keep.length }
+  await syncPpLots(scope, pid)
+  return { total, lines: keep.length, saved_lines: (await ppLinesByProduct(scope)).get(pid) || [] }
+  })
 }
 
 // Push a breakdown's total onto the opening row, if there is one.
@@ -691,7 +1083,7 @@ async function writePpTotal(
              WHERE ${where} AND product_id = ?`,
       args: [total == null ? 0 : total, arg, productId]
     })
-    .catch((e) => console.error('[stock] PP total write failed:', (e as Error).message))
+
 }
 
 // The PP totals the breakdowns add up to, by product. Used by the sheet's save
@@ -715,6 +1107,46 @@ export async function ppTotalsByProduct(companyId?: number): Promise<Map<number,
 // age is the stage's own `created_at` (when that vessel was first added to
 // the site's list), not when it was last counted, because two vessels last
 // re-counted the same morning still have a real order between them.
+
+// WHAT HAS BEEN DRAWN AGAINST THE COUNT IN FORCE — and only that.
+//
+// stock_opening_pp is the count of ONE morning, the opening date in
+// pp_opening_dates. A batch from before that morning drew on an earlier count;
+// whatever it took is already reflected in what the new count found standing
+// in the vessel. Subtracting it again emptied the vessel on paper: RPO-B's DEO
+// was struck at 32 W/O FFA on 01-10, batch #352 of 04-09 had drawn 32 from the
+// same vessel under the old count, and the first October batch found nothing
+// to take — so it would have consumed shea and RPS for oil already counted.
+//
+// So a draw counts only when its batch is dated on or after the opening in
+// force. With no opening date on file every draw counts, as before.
+const LIVE_DRAWS = `COALESCE((SELECT SUM(d.qty) FROM pp_draws d
+                                 JOIN production pr ON pr.id = d.production_id
+                                WHERE d.scope = sop.scope AND d.product_id = sop.product_id
+                                  AND d.stage_id = sop.stage_id
+                                  AND pr.prod_date >= COALESCE((SELECT od.opening_date FROM pp_opening_dates od
+                                                                 WHERE od.scope = sop.scope), '')), 0)`
+
+/** The morning the PP count in force was struck, or '' when none is on file. */
+export async function ppOpeningDate(companyId?: number): Promise<string> {
+  const scope = await ppScope(companyId)
+  const r = await getClient()
+    .execute({ sql: 'SELECT opening_date FROM pp_opening_dates WHERE scope = ?', args: [scope] })
+    .catch(() => null)
+  return String((r?.rows?.[0] as unknown as Row | undefined)?.opening_date || '').slice(0, 10)
+}
+
+/**
+ * Can a batch on this day draw on the PP count in force? Not one dated before
+ * the morning that count was taken: those vessels had not been counted yet,
+ * and what that batch made is already inside the later count.
+ */
+export async function ppCountCovers(day: string, companyId?: number): Promise<boolean> {
+  const d = String(day || '').slice(0, 10)
+  if (!d) return true
+  const from = await ppOpeningDate(companyId)
+  return !from || d >= from
+}
 
 async function ppProductTotal(scope: string, productId: number): Promise<number> {
   const res = await getClient().execute({
@@ -740,15 +1172,32 @@ async function ppVessels(
   // stays put and what is available is it, less what has been drawn against
   // it. Reversing a run deletes its draw rows and the balance comes back on
   // its own.
+  // A RESTATED VESSEL IS NO LONGER THIS OIL'S PP.
+  //
+  // Naming the recipe a with-FFA vessel was made to does something: the
+  // register reports that tonnage as the oils it CONSISTS of — the finished
+  // oil down, the shea, the RPS and the fatty oil up, in the recipe's own
+  // proportions. From that moment the oil is standing in the raw products,
+  // where a batch draws it like any other raw stock.
+  //
+  // Left in this pool it would also stand as PP of the finished oil, and a
+  // batch could draw the same tonnage twice — once as raw shea and RPS, once
+  // as the oil they were restated out of. So a with-FFA vessel carrying a
+  // recipe is excluded here, and the product's PP falls to what is genuinely
+  // still PP.
+  //
+  // Derived, not stored, exactly like the draw subtraction beside it: clear
+  // the recipe on the breakdown and the vessel is PP again, with no data to
+  // put back.
   const res = await getClient().execute({
     sql: `SELECT sop.stage_id,
-                 sop.qty - COALESCE((SELECT SUM(d.qty) FROM pp_draws d
-                                      WHERE d.scope = sop.scope
-                                        AND d.product_id = sop.product_id
-                                        AND d.stage_id = sop.stage_id), 0) AS qty
+                 sop.qty - ${LIVE_DRAWS} AS qty
             FROM stock_opening_pp sop
             JOIN stock_pp_stages st ON st.id = sop.stage_id
            WHERE sop.scope = ? AND sop.product_id = ? AND sop.ffa = ?
+             AND (sop.ffa <> 'with' OR sop.formulation_id IS NULL)
+             -- N on the breakdown: held back, no batch draws on it.
+             AND COALESCE(sop.in_use, 1) = 1
            ORDER BY st.created_at, st.id`,
     args: [scope, n(productId), ffa]
   })
@@ -786,10 +1235,16 @@ export async function ppFreeByProduct(
 // createProduction/updateProduction would actually draw against.
 export async function ppTotalsBothByProduct(
   productIds: number[],
-  companyId?: number
+  companyId?: number,
+  asOf?: string
 ): Promise<Record<number, { without: number; with: number }>> {
   const scope = await ppScope(companyId)
   const out: Record<number, { without: number; with: number }> = {}
+  // A sheet dated before the count in force draws nothing from it.
+  if (asOf && !(await ppCountCovers(asOf, companyId))) {
+    for (const pid of new Set(productIds.filter((x) => n(x) > 0))) out[pid] = { without: 0, with: 0 }
+    return out
+  }
   for (const pid of new Set(productIds.filter((x) => n(x) > 0))) {
     const [without, withFfa] = await Promise.all([ppVessels(scope, pid, 'without'), ppVessels(scope, pid, 'with')])
     out[pid] = {
@@ -804,9 +1259,33 @@ export async function ppTotalsBothByProduct(
 // back to the pool it is previewing against when that run is being edited,
 // the same way it already gives back the run's own Raw consumption.
 /**
+ * WITH FFA AND A RECIPE MEANS IT IS NOT PP ANY MORE.
+ *
+ * Naming the recipe a with-FFA vessel was made to moves that tonnage, on the
+ * register, out of the finished oil and into the shea, the RPS and the fatty
+ * oil it consists of. From that moment it is raw stock standing under those
+ * products — so nothing may take it out of the vessel a second time: not a
+ * batch drawing it, not a write-off, not a move.
+ *
+ * The same test is applied in ppVessels (what production may draw), in the two
+ * lists below (what a write-off or a move may act on), and in the two write
+ * paths themselves, so a stale screen cannot get past it either.
+ */
+const RESTATED = "sop.ffa = 'with' AND sop.formulation_id IS NOT NULL AND COALESCE(sop.in_use, 1) = 1"
+
+/** The same test, on a row already read. */
+function assertNotRestated(row: Row | undefined, verb: string): void {
+  if (row && String(row.ffa || '') === 'with' && n(row.formulation_id) > 0 && (row.in_use == null || n(row.in_use) !== 0)) {
+    throw new Error(
+      `That vessel is with FFA and has a recipe against it, so its oil is already reported as the products it consists of. It cannot be ${verb} as well — clear the recipe on the PP breakdown first.`
+    )
+  }
+}
+
+/**
  * Every vessel standing for one product, with what is in it — the list the
  * write-off screen offers. Empty vessels are left out: there is nothing to
- * write off in them.
+ * write off in them, and so is anything already restated by a recipe.
  */
 export async function ppVesselBalances(productId: number, companyId?: number): Promise<Row[]> {
   const scope = await ppScope(companyId)
@@ -816,14 +1295,13 @@ export async function ppVesselBalances(productId: number, companyId?: number): P
   // has already gone through the plant. `counted` comes along for the screen,
   // which still wants to say what the morning found.
   const res = await getClient().execute({
-    sql: `SELECT sop.stage_id, st.name AS vessel, sop.ffa,
+    sql: `SELECT sop.stage_id, st.name AS vessel, sop.ffa, sop.formulation_id,
                  sop.qty AS counted,
-                 sop.qty - COALESCE((SELECT SUM(d.qty) FROM pp_draws d
-                                      WHERE d.scope = sop.scope AND d.product_id = sop.product_id
-                                        AND d.stage_id = sop.stage_id), 0) AS qty
+                 sop.qty - ${LIVE_DRAWS} AS qty
             FROM stock_opening_pp sop
             JOIN stock_pp_stages st ON st.id = sop.stage_id
            WHERE sop.scope = ? AND sop.product_id = ?
+             AND NOT (${RESTATED})
            ORDER BY st.created_at, st.id`,
     args: [scope, n(productId)]
   })
@@ -841,6 +1319,9 @@ export async function ppVesselBalances(productId: number, companyId?: number): P
  */
 export async function ppVesselsForReceiving(productId: number, companyId?: number): Promise<Row[]> {
   const scope = await ppScope(companyId)
+  // A restated vessel cannot receive either. Oil put into it would be swept
+  // into a restatement it was never part of — the register would report more
+  // shea and RPS than any recipe was told about.
   const res = await getClient().execute({
     sql: `SELECT st.id AS stage_id, st.name AS vessel,
                  COALESCE(sop.qty, 0) AS qty, sop.ffa
@@ -848,6 +1329,7 @@ export async function ppVesselsForReceiving(productId: number, companyId?: numbe
             LEFT JOIN stock_opening_pp sop
                    ON sop.stage_id = st.id AND sop.scope = ? AND sop.product_id = ?
            WHERE st.scope = ? AND st.active = 1
+             AND NOT (COALESCE(${RESTATED}, 0))
            ORDER BY st.created_at, st.id`,
     args: [scope, n(productId), scope]
   })
@@ -883,11 +1365,13 @@ export async function writeOffPp(
   const scope = await ppScope(cid)
   const c = getClient()
   const cur = await c.execute({
-    sql: 'SELECT qty, ffa FROM stock_opening_pp WHERE scope = ? AND product_id = ? AND stage_id = ?',
+    sql: `SELECT qty, ffa, formulation_id, in_use FROM stock_opening_pp
+           WHERE scope = ? AND product_id = ? AND stage_id = ?`,
     args: [scope, n(productId), n(stageId)]
   })
   const have = r3(n(cur.rows[0]?.qty))
   if (!cur.rows.length || have <= 0.0005) throw new Error('That vessel is already empty')
+  assertNotRestated(cur.rows[0] as unknown as Row, 'written off')
   if (want > have + 0.0005) {
     throw new Error(`Only ${have} is standing in that vessel — cannot write off ${want}`)
   }
@@ -958,16 +1442,22 @@ export async function movePp(
   // fed a batch holds less than the morning's figure, and moving against the
   // count would move oil that has been used.
   const src = await c.execute({
-    sql: `SELECT sop.ffa,
+    sql: `SELECT sop.ffa, sop.formulation_id,
                  sop.qty AS counted,
-                 sop.qty - COALESCE((SELECT SUM(d.qty) FROM pp_draws d
-                                      WHERE d.scope = sop.scope AND d.product_id = sop.product_id
-                                        AND d.stage_id = sop.stage_id), 0) AS avail
+                 sop.qty - ${LIVE_DRAWS} AS avail
             FROM stock_opening_pp sop
            WHERE sop.scope = ? AND sop.product_id = ? AND sop.stage_id = ?`,
     args: [scope, from, fromStage]
   })
   if (!src.rows.length) throw new Error('There is nothing standing in that vessel')
+  assertNotRestated(toPlain(src)[0], 'moved')
+  // The destination too: oil tipped into a restated vessel would be swept into
+  // a restatement it was never part of.
+  const dstRestate = await c.execute({
+    sql: 'SELECT ffa, formulation_id, in_use FROM stock_opening_pp WHERE scope = ? AND product_id = ? AND stage_id = ?',
+    args: [scope, to, toStage]
+  })
+  if (dstRestate.rows.length) assertNotRestated(toPlain(dstRestate)[0], 'moved into')
   const ffa = String(toPlain(src)[0].ffa || '')
   const avail = r3(n(toPlain(src)[0].avail))
   if (avail <= 0.0005) throw new Error('That vessel is already empty')
@@ -1061,8 +1551,18 @@ export async function listPpWriteoffs(productId: number, companyId?: number): Pr
 export async function ppDrawsForProduction(
   productionId: number
 ): Promise<{ product_id: number; ffa: string; qty: number }[]> {
+  // Only what the run could draw AGAIN. A vessel set to N on the breakdown
+  // after this run drew from it — or restated by a recipe — is held now, and
+  // a re-save will not draw on it (ppVessels skips it). Handing its old draw
+  // back to the editing sheet's pool made the preview show a draw the save
+  // would never make: "RPS · PP 4.86" against a vessel marked N.
   const res = await getClient().execute({
-    sql: 'SELECT product_id, ffa, qty FROM pp_draws WHERE production_id = ?',
+    sql: `SELECT d.product_id, d.ffa, d.qty FROM pp_draws d
+           WHERE d.production_id = ?
+             AND NOT EXISTS (
+               SELECT 1 FROM stock_opening_pp sop
+                WHERE sop.scope = d.scope AND sop.product_id = d.product_id AND sop.stage_id = d.stage_id
+                  AND (COALESCE(sop.in_use, 1) = 0 OR (sop.ffa = 'with' AND sop.formulation_id IS NOT NULL)))`,
     args: [n(productionId)]
   })
   return toPlain(res).map((r) => ({ product_id: n(r.product_id), ffa: String(r.ffa || ''), qty: r3(n(r.qty)) }))
@@ -1079,11 +1579,13 @@ export async function drawPp(
   qty: number,
   companyId?: number
 ): Promise<number> {
+  return withDbTransaction(async () => {
   let need = r3(qty)
   if (need <= 0.0005 || !n(productId) || !n(productionId)) return 0
   const cid = n(companyId) || getActiveCompanyId()
   const scope = await ppScope(cid)
   const c = getClient()
+  const lots = await syncPpLots(scope)
   const vessels = await ppVessels(scope, productId, ffa)
   let drawn = 0
   for (const v of vessels) {
@@ -1093,11 +1595,13 @@ export async function drawPp(
     // Only the draw is written. The counted opening line is left exactly as it
     // was struck — see ppVessels for why what is AVAILABLE is derived from it
     // rather than stored.
-    await c.execute({
+    const inserted = await c.execute({
       sql: `INSERT INTO pp_draws (production_id, scope, product_id, stage_id, qty, ffa)
             VALUES (?, ?, ?, ?, ?, ?)`,
       args: [n(productionId), scope, productId, v.stage_id, take, ffa]
     })
+    const lot = lots.get(lotKey(productId, v.stage_id))
+    if (lot) await recordPpDrawSource(Number(inserted.lastInsertRowid), lot)
     need -= take
     drawn += take
   }
@@ -1107,6 +1611,7 @@ export async function drawPp(
   // Deleting the line here is what used to make the PP column fall to 18 the
   // moment 35 was consumed.
   return drawn
+  })
 }
 
 // Put back everything one production run took off PP, before that run's

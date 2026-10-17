@@ -3,6 +3,7 @@ import { getClient, bumpRevision, todayISO } from './db'
 import { getActiveCompanyId } from './company'
 import { postJournal } from './journal'
 import { createNote, deleteNote } from './notes'
+import { gstLines, DEFAULT_GST_TYPE } from './gstLedgers'
 import { getCurrentUser } from './currentUser'
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -71,7 +72,7 @@ export async function listTransporterFreight(
 
   const doc =
     side === 'purchase'
-      ? `o.invoice_no AS doc_no, o.order_date AS doc_date, s.name AS party_name,
+      ? `o.invoice_no AS doc_no, o.order_date AS doc_date, s.name AS party_name, o.gst_pct AS oil_gst_pct,
          p.name AS product_name,
          -- Purchase freight is booked per TANKER (one ledger row each) under a
          -- single oil invoice, and the tanker number lives in the note the
@@ -83,7 +84,7 @@ export async function listTransporterFreight(
          o.ordered_qty AS dispatch_qty, o.received_qty AS received_qty,
          o.status AS dispatch_stage,
          CASE WHEN o.status != 'received' THEN 1 ELSE 0 END AS provisional`
-      : `sa.invoice_no AS doc_no, sa.sale_date AS doc_date, COALESCE(cu.name, sa.customer) AS party_name,
+      : `sa.invoice_no AS doc_no, sa.sale_date AS doc_date, COALESCE(cu.name, sa.customer) AS party_name, sa.gst_pct AS oil_gst_pct,
          p.name AS product_name,
          -- A sale has no tanker record of its own; the vehicle that carried it
          -- is whatever the gate wrote against the invoice group on the way out.
@@ -114,7 +115,7 @@ export async function listTransporterFreight(
     sql: `SELECT l.id, l.transporter_id, l.entry_date, l.entry_type, l.amount, l.note,
                  l.accrued, l.bill_id, l.note_id, l.waived_at, l.waived_by, l.waived_reason,
                  nt.note_no, nt.note_date,
-                 t.name AS transporter_name,
+                 t.name AS transporter_name, COALESCE(t.gst_registration, 'registered') AS gst_registration,
                  b.bill_no, b.bill_date, ${doc}
           FROM transporter_ledger l
           LEFT JOIN transporters t ON t.id = l.transporter_id
@@ -125,7 +126,26 @@ export async function listTransporterFreight(
           ORDER BY COALESCE(l.entry_date, '') DESC, l.id DESC`,
     args
   })
-  return toPlain(res)
+  // AN UNREGISTERED TRANSPORTER CANNOT TAKE A DEBIT NOTE WITH GST, so the oil
+  // they lost is recovered at what it cost us with its GST — oil rate plus
+  // the invoice's GST % — straight off their freight. The ledger row keeps
+  // the plain value (amount_base); the register and the bill read the
+  // recovered figure.
+  return toPlain(res).map((r) =>
+    String(r.entry_type) === 'shortage_penalty' && String(r.gst_registration) === 'unregistered'
+      ? { ...r, amount_base: n(r.amount), amount: shortageRecovered(n(r.amount), n(r.oil_gst_pct)) }
+      : r
+  )
+}
+
+/** A shortage as recovered from an unregistered transporter: its value plus the oil's GST. */
+function shortageRecovered(base: number, gstPct: number): number {
+  return round2(base * (1 + Math.max(0, gstPct) / 100))
+}
+
+async function transporterRegistration(transporterId: number): Promise<'registered' | 'unregistered'> {
+  const r = await getClient().execute({ sql: 'SELECT gst_registration FROM transporters WHERE id = ?', args: [n(transporterId)] })
+  return String((r.rows[0] as unknown as Row | undefined)?.gst_registration || '') === 'unregistered' ? 'unregistered' : 'registered'
 }
 
 // Headline figures for the register: what each side has earned, and how much of
@@ -184,7 +204,7 @@ async function dropEntry(entryId?: number | null): Promise<void> {
 //   Dr FREIGHT PAYABLE A/C   the part already accrued when the goods moved
 //   Dr FREIGHT INWARD A/C    the part never accrued (inward freight is not on
 //                            the purchase voucher, so the expense lands here)
-//   Dr GST INPUT A/C         gst
+//   Dr INPUT CGST/SGST       gst — a carrier is in the same state, so two heads
 //     Cr TDS PAYABLE A/C     tds
 //     Cr {Transporter}       what they are actually owed
 //   Dr/Cr ROUND OFF A/C
@@ -203,11 +223,21 @@ export async function createTransporterBill(v: Row, existingId?: number): Promis
 
   const ph = lineIds.map(() => '?').join(', ')
   const linesRes = await c.execute({
-    sql: `SELECT id, transporter_id, amount, accrued, bill_id FROM transporter_ledger
-          WHERE id IN (${ph}) AND company_id = ?`,
+    sql: `SELECT l.id, l.transporter_id, l.amount, l.accrued, l.bill_id, l.note_id, l.waived_at, l.entry_type,
+                 COALESCE(o.gst_pct, sa.gst_pct, 0) AS oil_gst_pct
+          FROM transporter_ledger l
+          LEFT JOIN orders o ON o.id = l.order_id
+          LEFT JOIN sales sa ON sa.id = l.sale_id
+          WHERE l.id IN (${ph}) AND l.company_id = ?`,
     args: [...lineIds, cid]
   })
-  const picked = toPlain(linesRes)
+  const reg = await transporterRegistration(transporterId)
+  // Unregistered: each shortage comes off at its value plus the oil's GST.
+  const picked = toPlain(linesRes).map((l) =>
+    reg === 'unregistered' && String(l.entry_type) === 'shortage_penalty'
+      ? { ...l, amount: shortageRecovered(n(l.amount), n(l.oil_gst_pct)) }
+      : l
+  )
   if (picked.length !== lineIds.length) throw new Error('Some of those freight lines no longer exist')
   for (const l of picked) {
     if (n(l.transporter_id) !== transporterId) throw new Error('Every line on one bill must belong to the same transporter')
@@ -223,6 +253,12 @@ export async function createTransporterBill(v: Row, existingId?: number): Promis
     if (l.waived_at != null) {
       throw new Error('That shortage was written off — leave it off the bill, which books the freight in full')
     }
+    // A REGISTERED transporter's shortage is claimed on a debit note with GST,
+    // never netted into the bill. A line already on this bill (an older bill
+    // being re-saved) is left as it was booked.
+    if (reg === 'registered' && String(l.entry_type) === 'shortage_penalty' && !(existingId && n(l.bill_id) === n(existingId))) {
+      throw new Error('This transporter is GST registered — raise a debit note (NOTE) for the shortage instead of netting it into the bill')
+    }
   }
 
   const accrued = round2(picked.filter((l) => n(l.accrued) === 1).reduce((t, l) => t + n(l.amount), 0))
@@ -236,11 +272,20 @@ export async function createTransporterBill(v: Row, existingId?: number): Promis
   const adjustment = round2(n(v.adjustment))
   const taxable = round2(lineTotal + adjustment)
   if (taxable <= 0) throw new Error('The bill nets to zero or less — check the adjustment')
-  const gstPct = n(v.gst_pct)
+  // Unregistered: no GST on their freight (it is under reverse charge — marked
+  // on the voucher, accounted for separately).
+  const gstPct = reg === 'unregistered' ? 0 : n(v.gst_pct)
   const gst = round2((taxable * gstPct) / 100)
   const tdsPct = n(v.tds_pct)
   const tds = round2((taxable * tdsPct) / 100)
-  const raw = round2(taxable + gst - tds)
+  // OTHERS: anything else recovered on this bill — damage, detention, a
+  // short-loaded drum — taken off what the transporter is paid and credited to
+  // the ledger named. It is not freight, so it leaves the GST and TDS alone.
+  const othersAmt = round2(Math.max(0, n(v.others_amount)))
+  const frAccount = side === 'purchase' ? 'FREIGHT INWARD A/C' : 'FREIGHT OUTWARD A/C'
+  const othersLedger = othersAmt > 0.004 ? (String(v.others_ledger || '').trim() || frAccount).toUpperCase() : null
+  const raw = round2(taxable + gst - tds - othersAmt)
+  if (raw <= 0) throw new Error('After the deductions nothing is left to pay the transporter — check the Others amount')
   const total = Math.round(raw)
   const roundOff = round2(total - raw)
   const billDate = String(v.bill_date || todayISO()).slice(0, 10)
@@ -266,14 +311,18 @@ export async function createTransporterBill(v: Row, existingId?: number): Promis
     date: billDate,
     // A freight bill IS a purchase of a service, so it belongs in the purchase
     // series and reads as PUR in the ledger — not as an unexplained JV.
-    vchType: side === 'purchase' ? 'PURCHASE FREIGHT INWARD' : 'PURCHASE FREIGHT OUTWARD',
+    // An unregistered transporter's freight is booked as a JV (no GST bill to
+    // record against); a registered one's stays in the purchase series.
+    vchType: reg === 'unregistered' ? 'JOURNAL' : side === 'purchase' ? 'PURCHASE FREIGHT INWARD' : 'PURCHASE FREIGHT OUTWARD',
     vchNo: billNo,
     narration:
       `Transporter bill ${billNo || ''} — ${partyName} (${side === 'purchase' ? 'inward' : 'outward'} freight, ` +
       `${picked.length} line${picked.length === 1 ? '' : 's'}` +
       (adjustment ? `, adjusted by ${adjustment > 0 ? '+' : ''}${adjustment.toFixed(2)}` : '') +
       ')' +
-      (v.adjustment_note ? ` — ${String(v.adjustment_note).trim()}` : ''),
+      (v.adjustment_note ? ` — ${String(v.adjustment_note).trim()}` : '') +
+      (othersAmt > 0.004 ? `; others ${othersAmt.toFixed(2)} recovered${v.others_note ? ` (${String(v.others_note).trim()})` : ''}` : '') +
+      (reg === 'unregistered' ? ' — unregistered transporter, RCM applicable' : ''),
     companyId: cid,
     lines: [
       { account: 'FREIGHT PAYABLE A/C', group: 'Current Liabilities', dr: accrued },
@@ -285,9 +334,16 @@ export async function createTransporterBill(v: Row, existingId?: number): Promis
         dr: round2(unaccrued + adjustment) > 0 ? round2(unaccrued + adjustment) : 0,
         cr: round2(unaccrued + adjustment) < 0 ? -round2(unaccrued + adjustment) : 0
       },
-      { account: 'GST INPUT A/C', group: 'Duties & Taxes', dr: gst },
+      // A freight bill records no head of its own. A carrier billing this
+      // site is in the same state, which is the conservative reading anyway:
+      // it splits into central and state tax rather than lumping a state tax
+      // into the central one.
+      ...gstLines({ side: 'INPUT', pct: n(v.gst_pct), type: DEFAULT_GST_TYPE, dr: gst }),
       { account: 'ROUND OFF A/C', group: 'Indirect Expenses', dr: roundOff > 0 ? roundOff : 0, cr: roundOff < 0 ? -roundOff : 0 },
       { account: 'TDS PAYABLE A/C', group: 'Duties & Taxes', cr: tds },
+      ...(othersLedger
+        ? [{ account: othersLedger, group: othersLedger === frAccount ? 'Direct Expenses' : 'Indirect Incomes', cr: othersAmt }]
+        : []),
       { account: partyName, group: 'Sundry Creditors', cr: total }
     ]
   })
@@ -297,20 +353,23 @@ export async function createTransporterBill(v: Row, existingId?: number): Promis
     await c.execute({
       sql: `UPDATE transporter_bills SET transporter_id = ?, side = ?, bill_no = ?, bill_date = ?,
               taxable = ?, gst_pct = ?, gst_amount = ?, tds_pct = ?, tds_amount = ?, round_off = ?,
-              total = ?, journal_entry_id = ?, note = ?, adjustment = ?, adjustment_note = ?
+              total = ?, journal_entry_id = ?, note = ?, adjustment = ?, adjustment_note = ?,
+              others_amount = ?, others_ledger = ?
             WHERE id = ? AND company_id = ?`,
       args: [transporterId, side, billNo, billDate, taxable, gstPct, gst, tdsPct, tds, roundOff, total, je.id ?? null, note,
-             adjustment, v.adjustment_note ? String(v.adjustment_note).trim() : null, existingId as number, cid]
+             adjustment, v.adjustment_note ? String(v.adjustment_note).trim() : null, othersAmt, othersLedger,
+             existingId as number, cid]
     })
     billId = existingId as number
   } else {
     const ins = await c.execute({
       sql: `INSERT INTO transporter_bills
               (company_id, transporter_id, side, bill_no, bill_date, taxable, gst_pct, gst_amount,
-               tds_pct, tds_amount, round_off, total, journal_entry_id, note, adjustment, adjustment_note)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+               tds_pct, tds_amount, round_off, total, journal_entry_id, note, adjustment, adjustment_note,
+               others_amount, others_ledger)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       args: [cid, transporterId, side, billNo, billDate, taxable, gstPct, gst, tdsPct, tds, roundOff, total, je.id, note,
-             adjustment, v.adjustment_note ? String(v.adjustment_note).trim() : null]
+             adjustment, v.adjustment_note ? String(v.adjustment_note).trim() : null, othersAmt, othersLedger]
     })
     billId = Number(ins.lastInsertRowid)
   }
@@ -335,7 +394,8 @@ export async function raiseFreightShortageNote(
   const c = getClient()
   const cid = v.companyId ? n(v.companyId) : getActiveCompanyId()
   const r = await c.execute({
-    sql: `SELECT l.*, s.invoice_no AS sale_invoice, o.invoice_no AS order_invoice
+    sql: `SELECT l.*, s.invoice_no AS sale_invoice, o.invoice_no AS order_invoice,
+                 o.gst_pct AS order_gst_pct, s.gst_pct AS sale_gst_pct
             FROM transporter_ledger l
             LEFT JOIN sales s ON s.id = l.sale_id
             LEFT JOIN orders o ON o.id = l.order_id
@@ -357,6 +417,13 @@ export async function raiseFreightShortageNote(
   const amount = round2(Math.abs(n(line.amount)))
   if (amount <= 0) throw new Error('Nothing to claim on this line')
   if (!line.transporter_id) throw new Error('This line has no transporter to raise a note against')
+  // Unregistered: no debit note — the shortage comes off their freight JV,
+  // at the oil's value plus GST, when the bill is booked.
+  if ((await transporterRegistration(n(line.transporter_id))) === 'unregistered') {
+    throw new Error('This transporter is unregistered — no debit note; the shortage is deducted on their freight bill (with GST) when you book it')
+  }
+  // Registered: the note carries the oil's own GST on top of its value.
+  const oilGst = n(line.order_id != null ? line.order_gst_pct : line.sale_gst_pct)
 
   const inv = String(line.sale_invoice || line.order_invoice || '')
   // Which side this line belongs to decides which freight expense the recovery
@@ -371,7 +438,7 @@ export async function raiseFreightShortageNote(
     note_date: String(v.date || line.entry_date || todayISO()).slice(0, 10),
     against_account: inward ? 'FREIGHT INWARD A/C' : 'FREIGHT OUTWARD A/C',
     base_amount: amount,
-    gst_pct: 0,
+    gst_pct: oilGst,
     against_invoice: inv || null,
     narration: `Oil shortage recovery${inv ? ` on ${inv}` : ''}${line.note ? ` — ${String(line.note)}` : ''}`
   })

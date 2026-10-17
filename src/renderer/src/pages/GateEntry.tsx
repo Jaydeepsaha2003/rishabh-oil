@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import { toast } from 'sonner'
 import {
   AlertTriangle, Ban, Check, CheckCircle2, ChevronDown, ChevronLeft, ChevronRight, ClipboardList, Clock, Hash, Info, Lock, XCircle,
-  RotateCcw, LogIn, LogOut, Pencil, Scale, Trash2, Truck, X , Undo2
+  RotateCcw, LogIn, LogOut, Pencil, Scale, Trash2, Truck, X , Undo2, Eye
 } from 'lucide-react'
 import { PageHeader } from '@/components/PageHeader'
 import { useIsMobile } from '@/lib/useIsMobile'
@@ -406,6 +406,8 @@ export function GateEntry(): React.JSX.Element {
   // way; greying the days out just stops the form offering one it will reject.
   const minDate = useEntryWindow('gateEntry')
   const [rows, setRows] = useState<Row[]>([])
+  // A register line's full party / note text, opened from its View button.
+  const [viewNote, setViewNote] = useState<{ row: Row; full: string } | null>(null)
   // Register filters: date range on the entry date, receipt category, free text.
   const [gFrom, setGFrom] = useState('')
   const [gTo, setGTo] = useState('')
@@ -3196,6 +3198,62 @@ export function GateEntry(): React.JSX.Element {
               </span>
             )}
           </div>
+          <Dialog open={!!viewNote} onOpenChange={(o) => !o && setViewNote(null)}>
+            <DialogContent readOnly className="max-h-[85vh] overflow-y-auto sm:max-w-xl">
+              <DialogHeader>
+                <DialogTitle>
+                  {String(viewNote?.row.gate_entry_no || '')} · {String(viewNote?.row.tanker_no || '')}
+                </DialogTitle>
+              </DialogHeader>
+              {viewNote && (() => {
+                const r = viewNote.row
+                const simple = String(r.entry_kind) === 'simple'
+                // A quick entry's note is usually a list typed with commas —
+                // one item a line reads far better than a paragraph.
+                const items = simple && r.note ? String(r.note).split(/\s*,\s*/).filter(Boolean) : []
+                return (
+                  <div className="grid gap-3 text-[13px]">
+                    <div className="grid grid-cols-[110px_1fr] gap-x-3 gap-y-1.5">
+                      <span className="text-[11px] font-bold uppercase tracking-wide text-muted-foreground">In / Out</span>
+                      <span className="font-semibold">{r.direction === 'out' ? 'OUT' : 'IN'} · {String(r.rec_type || 'OIL')}</span>
+                      <span className="text-[11px] font-bold uppercase tracking-wide text-muted-foreground">Date</span>
+                      <span className="font-semibold tabular-nums">
+                        In {formatDate(r.entry_date)} {r.entry_time ? String(r.entry_time).slice(0, 5) : ''}
+                        {r.out_date ? ` · Out ${formatDate(r.out_date)} ${r.out_time ? String(r.out_time).slice(0, 5) : ''}` : ''}
+                      </span>
+                      <span className="text-[11px] font-bold uppercase tracking-wide text-muted-foreground">{simple ? 'Person' : 'Party'}</span>
+                      <span className="font-semibold">{simple ? String(r.person || 'Quick entry') : String(r.supplier_name || r.sale_customer || '—')}</span>
+                      {r.ref_no && (
+                        <>
+                          <span className="text-[11px] font-bold uppercase tracking-wide text-muted-foreground">Manual no</span>
+                          <span className="font-semibold">{String(r.ref_no)}</span>
+                        </>
+                      )}
+                    </div>
+                    {items.length > 1 ? (
+                      <div className="rounded-[6px] border border-[#DCE7DB] bg-[#F7FAF6]">
+                        <div className="border-b border-[#E4ECE3] px-3 py-1.5 text-[11px] font-bold uppercase tracking-wide text-muted-foreground">
+                          {items.length} items
+                        </div>
+                        <ol className="list-decimal py-1.5 pl-8 pr-3">
+                          {items.map((it, i) => (
+                            <li key={i} className="py-0.5 font-semibold text-[#0A1F17]">{it}</li>
+                          ))}
+                        </ol>
+                      </div>
+                    ) : (
+                      <div className="whitespace-pre-wrap break-words rounded-[6px] border border-[#DCE7DB] bg-[#F7FAF6] px-3 py-2 font-semibold text-[#0A1F17]">
+                        {viewNote.full}
+                      </div>
+                    )}
+                  </div>
+                )
+              })()}
+              <DialogFooter>
+                <Button variant="outline" onClick={() => setViewNote(null)}>Close</Button>
+              </DialogFooter>
+            </DialogContent>
+          </Dialog>
           <Table
             className={cn(
               'text-[13px] [&_td]:border-r [&_td]:border-slate-100 [&_td:last-child]:border-r-0 [&_th]:border-r [&_th]:border-slate-200 [&_th:last-child]:border-r-0',
@@ -3308,7 +3366,26 @@ export function GateEntry(): React.JSX.Element {
                         )}
                       </TableCell>
                       <TableCell>
-                        <div className={cn(__WEB__ && '!text-[13px] !font-extrabold !tabular-nums !text-[#0A1F17]')}>{row.tanker_no}</div>
+                        {/* A FIXED WIDTH, NOT THE LONGEST NOTE'S. A quick entry's
+                            note can list a whole parcel of spares; on one line it
+                            pushed every column after it off the screen. The
+                            party line wraps to two lines at most and the full
+                            text is on hover. */}
+                        {(() => {
+                          const full =
+                            String(row.entry_kind) === 'simple'
+                              ? [row.person || 'Quick entry', row.note].filter(Boolean).join(' · ')
+                              : isOut
+                                ? [row.sale_customer, Number(row.sale_count) > 1 ? row.sale_invoices || row.sale_invoice : row.sale_invoice, row.sale_product, row.note]
+                                    .filter(Boolean)
+                                    .join(' · ')
+                                : [row.supplier_name, row.bargain_no].filter(Boolean).join(' · ')
+                          return (
+                        <div
+                          className={cn(__WEB__ && 'max-w-[min(34vw,520px)] [&>div+div]:line-clamp-2 [&>div+div]:!whitespace-normal [&>div+div]:break-words')}
+                          title={full}
+                        >
+                        <div className={cn(__WEB__ && '!truncate !text-[13px] !font-extrabold !tabular-nums !text-[#0A1F17]')}>{row.tanker_no}</div>
                         {String(row.entry_kind) === 'simple' ? (
                           <div className={cn('text-xs', __WEB__ && '!mt-0.5 !text-[12px]')}>
                             <span className={cn('font-medium text-slate-700', __WEB__ && '!font-semibold !text-[#33473E]')}>{row.person || 'Quick entry'}</span>
@@ -3329,6 +3406,19 @@ export function GateEntry(): React.JSX.Element {
                         ) : (
                           row.supplier_name && <div className={cn('text-xs text-muted-foreground', __WEB__ && '!mt-0.5 !text-[12px] !font-semibold !text-[#33473E]')}>{row.supplier_name}{row.bargain_no ? ` · ${row.bargain_no}` : ''}</div>
                         )}
+                        {/* Too long for two lines — the whole of it, readably. */}
+                        {__WEB__ && full.length > 70 && (
+                          <button
+                            type="button"
+                            onClick={() => setViewNote({ row, full })}
+                            className="mt-1 inline-flex items-center gap-1 rounded-[3px] border border-[#C3D2C6] bg-white px-1.5 py-0.5 text-[10.5px] font-extrabold uppercase tracking-[.06em] text-[#0B3D2E] hover:bg-[#F3FBE2]"
+                          >
+                            <Eye className="h-3 w-3" /> View
+                          </button>
+                        )}
+                        </div>
+                          )
+                        })()}
                       </TableCell>
                       <TableCell className={cn('text-right tabular-nums', __WEB__ && '!text-[13px] !font-bold !text-[#33473E]')}>{dispatchLabel(row, row.uom)}</TableCell>
                       <TableCell className={cn('text-right tabular-nums', __WEB__ && '!text-[13px] !font-bold !text-[#0A1F17]')}>

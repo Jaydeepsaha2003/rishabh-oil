@@ -16,6 +16,8 @@
 // new one. No component state, nothing to mock, and the rules can be checked on
 // their own.
 
+import { SECTION_PARENT } from './accessSections'
+
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Any = Record<string, any>
 
@@ -61,8 +63,26 @@ export function parsePerms(value: unknown): Perms {
   }
 }
 
+// Where a row's rights come from. A SECTION (Accounting · Day Book, Treasury ·
+// LC…) with no setting of its own FOLLOWS its page; 'off' is a section switched
+// off on its own row while the page is granted.
+export type RightsSource = 'own' | 'follows' | 'off' | 'none'
+export function rightsSource(perms: Perms, key: string): RightsSource {
+  const raw = (perms || {})[key]
+  if (raw === false) return 'off'
+  if (raw !== undefined) return 'own'
+  const parent = SECTION_PARENT[key]
+  if (parent && rightsOf(perms, parent).view) return 'follows'
+  return 'none'
+}
+
 export function rightsOf(perms: Perms, key: string): Rights {
   const raw = (perms || {})[key]
+  // A section switched off on its own row.
+  if (raw === false) return { ...NONE }
+  // No setting of its own: a section reads as its page does (the server's
+  // write gate applies the same rule).
+  if (raw === undefined && SECTION_PARENT[key]) return rightsOf(perms, SECTION_PARENT[key])
   if (raw === 'write') return { ...NONE, view: true, create: true, edit: true, delete: true }
   if (raw === 'read') return { ...NONE, view: true }
   if (raw && typeof raw === 'object') {
@@ -89,6 +109,26 @@ export function rightsOf(perms: Perms, key: string): Rights {
 export function writeRights(perms: Perms, key: string, next: Rights): Perms {
   const out = { ...(perms || {}) }
   const any = next.view || next.create || next.edit || next.delete
+  const parent = SECTION_PARENT[key]
+  if (parent) {
+    // A SECTION: set back to exactly what its page grants, it goes back to
+    // following the page, so a later change to the page reaches it too…
+    const up = rightsOf(out, parent)
+    const same =
+      up.view === next.view && up.create === next.create && up.edit === next.edit && up.delete === next.delete &&
+      up.editDays === next.editDays && up.viewDays === next.viewDays && up.scope === next.scope
+    if (same) {
+      delete out[key]
+      return out
+    }
+    // …and switched off while the page is on, it is stored as OFF — deleting
+    // it would quietly hand the page's access straight back.
+    if (!any) {
+      if (up.view) out[key] = false
+      else delete out[key]
+      return out
+    }
+  }
   if (!any) {
     delete out[key]
     return out
@@ -136,6 +176,9 @@ export function setAllPerms(keys: string[], level: 'none' | 'read' | 'write'): P
   if (level === 'none') return {}
   const out: Perms = {}
   for (const key of keys) {
+    // A section whose page is being set in the same breath simply follows it.
+    const parent = SECTION_PARENT[key]
+    if (parent && keys.includes(parent)) continue
     out[key] =
       level === 'read'
         ? { view: true, create: false, edit: false, delete: false }
@@ -168,7 +211,17 @@ export function setAllDays(perms: Perms, keys: string[], field: 'editDays' | 'vi
 // because what it restricts is not an ACTION but which rows and columns exist.
 // The rights are fixed — there is exactly one thing to record — so the toggle
 // writes them rather than offering them.
-export function setDesk(perms: Perms, moduleKey: string, scope: string, on: boolean): Perms {
+export function setDesk(
+  perms: Perms,
+  moduleKey: string,
+  scope: string,
+  on: boolean,
+  // A desk that covers two pages does not always give the same on each: the
+  // inter-company desk BILLS on Sales and only READS on Purchases, because a
+  // transfer purchase is written by its sale. Omitted, every page gets what
+  // every desk got before this existed.
+  grant?: { view?: boolean; create?: boolean; edit?: boolean; delete?: boolean }
+): Perms {
   const out = { ...(perms || {}) }
   if (!on) {
     const cur = out[moduleKey]
@@ -181,7 +234,7 @@ export function setDesk(perms: Perms, moduleKey: string, scope: string, on: bool
       out[moduleKey] = o
     }
   } else {
-    out[moduleKey] = { view: true, create: false, edit: true, delete: false, scope }
+    out[moduleKey] = { view: true, create: false, edit: true, delete: false, ...(grant || {}), scope }
   }
   return out
 }
@@ -191,6 +244,8 @@ export function setDesk(perms: Perms, moduleKey: string, scope: string, on: bool
 export function scopeOf(perms: Perms): string {
   if (rightsOf(perms, 'sales').scope === 'unload') return 'Unloading desk'
   if (rightsOf(perms, 'orders').scope === 'readings') return 'Readings desk'
+  if (rightsOf(perms, 'salesBargains').scope === 'topup') return 'Bargain increase desk'
+  if (rightsOf(perms, 'sales').scope === 'intercompany') return 'Inter-company desk'
   return ''
 }
 

@@ -24,6 +24,8 @@
 // done — never spoke again. A plain element cannot be swallowed by where it
 // was called from.
 
+import { freshReload } from '@/lib/freshReload'
+
 const CHECK_EVERY_MS = 15 * 60 * 1000
 // A tab coming back to the foreground is the moment staleness matters, but a
 // user alt-tabbing between windows generates a lot of those, so they are
@@ -81,7 +83,9 @@ function show(onDismiss: () => void): void {
   reload.textContent = 'Reload'
   reload.style.cssText =
     'height:32px;padding:0 14px;border:0;border-radius:4px;background:#C7F03F;color:#0B3D2E;font-size:12px;font-weight:800;cursor:pointer'
-  reload.onclick = () => window.location.reload()
+  // Not location.reload(): that asks for the same address again and can be
+  // answered from a cache with the old page — see freshReload.
+  reload.onclick = () => freshReload()
 
   const later = document.createElement('button')
   later.type = 'button'
@@ -128,7 +132,15 @@ export function watchForNewVersion(): void {
       return
     }
 
-    if (!deployed || deployed === running || deployed === announced) return
+    if (!deployed || deployed === running) return
+    // An installed app (the PWA on a phone) is seldom closed — it sits in the
+    // background for days, so "Not now" there meant never, and the phone kept
+    // showing an old build's screens. Installed, it asks again on every return
+    // to the foreground; in a browser tab once is enough.
+    const installed =
+      window.matchMedia?.('(display-mode: standalone)').matches ||
+      (navigator as Navigator & { standalone?: boolean }).standalone === true
+    if (deployed === announced && !installed) return
     announced = deployed
     show(() => undefined)
   }

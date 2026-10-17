@@ -43,12 +43,15 @@ import {
   Save,
   Scale,
   Search,
+  StickyNote,
   Truck,
   Undo2,
-  X
+  X,
+  FileText
 } from 'lucide-react'
 import { formatDate, formatNum, todayISO } from '@/lib/format'
 import { MobileBar } from '@/components/MobileBar'
+import { SerialNo } from '@/components/SerialNo'
 import { OutsideTankerLog } from '@/components/OutsideTankerLog'
 import { cn } from '@/lib/utils'
 
@@ -68,6 +71,17 @@ const partyOf = (r: Row): string =>
 const dirOf = (r: Row): 'in' | 'out' => (String(r.direction || 'in') === 'out' ? 'out' : 'in')
 
 type Tab = 'in' | 'out' | 'view' | 'rejected'
+
+// WHAT THE VEHICLE IS BOOKED AGAINST — the sale invoices it carried out, or
+// the bargain it brought in against, as the desktop register shows it.
+function linkOf(r: Row): string {
+  if (dirOf(r) === 'out') {
+    const inv = Number(r.sale_count) > 1 ? s(r.sale_invoices || r.sale_invoice) : s(r.sale_invoice)
+    if (!inv) return ''
+    return [Number(r.sale_count) > 1 ? `${inv} (${Number(r.sale_count)} bills)` : inv, s(r.sale_product)].filter(Boolean).join(' · ')
+  }
+  return s(r.bargain_no)
+}
 
 export function GateEntryMobile(): React.JSX.Element {
   const [rows, setRows] = useState<Row[]>([])
@@ -319,9 +333,10 @@ export function GateEntryMobile(): React.JSX.Element {
               note={tab === 'in' ? 'Every vehicle at the barrier has its weights.' : 'Nothing is waiting to leave.'}
             />
           ) : (
-            queue.map((r) => (
+            queue.map((r, i) => (
               <WeighCard
                 key={String(r.id)}
+                sno={i + 1}
                 row={r}
                 draft={draft[String(r.id)] || {}}
                 saving={savingId === n(r.id)}
@@ -352,8 +367,8 @@ export function GateEntryMobile(): React.JSX.Element {
             {register.length === 0 ? (
               <Empty icon={<Inbox className="mx-auto h-7 w-7 text-[#C3D2C6]" />} title="Nothing matches that." note="" />
             ) : (
-              register.map((r) => (
-                <RegisterCard key={String(r.id)} row={r} onOpen={() => setScreen({ mode: 'edit', id: n(r.id) })} />
+              register.map((r, i) => (
+                <RegisterCard key={String(r.id)} sno={i + 1} row={r} onOpen={() => setScreen({ mode: 'edit', id: n(r.id) })} />
               ))
             )}
           </>
@@ -451,12 +466,13 @@ function RejectedList({
         rejected.length === 0 ? (
           <Empty icon={<CheckCircle2 className="mx-auto h-7 w-7 text-[#9CCFAE]" />} title="Nothing rejected" note="" />
         ) : (
-          rejected.map((r) => {
+          rejected.map((r, ri) => {
             const out = dirOf(r) === 'out'
             return (
               <div key={String(r.id)} className="overflow-hidden rounded-[4px] border border-[#F0D6D4] border-l-[3px] border-l-[#B3261E] bg-white">
                 <div className="flex flex-col gap-2.5 px-3.5 pb-3 pt-3">
                   <div className="flex items-start gap-2.5">
+                    <SerialNo n={ri + 1} />
                     <div className="min-w-0 flex-1">
                       <div className="flex flex-wrap items-center gap-2">
                         <span className="text-[13px] font-bold tabular-nums text-[#0A1F17]">{s(r.gate_entry_no)}</span>
@@ -542,13 +558,14 @@ function RejectedList({
         waived.length === 0 ? (
           <Empty icon={<CheckCircle2 className="mx-auto h-7 w-7 text-[#9CCFAE]" />} title="Nothing waived" note="Every dispatch is on the gate-out queue." />
         ) : (
-          waived.map((w) => (
+          waived.map((w, wi) => (
             <div
               key={String(w.invoice_group)}
               className="overflow-hidden rounded-[4px] border border-[#F0E4CB] border-l-[3px] border-l-[#C2700A] bg-white"
             >
               <div className="flex flex-col gap-2.5 px-3.5 pb-3 pt-3">
                 <div className="flex items-start gap-2.5">
+                  <SerialNo n={wi + 1} />
                   <div className="min-w-0 flex-1">
                     <div className="text-[13px] font-bold tabular-nums text-[#0A1F17]">
                       {s(w.invoice_no || w.invoice_group)}
@@ -613,6 +630,7 @@ function Empty({ icon, title, note }: { icon: React.ReactNode; title: string; no
 // invoice is settled against — it can still be corrected, on the entry
 // itself, deliberately.
 function WeighCard({
+  sno,
   row,
   draft,
   saving,
@@ -620,6 +638,7 @@ function WeighCard({
   onSave,
   onOpen
 }: {
+  sno: number
   row: Row
   draft: { gross?: string; tare?: string }
   saving: boolean
@@ -642,6 +661,7 @@ function WeighCard({
     <div className="overflow-hidden rounded-[4px] border border-[#D6E2D6] border-l-[3px] border-l-[#C2700A] bg-white">
       <button type="button" onClick={onOpen} className="w-full px-3.5 pb-2 pt-3 text-left">
         <div className="flex items-center gap-2.5">
+          <SerialNo n={sno} />
           <span className="text-[14.5px] font-bold tracking-[-0.01em] text-[#0A1F17]">{s(row.tanker_no) || '—'}</span>
           <span className="ml-auto shrink-0 text-[11px] font-bold tabular-nums text-[#5A6B62]">
             {s(row.gate_entry_no)}
@@ -655,11 +675,27 @@ function WeighCard({
           {row.bargain_no ? (
             <span className="text-[11px] font-semibold text-[#5A6B62]">{s(row.bargain_no)}</span>
           ) : null}
+          {dirOf(row) === 'out' && !!linkOf(row) ? (
+            <span className="text-[11px] font-bold text-[#1B4E82]">{linkOf(row)}</span>
+          ) : null}
           <span className="ml-auto text-[10.5px] font-semibold text-[#8FA79B]">
             {formatDate(row.entry_date)} {s(row.entry_time).slice(0, 5)}
           </span>
         </div>
       </button>
+
+      {/* The note, on the one screen where the vehicle is still outside. What
+          somebody wrote about a tanker is often the reason it is standing at
+          the barrier, so it belongs above the weights rather than an entry
+          away. Shown only when there is one. */}
+      {!!s(row.note).trim() && (
+        <div className="flex items-start gap-2 border-t border-t-[#EAF0E9] bg-[#FFFDF4] px-3.5 py-2">
+          <StickyNote className="mt-[2px] h-3.5 w-3.5 shrink-0 text-[#C2700A]" />
+          <p className="line-clamp-3 min-w-0 whitespace-pre-line text-[11.5px] font-semibold leading-[1.45] text-[#33473E] [text-wrap:pretty]">
+            {s(row.note).trim()}
+          </p>
+        </div>
+      )}
 
       <div className="grid grid-cols-2 gap-2.5 px-3.5 pb-3 pt-1">
         <Box label="Dispatch" value={dispatch === '—' ? '—' : `${dispatch}`} />
@@ -729,7 +765,7 @@ function WeighCard({
   )
 }
 
-function RegisterCard({ row, rejected, onOpen }: { row: Row; rejected?: boolean; onOpen: () => void }): React.JSX.Element {
+function RegisterCard({ sno, row, rejected, onOpen }: { sno?: number; row: Row; rejected?: boolean; onOpen: () => void }): React.JSX.Element {
   const out = dirOf(row) === 'out'
   const done = s(row.status) === 'completed'
   const uom = s(row.uom || 'MT')
@@ -750,6 +786,7 @@ function RegisterCard({ row, rejected, onOpen }: { row: Row; rejected?: boolean;
     >
       <div className="flex flex-col gap-1.5 px-3.5 pb-2.5 pt-3">
         <div className="flex flex-wrap items-center gap-2">
+          {sno != null && <SerialNo n={sno} />}
           <span className="text-[13.5px] font-bold tabular-nums text-[#0A1F17]">{s(row.gate_entry_no)}</span>
           <span
             className={cn(
@@ -779,11 +816,46 @@ function RegisterCard({ row, rejected, onOpen }: { row: Row; rejected?: boolean;
         </div>
         <div className="text-[13px] font-bold tabular-nums text-[#0A1F17]">{s(row.tanker_no) || '—'}</div>
         <div className="text-[11.5px] font-bold leading-snug text-[#33473E]">{partyOf(row)}</div>
+        {!!linkOf(row) && (
+          <div className="flex items-start gap-1.5 text-[11.5px] font-bold leading-snug text-[#1B4E82]">
+            <FileText className="mt-[2px] h-3.5 w-3.5 shrink-0" />
+            <span className="min-w-0 break-words">{linkOf(row)}</span>
+          </div>
+        )}
+        {dirOf(row) === 'out' && !linkOf(row) && s(row.entry_kind) !== 'simple' && (
+          <div className="text-[11px] font-bold text-[#8A5300]">No bill linked</div>
+        )}
+        {/* IN and OUT carry the line — on a card being skimmed with a thumb
+            they are what is being looked for, and the timestamps only answer
+            once one of them has been found. So they are set apart from their
+            own figures rather than reading as part of them. */}
         <div className="text-[10.5px] font-semibold tabular-nums text-[#5A6B62]">
-          IN {formatDate(row.entry_date)} {s(row.entry_time).slice(0, 5)}
-          {row.out_date ? ` · OUT ${formatDate(row.out_date)} ${s(row.out_time).slice(0, 5)}` : ''}
+          <span className="font-extrabold text-[#33473E]">IN</span> {formatDate(row.entry_date)}{' '}
+          {s(row.entry_time).slice(0, 5)}
+          {row.out_date ? (
+            <>
+              {' · '}
+              <span className="font-extrabold text-[#33473E]">OUT</span> {formatDate(row.out_date)}{' '}
+              {s(row.out_time).slice(0, 5)}
+            </>
+          ) : null}
         </div>
       </div>
+
+      {/* WHAT SOMEBODY WROTE ABOUT THIS VEHICLE.
+          Only when there is one — an empty band on every other card would cost
+          more than it tells. It matters most on a miscellaneous entry, where
+          the note IS the cargo and the party line is a dash, and it saves
+          opening the card to read one line. Three lines is the cap: a note
+          longer than that is being read in the entry itself, not here. */}
+      {!!s(row.note).trim() && (
+        <div className="flex items-start gap-2 border-t border-t-[#EAF0E9] bg-[#FFFDF4] px-3.5 py-2">
+          <StickyNote className="mt-[2px] h-3.5 w-3.5 shrink-0 text-[#C2700A]" />
+          <p className="line-clamp-3 min-w-0 whitespace-pre-line text-[11.5px] font-semibold leading-[1.45] text-[#33473E] [text-wrap:pretty]">
+            {s(row.note).trim()}
+          </p>
+        </div>
+      )}
       <div className="grid grid-cols-3 gap-2 border-t border-t-[#EAF0E9] bg-[#F7FAF6] px-3.5 py-2.5">
         {[
           { k: 'Dis qty', v: dis, tone: 'text-[#33473E]' },
@@ -884,6 +956,7 @@ function EditEntry({ row, onClose, onSaved }: { row: Row; onClose: () => void; o
       <Card title="Vehicle and party">
         <FieldNum label="Vehicle" value={tanker} onChange={setTanker} text />
         <Readout label="Party" value={partyOf(row)} />
+        {!!linkOf(row) && <Readout label={dirOf(row) === 'out' ? 'Invoices' : 'Bargain'} value={linkOf(row)} />}
         <div className="grid grid-cols-[1fr_112px] gap-2.5">
           <Readout label="Date" value={formatDate(row.entry_date)} />
           <FieldNum label="In time" value={time} onChange={setTime} text center />

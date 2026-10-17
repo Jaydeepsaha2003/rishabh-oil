@@ -1,12 +1,12 @@
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
 import { createReadStream, existsSync, statSync } from 'node:fs'
 import { extname, join, normalize, sep } from 'node:path'
-import { randomBytes } from 'node:crypto'
+import { createHash, randomBytes } from 'node:crypto'
 import { handlers } from './electron-shim'
 import { runInRequestContext, type RequestContext } from '../main/requestContext'
 import { getClient } from '../main/db'
 import { logEvent } from '../main/access'
-import { dbStatus, restoreFromDump } from './dbrestore'
+import { dbStatus, liveDbFile, restoreFromDump } from './dbrestore'
 
 // The web front door.
 // -----------------------------------------------------------------------------
@@ -27,18 +27,172 @@ interface Session {
   username: string
   companyId: number
   seen: number
+  // When this signed-in session was last written to web_sessions.
+  savedAt?: number
 }
 
-// In memory on purpose, for now: a restart logs everyone out, which is the
-// correct behaviour for a first cut and avoids inventing a token format that a
-// later phase would have to migrate. Phase 2 moves this to a signed cookie or
-// a sessions table.
+// WHO IS ASKING, AND HOW THE SERVER KNOWS.
+//
+// A session is a random id in an HttpOnly cookie. It used to live in memory
+// only, so a restart (every deploy) signed everyone out — and to paper over
+// that, every page sent an x-user-id header and the server took the user from
+// it. That made the header the login: anyone could send any id, an admin's
+// included, and be that person. Worse, a caller with no session at all was
+// handed an anonymous one and every channel ran for it.
+//
+// Now: a SIGNED-IN session is kept in web_sessions as well as in memory, so a
+// restart forgets nothing and nobody is asked who they are by a header. Only a
+// hash of the id is stored — the table can be read by an administrator (the
+// database download) and must not hand them working cookies. And nothing but
+// signing in runs without a signed-in session: see PUBLIC below.
 const sessions = new Map<string, Session>()
-const SESSION_TTL_MS = 12 * 60 * 60 * 1000
+// How long a session may sit idle. A page open on a desk beats every thirty
+// seconds, so this is what an abandoned login gets, not a working one.
+const SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000
+// How often a live session refreshes its row (and its cookie).
+const SESSION_SAVE_MS = 30 * 60 * 1000
 
+// The only channels that answer someone who is not signed in: signing in,
+// and the two the page asks before it knows who you are (is the database up,
+// what revision is it at). Everything else is refused, whatever it is.
+const PUBLIC = new Set(['auth:login', 'db:ping', 'app:revision'])
+
+const hashSid = (sid: string): string => createHash('sha256').update(sid).digest('hex')
+const sessionCookie = (sid: string): string =>
+  `sid=${sid}; HttpOnly; SameSite=Lax; Path=/; Max-Age=${SESSION_TTL_MS / 1000}`
+const CLEAR_COOKIE = 'sid=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0'
+
+// Created on first use rather than in a migration: it belongs to the website
+// alone (the desktop has no sessions), and a database restore drops it with
+// everything else, so every write makes sure it is there.
+async function ensureSessionTable(): Promise<void> {
+  await getClient().execute(
+    `CREATE TABLE IF NOT EXISTS web_sessions (
+       sid_hash TEXT PRIMARY KEY,
+       user_id INTEGER NOT NULL,
+       username TEXT,
+       company_id INTEGER NOT NULL DEFAULT 1,
+       created_at TEXT NOT NULL DEFAULT (datetime('now')),
+       seen_at INTEGER NOT NULL
+     )`
+  )
+}
+
+async function saveSession(sid: string, s: Session): Promise<void> {
+  try {
+    await ensureSessionTable()
+    if (!s.userId) {
+      await getClient().execute({ sql: 'DELETE FROM web_sessions WHERE sid_hash = ?', args: [hashSid(sid)] })
+      return
+    }
+    const now = Date.now()
+    await getClient().execute({
+      sql: `INSERT INTO web_sessions (sid_hash, user_id, username, company_id, seen_at) VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(sid_hash) DO UPDATE SET user_id = excluded.user_id, username = excluded.username,
+              company_id = excluded.company_id, seen_at = excluded.seen_at`,
+      args: [hashSid(sid), s.userId, s.username, s.companyId, now]
+    })
+    s.savedAt = now
+  } catch (e) {
+    // The session still works from memory; it just will not survive a restart.
+    console.error('[web] could not save a session:', (e as Error).message)
+  }
+}
+
+async function dropSession(sid: string): Promise<void> {
+  sessions.delete(sid)
+  try {
+    await ensureSessionTable()
+    await getClient().execute({ sql: 'DELETE FROM web_sessions WHERE sid_hash = ?', args: [hashSid(sid)] })
+  } catch {
+    // Already gone, or the table is — either way it is not a session any more.
+  }
+}
+
+// A session this process has not seen — it restarted since — read back from
+// the table, and only for an account that still exists and is still active.
+async function loadSession(sid: string): Promise<Session | null> {
+  try {
+    await ensureSessionTable()
+    const r = await getClient().execute({
+      sql: `SELECT ws.user_id, ws.company_id, ws.seen_at, u.username
+              FROM web_sessions ws
+              JOIN users u ON u.id = ws.user_id AND COALESCE(u.active, 1) = 1
+             WHERE ws.sid_hash = ?`,
+      args: [hashSid(sid)]
+    })
+    const row = r.rows[0]
+    if (!row) return null
+    if (Date.now() - Number(row.seen_at) > SESSION_TTL_MS) {
+      await dropSession(sid)
+      return null
+    }
+    return {
+      userId: Number(row.user_id),
+      username: String(row.username || ''),
+      companyId: Number(row.company_id) || 1,
+      seen: Date.now(),
+      savedAt: Number(row.seen_at)
+    }
+  } catch {
+    return null
+  }
+}
+
+let lastTableSweep = 0
 function sweepSessions(): void {
   const cutoff = Date.now() - SESSION_TTL_MS
   for (const [k, v] of sessions) if (v.seen < cutoff) sessions.delete(k)
+  // The table too, at most hourly.
+  if (Date.now() - lastTableSweep > 60 * 60 * 1000) {
+    lastTableSweep = Date.now()
+    void ensureSessionTable()
+      .then(() => getClient().execute({ sql: 'DELETE FROM web_sessions WHERE seen_at < ?', args: [cutoff] }))
+      .catch(() => {})
+  }
+}
+
+// The session a request belongs to — from memory, else from the table — or a
+// fresh anonymous one when `create` says to make one. A signed-in session that
+// is in use refreshes its row and its cookie every half hour, so a login that
+// is being used never runs out.
+async function resolveSession(
+  req: IncomingMessage,
+  create: boolean
+): Promise<{ sid: string; s: Session; cookie?: string } | null> {
+  sweepSessions()
+  let sid = readCookie(req, 'sid')
+  let s = sid ? sessions.get(sid) : undefined
+  if (!s && sid) {
+    const loaded = await loadSession(sid)
+    if (loaded) {
+      sessions.set(sid, loaded)
+      s = loaded
+    }
+  }
+  let cookie: string | undefined
+  if (!s) {
+    if (!create) return null
+    sid = randomBytes(24).toString('hex')
+    s = { userId: null, username: 'system', companyId: 1, seen: Date.now() }
+    sessions.set(sid, s)
+    // HttpOnly so no script can read it; SameSite=Lax so it survives a normal
+    // navigation but not a cross-site form post.
+    cookie = sessionCookie(sid)
+  }
+  s.seen = Date.now()
+  if (s.userId && Date.now() - (s.savedAt || 0) > SESSION_SAVE_MS) {
+    await saveSession(sid, s)
+    cookie = cookie || sessionCookie(sid)
+  }
+  return { sid, s, cookie }
+}
+
+// The answer to anyone who is not (or no longer) signed in. 401 with a code,
+// so the page can tell "sign in again" from an ordinary refusal and go back
+// to the sign-in screen rather than showing it as a toast.
+function signedOut(res: ServerResponse, cookie?: string): void {
+  json(res, 401, { ok: false, code: 'signed_out', error: 'You are signed out — please sign in again.' }, cookie)
 }
 
 function readCookie(req: IncomingMessage, name: string): string {
@@ -140,8 +294,17 @@ function serveStatic(res: ServerResponse, root: string, urlPath: string): boolea
   res.writeHead(200, {
     'content-type': MIME[ext] || 'application/octet-stream',
     // Vite fingerprints its assets, so they are safe to cache hard; index.html
-    // must not be, or a deploy never reaches anyone.
-    'cache-control': rel.startsWith('assets/') ? 'public, max-age=31536000, immutable' : 'no-cache'
+    // must not be, or a deploy never reaches anyone. `no-store`, not
+    // `no-cache`: no-cache still lets a browser (or anything between it and
+    // here) keep a copy and decide for itself when to ask again, and after a
+    // deploy the plain Reload kept landing on the old page — only
+    // Ctrl+Shift+R got through. A page shell that is never stored cannot be
+    // served stale. It is a couple of kilobytes; fetching it every time costs
+    // nothing next to the hashed bundle it points at, which stays cached.
+    // (Either slash: normalize() gives backslashes on Windows.)
+    ...(/^assets[\\/]/.test(rel)
+      ? { 'cache-control': 'public, max-age=31536000, immutable' }
+      : { 'cache-control': 'no-store, no-cache, must-revalidate, max-age=0', pragma: 'no-cache', expires: '0' })
   })
   createReadStream(full).pipe(res)
   return true
@@ -175,14 +338,9 @@ function applySessionEffect(channel: string, args: Row, result: unknown, s: Sess
 // this never CREATES one: the database endpoints are for an administrator who
 // is already signed in, and a caller with no session is turned away rather
 // than handed a fresh anonymous one.
-function currentSession(req: IncomingMessage): Session | null {
-  sweepSessions()
-  const sid = readCookie(req, 'sid')
-  if (!sid) return null
-  const s = sessions.get(sid)
-  if (!s) return null
-  s.seen = Date.now()
-  return s
+async function currentSession(req: IncomingMessage): Promise<Session | null> {
+  const got = await resolveSession(req, false)
+  return got && got.s.userId ? got.s : null
 }
 
 // Admin is read from the database rather than trusted from the session,
@@ -260,7 +418,7 @@ export function startHttpServer({ port, webRoot }: ServerOptions): void {
 
     // What is in the database now, and what can be rolled back to.
     if (path === '/api/db/info') {
-      const s = currentSession(req)
+      const s = await currentSession(req)
       if (!(await isAdmin(s))) return json(res, 403, { error: 'Administrators only' })
       try {
         return json(res, 200, { ok: true, result: await dbStatus() })
@@ -273,7 +431,7 @@ export function startHttpServer({ port, webRoot }: ServerOptions): void {
     // desktop, the local file here. Streamed as a real download so the browser
     // saves it to disk rather than the page holding it in memory.
     if (path === '/api/db/snapshot') {
-      const s = currentSession(req)
+      const s = await currentSession(req)
       if (!(await isAdmin(s))) return json(res, 403, { error: 'Administrators only' })
       try {
         // Dispatched through the db:snapshot CHANNEL rather than calling the
@@ -305,10 +463,49 @@ export function startHttpServer({ port, webRoot }: ServerOptions): void {
       }
     }
 
+    // THE SAME DATABASE, BUT AS A DATABASE.
+    //
+    // The route above hands back SQL to restore FROM. This one hands back the
+    // file itself, to open and read — which is what is wanted when a figure on
+    // screen is being argued with and nobody can see the rows behind it.
+    //
+    // Same admin gate and the same line in the audit trail: the two downloads
+    // differ in format, not in what they give away.
+    if (path === '/api/db/file') {
+      const s2 = await currentSession(req)
+      if (!(await isAdmin(s2))) return json(res, 403, { error: 'Administrators only' })
+      try {
+        const file = await liveDbFile()
+        await logEvent(
+          s2!.userId,
+          s2!.username,
+          clientIp(req),
+          'Downloaded the database file',
+          `${(file.bytes.length / 1048576).toFixed(2)} MB · ${file.fileName}`,
+          s2!.companyId,
+          'Database',
+          null,
+          null
+        ).catch(() => {
+          // The copy is made; failing to note it must not fail the download.
+        })
+        console.log(`[web] database file downloaded by ${s2!.username}: ${file.fileName}`)
+        res.writeHead(200, {
+          'content-type': 'application/vnd.sqlite3',
+          'content-length': file.bytes.length,
+          'content-disposition': `attachment; filename="${file.fileName}"`,
+          'cache-control': 'no-store'
+        })
+        return res.end(file.bytes)
+      } catch (e) {
+        return json(res, 200, { ok: false, error: (e as Error).message })
+      }
+    }
+
     // Replace it. The body is the snapshot file, posted raw.
     if (path === '/api/db/restore') {
       if (req.method !== 'POST') return json(res, 405, { error: 'Use POST' })
-      const s = currentSession(req)
+      const s = await currentSession(req)
       if (!(await isAdmin(s))) return json(res, 403, { error: 'Administrators only' })
       try {
         const buf = await readBinary(req, RESTORE_LIMIT)
@@ -350,24 +547,33 @@ export function startHttpServer({ port, webRoot }: ServerOptions): void {
         return json(res, 400, { error: (e as Error).message })
       }
       const channel = String(payload?.channel || '')
-      const args = (payload?.args ?? {}) as Row
+      let args = (payload?.args ?? {}) as Row
       const fn = handlers.get(channel)
       if (!fn) return json(res, 404, { error: `Unknown channel: ${channel}` })
 
       // The session, and a cookie for it if this caller has none yet.
-      sweepSessions()
-      let sid = readCookie(req, 'sid')
-      let cookie: string | undefined
-      if (!sid || !sessions.has(sid)) {
-        sid = randomBytes(24).toString('hex')
-        sessions.set(sid, { userId: null, username: 'system', companyId: 1, seen: Date.now() })
-        // HttpOnly so no script can read it; SameSite=Lax so it survives a
-        // normal navigation but not a cross-site form post.
-        cookie = `sid=${sid}; HttpOnly; SameSite=Lax; Path=/; Max-Age=${SESSION_TTL_MS / 1000}`
-      }
-      const s = sessions.get(sid)!
-      s.seen = Date.now()
+      const got = (await resolveSession(req, true))!
+      let { sid } = got
+      const { s } = got
+      let cookie = got.cookie
 
+      // session:setUser is how the page says who it is. It may sign the session
+      // OUT, or restate the user it already has — never name somebody else.
+      // Naming somebody else is what made it a way in.
+      if (channel === 'session:setUser') {
+        const want = Number(args?.id) || 0
+        if (!want) {
+          await dropSession(sid)
+          return json(res, 200, { ok: true, result: { ok: true } }, CLEAR_COOKIE)
+        }
+        if (want !== s.userId) return signedOut(res, cookie)
+      }
+      if (!s.userId && !PUBLIC.has(channel)) return signedOut(res, cookie)
+      // The heartbeat marks a USER live; that user is the session's, not
+      // whichever id the page put in the call.
+      if (channel === 'access:heartbeat') args = { ...args, userId: s.userId, username: s.username }
+
+      const before = { userId: s.userId, companyId: s.companyId }
       const ctx: RequestContext = {
         userId: s.userId,
         username: s.username,
@@ -383,6 +589,17 @@ export function startHttpServer({ port, webRoot }: ServerOptions): void {
         s.username = ctx.username
         s.companyId = ctx.companyId
         applySessionEffect(channel, args, result, s)
+        // A sign-in gets a NEW session id, so an id handed out before it (or
+        // planted in the browser by someone else) does not become a login.
+        if (channel === 'auth:login' && s.userId) {
+          sessions.delete(sid)
+          sid = randomBytes(24).toString('hex')
+          sessions.set(sid, s)
+          cookie = sessionCookie(sid)
+          await saveSession(sid, s)
+        } else if (s.userId !== before.userId || s.companyId !== before.companyId) {
+          await saveSession(sid, s)
+        }
         return json(res, 200, { ok: true, result: result ?? null }, cookie)
       } catch (e) {
         // The renderer shows `message` on a rejected invoke, so the shape of a

@@ -15,7 +15,30 @@
 type Row = Record<string, unknown>
 
 // One POST per call, to the one endpoint the server exposes. `credentials` is
-// same-origin so the session cookie rides along.
+// same-origin so the session cookie rides along — the cookie is the ONLY thing
+// that says who is asking. The page used to send its stored user id as a
+// header too, and the server believed it; that made any id a login.
+
+// SIGNED OUT ON THE SERVER: the session expired, was signed out elsewhere, or
+// this page was never signed in on it. The page's stored user is then a
+// leftover, so it goes, and the page reloads onto the sign-in screen — once,
+// however many calls were in flight when it happened.
+let leaving = false
+function backToSignIn(): void {
+  if (leaving) return
+  let had = false
+  try {
+    had = !!localStorage.getItem('rishabhoil.user')
+    localStorage.removeItem('rishabhoil.user')
+  } catch {
+    // Storage blocked: there is nothing stored to clear either.
+  }
+  if (had) {
+    leaving = true
+    window.location.reload()
+  }
+}
+
 async function invoke(channel: string, args?: unknown): Promise<unknown> {
   let res: Response
   try {
@@ -34,6 +57,18 @@ async function invoke(channel: string, args?: unknown): Promise<unknown> {
     // 404 means the channel does not exist on this build; anything else is the
     // server itself failing. Neither is a business error, so say which.
     const text = await res.text().catch(() => '')
+    if (res.status === 401) {
+      let code = ''
+      try {
+        code = String((JSON.parse(text) as Row)?.code ?? '')
+      } catch {
+        code = ''
+      }
+      if (code === 'signed_out') {
+        backToSignIn()
+        throw new Error('You are signed out — please sign in again.')
+      }
+    }
     // The body is JSON. Thrown as-is, it reaches the screen as a toast reading
     // {"error":"Unknown channel: stockOpening:ppStages"} — which is a stack
     // trace shown to somebody counting oil.

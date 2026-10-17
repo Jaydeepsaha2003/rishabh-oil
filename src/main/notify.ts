@@ -136,7 +136,8 @@ export const RULES: RuleDef[] = [
                 FROM letters_of_credit l
                 LEFT JOIN suppliers s ON l.party_type = 'supplier' AND s.id = l.party_id
                WHERE l.company_id = ? AND l.status != 'closed'
-                 AND l.preclosed_date IS NULL AND l.expiry_date IS NOT NULL`,
+                 AND l.preclosed_date IS NULL AND l.expiry_date IS NOT NULL
+                 AND COALESCE(l.workflow_status, '') <> 'rejected'`,
         args: [companyId]
       })
       return plain(res)

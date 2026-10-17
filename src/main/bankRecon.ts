@@ -387,3 +387,31 @@ export async function setBankLineSubEntry(lineId: number, v: Row): Promise<{ id:
   })
   return { id: lineId }
 }
+
+/**
+ * A bank's own statement sent as file contents (the website has no file
+ * path) — read the same way as an import here, columns found by their names.
+ * A real date cell is taken as the date it is, not as text to be re-read.
+ */
+export async function parseStatementFile(b64: string, fileName = ''): Promise<ParsedLine[]> {
+  const buf = Buffer.from(String(b64 || ''), 'base64')
+  if (/\.csv$/i.test(fileName)) return rowsToLines(parseCsv(buf.toString('utf8')))
+  const wb = new ExcelJS.Workbook()
+  try {
+    await wb.xlsx.load(buf as unknown as ArrayBuffer)
+  } catch {
+    throw new Error("That bank statement could not be read — save the bank's statement as .xlsx or .csv")
+  }
+  const ws = wb.worksheets[0]
+  if (!ws) return []
+  const rows: string[][] = []
+  ws.eachRow((row) => {
+    const cells: string[] = []
+    row.eachCell({ includeEmpty: true }, (cell) => {
+      const v = cell.value
+      cells.push(v instanceof Date ? v.toISOString().slice(0, 10) : (cell.text ?? ''))
+    })
+    rows.push(cells)
+  })
+  return rowsToLines(rows)
+}

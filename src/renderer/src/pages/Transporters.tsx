@@ -7,6 +7,21 @@ import { COMPANY_TYPES } from '@/lib/constants'
 const fields: FieldDef[] = [
   { key: 'name', label: 'Name', type: 'text', required: true },
   { key: 'company_type', label: 'Company type', type: 'select', required: true, options: COMPANY_TYPES },
+  // Decides how their freight and shortages are booked. Registered: GST on the
+  // freight bill, shortages claimed on a debit note with GST. Unregistered: no
+  // GST (RCM applicable), the freight is a JV, and shortages come off it at
+  // the oil rate plus GST — no debit note.
+  {
+    key: 'gst_registration',
+    label: 'GST registration',
+    type: 'select',
+    required: true,
+    default: 'registered',
+    options: [
+      { value: 'registered', label: 'Registered' },
+      { value: 'unregistered', label: 'Unregistered' }
+    ]
+  },
   { key: 'contact', label: 'Contact', type: 'text' },
   { key: 'gst_pct', label: 'GST %', type: 'number', required: true, default: 0 },
   { key: 'tds_pct', label: 'TDS %', type: 'number', required: true, default: 0 },
@@ -27,6 +42,7 @@ const fields: FieldDef[] = [
 const columns: ColumnDef[] = [
   { key: 'name', label: 'Name' },
   { key: 'company_type', label: 'Type' },
+  { key: 'gst_registration', label: 'GST', filterable: true, value: (r) => (String(r.gst_registration || '') === 'unregistered' ? 'Unregistered' : 'Registered') },
   { key: 'gst_pct', label: 'GST %', align: 'right' },
   { key: 'tds_pct', label: 'TDS %', align: 'right' },
   { key: 'reverse_charge', label: 'RCM', type: 'switch' },

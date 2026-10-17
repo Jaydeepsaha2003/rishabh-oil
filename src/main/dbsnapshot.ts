@@ -43,7 +43,9 @@ function idempotent(sql: string): string {
 // handled separately below, and the rest belong to whichever engine is holding
 // the file.
 function internal(name: string): boolean {
-  return name.startsWith('sqlite_') || name.startsWith('libsql_') || name === '_litestream_seq'
+  // web_sessions is the website's sign-ins: per server, worthless anywhere
+  // else, and not something a database copy should carry around.
+  return name.startsWith('sqlite_') || name.startsWith('libsql_') || name === '_litestream_seq' || name === 'web_sessions'
 }
 
 export interface SnapshotMeta {

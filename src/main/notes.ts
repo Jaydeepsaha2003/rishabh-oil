@@ -2,7 +2,10 @@ import type { ResultSet } from '@libsql/client'
 import { getClient, todayISO } from './db'
 import { getActiveCompanyId } from './company'
 import { postJournal } from './journal'
+import { gstLines, asGstType, DEFAULT_GST_TYPE, type GstType } from './gstLedgers'
 import { resolveRefIds } from './accounting'
+import { resolveAccountName } from './ledgerMap'
+import { baseGroupOf } from './ledgerGroups'
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Row = Record<string, any>
@@ -79,11 +82,69 @@ export async function listNoteItems(noteId: number): Promise<Row[]> {
 // supplier is Input, tax you charge a customer is Output, whichever kind of
 // note adjusts it.
 const PARTY_KINDS = {
-  supplier: { master: 'suppliers', ledger: 'supplier_ledger', idCol: 'supplier_id', refCol: 'order_id', group: 'Sundry Creditors', gst: 'GST INPUT A/C' },
-  customer: { master: 'customers', ledger: 'customer_ledger', idCol: 'customer_id', refCol: 'sale_id', group: 'Sundry Debtors', gst: 'GST OUTPUT A/C' },
-  transporter: { master: 'transporters', ledger: 'transporter_ledger', idCol: 'transporter_id', refCol: 'order_id', group: 'Sundry Creditors', gst: 'GST INPUT A/C' }
+  supplier: { master: 'suppliers', ledger: 'supplier_ledger', idCol: 'supplier_id', refCol: 'order_id', group: 'Sundry Creditors', gst: 'INPUT' },
+  customer: { master: 'customers', ledger: 'customer_ledger', idCol: 'customer_id', refCol: 'sale_id', group: 'Sundry Debtors', gst: 'OUTPUT' },
+  transporter: { master: 'transporters', ledger: 'transporter_ledger', idCol: 'transporter_id', refCol: 'order_id', group: 'Sundry Creditors', gst: 'INPUT' }
 } as const
 type PartyKind = keyof typeof PARTY_KINDS
+
+/**
+ * THE PARTY BEHIND A LEDGER, THROUGH A RENAME.
+ *
+ * The website enters a note in the accounting grid, where the party is a
+ * ledger, and the note needs the MASTER behind it. They used to be matched by
+ * name alone — which fails the moment a ledger has been renamed to the name
+ * the books use: the supplier master still reads DIL EXIM while its ledger
+ * reads DIL EXIM COMMODITIES PRIVATE LIMITED(CR), and every note on it was
+ * refused with "Select the supplier" although the party was right there.
+ *
+ * A rename leaves its trail in ledger_map (posts_as = the old name, use_name =
+ * the ledger), so the ledger's name and every old name redirected to it are
+ * all tried. The kinds tried are the ones the ledger's group allows: a debtor
+ * is a customer; a creditor is a supplier, or a transporter.
+ */
+async function partyByLedgerName(
+  name: string,
+  cid: number,
+  preferred: PartyKind,
+  group?: string
+): Promise<{ id: number; kind: PartyKind } | null> {
+  const c = getClient()
+  const want = String(name || '').trim().toUpperCase()
+  if (!want) return null
+  const aliases = [want]
+  const map = await c
+    .execute({
+      sql: `SELECT posts_as FROM ledger_map
+             WHERE UPPER(TRIM(use_name)) = ? AND (company_id = ? OR company_id IS NULL)
+             ORDER BY company_id IS NULL, id`,
+      args: [want, cid]
+    })
+    .catch(() => null)
+  for (const r of map?.rows || []) {
+    const a = String((r as unknown as Row).posts_as || '').trim().toUpperCase()
+    if (a && !aliases.includes(a)) aliases.push(a)
+  }
+  const g = await baseGroupOf(group)
+  const kinds: PartyKind[] =
+    g === 'Sundry Debtors'
+      ? ['customer']
+      : g === 'Sundry Creditors'
+        ? preferred === 'transporter'
+          ? ['transporter', 'supplier']
+          : ['supplier', 'transporter']
+        : [preferred, ...(['supplier', 'customer', 'transporter'] as PartyKind[]).filter((k) => k !== preferred)]
+  for (const k of kinds) {
+    for (const a of aliases) {
+      const hit = await c.execute({
+        sql: `SELECT id FROM ${PARTY_KINDS[k].master} WHERE UPPER(TRIM(name)) = ? LIMIT 1`,
+        args: [a]
+      })
+      if (hit.rows.length) return { id: n(hit.rows[0].id), kind: k }
+    }
+  }
+  return null
+}
 
 // Create a Debit or Credit note against ANY party — supplier, customer or
 // transporter. Posts a balanced journal voucher and a signed party-ledger row.
@@ -97,20 +158,48 @@ export async function createNote(v: Row, existingId?: number): Promise<{ id: num
   const type: 'debit' | 'credit' = v.note_type === 'credit' ? 'credit' : 'debit'
   // Defaults preserve the old behaviour for any caller that doesn't say.
   const requested = String(v.party_type || '').trim().toLowerCase()
-  const partyType: PartyKind = (requested in PARTY_KINDS ? requested : type === 'debit' ? 'supplier' : 'customer') as PartyKind
-  const kind = PARTY_KINDS[partyType]
-  const partyId = n(v.party_id)
-  if (!partyId) throw new Error(`Select the ${partyType}`)
+  let partyType: PartyKind = (requested in PARTY_KINDS ? requested : type === 'debit' ? 'supplier' : 'customer') as PartyKind
+  let kind: (typeof PARTY_KINDS)[PartyKind] = PARTY_KINDS[partyType]
+  let partyId = n(v.party_id)
+  // A caller that only knows the ledger name — the website enters a note in the
+  // accounting grid, where the party is a ledger account, not a picked id — can
+  // pass party_name instead, and the master is found through the ledger (see
+  // partyByLedgerName). The id path above is untouched.
+  if (!partyId && v.party_name) {
+    const hit = await partyByLedgerName(String(v.party_name), cid, partyType, v.party_group ? String(v.party_group) : undefined)
+    if (hit) {
+      partyId = hit.id
+      partyType = hit.kind
+      kind = PARTY_KINDS[partyType]
+    }
+  }
+  if (!partyId) {
+    throw new Error(
+      v.party_name
+        ? `${String(v.party_name).trim()} is not linked to any ${partyType === 'customer' ? 'customer' : 'supplier or transporter'} in the masters. Add it there (or rename that party's ledger from Masters so the two are linked), then save again.`
+        : `Select the ${partyType}`
+    )
+  }
   // Optional item lines. When present, they compute the base amount.
   const rawItems: Row[] = Array.isArray(v.items) ? v.items : []
   const items = rawItems
-    .map((it) => ({
-      product_id: it.product_id ? n(it.product_id) : null,
-      description: it.description ? String(it.description).trim() : null,
-      qty: n(it.qty),
-      rate: n(it.rate),
-      amount: round2(n(it.qty) * n(it.rate))
-    }))
+    .map((it) => {
+      const qty = n(it.qty)
+      const rate = n(it.rate)
+      // WITH vs WITHOUT quantity, the Tally way. A line that carries a quantity
+      // prices itself qty × rate and its quantity moves stock (for a real
+      // return). A line with no quantity is a value-only adjustment against the
+      // product — a rate difference, a discount, a claim — so its amount is
+      // taken as entered and it never touches stock (SUM(qty) stays nil).
+      const amount = qty > 0 ? round2(qty * rate) : round2(n(it.amount))
+      return {
+        product_id: it.product_id ? n(it.product_id) : null,
+        description: it.description ? String(it.description).trim() : null,
+        qty,
+        rate,
+        amount
+      }
+    })
     .filter((it) => it.amount > 0 || it.qty > 0)
   const base = items.length
     ? round2(items.reduce((s, it) => s + it.amount, 0))
@@ -124,7 +213,21 @@ export async function createNote(v: Row, existingId?: number): Promise<{ id: num
   const total = Math.round(rawTotal)
   const roundOff = round2(total - rawTotal)
   // The original invoice this note adjusts (GST's "original invoice no").
-  const againstRef = v.against_invoice ? String(v.against_invoice).trim() : null
+  // THE BILL-WISE SPLIT, when the screen sends one — the party line's own
+  // allocations (Agst Ref against one or more invoices, New Ref, Advance, On
+  // Account). Without it the note settles against the one invoice named, or
+  // stays On Account, as it always has.
+  const METHODS = ['agst_ref', 'advance', 'on_account', 'new_ref']
+  const splitIn: Row[] = (Array.isArray(v.allocs) ? (v.allocs as Row[]) : []).filter((a) => Number(a?.amount) > 0)
+  for (const a of splitIn) {
+    if (!METHODS.includes(String(a.method))) throw new Error(`Unknown bill-wise method "${String(a.method)}"`)
+    if (String(a.method) !== 'on_account' && !String(a.ref_name || '').trim()) {
+      throw new Error('Every bill-wise line except On Account needs a reference')
+    }
+  }
+  const againstRef = v.against_invoice
+    ? String(v.against_invoice).trim()
+    : String(splitIn.find((a) => String(a.method) === 'agst_ref')?.ref_name || '').trim() || null
   // Which bargain this return goes back onto, when the note does not name an
   // original invoice to read it off. Stored, not acted on: the sales-bargain
   // register derives the Return figure from the note itself, so there is one
@@ -179,6 +282,29 @@ export async function createNote(v: Row, existingId?: number): Promise<{ id: num
   const narration = v.narration ? String(v.narration).trim() : null
 
   // 1) Double-entry journal voucher.
+  // WHICH HEAD THIS NOTE ADJUSTS.
+  //
+  // A note carries a rate but not a head, because it is written against
+  // something else and takes that thing's treatment: a credit note against an
+  // IGST sale must put the tax back where the sale charged it, not split it
+  // into two state heads that were never touched. So the original invoice
+  // decides where one is named, and intra-state stands in where it is not.
+  const noteGstType: GstType = await (async (): Promise<GstType> => {
+    // Picked on the note itself — the website's GST panel names it — wins.
+    if (v.gst_type === 'IGST' || v.gst_type === 'CGST_SGST') return v.gst_type
+    const ref = String(againstRef || '').trim()
+    if (!ref) return DEFAULT_GST_TYPE
+    const table = partyType === 'customer' ? 'sales' : 'orders'
+    const r = await c
+      .execute({
+        sql: `SELECT gst_type FROM ${table} WHERE TRIM(UPPER(invoice_no)) = ? LIMIT 1`,
+        args: [ref.toUpperCase()]
+      })
+      .catch(() => null)
+    const row = r ? (r.rows[0] as unknown as Row | undefined) : undefined
+    return row ? asGstType(row.gst_type) : DEFAULT_GST_TYPE
+  })()
+
   const je = await postJournal({
     date,
     vchType: type === 'debit' ? 'DEBIT NOTE' : 'CREDIT NOTE',
@@ -190,12 +316,12 @@ export async function createNote(v: Row, existingId?: number): Promise<{ id: num
         ? [
             { account: partyName, group: kind.group, dr: total },
             { account: against, group: againstGroup, cr: base },
-            { account: kind.gst, group: 'Duties & Taxes', cr: gst },
+            ...gstLines({ side: kind.gst, pct: gstPct, type: noteGstType, cr: gst }),
             { account: 'ROUND OFF A/C', group: 'Indirect Expenses', cr: roundOff > 0 ? roundOff : 0, dr: roundOff < 0 ? -roundOff : 0 }
           ]
         : [
             { account: against, group: againstGroup, dr: base },
-            { account: kind.gst, group: 'Duties & Taxes', dr: gst },
+            ...gstLines({ side: kind.gst, pct: gstPct, type: noteGstType, dr: gst }),
             { account: 'ROUND OFF A/C', group: 'Indirect Expenses', dr: roundOff > 0 ? roundOff : 0, cr: roundOff < 0 ? -roundOff : 0 },
             { account: partyName || 'CASH CUSTOMER A/C', group: kind.group, cr: total }
           ]
@@ -203,13 +329,45 @@ export async function createNote(v: Row, existingId?: number): Promise<{ id: num
 
   // Bill-wise: the note settles against the original invoice when one is
   // named, otherwise it stays On Account — exactly like a payment would.
+  // The party line is found under the ledger the posting actually landed on,
+  // which for a renamed party is the new name, not the master's — matched on
+  // the old one it was never found, and the note carried no bill-wise line.
+  const partyAccount = (await resolveAccountName(partyName, cid)).trim().toUpperCase()
   const partyLine = await c.execute({
     sql: `SELECT jl.id, jl.account_id FROM journal_lines jl
           JOIN ledger_accounts a ON a.id = jl.account_id
-          WHERE jl.entry_id = ? AND a.name = ? LIMIT 1`,
-    args: [je.id, partyName.toUpperCase()]
+          WHERE jl.entry_id = ? AND UPPER(TRIM(a.name)) IN (?, ?) LIMIT 1`,
+    args: [je.id, partyAccount, partyName.toUpperCase()]
   })
-  if (partyLine.rows.length) {
+  if (partyLine.rows.length && splitIn.length) {
+    const sum = Math.round(splitIn.reduce((s, a) => s + Number(a.amount), 0) * 100) / 100
+    if (Math.abs(sum - total) > 0.01) {
+      throw new Error(`The bill-wise split (${sum.toFixed(2)}) must add up to the note total (${total.toFixed(2)})`)
+    }
+    for (const a of splitIn) {
+      const method = String(a.method)
+      const ref = method === 'on_account' ? null : String(a.ref_name || '').trim()
+      // The ids the screen picked the bill by; looked up by the reference only
+      // when it did not send them.
+      let ids = { order_id: a.order_id ? Number(a.order_id) : null, sale_invoice_group: a.sale_invoice_group ? String(a.sale_invoice_group) : null }
+      if (method === 'agst_ref' && ref && !ids.order_id && !ids.sale_invoice_group) {
+        ids = await resolveRefIds(ref, cid, partyType === 'customer' ? 'customer' : 'supplier')
+      }
+      await c.execute({
+        sql: `INSERT INTO journal_bill_allocs (line_id, account_id, method, ref_name, amount, order_id, sale_invoice_group)
+              VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        args: [
+          Number(partyLine.rows[0].id),
+          Number(partyLine.rows[0].account_id),
+          method,
+          ref,
+          Math.round(Number(a.amount) * 100) / 100,
+          ids.order_id,
+          ids.sale_invoice_group
+        ]
+      })
+    }
+  } else if (partyLine.rows.length) {
     // The id of the document the ref names, not just its text: an allocation
     // with no id can only be matched by string, which is fragile and was how a
     // credit note against a sales invoice ended up settling nothing.

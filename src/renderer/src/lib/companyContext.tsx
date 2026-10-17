@@ -32,6 +32,12 @@ export function useCompany(): CompanyContextValue {
 // through 26 pages.
 export interface HeaderExtrasValue {
   bell?: React.ReactNode
+  /**
+   * The same bell, drawn for a phone's top bar. The mobile pages replace the
+   * desktop PageHeader wholesale, so the header's own bell never reaches
+   * them — this is what MobileBar puts on every mobile screen.
+   */
+  mobileBell?: React.ReactNode
 }
 
 const HeaderExtrasContext = createContext<HeaderExtrasValue>({})

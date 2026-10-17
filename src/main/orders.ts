@@ -1,3 +1,4 @@
+import { withDbTransaction } from './dbTransaction'
 import type { InValue, ResultSet } from '@libsql/client'
 import { getClient, todayISO } from './db'
 import { getSetting } from './repos'
@@ -6,18 +7,20 @@ import { createBargain, ensureOilType, adjustBargainQty } from './bargains'
 import {
   consignmentAvailable,
   consignmentDeposited,
-  assignConsignmentLots,
   autoAssignConsignmentLots,
+  planConsignmentDraw,
+  applyConsignmentDraw,
+  type DrawPlan,
   releaseConsignmentLots,
-  validateConsignmentLots,
   toLotPicks,
   type LotAllocation
 } from './consignment'
 import { deleteJournalByRef, postPurchaseJournal } from './journal'
 import { companiesOfFactory, getActiveCompanyId } from './company'
-import { visibleFromFor } from './access-gate'
+import { visibleFromFor, currentScope } from './access-gate'
 import { recordChanges, ORDER_FIELDS } from './history'
 import { assertPurchaseInvoiceNoFree } from './invoiceno'
+import { groupsUnder } from './ledgerGroups'
 
 const STAGES = [
   'ordered',
@@ -49,6 +52,13 @@ function toPlain(res: ResultSet): Row[] {
 function n(v: unknown): number {
   const x = Number(v)
   return Number.isFinite(x) ? x : 0
+}
+
+/** The other rows of the bill this row belongs to, as the caller named them. */
+function billSiblings(v: Row): number[] {
+  return Array.isArray(v?.bill_sibling_ids)
+    ? v.bill_sibling_ids.map((x: unknown) => Number(x)).filter((x: number) => x > 0)
+    : []
 }
 
 // Bargain condition "DLD" (delivered) — supplier bears transport. Accept the
@@ -142,7 +152,9 @@ async function relatedSupplierIds(supplierId: number): Promise<number[]> {
 export async function supplierFyTaxable(
   supplierId: number,
   dateStr: string,
-  excludeId: number
+  excludeId: number,
+  /** The purchase's own company; the desk's open one when left out. */
+  companyId?: number
 ): Promise<number> {
   const { start, end } = fyRange(dateStr)
   const c = getClient()
@@ -150,7 +162,7 @@ export async function supplierFyTaxable(
   const res = await c.execute({
     sql: `SELECT COALESCE(SUM(taxable_value), 0) AS t FROM orders
           WHERE supplier_id IN (${ids.map(() => '?').join(',')}) AND order_date BETWEEN ? AND ? AND id != ? AND company_id = ?`,
-    args: [...ids, start, dateStr, excludeId || 0, getActiveCompanyId()]
+    args: [...ids, start, dateStr, excludeId || 0, companyId || getActiveCompanyId()]
   })
   // Add the "purchase bill amount as on <date>" if that date is in this FY —
   // it seeds the cumulative taxable so the TDS slab picks up from the right
@@ -364,6 +376,14 @@ export async function listOrders(forModule?: string): Promise<Row[]> {
   // hidden however old — the same rule the tanker register and the gate
   // register follow. The window shortens the history, not the workload.
   const from = await visibleFromFor('orders', forModule)
+  // THE INTER-COMPANY DESK SEES THE TRANSFERS AND NOTHING ELSE.
+  //
+  // In the SQL rather than in the page, for the same reason the unload desk's
+  // reader is a query of its own: what this desk must not see is what the mill
+  // pays a third party for oil, and a column filtered in the renderer has
+  // already crossed the wire. A transfer purchase is the one with a sale
+  // behind it, which is exactly what intercompany_sale_id records.
+  const intercoOnly = (await currentScope('orders')) === 'intercompany'
   const res = await getClient().execute({
     args: from ? [getActiveCompanyId(), from] : [getActiveCompanyId()],
     sql: `
@@ -383,6 +403,11 @@ export async function listOrders(forModule?: string): Promise<Row[]> {
            t.name AS transporter_name,
            (SELECT COUNT(*) FROM purchase_tankers pt WHERE pt.order_id = o.id) AS tanker_count,
            (SELECT GROUP_CONCAT(pt.tanker_no, ', ') FROM purchase_tankers pt WHERE pt.order_id = o.id) AS tanker_nos,
+           -- The gate's entry numbers for those tankers, for the Accounts
+           -- purchase register's Vehicle column (the sales register shows its
+           -- gate pass the same way).
+           (SELECT GROUP_CONCAT(ge.gate_entry_no, ', ') FROM gate_entries ge JOIN purchase_tankers pt ON pt.id = ge.tanker_id
+             WHERE pt.order_id = o.id AND ge.direction = 'in') AS gate_entry_nos,
            -- The lab readings, as two counts: how many of this invoice's tankers
            -- have been emptied, and how many of those carry a reading. The
            -- register draws one glyph from the pair — green when they match,
@@ -433,7 +458,9 @@ export async function listOrders(forModule?: string): Promise<Row[]> {
     LEFT JOIN products ot ON ot.id = o.oil_type_id
     LEFT JOIN sources src ON src.id = o.source_id
     LEFT JOIN transporters t ON t.id = o.transporter_id
-    WHERE o.company_id = ?${from ? " AND (o.order_date >= ? OR COALESCE(o.status, '') <> 'received')" : ''}
+    WHERE o.company_id = ?${from ? " AND (o.order_date >= ? OR COALESCE(o.status, '') <> 'received')" : ''}${
+      intercoOnly ? ' AND o.intercompany_sale_id IS NOT NULL' : ''
+    }
     ORDER BY o.id DESC
   `
   })
@@ -674,6 +701,7 @@ export async function listConsignmentDraws(companyIds?: number[]): Promise<Row[]
 }
 
 export async function createOrder(v: Row): Promise<{ id: number }> {
+  return withDbTransaction(async () => {
   await ensureOilType(n(v.oil_type_id))
   const supplier = await getSupplier(n(v.supplier_id))
   // No tanker movement: the goods are already at our site, so the invoice is
@@ -699,18 +727,46 @@ export async function createOrder(v: Row): Promise<{ id: number }> {
   // against. The invoiced quantity is their sum, exactly as a tanker-based
   // invoice adds up its loaded qty. Validated up front so a bad pick never
   // leaves a half-written invoice behind.
+  // THE TYPED QUANTITY LEADS; THE TICKED PARCELS SAY WHERE IT STARTS.
+  //
+  // This used to read v.ordered_qty = lotAlloc.total, which made the parcels
+  // the amount: type 47, tick a 40.444 parcel, and 47 was replaced without a
+  // word. Now the plan takes 47 out of the ticked parcels first and off the
+  // oldest free ones for the rest, splitting the last parcel it reaches into
+  // the part drawn and the part left. See planConsignmentDraw.
   const picks = toLotPicks(v.consignment_lot_ids)
+  let drawPlan: DrawPlan | null = null
   let lotAlloc: LotAllocation = { total: 0, lines: [], primaryBargainId: 0 }
   if (picks.length) {
-    lotAlloc = await validateConsignmentLots(picks, n(v.supplier_id), n(v.oil_type_id), 0, bookInCompany)
-    v.ordered_qty = lotAlloc.total
+    drawPlan = await planConsignmentDraw(
+      picks,
+      n(v.supplier_id),
+      n(v.oil_type_id),
+      n(v.ordered_qty),
+      0,
+      bookInCompany,
+      n(v.bargain_id)
+    )
+    lotAlloc = drawPlan
+    v.ordered_qty = drawPlan.total
     // The invoice's own bargain_id is the first tanker's — the split lives on
     // the tankers, as it does for loaded ones.
-    if (lotAlloc.primaryBargainId) v.bargain_id = lotAlloc.primaryBargainId
+    if (drawPlan.primaryBargainId) v.bargain_id = drawPlan.primaryBargainId
   }
   // Typed-quantity route: the user enters how much is being invoiced and splits
   // it across bargains by hand.
-  const obLines = picks.length ? [] : toBargainLines(v.bargain_lines)
+  //
+  // Ticking parcels no longer throws this away. It used to, because the parcels
+  // decided the quantity and their own bargains decided the split; now the
+  // quantity is the user's, so the split they typed against it is theirs too —
+  // as long as it still adds up to the invoice, which is the only thing that
+  // ever made it unusable.
+  const typedBgLines = toBargainLines(v.bargain_lines)
+  const typedBgTotal = typedBgLines.reduce((t, l) => t + n(l.qty), 0)
+  const obLines =
+    !picks.length || (typedBgLines.length && Math.abs(typedBgTotal - n(v.ordered_qty)) <= 0.001)
+      ? typedBgLines
+      : []
   let obPriced: { lines: { rate: number; qty: number }[]; primaryBargainId: number } = { lines: [], primaryBargainId: 0 }
   if (obLines.length) {
     obPriced = await priceBargainLines(
@@ -829,11 +885,25 @@ export async function createOrder(v: Row): Promise<{ id: number }> {
     ]
   })
   const id = Number(res.lastInsertRowid)
+  // The bill this row is one line of, when it is one of several. Written here
+  // rather than in the INSERT above because two callers in the whole app set
+  // it, and the column list of the one function that books every purchase
+  // there is should not grow for them.
+  const billGroup = String(v.bill_group || '').trim()
+  if (billGroup) {
+    await getClient().execute({
+      sql: 'UPDATE orders SET bill_group = ? WHERE id = ?',
+      args: [billGroup, id]
+    })
+  }
   if (isConsignment) {
-    if (picks.length) {
-      const alloc = await assignConsignmentLots(id, picks, n(v.supplier_id), n(v.oil_type_id), bookInCompany)
-      // Mirror the tanker split onto the invoice, which is what the register reads.
-      await saveOrderBargains(id, alloc.lines.map((l) => ({ bargain_id: l.bargain_id, qty: l.qty })))
+    if (drawPlan) {
+      await applyConsignmentDraw(id, drawPlan, bookInCompany)
+      // Mirror the split onto the invoice, which is what the register reads.
+      await saveOrderBargains(
+        id,
+        obLines.length ? obLines : drawPlan.lines.map((l) => ({ bargain_id: l.bargain_id, qty: l.qty }))
+      )
     } else {
       await saveOrderBargains(
         id,
@@ -842,7 +912,7 @@ export async function createOrder(v: Row): Promise<{ id: number }> {
       await autoAssignConsignmentLots(id, n(v.supplier_id), n(v.oil_type_id), n(v.ordered_qty), n(v.bargain_id), bookInCompany)
     }
   } else {
-    await assignTankers(id, v.tanker_ids, n(v.bargain_id), n(v.transporter_id), bookInCompany)
+    await assignTankers(id, v.tanker_ids, n(v.bargain_id), n(v.transporter_id), bookInCompany, billSiblings(v))
     await applySupplierFreight(id, v)
   }
   await saveOrderBargainInterest(id, v.bargain_interest)
@@ -852,6 +922,7 @@ export async function createOrder(v: Row): Promise<{ id: number }> {
   // invoice does, rather than at whatever was edited first.
   await recordChanges('orders', id, String(v.invoice_no || ''), null, null, ORDER_FIELDS, 'raised')
   return { id }
+  })
 }
 
 // When freight is billed by the supplier (invoice rate > bargain rate), keep
@@ -891,8 +962,13 @@ async function postOrderJournal(
     args: [n(v.oil_type_id)]
   })
   const oilCode = String(oil.rows[0]?.code || oil.rows[0]?.name || 'OIL').toUpperCase()
+  // Into the purchase's OWN company's books — not whichever company the desk
+  // has open. An inter-company purchase is raised from the seller's books, and
+  // without this its voucher was filed there.
+  const own = await getClient().execute({ sql: 'SELECT company_id FROM orders WHERE id = ?', args: [orderId] })
   await postPurchaseJournal({
     orderId,
+    companyId: n(own.rows[0]?.company_id) || undefined,
     date: String(v.order_date),
     invoiceNo: String(v.invoice_no || ''),
     oilCode,
@@ -902,11 +978,162 @@ async function postOrderJournal(
     tds: m.tds_amount,
     net: m.net_amount,
     roundOff,
-    interest: m.interest_per_unit * n(v.ordered_qty)
+    interest: m.interest_per_unit * n(v.ordered_qty),
+    gstPct: n(v.gst_pct),
+    gstType: v.gst_type
   }).catch((e) => console.error('[journal] purchase post failed:', (e as Error).message))
 }
 
+/**
+ * ONE SUPPLIER INVOICE COVERING TANKERS OF SEVERAL PRODUCTS.
+ * ---------------------------------------------------------------------------
+ * A purchase ROW carries one product, because everything hanging off it —
+ * the bargain it draws on, its rate, its GST, its lab readings — is per
+ * product. A supplier's INVOICE is under no such obligation: one bill can
+ * cover a tanker of CPO and a tanker of RPS, and until now the desk had to
+ * split it into two invoices and invent a second number for a document that
+ * only ever had one.
+ *
+ * So the bill is written as one row per product, all carrying the real
+ * number and a shared bill_group. Nothing here re-implements booking a
+ * purchase: each line goes through createOrder exactly as a single-product
+ * invoice does, so the bargain draw, the interest, the freight, the tankers,
+ * the journal entry and the stock movement are the same code on the same
+ * path. The only new thing is that several of them share a number, which the
+ * duplicate rule now allows for rows of one group.
+ */
+
+let billSeq = 0
+function newBillGroup(): string {
+  billSeq += 1
+  return `PB-${Date.now().toString(36)}-${billSeq}`
+}
+
+/** The lines of one bill, as the form sends them. */
+function toBillItems(v: Row): Row[] {
+  const items: Row[] = Array.isArray(v.items) ? v.items : []
+  if (!items.length) throw new Error('Add at least one product to the invoice')
+  const seen = new Set<number>()
+  for (const it of items) {
+    const pid = n(it.oil_type_id)
+    if (!pid) throw new Error('Every line needs a product')
+    // One row per product is what makes an edit able to find its way back to
+    // the line it is changing. Two lines of the same product on one bill would
+    // also mean two draws on one bargain, which is a bargain line, not a
+    // second invoice line.
+    if (seen.has(pid)) throw new Error('The same product is on this invoice twice — put its tankers on one line')
+    seen.add(pid)
+    const ids = Array.isArray(it.tanker_ids) ? it.tanker_ids.map(Number).filter((x) => x > 0) : []
+    if (!ids.length) throw new Error('Every line needs at least one loaded tanker')
+  }
+  return items
+}
+
+/** The header fields every line of a bill inherits, merged onto one line. */
+function billLine(header: Row, item: Row, group: string, first: boolean): Row {
+  return {
+    ...header,
+    ...item,
+    bill_group: group,
+    tanker_ids: item.tanker_ids,
+    // Invoice-level money rides on the FIRST line only, exactly as a sales
+    // invoice carries its round off. Charged twice it would be charged once
+    // per product.
+    round_off: first ? header.round_off : 0,
+    round_off_manual: first ? header.round_off_manual : 0,
+    items: undefined
+  }
+}
+
+/**
+ * Raise one purchase invoice covering several products.
+ *
+ * Unwinds what it made if a line is refused, for the reason a sales invoice
+ * does: a bill the desk was told had not saved must not be half in the books.
+ */
+export async function createTankerInvoice(v: Row): Promise<{ group: string; ids: number[] }> {
+  return withDbTransaction(async () => {
+  const items = toBillItems(v)
+  const group = newBillGroup()
+  const ids: number[] = []
+  try {
+    for (let i = 0; i < items.length; i++) {
+      const res = await createOrder(billLine(v, items[i], group, i === 0))
+      ids.push(n(res?.id))
+    }
+  } catch (e) {
+    for (const id of ids.reverse()) {
+      await deleteOrder(id).catch((x) =>
+        console.error('[orders] could not unwind line', id, 'of a refused invoice:', (x as Error).message)
+      )
+    }
+    throw e
+  }
+  return { group, ids }
+  })
+}
+
+/**
+ * Edit one — add a product, drop one, change what is on any of them.
+ *
+ * Matched to the rows already standing BY PRODUCT and changed in place, rather
+ * than deleting every line and writing them again the way the sales invoice
+ * does. The two look identical from the form and are not at all alike in the
+ * books: a purchase row carries its tankers, its journal entry, its bargain
+ * draw, its lab readings and any LC it is pledged against. Rebuilding hands
+ * every one of those to a new row id for products that did not change, and a
+ * failure halfway through leaves the invoice deleted and not re-written.
+ *
+ * So: a product still on the bill is UPDATED, one taken off is deleted, one
+ * added is created. A line that did not change is not touched at all.
+ */
+export async function updateTankerInvoice(group: string, v: Row): Promise<{ group: string; ids: number[] }> {
+  return withDbTransaction(async () => {
+  const items = toBillItems(v)
+  const g = String(group || '').trim()
+  if (!g) throw new Error('This invoice has no bill reference to edit')
+  const existing = toPlain(
+    await getClient().execute({
+      sql: 'SELECT id, oil_type_id, invoice_no FROM orders WHERE bill_group = ? ORDER BY id',
+      args: [g]
+    })
+  )
+  if (!existing.length) throw new Error('That invoice is no longer in the books')
+
+  // The number this bill already holds is its own, whatever the rule would say
+  // about a stranger holding it — and every line of it holds the same one, so
+  // one look answers for all of them.
+  const held = existing.map((r) => n(r.id))
+  const byProduct = new Map<number, Row>()
+  for (const r of existing) byProduct.set(n(r.oil_type_id), r)
+
+  const ids: number[] = []
+  for (let i = 0; i < items.length; i++) {
+    const line = billLine(v, items[i], g, i === 0)
+    // Every row of this bill is excluded from the duplicate-number search: the
+    // number belongs to this bill however its lines are rearranged. The same
+    // list lets a lorry move between the bill's own lines without reading as
+    // one already billed elsewhere.
+    line.invoice_dup_exclude_ids = held
+    line.bill_sibling_ids = held
+    const standing = byProduct.get(n(items[i].oil_type_id))
+    if (standing) {
+      await updateOrder(n(standing.id), line)
+      ids.push(n(standing.id))
+      byProduct.delete(n(items[i].oil_type_id))
+    } else {
+      const res = await createOrder(line)
+      ids.push(n(res?.id))
+    }
+  }
+  // Whatever is left was taken off the bill.
+  for (const gone of byProduct.values()) await deleteOrder(n(gone.id))
+  return { group: g, ids }
+  })
+}
+
 export async function updateOrder(id: number, v: Row): Promise<{ id: number }> {
+  return withDbTransaction(async () => {
   await ensureOilType(n(v.oil_type_id))
   const supplier = await getSupplier(n(v.supplier_id))
   const cur = await getClient().execute({
@@ -924,15 +1151,42 @@ export async function updateOrder(id: number, v: Row): Promise<{ id: number }> {
   // screen — a register can be open in one book while the invoice lives in the
   // other, and the number must be unique where it is filed.
   await assertPurchaseInvoiceNoFree(v, n(cur.rows[0]?.company_id) || getActiveCompanyId(), id)
+  // The book this purchase is FILED in, not the one on screen. A register can
+  // be open in one company while the invoice lives in the other, and its
+  // parcels only exist in the latter — resolving them against the active
+  // company found none of them, and re-picked nothing.
+  const lotCompany = n(cur.rows[0]?.company_id) || getActiveCompanyId()
   const picks = toLotPicks(v.consignment_lot_ids)
-  // Re-picked tankers redefine the invoiced quantity — checked before any write.
+  // Put back what this invoice was holding BEFORE working out what it now
+  // takes: a part-withdrawal it made is merged back into its parcel by the
+  // release, and a plan drawn up before that would be reading parcel sizes
+  // that are about to change under it.
+  if (wasConsignment) await releaseConsignmentLots(id)
+  // Re-picked tankers redefine where the quantity comes from — checked before
+  // any write, and the quantity itself stays the one that was typed.
+  let drawPlan: DrawPlan | null = null
   let lotAlloc: LotAllocation = { total: 0, lines: [], primaryBargainId: 0 }
   if (wasConsignment && picks.length) {
-    lotAlloc = await validateConsignmentLots(picks, n(v.supplier_id), n(v.oil_type_id), id)
-    v.ordered_qty = lotAlloc.total
-    if (lotAlloc.primaryBargainId) v.bargain_id = lotAlloc.primaryBargainId
+    drawPlan = await planConsignmentDraw(
+      picks,
+      n(v.supplier_id),
+      n(v.oil_type_id),
+      n(v.ordered_qty),
+      id,
+      lotCompany,
+      n(v.bargain_id)
+    )
+    lotAlloc = drawPlan
+    v.ordered_qty = drawPlan.total
+    if (drawPlan.primaryBargainId) v.bargain_id = drawPlan.primaryBargainId
   }
-  const obLines = wasConsignment && !picks.length ? toBargainLines(v.bargain_lines) : []
+  const typedBgLinesU = wasConsignment ? toBargainLines(v.bargain_lines) : []
+  const typedBgTotalU = typedBgLinesU.reduce((t, l) => t + n(l.qty), 0)
+  const obLines =
+    wasConsignment &&
+    (!picks.length || (typedBgLinesU.length && Math.abs(typedBgTotalU - n(v.ordered_qty)) <= 0.001))
+      ? typedBgLinesU
+      : []
   let obPriced: { lines: { rate: number; qty: number; bargainId: number }[]; primaryBargainId: number } = {
     lines: [],
     primaryBargainId: 0
@@ -1037,17 +1291,27 @@ export async function updateOrder(id: number, v: Row): Promise<{ id: number }> {
       args: [n(v.ordered_qty), id]
     })
     // Re-pick the consignment tankers this invoice draws, and re-state how the
-    // quantity is spread across bargains.
-    await releaseConsignmentLots(id)
-    if (picks.length) {
-      const alloc = await assignConsignmentLots(id, picks, n(v.supplier_id), n(v.oil_type_id))
-      await saveOrderBargains(id, alloc.lines.map((l) => ({ bargain_id: l.bargain_id, qty: l.qty })))
+    // quantity is spread across bargains. The release already happened above,
+    // before the plan was drawn up against the parcels it restored.
+    if (drawPlan) {
+      await applyConsignmentDraw(id, drawPlan, lotCompany)
+      await saveOrderBargains(
+        id,
+        obLines.length ? obLines : drawPlan.lines.map((l) => ({ bargain_id: l.bargain_id, qty: l.qty }))
+      )
     } else {
       await saveOrderBargains(
         id,
         obLines.length ? obLines : v.bargain_id ? [{ bargain_id: n(v.bargain_id), qty: n(v.ordered_qty) }] : []
       )
-      await autoAssignConsignmentLots(id, n(v.supplier_id), n(v.oil_type_id), n(v.ordered_qty), n(v.bargain_id))
+      await autoAssignConsignmentLots(
+        id,
+        n(v.supplier_id),
+        n(v.oil_type_id),
+        n(v.ordered_qty),
+        n(v.bargain_id),
+        lotCompany
+      )
     }
   } else {
     await getClient().execute({ sql: 'UPDATE purchase_tankers SET order_id = NULL WHERE order_id = ?', args: [id] })
@@ -1055,7 +1319,7 @@ export async function updateOrder(id: number, v: Row): Promise<{ id: number }> {
     if (moveTo) {
       await getClient().execute({ sql: 'UPDATE orders SET company_id = ? WHERE id = ?', args: [moveTo, id] })
     }
-    await assignTankers(id, v.tanker_ids, n(v.bargain_id), n(v.transporter_id), moveTo)
+    await assignTankers(id, v.tanker_ids, n(v.bargain_id), n(v.transporter_id), moveTo, billSiblings(v))
     await applySupplierFreight(id, v)
   }
   await setSupplierPayable(id, n(v.supplier_id), m.net_amount, String(v.order_date))
@@ -1066,6 +1330,7 @@ export async function updateOrder(id: number, v: Row): Promise<{ id: number }> {
     .catch(() => null)
   await recordChanges('orders', id, String(v.invoice_no || beforeRow?.invoice_no || ''), beforeRow, afterRow, ORDER_FIELDS)
   return { id }
+  })
 }
 
 // A few things point at a purchase that deleteOrder itself doesn't own —
@@ -1261,7 +1526,299 @@ export async function rerateInvoicesForBargain(
   return { updated, failed }
 }
 
+// A TANKER SPLIT ACROSS TWO BARGAINS, BILLED AS IF IT WERE ONE — the reviewed
+// repair in Settings → Accounting checks.
+//
+// When a tanker's own bargain runs short, the rest of it goes on a second
+// bargain (extra_bargain_id / extra_qty), and each part is billed at its own
+// bargain's rate — as the supplier bills it and Tally has it. Some invoices
+// were saved before the tanker was split, so they still carry the one-rate
+// figure: GT/4213 sat ₹8,320.68 under its Tally bill until it was opened and
+// saved. This finds them and, for the ones picked, does exactly what opening
+// and saving does, through the same arithmetic the bargain re-rate uses
+// (bargainLinesForTankers → computeMoney), on each invoice's own terms: GST,
+// TDS, interest, any premium in its rate, its round off (re-derived unless it
+// was typed by hand).
+//
+// Only an invoice a rupee or more out is listed. An inter-company purchase
+// (its sale has to move with it) and one line of a multi-product bill (the
+// lines share one round off) are listed for review, never changed here. Each
+// one changed is archived in accounting_repair_log first; its payable, voucher
+// and history are written as a save writes them.
+export async function repriceSplitTankerInvoices(apply = false, onlyIds?: number[]): Promise<{ findings: Row[]; changed: number }> {
+  const c = getClient()
+  const round2 = (v: number): number => Math.round(v * 100) / 100
+  const pick = onlyIds ? new Set(onlyIds.map((x) => n(x))) : null
+  const cand = toPlain(
+    await c.execute(`SELECT o.* FROM orders o
+                      WHERE EXISTS (SELECT 1 FROM purchase_tankers pt
+                                     WHERE pt.order_id = o.id AND COALESCE(pt.extra_bargain_id, 0) > 0 AND COALESCE(pt.extra_qty, 0) > 0)
+                        AND COALESCE(o.is_trading, 0) = 0
+                      ORDER BY o.order_date ASC, o.id ASC`)
+  )
+  const findings: Row[] = []
+  let changed = 0
+  for (const o of cand) {
+    const id = n(o.id)
+    if (pick && !pick.has(id)) continue
+    const tankerIds = toPlain(await c.execute({ sql: 'SELECT id FROM purchase_tankers WHERE order_id = ?', args: [id] })).map((t) => n(t.id))
+    const lines = applyBargainInterestOverrides(await bargainLinesForTankers(tankerIds), await listOrderBargainInterest(id))
+    const qty = lines.reduce((t, l) => t + l.qty, 0)
+    if (!(qty > 0) || new Set(lines.map((l) => round2(l.rate))).size < 2) continue
+    const supplier = await getSupplier(n(o.supplier_id))
+    const prior = await supplierFyTaxable(n(o.supplier_id), String(o.order_date), id, n(o.company_id) || undefined)
+    const blended = round2(lines.reduce((t, l) => t + l.rate * l.qty, 0) / qty)
+    // Whatever the rate carried above its bargain — freight billed inside it —
+    // stays on top of the blend, as the re-rate does.
+    const oldPremium = round2(n(o.invoice_rate) - n(o.bargain_rate))
+    const invoiceRate = round2(blended + (Math.abs(oldPremium) < 0.01 ? 0 : oldPremium))
+    const money = (roundOff: number): MoneyResult =>
+      computeMoney({
+        orderedQty: n(o.ordered_qty),
+        invoiceRate,
+        bargainRate: blended,
+        gstPct: n(o.gst_pct),
+        tdsPct: supplier?.tds_above_only ? 0 : n(o.tds_pct),
+        addsInterest: n(o.interest_pct) > 0,
+        interestPct: n(o.interest_pct),
+        interestDays: n(o.interest_days),
+        additionalInterest: n(o.additional_interest),
+        rateRoundOff: o.rate_round_off == null ? null : n(o.rate_round_off),
+        tdsThreshold: n(supplier?.tds_threshold),
+        tdsPctAbove: n(o.tds_pct),
+        tdsPrior: prior,
+        roundOff,
+        lines
+      })
+    // The round off the form would set: the total excluding TDS to the whole
+    // rupee, from a base rounded to paise first. A hand-typed one is kept.
+    let roundOff = n(o.round_off)
+    if (n(o.round_off_manual) !== 1) {
+      const first = money(0)
+      const T = round2(first.taxable_value + first.gst_amount)
+      roundOff = round2(Math.round(T) - T)
+    }
+    const m = money(roundOff)
+    if (Math.abs(m.taxable_value - n(o.taxable_value)) < 1) continue
+    const siblings = String(o.bill_group || '').trim()
+      ? n((await c.execute({ sql: 'SELECT COUNT(*) AS k FROM orders WHERE bill_group = ?', args: [String(o.bill_group)] })).rows[0]?.k)
+      : 1
+    const comp = await c.execute({ sql: 'SELECT name FROM companies WHERE id = ?', args: [n(o.company_id)] }).catch(() => null)
+    const review =
+      o.intercompany_sale_id != null || String(o.intercompany_group || '').trim()
+        ? 'Inter-company purchase — open it and save it, with its sale'
+        : siblings > 1
+          ? 'One line of a multi-product bill — open the bill and save it'
+          : null
+    const row: Row = {
+      id,
+      invoice_no: String(o.invoice_no || ''),
+      order_date: String(o.order_date || '').slice(0, 10),
+      company: String(comp?.rows[0]?.name || ''),
+      supplier: String(supplier?.name || ''),
+      qty: round2(qty),
+      lines: lines.map((l) => ({ qty: round2(l.qty), rate: l.rate })),
+      taxable_before: round2(n(o.taxable_value)),
+      taxable_after: round2(m.taxable_value),
+      tds_before: round2(n(o.tds_amount)),
+      tds_after: round2(m.tds_amount),
+      net_before: round2(n(o.net_amount)),
+      net_after: round2(m.net_amount),
+      review
+    }
+    findings.push(row)
+    if (!apply || review) continue
+    await withDbTransaction(async () => {
+      // The transaction's own handle — the one taken above writes outside it.
+      const c = getClient()
+      const je = await c.execute({ sql: 'SELECT id FROM journal_entries WHERE order_id = ? ORDER BY id LIMIT 1', args: [id] })
+      await c.execute(`CREATE TABLE IF NOT EXISTS accounting_repair_log (
+          repair_key TEXT PRIMARY KEY, entry_id INTEGER NOT NULL, before_json TEXT NOT NULL,
+          created_at TEXT NOT NULL DEFAULT (datetime('now')))`)
+      await c.execute({
+        sql: 'INSERT OR REPLACE INTO accounting_repair_log(repair_key, entry_id, before_json) VALUES (?, ?, ?)',
+        args: [`split_tanker_reprice:${id}:${Date.now()}`, n(je.rows[0]?.id), JSON.stringify(o)]
+      })
+      await c.execute({
+        sql: `UPDATE orders SET bargain_rate = ?, invoice_rate = ?, adjusted_rate = ?, taxable_value = ?,
+                gst_amount = ?, tds_amount = ?, round_off = ?, net_amount = ?,
+                final_taxable_value = ?, final_gst_amount = ?, final_tds_amount = ?, final_net_amount = ?
+              WHERE id = ?`,
+        args: [
+          blended, invoiceRate, m.adjusted_rate, m.taxable_value,
+          m.gst_amount, m.tds_amount, roundOff, m.net_amount,
+          m.final_taxable_value, m.final_gst_amount, m.final_tds_amount, m.final_net_amount,
+          id
+        ]
+      })
+      const v: Row = { ...o, bargain_rate: blended, invoice_rate: invoiceRate }
+      await setSupplierPayable(id, n(o.supplier_id), m.net_amount, String(o.order_date))
+      await postOrderJournal(id, v, m, supplier, roundOff)
+      await recordChanges(
+        'orders',
+        id,
+        String(o.invoice_no || ''),
+        o,
+        { ...o, bargain_rate: blended, invoice_rate: invoiceRate, taxable_value: m.taxable_value, gst_amount: m.gst_amount, tds_amount: m.tds_amount, round_off: roundOff, net_amount: m.net_amount },
+        ORDER_FIELDS
+      )
+    })
+    changed++
+  }
+  return { findings, changed }
+}
+
+// A PURCHASE WHOSE TDS IS OLDER THAN ITS SLAB — the reviewed repair in
+// Settings → Accounting checks.
+//
+// A purchase's TDS is worked when it is saved, from where the supplier stood
+// in the year at that moment: the purchases before it, plus the "Purchase bill
+// amount (as on)" on the supplier. Enter that opening figure later — Hukum
+// Chand's ₹1,66,93,268 bought before the books began — and every invoice saved
+// before it still carries the TDS of a slab that had not been crossed: ₹280 on
+// 2026-27/086 where the slab, and Tally, give ₹5,280.
+//
+// This works each purchase's TDS again exactly as Save does (supplierFyTaxable
+// on its own company, the supplier's slab and "No TDS below the slab", the
+// invoice's own TDS %), lists every one 50 paise or more out, and for the ones
+// picked changes the TDS and nothing else: taxable, GST, round off, rate and
+// interest stay as stored; net (and the final block) move by the TDS, the
+// supplier's payable follows, and the voucher is re-posted in place. Each is
+// archived in accounting_repair_log first. A trading purchase is never touched.
+export async function refreshStalePurchaseTds(apply = false, onlyIds?: number[]): Promise<{ findings: Row[]; changed: number }> {
+  const round2 = (v: number): number => Math.round(v * 100) / 100
+  const pick = onlyIds ? new Set(onlyIds.map((x) => n(x))) : null
+  const tier = (taxable: number, prior: number, threshold: number, basePct: number, abovePct: number): number => {
+    if (!threshold || threshold <= 0) return (taxable * basePct) / 100
+    const below = Math.max(0, Math.min(threshold - prior, taxable))
+    return (below * basePct) / 100 + ((taxable - below) * abovePct) / 100
+  }
+  const cand = toPlain(
+    // Trading purchases too — their TDS is tiered on the same slab at save
+    // (GT/1061, Legacy, sat ₹5,000.30 short of Tally until this included them).
+    await getClient().execute(`SELECT o.* FROM orders o ORDER BY o.order_date ASC, o.id ASC`)
+  )
+  const findings: Row[] = []
+  let changed = 0
+  for (const o of cand) {
+    const id = n(o.id)
+    const supplier = await getSupplier(n(o.supplier_id))
+    if (!supplier) continue
+    const prior = await supplierFyTaxable(n(o.supplier_id), String(o.order_date), id, n(o.company_id) || undefined)
+    const basePct = supplier.tds_above_only ? 0 : n(o.tds_pct)
+    const tds = round2(tier(n(o.taxable_value), prior, n(supplier.tds_threshold), basePct, n(o.tds_pct)))
+    const finalTds = round2(tier(n(o.final_taxable_value), prior, n(supplier.tds_threshold), basePct, n(o.tds_pct)))
+    if (Math.abs(tds - n(o.tds_amount)) < 0.5) continue
+    if (pick && !pick.has(id)) continue
+    const comp = await getClient().execute({ sql: 'SELECT name FROM companies WHERE id = ?', args: [n(o.company_id)] }).catch(() => null)
+    const net = round2(n(o.net_amount) + n(o.tds_amount) - tds)
+    const finalNet = round2(n(o.final_net_amount) + n(o.final_tds_amount) - finalTds)
+    findings.push({
+      id,
+      invoice_no: String(o.invoice_no || ''),
+      order_date: String(o.order_date || '').slice(0, 10),
+      company: String(comp?.rows[0]?.name || ''),
+      supplier: String(supplier.name || ''),
+      taxable: round2(n(o.taxable_value)),
+      prior: round2(prior),
+      threshold: n(supplier.tds_threshold),
+      tds_before: round2(n(o.tds_amount)),
+      tds_after: tds,
+      net_before: round2(n(o.net_amount)),
+      net_after: net
+    })
+    if (!apply) continue
+    await withDbTransaction(async () => {
+      // The transaction's own handle.
+      const c = getClient()
+      const je = await c.execute({
+        sql: "SELECT id FROM journal_entries WHERE order_id = ? AND UPPER(vch_type) LIKE 'PURCHASE%' ORDER BY id LIMIT 1",
+        args: [id]
+      })
+      await c.execute(`CREATE TABLE IF NOT EXISTS accounting_repair_log (
+          repair_key TEXT PRIMARY KEY, entry_id INTEGER NOT NULL, before_json TEXT NOT NULL,
+          created_at TEXT NOT NULL DEFAULT (datetime('now')))`)
+      await c.execute({
+        sql: 'INSERT OR REPLACE INTO accounting_repair_log(repair_key, entry_id, before_json) VALUES (?, ?, ?)',
+        args: [`stale_tds:${id}:${Date.now()}`, n(je.rows[0]?.id), JSON.stringify(o)]
+      })
+      await c.execute({
+        sql: 'UPDATE orders SET tds_amount = ?, net_amount = ?, final_tds_amount = ?, final_net_amount = ? WHERE id = ?',
+        args: [tds, net, finalTds, finalNet, id]
+      })
+      await setSupplierPayable(id, n(o.supplier_id), net, String(o.order_date))
+      // THE VOUCHER, EDITED IN PLACE — two lines and nothing else. Re-posting
+      // it whole would give it a new id (a new voucher number, and every one
+      // after it shifting) and re-derive every line, which moved a GST line by
+      // a paisa on one bill. So the TDS line is set to the new TDS and the
+      // supplier's line moves by exactly the same amount: the voucher stays
+      // balanced to the paisa and keeps its id, date and number.
+      const entry = je.rows.length ? n(je.rows[0]?.id) : 0
+      // The supplier's line: Sundry Creditors or any group of the books' own
+      // under it (SC-OIL).
+      const creditorGroups = await groupsUnder('Sundry Creditors')
+      const vLines = entry
+        ? toPlain(
+            await c.execute({
+              sql: `SELECT jl.id, jl.account_id, jl.dr, jl.cr, a.name, a.acc_group FROM journal_lines jl
+                      JOIN ledger_accounts a ON a.id = jl.account_id WHERE jl.entry_id = ? ORDER BY jl.id`,
+              args: [entry]
+            })
+          )
+        : []
+      const tdsLine = vLines.find((l) => String(l.name).toUpperCase() === 'TDS PAYABLE A/C' && n(l.cr) > 0)
+      const partyLine = vLines
+        .filter((l) => creditorGroups.includes(String(l.acc_group)) && n(l.cr) > 0)
+        .sort((a, b) => n(b.cr) - n(a.cr))[0]
+      const tdsAcct = tdsLine
+        ? n(tdsLine.account_id)
+        : n((await c.execute("SELECT id FROM ledger_accounts WHERE UPPER(name) = 'TDS PAYABLE A/C' LIMIT 1")).rows[0]?.id)
+      if (entry && partyLine && tdsAcct) {
+        const delta = round2(tds - (tdsLine ? n(tdsLine.cr) : 0))
+        if (tdsLine) {
+          if (tds < 0.005) await c.execute({ sql: 'DELETE FROM journal_lines WHERE id = ?', args: [n(tdsLine.id)] })
+          else await c.execute({ sql: 'UPDATE journal_lines SET cr = ? WHERE id = ?', args: [tds, n(tdsLine.id)] })
+        } else if (tds > 0.005) {
+          await c.execute({ sql: 'INSERT INTO journal_lines (entry_id, account_id, dr, cr) VALUES (?, ?, 0, ?)', args: [entry, tdsAcct, tds] })
+        }
+        await c.execute({ sql: 'UPDATE journal_lines SET cr = ? WHERE id = ?', args: [round2(n(partyLine.cr) - delta), n(partyLine.id)] })
+        const bal = toPlain(await c.execute({ sql: 'SELECT ROUND(SUM(dr), 2) AS dr, ROUND(SUM(cr), 2) AS cr FROM journal_lines WHERE entry_id = ?', args: [entry] }))[0]
+        if (Math.abs(n(bal?.dr) - n(bal?.cr)) > 0.005) throw new Error(`${String(o.invoice_no)}: the voucher would not balance after the TDS change — left as it was`)
+        await recordChanges('orders', id, String(o.invoice_no || ''), o, { ...o, tds_amount: tds, net_amount: net }, ORDER_FIELDS)
+        return
+      }
+      // No voucher yet, or one not in the usual shape — posted afresh, as a
+      // save would.
+      // Every figure but the TDS as stored — including the interest the
+      // voucher carried, worked the way computeMoney works it.
+      const interestPerUnit =
+        n(o.interest_pct) > 0
+          ? n(o.bargain_rate) * (1 + n(o.gst_pct) / 100) * (n(o.interest_pct) / 100) * (n(o.interest_days) / 365)
+          : 0
+      const m: MoneyResult = {
+        interest_pct: n(o.interest_pct),
+        interest_days: n(o.interest_days),
+        interest_per_unit: interestPerUnit,
+        adjusted_rate: n(o.adjusted_rate),
+        taxable_value: n(o.taxable_value),
+        gst_amount: n(o.gst_amount),
+        tds_amount: tds,
+        net_amount: net,
+        final_taxable_value: n(o.final_taxable_value),
+        final_gst_amount: n(o.final_gst_amount),
+        final_tds_amount: finalTds,
+        final_net_amount: finalNet
+      }
+      await postOrderJournal(id, o, m, supplier, n(o.round_off))
+      await recordChanges('orders', id, String(o.invoice_no || ''), o, { ...o, tds_amount: tds, net_amount: net }, ORDER_FIELDS)
+    })
+    changed++
+  }
+  return { findings, changed }
+}
+
 export async function deleteOrder(id: number): Promise<{ id: number }> {
+  return withDbTransaction(async () => {
   const c = getClient()
   await assertOrderNotInUse(id)
   await deleteJournalByRef('order_id', id)
@@ -1283,6 +1840,7 @@ export async function deleteOrder(id: number): Promise<{ id: number }> {
   await c.execute({ sql: 'DELETE FROM order_bargain_interest WHERE order_id = ?', args: [id] })
   await c.execute({ sql: 'DELETE FROM orders WHERE id = ?', args: [id] })
   return { id }
+  })
 }
 
 async function assignTankers(
@@ -1290,7 +1848,15 @@ async function assignTankers(
   tankerIds: unknown,
   bargainId: number,
   transporterId: number,
-  companyId = 0
+  companyId = 0,
+  // The OTHER rows of the same bill, when this row is one line of several.
+  //
+  // "Already attached to another purchase" is the right answer for a tanker
+  // billed on somebody else's invoice and the wrong one for a tanker moving
+  // between the lines of the bill it is already on — which is what happens the
+  // moment a product is taken off a multi-product invoice, or two lines swap a
+  // lorry. Those rows are named here so the check can tell the two apart.
+  siblingIds: number[] = []
 ): Promise<void> {
   const ids = Array.isArray(tankerIds) ? tankerIds.map(Number).filter((x) => x > 0) : []
   if (!ids.length) throw new Error('Select at least one loaded tanker')
@@ -1302,7 +1868,11 @@ async function assignTankers(
     })
     if (!res.rows.length) throw new Error('A selected tanker no longer exists')
     const row = res.rows[0]
-    if (row.order_id != null && Number(row.order_id) !== orderId) {
+    if (
+      row.order_id != null &&
+      Number(row.order_id) !== orderId &&
+      !siblingIds.includes(Number(row.order_id))
+    ) {
       throw new Error('A selected tanker is already attached to another purchase')
     }
     if (Number(row.bargain_id) !== bargainId) {
@@ -1659,7 +2229,7 @@ export async function backfillPurchaseRoundOff(): Promise<void> {
 
   const res = await c.execute(`
     SELECT o.id, o.company_id, o.supplier_id, o.invoice_no, o.order_date, o.ordered_qty, o.bargain_rate,
-           o.gst_pct, o.interest_pct, o.interest_days, o.taxable_value, o.gst_amount, o.tds_pct, o.tds_amount,
+           o.gst_pct, o.gst_type, o.interest_pct, o.interest_days, o.taxable_value, o.gst_amount, o.tds_pct, o.tds_amount,
            o.round_off, o.round_off_manual, o.net_amount, o.final_taxable_value, o.final_gst_amount,
            pr.code AS oil_code, pr.name AS oil_name
     FROM orders o LEFT JOIN products pr ON pr.id = o.oil_type_id
@@ -1733,6 +2303,8 @@ export async function backfillPurchaseRoundOff(): Promise<void> {
       net,
       roundOff: ro,
       interest: interestPerUnit * n(r.ordered_qty),
+      gstPct: n(r.gst_pct),
+      gstType: r.gst_type,
       companyId: n(r.company_id) || 1
     }).catch((e) => console.error('[orders] journal re-post failed:', (e as Error).message))
     // The payable ledger entry mirrors net_amount, so it has to be restated
@@ -1789,7 +2361,7 @@ export async function repairPurchaseTdsOnTaxable(): Promise<void> {
     SELECT o.id, o.company_id, o.invoice_no, o.order_date, o.supplier_id,
            o.taxable_value, o.gst_amount, o.round_off, o.tds_pct, o.tds_amount, o.net_amount,
            o.final_taxable_value, o.final_gst_amount, o.final_tds_amount, o.final_net_amount,
-           o.interest_pct, o.interest_days, o.bargain_rate, o.gst_pct, o.ordered_qty,
+           o.interest_pct, o.interest_days, o.bargain_rate, o.gst_pct, o.gst_type, o.ordered_qty,
            p.code AS oil_code, p.name AS oil_name,
            s.name AS supplier_name, s.tds_threshold, s.tds_above_only,
            s.opening_purchase_amount, s.opening_purchase_date
@@ -1861,6 +2433,8 @@ export async function repairPurchaseTdsOnTaxable(): Promise<void> {
       net,
       roundOff: RO,
       interest,
+      gstPct: n(raw.gst_pct),
+      gstType: raw.gst_type,
       companyId: n(raw.company_id) || 1
     }).catch((e) => console.error(`[orders] TDS repair journal #${raw.id}:`, (e as Error).message))
     if (n(raw.supplier_id)) {
@@ -1954,6 +2528,12 @@ export async function revertPurchaseTanker(id: number): Promise<{ id: number; st
   // it counted as Loaded in the movement pivot.
   const clearQty = String(tanker.status) === 'loaded' ? ', loaded_qty = 0' : ''
   const clear = dateCol[String(tanker.status)]
+  // Back from Empty: the sale it was sold on with goes too, and the buying
+  // company's purchase with it.
+  if (String(tanker.status) === 'empty') {
+    const { removeOnwardSale } = await import('./onwardSale')
+    await removeOnwardSale(id)
+  }
   await c.execute({
     sql: `UPDATE purchase_tankers SET status = ?${clear ? `, ${clear} = NULL` : ''}${String(tanker.status) === 'empty' ? ', received_qty = NULL' : ''}${clearQty} WHERE id = ?`,
     args: [prev, id]
@@ -1970,6 +2550,11 @@ export async function revertPurchaseTanker(id: number): Promise<{ id: number; st
 // A reading with no value is dropped rather than stored blank: "not tested"
 // and "tested and found to be nothing" are different answers, and only one of
 // them is worth a row.
+//
+// part_no says which parcel of the load the reading is of — 0 for a load
+// sampled once, 1..N for one arriving as several. A split load writes the same
+// parameter once per parcel, and part_qty carries how much that parcel was, so
+// the blend can be re-derived rather than remembered.
 export async function saveTankerQuality(tankerId: number, rows: Row[]): Promise<void> {
   const c = getClient()
   await c.execute({ sql: 'DELETE FROM tanker_quality WHERE tanker_id = ?', args: [n(tankerId)] })
@@ -1981,9 +2566,11 @@ export async function saveTankerQuality(tankerId: number, rows: Row[]): Promise<
     // An empty string is a real answer here — "a figure with no unit", which
     // is what a Lovibond colour is — so it is stored rather than defaulted.
     const unit = r?.unit === undefined || r?.unit === null ? '%' : String(r.unit).trim()
+    const partNo = Math.max(0, Math.trunc(n(r?.part_no)))
+    const partQty = String(r?.part_qty ?? '').trim()
     await c.execute({
-      sql: 'INSERT INTO tanker_quality (tanker_id, name, value, sort_order, unit) VALUES (?, ?, ?, ?, ?)',
-      args: [n(tankerId), name, value, order++, unit]
+      sql: 'INSERT INTO tanker_quality (tanker_id, name, value, sort_order, unit, part_no, part_qty) VALUES (?, ?, ?, ?, ?, ?, ?)',
+      args: [n(tankerId), name, value, order++, unit, partNo, partQty || null]
     })
   }
 }
@@ -1999,17 +2586,68 @@ export async function saveOrderQuality(orderId: number, rows: Row[]): Promise<vo
     // Blank is not saved — "not tested" and "tested at nothing" differ.
     if (!name || !value) continue
     const unit = r?.unit === undefined || r?.unit === null ? '%' : String(r.unit).trim()
+    const partNo = Math.max(0, Math.trunc(n(r?.part_no)))
+    const partQty = String(r?.part_qty ?? '').trim()
     await c.execute({
-      sql: 'INSERT INTO order_quality (order_id, name, value, sort_order, unit) VALUES (?, ?, ?, ?, ?)',
-      args: [n(orderId), name, value, i++, unit]
+      sql: 'INSERT INTO order_quality (order_id, name, value, sort_order, unit, part_no, part_qty) VALUES (?, ?, ?, ?, ?, ?, ?)',
+      args: [n(orderId), name, value, i++, unit, partNo, partQty || null]
     })
   }
+}
+
+// Local wall clock, not SQLite's UTC now() — a waiver said at half past one in
+// the morning should read as that, on that day.
+function stampNow(): string {
+  const d = new Date()
+  const p2 = (x: number): string => String(x).padStart(2, '0')
+  return (
+    `${d.getFullYear()}-${p2(d.getMonth() + 1)}-${p2(d.getDate())} ` +
+    `${p2(d.getHours())}:${p2(d.getMinutes())}:${p2(d.getSeconds())}`
+  )
+}
+
+/**
+ * NOT EVERY INVOICE HAS SOMETHING TO SAMPLE.
+ *
+ * A transfer between our own companies, or any invoice whose goods were never
+ * drawn and tested here, has no lab reading to give — and the flask sat amber
+ * on the register for ever, which teaches everybody to ignore an amber flask.
+ * So the desk can say so, once, and the register believes it.
+ *
+ * Said, not skipped: the decision is stamped and carries whatever reason was
+ * given, and it can be taken back — because "we did not test this" is an
+ * answer somebody may have to account for later.
+ */
+export async function waiveOrderQuality(
+  orderId: number,
+  waived: boolean,
+  note?: string
+): Promise<{ id: number; waived: boolean }> {
+  const id = n(orderId)
+  if (!id) throw new Error('Which invoice?')
+  // OPENED TO EVERYONE WHO HAS ACCESS TO PURCHASES.
+  //
+  // This used to stop the readings desk specifically — declaring an invoice
+  // has nothing to sample was treated as the purchase desk's call, not a lab
+  // result. Whoever has access to this page at all is now trusted to make
+  // that call; the readings desk is no longer singled out from it.
+  const on = waived !== false
+  await getClient().execute({
+    sql: `UPDATE orders SET quality_waived = ?, quality_waived_note = ?, quality_waived_at = ? WHERE id = ?`,
+    args: [
+      on ? 1 : 0,
+      on ? String(note ?? '').trim().slice(0, 500) || null : null,
+      on ? stampNow() : null,
+      id
+    ]
+  })
+  return { id, waived: on }
 }
 
 export async function listOrderQuality(orderId: number): Promise<Row[]> {
   return toPlain(
     await getClient().execute({
-      sql: 'SELECT id, name, value, sort_order, unit FROM order_quality WHERE order_id = ? ORDER BY sort_order, id',
+      sql: 'SELECT id, name, value, sort_order, unit, part_no, part_qty FROM order_quality WHERE order_id = ? ORDER BY sort_order, part_no, id',
       args: [n(orderId)]
     })
   )
@@ -2017,10 +2655,29 @@ export async function listOrderQuality(orderId: number): Promise<Row[]> {
 
 export async function listTankerQuality(tankerId: number): Promise<Row[]> {
   const res = await getClient().execute({
-    sql: 'SELECT id, name, value, sort_order, unit FROM tanker_quality WHERE tanker_id = ? ORDER BY sort_order, id',
+    sql: 'SELECT id, name, value, sort_order, unit, part_no, part_qty FROM tanker_quality WHERE tanker_id = ? ORDER BY sort_order, part_no, id',
     args: [n(tankerId)]
   })
   return toPlain(res)
+}
+
+// The lab readings for many tankers at once — the Purchases Excel's Technical
+// Parameters sheet, which would otherwise ask once per tanker. Chunked so a
+// long export stays inside SQLite's limit on bound parameters.
+export async function listTankerQualityMany(ids: number[]): Promise<Row[]> {
+  const list = [...new Set((Array.isArray(ids) ? ids : []).map((x) => n(x)).filter((x) => x > 0))]
+  const out: Row[] = []
+  for (let i = 0; i < list.length; i += 400) {
+    const chunk = list.slice(i, i + 400)
+    const res = await getClient().execute({
+      sql: `SELECT tanker_id, name, value, sort_order, unit, part_no, part_qty FROM tanker_quality
+             WHERE tanker_id IN (${chunk.map(() => '?').join(', ')})
+             ORDER BY tanker_id, part_no, sort_order, id`,
+      args: chunk
+    })
+    out.push(...toPlain(res))
+  }
+  return out
 }
 
 // Every FFA the lab has actually recorded, newest first.
@@ -2067,7 +2724,7 @@ export async function listFfaHistory(productId = 0, limit = 60): Promise<Row[]> 
              s.name AS party, p.name AS product, p.code AS product_code,
              pt.oil_type_id AS product_id,
              COALESCE(pt.received_qty, pt.loaded_qty) AS qty, pt.uom AS uom,
-             o.invoice_no AS invoice_no, tq.value AS ffa,
+             o.invoice_no AS invoice_no, tq.value AS ffa, tq.part_qty AS part_qty,
              co.name AS company
         FROM tanker_quality tq
         JOIN purchase_tankers pt ON pt.id = tq.tanker_id
@@ -2083,7 +2740,7 @@ export async function listFfaHistory(productId = 0, limit = 60): Promise<Row[]> 
              COALESCE(NULLIF(o.delivered_date, ''), o.order_date),
              o.status,
              s.name, p.name, p.code, o.oil_type_id,
-             COALESCE(o.received_qty, o.ordered_qty), o.uom, o.invoice_no, oq.value,
+             COALESCE(o.received_qty, o.ordered_qty), o.uom, o.invoice_no, oq.value, oq.part_qty,
              co.name
         FROM order_quality oq
         JOIN orders o ON o.id = oq.order_id
@@ -2103,12 +2760,42 @@ export async function listFfaHistory(productId = 0, limit = 60): Promise<Row[]> 
   // column is free text, and "23", "23.4%" and "approx 23" all arrive from the
   // same field. Anything with no number in it cannot be averaged and would
   // only sit in the list as a row that can be ticked but not used.
-  return toPlain(res)
+  const read: Row[] = toPlain(res)
     .map((r) => {
       const m = String(r.ffa ?? '').match(/-?\d+(\.\d+)?/)
       return { ...r, ffa_num: m ? Number(m[0]) : null }
     })
     .filter((r) => r.ffa_num != null && Number.isFinite(r.ffa_num as number))
+
+  // A LOAD IS ONE LINE, WHATEVER IT WAS SAMPLED IN.
+  //
+  // A tanker that arrived as two parcels files two FFAs, and this list is
+  // "loads that have come in" — so the two are blended back into the one load
+  // they belong to rather than offered as two tickable rows. Weighted by each
+  // parcel's own quantity, because that is what the blend in the tank actually
+  // is; a parcel with no quantity recorded falls back to an equal voice.
+  const byLoad = new Map<string, Row[]>()
+  const order: string[] = []
+  for (const r of read) {
+    const k = `${String(r.kind)}:${String(r.id)}`
+    if (!byLoad.has(k)) {
+      byLoad.set(k, [])
+      order.push(k)
+    }
+    ;(byLoad.get(k) as Row[]).push(r)
+  }
+  return order.map((k) => {
+    const g = byLoad.get(k) as Row[]
+    if (g.length === 1) return g[0]
+    const w = g.map((r) => (n(r.part_qty) > 0 ? n(r.part_qty) : 0))
+    const total = w.reduce((a, b) => a + b, 0)
+    const blend =
+      total > 0
+        ? g.reduce((a, r, i) => a + n(r.ffa_num) * w[i], 0) / total
+        : g.reduce((a, r) => a + n(r.ffa_num), 0) / g.length
+    const ffa = Math.round(blend * 1000) / 1000
+    return { ...g[0], ffa: String(ffa), ffa_num: ffa, parts: g.length }
+  })
 }
 
 export async function advancePurchaseTanker(id: number, toStatus: string, data: Row): Promise<{ id: number }> {
@@ -2312,6 +2999,10 @@ export async function advancePurchaseTanker(id: number, toStatus: string, data: 
       args: [data.inside_factory_date || null, id]
     })
   } else if (toStatus === 'empty') {
+    // A trading company's tanker is sold on as it is emptied — the buyer and
+    // its purchase invoice number are asked first, before anything is written.
+    const { assertOnwardSale } = await import('./onwardSale')
+    await assertOnwardSale(tanker, data)
     // Only when the caller actually sent readings. The Empty form no longer
     // collects them — they are entered from the register whenever the lab
     // result comes back — so an unconditional save here would DELETE what was
@@ -2394,6 +3085,10 @@ export async function advancePurchaseTanker(id: number, toStatus: string, data: 
     }
   }
   if (tanker.order_id) await syncPurchaseFromTankers(n(tanker.order_id))
+  if (toStatus === 'empty') {
+    const { raiseOnwardSale } = await import('./onwardSale')
+    await raiseOnwardSale(id, data)
+  }
   return { id }
 }
 
@@ -2674,4 +3369,74 @@ export async function recordSupplierPayment(data: Row): Promise<{ id: number }> 
     ]
   })
   return { id: Number(res.lastInsertRowid) }
+}
+
+/**
+ * THE INTEREST ON A PURCHASE, IN RUPEES — for the ledger's columnar view.
+ *
+ * The invoice prices interest into its rate, line by line: each bargain line
+ * carries its own additional interest per MT (or the invoice's, where none is
+ * set) and its own interest days, exactly as computeMoney prices them. This
+ * gives the amount that adds up to — Σ (additional ₹/MT + days interest ₹/MT)
+ * × that line's quantity — plus any supplier credit interest. An invoice on
+ * two bargains carries its interest per bargain, so reading the invoice-level
+ * field alone (as the column once did) showed nothing for it; and that field
+ * is a rate per MT, not an amount.
+ */
+export async function orderInterestAmounts(orderIds: number[]): Promise<Map<number, number>> {
+  const out = new Map<number, number>()
+  const ids = [...new Set(orderIds.map((x) => n(x)).filter((x) => x > 0))]
+  if (!ids.length) return out
+  const c = getClient()
+  const ph = ids.map(() => '?').join(',')
+  const orders = toPlain(
+    await c.execute({
+      sql: `SELECT o.id, o.bargain_id, o.bargain_rate, o.ordered_qty, o.gst_pct, o.interest_pct, o.interest_days,
+                   o.additional_interest, o.credit_interest_amount, COALESCE(s.adds_interest, 0) AS adds_interest
+              FROM orders o LEFT JOIN suppliers s ON s.id = o.supplier_id
+             WHERE o.id IN (${ph})`,
+      args: ids
+    })
+  )
+  const overrides = toPlain(
+    await c.execute({ sql: `SELECT order_id, bargain_id, additional_interest, interest_days FROM order_bargain_interest WHERE order_id IN (${ph})`, args: ids })
+  )
+  const tankers = toPlain(await c.execute({ sql: `SELECT id, order_id FROM purchase_tankers WHERE order_id IN (${ph})`, args: ids }))
+  const split = toPlain(
+    await c.execute({
+      sql: `SELECT ob.order_id, ob.bargain_id, ob.qty, b.rate_per_uom AS rate
+              FROM order_bargains ob LEFT JOIN bargains b ON b.id = ob.bargain_id WHERE ob.order_id IN (${ph})`,
+      args: ids
+    })
+  )
+  for (const o of orders) {
+    const id = n(o.id)
+    let lines: { rate: number; qty: number; bargainId: number }[] = []
+    const tIds = tankers.filter((t) => n(t.order_id) === id).map((t) => n(t.id))
+    if (tIds.length) lines = await bargainLinesForTankers(tIds)
+    if (!lines.length) {
+      lines = split.filter((s) => n(s.order_id) === id).map((s) => ({ rate: n(s.rate), qty: n(s.qty), bargainId: n(s.bargain_id) }))
+    }
+    if (!lines.length) lines = [{ rate: n(o.bargain_rate), qty: n(o.ordered_qty), bargainId: n(o.bargain_id) }]
+    const pct = n(o.adds_interest) ? n(o.interest_pct) : 0
+    const k = (1 + n(o.gst_pct) / 100) * (pct / 100)
+    let amt = 0
+    if (lines.length === 1) {
+      // One line: priced off the invoice's own figures, as computeMoney does.
+      const ov = overrides.find((x) => n(x.order_id) === id)
+      const addl = n(o.additional_interest) || (ov ? n(ov.additional_interest) : 0)
+      const days = n(o.interest_days)
+      amt = (addl + n(o.bargain_rate) * k * (days / 365)) * n(o.ordered_qty)
+    } else {
+      for (const l of lines) {
+        const ov = overrides.find((x) => n(x.order_id) === id && n(x.bargain_id) === l.bargainId)
+        const addl = ov && ov.additional_interest != null ? n(ov.additional_interest) : n(o.additional_interest)
+        const days = ov && n(ov.interest_days) ? n(ov.interest_days) : n(o.interest_days)
+        amt += (addl + l.rate * k * (days / 365)) * l.qty
+      }
+    }
+    amt += n(o.credit_interest_amount)
+    out.set(id, Math.round(amt * 100) / 100)
+  }
+  return out
 }

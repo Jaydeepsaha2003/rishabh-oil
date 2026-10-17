@@ -15,6 +15,8 @@ interface Props {
   min?: string // ISO — dates before this are disabled
   max?: string // ISO — dates after this are disabled
   className?: string
+  /** The calendar's own layer, when the field sits in something layered high. */
+  popoverClassName?: string
 }
 
 function toDate(iso?: string): Date | undefined {
@@ -32,7 +34,8 @@ export function DatePicker({
   disabled,
   min,
   max,
-  className
+  className,
+  popoverClassName
 }: Props): React.JSX.Element {
   const [open, setOpen] = React.useState(false)
   const selected = toDate(value)
@@ -73,7 +76,7 @@ export function DatePicker({
           data-slot="date-picker"
           disabled={disabled}
           className={cn(
-            'h-9 w-full justify-start text-left font-normal',
+            'h-9 w-full justify-start rounded-none text-left font-normal',
             !selected && 'text-muted-foreground',
             className
           )}
@@ -82,7 +85,7 @@ export function DatePicker({
           {selected ? format(selected, 'dd-MM-yyyy') : <span>{placeholder}</span>}
         </Button>
       </PopoverTrigger>
-      <PopoverContent className="w-auto p-0" align="start">
+      <PopoverContent className={cn('w-auto p-0', popoverClassName)} align="start">
         <Calendar
           mode="single"
           selected={selected}

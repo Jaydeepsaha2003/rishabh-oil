@@ -131,7 +131,7 @@ export async function listFormulationVersions(formulationId: number): Promise<Ro
   })
 }
 
-export async function listFormulations(): Promise<Row[]> {
+export async function listFormulations(opts?: { includeHidden?: boolean }): Promise<Row[]> {
   // blend_pct is the input mix, which must total 100%. TOR (Total Oil
   // Required) is what actually has to go in for 100 of output — 100% plus
   // whatever the batch gives back as by-products and loses. A recipe with
@@ -155,6 +155,7 @@ export async function listFormulations(): Promise<Row[]> {
     FROM formulations f
     LEFT JOIN products p ON p.id = f.product_id
     LEFT JOIN formulation_subcategories sc ON sc.id = f.subcategory_id
+    ${opts?.includeHidden ? '' : 'WHERE COALESCE(f.hidden, 0) = 0'}
     ORDER BY f.id DESC
   `)
   const rows = toPlain(res)
@@ -174,9 +175,16 @@ export async function listFormulations(): Promise<Row[]> {
 
 export async function getFormulationItems(formulationId: number): Promise<Row[]> {
   const res = await getClient().execute({
-    sql: `SELECT i.*, p.name AS product_name, p.category AS product_category
+    // The by-product's NAME travels too. An auto-calculated input names the
+    // product its fatty acid is recovered into by id alone, so anything
+    // showing that line had either to look the id up itself or print the
+    // input's own name against it — which reads as SHEA being recovered when
+    // it is the fatty acid off the shea.
+    sql: `SELECT i.*, p.name AS product_name, p.category AS product_category,
+                 bp.name AS byproduct_product_name
           FROM formulation_items i
           LEFT JOIN products p ON p.id = i.product_id
+          LEFT JOIN products bp ON bp.id = i.byproduct_product_id
           WHERE i.formulation_id = ?
           ORDER BY i.id`,
     args: [formulationId]
@@ -216,9 +224,12 @@ async function writeItems(formulationId: number, items: Row[]): Promise<void> {
 }
 
 export async function createFormulation(v: Row): Promise<{ id: number }> {
+  // Hidden ones are built one-off from the PP breakdown and never join the
+  // Formulations tab — see the hidden column and listFormulations.
+  const hidden = v.hidden ? 1 : 0
   const res = await getClient().execute({
-    sql: 'INSERT INTO formulations (product_id, name, uom, subcategory_id, active) VALUES (?, ?, ?, ?, 1)',
-    args: [n(v.product_id), v.name || null, v.uom || 'MT', n(v.subcategory_id) || null]
+    sql: 'INSERT INTO formulations (product_id, name, uom, subcategory_id, active, hidden) VALUES (?, ?, ?, ?, 1, ?)',
+    args: [n(v.product_id), v.name || null, v.uom || 'MT', n(v.subcategory_id) || null, hidden]
   })
   const id = Number(res.lastInsertRowid)
   await writeItems(id, v.items)

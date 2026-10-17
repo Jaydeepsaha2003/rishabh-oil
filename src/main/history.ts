@@ -63,6 +63,29 @@ export const BARGAIN_FIELDS: FieldSpec[] = [
   { key: 'remarks', label: 'Remarks', kind: 'text' }
 ]
 
+/** And for a sales bargain — the same question asked of the selling side. */
+export const SALES_BARGAIN_FIELDS: FieldSpec[] = [
+  { key: 'bargain_no', label: 'Bargain no' },
+  { key: 'manual_bargain_no', label: 'Their bargain no' },
+  { key: 'bargain_date', label: 'Bargain date' },
+  { key: 'customer_id', label: 'Customer' },
+  { key: 'customer', label: 'Customer name', kind: 'text' },
+  { key: 'product_id', label: 'Product' },
+  { key: 'sale_category', label: 'Category' },
+  { key: 'sale_type', label: 'Sale type' },
+  { key: 'packaging_id', label: 'Packed SKU' },
+  { key: 'qty', label: 'Quantity', kind: 'qty' },
+  { key: 'uom', label: 'Unit' },
+  { key: 'rate', label: 'Bargain rate', kind: 'money' },
+  { key: 'rate_expiry_date', label: 'Rate expiry' },
+  { key: 'freight_term', label: 'Freight term' },
+  { key: 'gst_pct', label: 'GST %' },
+  { key: 'gst_type', label: 'GST type' },
+  { key: 'allowed_shortage_pct', label: 'Allowed shortage %' },
+  { key: 'status', label: 'Status' },
+  { key: 'note', label: 'Remarks', kind: 'text' }
+]
+
 const n = (v: unknown): number => (Number.isFinite(Number(v)) ? Number(v) : 0)
 
 // A value as it will be read back. Numbers are compared as numbers — 130000 and

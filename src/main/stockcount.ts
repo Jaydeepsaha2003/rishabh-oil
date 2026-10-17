@@ -33,6 +33,8 @@ export async function stockCountSheet(date: string): Promise<Row[]> {
       code: l.code,
       name: l.name,
       category: l.category,
+      // What the product is counted in, for the rate label (₹/MT, ₹/PCS…).
+      uom: l.uom || 'MT',
       book_qty: l.stock,
       rate,
       book_value: (Number(l.stock) || 0) * rate,

@@ -1,7 +1,11 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { toast } from 'sonner'
-import { Check, ChevronRight, Clock, Package, Pencil, Plus, ShoppingCart, Trash2 } from 'lucide-react'
+import { Check, ChevronDown, ChevronRight, Clock, Layers, Package, Pencil, Plus, ShoppingCart, Trash2, Unlink } from 'lucide-react'
 import { PageHeader } from '@/components/PageHeader'
+import { MobileBar } from '@/components/MobileBar'
+import { SerialNo } from '@/components/SerialNo'
+import { useIsMobile } from '@/lib/useIsMobile'
+import { ConsignmentOpeningDialog } from '@/components/ConsignmentOpening'
 import { ExcelButton } from '@/components/ExcelButton'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -13,8 +17,9 @@ import { DatePicker } from '@/components/ui/date-picker'
 import { InfoTip } from '@/components/ui/tooltip'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
-import { formatDate, formatINR, formatNum, todayISO } from '@/lib/format'
+import { errText, formatDate, formatINR, formatNum, todayISO } from '@/lib/format'
 import { cn } from '@/lib/utils'
+import { lotTint } from '@/lib/lotTint'
 import { computeMoney } from '@/lib/orderCalc'
 import { useLiveRefresh } from '@/lib/useLiveRefresh'
 import { useGlobalDateRange, globalRangeAppliesTo } from '@/lib/globalDateRange'
@@ -23,6 +28,57 @@ import { useEntryWindow } from '@/lib/useEntryWindow'
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Row = Record<string, any>
+
+/**
+ * THE TANKERS OF ONE PRODUCT, GATHERED BY THE CARGO THEY CAME OFF.
+ *
+ * A party's product can run to twenty-odd tankers, and they are not twenty-odd
+ * unrelated arrivals — they are three or four parcels, each a lot at a
+ * terminal, delivered a few vehicles at a time. Listed flat, the only way to
+ * see what a parcel brought in is to read the lot chip down every line and add
+ * the column up by eye, which is exactly the question the register is asked.
+ *
+ * So the lines gather under the parcel that owns them and each parcel folds.
+ * A product carrying ONE parcel (or none labelled yet) is left alone: there is
+ * nothing to tell apart, and a heading over a single group is furniture.
+ *
+ * SN is renumbered down the grouped page rather than carried from the flat
+ * order, because it has always been a position on screen and not a stored
+ * number — a column reading 1, 2, 3, 7, 8 would look like missing rows.
+ */
+interface LotGroup {
+  key: string
+  lot: string
+  term: string
+  rows: { row: Row; sn: number }[]
+  qty: number
+  weighed: number
+  booked: number
+  free: number
+}
+
+function groupByLot(lots: Row[]): LotGroup[] {
+  const map = new Map<string, LotGroup>()
+  for (const row of lots) {
+    const lot = String(row.lot_no || '').trim()
+    const term = String(row.terminal_no || '').trim()
+    const key = `${lot}|${term}`
+    let g = map.get(key)
+    if (!g) {
+      g = { key, lot, term, rows: [], qty: 0, weighed: 0, booked: 0, free: 0 }
+      map.set(key, g)
+    }
+    g.rows.push({ row, sn: 0 })
+    g.qty += Number(row.qty) || 0
+    g.weighed += Number(row.weighed_qty) || 0
+    if (row.order_id != null) g.booked += Number(row.qty) || 0
+    else g.free += Number(row.qty) || 0
+  }
+  const groups = Array.from(map.values())
+  let sn = 0
+  for (const g of groups) for (const r of g.rows) r.sn = ++sn
+  return groups
+}
 
 // The website's dialog shell: forest header band, pale ground, one field
 // height throughout, and a footer that is a bar rather than three buttons
@@ -58,6 +114,11 @@ export function Consignment(): React.JSX.Element {
   // How far back this user may date a new entry. The save is refused either
   // way; greying the days out just stops the form offering one it will reject.
   const minDate = useEntryWindow('consignment')
+  // The website gets a phone layout — the register is a wide table no phone can
+  // read — with two tabs (gate arrivals, stock) over the same data; every
+  // dialog it drives stays mounted below, so nothing here is out of reach.
+  const isMobile = useIsMobile()
+  const [mTab, setMTab] = useState<'gate' | 'stock'>('gate')
   const [deposits, setDeposits] = useState<Row[]>([])
   const [pending, setPending] = useState<Row[]>([])
   const [summary, setSummary] = useState<Row[]>([])
@@ -87,6 +148,80 @@ export function Consignment(): React.JSX.Element {
   const [depOpen, setDepOpen] = useState(false)
   const [editing, setEditing] = useState<Row | null>(null)
   const [depForm, setDepForm] = useState<Row>({})
+  // WHICH CARGO A SET OF TANKERS CAME OFF.
+  //
+  // Each arrival is validated on its own — each is weighed on its own — so the
+  // thing they have in common is put back afterwards, over several rows at
+  // once. `kin` is what the server thinks belongs with this one and why; the
+  // desk decides, which is why nothing here is ticked without being read.
+  const [assignFor, setAssignFor] = useState<Row | null>(null)
+  const [assignKin, setAssignKin] = useState<Row[]>([])
+  const [assignPicked, setAssignPicked] = useState<number[]>([])
+  const [assignLot, setAssignLot] = useState('')
+  const [assignTerm, setAssignTerm] = useState('')
+  const [assignFrom, setAssignFrom] = useState('')
+  const [assignBusy, setAssignBusy] = useState(false)
+
+  /**
+   * LABELLING TWENTY-TWO TANKERS, WITHOUT TWENTY-TWO DIALOGS.
+   *
+   * The panel is the right tool for one cargo that arrived on six vehicles:
+   * it goes and finds the other five and offers them. It is the wrong tool for
+   * the ordinary morning's work, which is a register of arrivals each needing
+   * its own lot and terminal typed once — twenty-two openings, twenty-two
+   * saves and twenty-two closings to key what is four keystrokes a line.
+   *
+   * So the cell edits in place. Tab moves lot to terminal, Enter saves and
+   * drops onto the NEXT unlabelled row on the same product, Escape leaves. The
+   * panel is still one click away for the cargo that spans several tankers,
+   * and both write through the same call.
+   */
+  const [inlineId, setInlineId] = useState(0)
+  const [inlineLot, setInlineLot] = useState('')
+  const [inlineTerm, setInlineTerm] = useState('')
+  const [inlineBusy, setInlineBusy] = useState(false)
+  // Set when Enter should land on the next row's lot box once the save and the
+  // reload are done. A ref, because the reload replaces every row in between.
+  const inlineNext = useRef(0)
+
+  function startInline(d: Row): void {
+    setInlineId(Number(d.id))
+    setInlineLot(String(d.lot_no || ''))
+    setInlineTerm(String(d.terminal_no || ''))
+  }
+
+  async function saveInline(row: Row, rows: Row[]): Promise<void> {
+    const lot = inlineLot.trim()
+    const term = inlineTerm.trim()
+    // Nothing typed is not an error — it is somebody moving on. Clearing a
+    // label that IS there is a real edit, so that still goes through.
+    if (!lot && !term && !row.lot_no && !row.terminal_no) {
+      setInlineId(0)
+      return
+    }
+    setInlineBusy(true)
+    try {
+      await window.api.consignment.assignGroup([Number(row.id)], { lot_no: lot, terminal_no: term })
+      // The next arrival on this product that has no label yet. Straight down
+      // the column is how the paperwork is read, so it is how this moves.
+      const here = rows.findIndex((x) => Number(x.id) === Number(row.id))
+      const next = rows.slice(here + 1).find((x) => !x.lot_no && !x.terminal_no && Number(x.is_opening) !== 1)
+      inlineNext.current = next ? Number(next.id) : 0
+      setInlineId(0)
+      await load()
+      if (inlineNext.current) {
+        const id = inlineNext.current
+        inlineNext.current = 0
+        setInlineId(id)
+        setInlineLot('')
+        setInlineTerm('')
+      }
+    } catch (e) {
+      toast.error(errText(e))
+    } finally {
+      setInlineBusy(false)
+    }
+  }
   const [depError, setDepError] = useState<string | null>(null)
   const [savingDep, setSavingDep] = useState(false)
 
@@ -141,6 +276,49 @@ export function Consignment(): React.JSX.Element {
     return String(Math.round(w * (1 - p / 100) * 1000) / 1000)
   }
 
+  // WHAT THE PARTY ALREADY HELD ON DAY ONE.
+  //
+  // The form was only on the Stock page's MNC tab, which is where it was built
+  // and is not where it is looked for: this page is what somebody opens to set
+  // a consignment party up, and it offered one button — Log consignment stock —
+  // so an opening of several lots at several terminals read as something the
+  // software could not do. Same component, so there is one form and not two.
+  const [openingOpen, setOpeningOpen] = useState(false)
+  // Which party and product the opening editor opens on, when a row named
+  // them. Empty from the page's own button, which is somebody starting fresh.
+  const [openingSeed, setOpeningSeed] = useState<{ s?: unknown; p?: unknown }>({})
+
+  /**
+   * AN OPENING IS NOT A TANKER, SO IT DOES NOT ASSIGN LIKE ONE.
+   *
+   * Every other row on this register is one arrival off one lot, and its chip
+   * opens the assigner that labels it: one lot, one terminal, that vehicle.
+   * The opening row is the whole of what a party held on day one, and that is
+   * routinely several parcels at several terminals — it is the one row where
+   * the single-lot assigner is the wrong tool, and clicking its chip landed in
+   * it anyway, with no way out and nothing on the panel to say so.
+   *
+   * So the opening row opens the parcel editor instead, on its own party and
+   * product. Same dialog the page's Opening stock button opens; it just
+   * arrives with the pair already chosen.
+   */
+  function openLotFor(d: Row): void {
+    // A FREE OPENING IS SPLIT; A DRAWN ONE IS ONLY LABELLED.
+    //
+    // The opening dialog restates what the party held on day one, and it
+    // cannot touch a parcel a purchase has already drawn — it skips those
+    // rows on purpose (see saveOpeningStock). Sending a drawn slice there
+    // opened a dialog that then ignored it, which is how an auto-assigned
+    // opening came to look unfixable. Labelling it is a different act and
+    // has always been allowed, so that is where a drawn row goes.
+    if (Number(d.is_opening) === 1 && d.order_id == null) {
+      setOpeningSeed({ s: d.supplier_id, p: d.product_id })
+      setOpeningOpen(true)
+      return
+    }
+    startInline(d)
+  }
+
   function openAddDeposit(): void {
     setEditing(null)
     setDepForm({
@@ -180,6 +358,8 @@ export function Consignment(): React.JSX.Element {
           : '',
       uom: g.uom || defaultUom,
       deposit_date: g.entry_date ?? todayISO(),
+      lot_no: '',
+      terminal_no: '',
       note: g.note || '',
       company_id: String(activeCompany || '')
     })
@@ -200,11 +380,58 @@ export function Consignment(): React.JSX.Element {
       // and saving then writes the blank back over it.
       tanker_no: row.tanker_no ?? '',
       deposit_date: row.deposit_date ?? todayISO(),
+      lot_no: row.lot_no ?? '',
+      terminal_no: row.terminal_no ?? '',
       note: row.note ?? '',
       company_id: String(row.company_id ?? activeCompany ?? '')
     })
     setDepError(null)
     setDepOpen(true)
+  }
+
+  async function openAssign(row: Row): Promise<void> {
+    setAssignFor(row)
+    setAssignKin([])
+    setAssignPicked([])
+    setAssignLot(String(row.lot_no || ''))
+    setAssignTerm(String(row.terminal_no || ''))
+    setAssignFrom('')
+    try {
+      const r = await window.api.consignment.kin(Number(row.id))
+      setAssignKin(Array.isArray(r.kin) ? (r.kin as Row[]) : [])
+      // Proposed, never applied: the box is filled in so the common case is
+      // one click, and it is a text box so the uncommon case is one edit.
+      if (!row.lot_no && r.suggested_lot) setAssignLot(String(r.suggested_lot))
+      if (!row.terminal_no && r.suggested_terminal) setAssignTerm(String(r.suggested_terminal))
+      setAssignFrom(String(r.suggested_from || ''))
+    } catch {
+      // The panel still works without suggestions — they are a courtesy.
+    }
+  }
+
+  async function saveAssign(): Promise<void> {
+    if (!assignFor) return
+    if (!assignLot.trim() && !assignTerm.trim()) {
+      toast.error('Give a lot number, a terminal number, or both')
+      return
+    }
+    setAssignBusy(true)
+    try {
+      const ids = [Number(assignFor.id), ...assignPicked]
+      const r = await window.api.consignment.assignGroup(ids, {
+        lot_no: assignLot.trim(),
+        terminal_no: assignTerm.trim()
+      })
+      toast.success(
+        `${r.updated} tanker${r.updated === 1 ? '' : 's'} on ${[r.lot_no, r.terminal_no].filter(Boolean).join(' · ') || 'no lot'}`
+      )
+      setAssignFor(null)
+      await load()
+    } catch (e) {
+      toast.error(errText(e))
+    } finally {
+      setAssignBusy(false)
+    }
   }
 
   async function saveDeposit(): Promise<void> {
@@ -228,6 +455,10 @@ export function Consignment(): React.JSX.Element {
           : null),
       gate_entry_id: depForm.gate_entry_id ? Number(depForm.gate_entry_id) : null,
       tanker_no: depForm.tanker_no || null,
+      // Sent whatever they hold, blank included: on this form a cleared box
+      // means "this had no lot after all", which the server reads as NULL.
+      lot_no: depForm.lot_no ?? '',
+      terminal_no: depForm.terminal_no ?? '',
       // Recorded alongside the net so the register can show how it was reached.
       weighed_qty: depForm.weighed_qty !== '' && depForm.weighed_qty != null ? Number(depForm.weighed_qty) : null,
       shortage_pct: depForm.shortage_pct !== '' && depForm.shortage_pct != null ? Number(depForm.shortage_pct) : null
@@ -462,11 +693,144 @@ export function Consignment(): React.JSX.Element {
   }, [summary, deposits, ranged, from, to])
   const pendingLotCount = deposits.filter((d) => d.order_id == null).length
 
+  // Computed from the pair itself, so a parcel's colour never moves when
+  // another is added and is the same here as in the Stock deposits panel.
+  const tintOf = lotTint
+
   // Products folded shut, by party and product. Shut rather than open is what
   // is remembered, so a product that arrives later opens the way every other
   // one does instead of inheriting a state set before it existed — and the
   // register reads exactly as it did before anything is clicked.
   const [shutProducts, setShutProducts] = useState<Set<string>>(() => new Set())
+  // PARCELS START FOLDED, THE OPPOSITE OF A PRODUCT.
+  //
+  // A product folds shut on request because open is the useful default — you
+  // came to see its tankers. A parcel group is different: there can be five or
+  // six of them under one product, and every one of them starting open is the
+  // same wall of rows the grouping was built to get away from. So this tracks
+  // the OPENED set instead of the shut one, and a group not in it starts
+  // folded — collapsed by default, expand the one you actually want.
+  const [openLots, setOpenLots] = useState<Set<string>>(() => new Set())
+  // Which invoice, or which party's product, is having its parcels handed
+  // back. Held only so the button can say it is working.
+  const [unlinking, setUnlinking] = useState(false)
+  /**
+   * PUT AN INVOICE BACK OFF THE PARCELS IT DREW.
+   *
+   * The invoice keeps its quantity, its value and its voucher; what comes
+   * back is only the freedom to say which cargo fed it. A part-drawn parcel
+   * is made whole again on the way — see unlinkConsignmentDraw.
+   */
+  async function unlinkOne(d: Row): Promise<void> {
+    const inv = String(d.invoice_no || '').trim()
+    if (
+      !window.confirm(
+        `Take ${inv ? `invoice ${inv}` : 'this invoice'} back off the parcels it drew?\n\n` +
+          'The invoice itself is not changed \u2014 its quantity, value and voucher stay exactly as they are. ' +
+          'The parcels go back to unbooked so they can be relabelled or drawn again.'
+      )
+    ) {
+      return
+    }
+    setUnlinking(true)
+    try {
+      const out = await window.api.consignment.unlinkDraw(Number(d.order_id))
+      toast.success(`${out.freed} parcel${out.freed === 1 ? '' : 's'} freed`)
+      await load()
+    } catch (e) {
+      toast.error((e as Error).message)
+    } finally {
+      setUnlinking(false)
+    }
+  }
+
+  /** The same sweep, undone in one go for a party's product. */
+  async function unlinkProduct(p: Row): Promise<void> {
+    if (!(p.lots as Row[]).some((l) => l.order_id != null)) return
+    if (
+      !window.confirm(
+        `Take every invoice back off the parcels it drew on ${String(p.product_code || p.product_name || 'this product')}?\n\n` +
+          'This is how an auto-assignment is undone. No invoice is changed \u2014 its quantity, value and ' +
+          'voucher stay exactly as they are, and only which parcel is recorded as having fed it goes. ' +
+          'Parcels split by a part draw are made whole again.\n\n' +
+          'It covers the whole product, not just what the date range above is showing.'
+      )
+    ) {
+      return
+    }
+    setUnlinking(true)
+    try {
+      const out = await window.api.consignment.unlinkDrawsFor(Number(p.supplier_id), Number(p.product_id))
+      toast.success(
+        `${out.invoices} invoice${out.invoices === 1 ? '' : 's'} unlinked \u2014 ${out.freed} parcel${out.freed === 1 ? '' : 's'} freed`
+      )
+      await load()
+    } catch (e) {
+      toast.error((e as Error).message)
+    } finally {
+      setUnlinking(false)
+    }
+  }
+
+  // RENAMING A COMBINATION, NOT A ROW.
+  //
+  // A lot at a terminal is one cargo however many vehicles carried it, so its
+  // number is corrected once for all of them. Row by row is six edits that can
+  // disagree, and a pair half-renamed splits one group into two.
+  const [renameFor, setRenameFor] = useState<Row | null>(null)
+  const [renameLotNo, setRenameLotNo] = useState('')
+  const [renameTermNo, setRenameTermNo] = useState('')
+  const [renameSaving, setRenameSaving] = useState(false)
+
+  function openRename(pr: Row, g: { lot: string; term: string; rows: unknown[] }): void {
+    setRenameFor({
+      supplier_id: pr.supplier_id,
+      product_id: pr.product_id,
+      product: pr.product_code || pr.product_name,
+      from_lot: g.lot,
+      from_terminal: g.term,
+      count: g.rows.length
+    })
+    setRenameLotNo(g.lot)
+    setRenameTermNo(g.term)
+  }
+
+  async function saveRename(): Promise<void> {
+    if (!renameFor) return
+    if (!renameLotNo.trim() && !renameTermNo.trim()) {
+      toast.error('Give the combination a lot number, a terminal number, or both')
+      return
+    }
+    setRenameSaving(true)
+    try {
+      const out = await window.api.consignment.renameLot({
+        supplier_id: Number(renameFor.supplier_id),
+        product_id: Number(renameFor.product_id),
+        from_lot: String(renameFor.from_lot || ''),
+        from_terminal: String(renameFor.from_terminal || ''),
+        to_lot: renameLotNo,
+        to_terminal: renameTermNo
+      })
+      toast.success(
+        `${out.updated} tanker${out.updated === 1 ? '' : 's'} now on ` +
+          `${[out.lot_no, out.terminal_no].filter(Boolean).join(' \u00b7 ')}`
+      )
+      setRenameFor(null)
+      await load()
+    } catch (e) {
+      toast.error((e as Error).message)
+    } finally {
+      setRenameSaving(false)
+    }
+  }
+  function toggleLot(key: string): void {
+    setOpenLots((prev) => {
+      const next = new Set(prev)
+      if (next.has(key)) next.delete(key)
+      else next.add(key)
+      return next
+    })
+  }
   function toggleProduct(key: string): void {
     setShutProducts((prev) => {
       const next = new Set(prev)
@@ -476,8 +840,332 @@ export function Consignment(): React.JSX.Element {
     })
   }
 
+  // THE PHONE BODY. Two tabs — gate arrivals waiting to be validated, and the
+  // stock already taken in, grouped party → product — reading the same arrays
+  // the desktop does and firing the same handlers, so the validate drawer, the
+  // book-purchase dialog and the rest all open here without a second copy.
+  const mobileBody = ((): React.JSX.Element => {
+    const co = companies.find((c) => String(c.id) === String(activeCompany))
+    const bookedTotal = stockBands.reduce((t, b) => t + (Number(b.invoiced) || 0), 0)
+    const kpis = [
+      { k: 'Pending', v: String(pending.length), bg: 'rgba(226,168,74,.2)', kFg: '#F0C98A', vFg: '#F5E2B8' },
+      { k: 'Booked MT', v: formatNum(bookedTotal), bg: 'rgba(255,255,255,.08)', kFg: '#8FBFA8', vFg: '#fff' },
+      { k: 'In stock MT', v: formatNum(totalBalance), bg: 'rgba(199,240,63,.14)', kFg: '#8FBFA8', vFg: '#C7F03F' }
+    ]
+    const mtabs = [
+      { key: 'gate' as const, label: 'Gate arrivals', count: pending.length },
+      { key: 'stock' as const, label: 'Stock', count: stockBands.length }
+    ]
+
+    return (
+      <div className="relative flex min-h-[100dvh] flex-col bg-[#F1F5EF]">
+        <div className="flex-none bg-[#0B3D2E] px-4 pb-3 pt-2.5 text-white">
+          <MobileBar onRefresh={() => load(true)} />
+          <div className="flex items-center gap-2.5">
+            <Package className="h-[22px] w-[22px] flex-none text-[#C7F03F]" />
+            <div className="min-w-0">
+              <div className="text-[17px] font-extrabold tracking-[-0.02em]">Consignment stock</div>
+              <div className="truncate text-[10.5px] font-bold text-[#8FBFA8]">
+                {(co?.name as string) || 'All companies'}
+              </div>
+            </div>
+          </div>
+          <div className="mt-3 flex gap-2.5">
+            {kpis.map((k) => (
+              <div key={k.k} className="min-w-0 flex-1 rounded-[3px] px-2.5 py-2" style={{ background: k.bg }}>
+                <div className="text-[8.5px] font-extrabold uppercase tracking-[.1em]" style={{ color: k.kFg }}>
+                  {k.k}
+                </div>
+                <div className="doc-ref mt-0.5 text-[15px] font-bold tracking-[-0.03em]" style={{ color: k.vFg }}>
+                  {k.v}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        <div className="flex flex-none border-b border-b-[#D6E2D6] bg-white">
+          {mtabs.map((t) => {
+            const on = mTab === t.key
+            return (
+              <button
+                key={t.key}
+                type="button"
+                onClick={() => setMTab(t.key)}
+                className="flex h-12 flex-1 items-center justify-center gap-[7px] text-[12.5px] font-extrabold"
+                style={{
+                  borderBottom: `3px solid ${on ? '#0B3D2E' : 'transparent'}`,
+                  background: on ? '#F7FAF6' : '#fff',
+                  color: on ? '#0A1F17' : '#5A6B62'
+                }}
+              >
+                {t.label}
+                <span
+                  className="doc-ref rounded-[2px] px-1.5 py-0.5 text-[10px] font-extrabold"
+                  style={on ? { background: '#0B3D2E', color: '#C7F03F' } : { background: '#EAF0E9', color: '#5A6B62' }}
+                >
+                  {t.count}
+                </span>
+              </button>
+            )
+          })}
+        </div>
+
+        <div className="flex flex-1 flex-col gap-2.5 overflow-y-auto px-3 pb-[92px] pt-3">
+          {mTab === 'gate' && (
+            <>
+              {pending.length === 0 ? (
+                <div className="flex flex-none flex-col items-center gap-2.5 rounded-[4px] border border-[#BFE3CB] bg-white px-4 py-8" style={{ borderLeft: '3px solid #12855A' }}>
+                  <Check className="h-8 w-8 text-[#12855A]" />
+                  <span className="text-[13px] font-extrabold text-[#0B6B45]">No gate arrivals waiting</span>
+                  <span className="text-center text-[11.5px] font-semibold leading-[1.5] text-[#33473E] [text-wrap:pretty]">
+                    A tanker that passes the gate without a purchase behind it lands here to be validated into stock.
+                  </span>
+                </div>
+              ) : (
+                <>
+                  <div className="flex-none rounded-[4px] border border-[#E4D9BC] bg-[#FDF6E7] px-3 py-2.5" style={{ borderLeft: '4px solid #E2A84A' }}>
+                    <div className="text-[11.5px] font-bold leading-[1.5] text-[#8A5300] [text-wrap:pretty]">
+                      Tankers passed at the gate with no purchase behind them. Validate one to start its consignment
+                      stock.
+                    </div>
+                  </div>
+                  {pending.map((g, gi) => {
+                    const weighed = g.status === 'completed' && Number(g.received_qty) > 0
+                    return (
+                      <div
+                        key={String(g.id)}
+                        className="flex-none rounded-[4px] border border-[#D6E2D6] bg-white p-3"
+                        style={{ borderLeft: `4px solid ${weighed ? '#12855A' : '#E2A84A'}` }}
+                      >
+                        <div className="flex items-start justify-between gap-2.5">
+                          <SerialNo n={gi + 1} className="mt-px" />
+                          <div className="min-w-0 flex-1">
+                            <div className="doc-ref text-[15px] font-bold tracking-[-0.02em]">
+                              {String(g.tanker_no || '—')}
+                            </div>
+                            <div className="mt-1 flex flex-wrap items-center gap-[7px]">
+                              <span className="doc-ref text-[11px] font-bold text-[#5A6B62]">{g.gate_entry_no}</span>
+                              <span className="text-[11px] font-semibold text-[#5A6B62]">· {formatDate(g.entry_date)}</span>
+                            </div>
+                          </div>
+                          <span
+                            className="inline-flex flex-none items-center gap-[5px] whitespace-nowrap rounded-[2px] border px-2 py-1 text-[10px] font-extrabold"
+                            style={
+                              weighed
+                                ? { background: '#E9F5EE', color: '#0B6B45', borderColor: '#BFE3CB' }
+                                : { background: '#FDF6E7', color: '#8A5300', borderColor: '#E4D9BC' }
+                            }
+                          >
+                            {weighed ? <Check className="h-3 w-3" /> : <Clock className="h-3 w-3" />}
+                            {weighed ? 'Weighed' : 'Awaiting weighment'}
+                          </span>
+                        </div>
+                        <div className="mt-2.5 flex flex-wrap items-center gap-[7px]">
+                          <span className="text-[11.5px] font-bold text-[#33473E]">{String(g.supplier_name || '—')}</span>
+                          {Number(g.is_direct_mnc) === 1 && (
+                            <span className="rounded-[2px] bg-[#0B3D2E] px-1.5 py-[3px] text-[9.5px] font-extrabold text-[#C7F03F]">
+                              MNC
+                            </span>
+                          )}
+                          <span className="rounded-[2px] bg-[#EAF0E9] px-[7px] py-[3px] text-[10.5px] font-extrabold text-[#33473E]">
+                            {String(g.rec_type || 'OIL')}
+                          </span>
+                        </div>
+                        <div className="mt-2.5 flex items-center justify-between gap-2.5 border-t border-t-[#EAF0E9] pt-2.5">
+                          <div>
+                            <div className="text-[9px] font-extrabold uppercase tracking-[.11em] text-[#5A6B62]">Net qty</div>
+                            <div className="doc-ref text-[15px] font-bold" style={{ color: weighed ? '#0A1F17' : '#C3D2C6' }}>
+                              {weighed ? `${formatNum(g.received_qty)} ${g.uom || 'MT'}` : '—'}
+                            </div>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => openValidate(g)}
+                            className="flex h-11 items-center gap-[7px] rounded-[3px] bg-[#0B3D2E] px-[18px] text-[13px] font-extrabold text-white"
+                          >
+                            <Check className="h-[18px] w-[18px] text-[#C7F03F]" />
+                            Validate
+                          </button>
+                        </div>
+                      </div>
+                    )
+                  })}
+                </>
+              )}
+            </>
+          )}
+
+          {mTab === 'stock' && (
+            <>
+              {stockBands.length === 0 ? (
+                <div className="flex flex-none flex-col items-center gap-2 rounded-[4px] border border-[#D6E2D6] bg-white px-4 py-10">
+                  <Package className="h-7 w-7 text-[#C3D2C6]" />
+                  <span className="text-center text-[12.5px] font-bold text-[#5A6B62] [text-wrap:pretty]">
+                    No consignment stock yet. Validate a gate arrival, or log one below.
+                  </span>
+                </div>
+              ) : (
+                stockBands.map((band) => (
+                  <div key={String(band.supplier_id)} className="flex flex-none flex-col gap-2.5">
+                    <div className="rounded-[4px] bg-[#0B3D2E] p-3 text-white">
+                      <div className="text-[13px] font-extrabold">{String(band.supplier_name || '—')}</div>
+                      <div className="mt-2.5 flex gap-2.5">
+                        {[
+                          { k: 'In', v: formatNum(band.deposited), fg: '#fff' },
+                          { k: 'Booked', v: formatNum(band.invoiced), fg: '#8FBFA8' },
+                          { k: 'In stock', v: `${formatNum(band.balance)} ${band.uom || 'MT'}`, fg: '#C7F03F' }
+                        ].map((s) => (
+                          <div key={s.k} className="min-w-0 flex-1">
+                            <div className="text-[8.5px] font-extrabold uppercase tracking-[.1em] text-[#8FBFA8]">{s.k}</div>
+                            <div className="doc-ref mt-0.5 text-[14px] font-bold tracking-[-0.02em]" style={{ color: s.fg }}>
+                              {s.v}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+
+                    {(band.products as Row[]).map((p) => {
+                      const pkey = `${band.supplier_id}:${p.product_id}`
+                      const open = !shutProducts.has(pkey)
+                      const lots = (p.lots as Row[]) || []
+                      const tankerN = lots.filter((d) => Number(d.is_opening) !== 1).length
+                      const canBook = Number(p.balance) > 0.0001
+                      return (
+                        <div key={pkey} className="overflow-hidden rounded-[4px] border border-[#D6E2D6] bg-white">
+                          <button
+                            type="button"
+                            onClick={() => toggleProduct(pkey)}
+                            className="flex w-full items-center justify-between gap-2.5 px-3 py-[11px] text-left"
+                            style={{ background: open ? '#F1F5EF' : '#F7FAF6' }}
+                          >
+                            <div className="flex min-w-0 items-center gap-2">
+                              <ChevronRight
+                                className="h-[18px] w-[18px] flex-none text-[#5A6B62] transition-transform"
+                                style={{ transform: open ? 'rotate(90deg)' : 'none' }}
+                              />
+                              <div className="min-w-0">
+                                <div className="truncate text-[12.5px] font-extrabold">
+                                  {String(p.product_code || p.product_name || '—')}
+                                </div>
+                                <div className="text-[10.5px] font-semibold text-[#5A6B62]">
+                                  {tankerN} {tankerN === 1 ? 'tanker' : 'tankers'}
+                                </div>
+                              </div>
+                            </div>
+                            <div className="flex-none text-right">
+                              <div className="text-[8.5px] font-extrabold uppercase tracking-[.1em] text-[#5A6B62]">In stock</div>
+                              <div className="doc-ref text-[14px] font-bold text-[#0B6B45]">
+                                {formatNum(p.balance)} {p.uom || 'MT'}
+                              </div>
+                            </div>
+                          </button>
+
+                          {open && (
+                            <div>
+                              {lots.map((d) => {
+                                const opening = Number(d.is_opening) === 1
+                                const booked = d.order_id != null
+                                return (
+                                  <button
+                                    key={String(d.id)}
+                                    type="button"
+                                    onClick={() => openEditDeposit(d)}
+                                    className="flex w-full flex-col border-t border-t-[#EAF0E9] px-3 py-2.5 text-left"
+                                    style={{ background: opening ? '#F7FAF6' : '#fff', borderLeft: `3px solid ${opening ? '#C3D2C6' : booked ? '#12855A' : '#E2A84A'}` }}
+                                  >
+                                    <div className="flex items-start justify-between gap-2.5">
+                                      <div className="min-w-0">
+                                        {opening ? (
+                                          <span className="rounded-[2px] bg-[#EAF0E9] px-[7px] py-[3px] text-[10px] font-extrabold tracking-[.06em] text-[#33473E]">
+                                            OPENING
+                                          </span>
+                                        ) : (
+                                          <div className="doc-ref truncate text-[12.5px] font-bold">
+                                            {String(d.tanker_no || '—')}
+                                          </div>
+                                        )}
+                                        <div className="mt-1 flex flex-wrap items-center gap-x-[7px] text-[10.5px] font-semibold text-[#5A6B62]">
+                                          <span className="doc-ref">{formatDate(d.deposit_date)}</span>
+                                          <span className="doc-ref">{d.gate_entry_no ? String(d.gate_entry_no) : 'no gate entry'}</span>
+                                        </div>
+                                      </div>
+                                      <div className="flex-none text-right">
+                                        <div className="doc-ref text-[14px] font-bold tracking-[-0.02em] text-[#0B6B45]">
+                                          {formatNum(d.qty)} {d.uom || 'MT'}
+                                        </div>
+                                        <div className="text-[10px] font-bold text-[#5A6B62]">
+                                          {Number(d.weighed_qty) > 0 ? `weighed ${formatNum(d.weighed_qty)}` : opening ? 'opening balance' : ''}
+                                        </div>
+                                      </div>
+                                    </div>
+                                    {booked && !!d.invoice_no && (
+                                      <div className="doc-ref mt-1.5 text-[10.5px] font-bold text-[#0B6B45]">Booked · {String(d.invoice_no)}</div>
+                                    )}
+                                    {!!d.note && (
+                                      <div className="mt-1.5 text-[10.5px] font-semibold text-[#5A6B62] [text-wrap:pretty]">{String(d.note)}</div>
+                                    )}
+                                  </button>
+                                )
+                              })}
+
+                              <div className="flex items-center justify-between gap-2.5 border-t-2 border-t-[#C7F03F] bg-[#EFF5EC] px-3 py-[11px]">
+                                <div>
+                                  <div className="text-[9px] font-extrabold uppercase tracking-[.11em] text-[#33473E]">
+                                    Total · {tankerN} {tankerN === 1 ? 'tanker' : 'tankers'}
+                                  </div>
+                                  <div className="text-[10.5px] font-bold text-[#5A6B62]">
+                                    {Number(p.invoiced) > 0.0001 ? `${formatNum(p.invoiced)} MT booked` : 'nothing booked yet'}
+                                  </div>
+                                </div>
+                                <div className="doc-ref text-[16px] font-bold tracking-[-0.02em]">
+                                  {formatNum(p.balance)} {p.uom || 'MT'}
+                                </div>
+                              </div>
+
+                              <div className="border-t border-t-[#EAF0E9] p-2.5">
+                                <button
+                                  type="button"
+                                  disabled={!canBook}
+                                  onClick={() => openBooking(p)}
+                                  className="flex h-11 w-full items-center justify-center gap-[7px] rounded-[3px] border border-[#C3D2C6] text-[13px] font-extrabold disabled:opacity-45"
+                                  style={{ color: '#33473E' }}
+                                >
+                                  <ShoppingCart className="h-[18px] w-[18px] text-[#0B6B45]" />
+                                  Book purchase
+                                </button>
+                              </div>
+                            </div>
+                          )}
+                        </div>
+                      )
+                    })}
+                  </div>
+                ))
+              )}
+            </>
+          )}
+        </div>
+
+        <div className="absolute inset-x-0 bottom-0 flex flex-none gap-2.5 border-t border-t-[#D6E2D6] bg-white px-3 pb-4 pt-2.5">
+          <button
+            type="button"
+            onClick={openAddDeposit}
+            className="flex h-[46px] flex-1 items-center justify-center gap-[7px] rounded-[3px] bg-[#C7F03F] text-[13px] font-extrabold text-[#0B3D2E]"
+          >
+            <Plus className="h-[19px] w-[19px]" />
+            Log consignment stock
+          </button>
+        </div>
+      </div>
+    )
+  })()
+
   return (
     <>
+      {__WEB__ && isMobile && mobileBody}
+      {!(__WEB__ && isMobile) && (<>
       <PageHeader
         title="Consignment stock"
         subtitle="Supplier goods lying at your place but not yet in your books — invoice them to make them yours"
@@ -502,6 +1190,16 @@ export function Consignment(): React.JSX.Element {
               ]}
               rows={deposits}
             />
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => {
+                setOpeningSeed({})
+                setOpeningOpen(true)
+              }}
+            >
+              <Layers className="h-4 w-4" /> Opening stock
+            </Button>
             <Button size="sm" onClick={openAddDeposit}>
               <Plus className="h-4 w-4" /> Log consignment stock
             </Button>
@@ -863,6 +1561,29 @@ export function Consignment(): React.JSX.Element {
                             </span>
                           </span>
                         </div>
+                        {/* UNDOING A SWEEP TAKES A SWEEP.
+                            The parcels under this product were matched to its
+                            invoices in one go, and unpicking that one invoice
+                            at a time is eleven confirmations to reach the same
+                            place. Shown only where there is something linked
+                            to undo. */}
+                        {(p.lots as Row[]).some((l) => l.order_id != null) && (
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            disabled={unlinking}
+                            title="Hand every parcel under this product back off the invoices that drew them. The invoices are not changed."
+                            className={cn(
+                              'ml-auto h-7 text-xs',
+                              __WEB__ &&
+                                '!ml-0 !h-8 !gap-1.5 !rounded-[3px] !border-0 !bg-white/15 !px-3 !text-[11.5px] !font-extrabold !text-white hover:!bg-white/25'
+                            )}
+                            onClick={() => void unlinkProduct(p)}
+                          >
+                            <Unlink className="h-3.5 w-3.5" />
+                            Unlink parcels
+                          </Button>
+                        )}
                         <Button
                           size="sm"
                           variant="outline"
@@ -895,16 +1616,151 @@ export function Consignment(): React.JSX.Element {
                               <TableHead className={cn('text-[10px] font-semibold uppercase tracking-wide', __WEB__ && '!w-[104px] !whitespace-nowrap !text-[10.5px]')}>Date</TableHead>
                               <TableHead className={cn('text-[10px] font-semibold uppercase tracking-wide', __WEB__ && '!w-[190px] !whitespace-nowrap !text-[10.5px]')}>Tanker</TableHead>
                               <TableHead className={cn('text-[10px] font-semibold uppercase tracking-wide', __WEB__ && '!w-[104px] !whitespace-nowrap !text-[10.5px]')}>Gate no</TableHead>
+                              {/* WHICH CARGO IT CAME OFF. One column for both,
+                                  because they are read together — L-2451 · T3
+                                  is one answer, and two columns of mostly
+                                  dashes would cost more width than the pair
+                                  is worth. */}
+                              <TableHead className={cn('text-[10px] font-semibold uppercase tracking-wide', __WEB__ && '!w-[132px] !whitespace-nowrap !text-[10.5px]')}>Lot · Terminal</TableHead>
                               <TableHead className={cn('text-right text-[10px] font-semibold uppercase tracking-wide', __WEB__ && '!w-[104px] !whitespace-nowrap !text-[10.5px]')}>Weighed</TableHead>
                               <TableHead className={cn('text-right text-[10px] font-semibold uppercase tracking-wide', __WEB__ && '!w-[86px] !whitespace-nowrap !text-[10.5px]')}>Short %</TableHead>
                               <TableHead className={cn('text-right text-[10px] font-semibold uppercase tracking-wide', __WEB__ && '!w-[118px] !whitespace-nowrap !text-[10.5px]')}>Qty (net)</TableHead>
-                              <TableHead className={cn('text-[10px] font-semibold uppercase tracking-wide', __WEB__ && '!w-[120px] !whitespace-nowrap !text-[10.5px]')}>Status</TableHead>
+                              <TableHead className={cn('text-[10px] font-semibold uppercase tracking-wide', __WEB__ && '!w-[132px] !whitespace-nowrap !text-[10.5px]')}>Status</TableHead>
                               <TableHead className={cn('text-[10px] font-semibold uppercase tracking-wide', __WEB__ && '!w-auto !whitespace-nowrap !text-[10.5px]')}>Note</TableHead>
                               <TableHead className={cn('text-right text-[10px] font-semibold uppercase tracking-wide', __WEB__ && '!w-[86px] !whitespace-nowrap !text-[10.5px]')}>Actions</TableHead>
                             </TableRow>
                           </TableHeader>
                           <TableBody>
-                            {(p.lots as Row[]).map((d, lotIndex) => {
+                            {groupByLot(p.lots as Row[]).map((g, _gi, allGroups) => {
+                              const grouped = allGroups.length > 1
+                              const gkey = `${pkey}:${g.key}`
+                              // A HEADING OVER ONE LINE IS THE LINE, TWICE.
+                              //
+                              // The same reasoning that leaves a single-parcel
+                              // product ungrouped, one level down: a parcel
+                              // carrying ONE tanker had a header saying its
+                              // lot, its quantity and what was free, sitting
+                              // directly above a row saying its lot, its
+                              // quantity and its status. An opening split into
+                              // parcels is the case that made it obvious —
+                              // every parcel is one line, so the register
+                              // doubled in height and said nothing more. The
+                              // row already carries the chips, so it stands on
+                              // its own; a group only earns a heading once it
+                              // has something to gather.
+                              const solo = g.rows.length === 1
+                              const showHeader = grouped && !solo
+                              const gshut = showHeader && !openLots.has(gkey)
+                              // The parcel's own colour, so the header wears
+                              // the same tint as the chips under it and the
+                              // eye can follow one cargo down the page.
+                              const gTint = tintOf(g.lot, g.term)
+                              return (
+                              <Fragment key={g.key}>
+                              {showHeader && (
+                                <TableRow
+                                  className="group/lot !border-b-[#DCE7DB] !bg-[#F3F8F1] hover:!bg-[#EDF4EA]"
+                                  style={{ borderLeft: `3px solid ${gTint ? gTint.fg : '#8FA79B'}` }}
+                                >
+                                  <TableCell colSpan={5} className="!py-2">
+                                    {/* HUGGING ITS OWN LABEL, NOT THE COLUMN.
+                                        The fold control took the whole
+                                        five-column span, which threw the
+                                        rename control to the far right of it
+                                        — a pencil sitting four hundred pixels
+                                        from the chips it renames, over a
+                                        column it has nothing to do with. Both
+                                        sit against the label now. */}
+                                    <div className="flex items-center gap-1">
+                                    <button
+                                      type="button"
+                                      aria-expanded={!gshut}
+                                      onClick={() => toggleLot(gkey)}
+                                      title={gshut ? 'Show the tankers off this parcel' : 'Fold this parcel away'}
+                                      className="flex min-w-0 items-center gap-2 rounded-[3px] py-0.5 text-left focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#0B3D2E]"
+                                    >
+                                      {gshut ? (
+                                        <ChevronRight className="h-4 w-4 shrink-0 text-[#5A6B62]" />
+                                      ) : (
+                                        <ChevronDown className="h-4 w-4 shrink-0 text-[#0B6B45]" />
+                                      )}
+                                      {g.lot || g.term ? (
+                                        (() => {
+                                          const tint = tintOf(g.lot, g.term)
+                                          const chip = (text: string, strong: boolean): React.JSX.Element => (
+                                            <span
+                                              className={cn('rounded-[2px] px-1.5 py-[1px] text-[11.5px] font-bold', __WEB__ && 'doc-ref')}
+                                              style={tint ? { background: tint.bg, color: tint.fg, opacity: strong ? 1 : 0.82 } : undefined}
+                                            >
+                                              {text}
+                                            </span>
+                                          )
+                                          return (
+                                            <span className="flex items-center gap-1">
+                                              {!!g.lot && chip(g.lot, true)}
+                                              {!!g.term && chip(g.term, false)}
+                                            </span>
+                                          )
+                                        })()
+                                      ) : (
+                                        <span className="text-[11px] font-extrabold uppercase tracking-[.1em] text-[#8FA79B]">
+                                          No lot yet
+                                        </span>
+                                      )}
+                                      <span className="text-[11px] font-bold text-[#5A6B62]">
+                                        · {g.rows.length} tanker{g.rows.length === 1 ? '' : 's'}
+                                      </span>
+                                    </button>
+                                    {/* THE NUMBER OF A CARGO, CORRECTED ONCE.
+                                        Renames this lot and terminal on every
+                                        tanker under it — which is what a
+                                        correction to a lot number actually is.
+                                        Row by row it is six edits that can
+                                        disagree, and a pair half-renamed
+                                        splits one group into two that are
+                                        really one. */}
+                                    <button
+                                      type="button"
+                                      title="Rename this lot and terminal on every tanker under it"
+                                      onClick={() => openRename(p, g)}
+                                      className="flex h-6 w-6 shrink-0 items-center justify-center rounded-[3px] text-[#8CA396] opacity-0 transition-opacity hover:bg-[#E3EDE1] hover:text-[#0B6B45] focus-visible:opacity-100 group-hover/lot:opacity-100"
+                                    >
+                                      <Pencil className="h-3 w-3" />
+                                    </button>
+                                    </div>
+                                  </TableCell>
+                                  {/* Set in the weights the rows beneath use,
+                                      so a total reads as the same kind of
+                                      figure as the lines it totals rather
+                                      than as another table's. */}
+                                  <TableCell className="!text-right !text-[12.5px] !font-semibold !tabular-nums !text-[#5A6B62]">
+                                    {g.weighed > 0 ? formatNum(g.weighed) : '—'}
+                                  </TableCell>
+                                  <TableCell />
+                                  <TableCell className="!text-right !text-[13.5px] !font-bold !tabular-nums !text-[#0A1F17]">
+                                    {formatNum(g.qty)} {p.uom}
+                                  </TableCell>
+                                  <TableCell colSpan={3}>
+                                    {/* A STATE, SO IT LOOKS LIKE ONE. Whether a
+                                        parcel has anything left is the answer
+                                        this row exists to give, and the rest
+                                        of the app says that kind of thing in a
+                                        chip. */}
+                                    <span
+                                      className={cn(
+                                        'inline-flex items-center rounded-[3px] border px-1.5 py-[1px] text-[11px] font-bold tabular-nums',
+                                        g.free > 0.0001
+                                          ? 'border-[#BFE3CB] bg-[#E9F5EE] text-[#0B6B45]'
+                                          : 'border-[#DCE7DB] bg-[#F1F5EF] text-[#8FA79B]'
+                                      )}
+                                    >
+                                      {g.free > 0.0001 ? `${formatNum(g.free)} ${p.uom} free` : 'All booked'}
+                                    </span>
+                                  </TableCell>
+                                </TableRow>
+                              )}
+                              {!gshut && g.rows.map(({ row: d, sn: lotIndex1 }) => {
+                              const lotIndex = lotIndex1 - 1
                               const booked = d.order_id != null
                               return (
                                 <TableRow
@@ -919,7 +1775,20 @@ export function Consignment(): React.JSX.Element {
                                   )}
                                   style={__WEB__ ? { borderLeft: `3px solid ${booked ? '#C3D2C6' : '#0B6B45'}` } : undefined}
                                 >
-                                  <TableCell className={cn('whitespace-nowrap tabular-nums', __WEB__ && '!text-[12.5px] !font-semibold !text-[#8FA79B]')}>{lotIndex + 1}</TableCell>
+                                  {/* Indented under the parcel that owns
+                                      them. Without it a group header and its
+                                      own tankers start at the same pixel and
+                                      the grouping reads as a stripe rather
+                                      than as a tree. */}
+                                  <TableCell
+                                    className={cn(
+                                      'whitespace-nowrap tabular-nums',
+                                      __WEB__ && '!text-[12.5px] !font-semibold !text-[#8FA79B]',
+                                      showHeader && '!pl-7'
+                                    )}
+                                  >
+                                    {lotIndex + 1}
+                                  </TableCell>
                                   <TableCell className={cn('whitespace-nowrap', __WEB__ && '!text-[13px] !font-semibold !tabular-nums !text-[#33473E]')}>{formatDate(d.deposit_date)}</TableCell>
                                   <TableCell
                                     className={cn('font-medium', __WEB__ && '!max-w-0 !truncate !text-[13px] !font-bold !tabular-nums !text-[#0A1F17]')}
@@ -933,6 +1802,120 @@ export function Consignment(): React.JSX.Element {
                                   </TableCell>
                                   <TableCell className={cn('tabular-nums text-muted-foreground', __WEB__ && '!text-[12.5px] !font-semibold !tabular-nums !text-[#5A6B62]')}>
                                     {d.gate_entry_no || '—'}
+                                  </TableCell>
+                                  <TableCell className={cn('whitespace-nowrap', __WEB__ && '!text-[12.5px] !font-semibold')}>
+                                    {/* EDITED WHERE IT IS READ. Two bare boxes
+                                        in the cell: Tab between them, Enter
+                                        saves and drops onto the next unlabelled
+                                        arrival, Escape leaves it alone. The
+                                        panel is still there for one cargo that
+                                        came on several tankers — the chevron
+                                        opens it — and both write through the
+                                        same call. */}
+                                    {inlineId === Number(d.id) ? (
+                                      <span data-inline-lot className="inline-flex items-center gap-1">
+                                        <input
+                                          autoFocus
+                                          disabled={inlineBusy}
+                                          value={inlineLot}
+                                          placeholder="lot"
+                                          onChange={(e) => setInlineLot(e.target.value.toUpperCase())}
+                                          onKeyDown={(e) => {
+                                            if (e.key === 'Enter') { e.preventDefault(); void saveInline(d, p.lots as Row[]) }
+                                            if (e.key === 'Escape') { e.preventDefault(); setInlineId(0) }
+                                          }}
+                                          className="h-[22px] w-[58px] min-w-0 rounded-[3px] border border-[#0B6B45] bg-white px-1 text-[11.5px] font-bold uppercase text-[#0A1F17] outline-none placeholder:font-semibold placeholder:normal-case placeholder:text-[#A8B8AE]"
+                                        />
+                                        <input
+                                          disabled={inlineBusy}
+                                          value={inlineTerm}
+                                          placeholder="terminal"
+                                          onChange={(e) => setInlineTerm(e.target.value.toUpperCase())}
+                                          onKeyDown={(e) => {
+                                            if (e.key === 'Enter') { e.preventDefault(); void saveInline(d, p.lots as Row[]) }
+                                            if (e.key === 'Escape') { e.preventDefault(); setInlineId(0) }
+                                          }}
+                                          onBlur={(e) => {
+                                            // Clicking away from the pair is
+                                            // leaving, not saving — but moving
+                                            // BETWEEN the two boxes is neither.
+                                            const to = e.relatedTarget as HTMLElement | null
+                                            if (!to || !to.closest('[data-inline-lot]')) setInlineId(0)
+                                          }}
+                                          className="h-[22px] w-[62px] min-w-0 rounded-[3px] border border-[#C3D2C6] bg-white px-1 text-[11.5px] font-bold uppercase text-[#0A1F17] outline-none placeholder:font-semibold placeholder:normal-case placeholder:text-[#A8B8AE]"
+                                        />
+                                        <button
+                                          type="button"
+                                          title="Label several tankers off the same cargo"
+                                          onMouseDown={(e) => e.preventDefault()}
+                                          onClick={() => { setInlineId(0); void openAssign(d) }}
+                                          className="flex h-[22px] w-[18px] flex-none items-center justify-center rounded-[3px] text-[#8CA396] hover:bg-[#EAF0E9] hover:text-[#0B6B45]"
+                                        >
+                                          <ChevronRight className="h-3.5 w-3.5" />
+                                        </button>
+                                      </span>
+                                    ) : d.lot_no || d.terminal_no ? (
+                                      /* The label is the way back in: changing
+                                         a lot, or adding the tankers that were
+                                         missed the first time, is the same act
+                                         as assigning it — and a chip you can
+                                         only read leaves Edit deposit as the
+                                         only route, one tanker at a time. */
+                                      <button
+                                        type="button"
+                                        onClick={() => openLotFor(d)}
+                                        title="Change this lot, or add other tankers to it"
+                                        className="inline-flex items-center gap-1 rounded-[3px] px-0.5 hover:bg-[#EAF0E9]"
+                                      >
+                                        {(() => {
+                                          // ONE COLOUR FOR THE PAIR, on both
+                                          // chips. The lot and the terminal
+                                          // together name the parcel, so
+                                          // colouring them separately would
+                                          // say there are two things here.
+                                          const tint = tintOf(d.lot_no, d.terminal_no)
+                                          const chip = (text: string, strong: boolean): React.JSX.Element => (
+                                            <span
+                                              className={cn('rounded-[2px] px-1.5 py-[1px] text-[11px] font-bold', __WEB__ && 'doc-ref')}
+                                              style={
+                                                tint
+                                                  ? {
+                                                      background: tint.bg,
+                                                      color: tint.fg,
+                                                      // The terminal is the
+                                                      // quieter half of the
+                                                      // name; same colour,
+                                                      // less of it.
+                                                      opacity: strong ? 1 : 0.82
+                                                    }
+                                                  : undefined
+                                              }
+                                            >
+                                              {text}
+                                            </span>
+                                          )
+                                          return (
+                                            <>
+                                              {!!d.lot_no && chip(String(d.lot_no), true)}
+                                              {!!d.terminal_no && chip(String(d.terminal_no), false)}
+                                            </>
+                                          )
+                                        })()}
+                                      </button>
+                                    ) : (
+                                      <button
+                                        type="button"
+                                        onClick={() => openLotFor(d)}
+                                        title={
+                                          Number(d.is_opening) === 1
+                                            ? 'Split this opening into its lots and terminals — an opening can be several parcels'
+                                            : 'Type the lot and terminal this tanker came off — Enter moves to the next'
+                                        }
+                                        className="rounded-[3px] border border-dashed border-[#C3D2C6] px-1.5 py-[1px] text-[11px] font-bold text-[#8CA396] hover:border-[#0B6B45] hover:text-[#0B6B45]"
+                                      >
+                                        {Number(d.is_opening) === 1 ? 'parcels' : 'assign'}
+                                      </button>
+                                    )}
                                   </TableCell>
                                   <TableCell className={cn('text-right tabular-nums text-muted-foreground', __WEB__ && '!text-[12.5px] !font-semibold !text-[#5A6B62]')}>
                                     {Number(d.weighed_qty) > 0 ? formatNum(d.weighed_qty) : '—'}
@@ -950,15 +1933,21 @@ export function Consignment(): React.JSX.Element {
                                   >
                                     {formatNum(d.qty)} {d.uom}
                                   </TableCell>
-                                  <TableCell>
+                                  <TableCell className={cn(__WEB__ && '!max-w-0 !overflow-hidden')}>
                                     {/* Validation status: a lot is Completed once it has been
                                         validated with a quantity. Whether it has since been
-                                        invoiced is shown alongside, not instead. */}
+                                        invoiced is shown alongside, not instead — under it
+                                        rather than beside it, because the column is a fixed
+                                        width and a ten-digit invoice number set next to the
+                                        badge ran out of the cell and printed over the note. */}
                                     {Number(d.qty) > 0 ? (
-                                      <span className="inline-flex items-center gap-1.5">
+                                      <span className="flex min-w-0 flex-col items-start gap-[3px]">
                                         <Badge variant="success">Completed</Badge>
                                         {booked && (
-                                          <span className="text-[10px] text-muted-foreground">
+                                          <span
+                                            className="block w-full truncate text-[10px] font-semibold tabular-nums text-[#8FA79B]"
+                                            title={`Booked on ${String(d.invoice_no || 'a purchase invoice')}`}
+                                          >
                                             {String(d.invoice_no || 'booked')}
                                           </span>
                                         )}
@@ -982,6 +1971,26 @@ export function Consignment(): React.JSX.Element {
                                       >
                                         <Pencil className="h-3.5 w-3.5" />
                                       </Button>
+                                      {/* THE WAY BACK OUT OF A WRONG ATTRIBUTION.
+                                          Edit and Delete are both shut on a
+                                          booked row and rightly so — but until
+                                          now that left NOTHING to do with a
+                                          parcel the wrong invoice had taken,
+                                          short of deleting the invoice itself.
+                                          This hands the parcels back and
+                                          leaves the invoice alone. */}
+                                      {booked && (
+                                        <Button
+                                          variant="ghost"
+                                          size="icon"
+                                          className="h-7 w-7 text-[#8A5300] hover:bg-[#FFF4E0]"
+                                          disabled={unlinking}
+                                          title={`Unlink ${String(d.invoice_no || 'this invoice')} from the parcels it drew — the invoice itself is not changed`}
+                                          onClick={() => void unlinkOne(d)}
+                                        >
+                                          <Unlink className="h-3.5 w-3.5" />
+                                        </Button>
+                                      )}
                                       <Button
                                         variant="ghost"
                                         size="icon"
@@ -997,13 +2006,16 @@ export function Consignment(): React.JSX.Element {
                                 </TableRow>
                               )
                             })}
+                              </Fragment>
+                              )
+                            })}
                             {/* What the lots above come to. The band over them
                                 already says it, but a table you have scrolled
                                 to the bottom of should not make you scroll back
                                 up to find its total. */}
                             {__WEB__ && (
                               <TableRow className="!border-b-[#C3D2C6] !border-t-2 !border-t-[#C7F03F] !bg-[#EFF5EC] hover:!bg-[#EFF5EC]">
-                                <TableCell colSpan={4} className="!text-[10.5px] !font-extrabold !uppercase !tracking-[.11em] !text-[#0B3D2E]">
+                                <TableCell colSpan={5} className="!text-[10.5px] !font-extrabold !uppercase !tracking-[.11em] !text-[#0B3D2E]">
                                   {(p.lots as Row[]).length} tanker{(p.lots as Row[]).length === 1 ? '' : 's'}
                                 </TableCell>
                                 <TableCell className="!text-right !text-[12.5px] !font-bold !tabular-nums !text-[#33473E]">
@@ -1013,8 +2025,23 @@ export function Consignment(): React.JSX.Element {
                                 <TableCell className="!text-right !text-[13.5px] !font-bold !tabular-nums !tracking-[-0.02em] !text-[#0A1F17]">
                                   {formatNum(p.deposited)} {p.uom}
                                 </TableCell>
-                                <TableCell colSpan={3} className="!text-[11px] !font-bold !text-[#5A6B62]">
-                                  {formatNum(p.balance)} {p.uom} still in stock
+                                <TableCell colSpan={3}>
+                                  {/* The same chip the parcels above wear, for
+                                      the same statement one level up — a total
+                                      that speaks a different language from the
+                                      lines it totals reads as a stray. */}
+                                  <span
+                                    className={cn(
+                                      'inline-flex items-center rounded-[3px] border px-1.5 py-[1px] text-[11px] font-bold tabular-nums',
+                                      Number(p.balance) > 0.0001
+                                        ? 'border-[#BFE3CB] bg-[#E9F5EE] text-[#0B6B45]'
+                                        : 'border-[#DCE7DB] bg-[#F1F5EF] text-[#8FA79B]'
+                                    )}
+                                  >
+                                    {Number(p.balance) > 0.0001
+                                      ? `${formatNum(p.balance)} ${p.uom} free`
+                                      : 'All booked'}
+                                  </span>
                                 </TableCell>
                               </TableRow>
                             )}
@@ -1031,10 +2058,165 @@ export function Consignment(): React.JSX.Element {
         </section>
 
       </div>
+      </>)}
 
       {/* Deposit intake dialog */}
+
+      {/* WHICH CARGO THESE TANKERS CAME OFF.
+          A drawer rather than a dialog: the suggestion list is the point of
+          the screen and it needs room to be read, tanker by tanker, with the
+          reason each one is being offered. */}
+      {!!assignFor && (
+        <div
+          className="fixed inset-0 z-[70] flex justify-end"
+          style={{ background: 'rgba(10,31,23,.5)' }}
+          onMouseDown={(e) => {
+            if (e.target === e.currentTarget && !assignBusy) setAssignFor(null)
+          }}
+        >
+          <div className="flex h-full w-[min(100%,620px)] flex-col bg-[#F1F5EF] shadow-[0_0_60px_rgba(10,31,23,.4)]">
+            <div className="flex-none bg-[#0B3D2E] px-[22px] py-4">
+              <div className="text-[11.5px] font-extrabold uppercase tracking-[.14em] text-[#8FBFA8]">
+                Assign lot &amp; terminal
+              </div>
+              <div className="mt-1.5 text-[15px] font-bold tracking-[-0.01em] text-white">
+                {String(assignFor.tanker_no || 'this tanker')}
+              </div>
+              <p className="mt-1.5 text-[11.5px] font-medium leading-[1.5] text-[#B7D6C4]">
+                {String(assignFor.supplier_name || '')} ·{' '}
+                {String(assignFor.product_code || assignFor.product_name || '')} · arrived{' '}
+                {formatDate(assignFor.deposit_date)}
+              </p>
+            </div>
+
+            <div className="min-h-0 flex-1 overflow-y-auto px-[22px] py-4">
+              <div className="grid grid-cols-2 gap-2.5">
+                <div className="flex flex-col gap-1.5">
+                  <Label>Lot no</Label>
+                  <Input value={assignLot} onChange={(e) => setAssignLot(e.target.value)} placeholder="e.g. L-2451" />
+                </div>
+                <div className="flex flex-col gap-1.5">
+                  <Label>Terminal no</Label>
+                  <Input value={assignTerm} onChange={(e) => setAssignTerm(e.target.value)} placeholder="e.g. T3" />
+                </div>
+              </div>
+              {!!assignFrom && (
+                <p className="mt-2 text-[11.5px] font-semibold text-[#1B4E82]">
+                  Proposed from {assignFrom}, which is already on this lot — change it if this cargo is different.
+                </p>
+              )}
+
+              <div className="mt-4 rounded-[4px] border border-[#D6E2D6] bg-white">
+                <div className="flex flex-wrap items-center gap-2 border-b border-b-[#EAF0E9] px-3.5 py-2.5">
+                  <span className="text-[10px] font-extrabold uppercase tracking-[.11em] text-[#8CA396]">
+                    Others that may be the same cargo
+                  </span>
+                  <span className="min-w-0 flex-1" />
+                  {assignKin.length > 0 && (
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setAssignPicked((prev) =>
+                          prev.length === assignKin.length ? [] : assignKin.map((k) => Number(k.id))
+                        )
+                      }
+                      className="rounded-[3px] border border-[#C3D2C6] bg-white px-2 py-0.5 text-[10.5px] font-bold text-[#33473E] hover:bg-[#F7FAF6]"
+                    >
+                      {assignPicked.length === assignKin.length ? 'Clear' : 'Take all'}
+                    </button>
+                  )}
+                </div>
+                {assignKin.length === 0 ? (
+                  <div className="px-3.5 py-6 text-center text-[11.5px] font-semibold text-[#8CA396]">
+                    Nothing else from this party and product arrived near this one.
+                  </div>
+                ) : (
+                  assignKin.map((k) => {
+                    const on = assignPicked.includes(Number(k.id))
+                    return (
+                      <button
+                        key={String(k.id)}
+                        type="button"
+                        onClick={() =>
+                          setAssignPicked((prev) =>
+                            on ? prev.filter((x) => x !== Number(k.id)) : [...prev, Number(k.id)]
+                          )
+                        }
+                        className={cn(
+                          'flex w-full items-center gap-2.5 border-b border-b-[#F1F5EF] px-3.5 py-2.5 text-left last:border-b-0',
+                          on ? 'bg-[#F1F5EF]' : 'hover:bg-[#F7FAF6]'
+                        )}
+                      >
+                        <span
+                          className={cn(
+                            'flex h-[15px] w-[15px] flex-none items-center justify-center rounded-[3px] border-[1.5px]',
+                            on ? 'border-[#0B3D2E] bg-[#0B3D2E]' : 'border-[#C3D2C6] bg-white'
+                          )}
+                        >
+                          {on && <Check className="h-3 w-3 text-[#C7F03F]" />}
+                        </span>
+                        <span className="min-w-0 flex-1">
+                          <span className="block truncate text-[12.5px] font-bold text-[#0A1F17]">
+                            {String(k.tanker_no || 'no number')}
+                          </span>
+                          {/* WHY it is being offered. A suggestion that cannot
+                              say why is one nobody should act on. */}
+                          <span className="mt-0.5 block text-[10.5px] font-semibold text-[#5A6B62]">
+                            {String(k.why || '')}
+                          </span>
+                        </span>
+                        <span className="flex-none text-right">
+                          <span className="block text-[12px] font-bold tabular-nums text-[#33473E]">
+                            {formatNum(k.qty)} {String(k.uom || 'MT')}
+                          </span>
+                          <span className="block text-[10.5px] font-semibold tabular-nums text-[#8CA396]">
+                            {formatDate(k.deposit_date)}
+                          </span>
+                        </span>
+                      </button>
+                    )
+                  })
+                )}
+              </div>
+
+              <p className="mt-3 text-[11px] font-medium leading-[1.55] text-[#5A6B62]">
+                Only this party and this product are ever offered — a lot is one parcel of one oil. A tanker already on
+                a different lot is left out: moving one is a decision, not a suggestion. A tanker already booked onto a
+                purchase can still be labelled, because which cargo it came off is a fact about the arrival, not about
+                the invoice.
+              </p>
+            </div>
+
+            <div className="flex flex-none flex-wrap items-center gap-3 border-t border-t-[#D6E2D6] bg-white px-[22px] py-4">
+              <span className="min-w-0 flex-1 text-[11.5px] font-semibold text-[#33473E]">
+                {assignPicked.length + 1} tanker{assignPicked.length ? 's' : ''} will be labelled
+                {assignLot.trim() ? ` ${assignLot.trim().toUpperCase()}` : ''}
+                {assignTerm.trim() ? ` · ${assignTerm.trim().toUpperCase()}` : ''}
+              </span>
+              <Button variant="outline" onClick={() => setAssignFor(null)} disabled={assignBusy}>
+                Cancel
+              </Button>
+              <Button
+                className="bg-[#0B3D2E] text-[#C7F03F] hover:bg-[#0A3327]"
+                onClick={() => void saveAssign()}
+                disabled={assignBusy || (!assignLot.trim() && !assignTerm.trim())}
+              >
+                {assignBusy ? 'Saving…' : 'Assign'}
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
+
       <Dialog open={depOpen} onOpenChange={(o) => !o && setDepOpen(false)}>
-        <DialogContent className={cn(__WEB__ && CS_DRAWER)}>
+        <DialogContent
+          className={cn(
+            __WEB__ && CS_DRAWER,
+            // On a phone the drawer is the whole screen and its field pairs
+            // (weighed / short / net) stack instead of running off the edge.
+            __WEB__ && isMobile && '!w-screen !max-w-none !grid-cols-1 [&_.grid-cols-3]:!grid-cols-1 [&_.grid-cols-2]:!grid-cols-1'
+          )}
+        >
           <DialogHeader className={cn(__WEB__ && CS_HEAD)}>
             {__WEB__ && (
               <div className="text-[11px] font-extrabold uppercase tracking-[.14em] text-[#8FBFA8]">
@@ -1112,6 +2294,28 @@ export function Consignment(): React.JSX.Element {
                 value={depForm.tanker_no ?? ''}
                 placeholder="Vehicle number"
                 onChange={(e) => setDepForm((p) => ({ ...p, tanker_no: e.target.value }))}
+              />
+            </div>
+            {/* WHICH CARGO IT CAME OFF.
+                Optional on purpose, and optional for good: the lot is on the
+                terminal's paperwork and the yard often validates the tanker
+                before that sheet reaches the desk. Both can be filled in
+                later, on one tanker or on a dozen at once — see Assign on the
+                register below. */}
+            <div className="flex flex-col gap-1.5">
+              <Label>Lot no</Label>
+              <Input
+                value={depForm.lot_no ?? ''}
+                placeholder="optional — the lot at the port"
+                onChange={(e) => setDepForm((p) => ({ ...p, lot_no: e.target.value }))}
+              />
+            </div>
+            <div className="flex flex-col gap-1.5">
+              <Label>Terminal no</Label>
+              <Input
+                value={depForm.terminal_no ?? ''}
+                placeholder="optional — where it was discharged"
+                onChange={(e) => setDepForm((p) => ({ ...p, terminal_no: e.target.value }))}
               />
             </div>
             <div className="flex flex-col gap-1.5">
@@ -1364,6 +2568,67 @@ export function Consignment(): React.JSX.Element {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      {/* The opening, as parcels — see components/ConsignmentOpening.tsx. */}
+      {/* RENAMING A COMBINATION. Two boxes, because a parcel is a lot AT a
+          terminal and correcting one usually means checking the other. */}
+      <Dialog open={!!renameFor} onOpenChange={(o) => !o && !renameSaving && setRenameFor(null)}>
+        <DialogContent className="sm:max-w-sm">
+          <DialogHeader>
+            <DialogTitle>Rename this parcel</DialogTitle>
+          </DialogHeader>
+          {renameFor && (
+            <div className="grid gap-3">
+              <p className="text-[12.5px] leading-[1.5] text-muted-foreground">
+                {String(renameFor.count)} tanker{Number(renameFor.count) === 1 ? '' : 's'} on{' '}
+                <b className="text-foreground">
+                  {[String(renameFor.from_lot || ''), String(renameFor.from_terminal || '')]
+                    .filter(Boolean)
+                    .join(' · ') || 'no lot yet'}
+                </b>{' '}
+                under {String(renameFor.product || 'this product')}. Renaming it here moves all of them together,
+                booked ones included — this writes a label and nothing else.
+              </p>
+              <div className="grid grid-cols-2 gap-3">
+                <div className="flex flex-col gap-1.5">
+                  <Label>Lot no</Label>
+                  <Input
+                    value={renameLotNo}
+                    onChange={(e) => setRenameLotNo(e.target.value)}
+                    placeholder="L-2451"
+                    className="uppercase"
+                  />
+                </div>
+                <div className="flex flex-col gap-1.5">
+                  <Label>Terminal no</Label>
+                  <Input
+                    value={renameTermNo}
+                    onChange={(e) => setRenameTermNo(e.target.value)}
+                    placeholder="KANDLA"
+                    className="uppercase"
+                  />
+                </div>
+              </div>
+            </div>
+          )}
+          <DialogFooter>
+            <Button variant="outline" disabled={renameSaving} onClick={() => setRenameFor(null)}>
+              Cancel
+            </Button>
+            <Button disabled={renameSaving} onClick={() => void saveRename()}>
+              {renameSaving ? 'Renaming…' : 'Rename'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <ConsignmentOpeningDialog
+        open={openingOpen}
+        supplierId={openingSeed.s}
+        productId={openingSeed.p}
+        onClose={() => setOpeningOpen(false)}
+        onSaved={() => void load()}
+      />
     </>
   )
 }

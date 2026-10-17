@@ -10,6 +10,7 @@
 // So a pre-cutoff voucher is never deleted; it simply stops reaching the ledger,
 // and the entered opening takes its place.
 import { getClient, todayISO } from './db'
+import { withDbTransaction } from './dbTransaction'
 import { getActiveCompanyId } from './company'
 import { getSetting, setSetting } from './repos'
 
@@ -46,23 +47,28 @@ export async function listOpenings(companyId?: number): Promise<Row> {
   const c = getClient()
   const cid = companyId || getActiveCompanyId()
   const from = await getBooksFrom(cid)
+  // Every ledger's movement since the books began, and before, in ONE pass
+  // over the company's lines — not two sums per ledger, which read every
+  // voucher of the company again for each of the ~500 ledgers (half a second).
   const res = await c.execute({
-    sql: `SELECT a.id, a.name, a.acc_group,
+    sql: `WITH mv AS (
+            SELECT jl.account_id,
+                   SUM(CASE WHEN ${from ? 'je.entry_date >= ?' : '1'} THEN jl.dr - jl.cr ELSE 0 END) AS movement,
+                   SUM(CASE WHEN ${from ? 'je.entry_date < ?' : '0'} THEN jl.dr - jl.cr ELSE 0 END) AS before_cutoff
+              FROM journal_lines jl
+              JOIN journal_entries je ON je.id = jl.entry_id
+             WHERE je.company_id = ?
+             GROUP BY jl.account_id
+          )
+          SELECT a.id, a.name, a.acc_group,
                  COALESCE(o.dr, 0) AS dr, COALESCE(o.cr, 0) AS cr,
-                 COALESCE((SELECT SUM(jl.dr) - SUM(jl.cr)
-                             FROM journal_lines jl
-                             JOIN journal_entries je ON je.id = jl.entry_id
-                            WHERE jl.account_id = a.id AND je.company_id = ?
-                              ${from ? 'AND je.entry_date >= ?' : ''}), 0) AS movement,
-                 COALESCE((SELECT SUM(jl.dr) - SUM(jl.cr)
-                             FROM journal_lines jl
-                             JOIN journal_entries je ON je.id = jl.entry_id
-                            WHERE jl.account_id = a.id AND je.company_id = ?
-                              ${from ? 'AND je.entry_date < ?' : 'AND 0'}), 0) AS before_cutoff
+                 COALESCE(mv.movement, 0) AS movement,
+                 COALESCE(mv.before_cutoff, 0) AS before_cutoff
             FROM ledger_accounts a
             LEFT JOIN ledger_openings o ON o.account_id = a.id AND o.company_id = ?
+            LEFT JOIN mv ON mv.account_id = a.id
            ORDER BY a.acc_group, a.name`,
-    args: from ? [cid, from, cid, from, cid] : [cid, cid, cid]
+    args: from ? [from, from, cid, cid] : [cid, cid]
   })
   const rows = res.rows.map((r) => {
     const o: Row = {}
@@ -117,6 +123,69 @@ export async function saveOpenings(
     saved += 1
   }
   return { saved }
+}
+
+// MOVING OPENINGS ENTERED IN THE WRONG COMPANY.
+//
+// Each selected ledger's opening comes off this company and onto the other.
+// A ledger the other company ALREADY holds an opening for is refused — two
+// figures for one ledger is a decision for whoever entered them, not a sum to
+// be made quietly — and then nothing moves at all. One transaction: either
+// every ledger moves or none does.
+export async function moveOpenings(
+  accountIds: number[],
+  fromCompanyId: number,
+  toCompanyId: number
+): Promise<{ moved: number; rows: Row[] }> {
+  const from = n(fromCompanyId)
+  const to = n(toCompanyId)
+  if (!from || !to) throw new Error('Pick the company to move the openings to')
+  if (from === to) throw new Error('That is the company they are already in')
+  const ids = [...new Set((accountIds || []).map(n).filter((x) => x > 0))]
+  if (!ids.length) throw new Error('Tick the ledgers whose openings are to move')
+  return withDbTransaction(async () => {
+    const c = getClient()
+    const out: Row[] = []
+    // Checked for every ledger before any is touched.
+    const held: string[] = []
+    for (const id of ids) {
+      const t2 = (await c.execute({
+        sql: `SELECT a.name, lo.dr, lo.cr FROM ledger_openings lo JOIN ledger_accounts a ON a.id = lo.account_id
+               WHERE lo.company_id = ? AND lo.account_id = ?`,
+        args: [to, id]
+      })).rows[0] as unknown as Row | undefined
+      if (t2 && Math.abs(n(t2.dr) - n(t2.cr)) >= 0.005) held.push(String(t2.name))
+    }
+    if (held.length) {
+      throw new Error(
+        `The other company already holds an opening for ${held.slice(0, 5).join(', ')}${held.length > 5 ? ` and ${held.length - 5} more` : ''} — clear it there first`
+      )
+    }
+    for (const id of ids) {
+      const src = (await c.execute({ sql: 'SELECT dr, cr FROM ledger_openings WHERE company_id = ? AND account_id = ?', args: [from, id] }))
+        .rows[0] as unknown as Row | undefined
+      const sNet = src ? round2(n(src.dr) - n(src.cr)) : 0
+      if (Math.abs(sNet) < 0.005) continue
+      const tgt = (await c.execute({ sql: 'SELECT dr, cr FROM ledger_openings WHERE company_id = ? AND account_id = ?', args: [to, id] }))
+        .rows[0] as unknown as Row | undefined
+      const tNet = tgt ? round2(n(tgt.dr) - n(tgt.cr)) : 0
+      const net = round2(sNet + tNet)
+      if (Math.abs(net) < 0.005) {
+        await c.execute({ sql: 'DELETE FROM ledger_openings WHERE company_id = ? AND account_id = ?', args: [to, id] })
+      } else {
+        await c.execute({
+          sql: `INSERT INTO ledger_openings (company_id, account_id, dr, cr, updated_at)
+                VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(company_id, account_id)
+                DO UPDATE SET dr = excluded.dr, cr = excluded.cr, updated_at = excluded.updated_at`,
+          args: [to, id, net > 0 ? net : 0, net < 0 ? -net : 0, todayISO()]
+        })
+      }
+      await c.execute({ sql: 'DELETE FROM ledger_openings WHERE company_id = ? AND account_id = ?', args: [from, id] })
+      out.push({ account_id: id, moved: sNet, had: tNet, now: net })
+    }
+    return { moved: out.length, rows: out }
+  })
 }
 
 // One ledger's entered opening, for the statement view. Returned alongside the

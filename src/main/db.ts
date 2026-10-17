@@ -7,6 +7,7 @@
 import { createClient, type Client } from '@libsql/client/web'
 import { SCHEMA_SQL } from './schema'
 import { getStoredConfig } from './config'
+import { transactionClient } from './dbTransaction'
 
 let client: Client | null = null
 
@@ -102,6 +103,8 @@ function withStreamRecovery(raw: Client): Client {
 }
 
 export function getClient(): Client {
+  const scoped = transactionClient()
+  if (scoped) return scoped
   if (client) return client
   loadEnv()
   // Resolution order: credentials the user saved on this machine (highest, so

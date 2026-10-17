@@ -1,7 +1,14 @@
+import { withDbTransaction } from './dbTransaction'
 import type { ResultSet } from '@libsql/client'
 import { getClient } from './db'
 import { getActiveCompanyId } from './company'
+import { resolveAccountName } from './ledgerMap'
+import { partyAccountName } from './partyLedgers'
 import { getBooksFrom } from './openings'
+import { gstLines, asGstType, gstLedgerName } from './gstLedgers'
+import { assertManualVoucher } from './voucherOwnership'
+import { ensureVoucherNumbers, permanentVoucherCodes, renumberOnTypeChange } from './voucherNumbers'
+import { normalizedJournalLines, validateCashFlow } from './voucherValidation'
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Row = Record<string, any>
@@ -21,9 +28,25 @@ function n(v: unknown): number {
 
 // --- accounts ---
 
-export async function getOrCreateAccount(name: string, group = 'General'): Promise<number> {
+export async function getOrCreateAccount(
+  name: string,
+  group = 'General',
+  companyId?: number
+): Promise<number> {
   const c = getClient()
-  const clean = String(name || '').trim().toUpperCase()
+  // WHAT THE CODE ASKS FOR IS NOT ALWAYS WHAT IT POSTS TO.
+  //
+  // Half this app addresses ledgers by name — `{OIL} PUR A/C`, `GST INPUT
+  // A/C`, `HDFCBANK A/C` — and this function makes the account if the name is
+  // not there. That is exactly why renaming one used to be unsafe: the next
+  // posting opened a SECOND account under the old name and left the history
+  // behind in the first.
+  //
+  // ledger_map is checked first, so a renamed or re-pointed ledger is followed
+  // instead of re-created. A book with no map behaves exactly as it always
+  // did. See src/main/ledgerMap.ts.
+  const wanted = await resolveAccountName(name, companyId)
+  const clean = String(wanted || '').trim().toUpperCase()
   if (!clean) throw new Error('Account name is required')
   await c.execute({
     sql: 'INSERT OR IGNORE INTO ledger_accounts (name, acc_group) VALUES (?, ?)',
@@ -36,13 +59,47 @@ export async function getOrCreateAccount(name: string, group = 'General'): Promi
   return Number(res.rows[0].id)
 }
 
+// WHICH BOOKS A LEDGER BELONGS TO.
+//
+// Ledgers are one shared list — a name is unique across both companies — so
+// KR FINMARK's LC PAYABLE - CSB sat in KR FOODS' chart of accounts as well. A
+// ledger is a company's when it has postings in that company's books, an
+// opening entered there, or was CREATED while that company was open (recorded
+// here, since a new ledger has neither yet). One no company has used at all —
+// CASH A/C, a party not yet traded with — belongs to every book.
+let homesReady = false
+export async function ensureLedgerHomes(): Promise<void> {
+  if (homesReady) return
+  await getClient().execute(`CREATE TABLE IF NOT EXISTS ledger_homes (
+    account_id INTEGER NOT NULL,
+    company_id INTEGER NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (account_id, company_id)
+  )`)
+  homesReady = true
+}
+
 export async function listAccounts(companyId?: number): Promise<Row[]> {
   // Accounts are shared; balances are per company (separate books) — the
   // caller may pin one, else the active company.
+  await ensureLedgerHomes()
+  const cid = companyId || getActiveCompanyId()
   const res = await getClient().execute({
-    args: [companyId || getActiveCompanyId()],
+    args: [cid, cid, cid, cid],
     sql: `
     SELECT a.*,
+      -- Whether this ledger belongs to the company in view (see ensureLedgerHomes).
+      CASE
+        WHEN EXISTS (SELECT 1 FROM journal_lines jl JOIN journal_entries je ON je.id = jl.entry_id
+                      WHERE jl.account_id = a.id AND je.company_id = ?) THEN 1
+        WHEN EXISTS (SELECT 1 FROM ledger_openings lo
+                      WHERE lo.account_id = a.id AND lo.company_id = ? AND (ABS(lo.dr) > 0.004 OR ABS(lo.cr) > 0.004)) THEN 1
+        WHEN EXISTS (SELECT 1 FROM ledger_homes lh WHERE lh.account_id = a.id AND lh.company_id = ?) THEN 1
+        WHEN NOT EXISTS (SELECT 1 FROM journal_lines jl WHERE jl.account_id = a.id)
+         AND NOT EXISTS (SELECT 1 FROM ledger_openings lo WHERE lo.account_id = a.id AND (ABS(lo.dr) > 0.004 OR ABS(lo.cr) > 0.004))
+         AND NOT EXISTS (SELECT 1 FROM ledger_homes lh WHERE lh.account_id = a.id) THEN 1
+        ELSE 0
+      END AS in_company,
       COALESCE((SELECT SUM(jl.dr) - SUM(jl.cr)
                 FROM journal_lines jl JOIN journal_entries je ON je.id = jl.entry_id
                 WHERE jl.account_id = a.id AND je.company_id = ?), 0) AS balance,
@@ -57,15 +114,42 @@ export async function listAccounts(companyId?: number): Promise<Row[]> {
       (SELECT COUNT(*) FROM customers m WHERE TRIM(UPPER(m.name)) = TRIM(UPPER(a.name))) +
       (SELECT COUNT(*) FROM suppliers m WHERE TRIM(UPPER(m.name)) = TRIM(UPPER(a.name))) +
       (SELECT COUNT(*) FROM transporters m WHERE TRIM(UPPER(m.name)) = TRIM(UPPER(a.name))) +
-      (SELECT COUNT(*) FROM brokers m WHERE TRIM(UPPER(m.name)) = TRIM(UPPER(a.name))) AS claimed_by_master
+      (SELECT COUNT(*) FROM brokers m WHERE TRIM(UPPER(m.name)) = TRIM(UPPER(a.name))) AS claimed_by_master,
+      -- The party behind this ledger runs a Trading or a Manufacturing book;
+      -- read off the master that names it (a debtor is a customer, a creditor a
+      -- supplier). A ledger no party claims — a purchase head, a bank — has none.
+      --
+      -- A RENAMED LEDGER STILL HAS A PARTY. Renaming the ledger does not rename
+      -- the customer or supplier, so the master keeps the old name while the
+      -- ledger wears the new one; the rename records the two in ledger_map
+      -- (posts_as = the old name, use_name = this ledger). So when the name on
+      -- the ledger finds no master, the redirected-from name is tried too.
+      COALESCE(
+        (SELECT m.business_type FROM customers m WHERE TRIM(UPPER(m.name)) = TRIM(UPPER(a.name)) LIMIT 1),
+        (SELECT m.business_type FROM suppliers m WHERE TRIM(UPPER(m.name)) = TRIM(UPPER(a.name)) LIMIT 1),
+        (SELECT m.business_type FROM customers m
+           JOIN ledger_map lm ON TRIM(UPPER(lm.posts_as)) = TRIM(UPPER(m.name))
+          WHERE TRIM(UPPER(lm.use_name)) = TRIM(UPPER(a.name)) LIMIT 1),
+        (SELECT m.business_type FROM suppliers m
+           JOIN ledger_map lm ON TRIM(UPPER(lm.posts_as)) = TRIM(UPPER(m.name))
+          WHERE TRIM(UPPER(lm.use_name)) = TRIM(UPPER(a.name)) LIMIT 1)
+      ) AS business_type
     FROM ledger_accounts a ORDER BY a.name
   `
   })
   return toPlain(res)
 }
 
-export async function createAccount(name: string, group = 'General'): Promise<{ id: number }> {
-  return { id: await getOrCreateAccount(name, group) }
+export async function createAccount(name: string, group = 'General', companyId?: number): Promise<{ id: number }> {
+  const id = await getOrCreateAccount(name, group)
+  // Made while a company was open: it is that company's ledger from now on,
+  // before it has a posting or an opening to say so.
+  await ensureLedgerHomes()
+  await getClient().execute({
+    sql: 'INSERT OR IGNORE INTO ledger_homes (account_id, company_id) VALUES (?, ?)',
+    args: [id, companyId || getActiveCompanyId()]
+  })
+  return { id }
 }
 
 // --- posting ---
@@ -91,8 +175,11 @@ interface PostArgs {
 
 // Insert a balanced journal entry. Lines with zero amounts are skipped.
 export async function postJournal(a: PostArgs): Promise<{ id: number }> {
+  return withDbTransaction(async () => {
   const c = getClient()
-  const lines = a.lines.filter((l) => n(l.dr) > 0.004 || n(l.cr) > 0.004)
+  const lines = normalizedJournalLines(a.lines)
+  await validateCashFlow(a.vchType, lines, a.companyId)
+  await ensureVoucherNumbers()
   if (!lines.length) throw new Error('Journal entry has no amounts')
   const dr = lines.reduce((s, l) => s + n(l.dr), 0)
   const cr = lines.reduce((s, l) => s + n(l.cr), 0)
@@ -115,13 +202,16 @@ export async function postJournal(a: PostArgs): Promise<{ id: number }> {
   })
   const entryId = Number(ins.lastInsertRowid)
   for (const l of lines) {
-    const accountId = await getOrCreateAccount(l.account, l.group)
+    // A party line never lands on the other side's ledger (partyLedgers.ts).
+    const accountId = await getOrCreateAccount(await partyAccountName(l.account, l.group, a.companyId), l.group, a.companyId)
     await c.execute({
       sql: 'INSERT INTO journal_lines (entry_id, account_id, dr, cr) VALUES (?, ?, ?, ?)',
       args: [entryId, accountId, n(l.dr), n(l.cr)]
     })
   }
+  await ensureVoucherNumbers()
   return { id: entryId }
+  })
 }
 
 // Re-post an EXISTING entry in place, keeping its id.
@@ -139,13 +229,18 @@ export async function postJournal(a: PostArgs): Promise<{ id: number }> {
 // Same balance check as postJournal — an in-place update must not be a way to
 // write an unbalanced entry.
 export async function repostJournal(entryId: number, a: PostArgs): Promise<{ id: number }> {
+  return withDbTransaction(async () => {
   const c = getClient()
   const id = n(entryId)
   if (!id) throw new Error('No entry to re-post')
-  const exists = await c.execute({ sql: 'SELECT id FROM journal_entries WHERE id = ?', args: [id] })
+  const exists = await c.execute({ sql: 'SELECT id, company_id FROM journal_entries WHERE id = ?', args: [id] })
   if (!exists.rows.length) throw new Error('That journal entry no longer exists')
+  if (a.companyId && a.companyId !== Number(exists.rows[0].company_id)) throw new Error('A voucher cannot move between companies')
+  a = { ...a, companyId: Number(exists.rows[0].company_id) }
+  await ensureVoucherNumbers()
 
-  const lines = a.lines.filter((l) => n(l.dr) > 0.004 || n(l.cr) > 0.004)
+  const lines = normalizedJournalLines(a.lines)
+  await validateCashFlow(a.vchType, lines, a.companyId)
   if (!lines.length) throw new Error('Journal entry has no amounts')
   const dr = lines.reduce((s, l) => s + n(l.dr), 0)
   const cr = lines.reduce((s, l) => s + n(l.cr), 0)
@@ -169,6 +264,7 @@ export async function repostJournal(entryId: number, a: PostArgs): Promise<{ id:
       id
     ]
   })
+  await renumberOnTypeChange(id, a.vchType)
   // The lines themselves are replaced: which accounts appear can change between
   // one posting and the next (a nil interest line simply is not written), so
   // matching them up would be guesswork. Their bill allocations go with them and
@@ -177,15 +273,18 @@ export async function repostJournal(entryId: number, a: PostArgs): Promise<{ id:
     sql: 'DELETE FROM journal_bill_allocs WHERE line_id IN (SELECT id FROM journal_lines WHERE entry_id = ?)',
     args: [id]
   })
+  await c.execute({ sql: 'DELETE FROM journal_line_splits WHERE line_id IN (SELECT id FROM journal_lines WHERE entry_id = ?)', args: [id] })
   await c.execute({ sql: 'DELETE FROM journal_lines WHERE entry_id = ?', args: [id] })
   for (const l of lines) {
-    const accountId = await getOrCreateAccount(l.account, l.group)
+    // A party line never lands on the other side's ledger (partyLedgers.ts).
+    const accountId = await getOrCreateAccount(await partyAccountName(l.account, l.group, a.companyId), l.group, a.companyId)
     await c.execute({
       sql: 'INSERT INTO journal_lines (entry_id, account_id, dr, cr) VALUES (?, ?, ?, ?)',
       args: [id, accountId, n(l.dr), n(l.cr)]
     })
   }
   return { id }
+  })
 }
 
 // Remove auto-posted entries tied to a source document (used before reposting).
@@ -193,6 +292,7 @@ export async function deleteJournalByRef(
   refCol: 'order_id' | 'sale_id' | 'payment_id',
   refId: number
 ): Promise<void> {
+  return withDbTransaction(async () => {
   const c = getClient()
   const res = await c.execute({
     sql: `SELECT id FROM journal_entries WHERE ${refCol} = ?`,
@@ -202,10 +302,14 @@ export async function deleteJournalByRef(
     await c.execute({ sql: 'DELETE FROM journal_lines WHERE entry_id = ?', args: [r.id] })
     await c.execute({ sql: 'DELETE FROM journal_entries WHERE id = ?', args: [r.id] })
   }
+  })
 }
 
 // Manual entries (Journal / Dr Note / Cr Note / Opening) have no source refs.
 export async function deleteManualEntry(id: number): Promise<{ id: number }> {
+  return withDbTransaction(async () => {
+  await assertManualVoucher(id)
+  await ensureVoucherNumbers()
   const c = getClient()
   const res = await c.execute({
     sql: 'SELECT order_id, sale_id, payment_id FROM journal_entries WHERE id = ?',
@@ -243,6 +347,7 @@ export async function deleteManualEntry(id: number): Promise<{ id: number }> {
   await c.execute({ sql: 'DELETE FROM journal_lines WHERE entry_id = ?', args: [id] })
   await c.execute({ sql: 'DELETE FROM journal_entries WHERE id = ?', args: [id] })
   return { id }
+  })
 }
 
 // --- statements ---
@@ -268,20 +373,8 @@ function vchPrefix(t: string): string {
 
 // A stable running serial per voucher type across the company, keyed by entry id
 // (ordered by id so a voucher always keeps the same number).
-async function voucherCodeMap(companyId: number): Promise<Map<number, string>> {
-  const res = await getClient().execute({
-    sql: 'SELECT id, vch_type FROM journal_entries WHERE company_id = ? ORDER BY id ASC',
-    args: [companyId]
-  })
-  const counters = new Map<string, number>()
-  const map = new Map<number, string>()
-  for (const r of res.rows) {
-    const pre = vchPrefix(String(r.vch_type))
-    const seq = (counters.get(pre) || 0) + 1
-    counters.set(pre, seq)
-    map.set(Number(r.id), `${pre}/${seq}`)
-  }
-  return map
+export async function voucherCodeMap(companyId: number): Promise<Map<number, string>> {
+  return permanentVoucherCodes(companyId)
 }
 
 export async function accountStatement(accountId: number, companyId?: number): Promise<Row[]> {
@@ -294,7 +387,127 @@ export async function accountStatement(accountId: number, companyId?: number): P
   const booksFrom = await getBooksFrom(cid)
   const res = await c.execute({
     sql: `SELECT jl.id, je.id AS entry_id, je.entry_date, je.vch_type, je.vch_no, je.narration,
-                 jl.dr, jl.cr, je.order_id, je.sale_id, je.payment_id
+                 jl.dr, jl.cr, je.order_id, je.sale_id, je.payment_id,
+                 -- THE DOCUMENT'S OWN NUMBER, for the Ref no column.
+                 -- A purchase voucher's reference is the supplier's invoice
+                 -- number and a sale's is the invoice raised — which is what
+                 -- anybody reading a ledger line is looking for, and what they
+                 -- would otherwise have to open the voucher to find. Read from
+                 -- the document itself rather than guessed at from the
+                 -- narration, which is prose and can be edited.
+                 (SELECT o.invoice_no FROM orders o WHERE o.id = je.order_id) AS order_invoice_no,
+                 (SELECT sl.invoice_no FROM sales sl WHERE sl.id = je.sale_id) AS sale_invoice_no,
+                 -- AND WHOSE BOOK THE DOCUMENT IS IN.
+                 -- Almost always this ledger's own, and once in a while not:
+                 -- an inter-company transfer can post its voucher in one
+                 -- company while the purchase itself belongs to the other. The
+                 -- drill-through switches company before it opens the page, so
+                 -- it has to switch to the DOCUMENT's — sent to the ledger's,
+                 -- the page opens in a book the bill does not exist in and the
+                 -- click looks like it did nothing.
+                 (SELECT o.company_id FROM orders o WHERE o.id = je.order_id) AS order_company_id,
+                 (SELECT sl.company_id FROM sales sl WHERE sl.id = je.sale_id) AS sale_company_id,
+                 -- WHICH LETTER OF CREDIT POSTED THIS VOUCHER.
+                 --
+                 -- Every LC voucher is already named exactly, by the LC itself
+                 -- or by one of its issuances, repayments or payment-ins —
+                 -- each of those rows holds the journal_entry_id it wrote. So
+                 -- the link is looked up, not guessed at from the narration.
+                 --
+                 -- It has to be looked up, because an LC NUMBER does not
+                 -- identify an LC: this book has LC-1 through LC-8 twice over
+                 -- in one company, and matching by number opened whichever the
+                 -- register happened to return first.
+                 COALESCE(
+                   (SELECT lc.id FROM letters_of_credit lc
+                     WHERE lc.journal_entry_id = je.id
+                        OR lc.interest_journal_entry_id = je.id
+                        OR lc.preclose_journal_entry_id = je.id
+                        OR lc.preclose_interest_journal_entry_id = je.id
+                        OR lc.preclose_payout_journal_entry_id = je.id
+                        OR lc.charges_journal_entry_id = je.id
+                        OR lc.fee_adjust_journal_entry_id = je.id
+                        OR lc.payment_in_journal_entry_id = je.id
+                     LIMIT 1),
+                   (SELECT i.lc_id FROM lc_issuances i WHERE i.journal_entry_id = je.id LIMIT 1),
+                   (SELECT pi.lc_id FROM lc_payment_ins pi WHERE pi.journal_entry_id = je.id LIMIT 1),
+                   (SELECT r.lc_id FROM lc_repayments r
+                     WHERE r.journal_entry_id = je.id OR r.fee_journal_entry_id = je.id LIMIT 1)
+                 ) AS lc_id,
+                 (SELECT l3.lc_no FROM letters_of_credit l3 WHERE l3.id = COALESCE(
+                   (SELECT lc.id FROM letters_of_credit lc
+                     WHERE lc.journal_entry_id = je.id
+                        OR lc.interest_journal_entry_id = je.id
+                        OR lc.preclose_journal_entry_id = je.id
+                        OR lc.preclose_interest_journal_entry_id = je.id
+                        OR lc.preclose_payout_journal_entry_id = je.id
+                        OR lc.charges_journal_entry_id = je.id
+                        OR lc.fee_adjust_journal_entry_id = je.id
+                        OR lc.payment_in_journal_entry_id = je.id
+                     LIMIT 1),
+                   (SELECT i.lc_id FROM lc_issuances i WHERE i.journal_entry_id = je.id LIMIT 1),
+                   (SELECT pi.lc_id FROM lc_payment_ins pi WHERE pi.journal_entry_id = je.id LIMIT 1),
+                   (SELECT r.lc_id FROM lc_repayments r
+                     WHERE r.journal_entry_id = je.id OR r.fee_journal_entry_id = je.id LIMIT 1)
+                 )) AS lc_no,
+                 -- WHICH DISCOUNTED BILL POSTED THIS VOUCHER, and which
+                 -- trading deal, by the same rule as the LC above: the row
+                 -- that wrote the voucher holds its id, so the link is read
+                 -- rather than matched on a number that repeats.
+                 COALESCE(
+                   (SELECT bd.id FROM bill_discountings bd
+                     WHERE bd.journal_entry_id = je.id
+                        OR bd.repay_journal_entry_id = je.id
+                        OR bd.margin_release_journal_entry_id = je.id
+                     LIMIT 1),
+                   (SELECT r2.bd_id FROM bd_repayments r2 WHERE r2.journal_entry_id = je.id LIMIT 1),
+                   (SELECT ip.bd_id FROM bd_interest_payments ip WHERE ip.journal_entry_id = je.id LIMIT 1)
+                 ) AS bd_id,
+                 (SELECT b3.bd_no FROM bill_discountings b3 WHERE b3.id = COALESCE(
+                   (SELECT bd.id FROM bill_discountings bd
+                     WHERE bd.journal_entry_id = je.id
+                        OR bd.repay_journal_entry_id = je.id
+                        OR bd.margin_release_journal_entry_id = je.id
+                     LIMIT 1),
+                   (SELECT r2.bd_id FROM bd_repayments r2 WHERE r2.journal_entry_id = je.id LIMIT 1),
+                   (SELECT ip.bd_id FROM bd_interest_payments ip WHERE ip.journal_entry_id = je.id LIMIT 1)
+                 )) AS bd_no,
+                 -- A TRADING DEAL IS TWO INVOICES, so its vouchers are their
+                 -- vouchers. A purchase or sale that belongs to one opens the
+                 -- deal, where both sides and the margin are, rather than one
+                 -- half of it on the purchase page.
+                 COALESCE(
+                   (SELECT tdo.deal_id FROM trading_deal_orders tdo WHERE tdo.order_id = je.order_id LIMIT 1),
+                   (SELECT ds.deal_id FROM trading_deal_sales ds WHERE ds.sale_id = je.sale_id LIMIT 1),
+                   (SELECT td.id FROM trading_deals td WHERE td.order_id = je.order_id OR td.sale_id = je.sale_id LIMIT 1)
+                 ) AS trading_deal_id,
+                 -- THE DEAL BEHIND THE POSTING, for the columnar view.
+                 -- A purchase voucher is struck on a bargain and a sale on a
+                 -- sales bargain; each carries that bargain's number, its rate
+                 -- and its quantity. A voucher with no purchase or sale link —
+                 -- a receipt, a journal — carries none, and the column stays
+                 -- blank on its row.
+                 COALESCE(
+                   (SELECT b.bargain_no FROM bargains b JOIN orders o ON o.bargain_id = b.id WHERE o.id = je.order_id LIMIT 1),
+                   (SELECT COALESCE(NULLIF(TRIM(sb.manual_bargain_no), ''), sb.bargain_no)
+                      FROM sales_bargains sb JOIN sales sl ON sl.sales_bargain_id = sb.id WHERE sl.id = je.sale_id LIMIT 1)
+                 ) AS bargain_no,
+                 COALESCE(
+                   (SELECT o.bargain_rate FROM orders o WHERE o.id = je.order_id),
+                   (SELECT sl.rate FROM sales sl WHERE sl.id = je.sale_id)
+                 ) AS deal_rate,
+                 COALESCE(
+                   (SELECT o.ordered_qty FROM orders o WHERE o.id = je.order_id),
+                   (SELECT sl.qty FROM sales sl WHERE sl.id = je.sale_id)
+                 ) AS deal_qty,
+                 -- Interest this voucher carries: a bill-discounting interest
+                 -- payment posts its gross here, and a purchase on credit the
+                 -- interest worked out for its terms.
+                 COALESCE(
+                   (SELECT ip.gross FROM bd_interest_payments ip WHERE ip.journal_entry_id = je.id LIMIT 1),
+                   (SELECT NULLIF(COALESCE(o.credit_interest_amount, 0) + COALESCE(o.additional_interest, 0), 0)
+                      FROM orders o WHERE o.id = je.order_id)
+                 ) AS interest_amt
           FROM journal_lines jl
           JOIN journal_entries je ON je.id = jl.entry_id
           WHERE jl.account_id = ? AND je.company_id = ?
@@ -304,6 +517,45 @@ export async function accountStatement(accountId: number, companyId?: number): P
   })
   const lines = toPlain(res)
   if (!lines.length) return lines
+
+  // A purchase's interest as an AMOUNT, worked out line by line from its
+  // bargains — see orderInterestAmounts. The column used to read the
+  // invoice-level additional interest, which is a rate per MT and is empty on
+  // an invoice struck on two bargains.
+  {
+    const { orderInterestAmounts } = await import('./orders')
+    const amounts = await orderInterestAmounts(lines.map((l) => Number(l.order_id)).filter((x) => x > 0))
+    for (const l of lines) {
+      if (!Number(l.order_id)) continue
+      const a = amounts.get(Number(l.order_id))
+      l.interest_amt = a && Math.abs(a) > 0.004 ? a : null
+    }
+  }
+
+  // ONE BANK DEBIT THAT REPAID SEVERAL DISCOUNTED BILLS — which bill took
+  // what, read from the repayment rows that share the voucher. Shown under the
+  // line; the voucher itself keeps its one figure.
+  {
+    const ids = [...new Set(lines.map((l) => Number(l.entry_id)))]
+    const split = ids.length
+      ? await c
+          .execute({
+            sql: `SELECT r.journal_entry_id AS je, b.bd_no, r.amount FROM bd_repayments r JOIN bill_discountings b ON b.id = r.bd_id
+                   WHERE r.journal_entry_id IN (${ids.map(() => '?').join(',')}) ORDER BY r.amount DESC, r.id`,
+            args: ids
+          })
+          .catch(() => null)
+      : null
+    const byJe = new Map<number, { bd_no: string; amount: number }[]>()
+    for (const x of split ? toPlain(split) : []) {
+      const k = Number(x.je)
+      byJe.set(k, [...(byJe.get(k) || []), { bd_no: String(x.bd_no || ''), amount: Number(x.amount) || 0 }])
+    }
+    for (const l of lines) {
+      const parts = byJe.get(Number(l.entry_id))
+      if (parts && parts.length > 1) l.bd_split = parts
+    }
+  }
 
   // All other lines of the same vouchers, to derive the principal contra name.
   const others = await c.execute({
@@ -343,7 +595,13 @@ export async function accountStatement(accountId: number, companyId?: number): P
     const opposite = Number(l.dr) > 0
       ? rest.filter((r) => n(r.cr) > 0).sort((a, b) => n(b.cr) - n(a.cr))
       : rest.filter((r) => n(r.dr) > 0).sort((a, b) => n(b.dr) - n(a.dr))
-    l.particulars = String((opposite[0] || rest[0])?.name || '')
+    // The opposite line that carries EXACTLY this one's amount is what it was
+    // posted against — a sale voucher's freight line (Dr FREIGHT OUTWARD
+    // 20,595) read "RPO SALE A/C" because the sale was the biggest credit,
+    // when its counterpart is Cr FREIGHT PAYABLE 20,595. Otherwise the largest.
+    const own = n(l.dr) > 0 ? n(l.dr) : n(l.cr)
+    const exact = opposite.filter((r) => Math.abs((n(l.dr) > 0 ? n(r.cr) : n(r.dr)) - own) < 0.005)
+    l.particulars = String((exact.length === 1 ? exact[0] : opposite[0] || rest[0])?.name || '')
     l.voucher_code = codes.get(Number(l.entry_id)) || ''
     // Every other leg of the voucher, for the ledger's DETAILED (Alt+F1) mode.
     l.legs = rest.map((r) => ({ name: String(r.name), dr: n(r.dr), cr: n(r.cr) }))
@@ -357,7 +615,7 @@ export async function accountStatement(accountId: number, companyId?: number): P
 // Purchase (Tally style):
 //   Dr {OILCODE} PUR A/C   taxable value less interest
 //   Dr INTEREST A/C        supplier interest portion
-//   Dr GST INPUT A/C       gst amount
+//   Dr INPUT CGST/SGST     gst amount, split by head and rate — see gstLedgers.ts
 //   Dr/Cr ROUND OFF A/C    rounding difference
 //     Cr TDS PAYABLE A/C   tds amount
 //     Cr {Supplier}        net amount (incl. round off)
@@ -373,8 +631,13 @@ export async function postPurchaseJournal(v: {
   net: number
   roundOff?: number
   interest?: number
+  // The rate and the head this bill was taxed at, so the tax lands in the
+  // ledger a return is filed from rather than in one lump.
+  gstPct?: number
+  gstType?: string | null
   companyId?: number
 }): Promise<void> {
+  return withDbTransaction(async () => {
   await deleteJournalByRef('order_id', v.orderId)
   const ro = n(v.roundOff)
   const interest = Math.min(Math.max(0, n(v.interest)), n(v.taxable))
@@ -388,11 +651,12 @@ export async function postPurchaseJournal(v: {
     lines: [
       { account: `${v.oilCode} PUR A/C`, group: 'Purchase Accounts', dr: v.taxable - interest },
       { account: 'INTEREST A/C', group: 'Indirect Expenses', dr: interest },
-      { account: 'GST INPUT A/C', group: 'Duties & Taxes', dr: v.gst },
+      ...gstLines({ side: 'INPUT', pct: n(v.gstPct), type: asGstType(v.gstType), dr: n(v.gst) }),
       { account: 'ROUND OFF A/C', group: 'Indirect Expenses', dr: ro > 0 ? ro : 0, cr: ro < 0 ? -ro : 0 },
       { account: 'TDS PAYABLE A/C', group: 'Duties & Taxes', cr: v.tds },
       { account: v.supplierName, group: 'Sundry Creditors', cr: v.net }
     ]
+  })
   })
 }
 
@@ -408,6 +672,7 @@ export async function postPaymentJournal(v: {
   reference?: string | null
   companyId?: number
 }): Promise<void> {
+  return withDbTransaction(async () => {
   await deleteJournalByRef('payment_id', v.paymentId)
   const sourceAccount = `${String(v.source || 'BANK').toUpperCase()} A/C`
   await postJournal({
@@ -426,23 +691,23 @@ export async function postPaymentJournal(v: {
           { account: sourceAccount, group: 'Bank Accounts', cr: v.amount }
         ]
   })
+  })
 }
 
-// Sale:  Dr {Customer}          net (taxable + output GST)
+// Sale:  Dr {Customer}          net (taxable + output GST) — no TDS leg; a
+//                               sale posts none (see SALE_TDS_PCT in sales.ts)
 //          Cr {FG} SALE A/C      taxable
-//          Cr GST OUTPUT A/C     gst
-// FOR delivery (we run and pay the transporter, priced into the rate so the
-// customer's own line is untouched):
-//        Dr FREIGHT OUTWARD A/C  freight
-//          Cr FREIGHT PAYABLE A/C freight
-// The credit is a CONTROL account, not the transporter. A transporter runs
-// several tankers over a month and bills for the lot at once, so crediting
-// them per tanker made their ledger a list of things they had never invoiced.
-// Entering their bill moves the accrual across: Dr FREIGHT PAYABLE, Cr them.
-// Freight has to be in THIS same voucher, not a second one keyed by the same
-// sale_id — deleteJournalByRef below wipes every entry for a ref regardless
-// of vchType, so two independent postJournal calls for one sale would each
-// erase the other's freight/sale lines on the next save.
+//          Cr OUTPUT CGST/SGST   gst, split by head and rate — see gstLedgers.ts
+// FOR delivery (we run and pay the transporter): NOTHING for the freight on
+// this voucher since 2026-10-01. It waits on the Fr. Outward Working register,
+// provisional, and is booked when the transporter's bill is entered there —
+// Dr FREIGHT OUTWARD, Cr the transporter. (It used to accrue here, Dr FREIGHT
+// OUTWARD / Cr FREIGHT PAYABLE, on a rate and quantity that could still move.)
+// Freight DEDUCTED from the customer stays on this voucher — Dr FREIGHT
+// OUTWARD against the smaller customer debit — because their bill is net of
+// it. It has to be in THIS voucher, not a second one keyed by the same
+// sale_id: deleteJournalByRef below wipes every entry for a ref regardless of
+// vchType, so two independent postJournal calls would erase each other.
 function round2(x: number): number {
   return Math.round((x + Number.EPSILON) * 100) / 100
 }
@@ -462,12 +727,15 @@ export async function postSaleJournal(v: {
   // their bill. See the freight legs below for why that changes the posting
   // rather than just the wording.
   deductFreight?: boolean
-  // Withheld by the customer out of what they pay us. It is OUR asset until it
-  // is claimed, so it leaves the customer's debt and sits in TDS RECEIVABLE
-  // rather than simply going missing from the voucher.
+  // No longer posted: a sale carries no TDS (see SALE_TDS_PCT in sales.ts).
+  // Kept so an old caller still type-checks; whatever it passes is ignored.
   tds?: number
+  // The rate and the head this invoice was taxed at.
+  gstPct?: number
+  gstType?: string | null
   companyId?: number
 }): Promise<void> {
+  return withDbTransaction(async () => {
   // The sale's EXISTING voucher, if it has one. It is rewritten in place
   // rather than deleted and re-inserted, because voucher numbers here are
   // positional: voucherCodeMap() orders a company's entries by id and numbers
@@ -504,25 +772,23 @@ export async function postSaleJournal(v: {
   // also stops showing as ours to pay on the freight register.
   const hasFreight = freight > 0 && !!transporterName
   const deducted = !!v.deductFreight && hasFreight
-  const tds = round2(n(v.tds))
-  const customerDr = round2(taxable + gst + ro - (deducted ? freight : 0) - tds)
+  const customerDr = round2(taxable + gst + ro - (deducted ? freight : 0))
+  // The round off takes the paisa the GST split rounds away, so the voucher
+  // balances with the customer's total unchanged — see postSaleInvoiceJournal.
+  const gstL = gstLines({ side: 'OUTPUT', pct: n(v.gstPct), type: asGstType(v.gstType), cr: gst })
+  const gstStored = round2(gstL.reduce((t, l) => t + round2(n(l.cr)), 0))
+  const roNet = round2(customerDr + (deducted ? freight : 0) - round2(taxable) - gstStored)
   const lines: JournalLine[] = [
     { account: v.customerName || 'CASH CUSTOMER A/C', group: 'Sundry Debtors', dr: customerDr },
     { account: `${v.productCode} SALE A/C`, group: 'Sales Accounts', cr: taxable },
-    { account: 'GST OUTPUT A/C', group: 'Duties & Taxes', cr: gst },
-    { account: 'ROUND OFF A/C', group: 'Indirect Expenses', cr: ro > 0 ? ro : 0, dr: ro < 0 ? -ro : 0 }
+    ...gstL,
+    { account: 'ROUND OFF A/C', group: 'Indirect Expenses', cr: roNet > 0 ? roNet : 0, dr: roNet < 0 ? -roNet : 0 }
   ]
-  if (tds > 0.004) {
-    lines.push({ account: 'TDS RECEIVABLE A/C', group: 'Deposits (Asset)', dr: tds })
-  }
-  if (hasFreight) {
-    lines.push({ account: 'FREIGHT OUTWARD A/C', group: 'Direct Expenses', dr: freight })
-    // Not deducted: unchanged from before — we carry the cost and owe the
-    // transporter, and the customer's bill is the goods alone.
-    if (!deducted) {
-      lines.push({ account: 'FREIGHT PAYABLE A/C', group: 'Current Liabilities', cr: freight })
-    }
-  }
+  // Delivery freight we pay is NOT posted with the sale: it waits on the
+  // Fr. Outward Working register until the transporter's bill is booked (see
+  // postSaleInvoiceJournal in sales.ts). Only freight deducted from the
+  // customer belongs here, because their bill is net of it.
+  if (deducted) lines.push({ account: 'FREIGHT OUTWARD A/C', group: 'Direct Expenses', dr: freight })
   const args = {
     date: v.date,
     vchType: 'SALE',
@@ -542,6 +808,7 @@ export async function postSaleJournal(v: {
     return
   }
   await postJournal(args)
+  })
 }
 
 // One-time (idempotent) backfill: post journal vouchers for documents created
@@ -552,8 +819,19 @@ export async function backfillJournal(): Promise<void> {
   // Core accounts always exist, even before any voucher touches them.
   await getOrCreateAccount('ROUND OFF A/C', 'Indirect Expenses').catch(() => {})
   await getOrCreateAccount('INTEREST A/C', 'Indirect Expenses').catch(() => {})
-  await getOrCreateAccount('GST INPUT A/C', 'Duties & Taxes').catch(() => {})
-  await getOrCreateAccount('GST OUTPUT A/C', 'Duties & Taxes').catch(() => {})
+  // The tax ledgers a mill on these rates actually files from. Opened up
+  // front so a trial balance shows the whole shape of the tax position even
+  // before a rate has been used — and a rate nobody has listed here still
+  // opens its own the moment something is booked at it (see gstLedgers.ts).
+  for (const side of ['INPUT', 'OUTPUT'] as const) {
+    for (const pct of [2.5, 9]) {
+      await getOrCreateAccount(gstLedgerName(side, 'CGST', pct), 'Duties & Taxes').catch(() => {})
+      await getOrCreateAccount(gstLedgerName(side, 'SGST', pct), 'Duties & Taxes').catch(() => {})
+    }
+    for (const pct of [3, 5, 18]) {
+      await getOrCreateAccount(gstLedgerName(side, 'IGST', pct), 'Duties & Taxes').catch(() => {})
+    }
+  }
   await getOrCreateAccount('TDS PAYABLE A/C', 'Duties & Taxes').catch(() => {})
   await getOrCreateAccount('BANK A/C', 'Bank Accounts').catch(() => {})
 

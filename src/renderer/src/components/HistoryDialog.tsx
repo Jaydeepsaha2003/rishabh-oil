@@ -5,6 +5,7 @@ import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
+import { utcStampLocal } from '@/lib/format'
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Row = Record<string, any>
@@ -69,7 +70,8 @@ function label(action: unknown): string {
 
 // Timestamps are stored as 'YYYY-MM-DD HH:MM:SS'.
 function when(ts: unknown): { date: string; time: string } {
-  const s = String(ts || '')
+  // Stored UTC — shown on the reader's clock.
+  const s = utcStampLocal(ts)
   return { date: `${s.slice(8, 10)}-${s.slice(5, 7)}-${s.slice(0, 4)}`, time: s.slice(11, 16) }
 }
 
@@ -180,7 +182,7 @@ export function HistoryDialog({
 
   return (
     <Dialog open={!!target} onOpenChange={(o) => !o && onClose?.()}>
-      <DialogContent className="max-h-[85vh] w-[calc(100vw-2rem)] max-w-2xl overflow-y-auto border-[#d9d2b8] bg-[#fffdf4]">
+      <DialogContent readOnly className="max-h-[85vh] w-[calc(100vw-2rem)] max-w-2xl overflow-y-auto border-[#d9d2b8] bg-[#fffdf4]">
         <DialogHeader className="-mx-6 -mt-6 mb-1 rounded-t-lg bg-[#dce6f5] px-6 py-2.5">
           <DialogTitle className="text-[13px] font-bold uppercase tracking-widest text-[#1a2c56]">
             History — {target?.title || 'record'}

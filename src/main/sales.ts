@@ -1,3 +1,4 @@
+import { withDbTransaction } from './dbTransaction'
 import type { ResultSet } from '@libsql/client'
 import { getClient, todayISO } from './db'
 import { getCurrentUser } from './currentUser'
@@ -6,8 +7,11 @@ import { getActiveCompanyId } from './company'
 import { getSetting } from './repos'
 import { productStockAvailable, stockMap } from './stock'
 import { deleteSaleProductions } from './production'
-import { visibleFromFor } from './access-gate'
+import { visibleFromFor, currentScope } from './access-gate'
+import { gstLines, asGstType } from './gstLedgers'
 import { assertSalesInvoiceNoFree } from './invoiceno'
+import { recordChanges, SALES_BARGAIN_FIELDS, type FieldSpec } from './history'
+import { raisePairedPurchase, removePairedPurchase, syncPairedPurchase } from './intercompany'
 
 // Guard: a dispatched (done) sale physically draws finished-goods stock, so the
 // available stock (excluding this sale's own effect) must cover the quantity.
@@ -123,25 +127,16 @@ function n(v: unknown): number {
 
 const round2 = (v: number): number => Math.round(v * 100) / 100
 
-// Maintain the receivable entry in the customer ledger for a sale.
-// Convention (shared with supplier/transporter ledger): amount positive = credit
-// (we owe the party), negative = debit. A sale debits the customer (they owe us).
-// TDS the customer withholds, on the customer master's terms — mirrors the
-// supplier side exactly. Below the FY threshold the base rate applies (0 when
-// the master says "no TDS below the slab"); everything above it is charged at
-// the invoice's rate.
-function tierTds(
-  taxable: number,
-  prior: number,
-  threshold: number,
-  basePct: number,
-  abovePct: number
-): number {
-  if (!threshold || threshold <= 0) return (taxable * basePct) / 100
-  const below = Math.max(0, Math.min(threshold - prior, taxable))
-  const above = taxable - below
-  return (below * basePct) / 100 + (above * abovePct) / 100
-}
+// SALES CARRY NO TDS (from 2026-09-30).
+//
+// A customer's TDS used to be struck on every sale line off the customer
+// master's rate and slab, and posted with the invoice as Dr TDS RECEIVABLE. It
+// is not any more: the customer is debited the whole invoice, and TDS they
+// withhold is posted separately, by hand, when they deduct it. So a sale line
+// stores a TDS rate and amount of 0 and its voucher has no TDS leg. Sales
+// saved before this are cleared of it from Settings → Accounting checks.
+const SALE_TDS_PCT = 0
+const SALE_TDS_AMOUNT = 0
 
 // Indian FY (Apr–Mar) range for a date.
 function fyRange(dateStr: string): { start: string; end: string } {
@@ -181,51 +176,9 @@ export async function customerFyTaxable(
   return Number(res.rows[0].t) || 0
 }
 
-// The TDS on one sale invoice, given its total and who it is billed to.
-// The rate to withhold on a new sale. The invoice form fills this in from the
-// customer master the moment a customer is picked, so it is normally stated on
-// the payload. When a caller states NOTHING at all — a programmatic create, an
-// import — fall back to the master rather than silently billing at 0%.
-// An explicit 0 is respected: that is someone deciding not to withhold.
-async function resolveTdsPct(v: Row, customerId: number | null): Promise<number> {
-  const stated = v.tds_pct
-  if (stated !== undefined && stated !== null && String(stated).trim() !== '') return n(stated)
-  if (!customerId) return 0
-  const cu = await getClient().execute({
-    sql: 'SELECT tds_pct FROM customers WHERE id = ?',
-    args: [customerId]
-  })
-  return cu.rows.length ? n(cu.rows[0].tds_pct) : 0
-}
-
-// TDS the customer withholds on a sale.
-//
-// The base is the invoice's TAXABLE VALUE — the goods alone. Not the
-// tax-inclusive total: GST is the government's money passing through, so
-// withholding a slice of it would withhold tax on tax, and the rupee round-off
-// is a presentation artifact that has no business moving the withheld amount.
-// The slab (threshold / above-only) runs on the same taxable figures, which is
-// what customerFyTaxable already accumulates — so the base and the running
-// year-to-date it is measured against are now the same kind of number.
-async function saleTds(
-  customerId: number | null,
-  tdsPct: number,
-  taxable: number,
-  dateStr: string,
-  excludeId: number
-): Promise<number> {
-  if (!customerId || tdsPct <= 0 || taxable <= 0) return 0
-  const cu = await getClient().execute({
-    sql: 'SELECT tds_threshold, tds_above_only FROM customers WHERE id = ?',
-    args: [customerId]
-  })
-  const master = cu.rows[0]
-  const threshold = Number(master?.tds_threshold) || 0
-  const basePct = master?.tds_above_only ? 0 : tdsPct
-  const prior = threshold > 0 ? await customerFyTaxable(customerId, dateStr, excludeId) : 0
-  return Math.round(tierTds(taxable, prior, threshold, basePct, tdsPct) * 100) / 100
-}
-
+// Maintain the receivable entry in the customer ledger for a sale.
+// Convention (shared with supplier/transporter ledger): amount positive = credit
+// (we owe the party), negative = debit. A sale debits the customer (they owe us).
 async function postCustomerReceivable(
   saleId: number,
   customerId: number | null,
@@ -247,7 +200,7 @@ async function postCustomerReceivable(
 }
 
 // Tally journal for a sale: Dr Customer (incl. GST), Cr {FG} SALE A/C (taxable),
-// Cr GST OUTPUT A/C (output gst), and — for a FOR delivery — Dr Freight
+// Cr OUTPUT CGST/SGST (output gst, by head and rate), and — for a FOR delivery — Dr Freight
 // Outward / Cr Transporter, so freight actually lands in the books instead of
 // only the informal transporter/customer ledgers postSaleFreight maintains.
 // ONE VOUCHER PER INVOICE.
@@ -310,7 +263,6 @@ export async function postSaleInvoiceJournal(saleId: number, reuseEntryId?: numb
   const taxable = round2(rows.reduce((t, r) => t + n(r.amount), 0))
   const gst = round2(rows.reduce((t, r) => t + n(r.gst_amount), 0))
   const ro = round2(rows.reduce((t, r) => t + n(r.round_off), 0))
-  const tds = round2(rows.reduce((t, r) => t + n(r.tds_amount), 0))
   const freight = round2(rows.reduce((t, r) => t + n(r.transport_amount), 0))
 
   if (taxable <= 0 && gst <= 0) {
@@ -347,29 +299,49 @@ export async function postSaleInvoiceJournal(saleId: number, reuseEntryId?: numb
   // 0.01 tolerance to wave a broken one through and drag the trial balance
   // with it.
   //
-  //   custDr = (sale accounts + GST + round off cr + freight payable)
-  //          - (TDS + round off dr + freight outward)
+  //   custDr = (sale accounts + GST + round off cr)
+  //          - (round off dr + freight deducted from the customer)
+  //
+  // No TDS: a sale posts none, even for a line still carrying an old TDS
+  // figure — see SALE_TDS_PCT.
+  //
+  // DELIVERY FREIGHT IS NOT POSTED WITH THE SALE (from 2026-10-01). It used to
+  // be — Dr FREIGHT OUTWARD / Cr FREIGHT PAYABLE on this voucher — so every
+  // tanker's freight reached the ledgers the day it was invoiced, on a rate and
+  // a quantity that could still move, before any transporter had billed it.
+  // Now it stays on the Fr. Outward Working register, provisional, and reaches
+  // the books when the transporter's bill is booked there (Dr FREIGHT OUTWARD,
+  // Cr the transporter) — the same way inward freight always has.
+  //
+  // The one exception is freight DEDUCTED from the customer: they paid the
+  // truck and their bill is net of it, so the deduction belongs on this voucher
+  // or it would not balance. No transporter is owed anything for it.
   const saleLines = Array.from(bySaleAcc, ([account, cr]) => ({ account, group: 'Sales Accounts', cr }))
   const saleAccounts = round2(saleLines.reduce((t, l) => t + l.cr, 0))
-  const freightOutward = hasFreight ? freight : 0
-  const freightPayable = hasFreight && !deducted ? freight : 0
+  const freightOutward = deducted ? freight : 0
+  const freightPayable = 0
   const roCr = ro > 0 ? ro : 0
   const roDr = ro < 0 ? -ro : 0
   const custDr = round2(
-    saleAccounts + gst + roCr + freightPayable - tds - roDr - freightOutward
+    saleAccounts + gst + roCr + freightPayable - roDr - freightOutward
   )
 
+  // THE ROUND OFF TAKES THE PAISA THE GST SPLIT ROUNDS AWAY. CGST and SGST
+  // are each exactly half and each stored to the paisa, so on GST that ends
+  // in a half paisa (66,486.995) the two heads come to 66,487.00 and the
+  // voucher stood a paisa out — 25 sales here. The customer's total stays the
+  // invoice's own; the round off line is what is left over, so the voucher
+  // always balances.
+  const gstL = gstLines({ side: 'OUTPUT', pct: n(first.gst_pct), type: asGstType(first.gst_type), cr: gst })
+  const gstStored = round2(gstL.reduce((t, l) => t + round2(n(l.cr)), 0))
+  const roNet = round2(custDr + freightOutward - freightPayable - saleAccounts - gstStored)
   const lines = [
     { account: customerName, group: 'Sundry Debtors', dr: custDr },
     ...saleLines,
-    { account: 'GST OUTPUT A/C', group: 'Duties & Taxes', cr: gst },
-    { account: 'ROUND OFF A/C', group: 'Indirect Expenses', cr: roCr, dr: roDr }
+    ...gstL,
+    { account: 'ROUND OFF A/C', group: 'Indirect Expenses', cr: roNet > 0 ? roNet : 0, dr: roNet < 0 ? -roNet : 0 }
   ]
-  if (tds > 0.004) lines.push({ account: 'TDS RECEIVABLE A/C', group: 'Deposits (Asset)', dr: tds })
-  if (hasFreight) {
-    lines.push({ account: 'FREIGHT OUTWARD A/C', group: 'Direct Expenses', dr: freightOutward })
-    if (!deducted) lines.push({ account: 'FREIGHT PAYABLE A/C', group: 'Current Liabilities', cr: freightPayable })
-  }
+  if (deducted) lines.push({ account: 'FREIGHT OUTWARD A/C', group: 'Direct Expenses', dr: freightOutward })
 
   const args = {
     date: String(first.sale_date),
@@ -461,6 +433,7 @@ async function postSaleEntry(
 // column the Trading page leaves empty), and useful for any future rule change
 // that should reach vouchers already written.
 export async function repostSaleJournal(saleId: number): Promise<{ id: number; party: string }> {
+  return withDbTransaction(async () => {
   const r = await getClient().execute({
     sql: `SELECT s.*, cu.name AS customer_master FROM sales s
             LEFT JOIN customers cu ON cu.id = s.customer_id WHERE s.id = ?`,
@@ -478,6 +451,7 @@ export async function repostSaleJournal(saleId: number): Promise<{ id: number; p
     n(row.tds_amount)
   )
   return { id: n(saleId), party: String(row.customer_master || row.customer || 'CASH CUSTOMER A/C') }
+  })
 }
 
 export async function listCustomerLedger(): Promise<Row[]> {
@@ -562,6 +536,15 @@ export async function listSales(companyIds?: number[], forModule?: string): Prom
   // rows are never fetched; `forModule` lets a page that only borrows this
   // register (Accounts, Treasury) keep its own window instead of this one.
   const vis = await visibleFromFor('sales', forModule)
+  // THE INTER-COMPANY DESK SEES THE TRANSFERS AND NOTHING ELSE.
+  //
+  // In the SQL rather than in the page: what this desk must not see is what
+  // the mill sells at to an outside customer, and a row filtered in the
+  // renderer has already crossed the wire. A transfer is a sale to a customer
+  // that stands for one of our own companies — the same test
+  // raisePairedPurchase() makes before it raises the other half, so the two
+  // cannot drift apart.
+  const intercoOnly = (await currentScope('sales')) === 'intercompany'
   const res = await getClient().execute({
     args: vis
       ? cos.length
@@ -595,6 +578,12 @@ export async function listSales(companyIds?: number[], forModule?: string): Prom
            co.name AS company_name,
            COALESCE((SELECT SUM(cl.amount) FROM customer_ledger cl
                       WHERE cl.sale_id = s.id AND cl.entry_type = 'payment'), 0) AS received_amount,
+           -- The number the other company books THIS line under, for an
+           -- inter-company transfer. It lives on the purchase this sale
+           -- raised, and the form needs it back when the invoice is reopened —
+           -- without it every line would reopen blank and the save would be
+           -- refused for a number that already exists.
+           (SELECT o2.invoice_no FROM orders o2 WHERE o2.intercompany_sale_id = s.id LIMIT 1) AS paired_invoice_no,
            -- The vehicle that actually carried this invoice out, from the
            -- gate register — Gate Out already links to a sale by invoice
            -- group; this is that link read back onto the invoice itself.
@@ -610,7 +599,14 @@ export async function listSales(companyIds?: number[], forModule?: string): Prom
     LEFT JOIN companies co ON co.id = s.company_id
     LEFT JOIN gate_out go2 ON go2.grp = s.invoice_group
     LEFT JOIN gate_entries gv ON gv.id = go2.ge_id
-    WHERE ${cos.length ? `s.company_id IN (${cos.join(',')})` : 's.company_id = ?'}${vis ? ' AND s.sale_date >= ?' : ''}
+    WHERE ${cos.length ? `s.company_id IN (${cos.join(',')})` : 's.company_id = ?'}${vis ? ' AND s.sale_date >= ?' : ''}${
+      intercoOnly
+        ? ` AND EXISTS (SELECT 1 FROM customers ic
+                         WHERE ic.id = s.customer_id
+                           AND ic.company_link_id IS NOT NULL
+                           AND ic.company_link_id <> s.company_id)`
+        : ''
+    }
     ORDER BY s.sale_date DESC, s.id DESC
   `
   })
@@ -759,6 +755,15 @@ export async function salesInvoiceGaps(
     voided.get(pfx)!.set(n(r.number), r)
   }
 
+  // The random-invoice placeholder (randomSalesInvoiceNo / randomPurchaseInvoiceNo)
+  // is a 7-digit number from 1,000,000 up. It is a stand-in for a bill whose
+  // real number was never printed, NOT the next number in a book — so a series
+  // like KRFL/367…KRFL/512 that has picked up one placeholder reads as running
+  // to 9,039,193, and everything between is reported "missing" (or the range is
+  // simply too wide to walk). A real invoice book does not reach seven figures,
+  // so a number this large is treated as a placeholder and left out of the
+  // series entirely: only genuine KRFL/… and KRFIN/… numbers are checked.
+  const RANDOM_FLOOR = 1_000_000
   // prefix -> the numbers seen under it, and the date each was first used
   const series = new Map<string, Map<number, string>>()
   const unparsed: string[] = []
@@ -766,12 +771,20 @@ export async function salesInvoiceGaps(
     const inv = String(r.invoice_no || '').trim()
     const m = inv.match(/^(.*?)[/\\-]?(\d+)$/)
     if (!m || !m[1]) {
+      // A bare placeholder number (no prefix) is a generated stand-in, not a
+      // party name mis-keyed into the field — leave it out of the report
+      // rather than listing it as an unparsed invoice.
+      const bare = m ? Number(m[2]) : NaN
+      if (Number.isFinite(bare) && bare >= RANDOM_FLOOR) continue
       unparsed.push(inv)
       continue
     }
+    const num = Number(m[2])
+    // A placeholder keyed under a real prefix must not stretch the series.
+    if (num >= RANDOM_FLOOR) continue
     const prefix = m[1].replace(/[/\\-]+$/, '')
     if (!series.has(prefix)) series.set(prefix, new Map())
-    series.get(prefix)!.set(Number(m[2]), String(r.first_date || '').slice(0, 10))
+    series.get(prefix)!.set(num, String(r.first_date || '').slice(0, 10))
   }
 
   // A prefix differing from another only by punctuation or case is the same
@@ -803,14 +816,27 @@ export async function salesInvoiceGaps(
 
     const missing = []
     const cancelled: Row[] = []
-    for (let i = lo; i <= hi; i++) {
-      if (held.has(i)) continue
-      const v = voidHere.get(i)
-      if (v) {
-        cancelled.push({ number: i, reason: v.reason ?? null, cancelled_on: v.cancelled_on ?? null })
-        continue
+    // A real invoice book is contiguous — a few hundred numbers, not millions.
+    // The random-invoice placeholder (a bare 7-digit number, see
+    // randomPurchaseInvoiceNo / randomSalesInvoiceNo) is meant to sit OUTSIDE
+    // any series, but if one is keyed under a prefix — or a number is simply
+    // mistyped with extra digits — it drags `hi` up to seven or eight figures.
+    // Walking lo…hi then means millions of iterations, which locks the request
+    // up (the "gap check crashes" report). A genuine book never spans that far,
+    // so past a sane width we stop enumerating and report the range as too wide
+    // to list rather than hanging on it.
+    const TOO_WIDE = 20000
+    const rangeTooWide = hi - lo + 1 > TOO_WIDE
+    if (!rangeTooWide) {
+      for (let i = lo; i <= hi; i++) {
+        if (held.has(i)) continue
+        const v = voidHere.get(i)
+        if (v) {
+          cancelled.push({ number: i, reason: v.reason ?? null, cancelled_on: v.cancelled_on ?? null })
+          continue
+        }
+        missing.push(i)
       }
-      missing.push(i)
     }
 
     rows.push({
@@ -821,6 +847,9 @@ export async function salesInvoiceGaps(
       from: lo,
       to: hi,
       expected: hi - lo + 1,
+      // A range so wide it is not a real book (a random-placeholder or a
+      // mistyped number pushed the top up); we did not enumerate it.
+      range_too_wide: rangeTooWide,
       missing,
       missing_count: missing.length,
       // Numbers that exist, but keyed under a misspelt prefix — a typo to fix,
@@ -1011,7 +1040,9 @@ function validateSalesBargainInput(v: Row): void {
   }
 }
 
-export async function createSalesBargain(v: Row): Promise<{ id: number; bargain_no: string }> {
+// `opts.companyId`: see createBargain — a balance moved off a bargain lands in
+// that bargain's book.
+export async function createSalesBargain(v: Row, opts?: { companyId?: number }): Promise<{ id: number; bargain_no: string }> {
   validateSalesBargainInput(v)
   const bargain_no = await nextSalesBargainNo(
     n(v.product_id),
@@ -1022,7 +1053,7 @@ export async function createSalesBargain(v: Row): Promise<{ id: number; bargain_
     sql: `INSERT INTO sales_bargains (company_id, bargain_no, manual_bargain_no, bargain_date, customer, customer_id, product_id, qty, uom, rate, rate_expiry_date, status, note, sale_type, sale_category, packaging_id, freight_term, gst_pct, gst_type, allowed_shortage_pct)
           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, ?, ?, ?, ?, ?, ?, ?)`,
     args: [
-      getActiveCompanyId(),
+      opts?.companyId || getActiveCompanyId(),
       bargain_no,
       v.manual_bargain_no ? String(v.manual_bargain_no).trim() : null,
       v.bargain_date,
@@ -1043,18 +1074,46 @@ export async function createSalesBargain(v: Row): Promise<{ id: number; bargain_
       shortagePct(v)
     ]
   })
-  return { id: Number(res.lastInsertRowid), bargain_no }
+  const newId = Number(res.lastInsertRowid)
+  // WHAT THIS BARGAIN HAS BEEN THROUGH.
+  //
+  // A rate corrected from 1,30,000 to 1,27,000 and one corrected the other way
+  // look identical in an activity log, and the invoices raised in between get
+  // argued about on memory. The purchase side has kept this trail for a while;
+  // the selling side kept nothing at all, which is why its history panel would
+  // have opened empty.
+  await recordChanges(
+    'sales_bargains',
+    newId,
+    bargain_no,
+    null,
+    { ...v, bargain_no, qty: n(v.qty), rate: n(v.rate) },
+    SALES_BARGAIN_FIELDS,
+    'created'
+  )
+  return { id: newId, bargain_no }
 }
 
-export async function updateSalesBargain(id: number, v: Row): Promise<{ id: number }> {
+export async function updateSalesBargain(
+  id: number,
+  v: Row
+): Promise<{ id: number; bargain_no: string; rate_changed_from: number | null; rate: number }> {
   validateSalesBargainInput(v)
   // Once anything is sold against it, the customer and product are locked and
   // the quantity can't drop below what's already been sold.
+  // The WHOLE row, not the five columns the locks need: it is also the
+  // "before" the history is diffed against, and a column left out of it would
+  // silently never appear as a change.
   const cur = await getClient().execute({
-    sql: 'SELECT customer, customer_id, product_id FROM sales_bargains WHERE id = ?',
+    sql: 'SELECT * FROM sales_bargains WHERE id = ?',
     args: [id]
   })
   if (!cur.rows.length) throw new Error('Sales bargain not found')
+  const beforeRow = toPlain(cur)[0]
+  // What the rate WAS, so the save can say that it moved. Nothing is re-priced
+  // here: every invoice keeps the rate it was billed at, and the caller offers
+  // the correction for a person to accept — see rerateSalesForBargain.
+  const oldRate = n((cur.rows[0] as unknown as Row).rate)
   const sold = await salesBargainSold(id)
   if (sold > 1e-6) {
     // Compare by master id when linked (so a rename isn't seen as a change);
@@ -1099,14 +1158,162 @@ export async function updateSalesBargain(id: number, v: Row): Promise<{ id: numb
       id
     ]
   })
-  return { id }
+  await recordChanges(
+    'sales_bargains',
+    n(id),
+    String(beforeRow.bargain_no || ''),
+    beforeRow,
+    { ...v, qty: n(v.qty), rate: n(v.rate) },
+    SALES_BARGAIN_FIELDS
+  )
+  const newRate = n(v.rate)
+  return {
+    id,
+    bargain_no: String((cur.rows[0] as unknown as Row).bargain_no || ''),
+    rate_changed_from: Math.abs(oldRate - newRate) > 0.005 ? oldRate : null,
+    rate: newRate
+  }
+}
+
+/**
+ * Every sales invoice raised on this bargain, with the rate each was billed at.
+ *
+ * A rate correction has to be able to say what it affects. The same question
+ * the purchase side answers (see bargainLinkedInvoices): which invoices are
+ * sitting on the old rate, and which already carry the new one — so the person
+ * correcting it picks rather than remembers.
+ */
+export async function salesBargainLinkedInvoices(id: number): Promise<Row[]> {
+  const res = await getClient().execute({
+    sql: `SELECT s.id, s.invoice_no, s.sale_date, s.company_id, s.uom, s.qty,
+                 s.rate AS billed_rate, s.amount, s.status,
+                 co.name AS company_name,
+                 COALESCE(cu.name, s.customer) AS customer_name
+            FROM sales s
+            LEFT JOIN companies co ON co.id = s.company_id
+            LEFT JOIN customers cu ON cu.id = s.customer_id
+           WHERE s.sales_bargain_id = ?
+           ORDER BY s.sale_date, s.id`,
+    args: [n(id)]
+  })
+  return toPlain(res)
+}
+
+/**
+ * Bring chosen sales invoices onto a bargain's new rate, and re-post them.
+ *
+ * Correcting a bargain rate leaves every invoice already raised on it holding
+ * the rate it was billed at — deliberately, because a rate is money and an
+ * invoice must not re-price itself because a master changed. But often the
+ * correction IS meant to reach them: a rate typed wrong on the day, found a
+ * week later. Doing that one invoice at a time, through the form, is how a page
+ * gets missed.
+ *
+ * Re-rating is not a field update. The rate decides the taxable amount, which
+ * decides GST, which decides the TDS the customer withholds and the net — and
+ * the customer ledger and the journal are posted from those. All of it is
+ * recomputed from the invoice's OWN stored terms, so nothing changes except
+ * what the rate implies.
+ *
+ * Each invoice is done in full or not at all, and one that fails is reported
+ * rather than aborting the rest: a bulk action that stops halfway leaves the
+ * book in a state nobody chose.
+ */
+export async function rerateSalesForBargain(
+  bargainId: number,
+  rate: number,
+  saleIds: number[]
+): Promise<{ updated: Row[]; failed: Row[] }> {
+  const bid = n(bargainId)
+  const newRate = Number(rate)
+  if (!bid) throw new Error('Which bargain?')
+  if (!Number.isFinite(newRate) || newRate <= 0) throw new Error('Enter a rate greater than zero')
+  const ids = (Array.isArray(saleIds) ? saleIds : []).map((x) => n(x)).filter((x) => x > 0)
+  if (!ids.length) throw new Error('Pick at least one invoice to bring onto the new rate')
+
+  const c = getClient()
+  const updated: Row[] = []
+  const failed: Row[] = []
+
+  for (const id of ids) {
+    try {
+      const cur = await c.execute({ sql: 'SELECT * FROM sales WHERE id = ? LIMIT 1', args: [id] })
+      if (!cur.rows.length) {
+        failed.push({ id, invoice_no: '', reason: 'That invoice no longer exists' })
+        continue
+      }
+      const s = toPlain(cur)[0]
+      if (n(s.sales_bargain_id) !== bid) {
+        failed.push({ id, invoice_no: String(s.invoice_no || ''), reason: 'No longer on this bargain' })
+        continue
+      }
+      const before = { amount: n(s.amount), rate: n(s.rate) }
+
+      // The money, from the invoice's own terms and its new rate. A packed sale
+      // is priced per case rather than per tonne, and re-pricing it off a
+      // bargain rate would silently change what a carton costs — so it is
+      // reported rather than quietly re-rated.
+      if (String(s.sale_type || 'LOOSE') === 'PACKED' && n(s.rate_per_case) > 0) {
+        failed.push({
+          id,
+          invoice_no: String(s.invoice_no || ''),
+          reason: 'Priced per case — open it and set the case rate yourself'
+        })
+        continue
+      }
+      const qty = n(s.qty)
+      const amount = round2(qty * newRate)
+      const gstPct = n(s.gst_pct)
+      const gstAmount = round2(amount * (gstPct / 100))
+      const roundOff = round2(n(s.round_off))
+      // No TDS — see SALE_TDS_PCT. A re-rated line drops any it carried.
+      const tdsAmount = SALE_TDS_AMOUNT
+      const net = round2(amount + gstAmount + roundOff - tdsAmount)
+
+      await c.execute({
+        sql: 'UPDATE sales SET rate = ?, amount = ?, gst_amount = ?, tds_pct = ?, tds_amount = ? WHERE id = ?',
+        args: [newRate, amount, gstAmount, SALE_TDS_PCT, tdsAmount, id]
+      })
+
+      // The ledger and the journal, from the figures just written.
+      await postCustomerReceivable(id, s.customer_id ? n(s.customer_id) : null, net, String(s.sale_date))
+      await repostSaleJournal(id)
+
+      updated.push({
+        id,
+        invoice_no: String(s.invoice_no || ''),
+        rate: newRate,
+        rate_before: before.rate,
+        amount_before: before.amount,
+        amount_after: amount
+      })
+    } catch (e) {
+      failed.push({ id, invoice_no: '', reason: (e as Error).message })
+    }
+  }
+  return { updated, failed }
 }
 
 export async function deleteSalesBargain(id: number): Promise<{ id: number }> {
   if ((await salesBargainSold(id)) > 1e-6) {
     throw new Error('This sales bargain has sales linked to it. Delete those sales first.')
   }
+  // Read before it is gone. A deletion with no record of WHAT was deleted is
+  // the one history entry people actually come looking for.
+  const cur = await getClient().execute({ sql: 'SELECT * FROM sales_bargains WHERE id = ?', args: [id] })
+  const gone = cur.rows.length ? toPlain(cur)[0] : null
   await getClient().execute({ sql: 'DELETE FROM sales_bargains WHERE id = ?', args: [id] })
+  if (gone) {
+    await recordChanges(
+      'sales_bargains',
+      n(id),
+      String(gone.bargain_no || ''),
+      gone,
+      null,
+      SALES_BARGAIN_FIELDS,
+      'deleted'
+    )
+  }
   return { id }
 }
 
@@ -1148,6 +1355,82 @@ export async function adjustSalesBargainQty(
     args: [id, d, adjDate, note ? String(note).trim() : null]
   })
   return { id, qty: newQty }
+}
+
+// MOVING A SALES BARGAIN'S OPEN BALANCE TO ANOTHER PRODUCT — the purchase
+// side's moveBargainBalance, for what we sell. A new bargain for the chosen
+// product is struck for the quantity and the same quantity comes off this one,
+// in one transaction, each naming the other. Customer, company, freight, GST
+// and shortage terms carry over; what is already dispatched stays where it is.
+//
+// Only a LOOSE bargain can move. A packed one is priced pack by pack on its own
+// rate card, which belongs to its product's packs — there is nothing to carry.
+export async function moveSalesBargainBalance(
+  id: number,
+  v: { product_id: number; qty: number; rate?: number; date?: string; note?: string }
+): Promise<{ id: number; bargain_no: string; moved: number }> {
+  return withDbTransaction(async () => {
+    const c = getClient()
+    const res = await c.execute({ sql: 'SELECT * FROM sales_bargains WHERE id = ?', args: [Number(id)] })
+    if (!res.rows.length) throw new Error('Sales bargain not found')
+    const b = toPlain(res)[0]
+    if (String(b.sale_type || 'LOOSE') === 'PACKED') {
+      throw new Error('A packed bargain is priced on its own SKU rate card, so its balance cannot move to another product — reduce it and strike a new bargain instead')
+    }
+    const toProd = n(v.product_id)
+    if (!toProd) throw new Error('Pick the product to move the balance to')
+    if (toProd === n(b.product_id)) throw new Error("That is this bargain's own product — pick another")
+    const qty = Math.round(n(v.qty) * 1000) / 1000
+    if (qty <= 0) throw new Error('Enter a quantity greater than zero')
+    const uom = String(b.uom || 'MT')
+    // The most that can go: what is open, and never below what is sold — the
+    // same floor a plain reduction keeps. Returned goods count as open, but
+    // the contracted quantity still cannot drop under the sold figure.
+    const sold = Math.round((await salesBargainSold(Number(id))) * 1000) / 1000
+    const open = Math.round((await salesBargainBalanceFor(Number(id), 0)) * 1000) / 1000
+    const movable = Math.max(0, Math.min(open, Math.round((n(b.qty) - sold) * 1000) / 1000))
+    if (qty > movable + 1e-6) {
+      throw new Error(`Only ${movable} ${uom} can move off ${String(b.bargain_no)} — that is the most that can be moved`)
+    }
+    const date = (v.date && String(v.date).slice(0, 10)) || todayISO()
+    const prods = await c.execute({ sql: 'SELECT id, name, material_type FROM products WHERE id IN (?, ?)', args: [n(b.product_id), toProd] })
+    const prodOf = (pid: number): Row | undefined => toPlain(prods).find((r) => n(r.id) === pid)
+    // The new product's own category, spelled the way the register files it
+    // (a product's OIL is the sales side's FINISHED_OIL).
+    const cat = String(prodOf(toProd)?.material_type || 'OIL')
+      .trim()
+      .toUpperCase()
+      .replace(/\s+/g, '_')
+      .replace(/^MISCELLANEOUS$/, 'MISC')
+    const note = String(v.note || '').trim()
+    const expiry = String(b.rate_expiry_date || '').slice(0, 10)
+    const made = await createSalesBargain(
+      {
+        customer: b.customer,
+        customer_id: b.customer_id,
+        product_id: toProd,
+        qty,
+        uom,
+        rate: n(v.rate) > 0 ? n(v.rate) : n(b.rate),
+        bargain_date: date,
+        rate_expiry_date: expiry && expiry > date ? expiry : null,
+        note: `Moved from ${String(b.bargain_no)}${note ? ` — ${note}` : ''}`,
+        sale_type: 'LOOSE',
+        sale_category: cat === 'OIL' ? 'FINISHED_OIL' : cat,
+        freight_term: b.freight_term,
+        gst_pct: b.gst_pct,
+        gst_type: b.gst_type,
+        allowed_shortage_pct: b.allowed_shortage_pct
+      },
+      { companyId: n(b.company_id) || undefined }
+    )
+    const toName = String(prodOf(toProd)?.name || 'product')
+    await adjustSalesBargainQty(Number(id), -qty, `Moved ${qty} ${uom} to ${made.bargain_no} (${toName})${note ? ` — ${note}` : ''}`, date)
+    const spec = (label: string): FieldSpec[] => [{ key: 'moved', label, kind: 'text' }]
+    await recordChanges('sales_bargains', Number(id), String(b.bargain_no), { moved: '' }, { moved: `${qty} ${uom} to ${made.bargain_no} · ${toName}` }, spec('Balance moved out'))
+    await recordChanges('sales_bargains', made.id, made.bargain_no, { moved: '' }, { moved: `${qty} ${uom} from ${String(b.bargain_no)} · ${String(prodOf(n(b.product_id))?.name || 'product')}` }, spec('Balance moved in'))
+    return { id: made.id, bargain_no: made.bargain_no, moved: qty }
+  })
 }
 
 // Balance available on a sales bargain for a (possibly editing) sale.
@@ -1383,11 +1666,11 @@ async function postSaleFreight(saleId: number, v: Row, qty: number): Promise<num
   // the cost (Dr FREIGHT OUTWARD) and the customer's bill is already net of it.
   if (v.deduct_freight) return amount
   await c.execute({
-    // accrued = 1: the sale voucher already carried Dr FREIGHT OUTWARD /
-    // Cr FREIGHT PAYABLE for this, so the transporter's bill must debit the
-    // payable rather than book the expense a second time.
+    // accrued = 0: the sale voucher no longer carries this freight (see
+    // postSaleInvoiceJournal), so it is in no ledger yet — the transporter's
+    // bill books it as the expense when it is entered.
     sql: `INSERT INTO transporter_ledger (transporter_id, sale_id, entry_date, entry_type, amount, note, company_id, accrued)
-          VALUES (?, ?, ?, 'freight', ?, 'Delivery freight', ?, 1)`,
+          VALUES (?, ?, ?, 'freight', ?, 'Delivery freight', ?, 0)`,
     args: [transporterId, saleId, v.sale_date, amount, companyId]
   })
   // Freight recovered from the customer, on top of the goods value.
@@ -1402,7 +1685,207 @@ async function postSaleFreight(saleId: number, v: Row, qty: number): Promise<num
   return amount
 }
 
+/**
+ * MONEY WITHOUT GOODS.
+ *
+ * A rate adjustment is a line of the bill whose whole content is a figure: a
+ * rate settled after the oil went out, an allowance, a discount struck at the
+ * end of a month. It names the product — or the packed SKU — it concerns, so
+ * the bill still reads a year later, and it carries NO quantity. That is the
+ * point of it, and the reason it must never reach the stock register: any
+ * quantity at all would be a lie there, either goods that never moved or a
+ * figure divided into a tonnage nobody agreed.
+ *
+ * Everything that could move stock is forced flat here rather than trusted
+ * from the form — qty, boxes and pouches to zero, affects_stock and
+ * track_stock to 0 — and it is forced on every save, so a later edit that
+ * types a quantity into one of them cannot bring it back.
+ *
+ * The figure IS the amount; nothing multiplies it. A negative one credits the
+ * customer, which is what an allowance usually is.
+ */
+function rateAdjAmount(v: Row): number {
+  // `rate` is the box the screen fills. `amount` is accepted too, so a caller
+  // that thinks in amounts rather than rates is not punished for it.
+  const raw = v.rate !== '' && v.rate != null ? n(v.rate) : n(v.amount)
+  return round2(raw)
+}
+
+/** The stock-affecting half of a sale, flattened. Used by create and update. */
+function rateAdjColumns(v: Row): Row {
+  return {
+    qty: 0,
+    uom: String(v.uom || 'MT'),
+    boxes: 0,
+    pouches: 0,
+    rate_per_case: null,
+    affects_stock: 0,
+    track_stock: 0,
+    // No journey: nothing is being delivered, so the line is done the moment
+    // it is raised and lands in the ledger with the rest of the invoice.
+    stage: 'unloaded' as DispatchStage,
+    status: 'done' as const,
+    // A bill line cannot also be a freight contract.
+    freight_term: 'FREIGHT_ON_GOODS',
+    transporter_id: null,
+    transport_rate: 0,
+    transport_amount: 0
+  }
+}
+
+/** Raise one. Nothing here can touch stock — see rateAdjColumns. */
+async function createRateAdjustment(v: Row, productId: number): Promise<{ id: number }> {
+  const amount = rateAdjAmount(v)
+  if (!amount) throw new Error('Give the amount of the adjustment — a rate adjustment of nothing is not a line')
+  const k = rateAdjColumns(v)
+  const gstPct = n(v.gst_pct)
+  // On the adjustment itself, not on any goods: an allowance on a taxed sale
+  // carries the same tax, in the opposite direction when it is a credit.
+  const gstAmount = round2(amount * (gstPct / 100))
+  const roundOff = round2(n(v.round_off) || 0)
+  const customerId = v.customer_id ? n(v.customer_id) : null
+  // No TDS — see SALE_TDS_PCT.
+  const tdsPct = SALE_TDS_PCT
+  const tdsAmount = SALE_TDS_AMOUNT
+  const net = amount + gstAmount + roundOff - tdsAmount
+  const dates = resolveStageDates(k.stage, v, String(v.sale_date || '') || todayLocal())
+
+  const res = await getClient().execute({
+    sql: `INSERT INTO sales (company_id, sale_date, invoice_no, invoice_group, customer, customer_id, product_id, sales_bargain_id,
+            qty, uom, rate, amount, gst_pct, gst_amount, gst_type, round_off, round_off_manual, tds_pct, tds_amount, status,
+            dispatch_stage, track_stock, loaded_date, transit_date, unloaded_date, note, sale_type, packaging_id, boxes, pouches,
+            freight_term, transporter_id, transport_rate, transport_amount, is_trading, affects_stock, deduct_freight,
+            rate_per_case, allowed_shortage_pct, is_rate_adj)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)`,
+    args: [
+      getActiveCompanyId(),
+      v.sale_date,
+      v.invoice_no || null,
+      v.invoice_group || null,
+      v.customer || null,
+      customerId,
+      productId,
+      // No bargain balance is consumed: nothing was delivered against it.
+      null,
+      k.qty,
+      k.uom,
+      amount,
+      amount,
+      gstPct,
+      gstAmount,
+      v.gst_type === 'IGST' ? 'IGST' : 'CGST_SGST',
+      roundOff,
+      v.round_off_manual ? 1 : 0,
+      tdsPct,
+      tdsAmount,
+      k.status,
+      k.stage,
+      k.track_stock,
+      dates.loaded_date,
+      dates.transit_date,
+      dates.unloaded_date,
+      v.note || null,
+      v.sale_type === 'PACKED' ? 'PACKED' : 'LOOSE',
+      v.packaging_id ? n(v.packaging_id) : null,
+      k.boxes,
+      k.pouches,
+      k.freight_term,
+      k.transporter_id,
+      k.transport_rate,
+      k.transport_amount,
+      v.is_trading ? 1 : 0,
+      k.affects_stock,
+      0,
+      k.rate_per_case,
+      0
+    ] as never[]
+  })
+  const id = Number(res.lastInsertRowid)
+  // The money still posts exactly as a sale line's does — it is the same
+  // receivable and the same voucher. Only the goods half is absent.
+  await postCustomerReceivable(id, customerId, net, String(v.sale_date))
+  await postSaleEntry(id, v, amount, gstAmount, roundOff, k.transport_amount, tdsAmount)
+  // No freight, no shortage, and no paired purchase in the other company: a
+  // rate settled between our own two companies is a decision on both sides,
+  // and raising one half automatically would put a figure in books nobody
+  // looked at. It is entered there in its own right.
+  return { id }
+}
+
+/** Change one. The same flattening runs again, so an edit cannot revive a qty. */
+async function updateRateAdjustment(id: number, v: Row, productId: number): Promise<{ id: number }> {
+  const amount = rateAdjAmount(v)
+  if (!amount) throw new Error('Give the amount of the adjustment — a rate adjustment of nothing is not a line')
+  const k = rateAdjColumns(v)
+  const gstPct = n(v.gst_pct)
+  const gstAmount = round2(amount * (gstPct / 100))
+  const roundOff = round2(n(v.round_off) || 0)
+  const customerId = v.customer_id ? n(v.customer_id) : null
+  // No TDS — see SALE_TDS_PCT.
+  const tdsPct = SALE_TDS_PCT
+  const tdsAmount = SALE_TDS_AMOUNT
+  const net = amount + gstAmount + roundOff - tdsAmount
+  const dates = resolveStageDates(k.stage, v, String(v.sale_date || '') || todayLocal())
+
+  await getClient().execute({
+    sql: `UPDATE sales SET sale_date = ?, invoice_no = ?, customer = ?, customer_id = ?, product_id = ?, sales_bargain_id = NULL,
+            qty = ?, uom = ?, rate = ?, amount = ?, gst_pct = ?, gst_amount = ?, gst_type = ?, round_off = ?, round_off_manual = ?,
+            tds_pct = ?, tds_amount = ?, status = ?, dispatch_stage = ?, track_stock = ?, loaded_date = ?, transit_date = ?,
+            unloaded_date = ?, note = ?, sale_type = ?, packaging_id = ?, boxes = ?, pouches = ?, freight_term = ?,
+            transporter_id = ?, transport_rate = ?, transport_amount = ?, affects_stock = ?, deduct_freight = 0,
+            rate_per_case = ?, allowed_shortage_pct = 0, is_rate_adj = 1
+          WHERE id = ?`,
+    args: [
+      v.sale_date,
+      v.invoice_no || null,
+      v.customer || null,
+      customerId,
+      productId,
+      k.qty,
+      k.uom,
+      amount,
+      amount,
+      gstPct,
+      gstAmount,
+      v.gst_type === 'IGST' ? 'IGST' : 'CGST_SGST',
+      roundOff,
+      v.round_off_manual ? 1 : 0,
+      tdsPct,
+      tdsAmount,
+      k.status,
+      k.stage,
+      k.track_stock,
+      dates.loaded_date,
+      dates.transit_date,
+      dates.unloaded_date,
+      v.note || null,
+      v.sale_type === 'PACKED' ? 'PACKED' : 'LOOSE',
+      v.packaging_id ? n(v.packaging_id) : null,
+      k.boxes,
+      k.pouches,
+      k.freight_term,
+      k.transporter_id,
+      k.transport_rate,
+      k.transport_amount,
+      k.affects_stock,
+      k.rate_per_case,
+      id
+    ] as never[]
+  })
+  await postCustomerReceivable(id, customerId, net, String(v.sale_date))
+  await postSaleEntry(id, v, amount, gstAmount, roundOff, k.transport_amount, tdsAmount)
+  // Anything the line used to carry as a delivery is cleared, in case it was
+  // an ordinary sale before this edit.
+  await getClient().execute({ sql: 'DELETE FROM transporter_ledger WHERE sale_id = ?', args: [id] })
+  await getClient().execute({
+    sql: "DELETE FROM customer_ledger WHERE sale_id = ? AND entry_type = 'freight'",
+    args: [id]
+  })
+  return { id }
+}
+
 export async function createSale(v: Row): Promise<{ id: number }> {
+  return withDbTransaction(async () => {
   const productId = n(v.product_id)
   if (!productId) throw new Error('Select a product')
   // One invoice number, one invoice — though an invoice may of course run to
@@ -1411,6 +1894,9 @@ export async function createSale(v: Row): Promise<{ id: number }> {
   // through here as well, line by line and with no group, each counting as an
   // invoice in its own right.
   await assertSalesInvoiceNoFree(v, getActiveCompanyId(), undefined, !!v.invoice_no_grandfathered)
+  // A rate adjustment has no quantity, so the guard below would refuse it and
+  // nothing about a delivery applies. It takes its own road.
+  if (v.is_rate_adj) return createRateAdjustment(v, productId)
   const { qty, uom } = await resolveSaleQty(v)
   if (qty <= 0) throw new Error('Quantity must be greater than zero')
   const rate = n(v.rate)
@@ -1421,11 +1907,9 @@ export async function createSale(v: Row): Promise<{ id: number }> {
   // Invoice-level round off (carried on the first line of the group only).
   const roundOff = Math.round((n(v.round_off) || 0) * 100) / 100
   const customerId = v.customer_id ? n(v.customer_id) : null
-  // TDS the customer withholds, charged on the invoice total like the purchase
-  // side and applied on the customer master's slab terms. With no rate set it
-  // is 0, so the receivable is unchanged for a sale that carries no TDS.
-  const tdsPct = await resolveTdsPct(v, customerId)
-  const tdsAmount = await saleTds(customerId, tdsPct, amount, String(v.sale_date), 0)
+  // No TDS — see SALE_TDS_PCT. Whatever rate a caller sends is not applied.
+  const tdsPct = SALE_TDS_PCT
+  const tdsAmount = SALE_TDS_AMOUNT
   const net = amount + gstAmount + roundOff - tdsAmount
   // Can't dispatch more than the chosen sales bargain still has open.
   if (v.sales_bargain_id) {
@@ -1529,10 +2013,37 @@ export async function createSale(v: Row): Promise<{ id: number }> {
   await postSaleEntry(id, v, amount, gstAmount, roundOff, transportAmount, tdsAmount)
   await postSaleFreight(id, v, freightQty)
   await postSaleShortageDebit(id)
+  // SOLD TO ONE OF OUR OWN COMPANIES.
+  //
+  // The same goods are a purchase in the other company's books, and it is
+  // raised here rather than typed again there — with its own invoice number
+  // and its own rate, both asked for on this form. An ordinary customer
+  // returns 0 and nothing else happens.
+  // rate/amount/sale_type travel with it: the purchase is booked at this
+  // sale's own rate, and a packed line's per-MT rate is worked back from the
+  // money. See pairedRate.
+  await raisePairedPurchase(
+    {
+      id,
+      customer_id: customerId,
+      company_id: getActiveCompanyId(),
+      product_id: productId,
+      qty,
+      uom,
+      rate,
+      amount,
+      sale_type: v.sale_type === 'PACKED' ? 'PACKED' : 'LOOSE',
+      invoice_group: v.invoice_group,
+      sale_date: v.sale_date
+    },
+    v
+  )
   return { id }
+  })
 }
 
 export async function updateSale(id: number, v: Row): Promise<{ id: number }> {
+  return withDbTransaction(async () => {
   const productId = n(v.product_id)
   if (!productId) throw new Error('Select a product')
   {
@@ -1546,6 +2057,7 @@ export async function updateSale(id: number, v: Row): Promise<{ id: number }> {
     const grp = v.invoice_group || own.rows[0]?.invoice_group || null
     await assertSalesInvoiceNoFree({ ...v, invoice_group: grp }, cid, id, !!v.invoice_no_grandfathered)
   }
+  if (v.is_rate_adj) return updateRateAdjustment(id, v, productId)
   const { qty, uom } = await resolveSaleQty(v)
   if (qty <= 0) throw new Error('Quantity must be greater than zero')
   const rate = n(v.rate)
@@ -1556,10 +2068,9 @@ export async function updateSale(id: number, v: Row): Promise<{ id: number }> {
   // Invoice-level round off (carried on the first line of the group only).
   const roundOff = Math.round((n(v.round_off) || 0) * 100) / 100
   const customerId = v.customer_id ? n(v.customer_id) : null
-  // TDS the customer withholds — see createSale. This sale is left out of its
-  // own prior-billed figure so re-saving cannot inflate the slab.
-  const tdsPct = n(v.tds_pct)
-  const tdsAmount = await saleTds(customerId, tdsPct, amount, String(v.sale_date), id)
+  // No TDS — see SALE_TDS_PCT. Re-saving an old line drops any it carried.
+  const tdsPct = SALE_TDS_PCT
+  const tdsAmount = SALE_TDS_AMOUNT
   const net = amount + gstAmount + roundOff - tdsAmount
   if (v.sales_bargain_id) {
     const bal = await salesBargainBalanceFor(n(v.sales_bargain_id), id)
@@ -1644,7 +2155,27 @@ export async function updateSale(id: number, v: Row): Promise<{ id: number }> {
   await postSaleEntry(id, v, amount, gstAmount, roundOff, transportAmount, tdsAmount)
   await postSaleFreight(id, v, freightQty)
   await postSaleShortageDebit(id)
+  // The other company's purchase follows this sale — raised if the customer
+  // has just become one of our companies, removed if it has stopped being
+  // one, and otherwise brought into step with what was changed here.
+  await syncPairedPurchase(
+    {
+      id,
+      customer_id: customerId,
+      company_id: getActiveCompanyId(),
+      product_id: productId,
+      qty,
+      uom,
+      rate,
+      amount,
+      sale_type: v.sale_type === 'PACKED' ? 'PACKED' : 'LOOSE',
+      invoice_group: v.invoice_group,
+      sale_date: v.sale_date
+    },
+    v
+  )
   return { id }
+  })
 }
 
 // Move a dispatch through its stages (pending → loaded → transit → unloaded).
@@ -1668,8 +2199,8 @@ async function recomputeSaleFreight(id: number): Promise<void> {
   if (Math.abs(amount - n(row.transport_amount)) < 0.005) return
   await c.execute({ sql: 'UPDATE sales SET transport_amount = ? WHERE id = ?', args: [amount, id] })
   await postSaleFreight(id, { ...row, transport_amount: amount }, qty)
-  // The sale voucher carries the freight leg, so it has to be re-posted too or
-  // FREIGHT OUTWARD / FREIGHT PAYABLE would keep the old figure.
+  // Re-posted too: freight deducted from the customer is on the sale voucher,
+  // and would otherwise keep the old figure.
   await postSaleEntry(
     id,
     { ...row, transport_amount: amount },
@@ -1790,6 +2321,7 @@ export async function setSaleStatus(id: number, status: string): Promise<{ id: n
 }
 
 export async function deleteSale(id: number): Promise<{ id: number }> {
+  return withDbTransaction(async () => {
   const c = getClient()
   // Reverse the linked auto-production first (releases the raw it consumed).
   await deleteSaleProductions(id)
@@ -1816,6 +2348,9 @@ export async function deleteSale(id: number): Promise<{ id: number }> {
   await c.execute({ sql: 'DELETE FROM payment_allocations WHERE sale_id = ?', args: [id] })
   await c.execute({ sql: 'DELETE FROM customer_ledger WHERE sale_id = ?', args: [id] })
   await c.execute({ sql: 'DELETE FROM transporter_ledger WHERE sale_id = ?', args: [id] })
+  // Before the sale goes: a purchase raised by it has nothing left to belong
+  // to, and a purchase nobody can trace back is worse than no purchase.
+  await removePairedPurchase(id)
   await c.execute({ sql: 'DELETE FROM sales WHERE id = ?', args: [id] })
   // What is left of the invoice is re-posted, so the voucher it kept now
   // states the reduced bill rather than the one that included this line.
@@ -1825,6 +2360,7 @@ export async function deleteSale(id: number): Promise<{ id: number }> {
     )
   }
   return { id }
+  })
 }
 
 // --- multi-item sale invoices ---
@@ -1860,26 +2396,60 @@ function mergeInvoiceItem(header: Row, item: Row, group: string): Row {
     is_trading: header.is_trading,
     deduct_freight: header.deduct_freight,
     // Agreed for the whole delivery, not per line — one tanker, one tolerance.
-    allowed_shortage_pct: header.allowed_shortage_pct
+    allowed_shortage_pct: header.allowed_shortage_pct,
+    // The other half of an inter-company invoice. This function names every
+    // header field a line inherits, so a field missing from the list simply
+    // never arrives — which is what happened: the form asked for the purchase
+    // invoice number, the desk typed it, and the line that reached createSale
+    // had never heard of it.
+    // One invoice, one number — the header's. A line may still carry its own
+    // where a desk really does book them separately, but nothing asks for one.
+    purchase_invoice_no: item.purchase_invoice_no || header.purchase_invoice_no
   }
 }
 
 export async function createSaleInvoice(v: Row): Promise<{ group: string; ids: number[] }> {
+  return withDbTransaction(async () => {
   const items: Row[] = Array.isArray(v.items) ? v.items : []
   if (!items.length) throw new Error('Add at least one item to the invoice')
   const group = newInvoiceGroup()
   const ids: number[] = []
-  for (let i = 0; i < items.length; i++) {
-    // Invoice-level round off rides on the FIRST line only (others 0).
-    const res = await createSale({ ...mergeInvoiceItem(v, items[i], group), round_off: i === 0 ? v.round_off : 0, round_off_manual: i === 0 ? v.round_off_manual : 0 })
-    ids.push(res.id)
+  // AN INVOICE IS SAVED WHOLE OR NOT AT ALL.
+  //
+  // The lines are written one at a time, so a refusal on line 2 used to leave
+  // line 1 standing — a sale, its receivable, its journal entry and (on a
+  // transfer) a purchase in the other company's books, all for an invoice the
+  // desk was told had not saved. They then correct the line and save again,
+  // and the half that IS there refuses the half that is not, on its own
+  // number. Every way out of that needs somebody who knows the books.
+  //
+  // So a failure unwinds what it made. deleteSale is the same path the desk's
+  // own Delete takes, and it already carries the receivable, the journal and
+  // the paired purchase with it. The ORIGINAL error is what gets thrown: it is
+  // the one that says what to fix, and a tidy-up that itself fails must not
+  // replace it with a message about the tidy-up.
+  try {
+    for (let i = 0; i < items.length; i++) {
+      // Invoice-level round off rides on the FIRST line only (others 0).
+      const res = await createSale({ ...mergeInvoiceItem(v, items[i], group), round_off: i === 0 ? v.round_off : 0, round_off_manual: i === 0 ? v.round_off_manual : 0 })
+      ids.push(res.id)
+    }
+  } catch (e) {
+    for (const id of ids.reverse()) {
+      await deleteSale(id).catch((x) =>
+        console.error('[sales] could not unwind line', id, 'of a refused invoice:', (x as Error).message)
+      )
+    }
+    throw e
   }
   return { group, ids }
+  })
 }
 
 // Edit an invoice: reverse its existing lines and recreate from the new set
 // (keeps the same group). Simpler and always consistent versus diffing.
 export async function updateSaleInvoice(group: string, v: Row): Promise<{ group: string; ids: number[] }> {
+  return withDbTransaction(async () => {
   const items: Row[] = Array.isArray(v.items) ? v.items : []
   if (!items.length) throw new Error('Add at least one item to the invoice')
   const existing = await getClient().execute({
@@ -1914,6 +2484,21 @@ export async function updateSaleInvoice(group: string, v: Row): Promise<{ group:
   // voucher behind on any failure mid-way, which is worse than a changed
   // number — so it is left as it is, deliberately. Saving a single line, and
   // deleting one line of several, both keep the number (see deleteSale).
+  // A sale booked from the Trading page is also listed on its deal
+  // (trading_deals.sale_id / trading_deal_sales.sale_id). Deleting its lines to
+  // rebuild them tripped those foreign keys, so editing such an invoice here —
+  // even just to add the GST it was missing — failed with a FOREIGN KEY error.
+  // The check is deferred to the commit instead, and the deal is pointed at the
+  // rebuilt lines below, line for line, before the transaction ends.
+  const oldIds = existing.rows.map((r) => Number(r.id))
+  const dealRefs = oldIds.length
+    ? await getClient().execute(
+        `SELECT (SELECT COUNT(*) FROM trading_deals WHERE sale_id IN (${oldIds.join(',')}))
+              + (SELECT COUNT(*) FROM trading_deal_sales WHERE sale_id IN (${oldIds.join(',')})) AS n`
+      )
+    : null
+  const onDeal = n(dealRefs?.rows[0]?.n) > 0
+  if (onDeal) await getClient().execute('PRAGMA defer_foreign_keys = ON')
   for (const r of existing.rows) await deleteSale(Number(r.id))
   const ids: number[] = []
   for (let i = 0; i < items.length; i++) {
@@ -1938,7 +2523,90 @@ export async function updateSaleInvoice(group: string, v: Row): Promise<{ group:
       await recomputeSaleFreight(res.id)
     }
   }
+  if (onDeal) {
+    // Old line i becomes new line i; a line that was removed hands its place on
+    // the deal to the invoice's last line, so the deal still reaches the invoice.
+    for (let i = 0; i < oldIds.length; i++) {
+      const to = ids[Math.min(i, ids.length - 1)]
+      await getClient().execute({ sql: 'UPDATE trading_deals SET sale_id = ? WHERE sale_id = ?', args: [to, oldIds[i]] })
+      await getClient().execute({ sql: 'UPDATE trading_deal_sales SET sale_id = ? WHERE sale_id = ?', args: [to, oldIds[i]] })
+    }
+  }
   return { group, ids }
+  })
+}
+
+// RE-DATE AN INVOICE — the one fix the Tally Sales Register check offers in
+// place ("Use Tally's date"), for a sale keyed in here days after the invoice
+// was raised and dated the day it was entered.
+//
+// Only the date moves, and it moves everywhere the date lives: every line of
+// the invoice, the stage dates that were simply the invoice date, the
+// customer's receivable, the freight lines, and the voucher — re-posted in
+// place, so it keeps its number. No figure is touched.
+//
+// Refused where a date alone cannot be moved honestly: an inter-company
+// transfer (the other company's purchase is dated with it — edit it from Sales
+// so both sides move), and a delivery whose own loaded / unloaded dates would
+// then run backwards.
+export async function setSaleInvoiceDate(id: number, date: string): Promise<{ id: number; from: string; to: string }> {
+  return withDbTransaction(async () => {
+    const c = getClient()
+    const to = String(date || '').slice(0, 10)
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(to)) throw new Error('Pick a valid date')
+    if (to > todayISO()) throw new Error('An invoice date cannot be in the future')
+    {
+      const { getBooksFrom } = await import('./openings')
+      const start = await getBooksFrom()
+      if (start && to < start) throw new Error(`These books begin on ${start}; an invoice cannot be moved to ${to}, before them.`)
+    }
+    const own = await c.execute({ sql: 'SELECT id, invoice_group, sale_date FROM sales WHERE id = ?', args: [n(id)] })
+    if (!own.rows.length) throw new Error('That sale no longer exists — check the file again')
+    const head = own.rows[0] as unknown as Row
+    const from = String(head.sale_date || '').slice(0, 10)
+    const lines = toPlain(
+      head.invoice_group
+        ? await c.execute({ sql: 'SELECT * FROM sales WHERE invoice_group = ? ORDER BY id', args: [String(head.invoice_group)] })
+        : await c.execute({ sql: 'SELECT * FROM sales WHERE id = ?', args: [n(id)] })
+    )
+    if (from === to) return { id: n(lines[0]?.id) || n(id), from, to }
+    for (const l of lines) {
+      const { pairedPurchaseOf } = await import('./intercompany')
+      if (await pairedPurchaseOf(n(l.id))) {
+        throw new Error(
+          'This invoice is a transfer to another of our companies, and their purchase carries the same date. Change it from Sales → Edit so both sides move together.'
+        )
+      }
+    }
+    for (const l of lines) {
+      // A stage date that was just the invoice date follows it; one recorded
+      // on its own day (a real loading or unloading) stays where it is.
+      const move = (d: unknown): string | null => (d == null || d === '' ? null : String(d).slice(0, 10) === from ? to : String(d))
+      const ex = String(l.freight_term) !== 'DLD'
+      const loaded = ex && l.loaded_date ? to : move(l.loaded_date)
+      const transit = ex && l.transit_date ? to : move(l.transit_date)
+      const unloaded = ex && l.unloaded_date ? to : move(l.unloaded_date)
+      try {
+        assertStageDateOrder(loaded, transit, unloaded)
+      } catch (e) {
+        throw new Error(`${(e as Error).message} Open the invoice from Sales and set its dates there.`)
+      }
+      await c.execute({
+        sql: 'UPDATE sales SET sale_date = ?, loaded_date = ?, transit_date = ?, unloaded_date = ? WHERE id = ?',
+        args: [to, loaded, transit, unloaded, n(l.id)]
+      })
+      await c.execute({
+        sql: "UPDATE customer_ledger SET entry_date = ? WHERE sale_id = ? AND entry_type = 'sale'",
+        args: [to, n(l.id)]
+      })
+      const row = { ...l, sale_date: to, loaded_date: loaded, transit_date: transit, unloaded_date: unloaded }
+      await postSaleFreight(n(l.id), row, await resolveFreightQty(row, n(l.qty)))
+      await postSaleShortageDebit(n(l.id))
+    }
+    // Re-posted in place: the voucher keeps its number and takes the new date.
+    await postSaleInvoiceJournal(n(lines[0].id))
+    return { id: n(lines[0].id), from, to }
+  })
 }
 
 // Move a whole invoice through a dispatch stage (all its line items together).
@@ -1964,12 +2632,14 @@ export async function setInvoiceStage(
 }
 
 export async function deleteSaleInvoice(group: string): Promise<{ group: string }> {
+  return withDbTransaction(async () => {
   const rows = await getClient().execute({
     sql: 'SELECT id FROM sales WHERE invoice_group = ?',
     args: [group]
   })
   for (const r of rows.rows) await deleteSale(Number(r.id))
   return { group }
+  })
 }
 
 // An invoice the customer refused to accept — kept on record (a Credit Note
@@ -2080,6 +2750,8 @@ export async function backfillSalesGst(): Promise<void> {
       customerName: String(r.customer || '').trim(),
       amount,
       gst: gstAmount,
+      gstPct,
+      gstType: r.gst_type,
       companyId: n(r.company_id) || 1
     }).catch(() => {})
     if (r.customer_id) {
@@ -2161,6 +2833,8 @@ export async function backfillSalesRoundOff(): Promise<void> {
       customerName: String(first.customer || '').trim(),
       amount: n(first.amount),
       gst: n(first.gst_amount),
+      gstPct: n(first.gst_pct),
+      gstType: first.gst_type,
       roundOff: ro,
       companyId: n(first.company_id) || 1
     }).catch(() => {})
@@ -2232,6 +2906,8 @@ export async function restateStaleSalesRoundOff(): Promise<void> {
       customerName: String(first.customer || '').trim(),
       amount: n(first.amount),
       gst: n(first.gst_amount),
+      gstPct: n(first.gst_pct),
+      gstType: first.gst_type,
       roundOff: should,
       companyId: n(first.company_id) || 1
     }).catch(() => {})

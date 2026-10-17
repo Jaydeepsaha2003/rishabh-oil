@@ -1,4 +1,5 @@
 import { Fragment, useCallback, useEffect, useMemo, useState } from 'react'
+import { takePageIntent } from '@/lib/pageIntent'
 import { toast } from 'sonner'
 import {
   ArrowDown,
@@ -6,6 +7,7 @@ import {
   ArrowUp,
   ArrowUpDown,
   AlertTriangle,
+  ReceiptText,
   BarChart3,
   Building2,
   Check,
@@ -14,11 +16,13 @@ import {
   ChevronRight,
   FileSpreadsheet,
   History,
+  Link2,
   Minus,
   MinusCircle,
   Pencil,
   Plus,
   Search,
+  Shuffle,
   SlidersHorizontal,
   Trash2,
   Truck
@@ -62,6 +66,10 @@ import { formatDate, formatINR, formatNum, todayISO } from '@/lib/format'
 import { exportRowsToExcel } from '@/lib/excel'
 import { cn, inkOn } from '@/lib/utils'
 import { RecordHistory, useRecordHistory } from '@/components/RecordHistory'
+import { BargainVouchersDialog } from '@/components/BargainVouchers'
+import { BargainMoveBalanceDialog } from '@/components/BargainMoveBalance'
+import { BargainNote } from '@/components/BargainNote'
+import { SerialNo } from '@/components/SerialNo'
 import { useIsMobile } from '@/lib/useIsMobile'
 import { useLiveRefresh } from '@/lib/useLiveRefresh'
 import { useCategories } from '@/lib/useCategories'
@@ -194,6 +202,9 @@ function emptyForm(uom: string): Row {
     supplier_id: '',
     broker_id: '',
     product_category: '',
+    // A filter on the product list rather than a field of the bargain — the
+    // sub-category lives on the product, and the bargain names the product.
+    product_subcategory: '',
     oil_type_id: '',
     bargain_type: 'EX',
     qty: '',
@@ -314,6 +325,26 @@ export function Bargains({
   const [suppliers, setSuppliers] = useState<Row[]>([])
   const [brokers, setBrokers] = useState<Row[]>([])
   const [oilTypes, setOilTypes] = useState<Row[]>([])
+  // HOW MANY PRODUCTS THIS FORM IS NOT OFFERING, AND WHY.
+  //
+  // The product list is gated to what a mill can BUY — raw, plus anything
+  // flagged "used for both" — so a category holding 32 products can offer 13,
+  // and the form said nothing about the other 19. A count with no explanation
+  // reads as a list that has lost something. Kept per category so the note can
+  // name a real number instead of a vague one.
+  const [madeNotBought, setMadeNotBought] = useState<Record<string, number>>({})
+  // EVERY ACTIVE PRODUCT, not only the buyable ones.
+  //
+  // The gate below (raw, plus anything flagged "used for both") is the right
+  // DEFAULT and the wrong wall: a mill that normally makes its own finished
+  // oil still buys some in occasionally, and having to go and re-flag the
+  // product master first — then remember to unflag it — is a worse answer than
+  // letting the bargain ask for it. The server never gated this at all; only
+  // this dropdown did.
+  //
+  // So the buyable set is what the form offers unasked, and everything else is
+  // one deliberate choice away in the Sub-category field.
+  const [allProducts, setAllProducts] = useState<Row[]>([])
   const [tankers, setTankers] = useState<Row[]>([])
   const [draws, setDraws] = useState<Row[]>([])
   // Bargains are general, so the register reads as ONE book across every
@@ -324,7 +355,9 @@ export function Bargains({
   const [defaultShortagePct, setDefaultShortagePct] = useState('0.2')
   const [expanded, setExpanded] = useState<Set<number>>(new Set())
   const [defaultUom, setDefaultUom] = useState('MT')
-  const [typeFilter, setTypeFilter] = useState('OIL')
+  // OIL unless opened for another view — the dashboard's open-bargains line
+  // asks for every category, so the register totals what the card said.
+  const [typeFilter, setTypeFilter] = useState(() => String(takePageIntent('bargains')?.category || 'OIL'))
   // Remembered, not reset.
   //
   // This is a way of LOOKING at the register, not a one-off action: somebody
@@ -382,6 +415,10 @@ export function Bargains({
 
   // Add/remove balance quantity on a bargain.
   const [adjustRow, setAdjustRow] = useState<Row | null>(null)
+  // The bargain whose hand-linked vouchers are open — see BargainVouchers.
+  const [vchLinkRow, setVchLinkRow] = useState<Row | null>(null)
+  // The bargain whose open balance is being moved to another product.
+  const [moveRow, setMoveRow] = useState<Row | null>(null)
   // What has already been added or removed on the bargain being adjusted. A
   // correction is nearly always made against the ones before it, so they are
   // on the same panel rather than a page away.
@@ -484,6 +521,18 @@ export function Bargains({
         .filter((x) => x.active && (x.category === 'raw' || Number(x.use_both) === 1))
         .sort((a, b) => String(a.name).localeCompare(String(b.name)))
     )
+    setAllProducts(o.filter((x: Row) => x.active).sort((a: Row, b: Row) => String(a.name).localeCompare(String(b.name))))
+    // The other side of that filter, counted per category, so the form can say
+    // what it is holding back rather than leave a short list unexplained.
+    setMadeNotBought(
+      o.reduce((acc: Record<string, number>, x: Row) => {
+        if (!x.active) return acc
+        if (x.category === 'raw' || Number(x.use_both) === 1) return acc
+        const k = String(x.material_type || 'OIL')
+        acc[k] = (acc[k] || 0) + 1
+        return acc
+      }, {})
+    )
     setDefaultUom(settings.default_uom ?? 'MT')
     setLoading(false)
   }, [F, T, coIds])
@@ -544,8 +593,17 @@ export function Bargains({
       const next = { ...prev, [key]: value }
       // Switching the product category clears a product that no longer fits it.
       if (key === 'product_category') {
-        const stillValid = oilTypes.some(
+        const stillValid = allProducts.some(
           (o) => String(o.id) === String(prev.oil_type_id) && String(o.material_type || 'OIL') === String(value)
+        )
+        if (!stillValid) next.oil_type_id = ''
+        // …and the sub-category under it, which belonged to the old one.
+        next.product_subcategory = ''
+      }
+      // Narrowing to a sub-category drops a product outside it, the same way.
+      if (key === 'product_subcategory' && value) {
+        const stillValid = allProducts.some(
+          (o) => String(o.id) === String(prev.oil_type_id) && String(o.category || '') === String(value)
         )
         if (!stillValid) next.oil_type_id = ''
       }
@@ -595,10 +653,53 @@ export function Bargains({
     () => productCategories.filter((t) => t.products > 0).map((t) => t.name),
     [productCategories]
   )
-  const categoryProducts = useMemo(
+  // THE SUB-CATEGORIES THIS CATEGORY ACTUALLY HAS, not the five the master
+  // knows about.
+  //
+  // A purchase bargain is struck on RAW — that is what a mill buys — plus
+  // anything flagged "used for both", which is the per-product override for
+  // something traded rather than refined. So the honest list here is whatever
+  // the offerable products carry: nearly always Raw alone, and Finished as
+  // well where a finished oil is bought in. Offering the master's full list
+  // would put Intermediate on screen and then show no products under it,
+  // which is a dropdown that lies.
+  //
+  // Derived, so a sub-category created on the Products master (the field is
+  // already `creatable` there) turns up here the moment a product carries it —
+  // nothing to maintain in two places.
+  // What this category holds, both ways: what it offers unasked, and
+  // everything in it.
+  const inCategory = useMemo(
     () => oilTypes.filter((o) => String(o.material_type || 'OIL') === String(form.product_category || '')),
     [oilTypes, form.product_category]
   )
+  const allInCategory = useMemo(
+    () => allProducts.filter((o) => String(o.material_type || 'OIL') === String(form.product_category || '')),
+    [allProducts, form.product_category]
+  )
+  // Every sub-category the category actually holds — including the ones a
+  // bargain does not normally buy, which is the whole point: they are how you
+  // reach a finished oil when you do want to buy one in.
+  const subCategories = useMemo(
+    () => [...new Set(allInCategory.map((o) => String(o.category || '').trim()).filter(Boolean))].sort(),
+    [allInCategory]
+  )
+  // Which sub-categories are bought without asking. Anything else is offered,
+  // and says so when it is chosen.
+  const boughtSubs = useMemo(
+    () => new Set(inCategory.map((o) => String(o.category || '').trim()).filter(Boolean)),
+    [inCategory]
+  )
+  const categoryProducts = useMemo(
+    () =>
+      form.product_subcategory
+        ? allInCategory.filter((o) => String(o.category || '') === String(form.product_subcategory))
+        : inCategory,
+    [inCategory, allInCategory, form.product_subcategory]
+  )
+  // True when the reader has deliberately reached past the default gate.
+  const unusualPick =
+    !!form.product_subcategory && !boughtSubs.has(String(form.product_subcategory))
 
   const bgRate = (Number(form.base_rate) || 0) + (Number(form.duty) || 0)
   const total = (Number(form.qty) || 0) * bgRate
@@ -733,6 +834,43 @@ export function Bargains({
   ).length
 
   const [sort, setSort] = useState<SortState>(null)
+  // What the register is banded by: the oil (as it always has been) or the
+  // supplier — "what is still open with ROHINI OIL, across every oil". Only the
+  // banding changes; every figure is the same either way. The same switch the
+  // Sales Bargain register has. Not remembered: it opens by oil each time.
+  const [groupBy, setGroupBy] = useState<'party' | 'oil'>('oil')
+  const grpOf = useCallback(
+    (r: Row): string => (groupBy === 'party' ? String(r.supplier_name || '—') : oilOf(r)),
+    [groupBy]
+  )
+  // The other of the two, where a row needs to say what the band does not.
+  const rowOther = (r: Row): string => (groupBy === 'party' ? oilOf(r) : String(r.supplier_name || '—'))
+  const groupNoun = (count: number, oilWord = 'oil'): string =>
+    groupBy === 'party' ? (count === 1 ? 'supplier' : 'suppliers') : count === 1 ? oilWord : `${oilWord}s`
+  // THE SECOND LEVEL. Inside each band the bargains fall into sub-groups by
+  // the other of the two — under an oil, each supplier; under a supplier, each
+  // oil — each with its own totals, opening and closing on its own. They are
+  // OPEN by default (opening a band shows its bargains as it always did), so
+  // what is tracked is the ones a person has closed. Keyed band + sub-group.
+  const [closedSubs, setClosedSubs] = useState<Set<string>>(new Set())
+  const subKeyOf = (r: Row): string => `${grpOf(r)}\u0001${rowOther(r)}`
+  function toggleSub(key: string): void {
+    setClosedSubs((prev) => {
+      const next = new Set(prev)
+      if (next.has(key)) next.delete(key)
+      else next.add(key)
+      return next
+    })
+  }
+  function switchGroupBy(v: 'party' | 'oil'): void {
+    if (v === groupBy) return
+    setGroupBy(v)
+    // The open bands and the phone's open screen were named for the old
+    // banding; none of them means anything under the new one.
+    setOpenGroups(new Set())
+    setClosedSubs(new Set())
+    setMobileOil(null)
+  }
   const [reportOpen, setReportOpen] = useState(false)
 
   function toggleSort(key: string): void {
@@ -742,7 +880,12 @@ export function Bargains({
   const sortedRows = useMemo(() => {
     const list = [...visibleRows]
     if (!sort) {
-      list.sort(defaultCompare)
+      // The band, then its sub-group (the supplier under an oil, the oil
+      // under a supplier), then oldest first — so each sub-group's bargains
+      // sit together under their own heading.
+      list.sort(
+        (a, b) => grpOf(a).localeCompare(grpOf(b)) || rowOther(a).localeCompare(rowOther(b)) || defaultCompare(a, b)
+      )
     } else {
       const acc = SORT_ACCESSORS[sort.key]
       list.sort((a, b) => {
@@ -753,10 +896,11 @@ export function Bargains({
       })
     }
     return list
-  }, [visibleRows, sort])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [visibleRows, sort, grpOf])
 
-  // Oil-group separators only make sense while rows are grouped by oil.
-  const groupedByOil = !sort || sort.key === 'oil'
+  // Group bands only make sense while rows are ordered by what they band on.
+  const grouped = !sort || sort.key === (groupBy === 'party' ? 'supplier' : 'oil')
 
   function toggleExpand(id: number): void {
     setExpanded((prev) => {
@@ -770,6 +914,10 @@ export function Bargains({
   // Collapsed oil groups (band click toggles).
   // Oil groups are COLLAPSED by default — we track the ones the user opens.
   const [openGroups, setOpenGroups] = useState<Set<string>>(new Set())
+  // WHICH OIL'S DRILL-DOWN IS OPEN, on the phone. The list screen shows the
+  // oils; tapping one opens its own screen of bargains, the way the reference
+  // design does it, rather than expanding inline into a wall on one page.
+  const [mobileOil, setMobileOil] = useState<string | null>(null)
   // Summary tiles start closed: the register below carries the same figures
   // per oil, so these are a glance, not the page.
   const [kpiOpen, setKpiOpen] = useState(false)
@@ -782,11 +930,11 @@ export function Bargains({
     })
   }
 
-  // Per-oil totals shown on the group band, aligned to the table columns.
+  // Per-band totals (per oil, or per supplier), aligned to the table columns.
   const groupStats = useMemo(() => {
     const m = new Map<string, { count: number; opening: number; addition: number; adjusted: number; dispatch: number; closing: number; balValue: number; uom: string }>()
     for (const r of visibleRows) {
-      const k = oilOf(r)
+      const k = grpOf(r)
       if (!m.has(k)) m.set(k, { count: 0, opening: 0, addition: 0, adjusted: 0, dispatch: 0, closing: 0, balValue: 0, uom: String(r.uom || 'MT') })
       const g = m.get(k)!
       g.count += 1
@@ -798,7 +946,26 @@ export function Bargains({
       g.balValue += (Number(r._closing) || 0) * (Number(r.rate_per_uom) || 0)
     }
     return m
-  }, [visibleRows])
+  }, [visibleRows, grpOf])
+
+  // The same totals per sub-group, for the second-level bands.
+  const subStats = useMemo(() => {
+    const m = new Map<string, { count: number; opening: number; addition: number; adjusted: number; dispatch: number; closing: number; balValue: number }>()
+    for (const r of visibleRows) {
+      const k = subKeyOf(r)
+      if (!m.has(k)) m.set(k, { count: 0, opening: 0, addition: 0, adjusted: 0, dispatch: 0, closing: 0, balValue: 0 })
+      const g = m.get(k)!
+      g.count += 1
+      g.opening += Number(r._opening) || 0
+      g.addition += Number(r._addition) || 0
+      g.adjusted += Number(r._adjusted) || 0
+      g.dispatch += Number(r._dispatch) || 0
+      g.closing += Number(r._closing) || 0
+      g.balValue += (Number(r._closing) || 0) * (Number(r.rate_per_uom) || 0)
+    }
+    return m
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [visibleRows, grpOf])
 
   // Grand total across the currently visible groups (matches the group bands).
   const grandVisible = useMemo(() => {
@@ -1112,1449 +1279,12 @@ export function Bargains({
   // of card: an oil-type band that opens into its bargains, and a bargain that
   // opens into its tankers. Same figures, same grouping, same collapse-by-
   // default as the desktop — a phone reading of the page, not a second page.
-  if (__WEB__ && isMobile) {
-    const contracted = grandVisible.opening + grandVisible.addition + grandVisible.adjusted
-    const mKpis = [
-      { k: 'Bargains', v: String(grandVisible.count), fg: '#fff' },
-      { k: 'Contracted', v: `${formatNum(contracted)}`, fg: '#fff' },
-      { k: 'Received', v: formatNum(grandVisible.dispatch), fg: '#fff' },
-      { k: 'Balance open', v: formatNum(grandVisible.closing), fg: '#C7F03F' }
-    ]
-    const oils = [...groupStats.entries()].sort((a, b) => a[0].localeCompare(b[0]))
-    const toggleRow = (id: number): void =>
-      setExpanded((prev) => {
-        const next = new Set(prev)
-        if (next.has(id)) next.delete(id)
-        else next.add(id)
-        return next
-      })
-    const bar = (drawn: number, total: number): { pct: string; label: string; colour: string } => {
-      const p = total > 0 ? Math.min(100, Math.max(0, (drawn / total) * 100)) : 0
-      return {
-        pct: `${p}%`,
-        label: `${Math.round(p)}%`,
-        // Amber while it is still being drawn, green once it is finished — the
-        // bar answers "is this contract done" at a glance.
-        colour: p >= 99.5 ? '#12855A' : p > 0 ? '#C2700A' : '#C3D2C6'
-      }
-    }
-
-    return (
-      <div className="flex min-h-screen flex-col bg-[#F1F5EF]">
-        <div className="flex-none bg-[#0B3D2E] px-4 pb-3.5 pt-2.5 text-white">
-          <MobileBar onRefresh={() => load()} />
-          <div className="flex items-center justify-between gap-2.5">
-            <div className="min-w-0">
-              <div className="text-[19px] font-extrabold tracking-[-0.02em]">Pur Bargain</div>
-              <div className="mt-[3px] text-[11.5px] font-bold text-[#8FBFA8]">
-                {grandVisible.count} {grandVisible.count === 1 ? 'bargain' : 'bargains'} · {oils.length}{' '}
-                {oils.length === 1 ? 'oil' : 'oils'} · {formatDate(F)} to {formatDate(T)}
-              </div>
-            </div>
-            <button
-              type="button"
-              onClick={() => setReportOpen(true)}
-              className="flex h-11 w-11 flex-none items-center justify-center rounded-[4px] bg-white/[.12]"
-              title="Summary by oil type"
-            >
-              <BarChart3 className="h-[22px] w-[22px]" />
-            </button>
-          </div>
-
-          <button
-            type="button"
-            onClick={() => setKpiOpen((v) => !v)}
-            className="mt-2.5 flex min-h-11 w-full items-center gap-2 rounded-[4px] bg-white/10 px-[11px]"
-          >
-            <ChevronDown
-              className="h-[19px] w-[19px] flex-none text-[#C7F03F] transition-transform"
-              style={{ transform: kpiOpen ? 'none' : 'rotate(-90deg)' }}
-            />
-            <span className="min-w-0 flex-1 text-left text-[10.5px] font-extrabold uppercase tracking-[.11em] text-[#8FBFA8]">
-              Summary
-            </span>
-            <span className="doc-ref whitespace-nowrap text-[11.5px] font-extrabold text-[#C7F03F]">
-              {formatNum(grandVisible.closing)} MT open
-            </span>
-          </button>
-          {kpiOpen && (
-            <div className="mt-[9px] grid grid-cols-2 gap-2">
-              {mKpis.map((k) => (
-                <div key={k.k} className="min-w-0 rounded-[4px] bg-white/10 px-[11px] py-[9px]">
-                  <div className="text-[9px] font-extrabold uppercase tracking-[.1em] text-[#8FBFA8]">{k.k}</div>
-                  <div
-                    className="doc-ref mt-[5px] text-[14px] font-bold tracking-[-0.02em]"
-                    style={{ color: k.fg }}
-                  >
-                    {k.v}
-                  </div>
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
-
-        <div className="flex flex-none flex-col gap-[9px] border-b border-b-[#D6E2D6] bg-white px-4 py-2.5">
-          <div className="flex h-11 items-center gap-[9px] rounded-[4px] border border-[#C3D2C6] px-3">
-            <Search className="h-[19px] w-[19px] flex-none text-[#5A6B62]" />
-            <input
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-              placeholder="Bargain, supplier or oil"
-              className="min-w-0 flex-1 border-0 bg-transparent text-[13px] font-medium outline-none"
-            />
-          </div>
-          <button
-            type="button"
-            onClick={() => setShowZero((v) => !v)}
-            className="flex min-h-11 items-center gap-[9px] text-left"
-          >
-            <span
-              className="flex h-[26px] w-11 flex-none rounded-[3px] p-[3px]"
-              style={{ background: showZero ? '#0B3D2E' : '#C3D2C6', justifyContent: showZero ? 'flex-end' : 'flex-start' }}
-            >
-              <span className="h-5 w-5 rounded-[2px] bg-white" />
-            </span>
-            <span className="inline-flex flex-wrap items-center gap-[7px] text-[12px] font-bold text-[#33473E]">
-              Show settled <span className="text-[#5A6B62]">(0 balance)</span>
-              <span
-                className="doc-ref rounded-[9px] px-2 py-[2px] text-[11px] font-extrabold"
-                style={
-                  showZero
-                    ? { background: '#0B3D2E', color: '#C7F03F' }
-                    : { background: '#EAF0E9', color: '#33473E' }
-                }
-              >
-                {settledCount}
-              </span>
-            </span>
-          </button>
-        </div>
-
-        <div className="flex flex-1 flex-col gap-2.5 overflow-y-auto px-4 pb-[96px] pt-3">
-          {oils.map(([oil, g]) => {
-            const open = openGroups.has(oil)
-            const gContracted = g.opening + g.addition + g.adjusted
-            const gb = bar(g.dispatch, gContracted)
-            const gRows = sortedRows.filter((r) => oilOf(r) === oil)
-            return (
-              <div key={oil} className="flex flex-none flex-col gap-[9px]">
-                <button
-                  type="button"
-                  onClick={() => toggleGroup(oil)}
-                  className="flex-none rounded-[4px] border border-[#D6E2D6] bg-white px-[13px] py-3 text-left"
-                  style={{ borderLeft: `3px solid ${g.closing > 0.0005 ? '#12855A' : '#C3D2C6'}` }}
-                >
-                  <div className="flex items-center gap-[9px]">
-                    <ChevronRight
-                      className="h-[19px] w-[19px] flex-none text-[#5A6B62] transition-transform"
-                      style={{ transform: open ? 'rotate(90deg)' : 'none' }}
-                    />
-                    <span className="min-w-0 flex-1 truncate text-[14px] font-extrabold tracking-[-0.01em]">{oil}</span>
-                    <span className="whitespace-nowrap text-[11px] font-bold text-[#5A6B62]">
-                      {g.count} {g.count === 1 ? 'bargain' : 'bargains'}
-                    </span>
-                  </div>
-                  <div className="mt-[11px] grid grid-cols-3 gap-[9px]">
-                    {([
-                      ['Contracted', formatNum(gContracted), '#0A1F17'],
-                      ['Received', g.dispatch ? formatNum(g.dispatch) : '—', g.dispatch ? '#8C2F26' : '#C3D2C6'],
-                      ['Balance', formatNum(g.closing), '#0A1F17']
-                    ] as const).map(([k, v, fg]) => (
-                      <div key={k}>
-                        <div className="text-[9px] font-extrabold uppercase tracking-[.09em] text-[#5A6B62]">{k}</div>
-                        <div className="doc-ref mt-1 text-[12.5px] font-bold" style={{ color: fg }}>
-                          {v}
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                  <div className="mt-2.5 h-1.5 overflow-hidden rounded-[2px] bg-[#EAF0E9]">
-                    <div className="h-full" style={{ width: gb.pct, background: gb.colour }} />
-                  </div>
-                </button>
-
-                {open &&
-                  (gRows.length === 0 ? (
-                    <div className="flex flex-none items-center gap-[9px] rounded-[4px] border border-[#E4ECE3] bg-[#F7FAF6] px-[13px] py-3.5">
-                      <AlertTriangle className="h-[18px] w-[18px] flex-none text-[#A8B8AE]" />
-                      <span className="text-[11.5px] font-semibold leading-[1.45] text-[#5A6B62]">
-                        No bargain of this oil is in the period.
-                      </span>
-                    </div>
-                  ) : (
-                    gRows.map((row) => {
-                      const rowOpen = expanded.has(Number(row.id))
-                      const rContracted = Number(row._opening) + Number(row._addition) + Number(row._adjusted)
-                      const rb = bar(Number(row._dispatch), rContracted)
-                      const list = tankers.filter(
-                        (t) =>
-                          (Number(t.bargain_id) === Number(row.id) ||
-                            (Number(t.extra_qty) > 0 && Number(t.extra_bargain_id) === Number(row.id))) &&
-                          (coIds.length === 0 || coIds.includes(Number(t.company_id)))
-                      )
-                      const { isEx, lines, tot } = bargainTankerLines(row, list, defaultShortagePct)
-                      const dedValue = tot.deductible * (Number(row.rate_per_uom) || 0)
-                      return (
-                        <div
-                          key={String(row.id)}
-                          className="flex-none overflow-hidden rounded-[4px] border border-[#D6E2D6] bg-white"
-                          style={{ borderLeft: `3px solid ${Number(row._closing) > 0.0005 ? '#12855A' : '#C3D2C6'}` }}
-                        >
-                          <div className="flex flex-col gap-[9px] px-[13px] py-3">
-                            <div className="flex items-start gap-[9px]">
-                              <div className="min-w-0 flex-1">
-                                <div className="flex flex-wrap items-center gap-[7px]">
-                                  <span className="doc-ref text-[12.5px] font-bold tracking-[-0.01em]">
-                                    {String(row.bargain_no)}
-                                  </span>
-                                  {tot.deductible > 0.0005 && (
-                                    <span className="rounded-[2px] border border-[#F0D6D4] bg-[#FDF3F2] px-1.5 py-[3px] text-[9.5px] font-extrabold tracking-[.05em] text-[#B3261E]">
-                                      DED
-                                    </span>
-                                  )}
-                                </div>
-                                <div className="mt-[5px] text-[12px] font-bold leading-[1.4] text-[#33473E]">
-                                  {String(row.supplier_name || '—')}
-                                </div>
-                              </div>
-                              <div className="flex-none text-right">
-                                <div className="doc-ref whitespace-nowrap text-[11.5px] font-semibold text-[#5A6B62]">
-                                  {formatDate(row.bargain_date)}
-                                </div>
-                                <span className="mt-[5px] inline-block rounded-[2px] bg-[#EAF0E9] px-[7px] py-[3px] text-[10px] font-extrabold tracking-[.05em] text-[#33473E]">
-                                  {String(row.bargain_type || '—')}
-                                </span>
-                              </div>
-                            </div>
-
-                            <div className="grid grid-cols-3 gap-[9px] rounded-[4px] border border-[#EAF0E9] bg-[#F7FAF6] px-[11px] py-2.5">
-                              {([
-                                ['Contracted', formatNum(rContracted), '#0A1F17'],
-                                [
-                                  'Received',
-                                  Number(row._dispatch) ? formatNum(row._dispatch) : '—',
-                                  Number(row._dispatch) ? '#8C2F26' : '#C3D2C6'
-                                ],
-                                [
-                                  'Balance',
-                                  formatNum(row._closing),
-                                  Number(row._closing) > 0.0005 ? '#0B6B45' : '#5A6B62'
-                                ]
-                              ] as const).map(([k, v, fg]) => (
-                                <div key={k}>
-                                  <div className="text-[9px] font-extrabold uppercase tracking-[.09em] text-[#5A6B62]">{k}</div>
-                                  <div className="doc-ref mt-1 text-[13px] font-bold" style={{ color: fg }}>
-                                    {v}
-                                  </div>
-                                </div>
-                              ))}
-                            </div>
-
-                            <div>
-                              <div className="h-1.5 overflow-hidden rounded-[2px] bg-[#EAF0E9]">
-                                <div className="h-full" style={{ width: rb.pct, background: rb.colour }} />
-                              </div>
-                              <div className="mt-[7px] flex items-center justify-between gap-2.5">
-                                <span className="text-[11px] font-bold text-[#5A6B62]">{rb.label} drawn</span>
-                                <span className="doc-ref whitespace-nowrap text-[11.5px] font-bold text-[#33473E]">
-                                  {formatINR(row.rate_per_uom)}/{String(row.uom || 'MT')}
-                                </span>
-                              </div>
-                            </div>
-                          </div>
-
-                          <button
-                            type="button"
-                            onClick={() => toggleRow(Number(row.id))}
-                            className="flex min-h-12 w-full items-center gap-[9px] border-t border-t-[#EAF0E9] bg-[#F7FAF6] px-[13px] py-2.5 text-left"
-                          >
-                            <Truck className="h-[18px] w-[18px] flex-none text-[#33473E]" />
-                            <span className="min-w-0 flex-1 text-[11.5px] font-extrabold text-[#33473E]">
-                              {list.length
-                                ? `${list.length} ${list.length === 1 ? 'tanker' : 'tankers'} · ${formatNum(tot.rec)} received`
-                                : 'No tanker yet'}
-                            </span>
-                            <ChevronRight
-                              className="h-[19px] w-[19px] flex-none text-[#5A6B62] transition-transform"
-                              style={{ transform: rowOpen ? 'rotate(90deg)' : 'none' }}
-                            />
-                          </button>
-
-                          {rowOpen &&
-                            (lines.length === 0 ? (
-                              <div className="flex flex-col items-center gap-2 border-t border-t-[#EAF0E9] px-[13px] py-5">
-                                <Truck className="h-[26px] w-[26px] text-[#C3D2C6]" />
-                                <span className="text-center text-[11.5px] font-semibold leading-[1.45] text-[#5A6B62]">
-                                  No tanker received yet — the full {formatNum(row._closing)} {String(row.uom || 'MT')} is
-                                  still open.
-                                </span>
-                              </div>
-                            ) : (
-                              <>
-                                {lines.map((l) => {
-                                  const ded = l.deductible != null && l.deductible > 0.0005
-                                  const over = l.shortage != null && l.shortage > l.allowed
-                                  return (
-                                    <div
-                                      key={String(l.t.id)}
-                                      className="border-t border-t-[#EAF0E9] px-[13px] py-2.5"
-                                      style={{
-                                        background: ded ? '#FDF3F2' : '#fff',
-                                        borderLeft: `3px solid ${ded ? '#B3261E' : '#12855A'}`
-                                      }}
-                                    >
-                                      <div className="flex items-center gap-[9px]">
-                                        <span className="doc-ref min-w-0 flex-1 truncate text-[12.5px] font-bold">
-                                          {String(l.t.tanker_no || '—')}
-                                        </span>
-                                        <span
-                                          className="inline-flex flex-none items-center gap-[5px] whitespace-nowrap rounded-[2px] border px-[7px] py-[3px] text-[9.5px] font-extrabold"
-                                          style={
-                                            ded
-                                              ? { background: '#FDF3F2', color: '#B3261E', borderColor: '#F0D6D4' }
-                                              : l.rec == null
-                                                ? { background: '#EAF0E9', color: '#5A6B62', borderColor: '#DCE7DB' }
-                                                : { background: '#E9F5EE', color: '#0B6B45', borderColor: '#BFE3CB' }
-                                          }
-                                        >
-                                          {ded ? (
-                                            <MinusCircle className="h-3 w-3" />
-                                          ) : l.rec == null ? (
-                                            <Truck className="h-3 w-3" />
-                                          ) : (
-                                            <CheckCircle2 className="h-3 w-3" />
-                                          )}
-                                          {ded ? 'DEDUCTIBLE' : l.rec == null ? 'IN TRANSIT' : 'RECEIVED'}
-                                        </span>
-                                      </div>
-                                      <div className="mt-[9px] grid grid-cols-2 gap-[9px]">
-                                        <div>
-                                          <div className="text-[9px] font-extrabold uppercase tracking-[.09em] text-[#5A6B62]">
-                                            Dispatched → received
-                                          </div>
-                                          <div className="doc-ref mt-1 text-[12px] font-bold">
-                                            {formatNum(l.dis)} → {l.rec == null ? '—' : formatNum(l.rec)}
-                                          </div>
-                                        </div>
-                                        <div className="text-right">
-                                          <div className="text-[9px] font-extrabold uppercase tracking-[.09em] text-[#5A6B62]">
-                                            Short / allowed
-                                          </div>
-                                          <div
-                                            className="doc-ref mt-1 text-[12px] font-bold"
-                                            style={{ color: over ? '#B3261E' : '#33473E' }}
-                                          >
-                                            {l.shortage == null ? '—' : formatNum(l.shortage)} / {formatNum(l.allowed)}
-                                          </div>
-                                        </div>
-                                      </div>
-                                      {ded && (
-                                        <div className="mt-[9px] flex items-center gap-2 rounded-[3px] border border-[#F0D6D4] bg-[#FDF3F2] px-2.5 py-2">
-                                          <MinusCircle className="h-4 w-4 flex-none text-[#B3261E]" />
-                                          <span className="min-w-0 flex-1 text-[11px] font-extrabold text-[#8C2F26]">
-                                            Deductible
-                                          </span>
-                                          <span className="doc-ref whitespace-nowrap text-[12px] font-bold text-[#B3261E]">
-                                            {formatNum(l.deductible)} {String(row.uom || 'MT')}
-                                          </span>
-                                        </div>
-                                      )}
-                                    </div>
-                                  )
-                                })}
-
-                                <div className="flex flex-col gap-2 bg-[#C7F03F] px-[13px] py-3">
-                                  <div className="flex items-center gap-[9px]">
-                                    <span className="min-w-0 flex-1 text-[10px] font-extrabold uppercase tracking-[.09em] text-[#2E4A0B]">
-                                      Total · {lines.length} {lines.length === 1 ? 'tanker' : 'tankers'}
-                                    </span>
-                                    <span className="doc-ref whitespace-nowrap text-[13px] font-bold text-[#12280B]">
-                                      {formatNum(tot.rec)} received
-                                    </span>
-                                  </div>
-                                  {isEx && tot.deductible > 0.0005 && (
-                                    <div className="flex items-center gap-[9px]">
-                                      <span className="min-w-0 flex-1 text-[10px] font-extrabold uppercase tracking-[.09em] text-[#8C2F26]">
-                                        Deductible
-                                      </span>
-                                      <span className="doc-ref whitespace-nowrap text-[13px] font-bold text-[#8C2F26]">
-                                        {formatNum(tot.deductible)} {String(row.uom || 'MT')} · {formatINR(dedValue)}
-                                      </span>
-                                    </div>
-                                  )}
-                                </div>
-
-                                {/* Why there is a deduction, or why there is not
-                                    one. A DLD bargain never shows a figure, and
-                                    saying so is better than an empty row. */}
-                                <div className="border-t border-t-[#F0D6D4] bg-[#FDF3F2] px-[13px] py-2.5">
-                                  <div className="text-[11.5px] font-semibold leading-[1.5] text-[#8C2F26]">
-                                    {!isEx
-                                      ? 'Delivered (DLD) — any shortage is absorbed through freight, so nothing is deductible from the supplier.'
-                                      : tot.deductible > 0.0005
-                                        ? `EX — ${formatNum(tot.shortage)} short against ${formatNum(tot.allowed)} allowed, so ${formatNum(tot.deductible)} ${String(row.uom || 'MT')} is deductible from the supplier.`
-                                        : `EX — ${formatNum(tot.shortage)} short, within the ${formatNum(tot.allowed)} allowance. Nothing deductible.`}
-                                  </div>
-                                </div>
-                              </>
-                            ))}
-                        </div>
-                      )
-                    })
-                  ))}
-              </div>
-            )
-          })}
-
-          {oils.length === 0 && (
-            <div className="flex flex-none flex-col items-center gap-2 rounded-[4px] border border-[#D6E2D6] bg-white px-4 py-10">
-              <AlertTriangle className="h-7 w-7 text-[#C3D2C6]" />
-              <span className="text-center text-[12.5px] font-bold text-[#5A6B62]">
-                {loading ? 'Loading…' : 'No bargain in this period.'}
-              </span>
-            </div>
-          )}
-
-          {oils.length > 0 && (
-            <div className="flex-none rounded-[4px] border border-[#DCE7DB] bg-[#EFF5EC] px-[13px] py-3">
-              <div className="text-[10px] font-extrabold uppercase tracking-[.11em] text-[#33473E]">
-                Grand total · {grandVisible.count} {grandVisible.count === 1 ? 'bargain' : 'bargains'}
-              </div>
-              <div className="mt-2.5 grid grid-cols-2 gap-2.5">
-                <div>
-                  <div className="text-[9px] font-extrabold uppercase tracking-[.09em] text-[#5A6B62]">Contracted</div>
-                  <div className="doc-ref mt-1 text-[14px] font-bold">{formatNum(contracted)} MT</div>
-                </div>
-                <div className="text-right">
-                  <div className="text-[9px] font-extrabold uppercase tracking-[.09em] text-[#5A6B62]">Balance open</div>
-                  <div className="doc-ref mt-1 text-[14px] font-bold">{formatNum(grandVisible.closing)} MT</div>
-                </div>
-                <div className="col-span-2 flex items-baseline justify-between gap-2.5 border-t border-t-[#DCE7DB] pt-[9px]">
-                  <span className="text-[9px] font-extrabold uppercase tracking-[.09em] text-[#5A6B62]">
-                    Balance value still to draw
-                  </span>
-                  <span className="doc-ref whitespace-nowrap text-[14px] font-bold">
-                    {formatINR(grandVisible.balValue)}
-                  </span>
-                </div>
-              </div>
-            </div>
-          )}
-        </div>
-
-        <div className="sticky bottom-0 flex flex-none gap-2.5 border-t border-t-[#D6E2D6] bg-white px-4 pb-6 pt-[11px]">
-          <button
-            type="button"
-            onClick={openAdd}
-            className="flex h-[50px] flex-1 items-center justify-center gap-2 rounded-[4px] bg-[#0B3D2E] text-[13.5px] font-extrabold text-[#C7F03F]"
-          >
-            <Plus className="h-5 w-5" />
-            New bargain
-          </button>
-        </div>
-      </div>
-    )
-  }
-
-  return (
+  // Every dialog on this page — the bargain editor, the quantity
+  // adjuster, the history sheet and the rate-change explainer — shared by
+  // both layouts. The mobile view returns early, so without lifting these
+  // out of the desktop return its drill-down could open none of them.
+  const overlays = (
     <>
-      <PageHeader
-        title="Bargains"
-        subtitle="Rate contracts — drawn down as purchase tankers are loaded"
-        hint="Each bargain locks a rate and quantity with a supplier. The bargain number is OILCODE/DD-MM/PARTYNAME/SERIAL, where the serial restarts every month from 01 (e.g. MAHUWA/01-07/ROHINIOIL/03). Landed rate = base rate + customs duty. Click any column header to sort; the Report button groups the full history by oil."
-        actions={
-          <div className="flex gap-2">
-            <Button variant="outline" size="sm" onClick={() => setReportOpen((v) => !v)}>
-              <BarChart3 className="h-4 w-4" />
-              {reportOpen ? 'Back to list' : 'Report'}
-            </Button>
-            <Button variant="outline" size="sm" onClick={downloadExcel}>
-              <FileSpreadsheet className="h-4 w-4" />
-              Excel
-            </Button>
-            <Button size="sm" onClick={openAdd} disabled={noMasters}>
-              <Plus className="h-4 w-4" />
-              New bargain
-            </Button>
-          </div>
-        }
-      />
-
-      <div className="w-full p-4">
-        {noMasters && (
-          <div className="mb-4 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
-            Add at least one supplier and one oil type in Settings before creating a bargain.
-          </div>
-        )}
-
-        {reportOpen ? (
-          <div className="space-y-5">
-            <div className="flex flex-wrap items-center justify-between gap-3">
-              <div>
-                <button
-                  className="mb-1 inline-flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground"
-                  onClick={() => setReportOpen(false)}
-                >
-                  <ArrowLeft className="h-4 w-4" /> Back to list
-                </button>
-                <h3 className="text-lg font-semibold">Bargain report — by oil</h3>
-                <p className="text-xs text-muted-foreground">
-                  Open bargains, weighted average rate and value per oil type · {report.grand.count} bargains overall
-                </p>
-              </div>
-              <Button variant="outline" size="sm" onClick={downloadReportExcel}>
-                <FileSpreadsheet className="h-4 w-4" /> Download report
-              </Button>
-            </div>
-
-            <div className="overflow-hidden rounded-xl border bg-card shadow-sm">
-              <Table className="text-[13px]">
-                <TableHeader className="bg-amber-100/70">
-                  <TableRow>
-                    <TableHead className="text-amber-900">Oil</TableHead>
-                    <TableHead className="text-center text-amber-900">Open bargains</TableHead>
-                    <TableHead className="text-center text-amber-900">Total bargains</TableHead>
-                    <TableHead className="text-right text-amber-900">Opening</TableHead>
-                    <TableHead className="text-right text-amber-900">Addition</TableHead>
-                    <TableHead className="text-right text-amber-900">Adjusted</TableHead>
-                    <TableHead className="text-right text-amber-900">Dispatch</TableHead>
-                    <TableHead className="text-right text-amber-900">Closing</TableHead>
-                    <TableHead className="text-right text-amber-900">Bal Qty</TableHead>
-                    <TableHead className="text-right text-amber-900">Total qty</TableHead>
-                    <TableHead className="text-right text-amber-900">Avg rate</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {report.groups.length === 0 ? (
-                    <TableRow>
-                      <TableCell colSpan={11} className="py-8 text-center text-muted-foreground">No bargains yet.</TableCell>
-                    </TableRow>
-                  ) : (
-                    <>
-                      {report.groups.map((g) => (
-                        <TableRow key={g.label}>
-                          <TableCell className="font-semibold">{g.label}</TableCell>
-                          <TableCell className="text-center tabular-nums">
-                            <Badge variant={g.openCount > 0 ? 'warning' : 'muted'}>{g.openCount}</Badge>
-                          </TableCell>
-                          <TableCell className="text-center tabular-nums">{g.count}</TableCell>
-                          <TableCell className="text-right tabular-nums">{formatNum(g.opening)}</TableCell>
-                          <TableCell className="text-right tabular-nums">{formatNum(g.addition)}</TableCell>
-                          <TableCell className="text-right tabular-nums">{formatNum(g.adjusted)}</TableCell>
-                          <TableCell className="text-right tabular-nums">{formatNum(g.dispatch)}</TableCell>
-                          <TableCell className="text-right font-medium tabular-nums">{formatNum(g.closing)}</TableCell>
-                          <TableCell className="text-right tabular-nums">{formatNum(g.balance)}</TableCell>
-                          <TableCell className="text-right tabular-nums">{formatNum(g.qty)}</TableCell>
-                          <TableCell className="text-right tabular-nums">{formatINR(avgRate(g))}</TableCell>
-                        </TableRow>
-                      ))}
-                      <TableRow className="bg-muted/50 font-semibold">
-                        <TableCell>Grand total</TableCell>
-                        <TableCell className="text-center tabular-nums">{report.grand.openCount}</TableCell>
-                        <TableCell className="text-center tabular-nums">{report.grand.count}</TableCell>
-                        <TableCell className="text-right tabular-nums">{formatNum(report.grand.opening)}</TableCell>
-                        <TableCell className="text-right tabular-nums">{formatNum(report.grand.addition)}</TableCell>
-                        <TableCell className="text-right tabular-nums">{formatNum(report.grand.adjusted)}</TableCell>
-                        <TableCell className="text-right tabular-nums">{formatNum(report.grand.dispatch)}</TableCell>
-                        <TableCell className="text-right font-medium tabular-nums">{formatNum(report.grand.closing)}</TableCell>
-                        <TableCell className="text-right tabular-nums">{formatNum(report.grand.balance)}</TableCell>
-                        <TableCell className="text-right tabular-nums">{formatNum(report.grand.qty)}</TableCell>
-                        <TableCell className="text-right tabular-nums">{formatINR(avgRate(report.grand))}</TableCell>
-                      </TableRow>
-                    </>
-                  )}
-                </TableBody>
-              </Table>
-            </div>
-            <p className="text-xs text-muted-foreground">
-              Opening / Addition / Dispatch / Closing follow the register's date range. Open = bargains with balance quantity left; Bal Qty is the live open quantity. Avg rate is weighted (total value ÷ total qty).
-            </p>
-          </div>
-        ) : (
-          <>
-            <div
-              className={cn(
-                'mb-4 flex flex-wrap items-center gap-x-3 gap-y-2',
-                // One white card, one height for everything on it — the
-                // pickers arrive at 32px, 36px and 40px otherwise.
-                __WEB__ &&
-                  '!mb-3 !flex-nowrap !gap-x-2.5 !rounded-[5px] !border !border-[#DCE7DB] !bg-[#FBFCFA] !px-4 !py-3 !shadow-[0_1px_2px_rgba(10,31,23,.04)] [&_input]:!h-10 [&_input]:!rounded-[4px] [&_input]:!border-[#C3D2C6] [&_input]:!bg-white [&_input]:!text-[13px] [&_[data-slot=select-trigger]]:!h-10 [&_[data-slot=select-trigger]]:!rounded-[4px] [&_[data-slot=select-trigger]]:!border-[#C3D2C6] [&_[data-slot=select-trigger]]:!bg-white [&_[data-slot=select-trigger]]:!text-[13px] [&_[data-slot=date-picker]]:!h-10 [&_[data-slot=date-picker]]:!rounded-[4px] [&_[data-slot=date-picker]]:!border-[#C3D2C6] [&_[data-slot=date-picker]]:!bg-white [&_[data-slot=date-picker]]:!text-[12.5px] [&>label>button]:!h-auto'
-              )}
-            >
-              {/* The filters are one zone, and the settled switch sits beside
-                  it rather than in the same wrap flow. With everything in one
-                  wrapping row, a narrow screen pushed the switch — the last
-                  item, held right by ml-auto — onto a line of its own with the
-                  whole width empty beside it. As its own zone the filters wrap
-                  among themselves and the switch stays put on the right.
-
-                  `contents` on the desktop build makes this wrapper invisible
-                  to layout, so the app's row is exactly the flat one it was. */}
-              <div
-                className={cn(
-                  'contents',
-                  __WEB__ && '!flex !min-w-0 !flex-1 !flex-wrap !items-center !gap-x-2.5 !gap-y-2'
-                )}
-              >
-              {/* One dropdown rather than a chip per category — the list grows
-                  with the Products master, so a row of chips only ever gets
-                  longer and starts scrolling sideways. */}
-              <Select value={typeFilter} onValueChange={setTypeFilter}>
-                {/* Sized to its own label rather than to a guessed pixel width:
-                    the categories come from the Products master, so any fixed
-                    width is either padding empty space or clipping a name. */}
-                <SelectTrigger
-                  className={cn('h-9 w-48 shrink-0 text-[13px]', __WEB__ && '!w-auto !min-w-[7.5rem] !max-w-[13rem]')}
-                >
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent className="max-h-72">
-                  {TYPE_FILTERS.map((t) => (
-                    <SelectItem key={t} value={t} className="text-[13px]">
-                      {t === 'ALL' ? 'All categories' : t}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-              {companies.length > 1 && (
-                <Select
-                  value={coIds.length === 1 ? String(coIds[0]) : 'all'}
-                  onValueChange={(v) => setCoIds(v === 'all' ? [] : [Number(v)])}
-                >
-                  {/* 10.5rem landed a pixel or two short of "ALL COMPANIES"
-                      once the building icon and the chevron took their share,
-                      so the default state read "ALL COMPANIE…". Auto-width fits
-                      whichever company is picked; the cap keeps a long legal
-                      name from eating the search box. */}
-                  <SelectTrigger
-                    className={cn(
-                      'h-9 w-[13rem] shrink-0 text-[13px]',
-                      __WEB__ && '!w-auto !min-w-[9rem] !max-w-[15rem]'
-                    )}
-                  >
-                    <span className="flex min-w-0 items-center gap-1.5">
-                      <Building2 className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-                      <SelectValue />
-                    </span>
-                  </SelectTrigger>
-                  <SelectContent className="max-h-72">
-                    <SelectItem value="all" className="text-[13px]">All companies</SelectItem>
-                    {companies.map((c) => (
-                      <SelectItem key={String(c.id)} value={String(c.id)} className="text-[13px]">
-                        {String(c.name)}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              )}
-              {/* Capped rather than fixed. It was flex-1 with no ceiling, so it
-                  took every pixel the row had spare — on a wide screen a search
-                  box half the width of the page, which also pushed the settled
-                  switch onto a line of its own. It still shrinks when the row
-                  is cramped; it just stops growing once it can hold its own
-                  placeholder. */}
-              <div
-                className={cn(
-                  'relative min-w-[180px] flex-1 basis-56',
-                  // A FLOOR, not a width: the box is flex-1, so it takes
-                  // whatever the row has spare and only falls back to this when
-                  // there is nothing spare left. 13rem held the row hostage —
-                  // being the one !important minimum on the strip, no other
-                  // control could give up space while it stood, and the row
-                  // broke to a second line at widths where it did not need to.
-                  // 9rem still shows the placeholder's first few words.
-                  __WEB__ && '!min-w-[9rem] !max-w-[17rem] !basis-0'
-                )}
-              >
-                <Search className="pointer-events-none absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-                <Input
-                  type="search"
-                  className="h-9 pl-8"
-                  placeholder={__WEB__ ? 'Search bargain, supplier, oil…' : 'Search bargain no, supplier, oil, broker…'}
-                  value={search}
-                  onChange={(e) => setSearch(e.target.value)}
-                />
-              </div>
-              {__WEB__ && (
-                <span aria-hidden className="h-7 w-px shrink-0 self-center bg-[#C3D2C6]" />
-              )}
-              <div
-                className={cn(
-                  'flex shrink-0 flex-wrap items-center gap-1.5 text-[13px]',
-                  // ONE ROW, ONE KIND OF CONTROL.
-                  //
-                  // This group has been through a chip (a white box with the
-                  // card's own border, drawn inside the card — a box within a
-                  // box), then nothing at all (three controls and the word
-                  // "to" floating unattached), then a tint (a coloured band
-                  // that nothing else on the strip had). Each of those tried to
-                  // GROUP the dates by drawing something around them, and every
-                  // one of them made the date fields look unlike the OIL, the
-                  // company picker and the search box sitting beside them.
-                  //
-                  // They are grouped by a LABEL and a rule instead — the
-                  // divider to their left, then the word DATE — so the fields
-                  // themselves are plain white 40px boxes with the same
-                  // #C3D2C6 edge as every other control on the bar. Nothing is
-                  // drawn around them, and nothing about them is special.
-                  __WEB__ && '!gap-2'
-                )}
-              >
-                {/* The group's name, and the only thing marking it out. It
-                    was dropped when the strip was fighting for width; the
-                    search box's floor now gives that width back, and without
-                    the word the dates read as two unexplained boxes. */}
-                <span
-                  className={cn(
-                    'text-muted-foreground',
-                    __WEB__ && '!text-[10.5px] !font-extrabold !uppercase !tracking-[.13em] !text-[#5A6B62]'
-                  )}
-                >
-                  Date
-                </span>
-                <FyPicker
-                  from={dateFrom}
-                  to={dateTo}
-                  onRange={(f, t) => { setDateFrom(f); setDateTo(t) }}
-                  // w-28 was tight enough to clip "FY 2026-27" to "FY 2026…".
-                  // Auto-width instead of a second guessed number: the face of
-                  // this control is either "Choose FY" or "FY 2026-27", and it
-                  // should be exactly as wide as whichever one is showing.
-                  className={cn('h-9 w-28 text-xs', __WEB__ && '!w-auto !min-w-[6.5rem]')}
-                />
-                <DatePicker
-                  value={dateFrom}
-                  onChange={(v) => setDateFrom(v || '')}
-                  max={dateTo || undefined}
-                  // SIZED TO THE DATE, not to a guess about it.
-                  //
-                  // 7.25rem is 116px and the content measures 114 — the date
-                  // ended two pixels from its own border, which is why it read
-                  // as spilling out of the box. Two pixels is not a margin:
-                  // a different font, a longer locale, a browser that rounds
-                  // the other way, and it genuinely overflows.
-                  //
-                  // Auto width with a floor instead, so the box is always as
-                  // wide as the date inside it plus real padding, and the
-                  // question cannot come back.
-                  className={cn('w-[8.5rem]', __WEB__ && '!w-auto !min-w-[7.25rem] !px-2.5')}
-                />
-                <span className={cn('text-muted-foreground', __WEB__ && '!text-[12px] !font-semibold !text-[#5A6B62]')}>to</span>
-                <DatePicker
-                  value={dateTo}
-                  onChange={(v) => setDateTo(v || '')}
-                  min={dateFrom || undefined}
-                  // SIZED TO THE DATE, not to a guess about it.
-                  //
-                  // 7.25rem is 116px and the content measures 114 — the date
-                  // ended two pixels from its own border, which is why it read
-                  // as spilling out of the box. Two pixels is not a margin:
-                  // a different font, a longer locale, a browser that rounds
-                  // the other way, and it genuinely overflows.
-                  //
-                  // Auto width with a floor instead, so the box is always as
-                  // wide as the date inside it plus real padding, and the
-                  // question cannot come back.
-                  className={cn('w-[8.5rem]', __WEB__ && '!w-auto !min-w-[7.25rem] !px-2.5')}
-                />
-                {(dateFrom || dateTo) && (
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    className={cn('h-8 text-muted-foreground', __WEB__ && '!h-10 !px-2.5 !font-extrabold !uppercase !tracking-[.05em] !text-[#0B6B45]')}
-                    onClick={() => { setDateFrom(''); setDateTo('') }}
-                  >
-                    Clear
-                  </Button>
-                )}
-              </div>
-              </div>
-              <label
-                title={
-                  __WEB__
-                    ? 'Bargains with no balance left on them. Off, the register lists only what is still open.'
-                    : undefined
-                }
-                className={cn('ml-auto flex shrink-0 cursor-pointer items-center gap-2 whitespace-nowrap text-[13px] text-muted-foreground', __WEB__ && '!h-[38px] !gap-2 !rounded-[4px] !border !border-[#C3D2C6] !bg-white !px-2.5 !text-[12.5px] !font-bold !text-[#33473E] hover:!bg-[#F7FAF6]')}
-              >
-                <Switch checked={showZero} onCheckedChange={setShowZero} />
-                Show settled {__WEB__ ? null : '(0 balance)'}
-                {/* The count, so the switch can be seen to have done something
-                    even when the rows it adds are inside collapsed oil bands —
-                    and so that "nothing to add" reads as an answer rather than
-                    as a control that ignored the click. */}
-                <span
-                  className={cn(
-                    'rounded-full px-2 py-0.5 font-mono text-[11px] font-bold tabular-nums',
-                    settledCount === 0 ? 'bg-muted text-muted-foreground' : 'bg-[#EAF0E9] text-[#33473E]'
-                  )}
-                >
-                  {settledCount}
-                </span>
-              </label>
-            </div>
-
-            {/* Summary. Every figure is read off grandVisible — the sum of
-                the same groupStats the bands below are drawn from — so a tile
-                can never state something the register contradicts. */}
-            {__WEB__ && sortedRows.length > 0 && (
-              <div className="mb-3 overflow-hidden rounded-[4px] border border-[#D6E2D6] bg-white">
-                <button
-                  type="button"
-                  aria-expanded={kpiOpen}
-                  onClick={() => setKpiOpen((o) => !o)}
-                  className="flex w-full items-center gap-1.5 px-3.5 py-2 text-[11px] font-extrabold uppercase tracking-[.1em] text-[#5A6B62] transition-colors hover:bg-[#F7FAF6]"
-                >
-                  <ChevronDown className={cn('h-4 w-4 shrink-0 text-[#12855A] transition-transform', !kpiOpen && '-rotate-90')} />
-                  Summary
-                  <span className="ml-1 rounded-[2px] bg-[#EAF0E9] px-1.5 py-[2px] text-[11px] font-extrabold tabular-nums tracking-normal text-[#33473E]">
-                    {formatNum(grandVisible.closing)} MT open
-                  </span>
-                </button>
-                {kpiOpen && (
-                  <div className="grid gap-2.5 px-3.5 pb-3.5 pt-1 sm:grid-cols-2 xl:grid-cols-4">
-                    {(() => {
-                      const contracted = grandVisible.opening + grandVisible.addition + grandVisible.adjusted
-                      return [
-                        {
-                          k: 'Bargains open',
-                          v: String(grandVisible.count),
-                          unit: '',
-                          sub: `across ${groupStats.size} oil type${groupStats.size === 1 ? '' : 's'}`,
-                          accent: '#0B3D2E'
-                        },
-                        {
-                          k: 'Contracted',
-                          v: formatNum(contracted),
-                          unit: 'MT',
-                          sub: grandVisible.opening ? `${formatNum(grandVisible.opening)} MT opening carried in` : 'nothing carried in',
-                          accent: '#12855A'
-                        },
-                        {
-                          k: 'Dispatched',
-                          v: formatNum(grandVisible.dispatch),
-                          unit: 'MT',
-                          sub: contracted > 0 ? `${Math.round((grandVisible.dispatch / contracted) * 100)}% of contracted` : 'nothing contracted',
-                          accent: '#C2700A'
-                        },
-                        {
-                          k: 'Balance open',
-                          v: formatNum(grandVisible.closing),
-                          unit: 'MT',
-                          sub: `${formatINR(grandVisible.balValue)} still to draw`,
-                          accent: '#C7F03F'
-                        }
-                      ]
-                    })().map((k) => (
-                      <div
-                        key={k.k}
-                        className="rounded-[4px] border border-[#D6E2D6] bg-white px-3.5 py-3"
-                        style={{ borderTop: `3px solid ${k.accent}` }}
-                      >
-                        <div className="text-[9.5px] font-extrabold uppercase tracking-[.13em] text-[#5A6B62]">{k.k}</div>
-                        <div className="mt-1 flex items-baseline gap-1.5">
-                          <span className="text-[23px] font-bold leading-none tracking-[-0.035em] tabular-nums">{k.v}</span>
-                          {k.unit && <span className="text-[11px] font-bold text-[#5A6B62]">{k.unit}</span>}
-                        </div>
-                        <div className="mt-1 truncate text-[11.5px] font-semibold text-[#5A6B62]" title={k.sub}>{k.sub}</div>
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </div>
-            )}
-
-            <div className={cn('rounded-xl border bg-card shadow-sm', __WEB__ && '!rounded-[4px] !border-[#D6E2D6] !bg-white !shadow-none')}>
-              {/* Nothing wraps: a bargain number split over three lines and a
-                  stacked date are exactly what this register is scanned for.
-                  The wrapper already scrolls, so it slides sideways instead. */}
-              <Table
-                wrapperClassName={cn('max-h-[calc(100vh-215px)] rounded-xl', __WEB__ && '!rounded-[4px]')}
-                className={cn(
-                  'min-w-[860px] text-[12px] [&_td]:px-3 [&_td]:py-2 [&_th]:px-3 [&_th]:h-9',
-                  // Same two jobs as the sales register: pinned columns while
-                  // it is a summary, content-sized once a group is open and the
-                  // reader needs the bargain number in full.
-                  __WEB__ &&
-                    '!min-w-[1074px] [&_td]:!whitespace-nowrap [&_td]:!px-2 [&_th]:!whitespace-nowrap [&_th]:!px-2 [&_th]:!text-[10.5px] [&_th]:!font-semibold [&_th]:!tracking-[.04em] [&_th_button]:!text-[10.5px] [&_th_button]:!font-semibold',
-                  __WEB__ && groupedByOil && !q && openGroups.size === 0 && '!table-fixed [&_td]:!truncate'
-                )}
-              >
-                {/* The widths, stated once. table-fixed cannot read them off
-                    the header here — its first row is the group band, whose
-                    cells span three columns at a time — so a colgroup is the
-                    only place they can live. They add to 1074, the table's
-                    floor, so a 13" screen fits without zooming out and
-                    anything narrower slides. */}
-                {__WEB__ && groupedByOil && !q && openGroups.size === 0 && (
-                  <colgroup>
-                    {[112, 91, 100, 69, 62, 69, 71, 69, 95, 65, 76, 128, 67].map((w, i) => (
-                      <col key={i} style={{ width: `${w}px` }} />
-                    ))}
-                  </colgroup>
-                )}
-                <TableHeader className={cn(__WEB__ && '[&_th]:!h-10')}>
-                  {/* A band naming what the column sets below mean, so Opening
-                      / Addition / Adjusted read as one idea and Dispatch as
-                      another — without renaming or merging any column. */}
-                  {__WEB__ && (
-                    <TableRow className="!border-b-0 hover:!bg-transparent [&>th]:!sticky [&>th]:!top-0 [&>th]:!z-20 [&>th]:!h-[30px] [&>th]:!bg-[#072B20] [&>th]:!text-center [&>th]:!text-[11px] [&>th]:!font-extrabold [&>th]:!uppercase [&>th]:!tracking-[.14em] [&>th]:!text-white">
-                      <TableHead colSpan={5} />
-                      <TableHead colSpan={3} className={cn(PB_HBAND, '!border-l !border-l-[#C7F03F]/20 !border-r !border-r-[#C7F03F]/20')}>
-                        Contracted qty
-                      </TableHead>
-                      <TableHead />
-                      <TableHead className={cn(PB_HBAND, '!border-l !border-l-[#C7F03F]/20 !border-r !border-r-[#C7F03F]/20')}>Moved</TableHead>
-                      <TableHead className={PB_HOPEN}>Open</TableHead>
-                      <TableHead colSpan={2} />
-                    </TableRow>
-                  )}
-                  <TableRow className={cn(__WEB__ && 'hover:!bg-transparent')}>
-                    {(
-                      [
-                        { id: 'bargain_no', label: 'Bargain no' },
-                        { id: 'bargain_date', label: 'Date' },
-                        { id: 'supplier', label: 'Supplier' },
-                        { id: 'oil', label: 'Oil' },
-                        { id: 'condition', label: __WEB__ ? 'Cond.' : 'Condition' },
-                        { id: 'qty', label: 'Opening', right: true },
-                        { id: 'addition', label: 'Addition', right: true },
-                        { id: 'adjusted', label: 'Adjusted', right: true },
-                        { id: 'rate', label: 'BG rate', right: true },
-                        { id: 'dispatch', label: 'Dispatch', right: true },
-                        { id: 'balance', label: 'Balance', right: true },
-                        { id: 'total', label: 'Total', right: true }
-                      ] as { id: string; label: string; right?: boolean }[]
-                    ).map((c) => (
-                      <TableHead
-                        key={c.id}
-                        className={cn(
-                          'sticky top-0 z-20 bg-slate-100 text-[11px] font-semibold uppercase tracking-wide text-foreground',
-                          c.right && 'text-right',
-                          __WEB__ && '!top-[30px] !h-11 !bg-[#0B3D2E] !text-[12px] !font-extrabold !tracking-[.07em] !text-[#DCEFE4]',
-                          __WEB__ && c.id === 'qty' && PB_HGL,
-                          __WEB__ && c.id === 'addition' && PB_HG,
-                          __WEB__ && c.id === 'adjusted' && PB_HGR,
-                          __WEB__ && c.id === 'dispatch' && cn(PB_HGL, '!border-r !border-r-[#C7F03F]/20'),
-                          __WEB__ && c.id === 'balance' && PB_HOPEN
-                        )}
-                      >
-                        <button
-                          onClick={() => toggleSort(c.id)}
-                          className={cn(
-                            // uppercase repeated here on purpose: Tailwind's
-                            // preflight sets `text-transform: none` on every
-                            // <button>, so the th's own uppercase never reached
-                            // the label inside it — which is why these headers
-                            // read "Bargain no" while the plain Actions th two
-                            // cells over read "ACTIONS".
-                            'inline-flex items-center gap-1 uppercase transition-colors hover:text-foreground',
-                            c.right && 'w-full justify-end'
-                          )}
-                          title={`Sort by ${c.label}`}
-                        >
-                          {c.label}
-                          {sort?.key === c.id ? (
-                            sort.dir === 'asc' ? <ArrowUp className="h-3 w-3" /> : <ArrowDown className="h-3 w-3" />
-                          ) : (
-                            <ArrowUpDown className="h-3 w-3 opacity-30" />
-                          )}
-                        </button>
-                      </TableHead>
-                    ))}
-                    <TableHead className={cn('sticky top-0 z-20 bg-slate-100 w-[90px] text-right text-[11px] font-semibold uppercase tracking-wide text-foreground', __WEB__ && '!top-[30px] !h-11 !bg-[#0B3D2E] !text-[12px] !font-extrabold !tracking-[.07em] !text-[#DCEFE4]')}>Actions</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {loading ? (
-                    <TableRow>
-                      <TableCell colSpan={13} className="py-10 text-center text-muted-foreground">
-                        Loading…
-                      </TableCell>
-                    </TableRow>
-                  ) : sortedRows.length === 0 ? (
-                    <TableRow>
-                      <TableCell colSpan={13} className="py-10 text-center text-muted-foreground">
-                        {rows.length === 0
-                          ? 'No bargains yet. Click “New bargain” to add one.'
-                          : `No ${typeFilter === 'ALL' ? '' : typeFilter + ' '}bargains to show.`}
-                      </TableCell>
-                    </TableRow>
-                  ) : (
-                    <>
-                    <TableRow
-                      className={cn(
-                        'border-y-2 border-amber-500 bg-amber-100 hover:bg-amber-100',
-                        // Lime family, not the page's greens — the total of
-                        // everything has to look unlike the group bands it
-                        // sums, or it reads as one more of them.
-                        __WEB__ && '!border-y-0 !border-b-2 !border-b-[#0B3D2E] !bg-[#EDF7D4] hover:!bg-[#EDF7D4] [&>td]:!h-[46px] [&>td]:!text-[13px] [&>td]:!text-[#2E4A0B]'
-                      )}
-                    >
-                      <TableCell colSpan={5} className={cn('py-2 text-xs font-bold uppercase tracking-wide text-amber-900', __WEB__ && '!text-[11px] !font-extrabold !tracking-[.1em] !text-[#2E4A0B]')}>
-                        Grand total
-                        <span className={cn('ml-1 font-medium normal-case tracking-normal text-amber-700', __WEB__ && '!ml-1.5 !text-[12px] !font-semibold !text-[#5B7226]')}>
-                          · {grandVisible.count} bargain{grandVisible.count === 1 ? '' : 's'}
-                        </span>
-                      </TableCell>
-                      <TableCell className={cn('py-2 text-right text-xs font-bold tabular-nums text-amber-900', __WEB__ && '!bg-[#E4F2C3] !border-l !border-l-[#CBE0A0] !text-[13px] !text-[#2E4A0B]')}>{formatNum(grandVisible.opening)}</TableCell>
-                      <TableCell className={cn('py-2 text-right text-xs font-bold tabular-nums text-amber-900', __WEB__ && '!bg-[#E4F2C3] !text-[13px] !text-[#2E4A0B]')}>{formatNum(grandVisible.addition)}</TableCell>
-                      <TableCell className={cn('py-2 text-right text-xs font-bold tabular-nums text-amber-900', __WEB__ && '!bg-[#E4F2C3] !border-r !border-r-[#CBE0A0] !text-[13px] !text-[#2E4A0B]')}>{formatNum(grandVisible.adjusted)}</TableCell>
-                      <TableCell className="py-2" />
-                      <TableCell className={cn('py-2 text-right text-xs font-bold tabular-nums text-amber-900', __WEB__ && '!bg-[#E4F2C3] !border-l !border-l-[#CBE0A0] !border-r !border-r-[#CBE0A0] !text-[13px] !text-[#2E4A0B]')}>{formatNum(grandVisible.dispatch)}</TableCell>
-                      <TableCell className={cn('py-2 text-right text-xs font-bold tabular-nums text-amber-900', __WEB__ && '!bg-[#C7F03F] !text-[14px] !tracking-[-0.02em] !text-[#12280B]')}>{formatNum(grandVisible.closing)}</TableCell>
-                      <TableCell className={cn('py-2 text-right text-xs font-bold tabular-nums text-amber-900', __WEB__ && '!text-[13px] !text-[#2E4A0B]')}>{formatINR(grandVisible.balValue)}</TableCell>
-                      <TableCell className="py-2" />
-                    </TableRow>
-                    {sortedRows.map((row, i) => {
-                      const oil = oilOf(row)
-                      const newGroup =
-                        groupedByOil && (i === 0 || oil !== oilOf(sortedRows[i - 1]))
-                      // Groups are collapsed unless the user opened them; while
-                      // searching, always reveal matches.
-                      const isCollapsed = groupedByOil && !q && !openGroups.has(oil)
-                      const g = groupStats.get(oil)
-                      // Serial number within the oil group (1-based).
-                      const seq = groupedByOil
-                        ? sortedRows.slice(0, i + 1).filter((r) => oilOf(r) === oil).length
-                        : i + 1
-                      return (
-                        <Fragment key={row.id as number}>
-                          {newGroup && (
-                            <TableRow
-                              className={cn(
-                                'cursor-pointer border-y-2 border-slate-300 bg-slate-100 hover:bg-slate-200/70',
-                                // An oil band, not a second header: a forest left
-                                // edge when open marks which rows belong to it.
-                                __WEB__ && '!border-y-0 !border-b !border-b-[#DCE7DB] !border-l-[3px] [&>td]:!h-[44px]',
-                                __WEB__ && (isCollapsed ? '!border-l-[#C3D2C6] !bg-[#F1F5EF] hover:!bg-[#E4ECE3]' : '!border-l-[#0B3D2E] !bg-[#E4ECE3] hover:!bg-[#E4ECE3]')
-                              )}
-                              onClick={() => toggleGroup(oil)}
-                            >
-                              <TableCell colSpan={5} className="py-1.5">
-                                <span className={cn('inline-flex items-center gap-1.5 text-xs font-bold uppercase tracking-wide text-slate-700', __WEB__ && '!gap-2.5 !text-[13.5px] !font-extrabold !tracking-[.01em] !text-[#0A1F17]')}>
-                                  {isCollapsed ? <ChevronRight className={cn('h-3.5 w-3.5', __WEB__ && '!h-[18px] !w-[18px] !text-[#5A6B62]')} /> : <ChevronDown className={cn('h-3.5 w-3.5', __WEB__ && '!h-[18px] !w-[18px] !text-[#5A6B62]')} />}
-                                  {oil}
-                                  <span className={cn('font-medium normal-case tracking-normal text-slate-500', __WEB__ && '!text-[11.5px] !font-semibold !text-[#5A6B62]')}>
-                                    · {g?.count ?? 0} bargain{(g?.count ?? 0) === 1 ? '' : 's'}
-                                  </span>
-                                </span>
-                              </TableCell>
-                              <TableCell className={cn('py-1.5 text-right text-xs font-bold tabular-nums text-slate-700', __WEB__ && '!border-l !border-l-[#DCE7DB] !text-[12.5px]', __WEB__ && ((g?.opening ?? 0) ? '!text-[#0A1F17]' : '!text-[#8AA096]'))}>{formatNum(g?.opening ?? 0)}</TableCell>
-                              <TableCell className={cn('py-1.5 text-right text-xs font-bold tabular-nums text-slate-700', __WEB__ && '!text-[12.5px]', __WEB__ && ((g?.addition ?? 0) ? '!text-[#0A1F17]' : '!text-[#8AA096]'))}>{formatNum(g?.addition ?? 0)}</TableCell>
-                              <TableCell className={cn('py-1.5 text-right text-xs font-bold tabular-nums text-slate-700', __WEB__ && '!border-r !border-r-[#DCE7DB] !text-[12.5px]', __WEB__ && ((g?.adjusted ?? 0) ? '!text-[#0A1F17]' : '!text-[#8AA096]'))}>{formatNum(g?.adjusted ?? 0)}</TableCell>
-                              <TableCell className="py-1.5" />
-                              <TableCell className={cn('py-1.5 text-right text-xs font-bold tabular-nums text-slate-700', __WEB__ && '!border-l !border-l-[#DCE7DB] !border-r !border-r-[#DCE7DB] !text-[12.5px]', __WEB__ && ((g?.dispatch ?? 0) ? '!text-[#0A1F17]' : '!text-[#8AA096]'))}>{formatNum(g?.dispatch ?? 0)}</TableCell>
-                              <TableCell className={cn('py-1.5 text-right text-xs font-bold tabular-nums text-slate-700', __WEB__ && PB_BAL, __WEB__ && '!text-[13px] !text-[#0A1F17]')}>
-                                {formatNum(g?.closing ?? 0)}
-                              </TableCell>
-                              <TableCell className={cn('py-1.5 text-right text-xs font-bold tabular-nums text-slate-700', __WEB__ && '!text-[12.5px] !text-[#0A1F17]')}>{formatINR(g?.balValue ?? 0)}</TableCell>
-                              <TableCell className="py-1.5" />
-                            </TableRow>
-                          )}
-                          {!isCollapsed && (
-                          <>
-                          <TableRow
-                            className={cn(
-                              'cursor-pointer transition-colors',
-                              expanded.has(Number(row.id)) ? 'bg-slate-100 hover:bg-slate-100' : 'hover:bg-muted/40',
-                              __WEB__ && '!border-b-[#EAF0E9] !border-l-[3px] !border-l-[#DCE7DB] [&>td]:!py-2.5',
-                              __WEB__ && (expanded.has(Number(row.id)) ? '!bg-white hover:!bg-white' : '!bg-white hover:!bg-[#F7FAF6]')
-                            )}
-                            onClick={() => toggleExpand(Number(row.id))}
-                          >
-                          <TableCell className={cn('font-medium', __WEB__ && '!min-w-[300px] !text-[12.5px] !font-bold !tracking-[-0.02em]')}>
-                            <ChevronRight
-                              className={cn(
-                                'mr-1 inline h-3.5 w-3.5 text-muted-foreground transition-transform',
-                                expanded.has(Number(row.id)) && 'rotate-90',
-                                __WEB__ && '!mr-2 !h-[18px] !w-[18px] !text-[#A8B8AE]'
-                              )}
-                            />
-                            <span className={cn('mr-1 tabular-nums text-muted-foreground', __WEB__ && '!mr-2 !text-[10.5px] !font-bold !text-[#5A6B62]')}>{seq}.</span>
-                            <span title={String(row.bargain_no || '')}>
-                              {row.bargain_no}
-                            </span>
-                          </TableCell>
-                          <TableCell className={cn('whitespace-nowrap text-muted-foreground', __WEB__ && '!text-[12.5px] !font-semibold !tabular-nums !text-[#5A6B62]')}>{formatDate(row.bargain_date)}</TableCell>
-                          <TableCell className={cn('max-w-[160px] truncate', __WEB__ && '!max-w-none !overflow-visible !text-[12.5px] !font-bold')} title={row.supplier_name ?? ''}>{row.supplier_name ?? '—'}</TableCell>
-                          <TableCell className={cn('text-muted-foreground', __WEB__ && '!text-[11.5px] !font-bold !text-[#5A6B62]')}>{row.oil_code}</TableCell>
-                          <TableCell>
-                            <Badge
-                              variant={row.bargain_type === 'DLD' || row.bargain_type === 'Delivered' ? 'secondary' : 'muted'}
-                              className={cn('text-[10px]', __WEB__ && '!rounded-[2px] !border-0 !bg-[#EAF0E9] !px-1.5 !py-1 !text-[10.5px] !font-extrabold !tracking-[.06em] !text-[#33473E]')}
-                            >
-                              {row.bargain_type}
-                            </Badge>
-                          </TableCell>
-                          <TableCell className={cn('text-right tabular-nums text-muted-foreground', __WEB__ && (expanded.has(Number(row.id)) ? '!bg-white' : PB_GL), __WEB__ && (Number(row._opening) ? '!text-[12.5px] !font-bold !text-[#0A1F17]' : '!text-[12.5px] !font-medium !text-[#C3D2C6]'))}>{Number(row._opening) ? formatNum(row._opening) : '—'}</TableCell>
-                          <TableCell className={cn('text-right tabular-nums', __WEB__ && (expanded.has(Number(row.id)) ? '!bg-white' : PB_G), __WEB__ && '!text-[13px] !font-bold')}>{Number(row._addition) ? formatNum(row._addition) : '—'}</TableCell>
-                          <TableCell className={cn('text-right tabular-nums', __WEB__ && (expanded.has(Number(row.id)) ? '!bg-white' : PB_GR), __WEB__ && (Number(row._adjusted) ? '!text-[12.5px] !font-bold' : '!text-[12.5px] !font-medium !text-[#C3D2C6]'))}>
-                            <span className={cn(Number(row._adjusted) < -1e-9 ? 'text-red-600' : Number(row._adjusted) > 0 ? 'text-emerald-700' : '', __WEB__ && Number(row._adjusted) !== 0 && '!text-[#8A5300]')}>
-                              {Number(row._adjusted) ? formatNum(row._adjusted) : '—'}
-                            </span>
-                          </TableCell>
-                          <TableCell className={cn('text-right tabular-nums', __WEB__ && '!text-[12.5px] !font-bold')}>{formatINR(row.rate_per_uom)}</TableCell>
-                          <TableCell className={cn('text-right tabular-nums', Number(row._dispatch) && 'font-bold text-red-600', __WEB__ && (expanded.has(Number(row.id)) ? '!bg-white !border-l !border-l-[#EAF0E9] !border-r !border-r-[#EAF0E9]' : cn(PB_GL, PB_GR)), __WEB__ && (Number(row._dispatch) ? '!text-[13px] !font-bold !text-[#0A1F17]' : '!text-[12.5px] !font-medium !text-[#C3D2C6]'))}>{Number(row._dispatch) ? formatNum(row._dispatch) : '—'}</TableCell>
-                          <TableCell className={cn('text-right font-semibold tabular-nums', __WEB__ && (expanded.has(Number(row.id)) ? '!bg-white' : PB_BAL))}>
-                            {__WEB__ ? (() => {
-                              const b = pbBar(Number(row._opening) || 0, Number(row._addition) || 0, Number(row._adjusted) || 0, Number(row._dispatch) || 0)
-                              return (
-                                <>
-                                  <div className={cn('text-[13.5px] font-bold', Number(row._closing) < -1e-9 ? 'text-[#B3261E]' : b.pct >= 95 ? 'text-[#8A5300]' : 'text-[#0A1F17]')}>
-                                    {formatNum(row._closing)}
-                                  </div>
-                                </>
-                              )
-                            })() : (
-                              <span className={Number(row._closing) < -1e-9 ? 'text-red-600' : ''}>
-                                {formatNum(row._closing)}
-                              </span>
-                            )}
-                          </TableCell>
-                          <TableCell className={cn('text-right tabular-nums', __WEB__ && '!text-[12.5px] !font-bold')}>
-                            {formatINR(row.total_amount)}
-                          </TableCell>
-                          <TableCell className="text-right" onClick={(e) => e.stopPropagation()}>
-                            <div className="flex justify-end gap-1">
-                              {/* One ⋮ rather than three icon buttons: the row's
-                                  own click already opens its tankers, so nothing
-                                  here is the primary action and none of the
-                                  three earns permanent width. */}
-                              <RowActions
-                                actions={[
-                                  { label: 'Add / remove balance qty', icon: SlidersHorizontal, onClick: () => openAdjust(row) },
-                                  { label: 'Edit bargain', icon: Pencil, onClick: () => openEdit(row) },
-                                  { label: 'History — who changed what', icon: History, onClick: () => openHistory(row) },
-                                  { label: 'Delete bargain', icon: Trash2, danger: true, onClick: () => del(row) }
-                                ]}
-                              />
-                            </div>
-                          </TableCell>
-                          </TableRow>
-                          {expanded.has(Number(row.id)) && (
-                            <TableRow className={cn('bg-slate-200 hover:bg-slate-200', __WEB__ && '!border-l-[3px] !border-l-[#C3D2C6] !bg-[#F1F5EF] hover:!bg-[#F1F5EF]')}>
-                              <TableCell colSpan={13} className="p-0">
-                                {(() => {
-                                  // A tanker may be split across two bargains (excess loading):
-                                  // its bargain gets loaded − extra, the auto-created line gets extra.
-                                  const list = tankers.filter(
-                                    (t) =>
-                                      (Number(t.bargain_id) === Number(row.id) ||
-                                        (Number(t.extra_qty) > 0 && Number(t.extra_bargain_id) === Number(row.id))) &&
-                                      // The register's figures are already scoped to
-                                      // the picked companies; the tanker list has to
-                                      // agree or the two stop adding up.
-                                      (coIds.length === 0 || coIds.includes(Number(t.company_id)))
-                                  )
-                                  // Consignment / direct purchases draw on a bargain
-                                  // without a tanker of their own, so they are listed
-                                  // separately from the tanker table.
-                                  const drawn = draws.filter((d) => Number(d.bargain_id) === Number(row.id))
-                                  const drawnBlock = drawn.length ? (
-                                    <div className={cn('mb-2 overflow-hidden rounded-md border border-violet-200', __WEB__ && '!mb-2.5 !rounded-[4px] !border-[#D6E2D6]')}>
-                                      <div className={cn('flex items-center justify-between bg-violet-100/70 px-3 py-1', __WEB__ && '!border-b !border-b-[#E4ECE3] !bg-[#EAF0E9] !px-3.5 !py-2.5')}>
-                                        <span className={cn('text-[10px] font-semibold uppercase tracking-wide text-violet-900', __WEB__ && '!text-[10px] !font-extrabold !tracking-[.1em] !text-[#33473E]')}>
-                                          MNC / direct purchases on this bargain
-                                        </span>
-                                        <span className={cn('text-[11px] font-bold tabular-nums text-violet-900', __WEB__ && '!text-[12.5px] !text-[#0A1F17]')}>
-                                          {formatNum(drawn.reduce((a, d) => a + (Number(d.qty) || 0), 0))} {row.uom}
-                                        </span>
-                                      </div>
-                                      <table className="w-full bg-white text-[11px]">
-                                        <thead>
-                                          <tr className="border-b text-left text-[10px] uppercase tracking-wide text-muted-foreground">
-                                            <th className="px-3 py-1">Invoice</th>
-                                            <th className="px-3 py-1">Date</th>
-                                            {companies.length > 1 && <th className="px-3 py-1">Co.</th>}
-                                            <th className="px-3 py-1">Party</th>
-                                            <th className="px-3 py-1">Tanker(s)</th>
-                                            <th className="px-3 py-1 text-right">Drawn</th>
-                                            <th className="px-3 py-1 text-right">Invoice rate</th>
-                                          </tr>
-                                        </thead>
-                                        <tbody>
-                                          {drawn.map((d) => (
-                                            <tr
-                                              key={`${d.order_id}-${d.bargain_id}`}
-                                              className={cn('border-b last:border-0', d.order_id && onOpenOrder && 'cursor-pointer hover:bg-sky-50')}
-                                              title={d.order_id ? 'Open the purchase invoice' : undefined}
-                                              onClick={() => d.order_id && onOpenOrder?.(Number(d.order_id), Number(d.company_id) || undefined)}
-                                            >
-                                              <td className="px-3 py-1 font-medium">{d.invoice_no}</td>
-                                              <td className="whitespace-nowrap px-3 py-1">{formatDate(d.order_date)}</td>
-                                              {companies.length > 1 && (
-                                                <td className="whitespace-nowrap px-3 py-1 text-muted-foreground">
-                                                  {String(d.company_name || '—')}
-                                                </td>
-                                              )}
-                                              <td className="px-3 py-1">{d.supplier_name}</td>
-                                              <td className="px-3 py-1 text-muted-foreground">{d.tanker_nos || '—'}</td>
-                                              <td className="px-3 py-1 text-right font-bold tabular-nums text-red-600">
-                                                {formatNum(d.qty)}
-                                              </td>
-                                              <td className="px-3 py-1 text-right tabular-nums">{formatINR(d.invoice_rate)}</td>
-                                            </tr>
-                                          ))}
-                                        </tbody>
-                                      </table>
-                                    </div>
-                                  ) : null
-                                  const remarksLine = row.remarks ? (
-                                    <p className="pb-2 text-xs text-muted-foreground"><span className="font-semibold">Remarks:</span> {row.remarks}</p>
-                                  ) : null
-                                  if (!list.length) {
-                                    return (
-                                      <div className={cn('bg-slate-200 px-6 py-4', __WEB__ && '!border-b !border-b-[#DCE7DB] !bg-[#F1F5EF] !py-3.5 !pl-10 !pr-4')}>
-                                        {remarksLine}
-                                        {drawnBlock}
-                                        {!drawn.length && (
-                                          <p className="text-xs text-muted-foreground">No tankers on this bargain yet.</p>
-                                        )}
-                                      </div>
-                                    )
-                                  }
-                                  const disOf = (t: Row): number => {
-                                    const loaded = Number(t.loaded_qty) || 0
-                                    const extra = t.extra_bargain_id ? Number(t.extra_qty) || 0 : 0
-                                    return Number(t.bargain_id) === Number(row.id) ? loaded - extra : extra
-                                  }
-                                  // receipts/shortage belong to the whole tanker — pro-rate by share
-                                  const shareOf = (t: Row): number => {
-                                    const loaded = Number(t.loaded_qty) || 0
-                                    return loaded > 0 ? disOf(t) / loaded : 1
-                                  }
-                                  const pctOf = (t: Row): number =>
-                                    Number(t.order_allowed_shortage_pct ?? row.allowed_shortage_pct ?? defaultShortagePct) || 0
-                                  // EX bargains put the shortage risk beyond the allowed
-                                  // tolerance on the supplier — the excess becomes a
-                                  // deductible, unlike DLD where the transporter/company
-                                  // already absorbs it through freight/shortage handling.
-                                  const isEx = row.bargain_type === 'EX'
-                                  const tot = list.reduce(
-                                    (s, t) => {
-                                      const loaded = Number(t.loaded_qty) || 0
-                                      const rec = t.received_qty != null ? Number(t.received_qty) : null
-                                      const share = shareOf(t)
-                                      s.dis += disOf(t)
-                                      s.rec += (rec ?? 0) * share
-                                      s.shortage += rec != null ? Math.max(0, loaded - rec) * share : 0
-                                      s.allowed += (disOf(t) * pctOf(t)) / 100
-                                      return s
-                                    },
-                                    { dis: 0, rec: 0, shortage: 0, allowed: 0 }
-                                  )
-                                  return (
-                                    <div className={cn('bg-slate-200 px-6 py-4', __WEB__ && '!border-b !border-b-[#DCE7DB] !bg-[#F1F5EF] !py-3.5 !pl-10 !pr-4')}>
-                                      {remarksLine}
-                                      {drawnBlock}
-                                      <div className={cn(__WEB__ && 'overflow-hidden rounded-[4px] border border-[#D6E2D6] bg-white')}>
-                                      <table className={cn('overflow-hidden rounded-lg border border-slate-300 bg-card text-xs shadow-sm [&_td]:pl-3 [&_th]:pl-3', __WEB__ && '!w-full !rounded-none !border-0 !shadow-none')}>
-                                        <thead>
-                                          <tr className={cn('border-b bg-slate-200/70 text-left text-slate-700', __WEB__ && '!border-b-[#D6E2D6] !bg-[#EAF0E9] [&>th]:!h-[34px] [&>th]:!py-0 [&>th]:!text-[10px] [&>th]:!font-extrabold [&>th]:!uppercase [&>th]:!tracking-[.09em] [&>th]:!text-[#33473E]')}>
-                                            <th className="py-1.5 pr-3 font-semibold w-8">#</th>
-                                            <th className="py-1.5 pr-3 font-semibold">Tanker</th>
-                                            <th className="py-1.5 pr-3 font-semibold">Loading Date</th>
-                                            <th className="py-1.5 pr-3 font-semibold">Receipt Date</th>
-                                            <th className="py-1.5 pr-3 text-right font-semibold">Dis Qty</th>
-                                            <th className="py-1.5 pr-3 text-right font-semibold">Rec Qty</th>
-                                            <th className="py-1.5 pr-3 text-right font-semibold">Shortage</th>
-                                            <th className={cn('py-1.5 text-right font-semibold', isEx && 'pr-3')}>Allowed MT</th>
-                                            {isEx && (
-                                              <>
-                                                <th className="py-1.5 pr-3 text-right font-semibold">Deductible</th>
-                                                <th className="py-1.5 text-right font-semibold">Status</th>
-                                              </>
-                                            )}
-                                            {/* Whose book the tanker went through. A bargain
-                                                is general — either company can draw on it —
-                                                so the tanker is the level where that is
-                                                actually decided. */}
-                                            <th className="py-1.5 pr-3 text-left font-semibold">Company</th>
-                                          </tr>
-                                        </thead>
-                                        <tbody>
-                                          {list.map((t, ti) => {
-                                            const loaded = Number(t.loaded_qty) || 0
-                                            const dis = disOf(t)
-                                            const share = shareOf(t)
-                                            const split = Number(t.extra_qty) > 0 && Number(t.extra_bargain_id) > 0
-                                            const rec = t.status === 'empty' && t.received_qty != null ? Number(t.received_qty) * share : null
-                                            const shortage = rec != null ? Math.max(0, loaded - Number(t.received_qty)) * share : null
-                                            const allowedAmt = loaded > 0 ? (dis * pctOf(t)) / 100 : 0
-                                            const deductible = isEx && shortage != null && shortage > allowedAmt ? shortage - allowedAmt : null
-                                            return (
-                                              <tr
-                                                key={t.id as number}
-                                                className={cn(
-                                                  'border-b',
-                                                  ti % 2 === 1 ? 'bg-muted/40' : 'bg-card',
-                                                  t.order_id && onOpenOrder && 'cursor-pointer hover:bg-sky-50',
-                                                  // Zebra stripes go: the left mark
-                                                  // carries the only distinction that
-                                                  // matters here — did this tanker cost
-                                                  // the supplier a deduction.
-                                                  __WEB__ && '!border-b-[#EAF0E9] !border-l-[3px] [&>td]:!h-[48px] [&>td]:!py-0',
-                                                  __WEB__ && (deductible != null ? '!border-l-[#B3261E] !bg-[#FDF3F2]' : '!border-l-[#12855A] !bg-white'),
-                                                  __WEB__ && t.order_id && onOpenOrder && 'hover:!bg-[#F7FAF6]'
-                                                )}
-                                                title={t.order_id ? 'Open the purchase invoice' : 'Not billed yet'}
-                                                onClick={() =>
-                                                  t.order_id &&
-                                                  onOpenOrder?.(Number(t.order_id), Number(t.invoice_company_id ?? t.company_id) || undefined)
-                                                }
-                                              >
-                                                <td className={cn('py-1.5 pr-3 tabular-nums text-muted-foreground', __WEB__ && '!text-[10px] !font-bold !text-[#5A6B62]')}>{ti + 1}</td>
-                                                <td className={cn('py-1.5 pr-3 font-medium', __WEB__ && '!text-[12.5px] !font-bold')}>
-                                                  {t.tanker_no}
-                                                  {split && <span className="ml-1 text-[10px] font-normal text-muted-foreground">(split)</span>}
-                                                </td>
-                                                <td className={cn('py-1.5 pr-3', __WEB__ && '!text-[12px] !font-semibold !tabular-nums !text-[#5A6B62]')}>{loaded > 0 ? formatDate(t.loaded_date) : '—'}</td>
-                                                <td className={cn('py-1.5 pr-3', __WEB__ && '!text-[12px] !font-semibold !tabular-nums !text-[#5A6B62]')}>{t.empty_date ? formatDate(t.empty_date) : '—'}</td>
-                                                <td className={cn('py-1.5 pr-3 text-right tabular-nums font-medium text-red-600', __WEB__ && '!text-[12.5px] !font-bold !text-[#0A1F17]')}>{loaded > 0 ? formatNum(dis) : '—'}</td>
-                                                <td className={cn('py-1.5 pr-3 text-right tabular-nums', __WEB__ && '!text-[12.5px] !font-bold')}>{rec != null ? formatNum(rec) : '—'}</td>
-                                                <td className="py-1.5 pr-3 text-right tabular-nums">
-                                                  {/* The figure alone. The bar that used to sit under it
-                                                      measured the shortage against its allowance — the same
-                                                      species of bar the client had removed from the Balance
-                                                      column, and the Allowed MT figure is right beside it
-                                                      anyway. */}
-                                                  {__WEB__ && shortage != null ? (
-                                                    <div
-                                                      className={cn('text-[12.5px] font-bold', deductible != null ? 'text-[#B3261E]' : 'text-[#8A5300]')}
-                                                      title={
-                                                        allowedAmt > 0
-                                                          ? `${formatNum(shortage)} against an allowance of ${formatNum(allowedAmt)}`
-                                                          : undefined
-                                                      }
-                                                    >
-                                                      {formatNum(shortage)}
-                                                    </div>
-                                                  ) : shortage != null ? (
-                                                    <span className={shortage > 0 ? 'text-amber-700' : ''}>{formatNum(shortage)}</span>
-                                                  ) : '—'}
-                                                </td>
-                                                <td className={cn('py-1.5 text-right tabular-nums', isEx && 'pr-3', __WEB__ && '!text-[12.5px] !font-semibold !text-[#5A6B62]')}>{loaded > 0 ? formatNum(allowedAmt) : '—'}</td>
-                                                {isEx && (
-                                                  <>
-                                                    <td className={cn('py-1.5 pr-3 text-right tabular-nums text-red-600', __WEB__ && (deductible != null ? '!text-[12.5px] !font-bold !text-[#B3261E]' : '!text-[12.5px] !text-[#C3D2C6]'))}>{deductible != null ? formatNum(deductible) : __WEB__ ? '—' : ''}</td>
-                                                    <td className={cn('py-1.5 text-right', __WEB__ && '!pr-3')}>
-                                                      {__WEB__ ? (
-                                                        <span
-                                                          className={cn(
-                                                            'inline-flex items-center gap-1.5 rounded-[2px] border px-2 py-1 text-[10.5px] font-extrabold',
-                                                            deductible != null ? 'border-[#F0D6D4] bg-[#FDF3F2] text-[#B3261E]' : 'border-[#BFE3CB] bg-[#E9F5EE] text-[#0B6B45]'
-                                                          )}
-                                                        >
-                                                          {deductible != null ? <MinusCircle className="h-3.5 w-3.5" /> : <CheckCircle2 className="h-3.5 w-3.5" />}
-                                                          {deductible != null ? 'Deductible' : 'Within allowance'}
-                                                        </span>
-                                                      ) : deductible != null ? <Badge variant="destructive" className="text-[10px]">Deductible</Badge> : ''}
-                                                    </td>
-                                                  </>
-                                                )}
-                                                {/* The invoice's company where the tanker has
-                                                    been mapped into one, and the tanker's own
-                                                    until then — that is the order in which it
-                                                    is actually decided. */}
-                                                <td className={cn('py-1.5 pr-3', __WEB__ && '!text-[12px] !font-bold !text-[#33473E]')}>
-                                                  {(() => {
-                                                    const co = coName(t.invoice_company_id ?? t.company_id)
-                                                    if (!co) return <span className={cn(__WEB__ && '!font-semibold !text-[#A8B8AE]')}>—</span>
-                                                    const bg = coColour(t.invoice_company_id ?? t.company_id)
-                                                    // The colour as the chip's ground rather than its
-                                                    // ink: a pale pick is unreadable as text but reads
-                                                    // perfectly as a background, and a filled chip
-                                                    // tells two companies apart down a column far
-                                                    // faster than two shades of lettering.
-                                                    if (!__WEB__ || !bg) return co
-                                                    return (
-                                                      <span
-                                                        className="inline-block whitespace-nowrap rounded-[2px] px-2 py-[3px] text-[11px] font-bold"
-                                                        style={{ background: bg, color: inkOn(bg) }}
-                                                      >
-                                                        {co}
-                                                      </span>
-                                                    )
-                                                  })()}
-                                                </td>
-                                              </tr>
-                                            )
-                                          })}
-                                          <tr className={cn('border-t-2 border-amber-500 bg-amber-50 font-semibold text-amber-900', __WEB__ && '!border-t-0 !bg-[#C7F03F] !text-[#12280B] [&>td]:!h-[46px] [&>td]:!py-0')}>
-                                            <td className={cn('py-1.5 pr-3', __WEB__ && '!pl-3 !text-[10.5px] !font-extrabold !uppercase !tracking-[.09em] !text-[#2E4A0B]')} colSpan={4}>
-                                              Total{__WEB__ ? ` · ${list.length} tanker${list.length === 1 ? '' : 's'}` : ''}
-                                            </td>
-                                            <td className={cn('py-1.5 pr-3 text-right tabular-nums text-red-600', __WEB__ && '!text-[13px] !text-[#12280B]')}>{formatNum(tot.dis)}</td>
-                                            <td className={cn('py-1.5 pr-3 text-right tabular-nums', __WEB__ && '!text-[13px] !text-[#12280B]')}>{formatNum(tot.rec)}</td>
-                                            <td className={cn('py-1.5 pr-3 text-right tabular-nums', __WEB__ && '!text-[13px] !text-[#12280B]')}>{formatNum(tot.shortage)}</td>
-                                            <td className={cn('py-1.5 text-right tabular-nums', isEx && 'pr-3', __WEB__ && '!text-[12.5px] !text-[#3F5A12]')}>{formatNum(tot.allowed)}</td>
-                                            {isEx && (() => {
-                                              const totDeductible = tot.shortage > tot.allowed ? tot.shortage - tot.allowed : null
-                                              return (
-                                                <>
-                                                  <td className={cn('py-1.5 pr-3 text-right tabular-nums text-red-600', __WEB__ && '!text-[13px] !text-[#8C2F26]')}>{totDeductible != null ? formatNum(totDeductible) : __WEB__ ? '—' : ''}</td>
-                                                  <td className={cn('py-1.5 text-right', __WEB__ && '!pr-3')}>
-                                                    {__WEB__ ? (
-                                                      totDeductible != null ? (
-                                                        <span className="inline-flex items-center gap-1.5 rounded-[2px] bg-[#8C2F26] px-2 py-1 text-[10.5px] font-extrabold text-white">
-                                                          <MinusCircle className="h-3.5 w-3.5" /> Deductible
-                                                        </span>
-                                                      ) : null
-                                                    ) : totDeductible != null ? <Badge variant="destructive" className="text-[10px]">Deductible</Badge> : ''}
-                                                  </td>
-                                                </>
-                                              )
-                                            })()}
-                                            <td className="py-1.5 pr-3" />
-                                          </tr>
-                                        </tbody>
-                                      </table>
-                                      </div>
-                                    </div>
-                                  )
-                                })()}
-                              </TableCell>
-                            </TableRow>
-                          )}
-                          </>
-                          )}
-                        </Fragment>
-                      )
-                    })}
-                    </>
-                  )}
-                </TableBody>
-              </Table>
-              {__WEB__ && sortedRows.length > 0 && (
-                <div className="flex items-center justify-between gap-3 border-t border-[#EAF0E9] px-4 py-3">
-                  <div className="text-[12px] font-semibold text-[#5A6B62]">
-                    {grandVisible.count} bargain{grandVisible.count === 1 ? '' : 's'} ·{' '}
-                    {formatNum(grandVisible.opening + grandVisible.addition + grandVisible.adjusted)} MT contracted ·{' '}
-                    {formatNum(grandVisible.closing)} MT balance
-                  </div>
-                  {(() => {
-                    const oils = Array.from(groupStats.keys())
-                    const allOpen = oils.length > 0 && oils.every((o) => openGroups.has(o))
-                    return (
-                      <button
-                        type="button"
-                        onClick={() => setOpenGroups(allOpen ? new Set<string>() : new Set(oils))}
-                        className="flex items-center gap-1.5 text-[11.5px] font-extrabold uppercase tracking-[.05em] text-[#0B6B45] transition-colors hover:text-[#0B3D2E]"
-                      >
-                        <ChevronDown className={cn('h-[18px] w-[18px] transition-transform', allOpen && 'rotate-180')} />
-                        {allOpen ? 'Collapse all' : 'Expand all'}
-                      </button>
-                    )
-                  })()}
-                </div>
-              )}
-            </div>
-          </>
-        )}
-      </div>
-
       <Dialog open={open} onOpenChange={setOpen}>
         <DialogContent
           className={cn(
@@ -2593,6 +1323,7 @@ export function Bargains({
                 <RowActions
                   label="More"
                   actions={[
+                    { label: 'Link vouchers', icon: Link2, onClick: () => setVchLinkRow(editing) },
                     { label: 'History — who changed what', icon: History, onClick: () => openHistory(editing) }
                   ]}
                 />
@@ -2718,6 +1449,61 @@ export function Bargains({
                 </SelectContent>
               </Select>
             </div>
+            {/* SUB-CATEGORY, BETWEEN THE CATEGORY AND THE PRODUCT.
+                Thirteen products under OIL is a list read one line at a time;
+                the same thirteen split by what they ARE is two or three.
+
+                The options are the sub-categories the offerable products
+                actually carry, not the five the Products master knows about —
+                a purchase bargain is struck on Raw (plus anything flagged
+                "used for both"), so offering Intermediate here would put a
+                choice on screen that shows no products under it.
+
+                A new sub-category is created where sub-categories live — on
+                the Products master, where the field already accepts one — and
+                appears here the moment a product carries it. */}
+            <div className="flex flex-col gap-1.5">
+              <Label>Sub-category</Label>
+              <Select
+                value={String(form.product_subcategory || '')}
+                onValueChange={(v) => setField('product_subcategory', v === '__all__' ? '' : v)}
+                disabled={editLocked || !form.product_category}
+              >
+                <SelectTrigger>
+                  <SelectValue
+                    placeholder={!form.product_category ? 'Pick a category first' : 'What you buy'}
+                  />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="__all__">
+                    <span className="flex w-full items-center justify-between gap-3">
+                      <span>What you buy</span>
+                      <span className="text-[10px] uppercase tracking-wide text-muted-foreground">
+                        {inCategory.length} product{inCategory.length === 1 ? '' : 's'}
+                      </span>
+                    </span>
+                  </SelectItem>
+                  {subCategories.map((sc) => {
+                    const count = allInCategory.filter((o) => String(o.category || '') === sc).length
+                    const bought = boughtSubs.has(sc)
+                    return (
+                      <SelectItem key={sc} value={sc}>
+                        <span className="flex w-full items-center justify-between gap-3">
+                          <span>{sc}</span>
+                          <span className="text-[10px] uppercase tracking-wide text-muted-foreground">
+                            {count} product{count === 1 ? '' : 's'}
+                            {/* Said on the option itself, so reaching past the
+                                default is a thing somebody chooses rather than
+                                a thing that happens to them. */}
+                            {!bought ? ' · made here' : ''}
+                          </span>
+                        </span>
+                      </SelectItem>
+                    )
+                  })}
+                </SelectContent>
+              </Select>
+            </div>
             <div className="flex flex-col gap-1.5">
               <Label>Product *</Label>
               <Select
@@ -2736,6 +1522,30 @@ export function Bargains({
                   ))}
                 </SelectContent>
               </Select>
+              {/* WHY THIS LIST IS SHORTER THAN THE PRODUCTS MASTER.
+                  A purchase bargain buys; it does not make. Everything the
+                  plant produces — finished oils, intermediates — is filed
+                  under the same category and is deliberately not offered here,
+                  and the one switch that changes that for a given product is
+                  named, because otherwise the only way to find it is to know
+                  it already. */}
+              {/* Reached past the default on purpose: say so, once, and
+                  without scolding. Buying in a finished oil is a real thing a
+                  mill does; it is just not the ordinary case, and the register
+                  should not look as though it happened by accident. */}
+              {unusualPick && (
+                <span className="text-[11px] leading-snug text-[#8A5300]">
+                  {String(form.product_subcategory)} products are made here rather than bought. Booking one on a
+                  purchase bargain is unusual but allowed — it is offered so you can when you need to.
+                </span>
+              )}
+              {!unusualPick && !!form.product_category && !!madeNotBought[String(form.product_category)] && (
+                <span className="text-[11px] leading-snug text-muted-foreground">
+                  {madeNotBought[String(form.product_category)]} more {String(form.product_category)} product
+                  {madeNotBought[String(form.product_category)] === 1 ? ' is' : 's are'} made here rather than bought.
+                  Pick their sub-category above to buy one in.
+                </span>
+              )}
               {!!form.product_category && categoryProducts.length === 0 && (
                 <span className="text-[11px] text-amber-700">No {String(form.product_category)} products yet — add one under Products.</span>
               )}
@@ -2748,11 +1558,26 @@ export function Bargains({
                   <SelectValue placeholder="Select broker (optional)" />
                 </SelectTrigger>
                 <SelectContent>
-                  {brokers.map((b) => (
-                    <SelectItem key={b.id} value={String(b.id)}>
-                      {b.name}
-                    </SelectItem>
-                  ))}
+                  {/* WHAT THIS BROKER IS ON.
+                      The master records it as a percentage of the value, as
+                      rupees a tonne, or both. Said here, where the broker is
+                      actually chosen, rather than left on a master nobody
+                      opens mid-deal. */}
+                  {brokers.map((b) => {
+                    const pct = Number(b.brokerage_pct) || 0
+                    const rate = Number(b.brokerage_rate) || 0
+                    const terms = [pct ? `${pct}%` : '', rate ? `₹${rate}/MT` : ''].filter(Boolean).join(' · ')
+                    return (
+                      <SelectItem key={b.id} value={String(b.id)}>
+                        <span className="flex w-full items-center gap-3">
+                          <span className="min-w-0 flex-1 truncate">{b.name}</span>
+                          {!!terms && (
+                            <span className="shrink-0 text-[11px] font-semibold text-muted-foreground">{terms}</span>
+                          )}
+                        </span>
+                      </SelectItem>
+                    )
+                  })}
                 </SelectContent>
               </Select>
             </div>
@@ -2956,6 +1781,26 @@ export function Bargains({
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      <BargainVouchersDialog kind="purchase" bargain={vchLinkRow} onClose={() => setVchLinkRow(null)} />
+      <BargainMoveBalanceDialog
+        kind="purchase"
+        bargain={
+          moveRow && {
+            id: moveRow.id,
+            bargain_no: moveRow.bargain_no,
+            uom: moveRow.uom,
+            rate: moveRow.rate_per_uom,
+            productId: moveRow.oil_type_id,
+            productName: moveRow.oil_name,
+            party: moveRow.supplier_name,
+            balance: moveRow.balance_qty
+          }
+        }
+        products={oilTypes}
+        onClose={() => setMoveRow(null)}
+        onDone={() => void load()}
+      />
 
       <Dialog open={!!adjustRow} onOpenChange={(o) => !o && setAdjustRow(null)}>
         <DialogContent
@@ -3478,6 +2323,1744 @@ export function Bargains({
           </DialogFooter>
         </DialogContent>
       </Dialog>
+    </>
+  )
+
+  if (__WEB__ && isMobile) {
+    const contracted = grandVisible.opening + grandVisible.addition + grandVisible.adjusted
+    const mKpis = [
+      { k: 'Bargains', v: String(grandVisible.count), fg: '#fff' },
+      { k: 'Contracted', v: `${formatNum(contracted)}`, fg: '#fff' },
+      { k: 'Received', v: formatNum(grandVisible.dispatch), fg: '#fff' },
+      { k: 'Balance open', v: formatNum(grandVisible.closing), fg: '#C7F03F' }
+    ]
+    const oils = [...groupStats.entries()].sort((a, b) => a[0].localeCompare(b[0]))
+    const toggleRow = (id: number): void =>
+      setExpanded((prev) => {
+        const next = new Set(prev)
+        if (next.has(id)) next.delete(id)
+        else next.add(id)
+        return next
+      })
+    const bar = (drawn: number, total: number): { pct: string; label: string; colour: string } => {
+      const p = total > 0 ? Math.min(100, Math.max(0, (drawn / total) * 100)) : 0
+      return {
+        pct: `${p}%`,
+        label: `${Math.round(p)}%`,
+        colour: p >= 99.5 ? '#12855A' : p > 0 ? '#C2700A' : '#C3D2C6'
+      }
+    }
+
+    // The tankers a bargain drew, in the shape the drill-down card renders.
+    const tankersFor = (row: Row): Row[] =>
+      tankers.filter(
+        (t) =>
+          (Number(t.bargain_id) === Number(row.id) ||
+            (Number(t.extra_qty) > 0 && Number(t.extra_bargain_id) === Number(row.id))) &&
+          (coIds.length === 0 || coIds.includes(Number(t.company_id)))
+      )
+
+    // ── THE DRILL-DOWN: one oil, its bargains, their tankers ──────────────
+    const drill = mobileOil && groupStats.has(mobileOil) ? mobileOil : null
+    if (drill) {
+      const g = groupStats.get(drill) as {
+        opening: number
+        addition: number
+        adjusted: number
+        dispatch: number
+        closing: number
+        count: number
+      }
+      const gContracted = g.opening + g.addition + g.adjusted
+      const gb = bar(g.dispatch, gContracted)
+      const gRows = sortedRows.filter((r) => grpOf(r) === drill)
+      const allOpen = gRows.length > 0 && gRows.every((r) => expanded.has(Number(r.id)))
+      const toggleAll = (): void =>
+        setExpanded((prev) => {
+          const next = new Set(prev)
+          if (allOpen) for (const r of gRows) next.delete(Number(r.id))
+          else for (const r of gRows) next.add(Number(r.id))
+          return next
+        })
+      return (
+        <div className="flex min-h-screen flex-col bg-[#F1F5EF]">
+          <div className="flex-none bg-[#0B3D2E] px-3 pb-3.5 pt-2 text-white">
+            <MobileBar onRefresh={() => load()} />
+            <div className="flex items-center gap-1.5">
+              <button
+                type="button"
+                onClick={() => setMobileOil(null)}
+                className="flex h-11 w-11 flex-none items-center justify-center"
+                title={`Back to all ${groupNoun(2)}`}
+              >
+                <ArrowLeft className="h-6 w-6" />
+              </button>
+              <div className="min-w-0 flex-1">
+                <div className="text-[10px] font-extrabold uppercase tracking-[.14em] text-[#8FBFA8]">
+                  Purchase bargains
+                </div>
+                <div className="mt-[2px] flex flex-wrap items-baseline gap-2.5">
+                  <span className="text-[18px] font-extrabold tracking-[-0.02em]">{drill}</span>
+                  <span className="text-[11.5px] font-bold text-[#8FBFA8]">
+                    {g.count} {g.count === 1 ? 'bargain' : 'bargains'}
+                  </span>
+                </div>
+              </div>
+            </div>
+
+            <div className="mt-[11px] grid grid-cols-3 gap-2 px-1">
+              {([
+                ['Contracted', formatNum(gContracted), '#fff'],
+                ['Received', g.dispatch ? formatNum(g.dispatch) : '—', g.dispatch ? '#F0AFAA' : '#8FBFA8'],
+                ['Balance', formatNum(g.closing), '#C7F03F']
+              ] as const).map(([k, v, fg]) => (
+                <div key={k} className="min-w-0 rounded-[4px] bg-white/10 px-2.5 py-[9px]">
+                  <div className="text-[9px] font-extrabold uppercase tracking-[.09em] text-[#8FBFA8]">{k}</div>
+                  <div className="doc-ref mt-1 text-[13.5px] font-bold tracking-[-0.02em]" style={{ color: fg }}>
+                    {v}
+                  </div>
+                </div>
+              ))}
+            </div>
+            <div className="mx-1 mt-2.5 h-1.5 overflow-hidden rounded-[2px] bg-white/[.16]">
+              <div className="h-full" style={{ width: gb.pct, background: '#C7F03F' }} />
+            </div>
+            <div className="mx-1 mt-[7px] text-[11px] font-bold text-[#8FBFA8] [text-wrap:pretty]">
+              {gb.label} of {formatNum(gContracted)} {'MT'} drawn · {formatNum(g.closing)} MT still open
+            </div>
+          </div>
+
+          <div className="flex flex-1 flex-col gap-[11px] overflow-y-auto px-4 pb-[26px] pt-3">
+            <div className="flex flex-none items-center gap-[9px]">
+              <span className="text-[10px] font-extrabold uppercase tracking-[.13em] text-[#5A6B62]">Bargains</span>
+              <span className="h-px flex-1 bg-[#DCE7DB]" />
+              {gRows.length > 0 && (
+                <button
+                  type="button"
+                  onClick={toggleAll}
+                  className="whitespace-nowrap text-[10.5px] font-extrabold tracking-[.05em] text-[#0B6B45]"
+                >
+                  {allOpen ? 'Collapse all' : 'Expand all'}
+                </button>
+              )}
+            </div>
+
+            {gRows.length === 0 ? (
+              <div className="flex flex-none flex-col items-center gap-2 rounded-[4px] border border-[#E4ECE3] bg-white px-4 py-6">
+                <ReceiptText className="h-[26px] w-[26px] text-[#C3D2C6]" />
+                <span className="text-center text-[12px] font-semibold leading-[1.5] text-[#5A6B62] [text-wrap:pretty]">
+                  No bargain of this {groupNoun(1)} is in the period.
+                </span>
+              </div>
+            ) : (
+              gRows.map((row, ri) => {
+                // The sub-group this bargain sits in, and whether its heading
+                // goes above it — see closedSubs.
+                const subKey = subKeyOf(row)
+                const newSub = ri === 0 || subKey !== subKeyOf(gRows[ri - 1])
+                const subClosed = closedSubs.has(subKey)
+                const sg = subStats.get(subKey)
+                const subSeq = gRows.slice(0, ri + 1).filter((r) => subKeyOf(r) === subKey).length
+                const rowOpen = expanded.has(Number(row.id))
+                const rContracted = Number(row._opening) + Number(row._addition) + Number(row._adjusted)
+                const rb = bar(Number(row._dispatch), rContracted)
+                const adj = Number(row._adjusted) || 0
+                const list = tankersFor(row)
+                const { isEx, lines, tot } = bargainTankerLines(row, list, defaultShortagePct)
+                const dedValue = tot.deductible * (Number(row.rate_per_uom) || 0)
+                // Consignment / direct purchases draw on a bargain with no
+                // tanker of their own — the desktop lists them above its tanker
+                // table. Left off here, a bargain drawn that way read "No tanker
+                // yet … still open" beside a Received figure that said otherwise.
+                const drawn = draws.filter((d) => Number(d.bargain_id) === Number(row.id))
+                const drawnQty = drawn.reduce((a, d) => a + (Number(d.qty) || 0), 0)
+                return (
+                  <Fragment key={String(row.id)}>
+                  {newSub && (
+                    <button
+                      type="button"
+                      onClick={() => toggleSub(subKey)}
+                      className="flex min-h-11 flex-none items-center gap-2 rounded-[4px] border border-[#DCE7DB] bg-[#EFF5EC] px-3 text-left"
+                    >
+                      <ChevronDown
+                        className="h-[18px] w-[18px] flex-none text-[#33473E] transition-transform"
+                        style={{ transform: subClosed ? 'rotate(-90deg)' : 'none' }}
+                      />
+                      <span className="min-w-0 flex-1 truncate text-[13px] font-extrabold text-[#0A1F17]">{rowOther(row)}</span>
+                      <span className="whitespace-nowrap text-[11px] font-bold text-[#5A6B62]">
+                        {sg?.count ?? 0} · {formatNum(sg?.closing ?? 0)} open
+                      </span>
+                    </button>
+                  )}
+                  {!subClosed && (
+                  <div
+                    className="flex-none overflow-hidden rounded-[4px] border border-[#D6E2D6] bg-white"
+                    style={{ borderLeft: `3px solid ${Number(row._closing) > 0.0005 ? '#12855A' : '#C3D2C6'}` }}
+                  >
+                    <div className="flex flex-col gap-2.5 px-[13px] py-3">
+                      <div className="flex items-start gap-[9px]">
+                        <div className="min-w-0 flex-1">
+                          <div className="flex items-start gap-[7px]">
+                            <SerialNo n={subSeq} />
+                            <div className="flex min-w-0 flex-wrap items-center gap-[7px] pt-px">
+                              <span className="doc-ref text-[12.5px] font-bold tracking-[-0.01em] [overflow-wrap:anywhere]">
+                                {String(row.bargain_no)}
+                              </span>
+                              {tot.deductible > 0.0005 && (
+                                <span className="rounded-[2px] border border-[#F0D6D4] bg-[#FDF3F2] px-1.5 py-[3px] text-[9.5px] font-extrabold tracking-[.05em] text-[#B3261E]">
+                                  DED
+                                </span>
+                              )}
+                            </div>
+                          </div>
+                          <div className="mt-[5px] text-[12px] font-bold leading-[1.4] text-[#33473E] [text-wrap:pretty]">
+                            {rowOther(row)}
+                          </div>
+                          <div className="mt-[6px] flex flex-wrap items-center gap-2">
+                            <span className="doc-ref text-[11px] font-semibold text-[#5A6B62]">
+                              {formatDate(row.bargain_date)}
+                            </span>
+                            <span className="rounded-[2px] bg-[#EAF0E9] px-[7px] py-[3px] text-[10px] font-extrabold tracking-[.05em] text-[#33473E]">
+                              {String(row.bargain_type || '—')}
+                            </span>
+                            <span className="doc-ref text-[11px] font-bold text-[#33473E]">
+                              {formatINR(row.rate_per_uom)}/{String(row.uom || 'MT')}
+                            </span>
+                          </div>
+                        </div>
+                        <div className="flex flex-none gap-[7px]">
+                          <button
+                            type="button"
+                            onClick={() => openAdjust(row)}
+                            title="Adjust the contracted quantity"
+                            className="flex h-11 w-11 items-center justify-center rounded-[4px] border border-[#C7BCF0] bg-[#F3F0FC]"
+                          >
+                            <SlidersHorizontal className="h-5 w-5 text-[#3D3179]" />
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setVchLinkRow(row)}
+                            title="Link vouchers to this bargain"
+                            className="flex h-11 w-11 items-center justify-center rounded-[4px] border border-[#D6E2D6] bg-white"
+                          >
+                            <Link2 className="h-5 w-5 text-[#0B6B45]" />
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => openEdit(row)}
+                            title="Edit this bargain"
+                            className="flex h-11 w-11 items-center justify-center rounded-[4px] border border-[#D6E2D6] bg-white"
+                          >
+                            <Pencil className="h-5 w-5 text-[#33473E]" />
+                          </button>
+                        </div>
+                      </div>
+
+                      {/* The bargain's remarks — what the register shows beside
+                          it on a desk, and the phone had nowhere at all. */}
+                      <BargainNote text={row.remarks} />
+
+                      <div className="grid grid-cols-3 gap-[9px] rounded-[4px] border border-[#EAF0E9] bg-[#F7FAF6] px-[11px] py-2.5">
+                        <div>
+                          <div className="text-[9px] font-extrabold uppercase tracking-[.09em] text-[#5A6B62]">Contracted</div>
+                          <div className="doc-ref mt-1 text-[13px] font-bold text-[#0A1F17]">{formatNum(rContracted)}</div>
+                          {Math.abs(adj) > 0.0005 && (
+                            <div className="mt-[3px] text-[9.5px] font-bold leading-[1.3] text-[#3D3179]">
+                              {adj > 0 ? '+' : ''}
+                              {formatNum(adj)} adjusted
+                            </div>
+                          )}
+                        </div>
+                        <div>
+                          <div className="text-[9px] font-extrabold uppercase tracking-[.09em] text-[#5A6B62]">Received</div>
+                          <div
+                            className="doc-ref mt-1 text-[13px] font-bold"
+                            style={{ color: Number(row._dispatch) ? '#8C2F26' : '#C3D2C6' }}
+                          >
+                            {Number(row._dispatch) ? formatNum(row._dispatch) : '—'}
+                          </div>
+                        </div>
+                        <div>
+                          <div className="text-[9px] font-extrabold uppercase tracking-[.09em] text-[#5A6B62]">Balance</div>
+                          <div
+                            className="doc-ref mt-1 text-[13px] font-bold"
+                            style={{ color: Number(row._closing) > 0.0005 ? '#0B6B45' : '#5A6B62' }}
+                          >
+                            {formatNum(row._closing)}
+                          </div>
+                        </div>
+                      </div>
+
+                      <div>
+                        <div className="h-1.5 overflow-hidden rounded-[2px] bg-[#EAF0E9]">
+                          <div className="h-full" style={{ width: rb.pct, background: rb.colour }} />
+                        </div>
+                        <div className="mt-[7px] text-[11px] font-bold text-[#5A6B62]">{rb.label} drawn</div>
+                      </div>
+                    </div>
+
+                    <button
+                      type="button"
+                      onClick={() => toggleRow(Number(row.id))}
+                      className="flex min-h-12 w-full items-center gap-[9px] border-t border-t-[#EAF0E9] bg-[#F7FAF6] px-[13px] py-2.5 text-left"
+                    >
+                      <Truck className="h-[18px] w-[18px] flex-none text-[#33473E]" />
+                      <span className="min-w-0 flex-1 text-[11.5px] font-extrabold text-[#33473E]">
+                        {[
+                          list.length
+                            ? `${list.length} ${list.length === 1 ? 'tanker' : 'tankers'} · ${formatNum(tot.rec)} received`
+                            : drawn.length
+                              ? ''
+                              : 'No tanker yet',
+                          drawn.length ? `${drawn.length} direct · ${formatNum(drawnQty)}` : ''
+                        ]
+                          .filter(Boolean)
+                          .join(' · ')}
+                      </span>
+                      <ChevronRight
+                        className="h-[19px] w-[19px] flex-none text-[#5A6B62] transition-transform"
+                        style={{ transform: rowOpen ? 'rotate(90deg)' : 'none' }}
+                      />
+                    </button>
+
+                    {rowOpen && drawn.length > 0 && (
+                      <div className="border-t border-t-[#EAF0E9]">
+                        <div className="flex items-center gap-2 bg-[#EAF0E9] px-[13px] py-2">
+                          <span className="min-w-0 flex-1 text-[9.5px] font-extrabold uppercase tracking-[.1em] text-[#33473E]">
+                            MNC / direct purchases
+                          </span>
+                          <span className="doc-ref whitespace-nowrap text-[12px] font-bold text-[#0A1F17]">
+                            {formatNum(drawnQty)} {String(row.uom || 'MT')}
+                          </span>
+                        </div>
+                        {drawn.map((d) => (
+                          <button
+                            key={`${d.order_id}-${d.bargain_id}`}
+                            type="button"
+                            disabled={!d.order_id || !onOpenOrder}
+                            onClick={() => d.order_id && onOpenOrder?.(Number(d.order_id), Number(d.company_id) || undefined)}
+                            className="flex w-full items-start gap-2.5 border-t border-t-[#EAF0E9] bg-white px-[13px] py-2.5 text-left"
+                          >
+                            <div className="min-w-0 flex-1">
+                              <div className="doc-ref truncate text-[12px] font-bold">{String(d.invoice_no || '—')}</div>
+                              <div className="mt-[3px] truncate text-[10.5px] font-semibold text-[#5A6B62]">
+                                {formatDate(d.order_date)} · {String(d.supplier_name || '—')}
+                                {d.tanker_nos ? ` · ${String(d.tanker_nos)}` : ''}
+                              </div>
+                            </div>
+                            <div className="flex-none text-right">
+                              <div className="doc-ref text-[12.5px] font-bold text-[#B3261E]">{formatNum(Number(d.qty) || 0)}</div>
+                              <div className="doc-ref mt-[3px] text-[10.5px] font-semibold text-[#5A6B62]">@ {formatINR(Number(d.invoice_rate) || 0)}</div>
+                            </div>
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                    {rowOpen &&
+                      (lines.length === 0 ? (
+                        drawn.length ? null : (
+                        <div className="flex flex-col items-center gap-2 border-t border-t-[#EAF0E9] px-[13px] py-5">
+                          <Truck className="h-[26px] w-[26px] text-[#C3D2C6]" />
+                          <span className="text-center text-[11.5px] font-semibold leading-[1.45] text-[#5A6B62] [text-wrap:pretty]">
+                            No tanker received yet — the full {formatNum(row._closing)} {String(row.uom || 'MT')} is still
+                            open.
+                          </span>
+                        </div>
+                        )
+                      ) : (
+                        <>
+                          {lines.map((l) => {
+                            const ded = l.deductible != null && l.deductible > 0.0005
+                            const over = l.shortage != null && l.shortage > l.allowed
+                            return (
+                              <div
+                                key={String(l.t.id)}
+                                className="border-t border-t-[#EAF0E9] px-[13px] py-2.5"
+                                style={{
+                                  background: ded ? '#FDF3F2' : '#fff',
+                                  borderLeft: `3px solid ${ded ? '#B3261E' : '#12855A'}`
+                                }}
+                              >
+                                <div className="flex items-center gap-[9px]">
+                                  <span className="doc-ref min-w-0 flex-1 truncate text-[12.5px] font-bold">
+                                    {String(l.t.tanker_no || '—')}
+                                  </span>
+                                  <span
+                                    className="inline-flex flex-none items-center gap-[5px] whitespace-nowrap rounded-[2px] border px-[7px] py-[3px] text-[9.5px] font-extrabold"
+                                    style={
+                                      ded
+                                        ? { background: '#FDF3F2', color: '#B3261E', borderColor: '#F0D6D4' }
+                                        : l.rec == null
+                                          ? { background: '#EAF0E9', color: '#5A6B62', borderColor: '#DCE7DB' }
+                                          : { background: '#E9F5EE', color: '#0B6B45', borderColor: '#BFE3CB' }
+                                    }
+                                  >
+                                    {ded ? (
+                                      <MinusCircle className="h-3 w-3" />
+                                    ) : l.rec == null ? (
+                                      <Truck className="h-3 w-3" />
+                                    ) : (
+                                      <CheckCircle2 className="h-3 w-3" />
+                                    )}
+                                    {ded ? 'DEDUCTIBLE' : l.rec == null ? 'IN TRANSIT' : 'RECEIVED'}
+                                  </span>
+                                </div>
+                                <div className="mt-[9px] grid grid-cols-2 gap-[9px]">
+                                  <div>
+                                    <div className="text-[9px] font-extrabold uppercase tracking-[.09em] text-[#5A6B62]">
+                                      Dispatched → received
+                                    </div>
+                                    <div className="doc-ref mt-1 text-[12px] font-bold">
+                                      {formatNum(l.dis)} → {l.rec == null ? '—' : formatNum(l.rec)}
+                                    </div>
+                                  </div>
+                                  <div className="text-right">
+                                    <div className="text-[9px] font-extrabold uppercase tracking-[.09em] text-[#5A6B62]">
+                                      Short / allowed
+                                    </div>
+                                    <div
+                                      className="doc-ref mt-1 text-[12px] font-bold"
+                                      style={{ color: over ? '#B3261E' : '#33473E' }}
+                                    >
+                                      {l.shortage == null ? '—' : formatNum(l.shortage)} / {formatNum(l.allowed)}
+                                    </div>
+                                  </div>
+                                </div>
+                                {ded && (
+                                  <div className="mt-[9px] flex items-center gap-2 rounded-[3px] border border-[#F0D6D4] bg-[#FDF3F2] px-2.5 py-2">
+                                    <MinusCircle className="h-4 w-4 flex-none text-[#B3261E]" />
+                                    <span className="min-w-0 flex-1 text-[11px] font-extrabold text-[#8C2F26]">
+                                      Deductible
+                                    </span>
+                                    <span className="doc-ref whitespace-nowrap text-[12px] font-bold text-[#B3261E]">
+                                      {formatNum(l.deductible)} {String(row.uom || 'MT')}
+                                    </span>
+                                  </div>
+                                )}
+                              </div>
+                            )
+                          })}
+
+                          <div className="flex flex-col gap-2 bg-[#C7F03F] px-[13px] py-3">
+                            <div className="flex items-center gap-[9px]">
+                              <span className="min-w-0 flex-1 text-[10px] font-extrabold uppercase tracking-[.09em] text-[#2E4A0B]">
+                                Total · {lines.length} {lines.length === 1 ? 'tanker' : 'tankers'}
+                              </span>
+                              <span className="doc-ref whitespace-nowrap text-[13px] font-bold text-[#12280B]">
+                                {formatNum(tot.rec)} received
+                              </span>
+                            </div>
+                            {isEx && tot.deductible > 0.0005 && (
+                              <div className="flex items-center gap-[9px]">
+                                <span className="min-w-0 flex-1 text-[10px] font-extrabold uppercase tracking-[.09em] text-[#8C2F26]">
+                                  Deductible
+                                </span>
+                                <span className="doc-ref whitespace-nowrap text-[13px] font-bold text-[#8C2F26]">
+                                  {formatNum(tot.deductible)} {String(row.uom || 'MT')} · {formatINR(dedValue)}
+                                </span>
+                              </div>
+                            )}
+                          </div>
+
+                          <div className="border-t border-t-[#F0D6D4] bg-[#FDF3F2] px-[13px] py-2.5">
+                            <div className="text-[11.5px] font-semibold leading-[1.5] text-[#8C2F26] [text-wrap:pretty]">
+                              {!isEx
+                                ? 'Delivered (DLD) — any shortage is absorbed through freight, so nothing is deductible from the supplier.'
+                                : tot.deductible > 0.0005
+                                  ? `EX — ${formatNum(tot.shortage)} short against ${formatNum(tot.allowed)} allowed, so ${formatNum(tot.deductible)} ${String(row.uom || 'MT')} is deductible from the supplier.`
+                                  : `EX — ${formatNum(tot.shortage)} short, within the ${formatNum(tot.allowed)} allowance. Nothing deductible.`}
+                            </div>
+                          </div>
+                        </>
+                      ))}
+                  </div>
+                  )}
+                  </Fragment>
+                )
+              })
+            )}
+          </div>
+          {overlays}
+        </div>
+      )
+    }
+
+    // ── THE LIST: every oil as a card that opens its own screen ───────────
+    return (
+      <div className="flex min-h-screen flex-col bg-[#F1F5EF]">
+        <div className="flex-none bg-[#0B3D2E] px-4 pb-3.5 pt-2.5 text-white">
+          <MobileBar onRefresh={() => load()} />
+          <div className="flex items-center justify-between gap-2.5">
+            <div className="min-w-0">
+              <div className="text-[19px] font-extrabold tracking-[-0.02em]">Pur Bargain</div>
+              <div className="mt-[3px] text-[11.5px] font-bold text-[#8FBFA8]">
+                {grandVisible.count} {grandVisible.count === 1 ? 'bargain' : 'bargains'} · {oils.length}{' '}
+                {groupNoun(oils.length)} · {formatDate(F)} to {formatDate(T)}
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={() => setReportOpen(true)}
+              className="flex h-11 w-11 flex-none items-center justify-center rounded-[4px] bg-white/[.12]"
+              title="Summary by oil type"
+            >
+              <BarChart3 className="h-[22px] w-[22px]" />
+            </button>
+          </div>
+
+          <button
+            type="button"
+            onClick={() => setKpiOpen((v) => !v)}
+            className="mt-2.5 flex min-h-11 w-full items-center gap-2 rounded-[4px] bg-white/10 px-[11px]"
+          >
+            <ChevronDown
+              className="h-[19px] w-[19px] flex-none text-[#C7F03F] transition-transform"
+              style={{ transform: kpiOpen ? 'none' : 'rotate(-90deg)' }}
+            />
+            <span className="min-w-0 flex-1 text-left text-[10.5px] font-extrabold uppercase tracking-[.11em] text-[#8FBFA8]">
+              Summary
+            </span>
+            <span className="doc-ref whitespace-nowrap text-[11.5px] font-extrabold text-[#C7F03F]">
+              {formatNum(grandVisible.closing)} MT open
+            </span>
+          </button>
+          {kpiOpen && (
+            <div className="mt-[9px] grid grid-cols-2 gap-2">
+              {mKpis.map((k) => (
+                <div key={k.k} className="min-w-0 rounded-[4px] bg-white/10 px-[11px] py-[9px]">
+                  <div className="text-[9px] font-extrabold uppercase tracking-[.1em] text-[#8FBFA8]">{k.k}</div>
+                  <div className="doc-ref mt-[5px] text-[14px] font-bold tracking-[-0.02em]" style={{ color: k.fg }}>
+                    {k.v}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+
+        <div className="flex flex-none flex-col gap-[9px] border-b border-b-[#D6E2D6] bg-white px-4 py-2.5">
+          <div className="flex h-11 items-center gap-[9px] rounded-[4px] border border-[#C3D2C6] px-3">
+            <Search className="h-[19px] w-[19px] flex-none text-[#5A6B62]" />
+            <input
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              placeholder="Bargain, supplier or oil"
+              className="min-w-0 flex-1 border-0 bg-transparent text-[13px] font-medium outline-none"
+            />
+          </div>
+          <div className="flex items-center gap-[9px]">
+            <span className="flex-none text-[10px] font-extrabold uppercase tracking-[.1em] text-[#5A6B62]">Group by</span>
+            <div className="flex flex-1 gap-[3px] rounded-[4px] bg-[#EAF0E9] p-[3px]">
+              {(['party', 'oil'] as const).map((v) => {
+                const on = groupBy === v
+                return (
+                  <button
+                    key={v}
+                    type="button"
+                    onClick={() => switchGroupBy(v)}
+                    className="flex h-[38px] flex-1 items-center justify-center rounded-[3px] text-[12.5px] font-extrabold"
+                    style={on ? { background: '#0B3D2E', color: '#C7F03F' } : { background: 'transparent', color: '#33473E' }}
+                  >
+                    {v === 'party' ? 'Party' : 'Oil'}
+                  </button>
+                )
+              })}
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={() => setShowZero((v) => !v)}
+            className="flex min-h-11 items-center gap-[9px] text-left"
+          >
+            <span
+              className="flex h-[26px] w-11 flex-none rounded-[3px] p-[3px]"
+              style={{ background: showZero ? '#0B3D2E' : '#C3D2C6', justifyContent: showZero ? 'flex-end' : 'flex-start' }}
+            >
+              <span className="h-5 w-5 rounded-[2px] bg-white" />
+            </span>
+            <span className="inline-flex flex-wrap items-center gap-[7px] text-[12px] font-bold text-[#33473E]">
+              Show settled <span className="text-[#5A6B62]">(0 balance)</span>
+              <span
+                className="doc-ref rounded-[9px] px-2 py-[2px] text-[11px] font-extrabold"
+                style={
+                  showZero ? { background: '#0B3D2E', color: '#C7F03F' } : { background: '#EAF0E9', color: '#33473E' }
+                }
+              >
+                {settledCount}
+              </span>
+            </span>
+          </button>
+        </div>
+
+        <div className="flex flex-1 flex-col gap-2.5 overflow-y-auto px-4 pb-[96px] pt-3">
+          {oils.map(([oil, g]) => {
+            const gContracted = g.opening + g.addition + g.adjusted
+            const gb = bar(g.dispatch, gContracted)
+            return (
+              <button
+                key={oil}
+                type="button"
+                onClick={() => {
+                  setMobileOil(oil)
+                  window.scrollTo(0, 0)
+                }}
+                className="flex-none rounded-[4px] border border-[#D6E2D6] bg-white px-[13px] py-3 text-left"
+                style={{ borderLeft: `3px solid ${g.closing > 0.0005 ? '#12855A' : '#C3D2C6'}` }}
+              >
+                <div className="flex items-center gap-[9px]">
+                  <span className="min-w-0 flex-1 truncate text-[14px] font-extrabold tracking-[-0.01em]">{oil}</span>
+                  <span className="whitespace-nowrap text-[11px] font-bold text-[#5A6B62]">
+                    {g.count} {g.count === 1 ? 'bargain' : 'bargains'}
+                  </span>
+                  <ChevronRight className="h-5 w-5 flex-none text-[#5A6B62]" />
+                </div>
+                <div className="mt-[11px] grid grid-cols-3 gap-[9px]">
+                  {([
+                    ['Contracted', formatNum(gContracted), '#0A1F17'],
+                    ['Received', g.dispatch ? formatNum(g.dispatch) : '—', g.dispatch ? '#8C2F26' : '#C3D2C6'],
+                    ['Balance', formatNum(g.closing), '#0A1F17']
+                  ] as const).map(([k, v, fg]) => (
+                    <div key={k}>
+                      <div className="text-[9px] font-extrabold uppercase tracking-[.09em] text-[#5A6B62]">{k}</div>
+                      <div className="doc-ref mt-1 text-[12.5px] font-bold" style={{ color: fg }}>
+                        {v}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+                <div className="mt-2.5 h-1.5 overflow-hidden rounded-[2px] bg-[#EAF0E9]">
+                  <div className="h-full" style={{ width: gb.pct, background: gb.colour }} />
+                </div>
+              </button>
+            )
+          })}
+
+          {oils.length === 0 && (
+            <div className="flex flex-none flex-col items-center gap-2 rounded-[4px] border border-[#D6E2D6] bg-white px-4 py-10">
+              <AlertTriangle className="h-7 w-7 text-[#C3D2C6]" />
+              <span className="text-center text-[12.5px] font-bold text-[#5A6B62]">
+                {loading ? 'Loading…' : 'No bargain in this period.'}
+              </span>
+            </div>
+          )}
+
+          {oils.length > 0 && (
+            <div className="flex-none rounded-[4px] border border-[#DCE7DB] bg-[#EFF5EC] px-[13px] py-3">
+              <div className="text-[10px] font-extrabold uppercase tracking-[.11em] text-[#33473E]">
+                Grand total · {grandVisible.count} {grandVisible.count === 1 ? 'bargain' : 'bargains'}
+              </div>
+              <div className="mt-2.5 grid grid-cols-2 gap-2.5">
+                <div>
+                  <div className="text-[9px] font-extrabold uppercase tracking-[.09em] text-[#5A6B62]">Contracted</div>
+                  <div className="doc-ref mt-1 text-[14px] font-bold">{formatNum(contracted)} MT</div>
+                </div>
+                <div className="text-right">
+                  <div className="text-[9px] font-extrabold uppercase tracking-[.09em] text-[#5A6B62]">Balance open</div>
+                  <div className="doc-ref mt-1 text-[14px] font-bold">{formatNum(grandVisible.closing)} MT</div>
+                </div>
+                <div className="col-span-2 flex items-baseline justify-between gap-2.5 border-t border-t-[#DCE7DB] pt-[9px]">
+                  <span className="text-[9px] font-extrabold uppercase tracking-[.09em] text-[#5A6B62]">
+                    Balance value still to draw
+                  </span>
+                  <span className="doc-ref whitespace-nowrap text-[14px] font-bold">
+                    {formatINR(grandVisible.balValue)}
+                  </span>
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+
+        <div className="sticky bottom-0 flex flex-none gap-2.5 border-t border-t-[#D6E2D6] bg-white px-4 pb-6 pt-[11px]">
+          <button
+            type="button"
+            onClick={openAdd}
+            className="flex h-[50px] flex-1 items-center justify-center gap-2 rounded-[4px] bg-[#0B3D2E] text-[13.5px] font-extrabold text-[#C7F03F]"
+          >
+            <Plus className="h-5 w-5" />
+            New bargain
+          </button>
+        </div>
+        {overlays}
+      </div>
+    )
+  }
+
+  return (
+    <>
+      <PageHeader
+        title="Bargains"
+        subtitle="Rate contracts — drawn down as purchase tankers are loaded"
+        hint="Each bargain locks a rate and quantity with a supplier. The bargain number is OILCODE/DD-MM/PARTYNAME/SERIAL, where the serial restarts every month from 01 (e.g. MAHUWA/01-07/ROHINIOIL/03). Landed rate = base rate + customs duty. Click any column header to sort; the Report button groups the full history by oil."
+        actions={
+          <div className="flex gap-2">
+            <Button variant="outline" size="sm" onClick={() => setReportOpen((v) => !v)}>
+              <BarChart3 className="h-4 w-4" />
+              {reportOpen ? 'Back to list' : 'Report'}
+            </Button>
+            <Button variant="outline" size="sm" onClick={downloadExcel}>
+              <FileSpreadsheet className="h-4 w-4" />
+              Excel
+            </Button>
+            <Button size="sm" onClick={openAdd} disabled={noMasters}>
+              <Plus className="h-4 w-4" />
+              New bargain
+            </Button>
+          </div>
+        }
+      />
+
+      <div className="w-full p-4">
+        {noMasters && (
+          <div className="mb-4 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
+            Add at least one supplier and one oil type in Settings before creating a bargain.
+          </div>
+        )}
+
+        {reportOpen ? (
+          <div className="space-y-5">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div>
+                <button
+                  className="mb-1 inline-flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground"
+                  onClick={() => setReportOpen(false)}
+                >
+                  <ArrowLeft className="h-4 w-4" /> Back to list
+                </button>
+                <h3 className="text-lg font-semibold">Bargain report — by oil</h3>
+                <p className="text-xs text-muted-foreground">
+                  Open bargains, weighted average rate and value per oil type · {report.grand.count} bargains overall
+                </p>
+              </div>
+              <Button variant="outline" size="sm" onClick={downloadReportExcel}>
+                <FileSpreadsheet className="h-4 w-4" /> Download report
+              </Button>
+            </div>
+
+            <div className="overflow-hidden rounded-xl border bg-card shadow-sm">
+              <Table className="text-[13px]">
+                <TableHeader className="bg-amber-100/70">
+                  <TableRow>
+                    <TableHead className="text-amber-900">Oil</TableHead>
+                    <TableHead className="text-center text-amber-900">Open bargains</TableHead>
+                    <TableHead className="text-center text-amber-900">Total bargains</TableHead>
+                    <TableHead className="text-right text-amber-900">Opening</TableHead>
+                    <TableHead className="text-right text-amber-900">Addition</TableHead>
+                    <TableHead className="text-right text-amber-900">Adjusted</TableHead>
+                    <TableHead className="text-right text-amber-900">Dispatch</TableHead>
+                    <TableHead className="text-right text-amber-900">Closing</TableHead>
+                    <TableHead className="text-right text-amber-900">Bal Qty</TableHead>
+                    <TableHead className="text-right text-amber-900">Total qty</TableHead>
+                    <TableHead className="text-right text-amber-900">Avg rate</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {report.groups.length === 0 ? (
+                    <TableRow>
+                      <TableCell colSpan={11} className="py-8 text-center text-muted-foreground">No bargains yet.</TableCell>
+                    </TableRow>
+                  ) : (
+                    <>
+                      {report.groups.map((g) => (
+                        <TableRow key={g.label}>
+                          <TableCell className="font-semibold">{g.label}</TableCell>
+                          <TableCell className="text-center tabular-nums">
+                            <Badge variant={g.openCount > 0 ? 'warning' : 'muted'}>{g.openCount}</Badge>
+                          </TableCell>
+                          <TableCell className="text-center tabular-nums">{g.count}</TableCell>
+                          <TableCell className="text-right tabular-nums">{formatNum(g.opening)}</TableCell>
+                          <TableCell className="text-right tabular-nums">{formatNum(g.addition)}</TableCell>
+                          <TableCell className="text-right tabular-nums">{formatNum(g.adjusted)}</TableCell>
+                          <TableCell className="text-right tabular-nums">{formatNum(g.dispatch)}</TableCell>
+                          <TableCell className="text-right font-medium tabular-nums">{formatNum(g.closing)}</TableCell>
+                          <TableCell className="text-right tabular-nums">{formatNum(g.balance)}</TableCell>
+                          <TableCell className="text-right tabular-nums">{formatNum(g.qty)}</TableCell>
+                          <TableCell className="text-right tabular-nums">{formatINR(avgRate(g))}</TableCell>
+                        </TableRow>
+                      ))}
+                      <TableRow className="bg-muted/50 font-semibold">
+                        <TableCell>Grand total</TableCell>
+                        <TableCell className="text-center tabular-nums">{report.grand.openCount}</TableCell>
+                        <TableCell className="text-center tabular-nums">{report.grand.count}</TableCell>
+                        <TableCell className="text-right tabular-nums">{formatNum(report.grand.opening)}</TableCell>
+                        <TableCell className="text-right tabular-nums">{formatNum(report.grand.addition)}</TableCell>
+                        <TableCell className="text-right tabular-nums">{formatNum(report.grand.adjusted)}</TableCell>
+                        <TableCell className="text-right tabular-nums">{formatNum(report.grand.dispatch)}</TableCell>
+                        <TableCell className="text-right font-medium tabular-nums">{formatNum(report.grand.closing)}</TableCell>
+                        <TableCell className="text-right tabular-nums">{formatNum(report.grand.balance)}</TableCell>
+                        <TableCell className="text-right tabular-nums">{formatNum(report.grand.qty)}</TableCell>
+                        <TableCell className="text-right tabular-nums">{formatINR(avgRate(report.grand))}</TableCell>
+                      </TableRow>
+                    </>
+                  )}
+                </TableBody>
+              </Table>
+            </div>
+            <p className="text-xs text-muted-foreground">
+              Opening / Addition / Dispatch / Closing follow the register's date range. Open = bargains with balance quantity left; Bal Qty is the live open quantity. Avg rate is weighted (total value ÷ total qty).
+            </p>
+          </div>
+        ) : (
+          <>
+            <div
+              className={cn(
+                'mb-4 flex flex-wrap items-center gap-x-3 gap-y-2',
+                // One white card, one height for everything on it — the
+                // pickers arrive at 32px, 36px and 40px otherwise.
+                __WEB__ &&
+                  '!mb-3 !flex-nowrap !gap-x-2.5 !rounded-[5px] !border !border-[#DCE7DB] !bg-[#FBFCFA] !px-4 !py-3 !shadow-[0_1px_2px_rgba(10,31,23,.04)] [&_input]:!h-10 [&_input]:!rounded-[4px] [&_input]:!border-[#C3D2C6] [&_input]:!bg-white [&_input]:!text-[13px] [&_[data-slot=select-trigger]]:!h-10 [&_[data-slot=select-trigger]]:!rounded-[4px] [&_[data-slot=select-trigger]]:!border-[#C3D2C6] [&_[data-slot=select-trigger]]:!bg-white [&_[data-slot=select-trigger]]:!text-[13px] [&_[data-slot=date-picker]]:!h-10 [&_[data-slot=date-picker]]:!rounded-[4px] [&_[data-slot=date-picker]]:!border-[#C3D2C6] [&_[data-slot=date-picker]]:!bg-white [&_[data-slot=date-picker]]:!text-[12.5px] [&>label>button]:!h-auto'
+              )}
+            >
+              {/* The filters are one zone, and the settled switch sits beside
+                  it rather than in the same wrap flow. With everything in one
+                  wrapping row, a narrow screen pushed the switch — the last
+                  item, held right by ml-auto — onto a line of its own with the
+                  whole width empty beside it. As its own zone the filters wrap
+                  among themselves and the switch stays put on the right.
+
+                  `contents` on the desktop build makes this wrapper invisible
+                  to layout, so the app's row is exactly the flat one it was. */}
+              <div
+                className={cn(
+                  'contents',
+                  __WEB__ && '!flex !min-w-0 !flex-1 !flex-wrap !items-center !gap-x-2.5 !gap-y-2'
+                )}
+              >
+              {/* One dropdown rather than a chip per category — the list grows
+                  with the Products master, so a row of chips only ever gets
+                  longer and starts scrolling sideways. */}
+              <Select value={typeFilter} onValueChange={setTypeFilter}>
+                {/* Sized to its own label rather than to a guessed pixel width:
+                    the categories come from the Products master, so any fixed
+                    width is either padding empty space or clipping a name. */}
+                <SelectTrigger
+                  className={cn('h-9 w-48 shrink-0 text-[13px]', __WEB__ && '!w-auto !min-w-[7.5rem] !max-w-[13rem]')}
+                >
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent className="max-h-72">
+                  {TYPE_FILTERS.map((t) => (
+                    <SelectItem key={t} value={t} className="text-[13px]">
+                      {t === 'ALL' ? 'All categories' : t}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              {companies.length > 1 && (
+                <Select
+                  value={coIds.length === 1 ? String(coIds[0]) : 'all'}
+                  onValueChange={(v) => setCoIds(v === 'all' ? [] : [Number(v)])}
+                >
+                  {/* 10.5rem landed a pixel or two short of "ALL COMPANIES"
+                      once the building icon and the chevron took their share,
+                      so the default state read "ALL COMPANIE…". Auto-width fits
+                      whichever company is picked; the cap keeps a long legal
+                      name from eating the search box. */}
+                  <SelectTrigger
+                    className={cn(
+                      'h-9 w-[13rem] shrink-0 text-[13px]',
+                      __WEB__ && '!w-auto !min-w-[9rem] !max-w-[15rem]'
+                    )}
+                  >
+                    <span className="flex min-w-0 items-center gap-1.5">
+                      <Building2 className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                      <SelectValue />
+                    </span>
+                  </SelectTrigger>
+                  <SelectContent className="max-h-72">
+                    <SelectItem value="all" className="text-[13px]">All companies</SelectItem>
+                    {companies.map((c) => (
+                      <SelectItem key={String(c.id)} value={String(c.id)} className="text-[13px]">
+                        {String(c.name)}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              )}
+              {/* Capped rather than fixed. It was flex-1 with no ceiling, so it
+                  took every pixel the row had spare — on a wide screen a search
+                  box half the width of the page, which also pushed the settled
+                  switch onto a line of its own. It still shrinks when the row
+                  is cramped; it just stops growing once it can hold its own
+                  placeholder. */}
+              <div
+                className={cn(
+                  'relative min-w-[180px] flex-1 basis-56',
+                  // A FLOOR, not a width: the box is flex-1, so it takes
+                  // whatever the row has spare and only falls back to this when
+                  // there is nothing spare left. 13rem held the row hostage —
+                  // being the one !important minimum on the strip, no other
+                  // control could give up space while it stood, and the row
+                  // broke to a second line at widths where it did not need to.
+                  // 9rem still shows the placeholder's first few words.
+                  __WEB__ && '!min-w-[9rem] !max-w-[17rem] !basis-0'
+                )}
+              >
+                <Search className="pointer-events-none absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+                <Input
+                  type="search"
+                  className="h-9 pl-8"
+                  placeholder={__WEB__ ? 'Search bargain, supplier, oil…' : 'Search bargain no, supplier, oil, broker…'}
+                  value={search}
+                  onChange={(e) => setSearch(e.target.value)}
+                />
+              </div>
+              {__WEB__ && (
+                <span aria-hidden className="h-7 w-px shrink-0 self-center bg-[#C3D2C6]" />
+              )}
+              <div
+                className={cn(
+                  'flex shrink-0 flex-wrap items-center gap-1.5 text-[13px]',
+                  // ONE ROW, ONE KIND OF CONTROL.
+                  //
+                  // This group has been through a chip (a white box with the
+                  // card's own border, drawn inside the card — a box within a
+                  // box), then nothing at all (three controls and the word
+                  // "to" floating unattached), then a tint (a coloured band
+                  // that nothing else on the strip had). Each of those tried to
+                  // GROUP the dates by drawing something around them, and every
+                  // one of them made the date fields look unlike the OIL, the
+                  // company picker and the search box sitting beside them.
+                  //
+                  // They are grouped by a LABEL and a rule instead — the
+                  // divider to their left, then the word DATE — so the fields
+                  // themselves are plain white 40px boxes with the same
+                  // #C3D2C6 edge as every other control on the bar. Nothing is
+                  // drawn around them, and nothing about them is special.
+                  __WEB__ && '!gap-2'
+                )}
+              >
+                {/* The group's name, and the only thing marking it out. It
+                    was dropped when the strip was fighting for width; the
+                    search box's floor now gives that width back, and without
+                    the word the dates read as two unexplained boxes. */}
+                <span
+                  className={cn(
+                    'text-muted-foreground',
+                    __WEB__ && '!text-[10.5px] !font-extrabold !uppercase !tracking-[.13em] !text-[#5A6B62]'
+                  )}
+                >
+                  Date
+                </span>
+                <FyPicker
+                  from={dateFrom}
+                  to={dateTo}
+                  onRange={(f, t) => { setDateFrom(f); setDateTo(t) }}
+                  // w-28 was tight enough to clip "FY 2026-27" to "FY 2026…".
+                  // Auto-width instead of a second guessed number: the face of
+                  // this control is either "Choose FY" or "FY 2026-27", and it
+                  // should be exactly as wide as whichever one is showing.
+                  className={cn('h-9 w-28 text-xs', __WEB__ && '!w-auto !min-w-[6.5rem]')}
+                />
+                <DatePicker
+                  value={dateFrom}
+                  onChange={(v) => setDateFrom(v || '')}
+                  max={dateTo || undefined}
+                  // SIZED TO THE DATE, not to a guess about it.
+                  //
+                  // 7.25rem is 116px and the content measures 114 — the date
+                  // ended two pixels from its own border, which is why it read
+                  // as spilling out of the box. Two pixels is not a margin:
+                  // a different font, a longer locale, a browser that rounds
+                  // the other way, and it genuinely overflows.
+                  //
+                  // Auto width with a floor instead, so the box is always as
+                  // wide as the date inside it plus real padding, and the
+                  // question cannot come back.
+                  className={cn('w-[8.5rem]', __WEB__ && '!w-auto !min-w-[7.25rem] !px-2.5')}
+                />
+                <span className={cn('text-muted-foreground', __WEB__ && '!text-[12px] !font-semibold !text-[#5A6B62]')}>to</span>
+                <DatePicker
+                  value={dateTo}
+                  onChange={(v) => setDateTo(v || '')}
+                  min={dateFrom || undefined}
+                  // SIZED TO THE DATE, not to a guess about it.
+                  //
+                  // 7.25rem is 116px and the content measures 114 — the date
+                  // ended two pixels from its own border, which is why it read
+                  // as spilling out of the box. Two pixels is not a margin:
+                  // a different font, a longer locale, a browser that rounds
+                  // the other way, and it genuinely overflows.
+                  //
+                  // Auto width with a floor instead, so the box is always as
+                  // wide as the date inside it plus real padding, and the
+                  // question cannot come back.
+                  className={cn('w-[8.5rem]', __WEB__ && '!w-auto !min-w-[7.25rem] !px-2.5')}
+                />
+                {(dateFrom || dateTo) && (
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className={cn('h-8 text-muted-foreground', __WEB__ && '!h-10 !px-2.5 !font-extrabold !uppercase !tracking-[.05em] !text-[#0B6B45]')}
+                    onClick={() => { setDateFrom(''); setDateTo('') }}
+                  >
+                    Clear
+                  </Button>
+                )}
+              </div>
+              </div>
+              {/* How the register is banded — by oil (default) or by supplier. */}
+              <div
+                className={cn('ml-auto inline-flex shrink-0 items-center rounded-lg border p-0.5', __WEB__ && '!h-[38px] !gap-0.5 !rounded-[4px] !border-[#C3D2C6] !bg-white !p-[3px]')}
+                title="Band the register by supplier or by oil"
+              >
+                <span className={cn('px-2 text-[11px] font-medium text-muted-foreground', __WEB__ && '!px-2 !text-[10px] !font-extrabold !uppercase !tracking-[.1em] !text-[#7C9188]')}>
+                  Group by
+                </span>
+                {(['party', 'oil'] as const).map((v) => (
+                  <button
+                    key={v}
+                    type="button"
+                    onClick={() => switchGroupBy(v)}
+                    className={cn(
+                      'whitespace-nowrap rounded-md px-3 py-1 text-[13px] font-medium transition-colors',
+                      groupBy === v ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:text-foreground',
+                      __WEB__ && '!h-[30px] !rounded-[2px] !px-3.5 !text-[12.5px] !font-extrabold',
+                      __WEB__ && (groupBy === v ? '!bg-[#0B3D2E] !text-[#C7F03F]' : '!bg-transparent !text-[#5A6B62] hover:!text-[#0B3D2E]')
+                    )}
+                  >
+                    {v === 'party' ? 'Party' : 'Oil'}
+                  </button>
+                ))}
+              </div>
+              <label
+                title={
+                  __WEB__
+                    ? 'Bargains with no balance left on them. Off, the register lists only what is still open.'
+                    : undefined
+                }
+                className={cn('flex shrink-0 cursor-pointer items-center gap-2 whitespace-nowrap text-[13px] text-muted-foreground', __WEB__ && '!h-[38px] !gap-2 !rounded-[4px] !border !border-[#C3D2C6] !bg-white !px-2.5 !text-[12.5px] !font-bold !text-[#33473E] hover:!bg-[#F7FAF6]')}
+              >
+                <Switch checked={showZero} onCheckedChange={setShowZero} />
+                Show settled {__WEB__ ? null : '(0 balance)'}
+                {/* The count, so the switch can be seen to have done something
+                    even when the rows it adds are inside collapsed oil bands —
+                    and so that "nothing to add" reads as an answer rather than
+                    as a control that ignored the click. */}
+                <span
+                  className={cn(
+                    'rounded-full px-2 py-0.5 font-mono text-[11px] font-bold tabular-nums',
+                    settledCount === 0 ? 'bg-muted text-muted-foreground' : 'bg-[#EAF0E9] text-[#33473E]'
+                  )}
+                >
+                  {settledCount}
+                </span>
+              </label>
+            </div>
+
+            {/* Summary. Every figure is read off grandVisible — the sum of
+                the same groupStats the bands below are drawn from — so a tile
+                can never state something the register contradicts. */}
+            {__WEB__ && sortedRows.length > 0 && (
+              <div className="mb-3 overflow-hidden rounded-[4px] border border-[#D6E2D6] bg-white">
+                <button
+                  type="button"
+                  aria-expanded={kpiOpen}
+                  onClick={() => setKpiOpen((o) => !o)}
+                  className="flex w-full items-center gap-1.5 px-3.5 py-2 text-[11px] font-extrabold uppercase tracking-[.1em] text-[#5A6B62] transition-colors hover:bg-[#F7FAF6]"
+                >
+                  <ChevronDown className={cn('h-4 w-4 shrink-0 text-[#12855A] transition-transform', !kpiOpen && '-rotate-90')} />
+                  Summary
+                  <span className="ml-1 rounded-[2px] bg-[#EAF0E9] px-1.5 py-[2px] text-[11px] font-extrabold tabular-nums tracking-normal text-[#33473E]">
+                    {formatNum(grandVisible.closing)} MT open
+                  </span>
+                </button>
+                {kpiOpen && (
+                  <div className="grid gap-2.5 px-3.5 pb-3.5 pt-1 sm:grid-cols-2 xl:grid-cols-4">
+                    {(() => {
+                      const contracted = grandVisible.opening + grandVisible.addition + grandVisible.adjusted
+                      return [
+                        {
+                          k: 'Bargains open',
+                          v: String(grandVisible.count),
+                          unit: '',
+                          sub: `across ${groupStats.size} ${groupNoun(groupStats.size, 'oil type')}`,
+                          accent: '#0B3D2E'
+                        },
+                        {
+                          k: 'Contracted',
+                          v: formatNum(contracted),
+                          unit: 'MT',
+                          sub: grandVisible.opening ? `${formatNum(grandVisible.opening)} MT opening carried in` : 'nothing carried in',
+                          accent: '#12855A'
+                        },
+                        {
+                          k: 'Dispatched',
+                          v: formatNum(grandVisible.dispatch),
+                          unit: 'MT',
+                          sub: contracted > 0 ? `${Math.round((grandVisible.dispatch / contracted) * 100)}% of contracted` : 'nothing contracted',
+                          accent: '#C2700A'
+                        },
+                        {
+                          k: 'Balance open',
+                          v: formatNum(grandVisible.closing),
+                          unit: 'MT',
+                          sub: `${formatINR(grandVisible.balValue)} still to draw`,
+                          accent: '#C7F03F'
+                        }
+                      ]
+                    })().map((k) => (
+                      <div
+                        key={k.k}
+                        className="rounded-[4px] border border-[#D6E2D6] bg-white px-3.5 py-3"
+                        style={{ borderTop: `3px solid ${k.accent}` }}
+                      >
+                        <div className="text-[9.5px] font-extrabold uppercase tracking-[.13em] text-[#5A6B62]">{k.k}</div>
+                        <div className="mt-1 flex items-baseline gap-1.5">
+                          <span className="text-[23px] font-bold leading-none tracking-[-0.035em] tabular-nums">{k.v}</span>
+                          {k.unit && <span className="text-[11px] font-bold text-[#5A6B62]">{k.unit}</span>}
+                        </div>
+                        <div className="mt-1 truncate text-[11.5px] font-semibold text-[#5A6B62]" title={k.sub}>{k.sub}</div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+
+            <div className={cn('rounded-xl border bg-card shadow-sm', __WEB__ && '!rounded-[4px] !border-[#D6E2D6] !bg-white !shadow-none')}>
+              {/* Nothing wraps: a bargain number split over three lines and a
+                  stacked date are exactly what this register is scanned for.
+                  The wrapper already scrolls, so it slides sideways instead. */}
+              <Table
+                wrapperClassName={cn('max-h-[calc(100vh-215px)] rounded-xl', __WEB__ && '!rounded-[4px]')}
+                className={cn(
+                  'min-w-[860px] text-[12px] [&_td]:px-3 [&_td]:py-2 [&_th]:px-3 [&_th]:h-9',
+                  // Same two jobs as the sales register: pinned columns while
+                  // it is a summary, content-sized once a group is open and the
+                  // reader needs the bargain number in full.
+                  __WEB__ &&
+                    '!min-w-[1074px] [&_td]:!whitespace-nowrap [&_td]:!px-2 [&_th]:!whitespace-nowrap [&_th]:!px-2 [&_th]:!text-[10.5px] [&_th]:!font-semibold [&_th]:!tracking-[.04em] [&_th_button]:!text-[10.5px] [&_th_button]:!font-semibold',
+                  __WEB__ && grouped && !q && openGroups.size === 0 && '!table-fixed [&_td]:!truncate'
+                )}
+              >
+                {/* The widths, stated once. table-fixed cannot read them off
+                    the header here — its first row is the group band, whose
+                    cells span three columns at a time — so a colgroup is the
+                    only place they can live. They add to 1074, the table's
+                    floor, so a 13" screen fits without zooming out and
+                    anything narrower slides. */}
+                {__WEB__ && grouped && !q && openGroups.size === 0 && (
+                  <colgroup>
+                    {[112, 91, 100, 69, 62, 69, 71, 69, 95, 65, 76, 128, 67].map((w, i) => (
+                      <col key={i} style={{ width: `${w}px` }} />
+                    ))}
+                  </colgroup>
+                )}
+                <TableHeader className={cn(__WEB__ && '[&_th]:!h-10')}>
+                  {/* A band naming what the column sets below mean, so Opening
+                      / Addition / Adjusted read as one idea and Dispatch as
+                      another — without renaming or merging any column. */}
+                  {__WEB__ && (
+                    <TableRow className="!border-b-0 hover:!bg-transparent [&>th]:!sticky [&>th]:!top-0 [&>th]:!z-20 [&>th]:!h-[30px] [&>th]:!bg-[#072B20] [&>th]:!text-center [&>th]:!text-[11px] [&>th]:!font-extrabold [&>th]:!uppercase [&>th]:!tracking-[.14em] [&>th]:!text-white">
+                      <TableHead colSpan={5} />
+                      <TableHead colSpan={3} className={cn(PB_HBAND, '!border-l !border-l-[#C7F03F]/20 !border-r !border-r-[#C7F03F]/20')}>
+                        Contracted qty
+                      </TableHead>
+                      <TableHead />
+                      <TableHead className={cn(PB_HBAND, '!border-l !border-l-[#C7F03F]/20 !border-r !border-r-[#C7F03F]/20')}>Moved</TableHead>
+                      <TableHead className={PB_HOPEN}>Open</TableHead>
+                      <TableHead colSpan={2} />
+                    </TableRow>
+                  )}
+                  <TableRow className={cn(__WEB__ && 'hover:!bg-transparent')}>
+                    {(
+                      [
+                        { id: 'bargain_no', label: 'Bargain no' },
+                        { id: 'bargain_date', label: 'Date' },
+                        { id: 'supplier', label: 'Supplier' },
+                        { id: 'oil', label: 'Oil' },
+                        { id: 'condition', label: __WEB__ ? 'Cond.' : 'Condition' },
+                        { id: 'qty', label: 'Opening', right: true },
+                        { id: 'addition', label: 'Addition', right: true },
+                        { id: 'adjusted', label: 'Adjusted', right: true },
+                        { id: 'rate', label: 'BG rate', right: true },
+                        { id: 'dispatch', label: 'Dispatch', right: true },
+                        { id: 'balance', label: 'Balance', right: true },
+                        { id: 'total', label: 'Total', right: true }
+                      ] as { id: string; label: string; right?: boolean }[]
+                    ).map((c) => (
+                      <TableHead
+                        key={c.id}
+                        className={cn(
+                          'sticky top-0 z-20 bg-slate-100 text-[11px] font-semibold uppercase tracking-wide text-foreground',
+                          c.right && 'text-right',
+                          __WEB__ && '!top-[30px] !h-11 !bg-[#0B3D2E] !text-[12px] !font-extrabold !tracking-[.07em] !text-[#DCEFE4]',
+                          __WEB__ && c.id === 'qty' && PB_HGL,
+                          __WEB__ && c.id === 'addition' && PB_HG,
+                          __WEB__ && c.id === 'adjusted' && PB_HGR,
+                          __WEB__ && c.id === 'dispatch' && cn(PB_HGL, '!border-r !border-r-[#C7F03F]/20'),
+                          __WEB__ && c.id === 'balance' && PB_HOPEN
+                        )}
+                      >
+                        <button
+                          onClick={() => toggleSort(c.id)}
+                          className={cn(
+                            // uppercase repeated here on purpose: Tailwind's
+                            // preflight sets `text-transform: none` on every
+                            // <button>, so the th's own uppercase never reached
+                            // the label inside it — which is why these headers
+                            // read "Bargain no" while the plain Actions th two
+                            // cells over read "ACTIONS".
+                            'inline-flex items-center gap-1 uppercase transition-colors hover:text-foreground',
+                            c.right && 'w-full justify-end'
+                          )}
+                          title={`Sort by ${c.label}`}
+                        >
+                          {c.label}
+                          {sort?.key === c.id ? (
+                            sort.dir === 'asc' ? <ArrowUp className="h-3 w-3" /> : <ArrowDown className="h-3 w-3" />
+                          ) : (
+                            <ArrowUpDown className="h-3 w-3 opacity-30" />
+                          )}
+                        </button>
+                      </TableHead>
+                    ))}
+                    <TableHead className={cn('sticky top-0 z-20 bg-slate-100 w-[90px] text-right text-[11px] font-semibold uppercase tracking-wide text-foreground', __WEB__ && '!top-[30px] !h-11 !bg-[#0B3D2E] !text-[12px] !font-extrabold !tracking-[.07em] !text-[#DCEFE4]')}>Actions</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {loading ? (
+                    <TableRow>
+                      <TableCell colSpan={13} className="py-10 text-center text-muted-foreground">
+                        Loading…
+                      </TableCell>
+                    </TableRow>
+                  ) : sortedRows.length === 0 ? (
+                    <TableRow>
+                      <TableCell colSpan={13} className="py-10 text-center text-muted-foreground">
+                        {rows.length === 0
+                          ? 'No bargains yet. Click “New bargain” to add one.'
+                          : `No ${typeFilter === 'ALL' ? '' : typeFilter + ' '}bargains to show.`}
+                      </TableCell>
+                    </TableRow>
+                  ) : (
+                    <>
+                    <TableRow
+                      className={cn(
+                        'border-y-2 border-amber-500 bg-amber-100 hover:bg-amber-100',
+                        // Lime family, not the page's greens — the total of
+                        // everything has to look unlike the group bands it
+                        // sums, or it reads as one more of them.
+                        __WEB__ && '!border-y-0 !border-b-2 !border-b-[#0B3D2E] !bg-[#EDF7D4] hover:!bg-[#EDF7D4] [&>td]:!h-[46px] [&>td]:!text-[13px] [&>td]:!text-[#2E4A0B]'
+                      )}
+                    >
+                      <TableCell colSpan={5} className={cn('py-2 text-xs font-bold uppercase tracking-wide text-amber-900', __WEB__ && '!text-[11px] !font-extrabold !tracking-[.1em] !text-[#2E4A0B]')}>
+                        Grand total
+                        <span className={cn('ml-1 font-medium normal-case tracking-normal text-amber-700', __WEB__ && '!ml-1.5 !text-[12px] !font-semibold !text-[#5B7226]')}>
+                          · {grandVisible.count} bargain{grandVisible.count === 1 ? '' : 's'}
+                        </span>
+                      </TableCell>
+                      <TableCell className={cn('py-2 text-right text-xs font-bold tabular-nums text-amber-900', __WEB__ && '!bg-[#E4F2C3] !border-l !border-l-[#CBE0A0] !text-[13px] !text-[#2E4A0B]')}>{formatNum(grandVisible.opening)}</TableCell>
+                      <TableCell className={cn('py-2 text-right text-xs font-bold tabular-nums text-amber-900', __WEB__ && '!bg-[#E4F2C3] !text-[13px] !text-[#2E4A0B]')}>{formatNum(grandVisible.addition)}</TableCell>
+                      <TableCell className={cn('py-2 text-right text-xs font-bold tabular-nums text-amber-900', __WEB__ && '!bg-[#E4F2C3] !border-r !border-r-[#CBE0A0] !text-[13px] !text-[#2E4A0B]')}>{formatNum(grandVisible.adjusted)}</TableCell>
+                      <TableCell className="py-2" />
+                      <TableCell className={cn('py-2 text-right text-xs font-bold tabular-nums text-amber-900', __WEB__ && '!bg-[#E4F2C3] !border-l !border-l-[#CBE0A0] !border-r !border-r-[#CBE0A0] !text-[13px] !text-[#2E4A0B]')}>{formatNum(grandVisible.dispatch)}</TableCell>
+                      <TableCell className={cn('py-2 text-right text-xs font-bold tabular-nums text-amber-900', __WEB__ && '!bg-[#C7F03F] !text-[14px] !tracking-[-0.02em] !text-[#12280B]')}>{formatNum(grandVisible.closing)}</TableCell>
+                      <TableCell className={cn('py-2 text-right text-xs font-bold tabular-nums text-amber-900', __WEB__ && '!text-[13px] !text-[#2E4A0B]')}>{formatINR(grandVisible.balValue)}</TableCell>
+                      <TableCell className="py-2" />
+                    </TableRow>
+                    {sortedRows.map((row, i) => {
+                      const oil = grpOf(row)
+                      const newGroup =
+                        grouped && (i === 0 || oil !== grpOf(sortedRows[i - 1]))
+                      const sub = rowOther(row)
+                      const subKey = subKeyOf(row)
+                      const newSub = grouped && (newGroup || sub !== rowOther(sortedRows[i - 1]))
+                      const subClosed = grouped && !q && closedSubs.has(subKey)
+                      const sg = subStats.get(subKey)
+                      // Groups are collapsed unless the user opened them; while
+                      // searching, always reveal matches.
+                      const isCollapsed = grouped && !q && !openGroups.has(oil)
+                      const g = groupStats.get(oil)
+                      // Serial number within the sub-group (1-based).
+                      const seq = grouped
+                        ? sortedRows.slice(0, i + 1).filter((r) => subKeyOf(r) === subKey).length
+                        : i + 1
+                      return (
+                        <Fragment key={row.id as number}>
+                          {newGroup && (
+                            <TableRow
+                              className={cn(
+                                'cursor-pointer border-y-2 border-slate-300 bg-slate-100 hover:bg-slate-200/70',
+                                // An oil band, not a second header: a forest left
+                                // edge when open marks which rows belong to it.
+                                __WEB__ && '!border-y-0 !border-b !border-b-[#DCE7DB] !border-l-[3px] [&>td]:!h-[44px]',
+                                __WEB__ && (isCollapsed ? '!border-l-[#C3D2C6] !bg-[#F1F5EF] hover:!bg-[#E4ECE3]' : '!border-l-[#0B3D2E] !bg-[#E4ECE3] hover:!bg-[#E4ECE3]')
+                              )}
+                              onClick={() => toggleGroup(oil)}
+                            >
+                              <TableCell colSpan={5} className="py-1.5">
+                                <span className={cn('inline-flex items-center gap-1.5 text-xs font-bold uppercase tracking-wide text-slate-700', __WEB__ && '!gap-2.5 !text-[13.5px] !font-extrabold !tracking-[.01em] !text-[#0A1F17]')}>
+                                  {isCollapsed ? <ChevronRight className={cn('h-3.5 w-3.5', __WEB__ && '!h-[18px] !w-[18px] !text-[#5A6B62]')} /> : <ChevronDown className={cn('h-3.5 w-3.5', __WEB__ && '!h-[18px] !w-[18px] !text-[#5A6B62]')} />}
+                                  {oil}
+                                  <span className={cn('font-medium normal-case tracking-normal text-slate-500', __WEB__ && '!text-[11.5px] !font-semibold !text-[#5A6B62]')}>
+                                    · {g?.count ?? 0} bargain{(g?.count ?? 0) === 1 ? '' : 's'}
+                                  </span>
+                                </span>
+                              </TableCell>
+                              <TableCell className={cn('py-1.5 text-right text-xs font-bold tabular-nums text-slate-700', __WEB__ && '!border-l !border-l-[#DCE7DB] !text-[12.5px]', __WEB__ && ((g?.opening ?? 0) ? '!text-[#0A1F17]' : '!text-[#8AA096]'))}>{formatNum(g?.opening ?? 0)}</TableCell>
+                              <TableCell className={cn('py-1.5 text-right text-xs font-bold tabular-nums text-slate-700', __WEB__ && '!text-[12.5px]', __WEB__ && ((g?.addition ?? 0) ? '!text-[#0A1F17]' : '!text-[#8AA096]'))}>{formatNum(g?.addition ?? 0)}</TableCell>
+                              <TableCell className={cn('py-1.5 text-right text-xs font-bold tabular-nums text-slate-700', __WEB__ && '!border-r !border-r-[#DCE7DB] !text-[12.5px]', __WEB__ && ((g?.adjusted ?? 0) ? '!text-[#0A1F17]' : '!text-[#8AA096]'))}>{formatNum(g?.adjusted ?? 0)}</TableCell>
+                              <TableCell className="py-1.5" />
+                              <TableCell className={cn('py-1.5 text-right text-xs font-bold tabular-nums text-slate-700', __WEB__ && '!border-l !border-l-[#DCE7DB] !border-r !border-r-[#DCE7DB] !text-[12.5px]', __WEB__ && ((g?.dispatch ?? 0) ? '!text-[#0A1F17]' : '!text-[#8AA096]'))}>{formatNum(g?.dispatch ?? 0)}</TableCell>
+                              <TableCell className={cn('py-1.5 text-right text-xs font-bold tabular-nums text-slate-700', __WEB__ && PB_BAL, __WEB__ && '!text-[13px] !text-[#0A1F17]')}>
+                                {formatNum(g?.closing ?? 0)}
+                              </TableCell>
+                              <TableCell className={cn('py-1.5 text-right text-xs font-bold tabular-nums text-slate-700', __WEB__ && '!text-[12.5px] !text-[#0A1F17]')}>{formatINR(g?.balValue ?? 0)}</TableCell>
+                              <TableCell className="py-1.5" />
+                            </TableRow>
+                          )}
+                          {/* The sub-group band: a lighter, indented copy of
+                              the band above it, with its own totals. */}
+                          {newSub && !isCollapsed && (
+                            <TableRow
+                              className={cn(
+                                'cursor-pointer bg-slate-50 hover:bg-slate-100',
+                                __WEB__ && '!border-b !border-b-[#EAF0E9] !border-l-[3px] !border-l-[#9DC4AE] !bg-[#F7FAF6] hover:!bg-[#EFF5EC] [&>td]:!h-[38px]'
+                              )}
+                              onClick={() => toggleSub(subKey)}
+                            >
+                              <TableCell colSpan={5} className="py-1 pl-6">
+                                <span className={cn('inline-flex items-center gap-1.5 text-xs font-semibold text-slate-700', __WEB__ && '!gap-2 !pl-4 !text-[12.5px] !font-extrabold !text-[#33473E]')}>
+                                  {subClosed ? <ChevronRight className={cn('h-3.5 w-3.5', __WEB__ && '!h-4 !w-4 !text-[#7C9188]')} /> : <ChevronDown className={cn('h-3.5 w-3.5', __WEB__ && '!h-4 !w-4 !text-[#7C9188]')} />}
+                                  {sub}
+                                  <span className={cn('font-medium text-slate-500', __WEB__ && '!text-[11px] !font-semibold !text-[#7C9188]')}>
+                                    · {sg?.count ?? 0} bargain{(sg?.count ?? 0) === 1 ? '' : 's'}
+                                  </span>
+                                </span>
+                              </TableCell>
+                              {[sg?.opening ?? 0, sg?.addition ?? 0, sg?.adjusted ?? 0].map((v, k) => (
+                                <TableCell
+                                  key={k}
+                                  className={cn('py-1 text-right text-xs font-semibold tabular-nums text-slate-600', __WEB__ && '!text-[12px]', __WEB__ && (v ? '!text-[#33473E]' : '!text-[#A8B8AE]'), __WEB__ && k === 0 && '!border-l !border-l-[#EAF0E9]', __WEB__ && k === 2 && '!border-r !border-r-[#EAF0E9]')}
+                                >
+                                  {formatNum(v)}
+                                </TableCell>
+                              ))}
+                              <TableCell className="py-1" />
+                              <TableCell className={cn('py-1 text-right text-xs font-semibold tabular-nums text-slate-600', __WEB__ && '!border-l !border-l-[#EAF0E9] !border-r !border-r-[#EAF0E9] !text-[12px]', __WEB__ && ((sg?.dispatch ?? 0) ? '!text-[#33473E]' : '!text-[#A8B8AE]'))}>
+                                {formatNum(sg?.dispatch ?? 0)}
+                              </TableCell>
+                              <TableCell className={cn('py-1 text-right text-xs font-bold tabular-nums text-slate-700', __WEB__ && '!text-[12.5px] !text-[#0A1F17]')}>{formatNum(sg?.closing ?? 0)}</TableCell>
+                              <TableCell className={cn('py-1 text-right text-xs font-semibold tabular-nums text-slate-600', __WEB__ && '!text-[12px] !text-[#33473E]')}>{formatINR(sg?.balValue ?? 0)}</TableCell>
+                              <TableCell className="py-1" />
+                            </TableRow>
+                          )}
+                          {!isCollapsed && !subClosed && (
+                          <>
+                          <TableRow
+                            className={cn(
+                              'cursor-pointer transition-colors',
+                              expanded.has(Number(row.id)) ? 'bg-slate-100 hover:bg-slate-100' : 'hover:bg-muted/40',
+                              __WEB__ && '!border-b-[#EAF0E9] !border-l-[3px] !border-l-[#DCE7DB] [&>td]:!py-2.5',
+                              __WEB__ && (expanded.has(Number(row.id)) ? '!bg-white hover:!bg-white' : '!bg-white hover:!bg-[#F7FAF6]')
+                            )}
+                            onClick={() => toggleExpand(Number(row.id))}
+                          >
+                          <TableCell className={cn('font-medium', __WEB__ && '!min-w-[300px] !text-[12.5px] !font-bold !tracking-[-0.02em]')}>
+                            <ChevronRight
+                              className={cn(
+                                'mr-1 inline h-3.5 w-3.5 text-muted-foreground transition-transform',
+                                expanded.has(Number(row.id)) && 'rotate-90',
+                                __WEB__ && '!mr-2 !h-[18px] !w-[18px] !text-[#A8B8AE]'
+                              )}
+                            />
+                            <span className={cn('mr-1 tabular-nums text-muted-foreground', __WEB__ && '!mr-2 !text-[10.5px] !font-bold !text-[#5A6B62]')}>{seq}.</span>
+                            <span title={String(row.bargain_no || '')}>
+                              {row.bargain_no}
+                            </span>
+                          </TableCell>
+                          <TableCell className={cn('whitespace-nowrap text-muted-foreground', __WEB__ && '!text-[12.5px] !font-semibold !tabular-nums !text-[#5A6B62]')}>{formatDate(row.bargain_date)}</TableCell>
+                          <TableCell className={cn('max-w-[160px] truncate', __WEB__ && '!max-w-none !overflow-visible !text-[12.5px] !font-bold')} title={row.supplier_name ?? ''}>{row.supplier_name ?? '—'}</TableCell>
+                          <TableCell className={cn('text-muted-foreground', __WEB__ && '!text-[11.5px] !font-bold !text-[#5A6B62]')}>{row.oil_code}</TableCell>
+                          <TableCell>
+                            <Badge
+                              variant={row.bargain_type === 'DLD' || row.bargain_type === 'Delivered' ? 'secondary' : 'muted'}
+                              className={cn('text-[10px]', __WEB__ && '!rounded-[2px] !border-0 !bg-[#EAF0E9] !px-1.5 !py-1 !text-[10.5px] !font-extrabold !tracking-[.06em] !text-[#33473E]')}
+                            >
+                              {row.bargain_type}
+                            </Badge>
+                          </TableCell>
+                          <TableCell className={cn('text-right tabular-nums text-muted-foreground', __WEB__ && (expanded.has(Number(row.id)) ? '!bg-white' : PB_GL), __WEB__ && (Number(row._opening) ? '!text-[12.5px] !font-bold !text-[#0A1F17]' : '!text-[12.5px] !font-medium !text-[#C3D2C6]'))}>{Number(row._opening) ? formatNum(row._opening) : '—'}</TableCell>
+                          <TableCell className={cn('text-right tabular-nums', __WEB__ && (expanded.has(Number(row.id)) ? '!bg-white' : PB_G), __WEB__ && '!text-[13px] !font-bold')}>{Number(row._addition) ? formatNum(row._addition) : '—'}</TableCell>
+                          <TableCell className={cn('text-right tabular-nums', __WEB__ && (expanded.has(Number(row.id)) ? '!bg-white' : PB_GR), __WEB__ && (Number(row._adjusted) ? '!text-[12.5px] !font-bold' : '!text-[12.5px] !font-medium !text-[#C3D2C6]'))}>
+                            <span className={cn(Number(row._adjusted) < -1e-9 ? 'text-red-600' : Number(row._adjusted) > 0 ? 'text-emerald-700' : '', __WEB__ && Number(row._adjusted) !== 0 && '!text-[#8A5300]')}>
+                              {Number(row._adjusted) ? formatNum(row._adjusted) : '—'}
+                            </span>
+                          </TableCell>
+                          <TableCell className={cn('text-right tabular-nums', __WEB__ && '!text-[12.5px] !font-bold')}>{formatINR(row.rate_per_uom)}</TableCell>
+                          <TableCell className={cn('text-right tabular-nums', Number(row._dispatch) && 'font-bold text-red-600', __WEB__ && (expanded.has(Number(row.id)) ? '!bg-white !border-l !border-l-[#EAF0E9] !border-r !border-r-[#EAF0E9]' : cn(PB_GL, PB_GR)), __WEB__ && (Number(row._dispatch) ? '!text-[13px] !font-bold !text-[#0A1F17]' : '!text-[12.5px] !font-medium !text-[#C3D2C6]'))}>{Number(row._dispatch) ? formatNum(row._dispatch) : '—'}</TableCell>
+                          <TableCell className={cn('text-right font-semibold tabular-nums', __WEB__ && (expanded.has(Number(row.id)) ? '!bg-white' : PB_BAL))}>
+                            {__WEB__ ? (() => {
+                              const b = pbBar(Number(row._opening) || 0, Number(row._addition) || 0, Number(row._adjusted) || 0, Number(row._dispatch) || 0)
+                              return (
+                                <>
+                                  <div className={cn('text-[13.5px] font-bold', Number(row._closing) < -1e-9 ? 'text-[#B3261E]' : b.pct >= 95 ? 'text-[#8A5300]' : 'text-[#0A1F17]')}>
+                                    {formatNum(row._closing)}
+                                  </div>
+                                </>
+                              )
+                            })() : (
+                              <span className={Number(row._closing) < -1e-9 ? 'text-red-600' : ''}>
+                                {formatNum(row._closing)}
+                              </span>
+                            )}
+                          </TableCell>
+                          <TableCell className={cn('text-right tabular-nums', __WEB__ && '!text-[12.5px] !font-bold')}>
+                            {formatINR(row.total_amount)}
+                          </TableCell>
+                          <TableCell className="text-right" onClick={(e) => e.stopPropagation()}>
+                            <div className="flex justify-end gap-1">
+                              {/* One ⋮ rather than three icon buttons: the row's
+                                  own click already opens its tankers, so nothing
+                                  here is the primary action and none of the
+                                  three earns permanent width. */}
+                              <RowActions
+                                actions={[
+                                  { label: 'Add / remove balance qty', icon: SlidersHorizontal, onClick: () => openAdjust(row) },
+                                  { label: 'Link vouchers', icon: Link2, onClick: () => setVchLinkRow(row) },
+                                  {
+                                    label: 'Move balance to another product',
+                                    icon: Shuffle,
+                                    onClick: () => setMoveRow(row),
+                                    disabled: !(Number(row.balance_qty) > 0.0005),
+                                    disabledReason: 'Nothing is open on this bargain'
+                                  },
+                                  { label: 'Edit bargain', icon: Pencil, onClick: () => openEdit(row) },
+                                  { label: 'History — who changed what', icon: History, onClick: () => openHistory(row) },
+                                  { label: 'Delete bargain', icon: Trash2, danger: true, onClick: () => del(row) }
+                                ]}
+                              />
+                            </div>
+                          </TableCell>
+                          </TableRow>
+                          {expanded.has(Number(row.id)) && (
+                            <TableRow className={cn('bg-slate-200 hover:bg-slate-200', __WEB__ && '!border-l-[3px] !border-l-[#C3D2C6] !bg-[#F1F5EF] hover:!bg-[#F1F5EF]')}>
+                              <TableCell colSpan={13} className="p-0">
+                                {(() => {
+                                  // A tanker may be split across two bargains (excess loading):
+                                  // its bargain gets loaded − extra, the auto-created line gets extra.
+                                  const list = tankers.filter(
+                                    (t) =>
+                                      (Number(t.bargain_id) === Number(row.id) ||
+                                        (Number(t.extra_qty) > 0 && Number(t.extra_bargain_id) === Number(row.id))) &&
+                                      // The register's figures are already scoped to
+                                      // the picked companies; the tanker list has to
+                                      // agree or the two stop adding up.
+                                      (coIds.length === 0 || coIds.includes(Number(t.company_id)))
+                                  )
+                                  // Consignment / direct purchases draw on a bargain
+                                  // without a tanker of their own, so they are listed
+                                  // separately from the tanker table.
+                                  const drawn = draws.filter((d) => Number(d.bargain_id) === Number(row.id))
+                                  const drawnBlock = drawn.length ? (
+                                    <div className={cn('mb-2 overflow-hidden rounded-md border border-violet-200', __WEB__ && '!mb-2.5 !rounded-[4px] !border-[#D6E2D6]')}>
+                                      <div className={cn('flex items-center justify-between bg-violet-100/70 px-3 py-1', __WEB__ && '!border-b !border-b-[#E4ECE3] !bg-[#EAF0E9] !px-3.5 !py-2.5')}>
+                                        <span className={cn('text-[10px] font-semibold uppercase tracking-wide text-violet-900', __WEB__ && '!text-[10px] !font-extrabold !tracking-[.1em] !text-[#33473E]')}>
+                                          MNC / direct purchases on this bargain
+                                        </span>
+                                        <span className={cn('text-[11px] font-bold tabular-nums text-violet-900', __WEB__ && '!text-[12.5px] !text-[#0A1F17]')}>
+                                          {formatNum(drawn.reduce((a, d) => a + (Number(d.qty) || 0), 0))} {row.uom}
+                                        </span>
+                                      </div>
+                                      <table className="w-full bg-white text-[11px]">
+                                        <thead>
+                                          <tr className="border-b text-left text-[10px] uppercase tracking-wide text-muted-foreground">
+                                            <th className="px-3 py-1">Invoice</th>
+                                            <th className="px-3 py-1">Date</th>
+                                            {companies.length > 1 && <th className="px-3 py-1">Co.</th>}
+                                            <th className="px-3 py-1">Party</th>
+                                            <th className="px-3 py-1">Tanker(s)</th>
+                                            <th className="px-3 py-1 text-right">Drawn</th>
+                                            <th className="px-3 py-1 text-right">Invoice rate</th>
+                                          </tr>
+                                        </thead>
+                                        <tbody>
+                                          {drawn.map((d) => (
+                                            <tr
+                                              key={`${d.order_id}-${d.bargain_id}`}
+                                              className={cn('border-b last:border-0', d.order_id && onOpenOrder && 'cursor-pointer hover:bg-sky-50')}
+                                              title={d.order_id ? 'Open the purchase invoice' : undefined}
+                                              onClick={() => d.order_id && onOpenOrder?.(Number(d.order_id), Number(d.company_id) || undefined)}
+                                            >
+                                              <td className="px-3 py-1 font-medium">{d.invoice_no}</td>
+                                              <td className="whitespace-nowrap px-3 py-1">{formatDate(d.order_date)}</td>
+                                              {companies.length > 1 && (
+                                                <td className="whitespace-nowrap px-3 py-1 text-muted-foreground">
+                                                  {String(d.company_name || '—')}
+                                                </td>
+                                              )}
+                                              <td className="px-3 py-1">{d.supplier_name}</td>
+                                              <td className="px-3 py-1 text-muted-foreground">{d.tanker_nos || '—'}</td>
+                                              <td className="px-3 py-1 text-right font-bold tabular-nums text-red-600">
+                                                {formatNum(d.qty)}
+                                              </td>
+                                              <td className="px-3 py-1 text-right tabular-nums">{formatINR(d.invoice_rate)}</td>
+                                            </tr>
+                                          ))}
+                                        </tbody>
+                                      </table>
+                                    </div>
+                                  ) : null
+                                  const remarksLine = row.remarks ? (
+                                    <p className="pb-2 text-xs text-muted-foreground"><span className="font-semibold">Remarks:</span> {row.remarks}</p>
+                                  ) : null
+                                  if (!list.length) {
+                                    return (
+                                      <div className={cn('bg-slate-200 px-6 py-4', __WEB__ && '!border-b !border-b-[#DCE7DB] !bg-[#F1F5EF] !py-3.5 !pl-10 !pr-4')}>
+                                        {remarksLine}
+                                        {drawnBlock}
+                                        {!drawn.length && (
+                                          <p className="text-xs text-muted-foreground">No tankers on this bargain yet.</p>
+                                        )}
+                                      </div>
+                                    )
+                                  }
+                                  const disOf = (t: Row): number => {
+                                    const loaded = Number(t.loaded_qty) || 0
+                                    const extra = t.extra_bargain_id ? Number(t.extra_qty) || 0 : 0
+                                    return Number(t.bargain_id) === Number(row.id) ? loaded - extra : extra
+                                  }
+                                  // receipts/shortage belong to the whole tanker — pro-rate by share
+                                  const shareOf = (t: Row): number => {
+                                    const loaded = Number(t.loaded_qty) || 0
+                                    return loaded > 0 ? disOf(t) / loaded : 1
+                                  }
+                                  const pctOf = (t: Row): number =>
+                                    Number(t.order_allowed_shortage_pct ?? row.allowed_shortage_pct ?? defaultShortagePct) || 0
+                                  // EX bargains put the shortage risk beyond the allowed
+                                  // tolerance on the supplier — the excess becomes a
+                                  // deductible, unlike DLD where the transporter/company
+                                  // already absorbs it through freight/shortage handling.
+                                  const isEx = row.bargain_type === 'EX'
+                                  const tot = list.reduce(
+                                    (s, t) => {
+                                      const loaded = Number(t.loaded_qty) || 0
+                                      const rec = t.received_qty != null ? Number(t.received_qty) : null
+                                      const share = shareOf(t)
+                                      s.dis += disOf(t)
+                                      s.rec += (rec ?? 0) * share
+                                      s.shortage += rec != null ? Math.max(0, loaded - rec) * share : 0
+                                      s.allowed += (disOf(t) * pctOf(t)) / 100
+                                      return s
+                                    },
+                                    { dis: 0, rec: 0, shortage: 0, allowed: 0 }
+                                  )
+                                  return (
+                                    <div className={cn('bg-slate-200 px-6 py-4', __WEB__ && '!border-b !border-b-[#DCE7DB] !bg-[#F1F5EF] !py-3.5 !pl-10 !pr-4')}>
+                                      {remarksLine}
+                                      {drawnBlock}
+                                      <div className={cn(__WEB__ && 'overflow-hidden rounded-[4px] border border-[#D6E2D6] bg-white')}>
+                                      <table className={cn('overflow-hidden rounded-lg border border-slate-300 bg-card text-xs shadow-sm [&_td]:pl-3 [&_th]:pl-3', __WEB__ && '!w-full !rounded-none !border-0 !shadow-none')}>
+                                        <thead>
+                                          <tr className={cn('border-b bg-slate-200/70 text-left text-slate-700', __WEB__ && '!border-b-[#D6E2D6] !bg-[#EAF0E9] [&>th]:!h-[34px] [&>th]:!py-0 [&>th]:!text-[10px] [&>th]:!font-extrabold [&>th]:!uppercase [&>th]:!tracking-[.09em] [&>th]:!text-[#33473E]')}>
+                                            <th className="py-1.5 pr-3 font-semibold w-8">#</th>
+                                            <th className="py-1.5 pr-3 font-semibold">Tanker</th>
+                                            <th className="py-1.5 pr-3 font-semibold">Loading Date</th>
+                                            <th className="py-1.5 pr-3 font-semibold">Receipt Date</th>
+                                            <th className="py-1.5 pr-3 text-right font-semibold">Dis Qty</th>
+                                            <th className="py-1.5 pr-3 text-right font-semibold">Rec Qty</th>
+                                            <th className="py-1.5 pr-3 text-right font-semibold">Shortage</th>
+                                            <th className={cn('py-1.5 text-right font-semibold', isEx && 'pr-3')}>Allowed MT</th>
+                                            {isEx && (
+                                              <>
+                                                <th className="py-1.5 pr-3 text-right font-semibold">Deductible</th>
+                                                <th className="py-1.5 text-right font-semibold">Status</th>
+                                              </>
+                                            )}
+                                            {/* Whose book the tanker went through. A bargain
+                                                is general — either company can draw on it —
+                                                so the tanker is the level where that is
+                                                actually decided. */}
+                                            <th className="py-1.5 pr-3 text-left font-semibold">Company</th>
+                                          </tr>
+                                        </thead>
+                                        <tbody>
+                                          {list.map((t, ti) => {
+                                            const loaded = Number(t.loaded_qty) || 0
+                                            const dis = disOf(t)
+                                            const share = shareOf(t)
+                                            const split = Number(t.extra_qty) > 0 && Number(t.extra_bargain_id) > 0
+                                            const rec = t.status === 'empty' && t.received_qty != null ? Number(t.received_qty) * share : null
+                                            const shortage = rec != null ? Math.max(0, loaded - Number(t.received_qty)) * share : null
+                                            const allowedAmt = loaded > 0 ? (dis * pctOf(t)) / 100 : 0
+                                            const deductible = isEx && shortage != null && shortage > allowedAmt ? shortage - allowedAmt : null
+                                            return (
+                                              <tr
+                                                key={t.id as number}
+                                                className={cn(
+                                                  'border-b',
+                                                  ti % 2 === 1 ? 'bg-muted/40' : 'bg-card',
+                                                  t.order_id && onOpenOrder && 'cursor-pointer hover:bg-sky-50',
+                                                  // Zebra stripes go: the left mark
+                                                  // carries the only distinction that
+                                                  // matters here — did this tanker cost
+                                                  // the supplier a deduction.
+                                                  __WEB__ && '!border-b-[#EAF0E9] !border-l-[3px] [&>td]:!h-[48px] [&>td]:!py-0',
+                                                  __WEB__ && (deductible != null ? '!border-l-[#B3261E] !bg-[#FDF3F2]' : '!border-l-[#12855A] !bg-white'),
+                                                  __WEB__ && t.order_id && onOpenOrder && 'hover:!bg-[#F7FAF6]'
+                                                )}
+                                                title={t.order_id ? 'Open the purchase invoice' : 'Not billed yet'}
+                                                onClick={() =>
+                                                  t.order_id &&
+                                                  onOpenOrder?.(Number(t.order_id), Number(t.invoice_company_id ?? t.company_id) || undefined)
+                                                }
+                                              >
+                                                <td className={cn('py-1.5 pr-3 tabular-nums text-muted-foreground', __WEB__ && '!text-[10px] !font-bold !text-[#5A6B62]')}>{ti + 1}</td>
+                                                <td className={cn('py-1.5 pr-3 font-medium', __WEB__ && '!text-[12.5px] !font-bold')}>
+                                                  {t.tanker_no}
+                                                  {split && <span className="ml-1 text-[10px] font-normal text-muted-foreground">(split)</span>}
+                                                </td>
+                                                <td className={cn('py-1.5 pr-3', __WEB__ && '!text-[12px] !font-semibold !tabular-nums !text-[#5A6B62]')}>{loaded > 0 ? formatDate(t.loaded_date) : '—'}</td>
+                                                <td className={cn('py-1.5 pr-3', __WEB__ && '!text-[12px] !font-semibold !tabular-nums !text-[#5A6B62]')}>{t.empty_date ? formatDate(t.empty_date) : '—'}</td>
+                                                <td className={cn('py-1.5 pr-3 text-right tabular-nums font-medium text-red-600', __WEB__ && '!text-[12.5px] !font-bold !text-[#0A1F17]')}>{loaded > 0 ? formatNum(dis) : '—'}</td>
+                                                <td className={cn('py-1.5 pr-3 text-right tabular-nums', __WEB__ && '!text-[12.5px] !font-bold')}>{rec != null ? formatNum(rec) : '—'}</td>
+                                                <td className="py-1.5 pr-3 text-right tabular-nums">
+                                                  {/* The figure alone. The bar that used to sit under it
+                                                      measured the shortage against its allowance — the same
+                                                      species of bar the client had removed from the Balance
+                                                      column, and the Allowed MT figure is right beside it
+                                                      anyway. */}
+                                                  {__WEB__ && shortage != null ? (
+                                                    <div
+                                                      className={cn('text-[12.5px] font-bold', deductible != null ? 'text-[#B3261E]' : 'text-[#8A5300]')}
+                                                      title={
+                                                        allowedAmt > 0
+                                                          ? `${formatNum(shortage)} against an allowance of ${formatNum(allowedAmt)}`
+                                                          : undefined
+                                                      }
+                                                    >
+                                                      {formatNum(shortage)}
+                                                    </div>
+                                                  ) : shortage != null ? (
+                                                    <span className={shortage > 0 ? 'text-amber-700' : ''}>{formatNum(shortage)}</span>
+                                                  ) : '—'}
+                                                </td>
+                                                <td className={cn('py-1.5 text-right tabular-nums', isEx && 'pr-3', __WEB__ && '!text-[12.5px] !font-semibold !text-[#5A6B62]')}>{loaded > 0 ? formatNum(allowedAmt) : '—'}</td>
+                                                {isEx && (
+                                                  <>
+                                                    <td className={cn('py-1.5 pr-3 text-right tabular-nums text-red-600', __WEB__ && (deductible != null ? '!text-[12.5px] !font-bold !text-[#B3261E]' : '!text-[12.5px] !text-[#C3D2C6]'))}>{deductible != null ? formatNum(deductible) : __WEB__ ? '—' : ''}</td>
+                                                    <td className={cn('py-1.5 text-right', __WEB__ && '!pr-3')}>
+                                                      {__WEB__ ? (
+                                                        <span
+                                                          className={cn(
+                                                            'inline-flex items-center gap-1.5 rounded-[2px] border px-2 py-1 text-[10.5px] font-extrabold',
+                                                            deductible != null ? 'border-[#F0D6D4] bg-[#FDF3F2] text-[#B3261E]' : 'border-[#BFE3CB] bg-[#E9F5EE] text-[#0B6B45]'
+                                                          )}
+                                                        >
+                                                          {deductible != null ? <MinusCircle className="h-3.5 w-3.5" /> : <CheckCircle2 className="h-3.5 w-3.5" />}
+                                                          {deductible != null ? 'Deductible' : 'Within allowance'}
+                                                        </span>
+                                                      ) : deductible != null ? <Badge variant="destructive" className="text-[10px]">Deductible</Badge> : ''}
+                                                    </td>
+                                                  </>
+                                                )}
+                                                {/* The invoice's company where the tanker has
+                                                    been mapped into one, and the tanker's own
+                                                    until then — that is the order in which it
+                                                    is actually decided. */}
+                                                <td className={cn('py-1.5 pr-3', __WEB__ && '!text-[12px] !font-bold !text-[#33473E]')}>
+                                                  {(() => {
+                                                    const co = coName(t.invoice_company_id ?? t.company_id)
+                                                    if (!co) return <span className={cn(__WEB__ && '!font-semibold !text-[#A8B8AE]')}>—</span>
+                                                    const bg = coColour(t.invoice_company_id ?? t.company_id)
+                                                    // The colour as the chip's ground rather than its
+                                                    // ink: a pale pick is unreadable as text but reads
+                                                    // perfectly as a background, and a filled chip
+                                                    // tells two companies apart down a column far
+                                                    // faster than two shades of lettering.
+                                                    if (!__WEB__ || !bg) return co
+                                                    return (
+                                                      <span
+                                                        className="inline-block whitespace-nowrap rounded-[2px] px-2 py-[3px] text-[11px] font-bold"
+                                                        style={{ background: bg, color: inkOn(bg) }}
+                                                      >
+                                                        {co}
+                                                      </span>
+                                                    )
+                                                  })()}
+                                                </td>
+                                              </tr>
+                                            )
+                                          })}
+                                          <tr className={cn('border-t-2 border-amber-500 bg-amber-50 font-semibold text-amber-900', __WEB__ && '!border-t-0 !bg-[#C7F03F] !text-[#12280B] [&>td]:!h-[46px] [&>td]:!py-0')}>
+                                            <td className={cn('py-1.5 pr-3', __WEB__ && '!pl-3 !text-[10.5px] !font-extrabold !uppercase !tracking-[.09em] !text-[#2E4A0B]')} colSpan={4}>
+                                              Total{__WEB__ ? ` · ${list.length} tanker${list.length === 1 ? '' : 's'}` : ''}
+                                            </td>
+                                            <td className={cn('py-1.5 pr-3 text-right tabular-nums text-red-600', __WEB__ && '!text-[13px] !text-[#12280B]')}>{formatNum(tot.dis)}</td>
+                                            <td className={cn('py-1.5 pr-3 text-right tabular-nums', __WEB__ && '!text-[13px] !text-[#12280B]')}>{formatNum(tot.rec)}</td>
+                                            <td className={cn('py-1.5 pr-3 text-right tabular-nums', __WEB__ && '!text-[13px] !text-[#12280B]')}>{formatNum(tot.shortage)}</td>
+                                            <td className={cn('py-1.5 text-right tabular-nums', isEx && 'pr-3', __WEB__ && '!text-[12.5px] !text-[#3F5A12]')}>{formatNum(tot.allowed)}</td>
+                                            {isEx && (() => {
+                                              const totDeductible = tot.shortage > tot.allowed ? tot.shortage - tot.allowed : null
+                                              return (
+                                                <>
+                                                  <td className={cn('py-1.5 pr-3 text-right tabular-nums text-red-600', __WEB__ && '!text-[13px] !text-[#8C2F26]')}>{totDeductible != null ? formatNum(totDeductible) : __WEB__ ? '—' : ''}</td>
+                                                  <td className={cn('py-1.5 text-right', __WEB__ && '!pr-3')}>
+                                                    {__WEB__ ? (
+                                                      totDeductible != null ? (
+                                                        <span className="inline-flex items-center gap-1.5 rounded-[2px] bg-[#8C2F26] px-2 py-1 text-[10.5px] font-extrabold text-white">
+                                                          <MinusCircle className="h-3.5 w-3.5" /> Deductible
+                                                        </span>
+                                                      ) : null
+                                                    ) : totDeductible != null ? <Badge variant="destructive" className="text-[10px]">Deductible</Badge> : ''}
+                                                  </td>
+                                                </>
+                                              )
+                                            })()}
+                                            <td className="py-1.5 pr-3" />
+                                          </tr>
+                                        </tbody>
+                                      </table>
+                                      </div>
+                                    </div>
+                                  )
+                                })()}
+                              </TableCell>
+                            </TableRow>
+                          )}
+                          </>
+                          )}
+                        </Fragment>
+                      )
+                    })}
+                    </>
+                  )}
+                </TableBody>
+              </Table>
+              {__WEB__ && sortedRows.length > 0 && (
+                <div className="flex items-center justify-between gap-3 border-t border-[#EAF0E9] px-4 py-3">
+                  <div className="text-[12px] font-semibold text-[#5A6B62]">
+                    {grandVisible.count} bargain{grandVisible.count === 1 ? '' : 's'} ·{' '}
+                    {formatNum(grandVisible.opening + grandVisible.addition + grandVisible.adjusted)} MT contracted ·{' '}
+                    {formatNum(grandVisible.closing)} MT balance
+                  </div>
+                  {(() => {
+                    const oils = Array.from(groupStats.keys())
+                    const allOpen = oils.length > 0 && oils.every((o) => openGroups.has(o))
+                    return (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setOpenGroups(allOpen ? new Set<string>() : new Set(oils))
+                          if (!allOpen) setClosedSubs(new Set())
+                        }}
+                        className="flex items-center gap-1.5 text-[11.5px] font-extrabold uppercase tracking-[.05em] text-[#0B6B45] transition-colors hover:text-[#0B3D2E]"
+                      >
+                        <ChevronDown className={cn('h-[18px] w-[18px] transition-transform', allOpen && 'rotate-180')} />
+                        {allOpen ? 'Collapse all' : 'Expand all'}
+                      </button>
+                    )
+                  })()}
+                </div>
+              )}
+            </div>
+          </>
+        )}
+      </div>
+
+      {overlays}
     </>
   )
 }

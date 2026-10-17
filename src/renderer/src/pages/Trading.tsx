@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react'
 import { toast } from 'sonner'
-import { AlertTriangle, ArrowLeft, CalendarClock, Check, CheckCircle2, ChevronDown, Clock, Lock, Zap, ChevronRight, FileSpreadsheet, Inbox, Info, Loader2, Pencil, Plus, Receipt, Repeat, Search, TrendingDown, TrendingUp, Trash2, Users } from 'lucide-react'
+import { AlertTriangle, ArrowLeft, BookOpen, CalendarClock, Check, CheckCircle2, ChevronDown, Clock, Lock, Zap, ChevronRight, FileSpreadsheet, Inbox, Info, Loader2, Pencil, Plus, Receipt, Repeat, Search, TrendingDown, TrendingUp, Trash2, Users, Wallet } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Card } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
@@ -11,6 +11,10 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/u
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { RowActions } from '@/components/ui/row-actions'
+import { TagPicker, useTagMap } from '@/components/Tags'
+import { LedgerPostings, type PostingTarget } from '@/components/LedgerPostings'
+import { loadUser } from '@/lib/session'
+import { canAccess } from '@/lib/modules'
 import { PageHeader } from '@/components/PageHeader'
 import { formatDate, formatINR, formatNum, todayISO } from '@/lib/format'
 import { cn } from '@/lib/utils'
@@ -22,6 +26,7 @@ import { exportTradingDeals } from '@/lib/tradingExcel'
 import { useEntryWindow } from '@/lib/useEntryWindow'
 import { useIsMobile } from '@/lib/useIsMobile'
 import { TradingMobile } from './TradingMobile'
+import { TradingPayments } from './TradingPayments'
 import { tierTds } from '@/lib/tdsSlab'
 import { TdsExplainer, type TdsParty } from '@/components/TdsExplainer'
 
@@ -1042,7 +1047,8 @@ function TaxCard({
   tdsPct,
   tdsAmt,
   netLabel,
-  net
+  net,
+  showTds = true
 }: {
   rose: boolean
   head: string
@@ -1058,6 +1064,8 @@ function TaxCard({
   tdsAmt: number
   netLabel: string
   net: number
+  // The sale side has none to show — a sale carries no TDS.
+  showTds?: boolean
 }): React.JSX.Element {
   return (
     <div className={cn('overflow-hidden rounded-[4px] border bg-white', rose ? 'border-[#F0D6D4]' : 'border-[#BFE3CB]')}>
@@ -1086,7 +1094,7 @@ function TaxCard({
           footnote. */}
       {[
         { k: 'GST', pct: gstPct, v: gstAmt, tone: '', explain: false },
-        { k: 'TDS', pct: tdsPct, v: tdsAmt, tone: 'text-[#8A5300]', explain: true }
+        ...(showTds ? [{ k: 'TDS', pct: tdsPct, v: tdsAmt, tone: 'text-[#8A5300]', explain: true }] : [])
       ].map((r) => (
         <div key={r.k} className="flex items-center gap-2.5 border-b border-b-[#EAF0E9] px-3.5 py-2.5">
           <span className="text-[10px] font-extrabold uppercase tracking-[.1em] text-[#5A6B62]">{r.k}</span>
@@ -1164,7 +1172,11 @@ function SideHead({ rose, label, total }: { rose: boolean; label: string; total:
   )
 }
 
-export function Trading(): React.JSX.Element {
+export function Trading({
+  // Arrived from a trading voucher on a ledger: open that deal.
+  focusId = null,
+  onFocusHandled
+}: { focusId?: number | null; onFocusHandled?: () => void } = {}): React.JSX.Element {
   // How far back this user may date a new entry. The save is refused either
   // way; greying the days out just stops the form offering one it will reject.
   const minDate = useEntryWindow('trading')
@@ -1192,6 +1204,20 @@ export function Trading(): React.JSX.Element {
   // The deal the detail drawer is open on. Website only: the desktop register
   // opens a deal in place, underneath its own row.
   const [detailDeal, setDetailDeal] = useState<Row | null>(null)
+  // The register reads a trade as a margin; Payments reads the same trades
+  // as bills — what is still owed on each side and how it is being settled.
+  const [view, setView] = useState<'deals' | 'payments'>('deals')
+  // The deal may not be in the list yet when the request arrives, so this
+  // waits for the list rather than dropping the click on the floor.
+  useEffect(() => {
+    const want = Number(focusId) || 0
+    if (!want) return
+    const hit = deals.find((d) => Number(d.id) === want)
+    if (!hit) return
+    setDetailDeal(hit)
+    onFocusHandled?.()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [focusId, deals])
   const isMobile = useIsMobile()
   // Which side's withholding is being explained, if either.
   const [tdsSide, setTdsSide] = useState<'purchase' | 'sale' | null>(null)
@@ -1365,21 +1391,19 @@ export function Trading(): React.JSX.Element {
     })
   }
 
-  // Same as the Sales Bargain form's customer pick — GST and TDS off the
-  // customer master when it carries them, for this buyer alone.
+  // Same as the Sales Bargain form's customer pick — GST off the customer
+  // master when it carries it, for this buyer alone. No TDS: a sale carries
+  // none (SALE_TDS_PCT in sales.ts).
   function chooseCustomer(pi: number, id: string): void {
     const c = customers.find((x) => String(x.id) === id)
     const hasGst = !!c && Number(c.gst_pct) > 0
-    const hasTds = !!c && Number(c.tds_pct) > 0
     patchParty(pi, {
       customer_id: id,
-      ...(hasGst ? { gst_pct: c?.gst_pct } : {}),
-      ...(hasTds ? { tds_pct: c?.tds_pct } : {})
+      ...(hasGst ? { gst_pct: c?.gst_pct } : {})
     })
     setAutoFields((prev) => {
       const next = new Set(prev)
       if (hasGst) next.add(partyKey(pi, 'gst_pct'))
-      if (hasTds) next.add(partyKey(pi, 'tds_pct'))
       return next
     })
   }
@@ -1587,7 +1611,7 @@ export function Trading(): React.JSX.Element {
   const purchaseNet = round2(purchaseCalc.roundedTotal - purchaseTds)
 
   // One set of figures per buyer. Each buyer is invoiced separately, so each
-  // gets its own GST, its own round off and its own TDS on its own slab —
+  // gets its own GST and its own round off (and no TDS — a sale carries none) —
   // adding them up afterwards is what the deal earned, but the arithmetic
   // cannot be done on the total or a party would be taxed at another's rate.
   const partyCalcs = useMemo(
@@ -1600,16 +1624,7 @@ export function Trading(): React.JSX.Element {
         const gstAmount = (amount * gstPct) / 100
         const roundOff = n(sp?.round_off)
         const total = amount + gstAmount + roundOff
-        const tdsAmount = slabTdsTotal(
-          ls,
-          (l) => l.qty * l.rate,
-          gstPct,
-          roundOff,
-          n(sp?.tds_pct),
-          master,
-          n(salePriors[String(sp?.customer_id || '')]),
-          'taxable'
-        )
+        const tdsAmount = 0
         return {
           qty: ls.reduce((a, l) => a + l.qty, 0),
           invoiceCount: ls.length,
@@ -1782,6 +1797,33 @@ export function Trading(): React.JSX.Element {
   // credit against output liability) and TDS is a withholding, not a cost;
   // neither belongs in what the trade earned. Now Sale − Purchase IS the
   // margin, to the paisa.
+  // THE DESK'S OWN LABELS ON THESE DEALS.
+  // One fetch for the whole register rather than one per row — and keyed off
+  // the FILTERED list, so narrowing to a product or a date range asks only for
+  // what is on screen. A deal is keyed by its own id: unlike a sale invoice it
+  // is one row, so there is no group to stand in for it.
+  const dealTags = useTagMap('trading', filteredDeals.map((d) => Number(d.id)))
+
+  // WHAT THIS DEAL PUT IN THE LEDGERS.
+  // A trade is two invoices and the difference between them, so the two
+  // vouchers side by side ARE the deal in the books. Behind the Accounting
+  // grant, like the panel everywhere else — it is a window on the ledgers.
+  const canSeeLedgers = useMemo(() => {
+    const u = loadUser()
+    // The ledgers themselves: the Accounting · Ledgers section (which follows
+    // Accounting for anyone not set otherwise).
+    return !u || canAccess(u, 'accountsLedgers')
+  }, [])
+  const [postings, setPostings] = useState<PostingTarget | null>(null)
+  const openPostings = (d: Row): void =>
+    setPostings({
+      entity: 'trading',
+      id: Number(d.id),
+      kicker: 'Trading deal',
+      title: `${formatDate(d.deal_date)} · ${String(d.product_code || d.product_name || '')}`.trim(),
+      subtitle: `${d.supplier_name || '—'} → ${d.customer_name || '—'} · ${formatNum(d.purchase_qty)} ${d.purchase_uom || 'MT'}`
+    })
+
   const totalMargin = filteredDeals.reduce((s, d) => s + n(d.margin), 0)
   const totalPurchase = filteredDeals.reduce((s, d) => s + n(d.purchase_taxable), 0)
   const totalSale = filteredDeals.reduce((s, d) => s + n(d.sale_amount), 0)
@@ -1889,7 +1931,7 @@ export function Trading(): React.JSX.Element {
                 <div className={cn('grid gap-4 md:grid-cols-4', __WEB__ && '!gap-3.5 !p-4 md:!grid-cols-[1.2fr_1.2fr_1fr_110px]')}>
                   <div className="flex flex-col gap-1.5">
                     <Label>Stock category</Label>
-                    <Select
+                    <Select searchable
                       value={String(form.product_category || 'ALL')}
                       onValueChange={(v) =>
                         // Changing the category drops a product that no longer
@@ -1913,7 +1955,7 @@ export function Trading(): React.JSX.Element {
                   </div>
                   <div className="flex flex-col gap-1.5">
                     <Label>Product <Req /></Label>
-                    <Select value={String(form.product_id || '')} onValueChange={(v) => setForm((p) => ({ ...p, product_id: v }))}>
+                    <Select searchable value={String(form.product_id || '')} onValueChange={(v) => setForm((p) => ({ ...p, product_id: v }))}>
                       <SelectTrigger><SelectValue placeholder="Select product" /></SelectTrigger>
                       <SelectContent className="max-h-64">
                         {shownProducts.length === 0 ? (
@@ -1971,7 +2013,7 @@ export function Trading(): React.JSX.Element {
                   </div>
                   <div className="flex flex-col gap-1.5">
                     <Label>UOM</Label>
-                    <Select value={form.uom || 'MT'} onValueChange={(v) => setForm((p) => ({ ...p, uom: v }))}>
+                    <Select searchable value={form.uom || 'MT'} onValueChange={(v) => setForm((p) => ({ ...p, uom: v }))}>
                       <SelectTrigger><SelectValue /></SelectTrigger>
                       <SelectContent>
                         <SelectItem value="MT">MT</SelectItem>
@@ -2068,7 +2110,7 @@ export function Trading(): React.JSX.Element {
                 <div className={cn('grid gap-4 md:grid-cols-3', __WEB__ && '!gap-3.5 !p-4')}>
                   <div className="flex flex-col gap-1.5 md:col-span-2">
                     <Label>Supplier <Req /></Label>
-                    <Select value={String(form.supplier_id || '')} onValueChange={chooseSupplier}>
+                    <Select searchable value={String(form.supplier_id || '')} onValueChange={chooseSupplier}>
                       <SelectTrigger><SelectValue placeholder="Select supplier" /></SelectTrigger>
                       <SelectContent className="max-h-64">
                         {dealSuppliers.length === 0 ? (
@@ -2121,7 +2163,7 @@ export function Trading(): React.JSX.Element {
                     </div>
                     <div className={cn('flex flex-col gap-1.5', __WEB__ && '!w-[210px]')}>
                       <Label>GST type</Label>
-                      <Select value={form.purchase_gst_type || 'CGST_SGST'} onValueChange={(v) => setForm((p) => ({ ...p, purchase_gst_type: v }))}>
+                      <Select searchable value={form.purchase_gst_type || 'CGST_SGST'} onValueChange={(v) => setForm((p) => ({ ...p, purchase_gst_type: v }))}>
                         <SelectTrigger><SelectValue /></SelectTrigger>
                         <SelectContent>
                           <SelectItem value="CGST_SGST">CGST + SGST</SelectItem>
@@ -2250,7 +2292,7 @@ export function Trading(): React.JSX.Element {
                           >
                             Buyer {pi + 1}
                           </span>
-                          <Select
+                          <Select searchable
                             value={String(sp?.customer_id || '')}
                             onValueChange={(v) => chooseCustomer(pi, v)}
                           >
@@ -2394,7 +2436,7 @@ export function Trading(): React.JSX.Element {
                             </div>
                             <div className={cn('flex items-center gap-1.5', __WEB__ && '!w-[210px] !flex-col !items-stretch !gap-1.5')}>
                               <Label className="whitespace-nowrap">GST type</Label>
-                              <Select
+                              <Select searchable
                                 value={sp?.gst_type || 'CGST_SGST'}
                                 onValueChange={(v) => patchParty(pi, { gst_type: v })}
                               >
@@ -2404,24 +2446,6 @@ export function Trading(): React.JSX.Element {
                                   <SelectItem value="IGST">IGST</SelectItem>
                                 </SelectContent>
                               </Select>
-                            </div>
-                            <div className={cn('flex items-center gap-1.5', __WEB__ && '!w-[130px] !flex-col !items-stretch !gap-1.5')}>
-                              <Label className="whitespace-nowrap">
-                                TDS %{' '}
-                                {autoFields.has(partyKey(pi, 'tds_pct')) && (
-                                  <span className="text-amber-700">(auto)</span>
-                                )}
-                              </Label>
-                              <Input
-                                type="number"
-                                className={cn(
-                                  'h-8 w-[4.5rem] text-right tabular-nums',
-                                  autoFields.has(partyKey(pi, 'tds_pct')) && AUTO_CLASS,
-                                  __WEB__ && '!w-full'
-                                )}
-                                value={sp?.tds_pct ?? ''}
-                                onChange={(e) => setPartyField(pi, 'tds_pct', e.target.value)}
-                              />
                             </div>
                           </div>
                         </div>
@@ -2483,40 +2507,7 @@ export function Trading(): React.JSX.Element {
                               />
                             </div>
                             <Fact label="Invoice total" value={formatINR(c.total)} />
-                            {/* TDS on its own, in the order the money actually
-                                moves: invoice total, less the withholding,
-                                leaves the net. It was a grey sub-line under
-                                Net receivable, which put the deduction after
-                                the figure it had already been taken out of. */}
-                            <Fact label="TDS" value={formatINR(c.tdsAmount)} warn />
                             <Fact label="Net receivable" value={formatINR(c.netReceivable)} strong />
-                            {n(sp?.tds_pct) > 0 && (() => {
-                              const b = tdsBasis(c.amount, c.master, n(salePriors[String(sp?.customer_id || '')]))
-                              return (
-                                <p
-                                  className={cn(
-                                    'sm:col-span-3 lg:col-span-5 text-[11px] leading-snug',
-                                    b.hasSlab && !b.exempt ? 'text-amber-800' : 'text-muted-foreground',
-                                    // Its own row across the strip, on the
-                                    // warning ground it earns: this is the
-                                    // sentence that explains why two buyers at
-                                    // one rate owe different TDS.
-                                    __WEB__ &&
-                                      '!col-span-full !m-0 !bg-[#FFFBF2] !px-3.5 !py-2.5 !text-[11.5px] !font-semibold !leading-relaxed !text-[#8A5300]'
-                                  )}
-                                >
-                                  <b>TDS {formatNum(sp?.tds_pct)}%</b> on {formatINR(b.base)} ={' '}
-                                  <b>{formatINR(c.tdsAmount)}</b> — {b.note}.
-                                  {b.exempt && (
-                                    <>
-                                      {' '}
-                                      {formatINR(n(salePriors[String(sp?.customer_id || '')]))} already billed to this
-                                      buyer this year.
-                                    </>
-                                  )}
-                                </p>
-                              )
-                            })()}
                           </div>
                         )}
                       </div>
@@ -2885,7 +2876,6 @@ export function Trading(): React.JSX.Element {
                   value={formatINR(saleCalc.total)}
                   strong
                 />
-                <MoneyRow label="TDS (on taxable value)" value={formatINR(saleCalc.tdsAmount)} muted />
                 <MoneyRow
                   label={partyCalcs.length > 1 ? 'Net receivable from buyers' : 'Net receivable from customer'}
                   value={formatINR(saleCalc.netReceivable)}
@@ -2923,6 +2913,29 @@ export function Trading(): React.JSX.Element {
         hint="No bargain, no tanker movement, no stock entries, no interest — the purchase and sale book straight through in one step, same as ticking 'Trading' inside Purchases/Sales, just from one dedicated screen with full GST/TDS/round-off control. One deal buys from a single supplier across as many purchase invoices as it needs, and sells on to ONE OR SEVERAL buyers — each buyer with its own invoices, its own GST type, its own TDS slab and its own round off, because those belong to the party and not to the trade. GST/TDS auto-load from the supplier/customer master (highlighted amber) and can be overridden. Deleting a deal removes every purchase and sale invoice on it."
         actions={
           <>
+            {__WEB__ && (
+              <div className="flex items-center gap-[3px] rounded-[4px] border border-[#DCE7DB] bg-[#EAF0E9] p-[3px]">
+                {(
+                  [
+                    { v: 'deals', label: 'Deals', Icon: Repeat },
+                    { v: 'payments', label: 'Payments', Icon: Wallet }
+                  ] as const
+                ).map((t) => (
+                  <button
+                    key={t.v}
+                    type="button"
+                    onClick={() => setView(t.v)}
+                    className={cn(
+                      'flex h-[30px] items-center gap-1.5 rounded-[2px] px-3 text-[12.5px] font-extrabold transition-colors',
+                      view === t.v ? 'bg-[#0B3D2E] text-white' : 'text-[#5A6B62] hover:bg-white/70'
+                    )}
+                  >
+                    <t.Icon className="h-3.5 w-3.5" />
+                    {t.label}
+                  </button>
+                ))}
+              </div>
+            )}
             {/* The period this register is showing — and the way to change
                 it. Trading is the one page with no From/To inputs of its own,
                 so this used to be a dead label whose tooltip pointed at
@@ -2972,7 +2985,7 @@ export function Trading(): React.JSX.Element {
                 </button>
               )
             })()}
-            <Button
+            {!(__WEB__ && view === 'payments') && <Button
               variant="outline"
               className="gap-1.5"
               disabled={filteredDeals.length === 0}
@@ -2984,7 +2997,7 @@ export function Trading(): React.JSX.Element {
               }
             >
               <FileSpreadsheet className="h-4 w-4" /> Download Excel
-            </Button>
+            </Button>}
             <Button className="gap-1.5" onClick={openNew}>
               <Plus className="h-4 w-4" /> New trading deal
             </Button>
@@ -2992,6 +3005,15 @@ export function Trading(): React.JSX.Element {
         }
       />
 
+      {__WEB__ && view === 'payments' ? (
+        <TradingPayments
+          range={globalRangeAppliesTo(globalRange, 'trading') ? { from: globalRange.from, to: globalRange.to } : null}
+          onOpenDeal={(id) => {
+            const d = deals.find((x) => Number(x.id) === id)
+            if (d) setDetailDeal(d)
+          }}
+        />
+      ) : (<>
       {/* Summary tiles. Every figure is read off filteredDeals — the same
           array the register below is drawn from — so a tile can never state
           something the table under it contradicts. */}
@@ -3231,6 +3253,25 @@ export function Trading(): React.JSX.Element {
                       {open && !__WEB__ ? <ChevronDown className="h-3.5 w-3.5 shrink-0" /> : <ChevronRight className={cn('h-3.5 w-3.5 shrink-0 text-muted-foreground', __WEB__ && '!h-[18px] !w-[18px] !text-[#5A6B62]')} />}
                       {formatDate(d.deal_date)}
                     </span>
+                    {/* A DEAL'S DATE IS ALL IT HAS FOR A NAME.
+                        There is no deal number — the date, the product and the
+                        two parties are the whole of it — which is precisely
+                        why a label is worth more here than on a bill that has
+                        an invoice number to be remembered by.
+
+                        Stops the row's own click: tagging a deal is not asking
+                        to open it. */}
+                    {__WEB__ && (
+                      <div className="mt-1 whitespace-normal" onClick={(e) => e.stopPropagation()}>
+                        <TagPicker
+                          entity="trading"
+                          refId={Number(d.id)}
+                          tags={dealTags.tagsOf(Number(d.id))}
+                          onChanged={(next) => dealTags.setFor(Number(d.id), next)}
+                          compact
+                        />
+                      </div>
+                    )}
                   </TableCell>
                   <TableCell className="py-1.5 text-[13px] font-semibold">
                     {__WEB__ ? (
@@ -3297,6 +3338,15 @@ export function Trading(): React.JSX.Element {
                         <RowActions
                           actions={[
                             { label: 'Edit this deal', icon: Pencil, onClick: () => openEdit(d) },
+                            ...(canSeeLedgers
+                              ? [
+                                  {
+                                    label: 'Ledger posting — what it put in the books',
+                                    icon: BookOpen,
+                                    onClick: () => openPostings(d)
+                                  }
+                                ]
+                              : []),
                             {
                               label: 'Delete this deal — removes its invoices too',
                               icon: Trash2,
@@ -3374,9 +3424,9 @@ export function Trading(): React.JSX.Element {
                             value={`${formatNum(d.purchase_gst_pct)}% / ${sp.length > 1 ? 'per buyer' : `${formatNum(d.sale_gst_pct)}%`}`}
                           />
                           <Fact
-                            label="TDS (purchase / sale)"
-                            value={`${formatINR(d.purchase_tds_amount)} / ${formatINR(d.sale_tds_amount)}`}
-                            hint={`${formatNum(d.purchase_tds_pct)}% / ${sp.length > 1 ? 'per buyer' : `${formatNum(d.sale_tds_pct)}%`}`}
+                            label="TDS (purchase)"
+                            value={formatINR(d.purchase_tds_amount)}
+                            hint={`${formatNum(d.purchase_tds_pct)}%`}
                           />
                           <Fact label="Net payable to supplier" value={formatINR(d.purchase_net)} />
                           <Fact
@@ -3473,6 +3523,7 @@ export function Trading(): React.JSX.Element {
           </div>
         )}
       </div>
+      </>)}
 
       {/* The deal, opened from its row.
           The register is one line per deal and a trade is a stack of invoices
@@ -3516,6 +3567,20 @@ export function Trading(): React.JSX.Element {
                         {formatNum(d.purchase_qty)} {uom}
                       </span>
                     </DialogTitle>
+                    {/* THE LABELS, WITH THE DEAL'S IDENTITY.
+                        Most deals are opened from the row rather than tagged
+                        on it, so the panel has to be able to do it too — and
+                        it reads from the same map as the register, so a tag
+                        put on here is on the row the moment the panel closes. */}
+                    <div className="mt-2.5 flex flex-wrap items-center gap-1.5">
+                      <TagPicker
+                        entity="trading"
+                        refId={Number(d.id)}
+                        tags={dealTags.tagsOf(Number(d.id))}
+                        onChanged={(next) => dealTags.setFor(Number(d.id), next)}
+                        onDark
+                      />
+                    </div>
                     {/* The one figure the deal is judged on, in the header
                         rather than at the foot of a scroll — a loss is the
                         reason a deal gets opened.
@@ -3685,11 +3750,11 @@ export function Trading(): React.JSX.Element {
                             rose={false}
                             head="Sale"
                             party={multi ? `${sp.length} buyers` : ''}
-                            onExplain={() => setTdsSide('sale')}
                             gstPct={multi ? 'per buyer' : `${formatNum(d.sale_gst_pct)}%`}
                             gstAmt={n(d.sale_gst_amount)}
-                            tdsPct={multi ? 'per buyer' : `${formatNum(d.sale_tds_pct)}%`}
-                            tdsAmt={n(d.sale_tds_amount)}
+                            tdsPct=""
+                            tdsAmt={0}
+                            showTds={false}
                             netLabel="Net receivable"
                             net={n(d.sale_net_receivable)}
                           />
@@ -3850,6 +3915,10 @@ export function Trading(): React.JSX.Element {
           />
         )
       })()}
+
+      {/* WHAT THIS DEAL PUT IN THE LEDGERS — the two invoices' vouchers side
+          by side. See components/LedgerPostings.tsx. */}
+      <LedgerPostings target={postings} onClose={() => setPostings(null)} />
     </div>
   )
 }

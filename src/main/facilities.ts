@@ -27,7 +27,8 @@ export async function listFacilities(): Promise<Row[]> {
             -- when the bill came in for less. Same rule as getLcLimit in lc.ts.
             COALESCE((SELECT SUM(COALESCE(NULLIF(l.blocked_amount, 0), l.amount) - COALESCE((SELECT SUM(r.amount) FROM lc_repayments r
                        WHERE r.lc_id = l.id AND r.posted = 1), 0)) FROM letters_of_credit l
-                       WHERE l.facility_id = f.id AND l.status != 'closed'), 0) AS lc_committed,
+                       WHERE l.facility_id = f.id AND l.status != 'closed'
+                         AND COALESCE(l.workflow_status, '') <> 'rejected'), 0) AS lc_committed,
             COALESCE((SELECT SUM(i.amount) FROM lc_issuances i
                        JOIN letters_of_credit l2 ON l2.id = i.lc_id
                       WHERE l2.facility_id = f.id), 0) AS lc_utilized,
@@ -157,7 +158,8 @@ export async function facilityHeadroom(facilityId: number, excludeLcId = 0): Pro
   const lc = await c.execute({
     sql: `SELECT COALESCE(SUM(COALESCE(NULLIF(l.blocked_amount, 0), l.amount) - COALESCE((SELECT SUM(r.amount) FROM lc_repayments r
                  WHERE r.lc_id = l.id AND r.posted = 1), 0)), 0) AS a
-          FROM letters_of_credit l WHERE l.facility_id = ? AND l.status != 'closed' AND l.id != ?`,
+          FROM letters_of_credit l WHERE l.facility_id = ? AND l.status != 'closed' AND l.id != ?
+            AND COALESCE(l.workflow_status, '') <> 'rejected'`,
     args: [facilityId, excludeLcId]
   })
   const other = await c.execute({

@@ -1,6 +1,10 @@
 import type { InValue } from '@libsql/client'
 import { getClient, onDataChanged } from './db'
+import { ensureCompanyParties } from './intercompany'
 import { getActiveCompanyId } from './company'
+import { bankLedgerName } from './treasury'
+import { renameLedger, ensureLedgerMap, resolveAccountName } from './ledgerMap'
+import { logLimitChange } from './facilityLimits'
 
 // Whitelist of writable columns per table. Table names and column names only
 // ever come from this map (never from the renderer), so the dynamic SQL below
@@ -46,6 +50,7 @@ const TABLES: Record<string, string[]> = {
     'tds_pct_above',
     'default_rate_per_ton',
     'reverse_charge',
+    'gst_registration',
     'active'
   ],
   customers: [
@@ -68,8 +73,12 @@ const TABLES: Record<string, string[]> = {
   ],
   sources: ['name', 'transit_days', 'active'],
   uoms: ['name', 'active'],
-  brokers: ['name', 'contact_person', 'phone', 'brokerage_pct', 'address', 'note', 'active'],
-  companies: ['name', 'company_type', 'colour', 'active', 'factory_id'],
+  brokers: ['name', 'contact_person', 'phone', 'brokerage_pct', 'brokerage_rate', 'address', 'note', 'active'],
+  companies: [
+    'name', 'company_type', 'colour', 'active', 'factory_id', 'priority',
+    'gstin', 'state', 'gst_pct', 'tds_pct', 'tds_threshold', 'tds_above_only', 'credit_period_days',
+    'opening_purchase_amount', 'opening_purchase_date', 'onward_sale_at_empty'
+  ],
   factories: ['name', 'location', 'active'],
   packagings: ['name', 'box_label', 'pouch_label', 'pouches_per_box', 'unit_size', 'unit_uom', 'base_per_pouch', 'base_uom', 'product_id', 'product_label', 'active']
 }
@@ -215,7 +224,37 @@ export async function create(table: string, values: Row): Promise<{ id: number }
     sql: `INSERT INTO ${table} (${keys.join(', ')}) VALUES (${placeholders})`,
     args: keys.map((k) => toArg(values[k], k))
   })
+  // A new company needs the customer and supplier rows that stand for it, or
+  // it cannot be picked as the other side of an inter-company sale.
+  if (table === 'companies') await ensureCompanyParties().catch(() => undefined)
+  if (table === 'banks') await ensureBankLedger(values).catch((e) => console.error('[banks] ledger not created:', e))
+  // A new party is a ledger at once — see ensurePartyMasterLedger.
+  if (table === 'customers' || table === 'suppliers' || table === 'transporters' || table === 'brokers') {
+    const { ensurePartyMasterLedger } = await import('./partyLedgers')
+    await ensurePartyMasterLedger(table, values.name).catch((e) => console.error(`[${table}] ledger not created:`, e))
+  }
   return { id: Number(res.lastInsertRowid) }
+}
+
+/**
+ * A NEW BANK IS A LEDGER AT ONCE.
+ *
+ * The bank pickers — where a disbursement landed, which bank a repayment or an
+ * interest payment left from, moving a voucher to another bank — list the bank
+ * LEDGERS, and a bank's ledger used to come into being only when something
+ * first posted to it. So a bank added here could not be picked anywhere until
+ * an LC happened to use it. It is created with the bank now, under the name
+ * the bank posts as (with the last four of its account number).
+ */
+async function ensureBankLedger(v: Row): Promise<void> {
+  const want = bankLedgerName(v.name, v.account_no)
+  if (!want) return
+  const name = String(await resolveAccountName(want, n(v.company_id) || undefined)).trim().toUpperCase()
+  if (!name) return
+  await getClient().execute({
+    sql: "INSERT OR IGNORE INTO ledger_accounts (name, acc_group) VALUES (?, 'Bank Accounts')",
+    args: [name]
+  })
 }
 
 // A party's ledger account is keyed by NAME (getOrCreateAccount), so renaming
@@ -229,17 +268,85 @@ export async function create(table: string, values: Row): Promise<{ id: number }
 //                                       shell is dropped
 const LEDGER_MASTERS = new Set(['customers', 'suppliers', 'transporters', 'brokers'])
 
+const n = (v: unknown): number => Number(v) || 0
+
+/**
+ * A REDIRECT THAT POINTED AT THIS LEDGER HAS TO FOLLOW IT.
+ *
+ * ledger_map says "postings addressed to X go to Y", and Y is a NAME. Rename
+ * the ledger Y without touching the map and the redirect points at a name
+ * that no longer exists — so the next posting addressed to X resolves to a
+ * dead name and getOrCreateAccount opens a fresh ledger under it. That is the
+ * exact duplicate the map exists to prevent, arrived at from the other side.
+ *
+ * renameLedger already does this for a rename made in Masters; a party rename
+ * comes through here instead, so it has to do it too.
+ *
+ * What this deliberately does NOT do is write a redirect from the party's old
+ * name to its new one. A party's postings are addressed by reading its name
+ * off the master at the time, so they follow a rename on their own — and a
+ * standing redirect would be a trap: create a NEW party later under the old
+ * name and its postings would be silently swept into the renamed party's
+ * ledger.
+ */
+async function followLedgerMap(from: string, to: string): Promise<void> {
+  await ensureLedgerMap().catch(() => undefined)
+  await getClient()
+    .execute({
+      sql: 'UPDATE ledger_map SET use_name = ? WHERE TRIM(UPPER(use_name)) = ?',
+      args: [to, from]
+    })
+    .catch(() => undefined)
+}
+
+/**
+ * THE PARTY'S LEDGER MAY NOT BE CALLED WHAT THE PARTY IS CALLED.
+ *
+ * This is handed the party's OLD name and looks for a ledger under it. That
+ * holds right up until somebody renames the ledger itself in Masters: the
+ * ledger is then ASHOK SHOP LTD while the party is still ASHOK SHOP, so the
+ * lookup finds nothing, this function quietly does nothing, and the party's
+ * ledger is left behind under a name nothing addresses any more. The next
+ * posting asks for the party's NEW name, finds no ledger, and opens an empty
+ * one — the history stranded in the old row.
+ *
+ * The map is what knows where the old name actually points, so it is asked
+ * before giving up.
+ */
+async function ledgerIdFor(name: string): Promise<{ id: number; name: string } | null> {
+  const c = getClient()
+  const want = String(name || '').trim().toUpperCase()
+  if (!want) return null
+  const hit = await c.execute({
+    sql: 'SELECT id, name FROM ledger_accounts WHERE TRIM(UPPER(name)) = ?',
+    args: [want]
+  })
+  if (hit.rows.length) return { id: Number(hit.rows[0].id), name: want }
+  const via = String(await resolveAccountName(want).catch(() => '') || '').trim().toUpperCase()
+  if (!via || via === want) return null
+  const second = await c.execute({
+    sql: 'SELECT id, name FROM ledger_accounts WHERE TRIM(UPPER(name)) = ?',
+    args: [via]
+  })
+  return second.rows.length ? { id: Number(second.rows[0].id), name: via } : null
+}
+
 async function renameLedgerAccount(oldName: string, newName: string): Promise<void> {
   const c = getClient()
-  const from = String(oldName || '').trim().toUpperCase()
+  const asked = String(oldName || '').trim().toUpperCase()
   const to = String(newName || '').trim().toUpperCase()
-  if (!from || !to || from === to) return
-  const src = await c.execute({ sql: 'SELECT id FROM ledger_accounts WHERE TRIM(UPPER(name)) = ?', args: [from] })
-  if (!src.rows.length) return
-  const srcId = Number(src.rows[0].id)
+  if (!asked || !to || asked === to) return
+  const found = await ledgerIdFor(asked)
+  if (!found) return
+  // The name the ledger is ACTUALLY under, which is what the map rows and the
+  // merge check below have to be matched against.
+  const from = found.name
+  if (from === to) return
+  const srcId = found.id
   const dst = await c.execute({ sql: 'SELECT id FROM ledger_accounts WHERE TRIM(UPPER(name)) = ?', args: [to] })
   if (!dst.rows.length) {
     await c.execute({ sql: 'UPDATE ledger_accounts SET name = ? WHERE id = ?', args: [to, srcId] })
+    await followLedgerMap(from, to)
     return
   }
   const dstId = Number(dst.rows[0].id)
@@ -247,12 +354,45 @@ async function renameLedgerAccount(oldName: string, newName: string): Promise<vo
   await c.execute({ sql: 'UPDATE journal_lines SET account_id = ? WHERE account_id = ?', args: [dstId, srcId] })
   await c.execute({ sql: 'UPDATE journal_bill_allocs SET account_id = ? WHERE account_id = ?', args: [dstId, srcId] })
   await c.execute({ sql: 'DELETE FROM ledger_accounts WHERE id = ?', args: [srcId] })
+  // The source ledger is gone; anything aimed at its name now aims at the one
+  // its history was merged into.
+  await followLedgerMap(from, to)
+}
+
+/**
+ * A BANK'S LEDGER CARRIES THE LAST FOUR OF ITS ACCOUNT NUMBER.
+ *
+ * Two accounts at the same bank are two ledgers, and a name stopping at the
+ * bank lumps them into one figure nobody can match against a statement. So the
+ * ledger reads HDFCBANK A/C · 4521, and the moment a bank's number is filled
+ * in — or changed — its ledger follows.
+ *
+ * Which is only safe because of ledger_map: the app posts by asking for
+ * `HDFCBANK A/C`, and renaming the account would otherwise have the next LC
+ * open a SECOND one under the old name. renameLedger writes the redirect at
+ * the same time, so the ask keeps landing on the same row.
+ */
+async function syncBankLedgerName(bankId: number, before: Row | null, after: Row): Promise<void> {
+  const was = bankLedgerName(before?.name, before?.account_no)
+  const now = bankLedgerName(after?.name, after?.account_no)
+  if (!was || !now || was === now) return
+  const c = getClient()
+  const src = await c.execute({
+    sql: 'SELECT id FROM ledger_accounts WHERE TRIM(UPPER(name)) = ?',
+    args: [was.toUpperCase()]
+  })
+  if (!src.rows.length) return
+  await renameLedger(Number(src.rows[0].id), now, n(after?.company_id) || undefined).catch((e) =>
+    console.error('[banks] could not carry the ledger name across:', e)
+  )
 }
 
 export async function update(table: string, id: number, values: Row): Promise<{ id: number }> {
   const allowed = assertTable(table)
   await assertUniqueName(table, values, id)
   const keys = pickKeys(values, allowed)
+  // A renamed company renames the parties that stand for it.
+  if (table === 'companies') await ensureCompanyParties().catch(() => undefined)
   if (keys.length === 0) return { id }
   // Read the old name BEFORE the update, so a rename can be detected.
   let priorName = ''
@@ -260,12 +400,58 @@ export async function update(table: string, id: number, values: Row): Promise<{ 
     const prev = await getClient().execute({ sql: `SELECT name FROM ${table} WHERE id = ?`, args: [id] })
     priorName = prev.rows.length ? String(prev.rows[0].name || '') : ''
   }
+  /**
+   * A SANCTIONED LIMIT CHANGING IS NOT THE SAME AS A FIELD CHANGING.
+   *
+   * Every other column on an NBFC is a property of the party — its name, its
+   * rate, its TDS. The limit is an event: somebody negotiated it, on a date,
+   * and next year the question will be when. Read before the write so the move
+   * can be recorded from what to what, and only for this one column, so the
+   * log stays a record of sanctions rather than of edits.
+   */
+  let priorLimit: number | null = null
+  if (table === 'nbfcs' && keys.includes('sanctioned_limit')) {
+    const prev = await getClient().execute({
+      sql: 'SELECT COALESCE(sanctioned_limit, 0) AS v FROM nbfcs WHERE id = ?',
+      args: [id]
+    })
+    priorLimit = prev.rows.length ? Number(prev.rows[0].v) || 0 : 0
+  }
+  // Same idea for a bank, but its ledger name is built from two fields.
+  let priorBank: Row | null = null
+  if (table === 'banks') {
+    const prev = await getClient().execute({
+      sql: 'SELECT name, account_no, company_id FROM banks WHERE id = ?',
+      args: [id]
+    })
+    priorBank = prev.rows.length ? (prev.rows[0] as unknown as Row) : null
+  }
   const setClause = keys.map((k) => `${k} = ?`).join(', ')
   await getClient().execute({
     sql: `UPDATE ${table} SET ${setClause} WHERE id = ?`,
     args: [...keys.map((k) => toArg(values[k], k)), id]
   })
+  if (priorLimit != null) {
+    await logLimitChange({
+      kind: 'nbfc',
+      refId: id,
+      oldAmount: priorLimit,
+      newAmount: Number(values.sanctioned_limit) || 0,
+      note: 'edited on the NBFC master'
+    })
+  }
   if (priorName) await renameLedgerAccount(priorName, String(values.name || ''))
+  if (table === 'banks') {
+    const now = await getClient().execute({
+      sql: 'SELECT name, account_no, company_id FROM banks WHERE id = ?',
+      args: [id]
+    })
+    if (now.rows.length) {
+      await syncBankLedgerName(id, priorBank, now.rows[0] as unknown as Row)
+      // A bank that never had a ledger gets one now, rather than on first use.
+      await ensureBankLedger(now.rows[0] as unknown as Row).catch(() => undefined)
+    }
+  }
   return { id }
 }
 

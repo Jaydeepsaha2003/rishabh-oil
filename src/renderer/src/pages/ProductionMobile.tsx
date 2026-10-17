@@ -86,8 +86,31 @@ export function ProductionMobile(): React.JSX.Element {
     )
   }, [rows, query])
 
+  // EACH RUN'S NUMBER WITHIN ITS DAY — the desktop register's #1, #2, #3.
+  // The stored day_no, or for a run saved before numbering its place in the
+  // day by entry order (then shown dotted, as there). Struck on every row, not
+  // the searched ones, so a search never renumbers a run.
+  const runNo = useMemo(() => {
+    const by = new Map<string, Row[]>()
+    for (const r of rows) {
+      const d = s(r.prod_date).slice(0, 10)
+      if (!by.has(d)) by.set(d, [])
+      ;(by.get(d) as Row[]).push(r)
+    }
+    const m = new Map<number, { no: number; set: boolean }>()
+    for (const day of by.values()) {
+      ;[...day]
+        .sort((a, b) => n(a.id) - n(b.id))
+        .forEach((r, i) => {
+          const set = n(r.day_no) > 0
+          m.set(n(r.id), { no: set ? n(r.day_no) : i + 1, set })
+        })
+    }
+    return m
+  }, [rows])
+
   // Grouped by day, newest first — the register is read as "what did we run
-  // on Tuesday", never as one long list.
+  // on Tuesday", never as one long list. Within a day, #1 first.
   const days = useMemo(() => {
     const by = new Map<string, Row[]>()
     for (const r of visible) {
@@ -97,7 +120,11 @@ export function ProductionMobile(): React.JSX.Element {
     }
     return [...by.entries()]
       .sort((a, b) => (a[0] < b[0] ? 1 : -1))
-      .map(([date, runs]) => ({
+      .map(([date, list]) => {
+        const runs = [...list].sort(
+          (a, b) => (runNo.get(n(a.id))?.no ?? 0) - (runNo.get(n(b.id))?.no ?? 0) || n(a.id) - n(b.id)
+        )
+        return {
         date,
         runs,
         // Recirculation is excluded from the day's total for the same reason
@@ -105,8 +132,9 @@ export function ProductionMobile(): React.JSX.Element {
         total: runs.filter((r) => !isRecirc(r)).reduce((a, r) => a + n(r.qty), 0),
         batches: runs.filter((r) => !isRecirc(r)).length,
         recircs: runs.filter(isRecirc).length
-      }))
-  }, [visible])
+        }
+      })
+  }, [visible, runNo])
 
   const kpis = useMemo(() => {
     const batches = visible.filter((r) => !isRecirc(r))
@@ -241,6 +269,7 @@ export function ProductionMobile(): React.JSX.Element {
 
               {d.runs.map((r) => {
                 const rec = isRecirc(r)
+                const no = runNo.get(n(r.id))
                 return (
                   <button
                     key={String(r.id)}
@@ -253,6 +282,23 @@ export function ProductionMobile(): React.JSX.Element {
                   >
                     <div className="flex flex-col gap-2 px-3.5 pb-2.5 pt-3">
                       <div className="flex items-start gap-2.5">
+                        {no && (
+                          <span
+                            title={
+                              no.set
+                                ? `Run #${no.no} of ${formatDate(r.prod_date)}`
+                                : `Not numbered — #${no.no} is its place in the day by entry order`
+                            }
+                            className={cn(
+                              'inline-flex h-[22px] min-w-[2.1rem] flex-none items-center justify-center rounded-[3px] border px-1.5 text-[11px] font-extrabold tabular-nums',
+                              no.set
+                                ? 'border-[#C3D2C6] bg-[#EAF0E9] text-[#0B3D2E]'
+                                : 'border-dashed border-[#DCE7DB] bg-transparent text-[#8CA396]'
+                            )}
+                          >
+                            #{no.no}
+                          </span>
+                        )}
                         <div className="min-w-0 flex-1">
                           <div className="text-[13.5px] font-extrabold tracking-[-0.01em] text-[#0A1F17]">
                             {s(r.product_name) || '—'}
@@ -518,16 +564,36 @@ function BatchSheet({
   const uom = s(product?.uom || row?.uom || 'MT')
   const q = Number(qty) || 0
 
+  // A batch booked on its OWN mix (no saved recipe) carries it, and an edit
+  // re-opens and re-expands that mix — as the desktop's does. Without this an
+  // edit re-ran the batch on the product's saved recipe (or none), and the
+  // server dropped the mix and rewrote what the batch drew. It holds while
+  // the product is unchanged; a batch moved to another product takes that
+  // product's recipe like any other.
+  const ownMix = useMemo((): Row[] => {
+    try {
+      const raw = JSON.parse(String(row?.custom_items_json || 'null'))
+      return Array.isArray(raw) ? (raw as Row[]) : []
+    } catch {
+      return []
+    }
+  }, [row])
+  const onOwnMix = ownMix.length > 0 && productId === s(row?.product_id)
+
   // A product with exactly one recipe needs no picker; more than one and the
   // choice decides what gets drawn, so it must be made deliberately.
   useEffect(() => {
-    if (!productId) return
+    if (!productId || onOwnMix) return
     if (forProduct.length === 1) setRecipeId(String(forProduct[0].id))
     else if (!forProduct.some((f) => String(f.id) === recipeId)) setRecipeId('')
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [productId, recipes])
 
   useEffect(() => {
+    if (onOwnMix) {
+      setItems(ownMix)
+      return
+    }
     if (!recipeId) {
       setItems([])
       return
@@ -544,7 +610,7 @@ function BatchSheet({
     return () => {
       live = false
     }
-  }, [recipeId])
+  }, [recipeId, onOwnMix, ownMix])
 
   // What the server will post, computed with the server's own function.
   const draw = useMemo(() => {
@@ -570,7 +636,10 @@ function BatchSheet({
         qty: q,
         uom,
         note: note || null,
-        formulation_id: recipeId ? Number(recipeId) : null
+        formulation_id: onOwnMix ? null : recipeId ? Number(recipeId) : null,
+        // Sent only for a batch on its own mix; the server reads it as the
+        // recipe (customMixOf) — the desktop's payload, field for field.
+        custom_items: onOwnMix ? ownMix : undefined
       }
       if (row) await window.api.production.update(n(row.id), payload)
       else await window.api.production.create(payload)
@@ -646,7 +715,13 @@ function BatchSheet({
         ) : null}
       </Field>
 
-      {forProduct.length > 1 ? (
+      {onOwnMix ? (
+        <Field label="Recipe">
+          <div className="rounded-[4px] border border-[#D6E2D6] bg-[#F7FAF6] px-3 py-2.5 text-[12px] font-semibold leading-[1.45] text-[#33473E]">
+            Its own mix, as booked — {ownMix.length} line{ownMix.length === 1 ? '' : 's'}. Re-applied to the quantity below.
+          </div>
+        </Field>
+      ) : forProduct.length > 1 ? (
         <Field label="Recipe *">
           <div className="flex flex-col gap-1.5">
             {forProduct.map((f) => (

@@ -159,6 +159,37 @@ tr.row-answered:hover .pin-col {
   background: rgba(61, 49, 121, 0.14);
 }
 
+/* ARRIVING AT A ROW FROM SOMEWHERE ELSE.
+   Following a product off the Book register lands the reader in the middle of
+   a sheet of forty rows, where the one they asked for looks like all the
+   others. This says which it is and then gets out of the way: three pulses of
+   the lime the app uses for "here", about two and a half seconds, and no
+   lasting mark on the row.
+   A pinned column repaints its own background — see the note above — so the
+   flash has to be stated for it separately or the product NAME would be the
+   one cell that never lit up. */
+@keyframes rowFlash {
+  0%, 100% { background-color: transparent; }
+  15%, 45%, 75% { background-color: rgba(199, 240, 63, 0.55); }
+  30%, 60%, 90% { background-color: transparent; }
+}
+tr.row-flash > td {
+  animation: rowFlash 2.4s ease-in-out 1;
+}
+tr.row-flash .pin-col,
+.sheet-violet tr.row-flash .pin-col {
+  animation: rowFlash 2.4s ease-in-out 1;
+}
+@media (prefers-reduced-motion: reduce) {
+  /* Still says which row, without the pulsing. */
+  tr.row-flash > td,
+  tr.row-flash .pin-col,
+  .sheet-violet tr.row-flash .pin-col {
+    animation: none;
+    background-color: rgba(199, 240, 63, 0.4);
+  }
+}
+
 .pin-col::after {
   content: '';
   position: absolute;
@@ -194,3 +225,55 @@ tr.row-answered:hover .pin-col {
 .no-scrollbar::-webkit-scrollbar {
   display: none;
 }
+
+/* A pane that scrolls sideways under its OWN control.
+   ---------------------------------------------------------------------------
+   The columnar register draws its own bar, pinned to the foot of the view
+   where the table is rather than at the bottom of a 141-row pane. The
+   browser's then sat directly underneath it — two horizontal scrollbars, one
+   above the other, which is worse than the one it replaced. Only the
+   HORIZONTAL one goes; the pane still scrolls down in the ordinary way and
+   keeps its vertical bar. */
+.no-hscrollbar::-webkit-scrollbar {
+  /* `height` is the HORIZONTAL bar's thickness and nothing else — the vertical
+     one is sized by `width` — so this takes one away and leaves the other.
+     Qualifying it as ::-webkit-scrollbar:horizontal reads better and does
+     nothing at all: measured, the pane still reserved its 15px. */
+  height: 0;
+}
+
+/* The columnar register's own scrollbar. The geometry is set inline (it comes
+   from the pane's scroll position); what lives here is the part inline styles
+   cannot say — how it answers a pointer. */
+.colbar-track {
+  cursor: pointer;
+}
+.colbar-thumb {
+  cursor: grab;
+  transition: background-color 0.12s ease;
+}
+.colbar-track:hover .colbar-thumb {
+  background-color: #12855a;
+}
+.colbar-thumb:active {
+  cursor: grabbing;
+  background-color: #0a3327;
+}
+
+/* The website Accounting's scrollbars: thin and quiet, and none along the two
+   strips that scroll sideways (the type row and the key bar), whose arrows and
+   trackpad do that job. The voucher's line grid keeps a thin sideways bar,
+   since on a narrow window it is the only sign there is more to the right. */
+.acct-web .sc::-webkit-scrollbar { width: 8px; height: 0 }
+.acct-web .sc::-webkit-scrollbar-thumb { background: #C3D2C6; border-radius: 4px }
+.acct-web .sc::-webkit-scrollbar-track { background: transparent }
+.acct-web .sc-x::-webkit-scrollbar { height: 8px }
+.acct-web .sc-x::-webkit-scrollbar-thumb { background: #C3D2C6; border-radius: 4px }
+.acct-web .sc-x::-webkit-scrollbar-track { background: transparent }
+/* A register that scrolls both ways: thin bars on both axes. */
+.acct-web .sc-both::-webkit-scrollbar { width: 8px; height: 8px }
+.acct-web .sc-both::-webkit-scrollbar-thumb { background: #C3D2C6; border-radius: 4px }
+.acct-web .sc-both::-webkit-scrollbar-track { background: transparent }
+/* The chart of accounts' rows light up under the pointer. !important because
+   each row's own zebra/primary ground is an inline style. */
+.acct-web .m-row:hover { background: #F4F9EF !important }

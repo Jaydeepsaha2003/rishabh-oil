@@ -44,13 +44,23 @@ import {
   TableRow
 } from '@/components/ui/table'
 import { PageHeader } from '@/components/PageHeader'
+import { AccountingChecks } from '@/components/AccountingChecks'
+import { ProductMerge } from '@/components/ProductMerge'
 import { applyBrandFavicon } from '@/lib/brand'
 import { EntityManager, type ColumnDef, type FieldDef } from '@/components/EntityManager'
 import { useLiveRefresh } from '@/lib/useLiveRefresh'
 import type { AppUser } from '@/lib/session'
 import { cn } from '@/lib/utils'
 import { MODULES, canWrite } from '@/lib/modules'
+import {
+  rightsOf as sharedRightsOf,
+  writeRights as sharedWriteRights,
+  setColumn as sharedSetColumn,
+  setAllPerms as sharedSetAllPerms,
+  type Perms
+} from '@/lib/userRights'
 import { clearEntryWindows } from '@/lib/useEntryWindow'
+import { activityStamp, utcStampLocal } from '@/lib/format'
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Row = Record<string, any>
@@ -185,52 +195,15 @@ function UsersManager(): React.JSX.Element {
     viewDays: string
     scope: string
   }
+  // The shared reading and writing of a grant (lib/userRights), so this tab and
+  // User Access agree on every rule — including that a section (Accounting ·
+  // Day Book, Treasury · LC…) with no setting of its own follows its page.
   function rightsOf(key: string): Rights {
-    const raw = (form.permissions || {})[key]
-    if (raw === 'write')
-      return { view: true, create: true, edit: true, delete: true, editDays: '', viewDays: '', scope: '' }
-    if (raw === 'read')
-      return { view: true, create: false, edit: false, delete: false, editDays: '', viewDays: '', scope: '' }
-    if (raw && typeof raw === 'object') {
-      const o = raw as Record<string, unknown>
-      return {
-        view: !!o.view || !!o.create || !!o.edit || !!o.delete,
-        create: !!o.create,
-        edit: !!o.edit,
-        delete: !!o.delete,
-        editDays: o.editDays == null || o.editDays === '' ? '' : String(o.editDays),
-        viewDays: o.viewDays == null || o.viewDays === '' ? '' : String(o.viewDays),
-        scope: o.scope ? String(o.scope) : ''
-      }
-    }
-    return { view: false, create: false, edit: false, delete: false, editDays: '', viewDays: '', scope: '' }
+    return sharedRightsOf((form.permissions || {}) as Perms, key)
   }
 
   function writeRights(key: string, next: Rights): void {
-    setForm((p) => {
-      const perms = { ...(p.permissions || {}) }
-      const any = next.view || next.create || next.edit || next.delete
-      if (!any) delete perms[key]
-      else {
-        const entry: Record<string, unknown> = {
-          view: true,
-          create: next.create,
-          edit: next.edit,
-          delete: next.delete
-        }
-        if (next.editDays !== '' && Number.isFinite(Number(next.editDays))) {
-          entry.editDays = Math.max(0, Number(next.editDays))
-        }
-        if (next.viewDays !== '' && Number.isFinite(Number(next.viewDays))) {
-          entry.viewDays = Math.max(0, Number(next.viewDays))
-        }
-        // Carried, not rebuilt — ticking any box on a scoped module would
-        // otherwise silently drop the restriction it was granted under.
-        if (next.scope) entry.scope = next.scope
-        perms[key] = entry
-      }
-      return { ...p, permissions: perms }
-    })
+    setForm((p) => ({ ...p, permissions: sharedWriteRights((p.permissions || {}) as Perms, key, next) }))
   }
 
   function toggleRight(key: string, flag: 'view' | 'create' | 'edit' | 'delete', on: boolean): void {
@@ -247,44 +220,13 @@ function UsersManager(): React.JSX.Element {
   }
 
   // Column-wise bulk set, and a whole-row preset.
+  const gridKeys = MODULES.filter((x) => !x.derived).map((x) => x.key)
   function setColumn(flag: 'view' | 'create' | 'edit' | 'delete', on: boolean): void {
-    setForm((p) => {
-      const perms = { ...(p.permissions || {}) }
-      for (const m of MODULES.filter((x) => !x.derived)) {
-        const cur = rightsOf(m.key)
-        const next = { ...cur, [flag]: on }
-        if (flag === 'view' && !on) {
-          next.create = false
-          next.edit = false
-          next.delete = false
-        }
-        if (on && flag !== 'view') next.view = true
-        const any = next.view || next.create || next.edit || next.delete
-        if (!any) delete perms[m.key]
-        else {
-          const entry: Record<string, unknown> = { view: true, create: next.create, edit: next.edit, delete: next.delete }
-          if (next.editDays !== '') entry.editDays = Math.max(0, Number(next.editDays))
-          if (next.viewDays !== '') entry.viewDays = Math.max(0, Number(next.viewDays))
-          if (next.scope) entry.scope = next.scope
-          perms[m.key] = entry
-        }
-      }
-      return { ...p, permissions: perms }
-    })
+    setForm((p) => ({ ...p, permissions: sharedSetColumn((p.permissions || {}) as Perms, gridKeys, flag, on) }))
   }
 
   function setAllPerms(level: 'none' | 'read' | 'write'): void {
-    setForm((p) => {
-      if (level === 'none') return { ...p, permissions: {} }
-      const perms: Record<string, unknown> = {}
-      for (const m of MODULES.filter((x) => !x.derived)) {
-        perms[m.key] =
-          level === 'read'
-            ? { view: true, create: false, edit: false, delete: false }
-            : { view: true, create: true, edit: true, delete: true }
-      }
-      return { ...p, permissions: perms }
-    })
+    setForm((p) => ({ ...p, permissions: sharedSetAllPerms(gridKeys, level) }))
   }
 
   // Special access: the unloading desk. A grant of its own rather than a
@@ -745,10 +687,17 @@ const companyFields: FieldDef[] = [
     type: 'color',
     placeholder: '#0B3D2E'
   },
+  { key: 'priority', label: 'Priority (1 = listed first)', type: 'number', placeholder: 'Blank = after the numbered ones' },
   { key: 'active', label: 'Active', type: 'switch', default: true }
 ]
 const companyColumns: ColumnDef[] = [
   { key: 'name', label: 'Company' },
+  {
+    key: 'priority',
+    label: 'Priority',
+    align: 'right',
+    value: (r) => (Number(r.priority) > 0 ? String(r.priority) : '—')
+  },
   {
     key: 'company_type',
     label: 'Type',
@@ -769,6 +718,16 @@ function GeneralSettings({ isAdmin }: { isAdmin: boolean }): React.JSX.Element {
   // Default true (required) — an LC needs a real invoice to draw against
   // unless an admin explicitly relaxes it here.
   const [lcRequireInvoice, setLcRequireInvoice] = useState(true)
+  // Who sees how far a trading bill has got on the money coming back.
+  //
+  // Default ON — everybody, which is what the register does today, and a
+  // setting that changes what people can see the moment they upgrade is a bug.
+  // An admin who wants the chip to themselves turns it off.
+  const [payInEveryone, setPayInEveryone] = useState(true)
+  // Whether a batch has to be struck on a saved recipe, or the floor composes
+  // its own mix at the sheet. Default ON — every mill on the books today works
+  // that way, and a setting that changes behaviour on upgrade is a bug.
+  const [recipeMode, setRecipeMode] = useState(true)
   const [saving, setSaving] = useState(false)
   // The mill's own mark. Stored as a data URL so one setting covers the
   // sidebar, the browser tab and the installed app's icon — see
@@ -781,6 +740,8 @@ function GeneralSettings({ isAdmin }: { isAdmin: boolean }): React.JSX.Element {
       setShortage(s.allowed_shortage_pct ?? '0.2')
       setUom(s.default_uom ?? 'ton')
       setLcRequireInvoice(s.lc_require_linked_invoice !== '0')
+      setPayInEveryone(s.bd_payment_in_chip_everyone !== '0')
+      setRecipeMode(s.production_formulation_mode !== '0')
       setLogo(s.brand_logo ?? '')
     })
   }, [])
@@ -835,6 +796,8 @@ function GeneralSettings({ isAdmin }: { isAdmin: boolean }): React.JSX.Element {
       await window.api.settings.set('allowed_shortage_pct', shortage)
       await window.api.settings.set('default_uom', uom)
       if (isAdmin) await window.api.settings.set('lc_require_linked_invoice', lcRequireInvoice ? '1' : '0')
+      if (isAdmin) await window.api.settings.set('bd_payment_in_chip_everyone', payInEveryone ? '1' : '0')
+      if (isAdmin) await window.api.settings.set('production_formulation_mode', recipeMode ? '1' : '0')
       toast.success('Settings saved')
     } catch (e) {
       toast.error((e as Error).message)
@@ -906,6 +869,46 @@ function GeneralSettings({ isAdmin }: { isAdmin: boolean }): React.JSX.Element {
       </Card>
       {isAdmin && (
         <Card className="p-6">
+          <h3 className="mb-1 text-base font-medium">Production</h3>
+          <p className="mb-4 text-xs text-muted-foreground">
+            Admin only — changes how every batch is entered from here on. Batches already recorded keep the mix they
+            were booked on either way.
+          </p>
+          <div className="flex items-start justify-between gap-4 rounded-lg border bg-muted/30 p-3">
+            <div>
+              <Label>Formulation-based production</Label>
+              <p className="mt-1 text-xs text-muted-foreground">
+                {recipeMode
+                  ? 'ON — a batch is struck on a saved recipe from Formulation, and the sheet asks which one.'
+                  : 'OFF — the sheet offers Make formulation instead: the mix is composed for that batch alone, with the same TOR and draw arithmetic, and is kept on the run rather than in the master.'}
+              </p>
+            </div>
+            <Switch checked={recipeMode} onCheckedChange={setRecipeMode} />
+          </div>
+        </Card>
+      )}
+      {isAdmin && (
+        <Card className="p-6">
+          <h3 className="mb-1 text-base font-medium">Bill Discounting</h3>
+          <p className="mb-4 text-xs text-muted-foreground">
+            Admin only — changes what the register shows other people. Nothing about how a bill is recorded changes
+            either way, and the Payment IN action itself is untouched.
+          </p>
+          <div className="flex items-start justify-between gap-4 rounded-lg border bg-muted/30 p-3">
+            <div>
+              <Label>Show the Payment IN status to everyone</Label>
+              <p className="mt-1 text-xs text-muted-foreground">
+                {payInEveryone
+                  ? 'ON — every user sees the Awaiting Payment IN / Payment IN chip on a trading bill, same as today.'
+                  : 'OFF — only an administrator sees it. The desk still records receipts exactly as before; what is hidden is the standing tally of which bills are still owed, which is the view kept for checking the work rather than doing it.'}
+              </p>
+            </div>
+            <Switch checked={payInEveryone} onCheckedChange={setPayInEveryone} />
+          </div>
+        </Card>
+      )}
+      {isAdmin && (
+        <Card className="p-6">
           <h3 className="mb-1 text-base font-medium">Letters of Credit</h3>
           <p className="mb-4 text-xs text-muted-foreground">Admin only — changes the rule for every LC going forward.</p>
           <div className="flex items-start justify-between gap-4 rounded-lg border bg-muted/30 p-3">
@@ -975,7 +978,7 @@ interface RestoreReport {
 
 function DatabasePanel(): React.JSX.Element {
   const [info, setInfo] = useState<DbInfo | null>(null)
-  const [busy, setBusy] = useState<'' | 'download' | 'restore'>('')
+  const [busy, setBusy] = useState<'' | 'download' | 'file' | 'restore'>('')
   const [pending, setPending] = useState<File | null>(null)
   const [report, setReport] = useState<RestoreReport | null>(null)
   // The upload's own progress. A snapshot is the largest thing this app ever
@@ -1027,6 +1030,38 @@ function DatabasePanel(): React.JSX.Element {
           `Snapshot saved — ${snap.rows.toLocaleString()} rows, ${mb(snap.gzBytes)} compressed.`
         )
       }
+    } catch (e) {
+      toast.error((e as Error).message)
+    } finally {
+      setBusy('')
+    }
+  }
+
+  // --- download the file itself ---------------------------------------------
+  // Different from the snapshot above, and worth its own button. The snapshot
+  // is SQL to restore FROM; this is the database AS a database — it opens in
+  // any SQLite viewer, so what the books actually hold can be read rather than
+  // described. Website only: the desktop app talks to Turso, where there is no
+  // file to hand over.
+  async function downloadFile(): Promise<void> {
+    setBusy('file')
+    try {
+      const res = await fetch('/api/db/file', { credentials: 'same-origin' })
+      if (!res.ok) {
+        const body = await res.json().catch(() => null)
+        throw new Error(body?.error || `Server error ${res.status}`)
+      }
+      // A refusal comes back as JSON with 200, the same way every other route
+      // here reports one — so the content type is what says which arrived.
+      if ((res.headers.get('content-type') || '').includes('application/json')) {
+        const body = await res.json()
+        throw new Error(body?.error || 'The server did not send a file')
+      }
+      const blob = await res.blob()
+      const name =
+        /filename="([^"]+)"/.exec(res.headers.get('content-disposition') || '')?.[1] || 'database.db'
+      saveBlob(blob, name)
+      toast.success(`Saved ${name} — ${mb(blob.size)}.`)
     } catch (e) {
       toast.error((e as Error).message)
     } finally {
@@ -1132,6 +1167,16 @@ function DatabasePanel(): React.JSX.Element {
             {busy === 'download' ? 'Preparing…' : 'Download snapshot'}
           </Button>
           {__WEB__ && (
+            <Button variant="outline" onClick={() => void downloadFile()} disabled={busy !== ''}>
+              {busy === 'file' ? (
+                <Loader2 className="h-4 w-4 animate-spin" />
+              ) : (
+                <Database className="h-4 w-4" />
+              )}
+              {busy === 'file' ? 'Copying…' : 'Download database.db'}
+            </Button>
+          )}
+          {__WEB__ && (
             <Button asChild variant="outline" disabled={busy !== ''}>
               <label className="cursor-pointer">
                 <Upload className="h-4 w-4" />
@@ -1156,7 +1201,7 @@ function DatabasePanel(): React.JSX.Element {
 
         <p className="mt-3 text-[11px] leading-relaxed text-muted-foreground">
           {__WEB__
-            ? 'Upload either the .sql.gz this app gives you or a .db file straight out of Turso. Downloading first gives you a copy of what the website is holding now.'
+            ? 'Two downloads, two jobs. The snapshot (.sql.gz) is for putting the database back — here or in the desktop app. The .db is the live file itself, copied while the site runs, for opening in a SQLite viewer or handing to someone looking into a figure. Upload accepts either.'
             : 'The snapshot is the whole database as compressed SQL: every table, every row, exactly as it stands.'}
         </p>
       </Card>
@@ -1521,7 +1566,7 @@ function AccessPanel(): React.JSX.Element {
               ) : (
                 logs.map((l) => (
                   <TableRow key={l.id as number}>
-                    <TableCell className="whitespace-nowrap text-muted-foreground">{l.created_at}</TableCell>
+                    <TableCell className="whitespace-nowrap text-muted-foreground">{activityStamp(utcStampLocal(l.created_at))}</TableCell>
                     <TableCell className="font-medium">{l.username}</TableCell>
                     <TableCell>{l.entity || '—'}</TableCell>
                     <TableCell className="capitalize">{l.action}</TableCell>
@@ -1642,6 +1687,8 @@ export function Settings({ user }: { user: AppUser }): React.JSX.Element {
                 there. */}
             {isAdmin && !__WEB__ && <TabsTrigger value="access">Access</TabsTrigger>}
             {isAdmin && <TabsTrigger value="database">Database</TabsTrigger>}
+            {isAdmin && <TabsTrigger value="checks">Accounting checks</TabsTrigger>}
+            {isAdmin && <TabsTrigger value="merge">Merge products</TabsTrigger>}
           </TabsList>
 
           {!__WEB__ && (
@@ -1695,6 +1742,16 @@ export function Settings({ user }: { user: AppUser }): React.JSX.Element {
           {isAdmin && (
             <TabsContent value="database" className="mt-6">
               <DatabasePanel />
+            </TabsContent>
+          )}
+          {isAdmin && (
+            <TabsContent value="checks" className="mt-6">
+              <AccountingChecks />
+            </TabsContent>
+          )}
+          {isAdmin && (
+            <TabsContent value="merge" className="mt-6">
+              <ProductMerge />
             </TabsContent>
           )}
         </Tabs>

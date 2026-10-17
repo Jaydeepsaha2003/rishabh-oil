@@ -1,6 +1,16 @@
-import { getClient, initDb, runDaily, runOnce, startRevisionWatcher } from './db'
+import { ensurePpTraceSchema } from './ppTrace'
+import { getClient, initDb, runDaily, runOnce, startRevisionWatcher, todayISO } from './db'
+import { seedDefaultGroups } from './ledgerGroups'
+import { splitGstLedgersByRate } from './gstBackfill'
 import { backfillJournal } from './journal'
+import { ensureBdPostingFields } from './accountingSchema'
+import { ensureVoucherNumbers, realignVoucherSeries } from './voucherNumbers'
+import { widenRenameRedirects } from './ledgerMap'
+import { ensureCompanyParties } from './intercompany'
+import { refreshLcUpfrontInterest, repairLcRepaymentAccount } from './treasury'
+import { ensureFacilityLimitLog } from './facilityLimits'
 import { dailyBackup } from './backup'
+import { migrateBdPerNbfcLedgers, convertOpenAdjToCharge } from './billDiscounting'
 import { backfillOrderStatuses, backfillPurchaseRoundOff, repairPurchaseTdsOnTaxable } from './orders'
 import {
   backfillSalesGst,
@@ -13,7 +23,10 @@ import { seedProducts, seedFormulations, seedPackagings } from './seed'
 import { cleanupLogs } from './access'
 import { expandRecipe, recipeTor } from '../renderer/src/lib/recipeMath'
 import { applyGateTimeFix } from './gateTimeFix'
+import { backfillConsignmentDraws } from './consignment'
 import { startNotificationWatcher, pruneNotifications } from './notify'
+import { startPushWatcher } from './webpush'
+import { previewLcCharges, fixLcCharges, autoFixDuplicateSales } from './accountingRepairs'
 
 // Everything a database needs before the app can serve a single request: the
 // schema (initDb), every additive migration recorded by runOnce, and the
@@ -32,6 +45,18 @@ import { startNotificationWatcher, pruneNotifications } from './notify'
 // with no separate code path for either case.
 export async function runStartupTasks(): Promise<void> {
   await initDb()
+  await ensureBdPostingFields()
+  // Permanent voucher numbers: the first fill numbers every existing voucher
+  // exactly as the ledgers already show it. Additive — a new table only.
+  await ensureVoucherNumbers()
+  // A ledger rename's redirect covers every company, because the ledger row is
+  // shared — see widenRenameRedirects. Redirect rows only; no voucher moves.
+  await runOnce('ledger_map_renames_sitewide_v1', async () => {
+    const n = await widenRenameRedirects()
+    if (n) console.log(`[ledger] ${n} rename redirect(s) now apply to every company`)
+  }).catch((e) => console.error('[ledger] widening rename redirects failed:', e))
+  // The duplicate sales vouchers (audit F01) are NOT removed here. Deleting
+  // postings is a reviewed action, offered in Settings → Accounting checks.
   // ONCE, not on every launch.
   //
   // This posts vouchers for documents created before the journal engine
@@ -46,6 +71,18 @@ export async function runStartupTasks(): Promise<void> {
   //
   // A catch-up job for historical rows only needs to run once, and runOnce
   // records nothing if it throws, so a genuine failure still retries.
+  // Before anything reads these tables: a column this build assumes is a
+  // fact to check, not an event to record. See ensureRequiredColumns.
+  await ensureRequiredColumns().catch((e) => console.error('[schema] column check failed:', e))
+
+  // An LC repayment that debited the wrong account and so never cleared the
+  // payable it settled. A fact to check rather than an event to record, for
+  // the same reason the columns above are — see repairLcRepaymentAccount.
+  await repairLcRepaymentAccount().catch((e) => console.error('[lc] repayment repair failed:', e))
+
+  // Where a facility's limit has been, as against where it is now.
+  await ensureFacilityLimitLog().catch((e) => console.error('[limits] log table failed:', e))
+
   await runOnce('journal_backfill_v1', () => backfillJournal()).catch((e) =>
     console.error('[journal] backfill failed:', e)
   )
@@ -92,6 +129,11 @@ export async function runStartupTasks(): Promise<void> {
   // the server all running this converge on the same answer rather than
   // fighting. Started after the migrations above so the tables exist.
   startNotificationWatcher()
+  // And the other half of telling somebody: the banner on their phone. It
+  // watches the same table the bell reads, so anything raised anywhere — a
+  // rule, a send-back, an approval — reaches a subscribed device without the
+  // code that raised it needing to know push exists.
+  startPushWatcher()
   await runDaily('notify_retention', async () => { await pruneNotifications() }).catch(() => {})
   // Stock brought forward on the day the books begin.
   //
@@ -120,6 +162,117 @@ export async function runStartupTasks(): Promise<void> {
     )`)
     await c.execute('CREATE INDEX IF NOT EXISTS idx_stock_openings_co ON stock_openings(company_id)')
   }).catch((e) => console.error('[stock] opening-stock table failed:', e))
+
+  // A BILL LINE THAT CARRIES MONEY AND NO GOODS.
+  //
+  // A rate settled after the oil has gone, a discount agreed at the end of a
+  // month, a short-weight allowance — each is a real figure on a real invoice
+  // and none of them moves a kilogram. Billed as an ordinary line they would
+  // have to carry a quantity, and any quantity at all is a lie to the stock
+  // register: either goods that never left, or a rate divided into a tonnage
+  // nobody agreed.
+  //
+  // So the line says so. It names the product or the SKU it concerns — which
+  // is what makes it readable a year later — carries no quantity at all, and
+  // is stamped affects_stock = 0, the same flag a trading pass-through uses
+  // and which every stock query in the app already respects.
+  // A LEDGER CAN BE HIDDEN. Masters → Hide takes a ledger out of the pickers
+  // and the chart's list (Show hidden brings it back to unhide); every figure,
+  // posting and report stays exactly as it was. A new column, default 0, so no
+  // existing row changes.
+  await runOnce('ledger_hidden_v1', async () => {
+    await getClient()
+      .execute('ALTER TABLE ledger_accounts ADD COLUMN is_hidden INTEGER NOT NULL DEFAULT 0')
+      .catch((e) => {
+        if (!/duplicate column/i.test(String(e?.message || e))) throw e
+      })
+  }).catch((e) => console.error('[ledgers] hidden flag failed:', e))
+
+  await runOnce('sales_rate_adjustment_v1', async () => {
+    await getClient()
+      .execute('ALTER TABLE sales ADD COLUMN is_rate_adj INTEGER NOT NULL DEFAULT 0')
+      .catch((e) => {
+        if (!/duplicate column/i.test(String(e?.message || e))) throw e
+      })
+  }).catch((e) => console.error('[sales] rate-adjustment flag failed:', e))
+
+  // AN OPENING CAN BE STRUCK AGAIN, AND THE OLD ONE IS NOT LOST.
+  //
+  // stock_openings holds one row per product — the opening the register is
+  // standing on right now — so re-counting the tanks used to overwrite the
+  // last count with no trace that it had ever said anything else. That is
+  // fine for a figure typed twice in a minute and wrong for a mill that
+  // re-strikes its opening every quarter: the previous count is the evidence
+  // behind months of closing balances, and it should still be readable after
+  // it stops being the one in force.
+  //
+  // So the live table stays exactly as it is — every reader of the opening is
+  // untouched — and each strike is ALSO written here, in full, as a set. One
+  // set per date: saving the same morning again corrects that set rather than
+  // piling up a set per keystroke.
+  await runOnce('stock_opening_sets_v1', async () => {
+    const c = getClient()
+    await c.execute(`CREATE TABLE IF NOT EXISTS stock_opening_sets (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      factory_id INTEGER,
+      company_id INTEGER NOT NULL,
+      as_of TEXT NOT NULL,
+      note TEXT,
+      created_at TEXT NOT NULL,
+      created_by INTEGER,
+      created_by_name TEXT,
+      updated_at TEXT,
+      updated_by_name TEXT,
+      -- How many times this morning's count has been corrected. A set that
+      -- reads 1 was typed once and never touched again.
+      revisions INTEGER NOT NULL DEFAULT 1,
+      -- Exactly one set per site is in force; the rest are what it replaced.
+      is_current INTEGER NOT NULL DEFAULT 0
+    )`)
+    await c.execute(`CREATE TABLE IF NOT EXISTS stock_opening_set_lines (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      set_id INTEGER NOT NULL,
+      product_id INTEGER NOT NULL,
+      qty REAL NOT NULL DEFAULT 0,
+      pp_qty REAL NOT NULL DEFAULT 0,
+      adj_qty REAL NOT NULL DEFAULT 0,
+      rate REAL,
+      note TEXT,
+      UNIQUE(set_id, product_id)
+    )`)
+    await c.execute('CREATE INDEX IF NOT EXISTS idx_opening_sets ON stock_opening_sets(factory_id, company_id, as_of)')
+
+    // The count already in force becomes set one. Starting the history at the
+    // NEXT strike would leave the opening every current figure rests on as the
+    // only one with no record — the opposite of the point.
+    const live = await c.execute(
+      `SELECT factory_id, company_id, as_of, COUNT(*) AS n, MIN(updated_at) AS first_at, MAX(updated_at) AS last_at
+         FROM stock_openings GROUP BY factory_id, company_id, as_of`
+    )
+    for (const g of live.rows) {
+      const fid = (g as unknown as Record<string, unknown>).factory_id
+      const cid = (g as unknown as Record<string, unknown>).company_id
+      const asOf = String((g as unknown as Record<string, unknown>).as_of || '').slice(0, 10)
+      if (!asOf) continue
+      const first = String((g as unknown as Record<string, unknown>).first_at || '')
+      const last = String((g as unknown as Record<string, unknown>).last_at || '')
+      const res = await c.execute({
+        sql: `INSERT INTO stock_opening_sets
+                (factory_id, company_id, as_of, note, created_at, created_by_name, updated_at, revisions, is_current)
+              VALUES (?, ?, ?, 'The count in force when history began', ?, NULL, ?, 1, 1)`,
+        args: [(fid as number) ?? null, (cid as number) ?? 1, asOf, first || last, last || first]
+      })
+      const sid = Number(res.lastInsertRowid) || 0
+      if (!sid) continue
+      await c.execute({
+        sql: `INSERT INTO stock_opening_set_lines (set_id, product_id, qty, pp_qty, adj_qty, rate, note)
+              SELECT ?, product_id, qty, pp_qty, adj_qty, rate, note
+                FROM stock_openings
+               WHERE as_of = ? AND ${fid == null ? 'factory_id IS NULL AND company_id = ?' : 'factory_id = ?'}`,
+        args: [sid, asOf, (fid == null ? ((cid as number) ?? 1) : (fid as number)) as number]
+      })
+    }
+  }).catch((e) => console.error('[stock] opening-stock history failed:', e))
 
   // An opening is counted the way the plant counts: what is in the tank, plus
   // what is already in process (PP / WIP). They are two separate figures on the
@@ -427,7 +580,7 @@ export async function runStartupTasks(): Promise<void> {
     const SEED: [string, string, string, string][] = [
       ['gateEntry', '', 'Weigh and record every tanker in', 'Gross and tare on each vehicle, both directions.'],
       ['gateEntry', '', "Close today's gate register", 'No entry left pending a weight at cut-off.'],
-      ['stock', '', 'Enter the day-close count', 'Raw and PP against the book figure, with a note on any difference.'],
+      ['stock', '', 'View the receiving stocks', 'What came in today against the book figure, with a note on any difference.'],
       ['sales', '', "Raise invoices for today's dispatches", 'Every loaded tanker invoiced before cut-off.'],
       ['sales', 'unload', 'Confirm unloading receipts', 'Received quantity against what was dispatched.'],
       ['orders', '', "Book today's purchases and confirm rates", 'Every purchase raised today has a rate against it.'],
@@ -435,7 +588,10 @@ export async function runStartupTasks(): Promise<void> {
       ['bargains', '', 'Update open purchase bargains', 'Balance quantity against what was actually drawn.'],
       ['salesBargains', '', 'Update open sales bargains', 'Every dispatch drawn against the right bargain.'],
       ['accounts', '', "Post today's vouchers", 'Nothing left unposted at cut-off.'],
-      ['treasury', '', 'Check LCs and bills maturing this week', 'Anything inside seven days needs a plan today.'],
+      // The LC desk and the discounting desk are granted separately and are
+      // often not the same person, so they are asked separately.
+      ['treasuryLc', '', 'Check LCs maturing this week', 'Anything inside seven days needs a plan today.'],
+      ['treasuryBd', '', 'Check bills maturing this week', 'Anything inside seven days needs a plan today.'],
       ['bankRecon', '', "Reconcile yesterday's bank statement", 'Every credit and debit tied to a voucher.'],
       ['production', '', "Record today's batches", 'Every batch run, with its formulation and what it consumed.'],
       ['formulation', '', 'Check the recipes used today', 'Any ratio changed on the floor is recorded against the batch.'],
@@ -554,6 +710,22 @@ export async function runStartupTasks(): Promise<void> {
     }
   }).catch((e) => console.error('[formulations] subcategory setup failed:', e))
 
+  // A formulation built one-off from the PP vessel breakdown is not a master
+  // recipe. It exists only to restate that with-FFA vessel into the oils it is
+  // made of, so it is marked hidden and kept off the Formulations tab — it is
+  // still there to be picked on the breakdown that made it, just not offered as
+  // a reusable recipe alongside the ones the mill actually runs to.
+  await runOnce('formulation_hidden_v1', async () => {
+    const c = getClient()
+    try {
+      await c.execute('ALTER TABLE formulations ADD COLUMN hidden INTEGER NOT NULL DEFAULT 0')
+    } catch (e) {
+      // Already there. Swallowed deliberately: runOnce does not record its
+      // marker if this throws, so it would retry on every launch for ever.
+      if (!/duplicate column/i.test((e as Error).message)) throw e
+    }
+  }).catch((e) => console.error('[formulations] hidden column setup failed:', e))
+
   // Invoice numbers that were deliberately voided rather than lost.
   //
   // A gap in the series has two innocent explanations and one worrying one: the
@@ -620,6 +792,25 @@ export async function runStartupTasks(): Promise<void> {
     await c.execute('ALTER TABLE letters_of_credit ADD COLUMN interest_adj REAL NOT NULL DEFAULT 0')
   }).catch((e) => console.error('[lc] interest-adjustment column failed:', e))
 
+  // Interest paid in the same debit as a discounted bill's repayment — gross,
+  // posted to the interest ledger on the repayment voucher (repayBd). Nil on
+  // every repayment already entered, so nothing moves.
+  await runOnce('bd_repay_interest_v1', async () => {
+    const c = getClient()
+    const info = await c.execute({ sql: "PRAGMA table_info('bd_repayments')", args: [] })
+    const cols = new Set(info.rows.map((r) => String((r as unknown as Record<string, unknown>).name)))
+    if (cols.has('interest')) return
+    await c.execute('ALTER TABLE bd_repayments ADD COLUMN interest REAL')
+  }).catch((e) => console.error('[bd] repayment-interest column failed:', e))
+
+  // Charges a repayment put on ledgers the user picked, as JSON [{account, amount}].
+  await runOnce('bd_repay_charges_v1', async () => {
+    const c = getClient()
+    const info = await c.execute({ sql: "PRAGMA table_info('bd_repayments')", args: [] })
+    if (info.rows.some((r) => String((r as unknown as Record<string, unknown>).name) === 'charges')) return
+    await c.execute('ALTER TABLE bd_repayments ADD COLUMN charges TEXT')
+  }).catch((e) => console.error('[bd] repayment-charges column failed:', e))
+
   // Whether a discounted bill's interest counts the payment received date
   // itself. Both ends of that question are real conventions and NBFCs differ,
   // so it is one of their negotiated terms — kept on the NBFC as the default
@@ -641,6 +832,35 @@ export async function runStartupTasks(): Promise<void> {
   // Index work for installs that are already past the migration-count mark, so
   // it cannot be added to that list and be run. Keyed by name, so it happens
   // exactly once per database and costs nothing on every launch after.
+  // The consignment invoices booked before a withdrawal drew its parcels.
+  // See backfillConsignmentDraws: oldest invoice first, oldest parcel first,
+  // and anything it cannot cover left alone.
+  await runOnce('consignment_draw_fifo_v1', async () => {
+    const out = await backfillConsignmentDraws()
+    if (out.linked || out.skipped) {
+      console.log(
+        `[consignment] linked ${out.linked} invoice(s) to their parcels FIFO` +
+          (out.skipped ? `, left ${out.skipped} alone: ${out.notes.join('; ')}` : '')
+      )
+    }
+  }).catch((e) => console.warn('[consignment] FIFO draw backfill skipped:', (e as Error).message))
+
+  // A second pass, asked for by name: relink the consignment withdrawals that
+  // were still showing no lot·terminal — bookings made after the first pass, or
+  // ones it could not cover then and can now. Safe to run on top of the first:
+  // backfillConsignmentDraws only touches orders with NO parcel link yet, so an
+  // already-linked withdrawal is never disturbed. A new key, so it fires once
+  // more even though the first pass has already been marked done.
+  await runOnce('consignment_draw_fifo_v2', async () => {
+    const out = await backfillConsignmentDraws()
+    if (out.linked || out.skipped) {
+      console.log(
+        `[consignment] FIFO relink: linked ${out.linked} invoice(s) to their parcels` +
+          (out.skipped ? `, left ${out.skipped} alone: ${out.notes.join('; ')}` : '')
+      )
+    }
+  }).catch((e) => console.warn('[consignment] FIFO draw relink skipped:', (e as Error).message))
+
   await runOnce('ulogs_entity_index_v1', async () => {
     const c = getClient()
     // One record's own history -- who did what to THIS letter of credit --
@@ -801,13 +1021,135 @@ export async function runStartupTasks(): Promise<void> {
     const c = getClient()
     for (const sql of [
       "ALTER TABLE companies ADD COLUMN company_type TEXT NOT NULL DEFAULT 'manufacturing'",
-      'ALTER TABLE companies ADD COLUMN colour TEXT'
+      'ALTER TABLE companies ADD COLUMN colour TEXT',
+      // The order companies are offered in (Accounting's Select Company). Nullable
+      // and never backfilled: a company with none sorts after the numbered ones.
+      'ALTER TABLE companies ADD COLUMN priority INTEGER'
     ]) {
       await c.execute(sql).catch((e: unknown) => {
         if (!/duplicate column/i.test(String((e as Error).message))) throw e
       })
     }
   })().catch((e: unknown) => console.error('[companies] column repair failed:', e))
+
+  // A transporter's GST registration, and a freight bill's free deduction.
+  //   transporters.gst_registration  'registered' | 'unregistered'; NULL reads
+  //     as registered, so every transporter entered before keeps working as it
+  //     did until someone marks it otherwise.
+  //   transporter_bills.others_amount / others_ledger  a deduction typed on the
+  //     bill (damage, detention…), credited to the ledger named.
+  for (const sql of [
+    'ALTER TABLE transporters ADD COLUMN gst_registration TEXT',
+    'ALTER TABLE transporter_bills ADD COLUMN others_amount REAL NOT NULL DEFAULT 0',
+    'ALTER TABLE transporter_bills ADD COLUMN others_ledger TEXT'
+  ]) {
+    await getClient()
+      .execute(sql)
+      .catch((e: unknown) => {
+        if (!/duplicate column/i.test(String((e as Error).message))) console.error('[transporters] column failed:', e)
+      })
+  }
+
+  // BD PAYMENT TO THE SUPPLIER IN PARTS: the first part on the bill, the rest
+  // in their own table. Nullable / new, so every bill before reads as paid in
+  // one go. Idempotent.
+  // An LC application the bank rejected: when, why, who recorded it. Nullable
+  // — no LC before this was ever rejected. Idempotent.
+  for (const sql of [
+    'ALTER TABLE letters_of_credit ADD COLUMN rejected_date TEXT',
+    'ALTER TABLE letters_of_credit ADD COLUMN rejected_reason TEXT',
+    'ALTER TABLE letters_of_credit ADD COLUMN rejected_by TEXT'
+  ]) {
+    await getClient()
+      .execute(sql)
+      .catch((e: unknown) => {
+        if (!/duplicate column/i.test(String((e as Error).message))) console.error('[lc] rejected column failed:', e)
+      })
+  }
+  // Raw opening stock, tank by tank (see stockopenings.parseRawTanks) — on the
+  // live opening and on every history line. Nullable: every opening struck
+  // before this is a single figure, exactly as it was. Idempotent.
+  for (const sql of [
+    'ALTER TABLE stock_openings ADD COLUMN raw_tanks TEXT',
+    'ALTER TABLE stock_opening_set_lines ADD COLUMN raw_tanks TEXT'
+  ]) {
+    await getClient()
+      .execute(sql)
+      .catch((e: unknown) => {
+        if (!/duplicate column/i.test(String((e as Error).message))) console.error('[stock] raw_tanks column failed:', e)
+      })
+  }
+  await getClient()
+    .execute('ALTER TABLE bill_discountings ADD COLUMN first_party_part REAL')
+    .catch((e: unknown) => {
+      if (!/duplicate column/i.test(String((e as Error).message))) console.error('[bd] first_party_part column failed:', e)
+    })
+  await getClient()
+    .execute(`CREATE TABLE IF NOT EXISTS bd_party_payments (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      bd_id INTEGER NOT NULL,
+      part_no INTEGER NOT NULL,
+      pay_date TEXT NOT NULL,
+      amount REAL NOT NULL,
+      note TEXT,
+      journal_entry_id INTEGER,
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    )`)
+    .catch((e: unknown) => console.error('[bd] party payments table failed:', e))
+  // SID RECEIVED IN PARTS. The NBFC can release a SID bill's money in several
+  // legs on different dates; the first leg is the Payment received itself
+  // (first_receipt_part), each later one a row here with its own voucher and
+  // its own interest to maturity. Nullable and never backfilled: every bill
+  // already on file reads as received in one go, exactly as before.
+  await getClient()
+    .execute('ALTER TABLE bill_discountings ADD COLUMN first_receipt_part REAL')
+    .catch((e: unknown) => {
+      if (!/duplicate column/i.test(String((e as Error).message))) console.error('[bd] first_receipt_part column failed:', e)
+    })
+  await getClient()
+    .execute(`CREATE TABLE IF NOT EXISTS bd_receipt_parts (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      bd_id INTEGER NOT NULL,
+      part_no INTEGER NOT NULL,
+      receipt_date TEXT NOT NULL,
+      amount REAL NOT NULL,
+      interest REAL NOT NULL DEFAULT 0,
+      account TEXT,
+      ref TEXT,
+      note TEXT,
+      journal_entry_id INTEGER,
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    )`)
+    .catch((e: unknown) => console.error('[bd] receipt parts table failed:', e))
+  // EACH PART ITS OWN MATURITY, INTEREST % AND MARGIN %. NULL everywhere it
+  // already exists, which reads as the bill's own maturity and rates — so no
+  // leg already received moves. Part 1's live on the bill (it is the Payment
+  // received itself); the later ones on their rows.
+  for (const [table, col] of [
+    ['bill_discountings', 'first_receipt_maturity TEXT'],
+    ['bill_discountings', 'first_receipt_interest_pct REAL'],
+    ['bill_discountings', 'first_receipt_margin_pct REAL'],
+    ['bd_receipt_parts', 'maturity_date TEXT'],
+    ['bd_receipt_parts', 'interest_pct REAL'],
+    ['bd_receipt_parts', 'margin_pct REAL']
+  ]) {
+    await getClient()
+      .execute(`ALTER TABLE ${table} ADD COLUMN ${col}`)
+      .catch((e: unknown) => {
+        if (!/duplicate column/i.test(String((e as Error).message))) console.error(`[bd] ${table} ${col} failed:`, e)
+      })
+  }
+
+  // LC PAYMENT TO THE PARTY IN INSTALLMENTS. The bank can pay the beneficiary
+  // in parts on different dates; each part is a set of lc_issuances rows
+  // sharing one installment_no, settled by its own voucher on its own date.
+  // Nullable and never backfilled: every bill raised before reads as the one
+  // payment it always was. Idempotent, like the block above.
+  await getClient()
+    .execute('ALTER TABLE lc_issuances ADD COLUMN installment_no INTEGER')
+    .catch((e: unknown) => {
+      if (!/duplicate column/i.test(String((e as Error).message))) console.error('[lc] installment column failed:', e)
+    })
 
   // The amount the bank BLOCKS against the facility when it opens the credit,
   // as distinct from the amount actually opened. They part company whenever the
@@ -914,6 +1256,33 @@ export async function runStartupTasks(): Promise<void> {
     // agree. IGNORE, so a bill that already has links is left alone.
     await c.execute(`INSERT OR IGNORE INTO bd_parties (bd_id, party_type, party_id)
       SELECT id, party_type, party_id FROM bill_discountings WHERE party_id IS NOT NULL`).catch(() => {})
+
+    /**
+     * PRINCIPAL REPAYMENTS — WHAT THE LIMIT ITSELF COMES DOWN BY.
+     *
+     * Not a repayment of a bill. A bill's repayment gives its money back and
+     * frees the limit it was using, so the line can be drawn again; this is the
+     * NBFC cutting the line. Repay 4 lakh of principal against a 35 lakh
+     * facility and the facility is 31 lakh from then on, whatever any bill is
+     * doing — the room does not come back.
+     *
+     * Kept as rows rather than as a running figure on the NBFC so the drop is
+     * dated, attributable and reversible: a limit that simply reads 31 cannot
+     * say when or why it stopped being 35.
+     */
+    await c.execute(`CREATE TABLE IF NOT EXISTS bd_limit_reductions (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      company_id INTEGER NOT NULL,
+      nbfc_id INTEGER NOT NULL REFERENCES nbfcs(id),
+      bd_id INTEGER REFERENCES bill_discountings(id),
+      amount REAL NOT NULL DEFAULT 0,
+      reduce_date TEXT NOT NULL,
+      note TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    )`)
+    await c
+      .execute('CREATE INDEX IF NOT EXISTS idx_bd_limit_red_nbfc ON bd_limit_reductions(company_id, nbfc_id)')
+      .catch(() => {})
 
     console.log('[bd] tables checked/restored')
   })().catch((e: unknown) => console.error('[bd] table repair failed:', e))
@@ -1294,6 +1663,587 @@ export async function runStartupTasks(): Promise<void> {
     }
   }).catch((e) => console.error('[quality] unit column failed:', e))
 
+  // SELLING TO OURSELVES.
+  //
+  // Two companies on one site trade with each other: KR FOODS sells oil to KR
+  // FINMARK, and that is a sale in one set of books and a purchase in the
+  // other — two documents, raised together, for one movement of goods.
+  //
+  // Three things are needed for that and none of them existed:
+  //   companies.gst_pct / tds_pct   the terms an inter-company invoice is
+  //                                 raised on, kept with the company rather
+  //                                 than typed again on every transfer;
+  //   *.company_link_id             the customer and supplier rows that stand
+  //                                 for a company of ours, so the ledgers,
+  //                                 bill-wise and TDS machinery all work
+  //                                 unchanged — they only need a party;
+  //   orders.intercompany_sale_id   which sale raised this purchase, so the
+  //                                 two stay in step when one is edited and
+  //                                 neither is left orphaned when it is not.
+  await runOnce('intercompany_sales_v1', async () => {
+    const c = getClient()
+    const add = async (sql: string): Promise<void> => {
+      await c.execute(sql).catch((e: unknown) => {
+        if (!/duplicate column/i.test(String((e as Error).message))) throw e
+      })
+    }
+    await add('ALTER TABLE companies ADD COLUMN gst_pct REAL NOT NULL DEFAULT 0')
+    await add('ALTER TABLE companies ADD COLUMN tds_pct REAL NOT NULL DEFAULT 0')
+
+    await add('ALTER TABLE customers ADD COLUMN company_link_id INTEGER')
+    await add('ALTER TABLE suppliers ADD COLUMN company_link_id INTEGER')
+    await add('ALTER TABLE orders ADD COLUMN intercompany_sale_id INTEGER')
+    await c.execute(
+      'CREATE INDEX IF NOT EXISTS idx_orders_intercompany ON orders(intercompany_sale_id)'
+    )
+  }).catch((e) => console.error('[intercompany] columns failed:', e))
+
+  // A COMPANY INVOICING ANOTHER IS A PARTY LIKE ANY OTHER.
+  //
+  // So it carries what any party carries — a GSTIN, a state, and the TDS terms
+  // INCLUDING the slab, which is the part that decides whether TDS is withheld
+  // at all. A rate with no threshold beside it withholds from the first rupee,
+  // which is neither how the law reads nor how the customer master is set up.
+  //
+  // Its own key rather than more statements inside intercompany_sales_v1: that
+  // one has already run on every database that has seen this feature, and a
+  // runOnce that has run is never opened again — statements added to it would
+  // take effect on new databases only, which is the worst of both.
+  await runOnce('intercompany_company_terms_v1', async () => {
+    const c = getClient()
+    const add = async (sql: string): Promise<void> => {
+      await c.execute(sql).catch((e: unknown) => {
+        if (!/duplicate column/i.test(String((e as Error).message))) throw e
+      })
+    }
+    await add('ALTER TABLE companies ADD COLUMN gstin TEXT')
+    await add('ALTER TABLE companies ADD COLUMN state TEXT')
+    // The customer master's own defaults: 0.1% past 50,00,000 in the financial
+    // year, the slab itself exempt.
+    await add('ALTER TABLE companies ADD COLUMN tds_threshold REAL NOT NULL DEFAULT 5000000')
+    await add('ALTER TABLE companies ADD COLUMN tds_above_only INTEGER NOT NULL DEFAULT 1')
+    await add('ALTER TABLE companies ADD COLUMN credit_period_days INTEGER NOT NULL DEFAULT 0')
+  }).catch((e) => console.error('[intercompany] company terms failed:', e))
+
+  // WHAT THE SLAB HAS ALREADY SEEN.
+  //
+  // TDS is withheld on turnover past a threshold for the financial year, so a
+  // party set up mid-year has to be told what it had already billed before the
+  // books began — otherwise the slab restarts at zero and nothing is withheld
+  // until the threshold is crossed a second time. The supplier master has
+  // carried that figure all along ("Purchase bill amount (as on)"); a company
+  // trading with another needs it for the same reason.
+  await runOnce('intercompany_opening_purchase_v1', async () => {
+    const c = getClient()
+    const add = async (sql: string): Promise<void> => {
+      await c.execute(sql).catch((e: unknown) => {
+        if (!/duplicate column/i.test(String((e as Error).message))) throw e
+      })
+    }
+    await add('ALTER TABLE companies ADD COLUMN opening_purchase_amount REAL NOT NULL DEFAULT 0')
+    await add('ALTER TABLE companies ADD COLUMN opening_purchase_date TEXT')
+  }).catch((e) => console.error('[intercompany] opening purchase failed:', e))
+
+  // Not runOnce: a company added later needs its party rows too, and the call
+  // is idempotent — it adopts a same-named party if one already exists rather
+  // than making a second. It also copies the company's terms onto those rows,
+  // which is what every slab and voucher downstream actually reads.
+  await ensureCompanyParties().catch((e) => console.error('[intercompany] party rows failed:', e))
+
+  // WHICH CARGO A TANKER CAME OFF.
+  //
+  // Five tankers arrive from BUNGE against one parcel of oil: one LOT at the
+  // port, discharged at one TERMINAL. The register knew each vehicle and knew
+  // nothing of what they had in common, so reconciling with the supplier meant
+  // reading tanker numbers off a sheet and grouping them by hand.
+  //
+  // Two labels on the deposit rather than a table of their own: a lot number is
+  // something the terminal gives us, not a thing this software owns the life
+  // of. Nothing hangs off them, and when something does, a table can be added
+  // later with these columns still the natural key.
+  await runOnce('consignment_lot_terminal_v1', async () => {
+    const c = getClient()
+    const add = async (sql: string): Promise<void> => {
+      await c.execute(sql).catch((e: unknown) => {
+        if (!/duplicate column/i.test(String((e as Error).message))) throw e
+      })
+    }
+    await add('ALTER TABLE consignment_stock ADD COLUMN lot_no TEXT')
+    await add('ALTER TABLE consignment_stock ADD COLUMN terminal_no TEXT')
+    await c
+      .execute('CREATE INDEX IF NOT EXISTS idx_consign_lot ON consignment_stock(company_id, lot_no)')
+      .catch(() => {})
+  }).catch((e) => console.error('[consignment] lot/terminal failed:', e))
+
+  // A NOTIFICATION THAT ARRIVES WITH THE APP CLOSED.
+  //
+  // The bell only ever drew a banner while the page was open, which on a phone
+  // is almost never — so the mill was told nothing until somebody happened to
+  // look. These are the subscriptions the browsers hand over: one row per
+  // device, with the endpoint its push service listens on and the two keys the
+  // payload is encrypted to. The endpoint is unique because it IS the device;
+  // re-subscribing the same browser must update the row, not add a second.
+  await runOnce('push_subscriptions_v1', async () => {
+    const c = getClient()
+    await c.execute(`CREATE TABLE IF NOT EXISTS push_subscriptions (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id INTEGER NOT NULL,
+      endpoint TEXT NOT NULL UNIQUE,
+      p256dh TEXT NOT NULL,
+      auth TEXT NOT NULL,
+      user_agent TEXT,
+      created_at TEXT,
+      last_ok_at TEXT,
+      failed_at TEXT
+    )`)
+    await c.execute('CREATE INDEX IF NOT EXISTS idx_push_user ON push_subscriptions(user_id)')
+  }).catch((e) => console.error('[push] subscriptions table failed:', e))
+
+  // A BATCH MIXED FOR ITSELF.
+  //
+  // With formulation-based production switched off (Settings), a run is not
+  // struck on a saved recipe — the operator composes the mix at the sheet. The
+  // arithmetic is unchanged; what changes is where the lines came from, and
+  // that they belong to that run alone. Kept on the row for the same reason a
+  // saved recipe pins its version: an edit has to re-expand exactly what was
+  // booked, and there is no master to go back to.
+  await runOnce('production_custom_mix_v1', async () => {
+    const c = getClient()
+    await c.execute('ALTER TABLE production ADD COLUMN custom_items_json TEXT').catch((e: unknown) => {
+      if (!/duplicate column/i.test(String((e as Error).message))) throw e
+    })
+  }).catch((e) => console.error('[production] custom mix column failed:', e))
+
+  // A DAY THAT CLOSED WITH WORK STILL IN IT.
+  //
+  // The board is today's, and a checklist anybody can back-fill at will
+  // records nothing worth having. So a closed day is asked for: one login, one
+  // date, an admin's answer. Ticks made afterwards still carry the moment they
+  // were actually made — this reopens the door, it does not backdate anything.
+  await runOnce('work_day_requests_v1', async () => {
+    const c = getClient()
+    await c.execute(`CREATE TABLE IF NOT EXISTS work_day_requests (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id INTEGER NOT NULL,
+      work_date TEXT NOT NULL,
+      reason TEXT,
+      -- pending | approved | refused
+      state TEXT NOT NULL DEFAULT 'pending',
+      decided_by INTEGER,
+      decided_at TEXT,
+      decided_note TEXT,
+      created_at TEXT,
+      -- One live ask per person per day: asking twice is the same ask, and a
+      -- day already open must not be shut by re-asking.
+      UNIQUE(user_id, work_date)
+    )`)
+    await c.execute('CREATE INDEX IF NOT EXISTS idx_work_day_req ON work_day_requests(state, work_date)')
+  }).catch((e) => console.error('[work] day requests failed:', e))
+
+  // WHICH PURCHASES ARE THE OTHER HALF OF ONE SALES INVOICE.
+  //
+  // A transfer of three products raises three purchases here, because a
+  // purchase row is one product — but it is ONE invoice, with one number, and
+  // all three carry it. The Purchases form refuses a number another row
+  // already has, which is right for two unrelated bills and wrong for these:
+  // they are not two bills, they are one bill in three rows.
+  //
+  // So they are stamped with the sales invoice's own group and the clash check
+  // lets that group share a number. Null on every ordinary purchase, which
+  // keeps the rule exactly as it was for them.
+  await runOnce('intercompany_invoice_group_v1', async () => {
+    await getClient()
+      .execute('ALTER TABLE orders ADD COLUMN intercompany_group TEXT')
+      .catch((e) => {
+        if (!/duplicate column/i.test(String(e?.message || e))) throw e
+      })
+  }).catch((e) => console.error('[intercompany] invoice group failed:', e))
+
+  // AN OPENING'S PP BREAKDOWN IS PART OF THE OPENING.
+  //
+  // stock_opening_pp holds one live row per product and vessel — qty and FFA —
+  // with no date on it at all. Striking the opening again overwrote it, so the
+  // history could say what the tanks held on the 13th but not what was in
+  // which vessel, nor at what FFA. That is the part somebody actually goes
+  // back for: a blend is argued about by its FFA, not by its tonnage.
+  //
+  // Filed alongside the set it belongs to, so every opening ever struck keeps
+  // its own breakdown — the ones carrying FFA and the ones that never did.
+  await runOnce('stock_opening_set_pp_v1', async () => {
+    await getClient().execute(
+      `CREATE TABLE IF NOT EXISTS stock_opening_set_pp (
+         id INTEGER PRIMARY KEY AUTOINCREMENT,
+         set_id INTEGER NOT NULL,
+         product_id INTEGER,
+         stage_id INTEGER,
+         qty REAL,
+         ffa REAL,
+         formulation_id INTEGER
+       )`
+    )
+    await getClient().execute(
+      'CREATE INDEX IF NOT EXISTS idx_opening_set_pp ON stock_opening_set_pp(set_id)'
+    )
+  }).catch((e) => console.error('[stock] opening PP history failed:', e))
+
+  // AN LC PAID AND REPAID IN PARTS — one row per part: its LC amount, its own
+  // maturity and interest, and when the bank was repaid for it. New table, so
+  // no LC already on the books changes. See lc.ts.
+  await getClient()
+    .execute(`CREATE TABLE IF NOT EXISTS lc_parts (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      lc_id INTEGER NOT NULL,
+      part_no INTEGER NOT NULL,
+      pay_date TEXT NOT NULL,
+      amount REAL NOT NULL,
+      maturity_date TEXT NOT NULL,
+      days INTEGER NOT NULL DEFAULT 0,
+      interest REAL NOT NULL DEFAULT 0,
+      charges REAL NOT NULL DEFAULT 0,
+      net REAL NOT NULL DEFAULT 0,
+      repayment_id INTEGER,
+      repaid_date TEXT,
+      rebate REAL NOT NULL DEFAULT 0,
+      rebate_route TEXT,
+      rebate_journal_entry_id INTEGER,
+      rebate_payout_journal_entry_id INTEGER,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      UNIQUE (lc_id, part_no)
+    )`)
+    .catch((e: unknown) => console.error('[lc] lc_parts table failed:', e))
+  // THE SWITCH FOR SELLING ON AT EMPTY (onwardSale.ts). On for every company
+  // by default — it only ever acts on a Trading one — so nothing changes until
+  // somebody turns it off under Companies.
+  await getClient()
+    .execute('ALTER TABLE companies ADD COLUMN onward_sale_at_empty INTEGER NOT NULL DEFAULT 1')
+    .catch((e: unknown) => {
+      if (!/duplicate column/i.test(String((e as Error).message))) console.error('[companies] onward_sale_at_empty failed:', e)
+    })
+  // Each part's own interest and margin rate. NULL on every part already paid,
+  // which reads as the LC's own rate — so no existing part's figures move.
+  for (const col of ['interest_pct REAL', 'margin_pct REAL']) {
+    await getClient()
+      .execute(`ALTER TABLE lc_parts ADD COLUMN ${col}`)
+      .catch((e: unknown) => {
+        if (!/duplicate column/i.test(String((e as Error).message))) console.error('[lc] lc_parts rate column failed:', e)
+      })
+  }
+  await getClient()
+    .execute('ALTER TABLE letters_of_credit ADD COLUMN preclose_parts_repayment_id INTEGER')
+    .catch((e: unknown) => {
+      if (!/duplicate column/i.test(String((e as Error).message))) console.error('[lc] parts closure column failed:', e)
+    })
+  // PP vessel Y/N — does production use it? 1 = yes, which is what every
+  // vessel counted before this was. On the live breakdown and its history.
+  for (const sql of [
+    'ALTER TABLE stock_opening_pp ADD COLUMN in_use INTEGER NOT NULL DEFAULT 1',
+    'ALTER TABLE stock_opening_set_pp ADD COLUMN in_use INTEGER NOT NULL DEFAULT 1'
+  ]) {
+    await getClient()
+      .execute(sql)
+      .catch((e: unknown) => {
+        if (!/duplicate column/i.test(String((e as Error).message))) console.error('[stock] in_use column failed:', e)
+      })
+  }
+
+  // HOW THE MONEY CAME BACK, not only that it did.
+  //
+  // A payment IN was an amount and a date. "Has the customer paid?" was
+  // answerable; "how did it reach us — RTGS, a cheque, an adjustment?" was
+  // not, and that is the question asked when a receipt is being matched
+  // against a bank statement. Null on every receipt already recorded, which
+  // reads as "not stated" rather than inventing a method for it.
+  // WHICH ACCOUNT IT LANDED IN, AND WHAT THE BANK CALLED IT.
+  //
+  // The receipt already said how much and by what route; it could not say
+  // WHERE, so every payment IN was debited to the one generic BANK A/C and a
+  // desk reconciling three banks had nothing to go on. The reference is the
+  // other half of the same question: a UTR or cheque number is what a line on
+  // the statement is found by. Null on everything already recorded, which
+  // reads as "not stated" rather than inventing a bank for it.
+  await runOnce('bd_payment_in_account_ref_v1', async () => {
+    for (const sql of [
+      'ALTER TABLE bd_payment_ins ADD COLUMN account TEXT',
+      'ALTER TABLE bd_payment_ins ADD COLUMN ref_no TEXT'
+    ]) {
+      await getClient()
+        .execute(sql)
+        .catch((e) => {
+          if (!/duplicate column/i.test(String(e?.message || e))) throw e
+        })
+    }
+  }).catch((e) => console.error('[bd] payment-in account/ref failed:', e))
+
+  await runOnce('bd_payment_in_method_v1', async () => {
+    await getClient()
+      .execute('ALTER TABLE bd_payment_ins ADD COLUMN method TEXT')
+      .catch((e) => {
+        if (!/duplicate column/i.test(String(e?.message || e))) throw e
+      })
+  }).catch((e) => console.error('[bd] payment-in method failed:', e))
+
+  // Move each NBFC's discounted-bill liability onto its own ledger, off the
+  // one shared BILLS DISCOUNTED A/C. See migrateBdPerNbfcLedgers.
+  await runOnce('bd_per_nbfc_ledger_v1', async () => {
+    const out = await migrateBdPerNbfcLedgers()
+    if (out.moved) {
+      console.log(`[bd] moved ${out.moved} line(s) onto ${out.ledgers} per-NBFC ledger(s)`)
+    }
+  }).catch((e) => console.error('[bd] per-NBFC ledger migration failed:', e))
+
+  // ONE BILL, SEVERAL PURCHASE ROWS — WHATEVER PUT THEM THERE.
+  //
+  // intercompany_group was added for transfers, where a sale of three products
+  // raises three purchases under one number. A supplier's own invoice can cover
+  // tankers of several products and lands in exactly the same shape, so the
+  // grouping is no longer about inter-company anything.
+  //
+  // Renamed by adding the honest column and copying into it, rather than by
+  // ALTER ... RENAME: a rename is one statement on a table the mill is writing
+  // to, and the old column costs nothing left where it is. Every reader moves
+  // to bill_group; intercompany_group is never read again.
+  await runOnce('orders_bill_group_v1', async () => {
+    const c = getClient()
+    await c.execute('ALTER TABLE orders ADD COLUMN bill_group TEXT').catch((e) => {
+      if (!/duplicate column/i.test(String(e?.message || e))) throw e
+    })
+    await c
+      .execute(
+        `UPDATE orders SET bill_group = intercompany_group
+          WHERE bill_group IS NULL AND TRIM(COALESCE(intercompany_group,'')) <> ''`
+      )
+      .catch((e) => console.error('[orders] bill group backfill:', e))
+  }).catch((e) => console.error('[orders] bill group failed:', e))
+
+  // A BROKER IS PAID ONE WAY OR THE OTHER, AND THE MASTER SHOULD SAY WHICH.
+  //
+  // Brokerage came as a percentage and nothing else, which is only half the
+  // trade: plenty of brokers here are engaged at so many rupees a tonne, and
+  // recording that as a percentage means working it out against a value that
+  // is not agreed yet — and writing down a figure nobody shook hands on.
+  //
+  // So both are kept, and neither is required. A broker quoted at 0.25% has a
+  // percentage and no rate; one at Rs 15 a tonne has a rate and no percentage;
+  // one paid partly each way has both, which is exactly what the two boxes
+  // then say. Existing brokers keep their percentage untouched and open with
+  // a rate of nothing, which is what they were always worth.
+  await runOnce('broker_rupee_rate_v1', async () => {
+    await getClient()
+      .execute('ALTER TABLE brokers ADD COLUMN brokerage_rate REAL NOT NULL DEFAULT 0')
+      .catch((e) => {
+        if (!/duplicate column/i.test(String(e?.message || e))) throw e
+      })
+  }).catch((e) => console.error('[brokers] rupee brokerage failed:', e))
+
+  // WHAT A LINE IS MADE OF.
+  //
+  // SALARY A/C 20,000 against BANK A/C is a true posting and a poor record: it
+  // is four people, or basic and HRA and an allowance, and a month later
+  // nobody can say which. The ledger is right either way — this does not move
+  // a rupee and does not touch the double entry — but the voucher can now
+  // carry the breakdown that produced the figure, and hand it back when the
+  // voucher is read again.
+  //
+  // A memo, deliberately. Splitting into real ledger postings is what extra
+  // journal lines are FOR; what was missing was somewhere to write down how
+  // one line's own total was arrived at.
+  await runOnce('journal_line_splits_v1', async () => {
+    const c = getClient()
+    await c.execute(`CREATE TABLE IF NOT EXISTS journal_line_splits (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      line_id INTEGER NOT NULL,
+      name TEXT NOT NULL,
+      amount REAL NOT NULL DEFAULT 0,
+      note TEXT,
+      sort_order INTEGER NOT NULL DEFAULT 0
+    )`)
+    await c.execute('CREATE INDEX IF NOT EXISTS idx_jl_splits ON journal_line_splits(line_id)')
+  }).catch((e) => console.error('[accounts] line breakdown table failed:', e))
+
+  // ONE LINE, ONE PERSON — WHERE THAT IS WHAT IS MEANT.
+  //
+  // A checklist line is written against a PAGE and asked of everyone who can
+  // open it, which is what makes the catalogue worth having: nobody is named,
+  // and a staff change needs no thought. But some jobs on a shared page belong
+  // to one desk — three people can open Stock and only one of them dips the
+  // tanks — and until now the only way to say so was to assign a one-off every
+  // single day.
+  //
+  // So a line may name a login. Null, which every existing line is, means what
+  // it has always meant: everyone who can open that page. Named, it is asked
+  // of that person ALONE — and still only if they can open the page, so this
+  // narrows the reach and can never widen it past what access allows.
+  await runOnce('work_process_person_v1', async () => {
+    await getClient()
+      .execute('ALTER TABLE work_processes ADD COLUMN user_id INTEGER')
+      .catch((e) => {
+        if (!/duplicate column/i.test(String(e?.message || e))) throw e
+      })
+  }).catch((e) => console.error('[work] per-person line failed:', e))
+
+  // THE SAME DOOR, OPENED FROM THE OTHER SIDE.
+  //
+  // An admin can now open a closed day without waiting to be asked, and it
+  // writes the very same row — already approved — so nothing that reads this
+  // table has to learn a second shape. This flag exists for one job only:
+  // shutting it again. A day nobody asked for is withdrawn outright, while a
+  // day that WAS asked for is refused, because an ask is owed an answer.
+  await runOnce('work_day_admin_open_v1', async () => {
+    await getClient()
+      .execute('ALTER TABLE work_day_requests ADD COLUMN opened_by_admin INTEGER NOT NULL DEFAULT 0')
+      .catch((e) => {
+        if (!/duplicate column/i.test(String(e?.message || e))) throw e
+      })
+  }).catch((e) => console.error('[work] admin-opened day flag failed:', e))
+
+  // AN INVOICE WITH NOTHING TO SAMPLE.
+  //
+  // The flask on the Purchases register goes amber the moment a load is
+  // emptied without a lab reading against it, and stays amber for ever. That
+  // is right for a tanker of oil and wrong for a transfer between our own
+  // companies, which has no sample to take — and a warning that can never be
+  // cleared is a warning everybody learns to ignore. These let the desk answer
+  // "not needed for this transaction", with the reason and the moment it was
+  // said, and take it back again.
+  await runOnce('orders_quality_waived_v1', async () => {
+    const c = getClient()
+    const add = async (sql: string): Promise<void> => {
+      await c.execute(sql).catch((e: unknown) => {
+        if (!/duplicate column/i.test(String((e as Error).message))) throw e
+      })
+    }
+    await add('ALTER TABLE orders ADD COLUMN quality_waived INTEGER NOT NULL DEFAULT 0')
+    await add('ALTER TABLE orders ADD COLUMN quality_waived_note TEXT')
+    await add('ALTER TABLE orders ADD COLUMN quality_waived_at TEXT')
+  }).catch((e) => console.error('[orders] quality waiver failed:', e))
+
+  // TREASURY IS THREE DESKS, AND ITS CHECKLIST SHOULD BE TOO.
+  //
+  // The seed asked one line of "Treasury": check the LCs and the bills. But
+  // the LC desk and the discounting desk are granted separately everywhere
+  // else in the app, and are frequently not the same person — so one line
+  // lands on both of them asking half about somebody else's work. Split into
+  // the section each half belongs to.
+  //
+  // Nobody loses the line: grantsOf now fills in the page↔section grants the
+  // rest of the app already infers, so a login holding only the old Treasury
+  // permission is asked both of these.
+  //
+  // The combined line is switched off rather than deleted — the days it was
+  // already asked on keep it, and it can be switched back on from the Task
+  // list if this split is not wanted.
+  await runOnce('work_treasury_sections_v1', async () => {
+    const c = getClient()
+    const OLD = 'Check LCs and bills maturing this week'
+    const old = await c.execute({
+      sql: "SELECT id, detail, sort_order FROM work_processes WHERE module = 'treasury' AND scope = '' AND title = ?",
+      args: [OLD]
+    })
+    const row = old.rows[0] as { id?: unknown; detail?: unknown; sort_order?: unknown } | undefined
+    if (!row) return
+    const detail = String(row.detail ?? '') || 'Anything inside seven days needs a plan today.'
+    const base = Number(row.sort_order) || 110
+    const parts: [string, string, number][] = [
+      ['treasuryLc', 'Check LCs maturing this week', base],
+      ['treasuryBd', 'Check bills maturing this week', base + 1]
+    ]
+    for (const [module, title, order] of parts) {
+      await c.execute({
+        sql: `INSERT INTO work_processes (module, scope, title, detail, sort_order, active)
+              VALUES (?, '', ?, ?, ?, 1)
+              ON CONFLICT(module, scope, title) DO NOTHING`,
+        args: [module, title, detail, order]
+      })
+    }
+    // Off, and off today's boards where nobody has touched it — the same two
+    // things switching a line off does by hand.
+    await c.execute({ sql: 'UPDATE work_processes SET active = 0 WHERE id = ?', args: [Number(row.id)] })
+    await c.execute({
+      sql: `DELETE FROM work_tasks
+             WHERE process_id = ? AND kind = 'auto' AND state = 'pending' AND work_date >= ?
+               AND id NOT IN (SELECT task_id FROM work_notes)`,
+      // TODAY ONWARDS. A past day is a record of what was asked of somebody
+      // that day, ticked or not — the split changes what is asked from now on,
+      // never what was.
+      args: [Number(row.id), todayISO()]
+    })
+  }).catch((e) => console.error('[work] treasury section split failed:', e))
+
+  // A DEADLINE PER DESK, NOT PER MILL.
+  //
+  // The board has always closed at one time for everybody. A weighbridge that
+  // shuts at six and a billing desk still invoicing at nine are not the same
+  // day, though, and one deadline across both makes the board wrong about one
+  // of them — either half the team is marked late every evening, or nobody
+  // ever is. NULL means this login follows the site's cut-off, which is what
+  // every login does until an admin says otherwise.
+  await runOnce('work_user_cutoff_v1', async () => {
+    const c = getClient()
+    const add = async (sql: string): Promise<void> => {
+      await c.execute(sql).catch((e: unknown) => {
+        if (!/duplicate column/i.test(String((e as Error).message))) throw e
+      })
+    }
+    await add('ALTER TABLE users ADD COLUMN work_cutoff TEXT')
+    await add('ALTER TABLE users ADD COLUMN work_cutoff_day TEXT')
+  }).catch((e) => console.error('[work] per-user cut-off failed:', e))
+
+  // THE STOCK DESK'S DAILY LINE, REWORDED.
+  //
+  // The catalogue seeds once and is never re-seeded, precisely so an admin's
+  // own wording survives — which means a change to the seed reaches a new
+  // database only. This carries the same change to the ones already running.
+  //
+  // Matched on the old wording, so a desk that had already reworded this line
+  // itself keeps what it wrote. Today's board is retitled with it, but only
+  // the rows still untouched: a task already ticked, approved or sent back is
+  // a record of what was asked at the time, and past days are left as they
+  // were read.
+  await runOnce('work_stock_receiving_title_v1', async () => {
+    const c = getClient()
+    const OLD = 'Enter the day-close count'
+    const NEW = 'View the receiving stocks'
+    const DETAIL = 'What came in today against the book figure, with a note on any difference.'
+    // (module, scope, title) is unique — if the new wording is somehow already
+    // in the catalogue, the rename would collide, so it is simply skipped.
+    const taken = await c.execute({
+      sql: "SELECT COUNT(*) AS k FROM work_processes WHERE module = 'stock' AND scope = '' AND title = ?",
+      args: [NEW]
+    })
+    if (Number(taken.rows[0]?.k) > 0) return
+    await c.execute({
+      sql: "UPDATE work_processes SET title = ?, detail = ? WHERE module = 'stock' AND scope = '' AND title = ?",
+      args: [NEW, DETAIL, OLD]
+    })
+    await c.execute({
+      sql: `UPDATE work_tasks SET title = ?, detail = ?
+             WHERE title = ? AND kind = 'auto' AND state = 'pending' AND work_date >= ?`,
+      args: [NEW, DETAIL, OLD, todayISO()]
+    })
+  }).catch((e) => console.error('[work] stock process rename failed:', e))
+
+  // A TANKER THAT ARRIVED AS MORE THAN ONE PARCEL.
+  //
+  // A load is not always one homogeneous lot: a tanker with two compartments,
+  // or one filled at two points, is sampled parcel by parcel and comes back
+  // with two FFAs rather than one. Recording that as a single reading meant
+  // somebody averaging in their head at the desk and typing the result, which
+  // is the arithmetic — and the audit trail — this table exists to keep.
+  //
+  // part_no 0 is the whole load, which is what every reading already on the
+  // books is and what an unsplit load keeps writing. So the migration changes
+  // nothing that exists: it only makes room for what could not be said before.
+  await runOnce('quality_parts_v1', async () => {
+    const c = getClient()
+    for (const t of ['tanker_quality', 'order_quality']) {
+      for (const col of ['part_no INTEGER NOT NULL DEFAULT 0', 'part_qty TEXT']) {
+        await c.execute(`ALTER TABLE ${t} ADD COLUMN ${col}`).catch((e: unknown) => {
+          if (!/duplicate column/i.test(String((e as Error).message))) throw e
+        })
+      }
+    }
+  }).catch((e) => console.error('[quality] part columns failed:', e))
+
   // The gate supervisor's diary of what is standing OUTSIDE the gate — see
   // outsidetankers.ts for why this is not a flag on gate_entries.
   await runOnce('outside_tankers_v1', async () => {
@@ -1554,6 +2504,104 @@ export async function runStartupTasks(): Promise<void> {
       console.log(`[stock] pp_equiv backfilled on production ${row.id} (${drawn} drawn)`)
     }
   }).catch((e) => console.error('[stock] pp_equiv backfill failed:', e))
+
+  // THE RECIPE A WITH-FFA VESSEL'S OIL IS MADE TO.
+  //
+  // Oil counted as PP WITH its free fatty acid still in it is not the finished
+  // product it is filed under — it is the blend on the way there. Naming the
+  // formulation lets the register restate it as what it actually is: the shea,
+  // the RPS and the fatty oil that went into it, on the adjustment column,
+  // against the finished oil coming off the same column. No production
+  // happened; the tonnage is only being called by its right name.
+  await runOnce('pp_formulation_v1', async () => {
+    await getClient()
+      .execute('ALTER TABLE stock_opening_pp ADD COLUMN formulation_id INTEGER')
+      .catch((e) => {
+        if (!/duplicate column/i.test(String(e))) throw e
+      })
+  }).catch((e) => console.error('[stock] PP formulation column failed:', e))
+
+  // INTEREST SERVICED DURING THE TENOR.
+  //
+  // A discounted bill has always charged its whole interest at the start —
+  // netted out of the disbursement, or settled separately once. Some NBFC
+  // terms instead have the interest PAID during the tenor: monthly,
+  // fortnightly, or whatever was agreed, with the principal falling due at
+  // maturity on its own. Each payment is its own voucher and its own row, so
+  // one can be corrected without disturbing the others.
+  // AN UPFRONT LC IS TWO VOUCHERS, AND THESE WERE ONE.
+  //
+  // Where an LC's terms say the interest and commission are paid from our own
+  // account rather than kept out of the credit, two different things happen
+  // and two different parties settle them:
+  //
+  //   1  the bank honours the credit out of ITS funds — the supplier is
+  //      discharged and the bank takes their place. Nothing of ours moves.
+  //   2  the interest and the commission come out of OUR bank.
+  //
+  // The interest voucher was only raised when the bank statement line was
+  // reconciled. Until that happened the fees rode on the settlement journal
+  // instead, so both acts arrived as a single entry — which overstates the
+  // bank's payable by fees it never lent, and shows no payment out of our own
+  // account at all.
+  //
+  // refreshLcUpfrontInterest now raises the voucher on the LC's own terms, and
+  // every such LC re-posts on its next save. This does that once for the ones
+  // already on the books rather than waiting for somebody to open each of
+  // them. postLcUpfrontInterest re-posts the settlement voucher itself, which
+  // is what drops the fee lines from it — so the expense still appears exactly
+  // once, on the voucher it belongs to.
+  await runOnce('lc_upfront_two_vouchers_v1', async () => {
+    const c = getClient()
+    const res = await c.execute(
+      `SELECT id, lc_no FROM letters_of_credit
+        WHERE COALESCE(interest_upfront, 0) = 1
+          AND interest_journal_entry_id IS NULL`
+    )
+    for (const row of res.rows) {
+      const id = Number((row as unknown as Record<string, unknown>).id)
+      const no = String((row as unknown as Record<string, unknown>).lc_no || id)
+      try {
+        await refreshLcUpfrontInterest(id)
+        console.log(`[lc] ${no}: upfront interest moved onto its own voucher`)
+      } catch (e) {
+        // One bad LC must not stop the rest, and must not leave the flag
+        // unset — the others are already corrected by the time it throws.
+        console.error(`[lc] ${no}: could not split the upfront interest —`, (e as Error).message)
+      }
+    }
+  })
+
+  await runOnce('bd_serviced_interest_v1', async () => {
+    const c = getClient()
+    for (const col of ["interest_mode TEXT", "interest_freq TEXT"]) {
+      await c.execute('ALTER TABLE bill_discountings ADD COLUMN ' + col).catch((e) => {
+        if (!/duplicate column/i.test(String(e))) throw e
+      })
+    }
+    // Every bill already on the books keeps exactly what it was posted with.
+    await c.execute(
+      "UPDATE bill_discountings SET interest_mode = CASE WHEN COALESCE(interest_upfront, 0) = 1 THEN 'upfront' ELSE 'discounted' END WHERE interest_mode IS NULL"
+    )
+    await c.execute(`CREATE TABLE IF NOT EXISTS bd_interest_payments (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      bd_id INTEGER NOT NULL REFERENCES bill_discountings(id),
+      -- The stretch of days this payment covers. from_date is the morning
+      -- after the previous one ended, so no day is charged twice and none is
+      -- skipped between them.
+      from_date TEXT NOT NULL,
+      to_date TEXT NOT NULL,
+      days INTEGER NOT NULL DEFAULT 0,
+      paid_date TEXT NOT NULL,
+      gross REAL NOT NULL DEFAULT 0,
+      tds REAL NOT NULL DEFAULT 0,
+      net REAL NOT NULL DEFAULT 0,
+      note TEXT,
+      journal_entry_id INTEGER,
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    )`)
+    await c.execute('CREATE INDEX IF NOT EXISTS idx_bd_interest_bd ON bd_interest_payments(bd_id)')
+  }).catch((e) => console.error('[bd] serviced interest setup failed:', e))
 
   // Where a heel went, when it did not go for good. A write-off row carrying
   // a destination is a MOVE — the oil left one oil's PP and arrived in
@@ -1862,5 +2910,385 @@ export async function runStartupTasks(): Promise<void> {
       })
   }).catch((e) => console.error('[production] kind column failed:', e))
 
+  // A CHART OF ACCOUNTS THE MILL CAN ADD TO.
+  //
+  // Groups were twenty-six names in a TypeScript array — fine until somebody
+  // needs TERM LOANS under SECURED LOANS, or a second freight group, which is
+  // an ordinary week's work in a set of books and was impossible here.
+  //
+  // Seeded with Tally's own twenty-eight plus this book's GENERAL, wired up
+  // parent to child, and then — the part that matters — every acc_group name
+  // already sitting on a ledger is adopted as a primary of its own, so no
+  // existing ledger is orphaned into a group that does not exist. Natures are
+  // seeded to resolve exactly as the old flat list returned them, so not one
+  // figure moves sides on the trial balance.
+  await runOnce('ledger_groups_v1', () => seedDefaultGroups()).catch((e) =>
+    console.error('[accounting] ledger groups failed:', e)
+  )
+
+  // AN LC MARGIN IS NOT A LEDGER ENTRY, AND THE OLD ONES COME OFF.
+  //
+  // Opening an LC used to post Dr LC MARGIN A/C / Cr the bank for the security
+  // the bank holds under lien. Across these books that parked 8.6 crore in a
+  // deposit account and took the same out of the bank balances, against money
+  // nobody had paid away. It is tracked on the LC and on the bank's own side;
+  // it does not belong here. postLcOpening no longer writes it.
+  //
+  // Two shapes exist. Nearly all are the two-line CONTRA — margin against the
+  // bank — and those come off whole. ONE is the original four-line JOURNAL,
+  // which also carried that LC's interest and its bank charges: deleting it
+  // would take two real expenses with it, so only the margin line is removed
+  // and the bank credit is reduced by exactly that much. The voucher stays,
+  // still balanced, carrying what it should have carried all along.
+  //
+  // Only vouchers an LC NAMES as its own opening are touched — never a
+  // hand-written journal that happens to mention a margin.
+  await runOnce('lc_margin_off_ledger_v1', async () => {
+    const c = getClient()
+    const acc = await c.execute({
+      sql: "SELECT id FROM ledger_accounts WHERE TRIM(UPPER(name)) = 'LC MARGIN A/C'",
+      args: []
+    })
+    const accId = Number(acc.rows[0]?.id || 0)
+    if (!accId) return
+    const lcs = await c.execute({
+      sql: `SELECT id, lc_no, journal_entry_id FROM letters_of_credit WHERE journal_entry_id IS NOT NULL`,
+      args: []
+    })
+    let whole = 0
+    let trimmed = 0
+    for (const row of lcs.rows) {
+      const jeId = Number((row as unknown as Record<string, unknown>).journal_entry_id || 0)
+      if (!jeId) continue
+      const lines = await c.execute({
+        sql: 'SELECT id, account_id, dr, cr FROM journal_lines WHERE entry_id = ?',
+        args: [jeId]
+      })
+      const all = lines.rows.map((r) => r as unknown as Record<string, unknown>)
+      const marginLine = all.find((l) => Number(l.account_id) === accId)
+      if (!marginLine) continue
+      const margin = Number(marginLine.dr) || 0
+      if (all.length <= 2) {
+        // The plain margin contra: the whole voucher is the margin.
+        await c.execute({
+          sql: 'DELETE FROM journal_bill_allocs WHERE line_id IN (SELECT id FROM journal_lines WHERE entry_id = ?)',
+          args: [jeId]
+        })
+        await c.execute({ sql: 'DELETE FROM journal_lines WHERE entry_id = ?', args: [jeId] })
+        await c.execute({ sql: 'DELETE FROM journal_entries WHERE id = ?', args: [jeId] })
+        whole += 1
+      } else {
+        // The old combined voucher: lift the margin out and leave the rest.
+        await c.execute({
+          sql: 'DELETE FROM journal_bill_allocs WHERE line_id = ?',
+          args: [Number(marginLine.id)]
+        })
+        await c.execute({ sql: 'DELETE FROM journal_lines WHERE id = ?', args: [Number(marginLine.id)] })
+        // The credit side loses exactly the margin, so the voucher still
+        // balances on what remains.
+        await c.execute({
+          sql: `UPDATE journal_lines SET cr = ROUND(cr - ?, 2)
+                 WHERE entry_id = ? AND cr > 0`,
+          args: [margin, jeId]
+        })
+        await c.execute({
+          sql: `UPDATE journal_entries
+                   SET narration = TRIM(COALESCE(narration, '')) || ' (margin taken off the books)'
+                 WHERE id = ?`,
+          args: [jeId]
+        })
+        trimmed += 1
+      }
+      await c.execute({
+        sql: 'UPDATE letters_of_credit SET journal_entry_id = NULL WHERE id = ?',
+        args: [Number((row as unknown as Record<string, unknown>).id)]
+      })
+    }
+    // A margin RELEASE reverses a posting that no longer exists, so it goes
+    // too. None had been raised when this was written; a book that preclosed
+    // an LC with the old build will have one.
+    const rel = await c.execute({
+      sql: `SELECT id, preclose_journal_entry_id FROM letters_of_credit
+             WHERE preclose_settlement_direction = 'margin_released'
+               AND preclose_journal_entry_id IS NOT NULL`,
+      args: []
+    })
+    for (const row of rel.rows) {
+      const jeId = Number((row as unknown as Record<string, unknown>).preclose_journal_entry_id || 0)
+      if (!jeId) continue
+      await c.execute({
+        sql: 'DELETE FROM journal_bill_allocs WHERE line_id IN (SELECT id FROM journal_lines WHERE entry_id = ?)',
+        args: [jeId]
+      })
+      await c.execute({ sql: 'DELETE FROM journal_lines WHERE entry_id = ?', args: [jeId] })
+      await c.execute({ sql: 'DELETE FROM journal_entries WHERE id = ?', args: [jeId] })
+      await c.execute({
+        sql: 'UPDATE letters_of_credit SET preclose_journal_entry_id = NULL WHERE id = ?',
+        args: [Number((row as unknown as Record<string, unknown>).id)]
+      })
+      whole += 1
+    }
+    console.log(`[lc] margin taken off the ledger — ${whole} voucher(s) removed, ${trimmed} trimmed`)
+  }).catch((e) => console.error('[lc] margin off-ledger failed:', e))
+
+  // WHEN THE MONEY IS EXPECTED BACK.
+  //
+  // A letter of credit and a discounted bill both fund something that is
+  // supposed to pay for itself, and the terms for that are agreed in DAYS —
+  // "60 days from the LC" — not as a date somebody types and then has to keep
+  // in step with whatever the facility was actually opened on.
+  //
+  // Optional on both, and null on everything already on file, which reads as
+  // "not agreed" rather than as nought days.
+  await runOnce('facility_payment_in_days_v1', async () => {
+    const c = getClient()
+    for (const t of ['letters_of_credit', 'bill_discountings']) {
+      // Whether money is expected back at all — the switch at the foot of the
+      // form. Separate from the term, because "yes, it comes back, we have not
+      // agreed when" is a real answer and a blank number cannot say it.
+      await c.execute(`ALTER TABLE ${t} ADD COLUMN payment_in_expected INTEGER NOT NULL DEFAULT 0`).catch((e) => {
+        if (!/duplicate column/i.test(String(e?.message || e))) throw e
+      })
+      await c.execute(`ALTER TABLE ${t} ADD COLUMN payment_in_days INTEGER`).catch((e) => {
+        if (!/duplicate column/i.test(String(e?.message || e))) throw e
+      })
+    }
+  }).catch((e) => console.error('[facility] payment-in days failed:', e))
+
+  // WHAT THE BANK TOOK ON TOP OF THE BILL.
+  //
+  // A discounted bill is repaid at more than its open amount whenever the NBFC
+  // keeps its commission and the bank its charges out of the same debit —
+  // 79,50,000 against a 77,76,117.45 bill, the difference being exactly those
+  // two. The LC side has carried them since it was written; the BD side had
+  // nowhere to put them, so the repayment refused the real figure as "more
+  // than the bill is for" and the charges never reached the books at all.
+  //
+  // Null on every repayment already recorded, which reads as "none stated" —
+  // those were entered at the principal, which is what they say.
+  await runOnce('bd_repayment_charges_v1', async () => {
+    const c = getClient()
+    for (const col of ['comm_charges REAL', 'bank_charges REAL']) {
+      await c.execute(`ALTER TABLE bd_repayments ADD COLUMN ${col}`).catch((e) => {
+        if (!/duplicate column/i.test(String(e?.message || e))) throw e
+      })
+    }
+  }).catch((e) => console.error('[bd] repayment charges failed:', e))
+
+  // THE INTER-COMPANY DESK'S OWN LINE ON THE CHECKLIST.
+  //
+  // Added separately rather than folded into SEED above, because SEED is
+  // written once and an admin may have reworded or retired half of it since.
+  // Re-running it would undo that. This adds the one row, and only if a row
+  // for that desk is not already there.
+  await runOnce('work_catalogue_intercompany_v1', async () => {
+    const c = getClient()
+    const have = await c.execute({
+      sql: "SELECT id FROM work_processes WHERE module = 'sales' AND scope = 'intercompany' LIMIT 1",
+      args: []
+    })
+    if (have.rows.length) return
+    await c.execute({
+      sql: `INSERT INTO work_processes (module, scope, title, detail, active)
+            VALUES ('sales', 'intercompany', ?, ?, 1)`,
+      args: [
+        "Bill today's inter-company transfers",
+        'Every movement between our own companies invoiced, so both sets of books show it.'
+      ]
+    })
+  }).catch((e) => console.error('[work] inter-company catalogue line failed:', e))
+
+  // GST, HEAD BY HEAD AND RATE BY RATE — the ledgers a return is filed from.
+  // See src/main/gstBackfill.ts for what it moves and why it keeps line ids.
+  await runOnce('gst_rate_ledgers_v1', splitGstLedgersByRate).catch((e) =>
+    console.error('[gst] rate ledgers failed:', e)
+  )
+
+  // LC REPAYMENT CHARGES, FOLDED ONTO THE PAYMENT — once, at start (asked for
+  // on 2026-09-30, so nobody has to press the button for the old ones).
+  //
+  // A repayment with bank charges used to post two vouchers: a journal raising
+  // LC PAYABLE by the charges, then a payment clearing it by the whole debit.
+  // New ones post one payment (postLcRepaymentEntry). This puts the old ones
+  // into that shape with EXACTLY the code the Settings → Accounting checks
+  // button runs: only the plain two-voucher shape is touched, every voucher is
+  // archived to accounting_repair_log before it changes, the payment keeps its
+  // number and date, and no ledger balance moves. Anything unusual (a rescued
+  // upfront interest, extra lines, allocations) is left on the Accounting
+  // checks list for a person. If it fails, the flag is not set and the next
+  // start tries again; a restored database without the flag is caught too.
+  await runOnce('lc_repay_charges_fold_v1', async () => {
+    const { findings } = await previewLcCharges()
+    const ids = findings.filter((f) => !f.review).map((f) => f.repayment_id)
+    if (!ids.length) return
+    const r = await fixLcCharges(ids)
+    console.log(`[lc] folded bank charges onto ${r.fixed} repayment voucher(s) — ${r.charges.toFixed(2)} in all`)
+  }).catch((e) => console.error('[lc] repayment charges fold failed:', e))
+
+  // VOUCHER NUMBERS IN THE WRONG SERIES — once, at start (asked for on 2026-10-17).
+  //
+  // A voucher kept the number it was first given when its type changed later:
+  // 17 bill discounting PID openings, posted as receipts and re-posted as
+  // journals, still read RCP/5 … RCP/34. Each moves to the next number of its
+  // own series in date order; the old code is logged. New changes renumber as
+  // they happen (renumberOnTypeChange).
+  await runOnce('voucher_series_realign_v1', async () => {
+    const moved = await realignVoucherSeries()
+    if (moved.length) console.log(`[vouchers] renumbered ${moved.length}: ${moved.join(', ')}`)
+  }).catch((e) => console.error('[vouchers] series realign failed:', e))
+
+  // DUPLICATE SALES VOUCHERS — once, at start (asked for on 2026-09-30).
+  //
+  // The extra component vouchers the 2026-09-03 catch-up bug left on grouped
+  // invoices, each counting a line's revenue and the party's debt twice. Plain
+  // ones are removed by the reviewed repair; an invoice it would leave for
+  // review is re-posted from its own lines, as saving it from Sales does. All
+  // archived first — see autoFixDuplicateSales. A failure leaves the flag unset
+  // and the next start tries again.
+  await runOnce('sales_duplicate_vouchers_v1', async () => {
+    const r = await autoFixDuplicateSales()
+    if (r.removed || r.reposted.length) {
+      console.log(
+        `[sales] removed ${r.removed} duplicate sale voucher(s) (${r.revenue.toFixed(2)} of revenue counted twice)` +
+          (r.reposted.length ? `; re-posted from their lines: ${r.reposted.join(', ')}` : '')
+      )
+    }
+  }).catch((e) => console.error('[sales] duplicate voucher repair failed:', e))
+
+  // DELIVERY FREIGHT ALREADY ACCRUED, BUT FLAGGED AS NOT — once, at start
+  // (asked for on 2026-10-01).
+  //
+  // A freight line on the Fr. Outward register says whether the sale voucher
+  // has already booked it to FREIGHT PAYABLE (accrued = 1). Lines written
+  // before that flag existed (2026-08-23) default to 0, and a sale voucher
+  // reposted since DOES carry the Cr FREIGHT PAYABLE — so the transporter's
+  // bill would debit FREIGHT OUTWARD for it a second time and leave the
+  // payable standing for good. KRFL/405's ₹20,595 (Sameer Carriers) was the
+  // one on the books when this was found.
+  //
+  // Only the flag moves, and only on a line that is unbilled, not deducted
+  // from the customer, and whose invoice's SALE voucher really carries a
+  // FREIGHT PAYABLE credit. No voucher is touched.
+  await runOnce('freight_accrued_flag_v1', async () => {
+    const c = getClient()
+    const map = await c
+      .execute("SELECT use_name FROM ledger_map WHERE UPPER(posts_as) = 'FREIGHT PAYABLE A/C'")
+      .catch(() => ({ rows: [] as unknown[] }))
+    const names = ['FREIGHT PAYABLE A/C', ...(map.rows as Record<string, unknown>[]).map((r) => String(r.use_name || '').toUpperCase())].filter(Boolean)
+    const cand = await c.execute(
+      `SELECT tl.id, tl.amount, s.id AS sale_id, s.invoice_no, s.invoice_group, s.company_id
+         FROM transporter_ledger tl
+         JOIN sales s ON s.id = tl.sale_id
+        WHERE tl.entry_type = 'freight' AND COALESCE(tl.accrued, 0) = 0 AND tl.bill_id IS NULL
+          AND COALESCE(s.deduct_freight, 0) = 0`
+    )
+    const fixed: string[] = []
+    for (const r of cand.rows as Record<string, unknown>[]) {
+      const hit = await c.execute({
+        sql: `SELECT 1 FROM journal_entries je
+                JOIN journal_lines jl ON jl.entry_id = je.id
+                JOIN ledger_accounts la ON la.id = jl.account_id
+               WHERE je.vch_type = 'SALE' AND jl.cr > 0
+                 AND UPPER(la.name) IN (${names.map(() => '?').join(',')})
+                 AND je.sale_id IN (SELECT s2.id FROM sales s2
+                                     WHERE s2.company_id = ?
+                                       AND COALESCE(s2.invoice_group, 'id:' || s2.id) = COALESCE(?, 'id:' || ?))
+               LIMIT 1`,
+        args: [...names, Number(r.company_id) || 1, r.invoice_group == null ? null : String(r.invoice_group), Number(r.sale_id)]
+      })
+      if (!hit.rows.length) continue
+      await c.execute({ sql: 'UPDATE transporter_ledger SET accrued = 1 WHERE id = ?', args: [Number(r.id)] })
+      fixed.push(`${String(r.invoice_no || r.sale_id)} ${Number(r.amount).toFixed(2)}`)
+    }
+    if (fixed.length) console.log(`[freight] marked ${fixed.length} delivery freight line(s) as already accrued: ${fixed.join(', ')}`)
+  }).catch((e) => console.error('[freight] accrued flag repair failed:', e))
+
+  // Every customer, supplier, transporter and broker gets its ledger — the
+  // masters added before parties were made ledgers on save. Only creates
+  // missing ledgers; nothing existing is changed.
+  await runOnce('party_master_ledgers_v1', async () => {
+    const { ensureAllPartyMasterLedgers } = await import('./partyLedgers')
+    const made = await ensureAllPartyMasterLedgers()
+    console.log(`[party ledgers] created ${made} ledger(s) for masters that had none`)
+  }).catch((e) => console.error('[party ledgers] backfill failed:', e))
+
+  // DISCOUNTED BILLS STILL READING THE ADJ. THE OLD WAY — once, at start
+  // (asked for on 2026-10-01, for FD1). See convertOpenAdjToCharge: the Open
+  // amount is what is owed, the Adj. is a BD charge, and the opening voucher is
+  // re-posted in place after being archived. Bills with anything paid against
+  // them are left for a person.
+  await runOnce('bd_open_adj_charge_v1', async () => {
+    const done = await convertOpenAdjToCharge()
+    if (done.length) console.log(`[bd] moved ${done.length} bill(s) to the Open amount with the Adj. as a charge: ${done.join(', ')}`)
+  }).catch((e) => console.error('[bd] open adjustment conversion failed:', e))
+
+  await ensurePpTraceSchema()
   startRevisionWatcher()
+}
+
+/**
+ * COLUMNS THIS BUILD CANNOT RUN WITHOUT, CHECKED ON EVERY START.
+ *
+ * Each of these was added by a runOnce migration, and runOnce is exactly right
+ * for work that must happen once @D@ moving money, rewriting vouchers. It is the
+ * wrong guard for a COLUMN, because a column is not an event: it is a fact
+ * about the database that this build's queries assume, and a build whose
+ * assumption is false does not fail politely. It fails as
+ * `SQLITE_ERROR: no such column`, in front of somebody saving a bill.
+ *
+ * There are several ways the flag and the column can part company — a restore
+ * that brings back a table from before the column and a setting from after it,
+ * a startup that threw between the two, a database hand-edited or rolled back.
+ * Rather than reason about which happened, this asks the table itself.
+ *
+ * One PRAGMA per table per start, and an ALTER only where something is
+ * genuinely missing. The runOnce versions stay where they are: they cost
+ * nothing once recorded, and this is a safety net rather than a replacement.
+ */
+const REQUIRED_COLUMNS: { table: string; column: string; type: string }[] = [
+  { table: 'bill_discountings', column: 'payment_in_expected', type: 'INTEGER NOT NULL DEFAULT 0' },
+  { table: 'bill_discountings', column: 'payment_in_days', type: 'INTEGER' },
+  { table: 'letters_of_credit', column: 'payment_in_expected', type: 'INTEGER NOT NULL DEFAULT 0' },
+  { table: 'letters_of_credit', column: 'payment_in_days', type: 'INTEGER' },
+  { table: 'bd_repayments', column: 'comm_charges', type: 'REAL' },
+  { table: 'bd_repayments', column: 'bank_charges', type: 'REAL' },
+  { table: 'orders', column: 'bill_group', type: 'TEXT' },
+  // The parcel a part-withdrawal was cut from, so releasing the invoice can
+  // put the two halves back together (see applyConsignmentDraw).
+  { table: 'consignment_stock', column: 'split_from', type: 'INTEGER' }
+]
+
+async function ensureRequiredColumns(): Promise<void> {
+  const c = getClient()
+  const seen = new Map<string, Set<string>>()
+  let added = 0
+  for (const need of REQUIRED_COLUMNS) {
+    let have = seen.get(need.table)
+    if (!have) {
+      try {
+        const r = await c.execute(`PRAGMA table_info(${need.table})`)
+        have = new Set(r.rows.map((x) => String((x as unknown as Record<string, unknown>).name)))
+      } catch {
+        // No such table on this build. Whatever creates it will create the
+        // column with it.
+        have = new Set<string>()
+      }
+      seen.set(need.table, have)
+    }
+    // An empty set means the table is not there at all, which is not this
+    // function's problem to solve.
+    if (!have.size || have.has(need.column)) continue
+    await c
+      .execute(`ALTER TABLE ${need.table} ADD COLUMN ${need.column} ${need.type}`)
+      .then(() => {
+        added++
+        have!.add(need.column)
+      })
+      .catch((e) => {
+        if (!/duplicate column/i.test(String((e as Error)?.message || e))) {
+          console.error(`[schema] could not add ${need.table}.${need.column}:`, (e as Error).message)
+        }
+      })
+  }
+  if (added) console.log(`[schema] ${added} missing column(s) added`)
 }

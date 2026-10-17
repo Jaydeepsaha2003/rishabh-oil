@@ -25,7 +25,11 @@ const r2 = (v: number): number => Math.round(v * 100) / 100
 // receipts cannot cover is older than every entry here: the opening count.
 //
 // Read only.
-export async function stockFifoMap(v: { productId: number; companyIds?: number[]; asOf?: string; qty: number }): Promise<Row> {
+// all: every receipt up to the date, not only the ones FIFO reaches — the
+// desk picks by hand which tankers the balance stands for, the way it picks
+// loads for a batch's FFA. FIFO's own answer still rides on each line
+// (fifo / taken), so it can be ticked in one go.
+export async function stockFifoMap(v: { productId: number; companyIds?: number[]; asOf?: string; qty: number; all?: boolean }): Promise<Row> {
   const c = getClient()
   const pid = n(v.productId)
   const want = r3(n(v.qty))
@@ -34,6 +38,9 @@ export async function stockFifoMap(v: { productId: number; companyIds?: number[]
   if (!ids.length) ids.push(...(await companiesOfFactory()))
   const ph = ids.map(() => '?').join(', ')
   const dateCut = asOf ? 'AND d <= ?' : ''
+  // A consignment invoice is let through whatever its date: its tankers are
+  // dated by the day each was deposited in our tank, and cut on that below.
+  const purchaseCut = asOf ? 'AND (consignment = 1 OR d <= ?)' : ''
 
   const purchases = (
     await c.execute({
@@ -55,7 +62,7 @@ export async function stockFifoMap(v: { productId: number; companyIds?: number[]
                WHERE o.status = 'received' AND COALESCE(o.affects_stock, 1) = 1
                  AND o.oil_type_id = ? AND o.company_id IN (${ph})
                  AND COALESCE(o.received_qty, 0) > 0
-            ) WHERE 1 = 1 ${dateCut}`,
+            ) WHERE 1 = 1 ${purchaseCut}`,
       args: [pid, ...ids, ...(asOf ? [asOf] : [])]
     })
   ).rows as unknown as Row[]
@@ -105,23 +112,66 @@ export async function stockFifoMap(v: { productId: number; companyIds?: number[]
     if (n(t.q) <= 0 || !String(t.tanker_no || '').trim()) continue
     byOrder.set(n(t.order_id), [...(byOrder.get(n(t.order_id)) || []), t])
   }
-  const perTanker = purchases.flatMap((r) => {
-    const all = byOrder.get(n(r.id)) || []
-    // A delivered order's own tankers win over the consignment draws naming it.
-    const ts = all.some((t) => t.src === 'pt') ? all.filter((t) => t.src === 'pt') : all
-    if (!ts.length) return [r]
-    const total = ts.reduce((s, t) => s + n(t.q), 0)
-    let given = 0
-    return ts.map((t, i) => {
-      const share = i === ts.length - 1 ? r3(n(r.qty) - given) : r3((n(r.qty) * n(t.q)) / total)
-      given = r3(given + share)
-      return { ...r, qty: share, tanker_no: t.tanker_no, tanker_id: n(t.id), td: t.td }
+  const perTanker = purchases
+    .flatMap((r): Row[] => {
+      const all = byOrder.get(n(r.id)) || []
+      // A delivered order's own tankers win over the consignment draws naming it.
+      const ts = all.some((t) => t.src === 'pt') ? all.filter((t) => t.src === 'pt') : all
+      if (!ts.length) return [{ ...r, inv_d: r.d }]
+      const total = ts.reduce((s, t) => s + n(t.q), 0)
+      let given = 0
+      return ts.map((t, i) => {
+        const share = i === ts.length - 1 ? r3(n(r.qty) - given) : r3((n(r.qty) * n(t.q)) / total)
+        given = r3(given + share)
+        // A consignment tanker (Bunge's) stands in the list on the day it was
+        // deposited in our tank, not on the invoice that later drew it.
+        const d = n(r.consignment) === 1 && t.src === 'cs' && String(t.td || '').trim() ? String(t.td) : r.d
+        return { ...r, d, inv_d: r.d, qty: share, r_qty: r3(n(t.q)), tanker_no: t.tanker_no, tanker_id: n(t.id), td: t.td }
+      })
     })
-  })
+    .filter((r) => !asOf || String(r.d).slice(0, 10) <= asOf)
+
+  // CONSIGNMENT TANKERS NOT YET INVOICED — standing in our tank, deposited,
+  // not drawn into our books by any invoice yet. Listed so the desk sees every
+  // tanker in the tank, but never part of FIFO's answer: the stock count only
+  // takes a consignment in on its invoice.
+  const undrawn = (
+    await c
+      .execute({
+        sql: `SELECT cs.id, cs.qty, cs.tanker_no, cs.deposit_date AS d, cs.company_id, s.name AS party, co.name AS company, b.bargain_no
+                FROM consignment_stock cs
+                LEFT JOIN suppliers s ON s.id = cs.supplier_id
+                LEFT JOIN companies co ON co.id = cs.company_id
+                LEFT JOIN bargains b ON b.id = cs.bargain_id
+               WHERE cs.order_id IS NULL AND cs.product_id = ? AND cs.company_id IN (${ph})
+                 AND COALESCE(cs.qty, 0) > 0 ${asOf ? 'AND cs.deposit_date <= ?' : ''}`,
+        args: [pid, ...ids, ...(asOf ? [asOf] : [])]
+      })
+      .catch(() => ({ rows: [] }))
+  ).rows as unknown as Row[]
+  const undrawnLines = undrawn.map((u): Row => ({
+    id: 0,
+    kind: 'purchase',
+    invoice_no: null,
+    tanker_no: u.tanker_no,
+    consignment: 1,
+    uninvoiced: true,
+    qty: r3(n(u.qty)),
+    r_qty: r3(n(u.qty)),
+    rate: null,
+    order_date: null,
+    company_id: u.company_id,
+    party: u.party,
+    company: u.company,
+    bargain_no: u.bargain_no,
+    d: u.d,
+    td: u.d,
+    tanker_id: n(u.id)
+  }))
 
   // Newest first; on the same day the later-entered one first, and within an
   // invoice the tanker emptied last first.
-  const inflows = [...perTanker, ...made]
+  const inflows: Row[] = [...perTanker, ...undrawnLines, ...made]
     .map((r) => ({ ...r }))
     .sort(
       (a, b) =>
@@ -137,12 +187,22 @@ export async function stockFifoMap(v: { productId: number; companyIds?: number[]
   let cum = 0
   let value = 0
   let valuedQty = 0
+  let running = 0
+  // Every receipt when asked for all — capped, so a product bought for years
+  // does not send thousands of rows to a picker nobody scrolls that far down.
+  const cap = v.all ? 400 : Infinity
   for (const r of inflows) {
-    if (left <= 0.0005) break
+    if (left <= 0.0005 && !v.all) break
+    if (lines.length >= cap) break
     const qty = r3(n(r.qty))
-    const taken = r3(Math.min(qty, left))
-    left = r3(left - taken)
+    // Not in our stock at the opening: a tanker with no invoice yet, or one
+    // whose invoice is dated after it. Listed, never taken by FIFO.
+    const invoicedLater = !!asOf && !r.uninvoiced && String(r.inv_d || r.d).slice(0, 10) > asOf
+    const outside = !!r.uninvoiced || invoicedLater
+    const taken = outside ? 0 : r3(Math.max(0, Math.min(qty, left)))
+    left = r3(Math.max(0, left - taken))
     cum = r3(cum + taken)
+    running = r3(running + qty)
     const rate = r.kind === 'purchase' ? r2(n(r.rate)) : null
     if (rate != null && rate > 0) {
       value += taken * rate
@@ -153,19 +213,28 @@ export async function stockFifoMap(v: { productId: number; companyIds?: number[]
       id: n(r.id),
       tanker_id: r.tanker_id ?? null,
       date: String(r.d || '').slice(0, 10),
+      // The tanker's own receipt: the day it was emptied (or deposited, for a
+      // consignment) and what it brought — R.Date and R.Qty on the screen.
+      r_date: String(r.td || r.d || '').slice(0, 10),
+      r_qty: r.r_qty != null ? n(r.r_qty) : qty,
       invoice_date: r.order_date ? String(r.order_date).slice(0, 10) : null,
       invoice_no: r.invoice_no ?? null,
       // Each tanker once — a consignment draw can name the same one twice.
       tanker_no: r.tanker_no ? [...new Set(String(r.tanker_no).split(',').map((x) => x.trim()).filter(Boolean))].join(', ') : null,
       consignment: n(r.consignment) === 1,
+      uninvoiced: !!r.uninvoiced,
+      invoiced_later: invoicedLater,
       bargain_no: r.bargain_no ?? null,
       party: r.party ?? null,
       company: r.company ?? null,
       rate,
       qty,
       taken,
-      partly: taken < qty - 0.0005,
+      partly: taken > 0.0005 && taken < qty - 0.0005,
+      fifo: taken > 0.0005,
       cumulative: cum,
+      // Every receipt's quantity added up from the newest down.
+      running,
       value: rate != null ? r2(taken * rate) : null
     })
   }

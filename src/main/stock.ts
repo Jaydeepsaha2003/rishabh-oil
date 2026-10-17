@@ -1,3 +1,4 @@
+import { syncPpLots, lotKey, ppFinishedDetails, roundAdjustmentDetails } from './ppTrace'
 import type { ResultSet } from '@libsql/client'
 import { getClient } from './db'
 import {
@@ -7,9 +8,26 @@ import {
   coversWholeFactory
 } from './company'
 import { getSetting } from './repos'
+import { ensureStockAdjustments } from './stockAdjust'
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Row = Record<string, any>
+
+// WHAT ONE ENTRY AGAINST AN SKU COUNTS.
+// ---------------------------------------------------------------------------
+// unit_size and base_per_pouch both describe ONE POUCH. That is not what every
+// SKU is COUNTED in: a SKU whose pack type is Box is entered a CASE at a time,
+// so its entries have to be multiplied by the pouches in a case before the
+// tonnage means anything. VPATI DALDA 1 LTR X20P packs 0.893 KG a pouch and
+// 17.86 KG a box; 4,687 boxes are 83.71 MT, not 4.185.
+//
+// The SKU register has always known this (see skustock.ts, which computes the
+// same figure the same way). The Book Stock register did not, so its Packed
+// column reported every box-type SKU short by exactly pouches_per_box — 10.301
+// MT against the 206 that was actually packed. Stated here once and used by
+// both the column and its hover, so the two cannot drift apart again.
+const SKU_BOX_MULT =
+  "CASE WHEN UPPER(TRIM(COALESCE(pk.pouch_label, ''))) = 'BOX' THEN MAX(1, COALESCE(pk.pouches_per_box, 1)) ELSE 1 END"
 
 // Stock per product is derived from movements (no stored balance), scoped to
 // the ACTIVE COMPANY'S FACTORY — every company that runs out of the same
@@ -35,6 +53,7 @@ export async function stockLevels(
   // working and a caller that wants one company's books can ask for it.
   const cidList = (companyIds || []).map(Number).filter((x) => x > 0)
   if (!cidList.length) cidList.push(...(await companiesOfFactory()))
+  await ensureStockAdjustments()
   const ph = cidList.map(() => '?').join(', ')
   const from = String(range?.from || '')
   const to = String(range?.to || '')
@@ -179,7 +198,7 @@ export async function stockLevels(
                             ELSE pk.base_per_pouch
                           END
                       END
-                    ) / 1000.0) AS q
+                    ) * (${SKU_BOX_MULT}) / 1000.0) AS q
              FROM sku_adjustments a
              JOIN packagings pk ON pk.id = a.packaging_id
              WHERE pk.product_id IS NOT NULL
@@ -187,6 +206,15 @@ export async function stockLevels(
                AND a.company_id IN (${ph})`,
       date: 'a.adj_date',
       group: 'GROUP BY pk.product_id'
+    },
+    // Hand adjustments from the register (stockAdjust.ts): + or −, each with
+    // its reason. Before the period they are part of the opening; inside it
+    // they land in the Adjusted column.
+    adjusted: {
+      base: `SELECT product_id AS pid, SUM(qty) AS q FROM stock_adjustments
+              WHERE deleted_at IS NULL AND company_id IN (${ph})`,
+      date: 'adj_date',
+      group: 'GROUP BY product_id'
     },
     transferredIn: {
       base: `SELECT product_id AS pid, SUM(qty) AS q FROM stock_transfers WHERE to_company_id IN (${ph})`,
@@ -278,22 +306,40 @@ export async function stockLevels(
   // of it that was the ADJUSTMENT rather than oil anybody dipped. The second is
   // a component of the first, never an addition to it — see the Adjusted column
   // on the register, which says so where somebody might otherwise add them up.
-  const openingBalance = async (): Promise<{ total: Map<number, number>; adj: Map<number, number> }> => {
+  const openingBalance = async (): Promise<{
+    total: Map<number, number>
+    adj: Map<number, number>
+    adjNote: Map<number, string>
+    note: Map<number, string>
+  }> => {
     const args: (string | number)[] = fid ? [fid] : [...cidList]
     // Raw + PP (work in process) + the count's own adjustment: the register
     // opens at the TOTAL that was counted, not at the tank figure alone.
     // Keyed to the FACTORY: the opening is the oil standing in the tank, and
     // the tank is not divided between companies. Filtering the register down
     // to one company narrows the movements, not the opening it starts from.
-    if (fid && !whole) return { total: new Map(), adj: new Map() }
+    if (fid && !whole) return { total: new Map(), adj: new Map(), adjNote: new Map(), note: new Map() }
+    // The note the count carries is the reason for the correction, in the
+    // person's own words. It rides alongside the figure so the Adjusted hover
+    // can name the adjustment by what it is, not by a stock word. Only the rows
+    // that actually hold an adjustment contribute one.
+    const noteExpr = `GROUP_CONCAT(CASE WHEN COALESCE(adj_qty, 0) <> 0 AND note IS NOT NULL AND TRIM(note) <> '' THEN TRIM(note) END, ' · ')`
+    // Every note on the count, adjustment or not — the Opening hover shows it,
+    // because a note is often about the tank itself (FFA, which vessel), not a
+    // correction.
+    const anyNoteExpr = `GROUP_CONCAT(CASE WHEN note IS NOT NULL AND TRIM(note) <> '' THEN TRIM(note) END, ' · ')`
     let sql = fid
       ? `SELECT product_id AS pid,
                 SUM(qty + COALESCE(pp_qty, 0) + COALESCE(adj_qty, 0)) AS q,
-                SUM(COALESCE(adj_qty, 0)) AS a
+                SUM(COALESCE(adj_qty, 0)) AS a,
+                ${noteExpr} AS nt,
+                ${anyNoteExpr} AS an
            FROM stock_openings WHERE factory_id = ?`
       : `SELECT product_id AS pid,
                 SUM(qty + COALESCE(pp_qty, 0) + COALESCE(adj_qty, 0)) AS q,
-                SUM(COALESCE(adj_qty, 0)) AS a
+                SUM(COALESCE(adj_qty, 0)) AS a,
+                ${noteExpr} AS nt,
+                ${anyNoteExpr} AS an
            FROM stock_openings WHERE company_id IN (${ph})`
     if (to) {
       sql += ' AND as_of <= ?'
@@ -302,15 +348,94 @@ export async function stockLevels(
     const res = await c.execute({ sql: `${sql} GROUP BY product_id`, args })
     const total = new Map<number, number>()
     const adj = new Map<number, number>()
+    const adjNote = new Map<number, string>()
+    const note = new Map<number, string>()
     for (const r of res.rows) {
       total.set(Number(r.pid), Number(r.q) || 0)
       adj.set(Number(r.pid), Number(r.a) || 0)
+      if (r.nt != null && String(r.nt).trim()) adjNote.set(Number(r.pid), String(r.nt).trim())
+      if (r.an != null && String(r.an).trim()) note.set(Number(r.pid), String(r.an).trim())
     }
-    return { total, adj }
+    return { total, adj, adjNote, note }
+  }
+
+  // OIL CALLED BY ITS RIGHT NAME.
+  //
+  // A vessel counted as PP WITH its free fatty acid still in it is not the
+  // finished oil it is filed under — it is the blend on the way there. Where
+  // the count names the recipe it is being made to, the register restates it:
+  // the finished oil comes DOWN by what is standing in that vessel, and the
+  // shea, the RPS and the fatty oil it was made from go UP in the recipe's own
+  // proportions.
+  //
+  // It is an adjustment, not a production. Nothing was made, nothing was
+  // consumed, and the tonnage is conserved to the kilo — the same oil is
+  // simply being reported under the products it actually consists of. So it
+  // lands in the Adjusted column, beside the count's own correction, and every
+  // product's Closing follows it because the oil really is theirs.
+  const ppDetails = new Map<number, Row[]>()
+  const ppScopeKey = fid ? `f${fid}` : `c${cidList[0] || getActiveCompanyId()}`
+  const ppLots = await syncPpLots(ppScopeKey)
+  const finishedDetails = await ppFinishedDetails(cidList, floor && (!from || from < floor) ? floor : from, to)
+  const ppRestate = async (): Promise<Map<number, number>> => {
+    const out = new Map<number, number>()
+    if ((fid && !whole) || (to && floor && to < floor)) return out
+    const scope = fid ? `f${fid}` : `c${cidList[0] || getActiveCompanyId()}`
+    const res = await c.execute({
+      sql: `SELECT sop.product_id AS pid, sop.qty AS qty, sop.formulation_id AS fid, sop.stage_id
+              FROM stock_opening_pp sop
+             WHERE sop.scope = ? AND sop.ffa = 'with'
+               AND sop.formulation_id IS NOT NULL AND sop.qty > 0.0005
+               -- N on the breakdown: held as the finished oil's PP, not restated.
+               AND COALESCE(sop.in_use, 1) = 1`,
+      args: [scope]
+    })
+    if (!res.rows.length) return out
+    const add = (pid: number, q: number): void => {
+      out.set(pid, (out.get(pid) || 0) + q)
+    }
+    for (const raw of res.rows) {
+      const r = raw as unknown as Row
+      const qty = Number(r.qty) || 0
+      const lot = ppLots.get(lotKey(Number(r.pid), Number(r.stage_id)))
+      const items = lot?.items?.length ? { rows: lot.items as Row[] } : await c.execute({
+        sql: `SELECT product_id, qty FROM formulation_items
+               WHERE formulation_id = ? AND COALESCE(kind, 'input') = 'input'`,
+        args: [Number(r.fid)]
+      })
+      // A recipe whose inputs come to nothing cannot divide anything, and
+      // splitting by a zero would put the whole tonnage on one product or none
+      // at all. Left alone is the honest answer.
+      const share = items.rows.reduce((t, x) => t + (Number((x as unknown as Row).qty) || 0), 0)
+      if (!(share > 0)) continue
+      const detail = (pid: number, q: number, basis: string): void => {
+        const rows = ppDetails.get(pid) || []
+        rows.push({ ...lot, kind:'PP restated', qty:q, basis })
+        ppDetails.set(pid, rows)
+      }
+      detail(Number(r.pid), -qty, 'Opening PP reclassified into its formulation ingredients')
+      // Out of the finished oil...
+      add(Number(r.pid), -qty)
+      // ...and into the oils it is made of, in the recipe's own ratio. The
+      // LAST input carries the rounding, so the two sides cancel to the kilo
+      // rather than leaving a gram of invented stock behind.
+      let placed = 0
+      const inputs = items.rows.map((x) => x as unknown as Row)
+      inputs.forEach((x, i) => {
+        const part =
+          i === inputs.length - 1
+            ? Math.round((qty - placed) * 1000) / 1000
+            : Math.round(((qty * (Number(x.qty) || 0)) / share) * 1000) / 1000
+        placed = Math.round((placed + part) * 1000) / 1000
+        add(Number(x.product_id), part)
+        detail(Number(x.product_id), part, `${qty} × ${Number(x.qty)} / ${share}; final ingredient carries rounding`)
+      })
+    }
+    return out
   }
 
   const keys = Object.keys(SOURCES) as (keyof typeof SOURCES)[]
-  const [products, brought, ...maps] = await Promise.all([
+  const [products, brought, restated, ...maps] = await Promise.all([
     // show_in_stock is the switch on the Products page. Filtered here rather
     // than in the page, because stockLevels() is what BOTH stock sheets are
     // built from — Book Stock reads it directly and the opening sheet maps
@@ -327,29 +452,57 @@ export async function stockLevels(
         ORDER BY category, name`
     ),
     openingBalance(),
+    ppRestate(),
     ...keys.map((k) => slice(SOURCES[k], 'period')),
     ...keys.map((k) => slice(SOURCES[k], 'opening'))
   ])
   const period = Object.fromEntries(keys.map((k, i) => [k, maps[i] as Map<number, number>]))
+  // Each hand adjustment in the period, so the Adjusted hover can name it.
+  const manualAdj = new Map<number, { kind: string; qty: number; basis: string }[]>()
+  {
+    const conds = ['deleted_at IS NULL', `company_id IN (${ph})`]
+    const args: (string | number)[] = [...cidList]
+    const lo = floor && (!from || from < floor) ? floor : from
+    if (lo) { conds.push('adj_date >= ?'); args.push(lo) }
+    if (to) { conds.push('adj_date <= ?'); args.push(to) }
+    const r = await c.execute({
+      sql: `SELECT product_id, adj_date, qty, note FROM stock_adjustments WHERE ${conds.join(' AND ')} ORDER BY adj_date, id`,
+      args
+    })
+    for (const x of r.rows as unknown as Row[]) {
+      const list = manualAdj.get(Number(x.product_id)) || []
+      list.push({ kind: 'Adjustment', qty: Number(x.qty) || 0, basis: `${String(x.adj_date).split('-').reverse().join('-')} · ${String(x.note || '')}` })
+      manualAdj.set(Number(x.product_id), list)
+    }
+  }
   const opening = Object.fromEntries(keys.map((k, i) => [k, maps[keys.length + i] as Map<number, number>]))
 
   return products.rows.map((p) => {
     const id = Number(p.id)
     const g = (m: Record<string, Map<number, number>>, k: string): number => m[k].get(id) || 0
+    // A with-FFA vessel reported as the oils it is made of — see ppRestate.
+    // Part of the opening, because the oil was counted; it is only being
+    // attributed to the products it actually consists of.
+    const restate = Math.round(((restated as Map<number, number>).get(id) || 0) * 1000) / 1000
     // `open` stays the FULL counted total (raw + PP + the adjustment) plus
     // whatever moved before the period starts — Closing has to reconcile to
     // the books whether or not the adjustment is shown on its own line, so
     // nothing here may drop it.
     const open =
+      restate +
       (brought.total.get(id) || 0) +
-      g(opening, 'received') + g(opening, 'produced') + g(opening, 'byProduct') + g(opening, 'transferredIn') -
+      g(opening, 'received') + g(opening, 'produced') + g(opening, 'byProduct') + g(opening, 'transferredIn') + g(opening, 'adjusted') -
       g(opening, 'consumed') - g(opening, 'sold') - g(opening, 'transferredOut') - g(opening, 'packedOut') +
       g(opening, 'returnedIn') - g(opening, 'returnedOut')
     // What actually gets shown as "Opening" — Raw + PP, the adjustment held
     // out and given its own column instead. Subtracted from the full `open`
     // rather than rebuilt from Raw + PP alone, so a period that starts after
     // the count still gets its "moved before the period" component right.
-    const adjPortion = brought.adj.get(id) || 0
+    // The count's own correction, plus what a named recipe restated. Both are
+    // adjustments to the opening rather than movements, so they share the
+    // column — and both are already inside `open`, the restatement because it
+    // is added to it two lines down.
+    const adjPortion = (brought.adj.get(id) || 0) + restate
     const openingShown = Math.round((open - adjPortion) * 1000) / 1000
     const rec = g(period, 'received') - g(period, 'returnedOut')
     // A by-product of someone else's batch is produced stock all the same, so
@@ -365,6 +518,8 @@ export async function stockLevels(
     // Oil that left the tank to be packed. Its own column, because "where did
     // the DALDA go" has a different answer from "who did we sell it to".
     const packed = g(period, 'packedOut')
+    // Hand adjustments inside the period — shown in Adjusted, counted in Closing.
+    const manual = Math.round(g(period, 'adjusted') * 1000) / 1000
     return {
       id,
       code: p.code,
@@ -382,15 +537,48 @@ export async function stockLevels(
       // rather than derived from movements before the range — kept on the
       // same footing as `opening` above so "Brought forward" + "Moved before
       // this period" still adds up to it on the hover.
-      opening_brought: Math.round(((brought.total.get(id) || 0) - adjPortion) * 1000) / 1000,
+      //
+      // `brought.adj`, NOT `adjPortion`. The two differ by the restatement,
+      // and the restatement is not inside `brought.total` — it is added to
+      // `open` separately, two lines up. Taking it off here subtracted
+      // something that was never in the figure, so an oil restated by 18
+      // reported its counted Raw + PP as 93.15 when 75.15 was what the sheet
+      // actually held, and the hover's own arithmetic then invented 18 MT of
+      // movement to bridge the gap. It cancels correctly in `openingShown`
+      // because `open` carries the restatement to cancel against; this
+      // figure has nothing to cancel.
+      opening_brought: Math.round(((brought.total.get(id) || 0) - (brought.adj.get(id) || 0)) * 1000) / 1000,
       // The correction struck on the count — the difference between what the
       // dip said and what the card said, rather than oil anybody measured.
       // Its own column; no longer folded into `opening` above.
-      opening_adj: Math.round((adjPortion + ppEq) * 1000) / 1000,
+      opening_adj: Math.round((adjPortion + ppEq + manual) * 1000) / 1000,
+      // The hand adjustments' part of Adjusted, on its own.
+      manual_adj: manual,
+      adjustment_details: roundAdjustmentDetails([
+        ...((brought.adj.get(id) || 0) ? [{kind:'Count correction',qty:brought.adj.get(id),basis:brought.adjNote.get(id) || 'Opening count correction'}] : []),
+        ...(ppDetails.get(id) || []), ...(finishedDetails.get(id) || []),
+        ...(manualAdj.get(id) || [])
+      ]),
+      // WHAT THE ADJUSTED COLUMN IS MADE OF, in three named parts.
+      //
+      // It carries three unlike things that happen to land in one column, and
+      // a figure that is the sum of three unlike things cannot be checked. So
+      // each travels on its own and the hover names it: the correction struck
+      // on the count, the with-FFA vessel restated as its own oils, and the
+      // batch finished out of PP. They add to `opening_adj` exactly.
+      opening_adj_count: Math.round((brought.adj.get(id) || 0) * 1000) / 1000,
+      // The count's own note, in the person's words — shown by the Adjusted
+      // hover in place of a generic description when they wrote one.
+      opening_adj_note: brought.adjNote.get(id) || '',
+      // Every note the opening count carries, with or without an adjustment.
+      opening_note: brought.note.get(id) || '',
       // The part of the Adjusted column that is a restatement of a PP batch
       // rather than a correction to the count, so the hover can tell them
       // apart and the two are never confused for one another.
       pp_equiv: ppEq,
+      // The part of Adjusted that is a with-FFA vessel reported as the oils it
+      // is made of, rather than a correction to the count.
+      pp_restated: restate,
       received: rec,
       produced: prod,
       // Shown beside Produced as the +N -N it is, never added to it. Nothing
@@ -406,7 +594,7 @@ export async function stockLevels(
       // Still built off the FULL `open` (Raw + PP + adjustment), so Closing
       // reconciles to the books regardless of how Opening is broken out on
       // screen — the adjustment has not gone anywhere, it is just labelled.
-      stock: open + rec + prod + tIn - cons - sld - tOut - packed
+      stock: open + rec + prod + tIn - cons - sld - tOut - packed + manual
     }
   })
 }
@@ -507,7 +695,9 @@ async function productStockForCompany(companyId: number, productId: number): Pro
                            WHERE nt.note_type = 'credit' AND nt.party_type = 'customer' AND nt.company_id = ? AND ni.product_id = ?`)
   const retOut = await one(`SELECT COALESCE(SUM(ni.qty), 0) AS q FROM note_items ni JOIN notes nt ON nt.id = ni.note_id
                             WHERE nt.note_type = 'debit' AND nt.party_type = 'supplier' AND nt.company_id = ? AND ni.product_id = ?`)
-  return rec + prod + byProd + tIn - cons - sld - tOut + retIn - retOut
+  await ensureStockAdjustments()
+  const adj = await one('SELECT COALESCE(SUM(qty), 0) AS q FROM stock_adjustments WHERE deleted_at IS NULL AND company_id = ? AND product_id = ?')
+  return rec + prod + byProd + tIn - cons - sld - tOut + retIn - retOut + adj
 }
 
 // Day zero for every stock figure.
@@ -535,6 +725,13 @@ async function productStockForCompany(companyId: number, productId: number): Pro
 // Applied only when EVERY selected company has an opening of its own: rolling
 // two companies together must never cut one company's history short with the
 // other's later start date. A company with no opening keeps its full history.
+/** The day a company's site opened its books — the register starts there, so
+ *  nothing dated before it (a hand adjustment included) can show in it. */
+export async function bookOpeningDate(companyId: number): Promise<string> {
+  const cids = [Number(companyId)].filter((x) => x > 0)
+  return openingFloor(cids, await factoryOfCompanies(cids))
+}
+
 async function openingFloor(cidList: number[], factoryId = 0): Promise<string> {
   if (!cidList.length) return ''
   // One opening set per factory, so the cut is simply the day that site's
@@ -567,7 +764,7 @@ async function openingFloor(cidList: number[], factoryId = 0): Promise<string> {
 export async function stockPartyBreakdown(
   companyIds?: number[],
   range?: { from?: string; to?: string }
-): Promise<Record<number, { receipt: Row[]; dispatch: Row[]; packed: Row[]; produced: Row[]; consumed: Row[] }>> {
+): Promise<Record<number, { receipt: Row[]; dispatch: Row[]; packed: Row[]; produced: Row[]; consumed: Row[]; recirculated: Row[] }>> {
   const c = getClient()
   const cidList = (companyIds || []).map(Number).filter((x) => x > 0)
   // The SAME default scope stockLevels uses — the whole factory, not the active
@@ -621,9 +818,9 @@ export async function stockPartyBreakdown(
   // Same rule as the register's Dispatch column above — the hover has to cover
   // exactly the period the cell it explains does.
   const dispB = bounds('s.sale_date')
-  const out: Record<number, { receipt: Row[]; dispatch: Row[]; packed: Row[]; produced: Row[]; consumed: Row[] }> = {}
-  const ensure = (pid: number): { receipt: Row[]; dispatch: Row[]; packed: Row[]; produced: Row[]; consumed: Row[] } =>
-    (out[pid] ??= { receipt: [], dispatch: [], packed: [], produced: [], consumed: [] })
+  const out: Record<number, { receipt: Row[]; dispatch: Row[]; packed: Row[]; produced: Row[]; consumed: Row[]; recirculated: Row[] }> = {}
+  const ensure = (pid: number): { receipt: Row[]; dispatch: Row[]; packed: Row[]; produced: Row[]; consumed: Row[]; recirculated: Row[] } =>
+    (out[pid] ??= { receipt: [], dispatch: [], packed: [], produced: [], consumed: [], recirculated: [] })
 
   // A RUN IS NAMED BY ITS PLANT, NOT BY THE BOOKS IT WAS FILED UNDER.
   //
@@ -693,25 +890,34 @@ export async function stockPartyBreakdown(
   const prodB = bounds('p.prod_date')
 
   // Output of a run, plus by-product lines, exactly as the register's own
-  // `produced` and `byProduct` sources add them together.
+  // `produced` and `byProduct` sources add them together — recirculation
+  // excluded from both, as it is there. Without that the tooltip contradicted
+  // the cell it explains: a product whose only run was a recirculation showed
+  // Produced 0 and hovered "Production run 1 MT". It has a column and a hover
+  // of its own; it does not belong in this one.
   const made = await c.execute({
     sql: `SELECT pid, party, plant, SUM(qty) AS qty FROM (
-            SELECT p.product_id AS pid, COALESCE(r.name, 'Production run') AS party,
+            SELECT p.product_id AS pid, COALESCE(NULLIF(TRIM(r.name), ''), rp.name || ' recipe', NULLIF(TRIM(op.name), '') || ' (One-Time Run)', 'Production run') AS party,
                    COALESCE(f.name, co.name) AS plant, p.qty AS qty
               FROM production p
               LEFT JOIN formulations r ON r.id = p.formulation_id
+              LEFT JOIN products rp ON rp.id = r.product_id
+              LEFT JOIN products op ON op.id = p.product_id
               LEFT JOIN companies co ON co.id = p.company_id
               LEFT JOIN factories f ON f.id = co.factory_id
-             WHERE p.company_id IN (${ph}) ${prodB.sql}
+             WHERE p.company_id IN (${ph}) AND COALESCE(p.kind, 'batch') <> 'recirculation' ${prodB.sql}
             UNION ALL
-            SELECT i.product_id AS pid, COALESCE(r.name, 'Production run') || ' · by-product' AS party,
+            SELECT i.product_id AS pid, COALESCE(NULLIF(TRIM(r.name), ''), rp.name || ' recipe', NULLIF(TRIM(op.name), '') || ' (One-Time Run)', 'Production run') || ' · by-product' AS party,
                    COALESCE(f.name, co.name) AS plant, i.qty AS qty
               FROM production_items i
               JOIN production p ON p.id = i.production_id
               LEFT JOIN formulations r ON r.id = p.formulation_id
+              LEFT JOIN products rp ON rp.id = r.product_id
+              LEFT JOIN products op ON op.id = p.product_id
               LEFT JOIN companies co ON co.id = p.company_id
               LEFT JOIN factories f ON f.id = co.factory_id
-             WHERE i.kind = 'output' AND p.company_id IN (${ph}) ${prodB.sql}
+             WHERE i.kind = 'output' AND p.company_id IN (${ph})
+               AND COALESCE(p.kind, 'batch') <> 'recirculation' ${prodB.sql}
           ) GROUP BY pid, party, plant HAVING SUM(qty) > 0 ORDER BY qty DESC`,
     args: [...cidList, ...prodB.args, ...cidList, ...prodB.args]
   })
@@ -721,21 +927,95 @@ export async function stockPartyBreakdown(
       qty: Number(r.qty) || 0
     })
 
-  // Inputs only. A 'loss' line is neither consumed nor produced — it just
-  // goes — and the register's own source excludes it, so this must too or the
-  // hover would out-total the cell it explains.
-  const used = await c.execute({
-    sql: `SELECT i.product_id AS pid, COALESCE(r.name, 'Production run') AS party,
-                 COALESCE(f.name, co.name) AS plant, SUM(i.qty) AS qty
-            FROM production_items i
-            JOIN production p ON p.id = i.production_id
+  // RECIRCULATION, run by run.
+  //
+  // Every other column's hover answers "who" — which supplier, which customer.
+  // This one answers "when", because recirculation has no counterparty: the
+  // oil went through the plant and came back. So each line is the day and the
+  // plant it happened on, which is what makes the figure checkable against the
+  // Production page.
+  const recircRuns = await c.execute({
+    sql: `SELECT p.product_id AS pid, p.prod_date AS d,
+                 COALESCE(f.name, co.name) AS plant, r.name AS recipe, SUM(p.qty) AS qty
+            FROM production p
             LEFT JOIN formulations r ON r.id = p.formulation_id
+            LEFT JOIN products rp ON rp.id = r.product_id
             LEFT JOIN companies co ON co.id = p.company_id
             LEFT JOIN factories f ON f.id = co.factory_id
-           WHERE i.kind = 'input' AND p.company_id IN (${ph}) ${prodB.sql}
-           GROUP BY i.product_id, r.name, f.name
-          HAVING SUM(i.qty) > 0 ORDER BY qty DESC`,
+           WHERE COALESCE(p.kind, 'batch') = 'recirculation'
+             AND p.company_id IN (${ph}) ${prodB.sql}
+           GROUP BY p.product_id, p.prod_date, plant, recipe
+           HAVING SUM(p.qty) > 0
+           ORDER BY p.prod_date DESC`,
     args: [...cidList, ...prodB.args]
+  })
+  for (const r of recircRuns.rows)
+    ensure(Number(r.pid)).recirculated.push({
+      // Sent in pieces, so the label is assembled where dates are formatted.
+      // `party` is the same line pre-joined, for anything reading this list
+      // without knowing what is in it.
+      date: String(r.d || ''),
+      plant: String(r.plant || ''),
+      recipe: String(r.recipe || ''),
+      party: [String(r.d || ''), String(r.plant || ''), String(r.recipe || '')]
+        .filter(Boolean)
+        .join(' \u00b7 '),
+      qty: Number(r.qty) || 0
+    })
+
+  // WHAT THE COLUMN COUNTS, LINE BY LINE — and it counts two things.
+  //
+  // 'input' is oil drawn out of the tanks for a batch. 'pp_equiv' is oil a
+  // batch used WITHOUT drawing it: the vessel already held it, blended, when
+  // the PP was made, so the Consumed cell adds it (see the ppEquiv source) and
+  // the hover has to as well, or it explains less than the figure above it.
+  //
+  // The PP lines say so in their own name — SHEA-BASED (Op. Stock PP,
+  // Finished) — because the two are not the same event and a reader checking
+  // the day's sheet will find only the first one on it.
+  //
+  // A 'loss' line is neither consumed nor produced — it just goes — and
+  // recirculation is excluded from both, exactly as the register's own sources
+  // exclude them, or the hover would out-total the cell it explains.
+  const used = await c.execute({
+    sql: `SELECT pid, party, plant, SUM(qty) AS qty FROM (
+            SELECT i.product_id AS pid,
+                   COALESCE(NULLIF(TRIM(r.name), ''), rp.name || ' recipe', NULLIF(TRIM(op.name), '') || ' (One-Time Run)', 'Production run')
+                     -- OIL THAT CAME OUT OF A VESSEL, NOT A TANK.
+                     -- A batch that drew this product from its own partly
+                     -- processed stock records the draw in pp_draws. The
+                     -- quantity is the same either way, but where it came from
+                     -- is the difference between oil that was bought and oil
+                     -- that was already half made — so the line says which.
+                     || CASE WHEN EXISTS (
+                          SELECT 1 FROM pp_draws d
+                           WHERE d.production_id = p.id AND d.product_id = i.product_id
+                        ) THEN ' (Op. Stock PP, Finished)' ELSE '' END AS party,
+                   COALESCE(f.name, co.name) AS plant, i.qty AS qty
+              FROM production_items i
+              JOIN production p ON p.id = i.production_id
+              LEFT JOIN formulations r ON r.id = p.formulation_id
+              LEFT JOIN products rp ON rp.id = r.product_id
+              LEFT JOIN products op ON op.id = p.product_id
+              LEFT JOIN companies co ON co.id = p.company_id
+              LEFT JOIN factories f ON f.id = co.factory_id
+             WHERE i.kind = 'input' AND p.company_id IN (${ph})
+               AND COALESCE(p.kind, 'batch') <> 'recirculation' ${prodB.sql}
+            UNION ALL
+            SELECT i.product_id AS pid,
+                   COALESCE(NULLIF(TRIM(r.name), ''), rp.name || ' recipe', NULLIF(TRIM(op.name), '') || ' (One-Time Run)', 'Production run') || ' (Op. Stock PP, Finished)' AS party,
+                   COALESCE(f.name, co.name) AS plant, i.qty AS qty
+              FROM production_items i
+              JOIN production p ON p.id = i.production_id
+              LEFT JOIN formulations r ON r.id = p.formulation_id
+              LEFT JOIN products rp ON rp.id = r.product_id
+              LEFT JOIN products op ON op.id = p.product_id
+              LEFT JOIN companies co ON co.id = p.company_id
+              LEFT JOIN factories f ON f.id = co.factory_id
+             WHERE i.kind = 'pp_equiv' AND p.company_id IN (${ph})
+               AND COALESCE(p.kind, 'batch') <> 'recirculation' ${prodB.sql}
+          ) GROUP BY pid, party, plant HAVING SUM(qty) > 0 ORDER BY qty DESC`,
+    args: [...cidList, ...prodB.args, ...cidList, ...prodB.args]
   })
   for (const r of used.rows)
     ensure(Number(r.pid)).consumed.push({
@@ -814,7 +1094,7 @@ export async function stockPartyBreakdown(
           WHEN 'KL' THEN pk.base_per_pouch * 1000.0
           ELSE pk.base_per_pouch
         END
-    END / 1000.0`
+    END * (${SKU_BOX_MULT}) / 1000.0`
   const packed = await c.execute({
     sql: `SELECT pk.product_id AS pid, pk.name AS sku, co.name AS company,
                  SUM(a.delta) AS pieces, SUM(a.delta * (${packMT})) AS qty
@@ -889,7 +1169,12 @@ export async function productStockAvailable(
      WHERE nt.note_type = 'debit' AND nt.party_type = 'supplier' AND nt.company_id = ? AND ni.product_id = ?`,
     [cid, productId]
   )
-  return rec + prod + byProd + tIn - cons - sld - tOut + retIn - retOut
+  await ensureStockAdjustments()
+  const adj = await one(
+    'SELECT COALESCE(SUM(qty), 0) AS q FROM stock_adjustments WHERE deleted_at IS NULL AND company_id = ? AND product_id = ?',
+    [cid, productId]
+  )
+  return rec + prod + byProd + tIn - cons - sld - tOut + retIn - retOut + adj
 }
 
 // Transfers involving the active company (either direction), newest first.

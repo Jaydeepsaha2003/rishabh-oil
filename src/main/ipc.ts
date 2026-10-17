@@ -1,4 +1,14 @@
+import { tallyHealth } from './tallyDesk'
+import { saveTallyLink, removeTallyLink, listTallyBatches, undoTallyBatch } from './tallyLinks'
+import { listCompanyBanks, setCompanyBank, suggestTallyBank, checkTallyBank, previewTallyBankVouchers, postTallyBankVouchers } from './tallyBank'
+import { checkTallyRegister, previewTallyRegisterVouchers, postTallyRegisterVouchers, setRegisterVoucherDate } from './tallyRegisters'
+import { previewTallyNotes, saveTallyNoteMap, createTallyNoteLedger, postTallyNotes, reconcileTallySales, previewTallySalesVouchers, postTallySalesVouchers, linkTallyParty, saveTallyDraft, listTallyDrafts, clearTallyDraft } from './tallyNotes'
+import { addStockAdjustment, deleteStockAdjustment, listStockAdjustments } from './stockAdjust'
 import { ipcMain, dialog, shell } from 'electron'
+import { voucherAlterInfo, alterOwnedVoucher } from './voucherAlter'
+import { intercompanySource } from './intercompany'
+import { randomPurchaseInvoiceNo, randomSalesInvoiceNo } from './invoiceno'
+import { withDbTransaction } from './dbTransaction'
 import { ping, bumpRevision, getRevision, initDb, resetClient, getConfiguredUrl, notifyDataChanged, getClient } from './db'
 import {
   listNotificationRules, saveNotificationRule, resetNotificationRule, runNotificationRules,
@@ -6,6 +16,7 @@ import {
   previewNotificationRule, notificationRecipients, listNotificationMutes, muteNotificationRule
 } from './notify'
 import { snapshotGz } from './dbsnapshot'
+import { vapidKeys, pushStatus, pushTo, saveSubscription, dropSubscription } from './webpush'
 import { saveStoredConfig } from './config'
 import { seedDefaultAdmin } from './auth'
 import { seedProducts, seedFormulations } from './seed'
@@ -25,6 +36,7 @@ import {
   updateBargain,
   deleteBargain,
   adjustBargainQty,
+  moveBargainBalance,
   bargainLinkedInvoices,
   setInvoiceBargainRate,
   bargainAdjustments
@@ -32,6 +44,8 @@ import {
 import {
   listOrders,
   createOrder,
+  createTankerInvoice,
+  updateTankerInvoice,
   updateOrder,
   deleteOrder,
   rerateInvoicesForBargain,
@@ -44,10 +58,12 @@ import {
   revertPurchaseTanker,
   replaceTanker,
   listTankerQuality,
+  listTankerQualityMany,
   listFfaHistory,
   saveTankerQuality,
   listOrderQuality,
   saveOrderQuality,
+  waiveOrderQuality,
   supplierFyTaxable,
   listOrderBargains,
   listOrderBargainInterest,
@@ -57,23 +73,53 @@ import {
   addLedgerEntry,
   deleteLedgerEntry, purchaseBargainNotes } from './orders'
 import { listUnmappedOrders, unmappedCount, mapOrderToBargains } from './unmapped'
-import { listTradingDeals, createTradingDeal, updateTradingDeal, deleteTradingDeal } from './trading'
-import { assertAllowed, clearAccessCache, currentScope, entryWindows } from './access-gate'
+import { documentPostings, type PostingEntity } from './postings'
+import { listTradingDeals, createTradingDeal, updateTradingDeal, deleteTradingDeal, listTradingPayments } from './trading'
+import { assertAdmin, assertAllowed, clearAccessCache, currentScope, entryWindows } from './access-gate'
+import {
+  accountingChecks,
+  clearSaleTds,
+  fixLcCharges,
+  genericBankPostings,
+  moveGenericBankPostings,
+  previewDuplicateInvoicePostings,
+  previewLcCharges,
+  previewSaleTds,
+  repairDuplicateInvoicePostings,
+  previewOutwardFreight,
+  fixOutwardFreight,
+  previewSharedLedgers,
+  fixSharedLedgers
+} from './accountingRepairs'
 import { listSkuRates, saveSkuRates, listPackagingParties, setPackagingParties, packagingPartyCounts } from './skurates'
 import {
   listConsignment,
   consignmentSummary,
   listPendingGateArrivals,
+  assignConsignmentGroup,
+  unlinkConsignmentDraw,
+  unlinkConsignmentDrawsFor,
+  renameConsignmentLot,
+  consignmentKin,
   listConsignmentInvoices,
   listUnbookedLots,
   createConsignment,
   updateConsignment,
-  deleteConsignment, saveOpeningStock, listOpeningLog } from './consignment'
+  deleteConsignment, saveOpeningStock, listOpeningLog, listOpeningLots } from './consignment'
+import {
+  listTags,
+  createTag,
+  renameTag,
+  deleteTag,
+  tagsFor,
+  setTags,
+  tagContents
+} from './tags'
 import { login, listUsers, createUser, updateUser, deleteUser } from './auth'
 import { heartbeat, liveUsers, listIps, setIpActive, listLogs, logEvent, machineIp, type LogFilter, entityHistory } from './access'
 import { getCurrentUser, setCurrentUser } from './currentUser'
 import { listChanges } from './history'
-import { getBooksFrom, setBooksFrom, listOpenings, saveOpenings, ledgerOpening } from './openings'
+import { getBooksFrom, setBooksFrom, listOpenings, saveOpenings, ledgerOpening, moveOpenings } from './openings'
 import {
   listFormulations,
   getFormulationItems,
@@ -95,6 +141,11 @@ import {
   approveWorkTask,
   assignWorkTask,
   listWorkBoard,
+  reorderWorkProcesses,
+  requestWorkDay,
+  decideWorkDay,
+  setWorkDayOpen,
+  setUserWorkCutoff,
   listWorkProcesses,
   redoWorkTask,
   removeWorkProcess,
@@ -120,7 +171,11 @@ import {
   removePpStage,
   savePpLines,
   saveStockOpenings,
-  stockOpeningDate
+  handOverOpeningPp,
+  putBackOpeningPp,
+  stockOpeningDate,
+  listOpeningSets,
+  openingSetLines
 } from './stockopenings'
 import { listOutsideTankers, saveOutsideTanker, recordNilRound, removeOutsideTanker } from './outsidetankers'
 import {
@@ -135,9 +190,13 @@ import { listSkuStock, adjustSkuStock, skuMovementBreakdown, listSkuAdjustments,
 import { listNotes, listNoteItems, createNote, updateNote, deleteNote } from './notes'
 import { daybook } from './daybook'
 import { dashboardStats } from './dashboard'
+import { dailyPosition } from './dailyPosition'
+import { listPaymentTracker } from './paymentTracker'
+import { getDashLayout, saveDashLayout } from './dashLayout'
+import { applyProductMerge, listProductMerges, previewProductMerge } from './productMerge'
+import { getProductionPlan, saveProductionPlan } from './productionPlan'
 import {
   treasuryAlerts,
-  listPaymentTracker,
   settleLcBill,
   reopenLcBill,
   listLcRepayments,
@@ -163,13 +222,33 @@ import {
   listPendingRefs,
   billsOutstanding,
   tradingAccount,
-  TALLY_GROUPS,
   type VoucherInput
 } from './accounting'
+import { nextVoucherCode } from './voucherNumbers'
+import { linkedVouchers, linkVoucher, unlinkVoucher, voucherChoices } from './bargainVouchers'
+import {
+  listLedgerMap,
+  renameLedger,
+  setLedgerMap,
+  dropLedgerMap
+} from './ledgerMap'
+import {
+  groupTree,
+  listGroupNames,
+  createGroup,
+  renameGroup,
+  moveGroup,
+  deleteGroup,
+  setAccountGroup,
+  setAccountsGroup,
+  setAccountsHidden,
+  type GroupNature
+} from './ledgerGroups'
 import {
   listProduction,
   productionReport,
   getProductionItems,
+  batchMix,
   createProduction,
   updateProduction,
   deleteProduction
@@ -215,13 +294,24 @@ import {
   createLC,
   updateLC,
   deleteLC,
+  rejectLC,
+  reinstateLC,
   issueLC,
   deleteLCIssuance,
   precloseLC,
   unPrecloseLC,
   getLcLimit,
   listBankLcLimits,
-  saveLcLimit
+  saveLcLimit,
+  assertLcNotClosed,
+  lcIdOfRepayment,
+  lcIdOfIssuance,
+  payLcParty,
+  deleteLastLcInstallment,
+  repayLcParts,
+  undoLcPartRepayment,
+  lcParts,
+  editPreclosure
 } from './lc'
 import {
   importBankStatement,
@@ -234,7 +324,47 @@ import {
   unreconcileBankLine,
   setBankLineSubEntry
 } from './bankRecon'
-import { listBd, createBd, updateBd, deleteBd, repayBd, reopenBd, postBdUpfrontInterest, bdKpis, listBdRepayments, deleteBdRepayment, markBdPaymentReceived, unmarkBdPaymentReceived, listAllBdRepayments, listBdLinkedOrders, bdLimits, setBdCombinedLimit, listBdParties, listAllBdParties } from './billDiscounting'
+import {
+  listBd,
+  createBd,
+  updateBd,
+  deleteBd,
+  repayBd,
+  reopenBd,
+  postBdUpfrontInterest,
+  reverseBdUpfrontInterest,
+  setBdVoucherBank,
+  bdKpis,
+  listBdRepayments,
+  deleteBdRepayment,
+  editBdRepayment,
+  markBdPaymentReceived,
+  unmarkBdPaymentReceived,
+  listAllBdRepayments,
+  listBdLinkedOrders,
+  bdLimits,
+  setBdCombinedLimit,
+  listBdParties,
+  listAllBdParties,
+  bdInterestSchedule,
+  listBdInterestPayments,
+  payBdInterest,
+  deleteBdInterestPayment,
+  postBdInterestPayment,
+  bdInterestWindow,
+  payBdInterestUpto,
+  listBdLimitReductions,
+  addBdLimitReduction,
+  deleteBdLimitReduction,
+  listBdChargeTypes,
+  addBdChargeType,
+  listBdPartyPayments,
+  payBdParty,
+  deleteLastBdPartyPayment,
+  listBdReceiptParts,
+  receiveBdPart,
+  deleteLastBdReceiptPart
+} from './billDiscounting'
 import {
   listTransporterFreight,
   transporterFreightKpis,
@@ -259,6 +389,8 @@ import {
   saveExposure,
   deleteExposure
 } from './facilities'
+import { listLimitHistory, addLimitRevision, deleteLimitRevision } from './facilityLimits'
+import { importTallyLedgers, tallyLedgerMap, mapTallyLedger, applyTallyOpenings, clearTallyLedgers, createTallyLedgers, regroupTallyLedger } from './tallyLedgers'
 import {
   listSales,
   listSalesForUnloadDesk,
@@ -273,6 +405,7 @@ import {
   deleteSale,
   createSaleInvoice,
   updateSaleInvoice,
+  setSaleInvoiceDate,
   setInvoiceStage,
   deleteSaleInvoice,
   rejectSaleInvoice,
@@ -282,12 +415,12 @@ import {
   updateSalesBargain,
   deleteSalesBargain,
   adjustSalesBargainQty,
+  moveSalesBargainBalance,
   listCustomerLedger,
   salesInvoiceGaps,
   cancelInvoiceNo,
   uncancelInvoiceNo,
-  salesInvoiceSeries
-} from './sales'
+  salesInvoiceSeries, salesBargainLinkedInvoices, rerateSalesForBargain } from './sales'
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Row = Record<string, any>
@@ -313,6 +446,7 @@ const NS_ENTITY: Record<string, string> = {
   stock: 'Stock',
   stockCount: 'Stock count',
   skuStock: 'Packed SKU stock',
+  stockAdj: 'Stock adjustment',
   notes: 'Debit/Credit note',
   gate: 'Gate entry',
   users: 'User',
@@ -388,6 +522,11 @@ function summarizeArgs(args: any): string {
   add('LC', v.lc_no)
   add('Qty', v.qty ?? v.ordered_qty)
   add('₹', v.amount)
+  // A production run: its date, whether it ran on its own mix, and the note —
+  // the things a run's history is read for.
+  add('Date', v.prod_date)
+  if (Array.isArray(v.custom_items) && v.custom_items.length) parts.push(`own mix (${v.custom_items.length} lines)`)
+  if (typeof v.note === 'string' && v.note.trim()) add('Note', v.note.trim().slice(0, 80))
   if (args?.toStatus) parts.push(`→ ${args.toStatus}`)
   if (args?.key) parts.push(`${args.key} = ${args.value}`)
   return parts.join(' · ').slice(0, 220)
@@ -426,7 +565,11 @@ async function recordAudit(channel: string, args: any, result: any): Promise<voi
 export function registerIpc(): void {
   // Read-only channels don't change data, so they must not bump the revision.
   const READONLY =
-    /:list$|:get$|:items$|:issuances$|:sheet$|:outstanding$|:all$|:summary$|:transfers$|:fyTaxable$|:needs$|:breakdown$|:nextNo$|:liveUsers$|:ips$|:logs$|:dispatchableSales$|:mine$|:pendingCount$|:pending$|:lots$|:unmapped$|:unmappedCount$|:bargainLines$|:bargainNotes$|:bargainInterest$|:consignmentDraws$|^access:heartbeat$|^db:ping$|^db:snapshot$|^app:revision$|^auth:login$|^journal:booksFrom$|^journal:openings$|^journal:opening$|^journal:accounts$|^journal:statement$|^journal:trialBalance$|^journal:groups$|^journal:groupNames$|^journal:pendingRefs$|^journal:billsOutstanding$|^journal:tradingAccount$|^dashboard:stats$|^skuRates:parties$|^skuRates:partyCounts$|^consignment:openingLog$|^consignment:invoices$|^tankers:quality$|^tankers:ffaHistory$|^orders:quality$|^gate:partyCategories$|^gate:waivedOuts$|^gate:forRecord$|^notify:rules$|^notify:list$|^notify:run$|^notify:preview$|^notify:people$|^notify:mutes$|^treasury:alerts$|^treasury:paymentTracker$|^facility:exposures$|^facility:headroom$|^company:setActive$|^company:getActive$|^factory:active$|^factory:companies$|^session:setUser$|^lc:repayments$|^lc:allRepayments$|^lc:getLimit$|^lc:bankLimits$|^lc:paymentIns$|^lc:openTradingInvoices$|^files:pickDocument$|^files:openDocument$|^bankRecon:imports$|^bankRecon:list$|^bankRecon:suggest$|^bd:kpis$|^bd:limits$|^skuStock:adjustments$|^skuOpening:list$|^skuOpening:date$|^stockCount:previous$|^stockOpening:list$|^stockOpening:date$|^stockOpening:ppStages$|^stockOpening:ppFreeTotals$|^production:ppDraws$|^bargains:linkedInvoices$|^bargains:adjustments$|^history:list$|^stockOpening:ppVessels$|^stockOpening:ppReceivers$|^stockOpening:ppWriteoffs$|^work:board$|^work:cutoff$|^work:processes$|^formulationSubcategory:list$|^formulations:versions$|^bd:allRepayments$|^bd:linkedOrders$|^bd:parties$|^bd:allParties$|^bd:openTradingInvoices$|^bd:paymentIns$|^access:entryWindows$|^access:entityHistory$|^trading:list$|^sales:series$|^sales:invoiceGaps$|^salesBargains:returns$|^salesBargains:unattributedReturns$|^tbill:orphans$|^production:report$/
+    /:list$|:get$|:items$|:issuances$|:sheet$|:outstanding$|:all$|:summary$|:transfers$|:fyTaxable$|:needs$|:breakdown$|:nextNo$|:liveUsers$|:ips$|:logs$|:dispatchableSales$|:mine$|:pendingCount$|:pending$|:lots$|:unmapped$|:unmappedCount$|:bargainLines$|:bargainNotes$|:bargainInterest$|:consignmentDraws$|^access:heartbeat$|^db:ping$|^db:snapshot$|^app:revision$|^auth:login$|^journal:booksFrom$|^tally:map$|^journal:openings$|^journal:opening$|^journal:accounts$|^journal:statement$|^journal:trialBalance$|^journal:groups$|^journal:groupNames$|^journal:groupTree$|^journal:ledgerMap$|^journal:pendingRefs$|^journal:billsOutstanding$|^journal:tradingAccount$|^dashboard:stats$|^vouchers:nextCode$|^vouchers:forDocument$|^vouchers:alterInfo$|^tfreight:kpis$|^dashboard:position$|^dashboard:layout$|^dashboard:saveLayout$|^productMerge:preview$|^skuRates:parties$|^skuRates:partyCounts$|^consignment:openingLog$|^tags:list$|^tags:for$|^tags:contents$|^consignment:openingLots$|^consignment:invoices$|^tankers:quality$|^tankers:qualityMany$|^tankers:ffaHistory$|^orders:quality$|^gate:partyCategories$|^gate:waivedOuts$|^gate:forRecord$|^notify:rules$|^notify:list$|^notify:run$|^notify:preview$|^notify:people$|^notify:mutes$|^treasury:alerts$|^treasury:paymentTracker$|^facility:exposures$|^facility:headroom$|^company:setActive$|^company:getActive$|^factory:active$|^factory:companies$|^session:setUser$|^lc:repayments$|^lc:parts$|^lc:parts$|^lc:allRepayments$|^lc:getLimit$|^lc:bankLimits$|^lc:paymentIns$|^lc:openTradingInvoices$|^files:pickDocument$|^files:openDocument$|^bankRecon:imports$|^bankRecon:list$|^bankRecon:suggest$|^bd:kpis$|^bd:limits$|^skuStock:adjustments$|^skuOpening:list$|^skuOpening:date$|^stockCount:previous$|^orders:intercompanySource$|^stockOpening:list$|^stockOpening:date$|^stockOpening:sets$|^stockOpening:setLines$|^stockOpening:ppStages$|^stockOpening:ppFreeTotals$|^production:ppDraws$|^bargains:linkedInvoices$|^bargains:linkedVouchers$|^bargains:voucherChoices$|^salesBargains:linkedVouchers$|^salesBargains:voucherChoices$|^bargains:adjustments$|^history:list$|^stockOpening:ppVessels$|^stockOpening:ppReceivers$|^stockOpening:ppWriteoffs$|^work:board$|^work:cutoff$|^work:processes$|^formulationSubcategory:list$|^formulations:versions$|^facility:limitHistory$|^bd:limitReductions$|^bd:allRepayments$|^bd:interestSchedule$|^bd:interestWindow$|^bd:interestPayments$|^bd:linkedOrders$|^bd:parties$|^bd:allParties$|^bd:openTradingInvoices$|^bd:paymentIns$|^bd:partyPayments$|^bd:receiptParts$|^access:entryWindows$|^access:entityHistory$|^trading:list$|^sales:series$|^sales:invoiceGaps$|^salesBargains:returns$|^salesBargains:linkedInvoices$|^salesBargains:unattributedReturns$|^tbill:orphans$|^production:report$|^production:mix$|^repairs:splitTanker:list$|^vouchers:cashflow$|^repairs:paisa:list$|^tallyNotes:(preview|salesCheck|salesPreview|registerCheck|registerPreview|health|batches|companyBanks|bankSuggest|bankCheck|bankPreview|drafts|bankBooks|bankBook)$/
+  // The Tally checks and previews only READ: they compare a file with the books
+  // and post nothing. Gated as writes, every click logged the whole uploaded
+  // file to the audit trail and woke every open screen to re-read — which is
+  // what made Book from Tally take seconds to open.
   // Writes that shouldn't clutter the audit trail (infra / no business meaning).
   const AUDIT_SKIP = new Set(['config:get', 'config:save', 'session:setUser'])
 
@@ -548,6 +691,19 @@ export function registerIpc(): void {
   )
   handle('bargains:linkedInvoices', (_e, { id }: { id: number }) => bargainLinkedInvoices(id))
   handle('bargains:adjustments', (_e, { id }: { id: number }) => bargainAdjustments(id))
+  // Vouchers linked to a bargain by hand — an advance, a receipt, a note —
+  // see src/main/bargainVouchers.ts. `id` is the bargain's, so linking and
+  // unlinking answer to the same edit right and window as editing it.
+  handle('bargains:linkedVouchers', (_e, { id }: { id: number }) => linkedVouchers('purchase', id))
+  handle('bargains:voucherChoices', (_e, { id, vchType }: { id: number; vchType?: string }) =>
+    voucherChoices('purchase', id, vchType)
+  )
+  handle('bargains:linkVoucher', (_e, { id, entryId, note }: { id: number; entryId: number; note?: string }) =>
+    linkVoucher('purchase', id, entryId, note)
+  )
+  handle('bargains:unlinkVoucher', (_e, { id, linkId }: { id: number; linkId: number }) =>
+    unlinkVoucher('purchase', id, linkId)
+  )
   handle(
     'bargains:rerateInvoices',
     (_e, { bargainId, rate, orderIds }: { bargainId: number; rate: number; orderIds: number[] }) =>
@@ -596,9 +752,17 @@ export function registerIpc(): void {
   handle('bargains:adjust', (_e, { id, delta, note, date }: { id: number; delta: number; note?: string; date?: string }) =>
     adjustBargainQty(id, delta, note, date)
   )
+  // The open balance struck again under another product: a new bargain for it,
+  // and the same quantity off this one, together. See moveBargainBalance.
+  handle('bargains:moveBalance', (_e, { id, values }: { id: number; values: { oil_type_id: number; qty: number; rate?: number; date?: string; note?: string } }) =>
+    moveBargainBalance(id, values)
+  )
 
   handle('orders:bargainNotes', (_e, { id }: { id: number }) => purchaseBargainNotes(id))
   handle('orders:list', (_e, args?: { forModule?: string }) => listOrders(args?.forModule))
+  // The selling company's own invoice, read from the purchase it raised here.
+  // Read-only by design — see intercompanySource.
+  handle('orders:intercompanySource', (_e, { id }: { id: number }) => intercompanySource(Number(id)))
   handle('skuRates:list', (_e, { id }: { id: number }) => listSkuRates(id))
   handle('skuRates:partyCounts', () => packagingPartyCounts())
   handle('skuRates:parties', (_e, { packagingId }: { packagingId: number }) => listPackagingParties(packagingId))
@@ -618,11 +782,13 @@ export function registerIpc(): void {
   handle(
     'tankers:advance',
     (_e, { id, toStatus, data }: { id: number; toStatus: string; data: Row }) =>
-      advancePurchaseTanker(id, toStatus, data)
+      // One transaction: a trading company's tanker is emptied AND sold on, or neither.
+      withDbTransaction(() => advancePurchaseTanker(id, toStatus, data))
   )
-  handle('tankers:revert', (_e, { id }: { id: number }) => revertPurchaseTanker(id))
+  handle('tankers:revert', (_e, { id }: { id: number }) => withDbTransaction(() => revertPurchaseTanker(id)))
   handle('tankers:replace', (_e, { id, values }: { id: number; values: Row }) => replaceTanker(id, values))
   handle('tankers:quality', (_e, { id }: { id: number }) => listTankerQuality(Number(id)))
+  handle('tankers:qualityMany', (_e, { ids }: { ids: number[] }) => listTankerQualityMany(ids))
   // Read-only, and listed in READONLY above so it neither passes the write
   // gate nor bumps the data revision — it answers a question, it changes
   // nothing.
@@ -634,11 +800,29 @@ export function registerIpc(): void {
     return { id: Number(id) }
   })
   handle('orders:quality', (_e, { id }: { id: number }) => listOrderQuality(Number(id)))
+  // "Not needed for this transaction" — an answer, not a gap.
+  handle(
+    'orders:waiveQuality',
+    (_e, { id, waived, note }: { id: number; waived: boolean; note?: string }) =>
+      waiveOrderQuality(Number(id), waived !== false, note)
+  )
   handle('orders:saveQuality', async (_e, { id, rows }: { id: number; rows: Row[] }) => {
     await saveOrderQuality(Number(id), Array.isArray(rows) ? rows : [])
     return { id: Number(id) }
   })
   handle('orders:create', (_e, { values }: { values: Row }) => createOrder(values))
+  // A placeholder invoice number for a supplier that never printed one on the
+  // paper handed over — seven digits, checked against every other purchase
+  // already booked for this company so it can never collide.
+  handle('orders:randomInvoiceNo', (_e, { companyId }: { companyId?: number }) =>
+    randomPurchaseInvoiceNo(companyId || getActiveCompanyId())
+  )
+  // One supplier invoice covering tankers of several products: one row per
+  // product, all under the real number. See createTankerInvoice.
+  handle('orders:createInvoice', (_e, { values }: { values: Row }) => createTankerInvoice(values))
+  handle('orders:updateInvoice', (_e, { group, values }: { group: string; values: Row }) =>
+    updateTankerInvoice(group, values)
+  )
   handle('orders:update', (_e, { id, values }: { id: number; values: Row }) =>
     updateOrder(id, values)
   )
@@ -678,7 +862,48 @@ export function registerIpc(): void {
     updateConsignment(id, values)
   )
   handle('consignment:delete', (_e, { id }: { id: number }) => deleteConsignment(id))
+  // Which cargo a set of tankers came off: the lot at the port, the terminal
+  // it was discharged at, put on several arrivals at once.
+  handle(
+    'consignment:assignGroup',
+    (_e, { ids, lot_no, terminal_no }: { ids: number[]; lot_no?: string; terminal_no?: string }) =>
+      assignConsignmentGroup(ids, { lot_no, terminal_no })
+  )
+  // Taking an invoice back off the parcels it drew, one invoice or a whole
+  // party's product at once. The invoice itself is untouched — see
+  // unlinkConsignmentDraw.
+  handle('consignment:unlinkDraw', (_e, { orderId }: { orderId: number }) =>
+    unlinkConsignmentDraw(orderId)
+  )
+  handle(
+    'consignment:unlinkDrawsFor',
+    (_e, { supplierId, productId }: { supplierId: number; productId: number }) =>
+      unlinkConsignmentDrawsFor(supplierId, productId)
+  )
+  // One cargo's number, corrected on every row that carries it.
+  handle('consignment:renameLot', (_e, { values }: { values: Row }) => renameConsignmentLot(values as never))
+  handle('consignment:kin', (_e, { id }: { id: number }) => consignmentKin(id))
   handle('consignment:saveOpening', (_e, { values }: { values: Row }) => saveOpeningStock(values))
+  // ── TAGS ────────────────────────────────────────────────────────────
+  // The mill's own word for something the software has no field for, put on
+  // any purchase, sale, LC, discounted bill or voucher. See src/main/tags.ts.
+  handle('tags:list', (_e, args?: { companyId?: number }) => listTags(args?.companyId))
+  handle('tags:create', (_e, a: { name: string; colour?: string; companyId?: number }) => createTag(a))
+  handle('tags:rename', (_e, { id, name, colour }: { id: number; name: string; colour?: string }) =>
+    renameTag(id, name, colour)
+  )
+  handle('tags:delete', (_e, { id }: { id: number }) => deleteTag(id))
+  handle('tags:for', (_e, { entity, refs, companyId }: { entity: string; refs: unknown[]; companyId?: number }) =>
+    tagsFor(entity, refs, companyId)
+  )
+  handle('tags:set', (_e, { entity, ref, tagIds }: { entity: string; ref: unknown; tagIds: unknown[] }) =>
+    setTags(entity, ref, tagIds)
+  )
+  handle('tags:contents', (_e, { id }: { id: number }) => tagContents(id))
+
+  handle('consignment:openingLots', (_e, { supplierId, productId }: { supplierId: number; productId: number }) =>
+    listOpeningLots(supplierId, productId)
+  )
   handle('consignment:openingLog', (_e, { supplierId, productId }: { supplierId: number; productId: number }) =>
     listOpeningLog(supplierId, productId)
   )
@@ -690,6 +915,70 @@ export function registerIpc(): void {
     setBooksFrom(date, companyId)
   )
   handle('journal:openings', (_e, args?: { companyId?: number }) => listOpenings(args?.companyId))
+  handle('tally:import', (_e, { values }: { values: Row }) => importTallyLedgers(values))
+  // Tally File Updation: a Credit / Debit Note register read, mapped and posted.
+  handle('tallyNotes:preview', (_e, { values }: { values: Row }) => previewTallyNotes(values as Parameters<typeof previewTallyNotes>[0]))
+  handle('tallyNotes:saveMap', (_e, { values }: { values: Row }) => saveTallyNoteMap(values as Parameters<typeof saveTallyNoteMap>[0]))
+  handle('tallyNotes:createLedger', (_e, { values }: { values: Row }) =>
+    createTallyNoteLedger(values as Parameters<typeof createTallyNoteLedger>[0])
+  )
+  handle('tallyNotes:post', (_e, { values }: { values: Row }) => postTallyNotes(values as Parameters<typeof postTallyNotes>[0]))
+  // The Sales Register check: read only, and the party link it can save.
+  handle('tallyNotes:salesCheck', (_e, { values }: { values: Row }) => reconcileTallySales(values as Parameters<typeof reconcileTallySales>[0]))
+  handle('tallyNotes:salesPreview', (_e, { values }: { values: Row }) =>
+    previewTallySalesVouchers(values as Parameters<typeof previewTallySalesVouchers>[0])
+  )
+  handle('tallyNotes:postSales', (_e, { values }: { values: Row }) =>
+    postTallySalesVouchers(values as Parameters<typeof postTallySalesVouchers>[0])
+  )
+  // Journal and Purchase Registers: the check, the booking preview, the booking.
+  handle('tallyNotes:registerCheck', (_e, { values }: { values: Row }) => checkTallyRegister(values as Parameters<typeof checkTallyRegister>[0]))
+  handle('tallyNotes:registerPreview', (_e, { values }: { values: Row }) =>
+    previewTallyRegisterVouchers(values as Parameters<typeof previewTallyRegisterVouchers>[0])
+  )
+  handle('tallyNotes:postRegister', (_e, { values }: { values: Row }) =>
+    postTallyRegisterVouchers(values as Parameters<typeof postTallyRegisterVouchers>[0])
+  )
+  // The desk at a glance; what it has decided (links); what it has booked (batches).
+  handle('tallyNotes:health', (_e, { values }: { values: Row }) => tallyHealth(values as Parameters<typeof tallyHealth>[0]))
+  handle('tallyNotes:link', (_e, { values }: { values: Row }) => saveTallyLink(values as Parameters<typeof saveTallyLink>[0]))
+  handle('tallyNotes:unlink', (_e, { values }: { values: Row }) => removeTallyLink(values as Parameters<typeof removeTallyLink>[0]))
+  handle('tallyNotes:batches', (_e, { values }: { values: Row }) => listTallyBatches(values as Parameters<typeof listTallyBatches>[0]))
+  handle('tallyNotes:undoBatch', (_e, { values }: { values: Row }) => undoTallyBatch(values as Parameters<typeof undoTallyBatch>[0]))
+  // A bank's book from Tally, against the same bank here.
+  handle('tallyNotes:companyBanks', (_e, { values }: { values: Row }) => listCompanyBanks(values as Parameters<typeof listCompanyBanks>[0]))
+  handle('tallyNotes:setCompanyBank', (_e, { values }: { values: Row }) => setCompanyBank(values as Parameters<typeof setCompanyBank>[0]))
+  handle('tallyNotes:bankSuggest', (_e, { values }: { values: Row }) => suggestTallyBank(values as Parameters<typeof suggestTallyBank>[0]))
+  handle('tallyNotes:bankBooks', async (_e, { values }: { values?: Row } = {}) => {
+    const { listBankBooks } = await import('./tallyNotes')
+    return listBankBooks(values)
+  })
+  handle('tallyNotes:bankBook', async (_e, { values }: { values: Row }) => {
+    const { getBankBook } = await import('./tallyNotes')
+    return getBankBook(values as Parameters<typeof getBankBook>[0])
+  })
+  handle('tallyNotes:bankCheck', (_e, { values }: { values: Row }) => checkTallyBank(values as Parameters<typeof checkTallyBank>[0]))
+  handle('tallyNotes:bankPreview', (_e, { values }: { values: Row }) =>
+    previewTallyBankVouchers(values as Parameters<typeof previewTallyBankVouchers>[0])
+  )
+  handle('tallyNotes:postBank', (_e, { values }: { values: Row }) => postTallyBankVouchers(values as Parameters<typeof postTallyBankVouchers>[0]))
+  handle('tallyNotes:fixRegisterDate', (_e, { values }: { values: Row }) =>
+    setRegisterVoucherDate(values as Parameters<typeof setRegisterVoucherDate>[0])
+  )
+  handle('tallyNotes:linkParty', (_e, { values }: { values: Row }) => linkTallyParty(values as Parameters<typeof linkTallyParty>[0]))
+  // The user's uploads kept as drafts until Process.
+  handle('tallyNotes:saveDraft', (_e, { values }: { values: Row }) => saveTallyDraft(values as Parameters<typeof saveTallyDraft>[0]))
+  handle('tallyNotes:drafts', (_e, a?: { values?: Row }) => listTallyDrafts(a?.values))
+  handle('tallyNotes:clearDraft', (_e, { values }: { values: Row }) => clearTallyDraft(values as Parameters<typeof clearTallyDraft>[0]))
+  handle('tally:map', () => tallyLedgerMap())
+  handle('tally:link', (_e, { values }: { values: Row }) => mapTallyLedger(values))
+  handle('tally:applyOpenings', (_e, { values }: { values: Row }) => applyTallyOpenings(values))
+  handle('tally:clear', () => clearTallyLedgers())
+  handle('tally:create', (_e, { values }: { values: Row }) => createTallyLedgers(values))
+  handle('tally:regroup', (_e, { values }: { values: Row }) => regroupTallyLedger(values))
+  handle('journal:moveOpenings', (_e, a: { accountIds: number[]; fromCompanyId: number; toCompanyId: number }) =>
+    moveOpenings(a.accountIds, a.fromCompanyId, a.toCompanyId)
+  )
   handle('journal:saveOpenings', (_e, { rows, companyId }: { rows: Row[]; companyId?: number }) =>
     saveOpenings(rows as { account_id: number; dr?: number; cr?: number }[], companyId)
   )
@@ -697,7 +986,9 @@ export function registerIpc(): void {
     ledgerOpening(accountId, companyId)
   )
   handle('journal:accounts', (_e, args?: { companyId?: number }) => listAccounts(args?.companyId))
-  handle('journal:createAccount', (_e, { name, group }: { name: string; group?: string }) => createAccount(name, group))
+  handle('journal:createAccount', (_e, { name, group, companyId }: { name: string; group?: string; companyId?: number }) =>
+    createAccount(name, group, companyId)
+  )
   handle('journal:statement', (_e, { accountId, companyId }: { accountId: number; companyId?: number }) =>
     accountStatement(accountId, companyId)
   )
@@ -706,7 +997,33 @@ export function registerIpc(): void {
     trialBalance(args?.from, args?.to, args?.companyId)
   )
   handle('journal:groups', (_e, args?: { companyId?: number }) => listGroups(args?.companyId))
-  handle('journal:groupNames', () => TALLY_GROUPS)
+  // Every group the books actually have, not a fixed list of twenty-six —
+  // shape unchanged for the callers that only wanted {name, nature}, with the
+  // parent, depth and path added for the ones that draw the tree.
+  handle('journal:groupNames', () => listGroupNames())
+  // WHAT THE APP POSTS AS ONE NAME, AND WHICH LEDGER THAT REALLY IS.
+  // Renaming a ledger the app posts to is only safe because of this — see
+  // src/main/ledgerMap.ts.
+  handle('journal:ledgerMap', (_e, args?: { companyId?: number }) => listLedgerMap(args?.companyId))
+  handle('journal:renameLedger', (_e, { id, name, companyId }: { id: number; name: string; companyId?: number }) =>
+    renameLedger(id, name, companyId)
+  )
+  handle('journal:mapLedger', (_e, a: { postsAs: string; useName: string; companyId?: number; note?: string }) =>
+    setLedgerMap(a)
+  )
+  handle('journal:unmapLedger', (_e, { id }: { id: number }) => dropLedgerMap(id))
+  handle('journal:groupTree', (_e, args?: { companyId?: number }) => groupTree(args?.companyId))
+  handle('journal:createGroup', (_e, a: { name: string; under?: string | number | null; nature?: GroupNature }) =>
+    createGroup(a)
+  )
+  handle('journal:renameGroup', (_e, { id, name }: { id: number; name: string }) => renameGroup(id, name))
+  handle('journal:moveGroup', (_e, { id, parentId, nature }: { id: number; parentId: number | null; nature?: GroupNature }) =>
+    moveGroup(id, parentId, nature)
+  )
+  handle('journal:deleteGroup', (_e, { id }: { id: number }) => deleteGroup(id))
+  handle('journal:setAccountGroup', (_e, { id, group }: { id: number; group: string }) => setAccountGroup(id, group))
+  handle('journal:setAccountsGroup', (_e, { ids, group }: { ids: number[]; group: string }) => setAccountsGroup(ids, group))
+  handle('journal:setAccountsHidden', (_e, { ids, hidden }: { ids: number[]; hidden: boolean }) => setAccountsHidden(ids, hidden))
   handle(
     'journal:billsOutstanding',
     (_e, a: { account: string; companyId?: number; asOf?: string; side?: 'customer' | 'supplier' }) =>
@@ -714,22 +1031,79 @@ export function registerIpc(): void {
   )
   handle(
     'journal:pendingRefs',
-    (_e, { account, companyId, side }: { account: string; companyId?: number; side?: 'customer' | 'supplier' }) =>
-      listPendingRefs(account, companyId, side)
+    (_e, { account, companyId, side, all }: { account: string; companyId?: number; side?: 'customer' | 'supplier'; all?: boolean }) =>
+      listPendingRefs(account, companyId, side, !!all)
   )
   handle('journal:tradingAccount', (_e, { from, to, companyId }: { from?: string; to?: string; companyId?: number }) =>
     tradingAccount(from, to, companyId)
   )
-  handle('dashboard:stats', () => dashboardStats())
+  handle('dashboard:stats', (_e, a?: { all?: boolean }) => dashboardStats({ all: !!a?.all }))
+  handle('dashboard:position', (_e, a?: { all?: boolean }) => dailyPosition({ all: !!a?.all }))
+  handle('dashboard:layout', () => getDashLayout())
+  handle('dashboard:saveLayout', (_e, { hidden }: { hidden: string[] }) => saveDashLayout(hidden))
+  // Settings → Merge products. The preview reads; the merge is an
+  // administrator's, checked inside applyProductMerge as well as here.
+  handle('productMerge:preview', (_e, { fromId, toId }: { fromId: number; toId: number }) => previewProductMerge(fromId, toId))
+  handle('productMerge:apply', (_e, { fromId, toId }: { fromId: number; toId: number }) => applyProductMerge(fromId, toId))
+  handle('productMerge:list', () => listProductMerges())
+  handle('productionPlan:get', (_e, { date }: { date: string }) => getProductionPlan(date))
+  handle('productionPlan:save', (_e, { date, rows }: { date: string; rows: Row[] }) => saveProductionPlan(date, rows))
+  // The gateway's counts and turnover — read-only (the :summary ending).
+  handle('vouchers:summary', async (_e, args?: { from?: string; to?: string; companyId?: number }) => {
+    const { voucherSummary } = await import('./accounting')
+    return voucherSummary(args?.from, args?.to, args?.companyId)
+  })
   handle('vouchers:list', (_e, args?: { from?: string; to?: string; vchType?: string | string[]; companyId?: number }) =>
     listVouchers(args?.from, args?.to, args?.vchType, args?.companyId)
   )
+  // Read-only: every voucher of a period opened up — see cashflowRegister.
+  // How many purchase entries each supplier has, across every company — the
+  // count beside the Trading / Manufacturing tag on the Suppliers list. Read
+  // only; the :summary ending keeps it in READONLY.
+  // THE LEDGER EACH BANK ACTUALLY POSTS TO — its name and last four digits
+  // (bankLedgerName), then any rename in the ledger map, so a picker can show
+  // the very ledger the books carry ("HDFC50200022765385 ( SWASTHYA VIHAR)")
+  // rather than the master's short name. Read only (:summary).
+  handle('banks:ledgers:summary', async () => {
+    const { bankLedgerName } = await import('./treasury')
+    const { resolveAccountName } = await import('./ledgerMap')
+    const rs = await getClient().execute('SELECT id, name, account_no, company_id FROM banks')
+    const out: Record<string, string> = {}
+    for (const r of rs.rows as unknown as Row[]) {
+      const posts = bankLedgerName(r.name, r.account_no)
+      out[String(r.id)] = await resolveAccountName(posts, Number(r.company_id) || undefined).catch(() => posts)
+    }
+    return out
+  })
+  handle('suppliers:purchases:summary', async () => {
+    const rs = await getClient().execute(
+      'SELECT supplier_id, COUNT(*) AS n FROM orders WHERE supplier_id IS NOT NULL GROUP BY supplier_id'
+    )
+    const out: Record<string, number> = {}
+    for (const r of rs.rows) out[String(r.supplier_id)] = Number(r.n) || 0
+    return out
+  })
+  handle('vouchers:cashflow', async (_e, args?: { from?: string; to?: string; companyId?: number }) => {
+    const { cashflowRegister } = await import('./cashflowRegister')
+    return cashflowRegister(args?.from, args?.to, args?.companyId)
+  })
   handle('vouchers:get', (_e, { id }: { id: number }) => getVoucher(id))
+  // WHAT THIS DOCUMENT PUT IN THE LEDGERS — read-only, see src/main/postings.ts.
+  handle('vouchers:forDocument', (_e, { entity, id }: { entity: PostingEntity; id: number }) =>
+    documentPostings({ entity, id })
+  )
   handle('vouchers:create', (_e, { values }: { values: VoucherInput }) => createVoucher(values))
   handle('vouchers:update', (_e, { id, values }: { id: number; values: VoucherInput }) =>
     updateVoucher(id, values)
   )
+  handle('vouchers:nextCode', (_e, a: { vchType: string; companyId?: number }) =>
+    nextVoucherCode(Number(a?.companyId) || getActiveCompanyId(), String(a?.vchType || ''))
+  )
   handle('vouchers:delete', (_e, { id }: { id: number }) => deleteManualEntry(id))
+  // A voucher a document wrote: how it is altered (voucherAlter.ts), and the
+  // alter itself for the ones changed through a form here.
+  handle('vouchers:alterInfo', (_e, { id }: { id: number }) => voucherAlterInfo(id))
+  handle('vouchers:alterOwned', (_e, { id, values }: { id: number; values: Row }) => alterOwnedVoucher(id, values))
   handle('journal:deleteEntry', (_e, { id }: { id: number }) => deleteManualEntry(id))
 
   handle('ledger:suppliers', () => listSupplierLedger())
@@ -768,7 +1142,7 @@ export function registerIpc(): void {
     setCurrentUser(id, username)
   )
 
-  handle('formulations:list', () => listFormulations())
+  handle('formulations:list', (_e, opts?: { includeHidden?: boolean }) => listFormulations(opts))
   handle('formulations:items', (_e, { id }: { id: number }) => getFormulationItems(id))
   handle('formulations:versions', (_e, { id }: { id: number }) => listFormulationVersions(Number(id)))
   handle('formulations:create', (_e, { values }: { values: Row }) => createFormulation(values))
@@ -779,6 +1153,12 @@ export function registerIpc(): void {
 
   handle('stock:list', (_e, args?: { range?: { from?: string; to?: string }; companyIds?: number[] }) => stockLevels(args?.range, args?.companyIds))
   handle('stock:needs', () => productionNeeds())
+  // STOCK MAPPING: a balance traced back to the entries it came from, FIFO.
+  // Read only — the :breakdown ending keeps it in READONLY.
+  handle('stock:fifo:breakdown', async (_e, a: { productId: number; companyIds?: number[]; asOf?: string; qty: number; all?: boolean }) => {
+    const { stockFifoMap } = await import('./stockFifo')
+    return stockFifoMap(a)
+  })
   handle('stock:registers', (_e, args?: { companyIds?: number[]; range?: { from?: string; to?: string } }) =>
     stockRegisters(args?.companyIds, args?.range)
   )
@@ -812,6 +1192,12 @@ export function registerIpc(): void {
   handle('stockOpening:list', (_e, { companyId }: { companyId?: number } = {}) =>
     listStockOpenings(companyId)
   )
+  handle('stockOpening:handOverPp', (_e, { date, companyId }: { date: string; companyId?: number }) =>
+    handOverOpeningPp(date, companyId)
+  )
+  handle('stockOpening:putBackPp', (_e, { rows, companyId }: { rows: Row[]; companyId?: number }) =>
+    putBackOpeningPp(rows, companyId)
+  )
   handle(
     'stockOpening:save',
     (
@@ -824,6 +1210,12 @@ export function registerIpc(): void {
   handle('stockOpening:date', (_e, { companyId }: { companyId?: number } = {}) =>
     stockOpeningDate(companyId)
   )
+  // Every opening ever struck here, and what any one of them said. Read-only:
+  // an old count is evidence, and evidence is not edited in place.
+  handle('stockOpening:sets', (_e, { companyId }: { companyId?: number } = {}) =>
+    listOpeningSets(companyId)
+  )
+  handle('stockOpening:setLines', (_e, { setId }: { setId: number }) => openingSetLines(Number(setId)))
   // What a PP figure is made of, stage by stage. The stage list is the SITE's
   // and is shared by every product on the sheet, which is why adding and
   // removing one are channels of their own rather than part of the save: they
@@ -852,8 +1244,8 @@ export function registerIpc(): void {
   // preview can give it back before showing the edited amount.
   handle(
     'stockOpening:ppFreeTotals',
-    (_e, { productIds, companyId }: { productIds: number[]; companyId?: number }) =>
-      ppTotalsBothByProduct(productIds, companyId)
+    (_e, { productIds, companyId, asOf }: { productIds: number[]; companyId?: number; asOf?: string }) =>
+      ppTotalsBothByProduct(productIds, companyId, asOf)
   )
   handle('production:ppDraws', (_e, { productionId }: { productionId: number }) =>
     ppDrawsForProduction(productionId)
@@ -864,13 +1256,46 @@ export function registerIpc(): void {
   handle('work:board', (_e, { date, userId }: { date?: string; userId?: number } = {}) =>
     listWorkBoard(date, userId)
   )
+  // A closed day, asked for and answered. The server decides both: a day is
+  // open for one login and one date, or it is not.
+  handle('work:requestDay', (_e, { date, userId, reason }: { date: string; userId: number; reason?: string }) =>
+    requestWorkDay(date, userId, reason)
+  )
+  handle(
+    'work:decideDay',
+    (_e, { id, approve, userId, note }: { id: number; approve: boolean; userId: number; note?: string }) =>
+      decideWorkDay(id, approve !== false, userId, note)
+  )
+  // The same door from the admin's side: no ask, no approval, just opened.
+  handle(
+    'work:setDayOpen',
+    (
+      _e,
+      { userIds, date, open, userId, note }: { userIds: number[]; date: string; open: boolean; userId: number; note?: string }
+    ) => setWorkDayOpen(userIds, date, open !== false, userId, note)
+  )
   handle('work:cutoff', () => workCutoff())
-  handle('work:setCutoff', (_e, { cutoff, userId }: { cutoff: string; userId?: number }) =>
-    setWorkCutoff(cutoff, userId)
+  // One login's own deadline, where the site's does not fit its shift.
+  handle(
+    'work:setUserCutoff',
+    (_e, { targetId, cutoff, day, userId }: { targetId: number; cutoff: string; day?: string; userId?: number }) =>
+      setUserWorkCutoff(targetId, cutoff, day, userId)
+  )
+  handle('work:setCutoff', (_e, { cutoff, userId, day }: { cutoff: string; userId?: number; day?: string }) =>
+    setWorkCutoff(cutoff, userId, day)
   )
   handle('work:processes', () => listWorkProcesses())
-  handle('work:saveProcess', (_e, { values }: { values: Row }) => saveWorkProcess(values))
-  handle('work:removeProcess', (_e, { id }: { id: number }) => removeWorkProcess(id))
+  // The catalogue every board is built from. Admin only, asserted on the
+  // server: this is the one list where a wrong hand costs the whole team a day.
+  handle('work:saveProcess', (_e, { values, userId }: { values: Row; userId?: number }) =>
+    saveWorkProcess(values, userId)
+  )
+  handle('work:removeProcess', (_e, { id, userId }: { id: number; userId?: number }) =>
+    removeWorkProcess(id, userId)
+  )
+  handle('work:reorderProcesses', (_e, { ids, userId }: { ids: number[]; userId?: number }) =>
+    reorderWorkProcesses(ids, userId)
+  )
   handle('work:tick', (_e, { taskId, userId }: { taskId: number; userId: number }) =>
     tickWorkTask(taskId, userId)
   )
@@ -909,6 +1334,14 @@ export function registerIpc(): void {
     (_e, args?: { date?: string | { from?: string; to?: string } }) => listSkuStock(args?.date)
   )
   handle('skuStock:adjustments', (_e, { id }: { id: number }) => listSkuAdjustments(id))
+  // Hand adjustments to a product's book stock (stockAdjust.ts).
+  handle('stockAdj:list', (_e, a: { productId: number; companyIds?: number[] }) => listStockAdjustments(a?.productId, a?.companyIds))
+  handle(
+    'stockAdj:create',
+    (_e, { values }: { values: { product_id: number; qty: number; date?: string; note: string; company_id?: number } }) =>
+      addStockAdjustment(values)
+  )
+  handle('stockAdj:delete', (_e, { id }: { id: number }) => deleteStockAdjustment(id))
   handle('skuOpening:list', (_e, args?: { asOf?: string }) => listSkuOpenings(undefined, args?.asOf))
   handle('skuOpening:date', () => skuOpeningDate())
   handle('skuOpening:save', (_e, { rows, asOf }: { rows: Row[]; asOf: string }) => saveSkuOpenings(rows, asOf))
@@ -960,6 +1393,8 @@ export function registerIpc(): void {
 
   handle('production:list', (_e, args?: { forModule?: string }) => listProduction(args?.forModule))
   handle('production:items', (_e, { id }: { id: number }) => getProductionItems(id))
+  // Read-only: the short formulation the register shows on hover.
+  handle('production:mix', (_e, { id }: { id: number }) => batchMix(Number(id)))
   // Read-only. The name ends in :report, which the READONLY regex below also
   // has to match — a channel that misses it passes the write gate and bumps
   // the revision, so every open page would treat drawing this report as
@@ -985,9 +1420,13 @@ export function registerIpc(): void {
     salesInvoiceGaps(args?.companyId, { from: args?.from, to: args?.to })
   )
   handle('sales:create', (_e, { values }: { values: Row }) => createSale(values))
+  handle('sales:randomInvoiceNo', (_e, { companyId }: { companyId?: number }) =>
+    randomSalesInvoiceNo(companyId || getActiveCompanyId())
+  )
   handle('sales:update', (_e, { id, values }: { id: number; values: Row }) => updateSale(id, values))
   handle('sales:createInvoice', (_e, { values }: { values: Row }) => createSaleInvoice(values))
   handle('sales:updateInvoice', (_e, { group, values }: { group: string; values: Row }) => updateSaleInvoice(group, values))
+  handle('sales:fixDate', (_e, { id, date }: { id: number; date: string }) => setSaleInvoiceDate(id, date))
   handle(
     'sales:setInvoiceStage',
     (
@@ -1022,15 +1461,73 @@ export function registerIpc(): void {
   handle('salesBargains:update', (_e, { id, values }: { id: number; values: Row }) =>
     updateSalesBargain(id, values)
   )
+  handle('salesBargains:linkedInvoices', (_e, { id }: { id: number }) => salesBargainLinkedInvoices(id))
+  handle('salesBargains:linkedVouchers', (_e, { id }: { id: number }) => linkedVouchers('sales', id))
+  handle('salesBargains:voucherChoices', (_e, { id, vchType }: { id: number; vchType?: string }) =>
+    voucherChoices('sales', id, vchType)
+  )
+  handle('salesBargains:linkVoucher', (_e, { id, entryId, note }: { id: number; entryId: number; note?: string }) =>
+    linkVoucher('sales', id, entryId, note)
+  )
+  handle('salesBargains:unlinkVoucher', (_e, { id, linkId }: { id: number; linkId: number }) =>
+    unlinkVoucher('sales', id, linkId)
+  )
+  handle(
+    'salesBargains:rerateInvoices',
+    (_e, { id, rate, saleIds }: { id: number; rate: number; saleIds: number[] }) =>
+      rerateSalesForBargain(id, rate, saleIds)
+  )
   handle('salesBargains:delete', (_e, { id }: { id: number }) => deleteSalesBargain(id))
   handle('salesBargains:adjust', (_e, { id, delta, note, date }: { id: number; delta: number; note?: string; date?: string }) =>
     adjustSalesBargainQty(id, delta, note, date)
+  )
+  handle('salesBargains:moveBalance', (_e, { id, values }: { id: number; values: { product_id: number; qty: number; rate?: number; date?: string; note?: string } }) =>
+    moveSalesBargainBalance(id, values)
   )
 
   handle('gate:list', () => listGateEntries())
   handle('gate:nextNo', (_e, args?: { direction?: 'in' | 'out' }) => nextGateEntryNo(args?.direction))
   handle('gate:dispatchableSales', () => listDispatchableSales())
   handle('gate:waivedOuts', () => listWaivedGateOuts())
+  // ------------------------------------------------------------- web push --
+  // The public key a browser needs to subscribe, the subscription it hands
+  // back, and the two ways of firing one: at this device, or at every device
+  // the site knows about.
+  handle('push:key', async () => ({ key: (await vapidKeys()).publicKey }))
+  handle('push:status', () => pushStatus())
+  handle('push:subscribe', (_e, { subscription, userId, ua }: { subscription: Row; userId: number; ua?: string }) =>
+    saveSubscription(subscription, userId, ua)
+  )
+  handle('push:unsubscribe', (_e, { endpoint }: { endpoint: string }) => dropSubscription(endpoint))
+  handle('push:test', async (_e, { userId }: { userId: number }) =>
+    pushTo([Number(userId) || 0], {
+      title: 'Rishabh Oil — test',
+      body: 'Push is working on this device. Real notifications will arrive the same way.',
+      tag: `rishabhoil-test-${Date.now()}`
+    })
+  )
+  // EVERY DEVICE, ON PURPOSE. An admin telling the whole mill something the
+  // rules engine has no rule for — a shutdown, a stock count, a visit.
+  handle(
+    'push:broadcast',
+    async (_e, { title, body, userId }: { title: string; body: string; userId: number }) => {
+      const who = await getClient().execute({
+        sql: 'SELECT role FROM users WHERE id = ?',
+        args: [Number(userId) || 0]
+      })
+      if (String((who.rows[0] as unknown as Row)?.role || '') !== 'admin') {
+        throw new Error('Only an admin can send to every device')
+      }
+      const t = String(title || '').trim()
+      if (!t) throw new Error('Say what the notification should say')
+      return pushTo('all', {
+        title: t.slice(0, 120),
+        body: String(body || '').trim().slice(0, 300),
+        tag: `rishabhoil-bcast-${Date.now()}`
+      })
+    }
+  )
+
   handle('notify:rules', () => listNotificationRules())
   handle('notify:saveRule', (_e, a) => saveNotificationRule(a))
   handle('notify:resetRule', (_e, a) => resetNotificationRule(String(a.key)))
@@ -1093,17 +1590,54 @@ export function registerIpc(): void {
   handle('gate:unreject', (_e, { id }: { id: number }) => unrejectGateEntry(id))
 
   handle('lc:list', () => listLCs())
-  handle('treasury:alerts', () => treasuryAlerts())
+  handle('treasury:alerts', (_e, a?: { all?: boolean }) => treasuryAlerts({ all: !!a?.all }))
   handle('treasury:paymentTracker', () => listPaymentTracker())
   handle('treasury:settleLcBill', (_e, { id, date }: { id: number; date?: string }) => settleLcBill(id, date))
   handle('treasury:reopenLcBill', (_e, { id }: { id: number }) => reopenLcBill(id))
   handle('lc:issuances', (_e, { lcId }: { lcId: number }) => listLCIssuances(lcId))
   handle('lc:create', (_e, { values }: { values: Row }) => createLC(values))
-  handle('lc:update', (_e, { id, values }: { id: number; values: Row }) => updateLC(id, values))
+  // A repaid/preclosed LC is closed: its figures, issuances and repayments
+  // stay as they were closed on until the closure is undone.
+  handle('lc:update', async (_e, { id, values }: { id: number; values: Row }) => {
+    await assertLcNotClosed(Number(id))
+    return updateLC(id, values)
+  })
   handle('lc:delete', (_e, { id }: { id: number }) => deleteLC(id))
-  handle('lc:issue', (_e, { values }: { values: Row }) => issueLC(values))
-  handle('lc:deleteIssuance', (_e, { id }: { id: number }) => deleteLCIssuance(id))
+  // The bank turned an application down; and undoing that when it was a mistake.
+  handle('lc:reject', (_e, { id, values }: { id: number; values: Row }) => rejectLC(Number(id), values || {}))
+  handle('lc:reinstate', (_e, { id }: { id: number }) => reinstateLC(Number(id)))
+  handle('lc:issue', async (_e, { values }: { values: Row }) => {
+    await assertLcNotClosed(Number(values?.lc_id), 'drawn on')
+    return issueLC(values)
+  })
+  // The bank paying the supplier in parts: the next part, and taking back
+  // the latest one.
+  handle('lc:payParty', async (_e, { id, values }: { id: number; values: Row }) => {
+    await assertLcNotClosed(Number(id), 'paid on')
+    return payLcParty(Number(id), values)
+  })
+  // The parts of an LC paid in parts — and repaying the bank for them.
+  handle('lc:parts', (_e, { id }: { id: number }) => lcParts(Number(id)))
+  handle('lc:repayParts', async (_e, { id, values }: { id: number; values: Row }) => {
+    await assertLcNotClosed(Number(id), 'repaid')
+    return repayLcParts(Number(id), values as Parameters<typeof repayLcParts>[1])
+  })
+  // Not behind the closed-LC lock: undoing the repayment that closed it is
+  // exactly how a closure by parts is taken back.
+  handle('lc:undoPartRepayment', (_e, { id }: { id: number }) => undoLcPartRepayment(Number(id)))
+  handle('lc:deleteInstallment', async (_e, { id }: { id: number }) => {
+    await assertLcNotClosed(Number(id), 'changed')
+    return deleteLastLcInstallment(Number(id))
+  })
+  handle('lc:deleteIssuance', async (_e, { id }: { id: number }) => {
+    await assertLcNotClosed(await lcIdOfIssuance(Number(id)), 'changed')
+    return deleteLCIssuance(id)
+  })
   handle('lc:unpreclose', (_e, { id }: { id: number }) => unPrecloseLC(id))
+  // Corrects a closure's own figures and re-posts its vouchers, in one go.
+  handle('lc:editPreclosure', (_e, { id, values }: { id: number; values: Parameters<typeof editPreclosure>[1] }) =>
+    editPreclosure(Number(id), values)
+  )
   handle(
     'lc:preclose',
     (
@@ -1137,8 +1671,14 @@ export function registerIpc(): void {
   handle('lc:deletePaymentIn', (_e, { id }: { id: number }) => deleteLcPaymentIn(id))
   handle('lc:openTradingInvoices', (_e, { lcId }: { lcId: number }) => listLcOpenTradingInvoices(lcId))
   handle('lc:repayments', (_e, { lcId }: { lcId: number }) => listLcRepayments(lcId))
-  handle('lc:saveRepayment', (_e, { values }: { values: Row }) => saveLcRepayment(values))
-  handle('lc:deleteRepayment', (_e, { id }: { id: number }) => deleteLcRepayment(id))
+  handle('lc:saveRepayment', async (_e, { values }: { values: Row }) => {
+    await assertLcNotClosed(Number(values?.lc_id) || (values?.id ? await lcIdOfRepayment(Number(values.id)) : 0), 'changed')
+    return saveLcRepayment(values)
+  })
+  handle('lc:deleteRepayment', async (_e, { id }: { id: number }) => {
+    await assertLcNotClosed(await lcIdOfRepayment(Number(id)), 'changed')
+    return deleteLcRepayment(id)
+  })
   handle('lc:getLimit', (_e, args?: { bankId?: number; from?: string; to?: string }) =>
     getLcLimit(args?.bankId, args?.from, args?.to)
   )
@@ -1192,6 +1732,39 @@ export function registerIpc(): void {
       }
     ) => repayBd(id, values)
   )
+  // WHAT IS PAYABLE NOW. Read-only, so the form can recompute as the date is
+  // moved without writing an audit row on every keystroke.
+  handle('bd:interestWindow', (_e, { id, toDate }: { id: number; toDate?: string }) =>
+    bdInterestWindow(id, toDate)
+  )
+  handle(
+    'bd:payInterestUpto',
+    (_e, { id, ...v }: { id: number; to_date: string; note?: string; post?: boolean }) =>
+      payBdInterestUpto(id, v)
+  )
+  handle('bd:interestSchedule', (_e, { id }: { id: number }) => bdInterestSchedule(id))
+  handle('bd:interestPayments', (_e, { id }: { id: number }) => listBdInterestPayments(id))
+  handle(
+    'bd:payInterest',
+    (
+      _e,
+      {
+        id,
+        values
+      }: {
+        id: number
+        values: {
+          to_date: string
+          paid_date?: string
+          amount?: number | string | null
+          note?: string | null
+          post?: boolean
+        }
+      }
+    ) => payBdInterest(id, values)
+  )
+  handle('bd:deleteInterest', (_e, { id }: { id: number }) => deleteBdInterestPayment(id))
+  handle('bd:postInterest', (_e, { id }: { id: number }) => postBdInterestPayment(id))
   handle('bd:repayments', (_e, { id }: { id: number }) => listBdRepayments(id))
   handle('bd:allRepayments', () => listAllBdRepayments())
   handle('bd:linkedOrders', (_e, { id }: { id: number }) => listBdLinkedOrders(id))
@@ -1203,18 +1776,201 @@ export function registerIpc(): void {
     'bd:paymentIn',
     (
       _e,
-      { id, amount, date, keys }: { id: number; amount: number; date?: string; keys?: string[] }
-    ) => postBdPaymentIn(id, amount, date, keys)
+      {
+        id,
+        amount,
+        date,
+        keys,
+        method,
+        account,
+        ref
+      }: {
+        id: number
+        amount: number
+        date?: string
+        keys?: string[]
+        method?: string
+        account?: string
+        ref?: string
+      }
+    ) => postBdPaymentIn(id, amount, date, keys, method, account, ref)
   )
   handle('bd:deletePaymentIn', (_e, { id }: { id: number }) => deleteBdPaymentIn(id))
   handle('bd:deleteRepayment', (_e, { id }: { id: number }) => deleteBdRepayment(id))
-  handle('bd:markReceived', (_e, { id, date }: { id: number; date?: string }) => markBdPaymentReceived(id, date))
+  handle('bd:editRepayment', (_e, { id, values }: { id: number; values: Row }) => editBdRepayment(id, values))
+  handle(
+    'bd:markReceived',
+    (
+      _e,
+      { id, date, route, account, firstPart, firstReceipt, legs }: { id: number; date?: string; route?: string; account?: string | null; firstPart?: number | null; firstReceipt?: number | null; legs?: Row[] | null }
+    ) =>
+      markBdPaymentReceived(id, date, {
+        route,
+        account,
+        ...(Array.isArray(legs) ? { legs } : {}),
+        ...(firstPart === undefined ? {} : { firstPart }),
+        ...(firstReceipt === undefined ? {} : { firstReceipt })
+      })
+  )
+  // A SID bill the NBFC released in parts.
+  handle('bd:receiptParts', (_e, { id }: { id: number }) => listBdReceiptParts(Number(id)))
+  handle('bd:receivePart', (_e, { id, values }: { id: number; values: Row }) => receiveBdPart(Number(id), values))
+  handle('bd:deleteReceiptPart', (_e, { id }: { id: number }) => deleteLastBdReceiptPart(Number(id)))
+  // The NBFC paying the supplier in parts.
+  handle('bd:partyPayments', (_e, { id }: { id: number }) => listBdPartyPayments(Number(id)))
+  handle('bd:payParty', (_e, { id, values }: { id: number; values: Row }) => payBdParty(Number(id), values))
+  handle('bd:deletePartyPayment', (_e, { id }: { id: number }) => deleteLastBdPartyPayment(Number(id)))
   handle('bd:unmarkReceived', (_e, { id }: { id: number }) => unmarkBdPaymentReceived(id))
   handle('bd:reopen', (_e, { id }: { id: number }) => reopenBd(id))
-  handle('bd:upfrontInterest', (_e, { id, date }: { id: number; date?: string }) => postBdUpfrontInterest(id, date))
+  handle('bd:upfrontInterest', (_e, { id, date, account }: { id: number; date?: string; account?: string }) =>
+    postBdUpfrontInterest(id, date, account)
+  )
+  handle('bd:reverseUpfrontInterest', (_e, { id }: { id: number }) => reverseBdUpfrontInterest(id))
+  handle('bd:setRoute', async (_e, { id, route, account }: { id: number; route: string; account?: string }) => {
+    const { setBdDisbursementRoute } = await import('./billDiscounting')
+    return setBdDisbursementRoute(Number(id), String(route || ''), account)
+  })
+  handle('bd:setVoucherBank', (_e, { id, entryId, account }: { id: number; entryId: number; account: string }) =>
+    setBdVoucherBank(id, entryId, account)
+  )
+  // Books repairs (accounting audit). The preview is read-only and ends in
+  // :list; removing vouchers is an administrator's reviewed action.
+  handle('repairs:duplicateSales:list', async (_e, a?: { companyId?: number }) => {
+    await assertAdmin('The books repair')
+    return previewDuplicateInvoicePostings(a?.companyId)
+  })
+  handle('repairs:checks:list', async (_e, a?: { companyId?: number }) => {
+    await assertAdmin('The accounting checks')
+    return accountingChecks(a?.companyId)
+  })
+  handle('repairs:genericBank:list', async () => {
+    await assertAdmin('The accounting checks')
+    return genericBankPostings()
+  })
+  handle('repairs:genericBankMove', async (_e, a: { companyId: number; account: string }) => {
+    await assertAdmin('Moving BANK A/C postings')
+    return moveGenericBankPostings(a?.companyId, a?.account)
+  })
+  handle('repairs:duplicateSalesRemove', async (_e, a: { entryIds: number[]; companyId?: number }) => {
+    await assertAdmin('The books repair')
+    return repairDuplicateInvoicePostings(a?.entryIds || [], a?.companyId)
+  })
+  // TDS left on sales invoices from before sales stopped carrying it.
+  handle('repairs:saleTds:list', async (_e, a?: { companyId?: number }) => {
+    await assertAdmin('The accounting checks')
+    return previewSaleTds(a?.companyId)
+  })
+  handle('repairs:saleTdsClear', async (_e, a: { keys: string[]; companyId?: number }) => {
+    await assertAdmin('Clearing TDS from sales')
+    return clearSaleTds(a?.keys || [], a?.companyId)
+  })
+  // LC repayments whose charges went through the payable in a second voucher.
+  handle('repairs:lcCharges:list', async () => {
+    await assertAdmin('The accounting checks')
+    return previewLcCharges()
+  })
+  handle('repairs:lcChargesFix', async (_e, a: { ids: number[] }) => {
+    await assertAdmin('Re-posting LC repayment charges')
+    return fixLcCharges(a?.ids || [])
+  })
+  // Sale vouchers still carrying their delivery freight from before it waited
+  // for the transporter's bill.
+  handle('repairs:outwardFreight:list', async () => {
+    await assertAdmin('The accounting checks')
+    return previewOutwardFreight()
+  })
+  handle('repairs:outwardFreightFix', async (_e, a: { ids: number[] }) => {
+    await assertAdmin('Taking delivery freight off sale vouchers')
+    return fixOutwardFreight(a?.ids || [])
+  })
+  // Purchase / sale vouchers filed in the other company's books.
+  handle('repairs:wrongCompany:list', async () => {
+    await assertAdmin('The accounting checks')
+    const { previewWrongCompany } = await import('./accountingRepairs')
+    return previewWrongCompany()
+  })
+  handle('repairs:wrongCompanyMove', async (_e, a: { ids: number[] }) => {
+    await assertAdmin('Moving vouchers to their own company')
+    const { moveWrongCompany } = await import('./accountingRepairs')
+    return moveWrongCompany(a?.ids || [])
+  })
+  // Vouchers whose Dr and Cr are a paisa or so apart.
+  handle('repairs:paisa:list', async () => {
+    await assertAdmin('The accounting checks')
+    const { previewPaisaImbalance } = await import('./accountingRepairs')
+    return previewPaisaImbalance()
+  })
+  handle('repairs:paisaFix', async (_e, a: { ids: number[] }) => {
+    await assertAdmin('Balancing vouchers a paisa out')
+    const { fixPaisaImbalance } = await import('./accountingRepairs')
+    return fixPaisaImbalance(a?.ids || [])
+  })
+  // BD / LC payment-in vouchers — the same money as the bank receipt booked
+  // from Tally. Removed on review; the payment in stays as a record.
+  handle('repairs:paymentIns:list', async () => {
+    await assertAdmin('The accounting checks')
+    const { previewPaymentInVouchers } = await import('./treasury')
+    return previewPaymentInVouchers()
+  })
+  handle('repairs:paymentInsFix', async (_e, a: { keys: string[] }) => {
+    await assertAdmin('Removing payment-in vouchers')
+    const { removePaymentInVouchers } = await import('./treasury')
+    return removePaymentInVouchers((a?.keys || []).map(String))
+  })
+  // Purchases whose TDS was worked before their slab's figures were known.
+  handle('repairs:staleTds:list', async () => {
+    await assertAdmin('The accounting checks')
+    const { refreshStalePurchaseTds } = await import('./orders')
+    return refreshStalePurchaseTds(false)
+  })
+  handle('repairs:staleTdsFix', async (_e, a: { ids: number[] }) => {
+    await assertAdmin('Re-working purchase TDS')
+    const ids = (a?.ids || []).map((x) => Number(x)).filter((x) => x > 0)
+    if (!ids.length) throw new Error('Pick at least one purchase')
+    const { refreshStalePurchaseTds } = await import('./orders')
+    return refreshStalePurchaseTds(true, ids)
+  })
+  // Purchases whose tanker is split across two bargains but billed at one rate.
+  handle('repairs:splitTanker:list', async () => {
+    await assertAdmin('The accounting checks')
+    const { repriceSplitTankerInvoices } = await import('./orders')
+    return repriceSplitTankerInvoices(false)
+  })
+  handle('repairs:splitTankerFix', async (_e, a: { ids: number[] }) => {
+    await assertAdmin('Re-pricing split-tanker purchases')
+    const ids = (a?.ids || []).map((x) => Number(x)).filter((x) => x > 0)
+    if (!ids.length) throw new Error('Pick at least one purchase')
+    const { repriceSplitTankerInvoices } = await import('./orders')
+    return repriceSplitTankerInvoices(true, ids)
+  })
+  // Customer postings in a supplier's ledger, and the other way round.
+  handle('repairs:sharedLedgers:list', async () => {
+    await assertAdmin('The accounting checks')
+    return previewSharedLedgers()
+  })
+  handle('repairs:sharedLedgersFix', async (_e, a: { keys: string[] }) => {
+    await assertAdmin('Splitting shared party ledgers')
+    return fixSharedLedgers(a?.keys || [])
+  })
+  // Whether a customer's or supplier's name is also the other side's.
+  handle('parties:clashes:list', async (_e, a: { name: string; side: 'customer' | 'supplier' }) => {
+    const { partyNameClashes } = await import('./partyLedgers')
+    return partyNameClashes(a?.name || '', a?.side === 'supplier' ? 'supplier' : 'customer')
+  })
   handle('bd:kpis', () => bdKpis())
+  // The kinds of charge an Adj. can be, and adding one.
+  handle('bd:chargeTypes:list', () => listBdChargeTypes())
+  handle('bd:addChargeType', (_e, a: { label: string }) => addBdChargeType(a?.label))
   handle('bd:limits', () => bdLimits())
   handle('bd:setCombinedLimit', (_e, { value }: { value: number | string | null }) => setBdCombinedLimit(value))
+  handle('facility:limitHistory', (_e, { kind, refId }: { kind: string; refId: number }) =>
+    listLimitHistory(kind, refId)
+  )
+  handle('facility:addLimitRevision', (_e, { values }: { values: Row }) => addLimitRevision(values))
+  handle('facility:deleteLimitRevision', (_e, { id }: { id: number }) => deleteLimitRevision(id))
+  handle('bd:limitReductions', (_e, { nbfcId }: { nbfcId?: number }) => listBdLimitReductions(nbfcId))
+  handle('bd:addLimitReduction', (_e, { values }: { values: Row }) => addBdLimitReduction(values))
+  handle('bd:deleteLimitReduction', (_e, { id }: { id: number }) => deleteBdLimitReduction(id))
 
   handle(
     'access:entityHistory',
@@ -1231,6 +1987,9 @@ export function registerIpc(): void {
   )
 
   handle('trading:list', (_e, args?: { forModule?: string }) => listTradingDeals(args?.forModule))
+  // Named for the read pattern (…:list), so it skips the write gate and the
+  // revision bump like every other register read.
+  handle('tradingPayments:list', () => listTradingPayments())
   handle('trading:create', (_e, { values }: { values: Row }) => createTradingDeal(values))
   handle('trading:update', (_e, { id, values }: { id: number; values: Row }) => updateTradingDeal(id, values))
   handle('trading:delete', (_e, { id }: { id: number }) => deleteTradingDeal(id))

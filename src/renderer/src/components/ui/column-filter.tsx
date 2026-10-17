@@ -31,7 +31,8 @@ export function ColumnFilter({
   value,
   onApply,
   align = 'start',
-  onDark = false
+  onDark = false,
+  bare = false
 }: {
   label: string
   // `count` is optional — a caller that already walks the rows to build this
@@ -45,6 +46,8 @@ export function ColumnFilter({
   // Set on a dark table header — the funnel's own colours invert, or the
   // active (filled navy) state would vanish into a navy header.
   onDark?: boolean
+  // Just the funnel — for a header that already prints its own label.
+  bare?: boolean
 }): React.JSX.Element {
   const [open, setOpen] = useState(false)
   const [staged, setStaged] = useState<Set<string>>(new Set(value))
@@ -101,7 +104,7 @@ export function ColumnFilter({
 
   return (
     <span className="inline-flex items-center gap-1">
-      {label}
+      {!bare && label}
       <Popover open={open} onOpenChange={setOpen}>
         <PopoverTrigger asChild>
           <button

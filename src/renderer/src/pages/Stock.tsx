@@ -1,6 +1,8 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { toast } from 'sonner'
-import { AlertTriangle, ArrowRightLeft, BookOpen, Boxes, Building2, CalendarCheck, CalendarRange, ClipboardCheck, Factory, Check, ChevronDown, ChevronLeft, ChevronRight, Copy, Download, Eye, EyeOff, Layers, Loader2, Plus, SlidersHorizontal, TrendingDown, TrendingUp, Trash2, Upload, X } from 'lucide-react'
+import { AlertTriangle, ArrowRightLeft, BookOpen, Boxes, Info, Search, Building2, CalendarCheck, CalendarRange, ClipboardCheck, Factory, Check, ChevronDown, ChevronLeft, ChevronRight, Copy, Download, Eye, EyeOff, History as HistoryIcon, Layers, Loader2, Plus, SlidersHorizontal, TrendingDown, TrendingUp, Trash2, Upload, X, Database } from 'lucide-react'
+import { RowActions } from '@/components/ui/row-actions'
+import { StockFifoMap } from '@/components/StockFifoMap'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import {
   Dialog,
@@ -29,11 +31,14 @@ import {
 } from '@/components/ui/table'
 import { HelpTip, InfoTip, Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { PageHeader } from '@/components/PageHeader'
+import { ConsignmentOpeningDialog } from '@/components/ConsignmentOpening'
 import { PpBreakdown } from '@/components/PpBreakdown'
+import { StockAdjustDrawer } from '@/components/StockAdjustDrawer'
 import { useIsMobile } from '@/lib/useIsMobile'
 import { StockMobile } from './StockMobile'
 import { errText, formatDate, formatDateShort, formatINR, formatNum, todayISO } from '@/lib/format'
 import { cn } from '@/lib/utils'
+import { lotTint } from '@/lib/lotTint'
 import { useLiveRefresh } from '@/lib/useLiveRefresh'
 import { useGlobalDateRange, globalRangeAppliesTo } from '@/lib/globalDateRange'
 import { downloadDayCloseExcel, parseDayCloseExcel } from '@/lib/dayCloseExcel'
@@ -44,6 +49,13 @@ import { FyPicker } from '@/components/FyPicker'
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Row = Record<string, any>
+
+// A bare input in the app's own clothes, without <Input>'s auto-uppercase
+// wiring — the parcel rows set their own case as they are typed.
+const PLAIN_LOT_INPUT =
+  'h-8 w-full min-w-0 rounded-md border border-input bg-transparent px-2 text-[12.5px] outline-none ' +
+  'placeholder:text-muted-foreground/60 focus:border-[#1a2c56] focus:ring-1 focus:ring-[#1a2c56]/20 ' +
+  'disabled:cursor-not-allowed disabled:opacity-60'
 
 // A figure on the register with its workings behind it. The register showed a
 // number per SKU per day and nothing about how it got there -- a dispatch of
@@ -98,6 +110,224 @@ function CellWithWorkings({
       </TooltipContent>
     </Tooltip>
   )
+}
+
+// THE OPENING CELL'S HOVER, AS A CARD.
+//
+// What the period opened at, the two things it is made of — the count brought
+// forward and what moved between that count and the From date — each with what
+// it means under it, the total they come to, and the count's own note in a box
+// of its own. Light, because it is read rather than glanced at.
+function OpeningHover({ row: r, periodLabel, openingFrom }: { row: Row; periodLabel: string; openingFrom: string }): React.JSX.Element {
+  const uom = String(r.uom || 'MT')
+  const opening = Number(r.opening) || 0
+  const brought = Number(r.opening_brought) || 0
+  const moved = Math.round((opening - brought) * 1000) / 1000
+  const note = String(r.opening_note || '').trim()
+  const signed = (v: number): string => (Math.abs(v) < 1e-9 ? '0' : `${v > 0 ? '+' : '−'} ${formatNum(Math.abs(v))}`)
+  const line = (label: string, sub: string, value: string, tone: string): React.JSX.Element => (
+    <div className="flex items-start gap-3 border-b border-dashed border-[#E4ECE3] py-2 last:border-b-0">
+      <div className="min-w-0 flex-1">
+        <div className="text-[12px] font-bold text-[#0A1F17]">{label}</div>
+        <div className="mt-0.5 text-[10.5px] font-semibold leading-snug text-[#8CA396]">{sub}</div>
+      </div>
+      <div className="doc-ref whitespace-nowrap pt-px text-[13px] font-bold" style={{ color: tone }}>
+        {value} <span className="text-[10px] font-semibold text-[#8CA396]">{uom}</span>
+      </div>
+    </div>
+  )
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <span className="cursor-help !text-[#33473E] underline decoration-dotted decoration-slate-400 underline-offset-4">{formatNum(opening)}</span>
+      </TooltipTrigger>
+      <TooltipContent
+        side="bottom"
+        align="start"
+        className="!w-[320px] !max-w-[90vw] !overflow-hidden !rounded-[10px] !border !border-[#DCE7DB] !bg-white !p-0 !text-[#0A1F17] !shadow-[0_18px_40px_-12px_rgba(10,31,23,.35)]"
+      >
+        <div className="bg-[linear-gradient(180deg,#145A43,#0B3D2E)] px-3.5 py-2.5 text-white">
+          <div className="text-[9.5px] font-extrabold uppercase tracking-[.14em] text-[#8FBFA8]">Opening · {String(r.name || '')}</div>
+          <div className="mt-1 flex items-baseline gap-1.5">
+            <span className="doc-ref text-[20px] font-bold tracking-[-0.02em] text-[#C7F03F]">{formatNum(opening)}</span>
+            <span className="text-[11px] font-bold text-[#8FBFA8]">{uom}</span>
+          </div>
+          <div className="mt-0.5 text-[10.5px] font-semibold text-[#8FBFA8]">at the start of {periodLabel}</div>
+        </div>
+        <div className="px-3.5 py-1">
+          {line(
+            'Brought forward',
+            `Raw + PP as counted${openingFrom ? ` on ${formatDate(openingFrom)}` : ''}`,
+            formatNum(brought),
+            '#0A1F17'
+          )}
+          {line(
+            'Moved before this period',
+            'Received and produced, less consumed and dispatched, between the count and the From date',
+            signed(moved),
+            Math.abs(moved) < 1e-9 ? '#8CA396' : moved > 0 ? '#0B6B45' : '#B3261E'
+          )}
+        </div>
+        <div className="flex items-center justify-between border-t border-[#DCE7DB] bg-[#EFF5EC] px-3.5 py-2">
+          <span className="text-[10.5px] font-extrabold uppercase tracking-[.1em] text-[#0B3D2E]">Opens the period at</span>
+          <span className="doc-ref text-[13.5px] font-bold text-[#0B3D2E]">
+            {formatNum(opening)} <span className="text-[10px] font-semibold text-[#5A6B62]">{uom}</span>
+          </span>
+        </div>
+        {note && (
+          <div className="border-t border-[#F1E2B8] bg-[#FFF8E6] px-3.5 py-2.5">
+            <div className="text-[9.5px] font-extrabold uppercase tracking-[.12em] text-[#8A5300]">Note on the opening count</div>
+            <div className="mt-1 whitespace-normal text-[12px] font-semibold leading-snug text-[#5C3B00] [overflow-wrap:anywhere]">{note}</div>
+          </div>
+        )}
+      </TooltipContent>
+    </Tooltip>
+  )
+}
+
+// WHAT AN ADJUSTMENT IS, IN THE WORDS OF THE PERSON READING THE REGISTER.
+//
+// The Adjusted column carries three unlike things, and each used to be spelt
+// out as one long line of internal terms ("Legacy draw; opening reference not
+// recorded; 3.5 / 9 of batch PP; offsets Consumed"). What somebody checking the
+// register wants is: why did this oil move, from where, and how much. So each
+// detail is put under a plain heading — the batch or count it came from — with
+// the vessel as the line and the quantity beside it. The same wording feeds the
+// hover, the click-through panel and the Excel note.
+function adjustmentPlain(d: Row, oil: string): { head: string; line: string; note?: string } {
+  // The vessel, led by its PP reference where there is one — the number the
+  // Opening Stock sheet shows against that vessel.
+  const vessel = [String(d.reference || '').trim(), String(d.vessel || '').trim() || 'vessel not recorded'].filter(Boolean).join(' · ')
+  const pp = String(d.product_name || '').trim() || 'part-processed oil'
+  const date = d.prod_date ? formatDate(d.prod_date) : ''
+  if (d.kind === 'Count correction') {
+    return { head: 'Stock count correction', line: String(d.basis || '').trim() || 'The count differed from the book' }
+  }
+  if (d.kind === 'PP restated') {
+    return Number(d.qty) < 0
+      ? { head: `Opening ${oil} in vessels, shown as its ingredient oils`, line: vessel }
+      : { head: `Part of the opening ${pp} in vessels`, line: vessel }
+  }
+  if (d.kind === 'PP finished') {
+    const share = Number(d.drawn_qty) > 0 ? `${formatNum(d.drawn_qty)} MT of ${pp} drawn from this vessel` : undefined
+    return { head: `Used by batch #${d.production_id}${date ? ` on ${date}` : ''} from ${pp}`, line: vessel, note: share }
+  }
+  return { head: String(d.kind || 'Adjustment'), line: String(d.basis || '') }
+}
+
+// Details under their heading, in the order they first appear.
+function groupAdjustments(details: Row[], oil: string): { head: string; items: { d: Row; line: string; note?: string }[] }[] {
+  const out: { head: string; items: { d: Row; line: string; note?: string }[] }[] = []
+  for (const d of details) {
+    const p = adjustmentPlain(d, oil)
+    let g = out.find((x) => x.head === p.head)
+    if (!g) out.push((g = { head: p.head, items: [] }))
+    g.items.push({ d, line: p.line, note: p.note })
+  }
+  return out
+}
+
+// What the pair of columns does to Closing, said once at the foot.
+function adjustmentFooter(details: Row[]): string[] {
+  const out: string[] = []
+  if (details.some((d) => d.kind === 'PP finished')) out.push('Also counted in Consumed, so Closing does not change.')
+  if (details.some((d) => d.kind === 'PP restated')) out.push('Opening part-processed oil is shown as the oils it is made of.')
+  return out
+}
+
+// One line per detail for the Excel note.
+function adjustmentText(d: Row, oil = ''): string {
+  const p = adjustmentPlain(d, oil)
+  return [p.head, p.line, p.note].filter(Boolean).join(' · ')
+}
+
+export function AdjustmentCell({ row }: { row: Row }): React.JSX.Element {
+  const [open, setOpen] = useState(false)
+  const [source, setSource] = useState<number | null>(null)
+  const details: Row[] = row.adjustment_details || []
+  const unit = String(row.uom || 'MT')
+  const oil = String(row.name || '')
+  if (!details.length && Math.abs(Number(row.opening_adj) || 0) < 1e-9) return <span>—</span>
+  const groups = groupAdjustments(details, oil)
+  const footer = adjustmentFooter(details)
+  const sign = (q: unknown): string => `${Number(q) > 0 ? '+' : ''}${formatNum(Number(q))}`
+  return <>
+    <Tooltip><TooltipTrigger asChild>
+      <button type="button" className="underline decoration-dotted underline-offset-4" onClick={() => setOpen(true)}
+        aria-label={`Review ${row.name} adjustment ${formatNum(row.opening_adj)} ${unit}`}>
+        {formatNum(row.opening_adj)}
+      </button>
+    </TooltipTrigger><TooltipContent className="max-w-md">
+      <div className="flex items-baseline justify-between gap-4 font-semibold">
+        <span>Adjusted · {oil}</span>
+        <span className="tabular-nums">{sign(row.opening_adj)} {unit}</span>
+      </div>
+      {groups.slice(0, 4).map((g, i) => (
+        <div key={i} className="mt-2 text-xs">
+          <div className="whitespace-normal text-white/70">{g.head}</div>
+          {g.items.slice(0, 6).map((it, j) => (
+            <div key={j} className="flex items-baseline gap-3">
+              <span className="min-w-0 flex-1 truncate">{it.line}</span>
+              <span className="shrink-0 font-semibold tabular-nums">{sign(it.d.qty)} {unit}</span>
+            </div>
+          ))}
+        </div>
+      ))}
+      {groups.length > 4 && <div className="mt-1 text-[10px] text-white/60">… and {groups.length - 4} more</div>}
+      <div className="mt-2 border-t border-white/20 pt-1.5 text-[11px] text-white/70">
+        {footer.map((f) => <div key={f}>{f}</div>)}
+        <div>Click for the full detail.</div>
+      </div>
+    </TooltipContent></Tooltip>
+    <Dialog open={open} onOpenChange={(value) => { setOpen(value); setSource(null) }}>
+      <DialogContent readOnly aria-describedby={undefined} className="max-w-2xl max-h-[85vh] overflow-y-auto">
+        <DialogHeader><DialogTitle>{oil} · Adjusted {sign(row.opening_adj)} {unit}</DialogTitle></DialogHeader>
+        {footer.length > 0 && <p className="text-sm text-muted-foreground">{footer.join(' ')}</p>}
+        {groups.map((g, i) => (
+          <div key={i} className="rounded border p-3 text-sm">
+            <div className="font-semibold">{g.head}</div>
+            {g.items.map((it, j) => {
+              const k = details.indexOf(it.d)
+              return (
+                <div key={j} className="mt-2 border-t pt-2 first:border-t-0 first:pt-0">
+                  <div className="flex items-baseline justify-between gap-3">
+                    <span>{it.line}</span>
+                    <strong className="tabular-nums">{sign(it.d.qty)} {unit}</strong>
+                  </div>
+                  {(it.note || it.d.formulation_name) && (
+                    <div className="text-xs text-muted-foreground">
+                      {[it.note, it.d.formulation_name && `Recipe: ${it.d.formulation_name}`].filter(Boolean).join(' · ')}
+                    </div>
+                  )}
+                  {it.d.reference ? (
+                    <>
+                      <button type="button" className="mt-1 text-xs font-semibold underline" onClick={() => setSource(source === k ? null : k)}>
+                        {it.d.reference} · {source === k ? 'Hide' : 'Show'} the opening count it came from
+                      </button>
+                      {it.d.reference_matched && (
+                        <div className="text-[11px] text-muted-foreground">
+                          Matched by vessel and date — this batch was made before references were saved with each draw.
+                        </div>
+                      )}
+                    </>
+                  ) : it.d.kind !== 'Count correction' ? (
+                    <div className="mt-1 text-xs text-muted-foreground">Entered before vessel references were kept, so the opening count it came from is not linked.</div>
+                  ) : null}
+                  {source === k && <div className="mt-2 rounded bg-muted p-3 text-xs">
+                    <div className="font-semibold">{it.d.reference} · {it.d.product_name} · {it.d.vessel}</div>
+                    <div>Opening count on {it.d.opening_date ? formatDate(it.d.opening_date) : 'a date not recorded'} · {it.d.ffa === 'with' ? 'with FFA' : it.d.ffa === 'without' ? 'without FFA' : 'FFA not stated'}</div>
+                    <div>Counted: {formatNum(it.d.counted_qty)} {it.d.uom || unit}</div>
+                    {(it.d.items || []).map((item: Row, m: number) => <div key={m}>{item.product_name || `Product #${item.product_id}`}: {formatNum(item.qty)} in the recipe</div>)}
+                  </div>}
+                </div>
+              )
+            })}
+          </div>
+        ))}
+        <p className="text-right font-semibold">Total: {sign(details.reduce((sum, d) => sum + Number(d.qty || 0), 0))} {unit}</p>
+      </DialogContent>
+    </Dialog>
+  </>
 }
 
 // Whole days between two ISO dates.
@@ -310,7 +540,8 @@ function PartyCell({
   uom,
   tone,
   wash,
-  caption
+  caption,
+  note
 }: {
   value: number
   parties: Row[]
@@ -327,6 +558,9 @@ function PartyCell({
   // the packing hover lists SKUs, and a list of SKUs with no heading reads like
   // a list of customers.
   caption?: string
+  // A sentence under the lines, for a column whose figure is not a movement
+  // and would otherwise be read as one.
+  note?: string
 }): React.JSX.Element {
   const cell = <span className="tabular-nums">{formatNum(value)}</span>
   // A dash is not a quantity. Painting it the column's own green or red — as
@@ -362,53 +596,80 @@ function PartyCell({
             {cell}
           </span>
         </TooltipTrigger>
-        <TooltipContent className="max-w-sm">
+        <TooltipContent className="max-w-[480px]">
           {empty ? (
             <div className="text-[11px] leading-snug">
-              No party breakdown came back for this figure. The quantity is right — it is the
-              detail behind it that is missing, which usually means the breakdown was read for a
-              different company or period than the register.
+              {note ||
+                'No party breakdown came back for this figure. The quantity is right — it is the detail behind it that is missing, which usually means the breakdown was read for a different company or period than the register.'}
             </div>
           ) : (
-          <div className="space-y-0.5">
+          <div>
             {caption && (
               <div className="mb-1 border-b border-white/25 pb-1 text-[10px] font-bold uppercase tracking-wider opacity-80">
                 {caption}
               </div>
             )}
-            {parties.map((p, i) => (
-              <div key={i} className={cn('flex justify-between gap-4', p.isReturn && 'opacity-90')}>
-                <span className={cn(p.isReturn && 'italic')}>{p.party}</span>
-                <span className={cn('tabular-nums font-medium', Number(p.qty) < 0 && 'text-rose-300')}>
-                  {/* Pieces first when the line carries them: that is the figure
-                      on the packing sheet, and the tonnage is derived from it. */}
-                  {p.pieces != null && (
-                    <span className="mr-2 font-normal opacity-70">{formatNum(Math.abs(Number(p.pieces) || 0))} pcs</span>
-                  )}
-                  {Number(p.qty) < 0 ? '−' : ''}{formatNum(Math.abs(Number(p.qty) || 0))} {uom || 'MT'}
-                </span>
-              </div>
-            ))}
-            {/* A multi-SKU breakdown is worth totalling; a single line is not. */}
-            {caption && parties.length > 1 && (
-              <div className="mt-1 flex justify-between gap-4 border-t border-white/25 pt-1 font-semibold">
-                <span>Total</span>
-                <span className="tabular-nums">
-                  <span className="mr-2 font-normal opacity-70">
-                    {formatNum(parties.reduce((t, p) => t + (Number(p.pieces) || 0), 0))} pcs
+            <div className="grid grid-cols-[minmax(0,1fr)_auto_auto] items-baseline gap-x-3 gap-y-0.5">
+              {parties.map((p, i) => (
+                <Fragment key={i}>
+                  <span className={cn('min-w-0 [overflow-wrap:anywhere]', p.isReturn && 'italic opacity-90')}>
+                    {p.party}
                   </span>
-                  {formatNum(parties.reduce((t, p) => t + (Number(p.qty) || 0), 0))} {uom || 'MT'}
-                </span>
-              </div>
-            )}
-            {/* The cell is net of any returns, so the lines have to add up to
-                it — otherwise the hover looks like it contradicts the column. */}
-            {parties.some((p) => p.isReturn) && (
-              <div className="mt-1 flex justify-between gap-4 border-t border-white/25 pt-1 font-semibold">
-                <span>Net</span>
-                <span className="tabular-nums">
-                  {formatNum(parties.reduce((t, p) => t + (Number(p.qty) || 0), 0))} {uom || 'MT'}
-                </span>
+                  {/* Pieces first when the line carries them: that is the
+                      figure on the packing sheet, and the tonnage is derived
+                      from it. */}
+                  <span
+                    className={cn(
+                      'whitespace-nowrap text-right font-normal tabular-nums opacity-70',
+                      p.isReturn && 'opacity-60'
+                    )}
+                  >
+                    {p.pieces != null ? `${formatNum(Math.abs(Number(p.pieces) || 0))} pcs` : ''}
+                  </span>
+                  <span
+                    className={cn(
+                      'whitespace-nowrap text-right font-medium tabular-nums',
+                      Number(p.qty) < 0 && 'text-rose-300',
+                      p.isReturn && 'opacity-90'
+                    )}
+                  >
+                    {Number(p.qty) < 0 ? '−' : ''}
+                    {formatNum(Math.abs(Number(p.qty) || 0))} {uom || 'MT'}
+                  </span>
+                </Fragment>
+              ))}
+              {/* The rule runs across all three tracks, so it reads as one line
+                  under the list rather than three. */}
+              {caption && parties.length > 1 && (
+                <>
+                  <span className="mt-1 border-t border-white/25 pt-1 font-semibold">Total</span>
+                  <span className="mt-1 whitespace-nowrap border-t border-white/25 pt-1 text-right font-normal tabular-nums opacity-70">
+                    {parties.some((p) => p.pieces != null)
+                      ? `${formatNum(parties.reduce((t, p) => t + (Number(p.pieces) || 0), 0))} pcs`
+                      : ''}
+                  </span>
+                  <span className="mt-1 whitespace-nowrap border-t border-white/25 pt-1 text-right font-semibold tabular-nums">
+                    {formatNum(parties.reduce((t, p) => t + (Number(p.qty) || 0), 0))} {uom || 'MT'}
+                  </span>
+                </>
+              )}
+              {/* The cell is net of any returns, so the lines have to add up to
+                  it — otherwise the hover looks like it contradicts the column. */}
+              {parties.some((p) => p.isReturn) && (
+                <>
+                  <span className="mt-1 border-t border-white/25 pt-1 font-semibold">Net</span>
+                  <span className="mt-1 border-t border-white/25 pt-1" />
+                  <span className="mt-1 whitespace-nowrap border-t border-white/25 pt-1 text-right font-semibold tabular-nums">
+                    {formatNum(parties.reduce((t, p) => t + (Number(p.qty) || 0), 0))} {uom || 'MT'}
+                  </span>
+                </>
+              )}
+            </div>
+            {/* What this column IS, where the figure alone would be read as a
+                movement. */}
+            {note && (
+              <div className="mt-1 border-t border-white/25 pt-1 text-[10.5px] leading-snug opacity-80">
+                {note}
               </div>
             )}
           </div>
@@ -637,13 +898,17 @@ function FactoryPicker({
   )
 }
 
-function StockTable({ rows: allRows, breakdown, label = 'stock', range, onRange, companyPicker, companySplit = {}, stagePicker, companyIds = [], openingFrom = '' }: { rows: Row[]; breakdown: Record<number, { receipt: Row[]; dispatch: Row[]; packed: Row[]; produced: Row[]; consumed: Row[] }>; label?: string; range: { from: string; to: string }; onRange: (r: { from: string; to: string }) => void; companyPicker?: React.ReactNode; companySplit?: Record<number, Row[]>; stagePicker?: React.ReactNode; companyIds?: number[]; openingFrom?: string }): React.JSX.Element {
+function StockTable({ rows: allRows, breakdown, label = 'stock', range, onRange, companyPicker, companySplit = {}, stagePicker, companyIds = [], openingFrom = '', onOpenProduct, jumpTo, onJumped }: { rows: Row[]; breakdown: Record<number, { receipt: Row[]; dispatch: Row[]; packed: Row[]; produced: Row[]; consumed: Row[]; recirculated: Row[] }>; label?: string; range: { from: string; to: string }; onRange: (r: { from: string; to: string }) => void; companyPicker?: React.ReactNode; companySplit?: Record<number, Row[]>; stagePicker?: React.ReactNode; companyIds?: number[]; openingFrom?: string; onOpenProduct?: (id: number) => void; jumpTo?: number | null; onJumped?: () => void }): React.JSX.Element {
   const ranged = !!(range.from || range.to)
   // A product with no opening, no movement and no closing balance is just noise
   // in a long list, so it can be folded away. Everything below — KPIs, section
   // counts, the grid and the Excel export — reads the filtered set, so what is
   // downloaded is always what is on screen.
   const [hideIdle, setHideIdle] = useState(false)
+  // The product whose book stock is being adjusted by hand (StockAdjustDrawer).
+  const [adjusting, setAdjusting] = useState<Row | null>(null)
+  // The product whose balance is being traced back to its entries (FIFO).
+  const [mapping, setMapping] = useState<Row | null>(null)
   // Which category sections are folded shut. Keyed by shut rather than open so
   // the default — every section showing — needs no seeding when the categories
   // on screen change with the filters.
@@ -656,6 +921,45 @@ function StockTable({ rows: allRows, breakdown, label = 'stock', range, onRange,
   )
   const idleCount = useMemo(() => allRows.filter(isIdle).length, [allRows, isIdle])
   const rows = useMemo(() => (hideIdle ? allRows.filter((r) => !isIdle(r)) : allRows), [allRows, hideIdle, isIdle])
+
+  // ARRIVING FROM THE OPENING SHEET.
+  //
+  // The same trip the product name here offers in the other direction, and the
+  // same two obstacles: a row folded away behind Hide zero rows, or inside a
+  // section somebody shut, cannot be scrolled to — the browser fails silently
+  // on an element that is not rendered, which reads as the click having done
+  // nothing. So both are undone for the row being looked for before the scroll
+  // is attempted.
+  //
+  // Only the table that HOLDS the product answers; the other two categories
+  // are rendered beside it and would otherwise each clear the request.
+  useEffect(() => {
+    const pid = Number(jumpTo) || 0
+    if (!pid) return
+    const mine = allRows.find((r) => Number(r.id) === pid)
+    if (!mine) return
+    if (hideIdle && isIdle(mine)) {
+      setHideIdle(false)
+      return
+    }
+    // Sections are the material type — OIL, HUSK, PACKAGING — which is what
+    // `groups` keys `shut` by.
+    const section = String(mine.material_type || '').trim().toUpperCase() || 'UNCATEGORIZED'
+    if (section && shut[section]) {
+      setShut((prev) => ({ ...prev, [section]: false }))
+      return
+    }
+    const t = window.setTimeout(() => {
+      const el = document.querySelector(`[data-book-row="${pid}"]`)
+      if (el) {
+        el.scrollIntoView({ behavior: 'smooth', block: 'center' })
+        el.classList.add('row-flash')
+        window.setTimeout(() => el.classList.remove('row-flash'), 2600)
+      }
+      onJumped?.()
+    }, 60)
+    return () => window.clearTimeout(t)
+  }, [jumpTo, allRows, hideIdle, isIdle, shut, onJumped])
   // The footer row is one figure across every category section on the sheet,
   // so only a product actually counted on the tonnage scale may add to it —
   // summing a KG or PCS product's real quantity in here is the same "counted
@@ -671,6 +975,10 @@ function StockTable({ rows: allRows, breakdown, label = 'stock', range, onRange,
     opening_adj: sum('opening_adj'),
     received: sum('received'),
     produced: sum('produced'),
+    // Totalled like any other column, but deliberately left OUT of inFlow
+    // below: it is a +N −N pair and adding it to what came in would inflate
+    // the movement the register reports.
+    recirculated: sum('recirculated'),
     transferred_in: sum('transferred_in'),
     transferred_out: sum('transferred_out'),
     consumed: sum('consumed'),
@@ -717,10 +1025,8 @@ function StockTable({ rows: allRows, breakdown, label = 'stock', range, onRange,
             // spreadsheet gets forwarded to people who never saw either.
             header: 'Adjusted', key: 'opening_adj', align: 'right' as const, numFmt: NUM_QTY,
             total: 'sum' as const, value: (r: Row) => Number(r.opening_adj) || 0,
-            note: (r: Row) =>
-              Math.abs(Number(r.opening_adj) || 0) > 1e-9
-                ? 'The correction struck on the opening count — included in the Opening beside it, not additional to it.'
-                : undefined
+            note: (r: Row) => (r.adjustment_details || []).map((d: Row) =>
+              `${formatNum(d.qty)} ${r.uom || 'MT'} · ${adjustmentText(d, String(r.name || ''))}`).join('\n') || undefined
           }
         ]
       : []),
@@ -1066,9 +1372,10 @@ function StockTable({ rows: allRows, breakdown, label = 'stock', range, onRange,
                       Open
                     </TableHead>
                   )}
-                  <TableHead colSpan={2} className={cn('!text-center !text-[#9FE3BF]', SK_RULE, SK_IN)}>In</TableHead>
+                  <TableHead colSpan={3} className={cn('!text-center !text-[#9FE3BF]', SK_RULE, SK_IN)}>In</TableHead>
                   <TableHead colSpan={3} className={cn('!text-center !text-[#F0AFAA]', SK_RULE, SK_OUT)}>Out</TableHead>
                   <TableHead className={cn('!text-center !text-[#C7F03F]', SK_RULE, SK_CLOSE)}>Close</TableHead>
+                  <TableHead className={SK_RULE} />
                 </TableRow>
                 <TableRow className="!border-b-0 !bg-[#0B3D2E] hover:!bg-[#0B3D2E]">
                   {cols.map((h) => (
@@ -1085,6 +1392,9 @@ function StockTable({ rows: allRows, breakdown, label = 'stock', range, onRange,
                       {h.l}
                     </TableHead>
                   ))}
+                  <TableHead className={cn('!w-[64px] !bg-transparent !text-center !text-[11px] !font-extrabold !uppercase !tracking-[.07em] !text-white', SK_RULE)}>
+                    Action
+                  </TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
@@ -1113,6 +1423,7 @@ function StockTable({ rows: allRows, breakdown, label = 'stock', range, onRange,
                         {ranged && <TableCell className="text-right font-bold">{fig(gSum('opening_adj'), '#7C9188')}</TableCell>}
                         <TableCell className={cn('text-right font-bold', SK_BRULE)}>{fig(gSum('received'), IN_FG)}</TableCell>
                         <TableCell className="text-right font-bold">{fig(gSum('produced'), IN_FG)}</TableCell>
+                        <TableCell className="text-right font-bold">{fig(gSum('recirculated'), IN_FG)}</TableCell>
                         <TableCell className={cn('text-right font-bold', SK_BRULE)}>{fig(gSum('consumed'), OUT_FG)}</TableCell>
                         <TableCell className="text-right font-bold">{fig(gSum('packed_out'), OUT_FG)}</TableCell>
                         <TableCell className="text-right font-bold">{fig(gSum('sold'), OUT_FG)}</TableCell>
@@ -1125,6 +1436,7 @@ function StockTable({ rows: allRows, breakdown, label = 'stock', range, onRange,
                         >
                           {formatNum(gStock)}
                         </TableCell>
+                        <TableCell className={SK_BRULE} />
                       </TableRow>
                       {open &&
                         grp.rows.map((r) => {
@@ -1139,13 +1451,30 @@ function StockTable({ rows: allRows, breakdown, label = 'stock', range, onRange,
                           const pct = inflow > 0 ? Math.max(0, Math.min(100, (closing / inflow) * 100)) : 0
                           const mark = neg ? '#B3261E' : pct < 12 && inflow > 0 ? '#C2700A' : 'transparent'
                           return (
-                            <TableRow key={r.id as number} className="!border-b-[#DCE7DB] !bg-transparent">
+                            <TableRow key={r.id as number} data-book-row={Number(r.id)} className="!border-b-[#DCE7DB] !bg-transparent">
                               <TableCell
                                 className="!py-[5px]"
                                 style={mark === 'transparent' ? undefined : { boxShadow: `inset 3px 0 0 ${mark}` }}
                               >
+                                {/* THE NAME IS THE WAY BACK TO WHERE THE ROW
+                                    STARTED. Every question this register raises
+                                    — why is this negative, where did the
+                                    opening come from — is answered on the
+                                    Opening Stock sheet, and finding the product
+                                    there by hand is the tedious part. */}
                                 <span className="flex items-center gap-1.5">
-                                  <span className="text-[12.5px] font-bold tracking-[-0.01em] text-[#0A1F17]">{r.name}</span>
+                                  {onOpenProduct ? (
+                                    <button
+                                      type="button"
+                                      onClick={() => onOpenProduct(Number(r.id))}
+                                      title={`Open ${String(r.name)} on the Opening Stock sheet`}
+                                      className="truncate text-left text-[12.5px] font-bold tracking-[-0.01em] text-[#0A1F17] underline decoration-[#C3D2C6] decoration-dotted underline-offset-[3px] transition-colors hover:text-[#0B6B45] hover:decoration-[#0B6B45]"
+                                    >
+                                      {r.name}
+                                    </button>
+                                  ) : (
+                                    <span className="text-[12.5px] font-bold tracking-[-0.01em] text-[#0A1F17]">{r.name}</span>
+                                  )}
                                   {neg && <AlertTriangle className="h-3.5 w-3.5 shrink-0 text-[#B3261E]" />}
                                 </span>
                               </TableCell>
@@ -1158,36 +1487,24 @@ function StockTable({ rows: allRows, breakdown, label = 'stock', range, onRange,
                                       and the row could not say which. The
                                       adjustment struck on the same count is
                                       its own column now, not folded in here. */}
-                                  {Math.abs(Number(r.opening) || 0) > 1e-9 ? (
-                                    <CellWithWorkings
-                                      value={formatNum(r.opening)}
-                                      className="!text-[#33473E]"
-                                      title="What this product opened the period at"
-                                      lines={[
-                                        { left: 'Brought forward', mid: 'Raw + PP as counted', right: formatNum(r.opening_brought) },
-                                        {
-                                          left: 'Moved before this period',
-                                          mid: 'received, produced, consumed, dispatched',
-                                          right: formatNum((Number(r.opening) || 0) - (Number(r.opening_brought) || 0))
-                                        }
-                                      ]}
-                                      footer={`= ${formatNum(r.opening)} at the start of ${periodLabel}`}
-                                    />
+                                  {Math.abs(Number(r.opening) || 0) > 1e-9 || String(r.opening_note || '').trim() ? (
+                                    <OpeningHover row={r} periodLabel={periodLabel} openingFrom={openingFrom} />
                                   ) : (
                                     dash
                                   )}
                                 </TableCell>
                               )}
                               {ranged && (
-                                <TableCell
-                                  title={
-                                    Math.abs(Number(r.pp_equiv) || 0) > 1e-9
-                                      ? `Part of the Opening beside it — the correction struck on the count, not a movement of its own. Of this, ${formatNum(r.pp_equiv)} is what a batch finished out of PP used by the formulation: it shows here and in Consumed at once, and the two cancel, because that oil left the tanks when the PP was made.`
-                                      : 'Part of the Opening beside it — the correction struck on the count, not a movement of its own'
-                                  }
-                                  className={cn('text-right', SK_NUM, SK_BOPEN, '!text-[#7C9188]')}
-                                >
-                                  {Math.abs(Number(r.opening_adj) || 0) > 1e-9 ? formatNum(r.opening_adj) : dash}
+                                <TableCell className={cn('text-right', SK_NUM, SK_BOPEN, '!text-[#7C9188]')}>
+                                  {/* WHY THE ADJUSTMENT HAPPENED.
+                                      Three unlike things land in this column
+                                      and the cell shows their sum — which
+                                      cannot be checked, and does not say which
+                                      of the three a reader is looking at. Each
+                                      is named in two or three words, with its
+                                      own figure, so the sum can be read back
+                                      to what caused it. */}
+                                  <AdjustmentCell row={r} />
                                 </TableCell>
                               )}
                               <PartyCell
@@ -1202,6 +1519,36 @@ function StockTable({ rows: allRows, breakdown, label = 'stock', range, onRange,
                                 parties={breakdown[r.id as number]?.produced || []}
                                 wash={cn(SK_NUM, SK_BIN)}
                                 caption="Produced by"
+                              />
+                              {/* RECIRCULATED — one figure, like every other
+                                  column.
+                                  It was written +N −N to say that the tonnage
+                                  cancels. It does cancel, but two numbers in a
+                                  column of one is not how a register states a
+                                  quantity, and the closing balance never read
+                                  this column anyway. The figure stands on its
+                                  own and the hover says what it is: which day,
+                                  on which plant, and that it moved no stock. */}
+                              <PartyCell
+                                uom={String(r.uom || 'MT')}
+                                value={Number(r.recirculated)}
+                                // Day and plant, in the app's own date format —
+                                // the server sends them apart so the label is
+                                // built where dates are formatted.
+                                parties={(breakdown[r.id as number]?.recirculated || []).map((x) => ({
+                                  ...x,
+                                  party: [
+                                    formatDate(String(x.date || '')),
+                                    String(x.plant || ''),
+                                    String(x.recipe || '')
+                                  ]
+                                    .filter(Boolean)
+                                    .join(' · ')
+                                }))}
+                                tone="text-sky-800"
+                                wash={cn(SK_NUM, SK_BIN, '!text-[#1B4E82]')}
+                                caption="Recirculated"
+                                note="Recirculation entry effect not taken into account"
                               />
                               <PartyCell
                                 uom={String(r.uom || 'MT')}
@@ -1246,13 +1593,27 @@ function StockTable({ rows: allRows, breakdown, label = 'stock', range, onRange,
                                       { left: 'Produced', right: `+ ${formatNum(r.produced)}` },
                                       { left: 'Consumed', right: `− ${formatNum(r.consumed)}` },
                                       { left: 'Packed', right: `− ${formatNum(r.packed_out)}` },
-                                      { left: 'Dispatch', right: `− ${formatNum(r.sold)}` }
+                                      { left: 'Dispatch', right: `− ${formatNum(r.sold)}` },
+                                      ...(Math.abs(Number(r.manual_adj) || 0) > 1e-9
+                                        ? [{ left: 'Adjusted by hand', right: `${Number(r.manual_adj) > 0 ? '+' : '−'} ${formatNum(Math.abs(Number(r.manual_adj)))}` }]
+                                        : [])
                                     ]}
                                     footer={
                                       neg
                                         ? `= ${formatNum(closing)} — more has gone out than ever came in, so the register is carrying a balance the mill never had`
                                         : `= ${formatNum(closing)} MT`
                                     }
+                                  />
+                                </span>
+                              </TableCell>
+                              <TableCell className={cn('!py-[4px] text-center', SK_BRULE)}>
+                                <span className="inline-flex justify-center">
+                                  <RowActions
+                                    label={`Actions for ${String(r.name)}`}
+                                    actions={[
+                                      { label: 'Adjust stock', icon: SlidersHorizontal, onClick: () => setAdjusting(r) },
+                                      { label: 'Stock mapping', icon: Layers, onClick: () => setMapping(r) }
+                                    ]}
                                   />
                                 </span>
                               </TableCell>
@@ -1270,15 +1631,19 @@ function StockTable({ rows: allRows, breakdown, label = 'stock', range, onRange,
                   {ranged && <TableCell className="text-right font-bold !text-[#8FA79B]">{totals.opening_adj ? formatNum(totals.opening_adj) : '—'}</TableCell>}
                   <TableCell className={cn('text-right font-bold !text-[#9FE3BF]', SK_RULE)}>{formatNum(totals.received)}</TableCell>
                   <TableCell className="text-right font-bold !text-[#9FE3BF]">{formatNum(totals.produced)}</TableCell>
+                  <TableCell className="text-right font-bold !text-[#9FE3BF]">{formatNum(totals.recirculated)}</TableCell>
                   <TableCell className={cn('text-right font-bold !text-[#F0AFAA]', SK_RULE)}>{formatNum(totals.consumed)}</TableCell>
                   <TableCell className="text-right font-bold !text-[#F0AFAA]">{formatNum(totals.packed_out)}</TableCell>
                   <TableCell className="text-right font-bold !text-[#F0AFAA]">{formatNum(totals.sold)}</TableCell>
                   <TableCell className={cn('text-right !text-[14px] font-bold !tracking-[-0.02em] !text-[#C7F03F]', SK_RULE, SK_CLOSE)}>
                     {formatNum(totals.stock)}
                   </TableCell>
+                  <TableCell className={SK_RULE} />
                 </TableRow>
               </TableBody>
             </Table>
+            <StockAdjustDrawer product={adjusting ? (allRows.find((x) => Number(x.id) === Number(adjusting.id)) ?? adjusting) : null} companyIds={companyIds} openingFrom={openingFrom} onClose={() => setAdjusting(null)} />
+            <StockFifoMap product={mapping ? (allRows.find((x) => Number(x.id) === Number(mapping.id)) ?? mapping) : null} range={range} companyIds={companyIds} onClose={() => setMapping(null)} />
           </div>
         )
       })()
@@ -1317,7 +1682,7 @@ function StockTable({ rows: allRows, breakdown, label = 'stock', range, onRange,
                           Open
                         </TableHead>
                       )}
-                      <TableHead colSpan={2} className={cn('!text-center !text-[#9FE3BF]', SK_RULE, SK_IN)}>In</TableHead>
+                      <TableHead colSpan={3} className={cn('!text-center !text-[#9FE3BF]', SK_RULE, SK_IN)}>In</TableHead>
                       <TableHead colSpan={3} className={cn('!text-center !text-[#F0AFAA]', SK_RULE, SK_OUT)}>Out</TableHead>
                       <TableHead className={cn('!text-center !text-[#C7F03F]', SK_RULE, SK_CLOSE)}>Close</TableHead>
                     </TableRow>
@@ -1370,27 +1735,35 @@ function StockTable({ rows: allRows, breakdown, label = 'stock', range, onRange,
                           title="Part of the Opening beside it — the correction struck on the count, not a movement of its own"
                           className={cn('text-right tabular-nums text-slate-500', __WEB__ && cn(SK_NUM, SK_BOPEN, '!text-[#7C9188]'))}
                         >
-                          {Number(r.opening_adj) ? formatNum(r.opening_adj) : '—'}
+                          <AdjustmentCell row={r} />
                         </TableCell>
                       )}
                       <PartyCell uom={String(r.uom || 'MT')} value={Number(r.received)} parties={breakdown[r.id as number]?.receipt || []} wash={__WEB__ ? cn(SK_NUM, SK_BRULE, SK_BIN) : undefined} />
                       <TableCell className={cn('text-right tabular-nums text-emerald-700', __WEB__ && cn(SK_NUM, SK_BIN))}>
                         {Number(r.produced) ? formatNum(r.produced) : '—'}
-                        {/* Oil run back through the plant to keep it turning
-                            while the mill was idle. It is NOT part of the
-                            figure above and never moves the closing balance —
-                            the same oil went in and came out — but it did
-                            happen, and a register that shows nothing at all
-                            cannot answer "what was the plant doing that
-                            week". Written as the +N -N it is. */}
+                      </TableCell>
+                      {/* Oil run back through the plant to keep it turning
+                          while the mill was idle. It never moves the closing
+                          balance — the same oil went in and came out — but it
+                          did happen, and a register that shows nothing at all
+                          cannot answer "what was the plant doing that week".
+                          Written as the +N −N it is, so the column cannot be
+                          mistaken for tonnage that went anywhere. */}
+                      <TableCell
+                        className={cn('text-right tabular-nums text-sky-800', __WEB__ && cn(SK_NUM, SK_BIN, '!text-[#1B4E82]'))}
+                        title={
+                          Number(r.recirculated) > 0
+                            ? 'Recirculated — put through the plant and taken off again. No stock moved.'
+                            : undefined
+                        }
+                      >
                         {Number(r.recirculated) > 0 ? (
-                          <div
-                            className="mt-0.5 whitespace-nowrap text-[10.5px] font-bold tabular-nums text-[#1B4E82]"
-                            title="Recirculated — put through the plant and taken off again. No stock moved."
-                          >
+                          <span className="whitespace-nowrap">
                             +{formatNum(r.recirculated)} −{formatNum(r.recirculated)}
-                          </div>
-                        ) : null}
+                          </span>
+                        ) : (
+                          '—'
+                        )}
                       </TableCell>
                       <TableCell className={cn('text-right tabular-nums text-rose-700', __WEB__ && cn(SK_NUM, SK_BRULE, SK_BOUT))}>{Number(r.consumed) ? formatNum(r.consumed) : '—'}</TableCell>
                       {/* Oil drawn out of the tank to be packed into SKUs. It is
@@ -1435,6 +1808,7 @@ function StockTable({ rows: allRows, breakdown, label = 'stock', range, onRange,
                     {ranged && <TableCell className={cn('text-right font-bold tabular-nums text-slate-500', __WEB__ && cn(SK_NUM, '!font-bold !text-[#7C9188]'))}>{gSum('opening_adj') ? formatNum(gSum('opening_adj')) : '—'}</TableCell>}
                     <TableCell className={cn('text-right font-bold tabular-nums text-teal-900', __WEB__ && cn(SK_NUM, SK_BRULE, '!font-bold !text-[#0B6B45]'))}>{formatNum(gSum('received'))}</TableCell>
                     <TableCell className={cn('text-right font-bold tabular-nums text-teal-900', __WEB__ && cn(SK_NUM, '!font-bold !text-[#0B6B45]'))}>{formatNum(gSum('produced'))}</TableCell>
+                    <TableCell className={cn('text-right font-bold tabular-nums text-teal-900', __WEB__ && cn(SK_NUM, '!font-bold !text-[#1B4E82]'))}>{formatNum(gSum('recirculated'))}</TableCell>
                     <TableCell className={cn('text-right font-bold tabular-nums text-teal-900', __WEB__ && cn(SK_NUM, SK_BRULE, '!font-bold !text-[#8C2F26]'))}>{formatNum(gSum('consumed'))}</TableCell>
                     <TableCell className={cn('text-right font-bold tabular-nums text-teal-900', __WEB__ && cn(SK_NUM, '!font-bold !text-[#8C2F26]'))}>{formatNum(gSum('packed_out'))}</TableCell>
                     <TableCell className={cn('text-right font-bold tabular-nums text-teal-900', __WEB__ && cn(SK_NUM, '!font-bold !text-[#8C2F26]'))}>{formatNum(gSum('sold'))}</TableCell>
@@ -1457,6 +1831,7 @@ function StockTable({ rows: allRows, breakdown, label = 'stock', range, onRange,
                   {ranged && <TableCell className={cn('text-right font-bold tabular-nums text-slate-500', __WEB__ && cn(SK_NUM, '!font-bold', '!text-[#8FA79B]'))}>{totals.opening_adj ? formatNum(totals.opening_adj) : '—'}</TableCell>}
                   <TableCell className={cn('text-right font-bold tabular-nums text-amber-900', __WEB__ && cn(SK_NUM, SK_RULE, '!font-bold', '!text-[#9FE3BF]'))}>{formatNum(totals.received)}</TableCell>
                   <TableCell className={cn('text-right font-bold tabular-nums text-amber-900', __WEB__ && cn(SK_NUM, SK_RULE, '!font-bold', '!text-[#9FE3BF]'))}>{formatNum(totals.produced)}</TableCell>
+                  <TableCell className={cn('text-right font-bold tabular-nums text-amber-900', __WEB__ && cn(SK_NUM, '!font-bold', '!text-[#9FE3BF]'))}>{formatNum(totals.recirculated)}</TableCell>
                   <TableCell className={cn('text-right font-bold tabular-nums text-amber-900', __WEB__ && cn(SK_NUM, SK_RULE, '!font-bold', '!text-[#F0AFAA]'))}>{formatNum(totals.consumed)}</TableCell>
                   <TableCell className={cn('text-right font-bold tabular-nums text-amber-900', __WEB__ && cn(SK_NUM, SK_RULE, '!font-bold', '!text-[#F0AFAA]'))}>{formatNum(totals.packed_out)}</TableCell>
                   <TableCell className={cn('text-right font-bold tabular-nums text-amber-900', __WEB__ && cn(SK_NUM, SK_RULE, '!font-bold', '!text-[#F0AFAA]'))}>{formatNum(totals.sold)}</TableCell>
@@ -1600,6 +1975,14 @@ function STOCK_TABLE_COLS(
       : []),
     { l: 'Receipt', r: true, tone: 'text-emerald-700', wash: cn(SK_RULE, SK_IN) },
     { l: 'Produced', r: true, tone: 'text-emerald-700', wash: SK_IN },
+    // FILTER RECIRCULATION, ON ITS OWN.
+    //
+    // It was a second line inside Produced, which put a figure that moves no
+    // stock underneath one that does and left the column header lying about
+    // what was in the cell. It is a different question — not "what did the
+    // plant make" but "what did the plant do" — so it gets a column, in the
+    // blue the register uses for a figure that is stated rather than counted.
+    { l: 'Recirculated', r: true, tone: 'text-sky-800', wash: SK_IN },
     { l: 'Consumed', r: true, tone: 'text-rose-700', wash: cn(SK_RULE, SK_OUT) },
     { l: 'Packed', r: true, tone: 'text-rose-700', wash: SK_OUT },
     { l: 'Dispatch', r: true, tone: 'text-rose-700', wash: SK_OUT },
@@ -1635,12 +2018,137 @@ function STOCK_TABLE_COLS(
 // once on mount and clears it.
 const RESUME_OPENING = 'stock.resumeOpening'
 
+// One product's line on the opening sheet, as typed. `tanks` is Raw split by
+// tank; when it has lines, qty is their sum and the Raw box is read-only.
+type TankLine = { tank: string; qty: string }
+type OpeningDraft = { qty: string; pp: string; adj: string; rate: string; note: string; tanks?: TankLine[] }
+const tankTotal = (lines: TankLine[] | undefined): number =>
+  Math.round((lines || []).reduce((s, l) => s + (Number(l.qty) || 0), 0) * 1000) / 1000
+const tanksOf = (v: unknown): TankLine[] =>
+  Array.isArray(v) ? (v as Row[]).map((l) => ({ tank: String(l.tank || ''), qty: l.qty == null ? '' : String(l.qty) })) : []
+// The lines as the server keeps them — what a save sends and what dirty compares.
+const tanksKey = (lines: TankLine[] | undefined): string =>
+  JSON.stringify((lines || []).filter((l) => l.tank.trim() || (Number(l.qty) || 0) !== 0).map((l) => [l.tank.trim(), Number(l.qty) || 0]))
+
+// RAW, SPLIT BY TANK — the button beside the Raw box and the list it opens.
+// Each line is a tank and what it held that morning; Raw becomes their sum.
+// The lines are saved with the opening (Save opening stock), not on their own.
+function RawTanks({
+  product,
+  uom,
+  lines,
+  rawNow,
+  names,
+  onChange
+}: {
+  product: string
+  uom: string
+  lines: TankLine[]
+  rawNow: string
+  names: string[]
+  onChange: (lines: TankLine[]) => void
+}): React.JSX.Element {
+  const listId = useMemo(() => `tank-names-${Math.random().toString(36).slice(2, 8)}`, [])
+  const set = (i: number, patch: Partial<TankLine>): void => onChange(lines.map((l, k) => (k === i ? { ...l, ...patch } : l)))
+  // The first tank starts from the Raw already typed, so splitting a figure
+  // begins from that figure rather than from nothing.
+  const add = (): void => onChange([...lines, { tank: '', qty: lines.length === 0 && rawNow ? rawNow : '' }])
+  const total = tankTotal(lines)
+  return (
+    <Popover>
+      <PopoverTrigger asChild>
+        <button
+          type="button"
+          title={lines.length ? `Raw is held in ${lines.length} tank${lines.length === 1 ? '' : 's'} — open the list` : 'Split Raw by tank — T-1, T-2…'}
+          className={cn(
+            'flex h-8 shrink-0 items-center gap-0.5 rounded-md border px-1.5 text-[10.5px] font-bold transition-colors',
+            lines.length ? 'border-[#5B4BA8]/40 bg-[#EDE9FB] text-[#3D3179] hover:bg-[#E1DAF8]' : 'border-input bg-white text-muted-foreground hover:bg-muted'
+          )}
+        >
+          <Database className="h-3.5 w-3.5" />
+          {lines.length ? lines.length : null}
+        </button>
+      </PopoverTrigger>
+      <PopoverContent align="end" className="w-[340px] p-0">
+        <div className="border-b bg-[#F8F6FE] px-3 py-2">
+          <div className="text-[10px] font-extrabold uppercase tracking-[.12em] text-[#3D3179]">Raw by tank</div>
+          <div className="truncate text-[12.5px] font-bold text-[#0A1F17]">{product}</div>
+        </div>
+        <div className="grid gap-1.5 p-3">
+          {lines.length === 0 && (
+            <div className="text-[11.5px] text-muted-foreground">
+              Raw is one figure{rawNow ? ` (${rawNow} ${uom})` : ''}. Add the tanks it stands in — the first starts from that figure.
+            </div>
+          )}
+          {lines.map((l, i) => (
+            <div key={i} className="flex items-center gap-1.5">
+              <input
+                list={listId}
+                placeholder={`Tank ${i + 1}`}
+                value={l.tank}
+                onChange={(e) => set(i, { tank: e.target.value.slice(0, 60) })}
+                className="h-8 min-w-0 flex-1 rounded-md border bg-white px-2 text-[12.5px] outline-none focus:border-[#5B4BA8] focus:ring-1 focus:ring-[#5B4BA8]/20"
+              />
+              <input
+                inputMode="decimal"
+                placeholder="0"
+                value={l.qty}
+                onChange={(e) => set(i, { qty: e.target.value.replace(/[^0-9.]/g, '') })}
+                className="doc-ref h-8 w-[92px] rounded-md border bg-white px-2 text-right text-[13px] tabular-nums outline-none focus:border-[#5B4BA8] focus:ring-1 focus:ring-[#5B4BA8]/20"
+              />
+              <button
+                type="button"
+                title="Remove this tank"
+                onClick={() => onChange(lines.filter((_, k) => k !== i))}
+                className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md border text-muted-foreground hover:bg-rose-50 hover:text-rose-700"
+              >
+                <X className="h-3.5 w-3.5" />
+              </button>
+            </div>
+          ))}
+          <datalist id={listId}>
+            {names.map((nm) => (
+              <option key={nm} value={nm} />
+            ))}
+          </datalist>
+          <button
+            type="button"
+            onClick={add}
+            className="mt-0.5 flex h-8 items-center justify-center gap-1 rounded-md border border-dashed border-[#C7BCF0] text-[11.5px] font-bold text-[#3D3179] hover:bg-[#F8F6FE]"
+          >
+            <Plus className="h-3.5 w-3.5" /> Add tank
+          </button>
+        </div>
+        {lines.length > 0 && (
+          <div className="flex items-center justify-between border-t bg-[#FAF9FE] px-3 py-2 text-[12px]">
+            <span className="font-semibold text-muted-foreground">
+              {lines.length} tank{lines.length === 1 ? '' : 's'} · Raw
+            </span>
+            <span className="doc-ref font-extrabold tabular-nums text-[#3D3179]">
+              {formatNum(total)} {uom}
+            </span>
+          </div>
+        )}
+        <div className="border-t px-3 py-1.5 text-[10.5px] text-muted-foreground">Kept with the opening — press Save opening stock to store it.</div>
+      </PopoverContent>
+    </Popover>
+  )
+}
+
 function OpeningStock({
   companies,
-  onCompanyChange
+  onCompanyChange,
+  jumpTo,
+  onJumped,
+  onOpenProduct
 }: {
   companies: Row[]
   onCompanyChange?: (id: string) => void
+  /** A product to scroll to and flash, set by a click on the Book register. */
+  jumpTo?: number | null
+  onJumped?: () => void
+  /** Open this product on the Book Stock register — the return trip. */
+  onOpenProduct?: (id: number) => void
 }): React.JSX.Element {
   const [data, setData] = useState<Row | null>(null)
   // An opening is counted in three parts, the way the plant counts it: what is
@@ -1652,7 +2160,7 @@ function OpeningStock({
   // Adj is signed. It exists so a disagreement can be stated without editing
   // the figure that was actually measured — oil sitting in a line rather than
   // a vessel, a drum counted twice, a dip that reads short of the card.
-  const [draft, setDraft] = useState<Record<number, { qty: string; pp: string; adj: string; rate: string; note: string }>>({})
+  const [draft, setDraft] = useState<Record<number, OpeningDraft>>({})
   const [asOf, setAsOf] = useState('')
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
@@ -1666,6 +2174,46 @@ function OpeningStock({
   // Products that still need an opening carry a Short badge on the row, which
   // is where the reader is already looking.
   const [search, setSearch] = useState('')
+  // HIDE WHAT HAS NOTHING TO SAY: no movement since the opening and no opening
+  // of its own. Such a row asks nothing of the person counting. Remembered in
+  // this browser; a row that gets a figure or a movement shows again by itself.
+  const [hideIdle, setHideIdleState] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem('stock.openingHideIdle') === '1'
+    } catch {
+      return false
+    }
+  })
+  const setHideIdle = (v: boolean): void => {
+    setHideIdleState(v)
+    try {
+      localStorage.setItem('stock.openingHideIdle', v ? '1' : '0')
+    } catch {
+      // Not remembered, that is all.
+    }
+  }
+  // WHICH CATEGORIES ARE FOLDED. A forty-row sheet is worked one category at a
+  // time; a folded one still shows its heading and its Sub total, so the
+  // figures that matter stay on screen. Remembered in this browser only.
+  // Folded by default: the sheet opens on three headings and their Sub totals,
+  // and a category is opened to be worked. A choice made here is remembered.
+  const [folded, setFolded] = useState<Record<string, boolean>>(() => {
+    const all = { raw: true, intermediate: true, finished: true }
+    try {
+      const kept = localStorage.getItem('stock.openingFolded')
+      return kept ? JSON.parse(kept) || all : all
+    } catch {
+      return all
+    }
+  })
+  const setFold = (next: Record<string, boolean>): void => {
+    setFolded(next)
+    try {
+      localStorage.setItem('stock.openingFolded', JSON.stringify(next))
+    } catch {
+      // A blocked storage only means it is not remembered.
+    }
+  }
   // The four figures, folded away by default like every other view's. This
   // sheet is worked down over twenty minutes and the cards were holding the
   // top of the screen the whole time.
@@ -1673,6 +2221,57 @@ function OpeningStock({
   // Which product's PP breakdown is open. PP is one number on this sheet and
   // seven vessels on the plant's own — see components/PpBreakdown.
   const [ppRow, setPpRow] = useState<Row | null>(null)
+  // WHICH MORNING THESE FIGURES BELONG TO.
+  //
+  // The sheet opens holding the count that is in force. Change the date and
+  // those figures are no longer an answer to the question on screen — they are
+  // the PREVIOUS morning's count wearing a new date, and saving them would
+  // record a count nobody took. So moving to another date clears the sheet to
+  // be filled in afresh.
+  //
+  // Kept, not destroyed: a mistyped date is the commonest reason to be here,
+  // and losing twenty minutes of typing to one is unforgivable.
+  const [loadedAsOf, setLoadedAsOf] = useState('')
+  const [clearedFrom, setClearedFrom] = useState<{
+    date: string
+    draft: Record<number, OpeningDraft>
+    // The PP vessels handed into history when the date moved, kept so undo can
+    // put them back exactly as they were.
+    pp?: Row[]
+  } | null>(null)
+  // Where the figures on screen came from, once the date has moved: the day
+  // close they were carried from, and how many products it actually filled.
+  const [carried, setCarried] = useState<{ from: string; filled: number } | null>(null)
+  // EVERY COUNT THIS SITE HAS EVER STRUCK.
+  //
+  // The tanks can be counted again — a quarter end, a re-dip after a
+  // discrepancy — and the new count takes over as the morning the register
+  // starts from. The one it replaced is not deleted: it is the evidence behind
+  // every closing balance that was read off it, so it stays here, whole, and
+  // can be read back or lifted into the sheet as a starting point.
+  const [sets, setSets] = useState<Row[]>([])
+  const [openSet, setOpenSet] = useState(0)
+  const [setLines, setSetLines] = useState<Row[]>([])
+  const [setBusy, setSetBusy] = useState(false)
+
+  // JUST THE ROWS, NOT THE WHOLE SCREEN.
+  //
+  // load() below also puts the date, the draft and the undo back to what is on
+  // file — right when the page opens, wrong in the middle of re-dating a sheet,
+  // which is exactly when the PP panel needs re-reading.
+  // Set the instant a date change begins, because clearedFrom cannot be: it is
+  // written after an await, and the hand-over inside that await bumps the app
+  // revision — which fires the live refresh a beat before the state that would
+  // have told it to hold off.
+  const reDating = useRef(false)
+
+  const refreshSheet = useCallback(async (): Promise<void> => {
+    try {
+      setData(await window.api.stockOpening.list())
+    } catch {
+      // The sheet on screen is still good; only the vessel counts are stale.
+    }
+  }, [])
 
   const load = useCallback(async (): Promise<void> => {
     setLoading(true)
@@ -1680,14 +2279,23 @@ function OpeningStock({
       const d = await window.api.stockOpening.list()
       setData(d)
       setAsOf(String(d.as_of || d.books_from || ''))
-      const next: Record<number, { qty: string; pp: string; adj: string; rate: string; note: string }> = {}
+      setLoadedAsOf(String(d.as_of || ''))
+      setClearedFrom(null)
+      reDating.current = false
+      // Never fatal: the sheet is the job, the history is the record of it.
+      void window.api.stockOpening
+        .sets()
+        .then((h) => setSets(Array.isArray(h) ? h : []))
+        .catch(() => setSets([]))
+      const next: Record<number, OpeningDraft> = {}
       for (const r of (d.rows as Row[]) || []) {
         next[Number(r.id)] = {
           qty: r.qty == null ? '' : String(r.qty),
           pp: r.pp_qty == null || Number(r.pp_qty) === 0 ? '' : String(r.pp_qty),
           adj: r.adj_qty == null || Number(r.adj_qty) === 0 ? '' : String(r.adj_qty),
           rate: r.rate == null ? '' : String(r.rate),
-          note: r.note == null ? '' : String(r.note)
+          note: r.note == null ? '' : String(r.note),
+          tanks: tanksOf(r.raw_tanks)
         }
       }
       setDraft(next)
@@ -1698,7 +2306,18 @@ function OpeningStock({
     }
   }, [])
   useEffect(() => { void load() }, [load])
-  useLiveRefresh(load)
+  // A BACKGROUND REFRESH MUST NOT THROW AWAY A SHEET BEING WRITTEN.
+  //
+  // load() puts the date, the draft and the undo back to what is on file,
+  // which is right when the page opens and wrong the moment somebody is
+  // part-way through re-dating an opening: a revision bump from anywhere in
+  // the app — another desk saving, or this page's own hand-over of the PP
+  // breakdown — would silently put the date back and lose the figures typed
+  // since. While a re-dating is in progress only the rows are re-read.
+  // A tank line's own auto-save bumps the revision too; answering that with
+  // load() would throw away every other figure typed and not yet saved.
+  const tankSavedAt = useRef(0)
+  useLiveRefresh(() => (reDating.current || clearedFrom || Date.now() - tankSavedAt.current < 10000 ? refreshSheet() : load()))
 
   const rows: Row[] = useMemo(() => ((data?.rows as Row[]) || []), [data])
 
@@ -1722,6 +2341,7 @@ function OpeningStock({
       ...p,
       [productId]: {
         qty: p[productId]?.qty ?? '',
+        tanks: p[productId]?.tanks,
         adj: p[productId]?.adj ?? '',
         rate: p[productId]?.rate ?? '',
         note: p[productId]?.note ?? '',
@@ -1767,10 +2387,103 @@ function OpeningStock({
         adj: p[id]?.adj ?? '',
         rate: p[id]?.rate ?? '',
         note: p[id]?.note ?? '',
+        tanks: key === 'qty' ? [] : p[id]?.tanks,
         [key]: value
       }
     }))
   }
+  // Raw split by tank: the lines, and Raw follows their sum. Taking the last
+  // line away leaves Raw at the figure it had, as one number again.
+  const setTanks = (id: number, lines: TankLine[]): void => {
+    setDraft((p) => {
+      const cur = p[id] || { qty: '', pp: '', adj: '', rate: '', note: '' }
+      return {
+        ...p,
+        [id]: { ...cur, tanks: lines, qty: lines.length ? String(tankTotal(lines)) : cur.qty }
+      }
+    })
+    queueTankSave(id)
+  }
+
+  // THE TANK LINES SAVE THEMSELVES. Typed into a sheet already struck, a
+  // product's tanks (and Raw, their sum) are written a moment after the last
+  // keystroke — that row alone, through the same save and the same check that
+  // nobody else has moved the sheet — so a refresh no longer loses them. Not
+  // while a line still lacks a tank name or a figure, and not on a sheet
+  // being re-dated or not yet struck: there Save is still the deliberate act.
+  const draftLive = useRef(draft)
+  draftLive.current = draft
+  const dataLive = useRef(data)
+  dataLive.current = data
+  const asOfLive = useRef(asOf)
+  asOfLive.current = asOf
+  const loadedAsOfLive = useRef(loadedAsOf)
+  loadedAsOfLive.current = loadedAsOf
+  const clearedLive = useRef(clearedFrom)
+  clearedLive.current = clearedFrom
+  const tankTimers = useRef(new Map<number, ReturnType<typeof setTimeout>>())
+  useEffect(() => () => tankTimers.current.forEach((t) => clearTimeout(t)), [])
+  function queueTankSave(id: number): void {
+    const prev = tankTimers.current.get(id)
+    if (prev) clearTimeout(prev)
+    tankTimers.current.set(
+      id,
+      setTimeout(() => {
+        tankTimers.current.delete(id)
+        void autoSaveTanks(id)
+      }, 1400)
+    )
+  }
+  async function autoSaveTanks(id: number): Promise<void> {
+    const d = draftLive.current[id]
+    const sheet = dataLive.current
+    const date = asOfLive.current
+    if (!d || !sheet || !date || date !== loadedAsOfLive.current || reDating.current || clearedLive.current) return
+    const lines = d.tanks || []
+    if (!lines.length || lines.some((l) => !l.tank.trim() || l.qty.trim() === '' || !Number.isFinite(Number(l.qty)))) return
+    const row = ((sheet.rows as Row[]) || []).find((r) => Number(r.id) === id)
+    if (!row || tanksKey(lines) === tanksKey(tanksOf(row.raw_tanks))) return
+    // Stamped before the call: the revision event can arrive before the reply.
+    tankSavedAt.current = Date.now()
+    try {
+      await window.api.stockOpening.save(
+        [
+          {
+            product_id: id,
+            qty: String(tankTotal(lines)),
+            raw_tanks: lines.map((l) => ({ tank: l.tank.trim(), qty: Number(l.qty) || 0 })),
+            pp_qty: d.pp ?? '',
+            adj_qty: d.adj ?? '',
+            rate: d.rate ?? '',
+            note: d.note ?? ''
+          }
+        ],
+        date,
+        undefined,
+        String(sheet.version || '')
+      )
+      tankSavedAt.current = Date.now()
+      toast.success(`Tanks saved — ${String(row.name || 'product')}`, { id: `tanks-${id}` })
+      // The rows and the sheet's version again, the drafts left as typed.
+      await refreshSheet()
+    } catch (e) {
+      toast.error(`Tanks not saved — ${errText(e)}`, { id: `tanks-${id}` })
+    }
+  }
+  // Tank names already used on this sheet, offered as each line is typed.
+  const tankNames = useMemo(() => {
+    const s = new Set<string>()
+    for (const d of Object.values(draft)) for (const l of d.tanks || []) if (l.tank.trim()) s.add(l.tank.trim())
+    return [...s].sort((a, b) => a.localeCompare(b, undefined, { numeric: true }))
+  }, [draft])
+
+  // No movement since the opening date, and nothing counted or on file.
+  const isIdle = useCallback(
+    (r: Row): boolean =>
+      Math.abs(Number(r.movement_closing) || 0) < 0.0005 && !answeredOf(Number(r.id)) && r.total == null,
+    [answeredOf]
+  )
+  const idleCount = useMemo(() => rows.filter(isIdle).length, [rows, isIdle])
 
   const shown = useMemo(() => {
     const q = search.trim().toLowerCase()
@@ -1778,9 +2491,48 @@ function OpeningStock({
       if (q && !String(r.name || '').toLowerCase().includes(q) && !String(r.code || '').toLowerCase().includes(q)) {
         return false
       }
+      if (hideIdle && isIdle(r)) return false
       return true
     })
-  }, [rows, search])
+  }, [rows, search, hideIdle, isIdle])
+
+  // GOING TO THE ROW SOMEBODY ASKED FOR.
+  //
+  // Arriving from the Book register, the sheet opens on forty rows and the one
+  // that was clicked looks like all the others. So it is scrolled to the
+  // middle of the view and flashed — long enough to find, short enough to stop
+  // being a mark on the row.
+  //
+  // The search box is cleared first if it would hide the row: the sheet
+  // remembers a search, and scrolling to an element that is not rendered fails
+  // silently, which reads as the click having done nothing.
+  useEffect(() => {
+    const pid = Number(jumpTo) || 0
+    if (!pid || !rows.length) return
+    if (!shown.some((r) => Number(r.id) === pid)) {
+      setSearch('')
+      if (hideIdle) setHideIdle(false)
+      return
+    }
+    // A row inside a folded category is not drawn, so open its category first.
+    const cat = String(rows.find((r) => Number(r.id) === pid)?.category || '')
+    if (cat && folded[cat]) {
+      setFold({ ...folded, [cat]: false })
+      return
+    }
+    // After paint: the row has to exist before it can be scrolled to.
+    const t = window.setTimeout(() => {
+      const el = document.querySelector(`[data-opening-row="${pid}"]`)
+      if (el) {
+        el.scrollIntoView({ behavior: 'smooth', block: 'center' })
+        el.classList.add('row-flash')
+        window.setTimeout(() => el.classList.remove('row-flash'), 2600)
+      }
+      onJumped?.()
+    }, 60)
+    return () => window.clearTimeout(t)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [jumpTo, rows.length, shown, onJumped, folded])
 
   const stats = useMemo(() => {
     let entered = 0
@@ -1820,12 +2572,183 @@ function OpeningStock({
       const wasAdj = r.adj_qty == null || Number(r.adj_qty) === 0 ? '' : String(r.adj_qty)
       const wasRate = r.rate == null ? '' : String(r.rate)
       const wasNote = r.note == null ? '' : String(r.note)
+      if (tanksKey(d.tanks) !== tanksKey(tanksOf(r.raw_tanks))) return true
       if (d.qty !== wasQty || d.pp !== wasPp || d.adj !== wasAdj || d.rate !== wasRate || d.note !== wasNote) {
         return true
       }
     }
     return false
   }, [rows, draft])
+
+  /**
+   * A NEW MORNING IS A NEW COUNT.
+   *
+   * Clears Raw, PP, Adj, the rate and the note so the sheet is ready to be
+   * filled in for the date now on it. Only when the date actually moves off
+   * the one the sheet was loaded with — going back to it puts the figures
+   * straight back.
+   *
+   * PP is the exception, and it has to be: where a product's PP has been
+   * broken down by vessel, that breakdown IS the figure and the server takes
+   * it from there whatever this sheet sends (see saveStockOpenings). Clearing
+   * the box would show a blank that fills itself back in on save, which is
+   * worse than leaving it — so those rows keep their PP and the note below
+   * says so.
+   */
+  async function countAfresh(nextDate: string): Promise<void> {
+    const from = loadedAsOf
+    if (!from || nextDate === from) return
+    reDating.current = true
+
+    // THE VESSELS GO WITH THE MORNING THEY WERE COUNTED IN.
+    //
+    // stock_opening_pp says which vessel holds what and at what FFA, and has
+    // no date on it — it describes whichever opening is in force. Re-dating
+    // the sheet left the PREVIOUS morning's seven vessels standing in the
+    // panel, and because a product's PP is read from its breakdown whatever is
+    // typed, the PP box could not be set at all.
+    //
+    // Handed over here, the moment the date is chosen, rather than at save:
+    // the point of emptying it is so the new morning's vessels can be entered,
+    // and a clear at save time would delete exactly what had just been set.
+    // The outgoing breakdown goes into its own set in history first, and the
+    // rows come back so Put back can undo the whole move.
+    let handedBack: Row[] = []
+    try {
+      const over = await window.api.stockOpening.handOverPp(nextDate)
+      handedBack = (over?.rows as Row[]) || []
+    } catch (e) {
+      // The figures can still be carried across; say what did not happen
+      // rather than leaving a stale breakdown to be discovered later.
+      toast.error(`Could not clear the PP breakdown — ${errText(e)}`)
+    }
+
+    // THE CLOSE OF THE NIGHT BEFORE IS THE OPENING OF THE MORNING.
+    //
+    // Nothing else it could be: what was counted in the tanks on the 13th
+    // evening is what is standing in them on the 14th morning. So moving the
+    // date does not merely clear the sheet — it carries that count across,
+    // product by product, and says which day it came from.
+    //
+    // The nearest close BEFORE the date, not strictly the day before: a mill
+    // that did not close on the 13th still closed on the 12th, and the 12th's
+    // count is a far better answer than a blank sheet. The date it came from
+    // is named so nobody has to assume.
+    let items: Row[] = []
+    let source = ''
+    try {
+      const prev = await window.api.stockCount.previous(nextDate)
+      items = Array.isArray(prev?.items) ? (prev.items as Row[]) : []
+      source = String(prev?.source_date || '')
+    } catch {
+      // No day close to be had — fall through and clear, which is still
+      // better than re-dating yesterday's opening.
+    }
+    const by = new Map(items.map((i) => [Number(i.product_id), i]))
+
+    // Read from the current draft rather than from inside a setState updater:
+    // an updater must be pure, and React may run it twice.
+    const next: typeof draft = {}
+    let filled = 0
+    for (const [k, v] of Object.entries(draft)) {
+      const id = Number(k)
+      const hit = by.get(id)
+      const qty = hit && hit.actual_qty != null ? String(hit.actual_qty) : ''
+      // PP COMES FORWARD FROM THE DAY CLOSE, like the raw figure.
+      //
+      // It used to hold on to whatever the PREVIOUS opening had typed, so a
+      // sheet re-dated to the 14th showed the 14th's raw stock beside the
+      // 13th's PP — one date's figures under another date's heading, which is
+      // the one thing an opening must never do.
+      //
+      // Every product now takes the count of the morning before, the vessel
+      // breakdown included: saving a new date files the old breakdown away and
+      // clears the live one (see saveStockOpenings), so this figure is no
+      // longer overruled by vessels belonging to the day it replaced. The
+      // breakdown itself starts empty, for the floor to set against the new
+      // morning.
+      const pp = hit && hit.pp_qty != null ? String(hit.pp_qty) : ''
+      if (qty || pp) filled += 1
+      // The rest starts clean: an adjustment and a note belong to the count
+      // they were written against, and the rate is the opening's own.
+      next[id] = { qty, pp, adj: '', rate: '', note: '', tanks: [] }
+    }
+    // Keep whatever was handed over the FIRST time the date moved. Moving it
+    // again finds an empty breakdown and hands back nothing, and that must not
+    // erase the undo for the vessels already taken.
+    setClearedFrom((prev) => ({
+      date: from,
+      draft,
+      pp: handedBack.length ? handedBack : prev?.pp || []
+    }))
+    setCarried(source ? { from: source, filled } : null)
+    setDraft(next)
+    // The panel reads its vessels off the loaded sheet, so it has to be read
+    // again for the rows to come back empty. Only `data` — a full load() would
+    // put the date, the draft and this very undo back to what was on file.
+    await refreshSheet()
+  }
+
+  async function putBackCleared(): Promise<void> {
+    if (!clearedFrom) return
+    const back = clearedFrom
+    setDraft(back.draft)
+    setAsOf(back.date)
+    setClearedFrom(null)
+    setCarried(null)
+    reDating.current = false
+    if (back.pp?.length) {
+      try {
+        await window.api.stockOpening.putBackPp(back.pp)
+        await refreshSheet()
+      } catch (e) {
+        toast.error(`Could not put the PP breakdown back — ${errText(e)}`)
+      }
+    }
+  }
+
+  async function showSet(id: number): Promise<void> {
+    if (openSet === id) {
+      setOpenSet(0)
+      setSetLines([])
+      return
+    }
+    setOpenSet(id)
+    setSetLines([])
+    setSetBusy(true)
+    try {
+      setSetLines(await window.api.stockOpening.setLines(id))
+    } catch (e) {
+      toast.error(errText(e))
+      setOpenSet(0)
+    } finally {
+      setSetBusy(false)
+    }
+  }
+
+  // An old count, put back in the boxes — NOT applied. Re-striking an opening
+  // moves the ground every later figure stands on, so it stays a deliberate
+  // act: the figures are offered, the date is chosen, and Save is still the
+  // thing that changes the register.
+  function loadSet(lines: Row[], from: string): void {
+    setDraft((prev) => {
+      const next = { ...prev }
+      for (const l of lines) {
+        const pid = Number(l.product_id)
+        if (!next[pid]) continue
+        next[pid] = {
+          qty: l.qty == null || Number(l.qty) === 0 ? '' : String(l.qty),
+          pp: l.pp_qty == null || Number(l.pp_qty) === 0 ? '' : String(l.pp_qty),
+          adj: l.adj_qty == null || Number(l.adj_qty) === 0 ? '' : String(l.adj_qty),
+          rate: l.rate == null ? '' : String(l.rate),
+          note: l.note == null ? '' : String(l.note),
+          tanks: tanksOf(l.raw_tanks)
+        }
+      }
+      return next
+    })
+    toast.success(`Figures from ${formatDate(from)} loaded — set the date and Save to strike them`)
+  }
 
   async function save(): Promise<void> {
     if (!asOf) return void toast.error('Pick the date this opening is struck on')
@@ -1834,6 +2757,9 @@ function OpeningStock({
       const payload = rows.map((r) => ({
         product_id: Number(r.id),
         qty: draft[Number(r.id)]?.qty ?? '',
+        raw_tanks: (draft[Number(r.id)]?.tanks || [])
+          .filter((l) => l.tank.trim() || (Number(l.qty) || 0) !== 0)
+          .map((l) => ({ tank: l.tank.trim(), qty: Number(l.qty) || 0 })),
         pp_qty: draft[Number(r.id)]?.pp ?? '',
         adj_qty: draft[Number(r.id)]?.adj ?? '',
         rate: draft[Number(r.id)]?.rate ?? '',
@@ -1982,7 +2908,13 @@ function OpeningStock({
                       )
                   )}
                 >
-                  <DatePicker value={asOf} onChange={setAsOf} />
+                  <DatePicker
+                    value={asOf}
+                    onChange={(v) => {
+                      void countAfresh(v)
+                      setAsOf(v)
+                    }}
+                  />
                 </div>
               </div>
             </div>
@@ -2000,6 +2932,32 @@ function OpeningStock({
                   <span className={cn('text-white/25', __WEB__ && '!text-[#C7BCF0]')}>·</span>
                 </>
               )}
+              {clearedFrom ? (
+                <>
+                  {/* Said where the date was changed, not as a toast that is
+                      gone before the consequence is noticed. */}
+                  <span
+                    className={cn(
+                      'flex items-center gap-1.5 font-semibold',
+                      carried ? 'text-emerald-200' : 'text-amber-200',
+                      __WEB__ && (carried ? '!font-bold !text-[#0B6B45]' : '!font-bold !text-[#8A5300]')
+                    )}
+                  >
+                    {carried ? <Check className="h-3 w-3 shrink-0" /> : <AlertTriangle className="h-3 w-3 shrink-0" />}
+                    {carried
+                      ? `Carried from the day close of ${formatDate(carried.from)} — ${carried.filled} product${carried.filled === 1 ? '' : 's'}`
+                      : `No day close before this date — counting afresh, the ${formatDate(clearedFrom.date)} figures are cleared`}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={putBackCleared}
+                    className={cn('underline underline-offset-2', __WEB__ && '!font-bold !text-[#3D3179]')}
+                  >
+                    undo
+                  </button>
+                  <span className={cn('text-white/25', __WEB__ && '!text-[#C7BCF0]')}>·</span>
+                </>
+              ) : null}
               <span className={cn('text-white/50', __WEB__ && '!font-semibold !text-[#8478C4]')}>every register opens from this day</span>
             </div>
           </div>
@@ -2291,6 +3249,21 @@ function OpeningStock({
           value={search}
           onChange={(e) => setSearch(e.target.value)}
         />
+        {idleCount > 0 && (
+          <button
+            type="button"
+            onClick={() => setHideIdle(!hideIdle)}
+            title="Products with no movement since the opening date and no opening of their own"
+            className={cn(
+              'flex h-10 items-center gap-1.5 rounded-md border px-3 text-[12px] font-semibold',
+              hideIdle ? 'border-[#1a2c56] bg-[#1a2c56] text-white' : 'bg-white text-[#1a2c56] hover:bg-muted',
+              __WEB__ && (hideIdle ? '!rounded-[3px] !border-[#3D3179] !bg-[#3D3179]' : '!rounded-[3px] !border-[#D6CEF5] !text-[#3D3179] hover:!bg-[#F8F6FE]')
+            )}
+          >
+            {hideIdle ? <Eye className="h-4 w-4" /> : <EyeOff className="h-4 w-4" />}
+            {hideIdle ? `Show ${idleCount} with no movement` : `Hide ${idleCount} with no movement`}
+          </button>
+        )}
         {/* A statement of where the sheet stands, not a control. */}
         <div className="flex items-center gap-2 text-[12px]">
           <span className={cn('font-semibold text-[#1a2c56]', __WEB__ && '!text-[12.5px] !font-extrabold !text-[#0B3D2E]')}>
@@ -2323,14 +3296,90 @@ function OpeningStock({
       </div>
 
       {/* ---------------------------------------------------------- sheet */}
+      {shown.length > 0 && (
+        <div className="-mb-1 flex justify-end">
+          {(() => {
+            const cats = (['raw', 'intermediate', 'finished'] as const).filter((c) => shown.some((r) => String(r.category) === c))
+            const allFolded = cats.length > 0 && cats.every((c) => folded[c])
+            return (
+              <button
+                type="button"
+                onClick={() => setFold(Object.fromEntries(cats.map((c) => [c, !allFolded])))}
+                className={cn(
+                  'flex items-center gap-1 rounded-[3px] border px-2.5 py-1 text-[11px] font-bold text-muted-foreground hover:bg-muted',
+                  __WEB__ && '!border-[#D6CEF5] !text-[#3D3179] hover:!bg-[#F8F6FE]'
+                )}
+              >
+                {allFolded ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}
+                {allFolded ? 'Expand all' : 'Collapse all'}
+              </button>
+            )
+          })()}
+        </div>
+      )}
       {(['raw', 'intermediate', 'finished'] as const).map((cat) => {
         const catRows = shown.filter((r) => String(r.category) === cat)
         if (!catRows.length) return null
+        const isFolded = !!folded[cat]
+        // THE SUB TOTAL. Tonnes only: a KG or PCS product's figure is real but
+        // it is not tonnes, and adding it in is the "PCS logged as MT" mistake
+        // the opening total above already refuses (see stats). Such rows are
+        // named under the figure instead of being folded in.
+        const sub = (() => {
+          let moved = 0
+          let raw = 0
+          let pp = 0
+          let adj = 0
+          let total = 0
+          let closes = 0
+          let value = 0
+          let counted = 0
+          let other = 0
+          for (const r of catRows) {
+            const id = Number(r.id)
+            if (answeredOf(id)) counted++
+            if (String(r.uom || 'MT').toUpperCase() !== 'MT') {
+              other++
+              continue
+            }
+            const d = draft[id]
+            moved += Number(r.movement_closing) || 0
+            raw += Number(d?.qty) || 0
+            pp += Number(d?.pp) || 0
+            adj += Number(d?.adj) || 0
+            total += openingOf(id)
+            closes += projected(r)
+            value += openingOf(id) * (Number(d?.rate) || 0)
+          }
+          return { moved, raw, pp, adj, total, closes, value, counted, other }
+        })()
         return (
           <div key={cat} className={cn('overflow-hidden rounded-xl border border-[#d9d2b8] shadow-sm', __WEB__ && '!rounded-[4px] !border-[#D6CEF5] !shadow-none')}>
-            <div className={cn('flex flex-wrap items-center justify-between gap-2 border-b border-[#d9d2b8] bg-[#f1ecd9] px-4 py-2.5', __WEB__ && '!border-b-[#D6CEF5] !bg-[#F8F6FE]')}>
-              <span className={cn('text-[11px] font-bold uppercase tracking-widest text-[#1a2c56]', __WEB__ && '!text-[10px] !font-extrabold !tracking-[.16em] !text-[#3D3179]')}>
+            <div
+              role="button"
+              tabIndex={0}
+              aria-expanded={!isFolded}
+              title={isFolded ? `Show the ${CAT_LABEL[cat]} products` : `Fold ${CAT_LABEL[cat]} away — its Sub total stays`}
+              onClick={() => setFold({ ...folded, [cat]: !isFolded })}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' || e.key === ' ') {
+                  e.preventDefault()
+                  setFold({ ...folded, [cat]: !isFolded })
+                }
+              }}
+              className={cn(
+                'flex cursor-pointer select-none flex-wrap items-center justify-between gap-2 border-b border-[#d9d2b8] bg-[#f1ecd9] px-4 py-2.5 hover:brightness-[.98]',
+                __WEB__ && '!border-b-[#D6CEF5] !bg-[#F8F6FE] hover:!bg-[#F1EEFD]'
+              )}
+            >
+              <span className={cn('flex items-center gap-1.5 text-[11px] font-bold uppercase tracking-widest text-[#1a2c56]', __WEB__ && '!text-[10px] !font-extrabold !tracking-[.16em] !text-[#3D3179]')}>
+                {isFolded ? <ChevronRight className="h-3.5 w-3.5" /> : <ChevronDown className="h-3.5 w-3.5" />}
                 {CAT_LABEL[cat]}
+                {isFolded && (
+                  <span className="ml-1 normal-case tracking-normal text-muted-foreground">
+                    · {sub.counted}/{catRows.length} counted · opens at {formatNum(sub.total)} MT
+                  </span>
+                )}
               </span>
               <span className="flex items-center gap-3 text-[11px] tabular-nums text-muted-foreground">
                 {/* What this section still owes, so a long sheet can be worked
@@ -2424,7 +3473,7 @@ function OpeningStock({
                   </tr>
                 </thead>
                 <tbody>
-                  {catRows.map((r) => {
+                  {(isFolded ? [] : catRows).map((r) => {
                     const id = Number(r.id)
                     const d = draft[id] || { qty: '', pp: '', adj: '', rate: '', note: '' }
                     const proj = projected(r)
@@ -2435,6 +3484,7 @@ function OpeningStock({
                     return (
                       <tr
                         key={id}
+                        data-opening-row={id}
                         className={cn(
                           'border-t border-[#f0ead2] transition-colors hover:bg-[#fbf6e4]',
                           // row-answered is read by .pin-col in main.css, which
@@ -2454,7 +3504,27 @@ function OpeningStock({
                             ) : (
                               <span className="h-3.5 w-3.5 shrink-0" />
                             )}
-                            <span className={cn('font-medium text-[#1a2c56]', __WEB__ && '!text-[12.5px] !font-bold !text-[#0A1F17]')}>{String(r.name)}</span>
+                            {/* THE NAME IS THE WAY TO WHAT HAPPENED NEXT.
+                                The register's product names come here to ask
+                                where a figure started; this is the same trip
+                                back — what the opening became once the month's
+                                receipts, production and sales ran through it. */}
+                            {onOpenProduct ? (
+                              <button
+                                type="button"
+                                onClick={() => onOpenProduct(id)}
+                                title={`Open ${String(r.name)} on the Book Stock register`}
+                                className={cn(
+                                  'text-left font-medium text-[#1a2c56] underline decoration-dotted underline-offset-[3px] transition-colors',
+                                  __WEB__ &&
+                                    '!text-[12.5px] !font-bold !text-[#0A1F17] !decoration-[#C3D2C6] hover:!text-[#5B4BA8] hover:!decoration-[#5B4BA8]'
+                                )}
+                              >
+                                {String(r.name)}
+                              </button>
+                            ) : (
+                              <span className={cn('font-medium text-[#1a2c56]', __WEB__ && '!text-[12.5px] !font-bold !text-[#0A1F17]')}>{String(r.name)}</span>
+                            )}
                             {!__WEB__ && r.code ? (
                               <span className="doc-ref rounded bg-[#f1ecd9] px-1.5 text-[10.5px] text-muted-foreground">
                                 {String(r.code)}
@@ -2526,11 +3596,26 @@ function OpeningStock({
                                 {formatNum(short)}
                               </button>
                             )}
+                            {/* Locked while tanks are listed: Raw is their sum,
+                                and two places to type it is how they disagree. */}
                             <input
                               inputMode="decimal"
-                              className="doc-ref h-8 w-[84px] rounded-md border bg-white px-2 text-right text-[13px] tabular-nums outline-none focus:border-[#1a2c56] focus:ring-1 focus:ring-[#1a2c56]/20"
+                              readOnly={!!d.tanks?.length}
+                              title={d.tanks?.length ? `${d.tanks.length} tank${d.tanks.length === 1 ? '' : 's'} add up to this — open them to change it` : undefined}
+                              className={cn(
+                                'doc-ref h-8 w-[84px] rounded-md border px-2 text-right text-[13px] tabular-nums outline-none focus:border-[#1a2c56] focus:ring-1 focus:ring-[#1a2c56]/20',
+                                d.tanks?.length ? 'cursor-default bg-muted/60 font-semibold' : 'bg-white'
+                              )}
                               value={d.qty}
                               onChange={(e) => setField(id, 'qty', e.target.value.replace(/[^0-9.]/g, ''))}
+                            />
+                            <RawTanks
+                              product={String(r.name)}
+                              uom={String(r.uom || 'MT')}
+                              lines={d.tanks || []}
+                              rawNow={d.qty}
+                              names={tankNames}
+                              onChange={(lines) => setTanks(id, lines)}
                             />
                           </div>
                         </td>
@@ -2659,6 +3744,34 @@ function OpeningStock({
                     )
                   })}
                 </tbody>
+                <tfoot>
+                  <tr
+                    className={cn(
+                      'border-t-2 border-[#d9d2b8] bg-[#f4efdd] text-[12.5px] font-bold tabular-nums text-[#1a2c56]',
+                      __WEB__ && '!border-t-[#C7BCF0] !bg-[#EDE9FB] !text-[#3D3179]'
+                    )}
+                  >
+                    <td className="pin-col px-3 py-2">
+                      <div className="text-[11px] font-extrabold uppercase tracking-[.08em]">{CAT_LABEL[cat]} · Sub total</div>
+                      <div className="text-[10.5px] font-semibold normal-case tracking-normal text-muted-foreground">
+                        {sub.counted} of {catRows.length} counted
+                        {sub.other > 0 ? ` · ${sub.other} not in MT left out` : ''}
+                      </div>
+                    </td>
+                    <td className={cn('whitespace-nowrap px-3 py-2 text-right', sub.moved < -0.0005 && 'text-rose-700')}>{formatNum(sub.moved)}</td>
+                    <td className="whitespace-nowrap px-3 py-2 text-right">{formatNum(sub.raw)}</td>
+                    <td className="whitespace-nowrap px-3 py-2 text-right">{formatNum(sub.pp)}</td>
+                    <td className={cn('whitespace-nowrap px-3 py-2 text-right', sub.adj < -0.0005 && 'text-rose-700')}>{formatNum(sub.adj)}</td>
+                    <td className={cn('whitespace-nowrap bg-[#efe8d0] px-3 py-2 text-right', __WEB__ && '!bg-[#E1DAF8]')}>{formatNum(sub.total)}</td>
+                    <td className="whitespace-nowrap px-3 py-2 text-right" title="The opening's value at the rates entered — Total × Rate, row by row">
+                      {sub.value > 0.005 ? formatINR(sub.value) : '—'}
+                    </td>
+                    <td className={cn('whitespace-nowrap px-3 py-2 text-right', sub.closes < -0.0005 ? 'text-rose-700' : 'text-emerald-700')}>
+                      {formatNum(sub.closes)}
+                    </td>
+                    <td className="px-3 py-2" />
+                  </tr>
+                </tfoot>
               </table>
             </div>
           </div>
@@ -2667,7 +3780,7 @@ function OpeningStock({
 
       {!shown.length && (
         <div className="rounded-md border border-dashed py-12 text-center text-sm text-muted-foreground">
-          No product matches that search.
+          {hideIdle && !search.trim() ? 'Every product here has no movement and no opening — Show them to see the list.' : 'No product matches that search.'}
         </div>
       )}
 
@@ -2675,6 +3788,151 @@ function OpeningStock({
         Blank means <b>not yet counted</b>; <span className="doc-ref">0</span> means it genuinely
         opened at nothing. Hover any heading for what it holds.
       </p>
+
+      {/* EVERY COUNT EVER STRUCK HERE.
+          Saving against a new date does not overwrite the last count — it
+          takes over from it, and the one it replaced stays readable below.
+          The register, and every page that opens its period from it, follows
+          whichever count is in force. */}
+      {sets.length > 0 && (
+        <div className={cn('overflow-hidden rounded-xl border shadow-sm', __WEB__ && '!rounded-[4px] !border-[#D6CEF5] !shadow-none')}>
+          <div className={cn('flex flex-wrap items-center gap-2 border-b bg-muted/40 px-4 py-2.5', __WEB__ && '!border-b-[#D6CEF5] !bg-[#EDE9FB] !px-4 !py-2.5')}>
+            <HistoryIcon className={cn('h-4 w-4 text-muted-foreground', __WEB__ && '!text-[#3D3179]')} />
+            <span className={cn('text-[11px] font-semibold uppercase tracking-wide text-muted-foreground', __WEB__ && '!text-[11px] !font-extrabold !tracking-[.09em] !text-[#3D3179]')}>
+              Openings struck here
+            </span>
+            <span className="min-w-0 flex-1" />
+            <span className={cn('text-[10.5px] font-semibold text-muted-foreground', __WEB__ && '!text-[#8478C4]')}>
+              {sets.length === 1 ? 'one count' : `${sets.length} counts`} · nothing is ever removed
+            </span>
+          </div>
+          {sets.map((h) => {
+            const id = Number(h.id)
+            const on = openSet === id
+            return (
+              <div key={id} className={cn('border-b last:border-b-0', __WEB__ && '!border-b-[#EDE9FB]')}>
+                <div className="flex flex-wrap items-center gap-2 px-4 py-2.5">
+                  <button
+                    type="button"
+                    onClick={() => void showSet(id)}
+                    className={cn('flex min-w-0 flex-1 items-center gap-2 text-left', __WEB__ && 'hover:opacity-80')}
+                  >
+                    {on ? <ChevronDown className="h-3.5 w-3.5 shrink-0" /> : <ChevronRight className="h-3.5 w-3.5 shrink-0" />}
+                    <span className="doc-ref text-[12.5px] font-bold">{formatDate(String(h.as_of))}</span>
+                    {!!h.is_current && (
+                      <span className={cn('rounded-[2px] bg-emerald-100 px-1.5 py-[1px] text-[10px] font-extrabold uppercase tracking-[.06em] text-emerald-800', __WEB__ && '!bg-[#E9F5EE] !text-[#0B6B45]')}>
+                        in force
+                      </span>
+                    )}
+                    <span className="truncate text-[11px] font-semibold text-muted-foreground">
+                      {Number(h.products)} {Number(h.products) === 1 ? 'product' : 'products'} ·{' '}
+                      {formatNum(Number(h.total_qty))} MT
+                      {Number(h.revisions) > 1 ? ` · corrected ${Number(h.revisions) - 1}×` : ''}
+                      {h.created_by_name ? ` · ${String(h.created_by_name)}` : ''}
+                    </span>
+                  </button>
+                  {/* Offered, never applied — see loadSet. */}
+                  {!h.is_current && (
+                    <button
+                      type="button"
+                      disabled={setBusy || saving}
+                      onClick={() => {
+                        void window.api.stockOpening
+                          .setLines(id)
+                          .then((l) => loadSet(l, String(h.as_of)))
+                          .catch((e) => toast.error(errText(e)))
+                      }}
+                      title="Put these figures back in the sheet. Nothing changes until you pick a date and Save."
+                      className={cn('shrink-0 rounded-[3px] border px-2 py-1 text-[11px] font-bold disabled:opacity-40', __WEB__ && '!border-[#C7BCF0] !text-[#3D3179] hover:!bg-[#EDE9FB]')}
+                    >
+                      Use these figures
+                    </button>
+                  )}
+                </div>
+                {on && (
+                  <div className={cn('border-t bg-muted/20 px-4 py-2', __WEB__ && '!border-t-[#EDE9FB] !bg-[#FAF9FE]')}>
+                    {setBusy && setLines.length === 0 ? (
+                      <div className="py-3 text-center text-[11.5px] text-muted-foreground">Reading that count…</div>
+                    ) : setLines.length === 0 ? (
+                      <div className="py-3 text-center text-[11.5px] text-muted-foreground">
+                        That count recorded no products.
+                      </div>
+                    ) : (
+                      <table className="w-full text-[11.5px]">
+                        <thead>
+                          <tr className="text-left text-[10px] font-extrabold uppercase tracking-[.07em] text-muted-foreground">
+                            <th className="py-1">Product</th>
+                            <th className="py-1 text-right">In tank</th>
+                            <th className="py-1 text-right">In process</th>
+                            <th className="py-1 text-right">Adjustment</th>
+                            <th className="py-1 text-right">Opened at</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {setLines.map((l) => {
+                            // WHICH VESSEL HELD WHAT, THAT MORNING.
+                            //
+                            // Re-dating an opening empties the live breakdown,
+                            // so this is where those vessels live afterwards —
+                            // and a blend is argued about by its FFA, not by
+                            // its tonnage, which is the part worth keeping.
+                            const vessels = (l.pp_lines as Row[]) || []
+                            return (
+                              <Fragment key={Number(l.product_id)}>
+                                <tr className={cn('border-t', __WEB__ && '!border-t-[#EDE9FB]')}>
+                                  <td className="py-1 font-semibold">{String(l.product_name)}</td>
+                                  <td className="py-1 text-right tabular-nums">
+                                    {formatNum(Number(l.qty))}
+                                    {Array.isArray(l.raw_tanks) && (l.raw_tanks as Row[]).length > 0 && (
+                                      <div className="text-[10px] font-semibold text-muted-foreground">
+                                        {(l.raw_tanks as Row[]).map((tk) => `${String(tk.tank || '—')} ${formatNum(Number(tk.qty))}`).join(' · ')}
+                                      </div>
+                                    )}
+                                  </td>
+                                  <td className="py-1 text-right tabular-nums">{formatNum(Number(l.pp_qty))}</td>
+                                  <td className="py-1 text-right tabular-nums">{formatNum(Number(l.adj_qty))}</td>
+                                  <td className="py-1 text-right font-bold tabular-nums">
+                                    {formatNum(Number(l.qty) + Number(l.pp_qty) + Number(l.adj_qty))} {String(l.uom)}
+                                  </td>
+                                </tr>
+                                {vessels.length > 0 && (
+                                  <tr>
+                                    <td />
+                                    <td colSpan={4} className="pb-1.5 pt-0.5">
+                                      <div className="flex flex-wrap justify-end gap-1.5">
+                                        {vessels.map((v) => (
+                                          <span
+                                            key={Number(v.stage_id)}
+                                            className={cn(
+                                              'rounded-[2px] border px-1.5 py-[1px] text-[10px] font-semibold',
+                                              __WEB__
+                                                ? '!border-[#D6CEF5] !bg-[#F6F3FE] !text-[#3D3179]'
+                                                : 'border-muted bg-muted/40 text-muted-foreground'
+                                            )}
+                                          >
+                                            {v.reference ? `${v.reference} · ` : ''}{String(v.stage_name)} {formatNum(Number(v.qty))}
+                                            {v.ffa ? (
+                                              <span className="opacity-70"> · {String(v.ffa)} FFA</span>
+                                            ) : null}
+                                          </span>
+                                        ))}
+                                      </div>
+                                    </td>
+                                  </tr>
+                                )}
+                              </Fragment>
+                            )
+                          })}
+                        </tbody>
+                      </table>
+                    )}
+                  </div>
+                )}
+              </div>
+            )
+          })}
+        </div>
+      )}
 
       <PpBreakdown
         version={String(data?.version || '')}
@@ -2764,7 +4022,11 @@ function DayClose(): React.JSX.Element {
   // reconciliation both run off the combined total, not Raw alone.
   const totalOf = (r: Row): number => (Number(r.actual_qty) || 0) + (Number(r.pp_qty) || 0)
   const actualValueOf = (r: Row): number => totalOf(r) * rateOf(r)
-  const diffOf = (r: Row): number => Number(r.book_qty || 0) - totalOf(r)
+  // ACTUAL − BOOK. What was counted, less what the books say should be there:
+  // a shortfall reads negative, a surplus positive. It was book − actual, the
+  // opposite sign to the phone's count sheet, so one shortage read +2 on the
+  // desktop and −2 on the phone.
+  const diffOf = (r: Row): number => totalOf(r) - Number(r.book_qty || 0)
 
   // Fill the sheet from the last count taken before this date — for the days
   // the plant is shut, when the stock on the ground has not moved.
@@ -2990,7 +4252,9 @@ function DayClose(): React.JSX.Element {
                     </tr>
                   ) : (
                     (hist || []).map((h) => {
-                      const diff = Number(h.net_diff) || 0
+                      // net_diff comes back book − actual; turned to actual −
+                      // book here, the sheet's own sign.
+                      const diff = -(Number(h.net_diff) || 0)
                       const mis = Number(h.mismatches) || 0
                       return (
                         <tr
@@ -3046,7 +4310,7 @@ function DayClose(): React.JSX.Element {
 
       <p className="text-xs text-muted-foreground">
         Book qty is the system-computed stock (received + produced − consumed − sold). Total = Raw qty + PP, the actual
-        physical count. Difference = book − total; a positive value means physical stock is short of the books. Actual
+        physical count. Difference = total − book (actual − book); a negative value means physical stock is short of the books. Actual
         value is valued automatically at the weighted-average cost (rate × total). Download a protected Excel per
         section — only the Raw qty, PP and Note cells are editable — hand it to the person counting, then upload it
         back — uploading records the counts immediately.
@@ -3166,7 +4430,7 @@ function DayCloseSection({
               sub={
                 Math.abs(totalDiff) < 0.0005
                   ? 'books and count agree'
-                  : totalDiff > 0
+                  : totalDiff < 0
                     ? 'physical stock is short of the books'
                     : 'more counted than the books carry'
               }
@@ -3186,7 +4450,7 @@ function DayCloseSection({
         <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4 flex-1">
           <StatCard label="Products counted" value={`${counted.length} / ${rows.length}`} />
           <StatCard label="Mismatches" value={String(mismatches)} tone={mismatches ? 'text-amber-700' : 'text-emerald-700'} />
-          <StatCard label="Net difference (book − actual)" value={`${formatNum(totalDiff)}`} tone={Math.abs(totalDiff) > 0.0005 ? 'text-amber-700' : ''} />
+          <StatCard label="Net difference (actual − book)" value={`${formatNum(totalDiff)}`} tone={Math.abs(totalDiff) > 0.0005 ? 'text-amber-700' : ''} />
           <StatCard label="Section actual value" value={formatINR(totalActualValue)} />
         </div>
         )}
@@ -3242,7 +4506,7 @@ function DayCloseSection({
               <TableHead className={cn('w-[130px] bg-[#cfe0f7] text-right', __WEB__ && cn('!bg-[#C7F03F]/[.1]', SK_RULE))}>Raw qty</TableHead>
               <TableHead className={cn('w-[120px] bg-[#cfe0f7] text-right', __WEB__ && '!bg-[#C7F03F]/[.1]')}>PP</TableHead>
               <TableHead className={cn('text-right', __WEB__ && SK_CLOSE)}>Total</TableHead>
-              <TableHead className={cn('text-right', __WEB__ && cn(SK_RULE, '!bg-[#C2700A]/[.18]'))}>Difference</TableHead>
+              <TableHead className={cn('text-right', __WEB__ && cn(SK_RULE, '!bg-[#C2700A]/[.18]'))} title="Actual − Book: negative is short of the books, positive is more than they carry">Difference</TableHead>
               <TableHead className={cn('text-right', __WEB__ && cn(SK_RULE, SK_OPEN))}>Rate (₹)</TableHead>
               <TableHead className={cn('text-right', __WEB__ && SK_OPEN)}>Actual value (₹)</TableHead>
               <TableHead className={cn('w-[180px]', __WEB__ && SK_RULE)}>Note</TableHead>
@@ -3303,7 +4567,7 @@ function DayCloseSection({
                     <TableCell className={cn('py-1.5 text-right text-[13px] font-bold tabular-nums', __WEB__ && cn('doc-ref !text-[13px] !font-bold', '!bg-[#F6FBEE] !text-[#0A1F17]'))}>
                       {has ? formatNum(totalOf(r)) : '—'}
                     </TableCell>
-                    <TableCell className={cn('py-1.5 text-right text-[13px] font-semibold tabular-nums', off ? (diff > 0 ? 'text-amber-700' : 'text-red-600') : 'text-muted-foreground', __WEB__ && cn(SK_NUM, SK_BRULE, '!bg-[#FFFBF2] !font-bold', off ? '!text-[#8A5300]' : '!text-[#8FA79B]'))}>
+                    <TableCell className={cn('py-1.5 text-right text-[13px] font-semibold tabular-nums', off ? (diff < 0 ? 'text-amber-700' : 'text-red-600') : 'text-muted-foreground', __WEB__ && cn(SK_NUM, SK_BRULE, '!bg-[#FFFBF2] !font-bold', off ? '!text-[#8A5300]' : '!text-[#8FA79B]'))}>
                       {has ? formatNum(diff) : '—'}
                     </TableCell>
                     <TableCell className={cn('py-1.5 text-right text-[13px] tabular-nums text-muted-foreground', __WEB__ && cn(SK_NUM, SK_BRULE, SK_BOPEN, '!font-medium !text-[#5A6B62]'))}>{rateOf(r) ? formatNum(rateOf(r)) : '—'}</TableCell>
@@ -3927,6 +5191,32 @@ function SkuStock(): React.JSX.Element {
   // figure nobody can check.
   const [adjLog, setAdjLog] = useState<Row[]>([])
   const [adjLogLoading, setAdjLogLoading] = useState(false)
+  /**
+   * DAY ZERO FOR THE PACKED SHELF.
+   *
+   * A counted shelf already accounts for every pack made and every pack sold
+   * before it, so the register starts at the opening date and nothing earlier
+   * is packed-SKU arithmetic any more. That is right, and it is invisible: a
+   * run packed on the 15th with the shelf counted on the 16th is excluded, and
+   * the SKU reads 0 on hand with its two packing entries still listed
+   * underneath — the figure and its own evidence disagreeing, with nothing on
+   * screen to say why.
+   *
+   * It applies to EVERY SKU, including ones that were never in the count: the
+   * opening is a stock-take of the whole shelf, so an SKU left out of it was
+   * counted at nothing.
+   */
+  const [packFloor, setPackFloor] = useState('')
+  useEffect(() => {
+    void window.api.skuOpening
+      .date()
+      .then((d) => setPackFloor(String(d || '').slice(0, 10)))
+      .catch(() => setPackFloor(''))
+  }, [])
+  // Which entries the list is showing. A long-lived SKU carries packing runs
+  // and corrections mixed together, and the reason for opening this screen is
+  // usually one or the other.
+  const [adjLogKind, setAdjLogKind] = useState<'all' | 'packing' | 'correction'>('all')
 
   // Which period the register is read over.
   //
@@ -4166,6 +5456,22 @@ function SkuStock(): React.JSX.Element {
     })
   }, [rows, search, hideEmpty, skuPick])
   const shownMT = useMemo(() => shown.reduce((s, r) => s + skuMT(r), 0), [shown]) // eslint-disable-line react-hooks/exhaustive-deps
+  // WHAT WENT IN AND OUT, IN TONNES.
+  //
+  // Closing has always carried both — the count in the SKU's own unit, and
+  // what that weighs — because 1,638 boxes of one thing and 872 boxes of
+  // another are not comparable quantities. The same is true of what was packed
+  // and what was sold, and the footer stated those in pieces alone: a total of
+  // 12,552 pieces across SKUs of 8.4, 13 and 17.86 KG is a number with no
+  // meaning. Each SKU converts at its own pack size, boxes included (unitMT).
+  const shownInMT = useMemo(
+    () => shown.reduce((s, r) => s + (dayMode ? Number(r.added_on) || 0 : Number(r.added) || 0) * unitMT(r), 0),
+    [shown, dayMode]
+  )
+  const shownOutMT = useMemo(
+    () => shown.reduce((s, r) => s + (dayMode ? Number(r.sold_on) || 0 : Number(r.sold) || 0) * unitMT(r), 0),
+    [shown, dayMode]
+  )
 
   // --- Excel count sheet -------------------------------------------------
   const fileRef = useRef<HTMLInputElement | null>(null)
@@ -4557,8 +5863,16 @@ function SkuStock(): React.JSX.Element {
                 line={[
                   { k: 'Closing', v: `${formatNum(sum(shown, handOf))} pcs` },
                   { k: 'Tonnage', v: `${formatNum(shownMT)} MT` },
-                  { k: dayMode ? 'Packed in' : 'Packed', v: formatNum(sum(shown, inOf)), fg: '#0B6B45' },
-                  { k: dayMode ? 'Dispatched' : 'Sold', v: formatNum(sum(shown, outOf)), fg: '#8C2F26' },
+                  {
+                    k: dayMode ? 'Packed in' : 'Packed',
+                    v: `${formatNum(sum(shown, inOf))} pcs · ${formatNum(shownInMT)} MT`,
+                    fg: '#0B6B45'
+                  },
+                  {
+                    k: dayMode ? 'Dispatched' : 'Sold',
+                    v: `${formatNum(sum(shown, outOf))} pcs · ${formatNum(shownOutMT)} MT`,
+                    fg: '#8C2F26'
+                  },
                   {
                     k: 'Below zero',
                     v: negatives ? `${negatives} SKU${negatives === 1 ? '' : 's'}` : 'none',
@@ -4587,7 +5901,7 @@ function SkuStock(): React.JSX.Element {
                   label={dayMode ? 'Packed in' : 'Packed (total)'}
                   value={formatNum(sum(shown, inOf))}
                   unit="pcs"
-                  sub={dayMode ? 'on the day shown' : 'since the counted morning'}
+                  sub={`${formatNum(shownInMT)} MT · ${dayMode ? 'on the day shown' : 'since the counted morning'}`}
                   accent="#12855A"
                   fg="#0B6B45"
                 />
@@ -4595,7 +5909,7 @@ function SkuStock(): React.JSX.Element {
                   label={dayMode ? 'Dispatched' : 'Sold (packed)'}
                   value={formatNum(sum(shown, outOf))}
                   unit="pcs"
-                  sub={dayMode ? 'on the day shown' : 'since the counted morning'}
+                  sub={`${formatNum(shownOutMT)} MT · ${dayMode ? 'on the day shown' : 'since the counted morning'}`}
                   accent="#B3261E"
                   fg="#8C2F26"
                 />
@@ -4666,7 +5980,7 @@ function SkuStock(): React.JSX.Element {
               <TableRow className="!border-b-0 !bg-[#072B20] hover:!bg-[#072B20] [&>th]:!h-[30px] [&>th]:!p-0 [&>th]:!text-[11px] [&>th]:!font-extrabold [&>th]:!uppercase [&>th]:!tracking-[.1em] [&>th]:!text-[#8FBFA8]">
                 <TableHead colSpan={4} />
                 {dayMode && <TableHead className={cn('!text-center', SK_RULE, SK_OPEN)}>Open</TableHead>}
-                <TableHead className={cn('!text-center !text-[#9FE3BF]', SK_RULE, SK_IN)}>In</TableHead>
+                <TableHead colSpan={2} className={cn('!text-center !text-[#9FE3BF]', SK_RULE, SK_IN)}>In</TableHead>
                 <TableHead className={cn('!text-center !text-[#F0AFAA]', SK_RULE, SK_OUT)}>Out</TableHead>
                 <TableHead className={cn('!text-center !text-[#C7F03F]', SK_RULE, SK_CLOSE)}>Close</TableHead>
                 <TableHead />
@@ -4687,6 +6001,17 @@ function SkuStock(): React.JSX.Element {
               {dayMode && (
                 <TableHead className={cn('text-right text-[10px] font-semibold uppercase tracking-wide text-slate-700', __WEB__ && cn(SK_RULE, SK_OPEN))}>Opening</TableHead>
               )}
+              {/* PACKING AND TIDYING UP ARE NOT THE SAME EVENT.
+                  Both were summed into "Packed in", so a shelf found 982 too
+                  high read as if 982 tins had been packed and then unpacked.
+                  Output belongs in one column and the corrections in another,
+                  and the closing balance is still the two together. */}
+              <TableHead className={cn('text-right text-[10px] font-semibold uppercase tracking-wide text-slate-700', __WEB__ && cn(SK_RULE, SK_IN))}>
+                <span className="inline-flex items-center gap-1">
+                  Adj.
+                  <InfoTip text="Corrections only — somebody deciding the count on the shelf was wrong. Packing is the column after this one. The closing balance is opening + packed + adj − dispatched." />
+                </span>
+              </TableHead>
               <TableHead className={cn('text-right text-[10px] font-semibold uppercase tracking-wide text-slate-700', __WEB__ && cn(SK_RULE, SK_IN))}>
                 {dayMode ? 'Packed in' : 'Packed (total)'}
               </TableHead>
@@ -4708,10 +6033,10 @@ function SkuStock(): React.JSX.Element {
           </TableHeader>
           <TableBody>
             {loading ? (
-              <TableRow><TableCell colSpan={(dayMode ? 10 : 9) - (__WEB__ ? 1 : 0)} className="py-12 text-center text-muted-foreground">Loading…</TableCell></TableRow>
+              <TableRow><TableCell colSpan={(dayMode ? 11 : 10) - (__WEB__ ? 1 : 0)} className="py-12 text-center text-muted-foreground">Loading…</TableCell></TableRow>
             ) : shown.length === 0 ? (
               <TableRow>
-                <TableCell colSpan={(dayMode ? 10 : 9) - (__WEB__ ? 1 : 0)} className="py-12 text-center text-muted-foreground">
+                <TableCell colSpan={(dayMode ? 11 : 10) - (__WEB__ ? 1 : 0)} className="py-12 text-center text-muted-foreground">
                   {rows.length === 0
                     ? 'No SKUs. Add packagings under Masters → Packed SKU first.'
                     : 'No SKU matches this search.'}
@@ -4721,7 +6046,12 @@ function SkuStock(): React.JSX.Element {
               <>
                 {shown.map((r, i) => {
                   const onHand = Number(r.on_hand) || 0
-                  const inQty = dayMode ? Number(r.added_on) || 0 : Number(r.added) || 0
+                  // Split at the source by kind — see skustock.ts. `added`
+                  // remains the net of the two and is what every balance is
+                  // struck off; these two are how it is made up.
+                  const packQty = dayMode ? Number(r.packed_on) || 0 : Number(r.packed_in) || 0
+                  const adjQty = dayMode ? Number(r.adj_on) || 0 : Number(r.adj_in) || 0
+                  const inQty = packQty
                   const outQty = dayMode ? Number(r.sold_on) || 0 : Number(r.sold) || 0
                   const touched = inQty > 1e-6 || outQty > 1e-6
                   const part = parts.get(Number(r.id))
@@ -4852,18 +6182,39 @@ function SkuStock(): React.JSX.Element {
                           {__WEB__ && mtLine(Number(r.opening) || 0)}
                         </TableCell>
                       )}
+                      {/* A correction reads as what it is: signed, because
+                          "the count was too high" and "too low" are opposite
+                          events and an unsigned figure makes them look alike.
+                          Nothing at all shows as a dash rather than a zero —
+                          no correction is not a correction of nothing. */}
+                      <TableCell
+                        className={cn(
+                          'text-right font-medium tabular-nums',
+                          adjQty < -1e-6 ? 'text-amber-700' : adjQty > 1e-6 ? 'text-sky-700' : 'text-muted-foreground',
+                          __WEB__ && cn(SK_NUM, SK_BRULE, SK_BIN)
+                        )}
+                      >
+                        {Math.abs(adjQty) > 1e-6 ? (
+                          <CellWithWorkings
+                            value={`${adjQty > 0 ? '+' : '−'}${formatNum(Math.abs(adjQty))}`}
+                            className={adjQty < 0 ? 'text-amber-700' : 'text-sky-700'}
+                            title={dayMode ? `Corrections on ${formatDate(date)}` : 'Corrections — all time'}
+                            lines={fixLines}
+                            footer={`${fixLines.length} correction${fixLines.length === 1 ? '' : 's'}`}
+                          />
+                        ) : (
+                          '—'
+                        )}
+                        {__WEB__ && Math.abs(adjQty) > 1e-6 && mtLine(adjQty)}
+                      </TableCell>
                       <TableCell className={cn('text-right font-medium tabular-nums text-emerald-700', __WEB__ && cn(SK_NUM, SK_BRULE, SK_BIN))}>
                         {inQty ? (
                           <CellWithWorkings
                             value={formatNum(inQty)}
                             className="text-emerald-700"
                             title={dayMode ? `Packed in on ${formatDate(date)}` : 'Packed in — all time'}
-                            lines={[...inLines, ...fixLines]}
-                            footer={
-                              fixLines.length
-                                ? `${inLines.length} packing entr${inLines.length === 1 ? 'y' : 'ies'}, ${fixLines.length} correction${fixLines.length === 1 ? '' : 's'}`
-                                : undefined
-                            }
+                            lines={inLines}
+                            footer={`${inLines.length} packing entr${inLines.length === 1 ? 'y' : 'ies'}`}
                           />
                         ) : (
                           '—'
@@ -4894,10 +6245,21 @@ function SkuStock(): React.JSX.Element {
                               ? [
                                   { left: 'Opening', right: asCases(Number(r.opening) || 0) },
                                   { left: 'Packed in', right: `+${asCases(inQty)}` },
+                                  ...(Math.abs(adjQty) > 1e-6
+                                    ? [{ left: 'Corrections', right: `${adjQty > 0 ? '+' : '−'}${asCases(Math.abs(adjQty))}` }]
+                                    : []),
                                   { left: 'Dispatched', right: `−${asCases(outQty)}` }
                                 ]
                               : [
-                                  { left: 'Packed in', right: asCases(Number(r.added) || 0) },
+                                  { left: 'Packed in', right: asCases(Number(r.packed_in) || 0) },
+                                  ...(Math.abs(Number(r.adj_in) || 0) > 1e-6
+                                    ? [
+                                        {
+                                          left: 'Corrections',
+                                          right: `${Number(r.adj_in) > 0 ? '+' : '−'}${asCases(Math.abs(Number(r.adj_in) || 0))}`
+                                        }
+                                      ]
+                                    : []),
                                   { left: 'Dispatched', right: `−${asCases(Number(r.sold) || 0)}` }
                                 ]
                           }
@@ -4982,11 +6344,34 @@ function SkuStock(): React.JSX.Element {
                   <TableCell colSpan={dayMode ? 5 : 4} className={cn('font-bold uppercase tracking-wide text-amber-900', __WEB__ && '!text-[11.5px] !font-extrabold !tracking-[.09em] !text-white')}>
                     Total{shown.length !== rows.length ? ' (filtered)' : ''}
                   </TableCell>
+                  {/* The corrections, totalled and signed. Kept out of the
+                      packed total above so that figure is a day's output and
+                      nothing else. */}
+                  {(() => {
+                    const adjTotal = shown.reduce((t, r) => t + (dayMode ? Number(r.adj_on) || 0 : Number(r.adj_in) || 0), 0)
+                    return (
+                      <TableCell className={cn('text-right font-bold tabular-nums text-amber-900', __WEB__ && cn(SK_NUM, SK_RULE, '!font-bold', '!text-[#9FE3BF]'))}>
+                        {Math.abs(adjTotal) > 1e-6 ? `${adjTotal > 0 ? '+' : '−'}${formatNum(Math.abs(adjTotal))}` : '—'}
+                      </TableCell>
+                    )
+                  })()}
                   <TableCell className={cn('text-right font-bold tabular-nums text-amber-900', __WEB__ && cn(SK_NUM, SK_RULE, '!font-bold', '!text-[#9FE3BF]'))}>
-                    {formatNum(shown.reduce((s, r) => s + (dayMode ? Number(r.added_on) || 0 : Number(r.added) || 0), 0))}
+                    {formatNum(shown.reduce((s, r) => s + (dayMode ? Number(r.packed_on) || 0 : Number(r.packed_in) || 0), 0))}
+                    {__WEB__ && Math.abs(shownInMT) > 1e-9 && (
+                      <span className="whitespace-nowrap text-[11px] font-semibold text-[#9FE3BF]">
+                        <span className="text-[#8FBFA8]">{' / '}</span>
+                        {formatNum(shownInMT)} MT
+                      </span>
+                    )}
                   </TableCell>
                   <TableCell className={cn('text-right font-bold tabular-nums text-amber-900', __WEB__ && cn(SK_NUM, SK_RULE, '!font-bold', '!text-[#F0AFAA]'))}>
                     {formatNum(shown.reduce((s, r) => s + (dayMode ? Number(r.sold_on) || 0 : Number(r.sold) || 0), 0))}
+                    {__WEB__ && Math.abs(shownOutMT) > 1e-9 && (
+                      <span className="whitespace-nowrap text-[11px] font-semibold text-[#F0AFAA]">
+                        <span className="text-[#C89A96]">{' / '}</span>
+                        {formatNum(shownOutMT)} MT
+                      </span>
+                    )}
                   </TableCell>
                   <TableCell className={cn('text-right font-bold tabular-nums text-amber-900', __WEB__ && cn(SK_NUM, SK_RULE, SK_CLOSE, '!font-bold', '!text-[#C7F03F]'))}>
                     {formatNum(shown.reduce((s, r) => s + (Number(r.on_hand) || 0), 0))}
@@ -5024,6 +6409,55 @@ function SkuStock(): React.JSX.Element {
           <DialogHeader>
             <DialogTitle>Update packed stock — {adjustRow?.name}</DialogTitle>
           </DialogHeader>
+          {/* WHAT IS ON THE SHELF, BEFORE ANYTHING IS TYPED.
+              The figure being changed was at the bottom of the form, under the
+              note, which is the last place it is looked for — and the pack
+              size it is counted in was nowhere at all, though it is the one
+              fact that decides whether a typed number is right. */}
+          {adjustRow && (
+            <div className="-mt-1 flex flex-wrap items-end justify-between gap-3 rounded-[4px] border border-[#E4ECE3] bg-[#F7FAF6] px-3 py-2">
+              <div className="min-w-0">
+                <div className="text-[9.5px] font-extrabold uppercase tracking-[.12em] text-[#5A6B62]">On the shelf now</div>
+                <div className="text-[19px] font-extrabold leading-tight tabular-nums text-[#0A1F17]">
+                  {formatNum(Number(adjustRow.on_hand) || 0)}{' '}
+                  <span className="text-[12px] font-bold text-[#5A6B62]">{pieceLabel(adjustRow)}</span>
+                </div>
+              </div>
+              {/* THE WEIGHT OF WHAT IS BEING COUNTED, NOT OF A POUCH.
+                  base_per_pouch is ONE POUCH however the SKU is ticked, and
+                  pouches_per_box is how many of them a box holds. Every SKU in
+                  these books held one piece to a box until PANGHAT 1 LTR X 20P
+                  arrived — 0.893 KG a pouch, twenty to the box — and this strip
+                  printed "0.893 KG per box" and a tonnage twenty times short of
+                  the entry sitting two inches below it. unitMT is the same
+                  conversion the register and the export already use. */}
+              <div className="text-right text-[11px] leading-tight text-[#5A6B62]">
+                <div>
+                  <b className="text-[#0A1F17]">
+                    {formatNum(unitMT(adjustRow) * 1000)} {String(adjustRow.base_uom || 'KG')}
+                  </b>{' '}
+                  per {pieceLabel(adjustRow).toLowerCase()}
+                  {Number(adjustRow.pouches_per_box) > 1 &&
+                    String(adjustRow.pouch_label || '').trim().toLowerCase() === 'box' && (
+                      <span className="text-[10px]">
+                        {' '}
+                        ({formatNum(adjustRow.pouches_per_box)} × {formatNum(adjustRow.base_per_pouch)})
+                      </span>
+                    )}
+                </div>
+                <div>
+                  ={' '}
+                  <b className="text-[#0A1F17]">
+                    {formatNum((Number(adjustRow.on_hand) || 0) * unitMT(adjustRow))} MT
+                  </b>{' '}
+                  on hand
+                </div>
+                {!!packFloor && (
+                  <div className="text-[10px] text-[#8CA396]">counted from {formatDate(packFloor)}</div>
+                )}
+              </div>
+            </div>
+          )}
           {adjustRow && (() => {
             const onHand = Number(adjustRow.on_hand) || 0
             const amt = Number(adjustForm.amount) || 0
@@ -5031,7 +6465,18 @@ function SkuStock(): React.JSX.Element {
             const delta = adjustForm.mode === 'add' ? pieces : -pieces
             const newHand = onHand + delta
             return (
-              <div className="space-y-3">
+              // min-w-0, AND IT IS NOT DECORATION.
+              //
+              // DialogContent is a grid, and a grid item's automatic minimum
+              // size is its MIN-CONTENT — so one unbreakable string anywhere
+              // inside forces the whole column wider than the dialog and every
+              // other row stretches with it. The entry notes below are the
+              // string: a 122-character correction note set nowrap has a
+              // min-content of 776px against a 655px dialog, which is why the
+              // form, the Packing/Correction cards and the quantity box all ran
+              // off the right edge behind a horizontal scrollbar. Zero here lets
+              // the column shrink to the dialog and the text wrap inside it.
+              <div className="min-w-0 space-y-3">
                 {/* Asked before anything else, because it changes what the
                     entry MEANS. Packing is production; a correction is somebody
                     deciding the count was wrong, and the register now says so
@@ -5119,15 +6564,47 @@ function SkuStock(): React.JSX.Element {
                       visible here instead of only in the tonnage. */}
                   {amt > 0 && (
                     <div className="text-[11px] text-muted-foreground">
-                      {formatNum(amt)} {pieceLabel(adjustRow)} × {formatNum(adjustRow.base_per_pouch)}{' '}
+                      {formatNum(amt)} {pieceLabel(adjustRow)} × {formatNum(unitMT(adjustRow) * 1000)}{' '}
                       {String(adjustRow.base_uom || 'KG')} per {pieceLabel(adjustRow).toLowerCase()} ={' '}
-                      <b className="text-foreground">
-                        {formatNum((amt * Number(adjustRow.base_per_pouch || 0)) / 1000)} MT
-                      </b>{' '}
-                      off the plant tank
+                      <b className="text-foreground">{formatNum(amt * unitMT(adjustRow))} MT</b> off the plant tank
                     </div>
                   )}
                 </div>
+                {/* THE ANSWER, BESIDE THE QUESTION.
+                    What the shelf becomes was stated at the foot of the form,
+                    below the note — three fields away from the box that
+                    decides it. It belongs here, where the number is typed. */}
+                {amt > 0 && (
+                  <div
+                    className={cn(
+                      'flex flex-wrap items-center justify-between gap-2 rounded-[4px] border px-3 py-2',
+                      newHand < -1e-9 ? 'border-[#F0C9C4] bg-[#FDF3F2]' : 'border-[#BFE3CB] bg-[#F1F9F4]'
+                    )}
+                  >
+                    <div className="text-[12px] text-[#33473E]">
+                      <span className="tabular-nums">{formatNum(onHand)}</span>
+                      <span className="mx-1.5 text-[#8CA396]">→</span>
+                      <span
+                        className={cn(
+                          'text-[15px] font-extrabold tabular-nums',
+                          newHand < -1e-9 ? 'text-[#B3261E]' : 'text-[#0B6B45]'
+                        )}
+                      >
+                        {formatNum(newHand)}
+                      </span>{' '}
+                      <span className="text-[11px] font-semibold text-[#5A6B62]">{pieceLabel(adjustRow)}</span>
+                    </div>
+                    <div
+                      className={cn(
+                        'rounded-[2px] px-1.5 py-[2px] text-[11px] font-extrabold tabular-nums',
+                        delta < 0 ? 'bg-[#FDECEA] text-[#B3261E]' : 'bg-[#E9F5EE] text-[#0B6B45]'
+                      )}
+                    >
+                      {delta > 0 ? '+' : '−'}
+                      {formatNum(Math.abs(delta))} {pieceLabel(adjustRow)}
+                    </div>
+                  </div>
+                )}
                 <div className="flex flex-col gap-1.5">
                   <Label>Date</Label>
                   <DatePicker value={adjustForm.date} onChange={(v) => setAdjustForm((p) => ({ ...p, date: v || '' }))} />
@@ -5151,6 +6628,9 @@ function SkuStock(): React.JSX.Element {
                     </span>
                   )}
                 </div>
+                {/* Kept only for the case where nothing has been typed yet:
+                    once there is a figure the card above states the result. */}
+                {amt <= 0 && (
                 <div className="rounded-md bg-muted px-3 py-2 text-sm">
                   On hand: <span className="tabular-nums">{formatNum(onHand)}</span> →{' '}
                   <span className={cn('font-semibold tabular-nums', newHand < -1e-9 && 'text-red-600')}>{formatNum(newHand)}</span>{' '}
@@ -5162,6 +6642,15 @@ function SkuStock(): React.JSX.Element {
                     </div>
                   )}
                 </div>
+                )}
+                {/* The below-zero warning still has to be said when a figure
+                    HAS been typed — that is precisely when it matters. */}
+                {amt > 0 && newHand < -1e-9 && (
+                  <p className="text-[11px] font-medium text-red-600">
+                    That would take this SKU below zero — this box counts in{' '}
+                    {pieceLabel(adjustRow).toLowerCase()}s, so check the figure is not a case or kilo total.
+                  </p>
+                )}
                 {error && <p className="text-sm text-red-600">{error}</p>}
 
                 {/* What is already on this SKU.
@@ -5180,11 +6669,44 @@ function SkuStock(): React.JSX.Element {
                     <span className="text-[10.5px] font-bold uppercase tracking-wide text-[#334155]">
                       Entries on this SKU
                     </span>
-                    <span className="text-[11px] text-[#475569]">
-                      {adjLog.length} hand {adjLog.length === 1 ? 'entry' : 'entries'} · dispatches live on the
-                      invoice
+                    <span className="flex items-center gap-1.5 text-[11px] text-[#475569]">
+                      {(
+                        [
+                          ['all', 'All'],
+                          ['packing', 'Packing'],
+                          ['correction', 'Corrections']
+                        ] as const
+                      ).map(([k, label]) => {
+                        const n2 =
+                          k === 'all' ? adjLog.length : adjLog.filter((a) => String(a.kind) === k).length
+                        return (
+                          <button
+                            key={k}
+                            type="button"
+                            onClick={() => setAdjLogKind(k)}
+                            className={cn(
+                              'rounded-[2px] px-1.5 py-[2px] text-[10.5px] font-bold',
+                              adjLogKind === k ? 'bg-[#0B3D2E] text-white' : 'text-[#475569] hover:bg-black/5'
+                            )}
+                          >
+                            {label} <span className="tabular-nums opacity-70">{n2}</span>
+                          </button>
+                        )
+                      })}
                     </span>
                   </div>
+                  {/* THE FIGURE AND ITS EVIDENCE HAVE TO AGREE, OR SAY WHY.
+                      Entries before the opening are superseded by the count,
+                      which is correct and was completely silent: "0 Box on
+                      hand" directly above two packing runs totalling +2,176. */}
+                  {!!packFloor && adjLog.some((a) => String(a.adj_date || '').slice(0, 10) < packFloor) && (
+                    <div className="border-b bg-amber-50 px-3 py-2 text-[11px] leading-snug text-amber-900">
+                      The packed shelf was counted on <b>{formatDate(packFloor)}</b>, and a counted shelf already
+                      accounts for everything packed and sold before it — so entries dated earlier are{' '}
+                      <b>not in the on-hand figure</b>. To bring one in, date the packed opening earlier, or move the
+                      entry on or after {formatDate(packFloor)}, or count these packs into the opening itself.
+                    </div>
+                  )}
                   <div className="max-h-60 overflow-y-auto">
                     {adjLogLoading ? (
                       <div className="px-3 py-6 text-center text-[12px] text-[#475569]">Reading the entries…</div>
@@ -5192,15 +6714,25 @@ function SkuStock(): React.JSX.Element {
                       <div className="px-3 py-6 text-center text-[12px] text-[#475569]">
                         Nothing has been entered by hand against this SKU yet.
                       </div>
+                    ) : adjLog.filter((a) => adjLogKind === 'all' || String(a.kind) === adjLogKind).length === 0 ? (
+                      <div className="px-3 py-6 text-center text-[12px] text-[#475569]">
+                        No {adjLogKind === 'packing' ? 'packing runs' : 'corrections'} on this SKU.
+                      </div>
                     ) : (
-                      adjLog.map((a) => {
+                      adjLog.filter((a) => adjLogKind === 'all' || String(a.kind) === adjLogKind).map((a) => {
                         const pcs = Number(a.delta) || 0
                         const mt = Number(a.mt) || 0
                         const packing = String(a.kind) === 'packing'
+                        // Superseded by the opening count — listed, because it
+                        // happened, but plainly not part of the balance above.
+                        const preFloor = !!packFloor && String(a.adj_date || '').slice(0, 10) < packFloor
                         return (
                           <div
                             key={String(a.id)}
-                            className="flex items-start gap-2 border-b px-3 py-2 last:border-0"
+                            className={cn(
+                              'flex min-w-0 items-start gap-2 border-b px-3 py-2 last:border-0',
+                              preFloor && 'bg-amber-50/40'
+                            )}
                           >
                             <div className="min-w-0 flex-1">
                               <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5">
@@ -5222,6 +6754,14 @@ function SkuStock(): React.JSX.Element {
                                 >
                                   {packing ? 'Packing' : 'Correction'}
                                 </Badge>
+                                {preFloor && (
+                                  <span
+                                    title={`Before the packed opening of ${formatDate(packFloor)} — the count supersedes it, so it is not in the on-hand figure`}
+                                    className="rounded-[2px] border border-amber-300 bg-amber-100 px-1.5 py-[1px] text-[9.5px] font-extrabold uppercase tracking-[.05em] text-amber-800"
+                                  >
+                                    not counted
+                                  </span>
+                                )}
                                 <span className="text-[11px] font-medium text-[#475569]">
                                   {!packing
                                     ? 'shelf only — no oil moved'
@@ -5232,7 +6772,14 @@ function SkuStock(): React.JSX.Element {
                                         : 'no oil moved'}
                                 </span>
                               </div>
-                              <div className="truncate text-[11px] text-[#475569]">
+                              {/* WRAPPED, NOT CLIPPED.
+                                  This line carries the reason a correction was
+                                  made — "reverses entry #209, that packing never
+                                  happened" — which is the one thing anybody
+                                  opens this list to read. On one line it was cut
+                                  off mid-sentence, and it was also what pushed
+                                  the dialog wider than itself. */}
+                              <div className="break-words text-[11px] leading-snug text-[#475569]">
                                 {String(a.created_by || 'unknown')}
                                 {a.created_at ? ` · ${String(a.created_at).slice(0, 16).replace('T', ' ')}` : ''}
                                 {a.note ? ` · “${String(a.note)}”` : ''}
@@ -5278,18 +6825,21 @@ function MncStock(): React.JSX.Element {
   const [open, setOpen] = useState<Set<string>>(new Set())
   // Opening stock: what the MNC already held with us when the books started.
   // No gate entry behind it, so it is entered by hand.
-  const [suppliers, setSuppliers] = useState<Row[]>([])
-  const [products, setProducts] = useState<Row[]>([])
   const [openingOpen, setOpeningOpen] = useState(false)
-  const [opening, setOpening] = useState<Row>({})
-  const [openingLog, setOpeningLog] = useState<Row[]>([])
-  const [savingOpening, setSavingOpening] = useState(false)
-  const [openingError, setOpeningError] = useState<string | null>(null)
+  // Which party and product the opening dialog opens on, when a row named
+  // them. The form itself lives in ConsignmentOpeningDialog, which the
+  // Consignment page opens too — see that file for why it is not here.
+  const [openingSeed, setOpeningSeed] = useState<{ s?: unknown; p?: unknown }>({})
   // Period for the register: opening balance before it, deposits/invoices
   // within it — same convention as Book Stock's date range.
   const [mncFrom, setMncFrom] = useState('')
   const [mncTo, setMncTo] = useState('')
   const mncRanged = !!(mncFrom || mncTo)
+  // The website's register: a search over the lots and invoices, and which of
+  // the lots to show — every one, those still partly the party's, or those
+  // invoiced in full.
+  const [mncQuery, setMncQuery] = useState('')
+  const [lotF, setLotF] = useState<'all' | 'open' | 'drawn'>('all')
   // Alt+F2 broadcasts a period from anywhere.
   const globalRangeMnc = useGlobalDateRange()
   useEffect(() => {
@@ -5301,20 +6851,16 @@ function MncStock(): React.JSX.Element {
     // page blink every few seconds. The rows already on screen stay until the
     // new ones arrive. See useLiveRefresh.
     if (!background) setLoading(true)
-    const [sm, ls, inv, sup, prd] = await Promise.all([
+    const [sm, ls, inv] = await Promise.all([
       window.api.consignment.summary(mncRanged ? { from: mncFrom, to: mncTo } : undefined),
       window.api.consignment.list('stock'),
       // The purchases that drew this stock down — the detail behind the
       // Invoiced column, on the same period as the summary.
-      window.api.consignment.invoices(mncRanged ? { from: mncFrom, to: mncTo } : undefined),
-      window.api.data.list('suppliers'),
-      window.api.data.list('products')
+      window.api.consignment.invoices(mncRanged ? { from: mncFrom, to: mncTo } : undefined)
     ])
     setRows(sm)
     setLots(ls)
     setInvoices(inv)
-    setSuppliers(sup.filter((x) => x.active))
-    setProducts(prd.filter((x) => x.active))
     setLoading(false)
   }, [mncRanged, mncFrom, mncTo])
 
@@ -5340,75 +6886,15 @@ function MncStock(): React.JSX.Element {
     (supplierId: unknown, productId: unknown): Row | undefined => openingLotsFor(supplierId, productId)[0],
     [openingLotsFor]
   )
-  const existingOpenings = openingLotsFor(opening.supplier_id, opening.product_id)
-  const existingOpening = existingOpenings[0]
-  const existingOpeningTotal = existingOpenings.reduce((s, l) => s + (Number(l.qty) || 0), 0)
 
   function openOpeningStock(supplierId?: unknown, productId?: unknown): void {
-    const existing = openingLotsFor(supplierId, productId)
-    const found = existing[0]
-    setOpening({
-      supplier_id: supplierId ? String(supplierId) : '',
-      product_id: productId ? String(productId) : '',
-      qty: existing.length ? String(existing[0].qty ?? '') : '',
-      uom: String(found?.uom || 'MT'),
-      deposit_date: String(found?.deposit_date || todayISO()).slice(0, 10),
-      note: found?.note ?? ''
-    })
-    setOpeningError(null)
+    setOpeningSeed({ s: supplierId, p: productId })
     setOpeningOpen(true)
   }
 
-  async function saveOpeningStock(): Promise<void> {
-    if (!opening.supplier_id) return setOpeningError('Choose the MNC / party')
-    if (!opening.product_id) return setOpeningError('Choose the product')
-    if ((Number(opening.qty) || 0) <= 0) return setOpeningError('Enter the opening quantity')
-    setSavingOpening(true)
-    setOpeningError(null)
-    try {
-      // One validated main-process step: logs the old figure, merges duplicate
-      // lots, refuses figures below what is already drawn or future dates.
-      await window.api.consignment.saveOpening({
-        supplier_id: Number(opening.supplier_id),
-        product_id: Number(opening.product_id),
-        qty: Number(opening.qty),
-        uom: opening.uom || 'MT',
-        deposit_date: opening.deposit_date,
-        note: opening.note ? String(opening.note).trim() : 'Opening stock'
-      })
-      toast.success(`Opening stock set to ${formatNum(Number(opening.qty))} ${opening.uom || 'MT'}`)
-      setOpeningOpen(false)
-      await load()
-    } catch (e) {
-      setOpeningError((e as Error).message)
-    } finally {
-      setSavingOpening(false)
-    }
-  }
-
-  // The band's live numbers for the pair in the dialog — shown before changing.
-  const dlgBand = rows.find(
-    (r) => String(r.supplier_id) === String(opening.supplier_id) && String(r.product_id) === String(opening.product_id)
-  )
-  const dlgDrawn = dlgBand ? (Number(dlgBand.deposited) || 0) - (Number(dlgBand.balance) || 0) : 0
-  const dlgMin = dlgBand ? Math.max(0, dlgDrawn - ((Number(dlgBand.deposited) || 0) - existingOpeningTotal)) : 0
   useEffect(() => { load() }, [load])
   useLiveRefresh(load)
 
-  // The restatement trail for the pair currently in the dialog — every set,
-  // restate and delete of this opening, so mistakes can be put back.
-  useEffect(() => {
-    if (!openingOpen || !opening.supplier_id || !opening.product_id) {
-      setOpeningLog([])
-      return
-    }
-    let live = true
-    window.api.consignment
-      .openingLog(Number(opening.supplier_id), Number(opening.product_id))
-      .then((r) => { if (live) setOpeningLog(r) })
-      .catch(() => {})
-    return () => { live = false }
-  }, [openingOpen, opening.supplier_id, opening.product_id])
 
   const key = (r: Row): string => `${r.supplier_id}:${r.product_id}`
   function toggle(k: string): void {
@@ -5492,6 +6978,784 @@ function MncStock(): React.JSX.Element {
     ])
   )
 
+  const mncSheetColumns: ExcelColumn[] = [
+    { header: 'Party', key: 'supplier_name', value: (r: Row) => r.supplier_name || '' },
+    { header: 'Product', key: 'product', value: (r: Row) => r.product_code || r.product_name || '' },
+    { header: 'Opening', key: 'opening', align: 'right', numFmt: '#,##0.000', value: (r: Row) => Number(r.opening) || 0 },
+    { header: 'Deposited', key: 'deposited', align: 'right', numFmt: '#,##0.000', value: (r: Row) => Number(r.deposited) || 0 },
+    { header: 'Invoiced', key: 'invoiced', align: 'right', numFmt: '#,##0.000', value: (r: Row) => Number(r.invoiced) || 0 },
+    { header: mncRanged ? 'Closing' : 'Balance', key: 'balance', align: 'right', numFmt: '#,##0.000', value: (r: Row) => Number(r.balance) || 0 },
+    { header: 'UOM', key: 'uom', value: (r: Row) => r.uom || 'MT' },
+    { header: 'Date', key: 'deposit_date', value: (r: Row) => (r.deposit_date ? formatDate(r.deposit_date) : '') },
+    { header: 'Tanker', key: 'tanker_no', value: (r: Row) => r.tanker_no || '' },
+    { header: 'Gate no', key: 'gate_entry_no', value: (r: Row) => r.gate_entry_no || '' },
+    { header: 'Weighed', key: 'weighed_qty', align: 'right', numFmt: '#,##0.000', value: (r: Row) => Number(r.weighed_qty) || 0 },
+    { header: 'Short %', key: 'shortage_pct', value: (r: Row) => (Number(r.shortage_pct) > 0 ? `${r.shortage_pct}%` : '') },
+    { header: 'Status', key: 'status', value: (r: Row) => r.status || '' },
+    { header: 'Invoice', key: 'invoice_no', value: (r: Row) => r.invoice_no || '' }
+  ]
+
+  // ── THE WEBSITE'S MNC REGISTER, from its canvas ─────────────────────
+  // The same figures and the same actions as the register below — this is a
+  // second drawing of it, not a second set of numbers. What it adds is the
+  // answer to "where did each lot go": a bar per lot split by the invoices that
+  // drew on it, the invoices listed with their quantities, and the part still
+  // the party's — plus a search and an open / fully-invoiced filter on the lots.
+  if (__WEB__) {
+    const V = {
+      deep: '#3D3179',
+      mid: '#5B4BA8',
+      soft: '#7A6DB8',
+      muted: '#6B6590',
+      faint: '#A9A3C4',
+      edge: '#E2DEF2',
+      rule: '#ECE9F6',
+      head: '#F1EFF9',
+      paper: '#FAF9FE'
+    }
+    const SHADES = ['#C4473D', '#E07B6F', '#A8322A', '#EFA096']
+    const qq = mncQuery.trim().toLowerCase()
+    const inRange = (d: unknown): boolean => {
+      if (!mncRanged) return true
+      const x = String(d || '').slice(0, 10)
+      return (!mncFrom || x >= mncFrom) && (!mncTo || x <= mncTo)
+    }
+    const q3 = (v: number): string => formatNum(Math.round(v * 1000) / 1000)
+    const sameRow = (x: Row, r: Row): boolean =>
+      String(x.supplier_id) === String(r.supplier_id) && String(x.product_id) === String(r.product_id)
+
+    type Parcel = { root: Row; parts: Row[]; received: number; drawn: Row[]; open: number }
+    // ONE ROW PER LOT AS IT WAS RECEIVED — the slices an invoice cut from a
+    // lot are folded back under it (see the same rule in the register below).
+    const detailOf = (r: Row): { parcels: Parcel[]; invs: Row[] } => {
+      const allMine = lots.filter((l) => sameRow(l, r))
+      const byId = new Map(allMine.map((l) => [Number(l.id), l]))
+      const rootOf = (l: Row): Row => {
+        let cur = l
+        for (let g = 0; g < 10 && cur.split_from != null && byId.has(Number(cur.split_from)); g++) {
+          cur = byId.get(Number(cur.split_from)) as Row
+        }
+        return cur
+      }
+      const m = new Map<number, { root: Row; parts: Row[] }>()
+      for (const l of allMine.filter((x) => inRange(x.deposit_date))) {
+        const root = rootOf(l)
+        const cur = m.get(Number(root.id)) || { root, parts: [] as Row[] }
+        cur.parts.push(l)
+        m.set(Number(root.id), cur)
+      }
+      const parcels = Array.from(m.values()).map(({ root, parts }) => ({
+        root,
+        parts,
+        received: parts.reduce((t, p) => t + (Number(p.qty) || 0), 0),
+        drawn: parts.filter((p) => p.order_id != null),
+        open: Math.round(parts.filter((p) => p.order_id == null).reduce((t, p) => t + (Number(p.qty) || 0), 0) * 1000) / 1000
+      }))
+      // Newest deposit first; same day, the later entry first.
+      parcels.sort(
+        (a, b) =>
+          String(b.root.deposit_date || '').slice(0, 10).localeCompare(String(a.root.deposit_date || '').slice(0, 10)) ||
+          Number(b.root.id) - Number(a.root.id)
+      )
+      return { parcels, invs: invoices.filter((v) => sameRow(v, r)) }
+    }
+    // The parcels one invoice came off, read off the WHOLE deposit list — a
+    // parcel deposited before the period is still the one it drew.
+    const drawnBy = (orderId: unknown): { lot: string; term: string; qty: number }[] => {
+      const seen = new Map<string, { lot: string; term: string; qty: number }>()
+      for (const l of lots) {
+        if (Number(l.order_id) !== Number(orderId)) continue
+        const lot = String(l.lot_no || '').trim()
+        const term = String(l.terminal_no || '').trim()
+        const cur = seen.get(`${lot}|${term}`) || { lot, term, qty: 0 }
+        cur.qty += Number(l.qty) || 0
+        seen.set(`${lot}|${term}`, cur)
+      }
+      return Array.from(seen.values())
+    }
+    const parcelHits = (p: Parcel): boolean =>
+      !qq ||
+      [p.root.tanker_no, p.root.gate_entry_no, p.root.lot_no, p.root.terminal_no, p.root.note, ...p.drawn.map((d) => d.invoice_no)]
+        .filter(Boolean)
+        .join(' ')
+        .toLowerCase()
+        .includes(qq)
+    const invoiceHits = (v: Row): boolean =>
+      !qq ||
+      [v.invoice_no, v.bargain_no, ...drawnBy(v.id).flatMap((g) => [g.lot, g.term])]
+        .filter(Boolean)
+        .join(' ')
+        .toLowerCase()
+        .includes(qq)
+    const details = new Map(rows.map((r) => [key(r), detailOf(r)]))
+    const allParcels = Array.from(details.values()).flatMap((d) => d.parcels)
+    const openingParcels = allParcels.filter((p) => Number(p.root.is_opening) === 1).length
+    // Counted off the products on the page, as the Invoiced figure is — the
+    // invoice list itself also carries purchases of products held by nobody.
+    const invCount = Array.from(details.values()).reduce((t, d) => t + d.invs.length, 0)
+    const hasFilter = mncRanged || !!qq || lotF !== 'all'
+
+    const chip = (text: string, tint: { bg: string; fg: string } | null, strong: boolean, small = false): React.JSX.Element => (
+      <span
+        className="doc-ref whitespace-nowrap rounded-[3px] font-bold"
+        style={{
+          fontSize: small ? 10 : 10.5,
+          padding: small ? '1px 5px' : '2px 6px',
+          background: tint ? tint.bg : '#EEF0F2',
+          color: tint ? tint.fg : '#5A6B62',
+          opacity: strong ? 1 : 0.78
+        }}
+      >
+        {text}
+      </span>
+    )
+    const tile = (o: { k: string; v: string; unit?: string; sub: string; icon: typeof Plus; accent: string; dark?: boolean }): React.JSX.Element => (
+      <div
+        key={o.k}
+        className="relative min-w-0 overflow-hidden rounded-[12px]"
+        style={{
+          background: o.dark ? 'linear-gradient(160deg,#5E4DB0 0%,#3D3179 55%,#2C2360 100%)' : '#fff',
+          border: `1px solid ${o.dark ? 'transparent' : V.edge}`,
+          boxShadow: o.dark ? 'inset 0 1px 0 rgba(255,255,255,.12),0 14px 30px -16px rgba(61,49,121,.7)' : '0 1px 2px rgba(61,49,121,.04)',
+          padding: '14px 16px'
+        }}
+      >
+        <div
+          className="pointer-events-none absolute"
+          style={{
+            top: -50,
+            right: -50,
+            width: 140,
+            height: 140,
+            borderRadius: '50%',
+            background: `radial-gradient(circle,${o.dark ? 'rgba(199,188,240,.28)' : `${o.accent}1A`},transparent 70%)`
+          }}
+        />
+        <div className="relative flex items-center gap-2">
+          <o.icon className="h-[17px] w-[17px]" style={{ color: o.dark ? '#C7BCF0' : o.accent }} />
+          <span className="text-[9.5px] font-extrabold uppercase tracking-[.13em]" style={{ color: o.dark ? '#C7BCF0' : V.muted }}>
+            {o.k}
+          </span>
+        </div>
+        <div className="relative mt-2 flex items-baseline gap-1.5">
+          <span className="doc-ref whitespace-nowrap text-[21px] font-bold tracking-[-0.03em]" style={{ color: o.dark ? '#fff' : o.accent }}>
+            {o.v}
+          </span>
+          {!!o.unit && (
+            <span className="text-[11px] font-extrabold" style={{ color: o.dark ? '#C7BCF0' : V.muted }}>
+              {o.unit}
+            </span>
+          )}
+        </div>
+        <div className="relative mt-1 text-[11px] font-semibold" style={{ color: o.dark ? '#C7BCF0' : V.muted }}>
+          {o.sub}
+        </div>
+      </div>
+    )
+
+    const GRID = 'minmax(260px,1fr) 150px 170px 160px 180px 96px'
+    const LOT_GRID = '34px 106px 124px 140px 74px 56px 118px minmax(230px,1fr) 124px 34px'
+    const INV_GRID = '36px 100px 116px minmax(200px,1fr) minmax(230px,1fr) 110px 120px 150px'
+    const subHead = 'text-[9.5px] font-extrabold uppercase tracking-[.1em]'
+
+    const lotsPanel = (r: Row, d: { parcels: Parcel[]; invs: Row[] }): React.JSX.Element => {
+      const counts = {
+        all: d.parcels.length,
+        open: d.parcels.filter((p) => p.open > 1e-9).length,
+        drawn: d.parcels.filter((p) => p.open <= 1e-9 && p.drawn.length > 0).length
+      }
+      const shown = d.parcels.filter(
+        (p) =>
+          parcelHits(p) &&
+          (lotF === 'all' || (lotF === 'open' ? p.open > 1e-9 : p.open <= 1e-9 && p.drawn.length > 0))
+      )
+      const invs = d.invs.filter(invoiceHits)
+      const invQty = invs.reduce((t, v) => t + (Number(v.ordered_qty) || 0), 0)
+      const invNet = invs.reduce((t, v) => t + (Number(v.net_amount) || 0), 0)
+      const uom = String(r.uom || 'MT')
+      return (
+        <div className="flex flex-col gap-4" style={{ padding: '16px 18px 18px 22px', background: V.paper, borderBottom: `1px solid ${V.edge}` }}>
+          {/* DEPOSITED — every lot as it came in, and where each one went. */}
+          <div>
+            <div className="mb-[9px] flex flex-wrap items-center gap-[9px]">
+              <span className="h-2 w-2 rounded-full bg-[#12855A]" />
+              <span className="text-[10.5px] font-extrabold uppercase tracking-[.14em] text-[#0B6B45]">Deposited — lots received</span>
+              <span className="doc-ref rounded-[10px] bg-[#E1F3E8] px-2 py-px text-[10.5px] font-bold text-[#0B6B45]">{d.parcels.length}</span>
+              <div className="flex-1" />
+              <div className="flex gap-0.5 rounded-[7px] p-0.5" style={{ background: '#ECEAF5', border: '1px solid #DDD8EF' }}>
+                {(
+                  [
+                    ['all', 'All'],
+                    ['open', 'Still open'],
+                    ['drawn', 'Fully invoiced']
+                  ] as const
+                ).map(([k, label]) => {
+                  const on = lotF === k
+                  return (
+                    <button
+                      key={k}
+                      type="button"
+                      onClick={() => setLotF(k)}
+                      className="flex h-[26px] items-center gap-[5px] whitespace-nowrap rounded-[5px] px-2.5 text-[10.5px] font-extrabold"
+                      style={{ background: on ? '#fff' : 'transparent', color: on ? V.deep : V.muted, boxShadow: on ? '0 1px 2px rgba(61,49,121,.12)' : 'none' }}
+                    >
+                      {label}
+                      <span className="doc-ref text-[9.5px] opacity-70">{counts[k]}</span>
+                    </button>
+                  )
+                })}
+              </div>
+            </div>
+            {d.parcels.length === 0 ? (
+              <p className="text-[12px] font-semibold" style={{ color: V.muted }}>
+                No deposit lots recorded{mncRanged ? ' in this period' : ''}.
+              </p>
+            ) : (
+              <div className="overflow-x-auto rounded-[10px] bg-white" style={{ border: `1px solid ${V.edge}`, boxShadow: '0 1px 2px rgba(61,49,121,.04)' }}>
+                <div style={{ minWidth: 1080 }}>
+                  <div className={cn('grid h-8 items-center', subHead)} style={{ gridTemplateColumns: LOT_GRID, background: V.head, borderBottom: `1px solid ${V.edge}`, color: '#5A5478' }}>
+                    <span style={{ padding: '0 10px 0 12px' }}>#</span>
+                    <span style={{ padding: '0 8px' }}>Deposit date</span>
+                    <span style={{ padding: '0 8px' }}>Tanker · gate</span>
+                    <span style={{ padding: '0 8px' }}>Lot · terminal</span>
+                    <span style={{ padding: '0 8px', textAlign: 'right' }}>Weighed</span>
+                    <span style={{ padding: '0 8px', textAlign: 'right' }}>Short</span>
+                    <span style={{ padding: '0 8px', textAlign: 'right' }}>Qty net</span>
+                    <span style={{ padding: '0 8px' }}>Where it went</span>
+                    <span style={{ padding: '0 8px' }}>Note</span>
+                    <span />
+                  </div>
+                  {shown.map((p, i) => {
+                    const l = p.root
+                    const tint = lotTint(l.lot_no, l.terminal_no)
+                    const isOpening = Number(l.is_opening) === 1
+                    const pct = (x: number): string => `${p.received > 0 ? (x / p.received) * 100 : 0}%`
+                    return (
+                      <div
+                        key={String(l.id)}
+                        className="grid items-center hover:!bg-[#F7F5FD]"
+                        style={{ gridTemplateColumns: LOT_GRID, minHeight: 42, borderBottom: '1px solid #F1EFF7', background: i % 2 ? '#FCFBFF' : '#fff' }}
+                      >
+                        <span className="doc-ref text-[11px] font-semibold" style={{ padding: '0 10px 0 12px', color: V.faint }}>
+                          {d.parcels.indexOf(p) + 1}
+                        </span>
+                        <span className="doc-ref whitespace-nowrap text-[11.5px] font-semibold" style={{ padding: '0 8px' }}>
+                          {formatDate(l.deposit_date)}
+                        </span>
+                        <div className="min-w-0" style={{ padding: '4px 8px' }}>
+                          {l.tanker_no ? (
+                            <>
+                              <div className="doc-ref truncate text-[11.5px] font-bold">{String(l.tanker_no)}</div>
+                              {!!l.gate_entry_no && <div className="doc-ref mt-px text-[10px] font-semibold text-[#8C86A8]">{String(l.gate_entry_no)}</div>}
+                            </>
+                          ) : isOpening ? (
+                            <span className="rounded-[4px] border border-[#D6CEF5] bg-[#EDE9FB] px-[7px] py-0.5 text-[9.5px] font-extrabold uppercase tracking-[.06em] text-[#5B4BA8]">
+                              Opening
+                            </span>
+                          ) : (
+                            <span style={{ color: V.faint }}>—</span>
+                          )}
+                        </div>
+                        <div className="flex items-center gap-[3px]" style={{ padding: '0 8px' }}>
+                          {!l.lot_no && !l.terminal_no ? (
+                            <span style={{ color: V.faint }}>—</span>
+                          ) : (
+                            <>
+                              {!!l.lot_no && chip(String(l.lot_no), tint, true)}
+                              {!!l.terminal_no && chip(String(l.terminal_no), tint, false)}
+                            </>
+                          )}
+                        </div>
+                        <span className="doc-ref text-right text-[11.5px] font-semibold" style={{ padding: '0 8px', color: V.muted }}>
+                          {Number(l.weighed_qty) > 0 ? q3(Number(l.weighed_qty)) : '—'}
+                        </span>
+                        <span className="doc-ref text-right text-[11.5px] font-semibold" style={{ padding: '0 8px', color: V.muted }}>
+                          {Number(l.shortage_pct) > 0 ? `${l.shortage_pct}%` : '—'}
+                        </span>
+                        <span className="doc-ref whitespace-nowrap text-right text-[12px] font-bold text-[#0B6B45]" style={{ padding: '0 8px' }}>
+                          {q3(p.received)} {String(l.uom || uom)}
+                        </span>
+                        {/* WHERE IT WENT: the lot as a bar, one shade per invoice
+                            that drew on it and green for what is still the
+                            party's, with the same split spelled out under it. */}
+                        <div className="flex min-w-0 flex-col gap-[5px]" style={{ padding: '7px 10px 7px 8px' }}>
+                          {p.received <= 0 ? (
+                            <span className="text-[10.5px] font-extrabold text-[#8A5300]">Pending — not weighed in yet</span>
+                          ) : (
+                            <>
+                              <div
+                                className="flex h-1.5 gap-px overflow-hidden rounded-[3px] bg-[#E9F5EE]"
+                                title={
+                                  p.drawn.length
+                                    ? `${Math.round(((p.received - p.open) / p.received) * 100)}% invoiced · ${q3(p.open)} ${uom} open`
+                                    : 'Nothing invoiced yet'
+                                }
+                              >
+                                {p.drawn.map((x, k) => (
+                                  <div key={String(x.id)} className="h-full" style={{ width: pct(Number(x.qty) || 0), background: SHADES[k % SHADES.length] }} />
+                                ))}
+                                {p.open > 1e-9 && <div className="h-full" style={{ width: pct(p.open), background: '#7FC79D' }} />}
+                              </div>
+                              {p.drawn.map((x, k) => (
+                                <div key={String(x.id)} className="flex min-w-0 items-center gap-1.5" title="Invoiced off this lot">
+                                  <span className="h-1.5 w-1.5 flex-none rounded-[2px]" style={{ background: SHADES[k % SHADES.length] }} />
+                                  <span className="doc-ref whitespace-nowrap text-[10.5px] font-semibold text-[#5A5478]">{String(x.invoice_no || 'booked')}</span>
+                                  <span className="min-w-2 flex-1 -translate-y-0.5 border-b border-dotted" style={{ borderColor: V.edge }} />
+                                  <span className="doc-ref whitespace-nowrap text-[11px] font-bold text-[#8C2F26]">{q3(Number(x.qty) || 0)}</span>
+                                </div>
+                              ))}
+                              {p.drawn.length > 0 && p.open > 1e-9 && (
+                                <div className="flex items-center gap-1.5" title="Still the party's — not invoiced yet">
+                                  <span className="h-1.5 w-1.5 flex-none rounded-[2px] bg-[#7FC79D]" />
+                                  <span className="text-[10.5px] font-extrabold text-[#0B6B45]">Still open</span>
+                                  <span className="min-w-2 flex-1 -translate-y-0.5 border-b border-dotted border-[#CFE8D8]" />
+                                  <span className="doc-ref whitespace-nowrap text-[11px] font-bold text-[#0B6B45]">{q3(p.open)}</span>
+                                </div>
+                              )}
+                              {p.drawn.length === 0 && (
+                                <div className="flex items-center gap-1.5">
+                                  <Boxes className="h-3.5 w-3.5 text-[#0B6B45]" />
+                                  <span className="text-[10.5px] font-extrabold text-[#0B6B45]">Not invoiced yet — all still the party’s</span>
+                                </div>
+                              )}
+                            </>
+                          )}
+                        </div>
+                        <span className="truncate text-[10.5px] font-semibold" title={String(l.note || '')} style={{ padding: '0 8px', color: V.muted }}>
+                          {String(l.note || '—')}
+                        </span>
+                        <div className="flex justify-end" style={{ padding: '0 8px 0 4px' }}>
+                          {isOpening && p.drawn.length === 0 && p.parts.length === 1 && (
+                            <button
+                              type="button"
+                              title="Delete this opening lot (kept in history — restorable)"
+                              className="flex h-[26px] w-[26px] items-center justify-center rounded-[6px] text-[#B3261E] hover:bg-[#FDF0EE]"
+                              onClick={async (e) => {
+                                e.stopPropagation()
+                                if (!confirm(`Delete the opening lot of ${formatNum(l.qty)} ${l.uom || 'MT'}? Its figure stays in the restatement history.`)) return
+                                try {
+                                  await window.api.consignment.remove(Number(l.id))
+                                  toast.success('Opening lot deleted — restorable from the opening dialog history')
+                                  await load()
+                                } catch (err) {
+                                  toast.error((err as Error).message)
+                                }
+                              }}
+                            >
+                              <Trash2 className="h-4 w-4" />
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                    )
+                  })}
+                  {shown.length === 0 && (
+                    <div className="px-3 py-5 text-center text-[11.5px] font-semibold" style={{ color: V.muted }}>
+                      No lot matches {qq ? `“${mncQuery.trim()}”` : 'this filter'}.
+                    </div>
+                  )}
+                  <div className="grid min-h-[38px] items-center bg-[#E9F5EE]" style={{ gridTemplateColumns: LOT_GRID }}>
+                    <span className="text-[10px] font-extrabold uppercase tracking-[.1em] text-[#0B6B45]" style={{ gridColumn: 'span 6', padding: '0 12px' }}>
+                      {shown.length} of {d.parcels.length} lots shown
+                    </span>
+                    <span className="doc-ref text-right text-[12.5px] font-bold text-[#0B6B45]" style={{ padding: '0 8px' }}>
+                      {q3(shown.reduce((t, p) => t + p.received, 0))} {uom}
+                    </span>
+                    <span className="text-[10.5px] font-bold text-[#0B6B45]" style={{ gridColumn: 'span 3', padding: '0 8px' }}>
+                      {q3(shown.reduce((t, p) => t + p.open, 0))} {uom} still the party’s
+                    </span>
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* INVOICED — the purchases that took this stock into our books. */}
+          <div>
+            <div className="mb-[9px] flex items-center gap-[9px]">
+              <span className="h-2 w-2 rounded-full bg-[#C4473D]" />
+              <span className="text-[10.5px] font-extrabold uppercase tracking-[.14em] text-[#8C2F26]">Invoiced — purchases booked</span>
+              <span className="doc-ref rounded-[10px] bg-[#FBE5E2] px-2 py-px text-[10.5px] font-bold text-[#8C2F26]">{d.invs.length}</span>
+            </div>
+            {d.invs.length === 0 ? (
+              <p className="text-[12px] font-semibold" style={{ color: V.muted }}>
+                Nothing invoiced{mncRanged ? ' in this period' : ''} — the whole deposit is still the party&apos;s.
+              </p>
+            ) : (
+              <div className="overflow-x-auto rounded-[10px] bg-white" style={{ border: `1px solid ${V.edge}`, boxShadow: '0 1px 2px rgba(61,49,121,.04)' }}>
+                <div style={{ minWidth: 1080 }}>
+                  <div className={cn('grid h-8 items-center', subHead)} style={{ gridTemplateColumns: INV_GRID, background: V.head, borderBottom: `1px solid ${V.edge}`, color: '#5A5478' }}>
+                    <span style={{ padding: '0 10px 0 12px' }}>#</span>
+                    <span style={{ padding: '0 8px' }}>Invoice date</span>
+                    <span style={{ padding: '0 8px' }}>Invoice no</span>
+                    <span style={{ padding: '0 8px' }}>Lots drawn</span>
+                    <span style={{ padding: '0 8px' }}>Bargain</span>
+                    <span style={{ padding: '0 8px', textAlign: 'right' }}>Rate</span>
+                    <span style={{ padding: '0 8px', textAlign: 'right' }}>Qty invoiced</span>
+                    <span style={{ padding: '0 12px 0 8px', textAlign: 'right' }}>Net amount</span>
+                  </div>
+                  {invs.map((v, i) => {
+                    const drew = drawnBy(v.id)
+                    return (
+                      <div key={String(v.id)} className="grid items-center hover:bg-[#F7F5FD]" style={{ gridTemplateColumns: INV_GRID, minHeight: 40, borderBottom: '1px solid #F1EFF7' }}>
+                        <span className="doc-ref text-[11px] font-semibold" style={{ padding: '0 10px 0 12px', color: V.faint }}>
+                          {i + 1}
+                        </span>
+                        <span className="doc-ref text-[11.5px] font-semibold" style={{ padding: '0 8px' }}>
+                          {formatDate(v.order_date)}
+                        </span>
+                        <span className="doc-ref truncate text-[12px] font-bold" style={{ padding: '0 8px' }} title={String(v.invoice_no || '')}>
+                          {String(v.invoice_no || '—')}
+                        </span>
+                        <div className="flex min-w-0 flex-col gap-1" style={{ padding: '6px 8px' }}>
+                          {drew.length === 0 ? (
+                            <span style={{ color: V.faint }}>—</span>
+                          ) : (
+                            drew.map((g) => {
+                              const tint = lotTint(g.lot, g.term)
+                              return (
+                                <div key={`${g.lot}|${g.term}`} className="flex items-center gap-1 whitespace-nowrap">
+                                  {!g.lot && !g.term ? (
+                                    <span className="rounded-[2px] border border-dashed border-slate-300 px-1.5 text-[10px] font-bold text-slate-400">no lot</span>
+                                  ) : (
+                                    <>
+                                      {!!g.lot && chip(g.lot, tint, true, true)}
+                                      {!!g.term && chip(g.term, tint, false, true)}
+                                    </>
+                                  )}
+                                  {drew.length > 1 && (
+                                    <span className="doc-ref ml-auto pl-2 text-[10.5px] font-bold text-[#5A5478]">{q3(g.qty)}</span>
+                                  )}
+                                </div>
+                              )
+                            })
+                          )}
+                        </div>
+                        <span className="doc-ref truncate text-[11px] font-semibold" style={{ padding: '0 8px', color: V.muted }} title={String(v.bargain_no || '')}>
+                          {String(v.bargain_no || '—')}
+                        </span>
+                        <span className="doc-ref text-right text-[11.5px] font-semibold" style={{ padding: '0 8px', color: V.muted }}>
+                          {Number(v.invoice_rate) > 0 ? formatNum(v.invoice_rate) : '—'}
+                        </span>
+                        <span className="doc-ref text-right text-[12px] font-bold text-[#8C2F26]" style={{ padding: '0 8px' }}>
+                          {drew.length ? (
+                            <DrawnFromCard invoiceNo={String(v.invoice_no || 'This invoice')} qty={Number(v.ordered_qty) || 0} uom={String(v.uom || 'MT')} drew={drew}>
+                              <span className="cursor-help underline decoration-rose-300 decoration-dotted underline-offset-4">
+                                {q3(Number(v.ordered_qty) || 0)} {String(v.uom || 'MT')}
+                              </span>
+                            </DrawnFromCard>
+                          ) : (
+                            `${q3(Number(v.ordered_qty) || 0)} ${String(v.uom || 'MT')}`
+                          )}
+                        </span>
+                        <span className="doc-ref whitespace-nowrap text-right text-[12px] font-bold" style={{ padding: '0 12px 0 8px' }}>
+                          {formatINR(v.net_amount)}
+                        </span>
+                      </div>
+                    )
+                  })}
+                  {invs.length === 0 && (
+                    <div className="px-3 py-5 text-center text-[11.5px] font-semibold" style={{ color: V.muted }}>
+                      No invoice matches “{mncQuery.trim()}”.
+                    </div>
+                  )}
+                  <div className="grid min-h-[38px] items-center bg-[#FBEDEB]" style={{ gridTemplateColumns: INV_GRID }}>
+                    <span className="text-[10px] font-extrabold uppercase tracking-[.1em] text-[#8C2F26]" style={{ gridColumn: 'span 6', padding: '0 12px' }}>
+                      {invs.length} invoice{invs.length === 1 ? '' : 's'}
+                    </span>
+                    <span className="doc-ref text-right text-[12.5px] font-bold text-[#8C2F26]" style={{ padding: '0 8px' }}>
+                      {q3(invQty)} {uom}
+                    </span>
+                    <span className="doc-ref text-right text-[12.5px] font-bold" style={{ padding: '0 12px 0 8px' }}>
+                      {formatINR(invNet)}
+                    </span>
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      )
+    }
+
+    return (
+      <div className="flex flex-col gap-3">
+        {/* THE FOUR TILES: what is still the party's first, in the dark tile,
+            because that is the figure this register exists to report. */}
+        <div className="grid gap-3" style={{ gridTemplateColumns: 'repeat(auto-fit,minmax(min(100%,170px),1fr))' }}>
+          {tile({ k: 'Closing — still the party’s', v: formatNum(tot.balance), unit: 'MT', sub: 'opening + deposited − invoiced', icon: Layers, accent: V.deep, dark: true })}
+          {tile({
+            k: 'Deposited',
+            v: formatNum(tot.deposited),
+            unit: 'MT',
+            sub: `${allParcels.length} lot${allParcels.length === 1 ? '' : 's'} received · ${openingParcels} opening lot${openingParcels === 1 ? '' : 's'}`,
+            icon: TrendingDown,
+            accent: '#0B6B45'
+          })}
+          {tile({
+            k: 'Invoiced',
+            v: formatNum(tot.invoiced),
+            unit: 'MT',
+            sub: `${invCount} purchase${invCount === 1 ? '' : 's'} booked off it`,
+            icon: TrendingUp,
+            accent: '#8C2F26'
+          })}
+          {tile({
+            k: 'Opening',
+            v: totOpening ? formatNum(totOpening) : '—',
+            unit: totOpening ? 'MT' : '',
+            sub: mncRanged && mncFrom ? `balance before ${formatDate(mncFrom)}` : 'held before the books started',
+            icon: CalendarCheck,
+            accent: V.mid
+          })}
+        </div>
+
+        <div className="overflow-hidden rounded-[12px] bg-white" style={{ border: `1px solid ${V.edge}`, boxShadow: '0 1px 2px rgba(61,49,121,.04),0 12px 30px -18px rgba(61,49,121,.25)' }}>
+          {/* The period, a search over the lots and invoices, and the actions. */}
+          <div className="flex flex-wrap items-center gap-[9px]" style={{ padding: '12px 14px', borderBottom: `1px solid ${V.rule}`, background: 'linear-gradient(180deg,#FCFBFF,#F6F4FC)' }}>
+            <FyPicker
+              from={mncFrom}
+              to={mncTo}
+              onRange={(f, t) => {
+                setMncFrom(f)
+                setMncTo(t)
+              }}
+              className="!h-9 !w-[118px] !rounded-[8px] !border-[#D9D3EE] !bg-white !text-[12px] !font-extrabold"
+            />
+            <div className="flex h-9 items-center gap-1 rounded-[8px] bg-white pl-1 pr-1" style={{ border: `1px solid ${mncRanged ? V.mid : '#D9D3EE'}` }}>
+              <DatePicker
+                value={mncFrom}
+                onChange={(v) => setMncFrom(v || '')}
+                max={mncTo || undefined}
+                placeholder="From"
+                className="!h-[30px] !w-[120px] !rounded-[6px] !border-0 !bg-transparent !px-1.5 !text-[12px] !font-semibold !shadow-none"
+              />
+              <span className="text-[11px] text-[#A9A3C4]">→</span>
+              <DatePicker
+                value={mncTo}
+                onChange={(v) => setMncTo(v || '')}
+                min={mncFrom || undefined}
+                placeholder="To"
+                className="!h-[30px] !w-[120px] !rounded-[6px] !border-0 !bg-transparent !px-1.5 !text-[12px] !font-semibold !shadow-none"
+              />
+            </div>
+            <div className="flex h-9 max-w-[300px] flex-[1_1_200px] items-center gap-2 rounded-[8px] bg-white px-2.5" style={{ border: `1px solid ${qq ? V.mid : '#D9D3EE'}` }}>
+              <Search className="h-4 w-4 flex-none" style={{ color: V.muted }} />
+              <input
+                value={mncQuery}
+                onChange={(e) => setMncQuery(e.target.value)}
+                placeholder="Tanker, gate no, lot, invoice"
+                className="min-w-0 flex-1 border-0 bg-transparent text-[12px] font-semibold outline-none"
+              />
+              {!!mncQuery && (
+                <button type="button" title="Clear the search" onClick={() => setMncQuery('')} className="flex-none" style={{ color: V.faint }}>
+                  <X className="h-3.5 w-3.5" />
+                </button>
+              )}
+            </div>
+            {hasFilter && (
+              <button
+                type="button"
+                onClick={() => {
+                  setMncFrom('')
+                  setMncTo('')
+                  setMncQuery('')
+                  setLotF('all')
+                }}
+                className="flex h-8 items-center gap-[5px] px-2 text-[11.5px] font-extrabold"
+                style={{ color: V.mid }}
+              >
+                <X className="h-[15px] w-[15px]" />
+                Clear
+              </button>
+            )}
+            <div className="flex-1" />
+            <div className="flex flex-none items-center gap-[9px]">
+              <button
+                type="button"
+                onClick={() => openOpeningStock()}
+                title="For what a party already held with you before the books started"
+                className="flex h-9 items-center gap-1.5 whitespace-nowrap rounded-[8px] px-[13px] text-[12px] font-extrabold text-white"
+                style={{ background: 'linear-gradient(180deg,#6A59BC,#4E3F9C)', boxShadow: '0 8px 18px -10px rgba(61,49,121,.8)' }}
+              >
+                <Plus className="h-[17px] w-[17px]" />
+                Add opening stock
+              </button>
+              <ExcelButton
+                filename={mncRanged ? `mnc-consignment-stock-${mncFrom || 'start'}-to-${mncTo || todayISO()}` : `mnc-consignment-stock-${todayISO()}`}
+                sheetName="MNC stock"
+                title={`MNC / consignment stock${mncRanged ? ` (${mncFrom || 'start'} → ${mncTo || 'today'})` : ''}`}
+                className="!h-9 !w-9 !rounded-[8px] !bg-[#0B6B45] hover:!bg-[#095C3B]"
+                columns={mncSheetColumns}
+                rows={mncSheetRows}
+                isGroup={(r) => !!r.is_group}
+                outlineDetail
+              />
+            </div>
+          </div>
+
+          <div className="overflow-x-auto">
+            <div style={{ minWidth: 1110 }}>
+              <div
+                className="grid h-[38px] items-center text-[9.5px] font-extrabold uppercase tracking-[.12em]"
+                style={{ gridTemplateColumns: GRID, background: 'linear-gradient(180deg,#4E3F9C,#3D3179)', color: '#DAD2F5' }}
+              >
+                <span className="text-white" style={{ padding: '0 14px' }}>Party / product</span>
+                <span style={{ padding: '0 12px', textAlign: 'right' }}>Opening</span>
+                <span className="text-[#A8E8C4]" style={{ padding: '0 12px', textAlign: 'right' }}>Deposited</span>
+                <span className="text-[#F5B9B3]" style={{ padding: '0 12px', textAlign: 'right' }}>Invoiced</span>
+                <span className="flex h-full items-center justify-end text-white" style={{ padding: '0 12px', background: 'rgba(255,255,255,.08)' }}>
+                  {mncRanged ? 'Closing' : 'Balance'}
+                </span>
+                <span style={{ padding: '0 12px' }}>UOM</span>
+              </div>
+
+              {loading ? (
+                <div className="py-10 text-center text-[12px] font-semibold" style={{ color: V.muted }}>Loading…</div>
+              ) : rows.length === 0 ? (
+                <div className="py-10 text-center text-[12px] font-semibold" style={{ color: V.muted }}>
+                  No consignment stock. Log a deposit under Consignment.
+                </div>
+              ) : (
+                byParty.map((g) => (
+                  <div key={g.name}>
+                    <div className="grid items-center" style={{ gridTemplateColumns: GRID, minHeight: 38, background: '#ECE9F7', borderBottom: '1px solid #DDD8EF' }}>
+                      <span className="flex min-w-0 items-center gap-[9px]" style={{ padding: '0 14px' }}>
+                        <Building2 className="h-[17px] w-[17px] flex-none" style={{ color: V.mid }} />
+                        <span className="truncate text-[12.5px] font-extrabold" style={{ color: V.deep }}>{g.name}</span>
+                        <span className="flex-none text-[10.5px] font-bold" style={{ color: V.soft }}>
+                          {g.rows.length} product{g.rows.length === 1 ? '' : 's'}
+                        </span>
+                      </span>
+                      <span className="doc-ref text-right text-[12px] font-bold" style={{ padding: '0 12px', color: V.faint }}>{g.opening ? formatNum(g.opening) : '—'}</span>
+                      <span className="doc-ref text-right text-[12px] font-bold text-[#0B6B45]" style={{ padding: '0 12px' }}>{formatNum(g.deposited)}</span>
+                      <span className="doc-ref text-right text-[12px] font-bold text-[#8C2F26]" style={{ padding: '0 12px' }}>{formatNum(g.invoiced)}</span>
+                      <span className="doc-ref text-right text-[12.5px] font-bold" style={{ padding: '0 12px', color: V.deep }}>{formatNum(g.balance)}</span>
+                      <span />
+                    </div>
+                    {g.rows.map((r) => {
+                      const k = key(r)
+                      const d = details.get(k) || { parcels: [], invs: [] }
+                      // A search opens the products it finds something in.
+                      const found = !!qq && (d.parcels.some(parcelHits) || d.invs.some(invoiceHits))
+                      const isOpen = open.has(k) || found
+                      const opening = openingFor(r)
+                      const base = opening + (Number(r.deposited) || 0)
+                      const drawnPct = base > 1e-9 ? Math.min(100, ((Number(r.invoiced) || 0) / base) * 100) : 0
+                      return (
+                        <div key={k}>
+                          <div
+                            role="button"
+                            tabIndex={0}
+                            aria-expanded={isOpen}
+                            onClick={() => toggle(k)}
+                            onKeyDown={(e) => {
+                              if (e.key === 'Enter' || e.key === ' ') {
+                                e.preventDefault()
+                                toggle(k)
+                              }
+                            }}
+                            className="grid cursor-pointer items-stretch outline-none hover:!bg-[#FAF9FE]"
+                            style={{
+                              gridTemplateColumns: GRID,
+                              minHeight: 50,
+                              borderBottom: `1px solid ${V.rule}`,
+                              background: isOpen ? V.paper : '#fff',
+                              boxShadow: `inset 3px 0 0 ${isOpen ? V.mid : 'transparent'}`
+                            }}
+                          >
+                            <div className="flex min-w-0 items-center gap-[9px]" style={{ padding: '0 14px 0 12px' }}>
+                              <ChevronRight className="h-[18px] w-[18px] flex-none transition-transform" style={{ color: V.mid, transform: isOpen ? 'rotate(90deg)' : 'none' }} />
+                              <div className="min-w-0">
+                                <div className="truncate text-[13px] font-extrabold">{String(r.product_code || r.product_name)}</div>
+                                <div className="mt-0.5 text-[10.5px] font-semibold" style={{ color: V.muted }}>
+                                  {d.parcels.length} lot{d.parcels.length === 1 ? '' : 's'} · {d.invs.length} invoice{d.invs.length === 1 ? '' : 's'} drew on them
+                                </div>
+                              </div>
+                            </div>
+                            <div className="doc-ref flex items-center justify-end text-[13px] font-bold" style={{ padding: '0 12px', color: opening ? '#33473E' : V.faint, borderLeft: `1px solid ${V.rule}` }}>
+                              {opening ? formatNum(opening) : '—'}
+                            </div>
+                            <div className="doc-ref flex items-center justify-end bg-[#F5FBF7] text-[13.5px] font-bold text-[#0B6B45]" style={{ padding: '0 12px', borderLeft: `1px solid ${V.rule}` }}>
+                              {formatNum(r.deposited)}
+                            </div>
+                            <div className="doc-ref flex items-center justify-end bg-[#FDF8F7] text-[13.5px] font-bold text-[#8C2F26]" style={{ padding: '0 12px', borderLeft: `1px solid ${V.rule}` }}>
+                              {Number(r.invoiced) ? formatNum(r.invoiced) : '—'}
+                            </div>
+                            <div className="flex flex-col items-end justify-center bg-[#F1EDFC]" style={{ padding: '6px 12px', borderLeft: `1px solid ${V.edge}` }}>
+                              <span className={cn('doc-ref text-[14.5px] font-bold tracking-[-0.02em]', Number(r.balance) < -1e-9 ? 'text-[#B3261E]' : 'text-[#3D3179]')}>
+                                {formatNum(r.balance)}
+                              </span>
+                              <div className="mt-[5px] h-1 w-[90px] overflow-hidden rounded-[2px] bg-[#DDD8EF]">
+                                <div className="h-full bg-[#C4473D]" style={{ width: `${drawnPct}%` }} />
+                              </div>
+                              <span className="mt-[3px] whitespace-nowrap text-[9.5px] font-bold" style={{ color: V.soft }}>
+                                {Math.round(drawnPct)}% invoiced
+                              </span>
+                            </div>
+                            <div className="flex items-center justify-between gap-2 text-[11px] font-extrabold" style={{ padding: '0 8px 0 12px', color: V.muted }}>
+                              {String(r.uom || 'MT')}
+                              {openingLotFor(r.supplier_id, r.product_id) && (
+                                <button
+                                  type="button"
+                                  title="Modify the opening stock (validated against what is already drawn)"
+                                  className="rounded-[6px] p-1 hover:bg-[#ECE9F7]"
+                                  style={{ color: V.mid }}
+                                  onClick={(e) => {
+                                    e.stopPropagation()
+                                    openOpeningStock(r.supplier_id, r.product_id)
+                                  }}
+                                >
+                                  <SlidersHorizontal className="h-3.5 w-3.5" />
+                                </button>
+                              )}
+                            </div>
+                          </div>
+                          {isOpen && lotsPanel(r, d)}
+                        </div>
+                      )
+                    })}
+                  </div>
+                ))
+              )}
+
+              {!loading && rows.length > 0 && (
+                <div className="grid min-h-[46px] items-center text-white" style={{ gridTemplateColumns: GRID, background: 'linear-gradient(180deg,#4E3F9C,#3D3179)' }}>
+                  <span className="text-[11px] font-extrabold uppercase tracking-[.1em]" style={{ padding: '0 14px' }}>Grand total</span>
+                  <span className="doc-ref text-right text-[13px] font-bold text-[#C7BCF0]" style={{ padding: '0 12px' }}>{totOpening ? formatNum(totOpening) : '—'}</span>
+                  <span className="doc-ref text-right text-[13px] font-bold text-[#A8E8C4]" style={{ padding: '0 12px' }}>{formatNum(tot.deposited)}</span>
+                  <span className="doc-ref text-right text-[13px] font-bold text-[#F5B9B3]" style={{ padding: '0 12px' }}>{formatNum(tot.invoiced)}</span>
+                  <span className="doc-ref flex h-full items-center justify-end text-[15px] font-bold" style={{ padding: '0 12px', background: 'rgba(255,255,255,.08)' }}>
+                    {formatNum(tot.balance)}
+                  </span>
+                  <span />
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+
+        <div className="flex items-start gap-[9px] px-1">
+          <Info className="mt-0.5 h-4 w-4 flex-none" style={{ color: V.faint }} />
+          <span className="text-[11px] font-semibold leading-[1.6]" style={{ color: V.muted }}>
+            Consigned stock belongs to the supplier until you invoice it, so it is kept out of your own stock figures. Deposited − Invoiced = Balance
+            still owned by the party. Booking a consignment purchase against a bargain moves that quantity into your books and reduces this balance
+            automatically. Expand a product to see its deposit lots and where each one went. Use{' '}
+            <b style={{ color: V.deep }}>Add opening stock</b> for what a party already held with you before the books started.
+          </span>
+        </div>
+
+        <ConsignmentOpeningDialog
+          open={openingOpen}
+          supplierId={openingSeed.s}
+          productId={openingSeed.p}
+          onClose={() => setOpeningOpen(false)}
+          onSaved={() => void load()}
+        />
+      </div>
+    )
+  }
+
   return (
     <div className="space-y-3">
       {/* The same four cards as every other view, in consignment's violet.
@@ -5568,22 +7832,7 @@ function MncStock(): React.JSX.Element {
           filename={mncRanged ? `mnc-consignment-stock-${mncFrom || 'start'}-to-${mncTo || todayISO()}` : `mnc-consignment-stock-${todayISO()}`}
           sheetName="MNC stock"
           title={`MNC / consignment stock${mncRanged ? ` (${mncFrom || 'start'} → ${mncTo || 'today'})` : ''}`}
-          columns={[
-            { header: 'Party', key: 'supplier_name', value: (r) => r.supplier_name || '' },
-            { header: 'Product', key: 'product', value: (r) => r.product_code || r.product_name || '' },
-            { header: 'Opening', key: 'opening', align: 'right', numFmt: '#,##0.000', value: (r) => Number(r.opening) || 0 },
-            { header: 'Deposited', key: 'deposited', align: 'right', numFmt: '#,##0.000', value: (r) => Number(r.deposited) || 0 },
-            { header: 'Invoiced', key: 'invoiced', align: 'right', numFmt: '#,##0.000', value: (r) => Number(r.invoiced) || 0 },
-            { header: mncRanged ? 'Closing' : 'Balance', key: 'balance', align: 'right', numFmt: '#,##0.000', value: (r) => Number(r.balance) || 0 },
-            { header: 'UOM', key: 'uom', value: (r) => r.uom || 'MT' },
-            { header: 'Date', key: 'deposit_date', value: (r) => (r.deposit_date ? formatDate(r.deposit_date) : '') },
-            { header: 'Tanker', key: 'tanker_no', value: (r) => r.tanker_no || '' },
-            { header: 'Gate no', key: 'gate_entry_no', value: (r) => r.gate_entry_no || '' },
-            { header: 'Weighed', key: 'weighed_qty', align: 'right', numFmt: '#,##0.000', value: (r) => Number(r.weighed_qty) || 0 },
-            { header: 'Short %', key: 'shortage_pct', value: (r) => (Number(r.shortage_pct) > 0 ? `${r.shortage_pct}%` : '') },
-            { header: 'Status', key: 'status', value: (r) => r.status || '' },
-            { header: 'Invoice', key: 'invoice_no', value: (r) => r.invoice_no || '' }
-          ]}
+          columns={mncSheetColumns}
           rows={mncSheetRows}
           isGroup={(r) => !!r.is_group}
           outlineDetail
@@ -5642,9 +7891,64 @@ function MncStock(): React.JSX.Element {
                         if (mncTo && d > mncTo) return false
                         return true
                       })
+                      // ONE ROW PER LOT AS IT WAS RECEIVED.
+                      //
+                      // An invoice that takes only part of a lot is stored as a
+                      // slice of it (split_from → the lot), so the invoice can
+                      // be released and the lot put back together exactly. That
+                      // is bookkeeping, not what came in: listed row by row, an
+                      // opening of two lots read as four "received" entries the
+                      // moment two invoices drew on them. So the slices are
+                      // folded back under the lot they came from — the lot shows
+                      // what was received, and its status says where it went.
+                      const allMine = lots.filter(
+                        (l) => String(l.supplier_id) === String(r.supplier_id) && String(l.product_id) === String(r.product_id)
+                      )
+                      const lotById = new Map(allMine.map((l) => [Number(l.id), l]))
+                      const rootOfLot = (l: Row): Row => {
+                        let cur = l
+                        for (let guard = 0; guard < 10 && cur.split_from != null && lotById.has(Number(cur.split_from)); guard++) {
+                          cur = lotById.get(Number(cur.split_from)) as Row
+                        }
+                        return cur
+                      }
+                      const parcelMap = new Map<number, { root: Row; parts: Row[] }>()
+                      for (const l of myLots) {
+                        const root = rootOfLot(l)
+                        const key = Number(root.id)
+                        const cur = parcelMap.get(key) || { root, parts: [] as Row[] }
+                        cur.parts.push(l)
+                        parcelMap.set(key, cur)
+                      }
+                      const myParcels = Array.from(parcelMap.values())
                       const myInvoices = invoices.filter(
                         (v) => String(v.supplier_id) === String(r.supplier_id) && String(v.product_id) === String(r.product_id)
                       )
+                      /**
+                       * THE PARCELS ONE INVOICE CAME OFF.
+                       *
+                       * An invoice draws its quantity from the deposit rows,
+                       * and those rows carry the lot and the terminal — so
+                       * the answer is already on file and only needed
+                       * gathering. Read off the WHOLE deposit list rather than
+                       * the ranged one: a parcel deposited before the picked
+                       * period is still the parcel this invoice drew, and
+                       * hiding it would make the invoice look as though it
+                       * came off nothing.
+                       */
+                      const lotsDrawnBy = (orderId: unknown): { lot: string; term: string; qty: number }[] => {
+                        const seen = new Map<string, { lot: string; term: string; qty: number }>()
+                        for (const l of lots) {
+                          if (Number(l.order_id) !== Number(orderId)) continue
+                          const lot = String(l.lot_no || '').trim()
+                          const term = String(l.terminal_no || '').trim()
+                          const key = `${lot}|${term}`
+                          const cur = seen.get(key) || { lot, term, qty: 0 }
+                          cur.qty += Number(l.qty) || 0
+                          seen.set(key, cur)
+                        }
+                        return Array.from(seen.values())
+                      }
                       return (
                         <Fragment key={k}>
                           <TableRow className={cn('cursor-pointer border-b', isOpen && 'bg-slate-100', __WEB__ && cn('!border-b-[#D6CEF5] !bg-transparent', isOpen && '!bg-transparent'))} onClick={() => toggle(k)}>
@@ -5689,7 +7993,7 @@ function MncStock(): React.JSX.Element {
                                   <div className="flex items-center gap-2 text-[10px] font-bold uppercase tracking-widest text-emerald-800">
                                     Deposited — lots received
                                     <span className="rounded bg-emerald-100 px-1.5 py-0.5 tabular-nums text-emerald-900">
-                                      {myLots.length}
+                                      {myParcels.length}
                                     </span>
                                   </div>
                                   {myLots.length === 0 ? (
@@ -5702,6 +8006,14 @@ function MncStock(): React.JSX.Element {
                                           <th className="py-1.5 pr-3 font-semibold">Deposit date</th>
                                           <th className="py-1.5 pr-3 font-semibold">Tanker</th>
                                           <th className="py-1.5 pr-3 font-semibold">Gate no</th>
+                                          {/* WHICH PARCEL EACH LORRY CAME OFF.
+                                              The register upstairs says it; a
+                                              panel listing the same tankers
+                                              that did not was the one place
+                                              the question had to be taken
+                                              somewhere else. Same colours, so
+                                              a parcel reads the same on both. */}
+                                          <th className="py-1.5 pr-3 font-semibold">Lot · Terminal</th>
                                           <th className="py-1.5 pr-3 text-right font-semibold">Weighed</th>
                                           <th className="py-1.5 pr-3 text-right font-semibold">Short %</th>
                                           <th className="py-1.5 pr-3 text-right font-semibold">Qty (net)</th>
@@ -5711,7 +8023,11 @@ function MncStock(): React.JSX.Element {
                                         </tr>
                                       </thead>
                                       <tbody>
-                                        {myLots.map((l, li) => (
+                                        {myParcels.map(({ root: l, parts }, li) => {
+                                          const received = parts.reduce((t, p) => t + (Number(p.qty) || 0), 0)
+                                          const drawn = parts.filter((p) => p.order_id != null)
+                                          const open = parts.filter((p) => p.order_id == null).reduce((t, p) => t + (Number(p.qty) || 0), 0)
+                                          return (
                                           <tr key={l.id as number} className={cn('border-b', li % 2 === 1 ? 'bg-muted/40' : 'bg-card')}>
                                             <td className="py-1.5 pr-3 tabular-nums text-muted-foreground">{li + 1}</td>
                                             <td className="py-1.5 pr-3 whitespace-nowrap">{formatDate(l.deposit_date)}</td>
@@ -5724,17 +8040,59 @@ function MncStock(): React.JSX.Element {
                                                 ))}
                                             </td>
                                             <td className="py-1.5 pr-3 tabular-nums text-muted-foreground">{l.gate_entry_no || '—'}</td>
+                                            <td className="py-1.5 pr-3 whitespace-nowrap">
+                                              {(() => {
+                                                const tint = lotTint(l.lot_no, l.terminal_no)
+                                                if (!tint) return <span className="text-muted-foreground">—</span>
+                                                const chip = (text: string, strong: boolean): React.JSX.Element => (
+                                                  <span
+                                                    className="doc-ref rounded-[2px] px-1.5 py-[1px] text-[11px] font-bold"
+                                                    style={{ background: tint.bg, color: tint.fg, opacity: strong ? 1 : 0.82 }}
+                                                  >
+                                                    {text}
+                                                  </span>
+                                                )
+                                                return (
+                                                  <span className="inline-flex items-center gap-1">
+                                                    {!!l.lot_no && chip(String(l.lot_no), true)}
+                                                    {!!l.terminal_no && chip(String(l.terminal_no), false)}
+                                                  </span>
+                                                )
+                                              })()}
+                                            </td>
                                             <td className="py-1.5 pr-3 text-right tabular-nums text-muted-foreground">{Number(l.weighed_qty) > 0 ? formatNum(l.weighed_qty) : '—'}</td>
                                             <td className="py-1.5 pr-3 text-right tabular-nums text-muted-foreground">{Number(l.shortage_pct) > 0 ? `${l.shortage_pct}%` : '—'}</td>
-                                            <td className="py-1.5 pr-3 text-right font-medium tabular-nums text-emerald-700">{formatNum(l.qty)} {l.uom}</td>
+                                            <td className="py-1.5 pr-3 text-right font-medium tabular-nums text-emerald-700">{formatNum(received)} {l.uom}</td>
                                             <td className="py-1.5 pr-3">
-                                              {Number(l.qty) > 0 ? (
-                                                <span className="inline-flex items-center gap-1.5">
+                                              {received > 0 ? (
+                                                <span className="inline-flex flex-wrap items-center gap-x-1.5 gap-y-0.5">
                                                   <span className="font-medium text-emerald-700">Completed</span>
-                                                  {l.order_id != null && (
-                                                    <span className="text-[10px] text-muted-foreground">
-                                                      {String(l.invoice_no || 'booked')}
-                                                    </span>
+                                                  {/* Where the lot went: each invoice that drew on
+                                                      it and how much, then what is still the
+                                                      party's. One invoice taking the whole lot
+                                                      reads as it always did — just its number. */}
+                                                  {drawn.length === 1 && open <= 1e-9 ? (
+                                                    <span className="text-[10px] text-muted-foreground">{String(drawn[0].invoice_no || 'booked')}</span>
+                                                  ) : (
+                                                    <>
+                                                      {drawn.map((p) => (
+                                                        <span
+                                                          key={String(p.id)}
+                                                          className="rounded-[2px] bg-rose-50 px-1.5 py-[1px] text-[10px] font-semibold tabular-nums text-rose-800"
+                                                          title="Invoiced off this lot"
+                                                        >
+                                                          {formatNum(p.qty)} → {String(p.invoice_no || 'booked')}
+                                                        </span>
+                                                      ))}
+                                                      {drawn.length > 0 && open > 1e-9 && (
+                                                        <span
+                                                          className="rounded-[2px] bg-emerald-50 px-1.5 py-[1px] text-[10px] font-semibold tabular-nums text-emerald-800"
+                                                          title="Still the party's — not invoiced yet"
+                                                        >
+                                                          {formatNum(Math.round(open * 1000) / 1000)} open
+                                                        </span>
+                                                      )}
+                                                    </>
                                                   )}
                                                 </span>
                                               ) : (
@@ -5743,7 +8101,7 @@ function MncStock(): React.JSX.Element {
                                             </td>
                                             <td className="py-1.5 pr-3 text-muted-foreground">{l.note || '—'}</td>
                                             <td className="py-1 pr-2 text-right">
-                                              {Number(l.is_opening) === 1 && l.order_id == null && (
+                                              {Number(l.is_opening) === 1 && drawn.length === 0 && parts.length === 1 && (
                                                 <button
                                                   type="button"
                                                   title="Delete this opening lot (kept in history — restorable)"
@@ -5765,7 +8123,8 @@ function MncStock(): React.JSX.Element {
                                               )}
                                             </td>
                                           </tr>
-                                        ))}
+                                          )
+                                        })}
                                       </tbody>
                                     </table>
                                   )}
@@ -5790,6 +8149,7 @@ function MncStock(): React.JSX.Element {
                                           <th className="w-8 py-1.5 pr-3 font-semibold">#</th>
                                           <th className="py-1.5 pr-3 font-semibold">Invoice date</th>
                                           <th className="py-1.5 pr-3 font-semibold">Invoice no</th>
+                                          <th className="py-1.5 pr-3 font-semibold">Lot · Terminal</th>
                                           <th className="py-1.5 pr-3 font-semibold">Bargain</th>
                                           <th className="py-1.5 pr-3 text-right font-semibold">Rate</th>
                                           <th className="py-1.5 pr-3 text-right font-semibold">Qty invoiced</th>
@@ -5802,12 +8162,78 @@ function MncStock(): React.JSX.Element {
                                             <td className="py-1.5 pr-3 tabular-nums text-muted-foreground">{vi + 1}</td>
                                             <td className="py-1.5 pr-3 whitespace-nowrap">{formatDate(v.order_date)}</td>
                                             <td className="py-1.5 pr-3 font-medium">{String(v.invoice_no || '—')}</td>
+                                            <td className="py-1.5 pr-3">
+                                              {(() => {
+                                                const drew = lotsDrawnBy(v.id)
+                                                if (!drew.length) return <span className="text-muted-foreground">—</span>
+                                                return (
+                                                  <span className="flex flex-wrap items-center gap-1">
+                                                    {drew.map((g) => {
+                                                      if (!g.lot && !g.term) {
+                                                        return (
+                                                          <span
+                                                            key="none"
+                                                            className="rounded-[2px] border border-dashed border-slate-300 px-1.5 text-[10px] font-bold text-slate-400"
+                                                            title={`${formatNum(g.qty)} off a parcel with no lot on it yet`}
+                                                          >
+                                                            no lot
+                                                          </span>
+                                                        )
+                                                      }
+                                                      // The same colour the register gives the pair, so a
+                                                      // parcel looks the same wherever it is read.
+                                                      const tint = lotTint(g.lot, g.term)
+                                                      const chip = (text: string, strong: boolean): React.JSX.Element => (
+                                                        <span
+                                                          className="rounded-[2px] px-1.5 text-[10px] font-bold"
+                                                          style={
+                                                            tint
+                                                              ? { background: tint.bg, color: tint.fg, opacity: strong ? 1 : 0.82 }
+                                                              : undefined
+                                                          }
+                                                        >
+                                                          {text}
+                                                        </span>
+                                                      )
+                                                      return (
+                                                        <span key={`${g.lot}|${g.term}`} className="inline-flex items-center gap-0.5">
+                                                          {!!g.lot && chip(g.lot, true)}
+                                                          {!!g.term && chip(g.term, false)}
+                                                          {/* With one parcel its quantity is the
+                                                              invoice's own; with more, each says
+                                                              its share right here. */}
+                                                          {drew.length > 1 && (
+                                                            <span className="ml-0.5 text-[10px] font-bold tabular-nums text-slate-500">
+                                                              {formatNum(g.qty)}
+                                                            </span>
+                                                          )}
+                                                        </span>
+                                                      )
+                                                    })}
+                                                  </span>
+                                                )
+                                              })()}
+                                            </td>
                                             <td className="py-1.5 pr-3 text-muted-foreground">{String(v.bargain_no || '—')}</td>
                                             <td className="py-1.5 pr-3 text-right tabular-nums text-muted-foreground">
                                               {Number(v.invoice_rate) > 0 ? formatNum(v.invoice_rate) : '—'}
                                             </td>
                                             <td className="py-1.5 pr-3 text-right font-medium tabular-nums text-rose-700">
-                                              {formatNum(v.ordered_qty)} {v.uom}
+                                              {(() => {
+                                                const drew = lotsDrawnBy(v.id)
+                                                const text = `${formatNum(v.ordered_qty)} ${String(v.uom || '')}`.trim()
+                                                if (!drew.length) return text
+                                                return (
+                                                  <DrawnFromCard
+                                                    invoiceNo={String(v.invoice_no || 'This invoice')}
+                                                    qty={Number(v.ordered_qty) || 0}
+                                                    uom={String(v.uom || 'MT')}
+                                                    drew={drew}
+                                                  >
+                                                    <span className="cursor-help underline decoration-rose-300 decoration-dotted underline-offset-4">{text}</span>
+                                                  </DrawnFromCard>
+                                                )
+                                              })()}
                                             </td>
                                             <td className="py-1.5 pr-3 text-right tabular-nums">{formatINR(v.net_amount)}</td>
                                           </tr>
@@ -5815,7 +8241,7 @@ function MncStock(): React.JSX.Element {
                                       </tbody>
                                       <tfoot>
                                         <tr className="border-t bg-muted/60 font-semibold">
-                                          <td className="py-1.5 pr-3" colSpan={5}>
+                                          <td className="py-1.5 pr-3" colSpan={6}>
                                             {myInvoices.length} invoice{myInvoices.length === 1 ? '' : 's'}
                                           </td>
                                           <td className="py-1.5 pr-3 text-right tabular-nums text-rose-700">
@@ -5854,175 +8280,16 @@ function MncStock(): React.JSX.Element {
         Consigned stock belongs to the supplier until you invoice it, so it is kept out of your own stock figures above. Deposited − Invoiced = Balance still owned by the party. Booking a consignment purchase against a bargain moves that quantity into your books and reduces this balance automatically. Expand a product to see its deposit lots. Use <span className="font-medium">Add opening stock</span> for what a party already held with you before the books started.
       </p>
 
-      {/* Opening stock for an MNC party — no gate entry, entered by hand */}
-      <Dialog open={openingOpen} onOpenChange={(o) => !o && setOpeningOpen(false)}>
-        <DialogContent className="max-w-2xl">
-          <DialogHeader>
-            <DialogTitle>{existingOpening ? 'Update opening stock' : 'Add opening stock'}</DialogTitle>
-          </DialogHeader>
-          <div className="space-y-3">
-            <div className="grid gap-x-5 gap-y-3 sm:grid-cols-2">
-              <div className="flex flex-col gap-1.5">
-                <Label>MNC / party *</Label>
-                <Select
-                  value={String(opening.supplier_id || '')}
-                  onValueChange={(v) => setOpening((p) => ({ ...p, supplier_id: v }))}
-                >
-                  <SelectTrigger><SelectValue placeholder="Select the party" /></SelectTrigger>
-                  <SelectContent>
-                    {suppliers.map((x) => (
-                      <SelectItem key={x.id} value={String(x.id)}>
-                        {x.name}
-                        {x.skip_tanker_stages ? ' · direct' : ''}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
-              <div className="flex flex-col gap-1.5">
-                <Label>Product *</Label>
-                <Select
-                  value={String(opening.product_id || '')}
-                  onValueChange={(v) => setOpening((p) => ({ ...p, product_id: v }))}
-                >
-                  <SelectTrigger><SelectValue placeholder="Select the product" /></SelectTrigger>
-                  <SelectContent>
-                    {products.map((x) => (
-                      <SelectItem key={x.id} value={String(x.id)}>
-                        {x.code || x.name}
-                        {x.category ? ` · ${x.category}` : ''}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
-              {opening.supplier_id && opening.product_id && (
-                <div className="sm:col-span-2">
-                  <div className="grid grid-cols-2 gap-2 rounded-lg border bg-muted/30 p-2.5 sm:grid-cols-4">
-                    {[
-                      { l: 'Current opening', v: existingOpening ? `${formatNum(existingOpeningTotal)} ${existingOpening.uom}` : '—', tone: 'text-violet-900' },
-                      { l: 'Deposited (all lots)', v: dlgBand ? formatNum(dlgBand.deposited) : '—', tone: 'text-emerald-700' },
-                      { l: 'Already drawn', v: dlgBand ? formatNum(dlgDrawn) : '—', tone: 'text-rose-700' },
-                      { l: 'Minimum allowed', v: `${formatNum(dlgMin)} ${opening.uom || 'MT'}`, tone: 'text-amber-700' }
-                    ].map((x) => (
-                      <div key={x.l}>
-                        <div className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">{x.l}</div>
-                        <div className={cn('text-[13px] font-semibold tabular-nums', x.tone)}>{x.v}</div>
-                      </div>
-                    ))}
-                  </div>
-                  {existingOpenings.length > 1 && (
-                    <p className="mt-1.5 rounded-md border border-amber-300 bg-amber-50 px-3 py-1.5 text-xs text-amber-900">
-                      {existingOpenings.length} opening entries exist — saving merges them into one figure.
-                    </p>
-                  )}
-                  {!existingOpening && openingLog.length > 0 && (
-                    <p className="mt-1.5 rounded-md border border-red-300 bg-red-50 px-3 py-1.5 text-xs text-red-800">
-                      The opening here was removed — its last figure was{' '}
-                      <b>
-                        {formatNum(openingLog[0].old_qty ?? openingLog[0].new_qty)} {openingLog[0].uom || 'MT'}
-                      </b>
-                      . Use Restore below to bring it back.
-                    </p>
-                  )}
-                </div>
-              )}
-              <div className="flex flex-col gap-1.5">
-                <Label>Opening quantity *</Label>
-                <Input
-                  type="number"
-                  value={opening.qty ?? ''}
-                  placeholder="0.000"
-                  onChange={(e) => setOpening((p) => ({ ...p, qty: e.target.value }))}
-                />
-              </div>
-              <div className="flex flex-col gap-1.5">
-                <Label>UOM</Label>
-                <Select value={String(opening.uom || 'MT')} onValueChange={(v) => setOpening((p) => ({ ...p, uom: v }))}>
-                  <SelectTrigger><SelectValue /></SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="MT">MT</SelectItem>
-                    <SelectItem value="KG">KG</SelectItem>
-                    <SelectItem value="L">L</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
-              <div className="flex flex-col gap-1.5">
-                <Label>As on date</Label>
-                <DatePicker
-                  value={String(opening.deposit_date || '')}
-                  onChange={(v) => setOpening((p) => ({ ...p, deposit_date: v }))}
-                />
-              </div>
-              <div className="flex flex-col gap-1.5">
-                <Label>Note</Label>
-                <Input
-                  value={opening.note ?? ''}
-                  placeholder="Opening stock"
-                  onChange={(e) => setOpening((p) => ({ ...p, note: e.target.value }))}
-                />
-              </div>
-            </div>
-            {opening.supplier_id && opening.product_id && openingLog.length > 0 && (
-              <div className="rounded-lg border">
-                <div className="border-b bg-muted/40 px-3 py-1.5 text-[10px] font-bold uppercase tracking-widest text-muted-foreground">
-                  Restatement history — every change is kept
-                </div>
-                <div className="max-h-36 overflow-auto">
-                  {openingLog.map((h) => (
-                    <div key={String(h.id)} className="flex items-center gap-2 border-b border-dotted px-3 py-1.5 text-[12px] last:border-0">
-                      <span className="w-32 shrink-0 tabular-nums text-muted-foreground">
-                        {formatDate(String(h.changed_at).slice(0, 10))}
-                      </span>
-                      <span
-                        className={cn(
-                          'w-16 shrink-0 rounded px-1.5 py-0.5 text-center text-[10px] font-semibold uppercase',
-                          h.action === 'delete' ? 'bg-red-100 text-red-700' : h.action === 'create' ? 'bg-emerald-100 text-emerald-700' : 'bg-sky-100 text-sky-700'
-                        )}
-                      >
-                        {h.action === 'delete' ? 'Removed' : h.action === 'create' ? 'Created' : 'Restated'}
-                      </span>
-                      <span className="min-w-0 flex-1 truncate tabular-nums">
-                        {h.old_qty != null ? `${formatNum(h.old_qty)} → ` : ''}
-                        {h.new_qty != null ? `${formatNum(h.new_qty)} ${h.uom || 'MT'}` : 'removed'}
-                      </span>
-                      {(h.old_qty != null || h.new_qty != null) && (
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          className="h-6 shrink-0 px-1.5 text-[11px] text-indigo-700"
-                          title="Fill this figure into the form — Save applies it with full validation"
-                          onClick={() =>
-                            setOpening((prev) => ({
-                              ...prev,
-                              qty: String(h.action === 'delete' || h.new_qty == null ? h.old_qty : h.old_qty ?? h.new_qty),
-                              uom: String(h.uom || prev.uom || 'MT'),
-                              deposit_date: String(h.deposit_date || prev.deposit_date || todayISO()).slice(0, 10)
-                            }))
-                          }
-                        >
-                          Restore
-                        </Button>
-                      )}
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )}
-            {openingError && (
-              <div className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs text-destructive">
-                {openingError}
-              </div>
-            )}
-          </div>
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setOpeningOpen(false)} disabled={savingOpening}>Cancel</Button>
-            <Button onClick={saveOpeningStock} disabled={savingOpening}>
-              {savingOpening ? 'Saving…' : existingOpening ? 'Update opening stock' : 'Add opening stock'}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+      {/* WHAT THE PARTY ALREADY HELD, AS PARCELS. Shared with the
+          Consignment page, which is where somebody setting a party up
+          actually looks for it — see components/ConsignmentOpening.tsx. */}
+      <ConsignmentOpeningDialog
+        open={openingOpen}
+        supplierId={openingSeed.s}
+        productId={openingSeed.p}
+        onClose={() => setOpeningOpen(false)}
+        onSaved={() => void load()}
+      />
     </div>
   )
 }
@@ -6211,6 +8478,101 @@ function Transfers(): React.JSX.Element {
   )
 }
 
+
+// WHERE AN INVOICE'S QUANTITY CAME FROM.
+//
+// An MNC invoice draws its quantity off the deposited parcels, and each parcel
+// carries its lot and its terminal — so "54.5 MT" is really "30 off 6TH · AVTL
+// and 24.5 off 5TH · AVTL". The chips name the parcels; this card, on hover,
+// says how much came off each one, in the parcel's own colours, and owns up to
+// any part of the invoice that was not drawn off a deposit at all.
+function DrawnFromCard({
+  invoiceNo,
+  qty,
+  uom,
+  drew,
+  children
+}: {
+  invoiceNo: string
+  qty: number
+  uom: string
+  drew: { lot: string; term: string; qty: number }[]
+  children: React.ReactNode
+}): React.JSX.Element {
+  if (!drew.length) return <>{children}</>
+  const total = drew.reduce((t, g) => t + g.qty, 0)
+  const gap = qty - total
+  const unit = uom || 'MT'
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>{children}</TooltipTrigger>
+      <TooltipContent
+        side="left"
+        className="!max-w-none !rounded-[8px] !border !border-slate-200 !bg-white !p-0 !text-slate-900 !shadow-[0_14px_32px_rgba(15,23,42,.18)]"
+      >
+        <div className="min-w-[260px]">
+          <div className="flex items-baseline justify-between gap-4 border-b border-slate-100 bg-slate-50 px-3 py-2">
+            <span className="text-[9.5px] font-extrabold uppercase tracking-[.12em] text-slate-500">Drawn from</span>
+            <span className="text-[11px] font-bold tabular-nums text-slate-700">{invoiceNo}</span>
+          </div>
+          <div className="px-3 py-1.5">
+            {drew.map((g) => {
+              const tint = lotTint(g.lot, g.term)
+              const share = qty > 0 ? Math.round((g.qty / qty) * 100) : 0
+              return (
+                <div key={`${g.lot}|${g.term}`} className="flex items-center gap-2 py-1.5">
+                  <span className="flex min-w-0 flex-1 items-center gap-1">
+                    {!g.lot && !g.term ? (
+                      <span className="rounded-[2px] border border-dashed border-slate-300 px-1.5 text-[10px] font-bold text-slate-400">
+                        no lot
+                      </span>
+                    ) : (
+                      <>
+                        <span
+                          className="rounded-[2px] px-1.5 py-px text-[10.5px] font-bold"
+                          style={tint ? { background: tint.bg, color: tint.fg } : undefined}
+                        >
+                          {g.lot || 'no lot'}
+                        </span>
+                        <span className="text-[10px] font-bold text-slate-300">·</span>
+                        <span
+                          className="rounded-[2px] px-1.5 py-px text-[10.5px] font-bold"
+                          style={tint ? { background: tint.bg, color: tint.fg, opacity: 0.82 } : undefined}
+                        >
+                          {g.term || 'no terminal'}
+                        </span>
+                      </>
+                    )}
+                  </span>
+                  {drew.length > 1 && <span className="text-[10px] font-semibold tabular-nums text-slate-400">{share}%</span>}
+                  <span className="w-[86px] text-right text-[12px] font-bold tabular-nums text-rose-700">
+                    {formatNum(g.qty)} {unit}
+                  </span>
+                </div>
+              )
+            })}
+          </div>
+          <div className="flex items-baseline justify-between gap-4 border-t border-slate-100 px-3 py-2">
+            <span className="text-[11px] font-bold text-slate-600">
+              {drew.length} parcel{drew.length === 1 ? '' : 's'}
+            </span>
+            <span className="text-[12px] font-extrabold tabular-nums text-slate-900">
+              {formatNum(total)} {unit}
+            </span>
+          </div>
+          {Math.abs(gap) > 0.0005 && (
+            <div className="border-t border-amber-100 bg-amber-50 px-3 py-1.5 text-[10.5px] font-semibold text-amber-800">
+              {gap > 0
+                ? `${formatNum(gap)} ${unit} of the invoice is not drawn off a deposited lot`
+                : `${formatNum(-gap)} ${unit} more drawn than the invoice quantity`}
+            </div>
+          )}
+        </div>
+      </TooltipContent>
+    </Tooltip>
+  )
+}
+
 export function Stock({ onCompanyChange }: { onCompanyChange?: (id: string) => void }): React.JSX.Element {
   const isMobile = useIsMobile()
   const [stockGroup, setStockGroup] = useState<'book' | 'actual'>(() =>
@@ -6225,6 +8587,13 @@ export function Stock({ onCompanyChange }: { onCompanyChange?: (id: string) => v
       'raw'
     )
   )
+  // Which product the Opening Stock sheet should scroll to and flash, when it
+  // was reached by clicking a name on the Book register. Beside the two view
+  // states it travels with.
+  const [jumpProduct, setJumpProduct] = useState<number | null>(null)
+  // The same journey in reverse — a product named on the opening sheet, to be
+  // found on the register.
+  const [jumpBookProduct, setJumpBookProduct] = useState<number | null>(null)
   const [bookView, setBookView] = useState<'register' | 'opening'>(() =>
     readStockView('bookView', ['register', 'opening'] as const, 'register')
   )
@@ -6256,7 +8625,7 @@ export function Stock({ onCompanyChange }: { onCompanyChange?: (id: string) => v
     }
   }, [])
   const [rows, setRows] = useState<Row[]>([])
-  const [breakdown, setBreakdown] = useState<Record<number, { receipt: Row[]; dispatch: Row[]; packed: Row[]; produced: Row[]; consumed: Row[] }>>({})
+  const [breakdown, setBreakdown] = useState<Record<number, { receipt: Row[]; dispatch: Row[]; packed: Row[]; produced: Row[]; consumed: Row[]; recirculated: Row[] }>>({})
   const [range, setRange] = useState({ from: '', to: '' })
   const ranged = !!(range.from || range.to)
   // Alt+F2 broadcasts a period from anywhere.
@@ -6394,6 +8763,37 @@ export function Stock({ onCompanyChange }: { onCompanyChange?: (id: string) => v
         ))}
       </SelectContent>
     </Select>
+  )
+
+  // FOLLOWING A PRODUCT FROM THE BOOKS TO WHERE IT STARTED.
+  //
+  // Both views live in this component, so the hop is a state change rather
+  // than navigation: switch the menu to Opening Stock and name the product the
+  // sheet should take the reader to. It is cleared as soon as the sheet has
+  // done it, so returning later does not flash a row nobody asked about.
+  const openOnOpeningSheet = useCallback((id: number) => {
+    setStockGroup('book')
+    setBookView('opening')
+    setJumpProduct(Number(id) || null)
+  }, [])
+
+  // AND BACK AGAIN.
+  //
+  // The register is split three ways — raw, intermediate, finished — and a tab
+  // that is not showing is not rendered, so the category has to be chosen
+  // before the row can be scrolled to. The product's own category decides it;
+  // anything unclassified lands on raw, where the register puts it too.
+  const openOnBookRegister = useCallback(
+    (id: number) => {
+      const pid = Number(id) || 0
+      if (!pid) return
+      const cat = String(rows.find((r) => Number(r.id) === pid)?.category || '').toLowerCase()
+      setStockGroup('book')
+      setBookView('register')
+      setTab(cat === 'intermediate' || cat === 'finished' ? cat : 'raw')
+      setJumpBookProduct(pid)
+    },
+    [rows]
   )
 
   // Phone. After every hook, so the order cannot change between renders.
@@ -6595,13 +8995,13 @@ export function Stock({ onCompanyChange }: { onCompanyChange?: (id: string) => v
                 })}
               </div>
               {openingTab === 'products' ? (
-                <OpeningStock companies={companies} onCompanyChange={onCompanyChange} />
+                <OpeningStock companies={companies} onCompanyChange={onCompanyChange} jumpTo={jumpProduct} onJumped={() => setJumpProduct(null)} onOpenProduct={openOnBookRegister} />
               ) : (
                 <SkuOpeningStock onSaved={() => undefined} />
               )}
             </div>
           ) : (
-          <OpeningStock companies={companies} onCompanyChange={onCompanyChange} />
+          <OpeningStock companies={companies} onCompanyChange={onCompanyChange} jumpTo={jumpProduct} onJumped={() => setJumpProduct(null)} onOpenProduct={openOnBookRegister} />
           )
         ) : (
         <Tabs value={tab} onValueChange={setTab}>
@@ -6622,13 +9022,13 @@ export function Stock({ onCompanyChange }: { onCompanyChange?: (id: string) => v
             </TabsList>
           )}
           <TabsContent value="raw" className="mt-1">
-            <StockTable rows={byCat('raw')} breakdown={breakdown} label="raw" range={range} onRange={setRange} companyPicker={companyPicker} companySplit={companySplit} stagePicker={stagePicker} companyIds={cids} openingFrom={openingFrom} />
+            <StockTable rows={byCat('raw')} breakdown={breakdown} label="raw" range={range} onRange={setRange} companyPicker={companyPicker} companySplit={companySplit} stagePicker={stagePicker} companyIds={cids} openingFrom={openingFrom} onOpenProduct={openOnOpeningSheet} jumpTo={jumpBookProduct} onJumped={() => setJumpBookProduct(null)} />
           </TabsContent>
           <TabsContent value="intermediate" className="mt-1">
-            <StockTable rows={byCat('intermediate')} breakdown={breakdown} label="intermediate" range={range} onRange={setRange} companyPicker={companyPicker} companySplit={companySplit} stagePicker={stagePicker} companyIds={cids} openingFrom={openingFrom} />
+            <StockTable rows={byCat('intermediate')} breakdown={breakdown} label="intermediate" range={range} onRange={setRange} companyPicker={companyPicker} companySplit={companySplit} stagePicker={stagePicker} companyIds={cids} openingFrom={openingFrom} onOpenProduct={openOnOpeningSheet} jumpTo={jumpBookProduct} onJumped={() => setJumpBookProduct(null)} />
           </TabsContent>
           <TabsContent value="finished" className="mt-1">
-            <StockTable rows={byCat('finished')} breakdown={breakdown} label="finished" range={range} onRange={setRange} companyPicker={companyPicker} companySplit={companySplit} stagePicker={stagePicker} companyIds={cids} openingFrom={openingFrom} />
+            <StockTable rows={byCat('finished')} breakdown={breakdown} label="finished" range={range} onRange={setRange} companyPicker={companyPicker} companySplit={companySplit} stagePicker={stagePicker} companyIds={cids} openingFrom={openingFrom} onOpenProduct={openOnOpeningSheet} jumpTo={jumpBookProduct} onJumped={() => setJumpBookProduct(null)} />
           </TabsContent>
           <TabsContent value="sku" className="mt-6">
             <SkuStock />

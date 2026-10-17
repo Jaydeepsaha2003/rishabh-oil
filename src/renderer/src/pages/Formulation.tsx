@@ -160,7 +160,10 @@ function uomLabel(v: unknown): string {
   return !t || t === 'ton' || t === 'tons' || t === 'tonne' || t === 'tonnes' ? 'MT' : String(v)
 }
 
-// FFA% x (1 + loss multiplier%) — e.g. 5% FFA x 1.10 = 5.5%.
+// FFA% x (1 + loss multiplier%) + moisture% — e.g. 5% FFA x 1.10 = 5.5%,
+// and 0.2% water on top of it is 5.7%. The multiplier GROSSES THE FFA UP,
+// because refining takes neutral oil with the acid it removes; water is not
+// refined out at a multiple, so it is added flat.
 // Full precision — feeds the TOR multiplier math below, which the backend
 // (src/main/production.ts) also does at full precision. Rounding this to 2dp
 // before it's divided into a multiplier and then multiplied by a blend share
@@ -185,10 +188,13 @@ const FM_CHIP = __WEB__
   ? '!h-9 !rounded-[4px] !px-3.5 !text-[11.5px] !font-extrabold !tracking-[.04em]'
   : ''
 
+// Kept identical to recipeMath.inputFattyAcidPct — the master and the batch
+// must strike the same figure, and two copies that drift are how they stop.
 function rawFattyAcidPct(it: Row): number {
   const ffa = Number(it.ffa_pct) || 0
   const loss = Number(it.loss_multiplier_pct) || 0
-  return ffa * (1 + loss / 100)
+  const moisture = Number(it.moisture_pct) || 0
+  return ffa * (1 + loss / 100) + moisture
 }
 
 // The rounded, user-facing version — this is what a by-product line's own
@@ -609,6 +615,7 @@ export function Formulation(): React.JSX.Element {
             auto_calc: !!i.auto_calc,
             ffa_pct: i.ffa_pct ?? '',
             loss_multiplier_pct: i.loss_multiplier_pct ?? '',
+            moisture_pct: i.moisture_pct ?? '',
             byproduct_product_id: i.byproduct_product_id ? String(i.byproduct_product_id) : ''
           }))
         : [{ product_id: '', qty: '', kind: 'input' }]
@@ -640,6 +647,7 @@ export function Formulation(): React.JSX.Element {
         it.auto_calc ? 1 : 0,
         String(it.ffa_pct ?? ''),
         String(it.loss_multiplier_pct ?? ''),
+        String(it.moisture_pct ?? ''),
         String(it.byproduct_product_id ?? '')
       ])
     })
@@ -785,7 +793,7 @@ export function Formulation(): React.JSX.Element {
     }
   }
 
-  function setItemFormula(idx: number, key: 'ffa_pct' | 'loss_multiplier_pct', value: string): void {
+  function setItemFormula(idx: number, key: 'ffa_pct' | 'loss_multiplier_pct' | 'moisture_pct', value: string): void {
     setItems((prev) =>
       prev.map((it, i) => {
         if (i !== idx) return it
@@ -959,8 +967,12 @@ export function Formulation(): React.JSX.Element {
         ffa_pct: it.auto_calc && it.ffa_pct !== '' && it.ffa_pct != null ? Number(it.ffa_pct) : null,
         loss_multiplier_pct:
           it.auto_calc && it.loss_multiplier_pct !== '' && it.loss_multiplier_pct != null ? Number(it.loss_multiplier_pct) : null,
-        // Dropped from the formula, so nothing new carries one.
-        moisture_pct: null,
+        // Water in the oil. It was once left out of this editor while the
+        // Make-formulation drawer could set one, which had a worse effect than
+        // the missing field: saving an edit here wrote null straight over a
+        // moisture somebody had entered there. Carried now, so a recipe means
+        // the same thing whichever screen wrote it.
+        moisture_pct: it.auto_calc && it.moisture_pct !== '' && it.moisture_pct != null ? Number(it.moisture_pct) : null,
         byproduct_product_id:
           it.auto_calc && String(it.kind || 'input') === 'input' && it.byproduct_product_id
             ? Number(it.byproduct_product_id)
@@ -1554,8 +1566,8 @@ export function Formulation(): React.JSX.Element {
                                       ? 'Auto-calculated TOR multiplier — click to turn off'
                                       : 'Auto-calculated — click to enter the % by hand instead'
                                     : sec.kind === 'input'
-                                      ? "Give this ingredient its own TOR multiplier from FFA % and its loss multiplier — dead loss always comes from the recipe's own Loss line below"
-                                      : 'Auto-calculate from FFA % and its loss multiplier'
+                                      ? "Give this ingredient its own TOR multiplier from FFA %, its loss multiplier and any moisture — dead loss always comes from the recipe's own Loss line below"
+                                      : 'Auto-calculate from FFA %, its loss multiplier and any moisture'
                                 }
                                 onClick={() => toggleItemAutoCalc(idx)}
                               >
@@ -1592,7 +1604,9 @@ export function Formulation(): React.JSX.Element {
                             <div
                               className={cn(
                                 'mt-2.5 grid gap-2.5 rounded-lg border p-2.5',
-                                sec.kind === 'input' ? 'grid-cols-2 sm:grid-cols-3' : 'grid-cols-2',
+                                sec.kind === 'input'
+                                  ? 'grid-cols-2 sm:grid-cols-3 lg:grid-cols-4'
+                                  : 'grid-cols-2 sm:grid-cols-3',
                                 sec.calcBox,
                                 __WEB__ && cn('!mt-3 !gap-3 !overflow-hidden !rounded-[4px] !bg-white !p-3', sec.webCalcBox)
                               )}
@@ -1638,6 +1652,25 @@ export function Formulation(): React.JSX.Element {
                                   onChange={(e) => setItemFormula(idx, 'loss_multiplier_pct', e.target.value)}
                                 />
                               </div>
+                              {/* WATER IN THE OIL, which is water: added flat,
+                                  not grossed up the way refining grosses the
+                                  fatty acid up. The same field the Make
+                                  formulation drawer asks for, so a recipe
+                                  built either way strikes the same multiplier.
+                                  Blank on every recipe written before it could
+                                  be entered, and blank adds nothing. */}
+                              <div className="flex flex-col gap-0.5">
+                                <Label className={cn('flex items-center gap-1 text-[10px] font-semibold text-sky-800', __WEB__ && '!text-[11.5px] !font-extrabold !uppercase !tracking-[.07em] !text-[#5A6B62]')}>
+                                  <span className={cn('h-1.5 w-1.5 shrink-0 rounded-full bg-sky-500', __WEB__ && '!hidden')} /> Moisture %
+                                </Label>
+                                <Input
+                                  type="number"
+                                  placeholder="0"
+                                  className={cn('h-8 border-sky-200 bg-sky-50/60 text-right focus-visible:ring-sky-400', __WEB__ && '!h-10 !rounded-[4px] !border-[#C3D2C6] !bg-white !text-[12.5px] !font-semibold !tabular-nums')}
+                                  value={it.moisture_pct ?? ''}
+                                  onChange={(e) => setItemFormula(idx, 'moisture_pct', e.target.value)}
+                                />
+                              </div>
                               {sec.kind === 'input' && (
                                 <div className="flex flex-col gap-0.5">
                                   <Label className={cn('flex items-center gap-1 text-[10px] font-semibold text-emerald-800', __WEB__ && '!text-[11.5px] !font-extrabold !uppercase !tracking-[.07em] !text-[#5A6B62]')}>
@@ -1668,14 +1701,16 @@ export function Formulation(): React.JSX.Element {
                               {sec.kind === 'input' ? (
                                 <div
                                   className={cn(
-                                    'col-span-2 flex flex-wrap items-center justify-between gap-2 rounded-md bg-white/70 px-2.5 py-1.5 sm:col-span-3',
+                                    'col-span-2 flex flex-wrap items-center justify-between gap-2 rounded-md bg-white/70 px-2.5 py-1.5 sm:col-span-3 lg:col-span-4',
                                     __WEB__ && '!-mx-3 !-mb-3 !mt-0.5 !gap-3 !rounded-none !bg-[#0B3D2E] !px-3 !py-2.5'
                                   )}
                                 >
                                   <span className={cn('text-[11px]', sec.formulaText, __WEB__ && '!min-w-0 !text-[12px] !font-bold !tabular-nums !text-white')}>
                                     {__WEB__
-                                      ? `1 ÷ (1 − ${formatNum(it.ffa_pct ?? 0)}% × ${(1 + (Number(it.loss_multiplier_pct) || 0) / 100).toFixed(2)} − ${formatNum(lossPct)}%)`
-                                      : "1 ÷ (1 − FFA % × (1 + loss %) − recipe's dead loss %) = this ingredient's own TOR multiplier"}
+                                      ? `1 ÷ (1 − ${formatNum(it.ffa_pct ?? 0)}% × ${(1 + (Number(it.loss_multiplier_pct) || 0) / 100).toFixed(2)}${
+                                          Number(it.moisture_pct) ? ` − ${formatNum(it.moisture_pct)}%` : ''
+                                        } − ${formatNum(lossPct)}%)`
+                                      : "1 ÷ (1 − FFA % × (1 + loss %) − moisture % − recipe's dead loss %) = this ingredient's own TOR multiplier"}
                                   </span>
                                   <span className={cn('rounded-full bg-sky-600 px-2.5 py-0.5 text-[12px] font-bold tabular-nums text-white', __WEB__ && '!ml-auto !shrink-0 !rounded-[2px] !bg-[#12855A] !px-2.5 !py-1.5 !text-[13px] !text-white')}>
                                     ×{inputTorMultiplier(it, lossPct).toFixed(4)}
@@ -1684,14 +1719,16 @@ export function Formulation(): React.JSX.Element {
                               ) : (
                                 <div
                                   className={cn(
-                                    'col-span-2 flex flex-wrap items-center justify-between gap-2 rounded-md bg-white/70 px-2.5 py-1.5',
+                                    'col-span-2 flex flex-wrap items-center justify-between gap-2 rounded-md bg-white/70 px-2.5 py-1.5 sm:col-span-3',
                                     __WEB__ && '!-mx-3 !-mb-3 !mt-0.5 !gap-3 !rounded-none !bg-[#1B4E82] !px-3 !py-2.5'
                                   )}
                                 >
                                   <span className={cn('text-[11px] text-emerald-800', __WEB__ && '!text-[12px] !font-bold !tabular-nums !text-white')}>
                                     {__WEB__
-                                      ? `${formatNum(it.ffa_pct ?? 0)}% × ${(1 + (Number(it.loss_multiplier_pct) || 0) / 100).toFixed(2)} = % of input`
-                                      : 'FFA % × (1 + loss %) = % of input'}
+                                      ? `${formatNum(it.ffa_pct ?? 0)}% × ${(1 + (Number(it.loss_multiplier_pct) || 0) / 100).toFixed(2)}${
+                                          Number(it.moisture_pct) ? ` + ${formatNum(it.moisture_pct)}%` : ''
+                                        } = % of input`
+                                      : 'FFA % × (1 + loss %) + moisture % = % of input'}
                                   </span>
                                   <span className={cn('rounded-full bg-emerald-600 px-2.5 py-0.5 text-[12px] font-bold tabular-nums text-white', __WEB__ && '!ml-auto !shrink-0 !rounded-[2px] !bg-[#0B3D2E] !px-2.5 !py-1.5 !text-[13px] !text-white')}>
                                     {formatNum(autoCalcPct(it))}%

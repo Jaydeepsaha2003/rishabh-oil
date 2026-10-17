@@ -16,32 +16,95 @@ function toPlain(res: ResultSet): Row[] {
 
 const n = (v: unknown): number => Number(v) || 0
 
-// Total qty this party has ever deposited with us for a product. Zero means
-// they hold no stock at our place, so there is nothing to draw against.
-// Restate the opening balance for a party + product in one validated step:
-// the previous figure is logged first, duplicates merge into a single lot, and
-// the new value may never fall below what has already been drawn out.
+// A LOT OR TERMINAL NUMBER, AS IT IS WRITTEN DOWN.
+//
+// Trimmed and upper-cased on the way in, because it arrives off a printed
+// sheet and "l-2451", "L-2451 " and "L-2451" are one lot — and a register that
+// treats them as three cannot group anything. Blank becomes NULL: a lot
+// nobody has given us is absent, not an empty string to match against.
+const label = (v: unknown): string | null => String(v ?? '').trim().toUpperCase().slice(0, 40) || null
+
+/**
+ * AN OPENING IS PARCELS, NOT A NUMBER.
+ *
+ * What a party holds with us on day one is not 167.51 MT in the abstract — it
+ * is L-2451 at KANDLA and L-2779 at MUNDRA, and a withdrawal draws on one of
+ * them and not the other. Every deposit AFTER the opening has said which lot
+ * and which terminal since lots were added; only the opening itself was a
+ * single undifferentiated figure, so the day the books start is the one day
+ * the parcels cannot be told apart — and a purchase booked against the opening
+ * had nothing to name.
+ *
+ * So the opening is a LIST. One consignment_stock row per lot + terminal,
+ * is_opening on each, which means every reader already written — the pending
+ * list, the purchase picker, the available balance — sees them as the lots
+ * they are without a line of change.
+ *
+ * A single { qty } with no lines is still accepted, and still writes exactly
+ * one unlabelled row: that is what every opening already on file looks like,
+ * and re-saving one must not invent a lot number nobody gave us.
+ */
+interface OpeningLine {
+  lot_no: string | null
+  terminal_no: string | null
+  qty: number
+}
+
+function openingLines(v: Row): OpeningLine[] {
+  const raw = Array.isArray(v.lines) ? (v.lines as Row[]) : null
+  if (!raw) return [{ lot_no: label(v.lot_no), terminal_no: label(v.terminal_no), qty: n(v.qty) }]
+  const out: OpeningLine[] = []
+  for (const l of raw) {
+    const qty = n(l?.qty)
+    if (qty <= 0) continue
+    out.push({ lot_no: label(l?.lot_no), terminal_no: label(l?.terminal_no), qty })
+  }
+  return out
+}
+
+// Two parcels of the same lot at the same terminal are one parcel.
+const lotKey = (l: { lot_no: string | null; terminal_no: string | null }): string =>
+  `${l.lot_no || ''}@@${l.terminal_no || ''}`
+
 export async function saveOpeningStock(v: Row): Promise<{ id: number }> {
   const c = getClient()
   const cid = getActiveCompanyId()
   const supplierId = n(v.supplier_id)
   const productId = n(v.product_id)
-  const qty = n(v.qty)
   const uom = String(v.uom || 'MT')
   const date = String(v.deposit_date || '').slice(0, 10)
   if (!supplierId) throw new Error('Choose the MNC / party')
   if (!productId) throw new Error('Choose the product')
-  if (qty <= 0) throw new Error('Enter an opening quantity greater than zero — use the history to restore an older figure')
   if (!date) throw new Error('Enter the opening date')
   if (date > todayISO()) throw new Error('The opening date cannot be in the future')
 
+  // Merged before anything is checked, so the figure that is validated is the
+  // figure that gets written.
+  const merged = new Map<string, OpeningLine>()
+  for (const l of openingLines(v)) {
+    const k = lotKey(l)
+    const cur = merged.get(k)
+    if (cur) cur.qty = Math.round((cur.qty + l.qty) * 1000) / 1000
+    else merged.set(k, { ...l })
+  }
+  const lines = Array.from(merged.values())
+  const qty = Math.round(lines.reduce((t, l) => t + l.qty, 0) * 1000) / 1000
+  if (qty <= 0) {
+    throw new Error('Enter an opening quantity greater than zero — use the history to restore an older figure')
+  }
+
+  // EVERY opening row, drawn or not. The drawn ones are the reason a floor
+  // exists at all, and deleting one because it is missing from the new list
+  // would unbook a purchase.
   const existing = await c.execute({
     sql: `SELECT * FROM consignment_stock
-          WHERE company_id = ? AND supplier_id = ? AND product_id = ? AND is_opening = 1 AND order_id IS NULL
-          ORDER BY id DESC`,
+          WHERE company_id = ? AND supplier_id = ? AND product_id = ? AND is_opening = 1
+          ORDER BY id`,
     args: [cid, supplierId, productId]
   })
   const lots = toPlain(existing)
+  const free = lots.filter((l) => l.order_id == null)
+  const drawn = lots.filter((l) => l.order_id != null)
   const oldTotal = lots.reduce((s2, l) => s2 + n(l.qty), 0)
   const available = await consignmentAvailable(supplierId, productId)
   // drawn − deposits-other-than-opening = the floor the opening cannot cross.
@@ -51,6 +114,14 @@ export async function saveOpeningStock(v: Row): Promise<{ id: number }> {
       `${minOpening.toFixed(3)} ${uom} of this opening is already drawn into purchases — the opening cannot go below that`
     )
   }
+  // A parcel a purchase has already drawn cannot be restated away. Its own row
+  // is left exactly as it stands and counts towards the total.
+  const drawnTotal = drawn.reduce((t, l) => t + n(l.qty), 0)
+  if (drawn.length && qty < drawnTotal - 1e-6) {
+    throw new Error(
+      `${drawnTotal.toFixed(3)} ${uom} of this opening is booked on purchases — the opening cannot go below that`
+    )
+  }
 
   await c.execute({
     sql: `INSERT INTO consignment_opening_log (company_id, supplier_id, product_id, action, old_qty, new_qty, uom, deposit_date, note)
@@ -58,21 +129,63 @@ export async function saveOpeningStock(v: Row): Promise<{ id: number }> {
     args: [cid, supplierId, productId, lots.length ? 'restate' : 'create', lots.length ? oldTotal : null, qty, uom, date, v.note ? String(v.note) : null]
   })
 
-  const payload = {
+  // MATCHED BY PARCEL, NOT BY POSITION.
+  //
+  // Restating an opening usually changes one lot's quantity and leaves the
+  // rest alone. Rewriting every row would give each of them a new id, and an
+  // id is what a purchase holds on to — so a parcel keeps its row as long as
+  // it keeps its lot and terminal.
+  const spare = [...free]
+  const takeMatching = (l: OpeningLine): Row | undefined => {
+    const i = spare.findIndex((x) => lotKey({ lot_no: label(x.lot_no), terminal_no: label(x.terminal_no) }) === lotKey(l))
+    return i >= 0 ? spare.splice(i, 1)[0] : undefined
+  }
+  const base = {
     supplier_id: supplierId,
     product_id: productId,
-    qty,
     uom,
     deposit_date: date,
     note: v.note ? String(v.note).trim() : 'Opening stock',
     is_opening: true
   }
-  if (lots.length) {
-    await updateConsignment(n(lots[0].id), payload)
-    for (const extra of lots.slice(1)) await deleteConsignment(n(extra.id))
-    return { id: n(lots[0].id) }
+  let firstId = 0
+  const keep: OpeningLine[] = []
+  for (const l of lines) {
+    // A parcel already drawn is on file and untouchable; its quantity counts
+    // but its row is not rewritten.
+    const isDrawn = drawn.some(
+      (d) => lotKey({ lot_no: label(d.lot_no), terminal_no: label(d.terminal_no) }) === lotKey(l)
+    )
+    if (isDrawn) continue
+    keep.push(l)
   }
-  return createConsignment(payload)
+  for (const l of keep) {
+    const row = takeMatching(l)
+    const payload = { ...base, qty: l.qty, lot_no: l.lot_no, terminal_no: l.terminal_no }
+    if (row) {
+      await updateConsignment(n(row.id), payload)
+      if (!firstId) firstId = n(row.id)
+    } else {
+      const made = await createConsignment(payload)
+      if (!firstId) firstId = made.id
+    }
+  }
+  // Whatever is left over is a parcel that has been taken off the opening, and
+  // nothing has drawn on it.
+  for (const gone of spare) await deleteConsignment(n(gone.id))
+  return { id: firstId || n(lots[0]?.id) || 0 }
+}
+
+// Every parcel making up the opening for a party + product, as it stands.
+export async function listOpeningLots(supplierId: number, productId: number): Promise<Row[]> {
+  const res = await getClient().execute({
+    sql: `SELECT id, qty, uom, lot_no, terminal_no, deposit_date, note, order_id
+          FROM consignment_stock
+          WHERE company_id = ? AND supplier_id = ? AND product_id = ? AND is_opening = 1
+          ORDER BY (order_id IS NOT NULL), lot_no, terminal_no, id`,
+    args: [getActiveCompanyId(), supplierId, productId]
+  })
+  return toPlain(res)
 }
 
 // The restatement trail for one party + product, newest first.
@@ -145,6 +258,9 @@ export async function listUnbookedLots(supplierId?: number, productId?: number):
   const res = await getClient().execute({
     sql: `SELECT cs.id, cs.supplier_id, cs.product_id, cs.qty, cs.uom, cs.deposit_date, cs.note,
                  cs.tanker_no, cs.gate_entry_id, cs.bargain_id, cs.extra_bargain_id, cs.extra_qty, cs.is_opening,
+                 -- The parcel this row is, which is what a withdrawal is picked
+                 -- by: a lot at a terminal, not a row id.
+                 cs.lot_no, cs.terminal_no,
                  s.name AS supplier_name, p.code AS product_code, p.name AS product_name,
                  ge.gate_entry_no, ge.entry_date AS gate_date, ge.received_qty AS gate_qty
           FROM consignment_stock cs
@@ -279,6 +395,248 @@ export async function validateConsignmentLots(
   return { total, lines: Array.from(alloc.values()), primaryBargainId: Number(primary) || 0 }
 }
 
+
+/**
+ * HOW MUCH COMES OUT OF WHICH PARCEL.
+ *
+ * A withdrawal used to be the parcels it named and nothing else: tick three
+ * tankers, and the invoice was their total to the gram. That is right when the
+ * quantity is the answer to "what did I tick". It is wrong when the quantity is
+ * the question — which it usually is. The bill says 47 MT. The user types 47,
+ * ticks the lot it came off, and the form replaced the 47 with the lot's own
+ * 40.444, quietly, because whole lots were the only thing the model could
+ * express.
+ *
+ * So the typed quantity leads and the ticked parcels say where it starts. The
+ * ticked ones are drawn first, in the order they were ticked; if they do not
+ * cover it, the rest comes off the oldest parcels that are still free — the
+ * same oldest-first draw an untouched invoice has always used. A parcel can be
+ * taken part-way: the drawn part becomes a row of its own against the invoice
+ * and the remainder stays where it was, under the same lot and terminal, ready
+ * for the next withdrawal.
+ *
+ * Nothing here decides whether the stock EXISTS — consignmentAvailable does
+ * that, against deposits minus invoices, and it is checked before this runs.
+ * This decides which rows carry it, which is what the bill has to be able to
+ * say afterwards.
+ */
+export interface DrawStep {
+  id: number
+  take: number
+  /** The whole row, as against a slice of it. */
+  whole: boolean
+  bargain_id: number | null
+  extra_bargain_id: number | null
+  extra_qty: number
+}
+
+export interface DrawPlan extends LotAllocation {
+  steps: DrawStep[]
+  /** What the ticked parcels held, so the form can say what it reached past. */
+  ticked: number
+  /** Taken off parcels nobody ticked, oldest first. */
+  fromPool: number
+}
+
+export async function planConsignmentDraw(
+  picks: unknown,
+  supplierId: number,
+  productId: number,
+  wantQty: number,
+  orderId = 0,
+  companyId?: number,
+  /**
+   * The invoice's own bargain, for stock this draw reaches past the ticked
+   * parcels to find. A parcel nobody ticked names no bargain, and without one
+   * its share would fall out of the invoice's bargain split entirely: the
+   * parcels would add up to the invoice and the bargains would not.
+   */
+  fallbackBargainId = 0
+): Promise<DrawPlan> {
+  const list = toLotPicks(picks)
+  const cid = companyId || getActiveCompanyId()
+  // Every check the named-parcels route has always made still applies: the
+  // parcels exist, are this party's and this product's, are not already on
+  // somebody else's invoice, and their bargains are this party's.
+  const picked = await validateConsignmentLots(list, supplierId, productId, orderId, cid)
+  const ticked = round3(picked.total)
+  // No typed quantity is the old behaviour exactly: the parcels ARE the amount.
+  const want = round3(wantQty > 1e-6 ? wantQty : ticked)
+  if (want <= 1e-6) throw new Error('Enter the quantity to invoice')
+
+  const byId = new Map<number, Row>()
+  if (list.length) {
+    const res = await getClient().execute({
+      sql: `SELECT id, qty FROM consignment_stock WHERE id IN (${list.map(() => '?').join(',')})`,
+      args: list.map((x) => x.id)
+    })
+    for (const r of toPlain(res)) byId.set(n(r.id), r)
+  }
+
+  const steps: DrawStep[] = []
+  let left = want
+  const eat = (id: number, have: number, pick?: LotPick): void => {
+    if (left <= 1e-6 || have <= 1e-6) return
+    const take = round3(Math.min(left, have))
+    // An extra-bargain split is a share of the row; taking part of the row
+    // takes no more of that share than it took of the row.
+    const extra = pick?.extra_bargain_id ? Math.min(n(pick.extra_qty), take) : 0
+    steps.push({
+      id,
+      take,
+      whole: take >= have - 1e-6,
+      bargain_id: pick?.bargain_id || fallbackBargainId || null,
+      extra_bargain_id: extra > 1e-9 ? pick?.extra_bargain_id || null : null,
+      extra_qty: extra
+    })
+    left = round3(left - take)
+  }
+
+  for (const pick of list) eat(pick.id, n(byId.get(pick.id)?.qty), pick)
+
+  if (left > 1e-6) {
+    // Past what was ticked. The oldest free parcels make up the difference,
+    // which is the draw an invoice that ticked nothing has always taken.
+    const mine = new Set(list.map((x) => x.id))
+    const free = await getClient().execute({
+      sql: `SELECT id, qty FROM consignment_stock
+            WHERE company_id = ? AND supplier_id = ? AND product_id = ?
+              AND (order_id IS NULL${orderId ? ' OR order_id = ?' : ''})
+            ORDER BY deposit_date, id`,
+      args: orderId ? [cid, supplierId, productId, orderId] : [cid, supplierId, productId]
+    })
+    for (const r of toPlain(free)) {
+      if (left <= 1e-6) break
+      if (mine.has(n(r.id))) continue
+      eat(n(r.id), n(r.qty))
+    }
+  }
+  if (left > 1e-6) {
+    throw new Error(
+      `Only ${round3(want - left).toFixed(3)} of consigned stock is available for this supplier and product`
+    )
+  }
+
+  // What each bargain ends up drawing, from the amounts actually taken rather
+  // than from the parcels' own sizes.
+  const bargainIds = Array.from(
+    new Set(steps.flatMap((x) => [x.bargain_id, x.extra_bargain_id]).filter((x): x is number => !!x))
+  )
+  const named = new Map<number, Row>()
+  if (bargainIds.length) {
+    const bres = await getClient().execute({
+      sql: `SELECT id, bargain_no, rate_per_uom FROM bargains WHERE id IN (${bargainIds.map(() => '?').join(',')})`,
+      args: bargainIds
+    })
+    for (const b of toPlain(bres)) named.set(n(b.id), b)
+  }
+  const lines = new Map<number, { bargain_id: number; bargain_no: string; rate: number; qty: number }>()
+  const add = (bid: number | null, qty: number): void => {
+    if (!bid || qty <= 1e-9) return
+    const b = named.get(bid)
+    const cur = lines.get(bid) || {
+      bargain_id: bid,
+      bargain_no: String(b?.bargain_no || ''),
+      rate: n(b?.rate_per_uom),
+      qty: 0
+    }
+    cur.qty = round3(cur.qty + qty)
+    lines.set(bid, cur)
+  }
+  for (const x of steps) {
+    add(x.bargain_id, round3(x.take - x.extra_qty))
+    add(x.extra_bargain_id, x.extra_qty)
+  }
+  const drawnFromPicks = steps
+    .filter((x) => list.some((pk) => pk.id === x.id))
+    .reduce((t, x) => t + x.take, 0)
+  return {
+    total: want,
+    steps,
+    lines: Array.from(lines.values()),
+    primaryBargainId: picked.primaryBargainId,
+    ticked,
+    fromPool: round3(want - drawnFromPicks)
+  }
+}
+
+/**
+ * Write the plan onto the parcels.
+ *
+ * A whole parcel is stamped with the invoice, as it always was. A part of one
+ * becomes a row of its own carrying that part and pointing at its parent
+ * through split_from, and the parent keeps the rest — same lot, same terminal,
+ * same party, so the picker shows the pair as the one combination it is, and
+ * releasing the invoice can put them back together exactly.
+ */
+export async function applyConsignmentDraw(
+  orderId: number,
+  plan: DrawPlan,
+  companyId?: number
+): Promise<void> {
+  const c = getClient()
+  for (const step of plan.steps) {
+    if (step.whole) {
+      await c.execute({
+        sql: `UPDATE consignment_stock
+              SET order_id = ?, bargain_id = ?, extra_bargain_id = ?, extra_qty = ?
+              WHERE id = ?`,
+        args: [
+          orderId,
+          step.bargain_id || null,
+          step.extra_bargain_id || null,
+          step.extra_bargain_id ? step.extra_qty : null,
+          step.id
+        ]
+      })
+      continue
+    }
+    const res = await c.execute({
+      sql: 'SELECT * FROM consignment_stock WHERE id = ? LIMIT 1',
+      args: [step.id]
+    })
+    const parent = (toPlain(res)[0] || null) as Row | null
+    if (!parent) continue
+    await c.execute({
+      sql: `INSERT INTO consignment_stock
+              (company_id, supplier_id, product_id, qty, uom, deposit_date, note, gate_entry_id,
+               tanker_no, order_id, bargain_id, extra_bargain_id, extra_qty, is_opening,
+               lot_no, terminal_no, split_from)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      args: [
+        companyId || n(parent.company_id),
+        n(parent.supplier_id),
+        n(parent.product_id),
+        step.take,
+        String(parent.uom || 'MT'),
+        String(parent.deposit_date || ''),
+        parent.note ? String(parent.note) : null,
+        parent.gate_entry_id ? n(parent.gate_entry_id) : null,
+        parent.tanker_no ? String(parent.tanker_no) : null,
+        orderId,
+        step.bargain_id || null,
+        step.extra_bargain_id || null,
+        step.extra_bargain_id ? step.extra_qty : null,
+        n(parent.is_opening) === 1 ? 1 : 0,
+        parent.lot_no ? String(parent.lot_no) : null,
+        parent.terminal_no ? String(parent.terminal_no) : null,
+        step.id
+      ]
+    })
+    // The parent keeps what was not taken. weighed_qty and shortage_pct stay on
+    // it untouched: they describe how the parcel was measured when it arrived,
+    // which a later withdrawal does not change.
+    await c.execute({
+      sql: 'UPDATE consignment_stock SET qty = ? WHERE id = ?',
+      args: [round3(n(parent.qty) - step.take), step.id]
+    })
+  }
+}
+
+function round3(x: number): number {
+  return Math.round((Number(x) || 0) * 1000) / 1000
+}
+
 // Tie the picked tankers, with their bargain split, to the invoice that drew them.
 export async function assignConsignmentLots(
   orderId: number,
@@ -347,7 +705,31 @@ export async function autoAssignConsignmentLots(
 
 // Free every lot an invoice held (on edit or delete) so they become pending again.
 export async function releaseConsignmentLots(orderId: number): Promise<void> {
-  await getClient().execute({
+  const c = getClient()
+  // A slice this invoice took out of a parcel goes back INTO that parcel, not
+  // back into the pending list as a parcel of its own — otherwise editing one
+  // invoice twice would leave a lot standing as five fragments of itself.
+  const slices = toPlain(
+    await c.execute({
+      sql: 'SELECT id, qty, split_from FROM consignment_stock WHERE order_id = ? AND split_from IS NOT NULL',
+      args: [orderId]
+    })
+  )
+  for (const sl of slices) {
+    const parent = await c.execute({
+      sql: 'SELECT id, qty FROM consignment_stock WHERE id = ? LIMIT 1',
+      args: [n(sl.split_from)]
+    })
+    if (!parent.rows.length) continue
+    await c.execute({
+      sql: 'UPDATE consignment_stock SET qty = ? WHERE id = ?',
+      args: [round3(n(toPlain(parent)[0].qty) + n(sl.qty)), n(sl.split_from)]
+    })
+    await c.execute({ sql: 'DELETE FROM consignment_stock WHERE id = ?', args: [n(sl.id)] })
+  }
+  // A slice whose parent is gone cannot be merged; it is freed like any other
+  // parcel below, which keeps its quantity in the register either way.
+  await c.execute({
     sql: `UPDATE consignment_stock
           SET order_id = NULL, bargain_id = NULL, extra_bargain_id = NULL, extra_qty = NULL
           WHERE order_id = ?`,
@@ -355,6 +737,105 @@ export async function releaseConsignmentLots(orderId: number): Promise<void> {
   })
 }
 
+
+/**
+ * TAKE AN INVOICE BACK OFF THE PARCELS IT DREW.
+ *
+ * A withdrawal is written onto the parcels themselves: the invoice stamps the
+ * rows it took, and a parcel it took only part of is carved into a slice of
+ * its own. That is right while the attribution is right """ + D + """ and a trap when it
+ * is not, because the register has no way to say "these were not the parcels".
+ * An opening carved into five drawn slices cannot be restated (see
+ * saveOpeningStock: a drawn parcel is untouchable), so a wrong guess about
+ * which cargo fed which bill freezes the opening it guessed at.
+ *
+ * So the draw comes undone the same way editing the invoice already undid it:
+ * slices merge back into the parcel they were cut from, and every row goes
+ * back to unbooked. Nothing about the INVOICE changes """ + D + """ its quantity, its
+ * value and its voucher are untouched, and the party balance is deposits less
+ * invoices either way. What comes back is only the freedom to say where the
+ * stock came from.
+ */
+export async function unlinkConsignmentDraw(orderId: number): Promise<{ id: number; freed: number }> {
+  const id = n(orderId)
+  if (!id) throw new Error('Which invoice?')
+  const before = await getClient().execute({
+    sql: 'SELECT COUNT(*) AS c FROM consignment_stock WHERE order_id = ?',
+    args: [id]
+  })
+  const freed = n(toPlain(before)[0]?.c)
+  if (!freed) throw new Error('This invoice is not holding any parcel')
+  await releaseConsignmentLots(id)
+  return { id, freed }
+}
+
+/**
+ * The same, for every invoice standing on one party's product.
+ *
+ * Which is what undoing a bulk assignment actually means: the parcels were
+ * matched to the invoices in one sweep, and a sweep is undone by a sweep, not
+ * by opening eleven invoices in turn.
+ */
+export async function unlinkConsignmentDrawsFor(
+  supplierId: number,
+  productId: number
+): Promise<{ invoices: number; freed: number }> {
+  const c = getClient()
+  const orders = toPlain(
+    await c.execute({
+      sql: `SELECT DISTINCT cs.order_id AS id
+              FROM consignment_stock cs
+             WHERE cs.company_id = ? AND cs.supplier_id = ? AND cs.product_id = ?
+               AND cs.order_id IS NOT NULL`,
+      args: [getActiveCompanyId(), n(supplierId), n(productId)]
+    })
+  )
+  let freed = 0
+  for (const o of orders) {
+    const one = await unlinkConsignmentDraw(n(o.id)).catch(() => null)
+    if (one) freed += one.freed
+  }
+  return { invoices: orders.length, freed }
+}
+
+/**
+ * RENAME A COMBINATION, EVERYWHERE IT IS WRITTEN.
+ *
+ * A lot at a terminal is one cargo however many vehicles carried it, so a
+ * correction to its number is a correction to all of them. Row by row it is
+ * six edits that can disagree with each other; the register groups by the
+ * pair, and a pair half-renamed splits into two groups that are really one.
+ *
+ * Drawn rows are renamed too. This writes a LABEL and nothing else """ + D + """ no
+ * quantity, no invoice, no voucher """ + D + """ so there is no reason a parcel already
+ * on a bill should have to keep a number that turned out to be wrong.
+ */
+export async function renameConsignmentLot(v: {
+  supplier_id: number
+  product_id: number
+  from_lot?: string | null
+  from_terminal?: string | null
+  to_lot?: string | null
+  to_terminal?: string | null
+}): Promise<{ updated: number; lot_no: string | null; terminal_no: string | null }> {
+  const c = getClient()
+  const cid = getActiveCompanyId()
+  const fromLot = label(v.from_lot)
+  const fromTerm = label(v.from_terminal)
+  const toLot = label(v.to_lot)
+  const toTerm = label(v.to_terminal)
+  if (!toLot && !toTerm) throw new Error('Give the combination a lot number, a terminal number, or both')
+  // Matched on what the rows actually hold, NULL included """ + D + """ "no lot yet" is a
+  // combination like any other, and naming it is the commonest rename there is.
+  const res = await c.execute({
+    sql: `UPDATE consignment_stock SET lot_no = ?, terminal_no = ?
+           WHERE company_id = ? AND supplier_id = ? AND product_id = ?
+             AND COALESCE(lot_no, '') = COALESCE(?, '')
+             AND COALESCE(terminal_no, '') = COALESCE(?, '')`,
+    args: [toLot, toTerm, cid, n(v.supplier_id), n(v.product_id), fromLot, fromTerm]
+  })
+  return { updated: Number(res.rowsAffected || 0), lot_no: toLot, terminal_no: toTerm }
+}
 
 // Consigned stock rolled up per supplier+product: deposited, invoiced, balance.
 // With a date range, the same split Book Stock uses: whatever moved before
@@ -558,19 +1039,27 @@ async function validateLot(v: Row, existing: Row | null, companyId?: number): Pr
     }
   }
 
-  // Opening stock is a balance, not a running total: one per party + product.
-  // A second one has to be an edit of the first, never a new row.
+  // Opening stock is a balance, not a running total — but a balance made of
+  // PARCELS: L-2451 at KANDLA and L-2779 at MUNDRA are two rows of one
+  // opening, and saveOpeningStock writes them as such. What is still refused
+  // is a second row for the SAME parcel, which is the duplicate this has
+  // always been about; an unlabelled opening is its own parcel, so a party
+  // that keeps its stock in one pool behaves exactly as before.
   if (!existing && v.is_opening) {
+    const lot = label(v.lot_no)
+    const term = label(v.terminal_no)
     const dup = await c.execute({
       sql: `SELECT id, qty, uom FROM consignment_stock
             WHERE company_id = ? AND supplier_id = ? AND product_id = ?
-              AND is_opening = 1 AND order_id IS NULL LIMIT 1`,
-      args: [cid, supplierId, productId]
+              AND is_opening = 1 AND order_id IS NULL
+              AND COALESCE(lot_no, '') = ? AND COALESCE(terminal_no, '') = ? LIMIT 1`,
+      args: [cid, supplierId, productId, lot || '', term || '']
     })
     if (dup.rows.length) {
       const d = dup.rows[0]
       throw new Error(
-        `Opening stock for ${sup.rows[0].name} · ${prod.rows[0].code || prod.rows[0].name} is already recorded ` +
+        `${lot || term ? `Parcel ${[lot, term].filter(Boolean).join(' at ')} of the opening` : 'Opening stock'} for ` +
+          `${sup.rows[0].name} · ${prod.rows[0].code || prod.rows[0].name} is already recorded ` +
           `(${n(d.qty).toFixed(3)} ${d.uom || 'MT'}) — update that entry instead of adding another`
       )
     }
@@ -617,8 +1106,8 @@ export async function createConsignment(v: Row): Promise<{ id: number }> {
   const ok = await validateLot({ ...v, tanker_no: tankerNo }, null, bookCompany)
   const res = await c.execute({
     sql: `INSERT INTO consignment_stock (company_id, supplier_id, product_id, qty, uom, deposit_date, note,
-            gate_entry_id, tanker_no, is_opening, weighed_qty, shortage_pct)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            gate_entry_id, tanker_no, is_opening, weighed_qty, shortage_pct, lot_no, terminal_no)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     args: [
       bookCompany,
       ok.supplierId,
@@ -631,7 +1120,9 @@ export async function createConsignment(v: Row): Promise<{ id: number }> {
       tankerNo,
       v.is_opening ? 1 : 0,
       v.weighed_qty != null && v.weighed_qty !== '' ? n(v.weighed_qty) : null,
-      v.shortage_pct != null && v.shortage_pct !== '' ? n(v.shortage_pct) : null
+      v.shortage_pct != null && v.shortage_pct !== '' ? n(v.shortage_pct) : null,
+      label(v.lot_no),
+      label(v.terminal_no)
     ]
   })
   return { id: Number(res.lastInsertRowid) }
@@ -682,7 +1173,7 @@ export async function updateConsignment(id: number, v: Row): Promise<{ id: numbe
   await c.execute({
     sql: `UPDATE consignment_stock
           SET company_id = ?, supplier_id = ?, product_id = ?, qty = ?, uom = ?, deposit_date = ?, note = ?,
-              weighed_qty = ?, shortage_pct = ?, tanker_no = ?
+              weighed_qty = ?, shortage_pct = ?, tanker_no = ?, lot_no = ?, terminal_no = ?
           WHERE id = ?`,
     args: [
       newCompany,
@@ -698,9 +1189,27 @@ export async function updateConsignment(id: number, v: Row): Promise<{ id: numbe
       // path into this function (booking, allocation) leaves it alone rather
       // than blanking the vehicle the gate weighed.
       v.tanker_no !== undefined ? String(v.tanker_no ?? '').trim() || null : row.tanker_no,
+      // Same rule as the tanker: only a caller that NAMED the field may change
+      // it, so booking a lot into a purchase cannot quietly strip the labels
+      // that say which cargo it came off.
+      v.lot_no !== undefined ? label(v.lot_no) : row.lot_no,
+      v.terminal_no !== undefined ? label(v.terminal_no) : row.terminal_no,
       id
     ]
   })
+  // The parts an invoice split off this lot are still this lot: a lot or
+  // terminal named on it reaches them too, or the one parcel would read as
+  // two differently-labelled ones the moment it was relabelled.
+  if (v.lot_no !== undefined || v.terminal_no !== undefined) {
+    await c.execute({
+      sql: 'UPDATE consignment_stock SET lot_no = ?, terminal_no = ? WHERE split_from = ?',
+      args: [
+        v.lot_no !== undefined ? label(v.lot_no) : row.lot_no ?? null,
+        v.terminal_no !== undefined ? label(v.terminal_no) : row.terminal_no ?? null,
+        id
+      ]
+    })
+  }
   return { id }
 }
 
@@ -740,4 +1249,259 @@ export async function deleteConsignment(id: number): Promise<{ id: number }> {
   }
   await c.execute({ sql: 'DELETE FROM consignment_stock WHERE id = ?', args: [id] })
   return { id }
+}
+
+// ---------------------------------------------------------------------------
+// WHICH CARGO A TANKER CAME OFF
+// ---------------------------------------------------------------------------
+//
+// Five tankers arrive from BUNGE against one parcel: one lot at the port, one
+// terminal it was discharged at. Each arrival is validated on its own — that
+// is right, because each is weighed on its own — so the thing they have in
+// common has to be put back afterwards, over several rows at once.
+
+/**
+ * Set the lot and/or terminal on a set of deposits.
+ *
+ * Only the field NAMED is written: passing a lot alone leaves each row's
+ * terminal as it was, which is what lets the two be filled in on different
+ * days by different desks. An empty string clears — that is a deliberate
+ * "this had no lot after all", and is different from not mentioning it.
+ *
+ * A booked lot is not refused here. Its quantity is frozen inside a purchase
+ * invoice, but which cargo it came off is a FACT ABOUT THE ARRIVAL, not about
+ * the invoice, and it is usually learnt after the booking.
+ */
+export async function assignConsignmentGroup(
+  ids: number[],
+  v: { lot_no?: string; terminal_no?: string }
+): Promise<{ updated: number; lot_no: string | null; terminal_no: string | null }> {
+  const list = (Array.isArray(ids) ? ids : []).map(n).filter(Boolean)
+  if (!list.length) throw new Error('Pick at least one tanker to assign')
+  const setLot = v.lot_no !== undefined
+  const setTerm = v.terminal_no !== undefined
+  if (!setLot && !setTerm) throw new Error('Give a lot number, a terminal number, or both')
+  const lot = setLot ? label(v.lot_no) : null
+  const term = setTerm ? label(v.terminal_no) : null
+
+  const c = getClient()
+  const sets: string[] = []
+  const args: (string | number | null)[] = []
+  if (setLot) {
+    sets.push('lot_no = ?')
+    args.push(lot)
+  }
+  if (setTerm) {
+    sets.push('terminal_no = ?')
+    args.push(term)
+  }
+  const res = await c.execute({
+    sql: `UPDATE consignment_stock SET ${sets.join(', ')}
+           WHERE company_id = ? AND id IN (${list.map(() => '?').join(',')})`,
+    args: [...args, getActiveCompanyId(), ...list] as never[]
+  })
+  // …and the parts invoices split off those lots, which are the same parcels.
+  await c.execute({
+    sql: `UPDATE consignment_stock SET ${sets.join(', ')}
+           WHERE company_id = ? AND split_from IN (${list.map(() => '?').join(',')})`,
+    args: [...args, getActiveCompanyId(), ...list] as never[]
+  })
+  return { updated: Number(res.rowsAffected || 0), lot_no: lot, terminal_no: term }
+}
+
+
+/**
+ * WHICH PARCELS THE INVOICES ALREADY BOOKED CAME OFF.
+ *
+ * A consignment purchase draws its parcels only when the form ticks some: an
+ * invoice booked by typing a quantity and nothing else took the stock out of
+ * the balance (deposits less invoices, which is what the register totals) but
+ * left every parcel standing as unbooked. Two things went wrong because of it.
+ * The withdrawal could not say which lot at which terminal it came off — the
+ * question the register now groups itself to answer — and the next booking
+ * was offered parcels that had in truth already gone, because the picker asks
+ * order_id IS NULL and every one of them was still null.
+ *
+ * So the invoices are walked oldest first and given the parcels they would
+ * have drawn had they been booked through the picker: the same oldest-first
+ * FIFO an untouched invoice has always used, through the same plan/apply pair,
+ * splitting the parcel it stops in the middle of. Nothing is invented and
+ * nothing is moved:
+ *
+ *   - Only invoices that hold NO parcel at all are touched, so this can run
+ *     again and find nothing to do, and a hand-picked invoice is never
+ *     second-guessed.
+ *   - Trading purchases are skipped. They ride the consignment booking path
+ *     but are bought and sold straight through, off no deposit at all.
+ *   - An invoice the deposits cannot cover is left exactly as it is. The plan
+ *     refuses rather than reaching for stock that is not there, and the next
+ *     invoice is still tried — one party short of a deposit does not stop the
+ *     rest.
+ *   - Quantities, rates, bargains and vouchers are not written. The only
+ *     change is which parcel row carries which invoice, which is the fact
+ *     that was missing.
+ */
+export async function backfillConsignmentDraws(): Promise<{
+  linked: number
+  skipped: number
+  notes: string[]
+}> {
+  const c = getClient()
+  const res = await c.execute(`SELECT o.id, o.company_id, o.supplier_id, o.oil_type_id, o.ordered_qty,
+                 o.bargain_id, o.invoice_no, o.order_date
+            FROM orders o
+           WHERE o.is_consignment = 1
+             AND COALESCE(o.is_trading, 0) = 0
+             AND COALESCE(o.ordered_qty, 0) > 0
+             AND NOT EXISTS (SELECT 1 FROM consignment_stock cs WHERE cs.order_id = o.id)
+           ORDER BY o.order_date, o.id`)
+  const orders = toPlain(res)
+  let linked = 0
+  let skipped = 0
+  const notes: string[] = []
+  for (const o of orders) {
+    try {
+      const plan = await planConsignmentDraw(
+        [],
+        n(o.supplier_id),
+        n(o.oil_type_id),
+        n(o.ordered_qty),
+        n(o.id),
+        n(o.company_id),
+        n(o.bargain_id)
+      )
+      await applyConsignmentDraw(n(o.id), plan, n(o.company_id))
+      linked += 1
+    } catch (e) {
+      skipped += 1
+      notes.push(`${String(o.invoice_no || o.id)}: ${(e as Error).message}`)
+    }
+  }
+  return { linked, skipped, notes }
+}
+
+// HOW ALIKE TWO TANKER NUMBERS ARE.
+//
+// A parcel is carried by vehicles booked together, and it shows in the
+// numbers: the same lorry making a second trip (identical), or a row of them
+// off one fleet (RJ09GB/4045, RJ09GB/4046). Split into the letters in front
+// and the digits behind and the two cases fall out.
+//
+// Deliberately narrow. This is a SUGGESTION beside a human decision, so it had
+// better be right when it speaks: a near-miss that groups two unrelated
+// tankers costs more than saying nothing.
+// The PLATE, out of whatever the gate typed into the box.
+//
+// The field is free text and the yard uses it as one: real rows read
+// "GJ39T 4627-BUNGE INDIA-CPO-INV.NO-8630636491". Everything from the first
+// dash that is followed by a word is documentation, not the vehicle — cut it,
+// or the invoice number becomes the tanker's digits and nothing matches.
+//
+// Four letters, not one: MH-12-AB-1234 is a plate, and cutting at its first
+// dash would leave "MH".
+function plateOf(no: unknown): string {
+  return String(no ?? '')
+    .toUpperCase()
+    .split(/-(?=[A-Z]{4})/)[0]
+    .replace(/[^A-Z0-9]/g, '')
+}
+
+function tankerParts(no: unknown): { key: string; tail: number } | null {
+  const raw = plateOf(no)
+  if (!raw) return null
+  const m = raw.match(/^(.*?)(\d+)$/)
+  if (!m) return { key: raw, tail: NaN }
+  return { key: m[1], tail: Number(m[2]) }
+}
+
+export function tankerKin(a: unknown, b: unknown): { kin: boolean; why: string } {
+  const x = tankerParts(a)
+  const y = tankerParts(b)
+  if (!x || !y) return { kin: false, why: '' }
+  const rawA = plateOf(a)
+  const rawB = plateOf(b)
+  if (rawA === rawB) return { kin: true, why: 'same vehicle, another trip' }
+  if (!x.key || x.key !== y.key) return { kin: false, why: '' }
+  if (!Number.isFinite(x.tail) || !Number.isFinite(y.tail)) return { kin: false, why: '' }
+  const gap = Math.abs(x.tail - y.tail)
+  if (gap > 0 && gap <= 10) return { kin: true, why: 'consecutive number, same fleet' }
+  return { kin: false, why: '' }
+}
+
+/**
+ * What else looks like it belongs with this arrival.
+ *
+ * Same party and same product always — a lot is a parcel of ONE oil from ONE
+ * supplier, and nothing across that line is ever a suggestion. Then, in the
+ * order they are worth reading:
+ *
+ *   1. a deposit whose tanker is kin to this one and already carries a lot —
+ *      the strongest, because it tells us the NUMBER as well as the grouping;
+ *   2. kin with no lot yet;
+ *   3. anything else unlabelled that arrived within three days.
+ *
+ * Never returns a row already on a different lot: moving one is a decision,
+ * not a suggestion, and the desk can still do it by hand.
+ */
+export async function consignmentKin(id: number): Promise<Row> {
+  const c = getClient()
+  const cur = await c.execute({ sql: 'SELECT * FROM consignment_stock WHERE id = ?', args: [n(id)] })
+  if (!cur.rows.length) throw new Error('That tanker is no longer on the register')
+  const row = toPlain(cur)[0]
+
+  const near = await c.execute({
+    sql: `SELECT cs.*, ge.gate_entry_no, o.invoice_no
+            FROM consignment_stock cs
+            LEFT JOIN gate_entries ge ON ge.id = cs.gate_entry_id
+            LEFT JOIN orders o ON o.id = cs.order_id
+           WHERE cs.company_id = ? AND cs.supplier_id = ? AND cs.product_id = ?
+             AND cs.id <> ? AND COALESCE(cs.is_opening, 0) = 0
+             AND ABS(JULIANDAY(cs.deposit_date) - JULIANDAY(?)) <= 7
+           ORDER BY cs.deposit_date DESC, cs.id DESC
+           LIMIT 40`,
+    args: [n(row.company_id), n(row.supplier_id), n(row.product_id), n(row.id), String(row.deposit_date)]
+  })
+
+  const mine = String(row.lot_no || '')
+  const out: Row[] = []
+  for (const r of toPlain(near)) {
+    const theirs = String(r.lot_no || '')
+    // A row already on a DIFFERENT lot is left alone — moving one is a
+    // decision, not a suggestion. But that only applies once this arrival has
+    // a lot of its own: while it has none, the rows that already carry one are
+    // the whole point, because they are what tells us the number.
+    if (mine && theirs && theirs !== mine) continue
+    const k = tankerKin(row.tanker_no, r.tanker_no)
+    const days = Math.abs(
+      (Date.parse(`${String(r.deposit_date).slice(0, 10)}T00:00:00Z`) -
+        Date.parse(`${String(row.deposit_date).slice(0, 10)}T00:00:00Z`)) /
+        86400000
+    )
+    const near = `arrived ${days === 0 ? 'the same day' : `within ${days} day${days === 1 ? '' : 's'}`}`
+    if (k.kin) {
+      // Kin AND already lotted is the best thing this can say: it gives the
+      // grouping and the number in one row.
+      out.push({ ...r, why: theirs ? `${k.why} — already on ${theirs}` : k.why, rank: theirs ? 1 : 2 })
+    } else if (theirs && days <= 3) {
+      // Not the same vehicle, but a cargo landed beside it has been named.
+      out.push({ ...r, why: `${near} — already on ${theirs}`, rank: 3 })
+    } else if (!theirs && days <= 3) {
+      out.push({ ...r, why: near, rank: 4 })
+    }
+  }
+  out.sort((a, b) => n(a.rank) - n(b.rank) || String(b.deposit_date).localeCompare(String(a.deposit_date)))
+
+  // The number to propose: the one a kin tanker is already on. Nothing is
+  // invented — an empty suggestion means nobody has named this cargo yet.
+  // Rank 1 first — the same vehicle, already lotted — then a neighbour that
+  // carries one. Nothing is invented: with neither, the suggestion is empty
+  // and the desk names the cargo itself.
+  const fromKin = out.find((r) => n(r.rank) === 1) || out.find((r) => n(r.rank) === 3)
+  return {
+    row,
+    suggested_lot: mine || String(fromKin?.lot_no || ''),
+    suggested_terminal: String(row.terminal_no || '') || String(fromKin?.terminal_no || ''),
+    suggested_from: fromKin ? String(fromKin.tanker_no || '') : '',
+    kin: out.slice(0, 12)
+  }
 }

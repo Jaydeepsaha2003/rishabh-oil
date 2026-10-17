@@ -3,7 +3,7 @@ import { getClient, todayISO } from './db'
 import { getActiveCompanyId, companiesOfFactory, factoryOfCompanies } from './company'
 import { stockMap, productStockAvailable, stockLevels } from './stock'
 import { visibleFromFor } from './access-gate'
-import { ppFreeByProduct, ppTotalsBothByProduct, drawPp, reversePpDraws } from './stockopenings'
+import { ppFreeByProduct, ppTotalsBothByProduct, drawPp, reversePpDraws, ppCountCovers } from './stockopenings'
 // One copy of the recipe arithmetic, shared with the entry sheet in the
 // renderer. It used to live only here, so the sheet previewed one set of
 // numbers and this posted another.
@@ -90,6 +90,115 @@ export async function recipeSnapshot(
   return { versionId: 0, items: toPlain(items) }
 }
 
+// A MIX WRITTEN FOR ONE BATCH AND NO OTHER.
+//
+// With formulation-based production switched off (Settings), a batch is not
+// struck on a saved recipe: the operator composes the mix at the sheet and it
+// belongs to that run alone. The arithmetic is not a second kind — the same
+// lines, read by the same expandRecipe — so what changes is only where they
+// came from, and that they are kept on the run rather than in the master.
+//
+// Stored as JSON on the row so an edit can re-expand exactly what was booked,
+// the way a formulation_version_id pins a saved recipe.
+const MIX_FIELDS = [
+  'product_id', 'qty', 'kind', 'auto_calc', 'ffa_pct',
+  'loss_multiplier_pct', 'moisture_pct', 'byproduct_product_id'
+] as const
+
+export function customMixOf(v: Row): Row[] | null {
+  const raw = v?.custom_items
+  const list = Array.isArray(raw) ? raw : typeof raw === 'string' ? safeParse(raw) : null
+  if (!Array.isArray(list)) return null
+  const out: Row[] = []
+  for (const it of list) {
+    if (!it || typeof it !== 'object') continue
+    const pid = n((it as Row).product_id)
+    const qty = n((it as Row).qty)
+    if (!pid || !(qty > 0)) continue
+    const row: Row = {}
+    for (const f of MIX_FIELDS) row[f] = (it as Row)[f] ?? null
+    row.product_id = pid
+    row.qty = qty
+    row.kind = String((it as Row).kind || 'input')
+    out.push(row)
+  }
+  return out.length ? out : null
+}
+
+// A one-off mix's inputs share out the batch, so together they cannot come to
+// more than 100 parts — the same ceiling the drawer holds them to.
+function assertMixBlend(mix: Row[] | null): void {
+  if (!mix) return
+  const blend = mix.filter((l) => String(l.kind || 'input') === 'input').reduce((t2, l) => t2 + n(l.qty), 0)
+  if (blend > 100.0005) {
+    throw new Error(`The mix's inputs come to ${Math.round(blend * 1000) / 1000} parts — they cannot be more than 100`)
+  }
+  // A batch's own mix shares the batch out exactly: 100 parts, no fewer.
+  if (blend < 99.9995) {
+    throw new Error(`The mix's inputs come to ${Math.round(blend * 1000) / 1000} parts — a batch's mix must come to exactly 100`)
+  }
+}
+
+function safeParse(raw: string): unknown {
+  try {
+    return JSON.parse(raw || 'null')
+  } catch {
+    return null
+  }
+}
+
+/** The lines a batch was actually booked on, saved mix or one-off. */
+export async function mixOfProduction(row: Row): Promise<Row[]> {
+  const own = customMixOf({ custom_items: row?.custom_items_json })
+  if (own) return own
+  const snap = await recipeSnapshot(n(row?.formulation_id), n(row?.formulation_version_id))
+  return snap.items
+}
+
+// A RUN'S NUMBER WITHIN ITS DAY — #1, #2, #3 — so the register can say which
+// batch ran first and which last. The entry sheet suggests the next free one
+// and the desk may change it; a caller that sends none (the phone layout, a
+// recirculation) gets the next one here. Auto rows made by a dispatch are left
+// unnumbered: they are re-made on every save of their sale.
+//
+// The column is added on first use rather than at startup, the way
+// voucher_numbers makes its table, so nothing runs on a launch and no existing
+// row is touched — a run saved before this reads as unnumbered.
+let dayNoReady = false
+async function ensureDayNo(): Promise<void> {
+  if (dayNoReady) return
+  try {
+    await getClient().execute('ALTER TABLE production ADD COLUMN day_no INTEGER')
+  } catch (e) {
+    if (!/duplicate column/i.test(String((e as Error).message))) throw e
+  }
+  dayNoReady = true
+}
+
+// A number typed on the sheet: a whole number from 1, or nothing.
+function dayNoOf(v: unknown): number | null {
+  const x = Math.round(Number(v))
+  return Number.isFinite(x) && x >= 1 && x <= 9999 ? x : null
+}
+
+// The next number for a day at this factory: one past the highest used, and
+// never less than one past the day's count, so runs entered before numbering
+// existed still count.
+async function nextDayNo(day: string): Promise<number> {
+  const fid = await factoryOfCompanies([getActiveCompanyId()])
+  const cids = await companiesOfFactory()
+  const ph = cids.map(() => '?').join(', ')
+  const where = fid
+    ? `(p.factory_id = ? OR (p.factory_id IS NULL AND p.company_id IN (${ph})))`
+    : `p.company_id IN (${ph})`
+  const r = await getClient().execute({
+    sql: `SELECT COALESCE(MAX(p.day_no), 0) AS mx, COUNT(*) AS n FROM production p
+           WHERE substr(p.prod_date, 1, 10) = ? AND ${where}`,
+    args: [String(day).slice(0, 10), ...(fid ? [fid, ...cids] : cids)]
+  })
+  return Math.max(n(r.rows[0]?.mx), n(r.rows[0]?.n)) + 1
+}
+
 export async function listProduction(forModule?: string): Promise<Row[]> {
   // Bounded to what this user may see. The bound goes in the SQL so the older
   // rows are never fetched; `forModule` lets a page that only borrows this
@@ -131,6 +240,81 @@ export async function listProduction(forModule?: string): Promise<Row[]> {
   `
   })
   return toPlain(res)
+}
+
+// A BATCH'S SHORT FORMULATION — what the register shows on hover.
+//
+// The recipe it was struck on, as the parts of its inputs (85:15, and each
+// part's share), read from the version the batch PINNED or from its own
+// one-off mix — never the recipe as it reads today. Beside it, what the run
+// actually drew, line by line, because a ratio alone does not say how much
+// came out of the tanks.
+export async function batchMix(productionId: number): Promise<Row> {
+  const c = getClient()
+  const res = await c.execute({
+    sql: `SELECT p.id, p.kind, p.qty, p.uom, p.formulation_id, p.formulation_version_id, p.custom_items_json,
+                 pr.name AS product_name, f.name AS formulation_name, fv.version AS recipe_version,
+                 (SELECT MAX(version) FROM formulation_versions WHERE formulation_id = p.formulation_id) AS recipe_latest_version
+            FROM production p
+            LEFT JOIN products pr ON pr.id = p.product_id
+            LEFT JOIN formulations f ON f.id = p.formulation_id
+            LEFT JOIN formulation_versions fv ON fv.id = p.formulation_version_id
+           WHERE p.id = ?`,
+    args: [productionId]
+  })
+  const b = toPlain(res)[0]
+  if (!b) throw new Error('That run is no longer there')
+  const own = customMixOf({ custom_items: b.custom_items_json })
+  const recipe = own || (n(b.formulation_id) ? (await recipeSnapshot(n(b.formulation_id), n(b.formulation_version_id))).items : [])
+  // Only the inputs make the ratio; a loss or by-product line is not one of
+  // its parts.
+  const inputs = recipe.filter((x) => String(x.kind || 'input') === 'input' && n(x.product_id) > 0)
+  const drawnRes = await c.execute({
+    sql: `SELECT i.product_id, i.qty, i.kind, pr.name AS product_name
+            FROM production_items i
+            LEFT JOIN products pr ON pr.id = i.product_id
+           WHERE i.production_id = ?
+           ORDER BY i.id`,
+    args: [productionId]
+  })
+  const drawnRows = toPlain(drawnRes)
+  const ids = [...new Set(inputs.map((x) => n(x.product_id)))]
+  const names = new Map<number, string>()
+  if (ids.length) {
+    const nr = await c.execute({ sql: `SELECT id, name FROM products WHERE id IN (${ids.map(() => '?').join(', ')})`, args: ids })
+    for (const r of nr.rows) names.set(n(r.id), String(r.name || ''))
+  }
+  const total = inputs.reduce((t, x) => t + n(x.qty), 0)
+  const trim = (v: number): string => (Number.isInteger(v) ? String(v) : String(Math.round(v * 100) / 100))
+  const parts = inputs.map((x) => ({
+    product_id: n(x.product_id),
+    name: names.get(n(x.product_id)) || `#${n(x.product_id)}`,
+    part: n(x.qty),
+    pct: total > 0 ? Math.round((n(x.qty) / total) * 10000) / 100 : 0
+  }))
+  // The same product drawn twice (free and FFA PP, say) reads as one line.
+  const drawnMap = new Map<string, Row>()
+  for (const r of drawnRows) {
+    const kind = String(r.kind || 'input')
+    const k = `${kind}|${n(r.product_id)}`
+    const hit = drawnMap.get(k)
+    if (hit) hit.qty = Math.round((n(hit.qty) + n(r.qty)) * 1000) / 1000
+    else drawnMap.set(k, { product_id: n(r.product_id), name: String(r.product_name || `#${n(r.product_id)}`), kind, qty: n(r.qty) })
+  }
+  return {
+    id: n(b.id),
+    kind: String(b.kind || 'batch'),
+    product_name: String(b.product_name || ''),
+    qty: n(b.qty),
+    uom: String(b.uom || 'MT'),
+    own_mix: !!own,
+    recipe_name: own ? 'Mix for this batch' : String(b.formulation_name || ''),
+    recipe_version: n(b.recipe_version),
+    recipe_latest_version: n(b.recipe_latest_version),
+    ratio: parts.map((x) => trim(x.part)).join(':'),
+    parts,
+    drawn: [...drawnMap.values()]
+  }
 }
 
 export async function getProductionItems(productionId: number): Promise<Row[]> {
@@ -248,12 +432,11 @@ export async function productionReport(
   // twenty batches on one version and there is no reason to read it twenty
   // times.
   const ratioCache = new Map<string, { ratio: string; parts: Row[] }>()
-  const ratioFor = async (fid2: number, versionId: number): Promise<{ ratio: string; parts: Row[] }> => {
-    if (!fid2) return { ratio: '', parts: [] }
-    const key = `${fid2}|${versionId}`
-    const hit = ratioCache.get(key)
-    if (hit) return hit
-    const snap = await recipeSnapshot(fid2, versionId).catch(() => ({ versionId: 0, items: [] as Row[] }))
+  // A batch struck on a one-off mix has no recipe to look up and no version to
+  // cache against — its lines came with it. So the ratio is read from ITEMS,
+  // and the saved-recipe path is the same call with the items fetched first.
+  const ratioFromItems = async (items: Row[]): Promise<{ ratio: string; parts: Row[] }> => {
+    const snap = { items }
     // Only the INPUTS carry the ratio. A loss line is a percentage of the
     // batch and a by-product line is what comes off it; neither is part of
     // "85:15", and including them turns every ratio into nonsense.
@@ -280,7 +463,20 @@ export async function productionReport(
       part: n(x.qty),
       pct: total > 0 ? Math.round((n(x.qty) / total) * 10000) / 100 : 0
     }))
-    const out = { ratio: parts.map((x) => trim(x.part)).join(':'), parts }
+    return { ratio: parts.map((x) => trim(x.part)).join(':'), parts }
+  }
+
+  // The saved-recipe path: fetch the version's lines, then read the same way.
+  // Cached per VERSION rather than per recipe — two batches of the same
+  // product a month apart can honestly show different ratios, which is the
+  // whole point of pinning the version.
+  const ratioFor = async (fid2: number, versionId: number): Promise<{ ratio: string; parts: Row[] }> => {
+    if (!fid2) return { ratio: '', parts: [] }
+    const key = `${fid2}|${versionId}`
+    const hit = ratioCache.get(key)
+    if (hit) return hit
+    const snap = await recipeSnapshot(fid2, versionId).catch(() => ({ versionId: 0, items: [] as Row[] }))
+    const out = await ratioFromItems(snap.items)
     ratioCache.set(key, out)
     return out
   }
@@ -293,9 +489,13 @@ export async function productionReport(
     // because the report is a record of what the plant DID and a day the
     // machine only turned over is part of that.
     const recirc = String(b.kind || 'batch') === 'recirculation'
+    // A one-off mix states its own ratio; there is no master to look up.
+    const ownMix = customMixOf({ custom_items: b.custom_items_json })
     const { ratio, parts } = recirc
       ? { ratio: '', parts: [] as Row[] }
-      : await ratioFor(n(b.formulation_id), n(b.formulation_version_id))
+      : ownMix
+        ? await ratioFromItems(ownMix)
+        : await ratioFor(n(b.formulation_id), n(b.formulation_version_id))
 
     // One entry per product this batch touched: what it took and what it gave
     // back. A loss line counts as consumed — dead loss leaves the floor as
@@ -450,6 +650,7 @@ async function recordRecirculation(v: Row, id = 0): Promise<{ id: number }> {
              WHERE id = ?`,
       args: [v.prod_date, productId, qty, v.uom || 'MT', v.note || null, n(id)]
     })
+    if ('day_no' in v) await c.execute({ sql: 'UPDATE production SET day_no = ? WHERE id = ?', args: [dayNoOf(v.day_no), n(id)] })
     // A row that used to be a batch and is being corrected to a recirculation
     // must lose the lines it drew, or the inputs stay consumed forever — PP
     // included, or a vessel this run drew from stays short after the batch
@@ -459,9 +660,9 @@ async function recordRecirculation(v: Row, id = 0): Promise<{ id: number }> {
     return { id: n(id) }
   }
   const ins = await c.execute({
-    sql: `INSERT INTO production (company_id, factory_id, prod_date, product_id, qty, uom, note, kind)
-          VALUES (?, (SELECT factory_id FROM companies WHERE id = ?), ?, ?, ?, ?, ?, 'recirculation')`,
-    args: [getActiveCompanyId(), getActiveCompanyId(), v.prod_date, productId, qty, v.uom || 'MT', v.note || null]
+    sql: `INSERT INTO production (company_id, factory_id, prod_date, product_id, qty, uom, note, kind, day_no)
+          VALUES (?, (SELECT factory_id FROM companies WHERE id = ?), ?, ?, ?, ?, ?, 'recirculation', ?)`,
+    args: [getActiveCompanyId(), getActiveCompanyId(), v.prod_date, productId, qty, v.uom || 'MT', v.note || null, dayNoOf(v.day_no) ?? (await nextDayNo(String(v.prod_date || todayISO())))]
   })
   return { id: Number(ins.lastInsertRowid) }
 }
@@ -480,20 +681,35 @@ async function recordRecirculation(v: Row, id = 0): Promise<{ id: number }> {
 async function expandRecipeForBatch(
   items: Row[],
   outputQty: number,
-  outputProductId = 0
+  outputProductId = 0,
+  prodDay = ''
 ): Promise<{
   lines: { product_id: number; qty: number; kind: string }[]
   draws: { product_id: number; fromFree: number; fromFfa: number; gross: number; fattyAcid: number }[]
   ownPp: { without: number; with: number }
 }> {
-  const autoCalcInputs = items
-    .filter((it) => String(it.kind || 'input') === 'input' && it.auto_calc)
-    .map((it) => n(it.product_id))
+  // A batch dated before the PP count in force cannot draw on it at all.
+  const covered = await ppCountCovers(prodDay)
+  const autoCalcInputs = covered
+    ? items.filter((it) => String(it.kind || 'input') === 'input' && it.auto_calc).map((it) => n(it.product_id))
+    : []
   const freeByProduct = autoCalcInputs.length ? await ppFreeByProduct(autoCalcInputs) : {}
   // The product's OWN vessels come first — oil already made, standing part-way
   // through the plant. Only what they cannot supply is a recipe problem.
-  const pools = outputProductId ? (await ppTotalsBothByProduct([outputProductId]))[outputProductId] : undefined
-  const r = expandBatchWithOutputPp(items, outputQty, pools || {}, freeByProduct, outputProductId)
+  const pools = outputProductId && covered ? (await ppTotalsBothByProduct([outputProductId]))[outputProductId] : undefined
+  // WITH-FFA OIL WAITS FOR ITS RECIPE.
+  //
+  // Oil standing in the product's vessels WITH its FFA is a blend part-way
+  // through, and what it is a blend OF is only known once its formulation is
+  // named on the PP breakdown. Finishing it here used to borrow this batch's
+  // own recipe as a stand-in, so the same vessel came out as mostly shea on a
+  // shea mix and mostly mahuwa on a mahuwa one — a guess written into stock.
+  //
+  // So it is left where it is. Unnamed, it stays PP of this product; named, the
+  // register restates it as the oils it consists of (see stock.ts), and a batch
+  // draws those like any other raw stock. Either way no batch takes it as PP.
+  // W/O-FFA vessel oil is finished oil already and is still taken one for one.
+  const r = expandBatchWithOutputPp(items, outputQty, { without: pools?.without || 0, with: 0 }, freeByProduct, outputProductId)
   return { lines: r.lines, draws: r.draws, ownPp: { without: r.plan.fromPpFree, with: r.plan.ppWithUsed } }
 }
 
@@ -534,6 +750,7 @@ function ppRunNote(typed: unknown, ownPp: { without: number; with: number }, uom
 }
 
 export async function createProduction(v: Row): Promise<{ id: number }> {
+  await ensureDayNo()
   if (String(v.kind || 'batch') === 'recirculation') return recordRecirculation(v)
   const c = getClient()
   const productId = n(v.product_id)
@@ -560,28 +777,41 @@ export async function createProduction(v: Row): Promise<{ id: number }> {
   // a SHEA-based one for the same RPO) — the caller picks which; falling back
   // to the most recently created one when none is given keeps every existing
   // caller working unchanged.
-  let fid = n(v.formulation_id)
+  // A ONE-OFF MIX BEATS EVERY LOOKUP.
+  //
+  // When the sheet sends its own lines they ARE the recipe for this batch, so
+  // no formulation is resolved and — this is the part that matters — the
+  // fallback below is not reached. Without that, a run composed by hand would
+  // quietly be re-expanded on whatever saved recipe the product happens to
+  // have, and consume something nobody asked for.
+  const mix = customMixOf(v)
+  assertMixBlend(mix)
+  let fid = mix ? 0 : n(v.formulation_id)
   if (fid) {
     const owner = await c.execute({ sql: 'SELECT product_id FROM formulations WHERE id = ?', args: [fid] })
     if (!owner.rows.length || Number(owner.rows[0].product_id) !== productId) {
       throw new Error("That recipe doesn't belong to the selected product")
     }
-  } else {
+  } else if (!mix) {
     const fRes = await c.execute({
       sql: 'SELECT id FROM formulations WHERE product_id = ? ORDER BY id DESC LIMIT 1',
       args: [productId]
     })
     fid = fRes.rows.length ? Number(fRes.rows[0].id) : 0
   }
-  const snap = await recipeSnapshot(fid)
+  const snap = mix ? { versionId: 0, items: mix } : await recipeSnapshot(fid)
   let lines: { product_id: number; qty: number; kind: string }[] = []
   let draws: { product_id: number; fromFree: number; fromFfa: number }[] = []
   // What this batch took out of the PRODUCT'S OWN vessels, drawn down after
   // the row exists so each take is logged against it and an edit can put it
   // back.
   let ownPp = { without: 0, with: 0 }
-  if (fid) {
-    const expanded = await expandRecipeForBatch(snap.items, qty, productId)
+  // With no recipe too: the product's own W/O FFA vessels are finished oil
+  // already, and a batch of it takes them first, one for one — otherwise the
+  // batch adds tonnage the opening already counted. With no recipe there is
+  // nothing else to expand, so the rest is simply made, as it always was.
+  {
+    const expanded = await expandRecipeForBatch(fid || mix ? snap.items : [], qty, productId, prodDay)
     lines = expanded.lines
     draws = expanded.draws
     ownPp = expanded.ownPp
@@ -618,11 +848,12 @@ export async function createProduction(v: Row): Promise<{ id: number }> {
   }
 
   const ins = await c.execute({
-    sql: `INSERT INTO production (company_id, factory_id, prod_date, product_id, qty, uom, note, formulation_id, formulation_version_id)
-          VALUES (?, (SELECT factory_id FROM companies WHERE id = ?), ?, ?, ?, ?, ?, ?, ?)`,
+    sql: `INSERT INTO production (company_id, factory_id, prod_date, product_id, qty, uom, note, formulation_id, formulation_version_id, custom_items_json, day_no)
+          VALUES (?, (SELECT factory_id FROM companies WHERE id = ?), ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     // The version is stamped now so a later edit to the recipe cannot reach
-    // this batch. See recipeSnapshot.
-    args: [getActiveCompanyId(), getActiveCompanyId(), v.prod_date, productId, qty, v.uom || 'MT', ppRunNote(v.note, ownPp, String(v.uom || 'MT')), fid || null, snap.versionId || null]
+    // this batch. See recipeSnapshot. A one-off mix is kept whole for the same
+    // reason — there is no master to go back to.
+    args: [getActiveCompanyId(), getActiveCompanyId(), v.prod_date, productId, qty, v.uom || 'MT', ppRunNote(v.note, ownPp, String(v.uom || 'MT')), fid || null, snap.versionId || null, mix ? JSON.stringify(mix) : null, dayNoOf(v.day_no) ?? (await nextDayNo(prodDay || todayISO()))]
   })
   const id = Number(ins.lastInsertRowid)
 
@@ -654,9 +885,10 @@ export async function createProduction(v: Row): Promise<{ id: number }> {
 // dispatches behind it. The resulting shortage goes to the log, and the Stock
 // register shows it in red.
 export async function updateProduction(id: number, v: Row): Promise<{ id: number }> {
+  await ensureDayNo()
   const c = getClient()
   const cur = await c.execute({
-    sql: "SELECT id, formulation_id, formulation_version_id, COALESCE(kind, 'batch') AS kind FROM production WHERE id = ?",
+    sql: "SELECT id, formulation_id, formulation_version_id, COALESCE(kind, 'batch') AS kind, note FROM production WHERE id = ?",
     args: [n(id)]
   })
   if (!cur.rows.length) throw new Error('Production run not found')
@@ -688,13 +920,16 @@ export async function updateProduction(id: number, v: Row): Promise<{ id: number
     throw new Error('Production cannot be dated in the future')
   }
 
-  let fid = n(v.formulation_id)
+  // Same rule as a new batch: lines sent with the edit are the recipe.
+  const mix = customMixOf(v)
+  assertMixBlend(mix)
+  let fid = mix ? 0 : n(v.formulation_id)
   if (fid) {
     const owner = await c.execute({ sql: 'SELECT product_id FROM formulations WHERE id = ?', args: [fid] })
     if (!owner.rows.length || Number(owner.rows[0].product_id) !== productId) {
       throw new Error("That recipe doesn't belong to the selected product")
     }
-  } else {
+  } else if (!mix) {
     const fRes = await c.execute({
       sql: 'SELECT id FROM formulations WHERE product_id = ? ORDER BY id DESC LIMIT 1',
       args: [productId]
@@ -705,7 +940,7 @@ export async function updateProduction(id: number, v: Row): Promise<{ id: number
   // The version this batch was run on, unless the recipe itself has been
   // switched to a different one — that is a deliberate re-costing, and takes
   // the new recipe as it stands today.
-  const snap = await recipeSnapshot(fid, fid && fid === wasFid ? wasVersion : 0)
+  const snap = mix ? { versionId: 0, items: mix } : await recipeSnapshot(fid, fid && fid === wasFid ? wasVersion : 0)
 
   // Put back whatever this run drew off PP BEFORE re-expanding the recipe —
   // the vessels have to be back at their pre-this-run balance before asking
@@ -720,18 +955,25 @@ export async function updateProduction(id: number, v: Row): Promise<{ id: number
   // the row exists so each take is logged against it and an edit can put it
   // back.
   let ownPp = { without: 0, with: 0 }
-  if (fid) {
-    const expanded = await expandRecipeForBatch(snap.items, qty, productId)
+  // Same as a new batch: with no recipe, its own W/O FFA vessels still go first.
+  {
+    const expanded = await expandRecipeForBatch(fid || mix ? snap.items : [], qty, productId, prodDay)
     lines = expanded.lines
     draws = expanded.draws
     ownPp = expanded.ownPp
   }
 
   await c.execute({
-    sql: `UPDATE production SET prod_date = ?, product_id = ?, qty = ?, uom = ?, note = ?, formulation_id = ?, formulation_version_id = ?
+    sql: `UPDATE production SET prod_date = ?, product_id = ?, qty = ?, uom = ?, note = ?, formulation_id = ?, formulation_version_id = ?,
+                custom_items_json = ?
            WHERE id = ?`,
-    args: [v.prod_date, productId, qty, v.uom || 'MT', ppRunNote(v.note, ownPp, String(v.uom || 'MT')), fid || null, snap.versionId || null, n(id)]
+    // An edit that does not send a note (the phone layout) keeps the one the
+    // batch has; ppRunNote strips the PP line from it and writes it fresh.
+    args: [v.prod_date, productId, qty, v.uom || 'MT', ppRunNote('note' in v ? v.note : cur.rows[0].note, ownPp, String(v.uom || 'MT')), fid || null, snap.versionId || null, mix ? JSON.stringify(mix) : null, n(id)]
   })
+  // Only when the edit says so — a caller that does not know about numbers
+  // (the phone layout) must not wipe one set on the sheet.
+  if ('day_no' in v) await c.execute({ sql: 'UPDATE production SET day_no = ? WHERE id = ?', args: [dayNoOf(v.day_no), n(id)] })
   if (draws.length) await drawPpForBatch(n(id), draws)
   // The product's own vessels, drawn after the input ones so both are logged
   // against this run and reverse together.

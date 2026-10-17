@@ -57,6 +57,35 @@ export function formatDateTime(value: string | null | undefined): string {
   return `${dd}-${mm}-${yy} ${hh}:${mi}`
 }
 
+// A STORED UTC STAMP, ON THE READER'S CLOCK, in the stamp's own shape.
+//
+// The audit trail's created_at is SQLite's datetime('now') — UTC, whatever the
+// server's own timezone — while the gate register writes Indian wall-clock
+// time. Put side by side unconverted, an invoice made at 21:39 read "16:09",
+// five and a half hours before itself, and sorted against the gate entries on
+// the wrong clock. Kept as 'YYYY-MM-DD HH:MM:SS' so it still sorts as text
+// beside the gate's local stamps. Anything not in that shape is returned as is.
+export function utcStampLocal(value: unknown): string {
+  const raw = String(value ?? '').trim()
+  if (!/^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}/.test(raw)) return raw
+  const d = new Date(/[zZ]|[+-]\d{2}:?\d{2}$/.test(raw) ? raw.replace(' ', 'T') : `${raw.replace(' ', 'T')}Z`)
+  if (Number.isNaN(d.getTime())) return raw
+  const p = (x: number): string => String(x).padStart(2, '0')
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`
+}
+
+// HOW AN ACTIVITY TRAIL WRITES A MOMENT: dd-mm-yyyy hh:mm, 24-hour, no
+// seconds — the same in every activity list, whichever source the moment came
+// from. Takes a LOCAL 'YYYY-MM-DD HH:MM[:SS]' (run a stored UTC stamp through
+// utcStampLocal first); a date alone comes back as the date, anything else as is.
+export function activityStamp(value: unknown): string {
+  const raw = String(value ?? '').trim()
+  const m = raw.match(/^(\d{4})-(\d{2})-(\d{2})(?:[ T](\d{2}):(\d{2}))?/)
+  if (!m) return raw
+  const day = `${m[3]}-${m[2]}-${m[1]}`
+  return m[4] ? `${day} ${m[4]}:${m[5]}` : day
+}
+
 // The LOCAL calendar day — never `.toISOString()`, which renders in UTC. For
 // any timezone ahead of UTC (IST is UTC+5:30), the stretch between local
 // midnight and UTC midnight would read back as YESTERDAY in every date field

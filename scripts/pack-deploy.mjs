@@ -99,6 +99,11 @@ writeFileSync(
       // Hostinger's panel runs this; `node server.js` is the same thing.
       scripts: { start: 'node server.js' },
       dependencies: deps,
+      // exceljs still asks for uuid ^8, and Hostinger's scan flags 8.3.2
+      // (CVE-2026-41907: v3/v5/v6 skip a bounds check on a caller's buffer).
+      // exceljs only ever calls v4(), so it was never reachable — but 11.1.1
+      // is the fixed line, still ships CommonJS, and exceljs runs on it.
+      overrides: { uuid: '^11.1.1' },
       engines: { node: '>=20.6' }
     },
     null,

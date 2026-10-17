@@ -171,22 +171,31 @@ function Select({
         const openUp = dirRef.current ?? (spaceBelow < 240 && spaceAbove > spaceBelow)
         dirRef.current = openUp
         const listMaxH = Math.max(120, Math.min(320, (openUp ? spaceAbove : spaceBelow) - 12))
+        // A trigger at the RIGHT edge of a form has no room to grow rightward,
+        // so its panel was cut to the trigger's width and a long entry — a bank
+        // ledger with its account number — lost its end. There it grows
+        // leftward instead, its right edge on the trigger's.
+        const roomRight = c.width - (t.left - c.left) - 8
+        const roomLeft = t.right - c.left - 8
+        const growLeft = roomRight < 380 && roomLeft > roomRight
+        const ty = openUp ? 'translateY(-100%)' : ''
         setInlineFlip(null)
         setPortal({
           target: dialog,
           listMaxH,
           style: {
             position: 'absolute',
-            left: t.left - c.left + dialog.scrollLeft,
+            left: (growLeft ? t.right : t.left) - c.left + dialog.scrollLeft,
             // The panel is at LEAST as wide as the trigger, but free to grow to
             // its longest entry — pinned to the trigger's width, a 208px picker
             // wrapped "VANIK FINANCE PRIVATE LIMITED" onto two lines. Capped to
-            // the room actually left to the right of the trigger.
+            // the room actually there on the side it grows to.
             minWidth: t.width,
-            maxWidth: Math.max(t.width, c.width - (t.left - c.left) - 8),
+            maxWidth: Math.max(t.width, growLeft ? roomLeft : roomRight),
             ...(openUp
-              ? { top: t.top - c.top + dialog.scrollTop - 4, transform: 'translateY(-100%)' }
-              : { top: t.bottom - c.top + dialog.scrollTop + 4 })
+              ? { top: t.top - c.top + dialog.scrollTop - 4 }
+              : { top: t.bottom - c.top + dialog.scrollTop + 4 }),
+            ...(growLeft || openUp ? { transform: `${growLeft ? 'translateX(-100%) ' : ''}${ty}`.trim() } : {})
           }
         })
         return
@@ -311,12 +320,14 @@ function Select({
       if (pick && !pick.disabled) choose(pick.value)
     } else if (e.key === 'Escape') {
       e.preventDefault()
+      e.stopPropagation()
       setOpen(false)
     }
   }
 
   const panelEl = open ? (
     <div
+      data-escape-layer="select"
       ref={panelRef}
       style={portal?.style}
       className={cn(
@@ -439,7 +450,7 @@ const SelectTrigger = React.forwardRef<
       disabled={disabled}
       onClick={toggle}
       className={cn(
-        'flex h-9 w-full min-w-0 items-center justify-between gap-1 whitespace-nowrap rounded-md border border-input bg-transparent px-3 py-2 text-sm uppercase shadow-sm ring-offset-background focus:outline-none focus:ring-1 focus:ring-ring disabled:cursor-not-allowed disabled:opacity-50 [&>span]:min-w-0 [&>span]:flex-1 [&>span]:truncate',
+        'flex h-9 w-full min-w-0 items-center justify-between gap-1 whitespace-nowrap rounded-none border border-input bg-transparent px-3 py-2 text-sm uppercase shadow-sm ring-offset-background focus:outline-none focus:ring-1 focus:ring-ring disabled:cursor-not-allowed disabled:opacity-50 [&>span]:min-w-0 [&>span]:flex-1 [&>span]:truncate',
         className
       )}
       {...props}

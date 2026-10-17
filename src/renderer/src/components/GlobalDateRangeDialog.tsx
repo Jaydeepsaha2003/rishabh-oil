@@ -18,7 +18,8 @@ const PAGE_LABEL: Record<string, string> = {
   accounts: 'Accounts',
   stock: 'Stock',
   sales: 'Sales',
-  salesBargains: 'Sales Bargain'
+  salesBargains: 'Sales Bargain',
+  production: 'Production'
 }
 // Only pages with their own date-range filter can sensibly take a page-only
 // apply — showing the button elsewhere would just do nothing when clicked.

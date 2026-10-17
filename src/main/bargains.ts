@@ -3,7 +3,8 @@ import { getClient, todayISO } from './db'
 import { getActiveCompanyId } from './company'
 import { visibleFromFor } from './access-gate'
 import { logEvent } from './access'
-import { recordChanges, BARGAIN_FIELDS } from './history'
+import { recordChanges, BARGAIN_FIELDS, type FieldSpec } from './history'
+import { withDbTransaction } from './dbTransaction'
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Row = Record<string, any>
@@ -192,7 +193,10 @@ function validateBargainInput(v: Row): { qty: number; rate: number } {
   return { qty, rate }
 }
 
-export async function createBargain(v: Row): Promise<{ id: number; bargain_no: string }> {
+// `opts.companyId` is for a bargain struck by the app itself on another's
+// behalf — a balance moved off an existing bargain lands in that bargain's
+// book, not in whichever one the desk happens to be working in.
+export async function createBargain(v: Row, opts?: { companyId?: number }): Promise<{ id: number; bargain_no: string }> {
   const { qty, rate } = validateBargainInput(v)
   const total = qty * rate
   const bargain_no = await nextBargainNo(
@@ -208,7 +212,7 @@ export async function createBargain(v: Row): Promise<{ id: number; bargain_no: s
        base_rate, duty, rate_per_uom, allowed_shortage_pct, rate_expiry_date, total_amount, remarks, status)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'open')`,
     args: [
-      getActiveCompanyId(),
+      opts?.companyId || getActiveCompanyId(),
       bargain_no,
       v.bargain_date,
       Number(v.supplier_id),
@@ -436,6 +440,83 @@ export async function adjustBargainQty(
     args: [id, d, adjDate, note ? String(note).trim() : null]
   })
   return { id, qty: newQty }
+}
+
+// MOVING A BARGAIN'S OPEN BALANCE TO ANOTHER PRODUCT.
+//
+// Once anything is drawn on a bargain its oil is locked — the tankers and
+// invoices against it depend on it. What a desk sometimes needs is the part NOT
+// yet drawn under a different product: 7 MT left on a CPO-BUNGE contract that
+// is really to come in as CPO. That is two acts — strike a new bargain for the
+// balance and take the same quantity off the old one — and here they are one,
+// in one transaction and each naming the other, so neither happens alone.
+//
+// The new bargain copies the old one's supplier, broker, company, EX/FOR terms,
+// shortage allowance and (unless another is given) its rate. Nothing already
+// drawn moves: those tankers and invoices stay on the bargain they were made
+// against. A bargain posts no voucher, so the books are untouched.
+const MOVED_OUT: FieldSpec[] = [{ key: 'moved', label: 'Balance moved out', kind: 'text' }]
+const MOVED_IN: FieldSpec[] = [{ key: 'moved', label: 'Balance moved in', kind: 'text' }]
+
+export async function moveBargainBalance(
+  id: number,
+  v: { oil_type_id: number; qty: number; rate?: number; date?: string; note?: string }
+): Promise<{ id: number; bargain_no: string; moved: number }> {
+  return withDbTransaction(async () => {
+    const c = getClient()
+    const res = await c.execute({ sql: 'SELECT * FROM bargains WHERE id = ?', args: [Number(id)] })
+    if (!res.rows.length) throw new Error('Bargain not found')
+    const b = toPlain(res)[0]
+    const toOil = Number(v.oil_type_id) || 0
+    if (!toOil) throw new Error('Pick the product to move the balance to')
+    if (toOil === Number(b.oil_type_id)) throw new Error("That is this bargain's own product — pick another")
+    const qty = Math.round((Number(v.qty) || 0) * 1000) / 1000
+    if (qty <= 0) throw new Error('Enter a quantity greater than zero')
+    const uom = String(b.uom || 'MT')
+    const balance = Math.round((Number(b.qty) - (await bargainConsumed(Number(id)))) * 1000) / 1000
+    if (qty > balance + 1e-6) {
+      throw new Error(`Only ${balance} ${uom} is open on ${String(b.bargain_no)} — that is the most that can be moved`)
+    }
+    const date = (v.date && String(v.date).slice(0, 10)) || todayISO()
+    // The landed rate is base + duty. Kept as it was, both carry over; a new
+    // rate keeps the duty and moves the base.
+    const oldRate = Number(b.rate_per_uom) || 0
+    const rate = Number(v.rate) > 0 ? Number(v.rate) : oldRate
+    const duty = Number(b.duty) || 0
+    const same = Math.abs(rate - oldRate) < 0.005
+    const base = same ? Number(b.base_rate) || rate - duty : rate > duty ? rate - duty : rate
+    const names = await c.execute({ sql: 'SELECT id, name FROM products WHERE id IN (?, ?)', args: [Number(b.oil_type_id), toOil] })
+    const nameOf = (pid: number): string => String(names.rows.find((r) => Number(r.id) === pid)?.name || 'product')
+    const note = String(v.note || '').trim()
+    const expiry = String(b.rate_expiry_date || '').slice(0, 10)
+    const made = await createBargain(
+      {
+        supplier_id: b.supplier_id,
+        broker_id: b.broker_id,
+        oil_type_id: toOil,
+        bargain_type: b.bargain_type,
+        qty,
+        uom,
+        base_rate: base,
+        duty: same || rate > duty ? duty : 0,
+        bargain_date: date,
+        allowed_shortage_pct: b.allowed_shortage_pct,
+        // An expiry the new date has already passed would refuse the save.
+        rate_expiry_date: expiry && expiry > date ? expiry : null,
+        remarks: `Moved from ${String(b.bargain_no)}${note ? ` — ${note}` : ''}`
+      },
+      { companyId: Number(b.company_id) || undefined }
+    )
+    await adjustBargainQty(
+      Number(id),
+      -qty,
+      `Moved ${qty} ${uom} to ${made.bargain_no} (${nameOf(toOil)})${note ? ` — ${note}` : ''}`,
+      date
+    )
+    await recordChanges('bargains', Number(id), String(b.bargain_no), { moved: '' }, { moved: `${qty} ${uom} to ${made.bargain_no} · ${nameOf(toOil)}` }, MOVED_OUT)
+    await recordChanges('bargains', made.id, made.bargain_no, { moved: '' }, { moved: `${qty} ${uom} from ${String(b.bargain_no)} · ${nameOf(Number(b.oil_type_id))}` }, MOVED_IN)
+    return { id: made.id, bargain_no: made.bargain_no, moved: qty }
+  })
 }
 
 /**

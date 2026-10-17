@@ -36,10 +36,20 @@ export function uniformRecipeTor(items: Row[]): number {
   return (100 * 100) / (100 - lossPct)
 }
 
-// A single input's own fatty-acid loss — FFA% x (1 + loss multiplier%) — as a
-// % of THAT INPUT's own quantity, not of the output.
+// A single input's own loss — as a % of THAT INPUT's own quantity, not of the
+// output.
+//
+//   FFA% x (1 + loss multiplier%)  +  moisture%
+//
+// The multiplier GROSSES THE FFA UP rather than scaling it down: refining does
+// not remove exactly the free fatty acid it measures, it takes neutral oil with
+// it, and the multiplier is how much more. Moisture is added flat — water in
+// the oil is water, it is not refined out at a multiple.
+//
+// Moisture is null on every recipe written before it could be entered, and
+// null adds nothing, so this is the same figure those recipes always struck.
 export function inputFattyAcidPct(it: Row): number {
-  return num(it.ffa_pct) * (1 + num(it.loss_multiplier_pct) / 100)
+  return num(it.ffa_pct) * (1 + num(it.loss_multiplier_pct) / 100) + num(it.moisture_pct)
 }
 
 // A single input's OWN TOR multiplier, when a blend mixes raw oils of

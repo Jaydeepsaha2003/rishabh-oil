@@ -81,9 +81,14 @@ export function LoginScreen({ onLogin }: { onLogin: (u: AppUser) => void }): Rea
           </button>
         </form>
 
-        <p className="mt-5 text-center text-xs text-slate-400">
-          First time? Default admin — <span className="font-medium text-slate-500">admin / admin123</span>
-        </p>
+        {/* Only for a fresh desktop install, where the first admin is seeded
+            with this password. On the public website it is an invitation to
+            guess at the admin account, and nobody there is setting one up. */}
+        {!__WEB__ && (
+          <p className="mt-5 text-center text-xs text-slate-400">
+            First time? Default admin — <span className="font-medium text-slate-500">admin / admin123</span>
+          </p>
+        )}
       </div>
     </div>
   )

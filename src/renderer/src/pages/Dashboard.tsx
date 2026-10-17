@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
+import { setPageIntent } from '@/lib/pageIntent'
 import {
   AlertTriangle,
   ArrowDownRight,
@@ -8,6 +9,7 @@ import {
   Landmark,
   RefreshCw,
   Scale,
+  SlidersHorizontal,
   ShoppingCart,
   Tag,
   Truck,
@@ -18,6 +20,10 @@ import { Card } from '@/components/ui/card'
 import { PageHeader } from '@/components/PageHeader'
 import type { Page } from '@/components/Sidebar'
 import { DashboardWeb } from './DashboardWeb'
+import { DailyPosition } from '@/components/DailyPosition'
+import { DASH_THEMES } from '@/lib/dashTheme'
+import { dashItemsHere, useDashLayout } from '@/lib/dashLayout'
+import { DashCustomize } from '@/components/DashCustomize'
 import { cn } from '@/lib/utils'
 import { formatINR, formatNum } from '@/lib/format'
 import { useLiveRefresh } from '@/lib/useLiveRefresh'
@@ -159,10 +165,33 @@ function Kpi({
   )
 }
 
+// The rows of the desktop app's board, by the Customize keys they carry.
+const MONTH_KPIS = ['m.buy', 'm.sell', 'm.pay', 'm.rec']
+const PARTY_ROW = ['m.topSup', 'm.topCus', 'm.duties']
+const OPS_ROW = ['m.stock', 'm.exposure', 'm.attention']
+
 export function Dashboard({ onNavigate }: Props): React.JSX.Element {
   const [stats, setStats] = useState<Row | null>(null)
   const [treasury, setTreasury] = useState<Row | null>(null)
   const [checking, setChecking] = useState(false)
+  // ALL COMPANIES: the board reads every company's books together. A way of
+  // looking at the dashboard, kept on this browser — it does not change the
+  // active company, which every other page still works in.
+  const [allCos, setAllCos] = useState(() => {
+    try {
+      return localStorage.getItem('dash.allCompanies') === '1'
+    } catch {
+      return false
+    }
+  })
+  const setAllCompanies = useCallback((v: boolean) => {
+    setAllCos(v)
+    try {
+      localStorage.setItem('dash.allCompanies', v ? '1' : '0')
+    } catch {
+      // Not remembered then; the choice still holds for this visit.
+    }
+  }, [])
 
   const refresh = useCallback(async (background = false) => {
     // Skipped on a live refresh: raising the spinner here is what made the
@@ -170,18 +199,23 @@ export function Dashboard({ onNavigate }: Props): React.JSX.Element {
     // new ones arrive. See useLiveRefresh.
     if (!background) setChecking(true)
     try {
-      const [st, tr] = await Promise.all([window.api.dashboard.stats(), window.api.treasury.alerts().catch(() => null)])
+      const [st, tr] = await Promise.all([window.api.dashboard.stats(allCos), window.api.treasury.alerts(allCos).catch(() => null)])
       setStats(st)
       setTreasury(tr)
     } finally {
       setChecking(false)
     }
-  }, [])
+  }, [allCos])
 
   useEffect(() => {
     refresh()
   }, [refresh])
   useLiveRefresh(refresh)
+  // Which KPIs and cards this person keeps on the board — one layout for the
+  // website's board and the desktop app's, kept on their account.
+  const layout = useDashLayout()
+  const on = layout.isOn
+  const [customizing, setCustomizing] = useState(false)
 
   const thisMonth = new Date().toISOString().slice(0, 7)
   const buyM = ((stats?.purchaseMonths as Row[]) || []).find((x) => x.m === thisMonth)
@@ -229,6 +263,9 @@ export function Dashboard({ onNavigate }: Props): React.JSX.Element {
         // click event lands in `background` and the spinner never shows.
         onRefresh={() => refresh()}
         onNavigate={onNavigate}
+        layout={layout}
+        allCompanies={allCos}
+        onAllCompanies={setAllCompanies}
       />
     )
   }
@@ -243,52 +280,92 @@ export function Dashboard({ onNavigate }: Props): React.JSX.Element {
         // arrive as its `background` argument — truthy — and a refresh
         // somebody asked for would come back without its spinner.
         actions={
-          <Button variant="outline" size="sm" onClick={() => void refresh()}>
-            <RefreshCw className={cn('h-4 w-4', checking && 'animate-spin')} /> Refresh
-          </Button>
+          <div className="flex items-center gap-2">
+            <Button variant="outline" size="sm" onClick={() => setCustomizing(true)} title="Choose which KPIs and cards the dashboard shows">
+              <SlidersHorizontal className="h-4 w-4" /> Customize
+              {dashItemsHere().filter((i) => layout.hidden.has(i.key)).length > 0 && (
+                <span className="rounded-full bg-emerald-100 px-1.5 text-[10.5px] font-bold text-emerald-800">
+                  {dashItemsHere().filter((i) => layout.hidden.has(i.key)).length} hidden
+                </span>
+              )}
+            </Button>
+            {/* Every company's books together — the company picker beside
+                this still sets the company every other page works in. */}
+            <Button
+              variant={allCos ? 'default' : 'outline'}
+              size="sm"
+              onClick={() => setAllCompanies(!allCos)}
+              title={allCos ? 'Showing every company together — click for the active company only' : 'Show every company together'}
+            >
+              All companies
+            </Button>
+            <Button variant="outline" size="sm" onClick={() => void refresh()}>
+              <RefreshCw className={cn('h-4 w-4', checking && 'animate-spin')} /> Refresh
+            </Button>
+          </div>
         }
       />
 
       <div className="space-y-4 px-4 py-4">
-        {/* KPI row */}
-        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-          <Kpi
+        {/* The morning's position — the same band the website carries, drawn
+            in the board's light palette. */}
+        {dashItemsHere().some((i) => i.group === 'position' && on(i.key)) && (
+          <div className="rounded-md bg-[#F1F5EF] p-3">
+            <DailyPosition t={DASH_THEMES.light} dark={false} isMobile={false} cats={cats} onNavigate={onNavigate} isOn={on} allCompanies={allCos} />
+          </div>
+        )}
+        {dashItemsHere().every((i) => !on(i.key)) && (
+          <Card className="flex flex-col items-center gap-2 p-8 text-center">
+            <SlidersHorizontal className="h-6 w-6 text-muted-foreground" />
+            <span className="text-sm font-semibold">Every card is hidden</span>
+            <Button size="sm" variant="outline" onClick={() => setCustomizing(true)}>
+              Customize the dashboard
+            </Button>
+          </Card>
+        )}
+        {/* KPI row — only the tiles kept, spread across the row. */}
+        {MONTH_KPIS.some(on) && (
+        <div className="grid gap-3" style={{ gridTemplateColumns: `repeat(${MONTH_KPIS.filter(on).length},minmax(0,1fr))` }}>
+          {on('m.buy') && <Kpi
             label="Purchases this month"
             value={inr(n(buyM?.v))}
             sub={`${formatNum(n(buyM?.qty))} MT · ${n(buyM?.cnt)} invoices`}
             icon={ShoppingCart}
             tone="bg-sky-100 text-sky-700"
             onClick={() => onNavigate('orders')}
-          />
-          <Kpi
+          />}
+          {on('m.sell') && <Kpi
             label="Sales this month"
             value={inr(n(sellM?.v))}
             sub={`${formatNum(n(sellM?.qty))} MT · ${n(sellM?.cnt)} invoices`}
             icon={Tag}
             tone="bg-emerald-100 text-emerald-700"
             onClick={() => onNavigate('sales')}
-          />
-          <Kpi
+          />}
+          {on('m.pay') && <Kpi
             label="Payable to suppliers"
             value={inr(payables.reduce((s, x) => s + x.v, 0))}
             sub={`${payables.length} parties with balances`}
             icon={Landmark}
             tone="bg-rose-100 text-rose-700"
             onClick={() => onNavigate('accounts')}
-          />
-          <Kpi
+          />}
+          {on('m.rec') && <Kpi
             label="Receivable from customers"
             value={inr(receivables.reduce((s, x) => s + x.v, 0))}
             sub={`${receivables.length} parties with balances`}
             icon={Scale}
             tone="bg-indigo-100 text-indigo-700"
             onClick={() => onNavigate('accounts')}
-          />
+          />}
         </div>
+        )}
 
         {/* Trend row */}
-        <div className="grid gap-3 lg:grid-cols-3">
-          <Card className="p-4 lg:col-span-2">
+        {(on('m.chart') || on('m.sparkBuy') || on('m.sparkSell')) && (
+        <div className={cn('grid gap-3', on('m.chart') && (on('m.sparkBuy') || on('m.sparkSell')) && 'lg:grid-cols-3')}>
+          {on('m.chart') && (
+          <Card className={cn('p-4', (on('m.sparkBuy') || on('m.sparkSell')) && 'lg:col-span-2')}>
             <div className="mb-1 flex items-center justify-between">
               <span className="text-sm font-semibold">Purchases vs sales — last 6 months</span>
               <span className="flex items-center gap-3 text-[11px] text-muted-foreground">
@@ -298,7 +375,10 @@ export function Dashboard({ onNavigate }: Props): React.JSX.Element {
             </div>
             <PairedBars months={months} />
           </Card>
+          )}
+          {(on('m.sparkBuy') || on('m.sparkSell')) && (
           <Card className="space-y-3 p-4">
+            {on('m.sparkBuy') && (
             <div>
               <div className="mb-1 flex items-center justify-between text-[12px]">
                 <span className="flex items-center gap-1 font-medium"><ArrowDownRight className="h-3.5 w-3.5 text-sky-600" /> Purchases · 30 days</span>
@@ -308,6 +388,8 @@ export function Dashboard({ onNavigate }: Props): React.JSX.Element {
               </div>
               <Spark days={((stats?.purchaseDays as Row[]) || []) as { d: string; v: number }[]} tone="sky" />
             </div>
+            )}
+            {on('m.sparkSell') && (
             <div>
               <div className="mb-1 flex items-center justify-between text-[12px]">
                 <span className="flex items-center gap-1 font-medium"><ArrowUpRight className="h-3.5 w-3.5 text-emerald-600" /> Sales · 30 days</span>
@@ -317,19 +399,28 @@ export function Dashboard({ onNavigate }: Props): React.JSX.Element {
               </div>
               <Spark days={((stats?.saleDays as Row[]) || []) as { d: string; v: number }[]} tone="emerald" />
             </div>
+            )}
           </Card>
+          )}
         </div>
+        )}
 
         {/* Parties + books */}
-        <div className="grid gap-3 lg:grid-cols-3">
+        {PARTY_ROW.some(on) && (
+        <div className="grid gap-3" style={{ gridTemplateColumns: `repeat(${PARTY_ROW.filter(on).length},minmax(0,1fr))` }}>
+          {on('m.topSup') && (
           <Card className="p-4">
             <div className="mb-2 text-sm font-semibold">Top suppliers by value</div>
             <RankBars rows={((stats?.topSuppliers as Row[]) || []).map((x) => ({ name: String(x.name), v: n(x.v) }))} />
           </Card>
+          )}
+          {on('m.topCus') && (
           <Card className="p-4">
             <div className="mb-2 text-sm font-semibold">Top customers by value</div>
             <RankBars rows={((stats?.topCustomers as Row[]) || []).map((x) => ({ name: String(x.name), v: n(x.v) }))} />
           </Card>
+          )}
+          {on('m.duties') && (
           <Card className="p-4">
             <div className="mb-2 text-sm font-semibold">Duties &amp; taxes (books)</div>
             <div className="space-y-2 text-[13px]">
@@ -355,10 +446,14 @@ export function Dashboard({ onNavigate }: Props): React.JSX.Element {
               </button>
             </div>
           </Card>
+          )}
         </div>
+        )}
 
         {/* Stock + operations */}
-        <div className="grid gap-3 lg:grid-cols-3">
+        {OPS_ROW.some(on) && (
+        <div className="grid gap-3" style={{ gridTemplateColumns: `repeat(${OPS_ROW.filter(on).length},minmax(0,1fr))` }}>
+          {on('m.stock') && (
           <Card className="p-4">
             <div className="mb-2 flex items-center justify-between">
               <span className="text-sm font-semibold">Book stock by category</span>
@@ -386,40 +481,61 @@ export function Dashboard({ onNavigate }: Props): React.JSX.Element {
               </button>
             </div>
           </Card>
+          )}
 
+          {on('m.exposure') && (
           <Card className="p-4">
             <div className="mb-2 flex items-center justify-between">
               <span className="text-sm font-semibold">Open exposure</span>
               <FileText className="h-4 w-4 text-muted-foreground" />
             </div>
             <div className="space-y-2 text-[13px]">
-              <div className="flex items-baseline justify-between border-b border-dotted pb-1.5">
+              <button
+                type="button"
+                onClick={() => {
+                  // Every category — the register opens on OIL otherwise.
+                  setPageIntent('bargains', { category: 'ALL' })
+                  onNavigate('bargains')
+                }}
+                className="flex w-full cursor-pointer items-baseline justify-between border-b border-dotted pb-1.5 text-left hover:text-primary"
+              >
                 <span>Purchase bargains open</span>
                 <span className="font-semibold tabular-nums">
                   {n((stats?.purBargains as Row)?.cnt)} · {formatNum(n((stats?.purBargains as Row)?.qty))} MT
                 </span>
-              </div>
-              <div className="flex items-baseline justify-between border-b border-dotted pb-1.5">
+              </button>
+              <button
+                type="button"
+                onClick={() => onNavigate('salesBargains')}
+                className="flex w-full cursor-pointer items-baseline justify-between border-b border-dotted pb-1.5 text-left hover:text-primary"
+              >
                 <span>Sales bargains open</span>
                 <span className="font-semibold tabular-nums">
                   {n((stats?.saleBargains as Row)?.cnt)} · {formatNum(n((stats?.saleBargains as Row)?.qty))} MT
                 </span>
-              </div>
+              </button>
               <div className="pt-1">
                 <div className="mb-1 flex items-center gap-1 text-[12px] font-medium"><Truck className="h-3.5 w-3.5" /> Tankers on the move</div>
                 {(((stats?.tankers as Row[]) || []).length === 0 && (
                   <p className="text-xs text-muted-foreground">None in transit.</p>
                 )) ||
                   ((stats?.tankers as Row[]) || []).map((t) => (
-                    <div key={String(t.status)} className="flex items-baseline justify-between text-[12.5px]">
+                    <button
+                      key={String(t.status)}
+                      type="button"
+                      onClick={() => onNavigate('orders')}
+                      className="flex w-full cursor-pointer items-baseline justify-between text-left text-[12.5px] hover:text-primary"
+                    >
                       <span>{STATUS_LABEL[String(t.status)] || t.status}</span>
                       <span className="font-semibold tabular-nums">{n(t.cnt)}</span>
-                    </div>
+                    </button>
                   ))}
               </div>
             </div>
           </Card>
+          )}
 
+          {on('m.attention') && (
           <Card className={cn('p-4', negatives.length && 'border-red-300 bg-red-50/40')}>
             <div className="mb-2 flex items-center justify-between">
               <span className="text-sm font-semibold">Attention</span>
@@ -449,10 +565,12 @@ export function Dashboard({ onNavigate }: Props): React.JSX.Element {
               </div>
             )}
           </Card>
+          )}
         </div>
+        )}
 
         {/* Treasury watch */}
-        {treasury && (((treasury.lcExpiring as Row[]) || []).length > 0 || ((treasury.lcBillsDue as Row[]) || []).length > 0 || ((treasury.billsDue as Row[]) || []).length > 0) && (
+        {on('m.treasury') && treasury && (((treasury.lcExpiring as Row[]) || []).length > 0 || ((treasury.lcBillsDue as Row[]) || []).length > 0 || ((treasury.billsDue as Row[]) || []).length > 0) && (
           <Card className={cn('p-4', n(treasury.overdue) > 0 && 'border-red-300 bg-red-50/40')}>
             <div className="mb-2 flex items-center justify-between">
               <span className="text-sm font-semibold">Treasury watch — LCs &amp; discounted bills</span>
@@ -487,6 +605,7 @@ export function Dashboard({ onNavigate }: Props): React.JSX.Element {
         )}
 
         {/* Payables / receivables detail */}
+        {on('m.balances') && (
         <div className="grid gap-3 lg:grid-cols-2">
           <Card className="p-4">
             <div className="mb-2 text-sm font-semibold">Largest supplier balances (payable)</div>
@@ -497,7 +616,11 @@ export function Dashboard({ onNavigate }: Props): React.JSX.Element {
             <RankBars rows={receivables} />
           </Card>
         </div>
+        )}
       </div>
+      {customizing && (
+        <DashCustomize t={DASH_THEMES.light} dark={false} isMobile={false} layout={layout} onClose={() => setCustomizing(false)} />
+      )}
     </>
   )
 }

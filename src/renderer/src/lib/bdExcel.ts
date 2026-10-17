@@ -72,16 +72,23 @@ export async function exportBdRegister(
     const amount = n(b.amount)
     // Mirrors bdCalc: margin on the invoice being discounted, what is left is
     // sanctioned, and the open amount is what was drawn against it.
-    const marginBase = n(b.invoice_amount) > 0 ? n(b.invoice_amount) : amount
+    // The invoice as adjusted by its Adj. figure, as bdCalc strikes it.
+    const invEff = n(b.invoice_amount) > 0 ? Math.max(0, round2(n(b.invoice_amount) + n(b.invoice_adj))) : 0
+    const marginBase = invEff > 0 ? invEff : amount
     const marginAmount = round2((marginBase * n(b.margin_pct)) / 100)
     const sanctionedAmount = round2(marginBase - marginAmount)
     const drawn = n(b.invoice_amount) > 0 ? amount : sanctionedAmount
     const undrawnAmount = round2(sanctionedAmount - drawn)
     const intDays = daysBetween(b.payment_received_date, b.maturity_date)
     const daysYear = n(b.days_year) || 360
-    const interestAmount = round2((drawn * n(b.interest_pct) * n(intDays)) / (100 * daysYear))
+    // On the charge basis the Adj. comes off (or onto) the payout — see bdCalc.
+    const adjCharge = n(b.open_adj_charge) ? n(b.open_adj) : 0
+    // Interest runs on the drawn amount, or on it after the Adj. when the bill
+    // says the NBFC charges it that way (bdCalc's interestBase).
+    const intBase = n(b.interest_after_adj) && n(b.open_adj_charge) ? Math.max(0, round2(drawn + adjCharge)) : drawn
+    const interestAmount = round2((intBase * n(b.interest_pct) * n(intDays)) / (100 * daysYear))
     const tdsAmount = round2((interestAmount * n(b.tds_pct)) / 100)
-    const receiptAmount = b.interest_upfront ? drawn : round2(drawn - interestAmount)
+    const receiptAmount = round2((b.interest_upfront ? drawn : drawn - interestAmount) + adjCharge)
     const repaidTotal = round2(n(b.repaid_total))
     const stage = String(b.stage || (String(b.status) === 'repaid' ? 'repaid' : b.payment_received_date ? 'live' : 'awaiting'))
     return {
@@ -106,6 +113,11 @@ export async function exportBdRegister(
       interest_days: intDays === '' || intDays === 0 ? '' : intDays,
       days_year: daysYear,
       invoice_amount: n(b.invoice_amount) || '',
+      invoice_adj: n(b.invoice_adj) || '',
+      // The Open figure. On the charge basis it is the amount itself (the Adj.
+      // is a charge on the payout); an older bill stored Open ± Adj.
+      open_before_adj: n(b.open_adj_charge) ? amount : round2(amount - n(b.open_adj)),
+      open_adj: n(b.open_adj) || '',
       open_amount: amount,
       margin_pct: n(b.margin_pct) || '',
       margin_amount: marginAmount || '',
@@ -196,7 +208,13 @@ export async function exportBdRegister(
       { header: 'Int. days', key: 'interest_days', align: 'right' },
       { header: 'Days in year', key: 'days_year', align: 'right', width: 12 },
       { header: 'Invoice amount (₹)', key: 'invoice_amount', align: 'right', numFmt: '#,##0.00', width: 17 },
-      { header: 'Open amount (₹)', key: 'open_amount', align: 'right', numFmt: '#,##0.00', width: 17, headerFill: 'FFF2DCDB', headerTextColor: 'FF1F2937' },
+      // Only where some bill still carries the older invoice adjustment.
+      ...(bds.some((b) => n(b.invoice_adj))
+        ? [{ header: 'Invoice adj. (₹)', key: 'invoice_adj', align: 'right' as const, numFmt: '#,##0.00;-#,##0.00', width: 14 }]
+        : []),
+      { header: 'Open (₹)', key: 'open_before_adj', align: 'right', numFmt: '#,##0.00', width: 16 },
+      { header: 'Adj. (₹)', key: 'open_adj', align: 'right', numFmt: '#,##0.00;-#,##0.00', width: 13 },
+      { header: 'Drawn (₹)', key: 'open_amount', align: 'right', numFmt: '#,##0.00', width: 17, headerFill: 'FFF2DCDB', headerTextColor: 'FF1F2937' },
       { header: 'Margin %', key: 'margin_pct', align: 'right' },
       { header: 'Margin amount (₹)', key: 'margin_amount', align: 'right', numFmt: '#,##0.00', width: 16 },
       { header: 'Sanctioned amt (₹)', key: 'sanctioned_amount', align: 'right', numFmt: '#,##0.00', width: 18 },

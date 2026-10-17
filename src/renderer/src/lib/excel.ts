@@ -70,6 +70,9 @@ export type ExcelSheet = {
   // When set alongside isGroup, detail rows are put on outline level 1 so Excel
   // shows the +/− handles in the margin and each parent can be collapsed.
   outlineDetail?: boolean
+  // With outlineDetail: open the sheet with every group folded, so it reads
+  // as one line per parent until a + is clicked.
+  collapsed?: boolean
   // Keep this many leading columns on screen when scrolling right (the product
   // name, typically) — the header row is always frozen.
   freezeCols?: number
@@ -172,7 +175,10 @@ function writeSheet(wb: ExcelJS.Workbook, spec: ExcelSheet, index: number): void
     if (!group) detailSeen += 1
     const banded = !group && detailSeen % 2 === 0
     // Detail rows sit one level in, so Excel groups them under their parent.
-    if (spec.outlineDetail && spec.isGroup) row.outlineLevel = group ? 0 : 1
+    if (spec.outlineDetail && spec.isGroup) {
+      row.outlineLevel = group ? 0 : 1
+      if (spec.collapsed && !group) row.hidden = true
+    }
     row.height = group ? 18 : 16
     columns.forEach((c, ci) => {
       const raw = c.value ? c.value(r) : r[c.key]

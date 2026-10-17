@@ -1,7 +1,9 @@
 import type { ResultSet } from '@libsql/client'
 import { getClient } from './db'
-import { getActiveCompanyId } from './company'
+import { allCompanyIds, getActiveCompanyId } from './company'
 import { stockLevels } from './stock'
+import { listBargains } from './bargains'
+import { listSalesBargains } from './sales'
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Row = Record<string, any>
@@ -30,12 +32,61 @@ const n = (v: unknown): number => (Number.isFinite(Number(v)) ? Number(v) : 0)
 const MT_ONLY = (col: string, uom = 'uom'): string =>
   `SUM(CASE WHEN UPPER(COALESCE(${uom}, 'MT')) = 'MT' THEN ${col} ELSE 0 END)`
 
-export async function dashboardStats(): Promise<Row> {
+// WHAT IS STILL OPEN ON THE BARGAINS — read off the registers themselves.
+//
+// This counted every bargain not marked 'settled' and added up its CONTRACTED
+// quantity, so a bargain drawn to nothing still counted in full: 49 bargains
+// and 3,491.98 MT on a Purchase Bargain register that had 875.24 MT open. A
+// bargain is open while something is left on it, and what is open is that
+// balance — the registers' own balance_qty (quantity with its adjustments,
+// less every draw, plus returns on the sales side). Both kinds of bargain are
+// general, across every company, exactly as the registers read them. The MT
+// figure sums MT bargains only (see MT_ONLY); the count is every open one.
+//
+// Split by how each register is looked at — purchase bargains by category
+// (it opens on OIL), sales bargains by Loose / Packed (it opens on Loose) — so
+// each part matches a view someone can open, and the total is their sum.
+function openOf(rows: Row[], partOf: (r: Row) => string): { cnt: number; qty: number; parts: { key: string; cnt: number; qty: number }[] } {
+  const isMt = (r: Row): boolean => String(r.uom || 'MT').trim().toUpperCase() === 'MT'
+  const open = rows.filter((r) => n(r.balance_qty) > 0.0005)
+  const parts = new Map<string, { key: string; cnt: number; qty: number }>()
+  let mt = 0
+  for (const r of open) {
+    const k = partOf(r)
+    const p = parts.get(k) || { key: k, cnt: 0, qty: 0 }
+    p.cnt += 1
+    if (isMt(r)) {
+      p.qty += n(r.balance_qty)
+      mt += n(r.balance_qty)
+    }
+    parts.set(k, p)
+  }
+  const r3 = (x: number): number => Math.round(x * 1000) / 1000
+  return {
+    cnt: open.length,
+    qty: r3(mt),
+    parts: [...parts.values()].map((p) => ({ ...p, qty: r3(p.qty) })).sort((a, b) => b.qty - a.qty || b.cnt - a.cnt)
+  }
+}
+
+export async function dashboardStats(opts: { all?: boolean } = {}): Promise<Row> {
   const c = getClient()
   const cid = getActiveCompanyId()
+  // ALL COMPANIES: the same queries over every company's rows at once, so a
+  // supplier's purchases, a ledger's balance or a month's sales across both
+  // books is ONE figure — added up before it is ranked, not two top-fives
+  // stitched together.
+  const all = !!opts.all
+  const ids = all ? await allCompanyIds() : [cid]
 
-  const q = async (sql: string, args: (string | number)[] = []): Promise<Row[]> =>
-    toPlain(await c.execute({ sql, args: [cid, ...args] }))
+  const q = async (sql: string, args: (string | number)[] = []): Promise<Row[]> => {
+    if (!all) return toPlain(await c.execute({ sql, args: [cid, ...args] }))
+    // Each query's company filter becomes the list; the only arguments these
+    // queries take are that company (the duties query names it three times),
+    // so they go with it.
+    const list = ids.join(',')
+    return toPlain(await c.execute({ sql: sql.replace(/(\b[a-z]+\.)?company_id = \?/g, (_m, a) => `${a || ''}company_id IN (${list})`), args: [] }))
+  }
 
   const [
     purchaseMonths,
@@ -78,41 +129,90 @@ export async function dashboardStats(): Promise<Row> {
     q(`SELECT a.name, SUM(jl.cr) - SUM(jl.dr) AS bal
        FROM journal_lines jl JOIN journal_entries je ON je.id = jl.entry_id
        JOIN ledger_accounts a ON a.id = jl.account_id
-       WHERE je.company_id = ? AND a.acc_group = 'Sundry Creditors'
+       WHERE je.company_id = ? AND a.acc_group IN (WITH RECURSIVE t(id, name) AS (SELECT id, name FROM ledger_groups WHERE name = 'Sundry Creditors'
+                       UNION ALL SELECT g.id, g.name FROM ledger_groups g JOIN t ON g.parent_id = t.id) SELECT name FROM t)
        GROUP BY a.id HAVING ABS(bal) > 0.005 ORDER BY bal DESC LIMIT 6`),
     q(`SELECT a.name, SUM(jl.dr) - SUM(jl.cr) AS bal
        FROM journal_lines jl JOIN journal_entries je ON je.id = jl.entry_id
        JOIN ledger_accounts a ON a.id = jl.account_id
-       WHERE je.company_id = ? AND a.acc_group = 'Sundry Debtors'
+       WHERE je.company_id = ? AND a.acc_group IN (WITH RECURSIVE t(id, name) AS (SELECT id, name FROM ledger_groups WHERE name = 'Sundry Debtors'
+                       UNION ALL SELECT g.id, g.name FROM ledger_groups g JOIN t ON g.parent_id = t.id) SELECT name FROM t)
        GROUP BY a.id HAVING ABS(bal) > 0.005 ORDER BY bal DESC LIMIT 6`),
-    q(`SELECT a.name, SUM(jl.dr) - SUM(jl.cr) AS bal
-       FROM journal_lines jl JOIN journal_entries je ON je.id = jl.entry_id
-       JOIN ledger_accounts a ON a.id = jl.account_id
-       WHERE je.company_id = ? AND a.name IN ('TDS PAYABLE A/C', 'GST INPUT A/C', 'GST OUTPUT A/C')
-       GROUP BY a.id`),
-    q(`SELECT COUNT(*) AS cnt, COALESCE(${MT_ONLY('qty')}, 0) AS qty FROM bargains WHERE company_id = ? AND status != 'settled'`).catch(
-      () => [] as Row[]
+    // THE BOARD WANTS THE TOTAL, NOT THE HEADS.
+    //
+    // GST is kept head by head and rate by rate now (see gstLedgers.ts), which
+    // is what a return is filed from and emphatically not what a tile on a
+    // dashboard should carry — six figures where one belongs. So the tiles are
+    // handed one input and one output figure, summed here, and the names they
+    // ask for are unchanged. The old single ledgers are still in the sum: a
+    // book that has not run the split yet reads exactly as it did.
+    q(
+      `SELECT 'TDS PAYABLE A/C' AS name, SUM(jl.dr) - SUM(jl.cr) AS bal
+         FROM journal_lines jl JOIN journal_entries je ON je.id = jl.entry_id
+         JOIN ledger_accounts a ON a.id = jl.account_id
+        WHERE je.company_id = ? AND a.name = 'TDS PAYABLE A/C'
+       UNION ALL
+       SELECT 'GST INPUT A/C', SUM(jl.dr) - SUM(jl.cr)
+         FROM journal_lines jl JOIN journal_entries je ON je.id = jl.entry_id
+         JOIN ledger_accounts a ON a.id = jl.account_id
+        WHERE je.company_id = ?
+          AND (a.name = 'GST INPUT A/C' OR a.name LIKE 'INPUT CGST %'
+               OR a.name LIKE 'INPUT SGST %' OR a.name LIKE 'INPUT IGST %')
+       UNION ALL
+       SELECT 'GST OUTPUT A/C', SUM(jl.dr) - SUM(jl.cr)
+         FROM journal_lines jl JOIN journal_entries je ON je.id = jl.entry_id
+         JOIN ledger_accounts a ON a.id = jl.account_id
+        WHERE je.company_id = ?
+          AND (a.name = 'GST OUTPUT A/C' OR a.name LIKE 'OUTPUT CGST %'
+               OR a.name LIKE 'OUTPUT SGST %' OR a.name LIKE 'OUTPUT IGST %')`,
+      [cid, cid]
     ),
-    q(`SELECT COUNT(*) AS cnt, ${MT_ONLY('qty')} AS qty FROM sales_bargains WHERE company_id = ? AND status != 'settled'`).catch(
-      () => [] as Row[]
-    ),
+    listBargains()
+      .then((rows) => openOf(rows, (r) => String(r.supplier_type || 'OTHER').toUpperCase()))
+      .catch(() => ({ cnt: 0, qty: 0, parts: [] })),
+    listSalesBargains()
+      .then((rows) => openOf(rows, (r) => (String(r.sale_type || 'LOOSE').toUpperCase() === 'PACKED' ? 'PACKED' : 'LOOSE')))
+      .catch(() => ({ cnt: 0, qty: 0, parts: [] })),
     q(`SELECT pt.status, COUNT(*) AS cnt FROM purchase_tankers pt
        WHERE pt.company_id = ? AND pt.status NOT IN ('received', 'empty') GROUP BY pt.status`).catch(() => [] as Row[]),
     q(`SELECT COALESCE(SUM(qty), 0) AS bal FROM consignment_stock WHERE company_id = ?`).catch(() => [] as Row[]),
-    stockLevels()
+    // STOCK IS PHYSICAL, SO IT IS READ FACTORY BY FACTORY. Every company at a
+    // site draws on the same floor; reading it once per company counted one
+    // shortfall twice, under each company's name. Each factory in view is read
+    // once, over all of its companies; a company with no factory stands alone.
+    (async () => {
+      const cos = toPlain(
+        await c.execute('SELECT co.id, co.name, co.factory_id, f.name AS factory FROM companies co LEFT JOIN factories f ON f.id = co.factory_id')
+      )
+      const groups = new Map<string, { label: string; ids: number[] }>()
+      for (const id of ids) {
+        const co = cos.find((r) => n(r.id) === n(id))
+        const fid = n(co?.factory_id)
+        const key = fid ? `f${fid}` : `c${id}`
+        if (groups.has(key)) continue
+        groups.set(key, {
+          label: fid ? String(co?.factory || co?.name || `Factory ${fid}`) : String(co?.name || id),
+          ids: fid ? cos.filter((r) => n(r.factory_id) === fid).map((r) => n(r.id)) : [n(id)]
+        })
+      }
+      return Promise.all([...groups.values()].map(async (g) => ({ label: g.label, rows: await stockLevels(undefined, g.ids) })))
+    })()
   ])
 
   // Stock: per-category totals and the products sitting negative.
   const stockCats: Record<string, { qty: number; products: number }> = {}
   const negatives: Row[] = []
-  for (const r of levels) {
-    const cat = String(r.category || 'other')
-    if (!stockCats[cat]) stockCats[cat] = { qty: 0, products: 0 }
-    if (Math.abs(n(r.stock)) > 1e-9) {
-      stockCats[cat].qty += n(r.stock)
-      stockCats[cat].products++
+  for (const { label, rows } of levels) {
+    for (const r of rows) {
+      const cat = String(r.category || 'other')
+      if (!stockCats[cat]) stockCats[cat] = { qty: 0, products: 0 }
+      if (Math.abs(n(r.stock)) > 1e-9) {
+        stockCats[cat].qty += n(r.stock)
+        stockCats[cat].products++
+      }
+      // Named with its factory — the place it is short at.
+      if (n(r.stock) < -1e-9) negatives.push({ name: `${r.name} · ${label}`, factory: label, category: r.category, stock: n(r.stock) })
     }
-    if (n(r.stock) < -1e-9) negatives.push({ name: r.name, category: r.category, stock: n(r.stock) })
   }
 
   return {
@@ -125,8 +225,8 @@ export async function dashboardStats(): Promise<Row> {
     payables,
     receivables,
     duties,
-    purBargains: purBargains[0] || { cnt: 0, qty: 0 },
-    saleBargains: saleBargains[0] || { cnt: 0, qty: 0 },
+    purBargains,
+    saleBargains,
     tankers,
     consignmentBalance: n(consignment[0]?.bal),
     stockCats,

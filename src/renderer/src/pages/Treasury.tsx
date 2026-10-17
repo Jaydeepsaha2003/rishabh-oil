@@ -1,9 +1,12 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { escToClose } from '@/lib/escape'
 import { toast } from 'sonner'
 import {
   AlertTriangle,
   ArrowUpRight,
+  Ban,
   Banknote,
+  BookOpen,
   CalendarClock,
   CalendarRange,
   Check,
@@ -34,6 +37,7 @@ import { Label } from '@/components/ui/label'
 import { DatePicker } from '@/components/ui/date-picker'
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
+import { MultiSelectFilter } from '@/components/ui/multi-select-filter'
 import { Switch } from '@/components/ui/switch'
 import { InfoTip } from '@/components/ui/tooltip'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
@@ -41,13 +45,18 @@ import { Tabs, TabsContent } from '@/components/ui/tabs'
 import { PageHeader } from '@/components/PageHeader'
 import { PeriodPicker } from '@/components/PeriodPicker'
 import { RowActions } from '@/components/ui/row-actions'
+import { LedgerPostings, type PostingTarget } from '@/components/LedgerPostings'
 import { formatDate, formatDateShort, formatINR, todayISO } from '@/lib/format'
 import { cn } from '@/lib/utils'
+import { TagPicker, useTagMap } from '@/components/Tags'
+import { PayInDue, payInDueDate } from '@/components/PayInDue'
 import { readView, writeView } from '@/lib/viewstate'
 import { useLiveRefresh } from '@/lib/useLiveRefresh'
 import { exportLcRegister } from '@/lib/lcExcel'
 import { HistoryDialog, useHistoryDialog } from '@/components/HistoryDialog'
-import { BillDiscounting } from './BillDiscounting'
+import { BillDiscounting, type BdFocusAction } from './BillDiscounting'
+import { PaymentTracker } from '@/components/PaymentTracker'
+import { LimitHistory, type LimitTarget } from '@/components/LimitHistory'
 import { ColumnFilter } from '@/components/ui/column-filter'
 import { canAccess } from '@/lib/modules'
 import { loadUser } from '@/lib/session'
@@ -60,6 +69,34 @@ type Row = Record<string, any>
 
 const n = (v: unknown): number => (Number.isFinite(Number(v)) ? Number(v) : 0)
 const round2 = (v: number): number => Math.round(v * 100) / 100
+// What the bank has still to pay the supplier on an LC paid in installments.
+// Paid in parts: what of the LC is still undrawn (as an LC amount); otherwise
+// what the supplier is still owed out of the net.
+const partyLeft = (l: Row): number =>
+  n(l?.parts_count) > 0 ? round2(n(l.parts_left)) : round2(Math.max(0, n(l.paid_expected) - n(l.utilized)))
+const isPartsLc = (l: Row | null | undefined): boolean => n(l?.parts_count) > 0
+const dayGap = (a: string, b: string): number => {
+  const x = Date.parse(`${String(a).slice(0, 10)}T00:00:00`)
+  const y = Date.parse(`${String(b).slice(0, 10)}T00:00:00`)
+  return Number.isFinite(x) && Number.isFinite(y) ? Math.round((y - x) / 86400000) : 0
+}
+// One part's interest and what reaches the supplier — the server's own sum
+// (lc.ts partFigures), shown before saving.
+function lcPartPreview(lc: Row, amount: number, payDate: string, maturity: string, first: boolean, ratePct?: unknown): { days: number; interest: number; charges: number; net: number } {
+  const days = payDate && maturity ? Math.max(0, dayGap(payDate, maturity)) : 0
+  const charges = first ? round2(n(lc?.charges)) : 0
+  const base = Math.max(0, round2(amount - (lc?.interest_excl_charges ? charges : 0)))
+  // A part's own rate where it has one; blank falls back to the LC's.
+  const rate = ratePct == null || String(ratePct).trim() === '' ? n(lc?.interest_pct) : n(ratePct)
+  const interest = round2((base * rate * days) / 36500)
+  return { days, interest, charges, net: round2(amount - interest - charges) }
+}
+// THE PARTS AT PAYMENT RECEIVED — one row per part the bank has paid so far.
+// Blank interest / margin % means the LC's own.
+type PlanPart = { amount: string; pay_date: string; maturity: string; interest_pct: string; margin_pct: string; charges: string; note: string }
+const planOf = (f: Row): PlanPart[] => (Array.isArray(f.parts_plan) ? (f.parts_plan as PlanPart[]) : [])
+const canPayParty = (l: Row): boolean =>
+  !l?.preclosed_date && String(l?.stage || '') === 'payment_received' && n(l?.installment_count) > 0 && partyLeft(l) > 0.5
 
 // The six cells under the facility bar. Centred text is right when a cell
 // is a lone KPI tile; in a row of six it makes every figure start at a
@@ -81,6 +118,11 @@ function daysTo(date: unknown): number | null {
 // Same action either way — winding the LC up posts a repayment — just named
 // for what's actually happening: still early (Preclose) vs. simply repaying
 // an LC that's already run its natural course (Repay).
+// An application the bank turned down: listed, counted nowhere, changed never.
+function isLcRejected(l: Row): boolean {
+  return String(l?.workflow_status || '') === 'rejected' || String(l?.display_status || '') === 'rejected'
+}
+
 function isLcPastMaturity(l: Row): boolean {
   const expiry = String(l.expiry_date || '').slice(0, 10)
   return !!expiry && todayISO() >= expiry
@@ -269,15 +311,11 @@ const LC_FIELDS = __WEB__
 // The four figures on an LC card. Same shape as the register's cells: label
 // in small caps over the money, so a card and a row read alike.
 const CARD_CELLS =
-  '!gap-2 [&>div]:!rounded-[4px] [&>div]:!px-3 [&>div]:!py-2.5 [&>div>div:first-child]:!text-[9px] [&>div>div:first-child]:!font-extrabold [&>div>div:first-child]:!uppercase [&>div>div:first-child]:!tracking-[.11em] [&>div>div:first-child]:!text-[#5A6B62] [&>div>div:last-child]:!mt-1 [&>div>div:last-child]:!whitespace-nowrap [&>div>div:last-child]:!text-[13px] [&>div>div:last-child]:!font-bold'
+  '!gap-2 [&>div]:!rounded-[4px] [&>div]:!px-3 [&>div]:!py-2.5 [&>div>div:first-child]:!text-[9px] [&>div>div:first-child]:!font-extrabold [&>div>div:first-child]:!uppercase [&>div>div:first-child]:!tracking-[.11em] [&>div>div:first-child]:!text-[#5A6B62] [&>div>div:nth-child(2)]:!mt-1 [&>div>div:nth-child(2)]:!whitespace-nowrap [&>div>div:nth-child(2)]:!text-[13px] [&>div>div:nth-child(2)]:!font-bold'
 
 const PREVIEW_CELLS =
   '!gap-px !bg-[#E4ECE3] !text-left [&>div]:!bg-white [&>div]:!px-3.5 [&>div]:!py-3 [&>div>div:first-child]:!text-[9px] [&>div>div:first-child]:!font-extrabold [&>div>div:first-child]:!tracking-[.12em] [&>div>div:first-child]:!text-[#5A6B62] [&>div>div:last-child]:!mt-1 [&>div>div:last-child]:!whitespace-nowrap [&>div>div:last-child]:!text-[14.5px] [&>div>div:last-child]:!font-bold'
 
-const TRACKER_HEAD =
-  __WEB__
-    ? '!border-b-0 !bg-[#0B3D2E] hover:!bg-[#0B3D2E] [&>th]:!h-auto [&>th]:!bg-[#0B3D2E] [&>th]:!py-2.5 [&>th]:!text-[9.5px] [&>th]:!font-extrabold [&>th]:!tracking-[.13em] [&>th]:!text-white'
-    : ''
 // The row's own actions. Fixed heights and a floor on the width so the column
 // reads as one stack of buttons rather than a ragged edge — min, not a hard
 // width, because "Mark Payment received" is twice the length of "Preclose"
@@ -332,6 +370,11 @@ const STAGE_ROW_TONE: Record<string, { row: string; hover: string }> = {
 
 interface Props {
   onCompanyChange: (id: string) => void
+  // Arrived from an LC posting on a ledger — open that letter of credit rather
+  // than the register's front page. Null on an ordinary visit.
+  focusLcId?: number | null
+  focusBdId?: number | null
+  onFocusHandled?: () => void
 }
 
 // What the beneficiary actually receives, shown as the arithmetic rather than
@@ -885,6 +928,78 @@ function lcNoClash(lcs: Row[], lcNo: unknown, selfId?: unknown): Row | null {
 // are refused outright now, but the eight that predate the rule are still here,
 // and a rule nobody can see the exceptions to is no help — this is how you find
 // them to renumber.
+
+/**
+ * THE PIECES THE LC PANEL IS BUILT OUT OF.
+ *
+ * The panel used to be four tiles, a bar and one undifferentiated grid of
+ * fifteen labels, so everything on it had the same weight: the maturity date
+ * read exactly as loudly as the interest basis, and half of what the record
+ * holds was not on it at all. These give it sections with names, and one shape
+ * for a fact, so a reader can find the thing they came for.
+ */
+function LcPanel({
+  title,
+  right,
+  children
+}: {
+  title: string
+  right?: React.ReactNode
+  children: React.ReactNode
+}): React.JSX.Element {
+  return (
+    <section className="overflow-hidden rounded-[4px] border border-[#D6E2D6] bg-white">
+      <div className="flex flex-wrap items-center gap-2 border-b border-b-[#E4ECE3] bg-[#F7FAF6] px-4 py-2.5">
+        <span className="text-[10.5px] font-extrabold uppercase tracking-[.13em] text-[#0A1F17]">{title}</span>
+        {right != null && <span className="ml-auto min-w-0">{right}</span>}
+      </div>
+      {children}
+    </section>
+  )
+}
+
+/** One labelled figure. `sub` is the line that stops it being a bare number. */
+function LcFact({
+  k,
+  v,
+  sub,
+  tone
+}: {
+  k: string
+  v: React.ReactNode
+  sub?: React.ReactNode
+  tone?: 'plain' | 'good' | 'warn' | 'bad' | 'muted'
+}): React.JSX.Element {
+  const colour =
+    tone === 'good'
+      ? 'text-[#0B6B45]'
+      : tone === 'warn'
+        ? 'text-[#8A5300]'
+        : tone === 'bad'
+          ? 'text-[#B3261E]'
+          : tone === 'muted'
+            ? 'text-[#8FA79B]'
+            : 'text-[#0A1F17]'
+  return (
+    // min-w-0 and a break: a grid item sizes to its content by default, so one
+    // long beneficiary name stretched the track and put the whole drawer into
+    // a sideways scroll.
+    <div className="min-w-0 bg-white px-4 py-3">
+      <div className="text-[9.5px] font-extrabold uppercase tracking-[.12em] text-[#5A6B62]">{k}</div>
+      <div className={cn('mt-[3px] break-words text-[13.5px] font-bold tabular-nums', colour)}>{v}</div>
+      {sub != null && (
+        <div className="mt-[2px] break-words text-[10.5px] font-semibold leading-[1.4] text-[#5A6B62]">
+          {sub}
+        </div>
+      )}
+    </div>
+  )
+}
+
+/** The hairline grid the facts sit in, so every panel divides the same way. */
+const LC_FACTS = 'grid grid-cols-2 gap-px bg-[#E4ECE3] [&>*]:min-w-0 sm:grid-cols-4'
+const LC_FACTS_3 = 'grid grid-cols-2 gap-px bg-[#E4ECE3] [&>*]:min-w-0 sm:grid-cols-3'
+
 function DuplicateNoBadge({ lcs, l }: { lcs: Row[]; l: Row }): React.JSX.Element | null {
   const other = lcNoClash(lcs, l.lc_no, l.id)
   if (!other) return null
@@ -956,16 +1071,25 @@ function ClosureBadge({ l, withDate }: { l: Row; withDate?: boolean }): React.JS
   )
 }
 
-export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
+// A phone gets its own screen rather than this one narrowed: the registers
+// here are wide tables of figures, and a table that has to scroll sideways
+// on a phone is a table nobody reads. Website only — the desktop app's
+// window is never this narrow. Same fork Sales.tsx makes for SalesMobile.
+//
+// The fork is its own component. It used to be an early return inside the
+// page, after one hook and before forty: a window crossing the phone width
+// while Treasury was open (a tablet turned, a browser resized) ran a different
+// number of hooks than the render before, and React tore the page down blank.
+export function Treasury(props: Props): React.JSX.Element {
+  const isMobile = useIsMobile()
+  if (__WEB__ && isMobile) return <TreasuryMobile />
+  return <TreasuryDesk {...props} />
+}
+
+function TreasuryDesk({ onCompanyChange, focusLcId, focusBdId, onFocusHandled }: Props): React.JSX.Element {
   // App owns the active company; this is the value that changes the instant it
   // is switched, where `activeCompany` below is only refreshed by a load.
   const { companyId } = useCompany()
-  // A phone gets its own screen rather than this one narrowed: the registers
-  // here are wide tables of figures, and a table that has to scroll sideways
-  // on a phone is a table nobody reads. Website only — the desktop app's
-  // window is never this narrow. Same fork Sales.tsx makes for SalesMobile.
-  const isMobile = useIsMobile()
-  if (__WEB__ && isMobile) return <TreasuryMobile />
 
   // Treasury's three sections are granted separately. A user reaches this page
   // through the Treasury permission, then sees only the sections they hold —
@@ -1019,7 +1143,11 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
   // Discounting — a discounted bill is against an NBFC, so naming it "bank"
   // there was wrong and it scoped nothing.
   const [nbfcs, setNbfcs] = useState<Row[]>([])
-  const [activeNbfc, setActiveNbfc] = useState('')
+  // WHICH LENDERS ARE IN VIEW. Several at once, because "what do I owe
+  // Vanik and Blacksoil between them" is a question the desk actually asks
+  // and one lender at a time could not answer. Empty means all of them,
+  // which is what no filter has always meant here.
+  const [activeNbfcs, setActiveNbfcs] = useState<string[]>([])
   const [lcDetailId, setLcDetailId] = useState<number | null>(null)
   const [lcView, setLcView] = useState<'cards' | 'table'>('table')
   const [expandedAlert, setExpandedAlert] = useState<string | null>(null)
@@ -1040,21 +1168,36 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
   //
   // Signature: 'none' | 'early' | 'on_time' | 'late'.
   // 'repaid' = preclosed/repaid already.
-  const [lcStatusFilter, setLcStatusFilter] = useState<'all' | 'matured' | 'repaid'>('all')
+  const [lcStatusFilter, setLcStatusFilter] = useState<'all' | 'matured' | 'repaid' | 'rejected'>('all')
   // One box across the three things an LC is looked up by. The column filters
   // are for narrowing a whole register; this is for finding one row.
   const [lcSearch, setLcSearch] = useState('')
   // Every LC bill and discounted bill in one due-date-sorted list, regardless
   // of urgency — the alerts above only surface what's already close.
   const [tracker, setTracker] = useState<Row[]>([])
-  const [trackerShowSettled, setTrackerShowSettled] = useState(false)
+  // A tracker row that belongs to a discounted bill hands over to the Bill
+  // discounting tab, naming the bill and the screen to open on it.
+  const [trackerBd, setTrackerBd] = useState<{ id: number; action: BdFocusAction } | null>(null)
   const [activeCompany, setActiveCompany] = useState(0)
   const [companies, setCompanies] = useState<Row[]>([])
   const [lcLimit, setLcLimit] = useState<Row | null>(null)
   const [banks, setBanks] = useState<Row[]>([])
+  // Each bank's exact ledger name, as the books carry it — what "My bank" shows.
+  const [bankLedger, setBankLedger] = useState<Record<string, string>>({})
+  useEffect(() => {
+    if (!banks.length) return
+    window.api.bankLedgers.names().then(setBankLedger).catch(() => setBankLedger({}))
+  }, [banks.length])
   // Which bank the page is looking at. '' = every bank rolled together, the
   // same idea as the company switcher's "All companies".
-  const [activeBank, setActiveBank] = useState('')
+  const [activeBanks, setActiveBanks] = useState<string[]>([])
+  // THE ONE BANK, WHERE ONE IS WHAT THE QUESTION NEEDS.
+  //
+  // A facility limit belongs to a bank and a new LC opens at a bank — neither
+  // means anything for a set. Narrowed to exactly one, both behave as they
+  // always did; with none or several picked they fall back to the same
+  // answer "all banks" has always given.
+  const soleBank = activeBanks.length === 1 ? activeBanks[0] : ''
   // Narrows the LC Facility Limit KPI (Utilised/Available) to LCs opened in
   // this window — empty means every currently-outstanding LC, unfiltered.
   const [lcKpiFrom, setLcKpiFrom] = useState('')
@@ -1076,7 +1219,7 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
       window.api.treasury.paymentTracker(),
       window.api.company.getActive(),
       window.api.company.list(),
-      window.api.lc.getLimit(activeBank ? Number(activeBank) : undefined, lcKpiFrom || undefined, lcKpiTo || undefined),
+      window.api.lc.getLimit(soleBank ? Number(soleBank) : undefined, lcKpiFrom || undefined, lcKpiTo || undefined),
       window.api.data.list('banks'),
       window.api.settings.get('lc_require_linked_invoice')
     ])
@@ -1100,12 +1243,23 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
     // My bank picker went on offering the old company's accounts, and saving
     // one was refused by assertOwnBankBelongsToCompany with "that bank belongs
     // to a different company" — a bank the form had itself offered.
-  }, [activeBank, lcKpiFrom, lcKpiTo, companyId])
+  }, [soleBank, lcKpiFrom, lcKpiTo, companyId])
 
   useEffect(() => {
     load()
   }, [load])
   useLiveRefresh(load)
+
+  // Back on the tracker after settling something on another tab: the Bill
+  // discounting register saves on its own and never tells this page, so the
+  // list is read again rather than left showing the row still due.
+  useEffect(() => {
+    if (tab !== 'tracker') return
+    void window.api.treasury
+      .paymentTracker()
+      .then(setTracker)
+      .catch(() => {})
+  }, [tab, companyId])
 
   // An open form's company-scoped choices do not survive the switch either.
   // They cannot be saved against the new company, so they are dropped rather
@@ -1121,7 +1275,7 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
     // switch, a new LC opened straight afterwards came pre-filled with the
     // other company's account, and Save refused it with "that bank belongs to
     // a different company" — about a value the user never chose.
-    setActiveBank('')
+    setActiveBanks([])
     setLcBankCol([])
     setLcForm((p) =>
       p
@@ -1137,6 +1291,25 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
         : p
     )
   }, [companyId])
+
+  // Handed an LC to open, open it — once, and then hand the request back so
+  // returning to Treasury later does not reopen it.
+  useEffect(() => {
+    const want = Number(focusLcId) || 0
+    if (!want) return
+    void openLcDetail(want).finally(() => onFocusHandled?.())
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [focusLcId])
+
+  // Handed a discounted bill instead: it lives on the other tab, so the tab
+  // has to move before the drawer has anything to open onto. Cleared the same
+  // way, so coming back to Treasury later does not reopen it.
+  useEffect(() => {
+    const want = Number(focusBdId) || 0
+    if (!want) return
+    setTab('bd')
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [focusBdId])
 
   async function openLcDetail(id: number): Promise<void> {
     setLcDetailId(id)
@@ -1155,6 +1328,12 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
 
   // ---------------- LC create ----------------
   const [lcForm, setLcForm] = useState<Row | null>(null)
+  // The form as it opened, so Esc can tell a changed form from an untouched one.
+  const lcFormWas = useRef('')
+  useEffect(() => {
+    if (!lcForm) lcFormWas.current = ''
+    else if (!lcFormWas.current) lcFormWas.current = JSON.stringify(lcForm)
+  }, [lcForm])
   const [busy, setBusy] = useState(false)
 
   // Deleting an LC reverses everything it's posted to the ledgers (opening
@@ -1193,6 +1372,8 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
   // that stage's own date(s), so the LC's status and its dates can never
   // drift out of sync with each other.
   const [stageRow, setStageRow] = useState<Row | null>(null)
+  // The LC whose installments to the supplier are open in their sheet.
+  const [instRow, setInstRow] = useState<Row | null>(null)
   const [stageForm, setStageForm] = useState<Row>({})
   const [stageSaving, setStageSaving] = useState(false)
   const [stageError, setStageError] = useState<string | null>(null)
@@ -1251,7 +1432,12 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
     if (next === 'open' && !String(stageForm.opened_date || '').trim()) {
       return setStageError('The open date is needed — the day the bank actually opened the credit')
     }
-    if (next === 'payment_received' && (!stageForm.payment_received_date || !stageForm.expiry_date)) {
+    if (next === 'payment_received' && !stageForm.payment_received_date) {
+      return setStageError('The payment received date is needed')
+    }
+    // Paid in parts: there is no one maturity for the LC — each part has its
+    // own, asked for on the part.
+    if (next === 'payment_received' && !stageForm.pay_in_parts && !stageForm.expiry_date) {
       return setStageError('Both the payment received date and the maturity date are needed')
     }
     if (
@@ -1260,6 +1446,45 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
       String(stageForm.payment_received_date) < String(stageRow.opened_date)
     ) {
       return setStageError('Payment received date cannot be before the date the LC was opened')
+    }
+    // Paid in parts: every part must be something, mature on or after the day
+    // it was paid, follow the part before it, and together stay within the LC.
+    const inParts = next === 'payment_received' && !!stageForm.pay_in_parts
+    const recvOn = String(stageForm.payment_received_date || '').slice(0, 10)
+    const plan = inParts
+      ? planOf(stageForm).map((p, i) => ({
+          amount: round2(n(p.amount)),
+          pay_date: i === 0 ? recvOn : String(p.pay_date || '').slice(0, 10),
+          maturity: String(p.maturity || '').slice(0, 10),
+          interest_pct: String(p.interest_pct ?? '').trim(),
+          margin_pct: String(p.margin_pct ?? '').trim(),
+          // Always a figure — blank is no charges on that part.
+          charges: round2(n(p.charges)),
+          note: String(p.note || '').trim()
+        }))
+      : []
+    const firstPart = plan.length ? plan[0].amount : 0
+    const firstMaturity = plan.length ? plan[0].maturity : ''
+    const lastMaturity = plan.reduce((m, p) => (p.maturity > m ? p.maturity : m), '')
+    if (inParts) {
+      if (stageRow.interest_upfront || stageForm.interest_upfront) return setStageError("This LC's interest is paid upfront, so it cannot be split into parts with their own maturities")
+      if (!plan.length) return setStageError('Add the first part')
+      let prev = recvOn
+      for (let i = 0; i < plan.length; i++) {
+        const p = plan[i]
+        const no = i + 1
+        if (p.amount <= 0) return setStageError(`Enter part ${no}'s LC amount`)
+        if (!p.pay_date) return setStageError(`Pick the day part ${no} was paid`)
+        if (p.pay_date > todayISO()) return setStageError(`Part ${no} cannot be paid on a future date`)
+        if (p.pay_date < prev) return setStageError(`Part ${no} cannot be paid before part ${no - 1}`)
+        prev = p.pay_date
+        if (!p.maturity) return setStageError(`Pick when part ${no} matures`)
+        if (p.maturity < p.pay_date) return setStageError(`Part ${no} cannot mature before it was paid`)
+        if ((p.interest_pct && n(p.interest_pct) < 0) || (p.margin_pct && n(p.margin_pct) < 0)) return setStageError(`Part ${no}'s rates cannot be negative`)
+        if (p.charges < 0) return setStageError(`Part ${no}'s charges cannot be negative`)
+      }
+      const total = round2(plan.reduce((s, p) => s + p.amount, 0))
+      if (total > n(stageRow.amount) + 0.005) return setStageError(`The parts come to ${formatINR(total)}, more than the LC's ${formatINR(n(stageRow.amount))}`)
     }
     setStageSaving(true)
     setStageError(null)
@@ -1277,9 +1502,22 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
         // this the record keeps whatever (often blank) value it had before
         // this step, so the interest actually saved would silently disagree
         // with the days shown in the preview below.
-        ...(next === 'payment_received' ? { usance_days: stagePreview?.days ?? 0 } : {})
+        ...(next === 'payment_received' ? { usance_days: stagePreview?.days ?? 0 } : {}),
+        // In parts, the LC runs to its last part's maturity.
+        ...(inParts ? { expiry_date: lastMaturity, usance_days: Math.max(0, dayGap(recvOn, lastMaturity)), charges: round2(plan.reduce((s, p) => s + p.charges, 0)) } : {}),
+        parts_plan: inParts ? plan : null,
+        first_installment: firstPart > 0 ? firstPart : null,
+        first_installment_maturity: firstPart > 0 ? firstMaturity : null
       })
-      toast.success(next === 'open' ? 'LC marked Open' : 'Payment received — bill(s) settled through the books')
+      toast.success(
+        next === 'open'
+          ? 'LC marked Open'
+          : firstPart > 0
+            ? plan.length > 1
+              ? `Payment received — ${plan.length} parts posted, ${formatINR(round2(plan.reduce((s, p) => s + p.amount, 0)))} in all`
+              : `Payment received — part 1 of ${formatINR(firstPart)} posted, maturing ${formatDate(firstMaturity)}`
+            : 'Payment received — bill(s) settled through the books'
+      )
       setStageRow(null)
       load()
     } catch (e) {
@@ -1321,6 +1559,16 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
     void openLcLimits()
   }
 
+  // WHERE A BANK'S LINE HAS BEEN. Opened from the row for that bank, so the
+  // history is one click from the box you would otherwise have typed over.
+  const [limitHistory, setLimitHistory] = useState<LimitTarget | null>(null)
+
+  // Closing the dialog closes whatever it was showing, or reopening it would
+  // land on a history nobody asked for a second time.
+  useEffect(() => {
+    if (!lcLimitOpen) setLimitHistory(null)
+  }, [lcLimitOpen])
+
   async function saveLcLimitForm(): Promise<void> {
     setLcLimitSaving(true)
     try {
@@ -1353,11 +1601,14 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
   // original maturity, which will now never happen) gets folded into the
   // same repayment as its excess-over-open-amount charge.
   const [precloseRow, setPrecloseRow] = useState<Row | null>(null)
+  // True when the sheet is correcting a closure already booked, not making one.
+  const [precloseEditing, setPrecloseEditing] = useState(false)
   const [precloseForm, setPrecloseForm] = useState<Row>({})
   const [precloseSaving, setPrecloseSaving] = useState(false)
   const [precloseError, setPrecloseError] = useState<string | null>(null)
 
   function openPreclose(l: Row): void {
+    setPrecloseEditing(false)
     setPrecloseRow(l)
     const precloseDate = todayISO()
     const openAmount = n(l.amount)
@@ -1381,11 +1632,71 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
     setPrecloseError(null)
   }
 
+  // The same sheet, filled with how the LC WAS closed, so any of it can be
+  // corrected. Saving re-posts the closure's vouchers from the new figures.
+  async function openEditPreclose(l: Row): Promise<void> {
+    const closed = String(l.preclosed_date || '').slice(0, 10)
+    let rep: Row | undefined
+    try {
+      const reps = (await window.api.lc.repayments(Number(l.id))) as Row[]
+      rep =
+        reps.find((r) => String(r.note || '') === 'Preclosure repayment' && String(r.repay_date || '').slice(0, 10) === closed) ||
+        reps.find((r) => String(r.repay_date || '').slice(0, 10) === closed)
+    } catch {
+      rep = undefined
+    }
+    setPrecloseEditing(true)
+    setPrecloseRow(l)
+    setPrecloseForm({
+      preclose_date: closed,
+      premature_interest: l.preclose_premature_interest == null ? '' : String(round2(n(l.preclose_premature_interest))),
+      premature_interest_direction: String(l.preclose_interest_route || '') === 'pay_to_party' ? 'pay_to_party' : 'credit_to_us',
+      amount: String(rep ? round2(n(rep.amount)) : n(l.amount)),
+      comm_charges: rep && n(rep.comm_charges) ? String(round2(n(rep.comm_charges))) : '',
+      bank_charges: rep && n(rep.bank_charges) ? String(round2(n(rep.bank_charges))) : '',
+      release_margin: String(l.preclose_settlement_direction || '') === 'margin_released'
+    })
+    setPrecloseError(null)
+  }
+
   // Undo a preclosure booked by mistake. Everything the preclosure wrote is
   // reversed — its rebate and margin vouchers, the repayment row it logged, and
   // the interest period it shortened. Confirmed first: it re-posts vouchers.
   const [unpreRow, setUnpreRow] = useState<Row | null>(null)
   const [unpreBusy, setUnpreBusy] = useState(false)
+
+  // THE BANK SAID NO. An application is marked Rejected with the day and the
+  // reason; it stays listed and stops counting anywhere — see rejectLC.
+  const [rejectForm, setRejectForm] = useState<{ row: Row; date: string; reason: string } | null>(null)
+  const [rejectBusy, setRejectBusy] = useState(false)
+  function openReject(l: Row): void {
+    setRejectForm({ row: l, date: todayISO(), reason: '' })
+  }
+  async function confirmReject(): Promise<void> {
+    if (!rejectForm) return
+    if (!rejectForm.reason.trim()) return void toast.error('Say why the bank rejected it')
+    setRejectBusy(true)
+    try {
+      await window.api.lc.reject(Number(rejectForm.row.id), { date: rejectForm.date, reason: rejectForm.reason })
+      toast.success(`${String(rejectForm.row.lc_no || 'The application')} marked Rejected — it no longer counts against the limit`)
+      setRejectForm(null)
+      load()
+    } catch (e) {
+      toast.error((e as Error).message)
+    } finally {
+      setRejectBusy(false)
+    }
+  }
+  async function reinstateLc(l: Row): Promise<void> {
+    if (!window.confirm(`Reinstate ${String(l.lc_no || 'this application')}? It goes back to Application and counts against the limit again.`)) return
+    try {
+      await window.api.lc.reinstate(Number(l.id))
+      toast.success('Application reinstated')
+      load()
+    } catch (e) {
+      toast.error((e as Error).message)
+    }
+  }
 
   async function confirmUnpreclose(): Promise<void> {
     const l = unpreRow
@@ -1448,17 +1759,25 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
     setPrecloseSaving(true)
     setPrecloseError(null)
     try {
-      await window.api.lc.preclose(Number(precloseRow.id), {
+      const values = {
         preclose_date: String(precloseForm.preclose_date),
         amount: n(precloseForm.amount),
         comm_charges: n(precloseForm.comm_charges),
         bank_charges: n(precloseForm.bank_charges),
         premature_interest: n(precloseForm.premature_interest),
-        premature_interest_direction: precloseForm.premature_interest_direction === 'pay_to_party' ? 'pay_to_party' : 'credit_to_us',
+        premature_interest_direction: (precloseForm.premature_interest_direction === 'pay_to_party' ? 'pay_to_party' : 'credit_to_us') as
+          | 'pay_to_party'
+          | 'credit_to_us',
         release_margin: !!precloseForm.release_margin
-      })
+      }
+      if (precloseEditing) await window.api.lc.editPreclosure(Number(precloseRow.id), values)
+      else await window.api.lc.preclose(Number(precloseRow.id), values)
       toast.success(
-        isLcPastMaturity(precloseRow) ? 'LC repaid — posted to the books' : 'LC preclosed — repayment logged and rebate posted to the books'
+        precloseEditing
+          ? 'Closure updated — its repayment, rebate and ledger entries re-posted'
+          : isLcPastMaturity(precloseRow)
+            ? 'LC repaid — posted to the books'
+            : 'LC preclosed — repayment logged and rebate posted to the books'
       )
       setPrecloseRow(null)
       load()
@@ -1843,7 +2162,16 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
   // independent legs of the round trip — Payment IN no longer waits on
   // Preclose/Repayment, just on the LC having reached Payment received.
   function canMarkPaymentIn(l: Row): boolean {
-    return String(l.purpose || '') === 'trading' && String(l.stage || 'application') === 'payment_received' && !isLcPaymentInDone(l)
+    if (String(l.stage || 'application') !== 'payment_received') return false
+    // A TRADING LC CLOSES THROUGH ITS RESALE INVOICES. ANY OTHER LC THAT
+    // EXPECTS MONEY BACK JUST RECEIVES IT.
+    //
+    // This was trading-only, so an LC that names a term for the money coming
+    // back — "60 days from the LC" — had nowhere to record that it had come.
+    // Saying a term is what opts an LC in: an LC with no term expects nothing
+    // and is left exactly as it was.
+    if (String(l.purpose || '') === 'trading') return !isLcPaymentInDone(l)
+    return !!Number(l.payment_in_expected) && !(Number(l.payment_in_total) > 0.004)
   }
 
   // ONE badge — where the LC actually stands right now — instead of stacking
@@ -1854,6 +2182,16 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
     // Squared off to match the stage tags beside it — a lozenge among 2px
     // boxes reads as a control rather than a label.
     const sq = __WEB__ ? '!rounded-[2px] !px-2 !py-[2px] !text-[10px] !font-bold !uppercase !tracking-wide' : ''
+    if (isLcRejected(l))
+      return (
+        <Badge
+          variant="destructive"
+          title={`Rejected by the bank${l.rejected_date ? ` on ${formatDate(String(l.rejected_date))}` : ''}${l.rejected_reason ? ` — ${String(l.rejected_reason)}` : ''}`}
+          className={cn(sq, __WEB__ && '!border-0 !bg-[#FDF3F2] !text-[#B3261E]')}
+        >
+          Rejected
+        </Badge>
+      )
     if (canMarkPaymentIn(l))
       return <Badge variant="warning" className={cn(sq, __WEB__ && '!border-0 !bg-[#FFEDD0] !text-[#8A5300]')}>Awaiting Payment IN</Badge>
     if (isLcPaymentInDone(l))
@@ -1887,7 +2225,7 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
     setBusy(true)
     try {
       await window.api.lc.paymentIn(Number(paymentInForm.lc_id), amount, String(paymentInForm.date || todayISO()), keys)
-      toast.success('Payment IN posted')
+      toast.success('Payment IN recorded on the LC — no voucher; the bank receipt comes from Tally')
       const lcId = Number(paymentInForm.lc_id)
       setPaymentInForm(null)
       await reloadLcDetail(lcId)
@@ -1917,10 +2255,11 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
         // more, so it carries no due date. Leaving one on would keep it
         // counting under T+1/This week/Fortnight and reading as overdue for
         // ever, long after it was settled.
-        const daysLeft = l.preclosed_date ? null : daysTo(dueDate)
+        // A rejected application never ran, so nothing is ever due on it either.
+        const daysLeft = l.preclosed_date || isLcRejected(l) ? null : daysTo(dueDate)
         const row: Row = {
           ...l,
-          due_date_effective: l.preclosed_date ? null : dueDate,
+          due_date_effective: l.preclosed_date || isLcRejected(l) ? null : dueDate,
           days_left_effective: daysLeft
         }
         return row
@@ -1938,14 +2277,17 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
     let rows = lcsWithDue
     if (lcStageFilter) rows = rows.filter((l) => String(l.stage || 'application') === lcStageFilter)
     if (lcPurposeFilter) rows = rows.filter((l) => String(l.purpose || 'manufacturing') === lcPurposeFilter)
-    if (activeBank) rows = rows.filter((l) => String(l.our_bank_id || '') === String(activeBank))
+    if (activeBanks.length) rows = rows.filter((l) => activeBanks.includes(String(l.our_bank_id || '')))
     // The three states are mutually exclusive: Repaid (wound up), Matured
     // (past its own expiry, still owed), and everything still running. The
     // default deliberately shows only the last of those — a settled or
     // expired LC needs no attention, so it would only pad the register.
-    if (lcStatusFilter === 'matured') rows = rows.filter((l) => isLcPastMaturity(l) && !l.preclosed_date)
-    else if (lcStatusFilter === 'repaid') rows = rows.filter((l) => !!l.preclosed_date)
-    else rows = rows.filter((l) => !l.preclosed_date && !isLcPastMaturity(l))
+    // Rejected applications sit apart from all three: never opened, never
+    // repaid, never matured — shown only under their own chip.
+    if (lcStatusFilter === 'rejected') rows = rows.filter((l) => isLcRejected(l))
+    else if (lcStatusFilter === 'matured') rows = rows.filter((l) => isLcPastMaturity(l) && !l.preclosed_date && !isLcRejected(l))
+    else if (lcStatusFilter === 'repaid') rows = rows.filter((l) => !!l.preclosed_date && !isLcRejected(l))
+    else rows = rows.filter((l) => !l.preclosed_date && !isLcPastMaturity(l) && !isLcRejected(l))
     // Same window the LC Facility Limit KPI above is scoped to — the register
     // and the KPI it summarises always show the same cohort of LCs.
     if (lcKpiFrom) rows = rows.filter((l) => String(l.open_date || '').slice(0, 10) >= lcKpiFrom)
@@ -1956,7 +2298,7 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
     // Cumulative: overdue and everything due sooner counts too, not just the
     // slice of days that falls exactly in this bucket.
     return rows.filter((l) => l.days_left_effective != null && l.days_left_effective <= maxDays)
-  }, [lcsWithDue, lcDuePeriod, lcStageFilter, lcPurposeFilter, lcStatusFilter, activeBank, lcKpiFrom, lcKpiTo])
+  }, [lcsWithDue, lcDuePeriod, lcStageFilter, lcPurposeFilter, lcStatusFilter, activeBanks, lcKpiFrom, lcKpiTo])
 
   // How many LCs sit behind each chip in the bar. Counted with every OTHER
   // filter in the bar applied, so a chip's number is what clicking it would
@@ -1966,7 +2308,7 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
     const scope = (rows: Row[], withDue: boolean): Row[] => {
       let r = rows
       if (lcStageFilter) r = r.filter((l) => String(l.stage || 'application') === lcStageFilter)
-      if (activeBank) r = r.filter((l) => String(l.our_bank_id || '') === String(activeBank))
+      if (activeBanks.length) r = r.filter((l) => activeBanks.includes(String(l.our_bank_id || '')))
       if (lcKpiFrom) r = r.filter((l) => String(l.open_date || '').slice(0, 10) >= lcKpiFrom)
       if (lcKpiTo) r = r.filter((l) => String(l.open_date || '').slice(0, 10) <= lcKpiTo)
       if (!withDue || lcDuePeriod === 'all') return r
@@ -1974,14 +2316,20 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
       if (maxDays == null) return r
       return r.filter((l) => l.days_left_effective != null && l.days_left_effective <= maxDays)
     }
-    const running = (l: Row): boolean => !l.preclosed_date && !isLcPastMaturity(l)
-    const matured = (l: Row): boolean => isLcPastMaturity(l) && !l.preclosed_date
+    const running = (l: Row): boolean => !l.preclosed_date && !isLcPastMaturity(l) && !isLcRejected(l)
+    const matured = (l: Row): boolean => isLcPastMaturity(l) && !l.preclosed_date && !isLcRejected(l)
     const purposeOf = (l: Row): string => String(l.purpose || 'manufacturing')
     // The purpose chips count within whichever state is on screen; the state
     // chips count within whichever purpose is on screen. Neither counts its
     // own dimension, or the number would just be the row count.
     const inState = scope(lcsWithDue, true).filter(
-      lcStatusFilter === 'matured' ? matured : lcStatusFilter === 'repaid' ? (l) => !!l.preclosed_date : running
+      lcStatusFilter === 'rejected'
+        ? isLcRejected
+        : lcStatusFilter === 'matured'
+          ? matured
+          : lcStatusFilter === 'repaid'
+            ? (l) => !!l.preclosed_date && !isLcRejected(l)
+            : running
     )
     const inPurpose = (rows: Row[]): Row[] =>
       lcPurposeFilter ? rows.filter((l) => purposeOf(l) === lcPurposeFilter) : rows
@@ -1992,9 +2340,10 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
       matured: inPurpose(scope(lcsWithDue, true)).filter(matured).length,
       // Clicking Repaid clears the due period, so counting one in would show a
       // zero on a chip that is about to reveal rows.
-      repaid: inPurpose(scope(lcsWithDue, false)).filter((l) => !!l.preclosed_date).length
+      repaid: inPurpose(scope(lcsWithDue, false)).filter((l) => !!l.preclosed_date && !isLcRejected(l)).length,
+      rejected: inPurpose(scope(lcsWithDue, false)).filter(isLcRejected).length
     }
-  }, [lcsWithDue, lcDuePeriod, lcStageFilter, lcPurposeFilter, lcStatusFilter, activeBank, lcKpiFrom, lcKpiTo])
+  }, [lcsWithDue, lcDuePeriod, lcStageFilter, lcPurposeFilter, lcStatusFilter, activeBanks, lcKpiFrom, lcKpiTo])
 
   // The month an LC matures in — the one useful way to filter a date column,
   // since a checkbox list of individual days would be as long as the register.
@@ -2060,6 +2409,8 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
     const longest = lcsFiltered.reduce((m, l) => Math.max(m, String(l.lc_no || '').length), 0)
     return Math.round(Math.min(244, Math.max(138, 36 + longest * 8.2)))
   }, [lcsFiltered])
+  // The desk's own labels on these letters — one fetch for the list.
+  const lcTags = useTagMap('lc', lcsFiltered.map((l) => Number(l.id)))
 
   // Who did what to one LC — the same dialog every other register uses.
   const hist = useHistoryDialog()
@@ -2067,6 +2418,26 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
     hist.open({
       entity: 'Letter of credit',
       id: Number(l.id),
+      title: String(l.lc_no || 'this LC'),
+      subtitle: `${l.bank_name || l.bank || '—'} · ${l.supplier_name || '—'} · ${formatINR(l.amount)}`
+    })
+
+  // WHAT THIS LETTER PUT IN THE LEDGERS.
+  // An LC is the hardest document in the app to trace through the books: it
+  // posts when a bill is settled against it, when interest is taken, when the
+  // bank charges for it, when it is preclosed and when the money comes back —
+  // each on its own date, months apart, with only the narration to join them
+  // up. This reads the link the postings themselves recorded.
+  // ONLY FOR SOMEBODY WHO IS ALLOWED IN THE BOOKS — the panel is a window on
+  // the ledgers, so it answers to the Accounting grant rather than to this
+  // page's. No session at all (the desktop app) is not a restriction.
+  const canSeeLedgers = !sessionUser || canAccess(sessionUser, 'accountsLedgers')
+  const [postings, setPostings] = useState<PostingTarget | null>(null)
+  const openPostings = (l: Row): void =>
+    setPostings({
+      entity: 'lc',
+      id: Number(l.id),
+      kicker: 'Letter of credit',
       title: String(l.lc_no || 'this LC'),
       subtitle: `${l.bank_name || l.bank || '—'} · ${l.supplier_name || '—'} · ${formatINR(l.amount)}`
     })
@@ -2336,6 +2707,26 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
 
   const tabAlerts = alertItems.filter((a) => a.tab === tab)
 
+  // WHAT A TRACKER ROW'S BUTTON OPENS. The tracker settles nothing itself:
+  // the LC's own Repay / Preclose or Payment IN dialog, or the bill's own
+  // Repay, Interest repayment or Payment IN screen on the Bill discounting
+  // tab. The voucher is posted there, and the row settles because the
+  // register now says so.
+  const mayOpenTab = (key: string): boolean => TREASURY_TABS.some((t) => t.key === key)
+  function trackerAction(r: Row): void {
+    const id = Number(r.src_id)
+    if (r.src === 'lc') {
+      const l = lcs.find((x) => Number(x.id) === id)
+      if (!l) return void toast.error('That LC is no longer in this company\u2019s register')
+      if (!r.settled && (r.action === 'repay' || r.action === 'preclose') && canPreclose(l)) return openPreclose(l)
+      if (!r.settled && r.action === 'payin' && canMarkPaymentIn(l)) return void openPaymentIn(l)
+      return void openLcDetail(id)
+    }
+    const action: BdFocusAction = r.settled ? 'open' : r.action === 'repay' ? 'repay' : r.action === 'interest' ? 'interest' : r.action === 'payin' ? 'payin' : 'open'
+    setTrackerBd({ id, action })
+    setTab('bd')
+  }
+
   return (
     <>
       <PageHeader
@@ -2346,43 +2737,37 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
           {/* The lender in view scopes the register below it. On the LC tab
               that is a BANK — it also drives the facility limit and which bank
               a new LC opens at. On Bill Discounting it is an NBFC. */}
-          {tab === 'bd' ? (
+          {tab === 'tracker' ? null : tab === 'bd' ? (
             <>
               <span className="whitespace-nowrap text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
                 Active NBFC
               </span>
-              <Select value={activeNbfc} onValueChange={setActiveNbfc}>
-                <SelectTrigger className="h-8 w-52 text-xs font-semibold uppercase tracking-wide">
-                  <span className="flex min-w-0 items-center gap-1.5">
-                    <Landmark className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-                    <SelectValue placeholder="All my NBFCs" />
-                  </span>
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="">All my NBFCs</SelectItem>
-                  {nbfcs
-                    .filter((x) => x.active)
-                    .map((x) => <SelectItem key={String(x.id)} value={String(x.id)}>{String(x.name)}</SelectItem>)}
-                </SelectContent>
-              </Select>
+              {/* Ticks rather than one value: the register below narrows to
+                  the lenders picked, and picking none is picking all. */}
+              <MultiSelectFilter
+                className="h-8 w-52 text-xs font-semibold tracking-wide"
+                label="NBFC"
+                allLabel="All my NBFCs"
+                value={activeNbfcs}
+                onApply={setActiveNbfcs}
+                options={nbfcs
+                  .filter((x) => x.active)
+                  .map((x) => ({ value: String(x.id), label: String(x.name) }))}
+              />
             </>
           ) : (
             <>
               <span className="whitespace-nowrap text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
                 Active bank
               </span>
-              <Select value={activeBank} onValueChange={setActiveBank}>
-                <SelectTrigger className="h-8 w-52 text-xs font-semibold uppercase tracking-wide">
-                  <span className="flex min-w-0 items-center gap-1.5">
-                    <Landmark className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-                    <SelectValue placeholder="All my banks" />
-                  </span>
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="">All my banks</SelectItem>
-                  {banks.map((b) => <SelectItem key={String(b.id)} value={String(b.id)}>{b.name}</SelectItem>)}
-                </SelectContent>
-              </Select>
+              <MultiSelectFilter
+                className="h-8 w-52 text-xs font-semibold tracking-wide"
+                label="Bank"
+                allLabel="All my banks"
+                value={activeBanks}
+                onApply={setActiveBanks}
+                options={banks.map((b) => ({ value: String(b.id), label: String(b.name) }))}
+              />
             </>
           )}
           {!__WEB__ && (
@@ -2471,138 +2856,11 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
           )}
 
           <TabsContent value="tracker" className={cn('mt-4', __WEB__ && '!mt-0')}>
-            <div className={cn('rounded-md border border-[#d9d2b8] bg-[#fffdf4] shadow-lg', __WEB__ && '!overflow-hidden !rounded-[4px] !border-[#D6E2D6] !bg-white !shadow-none')}>
-              <div
-                className={cn(
-                  'flex flex-wrap items-center gap-2 rounded-t-md bg-gradient-to-r from-[#1a2c56] to-[#24407e] px-4 py-2 text-white shadow-sm',
-                  __WEB__ && '!gap-2.5 !rounded-none !border-b !border-b-[#E4ECE3] !bg-[#F7FAF6] !bg-none !px-4 !py-3 !text-[#0A1F17] !shadow-none'
-                )}
-              >
-                <span className={cn('flex h-6 w-6 items-center justify-center rounded-full bg-white/15', __WEB__ && '!h-7 !w-7 !rounded-[3px] !bg-[#EAF0E9]')}>
-                  <CalendarClock className={cn('h-3.5 w-3.5', __WEB__ && '!h-4 !w-4 !text-[#0B3D2E]')} />
-                </span>
-                <span className={cn('text-[13px] font-bold uppercase tracking-widest', __WEB__ && '!text-[11.5px] !font-extrabold !tracking-[.14em]')}>Payment Tracker</span>
-                <span className={cn('text-[11px] text-white/60', __WEB__ && '!text-[12px] !font-semibold !text-[#5A6B62]')}>every LC bill and discounted bill, one due-date list</span>
-                {/* How much is actually owed on this list. It is a due-date
-                    list of money and the only way to know the size of it was
-                    to add the rows up. Overdue is broken out because that is
-                    the half somebody has to act on today. */}
-                {__WEB__ && (() => {
-                  const live = tracker.filter((x) => !x.settled)
-                  if (live.length === 0) return null
-                  const due = live.reduce((a, x) => a + n(x.amount), 0)
-                  const late = live.filter((x) => x.overdue)
-                  const lateSum = late.reduce((a, x) => a + n(x.amount), 0)
-                  return (
-                    <span className="flex flex-wrap items-center gap-2">
-                      <span className="rounded-[3px] border border-[#C3D2C6] bg-white px-2.5 py-1.5 text-[12px] font-bold tabular-nums text-[#0A1F17]">
-                        {live.length} outstanding · {formatINR(due)}
-                      </span>
-                      {late.length > 0 && (
-                        <span className="rounded-[3px] border border-[#F0D6D4] bg-[#FDF3F2] px-2.5 py-1.5 text-[12px] font-bold tabular-nums text-[#B3261E]">
-                          {late.length} overdue · {formatINR(lateSum)}
-                        </span>
-                      )}
-                    </span>
-                  )
-                })()}
-                <label className={cn('ml-auto flex cursor-pointer items-center gap-1.5 text-[11px]', __WEB__ && '!gap-2 !rounded-[3px] !border !border-[#C3D2C6] !bg-white !px-3 !py-2 !text-[12px] !font-bold !text-[#33473E]')}>
-                  <input type="checkbox" className={cn('h-3.5 w-3.5', __WEB__ && '!h-4 !w-4 !accent-[#0B3D2E]')} checked={trackerShowSettled} onChange={(e) => setTrackerShowSettled(e.target.checked)} />
-                  Show settled
-                </label>
-              </div>
-              <div className={cn(__WEB__ && 'overflow-x-auto')}>
-              <Table className={cn('text-[13px]', __WEB__ && '!min-w-[900px]')}>
-                <TableHeader>
-                  <TableRow className={cn('bg-[#f1ecd9] hover:bg-[#f1ecd9]', TRACKER_HEAD)}>
-                    <TableHead className="h-8 text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">Kind</TableHead>
-                    <TableHead className="h-8 text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">Reference · party</TableHead>
-                    <TableHead className="h-8 text-right text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">Amount</TableHead>
-                    <TableHead className="h-8 text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">Due</TableHead>
-                    <TableHead className="h-8 text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">Status</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {(() => {
-                    const rows = tracker.filter((x) => trackerShowSettled || !x.settled)
-                    if (rows.length === 0) {
-                      return (
-                        <TableRow>
-                          <TableCell colSpan={5} className="py-10 text-center text-muted-foreground">
-                            Nothing outstanding under LC or bill discounting.
-                          </TableCell>
-                        </TableRow>
-                      )
-                    }
-                    return rows.map((r) => (
-                      <TableRow
-                        key={`${r.kind}-${r.ref}-${r.due_date}-${r.amount}`}
-                        className={cn(
-                          'border-b border-dotted border-[#e5dfc8]',
-                          // A due-date list wants its state on the left edge:
-                          // overdue in red, settled in green, the rest neutral.
-                          // Scanning a Status column at the far right of the
-                          // row was the only way to find the late ones.
-                          __WEB__ && '!border-b-[#C3D2C6] !border-solid !border-l-[3px] hover:!bg-[#F7FAF6] [&>td]:!py-2.5',
-                          __WEB__ && (r.settled ? '!border-l-[#12855A]' : r.overdue ? '!border-l-[#B3261E] !bg-[#FDF3F2]' : '!border-l-[#C2700A]')
-                        )}
-                      >
-                        <TableCell>
-                          <span
-                            className={cn(
-                              'rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase',
-                              r.kind === 'lc_bill' ? 'bg-sky-100 text-sky-800' : 'bg-indigo-100 text-indigo-800',
-                              __WEB__ && '!whitespace-nowrap !rounded-[2px] !px-2 !py-1 !text-[10px] !font-extrabold !tracking-[.06em]',
-                              __WEB__ && (r.kind === 'lc_bill' ? '!bg-[#EAF0E9] !text-[#33473E]' : '!bg-[#EAF6EC] !text-[#0B6B45]')
-                            )}
-                          >
-                            {r.kind_label}
-                          </span>
-                        </TableCell>
-                        <TableCell>
-                          <div className={cn('font-semibold', __WEB__ && '!text-[13px] !font-bold !text-[#0A1F17]')}>{r.ref} {r.party ? `· ${r.party}` : ''}</div>
-                          {r.detail && <div className={cn('text-[11px] text-muted-foreground', __WEB__ && '!mt-0.5 !text-[11.5px] !font-semibold !text-[#5A6B62]')}>{r.detail}</div>}
-                        </TableCell>
-                        <TableCell className={cn('text-right font-medium tabular-nums', __WEB__ && '!whitespace-nowrap !text-[13.5px] !font-bold')}>{formatINR(r.amount)}</TableCell>
-                        <TableCell>
-                          <div className={cn('tabular-nums', __WEB__ && '!whitespace-nowrap !text-[13px] !font-bold')}>{r.due_date ? formatDate(r.due_date) : '—'}</div>
-                          {!r.settled && r.days_left != null && (
-                            <div
-                              className={cn(
-                                'text-[10px]',
-                                r.overdue ? 'font-semibold text-red-600' : 'text-muted-foreground',
-                                __WEB__ && '!mt-0.5 !text-[11px] !font-bold',
-                                __WEB__ && (r.overdue ? '!text-[#B3261E]' : '!text-[#5A6B62]')
-                              )}
-                            >
-                              {r.overdue ? `${Math.abs(r.days_left)}D overdue` : `${r.days_left}D left`}
-                            </div>
-                          )}
-                        </TableCell>
-                        <TableCell>
-                          <Badge
-                            variant={r.settled ? 'success' : r.overdue ? 'destructive' : 'warning'}
-                            className={cn(
-                              'uppercase',
-                              __WEB__ && '!whitespace-nowrap !rounded-[2px] !border !px-2 !py-1 !text-[10px] !font-extrabold !tracking-[.06em]',
-                              __WEB__ &&
-                                (r.settled
-                                  ? '!border-[#BFE3CB] !bg-[#EAF6EC] !text-[#0B6B45]'
-                                  : r.overdue
-                                    ? '!border-[#F0D6D4] !bg-white !text-[#B3261E]'
-                                    : '!border-[#F0D9AE] !bg-[#FFFBF2] !text-[#8A5300]')
-                            )}
-                          >
-                            {r.settled ? 'settled' : r.overdue ? 'overdue' : 'outstanding'}
-                          </Badge>
-                        </TableCell>
-                      </TableRow>
-                    ))
-                  })()}
-                </TableBody>
-              </Table>
-              </div>
-            </div>
+            <PaymentTracker
+              rows={tracker}
+              onAction={trackerAction}
+              canAct={(r) => mayOpenTab(r.src === 'lc' ? 'lc' : 'bd')}
+            />
           </TabsContent>
 
           <TabsContent value="lc" className={cn('mt-4 space-y-3', __WEB__ && '!mt-0')}>
@@ -2632,7 +2890,7 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                     title={
                       `${lcLimit.lc_count} LC${n(lcLimit.lc_count) === 1 ? '' : 's'} still holding limit` +
                       (n(lcs.length) > n(lcLimit.lc_count)
-                        ? ` — ${n(lcs.length) - n(lcLimit.lc_count)} preclosed LC${n(lcs.length) - n(lcLimit.lc_count) === 1 ? '' : 's'} excluded, since a wound-up LC no longer uses the facility`
+                        ? ` — ${n(lcs.length) - n(lcLimit.lc_count)} preclosed or rejected LC${n(lcs.length) - n(lcLimit.lc_count) === 1 ? '' : 's'} excluded, since neither uses the facility`
                         : '')
                     }
                   >
@@ -2907,9 +3165,13 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                         // hides the matured and repaid ones would misread.
                         { key: 'all', label: 'Running' },
                         { key: 'matured', label: 'Matured' },
-                        { key: 'repaid', label: 'Repaid' }
+                        { key: 'repaid', label: 'Repaid' },
+                        { key: 'rejected', label: 'Rejected' }
                       ] as const
-                    ).map((p) => (
+                    )
+                      // Rejected only appears once there is one to show.
+                      .filter((p) => p.key !== 'rejected' || lcChipCounts.rejected > 0 || lcStatusFilter === 'rejected')
+                      .map((p) => (
                       <button
                         key={p.key}
                         type="button"
@@ -2918,7 +3180,7 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                           // Switching to Repaid would otherwise leave a due-period
                           // chip selected but dead, and the list empty for no
                           // visible reason.
-                          if (p.key === 'repaid') setLcDuePeriod('all')
+                          if (p.key === 'repaid' || p.key === 'rejected') setLcDuePeriod('all')
                         }}
                         className={cn(
                           'rounded-full border px-3 py-1 text-[11px] font-semibold uppercase tracking-wide transition-colors',
@@ -3008,7 +3270,7 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                               purpose: 'manufacturing',
                               workflow_status: 'in_progress',
                               stage: 'application',
-                              our_bank_id: activeBank || ''
+                              our_bank_id: soleBank
                             })
                           }
                         >
@@ -3048,7 +3310,7 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                       'bg-[#1a2c56] hover:bg-[#24407e]',
                       __WEB__ && '!h-12 !gap-2.5 !rounded-[4px] !bg-[#0B3D2E] !px-5 !text-[13px] !font-extrabold !uppercase !tracking-[.04em] !text-[#C7F03F] hover:!bg-[#0F4A38]'
                     )}
-                    onClick={() => setLcForm({ open_date: todayISO(), usance_days: '', margin_pct: '', interest_pct: '', charges: '', purpose: 'manufacturing', workflow_status: 'in_progress', stage: 'application', our_bank_id: activeBank || '' })}
+                    onClick={() => setLcForm({ open_date: todayISO(), usance_days: '', margin_pct: '', interest_pct: '', charges: '', purpose: 'manufacturing', workflow_status: 'in_progress', stage: 'application', our_bank_id: soleBank })}
                   >
                     <Plus className="h-4 w-4" /> Open new LC
                   </Button>
@@ -3086,6 +3348,7 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                               <div className="flex flex-wrap items-center gap-1.5">
                                 <span className={cn('doc-ref text-[15px] font-bold', !l.lc_no && 'italic text-muted-foreground')}>{l.lc_no || 'Pending LC no'}</span>
                                 <DuplicateNoBadge lcs={lcs} l={l} />
+                                <PayInDue row={l} />
                                 {currentStageBadge(l)}
                                 <ClosureBadge l={l} withDate />
                               </div>
@@ -3095,10 +3358,25 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                                 <Users className="h-3 w-3 shrink-0" /> {l.supplier_name || '—'}
                               </div>
                               {l.fd_no && <div className="mt-0.5 text-[10px] text-muted-foreground">FD {l.fd_no}</div>}
+                              {/* Stops the card's own click, which opens the
+                                  LC — tagging it is not opening it. */}
+                              <div className="mt-1.5" onClick={(e) => e.stopPropagation()}>
+                                <TagPicker
+                                  entity="lc"
+                                  refId={Number(l.id)}
+                                  tags={lcTags.tagsOf(Number(l.id))}
+                                  onChanged={(next) => lcTags.setFor(Number(l.id), next)}
+                                  compact
+                                />
+                              </div>
                             </div>
                             <div className="flex flex-col items-end gap-1">
                               {l.purpose && <Badge variant="muted" className="capitalize">{l.purpose}</Badge>}
-                              {l.display_status === 'non_compliant' ? (
+                              {l.display_status === 'rejected' ? (
+                                <Badge variant="destructive" title={`${l.rejected_date ? `Rejected ${formatDate(String(l.rejected_date))}` : 'Rejected'}${l.rejected_reason ? ` — ${String(l.rejected_reason)}` : ''}`}>
+                                  Rejected
+                                </Badge>
+                              ) : l.display_status === 'non_compliant' ? (
                                 <Badge variant="destructive">Non-compliant</Badge>
                               ) : (
                                 <Badge variant={l.display_status === 'on_hold' ? 'warning' : 'success'} className="capitalize">
@@ -3174,7 +3452,7 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                         <div className={cn('flex flex-wrap gap-1.5 border-t border-dashed border-[#e5dfc8] px-4 py-3', __WEB__ && '!mt-auto !gap-2 !border-t-[#EAF0E9] !border-solid !bg-[#F7FAF6] !px-4 !py-3')}>
                           {(() => {
                             const next = nextLcStage(String(l.stage || 'application'))
-                            if (!next) return null
+                            if (!next || isLcRejected(l)) return null
                             return (
                               <Button
                                 size="sm"
@@ -3209,15 +3487,44 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                               variant="outline"
                               className={cn('h-7 px-2 text-xs', __WEB__ && '!h-9 !rounded-[3px] !border-[#C3D2C6] !bg-white !px-3 !text-[12px] !font-bold !text-[#33473E] hover:!bg-[#EAF0E9]')}
                               title={isLcPastMaturity(l) ? 'Repay this LC now that it has matured' : 'Wind this LC up before its natural maturity'}
-                              onClick={() => openPreclose(l)}
+                              onClick={() => (isPartsLc(l) ? setInstRow(l) : openPreclose(l))}
                             >
-                              {isLcPastMaturity(l) ? 'Repay' : 'Preclose'}
+                              {isPartsLc(l) ? 'Repay parts' : isLcPastMaturity(l) ? 'Repay' : 'Preclose'}
                             </Button>
                           )}
                           <RowActions
                             actions={[
-                              { label: 'Edit LC', icon: Pencil, onClick: () => setLcForm({ ...l }) },
+                              ...(l.preclosed_date
+                                ? [{ label: 'Edit preclosure — date, amount, rebate', icon: Pencil, onClick: () => void openEditPreclose(l) }]
+                                : []),
+                              ...(isLcRejected(l)
+                                ? [{ label: 'Reinstate application — the rejection was a mistake', icon: RotateCcw, onClick: () => void reinstateLc(l) }]
+                                : String(l.stage || 'application') === 'application' && !l.preclosed_date
+                                  ? [{ label: 'Reject application — the bank turned it down', icon: Ban, onClick: () => openReject(l) }]
+                                  : []),
+                              {
+                                      label: 'Edit LC',
+                                      icon: Pencil,
+                                      onClick: () => setLcForm({ ...l }),
+                                      // Repaid/preclosed: the books were closed on these figures.
+                                      disabled: !!l.preclosed_date || isLcRejected(l),
+                                      disabledReason: isLcRejected(l)
+                                        ? 'This application was rejected. Reinstate it first to change it.'
+                                        : 'This LC is repaid and closed. Use Edit preclosure to change how it closed, or Undo preclosure to change the LC.'
+                                    },
                               { label: 'History — who did what', icon: History, onClick: () => void openHistory(l) },
+                                    ...(n(l.installment_count) > 0
+                                      ? [{ label: isPartsLc(l) ? 'Parts — paid and repaid' : 'Installments to the party', icon: List, onClick: () => setInstRow(l) }]
+                                      : []),
+                              ...(__WEB__ && canSeeLedgers
+                                ? [
+                                    {
+                                      label: 'Ledger posting — what it put in the books',
+                                      icon: BookOpen,
+                                      onClick: () => openPostings(l)
+                                    }
+                                  ]
+                                : []),
                               {
                                 label: 'Delete LC — reverses its vouchers',
                                 icon: Trash2,
@@ -3272,7 +3579,7 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                     // the page that starts something new.
                     __WEB__ && '!h-[34px] !gap-1.5 !rounded-[3px] !bg-[#C7F03F] !px-3.5 !text-[12.5px] !font-extrabold !text-[#0B3D2E] !shadow-none hover:!bg-[#B9E62F]'
                   )}
-                  onClick={() => setLcForm({ open_date: todayISO(), usance_days: '', margin_pct: '', interest_pct: '', charges: '', purpose: 'manufacturing', workflow_status: 'in_progress', stage: 'application', our_bank_id: activeBank || '' })}
+                  onClick={() => setLcForm({ open_date: todayISO(), usance_days: '', margin_pct: '', interest_pct: '', charges: '', purpose: 'manufacturing', workflow_status: 'in_progress', stage: 'application', our_bank_id: soleBank })}
                 >
                   <Plus className="h-4 w-4" /> Open new LC
                 </Button>
@@ -3575,7 +3882,11 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                                 <div className={cn('text-[10px] tabular-nums text-muted-foreground', __WEB__ && '!mt-0.5 !text-[11px] !font-semibold')}>
                                   {l.paid_to_party == null
                                     ? 'not drawn yet'
-                                    : `after ${formatINR(n(l.amount) - n(l.paid_to_party))} int + chg`}
+                                    : n(l.installment_count) > 0 && partyLeft(l) > 0.5
+                                      ? `${formatINR(partyLeft(l))} to go`
+                                      : n(l.installment_count) > 0
+                                        ? `after ${formatINR(n(l.amount) - n(l.paid_expected))} int + chg`
+                                        : `after ${formatINR(n(l.amount) - n(l.paid_to_party))} int + chg`}
                                 </div>
                               </PayableBreakdown>
                             </TableCell>
@@ -3583,7 +3894,7 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                               <div className={cn('flex justify-end gap-1', __WEB__ && '!gap-1.5')}>
                                 {(() => {
                                   const next = nextLcStage(String(l.stage || 'application'))
-                                  if (!next) return null
+                                  if (!next || isLcRejected(l)) return null
                                   return (
                                     <Button
                                       size="sm"
@@ -3610,15 +3921,28 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                                     {__WEB__ ? 'Payment IN' : 'Mark Payment IN'}
                                   </Button>
                                 )}
+                                {canPayParty(l) && (
+                                  <Button
+                                    size="sm"
+                                    className={cn(
+                                      'h-7 bg-emerald-600 px-2 text-xs hover:bg-emerald-700',
+                                      __WEB__ && cn(LC_ACT_GO, '!bg-[#12855A] hover:!bg-[#0F7350]')
+                                    )}
+                                    title={`Record the next part the bank paid the supplier — ${formatINR(partyLeft(l))} still to pay`}
+                                    onClick={() => setInstRow(l)}
+                                  >
+                                    Pay party
+                                  </Button>
+                                )}
                                 {canPreclose(l) && (
                                   <Button
                                     size="sm"
                                     variant="outline"
                                     className={cn('h-7 px-2 text-xs', __WEB__ && LC_ACT_2ND)}
                                     title={isLcPastMaturity(l) ? 'Repay this LC now that it has matured' : 'Wind this LC up before its natural maturity'}
-                                    onClick={() => openPreclose(l)}
+                                    onClick={() => (isPartsLc(l) ? setInstRow(l) : openPreclose(l))}
                                   >
-                                    {isLcPastMaturity(l) ? 'Repay' : 'Preclose'}
+                                    {isPartsLc(l) ? 'Repay parts' : isLcPastMaturity(l) ? 'Repay' : 'Preclose'}
                                   </Button>
                                 )}
                                 <RowActions
@@ -3626,14 +3950,45 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                                     ...(l.preclosed_date
                                       ? [
                                           {
+                                            label: 'Edit preclosure — date, amount, rebate',
+                                            icon: Pencil,
+                                            onClick: () => void openEditPreclose(l)
+                                          },
+                                          {
                                             label: 'Undo preclosure — put this LC back',
                                             icon: RotateCcw,
                                             onClick: () => setUnpreRow(l)
                                           }
                                         ]
                                       : []),
-                                    { label: 'Edit LC', icon: Pencil, onClick: () => setLcForm({ ...l }) },
+                                    ...(isLcRejected(l)
+                                      ? [{ label: 'Reinstate application — the rejection was a mistake', icon: RotateCcw, onClick: () => void reinstateLc(l) }]
+                                      : String(l.stage || 'application') === 'application' && !l.preclosed_date
+                                        ? [{ label: 'Reject application — the bank turned it down', icon: Ban, onClick: () => openReject(l) }]
+                                        : []),
+                                    {
+                                      label: 'Edit LC',
+                                      icon: Pencil,
+                                      onClick: () => setLcForm({ ...l }),
+                                      // Repaid/preclosed: the books were closed on these figures.
+                                      disabled: !!l.preclosed_date || isLcRejected(l),
+                                      disabledReason: isLcRejected(l)
+                                        ? 'This application was rejected. Reinstate it first to change it.'
+                                        : 'This LC is repaid and closed. Use Edit preclosure to change how it closed, or Undo preclosure to change the LC.'
+                                    },
                                     { label: 'History — who did what', icon: History, onClick: () => void openHistory(l) },
+                                    ...(n(l.installment_count) > 0
+                                      ? [{ label: isPartsLc(l) ? 'Parts — paid and repaid' : 'Installments to the party', icon: List, onClick: () => setInstRow(l) }]
+                                      : []),
+                                    ...(__WEB__ && canSeeLedgers
+                                      ? [
+                                          {
+                                            label: 'Ledger posting — what it put in the books',
+                                            icon: BookOpen,
+                                            onClick: () => openPostings(l)
+                                          }
+                                        ]
+                                      : []),
                                     {
                                       label: 'Delete LC — reverses its vouchers',
                                       icon: Trash2,
@@ -3658,10 +4013,16 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
 
           <TabsContent value="bd" className={cn('mt-4', __WEB__ && '!mt-0')}>
             <BillDiscounting
+              focusId={focusBdId || trackerBd?.id || null}
+              focusAction={focusBdId ? 'open' : trackerBd?.action || 'open'}
+              onFocusHandled={() => {
+                setTrackerBd(null)
+                onFocusHandled?.()
+              }}
               companies={companies}
               activeCompany={activeCompany}
               onCompanyChange={onCompanyChange}
-              nbfcFilter={activeNbfc}
+              nbfcFilter={activeNbfcs}
               onNbfcsLoaded={setNbfcs}
               alerts={__WEB__ ? tabAlerts.map((a) => ({ key: a.key, label: a.label, tone: a.tone, icon: a.icon, count: a.rows.length })) : []}
               onOpenAlert={setExpandedAlert}
@@ -3811,7 +4172,20 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                 granted it, and the facility is the sum of them — so they are
                 set side by side and totalled underneath, rather than one at a
                 time behind a picker. */}
-            {lcLimitLoading ? (
+            {/* One layer, not two: the history takes this dialog's body
+                rather than opening over it, so the row it explains stays on
+                screen behind the Back arrow. */}
+            {limitHistory ? (
+              <LimitHistory
+                inline
+                target={limitHistory}
+                onClose={() => setLimitHistory(null)}
+                onChanged={() => {
+                  void openLcLimit()
+                  load()
+                }}
+              />
+            ) : lcLimitLoading ? (
               <div className="px-1 py-6 text-center text-[12.5px] font-semibold text-[#5A6B62]">Loading limits…</div>
             ) : banks.length === 0 ? (
               <div className="px-1 py-6 text-center text-[12.5px] font-semibold text-[#5A6B62]">
@@ -3837,6 +4211,21 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                         setLcBankLimits((prev) => ({ ...prev, [String(b.id)]: e.target.value }))
                       }
                     />
+                    <button
+                      type="button"
+                      title="When this bank's limit moved, and by how much"
+                      onClick={() =>
+                        setLimitHistory({
+                          kind: 'bank',
+                          id: Number(b.id),
+                          name: String(b.name || ''),
+                          current: n(lcBankLimits[String(b.id)])
+                        })
+                      }
+                      className="flex h-11 w-11 flex-none items-center justify-center rounded-[4px] border border-[#C3D2C6] text-[#33473E] hover:bg-[#F7FAF6] hover:text-[#0B6B45]"
+                    >
+                      <History className="h-[18px] w-[18px]" />
+                    </button>
                   </div>
                 ))}
               </div>
@@ -3871,6 +4260,8 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
         </DialogContent>
       </Dialog>
 
+      <LcInstallmentsDialog lc={instRow} onClose={() => setInstRow(null)} onChanged={() => load()} />
+
       {/* Preclose an LC — wind it up before its natural maturity */}
       <Dialog open={!!precloseRow} onOpenChange={(o) => !o && setPrecloseRow(null)}>
         <DialogContent
@@ -3893,19 +4284,349 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                   different acts on one screen, so the eyebrow says which. */}
               {__WEB__ && (
                 <div className="text-[11px] font-extrabold uppercase tracking-[.14em] text-[#8FBFA8]">
-                  {precloseRow && isLcPastMaturity(precloseRow) ? 'Repayment' : 'Premature closure'}
+                  {precloseEditing ? 'Edit closure' : precloseRow && isLcPastMaturity(precloseRow) ? 'Repayment' : 'Premature closure'}
                 </div>
               )}
               <DialogTitle className={cn('text-[16px] font-bold text-white', __WEB__ && '!mt-1 !text-[19px] !tracking-[-0.02em]')}>
-                {precloseRow && isLcPastMaturity(precloseRow) ? 'Repay' : 'Preclose'} LC {precloseRow?.lc_no || '(pending no.)'}
+                {precloseEditing ? 'Edit closure of' : precloseRow && isLcPastMaturity(precloseRow) ? 'Repay' : 'Preclose'} LC {precloseRow?.lc_no || '(pending no.)'}
               </DialogTitle>
               <p className={cn('text-[12px] text-white/70', __WEB__ && '!mt-1 !text-[12px] !font-semibold !text-[#8FBFA8]')}>
-                {precloseRow && isLcPastMaturity(precloseRow)
-                  ? 'Repay this LC now that it has matured.'
-                  : "Wind this LC up before its natural maturity."}
+                {precloseEditing
+                  ? 'Change any figure below — saving re-posts the repayment, rebate and ledger entries.'
+                  : precloseRow && isLcPastMaturity(precloseRow)
+                    ? 'Repay this LC now that it has matured.'
+                    : "Wind this LC up before its natural maturity."}
               </p>
             </div>
           </div>
+          {__WEB__ ? (
+            // THE WEBSITE'S PRECLOSE SHEET. The same form, laid out as one
+            // column of evenly padded cards: when it closes, what the period
+            // really cost, the rebate on the days that never ran, what goes
+            // back to the bank — and last, every entry it is about to post,
+            // with the net effect on the bank account, so nothing is a
+            // surprise when Preclose is pressed.
+            (() => {
+              const r = precloseRow || {}
+              const pv = preclosePreview
+              const repaying = isLcPastMaturity(r)
+              const start = String(r.payment_received_date || r.opened_date || r.open_date || '').slice(0, 10)
+              const maturity = String(r.expiry_date || '').slice(0, 10)
+              const closeOn = String(precloseForm.preclose_date || '').slice(0, 10)
+              const toParty = precloseForm.premature_interest_direction === 'pay_to_party'
+              const rebate = pv && pv.pendingDays > 0 ? round2(n(precloseForm.premature_interest)) : 0
+              const paid = round2(n(precloseForm.amount))
+              const excess = pv ? round2(paid - pv.openAmount) : 0
+              const splitTotal = round2(n(precloseForm.comm_charges) + n(precloseForm.bank_charges))
+              const splitOff = excess > 0.005 && Math.abs(splitTotal - excess) > 0.005
+              const short = !!pv && paid > 0 && paid < pv.openAmount - 0.005
+              const margin = pv ? n(pv.margin) : 0
+              const releasing = margin > 0 && !!precloseForm.release_margin
+              // What actually leaves the bank: the repayment, and the rebate only when
+              // it is paid on to the supplier. Kept, it is a journal (Dr LC Payable /
+              // Cr Interest) that moves no cash; the margin release is recorded on
+              // the LC and posts no voucher, since the margin never entered the books.
+              const net = round2(-paid - (toParty ? rebate : 0))
+              // shrink-0 in a flex column: as grid items, overflow-hidden let
+              // the scroller squash each card to the same height and cut the
+              // bottom of the taller ones off.
+              const card = 'shrink-0 overflow-hidden rounded-[6px] border border-[#D6E2D6] bg-white'
+              const head =
+                'flex items-center gap-2 border-b border-[#E4ECE3] bg-[#F7FAF6] px-4 py-3 text-[10.5px] font-extrabold uppercase tracking-[.13em] text-[#0A1F17]'
+              const pill = 'ml-auto flex items-center gap-1 rounded-[3px] px-2 py-1 text-[11px] font-bold normal-case tracking-normal'
+              const lbl = 'text-[10.5px] font-extrabold uppercase tracking-[.1em] text-[#5A6B62]'
+              const help = 'text-[11.5px] font-semibold leading-relaxed text-[#5A6B62]'
+              const money = 'text-[15px] font-bold tabular-nums tracking-[-0.01em]'
+              const stop = (d: string, tag: string, tone: string, struck = false): React.JSX.Element => (
+                <div className="min-w-0">
+                  <div className={cn('text-[9.5px] font-extrabold uppercase tracking-[.12em]', tone)}>{tag}</div>
+                  <div className={cn('mt-0.5 text-[13px] font-bold tabular-nums text-[#0A1F17]', struck && 'text-[#8CA396] line-through')}>
+                    {d ? formatDate(d) : '—'}
+                  </div>
+                </div>
+              )
+              const post = (sign: '+' | '−' | '·', title: string, sub: string, amt: number, tone: string): React.JSX.Element => (
+                <div className="flex items-start gap-3 px-4 py-3">
+                  <span
+                    className={cn(
+                      'mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-[13px] font-extrabold',
+                      sign === '+' ? 'bg-[#E9F5EE] text-[#0B6B45]' : sign === '−' ? 'bg-[#FDF3F2] text-[#B3261E]' : 'bg-[#FFF4DD] text-[#8A5300]'
+                    )}
+                  >
+                    {sign}
+                  </span>
+                  <div className="min-w-0 flex-1">
+                    <div className="text-[13px] font-extrabold text-[#0A1F17]">{title}</div>
+                    <div className="mt-0.5 text-[11px] font-semibold text-[#5A6B62]">{sub}</div>
+                  </div>
+                  <div className={cn(money, 'text-[14px]', tone)}>{formatINR(amt)}</div>
+                </div>
+              )
+              return (
+                <div className="flex min-h-0 flex-col gap-3.5 overflow-y-auto bg-[#F2F6F1] p-4">
+                  {/* 1 · when */}
+                  <section className={card}>
+                    <h3 className={head}>
+                      <CalendarClock className="h-4 w-4 text-[#0B3D2E]" /> {repaying ? 'Repayment date' : 'Closing date'}
+                    </h3>
+                    <div className="grid items-end gap-4 p-4 sm:grid-cols-[240px_1fr]">
+                      <div className="grid gap-1.5">
+                        <span className={lbl}>
+                          Date <span className="text-[#B3261E]">*</span>
+                        </span>
+                        <DatePicker
+                          value={closeOn}
+                          onChange={(v) => setPrecloseForm((p) => ({ ...p, preclose_date: v }))}
+                          min={r.open_date || undefined}
+                        />
+                      </div>
+                      {/* The LC's life on one line: interest ran from the
+                          bank's payment to this date; the rest of the term
+                          to maturity is what the rebate gives back. */}
+                      <div className="grid grid-cols-[auto_1fr_auto_1fr_auto] items-center gap-2.5 rounded-[4px] border border-[#E4ECE3] bg-[#FBFCFA] px-3.5 py-2.5">
+                        {stop(start, 'Interest from', 'text-[#5A6B62]')}
+                        <div className="flex flex-col items-center">
+                          <div className="h-[3px] w-full rounded-full bg-[#B3261E]/70" />
+                          <span className="mt-1 whitespace-nowrap text-[10.5px] font-extrabold text-[#B3261E]">{pv ? `${pv.days} days run` : '—'}</span>
+                        </div>
+                        {stop(closeOn, repaying ? 'Repaid' : 'Closes', 'text-[#0B3D2E]')}
+                        <div className="flex flex-col items-center">
+                          <div className="h-[3px] w-full rounded-full border-t-[3px] border-dashed border-[#12855A]/60" />
+                          <span className="mt-1 whitespace-nowrap text-[10.5px] font-extrabold text-[#0B6B45]">
+                            {pv && pv.pendingDays > 0 ? `${pv.pendingDays} days saved` : 'none left'}
+                          </span>
+                        </div>
+                        {stop(maturity, 'Maturity', 'text-[#5A6B62]', !!pv && pv.pendingDays > 0)}
+                      </div>
+                    </div>
+                  </section>
+
+                  {/* 2 · what the period really cost */}
+                  {pv && (
+                    <section className={card}>
+                      <h3 className={head}>
+                        <Banknote className="h-4 w-4 text-[#0B3D2E]" /> Recalculated over the actual period
+                        <InfoTip text="This corrects the margin/interest/charges voucher already posted for this LC to the shorter period actually used — a separate entry from the repayment below." />
+                        <span className={cn(pill, 'bg-[#EAF0E9] text-[#33473E]')}>
+                          <CalendarClock className="h-3 w-3" /> {pv.days} interest days
+                        </span>
+                      </h3>
+                      <div className="grid grid-cols-2 divide-[#E4ECE3] sm:grid-cols-4 sm:divide-x">
+                        {[
+                          { k: 'LC open amount', v: pv.openAmount, tone: 'text-[#0A1F17]' },
+                          { k: 'Interest', v: pv.interest, tone: 'text-[#B3261E]' },
+                          { k: 'Charges', v: pv.charges, tone: 'text-[#B3261E]' },
+                          { k: 'Margin', v: pv.margin, tone: 'text-[#0A1F17]' }
+                        ].map((c) => (
+                          <div key={c.k} className="px-4 py-3.5">
+                            <div className={lbl}>{c.k}</div>
+                            <div className={cn(money, 'mt-1', c.tone)}>{formatINR(c.v)}</div>
+                          </div>
+                        ))}
+                      </div>
+                    </section>
+                  )}
+
+                  {/* 3 · the rebate on the days that never ran */}
+                  {pv && pv.pendingDays > 0 && (
+                    <section className={cn(card, 'border-[#BFE3CB]')}>
+                      <h3 className={cn(head, 'border-b-[#BFE3CB] bg-[#F4FBF6] text-[#0B6B45]')}>
+                        <AlertTriangle className="h-4 w-4" /> Interest rebate
+                        <InfoTip text="Interest for the pending days was already deducted from what the supplier was paid, over the full planned term. Since those days won't actually happen, this comes back as a rebate — either to your own account, or passed on to the supplier." />
+                        <span className={cn(pill, 'bg-[#EAF6EC] text-[#0B6B45]')}>
+                          <CalendarClock className="h-3 w-3" /> {pv.pendingDays} unused days
+                        </span>
+                      </h3>
+                      <div className="grid gap-4 p-4 sm:grid-cols-2">
+                        <div className="grid content-start gap-1.5">
+                          <span className={lbl}>Rebate amount (₹)</span>
+                          <div className="relative">
+                            <Input
+                              type="number"
+                              value={precloseForm.premature_interest ?? ''}
+                              onChange={(e) => setPrecloseForm((p) => ({ ...p, premature_interest: e.target.value }))}
+                              className="!h-11 !rounded-[4px] !pr-[132px] !text-[14px] !font-bold"
+                            />
+                            {Math.abs(n(precloseForm.premature_interest) - pv.prematureInterest) > 0.005 && (
+                              <button
+                                type="button"
+                                title="Fill in the interest worked out for the unused days"
+                                onClick={() => setPrecloseForm((p) => ({ ...p, premature_interest: String(pv.prematureInterest) }))}
+                                className="absolute right-1.5 top-1/2 -translate-y-1/2 rounded-[3px] border border-[#BFE3CB] bg-[#F4FBF6] px-2 py-1 text-[10.5px] font-extrabold text-[#0B6B45] hover:bg-[#EAF6EC]"
+                              >
+                                Use {formatINR(pv.prematureInterest)}
+                              </button>
+                            )}
+                          </div>
+                          <span className={help}>Worked out at the LC's rate for {pv.pendingDays} days: {formatINR(pv.prematureInterest)}.</span>
+                        </div>
+                        <div className="grid content-start gap-1.5">
+                          <span className={lbl}>Rebate goes to</span>
+                          <div className="grid grid-cols-2 gap-1 rounded-[5px] border border-[#D6E2D6] bg-[#F7FAF6] p-1">
+                            {[
+                              { k: 'credit_to_us', label: 'Credit to us', on: !toParty, cls: 'bg-[#0B6B45] text-white shadow-sm' },
+                              { k: 'pay_to_party', label: 'Pay to party', on: toParty, cls: 'bg-[#C2700A] text-white shadow-sm' }
+                            ].map((o) => (
+                              <button
+                                key={o.k}
+                                type="button"
+                                onClick={() => setPrecloseForm((p) => ({ ...p, premature_interest_direction: o.k }))}
+                                className={cn(
+                                  'h-9 rounded-[4px] text-[12px] font-extrabold uppercase tracking-[.04em] transition-colors',
+                                  o.on ? o.cls : 'text-[#33473E] hover:bg-white'
+                                )}
+                              >
+                                {o.label}
+                              </button>
+                            ))}
+                          </div>
+                          <span className={help}>
+                            {toParty
+                              ? 'Reversed off interest, then paid on to the supplier from the bank — they were underpaid by this much when their bill was settled over the full term.'
+                              : 'Kept: the interest for those days comes back off the Interest account. No money moves.'}
+                          </span>
+                        </div>
+                      </div>
+                    </section>
+                  )}
+
+                  {/* 4 · what goes back to the bank */}
+                  <section className={card}>
+                    <h3 className={head}>
+                      <Landmark className="h-4 w-4 text-[#0B3D2E]" /> Repayment to bank
+                      <InfoTip text="Preclosing is a repayment, just like Log Repayment — the bank still wants its full open amount back. Anything debited over it is the bank's commission and charges." />
+                    </h3>
+                    <div className="grid gap-4 p-4">
+                      <div className="grid gap-4 sm:grid-cols-2">
+                        <div className="grid content-start gap-1.5">
+                          <span className={lbl}>Open amount (LC)</span>
+                          <div className="flex h-11 items-center rounded-[4px] border border-[#E4ECE3] bg-[#F7FAF6] px-3 text-[14px] font-bold tabular-nums text-[#5A6B62]">
+                            {formatINR(n(pv?.openAmount))}
+                          </div>
+                        </div>
+                        <div className="grid content-start gap-1.5">
+                          <span className={lbl}>
+                            Total debited from bank (₹) <span className="text-[#B3261E]">*</span>
+                          </span>
+                          <Input
+                            type="number"
+                            value={precloseForm.amount ?? ''}
+                            onChange={(e) => setPrecloseForm((p) => ({ ...p, amount: e.target.value }))}
+                            className={cn('!h-11 !rounded-[4px] !text-[14px] !font-bold', short && '!border-[#B3261E]')}
+                          />
+                          {short ? (
+                            <span className="text-[11.5px] font-bold text-[#B3261E]">Cannot be less than the open amount</span>
+                          ) : excess > 0.005 ? (
+                            <span className="text-[11.5px] font-bold text-[#8A5300]">{formatINR(excess)} over the open amount — split it below</span>
+                          ) : (
+                            <span className={help}>The open amount, plus any commission or charges the bank took.</span>
+                          )}
+                        </div>
+                      </div>
+                      {excess > 0.005 && (
+                        <div className="grid gap-3 rounded-[4px] border border-[#F1D9A6] bg-[#FFF8E9] p-3.5">
+                          <div className="grid gap-4 sm:grid-cols-2">
+                            <div className="grid gap-1.5">
+                              <span className={lbl}>Comm. charges (₹)</span>
+                              <Input
+                                type="number"
+                                value={precloseForm.comm_charges ?? ''}
+                                onChange={(e) => setPrecloseForm((p) => ({ ...p, comm_charges: e.target.value }))}
+                                className="!h-10 !rounded-[4px] !bg-white !font-bold"
+                              />
+                            </div>
+                            <div className="grid gap-1.5">
+                              <span className={lbl}>Bank charges (₹)</span>
+                              <Input
+                                type="number"
+                                value={precloseForm.bank_charges ?? ''}
+                                onChange={(e) => setPrecloseForm((p) => ({ ...p, bank_charges: e.target.value }))}
+                                className="!h-10 !rounded-[4px] !bg-white !font-bold"
+                              />
+                            </div>
+                          </div>
+                          <span className={cn('text-[11.5px] font-bold', splitOff ? 'text-[#B3261E]' : 'text-[#0B6B45]')}>
+                            {splitOff
+                              ? `Comm. + Bank charges must add up to ${formatINR(excess)} (now ${formatINR(splitTotal)})`
+                              : `Split adds up to ${formatINR(excess)}`}
+                          </span>
+                        </div>
+                      )}
+                      {margin > 0 && (
+                        <label
+                          className={cn(
+                            'flex cursor-pointer items-start gap-3 rounded-[5px] border px-3.5 py-3 transition-colors',
+                            releasing ? 'border-[#12855A] bg-[#F4FBF6]' : 'border-[#D6E2D6] bg-white hover:bg-[#F7FAF6]'
+                          )}
+                        >
+                          <input
+                            type="checkbox"
+                            className="mt-0.5 h-4 w-4 accent-[#0B6B45]"
+                            checked={releasing}
+                            onChange={(e) => setPrecloseForm((p) => ({ ...p, release_margin: e.target.checked }))}
+                          />
+                          <span className="min-w-0 flex-1">
+                            <span className="block text-[13px] font-extrabold text-[#0A1F17]">Also release the margin FD</span>
+                            <span className={cn(help, 'block')}>Marked as released on the LC. It posts no voucher — the margin was never booked when the LC opened.</span>
+                          </span>
+                          <span className={cn(money, 'text-[14px] text-[#0A1F17]')}>{formatINR(margin)}</span>
+                        </label>
+                      )}
+                    </div>
+                  </section>
+
+                  {/* The supplier paid in installments and not yet in full: closing
+                      now leaves the rest unpaid, so say so before it happens. */}
+                  {n(r.installment_count) > 0 && partyLeft(r) > 0.5 && (
+                    <div className="flex shrink-0 items-start gap-2 rounded-[4px] border border-[#F0D9AE] border-l-4 border-l-[#C2700A] bg-[#FFFBF2] px-3.5 py-3 text-[12px] font-semibold leading-relaxed text-[#8A5300]">
+                      <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+                      <span>
+                        {formatINR(partyLeft(r))} of the supplier's payment under this LC has not been paid yet. Record it with <b>Pay party</b> first — once
+                        the LC is closed no more installments can be added.
+                      </span>
+                    </div>
+                  )}
+
+                  {/* 5 · everything it is about to post */}
+                  {pv && paid > 0 && (
+                    <section className={cn(card, 'border-[#0B3D2E]/25')}>
+                      <h3 className={head}>
+                        <BookOpen className="h-4 w-4 text-[#0B3D2E]" /> What this posts
+                      </h3>
+                      <div className="divide-y divide-[#EEF3ED]">
+                        {post(
+                          '−',
+                          repaying ? 'Repayment to the bank' : 'Preclosure repayment to the bank',
+                          `Payment · Dr LC Payable${excess > 0.005 ? ' + Comm./Bank charges' : ''} · Cr Bank`,
+                          paid,
+                          'text-[#B3261E]'
+                        )}
+                        {rebate > 0.005 &&
+                          post('+', 'Interest reversed for the unused days', `Journal · Dr LC Payable · Cr Interest A/C · ${pv.pendingDays} days`, rebate, 'text-[#0B6B45]')}
+                        {rebate > 0.005 &&
+                          toParty &&
+                          post('−', 'Rebate paid on to the supplier', `Payment · Dr ${String(r.supplier_name || 'supplier')} · Cr Bank`, rebate, 'text-[#B3261E]')}
+                        {releasing && post('·', 'Margin FD marked released', 'Recorded on the LC · no voucher', margin, 'text-[#8A5300]')}
+                      </div>
+                      <div className="flex items-center gap-3 border-t border-[#D6E2D6] bg-[#0B3D2E] px-4 py-3">
+                        <span className="text-[10.5px] font-extrabold uppercase tracking-[.13em] text-[#A9CDBB]">Net on the bank account</span>
+                        <span className={cn(money, 'ml-auto', net < 0 ? 'text-[#F0C4BF]' : 'text-[#C7F03F]')}>
+                          {net < 0 ? '−' : '+'}
+                          {formatINR(Math.abs(net))}
+                        </span>
+                      </div>
+                    </section>
+                  )}
+
+                  {precloseError && (
+                    <div className="flex items-start gap-2 rounded-[4px] border border-[#F0D6D4] bg-[#FDF3F2] px-3.5 py-2.5 text-[12.5px] font-bold text-[#B3261E]">
+                      <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" /> {precloseError}
+                    </div>
+                  )}
+                </div>
+              )
+            })()
+          ) : (
           <div className={cn('grid gap-4 p-6', __WEB__ && '!min-h-0 !content-start !gap-3.5 !overflow-y-auto !p-4')}>
             <section className={cn('rounded-xl border border-[#e5dfc8] bg-white p-4 shadow-sm', LC_DIALOG, LC_FIELDS)}>
               <h3 className={cn('mb-3 flex items-center gap-1.5 text-[11px] font-bold uppercase tracking-widest text-[#1a2c56]', LC_SECTION_HEAD)}>
@@ -4107,6 +4828,7 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
 
             {precloseError && <p className="text-sm text-destructive">{precloseError}</p>}
           </div>
+          )}
           <DialogFooter className={cn('px-6 pb-6', __WEB__ && '!border-t !border-t-[#D6E2D6] !bg-white !px-5 !py-3.5 !pb-3.5')}>
             <Button
               variant="outline"
@@ -4122,7 +4844,7 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
               className={cn(__WEB__ && cn(LC_SAVE, '!ml-auto'))}
             >
               {__WEB__ && !precloseSaving && <Check className="h-[18px] w-[18px]" />}
-              {precloseSaving ? 'Saving…' : precloseRow && isLcPastMaturity(precloseRow) ? 'Repay LC' : 'Preclose LC'}
+              {precloseSaving ? 'Saving…' : precloseEditing ? 'Save changes' : precloseRow && isLcPastMaturity(precloseRow) ? 'Repay LC' : 'Preclose LC'}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -4212,13 +4934,57 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                 )}
                 {next === 'payment_received' && (
                   <>
+                    {/* ASKED FIRST: was the supplier paid in one go or in parts?
+                        It decides what the rest of the step asks — one maturity
+                        and one set of charges, or each part's own. */}
+                    {n(stageRow?.utilized) < 0.005 && (
+                      <div className="grid grid-cols-2 gap-1 rounded-[5px] border border-[#D6E2D6] bg-[#F7FAF6] p-1">
+                        {[
+                          { on: !stageForm.pay_in_parts, label: 'Paid in full', v: false },
+                          { on: !!stageForm.pay_in_parts, label: 'Paid in parts', v: true }
+                        ].map((o) => (
+                          <button
+                            key={o.label}
+                            type="button"
+                            onClick={() =>
+                              setStageForm((p) => ({
+                                ...p,
+                                pay_in_parts: o.v,
+                                parts_plan:
+                                  o.v && !planOf(p).length
+                                    ? [
+                                        {
+                                          amount: '',
+                                          pay_date: String(p.payment_received_date || '').slice(0, 10),
+                                          maturity: String(p.expiry_date || '').slice(0, 10),
+                                          interest_pct: String(p.interest_pct ?? ''),
+                                          margin_pct: String(p.margin_pct ?? ''),
+                                          // The LC's charges start on part 1; each
+                                          // part can carry its own.
+                                          charges: String(p.charges ?? ''),
+                                          note: ''
+                                        }
+                                      ]
+                                    : p.parts_plan
+                              }))
+                            }
+                            className={cn(
+                              'h-10 rounded-[4px] text-[12.5px] font-extrabold uppercase tracking-[.04em] transition-colors',
+                              o.on ? 'bg-[#0B3D2E] text-white shadow-sm' : 'text-[#33473E] hover:bg-white'
+                            )}
+                          >
+                            {o.label}
+                          </button>
+                        ))}
+                      </div>
+                    )}
                     <div className={cn('grid gap-4 sm:grid-cols-2', __WEB__ && '!gap-3.5 sm:!grid-cols-1')}>
                       <section className={cn('rounded-xl border border-[#e5dfc8] bg-white p-4 shadow-sm', __WEB__ && cn(LC_DIALOG, LC_FIELDS))}>
                         <h3 className={cn('mb-3 flex items-center gap-1.5 text-[11px] font-bold uppercase tracking-widest text-[#1a2c56]', LC_SECTION_HEAD)}>
                           <span className={cn('flex h-5 w-5 items-center justify-center rounded-full bg-[#1a2c56]/10', __WEB__ && '!h-6 !w-6 !rounded-[3px] !bg-[#EAF0E9]')}><CalendarClock className="h-3 w-3 text-[#1a2c56]" /></span>
                           Dates
                         </h3>
-                        <div className={cn('grid gap-3 grid-cols-2', __WEB__ && '!gap-3.5 !p-4')}>
+                        <div className={cn('grid gap-3', stageForm.pay_in_parts ? 'grid-cols-1' : 'grid-cols-2', __WEB__ && '!gap-3.5 !p-4')}>
                           <div className="flex flex-col gap-1.5">
                             <Label>Payment received date <span className="text-red-600">*</span></Label>
                             <DatePicker
@@ -4227,14 +4993,17 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                               min={String(stageRow?.opened_date || '') || undefined}
                             />
                           </div>
-                          <div className="flex flex-col gap-1.5">
-                            <Label>Maturity date <span className="text-red-600">*</span></Label>
-                            <DatePicker
-                              value={String(stageForm.expiry_date || '')}
-                              onChange={(v) => setStageForm((p) => ({ ...p, expiry_date: v }))}
-                              min={String(stageForm.payment_received_date || '') || undefined}
-                            />
-                          </div>
+                          {/* In parts, each part carries its own maturity below. */}
+                          {!stageForm.pay_in_parts && (
+                            <div className="flex flex-col gap-1.5">
+                              <Label>Maturity date <span className="text-red-600">*</span></Label>
+                              <DatePicker
+                                value={String(stageForm.expiry_date || '')}
+                                onChange={(v) => setStageForm((p) => ({ ...p, expiry_date: v }))}
+                                min={String(stageForm.payment_received_date || '') || undefined}
+                              />
+                            </div>
+                          )}
                         </div>
                       </section>
                       <section className={cn('rounded-xl border border-[#e5dfc8] bg-white p-4 shadow-sm', __WEB__ && cn(LC_DIALOG, LC_FIELDS))}>
@@ -4245,19 +5014,21 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                         {/* The switches and the adjustment sat outside the
                             padded body, so on the website they get a wrapper
                             that carries the same 16px as the grid above. */}
-                        <div className={cn('grid grid-cols-3 gap-3', __WEB__ && '!gap-3.5 !px-4 !pt-4')}>
+                        <div className={cn('grid gap-3', stageForm.pay_in_parts ? 'grid-cols-2' : 'grid-cols-3', __WEB__ && '!gap-3.5 !px-4 !pt-4')}>
                           <div className="flex flex-col gap-1.5">
-                            <Label>Margin %</Label>
+                            <Label>{stageForm.pay_in_parts ? 'Margin % (default)' : 'Margin %'}</Label>
                             <Input type="number" value={stageForm.margin_pct ?? ''} onChange={(e) => setStageForm((p) => ({ ...p, margin_pct: e.target.value }))} />
                           </div>
                           <div className="flex flex-col gap-1.5">
-                            <Label>Interest % p.a. (ROI)</Label>
+                            <Label>{stageForm.pay_in_parts ? 'Interest % p.a. (default)' : 'Interest % p.a. (ROI)'}</Label>
                             <Input type="number" value={stageForm.interest_pct ?? ''} onChange={(e) => setStageForm((p) => ({ ...p, interest_pct: e.target.value }))} />
                           </div>
-                          <div className="flex flex-col gap-1.5">
-                            <Label>LC charges (₹)</Label>
-                            <Input type="number" value={stageForm.charges ?? ''} onChange={(e) => setStageForm((p) => ({ ...p, charges: e.target.value }))} />
-                          </div>
+                          {!stageForm.pay_in_parts && (
+                            <div className="flex flex-col gap-1.5">
+                              <Label>LC charges (₹)</Label>
+                              <Input type="number" value={stageForm.charges ?? ''} onChange={(e) => setStageForm((p) => ({ ...p, charges: e.target.value }))} />
+                            </div>
+                          )}
                         </div>
                         {/* The bank's advice does not always charge interest on
                             the amount the credit was opened at. Signed, and it
@@ -4294,7 +5065,7 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                         </div>
                       </section>
                     </div>
-                    {stagePreview && (
+                    {stagePreview && !stageForm.pay_in_parts && (
                       <div className={cn('rounded-xl border border-sky-200 bg-gradient-to-br from-sky-50 to-indigo-50 p-4 shadow-sm', __WEB__ && '!rounded-[4px] !border-[#BFE3CB] !bg-white !bg-none !p-0 !shadow-none')}>
                         <h3 className={cn('mb-3 flex items-center gap-1.5 text-[11px] font-bold uppercase tracking-widest text-sky-900', __WEB__ && '!mb-0 !gap-2 !border-b !border-b-[#BFE3CB] !bg-[#F4FBF6] !px-4 !py-3 !text-[10.5px] !font-extrabold !tracking-[.13em] !text-[#0B6B45]')}>
                           {__WEB__ ? <ArrowUpRight className="h-4 w-4" /> : <Banknote className="h-3.5 w-3.5" />}
@@ -4336,9 +5107,174 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                         </div>
                       </div>
                     )}
+                    {/* THE SUPPLIER PAID IN PARTS. Off, the whole net is paid on
+                        the payment received date, as always. On, only the
+                        first part is; the rest follows from Pay party. */}
+                    {stagePreview && n(stageRow?.utilized) < 0.005 && (
+                      <section className={cn('rounded-xl border border-[#e5dfc8] bg-white p-4 shadow-sm', __WEB__ && cn(LC_DIALOG, LC_FIELDS))}>
+                        <h3 className={cn('mb-3 flex items-center gap-1.5 text-[11px] font-bold uppercase tracking-widest text-[#1a2c56]', LC_SECTION_HEAD)}>
+                          <span className={cn('flex h-5 w-5 items-center justify-center rounded-full bg-[#1a2c56]/10', __WEB__ && '!h-6 !w-6 !rounded-[3px] !bg-[#EAF0E9]')}><ArrowUpRight className="h-3 w-3 text-[#1a2c56]" /></span>
+                          Payment to the supplier
+                        </h3>
+                        <div className={cn('grid gap-3', __WEB__ && '!gap-3.5 !p-4')}>
+                          {stageForm.pay_in_parts ? (
+                            (() => {
+                              const recvOn = String(stageForm.payment_received_date || '').slice(0, 10)
+                              const plan = planOf(stageForm)
+                              const lcFor = { ...stageRow, charges: stageForm.charges, interest_excl_charges: stageForm.interest_excl_charges, interest_pct: stageForm.interest_pct }
+                              const lcAmt = round2(n(stageRow?.amount))
+                              const setPart = (i: number, patch: Partial<PlanPart>): void =>
+                                setStageForm((f) => ({ ...f, parts_plan: planOf(f).map((x, k) => (k === i ? { ...x, ...patch } : x)) }))
+                              const rows = plan.map((p, i) => {
+                                const amt = round2(n(p.amount))
+                                const payOn = i === 0 ? recvOn : String(p.pay_date || '').slice(0, 10)
+                                // The part's own charges, worked exactly as the server will.
+                                const pv = lcPartPreview({ ...lcFor, charges: n(p.charges) }, amt, payOn, String(p.maturity || ''), true, p.interest_pct)
+                                const mPct = String(p.margin_pct ?? '').trim() === '' ? n(stageForm.margin_pct) : n(p.margin_pct)
+                                return { p, i, amt, payOn, pv, margin: round2((amt * mPct) / 100) }
+                              })
+                              const drawn = round2(rows.reduce((s, r) => s + r.amt, 0))
+                              const left = round2(lcAmt - drawn)
+                              const over = left < -0.005
+                              const sum = (k: 'interest' | 'net' | 'charges'): number => round2(rows.reduce((s, r) => s + (r.amt > 0 ? r.pv[k] : 0), 0))
+                              const marginTotal = round2(rows.reduce((s, r) => s + r.margin, 0) + (Math.max(0, left) * n(stageForm.margin_pct)) / 100)
+                              const lbl = 'text-[10px] font-extrabold uppercase tracking-[.1em] text-[#5A6B62]'
+                              return (
+                                <div className="grid gap-3">
+                                  {rows.map(({ p, i, amt, payOn, pv, margin }) => (
+                                    <div key={i} className="overflow-hidden rounded-[5px] border border-[#D6E2D6] bg-white">
+                                      <div className="flex items-center gap-2 border-b border-[#E4ECE3] bg-[#F7FAF6] px-3 py-2">
+                                        <span className="flex h-6 w-6 items-center justify-center rounded-full bg-[#0B3D2E] text-[11px] font-extrabold text-white">{i + 1}</span>
+                                        <span className="text-[11px] font-extrabold uppercase tracking-[.1em] text-[#0A1F17]">Part {i + 1}</span>
+                                        {i > 0 && i === plan.length - 1 && (
+                                          <button
+                                            type="button"
+                                            onClick={() => setStageForm((f) => ({ ...f, parts_plan: planOf(f).slice(0, -1) }))}
+                                            className="ml-auto flex items-center gap-1 rounded-[3px] px-2 py-1 text-[11px] font-bold text-[#B3261E] hover:bg-[#FDF3F2]"
+                                          >
+                                            <Trash2 className="h-3.5 w-3.5" /> Remove
+                                          </button>
+                                        )}
+                                      </div>
+                                      <div className="grid gap-3 p-3 sm:grid-cols-3 lg:grid-cols-6">
+                                        <div className="flex flex-col gap-1.5">
+                                          <Label>Paid on <span className="text-red-600">*</span></Label>
+                                          {i === 0 ? (
+                                            <div className="flex h-10 items-center rounded-[4px] border border-[#E4ECE3] bg-[#F7FAF6] px-3 text-[13px] font-semibold text-[#33473E]" title="Part 1 is paid on the payment received date">
+                                              {payOn ? formatDate(payOn) : '—'}
+                                            </div>
+                                          ) : (
+                                            <DatePicker
+                                              value={payOn}
+                                              min={(i > 0 ? rows[i - 1].payOn : recvOn) || undefined}
+                                              max={todayISO()}
+                                              onChange={(v) => setPart(i, { pay_date: v })}
+                                            />
+                                          )}
+                                        </div>
+                                        <div className="flex flex-col gap-1.5">
+                                          <Label>LC amount (₹) <span className="text-red-600">*</span></Label>
+                                          <Input type="number" value={p.amount} placeholder="As on the bank's bill" onChange={(e) => setPart(i, { amount: e.target.value })} />
+                                        </div>
+                                        <div className="flex flex-col gap-1.5">
+                                          <Label>Matures on <span className="text-red-600">*</span></Label>
+                                          <DatePicker value={String(p.maturity || '')} min={payOn || undefined} onChange={(v) => setPart(i, { maturity: v })} />
+                                        </div>
+                                        <div className="flex flex-col gap-1.5">
+                                          <Label>Interest % p.a.</Label>
+                                          <Input type="number" value={p.interest_pct} placeholder={String(stageForm.interest_pct ?? '')} onChange={(e) => setPart(i, { interest_pct: e.target.value })} />
+                                        </div>
+                                        <div className="flex flex-col gap-1.5">
+                                          <Label>Margin %</Label>
+                                          <Input type="number" value={p.margin_pct} placeholder={String(stageForm.margin_pct ?? '')} onChange={(e) => setPart(i, { margin_pct: e.target.value })} />
+                                        </div>
+                                        <div className="flex flex-col gap-1.5">
+                                          <Label>LC charges (₹)</Label>
+                                          <Input type="number" value={p.charges ?? ''} placeholder="0" onChange={(e) => setPart(i, { charges: e.target.value })} />
+                                        </div>
+                                      </div>
+                                      <div className="grid grid-cols-2 gap-2 border-t border-[#E4ECE3] bg-[#FBFCFA] px-3 py-2 sm:grid-cols-4">
+                                        {[
+                                          { k: `Interest · ${pv.days}d`, v: amt > 0 ? pv.interest : 0 },
+                                          { k: 'Charges', v: amt > 0 ? pv.charges : 0 },
+                                          { k: 'Supplier receives', v: amt > 0 ? pv.net : 0 },
+                                          { k: 'Margin', v: margin }
+                                        ].map((x) => (
+                                          <div key={x.k} className="min-w-0">
+                                            <div className={lbl}>{x.k}</div>
+                                            <div className="mt-0.5 text-[13.5px] font-bold tabular-nums text-[#0A1F17]">{formatINR(x.v)}</div>
+                                          </div>
+                                        ))}
+                                      </div>
+                                    </div>
+                                  ))}
+                                  {left > 0.005 && (
+                                    <button
+                                      type="button"
+                                      onClick={() =>
+                                        setStageForm((f) => {
+                                          const cur = planOf(f)
+                                          const prev = cur[cur.length - 1]
+                                          return {
+                                            ...f,
+                                            parts_plan: [
+                                              ...cur,
+                                              {
+                                                amount: String(left),
+                                                pay_date: cur.length > 1 ? String(prev?.pay_date || '') : recvOn,
+                                                maturity: '',
+                                                interest_pct: String(f.interest_pct ?? ''),
+                                                margin_pct: String(f.margin_pct ?? ''),
+                                                charges: '',
+                                                note: ''
+                                              }
+                                            ]
+                                          }
+                                        })
+                                      }
+                                      className="flex h-10 items-center justify-center gap-1.5 rounded-[5px] border border-dashed border-[#9DBBA6] bg-white text-[12px] font-extrabold uppercase tracking-[.04em] text-[#0B6B45] hover:bg-[#F4FBF6]"
+                                    >
+                                      <Plus className="h-4 w-4" /> Add part {plan.length + 1}
+                                    </button>
+                                  )}
+                                  <div className="grid grid-cols-2 gap-px overflow-hidden rounded-[4px] border border-[#BFE3CB] bg-[#E4ECE3] sm:grid-cols-3 lg:grid-cols-6">
+                                    {[
+                                      { k: `Drawn · ${plan.length} part${plan.length === 1 ? '' : 's'}`, v: drawn, tone: over ? 'text-[#B3261E]' : 'text-[#0A1F17]' },
+                                      { k: 'Left for later parts', v: Math.max(0, left), tone: 'text-[#8A5300]' },
+                                      { k: '− Interest', v: sum('interest'), tone: 'text-[#B3261E]' },
+                                      { k: '− Charges', v: sum('charges'), tone: 'text-[#B3261E]' },
+                                      { k: 'Margin', v: marginTotal, tone: 'text-[#0A1F17]' },
+                                      { k: 'Supplier receives', v: sum('net'), tone: 'text-[#0B6B45]' }
+                                    ].map((x) => (
+                                      <div key={x.k} className="min-w-0 bg-white px-3 py-2.5">
+                                        <div className={lbl}>{x.k}</div>
+                                        <div className={cn('mt-0.5 text-[14px] font-bold tabular-nums', x.tone)}>{formatINR(x.v)}</div>
+                                      </div>
+                                    ))}
+                                  </div>
+                                  <p className="text-[11.5px] font-semibold leading-relaxed text-[#5A6B62]">
+                                    {over
+                                      ? `The parts come to more than the LC's ${formatINR(lcAmt)}.`
+                                      : "Enter only the parts paid so far — the rest need not be known yet. Each later part is added from ⋮ → Parts on the day the bank pays it, with its own maturity, interest %, margin % and charges; blank rates use the LC's. Every part posts on its own day, and the bank is repaid part by part from the same place."}
+                                  </p>
+                                </div>
+                              )
+                            })()
+                          ) : (
+                            <p className="text-[11.5px] font-semibold leading-relaxed text-[#5A6B62]">
+                              The whole {formatINR(stagePreview.netAvailable)} reaches the supplier on the payment received date.
+                            </p>
+                          )}
+                        </div>
+                      </section>
+                    )}
                     <div className={cn('flex items-start gap-2 rounded-md border border-amber-300 bg-amber-50 px-3 py-2.5 text-[11px] text-amber-900', __WEB__ && '!rounded-[4px] !border-[#F0D9AE] !border-l-4 !border-l-[#C2700A] !bg-[#FFFBF2] !px-3.5 !py-3 !text-[12px] !font-semibold !leading-relaxed !text-[#8A5300]')}>
                       <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
-                      Marking this Payment Received also issues (if not already) and settles this LC's bill(s) through the books.
+                      {stageForm.pay_in_parts
+                        ? planOf(stageForm).length > 1
+                          ? `Marking this Payment Received posts all ${planOf(stageForm).length} parts to the supplier through the books — each as its own voucher on the day it was paid.`
+                          : 'Marking this Payment Received posts the first installment to the supplier through the books.'
+                        : "Marking this Payment Received also issues (if not already) and settles this LC's bill(s) through the books."}
                     </div>
                   </>
                 )}
@@ -4369,6 +5305,9 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
       {/* New / edit LC */}
       <Dialog open={!!lcForm} onOpenChange={(o) => !o && setLcForm(null)}>
         <DialogContent
+          // Esc closes it as Cancel does — at once if nothing was changed;
+          // with changes, the first Esc says so and a second discards.
+          onEscapeKeyDown={escToClose(!!lcForm && JSON.stringify(lcForm) !== lcFormWas.current)}
           className={cn(
             'max-w-5xl max-h-[88vh] overflow-y-auto p-0 shadow-2xl [&>button]:text-white [&>button]:opacity-90 [&>button:hover]:opacity-100',
             LC_DRAWER,
@@ -4543,7 +5482,14 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                     >
                       <SelectTrigger><SelectValue placeholder={banks.length ? 'Which of my accounts' : 'Add one under Manage Banks first'} /></SelectTrigger>
                       <SelectContent>
-                        {banks.map((b) => <SelectItem key={String(b.id)} value={String(b.id)}>{b.name}</SelectItem>)}
+                        {/* The exact ledger the repayment posts to, not the
+                            master's short name — HDFCBANK alone does not say
+                            which account. */}
+                        {banks.map((b) => (
+                          <SelectItem key={String(b.id)} value={String(b.id)}>
+                            {bankLedger[String(b.id)] || b.name}
+                          </SelectItem>
+                        ))}
                       </SelectContent>
                     </Select>
                   </div>
@@ -5502,6 +6448,53 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                       placeholder="Anything worth recording against this LC"
                       onChange={(e) => setLcForm((p) => ({ ...p, note: e.target.value }))}
                     />
+                    {/* WILL THE MONEY COME BACK? — at the very foot of the
+                        form, because it is the last thing decided about an LC
+                        and the only thing here about what happens AFTER it.
+
+                        A switch rather than a number, because that is the
+                        question. Turn it on and the LC is tracked for money
+                        coming back: the register carries a chip until it
+                        comes, and Payment IN opens on the row. The term is
+                        optional on top of it — "yes, it comes back, we have
+                        not agreed when" is a real answer that a blank number
+                        could not give. A trading LC settles against its resale
+                        invoices instead and needs none of this. */}
+                    <div
+                      className={cn(
+                        'mt-4 flex flex-col gap-2 rounded-[4px] border px-3.5 py-3',
+                        lcForm.payment_in_expected
+                          ? 'border-[#BFE3CB] bg-[#F1F9F4]'
+                          : 'border-[#E4ECE3] bg-[#F8FBF7]'
+                      )}
+                    >
+                      <label className="flex cursor-pointer items-center gap-2.5">
+                        <Switch
+                          checked={!!lcForm.payment_in_expected}
+                          onCheckedChange={(v) => setLcForm((p) => ({ ...p, payment_in_expected: v }))}
+                        />
+                        <span className="text-[13px] font-semibold text-[#0A1F17]">Payment will come back IN</span>
+                      </label>
+                      {!!lcForm.payment_in_expected && (
+                        <div className="flex flex-wrap items-center gap-2 pl-[52px]">
+                          <span className="text-[11.5px] text-muted-foreground">Expected after</span>
+                          <Input
+                            type="number"
+                            min={0}
+                            className="h-8 w-[92px]"
+                            placeholder="days"
+                            value={lcForm.payment_in_days ?? ''}
+                            onChange={(e) => setLcForm((p) => ({ ...p, payment_in_days: e.target.value }))}
+                          />
+                          <span className="text-[11.5px] text-muted-foreground">
+                            days from the opening
+                            {Number(lcForm.payment_in_days) > 0 && (lcForm.opened_date || lcForm.open_date)
+                              ? ` · due ${formatDate(payInDueDate({ ...lcForm }))}`
+                              : ' · leave blank if no term was agreed'}
+                          </span>
+                        </div>
+                      )}
+                    </div>
                   </div>
                 </section>
               ) : (
@@ -5553,6 +6546,59 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
       </Dialog>
 
       {/* LC detail — a proper modal instead of expanding the row in place */}
+      <Dialog open={!!rejectForm} onOpenChange={(o) => !o && !rejectBusy && setRejectForm(null)}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <Ban className="h-4 w-4 text-[#B3261E]" /> Reject application
+            </DialogTitle>
+          </DialogHeader>
+          {rejectForm && (
+            <div className="grid gap-3.5">
+              <div className="rounded-[4px] border border-[#E4ECE3] bg-[#F7FAF6] px-3 py-2.5 text-[12.5px]">
+                <div className="font-bold text-[#0A1F17]">
+                  {String(rejectForm.row.lc_no || 'Application')} · {String(rejectForm.row.supplier_name || rejectForm.row.party_name || '—')}
+                </div>
+                <div className="text-muted-foreground">
+                  {String(rejectForm.row.bank || rejectForm.row.our_bank_name || '')} · {formatINR(n(rejectForm.row.amount))} · applied{' '}
+                  {formatDate(String(rejectForm.row.open_date || ''))}
+                </div>
+              </div>
+              <div className="grid gap-1.5">
+                <Label>Rejected on</Label>
+                <DatePicker
+                  value={rejectForm.date}
+                  min={String(rejectForm.row.open_date || '').slice(0, 10) || undefined}
+                  max={todayISO()}
+                  onChange={(v) => setRejectForm((f) => (f ? { ...f, date: v } : f))}
+                />
+              </div>
+              <div className="grid gap-1.5">
+                <Label>Reason *</Label>
+                <Input
+                  autoFocus
+                  value={rejectForm.reason}
+                  placeholder="e.g. limit not available, documents incomplete"
+                  onChange={(e) => setRejectForm((f) => (f ? { ...f, reason: e.target.value } : f))}
+                />
+              </div>
+              <p className="text-[11.5px] leading-relaxed text-muted-foreground">
+                Nothing is posted — an application has no vouchers. It stays in the register under <b>Rejected</b>, and stops counting against
+                the bank's LC limit, the facility and every total. You can reinstate it from ⋮ if this was a mistake.
+              </p>
+            </div>
+          )}
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setRejectForm(null)} disabled={rejectBusy}>
+              Cancel
+            </Button>
+            <Button onClick={() => void confirmReject()} disabled={rejectBusy} className="bg-[#B3261E] text-white hover:bg-[#9A1F18]">
+              {rejectBusy ? 'Rejecting…' : 'Reject application'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
       <Dialog open={!!unpreRow} onOpenChange={(o) => !o && !unpreBusy && setUnpreRow(null)}>
         <DialogContent className="max-w-lg">
           <DialogHeader>
@@ -5584,7 +6630,11 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
       </Dialog>
 
       <Dialog open={lcDetailId != null} onOpenChange={(o) => !o && setLcDetailId(null)}>
+        {/* A view of one LC, not a form — so Esc closes it, and a second Esc
+            returns to wherever it was opened from (Accounting's Day Book, a
+            ledger), as every drill-through does. */}
         <DialogContent
+          readOnly
           className={cn(
             'max-h-[85vh] max-w-3xl overflow-y-auto',
             // A drawer against the edge on the website, like the Purchases and
@@ -5624,7 +6674,11 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                     {isLcPaymentInDone(dRow) && <Badge variant="success">Payment IN</Badge>}
                     {canMarkPaymentIn(dRow) && <Badge variant="warning">Awaiting Payment IN</Badge>}
                     {dRow.purpose && <Badge variant="muted" className="capitalize">{dRow.purpose}</Badge>}
-                    {dRow.display_status === 'non_compliant' ? (
+                    {dRow.display_status === 'rejected' ? (
+                                <Badge variant="destructive" title={`${dRow.rejected_date ? `Rejected ${formatDate(String(dRow.rejected_date))}` : 'Rejected'}${dRow.rejected_reason ? ` — ${String(dRow.rejected_reason)}` : ''}`}>
+                                  Rejected
+                                </Badge>
+                              ) : dRow.display_status === 'non_compliant' ? (
                       <Badge variant="destructive">Non-compliant</Badge>
                     ) : (
                       <Badge variant={dRow.display_status === 'on_hold' ? 'warning' : 'success'} className="capitalize">
@@ -5634,16 +6688,61 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                   </DialogTitle>
                 </DialogHeader>
                 <div className={cn('space-y-4', __WEB__ && '!min-h-0 !space-y-3.5 !overflow-y-auto !px-5 !py-4 [&>*]:!shrink-0')}>
-                  <div className={cn('flex flex-wrap items-center gap-3 text-[12px] font-medium text-foreground', __WEB__ && '!gap-2.5 !rounded-[4px] !border !border-[#D6E2D6] !bg-white !px-4 !py-3 !text-[13px] !font-bold !text-[#0A1F17]')}>
-                    <span className="flex items-center gap-1.5"><Landmark className={cn('h-3.5 w-3.5 shrink-0 text-muted-foreground', __WEB__ && '!h-4 !w-4 !text-[#5A6B62]')} /> {dRow.bank}</span>
-                    {__WEB__ && <span className="h-4 w-px bg-[#DCE7DB]" />}
-                    <span className="flex items-center gap-1.5"><Users className={cn('h-3.5 w-3.5 shrink-0 text-muted-foreground', __WEB__ && '!h-4 !w-4 !text-[#5A6B62]')} /> {dRow.supplier_name || '—'}</span>
-                    {dRow.fd_no && <span className={cn(__WEB__ && '!text-[#5A6B62]')}>FD {dRow.fd_no}</span>}
-                  </div>
+                  {/* WHO IT IS BETWEEN. The issuing bank and the bank it
+                      settles out of are different things and were not both
+                      here: LC-7 is South Indian Bank's paper repaid out of
+                      HDFC, and only the first of those was on the panel. */}
+                  <LcPanel title="The letter">
+                    <div className={LC_FACTS_3}>
+                      <LcFact k="Issuing bank" v={String(dRow.bank || '\u2014')} sub={dRow.fd_no ? `FD ${String(dRow.fd_no)}` : undefined} />
+                      <LcFact
+                        k="Settles from"
+                        v={String(dRow.our_bank_name || '\u2014')}
+                        sub={dRow.our_bank_name ? 'our account the repayment leaves' : 'not set'}
+                        tone={dRow.our_bank_name ? 'plain' : 'muted'}
+                      />
+                      <LcFact
+                        k="Beneficiary"
+                        v={String(dRow.supplier_name || '\u2014')}
+                        sub={String(dRow.party_type || 'supplier')}
+                      />
+                      <LcFact
+                        k="Purpose"
+                        v={<span className="capitalize">{String(dRow.purpose || 'manufacturing')}</span>}
+                        sub={`stage \u00b7 ${STAGE_LABEL[String(dRow.stage || 'application')] || String(dRow.stage || '')}`}
+                      />
+                      <LcFact
+                        k="Facility"
+                        v={String(dRow.facility_name || '\u2014')}
+                        tone={dRow.facility_name ? 'plain' : 'muted'}
+                      />
+                      {/* Only a trading LC has one, and on one it is the whole
+                          point: it names who the money comes back from. */}
+                      <LcFact
+                        k="Repayment comes from"
+                        v={String(dRow.receivable_party_name || '\u2014')}
+                        sub={
+                          String(dRow.purpose || '') === 'trading' && !dRow.receivable_party_name
+                            ? 'a trading LC needs one'
+                            : undefined
+                        }
+                        tone={
+                          String(dRow.purpose || '') === 'trading' && !dRow.receivable_party_name ? 'bad' : dRow.receivable_party_name ? 'plain' : 'muted'
+                        }
+                      />
+                    </div>
+                  </LcPanel>
+
                   <div className={cn('rounded-lg bg-gradient-to-r from-[#1a2c56] to-[#24407e] px-4 py-3 text-center shadow-sm', __WEB__ && '!rounded-[4px] !bg-[#0B3D2E] !bg-none !px-4 !py-3.5 !text-left !shadow-none')}>
                     <div className={cn('text-[10px] font-semibold uppercase tracking-widest text-white/60', __WEB__ && '!text-[9.5px] !font-extrabold !tracking-[.13em] !text-[#8FBFA8]')}>LC amount</div>
                     <div className={cn('text-2xl font-bold tabular-nums text-white', __WEB__ && '!mt-1 !text-[26px] !leading-none !tracking-[-0.035em]')}>{formatINR(dRow.amount)}</div>
+                    {Math.abs(n(dRow.blocked_effective) - n(dRow.amount)) > 0.005 && (
+                      <div className="mt-1.5 text-[11.5px] font-bold text-[#BFE3CB]">
+                        {formatINR(dRow.blocked_effective)} blocked against the bank's limit
+                      </div>
+                    )}
                   </div>
+
                   <div className={cn('grid grid-cols-2 gap-2 text-[11px] sm:grid-cols-4', __WEB__ && CARD_CELLS)}>
                     <div className={cn('rounded-md border border-[#e5dfc8] bg-white px-2.5 py-1.5', __WEB__ && '!border-[#E4ECE3] !bg-[#F7FAF6]')}>
                       <div className="text-muted-foreground">Utilised</div>
@@ -5656,10 +6755,23 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                     <div className={cn('rounded-md border px-2.5 py-1.5', n(dRow.repaid) > 0 ? 'border-emerald-200 bg-emerald-50' : 'border-[#e5dfc8] bg-white', __WEB__ && (n(dRow.repaid) > 0 ? '!border-[#BFE3CB] !bg-[#F4FBF6]' : '!border-[#E4ECE3] !bg-[#F7FAF6]'))}>
                       <div className="text-muted-foreground">Repaid</div>
                       <div className={cn('font-semibold tabular-nums', n(dRow.repaid) > 0 ? 'text-emerald-700' : 'text-[#1a2c56]', __WEB__ && (n(dRow.repaid) > 0 ? '!text-[#0B6B45]' : '!text-[#8FA79B]'))}>{formatINR(dRow.repaid)}</div>
+                      {/* The debit and the principal are not the same figure,
+                          and the difference is exactly why Outstanding used to
+                          read as a negative. */}
+                      {n(dRow.repaid_charges) > 0.004 && (
+                        <div className="mt-[2px] break-words text-[10px] font-semibold leading-[1.35] text-[#5A6B62]">
+                          incl. {formatINR(dRow.repaid_charges)} charges
+                        </div>
+                      )}
                     </div>
                     <div className={cn('rounded-md border px-2.5 py-1.5', n(dRow.outstanding) > 0 ? 'border-amber-200 bg-amber-50' : 'border-[#e5dfc8] bg-white', __WEB__ && (n(dRow.outstanding) > 0 ? '!border-[#F0D9AE] !bg-[#FFFBF2]' : '!border-[#E4ECE3] !bg-[#F7FAF6]'))}>
                       <div className="text-muted-foreground">Outstanding</div>
                       <div className={cn('font-semibold tabular-nums', n(dRow.outstanding) > 0 ? 'text-amber-800' : 'text-[#1a2c56]', __WEB__ && (n(dRow.outstanding) > 0 ? '!text-[#8A5300]' : '!text-[#8FA79B]'))}>{formatINR(dRow.outstanding)}</div>
+                      {n(dRow.repaid_principal) > 0.004 && (
+                        <div className="mt-[2px] break-words text-[10px] font-semibold leading-[1.35] text-[#5A6B62]">
+                          {formatINR(dRow.repaid_principal)} principal back
+                        </div>
+                      )}
                     </div>
                   </div>
                   <div>
@@ -5671,43 +6783,184 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                       <div className={cn('h-2.5 rounded-full transition-all', barTone)} style={{ width: `${pct}%` }} />
                     </div>
                   </div>
-                  <div className={cn('grid grid-cols-2 gap-x-3 gap-y-2 rounded-lg border border-[#e5dfc8] bg-white p-3 text-[11px] sm:grid-cols-4', __WEB__ && '!gap-px !overflow-hidden !rounded-[4px] !border-[#D6E2D6] !bg-[#E4ECE3] !p-0 [&>div]:!bg-white [&>div]:!px-3.5 [&>div]:!py-3')}>
-                    <div><div className="text-muted-foreground">Application</div><div className="font-medium tabular-nums">{formatDate(dRow.open_date)}</div></div>
-                    <div><div className="text-muted-foreground">Open</div><div className="font-medium tabular-nums">{formatDate(dRow.opened_date)}</div></div>
-                    <div><div className="text-muted-foreground">Payment received</div><div className="font-medium tabular-nums">{formatDate(dRow.payment_received_date)}</div></div>
-                    <div><div className="text-muted-foreground">Maturity</div><div className="font-medium tabular-nums">{formatDate(dRow.expiry_date)}</div></div>
-                    {/* Only when it differs from the open amount above, which
-                        is the headline figure on this panel. Repeating the same
-                        number under a second name teaches the reader that the
-                        two are interchangeable, and they are not. */}
-                    {Math.abs(n(dRow.blocked_effective) - n(dRow.amount)) > 0.005 && (
-                      <div>
-                        <div className="text-muted-foreground">Blocked</div>
-                        <div className="font-medium tabular-nums">{formatINR(dRow.blocked_effective)}</div>
-                        <div className="text-[10.5px] text-muted-foreground">counts against the limit</div>
+
+                  {/* THE DATES, IN THE ORDER THEY HAPPEN. */}
+                  <LcPanel
+                    title="Dates"
+                    right={
+                      dRow.days_left_effective != null && !dRow.preclosed_date ? (
+                        <span
+                          className={cn(
+                            'rounded-[3px] border px-2 py-[2px] text-[10.5px] font-extrabold',
+                            n(dRow.days_left_effective) < 0
+                              ? 'border-[#F0D6D4] bg-[#FDF3F2] text-[#B3261E]'
+                              : n(dRow.days_left_effective) <= 15
+                                ? 'border-[#F0D9AE] bg-[#FFFBF2] text-[#8A5300]'
+                                : 'border-[#BFE3CB] bg-[#F4FBF6] text-[#0B6B45]'
+                          )}
+                        >
+                          {n(dRow.days_left_effective) < 0
+                            ? `${Math.abs(n(dRow.days_left_effective))}d overdue`
+                            : `${n(dRow.days_left_effective)}d left`}
+                        </span>
+                      ) : undefined
+                    }
+                  >
+                    <div className={LC_FACTS}>
+                      <LcFact k="Application" v={formatDate(dRow.open_date) || '\u2014'} />
+                      <LcFact k="Opened" v={formatDate(dRow.opened_date) || '\u2014'} tone={dRow.opened_date ? 'plain' : 'muted'} />
+                      <LcFact k="Payment received" v={formatDate(dRow.payment_received_date) || '\u2014'} tone={dRow.payment_received_date ? 'plain' : 'muted'} />
+                      <LcFact k="Maturity" v={formatDate(dRow.expiry_date) || '\u2014'} sub={n(dRow.usance_days) > 0 ? `${n(dRow.usance_days)} usance days` : undefined} />
+                      {!!dRow.preclosed_date && (
+                        <LcFact
+                          k="Preclosed"
+                          v={formatDate(dRow.preclosed_date)}
+                          sub={
+                            n(dRow.preclose_settlement_amount) > 0.004
+                              ? `${formatINR(dRow.preclose_settlement_amount)} ${String(dRow.preclose_settlement_direction || '')}`
+                              : undefined
+                          }
+                          tone="good"
+                        />
+                      )}
+                      {!!dRow.next_due_date && (
+                        <LcFact k="Next bill due" v={formatDate(dRow.next_due_date)} sub="on an unsettled bill" tone="warn" />
+                      )}
+                    </div>
+                  </LcPanel>
+
+                  {/* WHAT THE BANK CHARGED, AND ON WHAT. */}
+                  <LcPanel title="Terms and cost">
+                    <div className={LC_FACTS}>
+                      <LcFact
+                        k="Margin"
+                        v={`${n(dRow.margin_pct)}%`}
+                        sub={n(dRow.margin_amount) > 0.004 ? `${formatINR(dRow.margin_amount)} held` : 'nothing held'}
+                      />
+                      <LcFact
+                        k="Interest"
+                        v={`${n(dRow.interest_pct)}%${dRow.interest_upfront ? ' upfront' : ''}`}
+                        sub={
+                          <>
+                            {formatINR(dRow.interest_amount)} on{' '}
+                            {String(dRow.interest_basis || (dRow.interest_excl_charges ? 'amount \u2212 charges' : 'open amount'))}
+                            {n(dRow.interest_base_amount) > 0.004 ? ` (${formatINR(dRow.interest_base_amount)})` : ''}
+                          </>
+                        }
+                      />
+                      <LcFact k="Bank charges" v={formatINR(dRow.charges)} />
+                      <LcFact
+                        k="To the beneficiary"
+                        v={formatINR(dRow.paid_to_party ?? dRow.paid_expected)}
+                        sub={dRow.paid_to_party == null ? 'expected \u2014 no bill raised yet' : 'as the bank honoured it'}
+                        tone={dRow.paid_to_party == null ? 'muted' : 'plain'}
+                      />
+                      {Math.abs(n(dRow.interest_adj)) > 0.004 && (
+                        <LcFact k="Interest adjustment" v={formatINR(dRow.interest_adj)} tone="warn" />
+                      )}
+                      {Math.abs(n(dRow.fee_adjustment)) > 0.004 && (
+                        <LcFact
+                          k="Fee adjustment"
+                          v={formatINR(dRow.fee_adjustment)}
+                          sub="posted back to the party's ledger"
+                          tone="warn"
+                        />
+                      )}
+                    </div>
+                  </LcPanel>
+
+                  {/* WHAT IT IS FINANCING. Invoices and deals were on the
+                      record all along and nowhere on this panel. */}
+                  {(n(dRow.linked_invoice_count) > 0 ||
+                    (dRow.linked_deal_ids || []).length > 0 ||
+                    n(dRow.linked_bill_count) > 0) && (
+                    <LcPanel title="What it finances">
+                      <div className={LC_FACTS_3}>
+                        <LcFact
+                          k="Purchase invoices"
+                          v={n(dRow.linked_invoice_count) || '\u2014'}
+                          sub={String(dRow.linked_invoice_nos || '') || undefined}
+                          tone={n(dRow.linked_invoice_count) ? 'plain' : 'muted'}
+                        />
+                        <LcFact
+                          k="Their value"
+                          v={formatINR(dRow.linked_invoice_amount_total)}
+                          tone={n(dRow.linked_invoice_amount_total) ? 'plain' : 'muted'}
+                        />
+                        <LcFact
+                          k="Trading deals"
+                          v={(dRow.linked_deal_ids || []).length || '\u2014'}
+                          tone={(dRow.linked_deal_ids || []).length ? 'plain' : 'muted'}
+                        />
+                        <LcFact
+                          k="Bills issued"
+                          v={n(dRow.linked_bill_count) || '\u2014'}
+                          sub={n(dRow.settled_total) > 0.004 ? `${formatINR(dRow.settled_total)} settled` : undefined}
+                          tone={n(dRow.linked_bill_count) ? 'plain' : 'muted'}
+                        />
                       </div>
-                    )}
-                    <div><div className="text-muted-foreground">Margin</div><div className="font-medium tabular-nums">{n(dRow.margin_pct)}%</div></div>
-                    <div>
-                      <div className="text-muted-foreground">Interest</div>
-                      <div className="font-medium tabular-nums">
-                        {n(dRow.interest_pct)}%{dRow.interest_upfront ? ' upfront' : ''}
+                    </LcPanel>
+                  )}
+
+                  {/* MONEY COMING BACK IN, on a trading LC. */}
+                  {(String(dRow.purpose || '') === 'trading' ||
+                    n(dRow.payment_in_count) > 0 ||
+                    !!dRow.payment_in_expected) && (
+                    <LcPanel title="Payment in">
+                      <div className={LC_FACTS_3}>
+                        <LcFact
+                          k="Received"
+                          v={formatINR(dRow.payment_in_total)}
+                          sub={n(dRow.payment_in_count) > 0 ? `${n(dRow.payment_in_count)} receipt${n(dRow.payment_in_count) === 1 ? '' : 's'}` : 'nothing yet'}
+                          tone={n(dRow.payment_in_total) > 0.004 ? 'good' : 'muted'}
+                        />
+                        <LcFact
+                          k="Last received on"
+                          v={formatDate(dRow.payment_in_date) || '\u2014'}
+                          tone={dRow.payment_in_date ? 'plain' : 'muted'}
+                        />
+                        <LcFact
+                          k="Expected in"
+                          v={n(dRow.payment_in_days) > 0 ? `${n(dRow.payment_in_days)} days` : '\u2014'}
+                          sub={dRow.payment_in_expected ? 'a date was agreed' : undefined}
+                          tone={n(dRow.payment_in_days) > 0 ? 'plain' : 'muted'}
+                        />
                       </div>
-                      {/* Which base produced the figure. Without it the reader
-                          has to open the LC to know why two LCs at the same
-                          rate carry different interest. */}
-                      <div className="text-[10.5px] text-muted-foreground">
-                        on {String(dRow.interest_basis || (dRow.interest_excl_charges ? 'amount − charges' : 'open amount'))}
+                    </LcPanel>
+                  )}
+
+                  {/* Rejected by the bank: when, why, who recorded it. */}
+                  {isLcRejected(dRow) && (
+                    <div className="flex items-start gap-2.5 rounded-[4px] border border-[#F0D6D4] bg-[#FDF3F2] px-4 py-3">
+                      <Ban className="mt-0.5 h-4 w-4 shrink-0 text-[#B3261E]" />
+                      <div className="min-w-0 text-[12.5px] leading-relaxed">
+                        <div className="font-extrabold text-[#B3261E]">
+                          Application rejected{dRow.rejected_date ? ` on ${formatDate(String(dRow.rejected_date))}` : ''}
+                          {dRow.rejected_by ? ` · recorded by ${String(dRow.rejected_by)}` : ''}
+                        </div>
+                        {!!String(dRow.rejected_reason || '').trim() && (
+                          <div className="font-semibold text-[#8C2F26]">{String(dRow.rejected_reason)}</div>
+                        )}
+                        <div className="mt-1 text-[11.5px] font-semibold text-[#5A6B62]">
+                          It counts nowhere — not against the LC limit, the facility or any total. ⋮ → Reinstate application if this was a mistake.
+                        </div>
                       </div>
                     </div>
-                    <div><div className="text-muted-foreground">Charges</div><div className="font-medium tabular-nums">{formatINR(dRow.charges)}</div></div>
-                    <div><div className="text-muted-foreground">Int. days</div><div className="font-medium tabular-nums">{n(dRow.usance_days) > 0 ? n(dRow.usance_days) : '—'}</div></div>
-                  </div>
+                  )}
+
+                  {!!String(dRow.note || '').trim() && (
+                    <LcPanel title="Note">
+                      <p className="px-4 py-3 text-[12.5px] font-semibold leading-[1.55] text-[#33473E] [text-wrap:pretty]">
+                        {String(dRow.note)}
+                      </p>
+                    </LcPanel>
+                  )}
+
                   <div className="border-t border-[#e5dfc8] pt-1 [&>div]:px-0 [&>div]:sm:px-0">{lcExpanded(dRow)}</div>
                   <div className={cn('flex flex-wrap gap-1.5 border-t border-dashed border-[#e5dfc8] pt-3', __WEB__ && '!gap-2 !rounded-[4px] !border !border-[#D6E2D6] !border-solid !bg-white !p-3.5')}>
                     {(() => {
                       const next = nextLcStage(String(dRow.stage || 'application'))
-                      if (!next) return null
+                      if (!next || isLcRejected(dRow)) return null
                       return (
                         <Button size="sm" className={cn('h-7 bg-[#1a2c56] px-2 text-xs hover:bg-[#24407e]', __WEB__ && '!h-10 !rounded-[4px] !bg-[#0B3D2E] !px-3.5 !text-[12px] !font-extrabold !uppercase !tracking-[.04em] !text-[#C7F03F] hover:!bg-[#0F4A38]')} onClick={() => { setLcDetailId(null); openStageAdvance(dRow) }}>
                           Mark {STAGE_LABEL[next]}
@@ -5730,12 +6983,25 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                         variant="outline"
                         className="h-7 px-2 text-xs"
                         title={isLcPastMaturity(dRow) ? 'Repay this LC now that it has matured' : 'Wind this LC up before its natural maturity'}
-                        onClick={() => { setLcDetailId(null); openPreclose(dRow) }}
+                        onClick={() => { setLcDetailId(null); if (isPartsLc(dRow)) setInstRow(dRow); else openPreclose(dRow) }}
                       >
-                        {isLcPastMaturity(dRow) ? 'Repay' : 'Preclose'}
+                        {isPartsLc(dRow) ? 'Repay parts' : isLcPastMaturity(dRow) ? 'Repay' : 'Preclose'}
                       </Button>
                     )}
-                    <Button size="sm" variant="outline" className={cn('h-7 px-2 text-xs', __WEB__ && '!h-10 !rounded-[4px] !border-[#C3D2C6] !bg-white !px-3.5 !text-[12px] !font-bold !text-[#33473E] hover:!bg-[#EAF0E9]')} onClick={() => { setLcDetailId(null); setLcForm({ ...dRow }) }}>
+                    {/* The other half of the record: what this letter actually
+                        put in the ledgers. It was reachable from the row's menu
+                        and not from the panel about the same LC. */}
+                    {canSeeLedgers && (
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        className={cn('h-7 px-2 text-xs', __WEB__ && '!h-10 !rounded-[4px] !border-[#C3D2C6] !bg-white !px-3.5 !text-[12px] !font-bold !text-[#33473E] hover:!bg-[#EAF0E9]')}
+                        onClick={() => openPostings(dRow)}
+                      >
+                        <BookOpen className="h-3.5 w-3.5" /> Ledger posting
+                      </Button>
+                    )}
+                    <Button size="sm" variant="outline" className={cn('h-7 px-2 text-xs', __WEB__ && '!h-10 !rounded-[4px] !border-[#C3D2C6] !bg-white !px-3.5 !text-[12px] !font-bold !text-[#33473E] hover:!bg-[#EAF0E9]')} disabled={!!dRow.preclosed_date || isLcRejected(dRow)} title={isLcRejected(dRow) ? 'This application was rejected. Reinstate it first to change it.' : dRow.preclosed_date ? 'This LC is repaid and closed. Undo preclosure first to change it.' : undefined} onClick={() => { setLcDetailId(null); setLcForm({ ...dRow }) }}>
                       <Pencil className="h-3.5 w-3.5" /> Edit
                     </Button>
                     <Button size="sm" variant="outline" className={cn('h-7 px-2 text-xs text-destructive', __WEB__ && '!h-10 !rounded-[4px] !border-[#F0D6D4] !bg-[#FDF3F2] !px-3.5 !text-[12px] !font-bold !text-[#B3261E] hover:!bg-[#FBE9E7]')} onClick={() => { setLcDetailId(null); requestDeleteLc(dRow) }}>
@@ -5994,6 +7260,487 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
         </DialogContent>
       </Dialog>
 
+      {/* WHAT THIS LETTER PUT IN THE LEDGERS — see LedgerPostings. */}
+      <LedgerPostings target={postings} onClose={() => setPostings(null)} />
     </>
+  )
+}
+
+// THE BANK PAYING THE SUPPLIER IN PARTS.
+//
+// AN LC PAID AND REPAID IN PARTS — the one place it is worked.
+//
+// The bank pays the supplier the LC in parts, and each part runs to its own
+// maturity with its own interest (lc.ts partFigures): part 1 is recorded at
+// Payment received, the rest here, each typed as its LC amount off the bank's
+// bill. The bank is then repaid part by part — tick the parts a repayment
+// clears; one repaid before its maturity gets the unexpired interest back. The
+// repayment that clears the last part closes the LC. The latest part paid and
+// the latest repayment can each be taken back.
+function LcInstallmentsDialog({
+  lc,
+  onClose,
+  onChanged
+}: {
+  lc: Row | null
+  onClose: () => void
+  onChanged: () => void
+}): React.JSX.Element {
+  const [parts, setParts] = useState<Row[]>([])
+  const [busy, setBusy] = useState(false)
+  const [err, setErr] = useState<string | null>(null)
+  const [next, setNext] = useState<{ date: string; amount: string; maturity: string; note: string; interest_pct: string; margin_pct: string; charges: string }>({
+    date: todayISO(),
+    amount: '',
+    maturity: '',
+    note: '',
+    interest_pct: '',
+    margin_pct: '',
+    charges: ''
+  })
+  const [pick, setPick] = useState<Set<number>>(new Set())
+  const [rep, setRep] = useState<{ date: string; comm: string; bank: string; route: 'credit_to_us' | 'pay_to_party'; margin: boolean }>({
+    date: todayISO(),
+    comm: '',
+    bank: '',
+    route: 'credit_to_us',
+    margin: true
+  })
+  const [ask, setAsk] = useState<'' | 'undoPart' | 'undoRepay'>('')
+
+  const lcAmount = round2(n(lc?.amount))
+  const drawn = round2(parts.reduce((s, p) => s + n(p.amount), 0))
+  const undrawn = round2(Math.max(0, lcAmount - drawn))
+  const owed = round2(parts.filter((p) => !p.repaid_date).reduce((s, p) => s + n(p.amount), 0))
+  const closed = !!lc?.preclosed_date
+  const lastPaid = parts.length ? String(parts[parts.length - 1].pay_date).slice(0, 10) : String(lc?.payment_received_date || '').slice(0, 10)
+  const lastRepaidId = parts.reduce((m, p) => Math.max(m, n(p.repayment_id)), 0)
+
+  const load = useCallback(async () => {
+    if (!lc) return
+    const rows = ((await window.api.lc.parts(Number(lc.id)).catch(() => [])) as Row[]) || []
+    setParts(rows)
+    const used = round2(rows.reduce((s, p) => s + n(p.amount), 0))
+    setNext({
+      date: todayISO(),
+      amount: String(round2(Math.max(0, n(lc.amount) - used)) || ''),
+      maturity: String(lc.expiry_date || '').slice(0, 10),
+      note: '',
+      interest_pct: String(lc.interest_pct ?? ''),
+      margin_pct: String(lc.margin_pct ?? ''),
+      charges: ''
+    })
+    // The parts due first are the ones a repayment usually clears.
+    const open = rows.filter((p) => !p.repaid_date)
+    const due = open.filter((p) => String(p.maturity_date).slice(0, 10) <= todayISO())
+    setPick(new Set((due.length ? due : open.slice(0, 1)).map((p) => n(p.part_no))))
+  }, [lc])
+
+  useEffect(() => {
+    setErr(null)
+    setAsk('')
+    void load()
+  }, [load])
+
+  const preview = lcPartPreview({ ...(lc || {}), charges: n(next.charges) }, round2(n(next.amount)), next.date, next.maturity, true, next.interest_pct)
+  const picked = parts.filter((p) => pick.has(n(p.part_no)) && !p.repaid_date)
+  const principal = round2(picked.reduce((s, p) => s + n(p.amount), 0))
+  const rebateOf = (p: Row): number => {
+    const left = Math.max(0, dayGap(rep.date, String(p.maturity_date)))
+    return n(p.days) > 0 && left > 0 ? round2((n(p.interest) * left) / n(p.days)) : 0
+  }
+  const rebate = round2(picked.reduce((s, p) => s + rebateOf(p), 0))
+  const closesLc = picked.length > 0 && parts.every((p) => p.repaid_date || pick.has(n(p.part_no)))
+
+  async function payNext(): Promise<void> {
+    if (!lc) return
+    const amt = round2(n(next.amount))
+    if (amt <= 0) return setErr("Enter this part's LC amount")
+    if (amt > undrawn + 0.005) return setErr(`Only ${formatINR(undrawn)} of this LC is still undrawn`)
+    if (!next.date) return setErr('Pick the date the bank paid it')
+    if (next.date > todayISO()) return setErr('The payment date cannot be in the future')
+    if (lastPaid && next.date < lastPaid) return setErr(`The last part was paid on ${formatDate(lastPaid)} — this one cannot be dated before it`)
+    if (!next.maturity) return setErr('Pick when this part matures')
+    if (next.maturity < next.date) return setErr('A part cannot mature before it was paid')
+    setBusy(true)
+    setErr(null)
+    try {
+      const r = await window.api.lc.payParty(Number(lc.id), {
+        date: next.date,
+        amount: amt,
+        maturity: next.maturity,
+        note: next.note,
+        interest_pct: next.interest_pct,
+        margin_pct: next.margin_pct,
+        charges: round2(n(next.charges))
+      })
+      toast.success(`Part ${r.installment_no}: ${formatINR(preview.net)} to the supplier, maturing ${formatDate(next.maturity)}`)
+      onChanged()
+      await load()
+    } catch (e) {
+      setErr((e as Error).message)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function repay(): Promise<void> {
+    if (!lc) return
+    if (!picked.length) return setErr('Tick the parts this repayment clears')
+    if (!rep.date) return setErr('Pick the repayment date')
+    if (rep.date > todayISO()) return setErr('The repayment date cannot be in the future')
+    setBusy(true)
+    setErr(null)
+    try {
+      const r = await window.api.lc.repayParts(Number(lc.id), {
+        date: rep.date,
+        parts: picked.map((p) => n(p.part_no)),
+        comm_charges: n(rep.comm),
+        bank_charges: n(rep.bank),
+        rebate_route: rep.route,
+        release_margin: rep.margin
+      })
+      toast.success(
+        `${formatINR(principal)} repaid to the bank${r.rebate > 0.005 ? ` · ${formatINR(r.rebate)} interest rebate` : ''}${r.closed ? ' — the LC is now closed' : ''}`
+      )
+      onChanged()
+      await load()
+    } catch (e) {
+      setErr((e as Error).message)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function undo(kind: 'undoPart' | 'undoRepay'): Promise<void> {
+    if (!lc) return
+    setBusy(true)
+    setErr(null)
+    try {
+      if (kind === 'undoPart') {
+        const r = await window.api.lc.removeInstallment(Number(lc.id))
+        toast.success(`Part ${r.installment_no} taken back — its voucher is removed`)
+      } else {
+        const r = await window.api.lc.undoPartRepayment(Number(lc.id))
+        toast.success(`Repayment of part${r.parts.length === 1 ? '' : 's'} ${r.parts.join(', ')} taken back`)
+      }
+      setAsk('')
+      onChanged()
+      await load()
+    } catch (e) {
+      setErr((e as Error).message)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const lbl = 'text-[10.5px] font-extrabold uppercase tracking-[.1em] text-[#5A6B62]'
+  const card = 'shrink-0 overflow-hidden rounded-[6px] border border-[#D6E2D6] bg-white'
+  const head =
+    'flex items-center gap-2 border-b border-[#E4ECE3] bg-[#F7FAF6] px-4 py-3 text-[10.5px] font-extrabold uppercase tracking-[.13em] text-[#0A1F17]'
+  const supplier = String(lc?.supplier_name || 'the supplier')
+  const lastPart = parts[parts.length - 1]
+  return (
+    <Dialog open={!!lc} onOpenChange={(o) => !o && onClose()}>
+      <DialogContent
+        className={cn(
+          'max-w-3xl max-h-[90vh] overflow-y-auto p-0 shadow-2xl [&>button]:text-white [&>button]:opacity-90 [&>button:hover]:opacity-100',
+          LC_DRAWER,
+          __WEB__ && 'lg:!w-[min(94vw,880px)] xl:!w-[min(92vw,880px)] 2xl:!w-[min(90vw,880px)]'
+        )}
+      >
+        <div className={cn('flex items-center gap-3 bg-gradient-to-r from-[#1a2c56] to-[#24407e] px-6 py-4 text-white', LC_BAND)}>
+          <div className={cn('flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-white/15', __WEB__ && '!rounded-[4px]')}>
+            <ArrowUpRight className="h-5 w-5" />
+          </div>
+          <div className="min-w-0">
+            {__WEB__ && <div className={LC_EYEBROW}>Paid and repaid in parts</div>}
+            <DialogTitle className={cn('text-[16px] font-bold text-white', LC_TITLE)}>Parts — LC {String(lc?.lc_no || '(pending no.)')}</DialogTitle>
+            <p className={cn('text-[12px] text-white/70', LC_SUB)}>
+              Each part paid to {supplier} runs to its own maturity with its own interest, and is repaid to the bank on its own.
+            </p>
+          </div>
+        </div>
+
+        <div className="flex min-h-0 flex-col gap-3.5 overflow-y-auto bg-[#F2F6F1] p-4">
+          {/* Where it stands */}
+          <section className={card}>
+            <div className="grid grid-cols-2 divide-x divide-[#E4ECE3] sm:grid-cols-4">
+              {[
+                { k: 'LC amount', v: lcAmount, tone: 'text-[#0A1F17]' },
+                { k: `Drawn · ${parts.length} ${parts.length === 1 ? 'part' : 'parts'}`, v: drawn, tone: 'text-[#0B6B45]' },
+                { k: 'Still undrawn', v: undrawn, tone: undrawn > 0.005 ? 'text-[#8A5300]' : 'text-[#8CA396]' },
+                { k: 'Owed to the bank', v: owed, tone: owed > 0.005 ? 'text-[#B3261E]' : 'text-[#8CA396]' }
+              ].map((c) => (
+                <div key={c.k} className="px-4 py-3.5">
+                  <div className={lbl}>{c.k}</div>
+                  <div className={cn('mt-1 text-[16px] font-bold tabular-nums tracking-[-0.01em]', c.tone)}>{formatINR(c.v)}</div>
+                </div>
+              ))}
+            </div>
+          </section>
+
+          {/* Every part */}
+          <section className={card}>
+            <h3 className={head}>
+              <List className="h-4 w-4 text-[#0B3D2E]" /> The parts
+              {!closed && parts.some((p) => !p.repaid_date) && (
+                <span className="ml-auto text-[10px] font-bold normal-case tracking-normal text-[#5A6B62]">Tick the parts to repay</span>
+              )}
+            </h3>
+            {parts.length === 0 ? (
+              <div className="px-4 py-5 text-[12.5px] font-semibold text-[#5A6B62]">No part paid yet.</div>
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="w-full min-w-[720px] text-[12.5px]">
+                  <thead>
+                    <tr className="border-b border-[#E4ECE3] bg-[#FBFCFA] text-left text-[10px] font-extrabold uppercase tracking-[.08em] text-[#5A6B62]">
+                      <th className="w-8 px-3 py-2" />
+                      <th className="px-2 py-2">Part</th>
+                      <th className="px-2 py-2">Paid on</th>
+                      <th className="px-2 py-2 text-right">LC amount</th>
+                      <th className="px-2 py-2">Matures</th>
+                      <th className="px-2 py-2 text-right">Interest</th>
+                      <th className="px-2 py-2 text-right">Supplier got</th>
+                      <th className="px-3 py-2">Bank</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-[#EEF3ED]">
+                    {parts.map((p) => {
+                      const no = n(p.part_no)
+                      const left = dayGap(todayISO(), String(p.maturity_date))
+                      const repaid = !!p.repaid_date
+                      return (
+                        <tr key={no} className={cn(pick.has(no) && !repaid && 'bg-[#F4FBF6]')}>
+                          <td className="px-3 py-2.5">
+                            {!repaid && !closed && (
+                              <input
+                                type="checkbox"
+                                aria-label={`Repay part ${no}`}
+                                checked={pick.has(no)}
+                                onChange={(e) =>
+                                  setPick((s) => {
+                                    const nx = new Set(s)
+                                    if (e.target.checked) nx.add(no)
+                                    else nx.delete(no)
+                                    return nx
+                                  })
+                                }
+                              />
+                            )}
+                          </td>
+                          <td className="px-2 py-2.5">
+                            <span className="flex h-6 w-6 items-center justify-center rounded-full bg-[#E9F5EE] text-[11px] font-extrabold text-[#0B6B45]">{no}</span>
+                          </td>
+                          <td className="whitespace-nowrap px-2 py-2.5 font-semibold">{formatDate(String(p.pay_date))}</td>
+                          <td className="whitespace-nowrap px-2 py-2.5 text-right font-bold tabular-nums">{formatINR(n(p.amount))}</td>
+                          <td className="whitespace-nowrap px-2 py-2.5">
+                            <div className="font-semibold">{formatDate(String(p.maturity_date))}</div>
+                            <div className="text-[10.5px] font-semibold text-[#5A6B62]">{n(p.days)} days</div>
+                          </td>
+                          <td className="whitespace-nowrap px-2 py-2.5 text-right tabular-nums">
+                            {formatINR(n(p.interest))}
+                            <div className="text-[10.5px] text-[#5A6B62]">
+                              @ {p.interest_pct == null ? n(lc?.interest_pct) : n(p.interest_pct)}% · margin {p.margin_pct == null ? n(lc?.margin_pct) : n(p.margin_pct)}%
+                            </div>
+                            {n(p.charges) > 0.005 && <div className="text-[10.5px] text-[#5A6B62]">+ {formatINR(n(p.charges))} charges</div>}
+                          </td>
+                          <td className="whitespace-nowrap px-2 py-2.5 text-right font-semibold tabular-nums text-[#0B6B45]">{formatINR(n(p.net))}</td>
+                          <td className="whitespace-nowrap px-3 py-2.5">
+                            {repaid ? (
+                              <span className="text-[11.5px] font-bold text-[#0B6B45]">
+                                Repaid {formatDate(String(p.repaid_date))}
+                                {n(p.rebate) > 0.005 && <span className="block text-[10.5px] font-semibold text-[#5A6B62]">rebate {formatINR(n(p.rebate))}</span>}
+                              </span>
+                            ) : (
+                              <span className={cn('rounded-[3px] px-1.5 py-0.5 text-[10.5px] font-extrabold', left < 0 ? 'bg-[#FDF3F2] text-[#B3261E]' : left <= 7 ? 'bg-[#FFF4DD] text-[#8A5300]' : 'bg-[#EEF3EC] text-[#33473E]')}>
+                                {left < 0 ? `${Math.abs(left)}d overdue` : left === 0 ? 'due today' : `${left}d left`}
+                              </span>
+                            )}
+                          </td>
+                        </tr>
+                      )
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            )}
+            {!closed && parts.length > 0 && (
+              <div className="flex flex-wrap items-center gap-2 border-t border-[#E4ECE3] px-4 py-2.5">
+                {lastPart && n(lastPart.part_no) > 1 && !lastPart.repaid_date && (
+                  <Button size="sm" variant="outline" disabled={busy} onClick={() => setAsk('undoPart')} className="h-8 gap-1 px-2 text-[11px] font-bold text-[#B3261E]">
+                    <RotateCcw className="h-3.5 w-3.5" /> Undo part {n(lastPart.part_no)}
+                  </Button>
+                )}
+                {lastRepaidId > 0 && (
+                  <Button size="sm" variant="outline" disabled={busy} onClick={() => setAsk('undoRepay')} className="h-8 gap-1 px-2 text-[11px] font-bold text-[#B3261E]">
+                    <RotateCcw className="h-3.5 w-3.5" /> Undo last repayment
+                  </Button>
+                )}
+              </div>
+            )}
+            {closed && lastRepaidId > 0 && (
+              <div className="flex flex-wrap items-center gap-2 border-t border-[#E4ECE3] px-4 py-2.5 text-[12px] font-semibold text-[#5A6B62]">
+                Closed on {formatDate(String(lc?.preclosed_date))} by repaying the last part.
+                <Button size="sm" variant="outline" disabled={busy} onClick={() => setAsk('undoRepay')} className="ml-auto h-8 gap-1 px-2 text-[11px] font-bold text-[#B3261E]">
+                  <RotateCcw className="h-3.5 w-3.5" /> Undo last repayment
+                </Button>
+              </div>
+            )}
+            {ask && (
+              <div className="flex flex-wrap items-center gap-2.5 border-t border-[#F0D6D4] bg-[#FDF3F2] px-4 py-3">
+                <AlertTriangle className="h-4 w-4 shrink-0 text-[#B3261E]" />
+                <span className="min-w-0 flex-1 text-[12px] font-bold text-[#8C2F26]">
+                  {ask === 'undoPart'
+                    ? `Take back part ${n(lastPart?.part_no)} (${formatINR(n(lastPart?.amount))})? Its voucher is deleted.`
+                    : 'Take back the last repayment? Its bank voucher and any interest rebate are deleted, and the LC reopens if it closed it.'}
+                </span>
+                <Button size="sm" variant="outline" disabled={busy} onClick={() => setAsk('')} className="h-8 px-3 text-[11px] font-bold">
+                  Keep it
+                </Button>
+                <Button size="sm" disabled={busy} onClick={() => void undo(ask)} className="h-8 bg-[#B3261E] px-3 text-[11px] font-bold text-white hover:bg-[#9A1F18]">
+                  Take back
+                </Button>
+              </div>
+            )}
+          </section>
+
+          {/* Repay the bank */}
+          {!closed && picked.length > 0 && (
+            <section className={cn(card, 'border-[#C6DAF0]')}>
+              <h3 className={cn(head, 'border-b-[#C6DAF0] bg-[#EEF4FB] text-[#1B4E82]')}>
+                <Banknote className="h-4 w-4" /> Repay the bank — part{picked.length === 1 ? '' : 's'} {picked.map((p) => n(p.part_no)).join(', ')}
+              </h3>
+              <div className="grid gap-4 p-4 sm:grid-cols-3">
+                <div className="grid content-start gap-1.5">
+                  <span className={lbl}>Repaid on *</span>
+                  <DatePicker value={rep.date} max={todayISO()} onChange={(v) => setRep((r) => ({ ...r, date: v }))} />
+                </div>
+                <div className="grid content-start gap-1.5">
+                  <span className={lbl}>Comm. charges (₹)</span>
+                  <Input type="number" value={rep.comm} placeholder="0" onChange={(e) => setRep((r) => ({ ...r, comm: e.target.value }))} className="!h-10" />
+                </div>
+                <div className="grid content-start gap-1.5">
+                  <span className={lbl}>Bank charges (₹)</span>
+                  <Input type="number" value={rep.bank} placeholder="0" onChange={(e) => setRep((r) => ({ ...r, bank: e.target.value }))} className="!h-10" />
+                </div>
+                {rebate > 0.005 && (
+                  <div className="grid gap-1.5 sm:col-span-3">
+                    <span className={lbl}>Interest rebate {formatINR(rebate)} — repaid before maturity, so the bank debits that much less</span>
+                    <div className="flex flex-wrap gap-1.5">
+                      {[
+                        { v: 'credit_to_us' as const, label: 'Keep it (reverse the interest)' },
+                        { v: 'pay_to_party' as const, label: `Pass it on to ${supplier}` }
+                      ].map((o) => (
+                        <button
+                          key={o.v}
+                          type="button"
+                          onClick={() => setRep((r) => ({ ...r, route: o.v }))}
+                          className="h-8 rounded-[4px] border px-3 text-[11.5px] font-bold"
+                          style={rep.route === o.v ? { background: '#0B3D2E', color: '#fff', borderColor: '#0B3D2E' } : { background: '#fff', color: '#33473E', borderColor: '#D6E2D6' }}
+                        >
+                          {o.label}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
+                {closesLc && (
+                  <label className="flex items-center gap-2 text-[12px] font-bold text-[#0A1F17] sm:col-span-3">
+                    <input type="checkbox" checked={rep.margin} onChange={(e) => setRep((r) => ({ ...r, margin: e.target.checked }))} />
+                    This clears the last part — close the LC and release the margin
+                  </label>
+                )}
+              </div>
+              <div className="flex flex-wrap items-center gap-3 border-t border-[#E4ECE3] bg-[#FBFCFA] px-4 py-3 text-[12px] font-semibold text-[#33473E]">
+                <span>
+                  Principal <b className="tabular-nums">{formatINR(principal)}</b>
+                </span>
+                {n(rep.comm) + n(rep.bank) > 0.005 && (
+                  <span>
+                    + charges <b className="tabular-nums">{formatINR(round2(n(rep.comm) + n(rep.bank)))}</b>
+                  </span>
+                )}
+                {rebate > 0.005 && (
+                  <span>
+                    − rebate <b className="tabular-nums">{formatINR(rebate)}</b>
+                  </span>
+                )}
+                <span>
+                  = bank debit <b className="tabular-nums">{formatINR(round2(principal - rebate + n(rep.comm) + n(rep.bank)))}</b>
+                </span>
+                <Button disabled={busy} onClick={() => void repay()} className="ml-auto h-9 bg-[#1B4E82] px-4 text-[12px] font-extrabold text-white hover:bg-[#163F6A]">
+                  {busy ? 'Saving…' : `Repay ${picked.length} part${picked.length === 1 ? '' : 's'}`}
+                </Button>
+              </div>
+            </section>
+          )}
+
+          {/* The next part */}
+          {undrawn > 0.005 && !closed && (
+            <section className={cn(card, 'border-[#BFE3CB]')}>
+              <h3 className={cn(head, 'border-b-[#BFE3CB] bg-[#F4FBF6] text-[#0B6B45]')}>
+                <Plus className="h-4 w-4" /> Pay the supplier the next part
+                <span className="ml-auto rounded-[3px] bg-[#EAF6EC] px-2 py-1 text-[11px] font-bold normal-case tracking-normal text-[#0B6B45]">Part {parts.length + 1}</span>
+              </h3>
+              <div className="grid gap-4 p-4 sm:grid-cols-3">
+                <div className="grid content-start gap-1.5">
+                  <span className={lbl}>Paid on *</span>
+                  <DatePicker value={next.date} onChange={(v) => setNext((f) => ({ ...f, date: v }))} min={lastPaid || undefined} max={todayISO()} />
+                </div>
+                <div className="grid content-start gap-1.5">
+                  <span className={lbl}>Part's LC amount (₹) *</span>
+                  <div className="relative">
+                    <Input type="number" value={next.amount} onChange={(e) => setNext((f) => ({ ...f, amount: e.target.value }))} className="!h-10 !pr-[96px] !font-bold" />
+                    {Math.abs(n(next.amount) - undrawn) > 0.005 && (
+                      <button
+                        type="button"
+                        onClick={() => setNext((f) => ({ ...f, amount: String(undrawn) }))}
+                        className="absolute right-1.5 top-1/2 -translate-y-1/2 rounded-[3px] border border-[#BFE3CB] bg-[#F4FBF6] px-2 py-1 text-[10.5px] font-extrabold text-[#0B6B45]"
+                      >
+                        Draw the rest
+                      </button>
+                    )}
+                  </div>
+                </div>
+                <div className="grid content-start gap-1.5">
+                  <span className={lbl}>Matures on *</span>
+                  <DatePicker value={next.maturity} min={next.date || undefined} onChange={(v) => setNext((f) => ({ ...f, maturity: v }))} />
+                </div>
+                <div className="grid content-start gap-1.5">
+                  <span className={lbl}>Interest % p.a.</span>
+                  <Input type="number" value={next.interest_pct} placeholder={String(lc?.interest_pct ?? '')} onChange={(e) => setNext((f) => ({ ...f, interest_pct: e.target.value }))} className="!h-10" />
+                </div>
+                <div className="grid content-start gap-1.5">
+                  <span className={lbl}>Margin %</span>
+                  <Input type="number" value={next.margin_pct} placeholder={String(lc?.margin_pct ?? '')} onChange={(e) => setNext((f) => ({ ...f, margin_pct: e.target.value }))} className="!h-10" />
+                </div>
+                <div className="grid content-start gap-1.5">
+                  <span className={lbl}>LC charges (₹)</span>
+                  <Input type="number" value={next.charges} placeholder="0" onChange={(e) => setNext((f) => ({ ...f, charges: e.target.value }))} className="!h-10" />
+                </div>
+                <div className="grid gap-1.5 sm:col-span-3">
+                  <span className={lbl}>Note</span>
+                  <Input value={next.note} placeholder="Bank advice no., remarks" onChange={(e) => setNext((f) => ({ ...f, note: e.target.value }))} className="!h-10" />
+                </div>
+              </div>
+              <div className="flex flex-wrap items-center gap-3 border-t border-[#E4ECE3] bg-[#FBFCFA] px-4 py-3 text-[12px] font-semibold text-[#33473E]">
+                <span>
+                  Interest {preview.days}d <b className="tabular-nums">{formatINR(preview.interest)}</b>
+                </span>
+                <span>
+                  Supplier receives <b className="tabular-nums text-[#0B6B45]">{formatINR(n(next.amount) > 0 ? preview.net : 0)}</b>
+                </span>
+                <Button disabled={busy} onClick={() => void payNext()} className="ml-auto h-9 bg-[#0B3D2E] px-4 text-[12px] font-extrabold text-[#C7F03F] hover:bg-[#0F4A38]">
+                  {busy ? 'Saving…' : `Pay part ${parts.length + 1}`}
+                </Button>
+              </div>
+            </section>
+          )}
+
+          {err && <div className="rounded-[4px] border border-[#F0D6D4] bg-[#FDF3F2] px-3.5 py-2.5 text-[12.5px] font-bold text-[#B3261E]">{err}</div>}
+        </div>
+      </DialogContent>
+    </Dialog>
   )
 }

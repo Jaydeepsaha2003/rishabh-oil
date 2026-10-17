@@ -1,3 +1,4 @@
+import { withDbTransaction } from './dbTransaction'
 import type { ResultSet } from '@libsql/client'
 import { getClient } from './db'
 import { getActiveCompanyId } from './company'
@@ -6,6 +7,7 @@ import { facilityHeadroom } from './facilities'
 import { linkTradingDealsToLc } from './trading'
 import { getSetting } from './repos'
 import { lcInterest, lcInterestBase, lcInterestBasis } from './lcInterest'
+import { logLimitChange } from './facilityLimits'
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Row = Record<string, any>
@@ -69,7 +71,40 @@ export async function listLCs(): Promise<Row[]> {
       COALESCE((SELECT COUNT(CASE WHEN order_id IS NOT NULL THEN 1 END) FROM lc_issuances WHERE lc_id = l.id), 0) AS linked_bill_count,
       l.amount - COALESCE((SELECT SUM(amount) FROM lc_issuances WHERE lc_id = l.id), 0) AS available,
       COALESCE((SELECT SUM(amount) FROM lc_repayments WHERE lc_id = l.id AND posted = 1), 0) AS repaid,
-      (SELECT MIN(due_date) FROM lc_issuances WHERE lc_id = l.id AND COALESCE(status, 'outstanding') != 'settled') AS next_due_date
+      -- THE PRINCIPAL, APART FROM WHAT RODE OUT WITH IT.
+      -- A repayment debits the bank for the LC plus the bank's own charges in
+      -- one figure, because that is the one line on the statement. Measured
+      -- against the limit, though, only the principal repays anything: netting
+      -- the whole debit off drove Outstanding to minus the charges on an LC
+      -- that was square to the rupee.
+      COALESCE((SELECT SUM(amount - COALESCE(comm_charges, 0) - COALESCE(bank_charges, 0))
+                  FROM lc_repayments WHERE lc_id = l.id AND posted = 1), 0) AS repaid_principal,
+      COALESCE((SELECT SUM(COALESCE(comm_charges, 0) + COALESCE(bank_charges, 0))
+                  FROM lc_repayments WHERE lc_id = l.id AND posted = 1), 0) AS repaid_charges,
+      (SELECT COUNT(*) FROM lc_repayments WHERE lc_id = l.id) AS repayment_count,
+      -- Parts the bank has paid the supplier in; 0 for an LC paid in one go.
+      (SELECT COUNT(DISTINCT installment_no) FROM lc_issuances WHERE lc_id = l.id AND installment_no IS NOT NULL) AS installment_count,
+      (SELECT MAX(settled_date) FROM lc_issuances WHERE lc_id = l.id AND installment_no IS NOT NULL) AS last_installment_date,
+      -- What has actually come back, so the countdown chip can stand down and
+      -- the Payment IN action knows there is nothing left to receive.
+      COALESCE((SELECT SUM(amount) FROM lc_payment_ins WHERE lc_id = l.id), 0) AS payment_in_total,
+      (SELECT COUNT(*) FROM lc_payment_ins WHERE lc_id = l.id) AS payment_in_count,
+      COALESCE(
+        (SELECT MIN(p.maturity_date) FROM lc_parts p WHERE p.lc_id = l.id AND p.repaid_date IS NULL),
+        (SELECT MIN(due_date) FROM lc_issuances WHERE lc_id = l.id AND COALESCE(status, 'outstanding') != 'settled')
+      ) AS next_due_date,
+      -- Paid in parts: how many, their LC amounts, the interest each kept, and
+      -- what is still owed to the bank.
+      (SELECT COUNT(*) FROM lc_parts p WHERE p.lc_id = l.id) AS parts_count,
+      COALESCE((SELECT SUM(p.amount) FROM lc_parts p WHERE p.lc_id = l.id), 0) AS parts_amount,
+      COALESCE((SELECT SUM(p.interest) FROM lc_parts p WHERE p.lc_id = l.id), 0) AS parts_interest,
+      COALESCE((SELECT SUM(p.net) FROM lc_parts p WHERE p.lc_id = l.id), 0) AS parts_net,
+      COALESCE((SELECT SUM(p.amount) FROM lc_parts p WHERE p.lc_id = l.id AND p.repaid_date IS NOT NULL), 0) AS parts_repaid,
+      (SELECT COUNT(*) FROM lc_parts p WHERE p.lc_id = l.id AND p.repaid_date IS NULL) AS parts_open,
+      -- A part with its own margin % moves the LC's margin by the difference
+      -- on that part's amount; 0 for every LC whose parts use the LC's rate.
+      COALESCE((SELECT SUM(p.amount * (p.margin_pct - COALESCE(l.margin_pct, 0)) / 100) FROM lc_parts p
+                 WHERE p.lc_id = l.id AND p.margin_pct IS NOT NULL), 0) AS parts_margin_adj
     FROM letters_of_credit l
     LEFT JOIN suppliers s ON l.party_type = 'supplier' AND s.id = l.party_id
     LEFT JOIN banks ob ON ob.id = l.our_bank_id
@@ -84,7 +119,7 @@ export async function listLCs(): Promise<Row[]> {
     // Margin is the security deposit the bank asks for on the LC's own open
     // amount — a straight percentage of the credit limit itself, not of
     // whichever invoices happen to be linked to it.
-    const margin = Math.round((n(l.amount) * n(l.margin_pct)) / 100 * 100) / 100
+    const margin = Math.round(((n(l.amount) * n(l.margin_pct)) / 100 + n(l.parts_margin_adj)) * 100) / 100
     const interest = lcInterest(l)
     const rawCharges = Math.round(n(l.charges) * 100) / 100
     const chargedInterest = l.interest_upfront ? 0 : interest
@@ -133,12 +168,35 @@ export async function listLCs(): Promise<Row[]> {
       // repayments — explicitly requested this way even for an LC that's
       // barely drawn down, so it reads as the limit's outstanding exposure.
       // Against the limit, so the blocked figure less what has been repaid.
-      outstanding: Math.round(((n(l.blocked_amount) || n(l.amount)) - n(l.repaid)) * 100) / 100,
+      // Never below nothing: an LC repaid in full is repaid in full, and the
+      // charges that shared its debit are an expense, not an overpayment.
+      // A rejected application never became a credit: nothing outstanding.
+      outstanding:
+        String(l.workflow_status || '') === 'rejected'
+          ? 0
+          : // Closed by repaying its parts: what was never drawn is not owed.
+            n(l.parts_count) > 0 && l.preclosed_date
+            ? 0
+            : round2(Math.max(0, (n(l.blocked_amount) || n(l.amount)) - n(l.repaid_principal))),
+      repaid_principal: round2(n(l.repaid_principal)),
+      repaid_charges: round2(n(l.repaid_charges)),
       // Resolved once here so the register and the forms never have to repeat
       // the fallback — and cannot disagree about it.
       blocked_effective: round2(n(l.blocked_amount) || n(l.amount)),
+      // The bank's security on this LC, in rupees rather than as a percentage
+      // of a figure the reader has to go and find. Computed here already; it
+      // was simply never handed out.
+      margin_amount: margin,
+      interest_amount: n(l.parts_count) > 0 ? round2(n(l.parts_interest)) : round2(interest),
+      // Paid in parts: what of the LC is still undrawn, as an LC amount.
+      parts_left: n(l.parts_count) > 0 ? round2(Math.max(0, n(l.amount) - n(l.parts_amount))) : null,
       compliant,
-      display_status: !compliant ? 'non_compliant' : String(l.workflow_status || 'in_progress')
+      display_status:
+        String(l.workflow_status || '') === 'rejected'
+          ? 'rejected'
+          : !compliant
+            ? 'non_compliant'
+            : String(l.workflow_status || 'in_progress')
     }
   })
 }
@@ -205,8 +263,11 @@ export async function getLcLimit(bankId?: number, from?: string, to?: string): P
     // opened: the bank is holding the figure it blocked whether or not the bill
     // came in for that much. Interest and margin still work off the open
     // amount, which is why only the limit sums coalesce this way.
-    sql: `SELECT stage, COALESCE(SUM(COALESCE(NULLIF(blocked_amount, 0), amount)), 0) AS total, COUNT(*) AS cnt FROM letters_of_credit
+    sql: `SELECT stage, COALESCE(SUM(COALESCE(NULLIF(blocked_amount, 0), amount)
+                - COALESCE((SELECT SUM(p.amount) FROM lc_parts p WHERE p.lc_id = letters_of_credit.id AND p.repaid_date IS NOT NULL), 0)), 0) AS total,
+                 COUNT(*) AS cnt FROM letters_of_credit
           WHERE company_id = ? AND COALESCE(facility_type, 'lc') = 'lc' AND preclosed_date IS NULL
+            AND COALESCE(workflow_status, '') <> 'rejected'
             ${bank ? 'AND our_bank_id = ?' : ''}
             ${f ? 'AND open_date >= ?' : ''}
             ${t ? 'AND open_date <= ?' : ''}
@@ -225,6 +286,7 @@ export async function getLcLimit(bankId?: number, from?: string, to?: string): P
   const totalCountRes = await c.execute({
     sql: `SELECT COUNT(*) AS cnt FROM letters_of_credit
           WHERE company_id = ? AND COALESCE(facility_type, 'lc') = 'lc' AND preclosed_date IS NULL
+            AND COALESCE(workflow_status, '') <> 'rejected'
             ${bank ? 'AND our_bank_id = ?' : ''}`,
     args: bank ? [cid, bank] : [cid]
   })
@@ -259,10 +321,12 @@ export async function listBankLcLimits(): Promise<Row[]> {
                  COALESCE(l.fixed_limit, 0) AS fixed_limit,
                  COALESCE(l.convertible_limit, 0) AS convertible_limit,
                  COALESCE(l.convertible_enabled, 0) AS convertible_enabled,
-                 (SELECT COUNT(*) FROM letters_of_credit x WHERE x.company_id = ? AND x.our_bank_id = b.id) AS lc_count,
+                 (SELECT COUNT(*) FROM letters_of_credit x WHERE x.company_id = ? AND x.our_bank_id = b.id
+                     AND COALESCE(x.workflow_status, '') <> 'rejected') AS lc_count,
                  COALESCE((SELECT SUM(COALESCE(NULLIF(x.blocked_amount, 0), x.amount)) FROM letters_of_credit x
                            WHERE x.company_id = ? AND x.our_bank_id = b.id
-                             AND COALESCE(x.facility_type, 'lc') = 'lc' AND x.preclosed_date IS NULL), 0) AS utilized
+                             AND COALESCE(x.facility_type, 'lc') = 'lc' AND x.preclosed_date IS NULL
+                             AND COALESCE(x.workflow_status, '') <> 'rejected'), 0) AS utilized
           FROM banks b
           LEFT JOIN bank_lc_limits l ON l.bank_id = b.id AND l.company_id = ?
           WHERE b.company_id = ?
@@ -283,6 +347,13 @@ export async function saveLcLimit(v: Row): Promise<{ id: number }> {
   if (!bankId) throw new Error('Pick which bank this limit is sanctioned by')
   const owner = await getClient().execute({ sql: 'SELECT company_id FROM banks WHERE id = ?', args: [bankId] })
   if (n(owner.rows[0]?.company_id) !== cid) throw new Error('That bank belongs to a different company')
+  // What it was, before it stops being that. The screen saves every bank at
+  // once, so most of these are unchanged and record nothing.
+  const was = await getClient().execute({
+    sql: 'SELECT COALESCE(fixed_limit, 0) AS v FROM bank_lc_limits WHERE company_id = ? AND bank_id = ?',
+    args: [cid, bankId]
+  })
+  const priorFixed = was.rows.length ? n(was.rows[0].v) : 0
   await getClient().execute({
     sql: `INSERT INTO bank_lc_limits (company_id, bank_id, fixed_limit, convertible_limit, convertible_enabled, updated_at)
           VALUES (?, ?, ?, ?, ?, datetime('now'))
@@ -292,6 +363,14 @@ export async function saveLcLimit(v: Row): Promise<{ id: number }> {
             convertible_enabled = excluded.convertible_enabled,
             updated_at = excluded.updated_at`,
     args: [cid, bankId, n(v.fixed_limit), n(v.convertible_limit), v.convertible_enabled ? 1 : 0]
+  })
+  await logLimitChange({
+    kind: 'bank',
+    refId: bankId,
+    oldAmount: priorFixed,
+    newAmount: n(v.fixed_limit),
+    note: 'edited on the LC limit screen',
+    companyId: cid
   })
   return { id: bankId }
 }
@@ -326,6 +405,123 @@ async function syncLinkedOrders(lcId: number, orderIds: unknown): Promise<void> 
   }
 }
 
+// ── AN LC PAID AND REPAID IN PARTS ──────────────────────────────────────────
+//
+// The bank can pay the supplier an LC in parts, and each part runs to its OWN
+// maturity: part 1 of ₹60L paid 01-10 falls due 30-12, part 2 of ₹40L paid
+// 15-10 falls due 12-01. So each part carries its own interest — its LC amount
+// × the rate × the days from the day it was paid to its own maturity — taken
+// out of that part when it is paid, exactly as the bank's advice does. The
+// bank's charges are taken once, on part 1.
+//
+// One row per part in lc_parts: the part's LC amount (what the user types, off
+// the bank's bill), its maturity, the interest and charges kept, and what the
+// supplier received. The bills under it (lc_issuances, installment_no = part)
+// carry what reached the supplier; the settlement voucher is
+//   Dr supplier (net) · Dr Interest · Dr Bank charges (part 1) / Cr LC payable (LC amount)
+//
+// The bank is repaid part by part (repayLcParts): each repayment clears whole
+// parts, a part repaid before its maturity gets the unexpired interest back,
+// and the last repayment closes the LC.
+export interface LcPart {
+  id: number
+  lc_id: number
+  part_no: number
+  pay_date: string
+  amount: number
+  maturity_date: string
+  days: number
+  interest: number
+  charges: number
+  net: number
+  repayment_id: number | null
+  repaid_date: string | null
+  rebate: number
+  interest_pct: number | null
+  margin_pct: number | null
+}
+
+/** An LC paid in parts carries, as its charges, what its parts were charged. */
+async function syncPartsCharges(lcId: number): Promise<void> {
+  await getClient().execute({
+    sql: `UPDATE letters_of_credit SET charges = (SELECT ROUND(COALESCE(SUM(charges), 0), 2) FROM lc_parts WHERE lc_id = ?)
+           WHERE id = ? AND EXISTS (SELECT 1 FROM lc_parts WHERE lc_id = ?)`,
+    args: [n(lcId), n(lcId), n(lcId)]
+  })
+}
+
+/** The margin held on an LC paid in parts: each part at its own margin %
+ *  (the LC's where it has none), and what is still undrawn at the LC's. */
+export function lcPartsMargin(lc: Row, parts: Row[]): number {
+  const rate = n(lc.margin_pct)
+  const drawn = parts.reduce((s, p) => s + n(p.amount), 0)
+  const onParts = parts.reduce((s, p) => s + (n(p.amount) * (p.margin_pct == null ? rate : n(p.margin_pct))) / 100, 0)
+  return round2(onParts + (Math.max(0, n(lc.amount) - drawn) * rate) / 100)
+}
+
+/** A part's own rate as sent from a form: blank means "the LC's". */
+const partRate = (v: unknown): number | null => {
+  if (v == null || String(v).trim() === '') return null
+  const x = Number(v)
+  if (!Number.isFinite(x) || x < 0) throw new Error('A part\'s interest or margin % must be a number, 0 or more')
+  return x
+}
+
+export async function lcParts(lcId: number): Promise<LcPart[]> {
+  const r = await getClient()
+    .execute({ sql: 'SELECT * FROM lc_parts WHERE lc_id = ? ORDER BY part_no', args: [n(lcId)] })
+    .catch(() => null)
+  return r ? (toPlain(r) as unknown as LcPart[]) : []
+}
+
+/** One part's interest, charges and what reaches the supplier. */
+function partFigures(
+  lc: Row,
+  amount: number,
+  payDate: string,
+  maturity: string,
+  first: boolean,
+  ratePct?: number | null,
+  ownCharges?: number | null
+): { days: number; interest: number; charges: number; net: number } {
+  const days = Math.max(0, daysBetween(payDate, maturity))
+  // Each part's own bank charges where it was given them; otherwise, as
+  // before, the LC's charges on part 1 and none on the rest.
+  const charges = ownCharges != null ? round2(ownCharges) : first ? round2(n(lc.charges)) : 0
+  // The same base the whole-LC interest uses: the amount, less the bank's
+  // charges where the LC says interest runs on what was actually advanced.
+  const base = Math.max(0, round2(amount - (lc.interest_excl_charges ? charges : 0)))
+  const interest = round2((base * n(ratePct == null ? lc.interest_pct : ratePct) * days) / (100 * 365))
+  return { days, interest, charges, net: round2(amount - interest - charges) }
+}
+
+async function insertLcPart(
+  lcId: number,
+  partNo: number,
+  lc: Row,
+  amount: number,
+  payDate: string,
+  maturity: string,
+  rates: { interest_pct?: unknown; margin_pct?: unknown; charges?: unknown } = {}
+): Promise<{ net: number; interest: number }> {
+  if (lc.interest_upfront) {
+    throw new Error("This LC's interest is paid upfront from the bank account, so it cannot be split into parts with their own maturities.")
+  }
+  if (!maturity) throw new Error(`Pick the maturity of part ${partNo}`)
+  if (maturity < payDate) throw new Error(`Part ${partNo} cannot mature (${dmy(maturity)}) before it was paid (${dmy(payDate)})`)
+  const ip = partRate(rates.interest_pct)
+  const mp = partRate(rates.margin_pct)
+  const ch = partRate(rates.charges)
+  const f = partFigures(lc, amount, payDate, maturity, partNo === 1, ip, ch)
+  if (f.net <= 0.005) throw new Error(`Part ${partNo}'s interest and charges are more than its amount`)
+  await getClient().execute({
+    sql: `INSERT INTO lc_parts (lc_id, part_no, pay_date, amount, maturity_date, days, interest, charges, net, interest_pct, margin_pct)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    args: [n(lcId), partNo, payDate, round2(amount), maturity, f.days, f.interest, f.charges, f.net, ip, mp]
+  })
+  return { net: f.net, interest: f.interest }
+}
+
 // Pasting a Payment received date means the loop is closed: the bill(s) it
 // covers should show up under the LC rather than leaving "No bills issued
 // under this LC yet" (created once, per linked invoice, or one for the whole
@@ -337,7 +533,57 @@ async function syncPaymentReceivedIssuance(lcId: number, v: Row): Promise<void> 
   if (!paymentDate) return
   const c = getClient()
   const existing = await c.execute({ sql: 'SELECT COUNT(*) AS n FROM lc_issuances WHERE lc_id = ?', args: [lcId] })
-  if (n(existing.rows[0]?.n) === 0) {
+  // PAID IN INSTALLMENTS: the bank paid only part of the net to the supplier
+  // on this date. That part becomes installment 1; the rest is paid later
+  // through payLcParty, each part on its own date with its own voucher.
+  // first_installment is part 1's LC AMOUNT (off the bank's bill), with its
+  // own maturity; the interest and what the supplier got are worked from it.
+  const firstPart = round2(n(v.first_installment))
+  // SEVERAL PARTS AT ONCE: parts_plan lists every part the bank has paid so
+  // far — its LC amount, the day it was paid, its own maturity, and its own
+  // interest and margin % (blank = the LC's). Part 1 is paid on the payment
+  // received date; each part is posted as its own voucher on its own date,
+  // exactly as if the later ones had come through Pay party one by one.
+  const plan: Row[] = Array.isArray(v.parts_plan) ? v.parts_plan.filter((p: Row) => round2(n(p?.amount)) > 0.005) : []
+  if (n(existing.rows[0]?.n) === 0 && plan.length) {
+    const total = round2(plan.reduce((s, p) => s + round2(n(p.amount)), 0))
+    if (total > n(v.amount) + 0.005) {
+      throw new Error(`The parts come to ${total.toFixed(2)}, more than the LC's ${n(v.amount).toFixed(2)}`)
+    }
+    await c.execute({ sql: 'DELETE FROM lc_parts WHERE lc_id = ?', args: [lcId] })
+    const ids = Array.isArray(v.linked_order_ids) ? v.linked_order_ids.map((x: unknown) => n(x)).filter((x: number) => x > 0) : []
+    let prev = paymentDate
+    for (let i = 0; i < plan.length; i++) {
+      const p = plan[i]
+      const no = i + 1
+      const payOn = i === 0 ? paymentDate : String(p.pay_date || '').slice(0, 10)
+      if (!payOn) throw new Error(`Pick the day part ${no} was paid`)
+      if (payOn > todayISO()) throw new Error(`Part ${no} cannot be paid on a future date`)
+      if (payOn < prev) throw new Error(`Part ${no} cannot be paid (${dmy(payOn)}) before part ${no - 1} (${dmy(prev)})`)
+      prev = payOn
+      const maturity = String(p.maturity || '').slice(0, 10)
+      const fig = await insertLcPart(lcId, no, v, round2(n(p.amount)), payOn, maturity, p)
+      const billIds = await insertInstallmentBills(lcId, fig.net, payOn, maturity, no, ids)
+      const memo = String(p.note || '').trim()
+      if (memo && billIds.length) {
+        await c.execute({
+          sql: `UPDATE lc_issuances SET note = ? WHERE id IN (${billIds.map(() => '?').join(',')})`,
+          args: [memo, ...billIds]
+        })
+      }
+      await settleLcBillsCombined(billIds, payOn)
+    }
+    await syncPartsCharges(lcId)
+  } else if (n(existing.rows[0]?.n) === 0 && firstPart > 0.005) {
+    if (firstPart > n(v.amount) + 0.005) {
+      throw new Error(`Part 1 (${firstPart.toFixed(2)}) is more than the LC's ${n(v.amount).toFixed(2)}`)
+    }
+    const maturity = String(v.first_installment_maturity || v.expiry_date || '').slice(0, 10)
+    await c.execute({ sql: 'DELETE FROM lc_parts WHERE lc_id = ?', args: [lcId] })
+    const p1 = await insertLcPart(lcId, 1, v, firstPart, paymentDate, maturity)
+    const ids = Array.isArray(v.linked_order_ids) ? v.linked_order_ids.map((x: unknown) => n(x)).filter((x: number) => x > 0) : []
+    await insertInstallmentBills(lcId, p1.net, paymentDate, maturity, 1, ids)
+  } else if (n(existing.rows[0]?.n) === 0) {
     const issueDate = String(v.open_date || paymentDate).slice(0, 10)
     const dueDate = String(v.expiry_date || paymentDate).slice(0, 10)
     const ids = Array.isArray(v.linked_order_ids) ? v.linked_order_ids.map((x: unknown) => n(x)).filter((x: number) => x > 0) : []
@@ -381,9 +627,7 @@ async function syncPaymentReceivedIssuance(lcId: number, v: Row): Promise<void> 
     sql: "SELECT id FROM lc_issuances WHERE lc_id = ? AND COALESCE(status, 'outstanding') != 'settled'",
     args: [lcId]
   })
-  await settleLcBillsCombined(outstanding.rows.map((r) => Number(r.id)), paymentDate).catch((e) =>
-    console.error('[lc] auto-settle on payment received failed:', (e as Error).message)
-  )
+  await settleLcBillsCombined(outstanding.rows.map((r) => Number(r.id)), paymentDate)
 }
 
 export async function listLCIssuances(lcId: number): Promise<Row[]> {
@@ -427,7 +671,15 @@ const LC_COLS = [
   'opened_date',
   'interest_upfront',
   'interest_excl_charges',
-  'interest_adj'
+  'interest_adj',
+  // HOW LONG BEFORE THE MONEY COMES BACK.
+  //
+  // Optional, and a plain number of days rather than a date, because that is
+  // how the terms are agreed — "60 days from the LC" — and a date typed by
+  // hand drifts from whatever the LC was actually opened on. Counted from the
+  // opening; the register turns it into a date and says whether it is due.
+  'payment_in_expected',
+  'payment_in_days'
 ]
 
 function lcArgs(v: Row): (string | number | null)[] {
@@ -454,6 +706,7 @@ function lcArgs(v: Row): (string | number | null)[] {
       // lc_no is NOT NULL but genuinely unknown until Open — an empty string
       // satisfies the column without pretending to have a real number.
       if (k === 'lc_no') return ''
+      if (k === 'payment_in_expected') return 0
       return null
     }
     if (
@@ -470,7 +723,11 @@ function lcArgs(v: Row): (string | number | null)[] {
       k === 'interest_upfront' ||
       // Signed: a negative adjustment is the ordinary case, so this must not
       // be floored or read as a string.
-      k === 'interest_adj'
+      k === 'interest_adj' ||
+      // A number of days, kept as one — blank has already fallen through to
+      // null above, which is "no term agreed" rather than nought days.
+      k === 'payment_in_days' ||
+      k === 'payment_in_expected'
     ) {
       return n(val)
     }
@@ -676,12 +933,14 @@ async function resizeAutoLcBill(lcId: number): Promise<void> {
   if (!lcRes.rows.length) return
   const lc = toPlain(lcRes)[0]
   const res = await c.execute({
-    sql: 'SELECT id, amount, order_id, bill_no FROM lc_issuances WHERE lc_id = ?',
+    sql: 'SELECT id, amount, order_id, bill_no, installment_no FROM lc_issuances WHERE lc_id = ?',
     args: [n(lcId)]
   })
   if (res.rows.length !== 1) return
   const bill = toPlain(res)[0]
   if (n(bill.order_id)) return
+  // A first installment is a deliberate part-payment, not the whole limit.
+  if (n(bill.installment_no)) return
   if (String(bill.bill_no || '').trim()) return
 
   const want = netAvailable(lc, 0)
@@ -738,7 +997,7 @@ async function syncLcVouchers(id: number): Promise<string | undefined> {
     problems.push(`the party's fee adjustment (${(e as Error).message})`)
   }
   if (!problems.length) return undefined
-  return `The LC saved, but ${problems.join(' and ')} could not be re-posted — the books are out of step until that is fixed.`
+  throw new Error(`LC not saved: ${problems.join(' and ')} could not be posted. The previous books were retained.`)
 }
 
 // A bank belongs to one company (own-account, not the financing/discounting
@@ -756,6 +1015,7 @@ async function assertOwnBankBelongsToCompany(v: Row): Promise<void> {
 }
 
 export async function createLC(v: Row): Promise<{ id: number; warning?: string }> {
+  return withDbTransaction(async () => {
   if (!v.bank) throw new Error('Bank is required')
   if (!String(v.open_date || '').trim()) throw new Error('Application date is required')
   assertLcNoIfPastApplication(v)
@@ -779,9 +1039,11 @@ export async function createLC(v: Row): Promise<{ id: number; warning?: string }
   // Margin + charges voucher into the books (skipped when both are zero).
   const warning = await syncLcVouchers(id)
   return { id, warning }
+  })
 }
 
 export async function updateLC(id: number, v: Row): Promise<{ id: number; warning?: string }> {
+  return withDbTransaction(async () => {
   if (!v.bank) throw new Error('Bank is required')
   if (!String(v.open_date || '').trim()) throw new Error('Application date is required')
   assertLcNoIfPastApplication(v)
@@ -802,6 +1064,7 @@ export async function updateLC(id: number, v: Row): Promise<{ id: number; warnin
   await syncPaymentReceivedIssuance(id, v)
   const warning = await syncLcVouchers(id)
   return { id, warning }
+  })
 }
 
 function todayISO(): string {
@@ -830,11 +1093,15 @@ export async function precloseLC(
     release_margin?: boolean
   }
 ): Promise<{ id: number }> {
+  return withDbTransaction(async () => {
   const c = getClient()
   const res = await c.execute({ sql: 'SELECT * FROM letters_of_credit WHERE id = ?', args: [id] })
   if (!res.rows.length) throw new Error('LC not found')
   const lc = toPlain(res)[0]
   if (lc.preclosed_date) throw new Error('This LC is already preclosed')
+  if ((await lcParts(id)).length) {
+    throw new Error('This LC was paid in parts — repay it part by part from ⋮ → Parts (each part has its own maturity and rebate).')
+  }
   // Winding up early only means something once the bank has PAID under the
   // credit. Before that there is no advance to repay and no interest running —
   // an LC still with the bank is cancelled, not preclosed, and this routine
@@ -896,17 +1163,20 @@ export async function precloseLC(
   })
   if (v.release_margin) {
     const margin = round2((n(lc.amount) * n(lc.margin_pct)) / 100)
+    // Records the release whether or not it raises a voucher. The margin is
+    // off the books now (see postLcMarginRelease), so there is no entry to
+    // write — but that the bank let it go, and how much, is a fact about this
+    // LC and belongs on the row either way.
     const settlement = await postLcMarginRelease(id, margin, precloseDate)
-    if (settlement) {
-      await c.execute({
-        sql: `UPDATE letters_of_credit SET preclose_settlement_direction = 'margin_released',
-              preclose_settlement_amount = ?, preclose_journal_entry_id = ? WHERE id = ?`,
-        args: [margin, settlement.id, id]
-      })
-    }
+    await c.execute({
+      sql: `UPDATE letters_of_credit SET preclose_settlement_direction = 'margin_released',
+            preclose_settlement_amount = ?, preclose_journal_entry_id = ? WHERE id = ?`,
+      args: [margin, settlement ? settlement.id : null, id]
+    })
   }
   await c.execute({ sql: "UPDATE letters_of_credit SET workflow_status = 'preclosed' WHERE id = ?", args: [id] })
   return { id }
+  })
 }
 
 // Undo a preclosure booked by mistake. Everything precloseLC wrote comes back
@@ -922,11 +1192,15 @@ export async function precloseLC(
 // Bills issued under the LC and any Payment IN are left alone: they are not
 // part of the preclosure, and undoing it must not disturb them.
 export async function unPrecloseLC(id: number): Promise<{ id: number; removed: string[] }> {
+  return withDbTransaction(async () => {
   const c = getClient()
   const res = await c.execute({ sql: 'SELECT * FROM letters_of_credit WHERE id = ?', args: [id] })
   if (!res.rows.length) throw new Error('LC not found')
   const lc = toPlain(res)[0]
   if (!lc.preclosed_date) throw new Error('This LC is not preclosed, so there is nothing to undo')
+  if ((await lcParts(id)).length) {
+    throw new Error('This LC was closed by repaying its parts — undo the last part repayment from ⋮ → Parts instead.')
+  }
   const removed: string[] = []
 
   if (lc.preclose_payout_journal_entry_id) {
@@ -976,9 +1250,11 @@ export async function unPrecloseLC(id: number): Promise<{ id: number; removed: s
   await postLcOpening(id)
   removed.push(`interest days back to ${plannedDays}`)
   return { id, removed }
+  })
 }
 
 export async function deleteLC(id: number): Promise<{ id: number }> {
+  return withDbTransaction(async () => {
   const c = getClient()
   // Reverse everything the LC put into the books before it goes.
   const bills = await c.execute({ sql: 'SELECT journal_entry_id FROM lc_issuances WHERE lc_id = ?', args: [id] })
@@ -1006,6 +1282,7 @@ export async function deleteLC(id: number): Promise<{ id: number }> {
   await linkTradingDealsToLc(id, [])
   await c.execute({ sql: 'DELETE FROM letters_of_credit WHERE id = ?', args: [id] })
   return { id }
+  })
 }
 
 async function dropTreasuryEntry(entryId: number): Promise<void> {
@@ -1020,6 +1297,7 @@ async function dropTreasuryEntry(entryId: number): Promise<void> {
 
 // Issue (draw down) against an LC. Cannot exceed the available balance.
 export async function issueLC(v: Row): Promise<{ id: number }> {
+  return withDbTransaction(async () => {
   const c = getClient()
   const lcId = n(v.lc_id)
   const amount = n(v.amount)
@@ -1067,9 +1345,11 @@ export async function issueLC(v: Row): Promise<{ id: number }> {
     })
   }
   return { id: Number(ins.lastInsertRowid) }
+  })
 }
 
 export async function deleteLCIssuance(id: number): Promise<{ id: number }> {
+  return withDbTransaction(async () => {
   const c = getClient()
   const res = await c.execute({ sql: 'SELECT lc_id, journal_entry_id FROM lc_issuances WHERE id = ?', args: [id] })
   if (res.rows.length && res.rows[0].journal_entry_id) await dropTreasuryEntry(Number(res.rows[0].journal_entry_id))
@@ -1082,4 +1362,439 @@ export async function deleteLCIssuance(id: number): Promise<{ id: number }> {
     })
   }
   return { id }
+  })
+}
+
+// A REPAID OR PRECLOSED LC IS CLOSED BOOKS.
+//
+// Once the bank has been repaid, the LC's figures are what that repayment,
+// its interest rebate and its margin release were worked out from — and
+// preclosing even rewrites usance_days to the days actually run. Editing an
+// amount, a rate or a date afterwards would leave those vouchers answering to
+// numbers that are no longer on the LC. So the only way back in is Undo
+// preclosure, which reverses all of it first; then edit, then close again.
+export async function assertLcNotClosed(lcId: number, what = 'edited'): Promise<void> {
+  if (!lcId) return
+  const r = await getClient().execute({
+    sql: 'SELECT lc_no, preclosed_date, workflow_status, rejected_date FROM letters_of_credit WHERE id = ?',
+    args: [lcId]
+  })
+  const row = r.rows[0] as unknown as
+    | { lc_no?: string; preclosed_date?: string; workflow_status?: string; rejected_date?: string }
+    | undefined
+  if (String(row?.workflow_status || '') === 'rejected') {
+    const [ry, rm, rd] = String(row?.rejected_date || '').slice(0, 10).split('-')
+    throw new Error(
+      `This LC application was rejected${ry ? ` on ${rd}-${rm}-${ry}` : ''}, so it can no longer be ${what}. ` +
+        'Use ⋮ → Reinstate application first if the rejection was a mistake.'
+    )
+  }
+  const closed = String(row?.preclosed_date || '').slice(0, 10)
+  if (!closed) return
+  const [y, m, d] = closed.split('-')
+  if ((await lcParts(lcId)).length) {
+    throw new Error(
+      `LC ${String(row?.lc_no || '')} was closed on ${d}-${m}-${y} by repaying its last part, so it can no longer be ${what}. ` +
+        'Use ⋮ → Parts → Undo last repayment to reopen it.'
+    )
+  }
+  throw new Error(
+    `LC ${String(row?.lc_no || '')} was repaid on ${d}-${m}-${y} and is closed, so it can no longer be ${what}. ` +
+      'To change how it was closed, use ⋮ → Edit preclosure; to change the LC itself, Undo preclosure first.'
+  )
+}
+
+// ── REJECTED AT APPLICATION ──────────────────────────────────────────────────
+//
+// The bank can turn an LC application down. Nothing was ever posted for it —
+// an application carries no voucher (see postLcOpening) — so rejecting it is a
+// statement, not a reversal: the LC stays in the register, marked Rejected with
+// the day and the reason, and stops counting anywhere a figure is added up —
+// the LC limit and its Application bucket, the bank-wise utilisation, the
+// facility headroom, Outstanding, the expiry alert. It cannot be edited,
+// advanced or drawn on until it is reinstated.
+//
+// Only an application can be rejected, and only one nothing has happened to:
+// no bill, no repayment, no Payment IN, no upfront interest voucher. Anything
+// further along was opened by the bank, which is not a rejection.
+export async function rejectLC(
+  id: number,
+  v: { date?: string; reason?: string }
+): Promise<{ id: number }> {
+  return withDbTransaction(async () => {
+    const c = getClient()
+    const r = await c.execute({ sql: 'SELECT * FROM letters_of_credit WHERE id = ?', args: [n(id)] })
+    if (!r.rows.length) throw new Error('That LC no longer exists')
+    const lc = toPlain(r)[0]
+    if (String(lc.workflow_status || '') === 'rejected') throw new Error('This application is already rejected')
+    if (String(lc.stage || 'application') !== 'application') {
+      throw new Error('Only an LC still at Application can be rejected — this one has been opened by the bank.')
+    }
+    if (lc.preclosed_date) throw new Error('This LC is closed')
+    const counts = toPlain(
+      await c.execute({
+        sql: `SELECT (SELECT COUNT(*) FROM lc_issuances WHERE lc_id = ?) AS bills,
+                     (SELECT COUNT(*) FROM lc_repayments WHERE lc_id = ?) AS repayments,
+                     (SELECT COUNT(*) FROM lc_payment_ins WHERE lc_id = ?) AS ins`,
+        args: [n(id), n(id), n(id)]
+      })
+    )[0]
+    if (n(counts.bills) || n(counts.repayments) || n(counts.ins) || n(lc.interest_journal_entry_id)) {
+      throw new Error('This application already has bills, repayments or vouchers against it, so it cannot simply be rejected.')
+    }
+    const date = String(v?.date || '').slice(0, 10) || todayISO()
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) throw new Error('Pick the date the bank rejected it')
+    if (date > todayISO()) throw new Error('The rejection date cannot be in the future')
+    const applied = String(lc.open_date || '').slice(0, 10)
+    if (applied && date < applied) throw new Error(`The bank cannot have rejected it before it was applied for (${applied})`)
+    const reason = String(v?.reason || '').trim()
+    if (!reason) throw new Error('Say why the bank rejected it')
+    await c.execute({
+      sql: `UPDATE letters_of_credit
+               SET workflow_status = 'rejected', rejected_date = ?, rejected_reason = ?, rejected_by = ?
+             WHERE id = ?`,
+      args: [date, reason.slice(0, 500), String((await import('./currentUser')).getCurrentUser()?.username || '') || null, n(id)]
+    })
+    return { id: n(id) }
+  })
+}
+
+/** A rejection made in error, undone: the application counts again, as it did. */
+export async function reinstateLC(id: number): Promise<{ id: number }> {
+  return withDbTransaction(async () => {
+    const c = getClient()
+    const r = await c.execute({ sql: 'SELECT * FROM letters_of_credit WHERE id = ?', args: [n(id)] })
+    if (!r.rows.length) throw new Error('That LC no longer exists')
+    const lc = toPlain(r)[0]
+    if (String(lc.workflow_status || '') !== 'rejected') throw new Error('This LC is not rejected')
+    // It takes limit again, so it has to fit — the same check a new LC meets.
+    await assertWithinFacility(lc, n(id))
+    await c.execute({
+      sql: `UPDATE letters_of_credit
+               SET workflow_status = 'in_progress', rejected_date = NULL, rejected_reason = NULL, rejected_by = NULL
+             WHERE id = ?`,
+      args: [n(id)]
+    })
+    return { id: n(id) }
+  })
+}
+
+/**
+ * Repay the bank for one or more whole parts. One lc_repayments row and its
+ * voucher (Dr LC payable / Cr bank, with any charges on the day); a part
+ * repaid before its own maturity gets the unexpired share of ITS interest
+ * back (Cr Interest — kept, or passed on to the supplier). The repayment that
+ * clears the last part closes the LC — optionally releasing the margin.
+ */
+export async function repayLcParts(
+  lcId: number,
+  v: {
+    date: string
+    parts: number[]
+    comm_charges?: number
+    bank_charges?: number
+    rebate_route?: 'credit_to_us' | 'pay_to_party'
+    release_margin?: boolean
+    note?: string
+  }
+): Promise<{ repayment_id: number; closed: boolean; rebate: number }> {
+  return withDbTransaction(async () => {
+    const c = getClient()
+    const r = await c.execute({ sql: 'SELECT * FROM letters_of_credit WHERE id = ?', args: [n(lcId)] })
+    if (!r.rows.length) throw new Error('LC not found')
+    const lc = toPlain(r)[0]
+    if (lc.preclosed_date) throw new Error('This LC is already closed')
+    const all = await lcParts(n(lcId))
+    if (!all.length) throw new Error('This LC was not paid in parts — use Repay / Preclose')
+    const want = new Set((v.parts || []).map((x) => n(x)).filter((x) => x > 0))
+    const pick = all.filter((p) => want.has(n(p.part_no)))
+    if (!pick.length) throw new Error('Tick the parts this repayment clears')
+    const done = pick.find((p) => p.repaid_date)
+    if (done) throw new Error(`Part ${done.part_no} was already repaid on ${dmy(String(done.repaid_date))}`)
+    const date = String(v.date || '').slice(0, 10)
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) throw new Error('Pick the repayment date')
+    if (date > todayISO()) throw new Error('The repayment date cannot be in the future')
+    const early = pick.find((p) => date < String(p.pay_date).slice(0, 10))
+    if (early) throw new Error(`Part ${early.part_no} was only paid on ${dmy(String(early.pay_date))} — it cannot be repaid before that`)
+    const comm = round2(n(v.comm_charges))
+    const bankCh = round2(n(v.bank_charges))
+    const principal = round2(pick.reduce((s, p) => s + n(p.amount), 0))
+    const label = pick.map((p) => p.part_no).join(', ')
+    // REPAID BEFORE ITS MATURITY: the bank charged interest to the part's own
+    // maturity when it paid, so it now debits that much less — the unexpired
+    // share comes back off the debit, and a rebate voucher (Dr LC payable / Cr
+    // Interest) takes the same off the interest. Worked first, because the
+    // debit depends on it.
+    const route = v.rebate_route === 'pay_to_party' ? 'pay_to_party' : 'credit_to_us'
+    const rebates = pick.map((p) => {
+      const left = Math.max(0, daysBetween(date, String(p.maturity_date)))
+      return n(p.days) > 0 && left > 0 ? round2((n(p.interest) * left) / n(p.days)) : 0
+    })
+    const rebateTotal = round2(rebates.reduce((s, x) => s + x, 0))
+    const ins = await c.execute({
+      sql: `INSERT INTO lc_repayments (lc_id, party_id, amount, maturity_charges, comm_charges, bank_charges, repay_date, posted, document_path, note)
+            VALUES (?, NULL, ?, ?, ?, ?, ?, 1, NULL, ?)`,
+      args: [n(lcId), round2(principal - rebateTotal + comm + bankCh), round2(comm + bankCh), comm, bankCh, date,
+        `Part repayment — part${pick.length === 1 ? '' : 's'} ${label}${String(v.note || '').trim() ? ` · ${String(v.note).trim()}` : ''}`]
+    })
+    const repId = Number(ins.lastInsertRowid)
+    const { postLcRepaymentEntry } = await import('./treasury')
+    await postLcRepaymentEntry(repId)
+    // The unexpired interest on each part repaid early comes back.
+    for (let i = 0; i < pick.length; i++) {
+      const p = pick[i]
+      const rebate = rebates[i]
+      let je: { id: number; payoutId?: number } | null = null
+      if (rebate > 0.005) je = await postLcPrematureInterestRebate(n(lcId), route, rebate, date)
+      await c.execute({
+        sql: `UPDATE lc_parts SET repaid_date = ?, repayment_id = ?, rebate = ?, rebate_route = ?,
+                     rebate_journal_entry_id = ?, rebate_payout_journal_entry_id = ? WHERE id = ?`,
+        args: [date, repId, rebate, rebate > 0.005 ? route : null, je?.id ?? null, je?.payoutId ?? null, n(p.id)]
+      })
+    }
+    // The last part repaid closes the LC — what was never drawn is not owed.
+    const open = all.filter((p) => !p.repaid_date && !want.has(n(p.part_no)))
+    let closed = false
+    if (!open.length) {
+      closed = true
+      await c.execute({
+        sql: `UPDATE letters_of_credit SET preclosed_date = ?, workflow_status = 'preclosed', preclose_parts_repayment_id = ? WHERE id = ?`,
+        args: [date, repId, n(lcId)]
+      })
+      if (v.release_margin) {
+        // Each part's own margin %, where it has one.
+        const margin = lcPartsMargin(lc, all)
+        const settlement = await postLcMarginRelease(n(lcId), margin, date)
+        await c.execute({
+          sql: `UPDATE letters_of_credit SET preclose_settlement_direction = 'margin_released',
+                preclose_settlement_amount = ?, preclose_journal_entry_id = ? WHERE id = ?`,
+          args: [margin, settlement ? settlement.id : null, n(lcId)]
+        })
+      }
+    }
+    return { repayment_id: repId, closed, rebate: rebateTotal }
+  })
+}
+
+/** Take back the LATEST part repayment — its vouchers, its rebates, and the closure it made. */
+export async function undoLcPartRepayment(lcId: number): Promise<{ parts: number[] }> {
+  return withDbTransaction(async () => {
+    const c = getClient()
+    const parts = (await lcParts(n(lcId))).filter((p) => n(p.repayment_id) > 0)
+    if (!parts.length) throw new Error('No part of this LC has been repaid yet')
+    const repId = Math.max(...parts.map((p) => n(p.repayment_id)))
+    const mine = parts.filter((p) => n(p.repayment_id) === repId)
+    for (const p of mine) {
+      const row = toPlain(await c.execute({ sql: 'SELECT rebate_journal_entry_id, rebate_payout_journal_entry_id FROM lc_parts WHERE id = ?', args: [n(p.id)] }))[0] || {}
+      if (n(row.rebate_payout_journal_entry_id)) await dropTreasuryEntry(n(row.rebate_payout_journal_entry_id))
+      if (n(row.rebate_journal_entry_id)) await dropTreasuryEntry(n(row.rebate_journal_entry_id))
+      await c.execute({
+        sql: `UPDATE lc_parts SET repaid_date = NULL, repayment_id = NULL, rebate = 0, rebate_route = NULL,
+                     rebate_journal_entry_id = NULL, rebate_payout_journal_entry_id = NULL WHERE id = ?`,
+        args: [n(p.id)]
+      })
+    }
+    const rep = toPlain(await c.execute({ sql: 'SELECT journal_entry_id, fee_journal_entry_id FROM lc_repayments WHERE id = ?', args: [repId] }))[0] || {}
+    if (n(rep.journal_entry_id)) await dropTreasuryEntry(n(rep.journal_entry_id))
+    if (n(rep.fee_journal_entry_id)) await dropTreasuryEntry(n(rep.fee_journal_entry_id))
+    await c.execute({ sql: 'DELETE FROM lc_repayments WHERE id = ?', args: [repId] })
+    // If this repayment closed the LC, it is open again.
+    const lc = toPlain(await c.execute({ sql: 'SELECT preclose_parts_repayment_id, preclose_journal_entry_id FROM letters_of_credit WHERE id = ?', args: [n(lcId)] }))[0] || {}
+    if (n(lc.preclose_parts_repayment_id) === repId) {
+      if (n(lc.preclose_journal_entry_id)) await dropTreasuryEntry(n(lc.preclose_journal_entry_id))
+      await c.execute({
+        sql: `UPDATE letters_of_credit SET preclosed_date = NULL, workflow_status = 'in_progress', preclose_parts_repayment_id = NULL,
+                     preclose_settlement_direction = NULL, preclose_settlement_amount = NULL, preclose_journal_entry_id = NULL
+               WHERE id = ?`,
+        args: [n(lcId)]
+      })
+    }
+    return { parts: mine.map((p) => n(p.part_no)) }
+  })
+}
+
+export async function lcIdOfRepayment(id: number): Promise<number> {
+  const r = await getClient().execute({ sql: 'SELECT lc_id FROM lc_repayments WHERE id = ?', args: [id] })
+  return Number((r.rows[0] as unknown as { lc_id?: number } | undefined)?.lc_id || 0)
+}
+
+export async function lcIdOfIssuance(id: number): Promise<number> {
+  const r = await getClient().execute({ sql: 'SELECT lc_id FROM lc_issuances WHERE id = ?', args: [id] })
+  return Number((r.rows[0] as unknown as { lc_id?: number } | undefined)?.lc_id || 0)
+}
+
+// ── PAYMENT TO THE PARTY IN INSTALLMENTS ────────────────────────────────────
+//
+// The bank does not always release an LC's whole net to the supplier at once.
+// Each part it pays is one installment: a set of bills (lc_issuances) sharing
+// an installment_no, settled together by ONE journal on the day it was paid —
+// Dr supplier / Cr LC payable — exactly as the single payment always was. The
+// bank's interest and commission still ride on the first settlement only
+// (settleLcBillsCombined), so the fees are taken once however many parts
+// there are, and interest still runs from Payment received to maturity.
+//
+// A part is spread over the LC's linked invoices first-come, so the supplier's
+// bill-wise ledger shows each invoice paid down; with no invoice linked it is
+// one on-account bill.
+async function insertInstallmentBills(
+  lcId: number,
+  amount: number,
+  date: string,
+  dueDate: string,
+  instNo: number,
+  orderIds: number[]
+): Promise<number[]> {
+  const c = getClient()
+  const ids: number[] = []
+  let left = round2(amount)
+  for (const oid of orderIds) {
+    if (left <= 0.005) break
+    const o = await c.execute({ sql: 'SELECT invoice_no, net_amount FROM orders WHERE id = ?', args: [oid] })
+    if (!o.rows.length) continue
+    const used = await c.execute({
+      sql: 'SELECT COALESCE(SUM(amount), 0) AS u FROM lc_issuances WHERE lc_id = ? AND order_id = ?',
+      args: [lcId, oid]
+    })
+    const room = round2(n(o.rows[0].net_amount) - n(used.rows[0]?.u))
+    const part = round2(Math.min(left, room))
+    if (part <= 0.005) continue
+    const ins = await c.execute({
+      sql: `INSERT INTO lc_issuances (lc_id, issue_date, amount, order_id, bill_no, due_date, status, installment_no)
+            VALUES (?, ?, ?, ?, ?, ?, 'outstanding', ?)`,
+      args: [lcId, date, part, oid, String(o.rows[0].invoice_no || ''), dueDate, instNo]
+    })
+    ids.push(Number(ins.lastInsertRowid))
+    left = round2(left - part)
+  }
+  if (left > 0.005) {
+    const ins = await c.execute({
+      sql: `INSERT INTO lc_issuances (lc_id, issue_date, amount, bill_no, due_date, status, installment_no)
+            VALUES (?, ?, ?, NULL, ?, 'outstanding', ?)`,
+      args: [lcId, date, left, dueDate, instNo]
+    })
+    ids.push(Number(ins.lastInsertRowid))
+  }
+  return ids
+}
+
+function dmy(iso: string): string {
+  return iso.slice(0, 10).split('-').reverse().join('-')
+}
+
+/** The next part the bank pays the supplier under this LC. */
+export async function payLcParty(lcId: number, v: Row): Promise<{ id: number; installment_no: number }> {
+  return withDbTransaction(async () => {
+    const c = getClient()
+    const res = await c.execute({ sql: 'SELECT * FROM letters_of_credit WHERE id = ?', args: [n(lcId)] })
+    if (!res.rows.length) throw new Error('LC not found')
+    const lc = toPlain(res)[0]
+    if (String(lc.stage || '') !== 'payment_received') {
+      throw new Error('Mark Payment received first — that records the first part the bank paid')
+    }
+    // The part's LC AMOUNT, as on the bank's bill — not what reached the
+    // supplier, which is worked from it.
+    const amount = round2(n(v.amount))
+    if (amount <= 0.005) throw new Error("Enter this part's LC amount")
+    const date = String(v.date || '').slice(0, 10)
+    if (!date) throw new Error('Pick the date the bank paid it')
+    if (date > todayISO()) throw new Error('The payment date cannot be in the future')
+    const paidFrom = String(lc.payment_received_date || '').slice(0, 10)
+    if (paidFrom && date < paidFrom) throw new Error(`An installment cannot be dated before the first payment on ${dmy(paidFrom)}`)
+    const bills = toPlain(
+      await c.execute({
+        sql: 'SELECT amount, installment_no, settled_date FROM lc_issuances WHERE lc_id = ?',
+        args: [n(lcId)]
+      })
+    )
+    if (bills.length && !bills.some((b) => n(b.installment_no))) {
+      throw new Error('This LC was paid to the supplier in one go — there is nothing left to pay in installments')
+    }
+    const last = bills.reduce((m, b) => (String(b.settled_date || '') > m ? String(b.settled_date) : m), '')
+    if (last && date < last.slice(0, 10)) {
+      throw new Error(`The last installment was paid on ${dmy(last)} — this one cannot be dated before it`)
+    }
+    const parts = await lcParts(n(lcId))
+    if (!parts.length) throw new Error('This LC was not paid in parts — there is no next part to record')
+    const used = round2(parts.reduce((s, p) => s + n(p.amount), 0))
+    const left = round2(n(lc.amount) - used)
+    if (left <= 0.005) throw new Error('This LC has been drawn in full — there is nothing left for another part')
+    if (amount > left + 0.005) throw new Error(`Only ${left.toFixed(2)} of this LC is still undrawn`)
+    const instNo = parts.reduce((m, p) => Math.max(m, n(p.part_no)), 0) + 1
+    const maturity = String(v.maturity || '').slice(0, 10)
+    const fig = await insertLcPart(n(lcId), instNo, lc, amount, date, maturity, v)
+    const linked = await c.execute({
+      sql: 'SELECT order_id FROM lc_linked_orders WHERE lc_id = ? ORDER BY order_id',
+      args: [n(lcId)]
+    })
+    const ids = await insertInstallmentBills(
+      n(lcId),
+      fig.net,
+      date,
+      maturity,
+      instNo,
+      linked.rows.map((r) => n((r as unknown as Row).order_id)).filter((x) => x > 0)
+    )
+    const memo = String(v.note || '').trim()
+    if (memo) {
+      await c.execute({
+        sql: `UPDATE lc_issuances SET note = ? WHERE id IN (${ids.map(() => '?').join(',')})`,
+        args: [memo, ...ids]
+      })
+    }
+    const je = await settleLcBillsCombined(ids, date)
+    if (!je) throw new Error('The installment could not be posted')
+    await syncPartsCharges(n(lcId))
+    return { id: je.id, installment_no: instNo }
+  })
+}
+
+/**
+ * Take back the LATEST installment — its bills and its voucher. Only the last,
+ * so the parts stay in date order, and never the first: that one is the
+ * Payment received stage itself.
+ */
+export async function deleteLastLcInstallment(lcId: number): Promise<{ installment_no: number }> {
+  return withDbTransaction(async () => {
+    const c = getClient()
+    const r = await c.execute({ sql: 'SELECT MAX(installment_no) AS m FROM lc_issuances WHERE lc_id = ?', args: [n(lcId)] })
+    const instNo = n(r.rows[0]?.m)
+    if (!instNo) throw new Error('This LC has no installments')
+    if (instNo === 1) throw new Error('The first installment is the Payment received itself — it cannot be removed here')
+    const part = (await lcParts(n(lcId))).find((p) => n(p.part_no) === instNo)
+    if (part?.repaid_date) throw new Error(`Part ${instNo} has already been repaid to the bank — undo that repayment first`)
+    const rows = toPlain(
+      await c.execute({
+        sql: 'SELECT id, journal_entry_id FROM lc_issuances WHERE lc_id = ? AND installment_no = ?',
+        args: [n(lcId), instNo]
+      })
+    )
+    const entries = [...new Set(rows.map((x) => n(x.journal_entry_id)).filter(Boolean))]
+    for (const e of entries) await dropTreasuryEntry(e)
+    await c.execute({ sql: 'DELETE FROM lc_issuances WHERE lc_id = ? AND installment_no = ?', args: [n(lcId), instNo] })
+    await c.execute({ sql: 'DELETE FROM lc_parts WHERE lc_id = ? AND part_no = ?', args: [n(lcId), instNo] })
+    await syncPartsCharges(n(lcId))
+    return { installment_no: instNo }
+  })
+}
+
+// EDIT A PRECLOSURE IN PLACE.
+//
+// The closure's own figures — its date, what the bank debited and how that
+// split into commission and charges, the interest rebate and where it went,
+// whether the margin was released — corrected without the user having to undo
+// the preclosure and redo it by hand. It is still exactly that underneath:
+// everything the closure posted is taken out (unPrecloseLC) and the closure is
+// posted again from the corrected figures (precloseLC), as ONE transaction, so
+// the books are never left half-closed and a refusal changes nothing.
+export async function editPreclosure(
+  id: number,
+  v: Parameters<typeof precloseLC>[1]
+): Promise<{ id: number }> {
+  return withDbTransaction(async () => {
+    const res = await getClient().execute({ sql: 'SELECT preclosed_date FROM letters_of_credit WHERE id = ?', args: [n(id)] })
+    if (!res.rows.length) throw new Error('LC not found')
+    if (!res.rows[0].preclosed_date) throw new Error('This LC is not closed — use Preclose instead')
+    await unPrecloseLC(n(id))
+    return precloseLC(n(id), v)
+  })
 }

@@ -59,15 +59,18 @@ const TYPE_DEFAULTS: Record<string, Record<string, number | boolean>> = {
   CHEMICAL: { tds_pct: 0.1, tds_threshold: 5000000, tds_above_only: true }
 }
 
+// A funnel on every column, Excel-style, beside the search.
 const baseColumns: ColumnDef[] = [
-  { key: 'name', label: 'Name' },
-  { key: 'supplier_type', label: 'Type' },
-  { key: 'business_type', label: 'Trading/Mfg', type: 'select' },
-  { key: 'gst_pct', label: 'GST %', align: 'right' },
-  { key: 'tds_pct', label: 'TDS %', align: 'right' },
-  { key: 'credit_period_days', label: 'Credit days', align: 'right' },
-  { key: 'skip_tanker_stages', label: 'Direct purchase', type: 'switch' },
-  { key: 'created_at', label: 'Created', type: 'date' }
+  { key: 'name', label: 'Name', filterable: true },
+  { key: 'supplier_type', label: 'Type', filterable: true },
+  { key: 'business_type', label: 'Trading/Mfg', type: 'select', filterable: true },
+  { key: 'state', label: 'State', filterable: true },
+  { key: 'gst_pct', label: 'GST %', align: 'right', filterable: true },
+  { key: 'tds_pct', label: 'TDS %', align: 'right', filterable: true },
+  { key: 'credit_period_days', label: 'Credit days', align: 'right', filterable: true },
+  { key: 'skip_tanker_stages', label: 'Direct purchase', type: 'switch', filterable: true },
+  { key: 'active', label: 'Active', type: 'switch', filterable: true },
+  { key: 'created_at', label: 'Created', type: 'date', filterable: true }
 ]
 
 export function Suppliers(): React.JSX.Element {
@@ -76,8 +79,11 @@ export function Suppliers(): React.JSX.Element {
   // For linking a Trading supplier to its real-world Manufacturing
   // counterpart, so the TDS slab is tracked across both rows together.
   const [allSuppliers, setAllSuppliers] = useState<Row[]>([])
+  // Purchase entries booked with each supplier, every company together.
+  const [purchaseCounts, setPurchaseCounts] = useState<Record<string, number>>({})
   useEffect(() => {
     window.api.data.list('suppliers').then(setAllSuppliers).catch(() => setAllSuppliers([]))
+    window.api.suppliers.purchaseCounts().then(setPurchaseCounts).catch(() => setPurchaseCounts({}))
   }, [])
   const manufacturingOptions = allSuppliers
     .filter((s) => !isTradingParty(s) && s.active)
@@ -96,7 +102,9 @@ export function Suppliers(): React.JSX.Element {
           value: (row: Row) =>
             row.linked_party_id && nameById.get(String(row.linked_party_id))
               ? `${row.business_type} · same as ${nameById.get(String(row.linked_party_id))}`
-              : String(row.business_type || '')
+              : String(row.business_type || ''),
+          badge: (row: Row) => purchaseCounts[String(row.id)] ?? 0,
+          badgeTitle: 'Purchase entries booked with this supplier (all companies)'
         }
       : c
   )
@@ -110,6 +118,7 @@ export function Suppliers(): React.JSX.Element {
           fields={fields}
           columns={columns}
           readOnly={!canWrite(loadUser(), 'suppliers')}
+          importable
           onFieldChange={(key, value) =>
             key === 'supplier_type' ? TYPE_DEFAULTS[String(value)] : undefined
           }

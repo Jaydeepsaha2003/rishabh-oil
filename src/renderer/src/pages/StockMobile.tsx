@@ -19,13 +19,17 @@ import {
   AlertTriangle,
   BookOpen,
   CalendarCheck,
+  ChevronDown,
+  ChevronRight,
   ClipboardCheck,
+  Database,
   Copy,
   Inbox,
   Layers,
   Loader2,
   Monitor,
   Package,
+  Plus,
   Save,
   Search,
   X,
@@ -33,6 +37,7 @@ import {
 } from 'lucide-react'
 import { formatDate, formatINR, formatNum, todayISO } from '@/lib/format'
 import { MobileBar } from '@/components/MobileBar'
+import { SerialNo } from '@/components/SerialNo'
 import { PpBreakdown } from '@/components/PpBreakdown'
 import { cn } from '@/lib/utils'
 
@@ -140,29 +145,34 @@ function BookScreen(): React.JSX.Element {
 
   const shown = useMemo(() => {
     const q = query.trim().toLowerCase()
-    const live = rows.filter((r) => n(r.active) !== 0)
+    // An inactive product is left off only when there is nothing on it — one
+    // still holding a balance (or below zero) is exactly what needs seeing,
+    // and the desktop register lists it.
+    const live = rows.filter((r) => n(r.active) !== 0 || Math.abs(n(r.stock)) > 0.0005)
     if (!q) return live
     return live.filter((r) => [r.name, r.code, r.category].some((f) => s(f).toLowerCase().includes(q)))
   }, [rows, query])
 
-  const totals = useMemo(
-    () => ({
-      closing: shown.reduce((a, r) => a + n(r.stock), 0),
-      received: shown.reduce((a, r) => a + n(r.received), 0),
-      produced: shown.reduce((a, r) => a + n(r.produced), 0),
+  // Only products counted in MT add to these — a carton (PCS) or KG product
+  // summed in would be "counted as tonnes", the rule the desktop footer keeps.
+  const totals = useMemo(() => {
+    const mt = shown.filter((r) => s(r.uom || 'MT').toUpperCase() === 'MT')
+    return {
+      closing: mt.reduce((a, r) => a + n(r.stock), 0),
+      received: mt.reduce((a, r) => a + n(r.received), 0),
+      produced: mt.reduce((a, r) => a + n(r.produced), 0),
       negative: shown.filter((r) => n(r.stock) < -0.0005).length
-    }),
-    [shown]
-  )
+    }
+  }, [shown])
 
   return (
     <>
       <Kpis
         tone="green"
         items={[
-          { k: 'Closing', v: formatNum(r3(totals.closing)) },
-          { k: 'Received', v: formatNum(r3(totals.received)) },
-          { k: 'Produced', v: formatNum(r3(totals.produced)) },
+          { k: 'Closing MT', v: formatNum(r3(totals.closing)) },
+          { k: 'Received MT', v: formatNum(r3(totals.received)) },
+          { k: 'Produced MT', v: formatNum(r3(totals.produced)) },
           { k: 'Below zero', v: String(totals.negative), warn: totals.negative > 0 }
         ]}
       />
@@ -175,7 +185,7 @@ function BookScreen(): React.JSX.Element {
         ) : shown.length === 0 ? (
           <Empty title={query ? 'Nothing matches that.' : 'No products.'} />
         ) : (
-          shown.map((r) => {
+          shown.map((r, ri) => {
             const closing = n(r.stock)
             return (
               <div
@@ -186,6 +196,7 @@ function BookScreen(): React.JSX.Element {
                 )}
               >
                 <div className="flex items-start gap-2.5 px-3.5 pb-2.5 pt-3">
+                  <SerialNo n={ri + 1} />
                   <div className="min-w-0 flex-1">
                     <div className="text-[13.5px] font-extrabold tracking-[-0.01em] text-[#0A1F17]">{s(r.name)}</div>
                     <div className="mt-1 text-[10.5px] font-semibold text-[#5A6B62]">
@@ -204,9 +215,14 @@ function BookScreen(): React.JSX.Element {
                     </div>
                   </div>
                 </div>
-                <div className="grid grid-cols-3 gap-2 border-t border-t-[#EAF0E9] bg-[#F7FAF6] px-3.5 py-2.5">
+                {/* Opening + Adj. + In − Out = Closing, as on the desktop. The
+                    adjustment (count correction, FFA restatement, a batch out
+                    of PP) is its own figure there; left off here the card
+                    did not add up, and Out carries the PP half of it. */}
+                <div className="grid grid-cols-4 gap-2 border-t border-t-[#EAF0E9] bg-[#F7FAF6] px-3.5 py-2.5">
                   {[
                     { k: 'Opening', v: n(r.opening), tone: 'text-[#33473E]' },
+                    { k: 'Adj.', v: n(r.opening_adj), tone: 'text-[#7C9188]' },
                     { k: 'In', v: n(r.received) + n(r.produced) + n(r.transferred_in), tone: 'text-[#0B6B45]' },
                     {
                       k: 'Out',
@@ -322,6 +338,10 @@ function DayCloseScreen(): React.JSX.Element {
     const items = rows
       .map((r) => ({
         product_id: r.product_id,
+        // The book figure the count is set against — the desktop sends it
+        // too. Without it the server stored 0, and every phone count read as
+        // a mismatch the size of the whole stock in the day-close history.
+        book_qty: r.book_qty,
         actual_qty: valOf(r, 'actual'),
         pp_qty: valOf(r, 'pp'),
         note: valOf(r, 'note')
@@ -386,7 +406,10 @@ function DayCloseScreen(): React.JSX.Element {
         ) : groups.length === 0 ? (
           <Empty title={query ? 'Nothing matches that.' : 'Nothing to count.'} />
         ) : (
-          groups.map((g) => {
+          groups.map((g, gi) => {
+            // Counted straight down the sheet, not restarting per category —
+            // "line 23" names one product on the whole count.
+            const base = groups.slice(0, gi).reduce((t, x) => t + x.rows.length, 0)
             const diff = g.rows.reduce(
               (a, r) => a + (n(valOf(r, 'actual')) + n(valOf(r, 'pp')) - n(r.book_qty)),
               0
@@ -408,7 +431,7 @@ function DayCloseScreen(): React.JSX.Element {
                   </span>
                 </div>
 
-                {g.rows.map((r) => {
+                {g.rows.map((r, ri) => {
                   const actual = valOf(r, 'actual')
                   const pp = valOf(r, 'pp')
                   const total = n(actual) + n(pp)
@@ -423,6 +446,7 @@ function DayCloseScreen(): React.JSX.Element {
                       )}
                     >
                       <div className="flex items-start gap-2.5 px-3.5 pb-2 pt-3">
+                        <SerialNo n={base + ri + 1} />
                         <div className="min-w-0 flex-1">
                           <div className="text-[13.5px] font-extrabold tracking-[-0.01em] text-[#0A1F17]">{s(r.name)}</div>
                           <div className="mt-1 text-[10.5px] font-semibold text-[#5A6B62]">{s(r.code) || '—'}</div>
@@ -565,9 +589,17 @@ function OpeningScreen(): React.JSX.Element {
   )
 }
 
+// Raw split by tank, as the desktop sheet has it: each line a tank and what it
+// held, and Raw is their sum. Saved with the opening (Save opening).
+type TankLine = { tank: string; qty: string }
+const tankSum = (lines: TankLine[]): number => r3(lines.reduce((t, l) => t + n(l.qty), 0))
+
 function OpeningProducts(): React.JSX.Element {
   const [data, setData] = useState<Row | null>(null)
-  const [draft, setDraft] = useState<Record<string, { qty?: string; pp?: string; adj?: string }>>({})
+  const [draft, setDraft] = useState<Record<string, { qty?: string; pp?: string; adj?: string; tanks?: TankLine[] }>>({})
+  // Which products have their tank list open. Shut by default — a card is a
+  // product's three figures first; the tanks open when they are wanted.
+  const [openTanks, setOpenTanks] = useState<Set<string>>(new Set())
   // Which product's PP breakdown is open — the same editor the desktop sheet
   // uses, because the stage list it writes to is the site's and there must not
   // be two versions of what it means.
@@ -582,6 +614,7 @@ function OpeningProducts(): React.JSX.Element {
       const d = await window.api.stockOpening.list()
       setData(d || null)
       setDraft({})
+      setOpenTanks(new Set())
     } catch (e) {
       toast.error((e as Error).message)
     } finally {
@@ -619,10 +652,33 @@ function OpeningProducts(): React.JSX.Element {
     const d = draft[String(r.id)]
     if (d && d[k] != null) return String(d[k])
     const src = k === 'qty' ? r.qty : k === 'pp' ? r.pp_qty : r.adj_qty
+    // A saved row comes back with 0 for an empty PP or Adj. Shown as "0" it was
+    // sent back as a figure, so clearing Raw kept the row at 0 instead of
+    // removing it. The desktop reads 0 there as blank; so does this.
+    if (k !== 'qty' && src != null && n(src) === 0) return ''
     return src == null ? '' : String(src)
   }
   const set = (r: Row, k: 'qty' | 'pp' | 'adj', v: string): void =>
     setDraft((p) => ({ ...p, [String(r.id)]: { ...(p[String(r.id)] || {}), [k]: v } }))
+  // The tanks as they stand: what was changed here, else what is on file.
+  const tanksOf = (r: Row): TankLine[] => {
+    const d = draft[String(r.id)]
+    if (d?.tanks) return d.tanks
+    return Array.isArray(r.raw_tanks) ? (r.raw_tanks as Row[]).map((l) => ({ tank: s(l.tank), qty: l.qty == null ? '' : String(l.qty) })) : []
+  }
+  // Raw follows the lines; taking the last one away leaves Raw where it was.
+  const setTanks = (r: Row, lines: TankLine[]): void =>
+    setDraft((p) => {
+      const cur = p[String(r.id)] || {}
+      return { ...p, [String(r.id)]: { ...cur, tanks: lines, qty: lines.length ? String(tankSum(lines)) : (cur.qty ?? valOf(r, 'qty')) } }
+    })
+  // Names already used on this sheet, offered as a tank is typed.
+  const tankNames = useMemo(() => {
+    const out = new Set<string>()
+    for (const r of rows) for (const l of tanksOf(r)) if (l.tank.trim()) out.add(l.tank.trim())
+    return [...out].sort((a, b) => a.localeCompare(b, undefined, { numeric: true }))
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [rows, draft])
 
   const shown = useMemo(() => {
     const q = query.trim().toLowerCase()
@@ -657,9 +713,16 @@ function OpeningProducts(): React.JSX.Element {
       const payload = rows.map((r) => ({
         product_id: r.id,
         qty: valOf(r, 'qty'),
+        // Sent every time, as the desktop does — an empty list says Raw is one figure.
+        raw_tanks: tanksOf(r)
+          .filter((l) => l.tank.trim() || n(l.qty) !== 0)
+          .map((l) => ({ tank: l.tank.trim(), qty: n(l.qty) })),
         pp_qty: valOf(r, 'pp'),
         adj_qty: valOf(r, 'adj'),
-        rate: r.rate ?? r.suggested_rate ?? null,
+        // The rate as saved, or blank — as the desktop sends it. The
+        // suggested (weighted-average) rate is a hint to click, not a value to
+        // write into every opening that had none.
+        rate: r.rate == null ? '' : r.rate,
         note: r.note ?? null
       }))
       const res = await window.api.stockOpening.save(payload, asOf, undefined, String(data?.version || ''))
@@ -707,12 +770,21 @@ function OpeningProducts(): React.JSX.Element {
         ) : shown.length === 0 ? (
           <Empty title={query ? 'Nothing matches that.' : 'No products.'} />
         ) : (
-          shown.map((r) => {
+          shown.map((r, ri) => {
             const total = n(valOf(r, 'qty')) + n(valOf(r, 'pp')) + n(valOf(r, 'adj'))
             const any = ['qty', 'pp', 'adj'].some((k) => valOf(r, k as 'qty') !== '')
             const after = r3(n(r.movement_closing) + total)
             const short = n(r.shortfall) > 0.0005 && valOf(r, 'qty') === ''
             const ppCount = Array.isArray(r.pp_lines) ? (r.pp_lines as Row[]).length : 0
+            const tanks = tanksOf(r)
+            const tanksOpen = openTanks.has(String(r.id))
+            const toggleTanks = (): void =>
+              setOpenTanks((p) => {
+                const next = new Set(p)
+                if (next.has(String(r.id))) next.delete(String(r.id))
+                else next.add(String(r.id))
+                return next
+              })
             return (
               <div
                 key={String(r.id)}
@@ -723,6 +795,7 @@ function OpeningProducts(): React.JSX.Element {
               >
                 <div className="flex flex-col gap-2 px-3.5 pb-2 pt-3">
                   <div className="flex items-start gap-2.5">
+                    <SerialNo n={ri + 1} />
                     <div className="min-w-0 flex-1">
                       <div className="text-[13.5px] font-extrabold tracking-[-0.01em] text-[#0A1F17]">{s(r.name)}</div>
                       <div className="mt-1 text-[10.5px] font-semibold text-[#5A6B62]">
@@ -763,7 +836,13 @@ function OpeningProducts(): React.JSX.Element {
                 </div>
 
                 <div className="grid grid-cols-3 gap-2.5 px-3.5 pb-2">
-                  <Num label="Raw qty" value={valOf(r, 'qty')} onChange={(v) => set(r, 'qty', v)} />
+                  {/* Locked while tanks are listed: Raw is their sum. */}
+                  <Num
+                    label="Raw qty"
+                    value={valOf(r, 'qty')}
+                    onChange={(v) => set(r, 'qty', v)}
+                    readOnly={tanks.length > 0}
+                  />
                   {/* Locked while a breakdown stands behind it: the stages are
                       the count, and a second place to type the same figure is
                       how the two come to disagree. */}
@@ -774,6 +853,86 @@ function OpeningProducts(): React.JSX.Element {
                     readOnly={ppCount > 0}
                   />
                   <Num label="Adj." value={valOf(r, 'adj')} onChange={(v) => set(r, 'adj', v)} />
+                </div>
+
+                {/* RAW BY TANK — shut until tapped. */}
+                <div className="px-3.5 pb-2">
+                  <button
+                    type="button"
+                    onClick={toggleTanks}
+                    aria-expanded={tanksOpen}
+                    className={cn(
+                      'flex h-11 w-full items-center gap-2.5 rounded-[4px] border px-3',
+                      tanks.length ? 'border-[#D6CEF5] bg-[#F6F3FD]' : 'border-[#E1E8E0] bg-white'
+                    )}
+                  >
+                    <Database className={cn('h-[17px] w-[17px] shrink-0', tanks.length ? 'text-[#5B4BA8]' : 'text-[#7C9188]')} />
+                    <span
+                      className={cn(
+                        'min-w-0 flex-1 truncate text-left text-[11.5px] font-extrabold',
+                        tanks.length ? 'text-[#3D3179]' : 'text-[#5A6B62]'
+                      )}
+                    >
+                      {tanks.length ? `Raw by tank · ${tanks.length} tank${tanks.length === 1 ? '' : 's'}` : 'Split Raw by tank'}
+                    </span>
+                    {tanks.length ? (
+                      <span className="shrink-0 text-[12.5px] font-bold tabular-nums text-[#3D3179]">{formatNum(tankSum(tanks))}</span>
+                    ) : null}
+                    {tanksOpen ? (
+                      <ChevronDown className="h-4 w-4 shrink-0 text-[#7C9188]" />
+                    ) : (
+                      <ChevronRight className="h-4 w-4 shrink-0 text-[#7C9188]" />
+                    )}
+                  </button>
+                  {tanksOpen && (
+                    <div className="mt-1.5 grid gap-1.5 rounded-[4px] border border-[#E4DEF8] bg-[#FAF9FE] p-2.5">
+                      {tanks.length === 0 && (
+                        <div className="text-[11px] font-semibold leading-snug text-[#5A6B62]">
+                          Raw is one figure{valOf(r, 'qty') ? ` (${valOf(r, 'qty')})` : ''}. Add the tanks it stands in — the first starts from that figure.
+                        </div>
+                      )}
+                      {tanks.map((l, i) => (
+                        <div key={i} className="flex items-center gap-1.5">
+                          <input
+                            list={`tanks-${String(r.id)}`}
+                            placeholder={`Tank ${i + 1}`}
+                            value={l.tank}
+                            onChange={(e) => setTanks(r, tanks.map((x, k) => (k === i ? { ...x, tank: e.target.value.slice(0, 60) } : x)))}
+                            className="h-11 min-w-0 flex-1 rounded-[4px] border border-[#C3D2C6] bg-white px-2.5 text-[13px] font-bold text-[#0A1F17] outline-none placeholder:font-medium placeholder:text-[#C3D2C6]"
+                          />
+                          <input
+                            inputMode="decimal"
+                            placeholder="0"
+                            value={l.qty}
+                            onChange={(e) =>
+                              setTanks(r, tanks.map((x, k) => (k === i ? { ...x, qty: e.target.value.replace(/[^0-9.]/g, '') } : x)))
+                            }
+                            className="h-11 w-[96px] rounded-[4px] border border-[#C3D2C6] bg-white px-2.5 text-right text-[13px] font-bold tabular-nums text-[#0A1F17] outline-none placeholder:font-medium placeholder:text-[#C3D2C6]"
+                          />
+                          <button
+                            type="button"
+                            aria-label="Remove this tank"
+                            onClick={() => setTanks(r, tanks.filter((_, k) => k !== i))}
+                            className="flex h-11 w-11 shrink-0 items-center justify-center rounded-[4px] border border-[#F0D6D4] bg-white text-[#B3261E]"
+                          >
+                            <X className="h-4 w-4" />
+                          </button>
+                        </div>
+                      ))}
+                      <datalist id={`tanks-${String(r.id)}`}>
+                        {tankNames.map((nm) => (
+                          <option key={nm} value={nm} />
+                        ))}
+                      </datalist>
+                      <button
+                        type="button"
+                        onClick={() => setTanks(r, [...tanks, { tank: '', qty: tanks.length === 0 ? valOf(r, 'qty') : '' }])}
+                        className="flex h-11 items-center justify-center gap-1.5 rounded-[4px] border border-dashed border-[#C7BCF0] bg-white text-[12px] font-extrabold text-[#3D3179]"
+                      >
+                        <Plus className="h-4 w-4" /> Add tank
+                      </button>
+                    </div>
+                  )}
                 </div>
 
                 <div className="px-3.5 pb-3">
@@ -946,7 +1105,7 @@ function OpeningPacked(): React.JSX.Element {
         ) : shown.length === 0 ? (
           <Empty title={query ? 'Nothing matches that.' : 'No packed SKUs.'} />
         ) : (
-          shown.map((r) => {
+          shown.map((r, ri) => {
             const v = valOf(r)
             const after = r3(n(r.movement_closing) + n(v))
             const short = n(r.shortfall) > 0.0005 && v === ''
@@ -959,6 +1118,7 @@ function OpeningPacked(): React.JSX.Element {
                 )}
               >
                 <div className="flex items-start gap-2.5 px-3.5 pb-2 pt-3">
+                  <SerialNo n={ri + 1} />
                   <div className="min-w-0 flex-1">
                     <div className="text-[13.5px] font-extrabold leading-snug tracking-[-0.01em] text-[#0A1F17]">
                       {s(r.name)}

@@ -17,7 +17,7 @@
 import React, { useEffect, useState } from 'react'
 import { Building2, ChevronDown, MoreVertical, RefreshCw } from 'lucide-react'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
-import { useCompany } from '@/lib/companyContext'
+import { useCompany, useHeaderExtras } from '@/lib/companyContext'
 import { useMobileMenu } from '@/lib/mobileMenu'
 import { cn } from '@/lib/utils'
 
@@ -38,6 +38,14 @@ export function MobileBar({
 }): React.JSX.Element {
   const { setOpen, registerBar } = useMobileMenu()
   const { companies, companyId, onCompanyChange } = useCompany()
+  // THE BELL, ON EVERY MOBILE PAGE.
+  //
+  // It lives in the desktop PageHeader, which no mobile page renders — they
+  // draw their own top bar instead. So on a phone there was no way to reach a
+  // notification at all: the one bell on screen, in the Sales header, was an
+  // icon from the design handoff with no click and a dot that was always lit.
+  // Here it sits beside Refresh on the one strip every mobile page shares.
+  const { mobileBell } = useHeaderExtras()
   const [spinning, setSpinning] = useState(false)
 
   // Tells the sidebar it does not need its floating trigger on this page.
@@ -129,6 +137,8 @@ export function MobileBar({
             </Popover>
           ) : null)}
       </div>
+
+      {mobileBell}
 
       <button
         type="button"

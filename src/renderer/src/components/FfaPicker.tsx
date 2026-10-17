@@ -102,6 +102,26 @@ export function FfaPicker({
     )
   }, [rows, search])
 
+  // A RUNNING TOTAL, COUNTED FROM THE BOTTOM UP. Each row carries its own
+  // quantity plus every load listed below it, so the top row is the sum of the
+  // whole list and reading down says how much a run on the latest N loads
+  // would draw on. Follows the search, like the list it sits in.
+  const cumulative = useMemo(() => {
+    const out: number[] = new Array(visible.length)
+    let run = 0
+    for (let i = visible.length - 1; i >= 0; i--) {
+      run += Number(visible[i].qty) || 0
+      out[i] = Math.round(run * 1000) / 1000
+    }
+    return out
+  }, [visible])
+  // One unit if every load is counted in the same one; otherwise the figure is
+  // shown bare rather than wrongly labelled.
+  const cumUom = useMemo(() => {
+    const u = new Set(visible.map((r) => String(r.uom || '')).filter(Boolean))
+    return u.size === 1 ? [...u][0] : ''
+  }, [visible])
+
   const picked = useMemo(() => rows.filter((r) => sel.has(rowKey(r))), [rows, sel])
 
   // What the ticked loads come to. Both figures are computed whichever is
@@ -113,7 +133,11 @@ export function FfaPicker({
     const plain = vals.reduce((t, v) => t + v, 0) / vals.length
     const wSum = picked.reduce((t, r) => t + (Number(r.qty) || 0), 0)
     const wAvg = wSum > 0 ? picked.reduce((t, r) => t + (Number(r.ffa_num) || 0) * (Number(r.qty) || 0), 0) / wSum : plain
+    // What the ticked loads add up to, in their unit — or said to be mixed.
+    const units = [...new Set(picked.filter((r) => Number(r.qty) > 0).map((r) => String(r.uom || '').trim().toUpperCase()))]
     return {
+      qty: wSum,
+      qtyUom: units.length === 1 ? units[0] : units.length > 1 ? 'mixed' : '',
       plain: round2(plain),
       weighted: round2(wAvg),
       // Whether weighting is even available to offer: with no quantities
@@ -146,7 +170,7 @@ export function FfaPicker({
   return (
     <Dialog open={open} onOpenChange={(o) => !o && onClose()}>
       <DialogContent
-        className="flex max-h-[88dvh] w-[min(96vw,54rem)] max-w-none flex-col gap-0 overflow-hidden !rounded-[4px] !border-0 p-0 [&>button]:top-5 [&>button]:text-white [&>button]:opacity-70 [&>button]:hover:opacity-100"
+        className="flex max-h-[88dvh] w-[min(96vw,60rem)] max-w-none flex-col gap-0 overflow-hidden !rounded-[4px] !border-0 p-0 [&>button]:top-5 [&>button]:text-white [&>button]:opacity-70 [&>button]:hover:opacity-100"
       >
         <DialogHeader className="shrink-0 space-y-0 !bg-[#0B3D2E] px-5 py-4 pr-14 text-left">
           <div className="flex items-start gap-3">
@@ -248,15 +272,18 @@ export function FfaPicker({
             </div>
           ) : (
             <div className="overflow-hidden rounded-[4px] border border-[#C3D2C6] bg-white">
-              <div className="grid grid-cols-[34px_88px_minmax(0,1fr)_minmax(0,130px)_92px_74px] items-center gap-x-2 border-b-2 border-[#0B3D2E] bg-[#EFF5EC] px-2.5 py-2 text-[10.5px] font-extrabold uppercase tracking-[.09em] text-[#0B3D2E]">
+              <div className="grid grid-cols-[34px_88px_minmax(0,1fr)_minmax(150px,200px)_92px_104px_74px] items-center gap-x-2 border-b-2 border-[#0B3D2E] bg-[#EFF5EC] px-2.5 py-2 text-[10.5px] font-extrabold uppercase tracking-[.09em] text-[#0B3D2E]">
                 <span />
                 <span>Received</span>
                 <span>Party</span>
                 <span>Tanker</span>
                 <span className="text-right">Qty</span>
+                <span className="text-right" title="Running total from the bottom row up — the top row is the whole list">
+                  Cumulative
+                </span>
                 <span className="text-right">FFA %</span>
               </div>
-              {visible.map((r) => {
+              {visible.map((r, ri) => {
                 const on = sel.has(rowKey(r))
                 return (
                   <div
@@ -271,7 +298,7 @@ export function FfaPicker({
                       }
                     }}
                     className={cn(
-                      'grid cursor-pointer grid-cols-[34px_88px_minmax(0,1fr)_minmax(0,130px)_92px_74px] items-center gap-x-2 border-b border-[#E4ECE3] px-2.5 py-2 transition-colors last:border-b-0',
+                      'grid cursor-pointer grid-cols-[34px_88px_minmax(0,1fr)_minmax(150px,200px)_92px_104px_74px] items-center gap-x-2 border-b border-[#E4ECE3] px-2.5 py-2 transition-colors last:border-b-0',
                       on ? 'bg-[#F1FAF4]' : 'hover:bg-[#F7FAF6]'
                     )}
                   >
@@ -290,24 +317,29 @@ export function FfaPicker({
                         <span className="ml-1.5 text-[11px] font-semibold text-[#5A6B62]">{String(r.product)}</span>
                       ) : null}
                     </span>
-                    <span className="truncate text-[11.5px] font-semibold text-[#33473E]" title={String(r.ref || '')}>
-                      {String(r.ref || '—')}
-                      {r.kind === 'consignment' ? (
-                        <span className="ml-1.5 text-[10.5px] font-extrabold uppercase tracking-[.04em] text-[#8FA79B]">
-                          consignment
-                        </span>
-                      ) : null}
-                      {/* Only where there is more than one book at this site to
-                          tell apart — on a single-company site it would be the
-                          same name on every row. */}
-                      {multiCompany && r.company ? (
-                        <span className="ml-1.5 text-[10.5px] font-semibold text-[#8FA79B]">
-                          {String(r.company)}
+                    {/* The tanker number whole, on its own line — the tags that
+                        used to share it pushed the number itself into an
+                        ellipsis. They sit under it now, and only they clip. */}
+                    <span className="flex min-w-0 flex-col" title={[r.ref, r.kind === 'consignment' ? 'consignment' : '', multiCompany ? r.company : ''].filter(Boolean).map(String).join(' · ')}>
+                      <span className="doc-ref whitespace-nowrap text-[11.5px] font-bold text-[#33473E]">{String(r.ref || '—')}</span>
+                      {r.kind === 'consignment' || (multiCompany && r.company) ? (
+                        <span className="truncate text-[10px] font-semibold text-[#8FA79B]">
+                          {r.kind === 'consignment' ? (
+                            <span className="font-extrabold uppercase tracking-[.04em]">consignment</span>
+                          ) : null}
+                          {r.kind === 'consignment' && multiCompany && r.company ? ' · ' : ''}
+                          {/* Only where there is more than one book at this site to
+                              tell apart — on a single-company site it would be the
+                              same name on every row. */}
+                          {multiCompany && r.company ? String(r.company) : ''}
                         </span>
                       ) : null}
                     </span>
                     <span className="text-right text-[12px] font-semibold tabular-nums text-[#33473E]">
                       {Number(r.qty) > 0 ? `${formatNum(r.qty)} ${String(r.uom || '')}` : '—'}
+                    </span>
+                    <span className="text-right text-[12px] font-bold tabular-nums text-[#1B4E82]">
+                      {cumulative[ri] > 0 ? `${formatNum(cumulative[ri])}${cumUom ? ` ${cumUom}` : ''}` : '—'}
                     </span>
                     <span className="text-right text-[13px] font-extrabold tabular-nums tracking-[-0.02em] text-[#0B3D2E]">
                       {formatNum(Number(r.ffa_num))}
@@ -326,6 +358,15 @@ export function FfaPicker({
                 <span className="text-[12.5px] font-bold text-[#0A1F17]">
                   {picked.length} load{picked.length === 1 ? '' : 's'} ticked
                 </span>
+                {stat.qty > 0 ? (
+                  <span
+                    className="doc-ref rounded-[4px] border border-[#C6DAF0] bg-[#EAF0FA] px-2 py-[3px] text-[12px] font-bold tabular-nums text-[#1B4E82]"
+                    title={stat.qtyUom === 'mixed' ? 'The ticked loads are in more than one unit — this adds the figures as entered' : 'Total quantity of the ticked loads'}
+                  >
+                    Σ {formatNum(stat.qty)}
+                    {stat.qtyUom && stat.qtyUom !== 'mixed' ? ` ${stat.qtyUom}` : stat.qtyUom === 'mixed' ? ' (mixed units)' : ''}
+                  </span>
+                ) : null}
                 {/* The spread, because two loads averaging 23 can be 22 and 24
                     or 5 and 41, and only one of those is a number worth
                     putting in a recipe. */}

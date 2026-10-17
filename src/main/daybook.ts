@@ -26,8 +26,9 @@ export async function daybook(from: string, to: string): Promise<{ vouchers: Row
       SELECT je.id, je.entry_date, je.vch_type, je.vch_no, je.narration,
              je.order_id, je.sale_id, je.payment_id,
              COALESCE((SELECT SUM(dr) FROM journal_lines WHERE entry_id = je.id), 0) AS amount,
-             (SELECT GROUP_CONCAT(a.name, ' + ') FROM journal_lines jl JOIN ledger_accounts a ON a.id = jl.account_id WHERE jl.entry_id = je.id AND jl.dr > 0) AS dr_accounts,
-             (SELECT GROUP_CONCAT(a.name, ' + ') FROM journal_lines jl JOIN ledger_accounts a ON a.id = jl.account_id WHERE jl.entry_id = je.id AND jl.cr > 0) AS cr_accounts
+             -- Biggest first on each side, as a voucher is read.
+             (SELECT GROUP_CONCAT(nm, ' + ') FROM (SELECT a.name AS nm FROM journal_lines jl JOIN ledger_accounts a ON a.id = jl.account_id WHERE jl.entry_id = je.id AND jl.dr > 0 ORDER BY jl.dr DESC, jl.id)) AS dr_accounts,
+             (SELECT GROUP_CONCAT(nm, ' + ') FROM (SELECT a.name AS nm FROM journal_lines jl JOIN ledger_accounts a ON a.id = jl.account_id WHERE jl.entry_id = je.id AND jl.cr > 0 ORDER BY jl.cr DESC, jl.id)) AS cr_accounts
       FROM journal_entries je
       WHERE je.company_id = ? AND substr(je.entry_date, 1, 10) >= ? AND substr(je.entry_date, 1, 10) <= ?
       ORDER BY je.entry_date ASC, je.id ASC`,

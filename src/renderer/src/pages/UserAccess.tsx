@@ -58,10 +58,11 @@ import {
 } from 'lucide-react'
 import { toast } from 'sonner'
 import { MobileBar } from '@/components/MobileBar'
+import { SerialNo } from '@/components/SerialNo'
 import { PageHeader } from '@/components/PageHeader'
 import { Input } from '@/components/ui/input'
 import { Button } from '@/components/ui/button'
-import { MODULES } from '@/lib/modules'
+import { MODULES, MODULE_GROUP, MODULE_GROUPS } from '@/lib/modules'
 import { clearEntryWindows } from '@/lib/useEntryWindow'
 import { useIsMobile } from '@/lib/useIsMobile'
 import { useLiveRefresh } from '@/lib/useLiveRefresh'
@@ -71,6 +72,7 @@ import {
   hasWorkAccess,
   parsePerms,
   rightsOf,
+  rightsSource,
   scopeOf,
   setAllDays,
   setAllPerms,
@@ -84,6 +86,7 @@ import {
   type Perms,
   type Rights
 } from '@/lib/userRights'
+import { isSectionKey, SECTION_PARENT } from '@/lib/accessSections'
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Row = Record<string, any>
@@ -125,39 +128,10 @@ const ICON_OF: Record<string, LucideIcon> = {
   notifications: BellRing,
   settings: SettingsIcon
 }
-const GROUP_OF: Record<string, string> = {
-  dashboard: 'Daily work',
-  bargains: 'Daily work',
-  orders: 'Daily work',
-  consignment: 'Daily work',
-  gateEntry: 'Daily work',
-  trading: 'Daily work',
-  salesBargains: 'Daily work',
-  sales: 'Daily work',
-  accounts: 'Money',
-  treasuryLc: 'Money',
-  treasuryBd: 'Money',
-  treasuryTracker: 'Money',
-  bankRecon: 'Money',
-  formulation: 'Plant',
-  production: 'Plant',
-  stock: 'Plant',
-  categories: 'Masters',
-  products: 'Masters',
-  suppliers: 'Masters',
-  transporters: 'Masters',
-  customers: 'Masters',
-  ports: 'Masters',
-  banks: 'Masters',
-  brokers: 'Masters',
-  packaging: 'Masters',
-  companies: 'Masters',
-  factories: 'Masters',
-  approvals: 'System',
-  notifications: 'System',
-  settings: 'System'
-}
-const GROUPS = ['Daily work', 'Money', 'Plant', 'Masters', 'System', 'Other']
+// Both maps now live in lib/modules.ts — the work-assignment catalogue reads
+// the same ones, and two copies would have drifted.
+const GROUP_OF = MODULE_GROUP
+const GROUPS = MODULE_GROUPS
 
 // The two the app decides for itself — see directLevel in lib/modules.ts. Shown
 // LOCKED rather than as free tick boxes that would not be honoured: a box that
@@ -171,7 +145,14 @@ const FIXED: Record<string, { note: string; adminOnly?: boolean }> = {
 // parent tick beside three child ticks could only ever disagree with itself.
 const GRID_MODULES = MODULES.filter((m) => !m.derived)
 const GRID_KEYS = GRID_MODULES.map((m) => m.key)
-const IS_SECTION = (key: string): boolean => key.startsWith('treasury') && key !== 'treasury'
+// A section of a page (Treasury's three desks, every Accounting voucher type
+// and screen) — drawn indented, and reading as its page does until it is set
+// on its own row.
+const IS_SECTION = isSectionKey
+// Under its Accounting row an Accounting section needs no "Accounting ·" in
+// front of it; Treasury has no row of its own, so its sections keep theirs.
+const rowLabel = (key: string, label: string): string =>
+  SECTION_PARENT[key] === 'accounts' ? label.replace(/^Accounting · /, '') : label
 
 const ROLES: { key: string; sub: string; icon: LucideIcon }[] = [
   { key: 'admin', sub: 'Everything, with no window', icon: ShieldCheck },
@@ -203,6 +184,9 @@ const DESKS = [
   {
     key: 'unload',
     module: 'sales',
+    badge: 'unloading desk',
+    digest: 'Receiving list only — records the received quantity on unloading. No rates, no values.',
+    short: 'Unloading desk only',
     title: 'Special access — unloading desk only',
     body:
       'Turns the Sales page into a receiving list instead of the invoice register: Date / Invoice, Customer, Item and Dispatch status only, for FOR deliveries still out. Everything already unloaded, every Ex sale, and every rate, invoice value, GST and freight figure is left out of the data entirely — not merely hidden. The one thing this user can record is the received quantity on unloading.',
@@ -212,8 +196,51 @@ const DESKS = [
     ink: '#8A5300'
   },
   {
+    key: 'topup',
+    module: 'salesBargains',
+    badge: 'top-up desk',
+    digest: 'Adds to a contracted quantity. Nothing else on the page.',
+    short: 'Sales Bargain increase only',
+    title: 'Special access — Sales Bargain increase only',
+    body:
+      'One change to a sales bargain and one direction: adding to the contracted quantity. Removing quantity, editing the rate, customer, product or date, raising a new bargain, deleting one, and the SKU rate card are all refused — on the screen and again on the server. The register itself stays readable, so the balance being topped up can be seen.',
+    override: 'The Sales Bargain row in the grid below is overridden while this is on.',
+    bd: '#0B6B45',
+    bg: '#E9F5EE',
+    ink: '#0B6B45'
+  },
+  {
+    key: 'intercompany',
+    module: 'sales',
+    badge: 'inter-company desk',
+    digest:
+      'Transfers between our own companies only — every outside rate and invoice value is left out of the data.',
+    // Purchases is NOT part of this desk. It is listed here only so the desk
+    // can KEEP Purchases CLEAR of its scope — it is never granted, locked or
+    // badged from here. The desk used to lock Purchases read-only, which
+    // stopped a login that also does the mill's normal buying from keying a
+    // New purchase; now the desk touches Sales alone and Purchases is an
+    // ordinary, independent page the admin grants in the grid like any other.
+    also: ['orders'],
+    // Only Sales is granted by the desk; Purchases is left to the grid below.
+    grants: {
+      sales: { view: true, create: true, edit: true, delete: true }
+    },
+    short: 'Inter-company transfers only',
+    title: 'Special access — inter-company transfers only',
+    body:
+      'Sales shows only the invoices raised on another of our companies — every outside rate and invoice value is left out of the data, not merely hidden — and those transfers can be raised, amended and deleted here. Purchases is NOT linked to this desk: grant it in the grid below like any other page, so a login that also does the mill’s normal buying can book a New purchase.',
+    override: 'The Sales row in the grid below is overridden while this is on. Purchases is not affected — grant it below like any other page.',
+    bd: '#4B3FA8',
+    bg: '#F3EFFC',
+    ink: '#4B3FA8'
+  },
+  {
     key: 'readings',
     module: 'orders',
+    badge: 'readings desk',
+    digest: 'Opens purchase entries and records technical parameters. Nothing else on the page.',
+    short: 'Technical parameters only',
     title: 'Special access — technical parameters only',
     body:
       'The lab opens Purchase entries, sees the invoices, and records technical parameters against them — and that is the whole of it. No New purchase, no row menu, no stage moves, and the other two tabs are not there. Rates and values are withheld from this user whatever the screen shows.',
@@ -223,6 +250,16 @@ const DESKS = [
     ink: '#1B4E82'
   }
 ] as const
+
+// WHAT A NARROWED PAGE IS CALLED, AND WHAT COLOUR IT WEARS.
+//
+// Read off DESKS itself rather than written out again beside every badge, tint
+// and digest line that shows one. Three places used to name 'unload' and
+// 'readings' by hand and fall back to the readings blue for anything else,
+// which meant the top-up desk had been drawing as an ordinary grant with its
+// ticks mysteriously locked since the day it shipped.
+const DESK_BY_SCOPE: Record<string, { badge: string; digest: string; ink: string; bg: string }> =
+  Object.fromEntries(DESKS.map((d) => [d.key, { badge: d.badge, digest: d.digest, ink: d.bd, bg: d.bg }]))
 
 const LIST_GRID = 'minmax(200px,1.4fr) 130px 110px minmax(150px,1fr) 130px 120px 110px'
 const PERM_GRID = 'minmax(200px,1fr) 76px 76px 76px 76px 128px 136px'
@@ -271,8 +308,38 @@ export function UserAccess(): React.JSX.Element {
   const rights = (key: string): Rights => rightsOf(perms, key)
   const setPerms = (next: Perms): void => setForm((p) => ({ ...p, permissions: next }))
 
-  const unloadOn = rights('sales').scope === 'unload'
-  const readingsOn = rights('orders').scope === 'readings'
+  // A desk is on when its module carries its scope — asked of the entry
+  // itself, so a fourth desk needs nothing here but a row in DESKS.
+  const deskOn = (d: (typeof DESKS)[number]): boolean => rights(d.module).scope === d.key
+  // A desk may cover more than one page — the inter-company one is a job that
+  // spans Sales and Purchases — so the toggle writes the grant to every page
+  // it names. Written together, and lifted together: half a desk is a login
+  // that can bill a transfer whose other side it cannot see.
+  const deskPages = (d: (typeof DESKS)[number]): string[] => [
+    d.module,
+    ...(('also' in d ? (d.also as readonly string[]) : []) || [])
+  ]
+  const toggleDesk = (d: (typeof DESKS)[number], on: boolean): void =>
+    setPerms(
+      deskPages(d).reduce((acc, page) => {
+        const grants = ('grants' in d ? (d.grants as Record<string, Record<string, boolean>>) : undefined) || {}
+        // The PRIMARY page carries the desk (its scope + grant).
+        if (page === d.module) return setDesk(acc, page, d.key, on, grants[page])
+        // A page listed only so the desk can KEEP IT CLEAR of its scope
+        // (Purchases, for the inter-company desk): never granted, locked or
+        // badged from here. Any leftover desk scope is dropped so it stays an
+        // ordinary, independent page whose rights the admin sets in the grid —
+        // this also heals a login that carried the old read-only Purchases lock.
+        const cur = acc[page] as { scope?: string } | undefined
+        if (cur && typeof cur === 'object' && cur.scope === d.key) {
+          const o = { ...cur }
+          delete o.scope
+          return { ...acc, [page]: o }
+        }
+        return acc
+      }, perms)
+    )
+  const anyDesk = DESKS.some(deskOn)
   // The one default-ON permission on this page: every login gets today's
   // checklist unless this is switched off for them by name.
   const workOn = hasWorkAccess(perms)
@@ -280,17 +347,21 @@ export function UserAccess(): React.JSX.Element {
   // What the login actually gets, in words. Recomputed from the same rights the
   // grid draws, so the two cannot disagree.
   const granted = useMemo(
-    () => GRID_MODULES.map((m) => ({ m, r: rightsOf(perms, m.key) })).filter((x) => x.r.view),
+    // A section that simply follows its page is said once, on the page.
+    () =>
+      GRID_MODULES.map((m) => ({ m, r: rightsOf(perms, m.key) })).filter(
+        (x) => x.r.view && rightsSource(perms, x.m.key) !== 'follows'
+      ),
     [perms]
   )
   const writable = granted.filter((x) => x.r.create || x.r.edit || x.r.delete)
 
   const digestRows = granted.map(({ m, r }) => {
     const acts = [r.create && 'add', r.edit && 'change', r.delete && 'delete'].filter(Boolean) as string[]
-    const scoped = r.scope === 'unload' || r.scope === 'readings'
+    const desk = DESK_BY_SCOPE[String(r.scope || '')]
+    const scoped = !!desk
     let text: string
-    if (r.scope === 'unload') text = 'Receiving list only — records the received quantity on unloading. No rates, no values.'
-    else if (r.scope === 'readings') text = 'Opens purchase entries and records technical parameters. Nothing else on the page.'
+    if (desk) text = desk.digest
     else if (!acts.length) text = 'Reads the page, changes nothing.'
     else text = `Can ${acts.join(', ')}.`
     const win: string[] = []
@@ -300,7 +371,7 @@ export function UserAccess(): React.JSX.Element {
       key: m.key,
       label: m.label,
       icon: ICON_OF[m.key] || Droplets,
-      mark: scoped ? (r.scope === 'unload' ? '#C2700A' : '#1B4E82') : acts.length ? '#12855A' : '#5A6B62',
+      mark: desk ? desk.ink : acts.length ? '#12855A' : '#5A6B62',
       text: text + (win.length ? ` ${win.join('; ')}.` : '')
     }
   })
@@ -558,12 +629,12 @@ export function UserAccess(): React.JSX.Element {
         ) : (
           <>
             {DESKS.map((d) => {
-              const on = d.key === 'unload' ? unloadOn : readingsOn
+              const on = deskOn(d)
               return (
                 <button
                   key={d.key}
                   type="button"
-                  onClick={() => setPerms(setDesk(perms, d.module, d.key, !on))}
+                  onClick={() => toggleDesk(d, !on)}
                   className="flex flex-none items-start gap-2.5 rounded-[4px] border-[1.5px] px-3.5 py-3 text-left"
                   style={{ borderColor: on ? d.bd : `${d.bd}80`, borderStyle: on ? 'solid' : 'dashed', background: on ? d.bg : '#fff' }}
                 >
@@ -574,8 +645,11 @@ export function UserAccess(): React.JSX.Element {
                     <span className="h-5 w-5 rounded-[2px] bg-white" />
                   </span>
                   <div className="min-w-0 flex-1">
-                    <div className="text-[12.5px] font-extrabold" style={{ color: d.ink }}>
-                      {d.key === 'unload' ? 'Unloading desk only' : 'Technical parameters only'}
+                    <div className="flex items-center gap-1.5">
+                      <span className="text-[12.5px] font-extrabold" style={{ color: d.ink }}>
+                        {d.short}
+                      </span>
+                      <WhyTip text={d.body} ink={d.ink} />
                     </div>
                     <div className="mt-1 text-[11.5px] font-semibold leading-[1.5]" style={{ color: d.ink }}>
                       {on ? d.override : 'Off — the page grant below applies as ticked.'}
@@ -630,7 +704,7 @@ export function UserAccess(): React.JSX.Element {
               {GROUPS.flatMap((g) => GRID_MODULES.filter((m) => (GROUP_OF[m.key] || 'Other') === g)).map((m, i, arr) => {
                 const r = rights(m.key)
                 const on = r.view || r.create || r.edit || r.delete
-                const scoped = r.scope === 'unload' || r.scope === 'readings'
+                const scoped = !!DESK_BY_SCOPE[String(r.scope || '')]
                 const writes = r.create || r.edit || r.delete
                 const fixed = FIXED[m.key]
                 const locked = scoped || !!fixed
@@ -652,10 +726,13 @@ export function UserAccess(): React.JSX.Element {
                       className="flex w-full items-center gap-2.5 border-b border-b-[#EFF3EE] px-3.5 py-3 text-left"
                       style={{ borderLeft: `3px solid ${on ? '#12855A' : 'transparent'}`, opacity: on ? 1 : 0.7 }}
                     >
+                      {IS_SECTION(m.key) && <CornerDownRight className="h-[14px] w-[14px] flex-none text-[#A8B8AE]" />}
                       <Ico className="h-[17px] w-[17px] flex-none" style={{ color: on ? '#33473E' : '#A8B8AE' }} />
                       <span className="min-w-0 flex-1">
-                        <span className="block truncate text-[12.5px] font-bold">{m.label}</span>
+                        <span className="block truncate text-[12.5px] font-bold">{rowLabel(m.key, m.label)}</span>
                         <span className="mt-[3px] block truncate text-[10.5px] font-semibold text-[#5A6B62]">
+                          {IS_SECTION(m.key) && rightsSource(perms, m.key) === 'follows' ? 'follows Accounting · ' : ''}
+                          {IS_SECTION(m.key) && rightsSource(perms, m.key) === 'off' ? 'switched off · ' : ''}
                           {locked
                             ? scoped
                               ? 'fixed by the special access above'
@@ -803,7 +880,7 @@ export function UserAccess(): React.JSX.Element {
           </div>
         </div>
         <div className="flex flex-1 flex-col gap-2.5 overflow-y-auto px-4 pb-[100px] pt-3">
-          {shown.map((raw) => {
+          {shown.map((raw, ui) => {
             const u = cardOf(raw)
             return (
               <div
@@ -813,6 +890,7 @@ export function UserAccess(): React.JSX.Element {
               >
                 <div className="flex flex-col gap-2.5 px-[13px] py-3">
                   <div className="flex items-start gap-[11px]">
+                    <SerialNo n={ui + 1} className="mt-[10px]" />
                     <div
                       className="flex h-10 w-10 flex-none items-center justify-center rounded-[4px] text-[13px] font-extrabold"
                       style={{ background: u.tone.bg, color: u.tone.fg }}
@@ -965,10 +1043,21 @@ export function UserAccess(): React.JSX.Element {
           </div>
 
           <div className="overflow-hidden rounded-[4px] border border-[#D6E2D6] bg-white">
-            <div className="overflow-x-auto">
+            {/* THE HEAD STAYS WHILE THE LIST MOVES.
+                It could not before, and not for want of a `sticky`: this div
+                was `overflow-x-auto`, and a box that is not `visible` on one
+                axis is a scrollport on both — so the head's nearest scrolling
+                ancestor was this element, which had no height to scroll inside
+                and therefore nothing for a sticky head to stick against. The
+                page scrolled instead and took the head with it.
+
+                Bounded, so it has its own scroll and the head has something to
+                hold on to. The same shape the Stock and Bargains registers
+                already use. */}
+            <div className="max-h-[calc(100vh-300px)] overflow-auto">
               <div className="min-w-[1100px]">
                 <div
-                  className="grid min-h-[38px] items-center bg-[#0B3D2E] text-[9.5px] font-extrabold uppercase tracking-[.12em] text-[#8FBFA8]"
+                  className="sticky top-0 z-20 grid min-h-[38px] items-center bg-[#0B3D2E] text-[9.5px] font-extrabold uppercase tracking-[.12em] text-[#8FBFA8]"
                   style={{ gridTemplateColumns: LIST_GRID }}
                 >
                   <span className="px-[10px] pl-[18px] text-white">Name</span>
@@ -1276,17 +1365,17 @@ export function UserAccess(): React.JSX.Element {
                     Special access · one job, not a set of ticks
                   </span>
                   <span className="text-[11.5px] font-bold text-[#5A6B62]">
-                    {unloadOn || readingsOn ? 'One is on — it overrides that page below' : 'Both off'}
+                    {anyDesk ? 'One is on — it overrides that page below' : 'All off'}
                   </span>
                 </div>
                 <div className="flex flex-col gap-[11px] px-4 py-3.5">
                   {DESKS.map((d) => {
-                    const on = d.key === 'unload' ? unloadOn : readingsOn
+                    const on = deskOn(d)
                     return (
                       <button
                         key={d.key}
                         type="button"
-                        onClick={() => setPerms(setDesk(perms, d.module, d.key, !on))}
+                        onClick={() => toggleDesk(d, !on)}
                         className="flex items-start gap-3 rounded-[4px] border-[1.5px] px-3.5 py-[13px] text-left"
                         style={{
                           borderColor: on ? d.bd : `${d.bd}80`,
@@ -1306,6 +1395,7 @@ export function UserAccess(): React.JSX.Element {
                             <span className="text-[13px] font-extrabold" style={{ color: d.ink }}>
                               {d.title}
                             </span>
+                            <WhyTip text={d.body} ink={d.ink} />
                             <span
                               className="rounded-[2px] px-2 py-[3px] text-[9.5px] font-extrabold uppercase tracking-[.09em]"
                               style={
@@ -1316,9 +1406,6 @@ export function UserAccess(): React.JSX.Element {
                             >
                               {on ? 'ON' : 'OFF'}
                             </span>
-                          </div>
-                          <div className="mt-[7px] text-[12px] font-semibold leading-[1.6]" style={{ color: d.ink }}>
-                            {d.body}
                           </div>
                           {on && (
                             <div
@@ -1391,10 +1478,21 @@ export function UserAccess(): React.JSX.Element {
                   </span>
                 </div>
 
-                <div className="overflow-x-auto">
+                {/* THE RIGHTS HEAD STAYS WHILE THE PAGES MOVE.
+                    Thirty-one pages and six columns: by the time you reach
+                    Packed SKU you have long lost which column is Edit and
+                    which is Delete, and ticking the wrong one of those two is
+                    not a small mistake.
+
+                    Same fix as the user list — this div was overflow-x-auto
+                    with no height, and a box that is not `visible` on one axis
+                    is a scrollport on both, so the head's scrolling ancestor
+                    was an element with nothing to scroll inside. Bounded, so
+                    the head has something to hold against. */}
+                <div className="max-h-[calc(100vh-340px)] min-h-[260px] overflow-auto">
                   <div className="min-w-[900px]">
                     <div
-                      className="grid items-stretch bg-[#0B3D2E] text-[9.5px] font-extrabold uppercase tracking-[.11em] text-[#8FBFA8]"
+                      className="sticky top-0 z-20 grid items-stretch bg-[#0B3D2E] text-[9.5px] font-extrabold uppercase tracking-[.11em] text-[#8FBFA8]"
                       style={{ gridTemplateColumns: PERM_GRID, borderLeft: '3px solid transparent' }}
                     >
                       <span className="flex items-center py-2.5 pl-[18px] pr-[9px] text-white">Page</span>
@@ -1448,7 +1546,8 @@ export function UserAccess(): React.JSX.Element {
                       (m, i, arr) => {
                         const r = rights(m.key)
                         const on = r.view || r.create || r.edit || r.delete
-                        const scoped = r.scope === 'unload' || r.scope === 'readings'
+                        const desk = DESK_BY_SCOPE[String(r.scope || '')]
+                        const scoped = !!desk
                         const writes = r.create || r.edit || r.delete
                         const fixed = FIXED[m.key]
                         const fixedNote = fixed ? (fixed.adminOnly ? (admin ? 'Admin · full' : 'Everyone · read') : fixed.note) : ''
@@ -1456,13 +1555,7 @@ export function UserAccess(): React.JSX.Element {
                         const newGroup = i === 0 || (GROUP_OF[arr[i - 1].key] || 'Other') !== group
                         const section = IS_SECTION(m.key)
                         const Ico = ICON_OF[m.key] || Droplets
-                        const mark = scoped
-                          ? r.scope === 'unload'
-                            ? '#C2700A'
-                            : '#1B4E82'
-                          : on
-                            ? '#12855A'
-                            : 'transparent'
+                        const mark = desk ? desk.ink : on ? '#12855A' : 'transparent'
                         return (
                           <div key={m.key}>
                             {newGroup && (
@@ -1476,7 +1569,7 @@ export function UserAccess(): React.JSX.Element {
                                 gridTemplateColumns: PERM_GRID,
                                 borderLeft: `3px solid ${mark}`,
                                 opacity: on ? 1 : 0.62,
-                                background: scoped ? (r.scope === 'unload' ? '#FFFBF2' : '#F4F8FD') : '#fff'
+                                background: desk ? desk.bg : '#fff'
                               }}
                             >
                               <div
@@ -1488,13 +1581,29 @@ export function UserAccess(): React.JSX.Element {
                                   className="h-[17px] w-[17px] flex-none"
                                   style={{ color: on ? '#33473E' : '#A8B8AE' }}
                                 />
-                                <span className="min-w-0 truncate text-[12.5px] font-bold">{m.label}</span>
+                                <span className="min-w-0 truncate text-[12.5px] font-bold">{rowLabel(m.key, m.label)}</span>
+                                {section && rightsSource(perms, m.key) === 'follows' && (
+                                  <span
+                                    className="flex-none whitespace-nowrap rounded-[2px] bg-[#EAF0E9] px-1.5 py-[3px] text-[9px] font-extrabold uppercase tracking-[.06em] text-[#5A6B62]"
+                                    title="No setting of its own — reads as the Accounting row. Change any tick to set this section on its own."
+                                  >
+                                    follows {SECTION_PARENT[m.key] === 'accounts' ? 'Accounting' : 'page'}
+                                  </span>
+                                )}
+                                {section && rightsSource(perms, m.key) === 'off' && (
+                                  <span
+                                    className="flex-none whitespace-nowrap rounded-[2px] bg-[#FDF3F2] px-1.5 py-[3px] text-[9px] font-extrabold uppercase tracking-[.06em] text-[#B3261E]"
+                                    title="Switched off for this user although the page is granted. Tick it again to give it back."
+                                  >
+                                    off
+                                  </span>
+                                )}
                                 {scoped && (
                                   <span
                                     className="flex-none whitespace-nowrap rounded-[2px] px-1.5 py-[3px] text-[9px] font-extrabold uppercase tracking-[.06em] text-white"
-                                    style={{ background: r.scope === 'unload' ? '#C2700A' : '#1B4E82' }}
+                                    style={{ background: desk.ink }}
                                   >
-                                    {r.scope === 'unload' ? 'unloading desk' : 'readings desk'}
+                                    {desk.badge}
                                   </span>
                                 )}
                                 {!!fixed && (
@@ -1645,8 +1754,10 @@ export function UserAccess(): React.JSX.Element {
                   ],
                   [
                     'Special access',
-                    unloadOn ? 'unloading desk' : readingsOn ? 'readings desk' : 'none',
-                    unloadOn ? '#8A5300' : readingsOn ? '#1B4E82' : '#5A6B62'
+                    // Named from the row that is on, so a desk added later
+                    // says its own name here without being remembered twice.
+                    DESKS.find(deskOn)?.short.toLowerCase() || 'none',
+                    DESKS.find(deskOn)?.ink || '#5A6B62'
                   ]
                 ] as const
               ).map(([k, v, fg]) => (
@@ -1712,6 +1823,33 @@ export function UserAccess(): React.JSX.Element {
 // desks rather than folded into either. Admin is shown locked ON, because an
 // admin is never blockable and a switch that cannot move should not look like
 // one that can.
+// WHY, ON HOVER, NOT IN THE WAY.
+//
+// Each of these cards carried a paragraph explaining what the grant does, and
+// three paragraphs down a page is a page nobody reads — the toggles themselves
+// stop being findable. The explanation has not gone anywhere; it is one hover
+// away, where somebody who wants it will look and somebody who already knows
+// will not have to scroll past it.
+//
+// A span rather than a button: these cards ARE buttons, and a button inside a
+// button is not something a browser is obliged to make sense of.
+function WhyTip({ text, ink }: { text: string; ink?: string }): React.JSX.Element {
+  return (
+    <span className="group/why relative inline-flex flex-none items-center">
+      <Info
+        className="h-[15px] w-[15px] cursor-help opacity-60 transition-opacity group-hover/why:opacity-100"
+        style={{ color: ink || '#5A6B62' }}
+      />
+      <span
+        role="tooltip"
+        className="pointer-events-none absolute left-1/2 top-[calc(100%+7px)] z-[60] hidden w-[min(320px,70vw)] -translate-x-1/2 rounded-[4px] border border-[#0A1F17] bg-[#0A1F17] px-3 py-2 text-[11.5px] font-medium normal-case leading-[1.55] tracking-normal text-white shadow-[0_12px_28px_rgba(10,31,23,.28)] group-hover/why:block"
+      >
+        {text}
+      </span>
+    </span>
+  )
+}
+
 function WorkAccessToggle({
   on,
   admin,

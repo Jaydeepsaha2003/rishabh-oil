@@ -14,7 +14,14 @@ const baseFields: FieldDef[] = [
   // sidebar right now.
   { key: 'company_id', label: 'Company', type: 'select', required: true, options: [] },
   { key: 'branch', label: 'Branch', type: 'text' },
-  { key: 'account_no', label: 'Account no', type: 'text' },
+  // REQUIRED, BECAUSE THE LEDGER IS NAMED BY IT.
+  //
+  // Every bank keeps its own line in the books and the ledger carries the last
+  // four digits — "HDFCBANK A/C · 4521" — which is how two accounts at the same
+  // bank are told apart on a statement, and how a figure here is matched
+  // against a bank statement at all. A bank with no number gives a ledger
+  // nobody can identify.
+  { key: 'account_no', label: 'Account no', type: 'text', required: true },
   { key: 'ifsc', label: 'IFSC', type: 'text' },
   { key: 'note', label: 'Note', type: 'text' },
   { key: 'active', label: 'Active', type: 'switch', default: true }

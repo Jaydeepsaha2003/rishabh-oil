@@ -1,8 +1,11 @@
+import { withDbTransaction } from './dbTransaction'
 import type { ResultSet } from '@libsql/client'
 import { getClient } from './db'
-import { getActiveCompanyId } from './company'
+import { allCompanyIds, getActiveCompanyId, withCompany } from './company'
 import { postJournal, repostJournal } from './journal'
 import { lcInterest, lcInterestBasis, lcInterestBaseIsCustom } from './lcInterest'
+import { ensureVoucherNumbers } from './voucherNumbers'
+import { resolveAccountName } from './ledgerMap'
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Row = Record<string, any>
@@ -52,6 +55,7 @@ export function duePeriodOf(daysLeft: number | null): string {
 // reverse treasury vouchers we posted ourselves.
 async function dropEntry(entryId?: number | null): Promise<void> {
   if (!entryId) return
+  await ensureVoucherNumbers()
   const c = getClient()
   await c.execute({
     sql: 'DELETE FROM journal_bill_allocs WHERE line_id IN (SELECT id FROM journal_lines WHERE entry_id = ?)',
@@ -130,12 +134,35 @@ function assertNotFuture(date: string, what: string): void {
   if (d && d > todayISO()) throw new Error(`${what} cannot be a future date`)
 }
 
+/**
+ * The ledger one of our banks posts to — and WHICH ACCOUNT at it.
+ *
+ * Two accounts at the same bank are two ledgers, and a name that stops at the
+ * bank lumps them into one figure nobody can reconcile against a statement. So
+ * the last four digits ride on the name: HDFCBANK A/C · 4521.
+ *
+ * Only the last four. A whole account number on a report that leaves the
+ * building is a number nobody needed to print, and four is what a bank
+ * statement itself quotes.
+ *
+ * A bank with no number still posts to the plain name, exactly as before —
+ * every bank already on file is one of those until its number is filled in,
+ * and the Banks master now requires one on anything new.
+ */
+export function bankLedgerName(name: unknown, accountNo: unknown): string {
+  const nm = String(name || '').trim().toUpperCase()
+  if (!nm) return 'BANK A/C'
+  const digits = String(accountNo || '').replace(/\D/g, '')
+  const last4 = digits.length >= 4 ? digits.slice(-4) : ''
+  return last4 ? `${nm} A/C · ${last4}` : `${nm} A/C`
+}
+
 async function bankAccountFor(lc: Row): Promise<string> {
   const id = n(lc.our_bank_id)
   if (!id) return 'BANK A/C'
-  const r = await getClient().execute({ sql: 'SELECT name FROM banks WHERE id = ?', args: [id] })
-  const name = String(r.rows[0]?.name || '').trim()
-  return name ? `${name.toUpperCase()} A/C` : 'BANK A/C'
+  const r = await getClient().execute({ sql: 'SELECT name, account_no FROM banks WHERE id = ?', args: [id] })
+  const row = r.rows[0] as unknown as Row | undefined
+  return bankLedgerName(row?.name, row?.account_no)
 }
 
 // ---------------------------------------------------------------------------
@@ -178,49 +205,35 @@ async function lcPayable(lc: Row): Promise<string> {
 }
 
 export async function postLcOpening(lcId: number): Promise<void> {
+  return withDbTransaction(async () => {
   const c = getClient()
   const res = await c.execute({ sql: 'SELECT * FROM letters_of_credit WHERE id = ?', args: [lcId] })
   if (!res.rows.length) return
   const lc = toPlain(res)[0]
   await dropEntry(n(lc.journal_entry_id) || null)
 
-  // Opening an LC is not itself a transaction — it is a commitment the bank
-  // makes, carried off the books until it honours the credit. Only ONE thing
-  // moves money at opening: the margin you lodge as security.
+  // OPENING AN LC POSTS NOTHING.
   //
-  // It is a CONTRA, because nothing is spent — your money moves out of the
-  // current account into a deposit the bank holds, and comes back when the LC
-  // closes. This used to be one JOURNAL that also credited the bank for
-  // interest and charges, which said cash had gone that had not.
+  // It is a commitment the bank makes, carried off the books until it honours
+  // the credit — and the margin lodged against it is not this company's money
+  // moving anywhere it needs a voucher for. It is security the bank holds
+  // under lien, tracked on the LC itself and on the bank's own side, and the
+  // mill does not want it in these books.
   //
-  // Interest and commission are NOT posted here. On a usance LC the bank takes
-  // them at maturity, with the repayment — which is what the recorded
-  // repayments show: ₹79,50,000 against a ₹77,76,117.45 bill, the difference
-  // being exactly that LC's interest and charges. Expensing them at opening
-  // dated the cost months before it was incurred. They belong to the repayment
-  // voucher, and postLcRepaymentEntry now carries them.
+  // It used to post a CONTRA — Dr LC MARGIN A/C, Cr the bank — which parked
+  // ₹8.6 crore in a deposit account and took the same out of the bank
+  // balances, against a lien nobody had paid away. Before that it was one
+  // JOURNAL carrying interest and charges as well, which dated a maturity cost
+  // months before it was incurred; those belong to the repayment voucher and
+  // postLcRepaymentEntry carries them.
   //
-  // interest_journal_entry_id is deliberately untouched: it belongs to the
-  // upfront path (postLcUpfrontInterest), which posts against a reconciled bank
-  // statement line. Dropping it here would delete a voucher this function never
-  // created and cannot re-post.
-  const margin = round2((n(lc.amount) * n(lc.margin_pct)) / 100)
-  if (margin < 0.005) {
-    await c.execute({ sql: 'UPDATE letters_of_credit SET journal_entry_id = NULL WHERE id = ?', args: [lcId] })
-    return
-  }
-  const je = await postJournal({
-    date: String(lc.open_date || todayISO()),
-    vchType: 'CONTRA',
-    vchNo: String(lc.lc_no || ''),
-    narration: `LC ${lc.lc_no} — margin ${margin.toFixed(2)} lodged with ${lc.bank}`,
-    companyId: n(lc.company_id) || undefined,
-    lines: [
-      { account: 'LC MARGIN A/C', group: 'Deposits (Asset)', dr: margin },
-      { account: await bankAccountFor(lc), group: 'Bank Accounts', cr: margin }
-    ]
+  // dropEntry above still runs, so re-saving any LC that still carries an old
+  // margin voucher takes it off the books. interest_journal_entry_id is
+  // deliberately untouched: it belongs to the upfront path
+  // (postLcUpfrontInterest), which posts against a reconciled bank statement
+  // line — a voucher this function never created and cannot re-post.
+  await c.execute({ sql: 'UPDATE letters_of_credit SET journal_entry_id = NULL WHERE id = ?', args: [lcId] })
   })
-  await c.execute({ sql: 'UPDATE letters_of_credit SET journal_entry_id = ? WHERE id = ?', args: [je.id, lcId] })
 }
 
 // The fees an LC's own settlement voucher carries — see settleLcBillsCombined,
@@ -231,6 +244,7 @@ export async function postLcOpening(lcId: number): Promise<void> {
 // fee voucher earlier versions raised, so re-posting an LC cleans up after
 // them rather than leaving two entries where there should be one.
 export async function postLcFees(lcId: number): Promise<void> {
+  return withDbTransaction(async () => {
   const c = getClient()
   const res = await c.execute({
     sql: 'SELECT charges_journal_entry_id FROM letters_of_credit WHERE id = ?',
@@ -239,6 +253,7 @@ export async function postLcFees(lcId: number): Promise<void> {
   if (!res.rows.length) return
   await dropEntry(n(res.rows[0].charges_journal_entry_id) || null)
   await c.execute({ sql: 'UPDATE letters_of_credit SET charges_journal_entry_id = NULL WHERE id = ?', args: [lcId] })
+  })
 }
 
 // Posts the Dr Interest + Dr Charges / Cr Bank entry for interest and charges
@@ -248,12 +263,17 @@ export async function postLcFees(lcId: number): Promise<void> {
 // prior entry first means re-reconciling (or a corrected usance_days) never
 // leaves a stale duplicate.
 export async function postLcUpfrontInterest(lcId: number, dateIn?: string): Promise<{ id: number } | null> {
+  return withDbTransaction(async () => {
   const c = getClient()
   const res = await c.execute({ sql: 'SELECT * FROM letters_of_credit WHERE id = ?', args: [lcId] })
   if (!res.rows.length) throw new Error('LC not found')
   const lc = toPlain(res)[0]
   const bankAcc = await bankAccountFor(lc)
-  await dropEntry(n(lc.interest_journal_entry_id) || null)
+  // The voucher being replaced — its id and number stay with the LC's interest
+  // (PAY/18 stays PAY/18), so a correction never renumbers what the bank book,
+  // Tally and the desk already know it by.
+  const oldId = n(lc.interest_journal_entry_id)
+  await dropEntry(oldId || null)
   const interest = lcInterest(lc)
   const charges = round2(n(lc.charges))
   const total = round2(interest + charges)
@@ -263,7 +283,12 @@ export async function postLcUpfrontInterest(lcId: number, dateIn?: string): Prom
   }
   const je = await postJournal({
     date: String(dateIn || todayISO()).slice(0, 10),
-    vchType: 'JOURNAL',
+    // A PAYMENT, not a JOURNAL. Money leaves our own account here — the
+    // interest and the commission are paid, not adjusted — and a voucher type
+    // that says otherwise misfiles it in every cash report that reads the
+    // type rather than the lines. The settlement voucher beside it stays a
+    // JOURNAL for the opposite reason: nothing of ours moves there at all.
+    vchType: 'PAYMENT',
     vchNo: String(lc.lc_no || ''),
     narration:
       `LC ${lc.lc_no} — interest ${interest.toFixed(2)} and charges ${charges.toFixed(2)} paid upfront from the bank, per its statement` +
@@ -275,12 +300,27 @@ export async function postLcUpfrontInterest(lcId: number, dateIn?: string): Prom
       { account: bankAcc, group: 'Bank Accounts', cr: total }
     ]
   })
+  // THE NEW VOUCHER TAKES THE OLD ONE'S PLACE — same id, same number.
+  if (oldId && oldId !== je.id && !(await c.execute({ sql: 'SELECT 1 FROM journal_entries WHERE id = ?', args: [oldId] })).rows.length) {
+    await c.execute({
+      sql: `INSERT INTO journal_entries (id, company_id, entry_date, vch_type, vch_no, narration, order_id, sale_id, payment_id)
+            SELECT ?, company_id, entry_date, vch_type, vch_no, narration, order_id, sale_id, payment_id FROM journal_entries WHERE id = ?`,
+      args: [oldId, je.id]
+    })
+    await c.execute({ sql: 'UPDATE journal_lines SET entry_id = ? WHERE entry_id = ?', args: [oldId, je.id] })
+    const keptNo = (await c.execute({ sql: 'SELECT 1 FROM voucher_numbers WHERE entry_id = ?', args: [oldId] }).catch(() => ({ rows: [] }))).rows.length
+    if (keptNo) await c.execute({ sql: 'DELETE FROM voucher_numbers WHERE entry_id = ?', args: [je.id] }).catch(() => {})
+    else await c.execute({ sql: 'UPDATE voucher_numbers SET entry_id = ? WHERE entry_id = ?', args: [oldId, je.id] }).catch(() => {})
+    await c.execute({ sql: 'DELETE FROM journal_entries WHERE id = ?', args: [je.id] })
+    je.id = oldId
+  }
   await c.execute({ sql: 'UPDATE letters_of_credit SET interest_journal_entry_id = ? WHERE id = ?', args: [je.id, lcId] })
   // The fees now sit here, so the settlement voucher must let go of them.
   // Without this they would be charged twice: once on this voucher and once on
   // the settlement journal that was written before the bank line was matched.
   await resyncLcSettlement(lcId)
   return { id: je.id }
+  })
 }
 
 // What the LC actually released to the beneficiary, against what its settled
@@ -315,6 +355,7 @@ export function lcFeeDelta(): number {
 // voucher is never touched, so the payment as it happened stays on the record
 // with the correction sitting beside it.
 export async function syncLcFeeAdjustment(lcId: number): Promise<number> {
+  return withDbTransaction(async () => {
   const c = getClient()
   const res = await c.execute({
     sql: `SELECT l.*, s.name AS supplier_name
@@ -371,6 +412,7 @@ export async function syncLcFeeAdjustment(lcId: number): Promise<number> {
     args: [je.id, lcId]
   })
   return delta
+  })
 }
 
 // Keeps an ALREADY-POSTED upfront interest/charges voucher in step with the
@@ -380,22 +422,60 @@ export async function syncLcFeeAdjustment(lcId: number): Promise<number> {
 // job (see postLcUpfrontInterest above), not an edit's. The original entry
 // date is kept, since that's the date the bank actually took the money.
 export async function refreshLcUpfrontInterest(lcId: number): Promise<void> {
+  return withDbTransaction(async () => {
   const c = getClient()
   const res = await c.execute({
-    sql: 'SELECT interest_journal_entry_id FROM letters_of_credit WHERE id = ?',
+    sql: `SELECT interest_journal_entry_id, COALESCE(interest_upfront, 0) AS upfront,
+                 payment_received_date, opened_date, open_date
+            FROM letters_of_credit WHERE id = ?`,
     args: [lcId]
   })
-  const jeId = n(res.rows[0]?.interest_journal_entry_id)
-  if (!jeId) return
-  const je = await c.execute({ sql: 'SELECT entry_date FROM journal_entries WHERE id = ?', args: [jeId] })
-  const date = String(je.rows[0]?.entry_date || '').slice(0, 10)
-  await postLcUpfrontInterest(lcId, date || undefined)
+  if (!res.rows.length) return
+  const lc = toPlain(res)[0]
+  const jeId = n(lc.interest_journal_entry_id)
+  if (jeId) {
+    // It exists: keep its date, which is a fact about when the bank took the
+    // money, and re-derive its figures.
+    const je = await c.execute({ sql: 'SELECT entry_date FROM journal_entries WHERE id = ?', args: [jeId] })
+    const date = String(je.rows[0]?.entry_date || '').slice(0, 10)
+    await postLcUpfrontInterest(lcId, date || undefined)
+    return
+  }
+  // UPFRONT MEANS TWO VOUCHERS, WHETHER OR NOT THE STATEMENT HAS BEEN MATCHED.
+  //
+  // This used to wait for the bank line to be reconciled before raising the
+  // interest voucher at all. Until then the fees rode on the settlement
+  // journal instead, which folded two different acts into one entry:
+  //
+  //   party Dr · interest Dr · charges Dr · LC payable Cr
+  //
+  // But they ARE two acts, and they are settled by two different parties. The
+  // bank honours the credit out of its own funds — nothing of ours moves, one
+  // liability is exchanged for another — while the interest and the commission
+  // come out of OUR account. Posted as one entry the bank's payable is
+  // inflated by fees it never lent, and our own bank shows no payment at all.
+  //
+  // So an LC whose terms say the interest is paid upfront raises its own
+  // voucher from the moment it is saved:
+  //
+  //   1  party Dr                       LC payable - <bank> Cr     (the credit)
+  //   2  interest Dr, bank charges Dr   our bank Cr                (what we paid)
+  //
+  // Reconciling the statement line later re-posts voucher 2 on the date the
+  // bank actually took it; until then it sits on the day the money landed,
+  // which is the day the bank charged for.
+  if (!n(lc.upfront)) return
+  const date =
+    String(lc.payment_received_date || lc.opened_date || lc.open_date || '').slice(0, 10) || undefined
+  await postLcUpfrontInterest(lcId, date)
+  })
 }
 
 // Reverses the upfront-interest posting above — used when its bank statement
 // line is un-reconciled (or reclassified to misc), so the books don't keep an
 // entry no longer backed by a confirmed statement line.
 export async function dropLcUpfrontInterest(lcId: number): Promise<void> {
+  return withDbTransaction(async () => {
   const c = getClient()
   const res = await c.execute({ sql: 'SELECT interest_journal_entry_id FROM letters_of_credit WHERE id = ?', args: [lcId] })
   if (res.rows.length && res.rows[0].interest_journal_entry_id) {
@@ -405,31 +485,24 @@ export async function dropLcUpfrontInterest(lcId: number): Promise<void> {
     // Un-matching a bank line should move an expense, never delete it.
     await resyncLcSettlement(lcId)
   }
+  })
 }
 
 // An LC's margin/security-deposit FD, released back as cash once the LC is
 // preclosed and the bank no longer needs it held — a separate, optional
 // voucher from the preclosure's repayment (see saveLcRepayment below).
 export async function postLcMarginRelease(lcId: number, amount: number, dateIn?: string): Promise<{ id: number } | null> {
-  const c = getClient()
-  const res = await c.execute({ sql: 'SELECT * FROM letters_of_credit WHERE id = ?', args: [lcId] })
-  if (!res.rows.length) throw new Error('LC not found')
-  const lc = toPlain(res)[0]
-  const bankAcc = await bankAccountFor(lc)
-  const value = round2(amount)
-  if (value < 0.005) return null
-  const je = await postJournal({
-    date: String(dateIn || todayISO()).slice(0, 10),
-    vchType: 'RECEIPT',
-    vchNo: String(lc.lc_no || ''),
-    narration: `LC ${lc.lc_no} preclosed — margin of ${value.toFixed(2)} refunded by ${lc.bank}`,
-    companyId: n(lc.company_id) || undefined,
-    lines: [
-      { account: bankAcc, group: 'Bank Accounts', dr: value },
-      { account: 'LC MARGIN A/C', group: 'Deposits (Asset)', cr: value }
-    ]
-  })
-  return { id: je.id }
+  // NOTHING TO RELEASE, BECAUSE NOTHING WAS POSTED.
+  //
+  // The margin never enters the ledger at opening, so refunding it has no
+  // entry to reverse — crediting LC MARGIN A/C here would drive an account
+  // that holds nothing straight through zero. The release is still a fact
+  // about the LC and precloseLC still records it on the row; it simply does
+  // not reach the books.
+  void lcId
+  void amount
+  void dateIn
+  return null
 }
 
 // Preclosing means less interest actually accrues than the LC's netAvailable
@@ -444,6 +517,7 @@ export async function postLcPrematureInterestRebate(
   amount: number,
   dateIn?: string
 ): Promise<{ id: number; payoutId?: number } | null> {
+  return withDbTransaction(async () => {
   const c = getClient()
   const res = await c.execute({
     sql: `SELECT l.*, s.name AS supplier_name FROM letters_of_credit l
@@ -502,6 +576,7 @@ export async function postLcPrematureInterestRebate(
     payoutId = pay.id
   }
   return { id: je.id, payoutId }
+  })
 }
 
 // Every sale invoice belonging to the LC's linked Trading deal(s), with
@@ -626,7 +701,17 @@ export async function postLcPaymentIn(
   dateIn?: string,
   selectedKeys?: string[]
 ): Promise<{ id: number; date: string }> {
-  const { lc, customerName, refs } = await outstandingSaleRefsForLc(lcId)
+  return withDbTransaction(async () => {
+  // Same as the BD side above: a trading LC settles against its resale
+  // invoices, and an LC with none of them records the receipt plainly.
+  let lc: Row
+  let customerName: string
+  let refs: SaleRef[]
+  try {
+    ;({ lc, customerName, refs } = await outstandingSaleRefsForLc(lcId))
+  } catch {
+    return postSimplePaymentIn('lc', lcId, amount, dateIn)
+  }
   const bankAcc = await bankAccountFor(lc)
   const wanted = Array.isArray(selectedKeys) && selectedKeys.length ? new Set(selectedKeys.map(String)) : null
   const outstanding = wanted ? refs.filter((r) => wanted.has(r.key)) : refs
@@ -645,26 +730,125 @@ export async function postLcPaymentIn(
   // Worked out before the voucher is written, because the credits have to
   // follow the bills: a deal resold to two buyers credits two debtors, each
   // for what its own invoices took.
-  const { takes, byParty } = planReceipt(outstanding, value, customerName)
-  const je = await postJournal({
-    date,
-    vchType: 'RECEIPT',
-    vchNo: String(lc.lc_no || ''),
-    narration:
-      `LC ${lc.lc_no} — payment IN of ${value.toFixed(2)} received from ` +
-      (byParty.length > 1 ? byParty.map((b) => `${b.party} ${b.amount.toFixed(2)}`).join(', ') : byParty[0]?.party || customerName),
-    companyId: n(lc.company_id) || undefined,
-    lines: [
-      { account: bankAcc, group: 'Bank Accounts', dr: value },
-      ...byParty.map((b) => ({ account: b.party, group: 'Sundry Debtors', cr: b.amount }))
-    ]
+  // RECORDED ON THE LC, NOT POSTED — see PAYMENT IN IS A RECORD below.
+  void bankAcc
+  void customerName
+  void planReceipt
+  void allocAgainst
+  const already = await recordedPaymentIns('lc', lcId)
+  if (value > round2(totalDue - already) + 0.005) {
+    throw new Error(`Only ${round2(totalDue - already).toFixed(2)} is still expected on this LC after what is already recorded`)
+  }
+  const ins = await c.execute({
+    sql: 'INSERT INTO lc_payment_ins (lc_id, pay_date, amount, journal_entry_id) VALUES (?, ?, ?, NULL)',
+    args: [lcId, date, value]
   })
-  for (const t of takes) await allocAgainst(je.id, t.party, t.key, t.amount)
-  await c.execute({
-    sql: 'INSERT INTO lc_payment_ins (lc_id, pay_date, amount, journal_entry_id) VALUES (?, ?, ?, ?)',
-    args: [lcId, date, value, je.id]
+  return { id: Number(ins.lastInsertRowid || 0), date }
   })
-  return { id: je.id, date }
+}
+
+/**
+ * PAYMENT IN IS A RECORD, NOT A VOUCHER.
+ *
+ * The money a party pays back on an LC or a discounted bill reaches the bank,
+ * and the bank's receipt is already in the books — booked from Tally, the
+ * book the accountants keep (Ashok's 85,98,493 on 17-09 as RCP/206). Posting
+ * a second receipt here put the same money in the bank twice (RCP/26 + RCP/27
+ * for B7 and T2). So a payment in is now kept on the facility only — its
+ * date, amount, method and reference, for the facility's own "what came
+ * back" — and posts nothing. The ones posted before are taken back through
+ * Settings → Accounting checks (previewPaymentInVouchers below).
+ */
+async function recordedPaymentIns(kind: 'lc' | 'bd', id: number): Promise<number> {
+  const table = kind === 'lc' ? 'lc_payment_ins' : 'bd_payment_ins'
+  const col = kind === 'lc' ? 'lc_id' : 'bd_id'
+  const r = await getClient().execute({
+    sql: `SELECT COALESCE(SUM(amount), 0) AS t FROM ${table} WHERE ${col} = ? AND journal_entry_id IS NULL`,
+    args: [n(id)]
+  })
+  return round2(n((r.rows[0] as unknown as Row)?.t))
+}
+
+/**
+ * A PAYMENT COMING BACK, WITH NOTHING TO SET IT AGAINST.
+ *
+ * On a TRADING facility the money comes back through resale invoices, and the
+ * receipt is allocated bill by bill against them — that is the path above and
+ * below this, and it stays exactly as it was.
+ *
+ * Everywhere else there are no such invoices. A manufacturing LC or discounted
+ * bill funds the company's own trade, and when the money comes back it is a
+ * receipt from the party the facility names and nothing more. Refusing to
+ * record it — which is what happened before — meant the one screen that knows
+ * the money was expected could not say it had arrived.
+ *
+ * Dr the bank, Cr the party. No allocation, because there is no bill to
+ * allocate against, and inventing one would put a reference on a ledger that
+ * no document answers for.
+ */
+async function facilityParty(row: Row): Promise<{ name: string; group: string }> {
+  const c = getClient()
+  // Whoever is named as paying us, if anybody is; otherwise the facility's own
+  // party, which on a customer-side bill IS the debtor.
+  const rid = n(row.receivable_party_id)
+  if (rid) {
+    const r = await c.execute({ sql: 'SELECT name FROM customers WHERE id = ?', args: [rid] })
+    const nm = String((r.rows[0] as unknown as Row)?.name || '').trim()
+    if (nm) return { name: nm, group: 'Sundry Debtors' }
+  }
+  const pid = n(row.party_id)
+  const kind = String(row.party_type || '').trim().toLowerCase()
+  if (pid && (kind === 'customer' || kind === 'supplier')) {
+    const table = kind === 'customer' ? 'customers' : 'suppliers'
+    const r = await c.execute({ sql: `SELECT name FROM ${table} WHERE id = ?`, args: [pid] })
+    const nm = String((r.rows[0] as unknown as Row)?.name || '').trim()
+    // A supplier paying US is unusual but it is what the bill says, and the
+    // group has to match the ledger they already have or a second one opens.
+    if (nm) return { name: nm, group: kind === 'customer' ? 'Sundry Debtors' : 'Sundry Creditors' }
+  }
+  throw new Error('This facility names no party for the money to come back from — set one on it first')
+}
+
+export async function postSimplePaymentIn(
+  kind: 'lc' | 'bd',
+  facilityId: number,
+  amount: number,
+  dateIn?: string,
+  method?: string,
+  /** The bank the money actually landed in, and the bank's own reference. */
+  account?: string,
+  ref?: string
+): Promise<{ id: number; date: string }> {
+  return withDbTransaction(async () => {
+  const c = getClient()
+  const table = kind === 'lc' ? 'letters_of_credit' : 'bill_discountings'
+  const res = await c.execute({ sql: `SELECT * FROM ${table} WHERE id = ?`, args: [n(facilityId)] })
+  if (!res.rows.length) throw new Error(kind === 'lc' ? 'LC not found' : 'Discounted bill not found')
+  const row = toPlain(res)[0]
+  const value = round2(n(amount))
+  if (value < 0.005) throw new Error('Enter the amount received')
+  const date = String(dateIn || todayISO()).slice(0, 10)
+  assertNotFuture(date, 'The date the payment was received')
+  // Recorded on the facility, not posted — see PAYMENT IN IS A RECORD.
+  const named = String(account || '').trim()
+  const refNo = String(ref || '').trim()
+  const how = payMethod(method)
+  if (how === 'Adjustment' && !named) throw new Error('Name the ledger this adjustment is set off against')
+  void facilityParty
+  void receivingSide
+  const ins =
+    kind === 'lc'
+      ? await c.execute({
+          sql: 'INSERT INTO lc_payment_ins (lc_id, pay_date, amount, journal_entry_id) VALUES (?, ?, ?, NULL)',
+          args: [n(facilityId), date, value]
+        })
+      : await c.execute({
+          sql: `INSERT INTO bd_payment_ins (bd_id, pay_date, amount, journal_entry_id, method, account, ref_no)
+                VALUES (?, ?, ?, NULL, ?, ?, ?)`,
+          args: [n(facilityId), date, value, how, named || null, refNo || null]
+        })
+  return { id: Number(ins.lastInsertRowid || 0), date }
+  })
 }
 
 // ---------------------------------------------------------------------------
@@ -788,13 +972,71 @@ export async function listBdOpenTradingInvoices(bdId: number): Promise<Row[]> {
 // receipt naturally clears the largest dues before spilling onto the next. Each
 // call posts its own voucher rather than replacing the last, so part-payments
 // and one-per-invoice both work.
+/**
+ * The ways money comes back, as the desk would name them.
+ *
+ * A fixed list rather than free text: the point of recording the method is to
+ * be able to say "show me what came by cheque", and forty spellings of RTGS
+ * answer nothing. "Other" carries the rest without forcing a wrong choice.
+ */
+export const PAYMENT_IN_METHODS = ['RTGS', 'NEFT', 'IMPS', 'UPI', 'Cheque', 'Cash', 'Adjustment', 'Other'] as const
+
+function payMethod(v: unknown): string | null {
+  const want = String(v ?? '').trim()
+  if (!want) return null
+  const hit = PAYMENT_IN_METHODS.find((m) => m.toLowerCase() === want.toLowerCase())
+  // An unknown method is not worth refusing a receipt over — the money did
+  // arrive — so it is filed under Other rather than thrown away or trusted.
+  return hit || 'Other'
+}
+
+// WHERE A PAYMENT IN ACTUALLY LANDED, AND SO WHAT KIND OF VOUCHER IT IS.
+//
+// Money into a bank or the cash box is a Receipt. An Adjustment is not money
+// at all — the debtor's balance is set off against another ledger — so it is a
+// Journal against that ledger, and it needs the ledger named: debiting a bank
+// for a set-off would put money in the bank book that never arrived.
+async function receivingSide(
+  method: unknown,
+  named: string,
+  bankFallback: () => Promise<string> | string
+): Promise<{ account: string; group: string; vchType: 'RECEIPT' | 'JOURNAL' }> {
+  const how = payMethod(method)
+  if (how === 'Adjustment') {
+    if (!named) throw new Error('Name the ledger this adjustment is set off against')
+    const r = await getClient().execute({ sql: 'SELECT acc_group FROM ledger_accounts WHERE name = ?', args: [named.toUpperCase()] })
+    if (!r.rows.length) throw new Error(`No ledger called "${named}"`)
+    return { account: named, group: String(r.rows[0].acc_group), vchType: 'JOURNAL' }
+  }
+  if (how === 'Cash') return { account: named || 'CASH A/C', group: 'Cash-in-Hand', vchType: 'RECEIPT' }
+  return { account: named || (await bankFallback()), group: 'Bank Accounts', vchType: 'RECEIPT' }
+}
+
 export async function postBdPaymentIn(
   bdId: number,
   amount: number,
   dateIn?: string,
-  selectedKeys?: string[]
+  selectedKeys?: string[],
+  method?: string,
+  account?: string,
+  ref?: string
 ): Promise<{ id: number; date: string }> {
-  const { bd, customerName, refs } = await outstandingSaleRefsForBd(bdId)
+  return withDbTransaction(async () => {
+  // TRADING SETTLES AGAINST ITS RESALE INVOICES. EVERYTHING ELSE JUST ARRIVES.
+  //
+  // A manufacturing bill funds the company's own trade and has no resale
+  // invoices to allocate against, so this used to refuse the receipt outright
+  // — the one screen that knows the money was expected could not record that
+  // it had come. It falls through to the plain receipt instead: Dr bank, Cr
+  // the party the bill names.
+  let bd: Row
+  let customerName: string
+  let refs: SaleRef[]
+  try {
+    ;({ bd, customerName, refs } = await outstandingSaleRefsForBd(bdId))
+  } catch {
+    return postSimplePaymentIn('bd', bdId, amount, dateIn, method, account, ref)
+  }
   const wanted = Array.isArray(selectedKeys) && selectedKeys.length ? new Set(selectedKeys.map(String)) : null
   const outstanding = wanted ? refs.filter((r) => wanted.has(r.key)) : refs
   if (!outstanding.length) throw new Error('Every sale invoice on this deal is already fully paid')
@@ -813,26 +1055,96 @@ export async function postBdPaymentIn(
   assertNotFuture(date, 'The date the payment was received')
   // See the LC side: one credit line per debtor, each for what its own bills
   // actually took, worked out before the voucher is written.
-  const { takes, byParty } = planReceipt(outstanding, value, customerName)
-  const je = await postJournal({
-    date,
-    vchType: 'RECEIPT',
-    vchNo: String(bd.bd_no || ''),
-    narration:
-      `Bill Discounting ${bd.bd_no} — payment IN of ${value.toFixed(2)} received from ` +
-      (byParty.length > 1 ? byParty.map((b) => `${b.party} ${b.amount.toFixed(2)}`).join(', ') : byParty[0]?.party || customerName),
-    companyId: n(bd.company_id) || undefined,
-    lines: [
-      { account: 'BANK A/C', group: 'Bank Accounts', dr: value },
-      ...byParty.map((b) => ({ account: b.party, group: 'Sundry Debtors', cr: b.amount }))
-    ]
+  // Recorded on the bill, not posted — see PAYMENT IN IS A RECORD.
+  void customerName
+  const how = payMethod(method)
+  const named = String(account || '').trim()
+  const refNo = String(ref || '').trim()
+  const already = await recordedPaymentIns('bd', bdId)
+  if (value > round2(totalDue - already) + 0.005) {
+    throw new Error(`Only ${round2(totalDue - already).toFixed(2)} is still expected on this bill after what is already recorded`)
+  }
+  const ins = await c.execute({
+    sql: `INSERT INTO bd_payment_ins (bd_id, pay_date, amount, journal_entry_id, method, account, ref_no)
+          VALUES (?, ?, ?, NULL, ?, ?, ?)`,
+    args: [bdId, date, value, how, named || null, refNo || null]
   })
-  for (const t of takes) await allocAgainst(je.id, t.party, t.key, t.amount)
-  await c.execute({
-    sql: 'INSERT INTO bd_payment_ins (bd_id, pay_date, amount, journal_entry_id) VALUES (?, ?, ?, ?)',
-    args: [bdId, date, value, je.id]
+  return { id: Number(ins.lastInsertRowid || 0), date }
   })
-  return { id: je.id, date }
+}
+
+/**
+ * PAYMENT-IN VOUCHERS POSTED BEFORE PAYMENT IN BECAME A RECORD.
+ *
+ * Each one is the same money as the bank's receipt already booked from Tally.
+ * Listed for review; on Apply the voucher (its lines and allocations) goes and
+ * the payment in stays on its facility as a record. The voucher number stays
+ * taken, so nothing else renumbers.
+ */
+export async function previewPaymentInVouchers(): Promise<Row> {
+  const c = getClient()
+  const rows: Row[] = []
+  for (const kind of ['bd', 'lc'] as const) {
+    const sql =
+      kind === 'bd'
+        ? `SELECT pi.id, pi.pay_date, pi.amount, pi.journal_entry_id, bd.bd_no AS facility, bd.company_id, co.name AS company
+             FROM bd_payment_ins pi JOIN bill_discountings bd ON bd.id = pi.bd_id LEFT JOIN companies co ON co.id = bd.company_id
+            WHERE pi.journal_entry_id IS NOT NULL`
+        : `SELECT pi.id, pi.pay_date, pi.amount, pi.journal_entry_id, l.lc_no AS facility, l.company_id, co.name AS company
+             FROM lc_payment_ins pi JOIN letters_of_credit l ON l.id = pi.lc_id LEFT JOIN companies co ON co.id = l.company_id
+            WHERE pi.journal_entry_id IS NOT NULL`
+    for (const r of toPlain(await c.execute(sql))) {
+      const eid = n(r.journal_entry_id)
+      const head = toPlain(
+        await c.execute({
+          sql: `SELECT je.entry_date, je.narration, (SELECT nn.prefix || '/' || nn.serial FROM voucher_numbers nn WHERE nn.entry_id = je.id) AS code
+                  FROM journal_entries je WHERE je.id = ?`,
+          args: [eid]
+        })
+      )[0]
+      if (!head) continue
+      const lines = toPlain(
+        await c.execute({
+          sql: 'SELECT a.name, jl.dr, jl.cr FROM journal_lines jl JOIN ledger_accounts a ON a.id = jl.account_id WHERE jl.entry_id = ? ORDER BY jl.dr DESC',
+          args: [eid]
+        })
+      )
+      rows.push({
+        key: `${kind}:${n(r.id)}`,
+        kind,
+        facility: String(r.facility || ''),
+        company: String(r.company || ''),
+        date: String(r.pay_date || head.entry_date || '').slice(0, 10),
+        amount: round2(n(r.amount)),
+        code: String(head.code || ''),
+        entry_id: eid,
+        bank: String(lines.find((l) => n(l.dr) > 0)?.name || ''),
+        party: String(lines.find((l) => n(l.cr) > 0)?.name || '')
+      })
+    }
+  }
+  return { findings: rows.sort((a, b) => String(a.date).localeCompare(String(b.date))) }
+}
+
+export async function removePaymentInVouchers(keys: string[]): Promise<{ removed: number }> {
+  const want = new Set((keys || []).map(String))
+  if (!want.size) throw new Error('Pick at least one payment in')
+  return withDbTransaction(async () => {
+    const c = getClient()
+    const { findings } = await previewPaymentInVouchers()
+    let removed = 0
+    for (const f of findings as Row[]) {
+      if (!want.has(String(f.key))) continue
+      const eid = n(f.entry_id)
+      const old = toPlain(await c.execute({ sql: 'SELECT a.name, jl.dr, jl.cr FROM journal_lines jl JOIN ledger_accounts a ON a.id = jl.account_id WHERE jl.entry_id = ?', args: [eid] }))
+      console.log(`[repairs] payment-in voucher ${String(f.code)} (${String(f.kind)} ${String(f.facility)}, ${String(f.date)}, ${String(f.amount)}) removed — lines ${JSON.stringify(old)}`)
+      await dropEntry(eid)
+      const table = f.kind === 'lc' ? 'lc_payment_ins' : 'bd_payment_ins'
+      await c.execute({ sql: `UPDATE ${table} SET journal_entry_id = NULL WHERE id = ?`, args: [n(String(f.key).split(':')[1])] })
+      removed++
+    }
+    return { removed }
+  })
 }
 
 export async function listBdPaymentIns(bdId: number): Promise<Row[]> {
@@ -846,6 +1158,7 @@ export async function listBdPaymentIns(bdId: number): Promise<Row[]> {
 // Undo one receipt — logged twice, or against the wrong bill. Its voucher and
 // the allocations under it go with it, exactly as removing a repayment does.
 export async function deleteBdPaymentIn(paymentInId: number): Promise<{ id: number }> {
+  return withDbTransaction(async () => {
   const c = getClient()
   const res = await c.execute({ sql: 'SELECT journal_entry_id FROM bd_payment_ins WHERE id = ?', args: [paymentInId] })
   if (!res.rows.length) throw new Error('That receipt no longer exists')
@@ -862,6 +1175,7 @@ export async function deleteBdPaymentIn(paymentInId: number): Promise<{ id: numb
   }
   await c.execute({ sql: 'DELETE FROM bd_payment_ins WHERE id = ?', args: [paymentInId] })
   return { id: paymentInId }
+  })
 }
 
 // Every LC repayment in the active company, for the Excel export's second
@@ -889,11 +1203,13 @@ export async function listLcPaymentIns(lcId: number): Promise<Row[]> {
 }
 
 export async function deleteLcPaymentIn(id: number): Promise<{ id: number }> {
+  return withDbTransaction(async () => {
   const c = getClient()
   const res = await c.execute({ sql: 'SELECT journal_entry_id FROM lc_payment_ins WHERE id = ?', args: [id] })
   if (res.rows.length && res.rows[0].journal_entry_id) await dropEntry(n(res.rows[0].journal_entry_id))
   await c.execute({ sql: 'DELETE FROM lc_payment_ins WHERE id = ?', args: [id] })
   return { id }
+  })
 }
 
 // A bill under the LC matures and the bank pays the supplier: the payable
@@ -909,6 +1225,7 @@ export async function deleteLcPaymentIn(id: number): Promise<{ id: number }> {
 // There is one path now. Everything about how an LC settles lives in
 // settleLcBillsCombined, and every caller reaches it.
 export async function settleLcBill(issuanceId: number, dateIn?: string): Promise<{ id: number }> {
+  return withDbTransaction(async () => {
   const c = getClient()
   const res = await c.execute({ sql: 'SELECT status FROM lc_issuances WHERE id = ?', args: [issuanceId] })
   if (!res.rows.length) throw new Error('LC bill not found')
@@ -916,6 +1233,7 @@ export async function settleLcBill(issuanceId: number, dateIn?: string): Promise
   const je = await settleLcBillsCombined([issuanceId], dateIn)
   if (!je) throw new Error('That bill could not be settled')
   return je
+  })
 }
 
 // Every bill still outstanding on an LC settles as ONE payment — one bank
@@ -932,6 +1250,7 @@ export async function settleLcBillsCombined(
   // old one — see repostJournal.
   reuseEntryId?: number
 ): Promise<{ id: number } | null> {
+  return withDbTransaction(async () => {
   if (!issuanceIds.length) return null
   const c = getClient()
   const res = await c.execute({
@@ -950,6 +1269,9 @@ export async function settleLcBillsCombined(
   const bills = toPlain(res).filter((b) => String(b.status) !== 'settled')
   if (!bills.length) return null
   const first = bills[0]
+  if (bills.some((b) => n(b.lc_id) !== n(first.lc_id) || n(b.company_id) !== n(first.company_id) || n(b.party_id) !== n(first.party_id))) {
+    throw new Error('Settle bills from one LC, company and supplier at a time')
+  }
   const party = String(first.supplier_name || '').trim()
   if (!party) throw new Error('The LC has no supplier party — set it on the LC first')
   const date = String(dateIn || todayISO()).slice(0, 10)
@@ -968,6 +1290,27 @@ export async function settleLcBillsCombined(
   const feeLines: { account: string; group: string; dr?: number; cr?: number }[] = []
   let fees = 0
   const seen = new Set<number>()
+  // PAID IN PARTS: each part's voucher carries that part's own interest, and
+  // part 1 the bank's charges — stored on lc_parts when the part was paid.
+  const partNos = [...new Set(bills.map((b) => n(b.installment_no)).filter((x) => x > 0))]
+  const partRows = partNos.length
+    ? toPlain(
+        await c
+          .execute({
+            sql: `SELECT part_no, interest, charges FROM lc_parts WHERE lc_id = ? AND part_no IN (${partNos.map(() => '?').join(',')})`,
+            args: [n(first.lc_id), ...partNos]
+          })
+          .catch(() => ({ rows: [], columns: [] }) as unknown as ResultSet)
+      )
+    : []
+  if (partRows.length) {
+    const interest = round2(partRows.reduce((s, p) => s + n(p.interest), 0))
+    const charges = round2(partRows.reduce((s, p) => s + n(p.charges), 0))
+    if (interest > 0.005) feeLines.push({ account: 'INTEREST A/C', group: 'Indirect Expenses', dr: interest })
+    if (charges > 0.005) feeLines.push({ account: 'BANK CHARGES A/C', group: 'Indirect Expenses', dr: charges })
+    fees = round2(interest + charges)
+    for (const b of bills) seen.add(n(b.lc_id))
+  }
   for (const b of bills) {
     const lcId = n(b.lc_id)
     if (seen.has(lcId)) continue
@@ -987,6 +1330,17 @@ export async function settleLcBillsCombined(
     // state, and postLcUpfrontInterest/dropLcUpfrontInterest re-post this
     // voucher so the two stay in step when a line is matched or un-matched.
     if (n(b.interest_journal_entry_id)) continue
+    // One LC expense, even when separate bills settle in separate calls. On
+    // resync, the earliest retained settlement owns the full fee; later ones
+    // release it. This also repairs duplicate fee legs on a controlled repost.
+    const prior = await c.execute({
+      sql: `SELECT MIN(i.journal_entry_id) AS id FROM lc_issuances i
+        JOIN journal_entries e ON e.id=i.journal_entry_id
+        WHERE i.lc_id=? AND i.status='settled' AND i.journal_entry_id<>?`,
+      args: [lcId, reuseEntryId || 0]
+    })
+    const priorId = n(prior.rows[0]?.id)
+    if (priorId && (!reuseEntryId || priorId < reuseEntryId)) continue
     const interest = lcInterest({
       amount: b.lc_amount,
       charges: b.lc_charges,
@@ -1041,6 +1395,7 @@ export async function settleLcBillsCombined(
     args: [date, je.id, ...bills.map((b) => Number(b.id))]
   })
   return { id: je.id }
+  })
 }
 
 // Re-posts an LC's settlement voucher from the LC's CURRENT figures.
@@ -1055,7 +1410,26 @@ export async function settleLcBillsCombined(
 // something to be re-derived — and bills that shared a voucher are kept
 // together so a combined settlement stays combined.
 export async function resyncLcSettlement(lcId: number): Promise<void> {
+  return withDbTransaction(async () => {
   const c = getClient()
+  // A REPAID LC'S SETTLEMENT IS HISTORY.
+  //
+  // Re-deriving it from the LC's terms is right while the LC is live — a
+  // corrected rate or usance should reach the books. Once the bank has been
+  // repaid it is not: the settlement then recorded what the bank actually
+  // paid and kept, and the repayment cleared exactly that. Re-saving such an
+  // LC recomputed its fees from today's terms (one extra usance day on LC-9,
+  // ₹1,612.22) while keeping the old supplier figure, and a payable that had
+  // cleared to the rupee was left owing the difference. So a repaid LC keeps
+  // the settlement it has; where its payable does not clear, Settings →
+  // Accounting checks lists it for reconciliation against the bank's advice.
+  const closed = await c.execute({
+    sql: `SELECT l.preclosed_date,
+                 (SELECT COALESCE(SUM(r.amount), 0) FROM lc_repayments r WHERE r.lc_id = l.id) AS repaid
+            FROM letters_of_credit l WHERE l.id = ?`,
+    args: [n(lcId)]
+  })
+  if (closed.rows.length && (closed.rows[0].preclosed_date || n(closed.rows[0].repaid) > 0.005)) return
   const res = await c.execute({
     sql: `SELECT id, journal_entry_id, settled_date FROM lc_issuances
            WHERE lc_id = ? AND journal_entry_id IS NOT NULL ORDER BY journal_entry_id, id`,
@@ -1087,6 +1461,7 @@ export async function resyncLcSettlement(lcId: number): Promise<void> {
   // the sweep can never take the voucher it just wrote.
   const dropped = await dropOrphanLcSettlements(lcId, live)
   if (dropped) console.log(`[lc] removed ${dropped} orphaned settlement voucher(s) on LC ${lcId}`)
+  })
 }
 
 // Settlement journals for this LC that no bill points at any more.
@@ -1132,6 +1507,7 @@ async function dropOrphanLcSettlements(lcId: number, keep: number[] = []): Promi
 // every bill in that same payment — a lump bank withdrawal can't be partly
 // undone without contradicting what the bank statement actually shows.
 export async function reopenLcBill(issuanceId: number): Promise<{ id: number }> {
+  return withDbTransaction(async () => {
   const c = getClient()
   const res = await c.execute({ sql: 'SELECT journal_entry_id FROM lc_issuances WHERE id = ?', args: [issuanceId] })
   if (!res.rows.length) throw new Error('LC bill not found')
@@ -1142,6 +1518,7 @@ export async function reopenLcBill(issuanceId: number): Promise<{ id: number }> 
     : "UPDATE lc_issuances SET status = 'outstanding', settled_date = NULL, journal_entry_id = NULL WHERE id = ?"
   await c.execute({ sql, args: [entryId || issuanceId] })
   return { id: issuanceId }
+  })
 }
 
 // ---------------------------------------------------------------------------
@@ -1163,10 +1540,21 @@ export async function listLcRepayments(lcId: number): Promise<Row[]> {
   return toPlain(res)
 }
 
-// Posts (or re-posts) the repayment's journal entry: money leaves our bank —
-// the repayment itself and any commission/bank charges combine into that one
-// Bank credit line, matching the single combined debit the bank statement shows.
+// Posts (or re-posts) the repayment's voucher: ONE payment, read the way the
+// bank statement reads it —
+//
+//   Dr LC PAYABLE - <bank>   the principal (what the LC put out for us)
+//   Dr COMM. CHARGES A/C     commission the bank took on the day, if any
+//   Dr BANK CHARGES A/C      bank charges taken on the day, if any
+//     Cr <our bank>          the one lump that left the account
+//
+// It used to route the charges THROUGH the payable — a journal raising the
+// payable by the charges, then a payment clearing the payable by the whole
+// lump — which balanced, but left LC PAYABLE showing ₹94,01,180 repaid on a
+// ₹94,00,000 LC with a ₹1,180 credit beside it. The charges were never owed to
+// the LC; they are this day's expense, straight out of the bank.
 export async function postLcRepaymentEntry(repaymentId: number): Promise<void> {
+  return withDbTransaction(async () => {
   const c = getClient()
   const res = await c.execute({
     sql: `SELECT r.*, l.lc_no, l.company_id, l.bank, l.our_bank_id, l.amount AS lc_open_amount,
@@ -1220,29 +1608,33 @@ export async function postLcRepaymentEntry(repaymentId: number): Promise<void> {
     : 0
   const upfrontCharges = upfrontStillDue ? round2(n(rep.lc_charges)) : 0
 
-  // What can still belong to this voucher, beyond a rescued upfront interest:
-  // anything the bank took ON THE DAY over and above the credit — a maturity
-  // charge, a commission keyed off the statement. Those are this event's cost.
+  // What the bank took ON THE DAY over and above the principal — a maturity
+  // charge, a commission keyed off the statement. This event's own cost, so it
+  // goes on the payment itself (below), not through the payable.
   const total = round2(n(rep.amount))
   const comm = round2(n(rep.comm_charges))
-  const extra = round2(n(rep.bank_charges) + upfrontCharges)
-  const onTheDay = round2(comm + extra + upfrontInterest)
+  const bankCharges = round2(n(rep.bank_charges))
+  const principal = round2(total - comm - bankCharges)
+  if (principal < -0.004) {
+    throw new Error(`The charges (${(comm + bankCharges).toFixed(2)}) are more than the ${total.toFixed(2)} debited — check the repayment amount`)
+  }
+  // A rescued upfront interest (and the LC's own charges with it) is the one
+  // thing still raised against the payable in a voucher of its own: it was
+  // owed on the LC, never reconciled, and this is where it is caught.
+  const rescued = round2(upfrontInterest + upfrontCharges)
   const date = String(rep.repay_date || todayISO()).slice(0, 10)
 
   let feeJe: number | null = null
-  if (onTheDay > 0.004) {
+  if (rescued > 0.004) {
     const lines: { account: string; group: string; dr?: number; cr?: number }[] = []
     if (upfrontInterest > 0.005) lines.push({ account: 'INTEREST A/C', group: 'Indirect Expenses', dr: upfrontInterest })
-    if (comm > 0.005) lines.push({ account: 'COMM. CHARGES A/C', group: 'Indirect Expenses', dr: comm })
-    if (extra > 0.005) lines.push({ account: 'BANK CHARGES A/C', group: 'Indirect Expenses', dr: extra })
-    lines.push({ account: payable, group: LC_PAYABLE_GROUP, cr: onTheDay })
+    if (upfrontCharges > 0.005) lines.push({ account: 'BANK CHARGES A/C', group: 'Indirect Expenses', dr: upfrontCharges })
+    lines.push({ account: payable, group: LC_PAYABLE_GROUP, cr: rescued })
     const je = await postJournal({
       date,
       vchType: 'JOURNAL',
       vchNo: rep.lc_no ? String(rep.lc_no) : null,
-      narration: upfrontStillDue
-        ? `LC ${rep.lc_no} — ${rep.bank || 'the bank'} charged ${onTheDay.toFixed(2)} on settlement (interest never reconciled upfront, caught at repayment)`
-        : `LC ${rep.lc_no} — ${rep.bank || 'the bank'} charged ${onTheDay.toFixed(2)} on settlement`,
+      narration: `LC ${rep.lc_no} — ${rep.bank || 'the bank'} interest ${rescued.toFixed(2)} (never reconciled upfront, caught at repayment)`,
       companyId: n(rep.company_id) || undefined,
       lines
     })
@@ -1255,30 +1647,108 @@ export async function postLcRepaymentEntry(repaymentId: number): Promise<void> {
     }
   } else if (n(rep.lc_interest_journal_entry_id) === ownFeeJe && ownFeeJe) {
     // The voucher just dropped was the one carrying this LC's interest, and
-    // nothing here replaces it (onTheDay rounds to nil) — leave the LC honestly
+    // nothing here replaces it (rescued rounds to nil) — leave the LC honestly
     // marked as not yet posted rather than pointing at a deleted entry.
     await c.execute({ sql: 'UPDATE letters_of_credit SET interest_journal_entry_id = NULL WHERE id = ?', args: [n(rep.lc_id)] })
   }
 
-  // One lump out of the account, exactly what the statement shows.
+  // One lump out of the account, exactly what the statement shows — the
+  // principal off the payable and the day's charges to expense beside it.
+  const payLines: { account: string; group: string; dr?: number; cr?: number }[] = []
+  if (principal > 0.004) payLines.push({ account: payable, group: LC_PAYABLE_GROUP, dr: principal })
+  if (comm > 0.004) payLines.push({ account: 'COMM. CHARGES A/C', group: 'Indirect Expenses', dr: comm })
+  if (bankCharges > 0.004) payLines.push({ account: 'BANK CHARGES A/C', group: 'Indirect Expenses', dr: bankCharges })
+  payLines.push({ account: bankAcc, group: 'Bank Accounts', cr: total })
   const je = await postJournal({
     date,
     vchType: 'PAYMENT',
     vchNo: rep.lc_no ? String(rep.lc_no) : null,
-    narration: `LC ${rep.lc_no} repaid to ${rep.bank || 'the bank'}`,
+    narration:
+      comm + bankCharges > 0.004
+        ? `LC ${rep.lc_no} repaid to ${rep.bank || 'the bank'} (incl. ${(comm + bankCharges).toFixed(2)} charges)`
+        : `LC ${rep.lc_no} repaid to ${rep.bank || 'the bank'}`,
     companyId: n(rep.company_id) || undefined,
-    lines: [
-      { account: payable, group: LC_PAYABLE_GROUP, dr: total },
-      { account: bankAcc, group: 'Bank Accounts', cr: total }
-    ]
+    lines: payLines
   })
   await c.execute({
     sql: 'UPDATE lc_repayments SET journal_entry_id = ?, fee_journal_entry_id = ? WHERE id = ?',
     args: [je.id, feeJe, repaymentId]
   })
+  })
+}
+
+
+/**
+ * A REPAYMENT THAT NEVER RELIEVED THE PAYABLE IT PAID OFF.
+ *
+ * An LC's maturity credits LC PAYABLE - <our bank> with what the bank put out
+ * on our behalf, and repaying it debits the same account back down to nothing.
+ * One repayment in the book does not: it debits an account called
+ * LC REPAYMENT A/C, which no code here writes and which holds that single
+ * line. It is a voucher from an older posting shape, left behind when the
+ * shape changed.
+ *
+ * The damage is quiet but real. The payable was raised and never cleared, so
+ * the LC liability is overstated by the principal; and the matching debit sits
+ * under Loans (Liability) as a liability with a debit balance, which is not a
+ * thing. Neither figure is wrong by a rounding — they are wrong by the whole
+ * repayment, on both sides of the balance sheet.
+ *
+ * The repair is one field: the line moves onto the payable it was always
+ * paying. Nothing else about the voucher changes — same date, same amount, the
+ * bank credit untouched, the charges still expensed, and the voucher still
+ * balances, because only the name on one debit was wrong. The books land
+ * exactly where the current posting path would have put them.
+ *
+ * Deliberately narrow. It moves a line only when the voucher is an LC
+ * repayment's own voucher (lc_repayments points at it), and only onto the
+ * payable that LC resolves to by the same rule every other LC posting uses.
+ * Where that account does not already exist it leaves the line alone rather
+ * than inventing one: a repair that creates ledgers is not a repair.
+ *
+ * Idempotent, and run on every start rather than recorded as done once. The
+ * website's database is a restorable copy of the desktop's — a restore can
+ * put the bad line back long after a one-shot migration has been marked
+ * finished, and this costs one query to find nothing.
+ */
+export async function repairLcRepaymentAccount(): Promise<number> {
+  const c = getClient()
+  const bad = toPlain(
+    await c.execute(`SELECT jl.id AS line_id, jl.entry_id, r.lc_id
+                       FROM journal_lines jl
+                       JOIN ledger_accounts a ON a.id = jl.account_id
+                       JOIN lc_repayments r ON r.journal_entry_id = jl.entry_id
+                      WHERE TRIM(UPPER(a.name)) = 'LC REPAYMENT A/C'`)
+  )
+  if (!bad.length) return 0
+  let moved = 0
+  for (const row of bad) {
+    const lcRes = await c.execute({
+      sql: 'SELECT * FROM letters_of_credit WHERE id = ? LIMIT 1',
+      args: [n(row.lc_id)]
+    })
+    if (!lcRes.rows.length) continue
+    const want = (await lcPayable(toPlain(lcRes)[0])).trim().toUpperCase()
+    const acc = await c.execute({
+      sql: 'SELECT id FROM ledger_accounts WHERE TRIM(UPPER(name)) = ? LIMIT 1',
+      args: [want]
+    })
+    if (!acc.rows.length) {
+      console.error(`[lc] repayment line ${n(row.line_id)}: no ${want} account to move it onto`)
+      continue
+    }
+    await c.execute({
+      sql: 'UPDATE journal_lines SET account_id = ? WHERE id = ?',
+      args: [n(acc.rows[0].id), n(row.line_id)]
+    })
+    moved++
+  }
+  if (moved) console.log(`[lc] ${moved} repayment line(s) moved onto the payable they clear`)
+  return moved
 }
 
 export async function saveLcRepayment(v: Row): Promise<{ id: number }> {
+  return withDbTransaction(async () => {
   const c = getClient()
   const lcId = n(v.lc_id)
   if (!lcId) throw new Error('Pick the LC this repayment is against')
@@ -1371,9 +1841,11 @@ export async function saveLcRepayment(v: Row): Promise<{ id: number }> {
     }
   }
   return { id }
+  })
 }
 
 export async function deleteLcRepayment(id: number): Promise<{ id: number }> {
+  return withDbTransaction(async () => {
   const c = getClient()
   const res = await c.execute({
     sql: 'SELECT journal_entry_id, fee_journal_entry_id FROM lc_repayments WHERE id = ?',
@@ -1386,13 +1858,28 @@ export async function deleteLcRepayment(id: number): Promise<{ id: number }> {
   }
   await c.execute({ sql: 'DELETE FROM lc_repayments WHERE id = ?', args: [id] })
   return { id }
+  })
 }
 
 // ---------------------------------------------------------------------------
 // Monitoring: everything the treasury needs eyes on, in one call.
 // ---------------------------------------------------------------------------
 
-export async function treasuryAlerts(): Promise<Row> {
+// ALL COMPANIES: each company's alerts, one list of each.
+export async function treasuryAlerts(opts: { all?: boolean } = {}): Promise<Row> {
+  if (!opts.all) return treasuryAlertsOne()
+  const parts: Row[] = []
+  for (const id of await allCompanyIds()) parts.push(await withCompany(id, treasuryAlertsOne))
+  const byDays = (a: Row, b: Row): number => (Number(a.days_left) || 0) - (Number(b.days_left) || 0)
+  return {
+    lcExpiring: parts.flatMap((p) => (p.lcExpiring as Row[]) || []).sort(byDays),
+    lcBillsDue: parts.flatMap((p) => (p.lcBillsDue as Row[]) || []).sort(byDays),
+    billsDue: parts.flatMap((p) => (p.billsDue as Row[]) || []).sort(byDays),
+    overdue: parts.reduce((s, p) => s + (Number(p.overdue) || 0), 0)
+  }
+}
+
+async function treasuryAlertsOne(): Promise<Row> {
   const c = getClient()
   const cid = getActiveCompanyId()
   const today = todayISO()
@@ -1460,76 +1947,5 @@ export async function treasuryAlerts(): Promise<Row> {
   }
 }
 
-// Every payment obligation being run through treasury, in one place — LC
-// bills and discounted bills, regardless of how close their due date is
-// (treasuryAlerts only surfaces what's urgent). One list, one status, one
-// due date, sorted soonest-first, so nothing tracked here needs checking in
-// three different tabs.
-export async function listPaymentTracker(): Promise<Row[]> {
-  const c = getClient()
-  const cid = getActiveCompanyId()
-  const today = todayISO()
-
-  const lcBills = toPlain(
-    await c.execute({
-      sql: `SELECT i.id, i.amount, i.due_date, i.status, i.issue_date,
-                   l.lc_no AS ref, l.bank, s.name AS party, o.invoice_no
-            FROM lc_issuances i
-            JOIN letters_of_credit l ON l.id = i.lc_id
-            LEFT JOIN suppliers s ON l.party_type = 'supplier' AND s.id = l.party_id
-            LEFT JOIN orders o ON o.id = i.order_id
-            WHERE l.company_id = ?`,
-      args: [cid]
-    })
-  ).map((r) => ({
-    kind: 'lc_bill' as const,
-    kind_label: 'LC bill',
-    ref: String(r.ref || ''),
-    detail: `${r.bank || ''}${r.invoice_no ? ` · inv ${r.invoice_no}` : ''}`,
-    party: String(r.party || ''),
-    amount: n(r.amount),
-    due_date: r.due_date ? String(r.due_date) : null,
-    status: String(r.status || 'outstanding'),
-    settled: String(r.status || 'outstanding') === 'settled'
-  }))
-
-  const bd = toPlain(
-    await c.execute({
-      sql: `SELECT bd.id, bd.bd_no, bd.amount, bd.maturity_date, bd.status, bd.finance_type,
-                   nb.name AS nbfc_name, COALESCE(s.name, cu.name) AS party_name
-            FROM bill_discountings bd
-            LEFT JOIN nbfcs nb ON nb.id = bd.nbfc_id
-            LEFT JOIN suppliers s ON bd.party_type = 'supplier' AND s.id = bd.party_id
-            LEFT JOIN customers cu ON bd.party_type = 'customer' AND cu.id = bd.party_id
-            WHERE bd.company_id = ?`,
-      args: [cid]
-    })
-  ).map((r) => ({
-    kind: 'bill_discount' as const,
-    kind_label: 'Bill discounting',
-    ref: String(r.bd_no || ''),
-    detail: `${r.nbfc_name || ''}${r.finance_type ? ` · ${r.finance_type}` : ''}`,
-    party: String(r.party_name || ''),
-    amount: n(r.amount),
-    due_date: r.maturity_date ? String(r.maturity_date) : null,
-    status: String(r.status || 'open'),
-    settled: String(r.status || '') === 'repaid'
-  }))
-
-  const all = [...lcBills, ...bd].map((r) => {
-    const daysLeft = r.due_date ? daysBetween(today, r.due_date) : null
-    return {
-      ...r,
-      days_left: daysLeft,
-      due_period: duePeriodOf(daysLeft),
-      overdue: !r.settled && daysLeft != null && daysLeft < 0
-    }
-  })
-  all.sort((a, b) => {
-    if (a.settled !== b.settled) return a.settled ? 1 : -1 // open items first
-    const ad = a.days_left ?? Infinity
-    const bd2 = b.days_left ?? Infinity
-    return ad - bd2
-  })
-  return all
-}
+// The Payment Tracker lives in paymentTracker.ts now: it reads the LC and BD
+// registers, which import this module, so it cannot sit here without a cycle.

@@ -59,7 +59,11 @@ export function PageHeader({ title, subtitle, hint, actions, leading, factorySco
   return (
     <div
       className={cn(
-        'sticky top-0 z-10 flex items-start justify-between gap-4 border-b bg-background/80 px-4 py-4 backdrop-blur',
+        // Opaque on the desktop too. A see-through header with a blur behind
+        // it has to re-blur whatever slides under it on every frame of a
+        // scroll — the dearest thing a browser paints — and over a long
+        // register like Treasury's that is what made scrolling judder.
+        'sticky top-0 z-10 flex items-start justify-between gap-4 border-b bg-background px-4 py-4',
         // Opaque, and between the registers and the sidebar.
         //
         // The header was 80% background with a blur behind it, which is fine
@@ -68,12 +72,13 @@ export function PageHeader({ title, subtitle, hint, actions, leading, factorySco
         // the same layer as this, and being later in the DOM it won the tie
         // and painted straight over the page title.
         //
-        // z-20, not z-30: the sidebar is z-30, and matching it put this header
-        // on the sidebar's own layer — where, being later in the DOM again,
-        // this one won and clipped the expanded sidebar's top. The order that
-        // works is thead (10) < header (20) < sidebar (30), and nothing else
-        // in the app sits on 20.
-        __WEB__ && '!z-20 !bg-background !backdrop-blur-none',
+        // z-30 now, one clear layer of its own. At 20 it was tied with every
+        // register that had raised its own <thead> to 20 to clear a second
+        // header row — Bargains and the Stock movement table both do — and a
+        // tie is decided by DOM order, which the table always wins. The rail
+        // moved up to 40 to make room, so the ladder is thead (<=20) < header
+        // (30) < rail (40), each a layer apart.
+        __WEB__ && '!z-30 !bg-background !backdrop-blur-none',
         // The sidebar's tap-to-open button is fixed in the top-left corner on
         // the website at phone width, and every page's title was sitting
         // underneath it. Clear it, and let the row wrap so the actions drop
@@ -82,7 +87,7 @@ export function PageHeader({ title, subtitle, hint, actions, leading, factorySco
       )}
     >
       {leading && <div className="flex shrink-0 items-center self-center">{leading}</div>}
-      <div>
+      <div className="shrink-0">
         <div className="flex items-center gap-1.5">
           <h2 className="text-xl font-semibold tracking-tight">{title}</h2>
           {hint && <InfoTip text={hint} className="mt-0.5" />}
@@ -101,7 +106,10 @@ export function PageHeader({ title, subtitle, hint, actions, leading, factorySco
           in the app lines up the same way. */}
       <div
         className={cn(
-          'ml-auto flex shrink-0 items-center gap-2',
+          // Wraps onto a second line instead of running off the screen: a
+          // page with many filters (Production) was wider than a laptop and
+          // dragged the whole page sideways with a scrollbar.
+          'ml-auto flex min-w-0 flex-wrap items-center justify-end gap-x-2 gap-y-2.5',
           __WEB__ &&
             '[&_button]:!h-9 [&_button]:!rounded-[4px] [&_button]:!text-[13px] [&_[data-slot=select-trigger]]:!h-9 [&_[data-slot=select-trigger]]:!rounded-[4px] [&_[data-slot=select-trigger]]:!text-[13px]'
         )}

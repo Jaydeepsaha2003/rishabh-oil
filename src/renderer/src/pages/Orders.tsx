@@ -1,11 +1,16 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { takePageIntent } from '@/lib/pageIntent'
+import { escMayDiscard, hasOpenOverlay } from '@/lib/escape'
 import { toast } from 'sonner'
 import {
-  Undo2, ArrowLeft, ArrowRight, AlertTriangle, BarChart3, Boxes, Building2, CalendarDays, CheckCircle2, ChevronDown, ClipboardList, Clock, DoorOpen, Eye, MinusCircle, Package,
-  FileText, FlaskConical, History, IndianRupee, Info, Landmark, Lock, Pencil, Plus, ScrollText, Search, Trash2, Truck, type LucideIcon,
-  Check
+  Undo2, ArrowLeft, ArrowRight, ArrowUp, ArrowDown, ChevronsUpDown, AlertTriangle, BarChart3, Boxes, Building2, CalendarDays, CheckCircle2, ChevronDown, ChevronRight, ClipboardList, Clock, DoorOpen, Eye, MinusCircle, Package,
+  BookOpen, FileText, FlaskConical, History, IndianRupee, Info, Landmark, Lock, Pencil, Plus, ScrollText, Search, Split, Trash2, Truck, type LucideIcon,
+  Check, Dices, X
 } from 'lucide-react'
 import { PageHeader } from '@/components/PageHeader'
+import { MobileBar } from '@/components/MobileBar'
+import { SerialNo } from '@/components/SerialNo'
+import { useIsMobile } from '@/lib/useIsMobile'
 import { TdsExplainer, type TdsParty } from '@/components/TdsExplainer'
 import { QualityUnit } from '@/components/QualityUnit'
 import { guessUnit } from '@/lib/qualityUnits'
@@ -26,6 +31,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { MultiSelectFilter } from '@/components/ui/multi-select-filter'
 import { ColumnFilter } from '@/components/ui/column-filter'
 import { RowActions } from '@/components/ui/row-actions'
+import { LedgerPostings, type PostingTarget } from '@/components/LedgerPostings'
 import { GateEntriesDialog } from '@/components/GateEntriesDialog'
 import { RecordHistory, useRecordHistory } from '@/components/RecordHistory'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
@@ -40,13 +46,16 @@ const rupees = formatINR
 // What the lab sees instead of a value.
 const MONEY_MASK = '*****'
 import { cn } from '@/lib/utils'
+import { useTableSort } from '@/lib/tableSort'
 import { computeMoney, computeShortage } from '@/lib/orderCalc'
 import { useLiveRefresh } from '@/lib/useLiveRefresh'
 import { useGlobalDateRange, globalRangeAppliesTo } from '@/lib/globalDateRange'
 import { isManufacturingParty } from '@/lib/constants'
 import { useEntryWindow } from '@/lib/useEntryWindow'
 import { loadUser } from '@/lib/session'
-import { moduleScope } from '@/lib/modules'
+import { moduleScope, canAccess } from '@/lib/modules'
+import { lotTint } from '@/lib/lotTint'
+import { TagDraftPicker, TagPicker, useTagMap } from '@/components/Tags'
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Row = Record<string, any>
@@ -421,6 +430,48 @@ function StageDateNote({ row, dateKey }: { row: Row | null | undefined; dateKey:
 
 const TANKER_QUALITY_DEFAULTS = ['FFA', 'Colour', 'Moisture', 'Melting point'] as const
 
+// A PARCEL OF A LOAD, AND WHAT THE PARCELS COME TO.
+// ---------------------------------------------------------------------------
+// A tanker is not always one lot. Two compartments, or one filled at two
+// points, is sampled twice and comes back with two FFAs — and until now the
+// desk averaged those in its head and typed the answer, so what was filed was
+// somebody's arithmetic with the readings it came from thrown away.
+//
+// So a load can be split into parcels, each with its own quantity, and every
+// parameter is then read parcel by parcel. The blend is worked out here.
+const PART_LETTER = (i: number): string => String.fromCharCode(65 + (i % 26))
+
+// The reading column is free text — "23", "23.4%" and "approx 23" all arrive
+// from the same box — so a figure is taken out of it rather than assumed.
+const qNum = (v: unknown): number | null => {
+  const m = String(v ?? '').match(/-?\d+(\.\d+)?/)
+  return m ? Number(m[0]) : null
+}
+
+// WEIGHTED BY THE PARCEL, when every parcel that was read has a quantity.
+// 20 MT at 4.2 and 14 MT at 3.8 is not 4.0 — it is 4.035, and the tank holds
+// the second figure. A plain mean is the fallback for parcels whose quantities
+// have not been entered, where an equal voice is the only honest guess.
+function partsAverage(
+  vals: unknown[],
+  parts: { qty: string }[]
+): { avg: number; weighted: boolean; count: number } | null {
+  const pts: { v: number; w: number }[] = []
+  vals.forEach((raw, i) => {
+    const v = qNum(raw)
+    if (v == null) return
+    const w = Number(parts[i]?.qty)
+    pts.push({ v, w: Number.isFinite(w) && w > 0 ? w : 0 })
+  })
+  if (!pts.length) return null
+  const weighted = pts.length > 1 && pts.every((x) => x.w > 0)
+  const total = pts.reduce((a, b) => a + b.w, 0)
+  const avg = weighted
+    ? pts.reduce((a, b) => a + b.v * b.w, 0) / total
+    : pts.reduce((a, b) => a + b.v, 0) / pts.length
+  return { avg: Math.round(avg * 1000) / 1000, weighted, count: pts.length }
+}
+
 function stageAsOf(t: Row, asOf: string): string {
   const on = (d: unknown): boolean => {
     const s = String(d || '').slice(0, 10)
@@ -576,6 +627,50 @@ function Fact({ label, value }: { label: string; value: string }): React.JSX.Ele
   )
 }
 
+/**
+ * Group purchase rows into the bills they actually are.
+ *
+ * Only rows carrying a bill_group are ever merged, and only with rows
+ * of the same group, company and number — three things that agree, because a
+ * wrongly merged pair of bills would hide one of them completely.
+ *
+ * The head keeps its OWN figures untouched and the lines are carried beside
+ * it, so nothing that prices a line off its quantity — the freight popover,
+ * the condition chip, the lab panel — is handed a total belonging to two
+ * products. Only the cells that SHOW the bill add the lines up.
+ */
+function asBills(rows: Row[]): Row[] {
+  const out: Row[] = []
+  const at = new Map<string, number>()
+  for (const r of rows) {
+    const grp = String(r.bill_group || '').trim()
+    if (!grp) {
+      out.push({ ...r, _lines: [r] })
+      continue
+    }
+    const key = `${r.company_id}|${grp}|${String(r.invoice_no || '').trim().toUpperCase()}`
+    const seen = at.get(key)
+    if (seen === undefined) {
+      at.set(key, out.length)
+      out.push({ ...r, _lines: [r] })
+      continue
+    }
+    out[seen]._lines.push(r)
+  }
+  return out
+}
+
+/** A bill's own quantity and money: the sum of the lines under it. */
+function billQty(b: Row): number {
+  return (b._lines as Row[]).reduce((t, l) => t + (Number(l.ordered_qty) || 0), 0)
+}
+function billNet(b: Row): number {
+  return (b._lines as Row[]).reduce((t, l) => t + (Number(l.net_amount) || 0), 0)
+}
+function billTankers(b: Row): number {
+  return (b._lines as Row[]).reduce((t, l) => t + (Number(l.tanker_count) || 0), 0)
+}
+
 // Small-caps field label on the Purchase entries filter card. Named rather
 // than repeated inline because it has to stay identical across DATE,
 // CATEGORY and the receipt-date toggle — a label a shade off its neighbours
@@ -648,6 +743,49 @@ const NP_RAIL_INPUT = __WEB__
   ? '!h-[34px] !rounded-[3px] !border-[#C3B78F] !bg-white !text-right !text-[12.5px] !font-bold !text-[#0A1F17]'
   : ''
 
+/**
+ * THE DIRECT-PURCHASE PANEL, IN THE HOUSE COLOURS.
+ *
+ * It was violet from end to end @@ card, rules, chips, headings, the tick
+ * boxes, even the words "Draw it from". That was fine when it was the one
+ * experimental corner of the purchase form. On the website it now sits
+ * directly under "Tankers on this invoice", which is white with a hairline
+ * green rule and a headed strip, and a lilac card in that company reads as
+ * something half-finished rather than as a mode of the same form.
+ *
+ * Same panel, same behaviour, same controls in the same order. Only the accent
+ * changes: forest where it was violet, and the two greys the rest of the page
+ * already uses for a heading and for a note.
+ */
+const DP_CARD = __WEB__ ? '!rounded-[4px] !border-[#D6E2D6] !bg-white !p-[18px]' : ''
+const DP_HEAD = __WEB__
+  ? '!-mx-[18px] !-mt-[18px] !mb-[15px] !rounded-t-[3px] !border-b !border-solid !border-b-[#E4ECE3] !bg-[#F7FAF6] !px-[18px] !py-[13px]'
+  : ''
+const DP_TITLE = __WEB__ ? '!text-[11.5px] !font-extrabold !tracking-[.14em] !text-[#0A1F17]' : ''
+/** A state chip, not a button: the same dress every "this is what it is" chip wears. */
+const DP_CHIP = __WEB__
+  ? '!border !border-[#BFE3CB] !bg-[#E9F5EE] !text-[11px] !font-extrabold !uppercase !tracking-[.1em] !text-[#0B6B45] !shadow-none hover:!bg-[#E9F5EE]'
+  : ''
+/** A panel inside the panel @@ the parcels, the bargain lines. */
+const DP_BOX = __WEB__ ? '!rounded-[4px] !border-[#D6E2D6]' : ''
+const DP_STRIP = __WEB__ ? '!border-b-[#E4ECE3] !bg-[#F7FAF6]' : ''
+/** A small heading over a group. */
+const DP_KICKER = __WEB__ ? '!text-[10.5px] !font-extrabold !uppercase !tracking-[.12em] !text-[#5A6B62]' : ''
+const DP_NOTE = __WEB__ ? '!text-[11.5px] !font-semibold !text-[#5A6B62]' : ''
+/**
+ * The compact controls in a bargain line. Deliberately NOT the form's 46px
+ * field: three of them sit on one row with a price and a bin beside them, and
+ * at full height that row stops being a line and becomes a card.
+ */
+const DP_SMALL = __WEB__
+  ? '!h-[38px] !rounded-[4px] !border-[#C3D2C6] !bg-white !text-[12.5px] !font-bold !text-[#0A1F17]'
+  : ''
+const DP_EMPTY = __WEB__
+  ? '!rounded-[4px] !border !border-solid !border-[#D6E2D6] !bg-[#F7FAF6] !text-[12px] !font-semibold !text-[#5A6B62]'
+  : ''
+/** Over its balance, over the available @@ the one red the app uses. */
+const DP_BAD = __WEB__ ? '!font-bold !text-[#B3261E]' : ''
+
 const PO_LABEL = '!text-[10.5px] !font-extrabold !tracking-[.13em] !text-[#5A6B62]'
 
 // The tanker group bands ("Loaded & received within…" / "Loaded outside…")
@@ -692,12 +830,34 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
   // How far back this user may date a new entry. The save is refused either
   // way; greying the days out just stops the form offering one it will reject.
   const minDate = useEntryWindow('orders')
+  // The website gets a phone layout: the desktop register is a wide table that
+  // cannot be read on a 375px screen, so on a phone the whole page becomes a
+  // stack of cards with the same three tabs — and every dialog it needs stays
+  // mounted below, so nothing on the desktop is out of reach here.
+  const isMobile = useIsMobile()
+  // The phone's Purchase-entries status chip (All / In process / Completed).
+  // Kept separate from the desktop column filter so the chip counts can read
+  // the whole search-filtered set rather than the set it has itself narrowed.
+  const [mEntryStatus, setMEntryStatus] = useState<'all' | 'process' | 'done'>('all')
   // The readings desk: may record technical parameters against a purchase and
   // nothing else. For them the page is Purchase entries alone, with the flask
   // as its only control — every other button, tab and row menu is not
   // rendered. Not disabled: not there. The server refuses the writes anyway
   // (access-gate.ts, scope 'readings'); this keeps the screen honest about it.
   const readingsOnly = moduleScope(loadUser(), 'orders') === 'readings'
+  // THE INTER-COMPANY DESK, ON THE PURCHASES SIDE.
+  //
+  // The register already comes back narrowed to the transfers — that is done
+  // in the SQL, so an outside supplier's rate never crosses the wire (see
+  // listOrders). What is left to do here is stop the page offering work this
+  // login cannot do: a transfer purchase is written by its sale and kept in
+  // step with it, so there is nothing to key on this page at all, and the
+  // server refuses every write whatever the screen shows.
+  //
+  // The two other tabs go with it. A transfer moves no tanker — it is booked
+  // straight to received, the goods having only changed books — and an
+  // invoice raised by a sale is never an unmapped one.
+  const intercoDesk = moduleScope(loadUser(), 'orders') === 'intercompany'
   // EVERY rupee figure on this page goes through this name, and for the
   // readings desk it prints ***** instead.
   //
@@ -725,7 +885,11 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
   // Website only: the desktop app has one window and no address bar to keep it
   // in, and it does not reload.
   const TABS = ['tankers', 'purchases', 'unmapped']
+  // Opened from the dashboard's "Yesterday receipts" tile: Purchase entries,
+  // showing only what that tile counts (see poReceivedOn).
+  const [openIntent] = useState(() => takePageIntent('orders'))
   const [tab, setTab] = useState<string>(() => {
+    if (openIntent?.kind === 'received') return 'purchases'
     if (!__WEB__) return 'tankers'
     const t = new URLSearchParams(window.location.search).get('tab')
     return t && TABS.includes(t) ? t : 'tankers'
@@ -741,9 +905,47 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
   }, [tab])
   // Invoices with no live bargain link, and the mapping dialog state.
   const [companies, setCompanies] = useState<Row[]>([])
+  // Is this company a trading one (Companies → Type)? Its tankers are sold on at Empty.
+  // …and only while its "Sell tankers on at Empty" switch is on (Companies).
+  const tradingCo = (id: unknown): boolean => {
+    const co = companies.find((c) => Number(c.id) === Number(id))
+    return String(co?.company_type || '') === 'trading' && Number(co?.onward_sale_at_empty ?? 1) !== 0
+  }
   const [activeCompany, setActiveCompany] = useState<number>(0)
   const [unmapped, setUnmapped] = useState<Row[]>([])
-  const unmappedPaged = usePaged(unmapped)
+  // ONE ROW PER BILL. A bill with two lines — two products, or one product at
+  // two rates — is two orders sharing a bill_group, and listed apart it read
+  // as two invoices with the same number. Grouped, it is the bill: its total
+  // quantity and value, the rate it averages out at (weighted by quantity),
+  // and its lines kept underneath for mapping, since each line's rate goes
+  // with its own bargain.
+  const unmappedBills = useMemo(() => {
+    const groups = new Map<string, Row[]>()
+    for (const r of unmapped) {
+      const k = String(r.bill_group || '').trim() ? `g:${String(r.bill_group)}` : `o:${String(r.id)}`
+      const g = groups.get(k)
+      if (g) g.push(r)
+      else groups.set(k, [r])
+    }
+    return [...groups.values()].map((lines) => {
+      const qty = lines.reduce((t, l) => t + (Number(l.ordered_qty) || 0), 0)
+      const value = lines.reduce((t, l) => t + (Number(l.taxable_value) || 0), 0)
+      const rate = qty > 0 ? lines.reduce((t, l) => t + (Number(l.invoice_rate) || 0) * (Number(l.ordered_qty) || 0), 0) / qty : Number(lines[0].invoice_rate) || 0
+      const products = [...new Set(lines.map((l) => String(l.product_code || l.product_name || '')).filter(Boolean))]
+      const tankers = [...new Set(lines.flatMap((l) => String(l.tanker_nos || '').split(',').map((x) => x.trim())).filter(Boolean))]
+      return {
+        ...lines[0],
+        lines,
+        ordered_qty: qty,
+        taxable_value: value,
+        invoice_rate: Math.round(rate * 100) / 100,
+        product_label: products.join(' + '),
+        tanker_nos: tankers.join(', '),
+        was_linked: lines.some((l) => Number(l.was_linked) === 1) ? 1 : 0
+      } as Row
+    })
+  }, [unmapped])
+  const unmappedPaged = usePaged(unmappedBills)
   const [mapRow, setMapRow] = useState<Row | null>(null)
   const [mapLines, setMapLines] = useState<Row[]>([])
   const [mapError, setMapError] = useState<string | null>(null)
@@ -754,14 +956,54 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
   // The purchase already booked under this invoice number, if any. Trimmed and
   // case-insensitive, scoped to the loaded register (already this company), so
   // the warning and the refusal on save agree on what a duplicate is.
+  /**
+   * ONE BILL IN THREE ROWS IS NOT THREE BILLS.
+   *
+   * A purchase row is one product, so a transfer of three products from one of
+   * our own companies arrives here as three rows — all carrying the ONE number
+   * that sales invoice was booked under. Two unrelated bills sharing a number
+   * is a real mistake and still refused; these are not two bills.
+   *
+   * They are told apart by bill_group, stamped on every row of one bill when
+   * it is raised — by a transfer, or by a tanker invoice covering more than
+   * one product. Null on every ordinary purchase, so the rule is exactly what
+   * it always was for them.
+   */
   function invoiceClash(no: unknown, selfId: unknown): Row | null {
     const want = String(no || '').trim().toUpperCase()
     if (!want) return null
+    const mine = String(
+      rows.find((r) => Number(r.id) === Number(selfId || 0))?.bill_group || ''
+    ).trim()
     return (
-      rows.find(
-        (r) => String(r.invoice_no || '').trim().toUpperCase() === want && Number(r.id) !== Number(selfId || 0)
-      ) || null
+      rows.find((r) => {
+        if (String(r.invoice_no || '').trim().toUpperCase() !== want) return false
+        if (Number(r.id) === Number(selfId || 0)) return false
+        // The other half of the same sales invoice — same bill, other line.
+        const theirs = String(r.bill_group || '').trim()
+        if (mine && theirs && theirs === mine) return false
+        return true
+      }) || null
     )
+  }
+
+  // A PLACEHOLDER NUMBER FOR A SUPPLIER THAT NEVER PRINTED ONE.
+  //
+  // The field is required, and typing something meaningless by hand just
+  // moves the same problem into the books — a "1", a "NA", a date reused
+  // across three bills. The server draws a genuine seven-digit number that
+  // does not exist on any other purchase of this company yet, so it is a
+  // real placeholder rather than a made-up one that might collide later.
+  async function randomizeInvoiceNo(): Promise<void> {
+    setRandomizingInvoice(true)
+    try {
+      const no = await window.api.orders.randomInvoiceNo(Number(form.company_id) || activeCompany || undefined)
+      setForm((p) => ({ ...p, invoice_no: no }))
+    } catch (e) {
+      toast.error((e as Error).message)
+    } finally {
+      setRandomizingInvoice(false)
+    }
   }
   const [tankers, setTankers] = useState<Row[]>([])
   const [bargains, setBargains] = useState<Row[]>([])
@@ -776,6 +1018,17 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
   const [pivotSel, setPivotSel] = useState<{ oil: string; stage: string } | null>(null)
   // Collapse state for the two tanker group cards. Website only — the desktop
   // app renders both open with no toggle, exactly as it always has.
+  // Unmapped invoices folds away like the two tanker cards do, and starts
+  // folded EVERY time.
+  //
+  // It was opened by default on the reasoning that a list of chores which
+  // hides itself is a list nobody does. In practice it is a long list that is
+  // rarely the reason anybody opened this page, and it pushed the registers
+  // below it off the first screen on every visit. The heading still carries
+  // the count, so the chore is announced without the whole of it being
+  // unrolled; one click opens it, and it stays open for as long as the page
+  // is.
+  const [unmappedOpen, setUnmappedOpen] = useState(false)
   const [tmInOpen, setTmInOpen] = useState(true)
   const [tmOutOpen, setTmOutOpen] = useState(true)
   // The stage summary cards start closed: the matrix right below them carries
@@ -797,6 +1050,8 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
   // all answer the same question — a count you cannot reconcile with the list
   // below it is worse than no search at all.
   const [moveSearch, setMoveSearch] = useState('')
+  // Mobile: the stage card tapped to narrow the tanker list, or null for all.
+  const [moveStage, setMoveStage] = useState<string | null>(null)
   const moveTankers = useMemo(() => {
     const base = allTankers.length ? allTankers : tankers
     const cid = moveCompany === 'active' ? String(activeCompany) : moveCompany
@@ -856,12 +1111,43 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
   const [editTankerForm, setEditTankerForm] = useState<Row>({})
 
   const [formPage, setFormPage] = useState(false)
+  // Where closing the purchase form goes back to. Opened from Unmapped
+  // invoices, Cancel or Save returns there rather than to Purchase entries,
+  // so the next invoice on the list is still in front of you.
+  const formReturnTab = useRef<string | null>(null)
+  useEffect(() => {
+    if (formPage || !formReturnTab.current) return
+    setTab(formReturnTab.current)
+    formReturnTab.current = null
+  }, [formPage])
+  // Whether anything on the open purchase form has been changed by hand —
+  // typed into, ticked, or picked from a list. Effects that fill the form in
+  // after it opens do not count; only the user's own input does.
+  const formTouched = useRef(false)
+  useEffect(() => {
+    if (formPage) formTouched.current = false
+  }, [formPage])
+  const touchForm = (e: React.SyntheticEvent): void => {
+    if (e.type === 'click') {
+      const el = e.target as HTMLElement | null
+      if (!el?.closest('[role=option],[role=checkbox],[role=switch],[role=radio],[role=menuitemradio]')) return
+    }
+    formTouched.current = true
+  }
   const [editing, setEditing] = useState<Row | null>(null)
   const [form, setForm] = useState<Row>({})
   const [products, setProducts] = useState<Row[]>([])
   const [selected, setSelected] = useState<number[]>([])
+  // THE BILL BEING EDITED, when it is one bill in several rows.
+  //
+  // `editing` is still the row the form's header is filled from; these are all
+  // the rows under the same number, because the tankers on a two-product bill
+  // belong to two of them and a picker that only knew about one would hide the
+  // other's lorries the moment the invoice was reopened.
+  const [editingBill, setEditingBill] = useState<{ group: string; ids: number[] }>({ group: '', ids: [] })
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [randomizingInvoice, setRandomizingInvoice] = useState(false)
 
   const load = useCallback(async (background = false) => {
     // Skipped on a live refresh: raising the spinner here is what made the
@@ -1370,6 +1656,13 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
   // category. Both narrow the list the page shows and exports.
   const [poFrom, setPoFrom] = useState('')
   const [poTo, setPoTo] = useState('')
+  // The dashboard's receipt rule, for one day: a received purchase that moves
+  // stock, dated by its received date (a consignment by its invoice date).
+  // While set it replaces the date window, so the list is exactly the tile's.
+  const [poReceivedOn, setPoReceivedOn] = useState<string | null>(
+    openIntent?.kind === 'received' ? String(openIntent.date) : null
+  )
+  const poSkipGlobalOnce = useRef(!!poReceivedOn)
   // Free text over the entries register. Sits with the date and category
   // rules rather than after the column filters, so the column dropdowns
   // offer values from what the search left — the same way they already
@@ -1388,6 +1681,10 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
   // Alt+F2 broadcasts a period from anywhere.
   const globalRange = useGlobalDateRange()
   useEffect(() => {
+    if (poSkipGlobalOnce.current) {
+      poSkipGlobalOnce.current = false
+      return
+    }
     if (!globalRangeAppliesTo(globalRange, 'orders')) return
     setPoFrom(globalRange.from); setPoTo(globalRange.to)
     setRepFrom(globalRange.from); setRepTo(globalRange.to)
@@ -1569,6 +1866,13 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
     () =>
       rows
         .map((r): Row => {
+          if (poReceivedOn) {
+            const rd = String(
+              Number(r.is_consignment) === 1 ? r.order_date || '' : r.received_date || r.order_date || ''
+            ).slice(0, 10)
+            const hit = String(r.status) === 'received' && Number(r.affects_stock ?? 1) !== 0 && rd === poReceivedOn
+            return { ...r, _shownForReceipt: false, _inWindow: hit }
+          }
           const d = String(r.order_date || '').slice(0, 10)
           const invoicedInRange = (!poFrom || d >= poFrom) && (!poTo || d <= poTo)
           // The invoice date alone can sit days before the tanker actually
@@ -1614,7 +1918,7 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
           }
           return true
         }),
-    [rows, tankers, poFrom, poTo, poCategory, poIncludeReceipt, poTerms, bargainNoByOrder]
+    [rows, tankers, poFrom, poTo, poCategory, poIncludeReceipt, poTerms, bargainNoByOrder, poReceivedOn]
   )
 
   const filteredOrders = useMemo(
@@ -1627,7 +1931,64 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
       ),
     [poBaseRows, poCols, PO_COLUMNS]
   )
-  const orderPaged = usePaged(filteredOrders)
+  // ONE BILL PER ROW, EVEN WHEN A TRANSFER IS STORED AS SEVERAL.
+  //
+  // A purchase row carries ONE product, so an inter-company transfer of two
+  // products is two rows. They are one bill under one number — which is right,
+  // and which the duplicate-number rule now allows — but the register listed
+  // them as two invoices and counted them as two, so a desk that had raised 53
+  // bills was told it had 54.
+  //
+  // Rows stamped with the same bill_group are that one bill, shown as
+  // one line that opens into its items, the way the Sales register already
+  // shows an invoice of several products. An ordinary purchase has no group,
+  // is its own bill, and renders exactly as it always did.
+  // The bill this purchase is one line of, when it is one of several.
+  const editingBillLines = useMemo(() => {
+    const g = String(editing?.bill_group || '').trim()
+    if (!g) return [] as Row[]
+    const lines = rows.filter((r) => String(r.bill_group || '') === g)
+    return lines.length > 1 ? lines : []
+  }, [editing, rows])
+
+  const orderBills = useMemo(() => asBills(filteredOrders), [filteredOrders])
+  // CLICK A HEADER, SORT THE COLUMN.
+  //
+  // Read off what the CELL shows, which for most columns is the filter's own
+  // reader — the two should never disagree about what a column contains. The
+  // exceptions are the columns a multi-product bill sums or joins: sorting
+  // those on the first line's figure would order the list by a number nobody
+  // can see.
+  const poSortRead = useCallback(
+    (b: Row, key: string): unknown => {
+      const lines: Row[] = b._lines || [b]
+      if (key === 'ordered_qty') return billQty(b)
+      if (key === 'net_amount') return billNet(b)
+      if (key === 'tanker_count') return billTankers(b)
+      if (key === 'oil_label' && lines.length > 1) {
+        return lines.map((l) => l.oil_code || l.oil_name || '').join(', ')
+      }
+      // The invoice column shows the number over the date; the number is what
+      // a person means by "sort by invoice".
+      const col = PO_COLUMNS.find((c) => c.key === key)
+      return col ? col.of(b) : b[key]
+    },
+    [PO_COLUMNS]
+  )
+  const poSort = useTableSort(orderBills, poSortRead)
+  const orderPaged = usePaged(poSort.sorted)
+  // The desk's own labels on these bills — one fetch for the page, not one per
+  // row. A bill spanning several purchase rows is tagged on the row the
+  // register shows, which is the one anybody clicks.
+  const orderTags = useTagMap('order', orderPaged.pageRows.map((r) => Number(r.id)))
+  // Which multi-item bills are open, by the id of the line they are headed by.
+  const [openBills, setOpenBills] = useState<Set<number>>(new Set())
+  const toggleBill = (id: number): void =>
+    setOpenBills((prev) => {
+      const next = new Set(prev)
+      if (!next.delete(id)) next.add(id)
+      return next
+    })
 
   // Row fields derived from a bargain (auto or manual pick).
   function bargainDefaults(b: Row): Row {
@@ -1789,6 +2150,30 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
       })
     if (target === 'outside_factory') next.outside_factory_date = todayISO()
     if (target === 'inside_factory') next.inside_factory_date = todayISO()
+    if (target === 'empty' && tradingCo(row.company_id)) {
+      // A trading company's tanker is sold on as it is emptied. The buyer is
+      // the one manufacturing company where there is only one; the sale number
+      // is this company's next in its series; the rate starts at what the
+      // tanker was bought at.
+      const buyers = companies.filter((c) => Number(c.id) !== Number(row.company_id) && Number(c.active ?? 1) !== 0)
+      const makers = buyers.filter((c) => String(c.company_type || '') !== 'trading')
+      const own = companies.find((c) => Number(c.id) === Number(row.company_id))
+      next.onward = {
+        buyer_company_id: makers.length === 1 ? String(makers[0].id) : '',
+        purchase_invoice_no: '',
+        sale_invoice_no: '',
+        rate: String(Number(row.bargain_live_rate ?? row.rate_per_uom ?? row.bargain_rate) || ''),
+        gst_pct: String(Number(own?.gst_pct) || ''),
+        gst_type: 'CGST_SGST'
+      }
+      window.api.sales
+        .series(Number(row.company_id))
+        .then((s) => {
+          const no = s?.prefix && Number(s?.next) > 0 ? `${s.prefix}/${s.next}` : ''
+          if (no) setActionForm((p) => (p.onward && !p.onward.sale_invoice_no ? { ...p, onward: { ...p.onward, sale_invoice_no: no } } : p))
+        })
+        .catch(() => {})
+    }
     if (target === 'empty') Object.assign(next, {
       empty_date: todayISO(),
       // prefill with the gate-received qty so the gate cross-check passes
@@ -1970,12 +2355,82 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
   // nothing anywhere afterwards to say it had been. On the register it can be
   // seen missing and filled in whenever the sample comes back.
   const [qualityFor, setQualityFor] = useState<Row | null>(null)
+  // The reason typed against a "not needed" — kept beside the panel rather
+  // than inside a set, because it answers for the whole invoice.
+  const [qualityWhy, setQualityWhy] = useState('')
   // One block of readings per tanker on the invoice that has reached Empty.
-  const [qualitySets, setQualitySets] = useState<{ tanker: Row; rows: Row[] }[]>([])
+  //
+  // parts is how many parcels that load arrived as: empty for a load sampled
+  // once, which is nearly all of them, and two or more when it was not. A row
+  // then carries `vals`, one reading per parcel, instead of a single `value`.
+  const [qualitySets, setQualitySets] = useState<{ tanker: Row; rows: Row[]; parts: { qty: string }[] }[]>([])
   const [qualityBusy, setQualityBusy] = useState(false)
+
+  // WHAT WAS SAVED, TURNED BACK INTO A SHEET.
+  //
+  // A split load's parcels have no table of their own — a parcel is not a
+  // thing that exists apart from the readings taken of it, so it is read back
+  // off them: part_no says how many there were, part_qty how big each was.
+  // A parcel nobody recorded a single reading for leaves no trace, which is
+  // the right answer: there is nothing to show.
+  function qualitySetFrom(tanker: Row, saved: Row[]): { tanker: Row; rows: Row[]; parts: { qty: string }[] } {
+    if (!saved.length) {
+      // A fresh sheet takes the guess for each default parameter, so Melting
+      // point already reads in degrees before anyone types.
+      return {
+        tanker,
+        parts: [],
+        rows: TANKER_QUALITY_DEFAULTS.map((name) => ({ name, value: '', unit: guessUnit(name) }))
+      }
+    }
+    const partCount = saved.reduce((a, q) => Math.max(a, Number(q.part_no) || 0), 0)
+    // unit_touched on a SAVED row: the unit it was stored with is a deliberate
+    // answer, so renaming the reading afterwards must not let the name-guess
+    // quietly overwrite it.
+    if (partCount < 1) {
+      return {
+        tanker,
+        parts: [],
+        rows: saved.map((q: Row) => ({
+          name: String(q.name || ''),
+          value: String(q.value ?? ''),
+          unit: q.unit == null ? '%' : String(q.unit),
+          unit_touched: true
+        }))
+      }
+    }
+    const parts: { qty: string }[] = []
+    for (let i = 1; i <= partCount; i++) {
+      const withQty = saved.find((q) => Number(q.part_no) === i && String(q.part_qty ?? '').trim() !== '')
+      parts.push({ qty: withQty ? String(withQty.part_qty) : '' })
+    }
+    // One row per PARAMETER, its readings laid out across the parcels — the
+    // rows come back one per parcel, which is how they are stored and not how
+    // they are read.
+    const order: string[] = []
+    const by = new Map<string, Row>()
+    for (const q of saved) {
+      const name = String(q.name || '')
+      if (!by.has(name)) {
+        by.set(name, {
+          name,
+          value: '',
+          unit: q.unit == null ? '%' : String(q.unit),
+          unit_touched: true,
+          vals: parts.map(() => '')
+        })
+        order.push(name)
+      }
+      const row = by.get(name) as Row
+      const i = (Number(q.part_no) || 1) - 1
+      if (i >= 0 && i < parts.length) (row.vals as string[])[i] = String(q.value ?? '')
+    }
+    return { tanker, parts, rows: order.map((name) => by.get(name) as Row) }
+  }
 
   async function openQuality(order: Row): Promise<void> {
     setQualityFor(order)
+    setQualityWhy(String(order.quality_waived_note || ''))
     setQualitySets([])
     const emptied = tankersForBooking.filter(
       (t) => Number(t.order_id) === Number(order.id) && String(t.status) === 'empty'
@@ -1985,44 +2440,17 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
     if (!emptied.length && !Number(order.tanker_count) && String(order.status) === 'received') {
       const saved = await window.api.orderQuality.list(Number(order.id)).catch(() => [] as Row[])
       setQualitySets([
-        {
-          tanker: { id: 0, order_level: true, tanker_no: 'This invoice', received_qty: order.ordered_qty, uom: order.uom },
-          rows: saved.length
-            ? // unit_touched on a SAVED row: the unit it was stored with is a
-              // deliberate answer, so renaming the reading afterwards must not
-              // let the name-guess quietly overwrite it.
-              saved.map((q: Row) => ({
-                name: String(q.name || ''),
-                value: String(q.value ?? ''),
-                unit: q.unit == null ? '%' : String(q.unit),
-                unit_touched: true
-              }))
-            : // A fresh sheet takes the guess for each default parameter, so
-              // Melting point already reads in degrees before anyone types.
-              TANKER_QUALITY_DEFAULTS.map((name) => ({ name, value: '', unit: guessUnit(name) }))
-        }
+        qualitySetFrom(
+          { id: 0, order_level: true, tanker_no: 'This invoice', received_qty: order.ordered_qty, uom: order.uom },
+          saved
+        )
       ])
       return
     }
     const sets = await Promise.all(
       emptied.map(async (t) => {
         const saved = await window.api.tankers.quality(Number(t.id)).catch(() => [] as Row[])
-        return {
-          tanker: t,
-          rows: saved.length
-            ? // unit_touched on a SAVED row: the unit it was stored with is a
-              // deliberate answer, so renaming the reading afterwards must not
-              // let the name-guess quietly overwrite it.
-              saved.map((q: Row) => ({
-                name: String(q.name || ''),
-                value: String(q.value ?? ''),
-                unit: q.unit == null ? '%' : String(q.unit),
-                unit_touched: true
-              }))
-            : // A fresh sheet takes the guess for each default parameter, so
-              // Melting point already reads in degrees before anyone types.
-              TANKER_QUALITY_DEFAULTS.map((name) => ({ name, value: '', unit: guessUnit(name) }))
-        }
+        return qualitySetFrom(t, saved)
       })
     )
     setQualitySets(sets)
@@ -2051,17 +2479,186 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
     )
   }
 
+  // A reading of one parcel, in a load that has been split.
+  function setQualityVal(si: number, ri: number, pi: number, v: string): void {
+    setQualitySets((p) =>
+      p.map((set, i) =>
+        i === si
+          ? {
+              ...set,
+              rows: set.rows.map((r, j) =>
+                j === ri
+                  ? { ...r, vals: set.parts.map((_, k) => (k === pi ? v : String((r.vals as string[])?.[k] ?? ''))) }
+                  : r
+              )
+            }
+          : set
+      )
+    )
+  }
+
+  // SPLITTING A LOAD, AND PUTTING IT BACK.
+  //
+  // Two parcels to begin with, because a load that is split at all is nearly
+  // always split in two, and the quantity divided evenly between them — a
+  // starting point to correct, not a claim. The reading already typed becomes
+  // the first parcel's, so splitting after the fact loses nothing.
+  function splitQualitySet(si: number): void {
+    setQualitySets((p) =>
+      p.map((set, i) => {
+        if (i !== si) return set
+        const total = Number(set.tanker.received_qty) || Number(set.tanker.loaded_qty) || 0
+        const half = total > 0 ? Math.round((total / 2) * 1000) / 1000 : 0
+        const parts = [
+          { qty: half ? String(half) : '' },
+          { qty: half ? String(Math.round((total - half) * 1000) / 1000) : '' }
+        ]
+        return {
+          ...set,
+          parts,
+          rows: set.rows.map((r) => ({ ...r, vals: [String(r.value ?? ''), ''] }))
+        }
+      })
+    )
+  }
+
+  // Back to one load: the parcels' readings collapse to what they came to,
+  // which is the blend — the figure a single reading of the whole load would
+  // have been. Rounded the way it is shown, so nothing appears from nowhere.
+  function unsplitQualitySet(si: number): void {
+    setQualitySets((p) =>
+      p.map((set, i) => {
+        if (i !== si) return set
+        return {
+          ...set,
+          parts: [],
+          rows: set.rows.map((r) => {
+            const vals = (r.vals as string[]) || []
+            const av = partsAverage(vals, set.parts)
+            const first = vals.find((v) => String(v ?? '').trim() !== '')
+            return {
+              ...r,
+              value: av ? String(av.count > 1 ? av.avg : (first ?? '')) : String(r.value ?? ''),
+              vals: undefined
+            }
+          })
+        }
+      })
+    )
+  }
+
+  function addQualityPart(si: number): void {
+    setQualitySets((p) =>
+      p.map((set, i) =>
+        i === si
+          ? {
+              ...set,
+              parts: [...set.parts, { qty: '' }],
+              rows: set.rows.map((r) => ({ ...r, vals: [...(((r.vals as string[]) || []).slice()), ''] }))
+            }
+          : set
+      )
+    )
+  }
+
+  function removeQualityPart(si: number, pi: number): void {
+    const set = qualitySets[si]
+    if (!set) return
+    // Down to one parcel is not a split at all, so it becomes a single load
+    // again rather than a split with nothing to compare.
+    if (set.parts.length <= 2) {
+      setQualitySets((p) =>
+        p.map((x, i) =>
+          i === si
+            ? {
+                ...x,
+                parts: [],
+                rows: x.rows.map((r) => ({
+                  ...r,
+                  value: String(((r.vals as string[]) || [])[pi === 0 ? 1 : 0] ?? ''),
+                  vals: undefined
+                }))
+              }
+            : x
+        )
+      )
+      return
+    }
+    setQualitySets((p) =>
+      p.map((x, i) =>
+        i === si
+          ? {
+              ...x,
+              parts: x.parts.filter((_, k) => k !== pi),
+              rows: x.rows.map((r) => ({ ...r, vals: ((r.vals as string[]) || []).filter((_, k) => k !== pi) }))
+            }
+          : x
+      )
+    )
+  }
+
+  function setQualityPartQty(si: number, pi: number, v: string): void {
+    setQualitySets((p) =>
+      p.map((set, i) =>
+        i === si ? { ...set, parts: set.parts.map((q, k) => (k === pi ? { qty: v } : q)) } : set
+      )
+    )
+  }
+
+  // One row per parcel per parameter on the way out — the shape the table
+  // keeps. An unsplit load writes exactly what it wrote before.
+  function qualityRowsToSave(set: { rows: Row[]; parts: { qty: string }[] }): Row[] {
+    if (!set.parts.length) return set.rows
+    return set.rows.flatMap((r) =>
+      set.parts.map((part, i) => ({
+        name: r.name,
+        unit: r.unit,
+        value: String(((r.vals as string[]) || [])[i] ?? ''),
+        part_no: i + 1,
+        part_qty: part.qty
+      }))
+    )
+  }
+
   async function saveQuality(): Promise<void> {
     if (!qualityFor) return
     setQualityBusy(true)
     try {
       for (const set of qualitySets) {
-        if (set.tanker.order_level) await window.api.orderQuality.save(Number(qualityFor.id), set.rows)
-        else await window.api.tankers.saveQuality(Number(set.tanker.id), set.rows)
+        const rows = qualityRowsToSave(set)
+        if (set.tanker.order_level) await window.api.orderQuality.save(Number(qualityFor.id), rows)
+        else await window.api.tankers.saveQuality(Number(set.tanker.id), rows)
       }
       setQualityFor(null)
       await load()
       toast.success(qualitySets.length === 1 ? 'Readings saved' : `Readings saved for ${qualitySets.length} tankers`)
+    } catch (e) {
+      toast.error((e as Error).message)
+    } finally {
+      setQualityBusy(false)
+    }
+  }
+
+  /**
+   * "Not needed for this transaction", and the way back from it.
+   *
+   * An inter-company transfer has no sample to take, so the flask would sit
+   * amber on the register for ever — and a warning that can never be cleared
+   * is one everybody learns to ignore. This is an ANSWER, not a skip: the
+   * reason and the moment are kept, and it can be undone.
+   */
+  async function waiveQuality(on: boolean): Promise<void> {
+    if (!qualityFor) return
+    setQualityBusy(true)
+    try {
+      await window.api.orderQuality.waive(Number(qualityFor.id), on, qualityWhy)
+      setQualityFor(null)
+      await load()
+      toast.success(
+        on
+          ? 'Marked as not needed for this transaction'
+          : 'Technical parameters are expected on this invoice again'
+      )
     } catch (e) {
       toast.error((e as Error).message)
     } finally {
@@ -2120,6 +2717,14 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
       toast.error('Select a transporter')
       return
     }
+    // A trading company's tanker cannot be emptied without being sold on.
+    if (target === 'empty' && tradingCo(actionRow.company_id)) {
+      const o = (actionForm.onward || {}) as Row
+      if (!o.buyer_company_id) return void toast.error('Pick the company this tanker is sold to')
+      if (!String(o.purchase_invoice_no || '').trim()) return void toast.error('Enter the purchase invoice number the buying company books it under')
+      if (!String(o.sale_invoice_no || '').trim()) return void toast.error('Enter the sale invoice number')
+      if (!(Number(o.rate) > 0)) return void toast.error('Enter the sale rate per MT')
+    }
     // More qty on the truck than the bargain has left: pause and ask before
     // booking the excess as a fresh bargain line (rate confirmed by the user).
     if (target === 'loaded' && !excess) {
@@ -2159,8 +2764,28 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
         krfl_weighment_doc_no: actionForm.krfl_weighment_doc_no || null,
         krfl_weighment_photo: actionForm.krfl_weighment_photo || null,
         outside_weighment_doc_no: actionForm.outside_weighment_doc_no || null,
-        outside_weighment_photo: actionForm.outside_weighment_photo || null
+        outside_weighment_photo: actionForm.outside_weighment_photo || null,
+        onward:
+          target === 'empty' && actionForm.onward
+            ? {
+                buyer_company_id: Number(actionForm.onward.buyer_company_id) || null,
+                purchase_invoice_no: String(actionForm.onward.purchase_invoice_no || '').trim(),
+                sale_invoice_no: String(actionForm.onward.sale_invoice_no || '').trim(),
+                rate: Number(actionForm.onward.rate) || 0,
+                gst_pct: Number(actionForm.onward.gst_pct) || 0,
+                gst_type: actionForm.onward.gst_type === 'IGST' ? 'IGST' : 'CGST_SGST',
+                tags: Array.isArray(actionForm.onward.tags) ? actionForm.onward.tags : []
+              }
+            : undefined
       })
+      if (target === 'empty' && actionForm.onward) {
+        const buyer = companies.find((c) => String(c.id) === String(actionForm.onward.buyer_company_id))
+        toast.success(`Tanker emptied and sold to ${String(buyer?.name || 'the buying company')} — sale ${String(actionForm.onward.sale_invoice_no)}, purchase ${String(actionForm.onward.purchase_invoice_no)}`)
+        setActionRow(null)
+        setExcess(null)
+        await load()
+        return
+      }
       if (target === 'loaded' && excess) {
         toast.success(
           excess.mode === 'existing'
@@ -2240,6 +2865,9 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
 
   function openNewPurchase(): void {
     setEditing(null)
+    // A fresh invoice carries no bill and no per-product rates from the last one.
+    setEditingBill({ group: '', ids: [] })
+    setLineRates({})
     setForm({ company_id: String(activeCompany || ''), invoice_no: '', order_date: todayISO(), is_registered_transporter: true, transporter_id: '', gst_type: 'CGST_SGST', allowed_shortage_pct: '', round_off: '', round_off_manual: false, rate_round_off: '0', charge_interest: false, interest_touched: false, remarks: '', freight_paid_to_supplier: false, bargain_interest: {} })
     setSelected([])
     setLotIds([])
@@ -2280,7 +2908,34 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
       activity: { entity: 'Purchase', id: Number(row.id) },
       kicker: 'Purchase invoice',
       title: String(row.invoice_no || 'this purchase'),
-      subtitle: `${row.supplier_name || '—'} · ${formatDate(row.invoice_date || row.order_date)} · ${formatINR(row.total_amount ?? row.amount)}`
+      subtitle: `${row.supplier_name || '—'} · ${formatDate(row.invoice_date || row.order_date)} · ${formatINR(row.net_amount ?? row.total_amount ?? row.amount)}`
+    })
+
+  // WHAT THIS PURCHASE PUT IN THE LEDGERS.
+  // A purchase invoice posts one voucher and it is a long one — the oil, the
+  // GST, the TDS withheld, the interest on a delayed bargain, the round-off,
+  // and the supplier credited with the balance. Checking it used to mean
+  // leaving the register for the Day Book and finding it by date and figure.
+  // ONLY FOR SOMEBODY WHO IS ALLOWED IN THE BOOKS.
+  // The panel is a window on the ledgers, so it answers to the Accounting
+  // grant and not to this page's — otherwise a purchase clerk with no reason
+  // to see a bank ledger would reach one through a menu on an invoice. Same
+  // convention as the Treasury tabs: no session at all (the desktop app) is
+  // not a restriction.
+  const canSeeLedgers = useMemo(() => {
+    const u = loadUser()
+    // The ledgers themselves: the Accounting · Ledgers section (which follows
+    // Accounting for anyone not set otherwise).
+    return !u || canAccess(u, 'accountsLedgers')
+  }, [])
+  const [postings, setPostings] = useState<PostingTarget | null>(null)
+  const openPostings = (row: Row): void =>
+    setPostings({
+      entity: 'order',
+      id: Number(row.id),
+      kicker: 'Purchase invoice',
+      title: String(row.invoice_no || 'this purchase'),
+      subtitle: `${row.supplier_name || '—'} · ${formatDate(row.invoice_date || row.order_date)} · ${formatINR(row.net_amount ?? row.total_amount ?? row.amount)}`
     })
 
   function openEditPurchase(row: Row): void {
@@ -2341,7 +2996,32 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
       // the saved invoice rate is a deliberate choice — never auto-overwrite it
       invoice_rate_touched: true
     })
-    setSelected(tankers.filter((x) => x.order_id === row.id).map((x) => Number(x.id)))
+    // ONE BILL OPENS AS ONE BILL.
+    //
+    // A purchase covering two products stands as two rows. Opening either of
+    // them has to bring the whole bill up — its other products, their rates
+    // and all their lorries — or saving would quietly drop whatever was not on
+    // screen. Rows are found by the group they were stamped with; an ordinary
+    // purchase has none and opens as itself, exactly as before.
+    const group = String(row.bill_group || '').trim()
+    const billRows = group ? rows.filter((r) => String(r.bill_group || '') === group) : [row]
+    const billLorries = tankers.filter((x) => billRows.some((r) => Number(r.id) === Number(x.order_id)))
+    setEditingBill(
+      group && billRows.length > 1 && billLorries.length > 0
+        ? { group, ids: billRows.map((r) => Number(r.id)) }
+        : { group: '', ids: [] }
+    )
+    setSelected(billLorries.map((x) => Number(x.id)))
+    // Each product's own rate and GST, read off the row that holds it, so
+    // reopening shows what was billed rather than one figure for both.
+    setLineRates(
+      Object.fromEntries(
+        billRows.map((r) => [
+          String(r.oil_type_id),
+          { invoice_rate: paise(r.invoice_rate), gst_pct: String(r.gst_pct ?? '') }
+        ])
+      )
+    )
     setError(null)
     setPendingRates({})
     setFormPage(true)
@@ -2369,9 +3049,9 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
       String(x.supplier_id) === String(form.supplier_id || '') &&
       x.status !== 'supplier_factory' &&
       Number(x.loaded_qty) > 0 &&
-      (x.order_id == null || x.order_id === editing?.id)
+      (x.order_id == null || x.order_id === editing?.id || editingBill.ids.includes(Number(x.order_id)))
     ),
-    [tankersForBooking, form.supplier_id, editing]
+    [tankersForBooking, form.supplier_id, editing, editingBill]
   )
   // Only suppliers that actually have billable tankers appear in the picker
   // (plus the invoice's own supplier when editing). Trading suppliers are left
@@ -2384,7 +3064,7 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
         .filter((x) =>
           x.status !== 'supplier_factory' &&
           Number(x.loaded_qty) > 0 &&
-          (x.order_id == null || x.order_id === editing?.id))
+          (x.order_id == null || x.order_id === editing?.id || editingBill.ids.includes(Number(x.order_id))))
         .map((x) => String(x.supplier_id))
     )
     return suppliers.filter((s) => {
@@ -2411,6 +3091,50 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
   // Raising a new invoice, as against amending one already booked. The rate
   // fills itself only while raising; once booked it is the invoice's own.
   const isNewInvoice = !editing?.id
+  // A TRANSFER BETWEEN OUR OWN COMPANIES IS ITS OWN KIND OF PURCHASE.
+  //
+  // It is raised from a sale over there, not typed here: the product, the
+  // quantity and the rate are the sale's and are shown whole, read-only, in
+  // the block above. It is stamped is_consignment so it books straight to
+  // received — which is right, and which also dragged in the whole Direct
+  // purchase panel: a party-stock chip reading "No stock logged", a product
+  // picker reading "No stock for this party", and a bargain row reading "No
+  // open bargain for this product".
+  //
+  // That was not merely noise. Those are SAVE GUARDS: the party has no
+  // consignment stock (so "only 0 available"), and a transfer is drawn from no
+  // bargain — so an inter-company purchase could not be saved from this form
+  // at all. Both the panel and the guards are skipped now.
+  const isIntercompany = !!editing?.intercompany_sale_id
+  // THE OTHER HALF OF A TRANSFER BETWEEN OUR OWN COMPANIES.
+  //
+  // This purchase was not typed — it was raised from a sale in the selling
+  // company and is tied to it. What it is FOR lives on that invoice, so it is
+  // fetched and shown here rather than left on a page the reader would have to
+  // know to go and find. Null for every ordinary purchase, which is most of
+  // them, and the block below simply does not render.
+  const [icSource, setIcSource] = useState<Row | null>(null)
+  useEffect(() => {
+    const oid = Number(editing?.id) || 0
+    if (!formPage || !oid || !editing?.intercompany_sale_id) {
+      setIcSource(null)
+      return
+    }
+    let alive = true
+    void window.api.orders
+      .intercompanySource(oid)
+      .then((r) => {
+        if (alive) setIcSource((r as Row) || null)
+      })
+      .catch(() => {
+        // A purchase is still perfectly editable without the other side on
+        // screen; this is context, not a dependency.
+        if (alive) setIcSource(null)
+      })
+    return () => {
+      alive = false
+    }
+  }, [formPage, editing])
   const isTrading = !!(editing ? editing.is_trading : form.is_trading)
   // Consignment tankers logged for this supplier that no purchase has drawn yet
   // — the purchase form offers these first, then a bargain is assigned to them.
@@ -2574,6 +3298,100 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
     [pickableLots, lotIds]
   )
   const lotQty = chosenLots.reduce((s, l) => s + Number(l.qty || 0), 0)
+
+  /**
+   * A WITHDRAWAL COMES OUT OF A LOT AT A TERMINAL, NOT OUT OF A TANKER.
+   *
+   * The deposits are mapped first: every tanker that arrives is given its lot
+   * and its terminal, and several tankers of the same cargo carry the same
+   * pair. What the party then holds with us is not twenty-three tankers — it
+   * is L-2451 at KANDLA and L-2779 at MUNDRA, and the invoice is raised
+   * against one of those. Listing the tankers made the picker a register of
+   * vehicles: to draw 167 MT off L-2451 you had to know which four registration
+   * numbers carried it and tick exactly those four.
+   *
+   * So the picker is the combinations. One line per lot + terminal, carrying
+   * what the combination holds, how many deposits are behind it and the span
+   * of dates they arrived over; ticking it takes the whole of it, and the
+   * chevron opens the deposits inside for anyone who wants one of them alone.
+   *
+   * Product is part of the key, never a filter: which product this invoice is
+   * for is decided by what gets ticked (see lotProducts), so every product the
+   * party holds stays visible and says its own name.
+   *
+   * A deposit nobody has mapped yet belongs to no combination, so it stands on
+   * its own rather than being heaped together with every other unmapped one —
+   * they have nothing in common but the gap.
+   */
+  const [openLotGroups, setOpenLotGroups] = useState<Record<string, boolean>>({})
+  // Set the moment a box is ticked, so nothing is re-derived merely because an
+  // invoice being edited loaded its own parcels.
+  const [lotTouched, setLotTouched] = useState(false)
+  // The last quantity the ticking wrote. While the box still reads exactly
+  // that, nobody has typed over it and it may be rewritten.
+  const lotFill = useRef<string | null>(null)
+  const lotGroups = useMemo(() => {
+    type Group = {
+      key: string
+      lot: string
+      term: string
+      mapped: boolean
+      product: string
+      uom: string
+      rows: Row[]
+      qty: number
+      from: string
+      to: string
+    }
+    const norm = (v: unknown): string => String(v ?? '').trim().toUpperCase()
+    const out: Group[] = []
+    const byKey = new Map<string, Group>()
+    for (const l of pickableLots) {
+      const lot = norm(l.lot_no)
+      const term = norm(l.terminal_no)
+      const mapped = !!(lot || term)
+      const key = mapped ? `${l.product_id}|${lot}|${term}` : `row:${l.id}`
+      let g = byKey.get(key)
+      if (!g) {
+        g = {
+          key,
+          lot,
+          term,
+          mapped,
+          product: String(l.product_code || l.product_name || ''),
+          uom: String(l.uom || 'MT'),
+          rows: [],
+          qty: 0,
+          from: '',
+          to: ''
+        }
+        byKey.set(key, g)
+        out.push(g)
+      }
+      g.rows.push(l)
+      // Kept to the three decimals a quantity is held in, so adding four
+      // parcels cannot show a total the sum of the lines does not make.
+      g.qty = Math.round((g.qty + (Number(l.qty) || 0)) * 1000) / 1000
+      const d = String(l.deposit_date || '')
+      if (d) {
+        if (!g.from || d < g.from) g.from = d
+        if (!g.to || d > g.to) g.to = d
+      }
+    }
+    // The mapped combinations first: those are what a withdrawal is picked by.
+    // Anything still unmapped is work outstanding, and sits below it.
+    return out.sort((a, b) =>
+      a.mapped === b.mapped ? String(a.from).localeCompare(String(b.from)) : a.mapped ? -1 : 1
+    )
+  }, [pickableLots])
+  const mappedGroups = useMemo(() => lotGroups.filter((g) => g.mapped).length, [lotGroups])
+  // Ticking a combination takes every deposit behind it, and untick puts them
+  // all back — the ids on the invoice never change shape, only how they are chosen.
+  const toggleLotGroup = (ids: number[], on: boolean): void => {
+    setLotTouched(true)
+    setLotIds((p) => (on ? Array.from(new Set([...p, ...ids])) : p.filter((x) => !ids.includes(x))))
+  }
+
   // Per-tanker bargain assignment, keyed by lot id: a tanker draws on one
   // bargain, or is split across two (extra_qty on the second).
   const [lotBargains, setLotBargains] = useState<Record<number, Row>>({})
@@ -2627,6 +3445,53 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
   )
   const lotProductId = lotProducts.length === 1 ? lotProducts[0] : ''
   const mixedLotProducts = lotProducts.length > 1
+
+  /**
+   * WHAT IS TICKED IS WHAT IS BEING INVOICED.
+   *
+   * The picker has always said so in as many words, and the backend has always
+   * meant it: createOrder throws away the typed quantity and takes the picks'
+   * total (see validateConsignmentLots). Only this form never caught up. You
+   * ticked a lot holding 120.907 MT and the quantity box stayed at 0.000, so
+   * the summary rail on the right — taxable, GST, TDS, net — sat at zero right
+   * up to Accept, and the one thing a person wants before booking a withdrawal
+   * is what it comes to.
+   *
+   * The product comes with it. A lot at a terminal is of one product, so
+   * picking the lot has already answered the question the product box asks;
+   * and on an invoice already booked the product cannot move at all, which is
+   * why that case is left alone.
+   *
+   * Only ever after a tick. An invoice being edited arrives with its own
+   * parcels pre-ticked, and re-deriving its figures from them would restate a
+   * booked quantity that nobody touched.
+   */
+  useEffect(() => {
+    if (!formPage) {
+      setLotTouched(false)
+      lotFill.current = null
+    }
+  }, [formPage])
+  useEffect(() => {
+    if (!formPage || !directMode || !lotTouched || !lotIds.length) return
+    // A QUANTITY THE USER TYPED IS THE QUANTITY.
+    //
+    // Filling an empty box from what was ticked is a convenience. Overwriting
+    // 47 with a parcel's own 40.444 is not: it is the form deciding the bill.
+    // So it writes only into a box that is empty, or that still holds exactly
+    // what this same effect last put there — which is to say, one the user has
+    // not touched since. Everything else stands, and the backend draws the
+    // typed amount from the ticked parcels first (see planConsignmentDraw).
+    const here = String(form.ordered_qty ?? '').trim()
+    if (!here || here === lotFill.current) {
+      const next = String(Math.round(lotQty * 1000) / 1000)
+      lotFill.current = next
+      setForm((f) => ({ ...f, ordered_qty: next }))
+    }
+    if (editing || !lotProductId) return
+    const prod = partyStock.find((x) => String(x.product_id) === lotProductId)
+    if (prod && String(prod.product_id) !== String(form.oil_type_id || '')) chooseDirectProduct(prod)
+  }, [formPage, directMode, lotTouched, lotIds, lotQty, lotProductId, editing]) // eslint-disable-line react-hooks/exhaustive-deps
   // Open bargains of that supplier (plus whichever one this invoice already
   // uses), narrowed to the product of the tankers that have been ticked.
   // Bargains of this party + product with balance left, oldest first — the
@@ -2731,6 +3596,105 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
     () => new Set(chosenTankers.map((x) => Number(x.bargain_rate) || 0)).size > 1,
     [chosenTankers]
   )
+
+  // ONE SUPPLIER INVOICE, TANKERS OF SEVERAL PRODUCTS.
+  // ------------------------------------------------------------------------
+  // A supplier's bill can cover a lorry of RPS and a lorry of SHEA. It is one
+  // document with one number, and it used to have to be split into two
+  // invoices with a number invented for the second.
+  //
+  // A purchase ROW is still one product — the bargain, the rate, the GST and
+  // the lab readings all are — so the bill is written as one row per product
+  // under a shared reference. That happens on save; here the form simply
+  // stops pretending the selection has only one product in it.
+  //
+  // The rate and the GST move to the product when there is more than one,
+  // because they are per product: two oils on one bill are two rates, and
+  // billing the second at the first's is the error this exists to prevent.
+  const [lineRates, setLineRates] = useState<Record<string, { invoice_rate: string; gst_pct: string }>>({})
+
+  const productLines = useMemo(() => {
+    const m = new Map<string, Row>()
+    for (const t of chosenTankers) {
+      const pid = String(t.oil_type_id || '')
+      if (!pid) continue
+      const cur = m.get(pid) || {
+        product_id: Number(pid),
+        label: String(t.oil_code || t.oil_name || '—'),
+        // The line's bargain is its first tanker's, the same way a
+        // single-product invoice takes the first selected tanker's.
+        bargain_id: Number(t.bargain_id) || 0,
+        bargain_no: String(t.bargain_no || ''),
+        // pt.bargain_rate is the rate a tanker was BILLED at, frozen when
+        // its invoice was saved — so on a tanker that has never been billed it
+        // is empty, and the rate to open at is the one its bargain reads now.
+        bargain_rate: Number(t.bargain_rate) || Number(t.bargain_live_rate) || 0,
+        uom: String(t.uom || 'MT'),
+        tankers: [] as Row[],
+        qty: 0
+      }
+      cur.tankers.push(t)
+      cur.qty += Number(t.loaded_qty) || 0
+      m.set(pid, cur)
+    }
+    // The order the products were picked in, so the list does not reshuffle
+    // itself as a second lorry is ticked.
+    return Array.from(m.values())
+  }, [chosenTankers])
+
+  const multiProduct = productLines.length > 1
+
+  // What each line is billed at. A rate not typed yet falls back to the
+  // bargain's own, which is what the single-product form does with its one.
+  const lineRateOf = useCallback(
+    (l: Row): { rate: number; gst: number } => {
+      const held = lineRates[String(l.product_id)] || {}
+      const rate = held.invoice_rate !== undefined && held.invoice_rate !== ''
+        ? Number(held.invoice_rate)
+        : Number(l.bargain_rate) || 0
+      const gst = held.gst_pct !== undefined && held.gst_pct !== ''
+        ? Number(held.gst_pct)
+        : Number(form.gst_pct) || 0
+      return { rate: Number.isFinite(rate) ? rate : 0, gst: Number.isFinite(gst) ? gst : 0 }
+    },
+    [lineRates, form.gst_pct]
+  )
+
+  // The bill's own figures while it is being typed. Only what the reader needs
+  // to check a total against the paper — the exact money is struck in the main
+  // process, line by line, by the same code that prices any purchase.
+  const billPreview = useMemo(() => {
+    let taxable = 0
+    let gst = 0
+    for (const l of productLines) {
+      const { rate, gst: pct } = lineRateOf(l)
+      const t = (Number(l.qty) || 0) * rate
+      taxable += t
+      gst += (t * pct) / 100
+    }
+    return { taxable, gst, total: taxable + gst }
+  }, [productLines, lineRateOf])
+
+  // A product ticked onto the bill starts at its own bargain's rate rather
+  // than blank, because that is what it will be billed at unless the supplier
+  // charged something else — the same default the one-product form applies.
+  useEffect(() => {
+    if (!formPage || !multiProduct) return
+    setLineRates((prev) => {
+      let changed = false
+      const next = { ...prev }
+      for (const l of productLines) {
+        if (next[String(l.product_id)] === undefined) {
+          next[String(l.product_id)] = {
+            invoice_rate: l.bargain_rate ? paise(l.bargain_rate) : '',
+            gst_pct: String(form.gst_pct ?? '')
+          }
+          changed = true
+        }
+      }
+      return changed ? next : prev
+    })
+  }, [formPage, multiProduct, productLines]) // eslint-disable-line react-hooks/exhaustive-deps
   // Per-bargain quantity shares across the selected tankers — a split tanker
   // contributes to BOTH its primary and its excess bargain. More than one entry
   // means the invoice spans multiple bargain rates.
@@ -2891,7 +3855,7 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
   // been corrected, the banner above the form says so and offers the new
   // figure per bargain, for a person to accept.
   useEffect(() => {
-    if (!formPage || !isNewInvoice || rateAlloc.length < 2 || blendedRate <= 0) return
+    if (!formPage || !isNewInvoice || multiProduct || rateAlloc.length < 2 || blendedRate <= 0) return
     setForm((p) => {
       const next: Row = { ...p }
       let changed = false
@@ -2905,7 +3869,41 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
       }
       return changed ? next : p
     })
-  }, [formPage, isNewInvoice, rateAlloc.length, blendedRate])
+  }, [formPage, isNewInvoice, multiProduct, rateAlloc.length, blendedRate])
+
+  // COMING BACK DOWN TO ONE PRODUCT.
+  //
+  // Untick the second product's lorry and the bill is an ordinary one again —
+  // priced in the header, off the one rate. Whatever the header was holding
+  // while the products carried their own is stale by definition, and left
+  // alone it showed the average of two oils as the rate for the one that
+  // remained: 18 MT of SHEA valued at RPS-and-SHEA-averaged money.
+  //
+  // Only on the way DOWN from several, and only onto the product that is
+  // left, so an ordinary invoice's typed rate is never touched.
+  const wasMulti = useRef(false)
+  useEffect(() => {
+    if (!formPage) {
+      wasMulti.current = false
+      return
+    }
+    if (wasMulti.current && !multiProduct && productLines.length === 1) {
+      const only = productLines[0]
+      const rate = lineRateOf(only).rate
+      if (rate > 0) {
+        setForm((p) => ({
+          ...p,
+          oil_type_id: only.product_id,
+          oil_label: only.label,
+          bargain_id: only.bargain_id,
+          invoice_rate: paise(rate),
+          bargain_rate: paise(only.bargain_rate || rate),
+          invoice_rate_touched: false
+        }))
+      }
+    }
+    wasMulti.current = multiProduct
+  }, [formPage, multiProduct, productLines]) // eslint-disable-line react-hooks/exhaustive-deps
   const financedCount = chosenTankers.filter((x) => x.payment_mode === 'supplier_finance').length
   // Transporter is already chosen during tanker movement — reuse it here.
   const tankerTransporterIds = Array.from(
@@ -3008,12 +4006,43 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
     },
     [lineInterestOf, form.charge_interest, form.gst_pct, form.interest_pct, ratePremium, billedRate]
   )
+  // The lines the money is struck on. One product: the bargains behind it,
+  // each at its own rate. Several products: the products, each at its own.
+  const moneyLines = useMemo(
+    () =>
+      multiProduct
+        ? productLines.map((l) => ({ rate: lineRateOf(l).rate, qty: Number(l.qty) || 0 }))
+        : rateAlloc.map((a) => ({ rate: a.rate, qty: a.qty, ...lineInterestOf(a.bargain_id) })),
+    [multiProduct, productLines, lineRateOf, rateAlloc, lineInterestOf]
+  )
+  // A single figure for a bill that may carry two of them. Quantity-weighted,
+  // so it is the rate the bill actually averages out at rather than whichever
+  // product happened to be ticked first — and on the usual bill, where every
+  // product is at the same GST, it is simply that GST.
+  const billGstPct = useMemo(() => {
+    if (!multiProduct) return Number(form.gst_pct) || 0
+    let base = 0
+    let tax = 0
+    for (const l of productLines) {
+      const { rate, gst } = lineRateOf(l)
+      const t = (Number(l.qty) || 0) * rate
+      base += t
+      tax += (t * gst) / 100
+    }
+    return base > 0 ? (tax / base) * 100 : 0
+  }, [multiProduct, productLines, lineRateOf, form.gst_pct])
+  const billAvgRate = useMemo(() => {
+    const qty = productLines.reduce((t, l) => t + (Number(l.qty) || 0), 0)
+    if (!multiProduct || qty <= 0) return Number(form.invoice_rate) || 0
+    return productLines.reduce((t, l) => t + (Number(l.qty) || 0) * lineRateOf(l).rate, 0) / qty
+  }, [multiProduct, productLines, lineRateOf, form.invoice_rate])
+
   const calc = useMemo(() => computeMoney({
     orderedQty: totalQty,
     rateRoundOff,
-    invoiceRate: Number(form.invoice_rate) || 0,
-    bargainRate: Number(form.bargain_rate) || 0,
-    gstPct: Number(form.gst_pct) || 0,
+    invoiceRate: multiProduct ? billAvgRate : Number(form.invoice_rate) || 0,
+    bargainRate: multiProduct ? billAvgRate : Number(form.bargain_rate) || 0,
+    gstPct: billGstPct,
     tdsPct: form.tds_above_only ? 0 : Number(form.tds_pct) || 0,
     addsInterest: !!form.charge_interest,
     interestPct: Number(form.interest_pct) || 0,
@@ -3022,9 +4051,65 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
     tdsThreshold: Number(form.tds_threshold) || 0,
     tdsPctAbove: Number(form.tds_pct) || 0,
     tdsPrior: Number(form.tds_prior) || 0,
-    lines: rateAlloc.map((a) => ({ rate: a.rate, qty: a.qty, ...lineInterestOf(a.bargain_id) })),
+    lines: moneyLines,
     roundOff: Number(form.round_off) || 0
-  }), [form, totalQty, rateAlloc, lineInterestOf])
+  }), [form, totalQty, moneyLines, multiProduct, billAvgRate, billGstPct, rateRoundOff])
+
+  // THE SUMMARY IS THE INVOICE'S, NOT THE LINE'S.
+  //
+  // A purchase row is one product, so editing a two-product bill lands on one
+  // of its rows — but the figures anybody comes to this rail for are the
+  // invoice's. Reading a line's 4.13 MT under a heading naming a 34.76 MT
+  // invoice is how a correct bill looks wrong.
+  //
+  // Struck the way a single-product invoice is struck, on the whole quantity:
+  // the same computeMoney, handed every line of the bill. So the taxable value
+  // is the weighted rate over the full tonnage, and the GST, the round off,
+  // the TDS and the net all follow from it exactly as they do on one line.
+  //
+  // The stored totals are deliberately NOT summed. A row keeps the TDS it was
+  // booked with, which on these transfers is nil, while the form is showing
+  // the supplier's 0.1% — adding the two would put a figure on screen that is
+  // neither what was booked nor what is being typed.
+  //
+  // This line comes from the form, live, so editing its rate moves the
+  // invoice total as it is typed; the others come from the rows standing,
+  // because they are not being changed here.
+  const billMoney = useMemo(() => {
+    const others = editingBillLines.filter((r) => Number(r.id) !== Number(editing?.id || 0))
+    // This line live from the form, the rest as they stand.
+    const lines = [
+      { rate: Number(form.invoice_rate) || 0, qty: totalQty },
+      ...others.map((r) => ({ rate: Number(r.invoice_rate) || 0, qty: Number(r.ordered_qty) || 0 }))
+    ]
+    const qty = lines.reduce((t, l) => t + l.qty, 0)
+    // Rate times quantity, line by line, added up. Plainly — not through the
+    // single-line calculator, which re-rounds the rate it is handed and so
+    // valued 34.76 MT at a rate that was already an average of two.
+    const taxable = lines.reduce((t, l) => t + l.rate * l.qty, 0)
+    const gst = (taxable * (Number(form.gst_pct) || 0)) / 100
+    const roundOff = Number(form.round_off) || 0
+    const total = taxable + gst
+    const roundedTotal = total + roundOff
+    // At the rate this line is actually withholding at — which carries the
+    // supplier's slab with it, rather than re-deciding the slab here and
+    // risking a different answer from the one below.
+    const tdsRate = calc.taxableValue > 0 ? calc.tdsAmount / calc.taxableValue : 0
+    const tds = Math.round(taxable * tdsRate * 100) / 100
+    return {
+      qty,
+      taxable,
+      gst,
+      total,
+      roundedTotal,
+      tds,
+      net: Math.round((roundedTotal - tds) * 100) / 100,
+      // Taxable over quantity IS the quantity-weighted average rate.
+      rate: qty > 0 ? taxable / qty : 0
+    }
+  }, [editingBillLines, editing, totalQty, form, calc])
+  // Only when this really is one bill in several rows.
+  const onBill = editingBillLines.length > 1
 
   // What the explainer needs to redo the arithmetic on screen: where this
   // supplier stood in the year BEFORE this invoice (orders:fyTaxable already
@@ -3108,6 +4193,12 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
     if (isTrading) {
       if (!form.oil_type_id) return setError('Choose the product being invoiced')
       if (totalQty <= 0) return setError('Enter the quantity being invoiced')
+    } else if (isIntercompany) {
+      // The product and the quantity are the sale's, and were written when the
+      // transfer was raised. Nothing is drawn from a party's consignment stock
+      // and nothing from a bargain, so neither is asked for.
+      if (!form.oil_type_id) return setError('Choose the product being invoiced')
+      if (totalQty <= 0) return setError('Enter the quantity being invoiced')
     } else if (directMode) {
       if (!form.oil_type_id) return setError('Choose the product being invoiced')
       if (totalQty <= 0) return setError('Enter the quantity being invoiced')
@@ -3140,7 +4231,12 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
         )
       }
     }
-    if (Number(form.invoice_rate) <= 0) return setError('Invoice rate must be greater than zero')
+    if (multiProduct) {
+      const blank = productLines.find((l) => lineRateOf(l).rate <= 0)
+      if (blank) return setError(`${blank.label} has no rate yet — every product on the bill needs one`)
+    } else if (Number(form.invoice_rate) <= 0) {
+      return setError('Invoice rate must be greater than zero')
+    }
     setSaving(true)
     setError(null)
     const payload: Row = {
@@ -3155,7 +4251,20 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
       is_consignment: !isTrading && directMode,
       is_trading: isTrading,
       bargain_id: isTrading ? null : form.bargain_id,
-      consignment_lot_ids: [],
+      // WHICH PARCELS THIS WITHDRAWAL TAKES.
+      //
+      // Empty means "you decide": the server draws oldest-first, whole lots
+      // only, which is what every consignment invoice did before parcels could
+      // be picked. Naming them takes precedence, and the invoiced quantity
+      // becomes their sum — a withdrawal IS the parcels it took.
+      consignment_lot_ids: directMode && !isTrading && lotIds.length
+        ? lotIds.map((id) => ({
+            id,
+            bargain_id: Number(lotBargains[id]?.bargain_id) || Number(form.bargain_id) || null,
+            extra_bargain_id: Number(lotBargains[id]?.extra_bargain_id) || null,
+            extra_qty: Number(lotBargains[id]?.extra_qty) || 0
+          }))
+        : [],
       bargain_lines: !isTrading && directMode
         ? bgLines
             .filter((l) => l.bargain_id && (Number(l.qty) || 0) > 0)
@@ -3188,17 +4297,89 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
       financed_by_party: !directMode && !isTrading && selected.length > 0 && financedCount === selected.length,
       payment_date: form.order_date
     }
+    // ONE BILL OVER SEVERAL PRODUCTS GOES AS ONE BILL.
+    //
+    // Each product becomes a line carrying its own product, bargain, lorries,
+    // quantity, rate and GST; everything else on the form is the bill's and is
+    // shared by all of them. The main process writes one purchase row per line
+    // through the same function that books any purchase, so nothing about how
+    // a purchase is priced, posted or drawn from a bargain changes here.
+    const billItems = productLines.map((l) => {
+      // Where the rate was typed is where it is read back from. On a bill that
+      // has just dropped to ONE product the header is editing it again, and
+      // reading the product row instead would send whatever it held before.
+      const { rate, gst } = multiProduct
+        ? lineRateOf(l)
+        : { rate: Number(form.invoice_rate) || 0, gst: Number(form.gst_pct) || 0 }
+      return {
+        oil_type_id: l.product_id,
+        bargain_id: l.bargain_id,
+        tanker_ids: l.tankers.map((t: Row) => Number(t.id)),
+        ordered_qty: l.qty,
+        uom: l.uom,
+        invoice_rate: rate,
+        bargain_rate: Number(l.bargain_rate) || 0,
+        gst_pct: gst
+      }
+    })
     try {
-      if (editing) {
+      if (editingBill.group) {
+        for (const [bid, rate] of Object.entries(pendingRates)) {
+          if (editing) await window.api.bargains.setInvoiceRate(Number(editing.id), Number(bid), Number(rate))
+        }
+        await window.api.orders.updateInvoice(editingBill.group, { ...payload, items: billItems })
+        setPendingRates({})
+        toast.success(
+          billItems.length > 1 ? `Invoice updated — ${billItems.length} products` : 'Purchase updated'
+        )
+      } else if (multiProduct) {
+        await window.api.orders.createInvoice({ ...payload, items: billItems })
+        toast.success(`Purchase invoice created — ${billItems.length} products`)
+      } else if (editing) {
         // The rates the pencil changed go in FIRST: the main process prices
-        // each line off the tanker'''s own frozen rate, so the invoice has to
+        // each line off the tanker's own frozen rate, so the invoice has to
         // be saved against the new ones, not the old.
         for (const [bid, rate] of Object.entries(pendingRates)) {
           await window.api.bargains.setInvoiceRate(Number(editing.id), Number(bid), Number(rate))
         }
         await window.api.orders.update(editing.id, payload)
+        // ONE SAVE, ONE INVOICE.
+        //
+        // A purchase row is one product, so a bill covering two stands as two
+        // rows — but they are one document, and nobody should have to go and
+        // open the other row to put the same date or the same GST on it. What
+        // belongs to the BILL is written to every line of it here.
+        //
+        // What belongs to the LINE is not touched: each keeps its own product,
+        // its own quantity and its own rate. On an inter-company transfer
+        // those come from the selling company's invoice and are read-only on
+        // this screen anyway — change them there and the purchase follows.
+        //
+        // The round off rides on the row it was typed against, exactly as a
+        // sales invoice carries it on its first line: charged on every line it
+        // would be charged once per product.
+        const siblings = editingBillLines.filter((r) => Number(r.id) !== Number(editing.id))
+        for (const r of siblings) {
+          await window.api.orders.update(Number(r.id), {
+            ...payload,
+            // The line's own facts, kept.
+            oil_type_id: Number(r.oil_type_id),
+            ordered_qty: Number(r.ordered_qty) || 0,
+            invoice_rate: Number(r.invoice_rate) || 0,
+            bargain_rate: Number(r.bargain_rate) || 0,
+            bargain_id: r.bargain_id ? Number(r.bargain_id) : null,
+            round_off: 0,
+            round_off_manual: 0,
+            tanker_ids: [],
+            invoice_dup_exclude_ids: editingBillLines.map((x) => Number(x.id))
+          })
+        }
         setPendingRates({})
-        toast.success('Purchase updated')
+        toast.success(
+          siblings.length
+            ? `Invoice updated — all ${editingBillLines.length} lines`
+            : 'Purchase updated'
+        )
       } else {
         await window.api.orders.create(payload)
         toast.success('Purchase invoice created')
@@ -3212,6 +4393,25 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
       setSaving(false)
     }
   }
+
+  // ESC LEAVES THE PURCHASE FORM, the way Back does — but never from under
+  // an open dialog or dropdown (that Esc is theirs), never mid-save, and with
+  // something changed by hand the first Esc only warns: the second discards.
+  useEffect(() => {
+    if (!formPage) return
+    const onKey = (e: KeyboardEvent): void => {
+      if (e.key !== 'Escape' || e.defaultPrevented) return
+      if (hasOpenOverlay()) return
+      e.preventDefault()
+      if (saving) return
+      if (!escMayDiscard(formTouched.current)) return
+      setPendingRates({})
+      if (onBack) onBack()
+      else setFormPage(false)
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [formPage, saving, onBack])
 
   async function deletePurchase(row: Row): Promise<void> {
     if (!window.confirm(`Delete purchase ${row.invoice_no}? Its tankers will return to the loaded queue.`)) return
@@ -3265,19 +4465,665 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
     transportRatePerTon: Number(actionForm.transport_rate_per_ton) || 0
   }) : null
 
+  // THE PHONE BODY. A stack of cards with the page's own three tabs, reading
+  // the same state the desktop does and firing the same handlers — so the
+  // dialogs mounted below (advance a stage, edit a tanker, the entry drawer,
+  // the mapping sheet, the full-page form) all work here without a second copy.
+  const mobileBody = ((): React.JSX.Element => {
+    const co = companies.find((c) => Number(c.id) === Number(activeCompany))
+    const fyLabel = ((): string => {
+      const d = new Date()
+      const y = d.getMonth() >= 3 ? d.getFullYear() : d.getFullYear() - 1
+      return `FY ${String(y).slice(2)}-${String(y + 1).slice(2)}`
+    })()
+    const awaitingLoad = moveTankers.filter((t) => String(t.status) === 'supplier_factory').length
+    const kpis = [
+      { k: 'Tankers moving', v: String(moveTankers.length), fg: '#fff' },
+      { k: 'Purchase entries', v: String(orderBills.length), fg: '#fff' },
+      { k: 'Awaiting load', v: String(awaitingLoad), fg: awaitingLoad > 0 ? '#F0C98A' : '#fff' },
+      { k: 'Unmapped', v: String(unmappedBills.length), fg: unmappedBills.length > 0 ? '#F0C98A' : '#C7F03F' }
+    ]
+    const showTankers = !readingsOnly && !intercoDesk
+    const mtabs = (
+      showTankers
+        ? [
+            { key: 'tankers', label: 'Movement', count: moveTankers.length },
+            { key: 'purchases', label: 'Entries', count: orderBills.length },
+            { key: 'unmapped', label: 'Unmapped', count: unmappedBills.length }
+          ]
+        : [{ key: 'purchases', label: 'Entries', count: orderBills.length }]
+    )
+    const activeTab = readingsOnly || intercoDesk ? 'purchases' : tab
+
+    const STAGE_ICON: Record<string, LucideIcon> = {
+      supplier_factory: Clock,
+      loaded: Package,
+      transit: Truck,
+      outside_factory: DoorOpen,
+      inside_factory: Building2,
+      empty: CheckCircle2
+    }
+    const stageCards = PIVOT_STAGES.map((s) => ({
+      key: s.key,
+      label: s.label,
+      icon: STAGE_ICON[s.key] || Clock,
+      count: pivot.totals[s.key] || 0,
+      qty: pivot.rows.reduce((t, r) => t + (r.cells[s.key]?.qty || 0), 0)
+    }))
+
+    // A tapped stage card narrows the list to exactly the tankers it counts —
+    // the same test the pivot counts them by, so the card's number and the
+    // list under it can never disagree.
+    const pvEnd = pivotEnd < pivotStart ? pivotStart : pivotEnd
+    const cardStage = (t: Row): string | null => {
+      if (!inCategory(t)) return null
+      const created = String(t.created_at || '').slice(0, 10)
+      if (created && created > pvEnd) return null
+      const st = stageAsOf(t, pvEnd)
+      if (st === 'empty') {
+        const ed = String(t.empty_date || '').slice(0, 10)
+        if (!(ed >= pivotStart && ed <= pvEnd)) return null
+      }
+      return st
+    }
+    const shownTankers = moveStage ? moveTankers.filter((t) => cardStage(t) === moveStage) : moveTankers
+    const moveStageLabel = PIVOT_STAGES.find((s) => s.key === moveStage)?.label
+
+    const paymentLabel = (m: unknown): string =>
+      m === 'supplier_finance' ? 'Supplier financed' : m === 'paid_by_us' ? 'Paid by us' : 'Not decided'
+
+    // The entries, grouped into bills from the search/category/date-filtered set
+    // (before the status column filter), so the chips can both count and narrow.
+    const mEntryBase = asBills(poBaseRows)
+    const mDoneCount = mEntryBase.filter((b) => String(b.status) === 'received').length
+    const mEntryRows = mEntryBase
+      .filter((b) =>
+        mEntryStatus === 'all'
+          ? true
+          : mEntryStatus === 'done'
+            ? String(b.status) === 'received'
+            : String(b.status) !== 'received'
+      )
+      .sort((a, b) => String(b.order_date || '').localeCompare(String(a.order_date || '')))
+
+    return (
+      <div className="relative flex min-h-[100dvh] flex-col bg-[#F1F5EF]">
+        <div className="flex-none bg-[#0B3D2E] px-4 pb-3.5 pt-2.5 text-white">
+          <MobileBar onRefresh={() => load()} />
+          <div className="flex items-center justify-between gap-2.5">
+            <div className="min-w-0">
+              <div className="text-[19px] font-extrabold tracking-[-0.02em]">Purchases</div>
+              <div className="mt-[3px] truncate text-[11.5px] font-bold text-[#8FBFA8]">
+                {(co?.name as string) || 'All companies'} · {fyLabel}
+              </div>
+            </div>
+            {!readingsOnly && (
+              <button
+                type="button"
+                onClick={() => setReportOpen(true)}
+                aria-label="Tanker report"
+                className="flex h-11 w-11 flex-none items-center justify-center rounded-[4px] bg-white/10"
+              >
+                <FileText className="h-[22px] w-[22px]" />
+              </button>
+            )}
+          </div>
+
+          <div className="mt-3 grid grid-cols-2 gap-2">
+            {kpis.map((k) => (
+              <div key={k.k} className="min-w-0 rounded-[4px] bg-white/10 px-[11px] py-[9px]">
+                <div className="text-[9px] font-extrabold uppercase tracking-[.1em] text-[#8FBFA8]">{k.k}</div>
+                <div className="doc-ref mt-[5px] text-[14px] font-bold tracking-[-0.02em]" style={{ color: k.fg }}>
+                  {k.v}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        <div className="flex flex-none overflow-x-auto border-b border-b-[#D6E2D6] bg-white">
+          {mtabs.map((t) => {
+            const on = activeTab === t.key
+            return (
+              <button
+                key={t.key}
+                type="button"
+                onClick={() => setTab(t.key)}
+                className="flex min-h-[50px] flex-none items-center gap-[7px] whitespace-nowrap px-[15px] text-[12.5px]"
+                style={{
+                  borderBottom: `3px solid ${on ? '#0B3D2E' : 'transparent'}`,
+                  color: on ? '#0A1F17' : '#5A6B62',
+                  fontWeight: on ? 800 : 600
+                }}
+              >
+                {t.label}
+                <span
+                  className="doc-ref rounded-[9px] px-[7px] py-[2px] text-[10.5px] font-bold"
+                  style={on ? { background: '#0B3D2E', color: '#C7F03F' } : { background: '#EAF0E9', color: '#33473E' }}
+                >
+                  {t.count}
+                </span>
+              </button>
+            )
+          })}
+        </div>
+
+        <div className="flex flex-1 flex-col gap-2.5 overflow-y-auto px-4 pb-[96px] pt-3">
+          {activeTab === 'tankers' && (
+            <>
+              <div className="flex flex-none gap-2 overflow-x-auto pb-0.5">
+                {stageCards.map((s) => {
+                  const live = s.count > 0
+                  const on = moveStage === s.key
+                  const Icon = s.icon
+                  return (
+                    <button
+                      key={s.key}
+                      type="button"
+                      aria-pressed={on}
+                      onClick={() => setMoveStage(on ? null : s.key)}
+                      className="min-w-[116px] flex-none rounded-[4px] border px-[11px] py-2.5 text-left transition-colors active:scale-[.98]"
+                      style={{
+                        background: on ? '#0B3D2E' : live ? '#fff' : '#F7FAF6',
+                        borderColor: on ? '#0B3D2E' : live ? '#D6E2D6' : '#E4ECE3',
+                        borderTop: `3px solid ${on ? '#C7F03F' : live ? '#0B3D2E' : '#DCE7DB'}`
+                      }}
+                    >
+                      <div className="flex items-center gap-[7px]">
+                        <Icon className="h-4 w-4" style={{ color: on ? '#C7F03F' : live ? '#0B3D2E' : '#5A6B62' }} />
+                        <span className="doc-ref text-[15px] font-bold" style={{ color: on ? '#fff' : live ? '#0A1F17' : '#5A6B62' }}>
+                          {s.count}
+                        </span>
+                      </div>
+                      <div
+                        className="mt-1.5 whitespace-nowrap text-[10px] font-extrabold tracking-[.04em]"
+                        style={{ color: on ? '#DCEFE4' : '#33473E' }}
+                      >
+                        {s.label}
+                      </div>
+                      <div
+                        className="doc-ref mt-[3px] whitespace-nowrap text-[10.5px] font-semibold"
+                        style={{ color: on ? '#8FBFA8' : '#5A6B62' }}
+                      >
+                        {s.qty > 0 ? `${formatNum(s.qty)} MT` : '— MT'}
+                      </div>
+                    </button>
+                  )
+                })}
+              </div>
+
+              <div className="flex h-11 flex-none items-center gap-[9px] rounded-[4px] border border-[#C3D2C6] bg-white px-3">
+                <Search className="h-[19px] w-[19px] flex-none text-[#5A6B62]" />
+                <input
+                  value={moveSearch}
+                  onChange={(e) => setMoveSearch(e.target.value)}
+                  placeholder="Tanker, supplier or bargain"
+                  className="min-w-0 flex-1 border-0 bg-transparent text-[13px] font-medium outline-none"
+                />
+              </div>
+
+              {moveStage && (
+                <div className="flex flex-none items-center gap-2 rounded-[4px] bg-[#EAF0E9] px-3 py-2 text-[12px] font-bold text-[#33473E]">
+                  <span className="min-w-0 flex-1">
+                    {shownTankers.length} tanker{shownTankers.length === 1 ? '' : 's'} · {moveStageLabel}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => setMoveStage(null)}
+                    className="flex h-7 items-center gap-1 rounded-[3px] bg-white px-2.5 text-[11.5px] font-extrabold text-[#0B3D2E]"
+                  >
+                    <X className="h-3.5 w-3.5" /> Show all
+                  </button>
+                </div>
+              )}
+
+              {shownTankers.map((row, ri) => {
+                const next = nextTankerStage(String(row.status))
+                const loaded = String(row.status) !== 'supplier_factory'
+                const stage = String(row.status) === 'received' ? 'Completed' : TANKER_LABEL[String(row.status)] || String(row.status)
+                const StageIcon = STAGE_ICON[String(row.status)] || Clock
+                const facts: { k: string; v: string; amber?: boolean; mono?: boolean }[] = [
+                  { k: 'Supplier', v: String(row.supplier_name || '—') },
+                  { k: 'Bargain', v: String(row.bargain_no || '—'), mono: true },
+                  {
+                    k: 'Quantity',
+                    v: Number(row.loaded_qty) > 0 ? `${formatNum(row.loaded_qty)} ${row.uom || 'MT'}` : 'Not loaded',
+                    amber: !(Number(row.loaded_qty) > 0),
+                    mono: Number(row.loaded_qty) > 0
+                  },
+                  {
+                    k: 'Payment',
+                    v: paymentLabel(row.payment_mode),
+                    amber: !(row.payment_mode === 'supplier_finance' || row.payment_mode === 'paid_by_us')
+                  },
+                  {
+                    k: 'Invoice',
+                    v: String(row.invoice_no || 'Not entered'),
+                    amber: !row.invoice_no,
+                    mono: !!row.invoice_no
+                  }
+                ]
+                return (
+                  <div
+                    key={String(row.id)}
+                    className="flex-none overflow-hidden rounded-[4px] border border-[#D6E2D6] bg-white"
+                    style={{ borderLeft: `3px solid ${loaded ? '#12855A' : '#C2700A'}` }}
+                  >
+                    <button
+                      type="button"
+                      onClick={() => openEditTanker(row)}
+                      className="flex w-full flex-col gap-2.5 px-[13px] py-3 text-left"
+                    >
+                      <div className="flex items-start gap-[9px]">
+                        <SerialNo n={ri + 1} />
+                        <div className="min-w-0 flex-1">
+                          <div className="doc-ref text-[14px] font-bold tracking-[-0.01em]">
+                            {String(row.tanker_no || '').trim() || 'No number yet'}
+                          </div>
+                          <div className="mt-1 text-[11px] font-semibold text-[#5A6B62]">
+                            {String(row.status) === 'supplier_factory'
+                              ? `Entered ${formatDate(row.loaded_date)}`
+                              : `Loaded ${formatDate(row.loaded_date)}`}
+                          </div>
+                        </div>
+                        <span
+                          className="inline-flex flex-none items-center gap-[5px] whitespace-nowrap rounded-[2px] border px-2 py-1 text-[10px] font-extrabold tracking-[.05em]"
+                          style={
+                            String(row.status) === 'supplier_factory'
+                              ? { background: '#EAF0E9', color: '#33473E', borderColor: '#C3D2C6' }
+                              : { background: '#E9F5EE', color: '#0B6B45', borderColor: '#BFE3CB' }
+                          }
+                        >
+                          <StageIcon className="h-3 w-3" />
+                          {stage}
+                        </span>
+                      </div>
+
+                      <div className="flex flex-col gap-[7px] rounded-[4px] border border-[#EAF0E9] bg-[#F7FAF6] px-[11px] py-2.5">
+                        {facts.map((f) => (
+                          <div key={f.k} className="flex items-baseline gap-2.5">
+                            <span className="w-[76px] flex-none text-[10px] font-extrabold uppercase tracking-[.08em] text-[#5A6B62]">
+                              {f.k}
+                            </span>
+                            <span
+                              className={cn('min-w-0 flex-1 text-[12px] leading-[1.4] [overflow-wrap:anywhere]', f.mono && 'doc-ref')}
+                              style={{ color: f.amber ? '#8A5300' : '#0A1F17', fontWeight: f.amber ? 600 : 700 }}
+                            >
+                              {f.v}
+                            </span>
+                          </div>
+                        ))}
+                      </div>
+
+                      {!!row.gate_entry_no && (
+                        <div className="flex items-center gap-[9px] rounded-[4px] border border-[#BFE3CB] bg-[#E9F5EE] px-[11px] py-2.5">
+                          <CheckCircle2 className="h-[17px] w-[17px] flex-none text-[#0B6B45]" />
+                          <span className="min-w-0 text-[11.5px] font-bold leading-[1.4] text-[#0B6B45]">
+                            Gate {String(row.gate_entry_no)}
+                            {Number(row.gate_qty) > 0 ? ` · weighed ${formatNum(row.gate_qty)}` : ''}
+                          </span>
+                        </div>
+                      )}
+                    </button>
+
+                    <div className="flex gap-[9px] border-t border-t-[#EAF0E9] bg-[#F7FAF6] px-[13px] py-[11px]">
+                      {next && (
+                        <button
+                          type="button"
+                          onClick={() => openTankerAction(row)}
+                          className="flex min-h-11 flex-1 items-center justify-center gap-[7px] rounded-[3px] bg-[#0B3D2E] text-[12.5px] font-extrabold text-[#C7F03F]"
+                        >
+                          <ArrowRight className="h-[18px] w-[18px]" />
+                          {TANKER_LABEL[next]}
+                        </button>
+                      )}
+                      <button
+                        type="button"
+                        onClick={() => openEditTanker(row)}
+                        className="flex min-h-11 flex-1 items-center justify-center gap-[7px] rounded-[3px] border border-[#C3D2C6] bg-white text-[12.5px] font-extrabold text-[#33473E]"
+                      >
+                        <Pencil className="h-[18px] w-[18px]" />
+                        Edit
+                      </button>
+                    </div>
+                  </div>
+                )
+              })}
+
+              {shownTankers.length === 0 && (
+                <div className="flex flex-none flex-col items-center gap-2 rounded-[4px] border border-[#D6E2D6] bg-white px-4 py-10">
+                  <Truck className="h-7 w-7 text-[#C3D2C6]" />
+                  <span className="text-center text-[12.5px] font-bold text-[#5A6B62]">
+                    {moveStage ? `No tanker at ${moveStageLabel}.` : 'No tanker in movement.'}
+                  </span>
+                </div>
+              )}
+            </>
+          )}
+
+          {activeTab === 'purchases' && (
+            <>
+              {poReceivedOn && (
+                <button
+                  type="button"
+                  onClick={() => setPoReceivedOn(null)}
+                  className="flex min-h-11 flex-none items-center justify-between gap-2 rounded-[4px] border border-[#BFE3CB] bg-[#E9F5EE] px-3 text-left text-[12.5px] font-extrabold text-[#0B6B45]"
+                >
+                  <span>Received on {formatDate(poReceivedOn)}</span>
+                  <X className="h-4 w-4" />
+                </button>
+              )}
+              <div className="flex h-11 flex-none items-center gap-[9px] rounded-[4px] border border-[#C3D2C6] bg-white px-3">
+                <Search className="h-[19px] w-[19px] flex-none text-[#5A6B62]" />
+                <input
+                  value={poSearch}
+                  onChange={(e) => setPoSearch(e.target.value)}
+                  placeholder="Invoice, supplier or product"
+                  className="min-w-0 flex-1 border-0 bg-transparent text-[13px] font-medium outline-none"
+                />
+              </div>
+
+              <div className="flex flex-none gap-[7px] overflow-x-auto pb-0.5">
+                {(
+                  [
+                    { key: 'all', label: 'All', count: mEntryBase.length },
+                    { key: 'process', label: 'In process', count: mEntryBase.length - mDoneCount },
+                    { key: 'done', label: 'Completed', count: mDoneCount }
+                  ] as const
+                ).map((st) => {
+                  const on = mEntryStatus === st.key
+                  return (
+                    <button
+                      key={st.key}
+                      type="button"
+                      onClick={() => setMEntryStatus(st.key)}
+                      className="flex min-h-11 flex-none items-center gap-[7px] whitespace-nowrap rounded-[4px] border border-[#DCE7DB] px-[14px] text-[12.5px] font-extrabold"
+                      style={on ? { background: '#0B3D2E', color: '#fff' } : { background: '#fff', color: '#33473E' }}
+                    >
+                      {st.label}
+                      <span
+                        className="doc-ref rounded-[9px] px-[7px] py-[2px] text-[10.5px] font-bold"
+                        style={on ? { background: 'rgba(199,240,63,.22)', color: '#C7F03F' } : { background: '#EAF0E9', color: '#33473E' }}
+                      >
+                        {st.count}
+                      </span>
+                    </button>
+                  )
+                })}
+              </div>
+
+              {mEntryRows.length === 0 ? (
+                <div className="flex flex-none flex-col items-center gap-2 rounded-[4px] border border-[#E4ECE3] bg-white px-4 py-8">
+                  <ScrollText className="h-7 w-7 text-[#C3D2C6]" />
+                  <span className="text-center text-[12px] font-semibold leading-[1.5] text-[#5A6B62]">
+                    No purchase entry matches what you typed.
+                  </span>
+                </div>
+              ) : (
+                mEntryRows.map((b, bi) => {
+                  const done = String(b.status) === 'received'
+                  // A bill of several products opens by its lines, as the
+                  // desktop's does: the drawer is one purchase line, so opening
+                  // the bill as a whole showed the first product's quantity and
+                  // tankers under the whole bill's net, and the others could
+                  // not be reached at all.
+                  const bLines: Row[] = (b._lines as Row[]) || [b]
+                  const multi = bLines.length > 1
+                  return (
+                    <div
+                      key={String(b.id)}
+                      role={multi ? undefined : 'button'}
+                      tabIndex={multi ? undefined : 0}
+                      onClick={multi ? undefined : () => setDetailRow(b)}
+                      onKeyDown={multi ? undefined : (e) => { if (e.key === 'Enter') setDetailRow(b) }}
+                      className={cn('flex-none rounded-[4px] border border-[#D6E2D6] bg-white px-[13px] py-3 text-left', !multi && 'cursor-pointer')}
+                      style={{ borderLeft: `3px solid ${done ? '#12855A' : '#C2700A'}` }}
+                    >
+                      <div className="flex items-start gap-[9px]">
+                        <SerialNo n={bi + 1} />
+                        <div className="min-w-0 flex-1">
+                          <div className="doc-ref text-[13.5px] font-bold tracking-[-0.01em] [overflow-wrap:anywhere]">
+                            {String(b.invoice_no || '—')}
+                          </div>
+                          <div className="doc-ref mt-1 text-[11px] font-semibold text-[#5A6B62]">
+                            {formatDate(b.order_date)} · {String(b.supplier_name || '—')}
+                          </div>
+                        </div>
+                        <span
+                          className="inline-flex flex-none items-center gap-[5px] whitespace-nowrap rounded-[2px] border px-2 py-1 text-[10px] font-extrabold tracking-[.05em]"
+                          style={
+                            done
+                              ? { background: '#E9F5EE', color: '#0B6B45', borderColor: '#BFE3CB' }
+                              : { background: '#FFEDD0', color: '#8A5300', borderColor: '#F0D9AE' }
+                          }
+                        >
+                          {done ? <CheckCircle2 className="h-3 w-3" /> : <Clock className="h-3 w-3" />}
+                          {done ? 'Completed' : 'In process'}
+                        </span>
+                      </div>
+
+                      <div className="mt-2.5 grid grid-cols-3 gap-[9px] rounded-[4px] border border-[#EAF0E9] bg-[#F7FAF6] px-[11px] py-2.5">
+                        <div className="min-w-0">
+                          <div className="text-[9px] font-extrabold uppercase tracking-[.09em] text-[#5A6B62]">Product</div>
+                          <div className="mt-1 truncate text-[12px] font-extrabold">
+                            {multi ? `${bLines.length} products` : String(b.oil_code || b.oil_name || b.product_name || '—')}
+                          </div>
+                        </div>
+                        <div className="min-w-0">
+                          <div className="text-[9px] font-extrabold uppercase tracking-[.09em] text-[#5A6B62]">Quantity</div>
+                          <div className="doc-ref mt-1 text-[12.5px] font-bold">
+                            {formatNum(billQty(b))} {String(b.uom || 'MT')}
+                          </div>
+                        </div>
+                        <div className="min-w-0">
+                          <div className="text-[9px] font-extrabold uppercase tracking-[.09em] text-[#5A6B62]">Tankers</div>
+                          <div className="doc-ref mt-1 text-[12px] font-extrabold text-[#33473E]">{billTankers(b) || '—'}</div>
+                        </div>
+                      </div>
+
+                      <div className="mt-2.5 flex items-center gap-[9px]">
+                        <span className="text-[10px] font-extrabold uppercase tracking-[.09em] text-[#5A6B62]">Net amount</span>
+                        <span className="doc-ref ml-auto whitespace-nowrap text-[14px] font-bold">{formatINR(billNet(b))}</span>
+                        {!multi && <ChevronRight className="h-[19px] w-[19px] flex-none text-[#5A6B62]" />}
+                      </div>
+                      {multi && (
+                        <div className="mt-2.5 flex flex-col gap-1.5">
+                          {bLines.map((l) => (
+                            <button
+                              key={String(l.id)}
+                              type="button"
+                              onClick={() => setDetailRow(l)}
+                              className="flex min-h-11 items-center gap-2 rounded-[4px] border border-[#DCE7DB] bg-[#F7FAF6] px-2.5 text-left"
+                            >
+                              <span className="min-w-0 flex-1 truncate text-[12px] font-extrabold">
+                                {String(l.oil_code || l.oil_name || l.product_name || '—')}
+                              </span>
+                              <span className="doc-ref whitespace-nowrap text-[11.5px] font-bold text-[#33473E]">
+                                {formatNum(Number(l.ordered_qty) || 0)} {String(l.uom || 'MT')}
+                              </span>
+                              <span className="doc-ref whitespace-nowrap text-[11.5px] font-bold">{formatINR(Number(l.net_amount) || 0)}</span>
+                              <ChevronRight className="h-[17px] w-[17px] flex-none text-[#5A6B62]" />
+                            </button>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  )
+                })
+              )}
+
+              <div className="flex-none px-0.5 pt-0.5 text-[11px] font-bold text-[#5A6B62]">
+                {mEntryRows.length} of {mEntryBase.length} entries shown
+              </div>
+            </>
+          )}
+
+          {activeTab === 'unmapped' && (
+            <>
+              {unmapped.length === 0 ? (
+                <div className="flex flex-none flex-col items-center gap-2.5 rounded-[4px] border border-[#BFE3CB] bg-white px-4 py-8" style={{ borderLeft: '3px solid #12855A' }}>
+                  <CheckCircle2 className="h-8 w-8 text-[#12855A]" />
+                  <span className="text-[13.5px] font-extrabold text-[#0B6B45]">Nothing unmapped</span>
+                  <span className="text-center text-[12px] font-semibold leading-[1.55] text-[#33473E] [text-wrap:pretty]">
+                    An invoice lands here when it arrives without a tanker, so it can be matched before the entry is
+                    completed.
+                  </span>
+                </div>
+              ) : (
+                unmappedBills.map((r, ui) => (
+                  <div
+                    key={String(r.id)}
+                    className="flex-none rounded-[4px] border border-[#D6E2D6] bg-white px-[13px] py-3"
+                    style={{ borderLeft: '3px solid #C2700A' }}
+                  >
+                    <div className="flex items-start gap-[9px]">
+                      <SerialNo n={ui + 1} />
+                      <div className="min-w-0 flex-1">
+                        <div className="doc-ref text-[13.5px] font-bold tracking-[-0.01em] [overflow-wrap:anywhere]">
+                          {String(r.invoice_no || '—')}
+                        </div>
+                        <div className="doc-ref mt-1 text-[11px] font-semibold text-[#5A6B62]">
+                          {formatDate(r.order_date)} · {String(r.supplier_name || '—')}
+                        </div>
+                      </div>
+                      <span className="doc-ref whitespace-nowrap text-[13px] font-bold">{formatINR(r.taxable_value)}</span>
+                    </div>
+                    <div className="mt-2.5 grid grid-cols-2 gap-[9px] rounded-[4px] border border-[#EAF0E9] bg-[#F7FAF6] px-[11px] py-2.5">
+                      <div className="min-w-0">
+                        <div className="text-[9px] font-extrabold uppercase tracking-[.09em] text-[#5A6B62]">Product</div>
+                        <div className="mt-1 truncate text-[12px] font-extrabold">
+                          {String(r.product_label || r.product_code || r.product_name || '—')}
+                        </div>
+                      </div>
+                      <div className="min-w-0">
+                        <div className="text-[9px] font-extrabold uppercase tracking-[.09em] text-[#5A6B62]">Quantity</div>
+                        <div className="doc-ref mt-1 text-[12.5px] font-bold">
+                          {formatNum(r.ordered_qty)} {String(r.uom || 'MT')}
+                        </div>
+                        <div className="mt-0.5 text-[10.5px] font-semibold text-[#5A6B62]">
+                          @ {formatINR(r.invoice_rate)}
+                          {(r.lines as Row[]).length > 1 ? ` weighted avg · ${(r.lines as Row[]).length} lines` : ''}
+                        </div>
+                      </div>
+                    </div>
+                    {!readingsOnly &&
+                      !intercoDesk &&
+                      (r.lines as Row[]).map((l) => (
+                        <button
+                          key={String(l.id)}
+                          type="button"
+                          onClick={() => openMap(l)}
+                          className="mt-2.5 flex h-11 w-full items-center justify-center gap-2 rounded-[3px] bg-[#0B3D2E] text-[12.5px] font-extrabold text-[#C7F03F]"
+                        >
+                          <Split className="h-[18px] w-[18px]" />
+                          {(r.lines as Row[]).length > 1
+                            ? `Assign · ${String(l.product_code || l.product_name || '')} ${formatNum(l.ordered_qty)} @ ${formatINR(l.invoice_rate)}`
+                            : 'Assign bargains'}
+                        </button>
+                      ))}
+                  </div>
+                ))
+              )}
+            </>
+          )}
+        </div>
+
+        {!readingsOnly && !intercoDesk && (activeTab === 'tankers' || activeTab === 'purchases') && (
+          <div className="absolute inset-x-0 bottom-0 flex flex-none gap-2.5 border-t border-t-[#D6E2D6] bg-white px-4 pb-6 pt-[11px]">
+            <button
+              type="button"
+              onClick={() => (activeTab === 'purchases' ? openNewPurchase() : setLoadingOpen(true))}
+              className="flex h-[50px] flex-1 items-center justify-center gap-2 rounded-[4px] bg-[#0B3D2E] text-[13.5px] font-extrabold text-[#C7F03F]"
+            >
+              <Plus className="h-5 w-5" />
+              {activeTab === 'purchases' ? 'New purchase entry' : 'Record a tanker'}
+            </button>
+          </div>
+        )}
+      </div>
+    )
+  })()
+
+  // A bill's quantities for the Purchase entries download, summed over its
+  // lines and their tankers. A purchase with no tanker (direct, consignment)
+  // was loaded as invoiced and received as its own row says. Blank, not 0,
+  // where nothing has been received or weighed yet.
+  const entryQtys = (b: Row): { loaded: number; received: number | null; gate: number | null; shortage: number | null; allowed: number | null; excess: number | null } => {
+    const lines: Row[] = (b._lines as Row[]) || [b]
+    const ids = new Set(lines.map((l) => Number(l.id)))
+    const tks = (allTankers.length ? allTankers : tankers).filter((x) => ids.has(Number(x.order_id)))
+    let loaded = 0
+    let received: number | null = null
+    let gate: number | null = null
+    if (tks.length) {
+      for (const x of tks) {
+        loaded += Number(x.loaded_qty) || 0
+        if (x.received_qty != null && x.received_qty !== '') received = (received || 0) + (Number(x.received_qty) || 0)
+        const g = gateQtyFor(x.id)
+        if (g != null) gate = (gate || 0) + g
+      }
+    } else {
+      loaded = lines.reduce((s, l) => s + (Number(l.ordered_qty) || 0), 0)
+      const rec = lines.filter((l) => l.received_qty != null && l.received_qty !== '')
+      if (rec.length) received = rec.reduce((s, l) => s + (Number(l.received_qty) || 0), 0)
+    }
+    const sum = (k: string): number | null => {
+      const has = lines.filter((l) => l[k] != null && l[k] !== '')
+      return has.length ? has.reduce((s, l) => s + (Number(l[k]) || 0), 0) : null
+    }
+    const r3 = (v: number | null): number | null => (v == null ? null : Math.round(v * 1000) / 1000)
+    return {
+      loaded: r3(loaded) || 0,
+      received: r3(received),
+      gate: r3(gate),
+      shortage: received == null ? null : r3(Math.max(0, loaded - received)),
+      allowed: r3(sum('allowed_shortage_qty')),
+      excess: r3(sum('excess_shortage_qty'))
+    }
+  }
+
   return (
     <>
-      {!formPage && (
+      {!formPage && !(__WEB__ && isMobile) && (
         <PageHeader
           title="Purchases"
           hint="Tanker lifecycle: To be loaded → Loaded → In transit → Outside factory → Inside factory → Empty. Pick the transporter when sending tankers to the supplier. At Empty, record received qty plus the KRFL and outside-factory weighment slips."
           actions={
             <div className="flex gap-2">
+              {/* THE FIRST SHEET FOLLOWS THE TAB. On Purchase entries it is the
+                  entries as filtered and sorted there — 15 on screen, 15 in the
+                  file; it used to be the tanker-movement list whichever tab was
+                  open. The readings sheet below already followed the tab. */}
               <ExcelButton
-                filename={`purchases-tankers-${todayISO()}`}
-                sheetName="Purchases"
-                title="Purchase tankers"
-                columns={[
+                filename={tab === 'purchases' ? `purchase-entries-${todayISO()}` : `purchases-tankers-${todayISO()}`}
+                sheetName={tab === 'purchases' ? 'Purchase entries' : 'Purchases'}
+                title={tab === 'purchases' ? 'Purchase entries' : 'Purchase tankers'}
+                columns={tab === 'purchases' ? [
+                  { header: 'Invoice', key: 'invoice_no', value: (r) => r.invoice_no || '' },
+                  { header: 'Invoice date', key: 'order_date', value: (r) => formatDate(r.order_date) },
+                  { header: 'Supplier', key: 'supplier_name', value: (r) => r.supplier_name || '' },
+                  { header: 'Category', key: 'product_category', value: (r) => r.product_category || '' },
+                  {
+                    header: 'Product',
+                    key: 'oil_label',
+                    value: (r) => ((r._lines as Row[] | undefined) || [r]).map((l) => l.oil_code || l.oil_name || '').filter(Boolean).join(', ')
+                  },
+                  { header: 'Tankers', key: 'tanker_count', align: 'right', value: (r) => billTankers(r) },
+                  // EVERY QUANTITY THE BILL HAS, not just what was invoiced:
+                  // what its tankers loaded, what was received at the plant,
+                  // what the gate weighed, and the shortage with its allowance.
+                  { header: 'Invoiced qty', key: 'ordered_qty', align: 'right', numFmt: '#,##0.000', value: (r) => billQty(r) },
+                  { header: 'Loaded qty', key: 'q_loaded', align: 'right', numFmt: '#,##0.000', value: (r) => entryQtys(r).loaded },
+                  { header: 'Received qty', key: 'q_received', align: 'right', numFmt: '#,##0.000', value: (r) => entryQtys(r).received ?? '' },
+                  { header: 'Gate weighed qty', key: 'q_gate', align: 'right', numFmt: '#,##0.000', value: (r) => entryQtys(r).gate ?? '' },
+                  { header: 'Shortage qty', key: 'q_short', align: 'right', numFmt: '#,##0.000', value: (r) => entryQtys(r).shortage ?? '' },
+                  { header: 'Allowed shortage qty', key: 'q_allowed', align: 'right', numFmt: '#,##0.000', value: (r) => entryQtys(r).allowed ?? '' },
+                  { header: 'Excess shortage qty', key: 'q_excess', align: 'right', numFmt: '#,##0.000', value: (r) => entryQtys(r).excess ?? '' },
+                  { header: 'UOM', key: 'uom', value: (r) => r.uom || '' },
+                  { header: 'Net amount', key: 'net_amount', align: 'right', numFmt: '#,##0.00', value: (r) => billNet(r) },
+                  { header: 'Freight', key: 'shortage', value: (r) => PO_COLUMNS.find((c) => c.key === 'shortage')?.of(r) || '' },
+                  { header: 'Status', key: 'status', value: (r) => (r.status === 'received' ? 'Completed' : 'In process') }
+                ] : [
                   { header: 'Tanker', key: 'tanker_no', value: (r) => r.tanker_no || '' },
                   { header: 'Loaded date', key: 'loaded_date', value: (r) => formatDate(r.loaded_date) },
                   { header: 'Supplier', key: 'supplier_name', value: (r) => r.supplier_name || '' },
@@ -3290,15 +5136,175 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
                   { header: 'Invoice', key: 'invoice_no', value: (r) => r.invoice_no || '' },
                   { header: 'Stage', key: 'status', value: (r) => r.status || '' }
                 ]}
-                rows={visibleTankers}
+                rows={tab === 'purchases' ? poSort.sorted : visibleTankers}
+                // TECHNICAL PARAMETERS, a second sheet: each tanker a row of
+                // its own — tanker, supplier, invoice — with the lab readings
+                // grouped under it, so Excel can fold a tanker away to its one
+                // line. Read at the click. On Purchase entries it follows the
+                // entries as filtered there — the tankers booked on those
+                // invoices; elsewhere the same tankers as the first sheet. A
+                // tanker with nothing tested is left off and counted in the
+                // subtitle instead.
+                // On Purchase entries the readings sheet can be laid out two
+                // ways, so the click asks which first.
+                ask={
+                  tab === 'purchases'
+                    ? {
+                        title: 'Technical parameters — row-wise or column-wise?',
+                        note: 'The purchase entries go on the first sheet either way; this is how the readings sheet is laid out.',
+                        options: [
+                          { value: 'rows', label: 'Row-wise', hint: 'Each tanker on a line with its readings listed under it — FFA, colour, moisture, one per row.' },
+                          { value: 'columns', label: 'Column-wise', hint: 'One row per tanker, each parameter its own column — easy to compare and sort.' }
+                        ]
+                      }
+                    : undefined
+                }
+                prepare={async (layout) => {
+                  const onEntries = tab === 'purchases'
+                  const source = onEntries
+                    ? (() => {
+                        const billIds = new Set(filteredOrders.map((o) => Number(o.id)))
+                        return (allTankers.length ? allTankers : tankers)
+                          .filter((t) => billIds.has(Number(t.order_id)))
+                          .sort(
+                            (a, b) =>
+                              String(b.invoice_date || '').localeCompare(String(a.invoice_date || '')) ||
+                              String(a.invoice_no || '').localeCompare(String(b.invoice_no || '')) ||
+                              String(a.tanker_no || '').localeCompare(String(b.tanker_no || ''))
+                          )
+                      })()
+                    : visibleTankers
+                  const ids = source.map((t) => Number(t.id)).filter((x) => x > 0)
+                  const readings = ids.length ? await window.api.tankers.qualityMany(ids) : []
+                  const byTanker = new Map<number, Row[]>()
+                  for (const q of readings) {
+                    const k = Number(q.tanker_id)
+                    if (!byTanker.has(k)) byTanker.set(k, [])
+                    byTanker.get(k)!.push(q)
+                  }
+                  if (layout === 'columns') {
+                    // ONE ROW PER TANKER (per part, where it was tested in
+                    // parts), each parameter its own column — named once,
+                    // whatever case it was typed in, in the order first met.
+                    const params: { key: string; name: string; unit: string }[] = []
+                    const seen = new Map<string, number>()
+                    for (const q of readings) {
+                      const k = String(q.name || '').trim().toLowerCase()
+                      if (!k || seen.has(k)) continue
+                      seen.set(k, params.length)
+                      params.push({ key: `p${params.length}`, name: String(q.name || '').trim(), unit: String(q.unit ?? '').trim() })
+                    }
+                    const crows: Row[] = []
+                    let testedC = 0
+                    for (const t of source) {
+                      const list = byTanker.get(Number(t.id)) || []
+                      if (!list.length) continue
+                      testedC++
+                      const byPart = new Map<string, Row>()
+                      for (const q of list) {
+                        const pk = Number(q.part_no) > 0 ? `Part ${Number(q.part_no)}${q.part_qty ? ` · ${q.part_qty}` : ''}` : ''
+                        if (!byPart.has(pk)) {
+                          byPart.set(pk, {
+                            tanker: t.tanker_no || '',
+                            supplier: t.supplier_name || '',
+                            invoice_no: t.invoice_no || '',
+                            invoice_date: t.invoice_date ? formatDate(t.invoice_date) : '',
+                            part: pk
+                          })
+                        }
+                        const i = seen.get(String(q.name || '').trim().toLowerCase())
+                        if (i == null) continue
+                        const raw = String(q.value ?? '').trim()
+                        byPart.get(pk)![`p${i}`] = raw !== '' && Number.isFinite(Number(raw)) ? Number(raw) : raw
+                      }
+                      crows.push(...byPart.values())
+                    }
+                    const hasParts = crows.some((r) => r.part)
+                    return [
+                      {
+                        sheetName: 'Technical Parameters',
+                        title: 'Technical parameters by tanker',
+                        subtitle: `${testedC} of ${source.length} tanker${source.length === 1 ? '' : 's'} have readings${onEntries ? ` · on the ${orderBills.length} purchase entr${orderBills.length === 1 ? 'y' : 'ies'} shown` : ''}`,
+                        columns: [
+                          { header: 'Tanker', key: 'tanker', value: (r: Row) => r.tanker || '' },
+                          { header: 'Supplier', key: 'supplier', value: (r: Row) => r.supplier || '' },
+                          { header: 'Invoice No', key: 'invoice_no', value: (r: Row) => r.invoice_no || '' },
+                          { header: 'Invoice Date', key: 'invoice_date', value: (r: Row) => r.invoice_date || '' },
+                          ...(hasParts ? [{ header: 'Part', key: 'part', value: (r: Row) => r.part || '' }] : []),
+                          ...params.map((pm) => ({
+                            header: pm.unit ? `${pm.name} (${pm.unit})` : pm.name,
+                            key: pm.key,
+                            align: 'right' as const,
+                            value: (r: Row) => r[pm.key] ?? ''
+                          }))
+                        ],
+                        rows: crows,
+                        freezeCols: 1
+                      }
+                    ]
+                  }
+                  const rows: Row[] = []
+                  let tested = 0
+                  for (const t of source) {
+                    const list = byTanker.get(Number(t.id)) || []
+                    if (!list.length) continue
+                    tested++
+                    rows.push({
+                      is_group: true,
+                      tanker: t.tanker_no || '',
+                      supplier: t.supplier_name || '',
+                      invoice_no: t.invoice_no || '',
+                      invoice_date: t.invoice_date ? formatDate(t.invoice_date) : '',
+                      parameter: `${list.length} reading${list.length === 1 ? '' : 's'}`
+                    })
+                    for (const q of list) {
+                      const part = Number(q.part_no) > 0 ? `Part ${Number(q.part_no)}${q.part_qty ? ` · ${q.part_qty}` : ''}` : ''
+                      // Readings are stored as typed; a figure goes out as a
+                      // number so Excel can sum and sort it, anything else as text.
+                      const raw = String(q.value ?? '').trim()
+                      const value = raw !== '' && Number.isFinite(Number(raw)) ? Number(raw) : raw
+                      rows.push({ parameter: q.name || '', value, unit: q.unit ?? '', part })
+                    }
+                  }
+                  return [
+                    {
+                      sheetName: 'Technical Parameters',
+                      title: 'Technical parameters by tanker',
+                      subtitle: `${tested} of ${source.length} tanker${source.length === 1 ? '' : 's'} have readings${onEntries ? ` · on the ${orderBills.length} purchase entr${orderBills.length === 1 ? 'y' : 'ies'} shown` : ''}`,
+                      columns: [
+                        { header: 'Tanker', key: 'tanker', value: (r: Row) => r.tanker || '' },
+                        { header: 'Supplier', key: 'supplier', value: (r: Row) => r.supplier || '' },
+                        { header: 'Invoice No', key: 'invoice_no', value: (r: Row) => r.invoice_no || '' },
+                        { header: 'Invoice Date', key: 'invoice_date', value: (r: Row) => r.invoice_date || '' },
+                        { header: 'Parameter', key: 'parameter', value: (r: Row) => r.parameter || '' },
+                        { header: 'Value', key: 'value', align: 'right' as const, value: (r: Row) => r.value ?? '' },
+                        { header: 'Unit', key: 'unit', value: (r: Row) => r.unit ?? '' },
+                        { header: 'Part', key: 'part', value: (r: Row) => r.part || '' }
+                      ],
+                      rows,
+                      isGroup: (r: Row) => !!r.is_group,
+                      outlineDetail: true,
+                      // Opens folded — one line per tanker; + shows its readings.
+                      collapsed: true,
+                      freezeCols: 1
+                    }
+                  ]
+                }}
               />
+              {/* The inter-company desk keeps Report — reading the transfers it
+                  bills is its job — but not the two that make no sense on it:
+                  a transfer moves no tanker, and a transfer purchase is raised
+                  by its sale rather than keyed here. */}
               {!readingsOnly && (<>
               <Button variant="outline" size="sm" onClick={() => setReportOpen(true)}>
                 <BarChart3 className="h-4 w-4" /> Report
               </Button>
+              {!intercoDesk && (
               <Button variant="outline" size="sm" onClick={() => setLoadingOpen(true)}>
                 <Truck className="h-4 w-4" /> Send tankers to supplier
               </Button>
+              )}
+              {!intercoDesk && (
               <Button
                 size="sm"
                 // The page's primary action, so it wears the theme's own
@@ -3311,6 +5317,7 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
               >
                 <Plus className="h-4 w-4" /> New purchase
               </Button>
+              )}
               </>)}
             </div>
           }
@@ -3318,7 +5325,7 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
       )}
 
       {formPage ? (
-        <div className={cn('px-4 py-4', __WEB__ && '!p-0')}>
+        <div className={cn('px-4 py-4', __WEB__ && '!p-0')} onInputCapture={touchForm} onChangeCapture={touchForm} onClickCapture={touchForm}>
           <div className={cn('rounded-md border border-[#d9d2b8] bg-[#fffdf4] shadow-lg', NP_SHELL)}>
           <div className={cn('flex flex-wrap items-center gap-x-3 gap-y-1 rounded-t-md bg-[#dce6f5] px-4 py-2 text-[#1a2c56]', NP_BAR)}>
             <button
@@ -3343,6 +5350,25 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
               )}
             </div>
             <span className={cn('ml-auto text-[11px] font-medium', __WEB__ && cn(NP_REF, '!ml-auto !shrink-0'))}>
+              {/* WHAT IS BEING BOUGHT, BEFORE THE INVOICE NUMBER THAT NAMES IT.
+                  The bar named the paperwork — invoice no, date, whether it is
+                  trading or direct — and never the oil itself, so knowing
+                  which purchase you had open meant reading the product picker
+                  further down the form. A bill of several products still says
+                  so as a count, the way the rest of this form already treats
+                  a multi-product invoice — naming all of them here would run
+                  the bar past what a header line is for. */}
+              {(() => {
+                const item = multiProduct
+                  ? `${productLines.length} products`
+                  : String(
+                      productLines[0]?.label ||
+                        products.find((p) => String(p.id) === String(form.oil_type_id))?.code ||
+                        products.find((p) => String(p.id) === String(form.oil_type_id))?.name ||
+                        ''
+                    )
+                return item ? `${item} · ` : ''
+              })()}
               {form.invoice_no ? `No ${form.invoice_no}` : 'No: not yet given'}
               {form.order_date ? ` · ${formatDate(form.order_date)}` : ''}
               {isTrading ? ' · trading, no bargain/stock' : directMode ? ' · direct, no tanker movement' : ''}
@@ -3360,7 +5386,16 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
                       label: 'History — who changed what',
                       icon: History,
                       onClick: () => openHistory(editing)
-                    }
+                    },
+                    ...(canSeeLedgers
+                      ? [
+                          {
+                            label: 'Ledger posting — what it put in the books',
+                            icon: BookOpen,
+                            onClick: () => openPostings(editing)
+                          }
+                        ]
+                      : [])
                   ]}
                 />
               </div>
@@ -3650,11 +5685,28 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
                       const hit = invoiceClash(form.invoice_no, editing?.id)
                       return (
                         <>
-                          <Input
-                            className={cn('doc-ref', hit && 'border-rose-400 focus-visible:ring-rose-300')}
-                            value={form.invoice_no || ''}
-                            onChange={(e) => setForm((p) => ({ ...p, invoice_no: e.target.value }))}
-                          />
+                          <div className="flex items-center gap-1.5">
+                            <Input
+                              className={cn('doc-ref', hit && 'border-rose-400 focus-visible:ring-rose-300')}
+                              value={form.invoice_no || ''}
+                              onChange={(e) => setForm((p) => ({ ...p, invoice_no: e.target.value }))}
+                            />
+                            {/* NOTHING PRINTED ON THE PAPER, SO SOMETHING HAS
+                                TO STAND IN FOR IT. A genuine seven-digit
+                                number, checked against the book so it can
+                                never collide with a real invoice later. */}
+                            <Button
+                              type="button"
+                              variant="outline"
+                              size="icon"
+                              disabled={randomizingInvoice}
+                              onClick={() => void randomizeInvoiceNo()}
+                              title="No invoice number on the paper? Generate a random one that doesn't already exist"
+                              className="h-9 w-9 shrink-0"
+                            >
+                              <Dices className={cn('h-4 w-4', randomizingInvoice && 'animate-spin')} />
+                            </Button>
+                          </div>
                           {hit && (
                             <span className="text-[11px] font-medium leading-snug text-rose-600">
                               Already booked — {String(hit.supplier_name || hit.supplier || 'another supplier')}
@@ -3670,6 +5722,12 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
                     <Label>Purchase date *</Label>
                     <DatePicker min={minDate} value={form.order_date || ''} onChange={(v) => setForm((p) => ({ ...p, order_date: v }))} />
                   </div>
+                  {/* THE RATE AND THE GST BELONG TO THE PRODUCT, NOT THE BILL.
+                      One bill over two oils is two rates and can be two GST
+                      rates, so on a multi-product invoice these move into the
+                      Products card below — where each line carries its own —
+                      rather than standing here offering one figure for both. */}
+                  {!multiProduct && (<>
                   <div className="flex flex-col gap-1.5">
                     {/* This box has always edited the INVOICE rate — what is
                         being billed — while the summary beside it showed the
@@ -3729,6 +5787,7 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
                     <Label>GST %</Label>
                     <Input type="number" value={form.gst_pct ?? ''} onChange={(e) => setForm((p) => ({ ...p, gst_pct: e.target.value }))} />
                   </div>
+                  </>)}
                   <div className="flex flex-col gap-1.5">
                     <Label>GST type</Label>
                     <Select value={form.gst_type || 'CGST_SGST'} onValueChange={(v) => setForm((p) => ({ ...p, gst_type: v }))}>
@@ -4056,6 +6115,129 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
                 </div>
               </section>
 
+              {/* WHAT THE OTHER COMPANY ACTUALLY SENT.
+                  One transfer, two sets of books: a sale over there, this
+                  purchase here. The invoice is shown whole — every line of it,
+                  because an invoice that moved two products is still ONE
+                  invoice, and this screen is editing all of it.
+
+                  It used to stamp one line "this purchase" and tint it, from
+                  when Save only changed the row you had opened. Save covers
+                  the whole bill now, so singling out a line said the opposite
+                  of what the screen does — two SHEA lines, both booked as A1,
+                  one of them flagged as though it were the real one.
+
+                  Read-only, and deliberately: these figures belong to the
+                  selling company's invoice. Changed here they would be
+                  overwritten the next time that invoice is touched — the two
+                  are kept in step on the server — or, worse, would not be, and
+                  one transfer would read as two different events. */}
+              {!!icSource && Array.isArray(icSource.lines) && (icSource.lines as Row[]).length > 0 && (
+                <section className="rounded border border-sky-300 bg-sky-50/40 p-4">
+                  <div className="mb-3 flex flex-wrap items-center justify-between gap-3 border-b border-dotted border-sky-200 pb-1.5">
+                    <h3 className="text-[11px] font-bold uppercase tracking-widest text-sky-900">
+                      Inter-company transfer — what {String(icSource.seller_company) || 'the other company'} invoiced
+                    </h3>
+                    <span className="inline-flex items-center gap-1.5 rounded-[3px] bg-sky-600 px-2 py-0.5 text-[10.5px] font-bold text-white">
+                      <Lock className="h-3 w-3" /> Linked · read-only
+                    </span>
+                  </div>
+                  <div className="mb-2 flex flex-wrap items-center gap-x-4 gap-y-1 text-[11.5px] font-medium text-sky-900/80">
+                    <span>
+                      Their invoice{' '}
+                      <b className="doc-ref font-bold">{String(icSource.sale_invoice_no) || '—'}</b>
+                    </span>
+                    <span>{formatDate(String(icSource.sale_date))}</span>
+                    <span>
+                      {String(icSource.seller_company)} → {String(icSource.buyer_company)}
+                    </span>
+                  </div>
+                  <div className="overflow-hidden rounded-md border border-sky-200 bg-white">
+                    <table className="w-full text-[12px]">
+                      <thead>
+                        <tr className="border-b border-b-sky-100 bg-sky-50/70 text-left text-[10px] font-bold uppercase tracking-wide text-sky-900/70">
+                          <th className="px-3 py-1.5">Item</th>
+                          <th className="px-3 py-1.5 text-right">Qty</th>
+                          <th className="px-3 py-1.5 text-right">Rate</th>
+                          <th className="px-3 py-1.5 text-right">Value</th>
+                          <th className="px-3 py-1.5">Booked here as</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {(icSource.lines as Row[]).map((l) => (
+                          <tr key={Number(l.sale_id)} className="border-b border-b-sky-50 last:border-b-0">
+                            <td className="px-3 py-1.5">
+                              <span className="font-semibold">{String(l.product_name)}</span>
+                              {!!l.packaging_name && (
+                                <span className="ml-1.5 text-[11px] text-muted-foreground">
+                                  {String(l.packaging_name)}
+                                </span>
+                              )}
+                              {!!l.is_rate_adj && (
+                                <span className="ml-1.5 rounded-[2px] bg-sky-100 px-1.5 py-[1px] text-[10px] font-bold text-sky-800">
+                                  rate adjustment
+                                </span>
+                              )}
+                            </td>
+                            <td className="px-3 py-1.5 text-right tabular-nums">
+                              {l.is_rate_adj ? '—' : `${formatNum(Number(l.qty))} ${String(l.uom)}`}
+                            </td>
+                            <td className="px-3 py-1.5 text-right tabular-nums">{formatINR(Number(l.rate))}</td>
+                            <td className="px-3 py-1.5 text-right font-semibold tabular-nums">
+                              {formatINR(Number(l.amount))}
+                            </td>
+                            <td className="px-3 py-1.5 text-[11px] text-muted-foreground">
+                              {/* A line whose purchase was never raised says so.
+                                  Silence would read as "there was no such line". */}
+                              {l.paired_order_id ? (
+                                <span className="doc-ref font-semibold text-sky-900">
+                                  {String(l.paired_invoice_no) || `#${Number(l.paired_order_id)}`}
+                                </span>
+                              ) : (
+                                <span className="font-semibold text-amber-700">not raised on this side</span>
+                              )}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                      {/* ONE INVOICE, SO IT HAS A TOTAL.
+                          Two lines with no sum under them read as two separate
+                          things that happen to share a number. */}
+                      {(icSource.lines as Row[]).length > 1 && (
+                        <tfoot>
+                          <tr className="border-t border-t-sky-200 bg-sky-50/70 text-[11.5px] font-bold text-sky-900">
+                            <td className="px-3 py-1.5">
+                              {(icSource.lines as Row[]).length} items on {String(icSource.sale_invoice_no) || 'this invoice'}
+                            </td>
+                            <td className="px-3 py-1.5 text-right tabular-nums">
+                              {formatNum(
+                                (icSource.lines as Row[]).reduce(
+                                  (t, l) => t + (l.is_rate_adj ? 0 : Number(l.qty) || 0),
+                                  0
+                                )
+                              )}{' '}
+                              {String((icSource.lines as Row[])[0]?.uom || 'MT')}
+                            </td>
+                            <td />
+                            <td className="px-3 py-1.5 text-right tabular-nums">
+                              {formatINR(
+                                (icSource.lines as Row[]).reduce((t, l) => t + (Number(l.amount) || 0), 0)
+                              )}
+                            </td>
+                            <td />
+                          </tr>
+                        </tfoot>
+                      )}
+                    </table>
+                  </div>
+                  <p className="mt-2 text-[11px] leading-relaxed text-sky-900/70">
+                    These are the selling company&rsquo;s figures and cannot be edited here — change them on their
+                    invoice and this bill follows. The rate this company books the transfer at is the{' '}
+                    <b>Invoice rate</b> above, which is its own and may differ.
+                  </p>
+                </section>
+              )}
+
               {isTrading ? (
                 <section className="rounded border border-teal-300 bg-teal-50/40 p-4 [&_label]:text-[10px] [&_label]:uppercase [&_label]:tracking-wide [&_label]:text-muted-foreground">
                   <div className="mb-3 flex items-center justify-between gap-3 border-b border-dotted border-teal-200 pb-1.5">
@@ -4098,26 +6280,59 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
                     </div>
                   )}
                 </section>
-              ) : directMode ? (
-                <section className="rounded border border-violet-300 bg-violet-50/40 p-4 [&_label]:text-[10px] [&_label]:uppercase [&_label]:tracking-wide [&_label]:text-muted-foreground">
-                  <div className="mb-3 flex items-center justify-between gap-3 border-b border-dotted border-violet-200 pb-1.5">
-                    <h3 className="text-[11px] font-bold uppercase tracking-widest text-violet-900">Direct purchase — no tanker movement</h3>
-                    <Badge className="bg-violet-600 hover:bg-violet-600">Direct</Badge>
+              ) : isIntercompany ? null : directMode ? (
+                <section
+                  className={cn(
+                    'rounded border border-violet-300 bg-violet-50/40 p-4 [&_label]:text-[10px] [&_label]:uppercase [&_label]:tracking-wide [&_label]:text-muted-foreground',
+                    __WEB__ && cn(DP_CARD, '[&_label]:!text-[10px] [&_label]:!font-extrabold [&_label]:!tracking-[.12em] [&_label]:!text-[#5A6B62]')
+                  )}
+                >
+                  <div
+                    className={cn(
+                      'mb-3 flex items-center justify-between gap-3 border-b border-dotted border-violet-200 pb-1.5',
+                      __WEB__ && DP_HEAD
+                    )}
+                  >
+                    <h3
+                      className={cn(
+                        'text-[11px] font-bold uppercase tracking-widest text-violet-900',
+                        __WEB__ && cn(DP_TITLE, '!flex !items-center !gap-[9px]')
+                      )}
+                    >
+                      {__WEB__ && <Boxes className="h-[19px] w-[19px] text-[#33473E]" />}
+                      Direct purchase — no tanker movement
+                    </h3>
+                    <Badge className={cn('bg-violet-600 hover:bg-violet-600', __WEB__ && DP_CHIP)}>Direct</Badge>
                   </div>
                   {!form.supplier_id ? (
-                    <div className="rounded-lg border border-dashed py-10 text-center text-sm text-muted-foreground">
+                    <div
+                      className={cn(
+                        'rounded-lg border border-dashed py-10 text-center text-sm text-muted-foreground',
+                        __WEB__ && DP_EMPTY
+                      )}
+                    >
                       Select the supplier first.
                     </div>
                   ) : (
                     <>
                     {/* Available stock as chips, then product + quantity. */}
                     {partyStock.length === 0 ? (
-                      <div className="mb-3 rounded-lg border border-dashed bg-white/60 px-3 py-3 text-center text-xs text-muted-foreground">
+                      <div
+                        className={cn(
+                          'mb-3 rounded-lg border border-dashed bg-white/60 px-3 py-3 text-center text-xs text-muted-foreground',
+                          __WEB__ && DP_EMPTY
+                        )}
+                      >
                         No stock logged for this party yet.
                       </div>
                     ) : (
                       <div className="mb-3 flex flex-wrap items-center gap-1.5">
-                        <span className="mr-1 text-[11px] font-medium uppercase tracking-wide text-violet-900/70">
+                        <span
+                          className={cn(
+                            'mr-1 text-[11px] font-medium uppercase tracking-wide text-violet-900/70',
+                            __WEB__ && DP_KICKER
+                          )}
+                        >
                           Available
                         </span>
                         {partyStock.map((p) => {
@@ -4129,11 +6344,23 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
                               onClick={() => chooseDirectProduct(p)}
                               className={cn(
                                 'rounded-md border bg-white px-2.5 py-1 text-[12px] transition',
-                                picked ? 'border-violet-500 ring-1 ring-violet-300' : 'hover:bg-muted/40'
+                                picked ? 'border-violet-500 ring-1 ring-violet-300' : 'hover:bg-muted/40',
+                                __WEB__ &&
+                                  cn(
+                                    '!rounded-[4px] !px-3 !py-[7px] !text-[12.5px] !font-bold !text-[#0A1F17]',
+                                    picked
+                                      ? '!border-[#0B6B45] !bg-[#E9F5EE] !ring-1 !ring-[#BFE3CB]'
+                                      : '!border-[#C3D2C6] hover:!bg-[#F7FAF6]'
+                                  )
                               )}
                             >
                               <span className="font-medium">{p.product_code || p.product_name}</span>
-                              <span className="ml-1.5 font-bold tabular-nums text-emerald-700">
+                              <span
+                                className={cn(
+                                  'ml-1.5 font-bold tabular-nums text-emerald-700',
+                                  __WEB__ && '!font-extrabold !text-[#0B6B45]'
+                                )}
+                              >
                                 {formatNum(p.balance)}
                               </span>
                               <span className="ml-0.5 text-[10px] text-muted-foreground">{p.uom || 'MT'}</span>
@@ -4143,7 +6370,7 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
                       </div>
                     )}
 
-                    <div className="mb-3 grid gap-4 md:grid-cols-2">
+                    <div className={cn('mb-3 grid gap-4 md:grid-cols-2', __WEB__ && NP_FIELDS)}>
                       <div className="flex flex-col gap-1.5">
                         <Label>Product *</Label>
                         <Select
@@ -4178,7 +6405,8 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
                           <span
                             className={cn(
                               'text-[11px]',
-                              totalQty > directAvailable + 1e-6 ? 'font-medium text-red-600' : 'text-muted-foreground'
+                              totalQty > directAvailable + 1e-6 ? 'font-medium text-red-600' : 'text-muted-foreground',
+                              __WEB__ && (totalQty > directAvailable + 1e-6 ? DP_BAD : DP_NOTE)
                             )}
                           >
                             {totalQty > directAvailable + 1e-6
@@ -4189,14 +6417,287 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
                       </div>
                     </div>
 
+                    {/* WHICH PARCEL THE WITHDRAWAL COMES OUT OF.
+                        ------------------------------------------------------
+                        A consigned balance is not a pool — it is L-2451 at
+                        KANDLA and L-2779 at MUNDRA, and an invoice is raised
+                        against one of them. Until now the parcels were picked
+                        for you, oldest first, and the bill could not say which
+                        it had taken.
+                        Ticking none keeps exactly that behaviour. Ticking any
+                        sets the quantity to their sum, because a withdrawal is
+                        the parcels it took and nothing else. */}
+                    {lotGroups.length > 0 && (
+                      <div
+                        className={cn(
+                          'mb-3 overflow-hidden rounded-lg border border-violet-200 bg-white',
+                          __WEB__ && DP_BOX
+                        )}
+                      >
+                        <div
+                          className={cn(
+                            'flex flex-wrap items-center gap-2 border-b border-violet-100 bg-violet-50/60 px-3 py-2',
+                            __WEB__ && DP_STRIP
+                          )}
+                        >
+                          <span
+                            className={cn(
+                              'text-[11px] font-bold uppercase tracking-wide text-violet-900',
+                              __WEB__ && '!text-[11px] !font-extrabold !tracking-[.12em] !text-[#0A1F17]'
+                            )}
+                          >
+                            Lots at our place
+                          </span>
+                          <span className={cn('text-[11px] text-violet-800/80', __WEB__ && DP_NOTE)}>
+                            {lotIds.length
+                              ? `${lotIds.length} deposit${lotIds.length === 1 ? '' : 's'} picked · ${formatNum(lotQty)} ${form.uom || 'MT'}`
+                              : mappedGroups
+                                ? `${mappedGroups} lot · terminal combination${mappedGroups === 1 ? '' : 's'} — tick the one to draw from`
+                                : `${lotGroups.length} deposit${lotGroups.length === 1 ? '' : 's'} — none mapped to a lot and terminal yet`}
+                          </span>
+                          {lotIds.length > 0 && (
+                            <button
+                              type="button"
+                              className={cn(
+                                'ml-auto text-[11px] font-semibold text-violet-700 underline underline-offset-2',
+                                __WEB__ && '!font-bold !text-[#0B6B45]'
+                              )}
+                              onClick={() => setLotIds([])}
+                            >
+                              clear
+                            </button>
+                          )}
+                        </div>
+                        <div className="max-h-64 overflow-y-auto">
+                          {lotGroups.map((g) => {
+                            const ids = g.rows.map((r) => Number(r.id))
+                            const on = ids.every((id) => lotIds.includes(id))
+                            const part = !on && ids.some((id) => lotIds.includes(id))
+                            const tint = g.mapped ? lotTint(g.lot, g.term) : null
+                            const open = !!openLotGroups[g.key]
+                            const span =
+                              g.from && g.to && g.from !== g.to
+                                ? `${formatDate(g.from)} → ${formatDate(g.to)}`
+                                : g.from
+                                  ? formatDate(g.from)
+                                  : ''
+                            const only = g.rows.length === 1 ? (g.rows[0] as Row) : null
+                            return (
+                              <div
+                                key={g.key}
+                                className={cn('border-b last:border-b-0', __WEB__ && '!border-b-[#EFF3EE]')}
+                              >
+                                <div
+                                  className={cn(
+                                    'flex items-center gap-2.5 px-3 py-2',
+                                    on || part ? 'bg-violet-50' : 'hover:bg-muted/30',
+                                    __WEB__ && (on || part ? '!bg-[#EAF0E9]' : 'hover:!bg-[#F7FAF6]')
+                                  )}
+                                >
+                                  <label className="flex min-w-0 flex-1 cursor-pointer items-center gap-2.5">
+                                    <input
+                                      type="checkbox"
+                                      className={cn('h-4 w-4 accent-violet-700', __WEB__ && 'accent-[#0B6B45]')}
+                                      checked={on}
+                                      /* Some of the combination taken but not
+                                         all of it. A plain tick would say the
+                                         whole lot is on this invoice. */
+                                      ref={(el) => {
+                                        if (el) el.indeterminate = part
+                                      }}
+                                      onChange={(e) => toggleLotGroup(ids, e.target.checked)}
+                                    />
+                                    <span className="flex min-w-0 flex-1 flex-col gap-[3px]">
+                                      <span className="flex flex-wrap items-center gap-1.5">
+                                        {g.mapped ? (
+                                          <>
+                                            {!!g.lot && (
+                                              <span
+                                                className="rounded-[2px] px-1.5 py-[1px] text-[10.5px] font-bold"
+                                                style={{ background: tint!.bg, color: tint!.fg }}
+                                              >
+                                                {g.lot}
+                                              </span>
+                                            )}
+                                            {!!g.term && (
+                                              <span
+                                                className="rounded-[2px] px-1.5 py-[1px] text-[10.5px] font-bold"
+                                                style={{ background: tint!.bg, color: tint!.fg, opacity: 0.82 }}
+                                              >
+                                                {g.term}
+                                              </span>
+                                            )}
+                                          </>
+                                        ) : (
+                                          <span
+                                            className={cn(
+                                              'text-[12px] font-semibold text-[#0A1F17]',
+                                              __WEB__ && '!text-[12.5px] !font-bold'
+                                            )}
+                                          >
+                                            {String(only?.tanker_no || '').trim() ||
+                                              (only?.is_opening ? 'Opening stock' : 'Unlabelled parcel')}
+                                          </span>
+                                        )}
+                                        {!g.mapped && (
+                                          <span
+                                            className={cn(
+                                              'rounded-[2px] border border-dashed px-1.5 py-[1px] text-[9.5px] font-bold uppercase tracking-wide text-muted-foreground',
+                                              __WEB__ && '!border-[#E0C9A8] !bg-[#FDF6EC] !text-[#8A6A3B]'
+                                            )}
+                                          >
+                                            no lot yet
+                                          </span>
+                                        )}
+                                      </span>
+                                      <span
+                                        className={cn(
+                                          'truncate text-[11px] text-muted-foreground',
+                                          __WEB__ && '!text-[11px] !font-semibold !text-[#5A6B62]'
+                                        )}
+                                      >
+                                        {g.product}
+                                        {g.mapped
+                                          ? ` · ${g.rows.length} deposit${g.rows.length === 1 ? '' : 's'}`
+                                          : only?.is_opening
+                                            ? ' · opening'
+                                            : ''}
+                                        {span ? ` · ${span}` : ''}
+                                      </span>
+                                    </span>
+                                  </label>
+                                  <span
+                                    className={cn(
+                                      'shrink-0 text-[12.5px] font-bold tabular-nums text-[#0A1F17]',
+                                      __WEB__ && '!text-[13px] !font-extrabold'
+                                    )}
+                                  >
+                                    {formatNum(g.qty)} {g.uom}
+                                  </span>
+                                  {g.rows.length > 1 && (
+                                    <button
+                                      type="button"
+                                      title={open ? 'Hide the deposits' : 'Show the deposits behind this lot'}
+                                      onClick={() =>
+                                        setOpenLotGroups((prev) => ({ ...prev, [g.key]: !prev[g.key] }))
+                                      }
+                                      className={cn(
+                                        'flex h-6 w-6 shrink-0 items-center justify-center rounded text-muted-foreground hover:bg-black/5',
+                                        __WEB__ && 'hover:!text-[#0B6B45]'
+                                      )}
+                                    >
+                                      <ChevronDown
+                                        className={cn('h-4 w-4 transition-transform', open && 'rotate-180')}
+                                      />
+                                    </button>
+                                  )}
+                                </div>
+                                {open &&
+                                  g.rows.map((l) => {
+                                    const id = Number(l.id)
+                                    const mine = lotIds.includes(id)
+                                    return (
+                                      <label
+                                        key={id}
+                                        className={cn(
+                                          'flex cursor-pointer items-center gap-2.5 border-t py-1.5 pl-9 pr-3',
+                                          __WEB__ && '!border-t-[#F1F5F0] !bg-[#FAFCF9]'
+                                        )}
+                                      >
+                                        <input
+                                          type="checkbox"
+                                          className={cn('h-3.5 w-3.5 accent-violet-700', __WEB__ && 'accent-[#0B6B45]')}
+                                          checked={mine}
+                                          onChange={(e) => {
+                                            setLotTouched(true)
+                                            setLotIds((prev) =>
+                                              e.target.checked
+                                                ? Array.from(new Set([...prev, id]))
+                                                : prev.filter((x) => x !== id)
+                                            )
+                                          }}
+                                        />
+                                        <span
+                                          className={cn(
+                                            'min-w-0 flex-1 truncate text-[11.5px] font-semibold text-[#33473E]',
+                                            __WEB__ && '!font-bold'
+                                          )}
+                                        >
+                                          {String(l.tanker_no || '').trim() ||
+                                            (l.is_opening ? 'Opening stock' : 'Unlabelled deposit')}
+                                          {l.deposit_date ? ` · ${formatDate(l.deposit_date)}` : ''}
+                                        </span>
+                                        <span className="shrink-0 text-[11.5px] font-bold tabular-nums text-[#33473E]">
+                                          {formatNum(Number(l.qty) || 0)} {String(l.uom || 'MT')}
+                                        </span>
+                                      </label>
+                                    )
+                                  })}
+                              </div>
+                            )
+                          })}
+                        </div>
+                        {/* WHAT THIS INVOICE IS ABOUT TO TAKE, AND FROM WHERE.
+                            The quantity is the user's; the ticks say where it
+                            starts. When the two do not match there is a real
+                            decision being made on their behalf — reaching past
+                            the ticked parcels, or leaving part of one behind —
+                            and it is said here rather than discovered later in
+                            the register. */}
+                        <div
+                          className={cn(
+                            'border-t bg-muted/20 px-3 py-1.5 text-[10.5px] leading-snug text-muted-foreground',
+                            __WEB__ && '!border-t-[#E4ECE3] !bg-[#F7FAF6] !px-3 !py-2 !text-[11px] !font-semibold !text-[#5A6B62]'
+                          )}
+                        >
+                          {!lotIds.length ? (
+                            'Leave every box clear and the oldest parcels are drawn automatically, whole lots only. Tick any and the quantity fills itself from them — type over it and your figure stands.'
+                          ) : totalQty > lotQty + 1e-6 ? (
+                            <>
+                              Invoicing <b>{formatNum(totalQty)} {form.uom || 'MT'}</b> against{' '}
+                              <b>{formatNum(lotQty)}</b> ticked — the remaining{' '}
+                              <b className={cn(__WEB__ && '!text-[#8A6A3B]')}>{formatNum(totalQty - lotQty)}</b> comes off
+                              the oldest parcels still free.
+                            </>
+                          ) : totalQty > 1e-6 && totalQty < lotQty - 1e-6 ? (
+                            <>
+                              Invoicing <b>{formatNum(totalQty)} {form.uom || 'MT'}</b> out of the{' '}
+                              <b>{formatNum(lotQty)}</b> ticked — the other{' '}
+                              <b>{formatNum(lotQty - totalQty)}</b> stays on the same lot and terminal.
+                            </>
+                          ) : (
+                            <>
+                              Invoicing the ticked parcels in full — <b>{formatNum(lotQty)} {form.uom || 'MT'}</b>. Type
+                              over the quantity above and your figure stands.
+                            </>
+                          )}
+                        </div>
+                      </div>
+                    )}
+
                     {/* Step 3 — which bargains that quantity is drawn from. */}
                     <div className="mb-2 flex flex-wrap items-center gap-2">
-                      <span className="text-sm font-medium text-violet-900">Draw it from</span>
+                      <span
+                        className={cn(
+                          'text-sm font-medium text-violet-900',
+                          __WEB__ && '!text-[12px] !font-extrabold !uppercase !tracking-[.12em] !text-[#0A1F17]'
+                        )}
+                      >
+                        Draw it from
+                      </span>
                       {!bgTouched && bgAlloc.length > 0 && (
-                        <Badge variant="secondary" className="font-normal">oldest bargain first</Badge>
+                        <Badge
+                          variant="secondary"
+                          className={cn(
+                            'font-normal',
+                            __WEB__ && '!border !border-[#D6E2D6] !bg-[#F0F5EF] !text-[10.5px] !font-bold !text-[#33473E]'
+                          )}
+                        >
+                          oldest bargain first
+                        </Badge>
                       )}
                       {totalQty > 0 && (
-                        <span className="text-[11px] text-violet-800/80">
+                        <span className={cn('text-[11px] text-violet-800/80', __WEB__ && DP_NOTE)}>
                           {formatNum(bgAllocated)} of {formatNum(totalQty)} {form.uom || 'MT'} allocated
                           {Math.abs(bgRemaining) > 1e-6 && (
                             <b>
@@ -4208,7 +6709,12 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
                       )}
                     </div>
                     {totalQty <= 0 ? (
-                      <div className="rounded-lg border border-dashed bg-white/60 px-3 py-3 text-center text-xs text-muted-foreground">
+                      <div
+                        className={cn(
+                          'rounded-lg border border-dashed bg-white/60 px-3 py-3 text-center text-xs text-muted-foreground',
+                          __WEB__ && DP_EMPTY
+                        )}
+                      >
                         Enter a quantity to see the bargains.
                       </div>
                     ) : (
@@ -4220,7 +6726,10 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
                           return (
                             <div
                               key={index}
-                              className="grid gap-2 rounded-lg border bg-white p-2.5 md:grid-cols-[minmax(0,1fr)_7rem_auto]"
+                              className={cn(
+                                'grid gap-2 rounded-lg border bg-white p-2.5 md:grid-cols-[minmax(0,1fr)_7rem_auto]',
+                                __WEB__ && '!rounded-[4px] !border-[#D6E2D6] !p-3'
+                              )}
                             >
                               <div className="flex min-w-0 flex-col gap-1">
                                 <Label className="text-[11px] text-muted-foreground">Bargain</Label>
@@ -4230,7 +6739,7 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
                                     editBgLines((p) => p.map((x, i) => (i === index ? { ...x, bargain_id: v } : x)))
                                   }
                                 >
-                                  <SelectTrigger className="h-8 text-xs">
+                                  <SelectTrigger className={cn('h-8 text-xs', __WEB__ && DP_SMALL)}>
                                     <SelectValue
                                       placeholder={directBargains.length ? 'Select bargain' : 'No open bargain for this product'}
                                     />
@@ -4250,7 +6759,7 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
                                 <Label className="text-[11px] text-muted-foreground">Qty</Label>
                                 <Input
                                   type="number"
-                                  className="h-8 text-right text-xs"
+                                  className={cn('h-8 text-right text-xs', __WEB__ && cn(DP_SMALL, '!text-right'))}
                                   value={line.qty ?? ''}
                                   onChange={(e) =>
                                     editBgLines((p) => p.map((x, i) => (i === index ? { ...x, qty: e.target.value } : x)))
@@ -4261,10 +6770,20 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
                                 <div className="min-w-[8.5rem] pb-1 text-[11px] leading-tight">
                                   {bg ? (
                                     <>
-                                      <div className="tabular-nums text-muted-foreground">
+                                      <div
+                                        className={cn(
+                                          'tabular-nums text-muted-foreground',
+                                          __WEB__ && '!font-bold !text-[#33473E]'
+                                        )}
+                                      >
                                         {formatINR(Number(bg.rate_per_uom) * qty)}
                                       </div>
-                                      <div className={cn(qty > bal + 1e-6 ? 'font-medium text-red-600' : 'text-muted-foreground')}>
+                                      <div
+                                        className={cn(
+                                          qty > bal + 1e-6 ? 'font-medium text-red-600' : 'text-muted-foreground',
+                                          __WEB__ && (qty > bal + 1e-6 ? DP_BAD : '!font-semibold !text-[#5A6B62]')
+                                        )}
+                                      >
                                         {qty > bal + 1e-6
                                           ? `${formatNum(qty - bal)} over its balance`
                                           : `balance left ${formatNum(bal - qty)}`}
@@ -4380,7 +6899,17 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
                   <div className="rounded-lg border border-dashed py-10 text-center text-sm text-muted-foreground">No unbilled loaded tankers for this supplier.</div>
                 ) : (
                   <div className="grid gap-2">
-                    {mixedRates && (
+    {/* Two different warnings, because they are two different situations.
+                        Several products is a normal bill and only needs saying
+                        so; several RATES on ONE product really does blend into
+                        a single figure and is worth a second look. */}
+                    {multiProduct && (
+                      <div className="rounded-md border border-[#BFE3CB] bg-[#E9F5EE] px-3 py-2 text-xs text-[#0B5638]">
+                        {productLines.length} products on this bill ({productLines.map((l) => l.label).join(', ')}) — one
+                        invoice, one number. Set each product&apos;s rate in <b>Products on this bill</b> below.
+                      </div>
+                    )}
+                    {mixedRates && !multiProduct && (
                       <div className="rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-900">
                         The selected tankers come from bargains with different rates — the invoice uses the first tanker&apos;s bargain rate, so adjust the invoice rate if needed.
                       </div>
@@ -4425,6 +6954,132 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
                 )}
               </section>
               )}
+
+              {/* THE PRODUCTS ON THE BILL, EACH AT ITS OWN RATE.
+                  Only when there IS more than one: a bill of a single product
+                  is priced in the header as it always was, and a card saying
+                  "1 item" under it would be furniture. */}
+              {multiProduct && (
+                <section className={cn('rounded border border-[#e5dfc8] bg-white p-4', __WEB__ && cn(NP_CARD, '!p-[18px]'))}>
+                  <div
+                    className={cn(
+                      'mb-3 flex items-center justify-between border-b border-dotted border-[#e5dfc8] pb-1.5',
+                      __WEB__ &&
+                        '!-mx-[18px] !-mt-[18px] !mb-[14px] !items-start !gap-3 !rounded-t-[3px] !border-b !border-solid !border-b-[#E4ECE3] !bg-[#F7FAF6] !px-[18px] !py-[13px]'
+                    )}
+                  >
+                    <div className={cn(__WEB__ && 'min-w-0')}>
+                      <h3
+                        className={cn(
+                          'text-[11px] font-bold uppercase tracking-widest text-[#1a2c56]',
+                          __WEB__ && '!flex !items-center !gap-[9px] !text-[11.5px] !font-extrabold !tracking-[.14em] !text-[#0A1F17]'
+                        )}
+                      >
+                        {__WEB__ && <Package className="h-[19px] w-[19px] text-[#33473E]" />}
+                        Products on this bill
+                      </h3>
+                      <p className={cn('text-xs text-muted-foreground', __WEB__ && cn(NP_NOTE, '!mt-[5px]'))}>
+                        One invoice, one number, {productLines.length} products. Each is billed at its own rate and
+                        booked as its own line, so its bargain, its GST and its lab readings stay its own.
+                      </p>
+                    </div>
+                  </div>
+                  <div className="overflow-x-auto">
+                    <table className="w-full min-w-[620px] text-[13px]">
+                      <thead>
+                        <tr className="border-b border-b-[#E4ECE3] text-left">
+                          {['Product', 'Tankers', 'Quantity', 'Rate', 'GST %', 'Line total'].map((h, i) => (
+                            <th
+                              key={h}
+                              className={cn(
+                                'pb-2 text-[9.5px] font-extrabold uppercase tracking-[.12em] text-[#5A6B62]',
+                                i > 1 && 'text-right'
+                              )}
+                            >
+                              {h}
+                            </th>
+                          ))}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {productLines.map((l) => {
+                          const held = lineRates[String(l.product_id)] || {}
+                          const { rate, gst } = lineRateOf(l)
+                          const taxable = (Number(l.qty) || 0) * rate
+                          return (
+                            <tr key={l.product_id} className="border-b border-b-[#EEF3ED] last:border-b-0">
+                              <td className="py-2.5 pr-3">
+                                <div className="font-bold text-[#0A1F17]">{l.label}</div>
+                                <div className="text-[11.5px] font-semibold text-[#5A6B62]">
+                                  {l.bargain_no || 'no bargain'}
+                                </div>
+                              </td>
+                              <td className="py-2.5 pr-3 text-[12.5px] font-semibold text-[#5A6B62]">
+                                {l.tankers.map((t: Row) => t.tanker_no || '-').join(', ')}
+                              </td>
+                              <td className="py-2.5 pr-3 text-right font-semibold tabular-nums">
+                                {formatNum(l.qty)} <span className="text-[11.5px] font-medium text-[#7C9188]">{l.uom}</span>
+                              </td>
+                              <td className="py-2.5 pr-3 text-right">
+                                <Input
+                                  type="number"
+                                  step="0.01"
+                                  aria-label={`Rate for ${l.label}`}
+                                  className="ml-auto !h-9 !w-[130px] text-right"
+                                  value={held.invoice_rate ?? ''}
+                                  onChange={(e) =>
+                                    setLineRates((prev) => ({
+                                      ...prev,
+                                      [String(l.product_id)]: { ...(prev[String(l.product_id)] || { gst_pct: '' }), invoice_rate: e.target.value }
+                                    }))
+                                  }
+                                />
+                              </td>
+                              <td className="py-2.5 pr-3 text-right">
+                                <Input
+                                  type="number"
+                                  step="0.01"
+                                  aria-label={`GST percent for ${l.label}`}
+                                  className="ml-auto !h-9 !w-[78px] text-right"
+                                  value={held.gst_pct ?? ''}
+                                  onChange={(e) =>
+                                    setLineRates((prev) => ({
+                                      ...prev,
+                                      [String(l.product_id)]: { ...(prev[String(l.product_id)] || { invoice_rate: '' }), gst_pct: e.target.value }
+                                    }))
+                                  }
+                                />
+                              </td>
+                              <td className="py-2.5 text-right font-bold tabular-nums text-[#0A1F17]">
+                                {formatINR(taxable + (taxable * gst) / 100)}
+                              </td>
+                            </tr>
+                          )
+                        })}
+                      </tbody>
+                      <tfoot>
+                        <tr className="border-t-2 border-t-[#C7F03F]">
+                          <td colSpan={5} className="pt-2.5 text-right text-[11px] font-extrabold uppercase tracking-[.12em] text-[#5A6B62]">
+                            Taxable {formatINR(billPreview.taxable)} + GST {formatINR(billPreview.gst)}
+                          </td>
+                          <td className="pt-2.5 text-right text-[15px] font-extrabold tabular-nums text-[#0A1F17]">
+                            {formatINR(billPreview.total)}
+                          </td>
+                        </tr>
+                      </tfoot>
+                    </table>
+                  </div>
+                  {/* Said plainly, because the figure above is not the one that
+                      gets written. TDS, the round off and any interest are the
+                      bill's, applied once, and each line's money is struck in
+                      the main process by the same code that prices every other
+                      purchase. This is the check against the paper, not the
+                      posting. */}
+                  <p className={cn('mt-3 text-[11px] leading-relaxed text-muted-foreground', NP_NOTE)}>
+                    Before TDS, interest and round off, which belong to the bill and are applied once.
+                  </p>
+                </section>
+              )}
             </div>
 
             <aside className={cn('h-fit rounded border border-[#d9d2b8] bg-[#f7f2e2] p-4 xl:sticky xl:top-6', NP_RAIL)}>
@@ -4456,7 +7111,12 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
                     />
                   )}
                   {bgAlloc.length > 1 && <MoneyRow label="Bargains drawn" value={String(bgAlloc.length)} />}
-                  <MoneyRow label="Quantity invoiced" value={`${formatNum(totalQty)} ${form.uom || 'MT'}`} strong />
+                  <MoneyRow
+                    label={onBill ? 'Quantity invoiced (whole invoice)' : 'Quantity invoiced'}
+                    title={onBill ? `This line is ${formatNum(totalQty)} ${form.uom || 'MT'} of it` : undefined}
+                    value={`${formatNum(onBill ? billMoney.qty : totalQty)} ${form.uom || 'MT'}`}
+                    strong
+                  />
                 </>
               ) : (
                 <>
@@ -4654,29 +7314,49 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
                   rates would read the same whether 30 MT came on the first
                   bargain or 3 did. */}
               <MoneyRow
-                label={rateAlloc.length > 1 ? 'Adjusted invoice rate (avg)' : 'Adjusted invoice rate'}
+                label={
+                  onBill
+                    ? `Adjusted invoice rate (avg of ${editingBillLines.length} lines)`
+                    : multiProduct
+                      ? `Adjusted invoice rate (avg of ${productLines.length} products)`
+                      : rateAlloc.length > 1
+                        ? 'Adjusted invoice rate (avg)'
+                        : 'Adjusted invoice rate'
+                }
                 title={
                   rateAlloc.length > 1
-                    ? `Weighted across ${rateAlloc.length} bargains — each line'''s own rate times its quantity, over ${formatNum(totalQty)} ${form.uom || 'MT'} = ${formatINR(calc.taxableValue)}`
+                    ? `Weighted across ${rateAlloc.length} bargains — each line's own rate times its quantity, over ${formatNum(totalQty)} ${form.uom || 'MT'} = ${formatINR(calc.taxableValue)}`
                     : `x ${formatNum(totalQty)} ${form.uom || 'MT'} = ${formatINR(calc.taxableValue)}`
                 }
-                value={formatINR(calc.adjustedRate)}
+                value={formatINR(onBill ? billMoney.rate : calc.adjustedRate)}
                 strong
               />
               </div>
               <div className={cn('my-2 border-t', __WEB__ && '!hidden')} />
               <div className={cn(__WEB__ && NP_RAIL_SECT)}>
-              <MoneyRow label="Taxable value" value={formatINR(calc.taxableValue)} />
+              {/* Every figure from here down is the INVOICE's when this row
+                  is one line of several — the weighted rate on the whole
+                  quantity, and the tax and the net that follow from it. This
+                  line's own share is on hover, and on the lines table above. */}
+              <MoneyRow
+                label="Taxable value"
+                title={onBill ? `This line: ${formatINR(calc.taxableValue)}` : undefined}
+                value={formatINR(onBill ? billMoney.taxable : calc.taxableValue)}
+              />
               {form.gst_type === 'IGST' ? (
-                <MoneyRow label={`IGST${form.gst_pct ? ` @ ${form.gst_pct}%` : ''}`} value={formatINR(calc.gstAmount)} />
+                <MoneyRow label={`IGST${form.gst_pct ? ` @ ${form.gst_pct}%` : ''}`} value={formatINR(onBill ? billMoney.gst : calc.gstAmount)} />
               ) : (
                 <>
-                  <MoneyRow label={`CGST${form.gst_pct ? ` @ ${(Number(form.gst_pct) || 0) / 2}%` : ''}`} value={formatINR(calc.gstAmount / 2)} />
-                  <MoneyRow label={`SGST${form.gst_pct ? ` @ ${(Number(form.gst_pct) || 0) / 2}%` : ''}`} value={formatINR(calc.gstAmount / 2)} />
+                  <MoneyRow label={`CGST${form.gst_pct ? ` @ ${(Number(form.gst_pct) || 0) / 2}%` : ''}`} value={formatINR((onBill ? billMoney.gst : calc.gstAmount) / 2)} />
+                  <MoneyRow label={`SGST${form.gst_pct ? ` @ ${(Number(form.gst_pct) || 0) / 2}%` : ''}`} value={formatINR((onBill ? billMoney.gst : calc.gstAmount) / 2)} />
                 </>
               )}
               <div className="border-t" />
-              <MoneyRow label="Total value (excl. TDS)" value={formatINR(calc.taxableValue + calc.gstAmount)} strong />
+              <MoneyRow
+                label="Total value (excl. TDS)"
+                value={formatINR(onBill ? billMoney.total : calc.taxableValue + calc.gstAmount)}
+                strong
+              />
               <div className={cn('flex items-center justify-between py-1.5 text-sm', __WEB__ && '!gap-2.5 !py-[5px]')}>
                 <span className={cn('text-muted-foreground', __WEB__ && '!text-[12.5px] !font-semibold !text-[#33473E]')} title="Applied to the total excluding TDS. TDS is then deducted on the rounded figure. Auto-rounds to the nearest rupee; type to override, clear to go back to auto.">
                   Round off {form.round_off_manual ? '(manual)' : '(auto)'}
@@ -4695,7 +7375,11 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
                   }
                 />
               </div>
-              <MoneyRow label="Total after round off" value={formatINR(calc.roundedTotal)} strong />
+              <MoneyRow
+                label="Total after round off"
+                value={formatINR(onBill ? billMoney.roundedTotal : calc.roundedTotal)}
+                strong
+              />
               {/* The label used to read "on the rounded total", which is
                   what it WAS struck on before the basis was corrected to the
                   taxable value. The figure has been right since; the caption
@@ -4715,8 +7399,11 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
                     <Info className="h-3.5 w-3.5" />
                   </button>
                 </span>
-                <span className={cn('tabular-nums', __WEB__ && '!text-[12.5px] !font-bold !text-[#0A1F17]')}>
-                  − {formatINR(calc.tdsAmount)}
+                <span
+                  className={cn('tabular-nums', __WEB__ && '!text-[12.5px] !font-bold !text-[#0A1F17]')}
+                  title={onBill ? `This line: ${formatINR(calc.tdsAmount)}` : undefined}
+                >
+                  − {formatINR(onBill ? billMoney.tds : calc.tdsAmount)}
                 </span>
               </div>
               </div>
@@ -4729,8 +7416,13 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
                   __WEB__ && '!gap-3 !bg-[#0B3D2E] !px-[18px] !py-[15px] !text-[12.5px] !font-extrabold !text-white'
                 )}
               >
-                <span>Net purchase amount</span>
-                <span className={cn('tabular-nums', __WEB__ && 'doc-ref !whitespace-nowrap !text-[17px] !font-bold !tracking-[-0.03em] !text-[#C7F03F]')}>{formatINR(calc.netAmount)}</span>
+                <span>{onBill ? 'Net purchase amount · whole invoice' : 'Net purchase amount'}</span>
+                <span
+                  className={cn('tabular-nums', __WEB__ && 'doc-ref !whitespace-nowrap !text-[17px] !font-bold !tracking-[-0.03em] !text-[#C7F03F]')}
+                  title={onBill ? `This line: ${formatINR(calc.netAmount)}` : undefined}
+                >
+                  {formatINR(onBill ? billMoney.net : calc.netAmount)}
+                </span>
               </div>
               <div className={cn(__WEB__ && 'px-[18px] py-[14px]')}>
               {error && <p className={cn('mt-3 rounded-md border border-red-300 bg-red-50 px-3 py-2 text-sm text-red-700', __WEB__ && '!mt-0 !mb-2.5 !rounded-[4px] !border-[#F0AFAA] !bg-[#FDF3F2] !text-[12.5px] !font-bold !text-[#8C2F26]')}>{error}</p>}
@@ -4758,7 +7450,9 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
                     >
                       {ok
                         ? editing
-                          ? `Saving amends invoice ${form.invoice_no} and reposts it to the ledger.`
+                          ? onBill
+                            ? `Saving amends invoice ${form.invoice_no} — all ${editingBillLines.length} lines — and reposts it to the ledger.`
+                            : `Saving amends invoice ${form.invoice_no} and reposts it to the ledger.`
                           : `Saving posts ${formatINR(calc.netAmount)} to the supplier ledger.`
                         : `${need.length} required: ${need.join(', ')}`}
                     </span>
@@ -4788,9 +7482,11 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
           </div>
           </div>
         </div>
+      ) : __WEB__ && isMobile ? (
+        mobileBody
       ) : (
         <div className="px-4 pb-6 pt-3">
-          <Tabs value={readingsOnly ? 'purchases' : tab} onValueChange={setTab}>
+          <Tabs value={readingsOnly || intercoDesk ? 'purchases' : tab} onValueChange={setTab}>
             <div className="mb-4 flex flex-wrap items-center justify-between gap-x-3 gap-y-2">
               {/* Website: the handoff's underline tabs — a bar under the live
                   one rather than a pill, with the count as a chip beside the
@@ -4801,7 +7497,7 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
                     '!h-auto !gap-6 !rounded-none !border-b !border-[#D6E2D6] !bg-transparent !p-0 [&>button]:!h-[52px] [&>button]:!rounded-none [&>button]:!border-b-[3px] [&>button]:!border-transparent [&>button]:!bg-transparent [&>button]:!px-0 [&>button]:!text-[14.5px] [&>button]:!font-semibold [&>button]:!text-[#5A6B62] [&>button]:!shadow-none [&>button[data-state=active]]:!border-[#0B3D2E] [&>button[data-state=active]]:!font-extrabold [&>button[data-state=active]]:!text-[#0A1F17]'
                 )}
               >
-              <TabsTrigger value="tankers" className={cn(readingsOnly && '!hidden')}>
+              <TabsTrigger value="tankers" className={cn((readingsOnly || intercoDesk) && '!hidden')}>
                 Tanker movement
                 {/* The count the page is actually showing — the two group
                     cards below always add up to exactly this. It used to be
@@ -4824,7 +7520,7 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
                 )}
               </TabsTrigger>
               <TabsTrigger value="purchases">Purchase entries</TabsTrigger>
-              <TabsTrigger value="unmapped" className={cn(readingsOnly && '!hidden')}>
+              <TabsTrigger value="unmapped" className={cn((readingsOnly || intercoDesk) && '!hidden')}>
                 Unmapped invoices
                 {unmapped.length > 0 && (
                   <span
@@ -4835,7 +7531,7 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
                       __WEB__ && '!ml-2 !rounded-[2px] !bg-[#FFEDD0] !px-1.5 !py-[3px] !text-[12px] !font-extrabold !text-[#8A5300]'
                     )}
                   >
-                    {unmapped.length}
+                    {unmappedBills.length}
                   </span>
                 )}
               </TabsTrigger>
@@ -4853,6 +7549,17 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
                       '!w-full !gap-x-3 !gap-y-2 !rounded-[4px] !border-[#D6E2D6] !bg-white !px-[18px] !py-3 [&_input]:!h-9 [&_input]:!rounded-[4px] [&_input]:!border-input [&_input]:!text-[12.5px] [&_button:not([role=switch])]:!h-9 [&_button:not([role=switch])]:!rounded-[4px] [&_button:not([role=switch])]:!text-[12.5px] [&_[data-slot=date-picker]]:!h-9 [&_[data-slot=date-picker]]:!rounded-[4px] [&_[data-slot=date-picker]]:!text-[12.5px]'
                   )}
                 >
+                  {poReceivedOn && (
+                    <button
+                      type="button"
+                      onClick={() => setPoReceivedOn(null)}
+                      title="Opened from the dashboard — purchases received that day. Click to go back to the date filter."
+                      className="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-[4px] border border-[#BFE3CB] bg-[#E9F5EE] px-2.5 text-[11.5px] font-extrabold text-[#0B6B45]"
+                    >
+                      Received on {formatDate(poReceivedOn)}
+                      <X className="h-3.5 w-3.5" />
+                    </button>
+                  )}
                   <div className={cn('relative w-full sm:w-64', __WEB__ && 'sm:!w-72')}>
                     <Search className={cn('pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground', __WEB__ && '!left-3 !h-4 !w-4 !text-[#8AA096]')} />
                     <Input
@@ -5315,6 +8022,7 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
                     {PO_COLUMNS.map((c) => (
                       <TableHead
                         key={c.key}
+                        aria-sort={poSort.ariaSort(c.key)}
                         className={cn(
                           c.key === 'tanker_count' && 'text-center',
                           (c.key === 'ordered_qty' || c.key === 'net_amount') && 'text-right',
@@ -5322,6 +8030,13 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
                           __WEB__ && '!h-10 !text-[12.5px] !font-extrabold !tracking-[-0.01em]'
                         )}
                       >
+                        <span
+                          className={cn(
+                            'inline-flex items-center gap-1',
+                            (c.key === 'ordered_qty' || c.key === 'net_amount') && 'flex-row-reverse',
+                            c.key === 'tanker_count' && 'justify-center'
+                          )}
+                        >
                         <ColumnFilter
                           label={c.label}
                           options={poColOptions(c.key)}
@@ -5330,6 +8045,33 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
                           onApply={(v) => setPoCols((p) => ({ ...p, [c.key]: v }))}
                           align={c.key === 'net_amount' || c.key === 'ordered_qty' ? 'end' : 'start'}
                         />
+                        {/* Beside the funnel, never around it. "Put this in
+                            order" and "show me only these" are two questions,
+                            and one control cannot answer both — nor can a
+                            button live inside a button. */}
+                        <button
+                          type="button"
+                          aria-label={`Sort by ${c.label}`}
+                          title={
+                            poSort.key !== c.key
+                              ? `Sort by ${c.label}`
+                              : poSort.dir === 'asc'
+                                ? `${c.label} — smallest first. Click to turn it round`
+                                : `${c.label} — largest first. Click to clear the sort`
+                          }
+                          onClick={() => poSort.toggle(c.key)}
+                          className={cn(
+                            'inline-flex h-4 w-4 shrink-0 items-center justify-center rounded-[2px] hover:bg-white/15',
+                            poSort.key === c.key ? 'text-[#C7F03F]' : 'text-white/45'
+                          )}
+                        >
+                          {poSort.key === c.key ? (
+                            poSort.dir === 'asc' ? <ArrowUp className="h-3 w-3" /> : <ArrowDown className="h-3 w-3" />
+                          ) : (
+                            <ChevronsUpDown className="h-3 w-3" />
+                          )}
+                        </button>
+                        </span>
                       </TableHead>
                     ))}
                     <TableHead className={cn('w-[34px] !px-0', __WEB__ && '!h-10')} />
@@ -5350,7 +8092,7 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
                         <TableCell className={cn('font-semibold text-amber-900', __WEB__ && '!font-extrabold !text-[#0A1F17]')}>
                           Total
                           <span className={cn('ml-1.5 font-normal text-amber-800/70', __WEB__ && '!font-semibold !text-[#5A6B62]')}>
-                            ({filteredOrders.length} invoice{filteredOrders.length === 1 ? '' : 's'})
+                            ({orderBills.length} invoice{orderBills.length === 1 ? '' : 's'})
                           </span>
                         </TableCell>
                         <TableCell />
@@ -5372,8 +8114,12 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
                     )}
                     {loading ? <TableRow><TableCell colSpan={10} className="py-10 text-center text-muted-foreground">Loading…</TableCell></TableRow>
                       : filteredOrders.length === 0 ? <TableRow><TableCell colSpan={10} className="py-10 text-center text-muted-foreground">{rows.length ? 'No purchase entry matches these filters.' : 'No purchase entries yet.'}</TableCell></TableRow>
-                        : orderPaged.pageRows.map((row) => <TableRow
-                          key={row.id}
+                        : orderPaged.pageRows.map((row) => {
+                          const lines: Row[] = row._lines || [row]
+                          const multi = lines.length > 1
+                          const open = openBills.has(Number(row.id))
+                          return (<Fragment key={row.id}>
+                          <TableRow
                           // Amber left edge on anything still in process, so the
                           // open work is findable down a long page without
                           // reading the Status column on every row.
@@ -5381,11 +8127,18 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
                           // The whole row opens the detail drawer. The Freight
                           // and Actions cells stop the click themselves, so a
                           // popover or the ⋮ menu still does its own thing.
-                          onClick={__WEB__ ? () => setDetailRow(row) : undefined}
+                          onClick={__WEB__ ? () => (multi ? toggleBill(Number(row.id)) : setDetailRow(row)) : undefined}
                           className={cn('hover:bg-amber-50', __WEB__ && '!cursor-pointer !border-b-[#EAF0E9] hover:!bg-[#F7FAF6] [&>td]:!py-2 [&>td]:!text-[13px]')}
                         >
                           <TableCell>
-                            <div className={cn('font-medium', __WEB__ && '!text-[13.5px] !font-bold !tracking-[-0.01em]')}>{row.invoice_no}</div>
+                            <div className={cn('flex items-center gap-1.5 font-medium', __WEB__ && '!text-[13.5px] !font-bold !tracking-[-0.01em]')}>
+                              {multi && (
+                                <ChevronDown
+                                  className={cn('h-3.5 w-3.5 shrink-0 text-[#5A6B62] transition-transform', !open && '-rotate-90')}
+                                />
+                              )}
+                              {row.invoice_no}
+                            </div>
                             <div className={cn('text-[11px] text-muted-foreground', __WEB__ && '!mt-0.5 !text-[12px] !font-semibold !tabular-nums !text-[#5A6B62]')}>{formatDate(row.order_date)}</div>
                             {row._shownForReceipt && (
                               <div
@@ -5395,6 +8148,17 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
                                 shown for receipt date
                               </div>
                             )}
+                            {/* Stops the row's own click: tagging a bill is not
+                                asking to open it. */}
+                            <div className="mt-1" onClick={(e) => e.stopPropagation()}>
+                              <TagPicker
+                                entity="order"
+                                refId={Number(row.id)}
+                                tags={orderTags.tagsOf(Number(row.id))}
+                                onChanged={(next) => orderTags.setFor(Number(row.id), next)}
+                                compact
+                              />
+                            </div>
                           </TableCell>
                           <TableCell className={cn(__WEB__ && '!text-[13.5px] !font-bold')}>{row.supplier_name}</TableCell>
                           <TableCell className={cn('uppercase text-muted-foreground', __WEB__ && '!text-inherit')}>
@@ -5404,7 +8168,18 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
                               </span>
                             ) : (row.product_category || '—')}
                           </TableCell>
-                          <TableCell className={cn('font-medium', __WEB__ && '!text-[13.5px] !font-bold')}>{row.oil_code || row.oil_name || '—'}</TableCell>
+                          <TableCell className={cn('font-medium', __WEB__ && '!text-[13.5px] !font-bold')}>
+                            {multi ? (
+                              <>
+                                <div>{lines.length} items</div>
+                                {/* The products themselves underneath, because
+                                    "2 items" answers how many and not which. */}
+                                <div className={cn('text-[11px] font-normal text-muted-foreground', __WEB__ && '!mt-0.5 !text-[12px] !font-semibold !text-[#5A6B62]')}>
+                                  {lines.map((l) => l.oil_code || l.oil_name || '—').join(', ')}
+                                </div>
+                              </>
+                            ) : (row.oil_code || row.oil_name || '—')}
+                          </TableCell>
                           <TableCell className="text-center">
                             {/* The vehicles behind the count, on hover.
                                 tanker_nos is already a GROUP_CONCAT on the
@@ -5425,7 +8200,7 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
                                       : 'border-[#C3D2C6] text-[#8FA79B]'
                                   )}
                                 >
-                                  {row.tanker_count || 0}
+                                  {billTankers(row)}
                                 </span>
                               )
                               if (!nos.length) return chip
@@ -5457,12 +8232,12 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
                                   </TooltipContent>
                                 </Tooltip>
                               )
-                            })() : <Badge variant="secondary">{row.tanker_count || 0}</Badge>}
+                            })() : <Badge variant="secondary">{billTankers(row)}</Badge>}
                           </TableCell>
                           <TableCell className={cn('text-right tabular-nums', __WEB__ && '!text-[13.5px] !font-semibold')}>
-                            {formatNum(row.ordered_qty)} <span className={cn(__WEB__ && '!text-[11.5px] !font-medium !text-[#7C9188]')}>{row.uom}</span>
+                            {formatNum(billQty(row))} <span className={cn(__WEB__ && '!text-[11.5px] !font-medium !text-[#7C9188]')}>{row.uom}</span>
                           </TableCell>
-                          <TableCell className={cn('text-right font-medium tabular-nums', __WEB__ && '!text-[13.5px] !font-bold !tracking-[-0.02em]')}>{formatINR(row.net_amount)}</TableCell>
+                          <TableCell className={cn('text-right font-medium tabular-nums', __WEB__ && '!text-[13.5px] !font-bold !tracking-[-0.02em]')}>{formatINR(billNet(row))}</TableCell>
                           <TableCell onClick={(e) => e.stopPropagation()}>
                             {(() => {
                               const f = poFreight(row)
@@ -5576,23 +8351,42 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
                                 )
                               }
                               const complete = done >= emptied
+                              // ANSWERED, rather than missing. Grey and struck
+                              // through: the desk has said this invoice has
+                              // nothing to sample, so it is neither a warning
+                              // nor a reading — and still one click from being
+                              // taken back.
+                              const waived = Number(row.quality_waived) === 1
                               return (
                                 <button
                                   type="button"
                                   title={
-                                    complete
+                                    waived
+                                      ? `Not needed for this transaction${
+                                          row.quality_waived_note ? ` — ${String(row.quality_waived_note)}` : ''
+                                        }${
+                                          row.quality_waived_at
+                                            ? ` · marked ${formatDate(String(row.quality_waived_at).slice(0, 10))}`
+                                            : ''
+                                        }. Click to change.`
+                                      : complete
                                       ? `Technical parameters recorded for ${emptied === 1 ? 'the tanker' : `all ${emptied} tankers`}. Click to view or change.`
                                       : `Technical parameters missing on ${emptied - done} of ${emptied} tanker${emptied === 1 ? '' : 's'}. Click to enter them.`
                                   }
                                   onClick={() => void openQuality(row)}
                                   className={cn(
-                                    'inline-flex h-[22px] w-[22px] items-center justify-center rounded-[3px] border transition-colors',
-                                    complete
-                                      ? 'border-[#BFE3CB] bg-[#EAF6EC] text-[#0B6B45] hover:bg-[#DCEFE1]'
-                                      : 'border-[#F0E4CB] bg-[#FFF4E0] text-[#C2700A] hover:bg-[#FFE9C7]'
+                                    'relative inline-flex h-[22px] w-[22px] items-center justify-center rounded-[3px] border transition-colors',
+                                    waived
+                                      ? 'border-[#DCE7DB] bg-[#F1F5EF] text-[#8CA396] hover:bg-[#E7EEE6]'
+                                      : complete
+                                        ? 'border-[#BFE3CB] bg-[#EAF6EC] text-[#0B6B45] hover:bg-[#DCEFE1]'
+                                        : 'border-[#F0E4CB] bg-[#FFF4E0] text-[#C2700A] hover:bg-[#FFE9C7]'
                                   )}
                                 >
                                   <FlaskConical className="h-[13px] w-[13px]" />
+                                  {waived && (
+                                    <span className="pointer-events-none absolute left-[2px] right-[2px] top-1/2 h-[1.5px] -translate-y-1/2 rotate-[-32deg] rounded bg-[#8CA396]" />
+                                  )}
                                 </button>
                               )
                             })()}
@@ -5603,14 +8397,77 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
                               actions={[
                                 { label: 'View details', icon: Eye, onClick: () => setDetailRow(row) },
                                 { label: 'Gate entries — what came through the barrier', icon: DoorOpen, onClick: () => setGateOrder(row) },
-                                { label: 'Edit purchase', icon: Pencil, onClick: () => openEditPurchase(row) },
+                                ...(intercoDesk
+                                  ? []
+                                  : [{ label: 'Edit purchase', icon: Pencil, onClick: () => openEditPurchase(row) }]),
                                 { label: 'History — who did what', icon: History, onClick: () => openHistory(row) },
-                                { label: 'Delete purchase', icon: Trash2, danger: true, onClick: () => deletePurchase(row) }
+                                ...(__WEB__ && canSeeLedgers
+                                  ? [
+                                      {
+                                        label: 'Ledger posting — what it put in the books',
+                                        icon: BookOpen,
+                                        onClick: () => openPostings(row)
+                                      }
+                                    ]
+                                  : []),
+                                ...(intercoDesk
+                                  ? []
+                                  : [{ label: 'Delete purchase', icon: Trash2, danger: true, onClick: () => deletePurchase(row) }])
                               ]}
                             />
                             )}
                           </div></TableCell>
-                        </TableRow>)}
+                        </TableRow>
+                        {/* THE ITEMS OF THE BILL, WHERE THE BILL IS.
+                            One transfer is one invoice number over several
+                            products, and the register now says so on one line.
+                            The products themselves still have to be reachable
+                            — the quantity and the rate of each is the thing
+                            being checked against the other company's copy —
+                            so they open underneath rather than being lost to
+                            the summary. Each keeps its own row, which is what
+                            it is in the books: click one to open it. */}
+                        {multi && open && (
+                          <TableRow className={cn('hover:bg-transparent', __WEB__ && '!border-b-[#EAF0E9]')}>
+                            <TableCell colSpan={11} className={cn('!p-0', __WEB__ && '!bg-[#F7FAF6]')}>
+                              <div className="px-4 py-3">
+                                <div className={cn('mb-2 text-[9.5px] font-extrabold uppercase tracking-[.14em] text-muted-foreground', __WEB__ && '!text-[#5A6B62]')}>
+                                  Line items
+                                </div>
+                                <div className="overflow-hidden rounded-[3px] border border-[#E3EBE2] bg-white">
+                                  <table className="w-full text-[12.5px]">
+                                    <thead>
+                                      <tr className={cn('border-b border-b-[#E3EBE2]', __WEB__ && 'bg-[#F1F5EF]')}>
+                                        <th className="px-3 py-1.5 text-left text-[9.5px] font-extrabold uppercase tracking-[.12em] text-[#5A6B62]">Product</th>
+                                        <th className="px-3 py-1.5 text-right text-[9.5px] font-extrabold uppercase tracking-[.12em] text-[#5A6B62]">Qty</th>
+                                        <th className="px-3 py-1.5 text-right text-[9.5px] font-extrabold uppercase tracking-[.12em] text-[#5A6B62]">Rate</th>
+                                        <th className="px-3 py-1.5 text-right text-[9.5px] font-extrabold uppercase tracking-[.12em] text-[#5A6B62]">Net amount</th>
+                                      </tr>
+                                    </thead>
+                                    <tbody>
+                                      {lines.map((l) => (
+                                        <tr
+                                          key={l.id}
+                                          onClick={__WEB__ ? (e) => { e.stopPropagation(); setDetailRow(l) } : undefined}
+                                          className={cn('border-b border-b-[#EEF3ED] last:border-b-0', __WEB__ && 'cursor-pointer hover:bg-[#F7FAF6]')}
+                                          title={__WEB__ ? 'Open this item' : undefined}
+                                        >
+                                          <td className="px-3 py-2 font-bold">{l.oil_code || l.oil_name || '—'}</td>
+                                          <td className="px-3 py-2 text-right font-semibold tabular-nums">
+                                            {formatNum(l.ordered_qty)} <span className="text-[11px] font-medium text-[#7C9188]">{l.uom}</span>
+                                          </td>
+                                          <td className="px-3 py-2 text-right tabular-nums text-[#5A6B62]">{formatINR(l.invoice_rate)}</td>
+                                          <td className="px-3 py-2 text-right font-bold tabular-nums">{formatINR(l.net_amount)}</td>
+                                        </tr>
+                                      ))}
+                                    </tbody>
+                                  </table>
+                                </div>
+                              </div>
+                            </TableCell>
+                          </TableRow>
+                        )}
+                        </Fragment>)})}
                   </TableBody>
                 </Table>
                 <Pagination {...orderPaged} label="invoices" className={cn('border-t px-3', __WEB__ && '!border-t-[#EAF0E9] !px-[18px] !py-2.5')} />
@@ -5619,15 +8476,31 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
 
             <TabsContent value="unmapped" className="space-y-4">
               <div className="overflow-hidden rounded-xl border-2 border-red-200 bg-card">
-                <div className="flex flex-wrap items-center justify-between gap-3 border-b border-red-200 bg-red-50 px-4 py-3">
-                  <div>
+                <div
+                  {...groupToggleProps(unmappedOpen, () => setUnmappedOpen((o) => !o))}
+                  title={__WEB__ ? (unmappedOpen ? 'Hide the list' : 'Show the list') : undefined}
+                  className={cn(
+                    'flex flex-wrap items-center justify-between gap-3 border-b border-red-200 bg-red-50 px-4 py-3',
+                    __WEB__ && 'cursor-pointer select-none hover:bg-red-100/70'
+                  )}
+                >
+                  <div className={cn(__WEB__ && 'flex min-w-0 items-start gap-2')}>
+                    {__WEB__ && (
+                      <ChevronDown
+                        className={cn('mt-[3px] h-4 w-4 shrink-0 text-red-900 transition-transform', !unmappedOpen && '-rotate-90')}
+                      />
+                    )}
+                    <div className="min-w-0">
                     <h3 className="font-medium text-red-900">Unmapped invoices</h3>
                     <p className="text-xs text-red-800/80">
                       Purchase invoices with no live bargain behind them — usually because the bargain was deleted.
                       Assign one or more bargains so the bargain register counts them again.
                     </p>
+                    </div>
                   </div>
-                  <div className="flex items-center gap-2">
+                  {/* The controls are not the toggle: clicking Excel must
+                      download the sheet, not fold the card under it. */}
+                  <div className="flex items-center gap-2" onClick={(e) => e.stopPropagation()}>
                     <ExcelButton
                       filename={`unmapped-invoices-${todayISO()}`}
                       sheetName="Unmapped"
@@ -5636,20 +8509,24 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
                         { header: 'Invoice', key: 'invoice_no', value: (r) => r.invoice_no || '' },
                         { header: 'Date', key: 'order_date', value: (r) => formatDate(r.order_date) },
                         { header: 'Supplier', key: 'supplier_name', value: (r) => r.supplier_name || '' },
-                        { header: 'Product', key: 'product', value: (r) => r.product_code || r.product_name || '' },
+                        { header: 'Product', key: 'product', value: (r) => r.product_label || r.product_code || r.product_name || '' },
                         { header: 'Qty', key: 'ordered_qty', align: 'right', numFmt: '#,##0.000', value: (r) => Number(r.ordered_qty) || 0 },
-                        { header: 'Rate', key: 'invoice_rate', align: 'right', numFmt: '#,##0.00', value: (r) => Number(r.invoice_rate) || 0 },
+                        { header: 'Rate (weighted avg)', key: 'invoice_rate', align: 'right', numFmt: '#,##0.00', value: (r) => Number(r.invoice_rate) || 0 },
                         { header: 'Taxable value', key: 'taxable_value', align: 'right', numFmt: '#,##0.00', value: (r) => Number(r.taxable_value) || 0 },
                         { header: 'Tankers', key: 'tanker_nos', value: (r) => r.tanker_nos || '' },
                         { header: 'Reason', key: 'reason', value: (r) => (Number(r.was_linked) === 1 ? 'Bargain deleted' : 'Never linked') }
                       ]}
-                      rows={unmapped}
+                      rows={unmappedBills}
                     />
-                    <Badge variant={unmapped.length ? 'destructive' : 'success'}>
-                      {unmapped.length ? `${unmapped.length} to map` : 'All mapped'}
+                    <Badge variant={unmappedBills.length ? 'destructive' : 'success'}>
+                      {unmappedBills.length ? `${unmappedBills.length} to map` : 'All mapped'}
                     </Badge>
                   </div>
                 </div>
+                {/* Folded away on the website; the desktop app has no toggle
+                    and renders it open, exactly as it always has. */}
+                {(!__WEB__ || unmappedOpen) && (
+                <>
                 <Table
                   className="text-[12px] [&_td]:px-3 [&_td]:py-2 [&_th]:h-9 [&_th]:px-3"
                   wrapperClassName="max-h-[65vh] overflow-auto"
@@ -5680,14 +8557,43 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
                     ) : (
                       unmappedPaged.pageRows.map((r, i) => (
                         <TableRow key={r.id as number} className={cn('border-b', i % 2 === 1 && 'bg-muted/30')}>
-                          <TableCell className="font-medium">{r.invoice_no}</TableCell>
+                          <TableCell className="font-medium">
+                            {/* Straight into the purchase's edit page; closing
+                                it comes back to this list. */}
+                            <button
+                              type="button"
+                              title={`Edit purchase ${String(r.invoice_no || '')}`}
+                              onClick={() => {
+                                const full = rows.find((x) => Number(x.id) === Number(r.id))
+                                if (!full) {
+                                  toast.error('This purchase is outside the period you can see here')
+                                  return
+                                }
+                                formReturnTab.current = 'unmapped'
+                                openEditPurchase(full)
+                              }}
+                              className="font-semibold text-[#1B4E82] underline decoration-[#9DB8D8] decoration-dotted underline-offset-[3px] hover:decoration-[#1B4E82]"
+                            >
+                              {r.invoice_no}
+                            </button>
+                          </TableCell>
                           <TableCell className="whitespace-nowrap">{formatDate(r.order_date)}</TableCell>
                           <TableCell>{r.supplier_name}</TableCell>
-                          <TableCell>{r.product_code || r.product_name}</TableCell>
+                          <TableCell>{r.product_label || r.product_code || r.product_name}</TableCell>
                           <TableCell className="text-right font-semibold tabular-nums">
                             {formatNum(r.ordered_qty)} {r.uom}
                           </TableCell>
-                          <TableCell className="text-right tabular-nums">{formatINR(r.invoice_rate)}</TableCell>
+                          <TableCell className="text-right tabular-nums">
+                            {formatINR(r.invoice_rate)}
+                            {(r.lines as Row[]).length > 1 && (
+                              <span
+                                className="block text-[10px] font-semibold text-muted-foreground"
+                                title={(r.lines as Row[]).map((l) => `${formatNum(l.ordered_qty)} ${l.uom || 'MT'} @ ${formatINR(l.invoice_rate)}`).join(' · ')}
+                              >
+                                weighted avg · {(r.lines as Row[]).length} lines
+                              </span>
+                            )}
+                          </TableCell>
                           <TableCell className="text-right font-semibold tabular-nums">{formatINR(r.taxable_value)}</TableCell>
                           <TableCell className="max-w-[160px] truncate text-muted-foreground">
                             {r.tanker_nos || (Number(r.is_trading) === 1 ? 'trading' : Number(r.is_consignment) === 1 ? 'consignment' : '—')}
@@ -5698,7 +8604,34 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
                             </Badge>
                           </TableCell>
                           <TableCell className="text-right">
-                            <Button size="sm" onClick={() => openMap(r)}>Assign bargains</Button>
+                            {(r.lines as Row[]).length > 1 ? (
+                              // Each line is mapped on its own, at its own rate.
+                              <Popover>
+                                <PopoverTrigger asChild>
+                                  <Button size="sm">Assign bargains · {(r.lines as Row[]).length} lines</Button>
+                                </PopoverTrigger>
+                                <PopoverContent align="end" className="w-72 p-1.5">
+                                  <div className="px-2 pb-1.5 pt-1 text-[10px] font-extrabold uppercase tracking-[.1em] text-muted-foreground">
+                                    Which line of {String(r.invoice_no || 'this bill')}?
+                                  </div>
+                                  {(r.lines as Row[]).map((l) => (
+                                    <button
+                                      key={String(l.id)}
+                                      type="button"
+                                      onClick={() => openMap(l)}
+                                      className="flex w-full items-center justify-between gap-2 rounded-[3px] px-2 py-2 text-left text-[12px] hover:bg-muted"
+                                    >
+                                      <span className="font-semibold">{String(l.product_code || l.product_name || '—')}</span>
+                                      <span className="tabular-nums text-muted-foreground">
+                                        {formatNum(l.ordered_qty)} {l.uom || 'MT'} @ {formatINR(l.invoice_rate)}
+                                      </span>
+                                    </button>
+                                  ))}
+                                </PopoverContent>
+                              </Popover>
+                            ) : (
+                              <Button size="sm" onClick={() => openMap((r.lines as Row[])[0])}>Assign bargains</Button>
+                            )}
                           </TableCell>
                         </TableRow>
                       ))
@@ -5706,6 +8639,8 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
                   </TableBody>
                 </Table>
                 <Pagination {...unmappedPaged} label="invoices" className="border-t px-3" />
+                </>
+                )}
               </div>
             </TabsContent>
           </Tabs>
@@ -5826,7 +8761,14 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
             'max-h-[92vh] w-[calc(100vw-2rem)] overflow-y-auto',
             target === 'empty' ? 'sm:max-w-3xl' : 'sm:max-w-2xl',
             TK_DRAWER,
-            target === 'empty' ? TK_WIDE : TK_NARROW
+            target === 'empty' ? TK_WIDE : TK_NARROW,
+            // A phone has room for one column, not two: the stage forms pair
+            // fields side by side (date + qty, transporter + rate, the two
+            // weighment slips), which runs off a 375px screen. Stack every one
+            // of those pairs here so the whole form reads down the page instead.
+            __WEB__ &&
+              isMobile &&
+              '!w-screen !max-w-none !grid-cols-1 !overflow-x-hidden [&_.grid-cols-2]:!grid-cols-1 [&_.grid-cols-3]:!grid-cols-1 [&_.grid-cols-4]:!grid-cols-1 [&_.sm\\:grid-cols-2]:!grid-cols-1 [&_.sm\\:grid-cols-3]:!grid-cols-1 [&_.sm\\:grid-cols-4]:!grid-cols-1'
           )}
         >
           <DialogHeader className={cn(TK_HEAD)}>
@@ -6454,6 +9396,81 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
                 </div>
               )
             })()}
+            {tradingCo(actionRow.company_id) && actionForm.onward && (() => {
+              const o = actionForm.onward as Row
+              const setO = (patch: Row): void => setActionForm((p) => ({ ...p, onward: { ...(p.onward || {}), ...patch } }))
+              const buyers = companies.filter((c) => Number(c.id) !== Number(actionRow.company_id) && Number(c.active ?? 1) !== 0)
+              const qty = Number(actionForm.received_qty) || 0
+              const taxable = Math.round(qty * (Number(o.rate) || 0) * 100) / 100
+              const gst = Math.round(taxable * (Number(o.gst_pct) || 0)) / 100
+              const seller = companies.find((c) => Number(c.id) === Number(actionRow.company_id))
+              return (
+                <div className={cn('grid gap-3 rounded-lg border border-[#BFE3CB] bg-[#F4FBF6] p-3', __WEB__ && '!gap-4 !rounded-[4px] !p-4')}>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="text-[11px] font-extrabold uppercase tracking-[.13em] text-[#0B6B45]">Sold on to *</span>
+                    <span className="text-[11.5px] font-semibold text-[#5A6B62]">
+                      {String(seller?.name || 'This company')} is a trading company — the tanker is sold on as it is emptied. Its sale and the buyer&rsquo;s purchase are raised together.
+                    </span>
+                  </div>
+                  <div className="grid gap-3 sm:grid-cols-2">
+                    <div className="flex flex-col gap-1.5">
+                      <Label>Buying company <span className="text-red-600">*</span></Label>
+                      <Select value={String(o.buyer_company_id || '')} onValueChange={(v) => setO({ buyer_company_id: v })}>
+                        <SelectTrigger><SelectValue placeholder="Pick the company" /></SelectTrigger>
+                        <SelectContent>
+                          {buyers.map((c) => (
+                            <SelectItem key={String(c.id)} value={String(c.id)}>
+                              {String(c.name)}{String(c.company_type || '') === 'trading' ? ' · Trading' : ''}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </div>
+                    <div className="flex flex-col gap-1.5">
+                      <Label>Purchase invoice no (buyer&rsquo;s) <span className="text-red-600">*</span></Label>
+                      <Input value={String(o.purchase_invoice_no || '')} placeholder="The number the buyer books it under" onChange={(e) => setO({ purchase_invoice_no: e.target.value })} />
+                    </div>
+                    <div className="flex flex-col gap-1.5">
+                      <Label>Sale invoice no <span className="text-red-600">*</span></Label>
+                      <Input className="doc-ref" value={String(o.sale_invoice_no || '')} onChange={(e) => setO({ sale_invoice_no: e.target.value })} />
+                    </div>
+                    <div className="flex flex-col gap-1.5">
+                      <Label>Sale rate /MT <span className="text-red-600">*</span></Label>
+                      <Input type="number" value={String(o.rate ?? '')} onChange={(e) => setO({ rate: e.target.value })} />
+                    </div>
+                    <div className="flex flex-col gap-1.5">
+                      <Label>GST %</Label>
+                      <Input type="number" value={String(o.gst_pct ?? '')} onChange={(e) => setO({ gst_pct: e.target.value })} />
+                    </div>
+                    <div className="flex flex-col gap-1.5">
+                      <Label>GST type</Label>
+                      <Select value={String(o.gst_type || 'CGST_SGST')} onValueChange={(v) => setO({ gst_type: v })}>
+                        <SelectTrigger><SelectValue /></SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="CGST_SGST">CGST + SGST</SelectItem>
+                          <SelectItem value="IGST">IGST</SelectItem>
+                        </SelectContent>
+                      </Select>
+                    </div>
+                  </div>
+                  {/* Tags for the transfer — put on the sale here and on the
+                      buyer's purchase as they are raised. */}
+                  <div className="flex flex-wrap items-center gap-2">
+                    <Label className="mr-1">Tags</Label>
+                    <TagDraftPicker
+                      value={Array.isArray(o.tags) ? (o.tags as string[]) : []}
+                      onChange={(next) => setO({ tags: next })}
+                      label="Tag this transfer"
+                    />
+                  </div>
+                  <div className="rounded-[4px] border border-[#D6E2D6] bg-white px-3 py-2 text-[12px] font-semibold text-[#33473E]">
+                    Sale of <b className="tabular-nums">{formatNum(qty)} {String(actionRow.uom || 'MT')}</b> on the empty date · taxable{' '}
+                    <b className="tabular-nums">{formatINR(taxable)}</b> + GST <b className="tabular-nums">{formatINR(gst)}</b> ={' '}
+                    <b className="tabular-nums">{formatINR(taxable + gst)}</b>
+                  </div>
+                </div>
+              )
+            })()}
             <div className={cn('grid gap-3 rounded-lg border p-3', __WEB__ && cn(TK_SECT, '!gap-4'))}>
               <div className={cn('text-sm font-medium', __WEB__ && '!text-[11px] !font-extrabold !uppercase !tracking-[.13em] !text-[#0A1F17]')}>
                 KRFL weighment slip
@@ -6539,6 +9556,19 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
           </DialogHeader>
 
           <div className={cn(__WEB__ && cn(TK_BODY, TK_FIELDS, 'grid content-start'))}>
+            {/* ALREADY ANSWERED. Said at the top, before the empty readings
+                below can be read as work still to do. */}
+            {Number(qualityFor?.quality_waived) === 1 && (
+              <div className={cn('rounded-lg border p-3', __WEB__ && '!rounded-[4px] !border-[#DCE7DB] !bg-[#F7FAF6] !p-[13px]')}>
+                <div className="text-[12.5px] font-extrabold text-[#33473E]">Not needed for this transaction</div>
+                <div className="mt-0.5 text-[11.5px] font-medium leading-[1.5] text-[#5A6B62]">
+                  {String(qualityFor?.quality_waived_note || 'No reason given')}
+                  {qualityFor?.quality_waived_at
+                    ? ` · marked ${formatDate(String(qualityFor.quality_waived_at).slice(0, 10))}`
+                    : ''}
+                </div>
+              </div>
+            )}
             {qualitySets.length === 0 && (
               <div className={cn('rounded-lg border p-4 text-center text-sm text-muted-foreground', __WEB__ && cn(TK_SECT, '!text-[12.5px] !font-semibold !text-[#8FA79B]'))}>
                 {qualityFor &&
@@ -6564,72 +9594,302 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
                       </div>
                     )}
                   </div>
-                  <Button
-                    type="button"
-                    size="sm"
-                    variant="outline"
-                    className={cn('h-7 gap-1 px-2 text-[11px]', __WEB__ && '!h-8 !rounded-[3px] !text-[11.5px] !font-bold')}
-                    onClick={() =>
-                      setQualitySets((p) => p.map((x, i) => (i === si ? { ...x, rows: [...x.rows, { name: '', value: '', unit: '%' }] } : x)))
-                    }
-                  >
-                    <Plus className="h-3.5 w-3.5" /> Add reading
-                  </Button>
+                  <div className="flex shrink-0 items-center gap-2">
+                    {/* A load sampled more than once. Offered on every load
+                        rather than hidden behind a setting, because whether a
+                        tanker came in as one lot or two is known at the desk
+                        and nowhere else. */}
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="outline"
+                      title={
+                        set.parts.length
+                          ? 'Put the parcels back together — their readings collapse to the blend'
+                          : 'This load arrived as more than one parcel, each with its own readings'
+                      }
+                      className={cn('h-7 gap-1 px-2 text-[11px]', __WEB__ && '!h-8 !rounded-[3px] !text-[11.5px] !font-bold')}
+                      onClick={() => (set.parts.length ? unsplitQualitySet(si) : splitQualitySet(si))}
+                    >
+                      <Split className="h-3.5 w-3.5" /> {set.parts.length ? 'One load' : 'Split the load'}
+                    </Button>
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="outline"
+                      className={cn('h-7 gap-1 px-2 text-[11px]', __WEB__ && '!h-8 !rounded-[3px] !text-[11.5px] !font-bold')}
+                      onClick={() =>
+                        setQualitySets((p) =>
+                          p.map((x, i) =>
+                            i === si
+                              ? {
+                                  ...x,
+                                  rows: [
+                                    ...x.rows,
+                                    x.parts.length
+                                      ? { name: '', value: '', unit: '%', vals: x.parts.map(() => '') }
+                                      : { name: '', value: '', unit: '%' }
+                                  ]
+                                }
+                              : x
+                          )
+                        )
+                      }
+                    >
+                      <Plus className="h-3.5 w-3.5" /> Add reading
+                    </Button>
+                  </div>
                 </div>
+                {/* HOW THE LOAD WAS PARCELLED.
+                    The quantities are what the blend is weighted by, so they
+                    are asked for once here rather than beside every reading.
+                    They are checked against the load and the difference is
+                    said out loud — parcels that do not come to the tanker are
+                    usually a typo, and the one place to catch it is while the
+                    figures are still being entered. */}
+                {set.parts.length > 0 && (
+                  <div className={cn('rounded-lg border bg-muted/30 p-2.5', __WEB__ && '!rounded-[4px] !border-[#D6E2D6] !bg-[#F7FAF6] !p-[11px]')}>
+                    <div className="flex flex-wrap items-end gap-2">
+                      {set.parts.map((part, pi) => (
+                        <div key={pi} className="flex items-end gap-1">
+                          <div>
+                            <div className={cn('mb-1 text-[10px] font-bold uppercase tracking-wider text-muted-foreground', __WEB__ && '!text-[9.5px] !font-extrabold !tracking-[.11em] !text-[#5A6B62]')}>
+                              Parcel {PART_LETTER(pi)}
+                            </div>
+                            <div className="relative w-[140px]">
+                              <Input
+                                value={String(part.qty ?? '')}
+                                placeholder="—"
+                                inputMode="decimal"
+                                onChange={(e) => setQualityPartQty(si, pi, e.target.value)}
+                                className={cn('h-9 pr-11 text-right text-[13px]', __WEB__ && '!h-[42px]')}
+                              />
+                              <span className={cn('pointer-events-none absolute right-2.5 top-1/2 -translate-y-1/2 text-[11px] font-semibold text-muted-foreground', __WEB__ && '!text-[11.5px] !font-bold !text-[#5A6B62]')}>
+                                {String(set.tanker.uom || 'MT')}
+                              </span>
+                            </div>
+                          </div>
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            size="icon"
+                            className="h-8 w-8 shrink-0 text-destructive"
+                            title="Remove this parcel"
+                            onClick={() => removeQualityPart(si, pi)}
+                          >
+                            <Trash2 className="h-3.5 w-3.5" />
+                          </Button>
+                        </div>
+                      ))}
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="outline"
+                        className={cn('mb-0.5 h-9 gap-1 px-2.5 text-[11px]', __WEB__ && '!h-[42px] !rounded-[3px] !text-[11.5px] !font-bold')}
+                        onClick={() => addQualityPart(si)}
+                      >
+                        <Plus className="h-3.5 w-3.5" /> Parcel
+                      </Button>
+                    </div>
+                    {(() => {
+                      const uomLabel = String(set.tanker.uom || 'MT')
+                      const sum = set.parts.reduce((a, q) => a + (Number(q.qty) || 0), 0)
+                      const load = Number(set.tanker.received_qty) || Number(set.tanker.loaded_qty) || 0
+                      const gap = Math.round((load - sum) * 1000) / 1000
+                      const off = load > 0 && Math.abs(gap) > 0.0005
+                      return (
+                        <div className={cn('mt-2 text-[11.5px] font-semibold leading-[1.45]', off ? 'text-amber-700' : 'text-muted-foreground', __WEB__ && (off ? '!text-[#8A5300]' : '!text-[#5A6B62]'))}>
+                          {load <= 0
+                            ? `The parcels come to ${formatNum(sum)} ${uomLabel}.`
+                            : !off
+                              ? `The parcels come to ${formatNum(sum)} ${uomLabel} — the whole load.`
+                              : gap > 0
+                                ? `${formatNum(sum)} of ${formatNum(load)} ${uomLabel} parcelled — ${formatNum(gap)} ${uomLabel} unaccounted for.`
+                                : `${formatNum(sum)} ${uomLabel} across the parcels, ${formatNum(Math.abs(gap))} ${uomLabel} more than the load.`}
+                        </div>
+                      )
+                    })()}
+                  </div>
+                )}
+
                 {/* Anything left blank is not saved — "not tested" and "tested
                     at nothing" are different answers. */}
                 <div className="grid gap-2">
-                  {set.rows.map((q: Row, ri: number) => (
-                    <div key={ri} className="flex items-center gap-2">
-                      <Input
-                        value={String(q.name ?? '')}
-                        placeholder="Parameter"
-                        onChange={(e) => setQualityRow(si, ri, { name: e.target.value })}
-                        className={cn('h-9 flex-1 text-[13px]', __WEB__ && '!h-[42px]')}
-                      />
-                      <div className="relative w-44 shrink-0">
-                        <Input
-                          value={String(q.value ?? '')}
-                          placeholder="—"
-                          inputMode="decimal"
-                          onChange={(e) => setQualityRow(si, ri, { value: e.target.value })}
-                          className={cn('h-9 pr-[82px] text-right text-[13px]', __WEB__ && '!h-[42px] !pr-[82px]')}
-                        />
-                        <QualityUnit
-                          value={String(q.unit ?? '%')}
-                          onChange={(v) => setQualityRow(si, ri, { unit: v, unit_touched: true })}
-                        />
+                  {set.rows.map((q: Row, ri: number) =>
+                    set.parts.length ? (
+                      // A PARAMETER READ PARCEL BY PARCEL.
+                      // Its own card, because it is no longer one line: the
+                      // name and the unit are asked once, the readings run
+                      // across the parcels beneath them, and what they come to
+                      // sits beside the name — the figure everyone downstream
+                      // is actually going to use.
+                      <div key={ri} className={cn('rounded-lg border p-2.5', __WEB__ && '!rounded-[4px] !border-[#D6E2D6] !p-[11px]')}>
+                        <div className="flex items-center gap-2">
+                          <Input
+                            value={String(q.name ?? '')}
+                            placeholder="Parameter"
+                            onChange={(e) => setQualityRow(si, ri, { name: e.target.value })}
+                            className={cn('h-9 min-w-0 flex-1 text-[13px]', __WEB__ && '!h-[42px]')}
+                          />
+                          {(() => {
+                            const av = partsAverage((q.vals as string[]) || [], set.parts)
+                            if (!av) return null
+                            return (
+                              <span
+                                title={
+                                  av.count < 2
+                                    ? 'One parcel read so far'
+                                    : av.weighted
+                                      ? 'Weighted by each parcel’s quantity — what the blend in the tank actually is'
+                                      : 'A plain average — give every parcel a quantity and this is weighted by them'
+                                }
+                                className={cn(
+                                  'shrink-0 whitespace-nowrap rounded px-2 py-1 text-[11.5px] font-bold tabular-nums',
+                                  'bg-emerald-50 text-emerald-800',
+                                  __WEB__ && '!rounded-[3px] !bg-[#E9F5EE] !px-[7px] !py-[3px] !text-[11.5px] !font-extrabold !text-[#0B6B45]'
+                                )}
+                              >
+                                {av.weighted ? 'blend' : 'avg'} {formatNum(av.avg)}
+                                {String(q.unit ?? '') ? ` ${String(q.unit)}` : ''}
+                              </span>
+                            )
+                          })()}
+                          <div className={cn('relative h-9 w-[76px] shrink-0 rounded-md border', __WEB__ && '!h-[42px] !rounded-[4px] !border-[#C3D2C6] !bg-white')}>
+                            <QualityUnit
+                              value={String(q.unit ?? '%')}
+                              onChange={(v) => setQualityRow(si, ri, { unit: v, unit_touched: true })}
+                            />
+                          </div>
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            size="icon"
+                            className="h-8 w-8 shrink-0 text-destructive"
+                            title="Remove this reading"
+                            onClick={() =>
+                              setQualitySets((p) => p.map((x, i) => (i === si ? { ...x, rows: x.rows.filter((_, j) => j !== ri) } : x)))
+                            }
+                          >
+                            <Trash2 className="h-3.5 w-3.5" />
+                          </Button>
+                        </div>
+                        <div className="mt-2 grid gap-2 [grid-template-columns:repeat(auto-fit,minmax(min(100%,132px),1fr))]">
+                          {set.parts.map((part, pi) => (
+                            <div key={pi} className="min-w-0">
+                              <div className={cn('mb-1 truncate text-[10px] font-bold uppercase tracking-wider text-muted-foreground', __WEB__ && '!text-[9.5px] !font-extrabold !tracking-[.11em] !text-[#5A6B62]')}>
+                                {PART_LETTER(pi)}
+                                {Number(part.qty) > 0 ? ` · ${formatNum(Number(part.qty))} ${String(set.tanker.uom || 'MT')}` : ''}
+                              </div>
+                              <div className="relative">
+                                <Input
+                                  value={String(((q.vals as string[]) || [])[pi] ?? '')}
+                                  placeholder="—"
+                                  inputMode="decimal"
+                                  onChange={(e) => setQualityVal(si, ri, pi, e.target.value)}
+                                  className={cn('h-9 pr-11 text-right text-[13px]', __WEB__ && '!h-[42px]')}
+                                />
+                                <span className={cn('pointer-events-none absolute right-2.5 top-1/2 max-w-[38px] -translate-y-1/2 truncate text-[11px] font-semibold text-muted-foreground', __WEB__ && '!text-[11.5px] !font-bold !text-[#5A6B62]')}>
+                                  {String(q.unit ?? '')}
+                                </span>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
                       </div>
-                      <Button
-                        type="button"
-                        variant="ghost"
-                        size="icon"
-                        className="h-8 w-8 shrink-0 text-destructive"
-                        title="Remove this reading"
-                        onClick={() =>
-                          setQualitySets((p) => p.map((x, i) => (i === si ? { ...x, rows: x.rows.filter((_, j) => j !== ri) } : x)))
-                        }
-                      >
-                        <Trash2 className="h-3.5 w-3.5" />
-                      </Button>
-                    </div>
-                  ))}
+                    ) : (
+                      <div key={ri} className="flex items-center gap-2">
+                        <Input
+                          value={String(q.name ?? '')}
+                          placeholder="Parameter"
+                          onChange={(e) => setQualityRow(si, ri, { name: e.target.value })}
+                          className={cn('h-9 flex-1 text-[13px]', __WEB__ && '!h-[42px]')}
+                        />
+                        <div className="relative w-44 shrink-0">
+                          <Input
+                            value={String(q.value ?? '')}
+                            placeholder="—"
+                            inputMode="decimal"
+                            onChange={(e) => setQualityRow(si, ri, { value: e.target.value })}
+                            className={cn('h-9 pr-[82px] text-right text-[13px]', __WEB__ && '!h-[42px] !pr-[82px]')}
+                          />
+                          <QualityUnit
+                            value={String(q.unit ?? '%')}
+                            onChange={(v) => setQualityRow(si, ri, { unit: v, unit_touched: true })}
+                          />
+                        </div>
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="icon"
+                          className="h-8 w-8 shrink-0 text-destructive"
+                          title="Remove this reading"
+                          onClick={() =>
+                            setQualitySets((p) => p.map((x, i) => (i === si ? { ...x, rows: x.rows.filter((_, j) => j !== ri) } : x)))
+                          }
+                        >
+                          <Trash2 className="h-3.5 w-3.5" />
+                        </Button>
+                      </div>
+                    )
+                  )}
                 </div>
               </div>
             ))}
             {__WEB__ && qualitySets.length > 0 && (
               <p className="text-[11.5px] font-semibold leading-[1.5] text-[#5A6B62]">
                 Each reading carries its own unit — click the one beside a value to change it between %, degrees, a
-                lab unit, or a bare figure.
+                lab unit, or a bare figure. A load that arrived as more than one parcel can be split, and each
+                parameter is then read parcel by parcel; the blend is weighted by the parcels’ own quantities.
               </p>
             )}
           </div>
 
-          <DialogFooter className={cn(TK_FOOT)}>
-            <Button variant="outline" onClick={() => setQualityFor(null)} disabled={qualityBusy}>Cancel</Button>
-            <Button onClick={() => void saveQuality()} disabled={qualityBusy || qualitySets.length === 0}>
-              {qualityBusy ? 'Saving…' : 'Save readings'}
-            </Button>
+          {/* WHY IT IS NOT NEEDED. Optional, and asked in the same breath as
+              the button rather than behind a second dialog — a reason typed
+              while the decision is being made is the only kind anybody
+              actually types. */}
+          {Number(qualityFor?.quality_waived) !== 1 && (
+            <div className={cn(__WEB__ && '!px-[22px]')}>
+              <Input
+                value={qualityWhy}
+                onChange={(e) => setQualityWhy(e.target.value)}
+                maxLength={500}
+                placeholder="Why no reading is needed — inter-company transfer, no sample drawn…"
+                className={cn('h-9 text-[13px]', __WEB__ && '!h-[42px] !text-[12.5px]')}
+              />
+            </div>
+          )}
+          <DialogFooter className={cn(TK_FOOT, 'sm:justify-between')}>
+            {/* Open to whoever has access to this page — the readings desk
+                included. Declaring an invoice has nothing to sample used to
+                be reserved for the purchase desk; it no longer is, and the
+                server no longer refuses it for this screen either. */}
+            {Number(qualityFor?.quality_waived) === 1 ? (
+              <Button
+                variant="outline"
+                onClick={() => void waiveQuality(false)}
+                disabled={qualityBusy}
+                title="Expect technical parameters on this invoice again"
+              >
+                Needed after all
+              </Button>
+            ) : (
+              <Button
+                variant="outline"
+                onClick={() => void waiveQuality(true)}
+                disabled={qualityBusy || !qualityFor}
+                title="This invoice has nothing to sample — stop asking for readings against it"
+                className={cn(__WEB__ && '!border-[#F0D6D4] !text-[#8C2F26] hover:!bg-[#FDF3F2]')}
+              >
+                Reject — not needed
+              </Button>
+            )}
+            <span className="flex items-center gap-2">
+              <Button variant="outline" onClick={() => setQualityFor(null)} disabled={qualityBusy}>Cancel</Button>
+              <Button onClick={() => void saveQuality()} disabled={qualityBusy || qualitySets.length === 0}>
+                {qualityBusy ? 'Saving…' : 'Save readings'}
+              </Button>
+            </span>
           </DialogFooter>
         </DialogContent>
       </Dialog>
@@ -7310,8 +10570,13 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
             // column against the edge than as a wide dialog floating over the
             // register. Header and footer are pinned; only the middle scrolls.
             __WEB__ &&
-              '!bottom-0 !left-auto !right-0 !top-0 !h-screen !max-h-screen !w-[660px] !max-w-[95vw] !translate-x-0 !translate-y-0 !grid-rows-[auto_minmax(0,1fr)_auto] !gap-0 !overflow-hidden !rounded-none !border-0 !bg-[#F1F5EF] !p-0 sm:!rounded-none [&>button]:!right-5 [&>button]:!top-5 [&>button]:!text-white [&>button]:!opacity-70 [&>button]:hover:!opacity-100'
+              '!bottom-0 !left-auto !right-0 !top-0 !h-screen !max-h-screen !translate-x-0 !translate-y-0 !grid-rows-[auto_minmax(0,1fr)_auto] !gap-0 !overflow-hidden !rounded-none !border-0 !bg-[#F1F5EF] !p-0 sm:!rounded-none [&>button]:!right-5 [&>button]:!top-5 [&>button]:!text-white [&>button]:!opacity-70 [&>button]:hover:!opacity-100',
+            // A phone gets the whole screen; the wider viewports keep the drawer.
+            __WEB__ && (isMobile ? '!w-screen !max-w-none' : '!w-[660px] !max-w-[95vw]')
           )}
+          // Nothing here is typed — it only shows the purchase — so Esc and a
+          // click outside close it, like any read-only view.
+          readOnly
         >
           <DialogHeader className={cn(__WEB__ && '!block !space-y-0 !bg-[#0B3D2E] !px-[22px] !py-4 !text-left')}>
             {__WEB__ && (
@@ -7337,6 +10602,17 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
                 </Badge>
               ))}
             </DialogTitle>
+            {/* On a phone the net amount leads — it is the one figure the reader
+                opened the card for, so it sits in the header rather than being
+                found among the tiles below. */}
+            {__WEB__ && isMobile && detailRow && (
+              <div className="mt-3 flex items-center gap-2.5 rounded-[4px] bg-white/10 px-3 py-2.5">
+                <span className="text-[10px] font-extrabold uppercase tracking-[.1em] text-[#8FBFA8]">Net amount</span>
+                <span className="doc-ref ml-auto whitespace-nowrap text-[16px] font-bold text-[#C7F03F]">
+                  {formatINR(detailRow._lines ? billNet(detailRow) : Number(detailRow.net_amount) || 0)}
+                </span>
+              </div>
+            )}
           </DialogHeader>
           {detailRow && <div className={cn('grid min-w-0 gap-3', __WEB__ && '!min-h-0 !content-start !gap-3.5 !overflow-y-auto !px-[22px] !py-[18px]')}>
             <DrawerSection icon={FileText} title="Purchase details" defaultOpen>
@@ -7953,6 +11229,9 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
           <p className="mt-2 text-xs text-muted-foreground">Counts every tanker (any stage) for the active company; filter by loaded date. Loaded = dispatched quantity, Received = weighed-in at gate.</p>
         </DialogContent>
       </Dialog>
+
+      {/* WHAT THIS PURCHASE PUT IN THE LEDGERS — see LedgerPostings. */}
+      <LedgerPostings target={postings} onClose={() => setPostings(null)} />
     </>
   )
 }

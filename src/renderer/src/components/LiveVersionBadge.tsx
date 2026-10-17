@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import { RefreshCw } from 'lucide-react'
 import { cn } from '@/lib/utils'
+import { freshReload } from '@/lib/freshReload'
 
 // "A newer version of this site is live — reload."
 //
@@ -77,8 +78,10 @@ export function LiveVersionBadge({ className }: { className?: string }): React.J
   return (
     <button
       type="button"
-      onClick={() => window.location.reload()}
-      title={`A newer version of this site is live. Press ${HOTKEY} for a hard reload, or click here.`}
+      // Onto a fresh address, so no cache can hand the old page back — a plain
+      // reload could, which is why only the hard reload used to work.
+      onClick={() => freshReload()}
+      title={`A newer version of this site is live. Click to load it (or press ${HOTKEY}).`}
       className={cn(
         'inline-flex shrink-0 cursor-pointer items-center gap-2 rounded-[4px] border border-[#E2A84A] bg-[#FFFBF2] px-3 text-[12.5px] font-extrabold text-[#8A5300] transition-colors motion-safe:animate-pulse hover:!bg-[#FFF4E0]',
         className
@@ -93,7 +96,7 @@ export function LiveVersionBadge({ className }: { className?: string }): React.J
         <span className="relative inline-flex h-2 w-2 rounded-full bg-[#C2700A]" />
       </span>
       <RefreshCw className="h-3.5 w-3.5 shrink-0" />
-      New version live — press {HOTKEY}
+      New version live — click to reload
     </button>
   )
 }

@@ -130,55 +130,89 @@ export async function listSkuStock(when?: SkuWhen): Promise<Row[]> {
   // triples the arguments and, worse, quietly does the wrong thing for a
   // one-ended range: "up to the 15th" has nothing before it, so its opening is
   // nil, where a null guard would hand back every row ever entered.
-  const args: (string | number | null)[] = []
-  // Everything since day zero — the running balance a no-period view shows.
-  const sinceFloor = (col: string): string => {
-    if (!floor) return ''
-    args.push(floor)
-    return `AND substr(${col}, 1, 10) >= ?`
-  }
-  const before = (col: string): string => {
-    if (!ranged) return '' // all-time: opening is unused, and this is what it always returned
-    if (!from) return 'AND 1 = 0'
+  // A PREDICATE IS ITS SQL AND ITS ARGUMENTS, TOGETHER.
+  //
+  // These three used to push onto a shared `args` array as a side effect of
+  // being called, and the argument list was assembled by calling them once
+  // each in the order the SQL happened to read them. That worked exactly as
+  // long as every fragment was used exactly once.
+  //
+  // It stopped being true the day PACKED IN and ADJ. were split out of the
+  // `added` column: three subqueries now share `sinceAdj` and three share
+  // `withinAdj`, each re-emitting that fragment's `?` placeholders while the
+  // arguments for them were pushed only once. Every placeholder after the
+  // fourth subquery bound the wrong value — company_id compared against a
+  // DATE — so `added_before` and `added_on` matched nothing and a day sheet
+  // showed a blank OPENING, a blank PACKED IN and a blank ADJ. beside entries
+  // the dialog listed in full.
+  //
+  // A fragment now carries its own arguments, and the argument list is built
+  // by walking the subqueries in order. Reuse a fragment as many times as you
+  // like: its arguments come with it.
+  type Frag = { sql: string; args: (string | number | null)[] }
+  const sinceFloor = (col: string): Frag =>
+    floor ? { sql: `AND substr(${col}, 1, 10) >= ?`, args: [floor] } : { sql: '', args: [] }
+  const before = (col: string): Frag => {
+    // all-time: opening is unused, and this is what it always returned
+    if (!ranged) return { sql: '', args: [] }
+    if (!from) return { sql: 'AND 1 = 0', args: [] }
     const parts: string[] = []
+    const a: (string | number | null)[] = []
     // Bounded below by day zero as well: the counted shelf already embodies
     // whatever happened before that morning.
     if (floor) {
-      args.push(floor)
       parts.push(`AND substr(${col}, 1, 10) >= ?`)
+      a.push(floor)
     }
-    args.push(from)
     parts.push(`AND substr(${col}, 1, 10) < ?`)
-    return parts.join(' ')
+    a.push(from)
+    return { sql: parts.join(' '), args: a }
   }
-  const within = (col: string): string => {
-    if (!ranged) return 'AND 1 = 0' // all-time reads `added`/`sold` instead
+  const within = (col: string): Frag => {
+    // all-time reads `added`/`sold` instead
+    if (!ranged) return { sql: 'AND 1 = 0', args: [] }
     const parts: string[] = []
+    const a: (string | number | null)[] = []
     // A period asked for from before day zero still begins at day zero.
     const lo = floor && (!from || from < floor) ? floor : from
     if (lo) {
-      args.push(lo)
       parts.push(`AND substr(${col}, 1, 10) >= ?`)
+      a.push(lo)
     }
     if (to) {
-      args.push(to)
       parts.push(`AND substr(${col}, 1, 10) <= ?`)
+      a.push(to)
     }
-    return parts.join(' ')
+    return { sql: parts.join(' '), args: a }
   }
-  // Assembled in the order the SQL below consumes them.
-  args.push(...cids)
-  const sinceAdj = sinceFloor('adj_date')
-  args.push(...cids)
-  const sinceSale = sinceFloor('s.sale_date')
-  args.push(...cids)
-  const beforeAdj = before('adj_date')
-  args.push(...cids)
-  const beforeSale = before('s.sale_date')
-  args.push(...cids)
-  const withinAdj = within('adj_date')
-  args.push(...cids)
-  const withinSale = within('s.sale_date')
+
+  const sinceAdjF = sinceFloor('adj_date')
+  const sinceSaleF = sinceFloor('s.sale_date')
+  const beforeAdjF = before('adj_date')
+  const beforeSaleF = before('s.sale_date')
+  const withinAdjF = within('adj_date')
+  const withinSaleF = within('s.sale_date')
+  const sinceAdj = sinceAdjF.sql
+  const sinceSale = sinceSaleF.sql
+  const beforeAdj = beforeAdjF.sql
+  const beforeSale = beforeSaleF.sql
+  const withinAdj = withinAdjF.sql
+  const withinSale = withinSaleF.sql
+  // IN THE ORDER THE SELECT BELOW READS THEM, one entry per subquery. Change
+  // the SELECT and this list changes with it — they are the same list written
+  // twice, which is the only part of this worth being careful about.
+  const args: (string | number | null)[] = [
+    ...cids, ...sinceAdjF.args, // added
+    ...cids, ...sinceAdjF.args, // packed_in
+    ...cids, ...sinceAdjF.args, // adj_in
+    ...cids, ...sinceSaleF.args, // sold
+    ...cids, ...beforeAdjF.args, // added_before
+    ...cids, ...beforeSaleF.args, // sold_before
+    ...cids, ...withinAdjF.args, // added_on
+    ...cids, ...withinAdjF.args, // packed_on
+    ...cids, ...withinAdjF.args, // adj_on
+    ...cids, ...withinSaleF.args // sold_on
+  ]
 
   const res = await c.execute({
     sql: `
@@ -190,6 +224,14 @@ export async function listSkuStock(when?: SkuWhen): Promise<Row[]> {
            COALESCE((SELECT SUM(delta) FROM sku_adjustments
                      WHERE packaging_id = pk.id AND company_id IN (${cph})
                        ${sinceAdj}), 0) AS added,
+           COALESCE((SELECT SUM(delta) FROM sku_adjustments
+                     WHERE packaging_id = pk.id AND company_id IN (${cph})
+                       AND COALESCE(kind, CASE WHEN delta < 0 THEN 'correction' ELSE 'packing' END) = 'packing'
+                       ${sinceAdj}), 0) AS packed_in,
+           COALESCE((SELECT SUM(delta) FROM sku_adjustments
+                     WHERE packaging_id = pk.id AND company_id IN (${cph})
+                       AND COALESCE(kind, CASE WHEN delta < 0 THEN 'correction' ELSE 'packing' END) = 'correction'
+                       ${sinceAdj}), 0) AS adj_in,
            COALESCE((SELECT SUM(${SOLD_UNITS}) FROM sales s
                      WHERE s.packaging_id = pk.id AND s.sale_type = 'PACKED'
                        AND s.status = 'done' AND s.company_id IN (${cph})
@@ -204,6 +246,14 @@ export async function listSkuStock(when?: SkuWhen): Promise<Row[]> {
            COALESCE((SELECT SUM(delta) FROM sku_adjustments
                      WHERE packaging_id = pk.id AND company_id IN (${cph})
                        ${withinAdj}), 0) AS added_on,
+           COALESCE((SELECT SUM(delta) FROM sku_adjustments
+                     WHERE packaging_id = pk.id AND company_id IN (${cph})
+                       AND COALESCE(kind, CASE WHEN delta < 0 THEN 'correction' ELSE 'packing' END) = 'packing'
+                       ${withinAdj}), 0) AS packed_on,
+           COALESCE((SELECT SUM(delta) FROM sku_adjustments
+                     WHERE packaging_id = pk.id AND company_id IN (${cph})
+                       AND COALESCE(kind, CASE WHEN delta < 0 THEN 'correction' ELSE 'packing' END) = 'correction'
+                       ${withinAdj}), 0) AS adj_on,
            COALESCE((SELECT SUM(${SOLD_UNITS}) FROM sales s
                      WHERE s.packaging_id = pk.id AND s.sale_type = 'PACKED'
                        AND s.status = 'done' AND s.company_id IN (${cph})

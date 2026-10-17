@@ -1,8 +1,9 @@
 import { Fragment, useCallback, useEffect, useMemo, useState, useRef } from 'react'
+import { takePageIntent } from '@/lib/pageIntent'
 import { toast } from 'sonner'
-import { AlertTriangle, ArrowLeft, Ban, Building2, Check, CheckCircle2, ChevronDown, ChevronLeft, ChevronRight, Clock, DoorOpen, Download, History, LogIn, LogOut, Maximize2, Pencil, Plus, Receipt, RotateCcw, Search, SlidersHorizontal, Tag, Tags, Trash2, Truck, Undo2, Upload, X, ListChecks, Info, type LucideIcon} from 'lucide-react'
-import { HelpTip, InfoTip } from '@/components/ui/tooltip'
-import { moduleScope } from '@/lib/modules'
+import { AlertTriangle, ArrowLeft, ArrowUp, ArrowDown, BookOpen, ChevronsUpDown, Ban, Building2, Check, CheckCircle2, ChevronDown, ChevronLeft, ChevronRight, Clock, Dices, DoorOpen, Download, History, Link2, Lock, LogIn, Shuffle, LogOut, Maximize2, Pencil, Plus, Receipt, RotateCcw, Search, SlidersHorizontal, Tag, Tags, Trash2, Truck, Undo2, Upload, X, ListChecks, Info, type LucideIcon} from 'lucide-react'
+import { HelpTip, InfoTip, Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
+import { moduleScope, canAccess } from '@/lib/modules'
 import { useCategories } from '@/lib/useCategories'
 import { loadUser } from '@/lib/session'
 import { MobileBar } from '@/components/MobileBar'
@@ -15,6 +16,19 @@ import { SalesMobile } from './SalesMobile'
 // listSalesForUnloadDesk), so this flag shapes the page to match what the data
 // already is rather than being the restriction itself.
 const UNLOAD_DESK = (): boolean => moduleScope(loadUser(), 'sales') === 'unload'
+
+// The top-up desk: a user granted the 'topup' scope on Sales bargains may make
+// exactly one change to a bargain — add to its contracted quantity. Not remove
+// it, not edit the rate or the customer, not raise one and not delete one. The
+// server refuses all of that whatever this flag does (see access-gate.ts); the
+// flag is here so the screen does not offer what the save is going to reject.
+const TOPUP_DESK = (): boolean => moduleScope(loadUser(), 'salesBargains') === 'topup'
+
+// THE INTER-COMPANY DESK: this login bills what moves between our own
+// companies and nothing else. The register is narrowed in the SQL (listSales)
+// and every write is checked again on the server (access-gate.ts); what the
+// page owes it is a customer list that cannot put it in the wrong place.
+const INTERCO_DESK = (): boolean => moduleScope(loadUser(), 'sales') === 'intercompany'
 import { cn, inkOn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -30,7 +44,15 @@ import {
 } from '@/components/ui/select'
 import { MultiSelectFilter } from '@/components/ui/multi-select-filter'
 import { ColumnFilter } from '@/components/ui/column-filter'
+import { useTableSort } from '@/lib/tableSort'
+import { TagPicker, useTagMap } from '@/components/Tags'
 import { RowActions } from '@/components/ui/row-actions'
+import { LedgerPostings, type PostingTarget } from '@/components/LedgerPostings'
+import { RecordHistory, useRecordHistory } from '@/components/RecordHistory'
+import { BargainVouchersDialog } from '@/components/BargainVouchers'
+import { BargainMoveBalanceDialog } from '@/components/BargainMoveBalance'
+import { BargainNote } from '@/components/BargainNote'
+import { SerialNo } from '@/components/SerialNo'
 import { GateEntriesDialog } from '@/components/GateEntriesDialog'
 import { HistoryDialog, useHistoryDialog } from '@/components/HistoryDialog'
 import {
@@ -52,7 +74,7 @@ import { PageHeader } from '@/components/PageHeader'
 import { FyPicker } from '@/components/FyPicker'
 import { UomSelect } from '@/components/UomSelect'
 import { DatePicker } from '@/components/ui/date-picker'
-import { convertQty, errText, formatDate, formatINR, formatNum, todayISO } from '@/lib/format'
+import { convertQty, errText, formatDate, formatINR, formatNum, todayISO, utcStampLocal, activityStamp } from '@/lib/format'
 import { ExcelButton } from '@/components/ExcelButton'
 import { downloadSkuRateExcel, parseSkuRateExcel, caseMT } from '@/lib/skuRateExcel'
 import { BASIS_LABEL, saleShortage } from '@/lib/saleShortage'
@@ -60,6 +82,7 @@ import { ShortageWorkings, type ShortageLine } from '@/components/ShortageWorkin
 import { useLiveRefresh } from '@/lib/useLiveRefresh'
 import { useGlobalDateRange, globalRangeAppliesTo } from '@/lib/globalDateRange'
 import { isManufacturingParty } from '@/lib/constants'
+import { useCompany } from '@/lib/companyContext'
 import { useEntryWindow } from '@/lib/useEntryWindow'
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -312,6 +335,23 @@ function SalesTab({
   const minDate = useEntryWindow('sales')
   const [rows, setRows] = useState<Row[]>([])
   const [products, setProducts] = useState<Row[]>([])
+  // CATEGORY FIRST, THEN THE PRODUCT. Each item picks a category and its
+  // product list narrows to it. The categories offered are only the ones a
+  // sellable product actually sits in — built-in order first — so none opens
+  // empty and no product is ever hidden behind a switched-off master row.
+  const prodCatOf = (p: Row | undefined): string => (p ? catAlias(p.material_type || 'OIL') : '')
+  const itemCats = useMemo(() => {
+    const have = new Set(products.map((p) => prodCatOf(p)))
+    const out = SALE_CATS_BASE.filter((c) => have.has(c.v))
+    for (const v of have) if (!out.some((c) => c.v === v)) out.push({ v, label: saleCatLabel(v) })
+    return out
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [products])
+  // An item's category: the one picked, else its product's, else the only one.
+  const itemCatOf = (it: Row): string =>
+    String(it.product_cat || '') ||
+    prodCatOf(products.find((p) => String(p.id) === String(it.product_id))) ||
+    (itemCats.length === 1 ? itemCats[0].v : '')
   const [bargains, setBargains] = useState<Row[]>([])
   const [customers, setCustomers] = useState<Row[]>([])
   const [packagings, setPackagings] = useState<Row[]>([])
@@ -329,6 +369,7 @@ function SalesTab({
   const [header, setHeader] = useState<Row>({})
   const [items, setItems] = useState<Row[]>([])
   const [saving, setSaving] = useState(false)
+  const [randomizingSalesInvoice, setRandomizingSalesInvoice] = useState(false)
   const [expanded, setExpanded] = useState<Record<string, boolean>>({})
   // Which invoice-form line items are unfolded (website form only). Absent =
   // open, so a freshly added item shows its fields without a click.
@@ -340,8 +381,15 @@ function SalesTab({
   const [search, setSearch] = useState('')
   // The desk opens with no lower bound: a load that went out last month and is
   // still not unloaded has to be on the list, not behind a date change.
-  const [dateFrom, setDateFrom] = useState(UNLOAD_DESK() ? '' : monthStartISO())
-  const [dateTo, setDateTo] = useState(todayISO())
+  // Opened from the dashboard's "Yesterday dispatch" tile: that day, and only
+  // what it counts — invoices that left and moved stock (see dispatchedOn).
+  const [openIntent] = useState(() => takePageIntent('sales'))
+  const [dispatchedOn, setDispatchedOn] = useState<string | null>(
+    openIntent?.kind === 'dispatched' ? String(openIntent.date) : null
+  )
+  const skipGlobalOnce = useRef(!!dispatchedOn)
+  const [dateFrom, setDateFrom] = useState(dispatchedOn || (UNLOAD_DESK() ? '' : monthStartISO()))
+  const [dateTo, setDateTo] = useState(dispatchedOn || todayISO())
   // Empty = every product type.
   const [productType, setProductType] = useState<string[]>([])
   // Which numbers the invoice series has skipped. A number nobody used is a
@@ -421,6 +469,11 @@ function SalesTab({
   // Alt+F2 broadcasts a period from anywhere.
   const globalRange = useGlobalDateRange()
   useEffect(() => {
+    // Opened on the dashboard's day: that day stands, not the period.
+    if (skipGlobalOnce.current) {
+      skipGlobalOnce.current = false
+      return
+    }
     if (globalRangeAppliesTo(globalRange, 'sales')) { setDateFrom(globalRange.from); setDateTo(globalRange.to) }
   }, [globalRange.version]) // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -471,12 +524,70 @@ function SalesTab({
   // Trading customers are left out — a pass-through deal is booked on the
   // Trading screen, not here. The invoice's own customer always stays listed,
   // so an invoice already raised on one still opens and edits normally.
+  // SELLING TO OURSELVES.
+  //
+  // The other companies on this site are customers like any other — they are
+  // in the master with a company_link_id saying which company they stand for,
+  // so nothing here needs a second kind of party. Only the company doing the
+  // selling is dropped: an invoice to itself is a mis-pick, not a transfer.
+  const { companyId: activeCompanyId, companies: allCompanies } = useCompany()
+
+  // A PLACEHOLDER NUMBER FOR A SALE WITH NOTHING OF ITS OWN TO FILE UNDER.
+  //
+  // The usual case is the series above deciding it — a customer's invoice
+  // number is ours to give. This is for the exception: a return, an
+  // adjustment, an inter-company entry, anything that needs SOME number and
+  // not the next one in a customer-facing sequence. The server draws a
+  // genuine seven digits and checks it against every other sale already
+  // booked for this company, so it can never collide with a real invoice.
+  async function randomizeSalesInvoiceNo(): Promise<void> {
+    setRandomizingSalesInvoice(true)
+    try {
+      const no = await window.api.sales.randomInvoiceNo(activeCompanyId || undefined)
+      // OUT OF THE SERIES, ON PURPOSE. The random placeholder is stored as a
+      // bare number and NEVER carries the KRFL/ · KRFIN/ prefix — it stands
+      // apart from the customer-facing series so it can never collide with, or
+      // stretch, the real run. The field detects an out-of-series value and
+      // drops its prefix chrome, so the box shows exactly what is stored.
+      setHeaderField('invoice_no', no)
+    } catch (e) {
+      toast.error((e as Error).message)
+    } finally {
+      setRandomizingSalesInvoice(false)
+    }
+  }
+  const companyOfCustomer = useCallback(
+    (id: unknown): number => {
+      const c = customers.find((x) => String(x.id) === String(id ?? ''))
+      return Number(c?.company_link_id) || 0
+    },
+    [customers]
+  )
+  // The inter-company desk is offered our own companies and nobody else. Not
+  // a courtesy: picking an outside customer is refused on the server, and a
+  // dropdown that offers a choice the save will reject is a worse screen than
+  // one that never offered it. The invoice's own customer is NOT carried
+  // through here the way it is for everybody else — on this desk every
+  // invoice it can open is already a transfer, so there is nothing to carry.
+  const intercoDesk = INTERCO_DESK()
   const invoiceCustomers = useMemo(
     () =>
-      customers.filter(
-        (c) => isManufacturingParty(c) || String(c.id) === String(header.customer_id || '')
-      ),
-    [customers, header.customer_id]
+      customers.filter((c) => {
+        const link = Number(c.company_link_id) || 0
+        if (intercoDesk) return link > 0 && link !== Number(activeCompanyId)
+        if (link) return link !== Number(activeCompanyId) || String(c.id) === String(header.customer_id || '')
+        return isManufacturingParty(c) || String(c.id) === String(header.customer_id || '')
+      }),
+    [customers, header.customer_id, activeCompanyId, intercoDesk]
+  )
+  // Is the invoice on screen an inter-company one, and to whom.
+  const interCompany = useMemo(() => {
+    const link = companyOfCustomer(header.customer_id)
+    return link && link !== Number(activeCompanyId) ? link : 0
+  }, [companyOfCustomer, header.customer_id, activeCompanyId])
+  const interCompanyName = useMemo(
+    () => String(allCompanies.find((c) => Number(c.id) === interCompany)?.name || 'the other company'),
+    [allCompanies, interCompany]
   )
 
   // Who did what to one invoice. An invoice is a GROUP of line rows, so its
@@ -493,6 +604,34 @@ function SalesTab({
       detail: first.invoice_no ? `Inv ${first.invoice_no}` : null,
       title: String(first.invoice_no || 'this invoice'),
       subtitle: `${first.customer || '—'} · ${formatDate(first.sale_date)} · ${inv.lines.length} line${inv.lines.length === 1 ? '' : 's'}`
+    })
+  }
+
+  // WHAT THIS INVOICE PUT IN THE LEDGERS.
+  // One voucher, and a long one — the customer debited, the sale credited, GST
+  // out — plus every receipt put against it, which is
+  // posted somewhere else entirely and is the half nobody could find.
+  // ONLY FOR SOMEBODY WHO IS ALLOWED IN THE BOOKS.
+  // The panel is a window on the ledgers, so it answers to the Accounting
+  // grant and not to this page's — otherwise a purchase clerk with no reason
+  // to see a bank ledger would reach one through a menu on an invoice. Same
+  // convention as the Treasury tabs: no session at all (the desktop app) is
+  // not a restriction.
+  const canSeeLedgers = useMemo(() => {
+    const u = loadUser()
+    // The ledgers themselves: the Accounting · Ledgers section (which follows
+    // Accounting for anyone not set otherwise).
+    return !u || canAccess(u, 'accountsLedgers')
+  }, [])
+  const [postings, setPostings] = useState<PostingTarget | null>(null)
+  const openPostings = (inv: Row): void => {
+    const first = (inv.first || inv) as Row
+    setPostings({
+      entity: 'sale',
+      id: Number(first.id),
+      kicker: 'Sales invoice',
+      title: String(first.invoice_no || 'this invoice'),
+      subtitle: `${first.customer || '—'} · ${formatDate(first.sale_date)} · ${formatINR(inv.net ?? first.amount)}`
     })
   }
 
@@ -583,6 +722,19 @@ function SalesTab({
       if (Number(inv.first.is_trading) === 1) return false
       const d = String(inv.first.sale_date || '').slice(0, 10)
       if (d < f || d > t) return false
+      // The dashboard's dispatch rule: a line that has left (done) and moves
+      // stock, on that day — so the list is exactly the tile's count.
+      if (
+        dispatchedOn &&
+        !inv.lines.some(
+          (r) =>
+            String(r.status) === 'done' &&
+            Number(r.affects_stock ?? 1) !== 0 &&
+            String(r.sale_date || '').slice(0, 10) === dispatchedOn
+        )
+      ) {
+        return false
+      }
       if (productType.length && !inv.lines.some((r) => productType.includes(String(r.product_category || '')))) {
         return false
       }
@@ -597,7 +749,7 @@ function SalesTab({
         .toLowerCase()
       return hay.includes(q)
     })
-  }, [invoices, dateFrom, dateTo, search, productType])
+  }, [invoices, dateFrom, dateTo, search, productType, dispatchedOn])
 
   // The invoice-register columns that carry a header filter, and how each one
   // reads its value off a grouped invoice. Money/qty format the same way the
@@ -708,10 +860,34 @@ function SalesTab({
   useEffect(() => {
     setInvPage(1)
   }, [invBaseRows, invCols])
+  // What a column is WORTH for sorting, which is not always what it FILTERS
+  // on. Qty filters on the unit — a funnel of 149 distinct quantities is
+  // useless — but sorting by unit is not what a click on Qty means. Money
+  // sorts as money, not as "₹1,00,000" against "₹9,000". And the first column
+  // leads with the date, so that is what it orders by.
+  const invSortRead = useCallback(
+    (inv: Row, key: string): unknown => {
+      if (key === 'invoice_no') return String(inv.first?.sale_date || '')
+      if (key === 'net') return Number(inv.net) || 0
+      if (key === 'qty') {
+        let total = 0
+        for (const v of (inv.qtyByUom as Map<string, number>).values()) total += Number(v) || 0
+        return total
+      }
+      const col = INV_COLUMNS.find((c) => c.key === key)
+      return col ? col.of(inv) : ''
+    },
+    [INV_COLUMNS]
+  )
+  const invSort = useTableSort(filteredInvoices, invSortRead)
   const pagedInvoices = useMemo(() => {
     const start = (Math.min(invPage, invPageCount) - 1) * INV_PAGE
-    return filteredInvoices.slice(start, start + INV_PAGE)
-  }, [filteredInvoices, invPage, invPageCount])
+    return invSort.sorted.slice(start, start + INV_PAGE)
+  }, [invSort.sorted, invPage, invPageCount])
+  // Tagged by INVOICE, not by line: an invoice of four products is one
+  // document and "Disputed" belongs to the document. invoice_group is what
+  // identifies it, which is why a tag's ref is text rather than a row id.
+  const invTags = useTagMap('sale', pagedInvoices.map((x) => String(x.group)))
 
   function blankHeader(): Row {
     return {
@@ -773,7 +949,22 @@ function SalesTab({
       // stopped landing on a whole rupee. Auto now keeps itself right, and a
       // real manual override is both respected and visibly flagged.
       round_off_manual: !!inv.lines.some((r) => Number(r.round_off_manual) === 1),
-      tds_pct: f.tds_pct ?? ''
+      tds_pct: f.tds_pct ?? '',
+      // THE OTHER COMPANY'S INVOICE NUMBER, PUT BACK WHERE IT IS ASKED FOR.
+      //
+      // The lines carried it but the header did not, so reopening a transfer
+      // showed an empty required box — and saving was then refused with "enter
+      // the purchase invoice number" for an invoice that plainly had one. The
+      // desk's only way past that was to type it again from memory, and typing
+      // a DIFFERENT number there raises a second purchase in the other company
+      // for goods that moved once.
+      //
+      // Taken from whichever line actually raised a purchase, not from the
+      // first line: one transfer is one bill with one number, and a line whose
+      // purchase failed to be raised has no number to give.
+      purchase_invoice_no: String(
+        inv.lines.find((r) => String(r.paired_invoice_no || '').trim())?.paired_invoice_no || ''
+      )
     })
     setItems(inv.lines.map((r) => ({
       product_id: String(r.product_id ?? ''),
@@ -788,6 +979,12 @@ function SalesTab({
       // and re-saves the same figure rather than deriving one back through the
       // MT conversion.
       rate_case: r.rate_per_case == null ? '' : String(r.rate_per_case),
+      // Reopened as what it is, so the qty stays absent and the one money box
+      // is the one that gets edited.
+      is_rate_adj: Number(r.is_rate_adj) === 1,
+      // Read off the purchase this line raised, so reopening shows what the
+      // other company actually has rather than an empty required box.
+      purchase_invoice_no: String(r.paired_invoice_no || ''),
       gst_pct: r.gst_pct ?? '',
       gst_type: r.gst_type ?? 'CGST_SGST'
     })))
@@ -814,7 +1011,24 @@ function SalesTab({
   }
   function addItem(): void {
     setDirty(true)
-    setItems((prev) => [...prev, blankItem()])
+    const cust = customers.find((c) => String(c.id) === String(header.customer_id || ''))
+    const gst = Number(cust?.gst_pct) || 0
+    setItems((prev) => [...prev, gst > 0 ? { ...blankItem(), gst_pct: String(gst) } : blankItem()])
+  }
+  // A LINE THAT CARRIES MONEY AND NO GOODS.
+  //
+  // A rate settled after the oil went out, an allowance, a month-end discount.
+  // It still names the product or the SKU it concerns — that is what makes it
+  // readable later — and it has no quantity at all, which is why the stock
+  // register never sees it.
+  function addRateAdj(): void {
+    setDirty(true)
+    const cust = customers.find((c) => String(c.id) === String(header.customer_id || ''))
+    const gst = Number(cust?.gst_pct) || 0
+    setItems((prev) => [
+      ...prev,
+      { ...blankItem(), is_rate_adj: true, ...(gst > 0 ? { gst_pct: String(gst) } : {}) }
+    ])
   }
   function removeItem(idx: number): void {
     setDirty(true)
@@ -885,6 +1099,26 @@ function SalesTab({
     packBaseQty: number; effQty: number; amount: number; gstPct: number; gstAmt: number; net: number
   } {
     const isPacked = item.sale_type === 'PACKED'
+    // A rate adjustment IS its figure — nothing multiplies it, because there is
+    // no quantity to multiply by. Struck before any of the packing arithmetic
+    // below, which has nothing to work on.
+    if (item.is_rate_adj) {
+      const amt = Math.round((Number(item.rate) || 0) * 100) / 100
+      const gp = Number(item.gst_pct) || 0
+      const ga = Math.round(amt * (gp / 100) * 100) / 100
+      return {
+        isPacked,
+        selPack: undefined,
+        saleUom: saleUomOf(item, undefined),
+        packBaseUom: '',
+        packBaseQty: 0,
+        effQty: 0,
+        amount: amt,
+        gstPct: gp,
+        gstAmt: ga,
+        net: amt + ga
+      }
+    }
     const selPack = isPacked && item.packaging_id ? packagings.find((p) => String(p.id) === String(item.packaging_id)) : undefined
     const b = bargains.find((x) => String(x.id) === String(item.sales_bargain_id))
     const saleUom = saleUomOf(item, b)
@@ -964,9 +1198,6 @@ function SalesTab({
     if (String(header.round_off ?? '') !== val) setHeaderField('round_off', val)
   }, [invoiceRawTotal, header.round_off_manual, header.round_off])
 
-  // TDS preview, on the customer master's own terms — the same slab the main
-  // process applies on save. Below the FY threshold nothing is withheld when
-  // the master says "no TDS below the slab"; above it the invoice's rate runs.
   // Freight on this invoice, on the same basis the main process uses: the rate
   // per case for a packed line, per MT for a loose one.
   const freightPreview = !isDld
@@ -987,42 +1218,6 @@ function SalesTab({
     freightPreview <= 0 || !header.transporter_id || !header.deduct_freight ? 0 : -freightPreview
   const invoiceTotal =
     Math.round((totals.amount + totals.gst + (Number(header.round_off) || 0) + freightOnInvoice) * 100) / 100
-  // Withheld on the TAXABLE value of the goods — see saleTds in sales.ts for
-  // why GST and the round-off are outside the base. This preview has to strike
-  // it on the same figure the save does, or the form quotes one net receivable
-  // and the ledger books another.
-  const tdsBase = Math.round(totals.amount * 100) / 100
-  const tds = useMemo(() => {
-    const pct = Number(header.tds_pct) || 0
-    const cust = customers.find((c) => String(c.id) === String(header.customer_id || ''))
-    if (!cust || pct <= 0 || tdsBase <= 0) return { amount: 0, threshold: 0, belowSlab: false }
-    const threshold = Number(cust.tds_threshold) || 0
-    const basePct = cust.tds_above_only ? 0 : pct
-    if (threshold <= 0) return { amount: (tdsBase * pct) / 100, threshold: 0, belowSlab: false }
-    // What this customer has already been billed this financial year, taken
-    // from the invoices on screen (this invoice itself excluded when editing).
-    const d = new Date(String(header.sale_date || todayISO()))
-    const startY = d.getMonth() + 1 >= 4 ? d.getFullYear() : d.getFullYear() - 1
-    const fyStart = `${startY}-04-01`
-    const upto = String(header.sale_date || todayISO()).slice(0, 10)
-    const prior = rows
-      .filter(
-        (r) =>
-          String(r.customer_id ?? '') === String(header.customer_id) &&
-          String(r.sale_date ?? '').slice(0, 10) >= fyStart &&
-          String(r.sale_date ?? '').slice(0, 10) <= upto &&
-          (!editingGroup || String(r.invoice_group ?? '') !== String(editingGroup))
-      )
-      .reduce((s, r) => s + (Number(r.amount) || 0), 0)
-    const below = Math.max(0, Math.min(threshold - prior, tdsBase))
-    const above = tdsBase - below
-    return {
-      amount: (below * basePct) / 100 + (above * pct) / 100,
-      threshold,
-      belowSlab: !!cust.tds_above_only && above <= 0
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [header.tds_pct, header.customer_id, header.sale_date, tdsBase, customers, rows, editingGroup])
 
   // Rate cards for the bargains used on this invoice, keyed by bargain id then
   // packaging id. Loaded when a line names a bargain; the rate it yields is
@@ -1131,13 +1326,34 @@ function SalesTab({
 
   function chooseCustomer(v: string): void {
     const cust = customers.find((c) => String(c.id) === v)
+    const prev = customers.find((c) => String(c.id) === String(header.customer_id || ''))
+    const gst = Number(cust?.gst_pct) || 0
+    const prevGst = Number(prev?.gst_pct) || 0
     setHeader((p) => ({
       ...p,
       customer_id: v,
-      customer: cust?.name ?? p.customer,
-      // TDS comes off the customer master, like GST does — still editable.
-      tds_pct: cust && Number(cust.tds_pct) > 0 ? cust.tds_pct : ''
+      customer: cust?.name ?? p.customer
     }))
+    // THE RATE OF TAX IS A FACT ABOUT THE PARTY.
+    //
+    // The master has carried a GST % for every customer all along and this
+    // form never read it, so every line started blank and was typed again —
+    // including a sale to one of our own companies, whose rate is settled once
+    // under Companies and copied onto its customer row.
+    //
+    // A rate already typed is left alone. The exception is a line still
+    // carrying the PREVIOUS customer's rate: that figure was this form's
+    // suggestion, not the desk's answer, and leaving it behind after the party
+    // changes is how an invoice goes out at somebody else's rate.
+    if (gst > 0 || prevGst > 0) {
+      setItems((prev2) =>
+        prev2.map((it) => {
+          const cur = Number(it.gst_pct) || 0
+          const untouched = !String(it.gst_pct ?? '').trim() || (prevGst > 0 && Math.abs(cur - prevGst) < 1e-9)
+          return untouched ? { ...it, gst_pct: gst > 0 ? String(gst) : '' } : it
+        })
+      )
+    }
     // Drop item bargains that belong to another customer.
     setItems((prev) => prev.map((it) => {
       const b = bargains.find((x) => String(x.id) === String(it.sales_bargain_id))
@@ -1390,13 +1606,25 @@ function SalesTab({
       }
     }
 
+    // An inter-company invoice writes into two sets of books, and the second
+    // one needs the invoice number it will be filed under — refused here
+    // rather than half-written there. The rate is no longer asked for: it is
+    // this invoice's own, on both sides.
+    if (interCompany > 0 && !String(header.purchase_invoice_no || '').trim()) {
+      toast.error(`Enter the purchase invoice number ${interCompanyName} books this under`)
+      return
+    }
+
     const payload: Row = {
       ...header,
+      purchase_invoice_no: String(header.purchase_invoice_no || '').trim() || undefined,
+
       customer_id: header.customer_id ? Number(header.customer_id) : null,
       transporter_id: header.transporter_id ? Number(header.transporter_id) : null,
       round_off: Number(header.round_off) || 0,
       round_off_manual: header.round_off_manual ? 1 : 0,
-      tds_pct: Number(header.tds_pct) || 0,
+      // No TDS: a sale carries none — it is posted by hand when the customer
+      // deducts it (see SALE_TDS_PCT in sales.ts).
       items: lines.map((it) => ({
         product_id: Number(it.product_id),
         sales_bargain_id: it.sales_bargain_id ? Number(it.sales_bargain_id) : null,
@@ -1404,8 +1632,12 @@ function SalesTab({
         packaging_id: it.packaging_id ? Number(it.packaging_id) : null,
         boxes: it.boxes,
         pouches: it.pouches,
-        qty: it.qty,
+        qty: it.is_rate_adj ? '' : it.qty,
         rate: it.rate,
+        // The server flattens every stock-bearing field of its own accord —
+        // this only tells it which kind of line it is looking at.
+        is_rate_adj: it.is_rate_adj ? 1 : 0,
+
         // A packed line is billed on this, not on rate x MT — the case weight
         // does not always convert exactly and the error lands on the money.
         // Only a STATED rate is stored. Never fabricate one for a line that
@@ -1641,18 +1873,22 @@ function SalesTab({
           const action = String(h.action || '')
           events.push({
             what: `${action}${h.username ? ` by ${h.username}` : ''}`,
-            when: String(h.created_at || ''),
+            // The audit stamp is UTC; the gate's is Indian time — one clock.
+            when: utcStampLocal(h.created_at),
             kind: /^created/i.test(action) ? 'created' : 'edit'
           })
         }
+        // ONE GATE ROW IS THE WHOLE VISIT: entry_date/entry_time is when the
+        // vehicle came in, out_date/out_time when it left. `direction` only
+        // says which way the goods moved — a dispatch is 'out' from the moment
+        // it arrives — so labelling the arrival time "gate out" put a lorry
+        // that came in at 13:11 and left at 22:06 out of the gate at 13:11.
         for (const g of ((gate?.rows || []) as Row[])) {
-          const dir = String(g.direction || 'in') === 'out' ? 'out' : 'in'
-          const stamp = [String(g.entry_date || ''), String(g.entry_time || '')].filter(Boolean).join(' ')
-          events.push({
-            what: `Tanker gate ${dir}${g.tanker_no ? ` — ${g.tanker_no}` : ''}${g.gate_entry_no ? ` (${g.gate_entry_no})` : ''}`,
-            when: stamp,
-            kind: dir
-          })
+          const tag = `${g.tanker_no ? ` — ${g.tanker_no}` : ''}${g.gate_entry_no ? ` (${g.gate_entry_no})` : ''}`
+          const inAt = [String(g.entry_date || ''), String(g.entry_time || '')].filter(Boolean).join(' ')
+          if (inAt) events.push({ what: `Tanker gate in${tag}`, when: inAt, kind: 'in' })
+          const outAt = [String(g.out_date || ''), String(g.out_time || '')].filter(Boolean).join(' ')
+          if (outAt) events.push({ what: `Tanker gate out${tag}`, when: outAt, kind: 'out' })
         }
         events.sort((a, b) => String(a.when).localeCompare(String(b.when)))
         setActivity(events)
@@ -1722,6 +1958,17 @@ function SalesTab({
           <DatePicker value={dateFrom} onChange={(v) => setDateFrom(v || '')} max={dateTo || undefined} className={cn('h-8 w-[9.5rem] shrink-0 text-[11px]', __WEB__ && 'h-9 w-[8.25rem] rounded-[4px] border-[#C3D2C6] text-[12.5px]')} />
           <span className={cn('shrink-0 text-[10px] text-muted-foreground', __WEB__ && 'text-[12.5px] font-semibold text-[#5A6B62]')}>to</span>
           <DatePicker value={dateTo} onChange={(v) => setDateTo(v || '')} min={dateFrom || undefined} className={cn('h-8 w-[9.5rem] shrink-0 text-[11px]', __WEB__ && 'h-9 w-[8.25rem] rounded-[4px] border-[#C3D2C6] text-[12.5px]')} />
+          {dispatchedOn && (
+            <button
+              type="button"
+              onClick={() => setDispatchedOn(null)}
+              title="Opened from the dashboard — dispatched and moving stock only. Click to show every invoice in the dates."
+              className="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-[4px] border border-[#C6DAF0] bg-[#EAF0FA] px-2.5 text-[11.5px] font-extrabold text-[#1B4E82]"
+            >
+              Dispatched on {formatDate(dispatchedOn)}
+              <X className="h-3.5 w-3.5" />
+            </button>
+          )}
         </div>
         <div className="flex shrink-0 items-center gap-1.5">
           <span
@@ -1796,6 +2043,7 @@ function SalesTab({
               {INV_COLUMNS.map((c) => (
                 <TableHead
                   key={c.key}
+                  aria-sort={invSort.ariaSort(c.key)}
                   className={cn(
                     c.key === 'invoice_no' && 'w-[150px]',
                     c.key === 'qty' && 'w-[110px] text-right',
@@ -1813,16 +2061,49 @@ function SalesTab({
                     unloadOnly && c.key === 'items' && 'w-auto'
                   )}
                 >
-                  <ColumnFilter
-                    label={c.label}
-                    options={invColOptions(c.key)}
-                    value={invCols[c.key] ?? []}
-                    onDark
-                    onApply={(v) => setInvCols((p) => ({ ...p, [c.key]: v }))}
-                    align={
-                      c.key === 'qty' || c.key === 'net' || (unloadOnly && c.key === 'dispatch') ? 'end' : 'start'
-                    }
-                  />
+                  <span
+                    className={cn(
+                      'inline-flex items-center gap-1',
+                      (c.key === 'qty' || c.key === 'net' || (unloadOnly && c.key === 'dispatch')) &&
+                        'flex-row-reverse'
+                    )}
+                  >
+                    <ColumnFilter
+                      label={c.label}
+                      options={invColOptions(c.key)}
+                      value={invCols[c.key] ?? []}
+                      onDark
+                      onApply={(v) => setInvCols((p) => ({ ...p, [c.key]: v }))}
+                      align={
+                        c.key === 'qty' || c.key === 'net' || (unloadOnly && c.key === 'dispatch') ? 'end' : 'start'
+                      }
+                    />
+                    {/* Beside the funnel, not around it: sorting and filtering
+                        are two questions, and a button inside a button is not
+                        a thing a browser will honour anyway. */}
+                    <button
+                      type="button"
+                      aria-label={`Sort by ${c.label}`}
+                      title={
+                        invSort.key !== c.key
+                          ? `Sort by ${c.label}`
+                          : invSort.dir === 'asc'
+                            ? `${c.label} — smallest first. Click to turn it round`
+                            : `${c.label} — largest first. Click to clear the sort`
+                      }
+                      onClick={() => invSort.toggle(c.key)}
+                      className={cn(
+                        'inline-flex h-4 w-4 shrink-0 items-center justify-center rounded-[2px] hover:bg-white/15',
+                        invSort.key === c.key ? 'text-[#C7F03F]' : 'text-white/45'
+                      )}
+                    >
+                      {invSort.key === c.key ? (
+                        invSort.dir === 'asc' ? <ArrowUp className="h-3 w-3" /> : <ArrowDown className="h-3 w-3" />
+                      ) : (
+                        <ChevronsUpDown className="h-3 w-3" />
+                      )}
+                    </button>
+                  </span>
                 </TableHead>
               ))}
               {!unloadOnly && <TableHead className="w-[84px] text-right">Actions</TableHead>}
@@ -1930,6 +2211,17 @@ function SalesTab({
                               )}
                             </div>
                             <div className={cn('truncate text-xs text-muted-foreground', __WEB__ && 'text-[12.5px] text-[#7C9188]')}>{inv.first.invoice_no || '—'}</div>
+                            {/* Stops the row's own click, which expands the
+                                invoice — tagging it is not opening it. */}
+                            <div className="mt-1" onClick={(e) => e.stopPropagation()}>
+                              <TagPicker
+                                entity="sale"
+                                refId={String(inv.group)}
+                                tags={invTags.tagsOf(String(inv.group))}
+                                onChanged={(next) => invTags.setFor(String(inv.group), next)}
+                                compact
+                              />
+                            </div>
                           </div>
                         </div>
                       </TableCell>
@@ -1990,17 +2282,43 @@ function SalesTab({
                               {invDue > 0 && <AlertTriangle className="h-2.5 w-2.5" />}
                             </span>
                           )
+                          // The vehicle that carried it out, from the gate register.
+                          const tankerNote = inv.first.gate_vehicle_no ? ` · Tanker ${String(inv.first.gate_vehicle_no)}` : ' · Tanker not through the gate yet'
                           if (exTerm || !shortLines.length) {
+                            // A HOVER CARD, NOT THE BROWSER'S TITLE — which took a
+                            // second to appear and was easy to miss. The vehicle
+                            // that carried the load, from the gate register.
+                            const veh = String(inv.first.gate_vehicle_no || '').trim()
+                            const kv = (k: string, v: React.ReactNode): React.JSX.Element => (
+                              <div className="flex items-baseline justify-between gap-4">
+                                <span className="text-[10px] font-bold uppercase tracking-[.08em] text-[#8FBFA8]">{k}</span>
+                                <span className="text-right text-[12.5px] font-bold text-white">{v}</span>
+                              </div>
+                            )
                             return (
-                              <span
-                                title={
-                                  exTerm
-                                    ? 'Ex — the customer lifts, no freight of ours'
-                                    : 'FOR — we deliver and pay the transporter'
-                                }
-                              >
-                                {tag}
-                              </span>
+                              <Tooltip delayDuration={80}>
+                                <TooltipTrigger asChild>
+                                  <span className="cursor-help">
+                                    {tag}
+                                  </span>
+                                </TooltipTrigger>
+                                <TooltipContent side="left" className="w-[260px] max-w-none !rounded-[8px] !bg-[#0B3D2E] !px-3.5 !py-3 shadow-xl">
+                                  <div className="mb-2 flex items-center gap-2 border-b border-white/10 pb-2">
+                                    <Truck className="h-4 w-4 flex-none text-[#C7F03F]" />
+                                    <div className="min-w-0">
+                                      <div className="text-[12.5px] font-extrabold text-white">{exTerm ? 'Ex — customer lifts' : 'FOR — we deliver'}</div>
+                                      <div className="text-[10.5px] font-semibold text-[#8FBFA8]">
+                                        {exTerm ? 'No freight of ours on this bill' : 'We pay the transporter'}
+                                      </div>
+                                    </div>
+                                  </div>
+                                  <div className="grid gap-1.5">
+                                    {kv('Tanker', veh ? <span className="tabular-nums tracking-[.02em] text-[#C7F03F]">{veh}</span> : <span className="font-semibold text-[#8FBFA8]">Not through the gate yet</span>)}
+                                    {!!inv.first.gate_entry_no && kv('Gate entry', String(inv.first.gate_entry_no))}
+                                    {!exTerm && !!inv.first.transporter_name && kv('Transporter', String(inv.first.transporter_name))}
+                                  </div>
+                                </TooltipContent>
+                              </Tooltip>
                             )
                           }
                           return (
@@ -2008,8 +2326,8 @@ function SalesTab({
                               <span
                                 title={
                                   invDue > 0
-                                    ? `Short beyond the agreed tolerance — ${formatINR(invDue)} deductible. Hover or click for the workings.`
-                                    : 'Delivered short but within tolerance — hover or click for the workings'
+                                    ? `Short beyond the agreed tolerance — ${formatINR(invDue)} deductible. Hover or click for the workings.${tankerNote}`
+                                    : `Delivered short but within tolerance — hover or click for the workings${tankerNote}`
                                 }
                               >
                                 {tag}
@@ -2161,6 +2479,15 @@ function SalesTab({
                               { label: 'Gate entries — what left the barrier', icon: DoorOpen, onClick: () => setGateInv(inv) },
                               { label: 'Edit invoice', icon: Pencil, onClick: () => openEditInvoice(inv) },
                               { label: 'History — who did what', icon: History, onClick: () => openHistory(inv) },
+                              ...(__WEB__ && canSeeLedgers
+                                ? [
+                                    {
+                                      label: 'Ledger posting — what it put in the books',
+                                      icon: BookOpen,
+                                      onClick: () => openPostings(inv)
+                                    }
+                                  ]
+                                : []),
                               { label: 'Delete invoice', icon: Trash2, danger: true, onClick: () => delInvoice(inv) }
                             ]}
                           />
@@ -2463,12 +2790,32 @@ function SalesTab({
               {(() => {
                 const prefix = String(series?.prefix || '')
                 const current = String(header.invoice_no ?? '')
-                if (!prefix) {
-                  // No series to go on — a first invoice, or a company whose
-                  // numbers have never followed one. Left free rather than
-                  // inventing a prefix nobody asked for.
+                // A value that does NOT begin with the series prefix — a random,
+                // out-of-series placeholder — is edited free, with no prefix
+                // chrome, so the box shows exactly what is stored. An empty
+                // field still gets the composite (it is a series entry waiting
+                // to be typed).
+                const inSeries = !!prefix && (current === '' || new RegExp(`^${prefix}[/\\-]`, 'i').test(current))
+                if (!inSeries) {
+                  // No series to go on — a first invoice, a company whose
+                  // numbers have never followed one, or a random placeholder
+                  // that stands apart from the series. Left free rather than
+                  // wearing a prefix that is not part of the value.
                   return (
-                    <Input value={current} onChange={(e) => setHeaderField('invoice_no', e.target.value)} />
+                    <div className="flex items-center gap-1.5">
+                      <Input value={current} onChange={(e) => setHeaderField('invoice_no', e.target.value)} />
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="icon"
+                        disabled={randomizingSalesInvoice}
+                        onClick={() => void randomizeSalesInvoiceNo()}
+                        title="Nothing of its own to file this under? Generate a random invoice number that doesn't already exist"
+                        className="h-9 w-9 shrink-0"
+                      >
+                        <Dices className={cn('h-4 w-4', randomizingSalesInvoice && 'animate-spin')} />
+                      </Button>
+                    </div>
                   )
                 }
                 // What is stored is the whole reference; the field edits only
@@ -2488,12 +2835,13 @@ function SalesTab({
                   )
                 return (
                   <>
+                    <div className="flex items-stretch gap-1.5">
                     {/* Hand-built composite, so it needs the form's height
                         given to it explicitly — the container rules size
                         inputs and selects, and this is neither. */}
                     <div
                       className={cn(
-                        'flex h-9 items-stretch overflow-hidden rounded-md border bg-background',
+                        'flex h-9 flex-1 items-stretch overflow-hidden rounded-md border bg-background',
                         __WEB__ && 'h-12 rounded-[4px] border-[#C3D2C6]',
                         clash && 'border-rose-400'
                       )}
@@ -2537,6 +2885,24 @@ function SalesTab({
                         </button>
                       )}
                     </div>
+                    {/* OUT OF THE SEQUENCE, ON PURPOSE. A random seven-digit
+                        number replaces the prefix entirely rather than
+                        filling in the bare part — it stands apart from the
+                        customer-facing series precisely because it is not
+                        one of those, and mixing the two would let a random
+                        pick collide with wherever the series gets to next. */}
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="icon"
+                      disabled={randomizingSalesInvoice}
+                      onClick={() => void randomizeSalesInvoiceNo()}
+                      title="Nothing of its own to file this under? Generate a random invoice number that doesn't already exist"
+                      className={cn('h-9 w-9 shrink-0', __WEB__ && 'h-12 w-12')}
+                    >
+                      <Dices className={cn('h-4 w-4', randomizingSalesInvoice && 'animate-spin')} />
+                    </Button>
+                    </div>
                     {clash && (
                       <span className="text-[11px] font-medium text-rose-600">
                         {prefix}/{bare} is already used on another invoice
@@ -2551,10 +2917,53 @@ function SalesTab({
               <Select value={header.customer_id ? String(header.customer_id) : ''} onValueChange={chooseCustomer}>
                 <SelectTrigger><SelectValue placeholder="Select customer" /></SelectTrigger>
                 <SelectContent>
-                  {invoiceCustomers.map((c) => <SelectItem key={c.id} value={String(c.id)}>{c.name}</SelectItem>)}
+                  {invoiceCustomers.map((c) => (
+                    <SelectItem key={c.id} value={String(c.id)}>
+                      <span className="flex items-center gap-2">
+                        {c.name}
+                        {/* Our own companies stand in this list as ordinary
+                            customers. The badge is what stops one being picked
+                            by accident for an outside sale — and picked on
+                            purpose, it turns the invoice into a pair. */}
+                        {Number(c.company_link_id) > 0 && (
+                          <span className="rounded-[2px] bg-[#EAF0FA] px-1.5 py-[1px] text-[9.5px] font-extrabold uppercase tracking-[.06em] text-[#1B4E82]">
+                            our company
+                          </span>
+                        )}
+                      </span>
+                    </SelectItem>
+                  ))}
                 </SelectContent>
               </Select>
             </div>
+            {/* THE OTHER HALF OF AN INTER-COMPANY SALE.
+                Shown only when the customer IS one of our companies, because
+                only then is there a second set of books to write into. The
+                sale is raised here and the purchase is raised there, together,
+                from these two answers — the invoice number that company files
+                it under, and the rate it buys at, which is not always the rate
+                this one sells at. */}
+            {interCompany > 0 && (
+              <>
+                {/* ONE INVOICE, ONE NUMBER.
+                    A transfer of three products raises three purchases over
+                    there, because a purchase row is one product — but it is
+                    still one invoice and they all carry its number. The
+                    Purchases form used to read that as three clashing bills;
+                    it now knows they are one bill in three rows (see
+                    bill_group). */}
+                <div className="flex flex-col gap-1.5">
+                  <Label>
+                    Purchase invoice no <span className="text-[#B3261E]">*</span>
+                  </Label>
+                  <Input
+                    value={String(header.purchase_invoice_no || '')}
+                    onChange={(e) => setHeaderField('purchase_invoice_no', e.target.value)}
+                    placeholder={`what ${interCompanyName} books it under`}
+                  />
+                </div>
+              </>
+            )}
             {/* No trading tick here: a trading sale is booked on the Trading
                 page, which sets the flag itself on both sides of the deal. The
                 header still CARRIES is_trading when an existing invoice is
@@ -2589,6 +2998,25 @@ function SalesTab({
                 </div>
               )}
             </div>
+            {/* NO PURCHASE RATE TO ASK FOR.
+                The two companies move oil between themselves at ONE price, so
+                the rate on this invoice is the rate the other company books —
+                asking twice for the same figure only made a way for them to
+                disagree. Each line's own rate carries across; a packed line's
+                is worked back from its value, so both sides come to the same
+                money.
+
+                A statement, not a field, so it takes a line of its own under
+                the fields rather than a column among them — it was standing in
+                Freight term's slot and pushing it onto a row by itself. */}
+            {interCompany > 0 && (
+              <div className="col-span-full flex flex-col gap-1.5">
+                <span className="flex items-center gap-1.5 rounded-[4px] border border-[#C6DAF0] bg-[#EAF0FA] px-3 py-2 text-[11.5px] font-semibold leading-[1.45] text-[#1B4E82]">
+                  <Lock className="h-3.5 w-3.5 shrink-0" />
+                  {interCompanyName} buys at these same rates — each line&rsquo;s own rate is what it books.
+                </span>
+              </div>
+            )}
           </div>
 
           {isDld && (
@@ -2807,6 +3235,11 @@ function SalesTab({
                       <span className="shrink-0 rounded-[2px] bg-[#EAF0E9] px-2 py-1 text-[11px] font-extrabold tracking-[.05em] text-[#33473E]">
                         {String(item.sale_type) === 'PACKED' ? 'PACKED' : 'LOOSE'}
                       </span>
+                      {!!item.is_rate_adj && (
+                        <span className="flex shrink-0 items-center gap-1 rounded-[2px] bg-[#EAF0FA] px-2 py-1 text-[10.5px] font-extrabold tracking-[.05em] text-[#1B4E82]">
+                          RATE ADJUSTMENT · NO STOCK
+                        </span>
+                      )}
                       {itemExpired && (
                         <span className="flex shrink-0 items-center gap-1 rounded-[2px] bg-[#FFEDD0] px-2 py-1 text-[10.5px] font-extrabold tracking-[.05em] text-[#8A5300]">
                           <AlertTriangle className="h-3.5 w-3.5" /> EXPIRED RATE
@@ -2853,15 +3286,35 @@ function SalesTab({
                     responsive one. */}
                 <div
                   className={cn(
-                    'grid gap-x-3 gap-y-2 sm:grid-cols-2 lg:grid-cols-[minmax(0,1fr)_minmax(0,2fr)_minmax(0,1fr)] [&>div]:min-w-0 [&>div]:gap-1',
-                    __WEB__ && 'gap-4 sm:grid-cols-2 lg:grid-cols-[340px_minmax(0,1fr)_300px]'
+                    'grid gap-x-3 gap-y-2 sm:grid-cols-2 lg:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_minmax(0,2fr)_minmax(0,1fr)] [&>div]:min-w-0 [&>div]:gap-1',
+                    __WEB__ && 'gap-4 sm:grid-cols-2 lg:grid-cols-[240px_300px_minmax(0,1fr)_260px]'
                   )}
                 >
                   <div className="flex flex-col gap-1.5">
+                    <Label>Category *</Label>
+                    <Select
+                      value={itemCatOf(item) || undefined}
+                      onValueChange={(v) => {
+                        // A product from another category is dropped with its
+                        // bargain, so the item never carries a mismatched pair.
+                        const keep = prodCatOf(products.find((p) => String(p.id) === String(item.product_id))) === v
+                        setItem(i, keep ? { product_cat: v } : { product_cat: v, product_id: '', sales_bargain_id: '' })
+                      }}
+                    >
+                      <SelectTrigger><SelectValue placeholder="Select category" /></SelectTrigger>
+                      <SelectContent>{itemCats.map((c) => <SelectItem key={c.v} value={c.v}>{c.label}</SelectItem>)}</SelectContent>
+                    </Select>
+                    <span className="block h-[15px]" />
+                  </div>
+                  <div className="flex flex-col gap-1.5">
                     <Label>Product *</Label>
-                    <Select value={String(item.product_id)} onValueChange={(v) => setItem(i, { product_id: v, sales_bargain_id: '' })}>
-                      <SelectTrigger><SelectValue placeholder="Finished product" /></SelectTrigger>
-                      <SelectContent>{products.map((p) => <SelectItem key={p.id} value={String(p.id)}>{p.name}</SelectItem>)}</SelectContent>
+                    <Select value={String(item.product_id)} onValueChange={(v) => setItem(i, { product_id: v, sales_bargain_id: '' })} disabled={!itemCatOf(item)}>
+                      <SelectTrigger><SelectValue placeholder={itemCatOf(item) ? 'Select product' : 'Pick a category first'} /></SelectTrigger>
+                      <SelectContent>
+                        {products
+                          .filter((p) => prodCatOf(p) === itemCatOf(item))
+                          .map((p) => <SelectItem key={p.id} value={String(p.id)}>{p.name}</SelectItem>)}
+                      </SelectContent>
                     </Select>
                     {/* A fixed-height caption slot, empty here — Sales bargain's
                         expiry note is the only one of these three that ever has
@@ -2885,6 +3338,17 @@ function SalesTab({
                             return (
                               <span className="flex min-w-0 items-center gap-1.5">
                                 <span className="truncate font-medium normal-case">{b.bargain_no}</span>
+                                {/* THE NUMBER THEY WROTE ON IT.
+                                    The app's own bargain number is generated;
+                                    the one typed at booking is the one on the
+                                    paper and the one a customer quotes back. A
+                                    picker that shows only the generated one
+                                    makes them look it up elsewhere. */}
+                                {!!String(b.manual_bargain_no || '').trim() && (
+                                  <span className="shrink-0 rounded-[2px] border border-[#C6DAF0] bg-[#EAF0FA] px-1.5 text-[10px] font-bold normal-case text-[#1B4E82]">
+                                    {String(b.manual_bargain_no)}
+                                  </span>
+                                )}
                                 <span className="shrink-0 text-[11px] normal-case text-muted-foreground">
                                   bal {formatNum(b.balance_qty)}
                                 </span>
@@ -2903,6 +3367,11 @@ function SalesTab({
                         {prodBargains.map((b) => (
                           <SelectItem key={b.id} value={String(b.id)}>
                             <span className="font-medium">{b.bargain_no}</span>
+                            {!!String(b.manual_bargain_no || '').trim() && (
+                              <span className="ml-1.5 rounded-[2px] border border-[#C6DAF0] bg-[#EAF0FA] px-1.5 text-[10px] font-bold text-[#1B4E82]">
+                                {String(b.manual_bargain_no)}
+                              </span>
+                            )}
                             <span className="text-muted-foreground"> · Bal {formatNum(b.balance_qty)} · {formatINR(b.rate)}</span>
                             {!notExpired(b) && (
                               <span className="font-medium text-amber-700"> · rate expired {formatDate(b.rate_expiry_date)}</span>
@@ -2946,11 +3415,15 @@ function SalesTab({
                     </Select>
                     <span className="block h-[15px]" />
                   </div>
+
                 </div>
 
+                {/* The SKU is still named on a rate adjustment — which SKU the
+                    money concerns is the whole point of the line — but the
+                    cases and pouches are not, because there are none. */}
                 {c.isPacked && (
                   <div className="mt-2 grid grid-cols-2 items-start gap-x-3 gap-y-2 rounded-md border border-violet-200 bg-violet-50/60 p-2.5 sm:grid-cols-3 [&>div]:min-w-0 [&>div]:gap-1">
-                    <div className="flex flex-col gap-1 sm:col-span-2">
+                    <div className={cn('flex flex-col gap-1 sm:col-span-2', item.is_rate_adj && 'sm:col-span-3')}>
                       <Label>Packed SKU *</Label>
                       <Select value={item.packaging_id ? String(item.packaging_id) : ''} onValueChange={(v) => {
                         setItem(i, { packaging_id: v })
@@ -2995,7 +3468,14 @@ function SalesTab({
                 <div className="mt-2 grid grid-cols-2 items-start gap-x-3 gap-y-2 sm:grid-cols-4 [&>div]:min-w-0 [&>div]:gap-1">
                   <div className="flex flex-col gap-1.5">
                     <Label>Qty ({c.saleUom})</Label>
-                    {c.isPacked ? (
+                    {item.is_rate_adj ? (
+                      <div
+                        title="A rate adjustment has no quantity — that is what keeps it out of book stock."
+                        className="flex h-9 items-center rounded-md bg-muted px-3 text-sm font-semibold text-muted-foreground"
+                      >
+                        — none
+                      </div>
+                    ) : c.isPacked ? (
                       <div className="flex h-9 items-center rounded-md bg-muted px-3 text-sm font-medium tabular-nums">{formatNum(c.effQty)}</div>
                     ) : (
                       <Input type="number" value={item.qty ?? ''} onChange={(e) => setItem(i, { qty: e.target.value })} />
@@ -3015,7 +3495,21 @@ function SalesTab({
                       next to the one the user actually fills in had nothing to
                       offer but clutter. Loose sales have no case to price by,
                       so they get the per-unit rate box instead. */}
-                  {c.isPacked ? (
+                  {item.is_rate_adj ? (
+                    <div className="flex flex-col gap-1.5">
+                      <Label>Adjustment amount</Label>
+                      <Input
+                        type="number"
+                        placeholder="0.00"
+                        value={item.rate ?? ''}
+                        onChange={(e) => setItem(i, { rate: e.target.value })}
+                        className={cn(__WEB__ && '!border-[#B6CBE4]')}
+                      />
+                      <span className="block h-[15px] text-[11px] leading-[15px] text-[#1B4E82]">
+                        {Number(item.rate) < 0 ? 'a credit to the customer' : 'charged as it stands'}
+                      </span>
+                    </div>
+                  ) : c.isPacked ? (
                     <div className="flex flex-col gap-1.5">
                       <Label>Rate / {c.selPack?.box_label || 'case'}</Label>
                       <Input
@@ -3138,15 +3632,31 @@ function SalesTab({
           })}
           </div>
           {__WEB__ ? (
-            <button
-              type="button"
-              onClick={addItem}
-              className="mt-4 flex h-12 items-center gap-2 rounded-[4px] border-[1.5px] border-dashed border-[#A8C0B2] bg-white px-[18px] text-[14px] font-extrabold tracking-[.02em] text-[#0B3D2E] transition-colors hover:bg-[#F7FAF6]"
-            >
-              <Plus className="h-5 w-5" /> Add item
-            </button>
+            <div className="mt-4 flex flex-wrap gap-2.5">
+              <button
+                type="button"
+                onClick={addItem}
+                className="flex h-12 items-center gap-2 rounded-[4px] border-[1.5px] border-dashed border-[#A8C0B2] bg-white px-[18px] text-[14px] font-extrabold tracking-[.02em] text-[#0B3D2E] transition-colors hover:bg-[#F7FAF6]"
+              >
+                <Plus className="h-5 w-5" /> Add item
+              </button>
+              {/* Its own button rather than a tick box on an ordinary line: it
+                  is a different kind of line, and one the reader should be
+                  able to see was chosen deliberately. */}
+              <button
+                type="button"
+                onClick={addRateAdj}
+                title="A figure with no quantity — a rate settled later, an allowance, a discount. It never touches book stock."
+                className="flex h-12 items-center gap-2 rounded-[4px] border-[1.5px] border-dashed border-[#B6CBE4] bg-white px-[18px] text-[14px] font-extrabold tracking-[.02em] text-[#1B4E82] transition-colors hover:bg-[#EAF0FA]"
+              >
+                <Plus className="h-5 w-5" /> Add rate adjustment
+              </button>
+            </div>
           ) : (
-            <Button variant="outline" size="sm" className="mt-2 bg-white" onClick={addItem}><Plus className="h-4 w-4" /> Add item</Button>
+            <div className="mt-2 flex flex-wrap gap-2">
+              <Button variant="outline" size="sm" className="bg-white" onClick={addItem}><Plus className="h-4 w-4" /> Add item</Button>
+              <Button variant="outline" size="sm" className="bg-white" onClick={addRateAdj}><Plus className="h-4 w-4" /> Add rate adjustment</Button>
+            </div>
           )}
         </div>
 
@@ -3266,66 +3776,13 @@ function SalesTab({
               // its 22px figure to the same size as every other line.
               // Equal air above and below. It had mt-3 and nothing under it,
               // so the band hung off the round-off row and sat flush against
-              // TDS — which is the lopsidedness that showed.
+              // the line below — which is the lopsidedness that showed.
               __WEB__ && 'tot-emph !mx-0 !my-2 items-baseline border-0 bg-[#C7F03F] !px-[18px] !py-3.5 text-[#12280B]'
             )}
           >
             <span className={cn(__WEB__ && 'text-[11px] font-extrabold uppercase tracking-[.1em] text-[#2E4A0B]')}>Invoice total</span>
             <span className={cn('tabular-nums', __WEB__ && 'text-[22px] font-bold tracking-[-0.03em]')}>{formatINR(invoiceTotal)}</span>
           </div>
-          <div className="flex items-center justify-between py-0.5">
-            <span className="text-muted-foreground">TDS %</span>
-            <Input
-              type="number"
-              step="0.01"
-              className="h-7 w-24 bg-white text-right"
-              placeholder="0"
-              title="Withheld by the customer on the invoice total. Filled in from the customer master; the slab on that master decides how much actually applies."
-              value={header.tds_pct ?? ''}
-              onChange={(e) => setHeaderField('tds_pct', e.target.value)}
-            />
-          </div>
-          {Number(header.tds_pct) > 0 && (
-            <>
-              <div className="flex items-center justify-between py-0.5">
-                <span className="text-muted-foreground">
-                  TDS{Number(header.tds_pct) > 0 ? ` (${Number(header.tds_pct)}%)` : ""}
-                  {/* Naming the base on the line itself: it is the goods value,
-                      not the invoice total, so the figure reconciles for anyone
-                      checking it by hand. */}
-                  {/* On the website this moves to a ? — as inline text it made
-                      the TDS label twice as wide as every other one and pushed
-                      the column out of line. */}
-                  {__WEB__ ? (
-                    <InfoTip
-                      className="ml-1 align-middle"
-                      text={
-                        tds.belowSlab
-                          ? `Under the ₹${formatNum(tds.threshold)} slab — nothing withheld.`
-                          : `Withheld on the taxable value of ${formatINR(tdsBase)} — the goods, not the invoice total.`
-                      }
-                    />
-                  ) : tds.belowSlab ? (
-                    <span className="ml-1 text-[11px]">— under the ₹{formatNum(tds.threshold)} slab, nothing withheld</span>
-                  ) : (
-                    <span className="ml-1 text-[11px]">on taxable {formatINR(tdsBase)}</span>
-                  )}
-                </span>
-                <span className="tabular-nums">{formatINR(tds.amount)}</span>
-              </div>
-              <div
-                className={cn(
-                  'flex items-center justify-between border-t pt-1 font-semibold text-[#1a2c56]',
-                  __WEB__ && 'tot-emph mt-1.5 items-baseline border-t-2 border-[#0B3D2E] !pb-1.5 !pt-3 text-[#0A1F17]'
-                )}
-              >
-                <span className={cn(__WEB__ && 'text-[15px] font-extrabold')}>Net receivable</span>
-                <span className={cn('tabular-nums', __WEB__ && 'text-[19px] font-bold tracking-[-0.02em]')}>
-                  {formatINR(invoiceTotal - tds.amount)}
-                </span>
-              </div>
-            </>
-          )}
           </div>
         </div>
 
@@ -3567,10 +4024,23 @@ function SalesTab({
                       <span
                         className={cn(
                           'rounded px-2 py-0.5 text-[11.5px] font-semibold tabular-nums',
-                          Number(sr.missing_count) ? 'bg-rose-100 text-rose-800' : 'bg-emerald-100 text-emerald-800'
+                          sr.range_too_wide
+                            ? 'bg-amber-100 text-amber-900'
+                            : Number(sr.missing_count)
+                              ? 'bg-rose-100 text-rose-800'
+                              : 'bg-emerald-100 text-emerald-800'
                         )}
+                        title={
+                          sr.range_too_wide
+                            ? 'This series spans an implausibly wide range — usually a random-placeholder or a mistyped number — so it is not checked for gaps.'
+                            : undefined
+                        }
                       >
-                        {Number(sr.missing_count) ? `${sr.missing_count} missing` : 'none missing'}
+                        {sr.range_too_wide
+                          ? 'range too wide to check'
+                          : Number(sr.missing_count)
+                            ? `${sr.missing_count} missing`
+                            : 'none missing'}
                       </span>
                     </span>
                   </div>
@@ -4077,7 +4547,7 @@ function SalesTab({
                         <Ico className="mt-0.5 h-[19px] w-[19px] shrink-0 text-[#12855A]" />
                         <div className="min-w-0">
                           <div className="text-[13px] font-bold">{a.what}</div>
-                          <div className="mt-0.5 text-[11.5px] font-semibold text-[#7C9188]">{a.when || '—'}</div>
+                          <div className="mt-0.5 text-[11.5px] font-semibold text-[#7C9188]">{activityStamp(a.when) || '—'}</div>
                         </div>
                       </div>
                     )
@@ -4089,6 +4559,9 @@ function SalesTab({
           </div>
         </div>
       )}
+
+      {/* WHAT THIS INVOICE PUT IN THE LEDGERS — see LedgerPostings. */}
+      <LedgerPostings target={postings} onClose={() => setPostings(null)} />
     </div>
   )
 }
@@ -4216,6 +4689,20 @@ export function salesBargainDraws(
 
 function SalesBargainsTab({ onOpenSale }: { onOpenSale?: (id: number, companyId?: number) => void } = {}): React.JSX.Element {
   const isMobile = useIsMobile()
+  // EVERYTHING THAT HAS HAPPENED TO ONE BARGAIN.
+  //
+  // The field trail and the activity trail read as one story — the same panel
+  // the purchase bargain has. Behind the ⋮, because it is asked for when a
+  // figure is being questioned rather than while the bargain is being struck.
+  const sbHist = useRecordHistory()
+  const openSbHistory = (row: Row): void =>
+    sbHist.open({
+      changes: { entity: 'sales_bargains', id: Number(row.id) },
+      activity: { entity: ['SalesBargain', 'Sales bargain'], id: Number(row.id) },
+      kicker: 'Sales bargain',
+      title: String(row.bargain_no || 'this bargain'),
+      subtitle: `${row.customer_name || row.customer || '—'} · ${formatDate(row.bargain_date)} · ${formatNum(Number(row.qty) || 0)} ${row.uom || 'MT'}`
+    })
   // How far back this user may date a new entry. The save is refused either
   // way; greying the days out just stops the form offering one it will reject.
   const minDate = useEntryWindow('salesBargains')
@@ -4227,7 +4714,11 @@ function SalesBargainsTab({ onOpenSale }: { onOpenSale?: (id: number, companyId?
   // Type classification tab (Finished Oil / Fatty / …), Loose / Packed section,
   // and whether to also show fully-settled (0-balance) bargains.
   const [sectionCategory, setSectionCategory] = useState<string>('ALL')
-  const [sectionType, setSectionType] = useState<'LOOSE' | 'PACKED'>('LOOSE')
+  // Loose unless opened for Packed — the dashboard's open-bargains card opens
+  // the tab its figure came from.
+  const [sectionType, setSectionType] = useState<'LOOSE' | 'PACKED'>(() =>
+    takePageIntent('salesBargains')?.saleType === 'PACKED' ? 'PACKED' : 'LOOSE'
+  )
   // Remembered, like the purchase register's own. This is a way of LOOKING at
   // the book, not a one-off action: somebody who turns settled bargains on is
   // reconciling and wants them there until they say otherwise. The page
@@ -4250,10 +4741,51 @@ function SalesBargainsTab({ onOpenSale }: { onOpenSale?: (id: number, companyId?
   }, [showZero])
   const [search, setSearch] = useState('')
   const [openGroups, setOpenGroups] = useState<Set<string>>(new Set())
+  // What the register is banded by: the customer (the default, and what the
+  // desk reads it by) or the product — "how much SPENT EARTH is still open,
+  // across everyone". Only the banding changes; every figure is the same
+  // bargainRegister either way. Not remembered: it opens by party each time.
+  const [groupBy, setGroupBy] = useState<'party' | 'product'>('party')
+  const grpOf = useCallback(
+    (r: Row): string => (groupBy === 'product' ? String(r.product_name || '—') : String(r.customer || '—')),
+    [groupBy]
+  )
+  // The other of the two, shown on each row where the band's own name would be.
+  const rowOther = (r: Row): string => (groupBy === 'product' ? String(r.customer || '—') : String(r.product_name || '—'))
+  const groupNoun = (count: number): string =>
+    groupBy === 'product' ? (count === 1 ? 'product' : 'products') : count === 1 ? 'customer' : 'customers'
+  // THE SECOND LEVEL. Inside each band the bargains fall into sub-groups by
+  // the other of the two — under a customer, each product; under a product,
+  // each customer — each with its own totals, opening and closing on its own.
+  // OPEN by default (opening a band shows its bargains as it always did), so
+  // what is tracked is the ones a person has closed. Keyed band + sub-group.
+  const [closedSubs, setClosedSubs] = useState<Set<string>>(new Set())
+  const subKeyOf = (r: Row): string => `${grpOf(r)}\u0001${rowOther(r)}`
+  function toggleSub(key: string): void {
+    setClosedSubs((prev) => {
+      const next = new Set(prev)
+      if (next.has(key)) next.delete(key)
+      else next.add(key)
+      return next
+    })
+  }
+  function switchGroupBy(v: 'party' | 'product'): void {
+    if (v === groupBy) return
+    setGroupBy(v)
+    // The open bands and the phone's open screen were named for the old
+    // banding; none of them means anything under the new one.
+    setOpenGroups(new Set())
+    setClosedSubs(new Set())
+    setMobileParty(null)
+  }
   // Summary tiles start closed: the register underneath carries the same
   // figures per customer, so these are a glance, not the page.
   const [kpiOpen, setKpiOpen] = useState(false)
   const [expandedBg, setExpandedBg] = useState<Set<number>>(new Set())
+  // The phone drills down instead of nesting: the register is a list of
+  // customer cards, and tapping one opens that customer's own screen of
+  // bargains. This holds whose screen is open (its name), or null on the list.
+  const [mobileParty, setMobileParty] = useState<string | null>(null)
   // Period register range — defaults to the current month. Opening / Addition /
   // Dispatch / Balance are computed relative to this range.
   const [dateFrom, setDateFrom] = useState(monthStartISO())
@@ -4268,12 +4800,29 @@ function SalesBargainsTab({ onOpenSale }: { onOpenSale?: (id: number, companyId?
 
   const [open, setOpen] = useState(false)
   const [editing, setEditing] = useState<Row | null>(null)
+  // What a rate correction touches. Held after the save so the dialog can
+  // name the invoices and let the user pick which come onto the new rate.
+  const [rateChange, setRateChange] = useState<{
+    id: number
+    bargain_no: string
+    from: number
+    to: number
+    uom: string
+    invoices: Row[]
+  } | null>(null)
+  const [rerate, setRerate] = useState<Record<number, boolean>>({})
+  const [rerateBusy, setRerateBusy] = useState(false)
   const [form, setForm] = useState<Row>({})
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
   // add/remove balance qty
   const [adjustRow, setAdjustRow] = useState<Row | null>(null)
+  // The bargain whose hand-linked vouchers are open — see BargainVouchers.
+  const [vchLinkRow, setVchLinkRow] = useState<Row | null>(null)
+  // The bargain whose open balance is being moved to another product, with
+  // the balance the register shows for it.
+  const [moveRow, setMoveRow] = useState<Row | null>(null)
   const [adjustForm, setAdjustForm] = useState<{ mode: 'add' | 'remove'; amount: string; note: string; date: string }>({
     mode: 'add',
     amount: '',
@@ -4427,16 +4976,18 @@ function SalesBargainsTab({ onOpenSale }: { onOpenSale?: (id: number, companyId?
     () =>
       [...visibleRows].sort(
         (a, b) =>
-          String(a.customer || '').localeCompare(String(b.customer || '')) ||
+          grpOf(a).localeCompare(grpOf(b)) ||
+          rowOther(a).localeCompare(rowOther(b)) ||
           String(a.bargain_date || '').localeCompare(String(b.bargain_date || ''))
       ),
-    [visibleRows]
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [visibleRows, grpOf]
   )
 
   const groupStats = useMemo(() => {
     const m = new Map<string, { count: number; opening: number; addition: number; adjusted: number; dispatch: number; ret: number; closing: number; uom: string }>()
     for (const r of visibleRows) {
-      const k = String(r.customer || '—')
+      const k = grpOf(r)
       if (!m.has(k)) m.set(k, { count: 0, opening: 0, addition: 0, adjusted: 0, dispatch: 0, ret: 0, closing: 0, uom: String(r.uom || 'MT') })
       const g = m.get(k)!
       const reg = bargainRegister(r, F, T)
@@ -4449,7 +5000,27 @@ function SalesBargainsTab({ onOpenSale }: { onOpenSale?: (id: number, companyId?
       g.closing += reg.closing
     }
     return m
-  }, [visibleRows, F, T])
+  }, [visibleRows, F, T, grpOf])
+
+  // The same totals per sub-group, for the second-level bands.
+  const subStats = useMemo(() => {
+    const m = new Map<string, { count: number; opening: number; addition: number; adjusted: number; dispatch: number; ret: number; closing: number; uom: string }>()
+    for (const r of visibleRows) {
+      const k = subKeyOf(r)
+      if (!m.has(k)) m.set(k, { count: 0, opening: 0, addition: 0, adjusted: 0, dispatch: 0, ret: 0, closing: 0, uom: String(r.uom || 'MT') })
+      const g = m.get(k)!
+      const reg = bargainRegister(r, F, T)
+      g.count += 1
+      g.opening += reg.opening
+      g.addition += reg.addition
+      g.adjusted += reg.adjusted
+      g.dispatch += reg.dispatch
+      g.ret += reg.ret
+      g.closing += reg.closing
+    }
+    return m
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [visibleRows, F, T, grpOf])
 
   const grand = useMemo(() => {
     let count = 0, opening = 0, addition = 0, adjusted = 0, dispatch = 0, ret = 0, closing = 0
@@ -4571,11 +5142,35 @@ function SalesBargainsTab({ onOpenSale }: { onOpenSale?: (id: number, companyId?
     setError(null)
     try {
       const payload = { ...form, product_id: Number(form.product_id) }
-      if (editing) await window.api.salesBargains.update(editing.id as number, payload)
+      let moved: { id: number; bargain_no: string; rate_changed_from: number | null; rate: number } | null = null
+      if (editing) moved = await window.api.salesBargains.update(editing.id as number, payload)
       else await window.api.salesBargains.create(payload)
       toast.success('Sales bargain saved')
       setOpen(false)
       await load()
+      // A RATE CORRECTION IS NOT SILENT.
+      //
+      // Nothing above re-prices anything: every invoice keeps the rate it was
+      // billed at, which is what was invoiced and what is posted. But the
+      // correction is often MEANT to reach them, so the invoices sitting on
+      // the old rate are named at the moment it is made, for a person to pick
+      // from. Same as the purchase side.
+      if (moved && moved.rate_changed_from != null && editing) {
+        const linked = await window.api.salesBargains
+          .linkedInvoices(Number(editing.id))
+          .catch(() => [] as Row[])
+        if (linked.length) {
+          setRateChange({
+            id: Number(editing.id),
+            bargain_no: String(moved.bargain_no || editing.bargain_no || ''),
+            from: Number(moved.rate_changed_from),
+            to: Number(moved.rate),
+            uom: String(editing.uom || 'MT'),
+            invoices: linked
+          })
+          setRerate({})
+        }
+      }
     } catch (e) {
       setError(errText(e))
     } finally {
@@ -4786,11 +5381,20 @@ function SalesBargainsTab({ onOpenSale }: { onOpenSale?: (id: number, companyId?
     setAdjustForm({ mode: 'add', amount: '', note: '', date: todayISO() })
     setAdjustError(null)
   }
+  // Adding is the whole grant, so this desk never sees the other half of the
+  // dialog — and could not save it if it did.
+  const topUpDesk = TOPUP_DESK()
   async function saveAdjust(): Promise<void> {
     if (!adjustRow) return
     const amt = Number(adjustForm.amount)
     if (!amt || amt <= 0) {
       setAdjustError('Enter a quantity greater than zero')
+      return
+    }
+    // Belt and braces on the one rule this desk has. The server says the same
+    // thing; this says it before a wasted round trip.
+    if (topUpDesk && adjustForm.mode !== 'add') {
+      setAdjustError('This login can add to a bargain quantity, but not take any back off it.')
       return
     }
     const delta = adjustForm.mode === 'add' ? amt : -amt
@@ -5243,17 +5847,263 @@ function SalesBargainsTab({ onOpenSale }: { onOpenSale?: (id: number, companyId?
       }
     }
 
+    // One bargain, as a card — the same card whether it is drawn against or
+    // not. It lives on the customer's own screen now, so the list screen only
+    // has to carry the customer bands and this stays out of its way.
+    const renderBargainCard = (row: Row, sno: number): React.JSX.Element => {
+      const reg = bargainRegister(row, F, T)
+      const rowOpen = expandedBg.has(Number(row.id))
+      const rContracted = reg.opening + reg.addition + reg.adjusted
+      const rNet = reg.dispatch - reg.ret
+      const rb = bar(rNet, rContracted)
+      const disp = dispatchesByBargain.get(Number(row.id)) || []
+      const retLines = returnsByBargain.get(Number(row.id)) || []
+      const { lines, net } = salesBargainDraws(row, disp, retLines, coNameOf, coColourOf)
+      // A sales bargain keeps its rate as `rate` — the desktop row reads the
+      // same. (`rate_per_uom` is the PURCHASE bargain's column; reading it
+      // here showed every card at ₹0.00.)
+      const rate = Number(row.rate) || 0
+      const packed = String(row.sale_type || 'LOOSE') === 'PACKED'
+      return (
+        <div
+          key={String(row.id)}
+          className="flex-none overflow-hidden rounded-[4px] border border-[#D6E2D6] bg-white"
+          style={{ borderLeft: `3px solid ${reg.closing > 0.0005 ? '#12855A' : '#C3D2C6'}` }}
+        >
+          <div className="flex flex-col gap-[9px] px-[13px] py-3">
+            <div className="flex items-start gap-[9px]">
+              <div className="min-w-0 flex-1">
+                <div className="flex items-start gap-[7px]">
+                  <SerialNo n={sno} />
+                  <div className="doc-ref min-w-0 pt-px text-[12px] font-bold leading-[1.35] tracking-[-0.01em] [overflow-wrap:anywhere]">
+                    {String(row.bargain_no || '—')}
+                    {/* The desktop row's flag, for the same rule. */}
+                    {rateExpired(row) && Number(row.balance_qty) > 0 && (
+                      <span
+                        className="ml-1.5 inline-block whitespace-nowrap rounded-[2px] bg-[#FFEDD0] px-1.5 py-[2px] align-middle font-sans text-[9.5px] font-extrabold uppercase tracking-[.05em] text-[#8A5300]"
+                        title={`The rate expired on ${formatDate(row.rate_expiry_date)}`}
+                      >
+                        Rate expired
+                      </span>
+                    )}
+                  </div>
+                </div>
+                <div className="mt-[5px] text-[12px] font-bold leading-[1.4] text-[#33473E]">
+                  {rowOther(row)}
+                </div>
+              </div>
+              <div className="flex-none text-right">
+                <div className="doc-ref whitespace-nowrap text-[11.5px] font-semibold text-[#5A6B62]">
+                  {formatDate(row.bargain_date)}
+                </div>
+                <div className="doc-ref mt-[5px] whitespace-nowrap text-[12.5px] font-bold">
+                  {packed ? 'per SKU' : `${formatINR(rate)}/${String(row.uom || 'MT')}`}
+                </div>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-3 gap-[9px] rounded-[4px] border border-[#EAF0E9] bg-[#F7FAF6] px-[11px] py-2.5">
+              <div>
+                <div className="text-[9px] font-extrabold uppercase tracking-[.09em] text-[#5A6B62]">Contracted</div>
+                <div className="doc-ref mt-1 text-[13px] font-bold">{formatNum(rContracted)}</div>
+                {Math.abs(reg.adjusted) > 0.0005 && (
+                  <div className="doc-ref mt-[3px] whitespace-nowrap text-[10px] font-bold text-[#8A5300]">
+                    {reg.adjusted > 0 ? '+' : ''}
+                    {formatNum(reg.adjusted)} adj
+                  </div>
+                )}
+              </div>
+              <div>
+                <div className="text-[9px] font-extrabold uppercase tracking-[.09em] text-[#5A6B62]">Net drawn</div>
+                <div className="doc-ref mt-1 text-[13px] font-bold">{rNet ? formatNum(rNet) : '—'}</div>
+              </div>
+              <div>
+                <div className="text-[9px] font-extrabold uppercase tracking-[.09em] text-[#5A6B62]">Balance</div>
+                <div
+                  className="doc-ref mt-1 text-[13px] font-bold"
+                  style={{ color: reg.closing > 0.0005 ? '#0B6B45' : '#5A6B62' }}
+                >
+                  {formatNum(reg.closing)}
+                </div>
+              </div>
+            </div>
+
+            {Math.abs(reg.futureAdjusted) > 0.0005 && (
+              <div className="flex items-start gap-[9px] rounded-[4px] border border-[#F0E4CB] bg-[#FFF4E0] px-[11px] py-2.5">
+                <Clock className="h-[17px] w-[17px] flex-none text-[#C2700A]" />
+                <div className="min-w-0">
+                  <div className="doc-ref text-[12px] font-extrabold text-[#8A5300]">
+                    {reg.futureAdjusted > 0 ? '+' : ''}
+                    {formatNum(reg.futureAdjusted)} {String(row.uom || 'MT')} later
+                  </div>
+                  <div className="mt-[3px] text-[11px] font-semibold leading-[1.45] text-[#8A5300]">
+                    Adjusted after {formatDate(T)}, so it is not in this period&rsquo;s balance.
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {reg.ret > 0.0005 && (
+              <div className="flex items-center gap-[9px] rounded-[4px] border border-[#BFE3CB] bg-[#F4FBF6] px-[11px] py-2.5">
+                <Undo2 className="h-[17px] w-[17px] flex-none text-[#0B6B45]" />
+                <span className="min-w-0 flex-1 text-[11.5px] font-bold text-[#0B6B45]">
+                  Dispatched {formatNum(reg.dispatch)} · returned {formatNum(reg.ret)}
+                </span>
+              </div>
+            )}
+
+            <div>
+              <div className="h-1.5 overflow-hidden rounded-[2px] bg-[#EAF0E9]">
+                <div className="h-full" style={{ width: rb.pct, background: rb.colour }} />
+              </div>
+              <div className="mt-[7px] flex items-center justify-between gap-2.5">
+                <span className="text-[11px] font-bold text-[#5A6B62]">{rb.label} drawn</span>
+                <span className="doc-ref whitespace-nowrap text-[11.5px] font-bold text-[#33473E]">
+                  {formatINR(net.amount)}
+                </span>
+              </div>
+            </div>
+
+            {/* Labelled and on its own lines, the same block as the purchase
+                card — it used to run as grey text under the bar, easy to take
+                for part of the figures above it. */}
+            <BargainNote text={row.note} />
+
+            {packed && (
+              <button
+                type="button"
+                onClick={() => void openRates(row)}
+                className="flex h-11 items-center justify-center gap-2 rounded-[4px] border border-[#C3D2C6] text-[12px] font-extrabold text-[#33473E]"
+              >
+                <Tag className="h-4 w-4" />
+                SKU rate card
+              </button>
+            )}
+            {!topUpDesk && (
+              <button
+                type="button"
+                onClick={() => setVchLinkRow(row)}
+                className="flex h-11 items-center justify-center gap-2 rounded-[4px] border border-[#C3D2C6] text-[12px] font-extrabold text-[#33473E]"
+              >
+                <Link2 className="h-4 w-4 text-[#0B6B45]" />
+                Link vouchers
+              </button>
+            )}
+          </div>
+
+          <button
+            type="button"
+            onClick={() => toggleBg(Number(row.id))}
+            className="flex min-h-12 w-full items-center gap-[9px] border-t border-t-[#EAF0E9] bg-[#F7FAF6] px-[13px] py-2.5 text-left"
+          >
+            <Receipt className="h-[18px] w-[18px] flex-none text-[#33473E]" />
+            <span className="min-w-0 flex-1 text-[11.5px] font-extrabold text-[#33473E]">
+              {lines.length
+                ? `${lines.length} ${lines.length === 1 ? 'draw' : 'draws'} · ${formatNum(net.qty)} net`
+                : 'Nothing drawn yet'}
+            </span>
+            <ChevronRight
+              className="h-[19px] w-[19px] flex-none text-[#5A6B62] transition-transform"
+              style={{ transform: rowOpen ? 'rotate(90deg)' : 'none' }}
+            />
+          </button>
+
+          {rowOpen &&
+            (lines.length === 0 ? (
+              <div className="flex flex-col items-center gap-2 border-t border-t-[#EAF0E9] px-[13px] py-5">
+                <Receipt className="h-[26px] w-[26px] text-[#C3D2C6]" />
+                <span className="text-center text-[11.5px] font-semibold leading-[1.45] text-[#5A6B62]">
+                  Nothing drawn yet — the full {formatNum(reg.closing)} {String(row.uom || 'MT')} is still open.
+                </span>
+              </div>
+            ) : (
+              <>
+                {lines.map((l) => {
+                  const ret = l.kind === 'ret'
+                  return (
+                    <button
+                      key={l.key}
+                      type="button"
+                      disabled={ret || !onOpenSale}
+                      onClick={() => onOpenSale?.(l.id, l.companyId || undefined)}
+                      className="w-full border-t border-t-[#EAF0E9] px-[13px] py-2.5 text-left"
+                      style={{
+                        background: ret ? '#F4FBF6' : '#fff',
+                        borderLeft: `3px solid ${ret ? '#0B6B45' : '#C3D2C6'}`
+                      }}
+                    >
+                      <div className="flex items-center gap-[9px]">
+                        <span className="doc-ref min-w-0 flex-1 truncate text-[12px] font-bold">{l.label}</span>
+                        <span
+                          className="inline-flex flex-none items-center gap-[5px] whitespace-nowrap rounded-[2px] px-[7px] py-[3px] text-[9.5px] font-extrabold"
+                          style={ret ? { background: '#E9F5EE', color: '#0B6B45' } : { background: '#EAF0E9', color: '#33473E' }}
+                        >
+                          {ret ? <Undo2 className="h-3 w-3" /> : <Receipt className="h-3 w-3" />}
+                          {l.sub}
+                        </span>
+                      </div>
+                      <div className="mt-[9px] flex items-center gap-2.5">
+                        <div className="min-w-0 flex-1">
+                          <div className="text-[9px] font-extrabold uppercase tracking-[.09em] text-[#5A6B62]">
+                            Qty @ rate
+                          </div>
+                          <div
+                            className="doc-ref mt-1 text-[12.5px] font-bold"
+                            style={{ color: ret ? '#0B6B45' : '#0A1F17' }}
+                          >
+                            {formatNum(l.qty)} @ {formatINR(l.rate)}
+                          </div>
+                        </div>
+                        <div className="flex-none text-right">
+                          <div className="text-[9px] font-extrabold uppercase tracking-[.09em] text-[#5A6B62]">Value</div>
+                          <div
+                            className="doc-ref mt-1 whitespace-nowrap text-[12.5px] font-bold"
+                            style={{ color: ret ? '#0B6B45' : '#0A1F17' }}
+                          >
+                            {formatINR(l.amount)}
+                          </div>
+                        </div>
+                      </div>
+                      <div className="doc-ref mt-[7px] text-[10.5px] font-semibold text-[#5A6B62]">
+                        {formatDate(l.date)}
+                        {l.company ? ` · ${l.company}` : ''}
+                      </div>
+                    </button>
+                  )
+                })}
+                <div className="flex flex-col gap-2 bg-[#C7F03F] px-[13px] py-3">
+                  <div className="flex items-center gap-[9px]">
+                    <span className="min-w-0 flex-1 text-[10px] font-extrabold uppercase tracking-[.09em] text-[#2E4A0B]">
+                      Net drawn
+                    </span>
+                    <span className="doc-ref whitespace-nowrap text-[13px] font-bold text-[#12280B]">
+                      {formatNum(net.qty)} {String(row.uom || 'MT')}
+                    </span>
+                  </div>
+                  {net.ret > 0.0005 && (
+                    <div className="text-[11px] font-bold leading-[1.45] text-[#2E4A0B]">
+                      {formatNum(net.out)} dispatched less {formatNum(net.ret)} returned — the net is what the bargain
+                      kept.
+                    </div>
+                  )}
+                </div>
+              </>
+            ))}
+        </div>
+      )
+    }
+
     // No negative margins here: the wrapper no longer pads on a phone, so
     // pulling back out of it would drag the layout off the screen edge.
     return (
-      <div className="flex min-h-[100dvh] flex-col bg-[#F1F5EF]">
+      <div className="relative flex min-h-[100dvh] flex-col bg-[#F1F5EF]">
         <div className="flex-none bg-[#0B3D2E] px-4 pb-3.5 pt-2.5 text-white">
           <MobileBar onRefresh={() => load()} />
           <div className="min-w-0">
             <div className="text-[19px] font-extrabold tracking-[-0.02em]">Sales Bargain</div>
             <div className="mt-[3px] text-[11.5px] font-bold text-[#8FBFA8]">
-              {grand.count} {grand.count === 1 ? 'bargain' : 'bargains'} · {parties.length}{' '}
-              {parties.length === 1 ? 'customer' : 'customers'} · {formatDate(F)} to {formatDate(T)}
+              {grand.count} {grand.count === 1 ? 'bargain' : 'bargains'} · {parties.length} {groupNoun(parties.length)} ·{' '}
+              {formatDate(F)} to {formatDate(T)}
             </div>
           </div>
 
@@ -5332,6 +6182,25 @@ function SalesBargainsTab({ onOpenSale }: { onOpenSale?: (id: number, companyId?
               )
             })}
           </div>
+          <div className="flex items-center gap-[9px]">
+            <span className="flex-none text-[10px] font-extrabold uppercase tracking-[.1em] text-[#5A6B62]">Group by</span>
+            <div className="flex flex-1 gap-[3px] rounded-[4px] bg-[#EAF0E9] p-[3px]">
+              {(['party', 'product'] as const).map((v) => {
+                const on = groupBy === v
+                return (
+                  <button
+                    key={v}
+                    type="button"
+                    onClick={() => switchGroupBy(v)}
+                    className="flex h-[38px] flex-1 items-center justify-center rounded-[3px] text-[12.5px] font-extrabold"
+                    style={on ? { background: '#0B3D2E', color: '#C7F03F' } : { background: 'transparent', color: '#33473E' }}
+                  >
+                    {v === 'party' ? 'Party' : 'Product'}
+                  </button>
+                )
+              })}
+            </div>
+          </div>
           <button
             type="button"
             onClick={() => setShowZero((v) => !v)}
@@ -5357,30 +6226,25 @@ function SalesBargainsTab({ onOpenSale }: { onOpenSale?: (id: number, companyId?
 
         <div className="flex flex-1 flex-col gap-2.5 overflow-y-auto px-4 pb-[96px] pt-3">
           {parties.map(([party, g]) => {
-            const open2 = openGroups.has(party)
             const gContracted = g.opening + g.addition + g.adjusted
             const gNet = g.dispatch - g.ret
             const gb = bar(gNet, gContracted)
-            const gRows = sortedRows.filter((r) => String(r.customer || '—') === party)
             return (
               <div key={party} className="flex flex-none flex-col gap-[9px]">
                 <button
                   type="button"
-                  onClick={() => toggleGroup(party)}
+                  onClick={() => setMobileParty(party)}
                   className="flex-none rounded-[4px] border border-[#D6E2D6] bg-white px-[13px] py-3 text-left"
                   style={{ borderLeft: `3px solid ${g.closing > 0.0005 ? '#12855A' : '#C3D2C6'}` }}
                 >
                   <div className="flex items-start gap-[9px]">
-                    <ChevronRight
-                      className="mt-0.5 h-[19px] w-[19px] flex-none text-[#5A6B62] transition-transform"
-                      style={{ transform: open2 ? 'rotate(90deg)' : 'none' }}
-                    />
                     <div className="min-w-0 flex-1">
                       <div className="text-[13px] font-extrabold leading-[1.35] tracking-[-0.01em]">{party}</div>
                       <div className="mt-1 text-[11px] font-bold text-[#5A6B62]">
                         {g.count} {g.count === 1 ? 'bargain' : 'bargains'}
                       </div>
                     </div>
+                    <ChevronRight className="h-5 w-5 flex-none text-[#5A6B62]" />
                   </div>
                   <div className="mt-[11px] grid grid-cols-3 gap-[9px]">
                     <div>
@@ -5407,244 +6271,6 @@ function SalesBargainsTab({ onOpenSale }: { onOpenSale?: (id: number, companyId?
                   </div>
                 </button>
 
-                {open2 &&
-                  gRows.map((row) => {
-                    const reg = bargainRegister(row, F, T)
-                    const rowOpen = expandedBg.has(Number(row.id))
-                    const rContracted = reg.opening + reg.addition + reg.adjusted
-                    const rNet = reg.dispatch - reg.ret
-                    const rb = bar(rNet, rContracted)
-                    const disp = dispatchesByBargain.get(Number(row.id)) || []
-                    const retLines = returnsByBargain.get(Number(row.id)) || []
-                    const { lines, net } = salesBargainDraws(row, disp, retLines, coNameOf, coColourOf)
-                    const rate = Number(row.rate_per_uom) || 0
-                    const packed = String(row.sale_type || 'LOOSE') === 'PACKED'
-                    return (
-                      <div
-                        key={String(row.id)}
-                        className="flex-none overflow-hidden rounded-[4px] border border-[#D6E2D6] bg-white"
-                        style={{ borderLeft: `3px solid ${reg.closing > 0.0005 ? '#12855A' : '#C3D2C6'}` }}
-                      >
-                        <div className="flex flex-col gap-[9px] px-[13px] py-3">
-                          <div className="flex items-start gap-[9px]">
-                            <div className="min-w-0 flex-1">
-                              <div className="doc-ref text-[12px] font-bold leading-[1.35] tracking-[-0.01em] [overflow-wrap:anywhere]">
-                                {String(row.bargain_no || '—')}
-                              </div>
-                              <div className="mt-[5px] text-[12px] font-bold leading-[1.4] text-[#33473E]">
-                                {String(row.product_name || '—')}
-                              </div>
-                            </div>
-                            <div className="flex-none text-right">
-                              <div className="doc-ref whitespace-nowrap text-[11.5px] font-semibold text-[#5A6B62]">
-                                {formatDate(row.bargain_date)}
-                              </div>
-                              <div className="doc-ref mt-[5px] whitespace-nowrap text-[12.5px] font-bold">
-                                {/* A packed bargain is priced per SKU, so there
-                                    is no single rate to print here. */}
-                                {packed ? 'per SKU' : `${formatINR(rate)}/${String(row.uom || 'MT')}`}
-                              </div>
-                            </div>
-                          </div>
-
-                          <div className="grid grid-cols-3 gap-[9px] rounded-[4px] border border-[#EAF0E9] bg-[#F7FAF6] px-[11px] py-2.5">
-                            <div>
-                              <div className="text-[9px] font-extrabold uppercase tracking-[.09em] text-[#5A6B62]">Contracted</div>
-                              <div className="doc-ref mt-1 text-[13px] font-bold">{formatNum(rContracted)}</div>
-                              {Math.abs(reg.adjusted) > 0.0005 && (
-                                <div className="doc-ref mt-[3px] whitespace-nowrap text-[10px] font-bold text-[#8A5300]">
-                                  {reg.adjusted > 0 ? '+' : ''}
-                                  {formatNum(reg.adjusted)} adj
-                                </div>
-                              )}
-                            </div>
-                            <div>
-                              <div className="text-[9px] font-extrabold uppercase tracking-[.09em] text-[#5A6B62]">Net drawn</div>
-                              <div className="doc-ref mt-1 text-[13px] font-bold">{rNet ? formatNum(rNet) : '—'}</div>
-                            </div>
-                            <div>
-                              <div className="text-[9px] font-extrabold uppercase tracking-[.09em] text-[#5A6B62]">Balance</div>
-                              <div
-                                className="doc-ref mt-1 text-[13px] font-bold"
-                                style={{ color: reg.closing > 0.0005 ? '#0B6B45' : '#5A6B62' }}
-                              >
-                                {formatNum(reg.closing)}
-                              </div>
-                            </div>
-                          </div>
-
-                          {/* A top-up dated AFTER the period. It is contracted
-                              quantity that this period's balance cannot show,
-                              and leaving it silent made the balance look wrong
-                              against the bargain's own total. */}
-                          {Math.abs(reg.futureAdjusted) > 0.0005 && (
-                            <div className="flex items-start gap-[9px] rounded-[4px] border border-[#F0E4CB] bg-[#FFF4E0] px-[11px] py-2.5">
-                              <Clock className="h-[17px] w-[17px] flex-none text-[#C2700A]" />
-                              <div className="min-w-0">
-                                <div className="doc-ref text-[12px] font-extrabold text-[#8A5300]">
-                                  {reg.futureAdjusted > 0 ? '+' : ''}
-                                  {formatNum(reg.futureAdjusted)} {String(row.uom || 'MT')} later
-                                </div>
-                                <div className="mt-[3px] text-[11px] font-semibold leading-[1.45] text-[#8A5300]">
-                                  Adjusted after {formatDate(T)}, so it is not in this period&rsquo;s balance.
-                                </div>
-                              </div>
-                            </div>
-                          )}
-
-                          {reg.ret > 0.0005 && (
-                            <div className="flex items-center gap-[9px] rounded-[4px] border border-[#BFE3CB] bg-[#F4FBF6] px-[11px] py-2.5">
-                              <Undo2 className="h-[17px] w-[17px] flex-none text-[#0B6B45]" />
-                              <span className="min-w-0 flex-1 text-[11.5px] font-bold text-[#0B6B45]">
-                                Dispatched {formatNum(reg.dispatch)} · returned {formatNum(reg.ret)}
-                              </span>
-                            </div>
-                          )}
-
-                          <div>
-                            <div className="h-1.5 overflow-hidden rounded-[2px] bg-[#EAF0E9]">
-                              <div className="h-full" style={{ width: rb.pct, background: rb.colour }} />
-                            </div>
-                            <div className="mt-[7px] flex items-center justify-between gap-2.5">
-                              <span className="text-[11px] font-bold text-[#5A6B62]">{rb.label} drawn</span>
-                              <span className="doc-ref whitespace-nowrap text-[11.5px] font-bold text-[#33473E]">
-                                {formatINR(net.amount)}
-                              </span>
-                            </div>
-                          </div>
-
-                          {!!row.note && (
-                            <div className="text-[11.5px] font-semibold leading-[1.5] text-[#5A6B62]">
-                              {String(row.note)}
-                            </div>
-                          )}
-
-                          {/* On the desktop the rate card is a row action. It
-                              only exists for a packed bargain, so it lives on
-                              the card here rather than in the header — a header
-                              button would have had no bargain to open. */}
-                          {packed && (
-                            <button
-                              type="button"
-                              onClick={() => void openRates(row)}
-                              className="flex h-11 items-center justify-center gap-2 rounded-[4px] border border-[#C3D2C6] text-[12px] font-extrabold text-[#33473E]"
-                            >
-                              <Tag className="h-4 w-4" />
-                              SKU rate card
-                            </button>
-                          )}
-                        </div>
-
-                        <button
-                          type="button"
-                          onClick={() => toggleBg(Number(row.id))}
-                          className="flex min-h-12 w-full items-center gap-[9px] border-t border-t-[#EAF0E9] bg-[#F7FAF6] px-[13px] py-2.5 text-left"
-                        >
-                          <Receipt className="h-[18px] w-[18px] flex-none text-[#33473E]" />
-                          <span className="min-w-0 flex-1 text-[11.5px] font-extrabold text-[#33473E]">
-                            {lines.length
-                              ? `${lines.length} ${lines.length === 1 ? 'draw' : 'draws'} · ${formatNum(net.qty)} net`
-                              : 'Nothing drawn yet'}
-                          </span>
-                          <ChevronRight
-                            className="h-[19px] w-[19px] flex-none text-[#5A6B62] transition-transform"
-                            style={{ transform: rowOpen ? 'rotate(90deg)' : 'none' }}
-                          />
-                        </button>
-
-                        {rowOpen &&
-                          (lines.length === 0 ? (
-                            <div className="flex flex-col items-center gap-2 border-t border-t-[#EAF0E9] px-[13px] py-5">
-                              <Receipt className="h-[26px] w-[26px] text-[#C3D2C6]" />
-                              <span className="text-center text-[11.5px] font-semibold leading-[1.45] text-[#5A6B62]">
-                                Nothing drawn yet — the full {formatNum(reg.closing)} {String(row.uom || 'MT')} is still
-                                open.
-                              </span>
-                            </div>
-                          ) : (
-                            <>
-                              {lines.map((l) => {
-                                const ret = l.kind === 'ret'
-                                return (
-                                  <button
-                                    key={l.key}
-                                    type="button"
-                                    disabled={ret || !onOpenSale}
-                                    onClick={() => onOpenSale?.(l.id, l.companyId || undefined)}
-                                    className="w-full border-t border-t-[#EAF0E9] px-[13px] py-2.5 text-left"
-                                    style={{
-                                      background: ret ? '#F4FBF6' : '#fff',
-                                      borderLeft: `3px solid ${ret ? '#0B6B45' : '#C3D2C6'}`
-                                    }}
-                                  >
-                                    <div className="flex items-center gap-[9px]">
-                                      <span className="doc-ref min-w-0 flex-1 truncate text-[12px] font-bold">
-                                        {l.label}
-                                      </span>
-                                      <span
-                                        className="inline-flex flex-none items-center gap-[5px] whitespace-nowrap rounded-[2px] px-[7px] py-[3px] text-[9.5px] font-extrabold"
-                                        style={
-                                          ret
-                                            ? { background: '#E9F5EE', color: '#0B6B45' }
-                                            : { background: '#EAF0E9', color: '#33473E' }
-                                        }
-                                      >
-                                        {ret ? <Undo2 className="h-3 w-3" /> : <Receipt className="h-3 w-3" />}
-                                        {l.sub}
-                                      </span>
-                                    </div>
-                                    <div className="mt-[9px] flex items-center gap-2.5">
-                                      <div className="min-w-0 flex-1">
-                                        <div className="text-[9px] font-extrabold uppercase tracking-[.09em] text-[#5A6B62]">
-                                          Qty @ rate
-                                        </div>
-                                        <div
-                                          className="doc-ref mt-1 text-[12.5px] font-bold"
-                                          style={{ color: ret ? '#0B6B45' : '#0A1F17' }}
-                                        >
-                                          {formatNum(l.qty)} @ {formatINR(l.rate)}
-                                        </div>
-                                      </div>
-                                      <div className="flex-none text-right">
-                                        <div className="text-[9px] font-extrabold uppercase tracking-[.09em] text-[#5A6B62]">
-                                          Value
-                                        </div>
-                                        <div
-                                          className="doc-ref mt-1 whitespace-nowrap text-[12.5px] font-bold"
-                                          style={{ color: ret ? '#0B6B45' : '#0A1F17' }}
-                                        >
-                                          {formatINR(l.amount)}
-                                        </div>
-                                      </div>
-                                    </div>
-                                    <div className="doc-ref mt-[7px] text-[10.5px] font-semibold text-[#5A6B62]">
-                                      {formatDate(l.date)}
-                                      {l.company ? ` · ${l.company}` : ''}
-                                    </div>
-                                  </button>
-                                )
-                              })}
-                              <div className="flex flex-col gap-2 bg-[#C7F03F] px-[13px] py-3">
-                                <div className="flex items-center gap-[9px]">
-                                  <span className="min-w-0 flex-1 text-[10px] font-extrabold uppercase tracking-[.09em] text-[#2E4A0B]">
-                                    Net drawn
-                                  </span>
-                                  <span className="doc-ref whitespace-nowrap text-[13px] font-bold text-[#12280B]">
-                                    {formatNum(net.qty)} {String(row.uom || 'MT')}
-                                  </span>
-                                </div>
-                                {net.ret > 0.0005 && (
-                                  <div className="text-[11px] font-bold leading-[1.45] text-[#2E4A0B]">
-                                    {formatNum(net.out)} dispatched less {formatNum(net.ret)} returned — the net is what
-                                    the bargain kept.
-                                  </div>
-                                )}
-                              </div>
-                            </>
-                          ))}
-                      </div>
-                    )
-                  })}
               </div>
             )
           })}
@@ -5659,16 +6285,146 @@ function SalesBargainsTab({ onOpenSale }: { onOpenSale?: (id: number, companyId?
           )}
         </div>
 
-        <div className="sticky bottom-0 flex flex-none gap-2.5 border-t border-t-[#D6E2D6] bg-white px-4 pb-6 pt-[11px]">
-          <button
-            type="button"
-            onClick={openAdd}
-            className="flex h-[50px] flex-1 items-center justify-center gap-2 rounded-[4px] bg-[#0B3D2E] text-[13.5px] font-extrabold text-[#C7F03F]"
-          >
-            <Plus className="h-5 w-5" />
-            New bargain
-          </button>
-        </div>
+        {!topUpDesk && (
+          <div className="sticky bottom-0 flex flex-none gap-2.5 border-t border-t-[#D6E2D6] bg-white px-4 pb-6 pt-[11px]">
+            <button
+              type="button"
+              onClick={openAdd}
+              className="flex h-[50px] flex-1 items-center justify-center gap-2 rounded-[4px] bg-[#0B3D2E] text-[13.5px] font-extrabold text-[#C7F03F]"
+            >
+              <Plus className="h-5 w-5" />
+              New bargain
+            </button>
+          </div>
+        )}
+
+        {/* THE DRILL-DOWN. A customer's own screen, laid over the list: the
+            list stays mounted underneath so going back is instant and keeps
+            its scroll. Every bargain card here is the shared renderer, so the
+            draws, returns and net figures read exactly as the register does. */}
+        {mobileParty &&
+          (() => {
+            const g = groupStats.get(mobileParty)
+            const gRows = sortedRows.filter((r) => grpOf(r) === mobileParty)
+            const gContracted = g ? g.opening + g.addition + g.adjusted : 0
+            const gNet = g ? g.dispatch - g.ret : 0
+            const gClosing = g ? g.closing : 0
+            const gb = bar(gNet, gContracted)
+            const partyRowIds = gRows.map((r) => Number(r.id))
+            const allDrawsOpen = partyRowIds.length > 0 && partyRowIds.every((id) => expandedBg.has(id))
+            const strip = [
+              { k: 'Contracted', v: formatNum(gContracted), fg: '#fff' },
+              { k: 'Net drawn', v: gNet ? formatNum(gNet) : '—', fg: '#fff' },
+              { k: 'Balance', v: formatNum(gClosing), fg: gClosing > 0.0005 ? '#C7F03F' : '#fff' }
+            ]
+            return (
+              <div className="absolute inset-0 z-30 flex flex-col bg-[#F1F5EF]">
+                <div className="flex-none bg-[#0B3D2E] px-3 pb-3.5 text-white">
+                  <MobileBar onRefresh={() => load()} />
+                  <div className="flex items-start gap-1.5">
+                    <button
+                      type="button"
+                      onClick={() => setMobileParty(null)}
+                      className="flex h-11 w-11 flex-none items-center justify-center"
+                    >
+                      <ArrowLeft className="h-6 w-6" />
+                    </button>
+                    <div className="min-w-0 flex-1 pt-1.5">
+                      <div className="text-[10px] font-extrabold uppercase tracking-[.14em] text-[#8FBFA8]">
+                        Sales bargains
+                      </div>
+                      <div className="mt-[3px] text-[16px] font-extrabold leading-[1.3] tracking-[-0.02em] [text-wrap:pretty]">
+                        {mobileParty}
+                      </div>
+                      <div className="mt-1 text-[11.5px] font-bold text-[#8FBFA8]">
+                        {gRows.length} {gRows.length === 1 ? 'bargain' : 'bargains'}
+                      </div>
+                    </div>
+                  </div>
+                  <div className="mt-[11px] grid grid-cols-3 gap-2 px-1">
+                    {strip.map((s) => (
+                      <div key={s.k} className="min-w-0 rounded-[4px] bg-white/10 px-2.5 py-[9px]">
+                        <div className="text-[9px] font-extrabold uppercase tracking-[.09em] text-[#8FBFA8]">{s.k}</div>
+                        <div
+                          className="doc-ref mt-1 text-[13.5px] font-bold tracking-[-0.02em]"
+                          style={{ color: s.fg }}
+                        >
+                          {s.v}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                  <div className="mx-1 mt-2.5 h-1.5 overflow-hidden rounded-[2px] bg-white/[.16]">
+                    <div className="h-full" style={{ width: gb.pct, background: '#C7F03F' }} />
+                  </div>
+                  <div className="mx-1 mt-[7px] text-[11px] font-bold text-[#8FBFA8] [text-wrap:pretty]">
+                    {gb.label} drawn · {formatNum(gClosing)} MT open
+                  </div>
+                </div>
+
+                <div className="flex flex-1 flex-col gap-[11px] overflow-y-auto px-4 pb-6 pt-3">
+                  <div className="flex flex-none items-center gap-[9px]">
+                    <span className="text-[10px] font-extrabold uppercase tracking-[.13em] text-[#5A6B62]">Bargains</span>
+                    {gRows.length > 0 && (
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setExpandedBg((prev) => {
+                            const next = new Set(prev)
+                            if (allDrawsOpen) partyRowIds.forEach((id) => next.delete(id))
+                            else partyRowIds.forEach((id) => next.add(id))
+                            return next
+                          })
+                        }
+                        className="ml-auto flex min-h-11 flex-none items-center whitespace-nowrap pl-2.5 text-[10.5px] font-extrabold tracking-[.05em] text-[#0B6B45]"
+                      >
+                        {allDrawsOpen ? 'Collapse all' : 'Expand all'}
+                      </button>
+                    )}
+                  </div>
+                  {gRows.length === 0 ? (
+                    <div className="flex flex-none flex-col items-center gap-2 rounded-[4px] border border-[#E4ECE3] bg-white px-3.5 py-6">
+                      <Receipt className="h-[26px] w-[26px] text-[#C3D2C6]" />
+                      <span className="text-center text-[12px] font-semibold leading-[1.5] text-[#5A6B62] [text-wrap:pretty]">
+                        No bargain for this customer in this period.
+                      </span>
+                    </div>
+                  ) : (
+                    gRows.map((row, ri) => {
+                      // The sub-group this bargain sits in — its heading goes
+                      // above the first of them, and closes them all.
+                      const subKey = subKeyOf(row)
+                      const newSub = ri === 0 || subKey !== subKeyOf(gRows[ri - 1])
+                      const subClosed = closedSubs.has(subKey)
+                      const sg = subStats.get(subKey)
+                      const subSeq = gRows.slice(0, ri + 1).filter((r) => subKeyOf(r) === subKey).length
+                      return (
+                        <Fragment key={String(row.id)}>
+                          {newSub && (
+                            <button
+                              type="button"
+                              onClick={() => toggleSub(subKey)}
+                              className="flex min-h-11 flex-none items-center gap-2 rounded-[4px] border border-[#DCE7DB] bg-[#EFF5EC] px-3 text-left"
+                            >
+                              <ChevronDown
+                                className="h-[18px] w-[18px] flex-none text-[#33473E] transition-transform"
+                                style={{ transform: subClosed ? 'rotate(-90deg)' : 'none' }}
+                              />
+                              <span className="min-w-0 flex-1 truncate text-[13px] font-extrabold text-[#0A1F17]">{rowOther(row)}</span>
+                              <span className="whitespace-nowrap text-[11px] font-bold text-[#5A6B62]">
+                                {sg?.count ?? 0} · {formatNum(sg?.closing ?? 0)} {sg?.uom || 'MT'} open
+                              </span>
+                            </button>
+                          )}
+                          {!subClosed && renderBargainCard(row, subSeq)}
+                        </Fragment>
+                      )
+                    })
+                  )}
+                </div>
+              </div>
+            )
+          })()}
       </div>
     )
   })()
@@ -5720,6 +6476,30 @@ function SalesBargainsTab({ onOpenSale }: { onOpenSale?: (id: number, companyId?
               )}
             >
               {t === 'LOOSE' ? 'Loose' : 'Packed'}
+            </button>
+          ))}
+        </div>
+        {/* How the register is banded — by customer (default) or by product. */}
+        <div
+          className={cn('inline-flex items-center rounded-lg border p-0.5', __WEB__ && '!h-[38px] !gap-0.5 !rounded-[4px] !border-[#C3D2C6] !bg-white !p-[3px]')}
+          title="Band the register by customer or by product"
+        >
+          <span className={cn('px-2 text-[11px] font-medium text-muted-foreground', __WEB__ && '!px-2 !text-[10px] !font-extrabold !uppercase !tracking-[.1em] !text-[#7C9188]')}>
+            Group by
+          </span>
+          {(['party', 'product'] as const).map((v) => (
+            <button
+              key={v}
+              type="button"
+              onClick={() => switchGroupBy(v)}
+              className={cn(
+                'whitespace-nowrap rounded-md px-3 py-1 text-[13px] font-medium transition-colors',
+                groupBy === v ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:text-foreground',
+                __WEB__ && '!h-[30px] !rounded-[2px] !px-3.5 !text-[12.5px] !font-extrabold',
+                __WEB__ && (groupBy === v ? '!bg-[#0B3D2E] !text-[#C7F03F]' : '!bg-transparent !text-[#5A6B62] hover:!text-[#0B3D2E]')
+              )}
+            >
+              {v === 'party' ? 'Party' : 'Product'}
             </button>
           ))}
         </div>
@@ -5862,9 +6642,11 @@ function SalesBargainsTab({ onOpenSale }: { onOpenSale?: (id: number, companyId?
               }
             ]}
           />
-          <Button size="sm" onClick={openAdd} disabled={products.length === 0}>
-            <Plus className="h-4 w-4" /> New sales bargain
-          </Button>
+          {!topUpDesk && (
+            <Button size="sm" onClick={openAdd} disabled={products.length === 0}>
+              <Plus className="h-4 w-4" /> New sales bargain
+            </Button>
+          )}
         </div>
       </div>
 
@@ -5892,7 +6674,7 @@ function SalesBargainsTab({ onOpenSale }: { onOpenSale?: (id: number, companyId?
               k: 'Bargains open',
               v: String(grand.count),
               unit: '',
-              sub: `across ${groupStats.size} customer${groupStats.size === 1 ? '' : 's'}`,
+              sub: `across ${groupStats.size} ${groupNoun(groupStats.size)}`,
               accent: '#0B3D2E'
             },
             {
@@ -5986,7 +6768,7 @@ function SalesBargainsTab({ onOpenSale }: { onOpenSale?: (id: number, companyId?
               <TableHead>Bargain no</TableHead>
               <TableHead>Manual no</TableHead>
               <TableHead>Date</TableHead>
-              <TableHead>Product</TableHead>
+              <TableHead>{groupBy === 'product' ? 'Customer' : 'Product'}</TableHead>
               <TableHead className={cn('text-right', __WEB__ && SB_HGL)}>Opening</TableHead>
               <TableHead className={cn('text-right', __WEB__ && SB_HG)}>Addition</TableHead>
               <TableHead className={cn('text-right', __WEB__ && SB_HGR)}>Adjusted</TableHead>
@@ -6032,12 +6814,17 @@ function SalesBargainsTab({ onOpenSale }: { onOpenSale?: (id: number, companyId?
                   <TableCell className="py-2" />
                 </TableRow>
                 {sortedRows.map((row, i) => {
-                  const grp = String(row.customer || '—')
-                  const newGroup = i === 0 || grp !== String(sortedRows[i - 1].customer || '—')
+                  const grp = grpOf(row)
+                  const newGroup = i === 0 || grp !== grpOf(sortedRows[i - 1])
                   const isCollapsed = !q && !openGroups.has(grp)
                   const g = groupStats.get(grp)
-                  // Serial number within the customer group (1-based).
-                  const seq = sortedRows.slice(0, i + 1).filter((r) => String(r.customer || '—') === grp).length
+                  const sub = rowOther(row)
+                  const subKey = subKeyOf(row)
+                  const newSub = newGroup || sub !== rowOther(sortedRows[i - 1])
+                  const subClosed = !q && closedSubs.has(subKey)
+                  const sg = subStats.get(subKey)
+                  // Serial number within the sub-group (1-based).
+                  const seq = sortedRows.slice(0, i + 1).filter((r) => subKeyOf(r) === subKey).length
                   const bgOpen = expandedBg.has(Number(row.id))
                   return (
                     <Fragment key={row.id as number}>
@@ -6079,7 +6866,47 @@ function SalesBargainsTab({ onOpenSale }: { onOpenSale?: (id: number, companyId?
                           <TableCell className="py-1.5" />
                         </TableRow>
                       )}
-                      {!isCollapsed && (() => {
+                      {/* The sub-group band: a lighter, indented copy of the
+                          band above it, with its own totals. */}
+                      {newSub && !isCollapsed && (
+                        <TableRow
+                          className={cn(
+                            'cursor-pointer bg-slate-50 hover:bg-slate-100',
+                            __WEB__ && '!border-b !border-b-[#EAF0E9] !border-l-[3px] !border-l-[#9DC4AE] !bg-[#FBFDFA] hover:!bg-[#EFF5EC] [&>td]:!h-[38px]'
+                          )}
+                          onClick={() => toggleSub(subKey)}
+                        >
+                          <TableCell colSpan={4} className="py-1 pl-6">
+                            <span className={cn('inline-flex items-center gap-1.5 text-xs font-semibold text-slate-700', __WEB__ && '!gap-2 !pl-4 !text-[12.5px] !font-extrabold !text-[#33473E]')}>
+                              {subClosed ? <ChevronRight className={cn('h-3.5 w-3.5', __WEB__ && '!h-4 !w-4 !text-[#7C9188]')} /> : <ChevronDown className={cn('h-3.5 w-3.5', __WEB__ && '!h-4 !w-4 !text-[#7C9188]')} />}
+                              {sub}
+                              <span className={cn('font-medium text-slate-500', __WEB__ && '!text-[11px] !font-semibold !text-[#7C9188]')}>
+                                · {sg?.count ?? 0} bargain{(sg?.count ?? 0) === 1 ? '' : 's'}
+                              </span>
+                            </span>
+                          </TableCell>
+                          {[sg?.opening ?? 0, sg?.addition ?? 0, sg?.adjusted ?? 0].map((v, k) => (
+                            <TableCell
+                              key={k}
+                              className={cn('py-1 text-right text-xs font-semibold tabular-nums text-slate-600', __WEB__ && '!text-[12px]', __WEB__ && (v ? '!text-[#33473E]' : '!text-[#A8B8AE]'), __WEB__ && k === 0 && '!border-l !border-l-[#EAF0E9]', __WEB__ && k === 2 && '!border-r !border-r-[#EAF0E9]')}
+                            >
+                              {formatNum(v)}
+                            </TableCell>
+                          ))}
+                          <TableCell className="py-1" />
+                          <TableCell className={cn('py-1 text-right text-xs font-semibold tabular-nums text-slate-600', __WEB__ && '!border-l !border-l-[#EAF0E9] !text-[12px]', __WEB__ && ((sg?.dispatch ?? 0) ? '!text-[#33473E]' : '!text-[#A8B8AE]'))}>
+                            {formatNum(sg?.dispatch ?? 0)}
+                          </TableCell>
+                          <TableCell className={cn('py-1 text-right text-xs font-semibold tabular-nums text-slate-600', __WEB__ && '!border-r !border-r-[#EAF0E9] !text-[12px]', __WEB__ && ((sg?.ret ?? 0) > 0.0005 ? '!text-[#8A5300]' : '!text-[#A8B8AE]'))}>
+                            {(sg?.ret ?? 0) > 0.0005 ? formatNum(sg?.ret ?? 0) : '0'}
+                          </TableCell>
+                          <TableCell className={cn('py-1 text-right text-xs font-bold tabular-nums text-slate-700', __WEB__ && '!text-[12.5px] !text-[#0A1F17]')}>
+                            {formatNum(sg?.closing ?? 0)} <span className={cn('text-[10px] font-semibold text-muted-foreground', __WEB__ && '!text-[#7C9188]')}>{sg?.uom || 'MT'}</span>
+                          </TableCell>
+                          <TableCell className="py-1" />
+                        </TableRow>
+                      )}
+                      {!isCollapsed && !subClosed && (() => {
                         const reg = bargainRegister(row, F, T)
                         return (
                         <TableRow
@@ -6135,9 +6962,9 @@ function SalesBargainsTab({ onOpenSale }: { onOpenSale?: (id: number, companyId?
                           <TableCell>
                             {__WEB__ ? (
                               <span className="rounded-[2px] bg-[#EAF0E9] px-1.5 py-1 text-[11px] font-extrabold tracking-[.05em] text-[#33473E]">
-                                {row.product_name || '—'}
+                                {rowOther(row)}
                               </span>
-                            ) : (row.product_name || '—')}
+                            ) : rowOther(row)}
                           </TableCell>
                           <TableCell className={cn('text-right tabular-nums text-muted-foreground', __WEB__ && SB_GL, __WEB__ && (reg.opening ? '!text-[13px] !font-bold !text-[#0A1F17]' : '!text-[13px] !font-medium !text-[#C3D2C6]'))}>{reg.opening ? formatNum(reg.opening) : '—'}</TableCell>
                           <TableCell className={cn('text-right tabular-nums', __WEB__ && SB_G, __WEB__ && '!text-[13.5px] !font-bold')}>{reg.addition ? formatNum(reg.addition) : '—'}</TableCell>
@@ -6177,19 +7004,41 @@ function SalesBargainsTab({ onOpenSale }: { onOpenSale?: (id: number, companyId?
                           <TableCell className="text-right" onClick={(e) => e.stopPropagation()}>
                             <div className="flex justify-end">
                               <RowActions
-                                actions={[
-                                  { label: 'SKU rate card', icon: Tags, onClick: () => void openRates(row) },
-                                  { label: 'Add / remove balance qty', icon: SlidersHorizontal, onClick: () => openAdjust(row) },
-                                  { label: 'Edit bargain', icon: Pencil, onClick: () => openEdit(row) },
-                                  { label: 'Delete bargain', icon: Trash2, danger: true, onClick: () => del(row) }
-                                ]}
+                                actions={
+                                  topUpDesk
+                                    ? [
+                                        // The one thing this desk does, and the
+                                        // record of what has been done to the
+                                        // bargain — which is read-only.
+                                        { label: 'Add to balance qty', icon: SlidersHorizontal, onClick: () => openAdjust(row) },
+                                        { label: 'History — who changed what', icon: History, onClick: () => openSbHistory(row) }
+                                      ]
+                                    : [
+                                        { label: 'SKU rate card', icon: Tags, onClick: () => void openRates(row) },
+                                        { label: 'Add / remove balance qty', icon: SlidersHorizontal, onClick: () => openAdjust(row) },
+                                        { label: 'Link vouchers', icon: Link2, onClick: () => setVchLinkRow(row) },
+                                        {
+                                          label: 'Move balance to another product',
+                                          icon: Shuffle,
+                                          onClick: () => setMoveRow({ ...row, _balance: reg.closing }),
+                                          disabled: String(row.sale_type || 'LOOSE') === 'PACKED' || !(reg.closing > 0.0005),
+                                          disabledReason:
+                                            String(row.sale_type || 'LOOSE') === 'PACKED'
+                                              ? 'A packed bargain is priced on its own SKU rate card — reduce it and strike a new bargain instead'
+                                              : 'Nothing is open on this bargain'
+                                        },
+                                        { label: 'Edit bargain', icon: Pencil, onClick: () => openEdit(row) },
+                                        { label: 'History — who changed what', icon: History, onClick: () => openSbHistory(row) },
+                                        { label: 'Delete bargain', icon: Trash2, danger: true, onClick: () => del(row) }
+                                      ]
+                                }
                               />
                             </div>
                           </TableCell>
                         </TableRow>
                         )
                       })()}
-                      {!isCollapsed && bgOpen && (
+                      {!isCollapsed && !subClosed && bgOpen && (
                         <TableRow className="bg-muted/20 hover:bg-muted/20">
                           <TableCell colSpan={12} className="p-0">
                             {(() => {
@@ -6430,12 +7279,15 @@ function SalesBargainsTab({ onOpenSale }: { onOpenSale?: (id: number, companyId?
               {formatNum(grand.closing)} MT balance
             </div>
             {(() => {
-              const parties = Array.from(new Set(sortedRows.map((r) => String(r.customer || '—'))))
+              const parties = Array.from(new Set(sortedRows.map((r) => grpOf(r))))
               const allOpen = parties.length > 0 && parties.every((p) => openGroups.has(p))
               return (
                 <button
                   type="button"
-                  onClick={() => setOpenGroups(allOpen ? new Set<string>() : new Set(parties))}
+                  onClick={() => {
+                    setOpenGroups(allOpen ? new Set<string>() : new Set(parties))
+                    if (!allOpen) setClosedSubs(new Set())
+                  }}
                   className="flex items-center gap-1.5 text-[11.5px] font-extrabold uppercase tracking-[.05em] text-[#0B6B45] transition-colors hover:text-[#0B3D2E]"
                 >
                   <ChevronDown className={cn('h-[18px] w-[18px] transition-transform', allOpen && 'rotate-180')} />
@@ -6805,6 +7657,26 @@ function SalesBargainsTab({ onOpenSale }: { onOpenSale?: (id: number, companyId?
         </DialogContent>
       </Dialog>
 
+      <BargainVouchersDialog kind="sales" bargain={vchLinkRow} onClose={() => setVchLinkRow(null)} />
+      <BargainMoveBalanceDialog
+        kind="sales"
+        bargain={
+          moveRow && {
+            id: moveRow.id,
+            bargain_no: moveRow.bargain_no,
+            uom: moveRow.uom,
+            rate: moveRow.rate,
+            productId: moveRow.product_id,
+            productName: moveRow.product_name,
+            party: moveRow.customer_master || moveRow.customer,
+            balance: moveRow._balance
+          }
+        }
+        products={products}
+        onClose={() => setMoveRow(null)}
+        onDone={() => void load()}
+      />
+
       <Dialog open={!!adjustRow} onOpenChange={(o) => !o && setAdjustRow(null)}>
         <DialogContent
           className={cn(
@@ -6876,11 +7748,11 @@ function SalesBargainsTab({ onOpenSale }: { onOpenSale?: (id: number, companyId?
                         </div>
                       </div>
 
-                      <div className="grid grid-cols-2 gap-2.5">
+                      <div className={cn('grid gap-2.5', topUpDesk ? 'grid-cols-1' : 'grid-cols-2')}>
                         {([
                           { m: 'add' as const, label: '+ Add to balance', on: 'border-[#12855A] bg-[#E9F5EE] text-[#0B6B45]' },
                           { m: 'remove' as const, label: '− Remove from balance', on: 'border-[#C2700A] bg-[#FFEDD0] text-[#8A5300]' }
-                        ]).map((b) => (
+                        ]).filter((b) => !topUpDesk || b.m === 'add').map((b) => (
                           <button
                             key={b.m}
                             type="button"
@@ -7030,7 +7902,9 @@ function SalesBargainsTab({ onOpenSale }: { onOpenSale?: (id: number, companyId?
                 </div>
                 <div className="flex gap-2">
                   <button type="button" onClick={() => setAdjustForm((p) => ({ ...p, mode: 'add' }))} className={cn('flex-1 rounded-md border px-3 py-2 text-sm font-medium', adjustForm.mode === 'add' ? 'border-emerald-500 bg-emerald-50 text-emerald-800' : 'hover:bg-muted/40')}>+ Add to balance</button>
+                  {!topUpDesk && (
                   <button type="button" onClick={() => setAdjustForm((p) => ({ ...p, mode: 'remove' }))} className={cn('flex-1 rounded-md border px-3 py-2 text-sm font-medium', adjustForm.mode === 'remove' ? 'border-red-500 bg-red-50 text-red-700' : 'hover:bg-muted/40')}>− Remove from balance</button>
+                  )}
                 </div>
                 <div className="flex flex-col gap-1.5">
                   <Label>Quantity to {adjustForm.mode === 'add' ? 'add' : 'remove'} ({uom})</Label>
@@ -7066,6 +7940,159 @@ function SalesBargainsTab({ onOpenSale }: { onOpenSale?: (id: number, companyId?
           )}
         </DialogContent>
       </Dialog>
+
+      {/* WHAT A RATE CORRECTION TOUCHES.
+          Nothing here changes a figure on its own — every invoice keeps the
+          rate it was billed at. This exists so the change is not silent: the
+          person who made it sees, at that moment, every invoice sitting on the
+          old rate, ticks the ones that should follow, and they are re-rated
+          and re-posted together. The purchase side works exactly this way. */}
+      <Dialog open={!!rateChange} onOpenChange={(o) => !o && setRateChange(null)}>
+        <DialogContent className={cn('max-w-[640px]', __WEB__ && '!max-w-[680px]')}>
+          <DialogHeader>
+            <DialogTitle>Rate changed on {rateChange?.bargain_no}</DialogTitle>
+          </DialogHeader>
+          {!!rateChange && (() => {
+            // An invoice already on the new rate has nothing to rectify.
+            const stale = (iv: Row): boolean => Math.abs((Number(iv.billed_rate) || 0) - rateChange.to) > 0.005
+            const picked = rateChange.invoices.filter((iv) => rerate[Number(iv.id)] && stale(iv))
+            return (
+              <div className="grid gap-3">
+                <div
+                  className={cn(
+                    'flex flex-wrap items-center gap-2.5 rounded-[4px] border px-3.5 py-3',
+                    __WEB__ ? 'border-[#DCE7DB] bg-[#F7FAF6]' : 'border-[#e5dfc8] bg-[#f7f4e8]'
+                  )}
+                >
+                  <span className="doc-ref text-[14px] font-bold text-[#8A9690] line-through">
+                    {formatINR(rateChange.from)}
+                  </span>
+                  <span className="text-[#B3C0B8]">→</span>
+                  <span className="doc-ref text-[16px] font-bold tracking-[-0.02em] text-[#0B6B45]">
+                    {formatINR(rateChange.to)}
+                  </span>
+                  <span className="text-[12px] font-bold text-[#5A6B62]">per {rateChange.uom}</span>
+                </div>
+                <p className="text-[12.5px] font-semibold leading-[1.5] text-[#33473E] [text-wrap:pretty]">
+                  {rateChange.invoices.length} invoice{rateChange.invoices.length === 1 ? '' : 's'} already raised
+                  against this bargain. None of them has changed — each keeps the rate it was billed at. Tick the ones
+                  that should come onto the new rate and they are re-rated and re-posted together.
+                </p>
+                <div className="max-h-[320px] overflow-y-auto rounded-[4px] border border-[#DCE7DB]">
+                  <table className="w-full text-[12.5px]">
+                    <thead className="bg-[#F7FAF6] text-[10px] font-extrabold uppercase tracking-[.1em] text-[#5A6B62]">
+                      <tr>
+                        <th className="w-9 px-3 py-2">
+                          {/* All or none. The commonest answer to "which of
+                              these five" is "all of them". */}
+                          <input
+                            type="checkbox"
+                            className="h-4 w-4 accent-[#0B3D2E]"
+                            checked={
+                              rateChange.invoices.filter(stale).length > 0 &&
+                              rateChange.invoices.filter(stale).every((iv) => rerate[Number(iv.id)])
+                            }
+                            onChange={(e) => {
+                              const on = e.target.checked
+                              const next: Record<number, boolean> = {}
+                              for (const iv of rateChange.invoices) if (stale(iv)) next[Number(iv.id)] = on
+                              setRerate(next)
+                            }}
+                          />
+                        </th>
+                        <th className="px-3 py-2 text-left">Invoice</th>
+                        <th className="px-3 py-2 text-left">Date</th>
+                        <th className="px-3 py-2 text-right">Qty</th>
+                        <th className="px-3 py-2 text-right">Billed at</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {rateChange.invoices.map((iv) => {
+                        const off = stale(iv)
+                        return (
+                          <tr key={String(iv.id)} className="border-t border-t-[#EAF0E9]">
+                            <td className="px-3 py-2">
+                              <input
+                                type="checkbox"
+                                className="h-4 w-4 accent-[#0B3D2E] disabled:opacity-30"
+                                disabled={!off}
+                                checked={!!rerate[Number(iv.id)]}
+                                onChange={(e) => setRerate((p) => ({ ...p, [Number(iv.id)]: e.target.checked }))}
+                              />
+                            </td>
+                            <td className="px-3 py-2 font-bold">{String(iv.invoice_no || '—')}</td>
+                            <td className="px-3 py-2 text-[#5A6B62]">{formatDate(iv.sale_date)}</td>
+                            <td className="px-3 py-2 text-right tabular-nums">{formatNum(Number(iv.qty) || 0)}</td>
+                            <td
+                              className={cn(
+                                'px-3 py-2 text-right font-bold tabular-nums',
+                                off ? 'text-[#8A5300]' : 'text-[#5A6B62]'
+                              )}
+                            >
+                              {formatINR(Number(iv.billed_rate) || 0)}
+                              {!off && <span className="ml-1.5 text-[10px] font-bold uppercase">on rate</span>}
+                            </td>
+                          </tr>
+                        )
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+                <DialogFooter className={cn(__WEB__ && '!flex !items-center !gap-3 sm:!justify-start')}>
+                  <span className="text-[12.5px] font-bold text-[#5A6B62]">
+                    {picked.length
+                      ? `${picked.length} invoice${picked.length === 1 ? '' : 's'} will be re-rated and re-posted`
+                      : 'Nothing selected — the invoices keep the rate they were billed at'}
+                  </span>
+                  <div className={cn(__WEB__ && 'ml-auto flex gap-2.5')}>
+                    <Button variant="outline" onClick={() => setRateChange(null)} disabled={rerateBusy}>
+                      {picked.length ? 'Not now' : 'Got it'}
+                    </Button>
+                    {picked.length > 0 && (
+                      <Button
+                        disabled={rerateBusy}
+                        className={cn(__WEB__ && '!bg-[#0B3D2E] !font-extrabold !text-[#C7F03F] hover:!bg-[#0F4A38]')}
+                        onClick={async () => {
+                          setRerateBusy(true)
+                          try {
+                            const res = await window.api.salesBargains.rerateInvoices(
+                              rateChange.id,
+                              rateChange.to,
+                              picked.map((iv) => Number(iv.id))
+                            )
+                            if (res.updated.length) {
+                              toast.success(
+                                `${res.updated.length} invoice${res.updated.length === 1 ? '' : 's'} brought onto ${formatINR(rateChange.to)}`
+                              )
+                            }
+                            // A bulk action that half-worked has to say so, by
+                            // name — silence would read as success.
+                            for (const f of res.failed) {
+                              toast.error(`${String(f.invoice_no || f.id)} — ${String(f.reason)}`)
+                            }
+                            setRateChange(null)
+                            setRerate({})
+                            await load()
+                          } catch (e) {
+                            toast.error(errText(e))
+                          } finally {
+                            setRerateBusy(false)
+                          }
+                        }}
+                      >
+                        {rerateBusy ? 'Re-rating…' : `Re-rate ${picked.length}`}
+                      </Button>
+                    )}
+                  </div>
+                </DialogFooter>
+              </div>
+            )
+          })()}
+        </DialogContent>
+      </Dialog>
+
+      {/* The bargain's own story — opened from the ⋮ on its row. */}
+      <RecordHistory target={sbHist.target} onClose={sbHist.close} />
     </div>
   )
 }

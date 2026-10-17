@@ -113,11 +113,17 @@ const ITEMS: Record<string, { label: string; icon: LucideIcon }> = {
 const GROUPS: { label: string; ids: string[] }[] = [
   { label: 'Overview', ids: ['dashboard'] },
   { label: 'Purchase', ids: ['bargains', 'orders', 'consignment', 'gateEntry'] },
-  { label: 'Production', ids: ['products', 'formulation', 'production', 'stock'] },
+  { label: 'Production', ids: ['formulation', 'production', 'stock'] },
   { label: 'Sales', ids: ['salesBargains', 'sales'] },
   { label: 'Trading', ids: ['trading'] },
-  { label: 'Accounts', ids: ['accounts', 'treasury', 'bankRecon'] },
-  { label: 'Masters', ids: ['categories', 'suppliers', 'transporters', 'customers', 'ports', 'banks', 'brokers', 'packaging'] },
+  // Bank Reconciliation left the menu (2026-10-11) — the bank book is checked
+  // in Accounting → Tally File Updation now. The page itself is untouched.
+  { label: 'Accounts', ids: ['accounts', 'treasury'] },
+  // Products sits with the other registers that are MAINTAINED rather than
+  // worked: it is a master list, like Categories beside it, and the work-
+  // assignment rail has always grouped it that way (MODULE_GROUP in
+  // lib/modules.ts). The two now agree.
+  { label: 'Masters', ids: ['categories', 'products', 'suppliers', 'transporters', 'customers', 'ports', 'banks', 'brokers', 'packaging'] },
   // userAccess is web-only. It is a NEW page rather than a rename, and the
   // desktop app still reaches the same job through Settings -> Users, which is
   // untouched — so putting it in the rail there would be two doors onto one
@@ -223,13 +229,16 @@ export function Sidebar({
       >
         <Icon className="h-4 w-4 shrink-0" />
         {showLabel && <span className="truncate">{it.label}</span>}
+        {showLabel && id === 'accounts' && !mobile && (
+          <kbd className="ml-auto rounded border border-current/30 px-1 text-[10px] font-bold leading-4 opacity-70" title="Press A anywhere to open Accounting">A</kbd>
+        )}
       </button>
     )
     if (showLabel) return <div key={id}>{btn}</div>
     return (
       <Tooltip key={id}>
         <TooltipTrigger asChild>{btn}</TooltipTrigger>
-        <TooltipContent side="right">{it.label}</TooltipContent>
+        <TooltipContent side="right">{id === 'accounts' ? `${it.label} · press A` : it.label}</TooltipContent>
       </Tooltip>
     )
   }
@@ -335,7 +344,21 @@ export function Sidebar({
         onMouseEnter={() => setExpanded(true)}
         onMouseLeave={() => setExpanded(false)}
         className={cn(
-          'fixed left-0 top-0 z-30 flex h-screen flex-col shadow-sm transition-[width] duration-200 ease-out',
+          // THE RAIL OUTRANKS EVERY PAGE.
+          //
+          // It is fixed and it GROWS on hover, out over whatever page is
+          // showing, so it has to win against page chrome that it was never
+          // laid out beside. It sat on 30 and so did the odd page header;
+          // being later in the DOM the page won the tie and clipped the top
+          // of the expanded rail — the brand and the first menu line
+          // disappeared under it.
+          //
+          // The ladder, top to bottom: dialogs and the notification sheet
+          // (50+) > this rail (40) > a page's own header (30) > anything
+          // sticky inside a page, a table head above all (<=20). Leaving a
+          // whole layer between the rail and the headers is the point: no
+          // page can reach it by accident again.
+          'fixed left-0 top-0 z-40 flex h-screen flex-col shadow-sm transition-[width] duration-200 ease-out',
           __WEB__ ? 'bg-[#0B3D2E]' : 'border-r bg-card',
           expanded ? 'w-64' : 'w-16'
         )}

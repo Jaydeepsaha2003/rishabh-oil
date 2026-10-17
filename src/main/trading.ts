@@ -109,7 +109,10 @@ function saleRefKey(l: Row): string {
 // side can then just look its own keys up in this map.
 async function saleReceiptsByKey(companyId: number): Promise<Map<string, number>> {
   const res = await getClient().execute({
-    sql: `SELECT COALESCE(ba.sale_invoice_group, ba.ref_name) AS key, SUM(ba.amount) AS amount
+    // A credit on the customer settles the bill; a debit against the same
+    // ref (a journal raising it) adds to it — the rule bill-wise follows.
+    sql: `SELECT COALESCE(ba.sale_invoice_group, ba.ref_name) AS key,
+                 SUM(CASE WHEN jl.dr > 0 THEN -ba.amount ELSE ba.amount END) AS amount
           FROM journal_bill_allocs ba
           JOIN journal_lines jl ON jl.id = ba.line_id
           JOIN journal_entries je ON je.id = jl.entry_id
@@ -708,4 +711,383 @@ export async function deleteTradingDeal(id: number): Promise<{ id: number }> {
   for (const sid of sales.get(id) ?? []) await deleteSale(sid)
   for (const oid of orders.get(id) ?? []) await deleteOrder(oid)
   return { id }
+}
+
+// ---------------------------------------------------------------------------
+// PAYMENT TRACKING ON TRADING.
+//
+// A trading deal is two debts: what we owe the supplier on the purchase
+// invoices, and what the buyer owes us on the sale invoices. This answers, per
+// invoice, how much of each is still open — and, for what has been settled,
+// WHAT settled it: the LC, the bill discounting, the bank, or an adjustment.
+//
+// Nothing here is a new record. Every settlement is already on the books as a
+// bill-wise Agst Ref allocation against the invoice, written by whichever
+// voucher did the settling; the voucher's owner says which instrument it was.
+//
+//   LC   the bank's settlement of an LC bill (lc_issuances), an LC payment-in,
+//        an LC repayment — any voucher an LC recorded as its own
+//   BD   a BD payment-in, a BD repaid through the party, any voucher a bill
+//        discounting recorded as its own
+//   Bank a Payment / Receipt / Contra entered against the invoice
+//   Adj  a debit or credit note, a journal
+//
+// A BD disbursement pays US, not the supplier — the NBFC's money lands in our
+// bank and we pay the supplier out of it — so on the purchase side a BD is
+// reported as what FINANCES the invoice, alongside the voucher that paid it.
+// ---------------------------------------------------------------------------
+
+type PayChannel = 'lc' | 'bd' | 'bank' | 'adjustment'
+type Instrument = { kind: 'lc' | 'bd'; id: number; ref: string }
+
+// Which instrument, if any, wrote each journal entry. Each source is read on
+// its own and allowed to be missing: an older database without one of these
+// tables should lose that attribution, not the whole report.
+async function entryOwners(cid: number): Promise<Map<number, Instrument>> {
+  const c = getClient()
+  const m = new Map<number, Instrument>()
+  const add = async (kind: 'lc' | 'bd', sql: string): Promise<void> => {
+    const res = await c.execute({ sql, args: [cid] }).catch(() => null)
+    if (!res) return
+    for (const r of toPlain(res)) {
+      const eid = n(r.eid)
+      if (eid && !m.has(eid)) m.set(eid, { kind, id: n(r.iid), ref: String(r.ref || '') })
+    }
+  }
+  const LC = 'letters_of_credit'
+  for (const col of [
+    'journal_entry_id',
+    'interest_journal_entry_id',
+    'preclose_journal_entry_id',
+    'preclose_interest_journal_entry_id',
+    'preclose_payout_journal_entry_id',
+    'charges_journal_entry_id',
+    'fee_adjust_journal_entry_id',
+    'payment_in_journal_entry_id'
+  ]) {
+    await add('lc', `SELECT ${col} AS eid, id AS iid, lc_no AS ref FROM ${LC} WHERE company_id = ? AND ${col} IS NOT NULL`)
+  }
+  await add('lc', `SELECT i.journal_entry_id AS eid, l.id AS iid, l.lc_no AS ref FROM lc_issuances i JOIN ${LC} l ON l.id = i.lc_id WHERE l.company_id = ? AND i.journal_entry_id IS NOT NULL`)
+  await add('lc', `SELECT p.journal_entry_id AS eid, l.id AS iid, l.lc_no AS ref FROM lc_payment_ins p JOIN ${LC} l ON l.id = p.lc_id WHERE l.company_id = ? AND p.journal_entry_id IS NOT NULL`)
+  await add('lc', `SELECT r.journal_entry_id AS eid, l.id AS iid, l.lc_no AS ref FROM lc_repayments r JOIN ${LC} l ON l.id = r.lc_id WHERE l.company_id = ? AND r.journal_entry_id IS NOT NULL`)
+
+  const BD = 'bill_discountings'
+  for (const col of ['journal_entry_id', 'repay_journal_entry_id', 'margin_release_journal_entry_id']) {
+    await add('bd', `SELECT ${col} AS eid, id AS iid, bd_no AS ref FROM ${BD} WHERE company_id = ? AND ${col} IS NOT NULL`)
+  }
+  await add('bd', `SELECT r.journal_entry_id AS eid, b.id AS iid, b.bd_no AS ref FROM bd_repayments r JOIN ${BD} b ON b.id = r.bd_id WHERE b.company_id = ? AND r.journal_entry_id IS NOT NULL`)
+  await add('bd', `SELECT x.journal_entry_id AS eid, b.id AS iid, b.bd_no AS ref FROM bd_interest_payments x JOIN ${BD} b ON b.id = x.bd_id WHERE b.company_id = ? AND x.journal_entry_id IS NOT NULL`)
+  await add('bd', `SELECT p.journal_entry_id AS eid, b.id AS iid, b.bd_no AS ref FROM bd_payment_ins p JOIN ${BD} b ON b.id = p.bd_id WHERE b.company_id = ? AND p.journal_entry_id IS NOT NULL`)
+  return m
+}
+
+const up = (v: unknown): string => String(v ?? '').trim().toUpperCase()
+
+// Days after an ISO date, as an ISO date.
+function addDays(iso: string, days: number): string {
+  const d = new Date(`${iso.slice(0, 10)}T00:00:00`)
+  d.setDate(d.getDate() + days)
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+}
+function daysFromToday(iso: string): number {
+  const a = new Date(`${todayISO()}T00:00:00`).getTime()
+  const b = new Date(`${iso.slice(0, 10)}T00:00:00`).getTime()
+  return Math.round((b - a) / 86400000)
+}
+
+// THE PENDING MONEY, IN TONNES. An invoice's quantity at its own price — the
+// bill amount over its quantity — so ₹X still owed on a 33.5 MT bill reads as
+// the share of that 33.5 MT not yet paid for: qty × pending ÷ amount. Worked
+// per invoice, never from a deal-wide rate, because each bill carries its own
+// rate, GST and round-off.
+function pendingQty(qty: number, uom: string, amount: number, settled: number): { qty: number; uom: string; pending_qty: number } {
+  const pending = Math.max(0, amount - settled)
+  const r3 = (x: number): number => Math.round(x * 1000) / 1000
+  return { qty: r3(qty), uom, pending_qty: amount > 0.005 && qty > 0 ? r3((qty * pending) / amount) : 0 }
+}
+
+export async function listTradingPayments(): Promise<Row[]> {
+  const from = await visibleFromFor('trading')
+  const cid = getActiveCompanyId()
+  const c = getClient()
+
+  const dealRes = await c.execute({
+    sql: `SELECT td.*, p.code AS product_code, p.name AS product_name, l.lc_no AS lc_no
+          FROM trading_deals td
+          LEFT JOIN products p ON p.id = td.product_id
+          LEFT JOIN letters_of_credit l ON l.id = td.lc_id
+          WHERE td.company_id = ?${from ? ' AND td.deal_date >= ?' : ''}
+          ORDER BY td.deal_date DESC, td.id DESC`,
+    args: from ? [cid, from] : [cid]
+  })
+  const deals = toPlain(dealRes)
+  if (!deals.length) return []
+  const dealIds = deals.map((d) => n(d.id)).filter(Boolean)
+  const { orders, sales } = await dealLineIds(dealIds, deals)
+  const orderIds = Array.from(new Set(Array.from(orders.values()).flat()))
+  const saleIds = Array.from(new Set(Array.from(sales.values()).flat()))
+
+  const [orderRows, saleRows, owners] = await Promise.all([
+    fetchOrderLines(orderIds),
+    fetchSaleLines(saleIds),
+    entryOwners(cid)
+  ])
+
+  // Every Agst Ref allocation in this company's books. The account it sits on
+  // travels with it: a purchase invoice number is the SUPPLIER's own number, and
+  // two suppliers can both have issued a bill "1".
+  const allocRes = await c.execute({
+    sql: `SELECT ba.id, ba.amount, ba.order_id, ba.ref_name, ba.sale_invoice_group,
+                 CASE WHEN jl.dr > 0 THEN 'dr' ELSE 'cr' END AS side,
+                 UPPER(TRIM(a.name)) AS acct, je.id AS eid, je.vch_type, je.vch_no, je.entry_date
+          FROM journal_bill_allocs ba
+          JOIN journal_lines jl ON jl.id = ba.line_id
+          JOIN journal_entries je ON je.id = jl.entry_id
+          LEFT JOIN ledger_accounts a ON a.id = COALESCE(ba.account_id, jl.account_id)
+          WHERE ba.method = 'agst_ref' AND je.company_id = ?`,
+    args: [cid]
+  })
+  const allocs = toPlain(allocRes)
+  const byOrder = new Map<number, Row[]>()
+  const byAcctRef = new Map<string, Row[]>()
+  const byKey = new Map<string, Row[]>()
+  const push = (m: Map<string | number, Row[]>, k: string | number, r: Row): void => {
+    m.set(k, [...(m.get(k) ?? []), r])
+  }
+  for (const a of allocs) {
+    if (n(a.order_id)) push(byOrder as Map<string | number, Row[]>, n(a.order_id), a)
+    if (a.ref_name) push(byAcctRef as Map<string | number, Row[]>, `${a.acct}|${up(a.ref_name)}`, a)
+    const key = up(a.sale_invoice_group || a.ref_name)
+    if (key) push(byKey as Map<string | number, Row[]>, key, a)
+  }
+
+  // A ledger renamed after the party was created posts under its new name, so
+  // the party is reached by that name too (see ledgerMap.ts).
+  const redirects = new Map<string, string[]>()
+  const mapRes = await c
+    .execute({ sql: 'SELECT posts_as, use_name FROM ledger_map WHERE company_id = ? OR company_id IS NULL', args: [cid] })
+    .catch(() => null)
+  for (const r of mapRes ? toPlain(mapRes) : []) {
+    const k = up(r.posts_as)
+    redirects.set(k, [...(redirects.get(k) ?? []), up(r.use_name)])
+  }
+  const ledgerNames = (party: unknown): string[] => {
+    const p = up(party)
+    return p ? [p, ...(redirects.get(p) ?? [])] : []
+  }
+
+  // What each purchase invoice is financed by.
+  const lcByOrder = new Map<number, Instrument[]>()
+  const bdByOrder = new Map<number, Instrument[]>()
+  if (orderIds.length) {
+    const list = orderIds.join(',')
+    const addFin = (m: Map<number, Instrument[]>, oid: number, x: Instrument): void => {
+      const cur = m.get(oid) ?? []
+      if (!cur.some((y) => y.kind === x.kind && y.id === x.id)) m.set(oid, [...cur, x])
+    }
+    const lcRows = await c
+      .execute(
+        `SELECT lo.order_id AS oid, l.id AS iid, l.lc_no AS ref FROM lc_linked_orders lo JOIN letters_of_credit l ON l.id = lo.lc_id WHERE lo.order_id IN (${list})
+         UNION ALL
+         SELECT i.order_id AS oid, l.id AS iid, l.lc_no AS ref FROM lc_issuances i JOIN letters_of_credit l ON l.id = i.lc_id WHERE i.order_id IN (${list})`
+      )
+      .catch(() => null)
+    for (const r of lcRows ? toPlain(lcRows) : []) addFin(lcByOrder, n(r.oid), { kind: 'lc', id: n(r.iid), ref: String(r.ref || '') })
+    const bdRows = await c
+      .execute(`SELECT bo.order_id AS oid, b.id AS iid, b.bd_no AS ref FROM bd_linked_orders bo JOIN bill_discountings b ON b.id = bo.bd_id WHERE bo.order_id IN (${list})`)
+      .catch(() => null)
+    for (const r of bdRows ? toPlain(bdRows) : []) addFin(bdByOrder, n(r.oid), { kind: 'bd', id: n(r.iid), ref: String(r.ref || '') })
+  }
+
+  // Credit terms, for the due date.
+  const [supTerms, cusTerms] = await Promise.all([
+    c.execute('SELECT id, credit_period_days FROM suppliers').then(toPlain).catch(() => [] as Row[]),
+    c.execute('SELECT id, credit_period_days FROM customers').then(toPlain).catch(() => [] as Row[])
+  ])
+  const supDays = new Map(supTerms.map((r) => [n(r.id), n(r.credit_period_days)]))
+  const cusDays = new Map(cusTerms.map((r) => [n(r.id), n(r.credit_period_days)]))
+
+  // Turn the allocations that settled one invoice into its figures. An
+  // allocation on the bill's OWN side (a journal crediting a supplier against
+  // its purchase bill, debiting a customer against a sale) adds to what is
+  // owed rather than settling it — the rule bill-wise follows.
+  const settle = (
+    list: Row[],
+    billSide: 'dr' | 'cr'
+  ): { by: Record<PayChannel, number>; movements: Row[]; via: Instrument[] } => {
+    const by: Record<PayChannel, number> = { lc: 0, bd: 0, bank: 0, adjustment: 0 }
+    const via: Instrument[] = []
+    const movements = list
+      .map((a) => {
+        const owner = owners.get(n(a.eid))
+        const vt = up(a.vch_type)
+        const channel: PayChannel = owner
+          ? owner.kind
+          : vt === 'PAYMENT' || vt === 'RECEIPT' || vt === 'CONTRA'
+            ? 'bank'
+            : 'adjustment'
+        const amount = round2(String(a.side) === billSide ? -n(a.amount) : n(a.amount))
+        by[channel] = round2(by[channel] + amount)
+        if (owner && !via.some((x) => x.kind === owner.kind && x.id === owner.id)) via.push(owner)
+        return {
+          channel,
+          amount,
+          date: a.entry_date ? String(a.entry_date).slice(0, 10) : null,
+          vch_type: a.vch_type ?? null,
+          vch_no: a.vch_no ?? null,
+          entry_id: n(a.eid),
+          instrument: owner ?? null
+        }
+      })
+      .sort((x, y) => String(x.date || '').localeCompare(String(y.date || '')))
+    return { by, movements, via }
+  }
+
+  const status = (amount: number, settled: number): 'settled' | 'part' | 'pending' =>
+    amount > 0.005 && settled >= amount - 0.005 ? 'settled' : settled > 0.005 ? 'part' : 'pending'
+
+  const due = (dateIso: unknown, days: number): { due_date: string | null; days_left: number | null } => {
+    const d = String(dateIso || '').slice(0, 10)
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(d) || !(days > 0)) return { due_date: null, days_left: null }
+    const dd = addDays(d, days)
+    return { due_date: dd, days_left: daysFromToday(dd) }
+  }
+
+  const out: Row[] = []
+  // Allocations a purchase invoice has already taken, so a sale ref that happens
+  // to read the same can never count them a second time.
+  const claimed = new Set<number>()
+  const saleWork: Array<() => void> = []
+  for (const d of deals) {
+    const id = n(d.id)
+    const dealInfo = {
+      deal_id: id,
+      deal_date: d.deal_date ?? null,
+      product_code: d.product_code ?? null,
+      product_name: d.product_name ?? null,
+      deal_lc: n(d.lc_id) ? { kind: 'lc' as const, id: n(d.lc_id), ref: String(d.lc_no || '') } : null
+    }
+
+    // --- what we owe the supplier, invoice by invoice
+    for (const oid of orders.get(id) ?? []) {
+      const o = orderRows.get(oid)
+      if (!o) continue
+      const seen = new Set<number>()
+      const hits: Row[] = []
+      const take = (rows: Row[] | undefined): void => {
+        for (const r of rows ?? []) {
+          if (seen.has(n(r.id))) continue
+          seen.add(n(r.id))
+          claimed.add(n(r.id))
+          hits.push(r)
+        }
+      }
+      take(byOrder.get(oid))
+      const inv = up(o.invoice_no)
+      if (inv) for (const nm of ledgerNames(o.supplier_name)) take(byAcctRef.get(`${nm}|${inv}`))
+      const { by, movements, via } = settle(hits, 'cr')
+      const amount = round2(n(o.net_amount))
+      const settled = round2(by.lc + by.bd + by.bank + by.adjustment)
+      const financed = [
+        ...(dealInfo.deal_lc ? [dealInfo.deal_lc] : []),
+        ...(lcByOrder.get(oid) ?? []),
+        ...(bdByOrder.get(oid) ?? [])
+      ].filter((x, i, arr) => arr.findIndex((y) => y.kind === x.kind && y.id === x.id) === i)
+      const st = status(amount, settled)
+      const dd = due(o.order_date, supDays.get(n(o.supplier_id)) ?? 0)
+      const qty = n(o.ordered_qty)
+      out.push({
+        ...dealInfo,
+        side: 'purchase',
+        ...pendingQty(qty, String(o.uom || d.uom || 'MT'), amount, settled),
+        key: `p:${oid}`,
+        order_id: oid,
+        invoice_no: o.invoice_no ?? '',
+        invoice_date: o.order_date ?? null,
+        party_id: o.supplier_id ?? null,
+        party_name: o.supplier_name ?? null,
+        amount,
+        settled_lc: by.lc,
+        settled_bd: by.bd,
+        settled_bank: by.bank,
+        settled_adjustment: by.adjustment,
+        settled_total: settled,
+        pending: Math.max(0, round2(amount - settled)),
+        excess: Math.max(0, round2(settled - amount)),
+        status: st,
+        ...dd,
+        overdue: st !== 'settled' && dd.days_left != null && dd.days_left < 0,
+        financed_by: financed,
+        settled_via: via,
+        movements
+      })
+    }
+
+    // --- what the buyer owes us, one row per invoice key (an invoice can run
+    // across several sale rows under one invoice_group)
+    const groups = new Map<string, Row[]>()
+    for (const sid of sales.get(id) ?? []) {
+      const l = saleRows.get(sid)
+      if (!l) continue
+      const k = saleRefKey(l)
+      if (!k) continue
+      groups.set(k, [...(groups.get(k) ?? []), l])
+    }
+    const dealBds = Array.from(
+      new Map(
+        (orders.get(id) ?? []).flatMap((oid) => bdByOrder.get(oid) ?? []).map((x) => [x.id, x] as [number, Instrument])
+      ).values()
+    )
+    for (const [k, ls] of groups) saleWork.push(() => {
+      const first = ls[0]
+      const amount = round2(ls.reduce((a, l) => a + n(l.amount) + n(l.gst_amount) + n(l.round_off) - n(l.tds_amount), 0))
+      // Matched on the ref alone, the way the deal register counts a receipt,
+      // so the two screens always agree — an imported ledger whose name drifted
+      // from the customer master still counts. Only what a purchase bill has
+      // already taken is left out.
+      const { by, movements, via } = settle((byKey.get(up(k)) ?? []).filter((a) => !claimed.has(n(a.id))), 'dr')
+      const settled = round2(by.lc + by.bd + by.bank + by.adjustment)
+      const st = status(amount, settled)
+      const dd = due(first.sale_date, cusDays.get(n(first.customer_id)) ?? 0)
+      const qty = ls.reduce((a, l) => a + n(l.qty), 0)
+      out.push({
+        ...dealInfo,
+        side: 'sale',
+        ...pendingQty(qty, String(first.uom || d.uom || 'MT'), amount, settled),
+        key: `s:${k}`,
+        sale_ids: ls.map((l) => n(l.id)),
+        // What the invoice is printed as; `ref_key` is what receipts are
+        // allocated against, which for a grouped invoice is its group.
+        invoice_no: Array.from(new Set(ls.map((l) => String(l.invoice_no || '').trim()).filter(Boolean))).join(', ') || k,
+        ref_key: k,
+        invoice_date: first.sale_date ?? null,
+        party_id: first.customer_id ?? null,
+        party_name: first.customer_name ?? null,
+        amount,
+        settled_lc: by.lc,
+        settled_bd: by.bd,
+        settled_bank: by.bank,
+        settled_adjustment: by.adjustment,
+        settled_total: settled,
+        pending: Math.max(0, round2(amount - settled)),
+        excess: Math.max(0, round2(settled - amount)),
+        status: st,
+        ...dd,
+        overdue: st !== 'settled' && dd.days_left != null && dd.days_left < 0,
+        // The instruments this receivable repays: the deal's own LC and any BD
+        // that financed its purchase side.
+        financed_by: [...(dealInfo.deal_lc ? [dealInfo.deal_lc] : []), ...dealBds],
+        settled_via: via,
+        movements
+      })
+    })
+  }
+  // Sales last, once every purchase bill has claimed its allocations.
+  for (const run of saleWork) run()
+  const rank = new Map(deals.map((d, i) => [n(d.id), i]))
+  return out.sort(
+    (a, b) =>
+      (rank.get(n(a.deal_id)) ?? 0) - (rank.get(n(b.deal_id)) ?? 0) ||
+      (a.side === b.side ? 0 : a.side === 'purchase' ? -1 : 1)
+  )
 }

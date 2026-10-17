@@ -45,14 +45,17 @@ const baseFields: FieldDef[] = [
   { key: 'active', label: 'Active', type: 'switch', default: true }
 ]
 
+// A funnel on every column, Excel-style, beside the search.
 const baseColumns: ColumnDef[] = [
-  { key: 'name', label: 'Name' },
-  { key: 'category', label: 'Category', type: 'select' },
-  { key: 'business_type', label: 'Trading/Mfg', type: 'select' },
-  { key: 'gst_pct', label: 'GST %', align: 'right' },
-  { key: 'tds_pct', label: 'TDS %', align: 'right' },
-  { key: 'credit_period_days', label: 'Credit days', align: 'right' },
-  { key: 'created_at', label: 'Created', type: 'date' }
+  { key: 'name', label: 'Name', filterable: true },
+  { key: 'category', label: 'Category', type: 'select', filterable: true },
+  { key: 'business_type', label: 'Trading/Mfg', type: 'select', filterable: true },
+  { key: 'state', label: 'State', filterable: true },
+  { key: 'gst_pct', label: 'GST %', align: 'right', filterable: true },
+  { key: 'tds_pct', label: 'TDS %', align: 'right', filterable: true },
+  { key: 'credit_period_days', label: 'Credit days', align: 'right', filterable: true },
+  { key: 'active', label: 'Active', type: 'switch', filterable: true },
+  { key: 'created_at', label: 'Created', type: 'date', filterable: true }
 ]
 
 export function Customers(): React.JSX.Element {

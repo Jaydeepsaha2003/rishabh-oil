@@ -32,6 +32,7 @@ import {
 } from 'lucide-react'
 import { formatDate, formatNum } from '@/lib/format'
 import { MobileBar } from '@/components/MobileBar'
+import { SerialNo } from '@/components/SerialNo'
 import { cn } from '@/lib/utils'
 import { useGlobalDateRange, globalRangeAppliesTo } from '@/lib/globalDateRange'
 
@@ -255,7 +256,7 @@ export function TradingMobile(): React.JSX.Element {
             </p>
           </div>
         ) : (
-          shown.map((d) => {
+          shown.map((d, di) => {
             const loss = n(d.margin) < 0
             const buyers: string[] = Array.isArray(d.customer_names) ? d.customer_names : []
             const many = n(d.customer_count) > 1
@@ -271,6 +272,7 @@ export function TradingMobile(): React.JSX.Element {
               >
                 <div className="flex flex-col gap-2.5 px-3.5 pb-2.5 pt-3">
                   <div className="flex flex-wrap items-center gap-2">
+                    <SerialNo n={di + 1} />
                     <span className="text-[12.5px] font-bold tabular-nums text-[#5A6B62]">{formatDate(d.deal_date)}</span>
                     <span className="rounded-[2px] bg-[#EAF0E9] px-2 py-1 text-[10.5px] font-extrabold tracking-[.05em] text-[#33473E]">
                       {dealProduct(d) || '—'}
@@ -578,11 +580,7 @@ function DealScreen({ deal: d, onBack }: { deal: Row; onBack: () => void }): Rea
               rose={false}
               rows={[
                 { k: multi ? 'GST · per buyer' : `GST ${formatNum(d.sale_gst_pct)}%`, v: fmtINR(n(d.sale_gst_amount)) },
-                {
-                  k: multi ? 'TDS · per buyer' : `TDS ${formatNum(d.sale_tds_pct)}%`,
-                  v: fmtINR(n(d.sale_tds_amount)),
-                  warn: true
-                },
+                // No TDS row: a sale carries none.
                 { k: 'Net receivable', v: fmtINR(n(d.sale_net_receivable)), foot: true }
               ]}
             />
@@ -823,7 +821,6 @@ function BuyerCard({ b, i, uom, totalQty }: { b: Row; i: number; uom: string; to
       <div className="flex flex-wrap gap-x-4 gap-y-2 border-b border-b-[#EAF0E9] px-3 py-2.5">
         {[
           { k: 'GST', v: `${formatNum(b.gst_pct)}%`, tone: 'text-[#0A1F17]' },
-          { k: 'TDS', v: fmtINR(n(b.tds_amount)), tone: 'text-[#8A5300]' },
           { k: 'Net due', v: fmtINR(n(b.net_receivable)), tone: 'text-[#0A1F17]' }
         ].map((f) => (
           <div key={f.k} className="min-w-[74px]">

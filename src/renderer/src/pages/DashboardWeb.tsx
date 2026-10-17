@@ -32,8 +32,14 @@ import {
   type LucideIcon
 } from 'lucide-react'
 import { MobileBar } from '@/components/MobileBar'
+import { DailyPosition } from '@/components/DailyPosition'
+import { DashCustomize, DashCustomizeButton } from '@/components/DashCustomize'
+import { dashItemsHere, type DashLayout } from '@/lib/dashLayout'
 import type { Page } from '@/components/Sidebar'
+import { setPageIntent } from '@/lib/pageIntent'
 import { useCompany } from '@/lib/companyContext'
+import { cn } from '@/lib/utils'
+import { sortCompanies } from '@/lib/companyOrder'
 import { DASH_KEYFRAMES, DASH_THEMES, storeDashTheme, storedDashTheme, type DashTheme } from '@/lib/dashTheme'
 import { formatNum } from '@/lib/format'
 import { useIsMobile } from '@/lib/useIsMobile'
@@ -73,12 +79,18 @@ export type DashProps = {
   checking: boolean
   onRefresh: () => void | Promise<void>
   onNavigate: (p: Page) => void
+  layout: DashLayout
+  // Every company's books together, and the switch for it.
+  allCompanies: boolean
+  onAllCompanies: (v: boolean) => void
 }
 
 export function DashboardWeb(props: DashProps): React.JSX.Element {
-  const { stats, treasury, months, payables, receivables, duty, negatives, cats, buyM, sellM, checking } = props
+  const { stats, treasury, months, payables, receivables, duty, negatives, cats, buyM, sellM, checking, layout } = props
+  const on = layout.isOn
+  const [customizing, setCustomizing] = useState(false)
   const isMobile = useIsMobile()
-  const { companies, companyId } = useCompany()
+  const { companies, companyId, onCompanyChange } = useCompany()
   const [theme, setTheme] = useState<'dark' | 'light'>(storedDashTheme)
   const t: DashTheme = DASH_THEMES[theme]
 
@@ -88,6 +100,33 @@ export function DashboardWeb(props: DashProps): React.JSX.Element {
   }
 
   const activeCompany = companies.find((c) => Number(c.id) === Number(companyId))
+  // WHOSE BOOKS THE BOARD READS: one company (picking it also makes it the
+  // active company, as the switcher everywhere else does), or All companies —
+  // every company's figures together, without changing the active company.
+  const scopeName = props.allCompanies ? 'all companies together' : String(activeCompany?.name || 'the active company')
+  const companyPicker = (full: boolean): React.JSX.Element => (
+    <select
+      value={props.allCompanies ? 'ALL' : String(companyId || '')}
+      onChange={(e) => {
+        const v = e.target.value
+        if (v === 'ALL') return props.onAllCompanies(true)
+        props.onAllCompanies(false)
+        if (v !== String(companyId || '')) onCompanyChange(v)
+      }}
+      title="Whose books the dashboard shows"
+      className={cn('h-10 cursor-pointer rounded-[4px] px-2.5 text-[12.5px] font-extrabold outline-none', full ? 'w-full' : 'max-w-[240px]')}
+      style={{ color: props.allCompanies ? t.accent : t.ink, background: props.allCompanies ? t.accentSoft : t.inset, border: `1px solid ${props.allCompanies ? t.accentBd : t.bd}` }}
+    >
+      {sortCompanies(companies).map((c) => (
+        <option key={String(c.id)} value={String(c.id)} style={{ color: '#0A1F17', background: '#fff' }}>
+          {String(c.name)}
+        </option>
+      ))}
+      <option value="ALL" style={{ color: '#0A1F17', background: '#fff' }}>
+        All companies (combined)
+      </option>
+    </select>
+  )
   const todayLabel = new Date().toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })
   const payTotal = payables.reduce((s, x) => s + x.v, 0)
   const recTotal = receivables.reduce((s, x) => s + x.v, 0)
@@ -254,9 +293,33 @@ export function DashboardWeb(props: DashProps): React.JSX.Element {
   }))
   const purBg = (stats?.purBargains as Row) || {}
   const saleBg = (stats?.saleBargains as Row) || {}
-  const exposure = [
-    { label: 'Purchase bargains open', v: `${n(purBg.cnt)} · ${formatNum(n(purBg.qty))} MT` },
-    { label: 'Sales bargains open', v: `${n(saleBg.cnt)} · ${formatNum(n(saleBg.qty))} MT` }
+  // Each line opens the register its figure comes from, on the view that
+  // figure is: purchase bargains across every category, sales bargains on the
+  // Loose or Packed tab. The parts under a line are the register's own views.
+  type Part = { key: string; cnt: number; qty: number }
+  const openPage = (page: Page, intent?: Row): void => {
+    if (intent) setPageIntent(page, intent)
+    props.onNavigate(page)
+  }
+  const exposure: { label: string; v: string; go: () => void; parts: { label: string; go: () => void }[] }[] = [
+    {
+      label: 'Purchase bargains open',
+      v: `${n(purBg.cnt)} · ${formatNum(n(purBg.qty))} MT`,
+      go: () => openPage('bargains', { category: 'ALL' }),
+      parts: ((purBg.parts as Part[]) || []).map((p) => ({
+        label: `${p.key.charAt(0)}${p.key.slice(1).toLowerCase()} ${p.cnt} · ${formatNum(p.qty)}`,
+        go: () => openPage('bargains', { category: p.key })
+      }))
+    },
+    {
+      label: 'Sales bargains open',
+      v: `${n(saleBg.cnt)} · ${formatNum(n(saleBg.qty))} MT`,
+      go: () => openPage('salesBargains'),
+      parts: ((saleBg.parts as Part[]) || []).map((p) => ({
+        label: `${p.key === 'PACKED' ? 'Packed' : 'Loose'} ${p.cnt} · ${formatNum(p.qty)}`,
+        go: () => openPage('salesBargains', { saleType: p.key })
+      }))
+    }
   ]
 
   const treasuryCards = [
@@ -291,6 +354,41 @@ export function DashboardWeb(props: DashProps): React.JSX.Element {
       }))
     }
   ]
+
+  // ------------------------------------------------------ what is kept --
+  // Everything below draws only what this person keeps (Customize), and each
+  // row spreads across what is left rather than leaving a hole.
+  const shownKpis = kpis.filter((k) => on(`m.${k.key}`))
+  const SPARK_KEY: Record<string, string> = { buy: 'm.sparkBuy', sell: 'm.sparkSell' }
+  const RANK_KEY: Record<string, string> = { sup: 'm.topSup', cus: 'm.topCus' }
+  const shownSparks = sparks.filter((sp) => on(SPARK_KEY[sp.key]))
+  const shownRanks = rankCards.filter((c) => on(RANK_KEY[c.key]))
+  const anyPos = dashItemsHere().some((i) => i.group === 'position' && on(i.key))
+  const anyMonth = dashItemsHere().some((i) => i.group === 'month' && on(i.key))
+  const cols = (count: number): string => `repeat(${Math.max(1, count)},minmax(0,1fr))`
+  const customize = customizing ? (
+    <DashCustomize t={t} dark={theme === 'dark'} isMobile={isMobile} layout={layout} onClose={() => setCustomizing(false)} />
+  ) : null
+  const allHidden = !anyPos && !anyMonth
+  const NothingShown = (): React.JSX.Element => (
+    <div
+      className="flex flex-col items-center gap-2.5 px-4 py-10 text-center"
+      style={{ background: t.card, border: `1px dashed ${t.bd}`, borderRadius: 6 }}
+    >
+      <span className="text-[13px] font-extrabold">Every card on the board is hidden</span>
+      <span className="text-[11.5px] font-semibold" style={{ color: t.muted }}>
+        Pick the KPIs and cards you want back.
+      </span>
+      <button
+        type="button"
+        onClick={() => setCustomizing(true)}
+        className="mt-1 h-10 rounded-[4px] px-4 text-[12.5px] font-extrabold"
+        style={{ background: '#C7F03F', color: '#0B3D2E' }}
+      >
+        Customize the dashboard
+      </button>
+    </div>
+  )
 
   // ------------------------------------------------------------- fragments --
   const Sheen = (): React.JSX.Element => (
@@ -369,7 +467,7 @@ export function DashboardWeb(props: DashProps): React.JSX.Element {
     <button
       type="button"
       onClick={() => props.onNavigate(page)}
-      className="mt-[11px] flex flex-none items-center gap-1.5 text-[11px] font-extrabold tracking-[.04em] hover:underline"
+      className={`flex flex-none items-center gap-1.5 text-[11px] font-extrabold tracking-[.04em] hover:underline ${isMobile ? 'mt-1.5 min-h-[40px]' : 'mt-[11px]'}`}
       style={{ color: fg }}
     >
       {label}
@@ -551,21 +649,46 @@ export function DashboardWeb(props: DashProps): React.JSX.Element {
                 </span>
                 <span className="doc-ref min-w-0 truncate text-[11px] font-bold text-white/65">as at {todayLabel}</span>
               </div>
+              <div className="mt-2">{companyPicker(true)}</div>
             </div>
-            <button
-              type="button"
-              onClick={() => flip(theme === 'dark' ? 'light' : 'dark')}
-              aria-label={`Switch to the ${theme === 'dark' ? 'light' : 'dark'} board`}
-              className="flex h-10 w-10 flex-none items-center justify-center rounded-[4px] bg-white/[.12] text-[#C7F03F] active:bg-white/25"
-            >
-              {theme === 'dark' ? <Sun className="h-[21px] w-[21px]" /> : <Moon className="h-[21px] w-[21px]" />}
-            </button>
+            <div className="flex flex-none items-center gap-2">
+              <DashCustomizeButton t={t} layout={layout} compact onClick={() => setCustomizing(true)} />
+              <button
+                type="button"
+                onClick={() => flip(theme === 'dark' ? 'light' : 'dark')}
+                aria-label={`Switch to the ${theme === 'dark' ? 'light' : 'dark'} board`}
+                className="flex h-10 w-10 flex-none items-center justify-center rounded-[4px] bg-white/[.12] text-[#C7F03F] active:bg-white/25"
+              >
+                {theme === 'dark' ? <Sun className="h-[21px] w-[21px]" /> : <Moon className="h-[21px] w-[21px]" />}
+              </button>
+            </div>
           </div>
         </div>
 
         <div className="relative z-[1] flex flex-1 flex-col gap-[11px] overflow-y-auto px-4 pb-[96px] pt-0.5">
+          {/* The morning's position first — stock, yesterday's movement, the
+              tankers on the road, money still to come back, and the plan. */}
+          {allHidden && (
+            <div className="pt-2.5">
+              <NothingShown />
+            </div>
+          )}
+          {anyPos && (
+            <div className="pt-2.5">
+              <DailyPosition t={t} dark={theme === 'dark'} isMobile cats={cats} onNavigate={props.onNavigate} isOn={on} allCompanies={props.allCompanies} />
+            </div>
+          )}
+          {anyMonth && (
+            <div className={anyPos ? 'mt-1 flex items-center gap-2.5' : 'flex items-center gap-2.5 pt-2.5'}>
+              <span className="text-[10.5px] font-extrabold uppercase tracking-[.16em]" style={{ color: t.muted }}>
+                This month
+              </span>
+              <span className="h-px flex-1" style={{ background: t.hair }} />
+            </div>
+          )}
+          {shownKpis.length > 0 && (
           <div className="grid flex-none grid-cols-2 gap-2.5">
-            {kpis.map((k) => {
+            {shownKpis.map((k, ki) => {
               const Ico = k.icon
               return (
                 <button
@@ -573,7 +696,13 @@ export function DashboardWeb(props: DashProps): React.JSX.Element {
                   type="button"
                   onClick={() => props.onNavigate(k.page)}
                   className="relative overflow-hidden px-[13px] py-3 text-left"
-                  style={{ borderRadius: 5, background: t.card, border: `1px solid ${t.bd}`, boxShadow: t.shadow }}
+                  style={{
+                    borderRadius: 5,
+                    background: t.card,
+                    border: `1px solid ${t.bd}`,
+                    boxShadow: t.shadow,
+                    gridColumn: ki === shownKpis.length - 1 && shownKpis.length % 2 === 1 ? '1 / -1' : undefined
+                  }}
                 >
                   <span
                     className="pointer-events-none absolute"
@@ -598,7 +727,9 @@ export function DashboardWeb(props: DashProps): React.JSX.Element {
               )
             })}
           </div>
+          )}
 
+          {on('m.chart') && (
           <Card className="flex-none overflow-hidden px-3.5 pb-2 pt-3.5" style={{ borderRadius: 5 }}>
             <div className="flex items-start justify-between gap-2.5">
               <div className="min-w-0 flex-1">
@@ -622,8 +753,9 @@ export function DashboardWeb(props: DashProps): React.JSX.Element {
               <MonthChart height={158} barW={13} gap={4} labels={false} />
             </div>
           </Card>
+          )}
 
-          {sparks.map((sp) => {
+          {shownSparks.map((sp) => {
             const Ico = sp.icon
             return (
               <Card key={sp.key} className="flex-none px-3.5 py-3.5" style={{ borderRadius: 5 }}>
@@ -643,11 +775,13 @@ export function DashboardWeb(props: DashProps): React.JSX.Element {
             )
           })}
 
+          {on('m.attention') && (
           <div className="flex-none">
             <Attention compact />
           </div>
+          )}
 
-          {rankCards.map((c) => {
+          {shownRanks.map((c) => {
             const Ico = c.icon
             const max = Math.max(1, ...c.rows.map((r) => r.v))
             return (
@@ -686,6 +820,7 @@ export function DashboardWeb(props: DashProps): React.JSX.Element {
             )
           })}
 
+          {on('m.stock') && (
           <Card className="flex-none px-3.5 py-3.5" style={{ borderRadius: 5 }}>
             <CardHead icon={Warehouse} title="Book stock by category" fg={t.accent} />
             <div className="mt-3 flex flex-col gap-2.5">
@@ -727,20 +862,40 @@ export function DashboardWeb(props: DashProps): React.JSX.Element {
             </div>
             <Deeper label="Open Stock" page="stock" fg={t.accent} />
           </Card>
+          )}
 
+          {on('m.exposure') && (
           <Card className="flex-none px-3.5 py-3.5" style={{ borderRadius: 5 }}>
             <CardHead icon={Factory} title="Open exposure" fg={t.blue} />
             <div className="mt-2.5 flex flex-col">
               {exposure.map((e) => (
-                <div
-                  key={e.label}
-                  className="flex items-baseline justify-between gap-2.5 py-2"
-                  style={{ borderBottom: `1px dotted ${t.hair}` }}
-                >
-                  <span className="text-[11.5px] font-bold" style={{ color: t.ink2 }}>
-                    {e.label}
-                  </span>
-                  <span className="doc-ref flex-none whitespace-nowrap text-[12px] font-bold">{e.v}</span>
+                <div key={e.label} className="py-2" style={{ borderBottom: `1px dotted ${t.hair}` }}>
+                  <button
+                    type="button"
+                    onClick={e.go}
+                    title="Open the register"
+                    className="flex w-full cursor-pointer items-baseline justify-between gap-2.5 text-left hover:opacity-80"
+                  >
+                    <span className="text-[11.5px] font-bold" style={{ color: t.ink2 }}>
+                      {e.label}
+                    </span>
+                    <span className="doc-ref flex-none whitespace-nowrap text-[12px] font-bold">{e.v}</span>
+                  </button>
+                  {e.parts.length > 1 && (
+                    <div className="mt-1.5 flex flex-wrap gap-1.5">
+                      {e.parts.map((p) => (
+                        <button
+                          key={p.label}
+                          type="button"
+                          onClick={p.go}
+                          className="doc-ref cursor-pointer rounded-[3px] px-1.5 py-[2px] text-[10.5px] font-bold hover:opacity-80"
+                          style={{ background: t.inset, border: `1px solid ${t.hair}`, color: t.muted }}
+                        >
+                          {p.label}
+                        </button>
+                      ))}
+                    </div>
+                  )}
                 </div>
               ))}
             </div>
@@ -757,7 +912,13 @@ export function DashboardWeb(props: DashProps): React.JSX.Element {
                 </span>
               )}
               {tankerRows.map((tk) => (
-                <div key={tk.label} className="flex items-center gap-2.5">
+                <button
+                  key={tk.label}
+                  type="button"
+                  onClick={() => props.onNavigate('orders')}
+                  title="Open Purchases — the tankers"
+                  className="flex cursor-pointer items-center gap-2.5 text-left hover:opacity-80"
+                >
                   <span className="h-[7px] w-[7px] flex-none rounded-full" style={{ background: t.accent }} />
                   <span className="min-w-0 flex-1 truncate text-[11.5px] font-bold capitalize" style={{ color: t.ink2 }}>
                     {tk.label}
@@ -765,11 +926,13 @@ export function DashboardWeb(props: DashProps): React.JSX.Element {
                   <span className="doc-ref flex-none text-[12.5px] font-bold" style={{ color: t.accent }}>
                     {tk.count}
                   </span>
-                </div>
+                </button>
               ))}
             </div>
           </Card>
+          )}
 
+          {on('m.treasury') && (
           <Card className="flex-none px-3.5 py-3.5" style={{ borderRadius: 5 }}>
             <CardHead icon={Landmark} title="Treasury watch" fg={t.accent} />
             <div className="mt-3 flex flex-col gap-2.5">
@@ -786,7 +949,7 @@ export function DashboardWeb(props: DashProps): React.JSX.Element {
                     )}
                     {tr.rows.map((rw, i) => (
                       <div key={`${rw.name}-${i}`} className="flex items-baseline justify-between gap-2.5">
-                        <span className="doc-ref min-w-0 truncate text-[11.5px] font-semibold" style={{ color: t.ink2 }}>
+                        <span className="doc-ref min-w-0 text-[11.5px] font-semibold leading-[1.35] [overflow-wrap:anywhere]" style={{ color: t.ink2 }}>
                           {rw.name || '—'}
                         </span>
                         <span
@@ -803,7 +966,9 @@ export function DashboardWeb(props: DashProps): React.JSX.Element {
             </div>
             <Deeper label="Open Treasury" page="treasury" fg={t.accent} />
           </Card>
+          )}
 
+          {on('m.duties') && (
           <Card className="flex-none px-3.5 py-3.5" style={{ borderRadius: 5 }}>
             <CardHead icon={Receipt} title="Duties & taxes" fg={t.blue} />
             <div className="mt-2 flex flex-col">
@@ -827,7 +992,9 @@ export function DashboardWeb(props: DashProps): React.JSX.Element {
             </div>
             <Deeper label="Open Trial Balance" page="accounts" fg={t.accent} />
           </Card>
+          )}
         </div>
+        {customize}
       </div>
     )
   }
@@ -880,10 +1047,12 @@ export function DashboardWeb(props: DashProps): React.JSX.Element {
             </span>
           </div>
           <div className="mt-[3px] text-[11.5px] font-semibold" style={{ color: t.muted }}>
-            Money, stock and movement at a glance for {String(activeCompany?.name || 'the active company')}
+            Money, stock and movement at a glance for {scopeName}
           </div>
         </div>
         <div className="flex flex-none items-center gap-2.5">
+          {companyPicker(false)}
+          <DashCustomizeButton t={t} layout={layout} onClick={() => setCustomizing(true)} />
           <div className="flex items-center gap-[3px] rounded-[4px] p-[3px]" style={{ background: t.inset, border: `1px solid ${t.bd}` }}>
             {([
               { v: 'dark' as const, label: 'Dark', icon: Moon },
@@ -919,8 +1088,21 @@ export function DashboardWeb(props: DashProps): React.JSX.Element {
       </div>
 
       <div className="relative flex flex-col gap-4 px-[26px] pb-[26px] pt-[18px]" style={{ perspective: 1800 }}>
-        <div className="grid flex-none gap-3.5" style={{ gridTemplateColumns: 'repeat(4,minmax(0,1fr))', transformStyle: 'preserve-3d' }}>
-          {kpis.map((k, ki) => {
+        {/* The morning's position first — stock, yesterday's movement, the
+            tankers on the road, money still to come back, and the plan. */}
+        {allHidden && <NothingShown />}
+        {anyPos && <DailyPosition t={t} dark={theme === 'dark'} isMobile={false} cats={cats} onNavigate={props.onNavigate} isOn={on} allCompanies={props.allCompanies} />}
+        {anyMonth && (
+          <div className="flex items-center gap-2.5">
+            <span className="text-[10.5px] font-extrabold uppercase tracking-[.16em]" style={{ color: t.muted }}>
+              This month
+            </span>
+            <span className="h-px flex-1" style={{ background: t.hair }} />
+          </div>
+        )}
+        {shownKpis.length > 0 && (
+        <div className="grid flex-none gap-3.5" style={{ gridTemplateColumns: cols(shownKpis.length), transformStyle: 'preserve-3d' }}>
+          {shownKpis.map((k, ki) => {
             const Ico = k.icon
             return (
               <button
@@ -971,8 +1153,20 @@ export function DashboardWeb(props: DashProps): React.JSX.Element {
             )
           })}
         </div>
+        )}
 
-        <div className="grid flex-none gap-3.5" style={{ gridTemplateColumns: 'minmax(0,1.62fr) minmax(0,1fr)' }}>
+        {(on('m.chart') || shownSparks.length > 0) && (
+        <div
+          className="grid flex-none gap-3.5"
+          style={{
+            gridTemplateColumns: on('m.chart')
+              ? shownSparks.length
+                ? 'minmax(0,1.62fr) minmax(0,1fr)'
+                : 'minmax(0,1fr)'
+              : cols(shownSparks.length)
+          }}
+        >
+          {on('m.chart') && (
           <Card className="overflow-hidden px-[18px] pb-2 pt-4">
             <div className="flex flex-wrap items-start justify-between gap-3.5">
               <div className="min-w-0">
@@ -996,9 +1190,11 @@ export function DashboardWeb(props: DashProps): React.JSX.Element {
               <MonthChart height={256} barW={26} gap={9} labels />
             </div>
           </Card>
+          )}
 
-          <div className="flex flex-col gap-3.5">
-            {sparks.map((sp) => {
+          {shownSparks.length > 0 && (
+          <div className={on('m.chart') ? 'flex flex-col gap-3.5' : 'contents'}>
+            {shownSparks.map((sp) => {
               const Ico = sp.icon
               return (
                 <Card key={sp.key} className="flex min-h-0 flex-1 flex-col overflow-hidden px-4 py-3.5">
@@ -1023,10 +1219,13 @@ export function DashboardWeb(props: DashProps): React.JSX.Element {
               )
             })}
           </div>
+          )}
         </div>
+        )}
 
-        <div className="grid flex-none gap-3.5" style={{ gridTemplateColumns: 'repeat(3,minmax(0,1fr))' }}>
-          {rankCards.map((c) => {
+        {(shownRanks.length > 0 || on('m.duties')) && (
+        <div className="grid flex-none gap-3.5" style={{ gridTemplateColumns: cols(shownRanks.length + (on('m.duties') ? 1 : 0)) }}>
+          {shownRanks.map((c) => {
             const Ico = c.icon
             const max = Math.max(1, ...c.rows.map((r) => r.v))
             return (
@@ -1061,6 +1260,7 @@ export function DashboardWeb(props: DashProps): React.JSX.Element {
             )
           })}
 
+          {on('m.duties') && (
           <Card className="flex flex-col px-[17px] py-[15px]">
             <CardHead
               icon={Receipt}
@@ -1093,9 +1293,13 @@ export function DashboardWeb(props: DashProps): React.JSX.Element {
             </div>
             <Deeper label="Open Trial Balance" page="accounts" fg={t.accent} />
           </Card>
+          )}
         </div>
+        )}
 
-        <div className="grid flex-none gap-3.5" style={{ gridTemplateColumns: 'repeat(3,minmax(0,1fr))' }}>
+        {['m.stock', 'm.exposure', 'm.attention'].some(on) && (
+        <div className="grid flex-none gap-3.5" style={{ gridTemplateColumns: cols(['m.stock', 'm.exposure', 'm.attention'].filter(on).length) }}>
+          {on('m.stock') && (
           <Card className="flex flex-col px-[17px] py-[15px]">
             <CardHead icon={Warehouse} title="Book stock by category" fg={t.accent} />
             <div className="mt-[13px] flex flex-1 flex-col gap-[9px]" style={{ perspective: 900 }}>
@@ -1141,20 +1345,40 @@ export function DashboardWeb(props: DashProps): React.JSX.Element {
             </div>
             <Deeper label="Open Stock" page="stock" fg={t.accent} />
           </Card>
+          )}
 
+          {on('m.exposure') && (
           <Card className="flex flex-col px-[17px] py-[15px]">
             <CardHead icon={Factory} title="Open exposure" fg={t.blue} />
             <div className="mt-[13px] flex flex-none flex-col gap-0.5">
               {exposure.map((e) => (
-                <div
-                  key={e.label}
-                  className="flex items-baseline justify-between gap-2.5 py-2"
-                  style={{ borderBottom: `1px dotted ${t.hair}` }}
-                >
-                  <span className="text-[11.5px] font-bold" style={{ color: t.ink2 }}>
-                    {e.label}
-                  </span>
-                  <span className="doc-ref flex-none whitespace-nowrap text-[12.5px] font-bold">{e.v}</span>
+                <div key={e.label} className="py-2" style={{ borderBottom: `1px dotted ${t.hair}` }}>
+                  <button
+                    type="button"
+                    onClick={e.go}
+                    title="Open the register"
+                    className="flex w-full cursor-pointer items-baseline justify-between gap-2.5 text-left hover:opacity-80"
+                  >
+                    <span className="text-[11.5px] font-bold" style={{ color: t.ink2 }}>
+                      {e.label}
+                    </span>
+                    <span className="doc-ref flex-none whitespace-nowrap text-[12.5px] font-bold">{e.v}</span>
+                  </button>
+                  {e.parts.length > 1 && (
+                    <div className="mt-1.5 flex flex-wrap gap-1.5">
+                      {e.parts.map((p) => (
+                        <button
+                          key={p.label}
+                          type="button"
+                          onClick={p.go}
+                          className="doc-ref cursor-pointer rounded-[3px] px-1.5 py-[2px] text-[10.5px] font-bold hover:opacity-80"
+                          style={{ background: t.inset, border: `1px solid ${t.hair}`, color: t.muted }}
+                        >
+                          {p.label}
+                        </button>
+                      ))}
+                    </div>
+                  )}
                 </div>
               ))}
             </div>
@@ -1172,7 +1396,13 @@ export function DashboardWeb(props: DashProps): React.JSX.Element {
                   </span>
                 )}
                 {tankerRows.map((tk) => (
-                  <div key={tk.label} className="flex items-center gap-2.5">
+                  <button
+                    key={tk.label}
+                    type="button"
+                    onClick={() => props.onNavigate('orders')}
+                    title="Open Purchases — the tankers"
+                    className="flex cursor-pointer items-center gap-2.5 text-left hover:opacity-80"
+                  >
                     <span className="h-[7px] w-[7px] flex-none rounded-full" style={{ background: t.accent }} />
                     <span className="min-w-0 flex-1 truncate text-[11.5px] font-bold capitalize" style={{ color: t.ink2 }}>
                       {tk.label}
@@ -1180,15 +1410,18 @@ export function DashboardWeb(props: DashProps): React.JSX.Element {
                     <span className="doc-ref flex-none text-[12.5px] font-bold" style={{ color: t.accent }}>
                       {tk.count}
                     </span>
-                  </div>
+                  </button>
                 ))}
               </div>
             </div>
           </Card>
+          )}
 
-          <Attention />
+          {on('m.attention') && <Attention />}
         </div>
+        )}
 
+        {on('m.treasury') && (
         <Card className="flex-none px-[18px] py-[15px]">
           <div className="flex flex-wrap items-center gap-2.5">
             <Landmark className="h-[19px] w-[19px]" style={{ color: t.accent }} />
@@ -1233,7 +1466,9 @@ export function DashboardWeb(props: DashProps): React.JSX.Element {
             ))}
           </div>
         </Card>
+        )}
       </div>
+      {customize}
     </div>
   )
 }

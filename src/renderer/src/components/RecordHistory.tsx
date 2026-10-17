@@ -23,12 +23,26 @@ type Row = Record<string, any>
 
 export type RecordHistoryTarget = {
   // The field-level trail — change_log, via history:list.
-  changes: { entity: 'orders' | 'bargains'; id: number }
+  //
+  // Optional: a module that keeps no field diff still has an activity trail,
+  // and that trail told a better story in this panel than in the table it used
+  // to get. Left out, the timeline is built from the activity alone.
+  changes?: { entity: 'orders' | 'bargains' | 'sales_bargains'; id: number }
   // The activity trail — user_logs. Optional: not every module logs one.
   activity?: { entity: string | string[]; id: number }
   kicker?: string
   title: string
   subtitle?: string
+  /**
+   * FACTS THE LOG DOES NOT KEEP.
+   *
+   * The activity trail records that a repayment happened and not what it was
+   * for — so "Repaid" arrives with no amount against it, which is the one
+   * thing anybody reading a repayment wants. A module that holds those
+   * figures passes them here with the moment they were saved, and each is
+   * merged into the entry made at that minute.
+   */
+  notes?: { at: string; text: string }[]
 }
 
 /* -------------------------------------------------------------------------- */
@@ -39,14 +53,20 @@ export type RecordHistoryTarget = {
 // to read one. A rate is money, a quantity is not, and an id is neither.
 const MONEY = new Set([
   'bargain_rate', 'invoice_rate', 'adjusted_rate', 'additional_interest', 'rate_round_off',
-  'taxable_value', 'net_amount', 'round_off', 'rate_per_uom', 'base_rate', 'duty'
+  'taxable_value', 'net_amount', 'round_off', 'rate_per_uom', 'base_rate', 'duty',
+  // A sales bargain spells its rate plainly as `rate`.
+  'rate'
 ])
 const QTY = new Set(['ordered_qty', 'qty'])
 const PCT = new Set(['interest_pct', 'gst_pct', 'tds_pct', 'allowed_shortage_pct'])
 const DATE = new Set(['order_date', 'bargain_date', 'rate_expiry_date'])
 // Stored as a number that means a name. Showing "12 → 15" helps nobody, so the
 // line says it changed and stops there rather than pretending to inform.
-const REF = new Set(['company_id', 'supplier_id', 'oil_type_id', 'broker_id'])
+const REF = new Set([
+  'company_id', 'supplier_id', 'oil_type_id', 'broker_id',
+  // Same on the selling side: an id that means a name informs nobody.
+  'customer_id', 'product_id', 'packaging_id'
+])
 
 // The figures that are WORKED OUT from the others. None of these is ever typed
 // by anybody — they move because a rate or a quantity moved.
@@ -54,7 +74,7 @@ const DERIVED = new Set(['adjusted_rate', 'taxable_value', 'net_amount', 'round_
 
 // What the save was about, in three words. Taken from the fields that moved,
 // because the verb the channel logged ('Updated') says nothing.
-const RATE_FIELDS = new Set(['bargain_rate', 'invoice_rate', 'rate_per_uom', 'base_rate', 'duty'])
+const RATE_FIELDS = new Set(['bargain_rate', 'invoice_rate', 'rate_per_uom', 'base_rate', 'duty', 'rate'])
 const TERM_FIELDS = new Set(['gst_pct', 'tds_pct', 'gst_type', 'interest_pct', 'interest_days', 'additional_interest', 'rate_round_off'])
 
 function readValue(field: string, raw: unknown): string {
@@ -78,12 +98,10 @@ function localDate(v: unknown): Date | null {
   return Number.isNaN(d.getTime()) ? null : d
 }
 
+// hh:mm on the 24-hour clock — the one way every activity trail in the app
+// writes a time (see activityStamp in lib/format).
 function clockTime(d: Date): string {
-  const h = d.getHours()
-  const m = String(d.getMinutes()).padStart(2, '0')
-  const ampm = h < 12 ? 'am' : 'pm'
-  const h12 = h % 12 === 0 ? 12 : h % 12
-  return `${h12}:${m} ${ampm}`
+  return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
 }
 
 function dayLabel(d: Date): string {
@@ -99,6 +117,25 @@ function dayLabel(d: Date): string {
   )
 }
 
+// The activity log's one-line summary, as it should be read.
+//
+// It is written by each module in its own shorthand — 'Qty 11.670', 'Qty 50'
+// — and the trailing zeros are an artefact of how the number was stored, not
+// a statement about precision. Two entries a minute apart reading 11.67 and
+// 11.670 look like a change when nothing moved.
+function tidyDetail(raw: string): string {
+  return (
+    raw
+      .trim()
+      // A rupee figure written plain — '₹ 2350000' — is a number to be counted
+      // on the screen rather than read. Put through the same formatter every
+      // other figure in the app uses, it is read at a glance.
+      .replace(/₹\s*(\d+(?:\.\d+)?)/g, (_m, x) => formatINR(Number(x)))
+      .replace(/(\d+\.\d*?[1-9])0+(?=\D|$)/g, '$1')
+      .replace(/(\d+)\.0+(?=\D|$)/g, '$1')
+  )
+}
+
 /* -------------------------------------------------------------------------- */
 /* One save = one event                                                       */
 /* -------------------------------------------------------------------------- */
@@ -109,6 +146,14 @@ type Event = {
   at: Date | null
   who: string
   verb: string
+  /** What the module called it, in English — see ACTION_LABEL. */
+  said?: string
+  /** Anything ELSE the same save did, in the same minute. */
+  also: string[]
+  /** Figures the module supplied that the log itself does not keep. */
+  facts: string[]
+  /** Where the person was, as the audit trail recorded it. */
+  ip?: string
   detail: string
   lines: Line[]
   derived: Line[]
@@ -120,9 +165,62 @@ function bucket(who: string, at: Date | null): string {
   return `${who}|${at ? Math.floor(at.getTime() / 60000) : 'x'}`
 }
 
+// THE RAW CHANNEL WORD, IN ENGLISH.
+//
+// The trail stores whatever verb the channel had at the time, so an older row
+// carries the channel name itself — 'repayments', 'markReceived', 'preclose'.
+// Shown as they are they read as code, which is exactly what a history panel
+// must not do. The same map the audit table has always used, kept here too so
+// the timeline reads the way that table did.
+const ACTION_LABEL: Record<string, string> = {
+  preclose: 'Preclosed',
+  unpreclose: 'Undid preclosure',
+  saveLimit: 'Changed the facility limit',
+  upfrontInterest: 'Posted upfront interest',
+  repay: 'Repaid',
+  repayments: 'Repaid',
+  advance: 'Advanced a stage',
+  issue: 'Issued a bill',
+  deleteIssuance: 'Removed a bill',
+  paymentIn: 'Logged a payment in',
+  createInvoice: 'Created',
+  updateInvoice: 'Updated',
+  deleteInvoice: 'Deleted',
+  rejectInvoice: 'Rejected',
+  unrejectInvoice: 'Un-rejected',
+  setInvoiceStage: 'Moved the dispatch stage',
+  setStage: 'Moved the dispatch stage',
+  markReceived: 'Marked payment received',
+  unmarkReceived: 'Undid payment received',
+  deleteRepayment: 'Removed a repayment',
+  payInterest: 'Paid interest',
+  payInterestUpto: 'Paid interest',
+  interestWindow: 'Looked at the interest due',
+  deleteInterest: 'Removed an interest payment',
+  reopen: 'Reopened',
+  adjust: 'Balance adjusted',
+  cancelDelivery: 'Cancelled the delivery'
+}
+
+// The activity log writes its action in whatever case the module used —
+// 'Created', 'Updated', 'adjust'. One vocabulary, so a verb from the activity
+// trail and a verb from the field diff can never disagree about the same save.
+function normVerb(a: unknown): string {
+  const v = String(a || '').trim().toLowerCase()
+  if (v === 'created' || v === 'create' || v === 'insert') return 'created'
+  if (v === 'deleted' || v === 'delete' || v === 'remove') return 'deleted'
+  if (v === 'adjust' || v === 'adjusted') return 'adjusted'
+  if (v === 'updated' || v === 'update' || v === 'edit' || v === 'edited') return 'updated'
+  return v
+}
+
 function headline(ev: Event): string {
   if (ev.verb === 'created') return 'Entered'
   if (ev.verb === 'deleted') return 'Deleted'
+  if (ev.verb === 'adjusted') return 'Balance adjusted'
+  // A verb the panel has no colour for is still a verb, and saying what the
+  // module actually did beats 'Edited' on every row of a bill's history.
+  if (ev.said) return ev.said
   const fields = ev.lines.map((l) => l.field)
   if (fields.some((f) => RATE_FIELDS.has(f))) return 'Rate changed'
   if (fields.some((f) => QTY.has(f))) return 'Quantity changed'
@@ -131,17 +229,19 @@ function headline(ev: Event): string {
   if (fields.some((f) => TERM_FIELDS.has(f))) return 'Terms changed'
   if (fields.length === 1 && fields[0] === 'remarks') return 'Remarks edited'
   if (!ev.lines.length && ev.derived.length) return 'Amounts recalculated'
-  if (!ev.lines.length && !ev.derived.length) return ev.detail ? '' : 'Opened for editing'
+  // No field diff at all: this record predates the field history, so the
+  // activity trail is everything there is. It still says what happened.
+  if (!ev.lines.length && !ev.derived.length) return 'Edited'
   return 'Edited'
 }
 
-function buildEvents(changes: Row[], activity: Row[]): Event[] {
+function buildEvents(changes: Row[], activity: Row[], notes: { at: string; text: string }[] = []): Event[] {
   const by = new Map<string, Event>()
   const take = (who: string, at: Date | null): Event => {
     const k = bucket(who, at)
     let ev = by.get(k)
     if (!ev) {
-      ev = { key: k, at, who, verb: 'updated', detail: '', lines: [], derived: [] }
+      ev = { key: k, at, who, verb: 'updated', detail: '', lines: [], derived: [], also: [], facts: [] }
       by.set(k, ev)
     }
     return ev
@@ -164,12 +264,51 @@ function buildEvents(changes: Row[], activity: Row[]): Event[] {
 
   // The activity row for the same minute is the same save — its verb and its
   // one-line summary belong on the event the diff already built, not beside it.
+  //
+  // The verb and the summary are kept APART. They were not: the summary was
+  // written over the verb, so "Created · Qty 50" arrived as "Qty 50" and every
+  // entry in the panel looked identical whatever had actually happened.
   for (const a of activity) {
     const at = localDate(a.created_at)
     const ev = take(String(a.username || 'system'), at)
-    const act = String(a.action || '')
-    if (act && act.toLowerCase() !== 'update' && act.toLowerCase() !== 'updated') ev.detail = ev.detail || act
-    if (a.detail) ev.detail = String(a.detail)
+    const act = normVerb(a.action)
+    // A field diff, where one exists, is the better authority on what the save
+    // was — it knows the fields. The activity verb fills in where there is
+    // none, which is every record struck before the diff existed.
+    if (act && (ev.verb === 'updated' || !ev.verb)) ev.verb = act
+    // Mapped where the trail kept a channel word; taken AS WRITTEN where it
+    // already kept English. Most of this log says 'Marked payment received'
+    // in as many words, and translating only the codes while flattening those
+    // to 'Edited' would lose the better half of the record.
+    const raw = String(a.action || '').trim()
+    const known = ['created', 'deleted', 'adjusted', 'updated'].includes(act)
+    const said = ACTION_LABEL[raw] || ACTION_LABEL[act] || (known ? '' : raw)
+    // TWO ACTIONS IN ONE MINUTE ARE TWO ACTIONS.
+    //
+    // A bill opened and marked received in the same save left both rows in the
+    // trail a second apart; this panel buckets by the minute, so the second
+    // was being thrown away and the entry read only "Entered". Whatever else
+    // the minute did is kept and said under the headline.
+    if (!ev.said) ev.said = said
+    else if (said && said !== ev.said && !ev.also.includes(said)) ev.also.push(said)
+    if (a.ip && !ev.ip) ev.ip = String(a.ip)
+    if (a.detail) ev.detail = tidyDetail(String(a.detail))
+  }
+
+  // The module's own figures, married to the entry made at the same minute.
+  // An orphan — saved in a minute the trail has no row for — still gets said,
+  // as an entry of its own, rather than being dropped for not matching.
+  for (const nt of notes) {
+    const at = localDate(nt.at)
+    if (!at || !nt.text) continue
+    const min = Math.floor(at.getTime() / 60000)
+    const hit = [...by.values()].find((e) => e.at && Math.floor(e.at.getTime() / 60000) === min)
+    if (hit) {
+      if (!hit.facts.includes(nt.text)) hit.facts.push(nt.text)
+      continue
+    }
+    const ev = take('system', at)
+    ev.facts.push(nt.text)
   }
 
   return [...by.values()].sort((x, y) => (y.at?.getTime() ?? 0) - (x.at?.getTime() ?? 0))
@@ -247,9 +386,11 @@ function Timeline({ events, loading }: { events: Event[]; loading: boolean }): R
                     ? 'bg-[#12855A]'
                     : ev.verb === 'deleted'
                       ? 'bg-[#B3261E]'
-                      : ev.lines.some((l) => RATE_FIELDS.has(l.field))
-                        ? 'bg-[#C2700A]'
-                        : 'bg-[#8FBFA8]'
+                      : ev.verb === 'adjusted'
+                        ? 'bg-[#3D3179]'
+                        : ev.lines.some((l) => RATE_FIELDS.has(l.field))
+                          ? 'bg-[#C2700A]'
+                          : 'bg-[#8FBFA8]'
                 )}
               />
               <div className="mb-2 rounded-[4px] border border-[#DCE7DB] bg-white px-4 py-3">
@@ -260,6 +401,10 @@ function Timeline({ events, loading }: { events: Event[]; loading: boolean }): R
                   <span className="ml-auto flex items-center gap-1.5 whitespace-nowrap text-[11px] font-bold text-[#5A6B62]">
                     <User2 className="h-[13px] w-[13px] text-[#8FBFA8]" />
                     {ev.who}
+                    {/* Where they were. It was in the old audit table and is
+                        the one field that answers "was that really them" —
+                        quiet, because it is only ever wanted once. */}
+                    {!!ev.ip && <span className="doc-ref font-semibold text-[#A8B8AE]">{ev.ip}</span>}
                     <span className="text-[#C3D2C6]">·</span>
                     <Clock className="h-[13px] w-[13px] text-[#8FBFA8]" />
                     {ev.at ? clockTime(ev.at) : '—'}
@@ -296,8 +441,49 @@ function Timeline({ events, loading }: { events: Event[]; loading: boolean }): R
                   </div>
                 )}
 
-                {!!ev.detail && !ev.lines.length && !ev.derived.length && (
-                  <p className="mt-1.5 text-[12px] font-semibold leading-[1.5] text-[#5A6B62]">{ev.detail}</p>
+                {/* What the module knows and the log does not — the amount
+                    on a repayment, chiefly. Set as a figure rather than as
+                    prose, because that is what it is. */}
+                {!!ev.facts.length && (
+                  <div className="mt-2 flex flex-col gap-1">
+                    {ev.facts.map((f) => (
+                      <div
+                        key={f}
+                        className="doc-ref rounded-[3px] bg-[#F7FAF6] px-2.5 py-1.5 text-[12px] font-bold text-[#0A1F17]"
+                      >
+                        {f}
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                {/* The rest of what this save did. Buckets are one minute
+                    wide, and a minute can hold more than one action. */}
+                {!!ev.also.length && (
+                  <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
+                    {ev.also.map((a) => (
+                      <span
+                        key={a}
+                        className="rounded-[3px] border border-[#DCE7DB] bg-[#F7FAF6] px-2 py-[3px] text-[10.5px] font-extrabold text-[#33473E]"
+                      >
+                        {a}
+                      </span>
+                    ))}
+                  </div>
+                )}
+
+                {!!ev.detail && (
+                  <p className="mt-1.5 text-[12px] font-semibold leading-[1.5] text-[#5A6B62]">
+                    {/* What the module itself recorded about the save. Where a
+                        field diff exists it is a second, coarser account of the
+                        same thing, so it sits quietly under the detail rather
+                        than above it. */}
+                    {ev.lines.length || ev.derived.length ? (
+                      <span className="text-[11.5px] text-[#8A9690]">{ev.detail}</span>
+                    ) : (
+                      ev.detail
+                    )}
+                  </p>
                 )}
               </div>
             </div>
@@ -330,7 +516,9 @@ export function RecordHistory({
     // The trail must never be the reason a screen breaks: whichever half is
     // unavailable is simply empty, and the other half still tells its story.
     const [c, a] = await Promise.all([
-      window.api.history.list(t.changes.entity, Number(t.changes.id)).catch(() => [] as Row[]),
+      t.changes
+        ? window.api.history.list(t.changes.entity, Number(t.changes.id)).catch(() => [] as Row[])
+        : Promise.resolve([] as Row[]),
       t.activity
         ? window.api.access.entityHistory(t.activity.entity, { id: Number(t.activity.id) }).catch(() => [] as Row[])
         : Promise.resolve([] as Row[])
@@ -344,7 +532,10 @@ export function RecordHistory({
     if (target) void load(target)
   }, [target, load])
 
-  const events = useMemo(() => buildEvents(changes, activity), [changes, activity])
+  const events = useMemo(
+    () => buildEvents(changes, activity, target?.notes || []),
+    [changes, activity, target]
+  )
 
   if (inline) {
     return (
@@ -357,6 +548,7 @@ export function RecordHistory({
   return (
     <Dialog open={!!target} onOpenChange={(o) => !o && onClose?.()}>
       <DialogContent
+        readOnly
         className={cn(
           'max-h-[85vh] w-[calc(100vw-2rem)] max-w-2xl overflow-y-auto',
           __WEB__ &&
