@@ -25513,10 +25513,11 @@ async function reconcileBank(v) {
     const sign = (dir, amt) => dir === "in" ? amt : -amt;
     const net = round213(ts.reduce((s5, t) => s5 + sign(t.dir, t.amount), 0));
     const ok = Math.abs(net - sign(b.dir, b.amount)) <= 1;
+    const main2 = ts.reduce((a, t) => t.amount > a.amount ? t : a, ts[0]);
     for (const t of ts) {
       handled.add(t.key);
       const diffs = [];
-      if (b.date !== t.date) diffs.push({ field: "date", tally: t.date, books: b.date });
+      if (t === main2 && b.date !== t.date) diffs.push({ field: "date", tally: t.date, books: b.date });
       if (!ok) diffs.push({ field: "amount", tally: Math.abs(net), books: b.amount, diff: round213(Math.abs(net) - b.amount) });
       rows2.push({
         key: t.key,
