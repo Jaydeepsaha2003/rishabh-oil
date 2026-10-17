@@ -77,9 +77,9 @@ export async function listLCs(): Promise<Row[]> {
       -- against the limit, though, only the principal repays anything: netting
       -- the whole debit off drove Outstanding to minus the charges on an LC
       -- that was square to the rupee.
-      COALESCE((SELECT SUM(amount - COALESCE(comm_charges, 0) - COALESCE(bank_charges, 0))
+      COALESCE((SELECT SUM(amount - COALESCE(comm_charges, 0) - COALESCE(bank_charges, 0) - COALESCE(charges_total, 0))
                   FROM lc_repayments WHERE lc_id = l.id AND posted = 1), 0) AS repaid_principal,
-      COALESCE((SELECT SUM(COALESCE(comm_charges, 0) + COALESCE(bank_charges, 0))
+      COALESCE((SELECT SUM(COALESCE(comm_charges, 0) + COALESCE(bank_charges, 0) + COALESCE(charges_total, 0))
                   FROM lc_repayments WHERE lc_id = l.id AND posted = 1), 0) AS repaid_charges,
       (SELECT COUNT(*) FROM lc_repayments WHERE lc_id = l.id) AS repayment_count,
       -- Parts the bank has paid the supplier in; 0 for an LC paid in one go.
@@ -1088,6 +1088,8 @@ export async function precloseLC(
     amount: number
     comm_charges?: number
     bank_charges?: number
+    // Charges on ledgers the user picks — as many rows as the debit carried.
+    charges?: { account?: string; amount?: number | string }[]
     premature_interest?: number
     premature_interest_direction?: 'credit_to_us' | 'pay_to_party'
     release_margin?: boolean
@@ -1157,6 +1159,7 @@ export async function precloseLC(
     amount: n(v.amount),
     comm_charges: n(v.comm_charges),
     bank_charges: n(v.bank_charges),
+    charges: v.charges || [],
     repay_date: precloseDate,
     posted: true,
     note: 'Preclosure repayment'
@@ -1493,6 +1496,7 @@ export async function repayLcParts(
     parts: number[]
     comm_charges?: number
     bank_charges?: number
+    charges?: { account?: string; amount?: number | string }[]
     rebate_route?: 'credit_to_us' | 'pay_to_party'
     release_margin?: boolean
     note?: string
@@ -1518,6 +1522,9 @@ export async function repayLcParts(
     if (early) throw new Error(`Part ${early.part_no} was only paid on ${dmy(String(early.pay_date))} — it cannot be repaid before that`)
     const comm = round2(n(v.comm_charges))
     const bankCh = round2(n(v.bank_charges))
+    const { lcChargeRows } = await import('./treasury')
+    const chargeRows = await lcChargeRows(v.charges)
+    const rowsTotal = round2(chargeRows.reduce((s, x) => s + x.amount, 0))
     const principal = round2(pick.reduce((s, p) => s + n(p.amount), 0))
     const label = pick.map((p) => p.part_no).join(', ')
     // REPAID BEFORE ITS MATURITY: the bank charged interest to the part's own
@@ -1534,10 +1541,16 @@ export async function repayLcParts(
     const ins = await c.execute({
       sql: `INSERT INTO lc_repayments (lc_id, party_id, amount, maturity_charges, comm_charges, bank_charges, repay_date, posted, document_path, note)
             VALUES (?, NULL, ?, ?, ?, ?, ?, 1, NULL, ?)`,
-      args: [n(lcId), round2(principal - rebateTotal + comm + bankCh), round2(comm + bankCh), comm, bankCh, date,
+      args: [n(lcId), round2(principal - rebateTotal + comm + bankCh + rowsTotal), round2(comm + bankCh + rowsTotal), comm, bankCh, date,
         `Part repayment — part${pick.length === 1 ? '' : 's'} ${label}${String(v.note || '').trim() ? ` · ${String(v.note).trim()}` : ''}`]
     })
     const repId = Number(ins.lastInsertRowid)
+    if (chargeRows.length) {
+      await c.execute({
+        sql: 'UPDATE lc_repayments SET charges = ?, charges_total = ? WHERE id = ?',
+        args: [JSON.stringify(chargeRows), rowsTotal, repId]
+      })
+    }
     const { postLcRepaymentEntry } = await import('./treasury')
     await postLcRepaymentEntry(repId)
     // The unexpired interest on each part repaid early comes back.

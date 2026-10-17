@@ -792,6 +792,17 @@ export async function runStartupTasks(): Promise<void> {
     await c.execute('ALTER TABLE letters_of_credit ADD COLUMN interest_adj REAL NOT NULL DEFAULT 0')
   }).catch((e) => console.error('[lc] interest-adjustment column failed:', e))
 
+  // An LC repayment's charges on ledgers the user picks — as many rows as the
+  // bank's debit carried (saveLcRepayment / repayLcParts). JSON rows plus
+  // their total, so every reader can take them off the principal in SQL.
+  await runOnce('lc_repay_charges_v1', async () => {
+    const c = getClient()
+    const info = await c.execute({ sql: "PRAGMA table_info('lc_repayments')", args: [] })
+    const cols = new Set(info.rows.map((r) => String((r as unknown as Record<string, unknown>).name)))
+    if (!cols.has('charges')) await c.execute('ALTER TABLE lc_repayments ADD COLUMN charges TEXT')
+    if (!cols.has('charges_total')) await c.execute('ALTER TABLE lc_repayments ADD COLUMN charges_total REAL')
+  }).catch((e) => console.error('[lc] repayment-charges columns failed:', e))
+
   // Interest paid in the same debit as a discounted bill's repayment — gross,
   // posted to the interest ledger on the repayment voucher (repayBd). Nil on
   // every repayment already entered, so nothing moves.

@@ -28,6 +28,7 @@ import {
   Trash2,
   Users
 } from 'lucide-react'
+import { ChargeRows, chargeRowsFrom, chargeRowsPayload, chargeRowsProblem, chargeRowsTotal, type ChargeRow } from '@/components/ChargeRows'
 import { Badge } from '@/components/ui/badge'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { Button } from '@/components/ui/button'
@@ -1627,6 +1628,7 @@ function TreasuryDesk({ onCompanyChange, focusLcId, focusBdId, onFocusHandled }:
       amount: String(openAmount),
       comm_charges: '',
       bank_charges: '',
+      charges: [],
       release_margin: false
     })
     setPrecloseError(null)
@@ -1652,8 +1654,10 @@ function TreasuryDesk({ onCompanyChange, focusLcId, focusBdId, onFocusHandled }:
       premature_interest: l.preclose_premature_interest == null ? '' : String(round2(n(l.preclose_premature_interest))),
       premature_interest_direction: String(l.preclose_interest_route || '') === 'pay_to_party' ? 'pay_to_party' : 'credit_to_us',
       amount: String(rep ? round2(n(rep.amount)) : n(l.amount)),
-      comm_charges: rep && n(rep.comm_charges) ? String(round2(n(rep.comm_charges))) : '',
-      bank_charges: rep && n(rep.bank_charges) ? String(round2(n(rep.bank_charges))) : '',
+      // Every charge as a ledger row — the old commission and bank figures too.
+      comm_charges: '',
+      bank_charges: '',
+      charges: chargeRowsFrom(rep),
       release_margin: String(l.preclose_settlement_direction || '') === 'margin_released'
     })
     setPrecloseError(null)
@@ -1752,9 +1756,11 @@ function TreasuryDesk({ onCompanyChange, focusLcId, focusBdId, onFocusHandled }:
       return setPrecloseError(`The total debited (${formatINR(n(precloseForm.amount))}) cannot be less than the open amount (${formatINR(openAmount)})`)
     }
     const excess = round2(n(precloseForm.amount) - openAmount)
-    const splitTotal = round2(n(precloseForm.comm_charges) + n(precloseForm.bank_charges))
+    const splitTotal = chargeRowsTotal(precloseForm.charges as ChargeRow[])
+    const rowProblem = chargeRowsProblem(precloseForm.charges as ChargeRow[])
+    if (rowProblem) return setPrecloseError(rowProblem)
     if (excess > 0.005 && Math.abs(splitTotal - excess) > 0.005) {
-      return setPrecloseError(`Comm. charges + Bank charges must add up to the ${formatINR(excess)} over the open amount`)
+      return setPrecloseError(`The charges must add up to the ${formatINR(excess)} over the open amount`)
     }
     setPrecloseSaving(true)
     setPrecloseError(null)
@@ -1762,8 +1768,9 @@ function TreasuryDesk({ onCompanyChange, focusLcId, focusBdId, onFocusHandled }:
       const values = {
         preclose_date: String(precloseForm.preclose_date),
         amount: n(precloseForm.amount),
-        comm_charges: n(precloseForm.comm_charges),
-        bank_charges: n(precloseForm.bank_charges),
+        comm_charges: 0,
+        bank_charges: 0,
+        charges: excess > 0.005 ? chargeRowsPayload(precloseForm.charges as ChargeRow[]) : [],
         premature_interest: n(precloseForm.premature_interest),
         premature_interest_direction: (precloseForm.premature_interest_direction === 'pay_to_party' ? 'pay_to_party' : 'credit_to_us') as
           | 'pay_to_party'
@@ -2094,11 +2101,12 @@ function TreasuryDesk({ onCompanyChange, focusLcId, focusBdId, onFocusHandled }:
     if (amount < openAmount - 0.005) {
       return void toast.error(`The repayment cannot be less than the LC's open amount (${formatINR(openAmount)})`)
     }
-    const commCharges = round2(n(repayForm.comm_charges))
-    const bankCharges = round2(n(repayForm.bank_charges))
+    const rows = (repayForm.charges as ChargeRow[]) || []
+    const rowProblem = chargeRowsProblem(rows)
+    if (rowProblem) return void toast.error(rowProblem)
     const excess = round2(amount - openAmount)
-    if (excess > 0.005 && Math.abs(commCharges + bankCharges - excess) > 0.005) {
-      return void toast.error(`Comm. + Bank charges must add up to ${formatINR(excess)}, the amount over the open amount`)
+    if (excess > 0.005 && Math.abs(chargeRowsTotal(rows) - excess) > 0.005) {
+      return void toast.error(`The charges must add up to ${formatINR(excess)}, the amount over the open amount`)
     }
     setBusy(true)
     try {
@@ -2107,8 +2115,9 @@ function TreasuryDesk({ onCompanyChange, focusLcId, focusBdId, onFocusHandled }:
         lc_id: Number(repayForm.lc_id),
         party_id: repayForm.party_id ? Number(repayForm.party_id) : null,
         amount,
-        comm_charges: commCharges,
-        bank_charges: bankCharges,
+        comm_charges: 0,
+        bank_charges: 0,
+        charges: excess > 0.005 ? chargeRowsPayload(rows) : [],
         posted: !!repayForm.posted
       })
       toast.success(repayForm.posted ? 'Repayment posted to the books' : 'Repayment logged')
@@ -2559,7 +2568,7 @@ function TreasuryDesk({ onCompanyChange, focusLcId, focusBdId, onFocusHandled }:
                     </td>
                     <td className="text-right">
                       <div className="flex justify-end gap-1">
-                        <Button size="icon" variant="ghost" className="h-6 w-6" title="Edit" onClick={() => setRepayForm({ ...r, open_amount: n(l.amount) })}>
+                        <Button size="icon" variant="ghost" className="h-6 w-6" title="Edit" onClick={() => setRepayForm({ ...r, open_amount: n(l.amount), charges: chargeRowsFrom(r), comm_charges: '', bank_charges: '' })}>
                           <Pencil className="h-3 w-3" />
                         </Button>
                         <Button size="icon" variant="ghost" className="h-6 w-6 text-destructive" title="Delete" onClick={() => void removeRepayment(r)}>
@@ -4317,7 +4326,7 @@ function TreasuryDesk({ onCompanyChange, focusLcId, focusBdId, onFocusHandled }:
               const rebate = pv && pv.pendingDays > 0 ? round2(n(precloseForm.premature_interest)) : 0
               const paid = round2(n(precloseForm.amount))
               const excess = pv ? round2(paid - pv.openAmount) : 0
-              const splitTotal = round2(n(precloseForm.comm_charges) + n(precloseForm.bank_charges))
+              const splitTotal = chargeRowsTotal(precloseForm.charges as ChargeRow[])
               const splitOff = excess > 0.005 && Math.abs(splitTotal - excess) > 0.005
               const short = !!pv && paid > 0 && paid < pv.openAmount - 0.005
               const margin = pv ? n(pv.margin) : 0
@@ -4525,30 +4534,15 @@ function TreasuryDesk({ onCompanyChange, focusLcId, focusBdId, onFocusHandled }:
                       </div>
                       {excess > 0.005 && (
                         <div className="grid gap-3 rounded-[4px] border border-[#F1D9A6] bg-[#FFF8E9] p-3.5">
-                          <div className="grid gap-4 sm:grid-cols-2">
-                            <div className="grid gap-1.5">
-                              <span className={lbl}>Comm. charges (₹)</span>
-                              <Input
-                                type="number"
-                                value={precloseForm.comm_charges ?? ''}
-                                onChange={(e) => setPrecloseForm((p) => ({ ...p, comm_charges: e.target.value }))}
-                                className="!h-10 !rounded-[4px] !bg-white !font-bold"
-                              />
-                            </div>
-                            <div className="grid gap-1.5">
-                              <span className={lbl}>Bank charges (₹)</span>
-                              <Input
-                                type="number"
-                                value={precloseForm.bank_charges ?? ''}
-                                onChange={(e) => setPrecloseForm((p) => ({ ...p, bank_charges: e.target.value }))}
-                                className="!h-10 !rounded-[4px] !bg-white !font-bold"
-                              />
-                            </div>
-                          </div>
+                          <span className={lbl}>Charges in this debit — one row per ledger</span>
+                          <ChargeRows
+                            value={(precloseForm.charges as ChargeRow[]) || []}
+                            onChange={(next) => setPrecloseForm((p) => ({ ...p, charges: next }))}
+                          />
                           <span className={cn('text-[11.5px] font-bold', splitOff ? 'text-[#B3261E]' : 'text-[#0B6B45]')}>
                             {splitOff
-                              ? `Comm. + Bank charges must add up to ${formatINR(excess)} (now ${formatINR(splitTotal)})`
-                              : `Split adds up to ${formatINR(excess)}`}
+                              ? `The charges must add up to ${formatINR(excess)} (now ${formatINR(splitTotal)})`
+                              : `Charges add up to ${formatINR(excess)}`}
                           </span>
                         </div>
                       )}
@@ -4597,7 +4591,7 @@ function TreasuryDesk({ onCompanyChange, focusLcId, focusBdId, onFocusHandled }:
                         {post(
                           '−',
                           repaying ? 'Repayment to the bank' : 'Preclosure repayment to the bank',
-                          `Payment · Dr LC Payable${excess > 0.005 ? ' + Comm./Bank charges' : ''} · Cr Bank`,
+                          `Payment · Dr LC Payable${excess > 0.005 ? ' + the charge ledgers' : ''} · Cr Bank`,
                           paid,
                           'text-[#B3261E]'
                         )}
@@ -4776,34 +4770,20 @@ function TreasuryDesk({ onCompanyChange, focusLcId, focusBdId, onFocusHandled }:
                   (() => {
                     const excess = round2(n(precloseForm.amount) - preclosePreview.openAmount)
                     if (excess <= 0.005) return null
-                    const splitTotal = round2(n(precloseForm.comm_charges) + n(precloseForm.bank_charges))
+                    const splitTotal = chargeRowsTotal(precloseForm.charges as ChargeRow[])
                     const splitOff = Math.abs(splitTotal - excess) > 0.005
                     return (
                       <div className="rounded-md border border-amber-300 bg-amber-50 p-3 sm:col-span-2">
                         <p className="mb-2 text-[11px] font-medium text-amber-900">
-                          This is {formatINR(excess)} over the open amount — split that between commission and bank charges below.
+                          This is {formatINR(excess)} over the open amount — put it on the ledgers it belongs to, one row each.
                         </p>
-                        <div className={cn('grid gap-3 sm:grid-cols-2', __WEB__ && LC_GRID)}>
-                          <div className="flex flex-col gap-1.5">
-                            <Label>Comm. charges (₹)</Label>
-                            <Input
-                              type="number"
-                              value={precloseForm.comm_charges ?? ''}
-                              onChange={(e) => setPrecloseForm((p) => ({ ...p, comm_charges: e.target.value }))}
-                            />
-                          </div>
-                          <div className="flex flex-col gap-1.5">
-                            <Label>Bank charges (₹)</Label>
-                            <Input
-                              type="number"
-                              value={precloseForm.bank_charges ?? ''}
-                              onChange={(e) => setPrecloseForm((p) => ({ ...p, bank_charges: e.target.value }))}
-                            />
-                          </div>
-                        </div>
+                        <ChargeRows
+                          value={(precloseForm.charges as ChargeRow[]) || []}
+                          onChange={(next) => setPrecloseForm((p) => ({ ...p, charges: next }))}
+                        />
                         {splitOff && (
                           <span className="mt-1.5 block text-[10px] font-medium text-rose-600">
-                            Comm. + Bank charges must add up to {formatINR(excess)} (currently {formatINR(splitTotal)})
+                            The charges must add up to {formatINR(excess)} (currently {formatINR(splitTotal)})
                           </span>
                         )}
                       </div>
@@ -4822,7 +4802,7 @@ function TreasuryDesk({ onCompanyChange, focusLcId, focusBdId, onFocusHandled }:
                 </label>
               )}
               <p className="mt-3 text-[10px] text-muted-foreground">
-                Posts Dr LC Repayment (+ Comm./Bank charges) / Cr Bank the moment you confirm below.
+                Posts Dr LC Repayment (+ the charge ledgers) / Cr Bank the moment you confirm below.
               </p>
             </section>
 
@@ -7077,26 +7057,20 @@ function TreasuryDesk({ onCompanyChange, focusLcId, focusBdId, onFocusHandled }:
               {(() => {
                 const excess = round2(n(repayForm.amount) - n(repayForm.open_amount))
                 if (excess <= 0.005) return null
-                const splitTotal = round2(n(repayForm.comm_charges) + n(repayForm.bank_charges))
+                const splitTotal = chargeRowsTotal(repayForm.charges as ChargeRow[])
                 const splitOff = Math.abs(splitTotal - excess) > 0.005
                 return (
                   <div className={cn('rounded-md border border-amber-300 bg-amber-50 p-3 sm:col-span-2', __WEB__ && '!rounded-[4px] !border-[#F0D9AE] !border-l-[3px] !border-l-[#C2700A] !bg-[#FFFBF2] !p-4')}>
                     <p className={cn('mb-2 text-[11px] font-medium text-amber-900', __WEB__ && '!mb-3 !text-[12px] !font-bold !leading-relaxed !text-[#8A5300]')}>
-                      This repayment is {formatINR(excess)} over the open amount — split that excess between commission and bank charges below.
+                      This repayment is {formatINR(excess)} over the open amount — put it on the ledgers it belongs to, one row each.
                     </p>
-                    <div className="grid gap-3 sm:grid-cols-2">
-                      <div className="flex flex-col gap-1.5">
-                        <Label>Comm. charges (₹)</Label>
-                        <Input type="number" value={repayForm.comm_charges ?? ''} onChange={(e) => setRepayForm((p) => ({ ...p, comm_charges: e.target.value }))} />
-                      </div>
-                      <div className="flex flex-col gap-1.5">
-                        <Label>Bank charges (₹)</Label>
-                        <Input type="number" value={repayForm.bank_charges ?? ''} onChange={(e) => setRepayForm((p) => ({ ...p, bank_charges: e.target.value }))} />
-                      </div>
-                    </div>
+                    <ChargeRows
+                      value={(repayForm.charges as ChargeRow[]) || []}
+                      onChange={(next) => setRepayForm((p) => ({ ...p, charges: next }))}
+                    />
                     {splitOff && (
                       <span className={cn('mt-1.5 block text-[10px] font-medium text-rose-600', __WEB__ && '!text-[11px] !font-bold !text-[#B3261E]')}>
-                        Comm. + Bank charges must add up to {formatINR(excess)} (currently {formatINR(splitTotal)})
+                        The charges must add up to {formatINR(excess)} (currently {formatINR(splitTotal)})
                       </span>
                     )}
                   </div>
@@ -7299,10 +7273,11 @@ function LcInstallmentsDialog({
     charges: ''
   })
   const [pick, setPick] = useState<Set<number>>(new Set())
-  const [rep, setRep] = useState<{ date: string; comm: string; bank: string; route: 'credit_to_us' | 'pay_to_party'; margin: boolean }>({
+  const [rep, setRep] = useState<{ date: string; comm: string; bank: string; chg: ChargeRow[]; route: 'credit_to_us' | 'pay_to_party'; margin: boolean }>({
     date: todayISO(),
     comm: '',
     bank: '',
+    chg: [],
     route: 'credit_to_us',
     margin: true
   })
@@ -7395,14 +7370,16 @@ function LcInstallmentsDialog({
       const r = await window.api.lc.repayParts(Number(lc.id), {
         date: rep.date,
         parts: picked.map((p) => n(p.part_no)),
-        comm_charges: n(rep.comm),
-        bank_charges: n(rep.bank),
+        comm_charges: 0,
+        bank_charges: 0,
+        charges: chargeRowsPayload(rep.chg),
         rebate_route: rep.route,
         release_margin: rep.margin
       })
       toast.success(
         `${formatINR(principal)} repaid to the bank${r.rebate > 0.005 ? ` · ${formatINR(r.rebate)} interest rebate` : ''}${r.closed ? ' — the LC is now closed' : ''}`
       )
+      setRep((x) => ({ ...x, chg: [] }))
       onChanged()
       await load()
     } catch (e) {
@@ -7616,13 +7593,9 @@ function LcInstallmentsDialog({
                   <span className={lbl}>Repaid on *</span>
                   <DatePicker value={rep.date} max={todayISO()} onChange={(v) => setRep((r) => ({ ...r, date: v }))} />
                 </div>
-                <div className="grid content-start gap-1.5">
-                  <span className={lbl}>Comm. charges (₹)</span>
-                  <Input type="number" value={rep.comm} placeholder="0" onChange={(e) => setRep((r) => ({ ...r, comm: e.target.value }))} className="!h-10" />
-                </div>
-                <div className="grid content-start gap-1.5">
-                  <span className={lbl}>Bank charges (₹)</span>
-                  <Input type="number" value={rep.bank} placeholder="0" onChange={(e) => setRep((r) => ({ ...r, bank: e.target.value }))} className="!h-10" />
+                <div className="grid content-start gap-1.5 sm:col-span-2">
+                  <span className={lbl}>Charges in this debit — one row per ledger</span>
+                  <ChargeRows value={rep.chg} onChange={(next) => setRep((r) => ({ ...r, chg: next }))} />
                 </div>
                 {rebate > 0.005 && (
                   <div className="grid gap-1.5 sm:col-span-3">
@@ -7656,9 +7629,9 @@ function LcInstallmentsDialog({
                 <span>
                   Principal <b className="tabular-nums">{formatINR(principal)}</b>
                 </span>
-                {n(rep.comm) + n(rep.bank) > 0.005 && (
+                {chargeRowsTotal(rep.chg) > 0.005 && (
                   <span>
-                    + charges <b className="tabular-nums">{formatINR(round2(n(rep.comm) + n(rep.bank)))}</b>
+                    + charges <b className="tabular-nums">{formatINR(round2(chargeRowsTotal(rep.chg)))}</b>
                   </span>
                 )}
                 {rebate > 0.005 && (
@@ -7667,7 +7640,7 @@ function LcInstallmentsDialog({
                   </span>
                 )}
                 <span>
-                  = bank debit <b className="tabular-nums">{formatINR(round2(principal - rebate + n(rep.comm) + n(rep.bank)))}</b>
+                  = bank debit <b className="tabular-nums">{formatINR(round2(principal - rebate + chargeRowsTotal(rep.chg)))}</b>
                 </span>
                 <Button disabled={busy} onClick={() => void repay()} className="ml-auto h-9 bg-[#1B4E82] px-4 text-[12px] font-extrabold text-white hover:bg-[#163F6A]">
                   {busy ? 'Saving…' : `Repay ${picked.length} part${picked.length === 1 ? '' : 's'}`}

@@ -157,11 +157,13 @@ export async function alterOwnedVoucher(entryId: number, v: Row): Promise<{ id: 
       const bank = round2(n(v.bank_charges ?? r.bank_charges))
       const charges: { account?: string; amount?: number }[] = JSON.parse(String(r.charges || '[]'))
       const extra = round2(charges.reduce((t, x) => t + n(x.amount), 0))
+      // Interest paid in the same debit stays with it (bd_repayments.interest).
+      const interest = round2(n(v.interest ?? r.interest))
       // One debit over several bills: this bill's share and the others' stay
       // as they were (each was what that bill owed at the time); the date,
       // bank, charges and reference can change.
       const principal = shared.length ? n(r.amount) : round2(n(v.amount ?? r.amount))
-      const typed = shared.length ? round2(principal + shared.reduce((t, s) => t + s.amount, 0) + comm + bank + extra) : principal
+      const typed = shared.length ? round2(principal + shared.reduce((t, s) => t + s.amount, 0) + comm + bank + extra + interest) : principal
       await deleteBdRepayment(n(r.id))
       await repayBd(bdId, {
         repay_date: String(v.repay_date || r.repay_date).slice(0, 10),
@@ -171,6 +173,7 @@ export async function alterOwnedVoucher(entryId: number, v: Row): Promise<{ id: 
         comm_charges: comm,
         bank_charges: bank,
         charges,
+        interest: interest || null,
         amount: typed,
         note: v.note !== undefined ? (v.note ? String(v.note) : null) : r.note ?? null,
         party_id: partyId,

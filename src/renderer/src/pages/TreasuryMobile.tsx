@@ -53,6 +53,7 @@ import {
   X
 } from 'lucide-react'
 import { formatDate, formatNum } from '@/lib/format'
+import { ChargeRows, chargeRowsFrom, chargeRowsPayload, chargeRowsProblem, chargeRowsTotal, type ChargeRow } from '@/components/ChargeRows'
 import { MobileBar } from '@/components/MobileBar'
 import { SerialNo } from '@/components/SerialNo'
 import { cn } from '@/lib/utils'
@@ -3399,8 +3400,8 @@ function PrecloseScreen({
   const closedOn = s(l.preclosed_date).slice(0, 10)
   const [date, setDate] = useState(editing && closedOn ? closedOn : todayISO())
   const [total, setTotal] = useState(String(openAmount))
-  const [comm, setComm] = useState('')
-  const [bankChg, setBankChg] = useState('')
+  // The bank's charges in this debit, one row per ledger.
+  const [chg, setChg] = useState<ChargeRow[]>([])
   const [premature, setPremature] = useState(editing && l.preclose_premature_interest != null ? String(round2(n(l.preclose_premature_interest))) : '')
   const [dir, setDir] = useState<'credit_to_us' | 'pay_to_party'>(
     editing && s(l.preclose_interest_route) === 'pay_to_party' ? 'pay_to_party' : 'credit_to_us'
@@ -3422,8 +3423,7 @@ function PrecloseScreen({
           (reps as Row[]).find((r) => s(r.repay_date).slice(0, 10) === closedOn)
         if (!rep) return
         setTotal(String(round2(n(rep.amount))))
-        setComm(n(rep.comm_charges) ? String(round2(n(rep.comm_charges))) : '')
-        setBankChg(n(rep.bank_charges) ? String(round2(n(rep.bank_charges))) : '')
+        setChg(chargeRowsFrom(rep))
       })
     return () => {
       live = false
@@ -3439,7 +3439,7 @@ function PrecloseScreen({
   const prematureSuggest = lcInterestOfDays(l, pending)
   const margin = round2((openAmount * n(l.margin_pct)) / 100)
   const excess = round2(n(total) - openAmount)
-  const split = round2(n(comm) + n(bankChg))
+  const split = chargeRowsTotal(chg)
   const balanced = excess <= 0.005 || Math.abs(split - excess) <= 0.005
   const tooLow = !(n(total) >= openAmount - 0.005)
 
@@ -3453,15 +3453,18 @@ function PrecloseScreen({
     if (!date) return setErr('Pick the pre-closure date')
     if (l.open_date && date < s(l.open_date)) return setErr('Pre-closure date cannot be before the application date')
     if (tooLow) return setErr(`The total debited (${inrFull(n(total))}) cannot be less than the open amount (${inrFull(openAmount)})`)
-    if (!balanced) return setErr(`Comm. charges + Bank charges must add up to the ${inrFull(excess)} over the open amount`)
+    const rowProblem = chargeRowsProblem(chg)
+    if (rowProblem) return setErr(rowProblem)
+    if (!balanced) return setErr(`The charges must add up to the ${inrFull(excess)} over the open amount`)
     setBusy(true)
     setErr(null)
     try {
       const values = {
         preclose_date: date,
         amount: n(total),
-        comm_charges: n(comm),
-        bank_charges: n(bankChg),
+        comm_charges: 0,
+        bank_charges: 0,
+        charges: excess > 0.005 ? chargeRowsPayload(chg) : [],
         premature_interest: n(premature),
         premature_interest_direction: dir,
         release_margin: release
@@ -3540,14 +3543,9 @@ function PrecloseScreen({
             <TextIn value={total} onChange={(v) => setTotal(num(v))} mono big bad={tooLow} inputMode="decimal" />
           </Field>
           {excess > 0.005 && (
-            <div className="grid grid-cols-2 gap-[13px]">
-              <Field label="Comm. charges (₹)">
-                <TextIn value={comm} onChange={(v) => setComm(num(v))} placeholder="0.00" mono inputMode="decimal" />
-              </Field>
-              <Field label="Bank charges (₹)">
-                <TextIn value={bankChg} onChange={(v) => setBankChg(num(v))} placeholder="0.00" mono inputMode="decimal" />
-              </Field>
-            </div>
+            <Field label="Charges in this debit — one row per ledger">
+              <ChargeRows value={chg} onChange={setChg} />
+            </Field>
           )}
           {excess > 0.005 &&
             (balanced ? (
@@ -5112,7 +5110,8 @@ function PayPartyScreen({
   const [undoAsk, setUndoAsk] = useState(false)
   // Repaying the bank.
   const [pick, setPick] = useState<Set<number>>(new Set())
-  const [rep, setRep] = useState<{ date: string; comm: string; bank: string; route: 'credit_to_us' | 'pay_to_party'; margin: boolean }>({
+  const [rep, setRep] = useState<{ date: string; comm: string; bank: string; chg: ChargeRow[]; route: 'credit_to_us' | 'pay_to_party'; margin: boolean }>({
+    chg: [],
     date: todayISO(),
     comm: '',
     bank: '',
@@ -5158,7 +5157,7 @@ function PayPartyScreen({
     return n(p.days) > 0 && daysLeft > 0 ? round2((n(p.interest) * daysLeft) / n(p.days)) : 0
   }
   const rebate = round2(picked.reduce((t, p) => t + rebateOf(p), 0))
-  const charges = round2(n(rep.comm) + n(rep.bank))
+  const charges = chargeRowsTotal(rep.chg)
   const debit = round2(principal - rebate + charges)
   const closesLc = picked.length > 0 && parts.every((p) => p.repaid_date || pick.has(n(p.part_no)))
   const lastRepaidId = parts.reduce((m, p) => Math.max(m, n(p.repayment_id)), 0)
@@ -5173,15 +5172,16 @@ function PayPartyScreen({
       const r = await window.api.lc.repayParts(Number(l.id), {
         date: rep.date,
         parts: picked.map((p) => n(p.part_no)),
-        comm_charges: n(rep.comm),
-        bank_charges: n(rep.bank),
+        comm_charges: 0,
+        bank_charges: 0,
+        charges: chargeRowsPayload(rep.chg),
         rebate_route: rep.route,
         release_margin: rep.margin
       })
       toast.success(
         `${inrFull(principal)} repaid to the bank${r.rebate > 0.005 ? ` · ${inrFull(r.rebate)} rebate` : ''}${r.closed ? ' — LC closed' : ''}`
       )
-      setRep((x) => ({ ...x, comm: '', bank: '' }))
+      setRep((x) => ({ ...x, comm: '', bank: '', chg: [] }))
       await onChanged()
       await reload()
     } catch (e) {
@@ -5423,14 +5423,9 @@ function PayPartyScreen({
             <Field label="Repaid on" req>
               <DateIn value={rep.date} onChange={(v) => setRep((x) => ({ ...x, date: v }))} max={todayISO()} />
             </Field>
-            <div className="grid grid-cols-2 gap-2.5">
-              <Field label="Comm. charges (₹)">
-                <TextIn value={rep.comm} onChange={(v) => setRep((x) => ({ ...x, comm: num(v) }))} placeholder="0" mono inputMode="decimal" />
-              </Field>
-              <Field label="Bank charges (₹)">
-                <TextIn value={rep.bank} onChange={(v) => setRep((x) => ({ ...x, bank: num(v) }))} placeholder="0" mono inputMode="decimal" />
-              </Field>
-            </div>
+            <Field label="Charges in this debit — one row per ledger">
+              <ChargeRows value={rep.chg} onChange={(next) => setRep((x) => ({ ...x, chg: next }))} />
+            </Field>
             {rebate > 0.005 && (
               <Field label={`Interest rebate ${inrFull(rebate)} — repaid before maturity`}>
                 <Seg

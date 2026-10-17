@@ -861,6 +861,7 @@ const api = {
         amount: number
         comm_charges?: number
         bank_charges?: number
+        charges?: { account?: string; amount?: number | string }[]
         premature_interest?: number
         premature_interest_direction?: 'credit_to_us' | 'pay_to_party'
         release_margin?: boolean

@@ -1614,9 +1614,11 @@ export async function postLcRepaymentEntry(repaymentId: number): Promise<void> {
   const total = round2(n(rep.amount))
   const comm = round2(n(rep.comm_charges))
   const bankCharges = round2(n(rep.bank_charges))
-  const principal = round2(total - comm - bankCharges)
+  const rows = storedChargeRows(rep)
+  const rowsTotal = round2(rows.reduce((t, x) => t + x.amount, 0))
+  const principal = round2(total - comm - bankCharges - rowsTotal)
   if (principal < -0.004) {
-    throw new Error(`The charges (${(comm + bankCharges).toFixed(2)}) are more than the ${total.toFixed(2)} debited — check the repayment amount`)
+    throw new Error(`The charges (${(comm + bankCharges + rowsTotal).toFixed(2)}) are more than the ${total.toFixed(2)} debited — check the repayment amount`)
   }
   // A rescued upfront interest (and the LC's own charges with it) is the one
   // thing still raised against the payable in a voucher of its own: it was
@@ -1658,14 +1660,15 @@ export async function postLcRepaymentEntry(repaymentId: number): Promise<void> {
   if (principal > 0.004) payLines.push({ account: payable, group: LC_PAYABLE_GROUP, dr: principal })
   if (comm > 0.004) payLines.push({ account: 'COMM. CHARGES A/C', group: 'Indirect Expenses', dr: comm })
   if (bankCharges > 0.004) payLines.push({ account: 'BANK CHARGES A/C', group: 'Indirect Expenses', dr: bankCharges })
+  for (const x of rows) payLines.push({ account: x.account, group: x.group || 'Indirect Expenses', dr: x.amount })
   payLines.push({ account: bankAcc, group: 'Bank Accounts', cr: total })
   const je = await postJournal({
     date,
     vchType: 'PAYMENT',
     vchNo: rep.lc_no ? String(rep.lc_no) : null,
     narration:
-      comm + bankCharges > 0.004
-        ? `LC ${rep.lc_no} repaid to ${rep.bank || 'the bank'} (incl. ${(comm + bankCharges).toFixed(2)} charges)`
+      comm + bankCharges + rowsTotal > 0.004
+        ? `LC ${rep.lc_no} repaid to ${rep.bank || 'the bank'} (incl. ${(comm + bankCharges + rowsTotal).toFixed(2)} charges)`
         : `LC ${rep.lc_no} repaid to ${rep.bank || 'the bank'}`,
     companyId: n(rep.company_id) || undefined,
     lines: payLines
@@ -1787,6 +1790,36 @@ export async function repairLcRepaymentAccount(): Promise<number> {
   return moved
 }
 
+/**
+ * CHARGES ON LEDGERS THE USER PICKS — as many as the bank's debit carried
+ * (commission, bank charges, GST on them, stamp duty…). Each must name a
+ * ledger that already exists: a typo would otherwise open a new one.
+ */
+export async function lcChargeRows(rows: unknown): Promise<{ account: string; group: string; amount: number }[]> {
+  const out: { account: string; group: string; amount: number }[] = []
+  for (const ch of Array.isArray(rows) ? (rows as Row[]) : []) {
+    const name = String(ch?.account || '').trim()
+    const amt = round2(n(ch?.amount))
+    if (!name && amt <= 0.004) continue
+    if (!name) throw new Error('Pick the ledger for each charge')
+    if (amt <= 0.004) throw new Error(`Enter the amount charged to ${name}`)
+    const acc = await getClient().execute({ sql: 'SELECT name, acc_group FROM ledger_accounts WHERE UPPER(TRIM(name)) = UPPER(?) LIMIT 1', args: [name] })
+    if (!acc.rows.length) throw new Error(`There is no ledger called ${name}`)
+    out.push({ account: String(acc.rows[0].name), group: String(acc.rows[0].acc_group || 'Indirect Expenses'), amount: amt })
+  }
+  return out
+}
+
+/** The charge rows stored on an LC repayment. */
+function storedChargeRows(rep: Row): { account: string; group?: string; amount: number }[] {
+  try {
+    const list = JSON.parse(String(rep?.charges || '[]'))
+    return Array.isArray(list) ? list.filter((x) => String(x?.account || '').trim() && n(x?.amount) > 0.004).map((x) => ({ account: String(x.account), group: x.group ? String(x.group) : undefined, amount: round2(n(x.amount)) })) : []
+  } catch {
+    return []
+  }
+}
+
 export async function saveLcRepayment(v: Row): Promise<{ id: number }> {
   return withDbTransaction(async () => {
   const c = getClient()
@@ -1802,17 +1835,20 @@ export async function saveLcRepayment(v: Row): Promise<{ id: number }> {
   }
   const commCharges = round2(n(v.comm_charges))
   const bankCharges = round2(n(v.bank_charges))
+  const chargeRows = await lcChargeRows(v.charges)
+  const rowsTotal = round2(chargeRows.reduce((t, x) => t + x.amount, 0))
+  const allCharges = round2(commCharges + bankCharges + rowsTotal)
   const excess = round2(amount - openAmount)
   if (excess > 0.005) {
-    if (Math.abs(commCharges + bankCharges - excess) > 0.005) {
+    if (Math.abs(allCharges - excess) > 0.005) {
       throw new Error(
-        `Comm. charges + Bank charges must add up to the ${excess.toFixed(2)} over the open amount (currently ${(commCharges + bankCharges).toFixed(2)})`
+        `The charges must add up to the ${excess.toFixed(2)} over the open amount (currently ${allCharges.toFixed(2)})`
       )
     }
-  } else if (commCharges > 0.005 || bankCharges > 0.005) {
-    throw new Error('Comm. charges and Bank charges only apply when the repayment exceeds the open amount')
+  } else if (allCharges > 0.005) {
+    throw new Error('Charges only apply when the repayment exceeds the open amount')
   }
-  const maturityCharges = round2(commCharges + bankCharges)
+  const maturityCharges = allCharges
   const posted = v.posted ? 1 : 0
   assertNotFuture(v.repay_date ? String(v.repay_date).slice(0, 10) : '', 'The repayment date')
   const args = [
@@ -1870,6 +1906,12 @@ export async function saveLcRepayment(v: Row): Promise<{ id: number }> {
     })
     id = Number(ins.lastInsertRowid)
   }
+  // The ledger rows, and their total for the readers that take charges off
+  // the principal (columns added at startup — lc_repay_charges_v1).
+  await c.execute({
+    sql: 'UPDATE lc_repayments SET charges = ?, charges_total = ? WHERE id = ?',
+    args: [chargeRows.length ? JSON.stringify(chargeRows) : null, rowsTotal > 0.004 ? rowsTotal : null, id]
+  })
   if (posted) {
     try {
       await postLcRepaymentEntry(id)
