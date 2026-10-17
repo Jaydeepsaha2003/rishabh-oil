@@ -1088,9 +1088,17 @@ function LcTimeline({ l }: { l: Row }): React.JSX.Element {
   type Stop = { k: string; d: string | null; sub?: string; tone?: 'warn' | 'good' | 'bad'; tag?: LcPart }
   const stops: Stop[] = [
     { k: 'Application', d: (l.open_date as string) || null },
-    { k: 'Opened', d: (l.opened_date as string) || null },
-    { k: 'Payment received', d: (l.payment_received_date as string) || null }
+    { k: 'Opened', d: (l.opened_date as string) || null }
   ]
+  // Paid in parts: each part was received on its own day (P1 03-10, P2 05-10),
+  // so each gets its own stop rather than the first part's date standing for all.
+  if (parts.length) {
+    for (const p of parts) {
+      stops.push({ k: `Part ${p.part_no} received`, d: p.pay_date, tag: p, sub: formatINR(p.amount) })
+    }
+  } else {
+    stops.push({ k: 'Payment received', d: (l.payment_received_date as string) || null })
+  }
   if (parts.length) {
     for (const p of parts) {
       const left = daysTo(p.maturity_date)
