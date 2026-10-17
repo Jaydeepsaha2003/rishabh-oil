@@ -710,6 +710,9 @@ export interface Api {
     fixSplitTanker: (ids: number[]) => Promise<Row>
     staleTds: () => Promise<Row>
     paymentIns: () => Promise<Row>
+    lcLedgers: () => Promise<Row>
+    saveLcLedgers: (values: Row) => Promise<Row>
+    fixLcLedgers: (ids: number[]) => Promise<{ moved: number; vouchers: number }>
     fixPaymentIns: (keys: string[]) => Promise<{ removed: number }>
     fixStaleTds: (ids: number[]) => Promise<Row>
     moveWrongCompany: (ids: number[]) => Promise<{ moved: number; codes: string[] }>

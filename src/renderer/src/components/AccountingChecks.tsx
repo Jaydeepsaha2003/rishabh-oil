@@ -5,6 +5,7 @@ import { Card } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { formatDate, formatINR } from '@/lib/format'
 import { cn } from '@/lib/utils'
+import { ChargeLedgerPicker } from '@/components/ChargeRows'
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Row = Record<string, any>
@@ -102,6 +103,12 @@ export function AccountingChecks(): React.JSX.Element {
   const [tdsPick, setTdsPick] = useState<Set<number>>(new Set())
   const [reworking, setReworking] = useState(false)
   const [movingCo, setMovingCo] = useState(false)
+  // LC vouchers on the ledgers chosen for LCs (Tally's).
+  const [lcl, setLcl] = useState<Row | null>(null)
+  const [lclForm, setLclForm] = useState<{ interest: string; charges: string; payables: Record<string, string> }>({ interest: '', charges: '', payables: {} })
+  const [lclPick, setLclPick] = useState<Set<number>>(new Set())
+  const [lclSaving, setLclSaving] = useState(false)
+  const [lclMoving, setLclMoving] = useState(false)
   // BD / LC payment-in vouchers — the bank receipt is booked from Tally.
   const [payIns, setPayIns] = useState<Row | null>(null)
   const [payInPick, setPayInPick] = useState<Set<string>>(new Set())
@@ -127,6 +134,26 @@ export function AccountingChecks(): React.JSX.Element {
       const pz = await window.api.repairs.paisa().catch(() => null)
       setPaisa(pz)
       setPaisaPick(new Set((((pz?.findings as Row[]) || []).filter((x) => !x.review)).map((x) => Number(x.entry_id))))
+      const lv = await window.api.repairs.lcLedgers().catch(() => null)
+      setLcl(lv)
+      setLclPick(new Set(((lv?.findings as Row[]) || []).map((x) => Number(x.line_id))))
+      if (lv) {
+        const st = (lv.settings as Row) || {}
+        // Not chosen yet: offer Tally's ledgers where the books have them.
+        const names = new Set(accts.map((a: Row) => String(a.name).toUpperCase()))
+        const guessPayable = (asked: string): string => {
+          const bank = asked.replace(/^LC PAYABLE - /, '').replace(/BANK|LTD|\s+/g, '')
+          const hit = accts.find((a: Row) => /^LC WITH /i.test(String(a.name)) && bank && String(a.name).toUpperCase().replace(/\s+/g, '').includes(bank))
+          return hit ? String(hit.name) : ''
+        }
+        setLclForm({
+          interest: String(st.interest || (names.has('INTEREST (LC)') ? 'INTEREST (LC)' : '')),
+          charges: String(st.charges || (names.has('LC CHARGES') ? 'LC CHARGES' : '')),
+          payables: Object.fromEntries(
+            ((lv.payables as string[]) || []).map((k) => [k, String((st.payables as Row)?.[k] || guessPayable(k))])
+          )
+        })
+      }
       const pin = await window.api.repairs.paymentIns().catch(() => null)
       setPayIns(pin)
       setPayInPick(new Set(((pin?.findings as Row[]) || []).map((x) => String(x.key))))
@@ -327,6 +354,46 @@ export function AccountingChecks(): React.JSX.Element {
       toast.error((e as Error).message)
     } finally {
       setRepricing(false)
+    }
+  }
+
+  const lclRows: Row[] = useMemo(() => (lcl?.findings as Row[]) || [], [lcl])
+  const lclSaved = (lcl?.settings as Row) || {}
+  const lclDirty =
+    String(lclForm.interest || '') !== String(lclSaved.interest || '') ||
+    String(lclForm.charges || '') !== String(lclSaved.charges || '') ||
+    Object.entries(lclForm.payables).some(([k, v]) => String(v || '') !== String((lclSaved.payables as Row)?.[k] || ''))
+  async function saveLcl(): Promise<void> {
+    setLclSaving(true)
+    try {
+      await window.api.repairs.saveLcLedgers(lclForm)
+      toast.success('LC ledgers saved — every LC posting uses them from now on')
+      await load()
+    } catch (e) {
+      toast.error((e as Error).message)
+    } finally {
+      setLclSaving(false)
+    }
+  }
+  async function moveLcl(): Promise<void> {
+    const ids = [...lclPick]
+    if (!ids.length) return
+    const vchs = new Set(lclRows.filter((x) => lclPick.has(Number(x.line_id))).map((x) => Number(x.entry_id))).size
+    if (
+      !window.confirm(
+        `Move ${ids.length} line${ids.length === 1 ? '' : 's'} on ${vchs} LC voucher${vchs === 1 ? '' : 's'} to the ledgers chosen for LCs?\n\nOnly the ledger each line sits on changes — amounts, sides, dates and voucher numbers stay. Every move is logged. Take a database snapshot if you want a copy you can restore.`
+      )
+    )
+      return
+    setLclMoving(true)
+    try {
+      const r = await window.api.repairs.fixLcLedgers(ids)
+      toast.success(`${r.moved} line${r.moved === 1 ? '' : 's'} moved on ${r.vouchers} LC voucher${r.vouchers === 1 ? '' : 's'}`)
+      await load()
+    } catch (e) {
+      toast.error((e as Error).message)
+    } finally {
+      setLclMoving(false)
     }
   }
 
@@ -809,6 +876,130 @@ export function AccountingChecks(): React.JSX.Element {
           </Button>
         </div>
       </Section>
+
+      <Card className="overflow-hidden p-0">
+        <div className="flex items-start gap-3 border-b px-4 py-3">
+          {lclRows.length || lclDirty || !lclSaved.interest ? (
+            <AlertTriangle className="mt-0.5 h-5 w-5 shrink-0 text-amber-600" />
+          ) : (
+            <CheckCircle2 className="mt-0.5 h-5 w-5 shrink-0 text-emerald-600" />
+          )}
+          <div className="min-w-0 flex-1">
+            <div className="flex items-center gap-2 text-[14px] font-bold">
+              LC vouchers on Tally&rsquo;s ledgers
+              <span className={cn('rounded px-1.5 py-0.5 text-[11px] tabular-nums', lclRows.length ? 'bg-amber-50 text-amber-800' : 'bg-emerald-50 text-emerald-700')}>
+                {lclRows.length}
+              </span>
+            </div>
+            <p className="mt-0.5 text-[12.5px] leading-relaxed text-muted-foreground">
+              Tally keeps LCs on its own ledgers — INTEREST (LC), LC CHARGES, LC WITH HDFC BANK LTD — where the app posted to INTEREST A/C, BANK CHARGES A/C and LC PAYABLE. Pick the ledgers once (step 1); every LC posting uses them from then on. Then move the LC vouchers already posted (step 2) — including a supplier&rsquo;s payment an LC put on their customer ledger.
+            </p>
+          </div>
+        </div>
+        <div className="grid gap-3 border-b bg-[#FBFCFA] px-4 py-3">
+          <div className="text-[11px] font-extrabold uppercase tracking-[.1em] text-[#0B6B45]">Step 1 · The ledgers LCs post to</div>
+          <div className="grid gap-3 md:grid-cols-2">
+            <label className="grid gap-1">
+              <span className="text-[11px] font-bold text-muted-foreground">LC interest</span>
+              <div className="flex"><ChargeLedgerPicker value={lclForm.interest} onPick={(v) => setLclForm((f) => ({ ...f, interest: v }))} /></div>
+            </label>
+            <label className="grid gap-1">
+              <span className="text-[11px] font-bold text-muted-foreground">LC charges and commission</span>
+              <div className="flex"><ChargeLedgerPicker value={lclForm.charges} onPick={(v) => setLclForm((f) => ({ ...f, charges: v }))} /></div>
+            </label>
+            {Object.keys(lclForm.payables).map((k) => (
+              <label key={k} className="grid gap-1">
+                <span className="text-[11px] font-bold text-muted-foreground">LC liability — instead of {k}</span>
+                <div className="flex">
+                  <ChargeLedgerPicker value={lclForm.payables[k] || ''} onPick={(v) => setLclForm((f) => ({ ...f, payables: { ...f.payables, [k]: v } }))} />
+                </div>
+              </label>
+            ))}
+          </div>
+          <div className="flex flex-wrap items-center gap-3">
+            <span className="text-[12px] text-muted-foreground">
+              {lclDirty ? 'Not saved yet — the list below follows what is saved.' : lclSaved.interest || lclSaved.charges ? 'Saved — LC postings use these.' : 'Nothing chosen yet — LCs post to the app’s own ledgers.'}
+            </span>
+            <Button className="ml-auto gap-1.5" disabled={!lclDirty || lclSaving} onClick={() => void saveLcl()}>
+              {lclSaving && <Loader2 className="h-4 w-4 animate-spin" />}
+              Save LC ledgers
+            </Button>
+          </div>
+        </div>
+        {lclRows.length > 0 && (
+          <>
+            <div className="px-4 pt-3 text-[11px] font-extrabold uppercase tracking-[.1em] text-[#0B6B45]">Step 2 · Lines to move</div>
+            <div className="overflow-x-auto">
+              <table className="w-full border-collapse">
+                <thead className="bg-muted/40">
+                  <tr>
+                    <th className={cn(th, 'w-8')}>
+                      <input
+                        type="checkbox"
+                        aria-label="Tick all"
+                        checked={lclPick.size === lclRows.length}
+                        onChange={(e) => setLclPick(e.target.checked ? new Set(lclRows.map((x) => Number(x.line_id))) : new Set())}
+                      />
+                    </th>
+                    <th className={th}>Voucher</th>
+                    <th className={th}>LC</th>
+                    <th className={cn(th, 'text-right')}>Amount</th>
+                    <th className={th}>From</th>
+                    <th className={th}>To</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {lclRows.map((x) => {
+                    const id = Number(x.line_id)
+                    return (
+                      <tr key={id} className="border-t">
+                        <td className={td}>
+                          <input
+                            type="checkbox"
+                            checked={lclPick.has(id)}
+                            onChange={(e) =>
+                              setLclPick((s0) => {
+                                const next = new Set(s0)
+                                if (e.target.checked) next.add(id)
+                                else next.delete(id)
+                                return next
+                              })
+                            }
+                          />
+                        </td>
+                        <td className={td}>
+                          <span className="font-semibold">{String(x.code || '—')}</span>
+                          <div className="text-[11px] text-muted-foreground">
+                            {formatDate(String(x.date))} · {String(x.company || '')}
+                          </div>
+                        </td>
+                        <td className={td}>{String(x.lc_no)}</td>
+                        <td className={cn(td, 'text-right tabular-nums')}>
+                          {formatINR(Number(x.dr) || Number(x.cr))} {Number(x.dr) > 0 ? 'Dr' : 'Cr'}
+                        </td>
+                        <td className={td}>
+                          <span className="text-muted-foreground">{String(x.from)}</span>
+                          <div className={cn('text-[10.5px] font-bold', x.why === 'supplier on a customer ledger' ? 'text-red-700' : 'text-muted-foreground')}>{String(x.why)}</div>
+                        </td>
+                        <td className={cn(td, 'font-semibold')}>→ {String(x.to)}</td>
+                      </tr>
+                    )
+                  })}
+                </tbody>
+              </table>
+            </div>
+            <div className="flex flex-wrap items-center gap-3 border-t bg-muted/30 px-4 py-3">
+              <span className="text-[12.5px] text-muted-foreground">
+                {lclPick.size} of {lclRows.length} ticked
+              </span>
+              <Button className="ml-auto gap-1.5" disabled={!lclPick.size || lclMoving || lclDirty} onClick={() => void moveLcl()}>
+                {lclMoving && <Loader2 className="h-4 w-4 animate-spin" />}
+                Move {lclPick.size} line{lclPick.size === 1 ? '' : 's'} to Tally&rsquo;s ledgers
+              </Button>
+            </div>
+          </>
+        )}
+      </Card>
 
       <Section
         title="Payment-in vouchers on discounted bills and LCs"

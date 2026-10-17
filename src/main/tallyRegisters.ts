@@ -1003,7 +1003,7 @@ function explain(rows: Row[], kind: TallyRegisterKind): void {
         say.unshift(
           n(of.parts) > 1
             ? `One of ${n(of.parts)} journals in Tally that together make ${ofName} here (${inr(n(of.total))}, ${dmy(String(of.date))}) — the same entry, split in Tally.`
-            : `The same entry as ${ofName} here (${inr(n(of.total))}, ${dmy(String(of.date))}), posted by its own document — Tally names its ledgers differently.`
+            : `The same entry as ${ofName} here (${inr(n(of.total))}, ${dmy(String(of.date))}), posted by its own document.`
         )
         fix = (r.diffs as Row[]).some((d) => d.field === 'date') && of.one_day ? fix : ''
       } else {

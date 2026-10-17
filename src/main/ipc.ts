@@ -1906,6 +1906,23 @@ export function registerIpc(): void {
     const { fixPaisaImbalance } = await import('./accountingRepairs')
     return fixPaisaImbalance(a?.ids || [])
   })
+  // LC vouchers on the ledgers chosen for LCs (Tally's): the choice, a
+  // preview of the lines that would move, and the move.
+  handle('repairs:lcLedgers:list', async () => {
+    await assertAdmin('The accounting checks')
+    const { previewLcLedgerMoves } = await import('./lcLedgers')
+    return previewLcLedgerMoves()
+  })
+  handle('repairs:lcLedgersSave', async (_e, a: { values: Row }) => {
+    await assertAdmin('Choosing the LC ledgers')
+    const { saveLcLedgerSettings } = await import('./lcLedgers')
+    return saveLcLedgerSettings(a?.values || {})
+  })
+  handle('repairs:lcLedgersFix', async (_e, a: { ids: number[] }) => {
+    await assertAdmin('Moving LC vouchers onto their ledgers')
+    const { applyLcLedgerMoves } = await import('./lcLedgers')
+    return applyLcLedgerMoves((a?.ids || []).map(Number))
+  })
   // BD / LC payment-in vouchers — the same money as the bank receipt booked
   // from Tally. Removed on review; the payment in stays as a record.
   handle('repairs:paymentIns:list', async () => {

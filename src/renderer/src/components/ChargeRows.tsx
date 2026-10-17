@@ -68,7 +68,7 @@ const dialogOf = (el: HTMLElement | null): HTMLElement | null => (el?.closest('[
  * list: ledgers used lately first, then expenses and charges, then the rest,
  * each with its group and closing balance. Typed, ↑ ↓, Enter; Esc closes.
  */
-function ChargeLedgerPicker({ value, onPick, companyId }: { value: string; onPick: (name: string) => void; companyId?: number }): React.JSX.Element {
+export function ChargeLedgerPicker({ value, onPick, companyId }: { value: string; onPick: (name: string) => void; companyId?: number }): React.JSX.Element {
   const [open, setOpen] = useState(false)
   const [query, setQuery] = useState('')
   const [all, setAll] = useState<Row[]>([])

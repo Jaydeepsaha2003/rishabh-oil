@@ -6,6 +6,7 @@ import { postJournal, repostJournal } from './journal'
 import { lcInterest, lcInterestBasis, lcInterestBaseIsCustom } from './lcInterest'
 import { ensureVoucherNumbers, renumberOnTypeChange, voucherCodeOf } from './voucherNumbers'
 import { resolveAccountName } from './ledgerMap'
+import { lcLedgerNames } from './lcLedgers'
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Row = Record<string, any>
@@ -194,6 +195,14 @@ const LC_PAYABLE_GROUP = 'Current Liabilities'
 // without one still lands somewhere named rather than in a single anonymous
 // heap.
 async function lcPayable(lc: Row): Promise<string> {
+  // The ledger chosen for this LC liability (Accounting checks → "LC vouchers
+  // on Tally's ledgers") — LC WITH HDFC BANK LTD for LC PAYABLE - HDFCBANK.
+  const L = await lcLedgerNames()
+  return L.payable(await lcPayableAsked(lc))
+}
+
+/** The app's own name for an LC's liability, before any chosen ledger. */
+async function lcPayableAsked(lc: Row): Promise<string> {
   const id = n(lc.our_bank_id)
   if (id) {
     const r = await getClient().execute({ sql: 'SELECT name FROM banks WHERE id = ?', args: [id] })
@@ -273,6 +282,7 @@ export async function postLcUpfrontInterest(lcId: number, dateIn?: string): Prom
   // (PAY/18 stays PAY/18), so a correction never renumbers what the bank book,
   // Tally and the desk already know it by.
   const oldId = n(lc.interest_journal_entry_id)
+  const L = await lcLedgerNames()
   await dropEntry(oldId || null)
   const interest = lcInterest(lc)
   const charges = round2(n(lc.charges))
@@ -295,8 +305,8 @@ export async function postLcUpfrontInterest(lcId: number, dateIn?: string): Prom
       (lcInterestBaseIsCustom(lc) ? ` (interest on ${lcInterestBasis(lc)})` : ''),
     companyId: n(lc.company_id) || undefined,
     lines: [
-      { account: 'INTEREST A/C', group: 'Indirect Expenses', dr: interest },
-      { account: 'BANK CHARGES A/C', group: 'Indirect Expenses', dr: charges },
+      { account: L.interest, group: 'Indirect Expenses', dr: interest },
+      { account: L.charges, group: 'Indirect Expenses', dr: charges },
       { account: bankAcc, group: 'Bank Accounts', cr: total }
     ]
   })
@@ -529,6 +539,7 @@ export async function postLcPrematureInterestRebate(
   const lc = toPlain(res)[0]
   const bankAcc = await bankAccountFor(lc)
   const payable = await lcPayable(lc)
+  const L = await lcLedgerNames()
   const value = round2(amount)
   if (value < 0.005) return null
   const date = String(dateIn || todayISO()).slice(0, 10)
@@ -551,7 +562,7 @@ export async function postLcPrematureInterestRebate(
     companyId: n(lc.company_id) || undefined,
     lines: [
       { account: payable, group: LC_PAYABLE_GROUP, dr: value },
-      { account: 'INTEREST A/C', group: 'Indirect Expenses', cr: value }
+      { account: L.interest, group: 'Indirect Expenses', cr: value }
     ]
   })
 
@@ -1277,6 +1288,7 @@ export async function settleLcBillsCombined(
   const date = String(dateIn || todayISO()).slice(0, 10)
   const total = round2(bills.reduce((s2, b) => s2 + n(b.amount), 0))
   const payable = await lcPayable(first)
+  const L = await lcLedgerNames()
 
   // ONE voucher, because this is one event.
   //
@@ -1306,8 +1318,8 @@ export async function settleLcBillsCombined(
   if (partRows.length) {
     const interest = round2(partRows.reduce((s, p) => s + n(p.interest), 0))
     const charges = round2(partRows.reduce((s, p) => s + n(p.charges), 0))
-    if (interest > 0.005) feeLines.push({ account: 'INTEREST A/C', group: 'Indirect Expenses', dr: interest })
-    if (charges > 0.005) feeLines.push({ account: 'BANK CHARGES A/C', group: 'Indirect Expenses', dr: charges })
+    if (interest > 0.005) feeLines.push({ account: L.interest, group: 'Indirect Expenses', dr: interest })
+    if (charges > 0.005) feeLines.push({ account: L.charges, group: 'Indirect Expenses', dr: charges })
     fees = round2(interest + charges)
     for (const b of bills) seen.add(n(b.lc_id))
   }
@@ -1350,8 +1362,8 @@ export async function settleLcBillsCombined(
       interest_adj: b.interest_adj
     })
     const charges = round2(n(b.lc_charges))
-    if (interest > 0.005) feeLines.push({ account: 'INTEREST A/C', group: 'Indirect Expenses', dr: interest })
-    if (charges > 0.005) feeLines.push({ account: 'BANK CHARGES A/C', group: 'Indirect Expenses', dr: charges })
+    if (interest > 0.005) feeLines.push({ account: L.interest, group: 'Indirect Expenses', dr: interest })
+    if (charges > 0.005) feeLines.push({ account: L.charges, group: 'Indirect Expenses', dr: charges })
     fees = round2(fees + interest + charges)
   }
 
@@ -1571,6 +1583,7 @@ export async function postLcRepaymentEntry(repaymentId: number): Promise<void> {
   const rep = toPlain(res)[0]
   const bankAcc = await bankAccountFor(rep)
   const payable = await lcPayable(rep)
+  const L = await lcLedgerNames()
   await dropEntry(n(rep.journal_entry_id) || null)
   await dropEntry(n(rep.fee_journal_entry_id) || null)
 
@@ -1629,8 +1642,8 @@ export async function postLcRepaymentEntry(repaymentId: number): Promise<void> {
   let feeJe: number | null = null
   if (rescued > 0.004) {
     const lines: { account: string; group: string; dr?: number; cr?: number }[] = []
-    if (upfrontInterest > 0.005) lines.push({ account: 'INTEREST A/C', group: 'Indirect Expenses', dr: upfrontInterest })
-    if (upfrontCharges > 0.005) lines.push({ account: 'BANK CHARGES A/C', group: 'Indirect Expenses', dr: upfrontCharges })
+    if (upfrontInterest > 0.005) lines.push({ account: L.interest, group: 'Indirect Expenses', dr: upfrontInterest })
+    if (upfrontCharges > 0.005) lines.push({ account: L.charges, group: 'Indirect Expenses', dr: upfrontCharges })
     lines.push({ account: payable, group: LC_PAYABLE_GROUP, cr: rescued })
     const je = await postJournal({
       date,
@@ -1658,8 +1671,8 @@ export async function postLcRepaymentEntry(repaymentId: number): Promise<void> {
   // principal off the payable and the day's charges to expense beside it.
   const payLines: { account: string; group: string; dr?: number; cr?: number }[] = []
   if (principal > 0.004) payLines.push({ account: payable, group: LC_PAYABLE_GROUP, dr: principal })
-  if (comm > 0.004) payLines.push({ account: 'COMM. CHARGES A/C', group: 'Indirect Expenses', dr: comm })
-  if (bankCharges > 0.004) payLines.push({ account: 'BANK CHARGES A/C', group: 'Indirect Expenses', dr: bankCharges })
+  if (comm > 0.004) payLines.push({ account: L.comm, group: 'Indirect Expenses', dr: comm })
+  if (bankCharges > 0.004) payLines.push({ account: L.charges, group: 'Indirect Expenses', dr: bankCharges })
   for (const x of rows) payLines.push({ account: x.account, group: x.group || 'Indirect Expenses', dr: x.amount })
   payLines.push({ account: bankAcc, group: 'Bank Accounts', cr: total })
   const je = await postJournal({
