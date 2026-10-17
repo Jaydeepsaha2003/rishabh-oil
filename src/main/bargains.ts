@@ -350,12 +350,18 @@ export async function updateBargain(
  * The billed rate is the tanker's frozen one where there is a tanker, and the
  * invoice's own stored rate for a direct/consignment purchase that has none.
  */
+// What an invoice took of a tanker's EXCESS bargain: the part it stored, or —
+// saved before that was stored — its share in proportion.
+const XPART = `COALESCE(a.extra_part, CASE WHEN pt.extra_bargain_id IS NOT NULL AND pt.loaded_qty > 0
+                 THEN COALESCE(pt.extra_qty, 0) * a.qty / pt.loaded_qty ELSE 0 END)`
+
 export async function bargainLinkedInvoices(id: number): Promise<Row[]> {
   const res = await getClient().execute({
     sql: `SELECT o.id, o.invoice_no, o.order_date, o.company_id, o.uom,
                  co.name AS company_name, s.name AS supplier_name,
-                 COALESCE((SELECT SUM((CASE WHEN pt.bargain_id = ? THEN pt.loaded_qty - COALESCE(pt.extra_qty, 0)
-                                           ELSE COALESCE(pt.extra_qty, 0) END) * CASE WHEN pt.loaded_qty > 0 THEN MIN(1.0, a.qty / pt.loaded_qty) ELSE 1.0 END)
+                 COALESCE((SELECT SUM(CASE WHEN pt.bargain_id = ?
+                                           THEN a.qty - ${XPART}
+                                           ELSE ${XPART} END)
                              FROM ${ALLOC} a JOIN purchase_tankers pt ON pt.id = a.tanker_id
                             WHERE a.order_id = o.id AND (pt.bargain_id = ? OR pt.extra_bargain_id = ?)),
                           o.ordered_qty) AS qty,

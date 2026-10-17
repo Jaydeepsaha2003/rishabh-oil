@@ -27,9 +27,17 @@ export async function ensureTankerInvoices(): Promise<void> {
       UNIQUE (tanker_id, order_id)
     )`)
   await getClient().execute('CREATE INDEX IF NOT EXISTS idx_tanker_invoices_order ON tanker_invoices(order_id)')
+  // How much of the invoice's share sits on the tanker's EXCESS bargain (see
+  // lib/tankerShare.ts). NULL on rows saved before it: those split in proportion.
+  const cols = await getClient().execute('PRAGMA table_info(tanker_invoices)')
+  if (!cols.rows.some((r) => String(r.name) === 'extra_part')) {
+    await getClient().execute('ALTER TABLE tanker_invoices ADD COLUMN extra_part REAL')
+  }
 }
 
-export const ALLOC = `(SELECT ti.tanker_id AS tanker_id, ti.order_id AS order_id, ti.qty AS qty FROM tanker_invoices ti
+export const ALLOC = `(SELECT ti.tanker_id AS tanker_id, ti.order_id AS order_id, ti.qty AS qty, ti.extra_part AS extra_part FROM tanker_invoices ti
   UNION ALL
-  SELECT pt0.id AS tanker_id, pt0.order_id AS order_id, pt0.loaded_qty AS qty FROM purchase_tankers pt0
+  SELECT pt0.id AS tanker_id, pt0.order_id AS order_id, pt0.loaded_qty AS qty,
+         CASE WHEN pt0.extra_bargain_id IS NOT NULL THEN COALESCE(pt0.extra_qty, 0) ELSE 0 END AS extra_part
+    FROM purchase_tankers pt0
    WHERE pt0.order_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM tanker_invoices ti0 WHERE ti0.tanker_id = pt0.id))`

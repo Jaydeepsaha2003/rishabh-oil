@@ -1,4 +1,5 @@
 import { withDbTransaction } from './dbTransaction'
+import { splitShare } from '../renderer/src/lib/tankerShare'
 import { ALLOC, ensureTankerInvoices } from './tankerAlloc'
 import type { InValue, ResultSet } from '@libsql/client'
 import { getClient, todayISO } from './db'
@@ -535,7 +536,7 @@ async function bargainLinesForTankers(
     // was billed at, then saving it re-priced every line off whatever the
     // bargain says today — so a rate corrected on the master silently re-rated
     // any invoice that was opened and saved afterwards.
-    sql: `SELECT pt.loaded_qty, pt.extra_qty, pt.bargain_id, pt.extra_bargain_id,
+    sql: `SELECT pt.id, pt.loaded_qty, pt.extra_qty, pt.bargain_id, pt.extra_bargain_id,
                  COALESCE(pt.bargain_rate, b.rate_per_uom) AS rate,
                  COALESCE(pt.extra_bargain_rate, xb.rate_per_uom) AS extra_rate
           FROM purchase_tankers pt
@@ -555,30 +556,51 @@ async function bargainLinesForTankers(
   for (const r of toPlain(res)) {
     const loaded = n(r.loaded_qty)
     const extra = r.extra_bargain_id ? n(r.extra_qty) : 0
-    // This invoice's share of the tanker, spread over its two bargains in the
-    // tanker's own proportion.
-    const f = loaded > 0 ? Math.min(1, (share.get(n(r.id)) ?? loaded) / loaded) : 1
-    add(r.bargain_id, n(r.rate), (loaded - extra) * f)
-    if (extra > 0) add(r.extra_bargain_id, n(r.extra_rate), extra * f)
+    // This invoice's share of the tanker over its two bargains: the own
+    // bargain first, then the excess (lib/tankerShare.ts). A share saved before
+    // that rule has no excess part recorded and keeps its proportional split.
+    const sh = share.get(n(r.id))
+    const q = sh ? Math.min(loaded, sh.qty) : loaded
+    const ex = !sh ? extra : sh.extra != null ? Math.min(extra, sh.extra) : loaded > 0 ? (extra * q) / loaded : 0
+    add(r.bargain_id, n(r.rate), q - ex)
+    if (extra > 0) add(r.extra_bargain_id, n(r.extra_rate), ex)
   }
   return Array.from(m.values())
 }
 
 /** How much of each tanker an invoice takes: typed, else as booked for the order, else none given (whole). */
-async function tankerShares(ids: number[], opts: { orderId?: number; qtys?: unknown }): Promise<Map<number, number>> {
-  const out = new Map<number, number>()
+async function tankerShares(
+  ids: number[],
+  opts: { orderId?: number; qtys?: unknown }
+): Promise<Map<number, { qty: number; extra: number | null }>> {
+  const out = new Map<number, { qty: number; extra: number | null }>()
   const typed = (opts.qtys && typeof opts.qtys === 'object' ? opts.qtys : {}) as Record<string, unknown>
-  for (const id of ids) if (n(typed[String(id)]) > 0) out.set(id, round3(n(typed[String(id)])))
+  await ensureTankerInvoices()
+  for (const id of ids) {
+    if (!(n(typed[String(id)]) > 0)) continue
+    // Typed on the form: the first bargain is used up before the excess one,
+    // after what the OTHER invoices on the lorry already took.
+    out.set(id, { qty: round3(n(typed[String(id)])), extra: (await splitForInvoice(id, n(typed[String(id)]), [n(opts.orderId)])).extra })
+  }
   const rest = ids.filter((id) => !out.has(id))
   if (rest.length && n(opts.orderId)) {
-    await ensureTankerInvoices()
     const r = await getClient().execute({
-      sql: `SELECT tanker_id, qty FROM ${ALLOC} a WHERE a.order_id = ? AND a.tanker_id IN (${rest.map(() => '?').join(',')})`,
+      sql: `SELECT tanker_id, qty, extra_part FROM ${ALLOC} a WHERE a.order_id = ? AND a.tanker_id IN (${rest.map(() => '?').join(',')})`,
       args: [n(opts.orderId), ...rest]
     })
-    for (const x of toPlain(r)) out.set(n(x.tanker_id), n(x.qty))
+    for (const x of toPlain(r)) out.set(n(x.tanker_id), { qty: n(x.qty), extra: x.extra_part == null ? null : n(x.extra_part) })
   }
   return out
+}
+
+/** A share of a tanker split over its own and excess bargain, given what the other invoices on it took. */
+async function splitForInvoice(tankerId: number, share: number, mine: number[]): Promise<{ own: number; extra: number }> {
+  const c = getClient()
+  const t = toPlain(await c.execute({ sql: 'SELECT loaded_qty, extra_qty, extra_bargain_id FROM purchase_tankers WHERE id = ?', args: [tankerId] }))[0] || {}
+  const others = toPlain(await c.execute({ sql: `SELECT order_id, qty, extra_part FROM ${ALLOC} a WHERE a.tanker_id = ?`, args: [tankerId] }))
+    .filter((a) => !mine.includes(n(a.order_id)))
+    .map((a) => ({ qty: n(a.qty), extra_part: a.extra_part == null ? null : n(a.extra_part) }))
+  return splitShare(n(t.loaded_qty), t.extra_bargain_id ? n(t.extra_qty) : 0, round3(share), others)
 }
 
 const round3 = (v: number): number => Math.round(v * 1000) / 1000
@@ -1993,7 +2015,11 @@ async function assignTankers(
           await c.execute({ sql: 'INSERT INTO tanker_invoices (tanker_id, order_id, qty) VALUES (?, ?, ?)', args: [tankerId, Number(row.order_id), otherQty] })
         }
       }
-      await c.execute({ sql: 'INSERT INTO tanker_invoices (tanker_id, order_id, qty) VALUES (?, ?, ?)', args: [tankerId, orderId, want] })
+      const part = await splitForInvoice(tankerId, want, [...mine])
+      await c.execute({
+        sql: 'INSERT INTO tanker_invoices (tanker_id, order_id, qty, extra_part) VALUES (?, ?, ?, ?)',
+        args: [tankerId, orderId, want, part.extra]
+      })
     } else {
       await c.execute({ sql: 'DELETE FROM tanker_invoices WHERE tanker_id = ?', args: [tankerId] })
     }
@@ -2044,7 +2070,7 @@ export async function listPurchaseTankers(allCompanies = false, forModule?: stri
     SELECT pt.*, o.invoice_no, o.order_date AS invoice_date, o.company_id AS invoice_company_id,
            -- ONE TANKER, SEVERAL INVOICES: each invoice it is on, with its
            -- share, and how much of the load is booked so far.
-           (SELECT json_group_array(json_object('order_id', a.order_id, 'invoice_no', oa.invoice_no, 'qty', a.qty))
+           (SELECT json_group_array(json_object('order_id', a.order_id, 'invoice_no', oa.invoice_no, 'qty', a.qty, 'extra_part', a.extra_part))
               FROM ${ALLOC} a JOIN orders oa ON oa.id = a.order_id WHERE a.tanker_id = pt.id) AS invoices_json,
            (SELECT COALESCE(SUM(a.qty), 0) FROM ${ALLOC} a WHERE a.tanker_id = pt.id) AS booked_qty,
            o.allowed_shortage_pct AS order_allowed_shortage_pct,

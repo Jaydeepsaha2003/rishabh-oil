@@ -1,4 +1,5 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { splitShare } from '@/lib/tankerShare'
 import { takePageIntent } from '@/lib/pageIntent'
 import { escMayDiscard, hasOpenOverlay } from '@/lib/escape'
 import { toast } from 'sonner'
@@ -643,12 +644,19 @@ function Fact({ label, value }: { label: string; value: string }): React.JSX.Ele
 // ONE TANKER, SEVERAL INVOICES (src/main/tankerAlloc.ts). A supplier can bill
 // one lorry on two or more invoices; each invoice books its own share of the
 // load. The tanker list carries every invoice it is on as invoices_json.
-type TankerInvoice = { order_id: number; invoice_no: string; qty: number }
+type TankerInvoice = { order_id: number; invoice_no: string; qty: number; extra_part: number | null }
 function tankerInvoices(t: Row): TankerInvoice[] {
   try {
     const a = JSON.parse(String(t.invoices_json || '[]'))
     return Array.isArray(a)
-      ? a.map((x) => ({ order_id: Number(x?.order_id) || 0, invoice_no: String(x?.invoice_no || ''), qty: Number(x?.qty) || 0 })).filter((x) => x.order_id > 0)
+      ? a
+          .map((x) => ({
+            order_id: Number(x?.order_id) || 0,
+            invoice_no: String(x?.invoice_no || ''),
+            qty: Number(x?.qty) || 0,
+            extra_part: x?.extra_part == null ? null : Number(x.extra_part)
+          }))
+          .filter((x) => x.order_id > 0)
       : []
   } catch {
     return []
@@ -2870,6 +2878,7 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
       interest_days: s.interest_days ?? 0
     }))
     setSelected([])
+    setTankerQty({})
     setLotIds([])
     setLotBargains({})
     setBgLines([{ bargain_id: '', qty: '' }])
@@ -2913,6 +2922,7 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
     setLineRates({})
     setForm({ company_id: String(activeCompany || ''), invoice_no: '', order_date: todayISO(), is_registered_transporter: true, transporter_id: '', gst_type: 'CGST_SGST', allowed_shortage_pct: '', round_off: '', round_off_manual: false, rate_round_off: '0', charge_interest: false, interest_touched: false, remarks: '', freight_paid_to_supplier: false, bargain_interest: {} })
     setSelected([])
+    setTankerQty({})
     setLotIds([])
     setLotBargains({})
     setBgLines([{ bargain_id: '', qty: '' }])
@@ -3646,13 +3656,15 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
           const typed = Number(tankerQty[String(x.id)])
           const share = typed > 0 ? typed : tankerLeftFor(x, myOrderIds)
           if (!(loaded > 0) || Math.abs(share - loaded) < 0.0005) return x
-          const f = share / loaded
-          return {
-            ...x,
-            tanker_loaded_qty: loaded,
-            loaded_qty: share,
-            extra_qty: x.extra_qty != null ? (Number(x.extra_qty) || 0) * f : x.extra_qty
-          }
+          // Two bargains on the lorry: this share uses up the first before
+          // the excess one, after what the other invoices took.
+          const split = splitShare(
+            loaded,
+            x.extra_bargain_id ? Number(x.extra_qty) || 0 : 0,
+            share,
+            tankerInvoices(x).filter((i) => !myOrderIds.includes(i.order_id))
+          )
+          return { ...x, tanker_loaded_qty: loaded, loaded_qty: share, extra_qty: split.extra }
         }),
     [tankersForBooking, selected, tankerQty, myOrderIds]
   )
@@ -3945,8 +3957,12 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
   // An invoice now keeps the rate it was billed at. Where a bargain has since
   // been corrected, the banner above the form says so and offers the new
   // figure per bargain, for a person to accept.
+  // A lorry split over two bargains whose share on this invoice now sits on
+  // ONE of them (its first bargain used up first) is priced at that bargain's
+  // rate, not left at the two-bargain blend it showed a keystroke ago.
+  const splitLorry = chosenTankers.some((t) => !!t.extra_bargain_id)
   useEffect(() => {
-    if (!formPage || !isNewInvoice || multiProduct || rateAlloc.length < 2 || blendedRate <= 0) return
+    if (!formPage || !isNewInvoice || multiProduct || (rateAlloc.length < 2 && !splitLorry) || blendedRate <= 0) return
     setForm((p) => {
       const next: Row = { ...p }
       let changed = false
@@ -3960,7 +3976,7 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
       }
       return changed ? next : p
     })
-  }, [formPage, isNewInvoice, multiProduct, rateAlloc.length, blendedRate])
+  }, [formPage, isNewInvoice, multiProduct, rateAlloc.length, blendedRate, splitLorry])
 
   // COMING BACK DOWN TO ONE PRODUCT.
   //
