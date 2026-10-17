@@ -253,13 +253,22 @@ function BankCard({ bill, repayments, onChanged }: { bill: Row; repayments?: Row
   const [banks, setBanks] = useState<Row[]>([])
   const [busy, setBusy] = useState<number | null>(null)
   const [refundOpen, setRefundOpen] = useState(false)
+  // Whether the NBFC has given the excess back yet — the line says so.
+  const [refundTot, setRefundTot] = useState<{ booked: number; refunded: number; due: number } | null>(null)
   const id = Number(bill.id)
+  const loadRefund = (): void => {
+    void window.api.billDiscounting
+      .refundTotals()
+      .then((t) => setRefundTot(t[String(id)] || null))
+      .catch(() => setRefundTot(null))
+  }
   const load = async (): Promise<void> => {
     const d = await window.api.vouchers.forDocument('bd', id).catch(() => null)
     setPosted(((d?.posted as Row[]) || []).filter((p) => ((p.lines as Row[]) || []).some((l) => CASH_BANK.includes(s(l.acc_group)))))
   }
   useEffect(() => {
     void load()
+    loadRefund()
     void window.api.journal
       .accounts()
       .then((a) => setBanks(a.filter((x) => CASH_BANK.includes(s(x.acc_group)))))
@@ -361,10 +370,22 @@ function BankCard({ bill, repayments, onChanged }: { bill: Row; repayments?: Row
                         <button
                           type="button"
                           onClick={() => setRefundOpen(true)}
-                          className="inline-flex items-center gap-1 rounded-[2px] border border-[#F0C4C0] bg-[#FDECEA] px-1.5 py-[2px] font-extrabold tabular-nums text-[#B3261E] hover:bg-[#FBD9D5]"
-                          title="Paid over the balance — the NBFC owes it back. Click to link the refund's receipt."
+                          className={cn(
+                            'inline-flex items-center gap-1 rounded-[2px] border px-1.5 py-[2px] font-extrabold tabular-nums',
+                            refundTot && refundTot.due <= 0.004
+                              ? 'border-[#F0C4C0] bg-white text-[#B3261E] hover:bg-[#FFF7F6]'
+                              : 'border-[#F0C4C0] bg-[#FDECEA] text-[#B3261E] hover:bg-[#FBD9D5]'
+                          )}
+                          title={refundTot && refundTot.due <= 0.004 ? 'Paid over the balance — the NBFC has refunded it. Click to see the refund.' : "Paid over the balance — the NBFC owes it back. Click to link the refund's receipt."}
                         >
-                          + {formatINR(st.refund)} paid over — refund received?
+                          + {formatINR(st.refund)} paid over —{' '}
+                          {refundTot && refundTot.due <= 0.004 ? (
+                            <span className="text-[#0B6B45]">refunded</span>
+                          ) : refundTot && refundTot.refunded > 0.004 ? (
+                            `${formatINR(refundTot.due)} still due`
+                          ) : (
+                            'refund received?'
+                          )}
                         </button>
                       )}
                     </div>
@@ -414,6 +435,7 @@ function BankCard({ bill, repayments, onChanged }: { bill: Row; repayments?: Row
         onClose={() => setRefundOpen(false)}
         onChanged={() => {
           void load()
+          loadRefund()
           onChanged?.()
         }}
       />
