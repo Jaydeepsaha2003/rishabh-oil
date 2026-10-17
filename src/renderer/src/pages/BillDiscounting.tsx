@@ -856,14 +856,27 @@ const BD_TOTAL = __WEB__
 // What the Payment tracker can ask this tab to open on a bill.
 export type BdFocusAction = 'open' | 'repay' | 'interest' | 'payin'
 
-function RefundDueChip({ amount }: { amount?: number }): React.JSX.Element | null {
-  if (!amount || amount <= 0.004) return null
+function RefundDueChip({ tot }: { tot?: { booked: number; refunded: number; due: number } }): React.JSX.Element | null {
+  // EXCESS PAID TO THE BANK — marked for good, not only while it is owed:
+  // red with "refund due" until the refund is in, then "refunded".
+  if (!tot || tot.booked <= 0.004) return null
+  const owed = tot.due > 0.004
   return (
     <span
-      className="inline-flex items-center gap-1 rounded-[2px] border border-[#F0C4C0] bg-[#FDECEA] px-1.5 py-[1px] text-[10.5px] font-extrabold uppercase tracking-[.04em] text-[#B3261E]"
-      title="Paid over the balance — the bank owes this back. ⋮ → Refund received when it comes in."
+      className={cn(
+        'inline-flex items-center gap-1 rounded-[2px] border px-1.5 py-[1px] text-[10.5px] font-extrabold uppercase tracking-[.04em]',
+        owed ? 'border-[#F0C4C0] bg-[#FDECEA] text-[#B3261E]' : 'border-[#F0C4C0] bg-white text-[#B3261E]'
+      )}
+      title={
+        owed
+          ? `Paid ${formatINR(tot.booked)} over the balance — ${formatINR(tot.due)} still due back from the bank. ⋮ → Refund received when it comes in.`
+          : `Paid ${formatINR(tot.booked)} over the balance — refunded in full.`
+      }
     >
-      Refund due {formatINR(amount)}
+      Excess paid {formatINR(tot.booked)}
+      <span className={cn('font-bold normal-case', owed ? '' : 'text-[#0B6B45]')}>
+        · {owed ? (tot.due < tot.booked - 0.004 ? `${formatINR(tot.due)} due` : 'refund due') : 'refunded'}
+      </span>
     </span>
   )
 }
@@ -1007,8 +1020,9 @@ export function BillDiscounting({
   // Paid the NBFC over a bill's balance: what it still owes back, per bill.
   const [bdRefundDue, setBdRefundDue] = useState<Record<string, number>>({})
   const [refundBd, setRefundBd] = useState<number | null>(null)
+  const [bdRefundTot, setBdRefundTot] = useState<Record<string, { booked: number; refunded: number; due: number }>>({})
   useEffect(() => {
-    void window.api.billDiscounting.refundDues().then(setBdRefundDue).catch(() => undefined)
+    void Promise.all([window.api.billDiscounting.refundDues().then(setBdRefundDue), window.api.billDiscounting.refundTotals().then(setBdRefundTot)]).catch(() => undefined)
   }, [rows])
   const [routeVal, setRouteVal] = useState('')
   const [routeAcct, setRouteAcct] = useState('')
@@ -3528,7 +3542,7 @@ export function BillDiscounting({
                             <div>
                               <div className={cn('flex items-center gap-1.5', __WEB__ && 'whitespace-nowrap')}>
                                 <span className={cn('font-semibold', !r.bd_no && 'italic text-muted-foreground', __WEB__ && 'doc-ref !text-[12.5px] !font-bold !text-[#0A1F17]')}>{r.bd_no || 'No BD no'}</span>
-                                <RefundDueChip amount={bdRefundDue[String(r.id)]} />
+                                <RefundDueChip tot={bdRefundTot[String(r.id)]} />
                                 <FinChip type={r.finance_type} />
                                 {/* Payment-IN at a glance, beside the side of
                                     the book it belongs to. Keyed on the SAME
@@ -7939,7 +7953,7 @@ export function BillDiscounting({
         id={refundBd}
         open={!!refundBd}
         onClose={() => setRefundBd(null)}
-        onChanged={() => void window.api.billDiscounting.refundDues().then(setBdRefundDue).catch(() => undefined)}
+        onChanged={() => void Promise.all([window.api.billDiscounting.refundDues().then(setBdRefundDue), window.api.billDiscounting.refundTotals().then(setBdRefundTot)]).catch(() => undefined)}
       />
       <Dialog open={!!routeRow} onOpenChange={(o) => !o && !routeSaving && setRouteRow(null)}>
         <DialogContent className="sm:max-w-[520px]">

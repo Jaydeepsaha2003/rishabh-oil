@@ -1710,6 +1710,7 @@ export function registerIpc(): void {
 
   // Paid the NBFC over the balance: what it owes back, and the refund that clears it (bankRefunds.ts).
   handle('bd:refundDues', async () => (await import('./bankRefunds')).refundDues('bd'))
+  handle('bd:refundTotals', async () => (await import('./bankRefunds')).refundTotals('bd'))
   handle('bd:refundInfo', async (_e, { id }: { id: number }) => (await import('./bankRefunds')).refundInfo('bd', Number(id)))
   handle('bd:refundLink', async (_e, { id, entryId }: { id: number; entryId: number }) => (await import('./bankRefunds')).linkRefund('bd', Number(id), Number(entryId)))
   handle('bd:refundRecord', async (_e, { id, values }: { id: number; values: { date: string; amount: number; bank: string } }) =>
@@ -1718,6 +1719,7 @@ export function registerIpc(): void {
   handle('bd:refundUndo', async (_e, { refundId }: { refundId: number }) => (await import('./bankRefunds')).undoRefund(Number(refundId)))
   // Paid the bank over the balance: what it owes back, and the refund that clears it (bankRefunds.ts).
   handle('lc:refundDues', async () => (await import('./bankRefunds')).refundDues('lc'))
+  handle('lc:refundTotals', async () => (await import('./bankRefunds')).refundTotals('lc'))
   handle('lc:refundInfo', async (_e, { id }: { id: number }) => (await import('./bankRefunds')).refundInfo('lc', Number(id)))
   handle('lc:refundLink', async (_e, { id, entryId }: { id: number; entryId: number }) => (await import('./bankRefunds')).linkRefund('lc', Number(id), Number(entryId)))
   handle('lc:refundRecord', async (_e, { id, values }: { id: number; values: { date: string; amount: number; bank: string } }) =>

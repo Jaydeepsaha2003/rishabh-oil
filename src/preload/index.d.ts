@@ -548,6 +548,7 @@ export interface Api {
   }
   lc: {
     refundDues: () => Promise<Record<string, number>>
+    refundTotals: () => Promise<Record<string, { booked: number; refunded: number; due: number }>>
     refundInfo: (id: number) => Promise<Row>
     refundLink: (id: number, entryId: number) => Promise<{ id: number }>
     refundRecord: (id: number, values: { date: string; amount: number; bank: string }) => Promise<{ id: number }>
@@ -610,6 +611,7 @@ export interface Api {
   }
   billDiscounting: {
     refundDues: () => Promise<Record<string, number>>
+    refundTotals: () => Promise<Record<string, { booked: number; refunded: number; due: number }>>
     refundInfo: (id: number) => Promise<Row>
     refundLink: (id: number, entryId: number) => Promise<{ id: number }>
     refundRecord: (id: number, values: { date: string; amount: number; bank: string }) => Promise<{ id: number }>

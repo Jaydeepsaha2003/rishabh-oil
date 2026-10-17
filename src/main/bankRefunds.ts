@@ -120,6 +120,39 @@ export async function refundDues(kind: Kind): Promise<Record<string, number>> {
   return out
 }
 
+/** Paid over, refunded and still due, per bill or LC — the register's marker stays once refunded. */
+export async function refundTotals(kind: Kind): Promise<Record<string, { booked: number; refunded: number; due: number }>> {
+  await ensure()
+  const c = getClient()
+  const reps = toPlain(
+    await c.execute(
+      kind === 'bd'
+        ? "SELECT bd_id AS fid, charges FROM bd_repayments WHERE charges LIKE '%REFUND DUE%'"
+        : "SELECT lc_id AS fid, charges FROM lc_repayments WHERE charges LIKE '%REFUND DUE%'"
+    )
+  )
+  const out: Record<string, { booked: number; refunded: number; due: number }> = {}
+  for (const r of reps) {
+    let list: Row[] = []
+    try {
+      list = JSON.parse(String(r.charges || '[]'))
+    } catch {
+      list = []
+    }
+    const amt = (Array.isArray(list) ? list : []).filter((x) => isRefundDue(String(x?.account || ''))).reduce((t, x) => t + n(x.amount), 0)
+    if (amt <= 0.004) continue
+    const k = String(r.fid)
+    out[k] = out[k] || { booked: 0, refunded: 0, due: 0 }
+    out[k].booked = round2(out[k].booked + amt)
+  }
+  for (const r of toPlain(await c.execute({ sql: 'SELECT facility_id AS fid, SUM(amount) AS amt FROM facility_refunds WHERE kind = ? GROUP BY facility_id', args: [kind] }))) {
+    const k = String(r.fid)
+    if (out[k]) out[k].refunded = round2(n(r.amt))
+  }
+  for (const k of Object.keys(out)) out[k].due = round2(Math.max(0, out[k].booked - out[k].refunded))
+  return out
+}
+
 /** Everything the Refund received dialog shows. */
 export async function refundInfo(kind: Kind, id: number): Promise<Row> {
   await ensure()

@@ -1242,14 +1242,27 @@ function ClosureBadge({ l, withDate }: { l: Row; withDate?: boolean }): React.JS
 // page, after one hook and before forty: a window crossing the phone width
 // while Treasury was open (a tablet turned, a browser resized) ran a different
 // number of hooks than the render before, and React tore the page down blank.
-function RefundDueChip({ amount }: { amount?: number }): React.JSX.Element | null {
-  if (!amount || amount <= 0.004) return null
+function RefundDueChip({ tot }: { tot?: { booked: number; refunded: number; due: number } }): React.JSX.Element | null {
+  // EXCESS PAID TO THE BANK — marked for good, not only while it is owed:
+  // red with "refund due" until the refund is in, then "refunded".
+  if (!tot || tot.booked <= 0.004) return null
+  const owed = tot.due > 0.004
   return (
     <span
-      className="inline-flex items-center gap-1 rounded-[2px] border border-[#F0C4C0] bg-[#FDECEA] px-1.5 py-[1px] text-[10.5px] font-extrabold uppercase tracking-[.04em] text-[#B3261E]"
-      title="Paid over the balance — the bank owes this back. ⋮ → Refund received when it comes in."
+      className={cn(
+        'inline-flex items-center gap-1 rounded-[2px] border px-1.5 py-[1px] text-[10.5px] font-extrabold uppercase tracking-[.04em]',
+        owed ? 'border-[#F0C4C0] bg-[#FDECEA] text-[#B3261E]' : 'border-[#F0C4C0] bg-white text-[#B3261E]'
+      )}
+      title={
+        owed
+          ? `Paid ${formatINR(tot.booked)} over the balance — ${formatINR(tot.due)} still due back from the bank. ⋮ → Refund received when it comes in.`
+          : `Paid ${formatINR(tot.booked)} over the balance — refunded in full.`
+      }
     >
-      Refund due {formatINR(amount)}
+      Excess paid {formatINR(tot.booked)}
+      <span className={cn('font-bold normal-case', owed ? '' : 'text-[#0B6B45]')}>
+        · {owed ? (tot.due < tot.booked - 0.004 ? `${formatINR(tot.due)} due` : 'refund due') : 'refunded'}
+      </span>
     </span>
   )
 }
@@ -1843,8 +1856,9 @@ function TreasuryDesk({ onCompanyChange, focusLcId, focusBdId, onFocusHandled }:
   // Paid the bank over an LC's balance: what it still owes back, per LC.
   const [lcRefundDue, setLcRefundDue] = useState<Record<string, number>>({})
   const [refundLc, setRefundLc] = useState<number | null>(null)
+  const [lcRefundTot, setLcRefundTot] = useState<Record<string, { booked: number; refunded: number; due: number }>>({})
   useEffect(() => {
-    void window.api.lc.refundDues().then(setLcRefundDue).catch(() => undefined)
+    void Promise.all([window.api.lc.refundDues().then(setLcRefundDue), window.api.lc.refundTotals().then(setLcRefundTot)]).catch(() => undefined)
   }, [lcs])
   const [unpreBusy, setUnpreBusy] = useState(false)
 
@@ -4007,7 +4021,7 @@ function TreasuryDesk({ onCompanyChange, focusLcId, focusBdId, onFocusHandled }:
                                     </span>
                                     {!__WEB__ && currentStageBadge(l)}
                                     {!__WEB__ && <ClosureBadge l={l} />}
-                                    {!__WEB__ && <RefundDueChip amount={lcRefundDue[String(l.id)]} />}
+                                    {!__WEB__ && <RefundDueChip tot={lcRefundTot[String(l.id)]} />}
                                   </div>
                                   <div className={cn('mt-0.5 text-[11px] text-muted-foreground', __WEB__ && '!mt-[1px] !truncate !text-[11.5px] !font-semibold !leading-[1.3] !text-[#5A6B62]')}>
                                     {l.bank}
@@ -4027,7 +4041,7 @@ function TreasuryDesk({ onCompanyChange, focusLcId, focusBdId, onFocusHandled }:
                                     <div className="mt-[3px] flex flex-wrap items-center gap-1.5 [&>span]:!rounded-[2px]">
                                       {currentStageBadge(l)}
                                       <ClosureBadge l={l} />
-                                      <RefundDueChip amount={lcRefundDue[String(l.id)]} />
+                                      <RefundDueChip tot={lcRefundTot[String(l.id)]} />
                                     </div>
                                   )}
                                 </div>
@@ -6922,7 +6936,7 @@ function TreasuryDesk({ onCompanyChange, focusLcId, focusBdId, onFocusHandled }:
         id={refundLc}
         open={!!refundLc}
         onClose={() => setRefundLc(null)}
-        onChanged={() => void window.api.lc.refundDues().then(setLcRefundDue).catch(() => undefined)}
+        onChanged={() => void Promise.all([window.api.lc.refundDues().then(setLcRefundDue), window.api.lc.refundTotals().then(setLcRefundTot)]).catch(() => undefined)}
       />
       <Dialog open={!!unpreRow} onOpenChange={(o) => !o && !unpreBusy && setUnpreRow(null)}>
         <DialogContent className="max-w-lg">

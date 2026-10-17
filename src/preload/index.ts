@@ -821,6 +821,7 @@ const api = {
   },
   lc: {
     refundDues: (): Promise<Record<string, number>> => ipcRenderer.invoke('lc:refundDues'),
+    refundTotals: (): Promise<Record<string, { booked: number; refunded: number; due: number }>> => ipcRenderer.invoke('lc:refundTotals'),
     refundInfo: (id: number): Promise<Row> => ipcRenderer.invoke('lc:refundInfo', { id }),
     refundLink: (id: number, entryId: number): Promise<{ id: number }> => ipcRenderer.invoke('lc:refundLink', { id, entryId }),
     refundRecord: (id: number, values: { date: string; amount: number; bank: string }): Promise<{ id: number }> =>
@@ -901,6 +902,7 @@ const api = {
   },
   billDiscounting: {
     refundDues: (): Promise<Record<string, number>> => ipcRenderer.invoke('bd:refundDues'),
+    refundTotals: (): Promise<Record<string, { booked: number; refunded: number; due: number }>> => ipcRenderer.invoke('bd:refundTotals'),
     refundInfo: (id: number): Promise<Row> => ipcRenderer.invoke('bd:refundInfo', { id }),
     refundLink: (id: number, entryId: number): Promise<{ id: number }> => ipcRenderer.invoke('bd:refundLink', { id, entryId }),
     refundRecord: (id: number, values: { date: string; amount: number; bank: string }): Promise<{ id: number }> =>
