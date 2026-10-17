@@ -14683,6 +14683,46 @@ async function ensureVoucherNumbers() {
     }
   });
 }
+async function renumberOnTypeChange(entryId, vchType) {
+  await ensureTable();
+  const c = getClient();
+  const cur = await c.execute({ sql: "SELECT company_id, prefix FROM voucher_numbers WHERE entry_id = ?", args: [entryId] });
+  const p = prefix(String(vchType || ""));
+  if (!cur.rows.length || String(cur.rows[0].prefix) === p) return;
+  const co = Number(cur.rows[0].company_id);
+  await c.execute({
+    sql: `UPDATE voucher_numbers SET prefix = ?,
+            serial = (SELECT COALESCE(MAX(serial), 0) + 1 FROM voucher_numbers WHERE company_id = ? AND prefix = ?)
+          WHERE entry_id = ?`,
+    args: [p, co, p, entryId]
+  });
+}
+async function realignVoucherSeries() {
+  await ensureVoucherNumbers();
+  const c = getClient();
+  const bad = await c.execute(`SELECT e.id, e.vch_type, n.prefix, n.serial FROM journal_entries e
+      JOIN voucher_numbers n ON n.entry_id = e.id
+     WHERE n.prefix <> COALESCE(${PREFIX_SQL}, n.prefix)
+     ORDER BY e.company_id, e.entry_date, e.id`);
+  if (!bad.rows.length) return [];
+  await c.execute(`CREATE TABLE IF NOT EXISTS accounting_repair_log (
+      repair_key TEXT PRIMARY KEY, entry_id INTEGER NOT NULL, before_json TEXT NOT NULL,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')))`);
+  const moved = [];
+  await withDbTransaction(async () => {
+    for (const r of bad.rows) {
+      const id = Number(r.id);
+      const was = `${r.prefix}/${r.serial}`;
+      await getClient().execute({
+        sql: "INSERT OR REPLACE INTO accounting_repair_log (repair_key, entry_id, before_json) VALUES (?, ?, ?)",
+        args: [`voucher-series:${id}`, id, JSON.stringify({ code: was, vch_type: r.vch_type })]
+      });
+      await renumberOnTypeChange(id, String(r.vch_type));
+      moved.push(`${was} \u2192 ${await voucherCodeOf(id)}`);
+    }
+  });
+  return moved;
+}
 async function nextVoucherCode(companyId, vchType) {
   await ensureVoucherNumbers();
   const p = prefix(String(vchType || ""));
@@ -14737,6 +14777,7 @@ __export(treasury_exports, {
   deleteLcRepayment: () => deleteLcRepayment,
   dropLcUpfrontInterest: () => dropLcUpfrontInterest,
   duePeriodOf: () => duePeriodOf,
+  fileLcRepaymentsAsPayments: () => fileLcRepaymentsAsPayments,
   lcFeeDelta: () => lcFeeDelta,
   listAllLcRepayments: () => listAllLcRepayments,
   listBdOpenTradingInvoices: () => listBdOpenTradingInvoices,
@@ -15774,6 +15815,35 @@ async function postLcRepaymentEntry(repaymentId) {
       args: [je.id, feeJe, repaymentId]
     });
   });
+}
+async function fileLcRepaymentsAsPayments() {
+  await ensureVoucherNumbers();
+  const found = await getClient().execute(`SELECT DISTINCT e.id FROM journal_entries e
+      JOIN lc_repayments rp ON rp.journal_entry_id = e.id
+     WHERE e.vch_type = 'JOURNAL'
+       AND EXISTS (SELECT 1 FROM journal_lines jl JOIN ledger_accounts a ON a.id = jl.account_id
+                    WHERE jl.entry_id = e.id AND jl.cr > 0.004 AND a.acc_group IN ('Bank Accounts', 'Bank OD A/c'))
+     ORDER BY e.entry_date, e.id`);
+  if (!found.rows.length) return [];
+  const moved = [];
+  await withDbTransaction(async () => {
+    const c = getClient();
+    await c.execute(`CREATE TABLE IF NOT EXISTS accounting_repair_log (
+        repair_key TEXT PRIMARY KEY, entry_id INTEGER NOT NULL, before_json TEXT NOT NULL,
+        created_at TEXT NOT NULL DEFAULT (datetime('now')))`);
+    for (const r of found.rows) {
+      const id = Number(r.id);
+      const was = await voucherCodeOf(id);
+      await c.execute({
+        sql: "INSERT OR REPLACE INTO accounting_repair_log (repair_key, entry_id, before_json) VALUES (?, ?, ?)",
+        args: [`lc-repay-as-payment:${id}`, id, JSON.stringify({ code: was, vch_type: "JOURNAL" })]
+      });
+      await c.execute({ sql: "UPDATE journal_entries SET vch_type = 'PAYMENT' WHERE id = ?", args: [id] });
+      await renumberOnTypeChange(id, "PAYMENT");
+      moved.push(`${was} \u2192 ${await voucherCodeOf(id)}`);
+    }
+  });
+  return moved;
 }
 async function repairLcRepaymentAccount() {
   const c = getClient();
@@ -17103,6 +17173,7 @@ async function repostJournal(entryId, a) {
         id
       ]
     });
+    await renumberOnTypeChange(id, a.vchType);
     await c.execute({
       sql: "DELETE FROM journal_bill_allocs WHERE line_id IN (SELECT id FROM journal_lines WHERE entry_id = ?)",
       args: [id]
@@ -18618,8 +18689,22 @@ async function repayBd(id, v) {
     const closed = left <= 4e-3;
     const comm = round27(n20(v.comm_charges));
     const bankCharges = round27(n20(v.bank_charges));
+    const interestPaid = round27(n20(v.interest));
     const repayBank = settleVia === "bank" ? await bdBankFor(bd, v.bank_account) : null;
     if (comm < 0 || bankCharges < 0) throw new Error("Charges cannot be negative");
+    if (interestPaid < 0) throw new Error("Interest cannot be negative");
+    const charges = [];
+    for (const ch of v.charges || []) {
+      const name = String(ch?.account || "").trim();
+      const amt = round27(n20(ch?.amount));
+      if (!name && amt <= 4e-3) continue;
+      if (!name) throw new Error("Pick the ledger for each charge");
+      if (amt <= 4e-3) throw new Error(`Enter the amount charged to ${name}`);
+      const acc = await c.execute({ sql: "SELECT name, acc_group FROM ledger_accounts WHERE UPPER(TRIM(name)) = UPPER(?) LIMIT 1", args: [name] });
+      if (!acc.rows.length) throw new Error(`There is no ledger called ${name}`);
+      charges.push({ account: String(acc.rows[0].name), group: String(acc.rows[0].acc_group || "Indirect Expenses"), amount: amt });
+    }
+    const extra = round27(charges.reduce((t, x) => t + x.amount, 0));
     const others = [];
     const alsoSeen = /* @__PURE__ */ new Set();
     for (const o of v.also || []) {
@@ -18645,19 +18730,21 @@ async function repayBd(id, v) {
     }
     const toOthers = round27(others.reduce((t, o) => t + o.amount, 0));
     if (spill > 4e-3 || others.length) {
-      const explained = round27(comm + bankCharges + toOthers);
+      const explained = round27(comm + bankCharges + interestPaid + extra + toOthers);
       if (Math.abs(spill - explained) > 4e-3) {
         throw new Error(
           spill > explained ? `${inr(round27(spill - explained))} of the ${inr(typed)} is not accounted for \u2014 add it to the charges or to another bill` : `${inr(round27(explained - spill))} more is allocated than the ${inr(typed)} being repaid`
         );
       }
     }
-    const paidOut = spill > 4e-3 || others.length ? typed : round27(asked + comm + bankCharges);
+    const paidOut = spill > 4e-3 || others.length ? typed : round27(asked + comm + bankCharges + interestPaid + extra);
     const lines = [
       { account: bdPayable(bd), group: BD_PAYABLE_GROUP, dr: round27(asked + toOthers) }
     ];
     if (comm > 4e-3) lines.push({ account: "COMM. CHARGES A/C", group: "Indirect Expenses", dr: comm });
     if (bankCharges > 4e-3) lines.push({ account: "BANK CHARGES A/C", group: "Indirect Expenses", dr: bankCharges });
+    if (interestPaid > 4e-3) lines.push({ account: "INTEREST ON BILL DISCOUNTING A/C", group: "Indirect Expenses", dr: interestPaid });
+    for (const ch of charges) lines.push({ account: ch.account, group: ch.group, dr: ch.amount });
     if (settleVia === "party") {
       lines.push({
         account: party,
@@ -18673,12 +18760,17 @@ async function repayBd(id, v) {
       vchNo: String(bd.bd_no || ""),
       narration: `Bill Discounting ${bd.bd_no} ${closed && already <= 4e-3 ? "repaid" : closed ? "closed \u2014 final part repayment" : "part repayment"} to ${bd.nbfc_name || "the NBFC"}` + (closed ? "" : ` \u2014 ${inr(left)} still outstanding`) + // Said on the voucher, because a debit larger than the principal is the
       // first thing anybody querying a bank statement asks about.
-      (comm > 4e-3 || bankCharges > 4e-3 ? ` \u2014 ${inr(paidOut)} debited, including ${[comm > 4e-3 ? `${inr(comm)} commission` : "", bankCharges > 4e-3 ? `${inr(bankCharges)} bank charges` : ""].filter(Boolean).join(" and ")}` : "") + (others.length ? ` \u2014 one debit of ${inr(paidOut)} also settling ${others.map((o) => `${o.bd.bd_no || o.bd.id} ${inr(o.amount)}`).join(", ")}` : "") + (settleVia === "party" ? ` \u2014 settled against ${party}` : ""),
+      (comm > 4e-3 || bankCharges > 4e-3 || interestPaid > 4e-3 || extra > 4e-3 ? ` \u2014 ${inr(paidOut)} debited, including ${[
+        interestPaid > 4e-3 ? `${inr(interestPaid)} interest` : "",
+        comm > 4e-3 ? `${inr(comm)} commission` : "",
+        bankCharges > 4e-3 ? `${inr(bankCharges)} bank charges` : "",
+        ...charges.map((ch) => `${inr(ch.amount)} ${ch.account}`)
+      ].filter(Boolean).join(" and ")}` : "") + (others.length ? ` \u2014 one debit of ${inr(paidOut)} also settling ${others.map((o) => `${o.bd.bd_no || o.bd.id} ${inr(o.amount)}`).join(", ")}` : "") + (settleVia === "party" ? ` \u2014 settled against ${party}` : ""),
       companyId: n20(bd.company_id) || void 0,
       lines
     });
     if (settleVia === "party") await allocAgainst2(je.id, party, v.ref || null, paidOut);
-    await c.execute({
+    const insRep = await c.execute({
       sql: `INSERT INTO bd_repayments (bd_id, repay_date, amount, comm_charges, bank_charges, settle_via, ref, journal_entry_id, note, bank_account)
           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       args: [
@@ -18694,6 +18786,15 @@ async function repayBd(id, v) {
         repayBank
       ]
     });
+    if (interestPaid > 4e-3) {
+      await c.execute({ sql: "UPDATE bd_repayments SET interest = ? WHERE id = ?", args: [interestPaid, Number(insRep.lastInsertRowid || 0)] });
+    }
+    if (charges.length) {
+      await c.execute({
+        sql: "UPDATE bd_repayments SET charges = ? WHERE id = ?",
+        args: [JSON.stringify(charges.map(({ account, amount: amount2 }) => ({ account, amount: amount2 }))), Number(insRep.lastInsertRowid || 0)]
+      });
+    }
     for (const o of others) {
       await c.execute({
         sql: `INSERT INTO bd_repayments (bd_id, repay_date, amount, comm_charges, bank_charges, settle_via, ref, journal_entry_id, note, bank_account)
@@ -19028,7 +19129,7 @@ async function listBdRepayments(bdId) {
     sql: `SELECT r.*, je.vch_no, je.entry_date AS voucher_date,
                  -- Every bill the same bank debit settled, this one included,
                  -- so an edit can show (and change) the whole debit.
-                 (SELECT json_group_array(json_object('id', r2.id, 'bd_id', r2.bd_id, 'bd_no', b2.bd_no, 'amount', r2.amount, 'comm_charges', r2.comm_charges, 'bank_charges', r2.bank_charges))
+                 (SELECT json_group_array(json_object('id', r2.id, 'bd_id', r2.bd_id, 'bd_no', b2.bd_no, 'amount', r2.amount, 'comm_charges', r2.comm_charges, 'bank_charges', r2.bank_charges, 'interest', r2.interest, 'charges', r2.charges))
                     FROM bd_repayments r2 JOIN bill_discountings b2 ON b2.id = r2.bd_id
                    WHERE r.journal_entry_id IS NOT NULL AND r2.journal_entry_id = r.journal_entry_id) AS group_json
           FROM bd_repayments r
@@ -19133,7 +19234,7 @@ async function editBdRepayment(repaymentId, v) {
     const bdId = n20(row.bd_id);
     const oldJe = n20(row.journal_entry_id);
     const siblings = oldJe ? toPlain18(await c.execute({ sql: "SELECT * FROM bd_repayments WHERE journal_entry_id = ? ORDER BY id", args: [oldJe] })) : [row];
-    const primary = siblings.find((x) => n20(x.comm_charges) > 0 || n20(x.bank_charges) > 0) || row;
+    const primary = siblings.find((x) => n20(x.comm_charges) > 0 || n20(x.bank_charges) > 0 || n20(x.interest) > 0 || !!x.charges) || row;
     const primaryId = n20(primary.bd_id);
     const oldHead = oldJe ? toPlain18(await c.execute({ sql: "SELECT vch_type FROM journal_entries WHERE id = ?", args: [oldJe] }))[0] : null;
     const mergeRows = [];
@@ -19174,7 +19275,10 @@ async function editBdRepayment(repaymentId, v) {
     const also = shares.filter((x) => x.bd_id !== primaryId);
     const comm = v.comm_charges === void 0 ? round27(n20(primary.comm_charges)) : round27(n20(v.comm_charges));
     const bankCh = v.bank_charges === void 0 ? round27(n20(primary.bank_charges)) : round27(n20(v.bank_charges));
-    const debit = round27(own.amount + also.reduce((t, x) => t + x.amount, 0) + (also.length ? comm + bankCh : 0));
+    const intr = v.interest === void 0 || v.interest === null ? round27(n20(primary.interest)) : round27(n20(v.interest));
+    const charges = v.charges ?? JSON.parse(String(primary.charges || "[]"));
+    const extra = round27(charges.reduce((t, x) => t + n20(x.amount), 0));
+    const debit = round27(own.amount + also.reduce((t, x) => t + x.amount, 0) + (also.length ? comm + bankCh + intr + extra : 0));
     await c.execute(`CREATE TABLE IF NOT EXISTS accounting_repair_log (
         repair_key TEXT PRIMARY KEY, entry_id INTEGER NOT NULL, before_json TEXT NOT NULL,
         created_at TEXT NOT NULL DEFAULT (datetime('now')))`);
@@ -19192,6 +19296,8 @@ async function editBdRepayment(repaymentId, v) {
       bank_account: v.bank_account === void 0 ? primary.bank_account ? String(primary.bank_account) : null : v.bank_account,
       comm_charges: comm || null,
       bank_charges: bankCh || null,
+      interest: intr || null,
+      charges,
       amount: debit,
       note: v.note === void 0 ? primary.note ? String(primary.note) : null : v.note,
       release_margin: oldMargins.has(primaryId) || void 0,
@@ -21238,6 +21344,7 @@ async function updateVoucher(id, v) {
       sql: "UPDATE journal_entries SET entry_date = ?, vch_type = ?, vch_no = ?, narration = ? WHERE id = ?",
       args: [v.date, v.vchType, v.vchNo || null, v.narration || null, id]
     });
+    await renumberOnTypeChange(id, v.vchType);
     await c.execute({
       sql: "DELETE FROM journal_bill_allocs WHERE line_id IN (SELECT id FROM journal_lines WHERE entry_id = ?)",
       args: [id]
@@ -27915,6 +28022,19 @@ async function runStartupTasks() {
     if (cols.has("interest_adj")) return;
     await c.execute("ALTER TABLE letters_of_credit ADD COLUMN interest_adj REAL NOT NULL DEFAULT 0");
   }).catch((e) => console.error("[lc] interest-adjustment column failed:", e));
+  await runOnce("bd_repay_interest_v1", async () => {
+    const c = getClient();
+    const info = await c.execute({ sql: "PRAGMA table_info('bd_repayments')", args: [] });
+    const cols = new Set(info.rows.map((r) => String(r.name)));
+    if (cols.has("interest")) return;
+    await c.execute("ALTER TABLE bd_repayments ADD COLUMN interest REAL");
+  }).catch((e) => console.error("[bd] repayment-interest column failed:", e));
+  await runOnce("bd_repay_charges_v1", async () => {
+    const c = getClient();
+    const info = await c.execute({ sql: "PRAGMA table_info('bd_repayments')", args: [] });
+    if (info.rows.some((r) => String(r.name) === "charges")) return;
+    await c.execute("ALTER TABLE bd_repayments ADD COLUMN charges TEXT");
+  }).catch((e) => console.error("[bd] repayment-charges column failed:", e));
   await runOnce("bd_days_incl_start_v1", async () => {
     const c = getClient();
     for (const table of ["nbfcs", "bill_discountings"]) {
@@ -29213,6 +29333,14 @@ async function runStartupTasks() {
     const r = await fixLcCharges(ids);
     console.log(`[lc] folded bank charges onto ${r.fixed} repayment voucher(s) \u2014 ${r.charges.toFixed(2)} in all`);
   }).catch((e) => console.error("[lc] repayment charges fold failed:", e));
+  await runOnce("lc_repay_as_payment_v1", async () => {
+    const moved = await fileLcRepaymentsAsPayments();
+    if (moved.length) console.log(`[lc] repayments filed as payments: ${moved.join(", ")}`);
+  }).catch((e) => console.error("[lc] repayment voucher type fix failed:", e));
+  await runOnce("voucher_series_realign_v1", async () => {
+    const moved = await realignVoucherSeries();
+    if (moved.length) console.log(`[vouchers] renumbered ${moved.length}: ${moved.join(", ")}`);
+  }).catch((e) => console.error("[vouchers] series realign failed:", e));
   await runOnce("sales_duplicate_vouchers_v1", async () => {
     const r = await autoFixDuplicateSales();
     if (r.removed || r.reposted.length) {
@@ -29516,8 +29644,10 @@ async function alterOwnedVoucher(entryId, v) {
       const shared = info.shared || [];
       const comm = round215(n27(v.comm_charges ?? r.comm_charges));
       const bank = round215(n27(v.bank_charges ?? r.bank_charges));
+      const charges = JSON.parse(String(r.charges || "[]"));
+      const extra = round215(charges.reduce((t, x) => t + n27(x.amount), 0));
       const principal = shared.length ? n27(r.amount) : round215(n27(v.amount ?? r.amount));
-      const typed = shared.length ? round215(principal + shared.reduce((t, s5) => t + s5.amount, 0) + comm + bank) : principal;
+      const typed = shared.length ? round215(principal + shared.reduce((t, s5) => t + s5.amount, 0) + comm + bank + extra) : principal;
       await deleteBdRepayment(n27(r.id));
       await repayBd(bdId, {
         repay_date: String(v.repay_date || r.repay_date).slice(0, 10),
@@ -29526,6 +29656,7 @@ async function alterOwnedVoucher(entryId, v) {
         release_margin: hadRelease,
         comm_charges: comm,
         bank_charges: bank,
+        charges,
         amount: typed,
         note: v.note !== void 0 ? v.note ? String(v.note) : null : r.note ?? null,
         party_id: partyId,
