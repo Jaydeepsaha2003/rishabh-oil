@@ -2415,6 +2415,29 @@ var init_ppTrace = __esm({
   }
 });
 
+// src/main/tankerAlloc.ts
+async function ensureTankerInvoices() {
+  await getClient().execute(`CREATE TABLE IF NOT EXISTS tanker_invoices (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      tanker_id INTEGER NOT NULL,
+      order_id INTEGER NOT NULL,
+      qty REAL NOT NULL,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      UNIQUE (tanker_id, order_id)
+    )`);
+  await getClient().execute("CREATE INDEX IF NOT EXISTS idx_tanker_invoices_order ON tanker_invoices(order_id)");
+}
+var ALLOC;
+var init_tankerAlloc = __esm({
+  "src/main/tankerAlloc.ts"() {
+    init_db();
+    ALLOC = `(SELECT ti.tanker_id AS tanker_id, ti.order_id AS order_id, ti.qty AS qty FROM tanker_invoices ti
+  UNION ALL
+  SELECT pt0.id AS tanker_id, pt0.order_id AS order_id, pt0.loaded_qty AS qty FROM purchase_tankers pt0
+   WHERE pt0.order_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM tanker_invoices ti0 WHERE ti0.tanker_id = pt0.id))`;
+  }
+});
+
 // src/main/requestContext.ts
 function runInRequestContext(ctx, fn) {
   return store.run(ctx, fn);
@@ -3899,7 +3922,7 @@ async function gateEntriesFor(args) {
   const where = [];
   const bind = [];
   if (orderId) {
-    where.push("g.tanker_id IN (SELECT id FROM purchase_tankers WHERE order_id = ?)");
+    where.push(`g.tanker_id IN (SELECT a.tanker_id FROM ${ALLOC} a WHERE a.order_id = ?)`);
     bind.push(orderId);
   }
   if (saleIds.length) {
@@ -4353,6 +4376,7 @@ async function unrejectGateEntry(id) {
 }
 var init_gate = __esm({
   "src/main/gate.ts"() {
+    init_tankerAlloc();
     init_db();
     init_access_gate();
   }
@@ -4941,21 +4965,21 @@ async function bargainLinkedInvoices(id) {
   const res = await getClient().execute({
     sql: `SELECT o.id, o.invoice_no, o.order_date, o.company_id, o.uom,
                  co.name AS company_name, s.name AS supplier_name,
-                 COALESCE((SELECT SUM(CASE WHEN pt.bargain_id = ? THEN pt.loaded_qty - COALESCE(pt.extra_qty, 0)
-                                           ELSE COALESCE(pt.extra_qty, 0) END)
-                             FROM purchase_tankers pt
-                            WHERE pt.order_id = o.id AND (pt.bargain_id = ? OR pt.extra_bargain_id = ?)),
+                 COALESCE((SELECT SUM((CASE WHEN pt.bargain_id = ? THEN pt.loaded_qty - COALESCE(pt.extra_qty, 0)
+                                           ELSE COALESCE(pt.extra_qty, 0) END) * CASE WHEN pt.loaded_qty > 0 THEN MIN(1.0, a.qty / pt.loaded_qty) ELSE 1.0 END)
+                             FROM ${ALLOC} a JOIN purchase_tankers pt ON pt.id = a.tanker_id
+                            WHERE a.order_id = o.id AND (pt.bargain_id = ? OR pt.extra_bargain_id = ?)),
                           o.ordered_qty) AS qty,
                  COALESCE((SELECT MAX(CASE WHEN pt.bargain_id = ? THEN pt.bargain_rate ELSE pt.extra_bargain_rate END)
-                             FROM purchase_tankers pt
-                            WHERE pt.order_id = o.id AND (pt.bargain_id = ? OR pt.extra_bargain_id = ?)),
+                             FROM ${ALLOC} a JOIN purchase_tankers pt ON pt.id = a.tanker_id
+                            WHERE a.order_id = o.id AND (pt.bargain_id = ? OR pt.extra_bargain_id = ?)),
                           o.bargain_rate) AS billed_rate
           FROM orders o
           LEFT JOIN companies co ON co.id = o.company_id
           LEFT JOIN suppliers s ON s.id = o.supplier_id
           WHERE o.bargain_id = ?
-             OR EXISTS (SELECT 1 FROM purchase_tankers pt
-                         WHERE pt.order_id = o.id AND (pt.bargain_id = ? OR pt.extra_bargain_id = ?))
+             OR EXISTS (SELECT 1 FROM ${ALLOC} a JOIN purchase_tankers pt ON pt.id = a.tanker_id
+                         WHERE a.order_id = o.id AND (pt.bargain_id = ? OR pt.extra_bargain_id = ?))
           ORDER BY o.order_date, o.id`,
     args: [id, id, id, id, id, id, id, id, id]
   });
@@ -5103,6 +5127,7 @@ async function deleteBargain(id) {
 var MOVED_OUT, MOVED_IN;
 var init_bargains = __esm({
   "src/main/bargains.ts"() {
+    init_tankerAlloc();
     init_db();
     init_company();
     init_access_gate();
@@ -7346,15 +7371,19 @@ async function stockRegisters(companyIds, range) {
                  -- with no way to read it by kind.
                  p.material_type AS category,
                  p.name AS oil_type,
-                 pt.loaded_qty AS dispatch_qty,
-                 CASE WHEN pt.status = 'empty' THEN pt.received_qty ELSE NULL END AS received_qty,
+                 -- This invoice's share of the tanker, when it is shared.
+                 a.qty AS dispatch_qty,
+                 CASE WHEN pt.status = 'empty'
+                      THEN pt.received_qty * CASE WHEN pt.loaded_qty > 0 THEN MIN(1.0, a.qty / pt.loaded_qty) ELSE 1.0 END
+                      ELSE NULL END AS received_qty,
                  pt.condition AS tanker_condition,
                  b.bargain_type AS bargain_type,
                  o.allowed_shortage_pct AS order_pct,
                  b.allowed_shortage_pct AS bargain_pct,
                  co.name AS company
-          FROM purchase_tankers pt
-          JOIN orders o ON o.id = pt.order_id
+          FROM ${ALLOC} a
+          JOIN purchase_tankers pt ON pt.id = a.tanker_id
+          JOIN orders o ON o.id = a.order_id
           LEFT JOIN bargains b ON b.id = pt.bargain_id
           LEFT JOIN suppliers sp ON sp.id = pt.supplier_id
           LEFT JOIN suppliers s2 ON s2.id = o.supplier_id
@@ -7390,7 +7419,7 @@ async function stockRegisters(companyIds, range) {
           LEFT JOIN companies co ON co.id = o.company_id
           WHERE o.status = 'received' AND COALESCE(o.affects_stock, 1) = 1
             AND o.company_id IN (${ph}) ${recB.sql}
-            AND NOT EXISTS (SELECT 1 FROM purchase_tankers pt WHERE pt.order_id = o.id)`,
+            AND NOT EXISTS (SELECT 1 FROM ${ALLOC} a WHERE a.order_id = o.id)`,
     args: [...cidList, ...recB.args]
   });
   const dispB = bounds("s.sale_date");
@@ -7491,6 +7520,7 @@ var SKU_BOX_MULT;
 var init_stock = __esm({
   "src/main/stock.ts"() {
     init_ppTrace();
+    init_tankerAlloc();
     init_db();
     init_company();
     init_repos();
@@ -11998,21 +12028,24 @@ async function listOrders(forModule) {
            pr.category AS product_sub_category,
            src.name AS source_name,
            t.name AS transporter_name,
-           (SELECT COUNT(*) FROM purchase_tankers pt WHERE pt.order_id = o.id) AS tanker_count,
-           (SELECT GROUP_CONCAT(pt.tanker_no, ', ') FROM purchase_tankers pt WHERE pt.order_id = o.id) AS tanker_nos,
+           (SELECT COUNT(*) FROM ${ALLOC} a WHERE a.order_id = o.id) AS tanker_count,
+           (SELECT GROUP_CONCAT(pt.tanker_no, ', ') FROM ${ALLOC} a JOIN purchase_tankers pt ON pt.id = a.tanker_id WHERE a.order_id = o.id) AS tanker_nos,
+           -- How much of the tankers this invoice took \u2014 less than they loaded
+           -- when a tanker is shared with another invoice.
+           (SELECT COALESCE(SUM(a.qty), 0) FROM ${ALLOC} a WHERE a.order_id = o.id) AS tanker_booked_qty,
            -- The gate's entry numbers for those tankers, for the Accounts
            -- purchase register's Vehicle column (the sales register shows its
            -- gate pass the same way).
-           (SELECT GROUP_CONCAT(ge.gate_entry_no, ', ') FROM gate_entries ge JOIN purchase_tankers pt ON pt.id = ge.tanker_id
-             WHERE pt.order_id = o.id AND ge.direction = 'in') AS gate_entry_nos,
+           (SELECT GROUP_CONCAT(ge.gate_entry_no, ', ') FROM gate_entries ge JOIN ${ALLOC} a ON a.tanker_id = ge.tanker_id
+             WHERE a.order_id = o.id AND ge.direction = 'in') AS gate_entry_nos,
            -- The lab readings, as two counts: how many of this invoice's tankers
            -- have been emptied, and how many of those carry a reading. The
            -- register draws one glyph from the pair \u2014 green when they match,
            -- amber when they do not \u2014 without loading a single value.
-           (SELECT COUNT(*) FROM purchase_tankers pt
-             WHERE pt.order_id = o.id AND pt.status = 'empty') AS empty_tankers,
-           (SELECT COUNT(*) FROM purchase_tankers pt
-             WHERE pt.order_id = o.id AND pt.status = 'empty'
+           (SELECT COUNT(*) FROM ${ALLOC} a JOIN purchase_tankers pt ON pt.id = a.tanker_id
+             WHERE a.order_id = o.id AND pt.status = 'empty') AS empty_tankers,
+           (SELECT COUNT(*) FROM ${ALLOC} a JOIN purchase_tankers pt ON pt.id = a.tanker_id
+             WHERE a.order_id = o.id AND pt.status = 'empty'
                AND EXISTS (SELECT 1 FROM tanker_quality tq
                             WHERE tq.tanker_id = pt.id AND TRIM(COALESCE(tq.value, '')) <> '')) AS quality_tankers,
            (SELECT COUNT(*) FROM order_quality oq
@@ -12020,18 +12053,19 @@ async function listOrders(forModule) {
            -- Shortage rolled up from the tankers. The order's own
            -- actual_shortage_qty columns are only written on the tanker-less
            -- receipt path, so a tanker purchase showed nothing at all.
-           (SELECT COALESCE(SUM(MAX(0, pt.loaded_qty - pt.received_qty)), 0)
-              FROM purchase_tankers pt
-             WHERE pt.order_id = o.id AND pt.status = 'empty' AND pt.received_qty IS NOT NULL) AS tanker_shortage_qty,
+           -- A shared tanker gives each invoice its share (see tankerAlloc.ts).
+           (SELECT COALESCE(SUM(MAX(0, pt.loaded_qty - pt.received_qty) * CASE WHEN pt.loaded_qty > 0 THEN MIN(1.0, a.qty / pt.loaded_qty) ELSE 1.0 END), 0)
+              FROM ${ALLOC} a JOIN purchase_tankers pt ON pt.id = a.tanker_id
+             WHERE a.order_id = o.id AND pt.status = 'empty' AND pt.received_qty IS NOT NULL) AS tanker_shortage_qty,
            -- Already recovered by docking the transporter's freight, so the part
            -- still open is what a debit note would be raised for.
-           (SELECT COALESCE(SUM(pt.shortage_charge_amount), 0)
-              FROM purchase_tankers pt WHERE pt.order_id = o.id) AS tanker_shortage_charged,
+           (SELECT COALESCE(SUM(pt.shortage_charge_amount * CASE WHEN pt.loaded_qty > 0 THEN MIN(1.0, a.qty / pt.loaded_qty) ELSE 1.0 END), 0)
+              FROM ${ALLOC} a JOIN purchase_tankers pt ON pt.id = a.tanker_id WHERE a.order_id = o.id) AS tanker_shortage_charged,
            -- Freight earned on this invoice, before the shortage deduction.
-           (SELECT COALESCE(SUM(pt.transport_amount), 0)
-              FROM purchase_tankers pt WHERE pt.order_id = o.id) AS tanker_freight_total,
-           (SELECT COUNT(*) FROM purchase_tankers pt
-             WHERE pt.order_id = o.id AND pt.status = 'empty' AND pt.received_qty IS NOT NULL) AS tanker_weighed_count,
+           (SELECT COALESCE(SUM(pt.transport_amount * CASE WHEN pt.loaded_qty > 0 THEN MIN(1.0, a.qty / pt.loaded_qty) ELSE 1.0 END), 0)
+              FROM ${ALLOC} a JOIN purchase_tankers pt ON pt.id = a.tanker_id WHERE a.order_id = o.id) AS tanker_freight_total,
+           (SELECT COUNT(*) FROM ${ALLOC} a JOIN purchase_tankers pt ON pt.id = a.tanker_id
+             WHERE a.order_id = o.id AND pt.status = 'empty' AND pt.received_qty IS NOT NULL) AS tanker_weighed_count,
            -- How this purchase is being funded, if through an LC. A purchase is
            -- tagged by issuing a bill under an LC against it, so the LC comes
            -- back through lc_issuances rather than sitting on the order itself.
@@ -12092,9 +12126,10 @@ async function purchaseBargainNotes(orderId) {
   }
   return bargains.map((b) => ({ ...b, adjustments: byBargain.get(n12(b.id)) || [] }));
 }
-async function bargainLinesForTankers(tankerIds) {
+async function bargainLinesForTankers(tankerIds, opts = {}) {
   const ids = (Array.isArray(tankerIds) ? tankerIds : []).map((x) => n12(x)).filter((x) => x > 0);
   if (ids.length === 0) return [];
+  const share = await tankerShares(ids, opts);
   const res = await getClient().execute({
     // THE RATE THE TANKER WAS BILLED AT, falling back to its bargain'''s only
     // for a tanker that predates the frozen column. Reading the live bargain
@@ -12122,10 +12157,54 @@ async function bargainLinesForTankers(tankerIds) {
   for (const r of toPlain14(res)) {
     const loaded = n12(r.loaded_qty);
     const extra = r.extra_bargain_id ? n12(r.extra_qty) : 0;
-    add(r.bargain_id, n12(r.rate), loaded - extra);
-    if (extra > 0) add(r.extra_bargain_id, n12(r.extra_rate), extra);
+    const f = loaded > 0 ? Math.min(1, (share.get(n12(r.id)) ?? loaded) / loaded) : 1;
+    add(r.bargain_id, n12(r.rate), (loaded - extra) * f);
+    if (extra > 0) add(r.extra_bargain_id, n12(r.extra_rate), extra * f);
   }
   return Array.from(m.values());
+}
+async function tankerShares(ids, opts) {
+  const out = /* @__PURE__ */ new Map();
+  const typed = opts.qtys && typeof opts.qtys === "object" ? opts.qtys : {};
+  for (const id of ids) if (n12(typed[String(id)]) > 0) out.set(id, round32(n12(typed[String(id)])));
+  const rest = ids.filter((id) => !out.has(id));
+  if (rest.length && n12(opts.orderId)) {
+    await ensureTankerInvoices();
+    const r = await getClient().execute({
+      sql: `SELECT tanker_id, qty FROM ${ALLOC} a WHERE a.order_id = ? AND a.tanker_id IN (${rest.map(() => "?").join(",")})`,
+      args: [n12(opts.orderId), ...rest]
+    });
+    for (const x of toPlain14(r)) out.set(n12(x.tanker_id), n12(x.qty));
+  }
+  return out;
+}
+async function unlinkOrderTankers(orderId) {
+  await ensureTankerInvoices();
+  const c = getClient();
+  const touched = /* @__PURE__ */ new Set([
+    ...toPlain14(await c.execute({ sql: "SELECT id FROM purchase_tankers WHERE order_id = ?", args: [orderId] })).map((r) => n12(r.id)),
+    ...toPlain14(await c.execute({ sql: "SELECT tanker_id FROM tanker_invoices WHERE order_id = ?", args: [orderId] })).map((r) => n12(r.tanker_id))
+  ]);
+  await c.execute({ sql: "DELETE FROM tanker_invoices WHERE order_id = ?", args: [orderId] });
+  const freed = [];
+  for (const tid of touched) {
+    const t = toPlain14(await c.execute({ sql: "SELECT order_id, loaded_qty FROM purchase_tankers WHERE id = ?", args: [tid] }))[0];
+    if (!t) continue;
+    const rows2 = toPlain14(await c.execute({ sql: "SELECT order_id, qty FROM tanker_invoices WHERE tanker_id = ? ORDER BY id", args: [tid] }));
+    if (!rows2.length) {
+      if (n12(t.order_id) === orderId) {
+        await c.execute({ sql: "UPDATE purchase_tankers SET order_id = NULL WHERE id = ?", args: [tid] });
+        freed.push(tid);
+      }
+      continue;
+    }
+    const primary = rows2.some((r) => n12(r.order_id) === n12(t.order_id)) ? n12(t.order_id) : n12(rows2[0].order_id);
+    await c.execute({ sql: "UPDATE purchase_tankers SET order_id = ? WHERE id = ?", args: [primary, tid] });
+    if (rows2.length === 1 && Math.abs(n12(rows2[0].qty) - n12(t.loaded_qty)) < 1e-3) {
+      await c.execute({ sql: "DELETE FROM tanker_invoices WHERE tanker_id = ?", args: [tid] });
+    }
+  }
+  return freed;
 }
 function applyBargainInterestOverrides(lines, overrides) {
   const list2 = Array.isArray(overrides) ? overrides : [];
@@ -12283,7 +12362,7 @@ async function createOrder(v) {
     }
     const prior = await supplierFyTaxable(n12(v.supplier_id), String(v.order_date), 0);
     const roundOff = n12(v.round_off);
-    const bargainLines = obPriced.lines.length ? obPriced.lines : lotAlloc.lines.length ? lotAlloc.lines.map((l) => ({ rate: l.rate, qty: l.qty, bargainId: l.bargain_id })) : await bargainLinesForTankers(v.tanker_ids);
+    const bargainLines = obPriced.lines.length ? obPriced.lines : lotAlloc.lines.length ? lotAlloc.lines.map((l) => ({ rate: l.rate, qty: l.qty, bargainId: l.bargain_id })) : await bargainLinesForTankers(v.tanker_ids, { qtys: v.tanker_qtys });
     const pricedLines = applyBargainInterestOverrides(bargainLines, v.bargain_interest);
     const m = computeMoney({
       orderedQty: n12(v.ordered_qty),
@@ -12384,7 +12463,7 @@ async function createOrder(v) {
         await autoAssignConsignmentLots(id, n12(v.supplier_id), n12(v.oil_type_id), n12(v.ordered_qty), n12(v.bargain_id), bookInCompany);
       }
     } else {
-      await assignTankers(id, v.tanker_ids, n12(v.bargain_id), n12(v.transporter_id), bookInCompany, billSiblings(v));
+      await assignTankers(id, v.tanker_ids, n12(v.bargain_id), n12(v.transporter_id), bookInCompany, billSiblings(v), v.tanker_qtys);
       await applySupplierFreight(id, v);
     }
     await saveOrderBargainInterest(id, v.bargain_interest);
@@ -12570,7 +12649,7 @@ async function updateOrder(id, v) {
     }
     const prior = await supplierFyTaxable(n12(v.supplier_id), String(v.order_date), id);
     const roundOff = n12(v.round_off);
-    const bargainLines = obPriced.lines.length ? obPriced.lines : lotAlloc.lines.length ? lotAlloc.lines.map((l) => ({ rate: l.rate, qty: l.qty, bargainId: l.bargain_id })) : await bargainLinesForTankers(v.tanker_ids);
+    const bargainLines = obPriced.lines.length ? obPriced.lines : lotAlloc.lines.length ? lotAlloc.lines.map((l) => ({ rate: l.rate, qty: l.qty, bargainId: l.bargain_id })) : await bargainLinesForTankers(v.tanker_ids, { qtys: v.tanker_qtys, orderId: id });
     const pricedLines = applyBargainInterestOverrides(bargainLines, v.bargain_interest);
     const m = computeMoney({
       orderedQty: n12(v.ordered_qty),
@@ -12666,12 +12745,12 @@ async function updateOrder(id, v) {
         );
       }
     } else {
-      await getClient().execute({ sql: "UPDATE purchase_tankers SET order_id = NULL WHERE order_id = ?", args: [id] });
+      await unlinkOrderTankers(id);
       const moveTo = v.company_id ? n12(v.company_id) : 0;
       if (moveTo) {
         await getClient().execute({ sql: "UPDATE orders SET company_id = ? WHERE id = ?", args: [moveTo, id] });
       }
-      await assignTankers(id, v.tanker_ids, n12(v.bargain_id), n12(v.transporter_id), moveTo, billSiblings(v));
+      await assignTankers(id, v.tanker_ids, n12(v.bargain_id), n12(v.transporter_id), moveTo, billSiblings(v), v.tanker_qtys);
       await applySupplierFreight(id, v);
     }
     await setSupplierPayable(id, n12(v.supplier_id), m.net_amount, String(v.order_date));
@@ -12740,8 +12819,9 @@ async function rerateInvoicesForBargain(bargainId, rate, orderIds) {
         sql: "UPDATE purchase_tankers SET extra_bargain_rate = ? WHERE order_id = ? AND extra_bargain_id = ?",
         args: [newRate, id, bid]
       });
+      await ensureTankerInvoices();
       const tankerIds = toPlain14(
-        await c.execute({ sql: "SELECT id FROM purchase_tankers WHERE order_id = ?", args: [id] })
+        await c.execute({ sql: `SELECT tanker_id AS id FROM ${ALLOC} a WHERE a.order_id = ?`, args: [id] })
       ).map((t) => n12(t.id));
       if (!tankerIds.length) {
         failed.push({
@@ -12754,7 +12834,7 @@ async function rerateInvoicesForBargain(bargainId, rate, orderIds) {
       const supplier = await getSupplier(n12(o.supplier_id));
       const prior = await supplierFyTaxable(n12(o.supplier_id), String(o.order_date), id);
       const lines = applyBargainInterestOverrides(
-        await bargainLinesForTankers(tankerIds),
+        await bargainLinesForTankers(tankerIds, { orderId: id }),
         await listOrderBargainInterest(id)
       );
       const blended = lines.reduce((t, l) => t + l.qty, 0) > 0 ? Math.round(lines.reduce((t, l) => t + l.rate * l.qty, 0) / lines.reduce((t, l) => t + l.qty, 0) * 100) / 100 : newRate;
@@ -12830,8 +12910,8 @@ async function repriceSplitTankerInvoices(apply = false, onlyIds) {
   const pick = onlyIds ? new Set(onlyIds.map((x) => n12(x))) : null;
   const cand = toPlain14(
     await c.execute(`SELECT o.* FROM orders o
-                      WHERE EXISTS (SELECT 1 FROM purchase_tankers pt
-                                     WHERE pt.order_id = o.id AND COALESCE(pt.extra_bargain_id, 0) > 0 AND COALESCE(pt.extra_qty, 0) > 0)
+                      WHERE EXISTS (SELECT 1 FROM ${ALLOC} a JOIN purchase_tankers pt ON pt.id = a.tanker_id
+                                     WHERE a.order_id = o.id AND COALESCE(pt.extra_bargain_id, 0) > 0 AND COALESCE(pt.extra_qty, 0) > 0)
                         AND COALESCE(o.is_trading, 0) = 0
                       ORDER BY o.order_date ASC, o.id ASC`)
   );
@@ -12840,8 +12920,9 @@ async function repriceSplitTankerInvoices(apply = false, onlyIds) {
   for (const o of cand) {
     const id = n12(o.id);
     if (pick && !pick.has(id)) continue;
-    const tankerIds = toPlain14(await c.execute({ sql: "SELECT id FROM purchase_tankers WHERE order_id = ?", args: [id] })).map((t) => n12(t.id));
-    const lines = applyBargainInterestOverrides(await bargainLinesForTankers(tankerIds), await listOrderBargainInterest(id));
+    await ensureTankerInvoices();
+    const tankerIds = toPlain14(await c.execute({ sql: `SELECT tanker_id AS id FROM ${ALLOC} a WHERE a.order_id = ?`, args: [id] })).map((t) => n12(t.id));
+    const lines = applyBargainInterestOverrides(await bargainLinesForTankers(tankerIds, { orderId: id }), await listOrderBargainInterest(id));
     const qty = lines.reduce((t, l) => t + l.qty, 0);
     if (!(qty > 0) || new Set(lines.map((l) => round223(l.rate))).size < 2) continue;
     const supplier = await getSupplier(n12(o.supplier_id));
@@ -13057,14 +13138,28 @@ async function deleteOrder(id) {
     await assertOrderNotInUse(id);
     await deleteJournalByRef("order_id", id);
     await c.execute({ sql: "DELETE FROM supplier_ledger WHERE order_id = ?", args: [id] });
+    const own = toPlain14(await c.execute({ sql: "SELECT id, tanker_no FROM purchase_tankers WHERE order_id = ?", args: [id] }));
+    const freed = await unlinkOrderTankers(id);
+    for (const t of own) {
+      if (freed.includes(n12(t.id))) continue;
+      await c.execute({
+        sql: `UPDATE transporter_ledger
+               SET order_id = (SELECT order_id FROM purchase_tankers WHERE id = ?),
+                   company_id = (SELECT o.company_id FROM orders o JOIN purchase_tankers pt ON pt.order_id = o.id WHERE pt.id = ?)
+             WHERE order_id = ? AND note LIKE ?`,
+        args: [n12(t.id), n12(t.id), id, `Tanker ${String(t.tanker_no)}:%`]
+      });
+    }
     await c.execute({ sql: "DELETE FROM transporter_ledger WHERE order_id = ?", args: [id] });
-    await c.execute({
-      sql: `UPDATE purchase_tankers
-          SET order_id = NULL, status = 'loaded', transit_date = NULL, outside_factory_date = NULL,
-              inside_factory_date = NULL, empty_date = NULL, received_qty = NULL
-          WHERE order_id = ?`,
-      args: [id]
-    });
+    for (const tid of freed) {
+      await c.execute({
+        sql: `UPDATE purchase_tankers
+            SET order_id = NULL, status = 'loaded', transit_date = NULL, outside_factory_date = NULL,
+                inside_factory_date = NULL, empty_date = NULL, received_qty = NULL
+            WHERE id = ?`,
+        args: [tid]
+      });
+    }
     await releaseConsignmentLots(id);
     await c.execute({ sql: "DELETE FROM order_bargains WHERE order_id = ?", args: [id] });
     await c.execute({ sql: "DELETE FROM order_bargain_interest WHERE order_id = ?", args: [id] });
@@ -13072,23 +13167,51 @@ async function deleteOrder(id) {
     return { id };
   });
 }
-async function assignTankers(orderId, tankerIds, bargainId, transporterId, companyId = 0, siblingIds = []) {
+async function assignTankers(orderId, tankerIds, bargainId, transporterId, companyId = 0, siblingIds = [], tankerQtys) {
   const ids = Array.isArray(tankerIds) ? tankerIds.map(Number).filter((x) => x > 0) : [];
   if (!ids.length) throw new Error("Select at least one loaded tanker");
   const c = getClient();
+  await ensureTankerInvoices();
+  const typed = tankerQtys && typeof tankerQtys === "object" ? tankerQtys : {};
+  const mine = /* @__PURE__ */ new Set([orderId, ...siblingIds]);
   for (const tankerId of ids) {
     const res = await c.execute({
-      sql: "SELECT order_id, bargain_id FROM purchase_tankers WHERE id = ?",
+      sql: "SELECT order_id, bargain_id, loaded_qty, tanker_no FROM purchase_tankers WHERE id = ?",
       args: [tankerId]
     });
     if (!res.rows.length) throw new Error("A selected tanker no longer exists");
     const row = res.rows[0];
-    if (row.order_id != null && Number(row.order_id) !== orderId && !siblingIds.includes(Number(row.order_id))) {
-      throw new Error("A selected tanker is already attached to another purchase");
-    }
     if (Number(row.bargain_id) !== bargainId) {
       throw new Error("All tankers on one purchase must belong to the selected bargain");
     }
+    const loaded = round32(n12(row.loaded_qty));
+    const others = toPlain14(
+      await c.execute({ sql: `SELECT order_id, qty FROM ${ALLOC} a WHERE a.tanker_id = ?`, args: [tankerId] })
+    ).filter((a) => !mine.has(n12(a.order_id)));
+    const otherQty = round32(others.reduce((t, a) => t + n12(a.qty), 0));
+    const left = round32(loaded - otherQty);
+    const want = n12(typed[String(tankerId)]) > 0 ? round32(n12(typed[String(tankerId)])) : left;
+    if (left <= 5e-4) throw new Error(`Tanker ${String(row.tanker_no || "")} is fully booked on other invoices`);
+    if (want > left + 1e-3) {
+      throw new Error(`Only ${left} of tanker ${String(row.tanker_no || "")} is left to book \u2014 the rest is on another invoice`);
+    }
+    await c.execute({
+      sql: `DELETE FROM tanker_invoices WHERE tanker_id = ? AND order_id IN (${[...mine].map(() => "?").join(",")})`,
+      args: [tankerId, ...mine]
+    });
+    const whole = !others.length && Math.abs(want - loaded) < 1e-3;
+    if (!whole) {
+      if (row.order_id != null && !mine.has(Number(row.order_id))) {
+        const has = await c.execute({ sql: "SELECT 1 FROM tanker_invoices WHERE tanker_id = ? AND order_id = ?", args: [tankerId, Number(row.order_id)] });
+        if (!has.rows.length) {
+          await c.execute({ sql: "INSERT INTO tanker_invoices (tanker_id, order_id, qty) VALUES (?, ?, ?)", args: [tankerId, Number(row.order_id), otherQty] });
+        }
+      }
+      await c.execute({ sql: "INSERT INTO tanker_invoices (tanker_id, order_id, qty) VALUES (?, ?, ?)", args: [tankerId, orderId, want] });
+    } else {
+      await c.execute({ sql: "DELETE FROM tanker_invoices WHERE tanker_id = ?", args: [tankerId] });
+    }
+    const primary = row.order_id != null && !mine.has(Number(row.order_id)) ? Number(row.order_id) : orderId;
     await c.execute({
       // A tanker belongs to whichever company its invoice was booked in, so a
       // clerical mix-up is corrected by re-billing rather than by editing rows.
@@ -13106,9 +13229,16 @@ async function assignTankers(orderId, tankerIds, bargainId, transporterId, compa
               ELSE COALESCE(extra_bargain_rate,
                 (SELECT b.rate_per_uom FROM bargains b WHERE b.id = purchase_tankers.extra_bargain_id)) END
             WHERE id = ?`,
-      args: [orderId, companyId, companyId, transporterId, transporterId, tankerId]
+      args: [primary, companyId, companyId, transporterId, transporterId, tankerId]
     });
   }
+  const shared = toPlain14(
+    await c.execute({
+      sql: `SELECT DISTINCT tanker_id FROM tanker_invoices WHERE tanker_id IN (${ids.map(() => "?").join(",")})`,
+      args: ids
+    })
+  );
+  for (const r of shared) await syncTankerOrders(n12(r.tanker_id));
 }
 async function listPurchaseTankers(allCompanies = false, forModule) {
   const from = await visibleFromFor("orders", forModule);
@@ -13117,6 +13247,11 @@ async function listPurchaseTankers(allCompanies = false, forModule) {
     args: from ? [...base, from] : base,
     sql: `
     SELECT pt.*, o.invoice_no, o.order_date AS invoice_date, o.company_id AS invoice_company_id,
+           -- ONE TANKER, SEVERAL INVOICES: each invoice it is on, with its
+           -- share, and how much of the load is booked so far.
+           (SELECT json_group_array(json_object('order_id', a.order_id, 'invoice_no', oa.invoice_no, 'qty', a.qty))
+              FROM ${ALLOC} a JOIN orders oa ON oa.id = a.order_id WHERE a.tanker_id = pt.id) AS invoices_json,
+           (SELECT COALESCE(SUM(a.qty), 0) FROM ${ALLOC} a WHERE a.tanker_id = pt.id) AS booked_qty,
            o.allowed_shortage_pct AS order_allowed_shortage_pct,
            b.bargain_no, b.bargain_type,
            -- pt.bargain_rate (from pt.* above) is THE RATE THIS TANKER WAS
@@ -13329,7 +13464,7 @@ async function updateTankerDetails(id, v) {
       id
     ]
   });
-  if (t.order_id) await syncPurchaseFromTankers(n12(t.order_id));
+  if (t.order_id) await syncTankerOrders(n12(t.id), t.order_id);
   return { id };
 }
 async function deletePurchaseTanker(id) {
@@ -13341,13 +13476,15 @@ async function deletePurchaseTanker(id) {
 }
 async function syncPurchaseFromTankers(orderId) {
   const c = getClient();
+  await ensureTankerInvoices();
+  const f = "CASE WHEN pt.loaded_qty > 0 THEN MIN(1.0, a.qty / pt.loaded_qty) ELSE 1.0 END";
   const res = await c.execute({
     sql: `SELECT COUNT(*) AS total,
-                 SUM(CASE WHEN status = 'empty' THEN 1 ELSE 0 END) AS empty_count,
-                 SUM(COALESCE(received_qty, 0)) AS received_qty,
-                 SUM(COALESCE(transport_amount, 0)) AS transport_amount,
-                 SUM(COALESCE(shortage_charge_amount, 0)) AS shortage_amount
-          FROM purchase_tankers WHERE order_id = ?`,
+                 SUM(CASE WHEN pt.status = 'empty' THEN 1 ELSE 0 END) AS empty_count,
+                 SUM(COALESCE(pt.received_qty, 0) * ${f}) AS received_qty,
+                 SUM(COALESCE(pt.transport_amount, 0) * ${f}) AS transport_amount,
+                 SUM(COALESCE(pt.shortage_charge_amount, 0) * ${f}) AS shortage_amount
+          FROM ${ALLOC} a JOIN purchase_tankers pt ON pt.id = a.tanker_id WHERE a.order_id = ?`,
     args: [orderId]
   });
   const x = res.rows[0];
@@ -13357,12 +13494,20 @@ async function syncPurchaseFromTankers(orderId) {
           shortage_charge_amount = ?,
           received_date = CASE WHEN ? = 'received' THEN COALESCE(
             (SELECT MAX(COALESCE(pt.empty_date, pt.inside_factory_date, pt.outside_factory_date, pt.transit_date, pt.loaded_date))
-             FROM purchase_tankers pt WHERE pt.order_id = orders.id),
+             FROM ${ALLOC} a JOIN purchase_tankers pt ON pt.id = a.tanker_id WHERE a.order_id = orders.id),
             orders.received_date, orders.order_date, date('now'))
           ELSE received_date END
           WHERE id = ?`,
-    args: [status, n12(x.received_qty), n12(x.transport_amount), n12(x.shortage_amount), status, orderId]
+    args: [status, Math.round(n12(x.received_qty) * 1e3) / 1e3, Math.round(n12(x.transport_amount) * 100) / 100, Math.round(n12(x.shortage_amount) * 100) / 100, status, orderId]
   });
+}
+async function syncTankerOrders(tankerId, primary) {
+  await ensureTankerInvoices();
+  const ids = new Set(
+    toPlain14(await getClient().execute({ sql: `SELECT DISTINCT order_id FROM ${ALLOC} a WHERE a.tanker_id = ?`, args: [n12(tankerId)] })).map((r) => n12(r.order_id))
+  );
+  if (n12(primary)) ids.add(n12(primary));
+  for (const id of ids) if (id) await syncPurchaseFromTankers(id);
 }
 async function backfillPurchaseRoundOff() {
   const c = getClient();
@@ -13531,9 +13676,8 @@ async function repairPurchaseTdsOnTaxable() {
 }
 async function backfillOrderStatuses() {
   const c = getClient();
-  const res = await c.execute(
-    "SELECT DISTINCT order_id FROM purchase_tankers WHERE order_id IS NOT NULL"
-  );
+  await ensureTankerInvoices();
+  const res = await c.execute(`SELECT DISTINCT order_id FROM ${ALLOC} a`);
   for (const r of res.rows) {
     await syncPurchaseFromTankers(n12(r.order_id)).catch(() => {
     });
@@ -13591,7 +13735,7 @@ async function revertPurchaseTanker(id) {
     sql: `UPDATE purchase_tankers SET status = ?${clear ? `, ${clear} = NULL` : ""}${String(tanker.status) === "empty" ? ", received_qty = NULL" : ""}${clearQty} WHERE id = ?`,
     args: [prev, id]
   });
-  if (tanker.order_id) await syncPurchaseFromTankers(n12(tanker.order_id)).catch(() => {
+  if (tanker.order_id) await syncTankerOrders(n12(tanker.id), tanker.order_id).catch(() => {
   });
   return { id, status: prev };
 }
@@ -13980,7 +14124,7 @@ async function advancePurchaseTanker(id, toStatus, data) {
       });
     }
   }
-  if (tanker.order_id) await syncPurchaseFromTankers(n12(tanker.order_id));
+  if (tanker.order_id) await syncTankerOrders(n12(tanker.id), tanker.order_id);
   if (toStatus === "empty") {
     const { raiseOnwardSale: raiseOnwardSale2 } = await Promise.resolve().then(() => (init_onwardSale(), onwardSale_exports));
     await raiseOnwardSale2(id, data);
@@ -14223,7 +14367,8 @@ async function orderInterestAmounts(orderIds) {
   const overrides = toPlain14(
     await c.execute({ sql: `SELECT order_id, bargain_id, additional_interest, interest_days FROM order_bargain_interest WHERE order_id IN (${ph})`, args: ids })
   );
-  const tankers = toPlain14(await c.execute({ sql: `SELECT id, order_id FROM purchase_tankers WHERE order_id IN (${ph})`, args: ids }));
+  await ensureTankerInvoices();
+  const tankers = toPlain14(await c.execute({ sql: `SELECT a.tanker_id AS id, a.order_id FROM ${ALLOC} a WHERE a.order_id IN (${ph})`, args: ids }));
   const split2 = toPlain14(
     await c.execute({
       sql: `SELECT ob.order_id, ob.bargain_id, ob.qty, b.rate_per_uom AS rate
@@ -14235,7 +14380,7 @@ async function orderInterestAmounts(orderIds) {
     const id = n12(o.id);
     let lines = [];
     const tIds = tankers.filter((t) => n12(t.order_id) === id).map((t) => n12(t.id));
-    if (tIds.length) lines = await bargainLinesForTankers(tIds);
+    if (tIds.length) lines = await bargainLinesForTankers(tIds, { orderId: id });
     if (!lines.length) {
       lines = split2.filter((s5) => n12(s5.order_id) === id).map((s5) => ({ rate: n12(s5.rate), qty: n12(s5.qty), bargainId: n12(s5.bargain_id) }));
     }
@@ -14261,10 +14406,11 @@ async function orderInterestAmounts(orderIds) {
   }
   return out;
 }
-var STAGES, TANKER_STAGES, GATE_MATCH_BUFFER, STAGE_DATE_FIELDS, billSeq;
+var STAGES, TANKER_STAGES, GATE_MATCH_BUFFER, STAGE_DATE_FIELDS, round32, billSeq;
 var init_orders = __esm({
   "src/main/orders.ts"() {
     init_dbTransaction();
+    init_tankerAlloc();
     init_db();
     init_repos();
     init_gate();
@@ -14294,6 +14440,7 @@ var init_orders = __esm({
       ["inside_factory_date", "Inside factory date"],
       ["empty_date", "Receipt (empty) date"]
     ];
+    round32 = (v) => Math.round(v * 1e3) / 1e3;
     billSeq = 0;
   }
 });
@@ -22228,9 +22375,9 @@ async function billsOutstanding(accountName, companyId, opts = {}) {
   if (orderIds.length) {
     const er = await c.execute({
       sql: `SELECT o.id, o.status, o.received_date,
-                   (SELECT COUNT(*) FROM purchase_tankers pt WHERE pt.order_id = o.id) AS tk,
-                   (SELECT COUNT(*) FROM purchase_tankers pt WHERE pt.order_id = o.id AND COALESCE(pt.empty_date, '') != '') AS tk_empty,
-                   (SELECT MAX(pt.empty_date) FROM purchase_tankers pt WHERE pt.order_id = o.id AND COALESCE(pt.empty_date, '') != '') AS last_empty
+                   (SELECT COUNT(*) FROM ${ALLOC} a JOIN purchase_tankers pt ON pt.id = a.tanker_id WHERE a.order_id = o.id) AS tk,
+                   (SELECT COUNT(*) FROM ${ALLOC} a JOIN purchase_tankers pt ON pt.id = a.tanker_id WHERE a.order_id = o.id AND COALESCE(pt.empty_date, '') != '') AS tk_empty,
+                   (SELECT MAX(pt.empty_date) FROM ${ALLOC} a JOIN purchase_tankers pt ON pt.id = a.tanker_id WHERE a.order_id = o.id AND COALESCE(pt.empty_date, '') != '') AS last_empty
               FROM orders o WHERE o.id IN (${orderIds.map(() => "?").join(", ")})`,
       args: orderIds
     });
@@ -22343,6 +22490,7 @@ var round29, todayISO6, TALLY_GROUPS;
 var init_accounting = __esm({
   "src/main/accounting.ts"() {
     init_dbTransaction();
+    init_tankerAlloc();
     init_db();
     init_company();
     init_openings();
@@ -26117,7 +26265,7 @@ async function stockFifoMap(v) {
   const purchases = (await c.execute({
     sql: `SELECT * FROM (
               SELECT o.id, 'purchase' AS kind, o.invoice_no,
-                     COALESCE(NULLIF(TRIM(o.tanker_no), ''), (SELECT GROUP_CONCAT(pt.tanker_no, ', ') FROM purchase_tankers pt WHERE pt.order_id = o.id),
+                     COALESCE(NULLIF(TRIM(o.tanker_no), ''), (SELECT GROUP_CONCAT(pt.tanker_no, ', ') FROM ${ALLOC} a JOIN purchase_tankers pt ON pt.id = a.tanker_id WHERE a.order_id = o.id),
                               (SELECT GROUP_CONCAT(cs.tanker_no, ', ') FROM consignment_stock cs WHERE cs.order_id = o.id AND cs.tanker_no IS NOT NULL)) AS tanker_no,
                      COALESCE(o.is_consignment, 0) AS consignment,
                      o.received_qty AS qty,
@@ -26154,8 +26302,10 @@ async function stockFifoMap(v) {
   const oids = purchases.map((r) => n50(r.id));
   const oph = oids.map(() => "?").join(", ");
   const tankerRows = oids.length ? (await c.execute({
-    sql: `SELECT order_id, id, tanker_no, COALESCE(NULLIF(received_qty, 0), loaded_qty) AS q, COALESCE(empty_date, '') AS td, 'pt' AS src
-                    FROM purchase_tankers WHERE order_id IN (${oph})
+    sql: `SELECT a.order_id, pt.id, pt.tanker_no,
+                         COALESCE(NULLIF(pt.received_qty, 0), pt.loaded_qty) * CASE WHEN pt.loaded_qty > 0 THEN MIN(1.0, a.qty / pt.loaded_qty) ELSE 1.0 END AS q,
+                         COALESCE(pt.empty_date, '') AS td, 'pt' AS src
+                    FROM ${ALLOC} a JOIN purchase_tankers pt ON pt.id = a.tanker_id WHERE a.order_id IN (${oph})
                   UNION ALL
                   SELECT order_id, id, tanker_no, qty AS q, COALESCE(deposit_date, '') AS td, 'cs' AS src
                     FROM consignment_stock WHERE order_id IN (${oph})`,
@@ -26280,6 +26430,7 @@ var n50, r35, r24;
 var init_stockFifo = __esm({
   "src/main/stockFifo.ts"() {
     init_db();
+    init_tankerAlloc();
     init_company();
     n50 = (v) => Number.isFinite(Number(v)) ? Number(v) : 0;
     r35 = (v) => Math.round(v * 1e3) / 1e3;
@@ -26304,6 +26455,7 @@ init_db();
 
 // src/main/bootstrap.ts
 init_ppTrace();
+init_tankerAlloc();
 init_db();
 init_ledgerGroups();
 
@@ -27897,6 +28049,7 @@ function startPushWatcher(intervalMs = 2e4) {
 init_accountingRepairs();
 async function runStartupTasks() {
   await initDb();
+  await ensureTankerInvoices().catch((e) => console.error("[tankers] tanker_invoices table failed:", e));
   await ensureBdPostingFields();
   await ensureVoucherNumbers();
   await runOnce("ledger_map_renames_sitewide_v1", async () => {
@@ -30037,6 +30190,7 @@ init_bargains();
 init_orders();
 
 // src/main/unmapped.ts
+init_tankerAlloc();
 init_db();
 init_company();
 init_bargains();
@@ -30050,9 +30204,9 @@ function toPlain23(res) {
 var n29 = (v) => Number(v) || 0;
 var EPS = 1e-3;
 var COVERED = `
-  COALESCE((SELECT SUM(pt.loaded_qty) FROM purchase_tankers pt
+  COALESCE((SELECT SUM(a.qty) FROM ${ALLOC} a JOIN purchase_tankers pt ON pt.id = a.tanker_id
             JOIN bargains b2 ON b2.id = pt.bargain_id
-            WHERE pt.order_id = o.id), 0)`;
+            WHERE a.order_id = o.id), 0)`;
 var UNMAPPED_WHERE = `
   COALESCE(o.is_trading, 0) = 0 AND
   CASE WHEN o.is_consignment = 1 THEN
