@@ -24305,7 +24305,31 @@ async function reconcile(v) {
           best = m;
         }
       }
-      if (!best) continue;
+      let short = 0;
+      if (!best) {
+        const mainIdx = cands.findIndex((t) => {
+          const d = top(t.lines, "dr");
+          return !!d && kin(d, bDr) && Math.abs(d.dr - bDr.dr) <= Math.max(1, tol);
+        });
+        if (mainIdx < 0) continue;
+        const remain = b.total - cands[mainIdx].total;
+        const others = cands.map((_, i) => i).filter((i) => i !== mainIdx && daysApart2(cands[i].date, cands[mainIdx].date) <= 1);
+        let pick = [];
+        let gapBest = remain;
+        const tryPick = (idx) => {
+          const s22 = idx.reduce((t, i) => t + cands[i].total, 0);
+          if (s22 > remain + Math.max(1, tol)) return;
+          if (Math.abs(remain - s22) < gapBest) {
+            gapBest = Math.abs(remain - s22);
+            pick = idx;
+          }
+        };
+        for (const i of others) tryPick([i]);
+        for (let x = 0; x < others.length; x++) for (let y = x + 1; y < others.length; y++) tryPick([others[x], others[y]]);
+        best = 1 << mainIdx | pick.reduce((m, i) => m | 1 << i, 0);
+        short = Math.round((remain - pick.reduce((t, i) => t + cands[i].total, 0)) * 100) / 100;
+        if (short > b.total * 0.05) continue;
+      }
       const parts0 = cands.filter((_, i) => best & 1 << i);
       if (parts0.length === 1) {
         const tDr = top(parts0[0].lines, "dr");
@@ -24313,7 +24337,7 @@ async function reconcile(v) {
       }
       used.add(b.id);
       const parts = cands.filter((_, i) => best & 1 << i);
-      const of = { id: b.id, code: b.code, vch_no: b.vch_no, total: b.total, date: b.date, parts: parts.length, one_day: new Set(parts.map((t) => t.date)).size === 1 };
+      const of = { id: b.id, code: b.code, vch_no: b.vch_no, total: b.total, date: b.date, parts: parts.length, one_day: new Set(parts.map((t) => t.date)).size === 1, short };
       for (const t of parts) {
         partTaken.add(t.key);
         const copy = byNumber.get(t.key);
@@ -24454,6 +24478,11 @@ function explain(rows2, kind) {
           `${String(b?.code || "This voucher")} was booked from Tally, but ${ofName} \u2014 posted by its own document \u2014 already carries it: ${n25(of.parts) > 1 ? `Tally's ${n25(of.parts)} journals together make its ${inr4(n25(of.total))}` : `the same ${inr4(n25(of.total))} on ${dmy(String(of.date))}`}. The same money is in these books twice.`
         );
         fix = `Reverse ${String(b?.code || "this copy")} (booked from Tally). ${String(of.code || "The document voucher")} stays, and stands for Tally's No. ${String(t.vch_no)} on the next check.`;
+      }
+      if (n25(of.short) > 1) {
+        say2.push(
+          `Tally's journal${n25(of.parts) > 1 ? "s" : ""} for ${ofName} come to ${inr4(n25(of.short))} less than its ${inr4(n25(of.total))} \u2014 usually the interest, entered in Tally for a different figure or not entered yet. Correct it in Tally.`
+        );
       }
     }
     r.explain = say2;
