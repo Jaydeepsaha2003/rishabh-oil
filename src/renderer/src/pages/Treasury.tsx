@@ -2648,111 +2648,200 @@ function TreasuryDesk({ onCompanyChange, focusLcId, focusBdId, onFocusHandled }:
   function lcExpanded(l: Row): React.JSX.Element {
     const kids = issuances[Number(l.id)] || []
     const reps = repayments[Number(l.id)] || []
+    const th = 'px-4 py-2 text-[9.5px] font-extrabold uppercase tracking-[.1em] text-[#5A6B62]'
+    const td = 'px-4 py-2.5 align-middle'
+    // Small, quiet actions on a row; the destructive one only turns red on hover.
+    const rowBtn = 'inline-flex h-8 items-center gap-1.5 rounded-[4px] border border-[#D6E2D6] bg-white px-2.5 text-[11.5px] font-bold text-[#33473E] hover:bg-[#EAF0E9]'
+    const rowDel = 'inline-flex h-8 w-8 items-center justify-center rounded-[4px] text-[#8CA396] hover:bg-[#FDF3F2] hover:text-[#B3261E]'
     return (
-      <div className="space-y-3 px-4 py-3 sm:px-8">
+      <div className="space-y-3.5 px-4 py-3 sm:px-8">
         {kids.length > 0 && (
-          <div>
-            <div className="mb-1 text-[10px] font-bold uppercase tracking-widest text-muted-foreground">Bills under this LC</div>
-            <table className="w-full rounded-lg border bg-card text-[12px] [&_td]:px-3 [&_td]:py-1.5 [&_th]:px-3 [&_th]:py-1.5">
-              <thead className="border-b bg-muted/50 text-left text-[10px] uppercase tracking-wide text-muted-foreground">
-                <tr>
-                  <th>Bill / invoice</th><th>Issued</th><th>Due</th><th className="text-right">Amount</th><th>Status</th><th className="text-right">Actions</th>
-                </tr>
-              </thead>
-              <tbody>
-                {kids.map((b) => (
-                  <tr key={String(b.id)} className="border-b last:border-0">
-                    <td className="font-medium">
-                      {b.bill_no || b.invoice_no || '—'}
-                      {/* An LC opened without a linked purchase invoice auto-issues
-                          one bill for its whole net available, named after the LC
-                          itself — say so, or the row just looks like the LC number
-                          repeated back. */}
-                      {!b.order_id && (
-                        <div className="text-[10px] font-normal text-muted-foreground">Full limit — no purchase invoice linked</div>
-                      )}
-                    </td>
-                    <td className="tabular-nums">{formatDate(b.issue_date)}</td>
-                    <td><span className="mr-1.5 tabular-nums">{formatDate(b.due_date)}</span>{String(b.status) !== 'settled' && <DueBadge date={b.due_date} />}</td>
-                    <td className="text-right font-medium tabular-nums">{formatINR(b.amount)}</td>
-                    <td>
-                      {String(b.status) === 'settled'
-                        ? <Badge variant="success">Settled {formatDate(b.settled_date)}</Badge>
-                        : <Badge variant="warning">Outstanding</Badge>}
-                    </td>
-                    <td className="text-right">
-                      <div className="flex justify-end gap-1">
-                        {String(b.status) === 'settled' ? (
-                          <Button size="sm" variant="ghost" className="h-6 px-1.5 text-[11px]" onClick={async () => { await window.api.treasury.reopenLcBill(Number(b.id)); await reloadLcDetail(Number(l.id)); load() }}>
-                            <RotateCcw className="h-3 w-3" /> Reopen
-                          </Button>
-                        ) : (
-                          <Button size="sm" variant="outline" className="h-6 px-1.5 text-[11px] text-emerald-700" onClick={async () => { try { await window.api.treasury.settleLcBill(Number(b.id)); toast.success('Bill settled — supplier paid through the books'); await reloadLcDetail(Number(l.id)); load() } catch (e) { toast.error((e as Error).message) } }}>
-                            <Check className="h-3 w-3" /> Settle
-                          </Button>
-                        )}
-                        <Button size="icon" variant="ghost" className="h-6 w-6 text-destructive" onClick={async () => { if (confirm('Delete this bill?')) { await window.api.lc.removeIssuance(Number(b.id)); await reloadLcDetail(Number(l.id)); load() } }}>
-                          <Trash2 className="h-3 w-3" />
-                        </Button>
-                      </div>
-                    </td>
+          <LcPanel
+            title={`Bills under this LC · ${kids.length}`}
+            right={
+              <span className="text-[11.5px] font-bold tabular-nums text-[#33473E]">
+                {formatINR(kids.reduce((t, b) => t + n(b.amount), 0))}
+                <span className="ml-2 font-semibold text-[#5A6B62]">
+                  {kids.filter((b) => String(b.status) === 'settled').length} settled
+                </span>
+              </span>
+            }
+          >
+            <div className="overflow-x-auto">
+              <table className="w-full border-collapse text-[12.5px]">
+                <thead>
+                  <tr className="border-b border-[#E4ECE3] text-left">
+                    <th className={th}>Bill / invoice</th>
+                    <th className={th}>Issued</th>
+                    <th className={th}>Due</th>
+                    <th className={cn(th, 'text-right')}>Amount</th>
+                    <th className={th}>Status</th>
+                    <th className={cn(th, 'text-right')}>Actions</th>
                   </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+                </thead>
+                <tbody>
+                  {kids.map((b) => {
+                    const settled = String(b.status) === 'settled'
+                    return (
+                      <tr key={String(b.id)} className="border-b border-[#F0F4EF] last:border-0 hover:bg-[#FBFDFA]">
+                        <td className={td}>
+                          <div className="font-bold text-[#0A1F17]">{b.bill_no || b.invoice_no || (b.order_id ? '—' : 'Full limit')}</div>
+                          {/* An LC opened without a linked purchase invoice
+                              auto-issues one bill for its whole net available —
+                              say so, or the row reads as the LC repeated back. */}
+                          {!b.order_id && <div className="mt-0.5 text-[10.5px] font-semibold text-[#8CA396]">no purchase invoice linked</div>}
+                        </td>
+                        <td className={cn(td, 'tabular-nums')}>{formatDate(b.issue_date)}</td>
+                        <td className={td}>
+                          <span className="tabular-nums">{formatDate(b.due_date)}</span>
+                          {!settled && (
+                            <span className="ml-1.5">
+                              <DueBadge date={b.due_date} />
+                            </span>
+                          )}
+                        </td>
+                        <td className={cn(td, 'text-right font-bold tabular-nums text-[#0A1F17]')}>{formatINR(b.amount)}</td>
+                        <td className={td}>
+                          {settled ? (
+                            <span className="inline-flex items-center gap-1 rounded-[2px] bg-[#E3F4EA] px-2 py-[3px] text-[11px] font-extrabold text-[#0B6B45]">
+                              <Check className="h-3 w-3" /> Settled {formatDateShort(b.settled_date)}
+                            </span>
+                          ) : (
+                            <span className="inline-flex items-center rounded-[2px] bg-[#FFF1D6] px-2 py-[3px] text-[11px] font-extrabold text-[#8A5300]">Outstanding</span>
+                          )}
+                        </td>
+                        <td className={cn(td, 'text-right')}>
+                          <div className="flex justify-end gap-1.5">
+                            {settled ? (
+                              <button
+                                type="button"
+                                className={rowBtn}
+                                title="Undo the settlement — the bill goes back to outstanding"
+                                onClick={async () => {
+                                  await window.api.treasury.reopenLcBill(Number(b.id))
+                                  await reloadLcDetail(Number(l.id))
+                                  load()
+                                }}
+                              >
+                                <RotateCcw className="h-3.5 w-3.5" /> Reopen
+                              </button>
+                            ) : (
+                              <button
+                                type="button"
+                                className={cn(rowBtn, '!border-[#BFE3CB] !bg-[#F4FBF6] !text-[#0B6B45]')}
+                                onClick={async () => {
+                                  try {
+                                    await window.api.treasury.settleLcBill(Number(b.id))
+                                    toast.success('Bill settled — supplier paid through the books')
+                                    await reloadLcDetail(Number(l.id))
+                                    load()
+                                  } catch (e) {
+                                    toast.error((e as Error).message)
+                                  }
+                                }}
+                              >
+                                <Check className="h-3.5 w-3.5" /> Settle
+                              </button>
+                            )}
+                            <button
+                              type="button"
+                              className={rowDel}
+                              title="Delete this bill"
+                              onClick={async () => {
+                                if (confirm('Delete this bill?')) {
+                                  await window.api.lc.removeIssuance(Number(b.id))
+                                  await reloadLcDetail(Number(l.id))
+                                  load()
+                                }
+                              }}
+                            >
+                              <Trash2 className="h-4 w-4" />
+                            </button>
+                          </div>
+                        </td>
+                      </tr>
+                    )
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </LcPanel>
         )}
-        <div>
-          <div className="mb-1 flex items-center gap-2 text-[10px] font-bold uppercase tracking-widest text-muted-foreground">
-            Repayments
-          </div>
+        <LcPanel title={reps.length ? `Repayments · ${reps.length}` : 'Repayments'}>
           {reps.length === 0 ? (
-            <p className="text-xs text-muted-foreground">
-              {String(l.stage || 'application') === 'payment_received'
-                ? 'No repayments logged against this LC yet.'
-                : 'Available once payment is received.'}
-            </p>
+            <div className="flex items-center gap-3 px-4 py-3.5">
+              <span className="flex h-8 w-8 flex-none items-center justify-center rounded-full bg-[#F1F5EF] text-[#8CA396]">
+                <Banknote className="h-4 w-4" />
+              </span>
+              <div className="text-[12.5px] font-semibold text-[#5A6B62]">
+                {String(l.stage || 'application') !== 'payment_received'
+                  ? 'Available once payment is received.'
+                  : isPartsLc(l)
+                    ? 'Nothing repaid to the bank yet — this LC is repaid part by part, from Repay parts below.'
+                    : 'Nothing repaid to the bank yet.'}
+              </div>
+            </div>
           ) : (
-            <table className="w-full rounded-lg border bg-card text-[12px] [&_td]:px-3 [&_td]:py-1.5 [&_th]:px-3 [&_th]:py-1.5">
-              <thead className="border-b bg-muted/50 text-left text-[10px] uppercase tracking-wide text-muted-foreground">
-                <tr>
-                  <th>Date</th><th className="text-right">Repayment</th><th className="text-right">Comm. chgs</th><th className="text-right">Bank chgs</th><th className="text-right">Total debited</th><th>Posted</th><th>Document</th><th className="text-right">Actions</th>
-                </tr>
-              </thead>
-              <tbody>
-                {reps.map((r) => (
-                  <tr key={String(r.id)} className="border-b last:border-0">
-                    <td className="tabular-nums">{formatDate(r.repay_date)}</td>
-                    <td className="text-right font-medium tabular-nums">{formatINR(r.amount)}</td>
-                    <td className="text-right tabular-nums text-muted-foreground">{n(r.comm_charges) > 0 ? formatINR(r.comm_charges) : '—'}</td>
-                    <td className="text-right tabular-nums text-muted-foreground">{n(r.bank_charges) > 0 ? formatINR(r.bank_charges) : '—'}</td>
-                    <td className="text-right font-medium tabular-nums">{formatINR(n(r.amount))}</td>
-                    <td>{n(r.posted) ? <Badge variant="success">Posted</Badge> : <Badge variant="muted">Draft</Badge>}</td>
-                    <td>
-                      {r.document_path ? (
-                        <Button size="sm" variant="ghost" className="h-6 px-1.5 text-[11px]" onClick={() => window.api.files.openDocument(String(r.document_path))}>
-                          <FileText className="h-3 w-3" /> Open
-                        </Button>
-                      ) : (
-                        <span className="text-muted-foreground">—</span>
-                      )}
-                    </td>
-                    <td className="text-right">
-                      <div className="flex justify-end gap-1">
-                        <Button size="icon" variant="ghost" className="h-6 w-6" title="Edit" onClick={() => setRepayForm({ ...r, open_amount: n(l.amount), charges: chargeRowsFrom(r), comm_charges: '', bank_charges: '' })}>
-                          <Pencil className="h-3 w-3" />
-                        </Button>
-                        <Button size="icon" variant="ghost" className="h-6 w-6 text-destructive" title="Delete" onClick={() => void removeRepayment(r)}>
-                          <Trash2 className="h-3 w-3" />
-                        </Button>
-                      </div>
-                    </td>
+            <div className="overflow-x-auto">
+              <table className="w-full border-collapse text-[12.5px]">
+                <thead>
+                  <tr className="border-b border-[#E4ECE3] text-left">
+                    <th className={th}>Date</th>
+                    <th className={cn(th, 'text-right')}>Repayment</th>
+                    <th className={cn(th, 'text-right')}>Comm. chgs</th>
+                    <th className={cn(th, 'text-right')}>Bank chgs</th>
+                    <th className={cn(th, 'text-right')}>Total debited</th>
+                    <th className={th}>Posted</th>
+                    <th className={th}>Document</th>
+                    <th className={cn(th, 'text-right')}>Actions</th>
                   </tr>
-                ))}
-              </tbody>
-            </table>
+                </thead>
+                <tbody>
+                  {reps.map((r) => (
+                    <tr key={String(r.id)} className="border-b border-[#F0F4EF] last:border-0 hover:bg-[#FBFDFA]">
+                      <td className={cn(td, 'tabular-nums')}>{formatDate(r.repay_date)}</td>
+                      <td className={cn(td, 'text-right font-bold tabular-nums')}>{formatINR(r.amount)}</td>
+                      <td className={cn(td, 'text-right tabular-nums text-[#5A6B62]')}>{n(r.comm_charges) > 0 ? formatINR(r.comm_charges) : '—'}</td>
+                      <td className={cn(td, 'text-right tabular-nums text-[#5A6B62]')}>{n(r.bank_charges) > 0 ? formatINR(r.bank_charges) : '—'}</td>
+                      <td className={cn(td, 'text-right font-bold tabular-nums')}>{formatINR(n(r.amount))}</td>
+                      <td className={td}>
+                        {n(r.posted) ? (
+                          <span className="rounded-[2px] bg-[#E3F4EA] px-2 py-[3px] text-[11px] font-extrabold text-[#0B6B45]">Posted</span>
+                        ) : (
+                          <span className="rounded-[2px] bg-[#EEF2EE] px-2 py-[3px] text-[11px] font-extrabold text-[#5A6B62]">Draft</span>
+                        )}
+                      </td>
+                      <td className={td}>
+                        {r.document_path ? (
+                          <button type="button" className={rowBtn} onClick={() => window.api.files.openDocument(String(r.document_path))}>
+                            <FileText className="h-3.5 w-3.5" /> Open
+                          </button>
+                        ) : (
+                          <span className="text-[#C3D2C6]">—</span>
+                        )}
+                      </td>
+                      <td className={cn(td, 'text-right')}>
+                        <div className="flex justify-end gap-1.5">
+                          <button
+                            type="button"
+                            className={rowBtn}
+                            title="Edit"
+                            onClick={() => setRepayForm({ ...r, open_amount: n(l.amount), charges: chargeRowsFrom(r), comm_charges: '', bank_charges: '' })}
+                          >
+                            <Pencil className="h-3.5 w-3.5" /> Edit
+                          </button>
+                          <button type="button" className={rowDel} title="Delete" onClick={() => void removeRepayment(r)}>
+                            <Trash2 className="h-4 w-4" />
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
           )}
-        </div>
+        </LcPanel>
         {String(l.purpose || '') === 'trading' && (
           <div>
             <div className="mb-1 flex items-center gap-2 text-[10px] font-bold uppercase tracking-widest text-muted-foreground">
@@ -7234,56 +7323,77 @@ function TreasuryDesk({ onCompanyChange, focusLcId, focusBdId, onFocusHandled }:
                   )}
 
                   <div className="border-t border-[#e5dfc8] pt-1 [&>div]:px-0 [&>div]:sm:px-0">{lcExpanded(dRow)}</div>
-                  <div className={cn('flex flex-wrap gap-1.5 border-t border-dashed border-[#e5dfc8] pt-3', __WEB__ && '!gap-2 !rounded-[4px] !border !border-[#D6E2D6] !border-solid !bg-white !p-3.5')}>
+                  {/* THE ACTIONS, pinned to the bottom of the window so they are
+                      always in reach: the next thing to do first and filled,
+                      the rest outlined, and Delete off on its own. */}
+                  <div
+                    className={cn(
+                      'flex flex-wrap items-center gap-2 border-t border-dashed border-[#e5dfc8] pt-3',
+                      __WEB__ && '!sticky !bottom-[-16px] !z-10 !-mx-5 !mb-[-16px] !border-0 !border-t !border-solid !border-t-[#D6E2D6] !bg-white !px-5 !py-3 !shadow-[0_-6px_16px_rgba(10,31,23,.06)]'
+                    )}
+                  >
                     {(() => {
+                      const primary = '!h-10 !rounded-[4px] !bg-[#0B3D2E] !px-4 !text-[12.5px] !font-extrabold !text-[#C7F03F] hover:!bg-[#0F4A38]'
+                      const outline = '!h-10 !rounded-[4px] !border-[#C3D2C6] !bg-white !px-3.5 !text-[12.5px] !font-bold !text-[#33473E] hover:!bg-[#EAF0E9]'
                       const next = nextLcStage(String(dRow.stage || 'application'))
-                      if (!next || isLcRejected(dRow)) return null
                       return (
-                        <Button size="sm" className={cn('h-7 bg-[#1a2c56] px-2 text-xs hover:bg-[#24407e]', __WEB__ && '!h-10 !rounded-[4px] !bg-[#0B3D2E] !px-3.5 !text-[12px] !font-extrabold !uppercase !tracking-[.04em] !text-[#C7F03F] hover:!bg-[#0F4A38]')} onClick={() => { setLcDetailId(null); openStageAdvance(dRow) }}>
-                          Mark {STAGE_LABEL[next]}
-                        </Button>
+                        <>
+                          {next && !isLcRejected(dRow) && (
+                            <Button size="sm" className={cn('h-7 bg-[#1a2c56] px-2 text-xs hover:bg-[#24407e]', __WEB__ && primary)} onClick={() => { setLcDetailId(null); openStageAdvance(dRow) }}>
+                              Mark {STAGE_LABEL[next]}
+                            </Button>
+                          )}
+                          {canPreclose(dRow) && (
+                            <Button
+                              size="sm"
+                              className={cn('h-7 bg-[#1a2c56] px-2 text-xs hover:bg-[#24407e]', __WEB__ && primary)}
+                              title={isLcPastMaturity(dRow) ? 'Repay this LC now that it has matured' : 'Wind this LC up before its natural maturity'}
+                              onClick={() => { setLcDetailId(null); if (isPartsLc(dRow)) setInstRow(dRow); else openPreclose(dRow) }}
+                            >
+                              <Banknote className="h-4 w-4" />
+                              {isPartsLc(dRow) ? 'Repay parts' : isLcPastMaturity(dRow) ? 'Repay' : 'Preclose'}
+                            </Button>
+                          )}
+                          {canMarkPaymentIn(dRow) && (
+                            <Button
+                              size="sm"
+                              className={cn('h-7 bg-emerald-600 px-2 text-xs hover:bg-emerald-700', __WEB__ && '!h-10 !rounded-[4px] !bg-[#0B6B45] !px-4 !text-[12.5px] !font-extrabold !text-white hover:!bg-[#095A3A]')}
+                              title="Record the customer's payment for the resale — independent of whether the bank side has been preclosed yet"
+                              onClick={() => { setLcDetailId(null); void openPaymentIn(dRow) }}
+                            >
+                              Mark Payment IN
+                            </Button>
+                          )}
+                          {/* What this letter actually put in the ledgers. */}
+                          {canSeeLedgers && (
+                            <Button size="sm" variant="outline" className={cn('h-7 px-2 text-xs', __WEB__ && outline)} onClick={() => openPostings(dRow)}>
+                              <BookOpen className="h-4 w-4" /> Ledger posting
+                            </Button>
+                          )}
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            className={cn('h-7 px-2 text-xs', __WEB__ && outline)}
+                            disabled={!!dRow.preclosed_date || isLcRejected(dRow)}
+                            title={isLcRejected(dRow) ? 'This application was rejected. Reinstate it first to change it.' : dRow.preclosed_date ? 'This LC is repaid and closed. Undo preclosure first to change it.' : undefined}
+                            onClick={() => { setLcDetailId(null); setLcForm({ ...dRow }) }}
+                          >
+                            <Pencil className="h-4 w-4" /> Edit
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            className={cn(
+                              'ml-auto h-7 px-2 text-xs text-destructive',
+                              __WEB__ && '!h-10 !rounded-[4px] !border-transparent !bg-transparent !px-3 !text-[12.5px] !font-bold !text-[#B3261E] hover:!border-[#F0D6D4] hover:!bg-[#FDF3F2]'
+                            )}
+                            onClick={() => { setLcDetailId(null); requestDeleteLc(dRow) }}
+                          >
+                            <Trash2 className="h-4 w-4" /> Delete LC
+                          </Button>
+                        </>
                       )
                     })()}
-                    {canMarkPaymentIn(dRow) && (
-                      <Button
-                        size="sm"
-                        className="h-7 bg-emerald-600 px-2 text-xs hover:bg-emerald-700"
-                        title="Record the customer's payment for the resale — independent of whether the bank side has been preclosed yet"
-                        onClick={() => { setLcDetailId(null); void openPaymentIn(dRow) }}
-                      >
-                        Mark Payment IN
-                      </Button>
-                    )}
-                    {canPreclose(dRow) && (
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        className="h-7 px-2 text-xs"
-                        title={isLcPastMaturity(dRow) ? 'Repay this LC now that it has matured' : 'Wind this LC up before its natural maturity'}
-                        onClick={() => { setLcDetailId(null); if (isPartsLc(dRow)) setInstRow(dRow); else openPreclose(dRow) }}
-                      >
-                        {isPartsLc(dRow) ? 'Repay parts' : isLcPastMaturity(dRow) ? 'Repay' : 'Preclose'}
-                      </Button>
-                    )}
-                    {/* The other half of the record: what this letter actually
-                        put in the ledgers. It was reachable from the row's menu
-                        and not from the panel about the same LC. */}
-                    {canSeeLedgers && (
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        className={cn('h-7 px-2 text-xs', __WEB__ && '!h-10 !rounded-[4px] !border-[#C3D2C6] !bg-white !px-3.5 !text-[12px] !font-bold !text-[#33473E] hover:!bg-[#EAF0E9]')}
-                        onClick={() => openPostings(dRow)}
-                      >
-                        <BookOpen className="h-3.5 w-3.5" /> Ledger posting
-                      </Button>
-                    )}
-                    <Button size="sm" variant="outline" className={cn('h-7 px-2 text-xs', __WEB__ && '!h-10 !rounded-[4px] !border-[#C3D2C6] !bg-white !px-3.5 !text-[12px] !font-bold !text-[#33473E] hover:!bg-[#EAF0E9]')} disabled={!!dRow.preclosed_date || isLcRejected(dRow)} title={isLcRejected(dRow) ? 'This application was rejected. Reinstate it first to change it.' : dRow.preclosed_date ? 'This LC is repaid and closed. Undo preclosure first to change it.' : undefined} onClick={() => { setLcDetailId(null); setLcForm({ ...dRow }) }}>
-                      <Pencil className="h-3.5 w-3.5" /> Edit
-                    </Button>
-                    <Button size="sm" variant="outline" className={cn('h-7 px-2 text-xs text-destructive', __WEB__ && '!h-10 !rounded-[4px] !border-[#F0D6D4] !bg-[#FDF3F2] !px-3.5 !text-[12px] !font-bold !text-[#B3261E] hover:!bg-[#FBE9E7]')} onClick={() => { setLcDetailId(null); requestDeleteLc(dRow) }}>
-                      <Trash2 className="h-3.5 w-3.5" /> Delete
-                    </Button>
                   </div>
                 </div>
               </>
