@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { toast } from 'sonner'
 import { Pencil, Plus, X } from 'lucide-react'
+import { ChargeRows } from '@/components/ChargeRows'
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Button } from '@/components/ui/button'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
@@ -50,7 +51,6 @@ export function BdRepaymentEdit({
   // Repay form. An old repayment's commission and bank charges open as rows
   // on their own ledgers, so nothing it carried is lost.
   const [charges, setCharges] = useState<{ account: string; amount: string; from?: number }[]>([])
-  const [ledgerNames, setLedgerNames] = useState<string[]>([])
   // Interest paid in the same debit — gross.
   const [intr, setIntr] = useState('')
   const [note, setNote] = useState('')
@@ -91,7 +91,6 @@ export function BdRepaymentEdit({
       .accounts()
       .then((accts: Row[]) => {
         setBanks(accts.filter((a) => ['Bank Accounts', 'Bank OD A/c'].includes(String(a.acc_group || ''))).map((a) => String(a.name)))
-        setLedgerNames(accts.filter((a) => !a.is_hidden).map((a) => String(a.name)))
       })
       .catch(() => setBanks([]))
   }, [repayment])
@@ -330,44 +329,7 @@ export function BdRepaymentEdit({
 
             <div className="grid gap-1.5">
               <span className={lbl}>Charges in this debit</span>
-              <datalist id="bd-edit-charge-ledgers">
-                {ledgerNames.map((nm) => (
-                  <option key={nm} value={nm} />
-                ))}
-              </datalist>
-              {charges.map((ch, i) => (
-                <div key={i} className="flex items-center gap-2">
-                  <input
-                    list="bd-edit-charge-ledgers"
-                    placeholder="Ledger — type to search"
-                    value={ch.account}
-                    onChange={(e) => setCharges((p) => p.map((x, j) => (j === i ? { ...x, account: e.target.value } : x)))}
-                    className={`${inp.replace('tabular-nums', '')} min-w-0 flex-1`}
-                  />
-                  <input
-                    inputMode="decimal"
-                    placeholder="0"
-                    value={ch.amount}
-                    onChange={(e) => setCharges((p) => p.map((x, j) => (j === i ? { ...x, amount: e.target.value } : x)))}
-                    className={`${inp} w-[140px] text-right`}
-                  />
-                  <button
-                    type="button"
-                    title="Remove this charge"
-                    onClick={() => setCharges((p) => p.filter((_, j) => j !== i))}
-                    className="flex h-9 w-9 flex-none items-center justify-center rounded text-[#8CA396] hover:bg-black/5 hover:text-[#B3261E]"
-                  >
-                    <X className="h-4 w-4" />
-                  </button>
-                </div>
-              ))}
-              <button
-                type="button"
-                onClick={() => setCharges((p) => [...p, { account: '', amount: '' }])}
-                className="flex h-8 items-center gap-1.5 self-start rounded-[4px] border border-[#C3D2C6] bg-white px-3 text-[12px] font-bold text-[#0B3D2E] hover:bg-[#F4FBF6]"
-              >
-                <Plus className="h-4 w-4" /> Add a ledger
-              </button>
+              <ChargeRows value={charges} onChange={(next) => setCharges(next)} />
             </div>
 
             <label className="grid gap-1">

@@ -33,6 +33,7 @@ import {
   Clock,
   X
 } from 'lucide-react'
+import { ChargeRows } from '@/components/ChargeRows'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card } from '@/components/ui/card'
@@ -1025,7 +1026,6 @@ export function BillDiscounting({
   // Charges in the same debit, each on a ledger the user picks — as many as the
   // bank or NBFC took.
   const [repayCharges, setRepayCharges] = useState<{ account: string; amount: string }[]>([])
-  const [ledgerNames, setLedgerNames] = useState<string[]>([])
   // The trading side, loaded ONLY while a trading bill's form is open. It is
   // not part of the register, so the page's normal refresh never pays for it.
   const [tradingDeals, setTradingDeals] = useState<Row[]>([])
@@ -2055,10 +2055,6 @@ export function BillDiscounting({
     setRepayParts([])
     setRepayAlso([])
     setRepayCharges([])
-    window.api.journal
-      .accounts(Number(r.company_id) || undefined)
-      .then((a) => setLedgerNames(a.filter((x) => n(x.in_company)).map((x) => String(x.name)).sort()))
-      .catch(() => setLedgerNames([]))
     setRepayBank('__bill')
     // Every panel opens on the full repayment, which is what the button in the
     // register says it is for; interest is the deliberate second choice.
@@ -6811,65 +6807,39 @@ export function BillDiscounting({
                     principal above stays the principal and these ride beside
                     it. */}
                 <div className="mt-1 flex flex-col gap-2">
-                  <div className="flex flex-col gap-1">
-                    <Label className="flex items-center gap-1 text-[11px]">
-                      Interest
-                      <InfoTip text="Interest the NBFC took in this same debit — gross. It posts to Interest on Bill Discounting on the repayment voucher, so the bank shows one line for the whole debit, as on the statement. TDS on it is entered separately, as before." />
-                    </Label>
-                    <Input
-                      type="number"
-                      step="0.01"
-                      className="h-8 tabular-nums"
-                      placeholder="0.00"
-                      value={repayForm.interest ?? ''}
-                      onChange={(e) => setRepayForm((p) => ({ ...p, interest: e.target.value }))}
-                    />
+                  <div className="flex flex-col gap-1">
+
+                    <Label className="flex items-center gap-1 text-[11px]">
+
+                      Interest
+
+                      <InfoTip text="Interest the NBFC took in this same debit — gross. It posts to Interest on Bill Discounting on the repayment voucher, so the bank shows one line for the whole debit, as on the statement. TDS on it is entered separately, as before." />
+
+                    </Label>
+
+                    <Input
+
+                      type="number"
+
+                      step="0.01"
+
+                      className="h-8 tabular-nums"
+
+                      placeholder="0.00"
+
+                      value={repayForm.interest ?? ''}
+
+                      onChange={(e) => setRepayForm((p) => ({ ...p, interest: e.target.value }))}
+
+                    />
+
                   </div>
                   {/* ANY OTHER CHARGE IN THE SAME DEBIT, ON ITS OWN LEDGER.
                       Commission, bank charges, processing fee, stamp duty —
                       one row each, so every rupee lands on the ledger it
                       belongs to rather than being lumped together. */}
                   <Label className="text-[11px]">Charges in this debit</Label>
-                  <datalist id="bd-charge-ledgers">
-                    {ledgerNames.map((nm) => (
-                      <option key={nm} value={nm} />
-                    ))}
-                  </datalist>
-                  {repayCharges.map((ch, i) => (
-                    <div key={i} className="flex items-center gap-2">
-                      <Input
-                        list="bd-charge-ledgers"
-                        className="h-8 flex-1"
-                        placeholder="Ledger — type to search"
-                        value={ch.account}
-                        onChange={(e) => setRepayCharges((p) => p.map((x, j) => (j === i ? { ...x, account: e.target.value } : x)))}
-                      />
-                      <Input
-                        type="number"
-                        step="0.01"
-                        className="h-8 w-[150px] text-right tabular-nums"
-                        placeholder="0.00"
-                        value={ch.amount}
-                        onChange={(e) => setRepayCharges((p) => p.map((x, j) => (j === i ? { ...x, amount: e.target.value } : x)))}
-                      />
-                      <button
-                        type="button"
-                        title="Remove this charge"
-                        onClick={() => setRepayCharges((p) => p.filter((_, j) => j !== i))}
-                        className="flex h-8 w-8 items-center justify-center rounded text-[#8CA396] hover:bg-black/5 hover:text-[#B3261E]"
-                      >
-                        <Trash2 className="h-4 w-4" />
-                      </button>
-                    </div>
-                  ))}
-                  <Button
-                    type="button"
-                    variant="outline"
-                    className="!h-8 self-start !rounded-[4px] !border-[#C3D2C6] !px-3 !text-[12px] !font-bold"
-                    onClick={() => setRepayCharges((p) => [...p, { account: '', amount: '' }])}
-                  >
-                    <Plus className="h-4 w-4" /> Add a ledger
-                  </Button>
+                  <ChargeRows value={repayCharges} onChange={setRepayCharges} companyId={Number(repayRow?.company_id) || undefined} />
                 </div>
                 {/* MORE THAN THIS BILL OWES, AND WHERE THE REST WENT.
                     One transfer settles several bills more often than it
