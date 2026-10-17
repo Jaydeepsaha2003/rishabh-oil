@@ -20,6 +20,8 @@ export const ACCOUNTS_SECTIONS = [
   { key: 'accountsReceipt', label: 'Accounting · Receipt voucher' },
   { key: 'accountsContra', label: 'Accounting · Contra voucher' },
   { key: 'accountsJournal', label: 'Accounting · Journal voucher' },
+  { key: 'accountsSalesVch', label: 'Accounting · Sales voucher' },
+  { key: 'accountsPurchaseVch', label: 'Accounting · Purchase voucher' },
   { key: 'accountsDebitNote', label: 'Accounting · Debit Note' },
   { key: 'accountsCreditNote', label: 'Accounting · Credit Note' },
   { key: 'accountsDaybook', label: 'Accounting · Day Book' },
@@ -46,6 +48,8 @@ export const VOUCHER_SECTION: Record<string, AccountsSectionKey> = {
   PAYMENT: 'accountsPayment',
   RECEIPT: 'accountsReceipt',
   JOURNAL: 'accountsJournal',
+  SALE: 'accountsSalesVch',
+  PURCHASE: 'accountsPurchaseVch',
   'DEBIT NOTE': 'accountsDebitNote',
   'CREDIT NOTE': 'accountsCreditNote'
 }

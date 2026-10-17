@@ -566,7 +566,7 @@ function AmountInput({
 // 30 Sep 2026; journal:tradingAccount on the server is left for any report
 // that wants the roll-up.
 type Screen = 'gateway' | 'voucher' | 'daybook' | 'ledger' | 'trial' | 'purchreg' | 'salesreg' | 'notesreg' | 'tfpur' | 'tfsal' | 'openings' | 'masters' | 'tallyimport' | 'cashflow' | 'payreg'
-type VchType = 'CONTRA' | 'PAYMENT' | 'RECEIPT' | 'JOURNAL' | 'DEBIT NOTE' | 'CREDIT NOTE'
+type VchType = 'CONTRA' | 'PAYMENT' | 'RECEIPT' | 'JOURNAL' | 'SALE' | 'PURCHASE' | 'DEBIT NOTE' | 'CREDIT NOTE'
 
 // `label` names the VOUCHER TYPE and is used wherever one is named — the tab
 // row, the type dropdown, a saved voucher's own heading. `barLabel` is what
@@ -578,6 +578,11 @@ const VCH_TYPES: { key: VchType; fkey: string; label: string; barLabel?: string 
   { key: 'PAYMENT', fkey: 'F5', label: 'Payment' },
   { key: 'RECEIPT', fkey: 'F6', label: 'Receipt', barLabel: 'Vouchers' },
   { key: 'JOURNAL', fkey: 'F7', label: 'Journal' },
+  // A bill with no item behind it — a service or a charge (Bunge's production
+  // commitment charges, KRFL/426), entered as Tally's F8 / F9 vouchers are.
+  // Bills of goods still come from Sales and Purchases.
+  { key: 'SALE', fkey: 'F8', label: 'Sales' },
+  { key: 'PURCHASE', fkey: 'F9', label: 'Purchase' },
   { key: 'DEBIT NOTE', fkey: 'Alt F5', label: 'Debit Note' },
   { key: 'CREDIT NOTE', fkey: 'Alt F6', label: 'Credit Note' }
 ]
@@ -3272,7 +3277,9 @@ export function Accounts({
   )
 
   // --- GST on a grid note (see noteGstType) ---------------------------------
-  const gridNote = __WEB__ && isNoteType && !structured && !viewOnly && editingId == null && noteEditId == null
+  // The GST panel: on a note, and on a Sales / Purchase bill — the same sum
+  // (party, item ledgers, GST at a rate, round-off to the rupee).
+  const gridNote = __WEB__ && (isNoteType || vchType === 'SALE' || vchType === 'PURCHASE') && !structured && !viewOnly && editingId == null && noteEditId == null
   const gridGst = useMemo(() => {
     // The party: Sundry Creditors / Debtors or a group under them (SC-OIL) —
     // read as an item line, its amount turned the GST round to the wrong side.
@@ -4854,6 +4861,16 @@ export function Accounts({
         setLgBills((b2) => !b2)
         return
       }
+      // Tally's F8 Sales and F9 Purchase. F8 elsewhere on this page is a
+      // summary (Day Book, ledger, registers), so Sales answers to it only on
+      // the voucher screen and the gateway; F9 is free everywhere.
+      if (!e.altKey && (fk === 'F9' || (fk === 'F8' && (screen === 'voucher' || screen === 'gateway')))) {
+        e.preventDefault()
+        const t: VchType = fk === 'F8' ? 'SALE' : 'PURCHASE'
+        if (screen === 'voucher') switchType(t)
+        else openVoucher(t)
+        return
+      }
       // Function keys work everywhere on this page; letters only outside inputs.
       if (fk === 'F4' || fk === 'F5' || fk === 'F6' || fk === 'F7') {
         e.preventDefault()
@@ -6302,6 +6319,8 @@ export function Accounts({
             {vchType === 'PAYMENT' && 'Credit side must be cash / bank'}
             {vchType === 'RECEIPT' && 'Debit side must be cash / bank'}
             {vchType === 'JOURNAL' && 'Any ledgers, Dr = Cr'}
+            {vchType === 'SALE' && 'Sales bill — Dr the customer, Cr the sales and GST ledgers'}
+            {vchType === 'PURCHASE' && 'Purchase bill — Dr the purchase / expense and GST ledgers, Cr the supplier'}
             {vchType === 'DEBIT NOTE' && 'Purchase return — Dr the supplier, Cr the purchase/GST ledgers'}
             {vchType === 'CREDIT NOTE' && 'Sales return — Dr the sales/GST ledgers, Cr the customer'}
           </div>
@@ -12666,7 +12685,11 @@ export function Accounts({
             ? 'Moves money between your own cash and bank accounts'
             : vchType === 'JOURNAL'
               ? 'Adjusts balances between ledgers with no money moving'
-              : 'Adjusts a party balance against a purchase or sale account'
+              : vchType === 'SALE'
+                ? 'A sales bill with no item behind it — a service or a charge'
+                : vchType === 'PURCHASE'
+                  ? 'A purchase bill with no item behind it — a service or an expense'
+                  : 'Adjusts a party balance against a purchase or sale account'
 
     // Where the owning document can be opened from here. A payment, a note or
     // a freight bill has no page this screen can open, so it is only named.
@@ -13605,7 +13628,7 @@ export function Accounts({
               {gridNote && (
                 <div style={{ ...card, padding: '14px 16px', display: 'flex', flexDirection: 'column', gap: 11 }}>
                   <div className="flex flex-wrap items-center gap-x-3.5 gap-y-2.5">
-                    <span style={{ ...cap, marginBottom: 0 }}>GST on this note</span>
+                    <span style={{ ...cap, marginBottom: 0 }}>{isNoteType ? 'GST on this note' : 'GST on this bill'}</span>
                     <div className="flex flex-none gap-[3px]" style={{ background: '#EEF3EC', border: '1px solid #DCE7DB', borderRadius: 7, padding: 3 }}>
                       {(
                         [
