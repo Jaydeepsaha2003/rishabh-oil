@@ -1935,6 +1935,18 @@ export function registerIpc(): void {
     const { removePaymentInVouchers } = await import('./treasury')
     return removePaymentInVouchers((a?.keys || []).map(String))
   })
+  // Tally's payment → parking → journal (→ refund) chain for money an LC/BD
+  // voucher here already pays. Removed on review; the app's voucher stays.
+  handle('repairs:parkingCopies:list', async () => {
+    await assertAdmin('The accounting checks')
+    const { previewParkingCopies } = await import('./parkingCopies')
+    return previewParkingCopies()
+  })
+  handle('repairs:parkingCopiesFix', async (_e, a: { keys: string[] }) => {
+    await assertAdmin('Removing Tally copies')
+    const { removeParkingCopies } = await import('./parkingCopies')
+    return removeParkingCopies((a?.keys || []).map(String))
+  })
   // Purchases whose TDS was worked before their slab's figures were known.
   handle('repairs:staleTds:list', async () => {
     await assertAdmin('The accounting checks')

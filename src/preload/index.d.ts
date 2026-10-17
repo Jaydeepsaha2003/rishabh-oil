@@ -714,6 +714,8 @@ export interface Api {
     saveLcLedgers: (values: Row) => Promise<Row>
     fixLcLedgers: (ids: number[]) => Promise<{ moved: number; vouchers: number }>
     fixPaymentIns: (keys: string[]) => Promise<{ removed: number }>
+    parkingCopies: () => Promise<Row>
+    fixParkingCopies: (keys: string[]) => Promise<{ removed: number; chains: number }>
     fixStaleTds: (ids: number[]) => Promise<Row>
     moveWrongCompany: (ids: number[]) => Promise<{ moved: number; codes: string[] }>
     sharedLedgers: () => Promise<Row>

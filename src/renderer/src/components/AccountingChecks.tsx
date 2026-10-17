@@ -113,6 +113,11 @@ export function AccountingChecks(): React.JSX.Element {
   const [payIns, setPayIns] = useState<Row | null>(null)
   const [payInPick, setPayInPick] = useState<Set<string>>(new Set())
   const [removingPayIns, setRemovingPayIns] = useState(false)
+  // Tally's payment → parking → journal (→ refund) chain for money an LC/BD
+  // voucher here already pays.
+  const [parking, setParking] = useState<Row | null>(null)
+  const [parkPick, setParkPick] = useState<Set<string>>(new Set())
+  const [removingPark, setRemovingPark] = useState(false)
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -154,6 +159,9 @@ export function AccountingChecks(): React.JSX.Element {
           )
         })
       }
+      const pk = await window.api.repairs.parkingCopies().catch(() => null)
+      setParking(pk)
+      setParkPick(new Set(((pk?.findings as Row[]) || []).filter((x) => x.fixable).map((x) => String(x.key))))
       const pin = await window.api.repairs.paymentIns().catch(() => null)
       setPayIns(pin)
       setPayInPick(new Set(((pin?.findings as Row[]) || []).map((x) => String(x.key))))
@@ -394,6 +402,37 @@ export function AccountingChecks(): React.JSX.Element {
       toast.error((e as Error).message)
     } finally {
       setLclMoving(false)
+    }
+  }
+
+  const parkRows: Row[] = useMemo(() => (parking?.findings as Row[]) || [], [parking])
+  async function removeParking(): Promise<void> {
+    const keys = [...parkPick]
+    if (!keys.length) return
+    const picked = parkRows.filter((x) => parkPick.has(String(x.key)))
+    const ok = window.confirm(
+      `Remove Tally's copies for ${picked.length} payment${picked.length === 1 ? '' : 's'}?\n\n` +
+        picked
+          .map((x) => {
+            const o = x.own as Row
+            const pay = x.payment as Row
+            const j = x.journal as Row
+            const refs = (x.refunds as Row[]) || []
+            return `• ${String(o.code)} stays (${formatINR(Number(o.amount))}). Removed: Tally Payment ${String(pay.vch_no)}${refs.map((r) => `, Receipt ${String(r.vch_no)}`).join('')}, Journal ${String(j.vch_no)}`
+          })
+          .join('\n') +
+        '\n\nThe app\'s voucher stays and is remembered as Tally\'s, so the bank and journal checks will not offer these again. The removed lines are logged. Take a database snapshot first if you want a copy you can restore.'
+    )
+    if (!ok) return
+    setRemovingPark(true)
+    try {
+      const r = await window.api.repairs.fixParkingCopies(keys)
+      toast.success(`${Number(r.removed) || 0} Tally cop${Number(r.removed) === 1 ? 'y' : 'ies'} removed for ${Number(r.chains) || 0} payment${Number(r.chains) === 1 ? '' : 's'}`)
+      await load()
+    } catch (e) {
+      toast.error((e as Error).message)
+    } finally {
+      setRemovingPark(false)
     }
   }
 
@@ -1000,6 +1039,93 @@ export function AccountingChecks(): React.JSX.Element {
           </>
         )}
       </Card>
+
+      <Section
+        title="LC / BD payments also booked from Tally (through a parking account)"
+        count={parkRows.length}
+        tone={parkRows.length ? 'warn' : 'ok'}
+        note={
+          parkRows.length
+            ? 'Tally books an LC or BD payment in steps: the bank pays into a parking account (e.g. RTGS NEFT PARKING), a journal moves it on to interest, and any extra the bank returned comes back as a receipt. The LC or BD here already posts the same money in one voucher, so it is in the books twice. Removing Tally\'s steps leaves the app\'s voucher — the bank, the interest and the parking account then read right.'
+            : 'No LC or BD payment is in the books twice through a parking account.'
+        }
+      >
+        <table className="w-full border-collapse">
+          <thead className="bg-muted/40">
+            <tr>
+              <th className={cn(th, 'w-8')}>
+                <input
+                  type="checkbox"
+                  aria-label="Tick all"
+                  checked={parkRows.some((x) => x.fixable) && parkPick.size === parkRows.filter((x) => x.fixable).length}
+                  onChange={(e) => setParkPick(e.target.checked ? new Set(parkRows.filter((x) => x.fixable).map((x) => String(x.key))) : new Set())}
+                />
+              </th>
+              <th className={th}>Keeps (app voucher)</th>
+              <th className={th}>Removes (booked from Tally)</th>
+              <th className={cn(th, 'text-right')}>Amount</th>
+            </tr>
+          </thead>
+          <tbody>
+            {parkRows.map((x) => {
+              const k = String(x.key)
+              const o = x.own as Row
+              const pay = x.payment as Row
+              const j = x.journal as Row
+              const refs = (x.refunds as Row[]) || []
+              return (
+                <tr key={k} className="border-t align-top">
+                  <td className={td}>
+                    <input
+                      type="checkbox"
+                      disabled={!x.fixable}
+                      checked={parkPick.has(k)}
+                      onChange={(e) =>
+                        setParkPick((s) => {
+                          const next = new Set(s)
+                          if (e.target.checked) next.add(k)
+                          else next.delete(k)
+                          return next
+                        })
+                      }
+                    />
+                  </td>
+                  <td className={td}>
+                    <span className="font-semibold">{String(o.code || '—')}</span>
+                    <div className="text-[11px] text-muted-foreground">
+                      {formatDate(String(o.date))} · {String(x.bank)}
+                    </div>
+                  </td>
+                  <td className={td}>
+                    <div>
+                      Payment {String(pay.vch_no)} · {formatDate(String(pay.date))} · {formatINR(Number(pay.amount))} into {String(x.via)}
+                    </div>
+                    {refs.map((r) => (
+                      <div key={String(r.id)}>
+                        Receipt {String(r.vch_no)} · {formatDate(String(r.date))} · {formatINR(Number(r.amount))} back from {String(x.via)}
+                      </div>
+                    ))}
+                    <div>
+                      Journal {String(j.vch_no)} · {formatDate(String(j.date))} · {formatINR(Number(j.amount))} to {String(j.to)}
+                    </div>
+                    {!x.fixable && <div className="mt-1 text-[11.5px] font-semibold text-amber-700">{String(x.note)}</div>}
+                  </td>
+                  <td className={cn(td, 'text-right tabular-nums font-semibold')}>{formatINR(Number(j.amount))}</td>
+                </tr>
+              )
+            })}
+          </tbody>
+        </table>
+        <div className="flex flex-wrap items-center gap-3 border-t bg-muted/30 px-4 py-3">
+          <span className="text-[12.5px] text-muted-foreground">
+            {parkPick.size} of {parkRows.length} ticked
+          </span>
+          <Button variant="destructive" className="ml-auto gap-1.5" disabled={!parkPick.size || removingPark} onClick={() => void removeParking()}>
+            {removingPark ? <Loader2 className="h-4 w-4 animate-spin" /> : <Trash2 className="h-4 w-4" />}
+            Remove Tally copies
+          </Button>
+        </div>
+      </Section>
 
       <Section
         title="Payment-in vouchers on discounted bills and LCs"
