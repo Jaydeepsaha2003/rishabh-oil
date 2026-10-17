@@ -3300,6 +3300,8 @@ var init_accessSections = __esm({
       { key: "accountsReceipt", label: "Accounting \xB7 Receipt voucher" },
       { key: "accountsContra", label: "Accounting \xB7 Contra voucher" },
       { key: "accountsJournal", label: "Accounting \xB7 Journal voucher" },
+      { key: "accountsSalesVch", label: "Accounting \xB7 Sales voucher" },
+      { key: "accountsPurchaseVch", label: "Accounting \xB7 Purchase voucher" },
       { key: "accountsDebitNote", label: "Accounting \xB7 Debit Note" },
       { key: "accountsCreditNote", label: "Accounting \xB7 Credit Note" },
       { key: "accountsDaybook", label: "Accounting \xB7 Day Book" },
@@ -3321,6 +3323,8 @@ var init_accessSections = __esm({
       PAYMENT: "accountsPayment",
       RECEIPT: "accountsReceipt",
       JOURNAL: "accountsJournal",
+      SALE: "accountsSalesVch",
+      PURCHASE: "accountsPurchaseVch",
       "DEBIT NOTE": "accountsDebitNote",
       "CREDIT NOTE": "accountsCreditNote"
     };
@@ -9878,6 +9882,33 @@ async function salesInvoiceGaps(companyId, range) {
     if (!voided.has(pfx)) voided.set(pfx, /* @__PURE__ */ new Map());
     voided.get(pfx).set(n9(r.number), r);
   }
+  const vchConds = ["je.company_id = ?", "UPPER(je.vch_type) LIKE '%SALE%'", "je.sale_id IS NULL", "TRIM(COALESCE(je.vch_no, '')) <> ''"];
+  const vchArgs = [cid];
+  if (range?.from) {
+    vchConds.push("je.entry_date >= ?");
+    vchArgs.push(range.from);
+  }
+  if (range?.to) {
+    vchConds.push("je.entry_date <= ?");
+    vchArgs.push(range.to);
+  }
+  const vchRes = await getClient().execute({
+    sql: `SELECT je.id, je.vch_no, je.entry_date, je.narration,
+                 (SELECT nn.prefix || '/' || nn.serial FROM voucher_numbers nn WHERE nn.entry_id = je.id) AS code,
+                 (SELECT a.name FROM journal_lines jl JOIN ledger_accounts a ON a.id = jl.account_id
+                   WHERE jl.entry_id = je.id AND jl.dr > 0 ORDER BY jl.dr DESC LIMIT 1) AS party,
+                 (SELECT MAX(jl.dr) FROM journal_lines jl WHERE jl.entry_id = je.id) AS amount
+            FROM journal_entries je WHERE ${vchConds.join(" AND ")}`,
+    args: vchArgs
+  }).catch(() => null);
+  const vouchered = /* @__PURE__ */ new Map();
+  for (const r of vchRes ? toPlain12(vchRes) : []) {
+    const m = String(r.vch_no || "").trim().match(/^(.*?)[/\\-]?(\d+)$/);
+    if (!m || !m[1]) continue;
+    const pfx = m[1].replace(/[/\\-]+$/, "");
+    if (!vouchered.has(pfx)) vouchered.set(pfx, /* @__PURE__ */ new Map());
+    vouchered.get(pfx).set(Number(m[2]), r);
+  }
   const RANDOM_FLOOR = 1e6;
   const series = /* @__PURE__ */ new Map();
   const unparsed = [];
@@ -9917,13 +9948,32 @@ async function salesInvoiceGaps(companyId, range) {
       if (bare(vp) !== bare(prefix2)) continue;
       for (const [num2, row] of vnums) voidHere.set(num2, row);
     }
+    const vchHere = /* @__PURE__ */ new Map();
+    for (const [vp, vnums] of vouchered) {
+      if (bare(vp) !== bare(prefix2)) continue;
+      for (const [num2, row] of vnums) vchHere.set(num2, row);
+    }
     const missing = [];
     const cancelled = [];
+    const voucherOnly = [];
     const TOO_WIDE = 2e4;
     const rangeTooWide = hi - lo + 1 > TOO_WIDE;
     if (!rangeTooWide) {
       for (let i = lo; i <= hi; i++) {
         if (held.has(i)) continue;
+        const vv = vchHere.get(i);
+        if (vv) {
+          voucherOnly.push({
+            number: i,
+            entry_id: n9(vv.id),
+            code: String(vv.code || ""),
+            date: String(vv.entry_date || "").slice(0, 10),
+            party: String(vv.party || ""),
+            amount: n9(vv.amount),
+            from_tally: /imported from tally/i.test(String(vv.narration || ""))
+          });
+          continue;
+        }
         const v = voidHere.get(i);
         if (v) {
           cancelled.push({ number: i, reason: v.reason ?? null, cancelled_on: v.cancelled_on ?? null });
@@ -9937,6 +9987,8 @@ async function salesInvoiceGaps(companyId, range) {
       used: keys.length,
       cancelled,
       cancelled_count: cancelled.length,
+      voucher_only: voucherOnly,
+      voucher_only_count: voucherOnly.length,
       from: lo,
       to: hi,
       expected: hi - lo + 1,
@@ -26547,6 +26599,7 @@ __export(bankRefunds_exports, {
   recordRefund: () => recordRefund,
   refundDues: () => refundDues,
   refundInfo: () => refundInfo,
+  refundTotals: () => refundTotals,
   undoRefund: () => undoRefund
 });
 function toPlain39(res) {
@@ -26634,6 +26687,35 @@ async function refundDues(kind) {
     if (out[String(r.fid)] != null) out[String(r.fid)] = round223(out[String(r.fid)] - n51(r.amt));
   }
   for (const k of Object.keys(out)) if (out[k] <= 4e-3) delete out[k];
+  return out;
+}
+async function refundTotals(kind) {
+  await ensure();
+  const c = getClient();
+  const reps = toPlain39(
+    await c.execute(
+      kind === "bd" ? "SELECT bd_id AS fid, charges FROM bd_repayments WHERE charges LIKE '%REFUND DUE%'" : "SELECT lc_id AS fid, charges FROM lc_repayments WHERE charges LIKE '%REFUND DUE%'"
+    )
+  );
+  const out = {};
+  for (const r of reps) {
+    let list2 = [];
+    try {
+      list2 = JSON.parse(String(r.charges || "[]"));
+    } catch {
+      list2 = [];
+    }
+    const amt = (Array.isArray(list2) ? list2 : []).filter((x) => isRefundDue(String(x?.account || ""))).reduce((t, x) => t + n51(x.amount), 0);
+    if (amt <= 4e-3) continue;
+    const k = String(r.fid);
+    out[k] = out[k] || { booked: 0, refunded: 0, due: 0 };
+    out[k].booked = round223(out[k].booked + amt);
+  }
+  for (const r of toPlain39(await c.execute({ sql: "SELECT facility_id AS fid, SUM(amount) AS amt FROM facility_refunds WHERE kind = ? GROUP BY facility_id", args: [kind] }))) {
+    const k = String(r.fid);
+    if (out[k]) out[k].refunded = round223(n51(r.amt));
+  }
+  for (const k of Object.keys(out)) out[k].due = round223(Math.max(0, out[k].booked - out[k].refunded));
   return out;
 }
 async function refundInfo(kind, id) {
@@ -39590,6 +39672,7 @@ function registerIpc() {
   handle("bankRecon:unreconcile", (_e, { lineId }) => unreconcileBankLine(lineId));
   handle("bankRecon:setSubEntry", (_e, { lineId, values }) => setBankLineSubEntry(lineId, values));
   handle("bd:refundDues", async () => (await Promise.resolve().then(() => (init_bankRefunds(), bankRefunds_exports))).refundDues("bd"));
+  handle("bd:refundTotals", async () => (await Promise.resolve().then(() => (init_bankRefunds(), bankRefunds_exports))).refundTotals("bd"));
   handle("bd:refundInfo", async (_e, { id }) => (await Promise.resolve().then(() => (init_bankRefunds(), bankRefunds_exports))).refundInfo("bd", Number(id)));
   handle("bd:refundLink", async (_e, { id, entryId }) => (await Promise.resolve().then(() => (init_bankRefunds(), bankRefunds_exports))).linkRefund("bd", Number(id), Number(entryId)));
   handle(
@@ -39598,6 +39681,7 @@ function registerIpc() {
   );
   handle("bd:refundUndo", async (_e, { refundId }) => (await Promise.resolve().then(() => (init_bankRefunds(), bankRefunds_exports))).undoRefund(Number(refundId)));
   handle("lc:refundDues", async () => (await Promise.resolve().then(() => (init_bankRefunds(), bankRefunds_exports))).refundDues("lc"));
+  handle("lc:refundTotals", async () => (await Promise.resolve().then(() => (init_bankRefunds(), bankRefunds_exports))).refundTotals("lc"));
   handle("lc:refundInfo", async (_e, { id }) => (await Promise.resolve().then(() => (init_bankRefunds(), bankRefunds_exports))).refundInfo("lc", Number(id)));
   handle("lc:refundLink", async (_e, { id, entryId }) => (await Promise.resolve().then(() => (init_bankRefunds(), bankRefunds_exports))).linkRefund("lc", Number(id), Number(entryId)));
   handle(
