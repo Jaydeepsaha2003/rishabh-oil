@@ -4016,6 +4016,11 @@ function SalesTab({
                       {String(sr.used)} used · {String(sr.from)}–{String(sr.to)}
                     </span>
                     <span className="ml-auto flex items-center gap-1.5">
+                      {Number(sr.voucher_only_count) > 0 && (
+                        <span className="rounded bg-sky-100 px-2 py-0.5 text-[11.5px] font-semibold tabular-nums text-sky-900">
+                          {String(sr.voucher_only_count)} voucher only
+                        </span>
+                      )}
                       {Number(sr.cancelled_count) > 0 && (
                         <span className="rounded px-2 py-0.5 text-[11.5px] font-semibold tabular-nums text-amber-900 bg-amber-100">
                           {String(sr.cancelled_count)} cancelled
@@ -4111,6 +4116,34 @@ function SalesTab({
                         </tbody>
                       </table>
                     </>
+                  )}
+
+                  {/* Numbers used by a sales voucher with no sales entry
+                      behind it (booked from Tally's register, or by hand) —
+                      in the books, so not missing. */}
+                  {((sr.voucher_only as Row[]) || []).length > 0 && (
+                    <div className="border-t bg-sky-50/60 px-3 py-2">
+                      <div className="mb-1 text-[10px] font-bold uppercase tracking-widest text-sky-900/70">
+                        In the books as a sales voucher — accounted for, not missing
+                      </div>
+                      <div className="space-y-1">
+                        {((sr.voucher_only as Row[]) || []).map((vv) => (
+                          <div key={String(vv.number)} className="flex flex-wrap items-baseline gap-x-2 text-[11.5px]">
+                            <span className="doc-ref font-semibold tabular-nums">
+                              {String(sr.prefix)}/{String(vv.number)}
+                            </span>
+                            <span className="text-muted-foreground">
+                              {String(vv.party || '—')} · {formatINR(Number(vv.amount))}
+                            </span>
+                            <span className="text-muted-foreground/70">· {formatDate(String(vv.date))}</span>
+                            <span className="rounded bg-white px-1.5 text-[10.5px] font-semibold text-sky-800">
+                              {vv.code ? String(vv.code) : 'voucher'}
+                              {vv.from_tally ? ' · from Tally' : ''}
+                            </span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
                   )}
 
                   {/* Voided numbers, kept in view. Leaving them out entirely

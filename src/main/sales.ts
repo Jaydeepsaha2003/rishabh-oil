@@ -755,6 +755,38 @@ export async function salesInvoiceGaps(
     voided.get(pfx)!.set(n(r.number), r)
   }
 
+  // NUMBERS THAT ARE IN THE BOOKS AS A VOUCHER ONLY. A sale with no sales
+  // entry behind it — KRFL/426, Bunge's production commitment charges, booked
+  // from Tally's sales register as a voucher — is not a lost bill: the number
+  // was used, and the money is in the books. Counted as held and listed apart.
+  const vchConds = ['je.company_id = ?', "UPPER(je.vch_type) LIKE '%SALE%'", 'je.sale_id IS NULL', "TRIM(COALESCE(je.vch_no, '')) <> ''"]
+  const vchArgs: (string | number)[] = [cid]
+  if (range?.from) {
+    vchConds.push('je.entry_date >= ?')
+    vchArgs.push(range.from)
+  }
+  if (range?.to) {
+    vchConds.push('je.entry_date <= ?')
+    vchArgs.push(range.to)
+  }
+  const vchRes = await getClient().execute({
+    sql: `SELECT je.id, je.vch_no, je.entry_date, je.narration,
+                 (SELECT nn.prefix || '/' || nn.serial FROM voucher_numbers nn WHERE nn.entry_id = je.id) AS code,
+                 (SELECT a.name FROM journal_lines jl JOIN ledger_accounts a ON a.id = jl.account_id
+                   WHERE jl.entry_id = je.id AND jl.dr > 0 ORDER BY jl.dr DESC LIMIT 1) AS party,
+                 (SELECT MAX(jl.dr) FROM journal_lines jl WHERE jl.entry_id = je.id) AS amount
+            FROM journal_entries je WHERE ${vchConds.join(' AND ')}`,
+    args: vchArgs
+  }).catch(() => null)
+  const vouchered = new Map<string, Map<number, Row>>()
+  for (const r of vchRes ? toPlain(vchRes) : []) {
+    const m = String(r.vch_no || '').trim().match(/^(.*?)[/\\-]?(\d+)$/)
+    if (!m || !m[1]) continue
+    const pfx = m[1].replace(/[/\\-]+$/, '')
+    if (!vouchered.has(pfx)) vouchered.set(pfx, new Map())
+    vouchered.get(pfx)!.set(Number(m[2]), r)
+  }
+
   // The random-invoice placeholder (randomSalesInvoiceNo / randomPurchaseInvoiceNo)
   // is a 7-digit number from 1,000,000 up. It is a stand-in for a bill whose
   // real number was never printed, NOT the next number in a book — so a series
@@ -814,8 +846,15 @@ export async function salesInvoiceGaps(
       for (const [num, row] of vnums) voidHere.set(num, row)
     }
 
+    // Numbers held as a voucher only, however the prefix was punctuated.
+    const vchHere = new Map<number, Row>()
+    for (const [vp, vnums] of vouchered) {
+      if (bare(vp) !== bare(prefix)) continue
+      for (const [num, row] of vnums) vchHere.set(num, row)
+    }
     const missing = []
     const cancelled: Row[] = []
+    const voucherOnly: Row[] = []
     // A real invoice book is contiguous — a few hundred numbers, not millions.
     // The random-invoice placeholder (a bare 7-digit number, see
     // randomPurchaseInvoiceNo / randomSalesInvoiceNo) is meant to sit OUTSIDE
@@ -830,6 +869,19 @@ export async function salesInvoiceGaps(
     if (!rangeTooWide) {
       for (let i = lo; i <= hi; i++) {
         if (held.has(i)) continue
+        const vv = vchHere.get(i)
+        if (vv) {
+          voucherOnly.push({
+            number: i,
+            entry_id: n(vv.id),
+            code: String(vv.code || ''),
+            date: String(vv.entry_date || '').slice(0, 10),
+            party: String(vv.party || ''),
+            amount: n(vv.amount),
+            from_tally: /imported from tally/i.test(String(vv.narration || ''))
+          })
+          continue
+        }
         const v = voidHere.get(i)
         if (v) {
           cancelled.push({ number: i, reason: v.reason ?? null, cancelled_on: v.cancelled_on ?? null })
@@ -844,6 +896,8 @@ export async function salesInvoiceGaps(
       used: keys.length,
       cancelled,
       cancelled_count: cancelled.length,
+      voucher_only: voucherOnly,
+      voucher_only_count: voucherOnly.length,
       from: lo,
       to: hi,
       expected: hi - lo + 1,
