@@ -40,6 +40,7 @@ import { formatDate, formatINR, formatNum, todayISO } from '@/lib/format'
 import { cn } from '@/lib/utils'
 import { adjKindsLabel, adjPostsTo } from '@/components/AdjChargePicker'
 import { BdRepaymentEdit } from '@/components/BdRepaymentEdit'
+import { isRefundDue } from '@/lib/refundDue'
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Row = Record<string, any>
@@ -279,6 +280,37 @@ function BankCard({ bill, repayments, onChanged }: { bill: Row; repayments?: Row
     }
   }
 
+  // WHAT EACH REPAYMENT DID TO THE BALANCE. In date order, the bill's open
+  // amount comes down by each repayment's principal; whatever else was in the
+  // same debit — interest, charges, and money paid OVER the balance that the
+  // NBFC must give back — is said beside it, so 79 + 16 + 46 lakh against a
+  // 1,38 lakh bill reads as 43 lakh settling it and 3 lakh paid over.
+  const settle = new Map<number, { before: number; after: number; principal: number; interest: number; charges: number; refund: number }>()
+  {
+    let bal = round2(n(bill.amount))
+    const reps = [...(repayments || [])].sort(
+      (a, b) => String(a.repay_date || '').localeCompare(String(b.repay_date || '')) || n(a.id) - n(b.id)
+    )
+    for (const r of reps) {
+      const je = n(r.journal_entry_id)
+      if (!je) continue
+      const rows = bdLedgerCharges(r)
+      const refund = round2(rows.filter((x) => isRefundDue(String(x.account || ''))).reduce((t, x) => t + n(x.amount), 0))
+      const charges = round2(
+        rows.filter((x) => !isRefundDue(String(x.account || ''))).reduce((t, x) => t + n(x.amount), 0) + n(r.comm_charges) + n(r.bank_charges)
+      )
+      const principal = round2(n(r.amount))
+      const cur = settle.get(je) || { before: bal, after: bal, principal: 0, interest: 0, charges: 0, refund: 0 }
+      cur.principal = round2(cur.principal + principal)
+      cur.interest = round2(cur.interest + n(r.interest))
+      cur.charges = round2(cur.charges + charges)
+      cur.refund = round2(cur.refund + refund)
+      bal = round2(Math.max(0, bal - principal))
+      cur.after = bal
+      settle.set(je, cur)
+    }
+  }
+
   return (
     <Card>
       <CardHead icon={Landmark}>Bank</CardHead>
@@ -312,6 +344,28 @@ function BankCard({ bill, repayments, onChanged }: { bill: Row; repayments?: Row
                     of one {formatINR(amt)} debit — also {others.map((g) => `${s(g.bd_no)} ${formatINR(n(g.amount))}`).join(', ')}
                   </div>
                 )}
+                {(() => {
+                  const st = settle.get(Number(p.id))
+                  if (!st || inflow) return null
+                  return (
+                    <div className="mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-[11.5px] font-semibold">
+                      <span className="rounded-[2px] bg-[#F1F5EF] px-1.5 py-[2px] tabular-nums text-[#33473E]">
+                        Balance {formatINR(st.before)} → {st.after <= 0.004 ? <b className="text-[#0B6B45]">settled</b> : formatINR(st.after)}
+                      </span>
+                      <span className="tabular-nums text-[#0A1F17]">{formatINR(st.principal)} towards the bill</span>
+                      {st.interest > 0.004 && <span className="tabular-nums text-[#5A6B62]">+ {formatINR(st.interest)} interest</span>}
+                      {st.charges > 0.004 && <span className="tabular-nums text-[#5A6B62]">+ {formatINR(st.charges)} charges</span>}
+                      {st.refund > 0.004 && (
+                        <span
+                          className="rounded-[2px] border border-[#F0C4C0] bg-[#FDECEA] px-1.5 py-[2px] font-extrabold tabular-nums text-[#B3261E]"
+                          title="Paid over the balance — the NBFC owes it back (⋮ → Refund received)"
+                        >
+                          + {formatINR(st.refund)} paid over — refund due
+                        </span>
+                      )}
+                    </div>
+                  )
+                })()}
               </div>
               {bankLines.length === 1 ? (
                 <select
@@ -575,7 +629,7 @@ This was one bank debit that also cleared ${others.map((g) => `${s(g.bd_no)} ${f
           one holds a 27px figure and two long company names — so on a phone it
           simply refused to fit and hung off the right-hand side. */}
       <div
-        className="flex w-full min-w-0 flex-col bg-[#F1F5EF] sm:w-[min(100%,700px)]"
+        className="flex w-full min-w-0 flex-col bg-[#F1F5EF] sm:w-[min(100%,980px)]"
         style={{ boxShadow: '-16px 0 40px rgba(10,31,23,.24)' }}
         ref={drawerRef}
         role="dialog"
