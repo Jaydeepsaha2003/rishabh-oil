@@ -1002,8 +1002,8 @@ const api = {
       ipcRenderer.invoke('bd:reverseUpfrontInterest', { id }),
     setVoucherBank: (id: number, entryId: number, account: string): Promise<{ id: number; account: string }> =>
       ipcRenderer.invoke('bd:setVoucherBank', { id, entryId, account }),
-    setRoute: (id: number, route: string, account?: string): Promise<{ id: number; route: string }> =>
-      ipcRenderer.invoke('bd:setRoute', { id, route, account }),
+    setRoute: (id: number, route: string, account?: string, shares?: Row[]): Promise<{ id: number; route: string }> =>
+      ipcRenderer.invoke('bd:setRoute', { id, route, account, shares }),
     kpis: (): Promise<Row> => ipcRenderer.invoke('bd:kpis'),
     chargeTypes: (): Promise<{ label: string; ledger: string; preset: boolean }[]> => ipcRenderer.invoke('bd:chargeTypes:list'),
     addChargeType: (label: string): Promise<{ label: string; ledger: string; preset: boolean }> => ipcRenderer.invoke('bd:addChargeType', { label }),

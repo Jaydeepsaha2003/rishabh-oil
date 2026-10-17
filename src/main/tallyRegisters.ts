@@ -773,6 +773,11 @@ async function reconcile(v: { kind: TallyRegisterKind; data_base64: string; comp
     const firstWord = (v: string): string =>
       String(v || '')
         .toUpperCase()
+        // The app's discounted-bill ledgers carry a prefix Tally's may not:
+        // "BILLS DISCOUNTED - INFOTEL FINANCE" is Tally's "INFOTEL FINANCE PVT
+        // LTD (NEW 1 CR.)", the same lender. (LC names keep theirs — "LC" is
+        // what pairs LC PAYABLE with Tally's LC WITH …)
+        .replace(/^\s*BILLS DISCOUNTED\s*-?\s*/, '')
         .replace(/[^A-Z0-9 ]/g, ' ')
         .split(/\s+/)
         .filter((w) => w && !NOISE.has(w))[0] || ''

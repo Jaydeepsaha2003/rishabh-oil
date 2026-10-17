@@ -681,7 +681,7 @@ export interface Api {
     upfrontInterest: (id: number, date?: string, account?: string) => Promise<{ id: number } | null>
     reverseUpfrontInterest: (id: number) => Promise<{ id: number }>
     setVoucherBank: (id: number, entryId: number, account: string) => Promise<{ id: number; account: string }>
-    setRoute: (id: number, route: string, account?: string) => Promise<{ id: number; route: string }>
+    setRoute: (id: number, route: string, account?: string, shares?: Row[]) => Promise<{ id: number; route: string }>
     kpis: () => Promise<Row>
     chargeTypes: () => Promise<{ label: string; ledger: string; preset: boolean }[]>
     addChargeType: (label: string) => Promise<{ label: string; ledger: string; preset: boolean }>

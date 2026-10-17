@@ -1827,9 +1827,9 @@ export function registerIpc(): void {
     postBdUpfrontInterest(id, date, account)
   )
   handle('bd:reverseUpfrontInterest', (_e, { id }: { id: number }) => reverseBdUpfrontInterest(id))
-  handle('bd:setRoute', async (_e, { id, route, account }: { id: number; route: string; account?: string }) => {
+  handle('bd:setRoute', async (_e, { id, route, account, shares }: { id: number; route: string; account?: string; shares?: Row[] }) => {
     const { setBdDisbursementRoute } = await import('./billDiscounting')
-    return setBdDisbursementRoute(Number(id), String(route || ''), account)
+    return setBdDisbursementRoute(Number(id), String(route || ''), account, shares)
   })
   handle('bd:setVoucherBank', (_e, { id, entryId, account }: { id: number; entryId: number; account: string }) =>
     setBdVoucherBank(id, entryId, account)

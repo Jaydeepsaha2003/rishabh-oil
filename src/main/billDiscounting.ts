@@ -455,7 +455,13 @@ export async function setBdVoucherBank(bdId: number, entryId: number, account: s
  * changes the route alone and re-posts the opening voucher in place (same
  * id, same number); the repayments, interest and everything after stay.
  */
-export async function setBdDisbursementRoute(bdId: number, routeIn: string, accountIn?: string): Promise<{ id: number; route: string }> {
+export async function setBdDisbursementRoute(
+  bdId: number,
+  routeIn: string,
+  accountIn?: string,
+  // Supplier direct to several suppliers: who got how much.
+  sharesIn?: { party_id?: number | string; amount?: number | string }[]
+): Promise<{ id: number; route: string }> {
   return withDbTransaction(async () => {
     const c = getClient()
     const bd = await loadBd(bdId)
@@ -465,9 +471,32 @@ export async function setBdDisbursementRoute(bdId: number, routeIn: string, acco
     if (route === 'supplier') {
       if (String(bd.finance_type) !== 'PID') throw new Error('Only a PID bill can be paid straight to the supplier')
       if (String(bd.party_type) !== 'supplier' || !partyName(bd)) throw new Error('This bill names no supplier for the NBFC to have paid')
-      const parties = await c.execute({ sql: 'SELECT COUNT(*) AS k FROM bd_parties WHERE bd_id = ?', args: [n(bdId)] }).catch(() => null)
-      if (n(parties?.rows[0]?.k) > 1) {
-        throw new Error('This bill names more than one supplier — supplier direct needs one supplier per bill. Split it into one bill per supplier first')
+      // WHO THE NBFC PAID, AND HOW MUCH EACH. Given, it replaces the bill's
+      // suppliers; one supplier, or none given, keeps the bill as it is.
+      const shares = (sharesIn || [])
+        .map((x) => ({ id: n(x?.party_id), amount: round2(n(x?.amount)) }))
+        .filter((x) => x.id || x.amount > 0)
+      if (shares.length) {
+        if (shares.some((x) => !x.id)) throw new Error('Pick the supplier for each share')
+        if (shares.some((x) => !(x.amount > 0))) throw new Error('Enter how much went to each supplier')
+        if (new Set(shares.map((x) => x.id)).size !== shares.length) throw new Error('The same supplier is named twice — one line each')
+        if (shares.length > 1 && n(bd.first_party_part) > 0.005) throw new Error('This bill was paid to its supplier in parts — several suppliers cannot be paid that way')
+        const paid = round2(bdCalc(bd).receiptAmount)
+        const sum = round2(shares.reduce((t, x) => t + x.amount, 0))
+        if (shares.length > 1 && Math.abs(sum - paid) > 0.01 && Math.abs(sum - n(bd.amount)) > 0.01) {
+          throw new Error(`The shares come to ${inr(sum)} — they must add up to the ${inr(paid)} the NBFC paid out`)
+        }
+        for (const x of shares) {
+          const s = await c.execute({ sql: 'SELECT 1 FROM suppliers WHERE id = ?', args: [x.id] })
+          if (!s.rows.length) throw new Error('A supplier picked no longer exists')
+        }
+        await syncBdParties(n(bdId), 'supplier', shares.map((x) => x.id), shares.length > 1 ? Object.fromEntries(shares.map((x) => [String(x.id), x.amount])) : null)
+        await c.execute({ sql: 'UPDATE bill_discountings SET party_id = ? WHERE id = ?', args: [shares[0].id, n(bdId)] })
+      } else {
+        const parties = await c.execute({ sql: 'SELECT COUNT(*) AS k, SUM(COALESCE(amount, 0) > 0) AS withShare FROM bd_parties WHERE bd_id = ?', args: [n(bdId)] }).catch(() => null)
+        if (n(parties?.rows[0]?.k) > 1 && n(parties?.rows[0]?.withShare) < n(parties?.rows[0]?.k)) {
+          throw new Error('This bill names more than one supplier — say how much went to each')
+        }
       }
     } else {
       account = String(accountIn || '').trim()
@@ -569,7 +598,13 @@ export async function postBdOpening(bdId: number): Promise<void> {
   const interestHere = leg1 ? (upfront || serviced ? 0 : leg1.interest) : interest
   const bankHere = leg1 ? round2((upfront || serviced ? leg1.amount : leg1.net) + calc.adjCharge) : toParty
   const payableHere = leg1 ? leg1.amount : round2(amount - notYet)
-  const lines: JournalLine[] = [{ account: destination, group: route === 'supplier' ? 'Sundry Creditors' : 'Bank Accounts', dr: bankHere }]
+  // Paid straight to SEVERAL suppliers: one debit each, by their shares of
+  // what the NBFC paid out (scaled to it, the last taking any paisa left).
+  const shares = route === 'supplier' && !firstPart && !leg1 ? await supplierShares(bdId) : []
+  const lines: JournalLine[] =
+    shares.length > 1
+      ? splitByShares(bankHere, shares).map((x) => ({ account: x.name, group: 'Sundry Creditors', dr: x.amount }))
+      : [{ account: destination, group: route === 'supplier' ? 'Sundry Creditors' : 'Bank Accounts', dr: bankHere }]
   if (marginWithheld > 0.005) lines.push({ account: 'BD MARGIN A/C', group: 'Deposits (Asset)', dr: marginWithheld })
   if (interestHere > 0.005) lines.push({ account: 'INTEREST ON BILL DISCOUNTING A/C', group: 'Indirect Expenses', dr: interestHere })
   // The Adj. as a charge: what the NBFC took out of the payout (or added to
@@ -606,7 +641,34 @@ export async function postBdOpening(bdId: number): Promise<void> {
     lines
   })
   await c.execute({ sql: 'UPDATE bill_discountings SET journal_entry_id = ? WHERE id = ?', args: [je.id, bdId] })
-  if (route === 'supplier') await allocAgainst(je.id, destination, null, leg1 ? bankHere : toParty)
+  if (route === 'supplier') {
+    if (shares.length > 1) for (const x of splitByShares(bankHere, shares)) await allocAgainst(je.id, x.name, null, x.amount)
+    else await allocAgainst(je.id, destination, null, leg1 ? bankHere : toParty)
+  }
+  })
+}
+
+/** The suppliers on a bill with their shares, when there are several with shares to split by. */
+async function supplierShares(bdId: number): Promise<{ name: string; share: number }[]> {
+  const rows = toPlain(
+    await getClient().execute({
+      sql: `SELECT s.name, COALESCE(bp.amount, 0) AS amount FROM bd_parties bp JOIN suppliers s ON s.id = bp.party_id
+             WHERE bp.bd_id = ? AND bp.party_type = 'supplier' ORDER BY bp.id`,
+      args: [n(bdId)]
+    })
+  )
+  if (rows.length < 2 || rows.some((r) => !(n(r.amount) > 0))) return []
+  return rows.map((r) => ({ name: String(r.name), share: round2(n(r.amount)) }))
+}
+
+/** A total split by shares — each its proportion, the last taking what rounding leaves. */
+function splitByShares(total: number, shares: { name: string; share: number }[]): { name: string; amount: number }[] {
+  const whole = shares.reduce((t, x) => t + x.share, 0)
+  let left = round2(total)
+  return shares.map((x, i) => {
+    const amt = i === shares.length - 1 ? left : round2((total * x.share) / whole)
+    left = round2(left - amt)
+    return { name: x.name, amount: amt }
   })
 }
 
@@ -1004,7 +1066,15 @@ async function validateBd(v: Row, cur?: Row): Promise<void> {
   const legacy = !!cur && String(cur.disbursement_route || 'unconfirmed') === 'unconfirmed' && route === 'unconfirmed'
   if (!legacy && !['bank', 'supplier'].includes(route)) throw new Error('Choose who receives the NBFC disbursement')
   if (v.disbursement_route === 'supplier' && v.finance_type !== 'PID') throw new Error('Only PID can be funded directly to a supplier')
-  if (v.disbursement_route === 'supplier' && Array.isArray(v.party_ids) && v.party_ids.length > 1) throw new Error('Direct supplier funding currently needs one supplier per BD; enter separate BDs for separate beneficiaries')
+  // SEVERAL SUPPLIERS PAID DIRECT — each with its share, so the opening
+  // voucher can debit each what the NBFC paid them (I2: Shri Govind 39,49,153
+  // + Bunge 60,50,847). Without the shares there is no way to split it.
+  if (v.disbursement_route === 'supplier' && Array.isArray(v.party_ids) && v.party_ids.length > 1) {
+    const amts = (v.party_amounts as Record<string, unknown> | null) || {}
+    if ((v.party_ids as unknown[]).some((pid) => !(n(amts[String(n(pid))]) > 0))) {
+      throw new Error('Paid straight to several suppliers — enter how much went to each')
+    }
+  }
   if (v.disbursement_route === 'bank' && !String(v.disbursement_account || '').trim()) throw new Error('Choose the receiving bank account')
   // Every voucher a bill posts is numbered with this — the disbursement, each
   // repayment, the margin release — so a bill without one puts unnumbered

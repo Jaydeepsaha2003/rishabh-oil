@@ -993,6 +993,8 @@ export function BillDiscounting({
   const [routeVal, setRouteVal] = useState('')
   const [routeAcct, setRouteAcct] = useState('')
   const [routeSaving, setRouteSaving] = useState(false)
+  // Supplier direct: who the NBFC paid, and how much each — one row per supplier.
+  const [routeShares, setRouteShares] = useState<{ party_id: string; amount: string }[]>([])
   // A repayment opened for editing from the Repay window's history.
   const [editRepPart, setEditRepPart] = useState<Row | null>(null)
   // WHICH KIND OF PAYMENT THIS IS.
@@ -1465,13 +1467,38 @@ export function BillDiscounting({
     setRouteRow(r)
     setRouteVal(String(r.disbursement_route || '') === 'supplier' ? 'supplier' : 'bank')
     setRouteAcct(String(r.disbursement_account || ''))
+    setRouteShares(r.party_id ? [{ party_id: String(r.party_id), amount: String(round2(n(r.amount))) }] : [])
+    void window.api.billDiscounting
+      .parties(Number(r.id))
+      .then((ps: Row[]) => {
+        const sup = (ps || []).filter((x) => String(x.party_type) === 'supplier')
+        if (!sup.length) return
+        setRouteShares(
+          sup.map((x) => ({
+            party_id: String(x.party_id),
+            amount: n(x.amount) > 0 ? String(round2(n(x.amount))) : sup.length === 1 ? String(round2(n(r.amount))) : ''
+          }))
+        )
+      })
+      .catch(() => undefined)
   }
   async function saveRoute(): Promise<void> {
     if (!routeRow) return
     if (routeVal === 'bank' && !routeAcct) return void toast.error('Pick the bank the money landed in')
+    const shares = routeShares.filter((x) => x.party_id || n(x.amount) > 0)
+    if (routeVal === 'supplier') {
+      if (!shares.length) return void toast.error('Pick the supplier the NBFC paid')
+      if (shares.some((x) => !x.party_id)) return void toast.error('Pick the supplier for each share')
+      if (shares.length > 1 && shares.some((x) => !(n(x.amount) > 0))) return void toast.error('Enter how much went to each supplier')
+    }
     setRouteSaving(true)
     try {
-      await window.api.billDiscounting.setRoute(Number(routeRow.id), routeVal, routeVal === 'bank' ? routeAcct : undefined)
+      await window.api.billDiscounting.setRoute(
+        Number(routeRow.id),
+        routeVal,
+        routeVal === 'bank' ? routeAcct : undefined,
+        routeVal === 'supplier' ? shares.map((x) => ({ party_id: Number(x.party_id), amount: round2(n(x.amount)) })) : undefined
+      )
       toast.success(
         `${String(routeRow.bd_no || 'Bill')} — disbursement now ${routeVal === 'supplier' ? `paid to ${String(routeRow.party_name || routeRow.supplier_name || 'the supplier')} direct` : `into ${routeAcct}`}; its opening voucher was re-posted`
       )
@@ -7914,9 +7941,69 @@ export function BillDiscounting({
                   </SelectContent>
                 </Select>
               ) : (
-                <p className="text-[12px] font-semibold text-[#33473E]">
-                  Posts as a journal: {String(routeRow.party_name || routeRow.supplier_name || 'the supplier')} is debited with what the NBFC paid, against the NBFC&rsquo;s payable. No bank entry.
-                </p>
+                <div className="grid gap-2">
+                  <p className="text-[12px] font-semibold text-[#33473E]">
+                    Posts as a journal: each supplier below is debited with what the NBFC paid them, against the NBFC&rsquo;s payable. No bank entry.
+                  </p>
+                  {routeShares.map((sh, i) => (
+                    <div key={i} className="flex items-center gap-2">
+                      <div className="min-w-0 flex-1">
+                        <Select
+                          searchable
+                          value={sh.party_id}
+                          onValueChange={(v) => setRouteShares((p) => p.map((x, j) => (j === i ? { ...x, party_id: v } : x)))}
+                        >
+                          <SelectTrigger className="h-10">
+                            <SelectValue placeholder="Pick the supplier" />
+                          </SelectTrigger>
+                          <SelectContent>
+                            {suppliers.map((sp) => (
+                              <SelectItem key={String(sp.id)} value={String(sp.id)}>
+                                {String(sp.name)}
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                      </div>
+                      <Input
+                        inputMode="decimal"
+                        className="h-10 w-[150px] text-right tabular-nums"
+                        placeholder="0.00"
+                        value={sh.amount}
+                        onChange={(e) => setRouteShares((p) => p.map((x, j) => (j === i ? { ...x, amount: e.target.value.replace(/[^0-9.]/g, '') } : x)))}
+                      />
+                      {routeShares.length > 1 && (
+                        <button
+                          type="button"
+                          title="Remove this supplier"
+                          onClick={() => setRouteShares((p) => p.filter((_, j) => j !== i))}
+                          className="flex h-10 w-9 flex-none items-center justify-center rounded text-[#8CA396] hover:bg-black/5 hover:text-[#B3261E]"
+                        >
+                          <Trash2 className="h-4 w-4" />
+                        </button>
+                      )}
+                    </div>
+                  ))}
+                  <div className="flex flex-wrap items-center gap-2">
+                    <Button
+                      type="button"
+                      variant="outline"
+                      className="!h-8 !px-3 !text-[12px] !font-bold"
+                      onClick={() => setRouteShares((p) => [...p, { party_id: '', amount: '' }])}
+                    >
+                      <Plus className="h-4 w-4" /> Add supplier
+                    </Button>
+                    {routeShares.length > 1 && (() => {
+                      const sum = round2(routeShares.reduce((t, x) => t + n(x.amount), 0))
+                      const ok = Math.abs(sum - n(routeRow.amount)) < 0.01
+                      return (
+                        <span className={cn('ml-auto text-[11.5px] font-bold', ok ? 'text-[#0B6B45]' : 'text-[#B3261E]')}>
+                          {ok ? `Shares add up to ${formatINR(sum)}` : `Shares ${formatINR(sum)} of ${formatINR(n(routeRow.amount))}`}
+                        </span>
+                      )
+                    })()}
+                  </div>
+                </div>
               )}
             </div>
           )}
