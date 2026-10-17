@@ -826,7 +826,44 @@ async function reconcile(v: { kind: TallyRegisterKind; data_base64: string; comp
           best = m
         }
       }
-      if (!best) continue
+      // THE MAIN PAYMENT TO THE RUPEE, THE INTEREST OFF OR NOT IN TALLY YET.
+      // T5 here: Ashok Soap 84,92,630.14 + interest 2,07,369.86 = 87,00,000;
+      // Tally journaled 84,92,630 and 2,07,340 (₹30 short) — and for T6 only
+      // the 54,66,520, its interest never entered. The parts never added up,
+      // so the bill read "Not in Tally" while Tally's journals sat in these
+      // books beside it, the same money twice. When one of Tally's journals
+      // is the voucher's main Dr to the rupee, the bill IS in Tally: the
+      // others that fit are taken toward the rest, and what Tally is short is
+      // said on the row rather than hidden.
+      let short = 0
+      if (!best) {
+        const mainIdx = cands.findIndex((t) => {
+          const d = top(t.lines, 'dr')
+          return !!d && kin(d, bDr) && Math.abs(d.dr - bDr.dr) <= Math.max(1, tol)
+        })
+        if (mainIdx < 0) continue
+        const remain = b.total - cands[mainIdx].total
+        // Only journals entered alongside the main one — Tally journals a
+        // bill's interest the same day. One days away is another bill's.
+        const others = cands.map((_, i) => i).filter((i) => i !== mainIdx && daysApart(cands[i].date, cands[mainIdx].date) <= 1)
+        let pick: number[] = []
+        let gapBest = remain
+        const tryPick = (idx: number[]): void => {
+          const s2 = idx.reduce((t, i) => t + cands[i].total, 0)
+          // Toward the rest, never past it by more than the tolerance.
+          if (s2 > remain + Math.max(1, tol)) return
+          if (Math.abs(remain - s2) < gapBest) {
+            gapBest = Math.abs(remain - s2)
+            pick = idx
+          }
+        }
+        for (const i of others) tryPick([i])
+        for (let x = 0; x < others.length; x++) for (let y = x + 1; y < others.length; y++) tryPick([others[x], others[y]])
+        best = (1 << mainIdx) | pick.reduce((m, i) => m | (1 << i), 0)
+        short = Math.round((remain - pick.reduce((t, i) => t + cands[i].total, 0)) * 100) / 100
+        // Tally missing more than a twentieth of the voucher is not this.
+        if (short > b.total * 0.05) continue
+      }
       // A lone copy must look like the voucher line by line too — its main
       // ledger the same amount, not only the same total.
       const parts0 = cands.filter((_, i) => best & (1 << i))
@@ -837,7 +874,7 @@ async function reconcile(v: { kind: TallyRegisterKind; data_base64: string; comp
       used.add(b.id)
       const parts = cands.filter((_, i) => best & (1 << i))
       // Tally's parts on one day can move the voucher to it; on several, not.
-      const of = { id: b.id, code: b.code, vch_no: b.vch_no, total: b.total, date: b.date, parts: parts.length, one_day: new Set(parts.map((t) => t.date)).size === 1 }
+      const of = { id: b.id, code: b.code, vch_no: b.vch_no, total: b.total, date: b.date, parts: parts.length, one_day: new Set(parts.map((t) => t.date)).size === 1, short }
       for (const t of parts) {
         partTaken.add(t.key)
         const copy = byNumber.get(t.key)
@@ -1016,6 +1053,13 @@ function explain(rows: Row[], kind: TallyRegisterKind): void {
           `${String(b?.code || 'This voucher')} was booked from Tally, but ${ofName} — posted by its own document — already carries it: ${n(of.parts) > 1 ? `Tally's ${n(of.parts)} journals together make its ${inr(n(of.total))}` : `the same ${inr(n(of.total))} on ${dmy(String(of.date))}`}. The same money is in these books twice.`
         )
         fix = `Reverse ${String(b?.code || 'this copy')} (booked from Tally). ${String(of.code || 'The document voucher')} stays, and stands for Tally's No. ${String(t.vch_no)} on the next check.`
+      }
+      // Tally's journals for it come to less than the voucher: its interest
+      // was entered for a different figure, or not entered at all.
+      if (n(of.short) > 1) {
+        say.push(
+          `Tally's journal${n(of.parts) > 1 ? 's' : ''} for ${ofName} come to ${inr(n(of.short))} less than its ${inr(n(of.total))} — usually the interest, entered in Tally for a different figure or not entered yet. Correct it in Tally.`
+        )
       }
     }
     r.explain = say
