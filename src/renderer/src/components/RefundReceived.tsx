@@ -24,13 +24,16 @@ export function RefundReceived({
   id,
   open,
   onClose,
-  onChanged
+  onChanged,
+  phone
 }: {
   kind: 'bd' | 'lc'
   id: number | null
   open: boolean
   onClose: () => void
   onChanged?: () => void
+  /** Over the phone's full-screen views (z-60), and scrolling within a phone's height. */
+  phone?: boolean
 }): React.JSX.Element {
   const api = kind === 'bd' ? window.api.billDiscounting : window.api.lc
   const [info, setInfo] = useState<Row | null>(null)
@@ -74,7 +77,7 @@ export function RefundReceived({
   const due = n(info?.due)
   return (
     <Dialog open={open} onOpenChange={(v) => !v && onClose()}>
-      <DialogContent className="max-w-[720px]">
+      <DialogContent className={cn('max-w-[720px]', phone && '!z-[70] max-h-[90vh] w-[calc(100%-20px)] overflow-y-auto overflow-x-hidden !p-4')}>
         <DialogHeader>
           <DialogTitle>Refund received{info ? ` — ${kind === 'bd' ? 'bill' : 'LC'} ${String(info.label || '')}` : ''}</DialogTitle>
           <DialogDescription>
@@ -87,14 +90,14 @@ export function RefundReceived({
             <Loader2 className="h-4 w-4 animate-spin" /> Loading…
           </div>
         ) : (
-          <div className="grid gap-4">
+          <div className="grid min-w-0 gap-4">
             <div className="grid grid-cols-3 gap-2 text-center">
               {[
                 ['Paid over', n(info.booked)],
                 ['Refunded', n(info.refunded)],
                 ['Still due', due]
               ].map(([k, v]) => (
-                <div key={String(k)} className={cn('rounded-[4px] border px-3 py-2', k === 'Still due' && due > 0 ? 'border-[#F0D9AE] bg-[#FFFBF2]' : 'border-[#D6E2D6] bg-[#F7FAF6]')}>
+                <div key={String(k)} className={cn('min-w-0 rounded-[4px] border px-2 py-2', k === 'Still due' && due > 0 ? 'border-[#F0D9AE] bg-[#FFFBF2]' : 'border-[#D6E2D6] bg-[#F7FAF6]')}>
                   <div className="text-[10.5px] font-extrabold uppercase tracking-[.08em] text-[#5A6B62]">{String(k)}</div>
                   <div className="text-[15px] font-extrabold tabular-nums">{formatINR(Number(v))}</div>
                 </div>
@@ -157,15 +160,15 @@ export function RefundReceived({
 
                 <div className="grid gap-1.5 border-t pt-3">
                   <Label className="text-[11px]">Not in the books yet? Record the refund</Label>
-                  <div className="flex flex-wrap items-end gap-2">
+                  <div className={cn(phone ? 'grid grid-cols-[minmax(0,1fr)_minmax(0,1fr)] gap-2' : 'flex flex-wrap items-end gap-2')}>
                     <div className="grid gap-1">
                       <span className="text-[10.5px] font-bold text-muted-foreground">Date</span>
-                      <Input type="date" className="h-9 w-[150px]" value={form.date} min={String(info.since || '')} max={today()} onChange={(e) => setForm((p) => ({ ...p, date: e.target.value }))} />
+                      <Input type="date" className={cn('h-9', phone ? 'w-full' : 'w-[150px]')} value={form.date} min={String(info.since || '')} max={today()} onChange={(e) => setForm((p) => ({ ...p, date: e.target.value }))} />
                     </div>
-                    <div className="grid min-w-[240px] flex-1 gap-1">
+                    <div className={cn('grid min-w-0 grid-cols-[minmax(0,1fr)] gap-1', phone ? 'col-span-2 row-start-2' : 'min-w-[240px] flex-1')}>
                       <span className="text-[10.5px] font-bold text-muted-foreground">Into bank</span>
                       <Select value={form.bank} onValueChange={(v) => setForm((p) => ({ ...p, bank: v }))}>
-                        <SelectTrigger className="h-9">
+                        <SelectTrigger className="h-9 w-full min-w-0 [&>span]:truncate">
                           <SelectValue placeholder="Pick the bank" />
                         </SelectTrigger>
                         <SelectContent>
@@ -181,13 +184,14 @@ export function RefundReceived({
                       <span className="text-[10.5px] font-bold text-muted-foreground">Amount</span>
                       <Input
                         inputMode="decimal"
-                        className="h-9 w-[130px] text-right tabular-nums"
+                        className={cn('h-9 text-right tabular-nums', phone ? 'w-full' : 'w-[130px]')}
                         value={form.amount}
                         onChange={(e) => setForm((p) => ({ ...p, amount: e.target.value.replace(/[^0-9.]/g, '') }))}
                       />
                     </div>
                     <Button
                       variant="outline"
+                      className={cn(phone && 'col-span-2')}
                       disabled={busy || !(n(form.amount) > 0) || !form.bank}
                       onClick={() => void run(() => api.refundRecord(id!, { date: form.date, amount: n(form.amount), bank: form.bank }), 'Refund recorded')}
                     >

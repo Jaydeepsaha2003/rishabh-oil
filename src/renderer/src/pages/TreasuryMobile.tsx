@@ -58,6 +58,7 @@ import { MobileBar } from '@/components/MobileBar'
 import { SerialNo } from '@/components/SerialNo'
 import { cn } from '@/lib/utils'
 import { PayInDue } from '@/components/PayInDue'
+import { RefundReceived } from '@/components/RefundReceived'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { useLiveRefresh } from '@/lib/useLiveRefresh'
 import { PaymentTrackerMobile, trackerHeadline } from '@/components/PaymentTracker'
@@ -2442,6 +2443,52 @@ function CellGrid({ cells }: { cells: { k: string; v: string; fg?: string; bg?: 
   )
 }
 
+// PAID THE BANK OVER THE BALANCE — what it still owes back, and the same
+// Refund received box as the desktop (link a receipt, or record it).
+function PhoneRefundStrip({ kind, id }: { kind: 'bd' | 'lc'; id: number }): React.JSX.Element | null {
+  const [due, setDue] = useState(0)
+  const [done, setDone] = useState(0)
+  const [open, setOpen] = useState(false)
+  const load = useCallback(() => {
+    const api = kind === 'bd' ? window.api.billDiscounting : window.api.lc
+    void api
+      .refundInfo(id)
+      .then((r: Row) => {
+        setDue(n(r.due))
+        setDone(((r.refunds as Row[]) || []).length)
+      })
+      .catch(() => undefined)
+  }, [kind, id])
+  useEffect(load, [load])
+  if (due <= 0.004 && !done) return null
+  return (
+    <>
+      <div
+        className="mx-4 mt-3 flex items-center gap-3 rounded-[4px] border px-3 py-2.5"
+        style={{ background: due > 0.004 ? '#FFFBF2' : '#F4FBF6', borderColor: due > 0.004 ? '#F0D9AE' : '#BFE3CB' }}
+      >
+        <div className="min-w-0 flex-1">
+          <div className="text-[10px] font-extrabold uppercase tracking-[.1em]" style={{ color: due > 0.004 ? '#8A5300' : '#0B5638' }}>
+            {due > 0.004 ? 'Refund due from the bank' : 'Refund received'}
+          </div>
+          <div className="text-[15px] font-bold" style={{ fontFamily: MONO }}>
+            {due > 0.004 ? inrFull(due) : 'Nothing more due'}
+          </div>
+        </div>
+        <button
+          type="button"
+          onClick={() => setOpen(true)}
+          className="h-9 flex-none rounded-[4px] px-3 text-[12.5px] font-extrabold text-white"
+          style={{ background: T.navy }}
+        >
+          {due > 0.004 ? 'Refund received' : 'View'}
+        </button>
+      </div>
+      <RefundReceived phone kind={kind} id={open ? id : null} open={open} onClose={() => setOpen(false)} onChanged={load} />
+    </>
+  )
+}
+
 function LcDetail({
   l,
   acts,
@@ -2571,6 +2618,7 @@ function LcDetail({
         </>
       }
     >
+      <PhoneRefundStrip kind="lc" id={Number(l.id)} />
       <CellGrid
         cells={[
           { k: 'Margin held', v: inrShort(margin) },
@@ -2814,6 +2862,7 @@ function BdDetail({
         </>
       }
     >
+      <PhoneRefundStrip kind="bd" id={Number(b.id)} />
       {/* The NBFC still owes the supplier part of this bill. */}
       {!repaid && !awaiting && b.party_in_parts && n(b.party_left) > 0.5 && onPayParty && (
         <button
