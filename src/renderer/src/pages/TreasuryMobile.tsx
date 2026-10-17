@@ -2465,13 +2465,13 @@ function PhoneRefundStrip({ kind, id }: { kind: 'bd' | 'lc'; id: number }): Reac
     <>
       <div
         className="mx-4 mt-3 flex items-center gap-3 rounded-[4px] border px-3 py-2.5"
-        style={{ background: due > 0.004 ? '#FFFBF2' : '#F4FBF6', borderColor: due > 0.004 ? '#F0D9AE' : '#BFE3CB' }}
+        style={{ background: due > 0.004 ? '#FDECEA' : '#F4FBF6', borderColor: due > 0.004 ? '#F0C4C0' : '#BFE3CB' }}
       >
         <div className="min-w-0 flex-1">
-          <div className="text-[10px] font-extrabold uppercase tracking-[.1em]" style={{ color: due > 0.004 ? '#8A5300' : '#0B5638' }}>
+          <div className="text-[10px] font-extrabold uppercase tracking-[.1em]" style={{ color: due > 0.004 ? '#B3261E' : '#0B5638' }}>
             {due > 0.004 ? 'Refund due from the bank' : 'Refund received'}
           </div>
-          <div className="text-[15px] font-bold" style={{ fontFamily: MONO }}>
+          <div className="text-[15px] font-bold" style={{ fontFamily: MONO, color: due > 0.004 ? '#B3261E' : undefined }}>
             {due > 0.004 ? inrFull(due) : 'Nothing more due'}
           </div>
         </div>

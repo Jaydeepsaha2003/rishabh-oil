@@ -97,7 +97,7 @@ export function RefundReceived({
                 ['Refunded', n(info.refunded)],
                 ['Still due', due]
               ].map(([k, v]) => (
-                <div key={String(k)} className={cn('min-w-0 rounded-[4px] border px-2 py-2', k === 'Still due' && due > 0 ? 'border-[#F0D9AE] bg-[#FFFBF2]' : 'border-[#D6E2D6] bg-[#F7FAF6]')}>
+                <div key={String(k)} className={cn('min-w-0 rounded-[4px] border px-2 py-2', k === 'Still due' && due > 0 ? 'border-[#F0C4C0] bg-[#FDECEA] text-[#B3261E]' : 'border-[#D6E2D6] bg-[#F7FAF6]')}>
                   <div className="text-[10.5px] font-extrabold uppercase tracking-[.08em] text-[#5A6B62]">{String(k)}</div>
                   <div className="text-[15px] font-extrabold tabular-nums">{formatINR(Number(v))}</div>
                 </div>

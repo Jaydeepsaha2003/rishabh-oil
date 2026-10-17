@@ -1238,7 +1238,7 @@ function RefundDueChip({ amount }: { amount?: number }): React.JSX.Element | nul
   if (!amount || amount <= 0.004) return null
   return (
     <span
-      className="inline-flex items-center gap-1 rounded-[2px] bg-[#FFEDD0] px-1.5 py-[1px] text-[10.5px] font-extrabold uppercase tracking-[.04em] text-[#8A5300]"
+      className="inline-flex items-center gap-1 rounded-[2px] border border-[#F0C4C0] bg-[#FDECEA] px-1.5 py-[1px] text-[10.5px] font-extrabold uppercase tracking-[.04em] text-[#B3261E]"
       title="Paid over the balance — the bank owes this back. ⋮ → Refund received when it comes in."
     >
       Refund due {formatINR(amount)}
