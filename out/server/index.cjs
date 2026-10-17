@@ -18277,7 +18277,7 @@ async function setBdVoucherBank(bdId, entryId, account) {
     return { id: eid, account: name };
   });
 }
-async function setBdDisbursementRoute(bdId, routeIn, accountIn) {
+async function setBdDisbursementRoute(bdId, routeIn, accountIn, sharesIn) {
   return withDbTransaction(async () => {
     const c = getClient();
     const bd = await loadBd(bdId);
@@ -18287,9 +18287,28 @@ async function setBdDisbursementRoute(bdId, routeIn, accountIn) {
     if (route === "supplier") {
       if (String(bd.finance_type) !== "PID") throw new Error("Only a PID bill can be paid straight to the supplier");
       if (String(bd.party_type) !== "supplier" || !partyName(bd)) throw new Error("This bill names no supplier for the NBFC to have paid");
-      const parties = await c.execute({ sql: "SELECT COUNT(*) AS k FROM bd_parties WHERE bd_id = ?", args: [n21(bdId)] }).catch(() => null);
-      if (n21(parties?.rows[0]?.k) > 1) {
-        throw new Error("This bill names more than one supplier \u2014 supplier direct needs one supplier per bill. Split it into one bill per supplier first");
+      const shares = (sharesIn || []).map((x) => ({ id: n21(x?.party_id), amount: round27(n21(x?.amount)) })).filter((x) => x.id || x.amount > 0);
+      if (shares.length) {
+        if (shares.some((x) => !x.id)) throw new Error("Pick the supplier for each share");
+        if (shares.some((x) => !(x.amount > 0))) throw new Error("Enter how much went to each supplier");
+        if (new Set(shares.map((x) => x.id)).size !== shares.length) throw new Error("The same supplier is named twice \u2014 one line each");
+        if (shares.length > 1 && n21(bd.first_party_part) > 5e-3) throw new Error("This bill was paid to its supplier in parts \u2014 several suppliers cannot be paid that way");
+        const paid = round27(bdCalc(bd).receiptAmount);
+        const sum = round27(shares.reduce((t, x) => t + x.amount, 0));
+        if (shares.length > 1 && Math.abs(sum - paid) > 0.01 && Math.abs(sum - n21(bd.amount)) > 0.01) {
+          throw new Error(`The shares come to ${inr(sum)} \u2014 they must add up to the ${inr(paid)} the NBFC paid out`);
+        }
+        for (const x of shares) {
+          const s5 = await c.execute({ sql: "SELECT 1 FROM suppliers WHERE id = ?", args: [x.id] });
+          if (!s5.rows.length) throw new Error("A supplier picked no longer exists");
+        }
+        await syncBdParties(n21(bdId), "supplier", shares.map((x) => x.id), shares.length > 1 ? Object.fromEntries(shares.map((x) => [String(x.id), x.amount])) : null);
+        await c.execute({ sql: "UPDATE bill_discountings SET party_id = ? WHERE id = ?", args: [shares[0].id, n21(bdId)] });
+      } else {
+        const parties = await c.execute({ sql: "SELECT COUNT(*) AS k, SUM(COALESCE(amount, 0) > 0) AS withShare FROM bd_parties WHERE bd_id = ?", args: [n21(bdId)] }).catch(() => null);
+        if (n21(parties?.rows[0]?.k) > 1 && n21(parties?.rows[0]?.withShare) < n21(parties?.rows[0]?.k)) {
+          throw new Error("This bill names more than one supplier \u2014 say how much went to each");
+        }
       }
     } else {
       account = String(accountIn || "").trim();
@@ -18349,7 +18368,8 @@ async function postBdOpening(bdId) {
     const interestHere = leg1 ? upfront || serviced ? 0 : leg1.interest : interest;
     const bankHere = leg1 ? round27((upfront || serviced ? leg1.amount : leg1.net) + calc.adjCharge) : toParty;
     const payableHere = leg1 ? leg1.amount : round27(amount2 - notYet);
-    const lines = [{ account: destination, group: route === "supplier" ? "Sundry Creditors" : "Bank Accounts", dr: bankHere }];
+    const shares = route === "supplier" && !firstPart && !leg1 ? await supplierShares(bdId) : [];
+    const lines = shares.length > 1 ? splitByShares(bankHere, shares).map((x) => ({ account: x.name, group: "Sundry Creditors", dr: x.amount })) : [{ account: destination, group: route === "supplier" ? "Sundry Creditors" : "Bank Accounts", dr: bankHere }];
     if (marginWithheld > 5e-3) lines.push({ account: "BD MARGIN A/C", group: "Deposits (Asset)", dr: marginWithheld });
     if (interestHere > 5e-3) lines.push({ account: "INTEREST ON BILL DISCOUNTING A/C", group: "Indirect Expenses", dr: interestHere });
     const adjLedger = String(bd.open_adj_ledger || "").trim().toUpperCase() || BD_ADJ_DEFAULT;
@@ -18370,7 +18390,30 @@ async function postBdOpening(bdId) {
       lines
     });
     await c.execute({ sql: "UPDATE bill_discountings SET journal_entry_id = ? WHERE id = ?", args: [je.id, bdId] });
-    if (route === "supplier") await allocAgainst2(je.id, destination, null, leg1 ? bankHere : toParty);
+    if (route === "supplier") {
+      if (shares.length > 1) for (const x of splitByShares(bankHere, shares)) await allocAgainst2(je.id, x.name, null, x.amount);
+      else await allocAgainst2(je.id, destination, null, leg1 ? bankHere : toParty);
+    }
+  });
+}
+async function supplierShares(bdId) {
+  const rows2 = toPlain18(
+    await getClient().execute({
+      sql: `SELECT s.name, COALESCE(bp.amount, 0) AS amount FROM bd_parties bp JOIN suppliers s ON s.id = bp.party_id
+             WHERE bp.bd_id = ? AND bp.party_type = 'supplier' ORDER BY bp.id`,
+      args: [n21(bdId)]
+    })
+  );
+  if (rows2.length < 2 || rows2.some((r) => !(n21(r.amount) > 0))) return [];
+  return rows2.map((r) => ({ name: String(r.name), share: round27(n21(r.amount)) }));
+}
+function splitByShares(total, shares) {
+  const whole = shares.reduce((t, x) => t + x.share, 0);
+  let left = round27(total);
+  return shares.map((x, i) => {
+    const amt = i === shares.length - 1 ? left : round27(total * x.share / whole);
+    left = round27(left - amt);
+    return { name: x.name, amount: amt };
   });
 }
 async function postBdUpfrontInterest(bdId, dateIn, account) {
@@ -18624,7 +18667,12 @@ async function validateBd(v, cur) {
   const legacy = !!cur && String(cur.disbursement_route || "unconfirmed") === "unconfirmed" && route === "unconfirmed";
   if (!legacy && !["bank", "supplier"].includes(route)) throw new Error("Choose who receives the NBFC disbursement");
   if (v.disbursement_route === "supplier" && v.finance_type !== "PID") throw new Error("Only PID can be funded directly to a supplier");
-  if (v.disbursement_route === "supplier" && Array.isArray(v.party_ids) && v.party_ids.length > 1) throw new Error("Direct supplier funding currently needs one supplier per BD; enter separate BDs for separate beneficiaries");
+  if (v.disbursement_route === "supplier" && Array.isArray(v.party_ids) && v.party_ids.length > 1) {
+    const amts = v.party_amounts || {};
+    if (v.party_ids.some((pid) => !(n21(amts[String(n21(pid))]) > 0))) {
+      throw new Error("Paid straight to several suppliers \u2014 enter how much went to each");
+    }
+  }
   if (v.disbursement_route === "bank" && !String(v.disbursement_account || "").trim()) throw new Error("Choose the receiving bank account");
   if (!String(v.bd_no ?? "").trim()) throw new Error("Enter the BD no");
   if (!["PID", "SID"].includes(String(v.finance_type))) throw new Error("Choose PID or SID");
@@ -18655,9 +18703,11 @@ async function validateBd(v, cur) {
     const invoice = round27(n21(v.invoice_amount));
     const sanctioned = round27(bdCalc(v).sanctionedAmount);
     const total = invoice > 0 ? invoice : sanctioned;
-    if (Math.abs(sum - total) > 0.05 && Math.abs(sum - sanctioned) > 0.05) {
+    const paidOut = round27(n21(v.amount));
+    const paidSplit = String(v.disbursement_route || "") === "supplier" && Math.abs(sum - paidOut) <= 0.05;
+    if (!paidSplit && Math.abs(sum - total) > 0.05 && Math.abs(sum - sanctioned) > 0.05) {
       throw new Error(
-        `The parties' invoice amounts come to ${inr(sum)}, but the bill's invoice amount is ${inr(total)} \u2014 they have to match`
+        `The parties' amounts come to ${inr(sum)} \u2014 they must add up to the bill's invoice amount (${inr(total)})${String(v.disbursement_route || "") === "supplier" ? ` or to the ${inr(paidOut)} the NBFC paid out` : ""}`
       );
     }
   }
@@ -23996,7 +24046,7 @@ async function reconcile(v) {
     }
     const fromTally = (b) => /imported from tally/i.test(b.narration);
     const NOISE = /* @__PURE__ */ new Set(["M", "S", "MS", "THE", "SHRI", "SRI", "NEW"]);
-    const firstWord = (v2) => String(v2 || "").toUpperCase().replace(/[^A-Z0-9 ]/g, " ").split(/\s+/).filter((w) => w && !NOISE.has(w))[0] || "";
+    const firstWord = (v2) => String(v2 || "").toUpperCase().replace(/^\s*BILLS DISCOUNTED\s*-?\s*/, "").replace(/[^A-Z0-9 ]/g, " ").split(/\s+/).filter((w) => w && !NOISE.has(w))[0] || "";
     const kin = (l, p) => sameLedger(l, p, mapped) || !!firstWord(l.name) && firstWord(l.name) === firstWord(p.account);
     const top = (ls, side) => ls.filter((l) => l[side] > 0).sort((a, b) => b[side] - a[side])[0];
     const owners = books.filter((b) => !used.has(b.id) && !fromTally(b) && b.total > 0 && b.date >= shiftDays(reg.from, -NEAR_DAYS) && b.date <= shiftDays(reg.to, NEAR_DAYS));
@@ -38895,9 +38945,9 @@ function registerIpc() {
     (_e, { id, date, account }) => postBdUpfrontInterest(id, date, account)
   );
   handle("bd:reverseUpfrontInterest", (_e, { id }) => reverseBdUpfrontInterest(id));
-  handle("bd:setRoute", async (_e, { id, route, account }) => {
+  handle("bd:setRoute", async (_e, { id, route, account, shares }) => {
     const { setBdDisbursementRoute: setBdDisbursementRoute2 } = await Promise.resolve().then(() => (init_billDiscounting(), billDiscounting_exports));
-    return setBdDisbursementRoute2(Number(id), String(route || ""), account);
+    return setBdDisbursementRoute2(Number(id), String(route || ""), account, shares);
   });
   handle(
     "bd:setVoucherBank",
