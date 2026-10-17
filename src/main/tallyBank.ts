@@ -443,10 +443,15 @@ async function reconcileBank(v: { account_id: number; data_base64: string; compa
     const sign = (dir: string, amt: number): number => (dir === 'in' ? amt : -amt)
     const net = round2(ts.reduce((s, t) => s + sign(t.dir, t.amount), 0))
     const ok = Math.abs(net - sign(b.dir, b.amount)) <= 1
+    // Only the main line answers for the voucher's date. The lines that came
+    // back (Receipt 477's ₹6,696 refunded ten days after PAY/18) are on their
+    // own days by nature — comparing those to the voucher flagged a match as
+    // "Date not matching".
+    const main = ts.reduce((a, t) => (t.amount > a.amount ? t : a), ts[0])
     for (const t of ts) {
       handled.add(t.key)
       const diffs: Row[] = []
-      if (b.date !== t.date) diffs.push({ field: 'date', tally: t.date, books: b.date })
+      if (t === main && b.date !== t.date) diffs.push({ field: 'date', tally: t.date, books: b.date })
       if (!ok) diffs.push({ field: 'amount', tally: Math.abs(net), books: b.amount, diff: round2(Math.abs(net) - b.amount) })
       rows.push({
         key: t.key,

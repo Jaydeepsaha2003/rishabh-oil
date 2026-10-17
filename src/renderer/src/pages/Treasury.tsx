@@ -1075,6 +1075,84 @@ function LcFact({
 /** The hairline grid the facts sit in, so every panel divides the same way. */
 const LC_FACTS = 'grid grid-cols-2 gap-px bg-[#E4ECE3] [&>*]:min-w-0 sm:grid-cols-4'
 const LC_FACTS_3 = 'grid grid-cols-2 gap-px bg-[#E4ECE3] [&>*]:min-w-0 sm:grid-cols-3'
+// Two to a row in a half-width panel; a lone last fact takes the whole row
+// rather than leaving a grey hole beside it.
+const LC_FACTS_2 = 'grid grid-cols-2 gap-px bg-[#E4ECE3] [&>*]:min-w-0 [&>*:last-child:nth-child(odd)]:col-span-2'
+
+// AN LC'S DATES AS A LINE. Application, opening, payment, then maturity — or,
+// paid in parts, each part's maturity — with what has happened filled in and
+// what is still to come hollow.
+function LcTimeline({ l }: { l: Row }): React.JSX.Element {
+  const today = todayISO()
+  const parts = lcPartsOf(l)
+  type Stop = { k: string; d: string | null; sub?: string; tone?: 'warn' | 'good' | 'bad'; tag?: LcPart }
+  const stops: Stop[] = [
+    { k: 'Application', d: (l.open_date as string) || null },
+    { k: 'Opened', d: (l.opened_date as string) || null },
+    { k: 'Payment received', d: (l.payment_received_date as string) || null }
+  ]
+  if (parts.length) {
+    for (const p of parts) {
+      const left = daysTo(p.maturity_date)
+      stops.push({
+        k: `Part ${p.part_no} matures`,
+        d: p.maturity_date,
+        tag: p,
+        sub: p.repaid_date ? `repaid ${formatDate(p.repaid_date)}` : left == null ? undefined : left < 0 ? `${-left}d overdue` : `${left}d left · ${p.days} days`,
+        tone: p.repaid_date ? 'good' : left != null && left <= 7 ? 'bad' : 'warn'
+      })
+    }
+  } else {
+    stops.push({ k: 'Maturity', d: (l.expiry_date as string) || null, sub: n(l.usance_days) > 0 ? `${n(l.usance_days)} usance days` : undefined })
+    if (l.next_due_date && !l.preclosed_date) stops.push({ k: 'Next bill due', d: String(l.next_due_date), sub: 'on an unsettled bill', tone: 'warn' })
+  }
+  if (l.preclosed_date) {
+    stops.push({
+      k: 'Closed',
+      d: String(l.preclosed_date),
+      sub: n(l.preclose_settlement_amount) > 0.004 ? `${formatINR(l.preclose_settlement_amount)} ${String(l.preclose_settlement_direction || '')}` : undefined,
+      tone: 'good'
+    })
+  }
+  return (
+    <div className="flex overflow-x-auto bg-white px-4 py-4">
+      {stops.map((st, i) => {
+        const done = !!st.d && String(st.d).slice(0, 10) <= today
+        return (
+          <div key={i} className="relative min-w-[130px] flex-1 pr-3">
+            {/* the line to the next stop */}
+            {i < stops.length - 1 && (
+              <div className={cn('absolute left-[7px] right-0 top-[6px] h-[2px]', done ? 'bg-[#0B6B45]' : 'bg-[#E4ECE3]')} />
+            )}
+            <div
+              className={cn(
+                'relative h-[14px] w-[14px] rounded-full border-2',
+                done ? 'border-[#0B6B45] bg-[#0B6B45]' : st.d ? 'border-[#C2700A] bg-white' : 'border-[#C3D2C6] bg-white'
+              )}
+            />
+            <div className="mt-2 flex items-center gap-1.5 text-[9.5px] font-extrabold uppercase tracking-[.1em] text-[#5A6B62]">
+              {st.tag && <PartTag p={st.tag} />}
+              <span className="truncate">{st.k}</span>
+            </div>
+            <div className={cn('mt-0.5 text-[13.5px] font-bold tabular-nums', st.d ? 'text-[#0A1F17]' : 'text-[#C3D2C6]')}>
+              {st.d ? formatDate(st.d) : '—'}
+            </div>
+            {st.sub && (
+              <div
+                className={cn(
+                  'mt-0.5 text-[11px] font-semibold',
+                  st.tone === 'bad' ? 'text-[#B3261E]' : st.tone === 'warn' ? 'text-[#8A5300]' : st.tone === 'good' ? 'text-[#0B6B45]' : 'text-[#5A6B62]'
+                )}
+              >
+                {st.sub}
+              </div>
+            )}
+          </div>
+        )
+      })}
+    </div>
+  )
+}
 
 function DuplicateNoBadge({ lcs, l }: { lcs: Row[]; l: Row }): React.JSX.Element | null {
   const other = lcNoClash(lcs, l.lc_no, l.id)
@@ -6786,13 +6864,13 @@ function TreasuryDesk({ onCompanyChange, focusLcId, focusBdId, onFocusHandled }:
         <DialogContent
           readOnly
           className={cn(
-            'max-h-[85vh] max-w-3xl overflow-y-auto',
+            'max-h-[90vh] max-w-6xl overflow-y-auto',
             // A drawer against the edge on the website, like the Purchases and
             // Trading detail views: this is a tall stack of blocks about one
             // LC, which reads better in a column than as a wide box floating
             // over the register it came from.
             __WEB__ &&
-              '!bottom-0 !left-auto !right-0 !top-0 !h-screen !max-h-screen !w-[760px] !max-w-[95vw] !min-w-0 !translate-x-0 !translate-y-0 !grid-rows-[auto_minmax(0,1fr)] !gap-0 !overflow-hidden !rounded-none !border-0 !bg-[#F1F5EF] !p-0 sm:!rounded-none [&>button]:!right-5 [&>button]:!top-5 [&>button]:!text-white [&>button]:!opacity-70 [&>button]:hover:!opacity-100'
+              '!bottom-0 !left-auto !right-0 !top-0 !h-screen !max-h-screen !w-[1100px] !max-w-[96vw] !min-w-0 !translate-x-0 !translate-y-0 !grid-rows-[auto_minmax(0,1fr)] !gap-0 !overflow-hidden !rounded-none !border-0 !bg-[#F1F5EF] !p-0 sm:!rounded-none [&>button]:!right-5 [&>button]:!top-5 [&>button]:!text-white [&>button]:!opacity-70 [&>button]:hover:!opacity-100'
           )}
         >
           {(() => {
@@ -6838,12 +6916,82 @@ function TreasuryDesk({ onCompanyChange, focusLcId, focusBdId, onFocusHandled }:
                   </DialogTitle>
                 </DialogHeader>
                 <div className={cn('space-y-4', __WEB__ && '!min-h-0 !space-y-3.5 !overflow-y-auto !px-5 !py-4 [&>*]:!shrink-0')}>
+                  {/* THE FIGURES THAT MATTER, IN ONE BAND: what the LC is for, what
+                      of it is used, repaid and still owed, and how full it is. */}
+                  {(() => {
+                    const parts = lcPartsOf(dRow)
+                    const tiles: { k: string; v: number; tone: string; sub?: string }[] = [
+                      { k: 'Utilised', v: n(dRow.utilized), tone: 'text-white' },
+                      { k: 'Available', v: n(dRow.available), tone: n(dRow.available) < 0 ? 'text-[#FFB4AB]' : 'text-[#C7F03F]' },
+                      {
+                        k: 'Repaid',
+                        v: n(dRow.repaid),
+                        tone: n(dRow.repaid) > 0 ? 'text-[#C7F03F]' : 'text-[#8FBFA8]',
+                        sub: n(dRow.repaid_charges) > 0.004 ? `incl. ${formatINR(dRow.repaid_charges)} charges` : undefined
+                      },
+                      {
+                        k: 'Outstanding',
+                        v: n(dRow.outstanding),
+                        tone: n(dRow.outstanding) > 0 ? 'text-[#FFD58A]' : 'text-[#8FBFA8]',
+                        sub: n(dRow.repaid_principal) > 0.004 ? `${formatINR(dRow.repaid_principal)} principal back` : undefined
+                      }
+                    ]
+                    return (
+                      <div className="rounded-[4px] bg-[#0B3D2E] px-5 py-4 text-white">
+                        <div className="flex flex-wrap items-start justify-between gap-x-6 gap-y-4">
+                          <div className="min-w-0">
+                            <div className="text-[9.5px] font-extrabold uppercase tracking-[.13em] text-[#8FBFA8]">LC amount</div>
+                            <div className="mt-1 text-[30px] font-bold leading-none tracking-[-0.035em] tabular-nums">{formatINR(dRow.amount)}</div>
+                            <div className="mt-2 flex flex-wrap items-center gap-x-2 gap-y-1 text-[12px] font-semibold text-[#BFE3CB]">
+                              <span>{String(dRow.bank || 'Bank')}</span>
+                              <span className="text-[#5E8A74]">→</span>
+                              <span>{String(dRow.supplier_name || 'Beneficiary')}</span>
+                              {parts.length > 0 && (
+                                <span className="rounded-[2px] bg-[#C7F03F] px-1.5 text-[10.5px] font-extrabold uppercase leading-[18px] tracking-[.05em] text-[#0A1F17]">
+                                  {parts.length} parts
+                                </span>
+                              )}
+                            </div>
+                            {Math.abs(n(dRow.blocked_effective) - n(dRow.amount)) > 0.005 && (
+                              <div className="mt-1.5 text-[11.5px] font-bold text-[#BFE3CB]">
+                                {formatINR(dRow.blocked_effective)} blocked against the bank's limit
+                              </div>
+                            )}
+                          </div>
+                          <div className="grid grid-cols-2 gap-2 lg:grid-cols-4">
+                            {tiles.map((t) => (
+                              <div key={t.k} className="min-w-[150px] rounded-[4px] border border-white/10 bg-white/[.06] px-3 py-2.5">
+                                <div className="text-[9px] font-extrabold uppercase tracking-[.12em] text-[#8FBFA8]">{t.k}</div>
+                                <div className={cn('mt-1 whitespace-nowrap text-[15px] font-bold tabular-nums', t.tone)}>{formatINR(t.v)}</div>
+                                {t.sub && <div className="mt-0.5 text-[10px] font-semibold text-[#8FBFA8]">{t.sub}</div>}
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                        <div className="mt-4">
+                          <div className="mb-1.5 flex items-center justify-between text-[9.5px] font-extrabold uppercase tracking-[.12em] text-[#8FBFA8]">
+                            <span>Utilisation</span>
+                            <span className="tabular-nums text-white">{pct.toFixed(0)}%</span>
+                          </div>
+                          <div className="h-2 overflow-hidden rounded-full bg-white/15">
+                            <div
+                              className={cn('h-2 rounded-full transition-all', pct >= 95 ? 'bg-[#FF8A80]' : pct >= 75 ? 'bg-[#FFD58A]' : 'bg-[#C7F03F]')}
+                              style={{ width: `${pct}%` }}
+                            />
+                          </div>
+                        </div>
+                      </div>
+                    )
+                  })()}
+
+                  {/* WHO IT IS BETWEEN, AND WHAT IT COST — side by side. */}
+                  <div className="grid gap-3.5 lg:grid-cols-2 [&>*]:min-w-0">
                   {/* WHO IT IS BETWEEN. The issuing bank and the bank it
                       settles out of are different things and were not both
                       here: LC-7 is South Indian Bank's paper repaid out of
                       HDFC, and only the first of those was on the panel. */}
                   <LcPanel title="The letter">
-                    <div className={LC_FACTS_3}>
+                    <div className={LC_FACTS_2}>
                       <LcFact k="Issuing bank" v={String(dRow.bank || '\u2014')} sub={dRow.fd_no ? `FD ${String(dRow.fd_no)}` : undefined} />
                       <LcFact
                         k="Settles from"
@@ -6882,106 +7030,9 @@ function TreasuryDesk({ onCompanyChange, focusLcId, focusBdId, onFocusHandled }:
                       />
                     </div>
                   </LcPanel>
-
-                  <div className={cn('rounded-lg bg-gradient-to-r from-[#1a2c56] to-[#24407e] px-4 py-3 text-center shadow-sm', __WEB__ && '!rounded-[4px] !bg-[#0B3D2E] !bg-none !px-4 !py-3.5 !text-left !shadow-none')}>
-                    <div className={cn('text-[10px] font-semibold uppercase tracking-widest text-white/60', __WEB__ && '!text-[9.5px] !font-extrabold !tracking-[.13em] !text-[#8FBFA8]')}>LC amount</div>
-                    <div className={cn('text-2xl font-bold tabular-nums text-white', __WEB__ && '!mt-1 !text-[26px] !leading-none !tracking-[-0.035em]')}>{formatINR(dRow.amount)}</div>
-                    {Math.abs(n(dRow.blocked_effective) - n(dRow.amount)) > 0.005 && (
-                      <div className="mt-1.5 text-[11.5px] font-bold text-[#BFE3CB]">
-                        {formatINR(dRow.blocked_effective)} blocked against the bank's limit
-                      </div>
-                    )}
-                  </div>
-
-                  <div className={cn('grid grid-cols-2 gap-2 text-[11px] sm:grid-cols-4', __WEB__ && CARD_CELLS)}>
-                    <div className={cn('rounded-md border border-[#e5dfc8] bg-white px-2.5 py-1.5', __WEB__ && '!border-[#E4ECE3] !bg-[#F7FAF6]')}>
-                      <div className="text-muted-foreground">Utilised</div>
-                      <div className={cn('font-semibold tabular-nums text-[#1a2c56]', __WEB__ && '!text-[#0A1F17]')}>{formatINR(dRow.utilized)}</div>
-                    </div>
-                    <div className={cn('rounded-md border px-2.5 py-1.5', n(dRow.available) <= 0 ? 'border-rose-200 bg-rose-50' : 'border-emerald-200 bg-emerald-50', __WEB__ && (n(dRow.available) <= 0 ? '!border-[#F0D6D4] !bg-[#FDF3F2]' : '!border-[#BFE3CB] !bg-[#F4FBF6]'))}>
-                      <div className="text-muted-foreground">Available</div>
-                      <div className={cn('font-semibold tabular-nums', n(dRow.available) <= 0 ? 'text-rose-600' : 'text-emerald-700', __WEB__ && (n(dRow.available) <= 0 ? '!text-[#B3261E]' : '!text-[#0B6B45]'))}>{formatINR(dRow.available)}</div>
-                    </div>
-                    <div className={cn('rounded-md border px-2.5 py-1.5', n(dRow.repaid) > 0 ? 'border-emerald-200 bg-emerald-50' : 'border-[#e5dfc8] bg-white', __WEB__ && (n(dRow.repaid) > 0 ? '!border-[#BFE3CB] !bg-[#F4FBF6]' : '!border-[#E4ECE3] !bg-[#F7FAF6]'))}>
-                      <div className="text-muted-foreground">Repaid</div>
-                      <div className={cn('font-semibold tabular-nums', n(dRow.repaid) > 0 ? 'text-emerald-700' : 'text-[#1a2c56]', __WEB__ && (n(dRow.repaid) > 0 ? '!text-[#0B6B45]' : '!text-[#8FA79B]'))}>{formatINR(dRow.repaid)}</div>
-                      {/* The debit and the principal are not the same figure,
-                          and the difference is exactly why Outstanding used to
-                          read as a negative. */}
-                      {n(dRow.repaid_charges) > 0.004 && (
-                        <div className="mt-[2px] break-words text-[10px] font-semibold leading-[1.35] text-[#5A6B62]">
-                          incl. {formatINR(dRow.repaid_charges)} charges
-                        </div>
-                      )}
-                    </div>
-                    <div className={cn('rounded-md border px-2.5 py-1.5', n(dRow.outstanding) > 0 ? 'border-amber-200 bg-amber-50' : 'border-[#e5dfc8] bg-white', __WEB__ && (n(dRow.outstanding) > 0 ? '!border-[#F0D9AE] !bg-[#FFFBF2]' : '!border-[#E4ECE3] !bg-[#F7FAF6]'))}>
-                      <div className="text-muted-foreground">Outstanding</div>
-                      <div className={cn('font-semibold tabular-nums', n(dRow.outstanding) > 0 ? 'text-amber-800' : 'text-[#1a2c56]', __WEB__ && (n(dRow.outstanding) > 0 ? '!text-[#8A5300]' : '!text-[#8FA79B]'))}>{formatINR(dRow.outstanding)}</div>
-                      {n(dRow.repaid_principal) > 0.004 && (
-                        <div className="mt-[2px] break-words text-[10px] font-semibold leading-[1.35] text-[#5A6B62]">
-                          {formatINR(dRow.repaid_principal)} principal back
-                        </div>
-                      )}
-                    </div>
-                  </div>
-                  <div>
-                    <div className="mb-1 flex items-center justify-between text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
-                      <span>Utilisation</span>
-                      <span className="tabular-nums">{pct.toFixed(0)}%</span>
-                    </div>
-                    <div className="h-2.5 overflow-hidden rounded-full bg-muted">
-                      <div className={cn('h-2.5 rounded-full transition-all', barTone)} style={{ width: `${pct}%` }} />
-                    </div>
-                  </div>
-
-                  {/* THE DATES, IN THE ORDER THEY HAPPEN. */}
-                  <LcPanel
-                    title="Dates"
-                    right={
-                      dRow.days_left_effective != null && !dRow.preclosed_date ? (
-                        <span
-                          className={cn(
-                            'rounded-[3px] border px-2 py-[2px] text-[10.5px] font-extrabold',
-                            n(dRow.days_left_effective) < 0
-                              ? 'border-[#F0D6D4] bg-[#FDF3F2] text-[#B3261E]'
-                              : n(dRow.days_left_effective) <= 15
-                                ? 'border-[#F0D9AE] bg-[#FFFBF2] text-[#8A5300]'
-                                : 'border-[#BFE3CB] bg-[#F4FBF6] text-[#0B6B45]'
-                          )}
-                        >
-                          {n(dRow.days_left_effective) < 0
-                            ? `${Math.abs(n(dRow.days_left_effective))}d overdue`
-                            : `${n(dRow.days_left_effective)}d left`}
-                        </span>
-                      ) : undefined
-                    }
-                  >
-                    <div className={LC_FACTS}>
-                      <LcFact k="Application" v={formatDate(dRow.open_date) || '\u2014'} />
-                      <LcFact k="Opened" v={formatDate(dRow.opened_date) || '\u2014'} tone={dRow.opened_date ? 'plain' : 'muted'} />
-                      <LcFact k="Payment received" v={formatDate(dRow.payment_received_date) || '\u2014'} tone={dRow.payment_received_date ? 'plain' : 'muted'} />
-                      <LcFact k="Maturity" v={formatDate(dRow.expiry_date) || '\u2014'} sub={n(dRow.usance_days) > 0 ? `${n(dRow.usance_days)} usance days` : undefined} />
-                      {!!dRow.preclosed_date && (
-                        <LcFact
-                          k="Preclosed"
-                          v={formatDate(dRow.preclosed_date)}
-                          sub={
-                            n(dRow.preclose_settlement_amount) > 0.004
-                              ? `${formatINR(dRow.preclose_settlement_amount)} ${String(dRow.preclose_settlement_direction || '')}`
-                              : undefined
-                          }
-                          tone="good"
-                        />
-                      )}
-                      {!!dRow.next_due_date && (
-                        <LcFact k="Next bill due" v={formatDate(dRow.next_due_date)} sub="on an unsettled bill" tone="warn" />
-                      )}
-                    </div>
-                  </LcPanel>
-
                   {/* WHAT THE BANK CHARGED, AND ON WHAT. */}
                   <LcPanel title="Terms and cost">
-                    <div className={LC_FACTS}>
+                    <div className={LC_FACTS_2}>
                       <LcFact
                         k="Margin"
                         v={`${n(dRow.margin_pct)}%`}
@@ -7018,6 +7069,82 @@ function TreasuryDesk({ onCompanyChange, focusLcId, focusBdId, onFocusHandled }:
                       )}
                     </div>
                   </LcPanel>
+                  </div>
+
+                  {/* THE DATES, IN THE ORDER THEY HAPPEN — as a line, each part's
+                      maturity its own stop on an LC paid in parts. */}
+                  <LcPanel
+                    title="Dates"
+                    right={
+                      dRow.days_left_effective != null && !dRow.preclosed_date ? (
+                        <span
+                          className={cn(
+                            'rounded-[3px] border px-2 py-[2px] text-[10.5px] font-extrabold',
+                            n(dRow.days_left_effective) < 0
+                              ? 'border-[#F0D6D4] bg-[#FDF3F2] text-[#B3261E]'
+                              : n(dRow.days_left_effective) <= 15
+                                ? 'border-[#F0D9AE] bg-[#FFFBF2] text-[#8A5300]'
+                                : 'border-[#BFE3CB] bg-[#F4FBF6] text-[#0B6B45]'
+                          )}
+                        >
+                          {n(dRow.days_left_effective) < 0
+                            ? `${Math.abs(n(dRow.days_left_effective))}d overdue`
+                            : `${n(dRow.days_left_effective)}d left`}
+                        </span>
+                      ) : undefined
+                    }
+                  >
+                    <LcTimeline l={dRow} />
+                  </LcPanel>
+
+                  {/* PAID IN PARTS: each part's own money, term and state. */}
+                  {lcPartsOf(dRow).length > 0 && (
+                    <LcPanel title={`Parts · ${lcPartsOf(dRow).length}`}>
+                      <div className="overflow-x-auto bg-white">
+                        <table className="w-full border-collapse text-[12.5px]">
+                          <thead>
+                            <tr className="border-b border-[#E4ECE3] text-[9.5px] font-extrabold uppercase tracking-[.1em] text-[#5A6B62]">
+                              <th className="px-4 py-2 text-left">Part</th>
+                              <th className="px-3 py-2 text-left">Paid on</th>
+                              <th className="px-3 py-2 text-right">LC amount</th>
+                              <th className="px-3 py-2 text-right">Days</th>
+                              <th className="px-3 py-2 text-right">Interest</th>
+                              <th className="px-3 py-2 text-left">Matures</th>
+                              <th className="px-4 py-2 text-left">State</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {lcPartsOf(dRow).map((p) => (
+                              <tr key={p.part_no} className={cn('border-b border-[#F0F4EF] last:border-b-0', p.repaid_date && 'text-[#8CA396]')}>
+                                <td className="px-4 py-2"><PartTag p={p} /></td>
+                                <td className="px-3 py-2 tabular-nums">{formatDate(p.pay_date)}</td>
+                                <td className="px-3 py-2 text-right font-bold tabular-nums">{formatINR(p.amount)}</td>
+                                <td className="px-3 py-2 text-right tabular-nums">{p.days || '—'}</td>
+                                <td className="px-3 py-2 text-right tabular-nums">{formatINR(p.interest)}</td>
+                                <td className={cn('px-3 py-2 tabular-nums', p.repaid_date && 'line-through')}>{formatDate(p.maturity_date)}</td>
+                                <td className="px-4 py-2">
+                                  {p.repaid_date ? (
+                                    <span className="text-[11.5px] font-bold">Repaid {formatDate(p.repaid_date)}</span>
+                                  ) : (
+                                    <PartDue p={p} />
+                                  )}
+                                </td>
+                              </tr>
+                            ))}
+                            <tr className="border-t-2 border-[#E4ECE3] bg-[#F7FAF6] font-bold">
+                              <td className="px-4 py-2 text-[10px] font-extrabold uppercase tracking-[.1em] text-[#5A6B62]" colSpan={2}>Total</td>
+                              <td className="px-3 py-2 text-right tabular-nums">{formatINR(lcPartsOf(dRow).reduce((t, p) => t + p.amount, 0))}</td>
+                              <td />
+                              <td className="px-3 py-2 text-right tabular-nums">{formatINR(lcPartsOf(dRow).reduce((t, p) => t + p.interest, 0))}</td>
+                              <td colSpan={2} className="px-3 py-2 text-[11.5px] font-semibold text-[#5A6B62]">
+                                {lcPartsOf(dRow).filter((p) => !p.repaid_date).length} open
+                              </td>
+                            </tr>
+                          </tbody>
+                        </table>
+                      </div>
+                    </LcPanel>
+                  )}
 
                   {/* WHAT IT IS FINANCING. Invoices and deals were on the
                       record all along and nowhere on this panel. */}
