@@ -3785,7 +3785,7 @@ function TreasuryDesk({ onCompanyChange, focusLcId, focusBdId, onFocusHandled }:
                           )}
                           <RowActions
                             actions={[
-                              ...(lcRefundDue[String(l.id)] ? [{ label: `Refund received — ${formatINR(lcRefundDue[String(l.id)])} due back`, icon: Undo2, onClick: () => setRefundLc(Number(l.id)) }] : []),
+                              ...(lcRefundTot[String(l.id)] ? [{ label: lcRefundTot[String(l.id)].due > 0.004 ? `Refund received — ${formatINR(lcRefundTot[String(l.id)].due)} due back` : `Refund received — ${formatINR(lcRefundTot[String(l.id)].booked)} refunded`, icon: Undo2, onClick: () => setRefundLc(Number(l.id)) }] : []),
                               ...(l.preclosed_date
                                 ? [{ label: 'Edit preclosure — date, amount, rebate', icon: Pencil, onClick: () => void openEditPreclose(l) }]
                                 : []),
@@ -4305,7 +4305,7 @@ function TreasuryDesk({ onCompanyChange, focusLcId, focusBdId, onFocusHandled }:
                                 )}
                                 <RowActions
                                   actions={[
-                                    ...(lcRefundDue[String(l.id)] ? [{ label: `Refund received — ${formatINR(lcRefundDue[String(l.id)])} due back`, icon: Undo2, onClick: () => setRefundLc(Number(l.id)) }] : []),
+                                    ...(lcRefundTot[String(l.id)] ? [{ label: lcRefundTot[String(l.id)].due > 0.004 ? `Refund received — ${formatINR(lcRefundTot[String(l.id)].due)} due back` : `Refund received — ${formatINR(lcRefundTot[String(l.id)].booked)} refunded`, icon: Undo2, onClick: () => setRefundLc(Number(l.id)) }] : []),
                                     ...(l.preclosed_date
                                       ? [
                                           {

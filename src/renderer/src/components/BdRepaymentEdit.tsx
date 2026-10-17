@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { toast } from 'sonner'
-import { Pencil, Plus, X } from 'lucide-react'
+import { ChevronDown, Pencil, Plus, Undo2, X } from 'lucide-react'
 import { ChargeRows } from '@/components/ChargeRows'
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Button } from '@/components/ui/button'
@@ -8,6 +8,9 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { escToClose } from '@/lib/escape'
 import { DatePicker } from '@/components/ui/date-picker'
 import { formatDate, formatINR, todayISO } from '@/lib/format'
+import { cn } from '@/lib/utils'
+import { isRefundDue } from '@/lib/refundDue'
+import { RefundReceived } from '@/components/RefundReceived'
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Row = Record<string, any>
@@ -67,6 +70,18 @@ export function BdRepaymentEdit({
   const [merge, setMerge] = useState<Record<number, number>>({})
   const [showAllReps, setShowAllReps] = useState(false)
   const [addBill, setAddBill] = useState('')
+  // Other debits to fold in — shut by default, it is the rare case.
+  const [showCombine, setShowCombine] = useState(false)
+  // The bill's money paid over, and how much of it the NBFC has given back.
+  const [refundTot, setRefundTot] = useState<{ booked: number; refunded: number; due: number } | null>(null)
+  const [refundOpen, setRefundOpen] = useState(false)
+  const loadRefund = (): void => {
+    if (!repayment) return
+    void window.api.billDiscounting
+      .refundTotals()
+      .then((t) => setRefundTot(t[String(repayment.bd_id)] || null))
+      .catch(() => setRefundTot(null))
+  }
 
   useEffect(() => {
     const r = repayment
@@ -85,6 +100,8 @@ export function BdRepaymentEdit({
     setMerge({})
     setShowAllReps(false)
     setAddBill('')
+    setShowCombine(false)
+    loadRefund()
     void window.api.billDiscounting.list().then((b: Row[]) => setBills(Array.isArray(b) ? b : [])).catch(() => setBills([]))
     void window.api.billDiscounting.allRepayments().then((x: Row[]) => setAllReps(Array.isArray(x) ? x : [])).catch(() => setAllReps([]))
     void window.api.journal
@@ -195,168 +212,270 @@ export function BdRepaymentEdit({
   }
 
   const lbl = 'text-[10.5px] font-extrabold uppercase tracking-[.1em] text-[#5A6B62]'
-  const inp = 'h-9 w-full rounded-[6px] border border-[#C3D2C6] bg-white px-2.5 text-[13px] font-semibold tabular-nums focus:border-[#0B3D2E] focus:outline-none focus:ring-2 focus:ring-[#0B3D2E]/15'
+  const inp = 'h-10 w-full rounded-[6px] border border-[#C3D2C6] bg-white px-3 text-[13.5px] font-semibold tabular-nums focus:border-[#0B3D2E] focus:outline-none focus:ring-2 focus:ring-[#0B3D2E]/15'
+  const card = 'overflow-hidden rounded-[8px] border border-[#DCE7DB] bg-white'
+  const cardHead = 'flex items-center justify-between gap-2 border-b border-[#E4ECE3] bg-[#F7FAF6] px-4 py-2.5'
+  // HOW THE ONE DEBIT SPLITS — the figure the bank shows, broken into what it
+  // is for, so an overpayment reads as exactly that.
+  const towards = round2(shares.reduce((t, x) => t + n(x.amount), 0))
+  const excess = round2(charges.filter((c) => isRefundDue(c.account)).reduce((t, c) => t + n(c.amount), 0))
+  const otherCharges = round2(charges.filter((c) => !isRefundDue(c.account)).reduce((t, c) => t + n(c.amount), 0))
+  const split: { k: string; v: number; tone?: string }[] = [
+    { k: shares.length > 1 ? 'Towards the bills' : 'Towards the bill', v: towards },
+    ...(n(intr) > 0 ? [{ k: 'Interest', v: round2(n(intr)) }] : []),
+    ...(otherCharges > 0 ? [{ k: 'Charges', v: otherCharges }] : []),
+    ...(excess > 0 ? [{ k: 'Paid over — refund due', v: excess, tone: 'text-[#B3261E]' }] : [])
+  ]
   return (
     <Dialog open={!!repayment} onOpenChange={(o) => !o && !saving && onClose()}>
       {/* Above the bill's drawer (z-90), which it is opened from. */}
       <DialogContent
         overlayClassName="z-[110]"
         onEscapeKeyDown={(e) => (saving ? e.preventDefault() : escToClose()(e))}
-        className="z-[120] max-h-[92vh] overflow-y-auto sm:max-w-xl"
+        className="z-[120] flex max-h-[92vh] flex-col gap-0 overflow-hidden !rounded-[10px] !p-0 sm:max-w-[920px] [&>button]:!right-4 [&>button]:!top-4 [&>button]:!text-white [&>button]:!opacity-80"
       >
-        <DialogHeader>
-          <DialogTitle className="flex items-center gap-2">
-            <Pencil className="h-4 w-4" /> Edit repayment
+        <DialogHeader className="!space-y-0 bg-[#0B3D2E] px-6 py-4 text-left">
+          <div className="text-[10.5px] font-extrabold uppercase tracking-[.14em] text-[#8FBFA8]">
+            Bill discounting · {String(repayment?.bd_no || myBill?.bd_no || '')}
+          </div>
+          <DialogTitle className="mt-1 flex items-center gap-2 text-[19px] font-bold tracking-[-0.02em] text-white">
+            <Pencil className="h-4 w-4 text-[#C7F03F]" /> Edit repayment
           </DialogTitle>
+          <p className="mt-1 text-[12px] font-semibold text-[#8FBFA8]">
+            {String(myBill?.nbfc_name || 'The NBFC')} · paid {formatDate(String(repayment?.repay_date || ''))}
+          </p>
         </DialogHeader>
+
         {party ? (
-          <p className="text-[13px] font-semibold text-[#8A5300]">
+          <p className="px-6 py-5 text-[13px] font-semibold text-[#8A5300]">
             This repayment was settled against a party, not from the bank. Remove it and enter it again to change it.
           </p>
         ) : (
-          <div className="grid gap-3.5">
-            <div className="grid grid-cols-2 gap-3">
-              <label className="grid gap-1">
-                <span className={lbl}>Date</span>
-                <DatePicker value={date} max={todayISO()} onChange={setDate} popoverClassName="z-[130]" className="!rounded-[6px] !border-[#C3D2C6] font-semibold" />
-              </label>
-              <label className="grid gap-1">
-                <span className={lbl}>From bank</span>
-                <Select value={bank || '__bill'} onValueChange={(v) => setBank(v === '__bill' ? '' : v)}>
-                  <SelectTrigger className="h-9">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="__bill">The bill&rsquo;s bank</SelectItem>
-                    {/* The bank it was paid from, even when that name is not
-                        a bank ledger today (an older spelling). */}
-                    {bank && !banks.includes(bank) && <SelectItem value={bank}>{bank}</SelectItem>}
-                    {banks.map((b) => (
-                      <SelectItem key={b} value={b}>
-                        {b}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </label>
-            </div>
-
-            <div className="overflow-hidden rounded-[6px] border border-[#DCE7DB]">
-              <div className="flex items-center justify-between border-b border-[#E4ECE3] bg-[#F7FAF6] px-3 py-2">
-                <span className={lbl}>{shares.length > 1 ? 'One debit — what it put against each bill' : 'Off the bill'}</span>
-              </div>
-              {shares.map((s, i) => (
-                <div key={`${s.bd_id}-${s.from || 0}-${i}`} className="flex items-center gap-3 border-b border-[#EFF3EE] px-3 py-2 last:border-b-0">
-                  <span className="min-w-0 flex-1 truncate text-[13px] font-extrabold text-[#0A1F17]">
-                    {s.bd_no || `Bill ${s.bd_id}`}
-                    {s.from ? <span className="ml-1.5 text-[10.5px] font-bold text-[#1B4E82]">combined</span> : null}
-                  </span>
-                  <input
-                    inputMode="decimal"
-                    value={s.amount}
-                    onChange={(e) => setShares((p) => p.map((x, j) => (j === i ? { ...x, amount: e.target.value } : x)))}
-                    className={`${inp} !w-[170px] text-right`}
-                  />
-                  {s.bd_id !== Number(repayment?.bd_id) && !s.from ? (
-                    <button type="button" title="Take this bill off the debit" onClick={() => setShares((p) => p.filter((_, j) => j !== i))} className="text-[#8CA396] hover:text-[#B3261E]">
-                      <X className="h-4 w-4" />
-                    </button>
-                  ) : (
-                    <span className="w-4" />
-                  )}
-                </div>
-              ))}
-              {/* PART OF THIS DEBIT WAS REALLY ANOTHER BILL'S. */}
-              {addable.length > 0 && (
-                <div className="flex items-center gap-2 border-t border-[#E4ECE3] bg-[#FBFCFA] px-3 py-2">
-                  <Plus className="h-3.5 w-3.5 flex-none text-[#0B6B45]" />
-                  <Select
-                    value={addBill}
-                    onValueChange={(v) => {
-                      const b = bills.find((x) => String(x.id) === v)
-                      if (b) setShares((p) => [...p, { bd_id: Number(b.id), bd_no: String(b.bd_no || ''), amount: '' }])
-                      setAddBill('')
-                    }}
-                  >
-                    <SelectTrigger className="h-8 flex-1 text-[12.5px]">
-                      <SelectValue placeholder="Adjust part of it against another bill…" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {addable.map((b) => (
-                        <SelectItem key={String(b.id)} value={String(b.id)}>
-                          {String(b.bd_no)} · {formatINR(n(b.outstanding_amount ?? b.amount))} outstanding
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                </div>
-              )}
-            </div>
-
-            {/* OTHER PAYMENTS THAT WERE REALLY THIS ONE DEBIT. */}
-            {candidates.length > 0 && (
-              <div className="overflow-hidden rounded-[6px] border border-[#DCE7DB]">
-                <div className="flex items-center justify-between gap-2 border-b border-[#E4ECE3] bg-[#F7FAF6] px-3 py-2">
-                  <span className={lbl}>Combine other repayments into this debit</span>
-                  {candidates.length > 6 && (
-                    <button type="button" onClick={() => setShowAllReps((v) => !v)} className="text-[11px] font-extrabold text-[#0B6B45]">
-                      {showAllReps ? 'Nearest only' : `All ${candidates.length}`}
-                    </button>
-                  )}
-                </div>
-                <div className="max-h-[190px] overflow-y-auto">
-                  {shownCands.map((c) => (
-                    <label key={c.je} className="flex cursor-pointer items-center gap-2.5 border-b border-[#EFF3EE] px-3 py-2 last:border-b-0 hover:bg-[#FBFCFA]">
-                      <input type="checkbox" checked={!!merge[c.je]} onChange={() => toggleMerge(c)} className="h-4 w-4 accent-[#0B3D2E]" />
-                      <span className="w-[86px] flex-none text-[12px] font-bold tabular-nums text-[#33473E]">{formatDate(c.date)}</span>
-                      <span className="min-w-0 flex-1 truncate text-[12px] font-semibold text-[#0A1F17]">
-                        {c.rows.map((r) => `${String(r.bd_no)} ${formatINR(n(r.amount))}`).join(' · ')}
-                      </span>
-                      <span className="flex-none text-[12px] font-extrabold tabular-nums text-[#0A1F17]">{formatINR(c.total)}</span>
+          <div className="min-h-0 flex-1 overflow-y-auto bg-[#F2F6F1]">
+            <div className="grid gap-4 p-5 lg:grid-cols-[minmax(0,1fr)_300px]">
+              {/* ---------------- what to change */}
+              <div className="grid min-w-0 content-start gap-4">
+                <section className={card}>
+                  <div className={cardHead}>
+                    <span className={lbl}>When and from where</span>
+                  </div>
+                  <div className="grid gap-3 p-4 sm:grid-cols-2">
+                    <label className="grid gap-1.5">
+                      <span className={lbl}>Date</span>
+                      <DatePicker value={date} max={todayISO()} onChange={setDate} popoverClassName="z-[130]" className="!h-10 !rounded-[6px] !border-[#C3D2C6] font-semibold" />
                     </label>
+                    <label className="grid gap-1.5">
+                      <span className={lbl}>From bank</span>
+                      <Select value={bank || '__bill'} onValueChange={(v) => setBank(v === '__bill' ? '' : v)}>
+                        <SelectTrigger className={cn('h-10 !rounded-[6px]', (bank || '') === 'BANK A/C' && '!border-[#E3C58C] !text-[#8A5A00]')}>
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="__bill">The bill&rsquo;s bank</SelectItem>
+                          {/* The bank it was paid from, even when that name is
+                              not a bank ledger today (an older spelling). */}
+                          {bank && !banks.includes(bank) && <SelectItem value={bank}>{bank}</SelectItem>}
+                          {banks.map((b) => (
+                            <SelectItem key={b} value={b}>
+                              {b}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                      {(bank || '') === 'BANK A/C' && (
+                        <span className="text-[11px] font-semibold text-[#8A5A00]">BANK A/C is a placeholder — pick the account the statement shows.</span>
+                      )}
+                    </label>
+                  </div>
+                </section>
+
+                <section className={card}>
+                  <div className={cardHead}>
+                    <span className={lbl}>{shares.length > 1 ? 'One debit — what it put against each bill' : 'Off the bill'}</span>
+                  </div>
+                  {shares.map((s2, i) => (
+                    <div key={`${s2.bd_id}-${s2.from || 0}-${i}`} className="flex items-center gap-3 border-b border-[#EFF3EE] px-4 py-2.5 last:border-b-0">
+                      <span className="flex min-w-0 flex-1 items-center gap-2">
+                        <span className="rounded-[3px] bg-[#0B3D2E] px-2 py-[3px] text-[11.5px] font-extrabold text-white">{s2.bd_no || `Bill ${s2.bd_id}`}</span>
+                        {s2.from ? <span className="text-[10.5px] font-bold text-[#1B4E82]">combined</span> : null}
+                      </span>
+                      <input
+                        inputMode="decimal"
+                        value={s2.amount}
+                        onChange={(e) => setShares((p) => p.map((x, j) => (j === i ? { ...x, amount: e.target.value } : x)))}
+                        className={`${inp} !w-[180px] text-right`}
+                      />
+                      {s2.bd_id !== Number(repayment?.bd_id) && !s2.from ? (
+                        <button type="button" title="Take this bill off the debit" onClick={() => setShares((p) => p.filter((_, j) => j !== i))} className="text-[#8CA396] hover:text-[#B3261E]">
+                          <X className="h-4 w-4" />
+                        </button>
+                      ) : (
+                        <span className="w-4" />
+                      )}
+                    </div>
                   ))}
-                </div>
-                <p className="border-t border-[#E4ECE3] px-3 py-1.5 text-[10.5px] font-semibold text-[#5A6B62]">
-                  A ticked payment&rsquo;s own voucher is removed and its bills join this one debit.
-                </p>
+                  {/* PART OF THIS DEBIT WAS REALLY ANOTHER BILL'S. */}
+                  {addable.length > 0 && (
+                    <div className="flex items-center gap-2 border-t border-[#E4ECE3] bg-[#FBFCFA] px-4 py-2.5">
+                      <Plus className="h-4 w-4 flex-none text-[#0B6B45]" />
+                      <Select
+                        value={addBill}
+                        onValueChange={(v) => {
+                          const b = bills.find((x) => String(x.id) === v)
+                          if (b) setShares((p) => [...p, { bd_id: Number(b.id), bd_no: String(b.bd_no || ''), amount: '' }])
+                          setAddBill('')
+                        }}
+                      >
+                        <SelectTrigger className="h-9 flex-1 !rounded-[6px] text-[12.5px]">
+                          <SelectValue placeholder="Put part of it against another bill…" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {addable.map((b) => (
+                            <SelectItem key={String(b.id)} value={String(b.id)}>
+                              {String(b.bd_no)} · {formatINR(n(b.outstanding_amount ?? b.amount))} outstanding
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </div>
+                  )}
+                </section>
+
+                <section className={card}>
+                  <div className={cardHead}>
+                    <span className={lbl}>Also in this debit</span>
+                  </div>
+                  <div className="grid gap-4 p-4">
+                    <label className="grid gap-1.5">
+                      <span className={lbl}>Interest</span>
+                      <input inputMode="decimal" value={intr} onChange={(e) => setIntr(e.target.value)} placeholder="0" className={`${inp} text-right`} />
+                    </label>
+                    <div className="grid gap-1.5">
+                      <span className={lbl}>Charges, or money paid over the balance</span>
+                      <ChargeRows value={charges} onChange={(next) => setCharges(next)} />
+                    </div>
+                    <label className="grid gap-1.5">
+                      <span className={lbl}>Note</span>
+                      <input value={note} onChange={(e) => setNote(e.target.value)} className={inp.replace('tabular-nums', '')} />
+                    </label>
+                  </div>
+                </section>
+
+                {/* OTHER PAYMENTS THAT WERE REALLY THIS ONE DEBIT — folded away. */}
+                {candidates.length > 0 && (
+                  <section className={card}>
+                    <button type="button" onClick={() => setShowCombine((v) => !v)} className={cn(cardHead, 'w-full text-left hover:bg-[#F1F5EF]')}>
+                      <span className={lbl}>
+                        Combine other repayments into this debit
+                        {Object.keys(merge).length > 0 && <span className="ml-2 text-[#0B6B45]">· {Object.keys(merge).length} ticked</span>}
+                      </span>
+                      <ChevronDown className={cn('h-4 w-4 text-[#5A6B62] transition-transform', showCombine && 'rotate-180')} />
+                    </button>
+                    {showCombine && (
+                      <>
+                        <div className="max-h-[220px] overflow-y-auto">
+                          {shownCands.map((c) => (
+                            <label key={c.je} className="flex cursor-pointer items-center gap-3 border-b border-[#EFF3EE] px-4 py-2.5 last:border-b-0 hover:bg-[#FBFCFA]">
+                              <input type="checkbox" checked={!!merge[c.je]} onChange={() => toggleMerge(c)} className="h-4 w-4 accent-[#0B3D2E]" />
+                              <span className="w-[86px] flex-none text-[12px] font-bold tabular-nums text-[#33473E]">{formatDate(c.date)}</span>
+                              <span className="min-w-0 flex-1 truncate text-[12.5px] font-semibold text-[#0A1F17]">
+                                {c.rows.map((r) => `${String(r.bd_no)} ${formatINR(n(r.amount))}`).join(' · ')}
+                              </span>
+                              <span className="flex-none text-[12.5px] font-extrabold tabular-nums text-[#0A1F17]">{formatINR(c.total)}</span>
+                            </label>
+                          ))}
+                        </div>
+                        <div className="flex items-center justify-between gap-2 border-t border-[#E4ECE3] px-4 py-2">
+                          <p className="text-[11px] font-semibold text-[#5A6B62]">A ticked payment&rsquo;s own voucher is removed and its bills join this one debit.</p>
+                          {candidates.length > 6 && (
+                            <button type="button" onClick={() => setShowAllReps((v) => !v)} className="flex-none text-[11px] font-extrabold text-[#0B6B45]">
+                              {showAllReps ? 'Nearest only' : `All ${candidates.length}`}
+                            </button>
+                          )}
+                        </div>
+                      </>
+                    )}
+                  </section>
+                )}
               </div>
-            )}
 
-            <label className="grid gap-1">
-              <span className={lbl}>Interest</span>
-              <input inputMode="decimal" value={intr} onChange={(e) => setIntr(e.target.value)} placeholder="0" className={`${inp} text-right`} />
-            </label>
+              {/* ---------------- what it comes to */}
+              <aside className="grid content-start gap-4 lg:sticky lg:top-0">
+                <section className="overflow-hidden rounded-[8px] bg-[#0B3D2E] text-white">
+                  <div className="px-4 pb-3 pt-4">
+                    <div className="text-[10.5px] font-extrabold uppercase tracking-[.12em] text-[#8FBFA8]">Leaves the bank</div>
+                    <div className="mt-1 text-[26px] font-bold leading-none tracking-[-0.03em] tabular-nums">{formatINR(total)}</div>
+                  </div>
+                  <div className="border-t border-white/10 px-4 py-3">
+                    {split.map((x) => (
+                      <div key={x.k} className="flex items-baseline justify-between gap-2 py-1 text-[12.5px]">
+                        <span className={cn('font-semibold text-[#BFE3CB]', x.tone && '!text-[#FFB4AB]')}>{x.k}</span>
+                        <span className={cn('font-bold tabular-nums', x.tone ? 'text-[#FFB4AB]' : 'text-white')}>{formatINR(x.v)}</span>
+                      </div>
+                    ))}
+                  </div>
+                </section>
 
-            <div className="grid gap-1.5">
-              <span className={lbl}>Charges in this debit</span>
-              <ChargeRows value={charges} onChange={(next) => setCharges(next)} />
+                {/* THE MONEY PAID OVER, AND WHETHER IT CAME BACK. */}
+                {(excess > 0 || (refundTot && refundTot.booked > 0)) && (
+                  <section className="overflow-hidden rounded-[8px] border border-[#F0C4C0] bg-[#FDECEA]">
+                    <div className="px-4 py-3">
+                      <div className="text-[10.5px] font-extrabold uppercase tracking-[.1em] text-[#B3261E]">Excess paid to the NBFC</div>
+                      <div className="mt-1 text-[18px] font-bold tabular-nums text-[#B3261E]">{formatINR(refundTot?.booked || excess)}</div>
+                      <div className="mt-1 text-[12px] font-semibold text-[#8C2F26]">
+                        {refundTot
+                          ? refundTot.due > 0.004
+                            ? `${formatINR(refundTot.due)} still to come back${refundTot.refunded > 0.004 ? ` · ${formatINR(refundTot.refunded)} refunded` : ''}`
+                            : 'Refunded in full'
+                          : 'Saved as due back from the NBFC'}
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      disabled={!refundTot}
+                      onClick={() => setRefundOpen(true)}
+                      title={refundTot ? undefined : 'Save the repayment first'}
+                      className="flex w-full items-center justify-center gap-2 border-t border-[#F0C4C0] bg-white px-4 py-2.5 text-[12.5px] font-extrabold text-[#B3261E] hover:bg-[#FFF7F6] disabled:opacity-50"
+                    >
+                      <Undo2 className="h-4 w-4" /> {refundTot && refundTot.due <= 0.004 ? 'See the refund' : 'Refund received — link the receipt'}
+                    </button>
+                  </section>
+                )}
+
+                <p className="text-[11.5px] font-semibold leading-relaxed text-[#5A6B62]">
+                  Saved as one voucher under its present number. Each bill&rsquo;s balance, closure and margin release are worked out again from the new figures.
+                </p>
+              </aside>
             </div>
-
-            <label className="grid gap-1">
-              <span className={lbl}>Note</span>
-              <input value={note} onChange={(e) => setNote(e.target.value)} className={inp.replace('tabular-nums', '')} />
-            </label>
-
-            <div className="flex items-baseline justify-between rounded-[6px] bg-[#0B3D2E] px-3.5 py-2.5 text-white">
-              <span className="text-[11px] font-extrabold uppercase tracking-[.1em] text-[#8FBFA8]">Leaves the bank</span>
-              <span className="text-[16px] font-extrabold tabular-nums">{formatINR(total)}</span>
-            </div>
-            <p className="text-[11.5px] font-semibold leading-relaxed text-[#5A6B62]">
-              Saved as one voucher under its present number. Each bill&rsquo;s balance, closure and margin release are worked out again from the new figures.
-            </p>
           </div>
         )}
-        <DialogFooter>
-          <Button variant="outline" onClick={onClose} disabled={saving}>
-            Cancel
-          </Button>
-          {!party && (
-            <Button className="bg-[#0B3D2E] hover:bg-[#0A3327]" disabled={saving} onClick={() => void save()}>
-              {saving ? 'Saving…' : 'Save changes'}
+        <DialogFooter className="flex-none border-t border-[#E4ECE3] bg-white px-5 py-3 sm:justify-between">
+          <span className="hidden text-[12px] font-semibold text-[#5A6B62] sm:block">
+            {!party && <>Leaves the bank <b className="tabular-nums text-[#0A1F17]">{formatINR(total)}</b></>}
+          </span>
+          <div className="flex gap-2">
+            <Button variant="outline" className="h-10 !rounded-[6px] px-4 font-bold" onClick={onClose} disabled={saving}>
+              Cancel
             </Button>
-          )}
+            {!party && (
+              <Button className="h-10 !rounded-[6px] bg-[#0B3D2E] px-5 font-extrabold text-[#C7F03F] hover:bg-[#0A3327]" disabled={saving} onClick={() => void save()}>
+                {saving ? 'Saving…' : 'Save changes'}
+              </Button>
+            )}
+          </div>
         </DialogFooter>
       </DialogContent>
+      <RefundReceived
+        above
+        kind="bd"
+        id={refundOpen && repayment ? Number(repayment.bd_id) : null}
+        open={refundOpen}
+        onClose={() => setRefundOpen(false)}
+        onChanged={() => {
+          loadRefund()
+          onSaved()
+        }}
+      />
     </Dialog>
   )
 }

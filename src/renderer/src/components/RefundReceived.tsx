@@ -25,7 +25,8 @@ export function RefundReceived({
   open,
   onClose,
   onChanged,
-  phone
+  phone,
+  above
 }: {
   kind: 'bd' | 'lc'
   id: number | null
@@ -34,6 +35,8 @@ export function RefundReceived({
   onChanged?: () => void
   /** Over the phone's full-screen views (z-60), and scrolling within a phone's height. */
   phone?: boolean
+  /** Opened from inside another dialog or drawer — sit above it. */
+  above?: boolean
 }): React.JSX.Element {
   const api = kind === 'bd' ? window.api.billDiscounting : window.api.lc
   const [info, setInfo] = useState<Row | null>(null)
@@ -77,7 +80,7 @@ export function RefundReceived({
   const due = n(info?.due)
   return (
     <Dialog open={open} onOpenChange={(v) => !v && onClose()}>
-      <DialogContent className={cn('max-w-[720px]', phone && '!z-[70] max-h-[90vh] w-[calc(100%-20px)] overflow-y-auto overflow-x-hidden !p-4')}>
+      <DialogContent overlayClassName={above ? 'z-[140]' : undefined} className={cn('max-w-[720px]', above && '!z-[150]', phone && '!z-[70] max-h-[90vh] w-[calc(100%-20px)] overflow-y-auto overflow-x-hidden !p-4')}>
         <DialogHeader>
           <DialogTitle>Refund received{info ? ` — ${kind === 'bd' ? 'bill' : 'LC'} ${String(info.label || '')}` : ''}</DialogTitle>
           <DialogDescription>

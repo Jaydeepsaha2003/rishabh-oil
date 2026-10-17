@@ -41,6 +41,7 @@ import { cn } from '@/lib/utils'
 import { adjKindsLabel, adjPostsTo } from '@/components/AdjChargePicker'
 import { BdRepaymentEdit } from '@/components/BdRepaymentEdit'
 import { isRefundDue } from '@/lib/refundDue'
+import { RefundReceived } from '@/components/RefundReceived'
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Row = Record<string, any>
@@ -251,6 +252,7 @@ function BankCard({ bill, repayments, onChanged }: { bill: Row; repayments?: Row
   const [posted, setPosted] = useState<Row[] | null>(null)
   const [banks, setBanks] = useState<Row[]>([])
   const [busy, setBusy] = useState<number | null>(null)
+  const [refundOpen, setRefundOpen] = useState(false)
   const id = Number(bill.id)
   const load = async (): Promise<void> => {
     const d = await window.api.vouchers.forDocument('bd', id).catch(() => null)
@@ -356,12 +358,14 @@ function BankCard({ bill, repayments, onChanged }: { bill: Row; repayments?: Row
                       {st.interest > 0.004 && <span className="tabular-nums text-[#5A6B62]">+ {formatINR(st.interest)} interest</span>}
                       {st.charges > 0.004 && <span className="tabular-nums text-[#5A6B62]">+ {formatINR(st.charges)} charges</span>}
                       {st.refund > 0.004 && (
-                        <span
-                          className="rounded-[2px] border border-[#F0C4C0] bg-[#FDECEA] px-1.5 py-[2px] font-extrabold tabular-nums text-[#B3261E]"
-                          title="Paid over the balance — the NBFC owes it back (⋮ → Refund received)"
+                        <button
+                          type="button"
+                          onClick={() => setRefundOpen(true)}
+                          className="inline-flex items-center gap-1 rounded-[2px] border border-[#F0C4C0] bg-[#FDECEA] px-1.5 py-[2px] font-extrabold tabular-nums text-[#B3261E] hover:bg-[#FBD9D5]"
+                          title="Paid over the balance — the NBFC owes it back. Click to link the refund's receipt."
                         >
-                          + {formatINR(st.refund)} paid over — refund due
-                        </span>
+                          + {formatINR(st.refund)} paid over — refund received?
+                        </button>
                       )}
                     </div>
                   )
@@ -402,6 +406,17 @@ function BankCard({ bill, repayments, onChanged }: { bill: Row; repayments?: Row
           </div>
         )}
       </div>
+      <RefundReceived
+        above
+        kind="bd"
+        id={refundOpen ? id : null}
+        open={refundOpen}
+        onClose={() => setRefundOpen(false)}
+        onChanged={() => {
+          void load()
+          onChanged?.()
+        }}
+      />
     </Card>
   )
 }

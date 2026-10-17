@@ -3305,7 +3305,7 @@ export function BillDiscounting({
                           disabledReason: 'Already repaid — reopen it first',
                           onClick: () => openEdit(r)
                         },
-                        ...(bdRefundDue[String(r.id)] ? [{ label: `Refund received — ${formatINR(bdRefundDue[String(r.id)])} due back`, icon: Undo2, onClick: () => setRefundBd(Number(r.id)) }] : []),
+                        ...(bdRefundTot[String(r.id)] ? [{ label: bdRefundTot[String(r.id)].due > 0.004 ? `Refund received — ${formatINR(bdRefundTot[String(r.id)].due)} due back` : `Refund received — ${formatINR(bdRefundTot[String(r.id)].booked)} refunded`, icon: Undo2, onClick: () => setRefundBd(Number(r.id)) }] : []),
                         {
                           label: 'Disbursement paid to…',
                           icon: Landmark,
@@ -4013,7 +4013,7 @@ export function BillDiscounting({
                                   disabledReason: 'Already repaid — reopen it first',
                                   onClick: () => openEdit(r)
                                 },
-                                ...(bdRefundDue[String(r.id)] ? [{ label: `Refund received — ${formatINR(bdRefundDue[String(r.id)])} due back`, icon: Undo2, onClick: () => setRefundBd(Number(r.id)) }] : []),
+                                ...(bdRefundTot[String(r.id)] ? [{ label: bdRefundTot[String(r.id)].due > 0.004 ? `Refund received — ${formatINR(bdRefundTot[String(r.id)].due)} due back` : `Refund received — ${formatINR(bdRefundTot[String(r.id)].booked)} refunded`, icon: Undo2, onClick: () => setRefundBd(Number(r.id)) }] : []),
                                 {
                                   label: 'Disbursement paid to…',
                                   icon: Landmark,
