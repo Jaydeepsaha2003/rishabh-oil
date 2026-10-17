@@ -102,9 +102,53 @@ function lcPartsOf(l: Row | null | undefined): LcPart[] {
 // so a reader can go across a row and stay on the same part.
 function PartTag({ p }: { p: LcPart }): React.JSX.Element {
   return (
-    <span className="inline-flex w-[22px] flex-none justify-center rounded-[2px] bg-[#0B3D2E] px-1 text-[9.5px] font-extrabold leading-[16px] text-white">
+    <span
+      className={cn(
+        'inline-flex h-[16px] w-[22px] flex-none items-center justify-center rounded-[2px] text-[9.5px] font-extrabold',
+        p.repaid_date ? 'bg-[#E4ECE3] text-[#8CA396]' : 'bg-[#0B3D2E] text-white'
+      )}
+    >
       P{p.part_no}
     </span>
+  )
+}
+// Every line in the three part columns is this tall, the opening-date line
+// included, so a part reads straight across Validity, Days left and Int. days.
+const PART_LINE = 'flex h-[22px] items-center'
+// One part's countdown, sized to the line: red within a week (or overdue),
+// amber otherwise, grey once repaid.
+function PartDue({ p }: { p: LcPart }): React.JSX.Element {
+  if (p.repaid_date)
+    return (
+      <span
+        className="rounded-[2px] bg-[#EEF2EE] px-1.5 text-[10.5px] font-extrabold uppercase leading-[18px] tracking-[.04em] text-[#8CA396]"
+        title={`Repaid ${formatDate(p.repaid_date)}`}
+      >
+        Repaid
+      </span>
+    )
+  const d = daysTo(p.maturity_date)
+  if (d == null) return <span className="text-[#C3D2C6]">—</span>
+  const hot = d <= 7
+  return (
+    <span
+      className={cn(
+        'rounded-[2px] px-1.5 text-[11px] font-extrabold leading-[18px] tabular-nums',
+        hot ? 'bg-[#FCE4E2] text-[#B3261E]' : 'bg-[#FFF1D6] text-[#8A5300]'
+      )}
+      title={`Part ${p.part_no} matures ${formatDate(p.maturity_date)}`}
+    >
+      {d < 0 ? `${-d}D overdue` : d === 0 ? 'due today' : `${d}D left`}
+    </span>
+  )
+}
+// The small grey heading on the opening-date line of the Days left and Int.
+// days columns — it holds the line, and says what the figures below are.
+function PartHead({ children, right }: { children: React.ReactNode; right?: boolean }): React.JSX.Element {
+  return (
+    <div className={cn(PART_LINE, right && 'justify-end', 'text-[9.5px] font-extrabold uppercase tracking-[.08em] text-[#A8B8AE]')}>
+      {children}
+    </div>
   )
 }
 const dayGap = (a: string, b: string): number => {
@@ -3851,12 +3895,18 @@ function TreasuryDesk({ onCompanyChange, focusLcId, focusBdId, onFocusHandled }:
                             </TableCell>
                             <TableCell className={cn('doc-ref whitespace-nowrap py-2', __WEB__ && '!py-2')}>
                               {isPartsLc(l) ? (
-                                <div className="flex flex-col gap-[3px] leading-[1.35]">
-                                  <DateLine tag={l.opened_date ? 'Op' : 'App'} date={l.opened_date || l.open_date} title="Opened by the bank" />
+                                <div className="flex flex-col">
+                                  <div className={cn(PART_LINE, 'gap-2')} title={l.opened_date ? 'Opened by the bank' : 'Applied for'}>
+                                    <span className="w-[22px] text-[9.5px] font-extrabold uppercase tracking-[.08em] text-[#5A6B62]">{l.opened_date ? 'Op' : 'App'}</span>
+                                    <span className="text-[12px] font-semibold text-[#0A1F17]">{formatDateShort(l.opened_date || l.open_date)}</span>
+                                  </div>
                                   {lcPartsOf(l).map((p) => (
-                                    <div key={p.part_no} className="flex items-center gap-1.5" title={`Part ${p.part_no}: paid ${formatDate(p.pay_date)}, matures ${formatDate(p.maturity_date)}`}>
+                                    <div
+                                      key={p.part_no}
+                                      className={cn(PART_LINE, 'gap-2')}
+                                      title={`Part ${p.part_no}: ${formatINR(p.amount)} · paid ${formatDate(p.pay_date)} · matures ${formatDate(p.maturity_date)}`}
+                                    >
                                       <PartTag p={p} />
-                                      <span className="text-[9.5px] font-extrabold uppercase tracking-[.08em] text-[#5A6B62]">Mat</span>
                                       <span className={cn('text-[12px] font-semibold', p.repaid_date ? 'text-[#A8B8AE] line-through' : 'text-[#0A1F17]')}>
                                         {formatDateShort(p.maturity_date)}
                                       </span>
@@ -3913,18 +3963,13 @@ function TreasuryDesk({ onCompanyChange, focusLcId, focusBdId, onFocusHandled }:
                             <TableCell className="whitespace-nowrap">
                               {/* Repaid means wound up — no live countdown. */}
                               {isPartsLc(l) ? (
-                                <div className="flex flex-col gap-[3px]">
-                                  {/* Lined up with the parts in Validity, one
-                                      row below its opening date. */}
-                                  <div className="h-[16px]" />
+                                <div className="flex flex-col">
+                                  {/* Lined up with the parts in Validity: one
+                                      heading line beside its opening date. */}
+                                  <PartHead>By part</PartHead>
                                   {lcPartsOf(l).map((p) => (
-                                    <div key={p.part_no} className="flex items-center gap-1.5">
-                                      <PartTag p={p} />
-                                      {p.repaid_date ? (
-                                        <Badge variant="muted" title={`Repaid ${formatDate(p.repaid_date)}`}>Repaid</Badge>
-                                      ) : (
-                                        <DueBadge date={p.maturity_date} l={{ ...l, opened_date: p.pay_date, open_date: p.pay_date }} />
-                                      )}
+                                    <div key={p.part_no} className={PART_LINE}>
+                                      <PartDue p={p} />
                                     </div>
                                   ))}
                                 </div>
@@ -3943,16 +3988,15 @@ function TreasuryDesk({ onCompanyChange, focusLcId, focusBdId, onFocusHandled }:
                               )}
                             >
                               {isPartsLc(l) ? (
-                                <div className="flex flex-col items-end gap-[3px]">
-                                  <div className="h-[16px]" />
+                                <div className="flex flex-col items-end">
+                                  <PartHead right>Days</PartHead>
                                   {lcPartsOf(l).map((p) => (
                                     <div
                                       key={p.part_no}
-                                      className={cn('flex items-center gap-1.5 leading-[16px]', p.repaid_date && 'text-[#A8B8AE]')}
+                                      className={cn(PART_LINE, 'justify-end', p.repaid_date && 'text-[#A8B8AE]')}
                                       title={`Part ${p.part_no}: ${p.days} days · interest ${formatINR(p.interest)}`}
                                     >
-                                      <PartTag p={p} />
-                                      <span>{p.days > 0 ? p.days : '—'}</span>
+                                      {p.days > 0 ? p.days : '—'}
                                     </div>
                                   ))}
                                 </div>
