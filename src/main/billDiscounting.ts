@@ -1132,9 +1132,14 @@ async function validateBd(v: Row, cur?: Row): Promise<void> {
     const invoice = round2(n(v.invoice_amount))
     const sanctioned = round2(bdCalc(v).sanctionedAmount)
     const total = invoice > 0 ? invoice : sanctioned
-    if (Math.abs(sum - total) > 0.05 && Math.abs(sum - sanctioned) > 0.05) {
+    // Or, on a bill the NBFC paid straight to its suppliers, what each was
+    // PAID — adding up to the open amount (I2: 39,49,153 + 60,50,847), the
+    // figures Tally carries and the opening voucher debits.
+    const paidOut = round2(n(v.amount))
+    const paidSplit = String(v.disbursement_route || '') === 'supplier' && Math.abs(sum - paidOut) <= 0.05
+    if (!paidSplit && Math.abs(sum - total) > 0.05 && Math.abs(sum - sanctioned) > 0.05) {
       throw new Error(
-        `The parties' invoice amounts come to ${inr(sum)}, but the bill's invoice amount is ${inr(total)} — they have to match`
+        `The parties' amounts come to ${inr(sum)} — they must add up to the bill's invoice amount (${inr(total)})${String(v.disbursement_route || '') === 'supplier' ? ` or to the ${inr(paidOut)} the NBFC paid out` : ''}`
       )
     }
   }

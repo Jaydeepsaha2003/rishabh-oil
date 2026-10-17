@@ -4445,7 +4445,11 @@ export function BillDiscounting({
                       // granted against its invoices, and that does not move
                       // when less is drawn against it today.
                       // Each party's INVOICE, adding up to the bill's invoice amount.
-                      const total = n(form.invoice_amount) > 0 ? round2(n(form.invoice_amount)) : round2(n(preview?.sanctionedAmount))
+                      const invTotal = n(form.invoice_amount) > 0 ? round2(n(form.invoice_amount)) : round2(n(preview?.sanctionedAmount))
+                      // Paid straight to the suppliers: what each was PAID is
+                      // the split too, adding up to the open amount.
+                      const paidSplit = String(form.disbursement_route) === 'supplier' && sum > 0 && Math.abs(sum - round2(n(form.amount))) < 0.05
+                      const total = paidSplit ? round2(n(form.amount)) : invTotal
                       const gap = round2(total - sum)
                       return (
                         <div
@@ -4542,7 +4546,7 @@ export function BillDiscounting({
                                   ? 'Nothing to divide yet'
                                   : sum <= 0
                                     ? `${formatINR(total)} to divide between ${ids.length} parties`
-                                    : `Invoice ${formatINR(sum)} of ${formatINR(total)}`}
+                                    : `${paidSplit ? 'Paid' : 'Invoice'} ${formatINR(sum)} of ${formatINR(total)}`}
                               </span>
                               <span>
                                 {total <= 0
