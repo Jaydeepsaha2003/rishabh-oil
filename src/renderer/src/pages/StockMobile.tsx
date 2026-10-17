@@ -107,7 +107,7 @@ export function StockMobile(): React.JSX.Element {
       {menu === 'book' ? (
         <BookScreen key={nonce} />
       ) : menu === 'actual' ? (
-        <DayCloseScreen key={nonce} />
+        <ActualScreen key={nonce} />
       ) : (
         <OpeningScreen key={nonce} />
       )}
@@ -256,9 +256,60 @@ function BookScreen(): React.JSX.Element {
 }
 
 // ---------------------------------------------------------------------------
+// ACTUAL STOCK — the same four views as the desk: the day's count, packed
+// SKUs, MNC / consignment stock and transfers between the companies.
+type ActualTab = 'count' | 'sku' | 'mnc' | 'transfers'
+function ActualScreen(): React.JSX.Element {
+  const [tab, setTab] = useState<ActualTab>('count')
+  return (
+    <>
+      <div className="flex shrink-0 gap-1.5 overflow-x-auto bg-[#0B3D2E] px-4 pb-3 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+        {(
+          [
+            ['count', 'Count'],
+            ['sku', 'Packed SKU'],
+            ['mnc', 'MNC'],
+            ['transfers', 'Transfers']
+          ] as const
+        ).map(([k, label]) => (
+          <button
+            key={k}
+            type="button"
+            onClick={() => setTab(k)}
+            className={cn(
+              'h-9 shrink-0 rounded-full px-3.5 text-[12px] font-extrabold',
+              tab === k ? 'bg-[#C7F03F] text-[#0A1F17]' : 'bg-white/10 text-[#BFE3CB]'
+            )}
+          >
+            {label}
+          </button>
+        ))}
+      </div>
+      {tab === 'count' ? <DayCloseScreen /> : tab === 'sku' ? <SkuScreen /> : tab === 'mnc' ? <MncScreen /> : <TransfersScreen />}
+    </>
+  )
+}
+
+// ---------------------------------------------------------------------------
 // Day close — walk the tanks and enter what is there.
 function DayCloseScreen(): React.JSX.Element {
   const [date, setDate] = useState(todayISO())
+  // The counts already saved, newest first — so what was counted is one tap
+  // away, and the screen opens on the last count rather than an empty today.
+  const [history, setHistory] = useState<Row[]>([])
+  const [openNote, setOpenNote] = useState<Record<string, boolean>>({})
+  useEffect(() => {
+    const from = new Date(Date.now() - 45 * 86400000).toISOString().slice(0, 10)
+    void window.api.stockCount
+      .history(from, todayISO())
+      .then((h) => {
+        const list = (Array.isArray(h) ? h : []).filter((x) => n(x.products) > 0)
+        list.sort((a, b) => s(b.count_date).localeCompare(s(a.count_date)))
+        setHistory(list)
+        if (list.length && !list.some((x) => s(x.count_date).slice(0, 10) === todayISO())) setDate(s(list[0].count_date).slice(0, 10))
+      })
+      .catch(() => undefined)
+  }, [])
   const [rows, setRows] = useState<Row[]>([])
   const [draft, setDraft] = useState<Record<string, { actual?: string; pp?: string; note?: string }>>({})
   const [loading, setLoading] = useState(true)
@@ -367,33 +418,53 @@ function DayCloseScreen(): React.JSX.Element {
     <>
       <Kpis
         tone="green"
+        dense
         items={[
-          { k: 'Counted', v: `${counted} of ${rows.length}` },
-          { k: 'Book total', v: formatNum(r3(rows.reduce((a, r) => a + n(r.book_qty), 0))) },
+          { k: 'Counted', v: `${counted} / ${rows.length}` },
+          { k: 'Book', v: formatNum(r3(rows.reduce((a, r) => a + n(r.book_qty), 0))) },
           {
-            k: 'Counted total',
+            k: 'Counted qty',
             v: formatNum(r3(rows.reduce((a, r) => a + n(valOf(r, 'actual')) + n(valOf(r, 'pp')), 0)))
-          },
-          { k: 'Date', v: formatDate(date) }
+          }
         ]}
       />
       <div className="flex min-h-0 flex-1 flex-col gap-2.5 overflow-y-auto px-4 pb-28 pt-3">
-        <div className="flex items-center gap-2.5 rounded-[4px] border border-[#D6E2D6] bg-white px-3.5 py-3">
-          <ClipboardCheck className="h-[19px] w-[19px] shrink-0 text-[#0B3D2E]" />
-          <div className="min-w-0 flex-1">
-            <input
-              type="date"
-              value={date}
-              max={todayISO()}
-              onChange={(e) => setDate(e.target.value)}
-              className="w-full border-0 bg-transparent p-0 text-[12.5px] font-extrabold text-[#0A1F17] outline-none"
-            />
-            <div className="mt-0.5 text-[11px] font-bold text-[#5A6B62]">Walk the tanks and enter what is there</div>
-          </div>
+        {/* THE COUNTS ALREADY TAKEN — today first, then each saved day. */}
+        <div className="-mx-4 flex gap-1.5 overflow-x-auto px-4 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+          {[todayISO(), ...history.map((h) => s(h.count_date).slice(0, 10)).filter((d) => d !== todayISO())].map((d) => {
+            const h = history.find((x) => s(x.count_date).slice(0, 10) === d)
+            const on = d === date
+            return (
+              <button
+                key={d}
+                type="button"
+                onClick={() => setDate(d)}
+                className={cn(
+                  'shrink-0 rounded-[6px] border px-3 py-1.5 text-left',
+                  on ? 'border-[#0B3D2E] bg-[#0B3D2E] text-white' : 'border-[#D6E2D6] bg-white text-[#0A1F17]'
+                )}
+              >
+                <div className="text-[12px] font-extrabold">{d === todayISO() ? 'Today' : formatDate(d).slice(0, 5)}</div>
+                <div className={cn('text-[10px] font-bold', on ? 'text-[#BFE3CB]' : 'text-[#5A6B62]')}>
+                  {h ? `${n(h.products)} counted${n(h.mismatches) ? ` · ${n(h.mismatches)} off` : ''}` : 'new count'}
+                </div>
+              </button>
+            )
+          })}
+        </div>
+        <div className="flex items-center gap-2.5 rounded-[4px] border border-[#D6E2D6] bg-white px-3 py-2">
+          <ClipboardCheck className="h-[18px] w-[18px] shrink-0 text-[#0B3D2E]" />
+          <input
+            type="date"
+            value={date}
+            max={todayISO()}
+            onChange={(e) => setDate(e.target.value)}
+            className="min-w-0 flex-1 border-0 bg-transparent p-0 text-[13px] font-extrabold text-[#0A1F17] outline-none"
+          />
           <button
             type="button"
             onClick={copyBook}
-            className="flex h-11 shrink-0 items-center gap-1.5 whitespace-nowrap rounded-[4px] border-[1.5px] border-[#C3D2C6] px-3 text-[11.5px] font-extrabold text-[#33473E]"
+            className="flex h-9 shrink-0 items-center gap-1.5 whitespace-nowrap rounded-[4px] border-[1.5px] border-[#C3D2C6] px-2.5 text-[11.5px] font-extrabold text-[#33473E]"
           >
             <Copy className="h-[17px] w-[17px]" /> Copy book
           </button>
@@ -459,40 +530,27 @@ function DayCloseScreen(): React.JSX.Element {
                         </div>
                       </div>
 
-                      <div className="flex flex-col gap-2.5 px-3.5 pb-3">
+                      <div className="flex flex-col gap-2 px-3.5 pb-2.5">
                         <div className="grid grid-cols-2 gap-2.5">
                           <Num label="Counted raw" value={actual} onChange={(v) => set(r, 'actual', v)} />
                           <Num label="PP / in process" value={pp} onChange={(v) => set(r, 'pp', v)} />
                         </div>
-                        <div>
-                          <Lbl>Note</Lbl>
+                        {openNote[String(r.product_id)] || valOf(r, 'note') ? (
                           <input
                             value={valOf(r, 'note')}
                             onChange={(e) => set(r, 'note', e.target.value)}
-                            placeholder="Which tank, who counted it"
-                            className="h-11 w-full rounded-[4px] border border-[#C3D2C6] bg-white px-2.5 text-[12.5px] font-semibold text-[#0A1F17] outline-none placeholder:font-medium placeholder:text-[#8FA79B]"
+                            placeholder="Note — which tank, who counted it"
+                            className="h-10 w-full rounded-[4px] border border-[#C3D2C6] bg-white px-2.5 text-[12.5px] font-semibold text-[#0A1F17] outline-none placeholder:font-medium placeholder:text-[#8FA79B]"
                           />
-                        </div>
-                        {/* Valued at the weighted-average cost, never typed —
-                            the rate is snapshotted with the count. */}
-                        <div className="grid grid-cols-2 gap-2 rounded-[4px] border border-[#E4ECE3] bg-[#F7FAF6] px-3 py-2.5">
-                          <div className="min-w-0">
-                            <div className="text-[9px] font-extrabold uppercase tracking-[.1em] text-[#5A6B62]">
-                              Rate ₹/{s(r.uom || 'MT')}
-                            </div>
-                            <div className="mt-1 truncate text-[12.5px] font-bold tabular-nums text-[#33473E]">
-                              {n(r.rate) ? formatINR(r.rate) : '—'}
-                            </div>
-                          </div>
-                          <div className="min-w-0 text-right">
-                            <div className="text-[9px] font-extrabold uppercase tracking-[.1em] text-[#5A6B62]">
-                              Actual value
-                            </div>
-                            <div className="mt-1 truncate text-[12.5px] font-bold tabular-nums text-[#0A1F17]">
-                              {entered ? formatINR(total * n(r.rate)) : '—'}
-                            </div>
-                          </div>
-                        </div>
+                        ) : (
+                          <button
+                            type="button"
+                            onClick={() => setOpenNote((o) => ({ ...o, [String(r.product_id)]: true }))}
+                            className="self-start text-[11.5px] font-extrabold text-[#0B6B45]"
+                          >
+                            + Note
+                          </button>
+                        )}
                       </div>
 
                       <div
@@ -522,6 +580,8 @@ function DayCloseScreen(): React.JSX.Element {
                             </span>
                             <span className="whitespace-nowrap text-[11px] font-bold tabular-nums text-[#5A6B62]">
                               counted {formatNum(r3(total))}
+                              {/* Valued at the weighted-average cost the count snapshots. */}
+                              {n(r.rate) ? ` · ${formatINR(total * n(r.rate))}` : ''}
                             </span>
                           </>
                         ) : null}
@@ -534,13 +594,6 @@ function DayCloseScreen(): React.JSX.Element {
           })
         )}
 
-        <div className="flex items-start gap-2.5 rounded-[4px] border border-[#E4ECE3] bg-[#F7FAF6] px-3.5 py-3">
-          <Monitor className="mt-0.5 h-[17px] w-[17px] shrink-0 text-[#A8B8AE]" />
-          <span className="text-[11.5px] font-semibold leading-relaxed text-[#5A6B62]">
-            Packed SKU, MNC / consignment and transfers are on the desk version of this page — each is a register
-            of its own with movements behind every figure.
-          </span>
-        </div>
       </div>
 
       <SaveBar
@@ -552,6 +605,243 @@ function DayCloseScreen(): React.JSX.Element {
         onSave={() => void save()}
       />
     </>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// PACKED SKU — cases and pieces on the shelf, as the desk register works them.
+function SkuScreen(): React.JSX.Element {
+  const [rows, setRows] = useState<Row[]>([])
+  const [loading, setLoading] = useState(true)
+  const [query, setQuery] = useState('')
+  // One day, as the desk register opens: brought forward + packed + adjusted
+  // − sold = on hand at the day's end.
+  const [date, setDate] = useState(todayISO())
+  useEffect(() => {
+    setLoading(true)
+    void window.api.skuStock
+      .list(date)
+      .then((r) => setRows(Array.isArray(r) ? r : []))
+      .catch((e) => toast.error((e as Error).message))
+      .finally(() => setLoading(false))
+  }, [date])
+  const shown = rows.filter((r) => {
+    const q = query.trim().toLowerCase()
+    return !q || [r.name, r.product_name].some((f) => s(f).toLowerCase().includes(q))
+  })
+  const neg = rows.filter((r) => n(r.on_hand) < 0).length
+  return (
+    <>
+      <Kpis
+        tone="green"
+        items={[
+          { k: 'SKUs', v: String(rows.length) },
+          { k: 'Below zero', v: String(neg), warn: neg > 0 }
+        ]}
+      />
+      <div className="flex min-h-0 flex-1 flex-col gap-2.5 overflow-y-auto px-4 pb-8 pt-3">
+        <div className="flex items-center gap-2.5 rounded-[4px] border border-[#D6E2D6] bg-white px-3 py-2">
+          <Package className="h-[18px] w-[18px] shrink-0 text-[#0B3D2E]" />
+          <input
+            type="date"
+            value={date}
+            max={todayISO()}
+            onChange={(e) => setDate(e.target.value || todayISO())}
+            className="min-w-0 flex-1 border-0 bg-transparent p-0 text-[13px] font-extrabold text-[#0A1F17] outline-none"
+          />
+          <span className="text-[11px] font-bold text-[#5A6B62]">closing</span>
+        </div>
+        <SearchBox value={query} onChange={setQuery} placeholder="SKU or product" />
+        {loading ? (
+          <Loading />
+        ) : !shown.length ? (
+          <Empty title={query ? 'Nothing matches that.' : 'No packed SKUs.'} />
+        ) : (
+          shown.map((r, i) => {
+            const box = s(r.box_label) || 'Case'
+            const low = n(r.on_hand) < 0
+            return (
+              <div key={String(r.id)} className={cn('overflow-hidden rounded-[4px] border border-[#D6E2D6] border-l-[3px] bg-white', low ? 'border-l-[#B3261E]' : 'border-l-[#12855A]')}>
+                <div className="flex items-start gap-2.5 px-3.5 py-3">
+                  <SerialNo n={i + 1} />
+                  <div className="min-w-0 flex-1">
+                    <div className="text-[13.5px] font-extrabold text-[#0A1F17]">{s(r.name)}</div>
+                    <div className="mt-0.5 text-[10.5px] font-semibold text-[#5A6B62]">
+                      {s(r.product_name)} · {n(r.pouches_per_box)} {s(r.pouch_label) || 'pc'} per {box.toLowerCase()}
+                    </div>
+                  </div>
+                  <div className="shrink-0 text-right">
+                    <div className="text-[9px] font-extrabold uppercase tracking-[.1em] text-[#5A6B62]">On hand</div>
+                    <div className={cn('mt-0.5 text-[16px] font-bold tabular-nums', low ? 'text-[#B3261E]' : 'text-[#0A1F17]')}>
+                      {formatNum(n(r.on_hand))}
+                    </div>
+                    <div className="text-[10px] font-bold text-[#5A6B62]">{box}s</div>
+                  </div>
+                </div>
+                <div className="grid grid-cols-4 border-t border-t-[#EAF0E9] bg-[#F7FAF6] text-center">
+                  {[
+                    ['B/f', n(r.opening)],
+                    ['Packed', n(r.packed_on)],
+                    ['Adjusted', n(r.adj_on)],
+                    ['Sold', n(r.sold_on) ? -n(r.sold_on) : 0]
+                  ].map(([k, v]) => (
+                    <div key={String(k)} className="px-1 py-2">
+                      <div className="text-[9px] font-extrabold uppercase tracking-[.08em] text-[#5A6B62]">{k}</div>
+                      <div className={cn('mt-0.5 text-[12px] font-bold tabular-nums', Number(v) < 0 ? 'text-[#8C2F26]' : 'text-[#0A1F17]')}>
+                        {Number(v) > 0 && k !== 'B/f' ? '+' : ''}
+                        {formatNum(Number(v))}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+                {r.negative_since ? (
+                  <div className="border-t border-t-[#F0D6D4] bg-[#FDF3F2] px-3.5 py-1.5 text-[11px] font-bold text-[#B3261E]">
+                    Below zero since {formatDate(s(r.negative_since))}
+                  </div>
+                ) : null}
+              </div>
+            )
+          })
+        )}
+      </div>
+    </>
+  )
+}
+
+// MNC / CONSIGNMENT — oil lying with us that is the supplier's until invoiced.
+function MncScreen(): React.JSX.Element {
+  const [sum, setSum] = useState<Row[]>([])
+  const [lots, setLots] = useState<Row[]>([])
+  const [loading, setLoading] = useState(true)
+  const [open, setOpen] = useState<string | null>(null)
+  useEffect(() => {
+    void Promise.all([window.api.consignment.summary(), window.api.consignment.list('stock')])
+      .then(([a, b]) => {
+        setSum(Array.isArray(a) ? a : [])
+        setLots(Array.isArray(b) ? b : [])
+      })
+      .catch((e) => toast.error((e as Error).message))
+      .finally(() => setLoading(false))
+  }, [])
+  const total = r3(sum.reduce((t, x) => t + n(x.balance), 0))
+  return (
+    <>
+      <Kpis
+        tone="green"
+        items={[
+          { k: 'On hand', v: formatNum(total) },
+          { k: 'Lines', v: String(sum.length) }
+        ]}
+      />
+      <div className="flex min-h-0 flex-1 flex-col gap-2.5 overflow-y-auto px-4 pb-8 pt-3">
+        {loading ? (
+          <Loading />
+        ) : !sum.length ? (
+          <Empty title="No MNC / consignment stock." />
+        ) : (
+          sum.map((x) => {
+            const key = `${x.supplier_id}-${x.product_id}`
+            const mine = lots.filter((l) => n(l.supplier_id) === n(x.supplier_id) && n(l.product_id) === n(x.product_id))
+            return (
+              <div key={key} className="overflow-hidden rounded-[4px] border border-[#D6E2D6] bg-white">
+                <button type="button" onClick={() => setOpen((o) => (o === key ? null : key))} className="flex w-full items-start gap-2.5 px-3.5 py-3 text-left">
+                  <div className="min-w-0 flex-1">
+                    <div className="text-[13.5px] font-extrabold text-[#0A1F17]">{s(x.product_code || x.product_name)}</div>
+                    <div className="mt-0.5 truncate text-[10.5px] font-semibold text-[#5A6B62]">{s(x.supplier_name)}</div>
+                  </div>
+                  <div className="shrink-0 text-right">
+                    <div className="text-[9px] font-extrabold uppercase tracking-[.1em] text-[#5A6B62]">Balance</div>
+                    <div className="mt-0.5 text-[16px] font-bold tabular-nums text-[#0A1F17]">{formatNum(r3(n(x.balance)))}</div>
+                    <div className="text-[10px] font-bold text-[#5A6B62]">{s(x.uom || 'MT')}</div>
+                  </div>
+                  <ChevronDown className={cn('mt-1 h-4 w-4 shrink-0 text-[#8FA79B] transition-transform', open === key && 'rotate-180')} />
+                </button>
+                <div className="grid grid-cols-3 border-t border-t-[#EAF0E9] bg-[#F7FAF6] text-center">
+                  {[
+                    ['Opening', n(x.opening)],
+                    ['Deposited', n(x.deposited)],
+                    ['Invoiced', n(x.invoiced) ? -n(x.invoiced) : 0]
+                  ].map(([k, v]) => (
+                    <div key={String(k)} className="px-1 py-2">
+                      <div className="text-[9px] font-extrabold uppercase tracking-[.08em] text-[#5A6B62]">{k}</div>
+                      <div className={cn('mt-0.5 text-[12px] font-bold tabular-nums', Number(v) < 0 ? 'text-[#8C2F26]' : 'text-[#0A1F17]')}>{formatNum(r3(Number(v)))}</div>
+                    </div>
+                  ))}
+                </div>
+                {open === key && (
+                  <div className="divide-y divide-[#EFF3EE] border-t border-t-[#E4ECE3]">
+                    {mine.length === 0 ? (
+                      <div className="px-3.5 py-2.5 text-[11.5px] font-semibold text-[#5A6B62]">No lots listed.</div>
+                    ) : (
+                      mine.map((l) => (
+                        <div key={String(l.id)} className="flex items-start gap-2 px-3.5 py-2.5">
+                          <div className="min-w-0 flex-1">
+                            <div className="text-[12px] font-extrabold text-[#0A1F17]">
+                              {s(l.tanker_no) || s(l.lot_no) || 'Lot'}
+                              {l.lot_no && l.tanker_no ? <span className="ml-1.5 text-[10.5px] font-bold text-[#5A6B62]">lot {s(l.lot_no)}</span> : null}
+                            </div>
+                            <div className="mt-0.5 text-[10.5px] font-semibold text-[#5A6B62]">
+                              {formatDate(s(l.deposit_date))}
+                              {l.gate_entry_no ? ` · ${s(l.gate_entry_no)}` : ''}
+                              {l.invoice_no ? ` · inv ${s(l.invoice_no)}` : ''}
+                            </div>
+                          </div>
+                          <div className="shrink-0 text-[12.5px] font-bold tabular-nums text-[#0A1F17]">
+                            {formatNum(r3(n(l.qty)))} {s(l.uom || 'MT')}
+                          </div>
+                        </div>
+                      ))
+                    )}
+                  </div>
+                )}
+              </div>
+            )
+          })
+        )}
+      </div>
+    </>
+  )
+}
+
+// TRANSFERS — stock moved from one company's books to the other's.
+function TransfersScreen(): React.JSX.Element {
+  const [rows, setRows] = useState<Row[]>([])
+  const [loading, setLoading] = useState(true)
+  useEffect(() => {
+    void window.api.stock
+      .transfers()
+      .then((r) => setRows(Array.isArray(r) ? r : []))
+      .catch((e) => toast.error((e as Error).message))
+      .finally(() => setLoading(false))
+  }, [])
+  return (
+    <div className="flex min-h-0 flex-1 flex-col gap-2.5 overflow-y-auto px-4 pb-8 pt-3">
+      {loading ? (
+        <Loading />
+      ) : !rows.length ? (
+        <Empty title="No transfers between the companies." />
+      ) : (
+        rows.map((t) => (
+          <div key={String(t.id)} className="rounded-[4px] border border-[#D6E2D6] bg-white px-3.5 py-3">
+            <div className="flex items-start gap-2">
+              <div className="min-w-0 flex-1">
+                <div className="text-[13.5px] font-extrabold text-[#0A1F17]">{s(t.product_code || t.product_name)}</div>
+                <div className="mt-0.5 text-[10.5px] font-semibold text-[#5A6B62]">
+                  {s(t.from_company_name)} → {s(t.to_company_name)}
+                </div>
+              </div>
+              <div className="shrink-0 text-right">
+                <div className="text-[15px] font-bold tabular-nums text-[#0A1F17]">
+                  {formatNum(r3(n(t.qty)))} {s(t.uom || 'MT')}
+                </div>
+                <div className="text-[10.5px] font-bold text-[#5A6B62]">{formatDate(s(t.transfer_date))}</div>
+              </div>
+            </div>
+            {t.note ? <div className="mt-1.5 text-[11.5px] font-semibold text-[#5A6B62]">{s(t.note)}</div> : null}
+          </div>
+        ))
+      )}
+    </div>
   )
 }
 
@@ -1198,16 +1488,19 @@ function OpeningPacked(): React.JSX.Element {
 // Furniture.
 function Kpis({
   tone,
-  items
+  items,
+  dense
 }: {
   tone: 'green' | 'violet'
   items: { k: string; v: string; warn?: boolean }[]
+  /** One row, smaller — where the screen below needs the room. */
+  dense?: boolean
 }): React.JSX.Element {
   return (
-    <div className={cn('shrink-0 px-4 pb-3 pt-3', tone === 'violet' ? 'bg-[#3D3179]' : 'bg-[#0B3D2E]')}>
-      <div className="grid grid-cols-2 gap-2">
+    <div className={cn('shrink-0 px-4', dense ? 'pb-2.5 pt-1' : 'pb-3 pt-3', tone === 'violet' ? 'bg-[#3D3179]' : 'bg-[#0B3D2E]')}>
+      <div className={cn('grid gap-2', dense ? 'grid-cols-3' : 'grid-cols-2')}>
         {items.map((c) => (
-          <div key={c.k} className="min-w-0 rounded-[4px] bg-white/10 px-3 py-2.5">
+          <div key={c.k} className={cn('min-w-0 rounded-[4px] bg-white/10', dense ? 'px-2.5 py-1.5' : 'px-3 py-2.5')}>
             <div className={cn('text-[9px] font-extrabold uppercase tracking-[.1em]', tone === 'violet' ? 'text-[#C9BEF5]' : 'text-[#8FBFA8]')}>
               {c.k}
             </div>
