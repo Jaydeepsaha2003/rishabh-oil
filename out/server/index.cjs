@@ -14778,6 +14778,7 @@ __export(treasury_exports, {
   dropLcUpfrontInterest: () => dropLcUpfrontInterest,
   duePeriodOf: () => duePeriodOf,
   fileLcRepaymentsAsPayments: () => fileLcRepaymentsAsPayments,
+  lcChargeRows: () => lcChargeRows,
   lcFeeDelta: () => lcFeeDelta,
   listAllLcRepayments: () => listAllLcRepayments,
   listBdOpenTradingInvoices: () => listBdOpenTradingInvoices,
@@ -15767,9 +15768,11 @@ async function postLcRepaymentEntry(repaymentId) {
     const total = round23(n15(rep.amount));
     const comm = round23(n15(rep.comm_charges));
     const bankCharges = round23(n15(rep.bank_charges));
-    const principal = round23(total - comm - bankCharges);
+    const rows2 = storedChargeRows(rep);
+    const rowsTotal = round23(rows2.reduce((t, x) => t + x.amount, 0));
+    const principal = round23(total - comm - bankCharges - rowsTotal);
     if (principal < -4e-3) {
-      throw new Error(`The charges (${(comm + bankCharges).toFixed(2)}) are more than the ${total.toFixed(2)} debited \u2014 check the repayment amount`);
+      throw new Error(`The charges (${(comm + bankCharges + rowsTotal).toFixed(2)}) are more than the ${total.toFixed(2)} debited \u2014 check the repayment amount`);
     }
     const rescued = round23(upfrontInterest + upfrontCharges);
     const date = String(rep.repay_date || todayISO2()).slice(0, 10);
@@ -15801,12 +15804,13 @@ async function postLcRepaymentEntry(repaymentId) {
     if (principal > 4e-3) payLines.push({ account: payable, group: LC_PAYABLE_GROUP, dr: principal });
     if (comm > 4e-3) payLines.push({ account: "COMM. CHARGES A/C", group: "Indirect Expenses", dr: comm });
     if (bankCharges > 4e-3) payLines.push({ account: "BANK CHARGES A/C", group: "Indirect Expenses", dr: bankCharges });
+    for (const x of rows2) payLines.push({ account: x.account, group: x.group || "Indirect Expenses", dr: x.amount });
     payLines.push({ account: bankAcc, group: "Bank Accounts", cr: total });
     const je = await postJournal({
       date,
       vchType: "PAYMENT",
       vchNo: rep.lc_no ? String(rep.lc_no) : null,
-      narration: comm + bankCharges > 4e-3 ? `LC ${rep.lc_no} repaid to ${rep.bank || "the bank"} (incl. ${(comm + bankCharges).toFixed(2)} charges)` : `LC ${rep.lc_no} repaid to ${rep.bank || "the bank"}`,
+      narration: comm + bankCharges + rowsTotal > 4e-3 ? `LC ${rep.lc_no} repaid to ${rep.bank || "the bank"} (incl. ${(comm + bankCharges + rowsTotal).toFixed(2)} charges)` : `LC ${rep.lc_no} repaid to ${rep.bank || "the bank"}`,
       companyId: n15(rep.company_id) || void 0,
       lines: payLines
     });
@@ -15880,6 +15884,28 @@ async function repairLcRepaymentAccount() {
   if (moved) console.log(`[lc] ${moved} repayment line(s) moved onto the payable they clear`);
   return moved;
 }
+async function lcChargeRows(rows2) {
+  const out = [];
+  for (const ch of Array.isArray(rows2) ? rows2 : []) {
+    const name = String(ch?.account || "").trim();
+    const amt = round23(n15(ch?.amount));
+    if (!name && amt <= 4e-3) continue;
+    if (!name) throw new Error("Pick the ledger for each charge");
+    if (amt <= 4e-3) throw new Error(`Enter the amount charged to ${name}`);
+    const acc = await getClient().execute({ sql: "SELECT name, acc_group FROM ledger_accounts WHERE UPPER(TRIM(name)) = UPPER(?) LIMIT 1", args: [name] });
+    if (!acc.rows.length) throw new Error(`There is no ledger called ${name}`);
+    out.push({ account: String(acc.rows[0].name), group: String(acc.rows[0].acc_group || "Indirect Expenses"), amount: amt });
+  }
+  return out;
+}
+function storedChargeRows(rep) {
+  try {
+    const list2 = JSON.parse(String(rep?.charges || "[]"));
+    return Array.isArray(list2) ? list2.filter((x) => String(x?.account || "").trim() && n15(x?.amount) > 4e-3).map((x) => ({ account: String(x.account), group: x.group ? String(x.group) : void 0, amount: round23(n15(x.amount)) })) : [];
+  } catch {
+    return [];
+  }
+}
 async function saveLcRepayment(v) {
   return withDbTransaction(async () => {
     const c = getClient();
@@ -15895,17 +15921,20 @@ async function saveLcRepayment(v) {
     }
     const commCharges = round23(n15(v.comm_charges));
     const bankCharges = round23(n15(v.bank_charges));
+    const chargeRows = await lcChargeRows(v.charges);
+    const rowsTotal = round23(chargeRows.reduce((t, x) => t + x.amount, 0));
+    const allCharges = round23(commCharges + bankCharges + rowsTotal);
     const excess = round23(amount2 - openAmount);
     if (excess > 5e-3) {
-      if (Math.abs(commCharges + bankCharges - excess) > 5e-3) {
+      if (Math.abs(allCharges - excess) > 5e-3) {
         throw new Error(
-          `Comm. charges + Bank charges must add up to the ${excess.toFixed(2)} over the open amount (currently ${(commCharges + bankCharges).toFixed(2)})`
+          `The charges must add up to the ${excess.toFixed(2)} over the open amount (currently ${allCharges.toFixed(2)})`
         );
       }
-    } else if (commCharges > 5e-3 || bankCharges > 5e-3) {
-      throw new Error("Comm. charges and Bank charges only apply when the repayment exceeds the open amount");
+    } else if (allCharges > 5e-3) {
+      throw new Error("Charges only apply when the repayment exceeds the open amount");
     }
-    const maturityCharges = round23(commCharges + bankCharges);
+    const maturityCharges = allCharges;
     const posted = v.posted ? 1 : 0;
     assertNotFuture(v.repay_date ? String(v.repay_date).slice(0, 10) : "", "The repayment date");
     const args = [
@@ -15956,6 +15985,10 @@ async function saveLcRepayment(v) {
       });
       id = Number(ins.lastInsertRowid);
     }
+    await c.execute({
+      sql: "UPDATE lc_repayments SET charges = ?, charges_total = ? WHERE id = ?",
+      args: [chargeRows.length ? JSON.stringify(chargeRows) : null, rowsTotal > 4e-3 ? rowsTotal : null, id]
+    });
     if (posted) {
       try {
         await postLcRepaymentEntry(id);
@@ -28022,6 +28055,13 @@ async function runStartupTasks() {
     if (cols.has("interest_adj")) return;
     await c.execute("ALTER TABLE letters_of_credit ADD COLUMN interest_adj REAL NOT NULL DEFAULT 0");
   }).catch((e) => console.error("[lc] interest-adjustment column failed:", e));
+  await runOnce("lc_repay_charges_v1", async () => {
+    const c = getClient();
+    const info = await c.execute({ sql: "PRAGMA table_info('lc_repayments')", args: [] });
+    const cols = new Set(info.rows.map((r) => String(r.name)));
+    if (!cols.has("charges")) await c.execute("ALTER TABLE lc_repayments ADD COLUMN charges TEXT");
+    if (!cols.has("charges_total")) await c.execute("ALTER TABLE lc_repayments ADD COLUMN charges_total REAL");
+  }).catch((e) => console.error("[lc] repayment-charges columns failed:", e));
   await runOnce("bd_repay_interest_v1", async () => {
     const c = getClient();
     const info = await c.execute({ sql: "PRAGMA table_info('bd_repayments')", args: [] });
@@ -29646,8 +29686,9 @@ async function alterOwnedVoucher(entryId, v) {
       const bank = round215(n27(v.bank_charges ?? r.bank_charges));
       const charges = JSON.parse(String(r.charges || "[]"));
       const extra = round215(charges.reduce((t, x) => t + n27(x.amount), 0));
+      const interest = round215(n27(v.interest ?? r.interest));
       const principal = shared.length ? n27(r.amount) : round215(n27(v.amount ?? r.amount));
-      const typed = shared.length ? round215(principal + shared.reduce((t, s5) => t + s5.amount, 0) + comm + bank + extra) : principal;
+      const typed = shared.length ? round215(principal + shared.reduce((t, s5) => t + s5.amount, 0) + comm + bank + extra + interest) : principal;
       await deleteBdRepayment(n27(r.id));
       await repayBd(bdId, {
         repay_date: String(v.repay_date || r.repay_date).slice(0, 10),
@@ -29657,6 +29698,7 @@ async function alterOwnedVoucher(entryId, v) {
         comm_charges: comm,
         bank_charges: bank,
         charges,
+        interest: interest || null,
         amount: typed,
         note: v.note !== void 0 ? v.note ? String(v.note) : null : r.note ?? null,
         party_id: partyId,
@@ -34052,9 +34094,9 @@ async function listLCs() {
       -- against the limit, though, only the principal repays anything: netting
       -- the whole debit off drove Outstanding to minus the charges on an LC
       -- that was square to the rupee.
-      COALESCE((SELECT SUM(amount - COALESCE(comm_charges, 0) - COALESCE(bank_charges, 0))
+      COALESCE((SELECT SUM(amount - COALESCE(comm_charges, 0) - COALESCE(bank_charges, 0) - COALESCE(charges_total, 0))
                   FROM lc_repayments WHERE lc_id = l.id AND posted = 1), 0) AS repaid_principal,
-      COALESCE((SELECT SUM(COALESCE(comm_charges, 0) + COALESCE(bank_charges, 0))
+      COALESCE((SELECT SUM(COALESCE(comm_charges, 0) + COALESCE(bank_charges, 0) + COALESCE(charges_total, 0))
                   FROM lc_repayments WHERE lc_id = l.id AND posted = 1), 0) AS repaid_charges,
       (SELECT COUNT(*) FROM lc_repayments WHERE lc_id = l.id) AS repayment_count,
       -- Parts the bank has paid the supplier in; 0 for an LC paid in one go.
@@ -34770,6 +34812,7 @@ async function precloseLC(id, v) {
       amount: n40(v.amount),
       comm_charges: n40(v.comm_charges),
       bank_charges: n40(v.bank_charges),
+      charges: v.charges || [],
       repay_date: precloseDate,
       posted: true,
       note: "Preclosure repayment"
@@ -35040,6 +35083,9 @@ async function repayLcParts(lcId, v) {
     if (early) throw new Error(`Part ${early.part_no} was only paid on ${dmy4(String(early.pay_date))} \u2014 it cannot be repaid before that`);
     const comm = round219(n40(v.comm_charges));
     const bankCh = round219(n40(v.bank_charges));
+    const { lcChargeRows: lcChargeRows2 } = await Promise.resolve().then(() => (init_treasury(), treasury_exports));
+    const chargeRows = await lcChargeRows2(v.charges);
+    const rowsTotal = round219(chargeRows.reduce((s5, x) => s5 + x.amount, 0));
     const principal = round219(pick.reduce((s5, p) => s5 + n40(p.amount), 0));
     const label2 = pick.map((p) => p.part_no).join(", ");
     const route = v.rebate_route === "pay_to_party" ? "pay_to_party" : "credit_to_us";
@@ -35053,8 +35099,8 @@ async function repayLcParts(lcId, v) {
             VALUES (?, NULL, ?, ?, ?, ?, ?, 1, NULL, ?)`,
       args: [
         n40(lcId),
-        round219(principal - rebateTotal + comm + bankCh),
-        round219(comm + bankCh),
+        round219(principal - rebateTotal + comm + bankCh + rowsTotal),
+        round219(comm + bankCh + rowsTotal),
         comm,
         bankCh,
         date,
@@ -35062,6 +35108,12 @@ async function repayLcParts(lcId, v) {
       ]
     });
     const repId = Number(ins.lastInsertRowid);
+    if (chargeRows.length) {
+      await c.execute({
+        sql: "UPDATE lc_repayments SET charges = ?, charges_total = ? WHERE id = ?",
+        args: [JSON.stringify(chargeRows), rowsTotal, repId]
+      });
+    }
     const { postLcRepaymentEntry: postLcRepaymentEntry2 } = await Promise.resolve().then(() => (init_treasury(), treasury_exports));
     await postLcRepaymentEntry2(repId);
     for (let i = 0; i < pick.length; i++) {
