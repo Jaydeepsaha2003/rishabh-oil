@@ -1527,7 +1527,8 @@ export async function repayLcParts(
     const comm = round2(n(v.comm_charges))
     const bankCh = round2(n(v.bank_charges))
     const { lcChargeRows } = await import('./treasury')
-    const chargeRows = await lcChargeRows(v.charges)
+    const lcBank = toPlain(await getClient().execute({ sql: 'SELECT bank FROM letters_of_credit WHERE id = ?', args: [n(lcId)] }))[0]
+    const chargeRows = await lcChargeRows(v.charges, String(lcBank?.bank || ''))
     const rowsTotal = round2(chargeRows.reduce((s, x) => s + x.amount, 0))
     const principal = round2(pick.reduce((s, p) => s + n(p.amount), 0))
     const label = pick.map((p) => p.part_no).join(', ')

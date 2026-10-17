@@ -820,6 +820,12 @@ const api = {
     reopenLcBill: (id: number): Promise<{ id: number }> => ipcRenderer.invoke('treasury:reopenLcBill', { id })
   },
   lc: {
+    refundDues: (): Promise<Record<string, number>> => ipcRenderer.invoke('lc:refundDues'),
+    refundInfo: (id: number): Promise<Row> => ipcRenderer.invoke('lc:refundInfo', { id }),
+    refundLink: (id: number, entryId: number): Promise<{ id: number }> => ipcRenderer.invoke('lc:refundLink', { id, entryId }),
+    refundRecord: (id: number, values: { date: string; amount: number; bank: string }): Promise<{ id: number }> =>
+      ipcRenderer.invoke('lc:refundRecord', { id, values }),
+    refundUndo: (refundId: number): Promise<{ id: number }> => ipcRenderer.invoke('lc:refundUndo', { refundId }),
     list: (): Promise<Row[]> => ipcRenderer.invoke('lc:list'),
     issuances: (lcId: number): Promise<Row[]> => ipcRenderer.invoke('lc:issuances', { lcId }),
     create: (values: Row): Promise<{ id: number }> => ipcRenderer.invoke('lc:create', { values }),
@@ -894,6 +900,12 @@ const api = {
       ipcRenderer.invoke('bankRecon:setSubEntry', { lineId, values })
   },
   billDiscounting: {
+    refundDues: (): Promise<Record<string, number>> => ipcRenderer.invoke('bd:refundDues'),
+    refundInfo: (id: number): Promise<Row> => ipcRenderer.invoke('bd:refundInfo', { id }),
+    refundLink: (id: number, entryId: number): Promise<{ id: number }> => ipcRenderer.invoke('bd:refundLink', { id, entryId }),
+    refundRecord: (id: number, values: { date: string; amount: number; bank: string }): Promise<{ id: number }> =>
+      ipcRenderer.invoke('bd:refundRecord', { id, values }),
+    refundUndo: (refundId: number): Promise<{ id: number }> => ipcRenderer.invoke('bd:refundUndo', { refundId }),
     list: (filter?: Row): Promise<Row[]> => ipcRenderer.invoke('bd:list', { filter }),
     create: (values: Row): Promise<{ id: number }> => ipcRenderer.invoke('bd:create', { values }),
     update: (id: number, values: Row): Promise<{ id: number }> => ipcRenderer.invoke('bd:update', { id, values }),

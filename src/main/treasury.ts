@@ -1,4 +1,5 @@
 import { withDbTransaction } from './dbTransaction'
+import { isRefundDue, refundLedgerFor, REFUND_DUE_GROUP } from '../renderer/src/lib/refundDue'
 import type { ResultSet } from '@libsql/client'
 import { getClient } from './db'
 import { allCompanyIds, getActiveCompanyId, withCompany } from './company'
@@ -1811,7 +1812,7 @@ export async function repairLcRepaymentAccount(): Promise<number> {
  * (commission, bank charges, GST on them, stamp duty…). Each must name a
  * ledger that already exists: a typo would otherwise open a new one.
  */
-export async function lcChargeRows(rows: unknown): Promise<{ account: string; group: string; amount: number }[]> {
+export async function lcChargeRows(rows: unknown, lender = ''): Promise<{ account: string; group: string; amount: number }[]> {
   const out: { account: string; group: string; amount: number }[] = []
   for (const ch of Array.isArray(rows) ? (rows as Row[]) : []) {
     const name = String(ch?.account || '').trim()
@@ -1819,6 +1820,12 @@ export async function lcChargeRows(rows: unknown): Promise<{ account: string; gr
     if (!name && amt <= 0.004) continue
     if (!name) throw new Error('Pick the ledger for each charge')
     if (amt <= 0.004) throw new Error(`Enter the amount charged to ${name}`)
+    // Paid over the balance and the bank will refund it: a receivable on this
+    // bank's own refund-due ledger, made the first time (lib/refundDue.ts).
+    if (isRefundDue(name)) {
+      out.push({ account: refundLedgerFor(lender), group: REFUND_DUE_GROUP, amount: amt })
+      continue
+    }
     const acc = await getClient().execute({ sql: 'SELECT name, acc_group FROM ledger_accounts WHERE UPPER(TRIM(name)) = UPPER(?) LIMIT 1', args: [name] })
     if (!acc.rows.length) throw new Error(`There is no ledger called ${name}`)
     out.push({ account: String(acc.rows[0].name), group: String(acc.rows[0].acc_group || 'Indirect Expenses'), amount: amt })
@@ -1843,7 +1850,7 @@ export async function saveLcRepayment(v: Row): Promise<{ id: number }> {
   if (!lcId) throw new Error('Pick the LC this repayment is against')
   const amount = n(v.amount)
   if (amount <= 0) throw new Error('Enter the repayment amount')
-  const lcRes = await c.execute({ sql: 'SELECT amount FROM letters_of_credit WHERE id = ?', args: [lcId] })
+  const lcRes = await c.execute({ sql: 'SELECT amount, bank FROM letters_of_credit WHERE id = ?', args: [lcId] })
   if (!lcRes.rows.length) throw new Error('LC not found')
   const openAmount = n(lcRes.rows[0].amount)
   if (amount < openAmount - 0.005) {
@@ -1851,7 +1858,7 @@ export async function saveLcRepayment(v: Row): Promise<{ id: number }> {
   }
   const commCharges = round2(n(v.comm_charges))
   const bankCharges = round2(n(v.bank_charges))
-  const chargeRows = await lcChargeRows(v.charges)
+  const chargeRows = await lcChargeRows(v.charges, String(lcRes.rows[0].bank || ''))
   const rowsTotal = round2(chargeRows.reduce((t, x) => t + x.amount, 0))
   const allCharges = round2(commCharges + bankCharges + rowsTotal)
   const excess = round2(amount - openAmount)

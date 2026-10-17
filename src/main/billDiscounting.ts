@@ -1,4 +1,5 @@
 import { withDbTransaction } from './dbTransaction'
+import { isRefundDue, refundLedgerFor, REFUND_DUE_GROUP } from '../renderer/src/lib/refundDue'
 import type { ResultSet } from '@libsql/client'
 import { getClient } from './db'
 import { getActiveCompanyId } from './company'
@@ -1579,6 +1580,12 @@ export async function repayBd(
     if (!name && amt <= 0.004) continue
     if (!name) throw new Error('Pick the ledger for each charge')
     if (amt <= 0.004) throw new Error(`Enter the amount charged to ${name}`)
+    // Paid over the balance and the NBFC will give it back: a receivable on
+    // this NBFC's own refund-due ledger, made the first time (lib/refundDue.ts).
+    if (isRefundDue(name)) {
+      charges.push({ account: refundLedgerFor(String(bd.nbfc_name || '')), group: REFUND_DUE_GROUP, amount: amt })
+      continue
+    }
     const acc = await c.execute({ sql: 'SELECT name, acc_group FROM ledger_accounts WHERE UPPER(TRIM(name)) = UPPER(?) LIMIT 1', args: [name] })
     if (!acc.rows.length) throw new Error(`There is no ledger called ${name}`)
     charges.push({ account: String(acc.rows[0].name), group: String(acc.rows[0].acc_group || 'Indirect Expenses'), amount: amt })

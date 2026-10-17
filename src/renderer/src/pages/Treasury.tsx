@@ -26,8 +26,10 @@ import {
   Search,
   SlidersHorizontal,
   Trash2,
-  Users
+  Users,
+  Undo2
 } from 'lucide-react'
+import { RefundReceived } from '@/components/RefundReceived'
 import { ChargeRows, chargeRowsFrom, chargeRowsPayload, chargeRowsProblem, chargeRowsTotal, type ChargeRow } from '@/components/ChargeRows'
 import { Badge } from '@/components/ui/badge'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
@@ -1110,6 +1112,18 @@ function ClosureBadge({ l, withDate }: { l: Row; withDate?: boolean }): React.JS
 // page, after one hook and before forty: a window crossing the phone width
 // while Treasury was open (a tablet turned, a browser resized) ran a different
 // number of hooks than the render before, and React tore the page down blank.
+function RefundDueChip({ amount }: { amount?: number }): React.JSX.Element | null {
+  if (!amount || amount <= 0.004) return null
+  return (
+    <span
+      className="inline-flex items-center gap-1 rounded-[2px] bg-[#FFEDD0] px-1.5 py-[1px] text-[10.5px] font-extrabold uppercase tracking-[.04em] text-[#8A5300]"
+      title="Paid over the balance — the bank owes this back. ⋮ → Refund received when it comes in."
+    >
+      Refund due {formatINR(amount)}
+    </span>
+  )
+}
+
 export function Treasury(props: Props): React.JSX.Element {
   const isMobile = useIsMobile()
   if (__WEB__ && isMobile) return <TreasuryMobile />
@@ -1696,6 +1710,12 @@ function TreasuryDesk({ onCompanyChange, focusLcId, focusBdId, onFocusHandled }:
   // reversed — its rebate and margin vouchers, the repayment row it logged, and
   // the interest period it shortened. Confirmed first: it re-posts vouchers.
   const [unpreRow, setUnpreRow] = useState<Row | null>(null)
+  // Paid the bank over an LC's balance: what it still owes back, per LC.
+  const [lcRefundDue, setLcRefundDue] = useState<Record<string, number>>({})
+  const [refundLc, setRefundLc] = useState<number | null>(null)
+  useEffect(() => {
+    void window.api.lc.refundDues().then(setLcRefundDue).catch(() => undefined)
+  }, [lcs])
   const [unpreBusy, setUnpreBusy] = useState(false)
 
   // THE BANK SAID NO. An application is marked Rejected with the day and the
@@ -3532,6 +3552,7 @@ function TreasuryDesk({ onCompanyChange, focusLcId, focusBdId, onFocusHandled }:
                           )}
                           <RowActions
                             actions={[
+                              ...(lcRefundDue[String(l.id)] ? [{ label: `Refund received — ${formatINR(lcRefundDue[String(l.id)])} due back`, icon: Undo2, onClick: () => setRefundLc(Number(l.id)) }] : []),
                               ...(l.preclosed_date
                                 ? [{ label: 'Edit preclosure — date, amount, rebate', icon: Pencil, onClick: () => void openEditPreclose(l) }]
                                 : []),
@@ -3767,6 +3788,7 @@ function TreasuryDesk({ onCompanyChange, focusLcId, focusBdId, onFocusHandled }:
                                     </span>
                                     {!__WEB__ && currentStageBadge(l)}
                                     {!__WEB__ && <ClosureBadge l={l} />}
+                                    {!__WEB__ && <RefundDueChip amount={lcRefundDue[String(l.id)]} />}
                                   </div>
                                   <div className={cn('mt-0.5 text-[11px] text-muted-foreground', __WEB__ && '!mt-[1px] !truncate !text-[11.5px] !font-semibold !leading-[1.3] !text-[#5A6B62]')}>
                                     {l.bank}
@@ -3786,6 +3808,7 @@ function TreasuryDesk({ onCompanyChange, focusLcId, focusBdId, onFocusHandled }:
                                     <div className="mt-[3px] flex flex-wrap items-center gap-1.5 [&>span]:!rounded-[2px]">
                                       {currentStageBadge(l)}
                                       <ClosureBadge l={l} />
+                                      <RefundDueChip amount={lcRefundDue[String(l.id)]} />
                                     </div>
                                   )}
                                 </div>
@@ -4049,6 +4072,7 @@ function TreasuryDesk({ onCompanyChange, focusLcId, focusBdId, onFocusHandled }:
                                 )}
                                 <RowActions
                                   actions={[
+                                    ...(lcRefundDue[String(l.id)] ? [{ label: `Refund received — ${formatINR(lcRefundDue[String(l.id)])} due back`, icon: Undo2, onClick: () => setRefundLc(Number(l.id)) }] : []),
                                     ...(l.preclosed_date
                                       ? [
                                           {
@@ -4631,6 +4655,7 @@ function TreasuryDesk({ onCompanyChange, focusLcId, focusBdId, onFocusHandled }:
                           <ChargeRows
                             value={(precloseForm.charges as ChargeRow[]) || []}
                             onChange={(next) => setPrecloseForm((p) => ({ ...p, charges: next }))}
+                            excess={excess}
                           />
                           <span className={cn('text-[11.5px] font-bold', splitOff ? 'text-[#B3261E]' : 'text-[#0B6B45]')}>
                             {splitOff
@@ -4873,6 +4898,7 @@ function TreasuryDesk({ onCompanyChange, focusLcId, focusBdId, onFocusHandled }:
                         <ChargeRows
                           value={(precloseForm.charges as ChargeRow[]) || []}
                           onChange={(next) => setPrecloseForm((p) => ({ ...p, charges: next }))}
+                          excess={excess}
                         />
                         {splitOff && (
                           <span className="mt-1.5 block text-[10px] font-medium text-rose-600">
@@ -6672,6 +6698,13 @@ function TreasuryDesk({ onCompanyChange, focusLcId, focusBdId, onFocusHandled }:
         </DialogContent>
       </Dialog>
 
+      <RefundReceived
+        kind="lc"
+        id={refundLc}
+        open={!!refundLc}
+        onClose={() => setRefundLc(null)}
+        onChanged={() => void window.api.lc.refundDues().then(setLcRefundDue).catch(() => undefined)}
+      />
       <Dialog open={!!unpreRow} onOpenChange={(o) => !o && !unpreBusy && setUnpreRow(null)}>
         <DialogContent className="max-w-lg">
           <DialogHeader>
@@ -7160,6 +7193,7 @@ function TreasuryDesk({ onCompanyChange, focusLcId, focusBdId, onFocusHandled }:
                     <ChargeRows
                       value={(repayForm.charges as ChargeRow[]) || []}
                       onChange={(next) => setRepayForm((p) => ({ ...p, charges: next }))}
+                      excess={excess}
                     />
                     {splitOff && (
                       <span className={cn('mt-1.5 block text-[10px] font-medium text-rose-600', __WEB__ && '!text-[11px] !font-bold !text-[#B3261E]')}>

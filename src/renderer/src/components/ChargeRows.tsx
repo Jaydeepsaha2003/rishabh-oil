@@ -1,10 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { Command as CommandPrimitive } from 'cmdk'
-import { BookOpen, Check, ChevronDown, Clock, Plus, Trash2 } from 'lucide-react'
+import { BookOpen, Check, ChevronDown, Clock, Plus, Trash2, Undo2 } from 'lucide-react'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { Command, CommandEmpty, CommandInput, CommandItem, CommandList } from '@/components/ui/command'
 import { formatINR } from '@/lib/format'
 import { cn } from '@/lib/utils'
+import { isRefundDue, REFUND_DUE_TOKEN } from '@/lib/refundDue'
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Row = Record<string, any>
@@ -188,13 +189,16 @@ export function ChargeRows({
   value,
   onChange,
   inputClassName = '',
-  companyId
+  companyId,
+  excess
 }: {
   value: ChargeRow[]
   onChange: (next: ChargeRow[]) => void
   inputClassName?: string
   /** The company whose ledgers are offered — the open one when left out. */
   companyId?: number
+  /** What was paid over the balance, when the form knows — the refund row opens at what the other rows leave. */
+  excess?: number
 }): React.JSX.Element {
   const set = (i: number, patch: Partial<ChargeRow>): void => onChange(value.map((x, j) => (j === i ? { ...x, ...patch } : x)))
   const box = `h-10 rounded-[4px] border border-[#D6E2D6] bg-white px-3 text-[13px] font-bold outline-none focus:border-[#0B6B45] ${inputClassName}`
@@ -202,7 +206,19 @@ export function ChargeRows({
     <div className="grid gap-2">
       {value.map((ch, i) => (
         <div key={i} className="flex items-center gap-2">
-          <ChargeLedgerPicker value={ch.account} companyId={companyId} onPick={(name) => set(i, { account: name })} />
+          {isRefundDue(ch.account) ? (
+            // Not a charge: the bank owes it back. Booked to the lender's
+            // refund-due ledger and cleared by Refund received on the register.
+            <div
+              className="flex h-10 min-w-0 flex-1 items-center gap-2 rounded-[4px] border border-[#BFE3CB] bg-[#E9F5EE] px-3 text-[12.5px] font-bold text-[#0B5638]"
+              title="Paid over the balance — booked as due back from the bank, cleared when its refund comes in"
+            >
+              <Undo2 className="h-4 w-4 flex-none" />
+              <span className="truncate">Excess paid — bank will refund</span>
+            </div>
+          ) : (
+            <ChargeLedgerPicker value={ch.account} companyId={companyId} onPick={(name) => set(i, { account: name })} />
+          )}
           <input
             inputMode="decimal"
             placeholder="0.00"
@@ -227,6 +243,20 @@ export function ChargeRows({
       >
         <Plus className="h-4 w-4" /> Add a ledger
       </button>
+      {!value.some((x) => isRefundDue(x.account)) && (
+        <button
+          type="button"
+          onClick={() => {
+            const others = value.reduce((t, x) => t + n(x.amount), 0)
+            const left = excess != null ? round2(Math.max(0, n(excess) - others)) : 0
+            onChange([...value.filter((x) => x.account.trim() || n(x.amount)), { account: REFUND_DUE_TOKEN, amount: left > 0 ? String(left) : '' }])
+          }}
+          className="flex h-8 items-center gap-1.5 self-start rounded-[4px] border border-[#BFE3CB] bg-[#E9F5EE] px-3 text-[12px] font-bold text-[#0B5638] hover:bg-[#DDF0E4]"
+          title="The bank took more than was owed and will give it back"
+        >
+          <Undo2 className="h-4 w-4" /> Excess — bank will refund
+        </button>
+      )}
     </div>
   )
 }

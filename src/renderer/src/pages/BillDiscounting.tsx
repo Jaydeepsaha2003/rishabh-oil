@@ -31,8 +31,10 @@ import {
   Search,
   Tag,
   Clock,
-  X
+  X,
+  Undo2
 } from 'lucide-react'
+import { RefundReceived } from '@/components/RefundReceived'
 import { ChargeRows } from '@/components/ChargeRows'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -854,6 +856,18 @@ const BD_TOTAL = __WEB__
 // What the Payment tracker can ask this tab to open on a bill.
 export type BdFocusAction = 'open' | 'repay' | 'interest' | 'payin'
 
+function RefundDueChip({ amount }: { amount?: number }): React.JSX.Element | null {
+  if (!amount || amount <= 0.004) return null
+  return (
+    <span
+      className="inline-flex items-center gap-1 rounded-[2px] bg-[#FFEDD0] px-1.5 py-[1px] text-[10.5px] font-extrabold uppercase tracking-[.04em] text-[#8A5300]"
+      title="Paid over the balance — the bank owes this back. ⋮ → Refund received when it comes in."
+    >
+      Refund due {formatINR(amount)}
+    </span>
+  )
+}
+
 export function BillDiscounting({
   companies = [],
   activeCompany = 0,
@@ -990,6 +1004,12 @@ export function BillDiscounting({
   // "Disbursement paid to" on its own — the one thing a repaid bill may still
   // change (setBdDisbursementRoute).
   const [routeRow, setRouteRow] = useState<Row | null>(null)
+  // Paid the NBFC over a bill's balance: what it still owes back, per bill.
+  const [bdRefundDue, setBdRefundDue] = useState<Record<string, number>>({})
+  const [refundBd, setRefundBd] = useState<number | null>(null)
+  useEffect(() => {
+    void window.api.billDiscounting.refundDues().then(setBdRefundDue).catch(() => undefined)
+  }, [rows])
   const [routeVal, setRouteVal] = useState('')
   const [routeAcct, setRouteAcct] = useState('')
   const [routeSaving, setRouteSaving] = useState(false)
@@ -3271,6 +3291,7 @@ export function BillDiscounting({
                           disabledReason: 'Already repaid — reopen it first',
                           onClick: () => openEdit(r)
                         },
+                        ...(bdRefundDue[String(r.id)] ? [{ label: `Refund received — ${formatINR(bdRefundDue[String(r.id)])} due back`, icon: Undo2, onClick: () => setRefundBd(Number(r.id)) }] : []),
                         {
                           label: 'Disbursement paid to…',
                           icon: Landmark,
@@ -3507,6 +3528,7 @@ export function BillDiscounting({
                             <div>
                               <div className={cn('flex items-center gap-1.5', __WEB__ && 'whitespace-nowrap')}>
                                 <span className={cn('font-semibold', !r.bd_no && 'italic text-muted-foreground', __WEB__ && 'doc-ref !text-[12.5px] !font-bold !text-[#0A1F17]')}>{r.bd_no || 'No BD no'}</span>
+                                <RefundDueChip amount={bdRefundDue[String(r.id)]} />
                                 <FinChip type={r.finance_type} />
                                 {/* Payment-IN at a glance, beside the side of
                                     the book it belongs to. Keyed on the SAME
@@ -3977,6 +3999,7 @@ export function BillDiscounting({
                                   disabledReason: 'Already repaid — reopen it first',
                                   onClick: () => openEdit(r)
                                 },
+                                ...(bdRefundDue[String(r.id)] ? [{ label: `Refund received — ${formatINR(bdRefundDue[String(r.id)])} due back`, icon: Undo2, onClick: () => setRefundBd(Number(r.id)) }] : []),
                                 {
                                   label: 'Disbursement paid to…',
                                   icon: Landmark,
@@ -6870,7 +6893,7 @@ export function BillDiscounting({
                       one row each, so every rupee lands on the ledger it
                       belongs to rather than being lumped together. */}
                   <Label className="text-[11px]">Charges in this debit</Label>
-                  <ChargeRows value={repayCharges} onChange={setRepayCharges} companyId={Number(repayRow?.company_id) || undefined} />
+                  <ChargeRows value={repayCharges} onChange={setRepayCharges} companyId={Number(repayRow?.company_id) || undefined} excess={round2(spill - n(repayForm.interest) - alsoTotal)} />
                 </div>
                 {/* MORE THAN THIS BILL OWES, AND WHERE THE REST WENT.
                     One transfer settles several bills more often than it
@@ -7911,6 +7934,13 @@ export function BillDiscounting({
       {/* THE BILL, OPENED OUT. Built to the Treasury canvas — see BdDetail.
           The row it belongs to is looked up live rather than copied in, so a
           repayment saved behind the panel is reflected in it. */}
+      <RefundReceived
+        kind="bd"
+        id={refundBd}
+        open={!!refundBd}
+        onClose={() => setRefundBd(null)}
+        onChanged={() => void window.api.billDiscounting.refundDues().then(setBdRefundDue).catch(() => undefined)}
+      />
       <Dialog open={!!routeRow} onOpenChange={(o) => !o && !routeSaving && setRouteRow(null)}>
         <DialogContent className="sm:max-w-[520px]">
           <DialogHeader>

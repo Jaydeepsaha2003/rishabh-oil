@@ -1708,6 +1708,22 @@ export function registerIpc(): void {
   handle('bankRecon:unreconcile', (_e, { lineId }: { lineId: number }) => unreconcileBankLine(lineId))
   handle('bankRecon:setSubEntry', (_e, { lineId, values }: { lineId: number; values: Row }) => setBankLineSubEntry(lineId, values))
 
+  // Paid the NBFC over the balance: what it owes back, and the refund that clears it (bankRefunds.ts).
+  handle('bd:refundDues', async () => (await import('./bankRefunds')).refundDues('bd'))
+  handle('bd:refundInfo', async (_e, { id }: { id: number }) => (await import('./bankRefunds')).refundInfo('bd', Number(id)))
+  handle('bd:refundLink', async (_e, { id, entryId }: { id: number; entryId: number }) => (await import('./bankRefunds')).linkRefund('bd', Number(id), Number(entryId)))
+  handle('bd:refundRecord', async (_e, { id, values }: { id: number; values: { date: string; amount: number; bank: string } }) =>
+    (await import('./bankRefunds')).recordRefund('bd', Number(id), values)
+  )
+  handle('bd:refundUndo', async (_e, { refundId }: { refundId: number }) => (await import('./bankRefunds')).undoRefund(Number(refundId)))
+  // Paid the bank over the balance: what it owes back, and the refund that clears it (bankRefunds.ts).
+  handle('lc:refundDues', async () => (await import('./bankRefunds')).refundDues('lc'))
+  handle('lc:refundInfo', async (_e, { id }: { id: number }) => (await import('./bankRefunds')).refundInfo('lc', Number(id)))
+  handle('lc:refundLink', async (_e, { id, entryId }: { id: number; entryId: number }) => (await import('./bankRefunds')).linkRefund('lc', Number(id), Number(entryId)))
+  handle('lc:refundRecord', async (_e, { id, values }: { id: number; values: { date: string; amount: number; bank: string } }) =>
+    (await import('./bankRefunds')).recordRefund('lc', Number(id), values)
+  )
+  handle('lc:refundUndo', async (_e, { refundId }: { refundId: number }) => (await import('./bankRefunds')).undoRefund(Number(refundId)))
   handle('bd:list', (_e, { filter }: { filter?: Row } = {}) => listBd(filter))
   handle('bd:create', (_e, { values }: { values: Row }) => createBd(values))
   handle('bd:update', (_e, { id, values }: { id: number; values: Row }) => updateBd(id, values))

@@ -547,6 +547,11 @@ export interface Api {
     reopenLcBill: (id: number) => Promise<{ id: number }>
   }
   lc: {
+    refundDues: () => Promise<Record<string, number>>
+    refundInfo: (id: number) => Promise<Row>
+    refundLink: (id: number, entryId: number) => Promise<{ id: number }>
+    refundRecord: (id: number, values: { date: string; amount: number; bank: string }) => Promise<{ id: number }>
+    refundUndo: (refundId: number) => Promise<{ id: number }>
     list: () => Promise<Row[]>
     issuances: (lcId: number) => Promise<Row[]>
     create: (values: Row) => Promise<{ id: number; warning?: string }>
@@ -604,6 +609,11 @@ export interface Api {
     setSubEntry: (lineId: number, values: Row) => Promise<{ id: number }>
   }
   billDiscounting: {
+    refundDues: () => Promise<Record<string, number>>
+    refundInfo: (id: number) => Promise<Row>
+    refundLink: (id: number, entryId: number) => Promise<{ id: number }>
+    refundRecord: (id: number, values: { date: string; amount: number; bank: string }) => Promise<{ id: number }>
+    refundUndo: (refundId: number) => Promise<{ id: number }>
     list: (filter?: Row) => Promise<Row[]>
     create: (values: Row) => Promise<{ id: number }>
     update: (id: number, values: Row) => Promise<{ id: number }>
