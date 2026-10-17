@@ -3812,10 +3812,14 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
       const extra = t.extra_bargain_id ? Number(t.extra_qty) || 0 : 0
       // An unsaved edit prices the line, so every figure below it — the blend,
       // the taxable value, the net — is what pressing Save would write.
-      const own = pendingRates[Number(t.bargain_id)] ?? (Number(t.bargain_rate) || 0)
+      // bargain_rate is frozen when the tanker is BILLED, so a tanker not yet
+      // on an invoice has none: read what its bargain says now, as the server
+      // does when it prices the save. Without this a lorry split over two
+      // bargains showed both lines at Rs 0.00.
+      const own = pendingRates[Number(t.bargain_id)] ?? (Number(t.bargain_rate) || Number(t.bargain_live_rate) || 0)
       add(t.bargain_id, t.bargain_no, own, loaded - extra)
       if (extra > 0) {
-        const ex = pendingRates[Number(t.extra_bargain_id)] ?? (Number(t.extra_bargain_rate) || 0)
+        const ex = pendingRates[Number(t.extra_bargain_id)] ?? (Number(t.extra_bargain_rate) || Number(t.extra_bargain_live_rate) || 0)
         add(t.extra_bargain_id, t.extra_bargain_no, ex, extra)
       }
     }
