@@ -697,11 +697,10 @@ export function Consignment(): React.JSX.Element {
   // another is added and is the same here as in the Stock deposits panel.
   const tintOf = lotTint
 
-  // Products folded shut, by party and product. Shut rather than open is what
-  // is remembered, so a product that arrives later opens the way every other
-  // one does instead of inheriting a state set before it existed — and the
-  // register reads exactly as it did before anything is clicked.
-  const [shutProducts, setShutProducts] = useState<Set<string>>(() => new Set())
+  // Products OPENED, by party and product. Every product starts collapsed
+  // (the client's rule: the register opens as a list of products, and the
+  // one wanted is expanded), so it is the opened ones that are remembered.
+  const [openProducts, setOpenProducts] = useState<Set<string>>(() => new Set())
   // PARCELS START FOLDED, THE OPPOSITE OF A PRODUCT.
   //
   // A product folds shut on request because open is the useful default — you
@@ -832,13 +831,17 @@ export function Consignment(): React.JSX.Element {
     })
   }
   function toggleProduct(key: string): void {
-    setShutProducts((prev) => {
+    setOpenProducts((prev) => {
       const next = new Set(prev)
       if (next.has(key)) next.delete(key)
       else next.add(key)
       return next
     })
   }
+
+  const productKeys = stockBands.flatMap((band) => ((band.products as Row[]) || []).map((p) => `${band.supplier_id}:${p.product_id}`))
+  const allProductsOpen = productKeys.length > 0 && productKeys.every((k) => openProducts.has(k))
+  const toggleAllProducts = (): void => setOpenProducts(allProductsOpen ? new Set() : new Set(productKeys))
 
   // THE PHONE BODY. Two tabs — gate arrivals waiting to be validated, and the
   // stock already taken in, grouped party → product — reading the same arrays
@@ -1006,7 +1009,16 @@ export function Consignment(): React.JSX.Element {
                   </span>
                 </div>
               ) : (
-                stockBands.map((band) => (
+                <>
+                <div className="flex flex-none items-center justify-between px-0.5">
+                  <span className="text-[10px] font-extrabold uppercase tracking-[.12em] text-[#5A6B62]">
+                    {productKeys.length} product{productKeys.length === 1 ? '' : 's'}
+                  </span>
+                  <button type="button" onClick={toggleAllProducts} className="text-[11.5px] font-extrabold text-[#0B6B45]">
+                    {allProductsOpen ? 'Collapse all' : 'Expand all'}
+                  </button>
+                </div>
+                {stockBands.map((band) => (
                   <div key={String(band.supplier_id)} className="flex flex-none flex-col gap-2.5">
                     <div className="rounded-[4px] bg-[#0B3D2E] p-3 text-white">
                       <div className="text-[13px] font-extrabold">{String(band.supplier_name || '—')}</div>
@@ -1028,7 +1040,7 @@ export function Consignment(): React.JSX.Element {
 
                     {(band.products as Row[]).map((p) => {
                       const pkey = `${band.supplier_id}:${p.product_id}`
-                      const open = !shutProducts.has(pkey)
+                      const open = openProducts.has(pkey)
                       const lots = (p.lots as Row[]) || []
                       const tankerN = lots.filter((d) => Number(d.is_opening) !== 1).length
                       // Stock carried in as an opening has no tanker behind it —
@@ -1147,7 +1159,8 @@ export function Consignment(): React.JSX.Element {
                       )
                     })}
                   </div>
-                ))
+                ))}
+                </>
               )}
             </>
           )}
@@ -1427,6 +1440,16 @@ export function Consignment(): React.JSX.Element {
               </p>
             </div>
             <div className="flex items-center gap-2">
+              {__WEB__ && productKeys.length > 0 && (
+                <button
+                  type="button"
+                  onClick={toggleAllProducts}
+                  className="inline-flex h-[28px] items-center gap-1.5 rounded-[2px] border border-white/20 px-2.5 text-[11.5px] font-extrabold text-white hover:bg-white/10"
+                >
+                  {allProductsOpen ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}
+                  {allProductsOpen ? 'Collapse all' : 'Expand all'}
+                </button>
+              )}
               {!__WEB__ && pendingLotCount > 0 && (
                 <Badge variant="warning">
                   {pendingLotCount} tanker{pendingLotCount > 1 ? 's' : ''} pending booking
@@ -1511,7 +1534,7 @@ export function Consignment(): React.JSX.Element {
                   {/* Products of that party, each with its tankers */}
                   {(band.products as Row[]).map((p) => {
                     const pkey = `${band.supplier_id}:${p.product_id}`
-                    const shut = __WEB__ && shutProducts.has(pkey)
+                    const shut = __WEB__ && !openProducts.has(pkey)
                     return (
                     <div key={pkey} className={cn('px-5 py-2.5', __WEB__ && '!p-0 [&+div]:!mt-2.5')}>
                       <div
