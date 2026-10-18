@@ -350,6 +350,37 @@ function samePartyLine(t: BankLine, b: BookEntry, mapped: Mapped): boolean {
 
 const narrationHead = (bank: string, t: BankLine): string => `Imported from Tally — ${bank} Book · ${t.vch_type} No. ${t.vch_no}`
 
+/**
+ * WHO EACH IMPORTED BANK VOUCHER NAMED, IN TALLY.
+ *
+ * Every bank book uploaded under Tally File Updation is kept (tally_import_drafts,
+ * kind bank:<ledger>), and every voucher booked from one is narrated with its
+ * head. Read back together they say which Tally ledger a booked line was for —
+ * the evidence a repair needs when a voucher landed on the wrong ledger here.
+ * Keyed by narration head; the party per ledger leg (one, or a detailed
+ * voucher's several).
+ */
+export async function tallyBankParties(): Promise<Map<string, { date: string; legs: { name: string; amount: number }[] }>> {
+  const out = new Map<string, { date: string; legs: { name: string; amount: number }[] }>()
+  const drafts = toPlain(
+    await getClient()
+      .execute("SELECT data_base64 FROM tally_import_drafts WHERE kind LIKE 'bank:%' AND data_base64 IS NOT NULL")
+      .catch(() => ({ rows: [], columns: [] }) as never)
+  )
+  for (const d of drafts) {
+    try {
+      const book = await parseBankBook(String(d.data_base64))
+      for (const t of book.lines) {
+        const legs = t.multi ? (t.details || []).map((x) => ({ name: x.name, amount: x.amount })) : [{ name: t.party, amount: t.amount }]
+        out.set(narrationHead(book.bank, t), { date: t.date, legs })
+      }
+    } catch {
+      // A file that no longer parses says nothing either way.
+    }
+  }
+  return out
+}
+
 interface StatementLine {
   date: string
   narration: string

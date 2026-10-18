@@ -2004,6 +2004,17 @@ export function registerIpc(): void {
     await assertAdmin('Splitting shared party ledgers')
     return fixSharedLedgers(a?.keys || [])
   })
+  // A rename redirect hijacking a live ledger, and the lines it misdirected.
+  handle('repairs:shadowedRedirects:list', async () => {
+    await assertAdmin('The accounting checks')
+    const { previewShadowedRedirects } = await import('./shadowedRedirects')
+    return previewShadowedRedirects()
+  })
+  handle('repairs:shadowedRedirectsFix', async (_e, a: { moves: { line_id: number; to_id: number }[] }) => {
+    await assertAdmin('Moving misdirected lines to their own ledger')
+    const { fixShadowedRedirects } = await import('./shadowedRedirects')
+    return fixShadowedRedirects(a?.moves || [])
+  })
   // Whether a customer's or supplier's name is also the other side's.
   handle('parties:clashes:list', async (_e, a: { name: string; side: 'customer' | 'supplier' }) => {
     const { partyNameClashes } = await import('./partyLedgers')

@@ -92,6 +92,10 @@ export function AccountingChecks(): React.JSX.Element {
   const [splitting, setSplitting] = useState(false)
   // Purchase / sale vouchers filed in the other company's books.
   const [wrongCo, setWrongCo] = useState<Row | null>(null)
+  // A rename redirect hijacking a live ledger, and the lines it sent astray.
+  const [shadow, setShadow] = useState<Row | null>(null)
+  const [shadowTo, setShadowTo] = useState<Record<string, number>>({})
+  const [fixingShadow, setFixingShadow] = useState(false)
   const [splitTk, setSplitTk] = useState<Row | null>(null)
   const [paisa, setPaisa] = useState<Row | null>(null)
   const [paisaPick, setPaisaPick] = useState<Set<number>>(new Set())
@@ -136,6 +140,12 @@ export function AccountingChecks(): React.JSX.Element {
       setOutFreight(await window.api.repairs.outwardFreight().catch(() => null))
       setShared(await window.api.repairs.sharedLedgers().catch(() => null))
       setWrongCo(await window.api.repairs.wrongCompany().catch(() => null))
+      const sh = await window.api.repairs.shadowedRedirects().catch(() => null)
+      setShadow(sh)
+      // Each Tally party starts on the ledger the check suggests for it.
+      const pre: Record<string, number> = {}
+      for (const l of ((sh?.lines as Row[]) || [])) if (l.to_id && !pre[String(l.tally_party)]) pre[String(l.tally_party)] = Number(l.to_id)
+      setShadowTo(pre)
       const pz = await window.api.repairs.paisa().catch(() => null)
       setPaisa(pz)
       setPaisaPick(new Set((((pz?.findings as Row[]) || []).filter((x) => !x.review)).map((x) => Number(x.entry_id))))
@@ -294,6 +304,39 @@ export function AccountingChecks(): React.JSX.Element {
       toast.error((e as Error).message)
     } finally {
       setFixingFreight(false)
+    }
+  }
+
+  const shRedirects: Row[] = useMemo(() => (shadow?.redirects as Row[]) || [], [shadow])
+  const shLines: Row[] = useMemo(() => (shadow?.lines as Row[]) || [], [shadow])
+  const shGroups = useMemo(() => {
+    const m = new Map<string, Row[]>()
+    for (const l of shLines) m.set(String(l.tally_party), [...(m.get(String(l.tally_party)) || []), l])
+    return [...m.entries()]
+  }, [shLines])
+  async function fixShadow(): Promise<void> {
+    const moves = shLines.filter((l) => shadowTo[String(l.tally_party)]).map((l) => ({ line_id: Number(l.line_id), to_id: shadowTo[String(l.tally_party)] }))
+    const skipped = shLines.length - moves.length
+    const nameOf = new Map(((shadow?.candidates as Row[]) || []).map((c) => [Number(c.id), String(c.name)]))
+    const ok = window.confirm(
+      `Remove ${shRedirects.length} wrong redirect${shRedirects.length === 1 ? '' : 's'} and move ${moves.length} line${moves.length === 1 ? '' : 's'}?\n\n` +
+        shGroups
+          .filter(([p]) => shadowTo[p])
+          .map(([p, ls]) => `• ${ls.length} × ${p} → ${nameOf.get(shadowTo[p]) || ''} (${formatINR(ls.reduce((t, l) => t + Number(l.amount), 0))})`)
+          .join('\n') +
+        (skipped ? `\n\n${skipped} line${skipped === 1 ? ' has' : 's have'} no ledger picked and stay where they are.` : '') +
+        '\n\nOnly the party line changes ledger — the voucher, its number, date, bank and amount stay. The old state is logged. Take a database snapshot if you want a copy you can restore.'
+    )
+    if (!ok) return
+    setFixingShadow(true)
+    try {
+      const r = await window.api.repairs.fixShadowedRedirects(moves)
+      toast.success(`${r.moved} line${r.moved === 1 ? '' : 's'} moved (${formatINR(r.amount)}); ${r.redirects} redirect${r.redirects === 1 ? '' : 's'} removed`)
+      await load()
+    } catch (e) {
+      toast.error((e as Error).message)
+    } finally {
+      setFixingShadow(false)
     }
   }
 
@@ -555,6 +598,85 @@ export function AccountingChecks(): React.JSX.Element {
           <RefreshCw className={cn('h-3.5 w-3.5', loading && 'animate-spin')} /> Check again
         </Button>
       </div>
+
+      <Section
+        title="Payments sent to the wrong ledger by an old rename"
+        count={shLines.length + (shLines.length ? 0 : shRedirects.length)}
+        tone={shRedirects.length ? 'bad' : 'ok'}
+        note={
+          shRedirects.length
+            ? `A ledger renamed away left a redirect from its old name, and another ledger was then renamed INTO that name — so everything posted to it still goes elsewhere. ${shRedirects
+                .map((r) => `“${r.posts_as}” → “${r.use_name}” (renamed ${String(r.created_at || '').slice(0, 10)}${r.created_by ? ` by ${r.created_by}` : ''})`)
+                .join('; ')}. Below, the Tally bank vouchers that landed there although Tally names another party — read from the uploaded bank books. Fixing moves each to the ledger picked and removes the redirect, so it cannot happen again.`
+            : 'No rename redirect points a live ledger’s postings elsewhere.'
+        }
+      >
+        {shRedirects.length > 0 && (
+          <>
+            {shGroups.map(([party, ls]) => {
+              const total = ls.reduce((t, l) => t + Number(l.amount), 0)
+              return (
+                <div key={party} className="border-t">
+                  <div className="flex flex-wrap items-center gap-3 bg-muted/30 px-4 py-2.5">
+                    <div className="min-w-0">
+                      <div className="text-[12.5px] font-bold">
+                        Tally names: {party}
+                        <span className="ml-2 font-normal text-muted-foreground">
+                          {ls.length} voucher{ls.length === 1 ? '' : 's'} · {formatINR(total)} · now on {String(ls[0].from_name)}
+                        </span>
+                      </div>
+                      <div className="text-[11.5px] text-muted-foreground">Suggested: {String(ls[0].to_name || '—')} — {String(ls[0].how)}</div>
+                    </div>
+                    <select
+                      className="ml-auto h-9 max-w-[360px] rounded-md border bg-background px-2 text-[12.5px] font-semibold"
+                      value={String(shadowTo[party] || '')}
+                      onChange={(e) => setShadowTo((m) => ({ ...m, [party]: Number(e.target.value) || 0 }))}
+                    >
+                      <option value="">Leave these where they are</option>
+                      {((shadow?.candidates as Row[]) || []).map((c) => (
+                        <option key={String(c.id)} value={String(c.id)}>
+                          {String(c.name)}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                  <table className="w-full border-collapse">
+                    <thead className="bg-muted/40">
+                      <tr>
+                        <th className={th}>Date</th>
+                        <th className={th}>Voucher</th>
+                        <th className={th}>Company</th>
+                        <th className={cn(th, 'text-right')}>Amount</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {ls.map((l) => (
+                        <tr key={String(l.line_id)} className="border-t">
+                          <td className={cn(td, 'tabular-nums')}>{formatDate(String(l.date))}</td>
+                          <td className={td}>
+                            <span className="font-semibold">{String(l.vch_type)} {String(l.vch_no)}</span>
+                          </td>
+                          <td className={td}>{String(l.company)}</td>
+                          <td className={cn(td, 'text-right tabular-nums')}>{formatINR(Number(l.amount))}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )
+            })}
+            <div className="flex flex-wrap items-center gap-3 border-t bg-muted/30 px-4 py-3">
+              <span className="text-[12.5px] text-muted-foreground">
+                {shLines.length} line{shLines.length === 1 ? '' : 's'} · {formatINR(Number(shadow?.amount) || 0)}
+              </span>
+              <Button className="ml-auto gap-1.5" disabled={fixingShadow} onClick={() => void fixShadow()}>
+                {fixingShadow && <Loader2 className="h-4 w-4 animate-spin" />}
+                Move to the picked ledgers and remove the redirect
+              </Button>
+            </div>
+          </>
+        )}
+      </Section>
 
       <Section
         title="TDS on sales invoices"

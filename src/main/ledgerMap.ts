@@ -184,6 +184,15 @@ export async function renameLedger(
     sql: 'DELETE FROM ledger_map WHERE posts_as = ? AND TRIM(UPPER(use_name)) = ?',
     args: [clean(to), clean(to)]
   })
+  // THE NEW NAME IS NOW A LIVE LEDGER'S, so an older rename's redirect FROM
+  // it must go — left standing, every posting addressed to this ledger would
+  // still be sent to whatever the old one became (on 22-Sep a Legacy ledger
+  // renamed onto LEGACY COMMODITIES PVT LTD, TRAD. kept a redirect to OBEROI
+  // BULK CARRIER, and ₹18.75 Cr of Legacy payments went to the transporter).
+  await c.execute({
+    sql: "DELETE FROM ledger_map WHERE TRIM(UPPER(posts_as)) = ? AND note LIKE 'renamed from %'",
+    args: [clean(to)]
+  })
   return { id: n(accountId), from, to }
 }
 

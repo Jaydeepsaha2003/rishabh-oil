@@ -735,6 +735,8 @@ export interface Api {
     sharedLedgers: () => Promise<Row>
     fixSharedLedgers: (keys: string[]) => Promise<{ fixed: number; lines: number; ledgers: string[] }>
     partyClashes: (name: string, side: 'customer' | 'supplier') => Promise<Row[]>
+    shadowedRedirects: () => Promise<Row>
+    fixShadowedRedirects: (moves: { line_id: number; to_id: number }[]) => Promise<{ moved: number; amount: number; redirects: number }>
     fixLcCharges: (ids: number[]) => Promise<{ fixed: number; charges: number }>
   }
   trading: {

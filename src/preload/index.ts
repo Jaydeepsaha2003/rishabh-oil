@@ -1073,7 +1073,10 @@ const api = {
     sharedLedgers: (): Promise<Row> => ipcRenderer.invoke('repairs:sharedLedgers:list'),
     fixSharedLedgers: (keys: string[]): Promise<{ fixed: number; lines: number; ledgers: string[] }> =>
       ipcRenderer.invoke('repairs:sharedLedgersFix', { keys }),
-    partyClashes: (name: string, side: 'customer' | 'supplier'): Promise<Row[]> => ipcRenderer.invoke('parties:clashes:list', { name, side })
+    partyClashes: (name: string, side: 'customer' | 'supplier'): Promise<Row[]> => ipcRenderer.invoke('parties:clashes:list', { name, side }),
+    shadowedRedirects: (): Promise<Row> => ipcRenderer.invoke('repairs:shadowedRedirects:list'),
+    fixShadowedRedirects: (moves: { line_id: number; to_id: number }[]): Promise<{ moved: number; amount: number; redirects: number }> =>
+      ipcRenderer.invoke('repairs:shadowedRedirectsFix', { moves })
   },
   trading: {
     list: (forModule?: string): Promise<Row[]> => ipcRenderer.invoke('trading:list', { forModule }),
