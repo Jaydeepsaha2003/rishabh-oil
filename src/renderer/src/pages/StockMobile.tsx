@@ -610,56 +610,159 @@ function DayCloseScreen(): React.JSX.Element {
 
 // ---------------------------------------------------------------------------
 // PACKED SKU — cases and pieces on the shelf, as the desk register works them.
+//
+// The same register as the desk: one day (brought forward + packed + adjusted
+// − sold = closing), a range, or everything since the shelf was opened; in the
+// SKU's own cases or in MT, each SKU at its own pack size; narrowed to a brand,
+// and with the empty ones hidden.
+
+// What one counted unit weighs in MT — the desk's own rule (Stock.tsx unitMT):
+// the SKU's unit size where one is set, else its pack, and a "box" counted
+// unit is the whole box. Litres count as kilograms, as the dispatch reports do.
+function skuUnitMT(r: Row): number {
+  const useOverride = n(r.unit_size) > 0
+  const size = useOverride ? n(r.unit_size) : n(r.base_per_pouch)
+  const u = String((useOverride ? r.unit_uom : r.base_uom) || 'KG').toUpperCase()
+  const kg = u === 'GM' || u === 'G' || u === 'ML' ? size / 1000 : u === 'QUINTAL' ? size * 100 : u === 'MT' || u === 'TON' || u === 'KL' ? size * 1000 : size
+  const perPiece = kg / 1000
+  return String(r.pouch_label || '').trim().toLowerCase() === 'box' ? perPiece * Math.max(1, n(r.pouches_per_box) || 1) : perPiece
+}
+
 function SkuScreen(): React.JSX.Element {
   const [rows, setRows] = useState<Row[]>([])
   const [loading, setLoading] = useState(true)
   const [query, setQuery] = useState('')
-  // One day, as the desk register opens: brought forward + packed + adjusted
-  // − sold = on hand at the day's end.
+  const [span, setSpan] = useState<'day' | 'range' | 'all'>('day')
   const [date, setDate] = useState(todayISO())
+  const [from, setFrom] = useState(() => `${todayISO().slice(0, 8)}01`)
+  const [to, setTo] = useState(todayISO())
+  const [unit, setUnit] = useState<'cases' | 'mt'>('cases')
+  const [brand, setBrand] = useState('')
+  const [hideEmpty, setHideEmpty] = useState(false)
   useEffect(() => {
     setLoading(true)
+    const arg = span === 'day' ? date : span === 'range' ? { from, to } : undefined
     void window.api.skuStock
-      .list(date)
+      .list(arg)
       .then((r) => setRows(Array.isArray(r) ? r : []))
       .catch((e) => toast.error((e as Error).message))
       .finally(() => setLoading(false))
-  }, [date])
+  }, [span, date, from, to])
+
+  // Over a day the movements are that day's; over a range or everything they
+  // are the period's own totals.
+  const day = span === 'day'
+  const packed = (r: Row): number => (day ? n(r.packed_on) : n(r.packed_in))
+  const adjusted = (r: Row): number => (day ? n(r.adj_on) : n(r.adj_in))
+  const sold = (r: Row): number => (day ? n(r.sold_on) : n(r.sold))
+  const inUnit = (r: Row, v: number): number => (unit === 'mt' ? r3(v * skuUnitMT(r)) : v)
+
+  const brands = useMemo(
+    () => Array.from(new Set(rows.map((r) => s(r.product_name).trim()).filter(Boolean))).sort((a, b) => a.localeCompare(b)),
+    [rows]
+  )
   const shown = rows.filter((r) => {
     const q = query.trim().toLowerCase()
-    return !q || [r.name, r.product_name].some((f) => s(f).toLowerCase().includes(q))
+    if (q && ![r.name, r.product_name].some((f) => s(f).toLowerCase().includes(q))) return false
+    if (brand && s(r.product_name).trim() !== brand) return false
+    if (hideEmpty && Math.abs(n(r.on_hand)) < 1e-6 && Math.abs(n(r.opening)) < 1e-6 && !packed(r) && !adjusted(r) && !sold(r)) return false
+    return true
   })
-  const neg = rows.filter((r) => n(r.on_hand) < 0).length
+  const neg = shown.filter((r) => n(r.on_hand) < 0).length
+  const totMT = (f: (r: Row) => number): number => r3(shown.reduce((t, r) => t + f(r) * skuUnitMT(r), 0))
+  const seg = (on: boolean): string =>
+    cn('h-8 flex-1 rounded-[4px] text-[11.5px] font-extrabold', on ? 'bg-[#0B3D2E] text-white' : 'text-[#33473E]')
   return (
     <>
       <Kpis
         tone="green"
+        dense
         items={[
-          { k: 'SKUs', v: String(rows.length) },
-          { k: 'Below zero', v: String(neg), warn: neg > 0 }
+          { k: 'Closing MT', v: formatNum(totMT((r) => n(r.on_hand))) },
+          { k: day ? 'Packed MT' : 'In MT', v: formatNum(totMT((r) => packed(r) + adjusted(r))) },
+          { k: 'Sold MT', v: formatNum(totMT(sold)) }
         ]}
       />
       <div className="flex min-h-0 flex-1 flex-col gap-2.5 overflow-y-auto px-4 pb-8 pt-3">
-        <div className="flex items-center gap-2.5 rounded-[4px] border border-[#D6E2D6] bg-white px-3 py-2">
-          <Package className="h-[18px] w-[18px] shrink-0 text-[#0B3D2E]" />
-          <input
-            type="date"
-            value={date}
-            max={todayISO()}
-            onChange={(e) => setDate(e.target.value || todayISO())}
-            className="min-w-0 flex-1 border-0 bg-transparent p-0 text-[13px] font-extrabold text-[#0A1F17] outline-none"
-          />
-          <span className="text-[11px] font-bold text-[#5A6B62]">closing</span>
+        {/* The period, as on the desk: one day, a range, or everything. */}
+        <div className="rounded-[4px] border border-[#D6E2D6] bg-white p-2">
+          <div className="flex gap-1 rounded-[6px] bg-[#EEF3EC] p-1">
+            <button type="button" className={seg(span === 'day')} onClick={() => setSpan('day')}>Day</button>
+            <button type="button" className={seg(span === 'range')} onClick={() => setSpan('range')}>Range</button>
+            <button type="button" className={seg(span === 'all')} onClick={() => setSpan('all')}>All time</button>
+          </div>
+          {span === 'day' && (
+            <div className="mt-2 flex items-center gap-2.5 px-1">
+              <Package className="h-[18px] w-[18px] shrink-0 text-[#0B3D2E]" />
+              <input
+                type="date"
+                value={date}
+                max={todayISO()}
+                onChange={(e) => setDate(e.target.value || todayISO())}
+                className="min-w-0 flex-1 border-0 bg-transparent p-0 text-[13px] font-extrabold text-[#0A1F17] outline-none"
+              />
+              <span className="text-[11px] font-bold text-[#5A6B62]">closing</span>
+            </div>
+          )}
+          {span === 'range' && (
+            <div className="mt-2 grid grid-cols-2 gap-2 px-1">
+              <input type="date" value={from} max={to} onChange={(e) => setFrom(e.target.value)} className="h-9 rounded-[4px] border border-[#C3D2C6] px-2 text-[12.5px] font-bold" />
+              <input type="date" value={to} min={from} max={todayISO()} onChange={(e) => setTo(e.target.value)} className="h-9 rounded-[4px] border border-[#C3D2C6] px-2 text-[12.5px] font-bold" />
+            </div>
+          )}
         </div>
-        <SearchBox value={query} onChange={setQuery} placeholder="SKU or product" />
+
+        {/* Brand, unit, and the empty ones. */}
+        <div className="grid grid-cols-[minmax(0,1fr)_auto] gap-2">
+          <select
+            value={brand}
+            onChange={(e) => setBrand(e.target.value)}
+            className="h-10 min-w-0 rounded-[4px] border border-[#C3D2C6] bg-white px-2.5 text-[12.5px] font-extrabold text-[#0A1F17] outline-none"
+            aria-label="Brand"
+          >
+            <option value="">All brands</option>
+            {brands.map((b) => (
+              <option key={b} value={b}>
+                {b}
+              </option>
+            ))}
+          </select>
+          <div className="flex h-10 gap-1 rounded-[4px] border border-[#C3D2C6] bg-white p-1">
+            <button type="button" className={cn(seg(unit === 'cases'), 'h-full px-2.5')} onClick={() => setUnit('cases')}>Cases</button>
+            <button type="button" className={cn(seg(unit === 'mt'), 'h-full px-2.5')} onClick={() => setUnit('mt')}>MT</button>
+          </div>
+        </div>
+        <div className="flex items-center gap-2">
+          <div className="min-w-0 flex-1">
+            <SearchBox value={query} onChange={setQuery} placeholder="SKU or product" />
+          </div>
+          <button
+            type="button"
+            onClick={() => setHideEmpty((v) => !v)}
+            className={cn(
+              'h-11 shrink-0 rounded-[4px] border px-2.5 text-[11.5px] font-extrabold',
+              hideEmpty ? 'border-[#0B3D2E] bg-[#0B3D2E] text-white' : 'border-[#C3D2C6] bg-white text-[#33473E]'
+            )}
+          >
+            Hide empty
+          </button>
+        </div>
+        <div className="flex items-center justify-between px-0.5 text-[11px] font-bold text-[#5A6B62]">
+          <span>
+            {shown.length} of {rows.length} SKUs{brand ? ` · ${brand}` : ''}
+          </span>
+          {neg > 0 && <span className="text-[#B3261E]">{neg} below zero</span>}
+        </div>
+
         {loading ? (
           <Loading />
         ) : !shown.length ? (
-          <Empty title={query ? 'Nothing matches that.' : 'No packed SKUs.'} />
+          <Empty title={query || brand ? 'Nothing matches that.' : 'No packed SKUs.'} />
         ) : (
           shown.map((r, i) => {
             const box = s(r.box_label) || 'Case'
             const low = n(r.on_hand) < 0
+            const u = unit === 'mt' ? 'MT' : `${box}s`
             return (
               <div key={String(r.id)} className={cn('overflow-hidden rounded-[4px] border border-[#D6E2D6] border-l-[3px] bg-white', low ? 'border-l-[#B3261E]' : 'border-l-[#12855A]')}>
                 <div className="flex items-start gap-2.5 px-3.5 py-3">
@@ -671,28 +774,36 @@ function SkuScreen(): React.JSX.Element {
                     </div>
                   </div>
                   <div className="shrink-0 text-right">
-                    <div className="text-[9px] font-extrabold uppercase tracking-[.1em] text-[#5A6B62]">On hand</div>
+                    <div className="text-[9px] font-extrabold uppercase tracking-[.1em] text-[#5A6B62]">{day ? 'Closing' : 'On hand'}</div>
                     <div className={cn('mt-0.5 text-[16px] font-bold tabular-nums', low ? 'text-[#B3261E]' : 'text-[#0A1F17]')}>
-                      {formatNum(n(r.on_hand))}
+                      {formatNum(inUnit(r, n(r.on_hand)))}
                     </div>
-                    <div className="text-[10px] font-bold text-[#5A6B62]">{box}s</div>
+                    <div className="text-[10px] font-bold text-[#5A6B62]">
+                      {u}
+                      {unit === 'cases' ? ` · ${formatNum(r3(n(r.on_hand) * skuUnitMT(r)))} MT` : ''}
+                    </div>
                   </div>
                 </div>
                 <div className="grid grid-cols-4 border-t border-t-[#EAF0E9] bg-[#F7FAF6] text-center">
-                  {[
-                    ['B/f', n(r.opening)],
-                    ['Packed', n(r.packed_on)],
-                    ['Adjusted', n(r.adj_on)],
-                    ['Sold', n(r.sold_on) ? -n(r.sold_on) : 0]
-                  ].map(([k, v]) => (
-                    <div key={String(k)} className="px-1 py-2">
-                      <div className="text-[9px] font-extrabold uppercase tracking-[.08em] text-[#5A6B62]">{k}</div>
-                      <div className={cn('mt-0.5 text-[12px] font-bold tabular-nums', Number(v) < 0 ? 'text-[#8C2F26]' : 'text-[#0A1F17]')}>
-                        {Number(v) > 0 && k !== 'B/f' ? '+' : ''}
-                        {formatNum(Number(v))}
+                  {(
+                    [
+                      [day ? 'B/f' : 'Opening', n(r.opening)],
+                      ['Packed', packed(r)],
+                      ['Adjusted', adjusted(r)],
+                      ['Sold', sold(r) ? -sold(r) : 0]
+                    ] as const
+                  ).map(([k, v]) => {
+                    const val = inUnit(r, v)
+                    return (
+                      <div key={k} className="px-1 py-2">
+                        <div className="text-[9px] font-extrabold uppercase tracking-[.08em] text-[#5A6B62]">{k}</div>
+                        <div className={cn('mt-0.5 text-[12px] font-bold tabular-nums', val < 0 ? 'text-[#8C2F26]' : 'text-[#0A1F17]')}>
+                          {val > 0 && k !== 'B/f' && k !== 'Opening' ? '+' : ''}
+                          {formatNum(val)}
+                        </div>
                       </div>
-                    </div>
-                  ))}
+                    )
+                  })}
                 </div>
                 {r.negative_since ? (
                   <div className="border-t border-t-[#F0D6D4] bg-[#FDF3F2] px-3.5 py-1.5 text-[11px] font-bold text-[#B3261E]">
