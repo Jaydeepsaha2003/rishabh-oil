@@ -853,6 +853,17 @@ export function Bargains({
   // OPEN by default (opening a band shows its bargains as it always did), so
   // what is tracked is the ones a person has closed. Keyed band + sub-group.
   const [closedSubs, setClosedSubs] = useState<Set<string>>(new Set())
+  // ON THE PHONE they start CLOSED — a screen of party headings to pick from,
+  // not every bargain at once — so there it is the opened ones that are kept.
+  const [openSubsPhone, setOpenSubsPhone] = useState<Set<string>>(new Set())
+  function togglePhoneSub(key: string): void {
+    setOpenSubsPhone((prev) => {
+      const next = new Set(prev)
+      if (next.has(key)) next.delete(key)
+      else next.add(key)
+      return next
+    })
+  }
   const subKeyOf = (r: Row): string => `${grpOf(r)}\u0001${rowOther(r)}`
   function toggleSub(key: string): void {
     setClosedSubs((prev) => {
@@ -2330,6 +2341,11 @@ export function Bargains({
     const contracted = grandVisible.opening + grandVisible.addition + grandVisible.adjusted
     const mKpis = [
       { k: 'Bargains', v: String(grandVisible.count), fg: '#fff' },
+      {
+        k: groupBy === 'oil' ? 'Parties' : 'Oils',
+        v: String(new Set(visibleRows.map((r) => (groupBy === 'oil' ? String(r.supplier_name || '—') : oilOf(r)))).size),
+        fg: '#fff'
+      },
       { k: 'Contracted', v: `${formatNum(contracted)}`, fg: '#fff' },
       { k: 'Received', v: formatNum(grandVisible.dispatch), fg: '#fff' },
       { k: 'Balance open', v: formatNum(grandVisible.closing), fg: '#C7F03F' }
@@ -2373,15 +2389,31 @@ export function Bargains({
       }
       const gContracted = g.opening + g.addition + g.adjusted
       const gb = bar(g.dispatch, gContracted)
-      const gRows = sortedRows.filter((r) => grpOf(r) === drill)
-      const allOpen = gRows.length > 0 && gRows.every((r) => expanded.has(Number(r.id)))
-      const toggleAll = (): void =>
+      // A, B, C … by party (or oil), whatever column the desk last sorted on;
+      // within one, the register's own order.
+      const gRows = sortedRows
+        .filter((r) => grpOf(r) === drill)
+        .map((r, i) => ({ r, i }))
+        .sort((a, b) => rowOther(a.r).localeCompare(rowOther(b.r), 'en', { sensitivity: 'base' }) || a.i - b.i)
+        .map((x) => x.r)
+      const subKeys = Array.from(new Set(gRows.map((r) => subKeyOf(r))))
+      const allOpen = gRows.length > 0 && subKeys.every((k) => openSubsPhone.has(k)) && gRows.every((r) => expanded.has(Number(r.id)))
+      const toggleAll = (): void => {
+        setOpenSubsPhone((prev) => {
+          const next = new Set(prev)
+          for (const k of subKeys) {
+            if (allOpen) next.delete(k)
+            else next.add(k)
+          }
+          return next
+        })
         setExpanded((prev) => {
           const next = new Set(prev)
           if (allOpen) for (const r of gRows) next.delete(Number(r.id))
           else for (const r of gRows) next.add(Number(r.id))
           return next
         })
+      }
       return (
         <div className="flex min-h-screen flex-col bg-[#F1F5EF]">
           <div className="flex-none bg-[#0B3D2E] px-3 pb-3.5 pt-2 text-white">
@@ -2402,7 +2434,8 @@ export function Bargains({
                 <div className="mt-[2px] flex flex-wrap items-baseline gap-2.5">
                   <span className="text-[18px] font-extrabold tracking-[-0.02em]">{drill}</span>
                   <span className="text-[11.5px] font-bold text-[#8FBFA8]">
-                    {g.count} {g.count === 1 ? 'bargain' : 'bargains'}
+                    {g.count} {g.count === 1 ? 'bargain' : 'bargains'} · {subKeys.length}{' '}
+                    {groupBy === 'oil' ? (subKeys.length === 1 ? 'party' : 'parties') : subKeys.length === 1 ? 'oil' : 'oils'}
                   </span>
                 </div>
               </div>
@@ -2458,7 +2491,7 @@ export function Bargains({
                 // goes above it — see closedSubs.
                 const subKey = subKeyOf(row)
                 const newSub = ri === 0 || subKey !== subKeyOf(gRows[ri - 1])
-                const subClosed = closedSubs.has(subKey)
+                const subClosed = !openSubsPhone.has(subKey)
                 const sg = subStats.get(subKey)
                 const subSeq = gRows.slice(0, ri + 1).filter((r) => subKeyOf(r) === subKey).length
                 const rowOpen = expanded.has(Number(row.id))
@@ -2479,7 +2512,7 @@ export function Bargains({
                   {newSub && (
                     <button
                       type="button"
-                      onClick={() => toggleSub(subKey)}
+                      onClick={() => togglePhoneSub(subKey)}
                       className="flex min-h-11 flex-none items-center gap-2 rounded-[4px] border border-[#DCE7DB] bg-[#EFF5EC] px-3 text-left"
                     >
                       <ChevronDown
@@ -2795,7 +2828,8 @@ export function Bargains({
               <div className="text-[19px] font-extrabold tracking-[-0.02em]">Pur Bargain</div>
               <div className="mt-[3px] text-[11.5px] font-bold text-[#8FBFA8]">
                 {grandVisible.count} {grandVisible.count === 1 ? 'bargain' : 'bargains'} · {oils.length}{' '}
-                {groupNoun(oils.length)} · {formatDate(F)} to {formatDate(T)}
+                {groupNoun(oils.length)} · {mKpis[1].v} {groupBy === 'oil' ? (mKpis[1].v === '1' ? 'party' : 'parties') : mKpis[1].v === '1' ? 'oil' : 'oils'} ·{' '}
+                {formatDate(F)} to {formatDate(T)}
               </div>
             </div>
             <button
@@ -2826,8 +2860,11 @@ export function Bargains({
           </button>
           {kpiOpen && (
             <div className="mt-[9px] grid grid-cols-2 gap-2">
-              {mKpis.map((k) => (
-                <div key={k.k} className="min-w-0 rounded-[4px] bg-white/10 px-[11px] py-[9px]">
+              {mKpis.map((k, ki) => (
+                <div
+                  key={k.k}
+                  className={cn('min-w-0 rounded-[4px] bg-white/10 px-[11px] py-[9px]', mKpis.length % 2 === 1 && ki === mKpis.length - 1 && 'col-span-2')}
+                >
                   <div className="text-[9px] font-extrabold uppercase tracking-[.1em] text-[#8FBFA8]">{k.k}</div>
                   <div className="doc-ref mt-[5px] text-[14px] font-bold tracking-[-0.02em]" style={{ color: k.fg }}>
                     {k.v}

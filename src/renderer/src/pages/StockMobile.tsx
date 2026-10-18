@@ -263,7 +263,7 @@ function ActualScreen(): React.JSX.Element {
   const [tab, setTab] = useState<ActualTab>('count')
   return (
     <>
-      <div className="flex shrink-0 gap-1.5 overflow-x-auto bg-[#0B3D2E] px-4 pb-3 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+      <div className="flex shrink-0 gap-1.5 overflow-x-auto bg-[#0B3D2E] px-4 pb-3 pt-2.5 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
         {(
           [
             ['count', 'Count'],

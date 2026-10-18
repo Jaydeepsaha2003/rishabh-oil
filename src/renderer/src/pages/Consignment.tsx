@@ -1031,6 +1031,13 @@ export function Consignment(): React.JSX.Element {
                       const open = !shutProducts.has(pkey)
                       const lots = (p.lots as Row[]) || []
                       const tankerN = lots.filter((d) => Number(d.is_opening) !== 1).length
+                      // Stock carried in as an opening has no tanker behind it —
+                      // say so, rather than "0 tankers" over a full balance.
+                      const openN = lots.length - tankerN
+                      const lotLabel =
+                        [tankerN ? `${tankerN} ${tankerN === 1 ? 'tanker' : 'tankers'}` : '', openN ? 'opening stock' : '']
+                          .filter(Boolean)
+                          .join(' + ') || '0 tankers'
                       const canBook = Number(p.balance) > 0.0001
                       return (
                         <div key={pkey} className="overflow-hidden rounded-[4px] border border-[#D6E2D6] bg-white">
@@ -1049,9 +1056,7 @@ export function Consignment(): React.JSX.Element {
                                 <div className="truncate text-[12.5px] font-extrabold">
                                   {String(p.product_code || p.product_name || '—')}
                                 </div>
-                                <div className="text-[10.5px] font-semibold text-[#5A6B62]">
-                                  {tankerN} {tankerN === 1 ? 'tanker' : 'tankers'}
-                                </div>
+                                <div className="text-[10.5px] font-semibold text-[#5A6B62]">{lotLabel}</div>
                               </div>
                             </div>
                             <div className="flex-none text-right">
@@ -1113,7 +1118,7 @@ export function Consignment(): React.JSX.Element {
                               <div className="flex items-center justify-between gap-2.5 border-t-2 border-t-[#C7F03F] bg-[#EFF5EC] px-3 py-[11px]">
                                 <div>
                                   <div className="text-[9px] font-extrabold uppercase tracking-[.11em] text-[#33473E]">
-                                    Total · {tankerN} {tankerN === 1 ? 'tanker' : 'tankers'}
+                                    Total · {lotLabel}
                                   </div>
                                   <div className="text-[10.5px] font-bold text-[#5A6B62]">
                                     {Number(p.invoiced) > 0.0001 ? `${formatNum(p.invoiced)} MT booked` : 'nothing booked yet'}
