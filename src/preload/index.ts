@@ -1076,7 +1076,9 @@ const api = {
     partyClashes: (name: string, side: 'customer' | 'supplier'): Promise<Row[]> => ipcRenderer.invoke('parties:clashes:list', { name, side }),
     shadowedRedirects: (): Promise<Row> => ipcRenderer.invoke('repairs:shadowedRedirects:list'),
     fixShadowedRedirects: (moves: { line_id: number; to_id: number }[]): Promise<{ moved: number; amount: number; redirects: number }> =>
-      ipcRenderer.invoke('repairs:shadowedRedirectsFix', { moves })
+      ipcRenderer.invoke('repairs:shadowedRedirectsFix', { moves }),
+    legacySplit: (): Promise<Row> => ipcRenderer.invoke('repairs:legacySplit:list'),
+    fixLegacySplit: (): Promise<{ moved: number; redirects: number }> => ipcRenderer.invoke('repairs:legacySplitFix')
   },
   trading: {
     list: (forModule?: string): Promise<Row[]> => ipcRenderer.invoke('trading:list', { forModule }),

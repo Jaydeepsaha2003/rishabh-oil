@@ -2015,6 +2015,16 @@ export function registerIpc(): void {
     const { fixShadowedRedirects } = await import('./shadowedRedirects')
     return fixShadowedRedirects(a?.moves || [])
   })
+  handle('repairs:legacySplit:list', async () => {
+    await assertAdmin('The accounting checks')
+    const { previewLegacySplit } = await import('./shadowedRedirects')
+    return previewLegacySplit()
+  })
+  handle('repairs:legacySplitFix', async () => {
+    await assertAdmin('Moving Legacy postings to their own ledger')
+    const { fixLegacySplit } = await import('./shadowedRedirects')
+    return fixLegacySplit()
+  })
   // Whether a customer's or supplier's name is also the other side's.
   handle('parties:clashes:list', async (_e, a: { name: string; side: 'customer' | 'supplier' }) => {
     const { partyNameClashes } = await import('./partyLedgers')

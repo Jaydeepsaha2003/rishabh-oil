@@ -96,6 +96,8 @@ export function AccountingChecks(): React.JSX.Element {
   const [shadow, setShadow] = useState<Row | null>(null)
   const [shadowTo, setShadowTo] = useState<Record<string, number>>({})
   const [fixingShadow, setFixingShadow] = useState(false)
+  const [legacy, setLegacy] = useState<Row | null>(null)
+  const [fixingLegacy, setFixingLegacy] = useState(false)
   const [splitTk, setSplitTk] = useState<Row | null>(null)
   const [paisa, setPaisa] = useState<Row | null>(null)
   const [paisaPick, setPaisaPick] = useState<Set<number>>(new Set())
@@ -146,6 +148,7 @@ export function AccountingChecks(): React.JSX.Element {
       const pre: Record<string, number> = {}
       for (const l of ((sh?.lines as Row[]) || [])) if (l.to_id && !pre[String(l.tally_party)]) pre[String(l.tally_party)] = Number(l.to_id)
       setShadowTo(pre)
+      setLegacy(await window.api.repairs.legacySplit().catch(() => null))
       const pz = await window.api.repairs.paisa().catch(() => null)
       setPaisa(pz)
       setPaisaPick(new Set((((pz?.findings as Row[]) || []).filter((x) => !x.review)).map((x) => Number(x.entry_id))))
@@ -337,6 +340,27 @@ export function AccountingChecks(): React.JSX.Element {
       toast.error((e as Error).message)
     } finally {
       setFixingShadow(false)
+    }
+  }
+
+  const lgLines: Row[] = useMemo(() => (legacy?.lines as Row[]) || [], [legacy])
+  async function fixLegacy(): Promise<void> {
+    const ok = window.confirm(
+      `Move ${lgLines.length} line${lgLines.length === 1 ? '' : 's'} from ${String(legacy?.mix)} to ${String(legacy?.trad)}, send the supplier's future postings there too, and rename the two-dot ledger ${String(legacy?.rajkot)}?
+
+` +
+        'Only the ledger on each line changes — vouchers, numbers, dates and amounts stay. The Rajkot opening and the Rajkot payments stay on the Rajkot ledger. The old state is logged. Take a database snapshot if you want a copy you can restore.'
+    )
+    if (!ok) return
+    setFixingLegacy(true)
+    try {
+      const r = await window.api.repairs.fixLegacySplit()
+      toast.success(`${r.moved} line${r.moved === 1 ? '' : 's'} moved to ${String(legacy?.trad)}`)
+      await load()
+    } catch (e) {
+      toast.error((e as Error).message)
+    } finally {
+      setFixingLegacy(false)
     }
   }
 
@@ -677,6 +701,59 @@ export function AccountingChecks(): React.JSX.Element {
           </>
         )}
       </Section>
+
+      {(legacy?.ok || legacy?.reason) && (
+        <Section
+          title="Legacy’s bills on the Rajkot ledger"
+          count={lgLines.length}
+          tone={legacy?.ok ? 'bad' : 'warn'}
+          note={
+            legacy?.ok
+              ? `${String(legacy.mix)} carries Tally’s opening for Legacy Rajkot (${formatINR(Number(legacy.opening) || 0)}) — it is the Rajkot ledger — yet a 22-Sep redirect sends every Legacy trading bill and LC settlement to it. Tally books those on ${String(legacy.trad)}. Fixing moves them there, points the supplier’s postings there, and renames the two-dot ledger ${String(legacy.rajkot)}. The Rajkot opening and Rajkot’s own payments stay.`
+              : String(legacy?.reason || '')
+          }
+        >
+          {legacy?.ok && (
+            <>
+              <table className="w-full border-collapse">
+                <thead className="bg-muted/40">
+                  <tr>
+                    <th className={th}>Date</th>
+                    <th className={th}>Voucher</th>
+                    <th className={th}>Narration</th>
+                    <th className={cn(th, 'text-right')}>Dr</th>
+                    <th className={cn(th, 'text-right')}>Cr</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {lgLines.map((l) => (
+                    <tr key={String(l.line_id)} className="border-t">
+                      <td className={cn(td, 'tabular-nums')}>{formatDate(String(l.date))}</td>
+                      <td className={td}>
+                        <span className="font-semibold">{String(l.vch_type)} {String(l.vch_no)}</span>
+                      </td>
+                      <td className={cn(td, 'max-w-[420px] truncate text-muted-foreground')} title={String(l.narration)}>
+                        {String(l.narration)}
+                      </td>
+                      <td className={cn(td, 'text-right tabular-nums')}>{Number(l.dr) ? formatINR(Number(l.dr)) : ''}</td>
+                      <td className={cn(td, 'text-right tabular-nums')}>{Number(l.cr) ? formatINR(Number(l.cr)) : ''}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+              <div className="flex flex-wrap items-center gap-3 border-t bg-muted/30 px-4 py-3">
+                <span className="text-[12.5px] text-muted-foreground">
+                  {lgLines.length} line{lgLines.length === 1 ? '' : 's'} · Dr {formatINR(Number(legacy.dr) || 0)} · Cr {formatINR(Number(legacy.cr) || 0)}
+                </span>
+                <Button className="ml-auto gap-1.5" disabled={fixingLegacy} onClick={() => void fixLegacy()}>
+                  {fixingLegacy && <Loader2 className="h-4 w-4 animate-spin" />}
+                  Move to {String(legacy.trad)}
+                </Button>
+              </div>
+            </>
+          )}
+        </Section>
+      )}
 
       <Section
         title="TDS on sales invoices"

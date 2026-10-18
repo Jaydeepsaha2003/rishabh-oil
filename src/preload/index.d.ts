@@ -737,6 +737,8 @@ export interface Api {
     partyClashes: (name: string, side: 'customer' | 'supplier') => Promise<Row[]>
     shadowedRedirects: () => Promise<Row>
     fixShadowedRedirects: (moves: { line_id: number; to_id: number }[]) => Promise<{ moved: number; amount: number; redirects: number }>
+    legacySplit: () => Promise<Row>
+    fixLegacySplit: () => Promise<{ moved: number; redirects: number }>
     fixLcCharges: (ids: number[]) => Promise<{ fixed: number; charges: number }>
   }
   trading: {

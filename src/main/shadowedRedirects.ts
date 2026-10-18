@@ -227,3 +227,111 @@ export async function fixShadowedRedirects(moves: { line_id: number; to_id: numb
     return { moved, amount, redirects: s.redirects.length }
   })
 }
+
+// ---------------------------------------------------------------------------
+// LEGACY: THE TRADING BILLS ON THE RAJKOT LEDGER.
+//
+// The same afternoon's renames pointed LEGACY COMMODITIES PVT LTD (the
+// supplier master the trading purchases are made under) at the ledger
+// LEGACY COMMODITIES PVT LTD, TRAD.. — the one carrying Tally's opening for
+// LEGACY COMMODITIES PRIVATE LTD (Rajkot), a different party. So every Legacy
+// bill and LC settlement since went to Rajkot, while Tally books them on
+// Legacy Commodities Pvt Ltd, Trad. (GT/1061 is there), leaving one ledger
+// ₹10 Cr overpaid and the other ₹10.9 Cr owed.
+//
+// Only offered when the evidence holds: both ledgers exist, and the two-dot
+// one's opening IS Tally's Rajkot opening. Applying moves every line on it that
+// did not come from a Tally bank book naming Rajkot onto TRAD., points the
+// supplier's redirect at TRAD. so re-posts follow, and renames the two-dot
+// ledger to the Rajkot name so it reads as what it is. Logged.
+// ---------------------------------------------------------------------------
+const LEGACY_TRAD = 'LEGACY COMMODITIES PVT LTD, TRAD.'
+const LEGACY_MIX = 'LEGACY COMMODITIES PVT LTD, TRAD..'
+const LEGACY_RAJKOT = 'LEGACY COMMODITIES PRIVATE LTD (RAJKOT)'
+
+async function scanLegacy(): Promise<{ ok: boolean; reason: string; trad_id: number; mix_id: number; lines: Row[]; redirects: Row[]; opening: number }> {
+  const c = getClient()
+  const none = (reason: string): { ok: boolean; reason: string; trad_id: number; mix_id: number; lines: Row[]; redirects: Row[]; opening: number } => ({
+    ok: false, reason, trad_id: 0, mix_id: 0, lines: [], redirects: [], opening: 0
+  })
+  const ids = new Map(
+    toPlain(await c.execute({ sql: 'SELECT id, name FROM ledger_accounts WHERE name IN (?, ?)', args: [LEGACY_TRAD, LEGACY_MIX] })).map((r) => [String(r.name), n(r.id)])
+  )
+  const tradId = ids.get(LEGACY_TRAD) || 0
+  const mixId = ids.get(LEGACY_MIX) || 0
+  if (!tradId || !mixId) return none('')
+  if ((await scan()).redirects.length) return none('Fix the payments above first — this step builds on them.')
+  // Evidence: the two-dot ledger's opening is Tally's Rajkot opening.
+  const op = toPlain(await c.execute({ sql: 'SELECT company_id, cr - dr AS bal FROM ledger_openings WHERE account_id = ?', args: [mixId] }))
+  const tb = toPlain(await c.execute("SELECT company_id, cr - dr AS bal FROM tally_ledgers WHERE UPPER(name) LIKE 'LEGACY COMMODITIES PRIVATE LTD%RAJKOT%'"))
+  const match = op.find((o) => tb.some((t) => n(t.company_id) === n(o.company_id) && Math.abs(n(t.bal) - n(o.bal)) < 1 && Math.abs(n(o.bal)) > 1))
+  if (!match) return none('')
+  const lines = toPlain(
+    await c.execute({
+      sql: `SELECT jl.id AS line_id, jl.dr, jl.cr, je.id AS entry_id, je.company_id, je.entry_date, je.vch_type, je.vch_no, je.narration
+              FROM journal_lines jl JOIN journal_entries je ON je.id = jl.entry_id
+             WHERE jl.account_id = ? AND COALESCE(je.narration, '') NOT LIKE 'Imported from Tally — %'
+             ORDER BY je.entry_date, je.id`,
+      args: [mixId]
+    })
+  ).map((r) => ({
+    line_id: n(r.line_id),
+    entry_id: n(r.entry_id),
+    company_id: n(r.company_id),
+    date: String(r.entry_date || '').slice(0, 10),
+    vch_type: String(r.vch_type || ''),
+    vch_no: String(r.vch_no || ''),
+    dr: round2(n(r.dr)),
+    cr: round2(n(r.cr)),
+    narration: String(r.narration || '').slice(0, 140)
+  }))
+  const redirects = toPlain(await c.execute({ sql: 'SELECT id, company_id, posts_as, use_name FROM ledger_map WHERE TRIM(UPPER(use_name)) = ?', args: [LEGACY_MIX] }))
+  if (!lines.length && !redirects.length) return none('')
+  return { ok: true, reason: '', trad_id: tradId, mix_id: mixId, lines, redirects, opening: round2(n(match.bal)) }
+}
+
+export async function previewLegacySplit(): Promise<Row> {
+  const s = await scanLegacy()
+  return { ...s, trad: LEGACY_TRAD, mix: LEGACY_MIX, rajkot: LEGACY_RAJKOT, dr: round2(s.lines.reduce((t, l) => t + l.dr, 0)), cr: round2(s.lines.reduce((t, l) => t + l.cr, 0)) }
+}
+
+export async function fixLegacySplit(): Promise<{ moved: number; redirects: number }> {
+  return withDbTransaction(async () => {
+    const c = getClient()
+    await ensureLog()
+    const s = await scanLegacy()
+    if (!s.ok) throw new Error(s.reason || 'Nothing to move — check again')
+    for (const l of s.lines) {
+      await c.execute({
+        sql: 'INSERT OR REPLACE INTO accounting_repair_log (repair_key, entry_id, before_json) VALUES (?, ?, ?)',
+        args: [`legacy-split:line:${l.line_id}`, l.entry_id, JSON.stringify({ line_id: l.line_id, account_id: s.mix_id, to_id: s.trad_id })]
+      })
+      await c.execute({ sql: 'UPDATE journal_lines SET account_id = ? WHERE id = ? AND account_id = ?', args: [s.trad_id, l.line_id, s.mix_id] })
+      await c.execute({ sql: 'UPDATE journal_bill_allocs SET account_id = ? WHERE line_id = ?', args: [s.trad_id, l.line_id] }).catch(() => undefined)
+    }
+    const taken = toPlain(await c.execute({ sql: 'SELECT id FROM ledger_accounts WHERE name = ?', args: [LEGACY_RAJKOT] }))
+    for (const r of s.redirects) {
+      await c.execute({
+        sql: 'INSERT OR REPLACE INTO accounting_repair_log (repair_key, entry_id, before_json) VALUES (?, ?, ?)',
+        args: [`legacy-split:map:${n(r.id)}`, 0, JSON.stringify(r)]
+      })
+      // A Rajkot name stays on the Rajkot ledger (under its new name); the
+      // supplier's postings follow to TRAD. — never a name pointed at itself.
+      const rajkot = /RAJKOT/.test(clean(r.posts_as))
+      const to = rajkot && !taken.length ? LEGACY_RAJKOT : rajkot ? LEGACY_MIX : LEGACY_TRAD
+      if (clean(r.posts_as) === to) await c.execute({ sql: 'DELETE FROM ledger_map WHERE id = ?', args: [n(r.id)] })
+      else await c.execute({ sql: 'UPDATE ledger_map SET use_name = ? WHERE id = ?', args: [to, n(r.id)] })
+    }
+    // The two-dot ledger is Rajkot's: name it so. Nothing posts to the old
+    // name any more, so no redirect is left for it.
+    if (!taken.length) {
+      await c.execute({
+        sql: 'INSERT OR REPLACE INTO accounting_repair_log (repair_key, entry_id, before_json) VALUES (?, ?, ?)',
+        args: [`legacy-split:rename:${s.mix_id}`, 0, JSON.stringify({ account_id: s.mix_id, name: LEGACY_MIX })]
+      })
+      await c.execute({ sql: 'UPDATE ledger_accounts SET name = ? WHERE id = ?', args: [LEGACY_RAJKOT, s.mix_id] })
+    }
+    await bumpRevision()
+    return { moved: s.lines.length, redirects: s.redirects.length }
+  })
+}
