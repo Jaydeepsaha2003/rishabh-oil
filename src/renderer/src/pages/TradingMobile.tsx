@@ -35,6 +35,7 @@ import { MobileBar } from '@/components/MobileBar'
 import { SerialNo } from '@/components/SerialNo'
 import { cn } from '@/lib/utils'
 import { useGlobalDateRange, globalRangeAppliesTo } from '@/lib/globalDateRange'
+import { TradingPaymentsMobile } from './TradingPayments'
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Row = Record<string, any>
@@ -70,6 +71,8 @@ export function TradingMobile(): React.JSX.Element {
   const [prodFilter, setProdFilter] = useState('ALL')
   const [openId, setOpenId] = useState<number | null>(null)
   const [entryNote, setEntryNote] = useState(false)
+  // Deals, or the Payments register — the desktop page's two views.
+  const [view, setView] = useState<'deals' | 'payments'>('deals')
   const globalRange = useGlobalDateRange()
   // Bumped by the refresh button; the fetch below watches it.
   const [nonce, setNonce] = useState(0)
@@ -162,11 +165,36 @@ export function TradingMobile(): React.JSX.Element {
           <div className="min-w-0">
             <div className="text-[19px] font-extrabold tracking-[-0.02em]">Trading</div>
             <div className="mt-0.5 text-[11.5px] font-bold text-[#8FBFA8]">
-              {shown.length} deal{shown.length === 1 ? '' : 's'}
-              {prodFilter !== 'ALL' ? ` · ${prodFilter}` : ''}
+              {view === 'payments' ? 'Payments — what is paid, received and still open' : (
+                <>
+                  {shown.length} deal{shown.length === 1 ? '' : 's'}
+                  {prodFilter !== 'ALL' ? ` · ${prodFilter}` : ''}
+                </>
+              )}
             </div>
           </div>
         </div>
+        <div className="mt-3 flex gap-1 rounded-[4px] bg-white/[0.08] p-1">
+          {(
+            [
+              ['deals', 'Deals'],
+              ['payments', 'Payments']
+            ] as const
+          ).map(([v, label]) => (
+            <button
+              key={v}
+              type="button"
+              onClick={() => setView(v)}
+              className={cn(
+                'h-9 flex-1 rounded-[3px] text-[12.5px] font-extrabold',
+                view === v ? 'bg-[#C7F03F] text-[#0B3D2E]' : 'text-[#DCEFE4]'
+              )}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+        {view === 'deals' && (
         <div className="mt-3 grid grid-cols-2 gap-2">
           {[
             { k: 'Bought in', v: fmtShort(totals.purchase), fg: 'text-white', span: '' },
@@ -184,7 +212,16 @@ export function TradingMobile(): React.JSX.Element {
             </div>
           ))}
         </div>
+        )}
       </div>
+
+      {view === 'payments' ? (
+        <TradingPaymentsMobile
+          range={globalRangeAppliesTo(globalRange, 'trading') ? { from: globalRange.from, to: globalRange.to } : null}
+          onOpenDeal={(id) => setOpenId(id)}
+        />
+      ) : (
+      <>
 
       {/* Search and the product chips. 44px controls throughout — a thumb
           target, not a pointer one. */}
@@ -368,6 +405,8 @@ export function TradingMobile(): React.JSX.Element {
           <Plus className="h-5 w-5" /> New trading deal
         </button>
       </div>
+      </>
+      )}
 
       {/* Why the button does not open a form. Said plainly, once, when it is
           asked for — rather than a disabled button nobody can interpret. */}
