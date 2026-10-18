@@ -528,6 +528,9 @@ async function accountsRule(ns: string, op: string, args: unknown): Promise<Rule
       action: ['preview', 'salesCheck', 'salesPreview', 'registerCheck', 'registerPreview', 'bankSuggest', 'bankCheck', 'bankPreview', 'health', 'batches', 'companyBanks', 'drafts', 'saveDraft', 'clearDraft'].includes(op) ? 'view' : 'edit'
     })
   }
+  if (ns === 'tbill' && op === 'postRcm') {
+    return section('accountsRcmReg', { action: 'edit', table: 'transporter_bills', dateCol: 'bill_date' })
+  }
   if (ns === 'tbill' && (op === 'create' || op === 'update' || op === 'delete')) {
     const stored = op === 'create' ? null : await one('SELECT side FROM transporter_bills WHERE id = ?', a.id)
     const side = String((op === 'delete' ? stored?.side : a.values?.side ?? stored?.side) || '').toLowerCase()

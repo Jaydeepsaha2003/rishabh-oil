@@ -32,6 +32,7 @@ export const ACCOUNTS_SECTIONS = [
   { key: 'accountsNotesReg', label: 'Accounting · Dr / Cr Notes register' },
   { key: 'accountsFrInward', label: 'Accounting · Fr. Inward Working' },
   { key: 'accountsFrOutward', label: 'Accounting · Fr. Outward Working' },
+  { key: 'accountsRcmReg', label: 'Accounting · RCM Register' },
   { key: 'accountsOpenings', label: 'Accounting · Opening Balances' },
   { key: 'accountsMasters', label: 'Accounting · Masters (ledgers & groups)' },
   { key: 'accountsTallyImport', label: 'Accounting · Tally file updation' },

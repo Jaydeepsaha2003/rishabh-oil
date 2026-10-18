@@ -1067,7 +1067,11 @@ export async function runStartupTasks(): Promise<void> {
   for (const sql of [
     'ALTER TABLE transporters ADD COLUMN gst_registration TEXT',
     'ALTER TABLE transporter_bills ADD COLUMN others_amount REAL NOT NULL DEFAULT 0',
-    'ALTER TABLE transporter_bills ADD COLUMN others_ledger TEXT'
+    'ALTER TABLE transporter_bills ADD COLUMN others_ledger TEXT',
+    // RCM on an unregistered transporter's freight: the rate struck and the
+    // tax it came to (0 on every bill booked before RCM was posted).
+    'ALTER TABLE transporter_bills ADD COLUMN rcm_pct REAL NOT NULL DEFAULT 0',
+    'ALTER TABLE transporter_bills ADD COLUMN rcm_amount REAL NOT NULL DEFAULT 0'
   ]) {
     await getClient()
       .execute(sql)

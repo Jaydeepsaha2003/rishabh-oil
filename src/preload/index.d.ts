@@ -432,6 +432,8 @@ export interface Api {
     updateBill: (id: number, values: Row) => Promise<{ id: number }>
     deleteBill: (id: number, companyId?: number) => Promise<{ id: number }>
     orphanBills: (companyId?: number) => Promise<Row[]>
+    rcmRegister: (opts?: { companyId?: number; from?: string; to?: string }) => Promise<Row[]>
+    postRcm: (id: number, pct?: number, companyId?: number) => Promise<{ id: number }>
     raiseShortageNote: (lineId: number, date?: string, companyId?: number) => Promise<{ note_id: number; note_no: string }>
     unraiseShortageNote: (lineId: number, companyId?: number) => Promise<{ id: number }>
     waiveShortage: (lineId: number, reason: string, companyId?: number) => Promise<{ id: number; entry_id: number | null }>

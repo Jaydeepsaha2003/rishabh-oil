@@ -96,6 +96,7 @@ import { TallyLedgers } from '@/components/TallyLedgers'
 import { TallyNotesImport } from '@/components/TallyNotesImport'
 import { CashflowRegister } from '@/components/CashflowRegister'
 import { PayReceiptRegister } from '@/components/PayReceiptRegister'
+import { RcmRegister } from '@/components/RcmRegister'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { MultiSelectFilter } from '@/components/ui/multi-select-filter'
@@ -293,7 +294,8 @@ const SCREEN_TITLE: Record<string, string> = {
   masters: 'Masters · Groups & Ledgers',
   tallyimport: 'Tally File Updation',
   cashflow: 'Cashflow Register',
-  payreg: 'Payment / Receipt Register'
+  payreg: 'Payment / Receipt Register',
+  rcmreg: 'RCM Register'
 }
 
 // What each gateway card is FOR, and the colour of its edge. A list of eleven
@@ -314,7 +316,8 @@ const GW_META: Record<string, { sub: string; mark: string }> = {
   M: { sub: 'The chart of accounts — groups, and what sits under them', mark: '#0B3D2E' },
   U: { sub: 'Tally notes in; sales, purchase, journal and bank books checked', mark: '#8A5300' },
   F: { sub: 'Every voucher opened up — invoice, refs, ledgers, breakdown, what is not right', mark: '#1B4E82' },
-  Y: { sub: 'Payments, receipts and contra — by bank, with the running balance', mark: '#0B6B45' }
+  Y: { sub: 'Payments, receipts and contra — by bank, with the running balance', mark: '#0B6B45' },
+  G: { sub: 'GST under reverse charge on unregistered transporters’ freight', mark: '#B3261E' }
 }
 
 // WHICH SIDE OF THE BOOKS A GROUP FALLS ON, IN COLOUR.
@@ -565,7 +568,7 @@ function AmountInput({
 // The Trading Account screen (U) was taken out at the client's request on
 // 30 Sep 2026; journal:tradingAccount on the server is left for any report
 // that wants the roll-up.
-type Screen = 'gateway' | 'voucher' | 'daybook' | 'ledger' | 'trial' | 'purchreg' | 'salesreg' | 'notesreg' | 'tfpur' | 'tfsal' | 'openings' | 'masters' | 'tallyimport' | 'cashflow' | 'payreg'
+type Screen = 'gateway' | 'voucher' | 'daybook' | 'ledger' | 'trial' | 'purchreg' | 'salesreg' | 'notesreg' | 'tfpur' | 'tfsal' | 'openings' | 'masters' | 'tallyimport' | 'cashflow' | 'payreg' | 'rcmreg'
 type VchType = 'CONTRA' | 'PAYMENT' | 'RECEIPT' | 'JOURNAL' | 'SALE' | 'PURCHASE' | 'DEBIT NOTE' | 'CREDIT NOTE'
 
 // `label` names the VOUCHER TYPE and is used wherever one is named — the tab
@@ -607,7 +610,8 @@ const SCREEN_SECTION: Record<Screen, AccountsSectionKey | null> = {
   masters: 'accountsMasters',
   tallyimport: 'accountsTallyImport',
   cashflow: 'accountsCashflow',
-  payreg: 'accountsPayReg'
+  payreg: 'accountsPayReg',
+  rcmreg: 'accountsRcmReg'
 }
 const SCREEN_LABEL: Record<Screen, string> = {
   gateway: 'the Gateway',
@@ -624,12 +628,13 @@ const SCREEN_LABEL: Record<Screen, string> = {
   masters: 'Masters',
   tallyimport: 'Tally File Updation',
   cashflow: 'the Cashflow Register',
-  payreg: 'the Payment / Receipt Register'
+  payreg: 'the Payment / Receipt Register',
+  rcmreg: 'the RCM Register'
 }
 // The gateway letters that open a screen ('V' opens a voucher instead).
 const GATE_SCREEN: Record<string, Screen> = {
   P: 'purchreg', S: 'salesreg', D: 'daybook', N: 'notesreg', C: 'notesreg', R: 'tfpur', O: 'tfsal',
-  L: 'ledger', T: 'trial', B: 'openings', M: 'masters', U: 'tallyimport', F: 'cashflow', Y: 'payreg'
+  L: 'ledger', T: 'trial', B: 'openings', M: 'masters', U: 'tallyimport', F: 'cashflow', Y: 'payreg', G: 'rcmreg'
 }
 const ALL_RIGHTS: Rights = { view: true, create: true, edit: true, delete: true, editDays: '', viewDays: '', scope: '' }
 
@@ -1885,7 +1890,7 @@ export function Accounts({
   // freight is a handful of parties.
   const [tfBillRow, setTfBillRow] = useState(0)
   const [tfBillWise, setTfBillWise] = useState<Record<string, Row[]>>({})
-  const [tfBill, setTfBill] = useState<Row>({ bill_no: '', bill_date: todayISO(), gst_pct: '5', tds_pct: '', adjustment: '', adjustment_note: '', note: '', others_amount: '', others_ledger: '', others_note: '' })
+  const [tfBill, setTfBill] = useState<Row>({ bill_no: '', bill_date: todayISO(), gst_pct: '5', tds_pct: '', adjustment: '', adjustment_note: '', note: '', others_amount: '', others_ledger: '', others_note: '', rcm_pct: '5' })
   const [tfSaving, setTfSaving] = useState(false)
   const [nrFrom, setNrFrom] = useState(() => regBack.current?.nrFrom ?? '')
   const [nrTo, setNrTo] = useState(() => regBack.current?.nrTo ?? '')
@@ -2013,7 +2018,7 @@ export function Accounts({
   // drill-through return uses. replaceState, not pushState: moving about
   // inside Accounting should not fill the browser's Back button with steps.
   // An unsaved voucher's lines are not in the URL — only which voucher it is.
-  const ACCT_SCREENS: Screen[] = ['gateway', 'voucher', 'daybook', 'ledger', 'trial', 'purchreg', 'salesreg', 'notesreg', 'tfpur', 'tfsal', 'openings', 'masters', 'cashflow', 'payreg']
+  const ACCT_SCREENS: Screen[] = ['gateway', 'voucher', 'daybook', 'ledger', 'trial', 'purchreg', 'salesreg', 'notesreg', 'tfpur', 'tfsal', 'openings', 'masters', 'cashflow', 'payreg', 'rcmreg']
   const urlVoucher = useRef<{ t: string; id: number } | null>(null)
   const urlRead = useRef(false)
   if (__WEB__ && !urlRead.current) {
@@ -4707,6 +4712,8 @@ export function Accounts({
       { key: 'F', label: 'Cashflow Register', icon: ArrowLeftRight, go: () => setScreen('cashflow') },
       // Payments, receipts and contra, one bank at a time if wanted.
       { key: 'Y', label: 'Payment / Receipt Register', icon: Banknote, go: () => setScreen('payreg') },
+      // Reverse-charge GST on unregistered transporters' freight bills.
+      { key: 'G', label: 'RCM Register', icon: Truck, go: () => setScreen('rcmreg') },
       ...(__WEB__
         ? [
             { key: 'M', label: 'Masters', icon: FolderTree, go: () => setScreen('masters') },
@@ -4718,7 +4725,7 @@ export function Accounts({
       // Workings, Reports & masters — so ↑ ↓ walks it in that order. The desktop list
       // keeps its own.
       if (!__WEB__) return 0
-      const ORDER = 'VDBPSNCYROLTFMU'
+      const ORDER = 'VDBPSNCYGROLTFMU'
       return ORDER.indexOf(a.key) - ORDER.indexOf(b.key)
     }).filter((g) => (g.key === 'V' ? !!firstVch() : mayScreen(GATE_SCREEN[g.key]))),
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -5518,7 +5525,7 @@ export function Accounts({
       { title: 'Enter', note: 'record what happened', accent: '#12855A', keys: ['V', 'D', 'B'] },
       // The notes are a register too — a list of documents already booked,
       // read beside the purchase and sale bills they adjust.
-      { title: 'Registers', note: 'bills in and out', accent: '#1B4E82', keys: ['P', 'S', 'N', 'C', 'Y'] },
+      { title: 'Registers', note: 'bills in and out', accent: '#1B4E82', keys: ['P', 'S', 'N', 'C', 'Y', 'G'] },
       // Not registers: a register lists bills already booked, and these are
       // the freight still being worked out before a transporter's bill is.
       { title: 'Workings', note: 'freight to bill', accent: '#8A5300', keys: ['R', 'O'] },
@@ -7438,7 +7445,11 @@ export function Accounts({
     const others = Math.max(0, Math.round((Number(tfBill.others_amount) || 0) * 100) / 100)
     const raw = Math.round((taxable + gst - tds - others) * 100) / 100
     const total = Math.round(raw)
-    return { lines, adj, taxable, gstPct, gst, tds, others, ro: Math.round((total - raw) * 100) / 100, total }
+    // RCM: the tax WE owe on an unregistered transporter's freight — booked
+    // as payable and as input credit, so it leaves what they are paid alone.
+    const rcmPct = tfUnreg ? Math.max(0, String(tfBill.rcm_pct ?? '') === '' ? 0 : Number(tfBill.rcm_pct) || 0) : 0
+    const rcm = Math.round(taxable * rcmPct) / 100
+    return { lines, adj, taxable, gstPct, gst, tds, others, ro: Math.round((total - raw) * 100) / 100, total, rcmPct, rcm }
   })()
 
   function tfToggle(row: Row): void {
@@ -7481,12 +7492,13 @@ export function Accounts({
         others_ledger: String(tfBill.others_ledger || '').trim() || null,
         others_note: String(tfBill.others_note || '').trim() || null,
         note: tfBill.note || null,
+        rcm_pct: tfBillCalc.rcmPct,
         line_ids: tfPickedRows.map((r) => Number(r.id))
       })
       toast.success(`Booked ${formatINR(tfBillCalc.total)} to ${tfPickedRows[0].transporter_name}`)
       setTfBillOpen(false)
       setTfPicked([])
-      setTfBill({ bill_no: '', bill_date: todayISO(), gst_pct: '5', tds_pct: '', adjustment: '', adjustment_note: '', note: '', others_amount: '', others_ledger: '', others_note: '' })
+      setTfBill({ bill_no: '', bill_date: todayISO(), gst_pct: '5', tds_pct: '', adjustment: '', adjustment_note: '', note: '', others_amount: '', others_ledger: '', others_note: '', rcm_pct: '5' })
       await loadTFreight()
       loadAccounts()
     } catch (e) {
@@ -7884,6 +7896,10 @@ export function Accounts({
       if (accrued > 0.004) jr.push({ side: 'Dr', ledger: tfPostedName('FREIGHT PAYABLE A/C'), amount: accrued })
       if (Math.abs(expense) > 0.004) jr.push({ side: expense > 0 ? 'Dr' : 'Cr', ledger: frLedger, amount: Math.abs(expense) })
       if (c.gst > 0.004) jr.push({ side: 'Dr', ledger: `Input GST ${c.gstPct}% (CGST + SGST)`, amount: c.gst })
+      if (c.rcm > 0.004) {
+        jr.push({ side: 'Dr', ledger: `RCM Input GST ${c.rcmPct}% (CGST + SGST)`, amount: c.rcm })
+        jr.push({ side: 'Cr', ledger: `RCM Payable GST ${c.rcmPct}% (CGST + SGST)`, amount: c.rcm })
+      }
       if (Math.abs(c.ro) > 0.004) jr.push({ side: c.ro > 0 ? 'Dr' : 'Cr', ledger: tfPostedName('ROUND OFF A/C'), amount: Math.abs(c.ro) })
       if (c.tds > 0.004) jr.push({ side: 'Cr', ledger: tfPostedName('TDS PAYABLE A/C'), amount: c.tds })
       if (c.others > 0.004)
@@ -7996,7 +8012,24 @@ export function Accounts({
               className="flex-none"
               style={{ borderRadius: 8, border: '1px solid #F1D9A6', background: '#FFF8E9', padding: '10px 12px', fontSize: 11.5, fontWeight: 600, color: '#8A5300', lineHeight: 1.5 }}
             >
-              <b>Unregistered transporter · RCM applicable.</b> No GST on this freight, and it is booked as a JV. Oil shortages come off at the oil rate plus its GST — no debit note.
+              <div>
+                <b>Unregistered transporter · RCM applicable.</b> No GST on this freight, and it is booked as a JV. Oil shortages come off at the oil rate plus its GST — no debit note.
+              </div>
+              <div className="mt-2 flex items-center gap-2">
+                <span style={{ fontWeight: 800 }}>RCM %</span>
+                <input
+                  type="number"
+                  min={0}
+                  value={String(tfBill.rcm_pct ?? '')}
+                  onChange={(e) => setTfBill((p) => ({ ...p, rcm_pct: e.target.value }))}
+                  style={{ ...field, width: 70, height: 30, fontFamily: MONO, textAlign: 'right', border: '1px solid #E3C58C', background: '#fff' }}
+                />
+                <span>
+                  {c.rcm > 0.004
+                    ? `= ${formatINR(c.rcm)} we pay as GST and claim back as input (CGST + SGST). Not on the transporter's bill.`
+                    : 'No RCM will be booked on this bill.'}
+                </span>
+              </div>
             </div>
           )}
           <div className="grid flex-none gap-3" style={{ gridTemplateColumns: '1fr 1.4fr' }}>
@@ -18626,6 +18659,7 @@ export function Accounts({
         { k: 'U', label: 'Tally', on: screen === 'tallyimport', go: () => setScreen('tallyimport'), hide: !__WEB__ || !mayScreen('tallyimport') },
         { k: 'F', label: 'Cashflow', on: screen === 'cashflow', go: () => setScreen('cashflow'), hide: !mayScreen('cashflow') },
         { k: 'Y', label: 'Pay / Receipt', on: screen === 'payreg', go: () => setScreen('payreg'), hide: !mayScreen('payreg') },
+        { k: 'G', label: 'RCM', on: screen === 'rcmreg', go: () => setScreen('rcmreg'), hide: !mayScreen('rcmreg') },
         {
           k: 'Esc',
           label: screen === 'gateway' ? 'Companies' : 'Gateway',
@@ -18719,6 +18753,7 @@ export function Accounts({
     const onTally = !!company && screen === 'tallyimport'
     const onCashflow = !!company && screen === 'cashflow'
     const onPayreg = !!company && screen === 'payreg'
+    const onRcmreg = !!company && screen === 'rcmreg'
     const chip: React.CSSProperties = {
       height: 34,
       display: 'flex',
@@ -19002,6 +19037,13 @@ export function Accounts({
           tfWeb.body
         ) : onDaybook ? (
           daybookWeb.body
+        ) : onRcmreg ? (
+          <RcmRegister
+            companyId={company ? Number(company.id) : undefined}
+            companyName={String(company?.name || '')}
+            canPost={rightsIn('accountsRcmReg').edit}
+            onOpen={(v) => openRowSource(v, null)}
+          />
         ) : onPayreg ? (
           <PayReceiptRegister
             companyId={company ? Number(company.id) : undefined}
@@ -19159,6 +19201,14 @@ export function Accounts({
             {screen === 'purchreg' && purchaseRegisterScreen}
             {screen === 'salesreg' && salesRegisterScreen}
             {screen === 'daybook' && daybookScreen}
+            {screen === 'rcmreg' && (
+              <RcmRegister
+                companyId={company ? Number(company.id) : undefined}
+                companyName={String(company?.name || '')}
+                canPost={rightsIn('accountsRcmReg').edit}
+                onOpen={(v) => openRowSource(v, null)}
+              />
+            )}
             {screen === 'payreg' && (
               <PayReceiptRegister
                 companyId={company ? Number(company.id) : undefined}

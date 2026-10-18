@@ -199,6 +199,29 @@ async function dropEntry(entryId?: number | null): Promise<void> {
   await c.execute({ sql: 'DELETE FROM journal_entries WHERE id = ?', args: [entryId] })
 }
 
+// RCM — GST ON AN UNREGISTERED TRANSPORTER'S FREIGHT, PAID BY US.
+//
+// A transporter who bills without GST leaves the tax to the recipient under
+// reverse charge: 5% on the freight, paid in cash with the return and then
+// claimed back as input. So the bill's own JV carries both halves —
+//   Dr RCM INPUT CGST 2.5% / RCM INPUT SGST 2.5%      the credit we can take
+//     Cr RCM PAYABLE CGST 2.5% / RCM PAYABLE SGST 2.5%  the tax we owe
+// — which net to nothing on the transporter, and leave the liability and the
+// credit standing for GSTR-3B (3.1(d) and 4(A)(3)). Their own names, not the
+// INPUT/OUTPUT GST ledgers, so the GST registers of bills stay as they were.
+export const RCM_DEFAULT_PCT = 5
+
+function rcmJournalLines(pct: number, amount: number): ReturnType<typeof gstLines> {
+  if (!(amount > 0.004)) return []
+  return [
+    ...gstLines({ side: 'INPUT', pct, type: DEFAULT_GST_TYPE, dr: amount }).map((l) => ({ ...l, account: `RCM ${l.account}` })),
+    ...gstLines({ side: 'OUTPUT', pct, type: DEFAULT_GST_TYPE, cr: amount }).map((l) => ({
+      ...l,
+      account: l.account.replace(/^OUTPUT /, 'RCM PAYABLE ')
+    }))
+  ]
+}
+
 // Enter the transporter's bill for a set of freight lines, and post it.
 //
 //   Dr FREIGHT PAYABLE A/C   the part already accrued when the goods moved
@@ -276,6 +299,10 @@ export async function createTransporterBill(v: Row, existingId?: number): Promis
   // on the voucher, accounted for separately).
   const gstPct = reg === 'unregistered' ? 0 : n(v.gst_pct)
   const gst = round2((taxable * gstPct) / 100)
+  // Unregistered: the RCM we owe on it (5% unless the bill says otherwise; 0
+  // books the freight with no RCM, as every bill before this did).
+  const rcmPct = reg === 'unregistered' ? (v.rcm_pct == null || v.rcm_pct === '' ? RCM_DEFAULT_PCT : Math.max(0, n(v.rcm_pct))) : 0
+  const rcm = round2((taxable * rcmPct) / 100)
   const tdsPct = n(v.tds_pct)
   const tds = round2((taxable * tdsPct) / 100)
   // OTHERS: anything else recovered on this bill — damage, detention, a
@@ -322,7 +349,11 @@ export async function createTransporterBill(v: Row, existingId?: number): Promis
       ')' +
       (v.adjustment_note ? ` — ${String(v.adjustment_note).trim()}` : '') +
       (othersAmt > 0.004 ? `; others ${othersAmt.toFixed(2)} recovered${v.others_note ? ` (${String(v.others_note).trim()})` : ''}` : '') +
-      (reg === 'unregistered' ? ' — unregistered transporter, RCM applicable' : ''),
+      (reg === 'unregistered'
+        ? rcm > 0.004
+          ? ` — unregistered transporter, RCM ${rcmPct}% ${rcm.toFixed(2)} booked`
+          : ' — unregistered transporter, RCM applicable'
+        : ''),
     companyId: cid,
     lines: [
       { account: 'FREIGHT PAYABLE A/C', group: 'Current Liabilities', dr: accrued },
@@ -339,6 +370,7 @@ export async function createTransporterBill(v: Row, existingId?: number): Promis
       // it splits into central and state tax rather than lumping a state tax
       // into the central one.
       ...gstLines({ side: 'INPUT', pct: n(v.gst_pct), type: DEFAULT_GST_TYPE, dr: gst }),
+      ...rcmJournalLines(rcmPct, rcm),
       { account: 'ROUND OFF A/C', group: 'Indirect Expenses', dr: roundOff > 0 ? roundOff : 0, cr: roundOff < 0 ? -roundOff : 0 },
       { account: 'TDS PAYABLE A/C', group: 'Duties & Taxes', cr: tds },
       ...(othersLedger
@@ -354,11 +386,11 @@ export async function createTransporterBill(v: Row, existingId?: number): Promis
       sql: `UPDATE transporter_bills SET transporter_id = ?, side = ?, bill_no = ?, bill_date = ?,
               taxable = ?, gst_pct = ?, gst_amount = ?, tds_pct = ?, tds_amount = ?, round_off = ?,
               total = ?, journal_entry_id = ?, note = ?, adjustment = ?, adjustment_note = ?,
-              others_amount = ?, others_ledger = ?
+              others_amount = ?, others_ledger = ?, rcm_pct = ?, rcm_amount = ?
             WHERE id = ? AND company_id = ?`,
       args: [transporterId, side, billNo, billDate, taxable, gstPct, gst, tdsPct, tds, roundOff, total, je.id ?? null, note,
              adjustment, v.adjustment_note ? String(v.adjustment_note).trim() : null, othersAmt, othersLedger,
-             existingId as number, cid]
+             rcmPct, rcm, existingId as number, cid]
     })
     billId = existingId as number
   } else {
@@ -366,10 +398,10 @@ export async function createTransporterBill(v: Row, existingId?: number): Promis
       sql: `INSERT INTO transporter_bills
               (company_id, transporter_id, side, bill_no, bill_date, taxable, gst_pct, gst_amount,
                tds_pct, tds_amount, round_off, total, journal_entry_id, note, adjustment, adjustment_note,
-               others_amount, others_ledger)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+               others_amount, others_ledger, rcm_pct, rcm_amount)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       args: [cid, transporterId, side, billNo, billDate, taxable, gstPct, gst, tdsPct, tds, roundOff, total, je.id, note,
-             adjustment, v.adjustment_note ? String(v.adjustment_note).trim() : null, othersAmt, othersLedger]
+             adjustment, v.adjustment_note ? String(v.adjustment_note).trim() : null, othersAmt, othersLedger, rcmPct, rcm]
     })
     billId = Number(ins.lastInsertRowid)
   }
@@ -558,6 +590,70 @@ export async function unraiseFreightShortageNote(lineId: number, companyId?: num
   if (noteId != null) await deleteNote(n(noteId), cid)
   await bumpRevision()
   return { id: n(lineId) }
+}
+
+// THE RCM REGISTER: every freight bill on which RCM falls — the unregistered
+// transporters' — with what was booked on each. A bill booked before RCM was
+// posted reads 0, flagged, and can be posted from the register.
+export async function rcmRegister(opts: { companyId?: number; from?: string; to?: string } = {}): Promise<Row[]> {
+  const cid = opts.companyId ? n(opts.companyId) : getActiveCompanyId()
+  const args: (string | number)[] = [cid]
+  const where = ['b.company_id = ?', "(b.rcm_amount > 0 OR COALESCE(t.gst_registration, '') = 'unregistered')"]
+  if (opts.from) {
+    where.push('b.bill_date >= ?')
+    args.push(String(opts.from).slice(0, 10))
+  }
+  if (opts.to) {
+    where.push('b.bill_date <= ?')
+    args.push(String(opts.to).slice(0, 10))
+  }
+  const res = await getClient().execute({
+    sql: `SELECT b.id, b.side, b.bill_no, b.bill_date, b.taxable, b.total, b.tds_amount, b.rcm_pct, b.rcm_amount,
+                 b.journal_entry_id, je.vch_type, je.vch_no, t.name AS transporter_name, t.gst_registration,
+                 (SELECT COUNT(*) FROM transporter_ledger l WHERE l.bill_id = b.id) AS line_count
+            FROM transporter_bills b
+            JOIN transporters t ON t.id = b.transporter_id
+            LEFT JOIN journal_entries je ON je.id = b.journal_entry_id
+           WHERE ${where.join(' AND ')}
+           ORDER BY b.bill_date, b.id`,
+    args
+  })
+  return toPlain(res)
+}
+
+// Post RCM on a bill booked without it: the bill is re-booked exactly as it
+// stands (same lines, bill no, date, TDS, adjustment and others) with the RCM
+// lines added — the same path an edit of the bill takes.
+export async function postBillRcm(billId: number, pct?: number, companyId?: number): Promise<{ id: number }> {
+  const c = getClient()
+  const cid = companyId ? n(companyId) : getActiveCompanyId()
+  const b = toPlain(await c.execute({ sql: 'SELECT * FROM transporter_bills WHERE id = ? AND company_id = ?', args: [n(billId), cid] }))[0]
+  if (!b) throw new Error('That bill no longer exists')
+  if ((await transporterRegistration(n(b.transporter_id))) !== 'unregistered') {
+    throw new Error('This transporter is GST registered — their bill carries GST, so there is no RCM to post')
+  }
+  if (n(b.rcm_amount) > 0.004) throw new Error('RCM is already posted on this bill')
+  const lines = toPlain(await c.execute({ sql: 'SELECT id FROM transporter_ledger WHERE bill_id = ?', args: [n(billId)] }))
+  if (!lines.length) throw new Error('This bill has no freight lines left — delete and book it again')
+  return createTransporterBill(
+    {
+      company_id: cid,
+      transporter_id: b.transporter_id,
+      side: b.side,
+      bill_no: b.bill_no,
+      bill_date: b.bill_date,
+      gst_pct: 0,
+      tds_pct: b.tds_pct,
+      adjustment: b.adjustment,
+      adjustment_note: b.adjustment_note,
+      others_amount: b.others_amount,
+      others_ledger: b.others_ledger,
+      note: b.note,
+      rcm_pct: pct == null ? RCM_DEFAULT_PCT : n(pct),
+      line_ids: lines.map((l) => n(l.id))
+    },
+    n(billId)
+  )
 }
 
 export async function updateTransporterBill(id: number, v: Row): Promise<{ id: number }> {

@@ -638,6 +638,10 @@ const api = {
     deleteBill: (id: number, companyId?: number): Promise<{ id: number }> =>
       ipcRenderer.invoke('tbill:delete', { id, companyId }),
     orphanBills: (companyId?: number): Promise<Row[]> => ipcRenderer.invoke('tbill:orphans', { companyId }),
+    rcmRegister: (opts: { companyId?: number; from?: string; to?: string } = {}): Promise<Row[]> =>
+      ipcRenderer.invoke('tbill:rcmRegister', opts),
+    postRcm: (id: number, pct?: number, companyId?: number): Promise<{ id: number }> =>
+      ipcRenderer.invoke('tbill:postRcm', { id, pct, companyId }),
     raiseShortageNote: (lineId: number, date?: string, companyId?: number): Promise<{ note_id: number; note_no: string }> =>
       ipcRenderer.invoke('tfreight:raiseNote', { lineId, date, companyId }),
     unraiseShortageNote: (lineId: number, companyId?: number): Promise<{ id: number }> =>
