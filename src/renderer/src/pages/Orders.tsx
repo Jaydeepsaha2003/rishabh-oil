@@ -8335,13 +8335,24 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
                                 .split(',')
                                 .map((x) => x.trim())
                                 .filter(Boolean)
+                              // A tanker split over several invoices: the other
+                              // invoices it is also billed on, per tanker.
+                              const shared = new Map<string, { inv: string; qty: number; mine: number }[]>()
+                              for (const piece of String(row.tanker_shared || '').split(';;')) {
+                                const [tno, inv, qty, mine] = piece.split('|')
+                                if (!inv) continue
+                                shared.set(tno, [...(shared.get(tno) ?? []), { inv, qty: Number(qty) || 0, mine: Number(mine) || 0 }])
+                              }
+                              const split = shared.size > 0
                               const chip = (
                                 <span
                                   className={cn(
                                     'inline-flex h-6 min-w-[30px] items-center justify-center rounded-[2px] border px-1.5 text-[12.5px] font-bold tabular-nums',
-                                    nos.length
-                                      ? 'cursor-help border-[#BFE3CB] bg-[#F4FBF6] text-[#0B6B45]'
-                                      : 'border-[#C3D2C6] text-[#8FA79B]'
+                                    split
+                                      ? 'cursor-help border-[#E3B341] bg-[#FDE9B8] text-[#7A4B00]'
+                                      : nos.length
+                                        ? 'cursor-help border-[#BFE3CB] bg-[#F4FBF6] text-[#0B6B45]'
+                                        : 'border-[#C3D2C6] text-[#8FA79B]'
                                   )}
                                 >
                                   {billTankers(row)}
@@ -8359,6 +8370,7 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
                                   <TooltipContent className="!max-w-none !bg-[#0A1F17] !p-0">
                                     <div className="border-b border-b-white/10 px-3 py-2 text-[9.5px] font-extrabold uppercase tracking-[.12em] text-[#8FBFA8]">
                                       {nos.length} tanker{nos.length === 1 ? '' : 's'} · {row.invoice_no || 'this invoice'}
+                                      {split && <span className="ml-1.5 text-[#F5C451]">· split</span>}
                                     </div>
                                     <div className="px-3 py-2">
                                       {nos.map((no, i) => (
@@ -8373,6 +8385,25 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
                                         </div>
                                       ))}
                                     </div>
+                                    {split && (
+                                      <div className="border-t border-t-white/10 px-3 py-2">
+                                        <div className="mb-1 text-[9.5px] font-extrabold uppercase tracking-[.12em] text-[#F5C451]">Also billed on</div>
+                                        {[...shared.entries()].map(([tno, others]) => (
+                                          <div key={tno} className="py-[3px]">
+                                            <div className="doc-ref whitespace-nowrap text-[11.5px] font-bold text-white">
+                                              {tno || 'Tanker'}
+                                              <span className="ml-1.5 font-semibold text-[#8FBFA8]">· {formatNum(others[0].mine)} MT here</span>
+                                            </div>
+                                            {others.map((o, k) => (
+                                              <div key={`${o.inv}-${k}`} className="doc-ref flex items-center gap-2 whitespace-nowrap pl-3 text-[12px] font-bold text-[#F5C451]">
+                                                ↳ {o.inv}
+                                                <span className="font-semibold text-[#8FBFA8]">{formatNum(o.qty)} MT</span>
+                                              </div>
+                                            ))}
+                                          </div>
+                                        ))}
+                                      </div>
+                                    )}
                                   </TooltipContent>
                                 </Tooltip>
                               )

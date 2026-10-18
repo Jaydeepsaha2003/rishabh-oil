@@ -405,6 +405,15 @@ export async function listOrders(forModule?: string): Promise<Row[]> {
            t.name AS transporter_name,
            (SELECT COUNT(*) FROM ${ALLOC} a WHERE a.order_id = o.id) AS tanker_count,
            (SELECT GROUP_CONCAT(pt.tanker_no, ', ') FROM ${ALLOC} a JOIN purchase_tankers pt ON pt.id = a.tanker_id WHERE a.order_id = o.id) AS tanker_nos,
+           -- A tanker split over several invoices: where ELSE each of this
+           -- invoice's tankers is billed — "tanker|invoice|qty|this qty" per
+           -- other invoice, ';;' between them — for the Tankers chip's hover.
+           (SELECT GROUP_CONCAT(COALESCE(pt.tanker_no, '') || '|' || COALESCE(o2.invoice_no, '#' || o2.id) || '|' || COALESCE(a2.qty, 0) || '|' || COALESCE(a.qty, 0), ';;')
+              FROM ${ALLOC} a
+              JOIN ${ALLOC} a2 ON a2.tanker_id = a.tanker_id AND a2.order_id <> a.order_id
+              JOIN orders o2 ON o2.id = a2.order_id
+              JOIN purchase_tankers pt ON pt.id = a.tanker_id
+             WHERE a.order_id = o.id) AS tanker_shared,
            -- How much of the tankers this invoice took — less than they loaded
            -- when a tanker is shared with another invoice.
            (SELECT COALESCE(SUM(a.qty), 0) FROM ${ALLOC} a WHERE a.order_id = o.id) AS tanker_booked_qty,
