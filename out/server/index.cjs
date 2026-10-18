@@ -3312,6 +3312,7 @@ var init_accessSections = __esm({
       { key: "accountsNotesReg", label: "Accounting \xB7 Dr / Cr Notes register" },
       { key: "accountsFrInward", label: "Accounting \xB7 Fr. Inward Working" },
       { key: "accountsFrOutward", label: "Accounting \xB7 Fr. Outward Working" },
+      { key: "accountsRcmReg", label: "Accounting \xB7 RCM Register" },
       { key: "accountsOpenings", label: "Accounting \xB7 Opening Balances" },
       { key: "accountsMasters", label: "Accounting \xB7 Masters (ledgers & groups)" },
       { key: "accountsTallyImport", label: "Accounting \xB7 Tally file updation" },
@@ -3676,6 +3677,9 @@ async function accountsRule(ns, op, args) {
     return section("accountsTallyImport", {
       action: ["preview", "salesCheck", "salesPreview", "registerCheck", "registerPreview", "bankSuggest", "bankCheck", "bankPreview", "health", "batches", "companyBanks", "drafts", "saveDraft", "clearDraft"].includes(op) ? "view" : "edit"
     });
+  }
+  if (ns === "tbill" && op === "postRcm") {
+    return section("accountsRcmReg", { action: "edit", table: "transporter_bills", dateCol: "bill_date" });
   }
   if (ns === "tbill" && (op === "create" || op === "update" || op === "delete")) {
     const stored = op === "create" ? null : await one("SELECT side FROM transporter_bills WHERE id = ?", a.id);
@@ -29271,7 +29275,11 @@ async function runStartupTasks() {
   for (const sql of [
     "ALTER TABLE transporters ADD COLUMN gst_registration TEXT",
     "ALTER TABLE transporter_bills ADD COLUMN others_amount REAL NOT NULL DEFAULT 0",
-    "ALTER TABLE transporter_bills ADD COLUMN others_ledger TEXT"
+    "ALTER TABLE transporter_bills ADD COLUMN others_ledger TEXT",
+    // RCM on an unregistered transporter's freight: the rate struck and the
+    // tax it came to (0 on every bill booked before RCM was posted).
+    "ALTER TABLE transporter_bills ADD COLUMN rcm_pct REAL NOT NULL DEFAULT 0",
+    "ALTER TABLE transporter_bills ADD COLUMN rcm_amount REAL NOT NULL DEFAULT 0"
   ]) {
     await getClient().execute(sql).catch((e) => {
       if (!/duplicate column/i.test(String(e.message))) console.error("[transporters] column failed:", e);
@@ -37994,6 +38002,17 @@ async function dropEntry3(entryId) {
   await c.execute({ sql: "DELETE FROM journal_lines WHERE entry_id = ?", args: [entryId] });
   await c.execute({ sql: "DELETE FROM journal_entries WHERE id = ?", args: [entryId] });
 }
+var RCM_DEFAULT_PCT = 5;
+function rcmJournalLines(pct, amount2) {
+  if (!(amount2 > 4e-3)) return [];
+  return [
+    ...gstLines({ side: "INPUT", pct, type: DEFAULT_GST_TYPE, dr: amount2 }).map((l) => ({ ...l, account: `RCM ${l.account}` })),
+    ...gstLines({ side: "OUTPUT", pct, type: DEFAULT_GST_TYPE, cr: amount2 }).map((l) => ({
+      ...l,
+      account: l.account.replace(/^OUTPUT /, "RCM PAYABLE ")
+    }))
+  ];
+}
 async function createTransporterBill(v, existingId) {
   const c = getClient();
   const cid = v.company_id ? n48(v.company_id) : getActiveCompanyId();
@@ -38038,6 +38057,8 @@ async function createTransporterBill(v, existingId) {
   if (taxable <= 0) throw new Error("The bill nets to zero or less \u2014 check the adjustment");
   const gstPct = reg === "unregistered" ? 0 : n48(v.gst_pct);
   const gst = round221(taxable * gstPct / 100);
+  const rcmPct = reg === "unregistered" ? v.rcm_pct == null || v.rcm_pct === "" ? RCM_DEFAULT_PCT : Math.max(0, n48(v.rcm_pct)) : 0;
+  const rcm = round221(taxable * rcmPct / 100);
   const tdsPct = n48(v.tds_pct);
   const tds = round221(taxable * tdsPct / 100);
   const othersAmt = round221(Math.max(0, n48(v.others_amount)));
@@ -38067,7 +38088,7 @@ async function createTransporterBill(v, existingId) {
     // record against); a registered one's stays in the purchase series.
     vchType: reg === "unregistered" ? "JOURNAL" : side === "purchase" ? "PURCHASE FREIGHT INWARD" : "PURCHASE FREIGHT OUTWARD",
     vchNo: billNo,
-    narration: `Transporter bill ${billNo || ""} \u2014 ${partyName2} (${side === "purchase" ? "inward" : "outward"} freight, ${picked.length} line${picked.length === 1 ? "" : "s"}` + (adjustment ? `, adjusted by ${adjustment > 0 ? "+" : ""}${adjustment.toFixed(2)}` : "") + ")" + (v.adjustment_note ? ` \u2014 ${String(v.adjustment_note).trim()}` : "") + (othersAmt > 4e-3 ? `; others ${othersAmt.toFixed(2)} recovered${v.others_note ? ` (${String(v.others_note).trim()})` : ""}` : "") + (reg === "unregistered" ? " \u2014 unregistered transporter, RCM applicable" : ""),
+    narration: `Transporter bill ${billNo || ""} \u2014 ${partyName2} (${side === "purchase" ? "inward" : "outward"} freight, ${picked.length} line${picked.length === 1 ? "" : "s"}` + (adjustment ? `, adjusted by ${adjustment > 0 ? "+" : ""}${adjustment.toFixed(2)}` : "") + ")" + (v.adjustment_note ? ` \u2014 ${String(v.adjustment_note).trim()}` : "") + (othersAmt > 4e-3 ? `; others ${othersAmt.toFixed(2)} recovered${v.others_note ? ` (${String(v.others_note).trim()})` : ""}` : "") + (reg === "unregistered" ? rcm > 4e-3 ? ` \u2014 unregistered transporter, RCM ${rcmPct}% ${rcm.toFixed(2)} booked` : " \u2014 unregistered transporter, RCM applicable" : ""),
     companyId: cid,
     lines: [
       { account: "FREIGHT PAYABLE A/C", group: "Current Liabilities", dr: accrued },
@@ -38084,6 +38105,7 @@ async function createTransporterBill(v, existingId) {
       // it splits into central and state tax rather than lumping a state tax
       // into the central one.
       ...gstLines({ side: "INPUT", pct: n48(v.gst_pct), type: DEFAULT_GST_TYPE, dr: gst }),
+      ...rcmJournalLines(rcmPct, rcm),
       { account: "ROUND OFF A/C", group: "Indirect Expenses", dr: roundOff > 0 ? roundOff : 0, cr: roundOff < 0 ? -roundOff : 0 },
       { account: "TDS PAYABLE A/C", group: "Duties & Taxes", cr: tds },
       ...othersLedger ? [{ account: othersLedger, group: othersLedger === frAccount ? "Direct Expenses" : "Indirect Incomes", cr: othersAmt }] : [],
@@ -38096,7 +38118,7 @@ async function createTransporterBill(v, existingId) {
       sql: `UPDATE transporter_bills SET transporter_id = ?, side = ?, bill_no = ?, bill_date = ?,
               taxable = ?, gst_pct = ?, gst_amount = ?, tds_pct = ?, tds_amount = ?, round_off = ?,
               total = ?, journal_entry_id = ?, note = ?, adjustment = ?, adjustment_note = ?,
-              others_amount = ?, others_ledger = ?
+              others_amount = ?, others_ledger = ?, rcm_pct = ?, rcm_amount = ?
             WHERE id = ? AND company_id = ?`,
       args: [
         transporterId,
@@ -38116,6 +38138,8 @@ async function createTransporterBill(v, existingId) {
         v.adjustment_note ? String(v.adjustment_note).trim() : null,
         othersAmt,
         othersLedger,
+        rcmPct,
+        rcm,
         existingId,
         cid
       ]
@@ -38126,8 +38150,8 @@ async function createTransporterBill(v, existingId) {
       sql: `INSERT INTO transporter_bills
               (company_id, transporter_id, side, bill_no, bill_date, taxable, gst_pct, gst_amount,
                tds_pct, tds_amount, round_off, total, journal_entry_id, note, adjustment, adjustment_note,
-               others_amount, others_ledger)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+               others_amount, others_ledger, rcm_pct, rcm_amount)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       args: [
         cid,
         transporterId,
@@ -38146,7 +38170,9 @@ async function createTransporterBill(v, existingId) {
         adjustment,
         v.adjustment_note ? String(v.adjustment_note).trim() : null,
         othersAmt,
-        othersLedger
+        othersLedger,
+        rcmPct,
+        rcm
       ]
     });
     billId = Number(ins.lastInsertRowid);
@@ -38285,6 +38311,62 @@ async function unraiseFreightShortageNote(lineId, companyId) {
   if (noteId != null) await deleteNote(n48(noteId), cid);
   await bumpRevision();
   return { id: n48(lineId) };
+}
+async function rcmRegister(opts = {}) {
+  const cid = opts.companyId ? n48(opts.companyId) : getActiveCompanyId();
+  const args = [cid];
+  const where = ["b.company_id = ?", "(b.rcm_amount > 0 OR COALESCE(t.gst_registration, '') = 'unregistered')"];
+  if (opts.from) {
+    where.push("b.bill_date >= ?");
+    args.push(String(opts.from).slice(0, 10));
+  }
+  if (opts.to) {
+    where.push("b.bill_date <= ?");
+    args.push(String(opts.to).slice(0, 10));
+  }
+  const res = await getClient().execute({
+    sql: `SELECT b.id, b.side, b.bill_no, b.bill_date, b.taxable, b.total, b.tds_amount, b.rcm_pct, b.rcm_amount,
+                 b.journal_entry_id, je.vch_type, je.vch_no, t.name AS transporter_name, t.gst_registration,
+                 (SELECT COUNT(*) FROM transporter_ledger l WHERE l.bill_id = b.id) AS line_count
+            FROM transporter_bills b
+            JOIN transporters t ON t.id = b.transporter_id
+            LEFT JOIN journal_entries je ON je.id = b.journal_entry_id
+           WHERE ${where.join(" AND ")}
+           ORDER BY b.bill_date, b.id`,
+    args
+  });
+  return toPlain37(res);
+}
+async function postBillRcm(billId, pct, companyId) {
+  const c = getClient();
+  const cid = companyId ? n48(companyId) : getActiveCompanyId();
+  const b = toPlain37(await c.execute({ sql: "SELECT * FROM transporter_bills WHERE id = ? AND company_id = ?", args: [n48(billId), cid] }))[0];
+  if (!b) throw new Error("That bill no longer exists");
+  if (await transporterRegistration(n48(b.transporter_id)) !== "unregistered") {
+    throw new Error("This transporter is GST registered \u2014 their bill carries GST, so there is no RCM to post");
+  }
+  if (n48(b.rcm_amount) > 4e-3) throw new Error("RCM is already posted on this bill");
+  const lines = toPlain37(await c.execute({ sql: "SELECT id FROM transporter_ledger WHERE bill_id = ?", args: [n48(billId)] }));
+  if (!lines.length) throw new Error("This bill has no freight lines left \u2014 delete and book it again");
+  return createTransporterBill(
+    {
+      company_id: cid,
+      transporter_id: b.transporter_id,
+      side: b.side,
+      bill_no: b.bill_no,
+      bill_date: b.bill_date,
+      gst_pct: 0,
+      tds_pct: b.tds_pct,
+      adjustment: b.adjustment,
+      adjustment_note: b.adjustment_note,
+      others_amount: b.others_amount,
+      others_ledger: b.others_ledger,
+      note: b.note,
+      rcm_pct: pct == null ? RCM_DEFAULT_PCT : n48(pct),
+      line_ids: lines.map((l) => n48(l.id))
+    },
+    n48(billId)
+  );
 }
 async function updateTransporterBill(id, v) {
   return createTransporterBill(v, n48(id));
@@ -38799,7 +38881,7 @@ async function recordAudit(channel, args, result) {
   );
 }
 function registerIpc() {
-  const READONLY = /:list$|:get$|:items$|:issuances$|:sheet$|:outstanding$|:all$|:summary$|:transfers$|:fyTaxable$|:needs$|:breakdown$|:nextNo$|:liveUsers$|:ips$|:logs$|:dispatchableSales$|:mine$|:pendingCount$|:pending$|:lots$|:unmapped$|:unmappedCount$|:bargainLines$|:bargainNotes$|:bargainInterest$|:consignmentDraws$|^access:heartbeat$|^db:ping$|^db:snapshot$|^app:revision$|^auth:login$|^journal:booksFrom$|^tally:map$|^journal:openings$|^journal:opening$|^journal:accounts$|^journal:statement$|^journal:trialBalance$|^journal:groups$|^journal:groupNames$|^journal:groupTree$|^journal:ledgerMap$|^journal:pendingRefs$|^journal:billsOutstanding$|^journal:tradingAccount$|^dashboard:stats$|^vouchers:nextCode$|^vouchers:forDocument$|^vouchers:alterInfo$|^tfreight:kpis$|^dashboard:position$|^dashboard:layout$|^dashboard:saveLayout$|^productMerge:preview$|^skuRates:parties$|^skuRates:partyCounts$|^consignment:openingLog$|^tags:list$|^tags:for$|^tags:contents$|^consignment:openingLots$|^consignment:invoices$|^tankers:quality$|^tankers:qualityMany$|^tankers:ffaHistory$|^orders:quality$|^gate:partyCategories$|^gate:waivedOuts$|^gate:forRecord$|^notify:rules$|^notify:list$|^notify:run$|^notify:preview$|^notify:people$|^notify:mutes$|^treasury:alerts$|^treasury:paymentTracker$|^facility:exposures$|^facility:headroom$|^company:setActive$|^company:getActive$|^factory:active$|^factory:companies$|^session:setUser$|^lc:repayments$|^lc:parts$|^lc:parts$|^lc:allRepayments$|^lc:getLimit$|^lc:bankLimits$|^lc:paymentIns$|^lc:openTradingInvoices$|^files:pickDocument$|^files:openDocument$|^bankRecon:imports$|^bankRecon:list$|^bankRecon:suggest$|^bd:kpis$|^bd:limits$|^skuStock:adjustments$|^skuOpening:list$|^skuOpening:date$|^stockCount:previous$|^orders:intercompanySource$|^stockOpening:list$|^stockOpening:date$|^stockOpening:sets$|^stockOpening:setLines$|^stockOpening:ppStages$|^stockOpening:ppFreeTotals$|^production:ppDraws$|^bargains:linkedInvoices$|^bargains:linkedVouchers$|^bargains:voucherChoices$|^salesBargains:linkedVouchers$|^salesBargains:voucherChoices$|^bargains:adjustments$|^history:list$|^stockOpening:ppVessels$|^stockOpening:ppReceivers$|^stockOpening:ppWriteoffs$|^work:board$|^work:cutoff$|^work:processes$|^formulationSubcategory:list$|^formulations:versions$|^facility:limitHistory$|^bd:limitReductions$|^bd:allRepayments$|^bd:interestSchedule$|^bd:interestWindow$|^bd:interestPayments$|^bd:linkedOrders$|^bd:parties$|^bd:allParties$|^bd:openTradingInvoices$|^bd:paymentIns$|^bd:partyPayments$|^bd:receiptParts$|^access:entryWindows$|^access:entityHistory$|^trading:list$|^sales:series$|^sales:invoiceGaps$|^salesBargains:returns$|^salesBargains:linkedInvoices$|^salesBargains:unattributedReturns$|^tbill:orphans$|^production:report$|^production:mix$|^repairs:splitTanker:list$|^vouchers:cashflow$|^repairs:paisa:list$|^tallyNotes:(preview|salesCheck|salesPreview|registerCheck|registerPreview|health|batches|companyBanks|bankSuggest|bankCheck|bankPreview|drafts|bankBooks|bankBook)$/;
+  const READONLY = /:list$|:get$|:items$|:issuances$|:sheet$|:outstanding$|:all$|:summary$|:transfers$|:fyTaxable$|:needs$|:breakdown$|:nextNo$|:liveUsers$|:ips$|:logs$|:dispatchableSales$|:mine$|:pendingCount$|:pending$|:lots$|:unmapped$|:unmappedCount$|:bargainLines$|:bargainNotes$|:bargainInterest$|:consignmentDraws$|^access:heartbeat$|^db:ping$|^db:snapshot$|^app:revision$|^auth:login$|^journal:booksFrom$|^tally:map$|^journal:openings$|^journal:opening$|^journal:accounts$|^journal:statement$|^journal:trialBalance$|^journal:groups$|^journal:groupNames$|^journal:groupTree$|^journal:ledgerMap$|^journal:pendingRefs$|^journal:billsOutstanding$|^journal:tradingAccount$|^dashboard:stats$|^vouchers:nextCode$|^vouchers:forDocument$|^vouchers:alterInfo$|^tfreight:kpis$|^dashboard:position$|^dashboard:layout$|^dashboard:saveLayout$|^productMerge:preview$|^skuRates:parties$|^skuRates:partyCounts$|^consignment:openingLog$|^tags:list$|^tags:for$|^tags:contents$|^consignment:openingLots$|^consignment:invoices$|^tankers:quality$|^tankers:qualityMany$|^tankers:ffaHistory$|^orders:quality$|^gate:partyCategories$|^gate:waivedOuts$|^gate:forRecord$|^notify:rules$|^notify:list$|^notify:run$|^notify:preview$|^notify:people$|^notify:mutes$|^treasury:alerts$|^treasury:paymentTracker$|^facility:exposures$|^facility:headroom$|^company:setActive$|^company:getActive$|^factory:active$|^factory:companies$|^session:setUser$|^lc:repayments$|^lc:parts$|^lc:parts$|^lc:allRepayments$|^lc:getLimit$|^lc:bankLimits$|^lc:paymentIns$|^lc:openTradingInvoices$|^files:pickDocument$|^files:openDocument$|^bankRecon:imports$|^bankRecon:list$|^bankRecon:suggest$|^bd:kpis$|^bd:limits$|^skuStock:adjustments$|^skuOpening:list$|^skuOpening:date$|^stockCount:previous$|^orders:intercompanySource$|^stockOpening:list$|^stockOpening:date$|^stockOpening:sets$|^stockOpening:setLines$|^stockOpening:ppStages$|^stockOpening:ppFreeTotals$|^production:ppDraws$|^bargains:linkedInvoices$|^bargains:linkedVouchers$|^bargains:voucherChoices$|^salesBargains:linkedVouchers$|^salesBargains:voucherChoices$|^bargains:adjustments$|^history:list$|^stockOpening:ppVessels$|^stockOpening:ppReceivers$|^stockOpening:ppWriteoffs$|^work:board$|^work:cutoff$|^work:processes$|^formulationSubcategory:list$|^formulations:versions$|^facility:limitHistory$|^bd:limitReductions$|^bd:allRepayments$|^bd:interestSchedule$|^bd:interestWindow$|^bd:interestPayments$|^bd:linkedOrders$|^bd:parties$|^bd:allParties$|^bd:openTradingInvoices$|^bd:paymentIns$|^bd:partyPayments$|^bd:receiptParts$|^access:entryWindows$|^access:entityHistory$|^trading:list$|^sales:series$|^sales:invoiceGaps$|^salesBargains:returns$|^salesBargains:linkedInvoices$|^salesBargains:unattributedReturns$|^tbill:orphans$|^tbill:rcmRegister$|^production:report$|^production:mix$|^repairs:splitTanker:list$|^vouchers:cashflow$|^repairs:paisa:list$|^tallyNotes:(preview|salesCheck|salesPreview|registerCheck|registerPreview|health|batches|companyBanks|bankSuggest|bankCheck|bankPreview|drafts|bankBooks|bankBook)$/;
   const AUDIT_SKIP = /* @__PURE__ */ new Set(["config:get", "config:save", "session:setUser"]);
   const handle = (channel, fn) => {
     ipcMain.handle(channel, async (e, args) => {
@@ -39513,6 +39595,8 @@ function registerIpc() {
   );
   handle("tbill:list", (_e, a = {}) => listTransporterBills(a?.companyId));
   handle("tbill:create", (_e, { values }) => createTransporterBill(values));
+  handle("tbill:rcmRegister", (_e, a = {}) => rcmRegister(a));
+  handle("tbill:postRcm", (_e, a) => postBillRcm(a.id, a.pct, a.companyId));
   handle(
     "tfreight:raiseNote",
     (_e, { lineId, date, companyId }) => raiseFreightShortageNote(lineId, { date, companyId })
