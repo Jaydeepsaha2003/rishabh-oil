@@ -1891,6 +1891,8 @@ export function Accounts({
   const [tfBillRow, setTfBillRow] = useState(0)
   const [tfBillWise, setTfBillWise] = useState<Record<string, Row[]>>({})
   const [tfBill, setTfBill] = useState<Row>({ bill_no: '', bill_date: todayISO(), gst_pct: '5', tds_pct: '', adjustment: '', adjustment_note: '', note: '', others_amount: '', others_ledger: '', others_note: '', rcm_pct: '5' })
+  // The bill's deductions — as many as it has, each to its own ledger.
+  const [tfDeds, setTfDeds] = useState<{ amount: string; ledger: string; note: string }[]>([])
   const [tfSaving, setTfSaving] = useState(false)
   const [nrFrom, setNrFrom] = useState(() => regBack.current?.nrFrom ?? '')
   const [nrTo, setNrTo] = useState(() => regBack.current?.nrTo ?? '')
@@ -7435,6 +7437,36 @@ export function Accounts({
   // The transporter's GST registration decides the bill: registered carries
   // GST, unregistered none (reverse charge) and is booked as a JV.
   const tfUnreg = String(tfPickedRows[0]?.gst_registration || '') === 'unregistered'
+  // ONE TANKER, ITS FREIGHT AND ITS SHORTAGE. The register keeps them as two
+  // lines (the shortage has its own note / write-off); these put them back
+  // together for the Freight | Oil shortage | Net payable columns.
+  const tfTankerKey = (r: Row): string => {
+    if (r.sale_id) return `s${Number(r.sale_id)}`
+    const veh = /^Tanker\s+([^:]+):/i.exec(String(r.note || ''))?.[1] || String(r.vehicle_no || '')
+    return `o${Number(r.order_id) || 0}|${veh.trim().toUpperCase()}`
+  }
+  // What a shortage line costs the transporter with the oil's GST: an
+  // unregistered one's amount already carries it; a registered one's is the
+  // oil value and its debit note adds the GST.
+  const tfShortGst = (r: Row): number =>
+    String(r.gst_registration || '') === 'unregistered' ? 0 : Math.round(Math.abs(Number(r.amount) || 0) * (Number(r.oil_gst_pct) || 0)) / 100
+  const tfByTanker = useMemo(() => {
+    const m = new Map<string, { freight: number; short: number; shortGst: number }>()
+    for (const r of tfRows) {
+      const k = tfTankerKey(r)
+      const x = m.get(k) || { freight: 0, short: 0, shortGst: 0 }
+      if (String(r.entry_type) === 'shortage_penalty') {
+        // Written off: nothing comes off the transporter.
+        if (r.waived_at == null) {
+          x.short += Math.abs(Number(r.amount) || 0)
+          x.shortGst += tfShortGst(r)
+        }
+      } else x.freight += Number(r.amount) || 0
+      m.set(k, x)
+    }
+    return m
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tfRows])
   const tfBillCalc = (() => {
     const lines = Math.round(tfPickedTotal * 100) / 100
     // What the transporter actually billed, over or under the tanker lines.
@@ -7443,8 +7475,8 @@ export function Accounts({
     const gstPct = tfUnreg ? 0 : Number(tfBill.gst_pct) || 0
     const gst = Math.round(taxable * gstPct) / 100
     const tds = Math.round(taxable * (Number(tfBill.tds_pct) || 0)) / 100
-    // Others: recovered on the bill, off what the transporter is paid.
-    const others = Math.max(0, Math.round((Number(tfBill.others_amount) || 0) * 100) / 100)
+    // Deductions: recovered on the bill, off what the transporter is paid.
+    const others = Math.round(tfDeds.reduce((t, d) => t + Math.max(0, Number(d.amount) || 0), 0) * 100) / 100
     const raw = Math.round((taxable + gst - tds - others) * 100) / 100
     const total = Math.round(raw)
     // RCM: the tax WE owe on an unregistered transporter's freight — booked
@@ -7490,9 +7522,9 @@ export function Accounts({
         tds_pct: Number(tfBill.tds_pct) || 0,
         adjustment: Number(tfBill.adjustment) || 0,
         adjustment_note: tfBill.adjustment_note || null,
-        others_amount: tfBillCalc.others,
-        others_ledger: String(tfBill.others_ledger || '').trim() || null,
-        others_note: String(tfBill.others_note || '').trim() || null,
+        deductions: tfDeds
+          .filter((d) => (Number(d.amount) || 0) > 0)
+          .map((d) => ({ amount: Number(d.amount) || 0, ledger: d.ledger.trim() || null, note: d.note.trim() || null })),
         note: tfBill.note || null,
         rcm_pct: tfBillCalc.rcmPct,
         line_ids: tfPickedRows.map((r) => Number(r.id))
@@ -7501,6 +7533,7 @@ export function Accounts({
       setTfBillOpen(false)
       setTfPicked([])
       setTfBill({ bill_no: '', bill_date: todayISO(), gst_pct: '5', tds_pct: '', adjustment: '', adjustment_note: '', note: '', others_amount: '', others_ledger: '', others_note: '', rcm_pct: '5' })
+      setTfDeds([])
       await loadTFreight()
       loadAccounts()
     } catch (e) {
@@ -7904,8 +7937,10 @@ export function Accounts({
       }
       if (Math.abs(c.ro) > 0.004) jr.push({ side: c.ro > 0 ? 'Dr' : 'Cr', ledger: tfPostedName('ROUND OFF A/C'), amount: Math.abs(c.ro) })
       if (c.tds > 0.004) jr.push({ side: 'Cr', ledger: tfPostedName('TDS PAYABLE A/C'), amount: c.tds })
-      if (c.others > 0.004)
-        jr.push({ side: 'Cr', ledger: String(tfBill.others_ledger || '').trim().toUpperCase() || frLedger, amount: c.others })
+      for (const d of tfDeds) {
+        const a = Math.max(0, Number(d.amount) || 0)
+        if (a > 0.004) jr.push({ side: 'Cr', ledger: d.ledger.trim().toUpperCase() || frLedger, amount: a })
+      }
       jr.push({ side: 'Cr', ledger: party, amount: c.total })
       if (c.total <= 0) need.push('less in Others than the bill comes to')
       const estimated = tfPickedRows.filter((r) => n(r.provisional) === 1).length
@@ -7963,29 +7998,58 @@ export function Accounts({
                 {tfPickedRows.length}
               </span>
             </div>
-            {tfPickedRows.map((r) => {
-              const short = String(r.entry_type) === 'shortage_penalty'
-              const sm = /shortage\s+([\d.]+)\s*MT/i.exec(String(r.note || ''))
-              const qq = short ? Number(sm?.[1]) || 0 : n(r.provisional) === 1 ? n(r.dispatch_qty) : n(r.received_qty) || n(r.dispatch_qty)
-              const rate = qq > 0 ? Math.abs(n(r.amount)) / qq : 0
-              return (
-                <div key={String(r.id)} className="flex items-center gap-2.5" style={{ padding: '9px 13px', borderBottom: '1px solid #EFF3EE' }}>
-                  <div className="min-w-0 flex-1">
-                    <div className="truncate" style={{ fontSize: 11.5, fontWeight: 700 }}>
-                      <span style={{ fontFamily: MONO }}>{String(r.vehicle_no || '—')}</span> · {String(r.doc_no || '')}
-                      {r.party_name ? ` · ${String(r.party_name)}` : ''}
+            <div
+              className="grid items-center"
+              style={{ gridTemplateColumns: '1fr 104px 112px 112px', padding: '6px 13px', borderBottom: '1px solid #EAF0E9', fontSize: 9.5, fontWeight: 800, letterSpacing: '.1em', textTransform: 'uppercase', color: A.muted }}
+            >
+              <span>Tanker</span>
+              <span style={{ textAlign: 'right' }}>Freight</span>
+              <span style={{ textAlign: 'right' }}>Oil shortage</span>
+              <span style={{ textAlign: 'right' }}>Net payable</span>
+            </div>
+            {(() => {
+              // The picked lines, a tanker each; a registered transporter's
+              // shortage is not on the bill (its debit note claims it) but is
+              // shown beside the freight it came off.
+              const keys = [...new Set(tfPickedRows.map(tfTankerKey))]
+              return keys.map((k) => {
+                const mine = tfPickedRows.filter((r) => tfTankerKey(r) === k)
+                const head = mine.find((r) => String(r.entry_type) !== 'shortage_penalty') || mine[0]
+                const fr = mine.filter((r) => String(r.entry_type) !== 'shortage_penalty').reduce((t, r) => t + n(r.amount), 0)
+                const pickedShort = mine.filter((r) => String(r.entry_type) === 'shortage_penalty').reduce((t, r) => t + Math.abs(n(r.amount)), 0)
+                const all = tfByTanker.get(k)
+                const reg = String(head.gst_registration || '') !== 'unregistered'
+                const sh = reg ? all?.short || 0 : pickedShort
+                const shGst = reg ? all?.shortGst || 0 : 0
+                const qq = n(head.provisional) === 1 ? n(head.dispatch_qty) : n(head.received_qty) || n(head.dispatch_qty)
+                const net = fr - sh - shGst
+                return (
+                  <div key={k} className="grid items-center" style={{ gridTemplateColumns: '1fr 104px 112px 112px', padding: '9px 13px', borderBottom: '1px solid #EFF3EE' }}>
+                    <div className="min-w-0">
+                      <div className="truncate" style={{ fontSize: 11.5, fontWeight: 700 }}>
+                        <span style={{ fontFamily: MONO }}>{String(head.vehicle_no || '—')}</span> · {String(head.doc_no || '')}
+                        {head.party_name ? ` · ${String(head.party_name)}` : ''}
+                      </div>
+                      <div style={{ fontFamily: MONO, fontVariantNumeric: FIGS, fontSize: 10.5, fontWeight: 600, color: A.muted, marginTop: 2 }}>
+                        {qq > 0 && fr ? `${q3(qq)} MT × ${formatINR(fr / qq)}` : 'freight'}
+                        {n(head.provisional) === 1 ? ' · estimated' : ''}
+                      </div>
                     </div>
-                    <div style={{ fontFamily: MONO, fontVariantNumeric: FIGS, fontSize: 10.5, fontWeight: 600, color: A.muted, marginTop: 2 }}>
-                      {qq > 0 ? `${q3(qq)} MT${short ? ' short' : ''} × ${formatINR(rate)}` : short ? 'oil shortage' : 'freight'}
-                      {n(r.provisional) === 1 ? ' · estimated' : ''}
-                    </div>
+                    <span style={{ textAlign: 'right', fontFamily: MONO, fontVariantNumeric: FIGS, fontSize: 12, fontWeight: 700 }}>{fr ? money(fr) : '—'}</span>
+                    <span style={{ textAlign: 'right', fontFamily: MONO, fontVariantNumeric: FIGS, fontSize: 12, fontWeight: 700, color: sh ? A.cr : A.none }}>
+                      {sh ? `−${formatINR(sh)}` : '—'}
+                      {reg && sh > 0 && (
+                        <span className="block" style={{ fontSize: 9.5, fontWeight: 600, color: A.muted }} title="Claimed on its debit note, which adds the oil's GST">
+                          + GST {formatINR(shGst)} on DN
+                        </span>
+                      )}
+                      {!reg && sh > 0 && <span className="block" style={{ fontSize: 9.5, fontWeight: 600, color: A.muted }}>incl. oil GST</span>}
+                    </span>
+                    <span style={{ textAlign: 'right', fontFamily: MONO, fontVariantNumeric: FIGS, fontSize: 12.5, fontWeight: 800, color: A.ink }}>{money(net)}</span>
                   </div>
-                  <span className="whitespace-nowrap" style={{ fontFamily: MONO, fontVariantNumeric: FIGS, fontSize: 12, fontWeight: 700, color: n(r.amount) < 0 ? A.cr : A.ink }}>
-                    {money(n(r.amount))}
-                  </span>
-                </div>
-              )
-            })}
+                )
+              })
+            })()}
           </div>
 
           <div className="grid flex-none gap-3" style={{ gridTemplateColumns: '1fr 1.4fr' }}>
@@ -8034,44 +8098,62 @@ export function Accounts({
               </div>
             </div>
           )}
-          <div className="grid flex-none gap-3" style={{ gridTemplateColumns: '1fr 1.4fr' }}>
-            <div>
-              {label('Others ₹ (deduct)')}
-              <input
-                type="number"
-                value={String(tfBill.others_amount ?? '')}
-                onChange={(e) => setTfBill((p) => ({ ...p, others_amount: e.target.value }))}
-                placeholder="0.00"
-                style={{ ...field, fontFamily: MONO, textAlign: 'right', border: '1px solid #C3D2C6' }}
-              />
+          {/* DEDUCTIONS — any number, each to its own ledger. */}
+          <div className="flex-none overflow-hidden rounded-[10px] bg-white" style={{ border: '1px solid #DCE7DB' }}>
+            <div className="flex items-center gap-2" style={{ padding: '9px 13px', borderBottom: tfDeds.length ? '1px solid #EAF0E9' : 'none' }}>
+              <span style={{ fontSize: 10, fontWeight: 800, letterSpacing: '.12em', textTransform: 'uppercase', color: A.muted }}>Deductions</span>
+              {c.others > 0.004 && (
+                <span style={{ fontFamily: MONO, fontVariantNumeric: FIGS, fontSize: 11, fontWeight: 700, color: A.cr }}>−{formatINR(c.others)}</span>
+              )}
+              <button
+                type="button"
+                onClick={() => setTfDeds((p) => [...p, { amount: '', ledger: '', note: '' }])}
+                className="ml-auto flex h-7 items-center gap-1 rounded-[6px] px-2.5"
+                style={{ border: '1px solid #C3D2C6', background: '#fff', fontSize: 11, fontWeight: 800, color: A.frame }}
+              >
+                <Plus className="h-3.5 w-3.5" /> Add deduction
+              </button>
             </div>
-            <div>
-              {label('Credit to ledger')}
-              <input
-                list="tf-others-ledgers"
-                value={String(tfBill.others_ledger ?? '')}
-                onChange={(e) => setTfBill((p) => ({ ...p, others_ledger: e.target.value }))}
-                placeholder={inward ? 'FREIGHT INWARD A/C' : 'FREIGHT OUTWARD A/C'}
-                style={{ ...field, fontWeight: 600, border: '1px solid #C3D2C6' }}
-              />
-              <datalist id="tf-others-ledgers">
-                {(accounts as Row[]).slice(0, 400).map((a) => (
-                  <option key={String(a.id)} value={String(a.name)} />
-                ))}
-              </datalist>
-            </div>
+            {tfDeds.map((d, k) => (
+              <div key={k} className="grid items-center gap-2" style={{ gridTemplateColumns: '120px 1fr 1.2fr 28px', padding: '8px 13px', borderBottom: '1px solid #EFF3EE' }}>
+                <input
+                  type="number"
+                  value={d.amount}
+                  onChange={(e) => setTfDeds((p) => p.map((x, j) => (j === k ? { ...x, amount: e.target.value } : x)))}
+                  placeholder="0.00"
+                  style={{ ...field, fontFamily: MONO, textAlign: 'right', border: '1px solid #C3D2C6' }}
+                />
+                <input
+                  value={d.note}
+                  onChange={(e) => setTfDeds((p) => p.map((x, j) => (j === k ? { ...x, note: e.target.value } : x)))}
+                  placeholder="Detention, damage, short drum…"
+                  style={{ ...field, fontWeight: 600, border: '1px solid #C3D2C6' }}
+                />
+                <input
+                  list="tf-others-ledgers"
+                  value={d.ledger}
+                  onChange={(e) => setTfDeds((p) => p.map((x, j) => (j === k ? { ...x, ledger: e.target.value } : x)))}
+                  placeholder={inward ? 'FREIGHT INWARD A/C' : 'FREIGHT OUTWARD A/C'}
+                  title="The ledger this deduction is credited to"
+                  style={{ ...field, fontWeight: 600, border: '1px solid #C3D2C6' }}
+                />
+                <button
+                  type="button"
+                  title="Remove this deduction"
+                  onClick={() => setTfDeds((p) => p.filter((_, j) => j !== k))}
+                  className="flex h-7 w-7 items-center justify-center rounded-[6px]"
+                  style={{ color: A.bad }}
+                >
+                  <X className="h-4 w-4" />
+                </button>
+              </div>
+            ))}
+            <datalist id="tf-others-ledgers">
+              {(accounts as Row[]).slice(0, 400).map((a) => (
+                <option key={String(a.id)} value={String(a.name)} />
+              ))}
+            </datalist>
           </div>
-          {Number(tfBill.others_amount) > 0 && (
-            <div className="flex-none">
-              {label('What the others are for')}
-              <input
-                value={String(tfBill.others_note ?? '')}
-                onChange={(e) => setTfBill((p) => ({ ...p, others_note: e.target.value }))}
-                placeholder="Damage, detention, short-loaded drum…"
-                style={{ ...field, fontWeight: 600, border: '1px solid #C3D2C6' }}
-              />
-            </div>
-          )}
           <div className="flex-none">
             {label('Note')}
             <input
@@ -8278,7 +8360,7 @@ export function Accounts({
     const est = sum(tfRows.filter((r) => !bookedOf(r) && !settledOf(r) && !weighedOf(r)))
     const trBase = tfRows.filter((r) => stateOk(r, tfState) && matchQ(r))
     const trList = Array.from(new Set(tfRows.map((r) => String(r.transporter_name || '')).filter(Boolean))).sort()
-    const GRID = '40px minmax(230px,1.1fr) 124px 150px minmax(200px,1.4fr) 110px 120px 140px 110px 230px'
+    const GRID = '40px minmax(230px,1.1fr) 124px 150px minmax(200px,1.4fr) 110px 120px 130px 130px 140px 110px 230px'
     const bodyPad = W >= 1400 ? '16px 20px' : '12px 14px'
     const cap: React.CSSProperties = { fontSize: 9.5, fontWeight: 800, letterSpacing: '.12em', textTransform: 'uppercase' }
     const mono: React.CSSProperties = { fontFamily: MONO, fontVariantNumeric: FIGS }
@@ -8663,7 +8745,7 @@ export function Accounts({
             </div>
 
             <div className="sc min-h-0 flex-1 overflow-auto">
-              <div style={{ minWidth: 1350 }}>
+              <div style={{ minWidth: 1610 }}>
                 <div
                   className="sticky top-0 z-[2] grid items-center"
                   style={{
@@ -8682,6 +8764,8 @@ export function Accounts({
                   <span style={{ padding: '0 10px', display: 'flex', justifyContent: 'flex-end' }}>{tfCf.head('qty', 'Qty MT', { onDark: true, align: 'end' })}</span>
                   <span style={{ padding: '0 10px', display: 'flex', justifyContent: 'flex-end' }}>{tfCf.head('rate', 'Rate', { onDark: true, align: 'end' })}</span>
                   <span style={{ padding: '0 10px', display: 'flex', justifyContent: 'flex-end' }}>{tfCf.head('freight', 'Freight', { onDark: true, align: 'end' })}</span>
+                  <span style={{ padding: '0 10px', textAlign: 'right' }}>Oil shortage</span>
+                  <span style={{ padding: '0 10px', textAlign: 'right' }}>Net payable</span>
                   <span style={{ padding: '0 10px' }}>{tfCf.head('basis', 'Basis', { onDark: true })}</span>
                   <span style={{ padding: '0 12px' }}>{tfCf.head('bill', 'Bill', { onDark: true })}</span>
                 </div>
@@ -8777,9 +8861,43 @@ export function Accounts({
                         <span style={{ padding: '0 10px', textAlign: 'right', ...mono, fontSize: 11.5, fontWeight: 600, color: qq > 0 ? A.muted : A.none }}>
                           {qq > 0 ? `${formatINR(rateOf(r))}${short ? '/MT' : ''}` : '—'}
                         </span>
-                        <span className="whitespace-nowrap" style={{ padding: '0 10px', textAlign: 'right', ...mono, fontSize: 12.5, fontWeight: 700, color: amt < 0 ? A.cr : A.ink }}>
-                          {money(amt)}
-                        </span>
+                        {/* Freight | Oil shortage | Net payable, a tanker at a
+                            time: the freight line carries the tanker's three
+                            figures; its shortage line shows what it is. */}
+                        {(() => {
+                          const tk = tfByTanker.get(tfTankerKey(r))
+                          const cell = (v: React.ReactNode, color: string, bold = 700): React.JSX.Element => (
+                            <span className="whitespace-nowrap" style={{ padding: '0 10px', textAlign: 'right', ...mono, fontSize: 12.5, fontWeight: bold, color }}>
+                              {v}
+                            </span>
+                          )
+                          if (short) {
+                            const g = tfShortGst(r)
+                            return (
+                              <>
+                                {cell('—', A.none)}
+                                <span className="whitespace-nowrap" style={{ padding: '0 10px', textAlign: 'right', ...mono, fontSize: 12.5, fontWeight: 700, color: r.waived_at != null ? A.none : A.cr }}>
+                                  {money(amt)}
+                                  {!unreg && (
+                                    <span className="block" style={{ fontSize: 9.5, fontWeight: 600, color: A.muted }} title="The oil's value; the debit note adds its GST">
+                                      + GST {formatINR(g)} on DN
+                                    </span>
+                                  )}
+                                  {unreg && <span className="block" style={{ fontSize: 9.5, fontWeight: 600, color: A.muted }}>incl. oil GST</span>}
+                                </span>
+                                {cell('—', A.none)}
+                              </>
+                            )
+                          }
+                          const sh = (tk?.short || 0) + (tk?.shortGst || 0)
+                          return (
+                            <>
+                              {cell(money(amt), amt < 0 ? A.cr : A.ink)}
+                              {cell(sh > 0.004 ? `−${formatINR(sh)}` : '—', sh > 0.004 ? A.cr : A.none)}
+                              {cell(money(amt - sh), A.ink, 800)}
+                            </>
+                          )
+                        })()}
                         <div style={{ padding: '0 10px' }}>
                           <span
                             title={

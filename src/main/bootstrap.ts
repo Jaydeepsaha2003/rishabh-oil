@@ -1071,7 +1071,11 @@ export async function runStartupTasks(): Promise<void> {
     // RCM on an unregistered transporter's freight: the rate struck and the
     // tax it came to (0 on every bill booked before RCM was posted).
     'ALTER TABLE transporter_bills ADD COLUMN rcm_pct REAL NOT NULL DEFAULT 0',
-    'ALTER TABLE transporter_bills ADD COLUMN rcm_amount REAL NOT NULL DEFAULT 0'
+    'ALTER TABLE transporter_bills ADD COLUMN rcm_amount REAL NOT NULL DEFAULT 0',
+    // Several deductions on one bill (detention, damage, …): a JSON list of
+    // { amount, ledger, note }. NULL on every bill booked before — those keep
+    // their single others_amount / others_ledger.
+    'ALTER TABLE transporter_bills ADD COLUMN deductions_json TEXT'
   ]) {
     await getClient()
       .execute(sql)

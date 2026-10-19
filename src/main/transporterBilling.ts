@@ -112,7 +112,7 @@ export async function listTransporterFreight(
          LEFT JOIN gate_entries gv ON gv.id = go2.ge_id`
 
   const res = await c.execute({
-    sql: `SELECT l.id, l.transporter_id, l.entry_date, l.entry_type, l.amount, l.note,
+    sql: `SELECT l.id, l.transporter_id, l.order_id, l.sale_id, l.entry_date, l.entry_type, l.amount, l.note,
                  l.accrued, l.bill_id, l.note_id, l.waived_at, l.waived_by, l.waived_reason,
                  nt.note_no, nt.note_date,
                  t.name AS transporter_name, COALESCE(t.gst_registration, 'registered') AS gst_registration,
@@ -308,9 +308,26 @@ export async function createTransporterBill(v: Row, existingId?: number): Promis
   // OTHERS: anything else recovered on this bill — damage, detention, a
   // short-loaded drum — taken off what the transporter is paid and credited to
   // the ledger named. It is not freight, so it leaves the GST and TDS alone.
-  const othersAmt = round2(Math.max(0, n(v.others_amount)))
   const frAccount = side === 'purchase' ? 'FREIGHT INWARD A/C' : 'FREIGHT OUTWARD A/C'
-  const othersLedger = othersAmt > 0.004 ? (String(v.others_ledger || '').trim() || frAccount).toUpperCase() : null
+  // AS MANY DEDUCTIONS AS THE BILL HAS — detention, damage, a short drum —
+  // each its own JV line on the ledger it names (freight by default). The
+  // single Others of a bill booked before reads as a list of one.
+  const deductions = (
+    Array.isArray(v.deductions)
+      ? (v.deductions as Row[])
+      : n(v.others_amount) > 0.004
+        ? [{ amount: v.others_amount, ledger: v.others_ledger, note: v.others_note }]
+        : []
+  )
+    .map((d) => ({
+      amount: round2(Math.max(0, n(d.amount))),
+      ledger: (String(d.ledger || '').trim() || frAccount).toUpperCase(),
+      note: String(d.note || '').trim()
+    }))
+    .filter((d) => d.amount > 0.004)
+  const othersAmt = round2(deductions.reduce((t, d) => t + d.amount, 0))
+  // The first deduction's ledger, kept on the bill row as before.
+  const othersLedger = deductions.length ? deductions[0].ledger : null
   const raw = round2(taxable + gst - tds - othersAmt)
   if (raw <= 0) throw new Error('After the deductions nothing is left to pay the transporter — check the Others amount')
   const total = Math.round(raw)
@@ -348,7 +365,9 @@ export async function createTransporterBill(v: Row, existingId?: number): Promis
       (adjustment ? `, adjusted by ${adjustment > 0 ? '+' : ''}${adjustment.toFixed(2)}` : '') +
       ')' +
       (v.adjustment_note ? ` — ${String(v.adjustment_note).trim()}` : '') +
-      (othersAmt > 0.004 ? `; others ${othersAmt.toFixed(2)} recovered${v.others_note ? ` (${String(v.others_note).trim()})` : ''}` : '') +
+      (deductions.length
+        ? `; deducted ${deductions.map((d) => `${d.amount.toFixed(2)}${d.note ? ` ${d.note}` : ''}`).join(', ')}`
+        : '') +
       (reg === 'unregistered'
         ? rcm > 0.004
           ? ` — unregistered transporter, RCM ${rcmPct}% ${rcm.toFixed(2)} booked`
@@ -373,9 +392,7 @@ export async function createTransporterBill(v: Row, existingId?: number): Promis
       ...rcmJournalLines(rcmPct, rcm),
       { account: 'ROUND OFF A/C', group: 'Indirect Expenses', dr: roundOff > 0 ? roundOff : 0, cr: roundOff < 0 ? -roundOff : 0 },
       { account: 'TDS PAYABLE A/C', group: 'Duties & Taxes', cr: tds },
-      ...(othersLedger
-        ? [{ account: othersLedger, group: othersLedger === frAccount ? 'Direct Expenses' : 'Indirect Incomes', cr: othersAmt }]
-        : []),
+      ...deductions.map((d) => ({ account: d.ledger, group: d.ledger === frAccount ? 'Direct Expenses' : 'Indirect Incomes', cr: d.amount })),
       { account: partyName, group: 'Sundry Creditors', cr: total }
     ]
   })
@@ -386,11 +403,11 @@ export async function createTransporterBill(v: Row, existingId?: number): Promis
       sql: `UPDATE transporter_bills SET transporter_id = ?, side = ?, bill_no = ?, bill_date = ?,
               taxable = ?, gst_pct = ?, gst_amount = ?, tds_pct = ?, tds_amount = ?, round_off = ?,
               total = ?, journal_entry_id = ?, note = ?, adjustment = ?, adjustment_note = ?,
-              others_amount = ?, others_ledger = ?, rcm_pct = ?, rcm_amount = ?
+              others_amount = ?, others_ledger = ?, rcm_pct = ?, rcm_amount = ?, deductions_json = ?
             WHERE id = ? AND company_id = ?`,
       args: [transporterId, side, billNo, billDate, taxable, gstPct, gst, tdsPct, tds, roundOff, total, je.id ?? null, note,
              adjustment, v.adjustment_note ? String(v.adjustment_note).trim() : null, othersAmt, othersLedger,
-             rcmPct, rcm, existingId as number, cid]
+             rcmPct, rcm, deductions.length ? JSON.stringify(deductions) : null, existingId as number, cid]
     })
     billId = existingId as number
   } else {
@@ -398,10 +415,11 @@ export async function createTransporterBill(v: Row, existingId?: number): Promis
       sql: `INSERT INTO transporter_bills
               (company_id, transporter_id, side, bill_no, bill_date, taxable, gst_pct, gst_amount,
                tds_pct, tds_amount, round_off, total, journal_entry_id, note, adjustment, adjustment_note,
-               others_amount, others_ledger, rcm_pct, rcm_amount)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+               others_amount, others_ledger, rcm_pct, rcm_amount, deductions_json)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       args: [cid, transporterId, side, billNo, billDate, taxable, gstPct, gst, tdsPct, tds, roundOff, total, je.id, note,
-             adjustment, v.adjustment_note ? String(v.adjustment_note).trim() : null, othersAmt, othersLedger, rcmPct, rcm]
+             adjustment, v.adjustment_note ? String(v.adjustment_note).trim() : null, othersAmt, othersLedger, rcmPct, rcm,
+             deductions.length ? JSON.stringify(deductions) : null]
     })
     billId = Number(ins.lastInsertRowid)
   }
@@ -648,6 +666,7 @@ export async function postBillRcm(billId: number, pct?: number, companyId?: numb
       adjustment_note: b.adjustment_note,
       others_amount: b.others_amount,
       others_ledger: b.others_ledger,
+      ...(b.deductions_json ? { deductions: JSON.parse(String(b.deductions_json)) } : {}),
       note: b.note,
       rcm_pct: pct == null ? RCM_DEFAULT_PCT : n(pct),
       line_ids: lines.map((l) => n(l.id))
