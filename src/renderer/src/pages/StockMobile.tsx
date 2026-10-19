@@ -639,6 +639,8 @@ function SkuScreen(): React.JSX.Element {
   const [unit, setUnit] = useState<'cases' | 'mt'>('cases')
   const [brand, setBrand] = useState('')
   const [hideEmpty, setHideEmpty] = useState(false)
+  // Each SKU's corrections in the period, for the comments typed on them.
+  const [fixes, setFixes] = useState<Map<number, Row[]>>(new Map())
   useEffect(() => {
     setLoading(true)
     const arg = span === 'day' ? date : span === 'range' ? { from, to } : undefined
@@ -647,6 +649,19 @@ function SkuScreen(): React.JSX.Element {
       .then((r) => setRows(Array.isArray(r) ? r : []))
       .catch((e) => toast.error((e as Error).message))
       .finally(() => setLoading(false))
+    void window.api.skuStock
+      .breakdown(arg)
+      .then((b) =>
+        setFixes(
+          new Map(
+            (Array.isArray(b) ? b : []).map((x: Row) => [
+              n(x.sku),
+              ((x.packed_in as Row[]) || []).filter((a) => s(a.kind) === 'correction' && s(a.note).trim())
+            ])
+          )
+        )
+      )
+      .catch(() => setFixes(new Map()))
   }, [span, date, from, to])
 
   // Over a day the movements are that day's; over a range or everything they
@@ -787,7 +802,9 @@ function SkuScreen(): React.JSX.Element {
                 <div className="grid grid-cols-4 border-t border-t-[#EAF0E9] bg-[#F7FAF6] text-center">
                   {(
                     [
-                      [day ? 'B/f' : 'Opening', n(r.opening)],
+                      // All time starts from the counted opening; a day or range from what
+                      // stood the morning it began.
+                      [day ? 'B/f' : 'Opening', span === 'all' ? n(r.opening_brought) : n(r.opening)],
                       ['Packed', packed(r)],
                       ['Adjusted', adjusted(r)],
                       ['Sold', sold(r) ? -sold(r) : 0]
@@ -805,6 +822,20 @@ function SkuScreen(): React.JSX.Element {
                     )
                   })}
                 </div>
+                {(fixes.get(n(r.id)) || []).length > 0 && (
+                  <div className="border-t border-t-[#F0E4CB] bg-[#FFF8E9] px-3.5 py-1.5">
+                    {(fixes.get(n(r.id)) || []).map((a, k) => (
+                      <div key={k} className="flex gap-2 text-[11px] font-semibold text-[#8A5300]">
+                        <span className="shrink-0 tabular-nums">{formatDate(s(a.adj_date))}</span>
+                        <span className="min-w-0 flex-1 italic [overflow-wrap:anywhere]">{s(a.note)}</span>
+                        <span className="shrink-0 font-bold tabular-nums">
+                          {n(a.delta) > 0 ? '+' : '−'}
+                          {formatNum(Math.abs(n(a.delta)))}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                )}
                 {r.negative_since ? (
                   <div className="border-t border-t-[#F0D6D4] bg-[#FDF3F2] px-3.5 py-1.5 text-[11px] font-bold text-[#B3261E]">
                     Below zero since {formatDate(s(r.negative_since))}

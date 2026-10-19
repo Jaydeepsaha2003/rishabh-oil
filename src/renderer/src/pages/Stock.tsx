@@ -5166,6 +5166,13 @@ function SkuStock(): React.JSX.Element {
   // The parts behind each figure, for the hover. One pair of queries for every
   // SKU on the page rather than one per tooltip.
   const [parts, setParts] = useState<Map<number, Row>>(new Map())
+  // The comments typed on a SKU's corrections in the period, oldest first —
+  // shown under the Adj. figure and as their own column in the download.
+  const adjNotes = (id: number): string[] =>
+    (((parts.get(id)?.packed_in as Row[]) || []) as Row[])
+      .filter((a) => String(a.kind) === 'correction')
+      .map((a) => String(a.note || '').trim())
+      .filter(Boolean)
   const [adjustRow, setAdjustRow] = useState<Row | null>(null)
   const [adjustForm, setAdjustForm] = useState<{
     mode: 'add' | 'remove'
@@ -5780,7 +5787,11 @@ function SkuStock(): React.JSX.Element {
                     { header: 'Type', key: 'type', value: (r) => pieceLabel(r) },
                     { header: 'Total', key: 'pack_total', value: (r) => (packTotal(r).qty > 0 ? `${formatNum(packTotal(r).qty)} ${packTotal(r).uom}` : '') },
                     { header: 'Opening (pcs)', key: 'opening', align: 'right' as const, numFmt: '#,##0.000', value: (r) => Number(r.opening) || 0 },
-                    { header: 'Packed in', key: 'added_on', align: 'right' as const, numFmt: '#,##0.000', value: (r) => Number(r.added_on) || 0 },
+                    // Corrections and packing apart, as on the screen — the
+                    // net `added_on` read as packing that never happened.
+                    { header: 'Adj.', key: 'adj_on', align: 'right' as const, numFmt: '#,##0.000', value: (r) => Number(r.adj_on) || 0 },
+                    { header: 'Adj. comment', key: 'adj_note', value: (r) => adjNotes(Number(r.id)).join('; ') },
+                    { header: 'Packed in', key: 'packed_on', align: 'right' as const, numFmt: '#,##0.000', value: (r) => Number(r.packed_on) || 0 },
                     { header: 'Dispatch', key: 'sold_on', align: 'right' as const, numFmt: '#,##0.000', value: (r) => Number(r.sold_on) || 0 },
                     { header: 'Closing (pcs)', key: 'on_hand', align: 'right' as const, numFmt: '#,##0.000', value: (r) => Number(r.on_hand) || 0 },
                     { header: 'Closing (MT)', key: 'mt', align: 'right' as const, numFmt: '#,##0.000', value: (r) => skuMT(r) }
@@ -5790,7 +5801,9 @@ function SkuStock(): React.JSX.Element {
                     { header: 'Pack size', key: 'size', value: (r) => unitLabel(r) },
                     { header: 'Type', key: 'type', value: (r) => pieceLabel(r) },
                     { header: 'Total', key: 'pack_total', value: (r) => (packTotal(r).qty > 0 ? `${formatNum(packTotal(r).qty)} ${packTotal(r).uom}` : '') },
-                    { header: 'Packed in', key: 'added', align: 'right' as const, numFmt: '#,##0.000', value: (r) => Number(r.added) || 0 },
+                    { header: 'Adj.', key: 'adj_in', align: 'right' as const, numFmt: '#,##0.000', value: (r) => Number(r.adj_in) || 0 },
+                    { header: 'Adj. comment', key: 'adj_note', value: (r) => adjNotes(Number(r.id)).join('; ') },
+                    { header: 'Packed in', key: 'packed_in', align: 'right' as const, numFmt: '#,##0.000', value: (r) => Number(r.packed_in) || 0 },
                     { header: 'Sold (packed)', key: 'sold', align: 'right' as const, numFmt: '#,##0.000', value: (r) => Number(r.sold) || 0 },
                     { header: 'On hand (pcs)', key: 'on_hand', align: 'right' as const, numFmt: '#,##0.000', value: (r) => Number(r.on_hand) || 0 },
                     { header: 'On hand (MT)', key: 'mt', align: 'right' as const, numFmt: '#,##0.000', value: (r) => skuMT(r) }
@@ -6206,6 +6219,16 @@ function SkuStock(): React.JSX.Element {
                           '—'
                         )}
                         {__WEB__ && Math.abs(adjQty) > 1e-6 && mtLine(adjQty)}
+                        {/* The comment, without hovering — a correction is
+                            somebody's judgement and the reason is the point. */}
+                        {fixes.some((a) => String(a.note || '').trim()) && (
+                          <div
+                            className="ml-auto mt-0.5 max-w-[190px] truncate text-right text-[10.5px] font-semibold italic text-[#8A5300]"
+                            title={fixes.map((a) => `${formatDateShort(a.adj_date)} · ${a.note || 'Correction'}`).join(' | ')}
+                          >
+                            {fixes.map((a) => String(a.note || '').trim()).filter(Boolean).join(' · ')}
+                          </div>
+                        )}
                       </TableCell>
                       <TableCell className={cn('text-right font-medium tabular-nums text-emerald-700', __WEB__ && cn(SK_NUM, SK_BRULE, SK_BIN))}>
                         {inQty ? (
