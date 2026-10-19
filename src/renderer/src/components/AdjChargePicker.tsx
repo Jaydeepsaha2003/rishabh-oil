@@ -80,7 +80,8 @@ export function AdjChargePicker({
   className,
   adj = 0,
   split,
-  onSplitChange
+  onSplitChange,
+  onAdjChange
 }: {
   value: string
   onChange: (ledger: string) => void
@@ -92,6 +93,12 @@ export function AdjChargePicker({
   /** The parts when more than one kind is ticked. */
   split?: AdjPart[] | null
   onSplitChange?: (split: AdjPart[] | null) => void
+  /**
+   * When given, the Adj. FOLLOWS its parts: typing a part's amount makes the
+   * Adj. their total (same sign), so an extra ₹100 on one kind is ₹100 more
+   * Adj. rather than "₹100 too much".
+   */
+  onAdjChange?: (adj: number) => void
 }): React.JSX.Element {
   const [open, setOpen] = useState(false)
   const [adding, setAdding] = useState('')
@@ -135,7 +142,13 @@ export function AdjChargePicker({
   }
 
   function setPart(ledger: string, amount: string): void {
-    onSplitChange?.(parts.map((p) => (String(p.ledger).toUpperCase() === ledger ? { ...p, amount } : p)))
+    const next = parts.map((p) => (String(p.ledger).toUpperCase() === ledger ? { ...p, amount } : p))
+    onSplitChange?.(next)
+    if (onAdjChange) {
+      const total = Math.round(next.reduce((t, p) => t + Math.abs(Number(p.amount) || 0), 0) * 100) / 100
+      // A deduction stays a deduction; an Adj. not yet typed is one too.
+      onAdjChange(Number(adj) > 0 ? total : -total)
+    }
   }
 
   async function add(): Promise<void> {

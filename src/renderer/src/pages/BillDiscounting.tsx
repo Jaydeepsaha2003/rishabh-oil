@@ -4943,6 +4943,7 @@ export function BillDiscounting({
                           adj={n(form.open_adj)}
                           split={Array.isArray(form.open_adj_split) ? (form.open_adj_split as AdjPart[]) : null}
                           onSplitChange={(split) => setForm((p) => ({ ...p, open_adj_split: split }))}
+                          onAdjChange={(v) => setForm((p) => ({ ...p, open_adj: String(v) }))}
                           types={chargeTypes}
                           onTypesChange={setChargeTypes}
                           className={cn(__WEB__ && '!h-[30px] !gap-[3px] !rounded-[5px] !border !border-[#C6DAF0] !py-0 !pl-2 !pr-1.5 !font-extrabold')}
