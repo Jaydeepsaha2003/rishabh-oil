@@ -2000,6 +2000,8 @@ export function Accounts({
   lgOpenRowRef.current = lgOpenRow
   const [lgFQuery, setLgFQuery] = useState('')
   const [lgFTypes, setLgFTypes] = useState<string[]>([])
+  // Tanker empty: leave out purchase bills whose tankers are not all emptied.
+  const [lgTankerEmpty, setLgTankerEmpty] = useState(false)
   const lgOrderRef = useRef<number[]>([])
   const setLgView = useCallback((v: LgView) => {
     setLgViewRaw(v)
@@ -15505,7 +15507,11 @@ export function Accounts({
         .map((x) => String(x || ''))
         .join(' ')
         .toUpperCase()
-    const toolbarOk = (r: Row): boolean => (!fTypes.length || fTypes.includes(typeOf(r))) && (!fq || rowText(r).includes(fq))
+    // A purchase bill with a tanker not yet emptied — its oil is not in yet.
+    const tankerOpen = (r: Row): boolean => Number(r.tanker_total) > 0 && Number(r.tanker_empty) < Number(r.tanker_total)
+    const openCount = allRows.filter(tankerOpen).length
+    const toolbarOk = (r: Row): boolean =>
+      (!fTypes.length || fTypes.includes(typeOf(r))) && (!fq || rowText(r).includes(fq)) && !(lgTankerEmpty && tankerOpen(r))
     // The column funnels, offered from what the chips and search leave.
     const lgCf = colFilter<Row>(colF, 'ledger:vouchers', allRows.filter(toolbarOk), [
       { key: 'date', get: (r) => formatDate(r.entry_date), sort: 'num' },
@@ -15519,7 +15525,7 @@ export function Accounts({
     ])
     const lgShown = new Set(lgCf.rows)
     const keep = allRows.map((r) => lgShown.has(r))
-    const filtering = fTypes.length > 0 || !!fq || lgCf.active > 0
+    const filtering = fTypes.length > 0 || !!fq || lgCf.active > 0 || (lgTankerEmpty && openCount > 0)
     const vRows = allRows.filter((_, i) => keep[i])
     const canFilter = lgView === 'vouchers' || (lgView === 'columnar' && !lgCondensed)
     // The columnar rows are one per statement row, in the same order, until
@@ -17249,6 +17255,46 @@ export function Accounts({
                         }
                       )}
                     </div>
+                    {/* TANKER: All, or only the bills whose tankers are all
+                        emptied — a bill whose oil is still on the road is left out. */}
+                    {(openCount > 0 || lgTankerEmpty) && (
+                      <div className="flex flex-none items-center gap-1.5">
+                        <span className="whitespace-nowrap" style={{ ...cap, fontSize: 9.5, letterSpacing: '.12em', color: A.muted }}>
+                          Tanker
+                        </span>
+                        <div className="flex items-center gap-[2px] rounded-[13px] p-[2px]" style={{ border: '1px solid #DCE7DB', background: '#F4F7F3' }}>
+                          {(
+                            [
+                              [false, 'All'],
+                              [true, 'Empty only']
+                            ] as const
+                          ).map(([v, label]) => {
+                            const on = lgTankerEmpty === v
+                            return (
+                              <button
+                                key={label}
+                                type="button"
+                                onClick={() => {
+                                  setLgOpenRow(null)
+                                  setLgTankerEmpty(v)
+                                }}
+                                title={v ? `Leave out ${openCount} purchase bill${openCount === 1 ? '' : 's'} whose tankers are not all emptied yet` : 'Every voucher'}
+                                className="flex h-[22px] items-center gap-1 whitespace-nowrap rounded-[11px] px-2.5"
+                                style={{
+                                  background: on ? 'linear-gradient(180deg,#11503C,#0B3D2E)' : 'transparent',
+                                  color: on ? '#fff' : '#33473E',
+                                  fontSize: 11,
+                                  fontWeight: 800
+                                }}
+                              >
+                                {label}
+                                {v && <span style={{ ...figS(10, 'currentColor', 600), opacity: 0.8 }}>−{openCount}</span>}
+                              </button>
+                            )
+                          })}
+                        </div>
+                      </div>
+                    )}
                     {filtering && (
                       <div className="flex flex-none items-center gap-2">
                         <span className="whitespace-nowrap" style={{ fontSize: 11, fontWeight: 700, color: A.good }}>
@@ -17259,6 +17305,7 @@ export function Accounts({
                           onClick={() => {
                             setLgFTypes([])
                             setLgFQuery('')
+                            setLgTankerEmpty(false)
                             lgCf.clear()
                           }}
                           className="flex h-[30px] items-center gap-[5px] whitespace-nowrap rounded-[6px] px-2.5"
