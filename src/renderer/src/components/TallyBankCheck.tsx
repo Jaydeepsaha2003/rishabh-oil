@@ -500,6 +500,21 @@ ${pairs.map((x) => String(x.own?.code || '')).join(', ')} stay, and match Tally'
       return [r.tally?.party, ...detailNames(r), r.tally?.vch_no, r.tally?.vch_type, r.books?.code, r.books?.party, String(side(r).amount)].some((x) => String(x || '').toLowerCase().includes(needle))
     })
   }, [rows, filter, q, dir])
+  // A search that only finds lines on ANOTHER tab — a matched line is hidden
+  // under "To look at", so searching for it there read as "missing".
+  const elsewhere = useMemo(() => {
+    const needle = q.trim().toLowerCase()
+    if (!needle || filter === 'all') return [] as Row[]
+    return rows.filter(
+      (r) =>
+        !tabbed.includes(r) &&
+        (!dir || side(r).dir === dir) &&
+        [r.tally?.party, ...detailNames(r), r.tally?.vch_no, r.tally?.vch_type, r.books?.code, r.books?.party, String(side(r).amount)].some((x) =>
+          String(x || '').toLowerCase().includes(needle)
+        )
+    )
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [rows, tabbed, q, dir, filter])
   const amt = (d: 'in' | 'out'): ColumnSpec<Row> => ({
     get: (r) => (side(r).dir === d ? String(Math.round(Number(side(r).amount) * 100) / 100) : ''),
     label: (v) => (v === '' ? '(blank)' : formatINR(Number(v))),
@@ -1065,6 +1080,24 @@ ${pairs.map((x) => String(x.own?.code || '')).join(', ')} stay, and match Tally'
                     <ColumnFilter label="Status" align="end" {...cf.props('status')} />
                   </span>
                 </div>
+                {elsewhere.length > 0 && (
+                  <div className="flex flex-wrap items-center gap-2 border-b border-[#F0E4CB] bg-[#FFF8E9] px-4 py-2 text-[12px] font-semibold text-[#8A5300]">
+                    <span>
+                      “{q.trim()}” also finds {elsewhere.length} line{elsewhere.length === 1 ? '' : 's'} on other tabs —{' '}
+                      {[...new Set(elsewhere.map((r) => STATUS[String(r.status)]?.label || String(r.status)))].join(', ')}
+                      {elsewhere.length <= 3
+                        ? ` (${elsewhere.map((r) => `${r.tally ? `${r.tally.vch_type} ${r.tally.vch_no}` : ''}${r.books?.code ? ` ↔ ${r.books.code}` : ''}`).join('; ')})`
+                        : ''}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => setFilter('all')}
+                      className="ml-auto rounded-[3px] border border-current px-2 py-0.5 text-[11px] font-extrabold"
+                    >
+                      Show all
+                    </button>
+                  </div>
+                )}
                 {shown.length === 0 && (
                   <div className="px-4 py-10 text-center text-[12.5px] font-semibold text-[#5A6B62]">
                     {cf.activeCount > 0 ? 'Nothing passes the column filters — clear them to see more.' : filter === 'problems' ? 'Nothing to look at — the bank agrees with Tally.' : 'Nothing to show for this filter.'}
