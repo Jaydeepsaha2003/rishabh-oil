@@ -17808,6 +17808,12 @@ async function accountStatement(accountId, companyId) {
                  -- the document itself rather than guessed at from the
                  -- narration, which is prose and can be edited.
                  (SELECT o.invoice_no FROM orders o WHERE o.id = je.order_id) AS order_invoice_no,
+                 -- THE PURCHASE'S TANKERS, and how many are emptied \u2014 so the
+                 -- statement can leave out a bill whose oil is still on the
+                 -- road (Tanker empty view).
+                 (SELECT COUNT(*) FROM ${ALLOC} ta WHERE ta.order_id = je.order_id) AS tanker_total,
+                 (SELECT COUNT(*) FROM ${ALLOC} ta JOIN purchase_tankers tp ON tp.id = ta.tanker_id
+                   WHERE ta.order_id = je.order_id AND tp.status = 'empty') AS tanker_empty,
                  (SELECT sl.invoice_no FROM sales sl WHERE sl.id = je.sale_id) AS sale_invoice_no,
                  -- AND WHOSE BOOK THE DOCUMENT IS IN.
                  -- Almost always this ledger's own, and once in a while not:
@@ -18215,6 +18221,7 @@ var init_journal = __esm({
     init_ledgerMap();
     init_partyLedgers();
     init_openings();
+    init_tankerAlloc();
     init_gstLedgers();
     init_voucherOwnership();
     init_voucherNumbers();
