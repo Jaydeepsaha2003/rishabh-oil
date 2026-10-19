@@ -1579,7 +1579,7 @@ export function BillDiscounting({
       // out — and saving it moves it onto the charge basis.
       open_adj: n(r.open_adj) ? r.open_adj : '',
       open_adj_ledger: String(r.open_adj_ledger || ''),
-      open_adj_split: adjParts(r.open_adj_split).length > 1 ? adjParts(r.open_adj_split) : null,
+      open_adj_split: adjParts(r.open_adj_split, n(r.open_adj)).length > 1 ? adjParts(r.open_adj_split, n(r.open_adj)) : null,
       interest_after_adj: !!n(r.interest_after_adj),
       amount: r.amount == null ? '' : String(n(r.open_adj_charge) ? n(r.amount) : round2(n(r.amount) - n(r.open_adj))),
       // Whatever was drawn on this bill was decided when it was raised. Marked
@@ -1803,7 +1803,7 @@ export function BillDiscounting({
         v: formatINR(Math.abs(adj)),
         op: adj < 0 ? '−' : '+',
         fg: adj < 0 ? '#F0AFAA' : '#C7F03F',
-        sub: adj < 0 ? `the NBFC’s deduction · ${adjPostsTo(form.open_adj_ledger, form.open_adj_split)}` : `added to the payout · ${adjPostsTo(form.open_adj_ledger, form.open_adj_split)}`
+        sub: adj < 0 ? `the NBFC’s deduction · ${adjPostsTo(form.open_adj_ledger, form.open_adj_split, n(form.open_adj))}` : `added to the payout · ${adjPostsTo(form.open_adj_ledger, form.open_adj_split, n(form.open_adj))}`
       })
     }
     if (funded) {
@@ -1928,7 +1928,7 @@ export function BillDiscounting({
         // The kind of charge picked beside the Adj. — blank is BD charges.
         open_adj_ledger: String(form.open_adj_ledger || '').trim() || null,
         // Several kinds of charge: each part posts to its own ledger.
-        open_adj_split: n(form.open_adj) && adjParts(form.open_adj_split).length > 1 ? adjParts(form.open_adj_split) : null,
+        open_adj_split: n(form.open_adj) && adjParts(form.open_adj_split, n(form.open_adj)).length > 1 ? adjParts(form.open_adj_split, n(form.open_adj)) : null,
         // Whether the NBFC charges its interest on the Open amount after the Adj.
         interest_after_adj: form.interest_after_adj ? 1 : 0,
         payment_received_date: form.payment_received_date || null,
@@ -4958,7 +4958,7 @@ export function BillDiscounting({
                             </div>
                             {!!adj && (
                               <div className="text-[11px] text-muted-foreground">
-                                {adj < 0 ? `Charged to ${adjPostsTo(form.open_adj_ledger, form.open_adj_split)}` : `Added to the payout · ${adjPostsTo(form.open_adj_ledger, form.open_adj_split)}`} — drawn and
+                                {adj < 0 ? `Charged to ${adjPostsTo(form.open_adj_ledger, form.open_adj_split, n(form.open_adj))}` : `Added to the payout · ${adjPostsTo(form.open_adj_ledger, form.open_adj_split, n(form.open_adj))}`} — drawn and
                                 interest stay on the Open amount
                               </div>
                             )}
@@ -4978,7 +4978,7 @@ export function BillDiscounting({
                             style={{ color: adj ? '#1B4E82' : '#8CA396' }}
                           >
                             {adj
-                              ? `${adj < 0 ? `Charged to ${adjPostsTo(form.open_adj_ledger, form.open_adj_split)}` : `Added to the payout · ${adjPostsTo(form.open_adj_ledger, form.open_adj_split)}`}${
+                              ? `${adj < 0 ? `Charged to ${adjPostsTo(form.open_adj_ledger, form.open_adj_split, n(form.open_adj))}` : `Added to the payout · ${adjPostsTo(form.open_adj_ledger, form.open_adj_split, n(form.open_adj))}`}${
                                   form.interest_after_adj
                                     ? ' — interest is charged on what is left after it'
                                     : ' — drawn and interest stay on the Open amount'

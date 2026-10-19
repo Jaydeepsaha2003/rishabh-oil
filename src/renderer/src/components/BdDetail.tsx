@@ -573,7 +573,7 @@ This was one bank debit that also cleared ${others.map((g) => `${s(g.bd_no)} ${f
             k: n(r.open_adj) < 0 ? `Less ${adjKindsLabel(r.open_adj_ledger, r.open_adj_split).toLowerCase()} (Adj.)` : 'Add adjustment',
             v: `${n(r.open_adj) < 0 ? '−' : '+'} ${formatINR(Math.abs(n(r.open_adj)))}`,
             fg: n(r.open_adj) < 0 ? '#8C2F26' : '#0B6B45',
-            sub: n(r.open_adj) < 0 ? `the NBFC’s deduction from the payout · ${adjPostsTo(r.open_adj_ledger, r.open_adj_split)}` : `added to the payout by the NBFC · ${adjPostsTo(r.open_adj_ledger, r.open_adj_split)}`
+            sub: n(r.open_adj) < 0 ? `the NBFC’s deduction from the payout · ${adjPostsTo(r.open_adj_ledger, r.open_adj_split, n(r.open_adj))}` : `added to the payout by the NBFC · ${adjPostsTo(r.open_adj_ledger, r.open_adj_split, n(r.open_adj))}`
           }
         ]
       : []),

@@ -615,10 +615,13 @@ export async function postBdOpening(bdId: number): Promise<void> {
   // An Adj. split across several kinds posts each part to its own ledger.
   const adjLedger = String(bd.open_adj_ledger || '').trim().toUpperCase() || BD_ADJ_DEFAULT
   const adjParts = bdAdjParts(bd)
-  for (const p of adjParts.length ? adjParts : [{ ledger: adjLedger, amount: Math.abs(calc.adjCharge) }]) {
-    if (p.amount < 0.005) continue
-    if (calc.adjCharge < -0.004) lines.push({ account: p.ledger, group: 'Indirect Expenses', dr: round2(p.amount) })
-    if (calc.adjCharge > 0.004) lines.push({ account: p.ledger, group: 'Indirect Expenses', cr: round2(p.amount) })
+  // Each part on its own side: a charge (minus) is debited, money the NBFC
+  // sent over (plus) credited — so ₹6,363.83 of BD charges and ₹100 excess
+  // received post as Dr 6,363.83 and Cr 100, and the bank takes the net.
+  for (const p of adjParts.length ? adjParts : [{ ledger: adjLedger, amount: round2(calc.adjCharge) }]) {
+    if (Math.abs(p.amount) < 0.005) continue
+    if (p.amount < 0) lines.push({ account: p.ledger, group: 'Indirect Expenses', dr: round2(-p.amount) })
+    else lines.push({ account: p.ledger, group: adjParts.length ? 'Indirect Incomes' : 'Indirect Expenses', cr: round2(p.amount) })
   }
   lines.push({ account: bdPayable(bd), group: BD_PAYABLE_GROUP, cr: payableHere })
   const write = n(bd.journal_entry_id) ? (args: Parameters<typeof postJournal>[0]) => repostJournal(n(bd.journal_entry_id), args) : postJournal
@@ -631,7 +634,7 @@ export async function postBdOpening(bdId: number): Promise<void> {
       (leg1 ? `received in parts, ${receiptRef(bd, 1)}: ${leg1.amount.toFixed(2)} of ${amount.toFixed(2)}, ` : '') +
       `margin ${calc.marginAmount.toFixed(2)}, interest ${interestHere.toFixed(2)}` +
       (Math.abs(calc.adjCharge) > 0.004
-        ? `, adj. ${calc.adjCharge.toFixed(2)} (${adjParts.length ? adjParts.map((p) => `${bdAdjLabel(p.ledger)} ${p.amount.toFixed(2)}`).join(' + ') : bdAdjLabel(adjLedger)})`
+        ? `, adj. ${calc.adjCharge.toFixed(2)} (${adjParts.length ? adjParts.map((p) => `${bdAdjLabel(p.ledger)} ${p.amount > 0 ? '+' : ''}${p.amount.toFixed(2)}`).join(', ') : bdAdjLabel(adjLedger)})`
         : '') +
       (serviced
         ? ` (interest serviced ${String(bd.interest_freq || 'monthly').replace('_', '-')} over the tenor)`
@@ -860,7 +863,14 @@ export async function addBdChargeType(labelIn: string): Promise<{ label: string;
   return { label, ledger, preset: false }
 }
 
-/** The parts of a split Adj. — [] when it is one kind (or none). */
+/**
+ * The parts of a split Adj. — [] when it is one kind (or none).
+ *
+ * SIGNED, AS THE ADJ. ITSELF IS: minus is what the NBFC took off the payout
+ * (a charge), plus what it sent over (the bank paid ₹100 more — income). A
+ * split saved before parts carried a sign stored them all unsigned, as shares
+ * of the one Adj.; those read with the Adj.'s own sign, exactly as they did.
+ */
 export function bdAdjParts(bd: Row): { ledger: string; amount: number }[] {
   let raw: unknown = bd?.open_adj_split
   if (typeof raw === 'string') {
@@ -871,14 +881,17 @@ export function bdAdjParts(bd: Row): { ledger: string; amount: number }[] {
     }
   }
   if (!Array.isArray(raw)) return []
+  const list = (raw as Row[]).map((p) => ({ ledger: String(p?.ledger || '').trim().toUpperCase(), amount: round2(Number(p?.amount) || 0) }))
+  // Unsigned (the old way): every part takes the Adj.'s sign.
+  const adj = round2(Number(bd?.open_adj) || 0)
+  const legacy = adj < 0 && !list.some((p) => p.amount < 0)
   const seen = new Map<string, number>()
-  for (const p of raw as Row[]) {
-    const ledger = String(p?.ledger || '').trim().toUpperCase()
-    const amount = Math.abs(round2(Number(p?.amount) || 0))
-    if (!ledger || amount < 0.005) continue
-    seen.set(ledger, round2((seen.get(ledger) || 0) + amount))
+  for (const p of list) {
+    const amount = legacy ? -Math.abs(p.amount) : p.amount
+    if (!p.ledger || Math.abs(amount) < 0.005) continue
+    seen.set(p.ledger, round2((seen.get(p.ledger) || 0) + amount))
   }
-  return Array.from(seen, ([ledger, amount]) => ({ ledger, amount }))
+  return Array.from(seen, ([ledger, amount]) => ({ ledger, amount })).filter((p) => Math.abs(p.amount) >= 0.005)
 }
 
 function bdAdjLabel(ledger: string): string {
@@ -938,10 +951,10 @@ function bdArgs(v: Row): (string | number | null)[] {
     if (k === 'open_adj_split') {
       const parts = bdAdjParts(v)
       if (parts.length < 2) return null
-      const whole = Math.abs(round2(n(v.open_adj)))
+      const whole = round2(n(v.open_adj))
       const sum = round2(parts.reduce((t, p) => t + p.amount, 0))
       if (Math.abs(sum - whole) > 0.01) {
-        throw new Error(`The kinds of charge add up to ${sum.toFixed(2)} but the Adj. is ${whole.toFixed(2)} — make the parts match the Adj.`)
+        throw new Error(`The kinds of charge come to ${sum.toFixed(2)} but the Adj. is ${whole.toFixed(2)} — make the parts match the Adj.`)
       }
       return JSON.stringify(parts)
     }

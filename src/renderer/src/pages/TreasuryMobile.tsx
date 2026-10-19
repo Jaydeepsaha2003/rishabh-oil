@@ -4890,7 +4890,7 @@ function BillForm({
             full
             hint={
               n(form.open_adj)
-                ? `${n(form.open_adj) < 0 ? `Charged to ${adjPostsTo(form.open_adj_ledger, form.open_adj_split)}` : 'Added to the payout'} — ${form.interest_after_adj ? `interest runs on ${inrFull(intBase)}, after it` : `drawn and interest stay on ${inrFull(amount)}`}; ${inrFull(received)} reaches the bank.`
+                ? `${n(form.open_adj) < 0 ? `Charged to ${adjPostsTo(form.open_adj_ledger, form.open_adj_split, n(form.open_adj))}` : 'Added to the payout'} — ${form.interest_after_adj ? `interest runs on ${inrFull(intBase)}, after it` : `drawn and interest stay on ${inrFull(amount)}`}; ${inrFull(received)} reaches the bank.`
                 : 'What the NBFC takes off (−) or adds to (+) its payout. Drawn and interest stay on the Open amount.'
             }
           >

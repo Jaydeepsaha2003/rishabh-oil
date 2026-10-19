@@ -36,8 +36,14 @@ export function adjLabel(ledger: unknown, types: ChargeType[] = []): string {
 /** The ledger a bill's Adj. posts to. */
 export const adjLedger = (ledger: unknown): string => String(ledger || '').trim().toUpperCase() || ADJ_DEFAULT_LEDGER
 
-/** A bill's Adj. split, read from the form or the stored row. [] for one kind. */
-export function adjParts(split: unknown): { ledger: string; amount: number }[] {
+/**
+ * A bill's Adj. split, read from the form or the stored row. [] for one kind.
+ *
+ * SIGNED like the Adj.: minus is taken off the payout, plus is extra received.
+ * Given the Adj., a split saved unsigned (every part a share of a deduction)
+ * reads with the Adj.'s sign, as it always meant.
+ */
+export function adjParts(split: unknown, adj?: number): { ledger: string; amount: number }[] {
   let raw: unknown = split
   if (typeof raw === 'string') {
     try {
@@ -47,10 +53,14 @@ export function adjParts(split: unknown): { ledger: string; amount: number }[] {
     }
   }
   if (!Array.isArray(raw)) return []
-  return (raw as AdjPart[])
-    .map((p) => ({ ledger: String(p?.ledger || '').trim().toUpperCase(), amount: Math.abs(Number(p?.amount) || 0) }))
+  const list = (raw as AdjPart[])
+    .map((p) => ({ ledger: String(p?.ledger || '').trim().toUpperCase(), amount: Number(p?.amount) || 0 }))
     .filter((p) => p.ledger)
+  const legacy = (Number(adj) || 0) < 0 && !list.some((p) => p.amount < 0)
+  return legacy ? list.map((p) => ({ ...p, amount: -Math.abs(p.amount) })) : list
 }
+
+const signed = (v: number): string => `${v > 0 ? '+' : v < 0 ? '−' : ''}${formatINR(Math.abs(v))}`
 
 /** How the Adj.'s kind reads in a summary: "Processing fees + Stamp duty". */
 export function adjKindsLabel(ledger: unknown, split: unknown, types: ChargeType[] = []): string {
@@ -58,18 +68,18 @@ export function adjKindsLabel(ledger: unknown, split: unknown, types: ChargeType
   return parts.length > 1 ? parts.map((p) => adjLabel(p.ledger, types)).join(' + ') : adjLabel(ledger, types)
 }
 
-/** Where the Adj. posts, in words: "PROCESSING FEES A/C" or "₹7,00,000 to …, ₹20,527 to …". */
-export function adjPostsTo(ledger: unknown, split: unknown): string {
-  const parts = adjParts(split)
-  return parts.length > 1 ? parts.map((p) => `${formatINR(p.amount)} to ${p.ledger}`).join(', ') : adjLedger(ledger)
+/** Where the Adj. posts, in words: "PROCESSING FEES A/C" or "−₹6,363.83 to …, +₹100 to …". */
+export function adjPostsTo(ledger: unknown, split: unknown, adj?: number): string {
+  const parts = adjParts(split, adj)
+  return parts.length > 1 ? parts.map((p) => `${signed(p.amount)} to ${p.ledger}`).join(', ') : adjLedger(ledger)
 }
 
 /** The split is consistent with the Adj. (always true for one kind). */
 export function adjSplitOk(adj: number, split: unknown): boolean {
-  const parts = adjParts(split)
+  const parts = adjParts(split, adj)
   if (parts.length < 2) return true
   const sum = parts.reduce((t, p) => t + p.amount, 0)
-  return Math.abs(Math.round(sum * 100) / 100 - Math.abs(Math.round(adj * 100) / 100)) <= 0.01
+  return Math.abs(Math.round(sum * 100) / 100 - Math.round(adj * 100) / 100) <= 0.01
 }
 
 export function AdjChargePicker({
@@ -108,11 +118,16 @@ export function AdjChargePicker({
   // dialog takes focus back and the new name cannot be typed (see popover.tsx).
   const [container, setContainer] = useState<HTMLElement | null>(null)
   const multi = !!onSplitChange
-  const whole = Math.abs(Number(adj) || 0)
-  const parts: AdjPart[] = Array.isArray(split) && split.length > 1 ? split : []
+  // Signed throughout: minus taken off the payout, plus extra received.
+  const whole = Math.round((Number(adj) || 0) * 100) / 100
+  const rawParts: AdjPart[] = Array.isArray(split) && split.length > 1 ? split : []
+  // An unsigned (older) split reads with the Adj.'s sign; what is being typed
+  // is kept as typed.
+  const legacy = whole < 0 && rawParts.length > 0 && !rawParts.some((p) => (Number(p.amount) || 0) < 0 || String(p.amount).trim().startsWith('-'))
+  const parts: AdjPart[] = legacy ? rawParts.map((p) => ({ ...p, amount: -Math.abs(Number(p.amount) || 0) })) : rawParts
   // What is ticked: the split's kinds, or the one kind.
   const ticked: string[] = parts.length ? parts.map((p) => String(p.ledger).toUpperCase()) : [adjLedger(value)]
-  const sum = parts.reduce((t, p) => t + Math.abs(Number(p.amount) || 0), 0)
+  const sum = parts.reduce((t, p) => t + (Number(p.amount) || 0), 0)
   const left = Math.round((whole - sum) * 100) / 100
 
   // Ticking a second kind starts a split: the first keeps the whole Adj. and
@@ -141,14 +156,12 @@ export function AdjChargePicker({
     onSplitChange?.([...base, { ledger, amount: 0 }])
   }
 
+  // A part is typed with its sign: −6363.83 taken off, +100 received extra.
+  // The Adj. is then the net of the parts.
   function setPart(ledger: string, amount: string): void {
     const next = parts.map((p) => (String(p.ledger).toUpperCase() === ledger ? { ...p, amount } : p))
     onSplitChange?.(next)
-    if (onAdjChange) {
-      const total = Math.round(next.reduce((t, p) => t + Math.abs(Number(p.amount) || 0), 0) * 100) / 100
-      // A deduction stays a deduction; an Adj. not yet typed is one too.
-      onAdjChange(Number(adj) > 0 ? total : -total)
-    }
+    if (onAdjChange) onAdjChange(Math.round(next.reduce((t, p) => t + (Number(p.amount) || 0), 0) * 100) / 100)
   }
 
   async function add(): Promise<void> {
@@ -233,16 +246,26 @@ export function AdjChargePicker({
                   {!t.preset && <span className="mt-0.5 flex-none rounded-[2px] bg-[#EEF3EC] px-1 text-[9px] font-bold text-[#5A6B62]">ADDED</span>}
                 </button>
                 {part && (
-                  <input
-                    data-raw=""
-                    type="number"
-                    step="any"
-                    value={String(part.amount ?? '')}
-                    onChange={(e) => setPart(t.ledger, e.target.value)}
-                    placeholder="0"
-                    title={`How much of the Adj. is ${t.label}`}
-                    className="doc-ref h-7 w-[104px] flex-none rounded-[4px] border border-[#C3D2C6] bg-white px-2 text-right text-[12px] font-bold outline-none focus:border-[#0B3D2E]"
-                  />
+                  <span className="flex flex-none flex-col items-end">
+                    <input
+                      data-raw=""
+                      type="number"
+                      step="any"
+                      value={String(part.amount ?? '')}
+                      onChange={(e) => setPart(t.ledger, e.target.value)}
+                      placeholder="−0"
+                      title={`${t.label}: minus if the NBFC took it off the payout, plus if it sent this much extra`}
+                      className={cn(
+                        'doc-ref h-7 w-[104px] rounded-[4px] border border-[#C3D2C6] bg-white px-2 text-right text-[12px] font-bold outline-none focus:border-[#0B3D2E]',
+                        (Number(part.amount) || 0) < 0 ? 'text-[#8C2F26]' : (Number(part.amount) || 0) > 0 ? 'text-[#0B6B45]' : ''
+                      )}
+                    />
+                    {(Number(part.amount) || 0) !== 0 && (
+                      <span className={cn('mt-0.5 text-[9px] font-extrabold uppercase tracking-[.08em]', (Number(part.amount) || 0) < 0 ? 'text-[#8C2F26]' : 'text-[#0B6B45]')}>
+                        {(Number(part.amount) || 0) < 0 ? 'taken off · Dr' : 'extra received · Cr'}
+                      </span>
+                    )}
+                  </span>
                 )}
               </div>
             )
@@ -254,11 +277,9 @@ export function AdjChargePicker({
             style={Math.abs(left) <= 0.01 ? { background: '#E9F5EE', color: '#0B6B45' } : { background: '#FFF4DD', color: '#8A5300' }}
           >
             <span className="doc-ref">
-              {formatINR(sum)} of {formatINR(whole)}
+              net {signed(Math.round(sum * 100) / 100)} · Adj. {signed(whole)}
             </span>
-            <span>
-              {Math.abs(left) <= 0.01 ? '· adds up' : left > 0 ? `· ${formatINR(left)} still to assign` : `· ${formatINR(-left)} too much`}
-            </span>
+            <span>{Math.abs(left) <= 0.01 ? '· adds up' : `· ${signed(left)} still to assign`}</span>
             {Math.abs(left) > 0.01 && (
               <button
                 type="button"
@@ -266,8 +287,8 @@ export function AdjChargePicker({
                 title="Put what is left on the last kind ticked"
                 onClick={() => {
                   const last = parts[parts.length - 1]
-                  const others = parts.slice(0, -1).reduce((t, p) => t + Math.abs(Number(p.amount) || 0), 0)
-                  setPart(String(last.ledger).toUpperCase(), String(Math.max(0, Math.round((whole - others) * 100) / 100)))
+                  const others = parts.slice(0, -1).reduce((t, p) => t + (Number(p.amount) || 0), 0)
+                  setPart(String(last.ledger).toUpperCase(), String(Math.round((whole - others) * 100) / 100))
                 }}
               >
                 Balance the last
