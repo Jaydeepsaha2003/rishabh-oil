@@ -156,8 +156,14 @@ export function AdjChargePicker({
     onSplitChange?.([...base, { ledger, amount: 0 }])
   }
 
-  // A part is typed with its sign: −6363.83 taken off, +100 received extra.
+  // A part is typed as a plain figure, and its LESS / MORE switch says which
+  // way it moves the payout: less = taken off (−), more = extra received (+).
   // The Adj. is then the net of the parts.
+  const signOf = (p: AdjPart): 1 | -1 => ((Number(p.amount) || 0) > 0 || String(p.amount).trim().startsWith('+') ? 1 : -1)
+  function setMagnitude(ledger: string, typed: string, sign: 1 | -1): void {
+    const v = typed.replace(/^[+-]/, '')
+    setPart(ledger, v === '' ? (sign > 0 ? '+' : '-') : sign > 0 ? `+${v}` : `-${v}`)
+  }
   function setPart(ledger: string, amount: string): void {
     const next = parts.map((p) => (String(p.ledger).toUpperCase() === ledger ? { ...p, amount } : p))
     onSplitChange?.(next)
@@ -247,24 +253,39 @@ export function AdjChargePicker({
                 </button>
                 {part && (
                   <span className="flex flex-none flex-col items-end">
-                    <input
-                      data-raw=""
-                      type="number"
-                      step="any"
-                      value={String(part.amount ?? '')}
-                      onChange={(e) => setPart(t.ledger, e.target.value)}
-                      placeholder="−0"
-                      title={`${t.label}: minus if the NBFC took it off the payout, plus if it sent this much extra`}
-                      className={cn(
-                        'doc-ref h-7 w-[104px] rounded-[4px] border border-[#C3D2C6] bg-white px-2 text-right text-[12px] font-bold outline-none focus:border-[#0B3D2E]',
-                        (Number(part.amount) || 0) < 0 ? 'text-[#8C2F26]' : (Number(part.amount) || 0) > 0 ? 'text-[#0B6B45]' : ''
-                      )}
-                    />
-                    {(Number(part.amount) || 0) !== 0 && (
-                      <span className={cn('mt-0.5 text-[9px] font-extrabold uppercase tracking-[.08em]', (Number(part.amount) || 0) < 0 ? 'text-[#8C2F26]' : 'text-[#0B6B45]')}>
-                        {(Number(part.amount) || 0) < 0 ? 'taken off · Dr' : 'extra received · Cr'}
+                    <span className="flex items-center gap-1">
+                      {/* Less (taken off the payout) or More (sent extra). */}
+                      <span className="flex overflow-hidden rounded-[4px] border border-[#C3D2C6] text-[10px] font-extrabold">
+                        {([-1, 1] as const).map((sg) => (
+                          <button
+                            key={sg}
+                            type="button"
+                            onClick={() => setMagnitude(t.ledger, String(Math.abs(Number(part.amount) || 0) || ''), sg)}
+                            title={sg < 0 ? 'Taken off the payout — a charge (Dr)' : 'Sent over and above — extra received (Cr)'}
+                            className={cn(
+                              'h-7 px-1.5',
+                              signOf(part) === sg ? (sg < 0 ? 'bg-[#8C2F26] text-white' : 'bg-[#0B6B45] text-white') : 'bg-white text-[#5A6B62]'
+                            )}
+                          >
+                            {sg < 0 ? 'Less' : 'More'}
+                          </button>
+                        ))}
                       </span>
-                    )}
+                      <input
+                        data-raw=""
+                        type="number"
+                        step="any"
+                        min={0}
+                        value={String(Math.abs(Number(part.amount) || 0) || '')}
+                        onChange={(e) => setMagnitude(t.ledger, e.target.value, signOf(part))}
+                        placeholder="0"
+                        title={`How much of the Adj. is ${t.label}`}
+                        className={cn(
+                          'doc-ref h-7 w-[92px] rounded-[4px] border border-[#C3D2C6] bg-white px-2 text-right text-[12px] font-bold outline-none focus:border-[#0B3D2E]',
+                          signOf(part) < 0 ? 'text-[#8C2F26]' : 'text-[#0B6B45]'
+                        )}
+                      />
+                    </span>
                   </span>
                 )}
               </div>
