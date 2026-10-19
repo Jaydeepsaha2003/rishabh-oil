@@ -18664,10 +18664,10 @@ async function postBdOpening(bdId) {
     if (interestHere > 5e-3) lines.push({ account: "INTEREST ON BILL DISCOUNTING A/C", group: "Indirect Expenses", dr: interestHere });
     const adjLedger = String(bd.open_adj_ledger || "").trim().toUpperCase() || BD_ADJ_DEFAULT;
     const adjParts = bdAdjParts(bd);
-    for (const p of adjParts.length ? adjParts : [{ ledger: adjLedger, amount: Math.abs(calc.adjCharge) }]) {
-      if (p.amount < 5e-3) continue;
-      if (calc.adjCharge < -4e-3) lines.push({ account: p.ledger, group: "Indirect Expenses", dr: round27(p.amount) });
-      if (calc.adjCharge > 4e-3) lines.push({ account: p.ledger, group: "Indirect Expenses", cr: round27(p.amount) });
+    for (const p of adjParts.length ? adjParts : [{ ledger: adjLedger, amount: round27(calc.adjCharge) }]) {
+      if (Math.abs(p.amount) < 5e-3) continue;
+      if (p.amount < 0) lines.push({ account: p.ledger, group: "Indirect Expenses", dr: round27(-p.amount) });
+      else lines.push({ account: p.ledger, group: adjParts.length ? "Indirect Incomes" : "Indirect Expenses", cr: round27(p.amount) });
     }
     lines.push({ account: bdPayable(bd), group: BD_PAYABLE_GROUP, cr: payableHere });
     const write = n21(bd.journal_entry_id) ? (args) => repostJournal(n21(bd.journal_entry_id), args) : postJournal;
@@ -18675,7 +18675,7 @@ async function postBdOpening(bdId) {
       date: String(bd.payment_received_date || todayISO5()).slice(0, 10),
       vchType: route === "supplier" ? "JOURNAL" : "RECEIPT",
       vchNo: String(bd.bd_no || ""),
-      narration: `Bill Discounting ${bd.bd_no || ""} (${bd.finance_type}) opened with ${bd.nbfc_name || "the NBFC"} \u2014 ` + (leg1 ? `received in parts, ${receiptRef(bd, 1)}: ${leg1.amount.toFixed(2)} of ${amount2.toFixed(2)}, ` : "") + `margin ${calc.marginAmount.toFixed(2)}, interest ${interestHere.toFixed(2)}` + (Math.abs(calc.adjCharge) > 4e-3 ? `, adj. ${calc.adjCharge.toFixed(2)} (${adjParts.length ? adjParts.map((p) => `${bdAdjLabel(p.ledger)} ${p.amount.toFixed(2)}`).join(" + ") : bdAdjLabel(adjLedger)})` : "") + (serviced ? ` (interest serviced ${String(bd.interest_freq || "monthly").replace("_", "-")} over the tenor)` : upfront ? " (interest settled separately on reconciliation)" : ""),
+      narration: `Bill Discounting ${bd.bd_no || ""} (${bd.finance_type}) opened with ${bd.nbfc_name || "the NBFC"} \u2014 ` + (leg1 ? `received in parts, ${receiptRef(bd, 1)}: ${leg1.amount.toFixed(2)} of ${amount2.toFixed(2)}, ` : "") + `margin ${calc.marginAmount.toFixed(2)}, interest ${interestHere.toFixed(2)}` + (Math.abs(calc.adjCharge) > 4e-3 ? `, adj. ${calc.adjCharge.toFixed(2)} (${adjParts.length ? adjParts.map((p) => `${bdAdjLabel(p.ledger)} ${p.amount > 0 ? "+" : ""}${p.amount.toFixed(2)}`).join(", ") : bdAdjLabel(adjLedger)})` : "") + (serviced ? ` (interest serviced ${String(bd.interest_freq || "monthly").replace("_", "-")} over the tenor)` : upfront ? " (interest settled separately on reconciliation)" : ""),
       companyId: n21(bd.company_id) || void 0,
       lines
     });
@@ -18810,14 +18810,16 @@ function bdAdjParts(bd) {
     }
   }
   if (!Array.isArray(raw)) return [];
+  const list2 = raw.map((p) => ({ ledger: String(p?.ledger || "").trim().toUpperCase(), amount: round27(Number(p?.amount) || 0) }));
+  const adj = round27(Number(bd?.open_adj) || 0);
+  const legacy = adj < 0 && !list2.some((p) => p.amount < 0);
   const seen = /* @__PURE__ */ new Map();
-  for (const p of raw) {
-    const ledger = String(p?.ledger || "").trim().toUpperCase();
-    const amount2 = Math.abs(round27(Number(p?.amount) || 0));
-    if (!ledger || amount2 < 5e-3) continue;
-    seen.set(ledger, round27((seen.get(ledger) || 0) + amount2));
+  for (const p of list2) {
+    const amount2 = legacy ? -Math.abs(p.amount) : p.amount;
+    if (!p.ledger || Math.abs(amount2) < 5e-3) continue;
+    seen.set(p.ledger, round27((seen.get(p.ledger) || 0) + amount2));
   }
-  return Array.from(seen, ([ledger, amount2]) => ({ ledger, amount: amount2 }));
+  return Array.from(seen, ([ledger, amount2]) => ({ ledger, amount: amount2 })).filter((p) => Math.abs(p.amount) >= 5e-3);
 }
 function bdAdjLabel(ledger) {
   const p = BD_ADJ_PRESETS.find((x) => x.ledger === ledger);
@@ -18863,10 +18865,10 @@ function bdArgs(v) {
     if (k === "open_adj_split") {
       const parts = bdAdjParts(v);
       if (parts.length < 2) return null;
-      const whole = Math.abs(round27(n21(v.open_adj)));
+      const whole = round27(n21(v.open_adj));
       const sum = round27(parts.reduce((t, p) => t + p.amount, 0));
       if (Math.abs(sum - whole) > 0.01) {
-        throw new Error(`The kinds of charge add up to ${sum.toFixed(2)} but the Adj. is ${whole.toFixed(2)} \u2014 make the parts match the Adj.`);
+        throw new Error(`The kinds of charge come to ${sum.toFixed(2)} but the Adj. is ${whole.toFixed(2)} \u2014 make the parts match the Adj.`);
       }
       return JSON.stringify(parts);
     }
@@ -29566,7 +29568,11 @@ async function runStartupTasks() {
     // RCM on an unregistered transporter's freight: the rate struck and the
     // tax it came to (0 on every bill booked before RCM was posted).
     "ALTER TABLE transporter_bills ADD COLUMN rcm_pct REAL NOT NULL DEFAULT 0",
-    "ALTER TABLE transporter_bills ADD COLUMN rcm_amount REAL NOT NULL DEFAULT 0"
+    "ALTER TABLE transporter_bills ADD COLUMN rcm_amount REAL NOT NULL DEFAULT 0",
+    // Several deductions on one bill (detention, damage, …): a JSON list of
+    // { amount, ledger, note }. NULL on every bill booked before — those keep
+    // their single others_amount / others_ledger.
+    "ALTER TABLE transporter_bills ADD COLUMN deductions_json TEXT"
   ]) {
     await getClient().execute(sql).catch((e) => {
       if (!/duplicate column/i.test(String(e.message))) console.error("[transporters] column failed:", e);
@@ -38223,7 +38229,7 @@ async function listTransporterFreight(side, opts = {}) {
                      GROUP BY ge.invoice_group) go2 ON go2.grp = sa.invoice_group
          LEFT JOIN gate_entries gv ON gv.id = go2.ge_id`;
   const res = await c.execute({
-    sql: `SELECT l.id, l.transporter_id, l.entry_date, l.entry_type, l.amount, l.note,
+    sql: `SELECT l.id, l.transporter_id, l.order_id, l.sale_id, l.entry_date, l.entry_type, l.amount, l.note,
                  l.accrued, l.bill_id, l.note_id, l.waived_at, l.waived_by, l.waived_reason,
                  nt.note_no, nt.note_date,
                  t.name AS transporter_name, COALESCE(t.gst_registration, 'registered') AS gst_registration,
@@ -38348,9 +38354,14 @@ async function createTransporterBill(v, existingId) {
   const rcm = round221(taxable * rcmPct / 100);
   const tdsPct = n48(v.tds_pct);
   const tds = round221(taxable * tdsPct / 100);
-  const othersAmt = round221(Math.max(0, n48(v.others_amount)));
   const frAccount = side === "purchase" ? "FREIGHT INWARD A/C" : "FREIGHT OUTWARD A/C";
-  const othersLedger = othersAmt > 4e-3 ? (String(v.others_ledger || "").trim() || frAccount).toUpperCase() : null;
+  const deductions = (Array.isArray(v.deductions) ? v.deductions : n48(v.others_amount) > 4e-3 ? [{ amount: v.others_amount, ledger: v.others_ledger, note: v.others_note }] : []).map((d) => ({
+    amount: round221(Math.max(0, n48(d.amount))),
+    ledger: (String(d.ledger || "").trim() || frAccount).toUpperCase(),
+    note: String(d.note || "").trim()
+  })).filter((d) => d.amount > 4e-3);
+  const othersAmt = round221(deductions.reduce((t, d) => t + d.amount, 0));
+  const othersLedger = deductions.length ? deductions[0].ledger : null;
   const raw = round221(taxable + gst - tds - othersAmt);
   if (raw <= 0) throw new Error("After the deductions nothing is left to pay the transporter \u2014 check the Others amount");
   const total = Math.round(raw);
@@ -38375,7 +38386,7 @@ async function createTransporterBill(v, existingId) {
     // record against); a registered one's stays in the purchase series.
     vchType: reg === "unregistered" ? "JOURNAL" : side === "purchase" ? "PURCHASE FREIGHT INWARD" : "PURCHASE FREIGHT OUTWARD",
     vchNo: billNo,
-    narration: `Transporter bill ${billNo || ""} \u2014 ${partyName2} (${side === "purchase" ? "inward" : "outward"} freight, ${picked.length} line${picked.length === 1 ? "" : "s"}` + (adjustment ? `, adjusted by ${adjustment > 0 ? "+" : ""}${adjustment.toFixed(2)}` : "") + ")" + (v.adjustment_note ? ` \u2014 ${String(v.adjustment_note).trim()}` : "") + (othersAmt > 4e-3 ? `; others ${othersAmt.toFixed(2)} recovered${v.others_note ? ` (${String(v.others_note).trim()})` : ""}` : "") + (reg === "unregistered" ? rcm > 4e-3 ? ` \u2014 unregistered transporter, RCM ${rcmPct}% ${rcm.toFixed(2)} booked` : " \u2014 unregistered transporter, RCM applicable" : ""),
+    narration: `Transporter bill ${billNo || ""} \u2014 ${partyName2} (${side === "purchase" ? "inward" : "outward"} freight, ${picked.length} line${picked.length === 1 ? "" : "s"}` + (adjustment ? `, adjusted by ${adjustment > 0 ? "+" : ""}${adjustment.toFixed(2)}` : "") + ")" + (v.adjustment_note ? ` \u2014 ${String(v.adjustment_note).trim()}` : "") + (deductions.length ? `; deducted ${deductions.map((d) => `${d.amount.toFixed(2)}${d.note ? ` ${d.note}` : ""}`).join(", ")}` : "") + (reg === "unregistered" ? rcm > 4e-3 ? ` \u2014 unregistered transporter, RCM ${rcmPct}% ${rcm.toFixed(2)} booked` : " \u2014 unregistered transporter, RCM applicable" : ""),
     companyId: cid,
     lines: [
       { account: "FREIGHT PAYABLE A/C", group: "Current Liabilities", dr: accrued },
@@ -38395,7 +38406,7 @@ async function createTransporterBill(v, existingId) {
       ...rcmJournalLines(rcmPct, rcm),
       { account: "ROUND OFF A/C", group: "Indirect Expenses", dr: roundOff > 0 ? roundOff : 0, cr: roundOff < 0 ? -roundOff : 0 },
       { account: "TDS PAYABLE A/C", group: "Duties & Taxes", cr: tds },
-      ...othersLedger ? [{ account: othersLedger, group: othersLedger === frAccount ? "Direct Expenses" : "Indirect Incomes", cr: othersAmt }] : [],
+      ...deductions.map((d) => ({ account: d.ledger, group: d.ledger === frAccount ? "Direct Expenses" : "Indirect Incomes", cr: d.amount })),
       { account: partyName2, group: "Sundry Creditors", cr: total }
     ]
   });
@@ -38405,7 +38416,7 @@ async function createTransporterBill(v, existingId) {
       sql: `UPDATE transporter_bills SET transporter_id = ?, side = ?, bill_no = ?, bill_date = ?,
               taxable = ?, gst_pct = ?, gst_amount = ?, tds_pct = ?, tds_amount = ?, round_off = ?,
               total = ?, journal_entry_id = ?, note = ?, adjustment = ?, adjustment_note = ?,
-              others_amount = ?, others_ledger = ?, rcm_pct = ?, rcm_amount = ?
+              others_amount = ?, others_ledger = ?, rcm_pct = ?, rcm_amount = ?, deductions_json = ?
             WHERE id = ? AND company_id = ?`,
       args: [
         transporterId,
@@ -38427,6 +38438,7 @@ async function createTransporterBill(v, existingId) {
         othersLedger,
         rcmPct,
         rcm,
+        deductions.length ? JSON.stringify(deductions) : null,
         existingId,
         cid
       ]
@@ -38437,8 +38449,8 @@ async function createTransporterBill(v, existingId) {
       sql: `INSERT INTO transporter_bills
               (company_id, transporter_id, side, bill_no, bill_date, taxable, gst_pct, gst_amount,
                tds_pct, tds_amount, round_off, total, journal_entry_id, note, adjustment, adjustment_note,
-               others_amount, others_ledger, rcm_pct, rcm_amount)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+               others_amount, others_ledger, rcm_pct, rcm_amount, deductions_json)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       args: [
         cid,
         transporterId,
@@ -38459,7 +38471,8 @@ async function createTransporterBill(v, existingId) {
         othersAmt,
         othersLedger,
         rcmPct,
-        rcm
+        rcm,
+        deductions.length ? JSON.stringify(deductions) : null
       ]
     });
     billId = Number(ins.lastInsertRowid);
@@ -38648,6 +38661,7 @@ async function postBillRcm(billId, pct, companyId) {
       adjustment_note: b.adjustment_note,
       others_amount: b.others_amount,
       others_ledger: b.others_ledger,
+      ...b.deductions_json ? { deductions: JSON.parse(String(b.deductions_json)) } : {},
       note: b.note,
       rcm_pct: pct == null ? RCM_DEFAULT_PCT : n48(pct),
       line_ids: lines.map((l) => n48(l.id))
