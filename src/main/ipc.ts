@@ -761,7 +761,7 @@ export function registerIpc(): void {
   )
 
   handle('orders:bargainNotes', (_e, { id }: { id: number }) => purchaseBargainNotes(id))
-  handle('orders:list', (_e, args?: { forModule?: string }) => listOrders(args?.forModule))
+  handle('orders:list', (_e, args?: { forModule?: string; companyId?: number }) => listOrders(args?.forModule, args?.companyId))
   // The selling company's own invoice, read from the purchase it raised here.
   // Read-only by design — see intercompanySource.
   handle('orders:intercompanySource', (_e, { id }: { id: number }) => intercompanySource(Number(id)))
@@ -1593,7 +1593,7 @@ export function registerIpc(): void {
   handle('gate:reject', (_e, { id, reason }: { id: number; reason: string }) => rejectGateEntry(id, reason))
   handle('gate:unreject', (_e, { id }: { id: number }) => unrejectGateEntry(id))
 
-  handle('lc:list', () => listLCs())
+  handle('lc:list', (_e, args?: { companyId?: number }) => listLCs(args?.companyId))
   handle('treasury:alerts', (_e, a?: { all?: boolean }) => treasuryAlerts({ all: !!a?.all }))
   handle('treasury:paymentTracker', () => listPaymentTracker())
   handle('treasury:settleLcBill', (_e, { id, date }: { id: number; date?: string }) => settleLcBill(id, date))

@@ -369,7 +369,7 @@ export async function setSupplierPayable(
   })
 }
 
-export async function listOrders(forModule?: string): Promise<Row[]> {
+export async function listOrders(forModule?: string, companyId?: number): Promise<Row[]> {
   // Bounded to what this user may see. The bound goes in the SQL so the older
   // rows are never fetched; `forModule` lets a page that only borrows this
   // register (Accounts, Treasury) keep its own window instead of this one.
@@ -387,7 +387,8 @@ export async function listOrders(forModule?: string): Promise<Row[]> {
   // behind it, which is exactly what intercompany_sale_id records.
   const intercoOnly = (await currentScope('orders')) === 'intercompany'
   const res = await getClient().execute({
-    args: from ? [getActiveCompanyId(), from] : [getActiveCompanyId()],
+    // Accounting names its own book (F3), which is not always the session's.
+    args: from ? [Number(companyId) || getActiveCompanyId(), from] : [Number(companyId) || getActiveCompanyId()],
     sql: `
     SELECT o.*,
            s.name AS supplier_name,

@@ -2410,16 +2410,20 @@ export function Accounts({
     setTfFrom(globalRange.from); setTfTo(globalRange.to)
   }, [globalRange.version]) // eslint-disable-line react-hooks/exhaustive-deps
 
+  // THE BOOK THAT IS OPEN (F3), NOT THE SESSION'S. These three used to read
+  // the app's active company, so with Accounting on KR FINMARK the Purchase
+  // and Sales Registers listed KR FOODS' bills.
   const loadRegisters = useCallback(async () => {
+    if (!cid) return
     const [o, s, l] = await Promise.all([
-      window.api.orders.list('accounts'),
-      window.api.sales.list(undefined, 'accounts'),
-      window.api.lc.list()
+      window.api.orders.list('accounts', cid),
+      window.api.sales.list([cid], 'accounts'),
+      window.api.lc.list(cid)
     ])
     setPurchases(o)
     setSaleRows(s)
     setLcList(l)
-  }, [])
+  }, [cid])
 
   const loadAccounts = useCallback(async () => {
     if (!cid) return

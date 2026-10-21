@@ -49,9 +49,9 @@ function netAvailable(lc: Row, issued: number): number {
 // LCs / discounting facilities with their utilisation (sum of issuances),
 // the invoice they're linked to, the party repayment is expected from, the
 // opening-amount breakdown, and how much of the exposure has been repaid.
-export async function listLCs(): Promise<Row[]> {
+export async function listLCs(companyId?: number): Promise<Row[]> {
   const res = await getClient().execute({
-    args: [getActiveCompanyId()],
+    args: [Number(companyId) || getActiveCompanyId()],
     sql: `
     SELECT l.*,
       s.name AS supplier_name,

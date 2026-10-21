@@ -138,7 +138,7 @@ const api = {
   },
   orders: {
     bargainNotes: (id: number): Promise<Row[]> => ipcRenderer.invoke('orders:bargainNotes', { id }),
-    list: (forModule?: string): Promise<Row[]> => ipcRenderer.invoke('orders:list', { forModule }),
+    list: (forModule?: string, companyId?: number): Promise<Row[]> => ipcRenderer.invoke('orders:list', { forModule, companyId }),
     intercompanySource: (id: number): Promise<Row | null> =>
       ipcRenderer.invoke('orders:intercompanySource', { id }),
     create: (values: Row): Promise<{ id: number }> =>
@@ -831,7 +831,7 @@ const api = {
     refundRecord: (id: number, values: { date: string; amount: number; bank: string }): Promise<{ id: number }> =>
       ipcRenderer.invoke('lc:refundRecord', { id, values }),
     refundUndo: (refundId: number): Promise<{ id: number }> => ipcRenderer.invoke('lc:refundUndo', { refundId }),
-    list: (): Promise<Row[]> => ipcRenderer.invoke('lc:list'),
+    list: (companyId?: number): Promise<Row[]> => ipcRenderer.invoke('lc:list', { companyId }),
     issuances: (lcId: number): Promise<Row[]> => ipcRenderer.invoke('lc:issuances', { lcId }),
     create: (values: Row): Promise<{ id: number }> => ipcRenderer.invoke('lc:create', { values }),
     update: (id: number, values: Row): Promise<{ id: number }> =>

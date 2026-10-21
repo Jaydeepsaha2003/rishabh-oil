@@ -308,7 +308,11 @@ async function writeAllocs(entryId: number, lines: LineWithAllocs[]): Promise<vo
     sql: 'SELECT id, account_id FROM journal_lines WHERE entry_id = ? ORDER BY id ASC',
     args: [entryId]
   })
-  const cid = getActiveCompanyId()
+  // The VOUCHER's company, not the session's: Accounting can be open on KR
+  // FINMARK while the app works in KR FOODS, and an Agst Ref looked up in the
+  // wrong book links the receipt to the other company's bill of that number.
+  const own = await c.execute({ sql: 'SELECT company_id FROM journal_entries WHERE id = ?', args: [entryId] })
+  const cid = Number((own.rows[0] as unknown as Row | undefined)?.company_id) || getActiveCompanyId()
   for (let i = 0; i < lines.length && i < saved.rows.length; i++) {
     for (const a of lines[i].allocs) {
       // The caller may already know which document it is settling. When it

@@ -102,7 +102,7 @@ export interface Api {
   }
   orders: {
     bargainNotes: (id: number) => Promise<Row[]>
-    list: (forModule?: string) => Promise<Row[]>
+    list: (forModule?: string, companyId?: number) => Promise<Row[]>
     intercompanySource: (id: number) => Promise<Row | null>
     create: (values: Row) => Promise<{ id: number }>
     randomInvoiceNo: (companyId?: number) => Promise<string>
@@ -555,7 +555,7 @@ export interface Api {
     refundLink: (id: number, entryId: number) => Promise<{ id: number }>
     refundRecord: (id: number, values: { date: string; amount: number; bank: string }) => Promise<{ id: number }>
     refundUndo: (refundId: number) => Promise<{ id: number }>
-    list: () => Promise<Row[]>
+    list: (companyId?: number) => Promise<Row[]>
     issuances: (lcId: number) => Promise<Row[]>
     create: (values: Row) => Promise<{ id: number; warning?: string }>
     update: (id: number, values: Row) => Promise<{ id: number; warning?: string }>
