@@ -944,6 +944,37 @@ export async function checkTallyBank(v: {
     ]
     twin.fix = `Reverse ${copy} here — ${own} stays, and matches this Tally line instead.`
   }
+  // ONE ROW PER VOUCHER HERE. Where several Tally lines net into one voucher
+  // (the parking chain: Payment 255 out, Receipt 477 back, against PAY/18) they
+  // are one row, the main line leading and the rest under it as \`also\` — so
+  // the check counts what the ledger counts (1093, not 1094). The money in the
+  // tiles still adds every Tally line.
+  {
+    const lead = new Map<number, Row>()
+    for (const r of rows) {
+      if (!r.linked || n(r.net_of) < 2 || !r.books?.id || !r.tally) continue
+      const cur = lead.get(Number(r.books.id))
+      if (!cur || n(r.tally.amount) > n(cur.tally.amount)) lead.set(Number(r.books.id), r)
+    }
+    if (lead.size) {
+      const keep: Row[] = []
+      for (const r of rows) {
+        const l = r.books?.id && r.linked && n(r.net_of) > 1 ? lead.get(Number(r.books.id)) : undefined
+        if (!l || l === r) {
+          keep.push(r)
+          continue
+        }
+        l.also = [...((l.also as Row[]) || []), r.tally]
+        // The worse of the two answers for the row.
+        if (r.status !== 'matched' && l.status === 'matched') {
+          l.status = r.status
+          l.diffs = [...((l.diffs as Row[]) || []), ...((r.diffs as Row[]) || [])]
+        }
+      }
+      rows.length = 0
+      rows.push(...keep)
+    }
+  }
   const openHere = await bankBalanceBefore(cid, Number(account.id), book.from)
   const closeHere = await bankBalanceBefore(cid, Number(account.id), shiftDays(book.to, 1))
   const count = (s: string): number => rows.filter((r) => r.status === s).length
@@ -957,7 +988,11 @@ export async function checkTallyBank(v: {
         // PAY/18's ₹2,76,288 — and adding the voucher per line put it in Money
         // out twice, a ₹2.70 L gap between two books that agree.
         .filter((r, i, all) => side === 'tally' || !r.books.id || all.findIndex((x) => x.books?.id === r.books.id) === i)
-        .reduce((t, r) => t + n(r[side].amount), 0)
+        .reduce((t, r) => t + n(r[side].amount), 0) +
+      // The Tally lines folded under a row (see ONE ROW PER VOUCHER HERE).
+      (side === 'tally'
+        ? rows.reduce((t, r) => t + ((r.also as Row[]) || []).filter((a) => a.dir === dir && !a.cancelled).reduce((x, a) => x + n(a.amount), 0), 0)
+        : 0)
     )
   const fileDigits = acctDigits(book.bank)
   const companyName = String(((await getClient().execute({ sql: 'SELECT name FROM companies WHERE id = ?', args: [cid] })).rows[0] as unknown as Row | undefined)?.name || '')

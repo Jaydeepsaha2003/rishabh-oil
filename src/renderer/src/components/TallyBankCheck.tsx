@@ -529,7 +529,7 @@ ${pairs.map((x) => String(x.own?.code || '')).join(', ')} stay, and match Tally'
       if (filter !== 'problems' && filter !== 'all' && r.status !== filter) return false
       if (dir && side(r).dir !== dir) return false
       if (!needle) return true
-      return [r.tally?.party, ...detailNames(r), r.tally?.vch_no, r.tally?.vch_type, r.books?.code, r.books?.party, String(side(r).amount)].some((x) => String(x || '').toLowerCase().includes(needle))
+      return [r.tally?.party, ...detailNames(r), r.tally?.vch_no, ...((r.also as Row[]) || []).map((a) => a.vch_no), r.tally?.vch_type, r.books?.code, r.books?.party, String(side(r).amount)].some((x) => String(x || '').toLowerCase().includes(needle))
     })
   }, [rows, filter, q, dir])
   // A search that only finds lines on ANOTHER tab — a matched line is hidden
@@ -541,7 +541,7 @@ ${pairs.map((x) => String(x.own?.code || '')).join(', ')} stay, and match Tally'
       (r) =>
         !tabbed.includes(r) &&
         (!dir || side(r).dir === dir) &&
-        [r.tally?.party, ...detailNames(r), r.tally?.vch_no, r.tally?.vch_type, r.books?.code, r.books?.party, String(side(r).amount)].some((x) =>
+        [r.tally?.party, ...detailNames(r), r.tally?.vch_no, ...((r.also as Row[]) || []).map((a) => a.vch_no), r.tally?.vch_type, r.books?.code, r.books?.party, String(side(r).amount)].some((x) =>
           String(x || '').toLowerCase().includes(needle)
         )
     )
@@ -1044,7 +1044,7 @@ ${pairs.map((x) => String(x.own?.code || '')).join(', ')} stay, and match Tally'
                 subtitle={`${String(res.file_company || '')} · ${String(res.period || '')}`}
                 columns={[
                   { header: 'Date (Tally)', key: 'td', value: (r: Row) => (r.tally ? formatDate(r.tally.date) : '') },
-                  { header: 'Voucher (Tally)', key: 'tv', value: (r: Row) => (r.tally ? `${r.tally.vch_type} ${r.tally.vch_no}` : '') },
+                  { header: 'Voucher (Tally)', key: 'tv', value: (r: Row) => (r.tally ? [r.tally, ...((r.also as Row[]) || [])].map((t) => `${t.vch_type} ${t.vch_no}`).join(' + ') : '') },
                   { header: 'Ledger (Tally)', key: 'tp', value: (r: Row) => (detailNames(r).length ? detailNames(r).join(', ') : String(r.tally?.party || '')) },
                   { header: 'In', key: 'in', align: 'right', numFmt: '#,##0.00', value: (r: Row) => (side(r).dir === 'in' ? Number(side(r).amount) : '') },
                   { header: 'Out', key: 'out', align: 'right', numFmt: '#,##0.00', value: (r: Row) => (side(r).dir === 'out' ? Number(side(r).amount) : '') },
@@ -1182,6 +1182,17 @@ ${pairs.map((x) => String(x.own?.code || '')).join(', ')} stay, and match Tally'
                               {String(t.vch_type)}
                             </span>
                             <span className="text-[11px] font-extrabold tabular-nums text-[#0A1F17]">No. {String(t.vch_no)}</span>
+                            {/* Tally lines that net into this one voucher here,
+                                shown in its row so the counts are the ledger's. */}
+                            {((r.also as Row[]) || []).map((a, k) => (
+                              <span
+                                key={k}
+                                className="mt-1 truncate rounded-[3px] bg-[#EEF4FB] px-1.5 py-0.5 text-[10.5px] font-bold text-[#1B4E82]"
+                                title={`Tally ${String(a.vch_type)} No. ${String(a.vch_no)} on ${formatDate(String(a.date))} — ${formatINR(Number(a.amount) || 0)} ${a.dir === 'in' ? 'in' : 'out'}, ${String(a.party || '')}. Netted into ${String(b?.code || 'this voucher')} here.`}
+                              >
+                                + {String(a.vch_type)} No. {String(a.vch_no)} · {formatDate(String(a.date))} · {formatINR(Number(a.amount) || 0)} {a.dir === 'in' ? 'in' : 'out'}
+                              </span>
+                            ))}
                           </>
                         ) : (
                           <span className="text-[9.5px] font-extrabold uppercase tracking-[.08em] text-[#8CA396]">{b ? 'Here only' : 'Bank only'}</span>
