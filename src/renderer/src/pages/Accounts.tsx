@@ -2002,9 +2002,31 @@ export function Accounts({
   lgOpenRowRef.current = lgOpenRow
   // THE HIGHLIGHTED VOUCHER, as in Tally: ↑ ↓ walk it, Enter opens it. Kept
   // by entry id so a re-sort or a filter does not move it to another voucher.
-  const [lgRowAt, setLgRowAt] = useState<number | null>(null)
+  // THE HIGHLIGHTED VOUCHER ROW lives in a ref and on the row itself
+  // (data-lghi), not in state. As state, every ↑ ↓ re-rendered the whole
+  // Accounting page — the statement, the rail, the filters and a thousand
+  // rows — to move one bar, and holding the key down stuttered. Now a key
+  // press moves an attribute on two rows; a render reads the ref.
   const lgRowAtRef = useRef<number | null>(null)
-  lgRowAtRef.current = lgRowAt
+  const markLgRow = useCallback((id: number | null): void => {
+    const prev = lgRowAtRef.current
+    lgRowAtRef.current = id
+    if (prev != null && prev !== id) document.querySelector(`[data-lgrow="${prev}"]`)?.removeAttribute('data-lghi')
+    if (id == null) return
+    const el = document.querySelector(`[data-lgrow="${id}"]`) as HTMLElement | null
+    if (!el) return
+    el.setAttribute('data-lghi', '1')
+    // Scrolled by hand, and only when the row has left the view:
+    // scrollIntoView cost ~15 ms a key press on a 1,000-voucher ledger, a
+    // position read costs nothing. The sticky header rows are kept clear.
+    const box = el.closest('.overflow-auto') as HTMLElement | null
+    if (!box) return
+    const r = el.getBoundingClientRect()
+    const b = box.getBoundingClientRect()
+    const head = 76
+    if (r.top < b.top + head) box.scrollTop -= b.top + head - r.top
+    else if (r.bottom > b.bottom) box.scrollTop += r.bottom - b.bottom
+  }, [])
   // The vouchers as drawn, for the keys (set in the vouchers view).
   const lgVRowsRef = useRef<Row[]>([])
   // F12 hides or shows the running Balance column; remembered on this browser.
@@ -2665,7 +2687,7 @@ export function Accounts({
   useEffect(() => {
     setLgOpenRow(null)
     // The highlight belongs to the old ledger's vouchers.
-    setLgRowAt(null)
+    markLgRow(null)
     // On the website the chosen view stays with the next ledger, bill-wise
     // included — the old ledger's bills are cleared and the new one's read.
     if (__WEB__) setBills(null)
@@ -5061,7 +5083,7 @@ export function Accounts({
                     ? last
                     : 0
                   : Math.max(0, Math.min(last, at + (e.key === 'ArrowDown' ? 1 : e.key === 'ArrowUp' ? -1 : e.key === 'PageDown' ? 10 : -10)))
-          setLgRowAt(Number(rows[to].id))
+          markLgRow(Number(rows[to].id))
           return
         }
       }
@@ -16210,6 +16232,8 @@ export function Accounts({
     lgVRowsRef.current = vRows
     const vouchersView = (
       <div style={{ minWidth: 1020 }}>
+        {/* The highlighted row, as Tally draws it: a lit bar down its edge. */}
+        <style>{'[data-lghi="1"]{background:#E4F5C8!important;box-shadow:inset 4px 0 0 #9ACD2A!important;transition:none!important}'}</style>
         <div className="grid" style={{ ...headRow, gridTemplateColumns: V_GRID, height: 34 }}>
           <span style={{ padding: '0 14px' }}>{lgCf.head('date', 'Date', { onDark: true })}</span>
           <span style={{ padding: '0 8px' }}>{lgCf.head('particulars', 'Particulars', { onDark: true })}</span>
@@ -16236,7 +16260,7 @@ export function Accounts({
         {vRows.map((r, i) => {
           const eid = Number(r.entry_id ?? r.id)
           const open = lgOpenRow === Number(r.id)
-          const hi = lgRowAt === Number(r.id)
+          const hi = lgRowAtRef.current === Number(r.id)
           const ref = lineRef(r)
           const doc = docTarget(r)
           return (
@@ -16246,11 +16270,9 @@ export function Accounts({
                 tabIndex={0}
                 title={voucherTitle(r)}
                 data-lgrow={String(r.id)}
-                ref={(el) => {
-                  if (el && hi) el.scrollIntoView({ block: 'nearest' })
-                }}
+                data-lghi={hi ? '1' : undefined}
                 onClick={() => {
-                  setLgRowAt(Number(r.id))
+                  markLgRow(Number(r.id))
                   void openForAlter({ id: eid })
                 }}
                 onKeyDown={(e) => {
@@ -16265,8 +16287,7 @@ export function Accounts({
                   minHeight: 46,
                   borderBottom: '1px solid #EFF3EE',
                   // The highlighted row, as Tally draws it: a lit bar down its edge.
-                  background: hi ? '#E4F5C8' : open ? '#F3FBE2' : stripe(i),
-                  boxShadow: hi ? 'inset 4px 0 0 #9ACD2A' : 'none'
+                  background: open ? '#F3FBE2' : stripe(i)
                 }}
               >
                 <span className="flex items-center gap-1.5" style={{ padding: '0 8px 0 8px', ...figS(11.5, '#33473E', 600) }}>
