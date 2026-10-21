@@ -12096,11 +12096,12 @@ async function setSupplierPayable(orderId, supplierId, amount2, date) {
     args: [supplierId, orderId, date, amount2, orderId]
   });
 }
-async function listOrders(forModule) {
+async function listOrders(forModule, companyId) {
   const from = await visibleFromFor("orders", forModule);
   const intercoOnly = await currentScope("orders") === "intercompany";
   const res = await getClient().execute({
-    args: from ? [getActiveCompanyId(), from] : [getActiveCompanyId()],
+    // Accounting names its own book (F3), which is not always the session's.
+    args: from ? [Number(companyId) || getActiveCompanyId(), from] : [Number(companyId) || getActiveCompanyId()],
     sql: `
     SELECT o.*,
            s.name AS supplier_name,
@@ -21887,7 +21888,8 @@ async function writeAllocs(entryId, lines) {
     sql: "SELECT id, account_id FROM journal_lines WHERE entry_id = ? ORDER BY id ASC",
     args: [entryId]
   });
-  const cid = getActiveCompanyId();
+  const own = await c.execute({ sql: "SELECT company_id FROM journal_entries WHERE id = ?", args: [entryId] });
+  const cid = Number(own.rows[0]?.company_id) || getActiveCompanyId();
   for (let i = 0; i < lines.length && i < saved.rows.length; i++) {
     for (const a of lines[i].allocs) {
       let orderId = a.order_id || null;
@@ -35594,9 +35596,9 @@ function netAvailable(lc, issued) {
   const charges = lc.interest_upfront ? 0 : round220(n42(lc.charges));
   return round220(n42(lc.amount) - interest - charges - issued);
 }
-async function listLCs() {
+async function listLCs(companyId) {
   const res = await getClient().execute({
-    args: [getActiveCompanyId()],
+    args: [Number(companyId) || getActiveCompanyId()],
     sql: `
     SELECT l.*,
       s.name AS supplier_name,
@@ -39351,7 +39353,7 @@ function registerIpc() {
     (_e, { id, values }) => moveBargainBalance(id, values)
   );
   handle("orders:bargainNotes", (_e, { id }) => purchaseBargainNotes(id));
-  handle("orders:list", (_e, args) => listOrders(args?.forModule));
+  handle("orders:list", (_e, args) => listOrders(args?.forModule, args?.companyId));
   handle("orders:intercompanySource", (_e, { id }) => intercompanySource(Number(id)));
   handle("skuRates:list", (_e, { id }) => listSkuRates(id));
   handle("skuRates:partyCounts", () => packagingPartyCounts());
@@ -40117,7 +40119,7 @@ function registerIpc() {
   handle("gate:delete", (_e, { id }) => deleteGateEntry(id));
   handle("gate:reject", (_e, { id, reason }) => rejectGateEntry(id, reason));
   handle("gate:unreject", (_e, { id }) => unrejectGateEntry(id));
-  handle("lc:list", () => listLCs());
+  handle("lc:list", (_e, args) => listLCs(args?.companyId));
   handle("treasury:alerts", (_e, a) => treasuryAlerts({ all: !!a?.all }));
   handle("treasury:paymentTracker", () => listPaymentTracker());
   handle("treasury:settleLcBill", (_e, { id, date }) => settleLcBill(id, date));
