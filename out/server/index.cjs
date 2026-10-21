@@ -26320,11 +26320,37 @@ async function checkTallyBank(v) {
     ];
     twin.fix = `Reverse ${copy} here \u2014 ${own} stays, and matches this Tally line instead.`;
   }
+  {
+    const lead = /* @__PURE__ */ new Map();
+    for (const r of rows2) {
+      if (!r.linked || n28(r.net_of) < 2 || !r.books?.id || !r.tally) continue;
+      const cur = lead.get(Number(r.books.id));
+      if (!cur || n28(r.tally.amount) > n28(cur.tally.amount)) lead.set(Number(r.books.id), r);
+    }
+    if (lead.size) {
+      const keep = [];
+      for (const r of rows2) {
+        const l = r.books?.id && r.linked && n28(r.net_of) > 1 ? lead.get(Number(r.books.id)) : void 0;
+        if (!l || l === r) {
+          keep.push(r);
+          continue;
+        }
+        l.also = [...l.also || [], r.tally];
+        if (r.status !== "matched" && l.status === "matched") {
+          l.status = r.status;
+          l.diffs = [...l.diffs || [], ...r.diffs || []];
+        }
+      }
+      rows2.length = 0;
+      rows2.push(...keep);
+    }
+  }
   const openHere = await bankBalanceBefore(cid, Number(account.id), book.from);
   const closeHere = await bankBalanceBefore(cid, Number(account.id), shiftDays2(book.to, 1));
   const count = (s5) => rows2.filter((r) => r.status === s5).length;
   const sum = (side, dir) => round214(
-    rows2.filter((r) => r[side] && r[side].dir === dir && (side === "books" ? r.status !== "cancelled_here" : !r.tally.cancelled)).filter((r) => side === "tally" || r.books.date >= book.from && r.books.date <= book.to).filter((r, i, all) => side === "tally" || !r.books.id || all.findIndex((x) => x.books?.id === r.books.id) === i).reduce((t, r) => t + n28(r[side].amount), 0)
+    rows2.filter((r) => r[side] && r[side].dir === dir && (side === "books" ? r.status !== "cancelled_here" : !r.tally.cancelled)).filter((r) => side === "tally" || r.books.date >= book.from && r.books.date <= book.to).filter((r, i, all) => side === "tally" || !r.books.id || all.findIndex((x) => x.books?.id === r.books.id) === i).reduce((t, r) => t + n28(r[side].amount), 0) + // The Tally lines folded under a row (see ONE ROW PER VOUCHER HERE).
+    (side === "tally" ? rows2.reduce((t, r) => t + (r.also || []).filter((a) => a.dir === dir && !a.cancelled).reduce((x, a) => x + n28(a.amount), 0), 0) : 0)
   );
   const fileDigits = acctDigits(book.bank);
   const companyName = String((await getClient().execute({ sql: "SELECT name FROM companies WHERE id = ?", args: [cid] })).rows[0]?.name || "");
