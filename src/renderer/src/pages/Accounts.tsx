@@ -17239,6 +17239,39 @@ export function Accounts({
                     {lgBooksFrom ? ` · books from ${formatDate(lgBooksFrom)}` : ''}
                   </div>
                 </div>
+                {/* The register as it stands on screen — the chips, search and
+                    column filters applied — with its opening and running balance. */}
+                <button
+                  type="button"
+                  title={filtering ? `Download the ${vRows.length} vouchers shown to Excel` : 'Download this ledger to Excel'}
+                  onClick={() => {
+                    const from = lgFrom || lgBooksFrom || ''
+                    const span = `${from ? formatDate(from) : 'start'} to ${lgTo ? formatDate(lgTo) : 'date'}`
+                    void exportRowsToExcel({
+                      filename: `${acName} ledger ${span}`,
+                      sheetName: 'Ledger',
+                      title: `${acName} — ${String(company?.name || '')}`,
+                      subtitle: `${group || 'Ungrouped'} · ${span} · opening ${bal(stmt.opening)} · closing ${bal(stmt.closing)}${filtering ? ` · ${vRows.length} of ${allRows.length} vouchers (filtered)` : ''}`,
+                      columns: [
+                        { header: 'Date', key: 'date', width: 12, value: (r) => (r.__opening ? (from ? formatDate(from) : '') : formatDate(r.entry_date)) },
+                        { header: 'Type', key: 'type', width: 14, value: (r) => (r.__opening ? '' : String(r.vch_type || '')) },
+                        { header: 'Voucher', key: 'voucher', width: 14, value: (r) => (r.__opening ? '' : String(r.voucher_code || r.vch_no || '')) },
+                        { header: 'Particulars', key: 'particulars', width: 36, value: (r) => (r.__opening ? 'Opening balance' : String(r.particulars || '')) },
+                        { header: 'Ref', key: 'ref', width: 18, value: (r) => (r.__opening ? '' : lineRef(r)?.full || '') },
+                        { header: 'Debit ₹', key: 'dr', width: 16, align: 'right', numFmt: NUM_MONEY, value: (r) => (n(r.dr) > 0 ? n(r.dr) : '') },
+                        { header: 'Credit ₹', key: 'cr', width: 16, align: 'right', numFmt: NUM_MONEY, value: (r) => (n(r.cr) > 0 ? n(r.cr) : '') },
+                        { header: 'Balance', key: 'bal', width: 20, align: 'right', value: (r) => bal(n(r.__opening ? stmt.opening : r.running)) },
+                        { header: 'Narration', key: 'narration', width: 60, value: (r) => (r.__opening ? '' : String(r.narration || '')) }
+                      ],
+                      rows: [{ __opening: true }, ...vRows]
+                    })
+                  }}
+                  className="flex h-8 flex-none items-center gap-[7px] rounded-[7px] px-2.5"
+                  style={{ border: '1px solid #0B6B45', background: '#0B6B45', fontSize: 12, fontWeight: 800, color: '#fff' }}
+                >
+                  <Download className="h-[17px] w-[17px]" />
+                  Excel
+                </button>
                 <button
                   type="button"
                   title={`Summary — closing balance, where it moved, voucher mix (${fKeyLabel('F8')})`}
