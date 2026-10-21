@@ -151,8 +151,40 @@ export function TallyBankCheck({
       setStmt(statement || null)
       if (fromDraft) setSavedAt(fromDraft)
       else {
-        const s = await window.api.tallyNotes.saveDraft({ company_id: forCompany, kind: `bank:${acct}`, file_name: f.name, data_base64: f.b64 })
+        const s = await window.api.tallyNotes.saveDraft({
+          company_id: forCompany,
+          kind: `bank:${acct}`,
+          file_name: f.name,
+          data_base64: f.b64,
+          period_from: checked.from,
+          period_to: checked.to
+        })
         if (companyNow.current === forCompany) setSavedAt(s.saved_at)
+        // A book for less than the one kept: checked, but the full book stays
+        // this bank's — unless that is what was meant.
+        if (s.kept) {
+          const kept = s.kept
+          toast.message(
+            `Checked ${f.name} (${formatDate(String(checked.from))}${checked.to !== checked.from ? ` to ${formatDate(String(checked.to))}` : ''}) — this bank's saved book, ${kept.file_name} (${formatDate(kept.from)} to ${formatDate(kept.to)}), is kept.`,
+            {
+              duration: 12000,
+              action: {
+                label: 'Replace saved book',
+                onClick: () => {
+                  void window.api.tallyNotes
+                    .saveDraft({ company_id: forCompany, kind: `bank:${acct}`, file_name: f.name, data_base64: f.b64, period_from: checked.from, period_to: checked.to, replace: true })
+                    .then((r) => {
+                      setSavedAt(r.saved_at)
+                      void loadDrafts()
+                      void loadBooks()
+                      toast.success(`${f.name} is now this bank's saved book`)
+                    })
+                    .catch((e) => toast.error((e as Error).message))
+                }
+              }
+            }
+          )
+        }
         void loadDrafts()
         void loadBooks()
       }

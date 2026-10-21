@@ -1121,7 +1121,8 @@ const api = {
     fixRegisterDate: (values: Row): Promise<{ entry_id: number; from: string; to: string; moved: string }> =>
       ipcRenderer.invoke('tallyNotes:fixRegisterDate', { values }),
     linkParty: (values: Row): Promise<{ key: string }> => ipcRenderer.invoke('tallyNotes:linkParty', { values }),
-    saveDraft: (values: Row): Promise<{ saved_at: string }> => ipcRenderer.invoke('tallyNotes:saveDraft', { values }),
+    saveDraft: (values: Row): Promise<{ saved_at: string; kept?: { file_name: string; from: string; to: string } }> =>
+      ipcRenderer.invoke('tallyNotes:saveDraft', { values }),
     drafts: (values?: Row): Promise<Row[]> => ipcRenderer.invoke('tallyNotes:drafts', { values }),
     clearDraft: (values: Row): Promise<{ cleared: boolean }> => ipcRenderer.invoke('tallyNotes:clearDraft', { values })
   },

@@ -774,7 +774,7 @@ export interface Api {
     postBank: (values: Row) => Promise<{ created: { vch_no: string; id: number }[]; skipped: { vch_no: string; reason: string }[] }>
     fixRegisterDate: (values: Row) => Promise<{ entry_id: number; from: string; to: string; moved: string }>
     linkParty: (values: Row) => Promise<{ key: string }>
-    saveDraft: (values: Row) => Promise<{ saved_at: string }>
+    saveDraft: (values: Row) => Promise<{ saved_at: string; kept?: { file_name: string; from: string; to: string } }>
     drafts: (values?: Row) => Promise<Row[]>
     clearDraft: (values: Row) => Promise<{ cleared: boolean }>
   }

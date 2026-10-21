@@ -1146,6 +1146,13 @@ async function ensureDraftTable(): Promise<void> {
     updated_at TEXT NOT NULL DEFAULT (datetime('now')),
     PRIMARY KEY (company_id, username, kind)
   )`)
+  // The period a kept bank book covers, so a one-day file cannot quietly
+  // replace the whole quarter (see saveTallyDraft).
+  for (const col of ['period_from TEXT', 'period_to TEXT']) {
+    await getClient()
+      .execute(`ALTER TABLE tally_import_drafts ADD COLUMN ${col}`)
+      .catch(() => undefined)
+  }
 }
 
 /**
@@ -1184,22 +1191,49 @@ export async function saveTallyDraft(v: {
   picked?: string[]
   allow_maybe?: boolean
   company_id?: number
-}): Promise<{ saved_at: string }> {
+  /** A bank book's period, when the caller knows it (the check just read it). */
+  period_from?: string
+  period_to?: string
+  /** Keep this file even though it covers less than the one kept now. */
+  replace?: boolean
+}): Promise<{ saved_at: string; kept?: { file_name: string; from: string; to: string } }> {
   await ensureDraftTable()
   const c = getClient()
   const kind = draftKind(v.kind)
   const cid = await companyOf(v)
   const who = draftOwner()
   const picked = JSON.stringify(Array.isArray(v.picked) ? v.picked.map(String) : [])
+  const from = v.period_from ? String(v.period_from).slice(0, 10) : null
+  const to = v.period_to ? String(v.period_to).slice(0, 10) : null
   if (v.data_base64) {
     if (String(v.data_base64).length > 12_000_000) throw new Error('That file is too large to keep as a draft')
+    // A BANK BOOK THAT DOES NOT COVER THE ONE KEPT DOES NOT REPLACE IT. On 19-Oct a
+    // one-day book (17-Oct, 13 vouchers) took the place of HDFC 5385's
+    // 1-Jul to 3-Oct book, and every other day dropped out of the check. The
+    // file is still checked; it is only not kept, unless asked.
+    if (/^bank:/.test(kind) && from && to && !v.replace) {
+      const cur = toPlain(
+        await c.execute({
+          sql: 'SELECT file_name, period_from, period_to, updated_at FROM tally_import_drafts WHERE company_id = ? AND username = ? AND kind = ?',
+          args: [cid, who, kind]
+        })
+      )[0]
+      const cf = String(cur?.period_from || '')
+      const ct = String(cur?.period_to || '')
+      // Kept automatically only when the new book covers every day the kept
+      // one does (a longer or later-ending export of the same bank).
+      if (cf && ct && !(from <= cf && to >= ct)) {
+        return { saved_at: String(cur?.updated_at || ''), kept: { file_name: String(cur?.file_name || ''), from: cf, to: ct } }
+      }
+    }
     await c.execute({
-      sql: `INSERT INTO tally_import_drafts (company_id, username, kind, file_name, data_base64, picked_json, allow_maybe, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'))
+      sql: `INSERT INTO tally_import_drafts (company_id, username, kind, file_name, data_base64, picked_json, allow_maybe, updated_at, period_from, period_to)
+            VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'), ?, ?)
             ON CONFLICT(company_id, username, kind) DO UPDATE SET
               file_name = excluded.file_name, data_base64 = excluded.data_base64,
-              picked_json = excluded.picked_json, allow_maybe = excluded.allow_maybe, updated_at = excluded.updated_at`,
-      args: [cid, who, kind, String(v.file_name || ''), String(v.data_base64), picked, v.allow_maybe ? 1 : 0]
+              picked_json = excluded.picked_json, allow_maybe = excluded.allow_maybe, updated_at = excluded.updated_at,
+              period_from = excluded.period_from, period_to = excluded.period_to`,
+      args: [cid, who, kind, String(v.file_name || ''), String(v.data_base64), picked, v.allow_maybe ? 1 : 0, from, to]
     })
   } else {
     // Only the choices changed — the file stays as it was kept.
