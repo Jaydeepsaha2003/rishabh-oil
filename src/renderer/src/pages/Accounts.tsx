@@ -2000,6 +2000,28 @@ export function Accounts({
   const [lgOpenRow, setLgOpenRow] = useState<number | null>(null)
   const lgOpenRowRef = useRef<number | null>(null)
   lgOpenRowRef.current = lgOpenRow
+  // THE HIGHLIGHTED VOUCHER, as in Tally: ↑ ↓ walk it, Enter opens it. Kept
+  // by entry id so a re-sort or a filter does not move it to another voucher.
+  const [lgRowAt, setLgRowAt] = useState<number | null>(null)
+  const lgRowAtRef = useRef<number | null>(null)
+  lgRowAtRef.current = lgRowAt
+  // The vouchers as drawn, for the keys (set in the vouchers view).
+  const lgVRowsRef = useRef<Row[]>([])
+  // F12 hides or shows the running Balance column; remembered on this browser.
+  const [lgHideBal, setLgHideBal] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem('acct.ledger.hideBalance') === '1'
+    } catch {
+      return false
+    }
+  })
+  useEffect(() => {
+    try {
+      localStorage.setItem('acct.ledger.hideBalance', lgHideBal ? '1' : '0')
+    } catch {
+      /* private window: just not remembered */
+    }
+  }, [lgHideBal])
   const [lgFQuery, setLgFQuery] = useState('')
   const [lgFTypes, setLgFTypes] = useState<string[]>([])
   // Tanker empty: leave out purchase bills whose tankers are not all emptied.
@@ -2635,6 +2657,8 @@ export function Accounts({
   // Switching party closes the bills view — its figures belonged to the old one.
   useEffect(() => {
     setLgOpenRow(null)
+    // The highlight belongs to the old ledger's vouchers.
+    setLgRowAt(null)
     // On the website the chosen view stays with the next ledger, bill-wise
     // included — the old ledger's bills are cleared and the new one's read.
     if (__WEB__) setBills(null)
@@ -4987,17 +5011,66 @@ export function Accounts({
         void deleteVoucher()
         return
       }
-      // ↑ ↓ WALK THE LEDGER LIST from anywhere on the website's ledger screen
-      // that is not a box being typed into — the next ledger opens at once.
+      // F12: the Balance column, hidden or shown.
+      if (__WEB__ && screen === 'ledger' && e.key === 'F12' && !e.ctrlKey && !e.metaKey && !e.shiftKey) {
+        e.preventDefault()
+        setLgHideBal((h) => !h)
+        return
+      }
+      // ↑ ↓ WALK THE VOUCHERS, Tally's way: a highlighted row moves, Enter
+      // opens it. Only on the Vouchers view, outside any box or menu.
+      const inPopup = !!(e.target as HTMLElement)?.closest?.('[role="dialog"],[role="listbox"],[role="menu"],[data-radix-popper-content-wrapper]')
+      if (
+        __WEB__ &&
+        screen === 'ledger' &&
+        lgView === 'vouchers' &&
+        !typing &&
+        !inPopup &&
+        !e.altKey &&
+        !e.ctrlKey &&
+        !e.metaKey &&
+        (e.key === 'ArrowDown' || e.key === 'ArrowUp' || e.key === 'Home' || e.key === 'End' || e.key === 'PageDown' || e.key === 'PageUp' || e.key === 'Enter')
+      ) {
+        const rows = lgVRowsRef.current
+        if (rows.length) {
+          const id = (r: Row): number => Number(r.entry_id ?? r.id)
+          const at = rows.findIndex((r) => Number(r.id) === lgRowAtRef.current)
+          if (e.key === 'Enter') {
+            if (at >= 0) {
+              e.preventDefault()
+              void openForAlter({ id: id(rows[at]) })
+            }
+            return
+          }
+          e.preventDefault()
+          const last = rows.length - 1
+          const to =
+            e.key === 'Home'
+              ? 0
+              : e.key === 'End'
+                ? last
+                : at < 0
+                  ? e.key === 'ArrowUp' || e.key === 'PageUp'
+                    ? last
+                    : 0
+                  : Math.max(0, Math.min(last, at + (e.key === 'ArrowDown' ? 1 : e.key === 'ArrowUp' ? -1 : e.key === 'PageDown' ? 10 : -10)))
+          setLgRowAt(Number(rows[to].id))
+          return
+        }
+      }
+      // ALT ↑ ↓ WALK THE LEDGER LIST from anywhere on the website's ledger
+      // screen that is not a box being typed into — the next ledger opens at
+      // once. (Plain ↑ ↓ did this before the voucher rows took them; on the
+      // other views, which have no rows to walk, plain ↑ ↓ still does.)
       if (
         __WEB__ &&
         screen === 'ledger' &&
         !typing &&
-        !e.altKey &&
+        (e.altKey || lgView !== 'vouchers') &&
         !e.ctrlKey &&
         !e.metaKey &&
         (e.key === 'ArrowDown' || e.key === 'ArrowUp') &&
-        !(e.target as HTMLElement)?.closest?.('[role="dialog"],[role="listbox"],[role="menu"],[data-radix-popper-content-wrapper]')
+        !inPopup
       ) {
         const order = lgOrderRef.current
         if (order.length) {
@@ -5052,7 +5125,7 @@ export function Accounts({
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [screen, gwIndex, viewRow, viewOnly, newLedger, editingId, noteEditId, lines, payLines, payAccounts, rawAlter, vchDate, vchNo, narration, vchType, saving, onExit, company, companies, coIndex, ledgerId, lgBills, lgPickerOpen, lgRailOpen, regSumOpen, regOpenRow, lgBack, splitOpen, noteSplitOpen, mPicked, alterBack, noteItems, noteInvoice, noteParty])
+  }, [screen, gwIndex, viewRow, viewOnly, newLedger, editingId, noteEditId, lines, payLines, payAccounts, rawAlter, vchDate, vchNo, narration, vchType, saving, onExit, company, companies, coIndex, ledgerId, lgView, lgBills, lgPickerOpen, lgRailOpen, regSumOpen, regOpenRow, lgBack, splitOpen, noteSplitOpen, mPicked, alterBack, noteItems, noteInvoice, noteParty])
 
   // ------- derived -------
   const ledgerAccount = accounts.find((a) => Number(a.id) === ledgerId)
@@ -15842,7 +15915,7 @@ export function Accounts({
         {W >= 1240 && (
           <div className="flex flex-none items-center gap-[7px] whitespace-nowrap" style={{ fontSize: 11, fontWeight: 600, color: A.inkSky }}>
             <KeyboardIcon className="h-[15px] w-[15px]" />
-            {lgView === 'billwise' ? '↑ ↓ pick a bill' : '↑ ↓ change ledger'} · {fKeyLabel('F4')} find · {[fKeyLabel('F1'), fKeyLabel('F5'), chordLabel('Alt F5'), fKeyLabel('F7')].join(' ')} change view · {fKeyLabel('F8')} summary
+            {lgView === 'billwise' ? '↑ ↓ pick a bill' : lgView === 'vouchers' ? `↑ ↓ voucher · Enter open · ${chordLabel('Alt ↑↓')} change ledger · F12 balance` : '↑ ↓ change ledger'} · {fKeyLabel('F4')} find · {[fKeyLabel('F1'), fKeyLabel('F5'), chordLabel('Alt F5'), fKeyLabel('F7')].join(' ')} change view · {fKeyLabel('F8')} summary
           </div>
         )}
       </div>
@@ -16041,29 +16114,38 @@ export function Accounts({
     // a 1366 laptop, and beside the list AND the rail from 1760 up.
     // Type wide enough for the longest voucher type ("PURCHASE HUSK"), so
     // its chip never runs into the voucher number beside it.
-    const V_GRID = '128px 140px 108px minmax(140px,1fr) 116px 122px 122px 148px'
+    // Particulars straight after the date, then what kind of voucher it is.
+    const V_GRID = `128px minmax(160px,1fr) 140px 108px 116px 122px 122px${lgHideBal ? '' : ' 148px'}`
+    lgVRowsRef.current = vRows
     const vouchersView = (
       <div style={{ minWidth: 1020 }}>
         <div className="grid" style={{ ...headRow, gridTemplateColumns: V_GRID, height: 34 }}>
           <span style={{ padding: '0 14px' }}>{lgCf.head('date', 'Date', { onDark: true })}</span>
+          <span style={{ padding: '0 8px' }}>{lgCf.head('particulars', 'Particulars', { onDark: true })}</span>
           <span style={{ padding: '0 8px' }}>{lgCf.head('type', 'Type', { onDark: true })}</span>
           <span style={{ padding: '0 8px' }}>{lgCf.head('voucher', 'Voucher', { onDark: true })}</span>
-          <span style={{ padding: '0 8px' }}>{lgCf.head('particulars', 'Particulars', { onDark: true })}</span>
           <span style={{ padding: '0 8px' }}>{lgCf.head('ref', 'Ref', { onDark: true })}</span>
           <span style={{ padding: '0 12px', display: 'flex', justifyContent: 'flex-end' }}>{lgCf.head('dr', 'Debit', { onDark: true, align: 'end' })}</span>
           <span style={{ padding: '0 12px', display: 'flex', justifyContent: 'flex-end' }}>{lgCf.head('cr', 'Credit', { onDark: true, align: 'end' })}</span>
-          <span style={{ padding: '0 14px', display: 'flex', justifyContent: 'flex-end' }}>{lgCf.head('balance', 'Balance', { onDark: true, align: 'end' })}</span>
+          {!lgHideBal && (
+            <span style={{ padding: '0 14px', display: 'flex', justifyContent: 'flex-end' }} title="F12 hides or shows this column">
+              {lgCf.head('balance', 'Balance', { onDark: true, align: 'end' })}
+            </span>
+          )}
         </div>
         <div className="grid items-center" style={{ gridTemplateColumns: V_GRID, height: 38, background: '#F4F7F2', borderBottom: '1px solid #E4ECE3' }}>
           <span style={{ padding: '0 14px', ...figS(11.5, A.muted, 600) }}>{lgFrom || lgBooksFrom ? formatDate(lgFrom || lgBooksFrom) : ''}</span>
-          <span style={{ gridColumn: 'span 4', padding: '0 8px', fontSize: 11.5, fontWeight: 800, color: '#33473E' }}>Opening balance</span>
+          <span style={{ gridColumn: 'span 4', padding: '0 8px', fontSize: 11.5, fontWeight: 800, color: '#33473E' }}>
+            Opening balance{lgHideBal ? <span style={{ ...figS(11.5, balFg(stmt.opening)), marginLeft: 10 }}>{bal(stmt.opening)}</span> : null}
+          </span>
           <span />
           <span />
-          <span style={{ padding: '0 14px', textAlign: 'right', ...figS(12, balFg(stmt.opening)) }}>{bal(stmt.opening)}</span>
+          {!lgHideBal && <span style={{ padding: '0 14px', textAlign: 'right', ...figS(12, balFg(stmt.opening)) }}>{bal(stmt.opening)}</span>}
         </div>
         {vRows.map((r, i) => {
           const eid = Number(r.entry_id ?? r.id)
           const open = lgOpenRow === Number(r.id)
+          const hi = lgRowAt === Number(r.id)
           const ref = lineRef(r)
           const doc = docTarget(r)
           return (
@@ -16072,7 +16154,14 @@ export function Accounts({
                 role="button"
                 tabIndex={0}
                 title={voucherTitle(r)}
-                onClick={() => void openForAlter({ id: eid })}
+                data-lgrow={String(r.id)}
+                ref={(el) => {
+                  if (el && hi) el.scrollIntoView({ block: 'nearest' })
+                }}
+                onClick={() => {
+                  setLgRowAt(Number(r.id))
+                  void openForAlter({ id: eid })
+                }}
                 onKeyDown={(e) => {
                   if (e.key === 'Enter' || e.key === ' ') {
                     e.preventDefault()
@@ -16080,7 +16169,14 @@ export function Accounts({
                   }
                 }}
                 className="grid cursor-pointer items-center transition-colors hover:bg-[#F1F8EC]"
-                style={{ gridTemplateColumns: V_GRID, minHeight: 46, borderBottom: '1px solid #EFF3EE', background: open ? '#F3FBE2' : stripe(i) }}
+                style={{
+                  gridTemplateColumns: V_GRID,
+                  minHeight: 46,
+                  borderBottom: '1px solid #EFF3EE',
+                  // The highlighted row, as Tally draws it: a lit bar down its edge.
+                  background: hi ? '#E4F5C8' : open ? '#F3FBE2' : stripe(i),
+                  boxShadow: hi ? 'inset 4px 0 0 #9ACD2A' : 'none'
+                }}
               >
                 <span className="flex items-center gap-1.5" style={{ padding: '0 8px 0 8px', ...figS(11.5, '#33473E', 600) }}>
                   <button
@@ -16096,8 +16192,6 @@ export function Accounts({
                   </button>
                   {formatDate(r.entry_date)}
                 </span>
-                <span style={{ padding: '0 12px 0 8px', minWidth: 0, overflow: 'hidden' }}>{typeChip(typeOf(r))}</span>
-                <span style={{ padding: '0 8px 0 4px', ...figS(11.5), ...clip }}>{String(r.voucher_code || r.vch_no || '—')}</span>
                 <div style={{ padding: '6px 8px', minWidth: 0 }}>
                   <div style={{ fontSize: 12, fontWeight: 800, ...clip }}>{String(r.particulars || '—')}</div>
                   {/* One bank debit that repaid several discounted bills:
@@ -16118,6 +16212,8 @@ export function Accounts({
                     <div style={{ fontSize: 10.5, fontWeight: 600, color: A.muted, marginTop: 2, ...clip }}>{String(r.narration)}</div>
                   )}
                 </div>
+                <span style={{ padding: '0 12px 0 8px', minWidth: 0, overflow: 'hidden' }}>{typeChip(typeOf(r))}</span>
+                <span style={{ padding: '0 8px 0 4px', ...figS(11.5), ...clip }}>{String(r.voucher_code || r.vch_no || '—')}</span>
                 {ref ? (
                   doc ? (
                     <button
@@ -16151,12 +16247,14 @@ export function Accounts({
                 )}
                 <span style={{ padding: '0 12px', textAlign: 'right', ...figS(12.5, A.dr) }}>{Number(r.dr) > 0 ? formatINR(Number(r.dr)) : ''}</span>
                 <span style={{ padding: '0 12px', textAlign: 'right', ...figS(12.5, A.cr) }}>{Number(r.cr) > 0 ? formatINR(Number(r.cr)) : ''}</span>
-                <span
-                  className="flex h-full items-center justify-end"
-                  style={{ padding: '0 14px', background: 'rgba(199,240,63,.07)', ...figS(12, balFg(Number(r.running))) }}
-                >
-                  {bal(Number(r.running))}
-                </span>
+                {!lgHideBal && (
+                  <span
+                    className="flex h-full items-center justify-end"
+                    style={{ padding: '0 14px', background: 'rgba(199,240,63,.07)', ...figS(12, balFg(Number(r.running))) }}
+                  >
+                    {bal(Number(r.running))}
+                  </span>
+                )}
               </div>
               {open && voucherLines(r)}
             </div>
