@@ -1834,7 +1834,7 @@ export function Trading({
   // Below the new-deal form on purpose — a deal being entered stays in the
   // form even if the window is narrowed mid-entry, rather than throwing the
   // work away to show a read-only list.
-  if (__WEB__ && isMobile && !formPage) return <TradingMobile />
+  if (__WEB__ && isMobile && !formPage) return <TradingMobile focusId={focusId} onFocusHandled={onFocusHandled} />
 
   if (formPage) {
     return (

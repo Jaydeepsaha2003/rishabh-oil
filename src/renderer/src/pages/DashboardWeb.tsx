@@ -79,6 +79,7 @@ export type DashProps = {
   checking: boolean
   onRefresh: () => void | Promise<void>
   onNavigate: (p: Page) => void
+  onOpenRecord?: (target: 'lc' | 'bd' | 'trading', id: number) => void
   layout: DashLayout
   // Every company's books together, and the switch for it.
   allCompanies: boolean
@@ -675,7 +676,7 @@ export function DashboardWeb(props: DashProps): React.JSX.Element {
           )}
           {anyPos && (
             <div className="pt-2.5">
-              <DailyPosition t={t} dark={theme === 'dark'} isMobile cats={cats} onNavigate={props.onNavigate} isOn={on} allCompanies={props.allCompanies} />
+              <DailyPosition t={t} dark={theme === 'dark'} isMobile cats={cats} onNavigate={props.onNavigate} onOpenRecord={props.onOpenRecord} isOn={on} allCompanies={props.allCompanies} />
             </div>
           )}
           {anyMonth && (
@@ -1091,7 +1092,7 @@ export function DashboardWeb(props: DashProps): React.JSX.Element {
         {/* The morning's position first — stock, yesterday's movement, the
             tankers on the road, money still to come back, and the plan. */}
         {allHidden && <NothingShown />}
-        {anyPos && <DailyPosition t={t} dark={theme === 'dark'} isMobile={false} cats={cats} onNavigate={props.onNavigate} isOn={on} allCompanies={props.allCompanies} />}
+        {anyPos && <DailyPosition t={t} dark={theme === 'dark'} isMobile={false} cats={cats} onNavigate={props.onNavigate} onOpenRecord={props.onOpenRecord} isOn={on} allCompanies={props.allCompanies} />}
         {anyMonth && (
           <div className="flex items-center gap-2.5">
             <span className="text-[10.5px] font-extrabold uppercase tracking-[.16em]" style={{ color: t.muted }}>

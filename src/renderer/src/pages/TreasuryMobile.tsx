@@ -825,8 +825,13 @@ const BD_PERIODS: { k: string; label: string; maxDays?: number }[] = [
   { k: 'fortnight', label: 'Fortnight', maxDays: 14 }
 ]
 
-export function TreasuryMobile(): React.JSX.Element {
-  const [tab, setTab] = useState<'lc' | 'bd' | 'tracker'>('lc')
+export function TreasuryMobile({
+  focusLcId = null,
+  focusBdId = null,
+  onFocusHandled
+}: { focusLcId?: number | null; focusBdId?: number | null; onFocusHandled?: () => void } = {}): React.JSX.Element {
+  // Opened on one LC or bill (the dashboard, a ledger): its tab, and the bill.
+  const [tab, setTab] = useState<'lc' | 'bd' | 'tracker'>(() => (Number(focusBdId) ? 'bd' : 'lc'))
   // The Payment tracker, as on the desktop: every dated payment in and out.
   const [tracker, setTracker] = useState<Row[]>([])
   const [trackerLoading, setTrackerLoading] = useState(false)
@@ -872,7 +877,18 @@ export function TreasuryMobile(): React.JSX.Element {
   const [loading, setLoading] = useState(true)
 
   // What is open over the list. One at a time — each is a full screen.
-  const [detail, setDetail] = useState<{ kind: 'lc' | 'bd'; id: number } | null>(null)
+  const [detail, setDetail] = useState<{ kind: 'lc' | 'bd'; id: number } | null>(() =>
+    Number(focusBdId) ? { kind: 'bd', id: Number(focusBdId) } : Number(focusLcId) ? { kind: 'lc', id: Number(focusLcId) } : null
+  )
+  useEffect(() => {
+    const bd = Number(focusBdId) || 0
+    const lc = Number(focusLcId) || 0
+    if (!bd && !lc) return
+    setTab(bd ? 'bd' : 'lc')
+    setDetail(bd ? { kind: 'bd', id: bd } : { kind: 'lc', id: lc })
+    onFocusHandled?.()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [focusBdId, focusLcId])
   const [lcForm, setLcForm] = useState<Row | null>(null)
   const [bdForm, setBdForm] = useState<Row | null>(null)
   const [stageRow, setStageRow] = useState<Row | null>(null)

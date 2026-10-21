@@ -34,6 +34,8 @@ type Row = Record<string, any>
 
 interface Props {
   onNavigate: (page: Page) => void
+  // Open one LC, bill or trading deal from a row on the board.
+  onOpenRecord?: (target: 'lc' | 'bd' | 'trading', id: number) => void
 }
 
 const n = (v: unknown): number => (Number.isFinite(Number(v)) ? Number(v) : 0)
@@ -170,7 +172,7 @@ const MONTH_KPIS = ['m.buy', 'm.sell', 'm.pay', 'm.rec']
 const PARTY_ROW = ['m.topSup', 'm.topCus', 'm.duties']
 const OPS_ROW = ['m.stock', 'm.exposure', 'm.attention']
 
-export function Dashboard({ onNavigate }: Props): React.JSX.Element {
+export function Dashboard({ onNavigate, onOpenRecord }: Props): React.JSX.Element {
   const [stats, setStats] = useState<Row | null>(null)
   const [treasury, setTreasury] = useState<Row | null>(null)
   const [checking, setChecking] = useState(false)
@@ -263,6 +265,7 @@ export function Dashboard({ onNavigate }: Props): React.JSX.Element {
         // click event lands in `background` and the spinner never shows.
         onRefresh={() => refresh()}
         onNavigate={onNavigate}
+        onOpenRecord={onOpenRecord}
         layout={layout}
         allCompanies={allCos}
         onAllCompanies={setAllCompanies}
@@ -311,7 +314,7 @@ export function Dashboard({ onNavigate }: Props): React.JSX.Element {
             in the board's light palette. */}
         {dashItemsHere().some((i) => i.group === 'position' && on(i.key)) && (
           <div className="rounded-md bg-[#F1F5EF] p-3">
-            <DailyPosition t={DASH_THEMES.light} dark={false} isMobile={false} cats={cats} onNavigate={onNavigate} isOn={on} allCompanies={allCos} />
+            <DailyPosition t={DASH_THEMES.light} dark={false} isMobile={false} cats={cats} onNavigate={onNavigate} onOpenRecord={onOpenRecord} isOn={on} allCompanies={allCos} />
           </div>
         )}
         {dashItemsHere().every((i) => !on(i.key)) && (

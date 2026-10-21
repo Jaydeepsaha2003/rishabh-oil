@@ -92,6 +92,9 @@ export type PositionProps = {
   isOn?: (key: string) => boolean
   // Every company's position together (the dashboard's All companies).
   allCompanies?: boolean
+  // Open the one record a row is about — the LC, the discounted bill, the
+  // trading deal — rather than just its page.
+  onOpenRecord?: (target: 'lc' | 'bd' | 'trading', id: number) => void
 }
 
 const ALL_ON = (): boolean => true
@@ -104,7 +107,12 @@ const TILE_KEY: Record<string, string> = {
   trade: 'pos.trade'
 }
 
-export function DailyPosition({ t, dark, isMobile, cats, onNavigate, isOn = ALL_ON, allCompanies = false }: PositionProps): React.JSX.Element | null {
+export function DailyPosition({ t, dark, isMobile, cats, onNavigate, isOn = ALL_ON, allCompanies = false, onOpenRecord }: PositionProps): React.JSX.Element | null {
+  // A stage cell opens Purchases on the tankers at that stage.
+  const openStage = (stage: string): void => {
+    setPageIntent('orders', { kind: 'stage', stage })
+    onNavigate('orders')
+  }
   const [pos, setPos] = useState<Row | null>(null)
   const [failed, setFailed] = useState('')
   const [planDate, setPlanDate] = useState(todayISO())
@@ -205,7 +213,7 @@ export function DailyPosition({ t, dark, isMobile, cats, onNavigate, isOn = ALL_
       icon: HandCoins,
       fg: t.violet,
       value: money(tradeRecv),
-      unit: 'Dr · buyers owe us',
+      unit: 'Dr · customers',
       sub: `${openDeals} deal${openDeals === 1 ? '' : 's'} with money outstanding`,
       page: 'trading',
       extra: (
@@ -213,7 +221,7 @@ export function DailyPosition({ t, dark, isMobile, cats, onNavigate, isOn = ALL_
           {money(tradePay)}
           <DrCr side="Cr" fg={t.red} small />
           <span className="ml-1.5 font-sans text-[10.5px] font-semibold" style={{ color: t.muted }}>
-            we owe suppliers
+            suppliers
           </span>
         </span>
       )
@@ -429,10 +437,19 @@ export function DailyPosition({ t, dark, isMobile, cats, onNavigate, isOn = ALL_
                     <td className="px-2.5 py-2 font-extrabold" style={{ color: t.ink }}>
                       {oil}
                     </td>
-                    {stages.map(([k]) => {
+                    {stages.map(([k, v]) => {
                       const c = row.cells.get(k)
                       return (
-                        <td key={k} className={isMobile ? 'px-2 py-2 text-right' : 'px-2.5 py-2 text-right'}>
+                        <td
+                          key={k}
+                          className={isMobile ? 'px-2 py-2 text-right' : 'px-2.5 py-2 text-right'}
+                          title={c?.count ? `${oil} · ${v.label} — open these tankers` : undefined}
+                          onClick={(e) => {
+                            if (!c?.count) return
+                            e.stopPropagation()
+                            openStage(k)
+                          }}
+                        >
                           {cell(c?.count || 0, c?.mt || 0)}
                         </td>
                       )
@@ -448,7 +465,12 @@ export function DailyPosition({ t, dark, isMobile, cats, onNavigate, isOn = ALL_
                       Total
                     </td>
                     {stages.map(([k, v]) => (
-                      <td key={k} className={isMobile ? 'px-2 py-2 text-right' : 'px-2.5 py-2 text-right'}>
+                      <td
+                        key={k}
+                        className={isMobile ? 'cursor-pointer px-2 py-2 text-right' : 'cursor-pointer px-2.5 py-2 text-right'}
+                        title={`${v.label} — open these tankers`}
+                        onClick={() => openStage(k)}
+                      >
                         {cell(v.count, v.mt, true)}
                       </td>
                     ))}
@@ -630,7 +652,7 @@ export function DailyPosition({ t, dark, isMobile, cats, onNavigate, isOn = ALL_
             <button
               key={`${x.kind}-${x.id}`}
               type="button"
-              onClick={() => onNavigate('treasury')}
+              onClick={() => (onOpenRecord && n(x.id) ? onOpenRecord(x.kind === 'LC' ? 'lc' : 'bd', n(x.id)) : onNavigate('treasury'))}
               className="flex items-center gap-2.5 py-2 text-left"
               style={{ borderTop: i ? `1px dotted ${t.hair}` : 'none' }}
             >
@@ -666,7 +688,7 @@ export function DailyPosition({ t, dark, isMobile, cats, onNavigate, isOn = ALL_
       <div className="mt-3 grid grid-cols-2 gap-2">
         <div className="rounded-[4px] px-3 py-2" style={{ background: t.inset, border: `1px solid ${t.hair}` }}>
           <div className="text-[9px] font-extrabold uppercase tracking-[.1em]" style={{ color: t.muted }}>
-            Buyers owe us
+            Customers · Dr
           </div>
           <div className="doc-ref mt-0.5 text-[15px] font-bold" style={{ color: t.green }}>
             {money(tradeRecv)}
@@ -675,7 +697,7 @@ export function DailyPosition({ t, dark, isMobile, cats, onNavigate, isOn = ALL_
         </div>
         <div className="rounded-[4px] px-3 py-2" style={{ background: t.inset, border: `1px solid ${t.hair}` }}>
           <div className="text-[9px] font-extrabold uppercase tracking-[.1em]" style={{ color: t.muted }}>
-            We owe suppliers
+            Suppliers · Cr
           </div>
           <div className="doc-ref mt-0.5 text-[15px] font-bold" style={{ color: t.red }}>
             {money(tradePay)}
@@ -691,7 +713,7 @@ export function DailyPosition({ t, dark, isMobile, cats, onNavigate, isOn = ALL_
             <button
               key={String(d.id)}
               type="button"
-              onClick={() => onNavigate('trading')}
+              onClick={() => (onOpenRecord && n(d.id) ? onOpenRecord('trading', n(d.id)) : onNavigate('trading'))}
               className="py-2 text-left"
               style={{ borderTop: i ? `1px dotted ${t.hair}` : 'none' }}
             >
@@ -709,17 +731,22 @@ export function DailyPosition({ t, dark, isMobile, cats, onNavigate, isOn = ALL_
               {isMobile ? (
                 <div className="mt-1.5 flex flex-col gap-1 text-[11.5px]">
                   {[
-                    { who: s(d.buyers) || 'Buyer', v: n(d.receivable), fg: t.green, owe: 'owes', none: 'settled', side: 'Dr' as const },
-                    { who: s(d.supplier) || 'Supplier', v: n(d.payable), fg: t.red, owe: 'we owe', none: 'paid', side: 'Cr' as const }
+                    { role: 'Customer', who: s(d.buyers), v: n(d.receivable), fg: t.green, none: 'settled', side: 'Dr' as const },
+                    { role: 'Supplier', who: s(d.supplier), v: n(d.payable), fg: t.red, none: 'paid', side: 'Cr' as const }
                   ].map((x, k) => (
                     <div key={k} className="flex items-start justify-between gap-2.5">
-                      <span className="min-w-0 font-semibold leading-[1.35] [overflow-wrap:anywhere]" style={{ color: t.muted }}>
-                        {x.who}
+                      <span className="min-w-0 leading-[1.35] [overflow-wrap:anywhere]">
+                        <span className="block text-[9px] font-extrabold uppercase tracking-[.1em]" style={{ color: t.faint }}>
+                          {x.role}
+                        </span>
+                        <span className="font-semibold" style={{ color: t.muted }}>
+                          {x.who || '—'}
+                        </span>
                       </span>
                       <span className="doc-ref flex-none whitespace-nowrap font-bold" style={{ color: x.v > 0.5 ? x.fg : t.faint }}>
                         {x.v > 0.5 ? (
                           <>
-                            {x.owe} {money(x.v)}
+                            {money(x.v)}
                             <DrCr side={x.side} fg={x.fg} small />
                           </>
                         ) : (
@@ -733,12 +760,13 @@ export function DailyPosition({ t, dark, isMobile, cats, onNavigate, isOn = ALL_
               <div className="mt-1 grid grid-cols-2 gap-2.5 text-[11px]">
                 <span className="min-w-0">
                   <span className="block truncate font-semibold" style={{ color: t.muted }}>
-                    {s(d.buyers) || 'Buyer'}
+                    <span className="text-[9px] font-extrabold uppercase tracking-[.1em]" style={{ color: t.faint }}>Customer · </span>
+                    {s(d.buyers) || '—'}
                   </span>
                   <span className="doc-ref font-bold" style={{ color: n(d.receivable) > 0.5 ? t.green : t.faint }}>
                     {n(d.receivable) > 0.5 ? (
                       <>
-                        owes {money(n(d.receivable))}
+                        {money(n(d.receivable))}
                         <DrCr side="Dr" fg={t.green} small />
                       </>
                     ) : (
@@ -748,12 +776,13 @@ export function DailyPosition({ t, dark, isMobile, cats, onNavigate, isOn = ALL_
                 </span>
                 <span className="min-w-0 text-right">
                   <span className="block truncate font-semibold" style={{ color: t.muted }}>
-                    {s(d.supplier) || 'Supplier'}
+                    <span className="text-[9px] font-extrabold uppercase tracking-[.1em]" style={{ color: t.faint }}>Supplier · </span>
+                    {s(d.supplier) || '—'}
                   </span>
                   <span className="doc-ref font-bold" style={{ color: n(d.payable) > 0.5 ? t.red : t.faint }}>
                     {n(d.payable) > 0.5 ? (
                       <>
-                        we owe {money(n(d.payable))}
+                        {money(n(d.payable))}
                         <DrCr side="Cr" fg={t.red} small />
                       </>
                     ) : (

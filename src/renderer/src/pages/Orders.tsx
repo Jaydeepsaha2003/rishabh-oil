@@ -923,6 +923,7 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
   const [openIntent] = useState(() => takePageIntent('orders'))
   const [tab, setTab] = useState<string>(() => {
     if (openIntent?.kind === 'received') return 'purchases'
+    if (openIntent?.kind === 'stage') return 'tankers'
     if (!__WEB__) return 'tankers'
     const t = new URLSearchParams(window.location.search).get('tab')
     return t && TABS.includes(t) ? t : 'tankers'
@@ -1084,7 +1085,8 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
   // below it is worse than no search at all.
   const [moveSearch, setMoveSearch] = useState('')
   // Mobile: the stage card tapped to narrow the tanker list, or null for all.
-  const [moveStage, setMoveStage] = useState<string | null>(null)
+  // Opened from the dashboard's oil-movement cell: the tankers at that stage.
+  const [moveStage, setMoveStage] = useState<string | null>(() => (openIntent?.kind === 'stage' ? String(openIntent.stage || '') || null : null))
   const moveTankers = useMemo(() => {
     const base = allTankers.length ? allTankers : tankers
     const cid = moveCompany === 'active' ? String(activeCompany) : moveCompany

@@ -585,7 +585,7 @@ function App(): React.JSX.Element {
           sharp text — so every scroll repainted the register in script's
           time. With a background of its own it scrolls on the compositor. */}
       <main key={companyId} className="relative flex-1 overflow-auto bg-background">
-        {view === 'dashboard' && <Dashboard onNavigate={setPage} />}
+        {view === 'dashboard' && <Dashboard onNavigate={setPage} onOpenRecord={(target, id) => openRecord(target, id)} />}
         {view === 'bargains' && (
           <Bargains onOpenOrder={(id, orderCompanyId) => openRecord('orders', id, { companyId: orderCompanyId })} />
         )}

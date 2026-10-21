@@ -1269,7 +1269,7 @@ function RefundDueChip({ tot }: { tot?: { booked: number; refunded: number; due:
 
 export function Treasury(props: Props): React.JSX.Element {
   const isMobile = useIsMobile()
-  if (__WEB__ && isMobile) return <TreasuryMobile />
+  if (__WEB__ && isMobile) return <TreasuryMobile focusLcId={props.focusLcId} focusBdId={props.focusBdId} onFocusHandled={props.onFocusHandled} />
   return <TreasuryDesk {...props} />
 }
 

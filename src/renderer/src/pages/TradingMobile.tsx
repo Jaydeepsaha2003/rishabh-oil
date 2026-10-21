@@ -63,7 +63,10 @@ const dealProduct = (d: Row): string => s(d.product_code || d.product_name).trim
 // colour when the same deal is opened on a laptop.
 const BUYER_COLORS = ['#0B6B45', '#12855A', '#3EA372']
 
-export function TradingMobile(): React.JSX.Element {
+export function TradingMobile({
+  focusId = null,
+  onFocusHandled
+}: { focusId?: number | null; onFocusHandled?: () => void } = {}): React.JSX.Element {
   const [deals, setDeals] = useState<Row[]>([])
   const [loading, setLoading] = useState(true)
   const [failed, setFailed] = useState('')
@@ -151,6 +154,14 @@ export function TradingMobile(): React.JSX.Element {
     [shown]
   )
 
+  // Opened on one deal (the dashboard, a ledger): straight to it once loaded.
+  useEffect(() => {
+    const want = Number(focusId) || 0
+    if (!want || !deals.some((d) => n(d.id) === want)) return
+    setOpenId(want)
+    onFocusHandled?.()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [focusId, deals])
   const open = openId == null ? null : deals.find((d) => n(d.id) === openId) || null
   if (open) return <DealScreen deal={open} onBack={() => setOpenId(null)} />
 
@@ -515,8 +526,8 @@ function DealScreen({ deal: d, onBack }: { deal: Row; onBack: () => void }): Rea
       <div className="flex shrink-0 border-b border-[#D6E2D6] bg-white">
         {(
           [
-            ['seller', 'Seller side', n(d.purchase_taxable)],
-            ['buyer', 'Buyer side', n(d.sale_amount)]
+            ['seller', 'Supplier', n(d.purchase_taxable)],
+            ['buyer', 'Customer', n(d.sale_amount)]
           ] as const
         ).map(([k, label, amt]) => {
           const on = side === k
@@ -679,7 +690,7 @@ function DealScreen({ deal: d, onBack }: { deal: Row; onBack: () => void }): Rea
           onClick={() => setSide(side === 'seller' ? 'buyer' : 'seller')}
           className="mt-1 flex h-12 items-center justify-center gap-2 rounded-[4px] border-[1.5px] border-[#C3D2C6] bg-white text-[12.5px] font-extrabold uppercase tracking-[.03em] text-[#33473E]"
         >
-          {side === 'seller' ? 'Buyer side' : 'Seller side'} <ArrowRight className="h-4 w-4" />
+          {side === 'seller' ? 'Customer' : 'Supplier'} <ArrowRight className="h-4 w-4" />
         </button>
       </div>
     </div>
