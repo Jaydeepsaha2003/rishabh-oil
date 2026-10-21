@@ -23745,6 +23745,9 @@ async function ensureDraftTable() {
     updated_at TEXT NOT NULL DEFAULT (datetime('now')),
     PRIMARY KEY (company_id, username, kind)
   )`);
+  for (const col of ["period_from TEXT", "period_to TEXT"]) {
+    await getClient().execute(`ALTER TABLE tally_import_drafts ADD COLUMN ${col}`).catch(() => void 0);
+  }
 }
 async function companyOf(v) {
   const id = Number(v?.company_id) || 0;
@@ -23767,15 +23770,31 @@ async function saveTallyDraft(v) {
   const cid = await companyOf(v);
   const who2 = draftOwner();
   const picked = JSON.stringify(Array.isArray(v.picked) ? v.picked.map(String) : []);
+  const from = v.period_from ? String(v.period_from).slice(0, 10) : null;
+  const to = v.period_to ? String(v.period_to).slice(0, 10) : null;
   if (v.data_base64) {
     if (String(v.data_base64).length > 12e6) throw new Error("That file is too large to keep as a draft");
+    if (/^bank:/.test(kind) && from && to && !v.replace) {
+      const cur = toPlain21(
+        await c.execute({
+          sql: "SELECT file_name, period_from, period_to, updated_at FROM tally_import_drafts WHERE company_id = ? AND username = ? AND kind = ?",
+          args: [cid, who2, kind]
+        })
+      )[0];
+      const cf = String(cur?.period_from || "");
+      const ct = String(cur?.period_to || "");
+      if (cf && ct && !(from <= cf && to >= ct)) {
+        return { saved_at: String(cur?.updated_at || ""), kept: { file_name: String(cur?.file_name || ""), from: cf, to: ct } };
+      }
+    }
     await c.execute({
-      sql: `INSERT INTO tally_import_drafts (company_id, username, kind, file_name, data_base64, picked_json, allow_maybe, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'))
+      sql: `INSERT INTO tally_import_drafts (company_id, username, kind, file_name, data_base64, picked_json, allow_maybe, updated_at, period_from, period_to)
+            VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'), ?, ?)
             ON CONFLICT(company_id, username, kind) DO UPDATE SET
               file_name = excluded.file_name, data_base64 = excluded.data_base64,
-              picked_json = excluded.picked_json, allow_maybe = excluded.allow_maybe, updated_at = excluded.updated_at`,
-      args: [cid, who2, kind, String(v.file_name || ""), String(v.data_base64), picked, v.allow_maybe ? 1 : 0]
+              picked_json = excluded.picked_json, allow_maybe = excluded.allow_maybe, updated_at = excluded.updated_at,
+              period_from = excluded.period_from, period_to = excluded.period_to`,
+      args: [cid, who2, kind, String(v.file_name || ""), String(v.data_base64), picked, v.allow_maybe ? 1 : 0, from, to]
     });
   } else {
     await c.execute({
