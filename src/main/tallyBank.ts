@@ -351,8 +351,20 @@ export async function bankBalanceBefore(cid: number, accountId: number, day: str
 type Mapped = Map<string, { account_id: number; account_name: string; how: 'saved' | 'auto' }>
 
 function samePartyLine(t: BankLine, b: BookEntry, mapped: Mapped): boolean {
-  const m = mapped.get(t.party_key)
-  return b.counter.some((c) => (m ? c.account_id === m.account_id : tallyKey(c.name) === t.party_key || companyKey(c.name) === companyKey(t.party)))
+  const same = (key: string, name: string): boolean => {
+    const m = mapped.get(key)
+    return b.counter.some((c) => (m ? c.account_id === m.account_id : tallyKey(c.name) === key || companyKey(c.name) === companyKey(name)))
+  }
+  // "(AS PER DETAILS)" IS NOT A PARTY. A voucher of several ledgers names its
+  // party in its detail rows, and the biggest of them is what it is for — LC
+  // PAYABLE HDFCBANK under an LC repayment's ₹1,180 charges, the bills
+  // discounted ledger under a repayment's interest. Compared as the words "(as
+  // per details)", every such voucher could only ever be a "possible match".
+  if (t.multi && t.details?.length) {
+    const main = t.details.reduce((a, d) => (d.amount > a.amount ? d : a), t.details[0])
+    return same(main.party_key, main.name)
+  }
+  return same(t.party_key, t.party)
 }
 
 const narrationHead = (bank: string, t: BankLine): string => `Imported from Tally — ${bank} Book · ${t.vch_type} No. ${t.vch_no}`
@@ -630,9 +642,17 @@ function explainBank(rows: Row[], hasStatement = false): void {
           : 'Tally shows it "as per details" — a voucher of several ledgers. Export the bank book from Tally in Detailed view (Alt+F1) so its ledgers come with it, or enter it here by hand.'
         : `Book it from Tally — it posts as a ${t.dir === 'in' ? 'RECEIPT' : 'PAYMENT'} (or CONTRA, between banks and cash) on this bank under Tally's number.`
     } else if (r.status === 'possible' && t && b) {
+      // WHY "POSSIBLE": the money and the day agree, the ledger does not. Said
+      // in that order, so what to look at is the one thing that differs.
+      const tLedgers =
+        t.multi && Array.isArray(t.details) && t.details.length
+          ? (t.details as Row[]).map((d) => `${d.name} ${inr(d.amount)}`).join(', ')
+          : String(t.party || 'no ledger')
+      const sameDay = t.date === b.date
       say.push(
-        `Tally has ${inr(t.amount)} ${way(t.dir)} on ${dmy(t.date)}${t.party ? ` for ${t.party}` : ''}. These books have ${bName} on ${dmy(b.date)} for the same amount, ${b.party ? `against ${b.party}` : ''} — very likely the same entry.`
+        `Same amount (${inr(t.amount)} ${way(t.dir)})${sameDay ? ` and same day (${dmy(t.date)})` : `, ${dmy(t.date)} in Tally and ${dmy(b.date)} here`} — but not the same ledger.`
       )
+      say.push(`Tally ${tName}: ${tLedgers}. Here ${bName}: ${b.party || 'no ledger'}.`)
       // "(as per details)" is not a ledger — Tally's word for a voucher of
       // several — so it is never offered for mapping; nor is a party this
       // voucher was posted by a document (an LC, a discounted bill) under its
