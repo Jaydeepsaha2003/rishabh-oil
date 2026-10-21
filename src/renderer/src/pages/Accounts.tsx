@@ -5438,30 +5438,9 @@ export function Accounts({
   // it. Nothing is merged — Fr. Inward and Fr. Outward are two registers
   // because a bill from a transporter and a bill to a customer settle on
   // different ledgers, and a single card would hide one of them.
-  // THE PERIOD, FOR THE WHOLE MODULE.
-  //
-  // Every screen here has its own From/To, and they were only ever set
-  // together by the app-wide date broadcast — so the header could not state a
-  // period, and there was nowhere to change one. Alt F2 sets all of them at
-  // once, which is what a period means in Tally: the books are open on these
-  // dates, and every report answers for them.
-  const [periodOpen, setPeriodOpen] = useState(false)
-  const applyPeriod = useCallback((from: string, to: string) => {
-    setDbFrom(from)
-    setDbTo(to)
-    setLgFrom(from)
-    setLgTo(to)
-    setTbFrom(from)
-    setTbTo(to)
-    setRegFrom(from)
-    setRegTo(to)
-    // Fr. Inward and Fr. Outward were the pair this list forgot, which is
-    // exactly why they still carried a From/To of their own: the header said
-    // one period and those two screens answered for another. They are on the
-    // module's period now, like every other report here.
-    setTfFrom(from)
-    setTfTo(to)
-  }, [])
+  // THE PERIOD, FOR THE WHOLE MODULE: set with Alt+F2 or the header chip,
+  // which open the app's period dialog; its broadcast (globalRange, above)
+  // moves every screen's From/To together.
   const periodLabel =
     dbFrom && dbTo
       ? `${formatDate(dbFrom)} — ${formatDate(dbTo)}`
@@ -19060,8 +19039,8 @@ export function Accounts({
               <div className="relative">
                 <button
                   type="button"
-                  title="Set the period every report here answers for"
-                  onClick={() => setPeriodOpen((o) => !o)}
+                  title="Set the period every report here answers for (Alt+F2)"
+                  onClick={() => window.dispatchEvent(new Event('open-period'))}
                   className="transition-colors hover:bg-white/10"
                   style={chip}
                 >
@@ -19069,60 +19048,6 @@ export function Accounts({
                   <span style={{ fontFamily: MONO, fontVariantNumeric: FIGS, fontSize: 11.5, fontWeight: 600 }}>{periodLabel}</span>
                   <span style={chipKey}>{chordLabel('Alt F2')}</span>
                 </button>
-                {periodOpen && (
-                  <div
-                    className="absolute right-0 z-50 mt-1.5 w-[286px] rounded-[4px] p-3 shadow-xl"
-                    style={{ background: A.paper, border: `1px solid ${A.edge}`, color: A.ink }}
-                  >
-                    <div
-                      style={{ fontSize: 9, fontWeight: 800, letterSpacing: '.12em', textTransform: 'uppercase', color: A.muted }}
-                    >
-                      Period
-                    </div>
-                    <div className="mt-2 flex items-center gap-2">
-                      <input
-                        type="date"
-                        value={dbFrom}
-                        onChange={(e) => applyPeriod(e.target.value, dbTo)}
-                        className="h-8 min-w-0 flex-1 rounded-[3px] px-2 outline-none"
-                        style={{ border: `1px solid ${A.none}`, background: '#fff', fontFamily: MONO, fontVariantNumeric: FIGS, fontSize: 11.5 }}
-                      />
-                      <span style={{ fontSize: 11, color: A.muted }}>to</span>
-                      <input
-                        type="date"
-                        value={dbTo}
-                        onChange={(e) => applyPeriod(dbFrom, e.target.value)}
-                        className="h-8 min-w-0 flex-1 rounded-[3px] px-2 outline-none"
-                        style={{ border: `1px solid ${A.none}`, background: '#fff', fontFamily: MONO, fontVariantNumeric: FIGS, fontSize: 11.5 }}
-                      />
-                    </div>
-                    <p className="mt-2" style={{ fontSize: 10.5, fontWeight: 600, color: A.muted, lineHeight: 1.45 }}>
-                      Every report in this module answers for these dates — the day book, each statement, the
-                      registers and the trial balance.
-                    </p>
-                    <div className="mt-2.5 flex gap-2">
-                      <button
-                        type="button"
-                        onClick={() => {
-                          applyPeriod('', todayISO())
-                          setPeriodOpen(false)
-                        }}
-                        className="h-8 flex-1 rounded-[3px]"
-                        style={{ border: `1px solid ${A.none}`, fontSize: 11, fontWeight: 700, color: A.ink }}
-                      >
-                        All dates
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => setPeriodOpen(false)}
-                        className="h-8 flex-1 rounded-[3px]"
-                        style={{ background: A.frame, color: '#fff', fontSize: 11, fontWeight: 800 }}
-                      >
-                        Done
-                      </button>
-                    </div>
-                  </div>
-                )}
               </div>
             )}
             {/* NO STATUS PILL, NO BELL.
@@ -19238,6 +19163,7 @@ export function Accounts({
           daybookWeb.body
         ) : onRcmreg ? (
           <RcmRegister
+            period={{ from: dbFrom, to: dbTo }}
             companyId={company ? Number(company.id) : undefined}
             companyName={String(company?.name || '')}
             canPost={rightsIn('accountsRcmReg').edit}
@@ -19245,12 +19171,14 @@ export function Accounts({
           />
         ) : onPayreg ? (
           <PayReceiptRegister
+            period={{ from: dbFrom, to: dbTo }}
             companyId={company ? Number(company.id) : undefined}
             companyName={String(company?.name || '')}
             onOpen={(v) => openRowSource(v, null)}
           />
         ) : onCashflow ? (
           <CashflowRegister
+            period={{ from: dbFrom, to: dbTo }}
             companyId={company ? Number(company.id) : undefined}
             companyName={String(company?.name || '')}
             // Opens where the entry was made — the purchase, sale, LC or bill
@@ -19402,6 +19330,7 @@ export function Accounts({
             {screen === 'daybook' && daybookScreen}
             {screen === 'rcmreg' && (
               <RcmRegister
+            period={{ from: dbFrom, to: dbTo }}
                 companyId={company ? Number(company.id) : undefined}
                 companyName={String(company?.name || '')}
                 canPost={rightsIn('accountsRcmReg').edit}
@@ -19410,6 +19339,7 @@ export function Accounts({
             )}
             {screen === 'payreg' && (
               <PayReceiptRegister
+            period={{ from: dbFrom, to: dbTo }}
                 companyId={company ? Number(company.id) : undefined}
                 companyName={String(company?.name || '')}
                 onOpen={(v) => openRowSource(v, null)}
@@ -19417,6 +19347,7 @@ export function Accounts({
             )}
             {screen === 'cashflow' && (
               <CashflowRegister
+            period={{ from: dbFrom, to: dbTo }}
                 companyId={company ? Number(company.id) : undefined}
                 companyName={String(company?.name || '')}
                 onOpen={(v) => openRowSource(v, null)}

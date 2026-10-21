@@ -32,15 +32,23 @@ export function RcmRegister({
   companyId,
   companyName,
   canPost,
-  onOpen
+  onOpen,
+  period
 }: {
   companyId?: number
   companyName: string
   canPost: boolean
   onOpen: (v: Row) => void
+  /** The module's period (Alt+F2 / the header). Followed whenever it changes. */
+  period?: { from: string; to: string }
 }): React.JSX.Element {
-  const [from, setFrom] = useState(fyStart)
-  const [to, setTo] = useState(todayISO)
+  const [from, setFrom] = useState(() => period?.from || fyStart())
+  const [to, setTo] = useState(() => period?.to || todayISO())
+  useEffect(() => {
+    if (!period || (!period.from && !period.to)) return
+    setFrom(period.from || fyStart())
+    setTo(period.to || todayISO())
+  }, [period?.from, period?.to]) // eslint-disable-line react-hooks/exhaustive-deps
   const [rows, setRows] = useState<Row[]>([])
   const [loading, setLoading] = useState(false)
   const [q, setQ] = useState('')
