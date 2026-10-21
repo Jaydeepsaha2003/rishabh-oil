@@ -2086,6 +2086,8 @@ export function Accounts({
   // was it funded" view. Deliberately document-level, not ledger-level.
   const [purchases, setPurchases] = useState<Row[]>([])
   const [saleRows, setSaleRows] = useState<Row[]>([])
+  // Voided invoice numbers, shown in the Sales Register so the series reads whole.
+  const [cancelledNos, setCancelledNos] = useState<Row[]>([])
   const [lcList, setLcList] = useState<Row[]>([])
   const [regFrom, setRegFrom] = useState(() => regBack.current?.regFrom ?? '')
   const [regTo, setRegTo] = useState(() => regBack.current?.regTo ?? '')
@@ -2437,14 +2439,16 @@ export function Accounts({
   // and Sales Registers listed KR FOODS' bills.
   const loadRegisters = useCallback(async () => {
     if (!cid) return
-    const [o, s, l] = await Promise.all([
+    const [o, s, l, cx] = await Promise.all([
       window.api.orders.list('accounts', cid),
       window.api.sales.list([cid], 'accounts'),
-      window.api.lc.list(cid)
+      window.api.lc.list(cid),
+      window.api.sales.cancelledNos(cid).catch(() => [] as Row[])
     ])
     setPurchases(o)
     setSaleRows(s)
     setLcList(l)
+    setCancelledNos(cx)
   }, [cid])
 
   const loadAccounts = useCallback(async () => {
@@ -6896,14 +6900,29 @@ export function Accounts({
 
   const salesRegRows = useMemo(() => {
     const q = regSearch.trim().toLowerCase()
-    return saleRows.filter((s) => {
-      if (!inPeriod(s.sale_date)) return false
-      if (!q) return true
-      return [s.invoice_no, s.customer, s.product_name, s.gate_vehicle_no]
-        .filter(Boolean).join(' ').toLowerCase().includes(q)
-    })
+    // THE CANCELLED NUMBERS SIT IN THE SERIES. Each is dated with the invoice
+    // before it, so in date order it lands between its neighbours; it carries
+    // no money, so no total moves.
+    const voids: Row[] = cancelledNos.map((c) => ({ ...c, customer: 'Cancelled', product_name: '', qty: 0, amount: 0 }))
+    const num = (x: Row): number => Number(/(\d+)\s*$/.exec(String(x.invoice_no || ''))?.[1]) || 0
+    return ([...saleRows, ...voids] as Row[])
+      .filter((s) => {
+        if (!inPeriod(s.sale_date)) return false
+        if (!q) return true
+        return [s.invoice_no, s.customer, s.product_name, s.gate_vehicle_no, s.cancel_reason]
+          .filter(Boolean).join(' ').toLowerCase().includes(q)
+      })
+      .map((s, i) => ({ s, i }))
+      .sort((a, b) => {
+        const d = String(a.s.sale_date || '').localeCompare(String(b.s.sale_date || ''))
+        if (d) return d
+        // Same day: a voided number sits by number among that day's invoices.
+        if (a.s.cancelled_no || b.s.cancelled_no) return num(a.s) - num(b.s) || a.i - b.i
+        return a.i - b.i
+      })
+      .map((x) => x.s)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [saleRows, regFrom, regTo, regSearch])
+  }, [saleRows, cancelledNos, regFrom, regTo, regSearch])
 
   // Tag a purchase to an LC — issues a bill under that LC against the invoice,
   // which is what makes the purchase show as LC-funded and eats the limit.
@@ -7117,6 +7136,21 @@ export function Accounts({
                 <tr><td colSpan={9} className="py-12 text-center text-muted-foreground">No sales for this filter.</td></tr>
               ) : (
                 dSalRows.map((s) => {
+                  if (s.cancelled_no) {
+                    return (
+                      <tr key={String(s.id)} className="border-b border-dotted border-[#DCE7DB] bg-rose-50/40 text-muted-foreground">
+                        <td className="whitespace-nowrap px-3 py-1.5 tabular-nums">{formatDate(s.sale_date)}</td>
+                        <td className="px-3 py-1.5 font-medium line-through">{s.invoice_no}</td>
+                        <td className="px-3 py-1.5" colSpan={7}>
+                          <span className="mr-2 rounded-[3px] bg-rose-100 px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wide text-rose-700">Cancelled</span>
+                          <span className="text-[11px]">
+                            {String(s.cancel_reason || '')}
+                            {s.cancelled_on ? ` · voided ${formatDate(s.cancelled_on)}` : ''}
+                          </span>
+                        </td>
+                      </tr>
+                    )
+                  }
                   const net = n(s.amount) + n(s.gst_amount) + n(s.round_off) - (Number(s.deduct_freight) ? n(s.transport_amount) : 0)
                   const bal = net - n(s.received_amount)
                   return (
@@ -7150,7 +7184,8 @@ export function Accounts({
               <tfoot className="sticky bottom-0">
                 <tr className="border-t-2 border-amber-500 bg-amber-100 font-semibold">
                   <td className="px-3 py-2 text-[11px] uppercase tracking-wide text-amber-900" colSpan={6}>
-                    {dSalRows.length} sale{dSalRows.length === 1 ? '' : 's'}
+                    {dSalRows.filter((x) => !x.cancelled_no).length} sale{dSalRows.filter((x) => !x.cancelled_no).length === 1 ? '' : 's'}
+                    {dSalRows.some((x) => x.cancelled_no) ? ` · ${dSalRows.filter((x) => x.cancelled_no).length} cancelled` : ''}
                   </td>
                   <td className="px-3 py-2 text-right tabular-nums text-amber-900">{formatINR(salesTotals.net)}</td>
                   <td className="px-3 py-2 text-right tabular-nums text-amber-900">{formatINR(salesTotals.recd)}</td>
@@ -9671,7 +9706,7 @@ export function Accounts({
     const lcOverdue = (o: Row): boolean =>
       n(o.lc_bills_open) > 0 && !!o.lc_next_due && String(o.lc_next_due).slice(0, 10) < today
 
-    const base: Row[] = isPur ? purchases : isSal ? saleRows : [...noteRows, ...noteVchRows]
+    const base: Row[] = isPur ? purchases : isSal ? [...saleRows, ...cancelledNos] : [...noteRows, ...noteVchRows]
     const preRows: Row[] = isPur ? purchaseRows : isSal ? salesRegRows : noteRegRowsWeb
     // A funnel on every column; the sums below read the rows they leave.
     const regCf = colFilter<Row>(
@@ -9711,6 +9746,9 @@ export function Accounts({
             ]
     )
     const rows: Row[] = regCf.rows
+    // Real invoices, apart from the cancelled numbers listed among them.
+    const voidN = isSal ? rows.filter((r) => r.cancelled_no).length : 0
+    const liveN = rows.length - voidN
     const dateOf = (r: Row): string => String((isPur ? r.order_date : isSal ? r.sale_date : r.note_date) || '').slice(0, 10)
 
     // ── the sums ──────────────────────────────────────────────────────────
@@ -9772,7 +9810,7 @@ export function Accounts({
         ]
       : isSal
         ? [
-            { k: 'Sold', v: formatINR(sTot.net), sub: `${plural(rows.length, 'invoice')} in view`, icon: ReceiptText, accent: '#0B3D2E', dark: true },
+            { k: 'Sold', v: formatINR(sTot.net), sub: `${plural(liveN, 'invoice')} in view${voidN ? `, ${voidN} cancelled` : ''}`, icon: ReceiptText, accent: '#0B3D2E', dark: true },
             { k: 'Received', v: formatINR(sTot.recd), sub: `${pct(sTot.recd, sTot.net)}% collected`, icon: CircleCheck, accent: '#0B6B45' },
             {
               k: 'Outstanding',
@@ -9783,7 +9821,7 @@ export function Accounts({
             },
             {
               k: 'Not gated out',
-              v: String(rows.filter((v) => !v.gate_vehicle_no).length),
+              v: String(rows.filter((v) => !v.gate_vehicle_no && !v.cancelled_no).length),
               sub: 'invoiced but the vehicle has not left',
               icon: Truck,
               accent: '#B3261E'
@@ -10208,7 +10246,7 @@ export function Accounts({
         ]
       : isSal
         ? [
-            footLabel(plural(rows.length, 'invoice'), 6),
+            footLabel(`${plural(liveN, 'invoice')}${voidN ? ` · ${voidN} cancelled` : ''}`, 6),
             footFig('net', formatINR(sTot.taxable), '#C7F03F')
           ]
         : [footLabel(plural(rows.length, 'note'), 6), footFig('tot', formatINR(nTot.total), '#C7F03F')]
@@ -10221,7 +10259,7 @@ export function Accounts({
     }
     const tabsList = [
       { k: 'purchase' as const, label: 'Purchase register', icon: ShoppingCart, key: 'P', screen: 'purchreg' as Screen, n: purchaseRows.length },
-      { k: 'sales' as const, label: 'Sales register', icon: ReceiptText, key: 'S', screen: 'salesreg' as Screen, n: salesRegRows.length },
+      { k: 'sales' as const, label: 'Sales register', icon: ReceiptText, key: 'S', screen: 'salesreg' as Screen, n: salesRegRows.filter((r) => !r.cancelled_no).length },
       { k: 'debit' as const, label: 'Debit notes', icon: FileText, key: 'N', screen: 'notesreg' as Screen, n: noteKindCount.debit },
       { k: 'credit' as const, label: 'Credit notes', icon: FileText, key: 'C', screen: 'notesreg' as Screen, n: noteKindCount.credit }
     ].filter((t) => mayScreen(t.screen))
@@ -10480,6 +10518,29 @@ export function Accounts({
                     toggleEntries(r, rk)
                   }
                   const stripe = open ? '#F3FBE2' : i % 2 ? '#FBFDFA' : '#fff'
+                  // A cancelled number: its place in the series, why, and no money.
+                  if (r.cancelled_no) {
+                    return (
+                      <div
+                        key={String(r.id)}
+                        className="grid min-h-[40px] items-center"
+                        title={`Cancelled${r.cancelled_on ? ` on ${formatDate(r.cancelled_on)}` : ''}${r.cancelled_by ? ` by ${r.cancelled_by}` : ''}`}
+                        style={{ gridTemplateColumns: grid, borderBottom: '1px solid #EFF3EE', background: '#FDF6F5', boxShadow: 'inset 3px 0 0 #E7A6A0' }}
+                      >
+                        {dateCell(r.sale_date)}
+                        <span style={{ ...fig(12, 700, '#9A6B66'), padding: '0 10px', textDecoration: 'line-through' }}>{String(r.invoice_no)}</span>
+                        <span className="flex min-w-0 items-center gap-2" style={{ gridColumn: '3 / -1', padding: '0 10px' }}>
+                          <span style={{ fontSize: 9.5, fontWeight: 800, letterSpacing: '.1em', textTransform: 'uppercase', color: '#B3261E', background: '#FBE3E0', borderRadius: 3, padding: '2px 7px' }}>
+                            Cancelled
+                          </span>
+                          <span className="truncate" style={{ fontSize: 11.5, fontWeight: 600, color: '#7C6A67' }}>
+                            {String(r.cancel_reason || '')}
+                            {r.cancelled_on ? ` · voided ${formatDate(r.cancelled_on)}` : ''}
+                          </span>
+                        </span>
+                      </div>
+                    )
+                  }
                   return (
                     <Fragment key={String(r.id)}>
                       <div

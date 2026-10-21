@@ -717,6 +717,7 @@ const api = {
     // Re-date an invoice (every line, its voucher in place) — the Tally check's fix.
     fixDate: (id: number, date: string): Promise<{ id: number; from: string; to: string }> =>
       ipcRenderer.invoke('sales:fixDate', { id, date }),
+    cancelledNos: (companyId?: number): Promise<Row[]> => ipcRenderer.invoke('sales:cancelledNos', { companyId }),
     tdsPreview: (id: number): Promise<Row> => ipcRenderer.invoke('sales:tdsPreview', { id }),
     tdsPost: (values: { sale_id: number; amount: number; ledger: string; date?: string }): Promise<{ entry_id: number }> =>
       ipcRenderer.invoke('sales:tdsPost', { values }),

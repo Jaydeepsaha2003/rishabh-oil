@@ -478,6 +478,7 @@ export interface Api {
     createInvoice: (values: Row) => Promise<{ group: string; ids: number[] }>
     updateInvoice: (group: string, values: Row) => Promise<{ group: string; ids: number[] }>
     fixDate: (id: number, date: string) => Promise<{ id: number; from: string; to: string }>
+    cancelledNos: (companyId?: number) => Promise<Row[]>
     tdsPreview: (id: number) => Promise<Row>
     tdsPost: (values: { sale_id: number; amount: number; ledger: string; date?: string }) => Promise<{ entry_id: number }>
     tdsRemove: (id: number) => Promise<{ ok: true }>

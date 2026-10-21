@@ -3055,6 +3055,57 @@ export async function cancelInvoiceNo(v: Row): Promise<{ prefix: string; number:
   return { prefix, number: num }
 }
 
+// THE VOIDED NUMBERS, FOR THE SALES REGISTER. Listed among the invoices so
+// the series reads without a hole: KRFL/379, KRFL/380 cancelled, KRFL/381.
+// Each is dated with the invoice just before it in its series (the one just
+// after when it opens the series), so it sorts into its place; the day it was
+// voided is carried as well. Spelt the way the series' own invoices are.
+export async function listCancelledInvoiceNos(companyId?: number): Promise<Row[]> {
+  const cid = n(companyId) || getActiveCompanyId()
+  const c = getClient()
+  const voids = toPlain(
+    await c.execute({
+      sql: 'SELECT id, prefix, number, reason, cancelled_on, created_by FROM cancelled_invoice_nos WHERE company_id = ? ORDER BY prefix, number',
+      args: [cid]
+    })
+  )
+  if (!voids.length) return []
+  const inv = toPlain(
+    await c.execute({ sql: 'SELECT invoice_no, sale_date FROM sales WHERE company_id = ? AND invoice_no IS NOT NULL', args: [cid] })
+  )
+  const key = (x: string): string => x.toUpperCase().replace(/[^A-Z0-9]/g, '')
+  // prefix key -> [number, date, separator] of the real invoices
+  const series = new Map<string, { num: number; date: string; sep: string }[]>()
+  for (const r of inv) {
+    const m = /^(.*?)([\/\- ]?)(\d+)\s*$/.exec(String(r.invoice_no).trim())
+    if (!m) continue
+    const k = key(m[1])
+    if (!series.has(k)) series.set(k, [])
+    series.get(k)!.push({ num: Number(m[3]), date: String(r.sale_date).slice(0, 10), sep: m[2] })
+  }
+  return voids.map((v) => {
+    const list = series.get(key(String(v.prefix))) || []
+    const num = n(v.number)
+    let before: { num: number; date: string; sep: string } | null = null
+    let after: { num: number; date: string; sep: string } | null = null
+    for (const x of list) {
+      if (x.num < num && (!before || x.num > before.num)) before = x
+      if (x.num > num && (!after || x.num < after.num)) after = x
+    }
+    const near = before || after
+    return {
+      id: `void-${v.id}`,
+      cancelled_no: 1,
+      invoice_no: `${v.prefix}${near ? near.sep : '/'}${num}`,
+      sale_date: near ? near.date : String(v.cancelled_on || '').slice(0, 10),
+      cancelled_on: v.cancelled_on,
+      cancel_reason: v.reason,
+      cancelled_by: v.created_by,
+      company_id: cid
+    }
+  })
+}
+
 // Put a voided number back into the missing list — for when it was voided by
 // mistake, or the bill turns out to exist after all.
 export async function uncancelInvoiceNo(v: Row): Promise<{ prefix: string; number: number }> {
