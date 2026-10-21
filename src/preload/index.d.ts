@@ -478,6 +478,10 @@ export interface Api {
     createInvoice: (values: Row) => Promise<{ group: string; ids: number[] }>
     updateInvoice: (group: string, values: Row) => Promise<{ group: string; ids: number[] }>
     fixDate: (id: number, date: string) => Promise<{ id: number; from: string; to: string }>
+    tdsPreview: (id: number) => Promise<Row>
+    tdsPost: (values: { sale_id: number; amount: number; ledger: string; date?: string }) => Promise<{ entry_id: number }>
+    tdsRemove: (id: number) => Promise<{ ok: true }>
+    tdsMap: (companyIds?: number[]) => Promise<Row[]>
     setInvoiceStage: (group: string, stage: string, force?: boolean, date?: string, received?: Record<string, number | null>) => Promise<{ group: string }>
     removeInvoice: (group: string) => Promise<{ group: string }>
     rejectInvoice: (group: string, reason: string) => Promise<{ group: string }>

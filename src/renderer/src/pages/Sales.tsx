@@ -1,7 +1,7 @@
 import { Fragment, useCallback, useEffect, useMemo, useState, useRef } from 'react'
 import { takePageIntent } from '@/lib/pageIntent'
 import { toast } from 'sonner'
-import { AlertTriangle, ArrowLeft, ArrowUp, ArrowDown, BookOpen, ChevronsUpDown, Ban, Building2, Check, CheckCircle2, ChevronDown, ChevronLeft, ChevronRight, Clock, Dices, DoorOpen, Download, History, Link2, Lock, LogIn, Shuffle, LogOut, Maximize2, Pencil, Plus, Receipt, RotateCcw, Search, SlidersHorizontal, Tag, Tags, Trash2, Truck, Undo2, Upload, X, ListChecks, Info, type LucideIcon} from 'lucide-react'
+import { AlertTriangle, ArrowLeft, ArrowUp, ArrowDown, BookOpen, ChevronsUpDown, Ban, Building2, Check, CheckCircle2, ChevronDown, ChevronLeft, ChevronRight, Clock, Dices, DoorOpen, Download, History, Link2, Lock, LogIn, Shuffle, LogOut, Maximize2, Pencil, Plus, Receipt, RotateCcw, Search, SlidersHorizontal, Tag, Tags, Trash2, Truck, Undo2, Upload, X, ListChecks, Info, Percent, type LucideIcon} from 'lucide-react'
 import { HelpTip, InfoTip, Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { moduleScope, canAccess } from '@/lib/modules'
 import { useCategories } from '@/lib/useCategories'
@@ -52,6 +52,7 @@ import { RecordHistory, useRecordHistory } from '@/components/RecordHistory'
 import { BargainVouchersDialog } from '@/components/BargainVouchers'
 import { BargainMoveBalanceDialog } from '@/components/BargainMoveBalance'
 import { BargainNote } from '@/components/BargainNote'
+import { SaleTdsDialog } from '@/components/SaleTdsDialog'
 import { SerialNo } from '@/components/SerialNo'
 import { GateEntriesDialog } from '@/components/GateEntriesDialog'
 import { HistoryDialog, useHistoryDialog } from '@/components/HistoryDialog'
@@ -477,7 +478,24 @@ function SalesTab({
     if (globalRangeAppliesTo(globalRange, 'sales')) { setDateFrom(globalRange.from); setDateTo(globalRange.to) }
   }, [globalRange.version]) // eslint-disable-line react-hooks/exhaustive-deps
 
+  // The customer's TDS on an invoice, posted as its own Journal (SaleTdsDialog).
+  // Keyed company|invoice key, as the server stores it.
+  const [tdsAsk, setTdsAsk] = useState<{ id: number; afterSave: boolean } | null>(null)
+  const [tdsByInv, setTdsByInv] = useState<Record<string, Row>>({})
+  const loadTds = useCallback(async () => {
+    try {
+      const m: Record<string, Row> = {}
+      for (const t of await window.api.sales.tdsMap()) m[`${t.company_id}|${t.invoice_key}`] = t
+      setTdsByInv(m)
+    } catch {
+      /* the chip is a hint only */
+    }
+  }, [])
+  const tdsOf = (first: Row): Row | undefined =>
+    tdsByInv[`${first.company_id}|${String(first.invoice_group || first.invoice_no || `sale-${first.id}`)}`]
+
   const load = useCallback(async (background = false) => {
+    void loadTds()
     // Skipped on a live refresh: raising the spinner here is what made the
     // page blink every few seconds. The rows already on screen stay until the
     // new ones arrive. See useLiveRefresh.
@@ -516,7 +534,7 @@ function SalesTab({
     for (const l of st) sm[l.id as number] = l
     setStock(sm)
     setLoading(false)
-  }, [])
+  }, [loadTds])
 
   useEffect(() => { load() }, [load])
   useLiveRefresh(load)
@@ -1651,10 +1669,11 @@ function SalesTab({
         gst_type: it.gst_type
       }))
     }
+    let saved: { group: string; ids: number[] } | null = null
     const submit = async (force: boolean): Promise<void> => {
       const p = force ? { ...payload, force_no_stock: true } : payload
-      if (editingGroup) await window.api.sales.updateInvoice(editingGroup, p)
-      else await window.api.sales.createInvoice(p)
+      if (editingGroup) saved = await window.api.sales.updateInvoice(editingGroup, p)
+      else saved = await window.api.sales.createInvoice(p)
     }
 
     setSaving(true)
@@ -1675,6 +1694,15 @@ function SalesTab({
       setDirty(false)
       setFormPage(false)
       await load()
+      // Ask whether the customer deducts TDS — for a customer whose master
+      // carries a TDS rate, on an invoice that has no TDS journal yet.
+      const done = saved as { group: string; ids: number[] } | null
+      const cust = customers.find((c) => String(c.id) === String(header.customer_id || ''))
+      const firstId = done?.ids?.[0]
+      if (firstId && cust && Number(cust.tds_pct) > 0) {
+        const pv = await window.api.sales.tdsPreview(firstId).catch(() => null)
+        if (pv && !pv.existing) setTdsAsk({ id: firstId, afterSave: true })
+      }
     } catch (e) {
       toast.error(errText(e))
     } finally {
@@ -2210,7 +2238,22 @@ function SalesTab({
                                 </Badge>
                               )}
                             </div>
-                            <div className={cn('truncate text-xs text-muted-foreground', __WEB__ && 'text-[12.5px] text-[#7C9188]')}>{inv.first.invoice_no || '—'}</div>
+                            <div className={cn('flex items-center gap-1.5 truncate text-xs text-muted-foreground', __WEB__ && 'text-[12.5px] text-[#7C9188]')}>
+                              {inv.first.invoice_no || '—'}
+                              {tdsOf(inv.first) && (
+                                <button
+                                  type="button"
+                                  title={`TDS ${formatINR(Number(tdsOf(inv.first)?.amount))} — Journal ${tdsOf(inv.first)?.vch_no || ''} to ${tdsOf(inv.first)?.ledger}`}
+                                  onClick={(e) => {
+                                    e.stopPropagation()
+                                    setTdsAsk({ id: Number(inv.first.id), afterSave: false })
+                                  }}
+                                  className="rounded-[3px] border border-[#E3C58C] bg-[#FFF6E5] px-1 text-[10px] font-semibold text-[#9A5A06]"
+                                >
+                                  TDS {formatINR(Number(tdsOf(inv.first)?.amount))}
+                                </button>
+                              )}
+                            </div>
                             {/* Stops the row's own click, which expands the
                                 invoice — tagging it is not opening it. */}
                             <div className="mt-1" onClick={(e) => e.stopPropagation()}>
@@ -2478,6 +2521,11 @@ function SalesTab({
                                 : []),
                               { label: 'Gate entries — what left the barrier', icon: DoorOpen, onClick: () => setGateInv(inv) },
                               { label: 'Edit invoice', icon: Pencil, onClick: () => openEditInvoice(inv) },
+                              {
+                                label: tdsOf(inv.first) ? 'Customer TDS — posted, view or change' : 'Customer TDS — post what they deducted',
+                                icon: Percent,
+                                onClick: () => setTdsAsk({ id: Number(inv.first.id), afterSave: false })
+                              },
                               { label: 'History — who did what', icon: History, onClick: () => openHistory(inv) },
                               ...(__WEB__ && canSeeLedgers
                                 ? [
@@ -4400,6 +4448,13 @@ function SalesTab({
           saleIds: (gateInv?.lines || []).map((l) => Number(l.id)).filter((x) => x > 0),
           invoiceGroup: String(gateInv?.first?.invoice_group || '') || undefined
         }}
+      />
+
+      <SaleTdsDialog
+        saleId={tdsAsk?.id ?? null}
+        afterSave={tdsAsk?.afterSave}
+        onClose={() => setTdsAsk(null)}
+        onDone={() => void loadTds()}
       />
 
       <Dialog open={!!rejectInv} onOpenChange={(o) => !o && !rejecting && setRejectInv(null)}>

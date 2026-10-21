@@ -2576,7 +2576,10 @@ export function Accounts({
   }, [cid])
   useEffect(() => {
     // Openings too on the website — its tab strip counts the groups.
-    if (screen === 'masters' || screen === 'gateway' || (__WEB__ && (screen === 'openings' || screen === 'tfpur' || screen === 'tfsal'))) void loadGroups()
+    // And on any screen while the group map is still empty: a ledger opened
+    // straight from the address bar (a refresh) never passed the gateway, and
+    // without the map an SC-OIL supplier read as "not a bill-wise account".
+    if (screen === 'masters' || screen === 'gateway' || (__WEB__ && (screen === 'openings' || screen === 'tfpur' || screen === 'tfsal')) || GROUP_BASE.size === 0) void loadGroups()
   }, [screen, loadGroups])
   useEffect(() => {
     if (!__WEB__ || screen !== 'masters' || !cid) return
@@ -5134,7 +5137,33 @@ export function Accounts({
   const stmt = useMemo(() => {
     let opening = lgOpening
     const rows: Row[] = []
-    for (const l of ledgerLines) {
+    // EMPTY DATE VIEW: a purchase bill is dated the day its last tanker was
+    // emptied, and one with a tanker still not emptied shows 0 with no date
+    // (at the foot, out of the balance) — its oil is not in yet. Every other
+    // voucher keeps its own date. The balance runs in that order.
+    const held: Row[] = []
+    let lines = ledgerLines
+    if (lgTankerEmpty) {
+      const moved: Row[] = []
+      for (const l of ledgerLines) {
+        const total = Number(l.tanker_total) || 0
+        if (total <= 0) {
+          moved.push(l)
+          continue
+        }
+        const open = (Number(l.tanker_empty) || 0) < total || !l.tanker_last_empty
+        if (open) {
+          if (!lgTo || String(l.entry_date) <= lgTo) held.push({ ...l, invoice_date: l.entry_date, entry_date: '', dr: 0, cr: 0, held_dr: l.dr, held_cr: l.cr, tanker_held: true })
+          continue
+        }
+        moved.push({ ...l, invoice_date: l.entry_date, entry_date: String(l.tanker_last_empty).slice(0, 10) })
+      }
+      lines = moved
+        .map((l, i) => ({ l, i }))
+        .sort((a, b) => String(a.l.entry_date).localeCompare(String(b.l.entry_date)) || a.i - b.i)
+        .map((x) => x.l)
+    }
+    for (const l of lines) {
       const d = String(l.entry_date)
       const net = (Number(l.dr) || 0) - (Number(l.cr) || 0)
       if (lgFrom && d < lgFrom) {
@@ -5145,7 +5174,7 @@ export function Accounts({
       rows.push(l)
     }
     let run = opening
-    const out = rows.map((l): Row => {
+    const out = [...rows, ...held].map((l): Row => {
       run += (Number(l.dr) || 0) - (Number(l.cr) || 0)
       return { ...l, running: run }
     })
@@ -5156,7 +5185,7 @@ export function Accounts({
       totDr: out.reduce((sum, l) => sum + (Number(l.dr) || 0), 0),
       totCr: out.reduce((sum, l) => sum + (Number(l.cr) || 0), 0)
     }
-  }, [ledgerLines, lgFrom, lgTo, lgOpening])
+  }, [ledgerLines, lgFrom, lgTo, lgOpening, lgTankerEmpty])
 
   // Tally's month-wise ledger summary: Dr/Cr per month and the cumulative
   // closing, drillable into that month's vouchers.
@@ -15682,10 +15711,11 @@ export function Accounts({
         .join(' ')
         .toUpperCase()
     // A purchase bill with a tanker not yet emptied — its oil is not in yet.
-    const tankerOpen = (r: Row): boolean => Number(r.tanker_total) > 0 && Number(r.tanker_empty) < Number(r.tanker_total)
+    const tankerOpen = (r: Row): boolean =>
+      !!r.tanker_held || (Number(r.tanker_total) > 0 && Number(r.tanker_empty) < Number(r.tanker_total))
     const openCount = allRows.filter(tankerOpen).length
     const toolbarOk = (r: Row): boolean =>
-      (!fTypes.length || fTypes.includes(typeOf(r))) && (!fq || rowText(r).includes(fq)) && !(lgTankerEmpty && tankerOpen(r))
+      (!fTypes.length || fTypes.includes(typeOf(r))) && (!fq || rowText(r).includes(fq))
     // The column funnels, offered from what the chips and search leave.
     const lgCf = colFilter<Row>(colF, 'ledger:vouchers', allRows.filter(toolbarOk), [
       { key: 'date', get: (r) => formatDate(r.entry_date), sort: 'num' },
@@ -15699,7 +15729,7 @@ export function Accounts({
     ])
     const lgShown = new Set(lgCf.rows)
     const keep = allRows.map((r) => lgShown.has(r))
-    const filtering = fTypes.length > 0 || !!fq || lgCf.active > 0 || (lgTankerEmpty && openCount > 0)
+    const filtering = fTypes.length > 0 || !!fq || lgCf.active > 0
     // In the funnels' order — date order, or the column clicked to sort by.
     const vRows = lgCf.rows
     const canFilter = lgView === 'vouchers' || (lgView === 'columnar' && !lgCondensed)
@@ -16190,7 +16220,18 @@ export function Accounts({
                   >
                     <ChevronRight className="h-[15px] w-[15px] transition-transform" style={{ color: '#8CA396', transform: open ? 'rotate(90deg)' : 'none' }} />
                   </button>
-                  {formatDate(r.entry_date)}
+                  {r.tanker_held ? (
+                    <span
+                      title={`Invoice ${formatDate(r.invoice_date)} — ${Number(r.tanker_empty) || 0} of ${Number(r.tanker_total) || 0} tanker(s) emptied`}
+                      style={{ fontSize: 9.5, fontWeight: 800, letterSpacing: '.06em', textTransform: 'uppercase', color: '#C2700A' }}
+                    >
+                      Not emptied
+                    </span>
+                  ) : (
+                    <span title={r.invoice_date && r.invoice_date !== r.entry_date ? `Emptied ${formatDate(r.entry_date)} · invoice ${formatDate(r.invoice_date)}` : undefined}>
+                      {formatDate(r.entry_date)}
+                    </span>
+                  )}
                 </span>
                 <div style={{ padding: '6px 8px', minWidth: 0 }}>
                   <div style={{ fontSize: 12, fontWeight: 800, ...clip }}>{String(r.particulars || '—')}</div>
@@ -16245,8 +16286,18 @@ export function Accounts({
                 ) : (
                   <span style={{ padding: '0 8px', ...figS(11, A.none, 600) }}>—</span>
                 )}
-                <span style={{ padding: '0 12px', textAlign: 'right', ...figS(12.5, A.dr) }}>{Number(r.dr) > 0 ? formatINR(Number(r.dr)) : ''}</span>
-                <span style={{ padding: '0 12px', textAlign: 'right', ...figS(12.5, A.cr) }}>{Number(r.cr) > 0 ? formatINR(Number(r.cr)) : ''}</span>
+                <span
+                  title={r.tanker_held && Number(r.held_dr) > 0 ? `Bill ${formatINR(Number(r.held_dr))} — counted when its tankers are emptied` : undefined}
+                  style={{ padding: '0 12px', textAlign: 'right', ...figS(12.5, A.dr) }}
+                >
+                  {Number(r.dr) > 0 ? formatINR(Number(r.dr)) : r.tanker_held && Number(r.held_dr) > 0 ? formatINR(0) : ''}
+                </span>
+                <span
+                  title={r.tanker_held && Number(r.held_cr) > 0 ? `Bill ${formatINR(Number(r.held_cr))} — counted when its tankers are emptied` : undefined}
+                  style={{ padding: '0 12px', textAlign: 'right', ...figS(12.5, A.cr) }}
+                >
+                  {Number(r.cr) > 0 ? formatINR(Number(r.cr)) : r.tanker_held && Number(r.held_cr) > 0 ? formatINR(0) : ''}
+                </span>
                 {!lgHideBal && (
                   <span
                     className="flex h-full items-center justify-end"
@@ -17051,6 +17102,14 @@ export function Accounts({
                           >
                             {vNo(x)}
                           </span>
+                          {x.fifo && (
+                            <span
+                              title="Paid with no Agst Ref — set against this party's oldest open bills first"
+                              style={{ fontStyle: 'normal', fontSize: 9, fontWeight: 800, letterSpacing: '.06em', color: '#1B4E82', background: '#EAF0FA', borderRadius: 3, padding: '1px 5px' }}
+                            >
+                              FIFO
+                            </span>
+                          )}
                         </button>
                         <span style={{ ...cell('right'), ...figS(11, String(x.side) === 'dr' ? A.dr : A.cr, 600) }}>
                           {dc(n(x.amount), String(x.side) === 'dr' ? 'dr' : 'cr')}
@@ -17488,18 +17547,18 @@ export function Accounts({
                         }
                       )}
                     </div>
-                    {/* TANKER: All, or only the bills whose tankers are all
-                        emptied — a bill whose oil is still on the road is left out. */}
-                    {(openCount > 0 || lgTankerEmpty) && (
+                    {/* DATE: the invoice's own, or the day its tankers were
+                        emptied — a bill whose oil is still on the road then reads 0. */}
+                    {allRows.some((r) => Number(r.tanker_total) > 0) && (
                       <div className="flex flex-none items-center gap-1.5">
                         <span className="whitespace-nowrap" style={{ ...cap, fontSize: 9.5, letterSpacing: '.12em', color: A.muted }}>
-                          Tanker
+                          Date
                         </span>
                         <div className="flex items-center gap-[2px] rounded-[13px] p-[2px]" style={{ border: '1px solid #DCE7DB', background: '#F4F7F3' }}>
                           {(
                             [
-                              [false, 'All'],
-                              [true, 'Empty only']
+                              [false, 'Invoice date'],
+                              [true, 'Empty date']
                             ] as const
                           ).map(([v, label]) => {
                             const on = lgTankerEmpty === v
@@ -17511,7 +17570,11 @@ export function Accounts({
                                   setLgOpenRow(null)
                                   setLgTankerEmpty(v)
                                 }}
-                                title={v ? `Leave out ${openCount} purchase bill${openCount === 1 ? '' : 's'} whose tankers are not all emptied yet` : 'Every voucher'}
+                                title={
+                                  v
+                                    ? `Purchase bills dated the day their tankers were emptied; ${openCount} not emptied yet show 0, undated, at the foot`
+                                    : 'Every voucher on its own (invoice) date'
+                                }
                                 className="flex h-[22px] items-center gap-1 whitespace-nowrap rounded-[11px] px-2.5"
                                 style={{
                                   background: on ? 'linear-gradient(180deg,#11503C,#0B3D2E)' : 'transparent',
@@ -17521,7 +17584,7 @@ export function Accounts({
                                 }}
                               >
                                 {label}
-                                {v && <span style={{ ...figS(10, 'currentColor', 600), opacity: 0.8 }}>−{openCount}</span>}
+                                {v && openCount > 0 && <span style={{ ...figS(10, 'currentColor', 600), opacity: 0.8 }}>{openCount} open</span>}
                               </button>
                             )
                           })}

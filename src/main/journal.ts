@@ -403,6 +403,9 @@ export async function accountStatement(accountId: number, companyId?: number): P
                  (SELECT COUNT(*) FROM ${ALLOC} ta WHERE ta.order_id = je.order_id) AS tanker_total,
                  (SELECT COUNT(*) FROM ${ALLOC} ta JOIN purchase_tankers tp ON tp.id = ta.tanker_id
                    WHERE ta.order_id = je.order_id AND tp.status = 'empty') AS tanker_empty,
+                 -- The day the bill's last tanker was emptied (Empty date view).
+                 (SELECT MAX(tp.empty_date) FROM ${ALLOC} ta JOIN purchase_tankers tp ON tp.id = ta.tanker_id
+                   WHERE ta.order_id = je.order_id AND tp.status = 'empty') AS tanker_last_empty,
                  (SELECT sl.invoice_no FROM sales sl WHERE sl.id = je.sale_id) AS sale_invoice_no,
                  -- AND WHOSE BOOK THE DOCUMENT IS IN.
                  -- Almost always this ledger's own, and once in a while not:

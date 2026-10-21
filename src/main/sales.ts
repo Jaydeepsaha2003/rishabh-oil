@@ -12,6 +12,7 @@ import { gstLines, asGstType } from './gstLedgers'
 import { assertSalesInvoiceNoFree } from './invoiceno'
 import { recordChanges, SALES_BARGAIN_FIELDS, type FieldSpec } from './history'
 import { raisePairedPurchase, removePairedPurchase, syncPairedPurchase } from './intercompany'
+import { dropSaleTdsForInvoice } from './saleTds'
 
 // Guard: a dispatched (done) sale physically draws finished-goods stock, so the
 // available stock (excluding this sale's own effect) must cover the quantity.
@@ -2384,7 +2385,7 @@ export async function deleteSale(id: number): Promise<{ id: number }> {
   // not take it down — dropping it and posting a fresh one would give the
   // invoice a new number and shift every voucher after it. Only when the last
   // line goes does the voucher go with it.
-  const own = await c.execute({ sql: 'SELECT invoice_group FROM sales WHERE id = ?', args: [id] })
+  const own = await c.execute({ sql: 'SELECT invoice_group, invoice_no, company_id FROM sales WHERE id = ?', args: [id] })
   const grp = own.rows[0] ? (own.rows[0] as unknown as Row).invoice_group : null
   let survivor = 0
   if (grp) {
@@ -2398,6 +2399,10 @@ export async function deleteSale(id: number): Promise<{ id: number }> {
     await c.execute({ sql: 'UPDATE journal_entries SET sale_id = ? WHERE sale_id = ?', args: [survivor, id] })
   } else {
     await deleteJournalByRef('sale_id', id)
+    // The customer's TDS on it was Agst Ref this invoice; with no invoice
+    // left it would settle nothing.
+    const o = own.rows[0] as unknown as Row | undefined
+    if (o) await dropSaleTdsForInvoice(n(o.company_id), String(grp || o.invoice_no || `sale-${id}`))
   }
   await c.execute({ sql: 'DELETE FROM payment_allocations WHERE sale_id = ?', args: [id] })
   await c.execute({ sql: 'DELETE FROM customer_ledger WHERE sale_id = ?', args: [id] })

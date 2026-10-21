@@ -1207,7 +1207,54 @@ export async function billsOutstanding(
       })
     : null
   const balance = balRes ? n(balRes.rows[0]?.bal) : 0
-  const totalPending = round2(rows.reduce((t, r) => t + n(r.pending), 0))
+
+  // CREDITORS: PAYMENTS WITH NO AGST REF CLEAR THE OLDEST BILLS FIRST.
+  //
+  // A payment booked from a bank book carries no bill-wise allocation, so it
+  // sat in On Account while every bill read as unpaid. What the bills do not
+  // claim of the money paid is spread over the open bills oldest first — each
+  // piece named by the payment it came from, oldest payment first — the same
+  // rule Trading Payments applies (fifoSettle.ts). Worked out on each read and
+  // never written to the books: a payment added or deleted moves it at once.
+  if (!debtor && accountId) {
+    const pendingNow = round2(rows.reduce((t, r) => t + n(r.pending), 0))
+    let spare = round2(balance + pendingNow) // the Dr the bills do not explain
+    if (spare > 0.005) {
+      const pays = toPlain(
+        await c.execute({
+          sql: `SELECT je.id AS entry_id, je.entry_date, je.vch_type, je.vch_no, je.narration, jl.dr,
+                       COALESCE((SELECT SUM(ba.amount) FROM journal_bill_allocs ba WHERE ba.line_id = jl.id AND ba.method = 'agst_ref'), 0) AS named
+                  FROM journal_lines jl JOIN journal_entries je ON je.id = jl.entry_id
+                 WHERE jl.account_id = ? AND je.company_id = ? AND je.entry_date <= ? AND jl.dr > 0
+                 ORDER BY je.entry_date, je.id`,
+          args: [accountId, cid, asOf]
+        })
+      )
+        .map((x): Row => ({ ...x, free: round2(n(x.dr) - n(x.named)) }))
+        .filter((x) => n(x.free) > 0.005)
+      let pi = 0
+      for (const r of rows as Row[]) {
+        while (spare > 0.005 && n(r.pending) > 0.005 && pi < pays.length) {
+          const p = pays[pi]
+          const take = round2(Math.min(n(r.pending), n(p.free), spare))
+          r.settlements = [
+            ...(r.settlements as Row[]),
+            { entry_id: n(p.entry_id), entry_date: p.entry_date, vch_type: p.vch_type, vch_no: p.vch_no, side: 'dr', narration: p.narration, amount: take, fifo: true }
+          ]
+          r.paid = round2(n(r.paid) + take)
+          r.pending = round2(n(r.pending) - take)
+          r.fifo = true
+          p.free = round2(n(p.free) - take)
+          spare = round2(spare - take)
+          if (n(p.free) <= 0.005) pi++
+        }
+        if (spare <= 0.005 || pi >= pays.length) break
+      }
+    }
+  }
+  // Settled bills drop off the list, as they always did.
+  const open = (rows as Row[]).filter((r) => n(r.pending) > 0.005)
+  const totalPending = round2(open.reduce((t, r) => t + n(r.pending), 0))
   // A debtor's bills are Dr, a creditor's are Cr — compare like for like before
   // calling the remainder On Account.
   const billsSigned = debtor ? totalPending : -totalPending
@@ -1217,9 +1264,9 @@ export async function billsOutstanding(
     as_of: asOf,
     debtor,
     credit_days: creditDays,
-    rows,
-    total_opening: round2(rows.reduce((t, r) => t + n(r.opening), 0)),
-    total_paid: round2(rows.reduce((t, r) => t + n(r.paid), 0)),
+    rows: open,
+    total_opening: round2(open.reduce((t, r) => t + n(r.opening), 0)),
+    total_paid: round2(open.reduce((t, r) => t + n(r.paid), 0)),
     total_pending: totalPending,
     balance: round2(balance),
     on_account: onAccount
