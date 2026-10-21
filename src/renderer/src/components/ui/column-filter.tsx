@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { Filter } from 'lucide-react'
+import { ArrowDown, ArrowUp, ArrowUpDown, Filter } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import {
@@ -32,7 +32,9 @@ export function ColumnFilter({
   onApply,
   align = 'start',
   onDark = false,
-  bare = false
+  bare = false,
+  sortDir = null,
+  onSort
 }: {
   label: string
   // `count` is optional — a caller that already walks the rows to build this
@@ -48,6 +50,10 @@ export function ColumnFilter({
   onDark?: boolean
   // Just the funnel — for a header that already prints its own label.
   bare?: boolean
+  // Sorting on this column: the label toggles it (up, down, off) and the
+  // panel has the two directions as buttons.
+  sortDir?: 'asc' | 'desc' | null
+  onSort?: (dir: 'asc' | 'desc' | null) => void
 }): React.JSX.Element {
   const [open, setOpen] = useState(false)
   const [staged, setStaged] = useState<Set<string>>(new Set(value))
@@ -104,7 +110,24 @@ export function ColumnFilter({
 
   return (
     <span className="inline-flex items-center gap-1">
-      {!bare && label}
+      {!bare &&
+        (onSort ? (
+          <button
+            type="button"
+            onClick={() => onSort(sortDir === 'asc' ? 'desc' : sortDir === 'desc' ? null : 'asc')}
+            title={sortDir === 'asc' ? `Sorted by ${label}, low to high — click for high to low` : sortDir === 'desc' ? `Sorted by ${label}, high to low — click to clear` : `Sort by ${label}`}
+            className="inline-flex items-center gap-1 uppercase [font:inherit] [letter-spacing:inherit] hover:underline"
+          >
+            {label}
+            {sortDir === 'asc' ? (
+              <ArrowUp className="h-3 w-3" />
+            ) : sortDir === 'desc' ? (
+              <ArrowDown className="h-3 w-3" />
+            ) : null}
+          </button>
+        ) : (
+          label
+        ))}
       <Popover open={open} onOpenChange={setOpen}>
         <PopoverTrigger asChild>
           <button
@@ -126,6 +149,45 @@ export function ColumnFilter({
         </PopoverTrigger>
         <PopoverContent align={align} className={FILTER_PANEL_CLASS}>
           <FilterPanelHeader label={label} onClose={() => setOpen(false)} />
+          {onSort && (
+            <div className="flex gap-1 border-b px-2 py-1.5">
+              {(
+                [
+                  ['asc', 'Sort ascending', ArrowUp],
+                  ['desc', 'Sort descending', ArrowDown]
+                ] as const
+              ).map(([d, text, Icon]) => (
+                <button
+                  key={d}
+                  type="button"
+                  onClick={() => {
+                    onSort(sortDir === d ? null : d)
+                    setOpen(false)
+                  }}
+                  className={cn(
+                    'flex h-7 flex-1 items-center justify-center gap-1 rounded text-[11px] font-bold',
+                    sortDir === d ? 'bg-[#1a2c56] text-white' : 'bg-muted/60 hover:bg-muted'
+                  )}
+                >
+                  <Icon className="h-3 w-3" />
+                  {text}
+                </button>
+              ))}
+              {sortDir && (
+                <button
+                  type="button"
+                  title="Back to the register's own order"
+                  onClick={() => {
+                    onSort(null)
+                    setOpen(false)
+                  }}
+                  className="flex h-7 items-center justify-center rounded px-2 text-[11px] font-bold hover:bg-muted"
+                >
+                  <ArrowUpDown className="h-3 w-3" />
+                </button>
+              )}
+            </div>
+          )}
           <FilterPanelSearch inputRef={searchRef} value={query} onChange={setQuery} />
           <div className="max-h-60 overflow-y-auto">
             {options.length === 0 ? (

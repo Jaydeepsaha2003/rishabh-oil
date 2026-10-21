@@ -70,14 +70,45 @@ export type ColFilterResult<T> = {
   clear: () => void
 }
 
+// SORTING, KEPT WITH THE FILTERS: the table's '__sort' entry is
+// [column key, 'asc' | 'desc'] — so it survives the same remounts they do.
+const SORT = '__sort'
+const numOf = (s: string): number => {
+  const m = /^(\d{2})-(\d{2})-(\d{4})/.exec(s)
+  if (m) return Number(`${m[3]}${m[2]}${m[1]}`)
+  const x = Number(s.replace(/[₹,\s]|Cr$|Dr$/gi, ''))
+  return Number.isFinite(x) ? x : Number.NaN
+}
+
 export function colFilter<T>(store: ColFilterStore, table: string, rows: T[], cols: ColDef<T>[]): ColFilterResult<T> {
   const sel = store.state[table] || {}
   const live = cols.filter((c) => (sel[c.key] || []).length)
   const sets = new Map(live.map((c) => [c.key, new Set(sel[c.key])]))
   const passes = (r: T, except?: string): boolean =>
     live.every((c) => c.key === except || valuesOf(c, r).some((v) => sets.get(c.key)!.has(v)))
-  const shown = live.length ? rows.filter((r) => passes(r)) : rows
+  const filtered = live.length ? rows.filter((r) => passes(r)) : rows
   const byKey = new Map(cols.map((c) => [c.key, c]))
+  // The column sorted on, if any: blanks always last, the rest by number
+  // (dates and amounts) for a 'num' column, else as text, numbers in order.
+  const [sortKey, sortDir] = (sel[SORT] || []) as [string?, string?]
+  const sortCol = sortKey ? byKey.get(sortKey) : undefined
+  const shown = sortCol
+    ? filtered
+        .map((r, i) => ({ r, i, v: valuesOf(sortCol, r)[0] }))
+        .sort((a, b) => {
+          const ab = a.v === BLANK
+          const bb = b.v === BLANK
+          if (ab || bb) return ab === bb ? a.i - b.i : ab ? 1 : -1
+          let d = 0
+          if (sortCol.sort === 'num') {
+            const x = numOf(a.v)
+            const y = numOf(b.v)
+            d = Number.isNaN(x) || Number.isNaN(y) ? a.v.localeCompare(b.v, undefined, { numeric: true }) : x - y
+          } else d = a.v.localeCompare(b.v, undefined, { numeric: true, sensitivity: 'base' })
+          return (sortDir === 'desc' ? -d : d) || a.i - b.i
+        })
+        .map((x) => x.r)
+    : filtered
 
   const head: ColFilterResult<T>['head'] = (key, label, opts) => {
     const c = byKey.get(key)
@@ -90,10 +121,8 @@ export function colFilter<T>(store: ColFilterStore, table: string, rows: T[], co
       for (const v of new Set(valuesOf(c, r))) counts.set(v, (counts.get(v) || 0) + 1)
     }
     const num = (s: string): number => {
-      const m = /^(\d{2})-(\d{2})-(\d{4})/.exec(s)
-      if (m) return Number(`${m[3]}${m[2]}${m[1]}`)
-      const x = Number(s.replace(/[₹,\s]|Cr$|Dr$/gi, ''))
-      return Number.isFinite(x) ? x : Number.POSITIVE_INFINITY
+      const x = numOf(s)
+      return Number.isNaN(x) ? Number.POSITIVE_INFINITY : x
     }
     const entries = [...counts.entries()]
     if (c.sort !== 'none') entries.sort((a, b) => {
@@ -107,11 +136,23 @@ export function colFilter<T>(store: ColFilterStore, table: string, rows: T[], co
         options={entries.map(([value, count]) => ({ value, label: value, count }))}
         value={sel[key] || []}
         onApply={(v) => store.set(table, key, v)}
+        sortDir={sortKey === key ? (sortDir === 'desc' ? 'desc' : 'asc') : null}
+        onSort={(d) => store.set(table, SORT, d ? [key, d] : [])}
         align={opts?.align}
         onDark={opts?.onDark}
         bare={opts?.bare}
       />
     )
   }
-  return { rows: shown, head, active: live.length, clear: () => store.clear(table) }
+  // Clear lets go of the filters; the sort stays, as a choice of view.
+  return {
+    rows: shown,
+    head,
+    active: live.length,
+    clear: () => {
+      const keep = sel[SORT]
+      store.clear(table)
+      if (keep?.length) store.set(table, SORT, keep)
+    }
+  }
 }

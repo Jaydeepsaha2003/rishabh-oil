@@ -15644,7 +15644,8 @@ export function Accounts({
     const lgShown = new Set(lgCf.rows)
     const keep = allRows.map((r) => lgShown.has(r))
     const filtering = fTypes.length > 0 || !!fq || lgCf.active > 0 || (lgTankerEmpty && openCount > 0)
-    const vRows = allRows.filter((_, i) => keep[i])
+    // In the funnels' order — date order, or the column clicked to sort by.
+    const vRows = lgCf.rows
     const canFilter = lgView === 'vouchers' || (lgView === 'columnar' && !lgCondensed)
     // The columnar rows are one per statement row, in the same order, until
     // they are condensed into months — so the same filter applies to them.
