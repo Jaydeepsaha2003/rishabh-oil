@@ -1512,7 +1512,7 @@ function AccountPicker({
               </button>
             </CommandEmpty>
               {accounts.map((a) => {
-                const b = Number(a.balance) || 0
+                const b = Number(a.closing ?? a.balance) || 0
                 return (
                 <CommandItem
                   key={String(a.id)}
@@ -9630,8 +9630,8 @@ export function Accounts({
                 </span>
                 <span className="block text-[10px] uppercase tracking-wide text-muted-foreground">{a.acc_group}</span>
               </span>
-              <span className={cn('shrink-0 tabular-nums text-[12px] font-semibold', Number(a.balance) >= 0 ? 'text-sky-800' : 'text-rose-700')}>
-                {formatINR(Math.abs(Number(a.balance) || 0))} {Number(a.balance) >= 0 ? 'Dr' : 'Cr'}
+              <span className={cn('shrink-0 tabular-nums text-[12px] font-semibold', Number(a.closing ?? a.balance) >= 0 ? 'text-sky-800' : 'text-rose-700')}>
+                {formatINR(Math.abs(Number(a.closing ?? a.balance) || 0))} {Number(a.closing ?? a.balance) >= 0 ? 'Dr' : 'Cr'}
               </span>
             </div>
     )
@@ -11088,7 +11088,7 @@ export function Accounts({
       { key: 'group', get: (a) => a.acc_group },
       { key: 'ledger', get: (a) => a.name },
       { key: 'nature', get: (a) => natOf(grpByName.get(String(a.acc_group || '').trim())?.nature).label },
-      { key: 'balance', get: (a) => bal(Number(a.balance) || 0), sort: 'num' }
+      { key: 'balance', get: (a) => bal(Number(a.closing ?? a.balance) || 0), sort: 'num' }
     ])
     const cfOn = msCf.active > 0
     const allowed = new Set(msCf.rows.map((a) => Number(a.id)))
@@ -11145,8 +11145,8 @@ export function Accounts({
         ? coAccounts.filter((a) => ledgerNameMatches(a.name, q) || ledgerNameMatches(a.acc_group, q))
         : coAccounts
     ).filter((a) => !cfOn || allowed.has(Number(a.id)))
-    const totDr = totalSet.reduce((t, a) => t + Math.max(0, Number(a.balance) || 0), 0)
-    const totCr = totalSet.reduce((t, a) => t + Math.max(0, -(Number(a.balance) || 0)), 0)
+    const totDr = totalSet.reduce((t, a) => t + Math.max(0, Number(a.closing ?? a.balance) || 0), 0)
+    const totCr = totalSet.reduce((t, a) => t + Math.max(0, -(Number(a.closing ?? a.balance) || 0)), 0)
     // The ledgers on screen, for "Select all shown".
     const shownLedgerIds = lines.filter((l) => l.kind === 'ledger').map((l) => Number((l as { a: Row }).a.id))
     const groupsByPath = [...groupRows].sort((x, y) => String(x.path || x.name).localeCompare(String(y.path || y.name)))
@@ -11541,7 +11541,7 @@ export function Accounts({
             {lines.map((ln, i) => {
               const zebra = i % 2 ? '#FBFDFA' : '#fff'
               if (ln.kind === 'ledger') {
-                const v = Number(ln.a.balance) || 0
+                const v = Number(ln.a.closing ?? ln.a.balance) || 0
                 const id = Number(ln.a.id)
                 return (
                   <div
@@ -16019,7 +16019,7 @@ export function Accounts({
       const ai = flatIndex
       const on = Number(a2.id) === ledgerId
       const cur = ai === lgCursor && !on
-      const b = Number(a2.balance) || 0
+      const b = Number(a2.closing ?? a2.balance) || 0
       return (
         <button
           key={String(a2.id)}

@@ -192,6 +192,7 @@ async function parseBankBook(b64: string): Promise<ParsedBook> {
     return null
   }
   let last: BankLine | null = null
+  let openingRead = false
   for (let r = headAt + 1; r < grid.length; r++) {
     const row = grid[r] || []
     const { side, name } = partOf(row)
@@ -207,6 +208,7 @@ async function parseBankBook(b64: string): Promise<ParsedBook> {
     const cr = round2(n(row[iCr]))
     if (/^opening\s*balance$/i.test(name)) {
       out.opening = round2(dr - cr)
+      openingRead = true
       continue
     }
     if (/^closing\s*balance$/i.test(name)) {
@@ -250,7 +252,12 @@ async function parseBankBook(b64: string): Promise<ParsedBook> {
   const dates = out.lines.map((x) => x.date).sort()
   out.from = p.from || dates[0]
   out.to = p.to || dates[dates.length - 1]
-  out.closing = round2(out.opening + out.lines.filter((l) => !l.cancelled).reduce((t, l) => t + (l.dir === 'in' ? l.amount : -l.amount), 0))
+  const net = out.lines.filter((l) => !l.cancelled).reduce((t, l) => t + (l.dir === 'in' ? l.amount : -l.amount), 0)
+  // NO OPENING ROW, BUT A CLOSING ONE: the opening is what the closing says it
+  // must have been. A book exported without its Opening Balance line read as
+  // opening ₹0, and the whole ₹11.11 Cr opening showed as a Tally difference.
+  if (!openingRead && out.closing_stated != null) out.opening = round2(out.closing_stated - net)
+  out.closing = round2(out.opening + net)
   return out
 }
 
@@ -925,6 +932,11 @@ export async function checkTallyBank(v: {
       rows
         .filter((r) => r[side] && r[side].dir === dir && (side === 'books' ? r.status !== 'cancelled_here' : !r.tally.cancelled))
         .filter((r) => side === 'tally' || (r.books.date >= book.from && r.books.date <= book.to))
+        // ONE VOUCHER HERE COUNTS ONCE. Two Tally lines can meet one voucher —
+        // the LC parking chain: Tally's ₹2,82,984 out and ₹6,696 back against
+        // PAY/18's ₹2,76,288 — and adding the voucher per line put it in Money
+        // out twice, a ₹2.70 L gap between two books that agree.
+        .filter((r, i, all) => side === 'tally' || !r.books.id || all.findIndex((x) => x.books?.id === r.books.id) === i)
         .reduce((t, r) => t + n(r[side].amount), 0)
     )
   const fileDigits = acctDigits(book.bank)

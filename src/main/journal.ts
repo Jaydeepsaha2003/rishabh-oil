@@ -85,8 +85,9 @@ export async function listAccounts(companyId?: number): Promise<Row[]> {
   // caller may pin one, else the active company.
   await ensureLedgerHomes()
   const cid = companyId || getActiveCompanyId()
+  const booksFrom = await getBooksFrom(cid)
   const res = await getClient().execute({
-    args: [cid, cid, cid, cid],
+    args: [cid, cid, cid, cid, cid, cid, booksFrom || '0000-00-00'],
     sql: `
     SELECT a.*,
       -- Whether this ledger belongs to the company in view (see ensureLedgerHomes).
@@ -104,6 +105,16 @@ export async function listAccounts(companyId?: number): Promise<Row[]> {
       COALESCE((SELECT SUM(jl.dr) - SUM(jl.cr)
                 FROM journal_lines jl JOIN journal_entries je ON je.id = jl.entry_id
                 WHERE jl.account_id = a.id AND je.company_id = ?), 0) AS balance,
+      -- WHAT THE LEDGER ITSELF CLOSES AT: the opening entered for this book,
+      -- plus the postings from the day the books start. \`balance\` above is
+      -- every posting ever, opening left out — a bank whose BD and LC
+      -- vouchers from before the books start were already inside its opening
+      -- read ₹4.39 Cr Dr in the picker while the ledger closed at ₹10.89 Cr Cr.
+      COALESCE((SELECT SUM(lo.dr) - SUM(lo.cr) FROM ledger_openings lo
+                WHERE lo.account_id = a.id AND lo.company_id = ?), 0)
+      + COALESCE((SELECT SUM(jl.dr) - SUM(jl.cr)
+                  FROM journal_lines jl JOIN journal_entries je ON je.id = jl.entry_id
+                  WHERE jl.account_id = a.id AND je.company_id = ? AND je.entry_date >= ?), 0) AS closing,
       -- Postings across EVERY company, not just the one in view.
       (SELECT COUNT(*) FROM journal_lines jl2 WHERE jl2.account_id = a.id) AS line_count,
       (SELECT COUNT(*) FROM journal_bill_allocs ba WHERE ba.account_id = a.id) AS alloc_count,
