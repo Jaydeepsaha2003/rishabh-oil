@@ -458,10 +458,16 @@ function DealScreen({ deal: d, onBack }: { deal: Row; onBack: () => void }): Rea
 
   return (
     <div className="flex min-h-[100dvh] flex-col bg-[#F1F5EF]">
-      <div className="shrink-0 bg-[#0B3D2E] px-3 pb-3.5 pt-2 text-white">
+      <div className="shrink-0 bg-[#0B3D2E] px-3 pb-3.5 pt-2.5 text-white">
+        {/* The shared strip first: without it the menu's floating button is
+            drawn over this screen's back arrow, and there is no way back. */}
+        <div className="px-1">
+          <MobileBar />
+        </div>
         <div className="flex items-center gap-1.5">
           <button
             type="button"
+            aria-label="Back to all trading deals"
             onClick={onBack}
             className="flex h-11 w-11 shrink-0 items-center justify-center rounded-[4px] active:bg-white/10"
           >
