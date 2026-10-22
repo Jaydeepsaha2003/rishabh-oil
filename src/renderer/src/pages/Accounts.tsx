@@ -89,6 +89,7 @@ import {
 import { exportRowsToExcel, NUM_MONEY, NUM_QTY } from '@/lib/excel'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
+import { Switch } from '@/components/ui/switch'
 import { Label } from '@/components/ui/label'
 import { DatePicker } from '@/components/ui/date-picker'
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
@@ -2132,6 +2133,9 @@ export function Accounts({
   // 'all' | 'lc' (funded by an LC) | 'nolc' (not tagged to any LC)
   // Empty = both — checking neither/both funding types is the same as "all".
   const [regFunding, setRegFunding] = useState<string[]>(() => regBack.current?.regFunding ?? [])
+  // Purchase register: every bill, or only the bills whose tankers are all
+  // emptied (the oil is in). A bill with no tanker on it is always shown.
+  const [regEmptyOnly, setRegEmptyOnly] = useState(false)
   // Tag-a-purchase-to-an-LC dialog.
   const [tagForm, setTagForm] = useState<Row | null>(null)
   // Books beginning from, and the opening balance each ledger was given as at
@@ -6886,12 +6890,18 @@ export function Accounts({
             className="h-8 w-40 bg-white text-[11px]"
           />
         )}
-        {(regFrom || regTo || regSearch || regFunding.length > 0) && (
+        {fundingLabels && (
+          <label className="flex h-8 cursor-pointer items-center gap-1.5 rounded-md border bg-white px-2 text-[11px] font-medium" title="Only the bills whose tankers are all emptied">
+            <Switch checked={regEmptyOnly} onCheckedChange={setRegEmptyOnly} />
+            Emptied only
+          </label>
+        )}
+        {(regFrom || regTo || regSearch || regFunding.length > 0 || regEmptyOnly) && (
           <Button
             variant="ghost"
             size="sm"
             className="h-8 px-2 text-xs"
-            onClick={() => { setRegFrom(''); setRegTo(''); setRegSearch(''); setRegFunding([]) }}
+            onClick={() => { setRegFrom(''); setRegTo(''); setRegSearch(''); setRegFunding([]); setRegEmptyOnly(false) }}
           >
             Clear
           </Button>
@@ -6908,17 +6918,20 @@ export function Accounts({
     return true
   }
 
+  // A purchase with a tanker on it not yet emptied — its oil is still on the road.
+  const purTankerOpen = (o: Row): boolean => n(o.tanker_count) > 0 && n(o.empty_tankers) < n(o.tanker_count)
   const purchaseRows = useMemo(() => {
     const q = regSearch.trim().toLowerCase()
     return purchases.filter((o) => {
       if (!inPeriod(o.order_date)) return false
       if (regFunding.length && !regFunding.includes(o.lc_nos ? 'lc' : 'nolc')) return false
+      if (regEmptyOnly && purTankerOpen(o)) return false
       if (!q) return true
       return [o.invoice_no, o.supplier_name, o.oil_code, o.oil_name, o.lc_nos]
         .filter(Boolean).join(' ').toLowerCase().includes(q)
     })
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [purchases, regFrom, regTo, regSearch, regFunding])
+  }, [purchases, regFrom, regTo, regSearch, regFunding, regEmptyOnly])
 
   const salesRegRows = useMemo(() => {
     const q = regSearch.trim().toLowerCase()
@@ -9701,6 +9714,7 @@ export function Accounts({
       // The kind is the register itself on the website, not a filter on it.
       if (isNotes && !__WEB__) setNoteKindFilter('all')
       else setRegFunding([])
+      setRegEmptyOnly(false)
       colF.clear(`reg:${tab}`)
     }
 
@@ -9896,7 +9910,7 @@ export function Accounts({
     // would show before it is pressed.
     const inPer = (d: string): boolean => (!fFrom || d >= fFrom) && (!fTo || d <= fTo)
     const periodPur = isPur ? purchases.filter((o) => inPer(String(o.order_date || '').slice(0, 10))) : []
-    const hasFilter = !!(fFrom || fTo || fQuery.trim() || (isPur && regFunding.length) || (!__WEB__ && isNotes && noteKindFilter !== 'all') || regCf.active > 0)
+    const hasFilter = !!(fFrom || fTo || fQuery.trim() || (isPur && (regFunding.length || regEmptyOnly)) || (!__WEB__ && isNotes && noteKindFilter !== 'all') || regCf.active > 0)
 
     // ── the table ─────────────────────────────────────────────────────────
     // EVERY COLUMN WIDE ENOUGH FOR WHAT IS IN IT. The number columns — the
@@ -10460,6 +10474,45 @@ export function Accounts({
                       </button>
                     )
                   })}
+                </div>
+              )}
+              {/* TANKER: every bill, or only those whose tankers are all emptied. */}
+              {isPur && (
+                <div className="flex flex-none items-center gap-1.5">
+                  <span style={{ fontSize: 9.5, fontWeight: 800, letterSpacing: '.12em', textTransform: 'uppercase', color: '#5A6B62' }}>Tanker</span>
+                  <div className="flex items-center gap-[2px] rounded-full p-[2px]" style={{ border: '1px solid #DCE7DB', background: '#F4F7F3' }}>
+                    {(
+                      [
+                        [false, 'All'],
+                        [true, 'Emptied only']
+                      ] as const
+                    ).map(([v, label]) => {
+                      const on = regEmptyOnly === v
+                      const openN = periodPur.filter(purTankerOpen).length
+                      return (
+                        <button
+                          key={label}
+                          type="button"
+                          onClick={() => setRegEmptyOnly(v)}
+                          title={
+                            v
+                              ? `Leave out ${openN} bill${openN === 1 ? '' : 's'} with a tanker not emptied yet`
+                              : 'Every purchase bill'
+                          }
+                          className="flex h-[26px] items-center gap-1 whitespace-nowrap rounded-full px-2.5"
+                          style={{
+                            background: on ? 'linear-gradient(180deg,#11503C,#0B3D2E)' : 'transparent',
+                            color: on ? '#fff' : '#33473E',
+                            fontSize: 11,
+                            fontWeight: 800
+                          }}
+                        >
+                          {label}
+                          {v && openN > 0 && <span style={{ ...fig(10, 600), opacity: 0.8 }}>−{openN}</span>}
+                        </button>
+                      )
+                    })}
+                  </div>
                 </div>
               )}
               {!__WEB__ && isNotes && noteKindFilter !== 'all' && (
