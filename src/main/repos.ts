@@ -5,6 +5,7 @@ import { getActiveCompanyId } from './company'
 import { bankLedgerName } from './treasury'
 import { renameLedger, ensureLedgerMap, resolveAccountName } from './ledgerMap'
 import { logLimitChange } from './facilityLimits'
+import { OPENING_FIELDS, overlayOpenings, setPartyOpening } from './partyOpenings'
 
 // Whitelist of writable columns per table. Table names and column names only
 // ever come from this map (never from the renderer), so the dynamic SQL below
@@ -35,8 +36,8 @@ const TABLES: Record<string, string[]> = {
     'adds_interest',
     'interest_pct',
     'interest_days',
-    'opening_purchase_amount',
-    'opening_purchase_date',
+    // opening_purchase_amount / _date are the open company's own now — see
+    // partyOpenings.ts; the shared column is no longer written.
     'skip_tanker_stages',
     'active'
   ],
@@ -175,7 +176,7 @@ export async function list(table: string): Promise<Row[]> {
   const key = `${table}|${scoped ? getActiveCompanyId() : 0}`
   const hit = masterCache.get(key)
   // Copied out, so a caller mutating what it got cannot corrupt the cache.
-  if (hit) return hit.map((r) => ({ ...r }))
+  if (hit) return overlayOpenings(table, hit.map((r) => ({ ...r })))
   // Every master table has a `name` and feeds dropdowns across the app —
   // always list A→Z. Company-scoped tables only ever show the active
   // company's own rows (a bank with no company set yet — there isn't a way
@@ -192,7 +193,14 @@ export async function list(table: string): Promise<Row[]> {
     return o
   })
   masterCache.set(key, rows)
-  return rows.map((r) => ({ ...r }))
+  return overlayOpenings(table, rows.map((r) => ({ ...r })))
+}
+
+/** A supplier's / customer's opening billing, written for the company open. */
+async function saveOpening(table: string, id: number, values: Row): Promise<void> {
+  const f = OPENING_FIELDS[table as 'suppliers' | 'customers']
+  if (!f || !id || !(f.amount in values || f.date in values)) return
+  await setPartyOpening(f.kind, id, Number(values.opening_company_id) || getActiveCompanyId(), values[f.amount], values[f.date])
 }
 
 export async function get(table: string, id: number): Promise<Row | null> {
@@ -205,7 +213,7 @@ export async function get(table: string, id: number): Promise<Row | null> {
   const r = res.rows[0] as unknown as Row
   const o: Row = {}
   for (const col of res.columns) o[col] = r[col]
-  return o
+  return (await overlayOpenings(table, [o]))[0]
 }
 
 export async function create(table: string, values: Row): Promise<{ id: number }> {
@@ -224,6 +232,7 @@ export async function create(table: string, values: Row): Promise<{ id: number }
     sql: `INSERT INTO ${table} (${keys.join(', ')}) VALUES (${placeholders})`,
     args: keys.map((k) => toArg(values[k], k))
   })
+  await saveOpening(table, Number(res.lastInsertRowid), values)
   // A new company needs the customer and supplier rows that stand for it, or
   // it cannot be picked as the other side of an inter-company sale.
   if (table === 'companies') await ensureCompanyParties().catch(() => undefined)
@@ -393,6 +402,7 @@ export async function update(table: string, id: number, values: Row): Promise<{ 
   const keys = pickKeys(values, allowed)
   // A renamed company renames the parties that stand for it.
   if (table === 'companies') await ensureCompanyParties().catch(() => undefined)
+  await saveOpening(table, id, values)
   if (keys.length === 0) return { id }
   // Read the old name BEFORE the update, so a rename can be detected.
   let priorName = ''

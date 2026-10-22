@@ -5,6 +5,7 @@ import { loadUser } from '@/lib/session'
 import { canWrite } from '@/lib/modules'
 import { useCategories } from '@/lib/useCategories'
 import { COMPANY_TYPES, BUSINESS_TYPES, isTradingParty } from '@/lib/constants'
+import { useCompany } from '@/lib/companyContext'
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Row = Record<string, any>
@@ -42,6 +43,10 @@ const baseFields: FieldDef[] = [
   { key: 'interest_pct', label: 'Interest %', type: 'number', default: 0, enabledWhen: (f) => !!f.adds_interest },
   { key: 'interest_days', label: 'Interest days', type: 'number', default: 0, enabledWhen: (f) => !!f.adds_interest },
   { key: 'credit_period_days', label: 'Credit period (days)', type: 'number', default: 0 },
+  // Billed to this customer earlier in the year, before these books — where
+  // the TDS slab they deduct picks up from. The open company's own figure.
+  { key: 'opening_sale_amount', label: 'Sale bill amount (as on)', type: 'number', default: 0 },
+  { key: 'opening_sale_date', label: 'As on date', type: 'date' },
   { key: 'active', label: 'Active', type: 'switch', default: true }
 ]
 
@@ -72,7 +77,11 @@ export function Customers(): React.JSX.Element {
     .map((c) => ({ value: String(c.id), label: c.name }))
   const nameById = new Map(allCustomers.map((c) => [String(c.id), c.name]))
 
+  const { companies, companyId } = useCompany()
+  const coName = String(companies.find((c) => Number(c.id) === Number(companyId))?.name || 'this company')
   const fields = baseFields.map((f) => {
+    if (f.key === 'opening_sale_amount') return { ...f, label: `Sale bill amount (as on) — ${coName}` }
+    if (f.key === 'opening_sale_date') return { ...f, label: `As on date — ${coName}` }
     if (f.key === 'category') return { ...f, options: categories.map((c) => ({ value: c, label: c })) }
     if (f.key === 'linked_party_id') return { ...f, options: manufacturingOptions }
     return f
@@ -93,6 +102,7 @@ export function Customers(): React.JSX.Element {
       <PageHeader title="Customers" subtitle="GST, TDS, credit period and interest terms per customer" hint="Each customer's tax and credit terms auto-fill on sales. Credit period defaults to 0 days; interest applies only to days beyond it. Category tags what the customer trades in, which is how the gate narrows its party list. A Trading customer that is really the same party as one of your Manufacturing customers can be linked to it, so the TDS slab tracks both together instead of restarting at zero." />
       <div className="px-4 py-6">
         <EntityManager
+          key={`customers-${companyId}`}
           table="customers"
           title="Customer"
           fields={fields}

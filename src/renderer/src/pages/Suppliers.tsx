@@ -5,6 +5,7 @@ import { loadUser } from '@/lib/session'
 import { canWrite } from '@/lib/modules'
 import { useCategories } from '@/lib/useCategories'
 import { COMPANY_TYPES, BUSINESS_TYPES, isTradingParty } from '@/lib/constants'
+import { useCompany } from '@/lib/companyContext'
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Row = Record<string, any>
@@ -90,7 +91,13 @@ export function Suppliers(): React.JSX.Element {
     .map((s) => ({ value: String(s.id), label: s.name }))
   const nameById = new Map(allSuppliers.map((s) => [String(s.id), s.name]))
 
+  // The purchase bill amount is the open company's own (partyOpenings.ts):
+  // the label says which, and the editor reloads when the company changes.
+  const { companies, companyId } = useCompany()
+  const coName = String(companies.find((c) => Number(c.id) === Number(companyId))?.name || 'this company')
   const fields = baseFields.map((f) => {
+    if (f.key === 'opening_purchase_amount') return { ...f, label: `Purchase bill amount (as on) — ${coName}` }
+    if (f.key === 'opening_purchase_date') return { ...f, label: `As on date — ${coName}` }
     if (f.key === 'supplier_type') return { ...f, options: categories.map((c) => ({ value: c, label: c })) }
     if (f.key === 'linked_party_id') return { ...f, options: manufacturingOptions }
     return f
@@ -113,6 +120,7 @@ export function Suppliers(): React.JSX.Element {
       <PageHeader title="Suppliers" subtitle="GST, TDS slab, credit period, interest rule and purchase flow per supplier" hint="Slab TDS is cumulative per financial year: a base % up to the threshold, then a higher % above it. 'Below slab no TDS' charges TDS only above the threshold. 'Direct purchase' suppliers keep their goods at our site, so no tanker is sent to them — the purchase is booked in one step against the bargain. A Trading supplier that is really the same party as one of your Manufacturing suppliers can be linked to it, so the TDS slab tracks both together instead of restarting at zero." />
       <div className="px-4 py-6">
         <EntityManager
+          key={`suppliers-${companyId}`}
           table="suppliers"
           title="Supplier"
           fields={fields}

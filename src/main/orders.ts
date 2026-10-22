@@ -169,15 +169,10 @@ export async function supplierFyTaxable(
   // Add the "purchase bill amount as on <date>" if that date is in this FY —
   // it seeds the cumulative taxable so the TDS slab picks up from the right
   // point. Any of the linked rows can carry its own opening figure.
-  const sup = await c.execute({
-    sql: `SELECT opening_purchase_amount, opening_purchase_date FROM suppliers WHERE id IN (${ids.map(() => '?').join(',')})`,
-    args: ids
-  })
-  let opening = 0
-  for (const r of sup.rows) {
-    const od = String(r.opening_purchase_date || '')
-    if (od && od >= start && od <= end) opening += Number(r.opening_purchase_amount) || 0
-  }
+  // This company's own figure (partyOpenings.ts): KR FINMARK's slab no longer
+  // starts from what KR FOODS had bought from the same supplier.
+  const { partyOpeningInYear } = await import('./partyOpenings')
+  const opening = await partyOpeningInYear('supplier', companyId || getActiveCompanyId(), ids, start, end)
   return (Number(res.rows[0].t) || 0) + opening
 }
 

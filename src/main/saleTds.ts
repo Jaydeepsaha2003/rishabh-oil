@@ -90,7 +90,12 @@ async function priorTaxable(first: Row, ids: number[]): Promise<number> {
              AND id NOT IN (${ids.map(() => '?').join(',')})`,
     args: [...custIds, n(first.company_id), fyStart(date), date, date, minId, ...ids]
   })
-  return n((res.rows[0] as unknown as Row).t)
+  // And what was billed to them before these books, in this company.
+  const { partyOpeningInYear } = await import('./partyOpenings')
+  const start = fyStart(date)
+  const end = `${Number(start.slice(0, 4)) + 1}-03-31`
+  const opening = await partyOpeningInYear('customer', n(first.company_id), custIds, start, end)
+  return n((res.rows[0] as unknown as Row).t) + opening
 }
 
 export async function saleTdsPreview(saleId: number): Promise<Row> {
