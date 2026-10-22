@@ -2654,6 +2654,11 @@ export function Accounts({
   // start from nil and understate the party by whatever was brought forward.
   const [lgOpening, setLgOpening] = useState(0)
   const [lgBooksFrom, setLgBooksFrom] = useState('')
+  // THE OPENING'S DATE: the later of the period's start and the day the books
+  // begin. A period from 01-04 on books that start 01-07 opens on 01-07 —
+  // nothing before it is in these books, and the opening is the figure entered
+  // for 01-07 (Opening balances).
+  const lgOpenDate = lgBooksFrom && (!lgFrom || lgFrom < lgBooksFrom) ? lgBooksFrom : lgFrom
   const loadLedger = useCallback(async () => {
     if (screen !== 'ledger' || !ledgerId || !cid) return
     const [lines, ob] = await Promise.all([
@@ -16364,7 +16369,7 @@ export function Accounts({
           )}
         </div>
         <div className="grid items-center" style={{ gridTemplateColumns: V_GRID, height: 38, background: '#F4F7F2', borderBottom: '1px solid #E4ECE3' }}>
-          <span style={{ padding: '0 14px', ...figS(11.5, A.muted, 600) }}>{lgFrom || lgBooksFrom ? formatDate(lgFrom || lgBooksFrom) : ''}</span>
+          <span style={{ padding: '0 14px', ...figS(11.5, A.muted, 600) }}>{lgOpenDate ? formatDate(lgOpenDate) : ''}</span>
           <span style={{ gridColumn: 'span 4', padding: '0 8px', fontSize: 11.5, fontWeight: 800, color: '#33473E' }}>
             Opening balance{lgHideBal ? <span style={{ ...figS(11.5, balFg(stmt.opening)), marginLeft: 10 }}>{bal(stmt.opening)}</span> : null}
           </span>
@@ -17583,7 +17588,7 @@ export function Accounts({
                   type="button"
                   title={filtering ? `Download the ${vRows.length} vouchers shown to Excel` : 'Download this ledger to Excel'}
                   onClick={() => {
-                    const from = lgFrom || lgBooksFrom || ''
+                    const from = lgOpenDate || ''
                     const span = `${from ? formatDate(from) : 'start'} to ${lgTo ? formatDate(lgTo) : 'date'}`
                     void exportRowsToExcel({
                       filename: `${acName} ledger ${span}`,
@@ -18296,7 +18301,7 @@ export function Accounts({
                     {(lgFrom || lgBooksFrom || Math.abs(stmt.opening) > 0.004) && (
                       <tr className="border-b bg-amber-50/60 font-medium" style={{ borderColor: '#DCE7DB' }}>
                         <td className={cn('whitespace-nowrap px-3 py-1.5 text-[11px] uppercase tracking-wide text-muted-foreground', lgDetailed && 'sticky left-0 z-10 bg-[#EFF5EC]')}>
-                          {lgFrom ? formatDate(lgFrom) : ''}
+                          {lgOpenDate ? formatDate(lgOpenDate) : ''}
                         </td>
                         <td className={cn('border-l px-2 py-1.5 italic', lgDetailed && 'sticky left-[104px] z-10 bg-[#EFF5EC]')} style={{ borderColor: '#EFF5EC' }} colSpan={lgDetailed ? 1 : 5}>Opening balance</td>
                         {lgDetailed && <td colSpan={4} />}
