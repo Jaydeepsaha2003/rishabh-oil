@@ -177,6 +177,9 @@ interface Props {
   // An Upload button beside Download: the downloaded sheet, edited, updates
   // the records (MasterImport) — checked and previewed before anything saves.
   importable?: boolean
+  // After a record is saved: its id, what was sent, and the row as it was
+  // before (null for a new one). Not called for one sent for approval.
+  onSaved?: (id: number, saved: Row, before: Row | null) => void
 }
 
 /** What clicking this header will do next, in words. */
@@ -198,7 +201,8 @@ export function EntityManager({
   onFieldChange,
   rowAction,
   renderCard,
-  importable = false
+  importable = false,
+  onSaved
 }: Props): React.JSX.Element {
   const [rows, setRows] = useState<Row[]>([])
   // Phone width on the website swaps the register for cards — see below.
@@ -406,11 +410,14 @@ export function EntityManager({
           toast.success(`${title} submitted for admin approval — it will appear here once approved.`)
         } else {
           toast.success(`${title} saved`)
+          if (res?.id) onSaved?.(Number(res.id), payload, null)
         }
       } else {
+        const before = rows.find((r) => Number(r.id) === Number(editingId)) || null
         await window.api.data.update(table, editingId, payload)
         setOpen(false)
         toast.success(`${title} saved`)
+        onSaved?.(Number(editingId), payload, before)
       }
       await load()
     } catch (e) {

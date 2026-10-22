@@ -1783,9 +1783,17 @@ export async function repriceSplitTankerInvoices(apply = false, onlyIds?: number
 // interest stay as stored; net (and the final block) move by the TDS, the
 // supplier's payable follows, and the voucher is re-posted in place. Each is
 // archived in accounting_repair_log first. A trading purchase is never touched.
-export async function refreshStalePurchaseTds(apply = false, onlyIds?: number[]): Promise<{ findings: Row[]; changed: number }> {
+export async function refreshStalePurchaseTds(
+  apply = false,
+  onlyIds?: number[],
+  // One supplier's bills in one company — what the Suppliers form asks about
+  // when that company's "Purchase bill amount (as on)" is changed. The
+  // supplier's linked rows (same PAN, one slab) come with it.
+  scope?: { supplierId: number; companyId: number }
+): Promise<{ findings: Row[]; changed: number }> {
   const round2 = (v: number): number => Math.round(v * 100) / 100
   const pick = onlyIds ? new Set(onlyIds.map((x) => n(x))) : null
+  const inScope = scope ? new Set(await relatedSupplierIds(n(scope.supplierId))) : null
   const tier = (taxable: number, prior: number, threshold: number, basePct: number, abovePct: number): number => {
     if (!threshold || threshold <= 0) return (taxable * basePct) / 100
     const below = Math.max(0, Math.min(threshold - prior, taxable))
@@ -1800,6 +1808,7 @@ export async function refreshStalePurchaseTds(apply = false, onlyIds?: number[])
   let changed = 0
   for (const o of cand) {
     const id = n(o.id)
+    if (scope && (n(o.company_id) !== n(scope.companyId) || !inScope?.has(n(o.supplier_id)))) continue
     const supplier = await getSupplier(n(o.supplier_id))
     if (!supplier) continue
     const prior = await supplierFyTaxable(n(o.supplier_id), String(o.order_date), id, n(o.company_id) || undefined)

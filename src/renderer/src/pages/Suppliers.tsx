@@ -6,6 +6,7 @@ import { canWrite } from '@/lib/modules'
 import { useCategories } from '@/lib/useCategories'
 import { COMPANY_TYPES, BUSINESS_TYPES, isTradingParty } from '@/lib/constants'
 import { useCompany } from '@/lib/companyContext'
+import { TdsRecalcDialog } from '@/components/TdsRecalcDialog'
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Row = Record<string, any>
@@ -95,6 +96,15 @@ export function Suppliers(): React.JSX.Element {
   // the label says which, and the editor reloads when the company changes.
   const { companies, companyId } = useCompany()
   const coName = String(companies.find((c) => Number(c.id) === Number(companyId))?.name || 'this company')
+  // Asked after this company's purchase bill amount (or its date) changes.
+  const [recalc, setRecalc] = useState<{ supplierId: number; supplierName: string; companyId: number; companyName: string } | null>(null)
+  const onSaved = (id: number, saved: Row, before: Row | null): void => {
+    const amt = (r: Row | null): number => Number(r?.opening_purchase_amount) || 0
+    const day = (r: Row | null): string => String(r?.opening_purchase_date || '').slice(0, 10)
+    if (amt(saved) === amt(before) && day(saved) === day(before)) return
+    if (!before && !amt(saved)) return
+    setRecalc({ supplierId: id, supplierName: String(saved.name || before?.name || ''), companyId: Number(companyId), companyName: coName })
+  }
   const fields = baseFields.map((f) => {
     if (f.key === 'opening_purchase_amount') return { ...f, label: `Purchase bill amount (as on) — ${coName}` }
     if (f.key === 'opening_purchase_date') return { ...f, label: `As on date — ${coName}` }
@@ -127,11 +137,13 @@ export function Suppliers(): React.JSX.Element {
           columns={columns}
           readOnly={!canWrite(loadUser(), 'suppliers')}
           importable
+          onSaved={onSaved}
           onFieldChange={(key, value) =>
             key === 'supplier_type' ? TYPE_DEFAULTS[String(value)] : undefined
           }
         />
       </div>
+      <TdsRecalcDialog ask={recalc} onClose={() => setRecalc(null)} />
     </>
   )
 }

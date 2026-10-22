@@ -26,6 +26,10 @@ const api = {
       ipcRenderer.invoke('config:save', { url, token })
   },
   suppliers: {
+    tdsRecalc: (supplierId: number, companyId: number): Promise<{ findings: Row[]; changed: number }> =>
+      ipcRenderer.invoke('suppliers:tdsRecalc', { supplierId, companyId }),
+    tdsRecalcFix: (supplierId: number, companyId: number, ids: number[]): Promise<{ findings: Row[]; changed: number }> =>
+      ipcRenderer.invoke('suppliers:tdsRecalcFix', { supplierId, companyId, ids }),
     purchaseCounts: (): Promise<Record<string, number>> => ipcRenderer.invoke('suppliers:purchases:summary')
   },
   bankLedgers: {

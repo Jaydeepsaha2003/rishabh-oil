@@ -20,6 +20,8 @@ export interface Api {
     save: (url: string, token: string) => Promise<{ ok: boolean; message: string }>
   }
   suppliers: {
+    tdsRecalc: (supplierId: number, companyId: number) => Promise<{ findings: Row[]; changed: number }>
+    tdsRecalcFix: (supplierId: number, companyId: number, ids: number[]) => Promise<{ findings: Row[]; changed: number }>
     purchaseCounts: () => Promise<Record<string, number>>
   }
   bankLedgers: {
