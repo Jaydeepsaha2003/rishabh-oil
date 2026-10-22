@@ -185,8 +185,9 @@ const A = {
   ink: '#0A1F17',
   inkMid: '#33473E',
   inkSky: '#8FBFA8',
-  dr: '#1B4E82',
-  cr: '#8C2F26',
+  // Dr in green, Cr in red — amounts and their Dr / Cr ending alike.
+  dr: '#0B7A45',
+  cr: '#C0261C',
   good: '#0B6B45',
   warn: '#8A5300',
   bad: '#B3261E',
@@ -9716,7 +9717,7 @@ export function Accounts({
                 </span>
                 <span className="block text-[10px] uppercase tracking-wide text-muted-foreground">{a.acc_group}</span>
               </span>
-              <span className={cn('shrink-0 tabular-nums text-[12px] font-semibold', Number(a.closing ?? a.balance) >= 0 ? 'text-sky-800' : 'text-rose-700')}>
+              <span className={cn('shrink-0 tabular-nums text-[12px] font-semibold', Number(a.closing ?? a.balance) >= 0 ? 'text-[#0B7A45]' : 'text-[#C0261C]')}>
                 {formatINR(Math.abs(Number(a.closing ?? a.balance) || 0))} {Number(a.closing ?? a.balance) >= 0 ? 'Dr' : 'Cr'}
               </span>
             </div>
@@ -11136,7 +11137,7 @@ export function Accounts({
     const natOf = (k: unknown): (typeof NAT)[string] => NAT[String(k || '').toLowerCase()] || NAT.asset
     // Positive is Dr, negative Cr — the same convention as the Ledgers screen.
     const bal = (v: number): string => (Math.abs(v) < 0.005 ? 'Nil' : `${formatINR(Math.abs(v))} ${v > 0 ? 'Dr' : 'Cr'}`)
-    const balFg = (v: number): string => (Math.abs(v) < 0.005 ? '#8CA396' : v > 0 ? '#1B4E82' : '#8C2F26')
+    const balFg = (v: number): string => (Math.abs(v) < 0.005 ? '#8CA396' : v > 0 ? A.dr : A.cr)
     const grp = (v: number): string => Math.abs(v).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
     const mono: React.CSSProperties = { fontFamily: MONO, fontVariantNumeric: FIGS }
     const DASH = '—'
@@ -12450,7 +12451,7 @@ export function Accounts({
                         fontSize: 12,
                         fontWeight: 700,
                         background: has ? (side === 'dr' ? '#F5F8FD' : '#FDF7F6') : '#fff',
-                        color: side === 'dr' ? '#1B4E82' : '#8C2F26'
+                        color: side === 'dr' ? A.dr : A.cr
                       }}
                     />
                   </div>
