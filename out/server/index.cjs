@@ -23178,6 +23178,7 @@ __export(tallyNotes_exports, {
   reconcileTallySales: () => reconcileTallySales,
   resolveNames: () => resolveNames,
   saleDateLimits: () => saleDateLimits,
+  sameCompany: () => sameCompany,
   saveTallyDraft: () => saveTallyDraft,
   saveTallyNoteMap: () => saveTallyNoteMap,
   tallyKey: () => tallyKey,
@@ -23208,6 +23209,10 @@ function tallyKey(v) {
 }
 function vchKey(v) {
   return String(v ?? "").toUpperCase().replace(/\s+/g, "").replace(/(^|[^0-9])0+(\d)/g, "$1$2");
+}
+function sameCompany(tally, books) {
+  const k = (x) => companyKey(String(x || "").replace(/\([^)]*\)/g, " "));
+  return k(tally) === k(books);
 }
 function companyKey(v) {
   return tallyKey(v).split(" ").filter((t) => !["LTD", "LIMITED", "PVT", "PRIVATE", "THE", "CO", "COMPANY"].includes(t)).join("");
@@ -23415,7 +23420,7 @@ async function previewTallyNotes(v) {
     file_name: String(v.file_name || ""),
     file_company: reg.company,
     company: companyName,
-    company_mismatch: !!reg.company && !!companyName && companyKey(reg.company) !== companyKey(companyName),
+    company_mismatch: !!reg.company && !!companyName && !sameCompany(reg.company, companyName),
     title: reg.title,
     period: reg.period,
     notes: reg.notes.map((x) => {
@@ -23757,7 +23762,7 @@ async function reconcileTallySales(v) {
     file_name: String(v.file_name || ""),
     file_company: reg.company,
     company: companyName,
-    company_mismatch: !!reg.company && !!companyName && companyKey(reg.company) !== companyKey(companyName),
+    company_mismatch: !!reg.company && !!companyName && !sameCompany(reg.company, companyName),
     title: reg.title,
     period: reg.period,
     from: reg.from,
@@ -23804,13 +23809,13 @@ function explainRows(rows2, tallySales, books, ownCompany = "") {
     } else if (r.status === "missing_here" && t) {
       say2.push(`In Tally on ${dmyOf(t.date)} for ${t.party}, ${inr3(t.gross)} (${t.ledgers.join(", ") || "no ledger"}), but no sale numbered ${t.vch_no} is in these books.`);
       const twin = booksLoose.get(looseKey(t.vch_no));
-      const sameDay = books.find((x) => x.date === t.date && Math.abs(x.gross - t.gross) <= 1);
+      const sameDay2 = books.find((x) => x.date === t.date && Math.abs(x.gross - t.gross) <= 1);
       if (twin && vchKey(twin.vch_no) !== vchKey(t.vch_no)) {
         say2.push(`A sale numbered "${twin.vch_no}" is here${Math.abs(twin.gross - t.gross) <= 1 ? " for the same amount" : ` for ${inr3(twin.gross)}`} \u2014 most likely this invoice with its number typed differently.`);
         fix = `Correct the invoice number here to ${t.vch_no}.`;
-      } else if (sameDay) {
-        say2.push(`A sale of the same date and amount is here as "${sameDay.vch_no}" \u2014 possibly this invoice under another number.`);
-        fix = `Check ${sameDay.vch_no} here; if it is this invoice, renumber it ${t.vch_no}.`;
+      } else if (sameDay2) {
+        say2.push(`A sale of the same date and amount is here as "${sameDay2.vch_no}" \u2014 possibly this invoice under another number.`);
+        fix = `Check ${sameDay2.vch_no} here; if it is this invoice, renumber it ${t.vch_no}.`;
       } else if (/^SER\//i.test(t.vch_no)) {
         fix = "A service invoice \u2014 enter it here as a sale (or journal) if these books should carry it.";
       } else {
@@ -23819,13 +23824,13 @@ function explainRows(rows2, tallySales, books, ownCompany = "") {
     } else if (r.status === "missing_tally" && b) {
       say2.push(`In these books on ${dmyOf(b.date)} for ${b.party}, ${inr3(b.gross)}, but Tally has no invoice numbered ${b.vch_no || "(blank)"} in this period.`);
       const twin = tallyLoose.get(looseKey(b.vch_no));
-      const sameDay = tallySales.find((x) => !x.cancelled && x.date === b.date && Math.abs(x.gross - b.gross) <= 1);
+      const sameDay2 = tallySales.find((x) => !x.cancelled && x.date === b.date && Math.abs(x.gross - b.gross) <= 1);
       if (twin && vchKey(twin.vch_no) !== vchKey(b.vch_no)) {
         say2.push(`Tally has "${twin.vch_no}"${Math.abs(twin.gross - b.gross) <= 1 ? " for the same amount" : ""} \u2014 the number here looks mistyped.`);
         fix = `Renumber this sale ${twin.vch_no}.`;
-      } else if (sameDay) {
-        say2.push(`Tally has ${sameDay.vch_no} on the same date for the same amount \u2014 possibly this sale under another number.`);
-        fix = `Check it against ${sameDay.vch_no}.`;
+      } else if (sameDay2) {
+        say2.push(`Tally has ${sameDay2.vch_no} on the same date for the same amount \u2014 possibly this sale under another number.`);
+        fix = `Check it against ${sameDay2.vch_no}.`;
       } else if (ownCompany && companyKey(b.party).startsWith(companyKey(ownCompany).slice(0, 6)) && companyKey(b.party).includes("FOOD") === companyKey(ownCompany).includes("FOOD")) {
         say2.push(`The party here is ${b.party} \u2014 this company itself. It looks like the other company's sale entered in these books.`);
         fix = "Check which company this invoice belongs to, and move it there.";
@@ -24283,6 +24288,7 @@ async function parseTallyRegister(b64, kind) {
     const iNo = at(/^voucher\s*no\.?$/i);
     const iRef = at(/^(supplier\s*invoice\s*no\.?|voucher\s*ref\.?\s*no\.?)$/i);
     const iGstin = at(/^gstin\/?\s*uin$/i);
+    const iInvDate = at(/^supplier\s*invoice\s*date$/i);
     const iGross = at(/^gross\s*total$/i);
     if (iNo < 0 || iGross < 0) throw new Error(`${title}: the sheet needs its Voucher No. and Gross Total columns`);
     const cols = head.map((h, i) => ({ h, i })).filter(({ h }) => !!h && !SUMMARY.test(h));
@@ -24342,6 +24348,7 @@ async function parseTallyRegister(b64, kind) {
         vch_no: vchNo,
         ref_no: iRef >= 0 ? txt(row[iRef]?.v) : "",
         gstin: iGstin >= 0 ? txt(row[iGstin]?.v) : "",
+        inv_date: iInvDate >= 0 ? isoDate(row[iInvDate]?.v) || "" : "",
         party,
         party_key: tallyKey(party),
         gross: pl ? round212(kind === "purchase" ? pl.cr - pl.dr : pl.dr + pl.cr) : 0,
@@ -24443,7 +24450,42 @@ async function bookVouchers(companyId, kind, from, to) {
       lines
     });
   }
+  if (kind === "purchase") await attachEmptyDates(out);
   return kind === "purchase" ? mergeBills(out) : out;
+}
+async function attachEmptyDates(vs) {
+  const ids = [...new Set(vs.map((v) => v.order_id).filter((x) => x > 0))];
+  const by = /* @__PURE__ */ new Map();
+  const open = /* @__PURE__ */ new Map();
+  for (let i = 0; i < ids.length; i += 400) {
+    const chunk = ids.slice(i, i + 400);
+    const rs = await getClient().execute({
+      sql: `SELECT a.order_id, pt.status, substr(pt.empty_date, 1, 10) AS d
+              FROM ${ALLOC} a JOIN purchase_tankers pt ON pt.id = a.tanker_id
+             WHERE a.order_id IN (${chunk.map(() => "?").join(",")})`,
+      args: chunk
+    });
+    for (const r of rs.rows) {
+      const k = Number(r.order_id);
+      if (String(r.status) !== "empty" || !r.d) {
+        open.set(k, (open.get(k) || 0) + 1);
+        continue;
+      }
+      if (!by.has(k)) by.set(k, []);
+      by.get(k).push(String(r.d));
+    }
+  }
+  for (const v of vs) {
+    v.empty_dates = by.get(v.order_id) || [];
+    v.open_tankers = open.get(v.order_id) || 0;
+  }
+}
+function sameDay(t, b) {
+  return t.date === b.date || !!t.inv_date && t.inv_date === b.date || (b.empty_dates || []).includes(t.date);
+}
+function dayGap(t, b) {
+  if (sameDay(t, b)) return 0;
+  return Math.min(daysApart2(b.date, t.date), ...t.inv_date ? [daysApart2(b.date, t.inv_date)] : [], ...(b.empty_dates || []).map((d) => daysApart2(d, t.date)));
 }
 async function mergeBills(vs) {
   const orderIds = [...new Set(vs.map((v) => v.order_id).filter((x) => x > 0))];
@@ -24487,6 +24529,8 @@ async function mergeBills(vs) {
     into.gst = round212(into.gst + v.gst);
     into.tds = round212(into.tds + v.tds);
     into.round_off = round212(into.round_off + v.round_off);
+    into.empty_dates = [...into.empty_dates || [], ...v.empty_dates || []];
+    into.open_tankers = (into.open_tankers || 0) + (v.open_tankers || 0);
   }
   return out;
 }
@@ -24571,7 +24615,7 @@ async function reconcile(v) {
     used.add(b.id);
     handled.add(t.key);
     const diffs = [];
-    if (t.date !== b.date) diffs.push({ field: "date", tally: t.date, books: b.date });
+    if (!sameDay(t, b)) diffs.push({ field: "date", tally: t.date, books: b.date });
     const tAmt = kind === "journal" ? t.total : t.gross;
     const bAmt = kind === "journal" ? b.total : b.gross;
     if (!close(tAmt, bAmt)) diffs.push({ field: kind === "journal" ? "lines" : "gross", tally: tAmt, books: bAmt, diff: round212(tAmt - bAmt), lines: kind === "journal" ? lineDiffs(t, b, mapped) : void 0 });
@@ -24605,7 +24649,7 @@ async function reconcile(v) {
         continue;
       }
       const diffs = [];
-      if (t.date !== b.date) diffs.push({ field: "date", tally: t.date, books: b.date });
+      if (!sameDay(t, b)) diffs.push({ field: "date", tally: t.date, books: b.date });
       if (!partyLike(t, b, mapped)) diffs.push({ field: "party", tally: t.party, books: b.party });
       if (family(t.type) !== family(b.type)) diffs.push({ field: "type", tally: purchaseTypeOf(t.type), books: b.type });
       for (const f of ["taxable", "gst", "tds", "gross"]) {
@@ -24621,7 +24665,7 @@ async function reconcile(v) {
         rows2.push({ key: t.key, status: "cancelled", tally: shortTally(t), books: null, diffs: [] });
         continue;
       }
-      const look = books.filter((b) => !used.has(b.id) && sameBill(t, b) && daysApart2(b.date, t.date) <= NEAR_DAYS && partyLike(t, b, mapped)).sort((a, b) => daysApart2(a.date, t.date) - daysApart2(b.date, t.date))[0];
+      const look = books.filter((b) => !used.has(b.id) && sameBill(t, b) && dayGap(t, b) <= NEAR_DAYS && partyLike(t, b, mapped)).sort((a, b) => dayGap(t, a) - dayGap(t, b))[0];
       if (look) {
         used.add(look.id);
         rows2.push({ key: t.key, status: "possible", tally: shortTally(t), books: shortBook(look), diffs: [] });
@@ -24649,7 +24693,7 @@ async function reconcile(v) {
         }
         const ld = lineDiffs(t, b, mapped);
         const diffs = [];
-        if (t.date !== b.date) diffs.push({ field: "date", tally: t.date, books: b.date });
+        if (!sameDay(t, b)) diffs.push({ field: "date", tally: t.date, books: b.date });
         if (ld.length) diffs.push({ field: "lines", tally: t.total, books: b.total, lines: ld });
         const row = { key: t.key, status: diffs.length ? "mismatch" : "matched", tally: shortTally(t), books: shortBook(b), diffs };
         rows2.push(row);
@@ -24742,10 +24786,10 @@ async function reconcile(v) {
         coveredBy.set(t.key, b);
         rows2.push({
           key: t.key,
-          status: t.date === b.date ? "matched" : "mismatch",
+          status: sameDay(t, b) ? "matched" : "mismatch",
           tally: shortTally(t),
           books: shortBook(b),
-          diffs: t.date === b.date ? [] : [{ field: "date", tally: t.date, books: b.date }],
+          diffs: sameDay(t, b) ? [] : [{ field: "date", tally: t.date, books: b.date }],
           part_of: of
         });
       }
@@ -24758,7 +24802,7 @@ async function reconcile(v) {
       if (t.cancelled || t.total <= 0) continue;
       for (const b of books) {
         if (used.has(b.id) || !close(b.total, t.total)) continue;
-        const gap = daysApart2(b.date, t.date);
+        const gap = dayGap(t, b);
         if (gap > NEAR_DAYS) continue;
         const s5 = lineScore(t, b, mapped);
         const allKnown = s5.known === t.lines.length;
@@ -24787,7 +24831,7 @@ async function reconcile(v) {
         continue;
       }
       const diffs = [];
-      if (t.date !== f.b.date) diffs.push({ field: "date", tally: t.date, books: f.b.date });
+      if (!sameDay(t, f.b)) diffs.push({ field: "date", tally: t.date, books: f.b.date });
       if (!f.full) diffs.push({ field: "lines", tally: t.total, books: f.b.total, lines: lineDiffs(t, f.b, mapped) });
       rows2.push({
         key: t.key,
@@ -24851,6 +24895,10 @@ function explain(rows2, kind) {
     } else if (r.status === "missing_tally" && b) {
       say2.push(`In these books (${bName}, ${dmy(b.date)}${b.party ? `, ${b.party}` : ""}, ${inr4(kind === "journal" ? b.total : b.gross)}) but not in Tally's register for the period.`);
       fix = kind === "journal" ? "Tally may hold it under another voucher type (Payment, Receipt). If it is not in Tally at all, enter it there." : "Enter it in Tally under the same supplier invoice number \u2014 or delete it here if it was entered by mistake.";
+      if (kind === "purchase" && n26(b.open_tankers) > 0) {
+        say2.push(`Its tanker${n26(b.open_tankers) > 1 ? "s are" : " is"} not emptied yet \u2014 Tally books an oil purchase on the empty date, so it reaches Tally's register then.`);
+        fix = "Nothing to do yet: book it in Tally on the day the tanker is emptied.";
+      }
     } else if (r.status === "cancelled_here" && b) {
       say2.push(`Tally shows ${tName} cancelled, but these books still carry ${bName}.`);
       fix = "Delete it here if the cancellation in Tally is right.";
@@ -24914,7 +24962,7 @@ async function checkTallyRegister(v) {
     file_name: String(v.file_name || ""),
     file_company: reg.company,
     company: companyName,
-    company_mismatch: !!reg.company && !!companyName && companyKey(reg.company) !== companyKey(companyName),
+    company_mismatch: !!reg.company && !!companyName && !sameCompany(reg.company, companyName),
     period: reg.period,
     from: reg.from,
     to: reg.to,
@@ -25214,6 +25262,7 @@ async function setRegisterVoucherDate(v) {
 var import_exceljs2, n26, round212, GST_COL2, TDS_COL, ROUND_OFF2, SUMMARY, NEAR_DAYS, inr4, dmy, shortBook, shortTally, FIELD_WORD;
 var init_tallyRegisters = __esm({
   "src/main/tallyRegisters.ts"() {
+    init_tankerAlloc();
     import_exceljs2 = __toESM(require("exceljs"));
     init_tallyCache();
     init_db();
@@ -25229,7 +25278,11 @@ var init_tallyRegisters = __esm({
     GST_COL2 = /\b[CSIU]GST\b|\bCESS\b|\b(INPUT|OUTPUT)\b.*\bGST\b|\bGST\b.*\b(RCM|REVERSE|PAYABLE|PAYBLE)\b/i;
     TDS_COL = /\bTDS\b|\bTCS\b/i;
     ROUND_OFF2 = /round\s*off/i;
-    SUMMARY = /^(date|particulars|voucher\s*type|voucher\s*no\.?|voucher\s*ref\.?\s*no\.?|supplier\s*invoice\s*no\.?|gstin\/?\s*uin|value|addl\.?\s*cost|gross\s*total|narration|quantity|rate)$/i;
+    SUMMARY = // Not ledgers, so never money: Tally's own columns. "Received Qty" (39.655
+    // MT on GT/3725) was read as ₹39.66 of purchase and the bill stood ₹39.66
+    // out; the quantity columns Tally can add are listed by name, exactly, so a
+    // ledger such as RATE DIFFERENCE still counts.
+    /^(date|particulars|voucher\s*type|voucher\s*no\.?|voucher\s*ref\.?\s*no\.?|supplier\s*invoice\s*(no|date)\.?|gstin\/?\s*uin|value|addl\.?\s*cost|gross\s*total|narration|(received|billed|actual|alternate|alt\.?)?\s*(quantity|qty)\.?|rate|units?|per)$/i;
     NEAR_DAYS = 7;
     inr4 = (v) => `\u20B9${Math.abs(v).toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
     dmy = (iso) => iso ? iso.slice(0, 10).split("-").reverse().join("-") : "\u2014";
@@ -25249,6 +25302,7 @@ var init_tallyRegisters = __esm({
       round_off: b.round_off,
       order_id: b.order_id,
       narration: b.narration,
+      open_tankers: b.open_tankers || 0,
       lines: drFirst(b.lines).map((l) => ({ name: l.account, dr: l.dr, cr: l.cr }))
     });
     shortTally = (t) => ({
@@ -26095,9 +26149,9 @@ function explainBank(rows2, hasStatement = false) {
       fix = t.multi ? detailsReady(t) ? "Book it from Tally \u2014 every ledger under it is in the detailed book, and it posts with all of them." : 'Tally shows it "as per details" \u2014 a voucher of several ledgers. Export the bank book from Tally in Detailed view (Alt+F1) so its ledgers come with it, or enter it here by hand.' : `Book it from Tally \u2014 it posts as a ${t.dir === "in" ? "RECEIPT" : "PAYMENT"} (or CONTRA, between banks and cash) on this bank under Tally's number.`;
     } else if (r.status === "possible" && t && b) {
       const tLedgers = t.multi && Array.isArray(t.details) && t.details.length ? t.details.map((d) => `${d.name} ${inr5(d.amount)}`).join(", ") : String(t.party || "no ledger");
-      const sameDay = t.date === b.date;
+      const sameDay2 = t.date === b.date;
       say2.push(
-        `Same amount (${inr5(t.amount)} ${way(t.dir)})${sameDay ? ` and same day (${dmy2(t.date)})` : `, ${dmy2(t.date)} in Tally and ${dmy2(b.date)} here`} \u2014 but not the same ledger.`
+        `Same amount (${inr5(t.amount)} ${way(t.dir)})${sameDay2 ? ` and same day (${dmy2(t.date)})` : `, ${dmy2(t.date)} in Tally and ${dmy2(b.date)} here`} \u2014 but not the same ledger.`
       );
       say2.push(`Tally ${tName}: ${tLedgers}. Here ${bName}: ${b.party || "no ledger"}.`);
       const detailed = !!t.multi || /as per details/i.test(String(t.party || ""));
@@ -26358,7 +26412,7 @@ async function checkTallyBank(v) {
     file_name: String(v.file_name || ""),
     file_company: book.company,
     company: companyName,
-    company_mismatch: !!book.company && !!companyName && companyKey(book.company) !== companyKey(companyName),
+    company_mismatch: !!book.company && !!companyName && !sameCompany(book.company, companyName),
     bank: book.bank,
     account: { id: Number(account.id), name: String(account.name), group: String(account.acc_group) },
     // The book's bank and the ledger picked do not share an account number.
