@@ -235,7 +235,7 @@ export interface Api {
     billsOutstanding: (
       account: string,
       companyId?: number,
-      opts?: { asOf?: string; side?: 'customer' | 'supplier' }
+      opts?: { asOf?: string; side?: 'customer' | 'supplier'; settled?: boolean }
     ) => Promise<Row>
     pendingRefs: (account: string, companyId?: number, side?: 'customer' | 'supplier', all?: boolean) => Promise<Row[]>
     tradingAccount: (from?: string, to?: string, companyId?: number) => Promise<Row[]>

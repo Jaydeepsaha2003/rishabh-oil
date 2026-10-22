@@ -1076,7 +1076,7 @@ export async function listPendingRefs(
 export async function billsOutstanding(
   accountName: string,
   companyId?: number,
-  opts: { asOf?: string; side?: 'customer' | 'supplier' } = {}
+  opts: { asOf?: string; side?: 'customer' | 'supplier'; settled?: boolean } = {}
 ): Promise<Row> {
   const c = getClient()
   const cid = companyId || getActiveCompanyId()
@@ -1108,7 +1108,9 @@ export async function billsOutstanding(
   }).catch(() => c.execute({ sql: `SELECT credit_period_days FROM ${master} WHERE TRIM(UPPER(name)) = ? LIMIT 1`, args: [name] }))
   const creditDays = cp.rows.length ? n(cp.rows[0].credit_period_days) : 0
 
-  const bills = await listPendingRefs(accountName, cid, opts.side)
+  // Settled bills too when asked (Bill-wise → Settled: Show); the totals and
+  // On Account are worked out on the open bills either way.
+  const bills = await listPendingRefs(accountName, cid, opts.side, !!opts.settled)
   const dayMs = 86400000
   const asOfMs = Date.parse(`${asOf}T00:00:00Z`)
   const rows = bills
@@ -1264,7 +1266,8 @@ export async function billsOutstanding(
     as_of: asOf,
     debtor,
     credit_days: creditDays,
-    rows: open,
+    rows: opts.settled ? (rows as Row[]).map((r) => ({ ...r, settled: n(r.pending) <= 0.005 })) : open,
+    settled_count: (rows as Row[]).length - open.length,
     total_opening: round2(open.reduce((t, r) => t + n(r.opening), 0)),
     total_paid: round2(open.reduce((t, r) => t + n(r.paid), 0)),
     total_pending: totalPending,

@@ -657,9 +657,12 @@ export function registerIpc(): void {
 
   handle('data:list', (_e, { table }: { table: string }) => list(table))
   handle('data:get', (_e, { table, id }: { table: string; id: number }) => get(table, id))
-  handle('data:create', async (_e, { table, values }: { table: string; values: Row }) =>
-    (await needsApproval(table)) ? submitApprovalRequest(table, values) : create(table, values)
-  )
+  handle('data:create', async (_e, { table, values }: { table: string; values: Row }) => {
+    // A party's opening billing belongs to the company it was entered under,
+    // even when somebody approves it later with the other company open.
+    const v = table === 'suppliers' || table === 'customers' ? { ...values, opening_company_id: getActiveCompanyId() } : values
+    return (await needsApproval(table)) ? submitApprovalRequest(table, v) : create(table, v)
+  })
   handle(
     'data:update',
     (_e, { table, id, values }: { table: string; id: number; values: Row }) =>
@@ -1030,8 +1033,8 @@ export function registerIpc(): void {
   handle('journal:setAccountsHidden', (_e, { ids, hidden }: { ids: number[]; hidden: boolean }) => setAccountsHidden(ids, hidden))
   handle(
     'journal:billsOutstanding',
-    (_e, a: { account: string; companyId?: number; asOf?: string; side?: 'customer' | 'supplier' }) =>
-      billsOutstanding(a.account, a.companyId, { asOf: a.asOf, side: a.side })
+    (_e, a: { account: string; companyId?: number; asOf?: string; side?: 'customer' | 'supplier'; settled?: boolean }) =>
+      billsOutstanding(a.account, a.companyId, { asOf: a.asOf, side: a.side, settled: a.settled })
   )
   handle(
     'journal:pendingRefs',

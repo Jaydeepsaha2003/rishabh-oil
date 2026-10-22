@@ -2678,18 +2678,35 @@ export function Accounts({
     const g = baseGroup(accounts.find((a2) => Number(a2.id) === ledgerId)?.acc_group)
     return g === 'Sundry Debtors' ? 'customer' : g === 'Sundry Creditors' ? 'supplier' : undefined
   })()
+  // BILL-WISE: the open bills, or the settled ones with them (Settled: Show).
+  // Kept on this computer.
+  const [bwSettled, setBwSettledState] = useState(() => {
+    try {
+      return localStorage.getItem('ledger.billsSettled') === '1'
+    } catch {
+      return false
+    }
+  })
+  const setBwSettled = (v: boolean): void => {
+    setBwSettledState(v)
+    try {
+      localStorage.setItem('ledger.billsSettled', v ? '1' : '0')
+    } catch {
+      /* the choice just is not remembered */
+    }
+  }
   const loadBills = useCallback(async () => {
     const nm = String(accounts.find((a2) => Number(a2.id) === ledgerId)?.name || '')
     if (!lgBills || !nm || !cid) return
     const g = baseGroup(accounts.find((a2) => Number(a2.id) === ledgerId)?.acc_group)
     const side = g === 'Sundry Debtors' ? 'customer' : g === 'Sundry Creditors' ? 'supplier' : undefined
     try {
-      setBills(await window.api.journal.billsOutstanding(nm, cid, { asOf: lgTo || undefined, side }))
+      setBills(await window.api.journal.billsOutstanding(nm, cid, { asOf: lgTo || undefined, side, settled: bwSettled }))
     } catch {
       setBills(null)
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [lgBills, ledgerId, cid, lgTo, accounts])
+  }, [lgBills, ledgerId, cid, lgTo, accounts, bwSettled])
   useEffect(() => {
     void loadBills()
   }, [loadBills])
@@ -2813,6 +2830,31 @@ export function Accounts({
   // Listed by the date shown, so the column reads in order either way.
   const byBillDate = (list: Row[]): Row[] =>
     bwDueOn === 'empty' ? [...list].sort((x, y) => billDateOf(x).on.localeCompare(billDateOf(y).on)) : list
+  // Settled bills: left out (the bills still owed), or listed with them.
+  const settledToggle = (): React.JSX.Element => (
+    <div
+      className="flex items-center gap-[3px] rounded-[4px] p-[3px]"
+      style={{ background: '#EEF3EC', border: '1px solid #DCE7DB' }}
+      title="Show the bills already settled as well as the ones still owed"
+    >
+      <span className="pl-1 pr-0.5 text-[10px] font-extrabold uppercase tracking-[.06em] text-[#5A6B62]">Settled</span>
+      {([
+        { v: false, label: 'Hide' },
+        { v: true, label: 'Show' }
+      ] as const).map((o) => (
+        <button
+          key={o.label}
+          type="button"
+          onClick={() => setBwSettled(o.v)}
+          className="h-7 rounded-[3px] px-2.5"
+          style={bwSettled === o.v ? { background: '#0B3D2E', color: '#fff', fontSize: 11, fontWeight: 800 } : { color: '#5A6B62', fontSize: 11, fontWeight: 700 }}
+        >
+          {o.label}
+          {o.v && n(bills?.settled_count) > 0 ? <span style={{ marginLeft: 4, opacity: 0.75 }}>{n(bills?.settled_count)}</span> : null}
+        </button>
+      ))}
+    </div>
+  )
   // The small switch both bill-wise views carry.
   const dueToggle = (): React.JSX.Element => (
     <div
@@ -17136,6 +17178,7 @@ export function Accounts({
                 <span style={{ color: '#C3D2C6' }}>·</span>
                 <span style={bwKey}>{chordLabel('Shift')} ↵</span> {bwDetailed ? 'fold it' : 'open it'}
               </span>
+              {settledToggle()}
               {dueToggle()}
               <div className="flex items-center gap-[3px] rounded-[4px] p-[3px]" style={{ background: '#EEF3EC', border: '1px solid #DCE7DB' }}>
                 <span className="flex items-center pl-1 pr-0.5" title="Alt F1 switches between Detailed and Condensed">
@@ -18025,7 +18068,7 @@ export function Accounts({
                 const onAcc = Number(bills?.on_account) || 0
                 return (
                   <div className="max-h-[calc(100vh-225px)] overflow-auto">
-                    <div className="flex items-center justify-end border-b bg-[#FBFDFA] px-4 py-1.5">{dueToggle()}</div>
+                    <div className="flex items-center justify-end gap-2 border-b bg-[#FBFDFA] px-4 py-1.5">{settledToggle()}{dueToggle()}</div>
                     <table className="w-full text-[13px]">
                       <thead className="sticky top-0 bg-[#EAF0E9]">
                         <tr className="text-left text-[10px] uppercase tracking-widest text-muted-foreground">
