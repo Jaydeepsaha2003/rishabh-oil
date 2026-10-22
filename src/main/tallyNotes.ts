@@ -86,6 +86,18 @@ export function vchKey(v: unknown): string {
 }
 
 // "K R FOODS LIMITED" and "KR FOODS LTD" are one company.
+/**
+ * Whether a Tally file's company is this one. Tally's name can carry a
+ * bracketed tag the books' name does not — "K R FINMARK PVT LTD.(UP)", a
+ * "(2026-27)" — which read as another company and raised the switch-company
+ * warning on the right books. Only the company check drops it; party names
+ * still compare whole.
+ */
+export function sameCompany(tally: string, books: string): boolean {
+  const k = (x: string): string => companyKey(String(x || '').replace(/\([^)]*\)/g, ' '))
+  return k(tally) === k(books)
+}
+
 export function companyKey(v: string): string {
   return tallyKey(v)
     .split(' ')
@@ -347,7 +359,7 @@ export async function previewTallyNotes(v: { kind: TallyNoteKind; data_base64: s
     file_name: String(v.file_name || ''),
     file_company: reg.company,
     company: companyName,
-    company_mismatch: !!reg.company && !!companyName && companyKey(reg.company) !== companyKey(companyName),
+    company_mismatch: !!reg.company && !!companyName && !sameCompany(reg.company, companyName),
     title: reg.title,
     period: reg.period,
     notes: reg.notes.map((x) => {
@@ -788,7 +800,7 @@ export async function reconcileTallySales(v: { data_base64: string; file_name?: 
     file_name: String(v.file_name || ''),
     file_company: reg.company,
     company: companyName,
-    company_mismatch: !!reg.company && !!companyName && companyKey(reg.company) !== companyKey(companyName),
+    company_mismatch: !!reg.company && !!companyName && !sameCompany(reg.company, companyName),
     title: reg.title,
     period: reg.period,
     from: reg.from,

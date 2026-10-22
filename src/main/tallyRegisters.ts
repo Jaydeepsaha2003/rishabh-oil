@@ -1,3 +1,4 @@
+import { ALLOC } from './tankerAlloc'
 import ExcelJS from 'exceljs'
 import { parsedFile, booksRead } from './tallyCache'
 import { getClient, todayISO } from './db'
@@ -13,6 +14,7 @@ import {
   mappingRows,
   periodOf,
   resolveNames,
+  sameCompany,
   saleDateLimits,
   tallyKey,
   toPlain
@@ -62,7 +64,11 @@ const GST_COL = /\b[CSIU]GST\b|\bCESS\b|\b(INPUT|OUTPUT)\b.*\bGST\b|\bGST\b.*\b(
 const TDS_COL = /\bTDS\b|\bTCS\b/i
 const ROUND_OFF = /round\s*off/i
 const SUMMARY =
-  /^(date|particulars|voucher\s*type|voucher\s*no\.?|voucher\s*ref\.?\s*no\.?|supplier\s*invoice\s*no\.?|gstin\/?\s*uin|value|addl\.?\s*cost|gross\s*total|narration|quantity|rate)$/i
+  // Not ledgers, so never money: Tally's own columns. "Received Qty" (39.655
+  // MT on GT/3725) was read as ₹39.66 of purchase and the bill stood ₹39.66
+  // out; the quantity columns Tally can add are listed by name, exactly, so a
+  // ledger such as RATE DIFFERENCE still counts.
+  /^(date|particulars|voucher\s*type|voucher\s*no\.?|voucher\s*ref\.?\s*no\.?|supplier\s*invoice\s*(no|date)\.?|gstin\/?\s*uin|value|addl\.?\s*cost|gross\s*total|narration|(received|billed|actual|alternate|alt\.?)?\s*(quantity|qty)\.?|rate|units?|per)$/i
 const NEAR_DAYS = 7
 
 /** A supplier's invoice number as both systems write it: TI/DL-1/26/0339 and TI/DL1/26/339 are one bill. */
@@ -137,6 +143,8 @@ export interface TallyVch {
   lines: TallyLine[]
   cancelled: boolean
   out_by: number
+  /** A purchase register's Supplier Invoice Date — the bill's own date, where Tally's voucher is dated the day the tanker was emptied. */
+  inv_date?: string
   // A purchase's figures, read off its columns: the goods or service, the GST
   // charged, the TDS held back and the round off.
   taxable: number
@@ -220,6 +228,7 @@ async function parseTallyRegister(b64: string, kind: TallyRegisterKind): Promise
     const iNo = at(/^voucher\s*no\.?$/i)
     const iRef = at(/^(supplier\s*invoice\s*no\.?|voucher\s*ref\.?\s*no\.?)$/i)
     const iGstin = at(/^gstin\/?\s*uin$/i)
+    const iInvDate = at(/^supplier\s*invoice\s*date$/i)
     const iGross = at(/^gross\s*total$/i)
     if (iNo < 0 || iGross < 0) throw new Error(`${title}: the sheet needs its Voucher No. and Gross Total columns`)
     const cols = head.map((h, i) => ({ h, i })).filter(({ h }) => !!h && !SUMMARY.test(h))
@@ -282,6 +291,7 @@ async function parseTallyRegister(b64: string, kind: TallyRegisterKind): Promise
         vch_no: vchNo,
         ref_no: iRef >= 0 ? txt(row[iRef]?.v) : '',
         gstin: iGstin >= 0 ? txt(row[iGstin]?.v) : '',
+        inv_date: iInvDate >= 0 ? isoDate(row[iInvDate]?.v) || '' : '',
         party,
         party_key: tallyKey(party),
         gross: pl ? round2(kind === 'purchase' ? pl.cr - pl.dr : pl.dr + pl.cr) : 0,
@@ -338,6 +348,10 @@ export interface BookVch {
   gst: number
   tds: number
   round_off: number
+  /** A purchase's tankers' empty dates — the day Tally dates the bill. */
+  empty_dates?: string[]
+  /** Its tankers not emptied yet: Tally has not booked it, and is not meant to. */
+  open_tankers?: number
   lines: BookLine[]
 }
 
@@ -425,7 +439,50 @@ async function bookVouchers(companyId: number, kind: TallyRegisterKind, from: st
       lines
     })
   }
+  if (kind === 'purchase') await attachEmptyDates(out)
   return kind === 'purchase' ? mergeBills(out) : out
+}
+
+// THE DAY THE OIL CAME IN. Tally books an oil purchase on the day its tanker
+// was emptied; these books keep the supplier's invoice date (GT/3725: 11-07
+// in Tally, 06-07 here). Each purchase voucher carries its tankers' empty
+// dates, so either date reads as the same bill — and the date here stays the
+// invoice's, for the analysis it is kept for.
+async function attachEmptyDates(vs: BookVch[]): Promise<void> {
+  const ids = [...new Set(vs.map((v) => v.order_id).filter((x) => x > 0))]
+  const by = new Map<number, string[]>()
+  const open = new Map<number, number>()
+  for (let i = 0; i < ids.length; i += 400) {
+    const chunk = ids.slice(i, i + 400)
+    const rs = await getClient().execute({
+      sql: `SELECT a.order_id, pt.status, substr(pt.empty_date, 1, 10) AS d
+              FROM ${ALLOC} a JOIN purchase_tankers pt ON pt.id = a.tanker_id
+             WHERE a.order_id IN (${chunk.map(() => '?').join(',')})`,
+      args: chunk
+    })
+    for (const r of rs.rows as unknown as Row[]) {
+      const k = Number(r.order_id)
+      if (String(r.status) !== 'empty' || !r.d) {
+        open.set(k, (open.get(k) || 0) + 1)
+        continue
+      }
+      if (!by.has(k)) by.set(k, [])
+      ;(by.get(k) as string[]).push(String(r.d))
+    }
+  }
+  for (const v of vs) {
+    v.empty_dates = by.get(v.order_id) || []
+    v.open_tankers = open.get(v.order_id) || 0
+  }
+}
+
+/** The same day for this bill: the invoice date here, Tally's Supplier Invoice Date, or a day its tanker was emptied. */
+function sameDay(t: TallyVch, b: BookVch): boolean {
+  return t.date === b.date || (!!t.inv_date && t.inv_date === b.date) || (b.empty_dates || []).includes(t.date)
+}
+function dayGap(t: TallyVch, b: BookVch): number {
+  if (sameDay(t, b)) return 0
+  return Math.min(daysApart(b.date, t.date), ...(t.inv_date ? [daysApart(b.date, t.inv_date)] : []), ...(b.empty_dates || []).map((d) => daysApart(d, t.date)))
 }
 
 // ONE BILL, ONE VOUCHER TO COMPARE.
@@ -479,6 +536,8 @@ async function mergeBills(vs: BookVch[]): Promise<BookVch[]> {
     into.gst = round2(into.gst + v.gst)
     into.tds = round2(into.tds + v.tds)
     into.round_off = round2(into.round_off + v.round_off)
+    into.empty_dates = [...(into.empty_dates || []), ...(v.empty_dates || [])]
+    into.open_tankers = (into.open_tankers || 0) + (v.open_tankers || 0)
   }
   return out
 }
@@ -560,6 +619,7 @@ const shortBook = (b: BookVch): Row => ({
   round_off: b.round_off,
   order_id: b.order_id,
   narration: b.narration,
+  open_tankers: b.open_tankers || 0,
   lines: drFirst(b.lines).map((l) => ({ name: l.account, dr: l.dr, cr: l.cr }))
 })
 
@@ -651,7 +711,7 @@ async function reconcile(v: { kind: TallyRegisterKind; data_base64: string; comp
     used.add(b.id)
     handled.add(t.key)
     const diffs: Row[] = []
-    if (t.date !== b.date) diffs.push({ field: 'date', tally: t.date, books: b.date })
+    if (!sameDay(t, b)) diffs.push({ field: 'date', tally: t.date, books: b.date })
     const tAmt = kind === 'journal' ? t.total : t.gross
     const bAmt = kind === 'journal' ? b.total : b.gross
     if (!close(tAmt, bAmt)) diffs.push({ field: kind === 'journal' ? 'lines' : 'gross', tally: tAmt, books: bAmt, diff: round2(tAmt - bAmt), lines: kind === 'journal' ? lineDiffs(t, b, mapped) : undefined })
@@ -697,7 +757,7 @@ async function reconcile(v: { kind: TallyRegisterKind; data_base64: string; comp
         continue
       }
       const diffs: Row[] = []
-      if (t.date !== b.date) diffs.push({ field: 'date', tally: t.date, books: b.date })
+      if (!sameDay(t, b)) diffs.push({ field: 'date', tally: t.date, books: b.date })
       if (!partyLike(t, b, mapped)) diffs.push({ field: 'party', tally: t.party, books: b.party })
       if (family(t.type) !== family(b.type)) diffs.push({ field: 'type', tally: purchaseTypeOf(t.type), books: b.type })
       for (const f of ['taxable', 'gst', 'tds', 'gross'] as const) {
@@ -716,8 +776,8 @@ async function reconcile(v: { kind: TallyRegisterKind; data_base64: string; comp
         continue
       }
       const look = books
-        .filter((b) => !used.has(b.id) && sameBill(t, b) && daysApart(b.date, t.date) <= NEAR_DAYS && partyLike(t, b, mapped))
-        .sort((a, b) => daysApart(a.date, t.date) - daysApart(b.date, t.date))[0]
+        .filter((b) => !used.has(b.id) && sameBill(t, b) && dayGap(t, b) <= NEAR_DAYS && partyLike(t, b, mapped))
+        .sort((a, b) => dayGap(t, a) - dayGap(t, b))[0]
       if (look) {
         used.add(look.id)
         rows.push({ key: t.key, status: 'possible', tally: shortTally(t), books: shortBook(look), diffs: [] })
@@ -749,7 +809,7 @@ async function reconcile(v: { kind: TallyRegisterKind; data_base64: string; comp
         }
         const ld = lineDiffs(t, b, mapped)
         const diffs: Row[] = []
-        if (t.date !== b.date) diffs.push({ field: 'date', tally: t.date, books: b.date })
+        if (!sameDay(t, b)) diffs.push({ field: 'date', tally: t.date, books: b.date })
         if (ld.length) diffs.push({ field: 'lines', tally: t.total, books: b.total, lines: ld })
         const row: Row = { key: t.key, status: diffs.length ? 'mismatch' : 'matched', tally: shortTally(t), books: shortBook(b), diffs }
         rows.push(row)
@@ -887,10 +947,10 @@ async function reconcile(v: { kind: TallyRegisterKind; data_base64: string; comp
         coveredBy.set(t.key, b)
         rows.push({
           key: t.key,
-          status: t.date === b.date ? 'matched' : 'mismatch',
+          status: sameDay(t, b) ? 'matched' : 'mismatch',
           tally: shortTally(t),
           books: shortBook(b),
-          diffs: t.date === b.date ? [] : [{ field: 'date', tally: t.date, books: b.date }],
+          diffs: sameDay(t, b) ? [] : [{ field: 'date', tally: t.date, books: b.date }],
           part_of: of
         })
       }
@@ -904,7 +964,7 @@ async function reconcile(v: { kind: TallyRegisterKind; data_base64: string; comp
       if (t.cancelled || t.total <= 0) continue
       for (const b of books) {
         if (used.has(b.id) || !close(b.total, t.total)) continue
-        const gap = daysApart(b.date, t.date)
+        const gap = dayGap(t, b)
         if (gap > NEAR_DAYS) continue
         const s = lineScore(t, b, mapped)
         const allKnown = s.known === t.lines.length
@@ -936,7 +996,7 @@ async function reconcile(v: { kind: TallyRegisterKind; data_base64: string; comp
         continue
       }
       const diffs: Row[] = []
-      if (t.date !== f.b.date) diffs.push({ field: 'date', tally: t.date, books: f.b.date })
+      if (!sameDay(t, f.b)) diffs.push({ field: 'date', tally: t.date, books: f.b.date })
       if (!f.full) diffs.push({ field: 'lines', tally: t.total, books: f.b.total, lines: lineDiffs(t, f.b, mapped) })
       rows.push({
         key: t.key,
@@ -1031,6 +1091,12 @@ function explain(rows: Row[], kind: TallyRegisterKind): void {
         kind === 'journal'
           ? 'Tally may hold it under another voucher type (Payment, Receipt). If it is not in Tally at all, enter it there.'
           : 'Enter it in Tally under the same supplier invoice number — or delete it here if it was entered by mistake.'
+      // Tally books an oil purchase on the day its tanker is emptied, so a bill
+      // whose oil is still on the road is not in Tally yet — and should not be.
+      if (kind === 'purchase' && n(b.open_tankers) > 0) {
+        say.push(`Its tanker${n(b.open_tankers) > 1 ? 's are' : ' is'} not emptied yet — Tally books an oil purchase on the empty date, so it reaches Tally's register then.`)
+        fix = 'Nothing to do yet: book it in Tally on the day the tanker is emptied.'
+      }
     } else if (r.status === 'cancelled_here' && b) {
       say.push(`Tally shows ${tName} cancelled, but these books still carry ${bName}.`)
       fix = 'Delete it here if the cancellation in Tally is right.'
@@ -1111,7 +1177,7 @@ export async function checkTallyRegister(v: { kind: TallyRegisterKind; data_base
     file_name: String(v.file_name || ''),
     file_company: reg.company,
     company: companyName,
-    company_mismatch: !!reg.company && !!companyName && companyKey(reg.company) !== companyKey(companyName),
+    company_mismatch: !!reg.company && !!companyName && !sameCompany(reg.company, companyName),
     period: reg.period,
     from: reg.from,
     to: reg.to,

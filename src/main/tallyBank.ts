@@ -3,7 +3,7 @@ import { parsedFile, booksRead } from './tallyCache'
 import { getClient } from './db'
 import { createVoucher, type VoucherType } from './accounting'
 import { linksFor, recordTallyBatch } from './tallyLinks'
-import { cellValue, companyKey, companyOf, isoDate, mappingRows, periodOf, resolveNames, saleDateLimits, tallyKey, toPlain } from './tallyNotes'
+import { cellValue, companyKey, companyOf, sameCompany, isoDate, mappingRows, periodOf, resolveNames, saleDateLimits, tallyKey, toPlain } from './tallyNotes'
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Row = Record<string, any>
@@ -1000,7 +1000,7 @@ export async function checkTallyBank(v: {
     file_name: String(v.file_name || ''),
     file_company: book.company,
     company: companyName,
-    company_mismatch: !!book.company && !!companyName && companyKey(book.company) !== companyKey(companyName),
+    company_mismatch: !!book.company && !!companyName && !sameCompany(book.company, companyName),
     bank: book.bank,
     account: { id: Number(account.id), name: String(account.name), group: String(account.acc_group) },
     // The book's bank and the ledger picked do not share an account number.
