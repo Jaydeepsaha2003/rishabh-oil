@@ -95,7 +95,7 @@ function Head({
 }
 
 /** One voucher, drawn the way a voucher is read. */
-function Voucher({ p }: { p: Row }): React.JSX.Element {
+function Voucher({ p, no }: { p: Row; no?: number }): React.JSX.Element {
   // Debits first, then credits, each biggest first — however it was entered.
   const lines: Row[] = orderVoucherLines(Array.isArray(p.lines) ? (p.lines as Row[]) : [], (l) => ({
     account: s(l.account),
@@ -125,6 +125,18 @@ function Voucher({ p }: { p: Row }): React.JSX.Element {
           settle ? 'border-b-[#C6DAF0] bg-[#F4F8FD]' : 'border-b-[#E4ECE3] bg-[#F7FAF6]'
         )}
       >
+        {/* Its place in the list — 1, 2, 3 — so a voucher can be called out
+            by number ("the third one") while the panel is talked through. */}
+        {no != null && (
+          <span
+            className={cn(
+              'flex h-[22px] min-w-[22px] flex-none items-center justify-center rounded-full px-1.5 text-[11px] font-extrabold tabular-nums text-white',
+              settle ? 'bg-[#1B4E82]' : 'bg-[#0B3D2E]'
+            )}
+          >
+            {no}
+          </span>
+        )}
         {/* THE VOUCHER NUMBER, which is the thing being looked for.
             It is the running serial the ledgers themselves print — PUR/51,
             JV/31 — so a figure found here can be taken straight to the Day
@@ -404,8 +416,8 @@ export function LedgerPostings({
               <SectionHead note={posted.length === 1 ? 'one voucher' : `${posted.length} vouchers`}>
                 Posted by this {label(target.entity)}
               </SectionHead>
-              {posted.map((p) => (
-                <Voucher key={`p${p.id}`} p={p} />
+              {posted.map((p, i) => (
+                <Voucher key={`p${p.id}`} p={p} no={i + 1} />
               ))}
             </>
           )}
@@ -416,8 +428,8 @@ export function LedgerPostings({
               <SectionHead note="money put against it, posted elsewhere">
                 Settled against it
               </SectionHead>
-              {settled.map((p) => (
-                <Voucher key={`s${p.id}`} p={p} />
+              {settled.map((p, i) => (
+                <Voucher key={`s${p.id}`} p={p} no={posted.length + i + 1} />
               ))}
             </>
           )}
