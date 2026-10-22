@@ -6933,6 +6933,49 @@ export function Accounts({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [purchases, regFrom, regTo, regSearch, regFunding, regEmptyOnly])
 
+  const saleInvoices = useMemo((): Row[] => {
+    // ONE INVOICE, ONE LINE. An invoice is one or more sale rows sharing an
+    // invoice_group (KRFL/369: DALDA in two rate bands); listed row by row it
+    // read as two bills. Its rows are added together here — quantity, taxable,
+    // GST, round off, freight, received — the products named once each, and
+    // the rate is the weighted average (taxable / quantity). The invoice keeps
+    // its first row's id, which is the row its voucher is filed under.
+    const byInv = new Map<string, Row[]>()
+    for (const r of saleRows) {
+      const k = `${r.company_id}|${r.invoice_group || `id-${r.id}`}`
+      const g = byInv.get(k)
+      if (g) g.push(r)
+      else byInv.set(k, [r])
+    }
+    return Array.from(byInv.values()).map((g): Row => {
+      const lines = [...g].sort((a, b) => Number(a.id) - Number(b.id))
+      const first = lines[0]
+      if (lines.length === 1) {
+        const q = n(first.qty)
+        return { ...first, line_count: 1, avg_rate: q > 0 ? n(first.amount) / q : null }
+      }
+      // Each line to the paisa first, as the voucher adds them (KRFL/369: ₹16,75,102.32).
+      const sum = (f: string): number => lines.reduce((t, r) => t + Math.round(n(r[f]) * 100) / 100, 0)
+      const qty = lines.reduce((t, r) => t + n(r.qty), 0)
+      const amount = sum('amount')
+      const uoms = Array.from(new Set(lines.filter((r) => n(r.qty) > 0).map((r) => String(r.uom || 'MT'))))
+      return {
+        ...first,
+        line_count: lines.length,
+        qty,
+        uom: uoms.length === 1 ? uoms[0] : first.uom,
+        mixed_uom: uoms.length > 1,
+        amount,
+        gst_amount: sum('gst_amount'),
+        round_off: sum('round_off'),
+        transport_amount: sum('transport_amount'),
+        received_amount: sum('received_amount'),
+        product_name: Array.from(new Set(lines.map((r) => String(r.product_name || '')).filter(Boolean))).join(' + '),
+        avg_rate: qty > 0 && uoms.length <= 1 ? amount / qty : null
+      }
+    })
+  }, [saleRows])
+
   const salesRegRows = useMemo(() => {
     const q = regSearch.trim().toLowerCase()
     // THE CANCELLED NUMBERS SIT IN THE SERIES. Each is dated with the invoice
@@ -6940,7 +6983,7 @@ export function Accounts({
     // no money, so no total moves.
     const voids: Row[] = cancelledNos.map((c) => ({ ...c, customer: 'Cancelled', product_name: '', qty: 0, amount: 0 }))
     const num = (x: Row): number => Number(/(\d+)\s*$/.exec(String(x.invoice_no || ''))?.[1]) || 0
-    return ([...saleRows, ...voids] as Row[])
+    return ([...saleInvoices, ...voids] as Row[])
       .filter((s) => {
         if (!inPeriod(s.sale_date)) return false
         if (!q) return true
@@ -6957,7 +7000,7 @@ export function Accounts({
       })
       .map((x) => x.s)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [saleRows, cancelledNos, regFrom, regTo, regSearch])
+  }, [saleInvoices, cancelledNos, regFrom, regTo, regSearch])
 
   // Tag a purchase to an LC — issues a bill under that LC against the invoice,
   // which is what makes the purchase show as LC-funded and eats the limit.
@@ -7204,7 +7247,15 @@ export function Accounts({
                       </td>
                       <td className="max-w-[180px] truncate px-3 py-1.5" title={String(s.customer || '')}>{s.customer || '—'}</td>
                       <td className="px-3 py-1.5 text-muted-foreground">{s.product_name || '—'}</td>
-                      <td className="px-3 py-1.5 text-right tabular-nums">{n(s.qty)} {s.uom || 'MT'}</td>
+                      <td className="px-3 py-1.5 text-right tabular-nums">
+                        {n(s.qty)} {s.uom || 'MT'}
+                        {s.avg_rate != null && (
+                          <span className="block text-[10px] text-muted-foreground">
+                            @ {formatINR(n(s.avg_rate))}/{s.uom || 'MT'}
+                            {n(s.line_count) > 1 ? ' avg' : ''}
+                          </span>
+                        )}
+                      </td>
                       <td className="px-3 py-1.5 text-right font-medium tabular-nums">{formatINR(net)}</td>
                       <td className="px-3 py-1.5 text-right tabular-nums text-emerald-700">{n(s.received_amount) ? formatINR(s.received_amount) : '—'}</td>
                       <td className={cn('px-3 py-1.5 text-right font-medium tabular-nums', bal > 0.005 ? 'text-rose-700' : 'text-muted-foreground')}>
@@ -9742,7 +9793,7 @@ export function Accounts({
     const lcOverdue = (o: Row): boolean =>
       n(o.lc_bills_open) > 0 && !!o.lc_next_due && String(o.lc_next_due).slice(0, 10) < today
 
-    const base: Row[] = isPur ? purchases : isSal ? [...saleRows, ...cancelledNos] : [...noteRows, ...noteVchRows]
+    const base: Row[] = isPur ? purchases : isSal ? [...saleInvoices, ...cancelledNos] : [...noteRows, ...noteVchRows]
     const preRows: Row[] = isPur ? purchaseRows : isSal ? salesRegRows : noteRegRowsWeb
     // A funnel on every column; the sums below read the rows they leave.
     const regCf = colFilter<Row>(
@@ -10101,6 +10152,16 @@ export function Accounts({
           <Fragment key="m">{material(String(r.product_name || '—'))}</Fragment>,
           <span key="q" style={{ ...fig(12, 600), ...cellPad, textAlign: 'right' }}>
             {formatNum(n(r.qty))} {String(r.uom || 'MT')}
+            {r.avg_rate != null && (
+              <span
+                className="block"
+                title={n(r.line_count) > 1 ? `Weighted average of ${n(r.line_count)} lines: taxable ÷ quantity` : 'Taxable ÷ quantity'}
+                style={{ ...fig(10.5, 600, '#5A6B62'), marginTop: 2 }}
+              >
+                @ {formatINR(n(r.avg_rate))}/{String(r.uom || 'MT')}
+                {n(r.line_count) > 1 ? ' avg' : ''}
+              </span>
+            )}
           </span>,
           <span key="a" style={{ ...fig(12.5, 700), ...cellPad, textAlign: 'right' }}>{formatINR(sTaxable(r))}</span>,
           remarkCell(r)
