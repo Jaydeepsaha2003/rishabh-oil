@@ -7217,8 +7217,8 @@ export function Accounts({
     n(s.amount) + n(s.gst_amount) + n(s.round_off) - (Number(s.deduct_freight) ? n(s.transport_amount) : 0)
   const dSalCf = colFilter<Row>(colF, 'dreg:sales', salesRegRows, [
     { key: 'date', get: (s) => formatDate(s.sale_date), sort: 'num' },
-    { key: 'invoice', get: (s) => s.invoice_no },
-    { key: 'vehicle', get: (s) => s.gate_vehicle_no || 'not gated out' },
+    { key: 'invoice', get: (s) => (s.cancelled_no ? `${String(s.invoice_no)} · Cancelled` : s.invoice_no) },
+    { key: 'vehicle', get: (s) => (s.cancelled_no ? 'Cancelled' : s.gate_vehicle_no || 'not gated out') },
     { key: 'customer', get: (s) => s.customer },
     { key: 'product', get: (s) => s.product_name },
     { key: 'qty', get: (s) => `${n(s.qty)} ${String(s.uom || 'MT')}`, sort: 'num' },
@@ -9862,8 +9862,10 @@ export function Accounts({
         : isSal
           ? [
               { key: 'Date', get: (r) => formatDate(r.sale_date), sort: 'num' },
-              { key: 'Invoice', get: (r) => r.invoice_no },
-              { key: 'Vehicle', get: (r) => r.gate_vehicle_no || 'Not gated out' },
+              // A cancelled number is "Cancelled" in both funnels, so the
+              // voided numbers can be picked out (or left out) of the series.
+              { key: 'Invoice', get: (r) => (r.cancelled_no ? `${String(r.invoice_no)} · Cancelled` : r.invoice_no) },
+              { key: 'Vehicle', get: (r) => (r.cancelled_no ? 'Cancelled' : r.gate_vehicle_no || 'Not gated out') },
               { key: 'Customer', get: (r) => r.customer },
               { key: 'Product', get: (r) => r.product_name },
               { key: 'Qty', get: (r) => `${formatNum(n(r.qty))} ${String(r.uom || 'MT')}`, sort: 'num' },
