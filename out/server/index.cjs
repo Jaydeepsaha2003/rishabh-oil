@@ -2793,16 +2793,16 @@ async function groupTree(companyId) {
     guard.add(id);
     const me = byId.get(id);
     const o = own.get(String(me?.name || "")) || { n: 0, bal: 0 };
-    let n58 = o.n;
+    let n59 = o.n;
     let bal = o.bal;
     let groups = 0;
     for (const k of kids.get(id) || []) {
       const sub = roll(k, guard);
-      n58 += sub.n;
+      n59 += sub.n;
       bal += sub.bal;
       groups += 1 + sub.groups;
     }
-    const out = { n: n58, bal, groups };
+    const out = { n: n59, bal, groups };
     totals.set(id, out);
     return out;
   };
@@ -5285,9 +5285,9 @@ async function accountsRule(ns, op, args) {
   const a = args || {};
   const c = getClient();
   const one = async (sql, id) => {
-    const n58 = Number(id) || 0;
-    if (!n58) return null;
-    const r = await c.execute({ sql, args: [n58] }).catch(() => null);
+    const n59 = Number(id) || 0;
+    if (!n59) return null;
+    const r = await c.execute({ sql, args: [n59] }).catch(() => null);
     return r?.rows[0] || null;
   };
   const section = (key3, extra = {}) => ({ module: key3, label: SECTION_LABEL[key3] || "Accounting", ...extra });
@@ -6495,8 +6495,8 @@ async function nextBargainNo(oilTypeId, supplierId, bargainDate) {
   let maxSeq = 0;
   for (const r of existing.rows) {
     const parts = String(r.bargain_no).split("/");
-    const n58 = parseInt(parts[parts.length - 1] ?? "0", 10);
-    if (!Number.isNaN(n58) && n58 > maxSeq) maxSeq = n58;
+    const n59 = parseInt(parts[parts.length - 1] ?? "0", 10);
+    if (!Number.isNaN(n59) && n59 > maxSeq) maxSeq = n59;
   }
   const serial = String(maxSeq + 1).padStart(2, "0");
   return `${oil}/${dayMonth(bargainDate)}/${party}/${serial}`;
@@ -13710,13 +13710,13 @@ function computeMoney(i) {
   const threshold = i.tdsThreshold || 0;
   const abovePct = i.tdsPctAbove || 0;
   const prior = i.tdsPrior || 0;
-  const round229 = (v) => Math.round(v * 100) / 100;
+  const round230 = (v) => Math.round(v * 100) / 100;
   const lines = (i.lines || []).filter((l) => n15(l.qty) > 0);
   const lineQty = lines.reduce((s5, l) => s5 + n15(l.qty), 0);
-  const blendedRate = lineQty > 0 ? round229(lines.reduce((s5, l) => s5 + n15(l.rate) * n15(l.qty), 0) / lineQty) : 0;
-  const rawPremium = round229(i.invoiceRate - blendedRate);
+  const blendedRate = lineQty > 0 ? round230(lines.reduce((s5, l) => s5 + n15(l.rate) * n15(l.qty), 0) / lineQty) : 0;
+  const rawPremium = round230(i.invoiceRate - blendedRate);
   const ratePremium = Math.abs(rawPremium) < 0.01 ? 0 : rawPremium;
-  const billedRate = (raw) => i.rateRoundOff == null ? Math.ceil(raw) : round229(raw + n15(i.rateRoundOff));
+  const billedRate = (raw) => i.rateRoundOff == null ? Math.ceil(raw) : round230(raw + n15(i.rateRoundOff));
   const taxableValue = lines.length > 1 && lineQty > 0 ? lines.reduce((s5, l) => {
     const days = l.interestDays != null ? n15(l.interestDays) : interestDays;
     const addl = l.additionalInterest != null ? n15(l.additionalInterest) : i.additionalInterest || 0;
@@ -13727,13 +13727,13 @@ function computeMoney(i) {
   const gstAmount = taxableValue * i.gstPct / 100;
   const roundOff = Number(i.roundOff) || 0;
   const roundedTotal = taxableValue + gstAmount + roundOff;
-  const tdsAmount = round229(tierTds(taxableValue, prior, threshold, i.tdsPct, abovePct));
-  const netAmount = round229(roundedTotal - tdsAmount);
+  const tdsAmount = round230(tierTds(taxableValue, prior, threshold, i.tdsPct, abovePct));
+  const netAmount = round230(roundedTotal - tdsAmount);
   const finalTaxable = i.bargainRate * i.orderedQty;
   const finalGst = finalTaxable * i.gstPct / 100;
   const finalRounded = finalTaxable + finalGst + roundOff;
-  const finalTds = round229(tierTds(finalTaxable, prior, threshold, i.tdsPct, abovePct));
-  const finalNet = round229(finalRounded - finalTds);
+  const finalTds = round230(tierTds(finalTaxable, prior, threshold, i.tdsPct, abovePct));
+  const finalNet = round230(finalRounded - finalTds);
   return {
     interest_pct: interestPct,
     interest_days: interestDays,
@@ -14705,7 +14705,7 @@ async function rerateInvoicesForBargain(bargainId, rate, orderIds) {
 }
 async function repriceSplitTankerInvoices(apply = false, onlyIds) {
   const c = getClient();
-  const round229 = (v) => Math.round(v * 100) / 100;
+  const round230 = (v) => Math.round(v * 100) / 100;
   const pick = onlyIds ? new Set(onlyIds.map((x) => n15(x))) : null;
   const cand = toPlain15(
     await c.execute(`SELECT o.* FROM orders o
@@ -14714,7 +14714,7 @@ async function repriceSplitTankerInvoices(apply = false, onlyIds) {
                         AND COALESCE(o.is_trading, 0) = 0
                       ORDER BY o.order_date ASC, o.id ASC`)
   );
-  const findings = [];
+  const findings2 = [];
   let changed = 0;
   for (const o of cand) {
     const id = n15(o.id);
@@ -14723,12 +14723,12 @@ async function repriceSplitTankerInvoices(apply = false, onlyIds) {
     const tankerIds = toPlain15(await c.execute({ sql: `SELECT tanker_id AS id FROM ${ALLOC} a WHERE a.order_id = ?`, args: [id] })).map((t) => n15(t.id));
     const lines = applyBargainInterestOverrides(await bargainLinesForTankers(tankerIds, { orderId: id }), await listOrderBargainInterest(id));
     const qty = lines.reduce((t, l) => t + l.qty, 0);
-    if (!(qty > 0) || new Set(lines.map((l) => round229(l.rate))).size < 2) continue;
+    if (!(qty > 0) || new Set(lines.map((l) => round230(l.rate))).size < 2) continue;
     const supplier = await getSupplier(n15(o.supplier_id));
     const prior = await supplierFyTaxable(n15(o.supplier_id), String(o.order_date), id, n15(o.company_id) || void 0);
-    const blended = round229(lines.reduce((t, l) => t + l.rate * l.qty, 0) / qty);
-    const oldPremium = round229(n15(o.invoice_rate) - n15(o.bargain_rate));
-    const invoiceRate = round229(blended + (Math.abs(oldPremium) < 0.01 ? 0 : oldPremium));
+    const blended = round230(lines.reduce((t, l) => t + l.rate * l.qty, 0) / qty);
+    const oldPremium = round230(n15(o.invoice_rate) - n15(o.bargain_rate));
+    const invoiceRate = round230(blended + (Math.abs(oldPremium) < 0.01 ? 0 : oldPremium));
     const money = (roundOff2) => computeMoney({
       orderedQty: n15(o.ordered_qty),
       invoiceRate,
@@ -14749,8 +14749,8 @@ async function repriceSplitTankerInvoices(apply = false, onlyIds) {
     let roundOff = n15(o.round_off);
     if (n15(o.round_off_manual) !== 1) {
       const first = money(0);
-      const T = round229(first.taxable_value + first.gst_amount);
-      roundOff = round229(Math.round(T) - T);
+      const T = round230(first.taxable_value + first.gst_amount);
+      roundOff = round230(Math.round(T) - T);
     }
     const m = money(roundOff);
     if (Math.abs(m.taxable_value - n15(o.taxable_value)) < 1) continue;
@@ -14763,17 +14763,17 @@ async function repriceSplitTankerInvoices(apply = false, onlyIds) {
       order_date: String(o.order_date || "").slice(0, 10),
       company: String(comp?.rows[0]?.name || ""),
       supplier: String(supplier?.name || ""),
-      qty: round229(qty),
-      lines: lines.map((l) => ({ qty: round229(l.qty), rate: l.rate })),
-      taxable_before: round229(n15(o.taxable_value)),
-      taxable_after: round229(m.taxable_value),
-      tds_before: round229(n15(o.tds_amount)),
-      tds_after: round229(m.tds_amount),
-      net_before: round229(n15(o.net_amount)),
-      net_after: round229(m.net_amount),
+      qty: round230(qty),
+      lines: lines.map((l) => ({ qty: round230(l.qty), rate: l.rate })),
+      taxable_before: round230(n15(o.taxable_value)),
+      taxable_after: round230(m.taxable_value),
+      tds_before: round230(n15(o.tds_amount)),
+      tds_after: round230(m.tds_amount),
+      net_before: round230(n15(o.net_amount)),
+      net_after: round230(m.net_amount),
       review
     };
-    findings.push(row);
+    findings2.push(row);
     if (!apply || review) continue;
     await withDbTransaction(async () => {
       const c2 = getClient();
@@ -14820,10 +14820,10 @@ async function repriceSplitTankerInvoices(apply = false, onlyIds) {
     });
     changed++;
   }
-  return { findings, changed };
+  return { findings: findings2, changed };
 }
 async function refreshStalePurchaseTds(apply = false, onlyIds, scope2) {
-  const round229 = (v) => Math.round(v * 100) / 100;
+  const round230 = (v) => Math.round(v * 100) / 100;
   const pick = onlyIds ? new Set(onlyIds.map((x) => n15(x))) : null;
   const inScope = scope2 ? new Set(await relatedSupplierIds(n15(scope2.supplierId))) : null;
   const tier = (taxable, prior, threshold, basePct, abovePct) => {
@@ -14836,7 +14836,7 @@ async function refreshStalePurchaseTds(apply = false, onlyIds, scope2) {
     // (GT/1061, Legacy, sat ₹5,000.30 short of Tally until this included them).
     await getClient().execute(`SELECT o.* FROM orders o ORDER BY o.order_date ASC, o.id ASC`)
   );
-  const findings = [];
+  const findings2 = [];
   let changed = 0;
   for (const o of cand) {
     const id = n15(o.id);
@@ -14845,25 +14845,25 @@ async function refreshStalePurchaseTds(apply = false, onlyIds, scope2) {
     if (!supplier) continue;
     const prior = await supplierFyTaxable(n15(o.supplier_id), String(o.order_date), id, n15(o.company_id) || void 0);
     const basePct = supplier.tds_above_only ? 0 : n15(o.tds_pct);
-    const tds = round229(tier(n15(o.taxable_value), prior, n15(supplier.tds_threshold), basePct, n15(o.tds_pct)));
-    const finalTds = round229(tier(n15(o.final_taxable_value), prior, n15(supplier.tds_threshold), basePct, n15(o.tds_pct)));
+    const tds = round230(tier(n15(o.taxable_value), prior, n15(supplier.tds_threshold), basePct, n15(o.tds_pct)));
+    const finalTds = round230(tier(n15(o.final_taxable_value), prior, n15(supplier.tds_threshold), basePct, n15(o.tds_pct)));
     if (Math.abs(tds - n15(o.tds_amount)) < 0.5) continue;
     if (pick && !pick.has(id)) continue;
     const comp = await getClient().execute({ sql: "SELECT name FROM companies WHERE id = ?", args: [n15(o.company_id)] }).catch(() => null);
-    const net = round229(n15(o.net_amount) + n15(o.tds_amount) - tds);
-    const finalNet = round229(n15(o.final_net_amount) + n15(o.final_tds_amount) - finalTds);
-    findings.push({
+    const net = round230(n15(o.net_amount) + n15(o.tds_amount) - tds);
+    const finalNet = round230(n15(o.final_net_amount) + n15(o.final_tds_amount) - finalTds);
+    findings2.push({
       id,
       invoice_no: String(o.invoice_no || ""),
       order_date: String(o.order_date || "").slice(0, 10),
       company: String(comp?.rows[0]?.name || ""),
       supplier: String(supplier.name || ""),
-      taxable: round229(n15(o.taxable_value)),
-      prior: round229(prior),
+      taxable: round230(n15(o.taxable_value)),
+      prior: round230(prior),
       threshold: n15(supplier.tds_threshold),
-      tds_before: round229(n15(o.tds_amount)),
+      tds_before: round230(n15(o.tds_amount)),
       tds_after: tds,
-      net_before: round229(n15(o.net_amount)),
+      net_before: round230(n15(o.net_amount)),
       net_after: net
     });
     if (!apply) continue;
@@ -14898,14 +14898,14 @@ async function refreshStalePurchaseTds(apply = false, onlyIds, scope2) {
       const partyLine = vLines.filter((l) => creditorGroups.includes(String(l.acc_group)) && n15(l.cr) > 0).sort((a, b) => n15(b.cr) - n15(a.cr))[0];
       const tdsAcct = tdsLine ? n15(tdsLine.account_id) : n15((await c.execute("SELECT id FROM ledger_accounts WHERE UPPER(name) = 'TDS PAYABLE A/C' LIMIT 1")).rows[0]?.id);
       if (entry && partyLine && tdsAcct) {
-        const delta = round229(tds - (tdsLine ? n15(tdsLine.cr) : 0));
+        const delta = round230(tds - (tdsLine ? n15(tdsLine.cr) : 0));
         if (tdsLine) {
           if (tds < 5e-3) await c.execute({ sql: "DELETE FROM journal_lines WHERE id = ?", args: [n15(tdsLine.id)] });
           else await c.execute({ sql: "UPDATE journal_lines SET cr = ? WHERE id = ?", args: [tds, n15(tdsLine.id)] });
         } else if (tds > 5e-3) {
           await c.execute({ sql: "INSERT INTO journal_lines (entry_id, account_id, dr, cr) VALUES (?, ?, 0, ?)", args: [entry, tdsAcct, tds] });
         }
-        await c.execute({ sql: "UPDATE journal_lines SET cr = ? WHERE id = ?", args: [round229(n15(partyLine.cr) - delta), n15(partyLine.id)] });
+        await c.execute({ sql: "UPDATE journal_lines SET cr = ? WHERE id = ?", args: [round230(n15(partyLine.cr) - delta), n15(partyLine.id)] });
         const bal = toPlain15(await c.execute({ sql: "SELECT ROUND(SUM(dr), 2) AS dr, ROUND(SUM(cr), 2) AS cr FROM journal_lines WHERE entry_id = ?", args: [entry] }))[0];
         if (Math.abs(n15(bal?.dr) - n15(bal?.cr)) > 5e-3) throw new Error(`${String(o.invoice_no)}: the voucher would not balance after the TDS change \u2014 left as it was`);
         await recordChanges("orders", id, String(o.invoice_no || ""), o, { ...o, tds_amount: tds, net_amount: net }, ORDER_FIELDS);
@@ -14931,7 +14931,7 @@ async function refreshStalePurchaseTds(apply = false, onlyIds, scope2) {
     });
     changed++;
   }
-  return { findings, changed };
+  return { findings: findings2, changed };
 }
 async function deleteOrder(id) {
   return withDbTransaction(async () => {
@@ -15330,7 +15330,7 @@ async function backfillPurchaseRoundOff() {
            pr.code AS oil_code, pr.name AS oil_name
     FROM orders o LEFT JOIN products pr ON pr.id = o.oil_type_id
     ORDER BY o.order_date ASC, o.id ASC`);
-  const round229 = (v) => Math.round(v * 100) / 100;
+  const round230 = (v) => Math.round(v * 100) / 100;
   const same2 = (a, b) => Math.abs(a - b) < 5e-3;
   const prior = /* @__PURE__ */ new Map();
   let applied = 0;
@@ -15345,13 +15345,13 @@ async function backfillPurchaseRoundOff() {
     const before = prior.get(key3);
     prior.set(key3, before + n15(r.taxable_value));
     if (n15(r.round_off_manual) === 1) continue;
-    const T = round229(n15(r.taxable_value) + n15(r.gst_amount));
-    const ro = round229(Math.round(T) - T);
-    const tds = round229(n15(r.tds_amount));
-    const net = round229(T + ro - tds);
-    const fT = round229(n15(r.final_taxable_value) + n15(r.final_gst_amount));
-    const fTds = round229(n15(r.final_tds_amount));
-    const fNet = round229(fT + ro - fTds);
+    const T = round230(n15(r.taxable_value) + n15(r.gst_amount));
+    const ro = round230(Math.round(T) - T);
+    const tds = round230(n15(r.tds_amount));
+    const net = round230(T + ro - tds);
+    const fT = round230(n15(r.final_taxable_value) + n15(r.final_gst_amount));
+    const fTds = round230(n15(r.final_tds_amount));
+    const fNet = round230(fT + ro - fTds);
     if (same2(ro, n15(r.round_off)) && same2(tds, n15(r.tds_amount)) && same2(net, n15(r.net_amount))) continue;
     console.log(
       `[orders] round-off repair #${r.id} ${r.invoice_no} ${r.order_date}: ro ${n15(r.round_off).toFixed(2)} -> ${ro.toFixed(2)} | tds ${n15(r.tds_amount).toFixed(2)} -> ${tds.toFixed(2)} | net ${n15(r.net_amount).toFixed(2)} -> ${net.toFixed(2)}`
@@ -15391,7 +15391,7 @@ async function backfillPurchaseRoundOff() {
 }
 async function repairPurchaseTdsOnTaxable() {
   const c = getClient();
-  const round229 = (v) => Math.round(v * 100) / 100;
+  const round230 = (v) => Math.round(v * 100) / 100;
   const roots = /* @__PURE__ */ new Map();
   for (const r of toPlain15(await c.execute("SELECT id, linked_party_id FROM suppliers")))
     roots.set(n15(r.id), n15(r.linked_party_id) || n15(r.id));
@@ -15433,11 +15433,11 @@ async function repairPurchaseTdsOnTaxable() {
     }
     const prior = ytd.get(key3);
     ytd.set(key3, prior + T);
-    const tds = round229(tierTds(T, prior, threshold, pctBelow, pctAbove));
-    const net = round229(T + G + RO - tds);
+    const tds = round230(tierTds(T, prior, threshold, pctBelow, pctAbove));
+    const net = round230(T + G + RO - tds);
     const fT = n15(raw.final_taxable_value);
-    const fTds = round229(tierTds(fT, prior, threshold, pctBelow, pctAbove));
-    const fNet = round229(fT + n15(raw.final_gst_amount) + RO - fTds);
+    const fTds = round230(tierTds(fT, prior, threshold, pctBelow, pctAbove));
+    const fNet = round230(fT + n15(raw.final_gst_amount) + RO - fTds);
     if (Math.abs(tds - n15(raw.tds_amount)) < 5e-3 && Math.abs(net - n15(raw.net_amount)) < 5e-3) continue;
     console.log(
       `[orders] TDS basis repair #${raw.id} ${raw.invoice_no} ${String(raw.order_date).slice(0, 10)}: taxable ${T.toFixed(2)} | tds ${n15(raw.tds_amount).toFixed(2)} -> ${tds.toFixed(2)} | net ${n15(raw.net_amount).toFixed(2)} -> ${net.toFixed(2)}`
@@ -16706,8 +16706,8 @@ async function previewLcLedgerMoves() {
   const { partyAccountName: partyAccountName2 } = await Promise.resolve().then(() => (init_partyLedgers(), partyLedgers_exports));
   const vouchers = await lcVouchers();
   const ids = [...vouchers.keys()];
-  const findings = [];
-  if (!ids.length) return { settings: s5, payables: [], findings };
+  const findings2 = [];
+  if (!ids.length) return { settings: s5, payables: [], findings: findings2 };
   const payableNames2 = /* @__PURE__ */ new Set();
   const lines = [];
   for (let i = 0; i < ids.length; i += 400) {
@@ -16751,7 +16751,7 @@ async function previewLcLedgerMoves() {
     }
     if (!to) continue;
     if (!await ledgerExistsCached(to)) continue;
-    findings.push({
+    findings2.push({
       line_id: n18(l.line_id),
       entry_id: n18(l.entry_id),
       code: String(l.code || ""),
@@ -16766,8 +16766,8 @@ async function previewLcLedgerMoves() {
       cr: n18(l.cr)
     });
   }
-  findings.sort((a, b) => String(a.date).localeCompare(String(b.date)) || n18(a.entry_id) - n18(b.entry_id));
-  return { settings: s5, payables: [...payableNames2].sort(), findings };
+  findings2.sort((a, b) => String(a.date).localeCompare(String(b.date)) || n18(a.entry_id) - n18(b.entry_id));
+  return { settings: s5, payables: [...payableNames2].sort(), findings: findings2 };
 }
 async function ledgerExistsCached(name) {
   const k = up(name);
@@ -16786,7 +16786,7 @@ async function applyLcLedgerMoves(lineIds) {
   const want = new Set((lineIds || []).map(n18).filter(Boolean));
   if (!want.size) throw new Error("Pick at least one line");
   existsCache.clear();
-  const { findings } = await previewLcLedgerMoves();
+  const { findings: findings2 } = await previewLcLedgerMoves();
   return withDbTransaction(async () => {
     const c = getClient();
     await c.execute(`CREATE TABLE IF NOT EXISTS accounting_repair_log (
@@ -16794,7 +16794,7 @@ async function applyLcLedgerMoves(lineIds) {
         created_at TEXT NOT NULL DEFAULT (datetime('now')))`);
     let moved = 0;
     const touched = /* @__PURE__ */ new Set();
-    for (const f of findings) {
+    for (const f of findings2) {
       if (!want.has(n18(f.line_id))) continue;
       const acc = await c.execute({ sql: "SELECT id FROM ledger_accounts WHERE TRIM(UPPER(name)) = ? LIMIT 1", args: [up(f.to)] });
       if (!acc.rows.length) continue;
@@ -17529,9 +17529,9 @@ async function removePaymentInVouchers(keys) {
   if (!want.size) throw new Error("Pick at least one payment in");
   return withDbTransaction(async () => {
     const c = getClient();
-    const { findings } = await previewPaymentInVouchers();
+    const { findings: findings2 } = await previewPaymentInVouchers();
     let removed = 0;
-    for (const f of findings) {
+    for (const f of findings2) {
       if (!want.has(String(f.key))) continue;
       const eid = n19(f.entry_id);
       const old = toPlain16(await c.execute({ sql: "SELECT a.name, jl.dr, jl.cr FROM journal_lines jl JOIN ledger_accounts a ON a.id = jl.account_id WHERE jl.entry_id = ?", args: [eid] }));
@@ -18571,8 +18571,8 @@ async function assertNotInUse(table, id) {
   const held = [];
   for (const d of deps) {
     const r = await c.execute({ sql: `SELECT COUNT(*) AS n FROM ${d.table} WHERE ${d.column} = ?`, args: [id] }).catch(() => null);
-    const n58 = r ? Number(r.rows[0].n) : 0;
-    if (n58 > 0) held.push(`${n58} ${d.label}${n58 === 1 ? "" : "s"}`);
+    const n59 = r ? Number(r.rows[0].n) : 0;
+    if (n59 > 0) held.push(`${n59} ${d.label}${n59 === 1 ? "" : "s"}`);
   }
   if (!held.length) return;
   const who2 = await c.execute({ sql: `SELECT name FROM ${table} WHERE id = ?`, args: [id] });
@@ -19463,7 +19463,6 @@ async function postPurchaseJournal(v) {
   return withDbTransaction(async () => {
     await deleteJournalByRef("order_id", v.orderId);
     const ro = n23(v.roundOff);
-    const interest = Math.min(Math.max(0, n23(v.interest)), n23(v.taxable));
     await postJournal({
       date: v.date,
       vchType: "PURCHASE OIL",
@@ -19472,8 +19471,7 @@ async function postPurchaseJournal(v) {
       orderId: v.orderId,
       companyId: v.companyId,
       lines: [
-        { account: `${v.oilCode} PUR A/C`, group: "Purchase Accounts", dr: v.taxable - interest },
-        { account: "INTEREST A/C", group: "Indirect Expenses", dr: interest },
+        { account: `${v.oilCode} PUR A/C`, group: "Purchase Accounts", dr: v.taxable },
         ...gstLines({ side: "INPUT", pct: n23(v.gstPct), type: asGstType(v.gstType), dr: n23(v.gst) }),
         { account: "ROUND OFF A/C", group: "Indirect Expenses", dr: ro > 0 ? ro : 0, cr: ro < 0 ? -ro : 0 },
         { account: "TDS PAYABLE A/C", group: "Duties & Taxes", cr: v.tds },
@@ -22112,7 +22110,7 @@ async function scan(companyId) {
           HAVING COUNT(*) > 1`,
     args: companyId ? [companyId] : []
   });
-  const findings = [];
+  const findings2 = [];
   const linesBy = /* @__PURE__ */ new Map();
   const entriesBy = /* @__PURE__ */ new Map();
   for (const g of groups.rows) {
@@ -22156,7 +22154,7 @@ async function scan(companyId) {
       review: null
     };
     if (full.length !== 1) {
-      findings.push({ ...base, review: full.length ? "More than one voucher carries the whole invoice" : "No single voucher carries the whole invoice" });
+      findings2.push({ ...base, review: full.length ? "More than one voucher carries the whole invoice" : "No single voucher carries the whole invoice" });
       continue;
     }
     const canonical = full[0];
@@ -22184,20 +22182,20 @@ async function scan(companyId) {
     }
     base.removable_amount = round210(base.duplicates.reduce((s5, d) => s5 + d.amount, 0));
     base.review = odd.length ? odd.join("; ") : null;
-    findings.push(base);
+    findings2.push(base);
   }
-  return { findings, lines: linesBy, entries: entriesBy };
+  return { findings: findings2, lines: linesBy, entries: entriesBy };
 }
 function round210(x) {
   return Math.round((x + Number.EPSILON) * 100) / 100;
 }
 async function previewDuplicateInvoicePostings(companyId) {
-  const { findings } = await scan(companyId);
+  const { findings: findings2 } = await scan(companyId);
   return {
-    findings,
-    removable_vouchers: findings.reduce((s5, f) => s5 + f.duplicates.length, 0),
-    removable_amount: round210(findings.reduce((s5, f) => s5 + f.removable_amount, 0)),
-    needs_review: findings.filter((f) => f.review).length
+    findings: findings2,
+    removable_vouchers: findings2.reduce((s5, f) => s5 + f.duplicates.length, 0),
+    removable_amount: round210(findings2.reduce((s5, f) => s5 + f.removable_amount, 0)),
+    needs_review: findings2.filter((f) => f.review).length
   };
 }
 async function repairDuplicateInvoicePostings(entryIds, companyId) {
@@ -22207,9 +22205,9 @@ async function repairDuplicateInvoicePostings(entryIds, companyId) {
     const c = getClient();
     await ensureVoucherNumbers();
     await ensureLog();
-    const { findings, lines, entries: entries2 } = await scan(companyId);
+    const { findings: findings2, lines, entries: entries2 } = await scan(companyId);
     const allowed = /* @__PURE__ */ new Map();
-    for (const f of findings) for (const d of f.duplicates) allowed.set(d.entry_id, f);
+    for (const f of findings2) for (const d of f.duplicates) allowed.set(d.entry_id, f);
     const stale = [...wanted].filter((id) => !allowed.has(id));
     if (stale.length) throw new Error(`Voucher${stale.length === 1 ? "" : "s"} ${stale.join(", ")} ${stale.length === 1 ? "is" : "are"} no longer a plain duplicate \u2014 refresh the list`);
     let removed = 0;
@@ -22445,10 +22443,10 @@ async function scanSaleTds(companyId) {
     );
     for (const r of al.rows) allocated.add(Number(r.line_id));
   }
-  const findings = /* @__PURE__ */ new Map();
+  const findings2 = /* @__PURE__ */ new Map();
   const findingFor = (r) => {
     const key3 = `${r.company_id}:${r.k}`;
-    let f = findings.get(key3);
+    let f = findings2.get(key3);
     if (!f) {
       f = {
         company_id: Number(r.company_id),
@@ -22466,7 +22464,7 @@ async function scanSaleTds(companyId) {
         tds_line_ids: [],
         review: null
       };
-      findings.set(key3, f);
+      findings2.set(key3, f);
     }
     return f;
   };
@@ -22496,18 +22494,18 @@ async function scanSaleTds(companyId) {
       f.customer_ledger = String(cust[0].account);
     }
   }
-  return [...findings.values()].sort(
+  return [...findings2.values()].sort(
     (a, b) => a.company_id - b.company_id || a.sale_date.localeCompare(b.sale_date) || a.invoice_no.localeCompare(b.invoice_no)
   );
 }
 async function previewSaleTds(companyId) {
-  const findings = await scanSaleTds(companyId);
-  const ok = findings.filter((f) => !f.review);
+  const findings2 = await scanSaleTds(companyId);
+  const ok = findings2.filter((f) => !f.review);
   return {
-    findings,
+    findings: findings2,
     clearable: ok.length,
     voucher_tds: round210(ok.reduce((s5, f) => s5 + f.voucher_tds, 0)),
-    needs_review: findings.length - ok.length
+    needs_review: findings2.length - ok.length
   };
 }
 async function clearSaleTds(keys, companyId) {
@@ -22516,8 +22514,8 @@ async function clearSaleTds(keys, companyId) {
   return withDbTransaction(async () => {
     const c = getClient();
     await ensureLog();
-    const findings = await scanSaleTds(companyId);
-    const allowed = new Map(findings.filter((f) => !f.review).map((f) => [`${f.company_id}:${f.invoice_key}`, f]));
+    const findings2 = await scanSaleTds(companyId);
+    const allowed = new Map(findings2.filter((f) => !f.review).map((f) => [`${f.company_id}:${f.invoice_key}`, f]));
     const stale = [...wanted].filter((k) => !allowed.has(k));
     if (stale.length) {
       throw new Error(`${stale.length} invoice${stale.length === 1 ? " has" : "s have"} changed since the list was shown \u2014 check again`);
@@ -22591,7 +22589,7 @@ async function scanLcCharges() {
     );
     for (const r of al.rows) allocated.add(Number(r.line_id));
   }
-  const findings = [];
+  const findings2 = [];
   for (const r of reps) {
     const payId = Number(r.journal_entry_id);
     const feeId = Number(r.fee_journal_entry_id);
@@ -22611,7 +22609,7 @@ async function scanLcCharges() {
     else if (Math.abs(Number(payDr[0].dr) - Number(r.amount)) > TOL) review = "the payment no longer matches the repayment amount";
     else if (Number(payDr[0].dr) - charges < -TOL) review = "the charges are more than the payment";
     else if ([...pay, ...fee].some((l) => allocated.has(Number(l.id)))) review = "something is allocated against these vouchers";
-    findings.push({
+    findings2.push({
       repayment_id: Number(r.id),
       company_id: Number(r.company_id),
       company_name: String(r.company_name || ""),
@@ -22624,12 +22622,12 @@ async function scanLcCharges() {
       review
     });
   }
-  return { findings, lines };
+  return { findings: findings2, lines };
 }
 async function previewLcCharges() {
-  const { findings } = await scanLcCharges();
-  const ok = findings.filter((f) => !f.review);
-  return { findings, fixable: ok.length, charges: round210(ok.reduce((s5, f) => s5 + f.charges, 0)) };
+  const { findings: findings2 } = await scanLcCharges();
+  const ok = findings2.filter((f) => !f.review);
+  return { findings: findings2, fixable: ok.length, charges: round210(ok.reduce((s5, f) => s5 + f.charges, 0)) };
 }
 async function fixLcCharges(repaymentIds) {
   const wanted = new Set((repaymentIds || []).map(Number).filter(Boolean));
@@ -22638,8 +22636,8 @@ async function fixLcCharges(repaymentIds) {
     const c = getClient();
     await ensureVoucherNumbers();
     await ensureLog();
-    const { findings, lines } = await scanLcCharges();
-    const allowed = new Map(findings.filter((f) => !f.review).map((f) => [f.repayment_id, f]));
+    const { findings: findings2, lines } = await scanLcCharges();
+    const allowed = new Map(findings2.filter((f) => !f.review).map((f) => [f.repayment_id, f]));
     const stale = [...wanted].filter((id) => !allowed.has(id));
     if (stale.length) {
       throw new Error(`${stale.length} repayment${stale.length === 1 ? " has" : "s have"} changed since the list was shown \u2014 check again`);
@@ -22683,9 +22681,9 @@ async function fixLcCharges(repaymentIds) {
   });
 }
 async function autoFixDuplicateSales() {
-  const { findings } = await previewDuplicateInvoicePostings();
-  if (!findings.length) return { removed: 0, revenue: 0, reposted: [] };
-  const plainIds = findings.flatMap((f) => f.duplicates.map((d) => d.entry_id));
+  const { findings: findings2 } = await previewDuplicateInvoicePostings();
+  if (!findings2.length) return { removed: 0, revenue: 0, reposted: [] };
+  const plainIds = findings2.flatMap((f) => f.duplicates.map((d) => d.entry_id));
   let removed = 0;
   let revenue = 0;
   if (plainIds.length) {
@@ -22694,7 +22692,7 @@ async function autoFixDuplicateSales() {
     revenue = r.revenue;
   }
   const reposted = [];
-  for (const f of findings.filter((x) => x.review)) {
+  for (const f of findings2.filter((x) => x.review)) {
     await withDbTransaction(async () => {
       const c = getClient();
       await ensureVoucherNumbers();
@@ -22722,7 +22720,7 @@ async function autoFixDuplicateSales() {
   }
   if (reposted.length) {
     const tds = await previewSaleTds();
-    const keys = tds.findings.filter((t) => !t.review && findings.some((f) => f.review && f.company_id === t.company_id && f.invoice_key === t.invoice_key)).map((t) => `${t.company_id}:${t.invoice_key}`);
+    const keys = tds.findings.filter((t) => !t.review && findings2.some((f) => f.review && f.company_id === t.company_id && f.invoice_key === t.invoice_key)).map((t) => `${t.company_id}:${t.invoice_key}`);
     if (keys.length) await clearSaleTds(keys);
   }
   return { removed, revenue: round210(revenue), reposted };
@@ -22802,9 +22800,9 @@ async function scanOutwardFreight() {
   return out;
 }
 async function previewOutwardFreight() {
-  const findings = await scanOutwardFreight();
-  const ok = findings.filter((f) => !f.review);
-  return { findings, fixable: ok.length, freight: round210(ok.reduce((s5, f) => s5 + f.freight, 0)) };
+  const findings2 = await scanOutwardFreight();
+  const ok = findings2.filter((f) => !f.review);
+  return { findings: findings2, fixable: ok.length, freight: round210(ok.reduce((s5, f) => s5 + f.freight, 0)) };
 }
 async function fixOutwardFreight(entryIds) {
   const wanted = new Set((entryIds || []).map(Number).filter(Boolean));
@@ -22812,8 +22810,8 @@ async function fixOutwardFreight(entryIds) {
   return withDbTransaction(async () => {
     const c = getClient();
     await ensureLog();
-    const findings = await scanOutwardFreight();
-    const allowed = new Map(findings.filter((f) => !f.review).map((f) => [f.entry_id, f]));
+    const findings2 = await scanOutwardFreight();
+    const allowed = new Map(findings2.filter((f) => !f.review).map((f) => [f.entry_id, f]));
     const stale = [...wanted].filter((id) => !allowed.has(id));
     if (stale.length) throw new Error(`${stale.length} voucher${stale.length === 1 ? " has" : "s have"} changed since the list was shown \u2014 check again`);
     const payable = new Set(await payableNames());
@@ -22958,9 +22956,9 @@ async function scanSharedLedgers() {
   return out.sort((a, b) => a.ledger.localeCompare(b.ledger) || a.party.localeCompare(b.party));
 }
 async function previewSharedLedgers() {
-  const findings = await scanSharedLedgers();
-  const ok = findings.filter((f) => !f.review);
-  return { findings, fixable: ok.length, lines: ok.reduce((t, f) => t + f.line_ids.length, 0) };
+  const findings2 = await scanSharedLedgers();
+  const ok = findings2.filter((f) => !f.review);
+  return { findings: findings2, fixable: ok.length, lines: ok.reduce((t, f) => t + f.line_ids.length, 0) };
 }
 async function fixSharedLedgers(keys) {
   const wanted = new Set((keys || []).map(String).filter(Boolean));
@@ -22968,8 +22966,8 @@ async function fixSharedLedgers(keys) {
   return withDbTransaction(async () => {
     const c = getClient();
     await ensureLog();
-    const findings = await scanSharedLedgers();
-    const allowed = new Map(findings.filter((f) => !f.review).map((f) => [f.key, f]));
+    const findings2 = await scanSharedLedgers();
+    const allowed = new Map(findings2.filter((f) => !f.review).map((f) => [f.key, f]));
     const stale = [...wanted].filter((k) => !allowed.has(k));
     if (stale.length) throw new Error(`${stale.length} ${stale.length === 1 ? "ledger has" : "ledgers have"} changed since the list was shown \u2014 check again`);
     const { getOrCreateAccount: getOrCreateAccount2 } = await Promise.resolve().then(() => (init_journal(), journal_exports));
@@ -23042,8 +23040,8 @@ async function scanWrongCompany() {
   return out;
 }
 async function previewWrongCompany() {
-  const findings = await scanWrongCompany();
-  return { findings, amount: round210(findings.reduce((t, f) => t + f.amount, 0)) };
+  const findings2 = await scanWrongCompany();
+  return { findings: findings2, amount: round210(findings2.reduce((t, f) => t + f.amount, 0)) };
 }
 async function moveWrongCompany(entryIds) {
   const wanted = new Set((entryIds || []).map(Number).filter(Boolean));
@@ -23051,12 +23049,12 @@ async function moveWrongCompany(entryIds) {
   return withDbTransaction(async () => {
     const c = getClient();
     await ensureLog();
-    const findings = await scanWrongCompany();
-    const by = new Map(findings.map((f) => [f.entry_id, f]));
+    const findings2 = await scanWrongCompany();
+    const by = new Map(findings2.map((f) => [f.entry_id, f]));
     const stale = [...wanted].filter((id) => !by.has(id));
     if (stale.length) throw new Error(`${stale.length} voucher${stale.length === 1 ? " has" : "s have"} changed since the list was shown \u2014 check again`);
     const codes = [];
-    for (const f of findings.filter((x) => wanted.has(x.entry_id))) {
+    for (const f of findings2.filter((x) => wanted.has(x.entry_id))) {
       const num2 = (await c.execute({ sql: "SELECT prefix, serial FROM voucher_numbers WHERE entry_id = ?", args: [f.entry_id] })).rows[0];
       await c.execute({
         sql: "INSERT OR REPLACE INTO accounting_repair_log (repair_key, entry_id, before_json) VALUES (?, ?, ?)",
@@ -23085,7 +23083,7 @@ async function previewPaisaImbalance() {
      GROUP BY je.id
     HAVING ABS(ROUND(SUM(jl.dr), 2) - ROUND(SUM(jl.cr), 2)) >= 0.005
      ORDER BY je.entry_date, je.id`);
-  const findings = res.rows.map((r) => {
+  const findings2 = res.rows.map((r) => {
     const diff = Math.round((Number(r.dr) - Number(r.cr)) * 100) / 100;
     return {
       entry_id: Number(r.id),
@@ -23099,13 +23097,13 @@ async function previewPaisaImbalance() {
       review: Math.abs(diff) > 0.05 ? `Out by ${Math.abs(diff).toFixed(2)} \u2014 more than rounding; open the voucher and correct it` : null
     };
   });
-  return { findings };
+  return { findings: findings2 };
 }
 async function fixPaisaImbalance(ids) {
   const pick = new Set((ids || []).map((x) => Number(x)).filter((x) => x > 0));
   if (!pick.size) throw new Error("Pick at least one voucher");
-  const { findings } = await previewPaisaImbalance();
-  const todo = findings.filter((f) => pick.has(Number(f.entry_id)) && !f.review);
+  const { findings: findings2 } = await previewPaisaImbalance();
+  const todo = findings2.filter((f) => pick.has(Number(f.entry_id)) && !f.review);
   await ensureLog();
   let fixed = 0;
   for (const f of todo) {
@@ -27616,7 +27614,7 @@ async function previewParkingCopies() {
   const journals = tally.filter((e) => /JOURNAL/i.test(e.type) && !bookOf(e));
   const taken = /* @__PURE__ */ new Set();
   const usedOwn = /* @__PURE__ */ new Set();
-  const findings = [];
+  const findings2 = [];
   for (const o of outs.sort((a, b) => a.e.date.localeCompare(b.e.date))) {
     if (taken.has(o.e.id)) continue;
     const clears = journals.filter((j) => {
@@ -27649,7 +27647,7 @@ async function previewParkingCopies() {
       for (const r of refunds) taken.add(r.e.id);
       usedOwn.add(d.d.id);
       const bankName = o.e.lines.find((l) => l.account_id === o.bankId)?.name || "";
-      findings.push({
+      findings2.push({
         key: [d.d.id, o.e.id, j.id, ...refunds.map((r) => r.e.id)].join(":"),
         fixable,
         own: { id: d.d.id, code: d.d.code, date: d.d.date, amount: d.paid, narration: d.d.narration },
@@ -27672,17 +27670,17 @@ async function previewParkingCopies() {
       break;
     }
   }
-  return { findings: findings.sort((a, b) => String(a.journal.date).localeCompare(String(b.journal.date))) };
+  return { findings: findings2.sort((a, b) => String(a.journal.date).localeCompare(String(b.journal.date))) };
 }
 async function removeParkingCopies(keys) {
   const want = new Set((keys || []).map(String));
   if (!want.size) throw new Error("Pick at least one");
   return withDbTransaction(async () => {
     const c = getClient();
-    const { findings } = await previewParkingCopies();
+    const { findings: findings2 } = await previewParkingCopies();
     let removed = 0;
     let chains = 0;
-    for (const f of findings) {
+    for (const f of findings2) {
       if (!want.has(f.key) || !f.fixable) continue;
       const ownId = n56(f.own.id);
       if (n56(f.match_lc)) {
@@ -27739,6 +27737,116 @@ var init_parkingCopies = __esm({
   }
 });
 
+// src/main/purchaseInterestFold.ts
+var purchaseInterestFold_exports = {};
+__export(purchaseInterestFold_exports, {
+  foldPurchaseInterest: () => foldPurchaseInterest,
+  previewPurchaseInterest: () => previewPurchaseInterest
+});
+async function findings(companyId) {
+  const c = getClient();
+  const cid = companyId ?? null;
+  const res = await c.execute({
+    sql: `SELECT je.id AS entry_id, je.company_id, je.entry_date, je.vch_no, je.order_id,
+                 (SELECT nn.prefix || '/' || nn.serial FROM voucher_numbers nn WHERE nn.entry_id = je.id) AS code,
+                 co.name AS company, o.invoice_no, s.name AS supplier,
+                 jl.id AS interest_line_id, jl.dr AS interest,
+                 (SELECT pl.id FROM journal_lines pl JOIN ledger_accounts pa ON pa.id = pl.account_id
+                   WHERE pl.entry_id = je.id AND pa.acc_group = 'Purchase Accounts' AND pl.dr > 0 ORDER BY pl.dr DESC LIMIT 1) AS purchase_line_id,
+                 (SELECT pa.name FROM journal_lines pl JOIN ledger_accounts pa ON pa.id = pl.account_id
+                   WHERE pl.entry_id = je.id AND pa.acc_group = 'Purchase Accounts' AND pl.dr > 0 ORDER BY pl.dr DESC LIMIT 1) AS purchase_account,
+                 (SELECT pl.dr FROM journal_lines pl JOIN ledger_accounts pa ON pa.id = pl.account_id
+                   WHERE pl.entry_id = je.id AND pa.acc_group = 'Purchase Accounts' AND pl.dr > 0 ORDER BY pl.dr DESC LIMIT 1) AS purchase_before,
+                 (SELECT COUNT(*) FROM journal_lines pl JOIN ledger_accounts pa ON pa.id = pl.account_id
+                   WHERE pl.entry_id = je.id AND pa.acc_group = 'Purchase Accounts' AND pl.dr > 0) AS purchase_lines
+            FROM journal_lines jl
+            JOIN journal_entries je ON je.id = jl.entry_id
+            JOIN ledger_accounts la ON la.id = jl.account_id
+            LEFT JOIN orders o ON o.id = je.order_id
+            LEFT JOIN suppliers s ON s.id = o.supplier_id
+            LEFT JOIN companies co ON co.id = je.company_id
+           WHERE la.name = 'INTEREST A/C' AND jl.dr > 0 AND jl.cr = 0
+             AND je.order_id IS NOT NULL AND UPPER(je.vch_type) LIKE 'PURCHASE%'
+             ${cid ? "AND je.company_id = ?" : ""}
+           ORDER BY je.company_id, je.entry_date, je.id`,
+    args: cid ? [cid] : []
+  });
+  return res.rows.map((r) => {
+    const x = { ...r };
+    const interest = round228(n57(x.interest));
+    return {
+      key: `${n57(x.entry_id)}:${n57(x.interest_line_id)}`,
+      entry_id: n57(x.entry_id),
+      code: String(x.code || x.vch_no || ""),
+      date: String(x.entry_date || "").slice(0, 10),
+      company: String(x.company || ""),
+      invoice_no: String(x.invoice_no || x.vch_no || ""),
+      supplier: String(x.supplier || ""),
+      interest,
+      purchase_account: String(x.purchase_account || ""),
+      purchase_before: round228(n57(x.purchase_before)),
+      purchase_after: round228(n57(x.purchase_before) + interest),
+      // No purchase line to put it on — left for a look rather than guessed at.
+      review: x.purchase_line_id ? null : "No purchase account line on this voucher \u2014 open it and re-save the purchase"
+    };
+  });
+}
+async function previewPurchaseInterest() {
+  const f = await findings();
+  return { findings: f, total: round228(f.reduce((t, x) => t + n57(x.interest), 0)), company_id: getActiveCompanyId() };
+}
+async function foldPurchaseInterest(entryIds) {
+  const want = new Set(entryIds.map(n57).filter(Boolean));
+  const list2 = (await findings()).filter((x) => want.has(n57(x.entry_id)) && !x.review);
+  let changed = 0;
+  for (const x of list2) {
+    await withDbTransaction(async () => {
+      const c = getClient();
+      const lines = await c.execute({ sql: "SELECT * FROM journal_lines WHERE entry_id = ? ORDER BY id", args: [x.entry_id] });
+      const before = lines.rows.map((r) => ({ ...r }));
+      const interestLine = before.find((l) => `${x.entry_id}:${n57(l.id)}` === x.key);
+      if (!interestLine) return;
+      const purchase = await c.execute({
+        sql: `SELECT pl.id, pl.dr FROM journal_lines pl JOIN ledger_accounts pa ON pa.id = pl.account_id
+               WHERE pl.entry_id = ? AND pa.acc_group = 'Purchase Accounts' AND pl.dr > 0 ORDER BY pl.dr DESC LIMIT 1`,
+        args: [x.entry_id]
+      });
+      const p = purchase.rows[0];
+      if (!p) return;
+      await c.execute(`CREATE TABLE IF NOT EXISTS accounting_repair_log (
+          repair_key TEXT PRIMARY KEY, entry_id INTEGER NOT NULL, before_json TEXT NOT NULL,
+          created_at TEXT NOT NULL DEFAULT (datetime('now')))`);
+      await c.execute({
+        sql: "INSERT OR REPLACE INTO accounting_repair_log(repair_key, entry_id, before_json) VALUES (?, ?, ?)",
+        args: [`purchase_interest_fold:${x.entry_id}:${Date.now()}`, x.entry_id, JSON.stringify(before)]
+      });
+      const amt = round228(n57(interestLine.dr));
+      await c.execute({ sql: "UPDATE journal_lines SET dr = ? WHERE id = ?", args: [round228(n57(p.dr) + amt), n57(p.id)] });
+      await c.execute({ sql: "DELETE FROM journal_bill_allocs WHERE line_id = ?", args: [n57(interestLine.id)] });
+      await c.execute({ sql: "DELETE FROM journal_line_splits WHERE line_id = ?", args: [n57(interestLine.id)] }).catch(() => void 0);
+      await c.execute({ sql: "DELETE FROM journal_lines WHERE id = ?", args: [n57(interestLine.id)] });
+      const bal = await c.execute({ sql: "SELECT ROUND(SUM(dr), 2) AS dr, ROUND(SUM(cr), 2) AS cr FROM journal_lines WHERE entry_id = ?", args: [x.entry_id] });
+      const b = bal.rows[0];
+      if (Math.abs(n57(b.dr) - n57(b.cr)) > 0.01) throw new Error(`${x.invoice_no}: the voucher would not balance \u2014 left as it was`);
+      changed++;
+    });
+  }
+  return { changed };
+}
+var n57, round228;
+var init_purchaseInterestFold = __esm({
+  "src/main/purchaseInterestFold.ts"() {
+    init_db();
+    init_dbTransaction();
+    init_company();
+    n57 = (v) => {
+      const x = Number(v);
+      return Number.isFinite(x) ? x : 0;
+    };
+    round228 = (v) => Math.round(v * 100) / 100;
+  }
+});
+
 // src/main/shadowedRedirects.ts
 var shadowedRedirects_exports = {};
 __export(shadowedRedirects_exports, {
@@ -27769,20 +27877,20 @@ async function scan2() {
                        JOIN ledger_accounts tgt ON TRIM(UPPER(tgt.name)) = TRIM(UPPER(lm.use_name))
                       WHERE lm.note LIKE 'renamed from %' AND live.id <> tgt.id`)
   ).map((r) => ({
-    map_id: n57(r.map_id),
+    map_id: n58(r.map_id),
     posts_as: String(r.posts_as),
     use_name: String(r.use_name),
-    live_id: n57(r.live_id),
-    target_id: n57(r.target_id),
+    live_id: n58(r.live_id),
+    target_id: n58(r.target_id),
     created_by: String(r.created_by || ""),
     created_at: String(r.created_at || "")
   }));
   if (!redirects.length) return { redirects, lines: [], candidates: [] };
   const tally = await tallyBankParties();
   const accts = toPlain42(await c.execute("SELECT id, name FROM ledger_accounts"));
-  const byClean = new Map(accts.map((a) => [clean4(a.name), n57(a.id)]));
-  const nameOf = new Map(accts.map((a) => [n57(a.id), String(a.name)]));
-  const companies = new Map(toPlain42(await c.execute("SELECT id, name FROM companies")).map((r) => [n57(r.id), String(r.name)]));
+  const byClean = new Map(accts.map((a) => [clean4(a.name), n58(a.id)]));
+  const nameOf = new Map(accts.map((a) => [n58(a.id), String(a.name)]));
+  const companies = new Map(toPlain42(await c.execute("SELECT id, name FROM companies")).map((r) => [n58(r.id), String(r.name)]));
   const lines = [];
   for (const rd of redirects) {
     const targetKey = tallyKey(rd.use_name);
@@ -27800,11 +27908,11 @@ async function scan2() {
       const head = narr.replace(/\s\([^()]*\)$/, "");
       const t = tally.get(head) || tally.get(narr);
       if (!t) continue;
-      const amount2 = round228(n57(r.dr) || n57(r.cr));
-      const leg = t.legs.length === 1 ? t.legs[0] : t.legs.find((g) => Math.abs(round228(g.amount) - amount2) < 0.02);
+      const amount2 = round229(n58(r.dr) || n58(r.cr));
+      const leg = t.legs.length === 1 ? t.legs[0] : t.legs.find((g) => Math.abs(round229(g.amount) - amount2) < 0.02);
       if (!leg || !leg.name) continue;
       if (tallyKey(leg.name) === targetKey) continue;
-      const cid = n57(r.company_id);
+      const cid = n58(r.company_id);
       let toId = null;
       let how = "";
       const exact = byClean.get(clean4(leg.name));
@@ -27819,7 +27927,7 @@ async function scan2() {
           })
         )[0];
         if (tb) {
-          const want = round228(n57(tb.cr) - n57(tb.dr));
+          const want = round229(n58(tb.cr) - n58(tb.dr));
           if (Math.abs(want) > 0.5) {
             const hits = toPlain42(
               await c.execute({
@@ -27828,22 +27936,22 @@ async function scan2() {
               })
             );
             if (hits.length === 1) {
-              toId = n57(hits[0].account_id);
+              toId = n58(hits[0].account_id);
               how = `its opening matches Tally's (${want.toFixed(2)})`;
             }
           }
         }
       }
       lines.push({
-        line_id: n57(r.line_id),
-        entry_id: n57(r.entry_id),
+        line_id: n58(r.line_id),
+        entry_id: n58(r.entry_id),
         company_id: cid,
         company: companies.get(cid) || `Company ${cid}`,
         date: String(r.entry_date || "").slice(0, 10),
         vch_type: String(r.vch_type || ""),
         vch_no: String(r.vch_no || ""),
         amount: amount2,
-        side: n57(r.dr) > 0 ? "dr" : "cr",
+        side: n58(r.dr) > 0 ? "dr" : "cr",
         from_id: rd.target_id,
         from_name: rd.use_name,
         tally_party: leg.name,
@@ -27854,12 +27962,12 @@ async function scan2() {
     }
   }
   const firsts = new Set(lines.map((l) => clean4(l.tally_party).split(" ")[0]).filter(Boolean));
-  const candidates = accts.filter((a) => firsts.has(clean4(a.name).split(" ")[0]) || lines.some((l) => l.to_id === n57(a.id))).filter((a) => !redirects.some((rd) => rd.target_id === n57(a.id))).map((a) => ({ id: n57(a.id), name: String(a.name) })).sort((a, b) => a.name.localeCompare(b.name));
+  const candidates = accts.filter((a) => firsts.has(clean4(a.name).split(" ")[0]) || lines.some((l) => l.to_id === n58(a.id))).filter((a) => !redirects.some((rd) => rd.target_id === n58(a.id))).map((a) => ({ id: n58(a.id), name: String(a.name) })).sort((a, b) => a.name.localeCompare(b.name));
   return { redirects, lines, candidates };
 }
 async function previewShadowedRedirects() {
   const s5 = await scan2();
-  return { ...s5, amount: round228(s5.lines.reduce((t, l) => t + l.amount, 0)) };
+  return { ...s5, amount: round229(s5.lines.reduce((t, l) => t + l.amount, 0)) };
 }
 async function fixShadowedRedirects(moves) {
   return withDbTransaction(async () => {
@@ -27868,13 +27976,13 @@ async function fixShadowedRedirects(moves) {
     const s5 = await scan2();
     if (!s5.redirects.length) throw new Error("No hijacking redirect is left \u2014 check again");
     const by = new Map(s5.lines.map((l) => [l.line_id, l]));
-    const valid = new Set(toPlain42(await c.execute("SELECT id FROM ledger_accounts")).map((r) => n57(r.id)));
+    const valid = new Set(toPlain42(await c.execute("SELECT id FROM ledger_accounts")).map((r) => n58(r.id)));
     let moved = 0;
     let amount2 = 0;
     for (const m of moves || []) {
-      const f = by.get(n57(m.line_id));
+      const f = by.get(n58(m.line_id));
       if (!f) throw new Error("A line has changed since the list was shown \u2014 check again");
-      const to = n57(m.to_id);
+      const to = n58(m.to_id);
       if (!valid.has(to) || to === f.from_id) throw new Error(`Pick the ledger for ${f.vch_type} ${f.vch_no}`);
       await c.execute({
         sql: "INSERT OR REPLACE INTO accounting_repair_log (repair_key, entry_id, before_json) VALUES (?, ?, ?)",
@@ -27883,7 +27991,7 @@ async function fixShadowedRedirects(moves) {
       await c.execute({ sql: "UPDATE journal_lines SET account_id = ? WHERE id = ? AND account_id = ?", args: [to, f.line_id, f.from_id] });
       await c.execute({ sql: "UPDATE journal_bill_allocs SET account_id = ? WHERE line_id = ?", args: [to, f.line_id] }).catch(() => void 0);
       moved++;
-      amount2 = round228(amount2 + f.amount);
+      amount2 = round229(amount2 + f.amount);
     }
     for (const rd of s5.redirects) {
       await c.execute({
@@ -27908,7 +28016,7 @@ async function scanLegacy() {
     opening: 0
   });
   const ids = new Map(
-    toPlain42(await c.execute({ sql: "SELECT id, name FROM ledger_accounts WHERE name IN (?, ?)", args: [LEGACY_TRAD, LEGACY_MIX] })).map((r) => [String(r.name), n57(r.id)])
+    toPlain42(await c.execute({ sql: "SELECT id, name FROM ledger_accounts WHERE name IN (?, ?)", args: [LEGACY_TRAD, LEGACY_MIX] })).map((r) => [String(r.name), n58(r.id)])
   );
   const tradId = ids.get(LEGACY_TRAD) || 0;
   const mixId = ids.get(LEGACY_MIX) || 0;
@@ -27916,7 +28024,7 @@ async function scanLegacy() {
   if ((await scan2()).redirects.length) return none("Fix the payments above first \u2014 this step builds on them.");
   const op = toPlain42(await c.execute({ sql: "SELECT company_id, cr - dr AS bal FROM ledger_openings WHERE account_id = ?", args: [mixId] }));
   const tb = toPlain42(await c.execute("SELECT company_id, cr - dr AS bal FROM tally_ledgers WHERE UPPER(name) LIKE 'LEGACY COMMODITIES PRIVATE LTD%RAJKOT%'"));
-  const match = op.find((o) => tb.some((t) => n57(t.company_id) === n57(o.company_id) && Math.abs(n57(t.bal) - n57(o.bal)) < 1 && Math.abs(n57(o.bal)) > 1));
+  const match = op.find((o) => tb.some((t) => n58(t.company_id) === n58(o.company_id) && Math.abs(n58(t.bal) - n58(o.bal)) < 1 && Math.abs(n58(o.bal)) > 1));
   if (!match) return none("");
   const lines = toPlain42(
     await c.execute({
@@ -27927,23 +28035,23 @@ async function scanLegacy() {
       args: [mixId]
     })
   ).map((r) => ({
-    line_id: n57(r.line_id),
-    entry_id: n57(r.entry_id),
-    company_id: n57(r.company_id),
+    line_id: n58(r.line_id),
+    entry_id: n58(r.entry_id),
+    company_id: n58(r.company_id),
     date: String(r.entry_date || "").slice(0, 10),
     vch_type: String(r.vch_type || ""),
     vch_no: String(r.vch_no || ""),
-    dr: round228(n57(r.dr)),
-    cr: round228(n57(r.cr)),
+    dr: round229(n58(r.dr)),
+    cr: round229(n58(r.cr)),
     narration: String(r.narration || "").slice(0, 140)
   }));
   const redirects = toPlain42(await c.execute({ sql: "SELECT id, company_id, posts_as, use_name FROM ledger_map WHERE TRIM(UPPER(use_name)) = ?", args: [LEGACY_MIX] }));
   if (!lines.length && !redirects.length) return none("");
-  return { ok: true, reason: "", trad_id: tradId, mix_id: mixId, lines, redirects, opening: round228(n57(match.bal)) };
+  return { ok: true, reason: "", trad_id: tradId, mix_id: mixId, lines, redirects, opening: round229(n58(match.bal)) };
 }
 async function previewLegacySplit() {
   const s5 = await scanLegacy();
-  return { ...s5, trad: LEGACY_TRAD, mix: LEGACY_MIX, rajkot: LEGACY_RAJKOT, dr: round228(s5.lines.reduce((t, l) => t + l.dr, 0)), cr: round228(s5.lines.reduce((t, l) => t + l.cr, 0)) };
+  return { ...s5, trad: LEGACY_TRAD, mix: LEGACY_MIX, rajkot: LEGACY_RAJKOT, dr: round229(s5.lines.reduce((t, l) => t + l.dr, 0)), cr: round229(s5.lines.reduce((t, l) => t + l.cr, 0)) };
 }
 async function fixLegacySplit() {
   return withDbTransaction(async () => {
@@ -27963,12 +28071,12 @@ async function fixLegacySplit() {
     for (const r of s5.redirects) {
       await c.execute({
         sql: "INSERT OR REPLACE INTO accounting_repair_log (repair_key, entry_id, before_json) VALUES (?, ?, ?)",
-        args: [`legacy-split:map:${n57(r.id)}`, 0, JSON.stringify(r)]
+        args: [`legacy-split:map:${n58(r.id)}`, 0, JSON.stringify(r)]
       });
       const rajkot = /RAJKOT/.test(clean4(r.posts_as));
       const to = rajkot && !taken.length ? LEGACY_RAJKOT : rajkot ? LEGACY_MIX : LEGACY_TRAD;
-      if (clean4(r.posts_as) === to) await c.execute({ sql: "DELETE FROM ledger_map WHERE id = ?", args: [n57(r.id)] });
-      else await c.execute({ sql: "UPDATE ledger_map SET use_name = ? WHERE id = ?", args: [to, n57(r.id)] });
+      if (clean4(r.posts_as) === to) await c.execute({ sql: "DELETE FROM ledger_map WHERE id = ?", args: [n58(r.id)] });
+      else await c.execute({ sql: "UPDATE ledger_map SET use_name = ? WHERE id = ?", args: [to, n58(r.id)] });
     }
     if (!taken.length) {
       await c.execute({
@@ -27981,15 +28089,15 @@ async function fixLegacySplit() {
     return { moved: s5.lines.length, redirects: s5.redirects.length };
   });
 }
-var n57, round228, clean4, LEGACY_TRAD, LEGACY_MIX, LEGACY_RAJKOT;
+var n58, round229, clean4, LEGACY_TRAD, LEGACY_MIX, LEGACY_RAJKOT;
 var init_shadowedRedirects = __esm({
   "src/main/shadowedRedirects.ts"() {
     init_db();
     init_dbTransaction();
     init_tallyBank();
     init_tallyNotes();
-    n57 = (v) => Number(v) || 0;
-    round228 = (v) => Math.round(v * 100) / 100;
+    n58 = (v) => Number(v) || 0;
+    round229 = (v) => Math.round(v * 100) / 100;
     clean4 = (v) => String(v ?? "").trim().replace(/\s+/g, " ").toUpperCase();
     LEGACY_TRAD = "LEGACY COMMODITIES PVT LTD, TRAD.";
     LEGACY_MIX = "LEGACY COMMODITIES PVT LTD, TRAD..";
@@ -28248,7 +28356,7 @@ async function dumpSql(from) {
 }
 function stamp() {
   const d = /* @__PURE__ */ new Date();
-  const p = (n58) => String(n58).padStart(2, "0");
+  const p = (n59) => String(n59).padStart(2, "0");
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}`;
 }
 async function snapshotGz() {
@@ -29633,8 +29741,8 @@ async function runStartupTasks() {
   await ensureBdPostingFields();
   await ensureVoucherNumbers();
   await runOnce("ledger_map_renames_sitewide_v1", async () => {
-    const n58 = await widenRenameRedirects();
-    if (n58) console.log(`[ledger] ${n58} rename redirect(s) now apply to every company`);
+    const n59 = await widenRenameRedirects();
+    if (n59) console.log(`[ledger] ${n59} rename redirect(s) now apply to every company`);
   }).catch((e) => console.error("[ledger] widening rename redirects failed:", e));
   await ensureRequiredColumns().catch((e) => console.error("[schema] column check failed:", e));
   await repairLcRepaymentAccount().catch((e) => console.error("[lc] repayment repair failed:", e));
@@ -30182,9 +30290,9 @@ async function runStartupTasks() {
     const cols = new Set(info.rows.map((r) => String(r.name)));
     if (cols.size === 0 || cols.has("bd_id")) return;
     const count = await c.execute("SELECT COUNT(*) AS n FROM bd_parties");
-    const n58 = Number(count.rows[0].n);
-    if (n58 > 0) {
-      console.error(`[bd] bd_parties has the retired party+entries shape AND ${n58} row(s) \u2014 leaving it for a human`);
+    const n59 = Number(count.rows[0].n);
+    if (n59 > 0) {
+      console.error(`[bd] bd_parties has the retired party+entries shape AND ${n59} row(s) \u2014 leaving it for a human`);
       return;
     }
     await c.execute("DROP TABLE IF EXISTS bd_entries");
@@ -31397,8 +31505,8 @@ async function runStartupTasks() {
     (e) => console.error("[gst] rate ledgers failed:", e)
   );
   await runOnce("lc_repay_charges_fold_v1", async () => {
-    const { findings } = await previewLcCharges();
-    const ids = findings.filter((f) => !f.review).map((f) => f.repayment_id);
+    const { findings: findings2 } = await previewLcCharges();
+    const ids = findings2.filter((f) => !f.review).map((f) => f.repayment_id);
     if (!ids.length) return;
     const r = await fixLcCharges(ids);
     console.log(`[lc] folded bank charges onto ${r.fixed} repayment voucher(s) \u2014 ${r.charges.toFixed(2)} in all`);
@@ -41144,6 +41252,16 @@ function registerIpc() {
     const { removeParkingCopies: removeParkingCopies2 } = await Promise.resolve().then(() => (init_parkingCopies(), parkingCopies_exports));
     return removeParkingCopies2((a?.keys || []).map(String));
   });
+  handle("repairs:purchaseInterest:list", async () => {
+    await assertAdmin("The accounting checks");
+    const { previewPurchaseInterest: previewPurchaseInterest2 } = await Promise.resolve().then(() => (init_purchaseInterestFold(), purchaseInterestFold_exports));
+    return previewPurchaseInterest2();
+  });
+  handle("repairs:purchaseInterestFix", async (_e, a) => {
+    await assertAdmin("Moving supplier interest into the purchase account");
+    const { foldPurchaseInterest: foldPurchaseInterest2 } = await Promise.resolve().then(() => (init_purchaseInterestFold(), purchaseInterestFold_exports));
+    return foldPurchaseInterest2((a?.ids || []).map(Number));
+  });
   handle("repairs:staleTds:list", async () => {
     await assertAdmin("The accounting checks");
     const { refreshStalePurchaseTds: refreshStalePurchaseTds2 } = await Promise.resolve().then(() => (init_orders(), orders_exports));
@@ -41335,7 +41453,7 @@ function stamp2() {
 async function countAll(c) {
   const names = await userTables(c);
   if (!names.length) return { tables: 0, rows: 0 };
-  const union = names.map((n58) => `SELECT COUNT(*) AS k FROM "${n58}"`).join(" UNION ALL ");
+  const union = names.map((n59) => `SELECT COUNT(*) AS k FROM "${n59}"`).join(" UNION ALL ");
   const res = await c.execute(union);
   let rows2 = 0;
   for (const r of res.rows) rows2 += Number(r.k) || 0;
