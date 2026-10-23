@@ -105,7 +105,18 @@ export async function downloadSkuRateExcel(
     row.getCell(COL.pack).value = size
     row.getCell(COL.mtPerCase).value = caseMT(r)
     row.getCell(COL.perCase).value = r.rate_per_case == null ? null : Number(r.rate_per_case)
-    row.getCell(COL.perMt).value = r.rate_per_mt == null ? null : Number(r.rate_per_mt)
+    // From the rate per case whenever there is one — the figure an invoice
+    // charges — not the per-MT stored beside it, which can date from a wrong
+    // pack weight (446.5 GM read as kg) and would be uploaded straight back.
+    {
+      const mt = caseMT(r)
+      row.getCell(COL.perMt).value =
+        r.rate_per_case != null && mt > 0
+          ? Math.round((Number(r.rate_per_case) / mt) * 100) / 100
+          : r.rate_per_mt == null
+            ? null
+            : Number(r.rate_per_mt)
+    }
     row.getCell(COL.note).value = ''
 
     for (let c = 1; c <= COL.note; c++) {

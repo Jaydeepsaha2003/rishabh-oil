@@ -5512,12 +5512,18 @@ function SalesBargainsTab({ onOpenSale }: { onOpenSale?: (id: number, companyId?
   // A pack priced far off its siblings on rate per MT is nearly always a rate
   // per case typed against the wrong pack size. Advisory only, and measured
   // against the median so one bad row cannot drag the yardstick to itself.
+  // RATE PER MT AS AN INVOICE WOULD CHARGE IT: from the rate per case and the
+  // pack's MT per case whenever a rate per case is set (cardRateInUnit). The
+  // per-MT figure stored beside it was worked out when the rate was saved —
+  // and for the 500 ML pouches, with "446.5 GM" then read as kg, it was ₹155.
+  const ratePerMt = (r: Row): number | null =>
+    r.rate_per_case != null ? derivedPerMt(r, Number(r.rate_per_case)) ?? (r.rate_per_mt != null ? Number(r.rate_per_mt) : null) : r.rate_per_mt != null ? Number(r.rate_per_mt) : null
   const rateMedianMt = (() => {
-    const v = ratePriced.map((r) => Number(r.rate_per_mt) || 0).filter((n) => n > 1000).sort((a, b) => a - b)
+    const v = ratePriced.map((r) => Number(ratePerMt(r)) || 0).filter((n) => n > 1000).sort((a, b) => a - b)
     return v.length ? v[Math.floor(v.length / 2)] : 0
   })()
   const rateIsOff = (r: Row): boolean => {
-    const mt = Number(r.rate_per_mt) || 0
+    const mt = Number(ratePerMt(r)) || 0
     const priced = r.rate_per_case != null || r.rate_per_mt != null
     return priced && rateMedianMt > 0 && mt > 0 && Math.abs(mt - rateMedianMt) / rateMedianMt > 0.5
   }
@@ -5687,7 +5693,7 @@ function SalesBargainsTab({ onOpenSale }: { onOpenSale?: (id: number, companyId?
                             {r.rate_per_case != null ? formatINR(r.rate_per_case) : '—'}
                           </div>
                           <div className={cn('px-3 text-right text-[14px] font-bold tabular-nums', off && 'text-[#B3261E]')}>
-                            {r.rate_per_mt != null ? formatINR(r.rate_per_mt) : '—'}
+                            {ratePerMt(r) != null ? formatINR(Number(ratePerMt(r))) : '—'}
                           </div>
                         </>
                       ) : (
@@ -5891,7 +5897,7 @@ function SalesBargainsTab({ onOpenSale }: { onOpenSale?: (id: number, companyId?
                           {r.rate_per_case != null ? formatINR(r.rate_per_case) : '—'}
                         </td>
                         <td className="px-3 py-1.5 text-right tabular-nums">
-                          {r.rate_per_mt != null ? formatINR(r.rate_per_mt) : '—'}
+                          {ratePerMt(r) != null ? formatINR(Number(ratePerMt(r))) : '—'}
                         </td>
                       </tr>
                     )
