@@ -17700,6 +17700,19 @@ export function Accounts({
                   onClick={() => {
                     const from = lgOpenDate || ''
                     const span = `${from ? formatDate(from) : 'start'} to ${lgTo ? formatDate(lgTo) : 'date'}`
+                    // ONE ROW PER PART OF A BREAKDOWN, its remark beside it —
+                    // while breakdowns are shown (Ctrl + Alt + B). The voucher's
+                    // Dr / Cr / Balance sit on its first row only, so the
+                    // columns still add up to the ledger.
+                    const xRows: Row[] = [{ __opening: true }]
+                    for (const r of vRows) {
+                      const parts = showBreakdowns ? ((r.splits as Row[]) || []) : []
+                      if (!parts.length) {
+                        xRows.push(r)
+                        continue
+                      }
+                      parts.forEach((p, i) => xRows.push(i === 0 ? { ...r, __part: p } : { ...r, __part: p, __cont: true }))
+                    }
                     void exportRowsToExcel({
                       filename: `${acName} ledger ${span}`,
                       sheetName: 'Ledger',
@@ -17711,12 +17724,19 @@ export function Accounts({
                         { header: 'Voucher', key: 'voucher', width: 14, value: (r) => (r.__opening ? '' : String(r.voucher_code || r.vch_no || '')) },
                         { header: 'Particulars', key: 'particulars', width: 36, value: (r) => (r.__opening ? 'Opening balance' : String(r.particulars || '')) },
                         { header: 'Ref', key: 'ref', width: 18, value: (r) => (r.__opening ? '' : lineRef(r)?.full || '') },
-                        { header: 'Debit ₹', key: 'dr', width: 16, align: 'right', numFmt: NUM_MONEY, value: (r) => (n(r.dr) > 0 ? n(r.dr) : '') },
-                        { header: 'Credit ₹', key: 'cr', width: 16, align: 'right', numFmt: NUM_MONEY, value: (r) => (n(r.cr) > 0 ? n(r.cr) : '') },
-                        { header: 'Balance', key: 'bal', width: 20, align: 'right', value: (r) => bal(n(r.__opening ? stmt.opening : r.running)) },
-                        { header: 'Narration', key: 'narration', width: 60, value: (r) => (r.__opening ? '' : String(r.narration || '')) }
+                        { header: 'Debit ₹', key: 'dr', width: 16, align: 'right', numFmt: NUM_MONEY, value: (r) => (!r.__cont && n(r.dr) > 0 ? n(r.dr) : '') },
+                        { header: 'Credit ₹', key: 'cr', width: 16, align: 'right', numFmt: NUM_MONEY, value: (r) => (!r.__cont && n(r.cr) > 0 ? n(r.cr) : '') },
+                        { header: 'Balance', key: 'bal', width: 20, align: 'right', value: (r) => (r.__cont ? '' : bal(n(r.__opening ? stmt.opening : r.running))) },
+                        ...(showBreakdowns
+                          ? [
+                              { header: 'Breakdown part', key: 'part', width: 28, value: (r: Row) => (r.__part ? String(r.__part.name || '') : '') },
+                              { header: 'Part amount ₹', key: 'part_amt', width: 16, align: 'right' as const, numFmt: NUM_MONEY, value: (r: Row) => (r.__part ? n(r.__part.amount) : '') },
+                              { header: 'Remarks', key: 'remarks', width: 36, value: (r: Row) => (r.__part ? String(r.__part.note || '') : '') }
+                            ]
+                          : []),
+                        { header: 'Narration', key: 'narration', width: 60, value: (r) => (r.__opening || r.__cont ? '' : String(r.narration || '')) }
                       ],
-                      rows: [{ __opening: true }, ...vRows]
+                      rows: xRows
                     })
                   }}
                   className="flex h-8 flex-none items-center gap-[7px] rounded-[7px] px-2.5"

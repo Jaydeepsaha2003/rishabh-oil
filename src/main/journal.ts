@@ -539,6 +539,38 @@ export async function accountStatement(accountId: number, companyId?: number): P
   const lines = toPlain(res)
   if (!lines.length) return lines
 
+  // THE BREAKDOWN BEHIND EACH ROW, for the ledger's Excel: this ledger's own
+  // line's parts when it has them (ABDUL's ledger, the parts written under
+  // ABDUL), otherwise the parts written on the voucher's other lines (the
+  // bank's ledger, for that payment) — each part with its remark.
+  {
+    const entryIds = [...new Set(lines.map((l) => Number(l.entry_id)).filter((x) => x > 0))]
+    const byEntry = new Map<number, Row[]>()
+    for (let i = 0; i < entryIds.length; i += 400) {
+      const chunk = entryIds.slice(i, i + 400)
+      const sp = await c
+        .execute({
+          sql: `SELECT jl.entry_id, jl.id AS line_id, s.name, s.amount, s.note
+                  FROM journal_line_splits s JOIN journal_lines jl ON jl.id = s.line_id
+                 WHERE jl.entry_id IN (${chunk.map(() => '?').join(',')})
+                 ORDER BY jl.id, s.sort_order, s.id`,
+          args: chunk
+        })
+        .catch(() => ({ rows: [] }) as unknown as ResultSet)
+      for (const r of sp.rows as unknown as Row[]) {
+        const k = Number(r.entry_id)
+        if (!byEntry.has(k)) byEntry.set(k, [])
+        ;(byEntry.get(k) as Row[]).push({ line_id: Number(r.line_id), name: String(r.name || ''), amount: Number(r.amount) || 0, note: r.note ? String(r.note) : null })
+      }
+    }
+    for (const l of lines) {
+      const all = byEntry.get(Number(l.entry_id)) || []
+      if (!all.length) continue
+      const own = all.filter((x) => x.line_id === Number(l.id))
+      l.splits = (own.length ? own : all).map(({ name, amount, note }) => ({ name, amount, note }))
+    }
+  }
+
   // A purchase's interest as an AMOUNT, worked out line by line from its
   // bargains — see orderInterestAmounts. The column used to read the
   // invoice-level additional interest, which is a rate per MT and is empty on
