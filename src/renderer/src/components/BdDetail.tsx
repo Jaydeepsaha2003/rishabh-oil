@@ -25,6 +25,7 @@ import {
   ArrowDownLeft,
   ArrowUpRight,
   Banknote,
+  BookOpen,
   CalendarClock,
   Check,
   CircleDollarSign,
@@ -457,6 +458,194 @@ export function chargesOf(p: Record<string, unknown>): number {
   return Number(p.comm_charges || 0) + Number(p.bank_charges || 0) + bdLedgerCharges(p).reduce((t, c) => t + Number(c.amount || 0), 0)
 }
 
+// WHO THE BILL WAS FOR, AND WHAT IT PUT IN THE BOOKS.
+//
+// A bill can be paid out to several parties (I2: Bunge and Shri Govind), and
+// the panel named only the first. Every party is listed here with its share,
+// what the bill's vouchers actually paid to that party's ledger, and the
+// purchase invoices of theirs linked to the bill; the NBFC's part payments to
+// the supplier follow. Under it, every voucher the bill posted — numbered,
+// line by line — so the detail of the entries is read without leaving the bill.
+const nameKey = (v: unknown): string => s(v).toUpperCase().replace(/\((DR|CR)\)\s*$/, '').replace(/[^A-Z0-9]/g, '')
+function BdPartiesAndEntries({ bill }: { bill: Row }): React.JSX.Element | null {
+  const id = Number(bill.id)
+  const [data, setData] = useState<{ parties: Row[]; orders: Row[]; partParts: Row[]; posted: Row[] } | null>(null)
+  useEffect(() => {
+    let live = true
+    setData(null)
+    const api = window.api.billDiscounting
+    void Promise.all([
+      api.parties(id).catch(() => [] as Row[]),
+      api.linkedOrders(id).catch(() => [] as Row[]),
+      api.partyPayments(id).catch(() => [] as Row[]),
+      window.api.vouchers.forDocument('bd', id).catch(() => ({}) as Row)
+    ]).then(([parties, orders, partParts, docs]) => {
+      if (!live) return
+      setData({
+        parties: Array.isArray(parties) ? parties : [],
+        orders: Array.isArray(orders) ? orders : [],
+        partParts: Array.isArray(partParts) ? partParts : [],
+        posted: Array.isArray((docs as Row)?.posted) ? ((docs as Row).posted as Row[]) : []
+      })
+    })
+    return () => {
+      live = false
+    }
+    // Re-read when the bill moves (a repayment, a part paid) — its figures change.
+  }, [id, bill.status, bill.repaid_total, bill.payment_received_date])
+
+  if (!data) return null
+  const amt = n(bill.amount)
+  // The parties: the bill's own list, or the one party on the bill itself.
+  const parties: Row[] = data.parties.length
+    ? data.parties
+    : bill.party_name
+      ? [{ name: bill.party_name, amount: amt, party_type: bill.party_type }]
+      : []
+  // What the vouchers put on each party's ledger: Dr for money paid to a
+  // supplier, Cr for a customer's bill discounted against.
+  const posted = data.posted
+  const onLedger = (name: string): { dr: number; cr: number } => {
+    const k = nameKey(name)
+    let dr = 0
+    let cr = 0
+    for (const v of posted) {
+      for (const l of (v.lines as Row[]) || []) {
+        const lk = nameKey(l.account)
+        if (!k || !lk || !(lk === k || lk.startsWith(k) || k.startsWith(lk))) continue
+        dr += n(l.dr)
+        cr += n(l.cr)
+      }
+    }
+    return { dr: round2(dr), cr: round2(cr) }
+  }
+  const lineAmt = (l: Row): number => n(l.dr) || n(l.cr)
+
+  return (
+    <>
+      {parties.length > 0 && (
+        <Card>
+          <CardHead icon={Users}>
+            {parties.length > 1 ? `${parties.length} parties on this bill` : 'Party on this bill'}
+          </CardHead>
+          <div className="overflow-x-auto">
+            <table className="w-full min-w-[560px] text-[12px]">
+              <thead className="bg-[#F4F7F3] text-[9.5px] font-extrabold uppercase tracking-[.1em] text-[#5A6B62]">
+                <tr>
+                  <th className="px-3.5 py-2 text-left">Party</th>
+                  <th className="px-3 py-2 text-right">Share</th>
+                  <th className="px-3 py-2 text-right">% of bill</th>
+                  <th className="px-3 py-2 text-right">Posted to their ledger</th>
+                  <th className="px-3.5 py-2 text-left">Invoices linked</th>
+                </tr>
+              </thead>
+              <tbody>
+                {parties.map((pt, i) => {
+                  const share = n(pt.amount)
+                  const led = onLedger(s(pt.name))
+                  const net = led.dr || led.cr
+                  const inv = data.orders.filter((o) => nameKey(o.supplier_name) === nameKey(pt.name))
+                  return (
+                    <tr key={i} className="border-t border-t-[#EFF3EE] align-top">
+                      <td className="px-3.5 py-2.5">
+                        <div className="font-extrabold text-[#0A1F17] [overflow-wrap:anywhere]">{s(pt.name) || '—'}</div>
+                        <div className="text-[10.5px] font-semibold capitalize text-[#5A6B62]">{s(pt.party_type) || 'party'}</div>
+                      </td>
+                      <td className="doc-ref px-3 py-2.5 text-right font-bold">{formatINR(share)}</td>
+                      <td className="doc-ref px-3 py-2.5 text-right text-[#5A6B62]">{amt > 0 ? `${formatNum((share / amt) * 100)}%` : '—'}</td>
+                      <td className="doc-ref px-3 py-2.5 text-right font-bold" title={led.dr || led.cr ? `Dr ${formatINR(led.dr)} · Cr ${formatINR(led.cr)} across this bill's vouchers` : 'Nothing posted to this party yet'}>
+                        {net ? (
+                          <>
+                            {formatINR(net)} <span className="text-[10px] font-extrabold text-[#5A6B62]">{led.dr ? 'Dr' : 'Cr'}</span>
+                            {Math.abs(net - share) > 1 && share > 0 && (
+                              <div className="text-[10.5px] font-semibold text-[#8A5300]">{net > share ? `${formatINR(net - share)} over the share` : `${formatINR(share - net)} short of the share`}</div>
+                            )}
+                          </>
+                        ) : (
+                          <span className="text-[#8CA396]">—</span>
+                        )}
+                      </td>
+                      <td className="px-3.5 py-2.5">
+                        {inv.length ? (
+                          inv.map((o) => (
+                            <div key={String(o.order_id)} className="whitespace-nowrap text-[11.5px] font-semibold text-[#33473E]">
+                              <span className="doc-ref font-bold text-[#0A1F17]">{s(o.invoice_no)}</span> · {formatDate(s(o.order_date))} · {formatINR(n(o.net_amount))}
+                            </div>
+                          ))
+                        ) : (
+                          <span className="text-[11px] text-[#8CA396]">None linked</span>
+                        )}
+                      </td>
+                    </tr>
+                  )
+                })}
+              </tbody>
+              {parties.length > 1 && (
+                <tfoot>
+                  <tr className="border-t-2 border-t-[#DCE7DB] bg-[#F7FAF6] font-extrabold">
+                    <td className="px-3.5 py-2">Total</td>
+                    <td className="doc-ref px-3 py-2 text-right">{formatINR(parties.reduce((t, pt) => t + n(pt.amount), 0))}</td>
+                    <td className="doc-ref px-3 py-2 text-right text-[#5A6B62]">
+                      {amt > 0 ? `${formatNum((parties.reduce((t, pt) => t + n(pt.amount), 0) / amt) * 100)}%` : '—'}
+                    </td>
+                    <td colSpan={2} />
+                  </tr>
+                </tfoot>
+              )}
+            </table>
+          </div>
+          {data.partParts.length > 0 && (
+            <div className="border-t border-t-[#EFF3EE] px-3.5 py-2.5">
+              <div className="mb-1.5 text-[9.5px] font-extrabold uppercase tracking-[.12em] text-[#5A6B62]">Paid to the supplier by the NBFC</div>
+              {data.partParts.map((pp) => (
+                <div key={String(pp.part_no)} className="flex items-baseline justify-between gap-3 py-1 text-[12px]">
+                  <span className="font-semibold text-[#33473E]">
+                    Part {s(pp.part_no)} · {formatDate(s(pp.pay_date))}
+                    {pp.note ? <span className="text-[#5A6B62]"> · {s(pp.note)}</span> : null}
+                  </span>
+                  <span className="doc-ref font-bold">{formatINR(n(pp.amount))}</span>
+                </div>
+              ))}
+            </div>
+          )}
+        </Card>
+      )}
+
+      {posted.length > 0 && (
+        <Card>
+          <CardHead icon={BookOpen}>
+            Entries posted · {posted.length} voucher{posted.length === 1 ? '' : 's'}
+          </CardHead>
+          <div className="divide-y divide-[#EFF3EE]">
+            {posted.map((v, i) => (
+              <div key={String(v.id ?? i)} className="px-3.5 py-2.5">
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="flex h-[20px] min-w-[20px] items-center justify-center rounded-full bg-[#0B3D2E] px-1.5 text-[10.5px] font-extrabold text-white">{i + 1}</span>
+                  <span className="doc-ref rounded-[2px] bg-[#EAF0E9] px-1.5 py-0.5 text-[11.5px] font-extrabold text-[#0B3D2E]">{s(v.code) || s(v.vch_type)}</span>
+                  <span className="text-[11px] font-extrabold uppercase tracking-[.06em] text-[#5A6B62]">{s(v.vch_type)}</span>
+                  <span className="ml-auto doc-ref text-[12px] font-bold text-[#33473E]">{formatDate(s(v.entry_date || v.date))}</span>
+                </div>
+                <div className="mt-1.5">
+                  {((v.lines as Row[]) || []).map((l, k) => (
+                    <div key={k} className="flex items-baseline justify-between gap-3 py-[3px] text-[12px]">
+                      <span className="min-w-0 [overflow-wrap:anywhere]">
+                        <span className={cn('mr-1.5 text-[10px] font-extrabold', n(l.dr) > 0 ? 'text-[#0B7A45]' : 'text-[#C0261C]')}>{n(l.dr) > 0 ? 'Dr' : 'Cr'}</span>
+                        <span className="font-semibold text-[#0A1F17]">{s(l.account)}</span>
+                      </span>
+                      <span className={cn('doc-ref flex-none font-bold', n(l.dr) > 0 ? 'text-[#0B7A45]' : 'text-[#C0261C]')}>{formatINR(lineAmt(l))}</span>
+                    </div>
+                  ))}
+                </div>
+                {!!s(v.narration).trim() && <div className="mt-1 text-[11px] font-semibold text-[#5A6B62] [overflow-wrap:anywhere]">{s(v.narration)}</div>}
+              </div>
+            ))}
+          </div>
+        </Card>
+      )}
+    </>
+  )
+}
+
 export function BdDetail({
   bill,
   onClose,
@@ -814,6 +1003,8 @@ This was one bank debit that also cleared ${others.map((g) => `${s(g.bd_no)} ${f
               </div>
             </div>
           </Card>
+
+          <BdPartiesAndEntries bill={r} />
 
           <UpfrontInterestCard bill={r} onChanged={onChanged} />
           <BankCard bill={r} repayments={parts} onChanged={onChanged} />
