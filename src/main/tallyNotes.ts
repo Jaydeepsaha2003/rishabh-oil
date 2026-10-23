@@ -510,7 +510,10 @@ export async function postTallyNotes(v: {
 // Tally's side the same way from its columns. A rupee either way is agreement.
 // ---------------------------------------------------------------------------
 
-const SALES_SUMMARY = /^(date|particulars|voucher\s*type|voucher\s*no\.?|quantity|gross\s*weight|rate|value|addl\.?\s*cost|gross\s*total|narration)$/i
+// Tally's own columns, never ledgers. The quantity columns are listed by name,
+// exactly, so a ledger like RATE DIFFERENCE still counts as money.
+const SALES_SUMMARY =
+  /^(date|particulars|voucher\s*type|voucher\s*no\.?|voucher\s*ref\.?\s*no\.?|buyer.?s?\s*order\s*no\.?|(received|billed|actual|alternate|alt\.?)?\s*(quantity|qty)\.?|gross\s*weight|net\s*weight|rate|units?|per|value|addl\.?\s*cost|gross\s*total|narration|gstin\/?\s*uin)$/i
 const GST_COL = /\b(C|S|I|U)?GST\b|\bTCS\b|\bCESS\b/i
 
 interface TallySale {
@@ -560,7 +563,14 @@ async function parseSalesRegister(b64: string): Promise<{ company: string; title
   })
   const txt = (v: unknown): string => String(v ?? '').trim()
   const title = txt(grid[1]?.[0])
-  if (title && !/sales/i.test(title)) throw new Error(`This is a ${title} — upload a Sales Register here`)
+  // A Sales Register is titled with the sales voucher type it lists — "Sales
+  // Register", or the type's own name: "Tax Invoice", "Sales GST", "Export
+  // Invoice". Only a title that plainly names another register is turned
+  // away; the columns below (Voucher No., Gross Total) decide the rest.
+  // "Tax Invoice" (KR FOODS' sales type) was refused as not a sales register.
+  if (title && !/sale|invoice/i.test(title) && /purchase|journal|payment|receipt|contra|debit\s*note|credit\s*note|bank|cash|stock|delivery|order/i.test(title)) {
+    throw new Error(`This is a ${title} — upload a Sales Register here`)
+  }
   const headAt = grid.findIndex((r) => (r || []).some((c) => /^date$/i.test(txt(c))) && (r || []).some((c) => /^particulars$/i.test(txt(c))))
   if (headAt < 0) throw new Error('No Date / Particulars header found — upload the register exactly as Tally exports it')
   const head = (grid[headAt] || []).map(txt)
