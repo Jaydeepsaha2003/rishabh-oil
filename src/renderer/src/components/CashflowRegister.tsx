@@ -5,6 +5,7 @@ import { exportRowsToExcel, NUM_MONEY } from '@/lib/excel'
 import { formatDate, formatINR, todayISO } from '@/lib/format'
 import { cn } from '@/lib/utils'
 import { toast } from 'sonner'
+import { useBreakdownShown } from '@/lib/breakdownReveal'
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Row = Record<string, any>
@@ -67,7 +68,17 @@ export function CashflowRegister({
     setFrom(period.from || fyStart())
     setTo(period.to || todayISO())
   }, [period?.from, period?.to]) // eslint-disable-line react-hooks/exhaustive-deps
-  const [data, setData] = useState<Row[] | null>(null)
+  const [rawData, setData] = useState<Row[] | null>(null)
+  // The breakdowns are out of sight until Ctrl + Alt + B (breakdownReveal.ts):
+  // the vouchers still list, with no line's working on them.
+  const reveal = useBreakdownShown()
+  const data = useMemo(
+    (): Row[] | null =>
+      reveal || !rawData
+        ? rawData
+        : rawData.map((v): Row => ({ ...v, lines: ((v.lines as Row[]) || []).map((l) => ({ ...l, splits: [] })) })),
+    [rawData, reveal]
+  )
   const [loading, setLoading] = useState(false)
   const [q, setQ] = useState('')
   const [kind, setKind] = useState<Kind>('all')

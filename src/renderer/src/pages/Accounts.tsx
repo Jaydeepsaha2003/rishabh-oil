@@ -90,6 +90,7 @@ import { exportRowsToExcel, NUM_MONEY, NUM_QTY } from '@/lib/excel'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Switch } from '@/components/ui/switch'
+import { useBreakdownShown } from '@/lib/breakdownReveal'
 import { Label } from '@/components/ui/label'
 import { DatePicker } from '@/components/ui/date-picker'
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
@@ -2021,6 +2022,8 @@ export function Accounts({
   // rows — to move one bar, and holding the key down stuttered. Now a key
   // press moves an attribute on two rows; a render reads the ref.
   const lgRowAtRef = useRef<number | null>(null)
+  // Line breakdowns stay out of sight until Ctrl + Alt + B (breakdownReveal.ts).
+  const showBreakdowns = useBreakdownShown()
   const markLgRow = useCallback((id: number | null): void => {
     const prev = lgRowAtRef.current
     lgRowAtRef.current = id
@@ -13709,6 +13712,7 @@ export function Accounts({
                       isNoteParty && gridGst.partyTarget != null && Math.abs(lineAmt - gridGst.partyTarget) < 0.005
                     const noteChips = isNoteParty && gridGst.active
                     const showSplitLink =
+                      showBreakdowns &&
                       !noteChips &&
                       !!r.onSplits &&
                       !r.inventory &&
@@ -13963,7 +13967,7 @@ export function Accounts({
                         </div>
 
                         {/* The working behind this line's figure, while open. */}
-                        {r.onSplits && splitIsOpen && !noteChips && (
+                        {showBreakdowns && r.onSplits && splitIsOpen && !noteChips && (
                           <div style={{ padding: `0 16px 12px ${indent}px`, background: '#F7FAF6', borderBottom: '1px solid #EAF0E9' }}>
                             <SplitPanel
                               rows={r.splits || []}
