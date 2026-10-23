@@ -106,6 +106,10 @@ export function AccountingChecks(): React.JSX.Element {
   const [repricing, setRepricing] = useState(false)
   // Purchases whose TDS was worked before their slab's figures were known.
   const [staleTds, setStaleTds] = useState<Row | null>(null)
+  // Purchase vouchers still posting the supplier's interest to INTEREST A/C.
+  const [purInt, setPurInt] = useState<Row | null>(null)
+  const [purIntPick, setPurIntPick] = useState<Set<number>>(new Set())
+  const [purIntBusy, setPurIntBusy] = useState(false)
   const [tdsPick, setTdsPick] = useState<Set<number>>(new Set())
   const [reworking, setReworking] = useState(false)
   const [movingCo, setMovingCo] = useState(false)
@@ -178,6 +182,9 @@ export function AccountingChecks(): React.JSX.Element {
       const pin = await window.api.repairs.paymentIns().catch(() => null)
       setPayIns(pin)
       setPayInPick(new Set(((pin?.findings as Row[]) || []).map((x) => String(x.key))))
+      const pi = await window.api.repairs.purchaseInterest().catch(() => null)
+      setPurInt(pi)
+      setPurIntPick(new Set((((pi?.findings as Row[]) || []).filter((x) => !x.review)).map((x) => Number(x.entry_id))))
       const stl = await window.api.repairs.staleTds().catch(() => null)
       setStaleTds(stl)
       setTdsPick(new Set(((stl?.findings as Row[]) || []).map((x) => Number(x.id))))
@@ -525,6 +532,28 @@ export function AccountingChecks(): React.JSX.Element {
       toast.error((e as Error).message)
     } finally {
       setRemovingPayIns(false)
+    }
+  }
+
+  const purIntRows: Row[] = useMemo(() => (purInt?.findings as Row[]) || [], [purInt])
+  async function foldInterest(): Promise<void> {
+    const ids = [...purIntPick]
+    if (!ids.length) return
+    const sum = purIntRows.filter((x) => purIntPick.has(Number(x.entry_id))).reduce((t, x) => t + Number(x.interest || 0), 0)
+    const ok = window.confirm(
+      `Move the supplier's interest into the purchase account on ${ids.length} purchase voucher${ids.length === 1 ? '' : 's'} (${formatINR(sum)})?\n\n` +
+        'Each voucher keeps its number, date and total: the INTEREST A/C line goes, and its amount is added to the purchase account line. The voucher as it was is logged first. Take a database snapshot if you want a copy you can restore.'
+    )
+    if (!ok) return
+    setPurIntBusy(true)
+    try {
+      const r = await window.api.repairs.fixPurchaseInterest(ids)
+      toast.success(`Interest moved into the purchase account on ${Number(r.changed) || 0} voucher${Number(r.changed) === 1 ? '' : 's'}`)
+      await load()
+    } catch (e) {
+      toast.error((e as Error).message)
+    } finally {
+      setPurIntBusy(false)
     }
   }
 
@@ -1397,6 +1426,86 @@ export function AccountingChecks(): React.JSX.Element {
           <Button variant="destructive" className="ml-auto gap-1.5" disabled={!payInPick.size || removingPayIns} onClick={() => void removePayIns()}>
             {removingPayIns ? <Loader2 className="h-4 w-4 animate-spin" /> : <Trash2 className="h-4 w-4" />}
             Remove {payInPick.size} voucher{payInPick.size === 1 ? '' : 's'}
+          </Button>
+        </div>
+      </Section>
+
+      <Section
+        title="Supplier interest posted to INTEREST A/C on purchase vouchers"
+        count={purIntRows.length}
+        tone={purIntRows.length ? 'warn' : 'ok'}
+        note={
+          purIntRows.length
+            ? 'The interest a supplier adds to the invoice is part of what the oil cost, so it belongs in the purchase account — not in INTEREST A/C as an expense of its own. New purchases already post it that way. These were posted before: moving it adds each one’s interest to its purchase account line and removes the INTEREST A/C line, and nothing else on the voucher changes.'
+            : 'Every purchase voucher carries the supplier’s interest inside its purchase account.'
+        }
+      >
+        <table className="w-full border-collapse">
+          <thead className="bg-muted/40">
+            <tr>
+              <th className={cn(th, 'w-8')}>
+                <input
+                  type="checkbox"
+                  aria-label="Tick all"
+                  checked={purIntRows.length > 0 && purIntPick.size === purIntRows.filter((x) => !x.review).length}
+                  onChange={(e) =>
+                    setPurIntPick(e.target.checked ? new Set(purIntRows.filter((x) => !x.review).map((x) => Number(x.entry_id))) : new Set())
+                  }
+                />
+              </th>
+              <th className={th}>Voucher</th>
+              <th className={th}>Supplier</th>
+              <th className={cn(th, 'text-right')}>Interest</th>
+              <th className={th}>Purchase account</th>
+              <th className={cn(th, 'text-right')}>Purchase line now → after</th>
+            </tr>
+          </thead>
+          <tbody>
+            {purIntRows.map((x) => {
+              const id = Number(x.entry_id)
+              return (
+                <tr key={String(x.key)} className="border-t">
+                  <td className={td}>
+                    <input
+                      type="checkbox"
+                      disabled={!!x.review}
+                      checked={purIntPick.has(id)}
+                      onChange={(e) =>
+                        setPurIntPick((s) => {
+                          const next = new Set(s)
+                          if (e.target.checked) next.add(id)
+                          else next.delete(id)
+                          return next
+                        })
+                      }
+                    />
+                  </td>
+                  <td className={td}>
+                    <span className="font-semibold">{String(x.code)}</span> · {String(x.invoice_no)}
+                    <div className="text-[11px] text-muted-foreground">
+                      {formatDate(String(x.date))} · {String(x.company)}
+                    </div>
+                    {x.review && <div className="text-[11px] text-amber-700">{String(x.review)}</div>}
+                  </td>
+                  <td className={td}>{String(x.supplier)}</td>
+                  <td className={cn(td, 'text-right tabular-nums')}>{formatINR(Number(x.interest))}</td>
+                  <td className={td}>{String(x.purchase_account || '—')}</td>
+                  <td className={cn(td, 'text-right tabular-nums')}>
+                    <span className="text-muted-foreground">{formatINR(Number(x.purchase_before))}</span>
+                    <div className="font-semibold">{formatINR(Number(x.purchase_after))}</div>
+                  </td>
+                </tr>
+              )
+            })}
+          </tbody>
+        </table>
+        <div className="flex flex-wrap items-center gap-3 border-t bg-muted/30 px-4 py-3">
+          <span className="text-[12.5px] text-muted-foreground">
+            {purIntPick.size} of {purIntRows.length} ticked · {formatINR(Number(purInt?.total) || 0)} in all
+          </span>
+          <Button className="ml-auto gap-1.5" disabled={!purIntPick.size || purIntBusy} onClick={() => void foldInterest()}>
+            {purIntBusy && <Loader2 className="h-4 w-4 animate-spin" />}
+            Move interest into purchase on {purIntPick.size} voucher{purIntPick.size === 1 ? '' : 's'}
           </Button>
         </div>
       </Section>

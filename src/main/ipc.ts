@@ -1989,6 +1989,17 @@ export function registerIpc(): void {
     const { removeParkingCopies } = await import('./parkingCopies')
     return removeParkingCopies((a?.keys || []).map(String))
   })
+  // Purchase vouchers that still post the supplier's interest to INTEREST A/C.
+  handle('repairs:purchaseInterest:list', async () => {
+    await assertAdmin('The accounting checks')
+    const { previewPurchaseInterest } = await import('./purchaseInterestFold')
+    return previewPurchaseInterest()
+  })
+  handle('repairs:purchaseInterestFix', async (_e, a: { ids: number[] }) => {
+    await assertAdmin('Moving supplier interest into the purchase account')
+    const { foldPurchaseInterest } = await import('./purchaseInterestFold')
+    return foldPurchaseInterest((a?.ids || []).map(Number))
+  })
   // Purchases whose TDS was worked before their slab's figures were known.
   handle('repairs:staleTds:list', async () => {
     await assertAdmin('The accounting checks')

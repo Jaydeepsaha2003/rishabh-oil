@@ -666,8 +666,9 @@ export async function accountStatement(accountId: number, companyId?: number): P
 // --- auto-posting helpers ---
 
 // Purchase (Tally style):
-//   Dr {OILCODE} PUR A/C   taxable value less interest
-//   Dr INTEREST A/C        supplier interest portion
+//   Dr {OILCODE} PUR A/C   taxable value — the supplier's interest included
+//                          (it is part of what the oil cost; no INTEREST A/C
+//                          line since 2026-10-23 — purchaseInterestFold.ts)
 //   Dr INPUT CGST/SGST     gst amount, split by head and rate — see gstLedgers.ts
 //   Dr/Cr ROUND OFF A/C    rounding difference
 //     Cr TDS PAYABLE A/C   tds amount
@@ -693,7 +694,6 @@ export async function postPurchaseJournal(v: {
   return withDbTransaction(async () => {
   await deleteJournalByRef('order_id', v.orderId)
   const ro = n(v.roundOff)
-  const interest = Math.min(Math.max(0, n(v.interest)), n(v.taxable))
   await postJournal({
     date: v.date,
     vchType: 'PURCHASE OIL',
@@ -702,8 +702,7 @@ export async function postPurchaseJournal(v: {
     orderId: v.orderId,
     companyId: v.companyId,
     lines: [
-      { account: `${v.oilCode} PUR A/C`, group: 'Purchase Accounts', dr: v.taxable - interest },
-      { account: 'INTEREST A/C', group: 'Indirect Expenses', dr: interest },
+      { account: `${v.oilCode} PUR A/C`, group: 'Purchase Accounts', dr: v.taxable },
       ...gstLines({ side: 'INPUT', pct: n(v.gstPct), type: asGstType(v.gstType), dr: n(v.gst) }),
       { account: 'ROUND OFF A/C', group: 'Indirect Expenses', dr: ro > 0 ? ro : 0, cr: ro < 0 ? -ro : 0 },
       { account: 'TDS PAYABLE A/C', group: 'Duties & Taxes', cr: v.tds },

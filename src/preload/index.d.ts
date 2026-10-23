@@ -733,6 +733,8 @@ export interface Api {
     fixPaisa: (ids: number[]) => Promise<Row>
     fixSplitTanker: (ids: number[]) => Promise<Row>
     staleTds: () => Promise<Row>
+    purchaseInterest: () => Promise<Row>
+    fixPurchaseInterest: (ids: number[]) => Promise<{ changed: number }>
     paymentIns: () => Promise<Row>
     lcLedgers: () => Promise<Row>
     saveLcLedgers: (values: Row) => Promise<Row>
