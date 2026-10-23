@@ -16512,8 +16512,11 @@ export function Accounts({
                       }}
                       style={{ padding: '0 8px', textAlign: 'left', minWidth: 0 }}
                     >
-                      <span className="block truncate" style={{ ...figS(11, A.link), textDecoration: 'underline', textUnderlineOffset: 2 }}>
-                        {ref.no}
+                      {/* Cut from the START when it does not fit: the end of a
+                          number (…03262320003) is the part that tells one from
+                          another. */}
+                      <span className="block truncate" title={String(ref.no)} style={{ ...figS(11, A.link), textDecoration: 'underline', textUnderlineOffset: 2, direction: 'rtl', textAlign: 'left' }}>
+                        <bdi>{ref.no}</bdi>
                       </span>
                       <span className="block truncate" style={{ fontSize: 9, fontWeight: 800, letterSpacing: '.07em', textTransform: 'uppercase', color: A.muted, marginTop: 1 }}>
                         {ref.kind}
@@ -16521,8 +16524,8 @@ export function Accounts({
                     </button>
                   ) : (
                     <span style={{ padding: '0 8px', minWidth: 0 }} title={`${ref.kind}: ${ref.full}`}>
-                      <span className="block truncate" style={figS(11, A.muted, 600)}>
-                        {ref.no}
+                      <span className="block truncate" style={{ ...figS(11, A.muted, 600), direction: 'rtl', textAlign: 'left' }}>
+                        <bdi>{ref.no}</bdi>
                       </span>
                       <span className="block truncate" style={{ fontSize: 9, fontWeight: 800, letterSpacing: '.07em', textTransform: 'uppercase', color: A.muted, marginTop: 1 }}>
                         {ref.kind}
