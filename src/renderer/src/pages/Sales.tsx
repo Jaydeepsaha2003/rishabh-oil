@@ -16,6 +16,10 @@ import { SalesMobile } from './SalesMobile'
 // listSalesForUnloadDesk), so this flag shapes the page to match what the data
 // already is rather than being the restriction itself.
 const UNLOAD_DESK = (): boolean => moduleScope(loadUser(), 'sales') === 'unload'
+// The customer-TDS desk: the same Sales page, its rows narrowed by the server
+// to invoices still missing their TDS (saleTds.listSalesForTdsDesk), and the
+// one action Book TDS.
+const TDS_DESK = (): boolean => moduleScope(loadUser(), 'sales') === 'tds'
 
 // The top-up desk: a user granted the 'topup' scope on Sales bargains may make
 // exactly one change to a bargain — add to its contracted quantity. Not remove
@@ -390,7 +394,7 @@ function SalesTab({
     openIntent?.kind === 'dispatched' ? String(openIntent.date) : null
   )
   const skipGlobalOnce = useRef(!!dispatchedOn)
-  const [dateFrom, setDateFrom] = useState(dispatchedOn || (UNLOAD_DESK() ? '' : monthStartISO()))
+  const [dateFrom, setDateFrom] = useState(dispatchedOn || (UNLOAD_DESK() || TDS_DESK() ? '' : monthStartISO()))
   const [dateTo, setDateTo] = useState(dispatchedOn || todayISO())
   // Empty = every product type.
   const [productType, setProductType] = useState<string[]>([])
@@ -520,7 +524,7 @@ function SalesTab({
     // The desk needs the deliveries and nothing else. Sales bargains carry
     // contract rates and the masters are of no use without the invoice form, so
     // they are not even fetched — the thin row set is the whole point.
-    if (UNLOAD_DESK()) {
+    if (UNLOAD_DESK() || TDS_DESK()) {
       const [ds, dcfg] = await Promise.all([window.api.sales.list(), window.api.settings.all()])
       setRows(ds)
       setDefaultShortagePct(String(dcfg.allowed_shortage_pct ?? '0.2'))
@@ -672,8 +676,9 @@ function SalesTab({
 
   // Sales grouped into invoices (line items sharing an invoice_group).
   const unloadOnly = UNLOAD_DESK()
+  const tdsOnly = TDS_DESK()
   // Columns rendered + the Actions column, for the empty/loading colSpan.
-  const colCount = unloadOnly ? 4 : 8
+  const colCount = unloadOnly ? 4 : tdsOnly ? 5 : 8
   const invoices = useMemo(() => {
     const m = new Map<string, Row[]>()
     // The unloading desk is FOR-only, and only what is still out. The main
@@ -840,8 +845,12 @@ function SalesTab({
     ]
     // The desk gets Date/Invoice, Customer, Item and Dispatch status — nothing
     // else. Qty, invoice value and the freight term are not its business.
+    // The TDS desk: Date/Invoice, Customer, Items and the taxable value the TDS
+    // is worked on — the server sends no GST, freight or round off, so the
+    // invoice-total column reads the taxable value and is named for it.
+    if (tdsOnly) return all.filter((c) => ['invoice_no', 'customer', 'items', 'net'].includes(c.key)).map((c) => (c.key === 'net' ? { ...c, label: 'Taxable' } : c))
     return all.filter((c) => !unloadOnly || ['invoice_no', 'customer', 'items', 'dispatch'].includes(c.key))
-  }, [unloadOnly])
+  }, [unloadOnly, tdsOnly])
 
   // Rows that pass every filter EXCEPT this column's own — so each dropdown
   // lists the values still reachable given the other filters, the way Excel
@@ -955,7 +964,7 @@ function SalesTab({
     setFormPage(true)
   }
   useEffect(() => {
-    onRegister?.({ open: openAdd, canAdd: products.length > 0 && !unloadOnly, formOpen: formPage })
+    onRegister?.({ open: openAdd, canAdd: products.length > 0 && !unloadOnly && !tdsOnly, formOpen: formPage })
   }, [products.length, formPage]) // eslint-disable-line react-hooks/exhaustive-deps
 
   function openEditInvoice(inv: { group: string; lines: Row[]; first: Row }): void {
@@ -2032,7 +2041,7 @@ function SalesTab({
             className={cn('h-9 w-[11.5rem] text-[12px]', __WEB__ && 'h-9 w-auto min-w-[150px] max-w-[230px] flex-1 rounded-[4px] border-[#C3D2C6] text-[12.5px] font-bold')}
           />
         </div>
-        {!unloadOnly && (
+        {!unloadOnly && !tdsOnly && (
           <Button
             variant="outline"
             size="sm"
@@ -2057,7 +2066,13 @@ function SalesTab({
             Deliveries still out — record what was received on unloading
           </span>
         )}
-        {!unloadOnly && (
+        {tdsOnly && (
+          <span className="ml-auto inline-flex items-center gap-1.5 rounded-md border border-amber-200 bg-amber-50 px-2.5 py-1.5 text-[11px] font-medium text-amber-900">
+            <Percent className="h-3.5 w-3.5 shrink-0" />
+            Invoices missing the customer's TDS — book what was deducted
+          </span>
+        )}
+        {!unloadOnly && !tdsOnly && (
         <ExcelButton
           className="ml-auto"
           filename={`sales-invoices-${todayISO()}`}
@@ -2077,7 +2092,7 @@ function SalesTab({
         )}
       </div>
       <div className={tableCardClass}>
-        <Table className={unloadOnly ? 'min-w-[720px]' : 'min-w-[1040px]'}>
+        <Table className={unloadOnly ? 'min-w-[720px]' : tdsOnly ? 'min-w-[860px]' : 'min-w-[1040px]'}>
           {/* The dark fill belongs on the THEAD, not the row: TableHeader
               carries [&_tr:hover]:bg-transparent (so a header never lights up
               like a data row), and that descendant selector out-specifies any
@@ -2151,13 +2166,14 @@ function SalesTab({
                   </span>
                 </TableHead>
               ))}
-              {!unloadOnly && <TableHead className="w-[84px] text-right">Actions</TableHead>}
+              {!unloadOnly && !tdsOnly && <TableHead className="w-[84px] text-right">Actions</TableHead>}
+              {tdsOnly && <TableHead className="w-[230px] text-right">TDS due</TableHead>}
             </TableRow>
           </TableHeader>
           <TableBody>
             {/* Totals for exactly the rows the filters left — sits under the
                 header so the figure is read before scrolling, not after. */}
-            {!loading && !unloadOnly && filteredInvoices.length > 0 && (
+            {!loading && !unloadOnly && !tdsOnly && filteredInvoices.length > 0 && (
               <TableRow className={totalRowClass}>
                 <TableCell className={cn('font-semibold', totalTextClass)}>
                   Total
@@ -2212,7 +2228,9 @@ function SalesTab({
               <TableRow><TableCell colSpan={colCount} className="py-10 text-center text-muted-foreground">Loading…</TableCell></TableRow>
             ) : filteredInvoices.length === 0 ? (
               <TableRow><TableCell colSpan={colCount} className="py-10 text-center text-muted-foreground">
-                {unloadOnly
+                {tdsOnly
+                  ? 'No invoice is missing its customer TDS.'
+                  : unloadOnly
                   ? 'Nothing waiting to be received — every delivery in this period has been unloaded.'
                   : invoices.length === 0 ? 'No sales yet.' : 'No sales in this period / search.'}
               </TableCell></TableRow>
@@ -2240,12 +2258,12 @@ function SalesTab({
                 return (
                   <Fragment key={inv.group}>
                     <TableRow
-                      className={unloadOnly ? undefined : 'cursor-pointer'}
-                      onClick={unloadOnly ? undefined : () => setExpanded((p) => ({ ...p, [inv.group]: !p[inv.group] }))}
+                      className={unloadOnly || tdsOnly ? undefined : 'cursor-pointer'}
+                      onClick={unloadOnly || tdsOnly ? undefined : () => setExpanded((p) => ({ ...p, [inv.group]: !p[inv.group] }))}
                     >
                       <TableCell className="align-top">
                         <div className="flex items-center gap-1.5">
-                          {unloadOnly ? null : isOpen ? <ChevronDown className="h-3.5 w-3.5 text-muted-foreground" /> : <ChevronRight className="h-3.5 w-3.5 text-muted-foreground" />}
+                          {unloadOnly || tdsOnly ? null : isOpen ? <ChevronDown className="h-3.5 w-3.5 text-muted-foreground" /> : <ChevronRight className="h-3.5 w-3.5 text-muted-foreground" />}
                           <div>
                             <div className={cn('flex items-center gap-1.5 whitespace-nowrap', __WEB__ && 'text-[14px] font-semibold')}>
                               {formatDate(inv.first.sale_date)}
@@ -2299,7 +2317,12 @@ function SalesTab({
                           {inv.lines.map((r) => r.product_name).join(', ')}
                         </div>
                       </TableCell>
-                      {!unloadOnly && (
+                      {tdsOnly && (
+                        <TableCell className={cn('align-top text-right tabular-nums', __WEB__ && 'text-[14.5px] font-bold tracking-[-0.02em]')}>
+                          {formatINR(inv.lines.reduce((t, r) => t + (Number(r.amount) || 0), 0))}
+                        </TableCell>
+                      )}
+                      {!unloadOnly && !tdsOnly && (
                         <>
                       {/* The unit beside every figure, not only on the total
                           row. Read down this column and 33.475 against 162 is
@@ -2432,6 +2455,7 @@ function SalesTab({
                       </TableCell>
                         </>
                       )}
+                      {!tdsOnly && (
                       <TableCell className="align-top" onClick={(e) => e.stopPropagation()}>
                         {/* A refused consignment has no next stage.
                             The stepper was still offered on one — In transit,
@@ -2511,7 +2535,20 @@ function SalesTab({
                         )}
                         {untracked && !unloadOnly && <div className="mt-1 text-[10px] font-medium uppercase tracking-wide text-orange-600">Off-stock</div>}
                       </TableCell>
-                      {!unloadOnly && (
+                      )}
+                      {/* The TDS desk's one action: what is due under the
+                          customer's slab, and Book TDS. */}
+                      {tdsOnly && (
+                        <TableCell className="align-top text-right" onClick={(e) => e.stopPropagation()}>
+                          <div className="flex items-center justify-end gap-2">
+                            <span className={cn('tabular-nums', __WEB__ && 'text-[14px] font-bold')}>{formatINR(Number(inv.first.tds_due) || 0)}</span>
+                            <Button size="sm" className="h-7 gap-1 px-2 text-xs" onClick={() => setTdsAsk({ id: Number(inv.first.id), afterSave: false })}>
+                              <Percent className="h-3.5 w-3.5" /> Book TDS
+                            </Button>
+                          </div>
+                        </TableCell>
+                      )}
+                      {!unloadOnly && !tdsOnly && (
                       <TableCell className="align-top text-right" onClick={(e) => e.stopPropagation()}>
                         <div className="flex justify-end gap-1">
                           {__WEB__ && (
@@ -2598,7 +2635,7 @@ function SalesTab({
                         row holding a line-items card and a side column, rather
                         than the desktop app's line-per-row breakdown (which
                         stays exactly as it was, below). */}
-                    {__WEB__ && !unloadOnly && isOpen && (() => {
+                    {__WEB__ && !unloadOnly && !tdsOnly && isOpen && (() => {
                       return (
                         <TableRow className="hover:bg-transparent">
                           <TableCell colSpan={colCount} className="border-b border-[#E4ECE3] bg-[#F7FAF6] p-0">
@@ -2676,7 +2713,7 @@ function SalesTab({
                       )
                     })()}
 
-                    {!__WEB__ && !unloadOnly && isOpen && inv.lines.map((r) => {
+                    {!__WEB__ && !unloadOnly && !tdsOnly && isOpen && inv.lines.map((r) => {
                       const inStock = stock[r.product_id as number]?.stock ?? 0
                       const sh = saleShortage(r, defaultShortagePct)
                       return (
@@ -4507,7 +4544,11 @@ function SalesTab({
         saleId={tdsAsk?.id ?? null}
         afterSave={tdsAsk?.afterSave}
         onClose={() => setTdsAsk(null)}
-        onDone={() => void loadTds()}
+        onDone={() => {
+          void loadTds()
+          // On the TDS desk a booked invoice leaves the list.
+          if (TDS_DESK()) void load(true)
+        }}
       />
 
       <Dialog open={!!rejectInv} onOpenChange={(o) => !o && !rejecting && setRejectInv(null)}>
@@ -8253,7 +8294,7 @@ export function Sales({ focusId, onFocusHandled, onBack, backLabel }: { focusId?
   const [salesAdd, setSalesAdd] = useState<{ open: () => void; canAdd: boolean; formOpen: boolean } | null>(null)
   const loadNeeds = useCallback(async () => {
     // Hidden for the unloading desk, so it is not fetched either.
-    if (UNLOAD_DESK()) return
+    if (UNLOAD_DESK() || TDS_DESK()) return
     setNeeds(await window.api.stock.needs())
   }, [])
   useEffect(() => {
@@ -8264,12 +8305,13 @@ export function Sales({ focusId, onFocusHandled, onBack, backLabel }: { focusId?
   const rawShort = needs.filter((n) => n.raw_short).length
   const totalProduce = needs.reduce((s, n) => s + (Number(n.shortfall) || 0), 0)
   const unloadOnly = UNLOAD_DESK()
+  const tdsOnly = TDS_DESK()
 
   // Website, phone width, the normal Sales role — the design_handoff_erp_sales_mobile
   // build. False on the desktop app (__WEB__ is a build-time constant, compiled
   // out entirely there — see electron.vite.config.ts) and on the restricted
   // unloading desk, which keeps its own simplified view.
-  if (__WEB__ && isMobile && !unloadOnly) return <SalesMobile />
+  if (__WEB__ && isMobile && !unloadOnly && !tdsOnly) return <SalesMobile />
 
   return (
     <>
@@ -8282,7 +8324,7 @@ export function Sales({ focusId, onFocusHandled, onBack, backLabel }: { focusId?
             : 'Each dispatch draws down a sales bargain and reduces finished-goods stock. Short stock can be produced on the spot. Book the rate contracts under Sales Bargain.'
         }
         actions={
-          salesAdd?.formOpen || unloadOnly ? undefined : (
+          salesAdd?.formOpen || unloadOnly || tdsOnly ? undefined : (
             <>
               {/* Production needs is off the website's header — the desk asked
                   for it gone from both widths there. The desktop app keeps it. */}

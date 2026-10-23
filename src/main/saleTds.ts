@@ -1,3 +1,4 @@
+import { getActiveCompanyId } from './company'
 import { getClient } from './db'
 import { withDbTransaction } from './dbTransaction'
 import { createVoucher } from './accounting'
@@ -233,7 +234,9 @@ export async function dropSaleTdsForInvoice(companyId: number, key: string): Pro
 export async function listSalesForTdsDesk(companyIds?: number[]): Promise<Row[]> {
   await ensureTable()
   const c = getClient()
-  const ids = (companyIds || []).map(n).filter(Boolean)
+  // The company open, as the Sales page lists — unless the caller names others.
+  const named = (companyIds || []).map(n).filter(Boolean)
+  const ids = named.length ? named : [getActiveCompanyId()]
   // Every invoice of the year, oldest first, so each one's TDS is worked from
   // what the customer (and any row linked to it by PAN) was billed before it —
   // the same slab saleTdsPreview reads. Only the ones with TDS due and none
@@ -278,21 +281,31 @@ export async function listSalesForTdsDesk(companyIds?: number[]): Promise<Row[]>
     const liable = n(r.tds_above_only) ? Math.max(0, prior + base - Math.max(prior, threshold)) : prior + base > threshold ? base : 0
     const tds = round2((liable * pct) / 100)
     if (tds <= 0) continue
-    out.push({
-      id: r.id,
-      company_id: r.company_id,
-      company_name: r.company_name,
-      invoice_key: r.invoice_key,
-      invoice_no: r.invoice_no,
-      sale_date: r.sale_date,
-      customer: r.customer,
-      customer_id: r.customer_id,
-      taxable: base,
-      tds_pct: pct,
-      tds
-    })
+    out.push({ company_id: n(r.company_id), invoice_key: String(r.invoice_key), tds })
   }
-  return out.reverse()
+  if (!out.length) return []
+  // The invoices' own lines, as the Sales page lists them — and only what the
+  // desk shows: date, number, customer, item, quantity and taxable. No rate,
+  // GST, round off, freight or bill total is selected.
+  const due = new Map(out.map((x) => [`${x.company_id}|${x.invoice_key}`, x.tds]))
+  const lines = await c.execute({
+    sql: `SELECT s.id, s.invoice_no, s.invoice_group, s.sale_date, s.customer, s.customer_id, s.product_id, s.packaging_id,
+                 s.sale_type, s.qty, s.uom, s.amount, s.freight_term, s.dispatch_stage, s.status, s.track_stock, s.rejected_at,
+                 s.company_id, COALESCE(s.invoice_group, s.invoice_no, 'sale-' || s.id) AS invoice_key,
+                 pr.name AS product_name, pk.name AS packaging_name, cu.name AS customer_master, co.name AS company_name
+            FROM sales s
+            LEFT JOIN products pr ON pr.id = s.product_id
+            LEFT JOIN packagings pk ON pk.id = s.packaging_id
+            LEFT JOIN customers cu ON cu.id = s.customer_id
+            LEFT JOIN companies co ON co.id = s.company_id
+           WHERE s.rejected_at IS NULL ${ids.length ? `AND s.company_id IN (${ids.map(() => '?').join(',')})` : ''}
+           ORDER BY s.sale_date DESC, s.id DESC`,
+    args: ids
+  })
+  return lines.rows
+    .map((x) => ({ ...(x as unknown as Row) }))
+    .filter((x) => due.has(`${n(x.company_id)}|${String(x.invoice_key)}`))
+    .map((x) => ({ ...x, customer: x.customer_master || x.customer, tds_due: due.get(`${n(x.company_id)}|${String(x.invoice_key)}`) }))
 }
 
 /** Whether the invoice this sale belongs to already carries a TDS journal. */
