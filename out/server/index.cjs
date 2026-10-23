@@ -19371,6 +19371,31 @@ async function accountStatement(accountId, companyId) {
   const lines = toPlain18(res);
   if (!lines.length) return lines;
   {
+    const entryIds = [...new Set(lines.map((l) => Number(l.entry_id)).filter((x) => x > 0))];
+    const byEntry2 = /* @__PURE__ */ new Map();
+    for (let i = 0; i < entryIds.length; i += 400) {
+      const chunk = entryIds.slice(i, i + 400);
+      const sp = await c.execute({
+        sql: `SELECT jl.entry_id, jl.id AS line_id, s.name, s.amount, s.note
+                  FROM journal_line_splits s JOIN journal_lines jl ON jl.id = s.line_id
+                 WHERE jl.entry_id IN (${chunk.map(() => "?").join(",")})
+                 ORDER BY jl.id, s.sort_order, s.id`,
+        args: chunk
+      }).catch(() => ({ rows: [] }));
+      for (const r of sp.rows) {
+        const k = Number(r.entry_id);
+        if (!byEntry2.has(k)) byEntry2.set(k, []);
+        byEntry2.get(k).push({ line_id: Number(r.line_id), name: String(r.name || ""), amount: Number(r.amount) || 0, note: r.note ? String(r.note) : null });
+      }
+    }
+    for (const l of lines) {
+      const all = byEntry2.get(Number(l.entry_id)) || [];
+      if (!all.length) continue;
+      const own = all.filter((x) => x.line_id === Number(l.id));
+      l.splits = (own.length ? own : all).map(({ name, amount: amount2, note }) => ({ name, amount: amount2, note }));
+    }
+  }
+  {
     const { orderInterestAmounts: orderInterestAmounts2 } = await Promise.resolve().then(() => (init_orders(), orders_exports));
     const amounts = await orderInterestAmounts2(lines.map((l) => Number(l.order_id)).filter((x) => x > 0));
     for (const l of lines) {
