@@ -7647,7 +7647,7 @@ export function Accounts({
                         <td className="whitespace-nowrap px-2 py-1.5 tabular-nums">{formatDate(r.note_date)}</td>
                         <td className="px-2 py-1.5 font-medium">{r.note_no}</td>
                         <td className="px-2 py-1.5">
-                          <span className={cn('rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase', credit ? 'bg-emerald-100 text-emerald-700' : 'bg-rose-100 text-rose-700')}>
+                          <span className={cn('rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase', credit ? 'bg-rose-100 text-rose-700' : 'bg-emerald-100 text-emerald-700')}>
                             {credit ? 'Credit' : 'Debit'}
                           </span>
                         </td>
@@ -7662,7 +7662,7 @@ export function Accounts({
                           {formatINR(r.gst_amount)}
                           {Number(r.gst_pct) ? <span className="ml-1 text-[10px] text-muted-foreground">@{Number(r.gst_pct)}%</span> : null}
                         </td>
-                        <td className="px-2 py-1.5 text-right font-semibold tabular-nums">{formatINR(r.total_amount)}</td>
+                        <td className={cn('px-2 py-1.5 text-right font-semibold tabular-nums', credit ? 'text-[#C0261C]' : 'text-[#0B7A45]')}>{formatINR(r.total_amount)}</td>
                         <td className="py-1.5 pl-2 pr-4" onClick={(e) => e.stopPropagation()}>
                           <div className="flex items-center justify-center gap-1">
                             <Button variant="ghost" size="sm" className="h-7 px-2 text-[11px]" onClick={() => void openNoteForAlter(r)}>
@@ -10024,7 +10024,7 @@ export function Accounts({
               v: formatINR(nTot.dr),
               sub: plural(nTot.drN, 'debit note'),
               icon: FileText,
-              accent: '#B3261E',
+              accent: '#0B6B45',
               go: () => setNoteKindFilter('debit'),
               title: 'Show only the debit notes'
             },
@@ -10033,7 +10033,7 @@ export function Accounts({
               v: formatINR(nTot.cr),
               sub: plural(nTot.crN, 'credit note'),
               icon: FileText,
-              accent: '#0B6B45',
+              accent: '#B3261E',
               go: () => setNoteKindFilter('credit'),
               title: 'Show only the credit notes'
             },
@@ -10278,7 +10278,8 @@ export function Accounts({
           {String(r.party_name || '—')}
         </span>,
         <span key="k" style={cellPad}>
-          <span style={debit ? chipStyle('#B3261E', '#FDF3F2', '#F0D6D4') : chipStyle('#0B6B45', '#E9F5EE', '#BFE3CB')}>
+          {/* Debit notes in green, credit notes in red — as Dr and Cr read everywhere in Accounting. */}
+          <span style={debit ? chipStyle('#0B6B45', '#E9F5EE', '#BFE3CB') : chipStyle('#B3261E', '#FDF3F2', '#F0D6D4')}>
             {debit ? 'Debit note' : 'Credit note'}
           </span>
         </span>,
@@ -10297,7 +10298,7 @@ export function Accounts({
         <span key="n" style={{ ...cellPad, fontSize: 11.5, fontWeight: 600, color: '#33473E', whiteSpace: 'normal', overflowWrap: 'anywhere', lineHeight: 1.35, padding: '6px 10px' }}>
           {String(r.narration || '—')}
         </span>,
-        <span key="a" style={{ ...fig(12.5, 700, debit ? '#B3261E' : '#0B6B45'), ...cellPad, textAlign: 'right' }}>{formatINR(n(r.total_amount))}</span>
+        <span key="a" style={{ ...fig(12.5, 700, debit ? A.dr : A.cr), ...cellPad, textAlign: 'right' }}>{formatINR(n(r.total_amount))}</span>
       ]
     }
 
@@ -10680,7 +10681,7 @@ export function Accounts({
                 </div>
               )}
               {!__WEB__ && isNotes && noteKindFilter !== 'all' && (
-                <span style={chipStyle(noteKindFilter === 'debit' ? '#B3261E' : '#0B6B45', noteKindFilter === 'debit' ? '#FDF3F2' : '#E9F5EE', noteKindFilter === 'debit' ? '#F0D6D4' : '#BFE3CB')}>
+                <span style={chipStyle(noteKindFilter === 'debit' ? '#0B6B45' : '#B3261E', noteKindFilter === 'debit' ? '#E9F5EE' : '#FDF3F2', noteKindFilter === 'debit' ? '#BFE3CB' : '#F0D6D4')}>
                   {noteKindFilter === 'debit' ? 'Debit notes only' : 'Credit notes only'}
                 </span>
               )}
