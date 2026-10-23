@@ -115,7 +115,34 @@ export async function createUser(v: Row): Promise<{ id: number }> {
   }
 }
 
+// THE CUSTOMER-TDS DESK IS FOR SOMEONE WITHOUT THE SALES PAGE. A user who
+// already holds the whole of Sales (view, create, edit and delete) is not
+// narrowed to one job by a switch — that would quietly take their page away.
+// Their Sales access has to be taken down first, and saved, before the desk
+// can be given.
+async function assertTdsDeskAllowed(id: number | null, perms: unknown): Promise<void> {
+  const sales = (perms as Record<string, Record<string, unknown>> | null)?.sales
+  if (!sales || typeof sales !== 'object' || sales.scope !== 'tds') return
+  if (id == null) return
+  const cur = await getClient().execute({ sql: 'SELECT role, permissions FROM users WHERE id = ?', args: [id] })
+  const row = cur.rows[0] as unknown as Row | undefined
+  if (!row) return
+  if (String(row.role) === 'admin') throw new Error('An admin already has the whole Sales page — the customer-TDS desk cannot be given to an admin')
+  let old: Record<string, unknown> | null = null
+  try {
+    old = JSON.parse(String(row.permissions || '{}'))
+  } catch {
+    old = null
+  }
+  const s = old?.sales as Record<string, unknown> | string | undefined
+  const full = s === 'write' || (!!s && typeof s === 'object' && !s.scope && !!s.view && !!s.create && !!s.edit && !!s.delete)
+  if (full) {
+    throw new Error('This user has full access to the Sales page, so the customer-TDS desk cannot be assigned. Take their Sales access down first and save, then give the desk.')
+  }
+}
+
 export async function updateUser(id: number, v: Row): Promise<{ id: number }> {
+  await assertTdsDeskAllowed(id, v.permissions)
   const sets = ['full_name = ?', 'role = ?', 'active = ?', 'permissions = ?']
   const args: InValue[] = [
     v.full_name || null,

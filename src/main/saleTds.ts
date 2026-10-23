@@ -224,6 +224,88 @@ export async function dropSaleTdsForInvoice(companyId: number, key: string): Pro
   await dropExisting(n(companyId), key)
 }
 
+// THE CUSTOMER-TDS DESK'S OWN READ. A user granted the 'tds' scope on Sales
+// sees the invoices still waiting for their customer's TDS and nothing else:
+// a customer whose master carries a TDS rate, an invoice not rejected, and no
+// TDS journal on it yet. One row per invoice, and only what booking the TDS
+// needs — date, number, customer, taxable — never a rate, GST, freight or
+// bill total, so the page cannot show them and the channel cannot be asked.
+export async function listSalesForTdsDesk(companyIds?: number[]): Promise<Row[]> {
+  await ensureTable()
+  const c = getClient()
+  const ids = (companyIds || []).map(n).filter(Boolean)
+  // Every invoice of the year, oldest first, so each one's TDS is worked from
+  // what the customer (and any row linked to it by PAN) was billed before it —
+  // the same slab saleTdsPreview reads. Only the ones with TDS due and none
+  // booked are handed back.
+  const res = await c.execute({
+      sql: `SELECT MIN(s.id) AS id, s.company_id, COALESCE(s.invoice_group, s.invoice_no, 'sale-' || s.id) AS invoice_key,
+                   MAX(s.invoice_no) AS invoice_no, MIN(s.sale_date) AS sale_date, cu.name AS customer, cu.id AS customer_id,
+                   COALESCE(cu.linked_party_id, cu.id) AS root, cu.tds_pct, cu.tds_threshold, cu.tds_above_only,
+                   ROUND(SUM(s.amount), 2) AS taxable, co.name AS company_name
+              FROM sales s JOIN customers cu ON cu.id = s.customer_id LEFT JOIN companies co ON co.id = s.company_id
+             WHERE s.rejected_at IS NULL ${ids.length ? `AND s.company_id IN (${ids.map(() => '?').join(',')})` : ''}
+             GROUP BY s.company_id, COALESCE(s.invoice_group, s.invoice_no, 'sale-' || s.id)
+             ORDER BY MIN(s.sale_date) ASC, MIN(s.id) ASC`,
+      args: ids
+  })
+  const all = res.rows.map((r) => ({ ...(r as unknown as Row) }))
+  const booked = new Set(
+    (await c.execute('SELECT t.company_id, t.invoice_key FROM sale_tds_journals t JOIN journal_entries je ON je.id = t.entry_id')).rows.map(
+      (r) => `${n((r as unknown as Row).company_id)}|${String((r as unknown as Row).invoice_key)}`
+    )
+  )
+  const { partyOpeningInYear } = await import('./partyOpenings')
+  const running = new Map<string, number>()
+  const out: Row[] = []
+  for (const r of all) {
+    const date = String(r.sale_date || '').slice(0, 10)
+    const start = fyStart(date)
+    const k = `${n(r.company_id)}|${n(r.root)}|${start}`
+    if (!running.has(k)) {
+      const linked = await c.execute({ sql: 'SELECT id FROM customers WHERE id = ? OR linked_party_id = ?', args: [n(r.root), n(r.root)] })
+      const custIds = linked.rows.map((x) => n((x as unknown as Row).id))
+      const end = `${Number(start.slice(0, 4)) + 1}-03-31`
+      running.set(k, await partyOpeningInYear('customer', n(r.company_id), custIds, start, end))
+    }
+    const prior = running.get(k) as number
+    const base = n(r.taxable)
+    running.set(k, prior + base)
+    const pct = n(r.tds_pct)
+    if (pct <= 0) continue
+    if (booked.has(`${n(r.company_id)}|${String(r.invoice_key)}`)) continue
+    const threshold = n(r.tds_threshold)
+    const liable = n(r.tds_above_only) ? Math.max(0, prior + base - Math.max(prior, threshold)) : prior + base > threshold ? base : 0
+    const tds = round2((liable * pct) / 100)
+    if (tds <= 0) continue
+    out.push({
+      id: r.id,
+      company_id: r.company_id,
+      company_name: r.company_name,
+      invoice_key: r.invoice_key,
+      invoice_no: r.invoice_no,
+      sale_date: r.sale_date,
+      customer: r.customer,
+      customer_id: r.customer_id,
+      taxable: base,
+      tds_pct: pct,
+      tds
+    })
+  }
+  return out.reverse()
+}
+
+/** Whether the invoice this sale belongs to already carries a TDS journal. */
+export async function saleHasTds(saleId: number): Promise<boolean> {
+  await ensureTable()
+  const { key, rows } = await invoiceOf(saleId)
+  const r = await getClient().execute({
+    sql: `SELECT 1 FROM sale_tds_journals t JOIN journal_entries je ON je.id = t.entry_id WHERE t.company_id = ? AND t.invoice_key = ? LIMIT 1`,
+    args: [n(rows[0].company_id), key]
+  })
+  return r.rows.length > 0
+}
+
 /** Which invoices of these carry a TDS journal: invoice_key → amount. For the Sales list. */
 export async function saleTdsMap(companyIds?: number[]): Promise<Row[]> {
   await ensureTable()

@@ -1419,11 +1419,17 @@ export function registerIpc(): void {
   // The unload desk's grant hands back its own thin row set — the money columns
   // are never selected, so a restricted user cannot reach them even by calling
   // the channel directly.
-  handle('sales:list', async (_e, args?: { companyIds?: number[]; forModule?: string }) =>
-    (await currentScope('sales')) === 'unload'
-      ? listSalesForUnloadDesk(args?.companyIds)
-      : listSales(args?.companyIds, args?.forModule)
-  )
+  handle('sales:list', async (_e, args?: { companyIds?: number[]; forModule?: string }) => {
+    const scope = await currentScope('sales')
+    if (scope === 'unload') return listSalesForUnloadDesk(args?.companyIds)
+    // The customer-TDS desk: invoices still missing their TDS, and only the
+    // figures booking it needs (saleTds.listSalesForTdsDesk).
+    if (scope === 'tds') {
+      const { listSalesForTdsDesk } = await import('./saleTds')
+      return listSalesForTdsDesk(args?.companyIds)
+    }
+    return listSales(args?.companyIds, args?.forModule)
+  })
   // Which numbers are missing from the KRFL / KRFIN invoice series.
   handle('sales:series', (_e, args?: { companyId?: number }) => salesInvoiceSeries(args?.companyId))
   handle('sales:invoiceGaps', (_e, args?: { companyId?: number; from?: string; to?: string }) =>

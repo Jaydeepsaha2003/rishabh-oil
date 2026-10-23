@@ -252,6 +252,38 @@ function UsersManager(): React.JSX.Element {
     })
   }
 
+  // Special access: the customer-TDS desk. One job on the Sales page — booking
+  // the TDS a customer deducted on invoices that have none yet — and the page
+  // becomes that list (TdsDesk). Not for someone who already holds the whole
+  // Sales page: narrowing them would quietly take their page away, so the
+  // switch stays shut until their Sales access is taken down (the server
+  // refuses it too — auth.ts assertTdsDeskAllowed).
+  const tdsDesk = rightsOf('sales').scope === 'tds'
+  const salesFull = (() => {
+    const r = rightsOf('sales')
+    return !r.scope && !!r.view && !!r.create && !!r.edit && !!r.delete
+  })()
+  function setTdsDesk(on: boolean): void {
+    if (on && salesFull) {
+      toast.error('This user has full access to the Sales page — take their Sales access down first, then give the customer-TDS desk.')
+      return
+    }
+    setForm((p) => {
+      const perms = { ...(p.permissions || {}) }
+      if (!on) {
+        const cur = perms.sales
+        if (cur && typeof cur === 'object') {
+          const o = { ...(cur as Record<string, unknown>) }
+          delete o.scope
+          perms.sales = o
+        }
+      } else {
+        perms.sales = { view: true, create: false, edit: true, delete: false, scope: 'tds' }
+      }
+      return { ...p, permissions: perms }
+    })
+  }
+
   // Special access: the readings desk. The lab's person opens Purchase entries,
   // sees the invoices, and records technical parameters against them — and that
   // is the whole of it. No New purchase, no row menu, no stage moves, and the
@@ -394,6 +426,48 @@ function UsersManager(): React.JSX.Element {
                       </p>
                       {unloadDesk && (
                         <p className="mt-1.5 rounded bg-amber-200/70 px-2 py-1 text-[11px] font-medium text-amber-900">
+                          The Sales row in the grid below is overridden while this is on.
+                        </p>
+                      )}
+                    </div>
+                  </div>
+                </div>
+
+                <div
+                  className={cn(
+                    'mt-3 rounded-lg border-2 p-3 transition-colors',
+                    tdsDesk ? 'border-violet-500 bg-violet-100/70' : 'border-dashed border-violet-400/70 bg-violet-50/50'
+                  )}
+                >
+                  <div className="flex items-start gap-3">
+                    <Switch
+                      checked={tdsDesk}
+                      onCheckedChange={setTdsDesk}
+                      disabled={!tdsDesk && salesFull}
+                      className="mt-0.5 shrink-0"
+                    />
+                    <div className="min-w-0 flex-1">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <ShieldCheck className={cn('h-4 w-4 shrink-0', tdsDesk ? 'text-violet-700' : 'text-violet-600/70')} />
+                        <span className="text-[13px] font-bold text-violet-900">Special access — customer TDS desk only</span>
+                        {tdsDesk ? (
+                          <Badge className="bg-violet-600 text-[10px] uppercase tracking-wide hover:bg-violet-600">On</Badge>
+                        ) : (
+                          <span className="text-[10px] font-semibold uppercase tracking-widest text-violet-700/60">Off</span>
+                        )}
+                      </div>
+                      <p className="mt-1 text-[11px] leading-relaxed text-violet-900/85">
+                        Turns the Sales page into the list of invoices whose customer deducts TDS and that have <b>no TDS booked yet</b>:{' '}
+                        <b>Date</b>, <b>Invoice</b>, <b>Customer</b> and <b>Taxable</b> only. The one thing this user can do is{' '}
+                        <b>book the TDS</b> on such an invoice; rates, GST, freight and every other invoice are left out of the data.
+                      </p>
+                      {!tdsDesk && salesFull && (
+                        <p className="mt-1.5 rounded bg-violet-200/70 px-2 py-1 text-[11px] font-medium text-violet-900">
+                          Not available: this user has full access to the Sales page. Take their Sales access down first.
+                        </p>
+                      )}
+                      {tdsDesk && (
+                        <p className="mt-1.5 rounded bg-violet-200/70 px-2 py-1 text-[11px] font-medium text-violet-900">
                           The Sales row in the grid below is overridden while this is on.
                         </p>
                       )}

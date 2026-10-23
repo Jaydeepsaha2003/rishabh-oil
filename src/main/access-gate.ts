@@ -570,6 +570,19 @@ export async function assertAllowed(channel: string, args: unknown): Promise<voi
     assertScopedSales(op, args)
     return
   }
+  // The customer-TDS desk: booking the TDS a customer deducted, on an invoice
+  // that has none yet, and nothing else on the page.
+  if (moduleScope(user, rule.module) === 'tds' && rule.module === 'sales') {
+    if (op !== 'tdsPost') {
+      throw new Error('Your access to Sales covers booking the TDS customers deducted on invoices that have none yet — nothing else on this page can be changed.')
+    }
+    const { saleHasTds } = await import('./saleTds')
+    const saleId = Number((args as Row)?.values?.sale_id)
+    if (!saleId || (await saleHasTds(saleId))) {
+      throw new Error('The TDS on this invoice is already booked — only an invoice with no TDS yet can be filled in from this desk.')
+    }
+    return
+  }
   // The same idea for Purchases: a job, not a set of ticks.
   if (moduleScope(user, rule.module) === 'readings' && rule.module === 'orders') {
     assertScopedReadings(op)

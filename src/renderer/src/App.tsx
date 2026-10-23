@@ -53,7 +53,8 @@ import { GlobalDateRangeProvider } from './lib/globalDateRange'
 import { CompanyProvider, HeaderExtrasProvider } from './lib/companyContext'
 import { clearUser, loadUser, saveUser, type AppUser } from './lib/session'
 import { useLiveRefresh } from './lib/useLiveRefresh'
-import { MODULES, canAccess } from './lib/modules'
+import { MODULES, canAccess, moduleScope } from './lib/modules'
+import { TdsDesk } from './pages/TdsDesk'
 import { clearEntryWindows } from './lib/useEntryWindow'
 import { useIsMobile } from './lib/useIsMobile'
 
@@ -640,7 +641,9 @@ function App(): React.JSX.Element {
         {view === 'salesBargains' && (
           <SalesBargains onOpenSale={(id, saleCompanyId) => openRecord('sales', id, { companyId: saleCompanyId })} />
         )}
-        {view === 'sales' && (
+        {/* The customer-TDS desk gets its own list in place of the Sales page. */}
+        {view === 'sales' && moduleScope(loadUser(), 'sales') === 'tds' && <TdsDesk />}
+        {view === 'sales' && moduleScope(loadUser(), 'sales') !== 'tds' && (
           <Sales
             focusId={focus?.page === 'sales' ? focus.id : null}
             onFocusHandled={() => setFocus(null)}
