@@ -23648,7 +23648,9 @@ async function parseSalesRegister(b64) {
   });
   const txt = (v) => String(v ?? "").trim();
   const title = txt(grid[1]?.[0]);
-  if (title && !/sales/i.test(title)) throw new Error(`This is a ${title} \u2014 upload a Sales Register here`);
+  if (title && !/sale|invoice/i.test(title) && /purchase|journal|payment|receipt|contra|debit\s*note|credit\s*note|bank|cash|stock|delivery|order/i.test(title)) {
+    throw new Error(`This is a ${title} \u2014 upload a Sales Register here`);
+  }
   const headAt = grid.findIndex((r) => (r || []).some((c) => /^date$/i.test(txt(c))) && (r || []).some((c) => /^particulars$/i.test(txt(c))));
   if (headAt < 0) throw new Error("No Date / Particulars header found \u2014 upload the register exactly as Tally exports it");
   const head = (grid[headAt] || []).map(txt);
@@ -24277,7 +24279,7 @@ var init_tallyNotes = __esm({
     STOP = /* @__PURE__ */ new Set(["PVT", "PRIVATE", "LTD", "LIMITED", "CO", "THE", "AND", "OF", "M", "S", "CR", "DR", "R"]);
     SUMMARY_COLS = /^(date|particulars|voucher\s*type|voucher\s*no\.?|value|addl\.?\s*cost|gross\s*total|narration)$/i;
     ROUND_OFF = /round\s*off/i;
-    SALES_SUMMARY = /^(date|particulars|voucher\s*type|voucher\s*no\.?|quantity|gross\s*weight|rate|value|addl\.?\s*cost|gross\s*total|narration)$/i;
+    SALES_SUMMARY = /^(date|particulars|voucher\s*type|voucher\s*no\.?|voucher\s*ref\.?\s*no\.?|buyer.?s?\s*order\s*no\.?|(received|billed|actual|alternate|alt\.?)?\s*(quantity|qty)\.?|gross\s*weight|net\s*weight|rate|units?|per|value|addl\.?\s*cost|gross\s*total|narration|gstin\/?\s*uin)$/i;
     GST_COL = /\b(C|S|I|U)?GST\b|\bTCS\b|\bCESS\b/i;
     inr3 = (v) => `\u20B9${Math.abs(v).toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
     dmyOf = (iso) => iso ? iso.slice(0, 10).split("-").reverse().join("-") : "\u2014";
