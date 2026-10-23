@@ -12,7 +12,18 @@ const COL = { pid: 1, sku: 2, pack: 3, mtPerCase: 4, perCase: 5, perMt: 6, note:
 export function caseMT(r: Row): number {
   const size = Number(r.unit_size) > 0 ? Number(r.unit_size) : Number(r.base_per_pouch) || 0
   const uom = String(Number(r.unit_size) > 0 ? r.unit_uom : r.base_uom || 'KG').toUpperCase()
-  const perUnit = uom === 'MT' ? size : uom === 'G' ? size / 1_000_000 : size / 1000
+  // To kg the way Stock reads a pack (Stock.tsx), then to MT. "GM" was not
+  // read as grams: VPATI DALDA 500 ML × 20 (446.5 GM a pouch) came out 8.93 MT
+  // a case and its rate ₹155/MT.
+  const kg =
+    uom === 'GM' || uom === 'G' || uom === 'GMS' || uom === 'GRAM' || uom === 'GRAMS' || uom === 'ML'
+      ? size / 1000
+      : uom === 'QUINTAL'
+        ? size * 100
+        : uom === 'MT' || uom === 'TON' || uom === 'KL'
+          ? size * 1000
+          : size
+  const perUnit = kg / 1000
   const perBox = Number(r.pouches_per_box) > 0 ? Number(r.pouches_per_box) : 1
   return perUnit * perBox
 }
