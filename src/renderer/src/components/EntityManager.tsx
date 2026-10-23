@@ -469,7 +469,8 @@ export function EntityManager({
 
   useEffect(() => {
     function onKey(e: KeyboardEvent): void {
-      if (e.altKey && (e.key === 'n' || e.key === 'N') && !readOnly) {
+      // By position: Option+N on a Mac is a dead key, not "n".
+      if (e.altKey && e.code === 'KeyN' && !readOnly) {
         e.preventDefault()
         openAdd()
       }

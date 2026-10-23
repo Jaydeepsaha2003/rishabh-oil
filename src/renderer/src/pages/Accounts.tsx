@@ -756,26 +756,41 @@ const blankLines = (t: VchType): VLine[] =>
 const IS_MAC =
   typeof navigator !== 'undefined' && /mac|iphone|ipad|ipod/i.test(navigator.platform || navigator.userAgent || '')
 
+// The Mac's keys for F10, F11, F12: the three after 9 on the number row.
+const MAC_F_HIGH: Record<string, string> = { Digit0: 'F10', Minus: 'F11', Equal: 'F12' }
+const MAC_F_HIGH_LABEL: Record<string, string> = { F10: '0', F11: '-', F12: '=' }
+
 /** The logical function key this keystroke means, or '' if it is not one. */
 function fKeyOf(e: KeyboardEvent): string {
   if (/^F([1-9]|1[0-2])$/.test(e.key)) return e.key
-  // Ctrl+1…9 on a Mac is F1…F9. Ctrl is free there; on Windows it is not
-  // (Ctrl+1 is a browser tab), so this is Mac-only on purpose.
-  if (IS_MAC && e.ctrlKey && /^[1-9]$/.test(e.key)) return `F${e.key}`
+  // Ctrl+1…9 on a Mac is F1…F9, and Ctrl+0 / - / = are F10 / F11 / F12. Ctrl
+  // is free there; on Windows it is not (Ctrl+1 is a browser tab), so this is
+  // Mac-only on purpose. Read by the key's POSITION: with Option held too
+  // (⌥⌃2 for Alt+F2) a Mac types "™" for the 2, and the digit was lost.
+  if (IS_MAC && e.ctrlKey && !e.metaKey) {
+    const d = /^Digit([1-9])$/.exec(e.code)
+    if (d) return `F${d[1]}`
+    if (MAC_F_HIGH[e.code]) return MAC_F_HIGH[e.code]
+    if (/^[1-9]$/.test(e.key)) return `F${e.key}`
+  }
   return ''
 }
 
 /** How to WRITE a function key for whoever is reading the bar. */
 function fKeyLabel(k: string): string {
   const m = /^F([1-9]|1[0-2])$/.exec(k)
-  if (!IS_MAC || !m || Number(m[1]) > 9) return k
-  return `⌃${m[1]}`
+  if (!IS_MAC || !m) return k
+  return Number(m[1]) > 9 ? `⌃${MAC_F_HIGH_LABEL[k]}` : `⌃${m[1]}`
 }
 
-/** …and the same for a chord written "Alt F2" or "Alt+F1". */
+/** …and the same for a chord written "Alt F2", "Alt+F1" or "Ctrl A". */
 function chordLabel(k: string): string {
   if (!IS_MAC) return k
-  return k.replace(/\bAlt\s*\+?\s*/i, '⌥').replace(/F([1-9])\b/g, (_m, d) => `⌃${d}`)
+  return k
+    .replace(/\bAlt\s*\+?\s*/i, '⌥')
+    .replace(/\bCtrl\s*\+?\s*/i, '⌃')
+    .replace(/F(1[0-2])\b/g, (m) => `⌃${MAC_F_HIGH_LABEL[m]}`)
+    .replace(/F([1-9])\b/g, (_m, d) => `⌃${d}`)
 }
 
 function FKey({ k, label, active, onClick }: { k: string; label: string; active?: boolean; onClick: () => void }): React.JSX.Element {
@@ -4738,6 +4753,13 @@ export function Accounts({
         }
         return
       }
+      // ⌃8 is F8 on a Mac (fKeyOf), so Control is let through for it there.
+      if (fKeyOf(e) === 'F8' && !e.altKey && !e.metaKey) {
+        e.preventDefault()
+        if (dbSum) setDbSum(null)
+        else dbSumBtnRef.current?.click()
+        return
+      }
       if (e.altKey || e.ctrlKey || e.metaKey) return
       if (e.key === 'F8') {
         e.preventDefault()
@@ -5103,13 +5125,14 @@ export function Accounts({
         void saveVoucher()
         return
       }
-      if (e.altKey && (e.key === 'd' || e.key === 'D') && screen === 'voucher' && (editingId != null || noteEditId != null)) {
+      // By the key's position: Option+D on a Mac types "∂".
+      if (e.altKey && e.code === 'KeyD' && screen === 'voucher' && (editingId != null || noteEditId != null)) {
         e.preventDefault()
         void deleteVoucher()
         return
       }
       // F12: the Balance column, hidden or shown.
-      if (__WEB__ && screen === 'ledger' && e.key === 'F12' && !e.ctrlKey && !e.metaKey && !e.shiftKey) {
+      if (__WEB__ && screen === 'ledger' && fk === 'F12' && (IS_MAC || !e.ctrlKey) && !e.metaKey && !e.shiftKey) {
         e.preventDefault()
         setLgHideBal((h) => !h)
         return
@@ -13517,7 +13540,7 @@ export function Accounts({
         >
           <Check style={{ width: dock ? 18 : 19, height: dock ? 18 : 19 }} />
           {acceptLabel}
-          {!dock && <span style={{ ...keyTag, opacity: 0.75 }}>Ctrl A</span>}
+          {!dock && <span style={{ ...keyTag, opacity: 0.75 }}>{chordLabel('Ctrl A')}</span>}
         </button>
       )
     }
@@ -16217,7 +16240,7 @@ export function Accounts({
         {W >= 1240 && (
           <div className="flex flex-none items-center gap-[7px] whitespace-nowrap" style={{ fontSize: 11, fontWeight: 600, color: A.inkSky }}>
             <KeyboardIcon className="h-[15px] w-[15px]" />
-            {lgView === 'billwise' ? '↑ ↓ pick a bill' : lgView === 'vouchers' ? `↑ ↓ voucher · Enter open · ${chordLabel('Alt ↑↓')} change ledger · F12 balance` : '↑ ↓ change ledger'} · {fKeyLabel('F4')} find · {[fKeyLabel('F1'), fKeyLabel('F5'), chordLabel('Alt F5'), fKeyLabel('F7')].join(' ')} change view · {fKeyLabel('F8')} summary
+            {lgView === 'billwise' ? '↑ ↓ pick a bill' : lgView === 'vouchers' ? `↑ ↓ voucher · Enter open · ${chordLabel('Alt ↑↓')} change ledger · ${fKeyLabel('F12')} balance` : '↑ ↓ change ledger'} · {fKeyLabel('F4')} find · {[fKeyLabel('F1'), fKeyLabel('F5'), chordLabel('Alt F5'), fKeyLabel('F7')].join(' ')} change view · {fKeyLabel('F8')} summary
           </div>
         )}
       </div>
@@ -16432,7 +16455,7 @@ export function Accounts({
           <span style={{ padding: '0 12px', display: 'flex', justifyContent: 'flex-end' }}>{lgCf.head('dr', 'Debit', { onDark: true, align: 'end' })}</span>
           <span style={{ padding: '0 12px', display: 'flex', justifyContent: 'flex-end' }}>{lgCf.head('cr', 'Credit', { onDark: true, align: 'end' })}</span>
           {!lgHideBal && (
-            <span style={{ padding: '0 14px', display: 'flex', justifyContent: 'flex-end' }} title="F12 hides or shows this column">
+            <span style={{ padding: '0 14px', display: 'flex', justifyContent: 'flex-end' }} title={`${fKeyLabel('F12')} hides or shows this column`}>
               {lgCf.head('balance', 'Balance', { onDark: true, align: 'end' })}
             </span>
           )}
@@ -19582,7 +19605,7 @@ export function Accounts({
             {vw >= 1320 && (
               <div className="flex flex-none items-center gap-[7px] whitespace-nowrap" style={{ fontSize: 11, fontWeight: 600, color: A.inkSky }}>
                 <KeyboardIcon className="h-[15px] w-[15px]" />
-                {chordLabel('F4')}–{chordLabel('F7')} · {chordLabel('Alt F5')} / {chordLabel('F6')} switch type · Ctrl A accepts
+                {chordLabel('F4')}–{chordLabel('F7')} · {chordLabel('Alt F5')} / {chordLabel('F6')} switch type · {chordLabel('Ctrl A')} accepts
               </div>
             )}
           </div>

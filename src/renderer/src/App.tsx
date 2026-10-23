@@ -260,7 +260,10 @@ function App(): React.JSX.Element {
   const [periodOpen, setPeriodOpen] = useState(false)
   useEffect(() => {
     function onKey(e: KeyboardEvent): void {
-      if (e.altKey && e.key === 'F2') {
+      // Alt+F2, or on a Mac ⌥⌃2 — read by position, since Option turns the 2
+      // into "™" there.
+      const mac = /mac|iphone|ipad|ipod/i.test(navigator.platform || navigator.userAgent || '')
+      if (e.altKey && (e.key === 'F2' || (mac && e.ctrlKey && e.code === 'Digit2'))) {
         // Caught on the way DOWN and kept to itself, so no page's own key
         // handling — a voucher's F2 (its date), a cell that keeps its keys —
         // can either swallow the period or act on it as well.
