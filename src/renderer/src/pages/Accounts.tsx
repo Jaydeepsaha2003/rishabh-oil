@@ -706,10 +706,10 @@ const METHODS:{ key: AllocRow['method']; label: string }[] = [
 const blankPayLine = (): PayLine => ({ account: '', group: '', amount: '', allocs: [] })
 // A line's breakdown, out to the voucher (rows with a name or an amount) and
 // back in from a saved one.
-const splitsOut = (rows?: SplitRow[]): { name: string; amount: number }[] =>
+const splitsOut = (rows?: SplitRow[]): { name: string; amount: number; note: string | null }[] =>
   (rows || [])
-    .filter((sp) => String(sp.name || '').trim() || Number(sp.amount) > 0)
-    .map((sp) => ({ name: String(sp.name || '').trim(), amount: Number(sp.amount) || 0 }))
+    .filter((sp) => String(sp.name || '').trim() || Number(sp.amount) > 0 || String(sp.note || '').trim())
+    .map((sp) => ({ name: String(sp.name || '').trim(), amount: Number(sp.amount) || 0, note: String(sp.note || '').trim() || null }))
 const splitsIn = (rows: unknown): SplitRow[] =>
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   ((rows as any[]) || []).map((sp) => ({ name: String(sp.name || ''), amount: String(sp.amount ?? ''), note: sp.note ? String(sp.note) : undefined }))
@@ -892,6 +892,20 @@ function SplitPanel({
             }}
             placeholder="0.00"
             className="doc-ref h-8 w-[130px] flex-none rounded-[3px] border border-[#C3D2C6] bg-white px-2 text-right text-[12px] font-bold tabular-nums outline-none focus:border-[#1B4E82]"
+          />
+          {/* A remark on this part — saved with it and printed in the Excel. */}
+          <input
+            value={r.note || ''}
+            onChange={(e) => set(i, { note: e.target.value })}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' && i === rows.length - 1) {
+                e.preventDefault()
+                add()
+              }
+            }}
+            placeholder="Remarks"
+            title="A comment on this part — saved with the voucher and printed in the Excel"
+            className="h-8 w-[200px] min-w-0 flex-none rounded-[3px] border border-[#C3D2C6] bg-white px-2 text-[12px] outline-none focus:border-[#1B4E82]"
           />
           <button
             type="button"

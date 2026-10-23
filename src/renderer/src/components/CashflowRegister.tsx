@@ -150,7 +150,11 @@ export function CashflowRegister({
     const flat: Row[] = []
     for (const v of rows) {
       for (const l of v.lines as Row[]) {
-        flat.push({
+        // ONE ROW PER PART OF THE BREAKDOWN, its remark in a column of its own.
+        // The line's own Dr / Cr is on its first row only, so a column total
+        // still adds up to the vouchers.
+        const parts = (l.splits as Row[]) || []
+        const base = {
           date: formatDate(v.date),
           voucher: v.code,
           type: v.type,
@@ -162,10 +166,19 @@ export function CashflowRegister({
           dr: l.side === 'dr' ? l.amount : '',
           cr: l.side === 'cr' ? l.amount : '',
           line_refs: (l.refs as Row[]).map((r) => `${REF_WORD[r.method] || r.method}${r.ref ? ' ' + r.ref : ''} ${r.amount}`).join('; '),
-          breakdown: (l.splits as Row[]).map((x) => `${x.name} ${x.amount}${x.note ? ' (' + x.note + ')' : ''}`).join('; '),
           issues: (v.issues as string[]).join('; '),
           narration: v.narration
-        })
+        }
+        if (!parts.length) flat.push({ ...base, part: '', part_amount: '', remarks: '' })
+        parts.forEach((x, i) =>
+          flat.push({
+            ...base,
+            ...(i > 0 ? { dr: '', cr: '' } : {}),
+            part: x.name,
+            part_amount: Number(x.amount) || 0,
+            remarks: x.note || ''
+          })
+        )
       }
     }
     await exportRowsToExcel({
@@ -185,7 +198,9 @@ export function CashflowRegister({
         { header: 'Dr', key: 'dr', align: 'right', numFmt: NUM_MONEY, value: (r) => r.dr },
         { header: 'Cr', key: 'cr', align: 'right', numFmt: NUM_MONEY, value: (r) => r.cr },
         { header: 'Bill references', key: 'line_refs', value: (r) => r.line_refs },
-        { header: 'Breakdown', key: 'breakdown', value: (r) => r.breakdown },
+        { header: 'Breakdown part', key: 'part', value: (r) => r.part },
+        { header: 'Part amount', key: 'part_amount', align: 'right', numFmt: NUM_MONEY, value: (r) => r.part_amount },
+        { header: 'Remarks', key: 'remarks', value: (r) => r.remarks },
         { header: 'Not right', key: 'issues', value: (r) => r.issues },
         { header: 'Narration', key: 'narration', value: (r) => r.narration }
       ],
