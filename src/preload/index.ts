@@ -722,6 +722,10 @@ const api = {
     fixDate: (id: number, date: string): Promise<{ id: number; from: string; to: string }> =>
       ipcRenderer.invoke('sales:fixDate', { id, date }),
     cancelledNos: (companyId?: number): Promise<Row[]> => ipcRenderer.invoke('sales:cancelledNos', { companyId }),
+    shortageNotes: (id: number): Promise<Row> => ipcRenderer.invoke('sales:shortageNotes', { id }),
+    shortageNotesSet: (id: number, entryIds: number[]): Promise<{ linked: number }> =>
+      ipcRenderer.invoke('sales:shortageNotesSet', { id, entryIds }),
+    shortageNoteMap: (): Promise<Row[]> => ipcRenderer.invoke('sales:shortageNoteMap', {}),
     tdsPreview: (id: number): Promise<Row> => ipcRenderer.invoke('sales:tdsPreview', { id }),
     tdsPost: (values: { sale_id: number; amount: number; ledger: string; date?: string }): Promise<{ entry_id: number }> =>
       ipcRenderer.invoke('sales:tdsPost', { values }),

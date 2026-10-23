@@ -53,6 +53,7 @@ import { BargainVouchersDialog } from '@/components/BargainVouchers'
 import { BargainMoveBalanceDialog } from '@/components/BargainMoveBalance'
 import { BargainNote } from '@/components/BargainNote'
 import { SaleTdsDialog } from '@/components/SaleTdsDialog'
+import { ShortageNoteDialog } from '@/components/ShortageNoteDialog'
 import { SerialNo } from '@/components/SerialNo'
 import { GateEntriesDialog } from '@/components/GateEntriesDialog'
 import { HistoryDialog, useHistoryDialog } from '@/components/HistoryDialog'
@@ -491,11 +492,27 @@ function SalesTab({
       /* the chip is a hint only */
     }
   }, [])
+  // The credit notes linked to an invoice's tanker shortage (ShortageNoteDialog),
+  // keyed company|invoice key.
+  const [shortNotes, setShortNotes] = useState<Record<string, Row[]>>({})
+  const [shortAsk, setShortAsk] = useState<{ saleId: number; invoiceNo: string; customer: string; due: number } | null>(null)
+  const loadShortNotes = useCallback(async () => {
+    try {
+      const m: Record<string, Row[]> = {}
+      for (const t of await window.api.sales.shortageNoteMap()) (m[`${t.company_id}|${t.invoice_key}`] ||= []).push(t)
+      setShortNotes(m)
+    } catch {
+      /* the chip is a hint only */
+    }
+  }, [])
+  const shortNotesOf = (first: Row): Row[] =>
+    shortNotes[`${first.company_id}|${String(first.invoice_group || first.invoice_no || `sale-${first.id}`)}`] || []
   const tdsOf = (first: Row): Row | undefined =>
     tdsByInv[`${first.company_id}|${String(first.invoice_group || first.invoice_no || `sale-${first.id}`)}`]
 
   const load = useCallback(async (background = false) => {
     void loadTds()
+    void loadShortNotes()
     // Skipped on a live refresh: raising the spinner here is what made the
     // page blink every few seconds. The rows already on screen stay until the
     // new ones arrive. See useLiveRefresh.
@@ -534,7 +551,7 @@ function SalesTab({
     for (const l of st) sm[l.id as number] = l
     setStock(sm)
     setLoading(false)
-  }, [loadTds])
+  }, [loadTds, loadShortNotes])
 
   useEffect(() => { load() }, [load])
   useLiveRefresh(load)
@@ -2364,18 +2381,52 @@ function SalesTab({
                               </Tooltip>
                             )
                           }
+                          // THE CREDIT NOTE THAT SETTLED IT: linked notes in green,
+                          // or "Link CN" while a shortage beyond tolerance stands.
+                          const cns = shortNotesOf(inv.first)
+                          const cnTotal = cns.reduce((t, x) => t + (Number(x.amount) || 0), 0)
+                          const openCn = (e: React.MouseEvent): void => {
+                            e.stopPropagation()
+                            setShortAsk({
+                              saleId: Number(inv.first.id),
+                              invoiceNo: String(inv.first.invoice_no || ''),
+                              customer: String(inv.first.customer_master || inv.first.customer || ''),
+                              due: invDue
+                            })
+                          }
                           return (
-                            <ShortageWorkings lines={shortLines}>
-                              <span
-                                title={
-                                  invDue > 0
-                                    ? `Short beyond the agreed tolerance — ${formatINR(invDue)} deductible. Hover or click for the workings.${tankerNote}`
-                                    : `Delivered short but within tolerance — hover or click for the workings${tankerNote}`
-                                }
-                              >
-                                {tag}
-                              </span>
-                            </ShortageWorkings>
+                            <div className="flex flex-col items-start gap-1">
+                              <ShortageWorkings lines={shortLines}>
+                                <span
+                                  title={
+                                    invDue > 0
+                                      ? `Short beyond the agreed tolerance — ${formatINR(invDue)} deductible. Hover or click for the workings.${tankerNote}`
+                                      : `Delivered short but within tolerance — hover or click for the workings${tankerNote}`
+                                  }
+                                >
+                                  {tag}
+                                </span>
+                              </ShortageWorkings>
+                              {cns.length > 0 ? (
+                                <button
+                                  type="button"
+                                  onClick={openCn}
+                                  title={`Shortage settled by ${cns.map((x) => `${String(x.code || x.vch_no)} ${formatINR(Number(x.amount))}`).join(', ')} — click to change`}
+                                  className="whitespace-nowrap rounded-[3px] border border-emerald-300 bg-emerald-50 px-1 text-[10px] font-semibold text-emerald-800"
+                                >
+                                  {cns.length === 1 ? String(cns[0].code || cns[0].vch_no) : `${cns.length} CNs`} {formatINR(cnTotal)}
+                                </button>
+                              ) : invDue > 0 ? (
+                                <button
+                                  type="button"
+                                  onClick={openCn}
+                                  title={`Link the credit note raised for this ${formatINR(invDue)} shortage`}
+                                  className="whitespace-nowrap rounded-[3px] border border-rose-300 bg-white px-1 text-[10px] font-semibold text-rose-700 hover:bg-rose-50"
+                                >
+                                  Link CN
+                                </button>
+                              ) : null}
+                            </div>
                           )
                         })()}
                       </TableCell>
@@ -4449,6 +4500,8 @@ function SalesTab({
           invoiceGroup: String(gateInv?.first?.invoice_group || '') || undefined
         }}
       />
+
+      <ShortageNoteDialog ask={shortAsk} onClose={() => setShortAsk(null)} onDone={() => void loadShortNotes()} />
 
       <SaleTdsDialog
         saleId={tdsAsk?.id ?? null}

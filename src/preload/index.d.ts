@@ -481,6 +481,9 @@ export interface Api {
     updateInvoice: (group: string, values: Row) => Promise<{ group: string; ids: number[] }>
     fixDate: (id: number, date: string) => Promise<{ id: number; from: string; to: string }>
     cancelledNos: (companyId?: number) => Promise<Row[]>
+    shortageNotes: (id: number) => Promise<Row>
+    shortageNotesSet: (id: number, entryIds: number[]) => Promise<{ linked: number }>
+    shortageNoteMap: () => Promise<Row[]>
     tdsPreview: (id: number) => Promise<Row>
     tdsPost: (values: { sale_id: number; amount: number; ledger: string; date?: string }) => Promise<{ entry_id: number }>
     tdsRemove: (id: number) => Promise<{ ok: true }>
