@@ -679,6 +679,8 @@ interface PayLine {
   group: string
   amount: string
   allocs: AllocRow[]
+  // How the figure is made up — the same breakdown a Journal line carries.
+  splits?: SplitRow[]
 }
 const CASH_BANK_GROUPS = ['Bank Accounts', 'Cash-in-Hand', 'Bank OD A/c']
 const BILLWISE_GROUPS = ['Sundry Creditors', 'Sundry Debtors']
@@ -701,6 +703,15 @@ const METHODS:{ key: AllocRow['method']; label: string }[] = [
   { key: 'new_ref', label: 'New Ref' }
 ]
 const blankPayLine = (): PayLine => ({ account: '', group: '', amount: '', allocs: [] })
+// A line's breakdown, out to the voucher (rows with a name or an amount) and
+// back in from a saved one.
+const splitsOut = (rows?: SplitRow[]): { name: string; amount: number }[] =>
+  (rows || [])
+    .filter((sp) => String(sp.name || '').trim() || Number(sp.amount) > 0)
+    .map((sp) => ({ name: String(sp.name || '').trim(), amount: Number(sp.amount) || 0 }))
+const splitsIn = (rows: unknown): SplitRow[] =>
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  ((rows as any[]) || []).map((sp) => ({ name: String(sp.name || ''), amount: String(sp.amount ?? ''), note: sp.note ? String(sp.note) : undefined }))
 const typeLabelOf = (t: string): string => VCH_TYPES.find((v) => v.key === t)?.label || t
 
 function monthLabelLong(m: string): string {
@@ -4049,13 +4060,15 @@ export function Accounts({
             cr: vchType === 'RECEIPT' ? Number(l.amount) : 0,
             allocs: l.allocs
               .filter((a) => Number(a.amount) > 0)
-              .map((a) => ({ method: a.method, ref_name: a.ref_name || null, order_id: a.order_id || null, sale_invoice_group: a.sale_invoice_group || null, amount: Number(a.amount) }))
+              .map((a) => ({ method: a.method, ref_name: a.ref_name || null, order_id: a.order_id || null, sale_invoice_group: a.sale_invoice_group || null, amount: Number(a.amount) })),
+            splits: splitsOut(l.splits)
           })),
           ...money.map((l, i) => ({
             account: l.account,
             group: l.group || undefined,
             dr: vchType === 'RECEIPT' ? moneyAmounts[i] : 0,
-            cr: vchType === 'PAYMENT' ? moneyAmounts[i] : 0
+            cr: vchType === 'PAYMENT' ? moneyAmounts[i] : 0,
+            splits: splitsOut(l.splits)
           }))
         ]
       }
@@ -4087,9 +4100,7 @@ export function Accounts({
                     amount: Number(a.amount)
                   })),
                 // The working behind this figure, where one was written.
-                splits: (l.splits || [])
-                  .filter((sp) => String(sp.name || '').trim() || Number(sp.amount) > 0)
-                  .map((sp) => ({ name: String(sp.name || '').trim(), amount: Number(sp.amount) || 0 }))
+                splits: splitsOut(l.splits)
               }))
               // The GST and round-off the note panel worked out.
               .concat(
@@ -4574,7 +4585,8 @@ export function Accounts({
             account: String(l.account),
             group: String(l.acc_group || ''),
             amount: String(Number(moneySide === 'cr' ? l.cr : l.dr)),
-            allocs: []
+            allocs: [],
+            splits: splitsIn(l.splits)
           }))
         )
         setPayLines(
@@ -4588,7 +4600,8 @@ export function Accounts({
               order_id: a.order_id != null ? Number(a.order_id) : null,
               sale_invoice_group: a.sale_invoice_group || null,
               amount: String(a.amount)
-            }))
+            })),
+            splits: splitsIn(l.splits)
           }))
         )
         for (const l of parties) void loadRefs(String(l.account))
@@ -13079,6 +13092,11 @@ export function Accounts({
             },
             onAmount: (v: string) => setPayLine(i, { amount: v }),
             onAllocs: (a: AllocRow[]) => setPayLine(i, { allocs: a }),
+            // The breakdown under a Payment / Receipt line, as under a Journal
+            // line. Its own index range, so the open one is never confused.
+            splits: l.splits || [],
+            onSplits: (rows: SplitRow[]) => setPayLine(i, { splits: rows }),
+            splitIndex: 1000 + i,
             onRemove: payLines.length > 1 ? () => setPayLines((p) => p.filter((_, j) => j !== i)) : null,
             refsSide: undefined as 'customer' | 'supplier' | undefined
           })),
@@ -13099,6 +13117,9 @@ export function Accounts({
             onAccount: (name: string, group: string) => setPayAccountLine(i, { account: name, group }),
             onAmount: (v: string) => setPayAccountLine(i, { amount: v }),
             onAllocs: () => undefined,
+            splits: l.splits || [],
+            onSplits: (rows: SplitRow[]) => setPayAccountLine(i, { splits: rows }),
+            splitIndex: 2000 + i,
             onRemove: payAccounts.length > 1 ? () => setPayAccounts((p) => p.filter((_, j) => j !== i)) : null
           }))
         ]
