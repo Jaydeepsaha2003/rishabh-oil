@@ -3263,6 +3263,32 @@ export async function runStartupTasks(): Promise<void> {
     if (done.length) console.log(`[bd] moved ${done.length} bill(s) to the Open amount with the Adj. as a charge: ${done.join(', ')}`)
   }).catch((e) => console.error('[bd] open adjustment conversion failed:', e))
 
+  // LC SETTLEMENTS DATED OFF THEIR PAYMENT-RECEIVED DATE — once, at start
+  // (asked for on 2026-10-24, for 005LM02262480003/4). A re-save now dates
+  // the settlement by Payment received (resyncLcSettlement); this does that
+  // re-save for the live LCs whose voucher is still on another day. Repaid and
+  // preclosed LCs are skipped inside resyncLcSettlement, as on a save.
+  await runOnce('lc_settlement_payment_date_v1', async () => {
+    const { resyncLcSettlement } = await import('./treasury')
+    const r = await getClient().execute(`
+      SELECT DISTINCT l.id, l.lc_no FROM letters_of_credit l
+        JOIN lc_issuances i ON i.lc_id = l.id
+        JOIN journal_entries je ON je.id = i.journal_entry_id
+       WHERE l.payment_received_date IS NOT NULL AND COALESCE(i.installment_no, 1) = 1
+         AND l.preclosed_date IS NULL AND NOT EXISTS (SELECT 1 FROM lc_repayments r WHERE r.lc_id = l.id)
+         AND (je.entry_date <> l.payment_received_date OR i.settled_date <> l.payment_received_date)`)
+    const fixed: string[] = []
+    for (const row of r.rows) {
+      try {
+        await resyncLcSettlement(Number(row.id))
+        fixed.push(String(row.lc_no))
+      } catch (e) {
+        console.error(`[lc] settlement date fix failed for ${String(row.lc_no)}:`, (e as Error).message)
+      }
+    }
+    if (fixed.length) console.log(`[lc] settlement dated by payment received on ${fixed.length} LC(s): ${fixed.join(', ')}`)
+  }).catch((e) => console.error('[lc] settlement date fix failed:', e))
+
   await ensurePpTraceSchema()
   startRevisionWatcher()
 }
