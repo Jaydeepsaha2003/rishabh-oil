@@ -8533,6 +8533,74 @@ export function Accounts({
             />
           </div>
 
+          {/* THE BILL IN ONE PLACE: freight, the shortage that comes off it,
+              tax, deductions, and what the transporter is paid — with the
+              RCM (unregistered) or the debit note (registered) beside it, as
+              neither changes the payable. Same arithmetic as createBill. */}
+          {(() => {
+            const frRows = tfPickedRows.filter((r) => String(r.entry_type) !== 'shortage_penalty')
+            const shRows = tfPickedRows.filter((r) => String(r.entry_type) === 'shortage_penalty')
+            const freight = Math.round(frRows.reduce((t, r) => t + n(r.amount), 0) * 100) / 100
+            // Unregistered: on the bill, at the oil rate plus its GST.
+            const shTotal = Math.round(shRows.reduce((t, r) => t + Math.abs(n(r.amount)), 0) * 100) / 100
+            const shBase = Math.round(shRows.reduce((t, r) => t + Math.abs(n(r.amount_base ?? r.amount)), 0) * 100) / 100
+            const shGst = Math.round((shTotal - shBase) * 100) / 100
+            const shPct = shRows.length ? n(shRows[0].oil_gst_pct) : 0
+            // Registered: claimed on a debit note, not on this bill.
+            const keys = [...new Set(tfPickedRows.map(tfTankerKey))]
+            const dnBase = tfUnreg ? 0 : Math.round(keys.reduce((t, k) => t + (tfByTanker.get(k)?.short || 0), 0) * 100) / 100
+            const dnGst = tfUnreg ? 0 : Math.round(keys.reduce((t, k) => t + (tfByTanker.get(k)?.shortGst || 0), 0) * 100) / 100
+            const row = (label: React.ReactNode, v: string, tone?: string, strong = false): React.JSX.Element => (
+              <div className="flex items-baseline justify-between gap-3" style={{ padding: '4px 0' }}>
+                <span style={{ fontSize: 12, fontWeight: strong ? 800 : 600, color: strong ? A.ink : '#33473E' }}>{label}</span>
+                <span style={{ fontFamily: MONO, fontVariantNumeric: FIGS, fontSize: strong ? 13 : 12.5, fontWeight: strong ? 800 : 700, color: tone || A.ink }}>{v}</span>
+              </div>
+            )
+            const small = (t: string): React.JSX.Element => <span style={{ fontSize: 10.5, fontWeight: 600, color: A.muted }}> {t}</span>
+            return (
+              <div className="flex-none rounded-[10px] bg-white" style={{ border: '1px solid #DCE7DB', padding: '10px 14px' }}>
+                <div style={{ fontSize: 10, fontWeight: 800, letterSpacing: '.12em', textTransform: 'uppercase', color: A.muted, marginBottom: 4 }}>Bill summary</div>
+                {row('Freight', money(freight))}
+                {shTotal > 0.004 && (
+                  <>
+                    {row(<>Oil shortage deductible{small('at the oil rate')}</>, `− ${formatINR(shBase)}`, A.cr)}
+                    {row(<>GST on the shortage{small(`${shPct}% — unregistered, recovered with it`)}</>, `− ${formatINR(shGst)}`, A.cr)}
+                  </>
+                )}
+                {!!c.adj && row('Adjustment', `${c.adj > 0 ? '+ ' : '− '}${formatINR(Math.abs(c.adj))}`, c.adj < 0 ? A.cr : undefined)}
+                <div style={{ borderTop: '1px dashed #DCE7DB', margin: '4px 0' }} />
+                {row(tfUnreg ? 'Freight after shortage' : 'Taxable freight', money(c.taxable), undefined, true)}
+                {!tfUnreg && row(`GST on freight @ ${c.gstPct}%`, `+ ${formatINR(c.gst)}`)}
+                {c.tds > 0.004 && row(`TDS @ ${Number(tfBill.tds_pct) || 0}%`, `− ${formatINR(c.tds)}`, A.cr)}
+                {c.others > 0.004 && row('Other deductions', `− ${formatINR(c.others)}`, A.cr)}
+                {Math.abs(c.ro) > 0.004 && row('Round off', `${c.ro > 0 ? '+ ' : '− '}${formatINR(Math.abs(c.ro))}`)}
+                <div className="flex items-baseline justify-between gap-3" style={{ borderTop: '2px solid #0B3D2E', marginTop: 4, paddingTop: 6 }}>
+                  <span style={{ fontSize: 11, fontWeight: 800, letterSpacing: '.08em', textTransform: 'uppercase', color: A.ink }}>Net payable to {party}</span>
+                  <span style={{ fontFamily: MONO, fontVariantNumeric: FIGS, fontSize: 16, fontWeight: 800, color: A.ink }}>{formatINR(c.total)}</span>
+                </div>
+                {tfUnreg && c.rcm > 0.004 && (
+                  <div style={{ marginTop: 6, fontSize: 11, fontWeight: 600, color: '#8A5300' }}>
+                    RCM @ {c.rcmPct}% {formatINR(c.rcm)} — we pay it and claim it back; not taken off the transporter.
+                  </div>
+                )}
+                {!tfUnreg && dnBase > 0.004 && (
+                  <div style={{ marginTop: 6, borderRadius: 6, background: '#F4F7F3', padding: '6px 8px', fontSize: 11, fontWeight: 600, color: '#33473E' }}>
+                    <div className="flex justify-between gap-3">
+                      <span>Oil shortage on a debit note {small('registered — not on this bill')}</span>
+                      <span style={{ fontFamily: MONO, fontWeight: 700 }}>
+                        {formatINR(dnBase)} + GST {formatINR(dnGst)} = {formatINR(Math.round(dnBase + dnGst))}
+                      </span>
+                    </div>
+                    <div className="flex justify-between gap-3" style={{ marginTop: 3, fontWeight: 800, color: A.ink }}>
+                      <span>Net to {party} after the debit note</span>
+                      <span style={{ fontFamily: MONO }}>{formatINR(Math.round(c.total - Math.round(dnBase + dnGst)))}</span>
+                    </div>
+                  </div>
+                )}
+              </div>
+            )
+          })()}
+
           <div
             className="flex-none text-white"
             style={{
