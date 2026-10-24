@@ -8242,16 +8242,24 @@ async function stockLevels(range, companyIds) {
     if (kind === "opening" && !from) return /* @__PURE__ */ new Map();
     let sql = src.base;
     const args = [...cidList];
+    let back = false;
     if (kind === "opening") {
-      if (floor && from <= floor) return /* @__PURE__ */ new Map();
-      sql += ` AND ${src.date} < ?`;
-      args.push(from);
-      if (floor) {
-        sql += ` AND ${src.date} >= ?`;
-        args.push(floor);
+      if (floor && from === floor) return /* @__PURE__ */ new Map();
+      if (floor && from < floor) {
+        if (fid && !whole) return /* @__PURE__ */ new Map();
+        back = true;
+        sql += ` AND ${src.date} >= ? AND ${src.date} < ?`;
+        args.push(from, floor);
+      } else {
+        sql += ` AND ${src.date} < ?`;
+        args.push(from);
+        if (floor) {
+          sql += ` AND ${src.date} >= ?`;
+          args.push(floor);
+        }
       }
     } else {
-      const lo = floor && (!from || from < floor) ? floor : from;
+      const lo = from || floor;
       if (lo) {
         sql += ` AND ${src.date} >= ?`;
         args.push(lo);
@@ -8263,7 +8271,7 @@ async function stockLevels(range, companyIds) {
     }
     const res = await c.execute({ sql: `${sql} ${src.group}`, args });
     const m = /* @__PURE__ */ new Map();
-    for (const r of res.rows) m.set(Number(r.pid), Number(r.q) || 0);
+    for (const r of res.rows) m.set(Number(r.pid), (back ? -1 : 1) * (Number(r.q) || 0));
     return m;
   };
   const openingBalance = async () => {
@@ -8282,10 +8290,6 @@ async function stockLevels(range, companyIds) {
                 ${noteExpr} AS nt,
                 ${anyNoteExpr} AS an
            FROM stock_openings WHERE company_id IN (${ph})`;
-    if (to) {
-      sql += " AND as_of <= ?";
-      args.push(to);
-    }
     const res = await c.execute({ sql: `${sql} GROUP BY product_id`, args });
     const total = /* @__PURE__ */ new Map();
     const adj = /* @__PURE__ */ new Map();
@@ -8302,10 +8306,10 @@ async function stockLevels(range, companyIds) {
   const ppDetails = /* @__PURE__ */ new Map();
   const ppScopeKey = fid ? `f${fid}` : `c${cidList[0] || getActiveCompanyId()}`;
   const ppLots = await syncPpLots(ppScopeKey);
-  const finishedDetails = await ppFinishedDetails(cidList, floor && (!from || from < floor) ? floor : from, to);
+  const finishedDetails = await ppFinishedDetails(cidList, from || floor, to);
   const ppRestate = async () => {
     const out = /* @__PURE__ */ new Map();
-    if (fid && !whole || to && floor && to < floor) return out;
+    if (fid && !whole) return out;
     const scope2 = fid ? `f${fid}` : `c${cidList[0] || getActiveCompanyId()}`;
     const res = await c.execute({
       sql: `SELECT sop.product_id AS pid, sop.qty AS qty, sop.formulation_id AS fid, sop.stage_id
@@ -8376,7 +8380,7 @@ async function stockLevels(range, companyIds) {
   {
     const conds = ["deleted_at IS NULL", `company_id IN (${ph})`];
     const args = [...cidList];
-    const lo = floor && (!from || from < floor) ? floor : from;
+    const lo = from || floor;
     if (lo) {
       conds.push("adj_date >= ?");
       args.push(lo);
@@ -8604,7 +8608,7 @@ async function stockPartyBreakdown(companyIds, range) {
   const to = String(range?.to || "");
   const fid = await factoryOfCompanies(cidList);
   const floor = await openingFloor(cidList, fid);
-  const from = floor && (!asked || asked < floor) ? floor : asked;
+  const from = asked || floor;
   const bounds = (dateExpr) => {
     const parts = [];
     const args = [];
