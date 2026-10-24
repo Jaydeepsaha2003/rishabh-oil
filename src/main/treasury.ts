@@ -1447,15 +1447,22 @@ export async function resyncLcSettlement(lcId: number): Promise<void> {
   })
   if (closed.rows.length && (closed.rows[0].preclosed_date || n(closed.rows[0].repaid) > 0.005)) return
   const res = await c.execute({
-    sql: `SELECT id, journal_entry_id, settled_date FROM lc_issuances
-           WHERE lc_id = ? AND journal_entry_id IS NOT NULL ORDER BY journal_entry_id, id`,
+    sql: `SELECT i.id, i.journal_entry_id, i.settled_date, i.installment_no, l.payment_received_date
+            FROM lc_issuances i JOIN letters_of_credit l ON l.id = i.lc_id
+           WHERE i.lc_id = ? AND i.journal_entry_id IS NOT NULL ORDER BY i.journal_entry_id, i.id`,
     args: [n(lcId)]
   })
   if (!res.rows.length) return
   const groups = new Map<number, { ids: number[]; date: string }>()
   for (const r of toPlain(res)) {
     const je = n(r.journal_entry_id)
-    if (!groups.has(je)) groups.set(je, { ids: [], date: String(r.settled_date || '').slice(0, 10) })
+    // The bill settled AT payment received (no part, or part 1) is dated by
+    // the LC's payment-received date — the day syncPaymentReceivedIssuance
+    // posts it — so correcting that date on the LC moves the voucher with it.
+    // A later part keeps its own pay date.
+    const atReceipt = n(r.installment_no) <= 1 && !!r.payment_received_date
+    const date = atReceipt ? String(r.payment_received_date) : String(r.settled_date || '')
+    if (!groups.has(je)) groups.set(je, { ids: [], date: date.slice(0, 10) })
     groups.get(je)!.ids.push(n(r.id))
   }
   const live: number[] = []
