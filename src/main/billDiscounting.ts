@@ -665,6 +665,23 @@ async function supplierShares(bdId: number): Promise<{ name: string; share: numb
   return rows.map((r) => ({ name: String(r.name), share: round2(n(r.amount)) }))
 }
 
+/**
+ * What an awaiting supplier-direct bill will debit its supplier(s) with once the
+ * NBFC's money is marked received — postBdOpening's own figures (a bill paid in
+ * parts counts every part). For the ledger's Provisional view; posts nothing.
+ */
+export async function bdPendingPayout(bdId: number): Promise<{ bd: Row; parts: { name: string; amount: number }[] }> {
+  const bd = await loadBd(bdId)
+  const calc = bdCalc(bd)
+  const upfront = !!bd.interest_upfront
+  const serviced = String(bd.interest_mode || '') === 'serviced'
+  const inParts = n(bd.first_party_part) > 0.005
+  const leg1 = calc.legs.length && !inParts ? calc.legs[0] : null
+  const pay = leg1 ? round2((upfront || serviced ? leg1.amount : leg1.net) + calc.adjCharge) : round2(calc.receiptAmount)
+  const shares = !inParts && !leg1 ? await supplierShares(bdId) : []
+  return { bd, parts: shares.length > 1 ? splitByShares(pay, shares) : [{ name: partyName(bd), amount: pay }] }
+}
+
 /** A total split by shares — each its proportion, the last taking what rounding leaves. */
 function splitByShares(total: number, shares: { name: string; share: number }[]): { name: string; amount: number }[] {
   const whole = shares.reduce((t, x) => t + x.share, 0)

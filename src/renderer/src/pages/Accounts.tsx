@@ -1454,6 +1454,8 @@ function lineRef(l: Row): { no: string; kind: string; full: string } | null {
   // two that is right.
   const lc = String(l.lc_no || '').trim()
   if (lc) return { no: lc, kind: 'LC no', full: lc }
+  // A provisional BD line has no voucher to read a number off — its bill's own.
+  if (l.provisional && l.bd_no) return { no: String(l.bd_no), kind: 'BD no', full: String(l.bd_no) }
   const f = facilityRef(l)
   if (f) return { no: f.no, kind: f.kind === 'BD' ? 'BD no' : 'LC no', full: f.no }
   const v = String(l.vch_no || '').trim()
@@ -2093,6 +2095,9 @@ export function Accounts({
   const [lgFTypes, setLgFTypes] = useState<string[]>([])
   // Tanker empty: leave out purchase bills whose tankers are not all emptied.
   const [lgTankerEmpty, setLgTankerEmpty] = useState(false)
+  // PROVISIONAL: open LCs and awaiting supplier-direct BDs shown as the debit
+  // their payment will post, in the balance (provisional.ts). Nothing posted.
+  const [lgProv, setLgProv] = useState(false)
   const lgOrderRef = useRef<number[]>([])
   const setLgView = useCallback((v: LgView) => {
     setLgViewRaw(v)
@@ -2704,14 +2709,21 @@ export function Accounts({
   const lgOpenDate = lgBooksFrom && (!lgFrom || lgFrom < lgBooksFrom) ? lgBooksFrom : lgFrom
   const loadLedger = useCallback(async () => {
     if (screen !== 'ledger' || !ledgerId || !cid) return
-    const [lines, ob] = await Promise.all([
+    const [lines, ob, prov] = await Promise.all([
       window.api.journal.statement(ledgerId, cid),
-      window.api.journal.opening(ledgerId, cid).catch(() => ({ opening: 0, books_from: '' }))
+      window.api.journal.opening(ledgerId, cid).catch(() => ({ opening: 0, books_from: '' })),
+      lgProv ? window.api.journal.provisional(ledgerId, cid).catch(() => [] as Row[]) : Promise.resolve([] as Row[])
     ])
-    setLedgerLines(lines)
+    // Each provisional line after the real entries of its own date.
+    const merged = [...lines]
+    for (const p of prov) {
+      const at = merged.findIndex((l) => String(l.entry_date) > String(p.entry_date))
+      merged.splice(at < 0 ? merged.length : at, 0, p)
+    }
+    setLedgerLines(merged)
     setLgOpening(Number((ob as Row).opening) || 0)
     setLgBooksFrom(String((ob as Row).books_from || ''))
-  }, [screen, ledgerId, cid])
+  }, [screen, ledgerId, cid, lgProv])
   useEffect(() => {
     loadLedger()
   }, [loadLedger])
@@ -16500,11 +16512,14 @@ export function Accounts({
                 data-lghi={hi ? '1' : undefined}
                 onClick={() => {
                   markLgRow(Number(r.id))
+                  // A provisional line has no voucher yet — it opens its LC / BD.
+                  if (r.provisional) return void openRowSource(r, ledgerId)
                   void openForAlter({ id: eid })
                 }}
                 onKeyDown={(e) => {
                   if (e.key === 'Enter' || e.key === ' ') {
                     e.preventDefault()
+                    if (r.provisional) return void openRowSource(r, ledgerId)
                     void openForAlter({ id: eid })
                   }
                 }}
@@ -16514,7 +16529,8 @@ export function Accounts({
                   minHeight: 46,
                   borderBottom: '1px solid #EFF3EE',
                   // The highlighted row, as Tally draws it: a lit bar down its edge.
-                  background: open ? '#F3FBE2' : stripe(i)
+                  background: open ? '#F3FBE2' : r.provisional ? '#FFF8EC' : stripe(i),
+                  fontStyle: r.provisional ? 'italic' : undefined
                 }}
               >
                 <span className="flex items-center gap-1.5" style={{ padding: '0 8px 0 8px', ...figS(11.5, '#33473E', 600) }}>
@@ -17880,6 +17896,38 @@ export function Accounts({
                         }
                       )}
                     </div>
+                    {/* PROVISIONAL: open LCs / awaiting BDs in the balance. */}
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setLgOpenRow(null)
+                        setLgProv((v) => !v)
+                      }}
+                      title={
+                        lgProv
+                          ? 'Provisional ON — open LCs and awaiting supplier-direct BDs are shown as the debit their payment will post, and counted in the balance. Nothing is posted.'
+                          : 'Show open LCs and awaiting supplier-direct BDs as provisional entries, counted in the balance'
+                      }
+                      className="flex h-[26px] flex-none items-center gap-1.5 whitespace-nowrap rounded-[13px] px-2.5"
+                      style={{
+                        border: `1px solid ${lgProv ? '#C2700A' : '#DCE7DB'}`,
+                        background: lgProv ? '#FFF4E0' : '#F4F7F3',
+                        color: lgProv ? '#8A5300' : '#33473E',
+                        fontSize: 11,
+                        fontWeight: 800
+                      }}
+                    >
+                      <span
+                        className="inline-block h-[8px] w-[8px] rounded-full"
+                        style={{ background: lgProv ? '#C2700A' : '#B9C7BC' }}
+                      />
+                      Provisional {lgProv ? 'ON' : 'OFF'}
+                      {lgProv && allRows.some((r) => r.provisional) && (
+                        <span style={{ ...figS(10, 'currentColor', 700), opacity: 0.85 }}>
+                          {allRows.filter((r) => r.provisional).length}
+                        </span>
+                      )}
+                    </button>
                     {/* DATE: the invoice's own, or the day its tankers were
                         emptied — a bill whose oil is still on the road then reads 0. */}
                     {allRows.some((r) => Number(r.tanker_total) > 0) && (

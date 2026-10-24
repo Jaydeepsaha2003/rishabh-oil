@@ -250,6 +250,7 @@ export interface Api {
     accounts: (companyId?: number) => Promise<Row[]>
     createAccount: (name: string, group?: string, companyId?: number) => Promise<{ id: number }>
     statement: (accountId: number, companyId?: number) => Promise<Row[]>
+    provisional: (accountId: number, companyId?: number) => Promise<Row[]>
     addEntry: (data: Row) => Promise<{ id: number }>
     deleteEntry: (id: number) => Promise<{ id: number }>
   }

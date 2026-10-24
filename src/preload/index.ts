@@ -369,6 +369,9 @@ const api = {
       ipcRenderer.invoke('journal:createAccount', { name, group, companyId }),
     statement: (accountId: number, companyId?: number): Promise<Row[]> =>
       ipcRenderer.invoke('journal:statement', { accountId, companyId }),
+    // Open LCs / awaiting supplier-direct BDs as provisional lines (provisional.ts).
+    provisional: (accountId: number, companyId?: number): Promise<Row[]> =>
+      ipcRenderer.invoke('journal:provisional', { accountId, companyId }),
     addEntry: (data: Row): Promise<{ id: number }> =>
       ipcRenderer.invoke('journal:addEntry', { data }),
     deleteEntry: (id: number): Promise<{ id: number }> =>
