@@ -176,6 +176,20 @@ export function SaleTdsDialog({
               Remove
             </Button>
           )}
+          {/* Not known yet: the invoice keeps its No TDS tag, which opens this again. */}
+          {afterSave && !ex && (
+            <Button
+              variant="outline"
+              className="mr-auto"
+              disabled={busy}
+              onClick={() => {
+                toast.info(`TDS on ${info?.invoice_no || 'this invoice'} left for later — click its No TDS tag on Sales to enter it`)
+                onClose()
+              }}
+            >
+              Mark TDS later
+            </Button>
+          )}
           <Button variant="outline" onClick={onClose} disabled={busy}>
             {afterSave && !ex ? 'No, not deducted' : 'Close'}
           </Button>

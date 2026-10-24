@@ -1067,6 +1067,26 @@ export async function listBdLinkedOrders(bdId: number): Promise<Row[]> {
   return toPlain(res)
 }
 
+// The sales invoices a SID bill was drawn against. There is no link table for
+// them — the form keeps them in the note ("KRFL/555, KRFL/560") — so they are
+// read off the note and matched to the Sales register of the bill's company.
+export async function listBdSalesInvoices(bdId: number): Promise<Row[]> {
+  const c = getClient()
+  const bd = (await c.execute({ sql: 'SELECT company_id, note FROM bill_discountings WHERE id = ?', args: [bdId] })).rows[0] as unknown as Row | undefined
+  const nos = [...new Set(String(bd?.note || '').split(/[\s,;]+/).map((x) => x.trim()).filter(Boolean))]
+  if (!bd || !nos.length) return []
+  const res = await c.execute({
+    sql: `SELECT s.invoice_no, MIN(s.sale_date) AS sale_date, s.customer_id, MAX(cu.name) AS customer_name,
+                 ROUND(SUM(s.amount), 2) AS taxable,
+                 ROUND(SUM(s.amount + COALESCE(s.gst_amount, 0)) + MAX(COALESCE(s.round_off, 0)), 2) AS total
+            FROM sales s LEFT JOIN customers cu ON cu.id = s.customer_id
+           WHERE s.company_id = ? AND s.rejected_at IS NULL AND s.invoice_no IN (${nos.map(() => '?').join(',')})
+           GROUP BY s.invoice_no, s.customer_id ORDER BY MIN(s.sale_date), s.invoice_no`,
+    args: [n(bd.company_id), ...nos]
+  })
+  return toPlain(res)
+}
+
 // Every check a Bill Discounting entry has to pass, on create or edit.
 //
 // WHO THE NBFC PAID. A new bill must say: into our own bank (a Receipt) or

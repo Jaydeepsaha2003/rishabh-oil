@@ -677,6 +677,7 @@ export interface Api {
     postInterest: (id: number) => Promise<{ id: number; journal_entry_id: number }>
     allRepayments: () => Promise<Row[]>
     linkedOrders: (id: number) => Promise<Row[]>
+    salesInvoices: (id: number) => Promise<Row[]>
     parties: (id: number) => Promise<Row[]>
     allParties: () => Promise<Row[]>
     openTradingInvoices: (id: number) => Promise<Row[]>

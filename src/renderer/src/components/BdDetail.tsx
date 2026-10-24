@@ -469,7 +469,7 @@ export function chargesOf(p: Record<string, unknown>): number {
 const nameKey = (v: unknown): string => s(v).toUpperCase().replace(/\((DR|CR)\)\s*$/, '').replace(/[^A-Z0-9]/g, '')
 function BdPartiesAndEntries({ bill }: { bill: Row }): React.JSX.Element | null {
   const id = Number(bill.id)
-  const [data, setData] = useState<{ parties: Row[]; orders: Row[]; partParts: Row[]; posted: Row[] } | null>(null)
+  const [data, setData] = useState<{ parties: Row[]; orders: Row[]; sales: Row[]; partParts: Row[]; posted: Row[] } | null>(null)
   useEffect(() => {
     let live = true
     setData(null)
@@ -478,12 +478,14 @@ function BdPartiesAndEntries({ bill }: { bill: Row }): React.JSX.Element | null 
       api.parties(id).catch(() => [] as Row[]),
       api.linkedOrders(id).catch(() => [] as Row[]),
       api.partyPayments(id).catch(() => [] as Row[]),
-      window.api.vouchers.forDocument('bd', id).catch(() => ({}) as Row)
-    ]).then(([parties, orders, partParts, docs]) => {
+      window.api.vouchers.forDocument('bd', id).catch(() => ({}) as Row),
+      api.salesInvoices(id).catch(() => [] as Row[])
+    ]).then(([parties, orders, partParts, docs, sales]) => {
       if (!live) return
       setData({
         parties: Array.isArray(parties) ? parties : [],
         orders: Array.isArray(orders) ? orders : [],
+        sales: Array.isArray(sales) ? sales : [],
         partParts: Array.isArray(partParts) ? partParts : [],
         posted: Array.isArray((docs as Row)?.posted) ? ((docs as Row).posted as Row[]) : []
       })
@@ -500,7 +502,7 @@ function BdPartiesAndEntries({ bill }: { bill: Row }): React.JSX.Element | null 
   const parties: Row[] = data.parties.length
     ? data.parties
     : bill.party_name
-      ? [{ name: bill.party_name, amount: amt, party_type: bill.party_type }]
+      ? [{ name: bill.party_name, amount: amt, party_type: bill.party_type, party_id: bill.party_id }]
       : []
   // What the vouchers put on each party's ledger: Dr for money paid to a
   // supplier, Cr for a customer's bill discounted against.
@@ -520,6 +522,8 @@ function BdPartiesAndEntries({ bill }: { bill: Row }): React.JSX.Element | null 
     return { dr: round2(dr), cr: round2(cr) }
   }
   const lineAmt = (l: Row): number => n(l.dr) || n(l.cr)
+  // Shares split the INVOICE the bill is drawn against, not the discounted sum.
+  const shareBase = n(bill.invoice_amount) > 0 ? n(bill.invoice_amount) : amt
 
   return (
     <>
@@ -545,6 +549,8 @@ function BdPartiesAndEntries({ bill }: { bill: Row }): React.JSX.Element | null 
                   const led = onLedger(s(pt.name))
                   const net = led.dr || led.cr
                   const inv = data.orders.filter((o) => nameKey(o.supplier_name) === nameKey(pt.name))
+                  // A SID bill's own sales invoices, matched to this customer.
+                  const sold = data.sales.filter((x) => s(pt.party_type) === 'customer' && n(x.customer_id) === n(pt.party_id))
                   return (
                     <tr key={i} className="border-t border-t-[#EFF3EE] align-top">
                       <td className="px-3.5 py-2.5">
@@ -552,7 +558,7 @@ function BdPartiesAndEntries({ bill }: { bill: Row }): React.JSX.Element | null 
                         <div className="text-[10.5px] font-semibold capitalize text-[#5A6B62]">{s(pt.party_type) || 'party'}</div>
                       </td>
                       <td className="doc-ref px-3 py-2.5 text-right font-bold">{formatINR(share)}</td>
-                      <td className="doc-ref px-3 py-2.5 text-right text-[#5A6B62]">{amt > 0 ? `${formatNum((share / amt) * 100)}%` : '—'}</td>
+                      <td className="doc-ref px-3 py-2.5 text-right text-[#5A6B62]">{shareBase > 0 ? `${formatNum((share / shareBase) * 100)}%` : '—'}</td>
                       <td className="doc-ref px-3 py-2.5 text-right font-bold" title={led.dr || led.cr ? `Dr ${formatINR(led.dr)} · Cr ${formatINR(led.cr)} across this bill's vouchers` : 'Nothing posted to this party yet'}>
                         {net ? (
                           <>
@@ -566,7 +572,13 @@ function BdPartiesAndEntries({ bill }: { bill: Row }): React.JSX.Element | null 
                         )}
                       </td>
                       <td className="px-3.5 py-2.5">
-                        {inv.length ? (
+                        {sold.length > 0 &&
+                          sold.map((x) => (
+                            <div key={s(x.invoice_no)} className="whitespace-nowrap text-[11.5px] font-semibold text-[#33473E]" title={`Taxable ${formatINR(n(x.taxable))}`}>
+                              <span className="doc-ref font-bold text-[#0A1F17]">{s(x.invoice_no)}</span> · {formatDate(s(x.sale_date))} · {formatINR(n(x.total))}
+                            </div>
+                          ))}
+                        {sold.length ? null : inv.length ? (
                           inv.map((o) => (
                             <div key={String(o.order_id)} className="whitespace-nowrap text-[11.5px] font-semibold text-[#33473E]">
                               <span className="doc-ref font-bold text-[#0A1F17]">{s(o.invoice_no)}</span> · {formatDate(s(o.order_date))} · {formatINR(n(o.net_amount))}
@@ -586,7 +598,7 @@ function BdPartiesAndEntries({ bill }: { bill: Row }): React.JSX.Element | null 
                     <td className="px-3.5 py-2">Total</td>
                     <td className="doc-ref px-3 py-2 text-right">{formatINR(parties.reduce((t, pt) => t + n(pt.amount), 0))}</td>
                     <td className="doc-ref px-3 py-2 text-right text-[#5A6B62]">
-                      {amt > 0 ? `${formatNum((parties.reduce((t, pt) => t + n(pt.amount), 0) / amt) * 100)}%` : '—'}
+                      {shareBase > 0 ? `${formatNum((parties.reduce((t, pt) => t + n(pt.amount), 0) / shareBase) * 100)}%` : '—'}
                     </td>
                     <td colSpan={2} />
                   </tr>
@@ -812,7 +824,16 @@ This was one bank debit that also cleared ${others.map((g) => `${s(g.bd_no)} ${f
   // `name` marks the two that are text rather than a figure — see the card.
   const terms: { k: string; v: string; sub?: string; name?: boolean }[] = [
     { k: 'NBFC', v: s(r.nbfc_name) || s(r.disc_bank) || '—', name: true },
-    { k: 'Party', v: s(r.party_name) || '—', sub: n(r.party_count) > 1 ? `and ${n(r.party_count) - 1} more` : '', name: true },
+    {
+      k: 'Party',
+      v: s(r.party_name) || '—',
+      // Name the others rather than counting them.
+      sub:
+        n(r.party_count) > 1
+          ? `and ${s(r.party_names).split(', ').filter((x) => x && nameKey(x) !== nameKey(r.party_name)).join(', ') || `${n(r.party_count) - 1} more`}`
+          : '',
+      name: true
+    },
     { k: 'Interest', v: `${formatNum(n(r.interest_pct))}%`, sub: `${formatNum(n(r.intDays))} days` },
     { k: 'Margin', v: `${formatNum(n(r.margin_pct))}%`, sub: formatINR(marginAmt) },
     { k: 'TDS', v: `${formatNum(n(r.tds_pct))}%`, sub: formatINR(tds) },
@@ -891,7 +912,7 @@ This was one bank debit that also cleared ${others.map((g) => `${s(g.bd_no)} ${f
                 </span>
                 <span className="flex min-w-0 max-w-full items-start gap-1.5">
                   <Users className="mt-px h-[17px] w-[17px] shrink-0 text-[#8FBFA8]" />
-                  <span className="min-w-0 [overflow-wrap:anywhere]">{s(r.party_name) || '—'}</span>
+                  <span className="min-w-0 [overflow-wrap:anywhere]">{s(r.party_names) || s(r.party_name) || '—'}</span>
                 </span>
                 <span className="flex items-center gap-1.5 capitalize">
                   <Percent className="h-[17px] w-[17px] text-[#8FBFA8]" />
