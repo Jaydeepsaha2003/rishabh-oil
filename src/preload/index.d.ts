@@ -225,6 +225,8 @@ export interface Api {
     groupTree: (companyId?: number) => Promise<Row[]>
     ledgerMap: (companyId?: number) => Promise<Row[]>
     renameLedger: (id: number, name: string, companyId?: number) => Promise<{ id: number; from: string; to: string }>
+    mergePreview: (fromId: number, intoId: number) => Promise<Row>
+    mergeLedgers: (fromId: number, intoId: number, keepName?: string) => Promise<{ id: number; name: string; lines: number }>
     mapLedger: (postsAs: string, useName: string, note?: string) => Promise<{ id: number }>
     unmapLedger: (id: number) => Promise<{ id: number }>
     createGroup: (a: { name: string; under?: string | number | null; nature?: string }) => Promise<{ id: number }>

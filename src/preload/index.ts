@@ -327,6 +327,9 @@ const api = {
     ledgerMap: (companyId?: number): Promise<Row[]> => ipcRenderer.invoke('journal:ledgerMap', { companyId }),
     renameLedger: (id: number, name: string, companyId?: number): Promise<{ id: number; from: string; to: string }> =>
       ipcRenderer.invoke('journal:renameLedger', { id, name, companyId }),
+    mergePreview: (fromId: number, intoId: number): Promise<Row> => ipcRenderer.invoke('journal:mergePreview', { fromId, intoId }),
+    mergeLedgers: (fromId: number, intoId: number, keepName?: string): Promise<{ id: number; name: string; lines: number }> =>
+      ipcRenderer.invoke('journal:mergeLedgers', { fromId, intoId, keepName }),
     mapLedger: (postsAs: string, useName: string, note?: string): Promise<{ id: number }> =>
       ipcRenderer.invoke('journal:mapLedger', { postsAs, useName, note }),
     unmapLedger: (id: number): Promise<{ id: number }> => ipcRenderer.invoke('journal:unmapLedger', { id }),

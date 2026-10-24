@@ -84,8 +84,10 @@ import {
   SearchX,
   ChevronsUpDown,
   Eye,
-  EyeOff
+  EyeOff,
+  Merge
 } from 'lucide-react'
+import { LedgerMergeDialog } from '@/components/LedgerMergeDialog'
 import { exportRowsToExcel, NUM_MONEY, NUM_QTY } from '@/lib/excel'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -2562,6 +2564,8 @@ export function Accounts({
   // ledger's own — written whenever a ledger is renamed, so the next posting
   // follows it. Shown on the row so a redirect is never invisible.
   const [ledMap, setLedMap] = useState<Row[]>([])
+  // The ledger being merged into another from Masters (LedgerMergeDialog).
+  const [mMerge, setMMerge] = useState<{ id: number; name: string } | null>(null)
   const [mBusy, setMBusy] = useState(false)
   // The website's one form for the chart — new, rename or move, a group or a
   // ledger — as a drawer beside the tree rather than a dialog over it. The
@@ -11957,6 +11961,11 @@ export function Accounts({
                         <FolderInput className="h-[15px] w-[15px]" />
                       )}
                       {actBtn(
+                        `Merge ${String(ln.a.name)} into another ledger — one party kept in two ledgers made one`,
+                        () => setMMerge({ id, name: String(ln.a.name) }),
+                        <Merge className="h-[15px] w-[15px]" />
+                      )}
+                      {actBtn(
                         Number(ln.a.is_hidden) ? `Unhide ${String(ln.a.name)}` : `Hide ${String(ln.a.name)} from the pickers and this list`,
                         () => void masterSetHidden([id], !Number(ln.a.is_hidden)),
                         Number(ln.a.is_hidden) ? <Eye className="h-[15px] w-[15px]" /> : <EyeOff className="h-[15px] w-[15px]" />
@@ -18880,6 +18889,16 @@ export function Accounts({
         }}
       />
     )}
+
+    <LedgerMergeDialog
+      from={mMerge}
+      ledgers={accounts}
+      onClose={() => setMMerge(null)}
+      onDone={() => {
+        void loadAccounts()
+        void loadGroups()
+      }}
+    />
 
     {/* LEAVING A VOUCHER HALF-WRITTEN.
         Both ways out of it used to be silent: an open alter carried its lines
