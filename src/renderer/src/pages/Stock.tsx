@@ -1225,10 +1225,8 @@ function StockTable({ rows: allRows, breakdown, label = 'stock', range, onRange,
       {/* Period for the register: opening balance before it, flows within it. */}
       {!__WEB__ && <span className="text-[11px] font-semibold text-muted-foreground">From</span>}
       <div className="w-40"><DatePicker value={range.from} onChange={(v) => onRange({ ...range, from: v })} max={range.to || undefined} /></div>
-      {/* A From earlier than the opening changes nothing here, so say so
-          rather than leaving the reader to wonder why the figures did not
-          move. The count superseded whatever came before it — that is what
-          striking an opening means. */}
+      {/* A From earlier than the opening count opens at the count worked
+          back (stockLevels), so say where that Opening came from. */}
       {!!openingFrom && (!range.from || range.from < openingFrom) && (
         <span
           className={cn(
@@ -1238,10 +1236,10 @@ function StockTable({ rows: allRows, breakdown, label = 'stock', range, onRange,
             // the handoff reserves for exactly that.
             __WEB__ && cn(SK_NOTE, '!rounded-[4px] !border-l-[3px] !px-2.5 !py-1 !text-[11px] !font-bold !text-[#3D3179]')
           )}
-          title={`The opening stock was counted on ${formatDate(openingFrom)}, and a counted tank already accounts for everything bought and consumed before it. So the register starts there whatever From says — reaching back earlier would count those movements a second time. They are still on their own documents: the purchase, the dispatch, the production run.`}
+          title={`The opening stock was counted on ${formatDate(openingFrom)}. A From before that shows the movements from that date, and its Opening is worked back from the count — the count less what came in and went out in between — so Closing still agrees with the count.`}
         >
           <AlertTriangle className={cn('h-3 w-3 shrink-0', __WEB__ && '!text-[#5B4BA8]')} />
-          register begins {formatDate(openingFrom)}
+          opening worked back from the {formatDate(openingFrom)} count
           <button
             type="button"
             className={cn('ml-0.5 underline underline-offset-2 hover:no-underline', __WEB__ && '!font-extrabold !text-[#5B4BA8]')}

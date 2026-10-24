@@ -267,19 +267,31 @@ export async function stockLevels(
     if (kind === 'opening' && !from) return new Map()
     let sql = src.base
     const args: (string | number)[] = [...cidList]
+    // FROM BEFORE THE COUNT: the opening is worked BACK from it. The count is
+    // the stock on its morning, so the stock on an earlier From is the count
+    // less what moved in between — those movements come off here (negated)
+    // and show in the period columns instead, never on both sides.
+    let back = false
     if (kind === 'opening') {
-      // Nothing to bring forward: the period starts at day zero (or before it),
-      // so the counted balance IS the opening and no movement precedes it.
-      if (floor && from <= floor) return new Map()
-      sql += ` AND ${src.date} < ?`
-      args.push(from)
-      if (floor) {
-        sql += ` AND ${src.date} >= ?`
-        args.push(floor)
+      if (floor && from === floor) return new Map()
+      if (floor && from < floor) {
+        // One company of a shared site carries no counted opening to work back from.
+        if (fid && !whole) return new Map()
+        back = true
+        sql += ` AND ${src.date} >= ? AND ${src.date} < ?`
+        args.push(from, floor)
+      } else {
+        sql += ` AND ${src.date} < ?`
+        args.push(from)
+        if (floor) {
+          sql += ` AND ${src.date} >= ?`
+          args.push(floor)
+        }
       }
     } else {
-      // A period asked for from before day zero still begins at day zero.
-      const lo = floor && (!from || from < floor) ? floor : from
+      // No From at all is the register since the count; an earlier From is
+      // honoured as asked (see the opening above).
+      const lo = from || floor
       if (lo) {
         sql += ` AND ${src.date} >= ?`
         args.push(lo)
@@ -291,7 +303,7 @@ export async function stockLevels(
     }
     const res = await c.execute({ sql: `${sql} ${src.group}`, args })
     const m = new Map<number, number>()
-    for (const r of res.rows) m.set(Number(r.pid), Number(r.q) || 0)
+    for (const r of res.rows) m.set(Number(r.pid), (back ? -1 : 1) * (Number(r.q) || 0))
     return m
   }
 
@@ -342,10 +354,8 @@ export async function stockLevels(
                 ${noteExpr} AS nt,
                 ${anyNoteExpr} AS an
            FROM stock_openings WHERE company_id IN (${ph})`
-    if (to) {
-      sql += ' AND as_of <= ?'
-      args.push(to)
-    }
+    // Not bounded by `to`: a period ending before the count opens at the
+    // count worked back (see slice), so the count is always the anchor.
     const res = await c.execute({ sql: `${sql} GROUP BY product_id`, args })
     const total = new Map<number, number>()
     const adj = new Map<number, number>()
@@ -377,10 +387,10 @@ export async function stockLevels(
   const ppDetails = new Map<number, Row[]>()
   const ppScopeKey = fid ? `f${fid}` : `c${cidList[0] || getActiveCompanyId()}`
   const ppLots = await syncPpLots(ppScopeKey)
-  const finishedDetails = await ppFinishedDetails(cidList, floor && (!from || from < floor) ? floor : from, to)
+  const finishedDetails = await ppFinishedDetails(cidList, from || floor, to)
   const ppRestate = async (): Promise<Map<number, number>> => {
     const out = new Map<number, number>()
-    if ((fid && !whole) || (to && floor && to < floor)) return out
+    if (fid && !whole) return out
     const scope = fid ? `f${fid}` : `c${cidList[0] || getActiveCompanyId()}`
     const res = await c.execute({
       sql: `SELECT sop.product_id AS pid, sop.qty AS qty, sop.formulation_id AS fid, sop.stage_id
@@ -463,7 +473,7 @@ export async function stockLevels(
   {
     const conds = ['deleted_at IS NULL', `company_id IN (${ph})`]
     const args: (string | number)[] = [...cidList]
-    const lo = floor && (!from || from < floor) ? floor : from
+    const lo = from || floor
     if (lo) { conds.push('adj_date >= ?'); args.push(lo) }
     if (to) { conds.push('adj_date <= ?'); args.push(to) }
     const r = await c.execute({
@@ -792,7 +802,7 @@ export async function stockPartyBreakdown(
   const to = String(range?.to || '')
   const fid = await factoryOfCompanies(cidList)
   const floor = await openingFloor(cidList, fid)
-  const from = floor && (!asked || asked < floor) ? floor : asked
+  const from = asked || floor
   const bounds = (dateExpr: string): { sql: string; args: string[] } => {
     const parts: string[] = []
     const args: string[] = []
