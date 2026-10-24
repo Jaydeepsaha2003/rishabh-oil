@@ -692,15 +692,33 @@ export async function postPurchaseJournal(v: {
   companyId?: number
 }): Promise<void> {
   return withDbTransaction(async () => {
-  await deleteJournalByRef('order_id', v.orderId)
+  const c = getClient()
+  // RE-SAVED, NOT RE-MADE. A purchase edited in Purchases (a rate, a quantity)
+  // updates the voucher it already has — same id, same PUR number — instead of
+  // deleting it and posting a new one at the end of the sequence. A new id
+  // every save left anything holding the voucher (the screen showing it, a
+  // link, the number noted down) on one that no longer existed, while the
+  // ledger showed the new figures. Only a voucher in the purchase's own
+  // company is kept; one filed elsewhere is replaced as before.
+  const prior = (await c.execute({ sql: 'SELECT id, company_id FROM journal_entries WHERE order_id = ? ORDER BY id', args: [v.orderId] }))
+    .rows as unknown as { id: number; company_id: number }[]
+  const want = n(v.companyId) || getActiveCompanyId()
+  const keep = prior.find((r) => n(r.company_id) === want)
+  for (const r of prior) {
+    if (keep && n(r.id) === n(keep.id)) continue
+    await c.execute({ sql: 'DELETE FROM journal_bill_allocs WHERE line_id IN (SELECT id FROM journal_lines WHERE entry_id = ?)', args: [n(r.id)] })
+    await c.execute({ sql: 'DELETE FROM journal_line_splits WHERE line_id IN (SELECT id FROM journal_lines WHERE entry_id = ?)', args: [n(r.id)] }).catch(() => undefined)
+    await c.execute({ sql: 'DELETE FROM journal_lines WHERE entry_id = ?', args: [n(r.id)] })
+    await c.execute({ sql: 'DELETE FROM journal_entries WHERE id = ?', args: [n(r.id)] })
+  }
   const ro = n(v.roundOff)
-  await postJournal({
+  const args: PostArgs = {
     date: v.date,
     vchType: 'PURCHASE OIL',
     vchNo: v.invoiceNo,
     narration: `Purchase ${v.invoiceNo}`,
     orderId: v.orderId,
-    companyId: v.companyId,
+    companyId: want,
     lines: [
       { account: `${v.oilCode} PUR A/C`, group: 'Purchase Accounts', dr: v.taxable },
       ...gstLines({ side: 'INPUT', pct: n(v.gstPct), type: asGstType(v.gstType), dr: n(v.gst) }),
@@ -708,7 +726,9 @@ export async function postPurchaseJournal(v: {
       { account: 'TDS PAYABLE A/C', group: 'Duties & Taxes', cr: v.tds },
       { account: v.supplierName, group: 'Sundry Creditors', cr: v.net }
     ]
-  })
+  }
+  if (keep) await repostJournal(n(keep.id), args)
+  else await postJournal(args)
   })
 }
 
