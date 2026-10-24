@@ -7549,7 +7549,10 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
                   className={cn('tabular-nums', __WEB__ && '!text-[12.5px] !font-bold !text-[#0A1F17]')}
                   title={onBill ? `This line: ${formatINR(calc.tdsAmount)}` : undefined}
                 >
-                  − {formatINR(onBill ? billMoney.tds : calc.tdsAmount)}
+                  {/* No minus on a nil TDS — "− ₹0.00" reads as something deducted. */}
+                  {Math.abs(onBill ? billMoney.tds : calc.tdsAmount) < 0.005
+                    ? formatINR(0)
+                    : `− ${formatINR(onBill ? billMoney.tds : calc.tdsAmount)}`}
                 </span>
               </div>
               </div>
