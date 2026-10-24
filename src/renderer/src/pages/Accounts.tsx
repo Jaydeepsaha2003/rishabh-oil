@@ -9185,8 +9185,9 @@ export function Accounts({
                             <span style={{ fontSize: 12, color: '#C3D2C6', paddingLeft: 3 }}>—</span>
                           )}
                         </div>
-                        <div className="flex min-w-0 items-center gap-1.5" style={{ padding: '0 10px' }}>
-                          <span className="truncate" style={{ fontSize: 12, fontWeight: 800 }}>
+                        {/* The tag under the name, so a long name keeps its width. */}
+                        <div className="flex min-w-0 flex-col items-start justify-center gap-0.5" style={{ padding: '0 10px' }}>
+                          <span className="max-w-full truncate" style={{ fontSize: 12, fontWeight: 800 }} title={String(r.transporter_name || '')}>
                             {String(r.transporter_name || '—')}
                           </span>
                           {unreg && (
