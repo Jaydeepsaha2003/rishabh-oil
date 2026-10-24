@@ -107,7 +107,7 @@ export function SaleTdsDialog({
   const pct = Number(info?.pct) || 0
   return (
     <Dialog open={!!saleId} onOpenChange={(o) => !o && !busy && onClose()}>
-      <DialogContent className="max-w-md">
+      <DialogContent className="max-w-lg">
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
             <Percent className="h-4 w-4 text-[#C2700A]" />
@@ -140,7 +140,7 @@ export function SaleTdsDialog({
                 again replaces it.
               </p>
             )}
-            <div className="grid grid-cols-2 gap-3">
+            <div className="grid grid-cols-2 gap-3 [&>*]:min-w-0">
               <div className="grid gap-1.5">
                 <Label>TDS amount</Label>
                 <Input inputMode="decimal" value={amount} onChange={(e) => setAmount(e.target.value)} autoFocus />
@@ -170,7 +170,7 @@ export function SaleTdsDialog({
             </div>
           </div>
         )}
-        <DialogFooter className="gap-2">
+        <DialogFooter className="flex-wrap gap-2 sm:space-x-0">
           {ex && (
             <Button variant="outline" className="mr-auto text-rose-600" onClick={() => void remove()} disabled={busy}>
               Remove
