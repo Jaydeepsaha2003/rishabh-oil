@@ -2288,6 +2288,22 @@ function SalesTab({
                                   TDS {formatINR(Number(tdsOf(inv.first)?.amount))}
                                 </button>
                               )}
+                              {/* A customer who deducts TDS, and none booked on this invoice yet. */}
+                              {!tdsOf(inv.first) &&
+                                !inv.first.rejected_at &&
+                                Number(customers.find((c) => Number(c.id) === Number(inv.first.customer_id))?.tds_pct) > 0 && (
+                                  <button
+                                    type="button"
+                                    title="No TDS booked on this invoice yet — click to enter what the customer deducted"
+                                    onClick={(e) => {
+                                      e.stopPropagation()
+                                      setTdsAsk({ id: Number(inv.first.id), afterSave: false })
+                                    }}
+                                    className="rounded-[3px] border border-dashed border-rose-300 bg-white px-1 text-[10px] font-semibold text-rose-700 hover:bg-rose-50"
+                                  >
+                                    No TDS
+                                  </button>
+                                )}
                             </div>
                             {/* Stops the row's own click, which expands the
                                 invoice — tagging it is not opening it. */}

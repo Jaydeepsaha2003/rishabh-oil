@@ -196,6 +196,20 @@ const DESKS = [
     ink: '#8A5300'
   },
   {
+    key: 'tds',
+    module: 'sales',
+    badge: 'TDS desk',
+    digest: 'Books the TDS customers deducted, on invoices with none yet. No rates, no other invoices.',
+    short: 'Customer TDS desk only',
+    title: 'Special access — customer TDS desk only',
+    body:
+      'Turns the Sales page into the list of invoices whose customer deducts TDS and that have no TDS booked yet: Date, Invoice, Customer and Taxable only. The one thing this user can do is book the TDS on such an invoice; rates, GST, freight and every other invoice are left out of the data. Not for a login that holds the whole Sales page — take their Sales access down and save first (the server refuses it otherwise).',
+    override: 'The Sales row in the grid below is overridden while this is on.',
+    bd: '#6D3FC0',
+    bg: '#F4EEFD',
+    ink: '#5B2FA8'
+  },
+  {
     key: 'topup',
     module: 'salesBargains',
     badge: 'top-up desk',
