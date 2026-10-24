@@ -2,11 +2,23 @@ import { useEffect, useState } from 'react'
 import { toast } from 'sonner'
 import { FileMinus } from 'lucide-react'
 import { Button } from '@/components/ui/button'
+import { Input } from '@/components/ui/input'
+import { Label } from '@/components/ui/label'
+import { DatePicker } from '@/components/ui/date-picker'
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { errText, formatDate, formatINR } from '@/lib/format'
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Row = Record<string, any>
+
+export type ShortageAsk = {
+  saleId: number
+  invoiceNo: string
+  customer: string
+  due: number
+  // What a credit note raised from here needs; absent, only linking is offered.
+  cn?: { customerId: number; companyId: number; date: string; gstPct: number; detail: string }
+}
 
 // WHICH CREDIT NOTE SETTLED THIS TANKER'S SHORTAGE. The customer's credit notes
 // in the invoice's book — made here or booked from Tally — are listed, the ones
@@ -17,17 +29,26 @@ export function ShortageNoteDialog({
   onClose,
   onDone
 }: {
-  ask: { saleId: number; invoiceNo: string; customer: string; due: number } | null
+  ask: ShortageAsk | null
   onClose: () => void
   onDone?: () => void
 }): React.JSX.Element {
   const [data, setData] = useState<Row | null>(null)
   const [picked, setPicked] = useState<Set<number>>(new Set())
   const [busy, setBusy] = useState(false)
+  // RAISE THE CREDIT NOTE HERE. Value-only (no quantity, so no stock moves),
+  // Agst Ref the invoice, then linked to its shortage in the same step.
+  const [cnAmt, setCnAmt] = useState('')
+  const [cnGst, setCnGst] = useState('')
+  const [cnDate, setCnDate] = useState('')
+  const [cnAgainst, setCnAgainst] = useState('')
 
   useEffect(() => {
     setData(null)
     if (!ask) return
+    setCnAmt(String(Math.round((ask.due || 0) * 100) / 100))
+    setCnGst(String(ask.cn?.gstPct ?? 0))
+    setCnDate(ask.cn?.date || '')
     let live = true
     window.api.sales
       .shortageNotes(ask.saleId)
@@ -35,6 +56,7 @@ export function ShortageNoteDialog({
         if (!live) return
         setData(r)
         setPicked(new Set(((r.linked as Row[]) || []).map((l) => Number(l.entry_id))))
+        setCnAgainst(String(r.sale_account || 'SALES RETURN A/C'))
       })
       .catch((e) => {
         toast.error(errText(e))
@@ -62,6 +84,37 @@ export function ShortageNoteDialog({
     }
   }
 
+  const createCn = async (): Promise<void> => {
+    if (!ask?.cn) return
+    setBusy(true)
+    try {
+      const made = await window.api.notes.create({
+        note_type: 'credit',
+        party_type: 'customer',
+        party_id: ask.cn.customerId,
+        company_id: ask.cn.companyId || undefined,
+        note_date: cnDate,
+        base_amount: Number(cnAmt),
+        gst_pct: Number(cnGst) || 0,
+        against_account: cnAgainst,
+        against_invoice: ask.invoiceNo,
+        narration: `Shortage on ${ask.invoiceNo} beyond tolerance — ${ask.cn.detail}`
+      })
+      // The new note's voucher, found among the customer's notes, joins the links.
+      const r = await window.api.sales.shortageNotes(ask.saleId)
+      const hit = ((r.notes as Row[]) || []).find((x) => String(x.vch_no) === String(made.note_no))
+      if (!hit) throw new Error(`Credit note ${made.note_no} was made but could not be found to link — link it from the list`)
+      await window.api.sales.shortageNotesSet(ask.saleId, [...picked, Number(hit.entry_id)])
+      toast.success(`Credit note ${made.note_no} made and linked to the shortage on ${ask.invoiceNo}`)
+      onDone?.()
+      onClose()
+    } catch (e) {
+      toast.error(errText(e))
+    } finally {
+      setBusy(false)
+    }
+  }
+
   return (
     <Dialog open={!!ask && !!data} onOpenChange={(o) => !o && !busy && onClose()}>
       <DialogContent className="max-w-2xl">
@@ -78,7 +131,7 @@ export function ShortageNoteDialog({
         </p>
         {notes.length === 0 ? (
           <p className="rounded-md border border-dashed px-3 py-6 text-center text-[12.5px] text-muted-foreground">
-            No credit note to this customer in these books yet. Raise it (Accounting → Credit Note, or book it from Tally), then link it here.
+            No credit note to this customer in these books yet. Create it below, or raise it in Accounting → Credit Note / book it from Tally and link it here.
           </p>
         ) : (
           <div className="max-h-[50vh] overflow-auto rounded-md border">
@@ -132,6 +185,43 @@ export function ShortageNoteDialog({
                 })}
               </tbody>
             </table>
+          </div>
+        )}
+        {ask?.cn && (
+          <div className="grid gap-2 rounded-md border border-rose-200 bg-rose-50/40 p-3">
+            <div className="text-[12.5px] font-semibold text-rose-800">Create the credit note from here</div>
+            <p className="text-[11.5px] text-muted-foreground">{ask.cn.detail}</p>
+            <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+              <div className="grid gap-1">
+                <Label className="text-[11px]">Amount (before GST)</Label>
+                <Input inputMode="decimal" value={cnAmt} onChange={(e) => setCnAmt(e.target.value)} />
+              </div>
+              <div className="grid gap-1">
+                <Label className="text-[11px]">GST %</Label>
+                <Input inputMode="decimal" value={cnGst} onChange={(e) => setCnGst(e.target.value)} />
+              </div>
+              <div className="grid gap-1">
+                <Label className="text-[11px]">Date</Label>
+                <DatePicker value={cnDate} onChange={(v) => setCnDate(String(v || ''))} />
+              </div>
+              <div className="grid gap-1">
+                <Label className="text-[11px]">Ledger (Dr)</Label>
+                <Input value={cnAgainst} onChange={(e) => setCnAgainst(e.target.value.toUpperCase())} />
+              </div>
+            </div>
+            <p className="text-[11px] text-muted-foreground">
+              Dr {cnAgainst || 'ledger'} {formatINR(Number(cnAmt) || 0)}
+              {Number(cnGst) > 0 ? ` + GST ${cnGst}%` : ''} / Cr {ask.customer}, Agst Ref {ask.invoiceNo}. No stock moves.
+            </p>
+            <div className="flex justify-end">
+              <Button
+                className="bg-rose-700 hover:bg-rose-800"
+                disabled={busy || !(Number(cnAmt) > 0) || !cnDate || !cnAgainst.trim()}
+                onClick={() => void createCn()}
+              >
+                {busy ? 'Creating…' : 'Create credit note & link'}
+              </Button>
+            </div>
           </div>
         )}
         <p className="text-[12px] text-muted-foreground">

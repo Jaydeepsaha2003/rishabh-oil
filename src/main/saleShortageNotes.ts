@@ -101,7 +101,19 @@ export async function shortageNoteCandidates(saleId: number): Promise<Row> {
     names_invoice: !!no && (String(r.refs || '').toUpperCase().includes(no) || String(r.narration || '').toUpperCase().includes(no))
   }))
   notes.sort((a, b) => Number(b.names_invoice) - Number(a.names_invoice))
-  return { invoice_no: inv.invoice_no, invoice_key: inv.key, notes, linked }
+  // The sale account the invoice credited — where a shortage credit note goes
+  // back to, as the ones booked in Tally do (RPO SALE A/C and the like).
+  const ids = inv.invoice_group
+    ? (await c.execute({ sql: 'SELECT id FROM sales WHERE invoice_group = ?', args: [String(inv.invoice_group)] })).rows.map((r) => n((r as unknown as Row).id))
+    : [n(inv.id)]
+  const sa = (
+    await c.execute({
+      sql: `SELECT a.name FROM journal_entries je JOIN journal_lines jl ON jl.entry_id = je.id JOIN ledger_accounts a ON a.id = jl.account_id
+             WHERE je.sale_id IN (${ids.map(() => '?').join(',')}) AND jl.cr > 0 AND a.acc_group = 'Sales Accounts' ORDER BY jl.cr DESC LIMIT 1`,
+      args: ids
+    })
+  ).rows[0] as unknown as Row | undefined
+  return { invoice_no: inv.invoice_no, invoice_key: inv.key, notes, linked, sale_account: sa ? String(sa.name) : '' }
 }
 
 /** Link these credit notes to the invoice's shortage (replacing the ones linked before). */

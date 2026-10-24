@@ -85,6 +85,7 @@ import { ExcelButton } from '@/components/ExcelButton'
 import { downloadSkuRateExcel, parseSkuRateExcel, caseMT } from '@/lib/skuRateExcel'
 import { BASIS_LABEL, saleShortage } from '@/lib/saleShortage'
 import { ShortageWorkings, type ShortageLine } from '@/components/ShortageWorkings'
+import type { ShortageAsk } from '@/components/ShortageNoteDialog'
 import { useLiveRefresh } from '@/lib/useLiveRefresh'
 import { useGlobalDateRange, globalRangeAppliesTo } from '@/lib/globalDateRange'
 import { isManufacturingParty } from '@/lib/constants'
@@ -499,7 +500,34 @@ function SalesTab({
   // The credit notes linked to an invoice's tanker shortage (ShortageNoteDialog),
   // keyed company|invoice key.
   const [shortNotes, setShortNotes] = useState<Record<string, Row[]>>({})
-  const [shortAsk, setShortAsk] = useState<{ saleId: number; invoiceNo: string; customer: string; due: number } | null>(null)
+  const [shortAsk, setShortAsk] = useState<ShortageAsk | null>(null)
+  // The shortage question for one invoice: what is due beyond tolerance on its
+  // LOOSE lines, and what a credit note for it needs (ShortageNoteDialog).
+  // `received` overrides the stored figures — the unload dialog asks before the
+  // list has reloaded.
+  const shortageAskFor = (inv: { first: Row; lines: Row[] }, received?: Record<string, number | null>, date?: string): ShortageAsk | null => {
+    const parts = inv.lines
+      .filter((l) => String(l.sale_type || 'LOOSE').toUpperCase() !== 'PACKED')
+      .map((l) => ({ l, sh: saleShortage(received ? { ...l, received_qty: received[String(l.id)] ?? l.received_qty } : l, defaultShortagePct) }))
+      .filter((x) => x.sh.applies && !x.sh.within)
+    const due = Math.round(parts.reduce((t, x) => t + x.sh.deductible, 0) * 100) / 100
+    if (!(due > 0)) return null
+    return {
+      saleId: Number(inv.first.id),
+      invoiceNo: String(inv.first.invoice_no || ''),
+      customer: String(inv.first.customer_master || inv.first.customer || ''),
+      due,
+      cn: {
+        customerId: Number(inv.first.customer_id) || 0,
+        companyId: Number(inv.first.company_id) || 0,
+        date: String(date || inv.first.unloaded_date || todayISO()).slice(0, 10),
+        gstPct: Number(parts[0].l.gst_pct) || 0,
+        detail: parts
+          .map((x) => `${String(x.l.product_name || 'Item')} ${formatNum(x.sh.excessQty)} ${String(x.l.uom || '')} short beyond ${formatNum(x.sh.pct)}% @ ${formatNum(x.sh.rate)}`)
+          .join('; ')
+      }
+    }
+  }
   const loadShortNotes = useCallback(async () => {
     try {
       const m: Record<string, Row[]> = {}
@@ -1776,8 +1804,11 @@ function SalesTab({
     }
     setUnloadSaving(true)
     try {
-      await changeInvoiceStage(unloadInv.group, 'unloaded', unloadDate, received)
+      const ok = await changeInvoiceStage(unloadInv.group, 'unloaded', unloadDate, received)
+      // Short beyond tolerance: offer the credit note straight away.
+      const ask = ok ? shortageAskFor(unloadInv, received, unloadDate) : null
       setUnloadInv(null)
+      if (ask) setShortAsk(ask)
     } finally {
       setUnloadSaving(false)
     }
@@ -1788,28 +1819,31 @@ function SalesTab({
     stage: string,
     dateIn?: string,
     received?: Record<string, number | null>
-  ): Promise<void> {
+  ): Promise<boolean> {
     const label = DISPATCH_STAGES.find((x) => x.value === stage)?.label || stage
     const today = dateIn || todayISO()
     try {
       await window.api.sales.setInvoiceStage(group, stage, false, today, received)
       toast.success(`Invoice marked ${label}`)
       await load()
+      return true
     } catch (e) {
       const msg = errText(e)
       if (/stock/i.test(msg)) {
         const go = window.confirm(`${msg}\n\nDispatch anyway (off-stock)? The finished-goods stock will still be reduced by this invoice and may go negative — this only skips the "enough stock" check.`)
-        if (!go) return
+        if (!go) return false
         try {
           await window.api.sales.setInvoiceStage(group, stage, true, today, received)
           toast.success(`Invoice marked ${label} — off-stock (stock still reduced)`)
           await load()
+          return true
         } catch (e2) {
           toast.error(errText(e2))
         }
-        return
+        return false
       }
       toast.error(msg)
+      return false
     }
   }
 
@@ -2430,7 +2464,8 @@ function SalesTab({
                               saleId: Number(inv.first.id),
                               invoiceNo: String(inv.first.invoice_no || ''),
                               customer: String(inv.first.customer_master || inv.first.customer || ''),
-                              due: invDue
+                              due: invDue,
+                              cn: shortageAskFor(inv)?.cn
                             })
                           }
                           return (
