@@ -95,11 +95,17 @@ export async function shortageNoteCandidates(saleId: number): Promise<Row> {
     })
   ).rows as unknown as Row[]
   const no = String(inv.invoice_no || '').toUpperCase()
-  const notes = rows.map((r) => ({
-    ...r,
-    amount: round2(n(r.amount)),
-    names_invoice: !!no && (String(r.refs || '').toUpperCase().includes(no) || String(r.narration || '').toUpperCase().includes(no))
-  }))
+  const linkedIds = new Set(linked.map((l) => n(l.entry_id)))
+  const notes = rows
+    .map((r) => ({
+      ...r,
+      amount: round2(n(r.amount)),
+      names_invoice: !!no && (String(r.refs || '').toUpperCase().includes(no) || String(r.narration || '').toUpperCase().includes(no))
+    }))
+    // A note set Agst Ref ANOTHER invoice settles that one, not this — left out.
+    // Kept: notes naming this invoice, notes with no bill reference, and any
+    // already linked here.
+    .filter((r: Row) => r.names_invoice || !String(r.refs || '').trim() || linkedIds.has(n(r.entry_id)))
   notes.sort((a, b) => Number(b.names_invoice) - Number(a.names_invoice))
   // The sale account the invoice credited — where a shortage credit note goes
   // back to, as the ones booked in Tally do (RPO SALE A/C and the like).
