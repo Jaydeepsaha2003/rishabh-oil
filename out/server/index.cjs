@@ -2793,16 +2793,16 @@ async function groupTree(companyId) {
     guard.add(id);
     const me = byId.get(id);
     const o = own.get(String(me?.name || "")) || { n: 0, bal: 0 };
-    let n59 = o.n;
+    let n60 = o.n;
     let bal = o.bal;
     let groups = 0;
     for (const k of kids.get(id) || []) {
       const sub = roll(k, guard);
-      n59 += sub.n;
+      n60 += sub.n;
       bal += sub.bal;
       groups += 1 + sub.groups;
     }
-    const out = { n: n59, bal, groups };
+    const out = { n: n60, bal, groups };
     totals.set(id, out);
     return out;
   };
@@ -5285,9 +5285,9 @@ async function accountsRule(ns, op, args) {
   const a = args || {};
   const c = getClient();
   const one = async (sql, id) => {
-    const n59 = Number(id) || 0;
-    if (!n59) return null;
-    const r = await c.execute({ sql, args: [n59] }).catch(() => null);
+    const n60 = Number(id) || 0;
+    if (!n60) return null;
+    const r = await c.execute({ sql, args: [n60] }).catch(() => null);
     return r?.rows[0] || null;
   };
   const section = (key3, extra = {}) => ({ module: key3, label: SECTION_LABEL[key3] || "Accounting", ...extra });
@@ -6495,8 +6495,8 @@ async function nextBargainNo(oilTypeId, supplierId, bargainDate) {
   let maxSeq = 0;
   for (const r of existing.rows) {
     const parts = String(r.bargain_no).split("/");
-    const n59 = parseInt(parts[parts.length - 1] ?? "0", 10);
-    if (!Number.isNaN(n59) && n59 > maxSeq) maxSeq = n59;
+    const n60 = parseInt(parts[parts.length - 1] ?? "0", 10);
+    if (!Number.isNaN(n60) && n60 > maxSeq) maxSeq = n60;
   }
   const serial = String(maxSeq + 1).padStart(2, "0");
   return `${oil}/${dayMonth(bargainDate)}/${party}/${serial}`;
@@ -18575,8 +18575,8 @@ async function assertNotInUse(table, id) {
   const held = [];
   for (const d of deps) {
     const r = await c.execute({ sql: `SELECT COUNT(*) AS n FROM ${d.table} WHERE ${d.column} = ?`, args: [id] }).catch(() => null);
-    const n59 = r ? Number(r.rows[0].n) : 0;
-    if (n59 > 0) held.push(`${n59} ${d.label}${n59 === 1 ? "" : "s"}`);
+    const n60 = r ? Number(r.rows[0].n) : 0;
+    if (n60 > 0) held.push(`${n60} ${d.label}${n60 === 1 ? "" : "s"}`);
   }
   if (!held.length) return;
   const who2 = await c.execute({ sql: `SELECT name FROM ${table} WHERE id = ?`, args: [id] });
@@ -19729,6 +19729,7 @@ __export(billDiscounting_exports, {
   bdInterestWindow: () => bdInterestWindow,
   bdKpis: () => bdKpis,
   bdLimits: () => bdLimits,
+  bdPendingPayout: () => bdPendingPayout,
   convertOpenAdjToCharge: () => convertOpenAdjToCharge,
   createBd: () => createBd,
   deleteBd: () => deleteBd,
@@ -20159,6 +20160,17 @@ async function supplierShares(bdId) {
   );
   if (rows2.length < 2 || rows2.some((r) => !(n24(r.amount) > 0))) return [];
   return rows2.map((r) => ({ name: String(r.name), share: round29(n24(r.amount)) }));
+}
+async function bdPendingPayout(bdId) {
+  const bd = await loadBd(bdId);
+  const calc = bdCalc(bd);
+  const upfront = !!bd.interest_upfront;
+  const serviced = String(bd.interest_mode || "") === "serviced";
+  const inParts = n24(bd.first_party_part) > 5e-3;
+  const leg1 = calc.legs.length && !inParts ? calc.legs[0] : null;
+  const pay = leg1 ? round29((upfront || serviced ? leg1.amount : leg1.net) + calc.adjCharge) : round29(calc.receiptAmount);
+  const shares = !inParts && !leg1 ? await supplierShares(bdId) : [];
+  return { bd, parts: shares.length > 1 ? splitByShares(pay, shares) : [{ name: partyName(bd), amount: pay }] };
 }
 function splitByShares(total, shares) {
   const whole = shares.reduce((t, x) => t + x.share, 0);
@@ -26914,6 +26926,89 @@ var init_tallyBank = __esm({
   }
 });
 
+// src/main/provisional.ts
+var provisional_exports = {};
+__export(provisional_exports, {
+  provisionalEntries: () => provisionalEntries
+});
+async function provisionalEntries(accountId, companyId) {
+  const c = getClient();
+  const cid = companyId || getActiveCompanyId();
+  const acc = (await c.execute({ sql: "SELECT name FROM ledger_accounts WHERE id = ?", args: [accountId] })).rows[0];
+  if (!acc) return [];
+  const want = String(acc.name || "").trim().toUpperCase();
+  const isThis = async (name) => {
+    const asked = await partyAccountName(String(name || "").trim().toUpperCase(), "Sundry Creditors", cid);
+    return String(await resolveAccountName(asked, cid) || asked).trim().toUpperCase() === want;
+  };
+  const out = [];
+  const lcs = await c.execute({
+    sql: `SELECT lc.id, lc.lc_no, lc.amount, lc.bank, COALESCE(lc.opened_date, lc.open_date) AS d, s.name AS supplier
+            FROM letters_of_credit lc JOIN suppliers s ON s.id = lc.party_id
+           WHERE lc.company_id = ? AND lc.party_type = 'supplier' AND lc.stage = 'open'
+             AND COALESCE(lc.workflow_status, 'in_progress') = 'in_progress'`,
+    args: [cid]
+  });
+  for (const r of lcs.rows) {
+    if (!(n53(r.amount) > 0) || !await isThis(String(r.supplier))) continue;
+    out.push({
+      id: -(1e6 + n53(r.id)),
+      entry_id: null,
+      entry_date: String(r.d || "").slice(0, 10),
+      vch_type: "PROVISIONAL",
+      vch_no: "",
+      particulars: `LC ${String(r.lc_no || "")} \xB7 ${String(r.bank || "").trim() || "bank"}`,
+      narration: `Provisional \u2014 LC ${String(r.lc_no || "")} is open; the bank's payment to the supplier will debit this ledger`,
+      dr: n53(r.amount),
+      cr: 0,
+      lc_id: n53(r.id),
+      lc_no: String(r.lc_no || ""),
+      provisional: true
+    });
+  }
+  const bds = await c.execute({
+    sql: `SELECT id FROM bill_discountings
+           WHERE company_id = ? AND finance_type = 'PID' AND disbursement_route = 'supplier'
+             AND payment_received_date IS NULL AND COALESCE(status, 'open') <> 'repaid'`,
+    args: [cid]
+  });
+  for (const b of bds.rows) {
+    const { bd, parts } = await bdPendingPayout(n53(b.id));
+    for (const [k, p] of parts.entries()) {
+      if (!(p.amount > 0) || !await isThis(p.name)) continue;
+      out.push({
+        id: -(2e6 + n53(b.id) * 10 + k),
+        entry_id: null,
+        entry_date: String(bd.created_at || "").slice(0, 10),
+        vch_type: "PROVISIONAL",
+        vch_no: "",
+        particulars: `BD ${String(bd.bd_no || "")} \xB7 ${String(bd.nbfc_name || "NBFC")}`,
+        narration: `Provisional \u2014 BD ${String(bd.bd_no || "")} awaits the NBFC's payment; paid straight to the supplier, it will debit this ledger`,
+        dr: p.amount,
+        cr: 0,
+        bd_id: n53(b.id),
+        bd_no: String(bd.bd_no || ""),
+        provisional: true
+      });
+    }
+  }
+  return out.sort((a, b) => String(a.entry_date).localeCompare(String(b.entry_date)));
+}
+var n53;
+var init_provisional = __esm({
+  "src/main/provisional.ts"() {
+    init_db();
+    init_company();
+    init_ledgerMap();
+    init_partyLedgers();
+    init_billDiscounting();
+    n53 = (v) => {
+      const x = Number(v);
+      return Number.isFinite(x) ? x : 0;
+    };
+  }
+});
+
 // src/main/cashflowRegister.ts
 var cashflowRegister_exports = {};
 __export(cashflowRegister_exports, {
@@ -26936,15 +27031,15 @@ async function cashflowRegister(from, to, companyId) {
   }
   const inPeriod = `SELECT je.id FROM journal_entries je WHERE ${conds.join(" AND ")}`;
   const groups = toPlain39(await c.execute("SELECT id, name, parent_id FROM ledger_groups").catch(() => ({ rows: [] })));
-  const gById = new Map(groups.map((g) => [n53(g.id), g]));
+  const gById = new Map(groups.map((g) => [n54(g.id), g]));
   const gByName = new Map(groups.map((g) => [String(g.name).trim().toUpperCase(), g]));
   const rootsOf = (name) => {
     const out = [String(name || "").trim().toUpperCase()];
     let g = gByName.get(out[0]);
     const seen = /* @__PURE__ */ new Set();
-    while (g && g.parent_id != null && !seen.has(n53(g.id))) {
-      seen.add(n53(g.id));
-      g = gById.get(n53(g.parent_id));
+    while (g && g.parent_id != null && !seen.has(n54(g.id))) {
+      seen.add(n54(g.id));
+      g = gById.get(n54(g.parent_id));
       if (g) out.push(String(g.name).trim().toUpperCase());
     }
     return out;
@@ -26986,36 +27081,36 @@ async function cashflowRegister(from, to, companyId) {
   );
   const allocsOf = /* @__PURE__ */ new Map();
   for (const a of allocs) {
-    const k = n53(a.line_id);
+    const k = n54(a.line_id);
     if (!allocsOf.has(k)) allocsOf.set(k, []);
-    allocsOf.get(k).push({ method: String(a.method || ""), ref: String(a.ref_name || ""), amount: round225(n53(a.amount)) });
+    allocsOf.get(k).push({ method: String(a.method || ""), ref: String(a.ref_name || ""), amount: round225(n54(a.amount)) });
   }
   const splitsOf = /* @__PURE__ */ new Map();
   for (const s5 of splits) {
-    const k = n53(s5.line_id);
+    const k = n54(s5.line_id);
     if (!splitsOf.has(k)) splitsOf.set(k, []);
-    splitsOf.get(k).push({ name: String(s5.name || ""), amount: round225(n53(s5.amount)), note: s5.note ? String(s5.note) : "" });
+    splitsOf.get(k).push({ name: String(s5.name || ""), amount: round225(n54(s5.amount)), note: s5.note ? String(s5.note) : "" });
   }
   const linesOf = /* @__PURE__ */ new Map();
   for (const l of lines) {
-    const k = n53(l.entry_id);
+    const k = n54(l.entry_id);
     if (!linesOf.has(k)) linesOf.set(k, []);
-    const dr = round225(n53(l.dr));
-    const cr = round225(n53(l.cr));
+    const dr = round225(n54(l.dr));
+    const cr = round225(n54(l.cr));
     linesOf.get(k).push({
-      id: n53(l.id),
-      account_id: n53(l.account_id),
+      id: n54(l.id),
+      account_id: n54(l.account_id),
       account: String(l.account || ""),
       group: String(l.acc_group || ""),
       kind: kindOf3(String(l.acc_group || "")),
       side: dr > 0 ? "dr" : "cr",
       amount: dr > 0 ? dr : cr,
-      refs: allocsOf.get(n53(l.id)) || [],
-      splits: splitsOf.get(n53(l.id)) || []
+      refs: allocsOf.get(n54(l.id)) || [],
+      splits: splitsOf.get(n54(l.id)) || []
     });
   }
   const vouchers = heads.map((h) => {
-    const ls = linesOf.get(n53(h.id)) || [];
+    const ls = linesOf.get(n54(h.id)) || [];
     const dr = round225(ls.filter((l) => l.side === "dr").reduce((t, l) => t + l.amount, 0));
     const cr = round225(ls.filter((l) => l.side === "cr").reduce((t, l) => t + l.amount, 0));
     const money = ls.filter((l) => l.kind === "money");
@@ -27029,7 +27124,7 @@ async function cashflowRegister(from, to, companyId) {
     for (const l of ls) {
       const sp = l.splits;
       if (sp.length) {
-        const t = round225(sp.reduce((s5, x) => s5 + n53(x.amount), 0));
+        const t = round225(sp.reduce((s5, x) => s5 + n54(x.amount), 0));
         if (Math.abs(t - l.amount) > 0.01) issues.push(`${l.account}: its breakdown comes to ${t.toFixed(2)}, the line is ${Number(l.amount).toFixed(2)}`);
       }
     }
@@ -27038,7 +27133,7 @@ async function cashflowRegister(from, to, companyId) {
     }
     if (!ls.length) issues.push("No lines on this voucher");
     return {
-      id: n53(h.id),
+      id: n54(h.id),
       date: String(h.entry_date || "").slice(0, 10),
       type: String(h.vch_type || ""),
       code: String(h.voucher_code || h.vch_no || ""),
@@ -27066,7 +27161,7 @@ async function cashflowRegister(from, to, companyId) {
     };
   });
   const moneyIds = /* @__PURE__ */ new Map();
-  for (const ls of linesOf.values()) for (const l of ls) if (l.kind === "money") moneyIds.set(n53(l.account_id), String(l.account));
+  for (const ls of linesOf.values()) for (const l of ls) if (l.kind === "money") moneyIds.set(n54(l.account_id), String(l.account));
   const openings = {};
   if (from) {
     const { bankBalanceBefore: bankBalanceBefore2 } = await Promise.resolve().then(() => (init_tallyBank(), tallyBank_exports));
@@ -27074,13 +27169,13 @@ async function cashflowRegister(from, to, companyId) {
   }
   return { from: from || null, to: to || null, vouchers, openings };
 }
-var n53, round225, toPlain39;
+var n54, round225, toPlain39;
 var init_cashflowRegister = __esm({
   "src/main/cashflowRegister.ts"() {
     init_db();
     init_company();
     init_accounting();
-    n53 = (v) => Number.isFinite(Number(v)) ? Number(v) : 0;
+    n54 = (v) => Number.isFinite(Number(v)) ? Number(v) : 0;
     round225 = (v) => Math.round(v * 100) / 100;
     toPlain39 = (rs) => rs.rows.map((r) => ({ ...r }));
   }
@@ -27093,8 +27188,8 @@ __export(stockFifo_exports, {
 });
 async function stockFifoMap(v) {
   const c = getClient();
-  const pid = n54(v.productId);
-  const want = r35(n54(v.qty));
+  const pid = n55(v.productId);
+  const want = r35(n55(v.qty));
   const asOf = String(v.asOf || "").slice(0, 10);
   const ids = (v.companyIds || []).map(Number).filter((x) => x > 0);
   if (!ids.length) ids.push(...await companiesOfFactory());
@@ -27138,7 +27233,7 @@ async function stockFifoMap(v) {
               ) WHERE 1 = 1 ${dateCut}`,
     args: [pid, ...ids, pid, ...ids, ...asOf ? [asOf] : []]
   }).catch(() => ({ rows: [] }))).rows;
-  const oids = purchases.map((r) => n54(r.id));
+  const oids = purchases.map((r) => n55(r.id));
   const oph = oids.map(() => "?").join(", ");
   const tankerRows = oids.length ? (await c.execute({
     sql: `SELECT a.order_id, pt.id, pt.tanker_no,
@@ -27152,20 +27247,20 @@ async function stockFifoMap(v) {
   }).catch(() => ({ rows: [] }))).rows : [];
   const byOrder = /* @__PURE__ */ new Map();
   for (const t of tankerRows) {
-    if (n54(t.q) <= 0 || !String(t.tanker_no || "").trim()) continue;
-    byOrder.set(n54(t.order_id), [...byOrder.get(n54(t.order_id)) || [], t]);
+    if (n55(t.q) <= 0 || !String(t.tanker_no || "").trim()) continue;
+    byOrder.set(n55(t.order_id), [...byOrder.get(n55(t.order_id)) || [], t]);
   }
   const perTanker = purchases.flatMap((r) => {
-    const all = byOrder.get(n54(r.id)) || [];
+    const all = byOrder.get(n55(r.id)) || [];
     const ts = all.some((t) => t.src === "pt") ? all.filter((t) => t.src === "pt") : all;
     if (!ts.length) return [{ ...r, inv_d: r.d }];
-    const total = ts.reduce((s5, t) => s5 + n54(t.q), 0);
+    const total = ts.reduce((s5, t) => s5 + n55(t.q), 0);
     let given = 0;
     return ts.map((t, i) => {
-      const share = i === ts.length - 1 ? r35(n54(r.qty) - given) : r35(n54(r.qty) * n54(t.q) / total);
+      const share = i === ts.length - 1 ? r35(n55(r.qty) - given) : r35(n55(r.qty) * n55(t.q) / total);
       given = r35(given + share);
-      const d = n54(r.consignment) === 1 && t.src === "cs" && String(t.td || "").trim() ? String(t.td) : r.d;
-      return { ...r, d, inv_d: r.d, qty: share, r_qty: r35(n54(t.q)), tanker_no: t.tanker_no, tanker_id: n54(t.id), td: t.td };
+      const d = n55(r.consignment) === 1 && t.src === "cs" && String(t.td || "").trim() ? String(t.td) : r.d;
+      return { ...r, d, inv_d: r.d, qty: share, r_qty: r35(n55(t.q)), tanker_no: t.tanker_no, tanker_id: n55(t.id), td: t.td };
     });
   }).filter((r) => !asOf || String(r.d).slice(0, 10) <= asOf);
   const undrawn = (await c.execute({
@@ -27185,8 +27280,8 @@ async function stockFifoMap(v) {
     tanker_no: u.tanker_no,
     consignment: 1,
     uninvoiced: true,
-    qty: r35(n54(u.qty)),
-    r_qty: r35(n54(u.qty)),
+    qty: r35(n55(u.qty)),
+    r_qty: r35(n55(u.qty)),
     rate: null,
     order_date: null,
     company_id: u.company_id,
@@ -27195,10 +27290,10 @@ async function stockFifoMap(v) {
     bargain_no: u.bargain_no,
     d: u.d,
     td: u.d,
-    tanker_id: n54(u.id)
+    tanker_id: n55(u.id)
   }));
   const inflows = [...perTanker, ...undrawnLines, ...made].map((r) => ({ ...r })).sort(
-    (a, b) => String(b.d).localeCompare(String(a.d)) || n54(b.id) - n54(a.id) || String(a.kind).localeCompare(String(b.kind)) || String(b.td || "").localeCompare(String(a.td || "")) || n54(b.tanker_id) - n54(a.tanker_id)
+    (a, b) => String(b.d).localeCompare(String(a.d)) || n55(b.id) - n55(a.id) || String(a.kind).localeCompare(String(b.kind)) || String(b.td || "").localeCompare(String(a.td || "")) || n55(b.tanker_id) - n55(a.tanker_id)
   );
   const lines = [];
   let left = want;
@@ -27210,32 +27305,32 @@ async function stockFifoMap(v) {
   for (const r of inflows) {
     if (left <= 5e-4 && !v.all) break;
     if (lines.length >= cap) break;
-    const qty = r35(n54(r.qty));
+    const qty = r35(n55(r.qty));
     const invoicedLater = !!asOf && !r.uninvoiced && String(r.inv_d || r.d).slice(0, 10) > asOf;
     const outside = !!r.uninvoiced || invoicedLater;
     const taken = outside ? 0 : r35(Math.max(0, Math.min(qty, left)));
     left = r35(Math.max(0, left - taken));
     cum = r35(cum + taken);
     running = r35(running + qty);
-    const rate = r.kind === "purchase" ? r24(n54(r.rate)) : null;
+    const rate = r.kind === "purchase" ? r24(n55(r.rate)) : null;
     if (rate != null && rate > 0) {
       value += taken * rate;
       valuedQty += taken;
     }
     lines.push({
       kind: r.kind,
-      id: n54(r.id),
+      id: n55(r.id),
       tanker_id: r.tanker_id ?? null,
       date: String(r.d || "").slice(0, 10),
       // The tanker's own receipt: the day it was emptied (or deposited, for a
       // consignment) and what it brought — R.Date and R.Qty on the screen.
       r_date: String(r.td || r.d || "").slice(0, 10),
-      r_qty: r.r_qty != null ? n54(r.r_qty) : qty,
+      r_qty: r.r_qty != null ? n55(r.r_qty) : qty,
       invoice_date: r.order_date ? String(r.order_date).slice(0, 10) : null,
       invoice_no: r.invoice_no ?? null,
       // Each tanker once — a consignment draw can name the same one twice.
       tanker_no: r.tanker_no ? [...new Set(String(r.tanker_no).split(",").map((x) => x.trim()).filter(Boolean))].join(", ") : null,
-      consignment: n54(r.consignment) === 1,
+      consignment: n55(r.consignment) === 1,
       uninvoiced: !!r.uninvoiced,
       invoiced_later: invoicedLater,
       bargain_no: r.bargain_no ?? null,
@@ -27265,13 +27360,13 @@ async function stockFifoMap(v) {
     avg_rate: valuedQty > 0 ? r24(value / valuedQty) : null
   };
 }
-var n54, r35, r24;
+var n55, r35, r24;
 var init_stockFifo = __esm({
   "src/main/stockFifo.ts"() {
     init_db();
     init_tankerAlloc();
     init_company();
-    n54 = (v) => Number.isFinite(Number(v)) ? Number(v) : 0;
+    n55 = (v) => Number.isFinite(Number(v)) ? Number(v) : 0;
     r35 = (v) => Math.round(v * 1e3) / 1e3;
     r24 = (v) => Math.round(v * 100) / 100;
   }
@@ -27333,7 +27428,7 @@ async function facility(kind, id) {
     } catch {
       list2 = [];
     }
-    const due = (Array.isArray(list2) ? list2 : []).filter((x) => isRefundDue(String(x?.account || ""))).reduce((t, x) => t + n55(x.amount), 0);
+    const due = (Array.isArray(list2) ? list2 : []).filter((x) => isRefundDue(String(x?.account || ""))).reduce((t, x) => t + n56(x.amount), 0);
     if (due > 4e-3) {
       booked += due;
       if (!first) first = String(r.d || "").slice(0, 10);
@@ -27341,13 +27436,13 @@ async function facility(kind, id) {
         await c.execute({
           sql: `SELECT a.name FROM journal_lines jl JOIN ledger_accounts a ON a.id = jl.account_id
                  WHERE jl.entry_id = ? AND jl.cr > 0 ORDER BY jl.cr DESC LIMIT 1`,
-          args: [n55(r.journal_entry_id)]
+          args: [n56(r.journal_entry_id)]
         })
       )[0];
       if (bl) bank = String(bl.name);
     }
   }
-  return { company_id: n55(head.company_id), label: String(head.label || ""), lender: String(head.lender || ""), booked: round226(booked), first, bank };
+  return { company_id: n56(head.company_id), label: String(head.label || ""), lender: String(head.lender || ""), booked: round226(booked), first, bank };
 }
 async function refundDues(kind) {
   await ensure3();
@@ -27365,11 +27460,11 @@ async function refundDues(kind) {
     } catch {
       list2 = [];
     }
-    const due = (Array.isArray(list2) ? list2 : []).filter((x) => isRefundDue(String(x?.account || ""))).reduce((t, x) => t + n55(x.amount), 0);
+    const due = (Array.isArray(list2) ? list2 : []).filter((x) => isRefundDue(String(x?.account || ""))).reduce((t, x) => t + n56(x.amount), 0);
     if (due > 4e-3) out[String(r.fid)] = round226((out[String(r.fid)] || 0) + due);
   }
   for (const r of toPlain40(await c.execute({ sql: "SELECT facility_id AS fid, SUM(amount) AS amt FROM facility_refunds WHERE kind = ? GROUP BY facility_id", args: [kind] }))) {
-    if (out[String(r.fid)] != null) out[String(r.fid)] = round226(out[String(r.fid)] - n55(r.amt));
+    if (out[String(r.fid)] != null) out[String(r.fid)] = round226(out[String(r.fid)] - n56(r.amt));
   }
   for (const k of Object.keys(out)) if (out[k] <= 4e-3) delete out[k];
   return out;
@@ -27390,7 +27485,7 @@ async function refundTotals(kind) {
     } catch {
       list2 = [];
     }
-    const amt = (Array.isArray(list2) ? list2 : []).filter((x) => isRefundDue(String(x?.account || ""))).reduce((t, x) => t + n55(x.amount), 0);
+    const amt = (Array.isArray(list2) ? list2 : []).filter((x) => isRefundDue(String(x?.account || ""))).reduce((t, x) => t + n56(x.amount), 0);
     if (amt <= 4e-3) continue;
     const k = String(r.fid);
     out[k] = out[k] || { booked: 0, refunded: 0, due: 0 };
@@ -27398,7 +27493,7 @@ async function refundTotals(kind) {
   }
   for (const r of toPlain40(await c.execute({ sql: "SELECT facility_id AS fid, SUM(amount) AS amt FROM facility_refunds WHERE kind = ? GROUP BY facility_id", args: [kind] }))) {
     const k = String(r.fid);
-    if (out[k]) out[k].refunded = round226(n55(r.amt));
+    if (out[k]) out[k].refunded = round226(n56(r.amt));
   }
   for (const k of Object.keys(out)) out[k].due = round226(Math.max(0, out[k].booked - out[k].refunded));
   return out;
@@ -27416,7 +27511,7 @@ async function refundInfo(kind, id) {
       args: [kind, id]
     })
   );
-  const refunded = round226(done.reduce((t, x) => t + n55(x.amount), 0));
+  const refunded = round226(done.reduce((t, x) => t + n56(x.amount), 0));
   const due = round226(Math.max(0, f.booked - refunded));
   const bankGroups = await groupsUnder("Bank Accounts");
   const ph = bankGroups.map(() => "?").join(",");
@@ -27425,7 +27520,7 @@ async function refundInfo(kind, id) {
   ).map((r) => String(r.name));
   let candidates = [];
   if (due > 4e-3 && f.first) {
-    const taken = new Set(toPlain40(await c.execute("SELECT entry_id FROM facility_refunds")).map((r) => n55(r.entry_id)));
+    const taken = new Set(toPlain40(await c.execute("SELECT entry_id FROM facility_refunds")).map((r) => n56(r.entry_id)));
     const rows2 = toPlain40(
       await c.execute({
         sql: `SELECT je.id, je.entry_date, je.vch_type, je.vch_no, je.narration,
@@ -27443,16 +27538,16 @@ async function refundInfo(kind, id) {
         args: [...bankGroups, f.company_id, f.first, f.first, due + 0.01, due]
       })
     );
-    candidates = rows2.filter((r) => !taken.has(n55(r.id)) && n55(r.nlines) === 2 && !bankGroups.includes(String(r.from_group || "")) && !isRefundDue(String(r.from_ledger || ""))).slice(0, 25).map((r) => ({
-      id: n55(r.id),
+    candidates = rows2.filter((r) => !taken.has(n56(r.id)) && n56(r.nlines) === 2 && !bankGroups.includes(String(r.from_group || "")) && !isRefundDue(String(r.from_ledger || ""))).slice(0, 25).map((r) => ({
+      id: n56(r.id),
       date: String(r.entry_date || "").slice(0, 10),
       code: String(r.code || r.vch_no || ""),
       vch_no: String(r.vch_no || ""),
-      amount: round226(n55(r.amount)),
+      amount: round226(n56(r.amount)),
       bank: String(r.bank || ""),
       from_ledger: String(r.from_ledger || ""),
       narration: String(r.narration || ""),
-      exact: Math.abs(n55(r.amount) - due) < 0.01
+      exact: Math.abs(n56(r.amount) - due) < 0.01
     }));
   }
   return {
@@ -27467,7 +27562,7 @@ async function refundInfo(kind, id) {
     bank: f.bank,
     banks,
     since: f.first,
-    refunds: done.map((x) => ({ id: n55(x.id), amount: round226(n55(x.amount)), date: String(x.refund_date || ""), how: String(x.how), code: String(x.code || x.vch_no || "") })),
+    refunds: done.map((x) => ({ id: n56(x.id), amount: round226(n56(x.amount)), date: String(x.refund_date || ""), how: String(x.how), code: String(x.code || x.vch_no || "") })),
     candidates
   };
 }
@@ -27476,20 +27571,20 @@ async function linkRefund(kind, id, entryId) {
     await ensure3();
     const c = getClient();
     const info = await refundInfo(kind, id);
-    const cand = (info.candidates || []).find((x) => n55(x.id) === n55(entryId));
+    const cand = (info.candidates || []).find((x) => n56(x.id) === n56(entryId));
     if (!cand) throw new Error("That receipt cannot be linked \u2014 it is already a refund, is more than is due, or is not a receipt into a bank");
     const line = toPlain40(await c.execute({ sql: "SELECT id, account_id, cr FROM journal_lines WHERE entry_id = ? AND cr > 0", args: [entryId] }));
     if (line.length !== 1) throw new Error("That receipt has more than one credit line \u2014 record the refund instead");
     const f = await facility(kind, id);
     const acc = await getOrCreateAccount(refundLedgerFor(f.lender), REFUND_DUE_GROUP, f.company_id || void 0);
-    await c.execute({ sql: "DELETE FROM journal_bill_allocs WHERE line_id = ?", args: [n55(line[0].id)] });
-    await c.execute({ sql: "UPDATE journal_lines SET account_id = ? WHERE id = ?", args: [acc, n55(line[0].id)] });
+    await c.execute({ sql: "DELETE FROM journal_bill_allocs WHERE line_id = ?", args: [n56(line[0].id)] });
+    await c.execute({ sql: "UPDATE journal_lines SET account_id = ? WHERE id = ?", args: [acc, n56(line[0].id)] });
     const ins = await c.execute({
       sql: `INSERT INTO facility_refunds (kind, facility_id, entry_id, amount, refund_date, how, old_account_id, line_id)
             VALUES (?, ?, ?, ?, ?, 'linked', ?, ?)`,
-      args: [kind, id, entryId, round226(n55(cand.amount)), String(cand.date), n55(line[0].account_id), n55(line[0].id)]
+      args: [kind, id, entryId, round226(n56(cand.amount)), String(cand.date), n56(line[0].account_id), n56(line[0].id)]
     });
-    console.log(`[refunds] ${kind} ${id}: receipt ${String(cand.code)} (${n55(cand.amount)}) linked as the bank's refund \u2014 credit moved from ${String(cand.from_ledger)} to ${refundLedgerFor(f.lender)}`);
+    console.log(`[refunds] ${kind} ${id}: receipt ${String(cand.code)} (${n56(cand.amount)}) linked as the bank's refund \u2014 credit moved from ${String(cand.from_ledger)} to ${refundLedgerFor(f.lender)}`);
     return { id: Number(ins.lastInsertRowid || 0) };
   });
 }
@@ -27498,12 +27593,12 @@ async function recordRefund(kind, id, v) {
     await ensure3();
     const c = getClient();
     const info = await refundInfo(kind, id);
-    const amount2 = round226(n55(v.amount));
+    const amount2 = round226(n56(v.amount));
     const date = String(v.date || "").slice(0, 10);
     if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) throw new Error("Pick the date the refund came in");
     if (date < String(info.since || "")) throw new Error("The refund cannot be before the repayment it refunds");
     if (!(amount2 > 0)) throw new Error("Enter the amount refunded");
-    if (amount2 > n55(info.due) + 0.01) throw new Error(`Only ${n55(info.due).toFixed(2)} is due back`);
+    if (amount2 > n56(info.due) + 0.01) throw new Error(`Only ${n56(info.due).toFixed(2)} is due back`);
     const bank = String(v.bank || info.bank || "").trim();
     if (!bank) throw new Error("Pick the bank the refund came into");
     const f = await facility(kind, id);
@@ -27531,9 +27626,9 @@ async function undoRefund(refundId) {
     const r = toPlain40(await c.execute({ sql: "SELECT * FROM facility_refunds WHERE id = ?", args: [refundId] }))[0];
     if (!r) throw new Error("Refund not found");
     if (String(r.how) === "linked") {
-      if (n55(r.line_id) && n55(r.old_account_id)) await c.execute({ sql: "UPDATE journal_lines SET account_id = ? WHERE id = ?", args: [n55(r.old_account_id), n55(r.line_id)] });
+      if (n56(r.line_id) && n56(r.old_account_id)) await c.execute({ sql: "UPDATE journal_lines SET account_id = ? WHERE id = ?", args: [n56(r.old_account_id), n56(r.line_id)] });
     } else {
-      const eid = n55(r.entry_id);
+      const eid = n56(r.entry_id);
       await c.execute({ sql: "DELETE FROM journal_bill_allocs WHERE line_id IN (SELECT id FROM journal_lines WHERE entry_id = ?)", args: [eid] });
       await c.execute({ sql: "DELETE FROM journal_lines WHERE entry_id = ?", args: [eid] });
       await c.execute({ sql: "DELETE FROM journal_entries WHERE id = ?", args: [eid] });
@@ -27542,7 +27637,7 @@ async function undoRefund(refundId) {
     return { id: refundId };
   });
 }
-var n55, round226, ready5;
+var n56, round226, ready5;
 var init_bankRefunds = __esm({
   "src/main/bankRefunds.ts"() {
     init_db();
@@ -27550,7 +27645,7 @@ var init_bankRefunds = __esm({
     init_journal();
     init_ledgerGroups();
     init_refundDue();
-    n55 = (v) => Number(v) || 0;
+    n56 = (v) => Number(v) || 0;
     round226 = (v) => Math.round(v * 100) / 100;
     ready5 = false;
   }
@@ -27586,13 +27681,13 @@ async function entries(tally) {
   if (!heads.length) return [];
   const byId = /* @__PURE__ */ new Map();
   for (const h of heads) {
-    byId.set(n56(h.id), {
-      id: n56(h.id),
+    byId.set(n57(h.id), {
+      id: n57(h.id),
       date: String(h.entry_date || "").slice(0, 10),
       type: String(h.vch_type || ""),
       vch_no: String(h.vch_no || ""),
       narration: String(h.narration || ""),
-      company_id: n56(h.company_id),
+      company_id: n57(h.company_id),
       code: String(h.code || h.vch_no || ""),
       lines: []
     });
@@ -27607,7 +27702,7 @@ async function entries(tally) {
     })
   );
   for (const l of lines) {
-    byId.get(n56(l.entry_id))?.lines.push({ account_id: n56(l.account_id), name: String(l.name || ""), dr: n56(l.dr), cr: n56(l.cr) });
+    byId.get(n57(l.entry_id))?.lines.push({ account_id: n57(l.account_id), name: String(l.name || ""), dr: n57(l.dr), cr: n57(l.cr) });
   }
   return [...byId.values()];
 }
@@ -27661,7 +27756,7 @@ async function previewParkingCopies() {
       const lc = toPlain41(
         await getClient().execute({ sql: "SELECT id, lc_no FROM letters_of_credit WHERE interest_journal_entry_id = ?", args: [d.d.id] })
       )[0];
-      const matchLc = Math.abs(diff) > 1 && lc ? n56(lc.id) : 0;
+      const matchLc = Math.abs(diff) > 1 && lc ? n57(lc.id) : 0;
       const fixable = Math.abs(diff) <= 1 || matchLc > 0;
       taken.add(o.e.id);
       taken.add(j.id);
@@ -27703,19 +27798,19 @@ async function removeParkingCopies(keys) {
     let chains = 0;
     for (const f of findings2) {
       if (!want.has(f.key) || !f.fixable) continue;
-      const ownId = n56(f.own.id);
-      if (n56(f.match_lc)) {
+      const ownId = n57(f.own.id);
+      if (n57(f.match_lc)) {
         const { postLcUpfrontInterest: postLcUpfrontInterest2 } = await Promise.resolve().then(() => (init_treasury(), treasury_exports));
-        await c.execute({ sql: "UPDATE letters_of_credit SET upfront_debited = ? WHERE id = ?", args: [round227(n56(f.match_to)), n56(f.match_lc)] });
-        await postLcUpfrontInterest2(n56(f.match_lc), String(f.own.date));
-        console.log(`[repairs] LC ${n56(f.match_lc)} upfront set to the bank's ${n56(f.match_to)} (was ${n56(f.own.amount)}) \u2014 ${String(f.own.code)} keeps its id`);
+        await c.execute({ sql: "UPDATE letters_of_credit SET upfront_debited = ? WHERE id = ?", args: [round227(n57(f.match_to)), n57(f.match_lc)] });
+        await postLcUpfrontInterest2(n57(f.match_lc), String(f.own.date));
+        console.log(`[repairs] LC ${n57(f.match_lc)} upfront set to the bank's ${n57(f.match_to)} (was ${n57(f.own.amount)}) \u2014 ${String(f.own.code)} keeps its id`);
       }
       const head = toPlain41(await c.execute({ sql: "SELECT company_id FROM journal_entries WHERE id = ?", args: [ownId] }))[0];
-      const cid = n56(head?.company_id);
+      const cid = n57(head?.company_id);
       const bankSteps = [f.payment, ...f.refunds || []];
       const all = [...bankSteps, f.journal];
       for (const s5 of all) {
-        const id = n56(s5.id);
+        const id = n57(s5.id);
         const lines = toPlain41(
           await c.execute({ sql: "SELECT a.name, jl.dr, jl.cr FROM journal_lines jl JOIN ledger_accounts a ON a.id = jl.account_id WHERE jl.entry_id = ?", args: [id] })
         );
@@ -27733,7 +27828,7 @@ async function removeParkingCopies(keys) {
         await c.execute({ sql: "DELETE FROM journal_entries WHERE id = ?", args: [id] });
         removed++;
         if (b && bankId) {
-          await saveTallyLink({ company_id: cid, scope: `bank:${n56(bankId.account_id)}`, tally_key: b.key, entry_id: ownId, also: true });
+          await saveTallyLink({ company_id: cid, scope: `bank:${n57(bankId.account_id)}`, tally_key: b.key, entry_id: ownId, also: true });
         } else if (s5 === f.journal) {
           await saveTallyLink({ company_id: cid, scope: "journal", tally_key: `JOURNAL|${String(s5.vch_no)}`, entry_id: ownId, also: true });
         }
@@ -27744,14 +27839,14 @@ async function removeParkingCopies(keys) {
     return { removed, chains };
   });
 }
-var n56, round227, FROM_TALLY, PARKING;
+var n57, round227, FROM_TALLY, PARKING;
 var init_parkingCopies = __esm({
   "src/main/parkingCopies.ts"() {
     init_db();
     init_dbTransaction();
     init_voucherNumbers();
     init_tallyLinks();
-    n56 = (v) => Number(v) || 0;
+    n57 = (v) => Number(v) || 0;
     round227 = (v) => Math.round(v * 100) / 100;
     FROM_TALLY = "Imported from Tally%";
     PARKING = /PARKING|SUSPENSE|CLEARING|TRANSFER|IN\s*TRANSIT/i;
@@ -27794,10 +27889,10 @@ async function findings(companyId) {
   });
   return res.rows.map((r) => {
     const x = { ...r };
-    const interest = round228(n57(x.interest));
+    const interest = round228(n58(x.interest));
     return {
-      key: `${n57(x.entry_id)}:${n57(x.interest_line_id)}`,
-      entry_id: n57(x.entry_id),
+      key: `${n58(x.entry_id)}:${n58(x.interest_line_id)}`,
+      entry_id: n58(x.entry_id),
       code: String(x.code || x.vch_no || ""),
       date: String(x.entry_date || "").slice(0, 10),
       company: String(x.company || ""),
@@ -27805,8 +27900,8 @@ async function findings(companyId) {
       supplier: String(x.supplier || ""),
       interest,
       purchase_account: String(x.purchase_account || ""),
-      purchase_before: round228(n57(x.purchase_before)),
-      purchase_after: round228(n57(x.purchase_before) + interest),
+      purchase_before: round228(n58(x.purchase_before)),
+      purchase_after: round228(n58(x.purchase_before) + interest),
       // No purchase line to put it on — left for a look rather than guessed at.
       review: x.purchase_line_id ? null : "No purchase account line on this voucher \u2014 open it and re-save the purchase"
     };
@@ -27814,18 +27909,18 @@ async function findings(companyId) {
 }
 async function previewPurchaseInterest() {
   const f = await findings();
-  return { findings: f, total: round228(f.reduce((t, x) => t + n57(x.interest), 0)), company_id: getActiveCompanyId() };
+  return { findings: f, total: round228(f.reduce((t, x) => t + n58(x.interest), 0)), company_id: getActiveCompanyId() };
 }
 async function foldPurchaseInterest(entryIds) {
-  const want = new Set(entryIds.map(n57).filter(Boolean));
-  const list2 = (await findings()).filter((x) => want.has(n57(x.entry_id)) && !x.review);
+  const want = new Set(entryIds.map(n58).filter(Boolean));
+  const list2 = (await findings()).filter((x) => want.has(n58(x.entry_id)) && !x.review);
   let changed = 0;
   for (const x of list2) {
     await withDbTransaction(async () => {
       const c = getClient();
       const lines = await c.execute({ sql: "SELECT * FROM journal_lines WHERE entry_id = ? ORDER BY id", args: [x.entry_id] });
       const before = lines.rows.map((r) => ({ ...r }));
-      const interestLine = before.find((l) => `${x.entry_id}:${n57(l.id)}` === x.key);
+      const interestLine = before.find((l) => `${x.entry_id}:${n58(l.id)}` === x.key);
       if (!interestLine) return;
       const purchase = await c.execute({
         sql: `SELECT pl.id, pl.dr FROM journal_lines pl JOIN ledger_accounts pa ON pa.id = pl.account_id
@@ -27841,26 +27936,26 @@ async function foldPurchaseInterest(entryIds) {
         sql: "INSERT OR REPLACE INTO accounting_repair_log(repair_key, entry_id, before_json) VALUES (?, ?, ?)",
         args: [`purchase_interest_fold:${x.entry_id}:${Date.now()}`, x.entry_id, JSON.stringify(before)]
       });
-      const amt = round228(n57(interestLine.dr));
-      await c.execute({ sql: "UPDATE journal_lines SET dr = ? WHERE id = ?", args: [round228(n57(p.dr) + amt), n57(p.id)] });
-      await c.execute({ sql: "DELETE FROM journal_bill_allocs WHERE line_id = ?", args: [n57(interestLine.id)] });
-      await c.execute({ sql: "DELETE FROM journal_line_splits WHERE line_id = ?", args: [n57(interestLine.id)] }).catch(() => void 0);
-      await c.execute({ sql: "DELETE FROM journal_lines WHERE id = ?", args: [n57(interestLine.id)] });
+      const amt = round228(n58(interestLine.dr));
+      await c.execute({ sql: "UPDATE journal_lines SET dr = ? WHERE id = ?", args: [round228(n58(p.dr) + amt), n58(p.id)] });
+      await c.execute({ sql: "DELETE FROM journal_bill_allocs WHERE line_id = ?", args: [n58(interestLine.id)] });
+      await c.execute({ sql: "DELETE FROM journal_line_splits WHERE line_id = ?", args: [n58(interestLine.id)] }).catch(() => void 0);
+      await c.execute({ sql: "DELETE FROM journal_lines WHERE id = ?", args: [n58(interestLine.id)] });
       const bal = await c.execute({ sql: "SELECT ROUND(SUM(dr), 2) AS dr, ROUND(SUM(cr), 2) AS cr FROM journal_lines WHERE entry_id = ?", args: [x.entry_id] });
       const b = bal.rows[0];
-      if (Math.abs(n57(b.dr) - n57(b.cr)) > 0.01) throw new Error(`${x.invoice_no}: the voucher would not balance \u2014 left as it was`);
+      if (Math.abs(n58(b.dr) - n58(b.cr)) > 0.01) throw new Error(`${x.invoice_no}: the voucher would not balance \u2014 left as it was`);
       changed++;
     });
   }
   return { changed };
 }
-var n57, round228;
+var n58, round228;
 var init_purchaseInterestFold = __esm({
   "src/main/purchaseInterestFold.ts"() {
     init_db();
     init_dbTransaction();
     init_company();
-    n57 = (v) => {
+    n58 = (v) => {
       const x = Number(v);
       return Number.isFinite(x) ? x : 0;
     };
@@ -27898,20 +27993,20 @@ async function scan2() {
                        JOIN ledger_accounts tgt ON TRIM(UPPER(tgt.name)) = TRIM(UPPER(lm.use_name))
                       WHERE lm.note LIKE 'renamed from %' AND live.id <> tgt.id`)
   ).map((r) => ({
-    map_id: n58(r.map_id),
+    map_id: n59(r.map_id),
     posts_as: String(r.posts_as),
     use_name: String(r.use_name),
-    live_id: n58(r.live_id),
-    target_id: n58(r.target_id),
+    live_id: n59(r.live_id),
+    target_id: n59(r.target_id),
     created_by: String(r.created_by || ""),
     created_at: String(r.created_at || "")
   }));
   if (!redirects.length) return { redirects, lines: [], candidates: [] };
   const tally = await tallyBankParties();
   const accts = toPlain42(await c.execute("SELECT id, name FROM ledger_accounts"));
-  const byClean = new Map(accts.map((a) => [clean4(a.name), n58(a.id)]));
-  const nameOf = new Map(accts.map((a) => [n58(a.id), String(a.name)]));
-  const companies = new Map(toPlain42(await c.execute("SELECT id, name FROM companies")).map((r) => [n58(r.id), String(r.name)]));
+  const byClean = new Map(accts.map((a) => [clean4(a.name), n59(a.id)]));
+  const nameOf = new Map(accts.map((a) => [n59(a.id), String(a.name)]));
+  const companies = new Map(toPlain42(await c.execute("SELECT id, name FROM companies")).map((r) => [n59(r.id), String(r.name)]));
   const lines = [];
   for (const rd of redirects) {
     const targetKey = tallyKey(rd.use_name);
@@ -27929,11 +28024,11 @@ async function scan2() {
       const head = narr.replace(/\s\([^()]*\)$/, "");
       const t = tally.get(head) || tally.get(narr);
       if (!t) continue;
-      const amount2 = round229(n58(r.dr) || n58(r.cr));
+      const amount2 = round229(n59(r.dr) || n59(r.cr));
       const leg = t.legs.length === 1 ? t.legs[0] : t.legs.find((g) => Math.abs(round229(g.amount) - amount2) < 0.02);
       if (!leg || !leg.name) continue;
       if (tallyKey(leg.name) === targetKey) continue;
-      const cid = n58(r.company_id);
+      const cid = n59(r.company_id);
       let toId = null;
       let how = "";
       const exact = byClean.get(clean4(leg.name));
@@ -27948,7 +28043,7 @@ async function scan2() {
           })
         )[0];
         if (tb) {
-          const want = round229(n58(tb.cr) - n58(tb.dr));
+          const want = round229(n59(tb.cr) - n59(tb.dr));
           if (Math.abs(want) > 0.5) {
             const hits = toPlain42(
               await c.execute({
@@ -27957,22 +28052,22 @@ async function scan2() {
               })
             );
             if (hits.length === 1) {
-              toId = n58(hits[0].account_id);
+              toId = n59(hits[0].account_id);
               how = `its opening matches Tally's (${want.toFixed(2)})`;
             }
           }
         }
       }
       lines.push({
-        line_id: n58(r.line_id),
-        entry_id: n58(r.entry_id),
+        line_id: n59(r.line_id),
+        entry_id: n59(r.entry_id),
         company_id: cid,
         company: companies.get(cid) || `Company ${cid}`,
         date: String(r.entry_date || "").slice(0, 10),
         vch_type: String(r.vch_type || ""),
         vch_no: String(r.vch_no || ""),
         amount: amount2,
-        side: n58(r.dr) > 0 ? "dr" : "cr",
+        side: n59(r.dr) > 0 ? "dr" : "cr",
         from_id: rd.target_id,
         from_name: rd.use_name,
         tally_party: leg.name,
@@ -27983,7 +28078,7 @@ async function scan2() {
     }
   }
   const firsts = new Set(lines.map((l) => clean4(l.tally_party).split(" ")[0]).filter(Boolean));
-  const candidates = accts.filter((a) => firsts.has(clean4(a.name).split(" ")[0]) || lines.some((l) => l.to_id === n58(a.id))).filter((a) => !redirects.some((rd) => rd.target_id === n58(a.id))).map((a) => ({ id: n58(a.id), name: String(a.name) })).sort((a, b) => a.name.localeCompare(b.name));
+  const candidates = accts.filter((a) => firsts.has(clean4(a.name).split(" ")[0]) || lines.some((l) => l.to_id === n59(a.id))).filter((a) => !redirects.some((rd) => rd.target_id === n59(a.id))).map((a) => ({ id: n59(a.id), name: String(a.name) })).sort((a, b) => a.name.localeCompare(b.name));
   return { redirects, lines, candidates };
 }
 async function previewShadowedRedirects() {
@@ -27997,13 +28092,13 @@ async function fixShadowedRedirects(moves) {
     const s5 = await scan2();
     if (!s5.redirects.length) throw new Error("No hijacking redirect is left \u2014 check again");
     const by = new Map(s5.lines.map((l) => [l.line_id, l]));
-    const valid = new Set(toPlain42(await c.execute("SELECT id FROM ledger_accounts")).map((r) => n58(r.id)));
+    const valid = new Set(toPlain42(await c.execute("SELECT id FROM ledger_accounts")).map((r) => n59(r.id)));
     let moved = 0;
     let amount2 = 0;
     for (const m of moves || []) {
-      const f = by.get(n58(m.line_id));
+      const f = by.get(n59(m.line_id));
       if (!f) throw new Error("A line has changed since the list was shown \u2014 check again");
-      const to = n58(m.to_id);
+      const to = n59(m.to_id);
       if (!valid.has(to) || to === f.from_id) throw new Error(`Pick the ledger for ${f.vch_type} ${f.vch_no}`);
       await c.execute({
         sql: "INSERT OR REPLACE INTO accounting_repair_log (repair_key, entry_id, before_json) VALUES (?, ?, ?)",
@@ -28037,7 +28132,7 @@ async function scanLegacy() {
     opening: 0
   });
   const ids = new Map(
-    toPlain42(await c.execute({ sql: "SELECT id, name FROM ledger_accounts WHERE name IN (?, ?)", args: [LEGACY_TRAD, LEGACY_MIX] })).map((r) => [String(r.name), n58(r.id)])
+    toPlain42(await c.execute({ sql: "SELECT id, name FROM ledger_accounts WHERE name IN (?, ?)", args: [LEGACY_TRAD, LEGACY_MIX] })).map((r) => [String(r.name), n59(r.id)])
   );
   const tradId = ids.get(LEGACY_TRAD) || 0;
   const mixId = ids.get(LEGACY_MIX) || 0;
@@ -28045,7 +28140,7 @@ async function scanLegacy() {
   if ((await scan2()).redirects.length) return none("Fix the payments above first \u2014 this step builds on them.");
   const op = toPlain42(await c.execute({ sql: "SELECT company_id, cr - dr AS bal FROM ledger_openings WHERE account_id = ?", args: [mixId] }));
   const tb = toPlain42(await c.execute("SELECT company_id, cr - dr AS bal FROM tally_ledgers WHERE UPPER(name) LIKE 'LEGACY COMMODITIES PRIVATE LTD%RAJKOT%'"));
-  const match = op.find((o) => tb.some((t) => n58(t.company_id) === n58(o.company_id) && Math.abs(n58(t.bal) - n58(o.bal)) < 1 && Math.abs(n58(o.bal)) > 1));
+  const match = op.find((o) => tb.some((t) => n59(t.company_id) === n59(o.company_id) && Math.abs(n59(t.bal) - n59(o.bal)) < 1 && Math.abs(n59(o.bal)) > 1));
   if (!match) return none("");
   const lines = toPlain42(
     await c.execute({
@@ -28056,19 +28151,19 @@ async function scanLegacy() {
       args: [mixId]
     })
   ).map((r) => ({
-    line_id: n58(r.line_id),
-    entry_id: n58(r.entry_id),
-    company_id: n58(r.company_id),
+    line_id: n59(r.line_id),
+    entry_id: n59(r.entry_id),
+    company_id: n59(r.company_id),
     date: String(r.entry_date || "").slice(0, 10),
     vch_type: String(r.vch_type || ""),
     vch_no: String(r.vch_no || ""),
-    dr: round229(n58(r.dr)),
-    cr: round229(n58(r.cr)),
+    dr: round229(n59(r.dr)),
+    cr: round229(n59(r.cr)),
     narration: String(r.narration || "").slice(0, 140)
   }));
   const redirects = toPlain42(await c.execute({ sql: "SELECT id, company_id, posts_as, use_name FROM ledger_map WHERE TRIM(UPPER(use_name)) = ?", args: [LEGACY_MIX] }));
   if (!lines.length && !redirects.length) return none("");
-  return { ok: true, reason: "", trad_id: tradId, mix_id: mixId, lines, redirects, opening: round229(n58(match.bal)) };
+  return { ok: true, reason: "", trad_id: tradId, mix_id: mixId, lines, redirects, opening: round229(n59(match.bal)) };
 }
 async function previewLegacySplit() {
   const s5 = await scanLegacy();
@@ -28092,12 +28187,12 @@ async function fixLegacySplit() {
     for (const r of s5.redirects) {
       await c.execute({
         sql: "INSERT OR REPLACE INTO accounting_repair_log (repair_key, entry_id, before_json) VALUES (?, ?, ?)",
-        args: [`legacy-split:map:${n58(r.id)}`, 0, JSON.stringify(r)]
+        args: [`legacy-split:map:${n59(r.id)}`, 0, JSON.stringify(r)]
       });
       const rajkot = /RAJKOT/.test(clean4(r.posts_as));
       const to = rajkot && !taken.length ? LEGACY_RAJKOT : rajkot ? LEGACY_MIX : LEGACY_TRAD;
-      if (clean4(r.posts_as) === to) await c.execute({ sql: "DELETE FROM ledger_map WHERE id = ?", args: [n58(r.id)] });
-      else await c.execute({ sql: "UPDATE ledger_map SET use_name = ? WHERE id = ?", args: [to, n58(r.id)] });
+      if (clean4(r.posts_as) === to) await c.execute({ sql: "DELETE FROM ledger_map WHERE id = ?", args: [n59(r.id)] });
+      else await c.execute({ sql: "UPDATE ledger_map SET use_name = ? WHERE id = ?", args: [to, n59(r.id)] });
     }
     if (!taken.length) {
       await c.execute({
@@ -28110,14 +28205,14 @@ async function fixLegacySplit() {
     return { moved: s5.lines.length, redirects: s5.redirects.length };
   });
 }
-var n58, round229, clean4, LEGACY_TRAD, LEGACY_MIX, LEGACY_RAJKOT;
+var n59, round229, clean4, LEGACY_TRAD, LEGACY_MIX, LEGACY_RAJKOT;
 var init_shadowedRedirects = __esm({
   "src/main/shadowedRedirects.ts"() {
     init_db();
     init_dbTransaction();
     init_tallyBank();
     init_tallyNotes();
-    n58 = (v) => Number(v) || 0;
+    n59 = (v) => Number(v) || 0;
     round229 = (v) => Math.round(v * 100) / 100;
     clean4 = (v) => String(v ?? "").trim().replace(/\s+/g, " ").toUpperCase();
     LEGACY_TRAD = "LEGACY COMMODITIES PVT LTD, TRAD.";
@@ -28377,7 +28472,7 @@ async function dumpSql(from) {
 }
 function stamp() {
   const d = /* @__PURE__ */ new Date();
-  const p = (n59) => String(n59).padStart(2, "0");
+  const p = (n60) => String(n60).padStart(2, "0");
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}`;
 }
 async function snapshotGz() {
@@ -29762,8 +29857,8 @@ async function runStartupTasks() {
   await ensureBdPostingFields();
   await ensureVoucherNumbers();
   await runOnce("ledger_map_renames_sitewide_v1", async () => {
-    const n59 = await widenRenameRedirects();
-    if (n59) console.log(`[ledger] ${n59} rename redirect(s) now apply to every company`);
+    const n60 = await widenRenameRedirects();
+    if (n60) console.log(`[ledger] ${n60} rename redirect(s) now apply to every company`);
   }).catch((e) => console.error("[ledger] widening rename redirects failed:", e));
   await ensureRequiredColumns().catch((e) => console.error("[schema] column check failed:", e));
   await repairLcRepaymentAccount().catch((e) => console.error("[lc] repayment repair failed:", e));
@@ -30311,9 +30406,9 @@ async function runStartupTasks() {
     const cols = new Set(info.rows.map((r) => String(r.name)));
     if (cols.size === 0 || cols.has("bd_id")) return;
     const count = await c.execute("SELECT COUNT(*) AS n FROM bd_parties");
-    const n59 = Number(count.rows[0].n);
-    if (n59 > 0) {
-      console.error(`[bd] bd_parties has the retired party+entries shape AND ${n59} row(s) \u2014 leaving it for a human`);
+    const n60 = Number(count.rows[0].n);
+    if (n60 > 0) {
+      console.error(`[bd] bd_parties has the retired party+entries shape AND ${n60} row(s) \u2014 leaving it for a human`);
       return;
     }
     await c.execute("DROP TABLE IF EXISTS bd_entries");
@@ -31797,11 +31892,12 @@ async function shortageNoteCandidates(saleId) {
     args: [acc, n30(inv.company_id), acc]
   })).rows;
   const no = String(inv.invoice_no || "").toUpperCase();
+  const linkedIds = new Set(linked.map((l) => n30(l.entry_id)));
   const notes = rows2.map((r) => ({
     ...r,
     amount: round216(n30(r.amount)),
     names_invoice: !!no && (String(r.refs || "").toUpperCase().includes(no) || String(r.narration || "").toUpperCase().includes(no))
-  }));
+  })).filter((r) => r.names_invoice || !String(r.refs || "").trim() || linkedIds.has(n30(r.entry_id)));
   notes.sort((a, b) => Number(b.names_invoice) - Number(a.names_invoice));
   const ids = inv.invoice_group ? (await c.execute({ sql: "SELECT id FROM sales WHERE invoice_group = ?", args: [String(inv.invoice_group)] })).rows.map((r) => n30(r.id)) : [n30(inv.id)];
   const sa = (await c.execute({
@@ -40062,7 +40158,7 @@ async function recordAudit(channel, args, result) {
   );
 }
 function registerIpc() {
-  const READONLY = /:list$|:get$|:items$|:issuances$|:sheet$|:outstanding$|:all$|:summary$|:transfers$|:fyTaxable$|:needs$|:breakdown$|:nextNo$|:liveUsers$|:ips$|:logs$|:dispatchableSales$|:mine$|:pendingCount$|:pending$|:lots$|:unmapped$|:unmappedCount$|:bargainLines$|:bargainNotes$|:bargainInterest$|:consignmentDraws$|^access:heartbeat$|^db:ping$|^db:snapshot$|^app:revision$|^auth:login$|^journal:booksFrom$|^tally:map$|^journal:openings$|^journal:opening$|^journal:accounts$|^journal:statement$|^journal:trialBalance$|^journal:groups$|^journal:groupNames$|^journal:groupTree$|^journal:ledgerMap$|^journal:pendingRefs$|^journal:billsOutstanding$|^journal:tradingAccount$|^dashboard:stats$|^vouchers:nextCode$|^vouchers:forDocument$|^vouchers:alterInfo$|^tfreight:kpis$|^dashboard:position$|^dashboard:layout$|^dashboard:saveLayout$|^productMerge:preview$|^skuRates:parties$|^skuRates:partyCounts$|^consignment:openingLog$|^tags:list$|^tags:for$|^tags:contents$|^consignment:openingLots$|^consignment:invoices$|^tankers:quality$|^tankers:qualityMany$|^tankers:ffaHistory$|^orders:quality$|^gate:partyCategories$|^gate:waivedOuts$|^gate:forRecord$|^notify:rules$|^notify:list$|^notify:run$|^notify:preview$|^notify:people$|^notify:mutes$|^treasury:alerts$|^treasury:paymentTracker$|^facility:exposures$|^facility:headroom$|^company:setActive$|^company:getActive$|^factory:active$|^factory:companies$|^session:setUser$|^lc:repayments$|^lc:parts$|^lc:parts$|^lc:allRepayments$|^lc:getLimit$|^lc:bankLimits$|^lc:paymentIns$|^lc:openTradingInvoices$|^files:pickDocument$|^files:openDocument$|^bankRecon:imports$|^bankRecon:list$|^bankRecon:suggest$|^bd:kpis$|^bd:limits$|^skuStock:adjustments$|^skuOpening:list$|^skuOpening:date$|^stockCount:previous$|^orders:intercompanySource$|^stockOpening:list$|^stockOpening:date$|^stockOpening:sets$|^stockOpening:setLines$|^stockOpening:ppStages$|^stockOpening:ppFreeTotals$|^production:ppDraws$|^bargains:linkedInvoices$|^bargains:linkedVouchers$|^bargains:voucherChoices$|^salesBargains:linkedVouchers$|^salesBargains:voucherChoices$|^bargains:adjustments$|^history:list$|^stockOpening:ppVessels$|^stockOpening:ppReceivers$|^stockOpening:ppWriteoffs$|^work:board$|^work:cutoff$|^work:processes$|^formulationSubcategory:list$|^formulations:versions$|^facility:limitHistory$|^bd:limitReductions$|^bd:allRepayments$|^bd:interestSchedule$|^bd:interestWindow$|^bd:interestPayments$|^bd:linkedOrders$|^bd:salesInvoices$|^bd:parties$|^bd:allParties$|^bd:openTradingInvoices$|^bd:paymentIns$|^bd:partyPayments$|^bd:receiptParts$|^access:entryWindows$|^access:entityHistory$|^trading:list$|^sales:series$|^sales:invoiceGaps$|^salesBargains:returns$|^salesBargains:linkedInvoices$|^salesBargains:unattributedReturns$|^tbill:orphans$|^tbill:rcmRegister$|^production:report$|^production:mix$|^repairs:splitTanker:list$|^vouchers:cashflow$|^repairs:paisa:list$|^tallyNotes:(preview|salesCheck|salesPreview|registerCheck|registerPreview|health|batches|companyBanks|bankSuggest|bankCheck|bankPreview|drafts|bankBooks|bankBook)$|^sales:(tdsPreview|tdsMap|cancelledNos|shortageNotes|shortageNoteMap)$|^suppliers:tdsRecalc$/;
+  const READONLY = /:list$|:get$|:items$|:issuances$|:sheet$|:outstanding$|:all$|:summary$|:transfers$|:fyTaxable$|:needs$|:breakdown$|:nextNo$|:liveUsers$|:ips$|:logs$|:dispatchableSales$|:mine$|:pendingCount$|:pending$|:lots$|:unmapped$|:unmappedCount$|:bargainLines$|:bargainNotes$|:bargainInterest$|:consignmentDraws$|^access:heartbeat$|^db:ping$|^db:snapshot$|^app:revision$|^auth:login$|^journal:booksFrom$|^tally:map$|^journal:openings$|^journal:opening$|^journal:accounts$|^journal:statement$|^journal:provisional$|^journal:trialBalance$|^journal:groups$|^journal:groupNames$|^journal:groupTree$|^journal:ledgerMap$|^journal:pendingRefs$|^journal:billsOutstanding$|^journal:tradingAccount$|^dashboard:stats$|^vouchers:nextCode$|^vouchers:forDocument$|^vouchers:alterInfo$|^tfreight:kpis$|^dashboard:position$|^dashboard:layout$|^dashboard:saveLayout$|^productMerge:preview$|^skuRates:parties$|^skuRates:partyCounts$|^consignment:openingLog$|^tags:list$|^tags:for$|^tags:contents$|^consignment:openingLots$|^consignment:invoices$|^tankers:quality$|^tankers:qualityMany$|^tankers:ffaHistory$|^orders:quality$|^gate:partyCategories$|^gate:waivedOuts$|^gate:forRecord$|^notify:rules$|^notify:list$|^notify:run$|^notify:preview$|^notify:people$|^notify:mutes$|^treasury:alerts$|^treasury:paymentTracker$|^facility:exposures$|^facility:headroom$|^company:setActive$|^company:getActive$|^factory:active$|^factory:companies$|^session:setUser$|^lc:repayments$|^lc:parts$|^lc:parts$|^lc:allRepayments$|^lc:getLimit$|^lc:bankLimits$|^lc:paymentIns$|^lc:openTradingInvoices$|^files:pickDocument$|^files:openDocument$|^bankRecon:imports$|^bankRecon:list$|^bankRecon:suggest$|^bd:kpis$|^bd:limits$|^skuStock:adjustments$|^skuOpening:list$|^skuOpening:date$|^stockCount:previous$|^orders:intercompanySource$|^stockOpening:list$|^stockOpening:date$|^stockOpening:sets$|^stockOpening:setLines$|^stockOpening:ppStages$|^stockOpening:ppFreeTotals$|^production:ppDraws$|^bargains:linkedInvoices$|^bargains:linkedVouchers$|^bargains:voucherChoices$|^salesBargains:linkedVouchers$|^salesBargains:voucherChoices$|^bargains:adjustments$|^history:list$|^stockOpening:ppVessels$|^stockOpening:ppReceivers$|^stockOpening:ppWriteoffs$|^work:board$|^work:cutoff$|^work:processes$|^formulationSubcategory:list$|^formulations:versions$|^facility:limitHistory$|^bd:limitReductions$|^bd:allRepayments$|^bd:interestSchedule$|^bd:interestWindow$|^bd:interestPayments$|^bd:linkedOrders$|^bd:salesInvoices$|^bd:parties$|^bd:allParties$|^bd:openTradingInvoices$|^bd:paymentIns$|^bd:partyPayments$|^bd:receiptParts$|^access:entryWindows$|^access:entityHistory$|^trading:list$|^sales:series$|^sales:invoiceGaps$|^salesBargains:returns$|^salesBargains:linkedInvoices$|^salesBargains:unattributedReturns$|^tbill:orphans$|^tbill:rcmRegister$|^production:report$|^production:mix$|^repairs:splitTanker:list$|^vouchers:cashflow$|^repairs:paisa:list$|^tallyNotes:(preview|salesCheck|salesPreview|registerCheck|registerPreview|health|batches|companyBanks|bankSuggest|bankCheck|bankPreview|drafts|bankBooks|bankBook)$|^sales:(tdsPreview|tdsMap|cancelledNos|shortageNotes|shortageNoteMap)$|^suppliers:tdsRecalc$/;
   const AUDIT_SKIP = /* @__PURE__ */ new Set(["config:get", "config:save", "session:setUser"]);
   const handle = (channel, fn) => {
     ipcMain.handle(channel, async (e, args) => {
@@ -40438,6 +40534,10 @@ function registerIpc() {
     "journal:statement",
     (_e, { accountId, companyId }) => accountStatement(accountId, companyId)
   );
+  handle("journal:provisional", async (_e, { accountId, companyId }) => {
+    const { provisionalEntries: provisionalEntries2 } = await Promise.resolve().then(() => (init_provisional(), provisional_exports));
+    return provisionalEntries2(accountId, companyId);
+  });
   handle("journal:addEntry", (_e, { data }) => addManualJournal(data));
   handle(
     "journal:trialBalance",
@@ -41481,7 +41581,7 @@ function stamp2() {
 async function countAll(c) {
   const names = await userTables(c);
   if (!names.length) return { tables: 0, rows: 0 };
-  const union = names.map((n59) => `SELECT COUNT(*) AS k FROM "${n59}"`).join(" UNION ALL ");
+  const union = names.map((n60) => `SELECT COUNT(*) AS k FROM "${n60}"`).join(" UNION ALL ");
   const res = await c.execute(union);
   let rows2 = 0;
   for (const r of res.rows) rows2 += Number(r.k) || 0;
