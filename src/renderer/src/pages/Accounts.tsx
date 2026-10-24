@@ -2566,6 +2566,8 @@ export function Accounts({
   const [ledMap, setLedMap] = useState<Row[]>([])
   // The ledger being merged into another from Masters (LedgerMergeDialog).
   const [mMerge, setMMerge] = useState<{ id: number; name: string } | null>(null)
+  // The ledger whose older names are listed out (Masters, the +N chip).
+  const [mMapOpen, setMMapOpen] = useState<number | null>(null)
   const [mBusy, setMBusy] = useState(false)
   // The website's one form for the chart — new, rename or move, a group or a
   // ledger — as a drawer beside the tree rather than a dialog over it. The
@@ -11920,27 +11922,66 @@ export function Accounts({
                         })()}
                       {/* A REDIRECT IS NEVER INVISIBLE — postings the app
                           addresses to an older name land here. */}
-                      {ledMap
-                        .filter((m) => String(m.use_name).trim().toUpperCase() === String(ln.a.name).trim().toUpperCase())
-                        .map((m) => (
-                          <span
-                            key={String(m.id)}
-                            title={`The app posts to “${String(m.posts_as)}” and that reaches this ledger${m.note ? ` — ${String(m.note)}` : ''}`}
-                            className="flex-none"
-                            style={{
-                              fontSize: 9,
-                              fontWeight: 800,
-                              letterSpacing: '.06em',
-                              color: '#1B4E82',
-                              background: '#EAF0FA',
-                              border: '1px solid #C6DAF0',
-                              borderRadius: 4,
-                              padding: '2px 6px'
-                            }}
-                          >
-                            ← {String(m.posts_as)}
+                      {/* The latest old name only; the rest on a click, newest first. */}
+                      {(() => {
+                        const maps = ledMap
+                          .filter((m) => String(m.use_name).trim().toUpperCase() === String(ln.a.name).trim().toUpperCase())
+                          .sort((x, y) => String(y.created_at || '').localeCompare(String(x.created_at || '')) || Number(y.id) - Number(x.id))
+                        if (!maps.length) return null
+                        const open = mMapOpen === id
+                        const chip: React.CSSProperties = {
+                          fontSize: 9,
+                          fontWeight: 800,
+                          letterSpacing: '.06em',
+                          color: '#1B4E82',
+                          background: '#EAF0FA',
+                          border: '1px solid #C6DAF0',
+                          borderRadius: 4,
+                          padding: '2px 6px'
+                        }
+                        const title = (m: Row): string =>
+                          `The app posts to “${String(m.posts_as)}” and that reaches this ledger${m.note ? ` — ${String(m.note)}` : ''}${m.created_at ? ` · ${formatDate(String(m.created_at).slice(0, 10))}` : ''}`
+                        return (
+                          <span className="relative flex flex-none items-center gap-1">
+                            <span title={title(maps[0])} className="flex-none" style={chip}>
+                              ← {String(maps[0].posts_as)}
+                            </span>
+                            {maps.length > 1 && (
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation()
+                                  setMMapOpen(open ? null : id)
+                                }}
+                                title={open ? 'Hide the older names' : `${maps.length - 1} older name${maps.length === 2 ? '' : 's'} also reach this ledger`}
+                                className="flex-none hover:underline"
+                                style={{ ...chip, background: open ? '#1B4E82' : '#fff', color: open ? '#fff' : '#1B4E82' }}
+                              >
+                                +{maps.length - 1}
+                              </button>
+                            )}
+                            {open && (
+                              <span
+                                className="absolute left-0 top-full z-20 mt-1 flex flex-col gap-1 rounded-md border bg-white p-2 shadow-lg"
+                                style={{ minWidth: 260 }}
+                                onClick={(e) => e.stopPropagation()}
+                              >
+                                <span style={{ fontSize: 9, fontWeight: 800, letterSpacing: '.1em', textTransform: 'uppercase', color: '#5A6B62' }}>
+                                  Older names reaching this ledger
+                                </span>
+                                {maps.slice(1).map((m) => (
+                                  <span key={String(m.id)} title={title(m)} className="flex items-center justify-between gap-3">
+                                    <span style={chip}>← {String(m.posts_as)}</span>
+                                    <span style={{ fontSize: 10.5, fontWeight: 600, color: '#5A6B62' }}>
+                                      {m.created_at ? formatDate(String(m.created_at).slice(0, 10)) : ''}
+                                    </span>
+                                  </span>
+                                ))}
+                              </span>
+                            )}
                           </span>
-                        ))}
+                        )
+                      })()}
                     </div>
                     <div style={{ padding: '0 10px' }}>
                       <span style={{ fontSize: 9.5, fontWeight: 800, letterSpacing: '.06em', textTransform: 'uppercase', color: '#8CA396' }}>
