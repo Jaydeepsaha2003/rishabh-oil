@@ -2660,6 +2660,48 @@ export function Accounts({
     // without the map an SC-OIL supplier read as "not a bill-wise account".
     if (screen === 'masters' || screen === 'gateway' || (__WEB__ && (screen === 'openings' || screen === 'tfpur' || screen === 'tfsal')) || GROUP_BASE.size === 0) void loadGroups()
   }, [screen, loadGroups])
+  // BACK ON MASTERS AT THE LEDGER THE DESK WAS ON. Coming from a statement —
+  // Esc back from one opened here, or M pressed while one is open — Masters
+  // opens that ledger's groups, brings its row into view and lights it,
+  // instead of starting again from the top of the chart.
+  const prevScreenRef = useRef(screen)
+  const [mLit, setMLit] = useState(0)
+  useEffect(() => {
+    const was = prevScreenRef.current
+    prevScreenRef.current = screen
+    if (screen !== 'masters' || was !== 'ledger' || !ledgerId) return
+    const id = ledgerId
+    const acc = accounts.find((a) => Number(a.id) === id)
+    let cur: Row | undefined = acc ? groupRows.find((g) => String(g.name) === String(acc.acc_group)) : undefined
+    if (cur) {
+      setMOpen((o) => {
+        const next = { ...o }
+        const guard = new Set<number>()
+        while (cur && !guard.has(Number(cur.id))) {
+          guard.add(Number(cur.id))
+          next[Number(cur.id)] = true
+          const pid: unknown = cur.parent_id
+          cur = pid == null ? undefined : groupRows.find((g) => Number(g.id) === Number(pid))
+        }
+        return next
+      })
+    }
+    setMLit(id)
+    let tries = 0
+    let live = true
+    const seek = (): void => {
+      if (!live) return
+      const el = document.querySelector(`[data-ms-ledger="${id}"]`)
+      if (el) el.scrollIntoView({ block: 'center' })
+      else if (tries++ < 20) setTimeout(seek, 100)
+    }
+    setTimeout(seek, 50)
+    const off = setTimeout(() => setMLit(0), 3000)
+    return () => {
+      live = false
+      clearTimeout(off)
+    }
+  }, [screen]) // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => {
     if (!__WEB__ || screen !== 'masters' || !cid) return
     let dead = false
@@ -11798,8 +11840,16 @@ export function Accounts({
                 return (
                   <div
                     key={`l${id}`}
+                    data-ms-ledger={id}
                     className="m-row grid items-center"
-                    style={{ gridTemplateColumns: M_GRID, minHeight: 40, borderBottom: '1px solid #EFF3EE', background: zebra }}
+                    style={{
+                      gridTemplateColumns: M_GRID,
+                      minHeight: 40,
+                      borderBottom: '1px solid #EFF3EE',
+                      background: mLit === id ? '#F3FBE2' : zebra,
+                      boxShadow: mLit === id ? 'inset 3px 0 0 #7FB52E' : undefined,
+                      transition: 'background .4s'
+                    }}
                   >
                     <div className="flex min-w-0 items-center gap-2" style={{ padding: `6px 10px 6px ${14 + ln.depth * 20}px` }}>
                       <input
@@ -19355,6 +19405,8 @@ export function Accounts({
         { k: 'S', label: 'Sales', on: false, go: () => setScreen('salesreg'), hide: !mayScreen('salesreg') },
         { k: 'V', label: 'Vouchers entry', on: false, go: () => openVoucher(firstVch() || 'PAYMENT'), hide: !firstVch() },
         { k: 'B', label: 'Openings', on: false, go: () => setScreen('openings'), hide: !mayScreen('openings') },
+        // Lands on this ledger's own row in the chart (see prevScreenRef).
+        { k: 'M', label: 'Masters', on: false, go: () => setScreen('masters'), hide: !mayScreen('masters') || lgBack === 'masters' },
         {
           k: 'Esc',
           label: lgBack === 'masters' ? 'Masters' : lgBack === 'openings' ? 'Openings' : lgBack === 'trial' ? 'Trial Balance' : 'Gateway',
