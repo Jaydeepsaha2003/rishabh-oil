@@ -2094,7 +2094,9 @@ export function Accounts({
   const [lgFQuery, setLgFQuery] = useState('')
   const [lgFTypes, setLgFTypes] = useState<string[]>([])
   // Tanker empty: leave out purchase bills whose tankers are not all emptied.
-  const [lgTankerEmpty, setLgTankerEmpty] = useState(false)
+  // Empty date by default: a purchase sits in the ledger on the day its oil
+  // came in; Invoice date is one click away.
+  const [lgTankerEmpty, setLgTankerEmpty] = useState(true)
   // PROVISIONAL: open LCs and awaiting supplier-direct BDs shown as the debit
   // their payment will post, in the balance (provisional.ts). Nothing posted.
   const [lgProv, setLgProv] = useState(false)
@@ -16668,13 +16670,13 @@ export function Accounts({
                   title={r.tanker_held && Number(r.held_dr) > 0 ? `Bill ${formatINR(Number(r.held_dr))} — counted when its tankers are emptied` : undefined}
                   style={{ padding: '0 12px', textAlign: 'right', ...figS(12.5, A.dr) }}
                 >
-                  {Number(r.dr) > 0 ? formatINR(Number(r.dr)) : r.tanker_held && Number(r.held_dr) > 0 ? formatINR(0) : ''}
+                  {Number(r.dr) > 0 ? formatINR(Number(r.dr)) : r.tanker_held && Number(r.held_dr) > 0 ? '—' : ''}
                 </span>
                 <span
                   title={r.tanker_held && Number(r.held_cr) > 0 ? `Bill ${formatINR(Number(r.held_cr))} — counted when its tankers are emptied` : undefined}
                   style={{ padding: '0 12px', textAlign: 'right', ...figS(12.5, A.cr) }}
                 >
-                  {Number(r.cr) > 0 ? formatINR(Number(r.cr)) : r.tanker_held && Number(r.held_cr) > 0 ? formatINR(0) : ''}
+                  {Number(r.cr) > 0 ? formatINR(Number(r.cr)) : r.tanker_held && Number(r.held_cr) > 0 ? '—' : ''}
                 </span>
                 {!lgHideBal && (
                   <span
@@ -17979,7 +17981,7 @@ export function Accounts({
                       )}
                     </button>
                     {/* DATE: the invoice's own, or the day its tankers were
-                        emptied — a bill whose oil is still on the road then reads 0. */}
+                        emptied — a bill whose oil is still on the road then reads —. */}
                     {allRows.some((r) => Number(r.tanker_total) > 0) && (
                       <div className="flex flex-none items-center gap-1.5">
                         <span className="whitespace-nowrap" style={{ ...cap, fontSize: 9.5, letterSpacing: '.12em', color: A.muted }}>
@@ -18003,7 +18005,7 @@ export function Accounts({
                                 }}
                                 title={
                                   v
-                                    ? `Purchase bills dated the day their tankers were emptied; ${openCount} not emptied yet show 0, undated, at the foot`
+                                    ? `Purchase bills dated the day their tankers were emptied; ${openCount} not emptied yet show —, undated, at the foot`
                                     : 'Every voucher on its own (invoice) date'
                                 }
                                 className="flex h-[22px] items-center gap-1 whitespace-nowrap rounded-[11px] px-2.5"
