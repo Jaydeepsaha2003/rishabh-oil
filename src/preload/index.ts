@@ -370,6 +370,7 @@ const api = {
     accounts: (companyId?: number): Promise<Row[]> => ipcRenderer.invoke('journal:accounts', { companyId }),
     createAccount: (name: string, group?: string, companyId?: number): Promise<{ id: number }> =>
       ipcRenderer.invoke('journal:createAccount', { name, group, companyId }),
+    splitNames: (): Promise<string[]> => ipcRenderer.invoke('journal:splitNames'),
     statement: (accountId: number, companyId?: number): Promise<Row[]> =>
       ipcRenderer.invoke('journal:statement', { accountId, companyId }),
     // Open LCs / awaiting supplier-direct BDs as provisional lines (provisional.ts).

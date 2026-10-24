@@ -663,6 +663,18 @@ export async function accountStatement(accountId: number, companyId?: number): P
   return lines
 }
 
+/** Every breakdown part name used before, most recent first — the part picker's list. */
+export async function splitNames(): Promise<string[]> {
+  const r = await getClient()
+    .execute(
+      `SELECT MAX(TRIM(name)) AS name FROM journal_line_splits
+        WHERE TRIM(COALESCE(name, '')) <> ''
+        GROUP BY UPPER(TRIM(name)) ORDER BY MAX(id) DESC LIMIT 1000`
+    )
+    .catch(() => null)
+  return r ? r.rows.map((x) => String((x as unknown as { name: string }).name)) : []
+}
+
 // --- auto-posting helpers ---
 
 // Purchase (Tally style):

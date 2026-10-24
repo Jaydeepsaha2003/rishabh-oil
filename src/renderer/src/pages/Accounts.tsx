@@ -842,6 +842,18 @@ function SplitPanel({
 }): React.JSX.Element {
   const total = rows.reduce((t, r) => t + (Number(r.amount) || 0), 0)
   const diff = Math.round((lineAmount - total) * 100) / 100
+  // Names used on earlier breakdowns, offered as the part is typed.
+  const [names, setNames] = useState<string[]>([])
+  useEffect(() => {
+    let live = true
+    window.api.journal
+      .splitNames()
+      .then((x) => live && setNames(x))
+      .catch(() => undefined)
+    return () => {
+      live = false
+    }
+  }, [])
   const set = (i: number, patch: Partial<SplitRow>): void =>
     onChange(rows.map((r, k) => (k === i ? { ...r, ...patch } : r)))
   const add = (): void => onChange([...rows, { name: '', amount: '' }])
@@ -849,6 +861,11 @@ function SplitPanel({
 
   return (
     <div className="mt-1.5 rounded-[4px] border border-[#C6DAF0] bg-[#F7FAFE] p-2.5">
+      <datalist id="split-part-names">
+        {names.map((x) => (
+          <option key={x} value={x} />
+        ))}
+      </datalist>
       <div className="mb-1.5 flex flex-wrap items-center gap-2">
         <span className="text-[10px] font-extrabold uppercase tracking-[.1em] text-[#1B4E82]">
           What this line is made of
@@ -880,6 +897,7 @@ function SplitPanel({
             autoFocus={i === rows.length - 1 && rows.length > 1}
             onChange={(e) => set(i, { name: e.target.value })}
             placeholder="Who or what — e.g. RAMESH · basic pay"
+            list="split-part-names"
             className="h-8 min-w-0 flex-1 rounded-[3px] border border-[#C3D2C6] bg-white px-2 text-[12px] font-semibold outline-none focus:border-[#1B4E82]"
           />
           <input
@@ -8572,7 +8590,21 @@ export function Accounts({
                 {row(tfUnreg ? 'Freight after shortage' : 'Taxable freight', money(c.taxable), undefined, true)}
                 {!tfUnreg && row(`GST on freight @ ${c.gstPct}%`, `+ ${formatINR(c.gst)}`)}
                 {c.tds > 0.004 && row(`TDS @ ${Number(tfBill.tds_pct) || 0}%`, `− ${formatINR(c.tds)}`, A.cr)}
-                {c.others > 0.004 && row('Other deductions', `− ${formatINR(c.others)}`, A.cr)}
+                {/* Each deduction on its own line, by what it is for. */}
+                {tfDeds
+                  .filter((d) => (Number(d.amount) || 0) > 0.004)
+                  .map((d, k) => (
+                    <div key={`ded${k}`}>
+                      {row(
+                        <>
+                          {d.note.trim() || 'Deduction'}
+                          {small(`→ ${d.ledger.trim() || (inward ? 'FREIGHT INWARD A/C' : 'FREIGHT OUTWARD A/C')}`)}
+                        </>,
+                        `− ${formatINR(Number(d.amount) || 0)}`,
+                        A.cr
+                      )}
+                    </div>
+                  ))}
                 {Math.abs(c.ro) > 0.004 && row('Round off', `${c.ro > 0 ? '+ ' : '− '}${formatINR(Math.abs(c.ro))}`)}
                 <div className="flex items-baseline justify-between gap-3" style={{ borderTop: '2px solid #0B3D2E', marginTop: 4, paddingTop: 6 }}>
                   <span style={{ fontSize: 11, fontWeight: 800, letterSpacing: '.08em', textTransform: 'uppercase', color: A.ink }}>Net payable to {party}</span>
@@ -16977,7 +17009,9 @@ export function Accounts({
       }
       const detailTpl = detailCols.map((d) => `${detailWidth(d)}px`).join(' ')
       const detailW = detailCols.reduce((s, d) => s + detailWidth(d), 0)
-      const COL_GRID = `${LEAD_W}px ${detailTpl ? detailTpl + ' ' : ''}repeat(${nCols},minmax(${COL_W}px,1fr)) ${TOT_W}px`
+      // The money first: each ledger column and the total straight after the
+      // voucher, the deal's details (type, ref, rate, narration) after them.
+      const COL_GRID = `${LEAD_W}px repeat(${nCols},minmax(${COL_W}px,1fr)) ${TOT_W}px${detailTpl ? ' ' + detailTpl : ''}`
       const COL_MIN = LEAD_W + detailW + nCols * COL_W + TOT_W
       const pin = (bg: string, z = 1): React.CSSProperties => ({ position: 'sticky', left: 0, zIndex: z, background: bg })
       const colTotal = (i: number): number => colRowsF.reduce((t, r) => t + r.cells[i], 0)
@@ -16991,7 +17025,7 @@ export function Accounts({
       const glide = (to: number): void => pane()?.scrollTo({ left: Math.max(0, Math.min(maxLeft, to)), behavior: 'smooth' })
       const nudge = (dir: -1 | 1): void => glide(colScroll.left + dir * COL_W * 2)
       const showCol = (i: number): void => {
-        const x = LEAD_W + detailW + i * COL_W
+        const x = LEAD_W + i * COL_W
         glide(x - Math.max(LEAD_W, (colScroll.view - COL_W) / 2))
         setColFlash(i)
       }
@@ -17030,6 +17064,15 @@ export function Accounts({
         cursor: at ? 'default' : 'pointer'
       })
       const TOT_BG = 'linear-gradient(180deg,#F1F9F3,#E6F4EA)'
+      // Blue where the voucher debits this ledger, red where it credits it; a
+      // month rolled together has both and stays plain.
+      const sideInk = (r: (typeof colRows)[number]): string => {
+        if (r.rows.length !== 1) return A.ink
+        const x = r.rows[0]
+        return (Number(x.dr) || 0) > 0 ? '#1B4E82' : (Number(x.cr) || 0) > 0 ? A.cr : A.ink
+      }
+      // Zebra a shade deeper than the page's, so a long row is easy to follow.
+      const zebra = (i: number): string => (i % 2 ? '#F4F8F3' : '#fff')
       return (
         <>
           {/* Every column, named, wherever it is — click one to go to it. */}
@@ -17086,11 +17129,6 @@ export function Accounts({
                 </span>
               )}
             </span>
-            {detailCols.map((d) => (
-              <span key={d.key} style={{ padding: '6px 10px', display: 'flex', alignItems: 'center', justifyContent: d.num ? 'flex-end' : 'flex-start' }}>
-                {cCf.head(`d:${d.key}`, d.label, { onDark: true, align: d.num ? 'end' : 'start' })}
-              </span>
-            ))}
             {lgContras.map((c, i) => (
               <span
                 key={c}
@@ -17119,18 +17157,23 @@ export function Accounts({
             <span style={{ padding: '0 14px', color: A.accent, display: 'flex', alignItems: 'center', justifyContent: 'flex-end' }}>
               {cCf.head('total', 'Total', { onDark: true, align: 'end' })}
             </span>
+            {detailCols.map((d) => (
+              <span key={d.key} style={{ padding: '6px 10px', display: 'flex', alignItems: 'center', justifyContent: d.num ? 'flex-end' : 'flex-start' }}>
+                {cCf.head(`d:${d.key}`, d.label, { onDark: true, align: d.num ? 'end' : 'start' })}
+              </span>
+            ))}
           </div>
           {colRowsF.map((r, i) => (
             <div
               key={`${r.label}-${i}`}
               className="grid items-center"
-              style={{ gridTemplateColumns: COL_GRID, minWidth: COL_MIN, minHeight: 50, borderBottom: '1px solid #EFF3EE', background: stripe(i) }}
+              style={{ gridTemplateColumns: COL_GRID, minWidth: COL_MIN, minHeight: 50, borderBottom: '1px solid #EFF3EE', background: zebra(i) }}
             >
               {/* The voucher first, its date under it — one pinned column that
                   reads as a label, not two figures fighting for 176px. */}
               <span
                 className="flex h-full min-w-0 flex-col justify-center"
-                style={{ padding: '6px 14px', ...pin(stripe(i)), borderRight: '1px solid #EAF0E9' }}
+                style={{ padding: '6px 14px', ...pin(zebra(i)), borderRight: '1px solid #EAF0E9' }}
               >
                 <span className="truncate" style={{ ...figS(12, A.ink, r.strong ? 800 : 700), fontFamily: r.lead ? MONO : SANS }}>
                   {r.label}
@@ -17140,6 +17183,15 @@ export function Accounts({
                     {r.lead}
                   </span>
                 )}
+              </span>
+              {r.cells.map((v, j) => (
+                <span key={j} style={{ padding: '0 10px', textAlign: 'right', ...figS(12, v > 0.004 ? sideInk(r) : '#C3D2C6', v > 0.004 ? 700 : 500) }}>
+                  {v > 0.004 ? formatINR(v) : '—'}
+                </span>
+              ))}
+              {lgContras.length === 0 && <span style={{ padding: '0 10px', textAlign: 'right', color: A.none }}>—</span>}
+              <span className="flex h-full items-center justify-end" style={{ padding: '0 14px', background: 'rgba(199,240,63,.08)', borderRight: '1px solid #EAF0E9', ...figS(12.5, sideInk(r)) }}>
+                {formatINR(r.total)}
               </span>
               {detailCols.map((d) => {
                 const dt = r.detail
@@ -17208,15 +17260,6 @@ export function Accounts({
                   </span>
                 )
               })}
-              {r.cells.map((v, j) => (
-                <span key={j} style={{ padding: '0 10px', textAlign: 'right', ...figS(12, v > 0.004 ? A.ink : '#C3D2C6', v > 0.004 ? 700 : 500) }}>
-                  {v > 0.004 ? formatINR(v) : '—'}
-                </span>
-              ))}
-              {lgContras.length === 0 && <span style={{ padding: '0 10px', textAlign: 'right', color: A.none }}>—</span>}
-              <span className="flex h-full items-center justify-end" style={{ padding: '0 14px', background: 'rgba(199,240,63,.08)', ...figS(12.5) }}>
-                {formatINR(r.total)}
-              </span>
             </div>
           ))}
           {colRowsF.length === 0 && (
@@ -17243,6 +17286,13 @@ export function Accounts({
                 {colRowsF.length} {lgCondensed ? (colRowsF.length === 1 ? 'month' : 'months') : colRowsF.length === 1 ? 'voucher' : 'vouchers'}
               </span>
             </span>
+            {lgContras.map((c, i) => (
+              <span key={c} style={{ padding: '0 10px', textAlign: 'right', whiteSpace: 'nowrap', ...figS(12, A.good) }}>
+                {formatINR(colTotal(i))}
+              </span>
+            ))}
+            {lgContras.length === 0 && <span />}
+            <span style={{ padding: '0 14px', textAlign: 'right', ...figS(13, A.good) }}>{formatINR(grand)}</span>
             {detailCols.map((d) => {
               if (d.key === 'qty' || d.key === 'interest') {
                 const sum = colRowsF.reduce((s, r) => s + (r.detail ? Number(r.detail[d.key as 'qty' | 'interest']) || 0 : 0), 0)
@@ -17254,13 +17304,6 @@ export function Accounts({
               }
               return <span key={d.key} />
             })}
-            {lgContras.map((c, i) => (
-              <span key={c} style={{ padding: '0 10px', textAlign: 'right', whiteSpace: 'nowrap', ...figS(12, A.good) }}>
-                {formatINR(colTotal(i))}
-              </span>
-            ))}
-            {lgContras.length === 0 && <span />}
-            <span style={{ padding: '0 14px', textAlign: 'right', ...figS(13, A.good) }}>{formatINR(grand)}</span>
           </div>
           {offScreen && (
             <div
