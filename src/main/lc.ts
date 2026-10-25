@@ -325,6 +325,7 @@ export async function listBankLcLimits(): Promise<Row[]> {
                  COALESCE(l.fixed_limit, 0) AS fixed_limit,
                  COALESCE(l.convertible_limit, 0) AS convertible_limit,
                  COALESCE(l.convertible_enabled, 0) AS convertible_enabled,
+                 l.commission_pct,
                  (SELECT COUNT(*) FROM letters_of_credit x WHERE x.company_id = ? AND x.our_bank_id = b.id
                      AND COALESCE(x.workflow_status, '') <> 'rejected') AS lc_count,
                  COALESCE((SELECT SUM(COALESCE(NULLIF(x.blocked_amount, 0), x.amount)) FROM letters_of_credit x
@@ -359,14 +360,22 @@ export async function saveLcLimit(v: Row): Promise<{ id: number }> {
   })
   const priorFixed = was.rows.length ? n(was.rows[0].v) : 0
   await getClient().execute({
-    sql: `INSERT INTO bank_lc_limits (company_id, bank_id, fixed_limit, convertible_limit, convertible_enabled, updated_at)
-          VALUES (?, ?, ?, ?, ?, datetime('now'))
+    sql: `INSERT INTO bank_lc_limits (company_id, bank_id, fixed_limit, convertible_limit, convertible_enabled, commission_pct, updated_at)
+          VALUES (?, ?, ?, ?, ?, ?, datetime('now'))
           ON CONFLICT(company_id, bank_id) DO UPDATE SET
             fixed_limit = excluded.fixed_limit,
             convertible_limit = excluded.convertible_limit,
             convertible_enabled = excluded.convertible_enabled,
+            commission_pct = excluded.commission_pct,
             updated_at = excluded.updated_at`,
-    args: [cid, bankId, n(v.fixed_limit), n(v.convertible_limit), v.convertible_enabled ? 1 : 0]
+    args: [
+      cid,
+      bankId,
+      n(v.fixed_limit),
+      n(v.convertible_limit),
+      v.convertible_enabled ? 1 : 0,
+      v.commission_pct === '' || v.commission_pct == null ? null : Math.max(0, n(v.commission_pct))
+    ]
   })
   await logLimitChange({
     kind: 'bank',
@@ -683,7 +692,10 @@ const LC_COLS = [
   // hand drifts from whatever the LC was actually opened on. Counted from the
   // opening; the register turns it into a date and says whether it is due.
   'payment_in_expected',
-  'payment_in_days'
+  'payment_in_days',
+  // The bank's commission % on the open amount, asked for at Open. A figure to
+  // show (open amount × %), not a posting. Blank = none stated.
+  'commission_pct'
 ]
 
 function lcArgs(v: Row): (string | number | null)[] {
@@ -731,7 +743,8 @@ function lcArgs(v: Row): (string | number | null)[] {
       // A number of days, kept as one — blank has already fallen through to
       // null above, which is "no term agreed" rather than nought days.
       k === 'payment_in_days' ||
-      k === 'payment_in_expected'
+      k === 'payment_in_expected' ||
+      k === 'commission_pct'
     ) {
       return n(val)
     }

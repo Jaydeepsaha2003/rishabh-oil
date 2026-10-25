@@ -3314,6 +3314,10 @@ export async function runStartupTasks(): Promise<void> {
  */
 const REQUIRED_COLUMNS: { table: string; column: string; type: string }[] = [
   { table: 'bill_discountings', column: 'payment_in_expected', type: 'INTEGER NOT NULL DEFAULT 0' },
+  // The bank's commission % on an LC's open amount — set per bank on the
+  // limit screen, taken (and changeable) on each LC. Shown, never posted.
+  { table: 'bank_lc_limits', column: 'commission_pct', type: 'REAL' },
+  { table: 'letters_of_credit', column: 'commission_pct', type: 'REAL' },
   { table: 'bill_discountings', column: 'payment_in_days', type: 'INTEGER' },
   { table: 'letters_of_credit', column: 'payment_in_expected', type: 'INTEGER NOT NULL DEFAULT 0' },
   { table: 'letters_of_credit', column: 'payment_in_days', type: 'INTEGER' },

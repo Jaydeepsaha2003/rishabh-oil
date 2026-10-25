@@ -1575,9 +1575,19 @@ function TreasuryDesk({ onCompanyChange, focusLcId, focusBdId, onFocusHandled }:
     const next = nextLcStage(String(l.stage || 'application'))
     if (!next) return
     setStageRow(l)
+    if (next === 'open' && (l.commission_pct == null || l.commission_pct === '') && l.our_bank_id) {
+      // The bank's commission %, from its limit, as the default.
+      void window.api.lc
+        .bankLimits()
+        .then((rows) => {
+          const hit = (rows as Row[]).find((r) => Number(r.bank_id) === Number(l.our_bank_id))
+          if (hit?.commission_pct != null) setStageForm((p) => (p.commission_pct === '' || p.commission_pct == null ? { ...p, commission_pct: String(hit.commission_pct) } : p))
+        })
+        .catch(() => undefined)
+    }
     setStageForm(
       next === 'open'
-        ? { opened_date: todayISO(), lc_no: l.lc_no || '' }
+        ? { opened_date: todayISO(), lc_no: l.lc_no || '', commission_pct: l.commission_pct == null ? '' : String(l.commission_pct) }
         : {
             payment_received_date: todayISO(),
             expiry_date: l.expiry_date || '',
@@ -1723,6 +1733,9 @@ function TreasuryDesk({ onCompanyChange, focusLcId, focusBdId, onFocusHandled }:
   // controlled while they are being typed into.
   const [lcLimitForm, setLcLimitForm] = useState<Row>({})
   const [lcBankLimits, setLcBankLimits] = useState<Record<string, string>>({})
+  // Each bank's commission % on an LC's open amount — the default an LC takes
+  // at Open (shown there, never posted).
+  const [lcBankComm, setLcBankComm] = useState<Record<string, string>>({})
   const [lcLimitLoading, setLcLimitLoading] = useState(false)
   async function openLcLimits(): Promise<void> {
     setLcLimitOpen(true)
@@ -1730,11 +1743,14 @@ function TreasuryDesk({ onCompanyChange, focusLcId, focusBdId, onFocusHandled }:
     try {
       const rows = await window.api.lc.bankLimits().catch(() => [] as Row[])
       const m: Record<string, string> = {}
+      const cm: Record<string, string> = {}
       for (const b of banks) {
         const hit = rows.find((r) => Number(r.bank_id) === Number(b.id))
         m[String(b.id)] = n(hit?.fixed_limit) ? String(n(hit?.fixed_limit)) : ''
+        cm[String(b.id)] = hit?.commission_pct == null ? '' : String(hit.commission_pct)
       }
       setLcBankLimits(m)
+      setLcBankComm(cm)
     } finally {
       setLcLimitLoading(false)
     }
@@ -1766,6 +1782,7 @@ function TreasuryDesk({ onCompanyChange, focusLcId, focusBdId, onFocusHandled }:
         await window.api.lc.saveLimit({
           bank_id: Number(b.id),
           fixed_limit: n(lcBankLimits[String(b.id)]),
+          commission_pct: lcBankComm[String(b.id)] ?? '',
           convertible_limit: 0,
           convertible_enabled: false
         })
@@ -4570,6 +4587,18 @@ function TreasuryDesk({ onCompanyChange, focusLcId, focusBdId, onFocusHandled }:
                         setLcBankLimits((prev) => ({ ...prev, [String(b.id)]: e.target.value }))
                       }
                     />
+                    <div className="relative flex-none" title="Commission this bank charges on an LC's open amount — shown on the LC at Open, not posted">
+                      <Input
+                        type="number"
+                        min={0}
+                        step="0.01"
+                        placeholder="Comm."
+                        className="!h-11 !w-[96px] !rounded-[4px] !border-[#9FB6A6] !pr-7 !text-right !text-[14px] !font-bold !tabular-nums"
+                        value={lcBankComm[String(b.id)] ?? ''}
+                        onChange={(e) => setLcBankComm((prev) => ({ ...prev, [String(b.id)]: e.target.value }))}
+                      />
+                      <span className="pointer-events-none absolute right-2.5 top-3 text-[13px] font-bold text-[#5A6B62]">%</span>
+                    </div>
                     <button
                       type="button"
                       title="When this bank's limit moved, and by how much"
@@ -5261,6 +5290,31 @@ function TreasuryDesk({ onCompanyChange, focusLcId, focusBdId, onFocusHandled }:
                         onChange={(v) => setStageForm((p) => ({ ...p, opened_date: v }))}
                         min={String(stageRow?.open_date || '') || undefined}
                       />
+                    </div>
+                    {/* THE BANK'S COMMISSION — its % (from the bank's limit
+                        screen, changeable here) and what it comes to on the
+                        open amount. A figure to see, not a posting. */}
+                    <div className="flex flex-col gap-1.5">
+                      <Label>Bank commission %</Label>
+                      <Input
+                        type="number"
+                        min={0}
+                        step="0.01"
+                        placeholder="0"
+                        className="text-right tabular-nums"
+                        value={String(stageForm.commission_pct ?? '')}
+                        onChange={(e) => setStageForm((p) => ({ ...p, commission_pct: e.target.value }))}
+                      />
+                      <span className="text-[10px] text-muted-foreground">From the bank&apos;s limit screen — change it if this LC differs.</span>
+                    </div>
+                    <div className="flex flex-col gap-1.5">
+                      <Label>Commission on the open amount</Label>
+                      <div className="flex h-9 items-center justify-end rounded-md border border-dashed border-[#C3D2C6] bg-[#F7FAF6] px-3 text-[14px] font-bold tabular-nums text-[#0A1F17]">
+                        {formatINR(round2((n(stageRow?.amount) * n(stageForm.commission_pct)) / 100))}
+                      </div>
+                      <span className="text-[10px] text-muted-foreground">
+                        {formatINR(n(stageRow?.amount))} × {n(stageForm.commission_pct)}% — shown only, nothing is deducted or posted.
+                      </span>
                     </div>
                   </section>
                 )}
@@ -7161,6 +7215,13 @@ function TreasuryDesk({ onCompanyChange, focusLcId, focusBdId, onFocusHandled }:
                         }
                       />
                       <LcFact k="Bank charges" v={formatINR(dRow.charges)} />
+                      {dRow.commission_pct != null && dRow.commission_pct !== '' && (
+                        <LcFact
+                          k="Bank commission"
+                          v={`${n(dRow.commission_pct)}%`}
+                          sub={`${formatINR(round2((n(dRow.amount) * n(dRow.commission_pct)) / 100))} on the open amount — shown only`}
+                        />
+                      )}
                       <LcFact
                         k="To the beneficiary"
                         v={formatINR(dRow.paid_to_party ?? dRow.paid_expected)}
