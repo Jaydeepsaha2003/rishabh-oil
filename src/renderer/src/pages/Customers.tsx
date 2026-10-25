@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { SubLedgersPanel } from '@/components/SubLedgersPanel'
 import { PageHeader } from '@/components/PageHeader'
 import { EntityManager, type ColumnDef, type FieldDef } from '@/components/EntityManager'
 import { loadUser } from '@/lib/session'
@@ -115,6 +116,13 @@ export function Customers(): React.JSX.Element {
         <EntityManager
           key={`customers-${companyId}`}
           table="customers"
+          drawerWidth={860}
+          renderDrawerExtra={({ editingId, form, reload }) =>
+            // A main party's window lists and manages its sub-ledgers.
+            editingId != null && !form.linked_party_id ? (
+              <SubLedgersPanel table="customers" mainId={editingId} mainForm={form} readOnly={!canWrite(loadUser(), 'customers')} onChanged={() => { reload(); void window.api.data.list('customers').then(setAllCustomers).catch(() => undefined) }} />
+            ) : null
+          }
           title="Customer"
           fields={fields}
           columns={columns}

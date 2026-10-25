@@ -180,6 +180,11 @@ interface Props {
   // After a record is saved: its id, what was sent, and the row as it was
   // before (null for a new one). Not called for one sent for approval.
   onSaved?: (id: number, saved: Row, before: Row | null) => void
+  // The edit window's width on the website (px). Default 520.
+  drawerWidth?: number
+  // More to show inside the edit window, under the fields — the record being
+  // edited (null id for a new one), its form, and a way to refresh the list.
+  renderDrawerExtra?: (ctx: { editingId: number | null; form: Row; reload: () => void }) => React.ReactNode
 }
 
 /** What clicking this header will do next, in words. */
@@ -202,7 +207,9 @@ export function EntityManager({
   rowAction,
   renderCard,
   importable = false,
-  onSaved
+  onSaved,
+  drawerWidth = 520,
+  renderDrawerExtra
 }: Props): React.JSX.Element {
   const [rows, setRows] = useState<Row[]>([])
   // Phone width on the website swaps the register for cards — see below.
@@ -1039,9 +1046,10 @@ export function EntityManager({
             __WEB__ &&
               cn(
                 '!left-auto !right-0 !top-0 !flex !h-screen !max-w-none !translate-x-0 !translate-y-0 !flex-col !gap-0 !rounded-none !border-0 !bg-[#F1F5EF] !p-0 !shadow-[-16px_0_40px_rgba(10,31,23,.22)]',
-                isMobile ? '!w-full' : '!w-[520px]'
+                isMobile && '!w-full'
               )
           )}
+          style={__WEB__ && !isMobile ? { width: drawerWidth } : undefined}
         >
           <DialogHeader
             className={cn(
@@ -1303,6 +1311,7 @@ export function EntityManager({
                 </div>
               )
             })}
+            {renderDrawerExtra?.({ editingId, form, reload: () => void load(true) })}
           </div>
           {nameBlocked && (
             <p className="flex items-center gap-1.5 rounded-md border border-red-300 bg-red-50 px-3 py-2 text-sm text-red-700">
