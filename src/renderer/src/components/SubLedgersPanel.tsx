@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import { toast } from 'sonner'
-import { GitBranch, Plus, Save, Unlink } from 'lucide-react'
+import { ArrowLeftRight, ChevronDown, Factory, GitBranch, Pencil, Plus, Save, Unlink, X } from 'lucide-react'
 import { errText } from '@/lib/format'
 import { BUSINESS_TYPES } from '@/lib/constants'
 import { cn } from '@/lib/utils'
@@ -52,6 +52,9 @@ export function SubLedgersPanel({
   const [drafts, setDrafts] = useState<Record<number, Draft>>({})
   const [add, setAdd] = useState<Draft>(blank(mainType))
   const [busy, setBusy] = useState(false)
+  // Which sub-ledger is open for editing, and whether the add form is showing.
+  const [openId, setOpenId] = useState<number | null>(null)
+  const [adding, setAdding] = useState(false)
 
   const load = useCallback(async () => {
     const all = (await window.api.data.list(table)) as Row[]
@@ -89,7 +92,10 @@ export function SubLedgersPanel({
   const saveSub = (r: Row): Promise<void> => {
     const d = drafts[Number(r.id)]
     if (!d.name.trim()) return Promise.resolve(void toast.error('A sub-ledger needs a name'))
-    return run(() => window.api.data.update(table, Number(r.id), { ...r, ...values(d), linked_party_id: mainId }), `${d.name.trim()} saved`)
+    return run(async () => {
+      await window.api.data.update(table, Number(r.id), { ...r, ...values(d), linked_party_id: mainId })
+      setOpenId(null)
+    }, `${d.name.trim()} saved`)
   }
   const detach = (r: Row): Promise<void> => {
     if (!window.confirm(`Detach ${String(r.name)} from this party? It stays as a party of its own, with its ledger and history, and sets its own TDS again.`)) return Promise.resolve()
@@ -101,11 +107,19 @@ export function SubLedgersPanel({
     return run(async () => {
       await window.api.data.create(table, { ...inherited, ...values(add), linked_party_id: mainId, active: true })
       setAdd(blank(mainType))
+      setAdding(false)
     }, `${add.name.trim()} added under ${String(mainForm.name || 'this party')} as ${add.business_type || mainType}`)
   }
 
-  const box = 'rounded-[6px] border border-[#DCE7DB] bg-white p-3'
+  // Colours by type — blue for Trading, green for Manufacturing — used on
+  // the stripe, the tag and the type switch alike.
+  const TONE = (t: string): { bar: string; tagBg: string; tagFg: string; tagBd: string; on: string } =>
+    String(t) === 'Trading'
+      ? { bar: '#1B4E82', tagBg: '#EAF0FA', tagFg: '#1B4E82', tagBd: '#C6DAF0', on: 'border-[#1B4E82] bg-[#1B4E82] text-white' }
+      : { bar: '#0B6B45', tagBg: '#E9F5EE', tagFg: '#0B6B45', tagBd: '#BFE3CB', on: 'border-[#0B3D2E] bg-[#0B3D2E] text-white' }
   const cap = 'mb-1 block text-[9.5px] font-extrabold uppercase tracking-[.13em] text-[#5A6B62]'
+  const input =
+    'h-10 w-full rounded-[6px] border border-[#C3D2C6] bg-white px-3 text-[13.5px] font-semibold text-[#0A1F17] outline-none transition-colors placeholder:font-medium placeholder:text-[#A8B8AE] focus:border-[#0B3D2E] focus:ring-2 focus:ring-[#0B3D2E]/10 disabled:bg-[#F4F7F3]'
   const field = (d: Draft, set: (p: Partial<Draft>) => void, k: Exclude<(typeof EDITABLE)[number], 'business_type'>, label: string, ph = ''): React.JSX.Element => (
     <label className="min-w-0">
       <span className={cap}>{label}</span>
@@ -115,17 +129,18 @@ export function SubLedgersPanel({
         inputMode={k === 'gst_pct' ? 'decimal' : undefined}
         placeholder={ph}
         onChange={(e) => set({ [k]: e.target.value } as Partial<Draft>)}
-        className="w-full rounded-[4px] border border-[#C3D2C6] bg-white px-3 text-[14px] font-semibold outline-none focus:border-[#1B4E82]"
+        className={cn(input, k === 'name' && 'uppercase placeholder:normal-case', k === 'gstin' && 'font-mono uppercase')}
       />
     </label>
   )
-  // Trading or Manufacturing, as two square chips — the choice this panel is for.
+  // Trading or Manufacturing — one switch of two, each with its icon.
   const typePick = (d: Draft, set: (p: Partial<Draft>) => void): React.JSX.Element => (
     <div className="min-w-0">
       <span className={cap}>Type</span>
-      <div className="flex gap-1">
+      <div className="grid h-10 grid-cols-2 gap-1 rounded-[7px] border border-[#D6E2D6] bg-[#F4F7F3] p-1">
         {BUSINESS_TYPES.map((t) => {
           const on = (d.business_type || mainType) === t.value
+          const Icon = t.value === 'Trading' ? ArrowLeftRight : Factory
           return (
             <button
               key={t.value}
@@ -133,112 +148,198 @@ export function SubLedgersPanel({
               disabled={readOnly || busy}
               onClick={() => set({ business_type: t.value })}
               className={cn(
-                'h-10 flex-1 rounded-[3px] border px-2 text-[12px] font-extrabold',
-                on
-                  ? t.value === 'Trading'
-                    ? 'border-[#1B4E82] bg-[#1B4E82] text-white'
-                    : 'border-[#0B3D2E] bg-[#0B3D2E] text-white'
-                  : 'border-[#C3D2C6] bg-white text-[#5A6B62] hover:border-[#9FB6A6]'
+                'flex items-center justify-center gap-1.5 rounded-[5px] border text-[12px] font-extrabold transition-colors',
+                on ? TONE(t.value).on : 'border-transparent text-[#5A6B62] hover:bg-white'
               )}
             >
-              {t.label}
+              <Icon className="h-3.5 w-3.5" /> {t.label}
             </button>
           )
         })}
       </div>
     </div>
   )
-  const grid = (d: Draft, set: (p: Partial<Draft>) => void, ph: string): React.JSX.Element => (
-    <>
-      <div className="grid grid-cols-[minmax(0,1fr)_230px] gap-2">
+  const form = (d: Draft, set: (p: Partial<Draft>) => void, ph: string): React.JSX.Element => (
+    <div className="grid gap-2.5">
+      <div className="grid grid-cols-[minmax(0,1fr)_250px] gap-2.5">
         {field(d, set, 'name', 'Name', ph)}
         {typePick(d, set)}
       </div>
-      <div className="mt-2 grid grid-cols-[1.3fr_1fr_80px_1fr] gap-2">
-        {field(d, set, 'gstin', 'GSTIN')}
-        {field(d, set, 'state', 'State')}
-        {field(d, set, 'gst_pct', 'GST %')}
+      <div className="grid grid-cols-[1.4fr_1fr_90px_1fr] gap-2.5">
+        {field(d, set, 'gstin', 'GSTIN', '22AAAAA0000A1Z5')}
+        {field(d, set, 'state', 'State', 'e.g. Gujarat')}
+        {field(d, set, 'gst_pct', 'GST %', '5')}
         {field(d, set, 'gst_rates', 'GST rates', '5, 18')}
       </div>
-    </>
+    </div>
   )
-  const typeTag = (t: string): React.JSX.Element => (
-    <span
-      className={cn(
-        'rounded-[2px] border px-1.5 py-0.5 text-[10px] font-extrabold uppercase tracking-[.06em]',
-        t === 'Trading' ? 'border-[#C6DAF0] bg-[#EAF0FA] text-[#1B4E82]' : 'border-[#BFE3CB] bg-[#E9F5EE] text-[#0B6B45]'
-      )}
-    >
-      {t || mainType}
-    </span>
-  )
+  const tag = (t: string): React.JSX.Element => {
+    const c = TONE(t || mainType)
+    const Icon = (t || mainType) === 'Trading' ? ArrowLeftRight : Factory
+    return (
+      <span
+        className="inline-flex flex-none items-center gap-1 rounded-[3px] border px-1.5 py-[2px] text-[9.5px] font-extrabold uppercase tracking-[.06em]"
+        style={{ background: c.tagBg, color: c.tagFg, borderColor: c.tagBd }}
+      >
+        <Icon className="h-3 w-3" /> {t || mainType}
+      </span>
+    )
+  }
+  const counts = BUSINESS_TYPES.map((t) => ({ t: t.value, n: (subs || []).filter((r) => (String(r.business_type) || mainType) === t.value).length })).filter((x) => x.n)
 
   return (
-    <div className="mt-2 rounded-[8px] border-2 border-[#BFE3CB] bg-[#F4FAF6] p-3.5">
-      <div className="mb-2.5 flex flex-wrap items-center gap-2">
-        <GitBranch className="h-4 w-4 text-[#0B6B45]" />
-        <span className="text-[12px] font-extrabold uppercase tracking-[.12em] text-[#0B3D2E]">Sub-ledgers</span>
-        <span className="rounded-full bg-[#0B3D2E] px-2 py-0.5 text-[10.5px] font-bold text-white">{subs ? subs.length : '…'}</span>
-        <span className="ml-auto text-[11px] font-semibold text-[#5A6B62]">Trading or Manufacturing — TDS is this party&apos;s for all of them</span>
+    <div className="mt-2 overflow-hidden rounded-[10px] border border-[#CFE0D2] bg-white shadow-[0_1px_2px_rgba(10,31,23,.04),0_10px_24px_-18px_rgba(10,31,23,.35)]">
+      {/* HEAD — what this is, how many of each. */}
+      <div className="flex flex-wrap items-center gap-3 border-b border-[#DCE7DB] bg-[linear-gradient(160deg,#F4FAF6,#EAF4EC)] px-4 py-3">
+        <span className="flex h-9 w-9 flex-none items-center justify-center rounded-[9px] bg-[#0B3D2E]">
+          <GitBranch className="h-[17px] w-[17px] text-[#C7F03F]" />
+        </span>
+        <div className="min-w-0">
+          <div className="flex items-center gap-2">
+            <span className="text-[13.5px] font-extrabold text-[#0A1F17]">Sub-ledgers</span>
+            <span className="rounded-full bg-[#0B3D2E] px-2 py-px text-[10.5px] font-extrabold tabular-nums text-white">{subs ? subs.length : '…'}</span>
+          </div>
+          <div className="text-[11.5px] font-semibold text-[#5A6B62]">
+            Branches and the Trading or Manufacturing side of {String(mainForm.name || 'this party')} — TDS is this party&apos;s for all
+          </div>
+        </div>
+        <span className="ml-auto flex flex-wrap gap-2">
+          {counts.map((x) => (
+            <span key={x.t} className="flex items-center gap-1">
+              {tag(x.t)}
+              <span className="text-[11px] font-extrabold tabular-nums text-[#33473E]">{x.n}</span>
+            </span>
+          ))}
+        </span>
       </div>
-      {subs == null ? (
-        <div className="py-2 text-[12px] text-[#5A6B62]">Reading…</div>
-      ) : (
-        <div className="grid gap-2.5">
-          {subs.length === 0 && (
-            <div className="text-[12px] text-[#5A6B62]">No sub-ledgers yet — add a branch, a factory or the Trading side of this party below.</div>
-          )}
-          {subs.map((r) => {
-            const id = Number(r.id)
-            const d = drafts[id] || draftOf(r)
-            const changed = JSON.stringify(d) !== JSON.stringify(draftOf(r))
-            return (
-              <div key={id} className={box}>
-                <div className="mb-2 flex items-center gap-2">
-                  {typeTag(String(r.business_type || ''))}
-                  <span className="min-w-0 truncate text-[12px] font-bold text-[#0A1F17]">{String(r.name)}</span>
+
+      <div className="grid gap-2 p-3">
+        {subs == null ? (
+          <div className="px-1 py-3 text-[12px] text-[#5A6B62]">Reading…</div>
+        ) : subs.length === 0 && !adding ? (
+          <div className="flex flex-col items-center rounded-[8px] border border-dashed border-[#C3D2C6] bg-[#FBFCFA] px-6 py-5 text-center">
+            <span className="flex h-10 w-10 items-center justify-center rounded-full bg-[#F1F8EC]">
+              <GitBranch className="h-5 w-5 text-[#0B6B45]" />
+            </span>
+            <div className="mt-2 text-[13px] font-extrabold text-[#0A1F17]">No sub-ledgers yet</div>
+            <div className="mt-0.5 text-[11.5px] font-semibold text-[#5A6B62]">Add a branch, a factory, or this party&apos;s Trading or Manufacturing side.</div>
+          </div>
+        ) : null}
+
+        {/* EACH SUB-LEDGER — a line that reads at a glance, opening to edit. */}
+        {(subs || []).map((r) => {
+          const id = Number(r.id)
+          const d = drafts[id] || draftOf(r)
+          const changed = JSON.stringify(d) !== JSON.stringify(draftOf(r))
+          const open = openId === id
+          const c = TONE(String(r.business_type) || mainType)
+          return (
+            <div
+              key={id}
+              className={cn('overflow-hidden rounded-[8px] border bg-white transition-shadow', open ? 'border-[#9FB6A6] shadow-[0_8px_20px_-14px_rgba(10,31,23,.45)]' : 'border-[#DCE7DB]')}
+              style={{ borderLeft: `4px solid ${c.bar}` }}
+            >
+              <button type="button" onClick={() => setOpenId(open ? null : id)} className="flex w-full items-center gap-3 px-3.5 py-2.5 text-left hover:bg-[#FAFCF9]">
+                <span className="min-w-0 flex-1">
+                  <span className="flex flex-wrap items-center gap-2">
+                    <span className="min-w-0 truncate text-[13px] font-extrabold uppercase text-[#0A1F17]">{String(r.name)}</span>
+                    {tag(String(r.business_type || ''))}
+                  </span>
+                  <span className="mt-0.5 flex flex-wrap gap-x-3 text-[11px] font-semibold text-[#5A6B62]">
+                    <span className={cn(!r.gstin && 'text-[#A8B8AE]')}>{r.gstin ? <span className="font-mono">{String(r.gstin)}</span> : 'No GSTIN'}</span>
+                    {r.state ? <span>{String(r.state)}</span> : null}
+                    <span>GST {r.gst_rates ? String(r.gst_rates) : `${Number(r.gst_pct) || 0}%`}</span>
+                  </span>
+                </span>
+                {changed && <span className="flex-none rounded-[3px] bg-[#FFF6E3] px-1.5 py-0.5 text-[10px] font-extrabold text-[#8A5A00]">UNSAVED</span>}
+                {!readOnly && !open && <Pencil className="h-4 w-4 flex-none text-[#8CA396]" />}
+                <ChevronDown className={cn('h-4 w-4 flex-none text-[#8CA396] transition-transform', open && 'rotate-180')} />
+              </button>
+              {open && (
+                <div className="border-t border-[#EAF0E9] bg-[#FBFCFA] px-3.5 pb-3 pt-3">
+                  {form(d, (p) => setDrafts((x) => ({ ...x, [id]: { ...d, ...p } })), '')}
+                  {!readOnly && (
+                    <div className="mt-3 flex items-center gap-2">
+                      <button
+                        type="button"
+                        disabled={busy}
+                        onClick={() => void detach(r)}
+                        className="flex h-9 items-center gap-1.5 rounded-[6px] border border-[#E5C9C6] bg-white px-3 text-[12px] font-bold text-[#8C2F26] hover:bg-rose-50"
+                      >
+                        <Unlink className="h-3.5 w-3.5" /> Detach
+                      </button>
+                      <span className="flex-1" />
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setDrafts((x) => ({ ...x, [id]: draftOf(r) }))
+                          setOpenId(null)
+                        }}
+                        className="h-9 rounded-[6px] border border-[#C3D2C6] bg-white px-3 text-[12px] font-bold text-[#33473E] hover:bg-[#F4F7F3]"
+                      >
+                        Cancel
+                      </button>
+                      <button
+                        type="button"
+                        disabled={busy || !changed}
+                        onClick={() => void saveSub(r)}
+                        className="flex h-9 items-center gap-1.5 rounded-[6px] bg-[#0B3D2E] px-3.5 text-[12px] font-extrabold text-[#C7F03F] hover:bg-[#0F4A38] disabled:opacity-40"
+                      >
+                        <Save className="h-3.5 w-3.5" /> Save
+                      </button>
+                    </div>
+                  )}
                 </div>
-                {grid(d, (p) => setDrafts((x) => ({ ...x, [id]: { ...d, ...p } })), '')}
-                {!readOnly && (
-                  <div className="mt-2 flex items-center justify-end gap-2">
-                    <button
-                      type="button"
-                      disabled={busy}
-                      onClick={() => void detach(r)}
-                      className="flex items-center gap-1 rounded-[4px] border border-[#E5C9C6] bg-white px-2.5 py-1.5 text-[11.5px] font-bold text-[#8C2F26] hover:bg-rose-50"
-                    >
-                      <Unlink className="h-3.5 w-3.5" /> Detach
-                    </button>
-                    <button
-                      type="button"
-                      disabled={busy || !changed}
-                      onClick={() => void saveSub(r)}
-                      className="flex items-center gap-1 rounded-[4px] bg-[#0B3D2E] px-3 py-1.5 text-[11.5px] font-bold text-white disabled:opacity-40"
-                    >
-                      <Save className="h-3.5 w-3.5" /> Save
-                    </button>
-                  </div>
-                )}
-              </div>
-            )
-          })}
-          {!readOnly && (
-            <div className={`${box} border-dashed border-[#9FB6A6]`}>
-              {grid(add, (p) => setAdd((x) => ({ ...x, ...p })), 'e.g. DIL EXIM – RAJKOT, or DIL EXIM COMMODITIES')}
-              <div className="mt-2 flex justify-end">
+              )}
+            </div>
+          )
+        })}
+
+        {/* ADD — a button until it is wanted, then the form. */}
+        {!readOnly &&
+          (adding ? (
+            <div className="overflow-hidden rounded-[8px] border-2 border-dashed border-[#9FC9AE] bg-[#F7FBF8]">
+              <div className="flex items-center gap-2 px-3.5 pt-3">
+                <Plus className="h-4 w-4 text-[#0B6B45]" />
+                <span className="text-[12px] font-extrabold uppercase tracking-[.1em] text-[#0B3D2E]">New sub-ledger</span>
+                <span className="flex-1" />
                 <button
                   type="button"
-                  disabled={busy}
-                  onClick={() => void addSub()}
-                  className="flex items-center gap-1 rounded-[4px] bg-[#C7F03F] px-3 py-1.5 text-[11.5px] font-extrabold text-[#0B3D2E] hover:bg-[#B9E62F]"
+                  title="Cancel"
+                  onClick={() => {
+                    setAdding(false)
+                    setAdd(blank(mainType))
+                  }}
+                  className="text-[#8CA396] hover:text-[#33473E]"
                 >
-                  <Plus className="h-3.5 w-3.5" /> Add {add.business_type || mainType} sub-ledger
+                  <X className="h-4 w-4" />
                 </button>
               </div>
+              <div className="p-3.5 pt-2.5">
+                {form(add, (p) => setAdd((x) => ({ ...x, ...p })), 'e.g. DIL EXIM – RAJKOT, or DIL EXIM COMMODITIES')}
+                <div className="mt-3 flex items-center justify-end gap-2">
+                  <span className="mr-auto text-[11px] font-semibold text-[#5A6B62]">Takes this party&apos;s TDS, credit days and interest terms.</span>
+                  <button
+                    type="button"
+                    disabled={busy || !add.name.trim()}
+                    onClick={() => void addSub()}
+                    className="flex h-9 items-center gap-1.5 rounded-[6px] bg-[#C7F03F] px-3.5 text-[12px] font-extrabold text-[#0B3D2E] shadow-[0_6px_14px_-8px_rgba(122,160,20,.9)] hover:bg-[#B9E62F] disabled:opacity-40"
+                  >
+                    <Plus className="h-4 w-4" /> Add {add.business_type || mainType} sub-ledger
+                  </button>
+                </div>
+              </div>
             </div>
-          )}
-        </div>
-      )}
+          ) : (
+            <button
+              type="button"
+              onClick={() => setAdding(true)}
+              className="flex h-11 items-center justify-center gap-2 rounded-[8px] border-2 border-dashed border-[#C3D2C6] bg-[#FBFCFA] text-[12.5px] font-extrabold text-[#0B3D2E] transition-colors hover:border-[#0B6B45] hover:bg-[#F1F8EC]"
+            >
+              <Plus className="h-4 w-4" /> Add a sub-ledger
+            </button>
+          ))}
+      </div>
     </div>
   )
 }
