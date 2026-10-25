@@ -2,7 +2,8 @@ import ExcelJS from 'exceljs'
 import { parsedFile, booksRead } from './tallyCache'
 import { getClient } from './db'
 import { createVoucher, type VoucherType } from './accounting'
-import { linksFor, recordTallyBatch } from './tallyLinks'
+import { linksFor, recordTallyBatch, saveTallyLink } from './tallyLinks'
+import { withDbTransaction } from './dbTransaction'
 import { cellValue, companyKey, companyOf, sameCompany, isoDate, mappingRows, periodOf, resolveNames, saleDateLimits, tallyKey, toPlain } from './tallyNotes'
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -617,6 +618,27 @@ async function reconcileBank(v: { account_id: number; data_base64: string; compa
       rows.push({ key: `STMT|${i}`, status: 'statement_only', tally: null, books: null, stmt: { date: s.date, narration: s.narration, amount: s.amount, dir: s.dir }, diffs: [] })
     })
   }
+  // NEAR PAIRS — one payment, two figures: Tally has what the bank actually
+  // took (₹1,25,755.00), these books what was worked out (₹1,25,753.43). Same
+  // direction, within three days, apart by no more than ₹500 or 1%. Offered,
+  // never assumed: the desk settles it with one press (settleTallyBankDifference).
+  const nearCand: { m: Row; e: Row; gap: number; d: number }[] = []
+  for (const m of rows) {
+    if (m.status !== 'missing_here' || !m.tally || m.tally.multi) continue
+    for (const e of rows) {
+      if (e.status !== 'missing_tally' || !e.books || e.books.dir !== m.tally.dir) continue
+      const d = Math.abs(n(m.tally.amount) - n(e.books.amount))
+      const gap = daysApart(m.tally.date, e.books.date)
+      if (d < 0.005 || d > Math.max(500, n(m.tally.amount) * 0.01) || gap > 3) continue
+      nearCand.push({ m, e, gap, d })
+    }
+  }
+  nearCand.sort((a, b) => a.gap - b.gap || a.d - b.d)
+  for (const p of nearCand) {
+    if (p.m.near || p.e.near_of) continue
+    p.m.near = { id: p.e.books.id, code: p.e.books.code, date: p.e.books.date, amount: p.e.books.amount, diff: round2(n(p.m.tally.amount) - n(p.e.books.amount)) }
+    p.e.near_of = { key: p.m.key, vch_type: p.m.tally.vch_type, vch_no: p.m.tally.vch_no, amount: p.m.tally.amount }
+  }
   explainBank(rows, !!statement)
   return { statement, book, account, mapped, rows, entries }
 }
@@ -631,7 +653,14 @@ function explainBank(rows: Row[], hasStatement = false): void {
     const way = (d: string): string => (d === 'in' ? 'received into the bank' : 'paid out of the bank')
     const tName = t ? `${t.vch_type} No. ${t.vch_no}` : ''
     const bName = b ? `${b.code || b.vch_type}${b.vch_no ? ` · ${b.vch_no}` : ''}` : ''
-    if (r.status === 'missing_here' && t) {
+    if (r.status === 'missing_here' && t && r.near) {
+      const nr = r.near as Row
+      say.push(
+        `In Tally on ${dmy(t.date)}: ${inr(t.amount)} ${way(t.dir)}${t.party ? `, ${t.dir === 'in' ? 'from' : 'to'} ${t.party}` : ''} (${tName}). ` +
+          `It looks like ${String(nr.code || 'a voucher')} here on ${dmy(nr.date)} for ${inr(nr.amount)} — the same ${t.dir === 'in' ? 'receipt' : 'payment'}, ${inr(Math.abs(n(nr.diff)))} ${n(nr.diff) > 0 ? 'more' : 'less'} in Tally.`
+      )
+      fix = `If it is the same, press "Same — take Tally's figure": it is linked, and ${String(nr.code || 'the voucher')} takes the bank's ${inr(t.amount)}, the ${inr(Math.abs(n(nr.diff)))} going to its own ledger. The bill or LC it came from keeps its worked-out figure.`
+    } else if (r.status === 'missing_here' && t) {
       say.push(`In Tally on ${dmy(t.date)}: ${inr(t.amount)} ${way(t.dir)}${t.party ? `, ${t.dir === 'in' ? 'from' : 'to'} ${t.party}` : ''} (${tName}) — not in this bank here.`)
       if (t.multi && Array.isArray(t.details) && t.details.length) {
         say.push(`Its ledgers: ${(t.details as Row[]).map((d) => `${d.name} ${inr(d.amount)} ${d.side === 'dr' ? 'Dr' : 'Cr'}`).join(', ')}.`)
@@ -668,6 +697,10 @@ function explainBank(rows: Row[], hasStatement = false): void {
         if (d.field === 'party') say.push(`${t.party} in Tally, ${d.books} here.`)
       }
       fix = (r.diffs as Row[]).every((d) => d.field === 'date') ? 'Correct the date on whichever side is wrong — the bank’s own statement says which.' : 'Open the voucher here and correct it to Tally — or correct Tally.'
+    } else if (r.status === 'missing_tally' && b && r.near_of) {
+      const no = r.near_of as Row
+      say.push(`In this bank here (${bName}, ${dmy(b.date)}, ${inr(b.amount)} ${way(b.dir)}) — Tally has it as ${String(no.vch_type || '')} No. ${String(no.vch_no || '')} for ${inr(no.amount)}.`)
+      fix = `Settle it from Tally's line above ("Same — take Tally's figure").`
     } else if (r.status === 'missing_tally' && b) {
       say.push(`In this bank here (${bName}, ${dmy(b.date)}${b.party ? `, ${b.party}` : ''}, ${inr(b.amount)} ${way(b.dir)}) but not in Tally's book for the period.`)
       fix = 'Enter it in Tally — or, if it never went through the bank, correct it here.'
@@ -1248,6 +1281,71 @@ async function ensureOwnBanks(): Promise<void> {
     PRIMARY KEY (company_id, account_id)
   )`)
   ownTable = true
+}
+
+/**
+ * ONE PAYMENT, TWO FIGURES — settled to the bank's.
+ *
+ * The voucher here (a BD's interest, an LC's charges) was worked out; Tally
+ * has what the bank actually took. The bank line takes Tally's figure, the
+ * difference goes on its own line to the voucher's main ledger (the interest,
+ * the charges), the narration says so, and the Tally line is linked — so the
+ * bank ledger reads as Tally and the check shows Matched. The bill or LC that
+ * posted it keeps its own worked-out figure; re-posting it from there puts the
+ * worked-out figure back, and the check flags it again.
+ */
+export async function settleTallyBankDifference(v: {
+  company_id?: number
+  account_id: number
+  tally_key: string
+  entry_id: number
+  tally_amount: number
+  tally_label?: string
+}): Promise<{ id: number; diff: number }> {
+  const cid = await companyOf(v)
+  return withDbTransaction(async () => {
+    const c = getClient()
+    const id = Number(v.entry_id) || 0
+    const head = toPlain(await c.execute({ sql: 'SELECT id, company_id, narration FROM journal_entries WHERE id = ?', args: [id] }))[0]
+    if (!head) throw new Error('That voucher no longer exists — check the file again')
+    if (Number(head.company_id) !== cid) throw new Error('That voucher belongs to another company')
+    const lines = toPlain(await c.execute({ sql: 'SELECT id, account_id, dr, cr FROM journal_lines WHERE entry_id = ? ORDER BY id', args: [id] }))
+    const bank = lines.filter((l) => Number(l.account_id) === Number(v.account_id))
+    if (bank.length !== 1) throw new Error('This voucher has the bank on more than one line — correct it by hand')
+    const bl = bank[0]
+    const out = n(bl.cr) > 0
+    const was = round2(out ? n(bl.cr) : n(bl.dr))
+    const want = round2(n(v.tally_amount))
+    const diff = round2(want - was)
+    if (want <= 0) throw new Error("Tally's figure is missing")
+    if (Math.abs(diff) > Math.max(500, was * 0.01)) throw new Error(`${inr(want)} and ${inr(was)} are too far apart to be one payment — correct it by hand`)
+    if (Math.abs(diff) >= 0.005) {
+      // The ledger the money was for: the biggest line on the other side.
+      const main = lines
+        .filter((l) => l.id !== bl.id && (out ? n(l.dr) > 0 : n(l.cr) > 0))
+        .sort((a, b) => (out ? n(b.dr) - n(a.dr) : n(b.cr) - n(a.cr)))[0]
+      if (!main) throw new Error('This voucher has no ledger on the other side of the bank')
+      await c.execute(`CREATE TABLE IF NOT EXISTS accounting_repair_log (
+        repair_key TEXT PRIMARY KEY, entry_id INTEGER NOT NULL, before_json TEXT NOT NULL,
+        created_at TEXT NOT NULL DEFAULT (datetime('now')))`)
+      await c.execute({
+        sql: 'INSERT OR REPLACE INTO accounting_repair_log(repair_key, entry_id, before_json) VALUES (?, ?, ?)',
+        args: [`bank_difference:${id}:${Date.now()}`, id, JSON.stringify({ lines, narration: head.narration, tally_key: v.tally_key, tally_amount: want })]
+      })
+      await c.execute({ sql: `UPDATE journal_lines SET ${out ? 'cr' : 'dr'} = ? WHERE id = ?`, args: [want, Number(bl.id)] })
+      // On its own line, so the worked-out figure stays readable beside it.
+      const more = diff > 0
+      const onMainSide = out ? (more ? 'dr' : 'cr') : more ? 'cr' : 'dr'
+      await c.execute({
+        sql: `INSERT INTO journal_lines (entry_id, account_id, ${onMainSide}) VALUES (?, ?, ?)`,
+        args: [id, Number(main.account_id), Math.abs(diff)]
+      })
+      const note = ` — bank's figure ${inr(want)}${v.tally_label ? ` (Tally ${v.tally_label})` : ''}, ${inr(Math.abs(diff))} ${more ? 'more' : 'less'} than worked out`
+      await c.execute({ sql: 'UPDATE journal_entries SET narration = ? WHERE id = ?', args: [`${String(head.narration || '')}${note}`, id] })
+    }
+    await saveTallyLink({ company_id: cid, scope: `bank:${Number(v.account_id)}`, tally_key: String(v.tally_key), entry_id: id })
+    return { id, diff }
+  })
 }
 
 export async function listCompanyBanks(v: { company_id?: number }): Promise<{ chosen: boolean; banks: Row[] }> {

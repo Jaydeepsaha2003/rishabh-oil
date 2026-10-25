@@ -309,6 +309,38 @@ export function TallyBankCheck({
     void loadDrafts()
   }
 
+  // ONE PAYMENT, TWO FIGURES: link the Tally line to the voucher here and give
+  // the voucher the bank's figure, the difference on its own line (tallyBank.ts
+  // settleTallyBankDifference). The bill or LC keeps its worked-out figure.
+  async function settleNear(r: Row): Promise<void> {
+    const nr = r.near as Row | undefined
+    if (!nr || !file || !bankId) return
+    const diff = Number(nr.diff) || 0
+    if (
+      !window.confirm(
+        `${String(nr.code || 'The voucher')} here is ${formatINR(Number(nr.amount))}; Tally (the bank) has ${formatINR(Number(r.tally?.amount))}.
+
+` +
+          `Take Tally's figure? The bank line becomes ${formatINR(Number(r.tally?.amount))} and the ${formatINR(Math.abs(diff))} goes on its own line to the voucher's main ledger. The bill or LC keeps its worked-out figure.`
+      )
+    )
+      return
+    try {
+      await window.api.tallyNotes.bankSettleDiff({
+        company_id: companyId,
+        account_id: bankId,
+        tally_key: String(r.key),
+        entry_id: Number(nr.id),
+        tally_amount: Number(r.tally?.amount),
+        tally_label: `${String(r.tally?.vch_type || '')} No. ${String(r.tally?.vch_no || '')}`.trim()
+      })
+      toast.success(`${String(nr.code || 'Voucher')} now reads ${formatINR(Number(r.tally?.amount))} — ${formatINR(Math.abs(diff))} ${diff > 0 ? 'more' : 'less'} than worked out, linked to Tally`)
+      await run(file, bankId, savedAt || undefined)
+    } catch (e) {
+      toast.error((e as Error).message)
+    }
+  }
+
   async function linkSame(r: Row, on: boolean): Promise<void> {
     if (!file || !bankId) return
     try {
@@ -582,7 +614,9 @@ ${pairs.map((x) => String(x.own?.code || '')).join(', ')} stay, and match Tally'
   // missing" offers only what is on screen, e.g. one party's entries.
   const narrowed = !!q.trim() || !!dir || cf.activeCount > 0
   const bookable = (narrowed ? shown : rows).filter((r) => r.bookable)
-  const missingBookable = bookable.filter((r) => r.status === 'missing_here')
+  // A line that looks like a voucher here at a slightly different figure is
+  // settled, not booked in bulk — booking it would put the payment in twice.
+  const missingBookable = bookable.filter((r) => r.status === 'missing_here' && !r.near)
   const copies = (narrowed ? shown : rows).filter((r) => (r.duplicate_of as Row | undefined)?.id)
   const redatable = rows.filter((r) => r.redate === 'yes')
   const problems = (c.mismatch || 0) + (c.possible || 0) + (c.missing_here || 0) + (c.missing_tally || 0) + (c.cancelled_here || 0) + (c.statement_only || 0)
@@ -1316,6 +1350,17 @@ ${pairs.map((x) => String(x.own?.code || '')).join(', ')} stay, and match Tally'
                             </p>
                           )}
                           <div className="mt-2 flex flex-wrap items-center gap-2 empty:hidden">
+                            {r.status === 'missing_here' && !!r.near && (
+                              <button
+                                type="button"
+                                onClick={() => void settleNear(r)}
+                                title="The same payment — link them and give the voucher here the bank's figure"
+                                className="flex h-7 items-center gap-1.5 rounded-[4px] bg-[#0B3D2E] px-2.5 text-[11px] font-extrabold text-[#C7F03F] hover:bg-[#0F5440]"
+                              >
+                                <Link2 className="h-3.5 w-3.5" /> Same — take Tally&apos;s figure ({Number(r.near.diff) > 0 ? '+' : '−'}
+                                {formatINR(Math.abs(Number(r.near.diff)))})
+                              </button>
+                            )}
                             {r.status === 'possible' && b && (
                               <button
                                 type="button"
@@ -1332,7 +1377,7 @@ ${pairs.map((x) => String(x.own?.code || '')).join(', ')} stay, and match Tally'
                                 onClick={() => setBookKeys([String(r.key)])}
                                 className="flex h-7 items-center gap-1.5 rounded-[4px] border border-[#F1D9A6] bg-white px-2.5 text-[11px] font-extrabold text-[#8A5300] hover:bg-[#FFF8E9]"
                               >
-                                <FilePlus2 className="h-3.5 w-3.5" /> {r.status === 'possible' ? 'It is a different one — book it' : 'Book from Tally'}
+                                <FilePlus2 className="h-3.5 w-3.5" /> {r.status === 'possible' || r.near ? 'It is a different one — book it' : 'Book from Tally'}
                               </button>
                             )}
                             {r.redate === 'yes' && t && b && (

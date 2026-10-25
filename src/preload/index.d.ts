@@ -790,6 +790,7 @@ export interface Api {
     postRegister: (values: Row) => Promise<{ created: { vch_no: string; id: number }[]; skipped: { vch_no: string; reason: string }[] }>
     health: (values: Row) => Promise<Row>
     link: (values: Row) => Promise<{ ok: true }>
+    bankSettleDiff: (values: Row) => Promise<{ id: number; diff: number }>
     unlink: (values: Row) => Promise<{ ok: true }>
     batches: (values: Row) => Promise<Row[]>
     undoBatch: (values: Row) => Promise<{ removed: number; kept: { id: number; reason: string }[] }>

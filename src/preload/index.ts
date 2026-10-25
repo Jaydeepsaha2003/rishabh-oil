@@ -1143,6 +1143,7 @@ const api = {
       ipcRenderer.invoke('tallyNotes:postRegister', { values }),
     health: (values: Row): Promise<Row> => ipcRenderer.invoke('tallyNotes:health', { values }),
     link: (values: Row): Promise<{ ok: true }> => ipcRenderer.invoke('tallyNotes:link', { values }),
+    bankSettleDiff: (values: Row): Promise<{ id: number; diff: number }> => ipcRenderer.invoke('tallyNotes:bankSettleDiff', { values }),
     unlink: (values: Row): Promise<{ ok: true }> => ipcRenderer.invoke('tallyNotes:unlink', { values }),
     batches: (values: Row): Promise<Row[]> => ipcRenderer.invoke('tallyNotes:batches', { values }),
     undoBatch: (values: Row): Promise<{ removed: number; kept: { id: number; reason: string }[] }> => ipcRenderer.invoke('tallyNotes:undoBatch', { values }),

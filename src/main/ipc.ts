@@ -952,6 +952,9 @@ export function registerIpc(): void {
   // The desk at a glance; what it has decided (links); what it has booked (batches).
   handle('tallyNotes:health', (_e, { values }: { values: Row }) => tallyHealth(values as Parameters<typeof tallyHealth>[0]))
   handle('tallyNotes:link', (_e, { values }: { values: Row }) => saveTallyLink(values as Parameters<typeof saveTallyLink>[0]))
+  handle('tallyNotes:bankSettleDiff', async (_e, { values }: { values: Row }) =>
+    (await import('./tallyBank')).settleTallyBankDifference(values as Parameters<typeof import('./tallyBank').settleTallyBankDifference>[0])
+  )
   handle('tallyNotes:unlink', (_e, { values }: { values: Row }) => removeTallyLink(values as Parameters<typeof removeTallyLink>[0]))
   handle('tallyNotes:batches', (_e, { values }: { values: Row }) => listTallyBatches(values as Parameters<typeof listTallyBatches>[0]))
   handle('tallyNotes:undoBatch', (_e, { values }: { values: Row }) => undoTallyBatch(values as Parameters<typeof undoTallyBatch>[0]))
