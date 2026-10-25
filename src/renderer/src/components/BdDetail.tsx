@@ -1,4 +1,5 @@
 import { useRef, useState } from 'react'
+import { SearchSelect } from '@/components/SearchSelect'
 import { toast } from 'sonner'
 import { useDrawerEscape } from '@/lib/escape'
 // THE BILL, OPENED OUT.
@@ -210,18 +211,7 @@ function UpfrontInterestCard({ bill, onChanged }: { bill: Row; onChanged?: () =>
               </label>
               <label className="flex min-w-[180px] flex-1 flex-col gap-1 text-[10.5px] font-extrabold uppercase tracking-[.08em] text-[#5A6B62]">
                 From bank
-                <select
-                  value={bank}
-                  onChange={(e) => setBank(e.target.value)}
-                  className="h-9 rounded-[3px] border border-[#C3D2C6] bg-white px-2 text-[13px] font-semibold normal-case tracking-normal text-[#0A1F17]"
-                >
-                  <option value="">Pick the bank</option>
-                  {banks.map((a) => (
-                    <option key={String(a.id)} value={s(a.name)}>
-                      {s(a.name)}
-                    </option>
-                  ))}
-                </select>
+                <SearchSelect value={bank} options={banks.map((a) => s(a.name))} onChange={setBank} placeholder="Pick the bank" />
               </label>
               <button
                 type="button"
@@ -394,28 +384,24 @@ function BankCard({ bill, repayments, onChanged }: { bill: Row; repayments?: Row
                 })()}
               </div>
               {bankLines.length === 1 ? (
-                <select
+                <SearchSelect
                   value={s(line.account)}
                   disabled={busy === Number(p.id)}
-                  onChange={(e) => {
-                    const to = e.target.value
+                  options={[
+                    ...(!banks.some((b) => s(b.name) === s(line.account)) ? [s(line.account)] : []),
+                    ...banks.map((b) => s(b.name))
+                  ]}
+                  onChange={(to) => {
                     if (to === s(line.account)) return
                     if (!window.confirm(`Move this ${formatINR(amt)}${shared ? ` debit (all its bills)` : ''} from ${s(line.account)} to ${to}? Only the bank line changes.`)) return
                     void change(Number(p.id), to)
                   }}
                   className={cn(
-                    'h-9 min-w-[190px] rounded-[3px] border bg-white px-2 text-[12px] font-bold outline-none',
-                    s(line.account) === 'BANK A/C' ? 'border-[#E3C58C] text-[#8A5A00]' : 'border-[#C3D2C6] text-[#0A1F17]'
+                    'min-w-[190px] text-[12px] font-bold',
+                    s(line.account) === 'BANK A/C' ? 'border-[#E3C58C] text-[#8A5A00]' : ''
                   )}
                   title={s(line.account) === 'BANK A/C' ? 'BANK A/C is not a real account — pick the bank this went through' : undefined}
-                >
-                  {!banks.some((b) => s(b.name) === s(line.account)) && <option value={s(line.account)}>{s(line.account)}</option>}
-                  {banks.map((b) => (
-                    <option key={String(b.id)} value={s(b.name)}>
-                      {s(b.name)}
-                    </option>
-                  ))}
-                </select>
+                />
               ) : (
                 <span className="text-[11px] font-semibold text-[#8CA396]">more than one bank line — change in Accounting</span>
               )}
