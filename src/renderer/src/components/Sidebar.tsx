@@ -110,6 +110,9 @@ const ITEMS: Record<string, { label: string; icon: LucideIcon }> = {
   settings: { label: 'Settings', icon: SettingsIcon }
 }
 
+// The page keys App.tsx listens for (a bare letter, nothing being typed).
+const HOTKEY: Partial<Record<string, string>> = { accounts: 'A', treasury: 'R' }
+
 const GROUPS: { label: string; ids: string[] }[] = [
   { label: 'Overview', ids: ['dashboard'] },
   { label: 'Purchase', ids: ['bargains', 'orders', 'consignment', 'gateEntry'] },
@@ -229,8 +232,10 @@ export function Sidebar({
       >
         <Icon className="h-4 w-4 shrink-0" />
         {showLabel && <span className="truncate">{it.label}</span>}
-        {showLabel && id === 'accounts' && !mobile && (
-          <kbd className="ml-auto rounded border border-current/30 px-1 text-[10px] font-bold leading-4 opacity-70" title="Press A anywhere to open Accounting">A</kbd>
+        {showLabel && !!HOTKEY[id] && !mobile && (
+          <kbd className="ml-auto rounded border border-current/30 px-1 text-[10px] font-bold leading-4 opacity-70" title={`Press ${HOTKEY[id]} anywhere to open ${it.label}`}>
+            {HOTKEY[id]}
+          </kbd>
         )}
       </button>
     )
@@ -238,7 +243,7 @@ export function Sidebar({
     return (
       <Tooltip key={id}>
         <TooltipTrigger asChild>{btn}</TooltipTrigger>
-        <TooltipContent side="right">{id === 'accounts' ? `${it.label} · press A` : it.label}</TooltipContent>
+        <TooltipContent side="right">{HOTKEY[id] ? `${it.label} · press ${HOTKEY[id]}` : it.label}</TooltipContent>
       </Tooltip>
     )
   }
