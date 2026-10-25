@@ -29330,7 +29330,7 @@ async function precloseLC(id, v) {
       args: [actualDays, precloseDate, prematureInterest, rebateDirection, id]
     });
     await postLcOpening(id);
-    const rebate = await postLcPrematureInterestRebate(id, rebateDirection, prematureInterest, precloseDate);
+    const rebate = rebateDirection === "pay_to_party" ? await postLcPrematureInterestRebate(id, rebateDirection, prematureInterest, precloseDate) : null;
     if (rebate) {
       await c.execute({
         sql: `UPDATE letters_of_credit
