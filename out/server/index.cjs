@@ -3781,7 +3781,7 @@ async function permanentVoucherCodes(companyId) {
   });
   return new Map(result.rows.map((r) => [Number(r.entry_id), `${r.prefix}/${r.serial}`]));
 }
-var WORDS, PREFIX_SQL, tableReady;
+var WORDS, voucherSeriesOf, PREFIX_SQL, tableReady;
 var init_voucherNumbers = __esm({
   "src/main/voucherNumbers.ts"() {
     init_db();
@@ -3797,8 +3797,104 @@ var init_voucherNumbers = __esm({
       ["OPENING", "OB"],
       ["JOURNAL", "JV"]
     ];
+    voucherSeriesOf = (type) => prefix(type);
     PREFIX_SQL = `CASE ${WORDS.map(([w, c]) => `WHEN UPPER(e.vch_type) LIKE '%${w}%' THEN '${c}'`).join(" ")} ELSE NULL END`;
     tableReady = false;
+  }
+});
+
+// src/main/voucherSubtypes.ts
+var voucherSubtypes_exports = {};
+__export(voucherSubtypes_exports, {
+  BASE_TYPES: () => BASE_TYPES,
+  checkedSubtype: () => checkedSubtype,
+  createVoucherSubtype: () => createVoucherSubtype,
+  deleteVoucherSubtype: () => deleteVoucherSubtype,
+  listVoucherSubtypes: () => listVoucherSubtypes,
+  renameVoucherSubtype: () => renameVoucherSubtype,
+  setVoucherSubtype: () => setVoucherSubtype
+});
+async function ensure() {
+  if (ready) return;
+  await getClient().execute(`CREATE TABLE IF NOT EXISTS voucher_subtypes (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    base_type TEXT NOT NULL,
+    name TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    UNIQUE(base_type, name)
+  )`);
+  ready = true;
+}
+async function listVoucherSubtypes() {
+  await ensure();
+  const r = await getClient().execute(`SELECT s.id, s.base_type, s.name,
+      (SELECT COUNT(*) FROM journal_entries je WHERE je.vch_subtype = s.name) AS used
+    FROM voucher_subtypes s ORDER BY s.base_type, s.name`);
+  return r.rows.map((x) => ({ id: Number(x.id), base_type: String(x.base_type), name: String(x.name), used: Number(x.used || 0) }));
+}
+async function createVoucherSubtype(v) {
+  await ensure();
+  const base = clean3(v.base_type);
+  const name = clean3(v.name);
+  if (!BASE_TYPES.includes(base)) throw new Error("Pick the basic type it comes under");
+  if (!name) throw new Error("Give the voucher type a name");
+  if (BASE_TYPES.includes(name)) throw new Error(`${name} is a basic type already`);
+  const taken = await getClient().execute({ sql: "SELECT base_type FROM voucher_subtypes WHERE name = ?", args: [name] });
+  if (taken.rows.length) throw new Error(`${name} already exists (under ${String(taken.rows[0].base_type)})`);
+  const r = await getClient().execute({ sql: "INSERT INTO voucher_subtypes (base_type, name) VALUES (?, ?)", args: [base, name] });
+  return { id: Number(r.lastInsertRowid) };
+}
+async function renameVoucherSubtype(v) {
+  await ensure();
+  const c = getClient();
+  const cur = (await c.execute({ sql: "SELECT name FROM voucher_subtypes WHERE id = ?", args: [Number(v.id)] })).rows[0];
+  if (!cur) throw new Error("That voucher type no longer exists");
+  const name = clean3(v.name);
+  if (!name) throw new Error("Give the voucher type a name");
+  if (name === String(cur.name)) return { id: Number(v.id) };
+  const taken = await c.execute({ sql: "SELECT id FROM voucher_subtypes WHERE name = ? AND id <> ?", args: [name, Number(v.id)] });
+  if (taken.rows.length) throw new Error(`${name} already exists`);
+  await c.execute({ sql: "UPDATE voucher_subtypes SET name = ? WHERE id = ?", args: [name, Number(v.id)] });
+  await c.execute({ sql: "UPDATE journal_entries SET vch_subtype = ? WHERE vch_subtype = ?", args: [name, String(cur.name)] });
+  return { id: Number(v.id) };
+}
+async function deleteVoucherSubtype(id) {
+  await ensure();
+  const c = getClient();
+  const cur = (await c.execute({ sql: "SELECT name FROM voucher_subtypes WHERE id = ?", args: [Number(id)] })).rows[0];
+  if (!cur) return { id: Number(id) };
+  const used = Number((await c.execute({ sql: "SELECT COUNT(*) AS k FROM journal_entries WHERE vch_subtype = ?", args: [String(cur.name)] })).rows[0]?.k || 0);
+  if (used) throw new Error(`${used} voucher${used === 1 ? "" : "s"} carry ${String(cur.name)} \u2014 move them to another type first`);
+  await c.execute({ sql: "DELETE FROM voucher_subtypes WHERE id = ?", args: [Number(id)] });
+  return { id: Number(id) };
+}
+async function checkedSubtype(vchType, subtype) {
+  const name = clean3(subtype);
+  if (!name) return null;
+  await ensure();
+  const r = (await getClient().execute({ sql: "SELECT base_type FROM voucher_subtypes WHERE name = ?", args: [name] })).rows[0];
+  if (!r) throw new Error(`There is no voucher type called ${name}`);
+  if (voucherSeriesOf(String(r.base_type)) !== voucherSeriesOf(vchType)) {
+    throw new Error(`${name} is a ${String(r.base_type).toLowerCase()} type \u2014 it cannot be given to a ${String(vchType).toLowerCase()} voucher`);
+  }
+  return name;
+}
+async function setVoucherSubtype(v) {
+  const c = getClient();
+  const e = (await c.execute({ sql: "SELECT vch_type FROM journal_entries WHERE id = ?", args: [Number(v.entry_id)] })).rows[0];
+  if (!e) throw new Error("That voucher no longer exists");
+  const name = await checkedSubtype(String(e.vch_type), v.subtype);
+  await c.execute({ sql: "UPDATE journal_entries SET vch_subtype = ? WHERE id = ?", args: [name, Number(v.entry_id)] });
+  return { id: Number(v.entry_id), subtype: name };
+}
+var BASE_TYPES, ready, clean3;
+var init_voucherSubtypes = __esm({
+  "src/main/voucherSubtypes.ts"() {
+    init_db();
+    init_voucherNumbers();
+    BASE_TYPES = ["CONTRA", "PAYMENT", "RECEIPT", "JOURNAL", "SALE", "PURCHASE", "DEBIT NOTE", "CREDIT NOTE"];
+    ready = false;
+    clean3 = (s5) => String(s5 ?? "").trim().replace(/\s+/g, " ").toUpperCase();
   }
 });
 
@@ -3814,6 +3910,7 @@ __export(accounting_exports, {
   listPendingRefs: () => listPendingRefs,
   listVouchers: () => listVouchers,
   resolveRefIds: () => resolveRefIds,
+  setLineSplits: () => setLineSplits,
   tradingAccount: () => tradingAccount,
   trialBalance: () => trialBalance,
   updateVoucher: () => updateVoucher,
@@ -3950,6 +4047,31 @@ async function writeSplits(entryId, lines) {
     }
   }
 }
+async function setLineSplits(lineId, splits) {
+  return withDbTransaction(async () => {
+    const c = getClient();
+    const line = (await c.execute({ sql: "SELECT id, dr, cr FROM journal_lines WHERE id = ?", args: [n3(lineId)] })).rows[0];
+    if (!line) throw new Error("That voucher line no longer exists \u2014 open the voucher again");
+    const amount2 = Math.round((n3(line.dr) || n3(line.cr)) * 100) / 100;
+    const parts = (splits || []).map((s5) => ({ name: String(s5.name || "").trim(), amount: Math.round(n3(s5.amount) * 100) / 100, note: s5.note ? String(s5.note).trim() : null })).filter((s5) => s5.name || s5.amount);
+    if (parts.some((s5) => !s5.name)) throw new Error("Give every part a name");
+    if (parts.some((s5) => s5.amount <= 0)) throw new Error("Every part needs an amount");
+    const total = Math.round(parts.reduce((t, s5) => t + s5.amount, 0) * 100) / 100;
+    if (parts.length && Math.abs(total - amount2) > 0.01) {
+      throw new Error(`The parts add up to ${total.toFixed(2)} \u2014 the line is ${amount2.toFixed(2)}`);
+    }
+    await c.execute({ sql: "DELETE FROM journal_line_splits WHERE line_id = ?", args: [n3(lineId)] });
+    let order = 0;
+    for (const s5 of parts) {
+      order += 10;
+      await c.execute({
+        sql: "INSERT INTO journal_line_splits (line_id, name, amount, note, sort_order) VALUES (?, ?, ?, ?, ?)",
+        args: [n3(lineId), s5.name, s5.amount, s5.note, order]
+      });
+    }
+    return { id: n3(lineId), parts: parts.length };
+  });
+}
 async function writeAllocs(entryId, lines) {
   const c = getClient();
   const saved = await c.execute({
@@ -4000,6 +4122,10 @@ async function createVoucher(v) {
     });
     await writeAllocs(res.id, lines);
     await writeSplits(res.id, lines);
+    if (v.subtype !== void 0) {
+      const { checkedSubtype: checkedSubtype2 } = await Promise.resolve().then(() => (init_voucherSubtypes(), voucherSubtypes_exports));
+      await getClient().execute({ sql: "UPDATE journal_entries SET vch_subtype = ? WHERE id = ?", args: [await checkedSubtype2(v.vchType, v.subtype), res.id] });
+    }
     return res;
   });
 }
@@ -4027,6 +4153,10 @@ async function updateVoucher(id, v) {
       args: [v.date, v.vchType, v.vchNo || null, v.narration || null, id]
     });
     await renumberOnTypeChange(id, v.vchType);
+    if (v.subtype !== void 0) {
+      const { checkedSubtype: checkedSubtype2 } = await Promise.resolve().then(() => (init_voucherSubtypes(), voucherSubtypes_exports));
+      await c.execute({ sql: "UPDATE journal_entries SET vch_subtype = ? WHERE id = ?", args: [await checkedSubtype2(v.vchType, v.subtype), id] });
+    }
     await c.execute({
       sql: "DELETE FROM journal_bill_allocs WHERE line_id IN (SELECT id FROM journal_lines WHERE entry_id = ?)",
       args: [id]
@@ -4122,7 +4252,7 @@ async function listVouchers(from, to, vchType, companyId) {
     }
   }
   const res = await c.execute({
-    sql: `SELECT je.id, je.entry_date, je.vch_type, je.vch_no, je.narration,
+    sql: `SELECT je.id, je.entry_date, je.vch_type, je.vch_subtype, je.vch_no, je.narration,
                  je.order_id, je.sale_id, je.payment_id,
                  -- The document's own number and its own book, for the Day
                  -- Book's Ref column and for the drill-through \u2014 see the note
@@ -4801,8 +4931,8 @@ __export(partyOpenings_exports, {
   partyOpenings: () => partyOpenings,
   setPartyOpening: () => setPartyOpening
 });
-async function ensure() {
-  if (ready) return;
+async function ensure2() {
+  if (ready2) return;
   const c = getClient();
   await c.execute(`CREATE TABLE IF NOT EXISTS party_openings (
     kind TEXT NOT NULL,
@@ -4821,10 +4951,10 @@ async function ensure() {
        WHERE COALESCE(s.opening_purchase_amount, 0) <> 0 OR COALESCE(s.opening_purchase_date, '') <> ''`);
     await c.execute("INSERT OR REPLACE INTO app_settings (key, value) VALUES ('party_openings_v1', '1')");
   }
-  ready = true;
+  ready2 = true;
 }
 async function partyOpenings(kind, companyId, partyIds) {
-  await ensure();
+  await ensure2();
   const ids = (partyIds || []).map(n4).filter(Boolean);
   const res = await getClient().execute({
     sql: `SELECT party_id, amount, as_on FROM party_openings WHERE kind = ? AND company_id = ?${ids.length ? ` AND party_id IN (${ids.map(() => "?").join(",")})` : ""}`,
@@ -4841,7 +4971,7 @@ async function partyOpeningInYear(kind, companyId, partyIds, start, end) {
   return t;
 }
 async function setPartyOpening(kind, partyId, companyId, amount2, asOn) {
-  await ensure();
+  await ensure2();
   await getClient().execute({
     sql: `INSERT INTO party_openings (kind, party_id, company_id, amount, as_on, updated_at)
           VALUES (?, ?, ?, ?, ?, datetime('now'))
@@ -4858,7 +4988,7 @@ async function overlayOpenings(table, rows2) {
     return { ...r, [f.amount]: v ? v.amount : 0, [f.date]: v ? v.as_on || null : null };
   });
 }
-var n4, ready, OPENING_FIELDS;
+var n4, ready2, OPENING_FIELDS;
 var init_partyOpenings = __esm({
   "src/main/partyOpenings.ts"() {
     init_db();
@@ -4867,7 +4997,7 @@ var init_partyOpenings = __esm({
       const x = Number(v);
       return Number.isFinite(x) ? x : 0;
     };
-    ready = false;
+    ready2 = false;
     OPENING_FIELDS = {
       suppliers: { kind: "supplier", amount: "opening_purchase_amount", date: "opening_purchase_date" },
       customers: { kind: "customer", amount: "opening_sale_amount", date: "opening_sale_date" }
@@ -5632,7 +5762,7 @@ async function listGateEntries() {
            b.bargain_no, COALESCE(ds.name, s.name, dc.name) AS supplier_name,
            dc.name AS gate_customer_name,
            COALESCE(sl.invoice_no, (SELECT invoice_no FROM sales WHERE invoice_group = g.invoice_group LIMIT 1)) AS sale_invoice,
-           COALESCE((SELECT m.name FROM customers cc JOIN customers m ON m.id = CASE WHEN LOWER(TRIM(COALESCE(cc.business_type, ''))) = 'trading' THEN cc.id ELSE COALESCE(cc.linked_party_id, cc.id) END WHERE cc.id = COALESCE(sl.customer_id, (SELECT customer_id FROM sales WHERE invoice_group = g.invoice_group LIMIT 1))), sl.customer, (SELECT customer FROM sales WHERE invoice_group = g.invoice_group LIMIT 1)) AS sale_customer,
+           COALESCE((SELECT m.name FROM customers cc JOIN customers m ON m.id = CASE WHEN cc.linked_party_id IS NOT NULL AND LOWER(TRIM(COALESCE(cc.business_type, ''))) = LOWER(TRIM(COALESCE((SELECT mm.business_type FROM customers mm WHERE mm.id = cc.linked_party_id), ''))) THEN cc.linked_party_id ELSE cc.id END WHERE cc.id = COALESCE(sl.customer_id, (SELECT customer_id FROM sales WHERE invoice_group = g.invoice_group LIMIT 1))), sl.customer, (SELECT customer FROM sales WHERE invoice_group = g.invoice_group LIMIT 1)) AS sale_customer,
            -- A vehicle can carry several invoices out; the register names them
            -- all rather than only the one written on the entry.
            (SELECT COUNT(*) FROM gate_entry_sales gs WHERE gs.gate_entry_id = g.id) AS sale_count,
@@ -5644,9 +5774,9 @@ async function listGateEntries() {
     LEFT JOIN products p ON p.id = g.oil_type_id
     LEFT JOIN purchase_tankers pt ON pt.id = g.tanker_id
     LEFT JOIN bargains b ON b.id = pt.bargain_id
-    LEFT JOIN suppliers s ON s.id = (SELECT CASE WHEN LOWER(TRIM(COALESCE(x.business_type, ''))) = 'trading' THEN x.id ELSE COALESCE(x.linked_party_id, x.id) END FROM suppliers x WHERE x.id = pt.supplier_id)
-    LEFT JOIN suppliers ds ON ds.id = (SELECT CASE WHEN LOWER(TRIM(COALESCE(x.business_type, ''))) = 'trading' THEN x.id ELSE COALESCE(x.linked_party_id, x.id) END FROM suppliers x WHERE x.id = g.supplier_id)
-    LEFT JOIN customers dc ON dc.id = (SELECT CASE WHEN LOWER(TRIM(COALESCE(x.business_type, ''))) = 'trading' THEN x.id ELSE COALESCE(x.linked_party_id, x.id) END FROM customers x WHERE x.id = g.customer_id)
+    LEFT JOIN suppliers s ON s.id = (SELECT CASE WHEN x.linked_party_id IS NOT NULL AND LOWER(TRIM(COALESCE(x.business_type, ''))) = LOWER(TRIM(COALESCE((SELECT mm.business_type FROM suppliers mm WHERE mm.id = x.linked_party_id), ''))) THEN x.linked_party_id ELSE x.id END FROM suppliers x WHERE x.id = pt.supplier_id)
+    LEFT JOIN suppliers ds ON ds.id = (SELECT CASE WHEN x.linked_party_id IS NOT NULL AND LOWER(TRIM(COALESCE(x.business_type, ''))) = LOWER(TRIM(COALESCE((SELECT mm.business_type FROM suppliers mm WHERE mm.id = x.linked_party_id), ''))) THEN x.linked_party_id ELSE x.id END FROM suppliers x WHERE x.id = g.supplier_id)
+    LEFT JOIN customers dc ON dc.id = (SELECT CASE WHEN x.linked_party_id IS NOT NULL AND LOWER(TRIM(COALESCE(x.business_type, ''))) = LOWER(TRIM(COALESCE((SELECT mm.business_type FROM customers mm WHERE mm.id = x.linked_party_id), ''))) THEN x.linked_party_id ELSE x.id END FROM customers x WHERE x.id = g.customer_id)
     LEFT JOIN sales sl ON sl.id = g.sale_id
     ${/* Compared directly, not through substr(): a function around the column
         makes the whole thing unindexable, and a plain string compare is
@@ -5699,7 +5829,7 @@ async function gateEntriesFor(args) {
            (SELECT GROUP_CONCAT(x.invoice_no, ', ') FROM gate_entry_sales gs
               JOIN sales x ON x.id = gs.sale_id WHERE gs.gate_entry_id = g.id) AS sale_invoices,
            COALESCE(sl.invoice_no, (SELECT invoice_no FROM sales WHERE invoice_group = g.invoice_group LIMIT 1)) AS sale_invoice,
-           COALESCE((SELECT m.name FROM customers cc JOIN customers m ON m.id = CASE WHEN LOWER(TRIM(COALESCE(cc.business_type, ''))) = 'trading' THEN cc.id ELSE COALESCE(cc.linked_party_id, cc.id) END WHERE cc.id = COALESCE(sl.customer_id, (SELECT customer_id FROM sales WHERE invoice_group = g.invoice_group LIMIT 1))), sl.customer, (SELECT customer FROM sales WHERE invoice_group = g.invoice_group LIMIT 1)) AS sale_customer
+           COALESCE((SELECT m.name FROM customers cc JOIN customers m ON m.id = CASE WHEN cc.linked_party_id IS NOT NULL AND LOWER(TRIM(COALESCE(cc.business_type, ''))) = LOWER(TRIM(COALESCE((SELECT mm.business_type FROM customers mm WHERE mm.id = cc.linked_party_id), ''))) THEN cc.linked_party_id ELSE cc.id END WHERE cc.id = COALESCE(sl.customer_id, (SELECT customer_id FROM sales WHERE invoice_group = g.invoice_group LIMIT 1))), sl.customer, (SELECT customer FROM sales WHERE invoice_group = g.invoice_group LIMIT 1)) AS sale_customer
     FROM gate_entries g
     LEFT JOIN products p ON p.id = g.oil_type_id
     LEFT JOIN purchase_tankers pt ON pt.id = g.tanker_id
@@ -5707,9 +5837,9 @@ async function gateEntriesFor(args) {
     LEFT JOIN bargains b ON b.id = pt.bargain_id
     LEFT JOIN transporters t ON t.id = pt.transporter_id
     LEFT JOIN sources src ON src.id = pt.source_id
-    LEFT JOIN suppliers s ON s.id = (SELECT CASE WHEN LOWER(TRIM(COALESCE(x.business_type, ''))) = 'trading' THEN x.id ELSE COALESCE(x.linked_party_id, x.id) END FROM suppliers x WHERE x.id = pt.supplier_id)
-    LEFT JOIN suppliers ds ON ds.id = (SELECT CASE WHEN LOWER(TRIM(COALESCE(x.business_type, ''))) = 'trading' THEN x.id ELSE COALESCE(x.linked_party_id, x.id) END FROM suppliers x WHERE x.id = g.supplier_id)
-    LEFT JOIN customers dc ON dc.id = (SELECT CASE WHEN LOWER(TRIM(COALESCE(x.business_type, ''))) = 'trading' THEN x.id ELSE COALESCE(x.linked_party_id, x.id) END FROM customers x WHERE x.id = g.customer_id)
+    LEFT JOIN suppliers s ON s.id = (SELECT CASE WHEN x.linked_party_id IS NOT NULL AND LOWER(TRIM(COALESCE(x.business_type, ''))) = LOWER(TRIM(COALESCE((SELECT mm.business_type FROM suppliers mm WHERE mm.id = x.linked_party_id), ''))) THEN x.linked_party_id ELSE x.id END FROM suppliers x WHERE x.id = pt.supplier_id)
+    LEFT JOIN suppliers ds ON ds.id = (SELECT CASE WHEN x.linked_party_id IS NOT NULL AND LOWER(TRIM(COALESCE(x.business_type, ''))) = LOWER(TRIM(COALESCE((SELECT mm.business_type FROM suppliers mm WHERE mm.id = x.linked_party_id), ''))) THEN x.linked_party_id ELSE x.id END FROM suppliers x WHERE x.id = g.supplier_id)
+    LEFT JOIN customers dc ON dc.id = (SELECT CASE WHEN x.linked_party_id IS NOT NULL AND LOWER(TRIM(COALESCE(x.business_type, ''))) = LOWER(TRIM(COALESCE((SELECT mm.business_type FROM customers mm WHERE mm.id = x.linked_party_id), ''))) THEN x.linked_party_id ELSE x.id END FROM customers x WHERE x.id = g.customer_id)
     LEFT JOIN sales sl ON sl.id = g.sale_id
     WHERE ${where.join(" OR ")}
     ORDER BY g.entry_date DESC, g.id DESC
@@ -6023,10 +6153,10 @@ async function saveGateWeights(id, gross, tare, awaitingGrossOut, dispatchQty, i
 }
 async function setGateEntrySales(entryId, groups) {
   const c = getClient();
-  const clean6 = Array.from(new Set(groups.map((g) => String(g || "").trim()).filter(Boolean)));
+  const clean7 = Array.from(new Set(groups.map((g) => String(g || "").trim()).filter(Boolean)));
   await c.execute({ sql: "DELETE FROM gate_entry_sales WHERE gate_entry_id = ?", args: [entryId] });
   let first = null;
-  for (const g of clean6) {
+  for (const g of clean7) {
     const sale = await c.execute({
       sql: "SELECT id, customer_id FROM sales WHERE invoice_group = ? ORDER BY id LIMIT 1",
       args: [g]
@@ -8005,7 +8135,7 @@ var init_invoiceno = __esm({
 
 // src/main/stockAdjust.ts
 async function ensureStockAdjustments() {
-  if (ready2) return;
+  if (ready3) return;
   await getClient().execute(`CREATE TABLE IF NOT EXISTS stock_adjustments (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     company_id INTEGER NOT NULL,
@@ -8021,7 +8151,7 @@ async function ensureStockAdjustments() {
   await getClient().execute(
     "CREATE INDEX IF NOT EXISTS idx_stock_adj_product ON stock_adjustments(product_id, company_id, adj_date)"
   );
-  ready2 = true;
+  ready3 = true;
 }
 async function listStockAdjustments(productId, companyIds) {
   await ensureStockAdjustments();
@@ -8076,14 +8206,14 @@ async function deleteStockAdjustment(id) {
   });
   return { id: rid };
 }
-var n9, ready2;
+var n9, ready3;
 var init_stockAdjust = __esm({
   "src/main/stockAdjust.ts"() {
     init_db();
     init_company();
     init_currentUser();
     n9 = (v) => Number.isFinite(Number(v)) ? Number(v) : 0;
-    ready2 = false;
+    ready3 = false;
   }
 });
 
@@ -8688,7 +8818,7 @@ async function stockPartyBreakdown(companyIds, range) {
   const recB = bounds(recDateExpr);
   const dispB = bounds("s.sale_date");
   const out = {};
-  const ensure4 = (pid) => out[pid] ??= { receipt: [], dispatch: [], packed: [], produced: [], consumed: [], recirculated: [] };
+  const ensure5 = (pid) => out[pid] ??= { receipt: [], dispatch: [], packed: [], produced: [], consumed: [], recirculated: [] };
   const site = (plant, party) => multi ? `${plant || "\u2014"} \xB7 ${party}` : String(party);
   const rec = await c.execute({
     sql: `SELECT o.oil_type_id AS pid, COALESCE(s.name, 'Unknown') AS party, co.name AS company, SUM(o.received_qty) AS qty
@@ -8702,7 +8832,7 @@ async function stockPartyBreakdown(companyIds, range) {
     args: [...cidList, ...recB.args]
   });
   for (const r of rec.rows)
-    ensure4(Number(r.pid)).receipt.push({
+    ensure5(Number(r.pid)).receipt.push({
       party: multi ? `${r.company || "\u2014"} \xB7 ${r.party}` : String(r.party),
       qty: Number(r.qty) || 0
     });
@@ -8721,7 +8851,7 @@ async function stockPartyBreakdown(companyIds, range) {
     args: [...cidList, ...dispB.args]
   });
   for (const r of disp.rows)
-    ensure4(Number(r.pid)).dispatch.push({
+    ensure5(Number(r.pid)).dispatch.push({
       party: multi ? `${r.company || "\u2014"} \xB7 ${r.party}` : String(r.party),
       qty: Number(r.qty) || 0
     });
@@ -8753,7 +8883,7 @@ async function stockPartyBreakdown(companyIds, range) {
     args: [...cidList, ...prodB.args, ...cidList, ...prodB.args]
   });
   for (const r of made.rows)
-    ensure4(Number(r.pid)).produced.push({
+    ensure5(Number(r.pid)).produced.push({
       party: site(r.plant, r.party),
       qty: Number(r.qty) || 0
     });
@@ -8773,7 +8903,7 @@ async function stockPartyBreakdown(companyIds, range) {
     args: [...cidList, ...prodB.args]
   });
   for (const r of recircRuns.rows)
-    ensure4(Number(r.pid)).recirculated.push({
+    ensure5(Number(r.pid)).recirculated.push({
       // Sent in pieces, so the label is assembled where dates are formatted.
       // `party` is the same line pre-joined, for anything reading this list
       // without knowing what is in it.
@@ -8824,7 +8954,7 @@ async function stockPartyBreakdown(companyIds, range) {
     args: [...cidList, ...prodB.args, ...cidList, ...prodB.args]
   });
   for (const r of used.rows)
-    ensure4(Number(r.pid)).consumed.push({
+    ensure5(Number(r.pid)).consumed.push({
       party: site(r.plant, r.party),
       qty: Number(r.qty) || 0
     });
@@ -8847,13 +8977,13 @@ async function stockPartyBreakdown(companyIds, range) {
     return res.rows;
   };
   for (const r of await noteSide("credit", "customer", "customers"))
-    ensure4(Number(r.pid)).dispatch.push({
+    ensure5(Number(r.pid)).dispatch.push({
       party: `${multi ? `${r.company || "\u2014"} \xB7 ${r.party}` : String(r.party)} \u2014 return ${r.note_no}`,
       qty: -(Number(r.qty) || 0),
       isReturn: true
     });
   for (const r of await noteSide("debit", "supplier", "suppliers"))
-    ensure4(Number(r.pid)).receipt.push({
+    ensure5(Number(r.pid)).receipt.push({
       party: `${multi ? `${r.company || "\u2014"} \xB7 ${r.party}` : String(r.party)} \u2014 return ${r.note_no}`,
       qty: -(Number(r.qty) || 0),
       isReturn: true
@@ -8899,7 +9029,7 @@ async function stockPartyBreakdown(companyIds, range) {
     args: [...cidList, ...packB.args]
   });
   for (const r of packed.rows)
-    ensure4(Number(r.pid)).packed.push({
+    ensure5(Number(r.pid)).packed.push({
       party: multi ? `${r.sku} \xB7 ${r.company || ""}` : String(r.sku),
       pieces: Number(r.pieces) || 0,
       qty: Number(r.qty) || 0
@@ -13412,7 +13542,7 @@ async function createTag(a) {
   await ensureTagTables();
   const c = getClient();
   const cid = n13(a.companyId) || getActiveCompanyId();
-  const name = clean3(a.name);
+  const name = clean4(a.name);
   if (!name) throw new Error("A tag needs a name");
   const dup = await c.execute({
     sql: "SELECT id, name FROM tags WHERE company_id = ? AND TRIM(UPPER(name)) = TRIM(UPPER(?))",
@@ -13428,7 +13558,7 @@ async function createTag(a) {
 async function renameTag(id, name, colour) {
   await ensureTagTables();
   const c = getClient();
-  const next = clean3(name);
+  const next = clean4(name);
   if (!next) throw new Error("A tag needs a name");
   const cur = await c.execute({ sql: "SELECT company_id FROM tags WHERE id = ?", args: [n13(id)] });
   if (!cur.rows.length) throw new Error("No such tag");
@@ -13500,7 +13630,7 @@ async function tagContents(tagId) {
   });
   return toPlain14(res);
 }
-var n13, ENTITIES, clean3, refOf;
+var n13, ENTITIES, clean4, refOf;
 var init_tags = __esm({
   "src/main/tags.ts"() {
     init_db();
@@ -13508,7 +13638,7 @@ var init_tags = __esm({
     init_currentUser();
     n13 = (v) => Number(v) || 0;
     ENTITIES = ["order", "sale", "lc", "bd", "trading", "voucher"];
-    clean3 = (v) => String(v ?? "").trim().replace(/\s+/g, " ").slice(0, 40);
+    clean4 = (v) => String(v ?? "").trim().replace(/\s+/g, " ").slice(0, 40);
     refOf = (v) => String(v ?? "").trim();
   }
 });
@@ -19084,15 +19214,15 @@ function n23(v) {
 async function getOrCreateAccount(name, group = "General", companyId) {
   const c = getClient();
   const wanted = await resolveAccountName(name, companyId);
-  const clean6 = String(wanted || "").trim().toUpperCase();
-  if (!clean6) throw new Error("Account name is required");
+  const clean7 = String(wanted || "").trim().toUpperCase();
+  if (!clean7) throw new Error("Account name is required");
   await c.execute({
     sql: "INSERT OR IGNORE INTO ledger_accounts (name, acc_group) VALUES (?, ?)",
-    args: [clean6, group]
+    args: [clean7, group]
   });
   const res = await c.execute({
     sql: "SELECT id FROM ledger_accounts WHERE name = ?",
-    args: [clean6]
+    args: [clean7]
   });
   return Number(res.rows[0].id);
 }
@@ -19277,14 +19407,35 @@ async function repostJournal(entryId, a) {
       sql: "DELETE FROM journal_bill_allocs WHERE line_id IN (SELECT id FROM journal_lines WHERE entry_id = ?)",
       args: [id]
     });
+    const kept = /* @__PURE__ */ new Map();
+    for (const s5 of (await c.execute({
+      sql: `SELECT jl.account_id, jl.dr, jl.cr, s.name, s.amount, s.note, s.sort_order
+            FROM journal_line_splits s JOIN journal_lines jl ON jl.id = s.line_id
+           WHERE jl.entry_id = ? ORDER BY s.line_id, s.sort_order, s.id`,
+      args: [id]
+    })).rows) {
+      const key3 = `${n23(s5.account_id)}|${n23(s5.dr) > 0 ? "dr" : "cr"}|${(n23(s5.dr) || n23(s5.cr)).toFixed(2)}`;
+      kept.set(key3, [...kept.get(key3) || [], s5]);
+    }
     await c.execute({ sql: "DELETE FROM journal_line_splits WHERE line_id IN (SELECT id FROM journal_lines WHERE entry_id = ?)", args: [id] });
     await c.execute({ sql: "DELETE FROM journal_lines WHERE entry_id = ?", args: [id] });
     for (const l of lines) {
       const accountId = await getOrCreateAccount(await partyAccountName(l.account, l.group, a.companyId), l.group, a.companyId);
-      await c.execute({
+      const ins = await c.execute({
         sql: "INSERT INTO journal_lines (entry_id, account_id, dr, cr) VALUES (?, ?, ?, ?)",
         args: [id, accountId, n23(l.dr), n23(l.cr)]
       });
+      const key3 = `${accountId}|${n23(l.dr) > 0 ? "dr" : "cr"}|${(n23(l.dr) || n23(l.cr)).toFixed(2)}`;
+      const parts = kept.get(key3);
+      if (parts) {
+        kept.delete(key3);
+        for (const s5 of parts) {
+          await c.execute({
+            sql: "INSERT INTO journal_line_splits (line_id, name, amount, note, sort_order) VALUES (?, ?, ?, ?, ?)",
+            args: [Number(ins.lastInsertRowid), s5.name, n23(s5.amount), s5.note ?? null, n23(s5.sort_order)]
+          });
+        }
+      }
     }
     return { id };
   });
@@ -21113,8 +21264,8 @@ async function principalRepaidByDate(bdId) {
 function bdInterestParts(base, steps, a, b, rate, daysYear) {
   const parts = [];
   if (b < a) return { parts, gross: 0 };
-  const balOn = (d) => Math.max(0, round29(base - steps.filter((x) => x.date < d).reduce((t, x) => t + x.amount, 0)));
-  const cuts = steps.map((x) => addDays(x.date, 1)).filter((d) => d > a && d <= b);
+  const balOn = (d) => Math.max(0, round29(base - steps.filter((x) => x.date <= d).reduce((t, x) => t + x.amount, 0)));
+  const cuts = steps.map((x) => x.date).filter((d) => d > a && d <= b);
   const starts = [a, ...Array.from(new Set(cuts)).sort()];
   let raw = 0;
   starts.forEach((from, i) => {
@@ -23422,7 +23573,7 @@ __export(tallyLinks_exports, {
   undoTallyBatch: () => undoTallyBatch
 });
 async function ensureTables() {
-  if (ready3) return;
+  if (ready4) return;
   const c = getClient();
   await c.execute(`CREATE TABLE IF NOT EXISTS tally_links (
     company_id INTEGER NOT NULL,
@@ -23445,7 +23596,7 @@ async function ensureTables() {
     undone_at TEXT,
     undone_by TEXT
   )`);
-  ready3 = true;
+  ready4 = true;
 }
 async function linksFor(companyId, scope2) {
   await ensureTables();
@@ -23575,12 +23726,12 @@ async function undoTallyBatch(v) {
   }
   return { removed, kept };
 }
-var ready3, who;
+var ready4, who;
 var init_tallyLinks = __esm({
   "src/main/tallyLinks.ts"() {
     init_db();
     init_currentUser();
-    ready3 = false;
+    ready4 = false;
     who = () => String(getCurrentUser().username || "").trim() || "local";
   }
 });
@@ -26144,6 +26295,7 @@ __export(tallyBank_exports, {
   postTallyBankVouchers: () => postTallyBankVouchers,
   previewTallyBankVouchers: () => previewTallyBankVouchers,
   setCompanyBank: () => setCompanyBank,
+  settleTallyBankDifference: () => settleTallyBankDifference,
   suggestTallyBank: () => suggestTallyBank,
   tallyBankParties: () => tallyBankParties
 });
@@ -26560,6 +26712,23 @@ async function reconcileBank(v) {
       rows2.push({ key: `STMT|${i}`, status: "statement_only", tally: null, books: null, stmt: { date: s5.date, narration: s5.narration, amount: s5.amount, dir: s5.dir }, diffs: [] });
     });
   }
+  const nearCand = [];
+  for (const m of rows2) {
+    if (m.status !== "missing_here" || !m.tally || m.tally.multi) continue;
+    for (const e of rows2) {
+      if (e.status !== "missing_tally" || !e.books || e.books.dir !== m.tally.dir) continue;
+      const d = Math.abs(n29(m.tally.amount) - n29(e.books.amount));
+      const gap = daysApart3(m.tally.date, e.books.date);
+      if (d < 5e-3 || d > Math.max(500, n29(m.tally.amount) * 0.01) || gap > 3) continue;
+      nearCand.push({ m, e, gap, d });
+    }
+  }
+  nearCand.sort((a, b) => a.gap - b.gap || a.d - b.d);
+  for (const p of nearCand) {
+    if (p.m.near || p.e.near_of) continue;
+    p.m.near = { id: p.e.books.id, code: p.e.books.code, date: p.e.books.date, amount: p.e.books.amount, diff: round214(n29(p.m.tally.amount) - n29(p.e.books.amount)) };
+    p.e.near_of = { key: p.m.key, vch_type: p.m.tally.vch_type, vch_no: p.m.tally.vch_no, amount: p.m.tally.amount };
+  }
   explainBank(rows2, !!statement);
   return { statement, book, account, mapped, rows: rows2, entries: entries2 };
 }
@@ -26573,7 +26742,13 @@ function explainBank(rows2, hasStatement = false) {
     const way = (d) => d === "in" ? "received into the bank" : "paid out of the bank";
     const tName = t ? `${t.vch_type} No. ${t.vch_no}` : "";
     const bName = b ? `${b.code || b.vch_type}${b.vch_no ? ` \xB7 ${b.vch_no}` : ""}` : "";
-    if (r.status === "missing_here" && t) {
+    if (r.status === "missing_here" && t && r.near) {
+      const nr = r.near;
+      say2.push(
+        `In Tally on ${dmy2(t.date)}: ${inr5(t.amount)} ${way(t.dir)}${t.party ? `, ${t.dir === "in" ? "from" : "to"} ${t.party}` : ""} (${tName}). It looks like ${String(nr.code || "a voucher")} here on ${dmy2(nr.date)} for ${inr5(nr.amount)} \u2014 the same ${t.dir === "in" ? "receipt" : "payment"}, ${inr5(Math.abs(n29(nr.diff)))} ${n29(nr.diff) > 0 ? "more" : "less"} in Tally.`
+      );
+      fix = `If it is the same, press "Same \u2014 take Tally's figure": it is linked, and ${String(nr.code || "the voucher")} takes the bank's ${inr5(t.amount)}, the ${inr5(Math.abs(n29(nr.diff)))} going to its own ledger. The bill or LC it came from keeps its worked-out figure.`;
+    } else if (r.status === "missing_here" && t) {
       say2.push(`In Tally on ${dmy2(t.date)}: ${inr5(t.amount)} ${way(t.dir)}${t.party ? `, ${t.dir === "in" ? "from" : "to"} ${t.party}` : ""} (${tName}) \u2014 not in this bank here.`);
       if (t.multi && Array.isArray(t.details) && t.details.length) {
         say2.push(`Its ledgers: ${t.details.map((d) => `${d.name} ${inr5(d.amount)} ${d.side === "dr" ? "Dr" : "Cr"}`).join(", ")}.`);
@@ -26595,6 +26770,10 @@ function explainBank(rows2, hasStatement = false) {
         if (d.field === "party") say2.push(`${t.party} in Tally, ${d.books} here.`);
       }
       fix = r.diffs.every((d) => d.field === "date") ? "Correct the date on whichever side is wrong \u2014 the bank\u2019s own statement says which." : "Open the voucher here and correct it to Tally \u2014 or correct Tally.";
+    } else if (r.status === "missing_tally" && b && r.near_of) {
+      const no = r.near_of;
+      say2.push(`In this bank here (${bName}, ${dmy2(b.date)}, ${inr5(b.amount)} ${way(b.dir)}) \u2014 Tally has it as ${String(no.vch_type || "")} No. ${String(no.vch_no || "")} for ${inr5(no.amount)}.`);
+      fix = `Settle it from Tally's line above ("Same \u2014 take Tally's figure").`;
     } else if (r.status === "missing_tally" && b) {
       say2.push(`In this bank here (${bName}, ${dmy2(b.date)}${b.party ? `, ${b.party}` : ""}, ${inr5(b.amount)} ${way(b.dir)}) but not in Tally's book for the period.`);
       fix = "Enter it in Tally \u2014 or, if it never went through the bank, correct it here.";
@@ -27046,6 +27225,48 @@ async function ensureOwnBanks() {
   )`);
   ownTable = true;
 }
+async function settleTallyBankDifference(v) {
+  const cid = await companyOf(v);
+  return withDbTransaction(async () => {
+    const c = getClient();
+    const id = Number(v.entry_id) || 0;
+    const head = toPlain21(await c.execute({ sql: "SELECT id, company_id, narration FROM journal_entries WHERE id = ?", args: [id] }))[0];
+    if (!head) throw new Error("That voucher no longer exists \u2014 check the file again");
+    if (Number(head.company_id) !== cid) throw new Error("That voucher belongs to another company");
+    const lines = toPlain21(await c.execute({ sql: "SELECT id, account_id, dr, cr FROM journal_lines WHERE entry_id = ? ORDER BY id", args: [id] }));
+    const bank = lines.filter((l) => Number(l.account_id) === Number(v.account_id));
+    if (bank.length !== 1) throw new Error("This voucher has the bank on more than one line \u2014 correct it by hand");
+    const bl = bank[0];
+    const out = n29(bl.cr) > 0;
+    const was = round214(out ? n29(bl.cr) : n29(bl.dr));
+    const want = round214(n29(v.tally_amount));
+    const diff = round214(want - was);
+    if (want <= 0) throw new Error("Tally's figure is missing");
+    if (Math.abs(diff) > Math.max(500, was * 0.01)) throw new Error(`${inr5(want)} and ${inr5(was)} are too far apart to be one payment \u2014 correct it by hand`);
+    if (Math.abs(diff) >= 5e-3) {
+      const main2 = lines.filter((l) => l.id !== bl.id && (out ? n29(l.dr) > 0 : n29(l.cr) > 0)).sort((a, b) => out ? n29(b.dr) - n29(a.dr) : n29(b.cr) - n29(a.cr))[0];
+      if (!main2) throw new Error("This voucher has no ledger on the other side of the bank");
+      await c.execute(`CREATE TABLE IF NOT EXISTS accounting_repair_log (
+        repair_key TEXT PRIMARY KEY, entry_id INTEGER NOT NULL, before_json TEXT NOT NULL,
+        created_at TEXT NOT NULL DEFAULT (datetime('now')))`);
+      await c.execute({
+        sql: "INSERT OR REPLACE INTO accounting_repair_log(repair_key, entry_id, before_json) VALUES (?, ?, ?)",
+        args: [`bank_difference:${id}:${Date.now()}`, id, JSON.stringify({ lines, narration: head.narration, tally_key: v.tally_key, tally_amount: want })]
+      });
+      await c.execute({ sql: `UPDATE journal_lines SET ${out ? "cr" : "dr"} = ? WHERE id = ?`, args: [want, Number(bl.id)] });
+      const more = diff > 0;
+      const onMainSide = out ? more ? "dr" : "cr" : more ? "cr" : "dr";
+      await c.execute({
+        sql: `INSERT INTO journal_lines (entry_id, account_id, ${onMainSide}) VALUES (?, ?, ?)`,
+        args: [id, Number(main2.account_id), Math.abs(diff)]
+      });
+      const note = ` \u2014 bank's figure ${inr5(want)}${v.tally_label ? ` (Tally ${v.tally_label})` : ""}, ${inr5(Math.abs(diff))} ${more ? "more" : "less"} than worked out`;
+      await c.execute({ sql: "UPDATE journal_entries SET narration = ? WHERE id = ?", args: [`${String(head.narration || "")}${note}`, id] });
+    }
+    await saveTallyLink({ company_id: cid, scope: `bank:${Number(v.account_id)}`, tally_key: String(v.tally_key), entry_id: id });
+    return { id, diff };
+  });
+}
 async function listCompanyBanks(v) {
   await ensureOwnBanks();
   const cid = await companyOf(v);
@@ -27098,6 +27319,7 @@ var init_tallyBank = __esm({
     init_db();
     init_accounting();
     init_tallyLinks();
+    init_dbTransaction();
     init_tallyNotes();
     n29 = (v) => {
       const x = Number(String(v ?? "").replace(/,/g, ""));
@@ -29811,7 +30033,7 @@ async function previewLedgerMerge(fromId, intoId) {
     args: [n54(fromId)]
   });
   const allocs = n54((await c.execute({ sql: "SELECT COUNT(*) AS k FROM journal_bill_allocs WHERE account_id = ?", args: [n54(fromId)] })).rows[0]?.k);
-  const redirects = (await c.execute({ sql: "SELECT posts_as FROM ledger_map WHERE TRIM(UPPER(use_name)) = ?", args: [clean4(from.name)] }).catch(() => ({ rows: [] }))).rows.map((r) => String(r.posts_as));
+  const redirects = (await c.execute({ sql: "SELECT posts_as FROM ledger_map WHERE TRIM(UPPER(use_name)) = ?", args: [clean5(from.name)] }).catch(() => ({ rows: [] }))).rows.map((r) => String(r.posts_as));
   const IMPORTED = "COALESCE(%s.narration, '') LIKE 'Imported from Tally%%'";
   const copies = await c.execute({
     sql: `SELECT CASE WHEN ${IMPORTED.replace("%s", "fe")} THEN fe.id ELSE ie.id END AS copy_id,
@@ -29838,7 +30060,7 @@ async function previewLedgerMerge(fromId, intoId) {
     into,
     blocked,
     copies: copies.rows.map((r) => ({ ...r })),
-    groups_differ: clean4(from.acc_group) !== clean4(into.acc_group),
+    groups_differ: clean5(from.acc_group) !== clean5(into.acc_group),
     companies: per.rows.map((r) => ({ ...r })),
     openings: openings.rows.map((r) => ({ ...r })),
     allocs,
@@ -29862,8 +30084,8 @@ async function mergeLedgers(fromId, intoId, keepName, keep = []) {
     const into = pv.into;
     const fid = n54(from.id);
     const iid = n54(into.id);
-    const fromName = clean4(from.name);
-    const intoName = clean4(into.name);
+    const fromName = clean5(from.name);
+    const intoName = clean5(into.name);
     await c.execute(`CREATE TABLE IF NOT EXISTS accounting_repair_log (
         repair_key TEXT PRIMARY KEY, entry_id INTEGER NOT NULL, before_json TEXT NOT NULL,
         created_at TEXT NOT NULL DEFAULT (datetime('now')))`);
@@ -29911,12 +30133,12 @@ async function mergeLedgers(fromId, intoId, keepName, keep = []) {
     await c.execute("DELETE FROM ledger_map WHERE TRIM(UPPER(posts_as)) = TRIM(UPPER(use_name))");
     await c.execute({ sql: "DELETE FROM ledger_accounts WHERE id = ?", args: [fid] });
     let name = intoName;
-    const want = clean4(keepName);
+    const want = clean5(keepName);
     if (want && want !== intoName) name = (await renameLedger(iid, want)).to;
     return { id: iid, name, lines: n54(moved.rowsAffected) };
   });
 }
-var n54, round225, clean4;
+var n54, round225, clean5;
 var init_ledgerMerge = __esm({
   "src/main/ledgerMerge.ts"() {
     init_db();
@@ -29929,7 +30151,7 @@ var init_ledgerMerge = __esm({
       return Number.isFinite(x) ? x : 0;
     };
     round225 = (v) => Math.round(v * 100) / 100;
-    clean4 = (v) => String(v ?? "").trim().replace(/\s+/g, " ").toUpperCase();
+    clean5 = (v) => String(v ?? "").trim().replace(/\s+/g, " ").toUpperCase();
   }
 });
 
@@ -30313,8 +30535,8 @@ function toPlain40(res) {
     return o;
   });
 }
-async function ensure3() {
-  if (ready5) return;
+async function ensure4() {
+  if (ready6) return;
   await getClient().execute(`CREATE TABLE IF NOT EXISTS facility_refunds (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       kind TEXT NOT NULL,
@@ -30327,7 +30549,7 @@ async function ensure3() {
       line_id INTEGER,
       created_at TEXT NOT NULL DEFAULT (datetime('now'))
     )`);
-  ready5 = true;
+  ready6 = true;
 }
 async function facility(kind, id) {
   const c = getClient();
@@ -30369,7 +30591,7 @@ async function facility(kind, id) {
   return { company_id: n57(head.company_id), label: String(head.label || ""), lender: String(head.lender || ""), booked: round227(booked), first, bank };
 }
 async function refundDues(kind) {
-  await ensure3();
+  await ensure4();
   const c = getClient();
   const reps = toPlain40(
     await c.execute(
@@ -30394,7 +30616,7 @@ async function refundDues(kind) {
   return out;
 }
 async function refundTotals(kind) {
-  await ensure3();
+  await ensure4();
   const c = getClient();
   const reps = toPlain40(
     await c.execute(
@@ -30423,7 +30645,7 @@ async function refundTotals(kind) {
   return out;
 }
 async function refundInfo(kind, id) {
-  await ensure3();
+  await ensure4();
   const c = getClient();
   const f = await facility(kind, id);
   const done = toPlain40(
@@ -30492,7 +30714,7 @@ async function refundInfo(kind, id) {
 }
 async function linkRefund(kind, id, entryId) {
   return withDbTransaction(async () => {
-    await ensure3();
+    await ensure4();
     const c = getClient();
     const info = await refundInfo(kind, id);
     const cand = (info.candidates || []).find((x) => n57(x.id) === n57(entryId));
@@ -30514,7 +30736,7 @@ async function linkRefund(kind, id, entryId) {
 }
 async function recordRefund(kind, id, v) {
   return withDbTransaction(async () => {
-    await ensure3();
+    await ensure4();
     const c = getClient();
     const info = await refundInfo(kind, id);
     const amount2 = round227(n57(v.amount));
@@ -30545,7 +30767,7 @@ async function recordRefund(kind, id, v) {
 }
 async function undoRefund(refundId) {
   return withDbTransaction(async () => {
-    await ensure3();
+    await ensure4();
     const c = getClient();
     const r = toPlain40(await c.execute({ sql: "SELECT * FROM facility_refunds WHERE id = ?", args: [refundId] }))[0];
     if (!r) throw new Error("Refund not found");
@@ -30561,7 +30783,7 @@ async function undoRefund(refundId) {
     return { id: refundId };
   });
 }
-var n57, round227, ready5;
+var n57, round227, ready6;
 var init_bankRefunds = __esm({
   "src/main/bankRefunds.ts"() {
     init_db();
@@ -30571,7 +30793,7 @@ var init_bankRefunds = __esm({
     init_refundDue();
     n57 = (v) => Number(v) || 0;
     round227 = (v) => Math.round(v * 100) / 100;
-    ready5 = false;
+    ready6 = false;
   }
 });
 
@@ -30928,7 +31150,7 @@ async function scan2() {
   if (!redirects.length) return { redirects, lines: [], candidates: [] };
   const tally = await tallyBankParties();
   const accts = toPlain42(await c.execute("SELECT id, name FROM ledger_accounts"));
-  const byClean = new Map(accts.map((a) => [clean5(a.name), n60(a.id)]));
+  const byClean = new Map(accts.map((a) => [clean6(a.name), n60(a.id)]));
   const nameOf = new Map(accts.map((a) => [n60(a.id), String(a.name)]));
   const companies = new Map(toPlain42(await c.execute("SELECT id, name FROM companies")).map((r) => [n60(r.id), String(r.name)]));
   const lines = [];
@@ -30955,7 +31177,7 @@ async function scan2() {
       const cid = n60(r.company_id);
       let toId = null;
       let how = "";
-      const exact = byClean.get(clean5(leg.name));
+      const exact = byClean.get(clean6(leg.name));
       if (exact && exact !== rd.target_id) {
         toId = exact;
         how = "the ledger of that exact name";
@@ -30963,7 +31185,7 @@ async function scan2() {
         const tb = toPlain42(
           await c.execute({
             sql: "SELECT dr, cr FROM tally_ledgers WHERE company_id = ? AND TRIM(UPPER(name)) = ?",
-            args: [cid, clean5(leg.name)]
+            args: [cid, clean6(leg.name)]
           })
         )[0];
         if (tb) {
@@ -31001,8 +31223,8 @@ async function scan2() {
       });
     }
   }
-  const firsts = new Set(lines.map((l) => clean5(l.tally_party).split(" ")[0]).filter(Boolean));
-  const candidates = accts.filter((a) => firsts.has(clean5(a.name).split(" ")[0]) || lines.some((l) => l.to_id === n60(a.id))).filter((a) => !redirects.some((rd) => rd.target_id === n60(a.id))).map((a) => ({ id: n60(a.id), name: String(a.name) })).sort((a, b) => a.name.localeCompare(b.name));
+  const firsts = new Set(lines.map((l) => clean6(l.tally_party).split(" ")[0]).filter(Boolean));
+  const candidates = accts.filter((a) => firsts.has(clean6(a.name).split(" ")[0]) || lines.some((l) => l.to_id === n60(a.id))).filter((a) => !redirects.some((rd) => rd.target_id === n60(a.id))).map((a) => ({ id: n60(a.id), name: String(a.name) })).sort((a, b) => a.name.localeCompare(b.name));
   return { redirects, lines, candidates };
 }
 async function previewShadowedRedirects() {
@@ -31113,9 +31335,9 @@ async function fixLegacySplit() {
         sql: "INSERT OR REPLACE INTO accounting_repair_log (repair_key, entry_id, before_json) VALUES (?, ?, ?)",
         args: [`legacy-split:map:${n60(r.id)}`, 0, JSON.stringify(r)]
       });
-      const rajkot = /RAJKOT/.test(clean5(r.posts_as));
+      const rajkot = /RAJKOT/.test(clean6(r.posts_as));
       const to = rajkot && !taken.length ? LEGACY_RAJKOT : rajkot ? LEGACY_MIX : LEGACY_TRAD;
-      if (clean5(r.posts_as) === to) await c.execute({ sql: "DELETE FROM ledger_map WHERE id = ?", args: [n60(r.id)] });
+      if (clean6(r.posts_as) === to) await c.execute({ sql: "DELETE FROM ledger_map WHERE id = ?", args: [n60(r.id)] });
       else await c.execute({ sql: "UPDATE ledger_map SET use_name = ? WHERE id = ?", args: [to, n60(r.id)] });
     }
     if (!taken.length) {
@@ -31129,7 +31351,7 @@ async function fixLegacySplit() {
     return { moved: s5.lines.length, redirects: s5.redirects.length };
   });
 }
-var n60, round230, clean5, LEGACY_TRAD, LEGACY_MIX, LEGACY_RAJKOT;
+var n60, round230, clean6, LEGACY_TRAD, LEGACY_MIX, LEGACY_RAJKOT;
 var init_shadowedRedirects = __esm({
   "src/main/shadowedRedirects.ts"() {
     init_db();
@@ -31138,7 +31360,7 @@ var init_shadowedRedirects = __esm({
     init_tallyNotes();
     n60 = (v) => Number(v) || 0;
     round230 = (v) => Math.round(v * 100) / 100;
-    clean5 = (v) => String(v ?? "").trim().replace(/\s+/g, " ").toUpperCase();
+    clean6 = (v) => String(v ?? "").trim().replace(/\s+/g, " ").toUpperCase();
     LEGACY_TRAD = "LEGACY COMMODITIES PVT LTD, TRAD.";
     LEGACY_MIX = "LEGACY COMMODITIES PVT LTD, TRAD..";
     LEGACY_RAJKOT = "LEGACY COMMODITIES PRIVATE LTD (RAJKOT)";
@@ -34631,6 +34853,9 @@ async function runStartupTasks() {
   startRevisionWatcher();
 }
 var REQUIRED_COLUMNS = [
+  // The desk's own voucher type (PURCHASE OTHERS under Purchase) — a label on
+  // top of the basic type, which keeps the number series (voucherSubtypes.ts).
+  { table: "journal_entries", column: "vch_subtype", type: "TEXT" },
   // The bank receipt an LC's preclosure interest refund came back by — linked
   // from the LC panel (lc.ts linkLcRefund). Shown, never posted.
   { table: "letters_of_credit", column: "refund_voucher_id", type: "INTEGER" },
@@ -34800,9 +35025,9 @@ var n30 = (v) => {
   return Number.isFinite(x) ? x : 0;
 };
 var round216 = (v) => Math.round(v * 100) / 100;
-var ready4 = false;
-async function ensure2() {
-  if (ready4) return;
+var ready5 = false;
+async function ensure3() {
+  if (ready5) return;
   await getClient().execute(`CREATE TABLE IF NOT EXISTS sale_shortage_notes (
     company_id INTEGER NOT NULL,
     invoice_key TEXT NOT NULL,
@@ -34811,7 +35036,7 @@ async function ensure2() {
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     PRIMARY KEY (company_id, invoice_key, entry_id)
   )`);
-  ready4 = true;
+  ready5 = true;
 }
 async function invoiceOf2(saleId) {
   const c = getClient();
@@ -34837,7 +35062,7 @@ async function customerLedgerOf(inv) {
 }
 var codeSql = "(SELECT nn.prefix || '/' || nn.serial FROM voucher_numbers nn WHERE nn.entry_id = je.id)";
 async function shortageNoteCandidates(saleId) {
-  await ensure2();
+  await ensure3();
   const c = getClient();
   const inv = await invoiceOf2(saleId);
   const acc = await customerLedgerOf(inv);
@@ -34872,7 +35097,7 @@ async function shortageNoteCandidates(saleId) {
   return { invoice_no: inv.invoice_no, invoice_key: inv.key, notes, linked, sale_account: sa ? String(sa.name) : "" };
 }
 async function setShortageNotes(saleId, entryIds) {
-  await ensure2();
+  await ensure3();
   const c = getClient();
   const inv = await invoiceOf2(saleId);
   const cand = await shortageNoteCandidates(saleId);
@@ -34889,7 +35114,7 @@ async function setShortageNotes(saleId, entryIds) {
   return { linked: ids.length };
 }
 async function shortageNoteMap() {
-  await ensure2();
+  await ensure3();
   const res = await getClient().execute(`
     SELECT t.company_id, t.invoice_key, t.entry_id, t.amount, je.entry_date, je.vch_no, ${codeSql} AS code
       FROM sale_shortage_notes t JOIN journal_entries je ON je.id = t.entry_id
@@ -39699,19 +39924,19 @@ async function approveRequest(id) {
 }
 async function rejectRequest(id, reason) {
   await assertAdmin2();
-  const clean6 = String(reason || "").trim();
-  if (!clean6) throw new Error("A reason is required to reject");
+  const clean7 = String(reason || "").trim();
+  if (!clean7) throw new Error("A reason is required to reject");
   const req = await loadPending(id);
   const u = getCurrentUser();
   await getClient().execute({
     sql: `UPDATE approval_requests SET status = 'rejected', decided_by = ?, decided_by_name = ?,
           decided_at = datetime('now'), reason = ? WHERE id = ?`,
-    args: [u.id ?? null, u.username || null, clean6, id]
+    args: [u.id ?? null, u.username || null, clean7, id]
   });
   await notify(
     [Number(req.requested_by)],
     `Your ${wordFor(String(req.table_name))} was not added`,
-    `${String(req.label || "").trim() || `The ${wordFor(String(req.table_name))} you added`} \u2014 ${clean6}`,
+    `${String(req.label || "").trim() || `The ${wordFor(String(req.table_name))} you added`} \u2014 ${clean7}`,
     `done:${id}`
   );
   return { id };
@@ -40750,7 +40975,7 @@ async function recordAudit(channel, args, result) {
   );
 }
 function registerIpc() {
-  const READONLY = /:list$|:get$|:items$|:issuances$|:sheet$|:outstanding$|:all$|:summary$|:transfers$|:fyTaxable$|:needs$|:breakdown$|:nextNo$|:liveUsers$|:ips$|:logs$|:dispatchableSales$|:mine$|:pendingCount$|:pending$|:lots$|:unmapped$|:unmappedCount$|:bargainLines$|:bargainNotes$|:bargainInterest$|:consignmentDraws$|^access:heartbeat$|^db:ping$|^db:snapshot$|^app:revision$|^auth:login$|^journal:booksFrom$|^tally:map$|^journal:openings$|^journal:opening$|^journal:accounts$|^journal:statement$|^journal:splitNames$|^journal:mergePreview$|^journal:provisional$|^journal:trialBalance$|^journal:groups$|^journal:groupNames$|^journal:groupTree$|^journal:ledgerMap$|^journal:pendingRefs$|^journal:billsOutstanding$|^journal:tradingAccount$|^dashboard:stats$|^vouchers:nextCode$|^vouchers:forDocument$|^vouchers:alterInfo$|^tfreight:kpis$|^dashboard:position$|^dashboard:layout$|^dashboard:saveLayout$|^productMerge:preview$|^skuRates:parties$|^skuRates:partyCounts$|^consignment:openingLog$|^tags:list$|^tags:for$|^tags:contents$|^consignment:openingLots$|^consignment:invoices$|^tankers:quality$|^tankers:qualityMany$|^tankers:ffaHistory$|^orders:quality$|^gate:partyCategories$|^gate:waivedOuts$|^gate:forRecord$|^notify:rules$|^notify:list$|^notify:run$|^notify:preview$|^notify:people$|^notify:mutes$|^treasury:alerts$|^treasury:paymentTracker$|^facility:exposures$|^facility:headroom$|^company:setActive$|^company:getActive$|^factory:active$|^factory:companies$|^session:setUser$|^lc:repayments$|^lc:parts$|^lc:parts$|^lc:allRepayments$|^lc:getLimit$|^lc:bankLimits$|^lc:commission$|^lc:commissionCandidates$|^lc:refund$|^lc:refundCandidates$|^journal:accountNames$|^lc:paymentIns$|^lc:openTradingInvoices$|^files:pickDocument$|^files:openDocument$|^bankRecon:imports$|^bankRecon:list$|^bankRecon:suggest$|^bd:kpis$|^bd:limits$|^skuStock:adjustments$|^skuOpening:list$|^skuOpening:date$|^stockCount:previous$|^orders:intercompanySource$|^stockOpening:list$|^stockOpening:date$|^stockOpening:sets$|^stockOpening:setLines$|^stockOpening:ppStages$|^stockOpening:ppFreeTotals$|^production:ppDraws$|^bargains:linkedInvoices$|^bargains:linkedVouchers$|^bargains:voucherChoices$|^salesBargains:linkedVouchers$|^salesBargains:voucherChoices$|^bargains:adjustments$|^history:list$|^stockOpening:ppVessels$|^stockOpening:ppReceivers$|^stockOpening:ppWriteoffs$|^work:board$|^work:cutoff$|^work:processes$|^formulationSubcategory:list$|^formulations:versions$|^facility:limitHistory$|^bd:limitReductions$|^bd:allRepayments$|^bd:interestSchedule$|^bd:interestWindow$|^bd:interestPayments$|^bd:linkedOrders$|^bd:salesInvoices$|^bd:parties$|^bd:allParties$|^bd:openTradingInvoices$|^bd:paymentIns$|^bd:partyPayments$|^bd:receiptParts$|^access:entryWindows$|^access:entityHistory$|^trading:list$|^sales:series$|^sales:invoiceGaps$|^salesBargains:returns$|^salesBargains:linkedInvoices$|^salesBargains:unattributedReturns$|^tbill:orphans$|^tbill:rcmRegister$|^production:report$|^production:mix$|^repairs:splitTanker:list$|^vouchers:cashflow$|^repairs:paisa:list$|^tallyNotes:(preview|salesCheck|salesPreview|registerCheck|registerPreview|health|batches|companyBanks|bankSuggest|bankCheck|bankPreview|drafts|bankBooks|bankBook)$|^sales:(tdsPreview|tdsMap|cancelledNos|shortageNotes|shortageNoteMap)$|^suppliers:tdsRecalc$/;
+  const READONLY = /:list$|:get$|:items$|:issuances$|:sheet$|:outstanding$|:all$|:summary$|:transfers$|:fyTaxable$|:needs$|:breakdown$|:nextNo$|:liveUsers$|:ips$|:logs$|:dispatchableSales$|:mine$|:pendingCount$|:pending$|:lots$|:unmapped$|:unmappedCount$|:bargainLines$|:bargainNotes$|:bargainInterest$|:consignmentDraws$|^access:heartbeat$|^db:ping$|^db:snapshot$|^app:revision$|^auth:login$|^journal:booksFrom$|^tally:map$|^journal:openings$|^journal:opening$|^journal:accounts$|^journal:statement$|^journal:splitNames$|^journal:mergePreview$|^journal:provisional$|^journal:trialBalance$|^journal:groups$|^journal:groupNames$|^journal:groupTree$|^journal:ledgerMap$|^journal:pendingRefs$|^journal:billsOutstanding$|^journal:tradingAccount$|^dashboard:stats$|^vouchers:nextCode$|^vouchers:forDocument$|^vouchers:subtypes$|^vouchers:alterInfo$|^tfreight:kpis$|^dashboard:position$|^dashboard:layout$|^dashboard:saveLayout$|^productMerge:preview$|^skuRates:parties$|^skuRates:partyCounts$|^consignment:openingLog$|^tags:list$|^tags:for$|^tags:contents$|^consignment:openingLots$|^consignment:invoices$|^tankers:quality$|^tankers:qualityMany$|^tankers:ffaHistory$|^orders:quality$|^gate:partyCategories$|^gate:waivedOuts$|^gate:forRecord$|^notify:rules$|^notify:list$|^notify:run$|^notify:preview$|^notify:people$|^notify:mutes$|^treasury:alerts$|^treasury:paymentTracker$|^facility:exposures$|^facility:headroom$|^company:setActive$|^company:getActive$|^factory:active$|^factory:companies$|^session:setUser$|^lc:repayments$|^lc:parts$|^lc:parts$|^lc:allRepayments$|^lc:getLimit$|^lc:bankLimits$|^lc:commission$|^lc:commissionCandidates$|^lc:refund$|^lc:refundCandidates$|^journal:accountNames$|^lc:paymentIns$|^lc:openTradingInvoices$|^files:pickDocument$|^files:openDocument$|^bankRecon:imports$|^bankRecon:list$|^bankRecon:suggest$|^bd:kpis$|^bd:limits$|^skuStock:adjustments$|^skuOpening:list$|^skuOpening:date$|^stockCount:previous$|^orders:intercompanySource$|^stockOpening:list$|^stockOpening:date$|^stockOpening:sets$|^stockOpening:setLines$|^stockOpening:ppStages$|^stockOpening:ppFreeTotals$|^production:ppDraws$|^bargains:linkedInvoices$|^bargains:linkedVouchers$|^bargains:voucherChoices$|^salesBargains:linkedVouchers$|^salesBargains:voucherChoices$|^bargains:adjustments$|^history:list$|^stockOpening:ppVessels$|^stockOpening:ppReceivers$|^stockOpening:ppWriteoffs$|^work:board$|^work:cutoff$|^work:processes$|^formulationSubcategory:list$|^formulations:versions$|^facility:limitHistory$|^bd:limitReductions$|^bd:allRepayments$|^bd:interestSchedule$|^bd:interestWindow$|^bd:interestPayments$|^bd:linkedOrders$|^bd:salesInvoices$|^bd:parties$|^bd:allParties$|^bd:openTradingInvoices$|^bd:paymentIns$|^bd:partyPayments$|^bd:receiptParts$|^access:entryWindows$|^access:entityHistory$|^trading:list$|^sales:series$|^sales:invoiceGaps$|^salesBargains:returns$|^salesBargains:linkedInvoices$|^salesBargains:unattributedReturns$|^tbill:orphans$|^tbill:rcmRegister$|^production:report$|^production:mix$|^repairs:splitTanker:list$|^vouchers:cashflow$|^repairs:paisa:list$|^tallyNotes:(preview|salesCheck|salesPreview|registerCheck|registerPreview|health|batches|companyBanks|bankSuggest|bankCheck|bankPreview|drafts|bankBooks|bankBook)$|^sales:(tdsPreview|tdsMap|cancelledNos|shortageNotes|shortageNoteMap)$|^suppliers:tdsRecalc$/;
   const AUDIT_SKIP = /* @__PURE__ */ new Set(["config:get", "config:save", "session:setUser"]);
   const handle = (channel, fn) => {
     ipcMain.handle(channel, async (e, args) => {
@@ -41071,6 +41296,10 @@ function registerIpc() {
   );
   handle("tallyNotes:health", (_e, { values }) => tallyHealth(values));
   handle("tallyNotes:link", (_e, { values }) => saveTallyLink(values));
+  handle(
+    "tallyNotes:bankSettleDiff",
+    async (_e, { values }) => (await Promise.resolve().then(() => (init_tallyBank(), tallyBank_exports))).settleTallyBankDifference(values)
+  );
   handle("tallyNotes:unlink", (_e, { values }) => removeTallyLink(values));
   handle("tallyNotes:batches", (_e, { values }) => listTallyBatches(values));
   handle("tallyNotes:undoBatch", (_e, { values }) => undoTallyBatch(values));
@@ -41235,6 +41464,15 @@ function registerIpc() {
     return cashflowRegister2(args?.from, args?.to, args?.companyId);
   });
   handle("vouchers:get", (_e, { id }) => getVoucher(id));
+  handle(
+    "vouchers:setLineSplits",
+    async (_e, { lineId, splits }) => (await Promise.resolve().then(() => (init_accounting(), accounting_exports))).setLineSplits(Number(lineId), splits || [])
+  );
+  handle("vouchers:subtypes", async () => (await Promise.resolve().then(() => (init_voucherSubtypes(), voucherSubtypes_exports))).listVoucherSubtypes());
+  handle("vouchers:subtypeCreate", async (_e, { values }) => (await Promise.resolve().then(() => (init_voucherSubtypes(), voucherSubtypes_exports))).createVoucherSubtype(values));
+  handle("vouchers:subtypeRename", async (_e, { values }) => (await Promise.resolve().then(() => (init_voucherSubtypes(), voucherSubtypes_exports))).renameVoucherSubtype(values));
+  handle("vouchers:subtypeDelete", async (_e, { id }) => (await Promise.resolve().then(() => (init_voucherSubtypes(), voucherSubtypes_exports))).deleteVoucherSubtype(Number(id)));
+  handle("vouchers:subtypeSet", async (_e, { values }) => (await Promise.resolve().then(() => (init_voucherSubtypes(), voucherSubtypes_exports))).setVoucherSubtype(values));
   handle(
     "vouchers:forDocument",
     (_e, { entity, id }) => documentPostings({ entity, id })
