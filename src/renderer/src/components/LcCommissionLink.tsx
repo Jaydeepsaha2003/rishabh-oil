@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import { toast } from 'sonner'
-import { Link2, Search, Unlink } from 'lucide-react'
+import { AlertTriangle, Link2, Search, Unlink } from 'lucide-react'
 import { errText, formatDate, formatINR } from '@/lib/format'
 import { cn } from '@/lib/utils'
 
@@ -235,13 +235,28 @@ export function LcCommissionLink({
           </button>
         </div>
       ) : !picking ? (
-        <button
-          type="button"
-          onClick={() => setPicking(true)}
-          className="flex items-center justify-center gap-1.5 rounded-[6px] border border-dashed border-[#9FB6A6] bg-white px-3 py-2.5 text-[12.5px] font-bold text-[#0B3D2E] hover:bg-[#F1F8EC]"
-        >
-          <Link2 className="h-4 w-4" /> {refund ? 'Link the bank receipt the refund came in by' : 'Link the bank voucher the commission was taken by'}
-        </button>
+        // NOTHING LINKED YET — said as something missing, not a quiet dashed
+        // box: the comparison above cannot be made until it is done.
+        <div className="flex min-w-0 flex-wrap items-center gap-3 rounded-[6px] border border-[#E8B44C] border-l-4 border-l-[#D98E04] bg-[#FFF6E3] px-3 py-2.5">
+          <AlertTriangle className="h-5 w-5 flex-none text-[#C27C00]" />
+          <span className="min-w-[160px] flex-1">
+            <span className="block text-[12.5px] font-extrabold text-[#6B4300]">
+              {refund ? 'Refund receipt not linked' : 'Commission voucher not linked'}
+            </span>
+            <span className="block text-[11px] font-semibold leading-[1.45] text-[#8A5A00]">
+              {refund
+                ? 'Link the bank receipt it came in by to check it against what should come back.'
+                : 'Link the bank voucher it was taken by to check it against the calculated figure.'}
+            </span>
+          </span>
+          <button
+            type="button"
+            onClick={() => setPicking(true)}
+            className="flex flex-none items-center gap-1.5 rounded-[4px] bg-[#0B3D2E] px-3.5 py-2 text-[12px] font-extrabold text-[#C7F03F] shadow-[0_1px_2px_rgba(10,31,23,.25)] hover:bg-[#0F5440]"
+          >
+            <Link2 className="h-4 w-4" /> {refund ? 'Link receipt' : 'Link voucher'}
+          </button>
+        </div>
       ) : (
         <div className="min-w-0 overflow-hidden rounded-[6px] border border-[#DCE7DB] bg-white">
           <div className="flex items-center gap-2 border-b border-[#EAF0E9] px-3 py-2">
