@@ -1,12 +1,11 @@
 import { useEffect, useState } from 'react'
-import { isSubLedger, isTradingLink } from '@/lib/mainParty'
 import { SubLedgersPanel } from '@/components/SubLedgersPanel'
 import { PageHeader } from '@/components/PageHeader'
 import { EntityManager, type ColumnDef, type FieldDef } from '@/components/EntityManager'
 import { loadUser } from '@/lib/session'
 import { canWrite } from '@/lib/modules'
 import { useCategories } from '@/lib/useCategories'
-import { COMPANY_TYPES, BUSINESS_TYPES, isTradingParty } from '@/lib/constants'
+import { COMPANY_TYPES, BUSINESS_TYPES } from '@/lib/constants'
 import { useCompany } from '@/lib/companyContext'
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -86,11 +85,14 @@ export function Customers(): React.JSX.Element {
     .map((c) => ({ value: String(c.id), label: c.name }))
   // Sub-ledgers (same kind, a branch) and the trading counterpart (a Trading
   // party linked to a Manufacturing one) are told apart — lib/mainParty.ts.
-  const subCount = new Map<string, number>()
-  for (const c of allCustomers) if (isSubLedger(c)) subCount.set(String(c.linked_party_id), (subCount.get(String(c.linked_party_id)) || 0) + 1)
-  const tradingOf = new Map<string, string>()
-  for (const c of allCustomers) if (isTradingLink(c)) tradingOf.set(String(c.linked_party_id), String(c.name))
+  // ONE ROW PER PARTY: a party's linked ledgers — branch sub-ledgers and its
+  // Trading/Manufacturing counterpart alike — are kept out of the list and
+  // managed in its window; the row names every type the family deals in.
   const nameById = new Map(allCustomers.map((c) => [String(c.id), c.name]))
+  const familyOf = new Map<string, Row[]>()
+  for (const c of allCustomers) if (c.linked_party_id) familyOf.set(String(c.linked_party_id), [...(familyOf.get(String(c.linked_party_id)) || []), c])
+  const hideRow = (r: Row): boolean => !!r.linked_party_id && nameById.has(String(r.linked_party_id))
+  const searchText = (r: Row): string => (familyOf.get(String(r.id)) || []).map((x) => String(x.name || '')).join(' ')
 
   const { companies, companyId } = useCompany()
   const coName = String(companies.find((c) => Number(c.id) === Number(companyId))?.name || 'this company')
@@ -106,17 +108,7 @@ export function Customers(): React.JSX.Element {
       ? {
           ...c,
           value: (row: Row) =>
-            row.linked_party_id && nameById.get(String(row.linked_party_id))
-              ? isTradingLink(row)
-                ? `${row.business_type} · trading party of ${nameById.get(String(row.linked_party_id))}`
-                : `${row.business_type} · sub-ledger of ${nameById.get(String(row.linked_party_id))}`
-              : [
-                  String(row.business_type || ''),
-                  subCount.get(String(row.id)) ? `main party · ${subCount.get(String(row.id))} sub-ledger${subCount.get(String(row.id)) === 1 ? '' : 's'}` : '',
-                  tradingOf.get(String(row.id)) ? `trading: ${tradingOf.get(String(row.id))}` : ''
-                ]
-                  .filter(Boolean)
-                  .join(' · ')
+            Array.from(new Set([row, ...(familyOf.get(String(row.id)) || [])].map((x) => String(x.business_type || '').trim()).filter(Boolean))).join(' · ')
         }
       : c
   )
@@ -131,14 +123,11 @@ export function Customers(): React.JSX.Element {
           renderDrawerExtra={({ editingId, form, reload }) =>
             // A main party's window lists and manages its sub-ledgers.
             editingId != null && !form.linked_party_id ? (
-              <>
-                <SubLedgersPanel kind="sub" table="customers" mainId={editingId} mainForm={form} readOnly={!canWrite(loadUser(), 'customers')} onChanged={() => { reload(); void window.api.data.list('customers').then(setAllCustomers).catch(() => undefined) }} />
-                {!isTradingParty(form) && (
-                  <SubLedgersPanel kind="trading" table="customers" mainId={editingId} mainForm={form} readOnly={!canWrite(loadUser(), 'customers')} onChanged={() => { reload(); void window.api.data.list('customers').then(setAllCustomers).catch(() => undefined) }} />
-                )}
-              </>
+              <SubLedgersPanel table="customers" mainId={editingId} mainForm={form} readOnly={!canWrite(loadUser(), 'customers')} onChanged={() => { reload(); void window.api.data.list('customers').then(setAllCustomers).catch(() => undefined) }} />
             ) : null
           }
+          hideRow={hideRow}
+          searchText={searchText}
           title="Customer"
           fields={fields}
           columns={columns}

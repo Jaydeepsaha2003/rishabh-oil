@@ -185,6 +185,10 @@ interface Props {
   // More to show inside the edit window, under the fields — the record being
   // edited (null id for a new one), its form, and a way to refresh the list.
   renderDrawerExtra?: (ctx: { editingId: number | null; form: Row; reload: () => void }) => React.ReactNode
+  // Rows kept out of the list (a party's sub-ledgers, shown inside its main
+  // party's window instead), and extra text a row is found by in the search.
+  hideRow?: (r: Row) => boolean
+  searchText?: (r: Row) => string
 }
 
 /** What clicking this header will do next, in words. */
@@ -209,9 +213,12 @@ export function EntityManager({
   importable = false,
   onSaved,
   drawerWidth = 520,
-  renderDrawerExtra
+  renderDrawerExtra,
+  hideRow,
+  searchText
 }: Props): React.JSX.Element {
-  const [rows, setRows] = useState<Row[]>([])
+  const [allRows, setRows] = useState<Row[]>([])
+  const rows = useMemo(() => (hideRow ? allRows.filter((r) => !hideRow(r)) : allRows), [allRows, hideRow])
   // Phone width on the website swaps the register for cards — see below.
   const isMobile = useIsMobile()
 
@@ -235,7 +242,9 @@ export function EntityManager({
   const shownRows = useMemo(() => {
     const q = search.trim().toLowerCase()
     if (!q) return rows
-    return rows.filter((r) => columns.some((c) => String(r[c.key] ?? '').toLowerCase().includes(q)))
+    return rows.filter(
+      (r) => columns.some((c) => String(r[c.key] ?? '').toLowerCase().includes(q)) || (!!searchText && searchText(r).toLowerCase().includes(q))
+    )
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [rows, search])
   // Excel-style per-column filters, on the columns that ask for one. Keyed by

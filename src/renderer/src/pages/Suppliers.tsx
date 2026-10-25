@@ -1,12 +1,11 @@
 import { useEffect, useState } from 'react'
-import { isSubLedger, isTradingLink } from '@/lib/mainParty'
 import { SubLedgersPanel } from '@/components/SubLedgersPanel'
 import { PageHeader } from '@/components/PageHeader'
 import { EntityManager, type ColumnDef, type FieldDef } from '@/components/EntityManager'
 import { loadUser } from '@/lib/session'
 import { canWrite } from '@/lib/modules'
 import { useCategories } from '@/lib/useCategories'
-import { COMPANY_TYPES, BUSINESS_TYPES, isTradingParty } from '@/lib/constants'
+import { COMPANY_TYPES, BUSINESS_TYPES } from '@/lib/constants'
 import { useCompany } from '@/lib/companyContext'
 import { TdsRecalcDialog } from '@/components/TdsRecalcDialog'
 
@@ -101,11 +100,14 @@ export function Suppliers(): React.JSX.Element {
     .map((s) => ({ value: String(s.id), label: s.name }))
   // Sub-ledgers (same kind, a branch) and the trading counterpart (a Trading
   // party linked to a Manufacturing one) are told apart — lib/mainParty.ts.
-  const subCount = new Map<string, number>()
-  for (const s of allSuppliers) if (isSubLedger(s)) subCount.set(String(s.linked_party_id), (subCount.get(String(s.linked_party_id)) || 0) + 1)
-  const tradingOf = new Map<string, string>()
-  for (const s of allSuppliers) if (isTradingLink(s)) tradingOf.set(String(s.linked_party_id), String(s.name))
+  // ONE ROW PER PARTY: a party's linked ledgers — branch sub-ledgers and its
+  // Trading/Manufacturing counterpart alike — are kept out of the list and
+  // managed in its window; the row names every type the family deals in.
   const nameById = new Map(allSuppliers.map((s) => [String(s.id), s.name]))
+  const familyOf = new Map<string, Row[]>()
+  for (const s of allSuppliers) if (s.linked_party_id) familyOf.set(String(s.linked_party_id), [...(familyOf.get(String(s.linked_party_id)) || []), s])
+  const hideRow = (r: Row): boolean => !!r.linked_party_id && nameById.has(String(r.linked_party_id))
+  const searchText = (r: Row): string => (familyOf.get(String(r.id)) || []).map((x) => String(x.name || '')).join(' ')
 
   // The purchase bill amount is the open company's own (partyOpenings.ts):
   // the label says which, and the editor reloads when the company changes.
@@ -132,18 +134,9 @@ export function Suppliers(): React.JSX.Element {
       ? {
           ...c,
           value: (row: Row) =>
-            row.linked_party_id && nameById.get(String(row.linked_party_id))
-              ? isTradingLink(row)
-                ? `${row.business_type} · trading party of ${nameById.get(String(row.linked_party_id))}`
-                : `${row.business_type} · sub-ledger of ${nameById.get(String(row.linked_party_id))}`
-              : [
-                  String(row.business_type || ''),
-                  subCount.get(String(row.id)) ? `main party · ${subCount.get(String(row.id))} sub-ledger${subCount.get(String(row.id)) === 1 ? '' : 's'}` : '',
-                  tradingOf.get(String(row.id)) ? `trading: ${tradingOf.get(String(row.id))}` : ''
-                ]
-                  .filter(Boolean)
-                  .join(' · '),
-          badge: (row: Row) => purchaseCounts[String(row.id)] ?? 0,
+            Array.from(new Set([row, ...(familyOf.get(String(row.id)) || [])].map((x) => String(x.business_type || '').trim()).filter(Boolean))).join(' · '),
+          // The family's purchases together — it is one row now.
+          badge: (row: Row) => [row, ...(familyOf.get(String(row.id)) || [])].reduce((t, x) => t + (purchaseCounts[String(x.id)] ?? 0), 0),
           badgeTitle: 'Purchase entries booked with this supplier (all companies)'
         }
       : c
@@ -159,14 +152,11 @@ export function Suppliers(): React.JSX.Element {
           renderDrawerExtra={({ editingId, form, reload }) =>
             // A main party's window lists and manages its sub-ledgers.
             editingId != null && !form.linked_party_id ? (
-              <>
-                <SubLedgersPanel kind="sub" table="suppliers" mainId={editingId} mainForm={form} readOnly={!canWrite(loadUser(), 'suppliers')} onChanged={() => { reload(); void window.api.data.list('suppliers').then(setAllSuppliers).catch(() => undefined) }} />
-                {!isTradingParty(form) && (
-                  <SubLedgersPanel kind="trading" table="suppliers" mainId={editingId} mainForm={form} readOnly={!canWrite(loadUser(), 'suppliers')} onChanged={() => { reload(); void window.api.data.list('suppliers').then(setAllSuppliers).catch(() => undefined) }} />
-                )}
-              </>
+              <SubLedgersPanel table="suppliers" mainId={editingId} mainForm={form} readOnly={!canWrite(loadUser(), 'suppliers')} onChanged={() => { reload(); void window.api.data.list('suppliers').then(setAllSuppliers).catch(() => undefined) }} />
             ) : null
           }
+          hideRow={hideRow}
+          searchText={searchText}
           title="Supplier"
           fields={fields}
           columns={columns}
