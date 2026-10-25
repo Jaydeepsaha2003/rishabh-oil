@@ -191,6 +191,8 @@ interface Props {
   searchText?: (r: Row) => string
 }
 
+const WIDE_FIELDS = new Set(['name', 'note', 'notes', 'address', 'remarks'])
+
 /** What clicking this header will do next, in words. */
 function sortTitle(label: string, active: boolean, dir: 'asc' | 'desc'): string {
   if (!active) return `Sort by ${label}`
@@ -221,6 +223,9 @@ export function EntityManager({
   const rows = useMemo(() => (hideRow ? allRows.filter((r) => !hideRow(r)) : allRows), [allRows, hideRow])
   // Phone width on the website swaps the register for cards — see below.
   const isMobile = useIsMobile()
+  // A wide window lays its fields out two to a row (2×2), the name and notes
+  // across both columns.
+  const twoCol = __WEB__ && !isMobile && drawerWidth >= 700
 
   // Names already taken, and the ones duplicated in the data as it stands.
   //
@@ -1088,15 +1093,16 @@ export function EntityManager({
           </DialogHeader>
           <div
             className={cn(
+              twoCol && '!grid-cols-2 !gap-x-4',
               'grid max-h-[60vh] grid-cols-[minmax(0,1fr)] gap-3 overflow-y-auto overflow-x-hidden py-2 pr-1 [&_label]:whitespace-normal',
               __WEB__ &&
-                '!max-h-none min-h-0 flex-1 content-start !gap-[18px] bg-[#F1F5EF] !p-[22px] [&_input]:!h-[50px] [&_input]:!rounded-[4px] [&_input]:!border-[#C3D2C6] [&_input]:!bg-white [&_input]:!text-[15px] [&_[data-slot=select-trigger]]:!h-[50px] [&_[data-slot=select-trigger]]:!rounded-[4px] [&_[data-slot=select-trigger]]:!border-[#C3D2C6] [&_[data-slot=select-trigger]]:!bg-white [&_[data-slot=date-picker]]:!h-[50px] [&_[data-slot=date-picker]]:!rounded-[4px] [&_[data-slot=date-picker]]:!border-[#C3D2C6] [&_[data-slot=date-picker]]:!bg-white [&_label]:!text-[9.5px] [&_label]:!font-extrabold [&_label]:!uppercase [&_label]:!tracking-[.13em] [&_label]:!text-[#5A6B62]'
+                '!max-h-none min-h-0 flex-1 content-start !gap-[18px] bg-[#F1F5EF] !p-[22px] [&_input]:!h-[46px] [&_[data-slot=select-trigger]]:!justify-between [&_[data-slot=select-trigger]]:!text-left [&_[data-slot=select-trigger]>span]:!text-left [&_[data-slot=select-trigger]]:!text-[14px] [&_[data-slot=select-trigger]]:!font-semibold [&_input]:!rounded-[4px] [&_input]:!border-[#C3D2C6] [&_input]:!bg-white [&_input]:!text-[15px] [&_[data-slot=select-trigger]]:!h-[46px] [&_[data-slot=select-trigger]]:!rounded-[4px] [&_[data-slot=select-trigger]]:!border-[#C3D2C6] [&_[data-slot=select-trigger]]:!bg-white [&_[data-slot=date-picker]]:!h-[46px] [&_[data-slot=date-picker]]:!rounded-[4px] [&_[data-slot=date-picker]]:!border-[#C3D2C6] [&_[data-slot=date-picker]]:!bg-white [&_label]:!text-[9.5px] [&_label]:!font-extrabold [&_label]:!uppercase [&_label]:!tracking-[.13em] [&_label]:!text-[#5A6B62]'
             )}
           >
             {fields.map((fd) => {
               const fieldDisabled = fd.enabledWhen ? !fd.enabledWhen(form) : false
               return (
-                <div key={fd.key} className={cn('flex min-w-0 flex-col gap-1.5', fieldDisabled && 'opacity-50')}>
+                <div key={fd.key} className={cn('flex min-w-0 flex-col gap-1.5', fieldDisabled && 'opacity-50', twoCol && WIDE_FIELDS.has(fd.key) && 'col-span-full')}>
                   {fd.type === 'computed' ? (
                     <>
                       <Label>{fd.label}</Label>
@@ -1105,7 +1111,12 @@ export function EntityManager({
                       </div>
                     </>
                   ) : fd.type === 'switch' ? (
-                    <div className="flex items-center justify-between rounded-md border px-3 py-2">
+                    <div
+                      className={cn(
+                        'flex items-center justify-between rounded-md border px-3 py-2',
+                        __WEB__ && '!min-h-[46px] !rounded-[4px] !border-[#C3D2C6] !bg-white'
+                      )}
+                    >
                       <Label>{fd.label}</Label>
                       <Switch
                         checked={!!form[fd.key]}
@@ -1320,7 +1331,8 @@ export function EntityManager({
                 </div>
               )
             })}
-            {renderDrawerExtra?.({ editingId, form, reload: () => void load(true) })}
+            {/* Full width under the fields, whatever the column count. */}
+            {renderDrawerExtra && <div className="col-span-full min-w-0 empty:hidden">{renderDrawerExtra({ editingId, form, reload: () => void load(true) })}</div>}
           </div>
           {nameBlocked && (
             <p className="flex items-center gap-1.5 rounded-md border border-red-300 bg-red-50 px-3 py-2 text-sm text-red-700">
