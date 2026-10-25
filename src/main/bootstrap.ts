@@ -3313,6 +3313,9 @@ export async function runStartupTasks(): Promise<void> {
  * nothing once recorded, and this is a safety net rather than a replacement.
  */
 const REQUIRED_COLUMNS: { table: string; column: string; type: string }[] = [
+  // The bank receipt an LC's preclosure interest refund came back by — linked
+  // from the LC panel (lc.ts linkLcRefund). Shown, never posted.
+  { table: 'letters_of_credit', column: 'refund_voucher_id', type: 'INTEGER' },
   // PENALTY INTEREST — the NBFC's rate for days a bill runs past maturity
   // unpaid, and what a late repayment paid of it (repayBd).
   { table: 'nbfcs', column: 'penalty_pct', type: 'REAL' },

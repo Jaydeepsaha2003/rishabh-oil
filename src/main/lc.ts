@@ -671,20 +671,25 @@ export async function lcCommission(lcId: number): Promise<Row> {
   }
 }
 
-/** One voucher, as the commission panel shows it: what left the bank on it. */
-async function voucherBrief(entryId: number): Promise<Row | null> {
+/**
+ * One voucher, as the commission / refund panels show it: what left the bank
+ * on it ('out', the commission) or what came into it ('in', a refund).
+ */
+async function voucherBrief(entryId: number, dir: 'out' | 'in' = 'out'): Promise<Row | null> {
   const BANKS = "('Bank Accounts', 'Bank OD A/c', 'Cash-in-Hand')"
+  const side = dir === 'in' ? 'dr' : 'cr'
+  const other = dir === 'in' ? 'cr' : 'dr'
   const r = (
     await getClient().execute({
       sql: `SELECT je.id, je.entry_date, je.vch_type, je.vch_no, je.narration, je.company_id,
                    (SELECT nn.prefix || '/' || nn.serial FROM voucher_numbers nn WHERE nn.entry_id = je.id) AS code,
-                   (SELECT ROUND(SUM(jl.cr), 2) FROM journal_lines jl JOIN ledger_accounts a ON a.id = jl.account_id
+                   (SELECT ROUND(SUM(jl.${side}), 2) FROM journal_lines jl JOIN ledger_accounts a ON a.id = jl.account_id
                      WHERE jl.entry_id = je.id AND a.acc_group IN ${BANKS}) AS amount,
                    (SELECT a.name FROM journal_lines jl JOIN ledger_accounts a ON a.id = jl.account_id
-                     WHERE jl.entry_id = je.id AND jl.cr > 0 AND a.acc_group IN ${BANKS}
-                     ORDER BY jl.cr DESC LIMIT 1) AS bank,
+                     WHERE jl.entry_id = je.id AND jl.${side} > 0 AND a.acc_group IN ${BANKS}
+                     ORDER BY jl.${side} DESC LIMIT 1) AS bank,
                    (SELECT GROUP_CONCAT(a.name, ', ') FROM journal_lines jl JOIN ledger_accounts a ON a.id = jl.account_id
-                     WHERE jl.entry_id = je.id AND jl.dr > 0) AS debited
+                     WHERE jl.entry_id = je.id AND jl.${other} > 0) AS debited
               FROM journal_entries je WHERE je.id = ?`,
       args: [n(entryId)]
     })
@@ -748,6 +753,79 @@ export async function linkLcCommission(lcId: number, entryId: number | null): Pr
     if (taken) throw new Error(`That voucher is already linked as LC ${String(taken.lc_no || '')}'s commission`)
   }
   await c.execute({ sql: 'UPDATE letters_of_credit SET commission_voucher_id = ? WHERE id = ?', args: [entryId ? n(entryId) : null, n(lcId)] })
+  return { id: n(lcId) }
+}
+
+// THE BANK'S INTEREST REFUND ON A PRECLOSED LC.
+//
+// Closed before maturity, the bank gives back the interest for the days it
+// never ran (preclose_premature_interest, when it is credited to us). It comes
+// in by a bank receipt — usually booked from Tally — which is linked here to
+// set what came back against what should have. Nothing is posted.
+export async function lcRefund(lcId: number): Promise<Row> {
+  const c = getClient()
+  const l = (
+    await c.execute({
+      sql: 'SELECT id, preclosed_date, expiry_date, preclose_premature_interest, preclose_interest_route, refund_voucher_id FROM letters_of_credit WHERE id = ?',
+      args: [n(lcId)]
+    })
+  ).rows[0] as unknown as Row | undefined
+  if (!l) throw new Error('That LC no longer exists')
+  const toUs = String(l.preclose_interest_route || 'credit_to_us') !== 'pay_to_party'
+  const expected = l.preclose_premature_interest == null || !toUs ? null : round2(n(l.preclose_premature_interest))
+  const voucher = n(l.refund_voucher_id) ? await voucherBrief(n(l.refund_voucher_id), 'in') : null
+  return {
+    preclosed_date: l.preclosed_date ? String(l.preclosed_date).slice(0, 10) : null,
+    to_us: toUs,
+    expected,
+    voucher,
+    received: voucher ? n(voucher.amount) : null,
+    difference: voucher && expected != null ? round2(n(voucher.amount) - expected) : null
+  }
+}
+
+/** Bank receipts that could be the refund: money into a bank from a fortnight before the closure on. */
+export async function lcRefundCandidates(lcId: number, q?: string): Promise<Row[]> {
+  const c = getClient()
+  const l = (
+    await c.execute({ sql: 'SELECT id, company_id, preclosed_date, preclose_premature_interest FROM letters_of_credit WHERE id = ?', args: [n(lcId)] })
+  ).rows[0] as unknown as Row | undefined
+  if (!l) throw new Error('That LC no longer exists')
+  const expected = round2(n(l.preclose_premature_interest))
+  const from = String(l.preclosed_date || '').slice(0, 10)
+  const like = `%${String(q || '').trim().toUpperCase()}%`
+  const res = await c.execute({
+    sql: `SELECT je.id FROM journal_entries je
+           WHERE je.company_id = ?
+             ${from ? "AND je.entry_date >= date(?, '-15 days')" : ''}
+             AND EXISTS (SELECT 1 FROM journal_lines jl JOIN ledger_accounts a ON a.id = jl.account_id
+                          WHERE jl.entry_id = je.id AND jl.dr > 0 AND a.acc_group IN ('Bank Accounts', 'Bank OD A/c'))
+             AND NOT EXISTS (SELECT 1 FROM letters_of_credit x WHERE x.refund_voucher_id = je.id AND x.id <> ?)
+             AND (? = '%%' OR UPPER(COALESCE(je.narration, '') || ' ' || COALESCE(je.vch_no, '')) LIKE ?)
+           ORDER BY je.entry_date DESC, je.id DESC LIMIT 400`,
+    args: [n(l.company_id), ...(from ? [from] : []), n(lcId), like, like]
+  })
+  const out: Row[] = []
+  for (const r of res.rows as unknown as Row[]) {
+    const v = await voucherBrief(n(r.id), 'in')
+    if (v && n(v.amount) > 0) out.push(v)
+  }
+  return out.sort((a, b) => Math.abs(n(a.amount) - expected) - Math.abs(n(b.amount) - expected)).slice(0, 40)
+}
+
+/** Link (or, with no voucher, unlink) the bank receipt the interest refund came back by. */
+export async function linkLcRefund(lcId: number, entryId: number | null): Promise<{ id: number }> {
+  const c = getClient()
+  const l = (await c.execute({ sql: 'SELECT id, company_id FROM letters_of_credit WHERE id = ?', args: [n(lcId)] })).rows[0] as unknown as Row | undefined
+  if (!l) throw new Error('That LC no longer exists')
+  if (entryId) {
+    const v = await voucherBrief(n(entryId), 'in')
+    if (!v) throw new Error('That voucher no longer exists')
+    if (n(v.company_id) !== n(l.company_id)) throw new Error("That voucher is in another company's books")
+    const taken = (await c.execute({ sql: 'SELECT lc_no FROM letters_of_credit WHERE refund_voucher_id = ? AND id <> ?', args: [n(entryId), n(lcId)] })).rows[0] as unknown as Row | undefined
+    if (taken) throw new Error(`That receipt is already linked as LC ${String(taken.lc_no || '')}'s refund`)
+  }
+  await c.execute({ sql: 'UPDATE letters_of_credit SET refund_voucher_id = ? WHERE id = ?', args: [entryId ? n(entryId) : null, n(lcId)] })
   return { id: n(lcId) }
 }
 

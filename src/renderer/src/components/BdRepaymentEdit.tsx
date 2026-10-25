@@ -106,7 +106,7 @@ export function BdRepaymentEdit({
     void window.api.billDiscounting.list().then((b: Row[]) => setBills(Array.isArray(b) ? b : [])).catch(() => setBills([]))
     void window.api.billDiscounting.allRepayments().then((x: Row[]) => setAllReps(Array.isArray(x) ? x : [])).catch(() => setAllReps([]))
     void window.api.journal
-      .accounts()
+      .accountNames()
       .then((accts: Row[]) => {
         setBanks(accts.filter((a) => ['Bank Accounts', 'Bank OD A/c'].includes(String(a.acc_group || ''))).map((a) => String(a.name)))
       })

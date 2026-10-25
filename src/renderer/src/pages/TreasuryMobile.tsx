@@ -4660,7 +4660,7 @@ function BillForm({
   useEffect(() => {
     let gone = false
     void window.api.journal
-      .accounts()
+      .accountNames()
       .then((a) => !gone && setBankLedgers(a.filter((x) => ['Bank Accounts', 'Bank OD A/c'].includes(s(x.acc_group)))))
       .catch(() => undefined)
     return () => {

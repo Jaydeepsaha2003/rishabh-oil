@@ -138,7 +138,7 @@ function UpfrontInterestCard({ bill, onChanged }: { bill: Row; onChanged?: () =>
     if (recorded) return
     let gone = false
     void window.api.journal
-      .accounts()
+      .accountNames()
       .then((a) => !gone && setBanks(a.filter((x) => ['Bank Accounts', 'Bank OD A/c'].includes(s(x.acc_group)))))
       .catch(() => undefined)
     return () => {
@@ -262,7 +262,7 @@ function BankCard({ bill, repayments, onChanged }: { bill: Row; repayments?: Row
     void load()
     loadRefund()
     void window.api.journal
-      .accounts()
+      .accountNames()
       .then((a) => setBanks(a.filter((x) => CASH_BANK.includes(s(x.acc_group)))))
       .catch(() => undefined)
     // eslint-disable-next-line react-hooks/exhaustive-deps

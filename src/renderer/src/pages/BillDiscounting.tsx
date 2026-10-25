@@ -869,8 +869,8 @@ function RefundDueChip({ tot }: { tot?: { booked: number; refunded: number; due:
   return (
     <span
       className={cn(
-        'inline-flex items-center gap-1 rounded-[2px] border px-1.5 py-[1px] text-[10.5px] font-extrabold uppercase tracking-[.04em]',
-        owed ? 'border-[#F0C4C0] bg-[#FDECEA] text-[#B3261E]' : 'border-[#F0C4C0] bg-white text-[#B3261E]'
+        'inline-flex items-center gap-1 whitespace-nowrap rounded-[2px] border px-1 py-[1px] text-[9.5px] font-extrabold uppercase tracking-[.03em]',
+        owed ? 'border-[#F0C4C0] bg-[#FDECEA] text-[#B3261E]' : 'border-[#E8D9D7] bg-white text-[#8C2F26]'
       )}
       title={
         owed
@@ -878,12 +878,19 @@ function RefundDueChip({ tot }: { tot?: { booked: number; refunded: number; due:
           : `Paid ${formatINR(tot.booked)} over the balance — refunded in full.`
       }
     >
-      Excess paid {formatINR(tot.booked)}
-      <span className={cn('font-bold normal-case', owed ? '' : 'text-[#0B6B45]')}>
-        · {owed ? (tot.due < tot.booked - 0.004 ? `${formatINR(tot.due)} due` : 'refund due') : 'refunded'}
-      </span>
+      {/* Short on purpose: the figure in lakh, the state as one word; the
+          full amounts are on hover. */}
+      Excess {shortInr(tot.booked)}
+      <span className={cn('font-bold normal-case', owed ? '' : 'text-[#0B6B45]')}>{owed ? '· due' : '✓'}</span>
     </span>
   )
+}
+
+const shortInr = (v: number): string => {
+  const a = Math.abs(v)
+  if (a >= 1e7) return `₹${(v / 1e7).toFixed(2)}Cr`
+  if (a >= 1e5) return `₹${(v / 1e5).toFixed(2)}L`
+  return `₹${Math.round(v).toLocaleString('en-IN')}`
 }
 
 export function BillDiscounting({
@@ -2409,7 +2416,7 @@ export function BillDiscounting({
     if (!formOpen) return
     let gone = false
     void window.api.journal
-      .accounts()
+      .accountNames()
       .then((accts) => {
         if (gone) return
         setFormBanks(accts.filter((a) => ['Bank Accounts', 'Bank OD A/c'].includes(String(a.acc_group || ''))))
@@ -2467,7 +2474,7 @@ export function BillDiscounting({
       const [open, done, accts] = await Promise.all([
         window.api.billDiscounting.openTradingInvoices(Number(r.id)),
         window.api.billDiscounting.paymentIns(Number(r.id)),
-        window.api.journal.accounts(Number(r.company_id) || undefined).catch(() => [] as Row[])
+        window.api.journal.accountNames().catch(() => [] as Row[])
       ])
       // Only the accounts money can actually land in. Cash is on the list
       // because a receipt in cash is still a receipt, and it has to go

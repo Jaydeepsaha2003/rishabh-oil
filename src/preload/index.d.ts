@@ -251,6 +251,7 @@ export interface Api {
     saveOpenings: (rows: Row[], companyId?: number) => Promise<{ saved: number }>
     opening: (accountId: number, companyId?: number) => Promise<Row>
     accounts: (companyId?: number) => Promise<Row[]>
+    accountNames: () => Promise<Row[]>
     createAccount: (name: string, group?: string, companyId?: number) => Promise<{ id: number }>
     splitNames: () => Promise<string[]>
     statement: (accountId: number, companyId?: number) => Promise<Row[]>
@@ -613,6 +614,9 @@ export interface Api {
     commissionCandidates: (id: number, q?: string) => Promise<Row[]>
     setCommissionPct: (id: number, pct: number | null) => Promise<{ id: number }>
     linkCommission: (id: number, entryId: number | null) => Promise<{ id: number }>
+    refund: (id: number) => Promise<Row>
+    refundCandidates: (id: number, q?: string) => Promise<Row[]>
+    linkRefund: (id: number, entryId: number | null) => Promise<{ id: number }>
     saveLimit: (values: Row) => Promise<{ id: number }>
   }
   files: {

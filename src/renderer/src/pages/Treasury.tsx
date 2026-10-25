@@ -1226,7 +1226,7 @@ function ClosureBadge({ l, withDate }: { l: Row; withDate?: boolean }): React.JS
     return (
       <Badge
         variant="muted"
-        className="!border !border-[#BFE3F0] !bg-[#E8F6FB] !font-bold !text-[#0E5A78]"
+        className="!rounded-[2px] !border !border-[#BFE3F0] !bg-[#E8F6FB] !px-1.5 !font-bold !text-[#0E5A78]"
         title={`Wound up early on ${formatDate(l.preclosed_date)} — ${formatDate(l.expiry_date)} never came`}
       >
         Preclosed{on}
@@ -7098,7 +7098,10 @@ function TreasuryDesk({ onCompanyChange, focusLcId, focusBdId, onFocusHandled }:
                               ) : dRow.display_status === 'non_compliant' ? (
                       <Badge variant="destructive">Non-compliant</Badge>
                     ) : (
-                      <Badge variant={dRow.display_status === 'on_hold' ? 'warning' : 'success'} className="capitalize">
+                      <Badge
+                        variant={dRow.display_status === 'on_hold' ? 'warning' : 'success'}
+                        className={cn('capitalize', dRow.display_status === 'preclosed' && '!rounded-[2px] !border !border-[#BFE3F0] !bg-[#E8F6FB] !text-[#0E5A78]')}
+                      >
                         {String(dRow.display_status || 'in_progress').replace('_', ' ')}
                       </Badge>
                     )}
@@ -7225,6 +7228,13 @@ function TreasuryDesk({ onCompanyChange, focusLcId, focusBdId, onFocusHandled }:
                   {!!dRow.payment_received_date && (
                     <LcPanel title="Bank commission">
                       <LcCommissionLink lcId={Number(dRow.id)} onChanged={load} />
+                    </LcPanel>
+                  )}
+                  {/* THE INTEREST THE BANK GAVE BACK on a preclosure — the
+                      receipt it came in by, linked, against what it should be. */}
+                  {closureKind(dRow) === 'early' && (
+                    <LcPanel title="Interest refund">
+                      <LcCommissionLink kind="refund" lcId={Number(dRow.id)} onChanged={load} />
                     </LcPanel>
                   )}
                   {/* WHAT THE BANK CHARGED, AND ON WHAT. */}
