@@ -5593,7 +5593,7 @@ async function listGateEntries() {
            b.bargain_no, COALESCE(ds.name, s.name, dc.name) AS supplier_name,
            dc.name AS gate_customer_name,
            COALESCE(sl.invoice_no, (SELECT invoice_no FROM sales WHERE invoice_group = g.invoice_group LIMIT 1)) AS sale_invoice,
-           COALESCE((SELECT m.name FROM customers cc JOIN customers m ON m.id = COALESCE(cc.linked_party_id, cc.id) WHERE cc.id = COALESCE(sl.customer_id, (SELECT customer_id FROM sales WHERE invoice_group = g.invoice_group LIMIT 1))), sl.customer, (SELECT customer FROM sales WHERE invoice_group = g.invoice_group LIMIT 1)) AS sale_customer,
+           COALESCE((SELECT m.name FROM customers cc JOIN customers m ON m.id = CASE WHEN LOWER(TRIM(COALESCE(cc.business_type, ''))) = 'trading' THEN cc.id ELSE COALESCE(cc.linked_party_id, cc.id) END WHERE cc.id = COALESCE(sl.customer_id, (SELECT customer_id FROM sales WHERE invoice_group = g.invoice_group LIMIT 1))), sl.customer, (SELECT customer FROM sales WHERE invoice_group = g.invoice_group LIMIT 1)) AS sale_customer,
            -- A vehicle can carry several invoices out; the register names them
            -- all rather than only the one written on the entry.
            (SELECT COUNT(*) FROM gate_entry_sales gs WHERE gs.gate_entry_id = g.id) AS sale_count,
@@ -5605,9 +5605,9 @@ async function listGateEntries() {
     LEFT JOIN products p ON p.id = g.oil_type_id
     LEFT JOIN purchase_tankers pt ON pt.id = g.tanker_id
     LEFT JOIN bargains b ON b.id = pt.bargain_id
-    LEFT JOIN suppliers s ON s.id = (SELECT COALESCE(x.linked_party_id, x.id) FROM suppliers x WHERE x.id = pt.supplier_id)
-    LEFT JOIN suppliers ds ON ds.id = (SELECT COALESCE(x.linked_party_id, x.id) FROM suppliers x WHERE x.id = g.supplier_id)
-    LEFT JOIN customers dc ON dc.id = (SELECT COALESCE(x.linked_party_id, x.id) FROM customers x WHERE x.id = g.customer_id)
+    LEFT JOIN suppliers s ON s.id = (SELECT CASE WHEN LOWER(TRIM(COALESCE(x.business_type, ''))) = 'trading' THEN x.id ELSE COALESCE(x.linked_party_id, x.id) END FROM suppliers x WHERE x.id = pt.supplier_id)
+    LEFT JOIN suppliers ds ON ds.id = (SELECT CASE WHEN LOWER(TRIM(COALESCE(x.business_type, ''))) = 'trading' THEN x.id ELSE COALESCE(x.linked_party_id, x.id) END FROM suppliers x WHERE x.id = g.supplier_id)
+    LEFT JOIN customers dc ON dc.id = (SELECT CASE WHEN LOWER(TRIM(COALESCE(x.business_type, ''))) = 'trading' THEN x.id ELSE COALESCE(x.linked_party_id, x.id) END FROM customers x WHERE x.id = g.customer_id)
     LEFT JOIN sales sl ON sl.id = g.sale_id
     ${/* Compared directly, not through substr(): a function around the column
         makes the whole thing unindexable, and a plain string compare is
@@ -5660,7 +5660,7 @@ async function gateEntriesFor(args) {
            (SELECT GROUP_CONCAT(x.invoice_no, ', ') FROM gate_entry_sales gs
               JOIN sales x ON x.id = gs.sale_id WHERE gs.gate_entry_id = g.id) AS sale_invoices,
            COALESCE(sl.invoice_no, (SELECT invoice_no FROM sales WHERE invoice_group = g.invoice_group LIMIT 1)) AS sale_invoice,
-           COALESCE((SELECT m.name FROM customers cc JOIN customers m ON m.id = COALESCE(cc.linked_party_id, cc.id) WHERE cc.id = COALESCE(sl.customer_id, (SELECT customer_id FROM sales WHERE invoice_group = g.invoice_group LIMIT 1))), sl.customer, (SELECT customer FROM sales WHERE invoice_group = g.invoice_group LIMIT 1)) AS sale_customer
+           COALESCE((SELECT m.name FROM customers cc JOIN customers m ON m.id = CASE WHEN LOWER(TRIM(COALESCE(cc.business_type, ''))) = 'trading' THEN cc.id ELSE COALESCE(cc.linked_party_id, cc.id) END WHERE cc.id = COALESCE(sl.customer_id, (SELECT customer_id FROM sales WHERE invoice_group = g.invoice_group LIMIT 1))), sl.customer, (SELECT customer FROM sales WHERE invoice_group = g.invoice_group LIMIT 1)) AS sale_customer
     FROM gate_entries g
     LEFT JOIN products p ON p.id = g.oil_type_id
     LEFT JOIN purchase_tankers pt ON pt.id = g.tanker_id
@@ -5668,9 +5668,9 @@ async function gateEntriesFor(args) {
     LEFT JOIN bargains b ON b.id = pt.bargain_id
     LEFT JOIN transporters t ON t.id = pt.transporter_id
     LEFT JOIN sources src ON src.id = pt.source_id
-    LEFT JOIN suppliers s ON s.id = (SELECT COALESCE(x.linked_party_id, x.id) FROM suppliers x WHERE x.id = pt.supplier_id)
-    LEFT JOIN suppliers ds ON ds.id = (SELECT COALESCE(x.linked_party_id, x.id) FROM suppliers x WHERE x.id = g.supplier_id)
-    LEFT JOIN customers dc ON dc.id = (SELECT COALESCE(x.linked_party_id, x.id) FROM customers x WHERE x.id = g.customer_id)
+    LEFT JOIN suppliers s ON s.id = (SELECT CASE WHEN LOWER(TRIM(COALESCE(x.business_type, ''))) = 'trading' THEN x.id ELSE COALESCE(x.linked_party_id, x.id) END FROM suppliers x WHERE x.id = pt.supplier_id)
+    LEFT JOIN suppliers ds ON ds.id = (SELECT CASE WHEN LOWER(TRIM(COALESCE(x.business_type, ''))) = 'trading' THEN x.id ELSE COALESCE(x.linked_party_id, x.id) END FROM suppliers x WHERE x.id = g.supplier_id)
+    LEFT JOIN customers dc ON dc.id = (SELECT CASE WHEN LOWER(TRIM(COALESCE(x.business_type, ''))) = 'trading' THEN x.id ELSE COALESCE(x.linked_party_id, x.id) END FROM customers x WHERE x.id = g.customer_id)
     LEFT JOIN sales sl ON sl.id = g.sale_id
     WHERE ${where.join(" OR ")}
     ORDER BY g.entry_date DESC, g.id DESC
@@ -28138,6 +28138,7 @@ __export(lc_exports, {
   rejectLC: () => rejectLC,
   repayLcParts: () => repayLcParts,
   saveLcLimit: () => saveLcLimit,
+  setLcCommissionPct: () => setLcCommissionPct,
   unPrecloseLC: () => unPrecloseLC,
   undoLcPartRepayment: () => undoLcPartRepayment,
   updateLC: () => updateLC
@@ -28584,12 +28585,15 @@ async function syncPaymentReceivedIssuance(lcId, v) {
 }
 async function lcCommission(lcId) {
   const c = getClient();
-  const l = (await c.execute({ sql: "SELECT id, company_id, amount, commission_pct, commission_voucher_id FROM letters_of_credit WHERE id = ?", args: [n45(lcId)] })).rows[0];
+  const l = (await c.execute({ sql: "SELECT id, company_id, amount, commission_pct, commission_voucher_id, our_bank_id FROM letters_of_credit WHERE id = ?", args: [n45(lcId)] })).rows[0];
   if (!l) throw new Error("That LC no longer exists");
   const expected = l.commission_pct == null ? null : round222(n45(l.amount) * n45(l.commission_pct) / 100);
+  const bank = n45(l.our_bank_id) ? (await c.execute({ sql: "SELECT commission_pct FROM bank_lc_limits WHERE company_id = ? AND bank_id = ?", args: [n45(l.company_id), n45(l.our_bank_id)] }).catch(() => null))?.rows[0] : void 0;
   const voucher = n45(l.commission_voucher_id) ? await voucherBrief(n45(l.commission_voucher_id)) : null;
   return {
     commission_pct: l.commission_pct == null ? null : n45(l.commission_pct),
+    bank_pct: bank?.commission_pct == null ? null : n45(bank.commission_pct),
+    amount: round222(n45(l.amount)),
     expected,
     voucher,
     charged: voucher ? n45(voucher.amount) : null,
@@ -28637,6 +28641,12 @@ async function lcCommissionCandidates(lcId, q) {
     if (v && n45(v.amount) > 0) out.push(v);
   }
   return out.sort((a, b) => Math.abs(n45(a.amount) - expected) - Math.abs(n45(b.amount) - expected)).slice(0, 40);
+}
+async function setLcCommissionPct(lcId, pct) {
+  if (pct != null && (!Number.isFinite(pct) || pct < 0 || pct > 100)) throw new Error("Enter a commission % between 0 and 100");
+  const r = await getClient().execute({ sql: "UPDATE letters_of_credit SET commission_pct = ? WHERE id = ?", args: [pct == null ? null : round222(pct * 1e4) / 1e4, n45(lcId)] });
+  if (!r.rowsAffected) throw new Error("That LC no longer exists");
+  return { id: n45(lcId) };
 }
 async function linkLcCommission(lcId, entryId) {
   const c = getClient();
@@ -41581,6 +41591,10 @@ function registerIpc() {
   handle(
     "lc:commissionCandidates",
     async (_e, { id, q }) => (await Promise.resolve().then(() => (init_lc(), lc_exports))).lcCommissionCandidates(Number(id), q)
+  );
+  handle(
+    "lc:setCommissionPct",
+    async (_e, { id, pct }) => (await Promise.resolve().then(() => (init_lc(), lc_exports))).setLcCommissionPct(Number(id), pct == null ? null : Number(pct))
   );
   handle(
     "lc:linkCommission",
