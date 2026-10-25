@@ -3317,6 +3317,10 @@ const REQUIRED_COLUMNS: { table: string; column: string; type: string }[] = [
   // The bank's commission % on an LC's open amount — set per bank on the
   // limit screen, taken (and changeable) on each LC. Shown, never posted.
   { table: 'bank_lc_limits', column: 'commission_pct', type: 'REAL' },
+  // The GST rates that apply to a party's dealings ("5, 18") — the first is the
+  // default, the others offered as quick picks on its purchases and sales.
+  { table: 'suppliers', column: 'gst_rates', type: 'TEXT' },
+  { table: 'customers', column: 'gst_rates', type: 'TEXT' },
   { table: 'letters_of_credit', column: 'commission_pct', type: 'REAL' },
   // The bank voucher the commission was actually taken by — linked by hand
   // after Payment received, compared with open amount × commission %.

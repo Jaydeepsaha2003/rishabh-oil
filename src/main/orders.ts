@@ -1,4 +1,5 @@
 import { withDbTransaction } from './dbTransaction'
+import { sameSupplierFamily } from './partyFamily'
 import { splitShare } from '../renderer/src/lib/tankerShare'
 import { ALLOC, ensureTankerInvoices } from './tankerAlloc'
 import type { InValue, ResultSet } from '@libsql/client'
@@ -739,7 +740,7 @@ async function priceBargainLines(
     })
     if (!r.rows.length) throw new Error('One of the chosen bargains no longer exists')
     const b = toPlain(r)[0]
-    if (n(b.supplier_id) !== supplierId) throw new Error(`Bargain ${b.bargain_no} belongs to a different supplier`)
+    if (!(await sameSupplierFamily(n(b.supplier_id), supplierId))) throw new Error(`Bargain ${b.bargain_no} belongs to a different supplier`)
     if (n(b.oil_type_id) !== productId) throw new Error(`Bargain ${b.bargain_no} is for a different product`)
     out.push({ rate: n(b.rate_per_uom), qty: l.qty, bargainId: l.bargain_id })
   }

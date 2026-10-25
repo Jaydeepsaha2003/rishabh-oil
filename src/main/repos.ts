@@ -32,6 +32,7 @@ const TABLES: Record<string, string[]> = {
     'tds_threshold',
     'tds_pct_above',
     'tds_above_only',
+    'gst_rates',
     'credit_period_days',
     'adds_interest',
     'interest_pct',
@@ -66,6 +67,7 @@ const TABLES: Record<string, string[]> = {
     'tds_pct',
     'tds_threshold',
     'tds_above_only',
+    'gst_rates',
     'adds_interest',
     'interest_pct',
     'interest_days',
@@ -216,8 +218,47 @@ export async function get(table: string, id: number): Promise<Row | null> {
   return (await overlayOpenings(table, [o]))[0]
 }
 
+// A MAIN PARTY AND ITS SUB-LEDGERS (DIL EXIM → DIL EXIM – UP, – RAJKOT).
+//
+// A sub-ledger is a party of its own — its own name, ledger, GSTIN, state and
+// GST rates — that names its main party in linked_party_id. One level only: a
+// sub-ledger cannot have sub-ledgers, and a party with sub-ledgers cannot itself
+// become one. TDS belongs to the main party: a sub-ledger takes the main's TDS
+// settings whenever it is saved, and a change to the main's flows down to every
+// sub-ledger (the TDS slab is already pooled across them by linked_party_id).
+const TDS_COLS: Record<string, string[]> = {
+  suppliers: ['tds_pct', 'tds_threshold', 'tds_pct_above', 'tds_above_only'],
+  customers: ['tds_pct', 'tds_threshold', 'tds_above_only']
+}
+async function applyMainParty(table: string, values: Row, id?: number): Promise<Row> {
+  if (!TDS_COLS[table] || !('linked_party_id' in values)) return values
+  const main = Number(values.linked_party_id) || 0
+  if (!main) return { ...values, linked_party_id: null }
+  if (id && main === Number(id)) throw new Error('A party cannot be its own main party')
+  const c = getClient()
+  const m = (await c.execute({ sql: `SELECT * FROM ${table} WHERE id = ?`, args: [main] })).rows[0] as unknown as Row | undefined
+  if (!m) throw new Error('That main party no longer exists')
+  if (m.linked_party_id) throw new Error(`${String(m.name)} is itself a sub-ledger of another party — pick the main party`)
+  if (id) {
+    const subs = await c.execute({ sql: `SELECT COUNT(*) AS k FROM ${table} WHERE linked_party_id = ?`, args: [Number(id)] })
+    if (Number(subs.rows[0]?.k) > 0) throw new Error('This party has sub-ledgers of its own, so it cannot be made a sub-ledger')
+  }
+  const out = { ...values }
+  for (const k of TDS_COLS[table]) out[k] = m[k]
+  return out
+}
+async function pushTdsToSubLedgers(table: string, id: number): Promise<void> {
+  const cols = TDS_COLS[table]
+  if (!cols) return
+  await getClient().execute({
+    sql: `UPDATE ${table} SET ${cols.map((k) => `${k} = (SELECT m.${k} FROM ${table} m WHERE m.id = ?)`).join(', ')} WHERE linked_party_id = ?`,
+    args: [...cols.map(() => id), id]
+  })
+}
+
 export async function create(table: string, values: Row): Promise<{ id: number }> {
   const allowed = assertTable(table)
+  values = await applyMainParty(table, values)
   // The form carries its own company picker — respect whichever company was
   // actually chosen there, only falling back to the active one if somehow
   // nothing was picked at all.
@@ -398,6 +439,7 @@ async function syncBankLedgerName(bankId: number, before: Row | null, after: Row
 
 export async function update(table: string, id: number, values: Row): Promise<{ id: number }> {
   const allowed = assertTable(table)
+  values = await applyMainParty(table, values, id)
   await assertUniqueName(table, values, id)
   const keys = pickKeys(values, allowed)
   // A renamed company renames the parties that stand for it.
@@ -441,6 +483,8 @@ export async function update(table: string, id: number, values: Row): Promise<{ 
     sql: `UPDATE ${table} SET ${setClause} WHERE id = ?`,
     args: [...keys.map((k) => toArg(values[k], k)), id]
   })
+  // A main party's TDS is its sub-ledgers' TDS.
+  if (TDS_COLS[table]) await pushTdsToSubLedgers(table, id)
   if (priorLimit != null) {
     await logLimitChange({
       kind: 'nbfc',

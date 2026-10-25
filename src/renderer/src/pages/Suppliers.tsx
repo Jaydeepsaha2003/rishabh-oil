@@ -22,23 +22,29 @@ const baseFields: FieldDef[] = [
   // TDS slab is then tracked across both rows together instead of each
   // quietly restarting the slab at zero.
   {
+    // MAIN PARTY: this one is a sub-ledger of it (DIL EXIM – RAJKOT of DIL
+    // EXIM). Its own ledger, GSTIN and GST rates; the main party's TDS, and the
+    // TDS slab tracked across the whole family. Blank = a main party itself.
     key: 'linked_party_id',
-    label: 'Same party as (Manufacturing) — for TDS slab',
+    label: 'Main party — this is its sub-ledger',
     type: 'select',
-    options: [],
-    enabledWhen: (f) => isTradingParty(f)
+    options: []
   },
   { key: 'gstin', label: 'GSTIN', type: 'text' },
   { key: 'state', label: 'State', type: 'text' },
   { key: 'gst_pct', label: 'GST %', type: 'number', default: 0 },
+  // Every rate that applies to this ledger — the first is the default, the rest
+  // offered as quick picks on its entries; any rate can still be typed there.
+  { key: 'gst_rates', label: 'GST rates that apply (e.g. 5, 18)', type: 'text' },
   // Withholding defaults, so a new party is set up the way every real one here
   // already is: 0.1% on turnover past a 50,00,000 slab for the financial year,
   // with the slab actually exempt. Left at 0/0/off, a party silently withheld
   // nothing until somebody remembered to fill all three in — and getting the
   // switch wrong is invisible until an invoice is a few thousand rupees out.
-  { key: 'tds_pct', label: 'TDS %', type: 'number', default: 0.1 },
-  { key: 'tds_threshold', label: 'TDS slab threshold (₹/FY)', type: 'number', default: 5000000 },
-  { key: 'tds_above_only', label: 'No TDS below the slab', type: 'switch', default: true },
+  // A sub-ledger's TDS is its main party's — locked here, copied on save.
+  { key: 'tds_pct', label: 'TDS % (a sub-ledger takes its main party\'s)', type: 'number', default: 0.1, enabledWhen: (f) => !f.linked_party_id },
+  { key: 'tds_threshold', label: 'TDS slab threshold (₹/FY)', type: 'number', default: 5000000, enabledWhen: (f) => !f.linked_party_id },
+  { key: 'tds_above_only', label: 'No TDS below the slab', type: 'switch', default: true, enabledWhen: (f) => !f.linked_party_id },
   { key: 'adds_interest', label: 'Adds interest on invoice', type: 'switch', default: false },
   { key: 'interest_pct', label: 'Interest %', type: 'number', default: 0, enabledWhen: (f) => !!f.adds_interest },
   { key: 'interest_days', label: 'Interest days', type: 'number', default: 0, enabledWhen: (f) => !!f.adds_interest },
@@ -87,9 +93,12 @@ export function Suppliers(): React.JSX.Element {
     window.api.data.list('suppliers').then(setAllSuppliers).catch(() => setAllSuppliers([]))
     window.api.suppliers.purchaseCounts().then(setPurchaseCounts).catch(() => setPurchaseCounts({}))
   }, [])
+  // Main parties only: a sub-ledger cannot have sub-ledgers of its own.
   const manufacturingOptions = allSuppliers
-    .filter((s) => !isTradingParty(s) && s.active)
+    .filter((s) => !s.linked_party_id && s.active)
     .map((s) => ({ value: String(s.id), label: s.name }))
+  const subCount = new Map<string, number>()
+  for (const s of allSuppliers) if (s.linked_party_id) subCount.set(String(s.linked_party_id), (subCount.get(String(s.linked_party_id)) || 0) + 1)
   const nameById = new Map(allSuppliers.map((s) => [String(s.id), s.name]))
 
   // The purchase bill amount is the open company's own (partyOpenings.ts):
@@ -118,8 +127,10 @@ export function Suppliers(): React.JSX.Element {
           ...c,
           value: (row: Row) =>
             row.linked_party_id && nameById.get(String(row.linked_party_id))
-              ? `${row.business_type} · same as ${nameById.get(String(row.linked_party_id))}`
-              : String(row.business_type || ''),
+              ? `${row.business_type} · sub-ledger of ${nameById.get(String(row.linked_party_id))}`
+              : subCount.get(String(row.id))
+                ? `${row.business_type} · main party · ${subCount.get(String(row.id))} sub-ledger${subCount.get(String(row.id)) === 1 ? '' : 's'}`
+                : String(row.business_type || ''),
           badge: (row: Row) => purchaseCounts[String(row.id)] ?? 0,
           badgeTitle: 'Purchase entries booked with this supplier (all companies)'
         }

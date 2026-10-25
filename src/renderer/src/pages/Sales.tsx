@@ -1,4 +1,5 @@
 import { Fragment, useCallback, useEffect, useMemo, useState, useRef } from 'react'
+import { GstRateChips } from '@/components/GstRateChips'
 import { takePageIntent } from '@/lib/pageIntent'
 import { toast } from 'sonner'
 import { AlertTriangle, ArrowLeft, ArrowUp, ArrowDown, BookOpen, ChevronsUpDown, Ban, Building2, Check, CheckCircle2, ChevronDown, ChevronLeft, ChevronRight, Clock, Dices, DoorOpen, Download, History, Link2, Lock, LogIn, Shuffle, LogOut, Maximize2, Pencil, Plus, Receipt, RotateCcw, Search, SlidersHorizontal, Tag, Tags, Trash2, Truck, Undo2, Upload, X, ListChecks, Info, Percent, type LucideIcon} from 'lucide-react'
@@ -1107,12 +1108,18 @@ function SalesTab({
     setItems((prev) => (prev.length <= 1 ? prev : prev.filter((_, i) => i !== idx)))
   }
 
-  // Customer bargain matching (by master id, else name).
+  // Customer bargain matching (by master id, else name). A customer and its
+  // sub-ledgers are one family: a bargain with the main customer serves a
+  // sale billed to any of its sub-ledgers, and the reverse.
+  const custFam = (id: unknown): string => {
+    const c = customers.find((x) => String(x.id) === String(id ?? ''))
+    return String(c?.linked_party_id || c?.id || id || '')
+  }
   const custId = String(header.customer_id || '')
   const custName = String(header.customer || '').trim().toLowerCase()
   const matchesCustomer = (b: Row): boolean => {
     if (!custId && !custName) return true
-    if (custId && b.customer_id != null && String(b.customer_id) !== '') return String(b.customer_id) === custId
+    if (custId && b.customer_id != null && String(b.customer_id) !== '') return custFam(b.customer_id) === custFam(custId)
     return String(b.customer || '').trim().toLowerCase() === custName
   }
   // As-of date for rate validity: the invoice's own date. A bargain that
@@ -1429,7 +1436,7 @@ function SalesTab({
     // Drop item bargains that belong to another customer.
     setItems((prev) => prev.map((it) => {
       const b = bargains.find((x) => String(x.id) === String(it.sales_bargain_id))
-      const keep = b && (b.customer_id != null && String(b.customer_id) !== '' ? String(b.customer_id) === v : true)
+      const keep = b && (b.customer_id != null && String(b.customer_id) !== '' ? custFam(b.customer_id) === custFam(v) : true)
       return keep ? it : { ...it, sales_bargain_id: '' }
     }))
   }
@@ -3782,6 +3789,11 @@ function SalesTab({
                   <div className="flex flex-col gap-1.5">
                     <Label>GST %</Label>
                     <Input type="number" value={item.gst_pct ?? ''} onChange={(e) => setItem(i, { gst_pct: e.target.value })} />
+                    <GstRateChips
+                      rates={customers.find((c) => String(c.id) === String(header.customer_id || ''))?.gst_rates}
+                      value={item.gst_pct}
+                      onPick={(v) => setItem(i, { gst_pct: v })}
+                    />
                     <span className="block h-[15px]" />
                   </div>
                   <div className="flex flex-col gap-1.5">

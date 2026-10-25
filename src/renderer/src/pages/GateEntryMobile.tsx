@@ -25,6 +25,7 @@
 // given. A partial payload would silently null the party, the invoice link
 // and the record type — so every save here merges its changes onto the row
 // as loaded and sends the lot back.
+import { mainNameOf, mainPartiesOnly } from '@/lib/mainParty'
 import { useEffect, useMemo, useState } from 'react'
 import { toast } from 'sonner'
 import {
@@ -120,11 +121,13 @@ export function GateEntryMobile(): React.JSX.Element {
         window.api.data.list('customers').catch(() => [] as Row[])
       ])
       setRows(Array.isArray(r) ? r : [])
-      setWaived(Array.isArray(w) ? w : [])
+      // The gate sees MAIN parties only (DIL EXIM, not DIL EXIM – RAJKOT).
+      const cusMain = mainNameOf(Array.isArray(cu) ? cu : [])
+      setWaived(Array.isArray(w) ? (w as Row[]).map((x) => ({ ...x, customer: cusMain(x.customer_id) ?? x.customer })) : [])
       setMasters({
         products: Array.isArray(pr) ? pr : [],
-        suppliers: Array.isArray(su) ? su : [],
-        customers: Array.isArray(cu) ? cu : []
+        suppliers: mainPartiesOnly(Array.isArray(su) ? su : []),
+        customers: mainPartiesOnly(Array.isArray(cu) ? cu : [])
       })
     } catch (e) {
       setFailed((e as Error).message)

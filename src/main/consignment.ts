@@ -1,4 +1,5 @@
 import type { ResultSet } from '@libsql/client'
+import { sameSupplierFamily } from './partyFamily'
 import { getClient, todayISO } from './db'
 import { getActiveCompanyId } from './company'
 import { visibleFromFor } from './access-gate'
@@ -253,7 +254,13 @@ export async function listConsignment(forModule?: string): Promise<Row[]> {
 export async function listUnbookedLots(supplierId?: number, productId?: number): Promise<Row[]> {
   const where = ['cs.company_id = ?', 'cs.order_id IS NULL']
   const args: (number | string)[] = [getActiveCompanyId()]
-  if (supplierId) { where.push('cs.supplier_id = ?'); args.push(supplierId) }
+  // The whole family's lots: stock lodged by DIL EXIM may be billed by any of
+  // its sub-ledgers (partyFamily.ts), and the reverse.
+  if (supplierId) {
+    where.push(`COALESCE((SELECT x.linked_party_id FROM suppliers x WHERE x.id = cs.supplier_id), cs.supplier_id) =
+                COALESCE((SELECT y.linked_party_id FROM suppliers y WHERE y.id = ?), ?)`)
+    args.push(supplierId, supplierId)
+  }
   if (productId) { where.push('cs.product_id = ?'); args.push(productId) }
   const res = await getClient().execute({
     sql: `SELECT cs.id, cs.supplier_id, cs.product_id, cs.qty, cs.uom, cs.deposit_date, cs.note,
@@ -342,7 +349,7 @@ export async function validateConsignmentLots(
       args: bargainIds
     })
     for (const b of toPlain(bres)) {
-      if (n(b.supplier_id) !== supplierId || n(b.oil_type_id) !== productId) {
+      if (!(await sameSupplierFamily(n(b.supplier_id), supplierId)) || n(b.oil_type_id) !== productId) {
         throw new Error(`Bargain ${b.bargain_no} is not for this supplier and product`)
       }
       bargains.set(Number(b.id), b)
@@ -370,7 +377,7 @@ export async function validateConsignmentLots(
     if (row.order_id != null && Number(row.order_id) !== orderId) {
       throw new Error(`Tanker ${row.tanker_no || row.id} is already booked on another purchase`)
     }
-    if (n(row.supplier_id) !== supplierId || n(row.product_id) !== productId) {
+    if (!(await sameSupplierFamily(n(row.supplier_id), supplierId)) || n(row.product_id) !== productId) {
       throw new Error('The selected tankers must all belong to this supplier and product')
     }
     const qty = n(row.qty)
@@ -1025,7 +1032,11 @@ async function validateLot(v: Row, existing: Row | null, companyId?: number): Pr
     })
     if (!ge.rows.length) throw new Error('That gate entry no longer exists')
     const g = toPlain(ge)[0]
-    if (n(g.is_direct_mnc) === 1 && n(g.supplier_id) && n(g.supplier_id) !== supplierId) {
+    // The gate books the MAIN party (DIL EXIM); the consignment may be one of
+    // its sub-ledgers (DIL EXIM – UP). One family is the same party here.
+    const family = async (id: number): Promise<number> =>
+      n((await c.execute({ sql: 'SELECT COALESCE(linked_party_id, id) AS m FROM suppliers WHERE id = ?', args: [id] })).rows[0]?.m) || id
+    if (n(g.is_direct_mnc) === 1 && n(g.supplier_id) && (await family(n(g.supplier_id))) !== (await family(supplierId))) {
       const named = await c.execute({ sql: 'SELECT name FROM suppliers WHERE id = ?', args: [n(g.supplier_id)] })
       throw new Error(
         `Gate entry ${g.gate_entry_no} was booked in for ${named.rows[0]?.name || 'another party'} — change it at the gate if that is wrong`

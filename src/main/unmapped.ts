@@ -2,6 +2,7 @@
 // bargain they pointed at was deleted, or because the invoice was entered before
 // its bargain existed. They sit in their own list until someone maps them onto
 // one or more bargains.
+import { sameSupplierFamily } from './partyFamily'
 import { ALLOC } from './tankerAlloc'
 import type { ResultSet } from '@libsql/client'
 import { getClient } from './db'
@@ -203,7 +204,7 @@ export async function mapOrderToBargains(
     })
     if (!b.rows.length) throw new Error('One of the chosen bargains no longer exists')
     const bg = toPlain(b)[0]
-    if (n(bg.supplier_id) !== n(order.supplier_id)) {
+    if (!(await sameSupplierFamily(n(bg.supplier_id), n(order.supplier_id)))) {
       throw new Error(`Bargain ${bg.bargain_no} belongs to a different supplier`)
     }
     if (n(bg.oil_type_id) !== n(order.oil_type_id)) {

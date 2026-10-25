@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
+import { mainNameOf, mainPartiesOnly } from '@/lib/mainParty'
 import { toast } from 'sonner'
 import {
   AlertTriangle, Ban, Check, CheckCircle2, ChevronDown, ChevronLeft, ChevronRight, ClipboardList, Clock, Hash, Info, Lock, XCircle,
@@ -633,15 +634,18 @@ export function GateEntry(): React.JSX.Element {
       window.api.gate.partyCategories().catch(() => [] as Row[])
     ])
     setRows(g)
-    setTankers(pt)
+    // The gate sees MAIN parties only (DIL EXIM, not DIL EXIM – RAJKOT).
+    const supMain = mainNameOf(sup)
+    const cusMain = mainNameOf(cus)
+    setTankers(pt.map((t) => ({ ...t, supplier_name: supMain(t.supplier_id) ?? t.supplier_name })))
     // Only parties whose purchases skip tanker movement can send direct stock.
-    setSuppliers(sup.filter((x) => x.active && x.skip_tanker_stages))
-    setAllSuppliers(sup.filter((x) => x.active))
-    setCustomers(cus.filter((x) => x.active))
+    setSuppliers(mainPartiesOnly(sup).filter((x) => x.active && x.skip_tanker_stages))
+    setAllSuppliers(mainPartiesOnly(sup).filter((x) => x.active))
+    setCustomers(mainPartiesOnly(cus).filter((x) => x.active))
     setPartyCats(pcats)
-    setWaived(wv)
+    setWaived(wv.map((w) => ({ ...w, customer: cusMain(w.customer_id) ?? w.customer })))
     setProducts(prd.filter((x) => x.active))
-    setSales(sl)
+    setSales(sl.map((x) => ({ ...x, customer: cusMain(x.customer_id) ?? x.customer })))
     setArrival((p) => (p.gate_entry_no ? p : { ...p, gate_entry_no: nextNo }))
     setGateOut((p) => (p.gate_entry_no ? p : { ...p, gate_entry_no: nextOutNo }))
     setLoading(false)

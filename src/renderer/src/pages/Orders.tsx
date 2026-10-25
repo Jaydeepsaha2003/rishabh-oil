@@ -1,4 +1,5 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { GstRateChips } from '@/components/GstRateChips'
 import { splitShare } from '@/lib/tankerShare'
 import { takePageIntent } from '@/lib/pageIntent'
 import { escMayDiscard, hasOpenOverlay } from '@/lib/escape'
@@ -3108,6 +3109,13 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
   // would hide the very tankers the user is choosing between. Tankers already
   // billed elsewhere are excluded downstream in selectableTankers, so only
   // genuinely unbilled ones cross over.
+  // A SUPPLIER AND ITS SUB-LEDGERS ARE ONE FAMILY: DIL EXIM – RAJKOT may bill
+  // DIL EXIM's tankers and bargains (and the reverse). Compared by main party.
+  const famOf = useMemo(() => {
+    const m = new Map(suppliers.map((s) => [String(s.id), String(s.linked_party_id || s.id)]))
+    return (id: unknown): string => m.get(String(id ?? '')) || String(id ?? '')
+  }, [suppliers])
+  const sameFam = useCallback((a: unknown, b: unknown): boolean => !!String(b ?? '') && famOf(a) === famOf(b), [famOf])
   const tankersForBooking = allTankers.length ? allTankers : tankers
 
   // The invoice(s) being edited — a tanker's share on these is this form's own.
@@ -3117,7 +3125,7 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
   )
   const selectableTankers = useMemo(
     () => tankersForBooking.filter((x) =>
-      String(x.supplier_id) === String(form.supplier_id || '') &&
+      sameFam(x.supplier_id, form.supplier_id) &&
       x.status !== 'supplier_factory' &&
       Number(x.loaded_qty) > 0 &&
       (x.order_id == null ||
@@ -3127,7 +3135,7 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
         // Part of it is billed on another invoice and part is still free.
         tankerLeftFor(x, myOrderIds) > 0.0005)
     ),
-    [tankersForBooking, form.supplier_id, editing, editingBill, myOrderIds]
+    [tankersForBooking, form.supplier_id, editing, editingBill, myOrderIds, sameFam]
   )
   // Only suppliers that actually have billable tankers appear in the picker
   // (plus the invoice's own supplier when editing). Trading suppliers are left
@@ -3145,14 +3153,15 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
             editingBill.ids.includes(Number(x.order_id)) ||
             // Part of the lorry is still free for another invoice.
             tankerLeftFor(x, myOrderIds) > 0.0005))
-        .map((x) => String(x.supplier_id))
+        .map((x) => famOf(x.supplier_id))
     )
+    // A sub-ledger is offered when its family has tankers to bill.
     return suppliers.filter((s) => {
       const isCurrent = String(s.id) === String(form.supplier_id || '')
       if (!isCurrent && !isManufacturingParty(s)) return false
-      return billable.has(String(s.id)) || !!s.skip_tanker_stages || isCurrent
+      return billable.has(famOf(s.id)) || !!s.skip_tanker_stages || isCurrent
     })
-  }, [suppliers, tankersForBooking, editing, form.supplier_id, myOrderIds])
+  }, [suppliers, tankersForBooking, editing, form.supplier_id, myOrderIds, famOf])
   // A supplier flagged "Direct purchase" in the master keeps its goods at our
   // site already, so there is no send-to-supplier → transit → outside → inside
   // → empty cycle: the invoice is booked in one step against a bargain with the
@@ -3310,20 +3319,20 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
   const partyStock = useMemo(
     () =>
       partyStockAll
-        .filter((r) => String(r.supplier_id) === String(form.supplier_id || '') && Number(r.balance) > 1e-6)
+        .filter((r) => sameFam(r.supplier_id, form.supplier_id) && Number(r.balance) > 1e-6)
         .sort((a, b) => Number(b.balance) - Number(a.balance)),
-    [partyStockAll, form.supplier_id]
+    [partyStockAll, form.supplier_id, sameFam]
   )
   // Available balance of the product being invoiced.
   const directAvailable = useMemo(() => {
     if (!directMode || !form.oil_type_id) return null
     const row = partyStockAll.find(
       (r) =>
-        String(r.supplier_id) === String(form.supplier_id || '') &&
+        sameFam(r.supplier_id, form.supplier_id) &&
         String(r.product_id) === String(form.oil_type_id)
     )
     return row ? Number(row.balance) || 0 : 0
-  }, [directMode, partyStockAll, form.supplier_id, form.oil_type_id])
+  }, [directMode, partyStockAll, form.supplier_id, form.oil_type_id, sameFam])
 
   // How the typed quantity is drawn from bargains: one line per bargain, the
   // same bargain twice simply means more quantity on it.
@@ -3581,7 +3590,7 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
     return bargains
       .filter(
         (b) =>
-          String(b.supplier_id) === String(form.supplier_id || '') &&
+          sameFam(b.supplier_id, form.supplier_id) &&
           (!pid || String(b.oil_type_id) === pid) &&
           Number(b.balance_qty) > 1e-6
       )
@@ -3589,7 +3598,7 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
         const d = String(a.bargain_date || '').localeCompare(String(b.bargain_date || ''))
         return d !== 0 ? d : (Number(a.id) || 0) - (Number(b.id) || 0)
       })
-  }, [bargains, form.supplier_id, form.oil_type_id])
+  }, [bargains, form.supplier_id, form.oil_type_id, sameFam])
   const fifoKey = fifoBargains.map((b) => `${b.id}:${b.balance_qty}`).join('|')
 
   // Fill the quantity from the oldest bargains first. Anything the balances
@@ -3623,7 +3632,7 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
     return bargains
       .filter(
         (b) =>
-          String(b.supplier_id) === String(form.supplier_id || '') &&
+          sameFam(b.supplier_id, form.supplier_id) &&
           (!pid || String(b.oil_type_id) === pid) &&
           (Number(b.balance_qty) > 0 ||
             String(b.id) === String(form.bargain_id || '') ||
@@ -3634,7 +3643,7 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
         const d = String(a.bargain_date || '').localeCompare(String(b.bargain_date || ''))
         return d !== 0 ? d : (Number(a.id) || 0) - (Number(b.id) || 0)
       })
-  }, [bargains, form.supplier_id, form.bargain_id, form.oil_type_id, form.ordered_qty, lotProductId, bgLines])
+  }, [bargains, form.supplier_id, form.bargain_id, form.oil_type_id, form.ordered_qty, lotProductId, bgLines, sameFam])
   // Resolved against the SAME list the picker offers from.
   //
   // This read `tankers`, which is scoped to the active company, while the
@@ -5900,6 +5909,11 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
                   <div className="flex flex-col gap-1.5">
                     <Label>GST %</Label>
                     <Input type="number" value={form.gst_pct ?? ''} onChange={(e) => setForm((p) => ({ ...p, gst_pct: e.target.value }))} />
+                    <GstRateChips
+                      rates={suppliers.find((s) => String(s.id) === String(form.supplier_id || ''))?.gst_rates}
+                      value={form.gst_pct}
+                      onPick={(v) => setForm((p) => ({ ...p, gst_pct: v }))}
+                    />
                   </div>
                   </>)}
                   <div className="flex flex-col gap-1.5">

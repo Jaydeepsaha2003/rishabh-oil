@@ -22,23 +22,29 @@ const baseFields: FieldDef[] = [
   // TDS slab is then tracked across both rows together instead of each
   // quietly restarting the slab at zero.
   {
+    // MAIN PARTY: this one is a sub-ledger of it (DIL EXIM – RAJKOT of DIL
+    // EXIM). Its own ledger, GSTIN and GST rates; the main party's TDS, and the
+    // TDS slab tracked across the whole family. Blank = a main party itself.
     key: 'linked_party_id',
-    label: 'Same party as (Manufacturing) — for TDS slab',
+    label: 'Main party — this is its sub-ledger',
     type: 'select',
-    options: [],
-    enabledWhen: (f) => isTradingParty(f)
+    options: []
   },
   { key: 'gstin', label: 'GSTIN', type: 'text' },
   { key: 'state', label: 'State', type: 'text' },
   { key: 'gst_pct', label: 'GST %', type: 'number', default: 0 },
+  // Every rate that applies to this ledger — the first is the default, the rest
+  // offered as quick picks on its entries; any rate can still be typed there.
+  { key: 'gst_rates', label: 'GST rates that apply (e.g. 5, 18)', type: 'text' },
   // Withholding defaults, so a new party is set up the way every real one here
   // already is: 0.1% on turnover past a 50,00,000 slab for the financial year,
   // with the slab actually exempt. Left at 0/0/off, a party silently withheld
   // nothing until somebody remembered to fill all three in — and getting the
   // switch wrong is invisible until an invoice is a few thousand rupees out.
-  { key: 'tds_pct', label: 'TDS %', type: 'number', default: 0.1 },
-  { key: 'tds_threshold', label: 'TDS slab threshold (₹/FY)', type: 'number', default: 5000000 },
-  { key: 'tds_above_only', label: 'No TDS below the slab', type: 'switch', default: true },
+  // A sub-ledger's TDS is its main party's — locked here, copied on save.
+  { key: 'tds_pct', label: 'TDS % (a sub-ledger takes its main party\'s)', type: 'number', default: 0.1, enabledWhen: (f) => !f.linked_party_id },
+  { key: 'tds_threshold', label: 'TDS slab threshold (₹/FY)', type: 'number', default: 5000000, enabledWhen: (f) => !f.linked_party_id },
+  { key: 'tds_above_only', label: 'No TDS below the slab', type: 'switch', default: true, enabledWhen: (f) => !f.linked_party_id },
   { key: 'adds_interest', label: 'Charges interest after credit period', type: 'switch', default: false },
   { key: 'interest_pct', label: 'Interest %', type: 'number', default: 0, enabledWhen: (f) => !!f.adds_interest },
   { key: 'interest_days', label: 'Interest days', type: 'number', default: 0, enabledWhen: (f) => !!f.adds_interest },
@@ -72,9 +78,12 @@ export function Customers(): React.JSX.Element {
   useEffect(() => {
     window.api.data.list('customers').then(setAllCustomers).catch(() => setAllCustomers([]))
   }, [])
+  // Main parties only: a sub-ledger cannot have sub-ledgers of its own.
   const manufacturingOptions = allCustomers
-    .filter((c) => !isTradingParty(c) && c.active)
+    .filter((c) => !c.linked_party_id && c.active)
     .map((c) => ({ value: String(c.id), label: c.name }))
+  const subCount = new Map<string, number>()
+  for (const c of allCustomers) if (c.linked_party_id) subCount.set(String(c.linked_party_id), (subCount.get(String(c.linked_party_id)) || 0) + 1)
   const nameById = new Map(allCustomers.map((c) => [String(c.id), c.name]))
 
   const { companies, companyId } = useCompany()
@@ -92,8 +101,10 @@ export function Customers(): React.JSX.Element {
           ...c,
           value: (row: Row) =>
             row.linked_party_id && nameById.get(String(row.linked_party_id))
-              ? `${row.business_type} · same as ${nameById.get(String(row.linked_party_id))}`
-              : String(row.business_type || '')
+              ? `${row.business_type} · sub-ledger of ${nameById.get(String(row.linked_party_id))}`
+              : subCount.get(String(row.id))
+                ? `${row.business_type} · main party · ${subCount.get(String(row.id))} sub-ledger${subCount.get(String(row.id)) === 1 ? '' : 's'}`
+                : String(row.business_type || '')
         }
       : c
   )
