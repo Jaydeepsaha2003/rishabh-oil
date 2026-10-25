@@ -1,7 +1,7 @@
 import { Fragment, useCallback, useEffect, useMemo, useState } from 'react'
 import { AlertTriangle, ArrowDownLeft, ArrowUpRight, CheckCircle2, ChevronRight, ExternalLink, Search, X } from 'lucide-react'
 import { DatePicker } from '@/components/ui/date-picker'
-import { exportRowsToExcel, NUM_MONEY } from '@/lib/excel'
+import { CashflowExcelDialog } from '@/components/CashflowExcelDialog'
 import { formatDate, formatINR, todayISO } from '@/lib/format'
 import { cn } from '@/lib/utils'
 import { toast } from 'sonner'
@@ -144,69 +144,9 @@ export function CashflowRegister({
       return next
     })
 
-  async function download(): Promise<void> {
-    // One row per ledger line, so the file can be filtered by ledger as well
-    // as by voucher; the breakdown and references ride on their line.
-    const flat: Row[] = []
-    for (const v of rows) {
-      for (const l of v.lines as Row[]) {
-        // ONE ROW PER PART OF THE BREAKDOWN, its remark in a column of its own.
-        // The line's own Dr / Cr is on its first row only, so a column total
-        // still adds up to the vouchers.
-        const parts = (l.splits as Row[]) || []
-        const base = {
-          date: formatDate(v.date),
-          voucher: v.code,
-          type: v.type,
-          invoice: v.invoice_no,
-          refs: (v.refs as string[]).join(', '),
-          party: v.party,
-          ledger: l.account,
-          group: l.group,
-          dr: l.side === 'dr' ? l.amount : '',
-          cr: l.side === 'cr' ? l.amount : '',
-          line_refs: (l.refs as Row[]).map((r) => `${REF_WORD[r.method] || r.method}${r.ref ? ' ' + r.ref : ''} ${r.amount}`).join('; '),
-          issues: (v.issues as string[]).join('; '),
-          narration: v.narration
-        }
-        if (!parts.length) flat.push({ ...base, part: '', part_amount: '', remarks: '' })
-        parts.forEach((x, i) =>
-          flat.push({
-            ...base,
-            ...(i > 0 ? { dr: '', cr: '' } : {}),
-            part: x.name,
-            part_amount: Number(x.amount) || 0,
-            remarks: x.note || ''
-          })
-        )
-      }
-    }
-    await exportRowsToExcel({
-      filename: `cashflow-register-${from}-to-${to}`,
-      sheetName: 'Cashflow register',
-      title: `Cashflow register — ${companyName}`,
-      subtitle: `${formatDate(from)} to ${formatDate(to)} · ${rows.length} vouchers`,
-      columns: [
-        { header: 'Date', key: 'date', value: (r) => r.date },
-        { header: 'Voucher', key: 'voucher', value: (r) => r.voucher },
-        { header: 'Type', key: 'type', value: (r) => r.type },
-        { header: 'Invoice no', key: 'invoice', value: (r) => r.invoice },
-        { header: 'Ref no', key: 'refs', value: (r) => r.refs },
-        { header: 'Party', key: 'party', value: (r) => r.party },
-        { header: 'Ledger', key: 'ledger', value: (r) => r.ledger },
-        { header: 'Group', key: 'group', value: (r) => r.group },
-        { header: 'Dr', key: 'dr', align: 'right', numFmt: NUM_MONEY, value: (r) => r.dr },
-        { header: 'Cr', key: 'cr', align: 'right', numFmt: NUM_MONEY, value: (r) => r.cr },
-        { header: 'Bill references', key: 'line_refs', value: (r) => r.line_refs },
-        { header: 'Breakdown part', key: 'part', value: (r) => r.part },
-        { header: 'Part amount', key: 'part_amount', align: 'right', numFmt: NUM_MONEY, value: (r) => r.part_amount },
-        { header: 'Remarks', key: 'remarks', value: (r) => r.remarks },
-        { header: 'Not right', key: 'issues', value: (r) => r.issues },
-        { header: 'Narration', key: 'narration', value: (r) => r.narration }
-      ],
-      rows: flat
-    })
-  }
+  // The download asks how the breakdown heads should lie — as columns or as
+  // rows, under the desk's own head groups (CashflowExcelDialog).
+  const [excelOpen, setExcelOpen] = useState(false)
 
   const card = (k: string, v: string, sub: string, tone: string, on: boolean, go: () => void): React.JSX.Element => (
     <button
@@ -257,7 +197,7 @@ export function CashflowRegister({
         </label>
         <button
           type="button"
-          onClick={() => void download()}
+          onClick={() => setExcelOpen(true)}
           disabled={!rows.length}
           className="h-10 rounded-[4px] bg-[#0B3D2E] px-3.5 text-[12px] font-extrabold text-[#C7F03F] hover:bg-[#0F4A38] disabled:opacity-40"
         >
@@ -583,6 +523,15 @@ export function CashflowRegister({
           </div>
         )}
       </div>
+      <CashflowExcelDialog
+        open={excelOpen}
+        onClose={() => setExcelOpen(false)}
+        vouchers={rows}
+        companyId={companyId}
+        companyName={companyName}
+        from={from}
+        to={to}
+      />
     </div>
   )
 }
