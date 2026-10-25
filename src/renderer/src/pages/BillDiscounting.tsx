@@ -1,4 +1,5 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { SearchSelect } from '@/components/SearchSelect'
 import { escToClose } from '@/lib/escape'
 import { toast } from 'sonner'
 import {
@@ -4735,21 +4736,13 @@ export function BillDiscounting({
                       </div>
                       {String(form.disbursement_route) === 'bank' && (
                         <div className="min-w-0 flex-1">
-                          <Select
+                          <SearchSelect
                             value={String(form.disbursement_account || '')}
-                            onValueChange={(v) => setForm((p) => ({ ...p, disbursement_account: v }))}
-                          >
-                            <SelectTrigger className="h-11">
-                              <SelectValue placeholder="Pick the bank the money landed in" />
-                            </SelectTrigger>
-                            <SelectContent>
-                              {formBanks.map((a) => (
-                                <SelectItem key={String(a.id)} value={String(a.name)}>
-                                  {String(a.name)}
-                                </SelectItem>
-                              ))}
-                            </SelectContent>
-                          </Select>
+                            options={formBanks.map((a) => String(a.name))}
+                            onChange={(v) => setForm((p) => ({ ...p, disbursement_account: v }))}
+                            placeholder="Pick the bank the money landed in"
+                            className="h-11 w-full"
+                          />
                         </div>
                       )}
                     </div>
@@ -5862,20 +5855,12 @@ export function BillDiscounting({
                       Received into
                       <InfoTip text="The account the money actually landed in, kept on the bill for reference. A payment in posts no voucher — the bank's own receipt is booked from Tally, and posting another here would count the money twice." />
                     </Label>
-                    <Select
+                    <SearchSelect
                       value={payInAccount || '__none__'}
-                      onValueChange={(v) => setPayInAccount(v === '__none__' ? '' : v)}
-                    >
-                      <SelectTrigger><SelectValue placeholder="Pick the account" /></SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="__none__">Not stated — book it to BANK A/C</SelectItem>
-                        {bankAccounts.map((a) => (
-                          <SelectItem key={String(a.id)} value={String(a.name)}>
-                            {String(a.name)}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
+                      options={[{ value: '__none__', label: 'Not stated — book it to BANK A/C' }, ...bankAccounts.map((a) => String(a.name))]}
+                      onChange={(v) => setPayInAccount(v === '__none__' ? '' : v)}
+                      className="w-full"
+                    />
                   </div>
                   <div className="flex flex-col gap-1.5">
                     <Label className="flex items-center gap-1">
@@ -6307,18 +6292,13 @@ export function BillDiscounting({
                       {receiveRoute === 'bank' ? (
                         <div className="grid gap-1.5">
                           <span className={lbl}>Into the bank *</span>
-                          <Select value={receiveAccount} onValueChange={setReceiveAccount}>
-                            <SelectTrigger className="h-11 rounded-[4px] border-[#C3D2C6] bg-white px-[11px] text-[13px] font-bold !normal-case text-[#0A1F17] [&>span]:flex-1 [&>span]:!text-left">
-                              <SelectValue placeholder="Pick the bank the money landed in" />
-                            </SelectTrigger>
-                            <SelectContent>
-                              {formBanks.map((a) => (
-                                <SelectItem key={String(a.id)} value={String(a.name)}>
-                                  {String(a.name)}
-                                </SelectItem>
-                              ))}
-                            </SelectContent>
-                          </Select>
+                          <SearchSelect
+                            value={receiveAccount}
+                            options={formBanks.map((a) => String(a.name))}
+                            onChange={setReceiveAccount}
+                            placeholder="Pick the bank the money landed in"
+                            className="h-11 w-full rounded-[4px] px-[11px] font-bold"
+                          />
                         </div>
                       ) : (
                         <div className="rounded-[4px] border border-dashed border-[#C3D2C6] bg-[#FBFCFA] px-3 py-2.5 text-[12px] font-semibold text-[#5A6B62]">
@@ -6534,21 +6514,15 @@ export function BillDiscounting({
                     From bank
                     <InfoTip text="The account the money leaves from. Left on the bill's own bank, it goes through the account the disbursement came into. It can be changed later from the bill's detail — Bank." />
                   </Label>
-                  <Select value={repayBank} onValueChange={setRepayBank}>
-                    <SelectTrigger className="h-10">
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="__bill">
-                        The bill&rsquo;s bank{repayRow.disbursement_account ? ` — ${String(repayRow.disbursement_account)}` : ''}
-                      </SelectItem>
-                      {formBanks.map((a) => (
-                        <SelectItem key={String(a.id)} value={String(a.name)}>
-                          {String(a.name)}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
+                  <SearchSelect
+                    value={repayBank}
+                    options={[
+                      { value: '__bill', label: `The bill\u2019s bank${repayRow.disbursement_account ? ` — ${String(repayRow.disbursement_account)}` : ''}` },
+                      ...formBanks.map((a) => String(a.name))
+                    ]}
+                    onChange={setRepayBank}
+                    className="h-10 w-full"
+                  />
                 </div>
               )}
 
@@ -7977,18 +7951,7 @@ export function BillDiscounting({
                 ]}
               />
               {routeVal === 'bank' ? (
-                <Select value={routeAcct} onValueChange={setRouteAcct}>
-                  <SelectTrigger className="h-11">
-                    <SelectValue placeholder="Pick the bank the money landed in" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {formBanks.map((a) => (
-                      <SelectItem key={String(a.id)} value={String(a.name)}>
-                        {String(a.name)}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
+                <SearchSelect value={routeAcct} options={formBanks.map((a) => String(a.name))} onChange={setRouteAcct} placeholder="Pick the bank the money landed in" className="h-11 w-full" />
               ) : (
                 <div className="grid gap-2">
                   <p className="text-[12px] font-semibold text-[#33473E]">

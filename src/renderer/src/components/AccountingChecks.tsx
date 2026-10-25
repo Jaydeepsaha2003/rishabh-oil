@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react'
+import { SearchSelect } from '@/components/SearchSelect'
 import { toast } from 'sonner'
 import { AlertTriangle, CheckCircle2, Loader2, RefreshCw, Trash2 } from 'lucide-react'
 import { Card } from '@/components/ui/card'
@@ -1699,18 +1700,13 @@ export function AccountingChecks(): React.JSX.Element {
                   <td className={cn(td, 'text-right tabular-nums')}>{formatINR(r.dr)}</td>
                   <td className={cn(td, 'text-right tabular-nums')}>{formatINR(r.cr)}</td>
                   <td className={td}>
-                    <select
+                    <SearchSelect
                       value={moveTo[cid] || ''}
-                      onChange={(e) => setMoveTo((m) => ({ ...m, [cid]: e.target.value }))}
-                      className="h-8 min-w-[190px] rounded border px-2 text-[12.5px] font-semibold"
-                    >
-                      <option value="">Pick the bank…</option>
-                      {bankLedgers.map((a) => (
-                        <option key={String(a.id)} value={String(a.name)}>
-                          {String(a.name)}
-                        </option>
-                      ))}
-                    </select>
+                      options={bankLedgers.map((a) => String(a.name))}
+                      onChange={(v) => setMoveTo((m) => ({ ...m, [cid]: v }))}
+                      placeholder="Pick the bank…"
+                      className="h-8 min-w-[190px] text-[12.5px]"
+                    />
                   </td>
                   <td className={cn(td, 'text-right')}>
                     <Button size="sm" disabled={!moveTo[cid] || moving === cid} onClick={() => void moveGeneric(r)}>

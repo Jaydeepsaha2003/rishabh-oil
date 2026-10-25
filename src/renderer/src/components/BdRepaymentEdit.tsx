@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
+import { SearchSelect } from '@/components/SearchSelect'
 import { toast } from 'sonner'
 import { ChevronDown, Pencil, Plus, Undo2, X } from 'lucide-react'
 import { ChargeRows } from '@/components/ChargeRows'
@@ -266,22 +267,14 @@ export function BdRepaymentEdit({
                     </label>
                     <label className="grid gap-1.5">
                       <span className={lbl}>From bank</span>
-                      <Select value={bank || '__bill'} onValueChange={(v) => setBank(v === '__bill' ? '' : v)}>
-                        <SelectTrigger className={cn('h-10 !rounded-[6px]', (bank || '') === 'BANK A/C' && '!border-[#E3C58C] !text-[#8A5A00]')}>
-                          <SelectValue />
-                        </SelectTrigger>
-                        <SelectContent>
-                          <SelectItem value="__bill">The bill&rsquo;s bank</SelectItem>
-                          {/* The bank it was paid from, even when that name is
-                              not a bank ledger today (an older spelling). */}
-                          {bank && !banks.includes(bank) && <SelectItem value={bank}>{bank}</SelectItem>}
-                          {banks.map((b) => (
-                            <SelectItem key={b} value={b}>
-                              {b}
-                            </SelectItem>
-                          ))}
-                        </SelectContent>
-                      </Select>
+                      {/* The bank it was paid from stays listed even when that
+                          name is not a bank ledger today (an older spelling). */}
+                      <SearchSelect
+                        value={bank || '__bill'}
+                        options={[{ value: '__bill', label: 'The bill\u2019s bank' }, ...(bank && !banks.includes(bank) ? [bank] : []), ...banks]}
+                        onChange={(v) => setBank(v === '__bill' ? '' : v)}
+                        className={cn('h-10 w-full !rounded-[6px]', (bank || '') === 'BANK A/C' && '!border-[#E3C58C] !text-[#8A5A00]')}
+                      />
                       {(bank || '') === 'BANK A/C' && (
                         <span className="text-[11px] font-semibold text-[#8A5A00]">BANK A/C is a placeholder — pick the account the statement shows.</span>
                       )}

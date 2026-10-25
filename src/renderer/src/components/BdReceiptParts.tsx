@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
+import { SearchSelect } from '@/components/SearchSelect'
 import { toast } from "sonner";
 import { RotateCcw } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -438,18 +439,7 @@ export function BdReceiptParts({
                 {!toSupplier && (
                 <div className="grid content-start gap-1.5">
                   <span className={lbl}>Into the bank *</span>
-                  <Select value={account} onValueChange={setAccount}>
-                    <SelectTrigger className="h-10">
-                      <SelectValue placeholder="Pick the bank" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {banks.map((a) => (
-                        <SelectItem key={String(a.id)} value={String(a.name)}>
-                          {String(a.name)}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
+                  <SearchSelect value={account} options={banks.map((a) => String(a.name))} onChange={setAccount} placeholder="Pick the bank" className="h-10 w-full rounded-md border-input text-sm" />
                 </div>
                 )}
                 <div className="grid content-start gap-1.5">

@@ -1,4 +1,5 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { SearchSelect } from '@/components/SearchSelect'
 import { LcCommissionLink } from '@/components/LcCommissionLink'
 import { escToClose } from '@/lib/escape'
 import { toast } from 'sonner'
@@ -5863,22 +5864,16 @@ function TreasuryDesk({ onCompanyChange, focusLcId, focusBdId, onFocusHandled }:
                       money actually leaves from when it is repaid. */}
                   <div className="flex flex-col gap-1.5">
                     <Label>My bank <span className="text-[10px] font-normal text-muted-foreground">(repayments go out of this)</span></Label>
-                    <Select
+                    {/* The exact ledger the repayment posts to, not the
+                        master's short name — HDFCBANK alone does not say
+                        which account. */}
+                    <SearchSelect
                       value={lcForm.our_bank_id ? String(lcForm.our_bank_id) : ''}
-                      onValueChange={(v) => setLcForm((p) => ({ ...p, our_bank_id: v }))}
-                    >
-                      <SelectTrigger><SelectValue placeholder={banks.length ? 'Which of my accounts' : 'Add one under Manage Banks first'} /></SelectTrigger>
-                      <SelectContent>
-                        {/* The exact ledger the repayment posts to, not the
-                            master's short name — HDFCBANK alone does not say
-                            which account. */}
-                        {banks.map((b) => (
-                          <SelectItem key={String(b.id)} value={String(b.id)}>
-                            {bankLedger[String(b.id)] || b.name}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
+                      options={banks.map((b) => ({ value: String(b.id), label: String(bankLedger[String(b.id)] || b.name) }))}
+                      onChange={(v) => setLcForm((p) => ({ ...p, our_bank_id: v }))}
+                      placeholder={banks.length ? 'Which of my accounts' : 'Add one under Manage Banks first'}
+                      className="w-full"
+                    />
                   </div>
                   <div className="flex flex-col gap-1.5 sm:col-span-2">
                     <Label>Stage</Label>

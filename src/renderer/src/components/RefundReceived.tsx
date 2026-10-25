@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
+import { SearchSelect } from '@/components/SearchSelect'
 import { toast } from 'sonner'
 import { Link2, Loader2, Undo2 } from 'lucide-react'
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog'
@@ -170,18 +171,7 @@ export function RefundReceived({
                     </div>
                     <div className={cn('grid min-w-0 grid-cols-[minmax(0,1fr)] gap-1', phone ? 'col-span-2 row-start-2' : 'min-w-[240px] flex-1')}>
                       <span className="text-[10.5px] font-bold text-muted-foreground">Into bank</span>
-                      <Select value={form.bank} onValueChange={(v) => setForm((p) => ({ ...p, bank: v }))}>
-                        <SelectTrigger className="h-9 w-full min-w-0 [&>span]:truncate">
-                          <SelectValue placeholder="Pick the bank" />
-                        </SelectTrigger>
-                        <SelectContent>
-                          {((info.banks as string[]) || []).map((b) => (
-                            <SelectItem key={b} value={b}>
-                              {b}
-                            </SelectItem>
-                          ))}
-                        </SelectContent>
-                      </Select>
+                      <SearchSelect value={form.bank} options={(info.banks as string[]) || []} onChange={(v) => setForm((p) => ({ ...p, bank: v }))} placeholder="Pick the bank" className="w-full" />
                     </div>
                     <div className="grid gap-1">
                       <span className="text-[10.5px] font-bold text-muted-foreground">Amount</span>
