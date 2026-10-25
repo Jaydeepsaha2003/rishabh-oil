@@ -829,6 +829,105 @@ function FKey({ k, label, active, onClick }: { k: string; label: string; active?
  * 20,000 misinforms every reader after it — so the difference is stated in
  * the panel and the server refuses the save.
  */
+// THE PART NAME, WITH THE NAMES USED BEFORE OFFERED UNDER IT — a styled list
+// rather than the browser's own datalist, filtered as it is typed; ↑ ↓ to
+// move, Enter to take one, Esc or a click away to close.
+function PartNameInput({
+  value,
+  names,
+  autoFocus,
+  onChange
+}: {
+  value: string
+  names: string[]
+  autoFocus?: boolean
+  onChange: (v: string) => void
+}): React.JSX.Element {
+  const [open, setOpen] = useState(false)
+  const [hi, setHi] = useState(-1)
+  const q = value.trim().toUpperCase()
+  const list = names.filter((x) => !q || (x.toUpperCase().includes(q) && x.toUpperCase() !== q)).slice(0, 30)
+  const pick = (v: string): void => {
+    onChange(v)
+    setOpen(false)
+    setHi(-1)
+  }
+  return (
+    <div className="relative min-w-0 flex-1">
+      <input
+        value={value}
+        autoFocus={autoFocus}
+        onFocus={() => setOpen(true)}
+        onBlur={() => setTimeout(() => setOpen(false), 120)}
+        onChange={(e) => {
+          onChange(e.target.value)
+          setOpen(true)
+          setHi(-1)
+        }}
+        onKeyDown={(e) => {
+          if (!open || !list.length) return
+          if (e.key === 'ArrowDown') {
+            e.preventDefault()
+            setHi((h) => Math.min(list.length - 1, h + 1))
+          } else if (e.key === 'ArrowUp') {
+            e.preventDefault()
+            setHi((h) => Math.max(0, h - 1))
+          } else if (e.key === 'Enter' && hi >= 0) {
+            e.preventDefault()
+            pick(list[hi])
+          } else if (e.key === 'Escape') {
+            e.stopPropagation()
+            setOpen(false)
+          }
+        }}
+        placeholder="Who or what — e.g. RAMESH · basic pay"
+        className="h-8 w-full rounded-[3px] border border-[#C3D2C6] bg-white pl-2 pr-7 text-[12px] font-semibold outline-none focus:border-[#1B4E82]"
+      />
+      {names.length > 0 && (
+        <button
+          type="button"
+          tabIndex={-1}
+          aria-label="Show the names used before"
+          onMouseDown={(e) => {
+            e.preventDefault()
+            setOpen((o) => !o)
+          }}
+          className="absolute right-1 top-1 flex h-6 w-6 items-center justify-center rounded-[3px] text-[#5A6B62] hover:bg-[#EDF3EC]"
+        >
+          <ChevronDown className="h-4 w-4" />
+        </button>
+      )}
+      {open && list.length > 0 && (
+        <ul
+          role="listbox"
+          className="absolute left-0 top-full z-30 mt-1 max-h-60 w-56 overflow-auto rounded-lg border border-[#DCE7DB] bg-white p-1.5 text-[12.5px] font-semibold text-[#0A1F17] shadow-lg"
+        >
+          {list.map((x, i) => (
+            <li key={x}>
+              <button
+                type="button"
+                role="option"
+                aria-selected={i === hi}
+                onMouseDown={(e) => {
+                  e.preventDefault()
+                  pick(x)
+                }}
+                onMouseEnter={() => setHi(i)}
+                className={cn(
+                  'flex w-full items-center rounded-md px-2.5 py-2 text-left',
+                  i === hi ? 'bg-[#EAF0E9] text-[#0B3D2E]' : 'hover:bg-[#F1F6F0]'
+                )}
+              >
+                {x}
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  )
+}
+
 function SplitPanel({
   rows,
   lineAmount,
@@ -861,11 +960,6 @@ function SplitPanel({
 
   return (
     <div className="mt-1.5 rounded-[4px] border border-[#C6DAF0] bg-[#F7FAFE] p-2.5">
-      <datalist id="split-part-names">
-        {names.map((x) => (
-          <option key={x} value={x} />
-        ))}
-      </datalist>
       <div className="mb-1.5 flex flex-wrap items-center gap-2">
         <span className="text-[10px] font-extrabold uppercase tracking-[.1em] text-[#1B4E82]">
           What this line is made of
@@ -892,13 +986,11 @@ function SplitPanel({
           <span className="w-[14px] flex-none text-right text-[10.5px] font-extrabold tabular-nums text-[#8CA396]">
             {i + 1}
           </span>
-          <input
+          <PartNameInput
             value={r.name}
+            names={names}
             autoFocus={i === rows.length - 1 && rows.length > 1}
-            onChange={(e) => set(i, { name: e.target.value })}
-            placeholder="Who or what — e.g. RAMESH · basic pay"
-            list="split-part-names"
-            className="h-8 min-w-0 flex-1 rounded-[3px] border border-[#C3D2C6] bg-white px-2 text-[12px] font-semibold outline-none focus:border-[#1B4E82]"
+            onChange={(v) => set(i, { name: v })}
           />
           <input
             inputMode="decimal"
