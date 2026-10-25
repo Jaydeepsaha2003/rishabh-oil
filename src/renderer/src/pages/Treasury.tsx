@@ -1,4 +1,5 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { LcCommissionLink } from '@/components/LcCommissionLink'
 import { escToClose } from '@/lib/escape'
 import { toast } from 'sonner'
 import {
@@ -7195,6 +7196,14 @@ function TreasuryDesk({ onCompanyChange, focusLcId, focusBdId, onFocusHandled }:
                       />
                     </div>
                   </LcPanel>
+                  {/* THE BANK'S COMMISSION AS CHARGED — from Payment received
+                      on: the voucher it came out by, linked, against what it
+                      should have been. */}
+                  {!!dRow.payment_received_date && (
+                    <LcPanel title="Bank commission">
+                      <LcCommissionLink lcId={Number(dRow.id)} onChanged={load} />
+                    </LcPanel>
+                  )}
                   {/* WHAT THE BANK CHARGED, AND ON WHAT. */}
                   <LcPanel title="Terms and cost">
                     <div className={LC_FACTS_2}>

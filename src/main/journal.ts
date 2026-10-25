@@ -449,6 +449,7 @@ export async function accountStatement(accountId: number, companyId?: number): P
                         OR lc.charges_journal_entry_id = je.id
                         OR lc.fee_adjust_journal_entry_id = je.id
                         OR lc.payment_in_journal_entry_id = je.id
+                        OR lc.commission_voucher_id = je.id
                      LIMIT 1),
                    (SELECT i.lc_id FROM lc_issuances i WHERE i.journal_entry_id = je.id LIMIT 1),
                    (SELECT pi.lc_id FROM lc_payment_ins pi WHERE pi.journal_entry_id = je.id LIMIT 1),
@@ -465,6 +466,7 @@ export async function accountStatement(accountId: number, companyId?: number): P
                         OR lc.charges_journal_entry_id = je.id
                         OR lc.fee_adjust_journal_entry_id = je.id
                         OR lc.payment_in_journal_entry_id = je.id
+                        OR lc.commission_voucher_id = je.id
                      LIMIT 1),
                    (SELECT i.lc_id FROM lc_issuances i WHERE i.journal_entry_id = je.id LIMIT 1),
                    (SELECT pi.lc_id FROM lc_payment_ins pi WHERE pi.journal_entry_id = je.id LIMIT 1),

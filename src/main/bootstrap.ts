@@ -3318,6 +3318,9 @@ const REQUIRED_COLUMNS: { table: string; column: string; type: string }[] = [
   // limit screen, taken (and changeable) on each LC. Shown, never posted.
   { table: 'bank_lc_limits', column: 'commission_pct', type: 'REAL' },
   { table: 'letters_of_credit', column: 'commission_pct', type: 'REAL' },
+  // The bank voucher the commission was actually taken by — linked by hand
+  // after Payment received, compared with open amount × commission %.
+  { table: 'letters_of_credit', column: 'commission_voucher_id', type: 'INTEGER' },
   { table: 'bill_discountings', column: 'payment_in_days', type: 'INTEGER' },
   { table: 'letters_of_credit', column: 'payment_in_expected', type: 'INTEGER NOT NULL DEFAULT 0' },
   { table: 'letters_of_credit', column: 'payment_in_days', type: 'INTEGER' },

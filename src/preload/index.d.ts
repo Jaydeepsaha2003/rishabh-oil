@@ -608,6 +608,9 @@ export interface Api {
     unpreclose: (id: number) => Promise<{ id: number; removed: string[] }>
     getLimit: (bankId?: number, from?: string, to?: string) => Promise<Row>
     bankLimits: () => Promise<Row[]>
+    commission: (id: number) => Promise<Row>
+    commissionCandidates: (id: number, q?: string) => Promise<Row[]>
+    linkCommission: (id: number, entryId: number | null) => Promise<{ id: number }>
     saveLimit: (values: Row) => Promise<{ id: number }>
   }
   files: {
