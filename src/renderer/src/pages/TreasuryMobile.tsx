@@ -2522,6 +2522,81 @@ function PhoneRefundStrip({ kind, id }: { kind: 'bd' | 'lc'; id: number }): Reac
   )
 }
 
+// THE STRETCHES OF ONE INTEREST PERIOD at the principal out then — a part
+// repaid early makes the later days cheaper (billDiscounting.ts bdInterestParts).
+function PartsTable({ parts }: { parts: Row[] }): React.JSX.Element {
+  return (
+    <div className="mt-3 overflow-hidden rounded-[4px] border" style={{ borderColor: T.border }}>
+      {parts.map((p, i) => (
+        <div key={i} className="grid grid-cols-[minmax(0,1fr)_auto] gap-x-3 border-b px-3 py-2 last:border-b-0" style={{ borderColor: T.rule }}>
+          <span className="text-[12px] font-bold" style={{ color: T.ink }}>
+            {formatDate(s(p.from_date))} → {formatDate(s(p.to_date))}
+            <span className="block text-[11px] font-semibold" style={{ color: T.inkSoft }}>
+              {inrFull(n(p.principal))} × {n(p.days)} d
+            </span>
+          </span>
+          <Money size={13}>{inrFull(n(p.interest))}</Money>
+        </div>
+      ))}
+    </div>
+  )
+}
+
+// A SERVICED BILL'S INTEREST, PERIOD BY PERIOD — tap a period for how it is
+// worked out. The desktop BD panel's list, on a phone.
+function ServicedSchedule({ id }: { id: number }): React.JSX.Element | null {
+  const [rows, setRows] = useState<Row[] | null>(null)
+  const [open, setOpen] = useState<number | null>(null)
+  useEffect(() => {
+    let live = true
+    void window.api.billDiscounting
+      .interestSchedule(id)
+      .then((r: Row[]) => live && setRows(Array.isArray(r) ? r : []))
+      .catch(() => live && setRows([]))
+    return () => {
+      live = false
+    }
+  }, [id])
+  if (!rows || !rows.length) return null
+  return (
+    <Panel title="Interest serviced" right={<Tag bg={T.blueBg} fg={T.navy} bd={T.blueRule}>{rows.filter((x) => x.paid_id).length} of {rows.length} paid</Tag>} bodyClass="p-0">
+      {rows.map((x, i) => {
+        const parts = (Array.isArray(x.parts) ? x.parts : []) as Row[]
+        return (
+          <div key={i} className="border-b last:border-b-0" style={{ borderColor: T.rule }}>
+            <button type="button" onClick={() => setOpen(open === i ? null : i)} className="flex w-full items-center gap-2 px-[15px] py-3 text-left">
+              <span className="min-w-0 flex-1">
+                <span className="block text-[12.5px] font-extrabold" style={{ color: T.ink }}>
+                  {formatDate(s(x.from_date))} → {formatDate(s(x.to_date))}
+                </span>
+                <span className="mt-[3px] flex flex-wrap items-center gap-1.5">
+                  <Tag bg={x.paid_id ? T.okBg : T.alertBg} fg={x.paid_id ? T.green : T.alert} bd={x.paid_id ? T.greenRule : T.alertRule}>
+                    {x.paid_id ? 'PAID' : 'DUE'}
+                  </Tag>
+                  <span className="text-[11px] font-semibold" style={{ color: T.inkSoft }}>{n(x.days)} d</span>
+                  {parts.length > 1 && <Tag bg={T.blueBg} fg={T.navy} bd={T.blueRule}>{parts.length} BALANCES</Tag>}
+                </span>
+              </span>
+              <Money size={14}>{inrFull(n(x.gross))}</Money>
+              <ChevronDown className="h-4 w-4 flex-none" style={{ color: T.inkFaint, transform: open === i ? 'rotate(180deg)' : undefined }} />
+            </button>
+            {open === i && (
+              <div className="px-[15px] pb-3">
+                <PartsTable parts={parts} />
+                <div className="mt-2 text-[11px] font-semibold leading-[1.5]" style={{ color: T.inkSoft }}>
+                  {x.reducing
+                    ? 'A part of the principal repaid stops costing interest from the day after it went back.'
+                    : 'Charged on the full principal — nothing was repaid early.'}
+                </div>
+              </div>
+            )}
+          </div>
+        )
+      })}
+    </Panel>
+  )
+}
+
 function LcDetail({
   l,
   acts,
@@ -3013,6 +3088,7 @@ function BdDetail({
         </div>
       </Panel>
 
+      {serviced && <ServicedSchedule id={Number(b.id)} />}
       <Panel title="Timeline">
         <Timeline steps={steps} />
       </Panel>
@@ -3717,6 +3793,23 @@ function RepayScreen({
   // The same as the desktop Repay form: interest, then a row per ledger the
   // debit carried — as many as it carried.
   const [intr, setIntr] = useState('')
+  // PENALTY INTEREST past maturity — the NBFC's rate, worked out until typed
+  // over (same as the desktop Repay form).
+  const [penPct, setPenPct] = useState('')
+  const [penAmt, setPenAmt] = useState('')
+  useEffect(() => {
+    let live = true
+    void window.api.data
+      .list('nbfcs')
+      .then((list: Row[]) => {
+        const nb = list.find((x) => String(x.id) === String(row.nbfc_id))
+        if (live && n(nb?.penalty_pct) > 0) setPenPct(String(n(nb?.penalty_pct)))
+      })
+      .catch(() => undefined)
+    return () => {
+      live = false
+    }
+  }, [row.nbfc_id])
   const [chg, setChg] = useState<{ account: string; amount: string }[]>([])
   const [reps, setReps] = useState<Row[]>([])
   const [busy, setBusy] = useState(false)
@@ -3747,6 +3840,13 @@ function RepayScreen({
     }
   }, [kind, intDate, row.id])
 
+  const lateDays = (() => {
+    const mat = s(row.maturity_date).slice(0, 10)
+    const on = s(date).slice(0, 10)
+    return mat && on && on > mat ? daysBetween(mat, on) || 0 : 0
+  })()
+  const penWorked = round2((due * n(penPct) * lateDays) / (100 * (n(row.days_year) || 360)))
+  const penalty = lateDays > 0 ? (penAmt.trim() === '' ? penWorked : round2(n(penAmt))) : 0
   const paid = round2(n(row.amount) - due)
   const paidPct = n(row.amount) > 0 ? (paid / n(row.amount)) * 100 : 0
   const nowPct = n(row.amount) > 0 ? (Math.min(n(amount), due) / n(row.amount)) * 100 : 0
@@ -3770,6 +3870,9 @@ function RepayScreen({
         amount: amt,
         also: [],
         interest: intr.trim() === '' ? null : Number(intr),
+        penalty: penalty > 0.004 ? penalty : null,
+        penalty_pct: penalty > 0.004 ? n(penPct) || null : null,
+        penalty_days: penalty > 0.004 ? lateDays : null,
         charges: chg.filter((c) => c.account.trim() && round2(n(c.amount)) > 0).map((c) => ({ account: c.account.trim(), amount: round2(n(c.amount)) })),
         party_id: via === 'party' && row.party_id ? Number(row.party_id) : null
       })
@@ -3949,6 +4052,7 @@ function RepayScreen({
               </div>
             </Field>
           </div>
+          {win && Array.isArray(win.parts) && win.parts.length > 1 && <PartsTable parts={win.parts as Row[]} />}
           {/* bdInterestWindow names it `blocked` (the fact) and `blocked_note`
               (why, and the way round it) — as the desktop shows them. */}
           {win && !!win.blocked && (
@@ -3992,6 +4096,29 @@ function RepayScreen({
             <Field label="Repay date" hint="Money already gone back — today at the latest.">
               <DateIn value={date} onChange={setDate} max={todayISO()} />
             </Field>
+            {lateDays > 0 && (
+              <div className="grid gap-2.5 rounded-[4px] border p-3" style={{ borderColor: T.alertRule, background: '#FDF8F7' }}>
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="text-[10.5px] font-extrabold uppercase tracking-[.12em]" style={{ color: T.alertInk }}>
+                    Penalty interest
+                  </span>
+                  <Tag bg="#fff" fg={T.alert} bd={T.alertRule}>
+                    {lateDays} day{lateDays === 1 ? '' : 's'} past {formatDate(s(row.maturity_date))}
+                  </Tag>
+                </div>
+                <div className="grid grid-cols-[110px_minmax(0,1fr)] gap-2">
+                  <Field label="Rate % p.a.">
+                    <TextIn value={penPct} onChange={(v) => { setPenPct(num(v)); setPenAmt('') }} placeholder="0.00" mono inputMode="decimal" />
+                  </Field>
+                  <Field label="Penalty (₹)">
+                    <TextIn value={penAmt.trim() === '' ? (penWorked ? String(penWorked) : '') : penAmt} onChange={(v) => setPenAmt(num(v))} placeholder="0.00" mono inputMode="decimal" />
+                  </Field>
+                </div>
+                <div className="text-[11.5px] font-semibold leading-[1.5]" style={{ color: T.inkSoft }}>
+                  {inrFull(due)} × {n(penPct) || 0}% × {lateDays} / {n(row.days_year) || 360} = {inrFull(penWorked)} — posts to Penal Interest in the same debit.
+                </div>
+              </div>
+            )}
             <Field
               label="Settle through"
               hint={via === 'party' ? 'The party paid the NBFC direct — it posts against their ledger.' : 'Out of your own bank account.'}
