@@ -19,6 +19,7 @@
 // Colours, sizes and spacing are the handoff's. Its Material Symbols are
 // substituted with the lucide icons this codebase already uses, as the handoff
 // itself says to do.
+import { LcCommissionLink } from '@/components/LcCommissionLink'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { toast } from 'sonner'
 import {
@@ -2694,6 +2695,13 @@ function LcDetail({
         />
       </Panel>
 
+      {/* THE INTEREST THE BANK GAVE BACK on a preclosure — the receipt it came
+          in by, linked, against what it should be (same panel as the desktop). */}
+      {!!l.preclosed_date && !!l.expiry_date && s(l.preclosed_date).slice(0, 10) < s(l.expiry_date).slice(0, 10) && (
+        <Panel title="Interest refund" bodyClass="p-[10px]">
+          <LcCommissionLink kind="refund" lcId={Number(l.id)} />
+        </Panel>
+      )}
       <Panel title="Timeline">
         <Timeline steps={steps} />
       </Panel>
