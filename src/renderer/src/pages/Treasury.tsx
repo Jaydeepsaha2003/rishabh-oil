@@ -5,7 +5,13 @@ import { escToClose } from '@/lib/escape'
 import { toast } from 'sonner'
 import {
   AlertTriangle,
+  ArrowDownLeft,
+  ArrowLeftRight,
   ArrowUpRight,
+  CalendarCheck,
+  CircleDot,
+  Factory,
+  PauseCircle,
   Ban,
   Banknote,
   BookOpen,
@@ -1204,6 +1210,56 @@ const LC_STATE_TONE: Record<'all' | 'matured' | 'repaid' | 'preclosed' | 'reject
   repaid: { on: '!border-[#3F4E5A] !bg-[#3F4E5A] !text-white !shadow-[0_1px_2px_rgba(10,31,23,.22),inset_0_-2px_0_#B8C6D1]', badge: 'bg-[#B8C6D1] text-[#1E2A33]', dot: 'bg-[#6B7F8E]' },
   preclosed: { on: '!border-[#0E5A78] !bg-[#0E5A78] !text-white !shadow-[0_1px_2px_rgba(10,31,23,.22),inset_0_-2px_0_#8FD3EA]', badge: 'bg-[#8FD3EA] text-[#06324A]', dot: 'bg-[#1C8DB5]' },
   rejected: { on: '!border-[#9B2C24] !bg-[#9B2C24] !text-white !shadow-[0_1px_2px_rgba(10,31,23,.22),inset_0_-2px_0_#F2B8B2]', badge: 'bg-[#F2B8B2] text-[#5C140F]', dot: 'bg-[#C0392B]' }
+}
+
+// THE LC WINDOW'S HEADER CHIPS, on the website: one shape, an icon each, a
+// soft tint on the dark band — stage, closure (with its date), purpose and the
+// work status. The status is left out once the closure says it already.
+function LcHeaderChips({ l, paymentIn, awaitingIn }: { l: Row; paymentIn: boolean; awaitingIn: boolean }): React.JSX.Element {
+  const kind = closureKind(l)
+  const stage = String(l.stage || 'application')
+  const tint = {
+    lime: { bg: 'rgba(199,240,63,.13)', bd: 'rgba(199,240,63,.38)', fg: '#DDF97A' },
+    teal: { bg: 'rgba(143,211,234,.14)', bd: 'rgba(143,211,234,.42)', fg: '#C4ECF8' },
+    slate: { bg: 'rgba(255,255,255,.08)', bd: 'rgba(255,255,255,.2)', fg: '#DCE7E1' },
+    red: { bg: 'rgba(242,184,178,.14)', bd: 'rgba(242,184,178,.42)', fg: '#F8CBC6' },
+    amber: { bg: 'rgba(245,198,107,.14)', bd: 'rgba(245,198,107,.42)', fg: '#F8DB9F' },
+    sky: { bg: 'rgba(143,183,234,.14)', bd: 'rgba(143,183,234,.42)', fg: '#C9DCF6' }
+  }
+  const chip = (key: string, Icon: typeof Check, label: string, t: keyof typeof tint, extra?: string, title?: string): React.JSX.Element => (
+    <span
+      key={key}
+      title={title}
+      className="inline-flex h-7 flex-none items-center gap-1.5 whitespace-nowrap rounded-[6px] border px-2.5 text-[11.5px] font-bold tracking-[.01em]"
+      style={{ background: tint[t].bg, borderColor: tint[t].bd, color: tint[t].fg }}
+    >
+      <Icon className="h-3.5 w-3.5 flex-none opacity-90" />
+      {label}
+      {extra && (
+        <>
+          <span className="h-3 w-px flex-none" style={{ background: tint[t].bd }} />
+          <span className="font-mono text-[11px] font-semibold opacity-90">{extra}</span>
+        </>
+      )}
+    </span>
+  )
+  const out: React.JSX.Element[] = []
+  out.push(chip('stage', stage === 'payment_received' ? Check : CircleDot, STAGE_LABEL[stage] || stage, stage === 'payment_received' ? 'lime' : stage === 'open' ? 'sky' : 'slate'))
+  if (kind !== 'none') {
+    const on = formatDate(String(l.preclosed_date))
+    if (kind === 'early') out.push(chip('closure', CalendarCheck, 'Preclosed', 'teal', on, `Wound up early — ${formatDate(String(l.expiry_date))} never came`))
+    else if (kind === 'late') out.push(chip('closure', CalendarCheck, 'Closed late', 'red', on, `Closed after its ${formatDate(String(l.expiry_date))} maturity`))
+    else out.push(chip('closure', CalendarCheck, 'Closed', 'slate', on, 'Closed on maturity'))
+  }
+  if (paymentIn) out.push(chip('pin', ArrowDownLeft, 'Payment IN', 'lime'))
+  if (awaitingIn) out.push(chip('ain', ArrowDownLeft, 'Awaiting Payment IN', 'amber'))
+  if (l.purpose) out.push(chip('purpose', String(l.purpose) === 'trading' ? ArrowLeftRight : Factory, String(l.purpose) === 'trading' ? 'Trading' : 'Manufacturing', 'slate'))
+  const ds = String(l.display_status || 'in_progress')
+  if (ds === 'rejected') out.push(chip('ds', Ban, 'Rejected', 'red', undefined, `${l.rejected_date ? `Rejected ${formatDate(String(l.rejected_date))}` : 'Rejected'}${l.rejected_reason ? ` — ${String(l.rejected_reason)}` : ''}`))
+  else if (ds === 'non_compliant') out.push(chip('ds', AlertTriangle, 'Non-compliant', 'red'))
+  else if (ds === 'on_hold') out.push(chip('ds', PauseCircle, 'On hold', 'amber'))
+  else if (kind === 'none' && !['preclosed', 'closed', 'repaid'].includes(ds)) out.push(chip('ds', CircleDot, ds.replace('_', ' ').replace(/^./, (c) => c.toUpperCase()), 'slate'))
+  return <>{out}</>
 }
 
 // How an LC's closure sits against its maturity. Only 'early' is a preclosure.
@@ -7086,6 +7142,10 @@ function TreasuryDesk({ onCompanyChange, focusLcId, focusBdId, onFocusHandled }:
                   <DialogTitle className={cn('flex flex-wrap items-center gap-1.5 pr-6', __WEB__ && '!mt-2 !gap-2 !pr-10')}>
                     <span className={cn('doc-ref', !dRow.lc_no && 'italic text-muted-foreground', __WEB__ && '!text-[19px] !font-bold !tracking-[-0.02em] !text-white', __WEB__ && !dRow.lc_no && '!text-[#8FBFA8]')}>{dRow.lc_no || 'Pending LC no'}</span>
                     <DuplicateNoBadge lcs={lcs} l={dRow} />
+                    {__WEB__ ? (
+                      <LcHeaderChips l={dRow} paymentIn={isLcPaymentInDone(dRow)} awaitingIn={canMarkPaymentIn(dRow)} />
+                    ) : (
+                      <>
                     <StageBadge stage={String(dRow.stage || 'application')} />
                     <ClosureBadge l={dRow} withDate />
                     {isLcPaymentInDone(dRow) && <Badge variant="success">Payment IN</Badge>}
@@ -7104,6 +7164,8 @@ function TreasuryDesk({ onCompanyChange, focusLcId, focusBdId, onFocusHandled }:
                       >
                         {String(dRow.display_status || 'in_progress').replace('_', ' ')}
                       </Badge>
+                    )}
+                      </>
                     )}
                   </DialogTitle>
                 </DialogHeader>
