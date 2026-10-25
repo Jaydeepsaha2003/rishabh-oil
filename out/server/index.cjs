@@ -2618,6 +2618,7 @@ __export(ledgerGroups_exports, {
   baseGroupOf: () => baseGroupOf,
   createGroup: () => createGroup,
   deleteGroup: () => deleteGroup,
+  deleteLedger: () => deleteLedger,
   ensureGroupTable: () => ensureGroupTable,
   groupBaseMap: () => groupBaseMap,
   groupNatureMap: () => groupNatureMap,
@@ -2916,6 +2917,44 @@ async function deleteGroup(id) {
   }
   await c.execute({ sql: "DELETE FROM ledger_groups WHERE id = ?", args: [Number(id)] });
   return { id: Number(id) };
+}
+async function deleteLedger(id) {
+  const c = getClient();
+  const a = (await c.execute({ sql: "SELECT id, name FROM ledger_accounts WHERE id = ?", args: [Number(id)] })).rows[0];
+  if (!a) throw new Error("No such ledger");
+  const name = String(a.name || "");
+  const key3 = name.trim().toUpperCase();
+  const count = async (sql, args) => Number((await c.execute({ sql, args })).rows[0]?.n || 0);
+  const lines = await count("SELECT COUNT(*) AS n FROM journal_lines WHERE account_id = ?", [Number(id)]);
+  if (lines) throw new Error(`${name} has ${lines} voucher line(s) \u2014 merge it into another ledger or hide it instead`);
+  if (await count("SELECT COUNT(*) AS n FROM journal_bill_allocs WHERE account_id = ?", [Number(id)]))
+    throw new Error(`${name} has bill allocations \u2014 merge it into another ledger or hide it instead`);
+  if (await count("SELECT COUNT(*) AS n FROM ledger_openings WHERE account_id = ? AND (ABS(COALESCE(dr, 0)) > 0.004 OR ABS(COALESCE(cr, 0)) > 0.004)", [Number(id)]))
+    throw new Error(`${name} has an opening balance \u2014 clear it under Opening balances first`);
+  const bare = key3.replace(/\s*\((DR|CR)\)$/, "");
+  for (const [t, what] of [
+    ["suppliers", "supplier"],
+    ["customers", "customer"],
+    ["transporters", "transporter"],
+    ["brokers", "broker"]
+  ]) {
+    const hit = await count(`SELECT COUNT(*) AS n FROM ${t} WHERE TRIM(UPPER(name)) IN (?, ?)`, [key3, bare]).catch(() => 0);
+    if (hit) throw new Error(`${name} is the ledger of a ${what} of that name \u2014 rename or remove the ${what} first, or it comes back on its next save`);
+  }
+  if (await count("SELECT COUNT(*) AS n FROM ledger_map WHERE TRIM(UPPER(use_name)) = ?", [key3]))
+    throw new Error(`Old names are redirected to ${name} \u2014 it cannot be deleted while they point here`);
+  await withDbTransaction(async () => {
+    const tx = getClient();
+    await tx.execute({ sql: "DELETE FROM ledger_openings WHERE account_id = ?", args: [Number(id)] });
+    for (const t of ["ledger_homes", "company_bank_accounts"]) {
+      await tx.execute({ sql: `DELETE FROM ${t} WHERE account_id = ?`, args: [Number(id)] }).catch(() => void 0);
+    }
+    for (const t of ["tally_import_map", "tally_ledgers"]) {
+      await tx.execute({ sql: `UPDATE ${t} SET account_id = NULL WHERE account_id = ?`, args: [Number(id)] }).catch(() => void 0);
+    }
+    await tx.execute({ sql: "DELETE FROM ledger_accounts WHERE id = ?", args: [Number(id)] });
+  });
+  return { id: Number(id), name };
 }
 async function setAccountsGroup(accountIds, group) {
   const ids = Array.from(new Set((accountIds || []).map(Number).filter((x) => x > 0)));
@@ -40992,6 +41031,7 @@ function registerIpc() {
     (_e, { id, parentId, nature }) => moveGroup(id, parentId, nature)
   );
   handle("journal:deleteGroup", (_e, { id }) => deleteGroup(id));
+  handle("journal:deleteLedger", (_e, { id }) => deleteLedger(id));
   handle("journal:setAccountGroup", (_e, { id, group }) => setAccountGroup(id, group));
   handle("journal:setAccountsGroup", (_e, { ids, group }) => setAccountsGroup(ids, group));
   handle("journal:setAccountsHidden", (_e, { ids, hidden }) => setAccountsHidden(ids, hidden));
