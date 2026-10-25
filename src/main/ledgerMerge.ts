@@ -64,24 +64,32 @@ export async function previewLedgerMerge(fromId: number, intoId: number): Promis
   const redirects = (
     await c.execute({ sql: 'SELECT posts_as FROM ledger_map WHERE TRIM(UPPER(use_name)) = ?', args: [clean(from.name)] }).catch(() => ({ rows: [] }))
   ).rows.map((r) => String((r as unknown as Row).posts_as))
-  // LIKELY THE SAME MONEY TWICE: a Tally-imported line on the ledger being
-  // merged away that matches, within a rupee and a week, a line the kept
-  // ledger already has on the same side (an LC payment the app posted and
-  // Tally's journal for it). Merged as they stand the party is debited twice;
-  // listed so the copy is removed first.
+  // LIKELY THE SAME MONEY TWICE, either way round: a line imported from Tally
+  // on one ledger and a line the app posted on the other — same company, same
+  // side, within a rupee and a week (an LC payment the app posted and Tally's
+  // journal for it). Merged as they stand the party carries both, so the merge
+  // is refused until each pair is resolved: the Tally copy deleted, or the pair
+  // marked as two real entries (`keep`). `copy_id` is the Tally one.
+  const IMPORTED = "COALESCE(%s.narration, '') LIKE 'Imported from Tally%%'"
   const copies = await c.execute({
-    sql: `SELECT fe.id AS entry_id, fe.company_id, fe.entry_date, fe.vch_no, fl.dr, fl.cr,
-                 (SELECT nn.prefix || '/' || nn.serial FROM voucher_numbers nn WHERE nn.entry_id = fe.id) AS code,
-                 ie.id AS twin_id, ie.entry_date AS twin_date,
-                 (SELECT nn.prefix || '/' || nn.serial FROM voucher_numbers nn WHERE nn.entry_id = ie.id) AS twin_code
+    sql: `SELECT CASE WHEN ${IMPORTED.replace('%s', 'fe')} THEN fe.id ELSE ie.id END AS copy_id,
+                 CASE WHEN ${IMPORTED.replace('%s', 'fe')} THEN ie.id ELSE fe.id END AS twin_id,
+                 CASE WHEN ${IMPORTED.replace('%s', 'fe')} THEN ? ELSE ? END AS copy_on,
+                 fe.company_id, fl.dr, fl.cr, il.dr AS twin_dr, il.cr AS twin_cr,
+                 fe.id AS from_entry, fe.entry_date AS from_date, ie.entry_date AS into_date,
+                 fe.vch_type AS from_type, ie.vch_type AS into_type,
+                 (SELECT nn.prefix || '/' || nn.serial FROM voucher_numbers nn WHERE nn.entry_id = fe.id) AS from_code,
+                 (SELECT nn.prefix || '/' || nn.serial FROM voucher_numbers nn WHERE nn.entry_id = ie.id) AS into_code,
+                 fe.vch_no AS from_no, ie.vch_no AS into_no
             FROM journal_lines fl JOIN journal_entries fe ON fe.id = fl.entry_id
-            JOIN journal_lines il ON il.account_id = ? AND ((fl.dr > 0 AND il.dr > 0 AND ABS(il.dr - fl.dr) <= 1) OR (fl.cr > 0 AND il.cr > 0 AND ABS(il.cr - fl.cr) <= 1))
-            JOIN journal_entries ie ON ie.id = il.entry_id AND ie.company_id = fe.company_id
+            JOIN journal_lines il ON il.account_id = ?
+                 AND ((fl.dr > 0 AND il.dr > 0 AND ABS(il.dr - fl.dr) <= 1) OR (fl.cr > 0 AND il.cr > 0 AND ABS(il.cr - fl.cr) <= 1))
+            JOIN journal_entries ie ON ie.id = il.entry_id AND ie.id <> fe.id AND ie.company_id = fe.company_id
                  AND ABS(julianday(ie.entry_date) - julianday(fe.entry_date)) <= 7
-                 AND COALESCE(ie.narration, '') NOT LIKE 'Imported from Tally%'
-           WHERE fl.account_id = ? AND COALESCE(fe.narration, '') LIKE 'Imported from Tally%'
+           WHERE fl.account_id = ?
+             AND (${IMPORTED.replace('%s', 'fe')}) <> (${IMPORTED.replace('%s', 'ie')})
            ORDER BY fe.entry_date`,
-    args: [n(intoId), n(fromId)]
+    args: [String(from.name), String(into.name), n(intoId), n(fromId)]
   })
   return {
     from,
@@ -100,9 +108,23 @@ export async function previewLedgerMerge(fromId: number, intoId: number): Promis
  * Merge `fromId` into `intoId`; the kept ledger then carries `keepName`
  * (its own name when blank). Everything happens in one transaction.
  */
-export async function mergeLedgers(fromId: number, intoId: number, keepName?: string): Promise<{ id: number; name: string; lines: number }> {
+export async function mergeLedgers(
+  fromId: number,
+  intoId: number,
+  keepName?: string,
+  // Tally copies the desk has looked at and says are real, separate entries.
+  keep: number[] = []
+): Promise<{ id: number; name: string; lines: number }> {
   const pv = await previewLedgerMerge(fromId, intoId)
   if (pv.blocked) throw new Error(String(pv.blocked))
+  // No merge that leaves the same money on the ledger twice.
+  const kept = new Set(keep.map(Number))
+  const open = (pv.copies as Row[]).filter((x) => !kept.has(n(x.copy_id)))
+  if (open.length) {
+    throw new Error(
+      `${open.length} entr${open.length === 1 ? 'y looks' : 'ies look'} like the same money booked twice (a Tally copy of an app entry) — delete the copy or mark it as a separate entry, then merge`
+    )
+  }
   await ensureLedgerMap()
   return withDbTransaction(async () => {
     // The transaction's own handle.

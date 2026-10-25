@@ -4,7 +4,8 @@ import { Merge, Search } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
-import { errText, formatINR } from '@/lib/format'
+import { errText, formatDate, formatINR } from '@/lib/format'
+import { cn } from '@/lib/utils'
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Row = Record<string, any>
@@ -30,6 +31,9 @@ export function LedgerMergeDialog({
   const [keep, setKeep] = useState<'into' | 'from' | 'custom'>('into')
   const [custom, setCustom] = useState('')
   const [busy, setBusy] = useState(false)
+  // Tally copies marked as real, separate entries (kept through the merge).
+  const [kept, setKept] = useState<Set<number>>(new Set())
+  const [rev, setRev] = useState(0)
 
   useEffect(() => {
     setQ(from ? String(from.name).split(/[\s,&(]+/)[0] || '' : '')
@@ -41,6 +45,7 @@ export function LedgerMergeDialog({
 
   useEffect(() => {
     setPv(null)
+    setKept(new Set())
     if (!from || !into) return
     let live = true
     window.api.journal
@@ -50,7 +55,7 @@ export function LedgerMergeDialog({
     return () => {
       live = false
     }
-  }, [from, into])
+  }, [from, into, rev])
 
   const matches = useMemo(() => {
     const k = q.trim().toUpperCase()
@@ -59,6 +64,23 @@ export function LedgerMergeDialog({
   }, [q, ledgers, from])
 
   const keepName = keep === 'into' ? String(into?.name || '') : keep === 'from' ? String(from?.name || '') : custom.trim()
+  const copies = ((pv?.copies as Row[]) || []) as Row[]
+  const unresolved = copies.filter((x) => !kept.has(Number(x.copy_id))).length
+  // Delete the Tally copy (an ordinary voucher delete) and look again.
+  const dropCopy = async (x: Row): Promise<void> => {
+    const no = String(x.copy_on === String(from?.name) ? x.from_code || x.from_no : x.into_code || x.into_no)
+    if (!window.confirm(`Delete the Tally copy ${no}? The app's own entry stays. This removes the voucher.`)) return
+    setBusy(true)
+    try {
+      await window.api.vouchers.remove(Number(x.copy_id))
+      toast.success(`${no} deleted`)
+      setRev((r) => r + 1)
+    } catch (e) {
+      toast.error(errText(e))
+    } finally {
+      setBusy(false)
+    }
+  }
   const merge = async (): Promise<void> => {
     if (!from || !into || !pv || pv.blocked) return
     const lines = ((pv.companies as Row[]) || []).reduce((t, x) => t + Number(x.lines || 0), 0)
@@ -70,7 +92,7 @@ export function LedgerMergeDialog({
       return
     setBusy(true)
     try {
-      const r = await window.api.journal.mergeLedgers(from.id, Number(into.id), keepName)
+      const r = await window.api.journal.mergeLedgers(from.id, Number(into.id), keepName, [...kept])
       toast.success(`Merged — ${r.lines} line(s) now on ${r.name}`)
       onDone?.()
       onClose()
@@ -184,17 +206,57 @@ export function LedgerMergeDialog({
                 </div>
               )}
 
-              {((pv.copies as Row[]) || []).length > 0 && (
+              {copies.length > 0 && (
                 <div className="rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-[12px] text-amber-900">
-                  <div className="font-bold">Possibly the same money twice — remove the Tally copy first</div>
-                  {(pv.copies as Row[]).map((x, i) => (
-                    <div key={i}>
-                      Tally {String(x.code || x.vch_no)} ({String(x.entry_date)}) {formatINR(Number(x.dr) || Number(x.cr))}{' '}
-                      {Number(x.dr) > 0 ? 'Dr' : 'Cr'} matches {String(x.twin_code || `#${x.twin_id}`)} ({String(x.twin_date)}) already on{' '}
-                      {String(into?.name || '')}
-                    </div>
-                  ))}
-                  <div className="mt-1 text-[11px]">Merged as they are, the party carries both. Delete the Tally voucher in Accounting, then merge.</div>
+                  <div className="font-bold">
+                    The same money on both ledgers? {unresolved ? `${unresolved} to resolve before merging` : 'all resolved'}
+                  </div>
+                  <div className="mb-1.5 text-[11px]">
+                    A Tally import on one ledger matches an entry the app posted on the other — merged as they are, the party would carry both.
+                  </div>
+                  {copies.map((x) => {
+                    const id = Number(x.copy_id)
+                    const fromIsCopy = x.copy_on === String(from?.name)
+                    const one = (side: 'from' | 'into'): string =>
+                      `${String(side === 'from' ? x.from_code || x.from_no : x.into_code || x.into_no)} ${String(side === 'from' ? x.from_type : x.into_type).toLowerCase()} ${formatDate(String(side === 'from' ? x.from_date : x.into_date))}`
+                    const amt = Number(x.dr) || Number(x.cr)
+                    const isKept = kept.has(id)
+                    return (
+                      <div key={`${id}-${String(x.twin_id)}`} className={cn('mb-1 rounded border bg-white px-2 py-1.5', isKept ? 'border-[#DCE7DB] opacity-70' : 'border-amber-300')}>
+                        <div>
+                          <b>Tally copy:</b> {one(fromIsCopy ? 'from' : 'into')} · {formatINR(amt)} {Number(x.dr) > 0 ? 'Dr' : 'Cr'}
+                        </div>
+                        <div className="text-[11px]">
+                          <b>App entry:</b> {one(fromIsCopy ? 'into' : 'from')} · {formatINR(Number(x.twin_dr) || Number(x.twin_cr))}
+                        </div>
+                        <div className="mt-1 flex flex-wrap items-center gap-2">
+                          <button
+                            type="button"
+                            disabled={busy}
+                            onClick={() => void dropCopy(x)}
+                            className="rounded-[4px] bg-[#8C2F26] px-2 py-1 text-[11px] font-bold text-white disabled:opacity-40"
+                          >
+                            Delete the Tally copy
+                          </button>
+                          <label className="flex items-center gap-1 text-[11px] font-semibold">
+                            <input
+                              type="checkbox"
+                              checked={isKept}
+                              onChange={(e) =>
+                                setKept((s) => {
+                                  const next = new Set(s)
+                                  if (e.target.checked) next.add(id)
+                                  else next.delete(id)
+                                  return next
+                                })
+                              }
+                            />
+                            Not the same — keep both
+                          </label>
+                        </div>
+                      </div>
+                    )
+                  })}
                 </div>
               )}
 
@@ -231,7 +293,7 @@ export function LedgerMergeDialog({
           <Button variant="outline" onClick={onClose} disabled={busy}>
             Close
           </Button>
-          <Button onClick={() => void merge()} disabled={busy || !pv || !!pv.blocked || !keepName}>
+          <Button onClick={() => void merge()} disabled={busy || !pv || !!pv.blocked || !keepName || unresolved > 0} title={unresolved ? 'Resolve the same-money pairs first' : undefined}>
             {busy ? 'Merging…' : 'Merge'}
           </Button>
         </DialogFooter>

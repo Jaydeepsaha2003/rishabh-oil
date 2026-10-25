@@ -1026,10 +1026,10 @@ export function registerIpc(): void {
     const { previewLedgerMerge } = await import('./ledgerMerge')
     return previewLedgerMerge(Number(fromId), Number(intoId))
   })
-  handle('journal:mergeLedgers', async (_e, { fromId, intoId, keepName }: { fromId: number; intoId: number; keepName?: string }) => {
+  handle('journal:mergeLedgers', async (_e, { fromId, intoId, keepName, keep }: { fromId: number; intoId: number; keepName?: string; keep?: number[] }) => {
     await assertAdmin('Merging ledgers')
     const { mergeLedgers } = await import('./ledgerMerge')
-    return mergeLedgers(Number(fromId), Number(intoId), keepName)
+    return mergeLedgers(Number(fromId), Number(intoId), keepName, Array.isArray(keep) ? keep.map(Number) : [])
   })
   handle('journal:renameLedger', (_e, { id, name, companyId }: { id: number; name: string; companyId?: number }) =>
     renameLedger(id, name, companyId)
