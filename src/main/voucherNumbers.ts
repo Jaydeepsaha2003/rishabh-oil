@@ -25,6 +25,9 @@ const WORDS: Array<[string, string]> = [
   ['JOURNAL', 'JV']
 ]
 
+/** The number series a voucher type falls in — PURCHASE OIL and PURCHASE OTHERS both PUR. */
+export const voucherSeriesOf = (type: string): string => prefix(type)
+
 function prefix(type: string): string {
   const u = type.toUpperCase()
   for (const [word, code] of WORDS) if (u.includes(word)) return code

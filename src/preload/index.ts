@@ -279,6 +279,11 @@ const api = {
     cashflow: (args?: { from?: string; to?: string; companyId?: number }): Promise<Row> => ipcRenderer.invoke('vouchers:cashflow', args),
     summary: (args?: { from?: string; to?: string; companyId?: number }): Promise<Row> => ipcRenderer.invoke('vouchers:summary', args),
     get: (id: number): Promise<Row | null> => ipcRenderer.invoke('vouchers:get', { id }),
+    subtypes: (): Promise<Row[]> => ipcRenderer.invoke('vouchers:subtypes'),
+    subtypeCreate: (values: { base_type: string; name: string }): Promise<{ id: number }> => ipcRenderer.invoke('vouchers:subtypeCreate', { values }),
+    subtypeRename: (values: { id: number; name: string }): Promise<{ id: number }> => ipcRenderer.invoke('vouchers:subtypeRename', { values }),
+    subtypeDelete: (id: number): Promise<{ id: number }> => ipcRenderer.invoke('vouchers:subtypeDelete', { id }),
+    subtypeSet: (values: { entry_id: number; subtype: string | null }): Promise<{ id: number; subtype: string | null }> => ipcRenderer.invoke('vouchers:subtypeSet', { values }),
     create: (values: Row): Promise<{ id: number }> => ipcRenderer.invoke('vouchers:create', { values }),
     update: (id: number, values: Row): Promise<{ id: number }> =>
       ipcRenderer.invoke('vouchers:update', { id, values }),

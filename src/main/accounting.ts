@@ -139,6 +139,9 @@ export interface LineSplit {
 export interface VoucherInput {
   date: string
   vchType: VoucherType
+  // The desk's own type under the basic one (PURCHASE OTHERS) — a label only;
+  // the number stays in the basic type's series. Omitted leaves it as it was.
+  subtype?: string | null
   vchNo?: string | null
   narration?: string | null
   companyId?: number
@@ -359,6 +362,10 @@ export async function createVoucher(v: VoucherInput): Promise<{ id: number }> {
   })
   await writeAllocs(res.id, lines)
   await writeSplits(res.id, lines)
+  if (v.subtype !== undefined) {
+    const { checkedSubtype } = await import('./voucherSubtypes')
+    await getClient().execute({ sql: 'UPDATE journal_entries SET vch_subtype = ? WHERE id = ?', args: [await checkedSubtype(v.vchType, v.subtype), res.id] })
+  }
   return res
   })
 }
@@ -390,6 +397,10 @@ export async function updateVoucher(id: number, v: VoucherInput): Promise<{ id: 
     args: [v.date, v.vchType, v.vchNo || null, v.narration || null, id]
   })
   await renumberOnTypeChange(id, v.vchType)
+  if (v.subtype !== undefined) {
+    const { checkedSubtype } = await import('./voucherSubtypes')
+    await c.execute({ sql: 'UPDATE journal_entries SET vch_subtype = ? WHERE id = ?', args: [await checkedSubtype(v.vchType, v.subtype), id] })
+  }
   await c.execute({
     sql: 'DELETE FROM journal_bill_allocs WHERE line_id IN (SELECT id FROM journal_lines WHERE entry_id = ?)',
     args: [id]
@@ -504,7 +515,7 @@ export async function listVouchers(
     }
   }
   const res = await c.execute({
-    sql: `SELECT je.id, je.entry_date, je.vch_type, je.vch_no, je.narration,
+    sql: `SELECT je.id, je.entry_date, je.vch_type, je.vch_subtype, je.vch_no, je.narration,
                  je.order_id, je.sale_id, je.payment_id,
                  -- The document's own number and its own book, for the Day
                  -- Book's Ref column and for the drill-through — see the note

@@ -201,6 +201,11 @@ export interface Api {
     cashflow: (args?: { from?: string; to?: string; companyId?: number }) => Promise<Row>
     summary: (args?: { from?: string; to?: string; companyId?: number }) => Promise<Row>
     get: (id: number) => Promise<Row | null>
+    subtypes: () => Promise<Row[]>
+    subtypeCreate: (values: { base_type: string; name: string }) => Promise<{ id: number }>
+    subtypeRename: (values: { id: number; name: string }) => Promise<{ id: number }>
+    subtypeDelete: (id: number) => Promise<{ id: number }>
+    subtypeSet: (values: { entry_id: number; subtype: string | null }) => Promise<{ id: number; subtype: string | null }>
     create: (values: Row) => Promise<{ id: number }>
     update: (id: number, values: Row) => Promise<{ id: number }>
     remove: (id: number) => Promise<{ id: number }>

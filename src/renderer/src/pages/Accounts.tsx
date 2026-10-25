@@ -1,4 +1,5 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { VoucherTypesMenu } from '@/components/VoucherTypesMenu'
 import { escMayDiscard, escToClose, hasOpenOverlay, useDrawerEscape } from '@/lib/escape'
 import { toast } from 'sonner'
 import { loadUser } from '@/lib/session'
@@ -716,6 +717,10 @@ const splitsIn = (rows: unknown): SplitRow[] =>
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   ((rows as any[]) || []).map((sp) => ({ name: String(sp.name || ''), amount: String(sp.amount ?? ''), note: sp.note ? String(sp.note) : undefined }))
 const typeLabelOf = (t: string): string => VCH_TYPES.find((v) => v.key === t)?.label || t
+// The number series a type falls in, by its word — PURCHASE OIL and PURCHASE
+// OTHERS are both Purchase (voucherNumbers.ts on the server says the same).
+const seriesWord = (t: string): string =>
+  ['PURCHASE', 'SALE', 'DEBIT', 'CREDIT', 'RECEIPT', 'PAYMENT', 'CONTRA', 'JOURNAL'].find((w) => String(t).toUpperCase().includes(w)) || String(t).toUpperCase()
 
 function monthLabelLong(m: string): string {
   const [y, mo] = m.split('-')
@@ -1893,6 +1898,14 @@ export function Accounts({
 
   // Voucher entry / alteration state.
   const [vchType, setVchType] = useState<VchType>('PAYMENT')
+  // The desk's own voucher type under the basic one — PURCHASE OTHERS under
+  // Purchase (voucherSubtypes.ts). A label: the number stays in PUR/***.
+  const [vchSubtype, setVchSubtype] = useState('')
+  const [subtypes, setSubtypes] = useState<Row[]>([])
+  const loadSubtypes = useCallback((): void => {
+    void window.api.vouchers.subtypes().then(setSubtypes).catch(() => setSubtypes([]))
+  }, [])
+  useEffect(loadSubtypes, [loadSubtypes])
   const [vchDate, setVchDate] = useState(todayISO())
   const [vchNo, setVchNo] = useState('')
   const [narration, setNarration] = useState('')
@@ -3334,6 +3347,7 @@ export function Accounts({
     setNoteEditId(null)
     setAlterBack(null)
     setVchType(t)
+    setVchSubtype('')
     setVchNo('')
     setVchCode('')
     setNoteSplitOpen(false)
@@ -3522,7 +3536,7 @@ export function Accounts({
     setLines(carried.length ? carried : blankLines(t))
   }
 
-  function openVoucher(t: VchType): void {
+  function openVoucher(t: VchType, sub = ''): void {
     if (!mayEnter(t)) {
       toast.error(`You do not have rights to enter a ${vchLabel(t)} voucher`)
       return
@@ -3532,6 +3546,7 @@ export function Accounts({
     setEditingId(null)
     setNoteEditId(null)
     setVchType(t)
+    setVchSubtype(sub)
     setVchDate(todayISO())
     setVchNo('')
     setVchCode('')
@@ -4279,6 +4294,7 @@ export function Accounts({
       const payload = {
         date: vchDate,
         vchType,
+        subtype: vchSubtype || null,
         vchNo: vchNo || null,
         narration: narration || null,
         companyId: cid || undefined,
@@ -4741,6 +4757,7 @@ export function Accounts({
       ? ((VCH_TYPES.some((x) => x.key === String(v.vch_type)) ? String(v.vch_type) : 'JOURNAL') as VchType)
       : (String(v.vch_type) as VchType) || 'JOURNAL'
     setVchType(t)
+    setVchSubtype(String(v.vch_subtype || ''))
     setVchDate(String(v.entry_date))
     setVchNo(String(v.vch_no || ''))
     setVchCode(String(v.code || ''))
@@ -13729,7 +13746,8 @@ export function Accounts({
           : diff > 0
             ? 'Debit is higher. Add a credit line or trim a debit.'
             : 'Credit is higher. Add a debit line or trim a credit.'
-    const typeLine = `${viewOnly ? String(viewOnly.vch_type || typeName) : typeName}${shownCode ? ` · ${shownCode}` : ''}`
+    const subName = viewOnly ? String(viewOnly.vch_subtype || '') : vchSubtype
+    const typeLine = `${subName ? `${subName} · ` : ''}${viewOnly ? String(viewOnly.vch_type || typeName) : typeName}${shownCode ? ` · ${shownCode}` : ''}`
     // Every ledger this voucher will touch, debits first — the way a voucher is
     // read — with the GST the note worked out included.
     const preview = orderVoucherLines([
@@ -14043,6 +14061,43 @@ export function Accounts({
                     style={field}
                   />
                 </div>
+                {/* THE DESK'S OWN TYPE, under the basic one — set while keying, or
+                    given to a posted voucher (even one a purchase posted). The
+                    number stays in the basic type's series. */}
+                {(() => {
+                  const fam = seriesWord(viewOnly ? String(viewOnly.vch_type || '') : vchType)
+                  const opts = subtypes.filter((x) => seriesWord(String(x.base_type)) === fam)
+                  if (!opts.length) return null
+                  const cur = viewOnly ? String(viewOnly.vch_subtype || '') : vchSubtype
+                  return (
+                    <div className="min-w-0">
+                      <div style={cap}>Voucher type</div>
+                      <select
+                        value={cur}
+                        onChange={(e) => {
+                          const next = e.target.value
+                          if (!viewOnly) return setVchSubtype(next)
+                          void window.api.vouchers
+                            .subtypeSet({ entry_id: Number(viewOnly.id), subtype: next || null })
+                            .then((r) => {
+                              setViewOnly((v) => (v ? { ...v, vch_subtype: r.subtype } : v))
+                              loadSubtypes()
+                              toast.success(r.subtype ? `Now a ${r.subtype} voucher — its number is unchanged` : 'Back to the basic type')
+                            })
+                            .catch((err) => toast.error((err as Error).message))
+                        }}
+                        style={{ ...field, padding: '0 8px', fontWeight: 700 }}
+                      >
+                        <option value="">{typeName} (basic)</option>
+                        {opts.map((x) => (
+                          <option key={x.id} value={x.name}>
+                            {x.name}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  )
+                })()}
                 <div className="min-w-0" style={{ gridColumn: 'span 2' }}>
                   <div style={cap}>Voucher nature</div>
                   <div style={roBox}>
@@ -14905,7 +14960,7 @@ export function Accounts({
     const dbCf = colFilter<Row>(colF, 'daybook', typed, [
       { key: 'date', get: (r) => formatDate(r.entry_date), sort: 'num' },
       { key: 'voucher', get: (r) => r.vch_no },
-      { key: 'type', get: (r) => r.vch_type },
+      { key: 'type', get: (r) => (r.vch_subtype ? `${r.vch_type} · ${r.vch_subtype}` : r.vch_type) },
       { key: 'dr', get: (r) => linesOf(r, 'dr').map((l) => l.name) },
       { key: 'drAmt', get: (r) => money(sideSum(r, 'dr')), sort: 'num' },
       { key: 'cr', get: (r) => linesOf(r, 'cr').map((l) => l.name) },
@@ -15238,7 +15293,10 @@ export function Accounts({
           style={{ gridTemplateColumns: GRID, borderBottom: '1px solid #EEF3EE', background: bg, boxShadow: `inset 3px 0 0 ${on ? '#12855A' : 'transparent'}` }}
         >
           <div className="flex min-w-0 flex-col gap-1" style={{ padding: '9px 12px 9px 14px' }}>
-            <div className="flex items-center gap-[7px]">{typeChip(r.vch_type)}</div>
+            <div className="flex min-w-0 flex-col items-start gap-[3px]">
+              <div className="flex items-center gap-[7px]">{typeChip(r.vch_type)}</div>
+              {!!r.vch_subtype && <span className="truncate" style={{ fontSize: 9.5, fontWeight: 800, letterSpacing: '.04em', color: A.muted }}>{String(r.vch_subtype)}</span>}
+            </div>
             <span style={{ ...MONO_FIG, fontSize: 11.5, fontWeight: 700, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{String(r.vch_no || '—')}</span>
             {!!ref && !dbDense && <span style={{ ...MONO_FIG, fontSize: 10, fontWeight: 600, color: '#8CA396', whiteSpace: 'nowrap' }}>ref {ref}</span>}
           </div>
@@ -16366,7 +16424,7 @@ export function Accounts({
     // The column funnels, offered from what the chips and search leave.
     const lgCf = colFilter<Row>(colF, 'ledger:vouchers', allRows.filter(toolbarOk), [
       { key: 'date', get: (r) => formatDate(r.entry_date), sort: 'num' },
-      { key: 'type', get: (r) => r.vch_type },
+      { key: 'type', get: (r) => (r.vch_subtype ? `${r.vch_type} · ${r.vch_subtype}` : r.vch_type) },
       { key: 'voucher', get: (r) => r.voucher_code || r.vch_no },
       { key: 'particulars', get: (r) => r.particulars },
       { key: 'ref', get: (r) => lineRef(r)?.full },
@@ -20047,6 +20105,19 @@ export function Accounts({
                 </button>
               )
             })}
+            <VoucherTypesMenu
+              bases={VCH_TYPES.filter((v) => mayEnter(v.key)).map((v) => ({ key: v.key, label: v.label }))}
+              subtypes={subtypes}
+              current={!viewOnly ? vchSubtype : undefined}
+              canManage={rightsIn('accountsMasters').create}
+              onChanged={loadSubtypes}
+              onPick={(base, name) => {
+                const t = base as VchType
+                if (!viewOnly && t === vchType && editingId == null && noteEditId == null) return setVchSubtype(name)
+                if (!viewOnly && voucherHasWork() && !window.confirm('Start a new voucher? What is keyed on this one will be cleared.')) return
+                openVoucher(t, name)
+              }}
+            />
             <div className="flex-1" />
             {vw >= 1320 && (
               <div className="flex flex-none items-center gap-[7px] whitespace-nowrap" style={{ fontSize: 11, fontWeight: 600, color: A.inkSky }}>

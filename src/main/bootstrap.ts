@@ -3313,6 +3313,9 @@ export async function runStartupTasks(): Promise<void> {
  * nothing once recorded, and this is a safety net rather than a replacement.
  */
 const REQUIRED_COLUMNS: { table: string; column: string; type: string }[] = [
+  // The desk's own voucher type (PURCHASE OTHERS under Purchase) — a label on
+  // top of the basic type, which keeps the number series (voucherSubtypes.ts).
+  { table: 'journal_entries', column: 'vch_subtype', type: 'TEXT' },
   // The bank receipt an LC's preclosure interest refund came back by — linked
   // from the LC panel (lc.ts linkLcRefund). Shown, never posted.
   { table: 'letters_of_credit', column: 'refund_voucher_id', type: 'INTEGER' },
