@@ -3276,6 +3276,22 @@ var init_partyLedgers = __esm({
   }
 });
 
+// src/main/partyFamily.ts
+async function mainSupplierId(id) {
+  if (!id) return 0;
+  const r = await getClient().execute({ sql: "SELECT COALESCE(linked_party_id, id) AS m FROM suppliers WHERE id = ?", args: [id] });
+  return Number(r.rows[0]?.m) || id;
+}
+async function sameSupplierFamily(a, b) {
+  if (Number(a) === Number(b)) return true;
+  return await mainSupplierId(Number(a)) === await mainSupplierId(Number(b));
+}
+var init_partyFamily = __esm({
+  "src/main/partyFamily.ts"() {
+    init_db();
+  }
+});
+
 // src/renderer/src/lib/tankerShare.ts
 function extraPartOf(o, loaded, extra) {
   if (o.extra_part != null && Number.isFinite(Number(o.extra_part))) return Number(o.extra_part);
@@ -5577,19 +5593,21 @@ async function listGateEntries() {
            b.bargain_no, COALESCE(ds.name, s.name, dc.name) AS supplier_name,
            dc.name AS gate_customer_name,
            COALESCE(sl.invoice_no, (SELECT invoice_no FROM sales WHERE invoice_group = g.invoice_group LIMIT 1)) AS sale_invoice,
-           COALESCE(sl.customer,  (SELECT customer  FROM sales WHERE invoice_group = g.invoice_group LIMIT 1)) AS sale_customer,
+           COALESCE((SELECT m.name FROM customers cc JOIN customers m ON m.id = COALESCE(cc.linked_party_id, cc.id) WHERE cc.id = COALESCE(sl.customer_id, (SELECT customer_id FROM sales WHERE invoice_group = g.invoice_group LIMIT 1))), sl.customer, (SELECT customer FROM sales WHERE invoice_group = g.invoice_group LIMIT 1)) AS sale_customer,
            -- A vehicle can carry several invoices out; the register names them
            -- all rather than only the one written on the entry.
            (SELECT COUNT(*) FROM gate_entry_sales gs WHERE gs.gate_entry_id = g.id) AS sale_count,
            (SELECT GROUP_CONCAT(x.invoice_no, ', ') FROM gate_entry_sales gs
               JOIN sales x ON x.id = gs.sale_id WHERE gs.gate_entry_id = g.id) AS sale_invoices
+    -- The gate sees the MAIN party (DIL EXIM), never a sub-ledger (DIL EXIM \u2013
+    -- RAJKOT): the joins below resolve every party through linked_party_id.
     FROM gate_entries g
     LEFT JOIN products p ON p.id = g.oil_type_id
     LEFT JOIN purchase_tankers pt ON pt.id = g.tanker_id
     LEFT JOIN bargains b ON b.id = pt.bargain_id
-    LEFT JOIN suppliers s ON s.id = pt.supplier_id
-    LEFT JOIN suppliers ds ON ds.id = g.supplier_id
-    LEFT JOIN customers dc ON dc.id = g.customer_id
+    LEFT JOIN suppliers s ON s.id = (SELECT COALESCE(x.linked_party_id, x.id) FROM suppliers x WHERE x.id = pt.supplier_id)
+    LEFT JOIN suppliers ds ON ds.id = (SELECT COALESCE(x.linked_party_id, x.id) FROM suppliers x WHERE x.id = g.supplier_id)
+    LEFT JOIN customers dc ON dc.id = (SELECT COALESCE(x.linked_party_id, x.id) FROM customers x WHERE x.id = g.customer_id)
     LEFT JOIN sales sl ON sl.id = g.sale_id
     ${/* Compared directly, not through substr(): a function around the column
         makes the whole thing unindexable, and a plain string compare is
@@ -5642,7 +5660,7 @@ async function gateEntriesFor(args) {
            (SELECT GROUP_CONCAT(x.invoice_no, ', ') FROM gate_entry_sales gs
               JOIN sales x ON x.id = gs.sale_id WHERE gs.gate_entry_id = g.id) AS sale_invoices,
            COALESCE(sl.invoice_no, (SELECT invoice_no FROM sales WHERE invoice_group = g.invoice_group LIMIT 1)) AS sale_invoice,
-           COALESCE(sl.customer,  (SELECT customer  FROM sales WHERE invoice_group = g.invoice_group LIMIT 1)) AS sale_customer
+           COALESCE((SELECT m.name FROM customers cc JOIN customers m ON m.id = COALESCE(cc.linked_party_id, cc.id) WHERE cc.id = COALESCE(sl.customer_id, (SELECT customer_id FROM sales WHERE invoice_group = g.invoice_group LIMIT 1))), sl.customer, (SELECT customer FROM sales WHERE invoice_group = g.invoice_group LIMIT 1)) AS sale_customer
     FROM gate_entries g
     LEFT JOIN products p ON p.id = g.oil_type_id
     LEFT JOIN purchase_tankers pt ON pt.id = g.tanker_id
@@ -5650,9 +5668,9 @@ async function gateEntriesFor(args) {
     LEFT JOIN bargains b ON b.id = pt.bargain_id
     LEFT JOIN transporters t ON t.id = pt.transporter_id
     LEFT JOIN sources src ON src.id = pt.source_id
-    LEFT JOIN suppliers s ON s.id = pt.supplier_id
-    LEFT JOIN suppliers ds ON ds.id = g.supplier_id
-    LEFT JOIN customers dc ON dc.id = g.customer_id
+    LEFT JOIN suppliers s ON s.id = (SELECT COALESCE(x.linked_party_id, x.id) FROM suppliers x WHERE x.id = pt.supplier_id)
+    LEFT JOIN suppliers ds ON ds.id = (SELECT COALESCE(x.linked_party_id, x.id) FROM suppliers x WHERE x.id = g.supplier_id)
+    LEFT JOIN customers dc ON dc.id = (SELECT COALESCE(x.linked_party_id, x.id) FROM customers x WHERE x.id = g.customer_id)
     LEFT JOIN sales sl ON sl.id = g.sale_id
     WHERE ${where.join(" OR ")}
     ORDER BY g.entry_date DESC, g.id DESC
@@ -6997,8 +7015,9 @@ async function listUnbookedLots(supplierId, productId) {
   const where = ["cs.company_id = ?", "cs.order_id IS NULL"];
   const args = [getActiveCompanyId()];
   if (supplierId) {
-    where.push("cs.supplier_id = ?");
-    args.push(supplierId);
+    where.push(`COALESCE((SELECT x.linked_party_id FROM suppliers x WHERE x.id = cs.supplier_id), cs.supplier_id) =
+                COALESCE((SELECT y.linked_party_id FROM suppliers y WHERE y.id = ?), ?)`);
+    args.push(supplierId, supplierId);
   }
   if (productId) {
     where.push("cs.product_id = ?");
@@ -7055,7 +7074,7 @@ async function validateConsignmentLots(picks, supplierId, productId, orderId = 0
       args: bargainIds
     });
     for (const b of toPlain9(bres)) {
-      if (n8(b.supplier_id) !== supplierId || n8(b.oil_type_id) !== productId) {
+      if (!await sameSupplierFamily(n8(b.supplier_id), supplierId) || n8(b.oil_type_id) !== productId) {
         throw new Error(`Bargain ${b.bargain_no} is not for this supplier and product`);
       }
       bargains.set(Number(b.id), b);
@@ -7081,7 +7100,7 @@ async function validateConsignmentLots(picks, supplierId, productId, orderId = 0
     if (row.order_id != null && Number(row.order_id) !== orderId) {
       throw new Error(`Tanker ${row.tanker_no || row.id} is already booked on another purchase`);
     }
-    if (n8(row.supplier_id) !== supplierId || n8(row.product_id) !== productId) {
+    if (!await sameSupplierFamily(n8(row.supplier_id), supplierId) || n8(row.product_id) !== productId) {
       throw new Error("The selected tankers must all belong to this supplier and product");
     }
     const qty = n8(row.qty);
@@ -7502,7 +7521,8 @@ async function validateLot(v, existing, companyId) {
     });
     if (!ge.rows.length) throw new Error("That gate entry no longer exists");
     const g = toPlain9(ge)[0];
-    if (n8(g.is_direct_mnc) === 1 && n8(g.supplier_id) && n8(g.supplier_id) !== supplierId) {
+    const family2 = async (id) => n8((await c.execute({ sql: "SELECT COALESCE(linked_party_id, id) AS m FROM suppliers WHERE id = ?", args: [id] })).rows[0]?.m) || id;
+    if (n8(g.is_direct_mnc) === 1 && n8(g.supplier_id) && await family2(n8(g.supplier_id)) !== await family2(supplierId)) {
       const named = await c.execute({ sql: "SELECT name FROM suppliers WHERE id = ?", args: [n8(g.supplier_id)] });
       throw new Error(
         `Gate entry ${g.gate_entry_no} was booked in for ${named.rows[0]?.name || "another party"} \u2014 change it at the gate if that is wrong`
@@ -7826,6 +7846,7 @@ async function consignmentKin(id) {
 var n8, label, lotKey2, CONSIGNMENT_UOMS, GATE_BUFFER;
 var init_consignment = __esm({
   "src/main/consignment.ts"() {
+    init_partyFamily();
     init_db();
     init_company();
     init_access_gate();
@@ -14069,7 +14090,7 @@ async function priceBargainLines(lines, supplierId, productId, orderedQty, uom) 
     });
     if (!r.rows.length) throw new Error("One of the chosen bargains no longer exists");
     const b = toPlain15(r)[0];
-    if (n15(b.supplier_id) !== supplierId) throw new Error(`Bargain ${b.bargain_no} belongs to a different supplier`);
+    if (!await sameSupplierFamily(n15(b.supplier_id), supplierId)) throw new Error(`Bargain ${b.bargain_no} belongs to a different supplier`);
     if (n15(b.oil_type_id) !== productId) throw new Error(`Bargain ${b.bargain_no} is for a different product`);
     out.push({ rate: n15(b.rate_per_uom), qty: l.qty, bargainId: l.bargain_id });
   }
@@ -16219,6 +16240,7 @@ var STAGES, TANKER_STAGES, GATE_MATCH_BUFFER, STAGE_DATE_FIELDS, round32, billSe
 var init_orders = __esm({
   "src/main/orders.ts"() {
     init_dbTransaction();
+    init_partyFamily();
     init_tankerShare();
     init_tankerAlloc();
     init_db();
@@ -18423,8 +18445,34 @@ async function get(table, id) {
   for (const col of res.columns) o[col] = r[col];
   return (await overlayOpenings(table, [o]))[0];
 }
+async function applyMainParty(table, values, id) {
+  if (!TDS_COLS[table] || !("linked_party_id" in values)) return values;
+  const main2 = Number(values.linked_party_id) || 0;
+  if (!main2) return { ...values, linked_party_id: null };
+  if (id && main2 === Number(id)) throw new Error("A party cannot be its own main party");
+  const c = getClient();
+  const m = (await c.execute({ sql: `SELECT * FROM ${table} WHERE id = ?`, args: [main2] })).rows[0];
+  if (!m) throw new Error("That main party no longer exists");
+  if (m.linked_party_id) throw new Error(`${String(m.name)} is itself a sub-ledger of another party \u2014 pick the main party`);
+  if (id) {
+    const subs = await c.execute({ sql: `SELECT COUNT(*) AS k FROM ${table} WHERE linked_party_id = ?`, args: [Number(id)] });
+    if (Number(subs.rows[0]?.k) > 0) throw new Error("This party has sub-ledgers of its own, so it cannot be made a sub-ledger");
+  }
+  const out = { ...values };
+  for (const k of TDS_COLS[table]) out[k] = m[k];
+  return out;
+}
+async function pushTdsToSubLedgers(table, id) {
+  const cols = TDS_COLS[table];
+  if (!cols) return;
+  await getClient().execute({
+    sql: `UPDATE ${table} SET ${cols.map((k) => `${k} = (SELECT m.${k} FROM ${table} m WHERE m.id = ?)`).join(", ")} WHERE linked_party_id = ?`,
+    args: [...cols.map(() => id), id]
+  });
+}
 async function create(table, values) {
   const allowed = assertTable(table);
+  values = await applyMainParty(table, values);
   if (COMPANY_SCOPED_TABLES.has(table) && !values.company_id) {
     values = { ...values, company_id: getActiveCompanyId() };
   }
@@ -18518,6 +18566,7 @@ async function syncBankLedgerName(bankId, before, after) {
 }
 async function update(table, id, values) {
   const allowed = assertTable(table);
+  values = await applyMainParty(table, values, id);
   await assertUniqueName(table, values, id);
   const keys = pickKeys(values, allowed);
   if (table === "companies") await ensureCompanyParties().catch(() => void 0);
@@ -18549,6 +18598,7 @@ async function update(table, id, values) {
     sql: `UPDATE ${table} SET ${setClause} WHERE id = ?`,
     args: [...keys.map((k) => toArg(values[k], k)), id]
   });
+  if (TDS_COLS[table]) await pushTdsToSubLedgers(table, id);
   if (priorLimit != null) {
     await logLimitChange({
       kind: "nbfc",
@@ -18613,7 +18663,7 @@ async function allSettings() {
   for (const r of res.rows) out[r.key] = r.value;
   return out;
 }
-var TABLES, COMPANY_SCOPED_TABLES, masterCache, LEDGER_MASTERS, n21, DEPENDENTS;
+var TABLES, COMPANY_SCOPED_TABLES, masterCache, TDS_COLS, LEDGER_MASTERS, n21, DEPENDENTS;
 var init_repos = __esm({
   "src/main/repos.ts"() {
     init_db();
@@ -18645,6 +18695,7 @@ var init_repos = __esm({
         "tds_threshold",
         "tds_pct_above",
         "tds_above_only",
+        "gst_rates",
         "credit_period_days",
         "adds_interest",
         "interest_pct",
@@ -18679,6 +18730,7 @@ var init_repos = __esm({
         "tds_pct",
         "tds_threshold",
         "tds_above_only",
+        "gst_rates",
         "adds_interest",
         "interest_pct",
         "interest_days",
@@ -18712,6 +18764,10 @@ var init_repos = __esm({
     COMPANY_SCOPED_TABLES = /* @__PURE__ */ new Set(["banks", "nbfcs"]);
     masterCache = /* @__PURE__ */ new Map();
     onDataChanged(() => masterCache.clear());
+    TDS_COLS = {
+      suppliers: ["tds_pct", "tds_threshold", "tds_pct_above", "tds_above_only"],
+      customers: ["tds_pct", "tds_threshold", "tds_above_only"]
+    };
     LEDGER_MASTERS = /* @__PURE__ */ new Set(["customers", "suppliers", "transporters", "brokers"]);
     n21 = (v) => Number(v) || 0;
     DEPENDENTS = {
@@ -19289,6 +19345,7 @@ async function accountStatement(accountId, companyId) {
                         OR lc.charges_journal_entry_id = je.id
                         OR lc.fee_adjust_journal_entry_id = je.id
                         OR lc.payment_in_journal_entry_id = je.id
+                        OR lc.commission_voucher_id = je.id
                      LIMIT 1),
                    (SELECT i.lc_id FROM lc_issuances i WHERE i.journal_entry_id = je.id LIMIT 1),
                    (SELECT pi.lc_id FROM lc_payment_ins pi WHERE pi.journal_entry_id = je.id LIMIT 1),
@@ -19305,6 +19362,7 @@ async function accountStatement(accountId, companyId) {
                         OR lc.charges_journal_entry_id = je.id
                         OR lc.fee_adjust_journal_entry_id = je.id
                         OR lc.payment_in_journal_entry_id = je.id
+                        OR lc.commission_voucher_id = je.id
                      LIMIT 1),
                    (SELECT i.lc_id FROM lc_issuances i WHERE i.journal_entry_id = je.id LIMIT 1),
                    (SELECT pi.lc_id FROM lc_payment_ins pi WHERE pi.journal_entry_id = je.id LIMIT 1),
@@ -26950,6 +27008,2516 @@ var init_tallyBank = __esm({
   }
 });
 
+// src/main/fifoSettle.ts
+function toPlain25(res) {
+  return res.rows.map((r) => {
+    const o = {};
+    for (const col of res.columns) o[col] = r[col];
+    return o;
+  });
+}
+async function fifoSettlement(companyId, accountIds) {
+  const out = /* @__PURE__ */ new Map();
+  const c = getClient();
+  const ids = [...new Set(accountIds.filter((x) => x > 0))];
+  if (!ids.length) return out;
+  const accts = toPlain25(await c.execute({ sql: `SELECT id, acc_group FROM ledger_accounts WHERE id IN (${ids.map(() => "?").join(",")})`, args: ids }));
+  for (const a of accts) {
+    const base = await baseGroupOf(a.acc_group);
+    const billSide = base === "Sundry Debtors" ? "dr" : base === "Sundry Creditors" ? "cr" : null;
+    if (!billSide) continue;
+    const payDr = billSide === "cr";
+    const lines = toPlain25(
+      await c.execute({
+        sql: `SELECT jl.id AS lid, jl.dr, jl.cr, je.id AS eid, je.entry_date, je.vch_type, je.vch_no, je.order_id, je.sale_id,
+                     s.invoice_group, s.invoice_no AS sale_no, o.invoice_no AS order_no
+                FROM journal_lines jl JOIN journal_entries je ON je.id = jl.entry_id
+                LEFT JOIN sales s ON s.id = je.sale_id
+                LEFT JOIN orders o ON o.id = je.order_id
+               WHERE jl.account_id = ? AND je.company_id = ?
+               ORDER BY je.entry_date, je.id`,
+        args: [n34(a.id), companyId]
+      })
+    );
+    if (!lines.length) continue;
+    const allocs = toPlain25(
+      await c.execute({
+        sql: `SELECT ba.line_id, ba.method, ba.amount, ba.order_id, ba.ref_name, ba.sale_invoice_group
+                FROM journal_bill_allocs ba JOIN journal_lines jl ON jl.id = ba.line_id JOIN journal_entries je ON je.id = jl.entry_id
+               WHERE jl.account_id = ? AND je.company_id = ?`,
+        args: [n34(a.id), companyId]
+      })
+    );
+    const byLine = /* @__PURE__ */ new Map();
+    for (const x of allocs) byLine.set(n34(x.line_id), [...byLine.get(n34(x.line_id)) || [], x]);
+    const bills = [];
+    const opening = toPlain25(await c.execute({ sql: "SELECT dr, cr FROM ledger_openings WHERE account_id = ? AND company_id = ?", args: [n34(a.id), companyId] }))[0];
+    const openAmt = opening ? round219(billSide === "dr" ? n34(opening.dr) - n34(opening.cr) : n34(opening.cr) - n34(opening.dr)) : 0;
+    const pool = [];
+    if (openAmt > 4e-3) bills.push({ eid: 0, date: "", left: openAmt, refs: /* @__PURE__ */ new Set(), order_id: 0, group: "" });
+    else if (openAmt < -4e-3) pool.push({ amount: -openAmt, eid: 0, date: "", vch_type: "OPENING", vch_no: "" });
+    for (const l of lines) {
+      const amt = round219(billSide === "dr" ? n34(l.dr) : n34(l.cr));
+      if (amt <= 4e-3) continue;
+      const refs = new Set([up2(l.vch_no), up2(l.sale_no), up2(l.order_no), up2(l.invoice_group)].filter(Boolean));
+      for (const x of byLine.get(n34(l.lid)) || []) if (x.ref_name) refs.add(up2(x.ref_name));
+      bills.push({ eid: n34(l.eid), date: String(l.entry_date || ""), left: amt, refs, order_id: n34(l.order_id), group: up2(l.invoice_group || l.sale_no) });
+    }
+    for (const l of lines) {
+      const amt = round219(payDr ? n34(l.dr) : n34(l.cr));
+      if (amt <= 4e-3) continue;
+      let named = 0;
+      for (const x of byLine.get(n34(l.lid)) || []) {
+        if (String(x.method) !== "agst_ref") continue;
+        named += n34(x.amount);
+        const ref = up2(x.ref_name);
+        const grp = up2(x.sale_invoice_group);
+        const bill = bills.find((b) => n34(x.order_id) && b.order_id === n34(x.order_id)) || bills.find((b) => grp && b.group === grp) || bills.find((b) => ref && b.refs.has(ref));
+        if (bill) bill.left = round219(bill.left - n34(x.amount));
+      }
+      const free = round219(amt - named);
+      if (free > 4e-3) pool.push({ amount: free, eid: n34(l.eid), date: String(l.entry_date || ""), vch_type: String(l.vch_type || ""), vch_no: String(l.vch_no || "") });
+    }
+    bills.sort((x, y) => x.date.localeCompare(y.date) || x.eid - y.eid);
+    let pi = 0;
+    for (const b of bills) {
+      while (b.left > 4e-3 && pi < pool.length) {
+        const p = pool[pi];
+        const take = round219(Math.min(b.left, p.amount));
+        if (b.eid) {
+          out.set(b.eid, [
+            ...out.get(b.eid) || [],
+            { amount: take, side: payDr ? "dr" : "cr", eid: p.eid, vch_type: p.vch_type, vch_no: p.vch_no, entry_date: p.date }
+          ]);
+        }
+        b.left = round219(b.left - take);
+        p.amount = round219(p.amount - take);
+        if (p.amount <= 4e-3) pi++;
+      }
+      if (pi >= pool.length) break;
+    }
+  }
+  return out;
+}
+var n34, round219, up2;
+var init_fifoSettle = __esm({
+  "src/main/fifoSettle.ts"() {
+    init_db();
+    init_ledgerGroups();
+    n34 = (v) => Number(v) || 0;
+    round219 = (v) => Math.round(v * 100) / 100;
+    up2 = (v) => String(v ?? "").trim().toUpperCase();
+  }
+});
+
+// src/main/trading.ts
+function toPlain26(res) {
+  return res.rows.map((r) => {
+    const o = {};
+    for (const col of res.columns) o[col] = r[col];
+    return o;
+  });
+}
+function n35(v) {
+  const x = Number(v);
+  return Number.isFinite(x) ? x : 0;
+}
+function todayISO7() {
+  const d = /* @__PURE__ */ new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
+async function dealLineIds(dealIds, deals) {
+  const orders = /* @__PURE__ */ new Map();
+  const sales = /* @__PURE__ */ new Map();
+  if (!dealIds.length) return { orders, sales };
+  const c = getClient();
+  const list2 = dealIds.join(",");
+  const [oRes, sRes] = await Promise.all([
+    c.execute(`SELECT deal_id, order_id FROM trading_deal_orders WHERE deal_id IN (${list2}) ORDER BY line_no, id`),
+    c.execute(`SELECT deal_id, sale_id FROM trading_deal_sales WHERE deal_id IN (${list2}) ORDER BY line_no, id`)
+  ]);
+  for (const r of toPlain26(oRes)) {
+    const k = n35(r.deal_id);
+    orders.set(k, [...orders.get(k) ?? [], n35(r.order_id)]);
+  }
+  for (const r of toPlain26(sRes)) {
+    const k = n35(r.deal_id);
+    sales.set(k, [...sales.get(k) ?? [], n35(r.sale_id)]);
+  }
+  for (const d of deals) {
+    const id = n35(d.id);
+    if (!orders.has(id) && n35(d.order_id)) orders.set(id, [n35(d.order_id)]);
+    if (!sales.has(id) && n35(d.sale_id)) sales.set(id, [n35(d.sale_id)]);
+  }
+  return { orders, sales };
+}
+async function fetchOrderLines(ids) {
+  const m = /* @__PURE__ */ new Map();
+  if (!ids.length) return m;
+  const res = await getClient().execute(
+    `SELECT o.id, o.invoice_no, o.order_date, o.invoice_rate, o.ordered_qty, o.uom,
+            o.taxable_value, o.gst_amount, o.gst_pct, o.gst_type, o.tds_pct, o.tds_amount,
+            o.round_off, o.net_amount, o.supplier_id, s.name AS supplier_name
+     FROM orders o LEFT JOIN suppliers s ON s.id = o.supplier_id
+     WHERE o.id IN (${ids.join(",")})`
+  );
+  for (const r of toPlain26(res)) m.set(n35(r.id), r);
+  return m;
+}
+async function fetchSaleLines(ids) {
+  const m = /* @__PURE__ */ new Map();
+  if (!ids.length) return m;
+  const res = await getClient().execute(
+    `SELECT sl.id, sl.invoice_no, sl.invoice_group, sl.sale_date, sl.rate, sl.qty, sl.uom, sl.amount,
+            sl.gst_pct, sl.gst_type, sl.gst_amount, sl.round_off, sl.tds_pct, sl.tds_amount,
+            sl.customer_id, cu.name AS customer_name
+     FROM sales sl LEFT JOIN customers cu ON cu.id = sl.customer_id
+     WHERE sl.id IN (${ids.join(",")})`
+  );
+  for (const r of toPlain26(res)) m.set(n35(r.id), r);
+  return m;
+}
+function saleRefKey(l) {
+  return String(l.invoice_group || l.invoice_no || "").trim();
+}
+async function saleReceiptsByKey(companyId) {
+  const res = await getClient().execute({
+    // A credit on the customer settles the bill; a debit against the same
+    // ref (a journal raising it) adds to it — the rule bill-wise follows.
+    sql: `SELECT COALESCE(ba.sale_invoice_group, ba.ref_name) AS key,
+                 SUM(CASE WHEN jl.dr > 0 THEN -ba.amount ELSE ba.amount END) AS amount
+          FROM journal_bill_allocs ba
+          JOIN journal_lines jl ON jl.id = ba.line_id
+          JOIN journal_entries je ON je.id = jl.entry_id
+          WHERE ba.method = 'agst_ref' AND je.company_id = ? AND COALESCE(ba.sale_invoice_group, ba.ref_name) IS NOT NULL
+          GROUP BY key`,
+    args: [companyId]
+  });
+  const m = /* @__PURE__ */ new Map();
+  for (const r of toPlain26(res)) m.set(String(r.key), n35(r.amount));
+  return m;
+}
+function groupSaleParties(sLines, receiptsByKey) {
+  const order = [];
+  const byParty = /* @__PURE__ */ new Map();
+  for (const l of sLines) {
+    const cid = n35(l.customer_id);
+    if (!byParty.has(cid)) {
+      byParty.set(cid, []);
+      order.push(cid);
+    }
+    ;
+    byParty.get(cid).push(l);
+  }
+  return order.map((cid) => {
+    const ls = byParty.get(cid);
+    const first = ls[0] ?? {};
+    const qty = ls.reduce((a, l) => a + n35(l.qty), 0);
+    const taxable = ls.reduce((a, l) => a + n35(l.amount), 0);
+    const gstAmount = ls.reduce((a, l) => a + n35(l.gst_amount), 0);
+    const roundOff = ls.reduce((a, l) => a + n35(l.round_off), 0);
+    const tdsAmount = ls.reduce((a, l) => a + n35(l.tds_amount), 0);
+    const total = round220(taxable + gstAmount + roundOff);
+    const keys = Array.from(new Set(ls.map((l) => saleRefKey(l)).filter(Boolean)));
+    const netReceivable = round220(total - tdsAmount);
+    const paid = round220(keys.reduce((a, k) => a + (receiptsByKey.get(k) || 0), 0));
+    return {
+      customer_id: cid || null,
+      customer_name: first.customer_name ?? null,
+      invoice_count: ls.length,
+      qty,
+      rate: qty > 0 ? ls.reduce((a, l) => a + n35(l.qty) * n35(l.rate), 0) / qty : 0,
+      taxable: round220(taxable),
+      gst_pct: n35(first.gst_pct),
+      gst_type: first.gst_type ?? "CGST_SGST",
+      gst_amount: round220(gstAmount),
+      round_off: round220(roundOff),
+      total,
+      tds_pct: n35(first.tds_pct),
+      tds_amount: round220(tdsAmount),
+      net_receivable: netReceivable,
+      paid,
+      fully_paid: netReceivable > 5e-3 && paid >= netReceivable - 5e-3,
+      lines: ls.map((l) => ({
+        sale_id: n35(l.id),
+        invoice_no: l.invoice_no ?? "",
+        qty: n35(l.qty),
+        rate: n35(l.rate)
+      }))
+    };
+  });
+}
+async function listTradingDeals(forModule) {
+  const from = await visibleFromFor("trading", forModule);
+  const cid = getActiveCompanyId();
+  const res = await getClient().execute({
+    sql: `SELECT td.*, p.code AS product_code, p.name AS product_name,
+                 l.lc_no AS lc_no, l.stage AS lc_stage, l.preclosed_date AS lc_preclosed_date,
+                 l.expiry_date AS lc_expiry_date, l.amount AS lc_amount
+          FROM trading_deals td
+          LEFT JOIN products p ON p.id = td.product_id
+          LEFT JOIN letters_of_credit l ON l.id = td.lc_id
+          WHERE td.company_id = ?${from ? " AND td.deal_date >= ?" : ""}
+          ORDER BY td.deal_date DESC, td.id DESC`,
+    args: from ? [cid, from] : [cid]
+  });
+  const deals = toPlain26(res);
+  const dealIds = deals.map((d) => n35(d.id)).filter(Boolean);
+  const { orders, sales } = await dealLineIds(dealIds, deals);
+  const [orderRows, saleRows, receiptsByKey] = await Promise.all([
+    fetchOrderLines(Array.from(new Set(Array.from(orders.values()).flat()))),
+    fetchSaleLines(Array.from(new Set(Array.from(sales.values()).flat()))),
+    saleReceiptsByKey(cid)
+  ]);
+  return deals.map((d) => {
+    const id = n35(d.id);
+    const pLines = (orders.get(id) ?? []).map((oid) => orderRows.get(oid)).filter(Boolean);
+    const sLines = (sales.get(id) ?? []).map((sid) => saleRows.get(sid)).filter(Boolean);
+    const purchaseQty = pLines.reduce((s5, l) => s5 + n35(l.ordered_qty), 0);
+    const saleQty = sLines.reduce((s5, l) => s5 + n35(l.qty), 0);
+    const purchaseTotal = pLines.reduce(
+      (s5, l) => s5 + n35(l.taxable_value) + n35(l.gst_amount) + n35(l.round_off),
+      0
+    );
+    const saleNet = sLines.reduce((s5, l) => s5 + n35(l.amount) + n35(l.gst_amount) + n35(l.round_off), 0);
+    const purchaseTaxable = pLines.reduce((s5, l) => s5 + n35(l.taxable_value), 0);
+    const saleTaxable = sLines.reduce((s5, l) => s5 + n35(l.amount), 0);
+    const marginOnTaxable = round220(saleTaxable - purchaseTaxable);
+    const marginPct = purchaseTaxable > 0 ? round220(marginOnTaxable / purchaseTaxable * 100) : 0;
+    const first = pLines[0] ?? {};
+    const firstSale = sLines[0] ?? {};
+    const avg = (total, qty) => qty > 0 ? total / qty : 0;
+    const saleNetReceivable = round220(saleNet - sLines.reduce((s5, l) => s5 + n35(l.tds_amount), 0));
+    const saleKeys = Array.from(new Set(sLines.map((l) => saleRefKey(l)).filter(Boolean)));
+    const salePaid = round220(saleKeys.reduce((s5, k) => s5 + (receiptsByKey.get(k) || 0), 0));
+    const saleFullyPaid = saleNetReceivable > 5e-3 && salePaid >= saleNetReceivable - 5e-3;
+    const saleParties = groupSaleParties(sLines, receiptsByKey);
+    const lcBankRepaid = !!d.lc_preclosed_date;
+    return {
+      ...d,
+      purchase_lines: pLines.map((l) => ({
+        order_id: n35(l.id),
+        invoice_no: l.invoice_no ?? "",
+        qty: n35(l.ordered_qty),
+        rate: n35(l.invoice_rate)
+      })),
+      sale_lines: sLines.map((l) => ({
+        sale_id: n35(l.id),
+        invoice_no: l.invoice_no ?? "",
+        qty: n35(l.qty),
+        rate: n35(l.rate),
+        // Which buyer this invoice went to, so a flat list of the deal's sale
+        // invoices can still say who each one was raised on.
+        customer_id: l.customer_id ?? null,
+        customer_name: l.customer_name ?? null
+      })),
+      sale_parties: saleParties,
+      customer_count: saleParties.length,
+      // Every buyer's name, for a list column and for search. The singular
+      // `customer_name` below stays the FIRST buyer, because that is what the
+      // LC and Bill Discounting pickers already read off a deal.
+      customer_names: saleParties.map((sp) => sp.customer_name).filter(Boolean),
+      purchase_count: pLines.length,
+      sale_count: sLines.length,
+      purchase_invoice_no: first.invoice_no ?? "",
+      sale_invoice_no: firstSale.invoice_no ?? "",
+      purchase_qty: purchaseQty,
+      sale_qty: saleQty,
+      purchase_uom: first.uom || "MT",
+      purchase_rate: avg(pLines.reduce((s5, l) => s5 + n35(l.ordered_qty) * n35(l.invoice_rate), 0), purchaseQty),
+      sale_rate: avg(sLines.reduce((s5, l) => s5 + n35(l.qty) * n35(l.rate), 0), saleQty),
+      supplier_id: first.supplier_id ?? null,
+      supplier_name: first.supplier_name ?? null,
+      customer_id: firstSale.customer_id ?? null,
+      customer_name: firstSale.customer_name ?? null,
+      purchase_gst_pct: n35(first.gst_pct),
+      purchase_gst_type: first.gst_type ?? "CGST_SGST",
+      purchase_tds_pct: n35(first.tds_pct),
+      purchase_round_off: pLines.reduce((s5, l) => s5 + n35(l.round_off), 0),
+      sale_gst_pct: n35(firstSale.gst_pct),
+      sale_gst_type: firstSale.gst_type ?? "CGST_SGST",
+      sale_tds_pct: n35(firstSale.tds_pct),
+      sale_tds_amount: sLines.reduce((s5, l) => s5 + n35(l.tds_amount), 0),
+      sale_net_receivable: saleNetReceivable,
+      sale_paid: salePaid,
+      sale_fully_paid: saleFullyPaid,
+      lc_bank_repaid: lcBankRepaid,
+      // Both sides of the round trip are done: the bank has been repaid on
+      // the LC, and the customer's money for the resale has actually come in.
+      trading_lc_closed: !!d.lc_id && lcBankRepaid && saleFullyPaid,
+      sale_round_off: sLines.reduce((s5, l) => s5 + n35(l.round_off), 0),
+      purchase_taxable: pLines.reduce((s5, l) => s5 + n35(l.taxable_value), 0),
+      purchase_gst_amount: pLines.reduce((s5, l) => s5 + n35(l.gst_amount), 0),
+      purchase_tds_amount: pLines.reduce((s5, l) => s5 + n35(l.tds_amount), 0),
+      // What is actually paid to the supplier across every invoice on the deal.
+      purchase_net: pLines.reduce((s5, l) => s5 + n35(l.net_amount), 0),
+      sale_amount: sLines.reduce((s5, l) => s5 + n35(l.amount), 0),
+      sale_gst_amount: sLines.reduce((s5, l) => s5 + n35(l.gst_amount), 0),
+      purchase_total: purchaseTotal,
+      sale_net: saleNet,
+      margin: marginOnTaxable,
+      margin_pct: marginPct,
+      // Both sides should move the same quantity; the form warns rather than
+      // refuses, so a deal can sit part-sold until the rest is invoiced.
+      qty_matched: Math.abs(purchaseQty - saleQty) < 1e-6
+    };
+  });
+}
+function toLines(raw, at, emptyMsg) {
+  const arr = Array.isArray(raw) ? raw : [];
+  const lines = arr.map((l) => {
+    const r = l ?? {};
+    return {
+      invoiceNo: r.invoice_no ? String(r.invoice_no).trim() : "",
+      qty: n35(r.qty),
+      rate: n35(r.rate)
+    };
+  }).filter((l) => l.invoiceNo !== "" || l.qty !== 0 || l.rate !== 0);
+  if (!lines.length) throw new Error(emptyMsg);
+  lines.forEach((l, i) => {
+    if (l.qty <= 0) throw new Error(`${at(i)}: enter the quantity`);
+    if (l.rate <= 0) throw new Error(`${at(i)}: enter the rate`);
+  });
+  return lines;
+}
+function toSaleParties(v) {
+  const raw = Array.isArray(v.sale_parties) ? v.sale_parties : [];
+  const groups = raw.length ? raw : [
+    {
+      customer_id: v.customer_id,
+      gst_pct: v.sale_gst_pct,
+      gst_type: v.sale_gst_type,
+      tds_pct: v.sale_tds_pct,
+      round_off: v.sale_round_off,
+      lines: v.sale_lines
+    }
+  ];
+  const live = groups.filter((g) => {
+    const ls = Array.isArray(g?.lines) ? g.lines : [];
+    const anyLine = ls.some(
+      (l) => String(l?.invoice_no ?? "").trim() !== "" || n35(l?.qty) !== 0 || n35(l?.rate) !== 0
+    );
+    return n35(g?.customer_id) > 0 || anyLine;
+  });
+  if (!live.length) throw new Error("Pick the customer");
+  const multi = live.length > 1;
+  const parties = live.map((g, gi) => {
+    const label2 = multi ? `Buyer ${gi + 1}` : "Sale";
+    if (!n35(g?.customer_id)) {
+      throw new Error(multi ? `${label2}: pick the customer` : "Pick the customer");
+    }
+    return {
+      customerId: n35(g.customer_id),
+      gstPct: n35(g.gst_pct),
+      gstType: g.gst_type === "IGST" ? "IGST" : "CGST_SGST",
+      tdsPct: n35(g.tds_pct),
+      roundOff: n35(g.round_off),
+      lines: toLines(g.lines, (i) => `${label2} invoice ${i + 1}`, `${label2}: add at least one sale invoice`)
+    };
+  });
+  const seen = /* @__PURE__ */ new Set();
+  for (const p of parties) {
+    if (seen.has(p.customerId)) {
+      throw new Error("The same customer is listed twice \u2014 put all of that buyer's invoices under one entry");
+    }
+    seen.add(p.customerId);
+  }
+  return parties;
+}
+function dealFields(v) {
+  const productId = n35(v.product_id);
+  if (!productId) throw new Error("Select the raw product");
+  if (!v.supplier_id) throw new Error("Pick the supplier");
+  const uom = String(v.uom || "MT");
+  const dealDate = v.deal_date ? String(v.deal_date).slice(0, 10) : todayISO7();
+  const purchaseLines = toLines(
+    v.purchase_lines,
+    (i) => `Purchase invoice ${i + 1}`,
+    "Add at least one purchase invoice"
+  );
+  const saleParties = toSaleParties(v);
+  assertNoRepeatsWithin(purchaseLines.map((l) => l.invoiceNo), "Purchase invoice");
+  assertNoRepeatsWithin(saleParties.flatMap((sp) => sp.lines.map((l) => l.invoiceNo)), "Invoice");
+  const orderPayloads = purchaseLines.map((l) => ({
+    is_trading: true,
+    invoice_no: l.invoiceNo,
+    order_date: dealDate,
+    supplier_id: n35(v.supplier_id),
+    oil_type_id: productId,
+    ordered_qty: l.qty,
+    uom,
+    invoice_rate: l.rate,
+    bargain_rate: l.rate,
+    gst_pct: n35(v.purchase_gst_pct),
+    gst_type: v.purchase_gst_type === "IGST" ? "IGST" : "CGST_SGST",
+    tds_pct: n35(v.purchase_tds_pct),
+    // Round-off is entered once for the deal and belongs to it as a whole, so
+    // it rides on the first invoice rather than being repeated on each.
+    round_off: 0,
+    // A trading deal is a clean pass-through — no interest block here, even
+    // if the supplier's master carries a default.
+    charge_interest: false
+  }));
+  if (orderPayloads.length) orderPayloads[0].round_off = n35(v.purchase_round_off);
+  const salePayloads = saleParties.flatMap(
+    (sp) => sp.lines.map((l, i) => ({
+      is_trading: true,
+      invoice_no: l.invoiceNo || null,
+      sale_date: dealDate,
+      customer_id: sp.customerId,
+      product_id: productId,
+      qty: l.qty,
+      uom,
+      rate: l.rate,
+      gst_pct: sp.gstPct,
+      gst_type: sp.gstType,
+      tds_pct: sp.tdsPct,
+      // Round off belongs to a buyer's own invoice total, so it rides that
+      // buyer's first invoice — not the deal's, which would round one party's
+      // bill by another party's paisa.
+      round_off: i === 0 ? sp.roundOff : 0,
+      sale_type: "LOOSE",
+      freight_term: "EX"
+    }))
+  );
+  return { productId, uom, dealDate, orderPayloads, salePayloads };
+}
+async function assertDealNumbersFree(orderPayloads, salePayloads, ownOrders = [], ownSales = []) {
+  const cid = getActiveCompanyId();
+  for (const p of orderPayloads) {
+    await assertPurchaseInvoiceNoFree({ ...p, invoice_dup_exclude_ids: ownOrders }, cid);
+  }
+  for (const p of salePayloads) {
+    await assertSalesInvoiceNoFree({ ...p, invoice_dup_exclude_ids: ownSales }, cid);
+  }
+}
+async function createTradingDeal(v) {
+  const { productId, dealDate, orderPayloads, salePayloads } = dealFields(v);
+  await assertDealNumbersFree(orderPayloads, salePayloads);
+  const orderIds = [];
+  const saleIds = [];
+  const rollback = async () => {
+    for (const sid of saleIds) await deleteSale(sid).catch(() => {
+    });
+    for (const oid of orderIds) await deleteOrder(oid).catch(() => {
+    });
+  };
+  try {
+    const settled = await Promise.allSettled([
+      (async () => {
+        for (const p of orderPayloads) orderIds.push((await createOrder(p)).id);
+      })(),
+      (async () => {
+        for (const p of salePayloads) saleIds.push((await createSale(p)).id);
+      })()
+    ]);
+    const failed = settled.find((r) => r.status === "rejected");
+    if (failed) throw failed.reason;
+  } catch (e) {
+    await rollback();
+    throw e;
+  }
+  const c = getClient();
+  let dealId;
+  try {
+    const ins = await c.execute({
+      sql: `INSERT INTO trading_deals (company_id, deal_date, product_id, order_id, sale_id, note)
+            VALUES (?, ?, ?, ?, ?, ?)`,
+      args: [
+        getActiveCompanyId(),
+        dealDate,
+        productId,
+        orderIds[0],
+        saleIds[0],
+        v.note ? String(v.note).trim() : null
+      ]
+    });
+    dealId = Number(ins.lastInsertRowid);
+    await linkDealLines(dealId, orderIds, saleIds);
+  } catch (e) {
+    await rollback();
+    throw e;
+  }
+  return { id: dealId };
+}
+async function linkDealLines(dealId, orderIds, saleIds) {
+  const c = getClient();
+  await c.execute({ sql: "DELETE FROM trading_deal_orders WHERE deal_id = ?", args: [dealId] });
+  await c.execute({ sql: "DELETE FROM trading_deal_sales WHERE deal_id = ?", args: [dealId] });
+  for (let i = 0; i < orderIds.length; i++) {
+    await c.execute({
+      sql: "INSERT INTO trading_deal_orders (deal_id, order_id, line_no) VALUES (?, ?, ?)",
+      args: [dealId, orderIds[i], i]
+    });
+  }
+  for (let i = 0; i < saleIds.length; i++) {
+    await c.execute({
+      sql: "INSERT INTO trading_deal_sales (deal_id, sale_id, line_no) VALUES (?, ?, ?)",
+      args: [dealId, saleIds[i], i]
+    });
+  }
+}
+async function updateTradingDeal(id, v) {
+  const c = getClient();
+  const cur = await c.execute({
+    sql: "SELECT id, order_id, sale_id FROM trading_deals WHERE id = ?",
+    args: [id]
+  });
+  if (!cur.rows.length) throw new Error("Trading deal not found");
+  const deal = toPlain26(cur)[0];
+  const { orders, sales } = await dealLineIds([id], [deal]);
+  const existingOrders = orders.get(id) ?? [];
+  const existingSales = sales.get(id) ?? [];
+  const { productId, dealDate, orderPayloads, salePayloads } = dealFields(v);
+  const ownOrders = [...existingOrders];
+  const ownSales = [...existingSales];
+  await assertDealNumbersFree(orderPayloads, salePayloads, ownOrders, ownSales);
+  const orderIds = [];
+  for (let i = 0; i < orderPayloads.length; i++) {
+    const p = { ...orderPayloads[i], invoice_dup_exclude_ids: ownOrders };
+    if (i < existingOrders.length) {
+      await updateOrder(existingOrders[i], p);
+      orderIds.push(existingOrders[i]);
+    } else {
+      orderIds.push((await createOrder(p)).id);
+    }
+  }
+  const saleIds = [];
+  for (let i = 0; i < salePayloads.length; i++) {
+    const p = { ...salePayloads[i], invoice_dup_exclude_ids: ownSales };
+    if (i < existingSales.length) {
+      await updateSale(existingSales[i], p);
+      saleIds.push(existingSales[i]);
+    } else {
+      saleIds.push((await createSale(p)).id);
+    }
+  }
+  await c.execute({
+    sql: "UPDATE trading_deals SET deal_date = ?, product_id = ?, order_id = ?, sale_id = ?, note = ? WHERE id = ?",
+    args: [dealDate, productId, orderIds[0], saleIds[0], v.note ? String(v.note).trim() : null, id]
+  });
+  await linkDealLines(id, orderIds, saleIds);
+  for (const sid of existingSales.slice(salePayloads.length)) await deleteSale(sid);
+  for (const oid of existingOrders.slice(orderPayloads.length)) await deleteOrder(oid);
+  return { id };
+}
+async function linkTradingDealsToLc(lcId, dealIds) {
+  const c = getClient();
+  const ids = Array.isArray(dealIds) ? dealIds.map((x) => n35(x)).filter((x) => x > 0) : [];
+  await c.execute({
+    sql: `UPDATE trading_deals SET lc_id = NULL WHERE lc_id = ? AND id NOT IN (${ids.length ? ids.join(",") : "0"})`,
+    args: [lcId]
+  });
+  for (const id of ids) {
+    await c.execute({ sql: "UPDATE trading_deals SET lc_id = ? WHERE id = ?", args: [lcId, id] });
+  }
+}
+async function deleteTradingDeal(id) {
+  const c = getClient();
+  const res = await c.execute({
+    sql: "SELECT id, order_id, sale_id FROM trading_deals WHERE id = ?",
+    args: [id]
+  });
+  if (!res.rows.length) throw new Error("Trading deal not found");
+  const deal = toPlain26(res)[0];
+  const { orders, sales } = await dealLineIds([id], [deal]);
+  await c.execute({ sql: "DELETE FROM trading_deal_orders WHERE deal_id = ?", args: [id] });
+  await c.execute({ sql: "DELETE FROM trading_deal_sales WHERE deal_id = ?", args: [id] });
+  await c.execute({ sql: "DELETE FROM trading_deals WHERE id = ?", args: [id] });
+  for (const sid of sales.get(id) ?? []) await deleteSale(sid);
+  for (const oid of orders.get(id) ?? []) await deleteOrder(oid);
+  return { id };
+}
+async function entryOwners(cid) {
+  const c = getClient();
+  const m = /* @__PURE__ */ new Map();
+  const add = async (kind, sql) => {
+    const res = await c.execute({ sql, args: [cid] }).catch(() => null);
+    if (!res) return;
+    for (const r of toPlain26(res)) {
+      const eid = n35(r.eid);
+      if (eid && !m.has(eid)) m.set(eid, { kind, id: n35(r.iid), ref: String(r.ref || "") });
+    }
+  };
+  const LC = "letters_of_credit";
+  for (const col of [
+    "journal_entry_id",
+    "interest_journal_entry_id",
+    "preclose_journal_entry_id",
+    "preclose_interest_journal_entry_id",
+    "preclose_payout_journal_entry_id",
+    "charges_journal_entry_id",
+    "fee_adjust_journal_entry_id",
+    "payment_in_journal_entry_id"
+  ]) {
+    await add("lc", `SELECT ${col} AS eid, id AS iid, lc_no AS ref FROM ${LC} WHERE company_id = ? AND ${col} IS NOT NULL`);
+  }
+  await add("lc", `SELECT i.journal_entry_id AS eid, l.id AS iid, l.lc_no AS ref FROM lc_issuances i JOIN ${LC} l ON l.id = i.lc_id WHERE l.company_id = ? AND i.journal_entry_id IS NOT NULL`);
+  await add("lc", `SELECT p.journal_entry_id AS eid, l.id AS iid, l.lc_no AS ref FROM lc_payment_ins p JOIN ${LC} l ON l.id = p.lc_id WHERE l.company_id = ? AND p.journal_entry_id IS NOT NULL`);
+  await add("lc", `SELECT r.journal_entry_id AS eid, l.id AS iid, l.lc_no AS ref FROM lc_repayments r JOIN ${LC} l ON l.id = r.lc_id WHERE l.company_id = ? AND r.journal_entry_id IS NOT NULL`);
+  const BD = "bill_discountings";
+  for (const col of ["journal_entry_id", "repay_journal_entry_id", "margin_release_journal_entry_id"]) {
+    await add("bd", `SELECT ${col} AS eid, id AS iid, bd_no AS ref FROM ${BD} WHERE company_id = ? AND ${col} IS NOT NULL`);
+  }
+  await add("bd", `SELECT r.journal_entry_id AS eid, b.id AS iid, b.bd_no AS ref FROM bd_repayments r JOIN ${BD} b ON b.id = r.bd_id WHERE b.company_id = ? AND r.journal_entry_id IS NOT NULL`);
+  await add("bd", `SELECT x.journal_entry_id AS eid, b.id AS iid, b.bd_no AS ref FROM bd_interest_payments x JOIN ${BD} b ON b.id = x.bd_id WHERE b.company_id = ? AND x.journal_entry_id IS NOT NULL`);
+  await add("bd", `SELECT p.journal_entry_id AS eid, b.id AS iid, b.bd_no AS ref FROM bd_payment_ins p JOIN ${BD} b ON b.id = p.bd_id WHERE b.company_id = ? AND p.journal_entry_id IS NOT NULL`);
+  return m;
+}
+function addDays2(iso, days) {
+  const d = /* @__PURE__ */ new Date(`${iso.slice(0, 10)}T00:00:00`);
+  d.setDate(d.getDate() + days);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
+function daysFromToday(iso) {
+  const a = (/* @__PURE__ */ new Date(`${todayISO7()}T00:00:00`)).getTime();
+  const b = (/* @__PURE__ */ new Date(`${iso.slice(0, 10)}T00:00:00`)).getTime();
+  return Math.round((b - a) / 864e5);
+}
+function pendingQty(qty, uom, amount2, settled) {
+  const pending = Math.max(0, amount2 - settled);
+  const r36 = (x) => Math.round(x * 1e3) / 1e3;
+  return { qty: r36(qty), uom, pending_qty: amount2 > 5e-3 && qty > 0 ? r36(qty * pending / amount2) : 0 };
+}
+async function listTradingPayments() {
+  const from = await visibleFromFor("trading");
+  const cid = getActiveCompanyId();
+  const c = getClient();
+  const dealRes = await c.execute({
+    sql: `SELECT td.*, p.code AS product_code, p.name AS product_name, l.lc_no AS lc_no
+          FROM trading_deals td
+          LEFT JOIN products p ON p.id = td.product_id
+          LEFT JOIN letters_of_credit l ON l.id = td.lc_id
+          WHERE td.company_id = ?${from ? " AND td.deal_date >= ?" : ""}
+          ORDER BY td.deal_date DESC, td.id DESC`,
+    args: from ? [cid, from] : [cid]
+  });
+  const deals = toPlain26(dealRes);
+  if (!deals.length) return [];
+  const dealIds = deals.map((d) => n35(d.id)).filter(Boolean);
+  const { orders, sales } = await dealLineIds(dealIds, deals);
+  const orderIds = Array.from(new Set(Array.from(orders.values()).flat()));
+  const saleIds = Array.from(new Set(Array.from(sales.values()).flat()));
+  const [orderRows, saleRows, owners] = await Promise.all([
+    fetchOrderLines(orderIds),
+    fetchSaleLines(saleIds),
+    entryOwners(cid)
+  ]);
+  const billEids = /* @__PURE__ */ new Map();
+  if (orderIds.length || saleIds.length) {
+    const conds = [];
+    if (orderIds.length) conds.push(`order_id IN (${orderIds.join(",")})`);
+    if (saleIds.length) conds.push(`sale_id IN (${saleIds.join(",")})`);
+    const er = await c.execute({ sql: `SELECT id, order_id, sale_id FROM journal_entries WHERE company_id = ? AND (${conds.join(" OR ")})`, args: [cid] });
+    for (const r of toPlain26(er)) {
+      const k = n35(r.order_id) ? `o:${n35(r.order_id)}` : `s:${n35(r.sale_id)}`;
+      billEids.set(k, [...billEids.get(k) ?? [], n35(r.id)]);
+    }
+  }
+  const allBillEids = Array.from(new Set(Array.from(billEids.values()).flat()));
+  const partyAccts = allBillEids.length ? toPlain26(await c.execute(`SELECT DISTINCT account_id FROM journal_lines WHERE entry_id IN (${allBillEids.join(",")})`)).map((r) => n35(r.account_id)) : [];
+  const fifo = await fifoSettlement(cid, partyAccts);
+  let fifoSeq = 0;
+  const fifoRows = (keys) => keys.flatMap((k) => billEids.get(k) ?? []).flatMap((eid) => fifo.get(eid) ?? []).map((x) => ({ id: -++fifoSeq, amount: x.amount, side: x.side, eid: x.eid, vch_type: x.vch_type, vch_no: x.vch_no, entry_date: x.entry_date, fifo: true }));
+  const allocRes = await c.execute({
+    sql: `SELECT ba.id, ba.amount, ba.order_id, ba.ref_name, ba.sale_invoice_group,
+                 CASE WHEN jl.dr > 0 THEN 'dr' ELSE 'cr' END AS side,
+                 UPPER(TRIM(a.name)) AS acct, je.id AS eid, je.vch_type, je.vch_no, je.entry_date
+          FROM journal_bill_allocs ba
+          JOIN journal_lines jl ON jl.id = ba.line_id
+          JOIN journal_entries je ON je.id = jl.entry_id
+          LEFT JOIN ledger_accounts a ON a.id = COALESCE(ba.account_id, jl.account_id)
+          WHERE ba.method = 'agst_ref' AND je.company_id = ?`,
+    args: [cid]
+  });
+  const allocs = toPlain26(allocRes);
+  const byOrder = /* @__PURE__ */ new Map();
+  const byAcctRef = /* @__PURE__ */ new Map();
+  const byKey = /* @__PURE__ */ new Map();
+  const push = (m, k, r) => {
+    m.set(k, [...m.get(k) ?? [], r]);
+  };
+  for (const a of allocs) {
+    if (n35(a.order_id)) push(byOrder, n35(a.order_id), a);
+    if (a.ref_name) push(byAcctRef, `${a.acct}|${up3(a.ref_name)}`, a);
+    const key3 = up3(a.sale_invoice_group || a.ref_name);
+    if (key3) push(byKey, key3, a);
+  }
+  const redirects = /* @__PURE__ */ new Map();
+  const mapRes = await c.execute({ sql: "SELECT posts_as, use_name FROM ledger_map WHERE company_id = ? OR company_id IS NULL", args: [cid] }).catch(() => null);
+  for (const r of mapRes ? toPlain26(mapRes) : []) {
+    const k = up3(r.posts_as);
+    redirects.set(k, [...redirects.get(k) ?? [], up3(r.use_name)]);
+  }
+  const ledgerNames = (party) => {
+    const p = up3(party);
+    return p ? [p, ...redirects.get(p) ?? []] : [];
+  };
+  const lcByOrder = /* @__PURE__ */ new Map();
+  const bdByOrder = /* @__PURE__ */ new Map();
+  if (orderIds.length) {
+    const list2 = orderIds.join(",");
+    const addFin = (m, oid, x) => {
+      const cur = m.get(oid) ?? [];
+      if (!cur.some((y) => y.kind === x.kind && y.id === x.id)) m.set(oid, [...cur, x]);
+    };
+    const lcRows = await c.execute(
+      `SELECT lo.order_id AS oid, l.id AS iid, l.lc_no AS ref FROM lc_linked_orders lo JOIN letters_of_credit l ON l.id = lo.lc_id WHERE lo.order_id IN (${list2})
+         UNION ALL
+         SELECT i.order_id AS oid, l.id AS iid, l.lc_no AS ref FROM lc_issuances i JOIN letters_of_credit l ON l.id = i.lc_id WHERE i.order_id IN (${list2})`
+    ).catch(() => null);
+    for (const r of lcRows ? toPlain26(lcRows) : []) addFin(lcByOrder, n35(r.oid), { kind: "lc", id: n35(r.iid), ref: String(r.ref || "") });
+    const bdRows = await c.execute(`SELECT bo.order_id AS oid, b.id AS iid, b.bd_no AS ref FROM bd_linked_orders bo JOIN bill_discountings b ON b.id = bo.bd_id WHERE bo.order_id IN (${list2})`).catch(() => null);
+    for (const r of bdRows ? toPlain26(bdRows) : []) addFin(bdByOrder, n35(r.oid), { kind: "bd", id: n35(r.iid), ref: String(r.ref || "") });
+  }
+  const [supTerms, cusTerms] = await Promise.all([
+    c.execute("SELECT id, credit_period_days FROM suppliers").then(toPlain26).catch(() => []),
+    c.execute("SELECT id, credit_period_days FROM customers").then(toPlain26).catch(() => [])
+  ]);
+  const supDays = new Map(supTerms.map((r) => [n35(r.id), n35(r.credit_period_days)]));
+  const cusDays = new Map(cusTerms.map((r) => [n35(r.id), n35(r.credit_period_days)]));
+  const settle = (list2, billSide) => {
+    const by = { lc: 0, bd: 0, bank: 0, adjustment: 0 };
+    const via = [];
+    const movements = list2.map((a) => {
+      const owner = owners.get(n35(a.eid));
+      const vt = up3(a.vch_type);
+      const channel = owner ? owner.kind : vt === "PAYMENT" || vt === "RECEIPT" || vt === "CONTRA" ? "bank" : "adjustment";
+      const amount2 = round220(String(a.side) === billSide ? -n35(a.amount) : n35(a.amount));
+      by[channel] = round220(by[channel] + amount2);
+      if (owner && !via.some((x) => x.kind === owner.kind && x.id === owner.id)) via.push(owner);
+      return {
+        channel,
+        amount: amount2,
+        // Settled oldest-bill-first because it was paid with no Agst Ref.
+        fifo: !!a.fifo,
+        date: a.entry_date ? String(a.entry_date).slice(0, 10) : null,
+        vch_type: a.vch_type ?? null,
+        vch_no: a.vch_no ?? null,
+        entry_id: n35(a.eid),
+        instrument: owner ?? null
+      };
+    }).sort((x, y) => String(x.date || "").localeCompare(String(y.date || "")));
+    return { by, movements, via };
+  };
+  const status = (amount2, settled) => (
+    // Under a rupee short is settled: Tally rounds a bill's paise off when it is paid.
+    amount2 > 5e-3 && settled >= amount2 - 0.995 ? "settled" : settled > 5e-3 ? "part" : "pending"
+  );
+  const due = (dateIso, days) => {
+    const d = String(dateIso || "").slice(0, 10);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(d) || !(days > 0)) return { due_date: null, days_left: null };
+    const dd = addDays2(d, days);
+    return { due_date: dd, days_left: daysFromToday(dd) };
+  };
+  const out = [];
+  const claimed = /* @__PURE__ */ new Set();
+  const saleWork = [];
+  for (const d of deals) {
+    const id = n35(d.id);
+    const dealInfo = {
+      deal_id: id,
+      deal_date: d.deal_date ?? null,
+      product_code: d.product_code ?? null,
+      product_name: d.product_name ?? null,
+      deal_lc: n35(d.lc_id) ? { kind: "lc", id: n35(d.lc_id), ref: String(d.lc_no || "") } : null
+    };
+    for (const oid of orders.get(id) ?? []) {
+      const o = orderRows.get(oid);
+      if (!o) continue;
+      const seen = /* @__PURE__ */ new Set();
+      const hits = [];
+      const take = (rows2) => {
+        for (const r of rows2 ?? []) {
+          if (seen.has(n35(r.id))) continue;
+          seen.add(n35(r.id));
+          claimed.add(n35(r.id));
+          hits.push(r);
+        }
+      };
+      take(byOrder.get(oid));
+      const inv = up3(o.invoice_no);
+      if (inv) for (const nm of ledgerNames(o.supplier_name)) take(byAcctRef.get(`${nm}|${inv}`));
+      const { by, movements, via } = settle([...hits, ...fifoRows([`o:${oid}`])], "cr");
+      const amount2 = round220(n35(o.net_amount));
+      const settled = round220(by.lc + by.bd + by.bank + by.adjustment);
+      const financed = [
+        ...dealInfo.deal_lc ? [dealInfo.deal_lc] : [],
+        ...lcByOrder.get(oid) ?? [],
+        ...bdByOrder.get(oid) ?? []
+      ].filter((x, i, arr) => arr.findIndex((y) => y.kind === x.kind && y.id === x.id) === i);
+      const st = status(amount2, settled);
+      const dd = due(o.order_date, supDays.get(n35(o.supplier_id)) ?? 0);
+      const qty = n35(o.ordered_qty);
+      out.push({
+        ...dealInfo,
+        side: "purchase",
+        ...pendingQty(qty, String(o.uom || d.uom || "MT"), amount2, settled),
+        key: `p:${oid}`,
+        order_id: oid,
+        invoice_no: o.invoice_no ?? "",
+        invoice_date: o.order_date ?? null,
+        party_id: o.supplier_id ?? null,
+        party_name: o.supplier_name ?? null,
+        amount: amount2,
+        settled_lc: by.lc,
+        settled_bd: by.bd,
+        settled_bank: by.bank,
+        settled_adjustment: by.adjustment,
+        settled_total: settled,
+        pending: amount2 - settled < 0.995 ? 0 : round220(amount2 - settled),
+        excess: Math.max(0, round220(settled - amount2)),
+        status: st,
+        ...dd,
+        overdue: st !== "settled" && dd.days_left != null && dd.days_left < 0,
+        financed_by: financed,
+        settled_via: via,
+        movements
+      });
+    }
+    const groups = /* @__PURE__ */ new Map();
+    for (const sid of sales.get(id) ?? []) {
+      const l = saleRows.get(sid);
+      if (!l) continue;
+      const k = saleRefKey(l);
+      if (!k) continue;
+      groups.set(k, [...groups.get(k) ?? [], l]);
+    }
+    const dealBds = Array.from(
+      new Map(
+        (orders.get(id) ?? []).flatMap((oid) => bdByOrder.get(oid) ?? []).map((x) => [x.id, x])
+      ).values()
+    );
+    for (const [k, ls] of groups) saleWork.push(() => {
+      const first = ls[0];
+      const amount2 = round220(ls.reduce((a, l) => a + n35(l.amount) + n35(l.gst_amount) + n35(l.round_off) - n35(l.tds_amount), 0));
+      const { by, movements, via } = settle(
+        [...(byKey.get(up3(k)) ?? []).filter((a) => !claimed.has(n35(a.id))), ...fifoRows(ls.map((l) => `s:${n35(l.id)}`))],
+        "dr"
+      );
+      const settled = round220(by.lc + by.bd + by.bank + by.adjustment);
+      const st = status(amount2, settled);
+      const dd = due(first.sale_date, cusDays.get(n35(first.customer_id)) ?? 0);
+      const qty = ls.reduce((a, l) => a + n35(l.qty), 0);
+      out.push({
+        ...dealInfo,
+        side: "sale",
+        ...pendingQty(qty, String(first.uom || d.uom || "MT"), amount2, settled),
+        key: `s:${k}`,
+        sale_ids: ls.map((l) => n35(l.id)),
+        // What the invoice is printed as; `ref_key` is what receipts are
+        // allocated against, which for a grouped invoice is its group.
+        invoice_no: Array.from(new Set(ls.map((l) => String(l.invoice_no || "").trim()).filter(Boolean))).join(", ") || k,
+        ref_key: k,
+        invoice_date: first.sale_date ?? null,
+        party_id: first.customer_id ?? null,
+        party_name: first.customer_name ?? null,
+        amount: amount2,
+        settled_lc: by.lc,
+        settled_bd: by.bd,
+        settled_bank: by.bank,
+        settled_adjustment: by.adjustment,
+        settled_total: settled,
+        pending: amount2 - settled < 0.995 ? 0 : round220(amount2 - settled),
+        excess: Math.max(0, round220(settled - amount2)),
+        status: st,
+        ...dd,
+        overdue: st !== "settled" && dd.days_left != null && dd.days_left < 0,
+        // The instruments this receivable repays: the deal's own LC and any BD
+        // that financed its purchase side.
+        financed_by: [...dealInfo.deal_lc ? [dealInfo.deal_lc] : [], ...dealBds],
+        settled_via: via,
+        movements
+      });
+    });
+  }
+  for (const run of saleWork) run();
+  const rank = new Map(deals.map((d, i) => [n35(d.id), i]));
+  return out.sort(
+    (a, b) => (rank.get(n35(a.deal_id)) ?? 0) - (rank.get(n35(b.deal_id)) ?? 0) || (a.side === b.side ? 0 : a.side === "purchase" ? -1 : 1)
+  );
+}
+var round220, up3;
+var init_trading = __esm({
+  "src/main/trading.ts"() {
+    init_fifoSettle();
+    init_db();
+    init_invoiceno();
+    init_company();
+    init_orders();
+    init_sales();
+    init_access_gate();
+    round220 = (v) => Math.round(v * 100) / 100;
+    up3 = (v) => String(v ?? "").trim().toUpperCase();
+  }
+});
+
+// src/main/facilities.ts
+function toPlain33(res) {
+  return res.rows.map((r) => {
+    const o = {};
+    for (const col of res.columns) o[col] = r[col];
+    return o;
+  });
+}
+async function listFacilities() {
+  const res = await getClient().execute({
+    sql: `SELECT f.*,
+            -- Blocked, not opened: a sanctioned facility carries whatever the
+            -- bank has blocked against it, which is the figure it holds even
+            -- when the bill came in for less. Same rule as getLcLimit in lc.ts.
+            COALESCE((SELECT SUM(COALESCE(NULLIF(l.blocked_amount, 0), l.amount) - COALESCE((SELECT SUM(r.amount) FROM lc_repayments r
+                       WHERE r.lc_id = l.id AND r.posted = 1), 0)) FROM letters_of_credit l
+                       WHERE l.facility_id = f.id AND l.status != 'closed'
+                         AND COALESCE(l.workflow_status, '') <> 'rejected'), 0) AS lc_committed,
+            COALESCE((SELECT SUM(i.amount) FROM lc_issuances i
+                       JOIN letters_of_credit l2 ON l2.id = i.lc_id
+                      WHERE l2.facility_id = f.id), 0) AS lc_utilized,
+            COALESCE((SELECT SUM(e.amount) FROM facility_exposures e
+                       WHERE e.facility_id = f.id AND e.kind = 'outstanding'), 0) AS other_outstanding,
+            COALESCE((SELECT SUM(e.amount) FROM facility_exposures e
+                       WHERE e.facility_id = f.id AND e.kind = 'planned'), 0) AS planned
+          FROM bank_facilities f
+          WHERE f.company_id = ?
+          ORDER BY f.active DESC, f.name`,
+    args: [getActiveCompanyId()]
+  });
+  return toPlain33(res).map((f) => {
+    const committed = n44(f.lc_committed) + n44(f.other_outstanding);
+    return {
+      ...f,
+      total_outstanding: committed,
+      available: n44(f.sanctioned_limit) - committed,
+      // What would be left if everything currently planned were also drawn.
+      available_after_planned: n44(f.sanctioned_limit) - committed - n44(f.planned)
+    };
+  });
+}
+async function listFacilityExposures(facilityId) {
+  const res = await getClient().execute({
+    sql: "SELECT * FROM facility_exposures WHERE facility_id = ? ORDER BY kind, id",
+    args: [facilityId]
+  });
+  return toPlain33(res);
+}
+function facilityArgs(v) {
+  return FACILITY_COLS.map((k) => {
+    const val = v[k];
+    if (val === "" || val === void 0 || val === null) return FACILITY_FALLBACK[k] ?? null;
+    if (k === "sanctioned_limit") return n44(val);
+    if (k === "active") return val ? 1 : 0;
+    return String(val);
+  });
+}
+async function createFacility(v) {
+  if (!String(v.name || "").trim()) throw new Error("Give the facility a name");
+  if (!String(v.bank || "").trim()) throw new Error("Name the bank");
+  const res = await getClient().execute({
+    sql: `INSERT INTO bank_facilities (company_id, ${FACILITY_COLS.join(", ")})
+          VALUES (?, ${FACILITY_COLS.map(() => "?").join(", ")})`,
+    args: [getActiveCompanyId(), ...facilityArgs(v)]
+  });
+  return { id: Number(res.lastInsertRowid) };
+}
+async function updateFacility(id, v) {
+  await getClient().execute({
+    sql: `UPDATE bank_facilities SET ${FACILITY_COLS.map((k) => `${k} = ?`).join(", ")} WHERE id = ?`,
+    args: [...facilityArgs(v), id]
+  });
+  return { id };
+}
+async function deleteFacility(id) {
+  const c = getClient();
+  const lc = await c.execute({ sql: "SELECT COUNT(*) AS n FROM letters_of_credit WHERE facility_id = ?", args: [id] });
+  if (n44(lc.rows[0].n) > 0) {
+    throw new Error(
+      `${n44(lc.rows[0].n)} LC(s) draw against this facility \u2014 unlink them first, or switch the facility off instead so its history stays.`
+    );
+  }
+  await c.execute({ sql: "DELETE FROM facility_exposures WHERE facility_id = ?", args: [id] });
+  await c.execute({ sql: "DELETE FROM bank_facilities WHERE id = ?", args: [id] });
+  return { id };
+}
+async function saveExposure(v) {
+  const c = getClient();
+  const facilityId = n44(v.facility_id);
+  if (!facilityId) throw new Error("Pick the facility this balance sits under");
+  if (!String(v.label || "").trim()) throw new Error("Name this balance (e.g. the account it belongs to)");
+  const args = [
+    String(v.label).trim(),
+    n44(v.amount),
+    String(v.kind || "outstanding"),
+    v.as_of ? String(v.as_of).slice(0, 10) : null,
+    v.note ? String(v.note).trim() : null
+  ];
+  if (v.id) {
+    await c.execute({
+      sql: "UPDATE facility_exposures SET label = ?, amount = ?, kind = ?, as_of = ?, note = ? WHERE id = ?",
+      args: [...args, n44(v.id)]
+    });
+    return { id: n44(v.id) };
+  }
+  const res = await c.execute({
+    sql: `INSERT INTO facility_exposures (facility_id, label, amount, kind, as_of, note)
+          VALUES (?, ?, ?, ?, ?, ?)`,
+    args: [facilityId, ...args]
+  });
+  return { id: Number(res.lastInsertRowid) };
+}
+async function deleteExposure(id) {
+  await getClient().execute({ sql: "DELETE FROM facility_exposures WHERE id = ?", args: [id] });
+  return { id };
+}
+async function facilityHeadroom(facilityId, excludeLcId = 0) {
+  const c = getClient();
+  const f = await c.execute({ sql: "SELECT * FROM bank_facilities WHERE id = ?", args: [facilityId] });
+  if (!f.rows.length) throw new Error("That facility no longer exists");
+  const lc = await c.execute({
+    sql: `SELECT COALESCE(SUM(COALESCE(NULLIF(l.blocked_amount, 0), l.amount) - COALESCE((SELECT SUM(r.amount) FROM lc_repayments r
+                 WHERE r.lc_id = l.id AND r.posted = 1), 0)), 0) AS a
+          FROM letters_of_credit l WHERE l.facility_id = ? AND l.status != 'closed' AND l.id != ?
+            AND COALESCE(l.workflow_status, '') <> 'rejected'`,
+    args: [facilityId, excludeLcId]
+  });
+  const other = await c.execute({
+    sql: "SELECT COALESCE(SUM(amount), 0) AS a FROM facility_exposures WHERE facility_id = ? AND kind = 'outstanding'",
+    args: [facilityId]
+  });
+  const sanctioned = n44(f.rows[0].sanctioned_limit);
+  const lcCommitted = n44(lc.rows[0].a);
+  const otherOutstanding = n44(other.rows[0].a);
+  return {
+    facility_id: facilityId,
+    name: f.rows[0].name,
+    sanctioned,
+    lc_committed: lcCommitted,
+    other_outstanding: otherOutstanding,
+    total_outstanding: lcCommitted + otherOutstanding,
+    available: sanctioned - lcCommitted - otherOutstanding
+  };
+}
+var n44, FACILITY_COLS, FACILITY_FALLBACK;
+var init_facilities = __esm({
+  "src/main/facilities.ts"() {
+    init_db();
+    init_company();
+    n44 = (v) => Number.isFinite(Number(v)) ? Number(v) : 0;
+    FACILITY_COLS = ["name", "bank", "facility_type", "sanctioned_limit", "sanction_date", "review_date", "note", "active"];
+    FACILITY_FALLBACK = {
+      facility_type: "lc",
+      sanctioned_limit: 0,
+      active: 1
+    };
+  }
+});
+
+// src/main/lc.ts
+var lc_exports = {};
+__export(lc_exports, {
+  assertLcNotClosed: () => assertLcNotClosed,
+  createLC: () => createLC,
+  deleteLC: () => deleteLC,
+  deleteLCIssuance: () => deleteLCIssuance,
+  deleteLastLcInstallment: () => deleteLastLcInstallment,
+  editPreclosure: () => editPreclosure,
+  getLcLimit: () => getLcLimit,
+  issueLC: () => issueLC,
+  lcCommission: () => lcCommission,
+  lcCommissionCandidates: () => lcCommissionCandidates,
+  lcIdOfIssuance: () => lcIdOfIssuance,
+  lcIdOfRepayment: () => lcIdOfRepayment,
+  lcParts: () => lcParts,
+  lcPartsMargin: () => lcPartsMargin,
+  linkLcCommission: () => linkLcCommission,
+  listBankLcLimits: () => listBankLcLimits,
+  listLCIssuances: () => listLCIssuances,
+  listLCs: () => listLCs,
+  payLcParty: () => payLcParty,
+  precloseLC: () => precloseLC,
+  reinstateLC: () => reinstateLC,
+  rejectLC: () => rejectLC,
+  repayLcParts: () => repayLcParts,
+  saveLcLimit: () => saveLcLimit,
+  unPrecloseLC: () => unPrecloseLC,
+  undoLcPartRepayment: () => undoLcPartRepayment,
+  updateLC: () => updateLC
+});
+function toPlain34(res) {
+  return res.rows.map((r) => {
+    const o = {};
+    for (const col of res.columns) o[col] = r[col];
+    return o;
+  });
+}
+function n45(v) {
+  const x = Number(v);
+  return Number.isFinite(x) ? x : 0;
+}
+function round222(v) {
+  return Math.round(v * 100) / 100;
+}
+function netAvailable(lc, issued) {
+  const interest = lc.interest_upfront ? 0 : lcInterest(lc);
+  const charges = lc.interest_upfront ? 0 : round222(n45(lc.charges));
+  return round222(n45(lc.amount) - interest - charges - issued);
+}
+async function listLCs(companyId) {
+  const res = await getClient().execute({
+    args: [Number(companyId) || getActiveCompanyId()],
+    sql: `
+    SELECT l.*,
+      s.name AS supplier_name,
+      l.bank AS bank_name,
+      ob.name AS our_bank_name,
+      f.name AS facility_name,
+      rp.name AS receivable_party_name,
+      (SELECT GROUP_CONCAT(lo.order_id) FROM lc_linked_orders lo WHERE lo.lc_id = l.id) AS linked_order_ids_csv,
+      (SELECT GROUP_CONCAT(o.invoice_no, ', ') FROM lc_linked_orders lo
+         JOIN orders o ON o.id = lo.order_id WHERE lo.lc_id = l.id) AS linked_invoice_nos,
+      (SELECT COALESCE(SUM(o.net_amount), 0) FROM lc_linked_orders lo
+         JOIN orders o ON o.id = lo.order_id WHERE lo.lc_id = l.id) AS linked_invoice_amount_total,
+      (SELECT COUNT(*) FROM lc_linked_orders lo WHERE lo.lc_id = l.id) AS linked_invoice_count,
+      (SELECT GROUP_CONCAT(td.id) FROM trading_deals td WHERE td.lc_id = l.id) AS linked_deal_ids_csv,
+      COALESCE((SELECT SUM(amount) FROM lc_issuances WHERE lc_id = l.id), 0) AS utilized,
+      COALESCE((SELECT SUM(CASE WHEN status = 'settled' THEN amount ELSE 0 END) FROM lc_issuances WHERE lc_id = l.id), 0) AS settled_total,
+      COALESCE((SELECT COUNT(CASE WHEN order_id IS NOT NULL THEN 1 END) FROM lc_issuances WHERE lc_id = l.id), 0) AS linked_bill_count,
+      l.amount - COALESCE((SELECT SUM(amount) FROM lc_issuances WHERE lc_id = l.id), 0) AS available,
+      COALESCE((SELECT SUM(amount) FROM lc_repayments WHERE lc_id = l.id AND posted = 1), 0) AS repaid,
+      -- THE PRINCIPAL, APART FROM WHAT RODE OUT WITH IT.
+      -- A repayment debits the bank for the LC plus the bank's own charges in
+      -- one figure, because that is the one line on the statement. Measured
+      -- against the limit, though, only the principal repays anything: netting
+      -- the whole debit off drove Outstanding to minus the charges on an LC
+      -- that was square to the rupee.
+      COALESCE((SELECT SUM(amount - COALESCE(comm_charges, 0) - COALESCE(bank_charges, 0) - COALESCE(charges_total, 0))
+                  FROM lc_repayments WHERE lc_id = l.id AND posted = 1), 0) AS repaid_principal,
+      COALESCE((SELECT SUM(COALESCE(comm_charges, 0) + COALESCE(bank_charges, 0) + COALESCE(charges_total, 0))
+                  FROM lc_repayments WHERE lc_id = l.id AND posted = 1), 0) AS repaid_charges,
+      (SELECT COUNT(*) FROM lc_repayments WHERE lc_id = l.id) AS repayment_count,
+      -- Parts the bank has paid the supplier in; 0 for an LC paid in one go.
+      (SELECT COUNT(DISTINCT installment_no) FROM lc_issuances WHERE lc_id = l.id AND installment_no IS NOT NULL) AS installment_count,
+      (SELECT MAX(settled_date) FROM lc_issuances WHERE lc_id = l.id AND installment_no IS NOT NULL) AS last_installment_date,
+      -- What has actually come back, so the countdown chip can stand down and
+      -- the Payment IN action knows there is nothing left to receive.
+      COALESCE((SELECT SUM(amount) FROM lc_payment_ins WHERE lc_id = l.id), 0) AS payment_in_total,
+      (SELECT COUNT(*) FROM lc_payment_ins WHERE lc_id = l.id) AS payment_in_count,
+      COALESCE(
+        (SELECT MIN(p.maturity_date) FROM lc_parts p WHERE p.lc_id = l.id AND p.repaid_date IS NULL),
+        (SELECT MIN(due_date) FROM lc_issuances WHERE lc_id = l.id AND COALESCE(status, 'outstanding') != 'settled')
+      ) AS next_due_date,
+      -- Paid in parts: how many, their LC amounts, the interest each kept, and
+      -- what is still owed to the bank.
+      (SELECT COUNT(*) FROM lc_parts p WHERE p.lc_id = l.id) AS parts_count,
+      -- Each part on its own, for the register: its maturity, days and state.
+      (SELECT json_group_array(json_object('part_no', p.part_no, 'amount', p.amount, 'pay_date', p.pay_date,
+                'maturity_date', p.maturity_date, 'days', p.days, 'interest', p.interest, 'repaid_date', p.repaid_date))
+         FROM (SELECT * FROM lc_parts WHERE lc_id = l.id ORDER BY part_no) p) AS parts_json,
+      COALESCE((SELECT SUM(p.amount) FROM lc_parts p WHERE p.lc_id = l.id), 0) AS parts_amount,
+      COALESCE((SELECT SUM(p.interest) FROM lc_parts p WHERE p.lc_id = l.id), 0) AS parts_interest,
+      COALESCE((SELECT SUM(p.net) FROM lc_parts p WHERE p.lc_id = l.id), 0) AS parts_net,
+      COALESCE((SELECT SUM(p.amount) FROM lc_parts p WHERE p.lc_id = l.id AND p.repaid_date IS NOT NULL), 0) AS parts_repaid,
+      (SELECT COUNT(*) FROM lc_parts p WHERE p.lc_id = l.id AND p.repaid_date IS NULL) AS parts_open,
+      -- A part with its own margin % moves the LC's margin by the difference
+      -- on that part's amount; 0 for every LC whose parts use the LC's rate.
+      COALESCE((SELECT SUM(p.amount * (p.margin_pct - COALESCE(l.margin_pct, 0)) / 100) FROM lc_parts p
+                 WHERE p.lc_id = l.id AND p.margin_pct IS NOT NULL), 0) AS parts_margin_adj
+    FROM letters_of_credit l
+    LEFT JOIN suppliers s ON l.party_type = 'supplier' AND s.id = l.party_id
+    LEFT JOIN banks ob ON ob.id = l.our_bank_id
+    LEFT JOIN bank_facilities f ON f.id = l.facility_id
+    LEFT JOIN customers rp ON rp.id = l.receivable_party_id
+    WHERE l.company_id = ?
+    ORDER BY l.id DESC
+  `
+  });
+  return toPlain34(res).map((l) => {
+    const linkedCount = n45(l.linked_invoice_count);
+    const margin = Math.round((n45(l.amount) * n45(l.margin_pct) / 100 + n45(l.parts_margin_adj)) * 100) / 100;
+    const interest = lcInterest(l);
+    const rawCharges = Math.round(n45(l.charges) * 100) / 100;
+    const chargedInterest = l.interest_upfront ? 0 : interest;
+    const charges = l.interest_upfront ? 0 : rawCharges;
+    const compliant = String(l.purpose || "") !== "trading" || linkedCount > 0 && !!l.receivable_party_id;
+    return {
+      ...l,
+      linked_order_ids: String(l.linked_order_ids_csv || "").split(",").map((x) => Number(x)).filter((x) => x > 0),
+      linked_deal_ids: String(l.linked_deal_ids_csv || "").split(",").map((x) => Number(x)).filter((x) => x > 0),
+      // Back-calculated: the open amount is the limit struck with the bank —
+      // interest and charges come OUT of it, not added on top (unless both
+      // are paid upfront from the bank instead — see interest_upfront).
+      lc_net_available: Math.round((n45(l.amount) - chargedInterest - charges) * 100) / 100,
+      // What the beneficiary was ACTUALLY paid: the bills the bank honoured.
+      //
+      // lc_net_available above is a back-calculation — open amount less what
+      // the fees ought to be — and the two disagreed. LC-15's bill was raised
+      // for 1,60,57,801.64 while the back-calculation said 1,60,54,441.64,
+      // because the bill deducted the interest and not the ₹3,360 charges. The
+      // ledger carried one figure and the register showed the other.
+      //
+      // A recorded amount beats a formula, every time. Until a bill exists
+      // there is nothing recorded, so the expectation stands in — and says so.
+      paid_to_party: n45(l.utilized) > 4e-3 ? round222(n45(l.utilized)) : null,
+      paid_expected: Math.round((n45(l.amount) - chargedInterest - charges) * 100) / 100,
+      // What's actually left to issue bills against — interest and charges
+      // come out of the open amount before issued bills reduce it further.
+      // The shortfall an over-drawn LC used to show as a negative balance is
+      // now credited back to the party instead (syncLcFeeAdjustment), so the
+      // LC itself is square — reporting it as still negative would double-count
+      // a correction that has already been posted.
+      interest_basis: lcInterestBasis(l),
+      interest_base_amount: lcInterestBase(l),
+      fee_adjustment: lcFeeDelta(),
+      available: round222(netAvailable(l, n45(l.utilized)) - lcFeeDelta()),
+      // What's still owed against the LC's full sanctioned limit, net of
+      // repayments — explicitly requested this way even for an LC that's
+      // barely drawn down, so it reads as the limit's outstanding exposure.
+      // Against the limit, so the blocked figure less what has been repaid.
+      // Never below nothing: an LC repaid in full is repaid in full, and the
+      // charges that shared its debit are an expense, not an overpayment.
+      // A rejected application never became a credit: nothing outstanding.
+      outstanding: String(l.workflow_status || "") === "rejected" ? 0 : (
+        // Closed by repaying its parts: what was never drawn is not owed.
+        n45(l.parts_count) > 0 && l.preclosed_date ? 0 : round222(Math.max(0, (n45(l.blocked_amount) || n45(l.amount)) - n45(l.repaid_principal)))
+      ),
+      repaid_principal: round222(n45(l.repaid_principal)),
+      repaid_charges: round222(n45(l.repaid_charges)),
+      // Resolved once here so the register and the forms never have to repeat
+      // the fallback — and cannot disagree about it.
+      blocked_effective: round222(n45(l.blocked_amount) || n45(l.amount)),
+      // The bank's security on this LC, in rupees rather than as a percentage
+      // of a figure the reader has to go and find. Computed here already; it
+      // was simply never handed out.
+      margin_amount: margin,
+      interest_amount: n45(l.parts_count) > 0 ? round222(n45(l.parts_interest)) : round222(interest),
+      // Paid in parts: what of the LC is still undrawn, as an LC amount.
+      parts_left: n45(l.parts_count) > 0 ? round222(Math.max(0, n45(l.amount) - n45(l.parts_amount))) : null,
+      compliant,
+      display_status: String(l.workflow_status || "") === "rejected" ? "rejected" : !compliant ? "non_compliant" : String(l.workflow_status || "in_progress")
+    };
+  });
+}
+async function getLcLimit(bankId, from, to) {
+  const c = getClient();
+  const cid = getActiveCompanyId();
+  let bank = n45(bankId);
+  if (bank) {
+    const owner = await c.execute({ sql: "SELECT company_id FROM banks WHERE id = ?", args: [bank] });
+    if (n45(owner.rows[0]?.company_id) !== cid) bank = 0;
+  }
+  const limitRes = bank ? await c.execute({
+    sql: "SELECT fixed_limit, convertible_limit, convertible_enabled FROM bank_lc_limits WHERE company_id = ? AND bank_id = ?",
+    args: [cid, bank]
+  }) : await c.execute({
+    sql: `SELECT COALESCE(SUM(fixed_limit), 0) AS fixed_limit,
+                     COALESCE(SUM(convertible_limit), 0) AS convertible_limit,
+                     MAX(convertible_enabled) AS convertible_enabled
+              FROM bank_lc_limits WHERE company_id = ?`,
+    args: [cid]
+  });
+  let limit = limitRes.rows.length ? toPlain34(limitRes)[0] : { fixed_limit: 0, convertible_limit: 0, convertible_enabled: 0 };
+  if (!bank && n45(limit.fixed_limit) === 0 && n45(limit.convertible_limit) === 0) {
+    const legacy = await c.execute({
+      sql: "SELECT fixed_limit, convertible_limit, convertible_enabled FROM lc_limits WHERE company_id = ?",
+      args: [cid]
+    });
+    if (legacy.rows.length) limit = toPlain34(legacy)[0];
+  }
+  const f = from ? String(from).slice(0, 10) : "";
+  const t = to ? String(to).slice(0, 10) : "";
+  const sumsRes = await c.execute({
+    // Against the LIMIT it is the blocked amount that counts, not the amount
+    // opened: the bank is holding the figure it blocked whether or not the bill
+    // came in for that much. Interest and margin still work off the open
+    // amount, which is why only the limit sums coalesce this way.
+    sql: `SELECT stage, COALESCE(SUM(COALESCE(NULLIF(blocked_amount, 0), amount)
+                - COALESCE((SELECT SUM(p.amount) FROM lc_parts p WHERE p.lc_id = letters_of_credit.id AND p.repaid_date IS NOT NULL), 0)), 0) AS total,
+                 COUNT(*) AS cnt FROM letters_of_credit
+          WHERE company_id = ? AND COALESCE(facility_type, 'lc') = 'lc' AND preclosed_date IS NULL
+            AND COALESCE(workflow_status, '') <> 'rejected'
+            ${bank ? "AND our_bank_id = ?" : ""}
+            ${f ? "AND open_date >= ?" : ""}
+            ${t ? "AND open_date <= ?" : ""}
+          GROUP BY stage`,
+    args: [cid, ...bank ? [bank] : [], ...f ? [f] : [], ...t ? [t] : []]
+  });
+  const byStage = { application: 0, open: 0, payment_received: 0 };
+  let periodCount = 0;
+  for (const r of toPlain34(sumsRes)) {
+    const stage = String(r.stage || "application");
+    if (stage in byStage) byStage[stage] = n45(r.total);
+    periodCount += n45(r.cnt);
+  }
+  const totalCountRes = await c.execute({
+    sql: `SELECT COUNT(*) AS cnt FROM letters_of_credit
+          WHERE company_id = ? AND COALESCE(facility_type, 'lc') = 'lc' AND preclosed_date IS NULL
+            AND COALESCE(workflow_status, '') <> 'rejected'
+            ${bank ? "AND our_bank_id = ?" : ""}`,
+    args: bank ? [cid, bank] : [cid]
+  });
+  const totalCount = n45(totalCountRes.rows[0]?.cnt);
+  const totalLimit = round222(n45(limit.fixed_limit) + (limit.convertible_enabled ? n45(limit.convertible_limit) : 0));
+  const utilized = round222(byStage.application + byStage.open + byStage.payment_received);
+  return {
+    bank_id: bank || null,
+    fixed_limit: n45(limit.fixed_limit),
+    convertible_limit: n45(limit.convertible_limit),
+    convertible_enabled: !!n45(limit.convertible_enabled),
+    total_limit: totalLimit,
+    lc_count: totalCount,
+    period_lc_count: periodCount,
+    application: round222(byStage.application),
+    open: round222(byStage.open),
+    payment_received: round222(byStage.payment_received),
+    utilized,
+    available: round222(totalLimit - utilized),
+    period_from: f || null,
+    period_to: t || null
+  };
+}
+async function listBankLcLimits() {
+  const cid = getActiveCompanyId();
+  const res = await getClient().execute({
+    sql: `SELECT b.id AS bank_id, b.name AS bank, b.active,
+                 COALESCE(l.fixed_limit, 0) AS fixed_limit,
+                 COALESCE(l.convertible_limit, 0) AS convertible_limit,
+                 COALESCE(l.convertible_enabled, 0) AS convertible_enabled,
+                 l.commission_pct,
+                 (SELECT COUNT(*) FROM letters_of_credit x WHERE x.company_id = ? AND x.our_bank_id = b.id
+                     AND COALESCE(x.workflow_status, '') <> 'rejected') AS lc_count,
+                 COALESCE((SELECT SUM(COALESCE(NULLIF(x.blocked_amount, 0), x.amount)) FROM letters_of_credit x
+                           WHERE x.company_id = ? AND x.our_bank_id = b.id
+                             AND COALESCE(x.facility_type, 'lc') = 'lc' AND x.preclosed_date IS NULL
+                             AND COALESCE(x.workflow_status, '') <> 'rejected'), 0) AS utilized
+          FROM banks b
+          LEFT JOIN bank_lc_limits l ON l.bank_id = b.id AND l.company_id = ?
+          WHERE b.company_id = ?
+          ORDER BY b.name`,
+    args: [cid, cid, cid, cid]
+  });
+  return toPlain34(res).map((r) => {
+    const total = round222(n45(r.fixed_limit) + (n45(r.convertible_enabled) ? n45(r.convertible_limit) : 0));
+    return { ...r, convertible_enabled: !!n45(r.convertible_enabled), total_limit: total, available: round222(total - n45(r.utilized)) };
+  });
+}
+async function saveLcLimit(v) {
+  const cid = getActiveCompanyId();
+  const bankId = n45(v.bank_id);
+  if (!bankId) throw new Error("Pick which bank this limit is sanctioned by");
+  const owner = await getClient().execute({ sql: "SELECT company_id FROM banks WHERE id = ?", args: [bankId] });
+  if (n45(owner.rows[0]?.company_id) !== cid) throw new Error("That bank belongs to a different company");
+  const was = await getClient().execute({
+    sql: "SELECT COALESCE(fixed_limit, 0) AS v FROM bank_lc_limits WHERE company_id = ? AND bank_id = ?",
+    args: [cid, bankId]
+  });
+  const priorFixed = was.rows.length ? n45(was.rows[0].v) : 0;
+  await getClient().execute({
+    sql: `INSERT INTO bank_lc_limits (company_id, bank_id, fixed_limit, convertible_limit, convertible_enabled, commission_pct, updated_at)
+          VALUES (?, ?, ?, ?, ?, ?, datetime('now'))
+          ON CONFLICT(company_id, bank_id) DO UPDATE SET
+            fixed_limit = excluded.fixed_limit,
+            convertible_limit = excluded.convertible_limit,
+            convertible_enabled = excluded.convertible_enabled,
+            commission_pct = excluded.commission_pct,
+            updated_at = excluded.updated_at`,
+    args: [
+      cid,
+      bankId,
+      n45(v.fixed_limit),
+      n45(v.convertible_limit),
+      v.convertible_enabled ? 1 : 0,
+      v.commission_pct === "" || v.commission_pct == null ? null : Math.max(0, n45(v.commission_pct))
+    ]
+  });
+  await logLimitChange({
+    kind: "bank",
+    refId: bankId,
+    oldAmount: priorFixed,
+    newAmount: n45(v.fixed_limit),
+    note: "edited on the LC limit screen",
+    companyId: cid
+  });
+  return { id: bankId };
+}
+async function syncLinkedOrders(lcId, orderIds) {
+  const c = getClient();
+  const ids = Array.isArray(orderIds) ? orderIds.map((x) => n45(x)).filter((x) => x > 0) : [];
+  if (ids.length) {
+    const taken = await c.execute({
+      sql: `SELECT lo.order_id, o.invoice_no, l.lc_no
+            FROM lc_linked_orders lo
+            JOIN orders o ON o.id = lo.order_id
+            LEFT JOIN letters_of_credit l ON l.id = lo.lc_id
+            WHERE lo.order_id IN (${ids.join(",")}) AND lo.lc_id != ?`,
+      args: [lcId]
+    });
+    if (taken.rows.length) {
+      const t = taken.rows[0];
+      throw new Error(`Invoice ${t.invoice_no || `#${t.order_id}`} is already linked to ${t.lc_no ? `LC ${t.lc_no}` : "another LC"}`);
+    }
+  }
+  await c.execute({ sql: "DELETE FROM lc_linked_orders WHERE lc_id = ?", args: [lcId] });
+  for (const oid of ids) {
+    await c.execute({
+      sql: "INSERT OR IGNORE INTO lc_linked_orders (lc_id, order_id) VALUES (?, ?)",
+      args: [lcId, oid]
+    });
+  }
+}
+async function syncPartsCharges(lcId) {
+  await getClient().execute({
+    sql: `UPDATE letters_of_credit SET charges = (SELECT ROUND(COALESCE(SUM(charges), 0), 2) FROM lc_parts WHERE lc_id = ?)
+           WHERE id = ? AND EXISTS (SELECT 1 FROM lc_parts WHERE lc_id = ?)`,
+    args: [n45(lcId), n45(lcId), n45(lcId)]
+  });
+}
+function lcPartsMargin(lc, parts) {
+  const rate = n45(lc.margin_pct);
+  const drawn = parts.reduce((s5, p) => s5 + n45(p.amount), 0);
+  const onParts = parts.reduce((s5, p) => s5 + n45(p.amount) * (p.margin_pct == null ? rate : n45(p.margin_pct)) / 100, 0);
+  return round222(onParts + Math.max(0, n45(lc.amount) - drawn) * rate / 100);
+}
+async function lcParts(lcId) {
+  const r = await getClient().execute({ sql: "SELECT * FROM lc_parts WHERE lc_id = ? ORDER BY part_no", args: [n45(lcId)] }).catch(() => null);
+  return r ? toPlain34(r) : [];
+}
+function partFigures(lc, amount2, payDate, maturity, first, ratePct, ownCharges) {
+  const days = Math.max(0, daysBetween4(payDate, maturity));
+  const charges = ownCharges != null ? round222(ownCharges) : first ? round222(n45(lc.charges)) : 0;
+  const base = Math.max(0, round222(amount2 - (lc.interest_excl_charges ? charges : 0)));
+  const interest = round222(base * n45(ratePct == null ? lc.interest_pct : ratePct) * days / (100 * 365));
+  return { days, interest, charges, net: round222(amount2 - interest - charges) };
+}
+async function insertLcPart(lcId, partNo, lc, amount2, payDate, maturity, rates = {}) {
+  if (lc.interest_upfront) {
+    throw new Error("This LC's interest is paid upfront from the bank account, so it cannot be split into parts with their own maturities.");
+  }
+  if (!maturity) throw new Error(`Pick the maturity of part ${partNo}`);
+  if (maturity < payDate) throw new Error(`Part ${partNo} cannot mature (${dmy4(maturity)}) before it was paid (${dmy4(payDate)})`);
+  const ip = partRate(rates.interest_pct);
+  const mp = partRate(rates.margin_pct);
+  const ch = partRate(rates.charges);
+  const f = partFigures(lc, amount2, payDate, maturity, partNo === 1, ip, ch);
+  if (f.net <= 5e-3) throw new Error(`Part ${partNo}'s interest and charges are more than its amount`);
+  await getClient().execute({
+    sql: `INSERT INTO lc_parts (lc_id, part_no, pay_date, amount, maturity_date, days, interest, charges, net, interest_pct, margin_pct)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    args: [n45(lcId), partNo, payDate, round222(amount2), maturity, f.days, f.interest, f.charges, f.net, ip, mp]
+  });
+  return { net: f.net, interest: f.interest };
+}
+async function syncPaymentReceivedIssuance(lcId, v) {
+  const paymentDate = String(v.payment_received_date || "").slice(0, 10);
+  if (!paymentDate) return;
+  const c = getClient();
+  const existing = await c.execute({ sql: "SELECT COUNT(*) AS n FROM lc_issuances WHERE lc_id = ?", args: [lcId] });
+  const firstPart = round222(n45(v.first_installment));
+  const plan = Array.isArray(v.parts_plan) ? v.parts_plan.filter((p) => round222(n45(p?.amount)) > 5e-3) : [];
+  if (n45(existing.rows[0]?.n) === 0 && plan.length) {
+    const total = round222(plan.reduce((s5, p) => s5 + round222(n45(p.amount)), 0));
+    if (total > n45(v.amount) + 5e-3) {
+      throw new Error(`The parts come to ${total.toFixed(2)}, more than the LC's ${n45(v.amount).toFixed(2)}`);
+    }
+    await c.execute({ sql: "DELETE FROM lc_parts WHERE lc_id = ?", args: [lcId] });
+    const ids = Array.isArray(v.linked_order_ids) ? v.linked_order_ids.map((x) => n45(x)).filter((x) => x > 0) : [];
+    let prev = paymentDate;
+    for (let i = 0; i < plan.length; i++) {
+      const p = plan[i];
+      const no = i + 1;
+      const payOn = i === 0 ? paymentDate : String(p.pay_date || "").slice(0, 10);
+      if (!payOn) throw new Error(`Pick the day part ${no} was paid`);
+      if (payOn > todayISO8()) throw new Error(`Part ${no} cannot be paid on a future date`);
+      if (payOn < prev) throw new Error(`Part ${no} cannot be paid (${dmy4(payOn)}) before part ${no - 1} (${dmy4(prev)})`);
+      prev = payOn;
+      const maturity = String(p.maturity || "").slice(0, 10);
+      const fig = await insertLcPart(lcId, no, v, round222(n45(p.amount)), payOn, maturity, p);
+      const billIds = await insertInstallmentBills(lcId, fig.net, payOn, maturity, no, ids);
+      const memo = String(p.note || "").trim();
+      if (memo && billIds.length) {
+        await c.execute({
+          sql: `UPDATE lc_issuances SET note = ? WHERE id IN (${billIds.map(() => "?").join(",")})`,
+          args: [memo, ...billIds]
+        });
+      }
+      await settleLcBillsCombined(billIds, payOn);
+    }
+    await syncPartsCharges(lcId);
+  } else if (n45(existing.rows[0]?.n) === 0 && firstPart > 5e-3) {
+    if (firstPart > n45(v.amount) + 5e-3) {
+      throw new Error(`Part 1 (${firstPart.toFixed(2)}) is more than the LC's ${n45(v.amount).toFixed(2)}`);
+    }
+    const maturity = String(v.first_installment_maturity || v.expiry_date || "").slice(0, 10);
+    await c.execute({ sql: "DELETE FROM lc_parts WHERE lc_id = ?", args: [lcId] });
+    const p1 = await insertLcPart(lcId, 1, v, firstPart, paymentDate, maturity);
+    const ids = Array.isArray(v.linked_order_ids) ? v.linked_order_ids.map((x) => n45(x)).filter((x) => x > 0) : [];
+    await insertInstallmentBills(lcId, p1.net, paymentDate, maturity, 1, ids);
+  } else if (n45(existing.rows[0]?.n) === 0) {
+    const issueDate = String(v.open_date || paymentDate).slice(0, 10);
+    const dueDate = String(v.expiry_date || paymentDate).slice(0, 10);
+    const ids = Array.isArray(v.linked_order_ids) ? v.linked_order_ids.map((x) => n45(x)).filter((x) => x > 0) : [];
+    if (ids.length) {
+      let remaining = netAvailable(v, 0);
+      for (const oid of ids) {
+        const o = await c.execute({ sql: "SELECT invoice_no, net_amount FROM orders WHERE id = ?", args: [oid] });
+        if (!o.rows.length) continue;
+        const issueAmount = Math.min(remaining, n45(o.rows[0].net_amount));
+        if (issueAmount <= 5e-3) continue;
+        await c.execute({
+          sql: `INSERT INTO lc_issuances (lc_id, issue_date, amount, order_id, bill_no, due_date, status)
+                VALUES (?, ?, ?, ?, ?, ?, 'outstanding')`,
+          args: [lcId, issueDate, Math.round(issueAmount * 100) / 100, oid, String(o.rows[0].invoice_no || ""), dueDate]
+        });
+        remaining -= issueAmount;
+      }
+    } else if (netAvailable(v, 0) > 0) {
+      await c.execute({
+        sql: `INSERT INTO lc_issuances (lc_id, issue_date, amount, bill_no, due_date, status)
+              VALUES (?, ?, ?, ?, ?, 'outstanding')`,
+        args: [lcId, issueDate, netAvailable(v, 0), null, dueDate]
+      });
+    }
+  }
+  const outstanding = await c.execute({
+    sql: "SELECT id FROM lc_issuances WHERE lc_id = ? AND COALESCE(status, 'outstanding') != 'settled'",
+    args: [lcId]
+  });
+  await settleLcBillsCombined(outstanding.rows.map((r) => Number(r.id)), paymentDate);
+}
+async function lcCommission(lcId) {
+  const c = getClient();
+  const l = (await c.execute({ sql: "SELECT id, company_id, amount, commission_pct, commission_voucher_id FROM letters_of_credit WHERE id = ?", args: [n45(lcId)] })).rows[0];
+  if (!l) throw new Error("That LC no longer exists");
+  const expected = l.commission_pct == null ? null : round222(n45(l.amount) * n45(l.commission_pct) / 100);
+  const voucher = n45(l.commission_voucher_id) ? await voucherBrief(n45(l.commission_voucher_id)) : null;
+  return {
+    commission_pct: l.commission_pct == null ? null : n45(l.commission_pct),
+    expected,
+    voucher,
+    charged: voucher ? n45(voucher.amount) : null,
+    difference: voucher && expected != null ? round222(n45(voucher.amount) - expected) : null
+  };
+}
+async function voucherBrief(entryId) {
+  const BANKS = "('Bank Accounts', 'Bank OD A/c', 'Cash-in-Hand')";
+  const r = (await getClient().execute({
+    sql: `SELECT je.id, je.entry_date, je.vch_type, je.vch_no, je.narration, je.company_id,
+                   (SELECT nn.prefix || '/' || nn.serial FROM voucher_numbers nn WHERE nn.entry_id = je.id) AS code,
+                   (SELECT ROUND(SUM(jl.cr), 2) FROM journal_lines jl JOIN ledger_accounts a ON a.id = jl.account_id
+                     WHERE jl.entry_id = je.id AND a.acc_group IN ${BANKS}) AS amount,
+                   (SELECT a.name FROM journal_lines jl JOIN ledger_accounts a ON a.id = jl.account_id
+                     WHERE jl.entry_id = je.id AND jl.cr > 0 AND a.acc_group IN ${BANKS}
+                     ORDER BY jl.cr DESC LIMIT 1) AS bank,
+                   (SELECT GROUP_CONCAT(a.name, ', ') FROM journal_lines jl JOIN ledger_accounts a ON a.id = jl.account_id
+                     WHERE jl.entry_id = je.id AND jl.dr > 0) AS debited
+              FROM journal_entries je WHERE je.id = ?`,
+    args: [n45(entryId)]
+  })).rows[0];
+  return r ? { ...r, amount: round222(n45(r.amount)) } : null;
+}
+async function lcCommissionCandidates(lcId, q) {
+  const c = getClient();
+  const l = (await c.execute({ sql: "SELECT id, company_id, amount, commission_pct, opened_date, open_date FROM letters_of_credit WHERE id = ?", args: [n45(lcId)] })).rows[0];
+  if (!l) throw new Error("That LC no longer exists");
+  const expected = round222(n45(l.amount) * n45(l.commission_pct) / 100);
+  const from = String(l.opened_date || l.open_date || "").slice(0, 10);
+  const like = `%${String(q || "").trim().toUpperCase()}%`;
+  const res = await c.execute({
+    sql: `SELECT je.id FROM journal_entries je
+           WHERE je.company_id = ?
+             ${from ? "AND je.entry_date >= date(?, '-15 days')" : ""}
+             AND EXISTS (SELECT 1 FROM journal_lines jl JOIN ledger_accounts a ON a.id = jl.account_id
+                          WHERE jl.entry_id = je.id AND jl.cr > 0 AND a.acc_group IN ('Bank Accounts', 'Bank OD A/c'))
+             AND NOT EXISTS (SELECT 1 FROM letters_of_credit x WHERE x.commission_voucher_id = je.id AND x.id <> ?)
+             AND (? = '%%' OR UPPER(COALESCE(je.narration, '') || ' ' || COALESCE(je.vch_no, '')) LIKE ?)
+           ORDER BY je.entry_date DESC, je.id DESC LIMIT 400`,
+    args: [n45(l.company_id), ...from ? [from] : [], n45(lcId), like, like]
+  });
+  const out = [];
+  for (const r of res.rows) {
+    const v = await voucherBrief(n45(r.id));
+    if (v && n45(v.amount) > 0) out.push(v);
+  }
+  return out.sort((a, b) => Math.abs(n45(a.amount) - expected) - Math.abs(n45(b.amount) - expected)).slice(0, 40);
+}
+async function linkLcCommission(lcId, entryId) {
+  const c = getClient();
+  const l = (await c.execute({ sql: "SELECT id, company_id FROM letters_of_credit WHERE id = ?", args: [n45(lcId)] })).rows[0];
+  if (!l) throw new Error("That LC no longer exists");
+  if (entryId) {
+    const v = await voucherBrief(n45(entryId));
+    if (!v) throw new Error("That voucher no longer exists");
+    if (n45(v.company_id) !== n45(l.company_id)) throw new Error("That voucher is in another company's books");
+    const taken = (await c.execute({ sql: "SELECT lc_no FROM letters_of_credit WHERE commission_voucher_id = ? AND id <> ?", args: [n45(entryId), n45(lcId)] })).rows[0];
+    if (taken) throw new Error(`That voucher is already linked as LC ${String(taken.lc_no || "")}'s commission`);
+  }
+  await c.execute({ sql: "UPDATE letters_of_credit SET commission_voucher_id = ? WHERE id = ?", args: [entryId ? n45(entryId) : null, n45(lcId)] });
+  return { id: n45(lcId) };
+}
+async function listLCIssuances(lcId) {
+  const res = await getClient().execute({
+    sql: `SELECT i.*, o.invoice_no
+          FROM lc_issuances i
+          LEFT JOIN orders o ON o.id = i.order_id
+          WHERE i.lc_id = ? ORDER BY i.id DESC`,
+    args: [lcId]
+  });
+  return toPlain34(res);
+}
+function lcArgs(v) {
+  return LC_COLS.map((k) => {
+    const val = v[k];
+    if (val === "" || val === void 0 || val === null) {
+      if (k === "workflow_status") return "in_progress";
+      if (k === "stage") return "application";
+      if (k === "amount" || k === "usance_days" || k === "margin_pct" || k === "interest_upfront" || k === "interest_excl_charges" || k === "interest_adj") {
+        return 0;
+      }
+      if (k === "lc_no") return "";
+      if (k === "payment_in_expected") return 0;
+      return null;
+    }
+    if (k === "our_bank_id" || k === "party_id" || k === "amount" || k === "blocked_amount" || k === "interest_pct" || k === "charges" || k === "usance_days" || k === "margin_pct" || k === "facility_id" || k === "receivable_party_id" || k === "interest_upfront" || // Signed: a negative adjustment is the ordinary case, so this must not
+    // be floored or read as a string.
+    k === "interest_adj" || // A number of days, kept as one — blank has already fallen through to
+    // null above, which is "no term agreed" rather than nought days.
+    k === "payment_in_days" || k === "payment_in_expected" || k === "commission_pct") {
+      return n45(val);
+    }
+    return val;
+  });
+}
+async function assertWithinFacility(v, excludeLcId = 0) {
+  const facilityId = n45(v.facility_id);
+  if (!facilityId || v.force_over_limit) return;
+  const h = await facilityHeadroom(facilityId, excludeLcId);
+  const amount2 = n45(v.blocked_amount) || n45(v.amount);
+  if (amount2 > n45(h.available) + 5e-3) {
+    throw new Error(
+      `${h.name} has ${Number(h.available).toFixed(2)} left of its ${Number(h.sanctioned).toFixed(2)} sanction (${Number(h.lc_committed).toFixed(2)} on other LCs, ${Number(h.other_outstanding).toFixed(2)} other outstanding). This LC of ${amount2.toFixed(2)} would exceed it.`
+    );
+  }
+}
+async function assertWithinInvoiceCover(v) {
+  const ids = Array.isArray(v.linked_order_ids) ? v.linked_order_ids.map((x) => n45(x)).filter((x) => x > 0) : [];
+  if (!ids.length) return;
+  const res = await getClient().execute({
+    sql: `SELECT COALESCE(SUM(net_amount), 0) AS total FROM orders WHERE id IN (${ids.map(() => "?").join(", ")})`,
+    args: ids
+  });
+  const total = n45(res.rows[0]?.total);
+  const amount2 = n45(v.amount);
+  if (amount2 > total + 5e-3) {
+    throw new Error(
+      `The open amount (${amount2.toFixed(2)}) cannot exceed the ${total.toFixed(2)} total of the selected invoices.`
+    );
+  }
+}
+function assertLcNoIfPastApplication(v) {
+  if (String(v.stage || "application") !== "application" && !String(v.lc_no || "").trim()) {
+    throw new Error("LC number is required once the LC is Open");
+  }
+}
+async function assertLcNoNotTaken(v, id) {
+  const lcNo = String(v.lc_no || "").trim();
+  if (!lcNo) return;
+  const c = getClient();
+  const cid = n45(v.company_id) || getActiveCompanyId();
+  if (id) {
+    const own = await c.execute({ sql: "SELECT lc_no FROM letters_of_credit WHERE id = ?", args: [id] });
+    const was = String(own.rows[0]?.lc_no || "").trim();
+    if (was.toUpperCase() === lcNo.toUpperCase()) return;
+  }
+  const res = await c.execute({
+    sql: `SELECT id, lc_no, bank, amount, open_date FROM letters_of_credit
+           WHERE company_id = ? AND UPPER(TRIM(COALESCE(lc_no,''))) = ? AND id <> ?
+           ORDER BY id LIMIT 1`,
+    args: [cid, lcNo.toUpperCase(), n45(id)]
+  });
+  if (!res.rows.length) return;
+  const clash = toPlain34(res)[0];
+  const when = String(clash.open_date || "").slice(0, 10);
+  throw new Error(
+    `LC ${lcNo} already exists in this company \u2014 ${clash.bank || "unknown bank"}${when ? `, opened ${when}` : ""}. Give this one a number of its own.`
+  );
+}
+async function assertHasLinkedInvoice(v) {
+  if (String(v.stage || "application") === "application") return;
+  const ids = Array.isArray(v.linked_order_ids) ? v.linked_order_ids.map((x) => n45(x)).filter((x) => x > 0) : [];
+  if (ids.length) return;
+  if (await getSetting("lc_require_linked_invoice") === "0") return;
+  const res = await getClient().execute({
+    sql: `SELECT COUNT(*) AS n FROM orders
+          WHERE supplier_id = ? AND company_id = ? AND COALESCE(is_trading, 0) = ? AND order_date <= ?`,
+    args: [
+      n45(v.party_id),
+      n45(v.company_id) || getActiveCompanyId(),
+      String(v.purpose || "") === "trading" ? 1 : 0,
+      String(v.open_date || "").slice(0, 10)
+    ]
+  });
+  if (n45(res.rows[0]?.n) === 0) return;
+  throw new Error(
+    "Link at least one purchase invoice before the LC leaves Application \u2014 an LC that is Open or has received payment must name the invoice(s) it covers."
+  );
+}
+function assertStageDates(v) {
+  const stage = String(v.stage || "application");
+  const has = (k) => !!String(v[k] ?? "").trim();
+  if ((stage === "open" || stage === "payment_received") && !has("opened_date")) {
+    throw new Error("Open date is required once the LC is Open \u2014 the day the bank opened the credit");
+  }
+  if (stage === "payment_received") {
+    if (!has("payment_received_date")) {
+      throw new Error("Payment received date is required once payment has been received");
+    }
+    if (!has("expiry_date")) {
+      throw new Error("Maturity date is required once payment has been received \u2014 it is what the interest days are counted to");
+    }
+  }
+}
+function assertPaymentReceivedNotBeforeOpen(v) {
+  if (String(v.stage || "application") === "payment_received" && v.opened_date && v.payment_received_date && String(v.payment_received_date) < String(v.opened_date)) {
+    throw new Error("Payment received date cannot be before the date the LC was opened");
+  }
+}
+async function resizeAutoLcBill(lcId) {
+  const c = getClient();
+  const lcRes = await c.execute({ sql: "SELECT * FROM letters_of_credit WHERE id = ?", args: [n45(lcId)] });
+  if (!lcRes.rows.length) return;
+  const lc = toPlain34(lcRes)[0];
+  const res = await c.execute({
+    sql: "SELECT id, amount, order_id, bill_no, installment_no FROM lc_issuances WHERE lc_id = ?",
+    args: [n45(lcId)]
+  });
+  if (res.rows.length !== 1) return;
+  const bill = toPlain34(res)[0];
+  if (n45(bill.order_id)) return;
+  if (n45(bill.installment_no)) return;
+  if (String(bill.bill_no || "").trim()) return;
+  const want = netAvailable(lc, 0);
+  if (want <= 5e-3) return;
+  if (Math.abs(want - n45(bill.amount)) < 5e-3) return;
+  await c.execute({
+    sql: "UPDATE lc_issuances SET amount = ? WHERE id = ?",
+    args: [round222(want), n45(bill.id)]
+  });
+}
+async function syncLcVouchers(id) {
+  const problems = [];
+  try {
+    await postLcOpening(id);
+  } catch (e) {
+    problems.push(`the margin voucher (${e.message})`);
+  }
+  try {
+    await postLcFees(id);
+  } catch (e) {
+    problems.push(`the stray fee voucher (${e.message})`);
+  }
+  try {
+    await resizeAutoLcBill(id);
+  } catch (e) {
+    problems.push(`the bill amount (${e.message})`);
+  }
+  try {
+    await refreshLcUpfrontInterest(id);
+  } catch (e) {
+    problems.push(`the upfront interest voucher (${e.message})`);
+  }
+  try {
+    await resyncLcSettlement(id);
+  } catch (e) {
+    problems.push(`the settlement journal (${e.message})`);
+  }
+  try {
+    await syncLcFeeAdjustment(id);
+  } catch (e) {
+    problems.push(`the party's fee adjustment (${e.message})`);
+  }
+  if (!problems.length) return void 0;
+  throw new Error(`LC not saved: ${problems.join(" and ")} could not be posted. The previous books were retained.`);
+}
+async function assertOwnBankBelongsToCompany(v) {
+  const bankId = n45(v.our_bank_id);
+  if (!bankId) return;
+  const cid = n45(v.company_id) || getActiveCompanyId();
+  const owner = await getClient().execute({ sql: "SELECT company_id FROM banks WHERE id = ?", args: [bankId] });
+  if (n45(owner.rows[0]?.company_id) !== cid) {
+    throw new Error("That bank belongs to a different company \u2014 pick one of this company's own banks");
+  }
+}
+async function createLC(v) {
+  return withDbTransaction(async () => {
+    if (!v.bank) throw new Error("Bank is required");
+    if (!String(v.open_date || "").trim()) throw new Error("Application date is required");
+    assertLcNoIfPastApplication(v);
+    assertStageDates(v);
+    await assertLcNoNotTaken(v);
+    await assertHasLinkedInvoice(v);
+    await assertOwnBankBelongsToCompany(v);
+    assertPaymentReceivedNotBeforeOpen(v);
+    if (!String(v.fd_no || "").trim()) throw new Error("FD No is required");
+    await assertWithinFacility(v);
+    await assertWithinInvoiceCover(v);
+    const res = await getClient().execute({
+      sql: `INSERT INTO letters_of_credit (company_id, ${LC_COLS.join(", ")})
+          VALUES (?, ${LC_COLS.map(() => "?").join(", ")})`,
+      args: [getActiveCompanyId(), ...lcArgs(v)]
+    });
+    const id = Number(res.lastInsertRowid);
+    await syncLinkedOrders(id, v.linked_order_ids);
+    await linkTradingDealsToLc(id, v.linked_deal_ids);
+    await syncPaymentReceivedIssuance(id, v);
+    const warning = await syncLcVouchers(id);
+    return { id, warning };
+  });
+}
+async function updateLC(id, v) {
+  return withDbTransaction(async () => {
+    if (!v.bank) throw new Error("Bank is required");
+    if (!String(v.open_date || "").trim()) throw new Error("Application date is required");
+    assertLcNoIfPastApplication(v);
+    assertStageDates(v);
+    await assertLcNoNotTaken(v, id);
+    await assertHasLinkedInvoice(v);
+    await assertOwnBankBelongsToCompany(v);
+    assertPaymentReceivedNotBeforeOpen(v);
+    if (!String(v.fd_no || "").trim()) throw new Error("FD No is required");
+    await assertWithinFacility(v, id);
+    await assertWithinInvoiceCover(v);
+    await getClient().execute({
+      sql: `UPDATE letters_of_credit SET ${LC_COLS.map((k) => `${k} = ?`).join(", ")} WHERE id = ?`,
+      args: [...lcArgs(v), id]
+    });
+    await syncLinkedOrders(id, v.linked_order_ids);
+    await linkTradingDealsToLc(id, v.linked_deal_ids);
+    await syncPaymentReceivedIssuance(id, v);
+    const warning = await syncLcVouchers(id);
+    return { id, warning };
+  });
+}
+function todayISO8() {
+  const d = /* @__PURE__ */ new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
+function daysBetween4(a, b) {
+  return Math.round(((/* @__PURE__ */ new Date(`${b}T00:00:00`)).getTime() - (/* @__PURE__ */ new Date(`${a}T00:00:00`)).getTime()) / 864e5);
+}
+async function precloseLC(id, v) {
+  return withDbTransaction(async () => {
+    const c = getClient();
+    const res = await c.execute({ sql: "SELECT * FROM letters_of_credit WHERE id = ?", args: [id] });
+    if (!res.rows.length) throw new Error("LC not found");
+    const lc = toPlain34(res)[0];
+    if (lc.preclosed_date) throw new Error("This LC is already preclosed");
+    if ((await lcParts(id)).length) {
+      throw new Error("This LC was paid in parts \u2014 repay it part by part from \u22EE \u2192 Parts (each part has its own maturity and rebate).");
+    }
+    if (String(lc.stage || "application") !== "payment_received") {
+      throw new Error(
+        String(lc.stage || "application") === "application" ? "This LC is still an application \u2014 the bank has not opened it, so there is nothing to wind up. Mark it Open first." : "The bank has not paid the beneficiary under this LC yet, so there is nothing to repay. Mark Payment received first."
+      );
+    }
+    const precloseDate = String(v.preclose_date || "").slice(0, 10);
+    if (!precloseDate) throw new Error("Pick the preclosure date");
+    const interestStart = lc.payment_received_date || lc.opened_date || lc.open_date;
+    if (!interestStart) throw new Error("The LC has no date yet to count interest days from");
+    const actualDays = Math.max(0, daysBetween4(String(interestStart), precloseDate));
+    const prematureInterest = round222(n45(v.premature_interest));
+    const rebateDirection = v.premature_interest_direction === "pay_to_party" ? "pay_to_party" : "credit_to_us";
+    await c.execute({
+      sql: `UPDATE letters_of_credit SET usance_days = ?, preclosed_date = ?, preclose_premature_interest = ?,
+          preclose_interest_route = ? WHERE id = ?`,
+      args: [actualDays, precloseDate, prematureInterest, rebateDirection, id]
+    });
+    await postLcOpening(id);
+    const rebate = await postLcPrematureInterestRebate(id, rebateDirection, prematureInterest, precloseDate);
+    if (rebate) {
+      await c.execute({
+        sql: `UPDATE letters_of_credit
+               SET preclose_interest_journal_entry_id = ?, preclose_payout_journal_entry_id = ?
+             WHERE id = ?`,
+        args: [rebate.id, rebate.payoutId ?? null, id]
+      });
+    }
+    await saveLcRepayment({
+      lc_id: id,
+      amount: n45(v.amount),
+      comm_charges: n45(v.comm_charges),
+      bank_charges: n45(v.bank_charges),
+      charges: v.charges || [],
+      repay_date: precloseDate,
+      posted: true,
+      note: "Preclosure repayment"
+    });
+    if (v.release_margin) {
+      const margin = round222(n45(lc.amount) * n45(lc.margin_pct) / 100);
+      const settlement = await postLcMarginRelease(id, margin, precloseDate);
+      await c.execute({
+        sql: `UPDATE letters_of_credit SET preclose_settlement_direction = 'margin_released',
+            preclose_settlement_amount = ?, preclose_journal_entry_id = ? WHERE id = ?`,
+        args: [margin, settlement ? settlement.id : null, id]
+      });
+    }
+    await c.execute({ sql: "UPDATE letters_of_credit SET workflow_status = 'preclosed' WHERE id = ?", args: [id] });
+    return { id };
+  });
+}
+async function unPrecloseLC(id) {
+  return withDbTransaction(async () => {
+    const c = getClient();
+    const res = await c.execute({ sql: "SELECT * FROM letters_of_credit WHERE id = ?", args: [id] });
+    if (!res.rows.length) throw new Error("LC not found");
+    const lc = toPlain34(res)[0];
+    if (!lc.preclosed_date) throw new Error("This LC is not preclosed, so there is nothing to undo");
+    if ((await lcParts(id)).length) {
+      throw new Error("This LC was closed by repaying its parts \u2014 undo the last part repayment from \u22EE \u2192 Parts instead.");
+    }
+    const removed = [];
+    if (lc.preclose_payout_journal_entry_id) {
+      await dropTreasuryEntry(n45(lc.preclose_payout_journal_entry_id));
+    }
+    if (lc.preclose_interest_journal_entry_id) {
+      await dropTreasuryEntry(n45(lc.preclose_interest_journal_entry_id));
+      removed.push("premature-interest rebate voucher");
+    }
+    if (lc.preclose_journal_entry_id) {
+      await dropTreasuryEntry(n45(lc.preclose_journal_entry_id));
+      removed.push("margin-release voucher");
+    }
+    const reps = await c.execute({
+      sql: `SELECT id, journal_entry_id FROM lc_repayments
+           WHERE lc_id = ? AND substr(repay_date, 1, 10) = ? AND COALESCE(note, '') = 'Preclosure repayment'`,
+      args: [id, String(lc.preclosed_date).slice(0, 10)]
+    });
+    for (const r of reps.rows) {
+      if (r.journal_entry_id) await dropTreasuryEntry(n45(r.journal_entry_id));
+      await c.execute({ sql: "DELETE FROM lc_repayments WHERE id = ?", args: [n45(r.id)] });
+    }
+    if (reps.rows.length) removed.push(`${reps.rows.length} preclosure repayment row(s)`);
+    const interestStart = lc.payment_received_date || lc.opened_date || lc.open_date;
+    const plannedDays = interestStart && lc.expiry_date ? Math.max(0, daysBetween4(String(interestStart), String(lc.expiry_date))) : n45(lc.usance_days);
+    await c.execute({
+      sql: `UPDATE letters_of_credit
+             SET usance_days = ?, preclosed_date = NULL, preclose_premature_interest = NULL,
+                 preclose_interest_route = NULL, preclose_interest_journal_entry_id = NULL,
+                 preclose_payout_journal_entry_id = NULL,
+                 preclose_settlement_direction = NULL, preclose_settlement_amount = NULL,
+                 preclose_journal_entry_id = NULL, workflow_status = 'in_progress'
+           WHERE id = ?`,
+      args: [plannedDays, id]
+    });
+    await postLcOpening(id);
+    removed.push(`interest days back to ${plannedDays}`);
+    return { id, removed };
+  });
+}
+async function deleteLC(id) {
+  return withDbTransaction(async () => {
+    const c = getClient();
+    const bills = await c.execute({ sql: "SELECT journal_entry_id FROM lc_issuances WHERE lc_id = ?", args: [id] });
+    for (const b of bills.rows) if (b.journal_entry_id) await dropTreasuryEntry(Number(b.journal_entry_id));
+    const repayments = await c.execute({ sql: "SELECT journal_entry_id FROM lc_repayments WHERE lc_id = ?", args: [id] });
+    for (const r of repayments.rows) if (r.journal_entry_id) await dropTreasuryEntry(Number(r.journal_entry_id));
+    const paymentIns = await c.execute({ sql: "SELECT journal_entry_id FROM lc_payment_ins WHERE lc_id = ?", args: [id] });
+    for (const p of paymentIns.rows) if (p.journal_entry_id) await dropTreasuryEntry(Number(p.journal_entry_id));
+    const lc = await c.execute({
+      sql: `SELECT journal_entry_id, preclose_journal_entry_id, interest_journal_entry_id, preclose_interest_journal_entry_id,
+                 preclose_payout_journal_entry_id, charges_journal_entry_id
+          FROM letters_of_credit WHERE id = ?`,
+      args: [id]
+    });
+    if (lc.rows.length && lc.rows[0].journal_entry_id) await dropTreasuryEntry(Number(lc.rows[0].journal_entry_id));
+    if (lc.rows.length && lc.rows[0].preclose_journal_entry_id) await dropTreasuryEntry(Number(lc.rows[0].preclose_journal_entry_id));
+    if (lc.rows.length && lc.rows[0].interest_journal_entry_id) await dropTreasuryEntry(Number(lc.rows[0].interest_journal_entry_id));
+    if (lc.rows.length && lc.rows[0].preclose_interest_journal_entry_id) await dropTreasuryEntry(Number(lc.rows[0].preclose_interest_journal_entry_id));
+    if (lc.rows.length && lc.rows[0].preclose_payout_journal_entry_id) await dropTreasuryEntry(Number(lc.rows[0].preclose_payout_journal_entry_id));
+    if (lc.rows.length && lc.rows[0].charges_journal_entry_id) await dropTreasuryEntry(Number(lc.rows[0].charges_journal_entry_id));
+    await c.execute({ sql: "DELETE FROM lc_issuances WHERE lc_id = ?", args: [id] });
+    await c.execute({ sql: "DELETE FROM lc_repayments WHERE lc_id = ?", args: [id] });
+    await c.execute({ sql: "DELETE FROM lc_payment_ins WHERE lc_id = ?", args: [id] });
+    await c.execute({ sql: "DELETE FROM lc_linked_orders WHERE lc_id = ?", args: [id] });
+    await linkTradingDealsToLc(id, []);
+    await c.execute({ sql: "DELETE FROM letters_of_credit WHERE id = ?", args: [id] });
+    return { id };
+  });
+}
+async function dropTreasuryEntry(entryId) {
+  const c = getClient();
+  await c.execute({
+    sql: "DELETE FROM journal_bill_allocs WHERE line_id IN (SELECT id FROM journal_lines WHERE entry_id = ?)",
+    args: [entryId]
+  });
+  await c.execute({ sql: "DELETE FROM journal_lines WHERE entry_id = ?", args: [entryId] });
+  await c.execute({ sql: "DELETE FROM journal_entries WHERE id = ?", args: [entryId] });
+}
+async function issueLC(v) {
+  return withDbTransaction(async () => {
+    const c = getClient();
+    const lcId = n45(v.lc_id);
+    const amount2 = n45(v.amount);
+    if (amount2 <= 0) throw new Error("Enter the issuance amount");
+    const lcRes = await c.execute({ sql: "SELECT * FROM letters_of_credit WHERE id = ?", args: [lcId] });
+    if (!lcRes.rows.length) throw new Error("LC not found");
+    const used = await c.execute({
+      sql: "SELECT COALESCE(SUM(amount), 0) AS u FROM lc_issuances WHERE lc_id = ?",
+      args: [lcId]
+    });
+    const available = netAvailable(lcRes.rows[0], n45(used.rows[0].u));
+    if (amount2 > available + 5e-3) {
+      throw new Error(`Issuance exceeds available LC balance (${available.toFixed(2)})`);
+    }
+    const lc = lcRes.rows[0];
+    const issueDate = String(v.issue_date || "").slice(0, 10);
+    if (lc.expiry_date && issueDate > String(lc.expiry_date)) {
+      throw new Error(`The LC expired on ${lc.expiry_date} \u2014 a bill cannot be issued after that`);
+    }
+    let dueDate = String(v.due_date || "").slice(0, 10);
+    if (!dueDate) {
+      const d = /* @__PURE__ */ new Date(`${issueDate}T00:00:00`);
+      d.setDate(d.getDate() + (n45(lc.usance_days) || 0));
+      dueDate = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+    }
+    const ins = await c.execute({
+      sql: `INSERT INTO lc_issuances (lc_id, issue_date, amount, order_id, bill_no, note, due_date, status)
+          VALUES (?, ?, ?, ?, ?, ?, ?, 'outstanding')`,
+      args: [
+        lcId,
+        issueDate,
+        amount2,
+        v.order_id ? n45(v.order_id) : null,
+        v.bill_no || null,
+        v.note || null,
+        dueDate
+      ]
+    });
+    if (amount2 >= available - 5e-3) {
+      await c.execute({
+        sql: "UPDATE letters_of_credit SET status = 'utilized' WHERE id = ?",
+        args: [lcId]
+      });
+    }
+    return { id: Number(ins.lastInsertRowid) };
+  });
+}
+async function deleteLCIssuance(id) {
+  return withDbTransaction(async () => {
+    const c = getClient();
+    const res = await c.execute({ sql: "SELECT lc_id, journal_entry_id FROM lc_issuances WHERE id = ?", args: [id] });
+    if (res.rows.length && res.rows[0].journal_entry_id) await dropTreasuryEntry(Number(res.rows[0].journal_entry_id));
+    await c.execute({ sql: "DELETE FROM lc_issuances WHERE id = ?", args: [id] });
+    if (res.rows.length) {
+      await c.execute({
+        sql: "UPDATE letters_of_credit SET status = 'open' WHERE id = ? AND status = 'utilized'",
+        args: [n45(res.rows[0].lc_id)]
+      });
+    }
+    return { id };
+  });
+}
+async function assertLcNotClosed(lcId, what = "edited") {
+  if (!lcId) return;
+  const r = await getClient().execute({
+    sql: "SELECT lc_no, preclosed_date, workflow_status, rejected_date FROM letters_of_credit WHERE id = ?",
+    args: [lcId]
+  });
+  const row = r.rows[0];
+  if (String(row?.workflow_status || "") === "rejected") {
+    const [ry, rm, rd] = String(row?.rejected_date || "").slice(0, 10).split("-");
+    throw new Error(
+      `This LC application was rejected${ry ? ` on ${rd}-${rm}-${ry}` : ""}, so it can no longer be ${what}. Use \u22EE \u2192 Reinstate application first if the rejection was a mistake.`
+    );
+  }
+  const closed = String(row?.preclosed_date || "").slice(0, 10);
+  if (!closed) return;
+  const [y, m, d] = closed.split("-");
+  if ((await lcParts(lcId)).length) {
+    throw new Error(
+      `LC ${String(row?.lc_no || "")} was closed on ${d}-${m}-${y} by repaying its last part, so it can no longer be ${what}. Use \u22EE \u2192 Parts \u2192 Undo last repayment to reopen it.`
+    );
+  }
+  throw new Error(
+    `LC ${String(row?.lc_no || "")} was repaid on ${d}-${m}-${y} and is closed, so it can no longer be ${what}. To change how it was closed, use \u22EE \u2192 Edit preclosure; to change the LC itself, Undo preclosure first.`
+  );
+}
+async function rejectLC(id, v) {
+  return withDbTransaction(async () => {
+    const c = getClient();
+    const r = await c.execute({ sql: "SELECT * FROM letters_of_credit WHERE id = ?", args: [n45(id)] });
+    if (!r.rows.length) throw new Error("That LC no longer exists");
+    const lc = toPlain34(r)[0];
+    if (String(lc.workflow_status || "") === "rejected") throw new Error("This application is already rejected");
+    if (String(lc.stage || "application") !== "application") {
+      throw new Error("Only an LC still at Application can be rejected \u2014 this one has been opened by the bank.");
+    }
+    if (lc.preclosed_date) throw new Error("This LC is closed");
+    const counts = toPlain34(
+      await c.execute({
+        sql: `SELECT (SELECT COUNT(*) FROM lc_issuances WHERE lc_id = ?) AS bills,
+                     (SELECT COUNT(*) FROM lc_repayments WHERE lc_id = ?) AS repayments,
+                     (SELECT COUNT(*) FROM lc_payment_ins WHERE lc_id = ?) AS ins`,
+        args: [n45(id), n45(id), n45(id)]
+      })
+    )[0];
+    if (n45(counts.bills) || n45(counts.repayments) || n45(counts.ins) || n45(lc.interest_journal_entry_id)) {
+      throw new Error("This application already has bills, repayments or vouchers against it, so it cannot simply be rejected.");
+    }
+    const date = String(v?.date || "").slice(0, 10) || todayISO8();
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) throw new Error("Pick the date the bank rejected it");
+    if (date > todayISO8()) throw new Error("The rejection date cannot be in the future");
+    const applied = String(lc.open_date || "").slice(0, 10);
+    if (applied && date < applied) throw new Error(`The bank cannot have rejected it before it was applied for (${applied})`);
+    const reason = String(v?.reason || "").trim();
+    if (!reason) throw new Error("Say why the bank rejected it");
+    await c.execute({
+      sql: `UPDATE letters_of_credit
+               SET workflow_status = 'rejected', rejected_date = ?, rejected_reason = ?, rejected_by = ?
+             WHERE id = ?`,
+      args: [date, reason.slice(0, 500), String((await Promise.resolve().then(() => (init_currentUser(), currentUser_exports))).getCurrentUser()?.username || "") || null, n45(id)]
+    });
+    return { id: n45(id) };
+  });
+}
+async function reinstateLC(id) {
+  return withDbTransaction(async () => {
+    const c = getClient();
+    const r = await c.execute({ sql: "SELECT * FROM letters_of_credit WHERE id = ?", args: [n45(id)] });
+    if (!r.rows.length) throw new Error("That LC no longer exists");
+    const lc = toPlain34(r)[0];
+    if (String(lc.workflow_status || "") !== "rejected") throw new Error("This LC is not rejected");
+    await assertWithinFacility(lc, n45(id));
+    await c.execute({
+      sql: `UPDATE letters_of_credit
+               SET workflow_status = 'in_progress', rejected_date = NULL, rejected_reason = NULL, rejected_by = NULL
+             WHERE id = ?`,
+      args: [n45(id)]
+    });
+    return { id: n45(id) };
+  });
+}
+async function repayLcParts(lcId, v) {
+  return withDbTransaction(async () => {
+    const c = getClient();
+    const r = await c.execute({ sql: "SELECT * FROM letters_of_credit WHERE id = ?", args: [n45(lcId)] });
+    if (!r.rows.length) throw new Error("LC not found");
+    const lc = toPlain34(r)[0];
+    if (lc.preclosed_date) throw new Error("This LC is already closed");
+    const all = await lcParts(n45(lcId));
+    if (!all.length) throw new Error("This LC was not paid in parts \u2014 use Repay / Preclose");
+    const want = new Set((v.parts || []).map((x) => n45(x)).filter((x) => x > 0));
+    const pick = all.filter((p) => want.has(n45(p.part_no)));
+    if (!pick.length) throw new Error("Tick the parts this repayment clears");
+    const done = pick.find((p) => p.repaid_date);
+    if (done) throw new Error(`Part ${done.part_no} was already repaid on ${dmy4(String(done.repaid_date))}`);
+    const date = String(v.date || "").slice(0, 10);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) throw new Error("Pick the repayment date");
+    if (date > todayISO8()) throw new Error("The repayment date cannot be in the future");
+    const early = pick.find((p) => date < String(p.pay_date).slice(0, 10));
+    if (early) throw new Error(`Part ${early.part_no} was only paid on ${dmy4(String(early.pay_date))} \u2014 it cannot be repaid before that`);
+    const comm = round222(n45(v.comm_charges));
+    const bankCh = round222(n45(v.bank_charges));
+    const { lcChargeRows: lcChargeRows2 } = await Promise.resolve().then(() => (init_treasury(), treasury_exports));
+    const lcBank = toPlain34(await getClient().execute({ sql: "SELECT bank FROM letters_of_credit WHERE id = ?", args: [n45(lcId)] }))[0];
+    const chargeRows = await lcChargeRows2(v.charges, String(lcBank?.bank || ""));
+    const rowsTotal = round222(chargeRows.reduce((s5, x) => s5 + x.amount, 0));
+    const principal = round222(pick.reduce((s5, p) => s5 + n45(p.amount), 0));
+    const label2 = pick.map((p) => p.part_no).join(", ");
+    const route = v.rebate_route === "pay_to_party" ? "pay_to_party" : "credit_to_us";
+    const rebates = pick.map((p) => {
+      const left = Math.max(0, daysBetween4(date, String(p.maturity_date)));
+      return n45(p.days) > 0 && left > 0 ? round222(n45(p.interest) * left / n45(p.days)) : 0;
+    });
+    const rebateTotal = round222(rebates.reduce((s5, x) => s5 + x, 0));
+    const ins = await c.execute({
+      sql: `INSERT INTO lc_repayments (lc_id, party_id, amount, maturity_charges, comm_charges, bank_charges, repay_date, posted, document_path, note)
+            VALUES (?, NULL, ?, ?, ?, ?, ?, 1, NULL, ?)`,
+      args: [
+        n45(lcId),
+        round222(principal - rebateTotal + comm + bankCh + rowsTotal),
+        round222(comm + bankCh + rowsTotal),
+        comm,
+        bankCh,
+        date,
+        `Part repayment \u2014 part${pick.length === 1 ? "" : "s"} ${label2}${String(v.note || "").trim() ? ` \xB7 ${String(v.note).trim()}` : ""}`
+      ]
+    });
+    const repId = Number(ins.lastInsertRowid);
+    if (chargeRows.length) {
+      await c.execute({
+        sql: "UPDATE lc_repayments SET charges = ?, charges_total = ? WHERE id = ?",
+        args: [JSON.stringify(chargeRows), rowsTotal, repId]
+      });
+    }
+    const { postLcRepaymentEntry: postLcRepaymentEntry2 } = await Promise.resolve().then(() => (init_treasury(), treasury_exports));
+    await postLcRepaymentEntry2(repId);
+    for (let i = 0; i < pick.length; i++) {
+      const p = pick[i];
+      const rebate = rebates[i];
+      let je = null;
+      if (rebate > 5e-3) je = await postLcPrematureInterestRebate(n45(lcId), route, rebate, date);
+      await c.execute({
+        sql: `UPDATE lc_parts SET repaid_date = ?, repayment_id = ?, rebate = ?, rebate_route = ?,
+                     rebate_journal_entry_id = ?, rebate_payout_journal_entry_id = ? WHERE id = ?`,
+        args: [date, repId, rebate, rebate > 5e-3 ? route : null, je?.id ?? null, je?.payoutId ?? null, n45(p.id)]
+      });
+    }
+    const open = all.filter((p) => !p.repaid_date && !want.has(n45(p.part_no)));
+    let closed = false;
+    if (!open.length) {
+      closed = true;
+      await c.execute({
+        sql: `UPDATE letters_of_credit SET preclosed_date = ?, workflow_status = 'preclosed', preclose_parts_repayment_id = ? WHERE id = ?`,
+        args: [date, repId, n45(lcId)]
+      });
+      if (v.release_margin) {
+        const margin = lcPartsMargin(lc, all);
+        const settlement = await postLcMarginRelease(n45(lcId), margin, date);
+        await c.execute({
+          sql: `UPDATE letters_of_credit SET preclose_settlement_direction = 'margin_released',
+                preclose_settlement_amount = ?, preclose_journal_entry_id = ? WHERE id = ?`,
+          args: [margin, settlement ? settlement.id : null, n45(lcId)]
+        });
+      }
+    }
+    return { repayment_id: repId, closed, rebate: rebateTotal };
+  });
+}
+async function undoLcPartRepayment(lcId) {
+  return withDbTransaction(async () => {
+    const c = getClient();
+    const parts = (await lcParts(n45(lcId))).filter((p) => n45(p.repayment_id) > 0);
+    if (!parts.length) throw new Error("No part of this LC has been repaid yet");
+    const repId = Math.max(...parts.map((p) => n45(p.repayment_id)));
+    const mine = parts.filter((p) => n45(p.repayment_id) === repId);
+    for (const p of mine) {
+      const row = toPlain34(await c.execute({ sql: "SELECT rebate_journal_entry_id, rebate_payout_journal_entry_id FROM lc_parts WHERE id = ?", args: [n45(p.id)] }))[0] || {};
+      if (n45(row.rebate_payout_journal_entry_id)) await dropTreasuryEntry(n45(row.rebate_payout_journal_entry_id));
+      if (n45(row.rebate_journal_entry_id)) await dropTreasuryEntry(n45(row.rebate_journal_entry_id));
+      await c.execute({
+        sql: `UPDATE lc_parts SET repaid_date = NULL, repayment_id = NULL, rebate = 0, rebate_route = NULL,
+                     rebate_journal_entry_id = NULL, rebate_payout_journal_entry_id = NULL WHERE id = ?`,
+        args: [n45(p.id)]
+      });
+    }
+    const rep = toPlain34(await c.execute({ sql: "SELECT journal_entry_id, fee_journal_entry_id FROM lc_repayments WHERE id = ?", args: [repId] }))[0] || {};
+    if (n45(rep.journal_entry_id)) await dropTreasuryEntry(n45(rep.journal_entry_id));
+    if (n45(rep.fee_journal_entry_id)) await dropTreasuryEntry(n45(rep.fee_journal_entry_id));
+    await c.execute({ sql: "DELETE FROM lc_repayments WHERE id = ?", args: [repId] });
+    const lc = toPlain34(await c.execute({ sql: "SELECT preclose_parts_repayment_id, preclose_journal_entry_id FROM letters_of_credit WHERE id = ?", args: [n45(lcId)] }))[0] || {};
+    if (n45(lc.preclose_parts_repayment_id) === repId) {
+      if (n45(lc.preclose_journal_entry_id)) await dropTreasuryEntry(n45(lc.preclose_journal_entry_id));
+      await c.execute({
+        sql: `UPDATE letters_of_credit SET preclosed_date = NULL, workflow_status = 'in_progress', preclose_parts_repayment_id = NULL,
+                     preclose_settlement_direction = NULL, preclose_settlement_amount = NULL, preclose_journal_entry_id = NULL
+               WHERE id = ?`,
+        args: [n45(lcId)]
+      });
+    }
+    return { parts: mine.map((p) => n45(p.part_no)) };
+  });
+}
+async function lcIdOfRepayment(id) {
+  const r = await getClient().execute({ sql: "SELECT lc_id FROM lc_repayments WHERE id = ?", args: [id] });
+  return Number(r.rows[0]?.lc_id || 0);
+}
+async function lcIdOfIssuance(id) {
+  const r = await getClient().execute({ sql: "SELECT lc_id FROM lc_issuances WHERE id = ?", args: [id] });
+  return Number(r.rows[0]?.lc_id || 0);
+}
+async function insertInstallmentBills(lcId, amount2, date, dueDate, instNo, orderIds) {
+  const c = getClient();
+  const ids = [];
+  let left = round222(amount2);
+  for (const oid of orderIds) {
+    if (left <= 5e-3) break;
+    const o = await c.execute({ sql: "SELECT invoice_no, net_amount FROM orders WHERE id = ?", args: [oid] });
+    if (!o.rows.length) continue;
+    const used = await c.execute({
+      sql: "SELECT COALESCE(SUM(amount), 0) AS u FROM lc_issuances WHERE lc_id = ? AND order_id = ?",
+      args: [lcId, oid]
+    });
+    const room = round222(n45(o.rows[0].net_amount) - n45(used.rows[0]?.u));
+    const part = round222(Math.min(left, room));
+    if (part <= 5e-3) continue;
+    const ins = await c.execute({
+      sql: `INSERT INTO lc_issuances (lc_id, issue_date, amount, order_id, bill_no, due_date, status, installment_no)
+            VALUES (?, ?, ?, ?, ?, ?, 'outstanding', ?)`,
+      args: [lcId, date, part, oid, String(o.rows[0].invoice_no || ""), dueDate, instNo]
+    });
+    ids.push(Number(ins.lastInsertRowid));
+    left = round222(left - part);
+  }
+  if (left > 5e-3) {
+    const ins = await c.execute({
+      sql: `INSERT INTO lc_issuances (lc_id, issue_date, amount, bill_no, due_date, status, installment_no)
+            VALUES (?, ?, ?, NULL, ?, 'outstanding', ?)`,
+      args: [lcId, date, left, dueDate, instNo]
+    });
+    ids.push(Number(ins.lastInsertRowid));
+  }
+  return ids;
+}
+function dmy4(iso) {
+  return iso.slice(0, 10).split("-").reverse().join("-");
+}
+async function payLcParty(lcId, v) {
+  return withDbTransaction(async () => {
+    const c = getClient();
+    const res = await c.execute({ sql: "SELECT * FROM letters_of_credit WHERE id = ?", args: [n45(lcId)] });
+    if (!res.rows.length) throw new Error("LC not found");
+    const lc = toPlain34(res)[0];
+    if (String(lc.stage || "") !== "payment_received") {
+      throw new Error("Mark Payment received first \u2014 that records the first part the bank paid");
+    }
+    const amount2 = round222(n45(v.amount));
+    if (amount2 <= 5e-3) throw new Error("Enter this part's LC amount");
+    const date = String(v.date || "").slice(0, 10);
+    if (!date) throw new Error("Pick the date the bank paid it");
+    if (date > todayISO8()) throw new Error("The payment date cannot be in the future");
+    const paidFrom = String(lc.payment_received_date || "").slice(0, 10);
+    if (paidFrom && date < paidFrom) throw new Error(`An installment cannot be dated before the first payment on ${dmy4(paidFrom)}`);
+    const bills = toPlain34(
+      await c.execute({
+        sql: "SELECT amount, installment_no, settled_date FROM lc_issuances WHERE lc_id = ?",
+        args: [n45(lcId)]
+      })
+    );
+    if (bills.length && !bills.some((b) => n45(b.installment_no))) {
+      throw new Error("This LC was paid to the supplier in one go \u2014 there is nothing left to pay in installments");
+    }
+    const last = bills.reduce((m, b) => String(b.settled_date || "") > m ? String(b.settled_date) : m, "");
+    if (last && date < last.slice(0, 10)) {
+      throw new Error(`The last installment was paid on ${dmy4(last)} \u2014 this one cannot be dated before it`);
+    }
+    const parts = await lcParts(n45(lcId));
+    if (!parts.length) throw new Error("This LC was not paid in parts \u2014 there is no next part to record");
+    const used = round222(parts.reduce((s5, p) => s5 + n45(p.amount), 0));
+    const left = round222(n45(lc.amount) - used);
+    if (left <= 5e-3) throw new Error("This LC has been drawn in full \u2014 there is nothing left for another part");
+    if (amount2 > left + 5e-3) throw new Error(`Only ${left.toFixed(2)} of this LC is still undrawn`);
+    const instNo = parts.reduce((m, p) => Math.max(m, n45(p.part_no)), 0) + 1;
+    const maturity = String(v.maturity || "").slice(0, 10);
+    const fig = await insertLcPart(n45(lcId), instNo, lc, amount2, date, maturity, v);
+    const linked = await c.execute({
+      sql: "SELECT order_id FROM lc_linked_orders WHERE lc_id = ? ORDER BY order_id",
+      args: [n45(lcId)]
+    });
+    const ids = await insertInstallmentBills(
+      n45(lcId),
+      fig.net,
+      date,
+      maturity,
+      instNo,
+      linked.rows.map((r) => n45(r.order_id)).filter((x) => x > 0)
+    );
+    const memo = String(v.note || "").trim();
+    if (memo) {
+      await c.execute({
+        sql: `UPDATE lc_issuances SET note = ? WHERE id IN (${ids.map(() => "?").join(",")})`,
+        args: [memo, ...ids]
+      });
+    }
+    const je = await settleLcBillsCombined(ids, date);
+    if (!je) throw new Error("The installment could not be posted");
+    await syncPartsCharges(n45(lcId));
+    return { id: je.id, installment_no: instNo };
+  });
+}
+async function deleteLastLcInstallment(lcId) {
+  return withDbTransaction(async () => {
+    const c = getClient();
+    const r = await c.execute({ sql: "SELECT MAX(installment_no) AS m FROM lc_issuances WHERE lc_id = ?", args: [n45(lcId)] });
+    const instNo = n45(r.rows[0]?.m);
+    if (!instNo) throw new Error("This LC has no installments");
+    if (instNo === 1) throw new Error("The first installment is the Payment received itself \u2014 it cannot be removed here");
+    const part = (await lcParts(n45(lcId))).find((p) => n45(p.part_no) === instNo);
+    if (part?.repaid_date) throw new Error(`Part ${instNo} has already been repaid to the bank \u2014 undo that repayment first`);
+    const rows2 = toPlain34(
+      await c.execute({
+        sql: "SELECT id, journal_entry_id FROM lc_issuances WHERE lc_id = ? AND installment_no = ?",
+        args: [n45(lcId), instNo]
+      })
+    );
+    const entries2 = [...new Set(rows2.map((x) => n45(x.journal_entry_id)).filter(Boolean))];
+    for (const e of entries2) await dropTreasuryEntry(e);
+    await c.execute({ sql: "DELETE FROM lc_issuances WHERE lc_id = ? AND installment_no = ?", args: [n45(lcId), instNo] });
+    await c.execute({ sql: "DELETE FROM lc_parts WHERE lc_id = ? AND part_no = ?", args: [n45(lcId), instNo] });
+    await syncPartsCharges(n45(lcId));
+    return { installment_no: instNo };
+  });
+}
+async function editPreclosure(id, v) {
+  return withDbTransaction(async () => {
+    const res = await getClient().execute({ sql: "SELECT preclosed_date FROM letters_of_credit WHERE id = ?", args: [n45(id)] });
+    if (!res.rows.length) throw new Error("LC not found");
+    if (!res.rows[0].preclosed_date) throw new Error("This LC is not closed \u2014 use Preclose instead");
+    await unPrecloseLC(n45(id));
+    return precloseLC(n45(id), v);
+  });
+}
+var partRate, LC_COLS;
+var init_lc = __esm({
+  "src/main/lc.ts"() {
+    init_dbTransaction();
+    init_db();
+    init_company();
+    init_treasury();
+    init_facilities();
+    init_trading();
+    init_repos();
+    init_lcInterest();
+    init_facilityLimits();
+    partRate = (v) => {
+      if (v == null || String(v).trim() === "") return null;
+      const x = Number(v);
+      if (!Number.isFinite(x) || x < 0) throw new Error("A part's interest or margin % must be a number, 0 or more");
+      return x;
+    };
+    LC_COLS = [
+      "our_bank_id",
+      "usance_days",
+      "margin_pct",
+      "lc_no",
+      "facility_type",
+      "bank",
+      "party_type",
+      "party_id",
+      "amount",
+      // What the bank blocks against the facility. Nullable on purpose: an LC that
+      // has never been told otherwise reads its blocked figure as the open amount,
+      // which is what every LC opened before this column existed means.
+      "blocked_amount",
+      "open_date",
+      "expiry_date",
+      "interest_pct",
+      "charges",
+      "status",
+      "note",
+      "facility_id",
+      "purpose",
+      "receivable_party_id",
+      "workflow_status",
+      "stage",
+      "fd_no",
+      "payment_received_date",
+      "opened_date",
+      "interest_upfront",
+      "interest_excl_charges",
+      "interest_adj",
+      // HOW LONG BEFORE THE MONEY COMES BACK.
+      //
+      // Optional, and a plain number of days rather than a date, because that is
+      // how the terms are agreed — "60 days from the LC" — and a date typed by
+      // hand drifts from whatever the LC was actually opened on. Counted from the
+      // opening; the register turns it into a date and says whether it is due.
+      "payment_in_expected",
+      "payment_in_days",
+      // The bank's commission % on the open amount, asked for at Open. A figure to
+      // show (open amount × %), not a posting. Blank = none stated.
+      "commission_pct"
+    ];
+  }
+});
+
 // src/main/provisional.ts
 var provisional_exports = {};
 __export(provisional_exports, {
@@ -27066,19 +29634,26 @@ async function previewLedgerMerge(fromId, intoId) {
   });
   const allocs = n54((await c.execute({ sql: "SELECT COUNT(*) AS k FROM journal_bill_allocs WHERE account_id = ?", args: [n54(fromId)] })).rows[0]?.k);
   const redirects = (await c.execute({ sql: "SELECT posts_as FROM ledger_map WHERE TRIM(UPPER(use_name)) = ?", args: [clean4(from.name)] }).catch(() => ({ rows: [] }))).rows.map((r) => String(r.posts_as));
+  const IMPORTED = "COALESCE(%s.narration, '') LIKE 'Imported from Tally%%'";
   const copies = await c.execute({
-    sql: `SELECT fe.id AS entry_id, fe.company_id, fe.entry_date, fe.vch_no, fl.dr, fl.cr,
-                 (SELECT nn.prefix || '/' || nn.serial FROM voucher_numbers nn WHERE nn.entry_id = fe.id) AS code,
-                 ie.id AS twin_id, ie.entry_date AS twin_date,
-                 (SELECT nn.prefix || '/' || nn.serial FROM voucher_numbers nn WHERE nn.entry_id = ie.id) AS twin_code
+    sql: `SELECT CASE WHEN ${IMPORTED.replace("%s", "fe")} THEN fe.id ELSE ie.id END AS copy_id,
+                 CASE WHEN ${IMPORTED.replace("%s", "fe")} THEN ie.id ELSE fe.id END AS twin_id,
+                 CASE WHEN ${IMPORTED.replace("%s", "fe")} THEN ? ELSE ? END AS copy_on,
+                 fe.company_id, fl.dr, fl.cr, il.dr AS twin_dr, il.cr AS twin_cr,
+                 fe.id AS from_entry, fe.entry_date AS from_date, ie.entry_date AS into_date,
+                 fe.vch_type AS from_type, ie.vch_type AS into_type,
+                 (SELECT nn.prefix || '/' || nn.serial FROM voucher_numbers nn WHERE nn.entry_id = fe.id) AS from_code,
+                 (SELECT nn.prefix || '/' || nn.serial FROM voucher_numbers nn WHERE nn.entry_id = ie.id) AS into_code,
+                 fe.vch_no AS from_no, ie.vch_no AS into_no
             FROM journal_lines fl JOIN journal_entries fe ON fe.id = fl.entry_id
-            JOIN journal_lines il ON il.account_id = ? AND ((fl.dr > 0 AND il.dr > 0 AND ABS(il.dr - fl.dr) <= 1) OR (fl.cr > 0 AND il.cr > 0 AND ABS(il.cr - fl.cr) <= 1))
-            JOIN journal_entries ie ON ie.id = il.entry_id AND ie.company_id = fe.company_id
+            JOIN journal_lines il ON il.account_id = ?
+                 AND ((fl.dr > 0 AND il.dr > 0 AND ABS(il.dr - fl.dr) <= 1) OR (fl.cr > 0 AND il.cr > 0 AND ABS(il.cr - fl.cr) <= 1))
+            JOIN journal_entries ie ON ie.id = il.entry_id AND ie.id <> fe.id AND ie.company_id = fe.company_id
                  AND ABS(julianday(ie.entry_date) - julianday(fe.entry_date)) <= 7
-                 AND COALESCE(ie.narration, '') NOT LIKE 'Imported from Tally%'
-           WHERE fl.account_id = ? AND COALESCE(fe.narration, '') LIKE 'Imported from Tally%'
+           WHERE fl.account_id = ?
+             AND (${IMPORTED.replace("%s", "fe")}) <> (${IMPORTED.replace("%s", "ie")})
            ORDER BY fe.entry_date`,
-    args: [n54(intoId), n54(fromId)]
+    args: [String(from.name), String(into.name), n54(intoId), n54(fromId)]
   });
   return {
     from,
@@ -27092,9 +29667,16 @@ async function previewLedgerMerge(fromId, intoId) {
     redirects
   };
 }
-async function mergeLedgers(fromId, intoId, keepName) {
+async function mergeLedgers(fromId, intoId, keepName, keep = []) {
   const pv = await previewLedgerMerge(fromId, intoId);
   if (pv.blocked) throw new Error(String(pv.blocked));
+  const kept = new Set(keep.map(Number));
+  const open = pv.copies.filter((x) => !kept.has(n54(x.copy_id)));
+  if (open.length) {
+    throw new Error(
+      `${open.length} entr${open.length === 1 ? "y looks" : "ies look"} like the same money booked twice (a Tally copy of an app entry) \u2014 delete the copy or mark it as a separate entry, then merge`
+    );
+  }
   await ensureLedgerMap();
   return withDbTransaction(async () => {
     const c = getClient();
@@ -31872,6 +34454,17 @@ async function runStartupTasks() {
 }
 var REQUIRED_COLUMNS = [
   { table: "bill_discountings", column: "payment_in_expected", type: "INTEGER NOT NULL DEFAULT 0" },
+  // The bank's commission % on an LC's open amount — set per bank on the
+  // limit screen, taken (and changeable) on each LC. Shown, never posted.
+  { table: "bank_lc_limits", column: "commission_pct", type: "REAL" },
+  // The GST rates that apply to a party's dealings ("5, 18") — the first is the
+  // default, the others offered as quick picks on its purchases and sales.
+  { table: "suppliers", column: "gst_rates", type: "TEXT" },
+  { table: "customers", column: "gst_rates", type: "TEXT" },
+  { table: "letters_of_credit", column: "commission_pct", type: "REAL" },
+  // The bank voucher the commission was actually taken by — linked by hand
+  // after Payment received, compared with open amount × commission %.
+  { table: "letters_of_credit", column: "commission_voucher_id", type: "INTEGER" },
   { table: "bill_discountings", column: "payment_in_days", type: "INTEGER" },
   { table: "letters_of_credit", column: "payment_in_expected", type: "INTEGER NOT NULL DEFAULT 0" },
   { table: "letters_of_credit", column: "payment_in_days", type: "INTEGER" },
@@ -32302,6 +34895,7 @@ init_bargains();
 init_orders();
 
 // src/main/unmapped.ts
+init_partyFamily();
 init_tankerAlloc();
 init_db();
 init_company();
@@ -32441,7 +35035,7 @@ async function mapOrderToBargains(orderId, rawLines, force = false) {
     });
     if (!b.rows.length) throw new Error("One of the chosen bargains no longer exists");
     const bg = toPlain23(b)[0];
-    if (n32(bg.supplier_id) !== n32(order.supplier_id)) {
+    if (!await sameSupplierFamily(n32(bg.supplier_id), n32(order.supplier_id))) {
       throw new Error(`Bargain ${bg.bargain_no} belongs to a different supplier`);
     }
     if (n32(bg.oil_type_id) !== n32(order.oil_type_id)) {
@@ -33008,940 +35602,8 @@ function roleOfType(t, ctx) {
   return t || "Voucher";
 }
 
-// src/main/fifoSettle.ts
-init_db();
-init_ledgerGroups();
-var n34 = (v) => Number(v) || 0;
-var round219 = (v) => Math.round(v * 100) / 100;
-var up2 = (v) => String(v ?? "").trim().toUpperCase();
-function toPlain25(res) {
-  return res.rows.map((r) => {
-    const o = {};
-    for (const col of res.columns) o[col] = r[col];
-    return o;
-  });
-}
-async function fifoSettlement(companyId, accountIds) {
-  const out = /* @__PURE__ */ new Map();
-  const c = getClient();
-  const ids = [...new Set(accountIds.filter((x) => x > 0))];
-  if (!ids.length) return out;
-  const accts = toPlain25(await c.execute({ sql: `SELECT id, acc_group FROM ledger_accounts WHERE id IN (${ids.map(() => "?").join(",")})`, args: ids }));
-  for (const a of accts) {
-    const base = await baseGroupOf(a.acc_group);
-    const billSide = base === "Sundry Debtors" ? "dr" : base === "Sundry Creditors" ? "cr" : null;
-    if (!billSide) continue;
-    const payDr = billSide === "cr";
-    const lines = toPlain25(
-      await c.execute({
-        sql: `SELECT jl.id AS lid, jl.dr, jl.cr, je.id AS eid, je.entry_date, je.vch_type, je.vch_no, je.order_id, je.sale_id,
-                     s.invoice_group, s.invoice_no AS sale_no, o.invoice_no AS order_no
-                FROM journal_lines jl JOIN journal_entries je ON je.id = jl.entry_id
-                LEFT JOIN sales s ON s.id = je.sale_id
-                LEFT JOIN orders o ON o.id = je.order_id
-               WHERE jl.account_id = ? AND je.company_id = ?
-               ORDER BY je.entry_date, je.id`,
-        args: [n34(a.id), companyId]
-      })
-    );
-    if (!lines.length) continue;
-    const allocs = toPlain25(
-      await c.execute({
-        sql: `SELECT ba.line_id, ba.method, ba.amount, ba.order_id, ba.ref_name, ba.sale_invoice_group
-                FROM journal_bill_allocs ba JOIN journal_lines jl ON jl.id = ba.line_id JOIN journal_entries je ON je.id = jl.entry_id
-               WHERE jl.account_id = ? AND je.company_id = ?`,
-        args: [n34(a.id), companyId]
-      })
-    );
-    const byLine = /* @__PURE__ */ new Map();
-    for (const x of allocs) byLine.set(n34(x.line_id), [...byLine.get(n34(x.line_id)) || [], x]);
-    const bills = [];
-    const opening = toPlain25(await c.execute({ sql: "SELECT dr, cr FROM ledger_openings WHERE account_id = ? AND company_id = ?", args: [n34(a.id), companyId] }))[0];
-    const openAmt = opening ? round219(billSide === "dr" ? n34(opening.dr) - n34(opening.cr) : n34(opening.cr) - n34(opening.dr)) : 0;
-    const pool = [];
-    if (openAmt > 4e-3) bills.push({ eid: 0, date: "", left: openAmt, refs: /* @__PURE__ */ new Set(), order_id: 0, group: "" });
-    else if (openAmt < -4e-3) pool.push({ amount: -openAmt, eid: 0, date: "", vch_type: "OPENING", vch_no: "" });
-    for (const l of lines) {
-      const amt = round219(billSide === "dr" ? n34(l.dr) : n34(l.cr));
-      if (amt <= 4e-3) continue;
-      const refs = new Set([up2(l.vch_no), up2(l.sale_no), up2(l.order_no), up2(l.invoice_group)].filter(Boolean));
-      for (const x of byLine.get(n34(l.lid)) || []) if (x.ref_name) refs.add(up2(x.ref_name));
-      bills.push({ eid: n34(l.eid), date: String(l.entry_date || ""), left: amt, refs, order_id: n34(l.order_id), group: up2(l.invoice_group || l.sale_no) });
-    }
-    for (const l of lines) {
-      const amt = round219(payDr ? n34(l.dr) : n34(l.cr));
-      if (amt <= 4e-3) continue;
-      let named = 0;
-      for (const x of byLine.get(n34(l.lid)) || []) {
-        if (String(x.method) !== "agst_ref") continue;
-        named += n34(x.amount);
-        const ref = up2(x.ref_name);
-        const grp = up2(x.sale_invoice_group);
-        const bill = bills.find((b) => n34(x.order_id) && b.order_id === n34(x.order_id)) || bills.find((b) => grp && b.group === grp) || bills.find((b) => ref && b.refs.has(ref));
-        if (bill) bill.left = round219(bill.left - n34(x.amount));
-      }
-      const free = round219(amt - named);
-      if (free > 4e-3) pool.push({ amount: free, eid: n34(l.eid), date: String(l.entry_date || ""), vch_type: String(l.vch_type || ""), vch_no: String(l.vch_no || "") });
-    }
-    bills.sort((x, y) => x.date.localeCompare(y.date) || x.eid - y.eid);
-    let pi = 0;
-    for (const b of bills) {
-      while (b.left > 4e-3 && pi < pool.length) {
-        const p = pool[pi];
-        const take = round219(Math.min(b.left, p.amount));
-        if (b.eid) {
-          out.set(b.eid, [
-            ...out.get(b.eid) || [],
-            { amount: take, side: payDr ? "dr" : "cr", eid: p.eid, vch_type: p.vch_type, vch_no: p.vch_no, entry_date: p.date }
-          ]);
-        }
-        b.left = round219(b.left - take);
-        p.amount = round219(p.amount - take);
-        if (p.amount <= 4e-3) pi++;
-      }
-      if (pi >= pool.length) break;
-    }
-  }
-  return out;
-}
-
-// src/main/trading.ts
-init_db();
-init_invoiceno();
-init_company();
-init_orders();
-init_sales();
-init_access_gate();
-function toPlain26(res) {
-  return res.rows.map((r) => {
-    const o = {};
-    for (const col of res.columns) o[col] = r[col];
-    return o;
-  });
-}
-function n35(v) {
-  const x = Number(v);
-  return Number.isFinite(x) ? x : 0;
-}
-var round220 = (v) => Math.round(v * 100) / 100;
-function todayISO7() {
-  const d = /* @__PURE__ */ new Date();
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
-}
-async function dealLineIds(dealIds, deals) {
-  const orders = /* @__PURE__ */ new Map();
-  const sales = /* @__PURE__ */ new Map();
-  if (!dealIds.length) return { orders, sales };
-  const c = getClient();
-  const list2 = dealIds.join(",");
-  const [oRes, sRes] = await Promise.all([
-    c.execute(`SELECT deal_id, order_id FROM trading_deal_orders WHERE deal_id IN (${list2}) ORDER BY line_no, id`),
-    c.execute(`SELECT deal_id, sale_id FROM trading_deal_sales WHERE deal_id IN (${list2}) ORDER BY line_no, id`)
-  ]);
-  for (const r of toPlain26(oRes)) {
-    const k = n35(r.deal_id);
-    orders.set(k, [...orders.get(k) ?? [], n35(r.order_id)]);
-  }
-  for (const r of toPlain26(sRes)) {
-    const k = n35(r.deal_id);
-    sales.set(k, [...sales.get(k) ?? [], n35(r.sale_id)]);
-  }
-  for (const d of deals) {
-    const id = n35(d.id);
-    if (!orders.has(id) && n35(d.order_id)) orders.set(id, [n35(d.order_id)]);
-    if (!sales.has(id) && n35(d.sale_id)) sales.set(id, [n35(d.sale_id)]);
-  }
-  return { orders, sales };
-}
-async function fetchOrderLines(ids) {
-  const m = /* @__PURE__ */ new Map();
-  if (!ids.length) return m;
-  const res = await getClient().execute(
-    `SELECT o.id, o.invoice_no, o.order_date, o.invoice_rate, o.ordered_qty, o.uom,
-            o.taxable_value, o.gst_amount, o.gst_pct, o.gst_type, o.tds_pct, o.tds_amount,
-            o.round_off, o.net_amount, o.supplier_id, s.name AS supplier_name
-     FROM orders o LEFT JOIN suppliers s ON s.id = o.supplier_id
-     WHERE o.id IN (${ids.join(",")})`
-  );
-  for (const r of toPlain26(res)) m.set(n35(r.id), r);
-  return m;
-}
-async function fetchSaleLines(ids) {
-  const m = /* @__PURE__ */ new Map();
-  if (!ids.length) return m;
-  const res = await getClient().execute(
-    `SELECT sl.id, sl.invoice_no, sl.invoice_group, sl.sale_date, sl.rate, sl.qty, sl.uom, sl.amount,
-            sl.gst_pct, sl.gst_type, sl.gst_amount, sl.round_off, sl.tds_pct, sl.tds_amount,
-            sl.customer_id, cu.name AS customer_name
-     FROM sales sl LEFT JOIN customers cu ON cu.id = sl.customer_id
-     WHERE sl.id IN (${ids.join(",")})`
-  );
-  for (const r of toPlain26(res)) m.set(n35(r.id), r);
-  return m;
-}
-function saleRefKey(l) {
-  return String(l.invoice_group || l.invoice_no || "").trim();
-}
-async function saleReceiptsByKey(companyId) {
-  const res = await getClient().execute({
-    // A credit on the customer settles the bill; a debit against the same
-    // ref (a journal raising it) adds to it — the rule bill-wise follows.
-    sql: `SELECT COALESCE(ba.sale_invoice_group, ba.ref_name) AS key,
-                 SUM(CASE WHEN jl.dr > 0 THEN -ba.amount ELSE ba.amount END) AS amount
-          FROM journal_bill_allocs ba
-          JOIN journal_lines jl ON jl.id = ba.line_id
-          JOIN journal_entries je ON je.id = jl.entry_id
-          WHERE ba.method = 'agst_ref' AND je.company_id = ? AND COALESCE(ba.sale_invoice_group, ba.ref_name) IS NOT NULL
-          GROUP BY key`,
-    args: [companyId]
-  });
-  const m = /* @__PURE__ */ new Map();
-  for (const r of toPlain26(res)) m.set(String(r.key), n35(r.amount));
-  return m;
-}
-function groupSaleParties(sLines, receiptsByKey) {
-  const order = [];
-  const byParty = /* @__PURE__ */ new Map();
-  for (const l of sLines) {
-    const cid = n35(l.customer_id);
-    if (!byParty.has(cid)) {
-      byParty.set(cid, []);
-      order.push(cid);
-    }
-    ;
-    byParty.get(cid).push(l);
-  }
-  return order.map((cid) => {
-    const ls = byParty.get(cid);
-    const first = ls[0] ?? {};
-    const qty = ls.reduce((a, l) => a + n35(l.qty), 0);
-    const taxable = ls.reduce((a, l) => a + n35(l.amount), 0);
-    const gstAmount = ls.reduce((a, l) => a + n35(l.gst_amount), 0);
-    const roundOff = ls.reduce((a, l) => a + n35(l.round_off), 0);
-    const tdsAmount = ls.reduce((a, l) => a + n35(l.tds_amount), 0);
-    const total = round220(taxable + gstAmount + roundOff);
-    const keys = Array.from(new Set(ls.map((l) => saleRefKey(l)).filter(Boolean)));
-    const netReceivable = round220(total - tdsAmount);
-    const paid = round220(keys.reduce((a, k) => a + (receiptsByKey.get(k) || 0), 0));
-    return {
-      customer_id: cid || null,
-      customer_name: first.customer_name ?? null,
-      invoice_count: ls.length,
-      qty,
-      rate: qty > 0 ? ls.reduce((a, l) => a + n35(l.qty) * n35(l.rate), 0) / qty : 0,
-      taxable: round220(taxable),
-      gst_pct: n35(first.gst_pct),
-      gst_type: first.gst_type ?? "CGST_SGST",
-      gst_amount: round220(gstAmount),
-      round_off: round220(roundOff),
-      total,
-      tds_pct: n35(first.tds_pct),
-      tds_amount: round220(tdsAmount),
-      net_receivable: netReceivable,
-      paid,
-      fully_paid: netReceivable > 5e-3 && paid >= netReceivable - 5e-3,
-      lines: ls.map((l) => ({
-        sale_id: n35(l.id),
-        invoice_no: l.invoice_no ?? "",
-        qty: n35(l.qty),
-        rate: n35(l.rate)
-      }))
-    };
-  });
-}
-async function listTradingDeals(forModule) {
-  const from = await visibleFromFor("trading", forModule);
-  const cid = getActiveCompanyId();
-  const res = await getClient().execute({
-    sql: `SELECT td.*, p.code AS product_code, p.name AS product_name,
-                 l.lc_no AS lc_no, l.stage AS lc_stage, l.preclosed_date AS lc_preclosed_date,
-                 l.expiry_date AS lc_expiry_date, l.amount AS lc_amount
-          FROM trading_deals td
-          LEFT JOIN products p ON p.id = td.product_id
-          LEFT JOIN letters_of_credit l ON l.id = td.lc_id
-          WHERE td.company_id = ?${from ? " AND td.deal_date >= ?" : ""}
-          ORDER BY td.deal_date DESC, td.id DESC`,
-    args: from ? [cid, from] : [cid]
-  });
-  const deals = toPlain26(res);
-  const dealIds = deals.map((d) => n35(d.id)).filter(Boolean);
-  const { orders, sales } = await dealLineIds(dealIds, deals);
-  const [orderRows, saleRows, receiptsByKey] = await Promise.all([
-    fetchOrderLines(Array.from(new Set(Array.from(orders.values()).flat()))),
-    fetchSaleLines(Array.from(new Set(Array.from(sales.values()).flat()))),
-    saleReceiptsByKey(cid)
-  ]);
-  return deals.map((d) => {
-    const id = n35(d.id);
-    const pLines = (orders.get(id) ?? []).map((oid) => orderRows.get(oid)).filter(Boolean);
-    const sLines = (sales.get(id) ?? []).map((sid) => saleRows.get(sid)).filter(Boolean);
-    const purchaseQty = pLines.reduce((s5, l) => s5 + n35(l.ordered_qty), 0);
-    const saleQty = sLines.reduce((s5, l) => s5 + n35(l.qty), 0);
-    const purchaseTotal = pLines.reduce(
-      (s5, l) => s5 + n35(l.taxable_value) + n35(l.gst_amount) + n35(l.round_off),
-      0
-    );
-    const saleNet = sLines.reduce((s5, l) => s5 + n35(l.amount) + n35(l.gst_amount) + n35(l.round_off), 0);
-    const purchaseTaxable = pLines.reduce((s5, l) => s5 + n35(l.taxable_value), 0);
-    const saleTaxable = sLines.reduce((s5, l) => s5 + n35(l.amount), 0);
-    const marginOnTaxable = round220(saleTaxable - purchaseTaxable);
-    const marginPct = purchaseTaxable > 0 ? round220(marginOnTaxable / purchaseTaxable * 100) : 0;
-    const first = pLines[0] ?? {};
-    const firstSale = sLines[0] ?? {};
-    const avg = (total, qty) => qty > 0 ? total / qty : 0;
-    const saleNetReceivable = round220(saleNet - sLines.reduce((s5, l) => s5 + n35(l.tds_amount), 0));
-    const saleKeys = Array.from(new Set(sLines.map((l) => saleRefKey(l)).filter(Boolean)));
-    const salePaid = round220(saleKeys.reduce((s5, k) => s5 + (receiptsByKey.get(k) || 0), 0));
-    const saleFullyPaid = saleNetReceivable > 5e-3 && salePaid >= saleNetReceivable - 5e-3;
-    const saleParties = groupSaleParties(sLines, receiptsByKey);
-    const lcBankRepaid = !!d.lc_preclosed_date;
-    return {
-      ...d,
-      purchase_lines: pLines.map((l) => ({
-        order_id: n35(l.id),
-        invoice_no: l.invoice_no ?? "",
-        qty: n35(l.ordered_qty),
-        rate: n35(l.invoice_rate)
-      })),
-      sale_lines: sLines.map((l) => ({
-        sale_id: n35(l.id),
-        invoice_no: l.invoice_no ?? "",
-        qty: n35(l.qty),
-        rate: n35(l.rate),
-        // Which buyer this invoice went to, so a flat list of the deal's sale
-        // invoices can still say who each one was raised on.
-        customer_id: l.customer_id ?? null,
-        customer_name: l.customer_name ?? null
-      })),
-      sale_parties: saleParties,
-      customer_count: saleParties.length,
-      // Every buyer's name, for a list column and for search. The singular
-      // `customer_name` below stays the FIRST buyer, because that is what the
-      // LC and Bill Discounting pickers already read off a deal.
-      customer_names: saleParties.map((sp) => sp.customer_name).filter(Boolean),
-      purchase_count: pLines.length,
-      sale_count: sLines.length,
-      purchase_invoice_no: first.invoice_no ?? "",
-      sale_invoice_no: firstSale.invoice_no ?? "",
-      purchase_qty: purchaseQty,
-      sale_qty: saleQty,
-      purchase_uom: first.uom || "MT",
-      purchase_rate: avg(pLines.reduce((s5, l) => s5 + n35(l.ordered_qty) * n35(l.invoice_rate), 0), purchaseQty),
-      sale_rate: avg(sLines.reduce((s5, l) => s5 + n35(l.qty) * n35(l.rate), 0), saleQty),
-      supplier_id: first.supplier_id ?? null,
-      supplier_name: first.supplier_name ?? null,
-      customer_id: firstSale.customer_id ?? null,
-      customer_name: firstSale.customer_name ?? null,
-      purchase_gst_pct: n35(first.gst_pct),
-      purchase_gst_type: first.gst_type ?? "CGST_SGST",
-      purchase_tds_pct: n35(first.tds_pct),
-      purchase_round_off: pLines.reduce((s5, l) => s5 + n35(l.round_off), 0),
-      sale_gst_pct: n35(firstSale.gst_pct),
-      sale_gst_type: firstSale.gst_type ?? "CGST_SGST",
-      sale_tds_pct: n35(firstSale.tds_pct),
-      sale_tds_amount: sLines.reduce((s5, l) => s5 + n35(l.tds_amount), 0),
-      sale_net_receivable: saleNetReceivable,
-      sale_paid: salePaid,
-      sale_fully_paid: saleFullyPaid,
-      lc_bank_repaid: lcBankRepaid,
-      // Both sides of the round trip are done: the bank has been repaid on
-      // the LC, and the customer's money for the resale has actually come in.
-      trading_lc_closed: !!d.lc_id && lcBankRepaid && saleFullyPaid,
-      sale_round_off: sLines.reduce((s5, l) => s5 + n35(l.round_off), 0),
-      purchase_taxable: pLines.reduce((s5, l) => s5 + n35(l.taxable_value), 0),
-      purchase_gst_amount: pLines.reduce((s5, l) => s5 + n35(l.gst_amount), 0),
-      purchase_tds_amount: pLines.reduce((s5, l) => s5 + n35(l.tds_amount), 0),
-      // What is actually paid to the supplier across every invoice on the deal.
-      purchase_net: pLines.reduce((s5, l) => s5 + n35(l.net_amount), 0),
-      sale_amount: sLines.reduce((s5, l) => s5 + n35(l.amount), 0),
-      sale_gst_amount: sLines.reduce((s5, l) => s5 + n35(l.gst_amount), 0),
-      purchase_total: purchaseTotal,
-      sale_net: saleNet,
-      margin: marginOnTaxable,
-      margin_pct: marginPct,
-      // Both sides should move the same quantity; the form warns rather than
-      // refuses, so a deal can sit part-sold until the rest is invoiced.
-      qty_matched: Math.abs(purchaseQty - saleQty) < 1e-6
-    };
-  });
-}
-function toLines(raw, at, emptyMsg) {
-  const arr = Array.isArray(raw) ? raw : [];
-  const lines = arr.map((l) => {
-    const r = l ?? {};
-    return {
-      invoiceNo: r.invoice_no ? String(r.invoice_no).trim() : "",
-      qty: n35(r.qty),
-      rate: n35(r.rate)
-    };
-  }).filter((l) => l.invoiceNo !== "" || l.qty !== 0 || l.rate !== 0);
-  if (!lines.length) throw new Error(emptyMsg);
-  lines.forEach((l, i) => {
-    if (l.qty <= 0) throw new Error(`${at(i)}: enter the quantity`);
-    if (l.rate <= 0) throw new Error(`${at(i)}: enter the rate`);
-  });
-  return lines;
-}
-function toSaleParties(v) {
-  const raw = Array.isArray(v.sale_parties) ? v.sale_parties : [];
-  const groups = raw.length ? raw : [
-    {
-      customer_id: v.customer_id,
-      gst_pct: v.sale_gst_pct,
-      gst_type: v.sale_gst_type,
-      tds_pct: v.sale_tds_pct,
-      round_off: v.sale_round_off,
-      lines: v.sale_lines
-    }
-  ];
-  const live = groups.filter((g) => {
-    const ls = Array.isArray(g?.lines) ? g.lines : [];
-    const anyLine = ls.some(
-      (l) => String(l?.invoice_no ?? "").trim() !== "" || n35(l?.qty) !== 0 || n35(l?.rate) !== 0
-    );
-    return n35(g?.customer_id) > 0 || anyLine;
-  });
-  if (!live.length) throw new Error("Pick the customer");
-  const multi = live.length > 1;
-  const parties = live.map((g, gi) => {
-    const label2 = multi ? `Buyer ${gi + 1}` : "Sale";
-    if (!n35(g?.customer_id)) {
-      throw new Error(multi ? `${label2}: pick the customer` : "Pick the customer");
-    }
-    return {
-      customerId: n35(g.customer_id),
-      gstPct: n35(g.gst_pct),
-      gstType: g.gst_type === "IGST" ? "IGST" : "CGST_SGST",
-      tdsPct: n35(g.tds_pct),
-      roundOff: n35(g.round_off),
-      lines: toLines(g.lines, (i) => `${label2} invoice ${i + 1}`, `${label2}: add at least one sale invoice`)
-    };
-  });
-  const seen = /* @__PURE__ */ new Set();
-  for (const p of parties) {
-    if (seen.has(p.customerId)) {
-      throw new Error("The same customer is listed twice \u2014 put all of that buyer's invoices under one entry");
-    }
-    seen.add(p.customerId);
-  }
-  return parties;
-}
-function dealFields(v) {
-  const productId = n35(v.product_id);
-  if (!productId) throw new Error("Select the raw product");
-  if (!v.supplier_id) throw new Error("Pick the supplier");
-  const uom = String(v.uom || "MT");
-  const dealDate = v.deal_date ? String(v.deal_date).slice(0, 10) : todayISO7();
-  const purchaseLines = toLines(
-    v.purchase_lines,
-    (i) => `Purchase invoice ${i + 1}`,
-    "Add at least one purchase invoice"
-  );
-  const saleParties = toSaleParties(v);
-  assertNoRepeatsWithin(purchaseLines.map((l) => l.invoiceNo), "Purchase invoice");
-  assertNoRepeatsWithin(saleParties.flatMap((sp) => sp.lines.map((l) => l.invoiceNo)), "Invoice");
-  const orderPayloads = purchaseLines.map((l) => ({
-    is_trading: true,
-    invoice_no: l.invoiceNo,
-    order_date: dealDate,
-    supplier_id: n35(v.supplier_id),
-    oil_type_id: productId,
-    ordered_qty: l.qty,
-    uom,
-    invoice_rate: l.rate,
-    bargain_rate: l.rate,
-    gst_pct: n35(v.purchase_gst_pct),
-    gst_type: v.purchase_gst_type === "IGST" ? "IGST" : "CGST_SGST",
-    tds_pct: n35(v.purchase_tds_pct),
-    // Round-off is entered once for the deal and belongs to it as a whole, so
-    // it rides on the first invoice rather than being repeated on each.
-    round_off: 0,
-    // A trading deal is a clean pass-through — no interest block here, even
-    // if the supplier's master carries a default.
-    charge_interest: false
-  }));
-  if (orderPayloads.length) orderPayloads[0].round_off = n35(v.purchase_round_off);
-  const salePayloads = saleParties.flatMap(
-    (sp) => sp.lines.map((l, i) => ({
-      is_trading: true,
-      invoice_no: l.invoiceNo || null,
-      sale_date: dealDate,
-      customer_id: sp.customerId,
-      product_id: productId,
-      qty: l.qty,
-      uom,
-      rate: l.rate,
-      gst_pct: sp.gstPct,
-      gst_type: sp.gstType,
-      tds_pct: sp.tdsPct,
-      // Round off belongs to a buyer's own invoice total, so it rides that
-      // buyer's first invoice — not the deal's, which would round one party's
-      // bill by another party's paisa.
-      round_off: i === 0 ? sp.roundOff : 0,
-      sale_type: "LOOSE",
-      freight_term: "EX"
-    }))
-  );
-  return { productId, uom, dealDate, orderPayloads, salePayloads };
-}
-async function assertDealNumbersFree(orderPayloads, salePayloads, ownOrders = [], ownSales = []) {
-  const cid = getActiveCompanyId();
-  for (const p of orderPayloads) {
-    await assertPurchaseInvoiceNoFree({ ...p, invoice_dup_exclude_ids: ownOrders }, cid);
-  }
-  for (const p of salePayloads) {
-    await assertSalesInvoiceNoFree({ ...p, invoice_dup_exclude_ids: ownSales }, cid);
-  }
-}
-async function createTradingDeal(v) {
-  const { productId, dealDate, orderPayloads, salePayloads } = dealFields(v);
-  await assertDealNumbersFree(orderPayloads, salePayloads);
-  const orderIds = [];
-  const saleIds = [];
-  const rollback = async () => {
-    for (const sid of saleIds) await deleteSale(sid).catch(() => {
-    });
-    for (const oid of orderIds) await deleteOrder(oid).catch(() => {
-    });
-  };
-  try {
-    const settled = await Promise.allSettled([
-      (async () => {
-        for (const p of orderPayloads) orderIds.push((await createOrder(p)).id);
-      })(),
-      (async () => {
-        for (const p of salePayloads) saleIds.push((await createSale(p)).id);
-      })()
-    ]);
-    const failed = settled.find((r) => r.status === "rejected");
-    if (failed) throw failed.reason;
-  } catch (e) {
-    await rollback();
-    throw e;
-  }
-  const c = getClient();
-  let dealId;
-  try {
-    const ins = await c.execute({
-      sql: `INSERT INTO trading_deals (company_id, deal_date, product_id, order_id, sale_id, note)
-            VALUES (?, ?, ?, ?, ?, ?)`,
-      args: [
-        getActiveCompanyId(),
-        dealDate,
-        productId,
-        orderIds[0],
-        saleIds[0],
-        v.note ? String(v.note).trim() : null
-      ]
-    });
-    dealId = Number(ins.lastInsertRowid);
-    await linkDealLines(dealId, orderIds, saleIds);
-  } catch (e) {
-    await rollback();
-    throw e;
-  }
-  return { id: dealId };
-}
-async function linkDealLines(dealId, orderIds, saleIds) {
-  const c = getClient();
-  await c.execute({ sql: "DELETE FROM trading_deal_orders WHERE deal_id = ?", args: [dealId] });
-  await c.execute({ sql: "DELETE FROM trading_deal_sales WHERE deal_id = ?", args: [dealId] });
-  for (let i = 0; i < orderIds.length; i++) {
-    await c.execute({
-      sql: "INSERT INTO trading_deal_orders (deal_id, order_id, line_no) VALUES (?, ?, ?)",
-      args: [dealId, orderIds[i], i]
-    });
-  }
-  for (let i = 0; i < saleIds.length; i++) {
-    await c.execute({
-      sql: "INSERT INTO trading_deal_sales (deal_id, sale_id, line_no) VALUES (?, ?, ?)",
-      args: [dealId, saleIds[i], i]
-    });
-  }
-}
-async function updateTradingDeal(id, v) {
-  const c = getClient();
-  const cur = await c.execute({
-    sql: "SELECT id, order_id, sale_id FROM trading_deals WHERE id = ?",
-    args: [id]
-  });
-  if (!cur.rows.length) throw new Error("Trading deal not found");
-  const deal = toPlain26(cur)[0];
-  const { orders, sales } = await dealLineIds([id], [deal]);
-  const existingOrders = orders.get(id) ?? [];
-  const existingSales = sales.get(id) ?? [];
-  const { productId, dealDate, orderPayloads, salePayloads } = dealFields(v);
-  const ownOrders = [...existingOrders];
-  const ownSales = [...existingSales];
-  await assertDealNumbersFree(orderPayloads, salePayloads, ownOrders, ownSales);
-  const orderIds = [];
-  for (let i = 0; i < orderPayloads.length; i++) {
-    const p = { ...orderPayloads[i], invoice_dup_exclude_ids: ownOrders };
-    if (i < existingOrders.length) {
-      await updateOrder(existingOrders[i], p);
-      orderIds.push(existingOrders[i]);
-    } else {
-      orderIds.push((await createOrder(p)).id);
-    }
-  }
-  const saleIds = [];
-  for (let i = 0; i < salePayloads.length; i++) {
-    const p = { ...salePayloads[i], invoice_dup_exclude_ids: ownSales };
-    if (i < existingSales.length) {
-      await updateSale(existingSales[i], p);
-      saleIds.push(existingSales[i]);
-    } else {
-      saleIds.push((await createSale(p)).id);
-    }
-  }
-  await c.execute({
-    sql: "UPDATE trading_deals SET deal_date = ?, product_id = ?, order_id = ?, sale_id = ?, note = ? WHERE id = ?",
-    args: [dealDate, productId, orderIds[0], saleIds[0], v.note ? String(v.note).trim() : null, id]
-  });
-  await linkDealLines(id, orderIds, saleIds);
-  for (const sid of existingSales.slice(salePayloads.length)) await deleteSale(sid);
-  for (const oid of existingOrders.slice(orderPayloads.length)) await deleteOrder(oid);
-  return { id };
-}
-async function linkTradingDealsToLc(lcId, dealIds) {
-  const c = getClient();
-  const ids = Array.isArray(dealIds) ? dealIds.map((x) => n35(x)).filter((x) => x > 0) : [];
-  await c.execute({
-    sql: `UPDATE trading_deals SET lc_id = NULL WHERE lc_id = ? AND id NOT IN (${ids.length ? ids.join(",") : "0"})`,
-    args: [lcId]
-  });
-  for (const id of ids) {
-    await c.execute({ sql: "UPDATE trading_deals SET lc_id = ? WHERE id = ?", args: [lcId, id] });
-  }
-}
-async function deleteTradingDeal(id) {
-  const c = getClient();
-  const res = await c.execute({
-    sql: "SELECT id, order_id, sale_id FROM trading_deals WHERE id = ?",
-    args: [id]
-  });
-  if (!res.rows.length) throw new Error("Trading deal not found");
-  const deal = toPlain26(res)[0];
-  const { orders, sales } = await dealLineIds([id], [deal]);
-  await c.execute({ sql: "DELETE FROM trading_deal_orders WHERE deal_id = ?", args: [id] });
-  await c.execute({ sql: "DELETE FROM trading_deal_sales WHERE deal_id = ?", args: [id] });
-  await c.execute({ sql: "DELETE FROM trading_deals WHERE id = ?", args: [id] });
-  for (const sid of sales.get(id) ?? []) await deleteSale(sid);
-  for (const oid of orders.get(id) ?? []) await deleteOrder(oid);
-  return { id };
-}
-async function entryOwners(cid) {
-  const c = getClient();
-  const m = /* @__PURE__ */ new Map();
-  const add = async (kind, sql) => {
-    const res = await c.execute({ sql, args: [cid] }).catch(() => null);
-    if (!res) return;
-    for (const r of toPlain26(res)) {
-      const eid = n35(r.eid);
-      if (eid && !m.has(eid)) m.set(eid, { kind, id: n35(r.iid), ref: String(r.ref || "") });
-    }
-  };
-  const LC = "letters_of_credit";
-  for (const col of [
-    "journal_entry_id",
-    "interest_journal_entry_id",
-    "preclose_journal_entry_id",
-    "preclose_interest_journal_entry_id",
-    "preclose_payout_journal_entry_id",
-    "charges_journal_entry_id",
-    "fee_adjust_journal_entry_id",
-    "payment_in_journal_entry_id"
-  ]) {
-    await add("lc", `SELECT ${col} AS eid, id AS iid, lc_no AS ref FROM ${LC} WHERE company_id = ? AND ${col} IS NOT NULL`);
-  }
-  await add("lc", `SELECT i.journal_entry_id AS eid, l.id AS iid, l.lc_no AS ref FROM lc_issuances i JOIN ${LC} l ON l.id = i.lc_id WHERE l.company_id = ? AND i.journal_entry_id IS NOT NULL`);
-  await add("lc", `SELECT p.journal_entry_id AS eid, l.id AS iid, l.lc_no AS ref FROM lc_payment_ins p JOIN ${LC} l ON l.id = p.lc_id WHERE l.company_id = ? AND p.journal_entry_id IS NOT NULL`);
-  await add("lc", `SELECT r.journal_entry_id AS eid, l.id AS iid, l.lc_no AS ref FROM lc_repayments r JOIN ${LC} l ON l.id = r.lc_id WHERE l.company_id = ? AND r.journal_entry_id IS NOT NULL`);
-  const BD = "bill_discountings";
-  for (const col of ["journal_entry_id", "repay_journal_entry_id", "margin_release_journal_entry_id"]) {
-    await add("bd", `SELECT ${col} AS eid, id AS iid, bd_no AS ref FROM ${BD} WHERE company_id = ? AND ${col} IS NOT NULL`);
-  }
-  await add("bd", `SELECT r.journal_entry_id AS eid, b.id AS iid, b.bd_no AS ref FROM bd_repayments r JOIN ${BD} b ON b.id = r.bd_id WHERE b.company_id = ? AND r.journal_entry_id IS NOT NULL`);
-  await add("bd", `SELECT x.journal_entry_id AS eid, b.id AS iid, b.bd_no AS ref FROM bd_interest_payments x JOIN ${BD} b ON b.id = x.bd_id WHERE b.company_id = ? AND x.journal_entry_id IS NOT NULL`);
-  await add("bd", `SELECT p.journal_entry_id AS eid, b.id AS iid, b.bd_no AS ref FROM bd_payment_ins p JOIN ${BD} b ON b.id = p.bd_id WHERE b.company_id = ? AND p.journal_entry_id IS NOT NULL`);
-  return m;
-}
-var up3 = (v) => String(v ?? "").trim().toUpperCase();
-function addDays2(iso, days) {
-  const d = /* @__PURE__ */ new Date(`${iso.slice(0, 10)}T00:00:00`);
-  d.setDate(d.getDate() + days);
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
-}
-function daysFromToday(iso) {
-  const a = (/* @__PURE__ */ new Date(`${todayISO7()}T00:00:00`)).getTime();
-  const b = (/* @__PURE__ */ new Date(`${iso.slice(0, 10)}T00:00:00`)).getTime();
-  return Math.round((b - a) / 864e5);
-}
-function pendingQty(qty, uom, amount2, settled) {
-  const pending = Math.max(0, amount2 - settled);
-  const r36 = (x) => Math.round(x * 1e3) / 1e3;
-  return { qty: r36(qty), uom, pending_qty: amount2 > 5e-3 && qty > 0 ? r36(qty * pending / amount2) : 0 };
-}
-async function listTradingPayments() {
-  const from = await visibleFromFor("trading");
-  const cid = getActiveCompanyId();
-  const c = getClient();
-  const dealRes = await c.execute({
-    sql: `SELECT td.*, p.code AS product_code, p.name AS product_name, l.lc_no AS lc_no
-          FROM trading_deals td
-          LEFT JOIN products p ON p.id = td.product_id
-          LEFT JOIN letters_of_credit l ON l.id = td.lc_id
-          WHERE td.company_id = ?${from ? " AND td.deal_date >= ?" : ""}
-          ORDER BY td.deal_date DESC, td.id DESC`,
-    args: from ? [cid, from] : [cid]
-  });
-  const deals = toPlain26(dealRes);
-  if (!deals.length) return [];
-  const dealIds = deals.map((d) => n35(d.id)).filter(Boolean);
-  const { orders, sales } = await dealLineIds(dealIds, deals);
-  const orderIds = Array.from(new Set(Array.from(orders.values()).flat()));
-  const saleIds = Array.from(new Set(Array.from(sales.values()).flat()));
-  const [orderRows, saleRows, owners] = await Promise.all([
-    fetchOrderLines(orderIds),
-    fetchSaleLines(saleIds),
-    entryOwners(cid)
-  ]);
-  const billEids = /* @__PURE__ */ new Map();
-  if (orderIds.length || saleIds.length) {
-    const conds = [];
-    if (orderIds.length) conds.push(`order_id IN (${orderIds.join(",")})`);
-    if (saleIds.length) conds.push(`sale_id IN (${saleIds.join(",")})`);
-    const er = await c.execute({ sql: `SELECT id, order_id, sale_id FROM journal_entries WHERE company_id = ? AND (${conds.join(" OR ")})`, args: [cid] });
-    for (const r of toPlain26(er)) {
-      const k = n35(r.order_id) ? `o:${n35(r.order_id)}` : `s:${n35(r.sale_id)}`;
-      billEids.set(k, [...billEids.get(k) ?? [], n35(r.id)]);
-    }
-  }
-  const allBillEids = Array.from(new Set(Array.from(billEids.values()).flat()));
-  const partyAccts = allBillEids.length ? toPlain26(await c.execute(`SELECT DISTINCT account_id FROM journal_lines WHERE entry_id IN (${allBillEids.join(",")})`)).map((r) => n35(r.account_id)) : [];
-  const fifo = await fifoSettlement(cid, partyAccts);
-  let fifoSeq = 0;
-  const fifoRows = (keys) => keys.flatMap((k) => billEids.get(k) ?? []).flatMap((eid) => fifo.get(eid) ?? []).map((x) => ({ id: -++fifoSeq, amount: x.amount, side: x.side, eid: x.eid, vch_type: x.vch_type, vch_no: x.vch_no, entry_date: x.entry_date, fifo: true }));
-  const allocRes = await c.execute({
-    sql: `SELECT ba.id, ba.amount, ba.order_id, ba.ref_name, ba.sale_invoice_group,
-                 CASE WHEN jl.dr > 0 THEN 'dr' ELSE 'cr' END AS side,
-                 UPPER(TRIM(a.name)) AS acct, je.id AS eid, je.vch_type, je.vch_no, je.entry_date
-          FROM journal_bill_allocs ba
-          JOIN journal_lines jl ON jl.id = ba.line_id
-          JOIN journal_entries je ON je.id = jl.entry_id
-          LEFT JOIN ledger_accounts a ON a.id = COALESCE(ba.account_id, jl.account_id)
-          WHERE ba.method = 'agst_ref' AND je.company_id = ?`,
-    args: [cid]
-  });
-  const allocs = toPlain26(allocRes);
-  const byOrder = /* @__PURE__ */ new Map();
-  const byAcctRef = /* @__PURE__ */ new Map();
-  const byKey = /* @__PURE__ */ new Map();
-  const push = (m, k, r) => {
-    m.set(k, [...m.get(k) ?? [], r]);
-  };
-  for (const a of allocs) {
-    if (n35(a.order_id)) push(byOrder, n35(a.order_id), a);
-    if (a.ref_name) push(byAcctRef, `${a.acct}|${up3(a.ref_name)}`, a);
-    const key3 = up3(a.sale_invoice_group || a.ref_name);
-    if (key3) push(byKey, key3, a);
-  }
-  const redirects = /* @__PURE__ */ new Map();
-  const mapRes = await c.execute({ sql: "SELECT posts_as, use_name FROM ledger_map WHERE company_id = ? OR company_id IS NULL", args: [cid] }).catch(() => null);
-  for (const r of mapRes ? toPlain26(mapRes) : []) {
-    const k = up3(r.posts_as);
-    redirects.set(k, [...redirects.get(k) ?? [], up3(r.use_name)]);
-  }
-  const ledgerNames = (party) => {
-    const p = up3(party);
-    return p ? [p, ...redirects.get(p) ?? []] : [];
-  };
-  const lcByOrder = /* @__PURE__ */ new Map();
-  const bdByOrder = /* @__PURE__ */ new Map();
-  if (orderIds.length) {
-    const list2 = orderIds.join(",");
-    const addFin = (m, oid, x) => {
-      const cur = m.get(oid) ?? [];
-      if (!cur.some((y) => y.kind === x.kind && y.id === x.id)) m.set(oid, [...cur, x]);
-    };
-    const lcRows = await c.execute(
-      `SELECT lo.order_id AS oid, l.id AS iid, l.lc_no AS ref FROM lc_linked_orders lo JOIN letters_of_credit l ON l.id = lo.lc_id WHERE lo.order_id IN (${list2})
-         UNION ALL
-         SELECT i.order_id AS oid, l.id AS iid, l.lc_no AS ref FROM lc_issuances i JOIN letters_of_credit l ON l.id = i.lc_id WHERE i.order_id IN (${list2})`
-    ).catch(() => null);
-    for (const r of lcRows ? toPlain26(lcRows) : []) addFin(lcByOrder, n35(r.oid), { kind: "lc", id: n35(r.iid), ref: String(r.ref || "") });
-    const bdRows = await c.execute(`SELECT bo.order_id AS oid, b.id AS iid, b.bd_no AS ref FROM bd_linked_orders bo JOIN bill_discountings b ON b.id = bo.bd_id WHERE bo.order_id IN (${list2})`).catch(() => null);
-    for (const r of bdRows ? toPlain26(bdRows) : []) addFin(bdByOrder, n35(r.oid), { kind: "bd", id: n35(r.iid), ref: String(r.ref || "") });
-  }
-  const [supTerms, cusTerms] = await Promise.all([
-    c.execute("SELECT id, credit_period_days FROM suppliers").then(toPlain26).catch(() => []),
-    c.execute("SELECT id, credit_period_days FROM customers").then(toPlain26).catch(() => [])
-  ]);
-  const supDays = new Map(supTerms.map((r) => [n35(r.id), n35(r.credit_period_days)]));
-  const cusDays = new Map(cusTerms.map((r) => [n35(r.id), n35(r.credit_period_days)]));
-  const settle = (list2, billSide) => {
-    const by = { lc: 0, bd: 0, bank: 0, adjustment: 0 };
-    const via = [];
-    const movements = list2.map((a) => {
-      const owner = owners.get(n35(a.eid));
-      const vt = up3(a.vch_type);
-      const channel = owner ? owner.kind : vt === "PAYMENT" || vt === "RECEIPT" || vt === "CONTRA" ? "bank" : "adjustment";
-      const amount2 = round220(String(a.side) === billSide ? -n35(a.amount) : n35(a.amount));
-      by[channel] = round220(by[channel] + amount2);
-      if (owner && !via.some((x) => x.kind === owner.kind && x.id === owner.id)) via.push(owner);
-      return {
-        channel,
-        amount: amount2,
-        // Settled oldest-bill-first because it was paid with no Agst Ref.
-        fifo: !!a.fifo,
-        date: a.entry_date ? String(a.entry_date).slice(0, 10) : null,
-        vch_type: a.vch_type ?? null,
-        vch_no: a.vch_no ?? null,
-        entry_id: n35(a.eid),
-        instrument: owner ?? null
-      };
-    }).sort((x, y) => String(x.date || "").localeCompare(String(y.date || "")));
-    return { by, movements, via };
-  };
-  const status = (amount2, settled) => (
-    // Under a rupee short is settled: Tally rounds a bill's paise off when it is paid.
-    amount2 > 5e-3 && settled >= amount2 - 0.995 ? "settled" : settled > 5e-3 ? "part" : "pending"
-  );
-  const due = (dateIso, days) => {
-    const d = String(dateIso || "").slice(0, 10);
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(d) || !(days > 0)) return { due_date: null, days_left: null };
-    const dd = addDays2(d, days);
-    return { due_date: dd, days_left: daysFromToday(dd) };
-  };
-  const out = [];
-  const claimed = /* @__PURE__ */ new Set();
-  const saleWork = [];
-  for (const d of deals) {
-    const id = n35(d.id);
-    const dealInfo = {
-      deal_id: id,
-      deal_date: d.deal_date ?? null,
-      product_code: d.product_code ?? null,
-      product_name: d.product_name ?? null,
-      deal_lc: n35(d.lc_id) ? { kind: "lc", id: n35(d.lc_id), ref: String(d.lc_no || "") } : null
-    };
-    for (const oid of orders.get(id) ?? []) {
-      const o = orderRows.get(oid);
-      if (!o) continue;
-      const seen = /* @__PURE__ */ new Set();
-      const hits = [];
-      const take = (rows2) => {
-        for (const r of rows2 ?? []) {
-          if (seen.has(n35(r.id))) continue;
-          seen.add(n35(r.id));
-          claimed.add(n35(r.id));
-          hits.push(r);
-        }
-      };
-      take(byOrder.get(oid));
-      const inv = up3(o.invoice_no);
-      if (inv) for (const nm of ledgerNames(o.supplier_name)) take(byAcctRef.get(`${nm}|${inv}`));
-      const { by, movements, via } = settle([...hits, ...fifoRows([`o:${oid}`])], "cr");
-      const amount2 = round220(n35(o.net_amount));
-      const settled = round220(by.lc + by.bd + by.bank + by.adjustment);
-      const financed = [
-        ...dealInfo.deal_lc ? [dealInfo.deal_lc] : [],
-        ...lcByOrder.get(oid) ?? [],
-        ...bdByOrder.get(oid) ?? []
-      ].filter((x, i, arr) => arr.findIndex((y) => y.kind === x.kind && y.id === x.id) === i);
-      const st = status(amount2, settled);
-      const dd = due(o.order_date, supDays.get(n35(o.supplier_id)) ?? 0);
-      const qty = n35(o.ordered_qty);
-      out.push({
-        ...dealInfo,
-        side: "purchase",
-        ...pendingQty(qty, String(o.uom || d.uom || "MT"), amount2, settled),
-        key: `p:${oid}`,
-        order_id: oid,
-        invoice_no: o.invoice_no ?? "",
-        invoice_date: o.order_date ?? null,
-        party_id: o.supplier_id ?? null,
-        party_name: o.supplier_name ?? null,
-        amount: amount2,
-        settled_lc: by.lc,
-        settled_bd: by.bd,
-        settled_bank: by.bank,
-        settled_adjustment: by.adjustment,
-        settled_total: settled,
-        pending: amount2 - settled < 0.995 ? 0 : round220(amount2 - settled),
-        excess: Math.max(0, round220(settled - amount2)),
-        status: st,
-        ...dd,
-        overdue: st !== "settled" && dd.days_left != null && dd.days_left < 0,
-        financed_by: financed,
-        settled_via: via,
-        movements
-      });
-    }
-    const groups = /* @__PURE__ */ new Map();
-    for (const sid of sales.get(id) ?? []) {
-      const l = saleRows.get(sid);
-      if (!l) continue;
-      const k = saleRefKey(l);
-      if (!k) continue;
-      groups.set(k, [...groups.get(k) ?? [], l]);
-    }
-    const dealBds = Array.from(
-      new Map(
-        (orders.get(id) ?? []).flatMap((oid) => bdByOrder.get(oid) ?? []).map((x) => [x.id, x])
-      ).values()
-    );
-    for (const [k, ls] of groups) saleWork.push(() => {
-      const first = ls[0];
-      const amount2 = round220(ls.reduce((a, l) => a + n35(l.amount) + n35(l.gst_amount) + n35(l.round_off) - n35(l.tds_amount), 0));
-      const { by, movements, via } = settle(
-        [...(byKey.get(up3(k)) ?? []).filter((a) => !claimed.has(n35(a.id))), ...fifoRows(ls.map((l) => `s:${n35(l.id)}`))],
-        "dr"
-      );
-      const settled = round220(by.lc + by.bd + by.bank + by.adjustment);
-      const st = status(amount2, settled);
-      const dd = due(first.sale_date, cusDays.get(n35(first.customer_id)) ?? 0);
-      const qty = ls.reduce((a, l) => a + n35(l.qty), 0);
-      out.push({
-        ...dealInfo,
-        side: "sale",
-        ...pendingQty(qty, String(first.uom || d.uom || "MT"), amount2, settled),
-        key: `s:${k}`,
-        sale_ids: ls.map((l) => n35(l.id)),
-        // What the invoice is printed as; `ref_key` is what receipts are
-        // allocated against, which for a grouped invoice is its group.
-        invoice_no: Array.from(new Set(ls.map((l) => String(l.invoice_no || "").trim()).filter(Boolean))).join(", ") || k,
-        ref_key: k,
-        invoice_date: first.sale_date ?? null,
-        party_id: first.customer_id ?? null,
-        party_name: first.customer_name ?? null,
-        amount: amount2,
-        settled_lc: by.lc,
-        settled_bd: by.bd,
-        settled_bank: by.bank,
-        settled_adjustment: by.adjustment,
-        settled_total: settled,
-        pending: amount2 - settled < 0.995 ? 0 : round220(amount2 - settled),
-        excess: Math.max(0, round220(settled - amount2)),
-        status: st,
-        ...dd,
-        overdue: st !== "settled" && dd.days_left != null && dd.days_left < 0,
-        // The instruments this receivable repays: the deal's own LC and any BD
-        // that financed its purchase side.
-        financed_by: [...dealInfo.deal_lc ? [dealInfo.deal_lc] : [], ...dealBds],
-        settled_via: via,
-        movements
-      });
-    });
-  }
-  for (const run of saleWork) run();
-  const rank = new Map(deals.map((d, i) => [n35(d.id), i]));
-  return out.sort(
-    (a, b) => (rank.get(n35(a.deal_id)) ?? 0) - (rank.get(n35(b.deal_id)) ?? 0) || (a.side === b.side ? 0 : a.side === "purchase" ? -1 : 1)
-  );
-}
-
 // src/main/ipc.ts
+init_trading();
 init_access_gate();
 init_accountingRepairs();
 
@@ -36551,1453 +38213,9 @@ async function dashboardStats(opts = {}) {
 // src/main/dailyPosition.ts
 init_db();
 init_company();
-
-// src/main/lc.ts
-init_dbTransaction();
-init_db();
-init_company();
-init_treasury();
-
-// src/main/facilities.ts
-init_db();
-init_company();
-function toPlain33(res) {
-  return res.rows.map((r) => {
-    const o = {};
-    for (const col of res.columns) o[col] = r[col];
-    return o;
-  });
-}
-var n44 = (v) => Number.isFinite(Number(v)) ? Number(v) : 0;
-async function listFacilities() {
-  const res = await getClient().execute({
-    sql: `SELECT f.*,
-            -- Blocked, not opened: a sanctioned facility carries whatever the
-            -- bank has blocked against it, which is the figure it holds even
-            -- when the bill came in for less. Same rule as getLcLimit in lc.ts.
-            COALESCE((SELECT SUM(COALESCE(NULLIF(l.blocked_amount, 0), l.amount) - COALESCE((SELECT SUM(r.amount) FROM lc_repayments r
-                       WHERE r.lc_id = l.id AND r.posted = 1), 0)) FROM letters_of_credit l
-                       WHERE l.facility_id = f.id AND l.status != 'closed'
-                         AND COALESCE(l.workflow_status, '') <> 'rejected'), 0) AS lc_committed,
-            COALESCE((SELECT SUM(i.amount) FROM lc_issuances i
-                       JOIN letters_of_credit l2 ON l2.id = i.lc_id
-                      WHERE l2.facility_id = f.id), 0) AS lc_utilized,
-            COALESCE((SELECT SUM(e.amount) FROM facility_exposures e
-                       WHERE e.facility_id = f.id AND e.kind = 'outstanding'), 0) AS other_outstanding,
-            COALESCE((SELECT SUM(e.amount) FROM facility_exposures e
-                       WHERE e.facility_id = f.id AND e.kind = 'planned'), 0) AS planned
-          FROM bank_facilities f
-          WHERE f.company_id = ?
-          ORDER BY f.active DESC, f.name`,
-    args: [getActiveCompanyId()]
-  });
-  return toPlain33(res).map((f) => {
-    const committed = n44(f.lc_committed) + n44(f.other_outstanding);
-    return {
-      ...f,
-      total_outstanding: committed,
-      available: n44(f.sanctioned_limit) - committed,
-      // What would be left if everything currently planned were also drawn.
-      available_after_planned: n44(f.sanctioned_limit) - committed - n44(f.planned)
-    };
-  });
-}
-async function listFacilityExposures(facilityId) {
-  const res = await getClient().execute({
-    sql: "SELECT * FROM facility_exposures WHERE facility_id = ? ORDER BY kind, id",
-    args: [facilityId]
-  });
-  return toPlain33(res);
-}
-var FACILITY_COLS = ["name", "bank", "facility_type", "sanctioned_limit", "sanction_date", "review_date", "note", "active"];
-var FACILITY_FALLBACK = {
-  facility_type: "lc",
-  sanctioned_limit: 0,
-  active: 1
-};
-function facilityArgs(v) {
-  return FACILITY_COLS.map((k) => {
-    const val = v[k];
-    if (val === "" || val === void 0 || val === null) return FACILITY_FALLBACK[k] ?? null;
-    if (k === "sanctioned_limit") return n44(val);
-    if (k === "active") return val ? 1 : 0;
-    return String(val);
-  });
-}
-async function createFacility(v) {
-  if (!String(v.name || "").trim()) throw new Error("Give the facility a name");
-  if (!String(v.bank || "").trim()) throw new Error("Name the bank");
-  const res = await getClient().execute({
-    sql: `INSERT INTO bank_facilities (company_id, ${FACILITY_COLS.join(", ")})
-          VALUES (?, ${FACILITY_COLS.map(() => "?").join(", ")})`,
-    args: [getActiveCompanyId(), ...facilityArgs(v)]
-  });
-  return { id: Number(res.lastInsertRowid) };
-}
-async function updateFacility(id, v) {
-  await getClient().execute({
-    sql: `UPDATE bank_facilities SET ${FACILITY_COLS.map((k) => `${k} = ?`).join(", ")} WHERE id = ?`,
-    args: [...facilityArgs(v), id]
-  });
-  return { id };
-}
-async function deleteFacility(id) {
-  const c = getClient();
-  const lc = await c.execute({ sql: "SELECT COUNT(*) AS n FROM letters_of_credit WHERE facility_id = ?", args: [id] });
-  if (n44(lc.rows[0].n) > 0) {
-    throw new Error(
-      `${n44(lc.rows[0].n)} LC(s) draw against this facility \u2014 unlink them first, or switch the facility off instead so its history stays.`
-    );
-  }
-  await c.execute({ sql: "DELETE FROM facility_exposures WHERE facility_id = ?", args: [id] });
-  await c.execute({ sql: "DELETE FROM bank_facilities WHERE id = ?", args: [id] });
-  return { id };
-}
-async function saveExposure(v) {
-  const c = getClient();
-  const facilityId = n44(v.facility_id);
-  if (!facilityId) throw new Error("Pick the facility this balance sits under");
-  if (!String(v.label || "").trim()) throw new Error("Name this balance (e.g. the account it belongs to)");
-  const args = [
-    String(v.label).trim(),
-    n44(v.amount),
-    String(v.kind || "outstanding"),
-    v.as_of ? String(v.as_of).slice(0, 10) : null,
-    v.note ? String(v.note).trim() : null
-  ];
-  if (v.id) {
-    await c.execute({
-      sql: "UPDATE facility_exposures SET label = ?, amount = ?, kind = ?, as_of = ?, note = ? WHERE id = ?",
-      args: [...args, n44(v.id)]
-    });
-    return { id: n44(v.id) };
-  }
-  const res = await c.execute({
-    sql: `INSERT INTO facility_exposures (facility_id, label, amount, kind, as_of, note)
-          VALUES (?, ?, ?, ?, ?, ?)`,
-    args: [facilityId, ...args]
-  });
-  return { id: Number(res.lastInsertRowid) };
-}
-async function deleteExposure(id) {
-  await getClient().execute({ sql: "DELETE FROM facility_exposures WHERE id = ?", args: [id] });
-  return { id };
-}
-async function facilityHeadroom(facilityId, excludeLcId = 0) {
-  const c = getClient();
-  const f = await c.execute({ sql: "SELECT * FROM bank_facilities WHERE id = ?", args: [facilityId] });
-  if (!f.rows.length) throw new Error("That facility no longer exists");
-  const lc = await c.execute({
-    sql: `SELECT COALESCE(SUM(COALESCE(NULLIF(l.blocked_amount, 0), l.amount) - COALESCE((SELECT SUM(r.amount) FROM lc_repayments r
-                 WHERE r.lc_id = l.id AND r.posted = 1), 0)), 0) AS a
-          FROM letters_of_credit l WHERE l.facility_id = ? AND l.status != 'closed' AND l.id != ?
-            AND COALESCE(l.workflow_status, '') <> 'rejected'`,
-    args: [facilityId, excludeLcId]
-  });
-  const other = await c.execute({
-    sql: "SELECT COALESCE(SUM(amount), 0) AS a FROM facility_exposures WHERE facility_id = ? AND kind = 'outstanding'",
-    args: [facilityId]
-  });
-  const sanctioned = n44(f.rows[0].sanctioned_limit);
-  const lcCommitted = n44(lc.rows[0].a);
-  const otherOutstanding = n44(other.rows[0].a);
-  return {
-    facility_id: facilityId,
-    name: f.rows[0].name,
-    sanctioned,
-    lc_committed: lcCommitted,
-    other_outstanding: otherOutstanding,
-    total_outstanding: lcCommitted + otherOutstanding,
-    available: sanctioned - lcCommitted - otherOutstanding
-  };
-}
-
-// src/main/lc.ts
-init_repos();
-init_lcInterest();
-init_facilityLimits();
-function toPlain34(res) {
-  return res.rows.map((r) => {
-    const o = {};
-    for (const col of res.columns) o[col] = r[col];
-    return o;
-  });
-}
-function n45(v) {
-  const x = Number(v);
-  return Number.isFinite(x) ? x : 0;
-}
-function round222(v) {
-  return Math.round(v * 100) / 100;
-}
-function netAvailable(lc, issued) {
-  const interest = lc.interest_upfront ? 0 : lcInterest(lc);
-  const charges = lc.interest_upfront ? 0 : round222(n45(lc.charges));
-  return round222(n45(lc.amount) - interest - charges - issued);
-}
-async function listLCs(companyId) {
-  const res = await getClient().execute({
-    args: [Number(companyId) || getActiveCompanyId()],
-    sql: `
-    SELECT l.*,
-      s.name AS supplier_name,
-      l.bank AS bank_name,
-      ob.name AS our_bank_name,
-      f.name AS facility_name,
-      rp.name AS receivable_party_name,
-      (SELECT GROUP_CONCAT(lo.order_id) FROM lc_linked_orders lo WHERE lo.lc_id = l.id) AS linked_order_ids_csv,
-      (SELECT GROUP_CONCAT(o.invoice_no, ', ') FROM lc_linked_orders lo
-         JOIN orders o ON o.id = lo.order_id WHERE lo.lc_id = l.id) AS linked_invoice_nos,
-      (SELECT COALESCE(SUM(o.net_amount), 0) FROM lc_linked_orders lo
-         JOIN orders o ON o.id = lo.order_id WHERE lo.lc_id = l.id) AS linked_invoice_amount_total,
-      (SELECT COUNT(*) FROM lc_linked_orders lo WHERE lo.lc_id = l.id) AS linked_invoice_count,
-      (SELECT GROUP_CONCAT(td.id) FROM trading_deals td WHERE td.lc_id = l.id) AS linked_deal_ids_csv,
-      COALESCE((SELECT SUM(amount) FROM lc_issuances WHERE lc_id = l.id), 0) AS utilized,
-      COALESCE((SELECT SUM(CASE WHEN status = 'settled' THEN amount ELSE 0 END) FROM lc_issuances WHERE lc_id = l.id), 0) AS settled_total,
-      COALESCE((SELECT COUNT(CASE WHEN order_id IS NOT NULL THEN 1 END) FROM lc_issuances WHERE lc_id = l.id), 0) AS linked_bill_count,
-      l.amount - COALESCE((SELECT SUM(amount) FROM lc_issuances WHERE lc_id = l.id), 0) AS available,
-      COALESCE((SELECT SUM(amount) FROM lc_repayments WHERE lc_id = l.id AND posted = 1), 0) AS repaid,
-      -- THE PRINCIPAL, APART FROM WHAT RODE OUT WITH IT.
-      -- A repayment debits the bank for the LC plus the bank's own charges in
-      -- one figure, because that is the one line on the statement. Measured
-      -- against the limit, though, only the principal repays anything: netting
-      -- the whole debit off drove Outstanding to minus the charges on an LC
-      -- that was square to the rupee.
-      COALESCE((SELECT SUM(amount - COALESCE(comm_charges, 0) - COALESCE(bank_charges, 0) - COALESCE(charges_total, 0))
-                  FROM lc_repayments WHERE lc_id = l.id AND posted = 1), 0) AS repaid_principal,
-      COALESCE((SELECT SUM(COALESCE(comm_charges, 0) + COALESCE(bank_charges, 0) + COALESCE(charges_total, 0))
-                  FROM lc_repayments WHERE lc_id = l.id AND posted = 1), 0) AS repaid_charges,
-      (SELECT COUNT(*) FROM lc_repayments WHERE lc_id = l.id) AS repayment_count,
-      -- Parts the bank has paid the supplier in; 0 for an LC paid in one go.
-      (SELECT COUNT(DISTINCT installment_no) FROM lc_issuances WHERE lc_id = l.id AND installment_no IS NOT NULL) AS installment_count,
-      (SELECT MAX(settled_date) FROM lc_issuances WHERE lc_id = l.id AND installment_no IS NOT NULL) AS last_installment_date,
-      -- What has actually come back, so the countdown chip can stand down and
-      -- the Payment IN action knows there is nothing left to receive.
-      COALESCE((SELECT SUM(amount) FROM lc_payment_ins WHERE lc_id = l.id), 0) AS payment_in_total,
-      (SELECT COUNT(*) FROM lc_payment_ins WHERE lc_id = l.id) AS payment_in_count,
-      COALESCE(
-        (SELECT MIN(p.maturity_date) FROM lc_parts p WHERE p.lc_id = l.id AND p.repaid_date IS NULL),
-        (SELECT MIN(due_date) FROM lc_issuances WHERE lc_id = l.id AND COALESCE(status, 'outstanding') != 'settled')
-      ) AS next_due_date,
-      -- Paid in parts: how many, their LC amounts, the interest each kept, and
-      -- what is still owed to the bank.
-      (SELECT COUNT(*) FROM lc_parts p WHERE p.lc_id = l.id) AS parts_count,
-      -- Each part on its own, for the register: its maturity, days and state.
-      (SELECT json_group_array(json_object('part_no', p.part_no, 'amount', p.amount, 'pay_date', p.pay_date,
-                'maturity_date', p.maturity_date, 'days', p.days, 'interest', p.interest, 'repaid_date', p.repaid_date))
-         FROM (SELECT * FROM lc_parts WHERE lc_id = l.id ORDER BY part_no) p) AS parts_json,
-      COALESCE((SELECT SUM(p.amount) FROM lc_parts p WHERE p.lc_id = l.id), 0) AS parts_amount,
-      COALESCE((SELECT SUM(p.interest) FROM lc_parts p WHERE p.lc_id = l.id), 0) AS parts_interest,
-      COALESCE((SELECT SUM(p.net) FROM lc_parts p WHERE p.lc_id = l.id), 0) AS parts_net,
-      COALESCE((SELECT SUM(p.amount) FROM lc_parts p WHERE p.lc_id = l.id AND p.repaid_date IS NOT NULL), 0) AS parts_repaid,
-      (SELECT COUNT(*) FROM lc_parts p WHERE p.lc_id = l.id AND p.repaid_date IS NULL) AS parts_open,
-      -- A part with its own margin % moves the LC's margin by the difference
-      -- on that part's amount; 0 for every LC whose parts use the LC's rate.
-      COALESCE((SELECT SUM(p.amount * (p.margin_pct - COALESCE(l.margin_pct, 0)) / 100) FROM lc_parts p
-                 WHERE p.lc_id = l.id AND p.margin_pct IS NOT NULL), 0) AS parts_margin_adj
-    FROM letters_of_credit l
-    LEFT JOIN suppliers s ON l.party_type = 'supplier' AND s.id = l.party_id
-    LEFT JOIN banks ob ON ob.id = l.our_bank_id
-    LEFT JOIN bank_facilities f ON f.id = l.facility_id
-    LEFT JOIN customers rp ON rp.id = l.receivable_party_id
-    WHERE l.company_id = ?
-    ORDER BY l.id DESC
-  `
-  });
-  return toPlain34(res).map((l) => {
-    const linkedCount = n45(l.linked_invoice_count);
-    const margin = Math.round((n45(l.amount) * n45(l.margin_pct) / 100 + n45(l.parts_margin_adj)) * 100) / 100;
-    const interest = lcInterest(l);
-    const rawCharges = Math.round(n45(l.charges) * 100) / 100;
-    const chargedInterest = l.interest_upfront ? 0 : interest;
-    const charges = l.interest_upfront ? 0 : rawCharges;
-    const compliant = String(l.purpose || "") !== "trading" || linkedCount > 0 && !!l.receivable_party_id;
-    return {
-      ...l,
-      linked_order_ids: String(l.linked_order_ids_csv || "").split(",").map((x) => Number(x)).filter((x) => x > 0),
-      linked_deal_ids: String(l.linked_deal_ids_csv || "").split(",").map((x) => Number(x)).filter((x) => x > 0),
-      // Back-calculated: the open amount is the limit struck with the bank —
-      // interest and charges come OUT of it, not added on top (unless both
-      // are paid upfront from the bank instead — see interest_upfront).
-      lc_net_available: Math.round((n45(l.amount) - chargedInterest - charges) * 100) / 100,
-      // What the beneficiary was ACTUALLY paid: the bills the bank honoured.
-      //
-      // lc_net_available above is a back-calculation — open amount less what
-      // the fees ought to be — and the two disagreed. LC-15's bill was raised
-      // for 1,60,57,801.64 while the back-calculation said 1,60,54,441.64,
-      // because the bill deducted the interest and not the ₹3,360 charges. The
-      // ledger carried one figure and the register showed the other.
-      //
-      // A recorded amount beats a formula, every time. Until a bill exists
-      // there is nothing recorded, so the expectation stands in — and says so.
-      paid_to_party: n45(l.utilized) > 4e-3 ? round222(n45(l.utilized)) : null,
-      paid_expected: Math.round((n45(l.amount) - chargedInterest - charges) * 100) / 100,
-      // What's actually left to issue bills against — interest and charges
-      // come out of the open amount before issued bills reduce it further.
-      // The shortfall an over-drawn LC used to show as a negative balance is
-      // now credited back to the party instead (syncLcFeeAdjustment), so the
-      // LC itself is square — reporting it as still negative would double-count
-      // a correction that has already been posted.
-      interest_basis: lcInterestBasis(l),
-      interest_base_amount: lcInterestBase(l),
-      fee_adjustment: lcFeeDelta(),
-      available: round222(netAvailable(l, n45(l.utilized)) - lcFeeDelta()),
-      // What's still owed against the LC's full sanctioned limit, net of
-      // repayments — explicitly requested this way even for an LC that's
-      // barely drawn down, so it reads as the limit's outstanding exposure.
-      // Against the limit, so the blocked figure less what has been repaid.
-      // Never below nothing: an LC repaid in full is repaid in full, and the
-      // charges that shared its debit are an expense, not an overpayment.
-      // A rejected application never became a credit: nothing outstanding.
-      outstanding: String(l.workflow_status || "") === "rejected" ? 0 : (
-        // Closed by repaying its parts: what was never drawn is not owed.
-        n45(l.parts_count) > 0 && l.preclosed_date ? 0 : round222(Math.max(0, (n45(l.blocked_amount) || n45(l.amount)) - n45(l.repaid_principal)))
-      ),
-      repaid_principal: round222(n45(l.repaid_principal)),
-      repaid_charges: round222(n45(l.repaid_charges)),
-      // Resolved once here so the register and the forms never have to repeat
-      // the fallback — and cannot disagree about it.
-      blocked_effective: round222(n45(l.blocked_amount) || n45(l.amount)),
-      // The bank's security on this LC, in rupees rather than as a percentage
-      // of a figure the reader has to go and find. Computed here already; it
-      // was simply never handed out.
-      margin_amount: margin,
-      interest_amount: n45(l.parts_count) > 0 ? round222(n45(l.parts_interest)) : round222(interest),
-      // Paid in parts: what of the LC is still undrawn, as an LC amount.
-      parts_left: n45(l.parts_count) > 0 ? round222(Math.max(0, n45(l.amount) - n45(l.parts_amount))) : null,
-      compliant,
-      display_status: String(l.workflow_status || "") === "rejected" ? "rejected" : !compliant ? "non_compliant" : String(l.workflow_status || "in_progress")
-    };
-  });
-}
-async function getLcLimit(bankId, from, to) {
-  const c = getClient();
-  const cid = getActiveCompanyId();
-  let bank = n45(bankId);
-  if (bank) {
-    const owner = await c.execute({ sql: "SELECT company_id FROM banks WHERE id = ?", args: [bank] });
-    if (n45(owner.rows[0]?.company_id) !== cid) bank = 0;
-  }
-  const limitRes = bank ? await c.execute({
-    sql: "SELECT fixed_limit, convertible_limit, convertible_enabled FROM bank_lc_limits WHERE company_id = ? AND bank_id = ?",
-    args: [cid, bank]
-  }) : await c.execute({
-    sql: `SELECT COALESCE(SUM(fixed_limit), 0) AS fixed_limit,
-                     COALESCE(SUM(convertible_limit), 0) AS convertible_limit,
-                     MAX(convertible_enabled) AS convertible_enabled
-              FROM bank_lc_limits WHERE company_id = ?`,
-    args: [cid]
-  });
-  let limit = limitRes.rows.length ? toPlain34(limitRes)[0] : { fixed_limit: 0, convertible_limit: 0, convertible_enabled: 0 };
-  if (!bank && n45(limit.fixed_limit) === 0 && n45(limit.convertible_limit) === 0) {
-    const legacy = await c.execute({
-      sql: "SELECT fixed_limit, convertible_limit, convertible_enabled FROM lc_limits WHERE company_id = ?",
-      args: [cid]
-    });
-    if (legacy.rows.length) limit = toPlain34(legacy)[0];
-  }
-  const f = from ? String(from).slice(0, 10) : "";
-  const t = to ? String(to).slice(0, 10) : "";
-  const sumsRes = await c.execute({
-    // Against the LIMIT it is the blocked amount that counts, not the amount
-    // opened: the bank is holding the figure it blocked whether or not the bill
-    // came in for that much. Interest and margin still work off the open
-    // amount, which is why only the limit sums coalesce this way.
-    sql: `SELECT stage, COALESCE(SUM(COALESCE(NULLIF(blocked_amount, 0), amount)
-                - COALESCE((SELECT SUM(p.amount) FROM lc_parts p WHERE p.lc_id = letters_of_credit.id AND p.repaid_date IS NOT NULL), 0)), 0) AS total,
-                 COUNT(*) AS cnt FROM letters_of_credit
-          WHERE company_id = ? AND COALESCE(facility_type, 'lc') = 'lc' AND preclosed_date IS NULL
-            AND COALESCE(workflow_status, '') <> 'rejected'
-            ${bank ? "AND our_bank_id = ?" : ""}
-            ${f ? "AND open_date >= ?" : ""}
-            ${t ? "AND open_date <= ?" : ""}
-          GROUP BY stage`,
-    args: [cid, ...bank ? [bank] : [], ...f ? [f] : [], ...t ? [t] : []]
-  });
-  const byStage = { application: 0, open: 0, payment_received: 0 };
-  let periodCount = 0;
-  for (const r of toPlain34(sumsRes)) {
-    const stage = String(r.stage || "application");
-    if (stage in byStage) byStage[stage] = n45(r.total);
-    periodCount += n45(r.cnt);
-  }
-  const totalCountRes = await c.execute({
-    sql: `SELECT COUNT(*) AS cnt FROM letters_of_credit
-          WHERE company_id = ? AND COALESCE(facility_type, 'lc') = 'lc' AND preclosed_date IS NULL
-            AND COALESCE(workflow_status, '') <> 'rejected'
-            ${bank ? "AND our_bank_id = ?" : ""}`,
-    args: bank ? [cid, bank] : [cid]
-  });
-  const totalCount = n45(totalCountRes.rows[0]?.cnt);
-  const totalLimit = round222(n45(limit.fixed_limit) + (limit.convertible_enabled ? n45(limit.convertible_limit) : 0));
-  const utilized = round222(byStage.application + byStage.open + byStage.payment_received);
-  return {
-    bank_id: bank || null,
-    fixed_limit: n45(limit.fixed_limit),
-    convertible_limit: n45(limit.convertible_limit),
-    convertible_enabled: !!n45(limit.convertible_enabled),
-    total_limit: totalLimit,
-    lc_count: totalCount,
-    period_lc_count: periodCount,
-    application: round222(byStage.application),
-    open: round222(byStage.open),
-    payment_received: round222(byStage.payment_received),
-    utilized,
-    available: round222(totalLimit - utilized),
-    period_from: f || null,
-    period_to: t || null
-  };
-}
-async function listBankLcLimits() {
-  const cid = getActiveCompanyId();
-  const res = await getClient().execute({
-    sql: `SELECT b.id AS bank_id, b.name AS bank, b.active,
-                 COALESCE(l.fixed_limit, 0) AS fixed_limit,
-                 COALESCE(l.convertible_limit, 0) AS convertible_limit,
-                 COALESCE(l.convertible_enabled, 0) AS convertible_enabled,
-                 (SELECT COUNT(*) FROM letters_of_credit x WHERE x.company_id = ? AND x.our_bank_id = b.id
-                     AND COALESCE(x.workflow_status, '') <> 'rejected') AS lc_count,
-                 COALESCE((SELECT SUM(COALESCE(NULLIF(x.blocked_amount, 0), x.amount)) FROM letters_of_credit x
-                           WHERE x.company_id = ? AND x.our_bank_id = b.id
-                             AND COALESCE(x.facility_type, 'lc') = 'lc' AND x.preclosed_date IS NULL
-                             AND COALESCE(x.workflow_status, '') <> 'rejected'), 0) AS utilized
-          FROM banks b
-          LEFT JOIN bank_lc_limits l ON l.bank_id = b.id AND l.company_id = ?
-          WHERE b.company_id = ?
-          ORDER BY b.name`,
-    args: [cid, cid, cid, cid]
-  });
-  return toPlain34(res).map((r) => {
-    const total = round222(n45(r.fixed_limit) + (n45(r.convertible_enabled) ? n45(r.convertible_limit) : 0));
-    return { ...r, convertible_enabled: !!n45(r.convertible_enabled), total_limit: total, available: round222(total - n45(r.utilized)) };
-  });
-}
-async function saveLcLimit(v) {
-  const cid = getActiveCompanyId();
-  const bankId = n45(v.bank_id);
-  if (!bankId) throw new Error("Pick which bank this limit is sanctioned by");
-  const owner = await getClient().execute({ sql: "SELECT company_id FROM banks WHERE id = ?", args: [bankId] });
-  if (n45(owner.rows[0]?.company_id) !== cid) throw new Error("That bank belongs to a different company");
-  const was = await getClient().execute({
-    sql: "SELECT COALESCE(fixed_limit, 0) AS v FROM bank_lc_limits WHERE company_id = ? AND bank_id = ?",
-    args: [cid, bankId]
-  });
-  const priorFixed = was.rows.length ? n45(was.rows[0].v) : 0;
-  await getClient().execute({
-    sql: `INSERT INTO bank_lc_limits (company_id, bank_id, fixed_limit, convertible_limit, convertible_enabled, updated_at)
-          VALUES (?, ?, ?, ?, ?, datetime('now'))
-          ON CONFLICT(company_id, bank_id) DO UPDATE SET
-            fixed_limit = excluded.fixed_limit,
-            convertible_limit = excluded.convertible_limit,
-            convertible_enabled = excluded.convertible_enabled,
-            updated_at = excluded.updated_at`,
-    args: [cid, bankId, n45(v.fixed_limit), n45(v.convertible_limit), v.convertible_enabled ? 1 : 0]
-  });
-  await logLimitChange({
-    kind: "bank",
-    refId: bankId,
-    oldAmount: priorFixed,
-    newAmount: n45(v.fixed_limit),
-    note: "edited on the LC limit screen",
-    companyId: cid
-  });
-  return { id: bankId };
-}
-async function syncLinkedOrders(lcId, orderIds) {
-  const c = getClient();
-  const ids = Array.isArray(orderIds) ? orderIds.map((x) => n45(x)).filter((x) => x > 0) : [];
-  if (ids.length) {
-    const taken = await c.execute({
-      sql: `SELECT lo.order_id, o.invoice_no, l.lc_no
-            FROM lc_linked_orders lo
-            JOIN orders o ON o.id = lo.order_id
-            LEFT JOIN letters_of_credit l ON l.id = lo.lc_id
-            WHERE lo.order_id IN (${ids.join(",")}) AND lo.lc_id != ?`,
-      args: [lcId]
-    });
-    if (taken.rows.length) {
-      const t = taken.rows[0];
-      throw new Error(`Invoice ${t.invoice_no || `#${t.order_id}`} is already linked to ${t.lc_no ? `LC ${t.lc_no}` : "another LC"}`);
-    }
-  }
-  await c.execute({ sql: "DELETE FROM lc_linked_orders WHERE lc_id = ?", args: [lcId] });
-  for (const oid of ids) {
-    await c.execute({
-      sql: "INSERT OR IGNORE INTO lc_linked_orders (lc_id, order_id) VALUES (?, ?)",
-      args: [lcId, oid]
-    });
-  }
-}
-async function syncPartsCharges(lcId) {
-  await getClient().execute({
-    sql: `UPDATE letters_of_credit SET charges = (SELECT ROUND(COALESCE(SUM(charges), 0), 2) FROM lc_parts WHERE lc_id = ?)
-           WHERE id = ? AND EXISTS (SELECT 1 FROM lc_parts WHERE lc_id = ?)`,
-    args: [n45(lcId), n45(lcId), n45(lcId)]
-  });
-}
-function lcPartsMargin(lc, parts) {
-  const rate = n45(lc.margin_pct);
-  const drawn = parts.reduce((s5, p) => s5 + n45(p.amount), 0);
-  const onParts = parts.reduce((s5, p) => s5 + n45(p.amount) * (p.margin_pct == null ? rate : n45(p.margin_pct)) / 100, 0);
-  return round222(onParts + Math.max(0, n45(lc.amount) - drawn) * rate / 100);
-}
-var partRate = (v) => {
-  if (v == null || String(v).trim() === "") return null;
-  const x = Number(v);
-  if (!Number.isFinite(x) || x < 0) throw new Error("A part's interest or margin % must be a number, 0 or more");
-  return x;
-};
-async function lcParts(lcId) {
-  const r = await getClient().execute({ sql: "SELECT * FROM lc_parts WHERE lc_id = ? ORDER BY part_no", args: [n45(lcId)] }).catch(() => null);
-  return r ? toPlain34(r) : [];
-}
-function partFigures(lc, amount2, payDate, maturity, first, ratePct, ownCharges) {
-  const days = Math.max(0, daysBetween4(payDate, maturity));
-  const charges = ownCharges != null ? round222(ownCharges) : first ? round222(n45(lc.charges)) : 0;
-  const base = Math.max(0, round222(amount2 - (lc.interest_excl_charges ? charges : 0)));
-  const interest = round222(base * n45(ratePct == null ? lc.interest_pct : ratePct) * days / (100 * 365));
-  return { days, interest, charges, net: round222(amount2 - interest - charges) };
-}
-async function insertLcPart(lcId, partNo, lc, amount2, payDate, maturity, rates = {}) {
-  if (lc.interest_upfront) {
-    throw new Error("This LC's interest is paid upfront from the bank account, so it cannot be split into parts with their own maturities.");
-  }
-  if (!maturity) throw new Error(`Pick the maturity of part ${partNo}`);
-  if (maturity < payDate) throw new Error(`Part ${partNo} cannot mature (${dmy4(maturity)}) before it was paid (${dmy4(payDate)})`);
-  const ip = partRate(rates.interest_pct);
-  const mp = partRate(rates.margin_pct);
-  const ch = partRate(rates.charges);
-  const f = partFigures(lc, amount2, payDate, maturity, partNo === 1, ip, ch);
-  if (f.net <= 5e-3) throw new Error(`Part ${partNo}'s interest and charges are more than its amount`);
-  await getClient().execute({
-    sql: `INSERT INTO lc_parts (lc_id, part_no, pay_date, amount, maturity_date, days, interest, charges, net, interest_pct, margin_pct)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    args: [n45(lcId), partNo, payDate, round222(amount2), maturity, f.days, f.interest, f.charges, f.net, ip, mp]
-  });
-  return { net: f.net, interest: f.interest };
-}
-async function syncPaymentReceivedIssuance(lcId, v) {
-  const paymentDate = String(v.payment_received_date || "").slice(0, 10);
-  if (!paymentDate) return;
-  const c = getClient();
-  const existing = await c.execute({ sql: "SELECT COUNT(*) AS n FROM lc_issuances WHERE lc_id = ?", args: [lcId] });
-  const firstPart = round222(n45(v.first_installment));
-  const plan = Array.isArray(v.parts_plan) ? v.parts_plan.filter((p) => round222(n45(p?.amount)) > 5e-3) : [];
-  if (n45(existing.rows[0]?.n) === 0 && plan.length) {
-    const total = round222(plan.reduce((s5, p) => s5 + round222(n45(p.amount)), 0));
-    if (total > n45(v.amount) + 5e-3) {
-      throw new Error(`The parts come to ${total.toFixed(2)}, more than the LC's ${n45(v.amount).toFixed(2)}`);
-    }
-    await c.execute({ sql: "DELETE FROM lc_parts WHERE lc_id = ?", args: [lcId] });
-    const ids = Array.isArray(v.linked_order_ids) ? v.linked_order_ids.map((x) => n45(x)).filter((x) => x > 0) : [];
-    let prev = paymentDate;
-    for (let i = 0; i < plan.length; i++) {
-      const p = plan[i];
-      const no = i + 1;
-      const payOn = i === 0 ? paymentDate : String(p.pay_date || "").slice(0, 10);
-      if (!payOn) throw new Error(`Pick the day part ${no} was paid`);
-      if (payOn > todayISO8()) throw new Error(`Part ${no} cannot be paid on a future date`);
-      if (payOn < prev) throw new Error(`Part ${no} cannot be paid (${dmy4(payOn)}) before part ${no - 1} (${dmy4(prev)})`);
-      prev = payOn;
-      const maturity = String(p.maturity || "").slice(0, 10);
-      const fig = await insertLcPart(lcId, no, v, round222(n45(p.amount)), payOn, maturity, p);
-      const billIds = await insertInstallmentBills(lcId, fig.net, payOn, maturity, no, ids);
-      const memo = String(p.note || "").trim();
-      if (memo && billIds.length) {
-        await c.execute({
-          sql: `UPDATE lc_issuances SET note = ? WHERE id IN (${billIds.map(() => "?").join(",")})`,
-          args: [memo, ...billIds]
-        });
-      }
-      await settleLcBillsCombined(billIds, payOn);
-    }
-    await syncPartsCharges(lcId);
-  } else if (n45(existing.rows[0]?.n) === 0 && firstPart > 5e-3) {
-    if (firstPart > n45(v.amount) + 5e-3) {
-      throw new Error(`Part 1 (${firstPart.toFixed(2)}) is more than the LC's ${n45(v.amount).toFixed(2)}`);
-    }
-    const maturity = String(v.first_installment_maturity || v.expiry_date || "").slice(0, 10);
-    await c.execute({ sql: "DELETE FROM lc_parts WHERE lc_id = ?", args: [lcId] });
-    const p1 = await insertLcPart(lcId, 1, v, firstPart, paymentDate, maturity);
-    const ids = Array.isArray(v.linked_order_ids) ? v.linked_order_ids.map((x) => n45(x)).filter((x) => x > 0) : [];
-    await insertInstallmentBills(lcId, p1.net, paymentDate, maturity, 1, ids);
-  } else if (n45(existing.rows[0]?.n) === 0) {
-    const issueDate = String(v.open_date || paymentDate).slice(0, 10);
-    const dueDate = String(v.expiry_date || paymentDate).slice(0, 10);
-    const ids = Array.isArray(v.linked_order_ids) ? v.linked_order_ids.map((x) => n45(x)).filter((x) => x > 0) : [];
-    if (ids.length) {
-      let remaining = netAvailable(v, 0);
-      for (const oid of ids) {
-        const o = await c.execute({ sql: "SELECT invoice_no, net_amount FROM orders WHERE id = ?", args: [oid] });
-        if (!o.rows.length) continue;
-        const issueAmount = Math.min(remaining, n45(o.rows[0].net_amount));
-        if (issueAmount <= 5e-3) continue;
-        await c.execute({
-          sql: `INSERT INTO lc_issuances (lc_id, issue_date, amount, order_id, bill_no, due_date, status)
-                VALUES (?, ?, ?, ?, ?, ?, 'outstanding')`,
-          args: [lcId, issueDate, Math.round(issueAmount * 100) / 100, oid, String(o.rows[0].invoice_no || ""), dueDate]
-        });
-        remaining -= issueAmount;
-      }
-    } else if (netAvailable(v, 0) > 0) {
-      await c.execute({
-        sql: `INSERT INTO lc_issuances (lc_id, issue_date, amount, bill_no, due_date, status)
-              VALUES (?, ?, ?, ?, ?, 'outstanding')`,
-        args: [lcId, issueDate, netAvailable(v, 0), null, dueDate]
-      });
-    }
-  }
-  const outstanding = await c.execute({
-    sql: "SELECT id FROM lc_issuances WHERE lc_id = ? AND COALESCE(status, 'outstanding') != 'settled'",
-    args: [lcId]
-  });
-  await settleLcBillsCombined(outstanding.rows.map((r) => Number(r.id)), paymentDate);
-}
-async function listLCIssuances(lcId) {
-  const res = await getClient().execute({
-    sql: `SELECT i.*, o.invoice_no
-          FROM lc_issuances i
-          LEFT JOIN orders o ON o.id = i.order_id
-          WHERE i.lc_id = ? ORDER BY i.id DESC`,
-    args: [lcId]
-  });
-  return toPlain34(res);
-}
-var LC_COLS = [
-  "our_bank_id",
-  "usance_days",
-  "margin_pct",
-  "lc_no",
-  "facility_type",
-  "bank",
-  "party_type",
-  "party_id",
-  "amount",
-  // What the bank blocks against the facility. Nullable on purpose: an LC that
-  // has never been told otherwise reads its blocked figure as the open amount,
-  // which is what every LC opened before this column existed means.
-  "blocked_amount",
-  "open_date",
-  "expiry_date",
-  "interest_pct",
-  "charges",
-  "status",
-  "note",
-  "facility_id",
-  "purpose",
-  "receivable_party_id",
-  "workflow_status",
-  "stage",
-  "fd_no",
-  "payment_received_date",
-  "opened_date",
-  "interest_upfront",
-  "interest_excl_charges",
-  "interest_adj",
-  // HOW LONG BEFORE THE MONEY COMES BACK.
-  //
-  // Optional, and a plain number of days rather than a date, because that is
-  // how the terms are agreed — "60 days from the LC" — and a date typed by
-  // hand drifts from whatever the LC was actually opened on. Counted from the
-  // opening; the register turns it into a date and says whether it is due.
-  "payment_in_expected",
-  "payment_in_days"
-];
-function lcArgs(v) {
-  return LC_COLS.map((k) => {
-    const val = v[k];
-    if (val === "" || val === void 0 || val === null) {
-      if (k === "workflow_status") return "in_progress";
-      if (k === "stage") return "application";
-      if (k === "amount" || k === "usance_days" || k === "margin_pct" || k === "interest_upfront" || k === "interest_excl_charges" || k === "interest_adj") {
-        return 0;
-      }
-      if (k === "lc_no") return "";
-      if (k === "payment_in_expected") return 0;
-      return null;
-    }
-    if (k === "our_bank_id" || k === "party_id" || k === "amount" || k === "blocked_amount" || k === "interest_pct" || k === "charges" || k === "usance_days" || k === "margin_pct" || k === "facility_id" || k === "receivable_party_id" || k === "interest_upfront" || // Signed: a negative adjustment is the ordinary case, so this must not
-    // be floored or read as a string.
-    k === "interest_adj" || // A number of days, kept as one — blank has already fallen through to
-    // null above, which is "no term agreed" rather than nought days.
-    k === "payment_in_days" || k === "payment_in_expected") {
-      return n45(val);
-    }
-    return val;
-  });
-}
-async function assertWithinFacility(v, excludeLcId = 0) {
-  const facilityId = n45(v.facility_id);
-  if (!facilityId || v.force_over_limit) return;
-  const h = await facilityHeadroom(facilityId, excludeLcId);
-  const amount2 = n45(v.blocked_amount) || n45(v.amount);
-  if (amount2 > n45(h.available) + 5e-3) {
-    throw new Error(
-      `${h.name} has ${Number(h.available).toFixed(2)} left of its ${Number(h.sanctioned).toFixed(2)} sanction (${Number(h.lc_committed).toFixed(2)} on other LCs, ${Number(h.other_outstanding).toFixed(2)} other outstanding). This LC of ${amount2.toFixed(2)} would exceed it.`
-    );
-  }
-}
-async function assertWithinInvoiceCover(v) {
-  const ids = Array.isArray(v.linked_order_ids) ? v.linked_order_ids.map((x) => n45(x)).filter((x) => x > 0) : [];
-  if (!ids.length) return;
-  const res = await getClient().execute({
-    sql: `SELECT COALESCE(SUM(net_amount), 0) AS total FROM orders WHERE id IN (${ids.map(() => "?").join(", ")})`,
-    args: ids
-  });
-  const total = n45(res.rows[0]?.total);
-  const amount2 = n45(v.amount);
-  if (amount2 > total + 5e-3) {
-    throw new Error(
-      `The open amount (${amount2.toFixed(2)}) cannot exceed the ${total.toFixed(2)} total of the selected invoices.`
-    );
-  }
-}
-function assertLcNoIfPastApplication(v) {
-  if (String(v.stage || "application") !== "application" && !String(v.lc_no || "").trim()) {
-    throw new Error("LC number is required once the LC is Open");
-  }
-}
-async function assertLcNoNotTaken(v, id) {
-  const lcNo = String(v.lc_no || "").trim();
-  if (!lcNo) return;
-  const c = getClient();
-  const cid = n45(v.company_id) || getActiveCompanyId();
-  if (id) {
-    const own = await c.execute({ sql: "SELECT lc_no FROM letters_of_credit WHERE id = ?", args: [id] });
-    const was = String(own.rows[0]?.lc_no || "").trim();
-    if (was.toUpperCase() === lcNo.toUpperCase()) return;
-  }
-  const res = await c.execute({
-    sql: `SELECT id, lc_no, bank, amount, open_date FROM letters_of_credit
-           WHERE company_id = ? AND UPPER(TRIM(COALESCE(lc_no,''))) = ? AND id <> ?
-           ORDER BY id LIMIT 1`,
-    args: [cid, lcNo.toUpperCase(), n45(id)]
-  });
-  if (!res.rows.length) return;
-  const clash = toPlain34(res)[0];
-  const when = String(clash.open_date || "").slice(0, 10);
-  throw new Error(
-    `LC ${lcNo} already exists in this company \u2014 ${clash.bank || "unknown bank"}${when ? `, opened ${when}` : ""}. Give this one a number of its own.`
-  );
-}
-async function assertHasLinkedInvoice(v) {
-  if (String(v.stage || "application") === "application") return;
-  const ids = Array.isArray(v.linked_order_ids) ? v.linked_order_ids.map((x) => n45(x)).filter((x) => x > 0) : [];
-  if (ids.length) return;
-  if (await getSetting("lc_require_linked_invoice") === "0") return;
-  const res = await getClient().execute({
-    sql: `SELECT COUNT(*) AS n FROM orders
-          WHERE supplier_id = ? AND company_id = ? AND COALESCE(is_trading, 0) = ? AND order_date <= ?`,
-    args: [
-      n45(v.party_id),
-      n45(v.company_id) || getActiveCompanyId(),
-      String(v.purpose || "") === "trading" ? 1 : 0,
-      String(v.open_date || "").slice(0, 10)
-    ]
-  });
-  if (n45(res.rows[0]?.n) === 0) return;
-  throw new Error(
-    "Link at least one purchase invoice before the LC leaves Application \u2014 an LC that is Open or has received payment must name the invoice(s) it covers."
-  );
-}
-function assertStageDates(v) {
-  const stage = String(v.stage || "application");
-  const has = (k) => !!String(v[k] ?? "").trim();
-  if ((stage === "open" || stage === "payment_received") && !has("opened_date")) {
-    throw new Error("Open date is required once the LC is Open \u2014 the day the bank opened the credit");
-  }
-  if (stage === "payment_received") {
-    if (!has("payment_received_date")) {
-      throw new Error("Payment received date is required once payment has been received");
-    }
-    if (!has("expiry_date")) {
-      throw new Error("Maturity date is required once payment has been received \u2014 it is what the interest days are counted to");
-    }
-  }
-}
-function assertPaymentReceivedNotBeforeOpen(v) {
-  if (String(v.stage || "application") === "payment_received" && v.opened_date && v.payment_received_date && String(v.payment_received_date) < String(v.opened_date)) {
-    throw new Error("Payment received date cannot be before the date the LC was opened");
-  }
-}
-async function resizeAutoLcBill(lcId) {
-  const c = getClient();
-  const lcRes = await c.execute({ sql: "SELECT * FROM letters_of_credit WHERE id = ?", args: [n45(lcId)] });
-  if (!lcRes.rows.length) return;
-  const lc = toPlain34(lcRes)[0];
-  const res = await c.execute({
-    sql: "SELECT id, amount, order_id, bill_no, installment_no FROM lc_issuances WHERE lc_id = ?",
-    args: [n45(lcId)]
-  });
-  if (res.rows.length !== 1) return;
-  const bill = toPlain34(res)[0];
-  if (n45(bill.order_id)) return;
-  if (n45(bill.installment_no)) return;
-  if (String(bill.bill_no || "").trim()) return;
-  const want = netAvailable(lc, 0);
-  if (want <= 5e-3) return;
-  if (Math.abs(want - n45(bill.amount)) < 5e-3) return;
-  await c.execute({
-    sql: "UPDATE lc_issuances SET amount = ? WHERE id = ?",
-    args: [round222(want), n45(bill.id)]
-  });
-}
-async function syncLcVouchers(id) {
-  const problems = [];
-  try {
-    await postLcOpening(id);
-  } catch (e) {
-    problems.push(`the margin voucher (${e.message})`);
-  }
-  try {
-    await postLcFees(id);
-  } catch (e) {
-    problems.push(`the stray fee voucher (${e.message})`);
-  }
-  try {
-    await resizeAutoLcBill(id);
-  } catch (e) {
-    problems.push(`the bill amount (${e.message})`);
-  }
-  try {
-    await refreshLcUpfrontInterest(id);
-  } catch (e) {
-    problems.push(`the upfront interest voucher (${e.message})`);
-  }
-  try {
-    await resyncLcSettlement(id);
-  } catch (e) {
-    problems.push(`the settlement journal (${e.message})`);
-  }
-  try {
-    await syncLcFeeAdjustment(id);
-  } catch (e) {
-    problems.push(`the party's fee adjustment (${e.message})`);
-  }
-  if (!problems.length) return void 0;
-  throw new Error(`LC not saved: ${problems.join(" and ")} could not be posted. The previous books were retained.`);
-}
-async function assertOwnBankBelongsToCompany(v) {
-  const bankId = n45(v.our_bank_id);
-  if (!bankId) return;
-  const cid = n45(v.company_id) || getActiveCompanyId();
-  const owner = await getClient().execute({ sql: "SELECT company_id FROM banks WHERE id = ?", args: [bankId] });
-  if (n45(owner.rows[0]?.company_id) !== cid) {
-    throw new Error("That bank belongs to a different company \u2014 pick one of this company's own banks");
-  }
-}
-async function createLC(v) {
-  return withDbTransaction(async () => {
-    if (!v.bank) throw new Error("Bank is required");
-    if (!String(v.open_date || "").trim()) throw new Error("Application date is required");
-    assertLcNoIfPastApplication(v);
-    assertStageDates(v);
-    await assertLcNoNotTaken(v);
-    await assertHasLinkedInvoice(v);
-    await assertOwnBankBelongsToCompany(v);
-    assertPaymentReceivedNotBeforeOpen(v);
-    if (!String(v.fd_no || "").trim()) throw new Error("FD No is required");
-    await assertWithinFacility(v);
-    await assertWithinInvoiceCover(v);
-    const res = await getClient().execute({
-      sql: `INSERT INTO letters_of_credit (company_id, ${LC_COLS.join(", ")})
-          VALUES (?, ${LC_COLS.map(() => "?").join(", ")})`,
-      args: [getActiveCompanyId(), ...lcArgs(v)]
-    });
-    const id = Number(res.lastInsertRowid);
-    await syncLinkedOrders(id, v.linked_order_ids);
-    await linkTradingDealsToLc(id, v.linked_deal_ids);
-    await syncPaymentReceivedIssuance(id, v);
-    const warning = await syncLcVouchers(id);
-    return { id, warning };
-  });
-}
-async function updateLC(id, v) {
-  return withDbTransaction(async () => {
-    if (!v.bank) throw new Error("Bank is required");
-    if (!String(v.open_date || "").trim()) throw new Error("Application date is required");
-    assertLcNoIfPastApplication(v);
-    assertStageDates(v);
-    await assertLcNoNotTaken(v, id);
-    await assertHasLinkedInvoice(v);
-    await assertOwnBankBelongsToCompany(v);
-    assertPaymentReceivedNotBeforeOpen(v);
-    if (!String(v.fd_no || "").trim()) throw new Error("FD No is required");
-    await assertWithinFacility(v, id);
-    await assertWithinInvoiceCover(v);
-    await getClient().execute({
-      sql: `UPDATE letters_of_credit SET ${LC_COLS.map((k) => `${k} = ?`).join(", ")} WHERE id = ?`,
-      args: [...lcArgs(v), id]
-    });
-    await syncLinkedOrders(id, v.linked_order_ids);
-    await linkTradingDealsToLc(id, v.linked_deal_ids);
-    await syncPaymentReceivedIssuance(id, v);
-    const warning = await syncLcVouchers(id);
-    return { id, warning };
-  });
-}
-function todayISO8() {
-  const d = /* @__PURE__ */ new Date();
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
-}
-function daysBetween4(a, b) {
-  return Math.round(((/* @__PURE__ */ new Date(`${b}T00:00:00`)).getTime() - (/* @__PURE__ */ new Date(`${a}T00:00:00`)).getTime()) / 864e5);
-}
-async function precloseLC(id, v) {
-  return withDbTransaction(async () => {
-    const c = getClient();
-    const res = await c.execute({ sql: "SELECT * FROM letters_of_credit WHERE id = ?", args: [id] });
-    if (!res.rows.length) throw new Error("LC not found");
-    const lc = toPlain34(res)[0];
-    if (lc.preclosed_date) throw new Error("This LC is already preclosed");
-    if ((await lcParts(id)).length) {
-      throw new Error("This LC was paid in parts \u2014 repay it part by part from \u22EE \u2192 Parts (each part has its own maturity and rebate).");
-    }
-    if (String(lc.stage || "application") !== "payment_received") {
-      throw new Error(
-        String(lc.stage || "application") === "application" ? "This LC is still an application \u2014 the bank has not opened it, so there is nothing to wind up. Mark it Open first." : "The bank has not paid the beneficiary under this LC yet, so there is nothing to repay. Mark Payment received first."
-      );
-    }
-    const precloseDate = String(v.preclose_date || "").slice(0, 10);
-    if (!precloseDate) throw new Error("Pick the preclosure date");
-    const interestStart = lc.payment_received_date || lc.opened_date || lc.open_date;
-    if (!interestStart) throw new Error("The LC has no date yet to count interest days from");
-    const actualDays = Math.max(0, daysBetween4(String(interestStart), precloseDate));
-    const prematureInterest = round222(n45(v.premature_interest));
-    const rebateDirection = v.premature_interest_direction === "pay_to_party" ? "pay_to_party" : "credit_to_us";
-    await c.execute({
-      sql: `UPDATE letters_of_credit SET usance_days = ?, preclosed_date = ?, preclose_premature_interest = ?,
-          preclose_interest_route = ? WHERE id = ?`,
-      args: [actualDays, precloseDate, prematureInterest, rebateDirection, id]
-    });
-    await postLcOpening(id);
-    const rebate = await postLcPrematureInterestRebate(id, rebateDirection, prematureInterest, precloseDate);
-    if (rebate) {
-      await c.execute({
-        sql: `UPDATE letters_of_credit
-               SET preclose_interest_journal_entry_id = ?, preclose_payout_journal_entry_id = ?
-             WHERE id = ?`,
-        args: [rebate.id, rebate.payoutId ?? null, id]
-      });
-    }
-    await saveLcRepayment({
-      lc_id: id,
-      amount: n45(v.amount),
-      comm_charges: n45(v.comm_charges),
-      bank_charges: n45(v.bank_charges),
-      charges: v.charges || [],
-      repay_date: precloseDate,
-      posted: true,
-      note: "Preclosure repayment"
-    });
-    if (v.release_margin) {
-      const margin = round222(n45(lc.amount) * n45(lc.margin_pct) / 100);
-      const settlement = await postLcMarginRelease(id, margin, precloseDate);
-      await c.execute({
-        sql: `UPDATE letters_of_credit SET preclose_settlement_direction = 'margin_released',
-            preclose_settlement_amount = ?, preclose_journal_entry_id = ? WHERE id = ?`,
-        args: [margin, settlement ? settlement.id : null, id]
-      });
-    }
-    await c.execute({ sql: "UPDATE letters_of_credit SET workflow_status = 'preclosed' WHERE id = ?", args: [id] });
-    return { id };
-  });
-}
-async function unPrecloseLC(id) {
-  return withDbTransaction(async () => {
-    const c = getClient();
-    const res = await c.execute({ sql: "SELECT * FROM letters_of_credit WHERE id = ?", args: [id] });
-    if (!res.rows.length) throw new Error("LC not found");
-    const lc = toPlain34(res)[0];
-    if (!lc.preclosed_date) throw new Error("This LC is not preclosed, so there is nothing to undo");
-    if ((await lcParts(id)).length) {
-      throw new Error("This LC was closed by repaying its parts \u2014 undo the last part repayment from \u22EE \u2192 Parts instead.");
-    }
-    const removed = [];
-    if (lc.preclose_payout_journal_entry_id) {
-      await dropTreasuryEntry(n45(lc.preclose_payout_journal_entry_id));
-    }
-    if (lc.preclose_interest_journal_entry_id) {
-      await dropTreasuryEntry(n45(lc.preclose_interest_journal_entry_id));
-      removed.push("premature-interest rebate voucher");
-    }
-    if (lc.preclose_journal_entry_id) {
-      await dropTreasuryEntry(n45(lc.preclose_journal_entry_id));
-      removed.push("margin-release voucher");
-    }
-    const reps = await c.execute({
-      sql: `SELECT id, journal_entry_id FROM lc_repayments
-           WHERE lc_id = ? AND substr(repay_date, 1, 10) = ? AND COALESCE(note, '') = 'Preclosure repayment'`,
-      args: [id, String(lc.preclosed_date).slice(0, 10)]
-    });
-    for (const r of reps.rows) {
-      if (r.journal_entry_id) await dropTreasuryEntry(n45(r.journal_entry_id));
-      await c.execute({ sql: "DELETE FROM lc_repayments WHERE id = ?", args: [n45(r.id)] });
-    }
-    if (reps.rows.length) removed.push(`${reps.rows.length} preclosure repayment row(s)`);
-    const interestStart = lc.payment_received_date || lc.opened_date || lc.open_date;
-    const plannedDays = interestStart && lc.expiry_date ? Math.max(0, daysBetween4(String(interestStart), String(lc.expiry_date))) : n45(lc.usance_days);
-    await c.execute({
-      sql: `UPDATE letters_of_credit
-             SET usance_days = ?, preclosed_date = NULL, preclose_premature_interest = NULL,
-                 preclose_interest_route = NULL, preclose_interest_journal_entry_id = NULL,
-                 preclose_payout_journal_entry_id = NULL,
-                 preclose_settlement_direction = NULL, preclose_settlement_amount = NULL,
-                 preclose_journal_entry_id = NULL, workflow_status = 'in_progress'
-           WHERE id = ?`,
-      args: [plannedDays, id]
-    });
-    await postLcOpening(id);
-    removed.push(`interest days back to ${plannedDays}`);
-    return { id, removed };
-  });
-}
-async function deleteLC(id) {
-  return withDbTransaction(async () => {
-    const c = getClient();
-    const bills = await c.execute({ sql: "SELECT journal_entry_id FROM lc_issuances WHERE lc_id = ?", args: [id] });
-    for (const b of bills.rows) if (b.journal_entry_id) await dropTreasuryEntry(Number(b.journal_entry_id));
-    const repayments = await c.execute({ sql: "SELECT journal_entry_id FROM lc_repayments WHERE lc_id = ?", args: [id] });
-    for (const r of repayments.rows) if (r.journal_entry_id) await dropTreasuryEntry(Number(r.journal_entry_id));
-    const paymentIns = await c.execute({ sql: "SELECT journal_entry_id FROM lc_payment_ins WHERE lc_id = ?", args: [id] });
-    for (const p of paymentIns.rows) if (p.journal_entry_id) await dropTreasuryEntry(Number(p.journal_entry_id));
-    const lc = await c.execute({
-      sql: `SELECT journal_entry_id, preclose_journal_entry_id, interest_journal_entry_id, preclose_interest_journal_entry_id,
-                 preclose_payout_journal_entry_id, charges_journal_entry_id
-          FROM letters_of_credit WHERE id = ?`,
-      args: [id]
-    });
-    if (lc.rows.length && lc.rows[0].journal_entry_id) await dropTreasuryEntry(Number(lc.rows[0].journal_entry_id));
-    if (lc.rows.length && lc.rows[0].preclose_journal_entry_id) await dropTreasuryEntry(Number(lc.rows[0].preclose_journal_entry_id));
-    if (lc.rows.length && lc.rows[0].interest_journal_entry_id) await dropTreasuryEntry(Number(lc.rows[0].interest_journal_entry_id));
-    if (lc.rows.length && lc.rows[0].preclose_interest_journal_entry_id) await dropTreasuryEntry(Number(lc.rows[0].preclose_interest_journal_entry_id));
-    if (lc.rows.length && lc.rows[0].preclose_payout_journal_entry_id) await dropTreasuryEntry(Number(lc.rows[0].preclose_payout_journal_entry_id));
-    if (lc.rows.length && lc.rows[0].charges_journal_entry_id) await dropTreasuryEntry(Number(lc.rows[0].charges_journal_entry_id));
-    await c.execute({ sql: "DELETE FROM lc_issuances WHERE lc_id = ?", args: [id] });
-    await c.execute({ sql: "DELETE FROM lc_repayments WHERE lc_id = ?", args: [id] });
-    await c.execute({ sql: "DELETE FROM lc_payment_ins WHERE lc_id = ?", args: [id] });
-    await c.execute({ sql: "DELETE FROM lc_linked_orders WHERE lc_id = ?", args: [id] });
-    await linkTradingDealsToLc(id, []);
-    await c.execute({ sql: "DELETE FROM letters_of_credit WHERE id = ?", args: [id] });
-    return { id };
-  });
-}
-async function dropTreasuryEntry(entryId) {
-  const c = getClient();
-  await c.execute({
-    sql: "DELETE FROM journal_bill_allocs WHERE line_id IN (SELECT id FROM journal_lines WHERE entry_id = ?)",
-    args: [entryId]
-  });
-  await c.execute({ sql: "DELETE FROM journal_lines WHERE entry_id = ?", args: [entryId] });
-  await c.execute({ sql: "DELETE FROM journal_entries WHERE id = ?", args: [entryId] });
-}
-async function issueLC(v) {
-  return withDbTransaction(async () => {
-    const c = getClient();
-    const lcId = n45(v.lc_id);
-    const amount2 = n45(v.amount);
-    if (amount2 <= 0) throw new Error("Enter the issuance amount");
-    const lcRes = await c.execute({ sql: "SELECT * FROM letters_of_credit WHERE id = ?", args: [lcId] });
-    if (!lcRes.rows.length) throw new Error("LC not found");
-    const used = await c.execute({
-      sql: "SELECT COALESCE(SUM(amount), 0) AS u FROM lc_issuances WHERE lc_id = ?",
-      args: [lcId]
-    });
-    const available = netAvailable(lcRes.rows[0], n45(used.rows[0].u));
-    if (amount2 > available + 5e-3) {
-      throw new Error(`Issuance exceeds available LC balance (${available.toFixed(2)})`);
-    }
-    const lc = lcRes.rows[0];
-    const issueDate = String(v.issue_date || "").slice(0, 10);
-    if (lc.expiry_date && issueDate > String(lc.expiry_date)) {
-      throw new Error(`The LC expired on ${lc.expiry_date} \u2014 a bill cannot be issued after that`);
-    }
-    let dueDate = String(v.due_date || "").slice(0, 10);
-    if (!dueDate) {
-      const d = /* @__PURE__ */ new Date(`${issueDate}T00:00:00`);
-      d.setDate(d.getDate() + (n45(lc.usance_days) || 0));
-      dueDate = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
-    }
-    const ins = await c.execute({
-      sql: `INSERT INTO lc_issuances (lc_id, issue_date, amount, order_id, bill_no, note, due_date, status)
-          VALUES (?, ?, ?, ?, ?, ?, ?, 'outstanding')`,
-      args: [
-        lcId,
-        issueDate,
-        amount2,
-        v.order_id ? n45(v.order_id) : null,
-        v.bill_no || null,
-        v.note || null,
-        dueDate
-      ]
-    });
-    if (amount2 >= available - 5e-3) {
-      await c.execute({
-        sql: "UPDATE letters_of_credit SET status = 'utilized' WHERE id = ?",
-        args: [lcId]
-      });
-    }
-    return { id: Number(ins.lastInsertRowid) };
-  });
-}
-async function deleteLCIssuance(id) {
-  return withDbTransaction(async () => {
-    const c = getClient();
-    const res = await c.execute({ sql: "SELECT lc_id, journal_entry_id FROM lc_issuances WHERE id = ?", args: [id] });
-    if (res.rows.length && res.rows[0].journal_entry_id) await dropTreasuryEntry(Number(res.rows[0].journal_entry_id));
-    await c.execute({ sql: "DELETE FROM lc_issuances WHERE id = ?", args: [id] });
-    if (res.rows.length) {
-      await c.execute({
-        sql: "UPDATE letters_of_credit SET status = 'open' WHERE id = ? AND status = 'utilized'",
-        args: [n45(res.rows[0].lc_id)]
-      });
-    }
-    return { id };
-  });
-}
-async function assertLcNotClosed(lcId, what = "edited") {
-  if (!lcId) return;
-  const r = await getClient().execute({
-    sql: "SELECT lc_no, preclosed_date, workflow_status, rejected_date FROM letters_of_credit WHERE id = ?",
-    args: [lcId]
-  });
-  const row = r.rows[0];
-  if (String(row?.workflow_status || "") === "rejected") {
-    const [ry, rm, rd] = String(row?.rejected_date || "").slice(0, 10).split("-");
-    throw new Error(
-      `This LC application was rejected${ry ? ` on ${rd}-${rm}-${ry}` : ""}, so it can no longer be ${what}. Use \u22EE \u2192 Reinstate application first if the rejection was a mistake.`
-    );
-  }
-  const closed = String(row?.preclosed_date || "").slice(0, 10);
-  if (!closed) return;
-  const [y, m, d] = closed.split("-");
-  if ((await lcParts(lcId)).length) {
-    throw new Error(
-      `LC ${String(row?.lc_no || "")} was closed on ${d}-${m}-${y} by repaying its last part, so it can no longer be ${what}. Use \u22EE \u2192 Parts \u2192 Undo last repayment to reopen it.`
-    );
-  }
-  throw new Error(
-    `LC ${String(row?.lc_no || "")} was repaid on ${d}-${m}-${y} and is closed, so it can no longer be ${what}. To change how it was closed, use \u22EE \u2192 Edit preclosure; to change the LC itself, Undo preclosure first.`
-  );
-}
-async function rejectLC(id, v) {
-  return withDbTransaction(async () => {
-    const c = getClient();
-    const r = await c.execute({ sql: "SELECT * FROM letters_of_credit WHERE id = ?", args: [n45(id)] });
-    if (!r.rows.length) throw new Error("That LC no longer exists");
-    const lc = toPlain34(r)[0];
-    if (String(lc.workflow_status || "") === "rejected") throw new Error("This application is already rejected");
-    if (String(lc.stage || "application") !== "application") {
-      throw new Error("Only an LC still at Application can be rejected \u2014 this one has been opened by the bank.");
-    }
-    if (lc.preclosed_date) throw new Error("This LC is closed");
-    const counts = toPlain34(
-      await c.execute({
-        sql: `SELECT (SELECT COUNT(*) FROM lc_issuances WHERE lc_id = ?) AS bills,
-                     (SELECT COUNT(*) FROM lc_repayments WHERE lc_id = ?) AS repayments,
-                     (SELECT COUNT(*) FROM lc_payment_ins WHERE lc_id = ?) AS ins`,
-        args: [n45(id), n45(id), n45(id)]
-      })
-    )[0];
-    if (n45(counts.bills) || n45(counts.repayments) || n45(counts.ins) || n45(lc.interest_journal_entry_id)) {
-      throw new Error("This application already has bills, repayments or vouchers against it, so it cannot simply be rejected.");
-    }
-    const date = String(v?.date || "").slice(0, 10) || todayISO8();
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) throw new Error("Pick the date the bank rejected it");
-    if (date > todayISO8()) throw new Error("The rejection date cannot be in the future");
-    const applied = String(lc.open_date || "").slice(0, 10);
-    if (applied && date < applied) throw new Error(`The bank cannot have rejected it before it was applied for (${applied})`);
-    const reason = String(v?.reason || "").trim();
-    if (!reason) throw new Error("Say why the bank rejected it");
-    await c.execute({
-      sql: `UPDATE letters_of_credit
-               SET workflow_status = 'rejected', rejected_date = ?, rejected_reason = ?, rejected_by = ?
-             WHERE id = ?`,
-      args: [date, reason.slice(0, 500), String((await Promise.resolve().then(() => (init_currentUser(), currentUser_exports))).getCurrentUser()?.username || "") || null, n45(id)]
-    });
-    return { id: n45(id) };
-  });
-}
-async function reinstateLC(id) {
-  return withDbTransaction(async () => {
-    const c = getClient();
-    const r = await c.execute({ sql: "SELECT * FROM letters_of_credit WHERE id = ?", args: [n45(id)] });
-    if (!r.rows.length) throw new Error("That LC no longer exists");
-    const lc = toPlain34(r)[0];
-    if (String(lc.workflow_status || "") !== "rejected") throw new Error("This LC is not rejected");
-    await assertWithinFacility(lc, n45(id));
-    await c.execute({
-      sql: `UPDATE letters_of_credit
-               SET workflow_status = 'in_progress', rejected_date = NULL, rejected_reason = NULL, rejected_by = NULL
-             WHERE id = ?`,
-      args: [n45(id)]
-    });
-    return { id: n45(id) };
-  });
-}
-async function repayLcParts(lcId, v) {
-  return withDbTransaction(async () => {
-    const c = getClient();
-    const r = await c.execute({ sql: "SELECT * FROM letters_of_credit WHERE id = ?", args: [n45(lcId)] });
-    if (!r.rows.length) throw new Error("LC not found");
-    const lc = toPlain34(r)[0];
-    if (lc.preclosed_date) throw new Error("This LC is already closed");
-    const all = await lcParts(n45(lcId));
-    if (!all.length) throw new Error("This LC was not paid in parts \u2014 use Repay / Preclose");
-    const want = new Set((v.parts || []).map((x) => n45(x)).filter((x) => x > 0));
-    const pick = all.filter((p) => want.has(n45(p.part_no)));
-    if (!pick.length) throw new Error("Tick the parts this repayment clears");
-    const done = pick.find((p) => p.repaid_date);
-    if (done) throw new Error(`Part ${done.part_no} was already repaid on ${dmy4(String(done.repaid_date))}`);
-    const date = String(v.date || "").slice(0, 10);
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) throw new Error("Pick the repayment date");
-    if (date > todayISO8()) throw new Error("The repayment date cannot be in the future");
-    const early = pick.find((p) => date < String(p.pay_date).slice(0, 10));
-    if (early) throw new Error(`Part ${early.part_no} was only paid on ${dmy4(String(early.pay_date))} \u2014 it cannot be repaid before that`);
-    const comm = round222(n45(v.comm_charges));
-    const bankCh = round222(n45(v.bank_charges));
-    const { lcChargeRows: lcChargeRows2 } = await Promise.resolve().then(() => (init_treasury(), treasury_exports));
-    const lcBank = toPlain34(await getClient().execute({ sql: "SELECT bank FROM letters_of_credit WHERE id = ?", args: [n45(lcId)] }))[0];
-    const chargeRows = await lcChargeRows2(v.charges, String(lcBank?.bank || ""));
-    const rowsTotal = round222(chargeRows.reduce((s5, x) => s5 + x.amount, 0));
-    const principal = round222(pick.reduce((s5, p) => s5 + n45(p.amount), 0));
-    const label2 = pick.map((p) => p.part_no).join(", ");
-    const route = v.rebate_route === "pay_to_party" ? "pay_to_party" : "credit_to_us";
-    const rebates = pick.map((p) => {
-      const left = Math.max(0, daysBetween4(date, String(p.maturity_date)));
-      return n45(p.days) > 0 && left > 0 ? round222(n45(p.interest) * left / n45(p.days)) : 0;
-    });
-    const rebateTotal = round222(rebates.reduce((s5, x) => s5 + x, 0));
-    const ins = await c.execute({
-      sql: `INSERT INTO lc_repayments (lc_id, party_id, amount, maturity_charges, comm_charges, bank_charges, repay_date, posted, document_path, note)
-            VALUES (?, NULL, ?, ?, ?, ?, ?, 1, NULL, ?)`,
-      args: [
-        n45(lcId),
-        round222(principal - rebateTotal + comm + bankCh + rowsTotal),
-        round222(comm + bankCh + rowsTotal),
-        comm,
-        bankCh,
-        date,
-        `Part repayment \u2014 part${pick.length === 1 ? "" : "s"} ${label2}${String(v.note || "").trim() ? ` \xB7 ${String(v.note).trim()}` : ""}`
-      ]
-    });
-    const repId = Number(ins.lastInsertRowid);
-    if (chargeRows.length) {
-      await c.execute({
-        sql: "UPDATE lc_repayments SET charges = ?, charges_total = ? WHERE id = ?",
-        args: [JSON.stringify(chargeRows), rowsTotal, repId]
-      });
-    }
-    const { postLcRepaymentEntry: postLcRepaymentEntry2 } = await Promise.resolve().then(() => (init_treasury(), treasury_exports));
-    await postLcRepaymentEntry2(repId);
-    for (let i = 0; i < pick.length; i++) {
-      const p = pick[i];
-      const rebate = rebates[i];
-      let je = null;
-      if (rebate > 5e-3) je = await postLcPrematureInterestRebate(n45(lcId), route, rebate, date);
-      await c.execute({
-        sql: `UPDATE lc_parts SET repaid_date = ?, repayment_id = ?, rebate = ?, rebate_route = ?,
-                     rebate_journal_entry_id = ?, rebate_payout_journal_entry_id = ? WHERE id = ?`,
-        args: [date, repId, rebate, rebate > 5e-3 ? route : null, je?.id ?? null, je?.payoutId ?? null, n45(p.id)]
-      });
-    }
-    const open = all.filter((p) => !p.repaid_date && !want.has(n45(p.part_no)));
-    let closed = false;
-    if (!open.length) {
-      closed = true;
-      await c.execute({
-        sql: `UPDATE letters_of_credit SET preclosed_date = ?, workflow_status = 'preclosed', preclose_parts_repayment_id = ? WHERE id = ?`,
-        args: [date, repId, n45(lcId)]
-      });
-      if (v.release_margin) {
-        const margin = lcPartsMargin(lc, all);
-        const settlement = await postLcMarginRelease(n45(lcId), margin, date);
-        await c.execute({
-          sql: `UPDATE letters_of_credit SET preclose_settlement_direction = 'margin_released',
-                preclose_settlement_amount = ?, preclose_journal_entry_id = ? WHERE id = ?`,
-          args: [margin, settlement ? settlement.id : null, n45(lcId)]
-        });
-      }
-    }
-    return { repayment_id: repId, closed, rebate: rebateTotal };
-  });
-}
-async function undoLcPartRepayment(lcId) {
-  return withDbTransaction(async () => {
-    const c = getClient();
-    const parts = (await lcParts(n45(lcId))).filter((p) => n45(p.repayment_id) > 0);
-    if (!parts.length) throw new Error("No part of this LC has been repaid yet");
-    const repId = Math.max(...parts.map((p) => n45(p.repayment_id)));
-    const mine = parts.filter((p) => n45(p.repayment_id) === repId);
-    for (const p of mine) {
-      const row = toPlain34(await c.execute({ sql: "SELECT rebate_journal_entry_id, rebate_payout_journal_entry_id FROM lc_parts WHERE id = ?", args: [n45(p.id)] }))[0] || {};
-      if (n45(row.rebate_payout_journal_entry_id)) await dropTreasuryEntry(n45(row.rebate_payout_journal_entry_id));
-      if (n45(row.rebate_journal_entry_id)) await dropTreasuryEntry(n45(row.rebate_journal_entry_id));
-      await c.execute({
-        sql: `UPDATE lc_parts SET repaid_date = NULL, repayment_id = NULL, rebate = 0, rebate_route = NULL,
-                     rebate_journal_entry_id = NULL, rebate_payout_journal_entry_id = NULL WHERE id = ?`,
-        args: [n45(p.id)]
-      });
-    }
-    const rep = toPlain34(await c.execute({ sql: "SELECT journal_entry_id, fee_journal_entry_id FROM lc_repayments WHERE id = ?", args: [repId] }))[0] || {};
-    if (n45(rep.journal_entry_id)) await dropTreasuryEntry(n45(rep.journal_entry_id));
-    if (n45(rep.fee_journal_entry_id)) await dropTreasuryEntry(n45(rep.fee_journal_entry_id));
-    await c.execute({ sql: "DELETE FROM lc_repayments WHERE id = ?", args: [repId] });
-    const lc = toPlain34(await c.execute({ sql: "SELECT preclose_parts_repayment_id, preclose_journal_entry_id FROM letters_of_credit WHERE id = ?", args: [n45(lcId)] }))[0] || {};
-    if (n45(lc.preclose_parts_repayment_id) === repId) {
-      if (n45(lc.preclose_journal_entry_id)) await dropTreasuryEntry(n45(lc.preclose_journal_entry_id));
-      await c.execute({
-        sql: `UPDATE letters_of_credit SET preclosed_date = NULL, workflow_status = 'in_progress', preclose_parts_repayment_id = NULL,
-                     preclose_settlement_direction = NULL, preclose_settlement_amount = NULL, preclose_journal_entry_id = NULL
-               WHERE id = ?`,
-        args: [n45(lcId)]
-      });
-    }
-    return { parts: mine.map((p) => n45(p.part_no)) };
-  });
-}
-async function lcIdOfRepayment(id) {
-  const r = await getClient().execute({ sql: "SELECT lc_id FROM lc_repayments WHERE id = ?", args: [id] });
-  return Number(r.rows[0]?.lc_id || 0);
-}
-async function lcIdOfIssuance(id) {
-  const r = await getClient().execute({ sql: "SELECT lc_id FROM lc_issuances WHERE id = ?", args: [id] });
-  return Number(r.rows[0]?.lc_id || 0);
-}
-async function insertInstallmentBills(lcId, amount2, date, dueDate, instNo, orderIds) {
-  const c = getClient();
-  const ids = [];
-  let left = round222(amount2);
-  for (const oid of orderIds) {
-    if (left <= 5e-3) break;
-    const o = await c.execute({ sql: "SELECT invoice_no, net_amount FROM orders WHERE id = ?", args: [oid] });
-    if (!o.rows.length) continue;
-    const used = await c.execute({
-      sql: "SELECT COALESCE(SUM(amount), 0) AS u FROM lc_issuances WHERE lc_id = ? AND order_id = ?",
-      args: [lcId, oid]
-    });
-    const room = round222(n45(o.rows[0].net_amount) - n45(used.rows[0]?.u));
-    const part = round222(Math.min(left, room));
-    if (part <= 5e-3) continue;
-    const ins = await c.execute({
-      sql: `INSERT INTO lc_issuances (lc_id, issue_date, amount, order_id, bill_no, due_date, status, installment_no)
-            VALUES (?, ?, ?, ?, ?, ?, 'outstanding', ?)`,
-      args: [lcId, date, part, oid, String(o.rows[0].invoice_no || ""), dueDate, instNo]
-    });
-    ids.push(Number(ins.lastInsertRowid));
-    left = round222(left - part);
-  }
-  if (left > 5e-3) {
-    const ins = await c.execute({
-      sql: `INSERT INTO lc_issuances (lc_id, issue_date, amount, bill_no, due_date, status, installment_no)
-            VALUES (?, ?, ?, NULL, ?, 'outstanding', ?)`,
-      args: [lcId, date, left, dueDate, instNo]
-    });
-    ids.push(Number(ins.lastInsertRowid));
-  }
-  return ids;
-}
-function dmy4(iso) {
-  return iso.slice(0, 10).split("-").reverse().join("-");
-}
-async function payLcParty(lcId, v) {
-  return withDbTransaction(async () => {
-    const c = getClient();
-    const res = await c.execute({ sql: "SELECT * FROM letters_of_credit WHERE id = ?", args: [n45(lcId)] });
-    if (!res.rows.length) throw new Error("LC not found");
-    const lc = toPlain34(res)[0];
-    if (String(lc.stage || "") !== "payment_received") {
-      throw new Error("Mark Payment received first \u2014 that records the first part the bank paid");
-    }
-    const amount2 = round222(n45(v.amount));
-    if (amount2 <= 5e-3) throw new Error("Enter this part's LC amount");
-    const date = String(v.date || "").slice(0, 10);
-    if (!date) throw new Error("Pick the date the bank paid it");
-    if (date > todayISO8()) throw new Error("The payment date cannot be in the future");
-    const paidFrom = String(lc.payment_received_date || "").slice(0, 10);
-    if (paidFrom && date < paidFrom) throw new Error(`An installment cannot be dated before the first payment on ${dmy4(paidFrom)}`);
-    const bills = toPlain34(
-      await c.execute({
-        sql: "SELECT amount, installment_no, settled_date FROM lc_issuances WHERE lc_id = ?",
-        args: [n45(lcId)]
-      })
-    );
-    if (bills.length && !bills.some((b) => n45(b.installment_no))) {
-      throw new Error("This LC was paid to the supplier in one go \u2014 there is nothing left to pay in installments");
-    }
-    const last = bills.reduce((m, b) => String(b.settled_date || "") > m ? String(b.settled_date) : m, "");
-    if (last && date < last.slice(0, 10)) {
-      throw new Error(`The last installment was paid on ${dmy4(last)} \u2014 this one cannot be dated before it`);
-    }
-    const parts = await lcParts(n45(lcId));
-    if (!parts.length) throw new Error("This LC was not paid in parts \u2014 there is no next part to record");
-    const used = round222(parts.reduce((s5, p) => s5 + n45(p.amount), 0));
-    const left = round222(n45(lc.amount) - used);
-    if (left <= 5e-3) throw new Error("This LC has been drawn in full \u2014 there is nothing left for another part");
-    if (amount2 > left + 5e-3) throw new Error(`Only ${left.toFixed(2)} of this LC is still undrawn`);
-    const instNo = parts.reduce((m, p) => Math.max(m, n45(p.part_no)), 0) + 1;
-    const maturity = String(v.maturity || "").slice(0, 10);
-    const fig = await insertLcPart(n45(lcId), instNo, lc, amount2, date, maturity, v);
-    const linked = await c.execute({
-      sql: "SELECT order_id FROM lc_linked_orders WHERE lc_id = ? ORDER BY order_id",
-      args: [n45(lcId)]
-    });
-    const ids = await insertInstallmentBills(
-      n45(lcId),
-      fig.net,
-      date,
-      maturity,
-      instNo,
-      linked.rows.map((r) => n45(r.order_id)).filter((x) => x > 0)
-    );
-    const memo = String(v.note || "").trim();
-    if (memo) {
-      await c.execute({
-        sql: `UPDATE lc_issuances SET note = ? WHERE id IN (${ids.map(() => "?").join(",")})`,
-        args: [memo, ...ids]
-      });
-    }
-    const je = await settleLcBillsCombined(ids, date);
-    if (!je) throw new Error("The installment could not be posted");
-    await syncPartsCharges(n45(lcId));
-    return { id: je.id, installment_no: instNo };
-  });
-}
-async function deleteLastLcInstallment(lcId) {
-  return withDbTransaction(async () => {
-    const c = getClient();
-    const r = await c.execute({ sql: "SELECT MAX(installment_no) AS m FROM lc_issuances WHERE lc_id = ?", args: [n45(lcId)] });
-    const instNo = n45(r.rows[0]?.m);
-    if (!instNo) throw new Error("This LC has no installments");
-    if (instNo === 1) throw new Error("The first installment is the Payment received itself \u2014 it cannot be removed here");
-    const part = (await lcParts(n45(lcId))).find((p) => n45(p.part_no) === instNo);
-    if (part?.repaid_date) throw new Error(`Part ${instNo} has already been repaid to the bank \u2014 undo that repayment first`);
-    const rows2 = toPlain34(
-      await c.execute({
-        sql: "SELECT id, journal_entry_id FROM lc_issuances WHERE lc_id = ? AND installment_no = ?",
-        args: [n45(lcId), instNo]
-      })
-    );
-    const entries2 = [...new Set(rows2.map((x) => n45(x.journal_entry_id)).filter(Boolean))];
-    for (const e of entries2) await dropTreasuryEntry(e);
-    await c.execute({ sql: "DELETE FROM lc_issuances WHERE lc_id = ? AND installment_no = ?", args: [n45(lcId), instNo] });
-    await c.execute({ sql: "DELETE FROM lc_parts WHERE lc_id = ? AND part_no = ?", args: [n45(lcId), instNo] });
-    await syncPartsCharges(n45(lcId));
-    return { installment_no: instNo };
-  });
-}
-async function editPreclosure(id, v) {
-  return withDbTransaction(async () => {
-    const res = await getClient().execute({ sql: "SELECT preclosed_date FROM letters_of_credit WHERE id = ?", args: [n45(id)] });
-    if (!res.rows.length) throw new Error("LC not found");
-    if (!res.rows[0].preclosed_date) throw new Error("This LC is not closed \u2014 use Preclose instead");
-    await unPrecloseLC(n45(id));
-    return precloseLC(n45(id), v);
-  });
-}
-
-// src/main/dailyPosition.ts
+init_lc();
 init_billDiscounting();
+init_trading();
 init_orders();
 init_treasury();
 var n46 = (v) => Number.isFinite(Number(v)) ? Number(v) : 0;
@@ -38201,6 +38419,7 @@ async function positionOne() {
 
 // src/main/paymentTracker.ts
 init_db();
+init_lc();
 init_billDiscounting();
 init_treasury();
 var n47 = (v) => Number.isFinite(Number(v)) ? Number(v) : 0;
@@ -39313,6 +39532,7 @@ async function rejectRequest(id, reason) {
 
 // src/main/ipc.ts
 init_journal();
+init_lc();
 init_bankRecon();
 init_billDiscounting();
 
@@ -39862,6 +40082,7 @@ async function deleteTransporterBill(id, companyId) {
 }
 
 // src/main/ipc.ts
+init_facilities();
 init_facilityLimits();
 
 // src/main/tallyLedgers.ts
@@ -40342,7 +40563,7 @@ async function recordAudit(channel, args, result) {
   );
 }
 function registerIpc() {
-  const READONLY = /:list$|:get$|:items$|:issuances$|:sheet$|:outstanding$|:all$|:summary$|:transfers$|:fyTaxable$|:needs$|:breakdown$|:nextNo$|:liveUsers$|:ips$|:logs$|:dispatchableSales$|:mine$|:pendingCount$|:pending$|:lots$|:unmapped$|:unmappedCount$|:bargainLines$|:bargainNotes$|:bargainInterest$|:consignmentDraws$|^access:heartbeat$|^db:ping$|^db:snapshot$|^app:revision$|^auth:login$|^journal:booksFrom$|^tally:map$|^journal:openings$|^journal:opening$|^journal:accounts$|^journal:statement$|^journal:splitNames$|^journal:mergePreview$|^journal:provisional$|^journal:trialBalance$|^journal:groups$|^journal:groupNames$|^journal:groupTree$|^journal:ledgerMap$|^journal:pendingRefs$|^journal:billsOutstanding$|^journal:tradingAccount$|^dashboard:stats$|^vouchers:nextCode$|^vouchers:forDocument$|^vouchers:alterInfo$|^tfreight:kpis$|^dashboard:position$|^dashboard:layout$|^dashboard:saveLayout$|^productMerge:preview$|^skuRates:parties$|^skuRates:partyCounts$|^consignment:openingLog$|^tags:list$|^tags:for$|^tags:contents$|^consignment:openingLots$|^consignment:invoices$|^tankers:quality$|^tankers:qualityMany$|^tankers:ffaHistory$|^orders:quality$|^gate:partyCategories$|^gate:waivedOuts$|^gate:forRecord$|^notify:rules$|^notify:list$|^notify:run$|^notify:preview$|^notify:people$|^notify:mutes$|^treasury:alerts$|^treasury:paymentTracker$|^facility:exposures$|^facility:headroom$|^company:setActive$|^company:getActive$|^factory:active$|^factory:companies$|^session:setUser$|^lc:repayments$|^lc:parts$|^lc:parts$|^lc:allRepayments$|^lc:getLimit$|^lc:bankLimits$|^lc:paymentIns$|^lc:openTradingInvoices$|^files:pickDocument$|^files:openDocument$|^bankRecon:imports$|^bankRecon:list$|^bankRecon:suggest$|^bd:kpis$|^bd:limits$|^skuStock:adjustments$|^skuOpening:list$|^skuOpening:date$|^stockCount:previous$|^orders:intercompanySource$|^stockOpening:list$|^stockOpening:date$|^stockOpening:sets$|^stockOpening:setLines$|^stockOpening:ppStages$|^stockOpening:ppFreeTotals$|^production:ppDraws$|^bargains:linkedInvoices$|^bargains:linkedVouchers$|^bargains:voucherChoices$|^salesBargains:linkedVouchers$|^salesBargains:voucherChoices$|^bargains:adjustments$|^history:list$|^stockOpening:ppVessels$|^stockOpening:ppReceivers$|^stockOpening:ppWriteoffs$|^work:board$|^work:cutoff$|^work:processes$|^formulationSubcategory:list$|^formulations:versions$|^facility:limitHistory$|^bd:limitReductions$|^bd:allRepayments$|^bd:interestSchedule$|^bd:interestWindow$|^bd:interestPayments$|^bd:linkedOrders$|^bd:salesInvoices$|^bd:parties$|^bd:allParties$|^bd:openTradingInvoices$|^bd:paymentIns$|^bd:partyPayments$|^bd:receiptParts$|^access:entryWindows$|^access:entityHistory$|^trading:list$|^sales:series$|^sales:invoiceGaps$|^salesBargains:returns$|^salesBargains:linkedInvoices$|^salesBargains:unattributedReturns$|^tbill:orphans$|^tbill:rcmRegister$|^production:report$|^production:mix$|^repairs:splitTanker:list$|^vouchers:cashflow$|^repairs:paisa:list$|^tallyNotes:(preview|salesCheck|salesPreview|registerCheck|registerPreview|health|batches|companyBanks|bankSuggest|bankCheck|bankPreview|drafts|bankBooks|bankBook)$|^sales:(tdsPreview|tdsMap|cancelledNos|shortageNotes|shortageNoteMap)$|^suppliers:tdsRecalc$/;
+  const READONLY = /:list$|:get$|:items$|:issuances$|:sheet$|:outstanding$|:all$|:summary$|:transfers$|:fyTaxable$|:needs$|:breakdown$|:nextNo$|:liveUsers$|:ips$|:logs$|:dispatchableSales$|:mine$|:pendingCount$|:pending$|:lots$|:unmapped$|:unmappedCount$|:bargainLines$|:bargainNotes$|:bargainInterest$|:consignmentDraws$|^access:heartbeat$|^db:ping$|^db:snapshot$|^app:revision$|^auth:login$|^journal:booksFrom$|^tally:map$|^journal:openings$|^journal:opening$|^journal:accounts$|^journal:statement$|^journal:splitNames$|^journal:mergePreview$|^journal:provisional$|^journal:trialBalance$|^journal:groups$|^journal:groupNames$|^journal:groupTree$|^journal:ledgerMap$|^journal:pendingRefs$|^journal:billsOutstanding$|^journal:tradingAccount$|^dashboard:stats$|^vouchers:nextCode$|^vouchers:forDocument$|^vouchers:alterInfo$|^tfreight:kpis$|^dashboard:position$|^dashboard:layout$|^dashboard:saveLayout$|^productMerge:preview$|^skuRates:parties$|^skuRates:partyCounts$|^consignment:openingLog$|^tags:list$|^tags:for$|^tags:contents$|^consignment:openingLots$|^consignment:invoices$|^tankers:quality$|^tankers:qualityMany$|^tankers:ffaHistory$|^orders:quality$|^gate:partyCategories$|^gate:waivedOuts$|^gate:forRecord$|^notify:rules$|^notify:list$|^notify:run$|^notify:preview$|^notify:people$|^notify:mutes$|^treasury:alerts$|^treasury:paymentTracker$|^facility:exposures$|^facility:headroom$|^company:setActive$|^company:getActive$|^factory:active$|^factory:companies$|^session:setUser$|^lc:repayments$|^lc:parts$|^lc:parts$|^lc:allRepayments$|^lc:getLimit$|^lc:bankLimits$|^lc:commission$|^lc:commissionCandidates$|^lc:paymentIns$|^lc:openTradingInvoices$|^files:pickDocument$|^files:openDocument$|^bankRecon:imports$|^bankRecon:list$|^bankRecon:suggest$|^bd:kpis$|^bd:limits$|^skuStock:adjustments$|^skuOpening:list$|^skuOpening:date$|^stockCount:previous$|^orders:intercompanySource$|^stockOpening:list$|^stockOpening:date$|^stockOpening:sets$|^stockOpening:setLines$|^stockOpening:ppStages$|^stockOpening:ppFreeTotals$|^production:ppDraws$|^bargains:linkedInvoices$|^bargains:linkedVouchers$|^bargains:voucherChoices$|^salesBargains:linkedVouchers$|^salesBargains:voucherChoices$|^bargains:adjustments$|^history:list$|^stockOpening:ppVessels$|^stockOpening:ppReceivers$|^stockOpening:ppWriteoffs$|^work:board$|^work:cutoff$|^work:processes$|^formulationSubcategory:list$|^formulations:versions$|^facility:limitHistory$|^bd:limitReductions$|^bd:allRepayments$|^bd:interestSchedule$|^bd:interestWindow$|^bd:interestPayments$|^bd:linkedOrders$|^bd:salesInvoices$|^bd:parties$|^bd:allParties$|^bd:openTradingInvoices$|^bd:paymentIns$|^bd:partyPayments$|^bd:receiptParts$|^access:entryWindows$|^access:entityHistory$|^trading:list$|^sales:series$|^sales:invoiceGaps$|^salesBargains:returns$|^salesBargains:linkedInvoices$|^salesBargains:unattributedReturns$|^tbill:orphans$|^tbill:rcmRegister$|^production:report$|^production:mix$|^repairs:splitTanker:list$|^vouchers:cashflow$|^repairs:paisa:list$|^tallyNotes:(preview|salesCheck|salesPreview|registerCheck|registerPreview|health|batches|companyBanks|bankSuggest|bankCheck|bankPreview|drafts|bankBooks|bankBook)$|^sales:(tdsPreview|tdsMap|cancelledNos|shortageNotes|shortageNoteMap)$|^suppliers:tdsRecalc$/;
   const AUDIT_SKIP = /* @__PURE__ */ new Set(["config:get", "config:save", "session:setUser"]);
   const handle = (channel, fn) => {
     ipcMain.handle(channel, async (e, args) => {
@@ -40736,10 +40957,10 @@ function registerIpc() {
     const { previewLedgerMerge: previewLedgerMerge2 } = await Promise.resolve().then(() => (init_ledgerMerge(), ledgerMerge_exports));
     return previewLedgerMerge2(Number(fromId), Number(intoId));
   });
-  handle("journal:mergeLedgers", async (_e, { fromId, intoId, keepName }) => {
+  handle("journal:mergeLedgers", async (_e, { fromId, intoId, keepName, keep }) => {
     await assertAdmin("Merging ledgers");
     const { mergeLedgers: mergeLedgers2 } = await Promise.resolve().then(() => (init_ledgerMerge(), ledgerMerge_exports));
-    return mergeLedgers2(Number(fromId), Number(intoId), keepName);
+    return mergeLedgers2(Number(fromId), Number(intoId), keepName, Array.isArray(keep) ? keep.map(Number) : []);
   });
   handle(
     "journal:renameLedger",
@@ -41356,6 +41577,15 @@ function registerIpc() {
     (_e, args) => getLcLimit(args?.bankId, args?.from, args?.to)
   );
   handle("lc:bankLimits", () => listBankLcLimits());
+  handle("lc:commission", async (_e, { id }) => (await Promise.resolve().then(() => (init_lc(), lc_exports))).lcCommission(Number(id)));
+  handle(
+    "lc:commissionCandidates",
+    async (_e, { id, q }) => (await Promise.resolve().then(() => (init_lc(), lc_exports))).lcCommissionCandidates(Number(id), q)
+  );
+  handle(
+    "lc:linkCommission",
+    async (_e, { id, entryId }) => (await Promise.resolve().then(() => (init_lc(), lc_exports))).linkLcCommission(Number(id), entryId ? Number(entryId) : null)
+  );
   handle("lc:saveLimit", (_e, { values }) => saveLcLimit(values));
   handle("files:pickDocument", async () => {
     const r = await dialog.showOpenDialog({ properties: ["openFile"] });
