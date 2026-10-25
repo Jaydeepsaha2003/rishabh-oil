@@ -812,8 +812,19 @@ function Req({ missing }: { missing: string[] }): React.JSX.Element {
 
 // ===================================================================== page
 
-type LcChip = 'all' | 'running' | 'due' | 'matured' | 'repaid' | 'rejected'
+type LcChip = 'all' | 'running' | 'due' | 'matured' | 'repaid' | 'preclosed' | 'rejected'
 // An application the bank turned down: listed, counted nowhere — as on the desktop.
+const lcPreclosedEarly = (l: Row): boolean => {
+  const closed = s(l.preclosed_date).slice(0, 10)
+  const mat = s(l.expiry_date).slice(0, 10)
+  return !!closed && !!mat && closed < mat
+}
+const LC_CHIP_TONE: Record<string, { fill: string; badge: string; badgeInk: string }> = {
+  matured: { fill: '#8A5300', badge: '#F5C66B', badgeInk: '#4A2C00' },
+  repaid: { fill: '#3F4E5A', badge: '#B8C6D1', badgeInk: '#1E2A33' },
+  preclosed: { fill: '#0E5A78', badge: '#8FD3EA', badgeInk: '#06324A' },
+  rejected: { fill: '#9B2C24', badge: '#F2B8B2', badgeInk: '#5C140F' }
+}
 const isLcRejected = (l: Row): boolean => s(l.workflow_status) === 'rejected' || s(l.display_status) === 'rejected'
 type BdChip = 'all' | 'awaiting' | 'live' | 'repaid'
 // The desktop register's due windows — cumulative, so "This week" is
@@ -1046,7 +1057,9 @@ export function TreasuryMobile({
       return d != null && d <= 7
     },
     matured: (l) => isLcPastMaturity(l) && !l.preclosed_date && !isLcRejected(l),
-    repaid: (l) => !!l.preclosed_date && !isLcRejected(l),
+    // Repaid = wound up on or after maturity; Preclosed = before it (as the desktop).
+    repaid: (l) => !!l.preclosed_date && !lcPreclosedEarly(l) && !isLcRejected(l),
+    preclosed: (l) => lcPreclosedEarly(l) && !isLcRejected(l),
     rejected: isLcRejected
   }
   const bdIn: Record<BdChip, (b: Row) => boolean> = {
@@ -1109,6 +1122,7 @@ export function TreasuryMobile({
     { k: 'running', label: 'Running' },
     { k: 'matured', label: 'Matured' },
     { k: 'repaid', label: 'Repaid' },
+    { k: 'preclosed', label: 'Preclosed' },
     // Only once there is one — most books will never have a rejection.
     ...(lcs.some(isLcRejected) ? [{ k: 'rejected' as LcChip, label: 'Rejected' }] : []),
     { k: 'due', label: 'Due this week' },
@@ -1513,6 +1527,7 @@ export function TreasuryMobile({
           )}
           {(tab === 'lc' ? lcChips : bdChips).map((c) => {
             const on = tab === 'lc' ? !lcStage && lcChip === c.k : bdChip === c.k
+            const tone = (tab === 'lc' && LC_CHIP_TONE[c.k]) || { fill: T.forest, badge: T.lime, badgeInk: T.limeInk }
             const count =
               tab === 'lc'
                 ? searchedLcs.filter(lcIn[c.k as LcChip]).length
@@ -1529,15 +1544,15 @@ export function TreasuryMobile({
                 }}
                 className="flex h-10 shrink-0 items-center gap-[7px] whitespace-nowrap rounded-[4px] border px-[13px] text-[12px] font-extrabold"
                 style={{
-                  borderColor: on ? T.forest : T.field,
-                  background: on ? T.forest : '#fff',
+                  borderColor: on ? tone.fill : T.field,
+                  background: on ? tone.fill : '#fff',
                   color: on ? '#fff' : T.inkMid
                 }}
               >
                 {c.label}
                 <span
                   className="rounded-[9px] px-[7px] py-[2px] text-[10.5px] font-bold"
-                  style={{ fontFamily: MONO, background: on ? T.lime : T.rule, color: on ? T.limeInk : T.inkSoft }}
+                  style={{ fontFamily: MONO, background: on ? tone.badge : T.rule, color: on ? tone.badgeInk : T.inkSoft }}
                 >
                   {count}
                 </span>
@@ -2019,6 +2034,7 @@ function lcStatus(l: Row): { text: string; bg: string; fg: string; bd: string } 
   if (closed) {
     const mat = s(l.expiry_date).slice(0, 10)
     const text = mat && closed < mat ? 'PRECLOSED' : mat && closed > mat ? 'CLOSED LATE' : 'CLOSED'
+    if (text === 'PRECLOSED') return { text, bg: '#E8F6FB', fg: '#0E5A78', bd: '#BFE3F0' }
     return { text, bg: T.rule, fg: T.inkSoft, bd: T.border }
   }
   const stage = s(l.stage || 'application')
