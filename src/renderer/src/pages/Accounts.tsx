@@ -10072,9 +10072,21 @@ export function Accounts({
                 </span>
                 <span className="block text-[10px] uppercase tracking-wide text-muted-foreground">{a.acc_group}</span>
               </span>
-              <span className={cn('shrink-0 tabular-nums text-[12px] font-semibold', Number(a.closing ?? a.balance) >= 0 ? 'text-[#0B7A45]' : 'text-[#C0261C]')}>
-                {formatINR(Math.abs(Number(a.closing ?? a.balance) || 0))} {Number(a.closing ?? a.balance) >= 0 ? 'Dr' : 'Cr'}
-              </span>
+              {(() => {
+                // Empty date on: the balance the ledger itself shows that way —
+                // bills whose oil is not all emptied yet are left out.
+                const v = (Number(a.closing ?? a.balance) || 0) - (lgTankerEmpty ? Number(a.held_not_empty) || 0 : 0)
+                const held = lgTankerEmpty && Math.abs(Number(a.held_not_empty) || 0) > 0.004
+                return (
+                  <span
+                    className={cn('shrink-0 text-right tabular-nums text-[12px] font-semibold', v >= 0 ? 'text-[#0B7A45]' : 'text-[#C0261C]')}
+                    title={held ? `By empty date — ${formatINR(Math.abs(Number(a.held_not_empty)))} on bills not emptied yet is left out` : undefined}
+                  >
+                    {formatINR(Math.abs(v))} {v >= 0 ? 'Dr' : 'Cr'}
+                    {held && <span className="block text-[9px] font-bold uppercase tracking-wide text-[#8A5A00]">by empty date</span>}
+                  </span>
+                )
+              })()}
             </div>
     )
   }
@@ -16593,7 +16605,12 @@ export function Accounts({
       const ai = flatIndex
       const on = Number(a2.id) === ledgerId
       const cur = ai === lgCursor && !on
-      const b = Number(a2.closing ?? a2.balance) || 0
+      // Empty date on (the ledger's default): the balance that view closes at —
+      // bills whose oil is not all emptied yet are left out (held_not_empty).
+      const heldOut = lgTankerEmpty ? Number(a2.held_not_empty) || 0 : 0
+      const b = (Number(a2.closing ?? a2.balance) || 0) - heldOut
+      const byEmpty = Math.abs(heldOut) > 0.004
+      const heldTip = byEmpty ? `By empty date — ${bal(heldOut)} on bills not emptied yet is left out` : undefined
       return (
         <button
           key={String(a2.id)}
@@ -16626,9 +16643,19 @@ export function Accounts({
               {String(a2.name)}
             </span>
             {compact && <span className="block" style={{ fontSize: 10, fontWeight: 600, color: A.muted, marginTop: 1 }}>{String(a2.acc_group || '')}</span>}
-            {!compact && <span className="block" style={{ ...figS(10.5, balFg(b), 600), marginTop: 2 }}>{bal(b)}</span>}
+            {!compact && (
+              <span className="block" title={heldTip} style={{ ...figS(10.5, balFg(b), 600), marginTop: 2 }}>
+                {bal(b)}
+                {byEmpty && <span style={{ marginLeft: 6, fontSize: 9, fontWeight: 800, letterSpacing: '.06em', color: '#8A5A00' }}>BY EMPTY DATE</span>}
+              </span>
+            )}
           </span>
-          {compact && <span className="flex-none whitespace-nowrap" style={figS(11, balFg(b), 600)}>{bal(b)}</span>}
+          {compact && (
+            <span className="flex-none whitespace-nowrap text-right" title={heldTip} style={figS(11, balFg(b), 600)}>
+              {bal(b)}
+              {byEmpty && <span className="block" style={{ fontSize: 8.5, fontWeight: 800, letterSpacing: '.06em', color: '#8A5A00' }}>BY EMPTY DATE</span>}
+            </span>
+          )}
           {!compact && on && stmt.rows.length > 0 && (
             <span
               className="flex-none"

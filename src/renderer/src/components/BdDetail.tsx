@@ -29,6 +29,7 @@ import {
   BookOpen,
   CalendarClock,
   Check,
+  ChevronDown,
   CircleDollarSign,
   Info,
   Landmark,
@@ -644,6 +645,84 @@ function BdPartiesAndEntries({ bill }: { bill: Row }): React.JSX.Element | null 
   )
 }
 
+// ONE SERVICED-INTEREST PERIOD, opened to show how it is worked out: each
+// stretch of days at the principal still out then (a part repaid early makes
+// the later days cheaper — billDiscounting.ts bdInterestParts).
+function ServicedRow({ x }: { x: Row }): React.JSX.Element {
+  const [open, setOpen] = useState(false)
+  const parts = (Array.isArray(x.parts) ? x.parts : []) as Row[]
+  return (
+    <div className="border-b border-b-[#EFF3EE] last:border-b-0">
+      <button
+        type="button"
+        onClick={() => setOpen((o) => !o)}
+        title="Show how this period's interest is worked out"
+        className="flex w-full items-start gap-2.5 px-3 py-[11px] text-left hover:bg-[#F7FAF6]"
+      >
+        {x.paid_id ? (
+          <ArrowDownLeft className="mt-px h-[17px] w-[17px] shrink-0 text-[#0B6B45]" />
+        ) : (
+          <CalendarClock className="mt-px h-[17px] w-[17px] shrink-0 text-[#A8B8AE]" />
+        )}
+        <div className="min-w-0 flex-1">
+          <div className="flex flex-wrap items-baseline gap-2">
+            <span className="doc-ref min-w-0 text-[12.5px] font-extrabold text-[#0A1F17]">
+              {formatDate(s(x.from_date))} <span className="font-bold text-[#8CA396]">&rarr;</span> {formatDate(s(x.to_date))}
+            </span>
+            <span
+              className={cn(
+                'flex-none rounded-[2px] border px-1.5 py-0.5 text-[9.5px] font-extrabold tracking-[.05em] uppercase',
+                // DUE IN RED: interest not yet paid is money owed on a date
+                // that is coming, not a column heading.
+                x.paid_id ? 'border-[#BFE3CB] bg-[#E9F5EE] text-[#0B6B45]' : 'border-[#F0C9C4] bg-[#FDECEA] text-[#B3261E]'
+              )}
+            >
+              {x.paid_id ? 'Paid' : 'Due'}
+            </span>
+            <span className="doc-ref flex-none text-[10.5px] font-semibold text-[#5A6B62]">{n(x.days)}d</span>
+            {parts.length > 1 && (
+              <span className="flex-none rounded-[2px] border border-[#C6DAF0] bg-[#EAF0FA] px-1.5 py-0.5 text-[9.5px] font-extrabold uppercase tracking-[.05em] text-[#1B4E82]">
+                {parts.length} balances
+              </span>
+            )}
+          </div>
+        </div>
+        <span className="doc-ref flex-none whitespace-nowrap text-[13.5px] font-bold text-[#0A1F17]">{formatINR(n(x.gross))}</span>
+        <ChevronDown className={cn('mt-0.5 h-4 w-4 flex-none text-[#8CA396] transition-transform', open && 'rotate-180')} />
+      </button>
+      {open && (
+        <div className="mx-3 mb-3 overflow-hidden rounded-[4px] border border-[#E4ECE3] bg-[#FBFCFA]">
+          <div className="grid grid-cols-[minmax(0,1fr)_auto_44px_auto] gap-x-3 border-b border-[#E4ECE3] px-3 py-1.5 text-[9.5px] font-extrabold uppercase tracking-[.1em] text-[#5A6B62]">
+            <span>Stretch</span>
+            <span className="text-right">Principal</span>
+            <span className="text-right">Days</span>
+            <span className="text-right">Interest</span>
+          </div>
+          {parts.map((p, k) => (
+            <div
+              key={k}
+              className="doc-ref grid grid-cols-[minmax(0,1fr)_auto_44px_auto] gap-x-3 border-b border-[#EFF3EE] px-3 py-1.5 text-[12px] font-semibold text-[#33473E] last:border-b-0"
+            >
+              <span>
+                {formatDate(s(p.from_date))} &rarr; {formatDate(s(p.to_date))}
+              </span>
+              <span className="text-right tabular-nums">{formatINR(n(p.principal))}</span>
+              <span className="text-right tabular-nums">{n(p.days)}</span>
+              <span className="text-right font-bold tabular-nums text-[#0A1F17]">{formatINR(n(p.interest))}</span>
+            </div>
+          ))}
+          <div className="border-t border-[#E4ECE3] px-3 py-1.5 text-[10.5px] font-semibold text-[#5A6B62]">
+            {x.reducing
+              ? 'A part of the principal repaid stops costing interest from the day after it went back.'
+              : 'Charged on the full principal — nothing was repaid early.'}
+            {x.paid_id && Math.abs(n(x.paid_gross) - n(x.gross)) > 0.5 ? ` Recorded as paid: ${formatINR(n(x.paid_gross))}.` : ''}
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
 export function BdDetail({
   bill,
   onClose,
@@ -1132,44 +1211,7 @@ This was one bank debit that also cleared ${others.map((g) => `${s(g.bd_no)} ${f
                     </span>
                   </div>
                   {sched.slice(0, 8).map((x, i) => (
-                    <div
-                      key={i}
-                      className="flex items-start gap-2.5 border-b border-b-[#EFF3EE] px-3 py-[11px] last:border-b-0"
-                    >
-                      {x.paid_id ? (
-                        <ArrowDownLeft className="mt-px h-[17px] w-[17px] shrink-0 text-[#0B6B45]" />
-                      ) : (
-                        <CalendarClock className="mt-px h-[17px] w-[17px] shrink-0 text-[#A8B8AE]" />
-                      )}
-                      <div className="min-w-0 flex-1">
-                        <div className="flex flex-wrap items-baseline gap-2">
-                          <span className="doc-ref min-w-0 text-[12.5px] font-extrabold text-[#0A1F17]">
-                            {formatDate(s(x.from_date))} <span className="font-bold text-[#8CA396]">&rarr;</span>{' '}
-                            {formatDate(s(x.to_date))}
-                          </span>
-                          <span
-                            className={cn(
-                              'flex-none rounded-[2px] border px-1.5 py-0.5 text-[9.5px] font-extrabold tracking-[.05em] uppercase',
-                              x.paid_id
-                                ? 'border-[#BFE3CB] bg-[#E9F5EE] text-[#0B6B45]'
-                                // DUE IN RED. Interest that has not been paid
-                                // is money owed on a date that is coming, and
-                                // in the grey it wore it read as a column
-                                // heading rather than as something to do.
-                                : 'border-[#F0C9C4] bg-[#FDECEA] text-[#B3261E]'
-                            )}
-                          >
-                            {x.paid_id ? 'Paid' : 'Due'}
-                          </span>
-                          <span className="doc-ref flex-none text-[10.5px] font-semibold text-[#5A6B62]">
-                            {n(x.days)}d
-                          </span>
-                        </div>
-                      </div>
-                      <span className="doc-ref flex-none whitespace-nowrap text-[13.5px] font-bold text-[#0A1F17]">
-                        {formatINR(n(x.gross))}
-                      </span>
-                    </div>
+                    <ServicedRow key={i} x={x} />
                   ))}
                 </div>
               )}

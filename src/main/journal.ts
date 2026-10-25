@@ -87,8 +87,14 @@ export async function listAccounts(companyId?: number): Promise<Row[]> {
   const cid = companyId || getActiveCompanyId()
   const booksFrom = await getBooksFrom(cid)
   const res = await getClient().execute({
-    args: [cid, cid, cid, cid, cid, cid, booksFrom || '0000-00-00'],
+    args: [cid, cid, cid, cid, cid, cid, booksFrom || '0000-00-00', cid, booksFrom || '0000-00-00'],
     sql: `
+    WITH not_emptied AS (
+      -- Purchases with a tanker still not emptied — out of the Empty-date balance.
+      SELECT ta.order_id FROM ${ALLOC} ta LEFT JOIN purchase_tankers tp ON tp.id = ta.tanker_id
+       GROUP BY ta.order_id
+      HAVING SUM(CASE WHEN tp.status = 'empty' AND tp.empty_date IS NOT NULL THEN 1 ELSE 0 END) < COUNT(*)
+    )
     SELECT a.*,
       -- Whether this ledger belongs to the company in view (see ensureLedgerHomes).
       CASE
@@ -115,6 +121,12 @@ export async function listAccounts(companyId?: number): Promise<Row[]> {
       + COALESCE((SELECT SUM(jl.dr) - SUM(jl.cr)
                   FROM journal_lines jl JOIN journal_entries je ON je.id = jl.entry_id
                   WHERE jl.account_id = a.id AND je.company_id = ? AND je.entry_date >= ?), 0) AS closing,
+      -- What the closing leaves out in the ledger's Empty-date view: bills
+      -- whose oil is not all emptied yet. closing − this = the Empty-date balance.
+      COALESCE((SELECT SUM(jl.dr) - SUM(jl.cr)
+                  FROM journal_lines jl JOIN journal_entries je ON je.id = jl.entry_id
+                  WHERE jl.account_id = a.id AND je.company_id = ? AND je.entry_date >= ?
+                    AND je.order_id IN (SELECT order_id FROM not_emptied)), 0) AS held_not_empty,
       -- Postings across EVERY company, not just the one in view.
       (SELECT COUNT(*) FROM journal_lines jl2 WHERE jl2.account_id = a.id) AS line_count,
       (SELECT COUNT(*) FROM journal_bill_allocs ba WHERE ba.account_id = a.id) AS alloc_count,

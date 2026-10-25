@@ -1533,6 +1533,11 @@ export async function repayBd(
     // transfer of 30,32,145 is 30,00,000 of principal and 32,145 of interest;
     // entered apart it would be two bank lines against the statement's one.
     interest?: string | number | null
+    // PENALTY INTEREST for days past maturity, gross, in the same debit — on
+    // its own ledger, with the rate and days it was worked at kept on the row.
+    penalty?: string | number | null
+    penalty_pct?: string | number | null
+    penalty_days?: string | number | null
     // What is going back now. Omitted (or blank) means the whole balance.
     amount?: number | string | null
     note?: string | null
@@ -1618,6 +1623,8 @@ export async function repayBd(
   const comm = round2(n(v.comm_charges))
   const bankCharges = round2(n(v.bank_charges))
   const interestPaid = round2(n(v.interest))
+  const penaltyPaid = round2(n(v.penalty))
+  if (penaltyPaid < 0) throw new Error('Penalty interest cannot be negative')
   const repayBank = settleVia === 'bank' ? await bdBankFor(bd, v.bank_account) : null
   if (comm < 0 || bankCharges < 0) throw new Error('Charges cannot be negative')
   if (interestPaid < 0) throw new Error('Interest cannot be negative')
@@ -1676,7 +1683,7 @@ export async function repayBd(
   // to be accounted for exactly — a rupee unexplained is a bank book that will
   // not reconcile, found weeks later.
   if (spill > 0.004 || others.length) {
-    const explained = round2(comm + bankCharges + interestPaid + extra + toOthers)
+    const explained = round2(comm + bankCharges + interestPaid + penaltyPaid + extra + toOthers)
     if (Math.abs(spill - explained) > 0.004) {
       throw new Error(
         spill > explained
@@ -1688,7 +1695,7 @@ export async function repayBd(
   // Charges ride ON TOP when the figure is this bill's own principal, because
   // that is what the bank debits; they come OUT of it once the figure IS the
   // debit and has been broken down.
-  const paidOut = spill > 0.004 || others.length ? typed : round2(asked + comm + bankCharges + interestPaid + extra)
+  const paidOut = spill > 0.004 || others.length ? typed : round2(asked + comm + bankCharges + interestPaid + penaltyPaid + extra)
   // One debit for the principal of every bill this payment settled. Summed
   // rather than a line each: the ledger carries one account, and which bill
   // took what is on the repayment rows and in the narration below.
@@ -1698,6 +1705,7 @@ export async function repayBd(
   if (comm > 0.004) lines.push({ account: 'COMM. CHARGES A/C', group: 'Indirect Expenses', dr: comm })
   if (bankCharges > 0.004) lines.push({ account: 'BANK CHARGES A/C', group: 'Indirect Expenses', dr: bankCharges })
   if (interestPaid > 0.004) lines.push({ account: 'INTEREST ON BILL DISCOUNTING A/C', group: 'Indirect Expenses', dr: interestPaid })
+  if (penaltyPaid > 0.004) lines.push({ account: 'PENAL INTEREST ON BILL DISCOUNTING A/C', group: 'Indirect Expenses', dr: penaltyPaid })
   for (const ch of charges) lines.push({ account: ch.account, group: ch.group, dr: ch.amount })
   if (settleVia === 'party') {
     lines.push({
@@ -1718,10 +1726,13 @@ export async function repayBd(
       (closed ? '' : ` — ${inr(left)} still outstanding`) +
       // Said on the voucher, because a debit larger than the principal is the
       // first thing anybody querying a bank statement asks about.
-      (comm > 0.004 || bankCharges > 0.004 || interestPaid > 0.004 || extra > 0.004
+      (comm > 0.004 || bankCharges > 0.004 || interestPaid > 0.004 || penaltyPaid > 0.004 || extra > 0.004
         ? ` — ${inr(paidOut)} debited, including ${
             [
               interestPaid > 0.004 ? `${inr(interestPaid)} interest` : '',
+              penaltyPaid > 0.004
+                ? `${inr(penaltyPaid)} penalty interest${n(v.penalty_pct) ? ` at ${n(v.penalty_pct)}%` : ''}${n(v.penalty_days) ? ` for ${n(v.penalty_days)} day${n(v.penalty_days) === 1 ? '' : 's'} past maturity` : ''}`
+                : '',
               comm > 0.004 ? `${inr(comm)} commission` : '',
               bankCharges > 0.004 ? `${inr(bankCharges)} bank charges` : '',
               ...charges.map((ch) => `${inr(ch.amount)} ${ch.account}`)
@@ -1762,6 +1773,12 @@ export async function repayBd(
   // startup — bd_repay_interest_v1).
   if (interestPaid > 0.004) {
     await c.execute({ sql: 'UPDATE bd_repayments SET interest = ? WHERE id = ?', args: [interestPaid, Number(insRep.lastInsertRowid || 0)] })
+  }
+  if (penaltyPaid > 0.004) {
+    await c.execute({
+      sql: 'UPDATE bd_repayments SET penalty = ?, penalty_pct = ?, penalty_days = ? WHERE id = ?',
+      args: [penaltyPaid, n(v.penalty_pct) || null, Math.round(n(v.penalty_days)) || null, Number(insRep.lastInsertRowid || 0)]
+    })
   }
   // The ledger charges, kept on the row so an edit re-posts them (bd_repay_charges_v1).
   if (charges.length) {
@@ -1884,6 +1901,53 @@ function monthEnd(iso: string): string {
 }
 
 /**
+ * INTEREST ON THE REDUCING PRINCIPAL.
+ *
+ * A part of the principal paid back early stops costing interest: the NBFC
+ * charges each day on what is still out that day. A repayment counts from the
+ * day AFTER it — the repayment day itself still runs on the old balance.
+ *
+ * `principalRepaidByDate` is what went back, grouped by day, oldest first.
+ * `bdInterestParts` splits one inclusive stretch of days [a, b] at those dates
+ * and prices each piece on its own balance — the breakdown the BD panel shows
+ * under each period.
+ */
+async function principalRepaidByDate(bdId: number): Promise<{ date: string; amount: number }[]> {
+  const r = await getClient().execute({
+    sql: `SELECT substr(repay_date, 1, 10) AS d, COALESCE(SUM(amount), 0) AS amt
+            FROM bd_repayments WHERE bd_id = ? GROUP BY substr(repay_date, 1, 10) ORDER BY d`,
+    args: [n(bdId)]
+  })
+  return (r.rows as unknown as Row[]).map((x) => ({ date: String(x.d), amount: round2(n(x.amt)) })).filter((x) => x.amount > 0.004)
+}
+
+function bdInterestParts(
+  base: number,
+  steps: { date: string; amount: number }[],
+  a: string,
+  b: string,
+  rate: number,
+  daysYear: number
+): { parts: Row[]; gross: number } {
+  const parts: Row[] = []
+  if (b < a) return { parts, gross: 0 }
+  const balOn = (d: string): number => Math.max(0, round2(base - steps.filter((x) => x.date < d).reduce((t, x) => t + x.amount, 0)))
+  // Cut points: the day after each repayment that falls inside the stretch.
+  const cuts = steps.map((x) => addDays(x.date, 1)).filter((d) => d > a && d <= b)
+  const starts = [a, ...Array.from(new Set(cuts)).sort()]
+  let raw = 0
+  starts.forEach((from, i) => {
+    const to = i + 1 < starts.length ? addDays(starts[i + 1], -1) : b
+    const days = daysBetween(from, to) + 1
+    const principal = balOn(from)
+    const exact = (principal * rate * days) / (100 * daysYear)
+    raw += exact
+    parts.push({ from_date: from, to_date: to, days, principal, interest: round2(exact) })
+  })
+  return { parts, gross: round2(raw) }
+}
+
+/**
  * What a serviced bill owes, when.
  *
  * A MONTH REST IS A CALENDAR MONTH, not a thirty-day anniversary. A bill
@@ -1939,6 +2003,10 @@ export async function bdInterestSchedule(bdId: number): Promise<Row[]> {
   const daysYear = n(bd.days_year) || 360
   const rate = n(bd.interest_pct)
   const paid = await listBdInterestPayments(bdId)
+  // Principal paid back inside the tenor makes every later day cheaper. A bill
+  // funded in legs keeps the flat schedule — its principal grows, not shrinks.
+  const steps = n(bd.first_receipt_part) > 0.005 ? [] : (await principalRepaidByDate(bdId)).filter((x) => x.date < to)
+  const reducing = steps.length > 0
   const out: Row[] = []
   let start = from
   let charged = 0
@@ -1948,9 +2016,16 @@ export async function bdInterestSchedule(bdId: number): Promise<Row[]> {
     // only where the NBFC's terms say it does, and only on the first slice —
     // every later one starts the morning after the previous ended.
     const days = Math.max(0, daysBetween(start, end) + (i === 0 && bd.days_incl_start ? 1 : 0))
-    const gross = last
-      ? round2(calc.interestAmount - charged)
-      : round2((calc.interestBase * rate * days) / (100 * daysYear))
+    const firstDay = i === 0 && bd.days_incl_start ? start : addDays(start, 1)
+    const split = bdInterestParts(calc.interestBase, steps, firstDay, end, rate, daysYear)
+    // With nothing repaid early the last slice stays the plug, so the schedule
+    // adds up to exactly what the bill would have been charged in one go.
+    const gross = reducing
+      ? split.gross
+      : last
+        ? round2(calc.interestAmount - charged)
+        : round2((calc.interestBase * rate * days) / (100 * daysYear))
+    if (!reducing && split.parts.length === 1) split.parts[0].interest = gross
     charged = round2(charged + gross)
     const tds = round2((gross * n(bd.tds_pct)) / 100)
     // A payment already made is matched to its slice by the day it covers to,
@@ -1978,7 +2053,10 @@ export async function bdInterestSchedule(bdId: number): Promise<Row[]> {
       // Whether a payment recorded against this slice actually reached the
       // ledger. A slice can be serviced without being posted, when the desk
       // chose to record it and post later — see payBdInterest's `post` flag.
-      posted: done ? !!done.journal_entry_id : false
+      posted: done ? !!done.journal_entry_id : false,
+      // Day stretches at each principal balance — the row's breakdown.
+      parts: split.parts,
+      reducing
     })
     start = end
   })
@@ -2079,10 +2157,13 @@ export async function bdInterestWindow(
     ? Math.max(0, daysBetween(from, to) + (bd.days_incl_start ? 1 : 0))
     : Math.max(0, daysBetween(from, to) + 1)
   const daysYear = n(bd.days_year) || 360
-  const gross = round2((calc.interestBase * n(bd.interest_pct) * span) / (100 * daysYear))
+  const steps = n(bd.first_receipt_part) > 0.005 ? [] : await principalRepaidByDate(bdId)
+  const split = bdInterestParts(calc.interestBase, steps, first && !bd.days_incl_start ? addDays(from, 1) : from, to, n(bd.interest_pct), daysYear)
+  const gross = steps.length ? split.gross : round2((calc.interestBase * n(bd.interest_pct) * span) / (100 * daysYear))
   const tds = round2((gross * n(bd.tds_pct)) / 100)
   return {
     bd_id: n(bdId),
+    parts: split.parts,
     blocked,
     blocked_note: blockedNote,
     mode,
@@ -2522,7 +2603,7 @@ export async function editBdRepayment(
       : [row]
     // Which bill the debit was entered on — the one carrying the charges, else
     // this one — stays the bill it is entered on again.
-    const primary = siblings.find((x) => n(x.comm_charges) > 0 || n(x.bank_charges) > 0 || n(x.interest) > 0 || !!x.charges) || row
+    const primary = siblings.find((x) => n(x.comm_charges) > 0 || n(x.bank_charges) > 0 || n(x.interest) > 0 || n(x.penalty) > 0 || !!x.charges) || row
     const primaryId = n(primary.bd_id)
     const oldHead = oldJe
       ? toPlain(await c.execute({ sql: 'SELECT vch_type FROM journal_entries WHERE id = ?', args: [oldJe] }))[0]
@@ -2578,7 +2659,9 @@ export async function editBdRepayment(
     // A screen that does not carry the ledger charges keeps what they were.
     const charges: { account?: string; amount?: string | number }[] = v.charges ?? JSON.parse(String(primary.charges || '[]'))
     const extra = round2(charges.reduce((t, x) => t + n(x.amount), 0))
-    const debit = round2(own.amount + also.reduce((t, x) => t + x.amount, 0) + (also.length ? comm + bankCh + intr + extra : 0))
+    // The penalty is not edited here; it rides along as it was.
+    const penalty = round2(n(primary.penalty))
+    const debit = round2(own.amount + also.reduce((t, x) => t + x.amount, 0) + (also.length ? comm + bankCh + intr + penalty + extra : 0))
 
     await c.execute(`CREATE TABLE IF NOT EXISTS accounting_repair_log (
         repair_key TEXT PRIMARY KEY, entry_id INTEGER NOT NULL, before_json TEXT NOT NULL,
@@ -2599,6 +2682,9 @@ export async function editBdRepayment(
       comm_charges: comm || null,
       bank_charges: bankCh || null,
       interest: intr || null,
+      penalty: penalty || null,
+      penalty_pct: primary.penalty_pct ?? null,
+      penalty_days: primary.penalty_days ?? null,
       charges,
       amount: debit,
       note: v.note === undefined ? (primary.note ? String(primary.note) : null) : v.note,

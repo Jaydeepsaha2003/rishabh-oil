@@ -956,6 +956,9 @@ const api = {
         bank_charges?: number | string | null
         // Interest paid in the same debit — gross.
         interest?: number | string | null
+        penalty?: number | string | null
+        penalty_pct?: number | string | null
+        penalty_days?: number | string | null
         // Other charges in the same debit, each on a ledger the user picked.
         charges?: { account: string; amount: number }[]
         note?: string | null

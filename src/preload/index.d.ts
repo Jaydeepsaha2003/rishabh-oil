@@ -654,6 +654,9 @@ export interface Api {
         bank_charges?: number | string | null
         // Interest paid in the same debit — gross.
         interest?: number | string | null
+        penalty?: number | string | null
+        penalty_pct?: number | string | null
+        penalty_days?: number | string | null
         charges?: { account: string; amount: number }[]
         note?: string | null
         party_id?: number | null

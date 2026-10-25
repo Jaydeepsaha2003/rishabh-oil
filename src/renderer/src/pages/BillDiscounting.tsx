@@ -169,6 +169,9 @@ const NBFC_FIELDS: FieldDef[] = [
   { key: 'interest_pct', label: 'Interest % p.a.', type: 'number', default: 0 },
   { key: 'interest_days', label: 'Interest days (default tenor)', type: 'number', default: 0 },
   { key: 'tds_pct', label: 'TDS % on interest', type: 'number', default: 0 },
+  // Charged on what is still owed for each day a bill runs past maturity —
+  // offered on a late repayment (Repay → Penalty interest).
+  { key: 'penalty_pct', label: 'Penalty interest % p.a. (after maturity)', type: 'number', default: 0 },
   { key: 'days_year', label: 'Days in year (360 / 365)', type: 'number', default: 360 },
   // Which end of the tenor earns interest. Stated as what is true when it is
   // ON, so the switch reads as a sentence rather than as a setting name.
@@ -197,6 +200,7 @@ function nbfcTerms(nb: Row): string {
   if (n(nb.interest_pct) > 0) bits.push(`${formatNum(n(nb.interest_pct))}%`)
   if (n(nb.interest_days) > 0) bits.push(`${n(nb.interest_days)}d`)
   if (n(nb.tds_pct) > 0) bits.push(`TDS ${formatNum(n(nb.tds_pct))}%`)
+  if (n(nb.penalty_pct) > 0) bits.push(`penalty ${formatNum(n(nb.penalty_pct))}%`)
   bits.push(`${n(nb.days_year) || 360}-day year`)
   return bits.join(' · ')
 }
@@ -1978,7 +1982,19 @@ export function BillDiscounting({
   const spill = repayRow ? round2(Math.max(0, round2(n(repayForm.amount)) - dueOn(repayRow))) : 0
   const alsoTotal = round2(repayAlso.reduce((t, a) => t + (a.bd_id ? n(a.amount) : 0), 0))
   const chargesTotal = round2(repayCharges.reduce((t, ch) => t + n(ch.amount), 0))
-  const unallocated = round2(spill - round2(n(repayForm.interest) + chargesTotal + alsoTotal))
+  // PENALTY INTEREST: each day past maturity, on the principal still owed, at
+  // the NBFC's penalty rate. Worked out until a figure is typed over it.
+  const penaltyDays = (() => {
+    const mat = String(repayRow?.maturity_date || '').slice(0, 10)
+    const on = String(repayForm.repay_date || '').slice(0, 10)
+    if (!mat || !on || on <= mat) return 0
+    return Math.round((new Date(`${on}T00:00:00Z`).getTime() - new Date(`${mat}T00:00:00Z`).getTime()) / 86400000)
+  })()
+  const penaltyWorked = repayRow
+    ? round2((dueOn(repayRow) * n(repayForm.penalty_pct) * penaltyDays) / (100 * (n(repayRow.days_year) || 360)))
+    : 0
+  const penaltyAmt = penaltyDays > 0 ? (String(repayForm.penalty ?? '').trim() === '' ? penaltyWorked : round2(n(repayForm.penalty))) : 0
+  const unallocated = round2(spill - round2(n(repayForm.interest) + penaltyAmt + chargesTotal + alsoTotal))
   // The other bills one debit could have settled: same NBFC, funded, still
   // open, and not the one being looked at.
   const otherOpenBds = useMemo(
@@ -2112,7 +2128,9 @@ export function BillDiscounting({
       amount: String(dueOn(r)),
       release_margin: n(r.marginAmount) > 0,
       // The primary by default; only asked about when the bill has more.
-      party_id: r.party_id ? String(r.party_id) : ''
+      party_id: r.party_id ? String(r.party_id) : '',
+      // The NBFC's penalty rate, asked only once the date is past maturity.
+      penalty_pct: String(n(nbfcs.find((x) => String(x.id) === String(r.nbfc_id))?.penalty_pct) || '')
     })
     setRepayParts([])
     setRepayAlso([])
@@ -2180,7 +2198,7 @@ export function BillDiscounting({
     // Over this bill's balance is fine when the rest is put against the
     // charges or another bill this one debit cleared — the server checks every
     // rupee of it. Only an unexplained excess is stopped here.
-    const explained = round2(n(repayForm.interest) + chargesTotal + alsoTotal)
+    const explained = round2(n(repayForm.interest) + penaltyAmt + chargesTotal + alsoTotal)
     if (amount - due - explained > 0.004) {
       toast.error(
         explained > 0
@@ -2211,6 +2229,9 @@ export function BillDiscounting({
           .map((ch) => ({ account: ch.account.trim(), amount: round2(n(ch.amount)) })),
         // Interest paid in the same debit — gross, to the interest ledger.
         interest: String(repayForm.interest ?? '').trim() === '' ? null : Number(repayForm.interest),
+        penalty: penaltyAmt > 0.004 ? penaltyAmt : null,
+        penalty_pct: penaltyAmt > 0.004 ? n(repayForm.penalty_pct) || null : null,
+        penalty_days: penaltyAmt > 0.004 ? penaltyDays : null,
         party_id:
           repayForm.settle_via === 'party' && repayForm.party_id ? Number(repayForm.party_id) : null,
         bank_account: repayForm.settle_via === 'party' || repayBank === '__bill' ? null : repayBank
@@ -7072,13 +7093,14 @@ export function BillDiscounting({
                     </div>
                   </div>
                 )}
-                {spill <= 0.004 && (chargesTotal > 0 || n(repayForm.interest) > 0) && (
+                {spill <= 0.004 && (chargesTotal > 0 || n(repayForm.interest) > 0 || penaltyAmt > 0) && (
                   <div className="rounded-[4px] border border-[#C6DAF0] bg-[#F4F8FD] px-3 py-2 text-[11.5px] text-[#1B4E82]">
                     <b>
-                      {formatINR(round2(n(repayForm.amount) + chargesTotal + n(repayForm.interest)))}
+                      {formatINR(round2(n(repayForm.amount) + chargesTotal + n(repayForm.interest) + penaltyAmt))}
                     </b>{' '}
                     leaves the account — {formatINR(round2(n(repayForm.amount)))} off the bill
                     {n(repayForm.interest) > 0 ? `, ${formatINR(round2(n(repayForm.interest)))} as interest` : ''}
+                    {penaltyAmt > 0 ? `, ${formatINR(penaltyAmt)} as penalty interest` : ''}
                     {chargesTotal > 0 ? `, ${formatINR(chargesTotal)} as charges` : ''}
                     . Match this against the debit on the statement.
                   </div>
@@ -7093,6 +7115,47 @@ export function BillDiscounting({
                   onChange={(v) => setRepayForm((p) => ({ ...p, repay_date: v }))}
                 />
               </div>
+              {/* PAST MATURITY: the NBFC's penalty rate on what is still owed,
+                  for the days the bill ran over. Posts on its own ledger in
+                  the same debit. */}
+              {penaltyDays > 0 && (
+                <div className="grid gap-2 rounded-[6px] border border-[#F0C9C4] bg-[#FDF6F5] p-3">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="text-[10.5px] font-extrabold uppercase tracking-[.12em] text-[#8C2F26]">Penalty interest</span>
+                    <span className="rounded-[2px] border border-[#F0C9C4] bg-white px-1.5 py-0.5 text-[10.5px] font-bold text-[#B3261E]">
+                      {penaltyDays} day{penaltyDays === 1 ? '' : 's'} past maturity ({formatDate(String(repayRow.maturity_date))})
+                    </span>
+                  </div>
+                  <div className="grid grid-cols-[120px_minmax(0,1fr)] gap-2">
+                    <div className="flex min-w-0 flex-col gap-1">
+                      <span className="text-[10px] font-bold text-[#5A6B62]">Rate % p.a.</span>
+                      <Input
+                        type="number"
+                        step="0.01"
+                        className="h-10 w-full rounded-[4px] border border-[#C3D2C6] bg-white px-2 text-right text-[13px] font-bold tabular-nums"
+                        placeholder="0.00"
+                        value={repayForm.penalty_pct ?? ''}
+                        onChange={(e) => setRepayForm((p) => ({ ...p, penalty_pct: e.target.value, penalty: '' }))}
+                      />
+                    </div>
+                    <div className="flex min-w-0 flex-col gap-1">
+                      <span className="text-[10px] font-bold text-[#5A6B62]">Penalty amount (₹)</span>
+                      <Input
+                        type="number"
+                        step="0.01"
+                        className="h-10 w-full rounded-[4px] border border-[#C3D2C6] bg-white px-2 text-right text-[13px] font-bold tabular-nums"
+                        placeholder={String(penaltyWorked || '0.00')}
+                        value={String(repayForm.penalty ?? '').trim() === '' ? (penaltyWorked ? String(penaltyWorked) : '') : repayForm.penalty}
+                        onChange={(e) => setRepayForm((p) => ({ ...p, penalty: e.target.value }))}
+                      />
+                    </div>
+                  </div>
+                  <span className="text-[11px] font-semibold text-[#5A6B62]">
+                    {formatINR(dueOn(repayRow))} × {n(repayForm.penalty_pct) || 0}% × {penaltyDays} / {n(repayRow.days_year) || 360} = {formatINR(penaltyWorked)}
+                    {!n(nbfcs.find((x) => String(x.id) === String(repayRow.nbfc_id))?.penalty_pct) && ' — set this NBFC\'s penalty % under Manage NBFCs to have it filled in'}
+                  </span>
+                </div>
+              )}
               <div className="flex flex-col gap-1.5">
                 <Label className="flex items-center gap-1">
                   Settle through

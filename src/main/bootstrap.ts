@@ -3313,6 +3313,12 @@ export async function runStartupTasks(): Promise<void> {
  * nothing once recorded, and this is a safety net rather than a replacement.
  */
 const REQUIRED_COLUMNS: { table: string; column: string; type: string }[] = [
+  // PENALTY INTEREST — the NBFC's rate for days a bill runs past maturity
+  // unpaid, and what a late repayment paid of it (repayBd).
+  { table: 'nbfcs', column: 'penalty_pct', type: 'REAL' },
+  { table: 'bd_repayments', column: 'penalty', type: 'REAL' },
+  { table: 'bd_repayments', column: 'penalty_pct', type: 'REAL' },
+  { table: 'bd_repayments', column: 'penalty_days', type: 'INTEGER' },
   { table: 'bill_discountings', column: 'payment_in_expected', type: 'INTEGER NOT NULL DEFAULT 0' },
   // The bank's commission % on an LC's open amount — set per bank on the
   // limit screen, taken (and changeable) on each LC. Shown, never posted.
