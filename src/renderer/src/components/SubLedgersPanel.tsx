@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react'
 import { toast } from 'sonner'
 import { GitBranch, Plus, Save, Unlink } from 'lucide-react'
 import { errText } from '@/lib/format'
+import { isSubLedger, isTradingLink } from '@/lib/mainParty'
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Row = Record<string, any>
@@ -28,12 +29,16 @@ const draftOf = (r: Row): Draft => ({
 // GST rates, edited in place; a new one added here; one detached to stand on
 // its own. TDS is the main party's and is not asked for.
 export function SubLedgersPanel({
+  kind = 'sub',
   table,
   mainId,
   mainForm,
   readOnly,
   onChanged
 }: {
+  // 'sub' — branches of the same kind; 'trading' — the Trading party that is
+  // the same PAN (TDS slab shared), kept apart from the branches.
+  kind?: 'sub' | 'trading'
   table: 'suppliers' | 'customers'
   mainId: number
   mainForm: Row
@@ -47,10 +52,12 @@ export function SubLedgersPanel({
 
   const load = useCallback(async () => {
     const all = (await window.api.data.list(table)) as Row[]
-    const mine = all.filter((r) => Number(r.linked_party_id) === mainId).sort((a, b) => String(a.name).localeCompare(String(b.name)))
+    const mine = all
+      .filter((r) => Number(r.linked_party_id) === mainId && (kind === 'trading' ? isTradingLink(r) : isSubLedger(r)))
+      .sort((a, b) => String(a.name).localeCompare(String(b.name)))
     setSubs(mine)
     setDrafts(Object.fromEntries(mine.map((r) => [Number(r.id), draftOf(r)])))
-  }, [table, mainId])
+  }, [table, mainId, kind])
   useEffect(() => {
     void load().catch((e) => toast.error(errText(e)))
   }, [load])
@@ -88,9 +95,15 @@ export function SubLedgersPanel({
     if (!add.name.trim()) return Promise.resolve(void toast.error('Give the sub-ledger a name — e.g. the main name and the branch'))
     const inherited = Object.fromEntries(INHERIT[table].map((k) => [k, mainForm[k]]))
     return run(async () => {
-      await window.api.data.create(table, { ...inherited, ...values(add), linked_party_id: mainId, active: true })
+      await window.api.data.create(table, {
+        ...inherited,
+        ...values(add),
+        ...(kind === 'trading' ? { business_type: 'Trading' } : {}),
+        linked_party_id: mainId,
+        active: true
+      })
       setAdd(blank())
-    }, `${add.name.trim()} added under ${String(mainForm.name || 'this party')}`)
+    }, kind === 'trading' ? `${add.name.trim()} linked as the trading party` : `${add.name.trim()} added under ${String(mainForm.name || 'this party')}`)
   }
 
   const box = 'rounded-[6px] border border-[#DCE7DB] bg-white p-3'
@@ -110,7 +123,7 @@ export function SubLedgersPanel({
   )
   const grid = (d: Draft, set: (p: Partial<Draft>) => void): React.JSX.Element => (
     <>
-      {field(d, set, 'name', 'Name', 'e.g. DIL EXIM – RAJKOT')}
+      {field(d, set, 'name', 'Name', kind === 'trading' ? 'The Trading-side name of this party' : 'e.g. DIL EXIM – RAJKOT')}
       <div className="mt-2 grid grid-cols-[1.3fr_1fr_80px_1fr] gap-2">
         {field(d, set, 'gstin', 'GSTIN')}
         {field(d, set, 'state', 'State')}
@@ -121,19 +134,27 @@ export function SubLedgersPanel({
   )
 
   return (
-    <div className="mt-2 rounded-[8px] border-2 border-[#BFE3CB] bg-[#F4FAF6] p-3.5">
+    <div className={kind === 'trading' ? 'mt-2 rounded-[8px] border-2 border-[#C6DAF0] bg-[#F4F8FD] p-3.5' : 'mt-2 rounded-[8px] border-2 border-[#BFE3CB] bg-[#F4FAF6] p-3.5'}>
       <div className="mb-2.5 flex items-center gap-2">
-        <GitBranch className="h-4 w-4 text-[#0B6B45]" />
-        <span className="text-[12px] font-extrabold uppercase tracking-[.12em] text-[#0B3D2E]">Sub-ledgers</span>
-        <span className="rounded-full bg-[#0B3D2E] px-2 py-0.5 text-[10.5px] font-bold text-white">{subs ? subs.length : '…'}</span>
-        <span className="ml-auto text-[11px] font-semibold text-[#5A6B62]">TDS is this party&apos;s for all of them</span>
+        <GitBranch className={kind === 'trading' ? 'h-4 w-4 text-[#1B4E82]' : 'h-4 w-4 text-[#0B6B45]'} />
+        <span className={kind === 'trading' ? 'text-[12px] font-extrabold uppercase tracking-[.12em] text-[#1B4E82]' : 'text-[12px] font-extrabold uppercase tracking-[.12em] text-[#0B3D2E]'}>
+          {kind === 'trading' ? 'Trading party' : 'Sub-ledgers'}
+        </span>
+        <span className={kind === 'trading' ? 'rounded-full bg-[#1B4E82] px-2 py-0.5 text-[10.5px] font-bold text-white' : 'rounded-full bg-[#0B3D2E] px-2 py-0.5 text-[10.5px] font-bold text-white'}>
+          {subs ? subs.length : '…'}
+        </span>
+        <span className="ml-auto text-[11px] font-semibold text-[#5A6B62]">
+          {kind === 'trading' ? 'Same party on the Trading side — TDS slab shared, its own name everywhere' : 'TDS is this party\'s for all of them'}
+        </span>
       </div>
       {subs == null ? (
         <div className="py-2 text-[12px] text-[#5A6B62]">Reading…</div>
       ) : (
         <div className="grid gap-2.5">
           {subs.length === 0 && (
-            <div className="text-[12px] text-[#5A6B62]">No sub-ledgers yet — add a branch, factory or account below.</div>
+            <div className="text-[12px] text-[#5A6B62]">
+              {kind === 'trading' ? 'No trading party linked — add the Trading-side ledger of this same party below.' : 'No sub-ledgers yet — add a branch, factory or account below.'}
+            </div>
           )}
           {subs.map((r) => {
             const id = Number(r.id)
@@ -175,7 +196,7 @@ export function SubLedgersPanel({
                   onClick={() => void addSub()}
                   className="flex items-center gap-1 rounded-[4px] bg-[#C7F03F] px-3 py-1.5 text-[11.5px] font-extrabold text-[#0B3D2E] hover:bg-[#B9E62F]"
                 >
-                  <Plus className="h-3.5 w-3.5" /> Add sub-ledger
+                  <Plus className="h-3.5 w-3.5" /> {kind === 'trading' ? 'Add trading party' : 'Add sub-ledger'}
                 </button>
               </div>
             </div>

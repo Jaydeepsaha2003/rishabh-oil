@@ -45,7 +45,7 @@ export async function listGateEntries(): Promise<Row[]> {
            b.bargain_no, COALESCE(ds.name, s.name, dc.name) AS supplier_name,
            dc.name AS gate_customer_name,
            COALESCE(sl.invoice_no, (SELECT invoice_no FROM sales WHERE invoice_group = g.invoice_group LIMIT 1)) AS sale_invoice,
-           COALESCE((SELECT m.name FROM customers cc JOIN customers m ON m.id = COALESCE(cc.linked_party_id, cc.id) WHERE cc.id = COALESCE(sl.customer_id, (SELECT customer_id FROM sales WHERE invoice_group = g.invoice_group LIMIT 1))), sl.customer, (SELECT customer FROM sales WHERE invoice_group = g.invoice_group LIMIT 1)) AS sale_customer,
+           COALESCE((SELECT m.name FROM customers cc JOIN customers m ON m.id = CASE WHEN LOWER(TRIM(COALESCE(cc.business_type, ''))) = 'trading' THEN cc.id ELSE COALESCE(cc.linked_party_id, cc.id) END WHERE cc.id = COALESCE(sl.customer_id, (SELECT customer_id FROM sales WHERE invoice_group = g.invoice_group LIMIT 1))), sl.customer, (SELECT customer FROM sales WHERE invoice_group = g.invoice_group LIMIT 1)) AS sale_customer,
            -- A vehicle can carry several invoices out; the register names them
            -- all rather than only the one written on the entry.
            (SELECT COUNT(*) FROM gate_entry_sales gs WHERE gs.gate_entry_id = g.id) AS sale_count,
@@ -57,9 +57,9 @@ export async function listGateEntries(): Promise<Row[]> {
     LEFT JOIN products p ON p.id = g.oil_type_id
     LEFT JOIN purchase_tankers pt ON pt.id = g.tanker_id
     LEFT JOIN bargains b ON b.id = pt.bargain_id
-    LEFT JOIN suppliers s ON s.id = (SELECT COALESCE(x.linked_party_id, x.id) FROM suppliers x WHERE x.id = pt.supplier_id)
-    LEFT JOIN suppliers ds ON ds.id = (SELECT COALESCE(x.linked_party_id, x.id) FROM suppliers x WHERE x.id = g.supplier_id)
-    LEFT JOIN customers dc ON dc.id = (SELECT COALESCE(x.linked_party_id, x.id) FROM customers x WHERE x.id = g.customer_id)
+    LEFT JOIN suppliers s ON s.id = (SELECT CASE WHEN LOWER(TRIM(COALESCE(x.business_type, ''))) = 'trading' THEN x.id ELSE COALESCE(x.linked_party_id, x.id) END FROM suppliers x WHERE x.id = pt.supplier_id)
+    LEFT JOIN suppliers ds ON ds.id = (SELECT CASE WHEN LOWER(TRIM(COALESCE(x.business_type, ''))) = 'trading' THEN x.id ELSE COALESCE(x.linked_party_id, x.id) END FROM suppliers x WHERE x.id = g.supplier_id)
+    LEFT JOIN customers dc ON dc.id = (SELECT CASE WHEN LOWER(TRIM(COALESCE(x.business_type, ''))) = 'trading' THEN x.id ELSE COALESCE(x.linked_party_id, x.id) END FROM customers x WHERE x.id = g.customer_id)
     LEFT JOIN sales sl ON sl.id = g.sale_id
     ${/* Compared directly, not through substr(): a function around the column
           makes the whole thing unindexable, and a plain string compare is
@@ -136,7 +136,7 @@ export async function gateEntriesFor(args: {
            (SELECT GROUP_CONCAT(x.invoice_no, ', ') FROM gate_entry_sales gs
               JOIN sales x ON x.id = gs.sale_id WHERE gs.gate_entry_id = g.id) AS sale_invoices,
            COALESCE(sl.invoice_no, (SELECT invoice_no FROM sales WHERE invoice_group = g.invoice_group LIMIT 1)) AS sale_invoice,
-           COALESCE((SELECT m.name FROM customers cc JOIN customers m ON m.id = COALESCE(cc.linked_party_id, cc.id) WHERE cc.id = COALESCE(sl.customer_id, (SELECT customer_id FROM sales WHERE invoice_group = g.invoice_group LIMIT 1))), sl.customer, (SELECT customer FROM sales WHERE invoice_group = g.invoice_group LIMIT 1)) AS sale_customer
+           COALESCE((SELECT m.name FROM customers cc JOIN customers m ON m.id = CASE WHEN LOWER(TRIM(COALESCE(cc.business_type, ''))) = 'trading' THEN cc.id ELSE COALESCE(cc.linked_party_id, cc.id) END WHERE cc.id = COALESCE(sl.customer_id, (SELECT customer_id FROM sales WHERE invoice_group = g.invoice_group LIMIT 1))), sl.customer, (SELECT customer FROM sales WHERE invoice_group = g.invoice_group LIMIT 1)) AS sale_customer
     FROM gate_entries g
     LEFT JOIN products p ON p.id = g.oil_type_id
     LEFT JOIN purchase_tankers pt ON pt.id = g.tanker_id
@@ -144,9 +144,9 @@ export async function gateEntriesFor(args: {
     LEFT JOIN bargains b ON b.id = pt.bargain_id
     LEFT JOIN transporters t ON t.id = pt.transporter_id
     LEFT JOIN sources src ON src.id = pt.source_id
-    LEFT JOIN suppliers s ON s.id = (SELECT COALESCE(x.linked_party_id, x.id) FROM suppliers x WHERE x.id = pt.supplier_id)
-    LEFT JOIN suppliers ds ON ds.id = (SELECT COALESCE(x.linked_party_id, x.id) FROM suppliers x WHERE x.id = g.supplier_id)
-    LEFT JOIN customers dc ON dc.id = (SELECT COALESCE(x.linked_party_id, x.id) FROM customers x WHERE x.id = g.customer_id)
+    LEFT JOIN suppliers s ON s.id = (SELECT CASE WHEN LOWER(TRIM(COALESCE(x.business_type, ''))) = 'trading' THEN x.id ELSE COALESCE(x.linked_party_id, x.id) END FROM suppliers x WHERE x.id = pt.supplier_id)
+    LEFT JOIN suppliers ds ON ds.id = (SELECT CASE WHEN LOWER(TRIM(COALESCE(x.business_type, ''))) = 'trading' THEN x.id ELSE COALESCE(x.linked_party_id, x.id) END FROM suppliers x WHERE x.id = g.supplier_id)
+    LEFT JOIN customers dc ON dc.id = (SELECT CASE WHEN LOWER(TRIM(COALESCE(x.business_type, ''))) = 'trading' THEN x.id ELSE COALESCE(x.linked_party_id, x.id) END FROM customers x WHERE x.id = g.customer_id)
     LEFT JOIN sales sl ON sl.id = g.sale_id
     WHERE ${where.join(' OR ')}
     ORDER BY g.entry_date DESC, g.id DESC

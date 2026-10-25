@@ -17,13 +17,32 @@ export function LcCommissionLink({ lcId, onChanged }: { lcId: number; onChanged?
   const [q, setQ] = useState('')
   const [cands, setCands] = useState<Row[] | null>(null)
   const [busy, setBusy] = useState(false)
+  // The commission % typed here — for LCs opened before it was asked at Open.
+  const [pct, setPct] = useState('')
 
   const load = useCallback(() => {
     window.api.lc
       .commission(lcId)
-      .then(setInfo)
+      .then((r) => {
+        setInfo(r)
+        setPct(r.commission_pct != null ? String(r.commission_pct) : r.bank_pct != null ? String(r.bank_pct) : '')
+      })
       .catch((e) => toast.error(errText(e)))
   }, [lcId])
+  const savePct = async (): Promise<void> => {
+    const v = pct.trim() === '' ? null : Number(pct)
+    setBusy(true)
+    try {
+      await window.api.lc.setCommissionPct(lcId, v)
+      toast.success(v == null ? 'Commission % cleared' : `Commission set at ${v}%`)
+      load()
+      onChanged?.()
+    } catch (e) {
+      toast.error(errText(e))
+    } finally {
+      setBusy(false)
+    }
+  }
   useEffect(load, [load])
 
   useEffect(() => {
@@ -63,8 +82,37 @@ export function LcCommissionLink({ lcId, onChanged }: { lcId: number; onChanged?
   const diff = info.difference == null ? null : Number(info.difference)
   const vLabel = (x: Row): string => String(x.code || x.vch_no || `#${x.id}`)
 
+  const pctChanged = (pct.trim() === '' ? null : Number(pct)) !== (info.commission_pct == null ? null : Number(info.commission_pct))
   return (
     <div className="grid gap-2.5 text-[12.5px]">
+      {/* THE COMMISSION % — set here for an LC opened before it was asked at
+          Open; the bank's % (Edit limit) is offered when it has none. */}
+      <div className="flex flex-wrap items-center gap-2 rounded-[6px] border border-[#DCE7DB] bg-[#F7FAF6] px-3 py-2">
+        <span className="text-[11px] font-extrabold uppercase tracking-[.1em] text-[#5A6B62]">Commission %</span>
+        <input
+          type="number"
+          min={0}
+          step="0.01"
+          value={pct}
+          onChange={(e) => setPct(e.target.value)}
+          placeholder="e.g. 0.25"
+          className="h-8 w-[90px] rounded-[4px] border border-[#C3D2C6] bg-white px-2 text-right text-[13px] font-bold tabular-nums outline-none focus:border-[#1B4E82]"
+        />
+        <span className="text-[11.5px] font-semibold tabular-nums text-[#33473E]">
+          = {formatINR(Math.round(Number(info.amount || 0) * (Number(pct) || 0)) / 100)} on {formatINR(Number(info.amount || 0))}
+        </span>
+        {info.commission_pct == null && info.bank_pct != null && (
+          <span className="text-[11px] font-semibold text-[#8A5300]">the bank&apos;s {Number(info.bank_pct)}% — not saved on this LC yet</span>
+        )}
+        <button
+          type="button"
+          disabled={busy || !pctChanged}
+          onClick={() => void savePct()}
+          className="ml-auto rounded-[4px] bg-[#0B3D2E] px-3 py-1 text-[11.5px] font-bold text-white disabled:opacity-40"
+        >
+          Save %
+        </button>
+      </div>
       {/* What it should be, what was charged, and the gap. */}
       <div className="grid grid-cols-3 gap-2">
         {[

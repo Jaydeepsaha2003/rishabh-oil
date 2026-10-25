@@ -652,12 +652,18 @@ async function syncPaymentReceivedIssuance(lcId: number, v: Row): Promise<void> 
 /** The LC's commission: expected, the linked voucher, and what it charged. */
 export async function lcCommission(lcId: number): Promise<Row> {
   const c = getClient()
-  const l = (await c.execute({ sql: 'SELECT id, company_id, amount, commission_pct, commission_voucher_id FROM letters_of_credit WHERE id = ?', args: [n(lcId)] })).rows[0] as unknown as Row | undefined
+  const l = (await c.execute({ sql: 'SELECT id, company_id, amount, commission_pct, commission_voucher_id, our_bank_id FROM letters_of_credit WHERE id = ?', args: [n(lcId)] })).rows[0] as unknown as Row | undefined
   if (!l) throw new Error('That LC no longer exists')
   const expected = l.commission_pct == null ? null : round2((n(l.amount) * n(l.commission_pct)) / 100)
+  // The bank's own % (Edit limit), offered for an LC that has none yet.
+  const bank = n(l.our_bank_id)
+    ? ((await c.execute({ sql: 'SELECT commission_pct FROM bank_lc_limits WHERE company_id = ? AND bank_id = ?', args: [n(l.company_id), n(l.our_bank_id)] }).catch(() => null))?.rows[0] as unknown as Row | undefined)
+    : undefined
   const voucher = n(l.commission_voucher_id) ? await voucherBrief(n(l.commission_voucher_id)) : null
   return {
     commission_pct: l.commission_pct == null ? null : n(l.commission_pct),
+    bank_pct: bank?.commission_pct == null ? null : n(bank.commission_pct),
+    amount: round2(n(l.amount)),
     expected,
     voucher,
     charged: voucher ? n(voucher.amount) : null,
@@ -715,6 +721,18 @@ export async function lcCommissionCandidates(lcId: number, q?: string): Promise<
     if (v && n(v.amount) > 0) out.push(v)
   }
   return out.sort((a, b) => Math.abs(n(a.amount) - expected) - Math.abs(n(b.amount) - expected)).slice(0, 40)
+}
+
+/**
+ * Set (or clear) an LC's commission % on its own — for LCs opened before the %
+ * was asked at Open. A figure for the should-be/charged comparison only, so it
+ * is allowed on a closed LC too; nothing is posted.
+ */
+export async function setLcCommissionPct(lcId: number, pct: number | null): Promise<{ id: number }> {
+  if (pct != null && (!Number.isFinite(pct) || pct < 0 || pct > 100)) throw new Error('Enter a commission % between 0 and 100')
+  const r = await getClient().execute({ sql: 'UPDATE letters_of_credit SET commission_pct = ? WHERE id = ?', args: [pct == null ? null : round2(pct * 10000) / 10000, n(lcId)] })
+  if (!r.rowsAffected) throw new Error('That LC no longer exists')
+  return { id: n(lcId) }
 }
 
 /** Link (or, with no voucher, unlink) the bank voucher the commission was taken by. */

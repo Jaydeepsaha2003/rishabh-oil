@@ -1730,6 +1730,9 @@ export function registerIpc(): void {
   handle('lc:commissionCandidates', async (_e, { id, q }: { id: number; q?: string }) =>
     (await import('./lc')).lcCommissionCandidates(Number(id), q)
   )
+  handle('lc:setCommissionPct', async (_e, { id, pct }: { id: number; pct: number | null }) =>
+    (await import('./lc')).setLcCommissionPct(Number(id), pct == null ? null : Number(pct))
+  )
   handle('lc:linkCommission', async (_e, { id, entryId }: { id: number; entryId: number | null }) =>
     (await import('./lc')).linkLcCommission(Number(id), entryId ? Number(entryId) : null)
   )

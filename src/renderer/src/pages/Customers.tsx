@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { isSubLedger, isTradingLink } from '@/lib/mainParty'
 import { SubLedgersPanel } from '@/components/SubLedgersPanel'
 import { PageHeader } from '@/components/PageHeader'
 import { EntityManager, type ColumnDef, type FieldDef } from '@/components/EntityManager'
@@ -83,8 +84,12 @@ export function Customers(): React.JSX.Element {
   const manufacturingOptions = allCustomers
     .filter((c) => !c.linked_party_id && c.active)
     .map((c) => ({ value: String(c.id), label: c.name }))
+  // Sub-ledgers (same kind, a branch) and the trading counterpart (a Trading
+  // party linked to a Manufacturing one) are told apart — lib/mainParty.ts.
   const subCount = new Map<string, number>()
-  for (const c of allCustomers) if (c.linked_party_id) subCount.set(String(c.linked_party_id), (subCount.get(String(c.linked_party_id)) || 0) + 1)
+  for (const c of allCustomers) if (isSubLedger(c)) subCount.set(String(c.linked_party_id), (subCount.get(String(c.linked_party_id)) || 0) + 1)
+  const tradingOf = new Map<string, string>()
+  for (const c of allCustomers) if (isTradingLink(c)) tradingOf.set(String(c.linked_party_id), String(c.name))
   const nameById = new Map(allCustomers.map((c) => [String(c.id), c.name]))
 
   const { companies, companyId } = useCompany()
@@ -102,10 +107,16 @@ export function Customers(): React.JSX.Element {
           ...c,
           value: (row: Row) =>
             row.linked_party_id && nameById.get(String(row.linked_party_id))
-              ? `${row.business_type} · sub-ledger of ${nameById.get(String(row.linked_party_id))}`
-              : subCount.get(String(row.id))
-                ? `${row.business_type} · main party · ${subCount.get(String(row.id))} sub-ledger${subCount.get(String(row.id)) === 1 ? '' : 's'}`
-                : String(row.business_type || '')
+              ? isTradingLink(row)
+                ? `${row.business_type} · trading party of ${nameById.get(String(row.linked_party_id))}`
+                : `${row.business_type} · sub-ledger of ${nameById.get(String(row.linked_party_id))}`
+              : [
+                  String(row.business_type || ''),
+                  subCount.get(String(row.id)) ? `main party · ${subCount.get(String(row.id))} sub-ledger${subCount.get(String(row.id)) === 1 ? '' : 's'}` : '',
+                  tradingOf.get(String(row.id)) ? `trading: ${tradingOf.get(String(row.id))}` : ''
+                ]
+                  .filter(Boolean)
+                  .join(' · ')
         }
       : c
   )
@@ -120,7 +131,12 @@ export function Customers(): React.JSX.Element {
           renderDrawerExtra={({ editingId, form, reload }) =>
             // A main party's window lists and manages its sub-ledgers.
             editingId != null && !form.linked_party_id ? (
-              <SubLedgersPanel table="customers" mainId={editingId} mainForm={form} readOnly={!canWrite(loadUser(), 'customers')} onChanged={() => { reload(); void window.api.data.list('customers').then(setAllCustomers).catch(() => undefined) }} />
+              <>
+                <SubLedgersPanel kind="sub" table="customers" mainId={editingId} mainForm={form} readOnly={!canWrite(loadUser(), 'customers')} onChanged={() => { reload(); void window.api.data.list('customers').then(setAllCustomers).catch(() => undefined) }} />
+                {!isTradingParty(form) && (
+                  <SubLedgersPanel kind="trading" table="customers" mainId={editingId} mainForm={form} readOnly={!canWrite(loadUser(), 'customers')} onChanged={() => { reload(); void window.api.data.list('customers').then(setAllCustomers).catch(() => undefined) }} />
+                )}
+              </>
             ) : null
           }
           title="Customer"
