@@ -660,6 +660,9 @@ interface VLine {
   // Optional, and absent on almost every line: how this one's total was
   // arrived at. Not a posting — see the note on SplitPanel.
   splits?: SplitRow[]
+  // The posted line it was read from — so its breakdown can be saved on its
+  // own when the voucher itself may not be altered (setLineSplits).
+  line_id?: number
   // A Debit/Credit note line that stands for a stock item. When a product
   // ledger (Purchase/Sales Accounts) is picked the line can carry a quantity,
   // and the amount then follows qty × rate. These ride only on note vouchers;
@@ -937,12 +940,16 @@ function SplitPanel({
   rows,
   lineAmount,
   onChange,
-  onClose
+  onClose,
+  onSave
 }: {
   rows: SplitRow[]
   lineAmount: number
   onChange: (rows: SplitRow[]) => void
   onClose: () => void
+  // Given on a voucher that may not be altered: the breakdown is saved on its
+  // own, the ledgers and amounts untouched.
+  onSave?: () => Promise<void>
 }): React.JSX.Element {
   const total = rows.reduce((t, r) => t + (Number(r.amount) || 0), 0)
   const diff = Math.round((lineAmount - total) * 100) / 100
@@ -973,6 +980,16 @@ function SplitPanel({
         <span className="text-[11px] font-semibold text-[#5A6B62]">
           {rows.length} {rows.length === 1 ? 'part' : 'parts'}
         </span>
+        {onSave && (
+          <button
+            type="button"
+            onClick={() => void onSave()}
+            title="Saves only the breakdown — the voucher's ledgers and amounts stay as posted"
+            className="rounded-[3px] bg-[#0B3D2E] px-2.5 py-0.5 text-[10.5px] font-extrabold text-[#C7F03F] hover:bg-[#0F4A38]"
+          >
+            Save breakdown
+          </button>
+        )}
         <button
           type="button"
           onClick={onClose}
@@ -4771,6 +4788,7 @@ export function Accounts({
     }))
     setLines(
       vLines.map((l) => ({
+        line_id: Number(l.id) || undefined,
         side: Number(l.dr) > 0 ? 'dr' : 'cr',
         account: String(l.account),
         group: String(l.acc_group || ''),
@@ -13451,6 +13469,8 @@ export function Accounts({
       // construction and whose party side is bill-wise instead.
       splits?: SplitRow[]
       onSplits?: (rows: SplitRow[]) => void
+      // The posted line, for saving its breakdown on a locked voucher.
+      lineId?: number
       splitIndex?: number
       // Stock line: set only on a note whose ledger is a purchase/sale account.
       inventory?: boolean
@@ -13551,6 +13571,7 @@ export function Accounts({
           onAllocs: (a: AllocRow[]) => setLine(i, { allocs: a }),
           splits: l.splits || [],
           onSplits: (rows: SplitRow[]) => setLine(i, { splits: rows }),
+          lineId: l.line_id,
           splitIndex: i,
           onRemove: lines.length > 2 ? () => setLines((p) => p.filter((_, j) => j !== i)) : null
           }
@@ -14148,7 +14169,9 @@ export function Accounts({
                       !r.inventory &&
                       !!r.account &&
                       lineAmt > 0 &&
-                      (!viewOnly || (r.splits || []).length > 0)
+                      // On a voucher that may not be altered (a purchase's, a
+                      // bill's) the breakdown can still be written and saved.
+                      (!viewOnly || !!r.lineId)
                     const splitIsOpen = splitOpen === r.splitIndex
                     return (
                       <div key={r.key}>
@@ -14404,6 +14427,19 @@ export function Accounts({
                               lineAmount={lineAmt}
                               onChange={(rs) => r.onSplits?.(rs)}
                               onClose={() => setSplitOpen(-1)}
+                              onSave={
+                                viewOnly && r.lineId
+                                  ? async () => {
+                                      try {
+                                        const res = await window.api.vouchers.setLineSplits(Number(r.lineId), splitsOut(r.splits))
+                                        toast.success(res.parts ? `Breakdown saved — ${res.parts} ${res.parts === 1 ? 'part' : 'parts'}` : 'Breakdown cleared')
+                                        setSplitOpen(-1)
+                                      } catch (e) {
+                                        toast.error((e as Error).message)
+                                      }
+                                    }
+                                  : undefined
+                              }
                             />
                           </div>
                         )}
@@ -15805,6 +15841,24 @@ export function Accounts({
                     {wide ? `Open ${(lines.find((l) => l.id === primary)?.name || 'ledger').slice(0, 28)}` : 'Open in ledger'}
                   </button>
                   <div className="flex-1" />
+                  {/* THE BREAKDOWN, on any voucher — a purchase's or a bill's
+                      too. It opens the voucher whole, where each line's working
+                      can be written and saved; its ledgers stay as posted. */}
+                  {showBreakdowns && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setDbSel(null)
+                        void openForAlter({ id: Number(dv.id) })
+                      }}
+                      title="Write what a line's figure is made of — the ledgers and amounts stay as posted"
+                      className="flex h-10 items-center gap-[7px] whitespace-nowrap rounded-[7px] px-3.5"
+                      style={{ border: '1.5px solid #BFE3CB', background: '#F1F8EC', fontSize: 12, fontWeight: 800, color: '#0B6B45' }}
+                    >
+                      <Split className="h-[17px] w-[17px]" />
+                      Break down a figure
+                    </button>
+                  )}
                   <button
                     type="button"
                     onClick={() => {

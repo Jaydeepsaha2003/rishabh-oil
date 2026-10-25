@@ -173,7 +173,6 @@ export function CashflowExcelDialog({
               r[`h:${k}`] = a || ''
               gt += a
             }
-            r[`g:${g.name}`] = round2(gt) || ''
             split += gt
           }
           r.split = round2(split) || ''
@@ -194,18 +193,19 @@ export function CashflowExcelDialog({
           money('Dr', 'dr'),
           money('Cr', 'cr')
         ]
+        // A column per head, coloured by its group; wide enough that the
+        // header reads in full beside the filter arrow.
         for (const g of order) {
-          g.heads.forEach((k, i) =>
-            cols.push(money(`${g.name} › ${label.get(k)}`, `h:${k}`, { headerFill: g.color.head, divider: i === 0 }))
-          )
-          cols.push(money(`${g.name} — total`, `g:${g.name}`, { headerFill: g.color.head, fill: g.color.tint }))
+          g.heads.forEach((k, i) => {
+            const header = `${g.name} › ${label.get(k)}`
+            cols.push(money(header, `h:${k}`, { headerFill: g.color.head, divider: i === 0, width: header.length + 6 }))
+          })
         }
         cols.push(
-          money('Split total', 'split', { divider: true, fill: 'FFFDF3D7' }),
-          money('Not split', 'unsplit'),
+          money('Split total', 'split', { divider: true, fill: 'FFFDF3D7', width: 16 }),
+          money('Not split', 'unsplit', { width: 14 }),
           { header: 'Remarks', key: 'remarks', width: 30 },
           { header: 'Bill references', key: 'line_refs' },
-          { header: 'Not right', key: 'issues' },
           { header: 'Narration', key: 'narration', width: 40 }
         )
         await exportRowsToExcel({
@@ -219,30 +219,23 @@ export function CashflowExcelDialog({
           extraSheets: [summarySheet]
         })
       } else {
-        // HEADS AS ROWS — under each group a subtotal row, its parts folded in.
+        // HEADS AS ROWS — each entry once, its parts beneath it (in the order
+        // of the head groups), folding open. The entry's row carries the line
+        // and what its parts add up to; the parts carry only the head.
+        const rank = new Map<string, number>()
+        order.forEach((g, gi) => g.heads.forEach((k, hi) => rank.set(k, gi * 1000 + hi)))
         const rows: Row[] = []
-        const pushGroup = (name: string, items: Row[]): void => {
-          if (!items.length) return
-          rows.push({ _g: true, hgroup: name, head: `${items.length} ${items.length === 1 ? 'entry' : 'entries'}`, amount: round2(items.reduce((t, x) => t + n(x.amount), 0)) })
-          rows.push(...items)
+        for (const { v, l, parts } of lines) {
+          const ps = [...(parts as Row[])].sort((a, b) => (rank.get(headKey(a.name)) ?? 1e9) - (rank.get(headKey(b.name)) ?? 1e9))
+          rows.push({ _g: true, ...base(v, l), line_amount: n(l.amount), part_amount: round2(ps.reduce((t, p) => t + n(p.amount), 0)) || '' })
+          for (const p of ps) rows.push({ hgroup: groupOf(headKey(p.name)), head: label.get(headKey(p.name)), part_amount: n(p.amount), remarks: p.note || '' })
         }
-        for (const g of order) {
-          const items: Row[] = []
-          for (const { v, l, parts } of lines)
-            for (const p of parts as Row[])
-              if (g.heads.includes(headKey(p.name))) items.push({ ...base(v, l), hgroup: g.name, head: label.get(headKey(p.name)), amount: n(p.amount), remarks: p.note || '' })
-          pushGroup(g.name, items)
-        }
-        if (withAll) pushGroup(NONE, lines.filter((x) => !x.parts.length).map(({ v, l }) => ({ ...base(v, l), hgroup: NONE, head: '—', amount: n(l.amount), remarks: '' })))
         await exportRowsToExcel({
           filename: `cashflow-register-${from}-to-${to}`,
           sheetName: 'Heads as rows',
           title: `Cashflow register — ${companyName}`,
           subtitle: sub,
           columns: [
-            { header: 'Head group', key: 'hgroup', width: 20 },
-            { header: 'Head', key: 'head', width: 24 },
-            money('Amount', 'amount', { divider: true }),
             { header: 'Date', key: 'date' },
             { header: 'Voucher', key: 'voucher' },
             { header: 'Type', key: 'type' },
@@ -250,15 +243,18 @@ export function CashflowExcelDialog({
             { header: 'Party', key: 'party' },
             { header: 'Ledger', key: 'ledger' },
             { header: 'Dr / Cr', key: 'side', align: 'center' },
+            money('Line amount', 'line_amount', { width: 16 }),
+            { header: 'Head group', key: 'hgroup', width: 20, divider: true },
+            { header: 'Head', key: 'head', width: 24 },
+            money('Part amount', 'part_amount', { width: 16 }),
             { header: 'Remarks', key: 'remarks', width: 30 },
             { header: 'Ref no', key: 'refs' },
-            { header: 'Not right', key: 'issues' },
             { header: 'Narration', key: 'narration', width: 40 }
           ],
           rows,
           isGroup: (r) => !!r._g,
           outlineDetail: true,
-          freezeCols: 3,
+          freezeCols: 2,
           extraSheets: [summarySheet]
         })
       }

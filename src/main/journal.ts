@@ -301,15 +301,39 @@ export async function repostJournal(entryId: number, a: PostArgs): Promise<{ id:
     sql: 'DELETE FROM journal_bill_allocs WHERE line_id IN (SELECT id FROM journal_lines WHERE entry_id = ?)',
     args: [id]
   })
+  // A BREAKDOWN written on a line comes back on the new line of the same
+  // ledger, side and amount — the working still adds up there. A line whose
+  // figure changed loses it: its parts no longer make the figure.
+  const kept = new Map<string, Row[]>()
+  for (const s of (await c.execute({
+    sql: `SELECT jl.account_id, jl.dr, jl.cr, s.name, s.amount, s.note, s.sort_order
+            FROM journal_line_splits s JOIN journal_lines jl ON jl.id = s.line_id
+           WHERE jl.entry_id = ? ORDER BY s.line_id, s.sort_order, s.id`,
+    args: [id]
+  })).rows as unknown as Row[]) {
+    const key = `${n(s.account_id)}|${n(s.dr) > 0 ? 'dr' : 'cr'}|${(n(s.dr) || n(s.cr)).toFixed(2)}`
+    kept.set(key, [...(kept.get(key) || []), s])
+  }
   await c.execute({ sql: 'DELETE FROM journal_line_splits WHERE line_id IN (SELECT id FROM journal_lines WHERE entry_id = ?)', args: [id] })
   await c.execute({ sql: 'DELETE FROM journal_lines WHERE entry_id = ?', args: [id] })
   for (const l of lines) {
     // A party line never lands on the other side's ledger (partyLedgers.ts).
     const accountId = await getOrCreateAccount(await partyAccountName(l.account, l.group, a.companyId), l.group, a.companyId)
-    await c.execute({
+    const ins = await c.execute({
       sql: 'INSERT INTO journal_lines (entry_id, account_id, dr, cr) VALUES (?, ?, ?, ?)',
       args: [id, accountId, n(l.dr), n(l.cr)]
     })
+    const key = `${accountId}|${n(l.dr) > 0 ? 'dr' : 'cr'}|${(n(l.dr) || n(l.cr)).toFixed(2)}`
+    const parts = kept.get(key)
+    if (parts) {
+      kept.delete(key)
+      for (const s of parts) {
+        await c.execute({
+          sql: 'INSERT INTO journal_line_splits (line_id, name, amount, note, sort_order) VALUES (?, ?, ?, ?, ?)',
+          args: [Number(ins.lastInsertRowid), s.name, n(s.amount), s.note ?? null, n(s.sort_order)]
+        })
+      }
+    }
   }
   return { id }
   })

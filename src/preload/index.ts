@@ -280,6 +280,8 @@ const api = {
     summary: (args?: { from?: string; to?: string; companyId?: number }): Promise<Row> => ipcRenderer.invoke('vouchers:summary', args),
     get: (id: number): Promise<Row | null> => ipcRenderer.invoke('vouchers:get', { id }),
     subtypes: (): Promise<Row[]> => ipcRenderer.invoke('vouchers:subtypes'),
+    setLineSplits: (lineId: number, splits: { name: string; amount: number; note?: string | null }[]): Promise<{ id: number; parts: number }> =>
+      ipcRenderer.invoke('vouchers:setLineSplits', { lineId, splits }),
     subtypeCreate: (values: { base_type: string; name: string }): Promise<{ id: number }> => ipcRenderer.invoke('vouchers:subtypeCreate', { values }),
     subtypeRename: (values: { id: number; name: string }): Promise<{ id: number }> => ipcRenderer.invoke('vouchers:subtypeRename', { values }),
     subtypeDelete: (id: number): Promise<{ id: number }> => ipcRenderer.invoke('vouchers:subtypeDelete', { id }),

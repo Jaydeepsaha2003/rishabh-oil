@@ -1129,6 +1129,10 @@ export function registerIpc(): void {
     return cashflowRegister(args?.from, args?.to, args?.companyId)
   })
   handle('vouchers:get', (_e, { id }: { id: number }) => getVoucher(id))
+  // One line's breakdown on its own, on any voucher (accounting.ts setLineSplits).
+  handle('vouchers:setLineSplits', async (_e, { lineId, splits }: { lineId: number; splits: { name: string; amount: number; note?: string | null }[] }) =>
+    (await import('./accounting')).setLineSplits(Number(lineId), splits || [])
+  )
   // The desk's own voucher types (voucherSubtypes.ts).
   handle('vouchers:subtypes', async () => (await import('./voucherSubtypes')).listVoucherSubtypes())
   handle('vouchers:subtypeCreate', async (_e, { values }: { values: { base_type: string; name: string } }) => (await import('./voucherSubtypes')).createVoucherSubtype(values))

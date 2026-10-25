@@ -202,6 +202,7 @@ export interface Api {
     summary: (args?: { from?: string; to?: string; companyId?: number }) => Promise<Row>
     get: (id: number) => Promise<Row | null>
     subtypes: () => Promise<Row[]>
+    setLineSplits: (lineId: number, splits: { name: string; amount: number; note?: string | null }[]) => Promise<{ id: number; parts: number }>
     subtypeCreate: (values: { base_type: string; name: string }) => Promise<{ id: number }>
     subtypeRename: (values: { id: number; name: string }) => Promise<{ id: number }>
     subtypeDelete: (id: number) => Promise<{ id: number }>

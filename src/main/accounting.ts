@@ -303,6 +303,40 @@ async function writeSplits(entryId: number, lines: LineWithAllocs[]): Promise<vo
   }
 }
 
+/**
+ * THE BREAKDOWN OF ONE LINE, on its own — for any voucher, including one a
+ * purchase, sale, LC or discounted bill posted, whose ledgers and amounts stay
+ * locked. Only the working is written: it has to add up to the line (or be
+ * empty, to clear it). Nothing posted changes.
+ */
+export async function setLineSplits(lineId: number, splits: LineSplit[]): Promise<{ id: number; parts: number }> {
+  return withDbTransaction(async () => {
+    const c = getClient()
+    const line = (await c.execute({ sql: 'SELECT id, dr, cr FROM journal_lines WHERE id = ?', args: [n(lineId)] })).rows[0] as unknown as Row | undefined
+    if (!line) throw new Error('That voucher line no longer exists — open the voucher again')
+    const amount = Math.round((n(line.dr) || n(line.cr)) * 100) / 100
+    const parts = (splits || [])
+      .map((s) => ({ name: String(s.name || '').trim(), amount: Math.round(n(s.amount) * 100) / 100, note: s.note ? String(s.note).trim() : null }))
+      .filter((s) => s.name || s.amount)
+    if (parts.some((s) => !s.name)) throw new Error('Give every part a name')
+    if (parts.some((s) => s.amount <= 0)) throw new Error('Every part needs an amount')
+    const total = Math.round(parts.reduce((t, s) => t + s.amount, 0) * 100) / 100
+    if (parts.length && Math.abs(total - amount) > 0.01) {
+      throw new Error(`The parts add up to ${total.toFixed(2)} — the line is ${amount.toFixed(2)}`)
+    }
+    await c.execute({ sql: 'DELETE FROM journal_line_splits WHERE line_id = ?', args: [n(lineId)] })
+    let order = 0
+    for (const s of parts) {
+      order += 10
+      await c.execute({
+        sql: 'INSERT INTO journal_line_splits (line_id, name, amount, note, sort_order) VALUES (?, ?, ?, ?, ?)',
+        args: [n(lineId), s.name, s.amount, s.note, order]
+      })
+    }
+    return { id: n(lineId), parts: parts.length }
+  })
+}
+
 // Store bill-wise rows against the freshly written journal lines. The entry's
 // lines are re-read in insert order, which matches the validated array.
 async function writeAllocs(entryId: number, lines: LineWithAllocs[]): Promise<void> {
