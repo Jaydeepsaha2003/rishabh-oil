@@ -161,11 +161,11 @@ export function SubLedgersPanel({
   )
   const form = (d: Draft, set: (p: Partial<Draft>) => void, ph: string): React.JSX.Element => (
     <div className="grid gap-2.5">
-      <div className="grid grid-cols-[minmax(0,1fr)_250px] gap-2.5">
+      <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-[minmax(0,1fr)_250px]">
         {field(d, set, 'name', 'Name', ph)}
         {typePick(d, set)}
       </div>
-      <div className="grid grid-cols-[1.4fr_1fr_90px_1fr] gap-2.5">
+      <div className="grid grid-cols-2 gap-2.5 sm:grid-cols-[1.4fr_1fr_90px_1fr]">
         {field(d, set, 'gstin', 'GSTIN', '22AAAAA0000A1Z5')}
         {field(d, set, 'state', 'State', 'e.g. Gujarat')}
         {field(d, set, 'gst_pct', 'GST %', '5')}
@@ -190,7 +190,7 @@ export function SubLedgersPanel({
   return (
     <div className="mt-2 overflow-hidden rounded-[10px] border border-[#CFE0D2] bg-white shadow-[0_1px_2px_rgba(10,31,23,.04),0_10px_24px_-18px_rgba(10,31,23,.35)]">
       {/* HEAD — what this is, how many of each. */}
-      <div className="flex flex-wrap items-center gap-3 border-b border-[#DCE7DB] bg-[linear-gradient(160deg,#F4FAF6,#EAF4EC)] px-4 py-3">
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-2 border-b border-[#DCE7DB] bg-[linear-gradient(160deg,#F4FAF6,#EAF4EC)] px-4 py-3">
         <span className="flex h-9 w-9 flex-none items-center justify-center rounded-[9px] bg-[#0B3D2E]">
           <GitBranch className="h-[17px] w-[17px] text-[#C7F03F]" />
         </span>
@@ -259,7 +259,7 @@ export function SubLedgersPanel({
                 <div className="border-t border-[#EAF0E9] bg-[#FBFCFA] px-3.5 pb-3 pt-3">
                   {form(d, (p) => setDrafts((x) => ({ ...x, [id]: { ...d, ...p } })), '')}
                   {!readOnly && (
-                    <div className="mt-3 flex items-center gap-2">
+                    <div className="mt-3 flex flex-wrap items-center gap-2">
                       <button
                         type="button"
                         disabled={busy}
@@ -317,8 +317,8 @@ export function SubLedgersPanel({
               </div>
               <div className="p-3.5 pt-2.5">
                 {form(add, (p) => setAdd((x) => ({ ...x, ...p })), 'e.g. DIL EXIM – RAJKOT, or DIL EXIM COMMODITIES')}
-                <div className="mt-3 flex items-center justify-end gap-2">
-                  <span className="mr-auto text-[11px] font-semibold text-[#5A6B62]">Takes this party&apos;s TDS, credit days and interest terms.</span>
+                <div className="mt-3 flex flex-wrap items-center justify-end gap-2">
+                  <span className="mr-auto basis-full text-[11px] font-semibold text-[#5A6B62] sm:basis-auto">Takes this party&apos;s TDS, credit days and interest terms.</span>
                   <button
                     type="button"
                     disabled={busy || !add.name.trim()}
