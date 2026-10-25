@@ -233,6 +233,7 @@ export interface Api {
     renameGroup: (id: number, name: string) => Promise<{ id: number }>
     moveGroup: (id: number, parentId: number | null, nature?: string) => Promise<{ id: number }>
     deleteGroup: (id: number) => Promise<{ id: number }>
+    deleteLedger: (id: number) => Promise<{ id: number; name: string }>
     setAccountGroup: (id: number, group: string) => Promise<{ id: number }>
     setAccountsGroup: (ids: number[], group: string) => Promise<{ moved: number; group: string }>
     setAccountsHidden: (ids: number[], hidden: boolean) => Promise<{ changed: number; hidden: boolean }>

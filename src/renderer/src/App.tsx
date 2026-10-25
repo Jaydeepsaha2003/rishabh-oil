@@ -386,25 +386,30 @@ function App(): React.JSX.Element {
     }
   }, [user, allowed, page])
 
-  // A — straight to Accounting, as Tally's gateway key would. Only a bare A
-  // pressed with nothing to type into: a field, a dropdown or an open dialog
-  // keeps the letter, and a page that already handled the key wins.
+  // A — straight to Accounting, as Tally's gateway key would; R — Treasury.
+  // Only a bare letter pressed with nothing to type into: a field, a dropdown
+  // or an open dialog keeps the letter, and a page that already handled the
+  // key wins. Not on Accounting itself, where every letter is its own menu
+  // (R there is Fr. Inward Working).
   const mayAccounts = allowed.includes('accounts')
+  const mayTreasury = allowed.includes('treasury')
   useEffect(() => {
-    if (!mayAccounts || page === 'accounts') return
+    if (page === 'accounts') return
     function onKey(e: KeyboardEvent): void {
       if (e.defaultPrevented || e.repeat || e.ctrlKey || e.metaKey || e.altKey) return
-      if (e.key !== 'a' && e.key !== 'A') return
+      const k = e.key.toLowerCase()
+      const to: Page | null = k === 'a' && mayAccounts ? 'accounts' : k === 'r' && mayTreasury && page !== 'treasury' ? 'treasury' : null
+      if (!to) return
       const t = e.target as HTMLElement | null
       if (t && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName) || t.closest('[role="combobox"],[role="listbox"],[role="menu"]'))) return
       if (document.querySelector('[role="dialog"],[role="alertdialog"],[role="menu"],[role="listbox"]')) return
       e.preventDefault()
-      navigate('accounts')
+      navigate(to)
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [mayAccounts, page])
+  }, [mayAccounts, mayTreasury, page])
 
   // Tell the main process who is acting on this device, so the audit trail can
   // attribute every write. Runs on login and whenever the user is restored.

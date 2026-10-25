@@ -340,6 +340,7 @@ const api = {
     moveGroup: (id: number, parentId: number | null, nature?: string): Promise<{ id: number }> =>
       ipcRenderer.invoke('journal:moveGroup', { id, parentId, nature }),
     deleteGroup: (id: number): Promise<{ id: number }> => ipcRenderer.invoke('journal:deleteGroup', { id }),
+    deleteLedger: (id: number): Promise<{ id: number; name: string }> => ipcRenderer.invoke('journal:deleteLedger', { id }),
     setAccountGroup: (id: number, group: string): Promise<{ id: number }> =>
       ipcRenderer.invoke('journal:setAccountGroup', { id, group }),
     setAccountsGroup: (ids: number[], group: string): Promise<{ moved: number; group: string }> =>

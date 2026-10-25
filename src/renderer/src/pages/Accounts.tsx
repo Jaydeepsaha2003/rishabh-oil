@@ -11429,6 +11429,18 @@ export function Accounts({
     }
   }
 
+  async function masterDeleteLedger(id: number, name: string): Promise<void> {
+    if (!rightsIn('accountsMasters').delete) return void toast.error('You do not have rights to delete in Masters')
+    if (!window.confirm(`Delete the ledger ${name}? Only a ledger nothing is posted to can go — one with history is refused.`)) return
+    try {
+      await window.api.journal.deleteLedger(id)
+      toast.success(`${name} deleted`)
+      await Promise.all([loadGroups(), loadAccounts()])
+    } catch (e) {
+      toast.error(errText(e))
+    }
+  }
+
   async function masterDeleteGroup(g: Row): Promise<void> {
     if (!rightsIn('accountsMasters').delete) return void toast.error('You do not have rights to delete in Masters')
     if (!window.confirm(`Delete the group ${String(g.name)}? Nothing is posted to it.`)) return
@@ -12203,6 +12215,12 @@ export function Accounts({
                         Number(ln.a.is_hidden) ? `Unhide ${String(ln.a.name)}` : `Hide ${String(ln.a.name)} from the pickers and this list`,
                         () => void masterSetHidden([id], !Number(ln.a.is_hidden)),
                         Number(ln.a.is_hidden) ? <Eye className="h-[15px] w-[15px]" /> : <EyeOff className="h-[15px] w-[15px]" />
+                      )}
+                      {actBtn(
+                        `Delete ${String(ln.a.name)} — only when nothing is posted to it`,
+                        () => void masterDeleteLedger(id, String(ln.a.name)),
+                        <Trash2 className="h-[15px] w-[15px]" />,
+                        { danger: true }
                       )}
                     </div>
                   </div>

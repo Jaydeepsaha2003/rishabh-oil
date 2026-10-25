@@ -3515,6 +3515,13 @@ export function BillDiscounting({
                             0
                           )
                         )}
+                        {/* Under the face total, what is still owed on these
+                            bills — the open amount less what has been repaid. */}
+                        {k === 'amount' && (
+                          <div className={cn('mt-0.5 text-[11px] font-semibold text-[#1B4E82]', __WEB__ && '!text-[11px] !font-bold !text-[#1B4E82]')}>
+                            Balance {formatINR(round2(filtered.reduce((t, x) => t + Math.max(0, dueOn(x)), 0)))}
+                          </div>
+                        )}
                       </TableCell>
                     ))}
                     <TableCell />

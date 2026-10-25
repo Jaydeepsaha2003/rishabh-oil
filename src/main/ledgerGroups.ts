@@ -459,6 +459,53 @@ export async function deleteGroup(id: number): Promise<{ id: number }> {
 }
 
 /**
+ * DELETING A LEDGER — only one nothing uses: no voucher line, no bill
+ * allocation, no opening figure, no party record of that name (which would
+ * re-create it on the next save) and no rename redirect pointing at it. A
+ * ledger with history is merged or hidden instead, never deleted.
+ */
+export async function deleteLedger(id: number): Promise<{ id: number; name: string }> {
+  const c = getClient()
+  const a = (await c.execute({ sql: 'SELECT id, name FROM ledger_accounts WHERE id = ?', args: [Number(id)] })).rows[0] as unknown as Row | undefined
+  if (!a) throw new Error('No such ledger')
+  const name = String(a.name || '')
+  const key = name.trim().toUpperCase()
+  const count = async (sql: string, args: (string | number)[]): Promise<number> =>
+    Number(((await c.execute({ sql, args })).rows[0] as unknown as Row | undefined)?.n || 0)
+  const lines = await count('SELECT COUNT(*) AS n FROM journal_lines WHERE account_id = ?', [Number(id)])
+  if (lines) throw new Error(`${name} has ${lines} voucher line(s) — merge it into another ledger or hide it instead`)
+  if (await count('SELECT COUNT(*) AS n FROM journal_bill_allocs WHERE account_id = ?', [Number(id)]))
+    throw new Error(`${name} has bill allocations — merge it into another ledger or hide it instead`)
+  if (await count('SELECT COUNT(*) AS n FROM ledger_openings WHERE account_id = ? AND (ABS(COALESCE(dr, 0)) > 0.004 OR ABS(COALESCE(cr, 0)) > 0.004)', [Number(id)]))
+    throw new Error(`${name} has an opening balance — clear it under Opening balances first`)
+  // The party masters name their ledger; "X (DR)"/"X (CR)" is party X's split ledger.
+  const bare = key.replace(/\s*\((DR|CR)\)$/, '')
+  for (const [t, what] of [
+    ['suppliers', 'supplier'],
+    ['customers', 'customer'],
+    ['transporters', 'transporter'],
+    ['brokers', 'broker']
+  ]) {
+    const hit = await count(`SELECT COUNT(*) AS n FROM ${t} WHERE TRIM(UPPER(name)) IN (?, ?)`, [key, bare]).catch(() => 0)
+    if (hit) throw new Error(`${name} is the ledger of a ${what} of that name — rename or remove the ${what} first, or it comes back on its next save`)
+  }
+  if (await count('SELECT COUNT(*) AS n FROM ledger_map WHERE TRIM(UPPER(use_name)) = ?', [key]))
+    throw new Error(`Old names are redirected to ${name} — it cannot be deleted while they point here`)
+  await withDbTransaction(async () => {
+    const tx = getClient() // the transaction's client inside withDbTransaction
+    await tx.execute({ sql: 'DELETE FROM ledger_openings WHERE account_id = ?', args: [Number(id)] })
+    for (const t of ['ledger_homes', 'company_bank_accounts']) {
+      await tx.execute({ sql: `DELETE FROM ${t} WHERE account_id = ?`, args: [Number(id)] }).catch(() => undefined)
+    }
+    for (const t of ['tally_import_map', 'tally_ledgers']) {
+      await tx.execute({ sql: `UPDATE ${t} SET account_id = NULL WHERE account_id = ?`, args: [Number(id)] }).catch(() => undefined)
+    }
+    await tx.execute({ sql: 'DELETE FROM ledger_accounts WHERE id = ?', args: [Number(id)] })
+  })
+  return { id: Number(id), name }
+}
+
+/**
  * MOVING A LEDGER, NOT RENAMING IT.
  *
  * Which group a ledger sits under is presentation — it decides the heading it

@@ -242,6 +242,7 @@ import {
   renameGroup,
   moveGroup,
   deleteGroup,
+  deleteLedger,
   setAccountGroup,
   setAccountsGroup,
   setAccountsHidden,
@@ -1047,6 +1048,7 @@ export function registerIpc(): void {
     moveGroup(id, parentId, nature)
   )
   handle('journal:deleteGroup', (_e, { id }: { id: number }) => deleteGroup(id))
+  handle('journal:deleteLedger', (_e, { id }: { id: number }) => deleteLedger(id))
   handle('journal:setAccountGroup', (_e, { id, group }: { id: number; group: string }) => setAccountGroup(id, group))
   handle('journal:setAccountsGroup', (_e, { ids, group }: { ids: number[]; group: string }) => setAccountsGroup(ids, group))
   handle('journal:setAccountsHidden', (_e, { ids, hidden }: { ids: number[]; hidden: boolean }) => setAccountsHidden(ids, hidden))
