@@ -4901,7 +4901,7 @@ function TreasuryDesk({ onCompanyChange, focusLcId, focusBdId, onFocusHandled }:
                           <span className={help}>
                             {toParty
                               ? 'Reversed off interest, then paid on to the supplier from the bank — they were underpaid by this much when their bill was settled over the full term.'
-                              : 'Kept: the interest for those days comes back off the Interest account. No money moves.'}
+                              : 'Kept: the bank refunds it into our account. Nothing is posted here — link the bank receipt under Interest refund once it is in.'}
                           </span>
                         </div>
                       </div>

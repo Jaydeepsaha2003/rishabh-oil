@@ -1343,7 +1343,14 @@ export async function precloseLC(
   // that stretch is a rebate now, not a charge — either refunded straight to
   // the company, or passed on to the supplier who was underpaid by exactly
   // this much when their bill was settled.
-  const rebate = await postLcPrematureInterestRebate(id, rebateDirection, prematureInterest, precloseDate)
+  //
+  // CREDITED TO US posts nothing here: the bank pays the refund into our
+  // account and it is booked from its own receipt (Tally's), linked to the LC
+  // under Interest refund (lc.ts linkLcRefund). Posting a reversal as well
+  // counted the same money twice. Only a rebate passed on to the supplier is
+  // posted — that one is money we pay out.
+  const rebate =
+    rebateDirection === 'pay_to_party' ? await postLcPrematureInterestRebate(id, rebateDirection, prematureInterest, precloseDate) : null
   if (rebate) {
     await c.execute({
       sql: `UPDATE letters_of_credit
