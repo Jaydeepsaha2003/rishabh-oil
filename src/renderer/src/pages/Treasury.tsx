@@ -659,10 +659,13 @@ function canPreclose(l: Row): boolean {
 function ChipCount({
   n: count,
   on,
-  tone = 'forest'
+  tone = 'forest',
+  onClass
 }: {
   n: number
   on: boolean
+  // The state chips each wear their own colour; this is the badge for it.
+  onClass?: string
   // The purpose chips wear violet, the state chips forest — so the badge on a
   // selected chip has to know which fill it is sitting on.
   tone?: 'forest' | 'violet'
@@ -672,7 +675,9 @@ function ChipCount({
       className={cn(
         'ml-1.5 inline-block rounded-[2px] px-[5px] py-[2px] align-middle font-mono text-[10.5px] font-bold tabular-nums',
         on
-          ? tone === 'violet'
+          ? onClass
+            ? onClass
+            : tone === 'violet'
             ? 'bg-[#C7BCF0] text-[#241C4D]'
             : 'bg-[#C7F03F] text-[#0B3D2E]'
           : // A nil count is not the same news as a count: greyed, so an empty
@@ -1191,6 +1196,16 @@ function DuplicateNoBadge({ lcs, l }: { lcs: Row[]; l: Row }): React.JSX.Element
   )
 }
 
+// Each state chip's colour when selected — fill, the accent under it, the
+// count badge, and the dot it shows when not selected.
+const LC_STATE_TONE: Record<'all' | 'matured' | 'repaid' | 'preclosed' | 'rejected', { on: string; badge: string; dot: string }> = {
+  all: { on: '!border-[#0B3D2E] !bg-[#0B3D2E] !text-white !shadow-[0_1px_2px_rgba(10,31,23,.22),inset_0_-2px_0_#C7F03F]', badge: 'bg-[#C7F03F] text-[#0B3D2E]', dot: 'bg-[#0B6B45]' },
+  matured: { on: '!border-[#8A5300] !bg-[#8A5300] !text-white !shadow-[0_1px_2px_rgba(10,31,23,.22),inset_0_-2px_0_#F5C66B]', badge: 'bg-[#F5C66B] text-[#4A2C00]', dot: 'bg-[#D99A1E]' },
+  repaid: { on: '!border-[#3F4E5A] !bg-[#3F4E5A] !text-white !shadow-[0_1px_2px_rgba(10,31,23,.22),inset_0_-2px_0_#B8C6D1]', badge: 'bg-[#B8C6D1] text-[#1E2A33]', dot: 'bg-[#6B7F8E]' },
+  preclosed: { on: '!border-[#0E5A78] !bg-[#0E5A78] !text-white !shadow-[0_1px_2px_rgba(10,31,23,.22),inset_0_-2px_0_#8FD3EA]', badge: 'bg-[#8FD3EA] text-[#06324A]', dot: 'bg-[#1C8DB5]' },
+  rejected: { on: '!border-[#9B2C24] !bg-[#9B2C24] !text-white !shadow-[0_1px_2px_rgba(10,31,23,.22),inset_0_-2px_0_#F2B8B2]', badge: 'bg-[#F2B8B2] text-[#5C140F]', dot: 'bg-[#C0392B]' }
+}
+
 // How an LC's closure sits against its maturity. Only 'early' is a preclosure.
 function closureKind(l: Row): 'none' | 'early' | 'on_time' | 'late' {
   const closed = String(l?.preclosed_date || '').slice(0, 10)
@@ -1209,7 +1224,11 @@ function ClosureBadge({ l, withDate }: { l: Row; withDate?: boolean }): React.JS
   const on = withDate ? ` ${formatDate(l.preclosed_date)}` : ''
   if (kind === 'early') {
     return (
-      <Badge variant="muted" title={`Wound up early on ${formatDate(l.preclosed_date)} — ${formatDate(l.expiry_date)} never came`}>
+      <Badge
+        variant="muted"
+        className="!border !border-[#BFE3F0] !bg-[#E8F6FB] !font-bold !text-[#0E5A78]"
+        title={`Wound up early on ${formatDate(l.preclosed_date)} — ${formatDate(l.expiry_date)} never came`}
+      >
         Preclosed{on}
       </Badge>
     )
@@ -1357,7 +1376,7 @@ function TreasuryDesk({ onCompanyChange, focusLcId, focusBdId, onFocusHandled }:
   //
   // Signature: 'none' | 'early' | 'on_time' | 'late'.
   // 'repaid' = preclosed/repaid already.
-  const [lcStatusFilter, setLcStatusFilter] = useState<'all' | 'matured' | 'repaid' | 'rejected'>('all')
+  const [lcStatusFilter, setLcStatusFilter] = useState<'all' | 'matured' | 'repaid' | 'preclosed' | 'rejected'>('all')
   // One box across the three things an LC is looked up by. The column filters
   // are for narrowing a whole register; this is for finding one row.
   const [lcSearch, setLcSearch] = useState('')
@@ -2507,7 +2526,9 @@ function TreasuryDesk({ onCompanyChange, focusLcId, focusBdId, onFocusHandled }:
     // repaid, never matured — shown only under their own chip.
     if (lcStatusFilter === 'rejected') rows = rows.filter((l) => isLcRejected(l))
     else if (lcStatusFilter === 'matured') rows = rows.filter((l) => isLcPastMaturity(l) && !l.preclosed_date && !isLcRejected(l))
-    else if (lcStatusFilter === 'repaid') rows = rows.filter((l) => !!l.preclosed_date && !isLcRejected(l))
+    // Repaid = wound up on or after maturity; Preclosed = wound up before it.
+    else if (lcStatusFilter === 'repaid') rows = rows.filter((l) => !!l.preclosed_date && closureKind(l) !== 'early' && !isLcRejected(l))
+    else if (lcStatusFilter === 'preclosed') rows = rows.filter((l) => closureKind(l) === 'early' && !isLcRejected(l))
     else rows = rows.filter((l) => !l.preclosed_date && !isLcPastMaturity(l) && !isLcRejected(l))
     // Same window the LC Facility Limit KPI above is scoped to — the register
     // and the KPI it summarises always show the same cohort of LCs.
@@ -2549,8 +2570,10 @@ function TreasuryDesk({ onCompanyChange, focusLcId, focusBdId, onFocusHandled }:
         : lcStatusFilter === 'matured'
           ? matured
           : lcStatusFilter === 'repaid'
-            ? (l) => !!l.preclosed_date && !isLcRejected(l)
-            : running
+            ? (l) => !!l.preclosed_date && closureKind(l) !== 'early' && !isLcRejected(l)
+            : lcStatusFilter === 'preclosed'
+              ? (l) => closureKind(l) === 'early' && !isLcRejected(l)
+              : running
     )
     const inPurpose = (rows: Row[]): Row[] =>
       lcPurposeFilter ? rows.filter((l) => purposeOf(l) === lcPurposeFilter) : rows
@@ -2561,7 +2584,8 @@ function TreasuryDesk({ onCompanyChange, focusLcId, focusBdId, onFocusHandled }:
       matured: inPurpose(scope(lcsWithDue, true)).filter(matured).length,
       // Clicking Repaid clears the due period, so counting one in would show a
       // zero on a chip that is about to reveal rows.
-      repaid: inPurpose(scope(lcsWithDue, false)).filter((l) => !!l.preclosed_date && !isLcRejected(l)).length,
+      repaid: inPurpose(scope(lcsWithDue, false)).filter((l) => !!l.preclosed_date && closureKind(l) !== 'early' && !isLcRejected(l)).length,
+      preclosed: inPurpose(scope(lcsWithDue, false)).filter((l) => closureKind(l) === 'early' && !isLcRejected(l)).length,
       rejected: inPurpose(scope(lcsWithDue, false)).filter(isLcRejected).length
     }
   }, [lcsWithDue, lcDuePeriod, lcStageFilter, lcPurposeFilter, lcStatusFilter, activeBanks, lcKpiFrom, lcKpiTo])
@@ -3429,8 +3453,8 @@ function TreasuryDesk({ onCompanyChange, focusLcId, focusBdId, onFocusHandled }:
                     <span
                       className="flex items-center gap-1.5"
                       title={
-                        lcStatusFilter === 'repaid'
-                          ? 'A repaid LC has no due date — nothing is owed on it'
+                        lcStatusFilter === 'repaid' || lcStatusFilter === 'preclosed'
+                          ? 'A closed LC has no due date — nothing is owed on it'
                           : undefined
                       }
                     >
@@ -3440,7 +3464,7 @@ function TreasuryDesk({ onCompanyChange, focusLcId, focusBdId, onFocusHandled }:
                       <Select
                         value={lcDuePeriod}
                         onValueChange={setLcDuePeriod}
-                        disabled={lcStatusFilter === 'repaid'}
+                        disabled={lcStatusFilter === 'repaid' || lcStatusFilter === 'preclosed'}
                       >
                         <SelectTrigger
                           className={cn(
@@ -3476,6 +3500,7 @@ function TreasuryDesk({ onCompanyChange, focusLcId, focusBdId, onFocusHandled }:
                         { key: 'all', label: 'Running' },
                         { key: 'matured', label: 'Matured' },
                         { key: 'repaid', label: 'Repaid' },
+                        { key: 'preclosed', label: 'Preclosed' },
                         { key: 'rejected', label: 'Rejected' }
                       ] as const
                     )
@@ -3490,7 +3515,7 @@ function TreasuryDesk({ onCompanyChange, focusLcId, focusBdId, onFocusHandled }:
                           // Switching to Repaid would otherwise leave a due-period
                           // chip selected but dead, and the list empty for no
                           // visible reason.
-                          if (p.key === 'repaid' || p.key === 'rejected') setLcDuePeriod('all')
+                          if (p.key === 'repaid' || p.key === 'preclosed' || p.key === 'rejected') setLcDuePeriod('all')
                         }}
                         className={cn(
                           'rounded-full border px-3 py-1 text-[11px] font-semibold uppercase tracking-wide transition-colors',
@@ -3498,12 +3523,15 @@ function TreasuryDesk({ onCompanyChange, focusLcId, focusBdId, onFocusHandled }:
                           __WEB__ && '!h-[32px] !rounded-[3px] !border !px-[11px] !text-[12.5px] !font-extrabold !capitalize !tracking-normal',
                           __WEB__ &&
                             (lcStatusFilter === p.key
-                              ? '!border-[#0B3D2E] !bg-[#0B3D2E] !text-white !shadow-[0_1px_2px_rgba(10,31,23,.22),inset_0_-2px_0_#C7F03F]'
+                              ? LC_STATE_TONE[p.key].on
                               : '!border-[#D5E1D4] !bg-white !text-[#5A6B62] !shadow-[0_1px_1px_rgba(10,31,23,.04)] hover:!border-[#B7CBB6] hover:!text-[#0A1F17]')
                         )}
                       >
+                        {__WEB__ && lcStatusFilter !== p.key && (
+                          <span aria-hidden className={cn('mr-1.5 inline-block h-[7px] w-[7px] rounded-full align-middle', LC_STATE_TONE[p.key].dot)} />
+                        )}
                         {p.label}
-                        {__WEB__ && <ChipCount n={lcChipCounts[p.key]} on={lcStatusFilter === p.key} />}
+                        {__WEB__ && <ChipCount n={lcChipCounts[p.key]} on={lcStatusFilter === p.key} onClass={LC_STATE_TONE[p.key].badge} />}
                       </button>
                     ))}
                     {__WEB__ && (
