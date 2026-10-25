@@ -2585,7 +2585,7 @@ function ServicedSchedule({ id }: { id: number }): React.JSX.Element | null {
                 <PartsTable parts={parts} />
                 <div className="mt-2 text-[11px] font-semibold leading-[1.5]" style={{ color: T.inkSoft }}>
                   {x.reducing
-                    ? 'A part of the principal repaid stops costing interest from the day after it went back.'
+                    ? 'A part of the principal repaid stops costing interest from the day it went back.'
                     : 'Charged on the full principal — nothing was repaid early.'}
                 </div>
               </div>

@@ -713,7 +713,7 @@ function ServicedRow({ x }: { x: Row }): React.JSX.Element {
           ))}
           <div className="border-t border-[#E4ECE3] px-3 py-1.5 text-[10.5px] font-semibold text-[#5A6B62]">
             {x.reducing
-              ? 'A part of the principal repaid stops costing interest from the day after it went back.'
+              ? 'A part of the principal repaid stops costing interest from the day it went back.'
               : 'Charged on the full principal — nothing was repaid early.'}
             {x.paid_id && Math.abs(n(x.paid_gross) - n(x.gross)) > 0.5 ? ` Recorded as paid: ${formatINR(n(x.paid_gross))}.` : ''}
           </div>

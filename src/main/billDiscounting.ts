@@ -1904,8 +1904,8 @@ function monthEnd(iso: string): string {
  * INTEREST ON THE REDUCING PRINCIPAL.
  *
  * A part of the principal paid back early stops costing interest: the NBFC
- * charges each day on what is still out that day. A repayment counts from the
- * day AFTER it — the repayment day itself still runs on the old balance.
+ * charges each day on what is still out that day. A repayment counts from its
+ * own day — the repayment day already runs on the lower balance.
  *
  * `principalRepaidByDate` is what went back, grouped by day, oldest first.
  * `bdInterestParts` splits one inclusive stretch of days [a, b] at those dates
@@ -1931,9 +1931,9 @@ function bdInterestParts(
 ): { parts: Row[]; gross: number } {
   const parts: Row[] = []
   if (b < a) return { parts, gross: 0 }
-  const balOn = (d: string): number => Math.max(0, round2(base - steps.filter((x) => x.date < d).reduce((t, x) => t + x.amount, 0)))
-  // Cut points: the day after each repayment that falls inside the stretch.
-  const cuts = steps.map((x) => addDays(x.date, 1)).filter((d) => d > a && d <= b)
+  const balOn = (d: string): number => Math.max(0, round2(base - steps.filter((x) => x.date <= d).reduce((t, x) => t + x.amount, 0)))
+  // Cut points: each repayment's own day, inside the stretch.
+  const cuts = steps.map((x) => x.date).filter((d) => d > a && d <= b)
   const starts = [a, ...Array.from(new Set(cuts)).sort()]
   let raw = 0
   starts.forEach((from, i) => {
