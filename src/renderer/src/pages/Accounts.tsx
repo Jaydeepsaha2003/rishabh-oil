@@ -3383,6 +3383,19 @@ export function Accounts({
   // a register or a ledger to be altered is left with Esc to the screen it was
   // opened from — it went to the Gateway, which is nowhere the desk was.
   const [alterBack, setAlterBack] = useState<Screen | null>(null)
+  // CTRL+I FROM A LEDGER: a new voucher entered from the statement goes back
+  // to it on Accept (and on Esc), the statement re-read. Set by the key, kept
+  // while the voucher screen switches type, dropped once the screen is left.
+  const vchFromLedger = useRef(false)
+  useEffect(() => {
+    if (screen !== 'voucher') vchFromLedger.current = false
+  }, [screen])
+  function voucherFromLedger(): void {
+    const t = firstVch()
+    if (!t) return void toast.error('You do not have rights to enter vouchers')
+    openVoucher(t)
+    vchFromLedger.current = true
+  }
   // THE FORM AS IT OPENED, for a voucher being altered — so Esc on one nobody
   // has touched simply goes back, instead of asking to discard a draft that
   // does not exist. Taken on the first render after the voucher loads.
@@ -3398,7 +3411,8 @@ export function Accounts({
     if (editBaseline.current?.key !== editKey) editBaseline.current = { key: editKey, snap: draftSnapshot() }
   })
   function backFromVoucher(): void {
-    const to = alterBack && alterBack !== 'voucher' ? alterBack : 'gateway'
+    const to = vchFromLedger.current ? 'ledger' : alterBack && alterBack !== 'voucher' ? alterBack : 'gateway'
+    vchFromLedger.current = false
     setAlterBack(null)
     setEditingId(null)
     setNoteEditId(null)
@@ -4374,6 +4388,13 @@ export function Accounts({
           )
           setPostedSeq((x) => x + 1)
         } else toast.success(`${vchType} voucher accepted`)
+        if (vchFromLedger.current) {
+          // Entered from a ledger (Ctrl+I): back to that statement, which re-reads.
+          const got = await window.api.vouchers.get(Number(made?.id)).catch(() => null)
+          toast.success(`Posted ${String(got?.code || `${typeLabelOf(vchType)} voucher`)} — back on the ledger`)
+          vchFromLedger.current = false
+          setScreen('ledger', true)
+        }
         // Tally stays in the entry screen, ready for the next voucher.
         setVchNo('')
         setNarration('')
@@ -5197,6 +5218,12 @@ export function Accounts({
       if (__WEB__ && fk === 'F8' && !e.altKey && (screen === 'purchreg' || screen === 'salesreg' || screen === 'notesreg')) {
         e.preventDefault()
         setRegSumOpen((o) => !o)
+        return
+      }
+      // Ctrl+I on a ledger: enter a voucher, Accept brings you back here.
+      if (screen === 'ledger' && e.ctrlKey && !e.altKey && !e.shiftKey && (e.key === 'i' || e.key === 'I')) {
+        e.preventDefault()
+        voucherFromLedger()
         return
       }
       if (fk === 'F4' && !e.altKey && screen === 'ledger') {
@@ -19834,6 +19861,7 @@ export function Accounts({
         { k: 'P', label: 'Purchases', on: false, go: () => setScreen('purchreg'), hide: !mayScreen('purchreg') },
         { k: 'S', label: 'Sales', on: false, go: () => setScreen('salesreg'), hide: !mayScreen('salesreg') },
         { k: 'V', label: 'Vouchers entry', on: false, go: () => openVoucher(firstVch() || 'PAYMENT'), hide: !firstVch() },
+        { k: 'Ctrl I', label: 'New voucher, back here', on: false, go: voucherFromLedger, hide: !firstVch() },
         { k: 'B', label: 'Openings', on: false, go: () => setScreen('openings'), hide: !mayScreen('openings') },
         // Lands on this ledger's own row in the chart (see prevScreenRef).
         { k: 'M', label: 'Masters', on: false, go: () => setScreen('masters'), hide: !mayScreen('masters') || lgBack === 'masters' },
