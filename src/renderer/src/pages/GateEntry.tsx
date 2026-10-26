@@ -478,6 +478,9 @@ export function GateEntry(): React.JSX.Element {
   const [gKind, setGKind] = useState<'ALL' | 'quick' | 'normal'>('ALL')
   // Excel-style filter on the register's own Status column. Empty = no filter.
   const [gStatus, setGStatus] = useState<string[]>([])
+  // Column filter on IN / OUT: entries with a narration, or without. Empty = both.
+  const [gNote, setGNote] = useState<string[]>([])
+  const hasNote = (r: Row): boolean => !!String(r.note || '').trim()
   const gCatOptions = useMemo(
     () => Array.from(new Set(rows.map((r) => String(r.rec_type || '')).filter(Boolean))).sort(),
     [rows]
@@ -499,6 +502,7 @@ export function GateEntry(): React.JSX.Element {
         if (gKind === 'normal' && isQuick) return false
       }
       if (gStatus.length && !gStatus.includes(String(r.status) === 'pending' ? 'pending' : 'done')) return false
+      if (gNote.length && !gNote.includes(hasNote(r) ? 'with' : 'without')) return false
       if (!q) return true
       return [r.gate_entry_no, r.ref_no, r.tanker_no, r.supplier_name, r.sale_customer, r.sale_invoice, r.sale_invoices, r.person, r.note]
         .filter(Boolean)
@@ -506,7 +510,7 @@ export function GateEntry(): React.JSX.Element {
         .toLowerCase()
         .includes(q)
     })
-  }, [rows, gFrom, gTo, gCats, gDir, gKind, gStatus, gSearch])
+  }, [rows, gFrom, gTo, gCats, gDir, gKind, gStatus, gNote, gSearch])
   const paged = usePaged(filteredRows)
   // Summary tiles start closed: the register below carries the same rows,
   // and this tab is opened to find an entry far more often than to read a
@@ -2422,7 +2426,7 @@ export function GateEntry(): React.JSX.Element {
                   <Input
                     type="search"
                     className={cn('h-7 w-52 pl-2 text-[11px]', __WEB__ && '!w-[16rem] !pl-3')}
-                    placeholder="Search gate no, vehicle, party…"
+                    placeholder="Search gate no, vehicle, party, narration…"
                     value={gSearch}
                     onChange={(e) => setGSearch(e.target.value)}
                   />
@@ -2507,7 +2511,7 @@ export function GateEntry(): React.JSX.Element {
                     column in the register carries the same filter, bound to the
                     same state, and this bar was running to a second row to hold
                     a duplicate of it. Clear below still resets it. */}
-                {(gFrom || gTo || gCats.length > 0 || gDir !== 'ALL' || gKind !== 'ALL' || gStatus.length > 0 || gSearch) && (
+                {(gFrom || gTo || gCats.length > 0 || gDir !== 'ALL' || gKind !== 'ALL' || gStatus.length > 0 || gNote.length > 0 || gSearch) && (
                   <>
                     <div className={cn('h-5 shrink-0 border-l border-[#d9d2b8]', __WEB__ && '!hidden')} />
                     <button
@@ -2515,7 +2519,7 @@ export function GateEntry(): React.JSX.Element {
                       className={cn('shrink-0 text-[10px] font-semibold uppercase tracking-wide text-rose-700 hover:text-rose-900', __WEB__ && '!px-2 !text-[11.5px] !font-extrabold !tracking-[.05em] !text-[#0B6B45] hover:!text-[#0B3D2E]')}
                       // Clearing the dates has to put the mode back too, or the
                       // control would still read "Day" over an unfiltered list.
-                      onClick={() => { setGMode('all'); setGFrom(''); setGTo(''); setGCats([]); setGDir('ALL'); setGKind('ALL'); setGStatus([]); setGSearch('') }}
+                      onClick={() => { setGMode('all'); setGFrom(''); setGTo(''); setGCats([]); setGDir('ALL'); setGKind('ALL'); setGStatus([]); setGNote([]); setGSearch('') }}
                     >
                       Clear
                     </button>
@@ -3296,7 +3300,17 @@ export function GateEntry(): React.JSX.Element {
               )}
             ><TableRow className={cn(__WEB__ && '!border-b-[#D6E2D6] hover:!bg-[#EAF0E9]')}>
               <TableHead>Gate entry</TableHead>
-              <TableHead>In / Out</TableHead>
+              <TableHead>
+                <ColumnFilter
+                  label="In / Out"
+                  options={[
+                    { value: 'with', label: 'With a narration', count: rows.filter((r) => !r.rejected_at && hasNote(r)).length },
+                    { value: 'without', label: 'No narration', count: rows.filter((r) => !r.rejected_at && !hasNote(r)).length }
+                  ]}
+                  value={gNote}
+                  onApply={setGNote}
+                />
+              </TableHead>
               <TableHead>
                 {/* Bound to the same gCats the Category picker in the filter
                     bar uses, so the two are one filter with two handles rather
