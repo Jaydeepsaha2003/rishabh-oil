@@ -11907,6 +11907,8 @@ export function Accounts({
             <input
               value={mSearch}
               onChange={(e) => setMSearch(e.target.value)}
+              // Opening the screen puts the cursor straight in the search.
+              autoFocus
               placeholder="Find a group or a ledger"
               className="min-w-0 flex-1 border-0 bg-transparent outline-none"
               style={{ fontSize: 12, fontWeight: 600, color: A.ink }}
@@ -12583,6 +12585,8 @@ export function Accounts({
             <input
               value={obQuery}
               onChange={(e) => setObQuery(e.target.value)}
+              // Opening the screen puts the cursor straight in the search.
+              autoFocus
               placeholder="Find a ledger or group"
               className="min-w-0 flex-1 border-0 bg-transparent outline-none"
               style={{ fontSize: 12, fontWeight: 600, color: A.ink }}
