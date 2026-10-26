@@ -172,7 +172,11 @@ export async function refundInfo(kind: Kind, id: number): Promise<Row> {
   const bankGroups = await groupsUnder('Bank Accounts')
   const ph = bankGroups.map(() => '?').join(',')
   const banks = toPlain(
-    await c.execute({ sql: `SELECT name FROM ledger_accounts WHERE acc_group IN (${ph}) AND COALESCE(is_hidden, 0) = 0 ORDER BY name`, args: bankGroups })
+    await c.execute({
+      sql: `SELECT name FROM ledger_accounts a WHERE acc_group IN (${ph})
+              AND NOT EXISTS (SELECT 1 FROM ledger_hidden h WHERE h.account_id = a.id AND h.company_id = ?) ORDER BY name`,
+      args: [...bankGroups, n(f.company_id)]
+    })
   ).map((r) => String(r.name))
   // Receipts that could be the refund: money INTO one of our banks, on or after
   // the repayment, two lines, not already a refund, no more than is due.

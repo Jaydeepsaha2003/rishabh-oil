@@ -11409,7 +11409,7 @@ export function Accounts({
     if (!ids.length) return
     setMMoving(true)
     try {
-      const r = await window.api.journal.setAccountsHidden(ids, hidden)
+      const r = await window.api.journal.setAccountsHidden(ids, hidden, cid)
       toast.success(`${r.changed} ledger${r.changed === 1 ? '' : 's'} ${hidden ? 'hidden' : 'shown again'}`)
       setMPicked(new Set())
       await loadAccounts()

@@ -116,12 +116,14 @@ export async function saleTdsPreview(saleId: number): Promise<Row> {
   const liable = aboveOnly ? Math.max(0, prior + base - Math.max(prior, threshold)) : prior + base > threshold ? base : 0
   const amount = pct > 0 ? round2((liable * pct) / 100) : 0
 
-  const led = await c.execute(
-    `SELECT name, acc_group FROM ledger_accounts
-      WHERE UPPER(name) LIKE '%TDS%' AND UPPER(name) NOT LIKE '%PAYABLE%' AND COALESCE(is_hidden, 0) = 0
+  const led = await c.execute({
+    sql: `SELECT name, acc_group FROM ledger_accounts a
+      WHERE UPPER(name) LIKE '%TDS%' AND UPPER(name) NOT LIKE '%PAYABLE%'
+        AND NOT EXISTS (SELECT 1 FROM ledger_hidden h WHERE h.account_id = a.id AND h.company_id = ?)
         AND UPPER(COALESCE(acc_group, '')) NOT LIKE '%EXPENSE%' AND UPPER(COALESCE(acc_group, '')) NOT LIKE '%INCOME%'
-      ORDER BY name`
-  )
+      ORDER BY name`,
+    args: [cid]
+  })
   const ledgers = led.rows.map((r) => ({ name: String((r as unknown as Row).name), acc_group: String((r as unknown as Row).acc_group || '') }))
   // The year's "TDS receivable on sale" ledger when there is one.
   const fy = fyStart(String(first.sale_date).slice(0, 10)).slice(0, 4)

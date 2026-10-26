@@ -3,7 +3,8 @@ import { ensureTankerInvoices } from './tankerAlloc'
 import { getClient, initDb, runDaily, runOnce, startRevisionWatcher, todayISO } from './db'
 import { seedDefaultGroups } from './ledgerGroups'
 import { splitGstLedgersByRate } from './gstBackfill'
-import { backfillJournal } from './journal'
+import { backfillJournal, ensureLedgerHomes } from './journal'
+import { allCompanyIds } from './company'
 import { ensureBdPostingFields } from './accountingSchema'
 import { ensureVoucherNumbers, realignVoucherSeries } from './voucherNumbers'
 import { widenRenameRedirects } from './ledgerMap'
@@ -191,6 +192,19 @@ export async function runStartupTasks(): Promise<void> {
         if (!/duplicate column/i.test(String(e?.message || e))) throw e
       })
   }).catch((e) => console.error('[ledgers] hidden flag failed:', e))
+
+  // HIDDEN PER COMPANY (ledger_hidden, see journal.ts ensureLedgerHomes). The
+  // ledgers hidden so far stay hidden in every company, as they are today;
+  // from here each company hides and unhides its own.
+  await runOnce('ledger_hidden_per_company_v1', async () => {
+    await ensureLedgerHomes()
+    for (const cid of await allCompanyIds()) {
+      await getClient().execute({
+        sql: 'INSERT OR IGNORE INTO ledger_hidden (account_id, company_id) SELECT id, ? FROM ledger_accounts WHERE COALESCE(is_hidden, 0) = 1',
+        args: [cid]
+      })
+    }
+  }).catch((e) => console.error('[ledgers] hidden per company failed:', e))
 
   await runOnce('sales_rate_adjustment_v1', async () => {
     await getClient()

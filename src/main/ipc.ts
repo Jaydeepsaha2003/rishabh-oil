@@ -290,7 +290,8 @@ import {
   createAccount,
   accountStatement,
   addManualJournal,
-  deleteManualEntry
+  deleteManualEntry,
+  ensureLedgerHomes
 } from './journal'
 import {
   listLCs,
@@ -1001,14 +1002,22 @@ export function registerIpc(): void {
   handle('journal:accounts', (_e, args?: { companyId?: number }) => listAccounts(args?.companyId))
   // Names and groups only — for pickers that need no balances (listAccounts
   // sums every ledger and takes over a second).
-  handle('journal:accountNames', async () =>
-    (await getClient().execute('SELECT id, name, acc_group, is_hidden FROM ledger_accounts ORDER BY name')).rows.map((r) => ({
+  handle('journal:accountNames', async (_e, args?: { companyId?: number }) => {
+    await ensureLedgerHomes()
+    const cid = Number(args?.companyId) || getActiveCompanyId()
+    return (
+      await getClient().execute({
+        sql: `SELECT id, name, acc_group, EXISTS (SELECT 1 FROM ledger_hidden h WHERE h.account_id = ledger_accounts.id AND h.company_id = ?) AS is_hidden
+                FROM ledger_accounts ORDER BY name`,
+        args: [cid]
+      })
+    ).rows.map((r) => ({
       id: Number(r.id),
       name: String(r.name ?? ''),
       acc_group: r.acc_group == null ? null : String(r.acc_group),
       is_hidden: Number(r.is_hidden || 0)
     }))
-  )
+  })
   handle('journal:createAccount', (_e, { name, group, companyId }: { name: string; group?: string; companyId?: number }) =>
     createAccount(name, group, companyId)
   )
@@ -1064,7 +1073,7 @@ export function registerIpc(): void {
   handle('journal:deleteLedger', (_e, { id }: { id: number }) => deleteLedger(id))
   handle('journal:setAccountGroup', (_e, { id, group }: { id: number; group: string }) => setAccountGroup(id, group))
   handle('journal:setAccountsGroup', (_e, { ids, group }: { ids: number[]; group: string }) => setAccountsGroup(ids, group))
-  handle('journal:setAccountsHidden', (_e, { ids, hidden }: { ids: number[]; hidden: boolean }) => setAccountsHidden(ids, hidden))
+  handle('journal:setAccountsHidden', (_e, { ids, hidden, companyId }: { ids: number[]; hidden: boolean; companyId?: number }) => setAccountsHidden(ids, hidden, companyId))
   handle(
     'journal:billsOutstanding',
     (_e, a: { account: string; companyId?: number; asOf?: string; side?: 'customer' | 'supplier'; settled?: boolean }) =>

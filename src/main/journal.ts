@@ -77,6 +77,14 @@ export async function ensureLedgerHomes(): Promise<void> {
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     PRIMARY KEY (account_id, company_id)
   )`)
+  // HIDDEN PER COMPANY. Ledgers are shared, so a hide is recorded against the
+  // company it was done in — hiding in KR FOODS no longer hides in KR FINMARK.
+  // (ledger_accounts.is_hidden is the old site-wide flag, no longer read.)
+  await getClient().execute(`CREATE TABLE IF NOT EXISTS ledger_hidden (
+    account_id INTEGER NOT NULL,
+    company_id INTEGER NOT NULL,
+    PRIMARY KEY (account_id, company_id)
+  )`)
   homesReady = true
 }
 
@@ -87,7 +95,7 @@ export async function listAccounts(companyId?: number): Promise<Row[]> {
   const cid = companyId || getActiveCompanyId()
   const booksFrom = await getBooksFrom(cid)
   const res = await getClient().execute({
-    args: [cid, booksFrom || '0000-00-00', cid, cid, cid, cid, cid, cid, booksFrom || '0000-00-00'],
+    args: [cid, booksFrom || '0000-00-00', cid, cid, cid, cid, cid, cid, cid, booksFrom || '0000-00-00'],
     sql: `
     WITH not_emptied AS (
       -- Purchases with a tanker still not emptied — out of the Empty-date balance.
@@ -103,6 +111,7 @@ export async function listAccounts(companyId?: number): Promise<Row[]> {
        GROUP BY jl.account_id
     )
     SELECT a.*,
+      EXISTS (SELECT 1 FROM ledger_hidden lhd WHERE lhd.account_id = a.id AND lhd.company_id = ?) AS hidden_here,
       -- Whether this ledger belongs to the company in view (see ensureLedgerHomes).
       CASE
         WHEN EXISTS (SELECT 1 FROM journal_lines jl JOIN journal_entries je ON je.id = jl.entry_id
@@ -165,7 +174,8 @@ export async function listAccounts(companyId?: number): Promise<Row[]> {
     FROM ledger_accounts a LEFT JOIN held hh ON hh.account_id = a.id ORDER BY a.name
   `
   })
-  return toPlain(res)
+  // is_hidden = hidden in THIS company (ledger_hidden), not the old site-wide flag.
+  return toPlain(res).map((r) => ({ ...r, is_hidden: Number(r.hidden_here) ? 1 : 0 }))
 }
 
 export async function createAccount(name: string, group = 'General', companyId?: number): Promise<{ id: number }> {

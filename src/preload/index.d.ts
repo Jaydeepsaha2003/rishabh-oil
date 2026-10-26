@@ -242,7 +242,7 @@ export interface Api {
     deleteLedger: (id: number) => Promise<{ id: number; name: string }>
     setAccountGroup: (id: number, group: string) => Promise<{ id: number }>
     setAccountsGroup: (ids: number[], group: string) => Promise<{ moved: number; group: string }>
-    setAccountsHidden: (ids: number[], hidden: boolean) => Promise<{ changed: number; hidden: boolean }>
+    setAccountsHidden: (ids: number[], hidden: boolean, companyId?: number) => Promise<{ changed: number; hidden: boolean }>
     billsOutstanding: (
       account: string,
       companyId?: number,

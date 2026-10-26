@@ -352,8 +352,8 @@ const api = {
       ipcRenderer.invoke('journal:setAccountGroup', { id, group }),
     setAccountsGroup: (ids: number[], group: string): Promise<{ moved: number; group: string }> =>
       ipcRenderer.invoke('journal:setAccountsGroup', { ids, group }),
-    setAccountsHidden: (ids: number[], hidden: boolean): Promise<{ changed: number; hidden: boolean }> =>
-      ipcRenderer.invoke('journal:setAccountsHidden', { ids, hidden }),
+    setAccountsHidden: (ids: number[], hidden: boolean, companyId?: number): Promise<{ changed: number; hidden: boolean }> =>
+      ipcRenderer.invoke('journal:setAccountsHidden', { ids, hidden, companyId }),
     billsOutstanding: (
       account: string,
       companyId?: number,

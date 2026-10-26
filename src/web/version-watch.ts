@@ -31,6 +31,8 @@ const CHECK_EVERY_MS = 15 * 60 * 1000
 // user alt-tabbing between windows generates a lot of those, so they are
 // rate-limited rather than answered one for one.
 const MIN_GAP_MS = 60 * 1000
+// After Not now, the installed app keeps quiet this long before asking again.
+const SNOOZE_MS = 30 * 60 * 1000
 
 const BUNDLE_RE = /\/assets\/index-[A-Za-z0-9_-]+\.js/
 const HOST_ID = 'app-version-notice'
@@ -62,8 +64,13 @@ function show(onDismiss: () => void): void {
     'border-radius:4px',
     'box-shadow:0 6px 24px rgba(10,31,23,.16)',
     'font-family:Inter,system-ui,sans-serif',
-    'color:#0A1F17'
+    'color:#0A1F17',
+    // An open dialog sets pointer-events:none on <body>, which this card would
+    // inherit — Reload and Not now then took no clicks at all.
+    'pointer-events:auto'
   ].join(';')
+  // And a click here is not a click outside that dialog (it would close it).
+  card.addEventListener('pointerdown', (e) => e.stopPropagation())
 
   const title = document.createElement('div')
   title.textContent = 'A newer version is available'
@@ -112,6 +119,7 @@ export function watchForNewVersion(): void {
   // The build already announced. Dismissing clears the notice but not this, so
   // the same deploy does not nag — while a LATER deploy still gets through.
   let announced = ''
+  let snoozedUntil = 0
 
   async function check(): Promise<void> {
     const now = Date.now()
@@ -140,9 +148,11 @@ export function watchForNewVersion(): void {
     const installed =
       window.matchMedia?.('(display-mode: standalone)').matches ||
       (navigator as Navigator & { standalone?: boolean }).standalone === true
-    if (deployed === announced && !installed) return
+    if (deployed === announced && (!installed || now < snoozedUntil)) return
     announced = deployed
-    show(() => undefined)
+    show(() => {
+      snoozedUntil = Date.now() + SNOOZE_MS
+    })
   }
 
   document.addEventListener('visibilitychange', () => {

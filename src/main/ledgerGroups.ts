@@ -2,6 +2,7 @@ import type { ResultSet } from '@libsql/client'
 import { getClient } from './db'
 import { withDbTransaction } from './dbTransaction'
 import { getActiveCompanyId } from './company'
+import { ensureLedgerHomes } from './journal'
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Row = Record<string, any>
@@ -530,12 +531,16 @@ export async function setAccountsGroup(accountIds: number[], group: string): Pro
   })
 }
 
-/** Hide ledgers from the pickers and the chart's list, or bring them back. */
-export async function setAccountsHidden(accountIds: number[], hidden: boolean): Promise<{ changed: number; hidden: boolean }> {
+/** Hide ledgers from one company's pickers and chart, or bring them back — other companies untouched. */
+export async function setAccountsHidden(accountIds: number[], hidden: boolean, companyId?: number): Promise<{ changed: number; hidden: boolean }> {
   const ids = Array.from(new Set((accountIds || []).map(Number).filter((x) => x > 0)))
   if (!ids.length) throw new Error('Pick the ledgers to hide')
+  const cid = Number(companyId) || getActiveCompanyId()
+  await ensureLedgerHomes()
   const c = getClient()
-  const r = await c.execute({ sql: `UPDATE ledger_accounts SET is_hidden = ? WHERE id IN (${ids.join(',')})`, args: [hidden ? 1 : 0] })
+  const r = hidden
+    ? await c.execute({ sql: `INSERT OR IGNORE INTO ledger_hidden (account_id, company_id) SELECT id, ? FROM ledger_accounts WHERE id IN (${ids.join(',')})`, args: [cid] })
+    : await c.execute({ sql: `DELETE FROM ledger_hidden WHERE company_id = ? AND account_id IN (${ids.join(',')})`, args: [cid] })
   return { changed: Number(r.rowsAffected) || 0, hidden: !!hidden }
 }
 
