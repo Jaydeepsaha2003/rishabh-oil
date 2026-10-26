@@ -4357,7 +4357,9 @@ export function Accounts({
         await window.api.vouchers.update(editingId, payload)
         toast.success('Voucher altered')
         setEditingId(null)
-        setScreen('daybook', true)
+        // Back where it was opened from (a ledger, a register) — not the Day Book.
+        setScreen(alterBack && alterBack !== 'voucher' ? alterBack : 'daybook', true)
+        setAlterBack(null)
       } else {
         const made = await window.api.vouchers.create(payload)
         if (__WEB__) {
@@ -4890,7 +4892,8 @@ export function Accounts({
       await window.api.vouchers.remove(editingId)
       toast.success('Voucher deleted')
       setEditingId(null)
-      setScreen('daybook', true)
+      setScreen(alterBack && alterBack !== 'voucher' ? alterBack : 'daybook', true)
+      setAlterBack(null)
     } catch (e) {
       toast.error((e as Error).message)
     }
