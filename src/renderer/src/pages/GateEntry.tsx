@@ -17,7 +17,7 @@ import { DatePicker } from '@/components/ui/date-picker'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { ColumnFilter } from '@/components/ui/column-filter'
 import { Switch } from '@/components/ui/switch'
-import { InfoTip } from '@/components/ui/tooltip'
+import { InfoTip, Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { cn } from '@/lib/utils'
 import { OutsideTankerLog } from '@/components/OutsideTankerLog'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
@@ -399,6 +399,23 @@ function RejectedTabWeb({
         ) : null}
       </section>
     </div>
+  )
+}
+
+// THE ENTRY'S NARRATION ON HOVER over its IN / OUT tag — nothing when it has none.
+function NarrationTip({ note, children, className }: { note: unknown; children: React.ReactElement; className?: string }): React.JSX.Element {
+  const text = String(note ?? '').trim()
+  if (!text) return children
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <span className={cn('inline-flex', className)}>{children}</span>
+      </TooltipTrigger>
+      <TooltipContent side="right" className="max-w-[320px]">
+        <div className="text-[9.5px] font-extrabold uppercase tracking-[.12em] opacity-70">Narration</div>
+        <div className="mt-0.5 whitespace-pre-wrap text-[12.5px] font-semibold leading-[1.45]">{text}</div>
+      </TooltipContent>
+    </Tooltip>
   )
 }
 
@@ -1466,7 +1483,7 @@ export function GateEntry(): React.JSX.Element {
 
           {/* -------------------------------------------------------- note -- */}
           <div className={cn(EDIT_CARD, 'p-[15px]')}>
-            <span className={EDIT_LABEL}>Note</span>
+            <span className={EDIT_LABEL}>Narration</span>
             <Input
               value={editForm.note || ''}
               placeholder="Anything to record against this entry"
@@ -1938,9 +1955,12 @@ export function GateEntry(): React.JSX.Element {
                       {row.direction === 'out' ? <LogOut className={cn('h-3.5 w-3.5', __WEB__ && '!h-[17px] !w-[17px]')} /> : <LogIn className={cn('h-3.5 w-3.5', __WEB__ && '!h-[17px] !w-[17px]')} />}
                     </span>
                     <span className={cn('truncate text-[13.5px] font-bold tracking-wide', __WEB__ && '!text-[14.5px] !tracking-[-0.01em]')}>{row.tanker_no}</span>
-                    <span className={cn('ml-auto shrink-0 whitespace-nowrap rounded-full px-2 py-0.5 text-[10px] font-bold tracking-wide', dirColor.badge, __WEB__ && '!rounded-[2px] !bg-[#0B3D2E] !px-2.5 !py-1 !text-[10.5px] !font-extrabold !tracking-[.08em] !text-[#C7F03F]')}>
-                      {row.direction === 'out' ? 'OUT' : 'IN'}
-                    </span>
+                    <NarrationTip note={row.note} className="ml-auto shrink-0">
+                      <span className={cn('ml-auto inline-flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded-full px-2 py-0.5 text-[10px] font-bold tracking-wide', dirColor.badge, __WEB__ && '!rounded-[2px] !bg-[#0B3D2E] !px-2.5 !py-1 !text-[10.5px] !font-extrabold !tracking-[.08em] !text-[#C7F03F]')}>
+                        {row.direction === 'out' ? 'OUT' : 'IN'}
+                        {!!String(row.note || '').trim() && <span className="h-1.5 w-1.5 rounded-full bg-[#D99A1E]" aria-label="Has a narration" />}
+                      </span>
+                    </NarrationTip>
                   </div>
 
                   <div className={cn('flex flex-1 flex-col px-3 pb-3 pt-2', __WEB__ && '!px-3.5 !pb-3.5 !pt-3')}>
@@ -2703,16 +2723,18 @@ export function GateEntry(): React.JSX.Element {
                 />
               </div>
             )}
-            {/* Miscellaneous has no product behind it, so let the gateman say
-                what actually came in. */}
-            {isMisc(arrival.rec_type) && (
+            {/* THE NARRATION — any word about this arrival, shown on hovering
+                its IN / OUT tag in the register. On Miscellaneous it is also
+                what actually came in, there being no product behind it. */}
+            {(
               <div className="flex min-w-0 flex-col gap-1 sm:col-span-2">
                 <Label>
-                  Details <span className="text-[10px] font-normal text-muted-foreground">(optional — what is it?)</span>
+                  {isMisc(arrival.rec_type) ? 'Details / narration' : 'Narration'}{' '}
+                  <span className="text-[10px] font-normal text-muted-foreground">(optional)</span>
                 </Label>
                 <Input
                   value={arrival.note || ''}
-                  placeholder="e.g. spare parts, empty drums, workshop material"
+                  placeholder={isMisc(arrival.rec_type) ? 'e.g. spare parts, empty drums, workshop material' : 'Anything to note about this vehicle'}
                   onChange={(e) => setArrival((p) => ({ ...p, note: e.target.value }))}
                 />
               </div>
@@ -3338,15 +3360,20 @@ export function GateEntry(): React.JSX.Element {
                         )}
                       </TableCell>
                       <TableCell>
-                        <Badge
-                          variant={isOut ? 'default' : 'muted'}
-                          className={cn(
-                            __WEB__ && '!rounded-[2px] !border-0 !px-2.5 !py-1 !text-[10.5px] !font-extrabold !tracking-[.08em]',
-                            __WEB__ && (isOut ? '!bg-[#1B4E82] !text-white' : '!bg-[#EAF0E9] !text-[#0B3D2E]')
-                          )}
-                        >
-                          {isOut ? 'OUT' : 'IN'}
-                        </Badge>
+                        <NarrationTip note={row.note}>
+                          <Badge
+                            variant={isOut ? 'default' : 'muted'}
+                            className={cn(
+                              'gap-1.5',
+                              __WEB__ && '!rounded-[2px] !border-0 !px-2.5 !py-1 !text-[10.5px] !font-extrabold !tracking-[.08em]',
+                              __WEB__ && (isOut ? '!bg-[#1B4E82] !text-white' : '!bg-[#EAF0E9] !text-[#0B3D2E]'),
+                              String(row.note || '').trim() && 'cursor-help'
+                            )}
+                          >
+                            {isOut ? 'OUT' : 'IN'}
+                            {!!String(row.note || '').trim() && <span className="h-1.5 w-1.5 rounded-full bg-[#D99A1E]" aria-label="Has a narration" />}
+                          </Badge>
+                        </NarrationTip>
                       </TableCell>
                       <TableCell><span className={cn('text-xs font-medium text-muted-foreground', __WEB__ && '!text-[12.5px] !font-bold !text-[#33473E]')}>{row.rec_type || 'OIL'}</span></TableCell>
                       <TableCell>
