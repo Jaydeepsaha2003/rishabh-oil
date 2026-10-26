@@ -19329,6 +19329,8 @@ export function Accounts({
     <LedgerMergeDialog
       from={mMerge}
       ledgers={accounts}
+      companyId={cid || undefined}
+      companyName={company ? String(company.name) : undefined}
       onClose={() => setMMerge(null)}
       onDone={() => {
         void loadAccounts()

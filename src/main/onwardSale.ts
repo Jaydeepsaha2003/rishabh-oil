@@ -25,7 +25,9 @@ const s = (v: unknown): string => (v == null ? '' : String(v))
 let columnsReady = false
 async function ensureColumns(): Promise<void> {
   if (columnsReady) return
-  for (const col of ['onward_sale_group TEXT', 'onward_company_id INTEGER']) {
+  // onward_kind 'return': emptied as a PURCHASE RETURN — not sold on, no
+  // inter-company sale (the debit note to the supplier is raised in Accounting).
+  for (const col of ['onward_sale_group TEXT', 'onward_company_id INTEGER', 'onward_kind TEXT']) {
     await getClient()
       .execute(`ALTER TABLE purchase_tankers ADD COLUMN ${col}`)
       .catch((e: unknown) => {
@@ -54,6 +56,7 @@ export async function isTradingCompany(companyId: number): Promise<boolean> {
 export async function assertOnwardSale(tanker: Row, v: Row): Promise<void> {
   if (!(await isTradingCompany(n(tanker.company_id)))) return
   const o = (v?.onward || {}) as Row
+  if (o.kind === 'return') return
   const buyer = n(o.buyer_company_id)
   if (!buyer) throw new Error('This tanker is a trading company\'s — pick the company it is sold to before marking it Empty')
   if (buyer === n(tanker.company_id)) throw new Error('A company cannot sell the tanker to itself — pick the buying company')
@@ -70,6 +73,10 @@ export async function raiseOnwardSale(tankerId: number, v: Row): Promise<void> {
   if (!t || !(await isTradingCompany(n(t.company_id)))) return
   if (s(t.onward_sale_group)) return
   const o = (v?.onward || {}) as Row
+  if (o.kind === 'return') {
+    await c.execute({ sql: "UPDATE purchase_tankers SET onward_kind = 'return' WHERE id = ?", args: [n(tankerId)] })
+    return
+  }
   const buyer = n(o.buyer_company_id)
   const { ensureCompanyParties } = await import('./intercompany')
   let cust = (await c.execute({ sql: 'SELECT id, name FROM customers WHERE company_link_id = ? LIMIT 1', args: [buyer] })).rows[0] as unknown as Row
@@ -171,6 +178,7 @@ export async function removeOnwardSale(tankerId: number): Promise<void> {
   const t = (await c.execute({ sql: 'SELECT company_id, onward_sale_group FROM purchase_tankers WHERE id = ?', args: [n(tankerId)] }))
     .rows[0] as unknown as Row
   const group = s(t?.onward_sale_group)
+  await c.execute({ sql: 'UPDATE purchase_tankers SET onward_kind = NULL WHERE id = ?', args: [n(tankerId)] })
   if (!group) return
   // Its tags go with it — on the sale, and on the buyer's paired purchase —
   // so none is left pointing at a bill that no longer exists.

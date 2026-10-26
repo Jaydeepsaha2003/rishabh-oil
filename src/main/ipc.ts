@@ -1044,15 +1044,15 @@ export function registerIpc(): void {
   handle('journal:ledgerMap', (_e, args?: { companyId?: number }) => listLedgerMap(args?.companyId))
   // Two ledgers that are one party, made one (ledgerMerge.ts). Admin only: it
   // moves vouchers of every kind.
-  handle('journal:mergePreview', async (_e, { fromId, intoId }: { fromId: number; intoId: number }) => {
+  handle('journal:mergePreview', async (_e, { fromId, intoId, companyId }: { fromId: number; intoId: number; companyId?: number }) => {
     await assertAdmin('Merging ledgers')
     const { previewLedgerMerge } = await import('./ledgerMerge')
-    return previewLedgerMerge(Number(fromId), Number(intoId))
+    return previewLedgerMerge(Number(fromId), Number(intoId), Number(companyId) || undefined)
   })
-  handle('journal:mergeLedgers', async (_e, { fromId, intoId, keepName, keep }: { fromId: number; intoId: number; keepName?: string; keep?: number[] }) => {
+  handle('journal:mergeLedgers', async (_e, { fromId, intoId, keepName, keep, companyId }: { fromId: number; intoId: number; keepName?: string; keep?: number[]; companyId?: number }) => {
     await assertAdmin('Merging ledgers')
     const { mergeLedgers } = await import('./ledgerMerge')
-    return mergeLedgers(Number(fromId), Number(intoId), keepName, Array.isArray(keep) ? keep.map(Number) : [])
+    return mergeLedgers(Number(fromId), Number(intoId), keepName, Array.isArray(keep) ? keep.map(Number) : [], Number(companyId) || undefined)
   })
   handle('journal:renameLedger', (_e, { id, name, companyId }: { id: number; name: string; companyId?: number }) =>
     renameLedger(id, name, companyId)

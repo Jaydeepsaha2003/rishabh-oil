@@ -2211,6 +2211,7 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
       const makers = buyers.filter((c) => String(c.company_type || '') !== 'trading')
       const own = companies.find((c) => Number(c.id) === Number(row.company_id))
       next.onward = {
+        kind: 'sale',
         buyer_company_id: makers.length === 1 ? String(makers[0].id) : '',
         purchase_invoice_no: '',
         sale_invoice_no: '',
@@ -2772,10 +2773,12 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
     // A trading company's tanker cannot be emptied without being sold on.
     if (target === 'empty' && tradingCo(actionRow.company_id)) {
       const o = (actionForm.onward || {}) as Row
+      if (o.kind !== 'return') {
       if (!o.buyer_company_id) return void toast.error('Pick the company this tanker is sold to')
       if (!String(o.purchase_invoice_no || '').trim()) return void toast.error('Enter the purchase invoice number the buying company books it under')
       if (!String(o.sale_invoice_no || '').trim()) return void toast.error('Enter the sale invoice number')
       if (!(Number(o.rate) > 0)) return void toast.error('Enter the sale rate per MT')
+      }
     }
     // More qty on the truck than the bargain has left: pause and ask before
     // booking the excess as a fresh bargain line (rate confirmed by the user).
@@ -2820,6 +2823,7 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
         onward:
           target === 'empty' && actionForm.onward
             ? {
+                kind: actionForm.onward.kind === 'return' ? 'return' : 'sale',
                 buyer_company_id: Number(actionForm.onward.buyer_company_id) || null,
                 purchase_invoice_no: String(actionForm.onward.purchase_invoice_no || '').trim(),
                 sale_invoice_no: String(actionForm.onward.sale_invoice_no || '').trim(),
@@ -2830,6 +2834,13 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
               }
             : undefined
       })
+      if (target === 'empty' && actionForm.onward?.kind === 'return') {
+        toast.success('Tanker emptied as a purchase return — not sold on. Raise the debit note to the supplier in Accounting.')
+        setActionRow(null)
+        setExcess(null)
+        await load()
+        return
+      }
       if (target === 'empty' && actionForm.onward) {
         const buyer = companies.find((c) => String(c.id) === String(actionForm.onward.buyer_company_id))
         toast.success(`Tanker emptied and sold to ${String(buyer?.name || 'the buying company')} — sale ${String(actionForm.onward.sale_invoice_no)}, purchase ${String(actionForm.onward.purchase_invoice_no)}`)
@@ -9635,6 +9646,35 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
               const seller = companies.find((c) => Number(c.id) === Number(actionRow.company_id))
               return (
                 <div className={cn('grid gap-3 rounded-lg border border-[#BFE3CB] bg-[#F4FBF6] p-3', __WEB__ && '!gap-4 !rounded-[4px] !p-4')}>
+                  {/* SOLD ON, or a PURCHASE RETURN — back to the supplier, no
+                      inter-company sale. */}
+                  <div className="grid grid-cols-2 gap-1 rounded-[6px] border border-[#D6E2D6] bg-white p-1">
+                    {(
+                      [
+                        ['sale', 'Sold on to a company'],
+                        ['return', 'Purchase return']
+                      ] as const
+                    ).map(([k, label]) => (
+                      <button
+                        key={k}
+                        type="button"
+                        onClick={() => setO({ kind: k })}
+                        className={cn(
+                          'h-9 rounded-[4px] text-[12.5px] font-extrabold transition-colors',
+                          (o.kind === 'return' ? 'return' : 'sale') === k ? 'bg-[#0B3D2E] text-white' : 'text-[#5A6B62] hover:bg-[#F4F7F3]'
+                        )}
+                      >
+                        {label}
+                      </button>
+                    ))}
+                  </div>
+                  {o.kind === 'return' ? (
+                    <div className="rounded-[4px] border border-[#F0D6A6] bg-[#FFF6E3] px-3 py-2.5 text-[12px] font-semibold text-[#6F4800]">
+                      Emptied as a <b>purchase return</b> — nothing is sold on and no inter-company sale or purchase is raised. Raise the debit note to{' '}
+                      <b>{String(actionRow.supplier_name || actionRow.supplier || 'the supplier')}</b> in Accounting.
+                    </div>
+                  ) : (
+                  <>
                   <div className="flex flex-wrap items-center gap-2">
                     <span className="text-[11px] font-extrabold uppercase tracking-[.13em] text-[#0B6B45]">Sold on to *</span>
                     <span className="text-[11.5px] font-semibold text-[#5A6B62]">
@@ -9697,6 +9737,8 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
                     <b className="tabular-nums">{formatINR(taxable)}</b> + GST <b className="tabular-nums">{formatINR(gst)}</b> ={' '}
                     <b className="tabular-nums">{formatINR(taxable + gst)}</b>
                   </div>
+                  </>
+                  )}
                 </div>
               )
             })()}

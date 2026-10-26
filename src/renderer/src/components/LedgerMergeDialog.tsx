@@ -13,18 +13,24 @@ type Row = Record<string, any>
 // MERGE ONE LEDGER INTO ANOTHER (ledgerMerge.ts). Pick the ledger to keep, see
 // what moves company by company, choose the name the one ledger carries — the
 // Tally name, the software's, or a new one — and merge. Every voucher keeps its
-// number; the old names become redirects.
+// number; the old names become redirects. COMPANY BY COMPANY: only the open
+// company's entries move — the other company keeps the old ledger as it is.
 export function LedgerMergeDialog({
   from,
   ledgers,
+  companyId,
+  companyName,
   onClose,
   onDone
 }: {
   from: { id: number; name: string } | null
   ledgers: Row[]
+  companyId?: number
+  companyName?: string
   onClose: () => void
   onDone?: () => void
 }): React.JSX.Element {
+  const coName = companyName || 'this company'
   const [q, setQ] = useState('')
   const [into, setInto] = useState<Row | null>(null)
   const [pv, setPv] = useState<Row | null>(null)
@@ -49,13 +55,13 @@ export function LedgerMergeDialog({
     if (!from || !into) return
     let live = true
     window.api.journal
-      .mergePreview(from.id, Number(into.id))
+      .mergePreview(from.id, Number(into.id), companyId)
       .then((r) => live && setPv(r))
       .catch((e) => toast.error(errText(e)))
     return () => {
       live = false
     }
-  }, [from, into, rev])
+  }, [from, into, rev, companyId])
 
   const matches = useMemo(() => {
     const k = q.trim().toUpperCase()
@@ -86,14 +92,14 @@ export function LedgerMergeDialog({
     const lines = ((pv.companies as Row[]) || []).reduce((t, x) => t + Number(x.lines || 0), 0)
     if (
       !window.confirm(
-        `Merge ${from.name} into ${String(into.name)}?\n\n${lines} voucher line(s) move, its opening balances are added in, and ${from.name} becomes a redirect to the kept ledger, which will be named ${keepName.toUpperCase()}.\n\nVouchers keep their numbers. It is logged, but there is no one-click undo — take a database snapshot first if you want one.`
+        `Merge ${from.name} into ${String(into.name)} — in ${coName} only?\n\n${lines} voucher line(s) of ${coName} move, its opening there is added in, and in ${coName} ${from.name} becomes a redirect to the kept ledger, which will be named ${keepName.toUpperCase()}.\n\nOther companies keep ${from.name} as it is. Vouchers keep their numbers. It is logged, but there is no one-click undo — take a database snapshot first if you want one.`
       )
     )
       return
     setBusy(true)
     try {
-      const r = await window.api.journal.mergeLedgers(from.id, Number(into.id), keepName, [...kept])
-      toast.success(`Merged — ${r.lines} line(s) now on ${r.name}`)
+      const r = await window.api.journal.mergeLedgers(from.id, Number(into.id), keepName, [...kept], companyId)
+      toast.success(`Merged in ${coName} — ${r.lines} line(s) now on ${r.name}${r.removed ? '' : `; ${from.name} stays for the other company`}`)
       onDone?.()
       onClose()
     } catch (e) {
@@ -160,7 +166,7 @@ export function LedgerMergeDialog({
               ) : (
                 <div className="rounded-md border">
                   <div className="border-b bg-[#F4F7F3] px-3 py-1.5 text-[11px] font-bold uppercase tracking-wide text-muted-foreground">
-                    Moves from {from?.name}
+                    Moves from {from?.name} — {coName} only
                   </div>
                   <table className="w-full text-[12px]">
                     <tbody>
@@ -186,7 +192,7 @@ export function LedgerMergeDialog({
                       ))}
                       {!((pv.companies as Row[]) || []).length && !((pv.openings as Row[]) || []).length && (
                         <tr>
-                          <td className="px-3 py-2 text-muted-foreground">Nothing posted to it — only its name moves.</td>
+                          <td className="px-3 py-2 text-muted-foreground">Nothing posted to it in {coName} — only its name moves here.</td>
                         </tr>
                       )}
                     </tbody>
