@@ -560,10 +560,15 @@ async function reconcileBank(v: { account_id: number; data_base64: string; compa
   // one voucher here answers for one line of the book at most.
   // The same voucher number goes first, then the same party, then the nearest day.
   const pairs: { t: BankLine; b: BookEntry; party: boolean; gap: number; num: boolean }[] = []
+  // A voucher booked from THIS bank's book under another number stands for that
+  // other Tally voucher (No. 186) — never a candidate for this one (No. 189),
+  // however close the amount, party and day. Matched by its own number, or not.
+  const ownHead = `Imported from Tally — ${book.bank} Book · `
+  const otherTally = (b: BookEntry, t: BankLine): boolean => b.narration.startsWith(ownHead) && String(b.vch_no).trim() !== String(t.vch_no).trim()
   for (const t of rest) {
     if (t.cancelled) continue
     for (const b of entries) {
-      if (used.has(b.id) || b.dir !== t.dir || Math.abs(b.amount - t.amount) > 1) continue
+      if (used.has(b.id) || b.dir !== t.dir || Math.abs(b.amount - t.amount) > 1 || otherTally(b, t)) continue
       const gap = daysApart(b.date, t.date)
       const party = samePartyLine(t, b, mapped)
       const num = sameNum(t.vch_no, b.vch_no)
@@ -715,17 +720,6 @@ function explainBank(rows: Row[], hasStatement = false): void {
         if (d.field === 'party') say.push(`${t.party} in Tally, ${d.books} here.`)
       }
       fix = (r.diffs as Row[]).every((d) => d.field === 'date') ? 'Correct the date on whichever side is wrong — the bank’s own statement says which.' : 'Open the voucher here and correct it to Tally — or correct Tally.'
-      // BOOKED FROM TALLY, THEN REDATED IN TALLY. Tally numbers vouchers in date
-      // order, so moving one (19-10 → 23-10) also renumbers it (No. 186 → 189):
-      // the same payment, which is why both the date and the number differ.
-      const dd = (r.diffs as Row[]).find((d) => d.field === 'date')
-      if (dd && r.same_no === false && String(b.narration || '').startsWith('Imported from Tally')) {
-        say.push(
-          `${String(b.code || 'It')} was booked from Tally as No. ${String(b.vch_no)} dated ${dmy(dd.books)}; Tally now has it on ${dmy(dd.tally)} as No. ${String(t.vch_no)} — its date was changed in Tally after it was booked here, and Tally renumbers vouchers by date.`
-        )
-        if ((r.diffs as Row[]).length === 1)
-          fix = `If ${dmy(dd.tally)} is right, press "Use Tally's date". If ${dmy(dd.books)} is right, put the date back in Tally — or press "Our date is right".`
-      }
     } else if (r.status === 'missing_tally' && b && r.near_of) {
       const no = r.near_of as Row
       say.push(`In this bank here (${bName}, ${dmy(b.date)}, ${inr(b.amount)} ${way(b.dir)}) — Tally has it as ${String(no.vch_type || '')} No. ${String(no.vch_no || '')} for ${inr(no.amount)}.`)
