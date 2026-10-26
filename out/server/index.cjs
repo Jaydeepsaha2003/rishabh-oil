@@ -26705,10 +26705,12 @@ async function reconcileBank(v) {
     } else rest.push(t);
   }
   const pairs = [];
+  const ownHead = `Imported from Tally \u2014 ${book.bank} Book \xB7 `;
+  const otherTally = (b, t) => b.narration.startsWith(ownHead) && String(b.vch_no).trim() !== String(t.vch_no).trim();
   for (const t of rest) {
     if (t.cancelled) continue;
     for (const b of entries2) {
-      if (used.has(b.id) || b.dir !== t.dir || Math.abs(b.amount - t.amount) > 1) continue;
+      if (used.has(b.id) || b.dir !== t.dir || Math.abs(b.amount - t.amount) > 1 || otherTally(b, t)) continue;
       const gap = daysApart3(b.date, t.date);
       const party = samePartyLine(t, b, mapped);
       const num2 = sameNum(t.vch_no, b.vch_no);
@@ -26832,14 +26834,6 @@ function explainBank(rows2, hasStatement = false) {
         if (d.field === "party") say2.push(`${t.party} in Tally, ${d.books} here.`);
       }
       fix = r.diffs.every((d) => d.field === "date") ? "Correct the date on whichever side is wrong \u2014 the bank\u2019s own statement says which." : "Open the voucher here and correct it to Tally \u2014 or correct Tally.";
-      const dd = r.diffs.find((d) => d.field === "date");
-      if (dd && r.same_no === false && String(b.narration || "").startsWith("Imported from Tally")) {
-        say2.push(
-          `${String(b.code || "It")} was booked from Tally as No. ${String(b.vch_no)} dated ${dmy2(dd.books)}; Tally now has it on ${dmy2(dd.tally)} as No. ${String(t.vch_no)} \u2014 its date was changed in Tally after it was booked here, and Tally renumbers vouchers by date.`
-        );
-        if (r.diffs.length === 1)
-          fix = `If ${dmy2(dd.tally)} is right, press "Use Tally's date". If ${dmy2(dd.books)} is right, put the date back in Tally \u2014 or press "Our date is right".`;
-      }
     } else if (r.status === "missing_tally" && b && r.near_of) {
       const no = r.near_of;
       say2.push(`In this bank here (${bName}, ${dmy2(b.date)}, ${inr5(b.amount)} ${way(b.dir)}) \u2014 Tally has it as ${String(no.vch_type || "")} No. ${String(no.vch_no || "")} for ${inr5(no.amount)}.`);
