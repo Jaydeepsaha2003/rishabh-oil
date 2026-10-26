@@ -1460,6 +1460,18 @@ ${pairs.map((x) => String(x.own?.code || '')).join(', ')} stay, and match Tally'
                                 </button>
                               )
                             )}
+                            {/* ONLY THE DATE DIFFERS and ours is the right one (Tally
+                                was entered late): nothing to change — marked checked. */}
+                            {(r.redate === 'yes' || r.redate === 'owned') && b && !r.checked && dateAsk !== String(r.key) && (
+                              <button
+                                type="button"
+                                onClick={() => void markChecked(r, true)}
+                                title="Same amount, same entry — the date here is right. Nothing changes; it moves to Checked."
+                                className="flex h-7 items-center gap-1.5 rounded-[4px] border border-[#D6E2D6] bg-white px-2.5 text-[11px] font-extrabold text-[#33473E] hover:bg-[#F4F7F3]"
+                              >
+                                <CheckCheck className="h-3.5 w-3.5" /> Our date is right · keep {formatDate(String(b.date))}
+                              </button>
+                            )}
                             {r.redate === 'owned' && (
                               <span className="text-[11px] font-semibold text-[#5A6B62]">Posted by another document (an LC, a discounted bill, a payment) — its date is changed there.</span>
                             )}
