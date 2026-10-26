@@ -2794,16 +2794,16 @@ async function groupTree(companyId) {
     guard.add(id);
     const me = byId.get(id);
     const o = own.get(String(me?.name || "")) || { n: 0, bal: 0 };
-    let n61 = o.n;
+    let n62 = o.n;
     let bal = o.bal;
     let groups = 0;
     for (const k of kids.get(id) || []) {
       const sub = roll(k, guard);
-      n61 += sub.n;
+      n62 += sub.n;
       bal += sub.bal;
       groups += 1 + sub.groups;
     }
-    const out = { n: n61, bal, groups };
+    const out = { n: n62, bal, groups };
     totals.set(id, out);
     return out;
   };
@@ -3423,11 +3423,11 @@ function modulePerm(user, moduleKey) {
     }
     const parent = SECTION_PARENT[moduleKey];
     if (parent) {
-      const up4 = p[parent];
-      if (up4 === "write") return { view: true, create: true, edit: true, delete: true, editDays: null };
-      if (up4 === "read") return { view: true };
-      if (up4 && typeof up4 === "object") {
-        const e = up4;
+      const up5 = p[parent];
+      if (up5 === "write") return { view: true, create: true, edit: true, delete: true, editDays: null };
+      if (up5 === "read") return { view: true };
+      if (up5 && typeof up5 === "object") {
+        const e = up5;
         const view = e.view ?? !!(e.create || e.edit || e.delete);
         return { ...e, view };
       }
@@ -5470,9 +5470,9 @@ async function accountsRule(ns, op, args) {
   const a = args || {};
   const c = getClient();
   const one = async (sql, id) => {
-    const n61 = Number(id) || 0;
-    if (!n61) return null;
-    const r = await c.execute({ sql, args: [n61] }).catch(() => null);
+    const n62 = Number(id) || 0;
+    if (!n62) return null;
+    const r = await c.execute({ sql, args: [n62] }).catch(() => null);
     return r?.rows[0] || null;
   };
   const section = (key3, extra = {}) => ({ module: key3, label: SECTION_LABEL[key3] || "Accounting", ...extra });
@@ -6682,8 +6682,8 @@ async function nextBargainNo(oilTypeId, supplierId, bargainDate) {
   let maxSeq = 0;
   for (const r of existing.rows) {
     const parts = String(r.bargain_no).split("/");
-    const n61 = parseInt(parts[parts.length - 1] ?? "0", 10);
-    if (!Number.isNaN(n61) && n61 > maxSeq) maxSeq = n61;
+    const n62 = parseInt(parts[parts.length - 1] ?? "0", 10);
+    if (!Number.isNaN(n62) && n62 > maxSeq) maxSeq = n62;
   }
   const serial = String(maxSeq + 1).padStart(2, "0");
   return `${oil}/${dayMonth(bargainDate)}/${party}/${serial}`;
@@ -12965,6 +12965,9 @@ async function createSaleInvoice(v) {
       }
       throw e;
     }
+    if ("party_gstin" in v) {
+      await getClient().execute({ sql: "UPDATE sales SET party_gstin = ? WHERE invoice_group = ?", args: [v.party_gstin ? String(v.party_gstin).trim().toUpperCase() : null, group] });
+    }
     return { group, ids };
   });
 }
@@ -12973,7 +12976,7 @@ async function updateSaleInvoice(group, v) {
     const items = Array.isArray(v.items) ? v.items : [];
     if (!items.length) throw new Error("Add at least one item to the invoice");
     const existing = await getClient().execute({
-      sql: "SELECT id, product_id, packaging_id, received_qty, invoice_no FROM sales WHERE invoice_group = ? ORDER BY id",
+      sql: "SELECT id, product_id, packaging_id, received_qty, invoice_no, party_gstin FROM sales WHERE invoice_group = ? ORDER BY id",
       args: [group]
     });
     const heldBefore = String(existing.rows[0]?.invoice_no || "").trim().toUpperCase();
@@ -13015,6 +13018,9 @@ async function updateSaleInvoice(group, v) {
         await getClient().execute({ sql: "UPDATE trading_deal_sales SET sale_id = ? WHERE sale_id = ?", args: [to, oldIds[i]] });
       }
     }
+    const priorGstin = existing.rows[0]?.party_gstin ?? null;
+    const gstinNow = "party_gstin" in v ? v.party_gstin ? String(v.party_gstin).trim().toUpperCase() : null : priorGstin;
+    await getClient().execute({ sql: "UPDATE sales SET party_gstin = ? WHERE invoice_group = ?", args: [gstinNow, group] });
     return { group, ids };
   });
 }
@@ -14434,6 +14440,7 @@ async function createOrder(v) {
       ]
     });
     const id = Number(res.lastInsertRowid);
+    if (v.party_gstin) await getClient().execute({ sql: "UPDATE orders SET party_gstin = ? WHERE id = ?", args: [String(v.party_gstin).trim().toUpperCase(), id] });
     const billGroup = String(v.bill_group || "").trim();
     if (billGroup) {
       await getClient().execute({
@@ -14712,6 +14719,9 @@ async function updateOrder(id, v) {
         id
       ]
     });
+    if ("party_gstin" in v) {
+      await getClient().execute({ sql: "UPDATE orders SET party_gstin = ? WHERE id = ?", args: [v.party_gstin ? String(v.party_gstin).trim().toUpperCase() : null, id] });
+    }
     if (wasConsignment) {
       await getClient().execute({
         sql: "UPDATE orders SET received_qty = ?, status = 'received' WHERE id = ?",
@@ -18797,8 +18807,8 @@ async function assertNotInUse(table, id) {
   const held = [];
   for (const d of deps) {
     const r = await c.execute({ sql: `SELECT COUNT(*) AS n FROM ${d.table} WHERE ${d.column} = ?`, args: [id] }).catch(() => null);
-    const n61 = r ? Number(r.rows[0].n) : 0;
-    if (n61 > 0) held.push(`${n61} ${d.label}${n61 === 1 ? "" : "s"}`);
+    const n62 = r ? Number(r.rows[0].n) : 0;
+    if (n62 > 0) held.push(`${n62} ${d.label}${n62 === 1 ? "" : "s"}`);
   }
   if (!held.length) return;
   const who2 = await c.execute({ sql: `SELECT name FROM ${table} WHERE id = ?`, args: [id] });
@@ -18865,6 +18875,8 @@ var init_repos = __esm({
         "tds_pct_above",
         "tds_above_only",
         "gst_rates",
+        // Its other GST Nos. — [{gstin, state, gst_rates, gst_type}] (GstRegsPanel).
+        "gst_regs",
         "credit_period_days",
         "adds_interest",
         "interest_pct",
@@ -18900,6 +18912,8 @@ var init_repos = __esm({
         "tds_threshold",
         "tds_above_only",
         "gst_rates",
+        // Its other GST Nos. — [{gstin, state, gst_rates, gst_type}] (GstRegsPanel).
+        "gst_regs",
         "adds_interest",
         "interest_pct",
         "interest_days",
@@ -20553,10 +20567,10 @@ async function addBdChargeType(labelIn) {
   if (label2.length < 2) throw new Error("Give the charge a name");
   if (label2.length > 40) throw new Error("Keep the name under 40 characters");
   if (!/^[A-Za-z0-9 .&()/-]+$/.test(label2)) throw new Error("Use letters, numbers and . & ( ) / - only");
-  const up4 = label2.toUpperCase();
-  const ledger2 = /\bA\/C$/.test(up4) ? up4 : `${up4} A/C`;
+  const up5 = label2.toUpperCase();
+  const ledger2 = /\bA\/C$/.test(up5) ? up5 : `${up5} A/C`;
   const all = await listBdChargeTypes();
-  const hit = all.find((x) => x.ledger === ledger2 || x.label.toUpperCase() === up4);
+  const hit = all.find((x) => x.ledger === ledger2 || x.label.toUpperCase() === up5);
   if (hit) return hit;
   const custom = await customChargeTypes();
   custom.push({ label: label2, ledger: ledger2 });
@@ -31109,6 +31123,179 @@ var init_purchaseInterestFold = __esm({
   }
 });
 
+// src/main/partyFold.ts
+var partyFold_exports = {};
+__export(partyFold_exports, {
+  foldBranches: () => foldBranches,
+  previewBranchFold: () => previewBranchFold
+});
+async function tablesWith(cols) {
+  const c = getClient();
+  const names = (await c.execute("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'")).rows.map((r) => String(r.name));
+  const out = [];
+  for (const t of names) {
+    const have = new Set((await c.execute(`PRAGMA table_info("${t}")`)).rows.map((r) => String(r.name)));
+    if (cols.some((x) => have.has(x))) out.push({ table: t, cols: have });
+  }
+  return out;
+}
+async function ledgerPairs(branch, main2, cid) {
+  const c = getClient();
+  const find = async (name) => (await c.execute({ sql: "SELECT id, name, acc_group FROM ledger_accounts WHERE name = ?", args: [up4(name)] })).rows[0] || null;
+  const bBase = up4(await resolveAccountName(up4(branch.name), cid));
+  const mBase = up4(await resolveAccountName(up4(main2.name), cid));
+  const out = [];
+  for (const suf of ["", " (DR)", " (CR)"]) {
+    const from = await find(bBase + suf);
+    if (!from) continue;
+    const intoName = mBase + suf;
+    out.push({ from, intoName, into: await find(intoName) });
+  }
+  return out;
+}
+async function branches() {
+  const c = getClient();
+  const out = [];
+  for (const kind of ["suppliers", "customers"]) {
+    const all = (await c.execute(`SELECT * FROM ${kind}`)).rows;
+    const byId = new Map(all.map((p) => [n60(p.id), p]));
+    for (const b of all) {
+      const m = b.linked_party_id ? byId.get(n60(b.linked_party_id)) : void 0;
+      if (m && typeOf(m) === typeOf(b)) out.push({ kind, branch: b, main: m });
+    }
+  }
+  return out;
+}
+async function previewBranchFold(companyId) {
+  const cid = n60(companyId) || 1;
+  const c = getClient();
+  const out = [];
+  for (const { kind, branch, main: main2 } of await branches()) {
+    let docs = 0;
+    for (const { table, cols } of await tablesWith([ID_COL[kind]])) {
+      if (table === kind) continue;
+      if (cols.has(ID_COL[kind])) docs += n60((await c.execute({ sql: `SELECT COUNT(*) AS k FROM "${table}" WHERE ${ID_COL[kind]} = ?`, args: [n60(branch.id)] })).rows[0]?.k);
+    }
+    const pairs = await ledgerPairs(branch, main2, cid);
+    let lines = 0;
+    let blocked = "";
+    for (const p of pairs) {
+      lines += n60((await c.execute({ sql: "SELECT COUNT(*) AS k FROM journal_lines WHERE account_id = ?", args: [n60(p.from.id)] })).rows[0]?.k);
+      if (p.into && n60(p.into.id) !== n60(p.from.id)) {
+        const pv = await previewLedgerMerge(n60(p.from.id), n60(p.into.id));
+        if (pv.blocked) blocked = String(pv.blocked);
+        else if (pv.copies.length)
+          blocked = `${pv.copies.length} entr${pv.copies.length === 1 ? "y looks" : "ies look"} booked twice between ${p.from.name} and ${p.intoName} \u2014 resolve them in Masters \u2192 Merge first`;
+      }
+    }
+    out.push({
+      key: `${kind}:${n60(branch.id)}`,
+      kind: PARTY_TYPE[kind],
+      branch_id: n60(branch.id),
+      branch: String(branch.name),
+      main_id: n60(main2.id),
+      main: String(main2.name),
+      gstin: branch.gstin || null,
+      state: branch.state || null,
+      gst_rates: branch.gst_rates || (n60(branch.gst_pct) ? String(n60(branch.gst_pct)) : null),
+      documents: docs,
+      ledger_lines: lines,
+      ledgers: pairs.map((p) => `${p.from.name} \u2192 ${p.intoName}${p.into ? "" : " (renamed)"}`),
+      blocked: blocked || null
+    });
+  }
+  return out;
+}
+async function foldBranches(keys, companyId) {
+  const cid = n60(companyId) || 1;
+  const want = new Set(keys);
+  const folded = [];
+  const skipped = [];
+  for (const { kind, branch, main: main2 } of await branches()) {
+    if (!want.has(`${kind}:${n60(branch.id)}`)) continue;
+    try {
+      for (const p of await ledgerPairs(branch, main2, cid)) {
+        if (!p.into) await renameLedger(n60(p.from.id), p.intoName, cid);
+        else if (n60(p.into.id) !== n60(p.from.id)) await mergeLedgers(n60(p.from.id), n60(p.into.id));
+      }
+      await withDbTransaction(async () => {
+        const c = getClient();
+        const b = n60(branch.id);
+        const m = n60(main2.id);
+        await c.execute(`CREATE TABLE IF NOT EXISTS accounting_repair_log (
+          repair_key TEXT PRIMARY KEY, entry_id INTEGER NOT NULL, before_json TEXT NOT NULL,
+          created_at TEXT NOT NULL DEFAULT (datetime('now')))`);
+        await c.execute({
+          sql: "INSERT OR REPLACE INTO accounting_repair_log(repair_key, entry_id, before_json) VALUES (?, ?, ?)",
+          args: [`party_fold:${kind}:${b}:${Date.now()}`, 0, JSON.stringify({ branch, main: main2, by: getCurrentUser().username || null })]
+        });
+        if (branch.gstin) {
+          const docTable = kind === "suppliers" ? "orders" : "sales";
+          await c.execute({ sql: `UPDATE ${docTable} SET party_gstin = COALESCE(party_gstin, ?) WHERE ${ID_COL[kind]} = ?`, args: [up4(branch.gstin), b] });
+        }
+        const typeRow = (await c.execute({
+          sql: `SELECT gst_type, COUNT(*) AS k FROM ${kind === "suppliers" ? "orders" : "sales"} WHERE ${ID_COL[kind]} = ? AND gst_type IS NOT NULL GROUP BY gst_type ORDER BY k DESC LIMIT 1`,
+          args: [b]
+        })).rows[0];
+        for (const { table, cols } of await tablesWith([ID_COL[kind], "party_id"])) {
+          if (table === kind || table === "party_openings") continue;
+          if (cols.has(ID_COL[kind])) {
+            for (const nc of NAME_COLS[kind]) {
+              if (cols.has(nc)) await c.execute({ sql: `UPDATE "${table}" SET ${nc} = ? WHERE ${ID_COL[kind]} = ?`, args: [String(main2.name), b] });
+            }
+            await c.execute({ sql: `UPDATE "${table}" SET ${ID_COL[kind]} = ? WHERE ${ID_COL[kind]} = ?`, args: [m, b] });
+          }
+          if (cols.has("party_id") && cols.has("party_type")) {
+            await c.execute({ sql: `UPDATE "${table}" SET party_id = ? WHERE party_id = ? AND LOWER(party_type) = ?`, args: [m, b, PARTY_TYPE[kind]] });
+          }
+        }
+        for (const o of (await c.execute({ sql: "SELECT * FROM party_openings WHERE kind = ? AND party_id = ?", args: [PARTY_TYPE[kind], b] }).catch(() => ({ rows: [] }))).rows) {
+          const have = (await c.execute({ sql: "SELECT amount FROM party_openings WHERE kind = ? AND party_id = ? AND company_id = ?", args: [PARTY_TYPE[kind], m, n60(o.company_id)] })).rows[0];
+          if (have) await c.execute({ sql: "UPDATE party_openings SET amount = amount + ? WHERE kind = ? AND party_id = ? AND company_id = ?", args: [n60(o.amount), PARTY_TYPE[kind], m, n60(o.company_id)] });
+          else await c.execute({ sql: "UPDATE party_openings SET party_id = ? WHERE kind = ? AND party_id = ? AND company_id = ?", args: [m, PARTY_TYPE[kind], b, n60(o.company_id)] });
+        }
+        await c.execute({ sql: "DELETE FROM party_openings WHERE kind = ? AND party_id = ?", args: [PARTY_TYPE[kind], b] }).catch(() => void 0);
+        let regs = [];
+        try {
+          regs = JSON.parse(String(main2.gst_regs || "[]"));
+        } catch {
+          regs = [];
+        }
+        if (branch.gstin && !regs.some((r) => up4(r.gstin) === up4(branch.gstin)) && up4(branch.gstin) !== up4(main2.gstin)) {
+          regs.push({
+            gstin: up4(branch.gstin),
+            state: String(branch.state || "").trim(),
+            gst_rates: String(branch.gst_rates || (n60(branch.gst_pct) ? n60(branch.gst_pct) : "")).trim(),
+            gst_type: String(typeRow?.gst_type || "CGST_SGST") === "IGST" ? "IGST" : "CGST_SGST"
+          });
+          await c.execute({ sql: `UPDATE ${kind} SET gst_regs = ? WHERE id = ?`, args: [JSON.stringify(regs), m] });
+        }
+        await c.execute({ sql: `DELETE FROM ${kind} WHERE id = ?`, args: [b] });
+      });
+      folded.push(String(branch.name));
+    } catch (e) {
+      skipped.push({ branch: String(branch.name), reason: e.message });
+    }
+  }
+  return { folded, skipped };
+}
+var n60, up4, typeOf, ID_COL, PARTY_TYPE, NAME_COLS;
+var init_partyFold = __esm({
+  "src/main/partyFold.ts"() {
+    init_db();
+    init_dbTransaction();
+    init_ledgerMap();
+    init_ledgerMerge();
+    init_currentUser();
+    n60 = (v) => Number.isFinite(Number(v)) ? Number(v) : 0;
+    up4 = (s5) => String(s5 ?? "").trim().toUpperCase();
+    typeOf = (p) => String(p.business_type ?? "").trim().toLowerCase();
+    ID_COL = { suppliers: "supplier_id", customers: "customer_id" };
+    PARTY_TYPE = { suppliers: "supplier", customers: "customer" };
+    NAME_COLS = { suppliers: ["supplier", "supplier_name"], customers: ["customer", "customer_name"] };
+  }
+});
+
 // src/main/shadowedRedirects.ts
 var shadowedRedirects_exports = {};
 __export(shadowedRedirects_exports, {
@@ -31139,20 +31326,20 @@ async function scan2() {
                        JOIN ledger_accounts tgt ON TRIM(UPPER(tgt.name)) = TRIM(UPPER(lm.use_name))
                       WHERE lm.note LIKE 'renamed from %' AND live.id <> tgt.id`)
   ).map((r) => ({
-    map_id: n60(r.map_id),
+    map_id: n61(r.map_id),
     posts_as: String(r.posts_as),
     use_name: String(r.use_name),
-    live_id: n60(r.live_id),
-    target_id: n60(r.target_id),
+    live_id: n61(r.live_id),
+    target_id: n61(r.target_id),
     created_by: String(r.created_by || ""),
     created_at: String(r.created_at || "")
   }));
   if (!redirects.length) return { redirects, lines: [], candidates: [] };
   const tally = await tallyBankParties();
   const accts = toPlain42(await c.execute("SELECT id, name FROM ledger_accounts"));
-  const byClean = new Map(accts.map((a) => [clean6(a.name), n60(a.id)]));
-  const nameOf = new Map(accts.map((a) => [n60(a.id), String(a.name)]));
-  const companies = new Map(toPlain42(await c.execute("SELECT id, name FROM companies")).map((r) => [n60(r.id), String(r.name)]));
+  const byClean = new Map(accts.map((a) => [clean6(a.name), n61(a.id)]));
+  const nameOf = new Map(accts.map((a) => [n61(a.id), String(a.name)]));
+  const companies = new Map(toPlain42(await c.execute("SELECT id, name FROM companies")).map((r) => [n61(r.id), String(r.name)]));
   const lines = [];
   for (const rd of redirects) {
     const targetKey = tallyKey(rd.use_name);
@@ -31170,11 +31357,11 @@ async function scan2() {
       const head = narr.replace(/\s\([^()]*\)$/, "");
       const t = tally.get(head) || tally.get(narr);
       if (!t) continue;
-      const amount2 = round230(n60(r.dr) || n60(r.cr));
+      const amount2 = round230(n61(r.dr) || n61(r.cr));
       const leg = t.legs.length === 1 ? t.legs[0] : t.legs.find((g) => Math.abs(round230(g.amount) - amount2) < 0.02);
       if (!leg || !leg.name) continue;
       if (tallyKey(leg.name) === targetKey) continue;
-      const cid = n60(r.company_id);
+      const cid = n61(r.company_id);
       let toId = null;
       let how = "";
       const exact = byClean.get(clean6(leg.name));
@@ -31189,7 +31376,7 @@ async function scan2() {
           })
         )[0];
         if (tb) {
-          const want = round230(n60(tb.cr) - n60(tb.dr));
+          const want = round230(n61(tb.cr) - n61(tb.dr));
           if (Math.abs(want) > 0.5) {
             const hits = toPlain42(
               await c.execute({
@@ -31198,22 +31385,22 @@ async function scan2() {
               })
             );
             if (hits.length === 1) {
-              toId = n60(hits[0].account_id);
+              toId = n61(hits[0].account_id);
               how = `its opening matches Tally's (${want.toFixed(2)})`;
             }
           }
         }
       }
       lines.push({
-        line_id: n60(r.line_id),
-        entry_id: n60(r.entry_id),
+        line_id: n61(r.line_id),
+        entry_id: n61(r.entry_id),
         company_id: cid,
         company: companies.get(cid) || `Company ${cid}`,
         date: String(r.entry_date || "").slice(0, 10),
         vch_type: String(r.vch_type || ""),
         vch_no: String(r.vch_no || ""),
         amount: amount2,
-        side: n60(r.dr) > 0 ? "dr" : "cr",
+        side: n61(r.dr) > 0 ? "dr" : "cr",
         from_id: rd.target_id,
         from_name: rd.use_name,
         tally_party: leg.name,
@@ -31224,7 +31411,7 @@ async function scan2() {
     }
   }
   const firsts = new Set(lines.map((l) => clean6(l.tally_party).split(" ")[0]).filter(Boolean));
-  const candidates = accts.filter((a) => firsts.has(clean6(a.name).split(" ")[0]) || lines.some((l) => l.to_id === n60(a.id))).filter((a) => !redirects.some((rd) => rd.target_id === n60(a.id))).map((a) => ({ id: n60(a.id), name: String(a.name) })).sort((a, b) => a.name.localeCompare(b.name));
+  const candidates = accts.filter((a) => firsts.has(clean6(a.name).split(" ")[0]) || lines.some((l) => l.to_id === n61(a.id))).filter((a) => !redirects.some((rd) => rd.target_id === n61(a.id))).map((a) => ({ id: n61(a.id), name: String(a.name) })).sort((a, b) => a.name.localeCompare(b.name));
   return { redirects, lines, candidates };
 }
 async function previewShadowedRedirects() {
@@ -31238,13 +31425,13 @@ async function fixShadowedRedirects(moves) {
     const s5 = await scan2();
     if (!s5.redirects.length) throw new Error("No hijacking redirect is left \u2014 check again");
     const by = new Map(s5.lines.map((l) => [l.line_id, l]));
-    const valid = new Set(toPlain42(await c.execute("SELECT id FROM ledger_accounts")).map((r) => n60(r.id)));
+    const valid = new Set(toPlain42(await c.execute("SELECT id FROM ledger_accounts")).map((r) => n61(r.id)));
     let moved = 0;
     let amount2 = 0;
     for (const m of moves || []) {
-      const f = by.get(n60(m.line_id));
+      const f = by.get(n61(m.line_id));
       if (!f) throw new Error("A line has changed since the list was shown \u2014 check again");
-      const to = n60(m.to_id);
+      const to = n61(m.to_id);
       if (!valid.has(to) || to === f.from_id) throw new Error(`Pick the ledger for ${f.vch_type} ${f.vch_no}`);
       await c.execute({
         sql: "INSERT OR REPLACE INTO accounting_repair_log (repair_key, entry_id, before_json) VALUES (?, ?, ?)",
@@ -31278,7 +31465,7 @@ async function scanLegacy() {
     opening: 0
   });
   const ids = new Map(
-    toPlain42(await c.execute({ sql: "SELECT id, name FROM ledger_accounts WHERE name IN (?, ?)", args: [LEGACY_TRAD, LEGACY_MIX] })).map((r) => [String(r.name), n60(r.id)])
+    toPlain42(await c.execute({ sql: "SELECT id, name FROM ledger_accounts WHERE name IN (?, ?)", args: [LEGACY_TRAD, LEGACY_MIX] })).map((r) => [String(r.name), n61(r.id)])
   );
   const tradId = ids.get(LEGACY_TRAD) || 0;
   const mixId = ids.get(LEGACY_MIX) || 0;
@@ -31286,7 +31473,7 @@ async function scanLegacy() {
   if ((await scan2()).redirects.length) return none("Fix the payments above first \u2014 this step builds on them.");
   const op = toPlain42(await c.execute({ sql: "SELECT company_id, cr - dr AS bal FROM ledger_openings WHERE account_id = ?", args: [mixId] }));
   const tb = toPlain42(await c.execute("SELECT company_id, cr - dr AS bal FROM tally_ledgers WHERE UPPER(name) LIKE 'LEGACY COMMODITIES PRIVATE LTD%RAJKOT%'"));
-  const match = op.find((o) => tb.some((t) => n60(t.company_id) === n60(o.company_id) && Math.abs(n60(t.bal) - n60(o.bal)) < 1 && Math.abs(n60(o.bal)) > 1));
+  const match = op.find((o) => tb.some((t) => n61(t.company_id) === n61(o.company_id) && Math.abs(n61(t.bal) - n61(o.bal)) < 1 && Math.abs(n61(o.bal)) > 1));
   if (!match) return none("");
   const lines = toPlain42(
     await c.execute({
@@ -31297,19 +31484,19 @@ async function scanLegacy() {
       args: [mixId]
     })
   ).map((r) => ({
-    line_id: n60(r.line_id),
-    entry_id: n60(r.entry_id),
-    company_id: n60(r.company_id),
+    line_id: n61(r.line_id),
+    entry_id: n61(r.entry_id),
+    company_id: n61(r.company_id),
     date: String(r.entry_date || "").slice(0, 10),
     vch_type: String(r.vch_type || ""),
     vch_no: String(r.vch_no || ""),
-    dr: round230(n60(r.dr)),
-    cr: round230(n60(r.cr)),
+    dr: round230(n61(r.dr)),
+    cr: round230(n61(r.cr)),
     narration: String(r.narration || "").slice(0, 140)
   }));
   const redirects = toPlain42(await c.execute({ sql: "SELECT id, company_id, posts_as, use_name FROM ledger_map WHERE TRIM(UPPER(use_name)) = ?", args: [LEGACY_MIX] }));
   if (!lines.length && !redirects.length) return none("");
-  return { ok: true, reason: "", trad_id: tradId, mix_id: mixId, lines, redirects, opening: round230(n60(match.bal)) };
+  return { ok: true, reason: "", trad_id: tradId, mix_id: mixId, lines, redirects, opening: round230(n61(match.bal)) };
 }
 async function previewLegacySplit() {
   const s5 = await scanLegacy();
@@ -31333,12 +31520,12 @@ async function fixLegacySplit() {
     for (const r of s5.redirects) {
       await c.execute({
         sql: "INSERT OR REPLACE INTO accounting_repair_log (repair_key, entry_id, before_json) VALUES (?, ?, ?)",
-        args: [`legacy-split:map:${n60(r.id)}`, 0, JSON.stringify(r)]
+        args: [`legacy-split:map:${n61(r.id)}`, 0, JSON.stringify(r)]
       });
       const rajkot = /RAJKOT/.test(clean6(r.posts_as));
       const to = rajkot && !taken.length ? LEGACY_RAJKOT : rajkot ? LEGACY_MIX : LEGACY_TRAD;
-      if (clean6(r.posts_as) === to) await c.execute({ sql: "DELETE FROM ledger_map WHERE id = ?", args: [n60(r.id)] });
-      else await c.execute({ sql: "UPDATE ledger_map SET use_name = ? WHERE id = ?", args: [to, n60(r.id)] });
+      if (clean6(r.posts_as) === to) await c.execute({ sql: "DELETE FROM ledger_map WHERE id = ?", args: [n61(r.id)] });
+      else await c.execute({ sql: "UPDATE ledger_map SET use_name = ? WHERE id = ?", args: [to, n61(r.id)] });
     }
     if (!taken.length) {
       await c.execute({
@@ -31351,14 +31538,14 @@ async function fixLegacySplit() {
     return { moved: s5.lines.length, redirects: s5.redirects.length };
   });
 }
-var n60, round230, clean6, LEGACY_TRAD, LEGACY_MIX, LEGACY_RAJKOT;
+var n61, round230, clean6, LEGACY_TRAD, LEGACY_MIX, LEGACY_RAJKOT;
 var init_shadowedRedirects = __esm({
   "src/main/shadowedRedirects.ts"() {
     init_db();
     init_dbTransaction();
     init_tallyBank();
     init_tallyNotes();
-    n60 = (v) => Number(v) || 0;
+    n61 = (v) => Number(v) || 0;
     round230 = (v) => Math.round(v * 100) / 100;
     clean6 = (v) => String(v ?? "").trim().replace(/\s+/g, " ").toUpperCase();
     LEGACY_TRAD = "LEGACY COMMODITIES PVT LTD, TRAD.";
@@ -31618,7 +31805,7 @@ async function dumpSql(from) {
 }
 function stamp() {
   const d = /* @__PURE__ */ new Date();
-  const p = (n61) => String(n61).padStart(2, "0");
+  const p = (n62) => String(n62).padStart(2, "0");
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}`;
 }
 async function snapshotGz() {
@@ -33003,8 +33190,8 @@ async function runStartupTasks() {
   await ensureBdPostingFields();
   await ensureVoucherNumbers();
   await runOnce("ledger_map_renames_sitewide_v1", async () => {
-    const n61 = await widenRenameRedirects();
-    if (n61) console.log(`[ledger] ${n61} rename redirect(s) now apply to every company`);
+    const n62 = await widenRenameRedirects();
+    if (n62) console.log(`[ledger] ${n62} rename redirect(s) now apply to every company`);
   }).catch((e) => console.error("[ledger] widening rename redirects failed:", e));
   await ensureRequiredColumns().catch((e) => console.error("[schema] column check failed:", e));
   await repairLcRepaymentAccount().catch((e) => console.error("[lc] repayment repair failed:", e));
@@ -33552,9 +33739,9 @@ async function runStartupTasks() {
     const cols = new Set(info.rows.map((r) => String(r.name)));
     if (cols.size === 0 || cols.has("bd_id")) return;
     const count = await c.execute("SELECT COUNT(*) AS n FROM bd_parties");
-    const n61 = Number(count.rows[0].n);
-    if (n61 > 0) {
-      console.error(`[bd] bd_parties has the retired party+entries shape AND ${n61} row(s) \u2014 leaving it for a human`);
+    const n62 = Number(count.rows[0].n);
+    if (n62 > 0) {
+      console.error(`[bd] bd_parties has the retired party+entries shape AND ${n62} row(s) \u2014 leaving it for a human`);
       return;
     }
     await c.execute("DROP TABLE IF EXISTS bd_entries");
@@ -34853,6 +35040,12 @@ async function runStartupTasks() {
   startRevisionWatcher();
 }
 var REQUIRED_COLUMNS = [
+  // ONE PARTY, SEVERAL GST NOs. — [{gstin, state, gst_rates, gst_type}] on the
+  // party, and the GST No. a bill was made under (partyFold.ts, the bill forms).
+  { table: "suppliers", column: "gst_regs", type: "TEXT" },
+  { table: "customers", column: "gst_regs", type: "TEXT" },
+  { table: "orders", column: "party_gstin", type: "TEXT" },
+  { table: "sales", column: "party_gstin", type: "TEXT" },
   // The desk's own voucher type (PURCHASE OTHERS under Purchase) — a label on
   // top of the basic type, which keeps the number series (voucherSubtypes.ts).
   { table: "journal_entries", column: "vch_subtype", type: "TEXT" },
@@ -40782,8 +40975,8 @@ var GROUP_HINTS = [
   { re: /\bPAYABLE\b|\bPROVISION\b|\bOUTSTANDING\b|\bACCUMULATED\b/, group: "Current Liabilities" }
 ];
 function suggestGroup(name, dr, cr) {
-  const up4 = String(name || "").toUpperCase();
-  for (const h of GROUP_HINTS) if (h.re.test(up4)) return h.group;
+  const up5 = String(name || "").toUpperCase();
+  for (const h of GROUP_HINTS) if (h.re.test(up5)) return h.group;
   if (round224(cr) > 4e-3) return "Sundry Creditors";
   if (round224(dr) > 4e-3) return "Sundry Debtors";
   return "Suspense A/C";
@@ -42260,6 +42453,16 @@ function registerIpc() {
     const { foldPurchaseInterest: foldPurchaseInterest2 } = await Promise.resolve().then(() => (init_purchaseInterestFold(), purchaseInterestFold_exports));
     return foldPurchaseInterest2((a?.ids || []).map(Number));
   });
+  handle("repairs:branchFold:list", async (_e, a) => {
+    await assertAdmin("The accounting checks");
+    return (await Promise.resolve().then(() => (init_partyFold(), partyFold_exports))).previewBranchFold(a?.companyId);
+  });
+  handle("repairs:branchFold", async (_e, a) => {
+    await assertAdmin("Folding sub-ledgers");
+    const keys = (a?.keys || []).map(String).filter(Boolean);
+    if (!keys.length) throw new Error("Tick at least one sub-ledger");
+    return (await Promise.resolve().then(() => (init_partyFold(), partyFold_exports))).foldBranches(keys, a?.companyId);
+  });
   handle("repairs:staleTds:list", async () => {
     await assertAdmin("The accounting checks");
     const { refreshStalePurchaseTds: refreshStalePurchaseTds2 } = await Promise.resolve().then(() => (init_orders(), orders_exports));
@@ -42451,7 +42654,7 @@ function stamp2() {
 async function countAll(c) {
   const names = await userTables(c);
   if (!names.length) return { tables: 0, rows: 0 };
-  const union = names.map((n61) => `SELECT COUNT(*) AS k FROM "${n61}"`).join(" UNION ALL ");
+  const union = names.map((n62) => `SELECT COUNT(*) AS k FROM "${n62}"`).join(" UNION ALL ");
   const res = await c.execute(union);
   let rows2 = 0;
   for (const r of res.rows) rows2 += Number(r.k) || 0;
