@@ -23596,11 +23596,13 @@ var init_tallyCache = __esm({
 // src/main/tallyLinks.ts
 var tallyLinks_exports = {};
 __export(tallyLinks_exports, {
+  checkedFor: () => checkedFor,
   linksFor: () => linksFor,
   listTallyBatches: () => listTallyBatches,
   recordTallyBatch: () => recordTallyBatch,
   removeTallyLink: () => removeTallyLink,
   saveTallyLink: () => saveTallyLink,
+  setTallyChecked: () => setTallyChecked,
   undoTallyBatch: () => undoTallyBatch
 });
 async function ensureTables() {
@@ -23627,7 +23629,31 @@ async function ensureTables() {
     undone_at TEXT,
     undone_by TEXT
   )`);
+  await c.execute(`CREATE TABLE IF NOT EXISTS tally_checked (
+    company_id INTEGER NOT NULL,
+    scope TEXT NOT NULL,
+    row_key TEXT NOT NULL,
+    created_by TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (company_id, scope, row_key)
+  )`);
   ready4 = true;
+}
+async function checkedFor(companyId, scope2) {
+  await ensureTables();
+  const r = await getClient().execute({ sql: "SELECT row_key FROM tally_checked WHERE company_id = ? AND scope = ?", args: [companyId, scope2] });
+  return new Set(r.rows.map((x) => String(x.row_key)));
+}
+async function setTallyChecked(v) {
+  await ensureTables();
+  if (!Number(v.company_id) || !String(v.scope || "").trim() || !String(v.row_key || "").trim()) throw new Error("Nothing to mark");
+  if (v.on)
+    await getClient().execute({
+      sql: "INSERT OR REPLACE INTO tally_checked (company_id, scope, row_key, created_by) VALUES (?, ?, ?, ?)",
+      args: [Number(v.company_id), v.scope, v.row_key, who()]
+    });
+  else await getClient().execute({ sql: "DELETE FROM tally_checked WHERE company_id = ? AND scope = ? AND row_key = ?", args: [Number(v.company_id), v.scope, v.row_key] });
+  return { ok: true };
 }
 async function linksFor(companyId, scope2) {
   await ensureTables();
@@ -26685,11 +26711,12 @@ async function reconcileBank(v) {
       if (used.has(b.id) || b.dir !== t.dir || Math.abs(b.amount - t.amount) > 1) continue;
       const gap = daysApart3(b.date, t.date);
       const party = samePartyLine(t, b, mapped);
-      if (gap > (party ? NEAR_DAYS2 : 3)) continue;
-      pairs.push({ t, b, party, gap });
+      const num2 = sameNum(t.vch_no, b.vch_no);
+      if (gap > (num2 ? NUM_DAYS : party ? NEAR_DAYS2 : 3)) continue;
+      pairs.push({ t, b, party, gap, num: num2 });
     }
   }
-  pairs.sort((x, y) => Number(y.party) - Number(x.party) || x.gap - y.gap);
+  pairs.sort((x, y) => Number(y.num) - Number(x.num) || Number(y.party) - Number(x.party) || x.gap - y.gap);
   const found = /* @__PURE__ */ new Map();
   for (const p of pairs) {
     if (found.has(p.t.key) || used.has(p.b.id)) continue;
@@ -26714,6 +26741,10 @@ async function reconcileBank(v) {
   for (const b of entries2) {
     if (used.has(b.id) || b.date < book.from || b.date > book.to) continue;
     rows2.push({ key: `BOOKS|${b.id}`, status: "missing_tally", tally: null, books: short(b), diffs: [] });
+  }
+  for (const r of rows2) {
+    if (!r.tally || !r.books) continue;
+    if (vchNum(r.tally.vch_no) && vchNum(r.books.vch_no)) r.same_no = sameNum(r.tally.vch_no, r.books.vch_no);
   }
   const statement = await readStatement(String(v.statement_base64 || ""), String(v.statement_name || ""));
   if (statement) {
@@ -27048,6 +27079,8 @@ async function checkTallyBank(v) {
     rows2.filter((r) => r[side] && r[side].dir === dir && (side === "books" ? r.status !== "cancelled_here" : !r.tally.cancelled)).filter((r) => side === "tally" || r.books.date >= book.from && r.books.date <= book.to).filter((r, i, all) => side === "tally" || !r.books.id || all.findIndex((x) => x.books?.id === r.books.id) === i).reduce((t, r) => t + n29(r[side].amount), 0) + // The Tally lines folded under a row (see ONE ROW PER VOUCHER HERE).
     (side === "tally" ? rows2.reduce((t, r) => t + (r.also || []).filter((a) => a.dir === dir && !a.cancelled).reduce((x, a) => x + n29(a.amount), 0), 0) : 0)
   );
+  const checked = await checkedFor(cid, `bank:${Number(account.id)}`);
+  for (const r of rows2) if (checked.has(String(r.key))) r.checked = true;
   const fileDigits = acctDigits(book.bank);
   const companyName = String((await getClient().execute({ sql: "SELECT name FROM companies WHERE id = ?", args: [cid] })).rows[0]?.name || "");
   return {
@@ -27084,7 +27117,9 @@ async function checkTallyBank(v) {
       missing_tally: count("missing_tally"),
       cancelled: count("cancelled"),
       cancelled_here: count("cancelled_here"),
-      statement_only: count("statement_only")
+      statement_only: count("statement_only"),
+      // Checked lines that would otherwise be To look at.
+      checked: rows2.filter((r) => r.checked && r.status !== "matched" && r.status !== "cancelled").length
     },
     statement: statement ? { name: statement.name, lines: statement.lines.length, from: statement.from, to: statement.to } : null,
     vch_types: [...new Set(book.lines.map((l) => l.vch_type))].sort(),
@@ -27342,7 +27377,7 @@ async function setCompanyBank(v) {
   else await getClient().execute({ sql: "DELETE FROM company_bank_accounts WHERE company_id = ? AND account_id = ?", args: [cid, id] });
   return { ok: true };
 }
-var import_exceljs4, n29, round214, inr5, dmy2, NEAR_DAYS2, MONEY_GROUPS, narrationHead, ownTable;
+var import_exceljs4, n29, round214, inr5, dmy2, NEAR_DAYS2, NUM_DAYS, vchNum, sameNum, MONEY_GROUPS, narrationHead, ownTable;
 var init_tallyBank = __esm({
   "src/main/tallyBank.ts"() {
     import_exceljs4 = __toESM(require("exceljs"));
@@ -27360,6 +27395,12 @@ var init_tallyBank = __esm({
     inr5 = (v) => `\u20B9${Math.abs(v).toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
     dmy2 = (iso) => iso ? iso.slice(0, 10).split("-").reverse().join("-") : "\u2014";
     NEAR_DAYS2 = 7;
+    NUM_DAYS = 45;
+    vchNum = (v) => {
+      const s5 = String(v ?? "").trim();
+      return /^\d+$/.test(s5) ? String(Number(s5)) : "";
+    };
+    sameNum = (a, b) => !!vchNum(a) && vchNum(a) === vchNum(b);
     MONEY_GROUPS = ["Bank Accounts", "Bank OD A/c", "Cash-in-Hand"];
     narrationHead = (bank, t) => `Imported from Tally \u2014 ${bank} Book \xB7 ${t.vch_type} No. ${t.vch_no}`;
     ownTable = false;
@@ -41593,6 +41634,7 @@ function registerIpc() {
     async (_e, { values }) => (await Promise.resolve().then(() => (init_tallyBank(), tallyBank_exports))).settleTallyBankDifference(values)
   );
   handle("tallyNotes:unlink", (_e, { values }) => removeTallyLink(values));
+  handle("tallyNotes:setChecked", (_e, { values }) => setTallyChecked(values));
   handle("tallyNotes:batches", (_e, { values }) => listTallyBatches(values));
   handle("tallyNotes:undoBatch", (_e, { values }) => undoTallyBatch(values));
   handle("tallyNotes:companyBanks", (_e, { values }) => listCompanyBanks(values));
