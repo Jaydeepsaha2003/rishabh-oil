@@ -36,6 +36,16 @@ const round2 = (x: number): number => Math.round((Number(x) || 0) * 100) / 100
 const inr = (v: number): string => `₹${Math.abs(v).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
 const dmy = (iso: string): string => (iso ? iso.slice(0, 10).split('-').reverse().join('-') : '—')
 const NEAR_DAYS = 7
+// THE VOUCHER NUMBER, as a witness. A line booked from Tally keeps Tally's
+// number (No. 186); one with the same number and amount here is the same entry
+// even a month apart. Plain numbers only, leading zeros ignored — "I1" or a
+// cheque reference is not a voucher number.
+const NUM_DAYS = 45
+const vchNum = (v: unknown): string => {
+  const s = String(v ?? '').trim()
+  return /^\d+$/.test(s) ? String(Number(s)) : ''
+}
+const sameNum = (a: unknown, b: unknown): boolean => !!vchNum(a) && vchNum(a) === vchNum(b)
 const MONEY_GROUPS = ['Bank Accounts', 'Bank OD A/c', 'Cash-in-Hand']
 
 function daysApart(a: string, b: string): number {
@@ -548,18 +558,20 @@ async function reconcileBank(v: { account_id: number; data_base64: string; compa
   }
   // Then by what it is: direction, amount, day and party. Closest first, so
   // one voucher here answers for one line of the book at most.
-  const pairs: { t: BankLine; b: BookEntry; party: boolean; gap: number }[] = []
+  // The same voucher number goes first, then the same party, then the nearest day.
+  const pairs: { t: BankLine; b: BookEntry; party: boolean; gap: number; num: boolean }[] = []
   for (const t of rest) {
     if (t.cancelled) continue
     for (const b of entries) {
       if (used.has(b.id) || b.dir !== t.dir || Math.abs(b.amount - t.amount) > 1) continue
       const gap = daysApart(b.date, t.date)
       const party = samePartyLine(t, b, mapped)
-      if (gap > (party ? NEAR_DAYS : 3)) continue
-      pairs.push({ t, b, party, gap })
+      const num = sameNum(t.vch_no, b.vch_no)
+      if (gap > (num ? NUM_DAYS : party ? NEAR_DAYS : 3)) continue
+      pairs.push({ t, b, party, gap, num })
     }
   }
-  pairs.sort((x, y) => Number(y.party) - Number(x.party) || x.gap - y.gap)
+  pairs.sort((x, y) => Number(y.num) - Number(x.num) || Number(y.party) - Number(x.party) || x.gap - y.gap)
   const found = new Map<string, { b: BookEntry; party: boolean }>()
   for (const p of pairs) {
     if (found.has(p.t.key) || used.has(p.b.id)) continue
@@ -584,6 +596,12 @@ async function reconcileBank(v: { account_id: number; data_base64: string; compa
   for (const b of entries) {
     if (used.has(b.id) || b.date < book.from || b.date > book.to) continue
     rows.push({ key: `BOOKS|${b.id}`, status: 'missing_tally', tally: null, books: short(b), diffs: [] })
+  }
+  // Paired, but numbered differently on the two sides — said, not counted as a
+  // mismatch (the app's own vouchers carry their own numbers).
+  for (const r of rows) {
+    if (!r.tally || !r.books) continue
+    if (vchNum(r.tally.vch_no) && vchNum(r.books.vch_no)) r.same_no = sameNum(r.tally.vch_no, r.books.vch_no)
   }
 
   // THE BANK'S OWN STATEMENT, when there is one: each line of Tally or these

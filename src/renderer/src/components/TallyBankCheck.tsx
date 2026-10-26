@@ -1319,6 +1319,16 @@ ${pairs.map((x) => String(x.own?.code || '')).join(', ')} stay, and match Tally'
                           </span>
                         ))}
                         {t?.multi && <span style={chip('#5A6B62', '#EEF3EC', '#DCE7DB')}>As per details</span>}
+                        {r.same_no === true && r.status !== 'matched' && (
+                          <span title="Same voucher number on both sides — the same entry" style={chip('#0B6B45', '#E9F5EE', '#BFE3CB')}>
+                            Same No. {String(t?.vch_no)}
+                          </span>
+                        )}
+                        {r.same_no === false && (
+                          <span title={`Tally No. ${String(t?.vch_no)}, here No. ${String(b?.vch_no)} — paired by amount, party and date`} style={chip('#8A5300', '#FFF8E9', '#F1D9A6')}>
+                            No. {String(t?.vch_no)} · here {String(b?.vch_no)}
+                          </span>
+                        )}
                         {/* The same payment in the books twice — booked from
                             Tally AND posted by its own document. */}
                         {(r.duplicate || r.duplicate_of) && (
