@@ -43,7 +43,36 @@ async function ensureTables(): Promise<void> {
     undone_at TEXT,
     undone_by TEXT
   )`)
+  // CHECKED: lines the desk has looked at and says are fine as they stand —
+  // out of "To look at", kept under Checked. Keyed like tally_links.
+  await c.execute(`CREATE TABLE IF NOT EXISTS tally_checked (
+    company_id INTEGER NOT NULL,
+    scope TEXT NOT NULL,
+    row_key TEXT NOT NULL,
+    created_by TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (company_id, scope, row_key)
+  )`)
   ready = true
+}
+
+export async function checkedFor(companyId: number, scope: string): Promise<Set<string>> {
+  await ensureTables()
+  const r = await getClient().execute({ sql: 'SELECT row_key FROM tally_checked WHERE company_id = ? AND scope = ?', args: [companyId, scope] })
+  return new Set(r.rows.map((x) => String(x.row_key)))
+}
+
+/** Mark a line checked (on) or take the mark off. */
+export async function setTallyChecked(v: { company_id: number; scope: string; row_key: string; on: boolean }): Promise<{ ok: true }> {
+  await ensureTables()
+  if (!Number(v.company_id) || !String(v.scope || '').trim() || !String(v.row_key || '').trim()) throw new Error('Nothing to mark')
+  if (v.on)
+    await getClient().execute({
+      sql: 'INSERT OR REPLACE INTO tally_checked (company_id, scope, row_key, created_by) VALUES (?, ?, ?, ?)',
+      args: [Number(v.company_id), v.scope, v.row_key, who()]
+    })
+  else await getClient().execute({ sql: 'DELETE FROM tally_checked WHERE company_id = ? AND scope = ? AND row_key = ?', args: [Number(v.company_id), v.scope, v.row_key] })
+  return { ok: true }
 }
 
 const who = (): string => String(getCurrentUser().username || '').trim() || 'local'

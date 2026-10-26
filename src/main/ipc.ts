@@ -2,7 +2,7 @@ import { tallyHealth } from './tallyDesk'
 import { listCancelledInvoiceNos } from './sales'
 import { shortageNoteCandidates, setShortageNotes, shortageNoteMap } from './saleShortageNotes'
 import { saleTdsPreview, postSaleTds, removeSaleTds, saleTdsMap } from './saleTds'
-import { saveTallyLink, removeTallyLink, listTallyBatches, undoTallyBatch } from './tallyLinks'
+import { saveTallyLink, removeTallyLink, listTallyBatches, undoTallyBatch, setTallyChecked } from './tallyLinks'
 import { listCompanyBanks, setCompanyBank, suggestTallyBank, checkTallyBank, previewTallyBankVouchers, postTallyBankVouchers } from './tallyBank'
 import { checkTallyRegister, previewTallyRegisterVouchers, postTallyRegisterVouchers, setRegisterVoucherDate } from './tallyRegisters'
 import { previewTallyNotes, saveTallyNoteMap, createTallyNoteLedger, postTallyNotes, reconcileTallySales, previewTallySalesVouchers, postTallySalesVouchers, linkTallyParty, saveTallyDraft, listTallyDrafts, clearTallyDraft } from './tallyNotes'
@@ -957,6 +957,7 @@ export function registerIpc(): void {
     (await import('./tallyBank')).settleTallyBankDifference(values as Parameters<typeof import('./tallyBank').settleTallyBankDifference>[0])
   )
   handle('tallyNotes:unlink', (_e, { values }: { values: Row }) => removeTallyLink(values as Parameters<typeof removeTallyLink>[0]))
+  handle('tallyNotes:setChecked', (_e, { values }: { values: Row }) => setTallyChecked(values as Parameters<typeof setTallyChecked>[0]))
   handle('tallyNotes:batches', (_e, { values }: { values: Row }) => listTallyBatches(values as Parameters<typeof listTallyBatches>[0]))
   handle('tallyNotes:undoBatch', (_e, { values }: { values: Row }) => undoTallyBatch(values as Parameters<typeof undoTallyBatch>[0]))
   // A bank's book from Tally, against the same bank here.

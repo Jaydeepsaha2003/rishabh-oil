@@ -1,8 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { toast } from 'sonner'
-import { AlertTriangle, ArrowDownLeft, ArrowRight, ArrowUpRight, CalendarCheck, Check, ExternalLink, FilePlus2, FileText, Landmark, Link2, Plus, RefreshCw, RotateCcw, Search, Unlink, Upload, X } from 'lucide-react'
+import { AlertTriangle, ArrowDownLeft, ArrowRight, ArrowUpRight, CalendarCheck, Check, CheckCheck, ExternalLink, FilePlus2, FileText, Landmark, Link2, Plus, RefreshCw, RotateCcw, Search, Split, Unlink, Upload, X } from 'lucide-react'
 import { formatDate, formatINR } from '@/lib/format'
 import { ExcelButton } from '@/components/ExcelButton'
+import { useBreakdownShown } from '@/lib/breakdownReveal'
 import { TallyBookVouchers } from '@/components/TallyBookVouchers'
 import { TallyBatches } from '@/components/TallyBatches'
 import { draftTime } from '@/components/TallySalesCheck'
@@ -62,6 +63,8 @@ export function TallyBankCheck({
   // LC side's, or the generic BANK A/C.
   const [own, setOwn] = useState<{ chosen: boolean; banks: Row[] }>({ chosen: false, banks: [] })
   const [managing, setManaging] = useState(false)
+  // Breakdowns show only once revealed (Ctrl+Alt+B), as everywhere else.
+  const showBreakdowns = useBreakdownShown()
   const loadOwn = async (): Promise<void> => {
     if (!companyId) return
     try {
@@ -353,6 +356,19 @@ export function TallyBankCheck({
     }
   }
 
+  // CHECKED — the desk has looked at this line and it is fine as it stands:
+  // it leaves "To look at" and waits under Checked, where it can be unmarked.
+  async function markChecked(r: Row, on: boolean): Promise<void> {
+    if (!file || !bankId) return
+    try {
+      await window.api.tallyNotes.setChecked({ company_id: companyId, scope: `bank:${bankId}`, row_key: String(r.key), on })
+      toast.success(on ? 'Marked checked — moved out of To look at' : 'Unmarked — back under To look at')
+      await run(file, bankId, savedAt || undefined)
+    } catch (e) {
+      toast.error((e as Error).message)
+    }
+  }
+
   // REVERSE — take our voucher back out of these books. For a line booked
   // wrongly (or twice): the voucher here is deleted through the ordinary
   // voucher delete, with its rights and its guards — one posted by a purchase,
@@ -557,8 +573,8 @@ ${pairs.map((x) => String(x.own?.code || '')).join(', ')} stay, and match Tally'
   const tabbed = useMemo(() => {
     const needle = q.trim().toLowerCase()
     return rows.filter((r) => {
-      if (filter === 'problems' && (r.status === 'matched' || r.status === 'cancelled')) return false
-      if (filter !== 'problems' && filter !== 'all' && r.status !== filter) return false
+      if (filter === 'checked' ? !r.checked : filter === 'problems' && (r.status === 'matched' || r.status === 'cancelled' || r.checked)) return false
+      if (filter !== 'problems' && filter !== 'all' && filter !== 'checked' && r.status !== filter) return false
       if (dir && side(r).dir !== dir) return false
       if (!needle) return true
       return [r.tally?.party, ...detailNames(r), r.tally?.vch_no, ...((r.also as Row[]) || []).map((a) => a.vch_no), r.tally?.vch_type, r.books?.code, r.books?.party, String(side(r).amount)].some((x) => String(x || '').toLowerCase().includes(needle))
@@ -619,7 +635,7 @@ ${pairs.map((x) => String(x.own?.code || '')).join(', ')} stay, and match Tally'
   const missingBookable = bookable.filter((r) => r.status === 'missing_here' && !r.near)
   const copies = (narrowed ? shown : rows).filter((r) => (r.duplicate_of as Row | undefined)?.id)
   const redatable = rows.filter((r) => r.redate === 'yes')
-  const problems = (c.mismatch || 0) + (c.possible || 0) + (c.missing_here || 0) + (c.missing_tally || 0) + (c.cancelled_here || 0) + (c.statement_only || 0)
+  const problems = (c.mismatch || 0) + (c.possible || 0) + (c.missing_here || 0) + (c.missing_tally || 0) + (c.cancelled_here || 0) + (c.statement_only || 0) - (c.checked || 0)
   const card = 'overflow-hidden rounded-[6px] border border-[#D6E2D6] bg-white'
   const GRID = hasStmt ? '104px 180px minmax(220px,1.5fr) 132px 132px 140px 190px 176px' : '104px 190px minmax(260px,1.6fr) 140px 140px 150px 176px'
   const bal = res?.balances || {}
@@ -990,6 +1006,7 @@ ${pairs.map((x) => String(x.own?.code || '')).join(', ')} stay, and match Tally'
                   { k: 'missing_here', label: 'Missing here', n: Number(c.missing_here || 0) },
                   { k: 'missing_tally', label: 'Not in Tally', n: Number(c.missing_tally || 0) },
                   ...(hasStmt ? [{ k: 'statement_only', label: 'Bank only', n: Number(c.statement_only || 0) }] : []),
+                  { k: 'checked', label: 'Checked', n: Number(c.checked || 0) },
                   { k: 'all', label: 'All', n: rows.length }
                 ].map((f, i) => {
                   const on = filter === f.k
@@ -1325,6 +1342,40 @@ ${pairs.map((x) => String(x.own?.code || '')).join(', ')} stay, and match Tally'
                           >
                             <RotateCcw className="h-3 w-3" /> {r.duplicate_of ? `Reverse copy ${String(r.duplicate_of.code)}` : 'Reverse'}
                           </button>
+                        )}
+                        {/* THE BREAKDOWN of the voucher here — opened whole, each
+                            line's working written and saved; Esc comes back. */}
+                        {showBreakdowns && b?.id && onOpenVoucher && (
+                          <button
+                            type="button"
+                            onClick={() => openHere(r)}
+                            title={`Break down a figure on ${String(b.code || 'the voucher here')} — write what it is made of; the ledgers and amount stay as posted`}
+                            className="flex h-[22px] items-center gap-1 rounded-[3px] border border-[#BFE3CB] bg-[#F1F8EC] px-1.5 text-[10px] font-extrabold uppercase tracking-[.04em] text-[#0B6B45] hover:bg-[#E3F2E8]"
+                          >
+                            <Split className="h-3 w-3" /> Break down
+                          </button>
+                        )}
+                        {r.checked ? (
+                          <span className="flex items-center gap-1">
+                            <span title="You looked at it and it is fine as it stands" style={chip('#0B6B45', '#E9F5EE', '#BFE3CB')}>
+                              Checked
+                            </span>
+                            <button type="button" title="Unmark — back under To look at" onClick={() => void markChecked(r, false)} className="text-[#8CA396] hover:text-[#B3261E]">
+                              <X className="h-3.5 w-3.5" />
+                            </button>
+                          </span>
+                        ) : (
+                          r.status !== 'matched' &&
+                          r.status !== 'cancelled' && (
+                            <button
+                              type="button"
+                              onClick={() => void markChecked(r, true)}
+                              title="You have looked at it and it is fine as it stands — take it out of To look at"
+                              className="flex h-[22px] items-center gap-1 rounded-[3px] border border-[#D6E2D6] bg-white px-1.5 text-[10px] font-extrabold uppercase tracking-[.04em] text-[#33473E] hover:bg-[#F4F7F3]"
+                            >
+                              <CheckCheck className="h-3 w-3" /> Mark checked
+                            </button>
+                          )
                         )}
                         {r.linked && (
                           <span className="flex items-center gap-1">

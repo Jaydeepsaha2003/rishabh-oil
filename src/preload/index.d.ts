@@ -800,6 +800,7 @@ export interface Api {
     link: (values: Row) => Promise<{ ok: true }>
     bankSettleDiff: (values: Row) => Promise<{ id: number; diff: number }>
     unlink: (values: Row) => Promise<{ ok: true }>
+    setChecked: (values: Row) => Promise<{ ok: true }>
     batches: (values: Row) => Promise<Row[]>
     undoBatch: (values: Row) => Promise<{ removed: number; kept: { id: number; reason: string }[] }>
     companyBanks: (values: Row) => Promise<{ chosen: boolean; banks: Row[] }>

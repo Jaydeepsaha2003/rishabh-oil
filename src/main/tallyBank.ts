@@ -2,7 +2,7 @@ import ExcelJS from 'exceljs'
 import { parsedFile, booksRead } from './tallyCache'
 import { getClient } from './db'
 import { createVoucher, type VoucherType } from './accounting'
-import { linksFor, recordTallyBatch, saveTallyLink } from './tallyLinks'
+import { checkedFor, linksFor, recordTallyBatch, saveTallyLink } from './tallyLinks'
 import { withDbTransaction } from './dbTransaction'
 import { cellValue, companyKey, companyOf, sameCompany, isoDate, mappingRows, periodOf, resolveNames, saleDateLimits, tallyKey, toPlain } from './tallyNotes'
 
@@ -1027,6 +1027,9 @@ export async function checkTallyBank(v: {
         ? rows.reduce((t, r) => t + ((r.also as Row[]) || []).filter((a) => a.dir === dir && !a.cancelled).reduce((x, a) => x + n(a.amount), 0), 0)
         : 0)
     )
+  // Lines the desk marked Checked (tally_checked) — out of "To look at".
+  const checked = await checkedFor(cid, `bank:${Number(account.id)}`)
+  for (const r of rows) if (checked.has(String(r.key))) r.checked = true
   const fileDigits = acctDigits(book.bank)
   const companyName = String(((await getClient().execute({ sql: 'SELECT name FROM companies WHERE id = ?', args: [cid] })).rows[0] as unknown as Row | undefined)?.name || '')
   return {
@@ -1065,7 +1068,9 @@ export async function checkTallyBank(v: {
       missing_tally: count('missing_tally'),
       cancelled: count('cancelled'),
       cancelled_here: count('cancelled_here'),
-      statement_only: count('statement_only')
+      statement_only: count('statement_only'),
+      // Checked lines that would otherwise be To look at.
+      checked: rows.filter((r) => r.checked && r.status !== 'matched' && r.status !== 'cancelled').length
     },
     statement: statement ? { name: statement.name, lines: statement.lines.length, from: statement.from, to: statement.to } : null,
     vch_types: [...new Set(book.lines.map((l) => l.vch_type))].sort(),
