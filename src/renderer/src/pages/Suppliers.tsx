@@ -170,7 +170,7 @@ export function Suppliers(): React.JSX.Element {
               <GstRegsPanel value={form.gst_regs} onChange={(v) => setField('gst_regs', v)} readOnly={!canWrite(loadUser(), 'suppliers')} />
               {/* Its other (Trading / Manufacturing) side, a ledger of its own. */}
               {editingId != null && !form.linked_party_id ? (
-                <SubLedgersPanel table="suppliers" mainId={editingId} mainForm={form} readOnly={!canWrite(loadUser(), 'suppliers')} onChanged={() => { reload(); void window.api.data.list('suppliers').then(setAllSuppliers).catch(() => undefined) }} />
+                <SubLedgersPanel table="suppliers" mainId={editingId} mainForm={form} onGstRegs={(v) => setField('gst_regs', v)} readOnly={!canWrite(loadUser(), 'suppliers')} onChanged={() => { reload(); void window.api.data.list('suppliers').then(setAllSuppliers).catch(() => undefined) }} />
               ) : null}
             </>
           )}

@@ -141,7 +141,7 @@ export function Customers(): React.JSX.Element {
               <GstRegsPanel value={form.gst_regs} onChange={(v) => setField('gst_regs', v)} readOnly={!canWrite(loadUser(), 'customers')} />
               {/* Its other (Trading / Manufacturing) side, a ledger of its own. */}
               {editingId != null && !form.linked_party_id ? (
-                <SubLedgersPanel table="customers" mainId={editingId} mainForm={form} readOnly={!canWrite(loadUser(), 'customers')} onChanged={() => { reload(); void window.api.data.list('customers').then(setAllCustomers).catch(() => undefined) }} />
+                <SubLedgersPanel table="customers" mainId={editingId} mainForm={form} onGstRegs={(v) => setField('gst_regs', v)} readOnly={!canWrite(loadUser(), 'customers')} onChanged={() => { reload(); void window.api.data.list('customers').then(setAllCustomers).catch(() => undefined) }} />
               ) : null}
             </>
           )}

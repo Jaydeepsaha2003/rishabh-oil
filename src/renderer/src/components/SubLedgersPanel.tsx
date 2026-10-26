@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import { toast } from 'sonner'
-import { ArrowLeftRight, ChevronDown, Factory, GitBranch, Pencil, Plus, Save, Unlink, X } from 'lucide-react'
+import { ArrowLeftRight, ChevronDown, Factory, GitBranch, Merge, Pencil, Plus, Save, Unlink, X } from 'lucide-react'
 import { errText } from '@/lib/format'
 import { BUSINESS_TYPES } from '@/lib/constants'
 import { cn } from '@/lib/utils'
@@ -39,13 +39,17 @@ export function SubLedgersPanel({
   mainId,
   mainForm,
   readOnly,
-  onChanged
+  onChanged,
+  onGstRegs
 }: {
   table: 'suppliers' | 'customers'
   mainId: number
   mainForm: Row
   readOnly?: boolean
   onChanged?: () => void
+  // The main party's GST rows after a fold, so the open window shows (and a
+  // later Save keeps) the row the branch became.
+  onGstRegs?: (json: string | null) => void
 }): React.JSX.Element {
   const mainType = String(mainForm.business_type || 'Manufacturing')
   // What can be added here: only the party's other side — its Trading ledger
@@ -105,6 +109,30 @@ export function SubLedgersPanel({
     if (!window.confirm(`Detach ${String(r.name)} from this party? It stays as a party of its own, with its ledger and history, and sets its own TDS again.`)) return Promise.resolve()
     return run(() => window.api.data.update(table, Number(r.id), { ...r, linked_party_id: null }), `${String(r.name)} is a party of its own now`)
   }
+  // FOLD AN OLD BRANCH IN, right here — the same reviewed fold as Settings →
+  // Accounting checks (partyFold.ts), refused while it looks booked twice.
+  const foldIn = async (r: Row): Promise<void> => {
+    const key = `${table}:${Number(r.id)}`
+    const pv = ((await window.api.repairs.branchFold().catch((e) => void toast.error(errText(e)))) || []) as Row[]
+    const it = pv.find((x) => x.key === key)
+    if (!it) return void toast.error(`${String(r.name)} is not a branch that can be folded in`)
+    if (it.blocked) return void toast.error(String(it.blocked))
+    const ok = window.confirm(
+      `Fold ${String(r.name)} into ${String(mainForm.name || 'this party')}?\n\n` +
+        `• Its ledger (${Number(it.ledger_lines)} line${Number(it.ledger_lines) === 1 ? '' : 's'}) merges into ${String(mainForm.name || 'this party')}'s\n` +
+        `• Its ${Number(it.documents)} record${Number(it.documents) === 1 ? '' : 's'} (purchases, sales, gate…) move here, each bill keeping its GST No.\n` +
+        `• ${r.gstin ? `GST No. ${String(r.gstin)}` : 'Its GST No.'} becomes a row under More GST Nos.\n` +
+        `• ${String(r.name)} is then removed from the list\n\nThe before-state is logged.`
+    )
+    if (!ok) return
+    await run(async () => {
+      const res = await window.api.repairs.foldBranches([key])
+      if (res.skipped.length) throw new Error(res.skipped[0].reason)
+      const main = ((await window.api.data.list(table)) as Row[]).find((x) => Number(x.id) === mainId)
+      onGstRegs?.(main?.gst_regs ?? null)
+    }, `${String(r.name)} folded into ${String(mainForm.name || 'this party')}`)
+  }
+
   const addSub = (): Promise<void> => {
     if (!add.name.trim()) return Promise.resolve(void toast.error('Give the sub-ledger a name — e.g. the main name and the branch'))
     const inherited = Object.fromEntries(INHERIT[table].map((k) => [k, mainForm[k]]))
@@ -201,7 +229,7 @@ export function SubLedgersPanel({
         <div className="min-w-0">
           <div className="flex items-center gap-2">
             <span className="text-[13.5px] font-extrabold text-[#0A1F17]">{other} side</span>
-            <span className="rounded-full bg-[#0B3D2E] px-2 py-px text-[10.5px] font-extrabold tabular-nums text-white">{subs ? subs.length : '…'}</span>
+            <span className="rounded-full bg-[#0B3D2E] px-2 py-px text-[10.5px] font-extrabold tabular-nums text-white">{subs ? subs.filter((r) => (String(r.business_type) || mainType) !== mainType).length : '…'}</span>
           </div>
           <div className="text-[11.5px] font-semibold text-[#5A6B62]">
             The {other} ledger of {String(mainForm.name || 'this party')} — kept apart, TDS shared. Other states or branches go under More GST Nos. above.
@@ -249,11 +277,8 @@ export function SubLedgersPanel({
                     <span className="min-w-0 truncate text-[13px] font-extrabold uppercase text-[#0A1F17]">{String(r.name)}</span>
                     {tag(String(r.business_type || ''))}
                     {(String(r.business_type) || mainType) === mainType && (
-                      <span
-                        className="rounded-[3px] border border-[#F0D6A6] bg-[#FFF6E3] px-1.5 py-[2px] text-[9.5px] font-extrabold uppercase tracking-[.06em] text-[#8A5A00]"
-                        title="A branch kept as its own ledger the old way — fold it into this party (its GST No. becomes a row above) under Settings → Accounting checks"
-                      >
-                        Old branch · fold in
+                      <span className="rounded-[3px] border border-[#F0D6A6] bg-[#FFF6E3] px-1.5 py-[2px] text-[9.5px] font-extrabold uppercase tracking-[.06em] text-[#8A5A00]">
+                        Old branch
                       </span>
                     )}
                   </span>
@@ -264,6 +289,29 @@ export function SubLedgersPanel({
                   </span>
                 </span>
                 {changed && <span className="flex-none rounded-[3px] bg-[#FFF6E3] px-1.5 py-0.5 text-[10px] font-extrabold text-[#8A5A00]">UNSAVED</span>}
+                {!readOnly && (String(r.business_type) || mainType) === mainType && (
+                  <span
+                    role="button"
+                    tabIndex={0}
+                    title="A branch kept as its own ledger the old way — merge it into this party; its GST No. becomes a row under More GST Nos."
+                    onClick={(e) => {
+                      e.stopPropagation()
+                      if (!busy) void foldIn(r)
+                    }}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter' && !busy) {
+                        e.stopPropagation()
+                        void foldIn(r)
+                      }
+                    }}
+                    className={cn(
+                      'flex h-8 flex-none items-center gap-1.5 rounded-[6px] bg-[#8A5A00] px-3 text-[11.5px] font-extrabold text-white hover:bg-[#6F4800]',
+                      busy && 'pointer-events-none opacity-50'
+                    )}
+                  >
+                    <Merge className="h-3.5 w-3.5" /> Fold in
+                  </span>
+                )}
                 {!readOnly && !open && <Pencil className="h-4 w-4 flex-none text-[#8CA396]" />}
                 <ChevronDown className={cn('h-4 w-4 flex-none text-[#8CA396] transition-transform', open && 'rotate-180')} />
               </button>
