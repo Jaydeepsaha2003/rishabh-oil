@@ -63,6 +63,9 @@ export function TallyBankCheck({
   // LC side's, or the generic BANK A/C.
   const [own, setOwn] = useState<{ chosen: boolean; banks: Row[] }>({ chosen: false, banks: [] })
   const [managing, setManaging] = useState(false)
+  // "Break down" on a line not here yet: book it from Tally, then open the new
+  // voucher on its lines' breakdown (break this figure down, Dr or Cr).
+  const splitAfterBook = useRef(false)
   // Breakdowns show only once revealed (Ctrl+Alt+B), as everywhere else.
   const showBreakdowns = useBreakdownShown()
   const loadOwn = async (): Promise<void> => {
@@ -1374,19 +1377,7 @@ ${pairs.map((x) => String(x.own?.code || '')).join(', ')} stay, and match Tally'
                               <X className="h-3.5 w-3.5" />
                             </button>
                           </span>
-                        ) : (
-                          r.status !== 'matched' &&
-                          r.status !== 'cancelled' && (
-                            <button
-                              type="button"
-                              onClick={() => void markChecked(r, true)}
-                              title="You have looked at it and it is fine as it stands — take it out of To look at"
-                              className="flex h-[22px] items-center gap-1 rounded-[3px] border border-[#D6E2D6] bg-white px-1.5 text-[10px] font-extrabold uppercase tracking-[.04em] text-[#33473E] hover:bg-[#F4F7F3]"
-                            >
-                              <CheckCheck className="h-3 w-3" /> Mark checked
-                            </button>
-                          )
-                        )}
+                        ) : null}
                         {r.linked && (
                           <span className="flex items-center gap-1">
                             <span title="You said these are the same entry" style={chip('#1B4E82', '#EAF0FA', '#C6DAF0')}>
@@ -1430,6 +1421,19 @@ ${pairs.map((x) => String(x.own?.code || '')).join(', ')} stay, and match Tally'
                                 className="flex h-7 items-center gap-1.5 rounded-[4px] border border-[#C6DAF0] bg-white px-2.5 text-[11px] font-extrabold text-[#1B4E82] hover:bg-[#EAF0FA]"
                               >
                                 <Link2 className="h-3.5 w-3.5" /> Same entry — remember
+                              </button>
+                            )}
+                            {r.bookable && showBreakdowns && onOpenVoucher && !r.near && r.status === 'missing_here' && (
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  splitAfterBook.current = true
+                                  setBookKeys([String(r.key)])
+                                }}
+                                title="Book it from Tally, then break down its Dr or Cr figure — the voucher opens on its lines"
+                                className="flex h-7 items-center gap-1.5 rounded-[4px] border border-[#BFE3CB] bg-[#F1F8EC] px-2.5 text-[11px] font-extrabold text-[#0B6B45] hover:bg-[#E3F2E8]"
+                              >
+                                <Split className="h-3.5 w-3.5" /> Book &amp; break down
                               </button>
                             )}
                             {r.bookable && (
@@ -1507,11 +1511,19 @@ ${pairs.map((x) => String(x.own?.code || '')).join(', ')} stay, and match Tally'
         fileName={file?.name || ''}
         accounts={accounts}
         groupNames={groupNames}
-        onClose={() => setBookKeys(null)}
+        onClose={() => {
+          splitAfterBook.current = false
+          setBookKeys(null)
+        }}
         onChanged={onChanged}
-        onBooked={async () => {
+        onBooked={async (created) => {
           setBatchTick((x) => x + 1)
           if (file && bankId) await run(file, bankId, savedAt || undefined)
+          // Booked to be broken down: open it on its lines; Esc comes back.
+          if (splitAfterBook.current && created.length === 1 && onOpenVoucher) {
+            splitAfterBook.current = false
+            onOpenVoucher(Number(created[0].id))
+          }
         }}
       />
     </div>

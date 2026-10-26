@@ -166,7 +166,7 @@ export function TallyBookVouchers({
   accounts: Row[]
   groupNames: Row[]
   onClose: () => void
-  onBooked: () => void | Promise<void>
+  onBooked: (created: { id: number }[]) => void | Promise<void>
   onChanged: () => void
 }): React.JSX.Element {
   const copy = COPY[kind]
@@ -331,7 +331,7 @@ export function TallyBookVouchers({
       if (r.created.length) {
         toast.success(`${r.created.length} ${r.created.length === 1 ? copy.what : copy.whats} booked from Tally${r.skipped.length ? `, ${r.skipped.length} skipped` : ''}`)
         onChanged()
-        await onBooked()
+        await onBooked(r.created as { id: number }[])
       } else toast.error('Nothing was booked — see why below')
       // The booked ones drop out of the list as it is read again; the ticks on
       // the ones that were skipped stay, to be fixed and booked.
