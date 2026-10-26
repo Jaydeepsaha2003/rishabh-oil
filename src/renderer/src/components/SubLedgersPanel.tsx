@@ -48,9 +48,13 @@ export function SubLedgersPanel({
   onChanged?: () => void
 }): React.JSX.Element {
   const mainType = String(mainForm.business_type || 'Manufacturing')
+  // What can be added here: only the party's other side — its Trading ledger
+  // under a Manufacturing party (or the other way round). Branches of the same
+  // type are GST rows on the party now (GstRegsPanel), not ledgers.
+  const other = mainType === 'Trading' ? 'Manufacturing' : 'Trading'
   const [subs, setSubs] = useState<Row[] | null>(null)
   const [drafts, setDrafts] = useState<Record<number, Draft>>({})
-  const [add, setAdd] = useState<Draft>(blank(mainType))
+  const [add, setAdd] = useState<Draft>(blank(other))
   const [busy, setBusy] = useState(false)
   // Which sub-ledger is open for editing, and whether the add form is showing.
   const [openId, setOpenId] = useState<number | null>(null)
@@ -106,7 +110,7 @@ export function SubLedgersPanel({
     const inherited = Object.fromEntries(INHERIT[table].map((k) => [k, mainForm[k]]))
     return run(async () => {
       await window.api.data.create(table, { ...inherited, ...values(add), linked_party_id: mainId, active: true })
-      setAdd(blank(mainType))
+      setAdd(blank(other))
       setAdding(false)
     }, `${add.name.trim()} added under ${String(mainForm.name || 'this party')} as ${add.business_type || mainType}`)
   }
@@ -159,11 +163,11 @@ export function SubLedgersPanel({
       </div>
     </div>
   )
-  const form = (d: Draft, set: (p: Partial<Draft>) => void, ph: string): React.JSX.Element => (
+  const form = (d: Draft, set: (p: Partial<Draft>) => void, ph: string, fixedType?: boolean): React.JSX.Element => (
     <div className="grid gap-2.5">
-      <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-[minmax(0,1fr)_250px]">
+      <div className={cn('grid grid-cols-1 gap-2.5', !fixedType && 'sm:grid-cols-[minmax(0,1fr)_250px]')}>
         {field(d, set, 'name', 'Name', ph)}
-        {typePick(d, set)}
+        {!fixedType && typePick(d, set)}
       </div>
       <div className="grid grid-cols-2 gap-2.5 sm:grid-cols-[1.4fr_1fr_90px_1fr]">
         {field(d, set, 'gstin', 'GSTIN', '22AAAAA0000A1Z5')}
@@ -196,11 +200,11 @@ export function SubLedgersPanel({
         </span>
         <div className="min-w-0">
           <div className="flex items-center gap-2">
-            <span className="text-[13.5px] font-extrabold text-[#0A1F17]">Sub-ledgers</span>
+            <span className="text-[13.5px] font-extrabold text-[#0A1F17]">{other} side</span>
             <span className="rounded-full bg-[#0B3D2E] px-2 py-px text-[10.5px] font-extrabold tabular-nums text-white">{subs ? subs.length : '…'}</span>
           </div>
           <div className="text-[11.5px] font-semibold text-[#5A6B62]">
-            Branches and the Trading or Manufacturing side of {String(mainForm.name || 'this party')} — TDS is this party&apos;s for all
+            The {other} ledger of {String(mainForm.name || 'this party')} — kept apart, TDS shared. Other states or branches go under More GST Nos. above.
           </div>
         </div>
         <span className="ml-auto flex flex-wrap gap-2">
@@ -221,8 +225,8 @@ export function SubLedgersPanel({
             <span className="flex h-10 w-10 items-center justify-center rounded-full bg-[#F1F8EC]">
               <GitBranch className="h-5 w-5 text-[#0B6B45]" />
             </span>
-            <div className="mt-2 text-[13px] font-extrabold text-[#0A1F17]">No sub-ledgers yet</div>
-            <div className="mt-0.5 text-[11.5px] font-semibold text-[#5A6B62]">Add a branch, a factory, or this party&apos;s Trading or Manufacturing side.</div>
+            <div className="mt-2 text-[13px] font-extrabold text-[#0A1F17]">No {other} side</div>
+            <div className="mt-0.5 text-[11.5px] font-semibold text-[#5A6B62]">Add it if this party also deals with you as a {other.toLowerCase()} party.</div>
           </div>
         ) : null}
 
@@ -244,6 +248,14 @@ export function SubLedgersPanel({
                   <span className="flex flex-wrap items-center gap-2">
                     <span className="min-w-0 truncate text-[13px] font-extrabold uppercase text-[#0A1F17]">{String(r.name)}</span>
                     {tag(String(r.business_type || ''))}
+                    {(String(r.business_type) || mainType) === mainType && (
+                      <span
+                        className="rounded-[3px] border border-[#F0D6A6] bg-[#FFF6E3] px-1.5 py-[2px] text-[9.5px] font-extrabold uppercase tracking-[.06em] text-[#8A5A00]"
+                        title="A branch kept as its own ledger the old way — fold it into this party (its GST No. becomes a row above) under Settings → Accounting checks"
+                      >
+                        Old branch · fold in
+                      </span>
+                    )}
                   </span>
                   <span className="mt-0.5 flex flex-wrap gap-x-3 text-[11px] font-semibold text-[#5A6B62]">
                     <span className={cn(!r.gstin && 'text-[#A8B8AE]')}>{r.gstin ? <span className="font-mono">{String(r.gstin)}</span> : 'No GSTIN'}</span>
@@ -301,14 +313,14 @@ export function SubLedgersPanel({
             <div className="overflow-hidden rounded-[8px] border-2 border-dashed border-[#9FC9AE] bg-[#F7FBF8]">
               <div className="flex items-center gap-2 px-3.5 pt-3">
                 <Plus className="h-4 w-4 text-[#0B6B45]" />
-                <span className="text-[12px] font-extrabold uppercase tracking-[.1em] text-[#0B3D2E]">New sub-ledger</span>
+                <span className="text-[12px] font-extrabold uppercase tracking-[.1em] text-[#0B3D2E]">New {other} side</span>
                 <span className="flex-1" />
                 <button
                   type="button"
                   title="Cancel"
                   onClick={() => {
                     setAdding(false)
-                    setAdd(blank(mainType))
+                    setAdd(blank(other))
                   }}
                   className="text-[#8CA396] hover:text-[#33473E]"
                 >
@@ -316,7 +328,7 @@ export function SubLedgersPanel({
                 </button>
               </div>
               <div className="p-3.5 pt-2.5">
-                {form(add, (p) => setAdd((x) => ({ ...x, ...p })), 'e.g. DIL EXIM – RAJKOT, or DIL EXIM COMMODITIES')}
+                {form(add, (p) => setAdd((x) => ({ ...x, ...p, business_type: other })), `The ${other} name of this party — e.g. DIL EXIM COMMODITIES`, true)}
                 <div className="mt-3 flex flex-wrap items-center justify-end gap-2">
                   <span className="mr-auto basis-full text-[11px] font-semibold text-[#5A6B62] sm:basis-auto">Takes this party&apos;s TDS, credit days and interest terms.</span>
                   <button
@@ -325,7 +337,7 @@ export function SubLedgersPanel({
                     onClick={() => void addSub()}
                     className="flex h-9 items-center gap-1.5 rounded-[6px] bg-[#C7F03F] px-3.5 text-[12px] font-extrabold text-[#0B3D2E] shadow-[0_6px_14px_-8px_rgba(122,160,20,.9)] hover:bg-[#B9E62F] disabled:opacity-40"
                   >
-                    <Plus className="h-4 w-4" /> Add {add.business_type || mainType} sub-ledger
+                    <Plus className="h-4 w-4" /> Add the {other} side
                   </button>
                 </div>
               </div>
@@ -336,7 +348,7 @@ export function SubLedgersPanel({
               onClick={() => setAdding(true)}
               className="flex h-11 items-center justify-center gap-2 rounded-[8px] border-2 border-dashed border-[#C3D2C6] bg-[#FBFCFA] text-[12.5px] font-extrabold text-[#0B3D2E] transition-colors hover:border-[#0B6B45] hover:bg-[#F1F8EC]"
             >
-              <Plus className="h-4 w-4" /> Add a sub-ledger
+              <Plus className="h-4 w-4" /> Add the {other} side
             </button>
           ))}
       </div>

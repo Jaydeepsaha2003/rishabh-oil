@@ -184,11 +184,14 @@ interface Props {
   drawerWidth?: number
   // More to show inside the edit window, under the fields — the record being
   // edited (null id for a new one), its form, and a way to refresh the list.
-  renderDrawerExtra?: (ctx: { editingId: number | null; form: Row; reload: () => void }) => React.ReactNode
+  renderDrawerExtra?: (ctx: { editingId: number | null; form: Row; reload: () => void; setField: (key: string, value: unknown) => void }) => React.ReactNode
   // Rows kept out of the list (a party's sub-ledgers, shown inside its main
   // party's window instead), and extra text a row is found by in the search.
   hideRow?: (r: Row) => boolean
   searchText?: (r: Row) => string
+  // Columns with no field of their own, loaded into the form and saved with it
+  // (set from renderDrawerExtra) — a party's More GST Nos.
+  extraKeys?: string[]
 }
 
 const WIDE_FIELDS = new Set(['name', 'note', 'notes', 'address', 'remarks'])
@@ -217,7 +220,8 @@ export function EntityManager({
   drawerWidth = 520,
   renderDrawerExtra,
   hideRow,
-  searchText
+  searchText,
+  extraKeys = []
 }: Props): React.JSX.Element {
   const [allRows, setRows] = useState<Row[]>([])
   const rows = useMemo(() => (hideRow ? allRows.filter((r) => !hideRow(r)) : allRows), [allRows, hideRow])
@@ -373,6 +377,7 @@ export function EntityManager({
     setEditingId(row.id as number)
     const f: Row = {}
     for (const fd of fields) f[fd.key] = fd.type === 'switch' ? !!row[fd.key] : (row[fd.key] ?? '')
+    for (const k of extraKeys) f[k] = row[k] ?? null
     setForm(f)
     setError(null)
     setOpen(true)
@@ -424,6 +429,7 @@ export function EntityManager({
         if (fd.type === 'switch') v = v ? 1 : 0
         payload[fd.key] = v
       }
+      for (const k of extraKeys) if (k in form) payload[k] = form[k]
       if (editingId == null) {
         const res = await window.api.data.create(table, payload)
         setOpen(false)
@@ -1332,7 +1338,7 @@ export function EntityManager({
               )
             })}
             {/* Full width under the fields, whatever the column count. */}
-            {renderDrawerExtra && <div className="col-span-full min-w-0 empty:hidden">{renderDrawerExtra({ editingId, form, reload: () => void load(true) })}</div>}
+            {renderDrawerExtra && <div className="col-span-full min-w-0 empty:hidden">{renderDrawerExtra({ editingId, form, reload: () => void load(true), setField })}</div>}
           </div>
           {nameBlocked && (
             <p className="flex items-center gap-1.5 rounded-md border border-red-300 bg-red-50 px-3 py-2 text-sm text-red-700">

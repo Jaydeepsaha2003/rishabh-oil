@@ -107,6 +107,10 @@ export function AccountingChecks(): React.JSX.Element {
   const [repricing, setRepricing] = useState(false)
   // Purchases whose TDS was worked before their slab's figures were known.
   const [staleTds, setStaleTds] = useState<Row | null>(null)
+  // Branch sub-ledgers to fold into their main party (partyFold.ts).
+  const [folds, setFolds] = useState<Row[]>([])
+  const [foldPick, setFoldPick] = useState<Set<string>>(new Set())
+  const [folding, setFolding] = useState(false)
   // Purchase vouchers still posting the supplier's interest to INTEREST A/C.
   const [purInt, setPurInt] = useState<Row | null>(null)
   const [purIntPick, setPurIntPick] = useState<Set<number>>(new Set())
@@ -186,6 +190,9 @@ export function AccountingChecks(): React.JSX.Element {
       const pi = await window.api.repairs.purchaseInterest().catch(() => null)
       setPurInt(pi)
       setPurIntPick(new Set((((pi?.findings as Row[]) || []).filter((x) => !x.review)).map((x) => Number(x.entry_id))))
+      const fl = await window.api.repairs.branchFold().catch(() => [] as Row[])
+      setFolds(fl)
+      setFoldPick(new Set(fl.filter((x) => !x.blocked).map((x) => String(x.key))))
       const stl = await window.api.repairs.staleTds().catch(() => null)
       setStaleTds(stl)
       setTdsPick(new Set(((stl?.findings as Row[]) || []).map((x) => Number(x.id))))
@@ -559,6 +566,31 @@ export function AccountingChecks(): React.JSX.Element {
   }
 
   const staleRows: Row[] = useMemo(() => (staleTds?.findings as Row[]) || [], [staleTds])
+  async function foldIn(): Promise<void> {
+    const keys = [...foldPick]
+    if (!keys.length) return
+    const ok = window.confirm(
+      `Fold ${keys.length} branch sub-ledger${keys.length === 1 ? '' : 's'} into the main part${keys.length === 1 ? 'y' : 'ies'}?\n\n` +
+        folds
+          .filter((x) => foldPick.has(String(x.key)))
+          .map((x) => `• ${x.branch} → ${x.main}${x.gstin ? ` (GST ${x.gstin})` : ''}`)
+          .join('\n') +
+        '\n\nIts ledger is merged into the main party\'s, its purchases, sales and other records move to the main party (each bill keeping its GST No.), and its GST No. becomes a row on the main party. The before-state is logged. Take a database snapshot first if you want a copy you can restore.'
+    )
+    if (!ok) return
+    setFolding(true)
+    try {
+      const r = await window.api.repairs.foldBranches(keys)
+      if (r.folded.length) toast.success(`Folded in: ${r.folded.join(', ')}`)
+      for (const x of r.skipped) toast.error(`${x.branch}: ${x.reason}`)
+      await load()
+    } catch (e) {
+      toast.error((e as Error).message)
+    } finally {
+      setFolding(false)
+    }
+  }
+
   async function reworkTds(): Promise<void> {
     const ids = [...tdsPick]
     if (!ids.length) return
@@ -1507,6 +1539,88 @@ export function AccountingChecks(): React.JSX.Element {
           <Button className="ml-auto gap-1.5" disabled={!purIntPick.size || purIntBusy} onClick={() => void foldInterest()}>
             {purIntBusy && <Loader2 className="h-4 w-4 animate-spin" />}
             Move interest into purchase on {purIntPick.size} voucher{purIntPick.size === 1 ? '' : 's'}
+          </Button>
+        </div>
+      </Section>
+
+      <Section
+        title="Branch sub-ledgers to fold into their party"
+        count={folds.length}
+        tone={folds.length ? 'warn' : 'ok'}
+        note={
+          folds.length
+            ? 'One party now keeps all its GST Nos. (Supplier / Customer → More GST Nos.) instead of a ledger per branch. Each of these was made the old way. Folding it in merges its ledger into the main party’s, moves its purchases, sales and other records to the main party — every bill keeping the GST No. it was made under — and turns its GSTIN and state into a GST row on the main party. Run once on each database.'
+            : 'No branch sub-ledgers left — every party keeps its GST Nos. on itself.'
+        }
+      >
+        <table className="w-full border-collapse">
+          <thead className="bg-muted/40">
+            <tr>
+              <th className={cn(th, 'w-8')}>
+                <input
+                  type="checkbox"
+                  aria-label="Tick all"
+                  checked={folds.some((x) => !x.blocked) && foldPick.size === folds.filter((x) => !x.blocked).length}
+                  onChange={(e) => setFoldPick(e.target.checked ? new Set(folds.filter((x) => !x.blocked).map((x) => String(x.key))) : new Set())}
+                />
+              </th>
+              <th className={th}>Branch</th>
+              <th className={th}>Into</th>
+              <th className={th}>GST No. · State</th>
+              <th className={cn(th, 'text-right')}>Records · ledger lines</th>
+              <th className={th}>Ledger</th>
+            </tr>
+          </thead>
+          <tbody>
+            {folds.map((x) => {
+              const k = String(x.key)
+              return (
+                <tr key={k} className="border-t align-top">
+                  <td className={td}>
+                    <input
+                      type="checkbox"
+                      disabled={!!x.blocked}
+                      checked={foldPick.has(k)}
+                      onChange={(e) =>
+                        setFoldPick((s0) => {
+                          const next = new Set(s0)
+                          if (e.target.checked) next.add(k)
+                          else next.delete(k)
+                          return next
+                        })
+                      }
+                    />
+                  </td>
+                  <td className={td}>
+                    <span className="font-semibold">{String(x.branch)}</span>
+                    <div className="text-[11px] capitalize text-muted-foreground">{String(x.kind)}</div>
+                  </td>
+                  <td className={td}>{String(x.main)}</td>
+                  <td className={td}>
+                    <span className="font-mono text-[12px]">{x.gstin ? String(x.gstin) : '—'}</span>
+                    <div className="text-[11px] text-muted-foreground">
+                      {[x.state, x.gst_rates ? `GST ${String(x.gst_rates)}` : ''].filter(Boolean).join(' · ') || '—'}
+                    </div>
+                  </td>
+                  <td className={cn(td, 'text-right tabular-nums')}>
+                    {Number(x.documents)} · {Number(x.ledger_lines)}
+                  </td>
+                  <td className={td}>
+                    <div className="text-[11.5px]">{((x.ledgers as string[]) || []).join('; ') || 'no ledger yet'}</div>
+                    {x.blocked && <div className="mt-1 text-[11.5px] font-semibold text-rose-700">{String(x.blocked)}</div>}
+                  </td>
+                </tr>
+              )
+            })}
+          </tbody>
+        </table>
+        <div className="flex flex-wrap items-center gap-3 border-t bg-muted/30 px-4 py-3">
+          <span className="text-[12.5px] text-muted-foreground">
+            {foldPick.size} of {folds.length} ticked
+          </span>
+          <Button className="ml-auto gap-1.5" disabled={!foldPick.size || folding} onClick={() => void foldIn()}>
+            {folding && <Loader2 className="h-4 w-4 animate-spin" />}
+            Fold {foldPick.size} into their part{foldPick.size === 1 ? 'y' : 'ies'}
           </Button>
         </div>
       </Section>

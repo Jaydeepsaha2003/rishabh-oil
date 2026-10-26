@@ -2060,6 +2060,17 @@ export function registerIpc(): void {
     return foldPurchaseInterest((a?.ids || []).map(Number))
   })
   // Purchases whose TDS was worked before their slab's figures were known.
+  // Branch sub-ledgers folded into their main party (partyFold.ts).
+  handle('repairs:branchFold:list', async (_e, a?: { companyId?: number }) => {
+    await assertAdmin('The accounting checks')
+    return (await import('./partyFold')).previewBranchFold(a?.companyId)
+  })
+  handle('repairs:branchFold', async (_e, a: { keys: string[]; companyId?: number }) => {
+    await assertAdmin('Folding sub-ledgers')
+    const keys = (a?.keys || []).map(String).filter(Boolean)
+    if (!keys.length) throw new Error('Tick at least one sub-ledger')
+    return (await import('./partyFold')).foldBranches(keys, a?.companyId)
+  })
   handle('repairs:staleTds:list', async () => {
     await assertAdmin('The accounting checks')
     const { refreshStalePurchaseTds } = await import('./orders')

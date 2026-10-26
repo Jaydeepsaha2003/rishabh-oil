@@ -2501,6 +2501,11 @@ export async function createSaleInvoice(v: Row): Promise<{ group: string; ids: n
     }
     throw e
   }
+  // The customer's GST No. this invoice was made under, when it has several.
+  // Only a form that carries it changes it (the phone does not).
+  if ('party_gstin' in v) {
+    await getClient().execute({ sql: 'UPDATE sales SET party_gstin = ? WHERE invoice_group = ?', args: [v.party_gstin ? String(v.party_gstin).trim().toUpperCase() : null, group] })
+  }
   return { group, ids }
   })
 }
@@ -2512,7 +2517,7 @@ export async function updateSaleInvoice(group: string, v: Row): Promise<{ group:
   const items: Row[] = Array.isArray(v.items) ? v.items : []
   if (!items.length) throw new Error('Add at least one item to the invoice')
   const existing = await getClient().execute({
-    sql: 'SELECT id, product_id, packaging_id, received_qty, invoice_no FROM sales WHERE invoice_group = ? ORDER BY id',
+    sql: 'SELECT id, product_id, packaging_id, received_qty, invoice_no, party_gstin FROM sales WHERE invoice_group = ? ORDER BY id',
     args: [group]
   })
   // This edit works by deleting every line and building them again, so by the
@@ -2591,6 +2596,12 @@ export async function updateSaleInvoice(group: string, v: Row): Promise<{ group:
       await getClient().execute({ sql: 'UPDATE trading_deal_sales SET sale_id = ? WHERE sale_id = ?', args: [to, oldIds[i]] })
     }
   }
+  // The customer's GST No. this invoice was made under, when it has several.
+  // The lines were rebuilt, so the old value goes back unless the form sent one
+  // (the phone does not).
+  const priorGstin = (existing.rows[0] as unknown as Row | undefined)?.party_gstin ?? null
+  const gstinNow = 'party_gstin' in v ? (v.party_gstin ? String(v.party_gstin).trim().toUpperCase() : null) : priorGstin
+  await getClient().execute({ sql: 'UPDATE sales SET party_gstin = ? WHERE invoice_group = ?', args: [gstinNow, group] })
   return { group, ids }
   })
 }

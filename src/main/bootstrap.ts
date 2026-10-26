@@ -3313,6 +3313,12 @@ export async function runStartupTasks(): Promise<void> {
  * nothing once recorded, and this is a safety net rather than a replacement.
  */
 const REQUIRED_COLUMNS: { table: string; column: string; type: string }[] = [
+  // ONE PARTY, SEVERAL GST NOs. — [{gstin, state, gst_rates, gst_type}] on the
+  // party, and the GST No. a bill was made under (partyFold.ts, the bill forms).
+  { table: 'suppliers', column: 'gst_regs', type: 'TEXT' },
+  { table: 'customers', column: 'gst_regs', type: 'TEXT' },
+  { table: 'orders', column: 'party_gstin', type: 'TEXT' },
+  { table: 'sales', column: 'party_gstin', type: 'TEXT' },
   // The desk's own voucher type (PURCHASE OTHERS under Purchase) — a label on
   // top of the basic type, which keeps the number series (voucherSubtypes.ts).
   { table: 'journal_entries', column: 'vch_subtype', type: 'TEXT' },

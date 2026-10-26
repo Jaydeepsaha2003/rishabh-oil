@@ -33,6 +33,8 @@ const TABLES: Record<string, string[]> = {
     'tds_pct_above',
     'tds_above_only',
     'gst_rates',
+    // Its other GST Nos. — [{gstin, state, gst_rates, gst_type}] (GstRegsPanel).
+    'gst_regs',
     'credit_period_days',
     'adds_interest',
     'interest_pct',
@@ -68,6 +70,8 @@ const TABLES: Record<string, string[]> = {
     'tds_threshold',
     'tds_above_only',
     'gst_rates',
+    // Its other GST Nos. — [{gstin, state, gst_rates, gst_type}] (GstRegsPanel).
+    'gst_regs',
     'adds_interest',
     'interest_pct',
     'interest_days',

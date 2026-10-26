@@ -1100,6 +1100,9 @@ const api = {
     wrongCompany: (): Promise<Row> => ipcRenderer.invoke('repairs:wrongCompany:list'),
     splitTanker: (): Promise<Row> => ipcRenderer.invoke('repairs:splitTanker:list'),
     staleTds: (): Promise<Row> => ipcRenderer.invoke('repairs:staleTds:list'),
+    branchFold: (companyId?: number): Promise<Row[]> => ipcRenderer.invoke('repairs:branchFold:list', { companyId }),
+    foldBranches: (keys: string[], companyId?: number): Promise<{ folded: string[]; skipped: { branch: string; reason: string }[] }> =>
+      ipcRenderer.invoke('repairs:branchFold', { keys, companyId }),
     purchaseInterest: (): Promise<Row> => ipcRenderer.invoke('repairs:purchaseInterest:list'),
     fixPurchaseInterest: (ids: number[]): Promise<{ changed: number }> => ipcRenderer.invoke('repairs:purchaseInterestFix', { ids }),
     paymentIns: (): Promise<Row> => ipcRenderer.invoke('repairs:paymentIns:list'),

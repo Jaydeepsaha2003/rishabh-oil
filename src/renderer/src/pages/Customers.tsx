@@ -1,4 +1,6 @@
 import { useEffect, useState } from 'react'
+import { toast } from 'sonner'
+import { GstRegsPanel } from '@/components/GstRegsPanel'
 import { SubLedgersPanel } from '@/components/SubLedgersPanel'
 import { PageHeader } from '@/components/PageHeader'
 import { EntityManager, type ColumnDef, type FieldDef } from '@/components/EntityManager'
@@ -10,6 +12,16 @@ import { useCompany } from '@/lib/companyContext'
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Row = Record<string, any>
+
+// A link to a party of the same Trading/Manufacturing type would be a branch
+// ledger — refused; another GST No. goes under the party's More GST Nos.
+function sideClash(all: Row[], key: string, next: Row): Row | undefined {
+  if (key !== 'linked_party_id' && key !== 'business_type') return undefined
+  const main = all.find((p) => String(p.id) === String(next.linked_party_id || ''))
+  if (!main || String(main.business_type || '').toLowerCase() !== String(next.business_type || '').toLowerCase()) return undefined
+  toast.error(`${main.name} is also ${main.business_type} — add this branch as a GST No. under ${main.name} → More GST Nos. instead`)
+  return { linked_party_id: '' }
+}
 
 const baseFields: FieldDef[] = [
   { key: 'name', label: 'Name', type: 'text', required: true },
@@ -23,11 +35,13 @@ const baseFields: FieldDef[] = [
   // TDS slab is then tracked across both rows together instead of each
   // quietly restarting the slab at zero.
   {
-    // MAIN PARTY: this one is a sub-ledger of it (DIL EXIM – RAJKOT of DIL
-    // EXIM). Its own ledger, GSTIN and GST rates; the main party's TDS, and the
+    // LINKED PARTY: this is the other side — Trading or Manufacturing — of that
+    // party. Its own ledger, GSTIN and GST rates; the main party's TDS, and the
     // TDS slab tracked across the whole family. Blank = a main party itself.
+    // Another branch of the SAME side is not a ledger any more: it is a row
+    // under the party's More GST Nos. (sideClash below refuses it).
     key: 'linked_party_id',
-    label: 'Main party — this is its sub-ledger',
+    label: 'Linked party — this is its other (Trading / Manufacturing) side',
     type: 'select',
     options: []
   },
@@ -120,18 +134,24 @@ export function Customers(): React.JSX.Element {
           key={`customers-${companyId}`}
           table="customers"
           drawerWidth={860}
-          renderDrawerExtra={({ editingId, form, reload }) =>
-            // A main party's window lists and manages its sub-ledgers.
-            editingId != null && !form.linked_party_id ? (
-              <SubLedgersPanel table="customers" mainId={editingId} mainForm={form} readOnly={!canWrite(loadUser(), 'customers')} onChanged={() => { reload(); void window.api.data.list('customers').then(setAllCustomers).catch(() => undefined) }} />
-            ) : null
-          }
+          extraKeys={['gst_regs']}
+          renderDrawerExtra={({ editingId, form, reload, setField }) => (
+            <>
+              {/* One party, several GST Nos. — saved with the party. */}
+              <GstRegsPanel value={form.gst_regs} onChange={(v) => setField('gst_regs', v)} readOnly={!canWrite(loadUser(), 'customers')} />
+              {/* Its other (Trading / Manufacturing) side, a ledger of its own. */}
+              {editingId != null && !form.linked_party_id ? (
+                <SubLedgersPanel table="customers" mainId={editingId} mainForm={form} readOnly={!canWrite(loadUser(), 'customers')} onChanged={() => { reload(); void window.api.data.list('customers').then(setAllCustomers).catch(() => undefined) }} />
+              ) : null}
+            </>
+          )}
           hideRow={hideRow}
           searchText={searchText}
           title="Customer"
           fields={fields}
           columns={columns}
           readOnly={!canWrite(loadUser(), 'customers')}
+          onFieldChange={(key, _value, next) => sideClash(allCustomers, key, next)}
         />
       </div>
     </>

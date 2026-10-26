@@ -1,4 +1,5 @@
 import { Fragment, useCallback, useEffect, useMemo, useState, useRef } from 'react'
+import { partyGstOptions } from '@/components/GstRegsPanel'
 import { GstRateChips } from '@/components/GstRateChips'
 import { takePageIntent } from '@/lib/pageIntent'
 import { toast } from 'sonner'
@@ -1004,6 +1005,7 @@ function SalesTab({
       invoice_no: f.invoice_no ?? '',
       customer: f.customer ?? '',
       customer_id: f.customer_id ? String(f.customer_id) : '',
+      party_gstin: f.party_gstin ?? '',
       freight_term: f.freight_term ?? 'FREIGHT_ON_GOODS',
       transporter_id: f.transporter_id ? String(f.transporter_id) : '',
       transport_rate: f.transport_rate ?? '',
@@ -1411,7 +1413,9 @@ function SalesTab({
     setHeader((p) => ({
       ...p,
       customer_id: v,
-      customer: cust?.name ?? p.customer
+      customer: cust?.name ?? p.customer,
+      // A new customer starts on its own GST No.
+      party_gstin: ''
     }))
     // THE RATE OF TAX IS A FACT ABOUT THE PARTY.
     //
@@ -3130,6 +3134,35 @@ function SalesTab({
                 </SelectContent>
               </Select>
             </div>
+            {/* THE CUSTOMER'S GST No. this invoice is under, when it has
+                several: every line takes its CGST+SGST / IGST (GstRegsPanel). */}
+            {(() => {
+              const opts = partyGstOptions(customers.find((c) => String(c.id) === String(header.customer_id || '')))
+              if (!opts.some((o) => !o.own)) return null
+              return (
+                <div className="flex flex-col gap-1.5">
+                  <Label>GST No.</Label>
+                  <Select
+                    value={String(header.party_gstin || (opts[0].own ? opts[0].gstin : ''))}
+                    onValueChange={(v) => {
+                      const reg = opts.find((o) => o.gstin === v)
+                      setHeader((p) => ({ ...p, party_gstin: v }))
+                      if (reg && !reg.own) setItems((prev) => prev.map((it) => ({ ...it, gst_type: reg.gst_type })))
+                    }}
+                  >
+                    <SelectTrigger><SelectValue placeholder="Choose the GST No." /></SelectTrigger>
+                    <SelectContent>
+                      {opts.map((o) => (
+                        <SelectItem key={o.gstin} value={o.gstin}>
+                          <span className="font-mono">{o.gstin}</span>
+                          {o.state ? ` · ${o.state}` : ''}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+              )
+            })()}
             {/* THE OTHER HALF OF AN INTER-COMPANY SALE.
                 Shown only when the customer IS one of our companies, because
                 only then is there a second set of books to write into. The
@@ -3790,7 +3823,11 @@ function SalesTab({
                     <Label>GST %</Label>
                     <Input type="number" value={item.gst_pct ?? ''} onChange={(e) => setItem(i, { gst_pct: e.target.value })} />
                     <GstRateChips
-                      rates={customers.find((c) => String(c.id) === String(header.customer_id || ''))?.gst_rates}
+                      rates={(() => {
+                        const cust = customers.find((c) => String(c.id) === String(header.customer_id || ''))
+                        const reg = partyGstOptions(cust).find((o) => o.gstin === String(header.party_gstin || ''))
+                        return reg?.gst_rates || cust?.gst_rates
+                      })()}
                       value={item.gst_pct}
                       onPick={(v) => setItem(i, { gst_pct: v })}
                     />

@@ -756,6 +756,8 @@ export interface Api {
     fixPaisa: (ids: number[]) => Promise<Row>
     fixSplitTanker: (ids: number[]) => Promise<Row>
     staleTds: () => Promise<Row>
+    branchFold: (companyId?: number) => Promise<Row[]>
+    foldBranches: (keys: string[], companyId?: number) => Promise<{ folded: string[]; skipped: { branch: string; reason: string }[] }>
     purchaseInterest: () => Promise<Row>
     fixPurchaseInterest: (ids: number[]) => Promise<{ changed: number }>
     paymentIns: () => Promise<Row>

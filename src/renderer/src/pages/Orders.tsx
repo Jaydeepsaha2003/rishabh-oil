@@ -1,4 +1,5 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { partyGstOptions } from '@/components/GstRegsPanel'
 import { GstRateChips } from '@/components/GstRateChips'
 import { splitShare } from '@/lib/tankerShare'
 import { takePageIntent } from '@/lib/pageIntent'
@@ -3021,6 +3022,7 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
       invoice_rate: paise(row.invoice_rate),
       gst_pct: row.gst_pct,
       gst_type: row.gst_type || 'CGST_SGST',
+      party_gstin: row.party_gstin || '',
       tds_pct: supplier?.tds_pct ?? row.tds_pct,
       tds_threshold: supplier?.tds_threshold ?? 0,
       tds_above_only: !!supplier?.tds_above_only,
@@ -5906,11 +5908,43 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
                       )}
                     </div>
                   </div>
+                  {/* THE SUPPLIER'S GST No. this bill is under, when it has several:
+                      its rates and its CGST+SGST / IGST follow (GstRegsPanel). */}
+                  {(() => {
+                    const opts = partyGstOptions(suppliers.find((s) => String(s.id) === String(form.supplier_id || '')))
+                    if (!opts.some((o) => !o.own)) return null
+                    return (
+                      <div className="flex flex-col gap-1.5">
+                        <Label>GST No.</Label>
+                        <Select
+                          value={String(form.party_gstin || (opts[0].own ? opts[0].gstin : ''))}
+                          onValueChange={(v) => {
+                            const reg = opts.find((o) => o.gstin === v)
+                            setForm((p) => ({ ...p, party_gstin: v, ...(reg && !reg.own ? { gst_type: reg.gst_type } : {}) }))
+                          }}
+                        >
+                          <SelectTrigger><SelectValue placeholder="Choose the GST No." /></SelectTrigger>
+                          <SelectContent>
+                            {opts.map((o) => (
+                              <SelectItem key={o.gstin} value={o.gstin}>
+                                <span className="font-mono">{o.gstin}</span>
+                                {o.state ? ` · ${o.state}` : ''}
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                      </div>
+                    )
+                  })()}
                   <div className="flex flex-col gap-1.5">
                     <Label>GST %</Label>
                     <Input type="number" value={form.gst_pct ?? ''} onChange={(e) => setForm((p) => ({ ...p, gst_pct: e.target.value }))} />
                     <GstRateChips
-                      rates={suppliers.find((s) => String(s.id) === String(form.supplier_id || ''))?.gst_rates}
+                      rates={(() => {
+                        const sup = suppliers.find((s) => String(s.id) === String(form.supplier_id || ''))
+                        const reg = partyGstOptions(sup).find((o) => o.gstin === String(form.party_gstin || ''))
+                        return reg?.gst_rates || sup?.gst_rates
+                      })()}
                       value={form.gst_pct}
                       onPick={(v) => setForm((p) => ({ ...p, gst_pct: v }))}
                     />
