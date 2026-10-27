@@ -4122,6 +4122,14 @@ function TreasuryDesk({ onCompanyChange, focusLcId, focusBdId, onFocusHandled }:
                                       {l.lc_no || 'Pending LC no'}
                                       <DuplicateNoBadge lcs={lcs} l={l} />
                                     </span>
+                                    {/* The bank's commission not linked to its voucher yet — a
+                                        blinking red dot until it is (LcCommissionLink). */}
+                                    {!!l.lc_no && !Number(l.commission_voucher_id) && String(l.workflow_status || '') !== 'rejected' && (
+                                      <span className="relative flex h-2.5 w-2.5 flex-none" title="Commission voucher not linked — open the LC and press Link voucher">
+                                        <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-[#E5484D] opacity-75" />
+                                        <span className="relative inline-flex h-2.5 w-2.5 rounded-full bg-[#D92D20]" />
+                                      </span>
+                                    )}
                                     {!__WEB__ && currentStageBadge(l)}
                                     {!__WEB__ && <ClosureBadge l={l} />}
                                     {!__WEB__ && <RefundDueChip tot={lcRefundTot[String(l.id)]} />}
