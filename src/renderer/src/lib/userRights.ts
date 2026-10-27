@@ -245,7 +245,9 @@ export function scopeOf(perms: Perms): string {
   if (rightsOf(perms, 'sales').scope === 'unload') return 'Unloading desk'
   if (rightsOf(perms, 'orders').scope === 'readings') return 'Readings desk'
   if (rightsOf(perms, 'salesBargains').scope === 'topup') return 'Bargain increase desk'
-  if (rightsOf(perms, 'sales').scope === 'intercompany') return 'Inter-company desk'
+  // The TDS desk can ride on the inter-company one (sales.also_tds).
+  if (rightsOf(perms, 'sales').scope === 'intercompany')
+    return ((perms as Record<string, Record<string, unknown>>)?.sales as Record<string, unknown> | undefined)?.also_tds ? 'Inter-company + TDS desk' : 'Inter-company desk'
   if (rightsOf(perms, 'sales').scope === 'tds') return 'TDS desk'
   return ''
 }

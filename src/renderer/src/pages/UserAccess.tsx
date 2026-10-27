@@ -373,7 +373,6 @@ export function UserAccess(): React.JSX.Element {
         }
         return acc
       }, perms)
-  const anyDesk = DESKS.some(deskOn)
   // The one default-ON permission on this page: every login gets today's
   // checklist unless this is switched off for them by name.
   const workOn = hasWorkAccess(perms)
@@ -1399,7 +1398,10 @@ export function UserAccess(): React.JSX.Element {
                     Special access · one job, not a set of ticks
                   </span>
                   <span className="text-[11.5px] font-bold text-[#5A6B62]">
-                    {anyDesk ? 'One is on — it overrides that page below' : 'All off'}
+                    {(() => {
+                      const n = DESKS.filter(deskOn).length
+                      return n > 1 ? `${n} are on — they override those pages below` : n ? 'One is on — it overrides that page below' : 'All off'
+                    })()}
                   </span>
                 </div>
                 <div className="flex flex-col gap-[11px] px-4 py-3.5">
