@@ -13964,7 +13964,7 @@ async function createOrder(v) {
         }
       }
     }
-    const prior = await supplierFyTaxable(n14(v.supplier_id), String(v.order_date), 0);
+    const prior = await supplierFyTaxable(n14(v.supplier_id), String(v.order_date), 0, bookInCompany);
     const roundOff = n14(v.round_off);
     const bargainLines = obPriced.lines.length ? obPriced.lines : lotAlloc.lines.length ? lotAlloc.lines.map((l) => ({ rate: l.rate, qty: l.qty, bargainId: l.bargain_id })) : await bargainLinesForTankers(v.tanker_ids, { qtys: v.tanker_qtys });
     const pricedLines = applyBargainInterestOverrides(bargainLines, v.bargain_interest);
@@ -14252,7 +14252,7 @@ async function updateOrder(id, v) {
       );
       if (obPriced.primaryBargainId) v.bargain_id = obPriced.primaryBargainId;
     }
-    const prior = await supplierFyTaxable(n14(v.supplier_id), String(v.order_date), id);
+    const prior = await supplierFyTaxable(n14(v.supplier_id), String(v.order_date), id, lotCompany);
     const roundOff = n14(v.round_off);
     const bargainLines = obPriced.lines.length ? obPriced.lines : lotAlloc.lines.length ? lotAlloc.lines.map((l) => ({ rate: l.rate, qty: l.qty, bargainId: l.bargain_id })) : await bargainLinesForTankers(v.tanker_ids, { qtys: v.tanker_qtys, orderId: id });
     const pricedLines = applyBargainInterestOverrides(bargainLines, v.bargain_interest);
@@ -14440,7 +14440,7 @@ async function rerateInvoicesForBargain(bargainId, rate, orderIds) {
         continue;
       }
       const supplier = await getSupplier(n14(o.supplier_id));
-      const prior = await supplierFyTaxable(n14(o.supplier_id), String(o.order_date), id);
+      const prior = await supplierFyTaxable(n14(o.supplier_id), String(o.order_date), id, n14(o.company_id) || void 0);
       const lines = applyBargainInterestOverrides(
         await bargainLinesForTankers(tankerIds, { orderId: id }),
         await listOrderBargainInterest(id)
