@@ -4835,6 +4835,7 @@ __export(access_gate_exports, {
   clearAccessCache: () => clearAccessCache,
   currentScope: () => currentScope,
   entryWindows: () => entryWindows,
+  salesAlsoTds: () => salesAlsoTds,
   visibleFrom: () => visibleFrom,
   visibleFromFor: () => visibleFromFor
 });
@@ -4909,6 +4910,10 @@ async function visibleFromFor(ownModule, callerModule) {
   if (!user) return null;
   if (!modulePerm(user, callerModule).view) return visibleFrom(ownModule);
   return visibleFrom(callerModule);
+}
+async function salesAlsoTds() {
+  const user = await currentAccessUser();
+  return !!user && moduleScope(user, "sales") === "intercompany" && !!modulePerm(user, "sales").also_tds;
 }
 async function currentScope(moduleKey) {
   const user = await currentAccessUser();
@@ -5071,7 +5076,8 @@ async function assertAllowed(channel, args) {
     assertScopedSales(op, args);
     return;
   }
-  if (moduleScope(user, rule.module) === "tds" && rule.module === "sales") {
+  const tdsToo = rule.module === "sales" && moduleScope(user, "sales") === "intercompany" && !!modulePerm(user, "sales").also_tds && op === "tdsPost";
+  if (moduleScope(user, rule.module) === "tds" && rule.module === "sales" || tdsToo) {
     if (op !== "tdsPost") {
       throw new Error("Your access to Sales covers booking the TDS customers deducted on invoices that have none yet \u2014 nothing else on this page can be changed.");
     }
@@ -42110,7 +42116,7 @@ function registerIpc() {
   handle("sales:list", async (_e, args) => {
     const scope2 = await currentScope("sales");
     if (scope2 === "unload") return listSalesForUnloadDesk(args?.companyIds);
-    if (scope2 === "tds") {
+    if (scope2 === "tds" || scope2 === "intercompany" && args?.desk === "tds" && await salesAlsoTds()) {
       const { listSalesForTdsDesk: listSalesForTdsDesk2 } = await Promise.resolve().then(() => (init_saleTds(), saleTds_exports));
       return listSalesForTdsDesk2(args?.companyIds);
     }
