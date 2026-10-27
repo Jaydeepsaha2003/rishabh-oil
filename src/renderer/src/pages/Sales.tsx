@@ -21,7 +21,15 @@ const UNLOAD_DESK = (): boolean => moduleScope(loadUser(), 'sales') === 'unload'
 // The customer-TDS desk: the same Sales page, its rows narrowed by the server
 // to invoices still missing their TDS (saleTds.listSalesForTdsDesk), and the
 // one action Book TDS.
-const TDS_DESK = (): boolean => moduleScope(loadUser(), 'sales') === 'tds'
+// An inter-company desk can hold the TDS desk too (sales.also_tds): its Sales
+// page then switches between the two lists, and the TDS one is this desk.
+const ALSO_TDS = (): boolean => {
+  const u = loadUser()
+  const p = (u?.permissions as Record<string, Record<string, unknown>> | undefined)?.sales
+  return moduleScope(u, 'sales') === 'intercompany' && !!p && typeof p === 'object' && !!p.also_tds
+}
+let tdsView = false
+const TDS_DESK = (): boolean => moduleScope(loadUser(), 'sales') === 'tds' || (tdsView && ALSO_TDS())
 
 // The top-up desk: a user granted the 'topup' scope on Sales bargains may make
 // exactly one change to a bargain — add to its contracted quantity. Not remove
@@ -555,7 +563,7 @@ function SalesTab({
     // contract rates and the masters are of no use without the invoice form, so
     // they are not even fetched — the thin row set is the whole point.
     if (UNLOAD_DESK() || TDS_DESK()) {
-      const [ds, dcfg] = await Promise.all([window.api.sales.list(), window.api.settings.all()])
+      const [ds, dcfg] = await Promise.all([window.api.sales.list(undefined, undefined, tdsView ? 'tds' : undefined), window.api.settings.all()])
       setRows(ds)
       setDefaultShortagePct(String(dcfg.allowed_shortage_pct ?? '0.2'))
       setLoading(false)
@@ -8387,7 +8395,44 @@ function SalesBargainsTab({ onOpenSale }: { onOpenSale?: (id: number, companyId?
 
 // ---------------- page ----------------
 
-export function Sales({ focusId, onFocusHandled, onBack, backLabel }: { focusId?: number | null; onFocusHandled?: () => void; onBack?: () => void; backLabel?: string } = {}): React.JSX.Element {
+type SalesProps = { focusId?: number | null; onFocusHandled?: () => void; onBack?: () => void; backLabel?: string }
+
+// The two lists of a login holding both desks — remounted on a switch, so each
+// list loads as its own desk would.
+export function Sales(props: SalesProps = {}): React.JSX.Element {
+  const [tds, setTds] = useState(false)
+  tdsView = tds
+  const both = ALSO_TDS()
+  return (
+    <SalesPage
+      key={tds ? 'tds' : 'interco'}
+      {...props}
+      deskSwitch={
+        both ? (
+          <div className="mb-3 inline-flex overflow-hidden rounded-[6px] border border-[#D6E2D6] bg-white p-1">
+            {(
+              [
+                [false, 'Inter-company transfers'],
+                [true, 'Customer TDS']
+              ] as const
+            ).map(([v, label]) => (
+              <button
+                key={label}
+                type="button"
+                onClick={() => setTds(v)}
+                className={cn('h-8 rounded-[4px] px-3.5 text-[12.5px] font-extrabold', tds === v ? 'bg-[#0B3D2E] text-white' : 'text-[#5A6B62] hover:bg-[#F4F7F3]')}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+        ) : null
+      }
+    />
+  )
+}
+
+function SalesPage({ focusId, onFocusHandled, onBack, backLabel, deskSwitch }: SalesProps & { deskSwitch?: React.ReactNode }): React.JSX.Element {
   const isMobile = useIsMobile()
   const [needs, setNeeds] = useState<Row[]>([])
   const [needsOpen, setNeedsOpen] = useState(false)
@@ -8411,10 +8456,19 @@ export function Sales({ focusId, onFocusHandled, onBack, backLabel }: { focusId?
   // build. False on the desktop app (__WEB__ is a build-time constant, compiled
   // out entirely there — see electron.vite.config.ts) and on the restricted
   // unloading desk, which keeps its own simplified view.
-  if (__WEB__ && isMobile && !unloadOnly && !tdsOnly) return <SalesMobile />
+  if (__WEB__ && isMobile && !unloadOnly && !tdsOnly)
+    return deskSwitch ? (
+      <>
+        {deskSwitch}
+        <SalesMobile />
+      </>
+    ) : (
+      <SalesMobile />
+    )
 
   return (
     <>
+      {deskSwitch}
       <PageHeader
         title={unloadOnly ? 'Unloading desk' : 'Sales'}
         subtitle={unloadOnly ? 'FOR deliveries still out — record the quantity received' : undefined}

@@ -324,7 +324,12 @@ export function UserAccess(): React.JSX.Element {
 
   // A desk is on when its module carries its scope — asked of the entry
   // itself, so a fourth desk needs nothing here but a row in DESKS.
-  const deskOn = (d: (typeof DESKS)[number]): boolean => rights(d.module).scope === d.key
+  // THE TDS DESK ALONGSIDE THE INTER-COMPANY ONE. Both narrow Sales, which has
+  // one scope; so with inter-company on, the TDS desk is a second flag on the
+  // same page (sales.also_tds) and the login switches between the two lists.
+  const salesPerm = (): Record<string, unknown> => ((perms as Record<string, unknown>).sales as Record<string, unknown>) || {}
+  const deskOn = (d: (typeof DESKS)[number]): boolean =>
+    rights(d.module).scope === d.key || (d.key === 'tds' && rights('sales').scope === 'intercompany' && !!salesPerm().also_tds)
   // A desk may cover more than one page — the inter-company one is a job that
   // spans Sales and Purchases — so the toggle writes the grant to every page
   // it names. Written together, and lifted together: half a desk is a login
@@ -333,8 +338,24 @@ export function UserAccess(): React.JSX.Element {
     d.module,
     ...(('also' in d ? (d.also as readonly string[]) : []) || [])
   ]
-  const toggleDesk = (d: (typeof DESKS)[number], on: boolean): void =>
-    setPerms(
+  const withSales = (p: Perms, patch: Record<string, unknown>, drop: string[] = []): Perms => {
+    const cur = { ...(((p as Record<string, unknown>).sales as Record<string, unknown>) || {}), ...patch }
+    for (const k of drop) delete cur[k]
+    return { ...p, sales: cur } as Perms
+  }
+  const toggleDesk = (d: (typeof DESKS)[number], on: boolean): void => {
+    const scope = rights('sales').scope
+    const interco = DESKS.find((x) => x.key === 'intercompany')!
+    const tds = DESKS.find((x) => x.key === 'tds')!
+    // TDS on or off while inter-company holds Sales: only the second flag moves.
+    if (d.key === 'tds' && scope === 'intercompany') return setPerms(withSales(perms, on ? { also_tds: true } : {}, on ? [] : ['also_tds']))
+    // Inter-company on over a TDS desk: inter-company takes the scope, TDS stays as the flag.
+    if (d.key === 'intercompany' && on && scope === 'tds') return setPerms(withSales(applyDesk(interco, true, perms), { also_tds: true }))
+    // Inter-company off with TDS riding on it: the TDS desk is left, on its own.
+    if (d.key === 'intercompany' && !on && salesPerm().also_tds) return setPerms(withSales(applyDesk(tds, true, applyDesk(interco, false, perms)), {}, ['also_tds']))
+    setPerms(applyDesk(d, on, perms))
+  }
+  const applyDesk = (d: (typeof DESKS)[number], on: boolean, perms: Perms): Perms =>
       deskPages(d).reduce((acc, page) => {
         const grants = ('grants' in d ? (d.grants as Record<string, Record<string, boolean>>) : undefined) || {}
         // The PRIMARY page carries the desk (its scope + grant).
@@ -352,7 +373,6 @@ export function UserAccess(): React.JSX.Element {
         }
         return acc
       }, perms)
-    )
   const anyDesk = DESKS.some(deskOn)
   // The one default-ON permission on this page: every login gets today's
   // checklist unless this is switched off for them by name.

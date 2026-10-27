@@ -78,7 +78,7 @@ import {
 import { listUnmappedOrders, unmappedCount, mapOrderToBargains } from './unmapped'
 import { documentPostings, type PostingEntity } from './postings'
 import { listTradingDeals, createTradingDeal, updateTradingDeal, deleteTradingDeal, listTradingPayments } from './trading'
-import { assertAdmin, assertAllowed, clearAccessCache, currentScope, entryWindows } from './access-gate'
+import { assertAdmin, assertAllowed, clearAccessCache, currentScope, entryWindows, salesAlsoTds } from './access-gate'
 import {
   accountingChecks,
   clearSaleTds,
@@ -1472,12 +1472,13 @@ export function registerIpc(): void {
   // The unload desk's grant hands back its own thin row set — the money columns
   // are never selected, so a restricted user cannot reach them even by calling
   // the channel directly.
-  handle('sales:list', async (_e, args?: { companyIds?: number[]; forModule?: string }) => {
+  handle('sales:list', async (_e, args?: { companyIds?: number[]; forModule?: string; desk?: string }) => {
     const scope = await currentScope('sales')
     if (scope === 'unload') return listSalesForUnloadDesk(args?.companyIds)
     // The customer-TDS desk: invoices still missing their TDS, and only the
-    // figures booking it needs (saleTds.listSalesForTdsDesk).
-    if (scope === 'tds') {
+    // figures booking it needs (saleTds.listSalesForTdsDesk). An inter-company
+    // desk that also holds TDS (sales.also_tds) asks for it by name.
+    if (scope === 'tds' || (scope === 'intercompany' && args?.desk === 'tds' && (await salesAlsoTds()))) {
       const { listSalesForTdsDesk } = await import('./saleTds')
       return listSalesForTdsDesk(args?.companyIds)
     }

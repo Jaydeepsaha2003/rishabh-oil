@@ -265,6 +265,12 @@ export async function visibleFromFor(ownModule: string, callerModule?: string): 
 // The narrowed job the signed-in user holds in a module, for the readers that
 // have to hand back less than the full row set. Null for an admin, for a user
 // the app does not know (harness, first run), or for an unrestricted grant.
+/** An inter-company desk that also books customer TDS (sales.also_tds). */
+export async function salesAlsoTds(): Promise<boolean> {
+  const user = await currentAccessUser()
+  return !!user && moduleScope(user, 'sales') === 'intercompany' && !!(modulePerm(user, 'sales') as Row).also_tds
+}
+
 export async function currentScope(moduleKey: string): Promise<string | null> {
   const user = await currentAccessUser()
   if (!user) return null
@@ -571,8 +577,10 @@ export async function assertAllowed(channel: string, args: unknown): Promise<voi
     return
   }
   // The customer-TDS desk: booking the TDS a customer deducted, on an invoice
-  // that has none yet, and nothing else on the page.
-  if (moduleScope(user, rule.module) === 'tds' && rule.module === 'sales') {
+  // that has none yet, and nothing else on the page. Also held beside the
+  // inter-company desk (sales.also_tds) — then only for this one act.
+  const tdsToo = rule.module === 'sales' && moduleScope(user, 'sales') === 'intercompany' && !!(modulePerm(user, 'sales') as Row).also_tds && op === 'tdsPost'
+  if ((moduleScope(user, rule.module) === 'tds' && rule.module === 'sales') || tdsToo) {
     if (op !== 'tdsPost') {
       throw new Error('Your access to Sales covers booking the TDS customers deducted on invoices that have none yet — nothing else on this page can be changed.')
     }

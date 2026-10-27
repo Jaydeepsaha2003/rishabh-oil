@@ -477,7 +477,7 @@ export interface Api {
     ppDraws: (productionId: number) => Promise<{ product_id: number; ffa: string; qty: number }[]>
   }
   sales: {
-    list: (companyIds?: number[], forModule?: string) => Promise<Row[]>
+    list: (companyIds?: number[], forModule?: string, desk?: string) => Promise<Row[]>
     randomInvoiceNo: (companyId?: number) => Promise<string>
     invoiceGaps: (companyId?: number, from?: string, to?: string) => Promise<Row>
     cancelInvoiceNo: (values: Row) => Promise<{ prefix: string; number: number }>

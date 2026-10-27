@@ -708,8 +708,8 @@ const api = {
       ipcRenderer.invoke('production:ppDraws', { productionId })
   },
   sales: {
-    list: (companyIds?: number[], forModule?: string): Promise<Row[]> =>
-      ipcRenderer.invoke('sales:list', { companyIds, forModule }),
+    list: (companyIds?: number[], forModule?: string, desk?: string): Promise<Row[]> =>
+      ipcRenderer.invoke('sales:list', { companyIds, forModule, desk }),
     randomInvoiceNo: (companyId?: number): Promise<string> =>
       ipcRenderer.invoke('sales:randomInvoiceNo', { companyId }),
     invoiceGaps: (companyId?: number, from?: string, to?: string): Promise<Row> =>
