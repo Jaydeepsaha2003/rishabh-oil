@@ -649,6 +649,7 @@ function App(): React.JSX.Element {
           <Sales
             focusId={focus?.page === 'sales' ? focus.id : null}
             onFocusHandled={() => setFocus(null)}
+            onOpenOrder={(id, co) => openRecord('orders', id, { companyId: co })}
             onBack={view === 'sales' && returnTo ? goBack : undefined}
             backLabel={backLabel}
           />

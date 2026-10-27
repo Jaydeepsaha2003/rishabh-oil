@@ -339,13 +339,15 @@ function SalesTab({
   onFocusHandled,
   onRegister,
   onBack,
-  backLabel
+  backLabel,
+  onOpenOrder
 }: {
   focusId?: number | null
   onFocusHandled?: () => void
   onRegister?: (a: { open: () => void; canAdd: boolean; formOpen: boolean }) => void
   onBack?: () => void
   backLabel?: string
+  onOpenOrder?: (orderId: number, companyId?: number) => void
 }): React.JSX.Element {
   // How far back this user may date a new entry. The save is refused either
   // way; greying the days out just stops the form offering one it will reject.
@@ -2377,18 +2379,25 @@ function SalesTab({
                         {/* Raised by itself when a trading tanker was emptied — which one. */}
                         {inv.first.onward_from &&
                           (() => {
-                            const [tk, pur, sup, emptied, qty] = String(inv.first.onward_from).split('|')
+                            const [tk, pur, sup, emptied, qty, orderId, orderCo] = String(inv.first.onward_from).split('|')
+                            const go = onOpenOrder && Number(orderId) ? (): void => onOpenOrder(Number(orderId), Number(orderCo) || undefined) : null
                             return (
-                              <div
-                                className="mt-1 inline-flex max-w-full items-center gap-1 truncate rounded-[3px] border border-[#C6DAF0] bg-[#F4F8FD] px-1.5 py-px text-[10.5px] font-bold text-[#1B4E82]"
-                                title={`Raised automatically when tanker ${tk} was emptied${emptied ? ` on ${formatDate(emptied)}` : ''}${qty ? ` (${qty} MT received)` : ''} — purchase ${pur || '—'}${sup ? ` from ${sup}` : ''}. Taking the tanker back from Empty removes this sale.`}
+                              <button
+                                type="button"
+                                disabled={!go}
+                                onClick={(e) => {
+                                  e.stopPropagation()
+                                  go?.()
+                                }}
+                                className="mt-1 inline-flex max-w-full items-center gap-1 truncate rounded-[3px] border border-[#C6DAF0] bg-[#F4F8FD] px-1.5 py-px text-[10.5px] font-bold text-[#1B4E82] enabled:hover:border-[#1B4E82] enabled:hover:bg-[#EAF0FA]"
+                                title={`Raised automatically when tanker ${tk} was emptied${emptied ? ` on ${formatDate(emptied)}` : ''}${qty ? ` (${qty} MT received)` : ''} — purchase ${pur || '—'}${sup ? ` from ${sup}` : ''}. Taking the tanker back from Empty removes this sale.${go ? ' Click to open the purchase.' : ''}`}
                               >
                                 <Truck className="h-3 w-3 flex-none" />
                                 <span className="truncate">
                                   {tk}
                                   {pur ? ` · ${pur}` : ''}
                                 </span>
-                              </div>
+                              </button>
                             )
                           })()}
                         {inv.first.rejected_at && (
@@ -8412,7 +8421,14 @@ function SalesBargainsTab({ onOpenSale }: { onOpenSale?: (id: number, companyId?
 
 // ---------------- page ----------------
 
-type SalesProps = { focusId?: number | null; onFocusHandled?: () => void; onBack?: () => void; backLabel?: string }
+type SalesProps = {
+  focusId?: number | null
+  onFocusHandled?: () => void
+  onBack?: () => void
+  backLabel?: string
+  /** Open a purchase on the Purchases page, in its own company (the tanker chip). */
+  onOpenOrder?: (orderId: number, companyId?: number) => void
+}
 
 // The two lists of a login holding both desks — remounted on a switch, so each
 // list loads as its own desk would.
@@ -8449,7 +8465,7 @@ export function Sales(props: SalesProps = {}): React.JSX.Element {
   )
 }
 
-function SalesPage({ focusId, onFocusHandled, onBack, backLabel, deskSwitch }: SalesProps & { deskSwitch?: React.ReactNode }): React.JSX.Element {
+function SalesPage({ focusId, onFocusHandled, onBack, backLabel, deskSwitch, onOpenOrder }: SalesProps & { deskSwitch?: React.ReactNode }): React.JSX.Element {
   const isMobile = useIsMobile()
   const [needs, setNeeds] = useState<Row[]>([])
   const [needsOpen, setNeedsOpen] = useState(false)
@@ -8533,7 +8549,7 @@ function SalesPage({ focusId, onFocusHandled, onBack, backLabel, deskSwitch }: S
       {/* Website runs the register full-bleed — no side gutter, so the table
           gets the whole width. The desktop app keeps its padded page. */}
       <div className={__WEB__ ? 'py-4 pl-4' : 'px-4 py-4'}>
-        <SalesTab focusId={focusId} onFocusHandled={onFocusHandled} onRegister={setSalesAdd} onBack={onBack} backLabel={backLabel} />
+        <SalesTab focusId={focusId} onFocusHandled={onFocusHandled} onRegister={setSalesAdd} onBack={onBack} backLabel={backLabel} onOpenOrder={onOpenOrder} />
       </div>
 
       <Dialog open={needsOpen} onOpenChange={setNeedsOpen}>
