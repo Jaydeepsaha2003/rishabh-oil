@@ -11225,7 +11225,15 @@ async function listSales(companyIds, forModule) {
            -- group; this is that link read back onto the invoice itself.
            gv.tanker_no AS gate_vehicle_no,
            gv.gate_entry_no AS gate_entry_no,
-           gv.status AS gate_status
+           gv.status AS gate_status,
+           -- RAISED FROM A TANKER: a trading company's tanker sold on as it was
+           -- emptied (onwardSale.ts) \u2014 the tanker, its purchase and its supplier.
+           (SELECT pt.tanker_no || '|' || COALESCE(po.invoice_no, '') || '|' || COALESCE(ps.name, '') || '|' ||
+                   COALESCE(substr(pt.empty_date, 1, 10), '') || '|' || COALESCE(pt.received_qty, '')
+              FROM purchase_tankers pt
+              LEFT JOIN orders po ON po.id = pt.order_id
+              LEFT JOIN suppliers ps ON ps.id = pt.supplier_id
+             WHERE pt.onward_sale_group = s.invoice_group LIMIT 1) AS onward_from
     FROM sales s
     LEFT JOIN products pr ON pr.id = s.product_id
     LEFT JOIN sales_bargains sb ON sb.id = s.sales_bargain_id
@@ -13483,9 +13491,13 @@ async function supplierFyTaxable(supplierId, dateStr, excludeId, companyId) {
   const c = getClient();
   const ids = await relatedSupplierIds(supplierId);
   const res = await c.execute({
+    // A bill of the SAME day counts as before this one only if it was entered
+    // first (lower id): two same-day bills used to count each other, and the
+    // first one of the year (UNI-26-27-463) was taxed in full.
     sql: `SELECT COALESCE(SUM(taxable_value), 0) AS t FROM orders
-          WHERE supplier_id IN (${ids.map(() => "?").join(",")}) AND order_date BETWEEN ? AND ? AND id != ? AND company_id = ?`,
-    args: [...ids, start, dateStr, excludeId || 0, companyId || getActiveCompanyId()]
+          WHERE supplier_id IN (${ids.map(() => "?").join(",")}) AND order_date BETWEEN ? AND ? AND id != ? AND company_id = ?
+            AND (order_date < ? OR ? = 0 OR id < ?)`,
+    args: [...ids, start, dateStr, excludeId || 0, companyId || getActiveCompanyId(), dateStr, excludeId || 0, excludeId || 0]
   });
   const { partyOpeningInYear: partyOpeningInYear2 } = await Promise.resolve().then(() => (init_partyOpenings(), partyOpenings_exports));
   const opening = await partyOpeningInYear2("supplier", companyId || getActiveCompanyId(), ids, start, end);
@@ -35236,6 +35248,11 @@ async function runStartupTasks() {
 var REQUIRED_COLUMNS = [
   // Which unit a breakdown part belongs to: LUDHIANA, GHAZIABAD, OTHERS, BOTH.
   { table: "journal_line_splits", column: "branch", type: "TEXT" },
+  // A trading tanker's onward sale (onwardSale.ts) — always present, so the
+  // sales list can read which tanker an invoice was raised from.
+  { table: "purchase_tankers", column: "onward_sale_group", type: "TEXT" },
+  { table: "purchase_tankers", column: "onward_company_id", type: "INTEGER" },
+  { table: "purchase_tankers", column: "onward_kind", type: "TEXT" },
   // ONE PARTY, SEVERAL GST NOs. — [{gstin, state, gst_rates, gst_type}] on the
   // party, and the GST No. a bill was made under (partyFold.ts, the bill forms).
   { table: "suppliers", column: "gst_regs", type: "TEXT" },
