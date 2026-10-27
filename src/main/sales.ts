@@ -590,7 +590,15 @@ export async function listSales(companyIds?: number[], forModule?: string): Prom
            -- group; this is that link read back onto the invoice itself.
            gv.tanker_no AS gate_vehicle_no,
            gv.gate_entry_no AS gate_entry_no,
-           gv.status AS gate_status
+           gv.status AS gate_status,
+           -- RAISED FROM A TANKER: a trading company's tanker sold on as it was
+           -- emptied (onwardSale.ts) — the tanker, its purchase and its supplier.
+           (SELECT pt.tanker_no || '|' || COALESCE(po.invoice_no, '') || '|' || COALESCE(ps.name, '') || '|' ||
+                   COALESCE(substr(pt.empty_date, 1, 10), '') || '|' || COALESCE(pt.received_qty, '')
+              FROM purchase_tankers pt
+              LEFT JOIN orders po ON po.id = pt.order_id
+              LEFT JOIN suppliers ps ON ps.id = pt.supplier_id
+             WHERE pt.onward_sale_group = s.invoice_group LIMIT 1) AS onward_from
     FROM sales s
     LEFT JOIN products pr ON pr.id = s.product_id
     LEFT JOIN sales_bargains sb ON sb.id = s.sales_bargain_id

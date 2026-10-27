@@ -2358,6 +2358,23 @@ function SalesTab({
                                   </button>
                                 )}
                             </div>
+                            {/* Raised by itself when a trading tanker was emptied — which one. */}
+                            {inv.first.onward_from &&
+                              (() => {
+                                const [tk, pur, sup, emptied, qty] = String(inv.first.onward_from).split('|')
+                                return (
+                                  <div
+                                    className="mt-1 inline-flex max-w-full items-center gap-1 truncate rounded-[3px] border border-[#C6DAF0] bg-[#F4F8FD] px-1.5 py-px text-[10.5px] font-bold text-[#1B4E82]"
+                                    title={`Raised automatically when tanker ${tk} was emptied${emptied ? ` on ${formatDate(emptied)}` : ''}${qty ? ` (${qty} MT received)` : ''} — purchase ${pur || '—'}${sup ? ` from ${sup}` : ''}. Taking the tanker back from Empty removes this sale.`}
+                                  >
+                                    <Truck className="h-3 w-3 flex-none" />
+                                    <span className="truncate">
+                                      {tk}
+                                      {pur ? ` · ${pur}` : ''}
+                                    </span>
+                                  </div>
+                                )
+                              })()}
                             {/* Stops the row's own click, which expands the
                                 invoice — tagging it is not opening it. */}
                             <div className="mt-1" onClick={(e) => e.stopPropagation()}>
