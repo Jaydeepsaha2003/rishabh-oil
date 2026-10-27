@@ -30308,11 +30308,26 @@ var cashflowRegister_exports = {};
 __export(cashflowRegister_exports, {
   cashflowRegister: () => cashflowRegister
 });
-async function cashflowRegister(from, to, companyId) {
+async function cashflowRegister(from, to, companyId, onlySplits = false) {
   const c = getClient();
   const cid = companyId || getActiveCompanyId();
-  const heads = await listVouchers(from, to, void 0, cid);
-  if (!heads.length) return { from: from || null, to: to || null, vouchers: [] };
+  const all = await listVouchers(from, to, void 0, cid);
+  const total = all.length;
+  let heads = all;
+  let withSplits = null;
+  if (onlySplits) {
+    withSplits = new Set(
+      toPlain39(
+        await c.execute({
+          sql: `SELECT DISTINCT jl.entry_id AS id FROM journal_line_splits s JOIN journal_lines jl ON jl.id = s.line_id
+                    JOIN journal_entries je ON je.id = jl.entry_id WHERE je.company_id = ?`,
+          args: [cid]
+        }).catch(() => ({ rows: [] }))
+      ).map((r) => n55(r.id))
+    );
+    heads = all.filter((h) => withSplits.has(n55(h.id)));
+  }
+  if (!heads.length) return { from: from || null, to: to || null, vouchers: [], total, openings: {} };
   const conds = ["je.company_id = ?"];
   const args = [cid];
   if (from) {
@@ -30323,6 +30338,7 @@ async function cashflowRegister(from, to, companyId) {
     conds.push("je.entry_date <= ?");
     args.push(to);
   }
+  if (withSplits) conds.push(`je.id IN (${[...withSplits].map((id) => Number(id)).join(",") || "0"})`);
   const inPeriod = `SELECT je.id FROM journal_entries je WHERE ${conds.join(" AND ")}`;
   const groups = toPlain39(await c.execute("SELECT id, name, parent_id FROM ledger_groups").catch(() => ({ rows: [] })));
   const gById = new Map(groups.map((g) => [n55(g.id), g]));
@@ -30461,7 +30477,7 @@ async function cashflowRegister(from, to, companyId) {
     const { bankBalanceBefore: bankBalanceBefore2 } = await Promise.resolve().then(() => (init_tallyBank(), tallyBank_exports));
     for (const [aid, name] of moneyIds) openings[name] = await bankBalanceBefore2(cid, aid, from).catch(() => 0);
   }
-  return { from: from || null, to: to || null, vouchers, openings };
+  return { from: from || null, to: to || null, vouchers, total, openings };
 }
 var n55, round226, toPlain39;
 var init_cashflowRegister = __esm({
@@ -41808,7 +41824,7 @@ function registerIpc() {
   });
   handle("vouchers:cashflow", async (_e, args) => {
     const { cashflowRegister: cashflowRegister2 } = await Promise.resolve().then(() => (init_cashflowRegister(), cashflowRegister_exports));
-    return cashflowRegister2(args?.from, args?.to, args?.companyId);
+    return cashflowRegister2(args?.from, args?.to, args?.companyId, !!args?.onlySplits);
   });
   handle("vouchers:get", (_e, { id }) => getVoucher(id));
   handle(
