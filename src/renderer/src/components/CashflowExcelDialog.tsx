@@ -198,7 +198,8 @@ export function CashflowExcelDialog({
         // header reads in full beside the filter arrow.
         for (const g of order) {
           g.heads.forEach((k, i) => {
-            const header = `${g.name} › ${label.get(k)}`
+            // The head's own name only — its group shows in the header colour.
+            const header = String(label.get(k))
             cols.push(money(header, `h:${k}`, { headerFill: g.color.head, divider: i === 0, width: header.length + 6 }))
           })
         }
