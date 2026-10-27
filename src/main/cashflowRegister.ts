@@ -23,11 +23,30 @@ const toPlain = (rs: { rows: unknown[] }): Row[] => rs.rows.map((r) => ({ ...(r 
 //
 // Read only. Three queries for the lines, the bill references and the
 // breakdowns of every voucher in the period, so a month reads as fast as a day.
-export async function cashflowRegister(from?: string, to?: string, companyId?: number): Promise<Row> {
+export async function cashflowRegister(from?: string, to?: string, companyId?: number, onlySplits = false): Promise<Row> {
   const c = getClient()
   const cid = companyId || getActiveCompanyId()
-  const heads = await listVouchers(from, to, undefined, cid)
-  if (!heads.length) return { from: from || null, to: to || null, vouchers: [] }
+  const all = await listVouchers(from, to, undefined, cid)
+  const total = all.length
+  // ONLY THE BROKEN-DOWN ONES (the register's own view): a year is ~3,000
+  // vouchers and 2.7 MB opened up, of which a handful carry a breakdown.
+  let heads = all
+  let withSplits: Set<number> | null = null
+  if (onlySplits) {
+    withSplits = new Set(
+      toPlain(
+        await c
+          .execute({
+            sql: `SELECT DISTINCT jl.entry_id AS id FROM journal_line_splits s JOIN journal_lines jl ON jl.id = s.line_id
+                    JOIN journal_entries je ON je.id = jl.entry_id WHERE je.company_id = ?`,
+            args: [cid]
+          })
+          .catch(() => ({ rows: [] }))
+      ).map((r) => n(r.id))
+    )
+    heads = all.filter((h) => withSplits!.has(n(h.id)))
+  }
+  if (!heads.length) return { from: from || null, to: to || null, vouchers: [], total, openings: {} }
 
   const conds = ['je.company_id = ?']
   const args: (string | number)[] = [cid]
@@ -39,6 +58,7 @@ export async function cashflowRegister(from?: string, to?: string, companyId?: n
     conds.push('je.entry_date <= ?')
     args.push(to)
   }
+  if (withSplits) conds.push(`je.id IN (${[...withSplits].map((id) => Number(id)).join(',') || '0'})`)
   const inPeriod = `SELECT je.id FROM journal_entries je WHERE ${conds.join(' AND ')}`
 
   // Which group each ledger's group sits under, to the top — so a party ledger
@@ -187,5 +207,5 @@ export async function cashflowRegister(from?: string, to?: string, companyId?: n
     const { bankBalanceBefore } = await import('./tallyBank')
     for (const [aid, name] of moneyIds) openings[name] = await bankBalanceBefore(cid, aid, from).catch(() => 0)
   }
-  return { from: from || null, to: to || null, vouchers, openings }
+  return { from: from || null, to: to || null, vouchers, total, openings }
 }

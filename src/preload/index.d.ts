@@ -198,7 +198,7 @@ export interface Api {
   }
   vouchers: {
     list: (args?: { from?: string; to?: string; vchType?: string | string[]; companyId?: number }) => Promise<Row[]>
-    cashflow: (args?: { from?: string; to?: string; companyId?: number }) => Promise<Row>
+    cashflow: (args?: { from?: string; to?: string; companyId?: number; onlySplits?: boolean }) => Promise<Row>
     summary: (args?: { from?: string; to?: string; companyId?: number }) => Promise<Row>
     get: (id: number) => Promise<Row | null>
     subtypes: () => Promise<Row[]>

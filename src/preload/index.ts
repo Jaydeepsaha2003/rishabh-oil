@@ -276,7 +276,7 @@ const api = {
   vouchers: {
     list: (args?: { from?: string; to?: string; vchType?: string | string[]; companyId?: number }): Promise<Row[]> =>
       ipcRenderer.invoke('vouchers:list', args),
-    cashflow: (args?: { from?: string; to?: string; companyId?: number }): Promise<Row> => ipcRenderer.invoke('vouchers:cashflow', args),
+    cashflow: (args?: { from?: string; to?: string; companyId?: number; onlySplits?: boolean }): Promise<Row> => ipcRenderer.invoke('vouchers:cashflow', args),
     summary: (args?: { from?: string; to?: string; companyId?: number }): Promise<Row> => ipcRenderer.invoke('vouchers:summary', args),
     get: (id: number): Promise<Row | null> => ipcRenderer.invoke('vouchers:get', { id }),
     subtypes: (): Promise<Row[]> => ipcRenderer.invoke('vouchers:subtypes'),

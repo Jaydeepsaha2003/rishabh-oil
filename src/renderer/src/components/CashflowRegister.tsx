@@ -1,5 +1,5 @@
-import { Fragment, useCallback, useEffect, useMemo, useState } from 'react'
-import { AlertTriangle, ArrowDownLeft, ArrowUpRight, CheckCircle2, ChevronRight, ExternalLink, Search, X } from 'lucide-react'
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { AlertTriangle, ArrowDownLeft, ArrowUpRight, CheckCircle2, ChevronRight, ExternalLink, EyeOff, Search, X } from 'lucide-react'
 import { DatePicker } from '@/components/ui/date-picker'
 import { CashflowExcelDialog } from '@/components/CashflowExcelDialog'
 import { formatDate, formatINR, todayISO } from '@/lib/format'
@@ -42,6 +42,10 @@ const kindIs = (v: Row, k: Kind): boolean => {
   return t.includes('NOTE')
 }
 
+// What was last read for a company, period and view — shown at once on the way
+// back in, and read again behind it.
+const CACHE = new Map<string, { vouchers: Row[]; total: number }>()
+
 const REF_WORD: Record<string, string> = { agst_ref: 'Agst Ref', new_ref: 'New Ref', advance: 'Advance', on_account: 'On Account' }
 
 // THE CASHFLOW REGISTER. Every voucher of the period on one page, each opened
@@ -69,6 +73,7 @@ export function CashflowRegister({
     setTo(period.to || todayISO())
   }, [period?.from, period?.to]) // eslint-disable-line react-hooks/exhaustive-deps
   const [rawData, setData] = useState<Row[] | null>(null)
+  const [total, setTotal] = useState(0)
   // The breakdowns are out of sight until Ctrl + Alt + B (breakdownReveal.ts):
   // the vouchers still list, with no line's working on them.
   const reveal = useBreakdownShown()
@@ -90,19 +95,37 @@ export function CashflowRegister({
   const [open, setOpen] = useState<Set<number>>(new Set())
   const [shown, setShown] = useState(200)
 
+  // ONE ANSWER AT A TIME. The period arrives twice as the page opens (its own
+  // default, then the header's) and a slower first read used to land last and
+  // overwrite the right one — the register that "sometimes loads". Only the
+  // newest request may set the rows.
+  const seq = useRef(0)
   const load = useCallback(async () => {
     if (!companyId) return
+    const key = `${companyId}|${from}|${to}|${showAll ? 'all' : 'split'}`
+    const mine = ++seq.current
+    const hit = CACHE.get(key)
+    if (hit) {
+      setData(hit.vouchers)
+      setTotal(hit.total)
+    } else setData(null)
     setLoading(true)
     try {
-      const r = await window.api.vouchers.cashflow({ from, to, companyId })
-      setData((r.vouchers as Row[]) || [])
+      // Only the broken-down vouchers unless every one is asked for.
+      const r = await window.api.vouchers.cashflow({ from, to, companyId, onlySplits: !showAll })
+      if (mine !== seq.current) return
+      const got = { vouchers: (r.vouchers as Row[]) || [], total: Number(r.total) || ((r.vouchers as Row[]) || []).length }
+      CACHE.set(key, got)
+      setData(got.vouchers)
+      setTotal(got.total)
     } catch (e) {
+      if (mine !== seq.current) return
       toast.error((e as Error).message)
-      setData([])
+      if (!hit) setData([])
     } finally {
-      setLoading(false)
+      if (mine === seq.current) setLoading(false)
     }
-  }, [companyId, from, to])
+  }, [companyId, from, to, showAll])
   useEffect(() => {
     void load()
   }, [load])
@@ -207,7 +230,7 @@ export function CashflowRegister({
 
       {/* The figures — each a way in. */}
       <div className="grid gap-2.5 [grid-template-columns:repeat(auto-fit,minmax(180px,1fr))]">
-        {card(showAll ? 'Vouchers' : 'With a breakdown', String(rows.length), showAll ? `of ${(data || []).length} in the period` : `of ${(data || []).length} vouchers in the period`, 'text-[#0A1F17]', kind === 'all' && !wrongOnly, () => {
+        {card(showAll ? 'Vouchers' : 'With a breakdown', reveal || showAll ? String(rows.length) : '—', `of ${total} vouchers in the period`, 'text-[#0A1F17]', kind === 'all' && !wrongOnly, () => {
           setKind('all')
           setWrongOnly(false)
         })}
@@ -265,7 +288,7 @@ export function CashflowRegister({
             showAll ? 'border-[#0B3D2E] bg-[#0B3D2E] text-white' : 'border-[#C3D2C6] bg-white text-[#33473E] hover:bg-[#F7FAF6]'
           )}
         >
-          {showAll ? `Showing all vouchers · back to ${withBreakdown} with a breakdown` : 'Show all vouchers'}
+          {showAll ? 'Showing all vouchers · back to those with a breakdown' : 'Show all vouchers'}
         </button>
         <button
           type="button"
@@ -286,7 +309,13 @@ export function CashflowRegister({
         </button>
       </div>
 
-      <div className="overflow-hidden rounded-[6px] border border-[#D6E2D6] bg-white">
+      <div className="relative overflow-hidden rounded-[6px] border border-[#D6E2D6] bg-white">
+        {/* Read again behind rows already on screen — said, not blanked. */}
+        {loading && !!data && (
+          <div className="absolute right-3 top-2 z-10 flex items-center gap-1.5 rounded-full bg-[#C7F03F] px-2.5 py-0.5 text-[10.5px] font-extrabold text-[#0B3D2E] shadow">
+            <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-[#0B3D2E]" /> Refreshing…
+          </div>
+        )}
         <div className="overflow-x-auto">
           <table className="w-full min-w-[1320px] border-collapse text-[12.5px]">
             <thead className="bg-[#0B3D2E]">
@@ -306,9 +335,29 @@ export function CashflowRegister({
             </thead>
             <tbody>
               {loading && !data ? (
+                Array.from({ length: 6 }).map((_, i) => (
+                  <tr key={`sk${i}`} className="border-t border-[#EAF0E9]">
+                    <td colSpan={11} className="px-4 py-3">
+                      <div className="h-3.5 animate-pulse rounded bg-[#EEF3EC]" style={{ width: `${88 - i * 9}%` }} />
+                    </td>
+                  </tr>
+                ))
+              ) : !showAll && !reveal ? (
+                // THE BREAKDOWNS ARE OUT OF SIGHT (a reload or a new sign-in
+                // always starts that way) — not missing.
                 <tr>
-                  <td colSpan={11} className="py-10 text-center text-[13px] font-semibold text-[#8CA396]">
-                    Reading the books…
+                  <td colSpan={11} className="px-6 py-12 text-center">
+                    <div className="mx-auto flex max-w-[520px] flex-col items-center gap-2">
+                      <span className="flex h-11 w-11 items-center justify-center rounded-full bg-[#F1F8EC] text-[#0B6B45]">
+                        <EyeOff className="h-5 w-5" />
+                      </span>
+                      <div className="text-[14px] font-extrabold text-[#0A1F17]">Breakdowns are hidden</div>
+                      <div className="text-[12.5px] font-semibold leading-relaxed text-[#5A6B62]">
+                        Press <kbd className="rounded border border-[#C3D2C6] bg-[#F7FAF6] px-1.5 py-px font-mono text-[11.5px]">Ctrl</kbd> +{' '}
+                        <kbd className="rounded border border-[#C3D2C6] bg-[#F7FAF6] px-1.5 py-px font-mono text-[11.5px]">Alt</kbd> +{' '}
+                        <kbd className="rounded border border-[#C3D2C6] bg-[#F7FAF6] px-1.5 py-px font-mono text-[11.5px]">B</kbd> to show them — or press Show all vouchers.
+                      </div>
+                    </div>
                   </td>
                 </tr>
               ) : !rows.length ? (

@@ -1134,9 +1134,9 @@ export function registerIpc(): void {
     for (const r of rs.rows) out[String(r.supplier_id)] = Number(r.n) || 0
     return out
   })
-  handle('vouchers:cashflow', async (_e, args?: { from?: string; to?: string; companyId?: number }) => {
+  handle('vouchers:cashflow', async (_e, args?: { from?: string; to?: string; companyId?: number; onlySplits?: boolean }) => {
     const { cashflowRegister } = await import('./cashflowRegister')
-    return cashflowRegister(args?.from, args?.to, args?.companyId)
+    return cashflowRegister(args?.from, args?.to, args?.companyId, !!args?.onlySplits)
   })
   handle('vouchers:get', (_e, { id }: { id: number }) => getVoucher(id))
   // One line's breakdown on its own, on any voucher (accounting.ts setLineSplits).
