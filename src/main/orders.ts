@@ -897,7 +897,9 @@ export async function createOrder(v: Row): Promise<{ id: number }> {
       }
     }
   }
-  const prior = await supplierFyTaxable(n(v.supplier_id), String(v.order_date), 0)
+  // The slab of the company the purchase is booked IN — not the desk's open one
+  // (an inter-company purchase is raised from the selling company's screen).
+  const prior = await supplierFyTaxable(n(v.supplier_id), String(v.order_date), 0, bookInCompany)
   const roundOff = n(v.round_off)
   // Consignment tankers bring their own per-bargain split; otherwise the split
   // comes from the loaded tankers on the invoice.
@@ -1304,7 +1306,7 @@ export async function updateOrder(id: number, v: Row): Promise<{ id: number }> {
     )
     if (obPriced.primaryBargainId) v.bargain_id = obPriced.primaryBargainId
   }
-  const prior = await supplierFyTaxable(n(v.supplier_id), String(v.order_date), id)
+  const prior = await supplierFyTaxable(n(v.supplier_id), String(v.order_date), id, lotCompany)
   const roundOff = n(v.round_off)
   const bargainLines = obPriced.lines.length
     ? obPriced.lines
@@ -1550,7 +1552,7 @@ export async function rerateInvoicesForBargain(
         continue
       }
       const supplier = await getSupplier(n(o.supplier_id))
-      const prior = await supplierFyTaxable(n(o.supplier_id), String(o.order_date), id)
+      const prior = await supplierFyTaxable(n(o.supplier_id), String(o.order_date), id, n(o.company_id) || undefined)
       const lines = applyBargainInterestOverrides(
         await bargainLinesForTankers(tankerIds, { orderId: id }),
         await listOrderBargainInterest(id)

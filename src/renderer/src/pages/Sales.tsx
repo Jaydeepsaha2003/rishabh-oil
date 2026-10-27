@@ -1751,10 +1751,14 @@ function SalesTab({
       else saved = await window.api.sales.createInvoice(p)
     }
 
+    // An invoice already off-stock (a trading tanker sold on as it was emptied,
+    // or one dispatched anyway) stays off-stock on an edit — no stock check,
+    // no question, as when it was first saved.
+    const wasOffStock = !!editingGroup && rows.some((r) => String(r.invoice_group) === String(editingGroup) && Number(r.track_stock) === 0)
     setSaving(true)
     try {
       try {
-        await submit(false)
+        await submit(wasOffStock)
       } catch (e) {
         const msg = errText(e)
         if (/stock/i.test(msg)) {
