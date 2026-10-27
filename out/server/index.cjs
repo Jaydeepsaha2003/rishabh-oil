@@ -2911,7 +2911,8 @@ var init_accessSections = __esm({
       { key: "accountsMasters", label: "Accounting \xB7 Masters (ledgers & groups)" },
       { key: "accountsTallyImport", label: "Accounting \xB7 Tally file updation" },
       { key: "accountsCashflow", label: "Accounting \xB7 Cashflow Register" },
-      { key: "accountsPayReg", label: "Accounting \xB7 Payment / Receipt Register" }
+      { key: "accountsPayReg", label: "Accounting \xB7 Payment / Receipt Register" },
+      { key: "accountsJvReg", label: "Accounting \xB7 Journal Register" }
     ];
     VOUCHER_SECTION = {
       CONTRA: "accountsContra",
@@ -3501,7 +3502,8 @@ async function validateVoucher(v) {
     splits: (l.splits || []).map((sp) => ({
       name: String(sp?.name || "").trim().slice(0, 200),
       amount: n2(sp?.amount),
-      note: sp?.note ? String(sp.note).trim().slice(0, 500) : null
+      note: sp?.note ? String(sp.note).trim().slice(0, 500) : null,
+      branch: sp?.branch ? String(sp.branch).trim().slice(0, 40) : null
     })).filter((sp) => !!sp.name || sp.amount !== 0),
     allocs: (l.allocs || []).map((a) => ({
       method: a.method,
@@ -3575,9 +3577,9 @@ async function writeSplits(entryId, lines) {
     for (const sp of lines[i].splits) {
       order += 10;
       await c.execute({
-        sql: `INSERT INTO journal_line_splits (line_id, name, amount, note, sort_order)
-              VALUES (?, ?, ?, ?, ?)`,
-        args: [lineId, sp.name, n2(sp.amount), sp.note || null, order]
+        sql: `INSERT INTO journal_line_splits (line_id, name, amount, note, sort_order, branch)
+              VALUES (?, ?, ?, ?, ?, ?)`,
+        args: [lineId, sp.name, n2(sp.amount), sp.note || null, order, sp.branch ? String(sp.branch).trim() : null]
       });
     }
   }
@@ -3588,7 +3590,12 @@ async function setLineSplits(lineId, splits) {
     const line = (await c.execute({ sql: "SELECT id, dr, cr FROM journal_lines WHERE id = ?", args: [n2(lineId)] })).rows[0];
     if (!line) throw new Error("That voucher line no longer exists \u2014 open the voucher again");
     const amount2 = Math.round((n2(line.dr) || n2(line.cr)) * 100) / 100;
-    const parts = (splits || []).map((s5) => ({ name: String(s5.name || "").trim(), amount: Math.round(n2(s5.amount) * 100) / 100, note: s5.note ? String(s5.note).trim() : null })).filter((s5) => s5.name || s5.amount);
+    const parts = (splits || []).map((s5) => ({
+      name: String(s5.name || "").trim(),
+      amount: Math.round(n2(s5.amount) * 100) / 100,
+      note: s5.note ? String(s5.note).trim() : null,
+      branch: s5.branch ? String(s5.branch).trim() : null
+    })).filter((s5) => s5.name || s5.amount);
     if (parts.some((s5) => !s5.name)) throw new Error("Give every part a name");
     if (parts.some((s5) => s5.amount <= 0)) throw new Error("Every part needs an amount");
     const total = Math.round(parts.reduce((t, s5) => t + s5.amount, 0) * 100) / 100;
@@ -3600,8 +3607,8 @@ async function setLineSplits(lineId, splits) {
     for (const s5 of parts) {
       order += 10;
       await c.execute({
-        sql: "INSERT INTO journal_line_splits (line_id, name, amount, note, sort_order) VALUES (?, ?, ?, ?, ?)",
-        args: [n2(lineId), s5.name, s5.amount, s5.note, order]
+        sql: "INSERT INTO journal_line_splits (line_id, name, amount, note, sort_order, branch) VALUES (?, ?, ?, ?, ?, ?)",
+        args: [n2(lineId), s5.name, s5.amount, s5.note, order, s5.branch]
       });
     }
     return { id: n2(lineId), parts: parts.length };
@@ -3742,7 +3749,7 @@ async function getVoucher(id) {
     });
     l.allocs = toPlain3(al);
     const sp = await c.execute({
-      sql: "SELECT name, amount, note FROM journal_line_splits WHERE line_id = ? ORDER BY sort_order, id",
+      sql: "SELECT name, amount, note, branch FROM journal_line_splits WHERE line_id = ? ORDER BY sort_order, id",
       args: [Number(l.id)]
     });
     l.splits = toPlain3(sp);
@@ -19014,7 +19021,7 @@ async function repostJournal(entryId, a) {
     });
     const kept = /* @__PURE__ */ new Map();
     for (const s5 of (await c.execute({
-      sql: `SELECT jl.account_id, jl.dr, jl.cr, s.name, s.amount, s.note, s.sort_order
+      sql: `SELECT jl.account_id, jl.dr, jl.cr, s.name, s.amount, s.note, s.sort_order, s.branch
             FROM journal_line_splits s JOIN journal_lines jl ON jl.id = s.line_id
            WHERE jl.entry_id = ? ORDER BY s.line_id, s.sort_order, s.id`,
       args: [id]
@@ -19036,8 +19043,8 @@ async function repostJournal(entryId, a) {
         kept.delete(key3);
         for (const s5 of parts) {
           await c.execute({
-            sql: "INSERT INTO journal_line_splits (line_id, name, amount, note, sort_order) VALUES (?, ?, ?, ?, ?)",
-            args: [Number(ins.lastInsertRowid), s5.name, n22(s5.amount), s5.note ?? null, n22(s5.sort_order)]
+            sql: "INSERT INTO journal_line_splits (line_id, name, amount, note, sort_order, branch) VALUES (?, ?, ?, ?, ?, ?)",
+            args: [Number(ins.lastInsertRowid), s5.name, n22(s5.amount), s5.note ?? null, n22(s5.sort_order), s5.branch ?? null]
           });
         }
       }
@@ -19253,7 +19260,7 @@ async function accountStatement(accountId, companyId) {
     for (let i = 0; i < entryIds.length; i += 400) {
       const chunk = entryIds.slice(i, i + 400);
       const sp = await c.execute({
-        sql: `SELECT jl.entry_id, jl.id AS line_id, s.name, s.amount, s.note
+        sql: `SELECT jl.entry_id, jl.id AS line_id, s.name, s.amount, s.note, s.branch
                   FROM journal_line_splits s JOIN journal_lines jl ON jl.id = s.line_id
                  WHERE jl.entry_id IN (${chunk.map(() => "?").join(",")})
                  ORDER BY jl.id, s.sort_order, s.id`,
@@ -19262,14 +19269,14 @@ async function accountStatement(accountId, companyId) {
       for (const r of sp.rows) {
         const k = Number(r.entry_id);
         if (!byEntry2.has(k)) byEntry2.set(k, []);
-        byEntry2.get(k).push({ line_id: Number(r.line_id), name: String(r.name || ""), amount: Number(r.amount) || 0, note: r.note ? String(r.note) : null });
+        byEntry2.get(k).push({ line_id: Number(r.line_id), name: String(r.name || ""), amount: Number(r.amount) || 0, note: r.note ? String(r.note) : null, branch: r.branch ? String(r.branch) : null });
       }
     }
     for (const l of lines) {
       const all = byEntry2.get(Number(l.entry_id)) || [];
       if (!all.length) continue;
       const own = all.filter((x) => x.line_id === Number(l.id));
-      l.splits = (own.length ? own : all).map(({ name, amount: amount2, note }) => ({ name, amount: amount2, note }));
+      l.splits = (own.length ? own : all).map(({ name, amount: amount2, note, branch }) => ({ name, amount: amount2, note, branch }));
     }
   }
   {
@@ -30326,7 +30333,7 @@ var cashflowRegister_exports = {};
 __export(cashflowRegister_exports, {
   cashflowRegister: () => cashflowRegister
 });
-async function cashflowRegister(from, to, companyId, onlySplits = false) {
+async function cashflowRegister(from, to, companyId, onlySplits = false, vchType) {
   const c = getClient();
   const cid = companyId || getActiveCompanyId();
   const all = await listVouchers(from, to, void 0, cid);
@@ -30344,6 +30351,11 @@ async function cashflowRegister(from, to, companyId, onlySplits = false) {
       ).map((r) => n55(r.id))
     );
     heads = all.filter((h) => withSplits.has(n55(h.id)));
+  }
+  if (vchType) {
+    const want = vchType.toUpperCase();
+    heads = heads.filter((h) => String(h.vch_type || "").toUpperCase().startsWith(want));
+    withSplits = new Set(heads.map((h) => n55(h.id)));
   }
   if (!heads.length) return { from: from || null, to: to || null, vouchers: [], total, openings: {} };
   const conds = ["je.company_id = ?"];
@@ -30400,7 +30412,7 @@ async function cashflowRegister(from, to, companyId, onlySplits = false) {
   );
   const splits = toPlain39(
     await c.execute({
-      sql: `SELECT s.line_id, s.name, s.amount, s.note
+      sql: `SELECT s.line_id, s.name, s.amount, s.note, s.branch
                 FROM journal_line_splits s JOIN journal_lines jl ON jl.id = s.line_id
                WHERE jl.entry_id IN (${inPeriod})
                ORDER BY s.line_id, s.sort_order, s.id`,
@@ -30417,7 +30429,7 @@ async function cashflowRegister(from, to, companyId, onlySplits = false) {
   for (const s5 of splits) {
     const k = n55(s5.line_id);
     if (!splitsOf.has(k)) splitsOf.set(k, []);
-    splitsOf.get(k).push({ name: String(s5.name || ""), amount: round226(n55(s5.amount)), note: s5.note ? String(s5.note) : "" });
+    splitsOf.get(k).push({ name: String(s5.name || ""), amount: round226(n55(s5.amount)), note: s5.note ? String(s5.note) : "", branch: s5.branch ? String(s5.branch) : "" });
   }
   const linesOf = /* @__PURE__ */ new Map();
   for (const l of lines) {
@@ -35222,6 +35234,8 @@ async function runStartupTasks() {
   startRevisionWatcher();
 }
 var REQUIRED_COLUMNS = [
+  // Which unit a breakdown part belongs to: LUDHIANA, GHAZIABAD, OTHERS, BOTH.
+  { table: "journal_line_splits", column: "branch", type: "TEXT" },
   // ONE PARTY, SEVERAL GST NOs. — [{gstin, state, gst_rates, gst_type}] on the
   // party, and the GST No. a bill was made under (partyFold.ts, the bill forms).
   { table: "suppliers", column: "gst_regs", type: "TEXT" },
@@ -41842,7 +41856,7 @@ function registerIpc() {
   });
   handle("vouchers:cashflow", async (_e, args) => {
     const { cashflowRegister: cashflowRegister2 } = await Promise.resolve().then(() => (init_cashflowRegister(), cashflowRegister_exports));
-    return cashflowRegister2(args?.from, args?.to, args?.companyId, !!args?.onlySplits);
+    return cashflowRegister2(args?.from, args?.to, args?.companyId, !!args?.onlySplits, args?.vchType);
   });
   handle("vouchers:get", (_e, { id }) => getVoucher(id));
   handle(
