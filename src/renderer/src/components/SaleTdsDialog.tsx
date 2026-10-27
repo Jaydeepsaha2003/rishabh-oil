@@ -107,7 +107,8 @@ export function SaleTdsDialog({
   const pct = Number(info?.pct) || 0
   return (
     <Dialog open={!!saleId} onOpenChange={(o) => !o && !busy && onClose()}>
-      <DialogContent className="max-w-lg">
+      {/* Above the window it is opened from (the trading deal is a dialog too). */}
+      <DialogContent className="z-[60] max-w-lg" overlayClassName="z-[60]">
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
             <Percent className="h-4 w-4 text-[#C2700A]" />

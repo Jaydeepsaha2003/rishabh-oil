@@ -29,6 +29,7 @@ import { TradingMobile } from './TradingMobile'
 import { TradingPayments } from './TradingPayments'
 import { tierTds } from '@/lib/tdsSlab'
 import { TdsExplainer, type TdsParty } from '@/components/TdsExplainer'
+import { SaleTdsDialog } from '@/components/SaleTdsDialog'
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Row = Record<string, any>
@@ -1037,6 +1038,54 @@ const emptyForm = (): Row => ({
 // column and the sale card in the buyer column — under the invoices each
 // belongs to, rather than in a row of their own further down where the
 // reader has to carry the side across from one block to the next.
+// THE TDS THE BUYER DEDUCTED, on each sale invoice of the deal. A trading sale
+// is kept off the Sales page, so its "No TDS" tag lived nowhere; this is the
+// same booking (SaleTdsDialog — a Journal Agst Ref the invoice) from the deal.
+function CustomerTdsStrip({ lines }: { lines: Row[] }): React.JSX.Element | null {
+  // One row per invoice (an invoice's lines share it).
+  const invs = [...new Map(lines.filter((l) => n(l.sale_id)).map((l) => [String(l.invoice_no || l.sale_id), l])).values()]
+  const [booked, setBooked] = useState<Record<number, Row | null>>({})
+  const [open, setOpen] = useState<number | null>(null)
+  const ids = invs.map((l) => n(l.sale_id)).join(',')
+  const load = useCallback(() => {
+    for (const l of invs)
+      void window.api.sales
+        .tdsPreview(n(l.sale_id))
+        .then((r) => setBooked((b) => ({ ...b, [n(l.sale_id)]: (r.existing as Row) || null })))
+        .catch(() => undefined)
+  }, [ids]) // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(load, [load])
+  if (!invs.length) return null
+  return (
+    <div className="rounded-[4px] border border-[#D6E2D6] bg-white px-3.5 py-2.5">
+      <div className="mb-1.5 text-[10.5px] font-extrabold uppercase tracking-[.08em] text-[#33473E]">TDS deducted by the buyer</div>
+      {invs.map((l) => {
+        const id = n(l.sale_id)
+        const e = booked[id]
+        return (
+          <div key={id} className="flex items-center gap-2 py-1 text-[12.5px]">
+            <span className="font-bold">{String(l.invoice_no || `#${id}`)}</span>
+            <span className="min-w-0 flex-1 truncate text-[11.5px] font-semibold text-[#5A6B62]">
+              {e ? `${formatINR(n(e.amount))} · Journal ${String(e.vch_no || '')} to ${String(e.ledger || '')}` : e === null ? 'Not booked' : '…'}
+            </span>
+            <button
+              type="button"
+              onClick={() => setOpen(id)}
+              className={cn(
+                'h-7 rounded-[4px] px-2.5 text-[11.5px] font-extrabold',
+                e ? 'border border-[#C3D2C6] bg-white text-[#33473E] hover:bg-[#F4F7F3]' : 'bg-[#0B3D2E] text-[#C7F03F] hover:bg-[#0F4A38]'
+              )}
+            >
+              {e ? 'Change' : 'Book TDS'}
+            </button>
+          </div>
+        )
+      })}
+      <SaleTdsDialog saleId={open} onClose={() => setOpen(null)} onDone={load} />
+    </div>
+  )
+}
+
 function TaxCard({
   rose,
   head,
@@ -3758,6 +3807,7 @@ export function Trading({
                             netLabel="Net receivable"
                             net={n(d.sale_net_receivable)}
                           />
+                          <CustomerTdsStrip lines={sp.length ? sp.flatMap((x: Row) => (Array.isArray(x.lines) ? x.lines : [])) : sl} />
                         </div>
                       </div>
                     )}
