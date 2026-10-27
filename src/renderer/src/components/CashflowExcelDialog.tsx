@@ -143,15 +143,14 @@ export function CashflowExcelDialog({
                 return { head: label.get(k), count: ps.length, amount: round2(ps.reduce((t, p) => t + n(p.amount), 0)) }
               })
         if (!detail.some((d) => d.count)) continue
-        summary.push({ _g: true, group: g.name, head: '', count: detail.reduce((t, d) => t + d.count, 0), amount: round2(detail.reduce((t, d) => t + d.amount, 0)) })
-        detail.filter((d) => d.count).forEach((d) => summary.push({ group: g.name, ...d }))
+        summary.push({ _g: true, head: g.name, count: detail.reduce((t, d) => t + d.count, 0), amount: round2(detail.reduce((t, d) => t + d.amount, 0)) })
+        detail.filter((d) => d.count).forEach((d) => summary.push({ ...d }))
       }
       const summarySheet = {
         sheetName: 'By head',
         title: `Breakdown by head — ${companyName}`,
         subtitle: sub,
         columns: [
-          { header: 'Head group', key: 'group', width: 22 },
           { header: 'Head', key: 'head', width: 28 },
           { header: 'Entries', key: 'count', align: 'right' as const, numFmt: NUM_INT, total: 'sum' as const },
           money('Amount', 'amount')
@@ -184,11 +183,11 @@ export function CashflowExcelDialog({
         const cols: ExcelColumn[] = [
           { header: 'Date', key: 'date' },
           { header: 'Voucher', key: 'voucher' },
-          { header: 'Type', key: 'type' },
+          { header: 'Ledger', key: 'ledger' },
           { header: 'Invoice no', key: 'invoice' },
           { header: 'Ref no', key: 'refs' },
           { header: 'Party', key: 'party' },
-          { header: 'Ledger', key: 'ledger' },
+          { header: 'Type', key: 'type' },
           { header: 'Ledger group', key: 'lgroup' },
           money('Dr', 'dr'),
           money('Cr', 'cr')
@@ -228,7 +227,7 @@ export function CashflowExcelDialog({
         for (const { v, l, parts } of lines) {
           const ps = [...(parts as Row[])].sort((a, b) => (rank.get(headKey(a.name)) ?? 1e9) - (rank.get(headKey(b.name)) ?? 1e9))
           rows.push({ _g: true, ...base(v, l), line_amount: n(l.amount), part_amount: round2(ps.reduce((t, p) => t + n(p.amount), 0)) || '' })
-          for (const p of ps) rows.push({ hgroup: groupOf(headKey(p.name)), head: label.get(headKey(p.name)), part_amount: n(p.amount), remarks: p.note || '' })
+          for (const p of ps) rows.push({ head: label.get(headKey(p.name)), part_amount: n(p.amount), remarks: p.note || '' })
         }
         await exportRowsToExcel({
           filename: `cashflow-register-${from}-to-${to}`,
@@ -238,14 +237,13 @@ export function CashflowExcelDialog({
           columns: [
             { header: 'Date', key: 'date' },
             { header: 'Voucher', key: 'voucher' },
-            { header: 'Type', key: 'type' },
+            { header: 'Ledger', key: 'ledger' },
             { header: 'Invoice no', key: 'invoice' },
             { header: 'Party', key: 'party' },
-            { header: 'Ledger', key: 'ledger' },
+            { header: 'Type', key: 'type' },
             { header: 'Dr / Cr', key: 'side', align: 'center' },
             money('Line amount', 'line_amount', { width: 16 }),
-            { header: 'Head group', key: 'hgroup', width: 20, divider: true },
-            { header: 'Head', key: 'head', width: 24 },
+            { header: 'Head', key: 'head', width: 24, divider: true },
             money('Part amount', 'part_amount', { width: 16 }),
             { header: 'Remarks', key: 'remarks', width: 30 },
             { header: 'Ref no', key: 'refs' },
