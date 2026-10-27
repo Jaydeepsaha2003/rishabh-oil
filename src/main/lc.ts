@@ -675,8 +675,69 @@ export async function lcCommission(lcId: number): Promise<Row> {
  * One voucher, as the commission / refund panels show it: what left the bank
  * on it ('out', the commission) or what came into it ('in', a refund).
  */
-async function voucherBrief(entryId: number, dir: 'out' | 'in' = 'out'): Promise<Row | null> {
-  const BANKS = "('Bank Accounts', 'Bank OD A/c', 'Cash-in-Hand')"
+// Bank and cash groups WITH their sub-groups (group-base rule): a bank kept
+// under a sub-group of Bank Accounts was invisible to the commission picker.
+async function moneyGroupsSql(withCash = true): Promise<string> {
+  const { groupsUnder } = await import('./ledgerGroups')
+  const names = [...(await groupsUnder('Bank Accounts')), ...(await groupsUnder('Bank OD A/c')), ...(withCash ? await groupsUnder('Cash-in-Hand') : [])]
+  return `(${names.map((x) => `'${String(x).replace(/'/g, "''")}'`).join(', ')})`
+}
+
+// THE PICKER'S FILTERS, shared by commission and refund. A figure typed with or
+// without commas (31421.47, 31,421) matches the amount; anything else matches
+// the voucher no, its code, the narration or any ledger on it. A ledger picked
+// keeps only the vouchers that touch it.
+async function pickBankVouchers(v: {
+  lcId: number
+  companyId: number
+  from: string
+  dir: 'out' | 'in'
+  linkCol: 'commission_voucher_id' | 'refund_voucher_id'
+  expected: number
+  q?: string
+  ledgerId?: number
+}): Promise<Row[]> {
+  const c = getClient()
+  const BANKS = await moneyGroupsSql(false)
+  const raw = String(v.q || '').trim()
+  const num = raw.replace(/[,\s₹]/g, '')
+  const isNum = /^\d+(\.\d+)?$/.test(num)
+  const like = `%${raw.toUpperCase()}%`
+  const text = raw && !isNum
+  const res = await c.execute({
+    sql: `SELECT je.id FROM journal_entries je
+           WHERE je.company_id = ?
+             ${v.from ? "AND je.entry_date >= date(?, '-15 days')" : ''}
+             AND EXISTS (SELECT 1 FROM journal_lines jl JOIN ledger_accounts a ON a.id = jl.account_id
+                          WHERE jl.entry_id = je.id AND jl.${v.dir === 'in' ? 'dr' : 'cr'} > 0 AND a.acc_group IN ${BANKS})
+             AND NOT EXISTS (SELECT 1 FROM letters_of_credit x WHERE x.${v.linkCol} = je.id AND x.id <> ?)
+             ${v.ledgerId ? 'AND EXISTS (SELECT 1 FROM journal_lines jl WHERE jl.entry_id = je.id AND jl.account_id = ?)' : ''}
+             ${
+               text
+                 ? `AND (UPPER(COALESCE(je.narration, '') || ' ' || COALESCE(je.vch_no, '')) LIKE ?
+                      OR EXISTS (SELECT 1 FROM voucher_numbers nn WHERE nn.entry_id = je.id AND UPPER(nn.prefix || '/' || nn.serial) LIKE ?)
+                      OR EXISTS (SELECT 1 FROM journal_lines jl JOIN ledger_accounts a ON a.id = jl.account_id WHERE jl.entry_id = je.id AND UPPER(a.name) LIKE ?))`
+                 : ''
+             }
+           ORDER BY je.entry_date DESC, je.id DESC LIMIT 600`,
+    args: [v.companyId, ...(v.from ? [v.from] : []), v.lcId, ...(v.ledgerId ? [v.ledgerId] : []), ...(text ? [like, like, like] : [])]
+  })
+  const out: Row[] = []
+  const briefBanks = await moneyGroupsSql()
+  for (const r of res.rows as unknown as Row[]) {
+    const b = await voucherBrief(n(r.id), v.dir, briefBanks)
+    if (!b || !(n(b.amount) > 0)) continue
+    // The amount, as typed: the figure itself, or its digits as it starts.
+    if (isNum && !(Math.abs(n(b.amount) - Number(num)) < 1 || String(round2(n(b.amount))).startsWith(num))) continue
+    out.push(b)
+  }
+  out.sort((a, b) => Math.abs(n(a.amount) - v.expected) - Math.abs(n(b.amount) - v.expected))
+  // Browsing: the nearest 40. Searching or by ledger: everything found, to 200.
+  return out.slice(0, raw || v.ledgerId ? 200 : 40)
+}
+
+async function voucherBrief(entryId: number, dir: 'out' | 'in' = 'out', banks?: string): Promise<Row | null> {
+  const BANKS = banks || (await moneyGroupsSql())
   const side = dir === 'in' ? 'dr' : 'cr'
   const other = dir === 'in' ? 'cr' : 'dr'
   const r = (
@@ -702,30 +763,20 @@ async function voucherBrief(entryId: number, dir: 'out' | 'in' = 'out'): Promise
  * company, from a fortnight before it opened on, not already another LC's —
  * the nearest to the expected figure first. `q` narrows by number or narration.
  */
-export async function lcCommissionCandidates(lcId: number, q?: string): Promise<Row[]> {
+export async function lcCommissionCandidates(lcId: number, q?: string, ledgerId?: number): Promise<Row[]> {
   const c = getClient()
   const l = (await c.execute({ sql: 'SELECT id, company_id, amount, commission_pct, opened_date, open_date FROM letters_of_credit WHERE id = ?', args: [n(lcId)] })).rows[0] as unknown as Row | undefined
   if (!l) throw new Error('That LC no longer exists')
-  const expected = round2((n(l.amount) * n(l.commission_pct)) / 100)
-  const from = String(l.opened_date || l.open_date || '').slice(0, 10)
-  const like = `%${String(q || '').trim().toUpperCase()}%`
-  const res = await c.execute({
-    sql: `SELECT je.id FROM journal_entries je
-           WHERE je.company_id = ?
-             ${from ? "AND je.entry_date >= date(?, '-15 days')" : ''}
-             AND EXISTS (SELECT 1 FROM journal_lines jl JOIN ledger_accounts a ON a.id = jl.account_id
-                          WHERE jl.entry_id = je.id AND jl.cr > 0 AND a.acc_group IN ('Bank Accounts', 'Bank OD A/c'))
-             AND NOT EXISTS (SELECT 1 FROM letters_of_credit x WHERE x.commission_voucher_id = je.id AND x.id <> ?)
-             AND (? = '%%' OR UPPER(COALESCE(je.narration, '') || ' ' || COALESCE(je.vch_no, '')) LIKE ?)
-           ORDER BY je.entry_date DESC, je.id DESC LIMIT 400`,
-    args: [n(l.company_id), ...(from ? [from] : []), n(lcId), like, like]
+  return pickBankVouchers({
+    lcId: n(lcId),
+    companyId: n(l.company_id),
+    from: String(l.opened_date || l.open_date || '').slice(0, 10),
+    dir: 'out',
+    linkCol: 'commission_voucher_id',
+    expected: round2((n(l.amount) * n(l.commission_pct)) / 100),
+    q,
+    ledgerId
   })
-  const out: Row[] = []
-  for (const r of res.rows as unknown as Row[]) {
-    const v = await voucherBrief(n(r.id))
-    if (v && n(v.amount) > 0) out.push(v)
-  }
-  return out.sort((a, b) => Math.abs(n(a.amount) - expected) - Math.abs(n(b.amount) - expected)).slice(0, 40)
 }
 
 /**
@@ -785,32 +836,22 @@ export async function lcRefund(lcId: number): Promise<Row> {
 }
 
 /** Bank receipts that could be the refund: money into a bank from a fortnight before the closure on. */
-export async function lcRefundCandidates(lcId: number, q?: string): Promise<Row[]> {
+export async function lcRefundCandidates(lcId: number, q?: string, ledgerId?: number): Promise<Row[]> {
   const c = getClient()
   const l = (
     await c.execute({ sql: 'SELECT id, company_id, preclosed_date, preclose_premature_interest FROM letters_of_credit WHERE id = ?', args: [n(lcId)] })
   ).rows[0] as unknown as Row | undefined
   if (!l) throw new Error('That LC no longer exists')
-  const expected = round2(n(l.preclose_premature_interest))
-  const from = String(l.preclosed_date || '').slice(0, 10)
-  const like = `%${String(q || '').trim().toUpperCase()}%`
-  const res = await c.execute({
-    sql: `SELECT je.id FROM journal_entries je
-           WHERE je.company_id = ?
-             ${from ? "AND je.entry_date >= date(?, '-15 days')" : ''}
-             AND EXISTS (SELECT 1 FROM journal_lines jl JOIN ledger_accounts a ON a.id = jl.account_id
-                          WHERE jl.entry_id = je.id AND jl.dr > 0 AND a.acc_group IN ('Bank Accounts', 'Bank OD A/c'))
-             AND NOT EXISTS (SELECT 1 FROM letters_of_credit x WHERE x.refund_voucher_id = je.id AND x.id <> ?)
-             AND (? = '%%' OR UPPER(COALESCE(je.narration, '') || ' ' || COALESCE(je.vch_no, '')) LIKE ?)
-           ORDER BY je.entry_date DESC, je.id DESC LIMIT 400`,
-    args: [n(l.company_id), ...(from ? [from] : []), n(lcId), like, like]
+  return pickBankVouchers({
+    lcId: n(lcId),
+    companyId: n(l.company_id),
+    from: String(l.preclosed_date || '').slice(0, 10),
+    dir: 'in',
+    linkCol: 'refund_voucher_id',
+    expected: round2(n(l.preclose_premature_interest)),
+    q,
+    ledgerId
   })
-  const out: Row[] = []
-  for (const r of res.rows as unknown as Row[]) {
-    const v = await voucherBrief(n(r.id), 'in')
-    if (v && n(v.amount) > 0) out.push(v)
-  }
-  return out.sort((a, b) => Math.abs(n(a.amount) - expected) - Math.abs(n(b.amount) - expected)).slice(0, 40)
 }
 
 /** Link (or, with no voucher, unlink) the bank receipt the interest refund came back by. */

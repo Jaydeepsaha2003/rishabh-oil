@@ -3,6 +3,7 @@ import { toast } from 'sonner'
 import { AlertTriangle, Link2, Search, Unlink } from 'lucide-react'
 import { errText, formatDate, formatINR } from '@/lib/format'
 import { cn } from '@/lib/utils'
+import { SearchSelect } from '@/components/SearchSelect'
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Row = Record<string, any>
@@ -29,6 +30,16 @@ export function LcCommissionLink({
   const [picking, setPicking] = useState(false)
   const [q, setQ] = useState('')
   const [cands, setCands] = useState<Row[] | null>(null)
+  // A ledger picked: only the vouchers that touch it (the bank, the charges…).
+  const [ledgerId, setLedgerId] = useState('')
+  const [ledgers, setLedgers] = useState<Row[]>([])
+  useEffect(() => {
+    if (!picking || ledgers.length) return
+    window.api.journal
+      .accountNames()
+      .then((r) => setLedgers(r.filter((a) => !Number(a.is_hidden))))
+      .catch(() => setLedgers([]))
+  }, [picking, ledgers.length])
   const [busy, setBusy] = useState(false)
   // The commission % typed here — for LCs opened before it was asked at Open.
   const [pct, setPct] = useState('')
@@ -62,7 +73,8 @@ export function LcCommissionLink({
     let live = true
     setCands(null)
     const t = setTimeout(() => {
-      ;(refund ? window.api.lc.refundCandidates(lcId, q) : window.api.lc.commissionCandidates(lcId, q))
+      const lid = Number(ledgerId) || undefined
+      ;(refund ? window.api.lc.refundCandidates(lcId, q, lid) : window.api.lc.commissionCandidates(lcId, q, lid))
         .then((r) => live && setCands(r))
         .catch((e) => toast.error(errText(e)))
     }, 250)
@@ -70,7 +82,7 @@ export function LcCommissionLink({
       live = false
       clearTimeout(t)
     }
-  }, [picking, q, lcId, refund])
+  }, [picking, q, ledgerId, lcId, refund])
 
   const link = async (entryId: number | null): Promise<void> => {
     setBusy(true)
@@ -259,25 +271,43 @@ export function LcCommissionLink({
         </div>
       ) : (
         <div className="min-w-0 overflow-hidden rounded-[6px] border border-[#DCE7DB] bg-white">
-          <div className="flex items-center gap-2 border-b border-[#EAF0E9] px-3 py-2">
-            <Search className="h-4 w-4 flex-none text-[#5A6B62]" />
-            <input
-              autoFocus
-              value={q}
-              onChange={(e) => setQ(e.target.value)}
-              placeholder="Voucher no or narration — nearest amount first"
-              className="min-w-0 flex-1 bg-transparent text-[12.5px] font-semibold outline-none"
-            />
+          <div className="flex flex-wrap items-center gap-2 border-b border-[#EAF0E9] px-3 py-2">
+            <label className="flex h-9 min-w-[180px] flex-1 items-center gap-2 rounded-[5px] border border-[#C3D2C6] bg-white px-2.5">
+              <Search className="h-4 w-4 flex-none text-[#5A6B62]" />
+              <input
+                autoFocus
+                value={q}
+                onChange={(e) => setQ(e.target.value)}
+                placeholder="Amount (31421 or 31,421), voucher no, narration, ledger"
+                className="min-w-0 flex-1 bg-transparent text-[12.5px] font-semibold outline-none"
+              />
+            </label>
+            <div className="w-[230px] max-w-full">
+              <SearchSelect
+                value={ledgerId}
+                options={[{ value: '', label: 'All ledgers' }, ...ledgers.map((a) => ({ value: String(a.id), label: String(a.name) }))]}
+                onChange={setLedgerId}
+                placeholder="Filter by ledger"
+                title="Only the vouchers with a line on this ledger"
+              />
+            </div>
             <button type="button" onClick={() => setPicking(false)} className="flex-none text-[11px] font-bold text-[#5A6B62] hover:underline">
               Cancel
             </button>
           </div>
+          {cands != null && cands.length > 0 && (
+            <div className="border-b border-[#F1F5F0] bg-[#FBFCFA] px-3 py-1 text-[10.5px] font-semibold text-[#5A6B62]">
+              {q.trim() || ledgerId ? `${cands.length} found` : `The ${cands.length} nearest to the figure — search or pick a ledger to see more`}
+            </div>
+          )}
           <div className="max-h-64 overflow-auto">
             {cands == null ? (
               <div className="px-3 py-3 text-[12px] text-[#5A6B62]">Finding bank {refund ? 'receipts' : 'vouchers'}…</div>
             ) : cands.length === 0 ? (
               <div className="px-3 py-3 text-[12px] text-[#5A6B62]">
-                No bank {refund ? 'receipt' : 'voucher'} in this company&apos;s books from {refund ? 'the closure' : "the LC's opening"} on.
+                {q.trim() || ledgerId
+                  ? 'Nothing matches — try fewer digits, or another ledger.'
+                  : `No bank ${refund ? 'receipt' : 'voucher'} in this company's books from ${refund ? 'the closure' : "the LC's opening"} on.`}
               </div>
             ) : (
               cands.map((x) => {
@@ -295,6 +325,7 @@ export function LcCommissionLink({
                       <span className="block truncate">
                         <b>{vLabel(x)}</b> <span className="text-[11px] text-[#5A6B62]">{String(x.bank || '')}</span>
                       </span>
+                      {x.debited ? <span className="block truncate text-[11px] font-semibold text-[#33473E]">{refund ? '← ' : '→ '}{String(x.debited)}</span> : null}
                       {x.narration ? <span className="block truncate text-[11px] text-[#5A6B62]">{String(x.narration)}</span> : null}
                     </span>
                     {/* The figure always shows: the reason to pick one over another. */}

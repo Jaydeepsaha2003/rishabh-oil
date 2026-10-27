@@ -914,12 +914,12 @@ const api = {
       ipcRenderer.invoke('lc:getLimit', { bankId, from, to }),
     bankLimits: (): Promise<Row[]> => ipcRenderer.invoke('lc:bankLimits'),
     commission: (id: number): Promise<Row> => ipcRenderer.invoke('lc:commission', { id }),
-    commissionCandidates: (id: number, q?: string): Promise<Row[]> => ipcRenderer.invoke('lc:commissionCandidates', { id, q }),
+    commissionCandidates: (id: number, q?: string, ledgerId?: number): Promise<Row[]> => ipcRenderer.invoke('lc:commissionCandidates', { id, q, ledgerId }),
     setCommissionPct: (id: number, pct: number | null): Promise<{ id: number }> => ipcRenderer.invoke('lc:setCommissionPct', { id, pct }),
     linkCommission: (id: number, entryId: number | null): Promise<{ id: number }> =>
       ipcRenderer.invoke('lc:linkCommission', { id, entryId }),
     refund: (id: number): Promise<Row> => ipcRenderer.invoke('lc:refund', { id }),
-    refundCandidates: (id: number, q?: string): Promise<Row[]> => ipcRenderer.invoke('lc:refundCandidates', { id, q }),
+    refundCandidates: (id: number, q?: string, ledgerId?: number): Promise<Row[]> => ipcRenderer.invoke('lc:refundCandidates', { id, q, ledgerId }),
     linkRefund: (id: number, entryId: number | null): Promise<{ id: number }> => ipcRenderer.invoke('lc:linkRefund', { id, entryId }),
     saveLimit: (values: Row): Promise<{ id: number }> => ipcRenderer.invoke('lc:saveLimit', { values })
   },
