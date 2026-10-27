@@ -334,6 +334,8 @@ export async function exportRowsToExcel(opts: {
   subtitle?: string
   isGroup?: (row: Row) => boolean
   outlineDetail?: boolean
+  // With outlineDetail: open with every group folded (see writeSheet).
+  collapsed?: boolean
   freezeCols?: number
   totalLabel?: string
   extraSheets?: ExcelSheet[]
@@ -352,6 +354,7 @@ export async function exportRowsToExcel(opts: {
       rows: opts.rows,
       isGroup: opts.isGroup,
       outlineDetail: opts.outlineDetail,
+      collapsed: opts.collapsed,
       freezeCols: opts.freezeCols,
       totalLabel: opts.totalLabel
     },

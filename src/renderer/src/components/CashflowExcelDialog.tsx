@@ -158,6 +158,8 @@ export function CashflowExcelDialog({
         rows: summary,
         isGroup: (r: Row) => !!r._g,
         outlineDetail: true,
+        // Opens folded to the group subtotals; + opens a group.
+        collapsed: true,
         totalLabel: 'TOTAL'
       }
 
@@ -252,6 +254,8 @@ export function CashflowExcelDialog({
           rows,
           isGroup: (r) => !!r._g,
           outlineDetail: true,
+          // Opens folded to one row per entry; + shows its parts.
+          collapsed: true,
           freezeCols: 2,
           extraSheets: [summarySheet]
         })
