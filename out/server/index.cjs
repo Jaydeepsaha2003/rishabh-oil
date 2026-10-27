@@ -11229,7 +11229,8 @@ async function listSales(companyIds, forModule) {
            -- RAISED FROM A TANKER: a trading company's tanker sold on as it was
            -- emptied (onwardSale.ts) \u2014 the tanker, its purchase and its supplier.
            (SELECT pt.tanker_no || '|' || COALESCE(po.invoice_no, '') || '|' || COALESCE(ps.name, '') || '|' ||
-                   COALESCE(substr(pt.empty_date, 1, 10), '') || '|' || COALESCE(pt.received_qty, '')
+                   COALESCE(substr(pt.empty_date, 1, 10), '') || '|' || COALESCE(pt.received_qty, '') || '|' ||
+                   COALESCE(pt.order_id, '') || '|' || COALESCE(pt.company_id, '')
               FROM purchase_tankers pt
               LEFT JOIN orders po ON po.id = pt.order_id
               LEFT JOIN suppliers ps ON ps.id = pt.supplier_id
