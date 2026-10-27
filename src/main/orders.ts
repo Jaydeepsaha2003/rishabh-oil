@@ -163,9 +163,13 @@ export async function supplierFyTaxable(
   const c = getClient()
   const ids = await relatedSupplierIds(supplierId)
   const res = await c.execute({
+    // A bill of the SAME day counts as before this one only if it was entered
+    // first (lower id): two same-day bills used to count each other, and the
+    // first one of the year (UNI-26-27-463) was taxed in full.
     sql: `SELECT COALESCE(SUM(taxable_value), 0) AS t FROM orders
-          WHERE supplier_id IN (${ids.map(() => '?').join(',')}) AND order_date BETWEEN ? AND ? AND id != ? AND company_id = ?`,
-    args: [...ids, start, dateStr, excludeId || 0, companyId || getActiveCompanyId()]
+          WHERE supplier_id IN (${ids.map(() => '?').join(',')}) AND order_date BETWEEN ? AND ? AND id != ? AND company_id = ?
+            AND (order_date < ? OR ? = 0 OR id < ?)`,
+    args: [...ids, start, dateStr, excludeId || 0, companyId || getActiveCompanyId(), dateStr, excludeId || 0, excludeId || 0]
   })
   // Add the "purchase bill amount as on <date>" if that date is in this FY —
   // it seeds the cumulative taxable so the TDS slab picks up from the right
