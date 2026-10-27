@@ -12295,12 +12295,24 @@ export function Accounts({
                         () => void masterSetHidden([id], !Number(ln.a.is_hidden)),
                         Number(ln.a.is_hidden) ? <Eye className="h-[15px] w-[15px]" /> : <EyeOff className="h-[15px] w-[15px]" />
                       )}
-                      {actBtn(
-                        `Delete ${String(ln.a.name)} — only when nothing is posted to it`,
-                        () => void masterDeleteLedger(id, String(ln.a.name)),
-                        <Trash2 className="h-[15px] w-[15px]" />,
-                        { danger: true }
-                      )}
+                      {(() => {
+                        // A ledger with a balance, entries or bill references is never
+                        // deleted — merged or hidden instead (the server refuses it too).
+                        const bal = Number(ln.a.closing) || 0
+                        const used = Number(ln.a.line_count) || 0
+                        const why =
+                          Math.abs(bal) > 0.004
+                            ? `${String(ln.a.name)} has a balance of ${formatINR(Math.abs(bal))} ${bal > 0 ? 'Dr' : 'Cr'} — it cannot be deleted; merge or hide it instead`
+                            : used || Number(ln.a.alloc_count)
+                              ? `${String(ln.a.name)} has ${used || 'some'} entr${used === 1 ? 'y' : 'ies'} — it cannot be deleted; merge or hide it instead`
+                              : ''
+                        return actBtn(
+                          why || `Delete ${String(ln.a.name)} — only when nothing is posted to it`,
+                          () => void masterDeleteLedger(id, String(ln.a.name)),
+                          why ? <LockIcon className="h-[15px] w-[15px]" /> : <Trash2 className="h-[15px] w-[15px]" />,
+                          { off: !!why, danger: !why }
+                        )
+                      })()}
                     </div>
                   </div>
                 )
