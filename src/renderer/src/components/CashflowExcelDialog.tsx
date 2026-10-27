@@ -180,6 +180,7 @@ export function CashflowExcelDialog({
           // What the line carries that no head accounts for.
           r.unsplit = (parts as Row[]).length ? round2(n(l.amount) - split) || '' : ''
           r.remarks = (parts as Row[]).filter((p) => p.note).map((p) => `${p.name}: ${p.note}`).join('; ')
+          r.branch = [...new Set((parts as Row[]).map((p) => String(p.branch || '')).filter(Boolean))].join(', ')
           return r
         })
         const cols: ExcelColumn[] = [
@@ -192,7 +193,8 @@ export function CashflowExcelDialog({
           { header: 'Type', key: 'type' },
           { header: 'Ledger group', key: 'lgroup' },
           money('Dr', 'dr'),
-          money('Cr', 'cr')
+          money('Cr', 'cr'),
+          { header: 'Branch', key: 'branch', width: 14 }
         ]
         // A column per head, coloured by its group; wide enough that the
         // header reads in full beside the filter arrow.
@@ -230,7 +232,7 @@ export function CashflowExcelDialog({
         for (const { v, l, parts } of lines) {
           const ps = [...(parts as Row[])].sort((a, b) => (rank.get(headKey(a.name)) ?? 1e9) - (rank.get(headKey(b.name)) ?? 1e9))
           rows.push({ _g: true, ...base(v, l), line_amount: n(l.amount), part_amount: round2(ps.reduce((t, p) => t + n(p.amount), 0)) || '' })
-          for (const p of ps) rows.push({ head: label.get(headKey(p.name)), part_amount: n(p.amount), remarks: p.note || '' })
+          for (const p of ps) rows.push({ branch: p.branch || '', head: label.get(headKey(p.name)), part_amount: n(p.amount), remarks: p.note || '' })
         }
         await exportRowsToExcel({
           filename: `cashflow-register-${from}-to-${to}`,
@@ -246,7 +248,8 @@ export function CashflowExcelDialog({
             { header: 'Type', key: 'type' },
             { header: 'Dr / Cr', key: 'side', align: 'center' },
             money('Line amount', 'line_amount', { width: 16 }),
-            { header: 'Head', key: 'head', width: 24, divider: true },
+            { header: 'Branch', key: 'branch', width: 14, divider: true },
+            { header: 'Head', key: 'head', width: 24 },
             money('Part amount', 'part_amount', { width: 16 }),
             { header: 'Remarks', key: 'remarks', width: 30 },
             { header: 'Ref no', key: 'refs' },

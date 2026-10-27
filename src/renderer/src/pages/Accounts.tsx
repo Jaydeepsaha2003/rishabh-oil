@@ -653,7 +653,10 @@ interface SplitRow {
   name: string
   amount: string
   note?: string
+  // Which unit the part is for (SPLIT_BRANCHES).
+  branch?: string
 }
+const SPLIT_BRANCHES = ['LUDHIANA', 'GHAZIABAD', 'OTHERS', 'BOTH'] as const
 
 interface VLine {
   side: 'dr' | 'cr'
@@ -716,13 +719,13 @@ const METHODS:{ key: AllocRow['method']; label: string }[] = [
 const blankPayLine = (): PayLine => ({ account: '', group: '', amount: '', allocs: [] })
 // A line's breakdown, out to the voucher (rows with a name or an amount) and
 // back in from a saved one.
-const splitsOut = (rows?: SplitRow[]): { name: string; amount: number; note: string | null }[] =>
+const splitsOut = (rows?: SplitRow[]): { name: string; amount: number; note: string | null; branch: string | null }[] =>
   (rows || [])
     .filter((sp) => String(sp.name || '').trim() || Number(sp.amount) > 0 || String(sp.note || '').trim())
-    .map((sp) => ({ name: String(sp.name || '').trim(), amount: Number(sp.amount) || 0, note: String(sp.note || '').trim() || null }))
+    .map((sp) => ({ name: String(sp.name || '').trim(), amount: Number(sp.amount) || 0, note: String(sp.note || '').trim() || null, branch: sp.branch || null }))
 const splitsIn = (rows: unknown): SplitRow[] =>
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  ((rows as any[]) || []).map((sp) => ({ name: String(sp.name || ''), amount: String(sp.amount ?? ''), note: sp.note ? String(sp.note) : undefined }))
+  ((rows as any[]) || []).map((sp) => ({ name: String(sp.name || ''), amount: String(sp.amount ?? ''), note: sp.note ? String(sp.note) : undefined, branch: sp.branch ? String(sp.branch) : undefined }))
 const typeLabelOf = (t: string): string => VCH_TYPES.find((v) => v.key === t)?.label || t
 // The number series a type falls in, by its word — PURCHASE OIL and PURCHASE
 // OTHERS are both Purchase (voucherNumbers.ts on the server says the same).
@@ -1012,6 +1015,23 @@ function SplitPanel({
           <span className="w-[14px] flex-none text-right text-[10.5px] font-extrabold tabular-nums text-[#8CA396]">
             {i + 1}
           </span>
+          {/* Which unit this part is for — printed in the Excel. */}
+          <select
+            value={r.branch || ''}
+            onChange={(e) => set(i, { branch: e.target.value || undefined })}
+            title="Which unit this part is for"
+            className={cn(
+              'h-8 w-[118px] flex-none rounded-[3px] border border-[#C3D2C6] bg-white px-1.5 text-[11.5px] font-bold outline-none focus:border-[#1B4E82]',
+              !r.branch && 'text-[#9FB3A6]'
+            )}
+          >
+            <option value="">Branch…</option>
+            {SPLIT_BRANCHES.map((b) => (
+              <option key={b} value={b} className="text-[#0A1F17]">
+                {b}
+              </option>
+            ))}
+          </select>
           <PartNameInput
             value={r.name}
             names={names}

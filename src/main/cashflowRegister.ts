@@ -113,7 +113,7 @@ export async function cashflowRegister(from?: string, to?: string, companyId?: n
   const splits = toPlain(
     await c
       .execute({
-        sql: `SELECT s.line_id, s.name, s.amount, s.note
+        sql: `SELECT s.line_id, s.name, s.amount, s.note, s.branch
                 FROM journal_line_splits s JOIN journal_lines jl ON jl.id = s.line_id
                WHERE jl.entry_id IN (${inPeriod})
                ORDER BY s.line_id, s.sort_order, s.id`,
@@ -131,7 +131,7 @@ export async function cashflowRegister(from?: string, to?: string, companyId?: n
   for (const s of splits) {
     const k = n(s.line_id)
     if (!splitsOf.has(k)) splitsOf.set(k, [])
-    splitsOf.get(k)!.push({ name: String(s.name || ''), amount: round2(n(s.amount)), note: s.note ? String(s.note) : '' })
+    splitsOf.get(k)!.push({ name: String(s.name || ''), amount: round2(n(s.amount)), note: s.note ? String(s.note) : '', branch: s.branch ? String(s.branch) : '' })
   }
   const linesOf = new Map<number, Row[]>()
   for (const l of lines) {

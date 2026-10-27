@@ -134,6 +134,8 @@ export interface LineSplit {
   name: string
   amount: number
   note?: string | null
+  // LUDHIANA / GHAZIABAD / OTHERS / BOTH — which unit the part is for.
+  branch?: string | null
 }
 
 export interface VoucherInput {
@@ -201,7 +203,8 @@ async function validateVoucher(v: VoucherInput): Promise<LineWithAllocs[]> {
         .map((sp) => ({
           name: String(sp?.name || '').trim().slice(0, 200),
           amount: n(sp?.amount),
-          note: sp?.note ? String(sp.note).trim().slice(0, 500) : null
+          note: sp?.note ? String(sp.note).trim().slice(0, 500) : null,
+          branch: sp?.branch ? String(sp.branch).trim().slice(0, 40) : null
         }))
         // A row with neither a name nor a figure is a row somebody started and
         // left; it is dropped rather than refused.
@@ -295,9 +298,9 @@ async function writeSplits(entryId: number, lines: LineWithAllocs[]): Promise<vo
     for (const sp of lines[i].splits) {
       order += 10
       await c.execute({
-        sql: `INSERT INTO journal_line_splits (line_id, name, amount, note, sort_order)
-              VALUES (?, ?, ?, ?, ?)`,
-        args: [lineId, sp.name, n(sp.amount), sp.note || null, order]
+        sql: `INSERT INTO journal_line_splits (line_id, name, amount, note, sort_order, branch)
+              VALUES (?, ?, ?, ?, ?, ?)`,
+        args: [lineId, sp.name, n(sp.amount), sp.note || null, order, sp.branch ? String(sp.branch).trim() : null]
       })
     }
   }
@@ -316,7 +319,12 @@ export async function setLineSplits(lineId: number, splits: LineSplit[]): Promis
     if (!line) throw new Error('That voucher line no longer exists — open the voucher again')
     const amount = Math.round((n(line.dr) || n(line.cr)) * 100) / 100
     const parts = (splits || [])
-      .map((s) => ({ name: String(s.name || '').trim(), amount: Math.round(n(s.amount) * 100) / 100, note: s.note ? String(s.note).trim() : null }))
+      .map((s) => ({
+        name: String(s.name || '').trim(),
+        amount: Math.round(n(s.amount) * 100) / 100,
+        note: s.note ? String(s.note).trim() : null,
+        branch: s.branch ? String(s.branch).trim() : null
+      }))
       .filter((s) => s.name || s.amount)
     if (parts.some((s) => !s.name)) throw new Error('Give every part a name')
     if (parts.some((s) => s.amount <= 0)) throw new Error('Every part needs an amount')
@@ -329,8 +337,8 @@ export async function setLineSplits(lineId: number, splits: LineSplit[]): Promis
     for (const s of parts) {
       order += 10
       await c.execute({
-        sql: 'INSERT INTO journal_line_splits (line_id, name, amount, note, sort_order) VALUES (?, ?, ?, ?, ?)',
-        args: [n(lineId), s.name, s.amount, s.note, order]
+        sql: 'INSERT INTO journal_line_splits (line_id, name, amount, note, sort_order, branch) VALUES (?, ?, ?, ?, ?, ?)',
+        args: [n(lineId), s.name, s.amount, s.note, order, s.branch]
       })
     }
     return { id: n(lineId), parts: parts.length }
@@ -488,7 +496,7 @@ export async function getVoucher(id: number): Promise<Row | null> {
     l.allocs = toPlain(al)
     // The working behind this line's figure, if somebody wrote one down.
     const sp = await c.execute({
-      sql: 'SELECT name, amount, note FROM journal_line_splits WHERE line_id = ? ORDER BY sort_order, id',
+      sql: 'SELECT name, amount, note, branch FROM journal_line_splits WHERE line_id = ? ORDER BY sort_order, id',
       args: [Number(l.id)]
     })
     l.splits = toPlain(sp)

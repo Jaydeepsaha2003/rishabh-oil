@@ -3327,6 +3327,8 @@ export async function runStartupTasks(): Promise<void> {
  * nothing once recorded, and this is a safety net rather than a replacement.
  */
 const REQUIRED_COLUMNS: { table: string; column: string; type: string }[] = [
+  // Which unit a breakdown part belongs to: LUDHIANA, GHAZIABAD, OTHERS, BOTH.
+  { table: 'journal_line_splits', column: 'branch', type: 'TEXT' },
   // ONE PARTY, SEVERAL GST NOs. — [{gstin, state, gst_rates, gst_type}] on the
   // party, and the GST No. a bill was made under (partyFold.ts, the bill forms).
   { table: 'suppliers', column: 'gst_regs', type: 'TEXT' },
