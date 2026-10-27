@@ -23,7 +23,7 @@ const toPlain = (rs: { rows: unknown[] }): Row[] => rs.rows.map((r) => ({ ...(r 
 //
 // Read only. Three queries for the lines, the bill references and the
 // breakdowns of every voucher in the period, so a month reads as fast as a day.
-export async function cashflowRegister(from?: string, to?: string, companyId?: number, onlySplits = false): Promise<Row> {
+export async function cashflowRegister(from?: string, to?: string, companyId?: number, onlySplits = false, vchType?: string): Promise<Row> {
   const c = getClient()
   const cid = companyId || getActiveCompanyId()
   const all = await listVouchers(from, to, undefined, cid)
@@ -45,6 +45,12 @@ export async function cashflowRegister(from?: string, to?: string, companyId?: n
       ).map((r) => n(r.id))
     )
     heads = all.filter((h) => withSplits!.has(n(h.id)))
+  }
+  // One kind of voucher only (the Journal Register asks for JOURNAL).
+  if (vchType) {
+    const want = vchType.toUpperCase()
+    heads = heads.filter((h) => String(h.vch_type || '').toUpperCase().startsWith(want))
+    withSplits = new Set(heads.map((h) => n(h.id)))
   }
   if (!heads.length) return { from: from || null, to: to || null, vouchers: [], total, openings: {} }
 

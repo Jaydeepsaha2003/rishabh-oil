@@ -101,6 +101,7 @@ import { TallyLedgers } from '@/components/TallyLedgers'
 import { TallyNotesImport } from '@/components/TallyNotesImport'
 import { CashflowRegister } from '@/components/CashflowRegister'
 import { PayReceiptRegister } from '@/components/PayReceiptRegister'
+import { JournalRegister } from '@/components/JournalRegister'
 import { RcmRegister } from '@/components/RcmRegister'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
@@ -301,6 +302,7 @@ const SCREEN_TITLE: Record<string, string> = {
   tallyimport: 'Tally File Updation',
   cashflow: 'Cashflow Register',
   payreg: 'Payment / Receipt Register',
+  jvreg: 'Journal Register',
   rcmreg: 'RCM Register'
 }
 
@@ -574,7 +576,7 @@ function AmountInput({
 // The Trading Account screen (U) was taken out at the client's request on
 // 30 Sep 2026; journal:tradingAccount on the server is left for any report
 // that wants the roll-up.
-type Screen = 'gateway' | 'voucher' | 'daybook' | 'ledger' | 'trial' | 'purchreg' | 'salesreg' | 'notesreg' | 'tfpur' | 'tfsal' | 'openings' | 'masters' | 'tallyimport' | 'cashflow' | 'payreg' | 'rcmreg'
+type Screen = 'gateway' | 'voucher' | 'daybook' | 'ledger' | 'trial' | 'purchreg' | 'salesreg' | 'notesreg' | 'tfpur' | 'tfsal' | 'openings' | 'masters' | 'tallyimport' | 'cashflow' | 'payreg' | 'jvreg' | 'rcmreg'
 type VchType = 'CONTRA' | 'PAYMENT' | 'RECEIPT' | 'JOURNAL' | 'SALE' | 'PURCHASE' | 'DEBIT NOTE' | 'CREDIT NOTE'
 
 // `label` names the VOUCHER TYPE and is used wherever one is named — the tab
@@ -617,6 +619,7 @@ const SCREEN_SECTION: Record<Screen, AccountsSectionKey | null> = {
   tallyimport: 'accountsTallyImport',
   cashflow: 'accountsCashflow',
   payreg: 'accountsPayReg',
+  jvreg: 'accountsJvReg',
   rcmreg: 'accountsRcmReg'
 }
 const SCREEN_LABEL: Record<Screen, string> = {
@@ -635,12 +638,13 @@ const SCREEN_LABEL: Record<Screen, string> = {
   tallyimport: 'Tally File Updation',
   cashflow: 'the Cashflow Register',
   payreg: 'the Payment / Receipt Register',
+  jvreg: 'the Journal Register',
   rcmreg: 'the RCM Register'
 }
 // The gateway letters that open a screen ('V' opens a voucher instead).
 const GATE_SCREEN: Record<string, Screen> = {
   P: 'purchreg', S: 'salesreg', D: 'daybook', N: 'notesreg', C: 'notesreg', R: 'tfpur', O: 'tfsal',
-  L: 'ledger', T: 'trial', B: 'openings', M: 'masters', U: 'tallyimport', F: 'cashflow', Y: 'payreg', G: 'rcmreg'
+  L: 'ledger', T: 'trial', B: 'openings', M: 'masters', U: 'tallyimport', F: 'cashflow', Y: 'payreg', J: 'jvreg', G: 'rcmreg'
 }
 const ALL_RIGHTS: Rights = { view: true, create: true, edit: true, delete: true, editDays: '', viewDays: '', scope: '' }
 
@@ -2260,7 +2264,7 @@ export function Accounts({
   // drill-through return uses. replaceState, not pushState: moving about
   // inside Accounting should not fill the browser's Back button with steps.
   // An unsaved voucher's lines are not in the URL — only which voucher it is.
-  const ACCT_SCREENS: Screen[] = ['gateway', 'voucher', 'daybook', 'ledger', 'trial', 'purchreg', 'salesreg', 'notesreg', 'tfpur', 'tfsal', 'openings', 'masters', 'cashflow', 'payreg', 'rcmreg']
+  const ACCT_SCREENS: Screen[] = ['gateway', 'voucher', 'daybook', 'ledger', 'trial', 'purchreg', 'salesreg', 'notesreg', 'tfpur', 'tfsal', 'openings', 'masters', 'cashflow', 'payreg', 'jvreg', 'rcmreg']
   const urlVoucher = useRef<{ t: string; id: number } | null>(null)
   const urlRead = useRef(false)
   if (__WEB__ && !urlRead.current) {
@@ -5108,6 +5112,8 @@ export function Accounts({
       { key: 'F', label: 'Cashflow Register', icon: ArrowLeftRight, go: () => setScreen('cashflow') },
       // Payments, receipts and contra, one bank at a time if wanted.
       { key: 'Y', label: 'Payment / Receipt Register', icon: Banknote, go: () => setScreen('payreg') },
+      // Every journal voucher — Tally's JV register.
+      { key: 'J', label: 'Journal Register', icon: ScrollText, go: () => setScreen('jvreg') },
       // Reverse-charge GST on unregistered transporters' freight bills.
       { key: 'G', label: 'RCM Register', icon: Truck, go: () => setScreen('rcmreg') },
       ...(__WEB__
@@ -5121,7 +5127,7 @@ export function Accounts({
       // Workings, Reports & masters — so ↑ ↓ walks it in that order. The desktop list
       // keeps its own.
       if (!__WEB__) return 0
-      const ORDER = 'VDBPSNCYGROLTFMU'
+      const ORDER = 'VDBPSNCYJGROLTFMU'
       return ORDER.indexOf(a.key) - ORDER.indexOf(b.key)
     }).filter((g) => (g.key === 'V' ? !!firstVch() : mayScreen(GATE_SCREEN[g.key]))),
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -5948,6 +5954,8 @@ export function Accounts({
       if (key === 'D') return `${vCount} vouchers`
       if (key === 'N') return `${byType('DEBIT NOTE')} notes`
       if (key === 'C') return `${byType('CREDIT NOTE')} notes`
+      if (key === 'Y') return `${byType('PAYMENT') + byType('RECEIPT') + byType('CONTRA')} entries`
+      if (key === 'J') return `${byType('JOURNAL')} journals`
       if (key === 'L') return `${accounts.length} ledgers`
       if (key === 'T') return tbal ? `${groups} ${groups === 1 ? 'group' : 'groups'}` : ''
       if (key === 'B') return obLabel
@@ -5976,13 +5984,15 @@ export function Accounts({
       M: { icon: ListTree, tone: 'green' },
       U: { icon: FileSpreadsheet, tone: 'amber' },
       F: { icon: ArrowLeftRight, tone: 'blue' },
-      Y: { icon: Banknote, tone: 'green' }
+      Y: { icon: Banknote, tone: 'green' },
+      J: { icon: ScrollText, tone: 'blue' },
+      G: { icon: Truck, tone: 'red' }
     }
     const SECTIONS = [
       { title: 'Enter', note: 'record what happened', accent: '#12855A', keys: ['V', 'D', 'B'] },
       // The notes are a register too — a list of documents already booked,
       // read beside the purchase and sale bills they adjust.
-      { title: 'Registers', note: 'bills in and out', accent: '#1B4E82', keys: ['P', 'S', 'N', 'C', 'Y', 'G'] },
+      { title: 'Registers', note: 'bills in and out', accent: '#1B4E82', keys: ['P', 'S', 'N', 'C', 'Y', 'J', 'G'] },
       // Not registers: a register lists bills already booked, and these are
       // the freight still being worked out before a transporter's bill is.
       { title: 'Workings', note: 'freight to bill', accent: '#8A5300', keys: ['R', 'O'] },
@@ -6256,9 +6266,6 @@ export function Accounts({
                             ) : (
                               g.label
                             )}
-                          </span>
-                          <span className="block" style={{ fontSize: 11, fontWeight: 600, color: A.muted, marginTop: 3, lineHeight: 1.4, textWrap: 'pretty' }}>
-                            {(GW_META[key] || { sub: '' }).sub}
                           </span>
                         </span>
                         {!!badge && (
@@ -19917,6 +19924,7 @@ export function Accounts({
         { k: 'U', label: 'Tally', on: screen === 'tallyimport', go: () => setScreen('tallyimport'), hide: !__WEB__ || !mayScreen('tallyimport') },
         { k: 'F', label: 'Cashflow', on: screen === 'cashflow', go: () => setScreen('cashflow'), hide: !mayScreen('cashflow') },
         { k: 'Y', label: 'Pay / Receipt', on: screen === 'payreg', go: () => setScreen('payreg'), hide: !mayScreen('payreg') },
+        { k: 'J', label: 'Journals', on: screen === 'jvreg', go: () => setScreen('jvreg'), hide: !mayScreen('jvreg') },
         { k: 'G', label: 'RCM', on: screen === 'rcmreg', go: () => setScreen('rcmreg'), hide: !mayScreen('rcmreg') },
         {
           k: 'Esc',
@@ -20011,6 +20019,7 @@ export function Accounts({
     const onTally = !!company && screen === 'tallyimport'
     const onCashflow = !!company && screen === 'cashflow'
     const onPayreg = !!company && screen === 'payreg'
+    const onJvreg = !!company && screen === 'jvreg'
     const onRcmreg = !!company && screen === 'rcmreg'
     const chip: React.CSSProperties = {
       height: 34,
@@ -20269,6 +20278,13 @@ export function Accounts({
             companyName={String(company?.name || '')}
             onOpen={(v) => openRowSource(v, null)}
           />
+        ) : onJvreg ? (
+          <JournalRegister
+            period={{ from: dbFrom, to: dbTo }}
+            companyId={company ? Number(company.id) : undefined}
+            companyName={String(company?.name || '')}
+            onOpen={(v) => openRowSource(v, null)}
+          />
         ) : onCashflow ? (
           <CashflowRegister
             period={{ from: dbFrom, to: dbTo }}
@@ -20433,6 +20449,14 @@ export function Accounts({
             {screen === 'payreg' && (
               <PayReceiptRegister
             period={{ from: dbFrom, to: dbTo }}
+                companyId={company ? Number(company.id) : undefined}
+                companyName={String(company?.name || '')}
+                onOpen={(v) => openRowSource(v, null)}
+              />
+            )}
+            {screen === 'jvreg' && (
+              <JournalRegister
+                period={{ from: dbFrom, to: dbTo }}
                 companyId={company ? Number(company.id) : undefined}
                 companyName={String(company?.name || '')}
                 onOpen={(v) => openRowSource(v, null)}

@@ -37,7 +37,8 @@ export const ACCOUNTS_SECTIONS = [
   { key: 'accountsMasters', label: 'Accounting · Masters (ledgers & groups)' },
   { key: 'accountsTallyImport', label: 'Accounting · Tally file updation' },
   { key: 'accountsCashflow', label: 'Accounting · Cashflow Register' },
-  { key: 'accountsPayReg', label: 'Accounting · Payment / Receipt Register' }
+  { key: 'accountsPayReg', label: 'Accounting · Payment / Receipt Register' },
+  { key: 'accountsJvReg', label: 'Accounting · Journal Register' }
 ] as const
 
 export type AccountsSectionKey = (typeof ACCOUNTS_SECTIONS)[number]['key']
