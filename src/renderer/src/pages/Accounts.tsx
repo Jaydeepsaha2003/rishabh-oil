@@ -16519,8 +16519,18 @@ export function Accounts({
     const tankerOpen = (r: Row): boolean =>
       !!r.tanker_held || (Number(r.tanker_total) > 0 && Number(r.tanker_empty) < Number(r.tanker_total))
     const openCount = allRows.filter(tankerOpen).length
+    // AN AMOUNT, typed with or without commas (1,23,050 · 123050 · 1230): the
+    // Dr or Cr figure itself, or its digits as it starts.
+    const fNum = fq.replace(/[,\s₹]/g, '')
+    const fIsNum = /^\d+(\.\d+)?$/.test(fNum)
+    const amountHit = (r: Row): boolean =>
+      fIsNum &&
+      [r.dr, r.cr].some((v) => {
+        const x = Number(v) || 0
+        return x > 0 && (Math.abs(x - Number(fNum)) < 1 || String(Math.round(x * 100) / 100).startsWith(fNum))
+      })
     const toolbarOk = (r: Row): boolean =>
-      (!fTypes.length || fTypes.includes(typeOf(r))) && (!fq || rowText(r).includes(fq))
+      (!fTypes.length || fTypes.includes(typeOf(r))) && (!fq || rowText(r).includes(fq) || amountHit(r))
     // The column funnels, offered from what the chips and search leave.
     const lgCf = colFilter<Row>(colF, 'ledger:vouchers', allRows.filter(toolbarOk), [
       { key: 'date', get: (r) => formatDate(r.entry_date), sort: 'num' },
@@ -18361,7 +18371,7 @@ export function Accounts({
                           setLgFQuery(e.target.value)
                           setLgOpenRow(null)
                         }}
-                        placeholder="Voucher no, ref, ledger name or narration"
+                        placeholder="Amount (1,23,050 or 123050), voucher no, ref, ledger or narration"
                         className="min-w-0 flex-1 border-0 bg-transparent outline-none"
                         style={{ fontSize: 12, fontWeight: 600, color: A.ink }}
                       />
