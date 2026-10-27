@@ -29010,8 +29010,46 @@ async function lcCommission(lcId) {
     difference: voucher && expected != null ? round222(n45(voucher.amount) - expected) : null
   };
 }
-async function voucherBrief(entryId, dir = "out") {
-  const BANKS = "('Bank Accounts', 'Bank OD A/c', 'Cash-in-Hand')";
+async function moneyGroupsSql(withCash = true) {
+  const { groupsUnder: groupsUnder2 } = await Promise.resolve().then(() => (init_ledgerGroups(), ledgerGroups_exports));
+  const names = [...await groupsUnder2("Bank Accounts"), ...await groupsUnder2("Bank OD A/c"), ...withCash ? await groupsUnder2("Cash-in-Hand") : []];
+  return `(${names.map((x) => `'${String(x).replace(/'/g, "''")}'`).join(", ")})`;
+}
+async function pickBankVouchers(v) {
+  const c = getClient();
+  const BANKS = await moneyGroupsSql(false);
+  const raw = String(v.q || "").trim();
+  const num2 = raw.replace(/[,\s₹]/g, "");
+  const isNum = /^\d+(\.\d+)?$/.test(num2);
+  const like = `%${raw.toUpperCase()}%`;
+  const text = raw && !isNum;
+  const res = await c.execute({
+    sql: `SELECT je.id FROM journal_entries je
+           WHERE je.company_id = ?
+             ${v.from ? "AND je.entry_date >= date(?, '-15 days')" : ""}
+             AND EXISTS (SELECT 1 FROM journal_lines jl JOIN ledger_accounts a ON a.id = jl.account_id
+                          WHERE jl.entry_id = je.id AND jl.${v.dir === "in" ? "dr" : "cr"} > 0 AND a.acc_group IN ${BANKS})
+             AND NOT EXISTS (SELECT 1 FROM letters_of_credit x WHERE x.${v.linkCol} = je.id AND x.id <> ?)
+             ${v.ledgerId ? "AND EXISTS (SELECT 1 FROM journal_lines jl WHERE jl.entry_id = je.id AND jl.account_id = ?)" : ""}
+             ${text ? `AND (UPPER(COALESCE(je.narration, '') || ' ' || COALESCE(je.vch_no, '')) LIKE ?
+                      OR EXISTS (SELECT 1 FROM voucher_numbers nn WHERE nn.entry_id = je.id AND UPPER(nn.prefix || '/' || nn.serial) LIKE ?)
+                      OR EXISTS (SELECT 1 FROM journal_lines jl JOIN ledger_accounts a ON a.id = jl.account_id WHERE jl.entry_id = je.id AND UPPER(a.name) LIKE ?))` : ""}
+           ORDER BY je.entry_date DESC, je.id DESC LIMIT 600`,
+    args: [v.companyId, ...v.from ? [v.from] : [], v.lcId, ...v.ledgerId ? [v.ledgerId] : [], ...text ? [like, like, like] : []]
+  });
+  const out = [];
+  const briefBanks = await moneyGroupsSql();
+  for (const r of res.rows) {
+    const b = await voucherBrief(n45(r.id), v.dir, briefBanks);
+    if (!b || !(n45(b.amount) > 0)) continue;
+    if (isNum && !(Math.abs(n45(b.amount) - Number(num2)) < 1 || String(round222(n45(b.amount))).startsWith(num2))) continue;
+    out.push(b);
+  }
+  out.sort((a, b) => Math.abs(n45(a.amount) - v.expected) - Math.abs(n45(b.amount) - v.expected));
+  return out.slice(0, raw || v.ledgerId ? 200 : 40);
+}
+async function voucherBrief(entryId, dir = "out", banks) {
+  const BANKS = banks || await moneyGroupsSql();
   const side = dir === "in" ? "dr" : "cr";
   const other = dir === "in" ? "cr" : "dr";
   const r = (await getClient().execute({
@@ -29029,30 +29067,20 @@ async function voucherBrief(entryId, dir = "out") {
   })).rows[0];
   return r ? { ...r, amount: round222(n45(r.amount)) } : null;
 }
-async function lcCommissionCandidates(lcId, q) {
+async function lcCommissionCandidates(lcId, q, ledgerId) {
   const c = getClient();
   const l = (await c.execute({ sql: "SELECT id, company_id, amount, commission_pct, opened_date, open_date FROM letters_of_credit WHERE id = ?", args: [n45(lcId)] })).rows[0];
   if (!l) throw new Error("That LC no longer exists");
-  const expected = round222(n45(l.amount) * n45(l.commission_pct) / 100);
-  const from = String(l.opened_date || l.open_date || "").slice(0, 10);
-  const like = `%${String(q || "").trim().toUpperCase()}%`;
-  const res = await c.execute({
-    sql: `SELECT je.id FROM journal_entries je
-           WHERE je.company_id = ?
-             ${from ? "AND je.entry_date >= date(?, '-15 days')" : ""}
-             AND EXISTS (SELECT 1 FROM journal_lines jl JOIN ledger_accounts a ON a.id = jl.account_id
-                          WHERE jl.entry_id = je.id AND jl.cr > 0 AND a.acc_group IN ('Bank Accounts', 'Bank OD A/c'))
-             AND NOT EXISTS (SELECT 1 FROM letters_of_credit x WHERE x.commission_voucher_id = je.id AND x.id <> ?)
-             AND (? = '%%' OR UPPER(COALESCE(je.narration, '') || ' ' || COALESCE(je.vch_no, '')) LIKE ?)
-           ORDER BY je.entry_date DESC, je.id DESC LIMIT 400`,
-    args: [n45(l.company_id), ...from ? [from] : [], n45(lcId), like, like]
+  return pickBankVouchers({
+    lcId: n45(lcId),
+    companyId: n45(l.company_id),
+    from: String(l.opened_date || l.open_date || "").slice(0, 10),
+    dir: "out",
+    linkCol: "commission_voucher_id",
+    expected: round222(n45(l.amount) * n45(l.commission_pct) / 100),
+    q,
+    ledgerId
   });
-  const out = [];
-  for (const r of res.rows) {
-    const v = await voucherBrief(n45(r.id));
-    if (v && n45(v.amount) > 0) out.push(v);
-  }
-  return out.sort((a, b) => Math.abs(n45(a.amount) - expected) - Math.abs(n45(b.amount) - expected)).slice(0, 40);
 }
 async function setLcCommissionPct(lcId, pct) {
   if (pct != null && (!Number.isFinite(pct) || pct < 0 || pct > 100)) throw new Error("Enter a commission % between 0 and 100");
@@ -29093,30 +29121,20 @@ async function lcRefund(lcId) {
     difference: voucher && expected != null ? round222(n45(voucher.amount) - expected) : null
   };
 }
-async function lcRefundCandidates(lcId, q) {
+async function lcRefundCandidates(lcId, q, ledgerId) {
   const c = getClient();
   const l = (await c.execute({ sql: "SELECT id, company_id, preclosed_date, preclose_premature_interest FROM letters_of_credit WHERE id = ?", args: [n45(lcId)] })).rows[0];
   if (!l) throw new Error("That LC no longer exists");
-  const expected = round222(n45(l.preclose_premature_interest));
-  const from = String(l.preclosed_date || "").slice(0, 10);
-  const like = `%${String(q || "").trim().toUpperCase()}%`;
-  const res = await c.execute({
-    sql: `SELECT je.id FROM journal_entries je
-           WHERE je.company_id = ?
-             ${from ? "AND je.entry_date >= date(?, '-15 days')" : ""}
-             AND EXISTS (SELECT 1 FROM journal_lines jl JOIN ledger_accounts a ON a.id = jl.account_id
-                          WHERE jl.entry_id = je.id AND jl.dr > 0 AND a.acc_group IN ('Bank Accounts', 'Bank OD A/c'))
-             AND NOT EXISTS (SELECT 1 FROM letters_of_credit x WHERE x.refund_voucher_id = je.id AND x.id <> ?)
-             AND (? = '%%' OR UPPER(COALESCE(je.narration, '') || ' ' || COALESCE(je.vch_no, '')) LIKE ?)
-           ORDER BY je.entry_date DESC, je.id DESC LIMIT 400`,
-    args: [n45(l.company_id), ...from ? [from] : [], n45(lcId), like, like]
+  return pickBankVouchers({
+    lcId: n45(lcId),
+    companyId: n45(l.company_id),
+    from: String(l.preclosed_date || "").slice(0, 10),
+    dir: "in",
+    linkCol: "refund_voucher_id",
+    expected: round222(n45(l.preclose_premature_interest)),
+    q,
+    ledgerId
   });
-  const out = [];
-  for (const r of res.rows) {
-    const v = await voucherBrief(n45(r.id), "in");
-    if (v && n45(v.amount) > 0) out.push(v);
-  }
-  return out.sort((a, b) => Math.abs(n45(a.amount) - expected) - Math.abs(n45(b.amount) - expected)).slice(0, 40);
 }
 async function linkLcRefund(lcId, entryId) {
   const c = getClient();
@@ -42378,7 +42396,7 @@ function registerIpc() {
   handle("lc:commission", async (_e, { id }) => (await Promise.resolve().then(() => (init_lc(), lc_exports))).lcCommission(Number(id)));
   handle(
     "lc:commissionCandidates",
-    async (_e, { id, q }) => (await Promise.resolve().then(() => (init_lc(), lc_exports))).lcCommissionCandidates(Number(id), q)
+    async (_e, { id, q, ledgerId }) => (await Promise.resolve().then(() => (init_lc(), lc_exports))).lcCommissionCandidates(Number(id), q, Number(ledgerId) || void 0)
   );
   handle(
     "lc:setCommissionPct",
@@ -42389,7 +42407,10 @@ function registerIpc() {
     async (_e, { id, entryId }) => (await Promise.resolve().then(() => (init_lc(), lc_exports))).linkLcCommission(Number(id), entryId ? Number(entryId) : null)
   );
   handle("lc:refund", async (_e, { id }) => (await Promise.resolve().then(() => (init_lc(), lc_exports))).lcRefund(Number(id)));
-  handle("lc:refundCandidates", async (_e, { id, q }) => (await Promise.resolve().then(() => (init_lc(), lc_exports))).lcRefundCandidates(Number(id), q));
+  handle(
+    "lc:refundCandidates",
+    async (_e, { id, q, ledgerId }) => (await Promise.resolve().then(() => (init_lc(), lc_exports))).lcRefundCandidates(Number(id), q, Number(ledgerId) || void 0)
+  );
   handle(
     "lc:linkRefund",
     async (_e, { id, entryId }) => (await Promise.resolve().then(() => (init_lc(), lc_exports))).linkLcRefund(Number(id), entryId ? Number(entryId) : null)
