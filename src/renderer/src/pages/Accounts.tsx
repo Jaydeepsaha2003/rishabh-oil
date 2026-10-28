@@ -5810,8 +5810,10 @@ export function Accounts({
 
   const filteredAccounts = useMemo(() => {
     const q = ledgerSearch.trim().toLowerCase()
-    return q ? accounts.filter((a) => ledgerNameMatches(a.name, q)) : accounts
-  }, [accounts, ledgerSearch])
+    // A ledger hidden in Masters is out of the list too — unless it is the one open.
+    const shown = accounts.filter((a) => !Number(a.is_hidden) || Number(a.id) === ledgerId)
+    return q ? shown.filter((a) => ledgerNameMatches(a.name, q)) : shown
+  }, [accounts, ledgerSearch, ledgerId])
 
   // A narrower search can leave the cursor past the end; pull it back.
   useEffect(() => {
@@ -16457,6 +16459,8 @@ export function Accounts({
       const m = new Map<string, Row[]>()
       for (const a2 of accounts) {
         if (!matchesSearch(a2)) continue
+        // Hidden in Masters: not offered here either, unless it is the one open.
+        if (Number(a2.is_hidden) && Number(a2.id) !== ledgerId) continue
         const g = String(a2.acc_group || 'Ungrouped')
         if (!m.has(g)) m.set(g, [])
         ;(m.get(g) as Row[]).push(a2)
