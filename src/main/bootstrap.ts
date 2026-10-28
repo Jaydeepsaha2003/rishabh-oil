@@ -3329,6 +3329,8 @@ export async function runStartupTasks(): Promise<void> {
 const REQUIRED_COLUMNS: { table: string; column: string; type: string }[] = [
   // Which unit a breakdown part belongs to: LUDHIANA, GHAZIABAD, OTHERS, BOTH.
   { table: 'journal_line_splits', column: 'branch', type: 'TEXT' },
+  // A sale billed to a SUPPLIER as a purchase return (sales.ts stampReturnSupplier).
+  { table: 'sales', column: 'return_supplier_id', type: 'INTEGER' },
   // A trading tanker's onward sale (onwardSale.ts) — always present, so the
   // sales list can read which tanker an invoice was raised from.
   { table: 'purchase_tankers', column: 'onward_sale_group', type: 'TEXT' },

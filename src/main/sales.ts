@@ -235,16 +235,18 @@ export async function postSaleInvoiceJournal(saleId: number, reuseEntryId?: numb
   // Every line of the invoice, with what it sells and what it withheld.
   const rowsRes = group
     ? await c.execute({
-        sql: `SELECT s.*, p.code AS product_code, p.name AS product_name, cu.name AS customer_master
+        sql: `SELECT s.*, p.code AS product_code, p.name AS product_name, cu.name AS customer_master, rs.name AS return_supplier
               FROM sales s LEFT JOIN products p ON p.id = s.product_id
               LEFT JOIN customers cu ON cu.id = s.customer_id
+              LEFT JOIN suppliers rs ON rs.id = s.return_supplier_id
               WHERE s.invoice_group = ? ORDER BY s.id`,
         args: [group]
       })
     : await c.execute({
-        sql: `SELECT s.*, p.code AS product_code, p.name AS product_name, cu.name AS customer_master
+        sql: `SELECT s.*, p.code AS product_code, p.name AS product_name, cu.name AS customer_master, rs.name AS return_supplier
               FROM sales s LEFT JOIN products p ON p.id = s.product_id
               LEFT JOIN customers cu ON cu.id = s.customer_id
+              LEFT JOIN suppliers rs ON rs.id = s.return_supplier_id
               WHERE s.id = ?`,
         args: [n(saleId)]
       })
@@ -336,8 +338,11 @@ export async function postSaleInvoiceJournal(saleId: number, reuseEntryId?: numb
   const gstL = gstLines({ side: 'OUTPUT', pct: n(first.gst_pct), type: asGstType(first.gst_type), cr: gst })
   const gstStored = round2(gstL.reduce((t, l) => t + round2(n(l.cr)), 0))
   const roNet = round2(custDr + freightOutward - freightPayable - saleAccounts - gstStored)
+  // A PURCHASE RETURN billed as a sale: the debit is the SUPPLIER's own ledger
+  // (the one its purchases are credited to), so it comes off what we owe them.
+  const returnTo = String(first.return_supplier || '').trim()
   const lines = [
-    { account: customerName, group: 'Sundry Debtors', dr: custDr },
+    returnTo ? { account: returnTo, group: 'Sundry Creditors', dr: custDr } : { account: customerName, group: 'Sundry Debtors', dr: custDr },
     ...saleLines,
     ...gstL,
     { account: 'ROUND OFF A/C', group: 'Indirect Expenses', cr: roNet > 0 ? roNet : 0, dr: roNet < 0 ? -roNet : 0 }
@@ -1867,7 +1872,8 @@ async function createRateAdjustment(v: Row, productId: number): Promise<{ id: nu
   const id = Number(res.lastInsertRowid)
   // The money still posts exactly as a sale line's does — it is the same
   // receivable and the same voucher. Only the goods half is absent.
-  await postCustomerReceivable(id, customerId, net, String(v.sale_date))
+  await stampReturnSupplier(id, v)
+  await postCustomerReceivable(id, v.return_supplier_id ? null : customerId, net, String(v.sale_date))
   await postSaleEntry(id, v, amount, gstAmount, roundOff, k.transport_amount, tdsAmount)
   // No freight, no shortage, and no paired purchase in the other company: a
   // rate settled between our own two companies is a decision on both sides,
@@ -1936,7 +1942,8 @@ async function updateRateAdjustment(id: number, v: Row, productId: number): Prom
       id
     ] as never[]
   })
-  await postCustomerReceivable(id, customerId, net, String(v.sale_date))
+  await stampReturnSupplier(id, v)
+  await postCustomerReceivable(id, v.return_supplier_id ? null : customerId, net, String(v.sale_date))
   await postSaleEntry(id, v, amount, gstAmount, roundOff, k.transport_amount, tdsAmount)
   // Anything the line used to carry as a delivery is cleared, in case it was
   // an ordinary sale before this edit.
@@ -1946,6 +1953,26 @@ async function updateRateAdjustment(id: number, v: Row, productId: number): Prom
     args: [id]
   })
   return { id }
+}
+
+// PURCHASE RETURN — a sale billed to a supplier (the Sale type on the form).
+// The line keeps no customer; it names the supplier, whose ledger the voucher
+// debits (postSaleInvoiceJournal). A save that does not mention it leaves what
+// is stored alone.
+async function stampReturnSupplier(id: number, v: Row): Promise<void> {
+  if (!('return_supplier_id' in v)) return
+  const sid = n(v.return_supplier_id) || null
+  let name: string | null = null
+  if (sid) {
+    const r = await getClient().execute({ sql: 'SELECT name FROM suppliers WHERE id = ?', args: [sid] })
+    if (!r.rows.length) throw new Error('That supplier no longer exists')
+    name = String((r.rows[0] as unknown as Row).name || '').trim()
+  }
+  await getClient().execute({
+    sql: `UPDATE sales SET return_supplier_id = ?, customer_id = CASE WHEN ? IS NULL THEN customer_id ELSE NULL END,
+                 customer = COALESCE(?, customer) WHERE id = ?`,
+    args: [sid, sid, name, id]
+  })
 }
 
 export async function createSale(v: Row): Promise<{ id: number }> {
@@ -2073,7 +2100,8 @@ export async function createSale(v: Row): Promise<{ id: number }> {
     ]
   })
   const id = Number(res.lastInsertRowid)
-  await postCustomerReceivable(id, customerId, net, String(v.sale_date))
+  await stampReturnSupplier(id, v)
+  await postCustomerReceivable(id, v.return_supplier_id ? null : customerId, net, String(v.sale_date))
   await postSaleEntry(id, v, amount, gstAmount, roundOff, transportAmount, tdsAmount)
   await postSaleFreight(id, v, freightQty)
   await postSaleShortageDebit(id)
@@ -2215,7 +2243,8 @@ export async function updateSale(id: number, v: Row): Promise<{ id: number }> {
   // editing an old invoice cleans up after that behaviour rather than
   // preserving it.
   await deleteSaleProductions(id)
-  await postCustomerReceivable(id, customerId, net, String(v.sale_date))
+  await stampReturnSupplier(id, v)
+  await postCustomerReceivable(id, v.return_supplier_id ? null : customerId, net, String(v.sale_date))
   await postSaleEntry(id, v, amount, gstAmount, roundOff, transportAmount, tdsAmount)
   await postSaleFreight(id, v, freightQty)
   await postSaleShortageDebit(id)
@@ -2472,7 +2501,10 @@ function mergeInvoiceItem(header: Row, item: Row, group: string): Row {
     // had never heard of it.
     // One invoice, one number — the header's. A line may still carry its own
     // where a desk really does book them separately, but nothing asks for one.
-    purchase_invoice_no: item.purchase_invoice_no || header.purchase_invoice_no
+    purchase_invoice_no: item.purchase_invoice_no || header.purchase_invoice_no,
+    // A purchase return's supplier — only when the header says, so a save that
+    // does not carry it leaves the stored one (stampReturnSupplier).
+    ...('return_supplier_id' in header ? { return_supplier_id: header.return_supplier_id } : {})
   }
 }
 

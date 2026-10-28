@@ -373,6 +373,8 @@ function SalesTab({
     (itemCats.length === 1 ? itemCats[0].v : '')
   const [bargains, setBargains] = useState<Row[]>([])
   const [customers, setCustomers] = useState<Row[]>([])
+  // Suppliers a sale can be billed back to as a purchase return.
+  const [returnSuppliers, setReturnSuppliers] = useState<Row[]>([])
   const [packagings, setPackagings] = useState<Row[]>([])
   const [transporters, setTransporters] = useState<Row[]>([])
   const [stock, setStock] = useState<Record<number, Row>>({})
@@ -581,6 +583,11 @@ function SalesTab({
       window.api.data.list('transporters'),
       window.api.settings.all()
     ])
+    // Suppliers, for a sale billed back to one as a purchase return.
+    window.api.data
+      .list('suppliers')
+      .then((x) => setReturnSuppliers(x.filter((r) => r.active)))
+      .catch(() => setReturnSuppliers([]))
     setRows(s)
     setDefaultShortagePct(String(cfg.allowed_shortage_pct ?? '0.2'))
     // Finished is what a mill sells. `use_both` adds back a product traded
@@ -979,6 +986,8 @@ function SalesTab({
       invoice_no: '',
       customer: '',
       customer_id: '',
+      is_return: false,
+      return_supplier_id: '',
       freight_term: 'FREIGHT_ON_GOODS',
       transporter_id: '',
       transport_rate: '',
@@ -1015,6 +1024,8 @@ function SalesTab({
       invoice_no: f.invoice_no ?? '',
       customer: f.customer ?? '',
       customer_id: f.customer_id ? String(f.customer_id) : '',
+      is_return: !!f.return_supplier_id,
+      return_supplier_id: f.return_supplier_id ? String(f.return_supplier_id) : '',
       party_gstin: f.party_gstin ?? '',
       freight_term: f.freight_term ?? 'FREIGHT_ON_GOODS',
       transporter_id: f.transporter_id ? String(f.transporter_id) : '',
@@ -1659,6 +1670,7 @@ function SalesTab({
         )
       }
     }
+    if (header.is_return && !header.return_supplier_id) return void toast.error('Pick the supplier the goods are returned to')
     if (!lines.length) return void toast.error('Add at least one item')
     for (const [i, it] of lines.entries()) {
       if (!it.product_id) return void toast.error(`Item ${i + 1}: select a product`)
@@ -1712,7 +1724,9 @@ function SalesTab({
       ...header,
       purchase_invoice_no: String(header.purchase_invoice_no || '').trim() || undefined,
 
-      customer_id: header.customer_id ? Number(header.customer_id) : null,
+      customer_id: header.customer_id && !header.is_return ? Number(header.customer_id) : null,
+      // PURCHASE RETURN: billed to a supplier; its ledger is debited (sales.ts).
+      return_supplier_id: header.is_return ? Number(header.return_supplier_id) || null : null,
       transporter_id: header.transporter_id ? Number(header.transporter_id) : null,
       round_off: Number(header.round_off) || 0,
       round_off_manual: header.round_off_manual ? 1 : 0,
@@ -2380,6 +2394,14 @@ function SalesTab({
                       </TableCell>
                       <TableCell className="align-top">
                         <div className={cn('truncate font-medium', __WEB__ && 'text-[14.5px] font-bold tracking-[-0.015em]')} title={inv.first.customer || ''}>{inv.first.customer || '—'}</div>
+                        {!!inv.first.return_supplier_id && (
+                          <div
+                            className="mt-1 inline-flex rounded-[3px] border border-[#F1D9A6] bg-[#FFF8E9] px-1.5 py-px text-[10.5px] font-bold text-[#8A5300]"
+                            title="Billed to a supplier as a purchase return — it comes off what we owe them"
+                          >
+                            Purchase return
+                          </div>
+                        )}
                         {/* Raised by itself when a trading tanker was emptied — which one. */}
                         {inv.first.onward_from &&
                           (() => {
@@ -3148,6 +3170,45 @@ function SalesTab({
                 )
               })()}
             </div>
+            {/* SALE TYPE: an ordinary sale to a customer, or goods sent back to a
+                supplier as a PURCHASE RETURN — then the party is a supplier and
+                the invoice comes off what we owe them. */}
+            <div className="flex flex-col gap-1.5">
+              <Label>Sale type</Label>
+              <Select
+                value={header.is_return ? 'return' : 'sale'}
+                onValueChange={(v) =>
+                  setHeader((p) => ({ ...p, is_return: v === 'return', customer_id: '', customer: '', return_supplier_id: '', party_gstin: '' }))
+                }
+              >
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="sale">Sale to a customer</SelectItem>
+                  <SelectItem value="return">Purchase return — to a supplier</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            {header.is_return ? (
+              <div className="flex flex-col gap-1.5">
+                <Label>Supplier (returned to)</Label>
+                <Select
+                  value={header.return_supplier_id ? String(header.return_supplier_id) : ''}
+                  onValueChange={(v) => {
+                    const sup = returnSuppliers.find((x) => String(x.id) === v)
+                    setHeader((p) => ({ ...p, return_supplier_id: v, customer: sup?.name ?? '' }))
+                  }}
+                >
+                  <SelectTrigger><SelectValue placeholder="Select supplier" /></SelectTrigger>
+                  <SelectContent>
+                    {returnSuppliers.map((x) => (
+                      <SelectItem key={x.id} value={String(x.id)}>
+                        {x.name}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+            ) : (
             <div className="flex flex-col gap-1.5">
               <Label>Customer</Label>
               <Select value={header.customer_id ? String(header.customer_id) : ''} onValueChange={chooseCustomer}>
@@ -3172,6 +3233,7 @@ function SalesTab({
                 </SelectContent>
               </Select>
             </div>
+            )}
             {/* THE CUSTOMER'S GST No. this invoice is under, when it has
                 several: every line takes its CGST+SGST / IGST (GstRegsPanel). */}
             {(() => {
