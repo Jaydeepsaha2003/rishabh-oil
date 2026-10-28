@@ -68,6 +68,10 @@ export type ColFilterResult<T> = {
   /** How many columns are narrowed right now. */
   active: number
   clear: () => void
+  /** The column sorted on and which way, if any. */
+  sorted: { key: string; dir: 'asc' | 'desc' } | null
+  /** Back to the table's own order. */
+  clearSort: () => void
 }
 
 // SORTING, KEPT WITH THE FILTERS: the table's '__sort' entry is
@@ -153,6 +157,8 @@ export function colFilter<T>(store: ColFilterStore, table: string, rows: T[], co
       const keep = sel[SORT]
       store.clear(table)
       if (keep?.length) store.set(table, SORT, keep)
-    }
+    },
+    sorted: sortCol && sortKey ? { key: sortKey, dir: sortDir === 'desc' ? 'desc' : 'asc' } : null,
+    clearSort: () => store.set(table, SORT, [])
   }
 }

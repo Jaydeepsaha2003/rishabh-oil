@@ -18539,6 +18539,21 @@ export function Accounts({
                         </button>
                       </div>
                     )}
+                    {/* A column sorted on — said, with the way back to date order. */}
+                    {lgCf.sorted && (
+                      <button
+                        type="button"
+                        onClick={lgCf.clearSort}
+                        title="Clear the sort — back to date order"
+                        className="flex h-[30px] flex-none items-center gap-[5px] whitespace-nowrap rounded-[6px] px-2.5"
+                        style={{ border: '1px solid #C6DAF0', background: '#F4F8FD', fontSize: 11, fontWeight: 800, color: '#1B4E82' }}
+                      >
+                        Sorted by{' '}
+                        {({ date: 'Date', type: 'Type', voucher: 'Voucher', particulars: 'Particulars', ref: 'Ref', dr: 'Debit', cr: 'Credit', balance: 'Balance' } as Record<string, string>)[lgCf.sorted.key] || lgCf.sorted.key}{' '}
+                        {lgCf.sorted.dir === 'desc' ? '↓' : '↑'}
+                        <X className="h-[14px] w-[14px]" />
+                      </button>
+                    )}
                   </div>
                 )}
 
