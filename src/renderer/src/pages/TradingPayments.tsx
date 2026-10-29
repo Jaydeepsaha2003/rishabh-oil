@@ -252,7 +252,7 @@ export function TradingPayments({
       <div className="grid gap-2.5 sm:grid-cols-2 xl:grid-cols-4">
         {tile(
           'Payable to suppliers',
-          formatINR(kpi.payable),
+          `${formatINR(kpi.payable)} Cr.`,
           `${kpi.payableN} purchase invoice${kpi.payableN === 1 ? '' : 's'} open${kpi.payableMt > 0.0005 ? ` · ${formatNum(round3(kpi.payableMt))} MT` : ''}`,
           '#B3261E',
           ArrowUpRight,
@@ -260,8 +260,8 @@ export function TradingPayments({
           '#B3261E'
         )}
         {tile(
-          'Receivable from buyers',
-          formatINR(kpi.receivable),
+          'Receivable from customers',
+          `${formatINR(kpi.receivable)} Dr.`,
           `${kpi.receivableN} sale invoice${kpi.receivableN === 1 ? '' : 's'} open${kpi.receivableMt > 0.0005 ? ` · ${formatNum(round3(kpi.receivableMt))} MT` : ''}`,
           '#12855A',
           ArrowDownLeft,
