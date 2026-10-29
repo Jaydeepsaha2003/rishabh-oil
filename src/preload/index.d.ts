@@ -721,7 +721,7 @@ export interface Api {
     deletePaymentIn: (id: number) => Promise<{ id: number }>
     deleteRepayment: (id: number) => Promise<{ id: number; bd_id: number }>
     editRepayment: (id: number, values: Row) => Promise<{ id: number; bd_id: number; entry_id: number }>
-    markReceived: (id: number, date?: string, route?: string, account?: string | null, firstPart?: number | null, firstReceipt?: number | null, legs?: Row[] | null) => Promise<{ id: number; date: string }>
+    markReceived: (id: number, date?: string, route?: string, account?: string | null, firstPart?: number | null, firstReceipt?: number | null, legs?: Row[] | null, note?: string | null) => Promise<{ id: number; date: string }>
     receiptParts: (id: number) => Promise<Row[]>
     receivePart: (id: number, values: Row) => Promise<{ id: number; part_no: number; ref: string; interest: number }>
     removeReceiptPart: (id: number) => Promise<{ part_no: number; ref: string }>

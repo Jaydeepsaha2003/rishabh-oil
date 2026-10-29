@@ -3367,6 +3367,8 @@ const REQUIRED_COLUMNS: { table: string; column: string; type: string }[] = [
   // A BD repayment's interest as its own journal, with the TDS held on it
   // (billDiscounting.ts postBdInterestJournal).
   { table: 'bd_repayments', column: 'interest_entry_id', type: 'INTEGER' },
+  // A note typed on Mark received — kept on the bill, carried on its voucher.
+  { table: 'bill_discountings', column: 'received_note', type: 'TEXT' },
   { table: 'bd_repayments', column: 'tds_ledger', type: 'TEXT' },
   { table: 'bd_repayments', column: 'tds_amount', type: 'REAL' },
   // A trading tanker's onward sale (onwardSale.ts) — always present, so the

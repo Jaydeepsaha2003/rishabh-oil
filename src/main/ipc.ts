@@ -1921,11 +1921,12 @@ export function registerIpc(): void {
     'bd:markReceived',
     (
       _e,
-      { id, date, route, account, firstPart, firstReceipt, legs }: { id: number; date?: string; route?: string; account?: string | null; firstPart?: number | null; firstReceipt?: number | null; legs?: Row[] | null }
+      { id, date, route, account, firstPart, firstReceipt, legs, note }: { id: number; date?: string; route?: string; account?: string | null; firstPart?: number | null; firstReceipt?: number | null; legs?: Row[] | null; note?: string | null }
     ) =>
       markBdPaymentReceived(id, date, {
         route,
         account,
+        ...(note === undefined ? {} : { note }),
         ...(Array.isArray(legs) ? { legs } : {}),
         ...(firstPart === undefined ? {} : { firstPart }),
         ...(firstReceipt === undefined ? {} : { firstReceipt })

@@ -1111,6 +1111,7 @@ export function BillDiscounting({
   const [repayBank, setRepayBank] = useState('__bill')
   const [receiveAccount, setReceiveAccount] = useState('')
   const [receiveDate, setReceiveDate] = useState('')
+  const [receiveNote, setReceiveNote] = useState('')
   const [receiveSaving, setReceiveSaving] = useState(false)
   // Paid to the supplier in parts: the first part, at Payment received.
   const [receiveParts, setReceiveParts] = useState(false)
@@ -2716,6 +2717,7 @@ export function BillDiscounting({
         : []
     )
     setReceiveDate(String(r.payment_received_date || '').slice(0, 10) || todayISO())
+    setReceiveNote(String(r.received_note || ''))
     // The bill's own answer where it has one; otherwise the usual one for its
     // type — a PID's money goes to the supplier, a SID's lands in our bank.
     const recorded = String(r.disbursement_route || '')
@@ -2801,7 +2803,8 @@ export function BillDiscounting({
         firstPart > 0 ? firstPart : null,
         // Legs only where they can be; a bill that never had them is left alone.
         firstLeg > 0 ? firstLeg : sid || receiveRow.receipt_in_parts ? null : undefined,
-        legsOn ? plan : null
+        legsOn ? plan : null,
+        receiveNote
       )
       toast.success(
         receiveRow.payment_received_date
@@ -6513,6 +6516,17 @@ export function BillDiscounting({
                       </>
                       )
                     )}
+                  {/* A free note — kept on the bill, carried on its voucher. */}
+                  <div className="grid gap-1.5">
+                    <span className="text-[10px] font-extrabold uppercase tracking-[.12em] text-[#5A6B62]">Notes</span>
+                    <textarea
+                      value={receiveNote}
+                      onChange={(e) => setReceiveNote(e.target.value)}
+                      rows={2}
+                      placeholder="UTR, who confirmed it, anything to remember — optional"
+                      className="w-full resize-y rounded-[4px] border border-[#C3D2C6] bg-white px-[11px] py-2 text-[13px] font-semibold text-[#0A1F17] outline-none placeholder:font-semibold placeholder:text-[#9FB3A6] focus:border-[#0B3D2E]"
+                    />
+                  </div>
                 </div>
               )
             })()}

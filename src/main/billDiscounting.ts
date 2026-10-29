@@ -643,7 +643,8 @@ export async function postBdOpening(bdId: number): Promise<void> {
         ? ` (interest serviced ${String(bd.interest_freq || 'monthly').replace('_', '-')} over the tenor)`
         : upfront
           ? ' (interest settled separately on reconciliation)'
-          : ''),
+          : '') +
+      (String(bd.received_note || '').trim() ? ` — ${String(bd.received_note).trim()}` : ''),
     companyId: n(bd.company_id) || undefined,
     lines
   })
@@ -2899,7 +2900,7 @@ export async function markBdPaymentReceived(
   // WHERE THE MONEY WENT, asked when it arrives: into our bank (which one),
   // or straight to the supplier on a PID. Left out, the bill keeps the route
   // it already has.
-  opts?: { route?: string; account?: string | null; firstPart?: number | null; firstReceipt?: number | null; legs?: Row[] | null }
+  opts?: { route?: string; account?: string | null; firstPart?: number | null; firstReceipt?: number | null; legs?: Row[] | null; note?: string | null }
 ): Promise<{ id: number; date: string }> {
   return withDbTransaction(async () => {
   const c = getClient()
@@ -3007,6 +3008,9 @@ export async function markBdPaymentReceived(
   const m1 = String(bd.first_receipt_maturity || '').slice(0, 10)
   if (m1 && m1 < date) throw new Error('Part 1 cannot mature before it was received')
   await c.execute({ sql: 'UPDATE bill_discountings SET payment_received_date = ? WHERE id = ?', args: [date, id] })
+  if (opts && opts.note !== undefined) {
+    await c.execute({ sql: 'UPDATE bill_discountings SET received_note = ? WHERE id = ?', args: [String(opts.note || '').trim() || null, id] })
+  }
   await postBdOpening(id)
   // The later parts of the plan, each its own voucher on its own day.
   for (let i = 1; i < plan.length; i++) {

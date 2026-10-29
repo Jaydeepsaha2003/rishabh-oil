@@ -1041,13 +1041,15 @@ const api = {
       account?: string | null,
       firstPart?: number | null,
       firstReceipt?: number | null,
-      legs?: Row[] | null
+      legs?: Row[] | null,
+      note?: string | null
     ): Promise<{ id: number; date: string }> =>
       ipcRenderer.invoke('bd:markReceived', {
         id,
         date,
         route,
         account,
+        ...(note === undefined ? {} : { note }),
         ...(legs ? { legs } : {}),
         ...(firstPart === undefined ? {} : { firstPart }),
         ...(firstReceipt === undefined ? {} : { firstReceipt })
