@@ -4311,13 +4311,18 @@ async function billsOutstanding(accountName, companyId, opts = {}) {
       r.overdue_days_empty = 0;
     }
   }
+  const booksFrom = await getBooksFrom(cid);
   const balRes = accountId ? await c.execute({
     sql: `SELECT ROUND(COALESCE(SUM(jl.dr), 0) - COALESCE(SUM(jl.cr), 0), 2) AS bal
               FROM journal_lines jl JOIN journal_entries je ON je.id = jl.entry_id
-              WHERE jl.account_id = ? AND je.company_id = ? AND je.entry_date <= ?`,
-    args: [accountId, cid, asOf]
+              WHERE jl.account_id = ? AND je.company_id = ? AND je.entry_date <= ? AND je.entry_date >= ?`,
+    args: [accountId, cid, asOf, booksFrom || "0000-00-00"]
   }) : null;
-  const balance = balRes ? n2(balRes.rows[0]?.bal) : 0;
+  const openRes = accountId && booksFrom ? await c.execute({
+    sql: "SELECT COALESCE(SUM(dr), 0) - COALESCE(SUM(cr), 0) AS v FROM ledger_openings WHERE account_id = ? AND company_id = ?",
+    args: [accountId, cid]
+  }) : null;
+  const balance = round2((balRes ? n2(balRes.rows[0]?.bal) : 0) + (openRes ? n2(openRes.rows[0]?.v) : 0));
   if (!debtor && accountId) {
     const pendingNow = round2(rows2.reduce((t, r) => t + n2(r.pending), 0));
     let spare = round2(balance + pendingNow);
@@ -4327,9 +4332,9 @@ async function billsOutstanding(accountName, companyId, opts = {}) {
           sql: `SELECT je.id AS entry_id, je.entry_date, je.vch_type, je.vch_no, je.narration, jl.dr,
                        COALESCE((SELECT SUM(ba.amount) FROM journal_bill_allocs ba WHERE ba.line_id = jl.id AND ba.method = 'agst_ref'), 0) AS named
                   FROM journal_lines jl JOIN journal_entries je ON je.id = jl.entry_id
-                 WHERE jl.account_id = ? AND je.company_id = ? AND je.entry_date <= ? AND jl.dr > 0
+                 WHERE jl.account_id = ? AND je.company_id = ? AND je.entry_date <= ? AND je.entry_date >= ? AND jl.dr > 0
                  ORDER BY je.entry_date, je.id`,
-          args: [accountId, cid, asOf]
+          args: [accountId, cid, asOf, booksFrom || "0000-00-00"]
         })
       ).map((x) => ({ ...x, free: round2(n2(x.dr) - n2(x.named)) })).filter((x) => n2(x.free) > 5e-3);
       let pi = 0;
@@ -35807,7 +35812,16 @@ async function shortageNoteCandidates(saleId) {
              WHERE je.sale_id IN (${ids.map(() => "?").join(",")}) AND jl.cr > 0 AND a.acc_group = 'Sales Accounts' ORDER BY jl.cr DESC LIMIT 1`,
     args: ids
   })).rows[0];
-  return { invoice_no: inv.invoice_no, invoice_key: inv.key, notes, linked, sale_account: sa ? String(sa.name) : "" };
+  const transporter_lines = (await c.execute({
+    sql: `SELECT tl.id, tl.amount, tl.note, tl.entry_date, tl.note_id, tl.bill_id, tl.waived_at, tl.company_id,
+                   t.name AS transporter, COALESCE(t.gst_registration, 'registered') AS gst_registration,
+                   (SELECT nt.note_no FROM notes nt WHERE nt.id = tl.note_id) AS note_no
+              FROM transporter_ledger tl LEFT JOIN transporters t ON t.id = tl.transporter_id
+             WHERE tl.entry_type = 'shortage_penalty' AND tl.sale_id IN (${ids.map(() => "?").join(",")})
+             ORDER BY tl.id`,
+    args: ids
+  })).rows;
+  return { invoice_no: inv.invoice_no, invoice_key: inv.key, notes, linked, sale_account: sa ? String(sa.name) : "", transporter_lines };
 }
 async function setShortageNotes(saleId, entryIds) {
   await ensure3();
