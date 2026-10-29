@@ -265,7 +265,8 @@ async function bdItems(): Promise<Item[]> {
         const to = day10(s.to_date)
         // Repaid early: rests that start after the money went back are not owed.
         if (repaid && repaidOn && from > repaidOn) continue
-        const covered = !!paidTo && paidTo >= to
+        // Paid with a repayment (bdInterestWithRepayments) is settled too.
+        const covered = (!!paidTo && paidTo >= to) || (s.mode === 'with_repayment' && !!s.paid_id)
         let gross = n(s.gross)
         let days = n(s.days)
         if (!covered && paidTo && paidTo >= from) {

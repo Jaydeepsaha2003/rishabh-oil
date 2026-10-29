@@ -3563,7 +3563,12 @@ export function BillDiscounting({
                           filtered.reduce(
                             (t, x) =>
                               t +
-                              (isServiced(x) && (k === 'interestAmount' || k === 'tdsAmount') ? 0 : n(x[k])),
+                              (isServiced(x) && (k === 'interestAmount' || k === 'tdsAmount')
+                                ? // Only what was paid with the repayments.
+                                  k === 'interestAmount'
+                                  ? n(x.rep_interest_net) + n(x.rep_interest_tds)
+                                  : n(x.rep_interest_tds)
+                                : n(x[k])),
                             0
                           )
                         )}
@@ -3921,7 +3926,14 @@ export function BillDiscounting({
                             periodically while the bill runs and is recorded
                             against the repayments, not withheld here. */}
                         <TableCell className={cn('whitespace-nowrap text-right tabular-nums text-rose-700', __WEB__ && cn(BD_NUM, '!bg-[#FDF8F7] !text-[#8C2F26]'))}>
-                          {isServiced(r) ? (
+                          {isServiced(r) && n(r.rep_interest_net) > 0.004 ? (
+                            <span
+                              className="font-semibold"
+                              title={`Paid with the repayments: ${formatINR(n(r.rep_interest_net))} to the NBFC + ${formatINR(n(r.rep_interest_tds))} TDS`}
+                            >
+                              {formatINR(round2(n(r.rep_interest_net) + n(r.rep_interest_tds)))}
+                            </span>
+                          ) : isServiced(r) ? (
                             (() => {
                               /**
                                * SETTLED WITH THE NBFC IS NOT THE SAME AS SQUARE.
@@ -3978,7 +3990,9 @@ export function BillDiscounting({
                           )}
                         </TableCell>
                         <TableCell className={cn('whitespace-nowrap text-right tabular-nums', __WEB__ && cn(BD_NUM, '!bg-[#FDF8F7] !font-semibold !text-[#8C2F26]'))}>
-                          {isServiced(r) ? (
+                          {isServiced(r) && n(r.rep_interest_net) > 0.004 ? (
+                            formatINR(n(r.rep_interest_tds))
+                          ) : isServiced(r) ? (
                             <span className="text-[11.5px] font-semibold text-[#8FA79B]" title="Withheld with each interest payment, not here">
                               —
                             </span>
@@ -7419,7 +7433,7 @@ export function BillDiscounting({
                         {done ? (
                           <span className="flex shrink-0 items-center gap-2">
                             <span className="text-[11px] font-bold text-[#0B6B45]">
-                              paid {formatDate(String(r.paid_date))}
+                              {r.mode === 'with_repayment' ? `paid ${formatINR(n(r.paid_gross))} with the repayment` : `paid ${formatDate(String(r.paid_date))}`}
                             </span>
                             {/* RECORDED IS NOT THE SAME AS ON THE LEDGER.
                                 A slice paid without posting sits here exactly
@@ -7428,7 +7442,7 @@ export function BillDiscounting({
                                 books do not yet agree, and that has to be
                                 visible rather than found out later at the
                                 trial balance. */}
-                            {!r.posted && (
+                            {!r.posted && r.mode !== 'with_repayment' && (
                               <>
                                 <span
                                   className="inline-flex items-center gap-1 rounded-[3px] border border-[#F0E4CB] bg-[#FFF8E8] px-1.5 py-[1px] text-[10px] font-extrabold uppercase tracking-[.06em] text-[#8A5300]"
@@ -7447,7 +7461,7 @@ export function BillDiscounting({
                                 </Button>
                               </>
                             )}
-                            <Button
+                            {r.mode !== 'with_repayment' && <Button
                               size="sm"
                               variant="ghost"
                               title="Undo this interest payment — its voucher reverses too"
@@ -7455,7 +7469,7 @@ export function BillDiscounting({
                               onClick={() => void undoInterest(Number(r.paid_id))}
                             >
                               <Trash2 className="h-3.5 w-3.5" />
-                            </Button>
+                            </Button>}
                           </span>
                         ) : (
                           <Button

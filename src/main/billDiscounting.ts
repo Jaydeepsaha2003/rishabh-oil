@@ -1268,6 +1268,14 @@ export async function listBd(filter?: Row): Promise<Row[]> {
                    WHERE ip.bd_id = bd.id) AS interest_paid_to,
                  (SELECT MAX(rr.repay_date) FROM bd_repayments rr
                    WHERE rr.bd_id = bd.id) AS last_repay_date,
+                 -- Interest paid WITH the repayments (net) and its TDS — the
+                 -- one on the repayment, or worked off the gross for one
+                 -- entered before TDS was asked (bdInterestWithRepayments).
+                 COALESCE((SELECT SUM(rr.interest) FROM bd_repayments rr WHERE rr.bd_id = bd.id), 0) AS rep_interest_net,
+                 COALESCE((SELECT SUM(CASE WHEN rr.tds_amount IS NOT NULL THEN rr.tds_amount
+                                           WHEN COALESCE(rr.interest, 0) > 0 AND bd.tds_pct > 0 AND bd.tds_pct < 100
+                                           THEN ROUND(rr.interest * bd.tds_pct / (100 - bd.tds_pct), 2) ELSE 0 END)
+                            FROM bd_repayments rr WHERE rr.bd_id = bd.id), 0) AS rep_interest_tds,
                  -- The later parts the NBFC paid the supplier (the first is on the bill).
                  COALESCE((SELECT SUM(pp.amount) FROM bd_party_payments pp WHERE pp.bd_id = bd.id), 0) AS party_parts_paid,
                  (SELECT COUNT(*) FROM bd_party_payments pp WHERE pp.bd_id = bd.id) AS party_parts_count
@@ -1826,7 +1834,7 @@ export async function repayBd(
     const ij = await postBdInterestJournal(bd, date, interestPaid, tdsAmt, tdsLedger)
     await c.execute({
       sql: 'UPDATE bd_repayments SET interest_entry_id = ?, tds_ledger = ?, tds_amount = ? WHERE id = ?',
-      args: [ij, tdsAmt > 0.004 ? tdsLedger.name : null, tdsAmt > 0.004 ? tdsAmt : null, Number(insRep.lastInsertRowid || 0)]
+      args: [ij, tdsAmt > 0.004 ? tdsLedger.name : null, tdsAmt > 0.004 ? tdsAmt : 0, Number(insRep.lastInsertRowid || 0)]
     })
   }
   if (penaltyPaid > 0.004) {
@@ -2058,6 +2066,10 @@ export async function bdInterestSchedule(bdId: number): Promise<Row[]> {
   const daysYear = n(bd.days_year) || 360
   const rate = n(bd.interest_pct)
   const paid = await listBdInterestPayments(bdId)
+  if (!paid.length) {
+    const withRepay = await bdInterestWithRepayments(bd, from, to, rate, daysYear)
+    if (withRepay) return withRepay
+  }
   // Principal paid back inside the tenor makes every later day cheaper. A bill
   // funded in legs keeps the flat schedule — its principal grows, not shrinks.
   const steps = n(bd.first_receipt_part) > 0.005 ? [] : (await principalRepaidByDate(bdId)).filter((x) => x.date < to)
@@ -2115,6 +2127,79 @@ export async function bdInterestSchedule(bdId: number): Promise<Row[]> {
     })
     start = end
   })
+  return out
+}
+
+/**
+ * INTEREST PAID WITH EACH REPAYMENT (Vanik's way).
+ *
+ * Some NBFCs take no monthly interest: every repayment carries the interest on
+ * the whole outstanding up to and INCLUDING that day, and the repaid principal
+ * stops costing from the day after. The bill is then serviced repayment by
+ * repayment, not month by month. Recognised by what was entered — repayments
+ * carrying interest and no separate interest payment — so no setting is
+ * needed and nothing stored changes.
+ *
+ * The interest on a repayment is what the NBFC was paid, net of TDS; the TDS
+ * is the one on the repayment, or worked off the gross (net x % / (100 - %))
+ * for one entered before TDS was asked.
+ *
+ * One row per repayment day, due worked on the balance before that day's
+ * repayment; a bill still open gets a last unpaid row to maturity. An NBFC can
+ * spread the same total differently across repayments (V1 charged each part
+ * from the receipt), so the rows are compared in total, not one by one.
+ */
+async function bdInterestWithRepayments(bd: Row, from: string, to: string, rate: number, daysYear: number): Promise<Row[] | null> {
+  const r = await getClient().execute({
+    sql: `SELECT substr(repay_date, 1, 10) AS d, COALESCE(SUM(amount), 0) AS amt,
+                 COALESCE(SUM(interest), 0) AS net,
+                 SUM(CASE WHEN COALESCE(interest, 0) > 0 AND tds_amount IS NULL THEN interest ELSE 0 END) AS net_no_tds,
+                 COALESCE(SUM(tds_amount), 0) AS tds
+            FROM bd_repayments WHERE bd_id = ? GROUP BY substr(repay_date, 1, 10) ORDER BY d`,
+    args: [n(bd.id)]
+  })
+  const days = r.rows as unknown as Row[]
+  if (!days.some((x) => n(x.net) > 0.004)) return null
+  const pct = n(bd.tds_pct)
+  const tdsOn = (net: number): number => (pct > 0 && pct < 100 ? round2((net * pct) / (100 - pct)) : 0)
+  let balance = round2(n(bdCalc(bd).interestBase))
+  let start = bd.days_incl_start ? from : addDays(from, 1)
+  const out: Row[] = []
+  const slice = (end: string, principal: number, paidNet: number, paidTds: number, repayDay: boolean): void => {
+    const d = Math.max(0, daysBetween(start, end) + 1)
+    const gross = round2((principal * rate * d) / (100 * daysYear))
+    const paidGross = round2(paidNet + paidTds)
+    out.push({
+      seq: out.length + 1,
+      from_date: start,
+      to_date: end,
+      days: d,
+      gross,
+      tds: round2((gross * pct) / 100),
+      net: round2(gross - (gross * pct) / 100),
+      last: false,
+      paid_id: paidNet > 0.004 ? -1 : null,
+      paid_date: paidNet > 0.004 ? end : null,
+      paid_gross: paidGross,
+      paid_net: round2(paidNet),
+      paid_tds: round2(paidTds),
+      posted: paidNet > 0.004,
+      parts: [{ from_date: start, to_date: end, days: d, principal, interest: gross }],
+      reducing: true,
+      mode: 'with_repayment',
+      repay_day: repayDay
+    })
+  }
+  for (const x of days) {
+    const d = String(x.d)
+    if (d < start) continue
+    const paidTds = round2(n(x.tds) + tdsOn(n(x.net_no_tds)))
+    slice(d, balance, n(x.net), paidTds, true)
+    balance = Math.max(0, round2(balance - n(x.amt)))
+    start = addDays(d, 1)
+  }
+  if (balance > 0.004 && to >= start) slice(to, balance, 0, 0, false)
+  if (out.length) out[out.length - 1].last = true
   return out
 }
 

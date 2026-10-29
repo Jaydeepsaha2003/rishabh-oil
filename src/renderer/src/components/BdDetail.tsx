@@ -687,7 +687,12 @@ function ServicedRow({ x }: { x: Row }): React.JSX.Element {
             )}
           </div>
         </div>
-        <span className="doc-ref flex-none whitespace-nowrap text-[13.5px] font-bold text-[#0A1F17]">{formatINR(n(x.gross))}</span>
+        <span className="flex-none text-right">
+          <span className="doc-ref block whitespace-nowrap text-[13.5px] font-bold text-[#0A1F17]">{formatINR(n(x.gross))}</span>
+          {x.mode === 'with_repayment' && x.paid_id && (
+            <span className="doc-ref block whitespace-nowrap text-[10.5px] font-semibold text-[#0B6B45]">paid {formatINR(n(x.paid_gross))}</span>
+          )}
+        </span>
         <ChevronDown className={cn('mt-0.5 h-4 w-4 flex-none text-[#8CA396] transition-transform', open && 'rotate-180')} />
       </button>
       {open && (
@@ -712,7 +717,9 @@ function ServicedRow({ x }: { x: Row }): React.JSX.Element {
             </div>
           ))}
           <div className="border-t border-[#E4ECE3] px-3 py-1.5 text-[10.5px] font-semibold text-[#5A6B62]">
-            {x.reducing
+            {x.mode === 'with_repayment'
+              ? `Interest on the balance outstanding, to and including ${x.repay_day ? 'the repayment day' : 'maturity'}.${x.paid_id ? ` Paid with the repayment: ${formatINR(n(x.paid_net))} + ${formatINR(n(x.paid_tds))} TDS = ${formatINR(n(x.paid_gross))}.` : ''}`
+              : x.reducing
               ? 'A part of the principal repaid stops costing interest from the day it went back.'
               : 'Charged on the full principal — nothing was repaid early.'}
             {x.paid_id && Math.abs(n(x.paid_gross) - n(x.gross)) > 0.5 ? ` Recorded as paid: ${formatINR(n(x.paid_gross))}.` : ''}
@@ -907,6 +914,7 @@ This was one bank debit that also cleared ${others.map((g) => `${s(g.bd_no)} ${f
 
   const sched = Array.isArray(interest) ? interest : []
   const servicedPaid = sched.filter((x) => x.paid_id).length
+  const withRepay = sched.some((x) => x.mode === 'with_repayment')
 
   // WHAT WAS ACTUALLY PAID TO THE NBFC, PAYMENT BY PAYMENT.
   //
@@ -1204,7 +1212,7 @@ This was one bank debit that also cleared ${others.map((g) => `${s(g.bd_no)} ${f
                   <div className="flex flex-wrap items-center gap-2.5 border-b border-b-[#E4ECE3] bg-[#F7FAF6] px-3 py-[9px]">
                     <Percent className="h-4 w-4 text-[#1A2C56]" />
                     <span className="text-[10px] font-extrabold uppercase tracking-[.12em] text-[#1A2C56]">
-                      Interest serviced during the tenor
+                      {withRepay ? 'Interest paid with each repayment' : 'Interest serviced during the tenor'}
                     </span>
                     <span className="doc-ref ml-auto whitespace-nowrap rounded-[2px] border border-[#C6DAF0] bg-[#EAF0FA] px-[7px] py-0.5 text-[11px] font-bold text-[#1B4E82]">
                       {servicedPaid} of {sched.length} paid
@@ -1213,6 +1221,38 @@ This was one bank debit that also cleared ${others.map((g) => `${s(g.bd_no)} ${f
                   {sched.slice(0, 8).map((x, i) => (
                     <ServicedRow key={i} x={x} />
                   ))}
+                  {withRepay && (() => {
+                    // Compared in total: an NBFC can spread the same interest
+                    // differently across the repayments.
+                    const due = round2(sched.reduce((t, x) => t + n(x.gross), 0))
+                    const paidG = round2(sched.reduce((t, x) => t + n(x.paid_gross), 0))
+                    const paidT = round2(sched.reduce((t, x) => t + n(x.paid_tds), 0))
+                    const diff = round2(paidG - due)
+                    return (
+                      <div className="flex flex-wrap items-center gap-x-4 gap-y-1 border-t border-t-[#E4ECE3] bg-[#F7FAF6] px-3 py-[9px] text-[11.5px] font-semibold text-[#33473E]">
+                        <span>
+                          Due <b className="doc-ref text-[#0A1F17]">{formatINR(due)}</b>
+                        </span>
+                        <span>
+                          Paid <b className="doc-ref text-[#0A1F17]">{formatINR(paidG)}</b>{' '}
+                          <span className="text-[#5A6B62]">
+                            ({formatINR(round2(paidG - paidT))} + {formatINR(paidT)} TDS)
+                          </span>
+                        </span>
+                        <span
+                          className={cn(
+                            'ml-auto rounded-[2px] border px-1.5 py-0.5 text-[10.5px] font-extrabold',
+                            Math.abs(diff) < 1
+                              ? 'border-[#BFE3CB] bg-[#E9F5EE] text-[#0B6B45]'
+                              : 'border-[#F0C9C4] bg-[#FDECEA] text-[#B3261E]'
+                          )}
+                          title="Gross interest paid less the interest worked out on the balance outstanding each day"
+                        >
+                          {Math.abs(diff) < 1 ? 'Matches' : diff > 0 ? `Paid ${formatINR(diff)} more` : `${formatINR(-diff)} short`}
+                        </span>
+                      </div>
+                    )
+                  })()}
                 </div>
               )}
 
