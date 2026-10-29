@@ -20937,6 +20937,14 @@ async function listBd(filter) {
                    WHERE ip.bd_id = bd.id) AS interest_paid_to,
                  (SELECT MAX(rr.repay_date) FROM bd_repayments rr
                    WHERE rr.bd_id = bd.id) AS last_repay_date,
+                 -- Interest paid WITH the repayments (net) and its TDS \u2014 the
+                 -- one on the repayment, or worked off the gross for one
+                 -- entered before TDS was asked (bdInterestWithRepayments).
+                 COALESCE((SELECT SUM(rr.interest) FROM bd_repayments rr WHERE rr.bd_id = bd.id), 0) AS rep_interest_net,
+                 COALESCE((SELECT SUM(CASE WHEN rr.tds_amount IS NOT NULL THEN rr.tds_amount
+                                           WHEN COALESCE(rr.interest, 0) > 0 AND bd.tds_pct > 0 AND bd.tds_pct < 100
+                                           THEN ROUND(rr.interest * bd.tds_pct / (100 - bd.tds_pct), 2) ELSE 0 END)
+                            FROM bd_repayments rr WHERE rr.bd_id = bd.id), 0) AS rep_interest_tds,
                  -- The later parts the NBFC paid the supplier (the first is on the bill).
                  COALESCE((SELECT SUM(pp.amount) FROM bd_party_payments pp WHERE pp.bd_id = bd.id), 0) AS party_parts_paid,
                  (SELECT COUNT(*) FROM bd_party_payments pp WHERE pp.bd_id = bd.id) AS party_parts_count
@@ -21127,15 +21135,15 @@ function inr(v) {
 }
 async function postBdInterestJournal(bd, date, interest, tds, tdsLedger) {
   const lines = [
-    { account: "INTEREST ON BILL DISCOUNTING A/C", group: "Indirect Expenses", dr: interest },
-    { account: bdPayable(bd), group: BD_PAYABLE_GROUP, cr: round29(interest - tds) }
+    { account: "INTEREST ON BILL DISCOUNTING A/C", group: "Indirect Expenses", dr: round29(interest + tds) },
+    { account: bdPayable(bd), group: BD_PAYABLE_GROUP, cr: interest }
   ];
   if (tds > 4e-3) lines.push({ account: tdsLedger.name, group: tdsLedger.group, cr: tds });
   const je = await postJournal({
     date,
     vchType: "JOURNAL",
     vchNo: String(bd.bd_no || ""),
-    narration: `Interest on Bill Discounting ${bd.bd_no} \u2014 ${inr(interest)} to ${bd.nbfc_name || "the NBFC"}` + (tds > 4e-3 ? `, TDS ${inr(tds)} held to ${tdsLedger.name}` : ""),
+    narration: `Interest on Bill Discounting ${bd.bd_no} \u2014 ${inr(round29(interest + tds))}, ${inr(interest)} paid to ${bd.nbfc_name || "the NBFC"}` + (tds > 4e-3 ? `, TDS ${inr(tds)} held to ${tdsLedger.name}` : ""),
     companyId: n24(bd.company_id) || void 0,
     lines
   });
@@ -21186,7 +21194,6 @@ async function repayBd(id, v) {
     let tdsLedger = { name: "", group: "Duties & Taxes" };
     if (tdsAmt < 0) throw new Error("TDS cannot be negative");
     if (tdsAmt > 4e-3) {
-      if (tdsAmt > interestPaid + 4e-3) throw new Error("The TDS is more than the interest");
       const nm = String(v.tds_ledger || "").trim();
       if (!nm) throw new Error("Pick the TDS ledger");
       const t = await c.execute({ sql: "SELECT name, acc_group FROM ledger_accounts WHERE UPPER(TRIM(name)) = UPPER(?) LIMIT 1", args: [nm] });
@@ -21295,7 +21302,7 @@ async function repayBd(id, v) {
       const ij = await postBdInterestJournal(bd, date, interestPaid, tdsAmt, tdsLedger);
       await c.execute({
         sql: "UPDATE bd_repayments SET interest_entry_id = ?, tds_ledger = ?, tds_amount = ? WHERE id = ?",
-        args: [ij, tdsAmt > 4e-3 ? tdsLedger.name : null, tdsAmt > 4e-3 ? tdsAmt : null, Number(insRep.lastInsertRowid || 0)]
+        args: [ij, tdsAmt > 4e-3 ? tdsLedger.name : null, tdsAmt > 4e-3 ? tdsAmt : 0, Number(insRep.lastInsertRowid || 0)]
       });
     }
     if (penaltyPaid > 4e-3) {
@@ -21412,6 +21419,10 @@ async function bdInterestSchedule(bdId) {
   const daysYear = n24(bd.days_year) || 360;
   const rate = n24(bd.interest_pct);
   const paid = await listBdInterestPayments(bdId);
+  if (!paid.length) {
+    const withRepay = await bdInterestWithRepayments(bd, from, to, rate, daysYear);
+    if (withRepay) return withRepay;
+  }
   const steps = n24(bd.first_receipt_part) > 5e-3 ? [] : (await principalRepaidByDate(bdId)).filter((x) => x.date < to);
   const reducing = steps.length > 0;
   const out = [];
@@ -21456,6 +21467,59 @@ async function bdInterestSchedule(bdId) {
     });
     start = end;
   });
+  return out;
+}
+async function bdInterestWithRepayments(bd, from, to, rate, daysYear) {
+  const r = await getClient().execute({
+    sql: `SELECT substr(repay_date, 1, 10) AS d, COALESCE(SUM(amount), 0) AS amt,
+                 COALESCE(SUM(interest), 0) AS net,
+                 SUM(CASE WHEN COALESCE(interest, 0) > 0 AND tds_amount IS NULL THEN interest ELSE 0 END) AS net_no_tds,
+                 COALESCE(SUM(tds_amount), 0) AS tds
+            FROM bd_repayments WHERE bd_id = ? GROUP BY substr(repay_date, 1, 10) ORDER BY d`,
+    args: [n24(bd.id)]
+  });
+  const days = r.rows;
+  if (!days.some((x) => n24(x.net) > 4e-3)) return null;
+  const pct = n24(bd.tds_pct);
+  const tdsOn = (net) => pct > 0 && pct < 100 ? round29(net * pct / (100 - pct)) : 0;
+  let balance = round29(n24(bdCalc(bd).interestBase));
+  let start = bd.days_incl_start ? from : addDays(from, 1);
+  const out = [];
+  const slice = (end, principal, paidNet, paidTds, repayDay) => {
+    const d = Math.max(0, daysBetween2(start, end) + 1);
+    const gross = round29(principal * rate * d / (100 * daysYear));
+    const paidGross = round29(paidNet + paidTds);
+    out.push({
+      seq: out.length + 1,
+      from_date: start,
+      to_date: end,
+      days: d,
+      gross,
+      tds: round29(gross * pct / 100),
+      net: round29(gross - gross * pct / 100),
+      last: false,
+      paid_id: paidNet > 4e-3 ? -1 : null,
+      paid_date: paidNet > 4e-3 ? end : null,
+      paid_gross: paidGross,
+      paid_net: round29(paidNet),
+      paid_tds: round29(paidTds),
+      posted: paidNet > 4e-3,
+      parts: [{ from_date: start, to_date: end, days: d, principal, interest: gross }],
+      reducing: true,
+      mode: "with_repayment",
+      repay_day: repayDay
+    });
+  };
+  for (const x of days) {
+    const d = String(x.d);
+    if (d < start) continue;
+    const paidTds = round29(n24(x.tds) + tdsOn(n24(x.net_no_tds)));
+    slice(d, balance, n24(x.net), paidTds, true);
+    balance = Math.max(0, round29(balance - n24(x.amt)));
+    start = addDays(d, 1);
+  }
+  if (balance > 4e-3 && to >= start) slice(to, balance, 0, 0, false);
+  if (out.length) out[out.length - 1].last = true;
   return out;
 }
 async function listBdInterestPayments(bdId) {
@@ -31286,6 +31350,7 @@ var init_parkingCopies = __esm({
 // src/main/bdInterestJournalFix.ts
 var bdInterestJournalFix_exports = {};
 __export(bdInterestJournalFix_exports, {
+  bdTdsOnNet: () => bdTdsOnNet,
   fixBdInterestJournals: () => fixBdInterestJournals,
   previewBdInterestJournals: () => previewBdInterestJournals,
   previewBdInterestUndo: () => previewBdInterestUndo,
@@ -31318,8 +31383,12 @@ async function previewBdInterestJournals() {
   }));
   return { findings: findings2, total: round229(findings2.reduce((t, f) => t + f.interest, 0)) };
 }
+function bdTdsOnNet(net, pct) {
+  if (pct <= 0 || pct >= 100) return 0;
+  return round229(net * pct / (100 - pct));
+}
 async function fixBdInterestJournals(ids, tdsLedger, tdsPct) {
-  if (tdsPct < 0 || tdsPct > 100) throw new Error("TDS % must be between 0 and 100");
+  if (tdsPct < 0 || tdsPct >= 100) throw new Error("TDS % must be under 100");
   if (tdsPct > 0 && !String(tdsLedger || "").trim()) throw new Error("Pick the TDS ledger");
   const c = getClient();
   let changed = 0;
@@ -31327,7 +31396,7 @@ async function fixBdInterestJournals(ids, tdsLedger, tdsPct) {
   for (const id of ids) {
     const r = (await c.execute({ sql: "SELECT interest, interest_entry_id FROM bd_repayments WHERE id = ?", args: [id] })).rows[0];
     if (!r || n59(r.interest_entry_id)) continue;
-    const tds = round229(n59(r.interest) * tdsPct / 100);
+    const tds = bdTdsOnNet(n59(r.interest), tdsPct);
     try {
       await editBdRepayment(id, { tds_ledger: tds > 0 ? tdsLedger.trim() : null, tds_amount: tds > 0 ? tds : 0 });
       changed++;
@@ -31389,11 +31458,12 @@ async function undoBdInterestJournals(entryIds) {
         const intLines = (await c.execute({ sql: "SELECT * FROM journal_lines WHERE entry_id = ? ORDER BY id", args: [intJe] })).rows;
         const drLine = intLines.find((l) => n59(l.dr) > 4e-3);
         if (!drLine || intLines.filter((l) => n59(l.dr) > 4e-3).length !== 1) throw new Error(`${f.bd_no}: its interest journal has been changed \u2014 undo it by hand`);
-        const interest = round229(n59(drLine.dr));
         const payLines = (await c.execute({ sql: "SELECT * FROM journal_lines WHERE entry_id = ? ORDER BY id", args: [payJe] })).rows;
-        const crAccounts = new Set(intLines.filter((l) => n59(l.cr) > 4e-3).map((l) => n59(l.account_id)));
-        const payable = payLines.filter((l) => crAccounts.has(n59(l.account_id)) && n59(l.dr) >= interest - 4e-3).sort((a, b) => n59(b.dr) - n59(a.dr))[0];
-        if (!payable) throw new Error(`${f.bd_no}: the bill discounter's line is not on the payment \u2014 undo it by hand`);
+        const payAccounts = new Set(payLines.filter((l) => n59(l.dr) > 4e-3).map((l) => n59(l.account_id)));
+        const discCr = intLines.find((l) => n59(l.cr) > 4e-3 && payAccounts.has(n59(l.account_id)));
+        const interest = round229(n59(discCr?.cr));
+        const payable = payLines.filter((l) => n59(l.account_id) === n59(discCr?.account_id) && n59(l.dr) >= interest - 4e-3).sort((a, b) => n59(b.dr) - n59(a.dr))[0];
+        if (!discCr || !payable) throw new Error(`${f.bd_no}: the bill discounter's line is not on the payment \u2014 undo it by hand`);
         await c.execute(`CREATE TABLE IF NOT EXISTS accounting_repair_log (
             repair_key TEXT PRIMARY KEY, entry_id INTEGER NOT NULL, before_json TEXT NOT NULL,
             created_at TEXT NOT NULL DEFAULT (datetime('now')))`);
@@ -39656,7 +39726,7 @@ async function bdItems() {
         const from = day102(s5.from_date);
         const to = day102(s5.to_date);
         if (repaid && repaidOn && from > repaidOn) continue;
-        const covered = !!paidTo && paidTo >= to;
+        const covered = !!paidTo && paidTo >= to || s5.mode === "with_repayment" && !!s5.paid_id;
         let gross = n47(s5.gross);
         let days = n47(s5.days);
         if (!covered && paidTo && paidTo >= from) {
