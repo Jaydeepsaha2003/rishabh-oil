@@ -1139,6 +1139,10 @@ export function registerIpc(): void {
     return cashflowRegister(args?.from, args?.to, args?.companyId, !!args?.onlySplits, args?.vchType)
   })
   handle('vouchers:get', (_e, { id }: { id: number }) => getVoucher(id))
+  // One line's bill-wise details on its own, on any voucher (accounting.ts setLineAllocs).
+  handle('vouchers:setLineAllocs', async (_e, { lineId, allocs }: { lineId: number; allocs: Row[] }) =>
+    (await import('./accounting')).setLineAllocs(Number(lineId), (allocs || []) as never)
+  )
   // One line's breakdown on its own, on any voucher (accounting.ts setLineSplits).
   handle('vouchers:setLineSplits', async (_e, { lineId, splits }: { lineId: number; splits: { name: string; amount: number; note?: string | null }[] }) =>
     (await import('./accounting')).setLineSplits(Number(lineId), splits || [])

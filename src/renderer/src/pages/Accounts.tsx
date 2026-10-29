@@ -693,6 +693,8 @@ interface PayLine {
   group: string
   amount: string
   allocs: AllocRow[]
+  // The posted line it was read from (see VLine.line_id).
+  line_id?: number
   // How the figure is made up — the same breakdown a Journal line carries.
   splits?: SplitRow[]
 }
@@ -3606,7 +3608,7 @@ export function Accounts({
       const money = carried.filter((l) => isMoney(l) && l.side === (partyDr ? 'cr' : 'dr'))
       const party = carried.filter((l) => !isMoney(l) && l.side === (partyDr ? 'dr' : 'cr'))
       if (money.length && party.length && money.length + party.length === carried.length) {
-        setPayLines(party.map((l) => ({ account: l.account, group: l.group, amount: l.amount, allocs: l.allocs || [] })))
+        setPayLines(party.map((l) => ({ account: l.account, group: l.group, amount: l.amount, allocs: l.allocs || [], line_id: l.line_id })))
         setPayAccounts(money.map((l) => ({ account: l.account, group: l.group, amount: money.length === 1 ? '' : l.amount, allocs: l.allocs || [] })))
         return
       }
@@ -13625,6 +13627,7 @@ export function Accounts({
             cr: partySide === 'cr' ? l.amount : '',
             allocs: l.allocs,
             billwise: isBillwise(String(l.group)),
+            lineId: l.line_id,
             onAccount: (name: string, group: string) => {
               setPayLine(i, { account: name, group })
               // The party's own ledger decides whose bills are offered — a
@@ -14576,7 +14579,7 @@ export function Accounts({
                             bills. It offers the party's real pending references,
                             so Agst Ref settles a bill that exists rather than a
                             name somebody typed. */}
-                        {r.billwise && (!viewOnly || r.allocs.length > 0) && (
+                        {r.billwise && (!viewOnly || r.allocs.length > 0 || !!r.lineId) && (
                           <div style={{ padding: `10px 16px 12px ${indent}px`, background: '#FFFCF5', borderBottom: '1px solid #F1E6CC' }}>
                             <AllocPanel
                               look="card"
@@ -14586,6 +14589,31 @@ export function Accounts({
                               linkRefs={linkCache[refsKey(r.account, r.refsSide)] || []}
                               onChange={(a) => r.onAllocs(a)}
                             />
+                            {/* A voucher that may not be altered (posted by an
+                                LC, BD, purchase…) still takes its bill-wise
+                                details — saved on their own, nothing else moves. */}
+                            {viewOnly && !!r.lineId && (
+                              <div className="mt-2 flex justify-end">
+                                <button
+                                  type="button"
+                                  onClick={async () => {
+                                    try {
+                                      const res = await window.api.vouchers.setLineAllocs(
+                                        Number(r.lineId),
+                                        (r.allocs as AllocRow[]).map((a) => ({ ...a, amount: n(a.amount) }))
+                                      )
+                                      toast.success(res.allocs ? 'Bill-wise details saved — the bills read from them now' : 'Bill-wise details cleared')
+                                    } catch (e) {
+                                      toast.error((e as Error).message)
+                                    }
+                                  }}
+                                  className="flex h-8 items-center gap-1.5 rounded-[4px] px-3 text-[11.5px] font-extrabold text-white"
+                                  style={{ background: '#0B3D2E' }}
+                                >
+                                  <Check className="h-4 w-4" /> Save bill-wise
+                                </button>
+                              </div>
+                            )}
                           </div>
                         )}
                       </div>

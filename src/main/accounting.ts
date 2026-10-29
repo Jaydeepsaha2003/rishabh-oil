@@ -345,6 +345,69 @@ export async function setLineSplits(lineId: number, splits: LineSplit[]): Promis
   })
 }
 
+// ONE LINE'S BILL-WISE DETAILS, on any voucher — the ones a document posted
+// (LC, BD, purchase) included, which are not altered here. Same rules as a
+// voucher saved whole: they cover the line exactly, a named method needs its
+// reference, an Agst Ref is tied to its bill. The line as it was is logged.
+export async function setLineAllocs(lineId: number, allocs: BillAlloc[]): Promise<{ id: number; allocs: number }> {
+  return withDbTransaction(async () => {
+    const c = getClient()
+    const line = (
+      await c.execute({
+        sql: `SELECT jl.id, jl.dr, jl.cr, jl.account_id, jl.entry_id, a.name, a.acc_group, je.company_id
+                FROM journal_lines jl JOIN ledger_accounts a ON a.id = jl.account_id JOIN journal_entries je ON je.id = jl.entry_id
+               WHERE jl.id = ?`,
+        args: [n(lineId)]
+      })
+    ).rows[0] as unknown as Row | undefined
+    if (!line) throw new Error('That voucher line no longer exists — open the voucher again')
+    const amount = Math.round((n(line.dr) || n(line.cr)) * 100) / 100
+    const rows = (allocs || [])
+      .map((a) => ({
+        method: a.method,
+        ref_name: a.ref_name ? String(a.ref_name).trim() : null,
+        order_id: a.order_id ? Number(a.order_id) : null,
+        sale_invoice_group: a.sale_invoice_group ? String(a.sale_invoice_group).trim() : null,
+        amount: Math.round(n(a.amount) * 100) / 100
+      }))
+      .filter((a) => a.amount > 0.004)
+    const total = Math.round(rows.reduce((t, a) => t + a.amount, 0) * 100) / 100
+    if (rows.length && Math.abs(total - amount) > 0.005) {
+      throw new Error(`Bill-wise details total ${total.toFixed(2)} but the line is ${amount.toFixed(2)}`)
+    }
+    for (const a of rows) {
+      if (!['agst_ref', 'advance', 'on_account', 'new_ref'].includes(a.method)) throw new Error(`Unknown adjustment method "${a.method}"`)
+      if (a.method !== 'on_account' && !a.ref_name) throw new Error(`${a.method === 'agst_ref' ? 'Agst Ref' : a.method === 'advance' ? 'Advance' : 'New Ref'} needs a reference name`)
+    }
+    const before = toPlain(await c.execute({ sql: 'SELECT * FROM journal_bill_allocs WHERE line_id = ?', args: [n(lineId)] }))
+    await c.execute(`CREATE TABLE IF NOT EXISTS accounting_repair_log (
+        repair_key TEXT PRIMARY KEY, entry_id INTEGER NOT NULL, before_json TEXT NOT NULL,
+        created_at TEXT NOT NULL DEFAULT (datetime('now')))`)
+    await c.execute({
+      sql: 'INSERT OR REPLACE INTO accounting_repair_log(repair_key, entry_id, before_json) VALUES (?, ?, ?)',
+      args: [`line_allocs:${n(lineId)}:${Date.now()}`, n(line.entry_id), JSON.stringify(before)]
+    })
+    await c.execute({ sql: 'DELETE FROM journal_bill_allocs WHERE line_id = ?', args: [n(lineId)] })
+    const grp = await baseGroupOf(line.acc_group)
+    const side = grp === 'Sundry Debtors' ? 'customer' : grp === 'Sundry Creditors' ? 'supplier' : null
+    for (const a of rows) {
+      let orderId = a.order_id
+      let saleGroup = a.sale_invoice_group
+      if (a.method === 'agst_ref' && a.ref_name && !orderId && !saleGroup && side) {
+        const ids = await resolveRefIds(String(a.ref_name), n(line.company_id) || getActiveCompanyId(), side)
+        orderId = ids.order_id
+        saleGroup = ids.sale_invoice_group
+      }
+      await c.execute({
+        sql: `INSERT INTO journal_bill_allocs (line_id, account_id, method, ref_name, amount, order_id, sale_invoice_group)
+              VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        args: [n(lineId), n(line.account_id), a.method, a.ref_name, a.amount, orderId, saleGroup]
+      })
+    }
+    return { id: n(lineId), allocs: rows.length }
+  })
+}
+
 // Store bill-wise rows against the freshly written journal lines. The entry's
 // lines are re-read in insert order, which matches the validated array.
 async function writeAllocs(entryId: number, lines: LineWithAllocs[]): Promise<void> {
