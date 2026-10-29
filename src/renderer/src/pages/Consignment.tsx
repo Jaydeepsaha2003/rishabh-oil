@@ -55,9 +55,17 @@ interface LotGroup {
   weighed: number
   booked: number
   free: number
+  // Taken off `free` by invoices not linked to any tanker (see below).
+  untied: number
 }
 
-function groupByLot(lots: Row[]): LotGroup[] {
+// Weights to three places on every row, so 161.79 and 164.915 line up.
+const fmt3 = (v: number): string => v.toLocaleString('en-IN', { minimumFractionDigits: 3, maximumFractionDigits: 3 })
+
+// `balance` — the parcel's deposited less invoiced. Quantity invoiced without
+// a tanker linked (deposited − invoiced < the unlinked tankers) is taken off
+// the oldest lots' free first, so the lots add up to the total under them.
+function groupByLot(lots: Row[], balance?: number): LotGroup[] {
   const map = new Map<string, LotGroup>()
   for (const row of lots) {
     const lot = String(row.lot_no || '').trim()
@@ -65,7 +73,7 @@ function groupByLot(lots: Row[]): LotGroup[] {
     const key = `${lot}|${term}`
     let g = map.get(key)
     if (!g) {
-      g = { key, lot, term, rows: [], qty: 0, weighed: 0, booked: 0, free: 0 }
+      g = { key, lot, term, rows: [], qty: 0, weighed: 0, booked: 0, free: 0, untied: 0 }
       map.set(key, g)
     }
     g.rows.push({ row, sn: 0 })
@@ -75,6 +83,16 @@ function groupByLot(lots: Row[]): LotGroup[] {
     else g.free += Number(row.qty) || 0
   }
   const groups = Array.from(map.values())
+  if (balance != null) {
+    let left = groups.reduce((t, g) => t + g.free, 0) - Math.max(0, balance)
+    for (const g of groups) {
+      if (left <= 0.0005) break
+      const take = Math.min(g.free, left)
+      g.free -= take
+      g.untied = take
+      left -= take
+    }
+  }
   let sn = 0
   for (const g of groups) for (const r of g.rows) r.sn = ++sn
   return groups
@@ -1659,7 +1677,7 @@ export function Consignment(): React.JSX.Element {
                             </TableRow>
                           </TableHeader>
                           <TableBody>
-                            {groupByLot(p.lots as Row[]).map((g, _gi, allGroups) => {
+                            {groupByLot(p.lots as Row[], Number(p.balance)).map((g, _gi, allGroups) => {
                               const grouped = allGroups.length > 1
                               const gkey = `${pkey}:${g.key}`
                               // A HEADING OVER ONE LINE IS THE LINE, TWICE.
@@ -1762,7 +1780,7 @@ export function Consignment(): React.JSX.Element {
                                       figure as the lines it totals rather
                                       than as another table's. */}
                                   <TableCell className="!text-right !text-[12.5px] !font-semibold !tabular-nums !text-[#5A6B62]">
-                                    {g.weighed > 0 ? formatNum(g.weighed) : '—'}
+                                    {g.weighed > 0 ? fmt3(g.weighed) : '—'}
                                   </TableCell>
                                   <TableCell />
                                   <TableCell className="!text-right !text-[13.5px] !font-bold !tabular-nums !text-[#0A1F17]">
@@ -1775,6 +1793,11 @@ export function Consignment(): React.JSX.Element {
                                         of the app says that kind of thing in a
                                         chip. */}
                                     <span
+                                      title={
+                                        g.untied > 0.0005
+                                          ? `${formatNum(g.untied)} ${p.uom} of this lot is taken by invoices not linked to any tanker (oldest lots first) — link them to tankers to see which`
+                                          : undefined
+                                      }
                                       className={cn(
                                         'inline-flex items-center rounded-[3px] border px-1.5 py-[1px] text-[11px] font-bold tabular-nums',
                                         g.free > 0.0001
@@ -1784,6 +1807,11 @@ export function Consignment(): React.JSX.Element {
                                     >
                                       {g.free > 0.0001 ? `${formatNum(g.free)} ${p.uom} free` : 'All booked'}
                                     </span>
+                                    {g.untied > 0.0005 && (
+                                      <span className="ml-1.5 text-[10.5px] font-semibold text-[#8A5300]">
+                                        {formatNum(g.untied)} {p.uom} on unlinked invoices
+                                      </span>
+                                    )}
                                   </TableCell>
                                 </TableRow>
                               )}
@@ -1946,7 +1974,7 @@ export function Consignment(): React.JSX.Element {
                                     )}
                                   </TableCell>
                                   <TableCell className={cn('text-right tabular-nums text-muted-foreground', __WEB__ && '!text-[12.5px] !font-semibold !text-[#5A6B62]')}>
-                                    {Number(d.weighed_qty) > 0 ? formatNum(d.weighed_qty) : '—'}
+                                    {Number(d.weighed_qty) > 0 ? fmt3(Number(d.weighed_qty)) : '—'}
                                   </TableCell>
                                   <TableCell className={cn('text-right tabular-nums text-muted-foreground', __WEB__ && '!text-[12.5px] !font-semibold !text-[#5A6B62]')}>
                                     {Number(d.shortage_pct) > 0 ? `${d.shortage_pct}%` : '—'}
@@ -2047,7 +2075,7 @@ export function Consignment(): React.JSX.Element {
                                   {(p.lots as Row[]).length} tanker{(p.lots as Row[]).length === 1 ? '' : 's'}
                                 </TableCell>
                                 <TableCell className="!text-right !text-[12.5px] !font-bold !tabular-nums !text-[#33473E]">
-                                  {formatNum((p.lots as Row[]).reduce((t, d) => t + (Number(d.weighed_qty) || 0), 0))}
+                                  {fmt3((p.lots as Row[]).reduce((t, d) => t + (Number(d.weighed_qty) || 0), 0))}
                                 </TableCell>
                                 <TableCell />
                                 <TableCell className="!text-right !text-[13.5px] !font-bold !tabular-nums !tracking-[-0.02em] !text-[#0A1F17]">
