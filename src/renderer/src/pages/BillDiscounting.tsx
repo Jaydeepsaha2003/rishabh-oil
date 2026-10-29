@@ -7058,6 +7058,18 @@ export function BillDiscounting({
                       onChange={(e) => setRepayForm((p) => ({ ...p, interest: e.target.value }))}
 
                     />
+                    {/* What is typed is the NET the NBFC was paid; the gross
+                        is what the books carry as interest. */}
+                    {n(repayForm.interest) > 0 && (
+                      <div className="flex flex-wrap items-baseline gap-x-2 rounded-[4px] border border-[#C6DAF0] bg-[#F4F8FD] px-2.5 py-1.5 text-[11.5px] font-semibold text-[#1B4E82]">
+                        <span>
+                          Gross interest <b className="doc-ref text-[13px] text-[#0A1F17]">{formatINR(round2(n(repayForm.interest) + repayTds))}</b>
+                        </span>
+                        <span className="text-[#5A6B62]">
+                          = {formatINR(n(repayForm.interest))} paid (net) + {formatINR(repayTds)} TDS
+                        </span>
+                      </div>
+                    )}
 
                   </div>
                   {n(repayForm.interest) > 0 && (
