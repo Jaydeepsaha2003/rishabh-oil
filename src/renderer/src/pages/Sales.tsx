@@ -519,25 +519,32 @@ function SalesTab({
   // LOOSE lines, and what a credit note for it needs (ShortageNoteDialog).
   // `received` overrides the stored figures — the unload dialog asks before the
   // list has reloaded.
-  const shortageAskFor = (inv: { first: Row; lines: Row[] }, received?: Record<string, number | null>, date?: string): ShortageAsk | null => {
+  // `whole`: a delivery short INSIDE its tolerance, credited anyway (the
+  // customer deducted it) — the whole shortage, not just the excess.
+  const shortageAskFor = (inv: { first: Row; lines: Row[] }, received?: Record<string, number | null>, date?: string, whole = false): ShortageAsk | null => {
     const parts = inv.lines
       .filter((l) => String(l.sale_type || 'LOOSE').toUpperCase() !== 'PACKED')
       .map((l) => ({ l, sh: saleShortage(received ? { ...l, received_qty: received[String(l.id)] ?? l.received_qty } : l, defaultShortagePct) }))
-      .filter((x) => x.sh.applies && !x.sh.within)
-    const due = Math.round(parts.reduce((t, x) => t + x.sh.deductible, 0) * 100) / 100
+      .filter((x) => x.sh.applies && (whole ? x.sh.shortage > 0.0000005 : !x.sh.within))
+    const due = Math.round(parts.reduce((t, x) => t + (whole ? x.sh.shortage * x.sh.rate : x.sh.deductible), 0) * 100) / 100
     if (!(due > 0)) return null
     return {
       saleId: Number(inv.first.id),
       invoiceNo: String(inv.first.invoice_no || ''),
       customer: String(inv.first.customer_master || inv.first.customer || ''),
       due,
+      whole,
       cn: {
         customerId: Number(inv.first.customer_id) || 0,
         companyId: Number(inv.first.company_id) || 0,
         date: String(date || inv.first.unloaded_date || todayISO()).slice(0, 10),
         gstPct: Number(parts[0].l.gst_pct) || 0,
         detail: parts
-          .map((x) => `${String(x.l.product_name || 'Item')} ${formatNum(x.sh.excessQty)} ${String(x.l.uom || '')} short beyond ${formatNum(x.sh.pct)}% @ ${formatNum(x.sh.rate)}`)
+          .map((x) =>
+            whole
+              ? `${String(x.l.product_name || 'Item')} ${formatNum(x.sh.shortage)} ${String(x.l.uom || '')} short (within the ${formatNum(x.sh.pct)}% tolerance) @ ${formatNum(x.sh.rate)}`
+              : `${String(x.l.product_name || 'Item')} ${formatNum(x.sh.excessQty)} ${String(x.l.uom || '')} short beyond ${formatNum(x.sh.pct)}% @ ${formatNum(x.sh.rate)}`
+          )
           .join('; ')
       }
     }
@@ -2569,6 +2576,19 @@ function SalesTab({
                                   className="whitespace-nowrap rounded-[3px] border border-rose-300 bg-white px-1 text-[10px] font-semibold text-rose-700 hover:bg-rose-50"
                                 >
                                   Link CN
+                                </button>
+                              ) : shortLines.length > 0 ? (
+                                <button
+                                  type="button"
+                                  onClick={(e) => {
+                                    e.stopPropagation()
+                                    const ask = shortageAskFor(inv, undefined, undefined, true)
+                                    if (ask) setShortAsk(ask)
+                                  }}
+                                  title="Short inside the tolerance — raise or link a credit note for the whole shortage if the customer deducted it"
+                                  className="whitespace-nowrap rounded-[3px] border border-slate-300 bg-white px-1 text-[10px] font-semibold text-slate-600 hover:bg-slate-50"
+                                >
+                                  CN
                                 </button>
                               ) : null}
                             </div>

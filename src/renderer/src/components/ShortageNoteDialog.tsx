@@ -16,6 +16,8 @@ export type ShortageAsk = {
   invoiceNo: string
   customer: string
   due: number
+  // Short inside the tolerance, credited for the whole shortage anyway.
+  whole?: boolean
   // What a credit note raised from here needs; absent, only linking is offered.
   cn?: { customerId: number; companyId: number; date: string; gstPct: number; detail: string }
 }
@@ -114,7 +116,7 @@ export function ShortageNoteDialog({
         gst_pct: Number(cnGst) || 0,
         against_account: cnAgainst,
         against_invoice: ask.invoiceNo,
-        narration: `Shortage on ${ask.invoiceNo} beyond tolerance — ${ask.cn.detail}`
+        narration: `Shortage on ${ask.invoiceNo}${ask.whole ? '' : ' beyond tolerance'} — ${ask.cn.detail}`
       })
       // The new note's voucher, found among the customer's notes, joins the links.
       const r = await window.api.sales.shortageNotes(ask.saleId)
@@ -141,7 +143,7 @@ export function ShortageNoteDialog({
           </DialogTitle>
         </DialogHeader>
         <p className="text-[12.5px] text-muted-foreground">
-          {ask?.customer} · shortage beyond tolerance{' '}
+          {ask?.customer} · {ask?.whole ? 'short within tolerance — whole shortage' : 'shortage beyond tolerance'}{' '}
           <span className="font-semibold text-rose-700">{formatINR(ask?.due || 0)}</span>. Tick the credit note(s) raised for it —
           made here or booked from Tally. Nothing is posted; this only records which note settled it.
         </p>
