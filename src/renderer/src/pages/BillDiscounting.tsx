@@ -33,6 +33,7 @@ import {
   Tag,
   Clock,
   X,
+  Star,
   Undo2
 } from 'lucide-react'
 import { RefundReceived } from '@/components/RefundReceived'
@@ -1059,6 +1060,25 @@ export function BillDiscounting({
   const [repayForm, setRepayForm] = useState<Row>({})
   // Ledgers the TDS on a repayment's interest can go to (Duties & Taxes).
   const [tdsLedgers, setTdsLedgers] = useState<string[]>([])
+  // The starred TDS ledger, prefilled on every repayment (this browser only).
+  const TDS_FAV_KEY = 'bd-tds-ledger-fav'
+  const [tdsFav, setTdsFav] = useState<string>(() => {
+    try {
+      return localStorage.getItem(TDS_FAV_KEY) || ''
+    } catch {
+      return ''
+    }
+  })
+  const toggleTdsFav = (name: string): void => {
+    const next = tdsFav === name ? '' : name
+    try {
+      if (next) localStorage.setItem(TDS_FAV_KEY, next)
+      else localStorage.removeItem(TDS_FAV_KEY)
+    } catch {
+      // private window: the star still works for this visit
+    }
+    setTdsFav(next)
+  }
   const [repaySaving, setRepaySaving] = useState(false)
   // The parts already paid on the bill in the dialog, so it opens showing what
   // has gone back rather than only what is left.
@@ -2170,7 +2190,7 @@ export function BillDiscounting({
       penalty_pct: String(n(nbfcs.find((x) => String(x.id) === String(r.nbfc_id))?.penalty_pct) || ''),
       // TDS on the interest: the bill's own % (10 if it has none), amount
       // worked out until typed over.
-      tds_ledger: 'TDS ON INTEREST PAYABLE A/C',
+      tds_ledger: tdsFav || 'TDS ON INTEREST PAYABLE A/C',
       tds_pct: String(n(r.tds_pct) || 10),
       tds_amount: ''
     })
@@ -7014,13 +7034,32 @@ export function BillDiscounting({
                     <div className="grid grid-cols-1 gap-2 sm:grid-cols-[minmax(0,1fr)_80px_120px]">
                       <div className="flex min-w-0 flex-col gap-1">
                         <Label className="text-[11px]">TDS ledger</Label>
-                        <SearchSelect
-                          value={String(repayForm.tds_ledger || '')}
-                          options={[...new Set([String(repayForm.tds_ledger || ''), ...tdsLedgers].filter(Boolean))]}
-                          onChange={(v) => setRepayForm((p) => ({ ...p, tds_ledger: v }))}
-                          placeholder="Pick the TDS ledger"
-                          className="h-8 w-full"
-                        />
+                        <div className="flex items-center gap-1">
+                          <SearchSelect
+                            value={String(repayForm.tds_ledger || '')}
+                            options={[...new Set([String(repayForm.tds_ledger || ''), ...tdsLedgers].filter(Boolean))]}
+                            onChange={(v) => setRepayForm((p) => ({ ...p, tds_ledger: v }))}
+                            placeholder="Pick the TDS ledger"
+                            className="h-8 min-w-0 flex-1"
+                          />
+                          {(() => {
+                            const cur = String(repayForm.tds_ledger || '')
+                            const on = !!cur && tdsFav === cur
+                            return (
+                              <button
+                                type="button"
+                                disabled={!cur}
+                                onClick={() => toggleTdsFav(cur)}
+                                title={on ? 'Your favourite — prefilled on every repayment. Click to unstar.' : 'Star this ledger to prefill it on every repayment'}
+                                aria-label={on ? 'Unstar TDS ledger' : 'Star TDS ledger'}
+                                aria-pressed={on}
+                                className="flex h-8 w-8 flex-none items-center justify-center rounded-[4px] border border-[#C3D2C6] bg-white hover:bg-[#FFF8E8] disabled:opacity-40"
+                              >
+                                <Star className={cn('h-4 w-4', on ? 'fill-[#E0A100] text-[#E0A100]' : 'text-[#8CA396]')} />
+                              </button>
+                            )
+                          })()}
+                        </div>
                       </div>
                       <div className="flex flex-col gap-1">
                         <Label className="text-[11px]">TDS %</Label>
