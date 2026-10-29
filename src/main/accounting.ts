@@ -1163,7 +1163,9 @@ export async function billsOutstanding(
 
   // Settled bills too when asked (Bill-wise → Settled: Show); the totals and
   // On Account are worked out on the open bills either way.
-  const bills = await listPendingRefs(accountName, cid, opts.side, !!opts.settled)
+  // Every bill, settled ones too: the On Account breakdown nets each bill's
+  // vouchers off against it. Only the open ones are listed unless asked.
+  const bills = await listPendingRefs(accountName, cid, opts.side, true)
   const dayMs = 86400000
   const asOfMs = Date.parse(`${asOf}T00:00:00Z`)
   const rows = bills
@@ -1312,6 +1314,7 @@ export async function billsOutstanding(
             vch_type: 'PROVISIONAL',
             vch_no: String(p.lc_no || p.bd_no || ''),
             narration: p.narration,
+            particulars: p.particulars,
             dr: n(p.dr),
             free: round2(n(p.dr)),
             provisional: true
@@ -1342,10 +1345,59 @@ export async function billsOutstanding(
   // Settled bills drop off the list, as they always did.
   const open = (rows as Row[]).filter((r) => n(r.pending) > 0.005)
   const totalPending = round2(open.reduce((t, r) => t + n(r.pending), 0))
-  // A debtor's bills are Dr, a creditor's are Cr — compare like for like before
-  // calling the remainder On Account.
-  const billsSigned = debtor ? totalPending : -totalPending
+  // Each bill on its own side (a debit note's ref on a creditor is Dr) before
+  // calling the remainder On Account — the screen's sub total reads them so.
+  const sideOf = (r: Row): number => {
+    const s2 = String((r.origin as Row | null)?.side || '')
+    return (s2 === 'dr' || s2 === 'cr' ? s2 : debtor ? 'dr' : 'cr') === 'dr' ? 1 : -1
+  }
+  const billsSigned = round2(open.reduce((t, r) => t + n(r.pending) * sideOf(r), 0))
   const onAccount = round2(balance - billsSigned)
+
+  // WHAT THE ON ACCOUNT IS MADE OF: each voucher's part on this ledger that no
+  // bill answers for — every line, less the bill it raised and what it
+  // settled — plus the opening and any provisional payment not used up. Adds
+  // up to onAccount.
+  const onAccountLines: Row[] = []
+  if (accountId) {
+    const explained = new Map<number, number>()
+    // A voucher dated before the books start is inside the opening, so what
+    // a bill takes of it comes off the opening line instead.
+    let preBooks = 0
+    const add = (id: unknown, date: unknown, v: number): void => {
+      if (booksFrom && String(date || '').slice(0, 10) < booksFrom) preBooks += v
+      else if (n(id) > 0) explained.set(n(id), (explained.get(n(id)) || 0) + v)
+    }
+    for (const r of rows as Row[]) {
+      const o = r.origin as Row | null
+      if (o?.entry_id) add(o.entry_id, o.entry_date, n(r.opening) * sideOf(r))
+      for (const x of (r.settlements as Row[]) || []) add(x.entry_id, x.entry_date, n(x.amount) * (String(x.side) === 'dr' ? 1 : -1))
+    }
+    const lines = toPlain(
+      await c.execute({
+        sql: `SELECT je.id AS entry_id, je.entry_date, je.vch_type, je.vch_no, je.narration,
+                     ROUND(SUM(jl.dr) - SUM(jl.cr), 2) AS net
+                FROM journal_lines jl JOIN journal_entries je ON je.id = jl.entry_id
+               WHERE jl.account_id = ? AND je.company_id = ? AND je.entry_date <= ? AND je.entry_date >= ?
+               GROUP BY je.id ORDER BY je.entry_date, je.id`,
+        args: [accountId, cid, asOf, booksFrom || '0000-00-00']
+      })
+    )
+    const opening = round2((openRes ? n(openRes.rows[0]?.v) : 0) - preBooks)
+    if (Math.abs(opening) > 0.005) onAccountLines.push({ entry_id: null, entry_date: booksFrom, vch_type: 'OPENING', vch_no: '', narration: 'Opening balance — the part no bill accounts for', amount: opening })
+    for (const l of lines) {
+      const left = round2(n(l.net) - (explained.get(n(l.entry_id)) || 0))
+      if (Math.abs(left) > 0.005) onAccountLines.push({ ...l, amount: left })
+    }
+    for (const p of prov) {
+      const used = (rows as Row[]).reduce(
+        (t, r) => t + ((r.settlements as Row[]) || []).filter((x) => x.provisional && x.vch_no === String(p.lc_no || p.bd_no || '')).reduce((u, x) => u + n(x.amount), 0),
+        0
+      )
+      const left = round2(n(p.dr) - used)
+      if (left > 0.005) onAccountLines.push({ entry_id: null, entry_date: p.entry_date, vch_type: 'PROVISIONAL', vch_no: String(p.lc_no || p.bd_no || ''), narration: p.narration, amount: left, provisional: true })
+    }
+  }
 
   return {
     as_of: asOf,
@@ -1357,7 +1409,8 @@ export async function billsOutstanding(
     total_paid: round2(open.reduce((t, r) => t + n(r.paid), 0)),
     total_pending: totalPending,
     balance: round2(balance),
-    on_account: onAccount
+    on_account: onAccount,
+    on_account_lines: onAccountLines
   }
 }
 

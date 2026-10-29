@@ -18075,19 +18075,70 @@ export function Accounts({
                 <span />
               </div>
             )}
-            {!!bills && Math.abs(onAcc) > 0.004 && (
-              <div className="grid items-center" style={{ gridTemplateColumns: T_GRID, minHeight: 38, background: 'linear-gradient(180deg,#FFF9EC,#FFF4DD)', borderBottom: '1px solid #F1E6CC' }}>
-                <span />
-                <span style={{ ...cell(), fontSize: 12.5, fontWeight: 700, fontStyle: 'italic', color: '#6B4200' }} title="The part of the balance no bill answers for — an advance, or a payment not set against a bill">
-                  On Account
-                </span>
-                <span />
-                <span style={{ ...cell('right'), ...figS(12, A.warn, 700), fontStyle: 'italic' }}>{signed(onAcc)}</span>
-                <span style={{ ...cell('right'), ...figS(12.5, A.warn, 800), fontStyle: 'italic' }}>{signed(onAcc)}</span>
-                <span />
-                <span />
-              </div>
-            )}
+            {!!bills && Math.abs(onAcc) > 0.004 && (() => {
+              // ON ACCOUNT OPENS like a bill: the vouchers whose part on this
+              // ledger no bill answers for.
+              const oaLines = ((bills?.on_account_lines as Row[]) || []) as Row[]
+              const oaOpen = bwDetailed !== bwFlip.has('on-account')
+              return (
+                <div style={{ background: 'linear-gradient(180deg,#FFF9EC,#FFF4DD)', borderBottom: '1px solid #F1E6CC' }}>
+                  <button
+                    type="button"
+                    onClick={() => toggleBw('on-account')}
+                    title={oaOpen ? 'Fold' : 'Show the vouchers that make up the On Account'}
+                    className="grid w-full items-center text-left hover:bg-[#FFF1D2]"
+                    style={{ gridTemplateColumns: T_GRID, minHeight: 38, cursor: 'pointer' }}
+                  >
+                    <span />
+                    <span className="flex items-center gap-1.5" style={{ ...cell(), fontSize: 12.5, fontWeight: 700, fontStyle: 'italic', color: '#6B4200' }}>
+                      <ChevronRight className="h-3.5 w-3.5 flex-none transition-transform" style={{ transform: oaOpen ? 'rotate(90deg)' : undefined }} />
+                      On Account
+                      {oaLines.length > 0 && <span style={{ ...figS(10, '#8A5300', 700), fontStyle: 'normal' }}>· {oaLines.length}</span>}
+                    </span>
+                    <span />
+                    <span style={{ ...cell('right'), ...figS(12, A.warn, 700), fontStyle: 'italic' }}>{signed(onAcc)}</span>
+                    <span style={{ ...cell('right'), ...figS(12.5, A.warn, 800), fontStyle: 'italic' }}>{signed(onAcc)}</span>
+                    <span />
+                    <span />
+                  </button>
+                  {oaOpen &&
+                    oaLines.map((x, xi) => (
+                      <div key={xi} className="grid items-center" style={{ gridTemplateColumns: T_GRID, minHeight: 24, fontStyle: 'italic' }}>
+                        <span />
+                        <button
+                          type="button"
+                          disabled={!x.entry_id}
+                          onClick={() => openRowSource({ ...x, id: x.entry_id }, ledgerId)}
+                          title={`${x.entry_id ? `Open ${vType(x.vch_type) || 'voucher'} ${vNo(x)}` : ''}${x.narration ? ` · ${String(x.narration)}` : ''}`}
+                          className="group flex min-w-0 items-baseline gap-2.5 rounded-[4px] text-left hover:bg-[#FFF1D2] disabled:cursor-default disabled:hover:bg-transparent"
+                          style={{ padding: '2px 10px 2px 26px', fontStyle: 'italic' }}
+                        >
+                          <span style={figS(11, '#5A6B62', 600)}>{formatDate(x.entry_date)}</span>
+                          <span className="whitespace-nowrap" style={{ fontSize: 11, fontWeight: 700, color: '#33473E' }}>
+                            {vType(x.vch_type)}
+                          </span>
+                          {!!vNo(x) && (
+                            <span className="whitespace-nowrap underline decoration-[#C3D2C6] decoration-dotted underline-offset-[3px]" style={figS(11, '#5A6B62', 600)}>
+                              {vNo(x)}
+                            </span>
+                          )}
+                          <span className="truncate" style={{ fontSize: 11, color: '#7C8B82' }}>
+                            {String(x.narration || '')}
+                          </span>
+                        </button>
+                        <span />
+                        <span style={{ ...cell('right'), ...figS(11, n(x.amount) > 0 ? A.dr : A.cr, 600) }}>{signed(n(x.amount))}</span>
+                        <span />
+                        <span />
+                        <span />
+                      </div>
+                    ))}
+                  {oaOpen && oaLines.length === 0 && (
+                    <div style={{ padding: '2px 10px 8px 140px', fontSize: 11, fontStyle: 'italic', color: A.muted }}>No voucher to show for it.</div>
+                  )}
+                </div>
+              )
+            })()}
             {!!bills && (
               <div className="grid items-center" style={{ gridTemplateColumns: T_GRID, minHeight: 44, background: 'linear-gradient(180deg,#F1F9F3,#E6F4EA)', borderTop: '1px solid #BFE3CB' }}>
                 <span />
