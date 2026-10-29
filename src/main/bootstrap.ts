@@ -3277,6 +3277,39 @@ export async function runStartupTasks(): Promise<void> {
     if (done.length) console.log(`[bd] moved ${done.length} bill(s) to the Open amount with the Adj. as a charge: ${done.join(', ')}`)
   }).catch((e) => console.error('[bd] open adjustment conversion failed:', e))
 
+  // V2'S MONEY LANDED ON 22-08-2026 — once, at start (asked for on 2026-10-29).
+  //
+  // Vanik charged V2 interest from 22-08 and the bank shows the money in that
+  // day; the bill was entered as received 23-08, so its interest read one day
+  // (₹3,337 gross) over what the app worked out. The received date and the
+  // disbursement voucher move to the 22nd — only on KR FOODS' V2 with Vanik,
+  // and only while both still read the 23rd. The row as it was is logged first.
+  await runOnce('bd_v2_received_22aug_v1', async () => {
+    const c = getClient()
+    const r = await c.execute(`
+      SELECT b.id, b.journal_entry_id, b.payment_received_date FROM bill_discountings b
+        JOIN nbfcs nb ON nb.id = b.nbfc_id JOIN companies co ON co.id = b.company_id
+       WHERE b.bd_no = 'V2' AND UPPER(nb.name) LIKE 'VANIK%' AND UPPER(co.name) LIKE 'KR FOODS%'
+         AND substr(b.payment_received_date, 1, 10) = '2026-08-23'`)
+    if (r.rows.length !== 1) return
+    const bd = r.rows[0] as Record<string, unknown>
+    await c.execute(`CREATE TABLE IF NOT EXISTS accounting_repair_log (
+        repair_key TEXT PRIMARY KEY, entry_id INTEGER NOT NULL, before_json TEXT NOT NULL,
+        created_at TEXT NOT NULL DEFAULT (datetime('now')))`)
+    await c.execute({
+      sql: 'INSERT OR REPLACE INTO accounting_repair_log(repair_key, entry_id, before_json) VALUES (?, ?, ?)',
+      args: [`bd_v2_received_22aug:${Number(bd.id)}`, Number(bd.journal_entry_id) || 0, JSON.stringify(bd)]
+    })
+    await c.execute({ sql: "UPDATE bill_discountings SET payment_received_date = '2026-08-22' WHERE id = ?", args: [Number(bd.id)] })
+    if (Number(bd.journal_entry_id)) {
+      await c.execute({
+        sql: "UPDATE journal_entries SET entry_date = '2026-08-22' WHERE id = ? AND substr(entry_date, 1, 10) = '2026-08-23'",
+        args: [Number(bd.journal_entry_id)]
+      })
+    }
+    console.log('[bd] V2 received date and disbursement voucher moved to 22-08-2026')
+  }).catch((e) => console.error('[bd] V2 received date fix failed:', e))
+
   // LC SETTLEMENTS DATED OFF THEIR PAYMENT-RECEIVED DATE — once, at start
   // (asked for on 2026-10-24, for 005LM02262480003/4). A re-save now dates
   // the settlement by Payment received (resyncLcSettlement); this does that
