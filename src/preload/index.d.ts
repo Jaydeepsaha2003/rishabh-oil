@@ -763,6 +763,8 @@ export interface Api {
     foldBranches: (keys: string[], companyId?: number) => Promise<{ folded: string[]; skipped: { branch: string; reason: string }[] }>
     purchaseInterest: () => Promise<Row>
     bdInterestJournals: () => Promise<Row>
+    bdInterestUndo: () => Promise<Row>
+    undoBdInterest: (ids: number[]) => Promise<{ changed: number; failed: { id: number; error: string }[] }>
     fixBdInterestJournals: (ids: number[], tdsLedger: string, tdsPct: number) => Promise<{ changed: number; failed: { id: number; error: string }[] }>
     fixPurchaseInterest: (ids: number[]) => Promise<{ changed: number }>
     paymentIns: () => Promise<Row>

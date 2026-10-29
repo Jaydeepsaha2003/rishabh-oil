@@ -2074,6 +2074,16 @@ export function registerIpc(): void {
     const { fixBdInterestJournals } = await import('./bdInterestJournalFix')
     return fixBdInterestJournals((a?.ids || []).map(Number), String(a?.tdsLedger || ''), Number(a?.tdsPct) || 0)
   })
+  handle('repairs:bdInterestUndo:list', async () => {
+    await assertAdmin('The accounting checks')
+    const { previewBdInterestUndo } = await import('./bdInterestJournalFix')
+    return previewBdInterestUndo()
+  })
+  handle('repairs:bdInterestUndoFix', async (_e, a: { ids: number[] }) => {
+    await assertAdmin('Undoing the BD interest re-post')
+    const { undoBdInterestJournals } = await import('./bdInterestJournalFix')
+    return undoBdInterestJournals((a?.ids || []).map(Number))
+  })
   // Purchase vouchers that still post the supplier's interest to INTEREST A/C.
   handle('repairs:purchaseInterest:list', async () => {
     await assertAdmin('The accounting checks')

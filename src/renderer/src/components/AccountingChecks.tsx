@@ -122,6 +122,10 @@ export function AccountingChecks(): React.JSX.Element {
   const [bdIntPct, setBdIntPct] = useState('10')
   const [bdIntBusy, setBdIntBusy] = useState(false)
   const [tdsLedgerNames, setTdsLedgerNames] = useState<string[]>([])
+  // Those re-posted, to put back as they were.
+  const [bdUndo, setBdUndo] = useState<Row | null>(null)
+  const [bdUndoPick, setBdUndoPick] = useState<Set<number>>(new Set())
+  const [bdUndoBusy, setBdUndoBusy] = useState(false)
   const [tdsPick, setTdsPick] = useState<Set<number>>(new Set())
   const [reworking, setReworking] = useState(false)
   const [movingCo, setMovingCo] = useState(false)
@@ -200,6 +204,9 @@ export function AccountingChecks(): React.JSX.Element {
       const bi = await window.api.repairs.bdInterestJournals().catch(() => null)
       setBdInt(bi)
       setBdIntPick(new Set(((bi?.findings as Row[]) || []).map((x) => Number(x.id))))
+      setBdUndo(await window.api.repairs.bdInterestUndo().catch(() => null))
+      // Nothing ticked: undoing is the deliberate choice, one by one.
+      setBdUndoPick(new Set())
       setTdsLedgerNames(
         accts.filter((a: Row) => /DUTIES|TAX/i.test(String(a.acc_group || '')) || /TDS/i.test(String(a.name || ''))).map((a: Row) => String(a.name))
       )
@@ -600,6 +607,29 @@ export function AccountingChecks(): React.JSX.Element {
       toast.error((e as Error).message)
     } finally {
       setBdIntBusy(false)
+    }
+  }
+
+  const bdUndoRows: Row[] = useMemo(() => (bdUndo?.findings as Row[]) || [], [bdUndo])
+  async function undoBdInterest(): Promise<void> {
+    const ids = [...bdUndoPick]
+    if (!ids.length) return
+    const sum = bdUndoRows.filter((x) => bdUndoPick.has(Number(x.entry_id))).reduce((t, x) => t + Number(x.interest || 0), 0)
+    const ok = window.confirm(
+      `Put ${ids.length} BD repayment${ids.length === 1 ? '' : 's'} back as they were (${formatINR(sum)} interest)?\n\n` +
+        'The interest goes back onto the payment as Interest on Bill Discounting, the interest journal and its TDS are removed, and the payment keeps its number, date and bank total. Each is logged first.'
+    )
+    if (!ok) return
+    setBdUndoBusy(true)
+    try {
+      const r = await window.api.repairs.undoBdInterest(ids)
+      if (r.failed.length) toast.error(`${r.failed.length} not undone: ${r.failed.map((f) => f.error).join('; ')}`)
+      toast.success(`${r.changed} repayment${r.changed === 1 ? '' : 's'} put back as before`)
+      await load()
+    } catch (e) {
+      toast.error((e as Error).message)
+    } finally {
+      setBdUndoBusy(false)
     }
   }
 
@@ -1675,6 +1705,78 @@ export function AccountingChecks(): React.JSX.Element {
           </Button>
         </div>
       </Section>
+
+      {bdUndoRows.length > 0 && (
+        <Section
+          title="Re-posted BD repayments — undo"
+          count={bdUndoRows.length}
+          tone="ok"
+          note="These repayments were re-posted with an interest journal. Tick any to put back as they were: the interest returns to the payment voucher and the interest journal (with its TDS) is removed. Each can be re-posted again from the list above."
+        >
+          <table className="w-full border-collapse">
+            <thead className="bg-muted/40">
+              <tr>
+                <th className={cn(th, 'w-8')}>
+                  <input
+                    type="checkbox"
+                    aria-label="Tick all"
+                    checked={bdUndoPick.size === bdUndoRows.length}
+                    onChange={(e) => setBdUndoPick(e.target.checked ? new Set(bdUndoRows.map((x) => Number(x.entry_id))) : new Set())}
+                  />
+                </th>
+                <th className={th}>Repayment</th>
+                <th className={th}>NBFC</th>
+                <th className={cn(th, 'text-right')}>Interest</th>
+                <th className={th}>TDS ledger</th>
+                <th className={cn(th, 'text-right')}>TDS</th>
+              </tr>
+            </thead>
+            <tbody>
+              {bdUndoRows.map((x) => {
+                const id = Number(x.entry_id)
+                return (
+                  <tr key={id} className="border-t">
+                    <td className={td}>
+                      <input
+                        type="checkbox"
+                        checked={bdUndoPick.has(id)}
+                        onChange={(e) =>
+                          setBdUndoPick((s) => {
+                            const next = new Set(s)
+                            if (e.target.checked) next.add(id)
+                            else next.delete(id)
+                            return next
+                          })
+                        }
+                      />
+                    </td>
+                    <td className={td}>
+                      <span className="font-semibold">{String(x.bd_no)}</span>
+                      {x.vch_no ? ` · ${String(x.vch_no)}` : ''}
+                      <div className="text-[11px] text-muted-foreground">
+                        {formatDate(String(x.date))} · {String(x.company)}
+                      </div>
+                    </td>
+                    <td className={td}>{String(x.nbfc || '—')}</td>
+                    <td className={cn(td, 'text-right tabular-nums')}>{formatINR(Number(x.interest))}</td>
+                    <td className={td}>{String(x.tds_ledger || '—')}</td>
+                    <td className={cn(td, 'text-right tabular-nums')}>{formatINR(Number(x.tds))}</td>
+                  </tr>
+                )
+              })}
+            </tbody>
+          </table>
+          <div className="flex flex-wrap items-center gap-3 border-t bg-muted/30 px-4 py-3">
+            <span className="text-[12.5px] text-muted-foreground">
+              {bdUndoPick.size} of {bdUndoRows.length} ticked
+            </span>
+            <Button variant="outline" className="ml-auto gap-1.5" disabled={!bdUndoPick.size || bdUndoBusy} onClick={() => void undoBdInterest()}>
+              {bdUndoBusy && <Loader2 className="h-4 w-4 animate-spin" />}
+              Undo {bdUndoPick.size} re-post{bdUndoPick.size === 1 ? '' : 's'}
+            </Button>
+          </div>
+        </Section>
+      )}
 
       <Section
         title="Branch sub-ledgers to fold into their party"

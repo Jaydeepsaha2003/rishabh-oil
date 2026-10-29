@@ -1108,6 +1108,9 @@ const api = {
       ipcRenderer.invoke('repairs:branchFold', { keys, companyId }),
     purchaseInterest: (): Promise<Row> => ipcRenderer.invoke('repairs:purchaseInterest:list'),
     bdInterestJournals: (): Promise<Row> => ipcRenderer.invoke('repairs:bdInterestJournals:list'),
+    bdInterestUndo: (): Promise<Row> => ipcRenderer.invoke('repairs:bdInterestUndo:list'),
+    undoBdInterest: (ids: number[]): Promise<{ changed: number; failed: { id: number; error: string }[] }> =>
+      ipcRenderer.invoke('repairs:bdInterestUndoFix', { ids }),
     fixBdInterestJournals: (ids: number[], tdsLedger: string, tdsPct: number): Promise<{ changed: number; failed: { id: number; error: string }[] }> =>
       ipcRenderer.invoke('repairs:bdInterestJournalsFix', { ids, tdsLedger, tdsPct }),
     fixPurchaseInterest: (ids: number[]): Promise<{ changed: number }> => ipcRenderer.invoke('repairs:purchaseInterestFix', { ids }),
