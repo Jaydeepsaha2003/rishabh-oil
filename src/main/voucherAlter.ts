@@ -74,7 +74,10 @@ export async function voucherAlterInfo(entryId: number): Promise<AlterInfo> {
   if (owner.kind === 'transporter') return { mode: 'waiver', line_id: owner.id }
 
   if (owner.kind === 'bd') {
-    const rep = await rows('SELECT * FROM bd_repayments WHERE journal_entry_id = ? ORDER BY id', [id])
+    // The interest journal of a repayment opens its payment's form.
+    const viaInt = (await rows('SELECT journal_entry_id FROM bd_repayments WHERE interest_entry_id = ? LIMIT 1', [id]))[0]
+    const payJe = n(viaInt?.journal_entry_id) || id
+    const rep = await rows('SELECT * FROM bd_repayments WHERE journal_entry_id = ? ORDER BY id', [payJe])
     if (rep.length) {
       const bdNos = await rows(
         `SELECT id, bd_no FROM bill_discountings WHERE id IN (${rep.map(() => '?').join(',')})`,
@@ -146,7 +149,7 @@ export async function alterOwnedVoucher(entryId: number, v: Row): Promise<{ id: 
         const cr = (await rows(
           `SELECT a.name FROM journal_lines jl JOIN ledger_accounts a ON a.id = jl.account_id
             WHERE jl.entry_id = ? AND jl.cr > 0 ORDER BY jl.cr DESC LIMIT 1`,
-          [n(entryId)]
+          [n(r.journal_entry_id) || n(entryId)]
         ))[0]
         const parties = await listBdParties(bdId)
         const hit = parties.find((p) => String(p.name || '').trim().toUpperCase() === String(cr?.name || '').trim().toUpperCase())
@@ -178,7 +181,9 @@ export async function alterOwnedVoucher(entryId: number, v: Row): Promise<{ id: 
         note: v.note !== undefined ? (v.note ? String(v.note) : null) : r.note ?? null,
         party_id: partyId,
         bank_account: settleVia === 'bank' ? String(v.bank_account || r.bank_account || '') || null : null,
-        also: shared.map((s) => ({ bd_id: s.bd_id, amount: s.amount }))
+        also: shared.map((s) => ({ bd_id: s.bd_id, amount: s.amount })),
+        tds_ledger: v.tds_ledger !== undefined ? (v.tds_ledger ? String(v.tds_ledger) : null) : r.tds_ledger ? String(r.tds_ledger) : null,
+        tds_amount: v.tds_amount !== undefined ? n(v.tds_amount) : n(r.tds_amount) || null
       })
       const now = (await rows('SELECT journal_entry_id FROM bd_repayments WHERE bd_id = ? ORDER BY id DESC LIMIT 1', [bdId]))[0]
       return { id: n(now?.journal_entry_id) }

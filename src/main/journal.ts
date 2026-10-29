@@ -533,7 +533,7 @@ export async function accountStatement(accountId: number, companyId?: number): P
                         OR bd.repay_journal_entry_id = je.id
                         OR bd.margin_release_journal_entry_id = je.id
                      LIMIT 1),
-                   (SELECT r2.bd_id FROM bd_repayments r2 WHERE r2.journal_entry_id = je.id LIMIT 1),
+                   (SELECT r2.bd_id FROM bd_repayments r2 WHERE r2.journal_entry_id = je.id OR r2.interest_entry_id = je.id LIMIT 1),
                    (SELECT ip.bd_id FROM bd_interest_payments ip WHERE ip.journal_entry_id = je.id LIMIT 1)
                  ) AS bd_id,
                  (SELECT b3.bd_no FROM bill_discountings b3 WHERE b3.id = COALESCE(
@@ -542,7 +542,7 @@ export async function accountStatement(accountId: number, companyId?: number): P
                         OR bd.repay_journal_entry_id = je.id
                         OR bd.margin_release_journal_entry_id = je.id
                      LIMIT 1),
-                   (SELECT r2.bd_id FROM bd_repayments r2 WHERE r2.journal_entry_id = je.id LIMIT 1),
+                   (SELECT r2.bd_id FROM bd_repayments r2 WHERE r2.journal_entry_id = je.id OR r2.interest_entry_id = je.id LIMIT 1),
                    (SELECT ip.bd_id FROM bd_interest_payments ip WHERE ip.journal_entry_id = je.id LIMIT 1)
                  )) AS bd_no,
                  -- A TRADING DEAL IS TWO INVOICES, so its vouchers are their

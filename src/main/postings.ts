@@ -477,7 +477,10 @@ export async function documentPostings(a: {
         'bd_repayments',
         'bd_id',
         id,
-        [['journal_entry_id', (r) => `Repayment${s(r.repay_date) ? ` · ${dmy(r.repay_date)}` : ''}`]],
+        [
+          ['journal_entry_id', (r) => `Repayment${s(r.repay_date) ? ` · ${dmy(r.repay_date)}` : ''}`],
+          ['interest_entry_id', (r) => `Repayment interest${s(r.repay_date) ? ` · ${dmy(r.repay_date)}` : ''}`]
+        ],
         ['repay_date']
       )),
       ...(await childRows(

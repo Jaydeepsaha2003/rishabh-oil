@@ -115,6 +115,13 @@ export function AccountingChecks(): React.JSX.Element {
   const [purInt, setPurInt] = useState<Row | null>(null)
   const [purIntPick, setPurIntPick] = useState<Set<number>>(new Set())
   const [purIntBusy, setPurIntBusy] = useState(false)
+  // BD repayments still carrying their interest on the payment voucher.
+  const [bdInt, setBdInt] = useState<Row | null>(null)
+  const [bdIntPick, setBdIntPick] = useState<Set<number>>(new Set())
+  const [bdIntLedger, setBdIntLedger] = useState('TDS ON INTEREST PAYABLE A/C')
+  const [bdIntPct, setBdIntPct] = useState('10')
+  const [bdIntBusy, setBdIntBusy] = useState(false)
+  const [tdsLedgerNames, setTdsLedgerNames] = useState<string[]>([])
   const [tdsPick, setTdsPick] = useState<Set<number>>(new Set())
   const [reworking, setReworking] = useState(false)
   const [movingCo, setMovingCo] = useState(false)
@@ -190,6 +197,12 @@ export function AccountingChecks(): React.JSX.Element {
       const pi = await window.api.repairs.purchaseInterest().catch(() => null)
       setPurInt(pi)
       setPurIntPick(new Set((((pi?.findings as Row[]) || []).filter((x) => !x.review)).map((x) => Number(x.entry_id))))
+      const bi = await window.api.repairs.bdInterestJournals().catch(() => null)
+      setBdInt(bi)
+      setBdIntPick(new Set(((bi?.findings as Row[]) || []).map((x) => Number(x.id))))
+      setTdsLedgerNames(
+        accts.filter((a: Row) => /DUTIES|TAX/i.test(String(a.acc_group || '')) || /TDS/i.test(String(a.name || ''))).map((a: Row) => String(a.name))
+      )
       const fl = await window.api.repairs.branchFold().catch(() => [] as Row[])
       setFolds(fl)
       setFoldPick(new Set(fl.filter((x) => !x.blocked).map((x) => String(x.key))))
@@ -562,6 +575,31 @@ export function AccountingChecks(): React.JSX.Element {
       toast.error((e as Error).message)
     } finally {
       setPurIntBusy(false)
+    }
+  }
+
+  const bdIntRows: Row[] = useMemo(() => (bdInt?.findings as Row[]) || [], [bdInt])
+  async function repostBdInterest(): Promise<void> {
+    const ids = [...bdIntPick]
+    if (!ids.length) return
+    const pct = Number(bdIntPct) || 0
+    const sum = bdIntRows.filter((x) => bdIntPick.has(Number(x.id))).reduce((t, x) => t + Number(x.interest || 0), 0)
+    const ok = window.confirm(
+      `Re-post ${ids.length} BD repayment${ids.length === 1 ? '' : 's'} (${formatINR(sum)} interest)?\n\n` +
+        `Each payment becomes Bills Discounted A/C To Bank for the whole debit, and a journal books the interest: Interest on Bill Discounting To the bill discounter, To ${pct > 0 ? `${bdIntLedger} (${pct}%)` : 'no TDS'}.\n\n` +
+        'The payment keeps its number, date and bank total. The repayment as it was is logged first. Take a database snapshot if you want a copy you can restore.'
+    )
+    if (!ok) return
+    setBdIntBusy(true)
+    try {
+      const r = await window.api.repairs.fixBdInterestJournals(ids, bdIntLedger, pct)
+      if (r.failed.length) toast.error(`${r.failed.length} not re-posted: ${r.failed.map((f) => f.error).join('; ')}`)
+      toast.success(`${r.changed} repayment${r.changed === 1 ? '' : 's'} re-posted with an interest journal`)
+      await load()
+    } catch (e) {
+      toast.error((e as Error).message)
+    } finally {
+      setBdIntBusy(false)
     }
   }
 
@@ -1539,6 +1577,101 @@ export function AccountingChecks(): React.JSX.Element {
           <Button className="ml-auto gap-1.5" disabled={!purIntPick.size || purIntBusy} onClick={() => void foldInterest()}>
             {purIntBusy && <Loader2 className="h-4 w-4 animate-spin" />}
             Move interest into purchase on {purIntPick.size} voucher{purIntPick.size === 1 ? '' : 's'}
+          </Button>
+        </div>
+      </Section>
+
+      <Section
+        title="BD repayments with the interest on the payment voucher"
+        count={bdIntRows.length}
+        tone={bdIntRows.length ? 'warn' : 'ok'}
+        note={
+          bdIntRows.length
+            ? 'A repayment now pays the bill discounter for principal and interest (Bills Discounted A/C To Bank), and a journal books the interest: Interest on Bill Discounting To the bill discounter less TDS, To the TDS ledger. These were entered before and carry the interest on the payment with no TDS. Re-posting keeps each payment’s number and bank total.'
+            : 'Every BD repayment books its interest by its own journal.'
+        }
+      >
+        <div className="flex flex-wrap items-end gap-3 border-b px-4 py-3">
+          <label className="grid min-w-[260px] gap-1 text-[12px]">
+            <span className="text-muted-foreground">TDS ledger</span>
+            <SearchSelect
+              value={bdIntLedger}
+              options={[...new Set([bdIntLedger, ...tdsLedgerNames].filter(Boolean))]}
+              onChange={setBdIntLedger}
+              className="w-full"
+            />
+          </label>
+          <label className="grid w-24 gap-1 text-[12px]">
+            <span className="text-muted-foreground">TDS %</span>
+            <input
+              type="number"
+              step="0.01"
+              value={bdIntPct}
+              onChange={(e) => setBdIntPct(e.target.value)}
+              className="h-9 rounded-md border px-2 text-right tabular-nums"
+            />
+          </label>
+        </div>
+        <table className="w-full border-collapse">
+          <thead className="bg-muted/40">
+            <tr>
+              <th className={cn(th, 'w-8')}>
+                <input
+                  type="checkbox"
+                  aria-label="Tick all"
+                  checked={bdIntRows.length > 0 && bdIntPick.size === bdIntRows.length}
+                  onChange={(e) => setBdIntPick(e.target.checked ? new Set(bdIntRows.map((x) => Number(x.id))) : new Set())}
+                />
+              </th>
+              <th className={th}>Repayment</th>
+              <th className={th}>NBFC</th>
+              <th className={cn(th, 'text-right')}>Interest</th>
+              <th className={cn(th, 'text-right')}>TDS</th>
+            </tr>
+          </thead>
+          <tbody>
+            {bdIntRows.map((x) => {
+              const id = Number(x.id)
+              return (
+                <tr key={id} className="border-t">
+                  <td className={td}>
+                    <input
+                      type="checkbox"
+                      checked={bdIntPick.has(id)}
+                      onChange={(e) =>
+                        setBdIntPick((s) => {
+                          const next = new Set(s)
+                          if (e.target.checked) next.add(id)
+                          else next.delete(id)
+                          return next
+                        })
+                      }
+                    />
+                  </td>
+                  <td className={td}>
+                    <span className="font-semibold">{String(x.bd_no)}</span>
+                    {x.vch_no ? ` · ${String(x.vch_no)}` : ''}
+                    <div className="text-[11px] text-muted-foreground">
+                      {formatDate(String(x.date))} · {String(x.company)}
+                    </div>
+                  </td>
+                  <td className={td}>{String(x.nbfc || '—')}</td>
+                  <td className={cn(td, 'text-right tabular-nums')}>{formatINR(Number(x.interest))}</td>
+                  <td className={cn(td, 'text-right tabular-nums')}>
+                    {formatINR(Math.round(Number(x.interest) * (Number(bdIntPct) || 0)) / 100)}
+                  </td>
+                </tr>
+              )
+            })}
+          </tbody>
+        </table>
+        <div className="flex flex-wrap items-center gap-3 border-t bg-muted/30 px-4 py-3">
+          <span className="text-[12.5px] text-muted-foreground">
+            {bdIntPick.size} of {bdIntRows.length} ticked · {formatINR(Number(bdInt?.total) || 0)} interest in all
+          </span>
+          <Button className="ml-auto gap-1.5" disabled={!bdIntPick.size || bdIntBusy} onClick={() => void repostBdInterest()}>
+            {bdIntBusy && <Loader2 className="h-4 w-4 animate-spin" />}
+            Re-post {bdIntPick.size} repayment{bdIntPick.size === 1 ? '' : 's'}
           </Button>
         </div>
       </Section>

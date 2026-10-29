@@ -978,6 +978,9 @@ const api = {
         bank_account?: string | null
         // Other bills this same bank debit also settled.
         also?: { bd_id?: number | string; amount?: number | string }[]
+        // TDS held on the interest and the ledger it goes to.
+        tds_ledger?: string | null
+        tds_amount?: number | string | null
       }
     ): Promise<{ id: number; amount: number; outstanding: number; closed: boolean }> =>
       ipcRenderer.invoke('bd:repay', { id, values }),
@@ -1104,6 +1107,9 @@ const api = {
     foldBranches: (keys: string[], companyId?: number): Promise<{ folded: string[]; skipped: { branch: string; reason: string }[] }> =>
       ipcRenderer.invoke('repairs:branchFold', { keys, companyId }),
     purchaseInterest: (): Promise<Row> => ipcRenderer.invoke('repairs:purchaseInterest:list'),
+    bdInterestJournals: (): Promise<Row> => ipcRenderer.invoke('repairs:bdInterestJournals:list'),
+    fixBdInterestJournals: (ids: number[], tdsLedger: string, tdsPct: number): Promise<{ changed: number; failed: { id: number; error: string }[] }> =>
+      ipcRenderer.invoke('repairs:bdInterestJournalsFix', { ids, tdsLedger, tdsPct }),
     fixPurchaseInterest: (ids: number[]): Promise<{ changed: number }> => ipcRenderer.invoke('repairs:purchaseInterestFix', { ids }),
     paymentIns: (): Promise<Row> => ipcRenderer.invoke('repairs:paymentIns:list'),
     lcLedgers: (): Promise<Row> => ipcRenderer.invoke('repairs:lcLedgers:list'),

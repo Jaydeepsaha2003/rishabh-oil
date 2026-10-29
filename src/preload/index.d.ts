@@ -674,6 +674,9 @@ export interface Api {
         bank_account?: string | null
         // Other bills this same bank debit also settled.
         also?: { bd_id?: number | string; amount?: number | string }[]
+        // TDS held on the interest and the ledger it goes to.
+        tds_ledger?: string | null
+        tds_amount?: number | string | null
       }
     ) => Promise<{ id: number; amount: number; outstanding: number; closed: boolean }>
     repayments: (id: number) => Promise<Row[]>
@@ -759,6 +762,8 @@ export interface Api {
     branchFold: (companyId?: number) => Promise<Row[]>
     foldBranches: (keys: string[], companyId?: number) => Promise<{ folded: string[]; skipped: { branch: string; reason: string }[] }>
     purchaseInterest: () => Promise<Row>
+    bdInterestJournals: () => Promise<Row>
+    fixBdInterestJournals: (ids: number[], tdsLedger: string, tdsPct: number) => Promise<{ changed: number; failed: { id: number; error: string }[] }>
     fixPurchaseInterest: (ids: number[]) => Promise<{ changed: number }>
     paymentIns: () => Promise<Row>
     lcLedgers: () => Promise<Row>

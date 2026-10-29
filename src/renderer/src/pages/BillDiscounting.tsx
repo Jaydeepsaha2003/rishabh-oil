@@ -1057,6 +1057,8 @@ export function BillDiscounting({
   const [intDate, setIntDate] = useState('')
   const [intBusyUpto, setIntBusyUpto] = useState(false)
   const [repayForm, setRepayForm] = useState<Row>({})
+  // Ledgers the TDS on a repayment's interest can go to (Duties & Taxes).
+  const [tdsLedgers, setTdsLedgers] = useState<string[]>([])
   const [repaySaving, setRepaySaving] = useState(false)
   // The parts already paid on the bill in the dialog, so it opens showing what
   // has gone back rather than only what is left.
@@ -2002,6 +2004,10 @@ export function BillDiscounting({
     : 0
   const penaltyAmt = penaltyDays > 0 ? (String(repayForm.penalty ?? '').trim() === '' ? penaltyWorked : round2(n(repayForm.penalty))) : 0
   const unallocated = round2(spill - round2(n(repayForm.interest) + penaltyAmt + chargesTotal + alsoTotal))
+  const repayTds =
+    String(repayForm.tds_amount ?? '').trim() === ''
+      ? round2((n(repayForm.interest) * n(repayForm.tds_pct)) / 100)
+      : round2(n(repayForm.tds_amount))
   // The other bills one debit could have settled: same NBFC, funded, still
   // open, and not the one being looked at.
   const otherOpenBds = useMemo(
@@ -2137,8 +2143,21 @@ export function BillDiscounting({
       // The primary by default; only asked about when the bill has more.
       party_id: r.party_id ? String(r.party_id) : '',
       // The NBFC's penalty rate, asked only once the date is past maturity.
-      penalty_pct: String(n(nbfcs.find((x) => String(x.id) === String(r.nbfc_id))?.penalty_pct) || '')
+      penalty_pct: String(n(nbfcs.find((x) => String(x.id) === String(r.nbfc_id))?.penalty_pct) || ''),
+      // TDS on the interest: the bill's own % (10 if it has none), amount
+      // worked out until typed over.
+      tds_ledger: 'TDS ON INTEREST PAYABLE A/C',
+      tds_pct: String(n(r.tds_pct) || 10),
+      tds_amount: ''
     })
+    void window.api.journal
+      .accountNames()
+      .then((a: Row[]) =>
+        setTdsLedgers(
+          a.filter((x) => /DUTIES|TAX/i.test(String(x.acc_group || '')) || /TDS/i.test(String(x.name || ''))).map((x) => String(x.name))
+        )
+      )
+      .catch(() => setTdsLedgers([]))
     setRepayParts([])
     setRepayAlso([])
     setRepayCharges([])
@@ -2236,6 +2255,8 @@ export function BillDiscounting({
           .map((ch) => ({ account: ch.account.trim(), amount: round2(n(ch.amount)) })),
         // Interest paid in the same debit — gross, to the interest ledger.
         interest: String(repayForm.interest ?? '').trim() === '' ? null : Number(repayForm.interest),
+        tds_ledger: n(repayForm.interest) > 0 && repayTds > 0 ? String(repayForm.tds_ledger || '') : null,
+        tds_amount: n(repayForm.interest) > 0 && repayTds > 0 ? repayTds : null,
         penalty: penaltyAmt > 0.004 ? penaltyAmt : null,
         penalty_pct: penaltyAmt > 0.004 ? n(repayForm.penalty_pct) || null : null,
         penalty_days: penaltyAmt > 0.004 ? penaltyDays : null,
@@ -6891,7 +6912,7 @@ export function BillDiscounting({
 
                       Interest
 
-                      <InfoTip text="Interest the NBFC took in this same debit — gross. It posts to Interest on Bill Discounting on the repayment voucher, so the bank shows one line for the whole debit, as on the statement. TDS on it is entered separately, as before." />
+                      <InfoTip text="Interest the NBFC took in this same debit — gross. The whole debit goes to the bill discounter's ledger (Bills Discounted A/C To Bank A/C), and a journal books the interest: Interest on Bill Discounting To the bill discounter (less TDS), To the TDS ledger below." />
 
                     </Label>
 
@@ -6912,6 +6933,46 @@ export function BillDiscounting({
                     />
 
                   </div>
+                  {n(repayForm.interest) > 0 && (
+                    <div className="grid grid-cols-1 gap-2 sm:grid-cols-[minmax(0,1fr)_80px_120px]">
+                      <div className="flex min-w-0 flex-col gap-1">
+                        <Label className="text-[11px]">TDS ledger</Label>
+                        <SearchSelect
+                          value={String(repayForm.tds_ledger || '')}
+                          options={[...new Set([String(repayForm.tds_ledger || ''), ...tdsLedgers].filter(Boolean))]}
+                          onChange={(v) => setRepayForm((p) => ({ ...p, tds_ledger: v }))}
+                          placeholder="Pick the TDS ledger"
+                          className="h-8 w-full"
+                        />
+                      </div>
+                      <div className="flex flex-col gap-1">
+                        <Label className="text-[11px]">TDS %</Label>
+                        <Input
+                          type="number"
+                          step="0.01"
+                          className="h-8 tabular-nums"
+                          value={repayForm.tds_pct ?? ''}
+                          onChange={(e) => setRepayForm((p) => ({ ...p, tds_pct: e.target.value, tds_amount: '' }))}
+                        />
+                      </div>
+                      <div className="flex flex-col gap-1">
+                        <Label className="text-[11px]">TDS amount</Label>
+                        <Input
+                          type="number"
+                          step="0.01"
+                          className="h-8 tabular-nums"
+                          placeholder={String(repayTds)}
+                          value={repayForm.tds_amount ?? ''}
+                          onChange={(e) => setRepayForm((p) => ({ ...p, tds_amount: e.target.value }))}
+                        />
+                      </div>
+                      <div className="text-[11px] text-muted-foreground sm:col-span-3">
+                        Journal: Interest on Bill Discounting Dr {formatINR(n(repayForm.interest))} · To {repayRow?.nbfc_name || 'the bill discounter'}{' '}
+                        {formatINR(round2(n(repayForm.interest) - repayTds))}
+                        {repayTds > 0 ? ` · To ${repayForm.tds_ledger || 'TDS'} ${formatINR(repayTds)}` : ''}
+                      </div>
+                    </div>
+                  )}
                   {/* ANY OTHER CHARGE IN THE SAME DEBIT, ON ITS OWN LEDGER.
                       Commission, bank charges, processing fee, stamp duty —
                       one row each, so every rupee lands on the ledger it

@@ -3331,6 +3331,11 @@ const REQUIRED_COLUMNS: { table: string; column: string; type: string }[] = [
   { table: 'journal_line_splits', column: 'branch', type: 'TEXT' },
   // A sale billed to a SUPPLIER as a purchase return (sales.ts stampReturnSupplier).
   { table: 'sales', column: 'return_supplier_id', type: 'INTEGER' },
+  // A BD repayment's interest as its own journal, with the TDS held on it
+  // (billDiscounting.ts postBdInterestJournal).
+  { table: 'bd_repayments', column: 'interest_entry_id', type: 'INTEGER' },
+  { table: 'bd_repayments', column: 'tds_ledger', type: 'TEXT' },
+  { table: 'bd_repayments', column: 'tds_amount', type: 'REAL' },
   // A trading tanker's onward sale (onwardSale.ts) — always present, so the
   // sales list can read which tanker an invoice was raised from.
   { table: 'purchase_tankers', column: 'onward_sale_group', type: 'TEXT' },

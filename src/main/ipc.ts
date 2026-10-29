@@ -1842,6 +1842,8 @@ export function registerIpc(): void {
           amount?: number | string | null
           note?: string | null
           party_id?: number | null
+          tds_ledger?: string | null
+          tds_amount?: number | string | null
         }
       }
     ) => repayBd(id, values)
@@ -2060,6 +2062,17 @@ export function registerIpc(): void {
     await assertAdmin('Removing Tally copies')
     const { removeParkingCopies } = await import('./parkingCopies')
     return removeParkingCopies((a?.keys || []).map(String))
+  })
+  // BD repayments with the interest still on the payment (bdInterestJournalFix.ts).
+  handle('repairs:bdInterestJournals:list', async () => {
+    await assertAdmin('The accounting checks')
+    const { previewBdInterestJournals } = await import('./bdInterestJournalFix')
+    return previewBdInterestJournals()
+  })
+  handle('repairs:bdInterestJournalsFix', async (_e, a: { ids: number[]; tdsLedger: string; tdsPct: number }) => {
+    await assertAdmin('Re-posting BD repayment interest')
+    const { fixBdInterestJournals } = await import('./bdInterestJournalFix')
+    return fixBdInterestJournals((a?.ids || []).map(Number), String(a?.tdsLedger || ''), Number(a?.tdsPct) || 0)
   })
   // Purchase vouchers that still post the supplier's interest to INTEREST A/C.
   handle('repairs:purchaseInterest:list', async () => {

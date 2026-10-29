@@ -57,6 +57,10 @@ export function BdRepaymentEdit({
   const [charges, setCharges] = useState<{ account: string; amount: string; from?: number }[]>([])
   // Interest paid in the same debit — gross.
   const [intr, setIntr] = useState('')
+  // TDS held on that interest, and the ledger it goes to.
+  const [tdsLedger, setTdsLedger] = useState('')
+  const [tdsAmt, setTdsAmt] = useState('')
+  const [tdsLedgers, setTdsLedgers] = useState<string[]>([])
   const [note, setNote] = useState('')
   const [noteWas, setNoteWas] = useState('')
   // `from` marks a line brought in by combining another repayment (its
@@ -96,6 +100,8 @@ export function BdRepaymentEdit({
     const it = round2(group.reduce((t, g) => t + n(g.interest), 0) || n(r.interest))
     setCharges(chargeRowsOf(group.some((g) => g.comm_charges != null || g.bank_charges != null || g.charges) ? group : [r]))
     setIntr(it ? String(it) : '')
+    setTdsLedger(String(r.tds_ledger || 'TDS ON INTEREST PAYABLE A/C'))
+    setTdsAmt(n(r.tds_amount) ? String(round2(n(r.tds_amount))) : '')
     setNote(String(r.note || ''))
     setNoteWas(String(r.note || ''))
     setMerge({})
@@ -109,6 +115,7 @@ export function BdRepaymentEdit({
       .accountNames()
       .then((accts: Row[]) => {
         setBanks(accts.filter((a) => ['Bank Accounts', 'Bank OD A/c'].includes(String(a.acc_group || ''))).map((a) => String(a.name)))
+        setTdsLedgers(accts.filter((a) => /DUTIES|TAX/i.test(String(a.acc_group || '')) || /TDS/i.test(String(a.name || ''))).map((a) => String(a.name)))
       })
       .catch(() => setBanks([]))
   }, [repayment])
@@ -196,6 +203,8 @@ export function BdRepaymentEdit({
           .filter((c) => c.account.trim() && round2(n(c.amount)) > 0)
           .map((c) => ({ account: c.account.trim(), amount: round2(n(c.amount)) })),
         interest: intr.trim() === '' ? 0 : n(intr),
+        tds_ledger: n(intr) > 0 && n(tdsAmt) > 0 ? tdsLedger : null,
+        tds_amount: n(intr) > 0 ? round2(n(tdsAmt)) : 0,
         // Sent only when changed: a bill that shared the debit carries its own
         // "Part of one … debit" line, which is not the debit's note.
         note: note !== noteWas ? note.trim() || null : undefined,
@@ -343,6 +352,30 @@ export function BdRepaymentEdit({
                       <span className={lbl}>Interest</span>
                       <input inputMode="decimal" value={intr} onChange={(e) => setIntr(e.target.value)} placeholder="0" className={`${inp} text-right`} />
                     </label>
+                    {n(intr) > 0 && (
+                      <div className="grid gap-3 sm:grid-cols-[minmax(0,1fr)_140px]">
+                        <div className="grid min-w-0 gap-1.5">
+                          <span className={lbl}>TDS ledger</span>
+                          <SearchSelect
+                            value={tdsLedger}
+                            options={[...new Set([tdsLedger, ...tdsLedgers].filter(Boolean))]}
+                            onChange={setTdsLedger}
+                            placeholder="Pick the TDS ledger"
+                            className="w-full"
+                          />
+                        </div>
+                        <label className="grid gap-1.5">
+                          <span className={lbl}>TDS amount</span>
+                          <input
+                            inputMode="decimal"
+                            value={tdsAmt}
+                            onChange={(e) => setTdsAmt(e.target.value)}
+                            placeholder={`10% = ${round2(n(intr) * 0.1)}`}
+                            className={`${inp} text-right`}
+                          />
+                        </label>
+                      </div>
+                    )}
                     <div className="grid gap-1.5">
                       <span className={lbl}>Charges, or money paid over the balance</span>
                       <ChargeRows value={charges} onChange={(next) => setCharges(next)} />

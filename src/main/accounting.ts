@@ -694,7 +694,7 @@ async function docLinks(): Promise<{ lc: Map<number, { id: number; no: string }>
   const bdNo = new Map<number, string>(bds.map((x) => [Number(x.id), x.bd_no == null ? '' : String(x.bd_no)]))
   for (const x of bds)
     for (const col of ['journal_entry_id', 'repay_journal_entry_id', 'margin_release_journal_entry_id']) put(bd, x[col], Number(x.id), bdNo.get(Number(x.id)) || '')
-  for (const sql of ['SELECT bd_id, journal_entry_id AS je FROM bd_repayments ORDER BY rowid', 'SELECT bd_id, journal_entry_id AS je FROM bd_interest_payments ORDER BY rowid']) {
+  for (const sql of ['SELECT bd_id, journal_entry_id AS je FROM bd_repayments ORDER BY rowid', 'SELECT bd_id, interest_entry_id AS je FROM bd_repayments WHERE interest_entry_id IS NOT NULL ORDER BY rowid', 'SELECT bd_id, journal_entry_id AS je FROM bd_interest_payments ORDER BY rowid']) {
     const rs = await safe(sql)
     for (const r of rs) {
       const id = Number(r.bd_id)

@@ -356,8 +356,11 @@ async function dropRepayEntries(bd: Row): Promise<void> {
       WHERE mine.bd_id=? LIMIT 1`, args: [Number(bd.id)]
   })
   if (shared.rows.length) throw new Error('This bill shares a repayment with another bill — undo that combined repayment first')
-  const parts = await c.execute({ sql: 'SELECT journal_entry_id FROM bd_repayments WHERE bd_id = ?', args: [Number(bd.id)] })
-  for (const r of parts.rows) await dropEntry(n(r.journal_entry_id) || null)
+  const parts = await c.execute({ sql: 'SELECT journal_entry_id, interest_entry_id FROM bd_repayments WHERE bd_id = ?', args: [Number(bd.id)] })
+  for (const r of parts.rows) {
+    await dropEntry(n(r.interest_entry_id) || null)
+    await dropEntry(n(r.journal_entry_id) || null)
+  }
   await c.execute({ sql: 'DELETE FROM bd_repayments WHERE bd_id = ?', args: [Number(bd.id)] })
   await dropEntry(n(bd.repay_journal_entry_id) || null)
 }
@@ -1517,6 +1520,34 @@ function inr(v: number): string {
 // `settleVia: 'bank'` posts the payment straight from our own bank; `'party'`
 // posts it against the supplier/customer ledger instead — bill-wise (a ref) or
 // on account (blank), the same allocation choice LC/orders/sales already use.
+// THE INTEREST OF A REPAYMENT, BOOKED: Dr INTEREST ON BILL DISCOUNTING,
+// Cr the bill discounter (interest less TDS), Cr the TDS ledger — the debit for
+// it already sits on the discounter's ledger in the payment.
+async function postBdInterestJournal(
+  bd: Row,
+  date: string,
+  interest: number,
+  tds: number,
+  tdsLedger: { name: string; group: string }
+): Promise<number> {
+  const lines: JournalLine[] = [
+    { account: 'INTEREST ON BILL DISCOUNTING A/C', group: 'Indirect Expenses', dr: interest },
+    { account: bdPayable(bd), group: BD_PAYABLE_GROUP, cr: round2(interest - tds) }
+  ]
+  if (tds > 0.004) lines.push({ account: tdsLedger.name, group: tdsLedger.group, cr: tds })
+  const je = await postJournal({
+    date,
+    vchType: 'JOURNAL',
+    vchNo: String(bd.bd_no || ''),
+    narration:
+      `Interest on Bill Discounting ${bd.bd_no} — ${inr(interest)} to ${bd.nbfc_name || 'the NBFC'}` +
+      (tds > 0.004 ? `, TDS ${inr(tds)} held to ${tdsLedger.name}` : ''),
+    companyId: n(bd.company_id) || undefined,
+    lines
+  })
+  return je.id
+}
+
 export async function repayBd(
   id: number,
   v: {
@@ -1559,6 +1590,10 @@ export async function repayBd(
      * voucher, one bank credit, and a repayment row against each bill.
      */
     also?: { bd_id?: number | string; amount?: number | string }[]
+    // TDS HELD ON THE INTEREST — the ledger it goes to and how much. The
+    // interest is booked by a journal of its own (postBdInterestJournal).
+    tds_ledger?: string | null
+    tds_amount?: number | string | null
   }
 ): Promise<{ id: number; amount: number; outstanding: number; closed: boolean }> {
   return withDbTransaction(async () => {
@@ -1628,6 +1663,18 @@ export async function repayBd(
   const repayBank = settleVia === 'bank' ? await bdBankFor(bd, v.bank_account) : null
   if (comm < 0 || bankCharges < 0) throw new Error('Charges cannot be negative')
   if (interestPaid < 0) throw new Error('Interest cannot be negative')
+  const tdsAmt = round2(n(v.tds_amount))
+  let tdsLedger = { name: '', group: 'Duties & Taxes' }
+  if (tdsAmt < 0) throw new Error('TDS cannot be negative')
+  if (tdsAmt > 0.004) {
+    if (tdsAmt > interestPaid + 0.004) throw new Error('The TDS is more than the interest')
+    const nm = String(v.tds_ledger || '').trim()
+    if (!nm) throw new Error('Pick the TDS ledger')
+    const t = await c.execute({ sql: 'SELECT name, acc_group FROM ledger_accounts WHERE UPPER(TRIM(name)) = UPPER(?) LIMIT 1', args: [nm] })
+    // A ledger not made yet (TDS ON INTEREST PAYABLE A/C on a fresh book) is
+    // made by the journal under Duties & Taxes.
+    tdsLedger = t.rows.length ? { name: String(t.rows[0].name), group: String(t.rows[0].acc_group || 'Duties & Taxes') } : { name: nm, group: 'Duties & Taxes' }
+  }
   // CHARGES ON A LEDGER OF THE USER'S CHOOSING — as many as the debit carried.
   // The ledger must already exist: a typo would otherwise open a new one.
   const charges: { account: string; group: string; amount: number }[] = []
@@ -1699,12 +1746,15 @@ export async function repayBd(
   // One debit for the principal of every bill this payment settled. Summed
   // rather than a line each: the ledger carries one account, and which bill
   // took what is on the repayment rows and in the narration below.
+  // THE PAYMENT is the bill discounter's for the whole of principal AND
+  // interest — Bills Discounted A/C To Bank A/C — and the interest is put on
+  // that ledger by a journal of its own (Interest To Bills Discounted, To TDS),
+  // the way Tally books it.
   const lines: JournalLine[] = [
-    { account: bdPayable(bd), group: BD_PAYABLE_GROUP, dr: round2(asked + toOthers) }
+    { account: bdPayable(bd), group: BD_PAYABLE_GROUP, dr: round2(asked + toOthers + interestPaid) }
   ]
   if (comm > 0.004) lines.push({ account: 'COMM. CHARGES A/C', group: 'Indirect Expenses', dr: comm })
   if (bankCharges > 0.004) lines.push({ account: 'BANK CHARGES A/C', group: 'Indirect Expenses', dr: bankCharges })
-  if (interestPaid > 0.004) lines.push({ account: 'INTEREST ON BILL DISCOUNTING A/C', group: 'Indirect Expenses', dr: interestPaid })
   if (penaltyPaid > 0.004) lines.push({ account: 'PENAL INTEREST ON BILL DISCOUNTING A/C', group: 'Indirect Expenses', dr: penaltyPaid })
   for (const ch of charges) lines.push({ account: ch.account, group: ch.group, dr: ch.amount })
   if (settleVia === 'party') {
@@ -1773,6 +1823,11 @@ export async function repayBd(
   // startup — bd_repay_interest_v1).
   if (interestPaid > 0.004) {
     await c.execute({ sql: 'UPDATE bd_repayments SET interest = ? WHERE id = ?', args: [interestPaid, Number(insRep.lastInsertRowid || 0)] })
+    const ij = await postBdInterestJournal(bd, date, interestPaid, tdsAmt, tdsLedger)
+    await c.execute({
+      sql: 'UPDATE bd_repayments SET interest_entry_id = ?, tds_ledger = ?, tds_amount = ? WHERE id = ?',
+      args: [ij, tdsAmt > 0.004 ? tdsLedger.name : null, tdsAmt > 0.004 ? tdsAmt : null, Number(insRep.lastInsertRowid || 0)]
+    })
   }
   if (penaltyPaid > 0.004) {
     await c.execute({
@@ -2525,6 +2580,11 @@ export async function deleteBdRepayment(repaymentId: number): Promise<{ id: numb
     : [{ id: repaymentId, bd_id: bdId }]
   const touched = Array.from(new Set(siblings.map((x) => n(x.bd_id)).filter((x) => x > 0)))
 
+  // Each share's interest journal goes with the payment.
+  const interestJes = je
+    ? toPlain(await c.execute({ sql: 'SELECT interest_entry_id FROM bd_repayments WHERE journal_entry_id = ? AND interest_entry_id IS NOT NULL', args: [je] }))
+    : n(part.interest_entry_id) ? [{ interest_entry_id: part.interest_entry_id }] : []
+  for (const x of interestJes) await dropEntry(n(x.interest_entry_id) || null)
   await dropEntry(je || null)
   if (je) {
     await c.execute({ sql: 'DELETE FROM bd_repayments WHERE journal_entry_id = ?', args: [je] })
@@ -2578,6 +2638,9 @@ export async function editBdRepayment(
     comm_charges?: number | string | null
     bank_charges?: number | string | null
     interest?: number | string | null
+    // TDS on the interest — left out, it stays as it was.
+    tds_ledger?: string | null
+    tds_amount?: number | string | null
     charges?: { account?: string; amount?: string | number }[] | null
     note?: string | null
     // What the debit put against each bill — this repayment's bill and any
@@ -2608,6 +2671,8 @@ export async function editBdRepayment(
     const oldHead = oldJe
       ? toPlain(await c.execute({ sql: 'SELECT vch_type FROM journal_entries WHERE id = ?', args: [oldJe] }))[0]
       : null
+    // The interest journal keeps its number too.
+    const oldIntJe = n(primary.interest_entry_id)
     // The repayments being folded in — each a debit of its own today.
     const mergeRows: Row[] = []
     const seenJe = new Set<number>([oldJe])
@@ -2689,7 +2754,9 @@ export async function editBdRepayment(
       amount: debit,
       note: v.note === undefined ? (primary.note ? String(primary.note) : null) : v.note,
       release_margin: oldMargins.has(primaryId) || undefined,
-      also
+      also,
+      tds_ledger: v.tds_ledger === undefined ? (primary.tds_ledger ? String(primary.tds_ledger) : null) : v.tds_ledger,
+      tds_amount: v.tds_amount === undefined ? n(primary.tds_amount) || null : v.tds_amount
     })
 
     // THE NEW VOUCHER TAKES THE OLD ONE'S PLACE.
@@ -2708,6 +2775,7 @@ export async function editBdRepayment(
       })
       await c.execute({ sql: 'UPDATE journal_lines SET entry_id = ? WHERE entry_id = ?', args: [to, from] })
       await c.execute({ sql: 'UPDATE bd_repayments SET journal_entry_id = ? WHERE journal_entry_id = ?', args: [to, from] })
+      await c.execute({ sql: 'UPDATE bd_repayments SET interest_entry_id = ? WHERE interest_entry_id = ?', args: [to, from] })
       await c.execute({ sql: 'UPDATE bill_discountings SET margin_release_journal_entry_id = ? WHERE margin_release_journal_entry_id = ?', args: [to, from] })
       await c.execute({ sql: 'DELETE FROM voucher_numbers WHERE entry_id = ?', args: [from] }).catch(() => {})
       await c.execute({ sql: 'DELETE FROM journal_entries WHERE id = ?', args: [from] })
@@ -2717,6 +2785,10 @@ export async function editBdRepayment(
       await c.execute({ sql: 'SELECT journal_entry_id FROM bd_repayments WHERE bd_id = ? ORDER BY id DESC LIMIT 1', args: [primaryId] })
     )[0]
     const entry = await moveEntry(n(fresh?.journal_entry_id), oldJe, oldHead ? String(oldHead.vch_type) : null)
+    if (oldIntJe) {
+      const ni = toPlain(await c.execute({ sql: 'SELECT interest_entry_id FROM bd_repayments WHERE journal_entry_id = ? AND interest_entry_id IS NOT NULL LIMIT 1', args: [entry] }))[0]
+      if (n(ni?.interest_entry_id)) await moveEntry(n(ni.interest_entry_id), oldIntJe, 'JOURNAL')
+    }
     for (const [id, oldM] of oldMargins) {
       const b = await loadBd(id)
       const now = n(b.margin_release_journal_entry_id)
