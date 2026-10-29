@@ -1252,16 +1252,28 @@ export async function billsOutstanding(
   }
 
   // The ledger's own closing balance as at asOf, signed the same way the
-  // statement shows it (positive = Dr).
+  // statement shows it (positive = Dr) — and worked out the way the statement
+  // works it: where the books start on a date, the opening entered for this
+  // book plus the postings from that day. Every posting ever, opening left
+  // out, put the total ₹2.92 Cr away from the ledger on a party whose June LC
+  // payments sat inside its 1 July opening.
+  const booksFrom = await getBooksFrom(cid)
   const balRes = accountId
     ? await c.execute({
         sql: `SELECT ROUND(COALESCE(SUM(jl.dr), 0) - COALESCE(SUM(jl.cr), 0), 2) AS bal
               FROM journal_lines jl JOIN journal_entries je ON je.id = jl.entry_id
-              WHERE jl.account_id = ? AND je.company_id = ? AND je.entry_date <= ?`,
-        args: [accountId, cid, asOf]
+              WHERE jl.account_id = ? AND je.company_id = ? AND je.entry_date <= ? AND je.entry_date >= ?`,
+        args: [accountId, cid, asOf, booksFrom || '0000-00-00']
       })
     : null
-  const balance = balRes ? n(balRes.rows[0]?.bal) : 0
+  const openRes =
+    accountId && booksFrom
+      ? await c.execute({
+          sql: 'SELECT COALESCE(SUM(dr), 0) - COALESCE(SUM(cr), 0) AS v FROM ledger_openings WHERE account_id = ? AND company_id = ?',
+          args: [accountId, cid]
+        })
+      : null
+  const balance = round2((balRes ? n(balRes.rows[0]?.bal) : 0) + (openRes ? n(openRes.rows[0]?.v) : 0))
 
   // CREDITORS: PAYMENTS WITH NO AGST REF CLEAR THE OLDEST BILLS FIRST.
   //
@@ -1280,9 +1292,9 @@ export async function billsOutstanding(
           sql: `SELECT je.id AS entry_id, je.entry_date, je.vch_type, je.vch_no, je.narration, jl.dr,
                        COALESCE((SELECT SUM(ba.amount) FROM journal_bill_allocs ba WHERE ba.line_id = jl.id AND ba.method = 'agst_ref'), 0) AS named
                   FROM journal_lines jl JOIN journal_entries je ON je.id = jl.entry_id
-                 WHERE jl.account_id = ? AND je.company_id = ? AND je.entry_date <= ? AND jl.dr > 0
+                 WHERE jl.account_id = ? AND je.company_id = ? AND je.entry_date <= ? AND je.entry_date >= ? AND jl.dr > 0
                  ORDER BY je.entry_date, je.id`,
-          args: [accountId, cid, asOf]
+          args: [accountId, cid, asOf, booksFrom || '0000-00-00']
         })
       )
         .map((x): Row => ({ ...x, free: round2(n(x.dr) - n(x.named)) }))
