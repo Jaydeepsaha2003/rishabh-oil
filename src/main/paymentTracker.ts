@@ -27,7 +27,7 @@
  * why the tracker's buttons open those registers' own screens rather than
  * ticking a box of their own.
  */
-import { todayISO } from './db'
+import { getClient, todayISO } from './db'
 import { listLCs } from './lc'
 import { bdCalc, bdInterestSchedule, listBd, listBdInterestPayments } from './billDiscounting'
 import { listBdOpenTradingInvoices, listLcOpenTradingInvoices } from './treasury'
@@ -378,12 +378,46 @@ async function bdItems(): Promise<Item[]> {
   return out
 }
 
+// REJECTED ITEMS — ones the desk says will never be paid or received (an
+// interest rest the NBFC never charged, say). Kept by key, shared by every
+// viewer; a rejected row reads as settled ("Rejected") and Restore undoes it.
+async function ensureRejected(): Promise<void> {
+  await getClient().execute(`CREATE TABLE IF NOT EXISTS payment_tracker_rejected (
+      item_key TEXT PRIMARY KEY, reason TEXT, rejected_at TEXT NOT NULL DEFAULT (datetime('now')))`)
+}
+
+export async function rejectTrackerItem(key: string, reason?: string | null): Promise<{ key: string }> {
+  const k = String(key || '').trim()
+  if (!k) throw new Error('Nothing to reject')
+  await ensureRejected()
+  await getClient().execute({
+    sql: 'INSERT OR REPLACE INTO payment_tracker_rejected (item_key, reason) VALUES (?, ?)',
+    args: [k, reason ? String(reason).trim() || null : null]
+  })
+  return { key: k }
+}
+
+export async function restoreTrackerItem(key: string): Promise<{ key: string }> {
+  await ensureRejected()
+  await getClient().execute({ sql: 'DELETE FROM payment_tracker_rejected WHERE item_key = ?', args: [String(key || '')] })
+  return { key: String(key || '') }
+}
+
 export async function listPaymentTracker(): Promise<Row[]> {
   const today = todayISO()
   const items = [...(await lcItems()), ...(await bdItems())]
+  await ensureRejected()
+  const rejected = new Map(
+    ((await getClient().execute('SELECT item_key, reason, rejected_at FROM payment_tracker_rejected')).rows as unknown as Row[]).map((r) => [
+      String(r.item_key),
+      r
+    ])
+  )
   const rows = items.map((x) => {
-    const daysLeft = x.due_date ? daysBetween(today, x.due_date) : null
-    return { ...x, days_left: daysLeft, overdue: !x.settled && daysLeft != null && daysLeft < 0 }
+    const rj = !x.settled ? rejected.get(x.key) : undefined
+    const y = rj ? { ...x, settled: true, settled_date: day10(rj.rejected_at), rejected: true, reject_reason: rj.reason || null } : x
+    const daysLeft = y.due_date ? daysBetween(today, y.due_date) : null
+    return { ...y, days_left: daysLeft, overdue: !y.settled && daysLeft != null && daysLeft < 0 }
   })
   rows.sort((a, b) => {
     if (a.settled !== b.settled) return a.settled ? 1 : -1

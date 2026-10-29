@@ -194,7 +194,7 @@ import { listNotes, listNoteItems, createNote, updateNote, deleteNote } from './
 import { daybook } from './daybook'
 import { dashboardStats } from './dashboard'
 import { dailyPosition } from './dailyPosition'
-import { listPaymentTracker } from './paymentTracker'
+import { listPaymentTracker, rejectTrackerItem, restoreTrackerItem } from './paymentTracker'
 import { getDashLayout, saveDashLayout } from './dashLayout'
 import { applyProductMerge, listProductMerges, previewProductMerge } from './productMerge'
 import { getProductionPlan, saveProductionPlan } from './productionPlan'
@@ -1670,6 +1670,8 @@ export function registerIpc(): void {
   handle('lc:list', (_e, args?: { companyId?: number }) => listLCs(args?.companyId))
   handle('treasury:alerts', (_e, a?: { all?: boolean }) => treasuryAlerts({ all: !!a?.all }))
   handle('treasury:paymentTracker', () => listPaymentTracker())
+  handle('treasury:trackerReject', (_e, { key, reason }: { key: string; reason?: string | null }) => rejectTrackerItem(key, reason))
+  handle('treasury:trackerRestore', (_e, { key }: { key: string }) => restoreTrackerItem(key))
   handle('treasury:settleLcBill', (_e, { id, date }: { id: number; date?: string }) => settleLcBill(id, date))
   handle('treasury:reopenLcBill', (_e, { id }: { id: number }) => reopenLcBill(id))
   handle('lc:issuances', (_e, { lcId }: { lcId: number }) => listLCIssuances(lcId))

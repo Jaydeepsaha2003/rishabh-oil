@@ -567,6 +567,8 @@ export interface Api {
   treasury: {
     alerts: (all?: boolean) => Promise<Row>
     paymentTracker: () => Promise<Row[]>
+    trackerReject: (key: string, reason?: string | null) => Promise<{ key: string }>
+    trackerRestore: (key: string) => Promise<{ key: string }>
     settleLcBill: (id: number, date?: string) => Promise<{ id: number }>
     reopenLcBill: (id: number) => Promise<{ id: number }>
   }

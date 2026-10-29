@@ -3250,6 +3250,22 @@ function TreasuryDesk({ onCompanyChange, focusLcId, focusBdId, onFocusHandled }:
               rows={tracker}
               onAction={trackerAction}
               canAct={(r) => mayOpenTab(r.src === 'lc' ? 'lc' : 'bd')}
+              onReject={(r) => {
+                const reason = window.prompt(`Reject "${String(r.ref || '')}${r.party ? ` · ${String(r.party)}` : ''}" — ${String(r.detail || '')}?\n\nIt comes off the tracker for everyone (Show settled → Restore brings it back). Reason (optional):`, '')
+                if (reason === null) return
+                void window.api.treasury
+                  .trackerReject(String(r.key), reason)
+                  .then(() => window.api.treasury.paymentTracker().then(setTracker))
+                  .then(() => toast.success('Rejected — off the tracker'))
+                  .catch((e) => toast.error((e as Error).message))
+              }}
+              onRestore={(r) =>
+                void window.api.treasury
+                  .trackerRestore(String(r.key))
+                  .then(() => window.api.treasury.paymentTracker().then(setTracker))
+                  .then(() => toast.success('Restored to the tracker'))
+                  .catch((e) => toast.error((e as Error).message))
+              }
             />
           </TabsContent>
 

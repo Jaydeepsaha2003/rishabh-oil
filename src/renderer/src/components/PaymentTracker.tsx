@@ -14,6 +14,8 @@ import {
   CircleCheck,
   Clock,
   Eye,
+  Ban,
+  Undo2,
   FilterX,
   Landmark,
   LockOpen,
@@ -224,11 +226,16 @@ function useTrackerView(rows: Row[]) {
 export function PaymentTracker({
   rows,
   onAction,
-  canAct
+  canAct,
+  onReject,
+  onRestore
 }: {
   rows: Row[]
   // Opens the register screen that settles the row (or shows a settled one).
   onAction: (r: Row) => void
+  // Reject: never to be paid/received, so off the list; Restore undoes it.
+  onReject?: (r: Row) => void
+  onRestore?: (r: Row) => void
   // Whether this viewer may open that register at all.
   canAct: (r: Row) => boolean
 }): React.JSX.Element {
@@ -500,7 +507,7 @@ export function PaymentTracker({
                   {g.in > 0.004 && <span className="whitespace-nowrap text-[11.5px] font-bold tabular-nums text-[#0B6B45]">in {formatINR(g.in)}</span>}
                 </div>
                 {g.rows.map((r) => (
-                  <TrackerRow key={String(r.key)} r={r} onAction={onAction} canAct={canAct(r)} />
+                  <TrackerRow key={String(r.key)} r={r} onAction={onAction} canAct={canAct(r)} onReject={onReject} onRestore={onRestore} />
                 ))}
               </div>
             ))}
@@ -528,7 +535,19 @@ export function PaymentTracker({
   )
 }
 
-function TrackerRow({ r, onAction, canAct }: { r: Row; onAction: (r: Row) => void; canAct: boolean }): React.JSX.Element {
+function TrackerRow({
+  r,
+  onAction,
+  canAct,
+  onReject,
+  onRestore
+}: {
+  r: Row
+  onAction: (r: Row) => void
+  canAct: boolean
+  onReject?: (r: Row) => void
+  onRestore?: (r: Row) => void
+}): React.JSX.Element {
   const m = KIND[(r.kind as Kind) || 'lc_mat'] || KIND.lc_mat
   const d = dOf(r)
   const settled = !!r.settled
@@ -537,7 +556,10 @@ function TrackerRow({ r, onAction, canAct }: { r: Row; onAction: (r: Row) => voi
   const soon = !settled && d != null && d >= 1 && d <= 3
   const out = r.dir === 'out'
   const amtFg = out ? '#8C2F26' : '#0B6B45'
-  const when = settled
+  const rejected = !!r.rejected
+  const when = rejected
+    ? `rejected ${r.settled_date ? dmy(r.settled_date) : ''}`.trim()
+    : settled
     ? r.settled_date
       ? `settled ${dmy(r.settled_date)}`
       : 'settled'
@@ -548,11 +570,13 @@ function TrackerRow({ r, onAction, canAct }: { r: Row; onAction: (r: Row) => voi
         : today
           ? 'due today'
           : `in ${d} ${d === 1 ? 'day' : 'days'}`
-  const tone = settled ? 'good' : late ? 'bad' : today || soon ? 'warn' : 'none'
+  const tone = rejected ? 'none' : settled ? 'good' : late ? 'bad' : today || soon ? 'warn' : 'none'
   const whenFg = tone === 'good' ? '#0B6B45' : tone === 'bad' ? '#B3261E' : tone === 'warn' ? '#8A5300' : '#5A6B62'
   const edge = settled ? '#12855A' : late ? '#B3261E' : today || soon ? '#C2700A' : 'transparent'
   const bg = settled ? '#FBFDFA' : late ? '#FFF8F7' : today ? '#FFFBF2' : '#fff'
-  const status = settled
+  const status = rejected
+    ? { label: 'Rejected', Icon: Ban }
+    : settled
     ? { label: 'Settled', Icon: CircleCheck }
     : late
       ? { label: 'Overdue', Icon: CircleAlert }
@@ -618,8 +642,30 @@ function TrackerRow({ r, onAction, canAct }: { r: Row; onAction: (r: Row) => voi
           {status.label}
         </span>
       </div>
-      <div className="flex justify-end pl-2 pr-3.5">
-        {canAct && (
+      <div className="flex items-center justify-end gap-1.5 pl-2 pr-3.5">
+        {rejected && canAct && onRestore && (
+          <button
+            type="button"
+            onClick={() => onRestore(r)}
+            title={r.reject_reason ? `Rejected: ${String(r.reject_reason)} — bring it back onto the list` : 'Bring it back onto the list'}
+            className="flex h-8 items-center gap-1.5 whitespace-nowrap rounded-[4px] border border-[#C3D2C6] bg-white px-[11px] text-[11.5px] font-extrabold text-[#33473E] hover:bg-[#F7FAF6]"
+          >
+            <Undo2 className="h-4 w-4" />
+            Restore
+          </button>
+        )}
+        {!settled && canAct && onReject && (
+          <button
+            type="button"
+            onClick={() => onReject(r)}
+            title="Reject — this will not be paid or received; take it off the list"
+            aria-label="Reject"
+            className="flex h-8 w-8 flex-none items-center justify-center rounded-[4px] border border-[#F0D6D4] bg-white text-[#B3261E] hover:bg-[#FDF3F2]"
+          >
+            <Ban className="h-4 w-4" />
+          </button>
+        )}
+        {canAct && !rejected && (
           <button
             type="button"
             onClick={() => onAction(r)}

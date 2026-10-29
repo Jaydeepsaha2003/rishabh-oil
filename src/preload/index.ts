@@ -849,6 +849,8 @@ const api = {
   treasury: {
     alerts: (all?: boolean): Promise<Row> => ipcRenderer.invoke('treasury:alerts', { all }),
     paymentTracker: (): Promise<Row[]> => ipcRenderer.invoke('treasury:paymentTracker'),
+    trackerReject: (key: string, reason?: string | null): Promise<{ key: string }> => ipcRenderer.invoke('treasury:trackerReject', { key, reason }),
+    trackerRestore: (key: string): Promise<{ key: string }> => ipcRenderer.invoke('treasury:trackerRestore', { key }),
     settleLcBill: (id: number, date?: string): Promise<{ id: number }> =>
       ipcRenderer.invoke('treasury:settleLcBill', { id, date }),
     reopenLcBill: (id: number): Promise<{ id: number }> => ipcRenderer.invoke('treasury:reopenLcBill', { id })
