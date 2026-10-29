@@ -4,6 +4,8 @@ import { Input } from '@/components/ui/input'
 import { formatDate, formatINR, formatNum } from '@/lib/format'
 import { cn } from '@/lib/utils'
 import { useLiveRefresh } from '@/lib/useLiveRefresh'
+import { ExcelButton } from '@/components/ExcelButton'
+import { NUM_MONEY, NUM_QTY } from '@/lib/excel'
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Row = Record<string, any>
@@ -360,6 +362,30 @@ export function TradingPayments({
             )
           })}
         </div>
+        {/* What the list shows — side, status, period and search as set. */}
+        <ExcelButton
+          filename="Trading payments"
+          sheetName="Trading payments"
+          title="Purchase & Sales Trading — payments"
+          subtitle={range ? `${formatDate(range.from)} to ${formatDate(range.to)}` : undefined}
+          rows={[...visible].sort((a, b) => String(b.deal_date || '').localeCompare(String(a.deal_date || '')) || n(a.deal_id) - n(b.deal_id))}
+          columns={[
+            { header: 'Deal date', key: 'deal_date', width: 12, value: (r) => formatDate(r.deal_date) },
+            { header: 'Product', key: 'product_code', width: 16, value: (r) => r.product_code || r.product_name || '' },
+            { header: 'Side', key: 'side', width: 7, value: (r) => (r.side === 'purchase' ? 'Buy' : 'Sell') },
+            { header: 'Invoice', key: 'invoice_no', width: 16 },
+            { header: 'Invoice date', key: 'invoice_date', width: 12, value: (r) => formatDate(r.invoice_date) },
+            { header: 'Party', key: 'party_name', width: 34 },
+            { header: 'Bill amount', key: 'amount', width: 16, align: 'right', numFmt: NUM_MONEY, value: (r) => n(r.amount) },
+            ...CHANNELS.map((k) => ({ header: `Paid via ${CH[k].label}`, key: `by_${k}`, width: 15, align: 'right' as const, numFmt: NUM_MONEY, value: (r: Row) => byChannel(r)[k] || 0 })),
+            { header: 'Settled', key: 'settled_total', width: 16, align: 'right', numFmt: NUM_MONEY, value: (r) => n(r.settled_total) },
+            { header: 'Pending', key: 'pending', width: 16, align: 'right', numFmt: NUM_MONEY, value: (r) => n(r.pending) },
+            { header: 'Pending (MT)', key: 'pending_qty', width: 12, align: 'right', numFmt: NUM_QTY, value: (r) => n(r.pending_qty) },
+            { header: 'Status', key: 'status', width: 10, value: (r) => (r.overdue ? 'Overdue' : r.status === 'settled' ? 'Settled' : r.status === 'part' ? 'Part paid' : 'Pending') },
+            { header: 'Due', key: 'due_date', width: 12, value: (r) => (r.status === 'settled' || !r.due_date ? '' : formatDate(r.due_date)) },
+            { header: 'Financed by', key: 'financed_by', width: 24, value: (r) => ((r.financed_by ?? []) as Row[]).map((x) => x.ref).join(', ') || 'Own funds' }
+          ]}
+        />
       </div>
 
       <div className="overflow-hidden rounded-[4px] border border-[#D6E2D6] bg-white">
