@@ -16905,7 +16905,11 @@ export function Accounts({
             left: W >= 1400 ? 20 : 14,
             top: W >= 1400 ? 16 : 12,
             bottom: W >= 1400 ? 14 : 12,
-            width: 'min(340px, calc(100% - 28px))',
+            // As wide as the longest name (TDS PAYABLE ON COMMISS. & BROKER…),
+            // within 340–720px and the screen.
+            width: 'max-content',
+            minWidth: 'min(340px, calc(100% - 28px))',
+            maxWidth: 'min(720px, calc(100% - 28px))',
             boxShadow: '18px 0 44px -22px rgba(10,31,23,.5)'
           }}
         >
