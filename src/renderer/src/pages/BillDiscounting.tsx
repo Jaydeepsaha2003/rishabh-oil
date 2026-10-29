@@ -2132,12 +2132,33 @@ export function BillDiscounting({
     }
   }
 
+  // INTEREST UP TO THE REPAY DATE, on the principal still outstanding: from
+  // the day after the last repayment or interest paid-to (or the receipt) to
+  // and including the repay date — Vanik's way (bdInterestWithRepayments).
+  // Returned net of TDS, which is what the debit carries.
+  const repayInterestTo = (date: string, tdsPct: number): number => {
+    const r = repayRow
+    if (!r || !date) return 0
+    const day = (d: string): number => Date.parse(`${d.slice(0, 10)}T00:00:00Z`) / 86400000
+    const rec = String(r.payment_received_date || '').slice(0, 10)
+    const last = [...repayParts.map((p) => String(p.repay_date || '').slice(0, 10)), String(r.interest_paid_to || '').slice(0, 10)]
+      .filter(Boolean)
+      .sort()
+      .pop()
+    const days = last ? day(date) - day(last) : rec ? day(date) - day(rec) + (r.days_incl_start ? 1 : 0) : 0
+    if (!(days > 0)) return 0
+    const gross = (dueOn(r) * n(r.interest_pct) * days) / (100 * (n(r.days_year) || 360))
+    return round2(gross - (gross * tdsPct) / 100)
+  }
+
   function openRepay(r: Row): void {
     setRepayRow(r)
     // Defaults to clearing the balance — the ordinary case — and is editable
     // down to whatever instalment is actually going back.
     setRepayForm({
-      repay_date: todayISO(),
+      // Picked first: nothing else on the panel is filled in before it.
+      repay_date: '',
+      with_interest: false,
       // SID never settles on a party's ledger, so it is not even offered.
       settle_via: 'bank',
       ref: '',
@@ -2218,6 +2239,10 @@ export function BillDiscounting({
 
   async function saveRepay(): Promise<void> {
     if (!repayRow) return
+    if (!repayForm.repay_date) {
+      toast.error('Pick the repay date first')
+      return
+    }
     const due = dueOn(repayRow)
     const amount = round2(n(repayForm.amount))
     if (amount <= 0) {
@@ -6789,6 +6814,7 @@ export function BillDiscounting({
                       <div className="text-[12.5px] font-extrabold text-[#33473E] [text-wrap:pretty]">
                         {repayRow.nbfc_name} · {repayRow.party_name}
                       </div>
+                      <div className="grid grid-cols-3 gap-2">
                       {([
                         { k: 'Bill', v: bill, bg: 'bg-[#F7FAF6]', bd: 'border-[#E4ECE3]', fg: 'text-[#0A1F17]', kf: 'text-[#5A6B62]' },
                         { k: 'Repaid', v: paid, bg: 'bg-[#F4FBF6]', bd: 'border-[#BFE3CB]', fg: 'text-[#0B6B45]', kf: 'text-[#0B6B45]' },
@@ -6796,16 +6822,17 @@ export function BillDiscounting({
                       ] as Row[]).map((r) => (
                         <div
                           key={String(r.k)}
-                          className={cn('flex items-baseline justify-between gap-3 rounded-[4px] border px-3 py-2.5', String(r.bg), String(r.bd))}
+                          className={cn('flex min-w-0 flex-col gap-0.5 rounded-[4px] border px-2.5 py-1.5', String(r.bg), String(r.bd))}
                         >
-                          <span className={cn('text-[9.5px] font-extrabold uppercase tracking-[.11em]', String(r.kf))}>
+                          <span className={cn('text-[9px] font-extrabold uppercase tracking-[.11em]', String(r.kf))}>
                             {String(r.k)}
                           </span>
-                          <span className={cn('doc-ref shrink-0 whitespace-nowrap text-[15px] font-bold tracking-[-0.02em]', String(r.fg))}>
+                          <span className={cn('doc-ref truncate text-[13px] font-bold tracking-[-0.02em]', String(r.fg))} title={formatINR(Number(r.v))}>
                             {formatINR(Number(r.v))}
                           </span>
                         </div>
                       ))}
+                      </div>
                       <div className="flex h-2 overflow-hidden rounded-[2px] bg-[#EAF0E9]">
                         <span className="h-full bg-[#12855A]" style={{ width: pct(paid) }} />
                         <span className="h-full bg-[#A9C8EA]" style={{ width: pct(now) }} />
@@ -6846,6 +6873,39 @@ export function BillDiscounting({
                   somebody to fill them in and wonder why nothing happened. */}
               {(!__WEB__ || repayKind === 'full') && (
               <>
+              <div className="flex flex-col gap-1.5">
+                <Label>Repay date</Label>
+                {/* Money already gone back — today at the latest. Asked
+                    first: the interest is worked to it, and nothing below is
+                    filled in until it is picked. */}
+                <DatePicker
+                  max={todayISO()}
+                  value={String(repayForm.repay_date || '')}
+                  onChange={(v) =>
+                    setRepayForm((p) => ({
+                      ...p,
+                      repay_date: v,
+                      interest: p.with_interest ? String(repayInterestTo(String(v || ''), n(p.tds_pct)) || '') : p.interest,
+                      tds_amount: p.with_interest ? '' : p.tds_amount
+                    }))
+                  }
+                />
+              </div>
+              <fieldset disabled={!repayForm.repay_date} className={cn('m-0 grid min-w-0 gap-4 border-0 p-0', !repayForm.repay_date && 'opacity-50')}>
+              <label className="flex items-center justify-between gap-3 rounded-[4px] border border-[#D6E2D6] bg-white px-3 py-2.5">
+                <span className="text-[12.5px] font-bold text-[#33473E]">Are you paying the interest with this repayment?</span>
+                <Switch
+                  checked={!!repayForm.with_interest}
+                  onCheckedChange={(on) =>
+                    setRepayForm((p) => ({
+                      ...p,
+                      with_interest: on,
+                      interest: on ? String(repayInterestTo(String(p.repay_date || ''), n(p.tds_pct)) || '') : '',
+                      tds_amount: ''
+                    }))
+                  }
+                />
+              </label>
               {/* A discounted bill is often taken back in instalments, so the
                   amount is asked for rather than assumed. It opens on the whole
                   balance — the ordinary case — and Full balance puts it back. */}
@@ -6923,7 +6983,7 @@ export function BillDiscounting({
                     principal above stays the principal and these ride beside
                     it. */}
                 <div className="mt-1 flex flex-col gap-2">
-                  <div className="flex flex-col gap-1">
+                  <div className={cn('flex flex-col gap-1', !repayForm.with_interest && 'hidden')}>
 
                     <Label className="flex items-center gap-1 text-[11px]">
 
@@ -7191,15 +7251,6 @@ export function BillDiscounting({
                   </div>
                 )}
               </div>
-              <div className="flex flex-col gap-1.5">
-                <Label>Repay date</Label>
-                {/* Money already gone back — today at the latest. */}
-                <DatePicker
-                  max={todayISO()}
-                  value={String(repayForm.repay_date || '')}
-                  onChange={(v) => setRepayForm((p) => ({ ...p, repay_date: v }))}
-                />
-              </div>
               {/* PAST MATURITY: the NBFC's penalty rate on what is still owed,
                   for the days the bill ran over. Posts on its own ledger in
                   the same debit. */}
@@ -7376,6 +7427,7 @@ export function BillDiscounting({
                   </span>
                 </label>
               )}
+              </fieldset>
               </>
               )}
               {/* What has already gone back, so the schedule is visible where
