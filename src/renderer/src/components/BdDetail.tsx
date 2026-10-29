@@ -757,6 +757,7 @@ export function BdDetail({
   const drawerRef = useRef<HTMLDivElement>(null)
   // A repayment being edited (BdRepaymentEdit).
   const [editRep, setEditRep] = useState<Row | null>(null)
+  const [fixingTds, setFixingTds] = useState(false)
   // DELETE ONE REPAYMENT. Its voucher goes with it; one bank debit that also
   // cleared other bills goes as a whole (the bank was debited once), so the
   // question names every bill it takes off.
@@ -930,6 +931,31 @@ This was one bank debit that also cleared ${others.map((g) => `${s(g.bd_no)} ${f
   // event's cost, not part of what was borrowed. Summed separately for the
   // same reason.
   const partsCharges = parts.reduce((t, p) => t + chargesOf(p), 0)
+  // TDS BOOKED OFF THE NET. A repayment entered before the TDS was worked off
+  // the gross carries 10% of what was paid instead of 10% of the gross
+  // (net x % / (100 - %)); its interest journal is short by the difference.
+  const tdsPctBill = n(r.tds_pct)
+  const tdsFor = (p: Row): number =>
+    tdsPctBill > 0 && tdsPctBill < 100 ? Math.round(((n(p.interest) * tdsPctBill) / (100 - tdsPctBill)) * 100) / 100 : 0
+  const wrongTds = parts.filter(
+    (p) => n(p.interest) > 0.004 && n(p.interest_entry_id) > 0 && s(p.settle_via) !== 'party' && Math.abs(n(p.tds_amount) - tdsFor(p)) > 0.5
+  )
+  const fixTds = async (): Promise<void> => {
+    const msg = wrongTds
+      .map((p) => `${formatDate(s(p.repay_date))}: TDS ${formatINR(n(p.tds_amount))} → ${formatINR(tdsFor(p))} on ${formatINR(n(p.interest))} paid`)
+      .join('\n')
+    if (!window.confirm(`Correct the TDS to ${formatNum(tdsPctBill)}% of the gross interest?\n\n${msg}\n\nThe interest journal is re-posted and keeps its number; the payment does not change.`)) return
+    setFixingTds(true)
+    try {
+      for (const p of wrongTds) await window.api.billDiscounting.editRepayment(Number(p.id), { tds_amount: tdsFor(p) })
+      toast.success('TDS corrected — the interest journal keeps its number')
+      onChanged?.()
+    } catch (e) {
+      toast.error((e as Error).message.replace(/^Error invoking remote method '[^']+': (Error: )?/, ''))
+    } finally {
+      setFixingTds(false)
+    }
+  }
 
   return (
     <div className="fixed inset-0 z-[90] flex justify-end">
@@ -1250,6 +1276,19 @@ This was one bank debit that also cleared ${others.map((g) => `${s(g.bd_no)} ${f
                         >
                           {Math.abs(diff) < 1 ? 'Matches' : diff > 0 ? `Paid ${formatINR(diff)} more` : `${formatINR(-diff)} short`}
                         </span>
+                        {wrongTds.length > 0 && onChanged && (
+                          <button
+                            type="button"
+                            disabled={fixingTds}
+                            onClick={() => void fixTds()}
+                            title={`The TDS was booked as ${formatNum(tdsPctBill)}% of the interest paid; it is ${formatNum(tdsPctBill)}% of the gross`}
+                            className="w-full rounded-[3px] border border-[#C3D2C6] bg-white px-2 py-1 text-left text-[11px] font-extrabold text-[#0B3D2E] hover:bg-[#F3FBE2] disabled:opacity-60"
+                          >
+                            {fixingTds
+                              ? 'Correcting…'
+                              : `Correct TDS: ${formatINR(wrongTds.reduce((t, p) => t + n(p.tds_amount), 0))} → ${formatINR(wrongTds.reduce((t, p) => t + tdsFor(p), 0))} (${formatNum(tdsPctBill)}% of gross)`}
+                          </button>
+                        )}
                       </div>
                     )
                   })()}
