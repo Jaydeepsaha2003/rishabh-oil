@@ -519,32 +519,28 @@ function SalesTab({
   // LOOSE lines, and what a credit note for it needs (ShortageNoteDialog).
   // `received` overrides the stored figures — the unload dialog asks before the
   // list has reloaded.
-  // `whole`: a delivery short INSIDE its tolerance, credited anyway (the
-  // customer deducted it) — the whole shortage, not just the excess.
-  const shortageAskFor = (inv: { first: Row; lines: Row[] }, received?: Record<string, number | null>, date?: string, whole = false): ShortageAsk | null => {
+  // THE CUSTOMER HAS NO TOLERANCE: whatever did not arrive is credited, all
+  // of it. The tolerance is the transporter's — their debit note counts only
+  // the shortage beyond it (sales.ts postSaleShortageDebit).
+  const shortageAskFor = (inv: { first: Row; lines: Row[] }, received?: Record<string, number | null>, date?: string): ShortageAsk | null => {
     const parts = inv.lines
       .filter((l) => String(l.sale_type || 'LOOSE').toUpperCase() !== 'PACKED')
       .map((l) => ({ l, sh: saleShortage(received ? { ...l, received_qty: received[String(l.id)] ?? l.received_qty } : l, defaultShortagePct) }))
-      .filter((x) => x.sh.applies && (whole ? x.sh.shortage > 0.0000005 : !x.sh.within))
-    const due = Math.round(parts.reduce((t, x) => t + (whole ? x.sh.shortage * x.sh.rate : x.sh.deductible), 0) * 100) / 100
+      .filter((x) => x.sh.applies && x.sh.shortage > 0.0000005)
+    const due = Math.round(parts.reduce((t, x) => t + x.sh.shortage * x.sh.rate, 0) * 100) / 100
     if (!(due > 0)) return null
     return {
       saleId: Number(inv.first.id),
       invoiceNo: String(inv.first.invoice_no || ''),
       customer: String(inv.first.customer_master || inv.first.customer || ''),
       due,
-      whole,
       cn: {
         customerId: Number(inv.first.customer_id) || 0,
         companyId: Number(inv.first.company_id) || 0,
         date: String(date || inv.first.unloaded_date || todayISO()).slice(0, 10),
         gstPct: Number(parts[0].l.gst_pct) || 0,
         detail: parts
-          .map((x) =>
-            whole
-              ? `${String(x.l.product_name || 'Item')} ${formatNum(x.sh.shortage)} ${String(x.l.uom || '')} short (within the ${formatNum(x.sh.pct)}% tolerance) @ ${formatNum(x.sh.rate)}`
-              : `${String(x.l.product_name || 'Item')} ${formatNum(x.sh.excessQty)} ${String(x.l.uom || '')} short beyond ${formatNum(x.sh.pct)}% @ ${formatNum(x.sh.rate)}`
-          )
+          .map((x) => `${String(x.l.product_name || 'Item')} ${formatNum(x.sh.shortage)} ${String(x.l.uom || '')} short @ ${formatNum(x.sh.rate)}`)
           .join('; ')
       }
     }
@@ -2533,7 +2529,9 @@ function SalesTab({
                             )
                           }
                           // THE CREDIT NOTE THAT SETTLED IT: linked notes in green,
-                          // or "Link CN" while a shortage beyond tolerance stands.
+                          // or "Link CN" while any shortage stands — the customer
+                          // is credited all of it, tolerance or not.
+                          const custDue = Math.round(shortLines.reduce((t, l) => t + l.s.shortage * l.s.rate, 0) * 100) / 100
                           const cns = shortNotesOf(inv.first)
                           const cnTotal = cns.reduce((t, x) => t + (Number(x.amount) || 0), 0)
                           const openCn = (e: React.MouseEvent): void => {
@@ -2542,7 +2540,7 @@ function SalesTab({
                               saleId: Number(inv.first.id),
                               invoiceNo: String(inv.first.invoice_no || ''),
                               customer: String(inv.first.customer_master || inv.first.customer || ''),
-                              due: invDue,
+                              due: custDue,
                               cn: shortageAskFor(inv)?.cn
                             })
                           }
@@ -2568,27 +2566,14 @@ function SalesTab({
                                 >
                                   {cns.length === 1 ? String(cns[0].code || cns[0].vch_no) : `${cns.length} CNs`} {formatINR(cnTotal)}
                                 </button>
-                              ) : invDue > 0 ? (
+                              ) : custDue > 0 ? (
                                 <button
                                   type="button"
                                   onClick={openCn}
-                                  title={`Link the credit note raised for this ${formatINR(invDue)} shortage`}
+                                  title={`Credit the customer for the ${formatINR(custDue)} shortage — the customer has no tolerance`}
                                   className="whitespace-nowrap rounded-[3px] border border-rose-300 bg-white px-1 text-[10px] font-semibold text-rose-700 hover:bg-rose-50"
                                 >
                                   Link CN
-                                </button>
-                              ) : shortLines.length > 0 ? (
-                                <button
-                                  type="button"
-                                  onClick={(e) => {
-                                    e.stopPropagation()
-                                    const ask = shortageAskFor(inv, undefined, undefined, true)
-                                    if (ask) setShortAsk(ask)
-                                  }}
-                                  title="Short inside the tolerance — raise or link a credit note for the whole shortage if the customer deducted it"
-                                  className="whitespace-nowrap rounded-[3px] border border-slate-300 bg-white px-1 text-[10px] font-semibold text-slate-600 hover:bg-slate-50"
-                                >
-                                  CN
                                 </button>
                               ) : null}
                             </div>
