@@ -1520,9 +1520,10 @@ function inr(v: number): string {
 // `settleVia: 'bank'` posts the payment straight from our own bank; `'party'`
 // posts it against the supplier/customer ledger instead — bill-wise (a ref) or
 // on account (blank), the same allocation choice LC/orders/sales already use.
-// THE INTEREST OF A REPAYMENT, BOOKED: Dr INTEREST ON BILL DISCOUNTING,
-// Cr the bill discounter (interest less TDS), Cr the TDS ledger — the debit for
-// it already sits on the discounter's ledger in the payment.
+// THE INTEREST OF A REPAYMENT, BOOKED: Dr INTEREST ON BILL DISCOUNTING for
+// the gross (what was paid + the TDS held), Cr the bill discounter for what was
+// paid, Cr the TDS ledger — the debit for what was paid already sits on the
+// discounter's ledger in the payment, so the two cancel there.
 async function postBdInterestJournal(
   bd: Row,
   date: string,
@@ -1531,8 +1532,8 @@ async function postBdInterestJournal(
   tdsLedger: { name: string; group: string }
 ): Promise<number> {
   const lines: JournalLine[] = [
-    { account: 'INTEREST ON BILL DISCOUNTING A/C', group: 'Indirect Expenses', dr: interest },
-    { account: bdPayable(bd), group: BD_PAYABLE_GROUP, cr: round2(interest - tds) }
+    { account: 'INTEREST ON BILL DISCOUNTING A/C', group: 'Indirect Expenses', dr: round2(interest + tds) },
+    { account: bdPayable(bd), group: BD_PAYABLE_GROUP, cr: interest }
   ]
   if (tds > 0.004) lines.push({ account: tdsLedger.name, group: tdsLedger.group, cr: tds })
   const je = await postJournal({
@@ -1540,7 +1541,7 @@ async function postBdInterestJournal(
     vchType: 'JOURNAL',
     vchNo: String(bd.bd_no || ''),
     narration:
-      `Interest on Bill Discounting ${bd.bd_no} — ${inr(interest)} to ${bd.nbfc_name || 'the NBFC'}` +
+      `Interest on Bill Discounting ${bd.bd_no} — ${inr(round2(interest + tds))}, ${inr(interest)} paid to ${bd.nbfc_name || 'the NBFC'}` +
       (tds > 0.004 ? `, TDS ${inr(tds)} held to ${tdsLedger.name}` : ''),
     companyId: n(bd.company_id) || undefined,
     lines
@@ -1667,7 +1668,6 @@ export async function repayBd(
   let tdsLedger = { name: '', group: 'Duties & Taxes' }
   if (tdsAmt < 0) throw new Error('TDS cannot be negative')
   if (tdsAmt > 0.004) {
-    if (tdsAmt > interestPaid + 0.004) throw new Error('The TDS is more than the interest')
     const nm = String(v.tds_ledger || '').trim()
     if (!nm) throw new Error('Pick the TDS ledger')
     const t = await c.execute({ sql: 'SELECT name, acc_group FROM ledger_accounts WHERE UPPER(TRIM(name)) = UPPER(?) LIMIT 1', args: [nm] })

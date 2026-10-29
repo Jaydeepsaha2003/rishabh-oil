@@ -2006,7 +2006,10 @@ export function BillDiscounting({
   const unallocated = round2(spill - round2(n(repayForm.interest) + penaltyAmt + chargesTotal + alsoTotal))
   const repayTds =
     String(repayForm.tds_amount ?? '').trim() === ''
-      ? round2((n(repayForm.interest) * n(repayForm.tds_pct)) / 100)
+      ? // The interest typed is what was paid, net of TDS: gross = net / (1 - TDS%).
+        n(repayForm.tds_pct) > 0 && n(repayForm.tds_pct) < 100
+        ? round2((n(repayForm.interest) * n(repayForm.tds_pct)) / (100 - n(repayForm.tds_pct)))
+        : 0
       : round2(n(repayForm.tds_amount))
   // The other bills one debit could have settled: same NBFC, funded, still
   // open, and not the one being looked at.
@@ -6912,7 +6915,7 @@ export function BillDiscounting({
 
                       Interest
 
-                      <InfoTip text="Interest the NBFC took in this same debit — gross. The whole debit goes to the bill discounter's ledger (Bills Discounted A/C To Bank A/C), and a journal books the interest: Interest on Bill Discounting To the bill discounter (less TDS), To the TDS ledger below." />
+                      <InfoTip text="Interest the NBFC took in this same debit — what was actually paid, net of TDS. The whole debit goes to the bill discounter's ledger (Bills Discounted A/C To Bank A/C), and a journal books the gross: Interest on Bill Discounting (paid + TDS) To the bill discounter (paid), To the TDS ledger below. TDS = paid × TDS% ÷ (100 − TDS%)." />
 
                     </Label>
 
@@ -6967,8 +6970,8 @@ export function BillDiscounting({
                         />
                       </div>
                       <div className="text-[11px] text-muted-foreground sm:col-span-3">
-                        Journal: Interest on Bill Discounting Dr {formatINR(n(repayForm.interest))} · To {repayRow?.nbfc_name || 'the bill discounter'}{' '}
-                        {formatINR(round2(n(repayForm.interest) - repayTds))}
+                        Journal: Interest on Bill Discounting Dr {formatINR(round2(n(repayForm.interest) + repayTds))} · To {repayRow?.nbfc_name || 'the bill discounter'}{' '}
+                        {formatINR(n(repayForm.interest))}
                         {repayTds > 0 ? ` · To ${repayForm.tds_ledger || 'TDS'} ${formatINR(repayTds)}` : ''}
                       </div>
                     </div>

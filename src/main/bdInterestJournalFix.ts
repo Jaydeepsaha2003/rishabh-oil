@@ -49,12 +49,17 @@ export async function previewBdInterestJournals(): Promise<Row> {
   return { findings, total: round2(findings.reduce((t, f) => t + f.interest, 0)) }
 }
 
+export function bdTdsOnNet(net: number, pct: number): number {
+  if (pct <= 0 || pct >= 100) return 0
+  return round2((net * pct) / (100 - pct))
+}
+
 export async function fixBdInterestJournals(
   ids: number[],
   tdsLedger: string,
   tdsPct: number
 ): Promise<{ changed: number; failed: { id: number; error: string }[] }> {
-  if (tdsPct < 0 || tdsPct > 100) throw new Error('TDS % must be between 0 and 100')
+  if (tdsPct < 0 || tdsPct >= 100) throw new Error('TDS % must be under 100')
   if (tdsPct > 0 && !String(tdsLedger || '').trim()) throw new Error('Pick the TDS ledger')
   const c = getClient()
   let changed = 0
@@ -64,7 +69,9 @@ export async function fixBdInterestJournals(
   for (const id of ids) {
     const r = (await c.execute({ sql: 'SELECT interest, interest_entry_id FROM bd_repayments WHERE id = ?', args: [id] })).rows[0]
     if (!r || n(r.interest_entry_id)) continue
-    const tds = round2((n(r.interest) * tdsPct) / 100)
+    // The interest on the row is what the NBFC was paid — net of the TDS — so
+    // the TDS is worked off the gross: gross = net / (1 - TDS%).
+    const tds = bdTdsOnNet(n(r.interest), tdsPct)
     try {
       await editBdRepayment(id, { tds_ledger: tds > 0 ? tdsLedger.trim() : null, tds_amount: tds > 0 ? tds : 0 })
       changed++
@@ -145,13 +152,16 @@ export async function undoBdInterestJournals(entryIds: number[]): Promise<{ chan
         // Dr interest ledger, Cr the bill discounter (interest less TDS), Cr TDS.
         const drLine = intLines.find((l) => n(l.dr) > 0.004)
         if (!drLine || intLines.filter((l) => n(l.dr) > 0.004).length !== 1) throw new Error(`${f.bd_no}: its interest journal has been changed — undo it by hand`)
-        const interest = round2(n(drLine.dr))
         const payLines = (await c.execute({ sql: 'SELECT * FROM journal_lines WHERE entry_id = ? ORDER BY id', args: [payJe] })).rows as unknown as Row[]
-        const crAccounts = new Set(intLines.filter((l) => n(l.cr) > 0.004).map((l) => n(l.account_id)))
+        // The discounter's credit in the journal is what was paid (the net) —
+        // that is what goes back onto the payment as interest.
+        const payAccounts = new Set(payLines.filter((l) => n(l.dr) > 0.004).map((l) => n(l.account_id)))
+        const discCr = intLines.find((l) => n(l.cr) > 0.004 && payAccounts.has(n(l.account_id)))
+        const interest = round2(n(discCr?.cr))
         const payable = payLines
-          .filter((l) => crAccounts.has(n(l.account_id)) && n(l.dr) >= interest - 0.004)
+          .filter((l) => n(l.account_id) === n(discCr?.account_id) && n(l.dr) >= interest - 0.004)
           .sort((a, b) => n(b.dr) - n(a.dr))[0]
-        if (!payable) throw new Error(`${f.bd_no}: the bill discounter's line is not on the payment — undo it by hand`)
+        if (!discCr || !payable) throw new Error(`${f.bd_no}: the bill discounter's line is not on the payment — undo it by hand`)
         await c.execute(`CREATE TABLE IF NOT EXISTS accounting_repair_log (
             repair_key TEXT PRIMARY KEY, entry_id INTEGER NOT NULL, before_json TEXT NOT NULL,
             created_at TEXT NOT NULL DEFAULT (datetime('now')))`)

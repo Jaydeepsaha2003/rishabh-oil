@@ -593,7 +593,7 @@ export function AccountingChecks(): React.JSX.Element {
     const sum = bdIntRows.filter((x) => bdIntPick.has(Number(x.id))).reduce((t, x) => t + Number(x.interest || 0), 0)
     const ok = window.confirm(
       `Re-post ${ids.length} BD repayment${ids.length === 1 ? '' : 's'} (${formatINR(sum)} interest)?\n\n` +
-        `Each payment becomes Bills Discounted A/C To Bank for the whole debit, and a journal books the interest: Interest on Bill Discounting To the bill discounter, To ${pct > 0 ? `${bdIntLedger} (${pct}%)` : 'no TDS'}.\n\n` +
+        `Each payment becomes Bills Discounted A/C To Bank for the whole debit, and a journal books the gross interest: Interest on Bill Discounting (paid + TDS) To the bill discounter (paid), To ${pct > 0 ? `${bdIntLedger} (${pct}%)` : 'no TDS'}.\n\n` +
         'The payment keeps its number, date and bank total. The repayment as it was is logged first. Take a database snapshot if you want a copy you can restore.'
     )
     if (!ok) return
@@ -1617,7 +1617,7 @@ export function AccountingChecks(): React.JSX.Element {
         tone={bdIntRows.length ? 'warn' : 'ok'}
         note={
           bdIntRows.length
-            ? 'A repayment now pays the bill discounter for principal and interest (Bills Discounted A/C To Bank), and a journal books the interest: Interest on Bill Discounting To the bill discounter less TDS, To the TDS ledger. These were entered before and carry the interest on the payment with no TDS. Re-posting keeps each payment’s number and bank total.'
+            ? 'A repayment now pays the bill discounter for principal and interest (Bills Discounted A/C To Bank), and a journal books the interest: Interest on Bill Discounting (gross) To the bill discounter (what was paid), To the TDS ledger. The interest on these is what was paid, net of TDS, so the TDS is worked off the gross: TDS = paid × TDS% ÷ (100 − TDS%). These were entered before and carry the interest on the payment with no TDS. Re-posting keeps each payment’s number and bank total.'
             : 'Every BD repayment books its interest by its own journal.'
         }
       >
@@ -1655,12 +1655,15 @@ export function AccountingChecks(): React.JSX.Element {
               </th>
               <th className={th}>Repayment</th>
               <th className={th}>NBFC</th>
-              <th className={cn(th, 'text-right')}>Interest</th>
+              <th className={cn(th, 'text-right')}>Interest paid (net)</th>
               <th className={cn(th, 'text-right')}>TDS</th>
+              <th className={cn(th, 'text-right')}>Gross interest</th>
             </tr>
           </thead>
           <tbody>
             {bdIntRows.map((x) => {
+              const pct = Number(bdIntPct) || 0
+              const tds = pct > 0 && pct < 100 ? Math.round((Number(x.interest) * pct * 100) / (100 - pct)) / 100 : 0
               const id = Number(x.id)
               return (
                 <tr key={id} className="border-t">
@@ -1687,9 +1690,8 @@ export function AccountingChecks(): React.JSX.Element {
                   </td>
                   <td className={td}>{String(x.nbfc || '—')}</td>
                   <td className={cn(td, 'text-right tabular-nums')}>{formatINR(Number(x.interest))}</td>
-                  <td className={cn(td, 'text-right tabular-nums')}>
-                    {formatINR(Math.round(Number(x.interest) * (Number(bdIntPct) || 0)) / 100)}
-                  </td>
+                  <td className={cn(td, 'text-right tabular-nums')}>{formatINR(tds)}</td>
+                  <td className={cn(td, 'text-right tabular-nums')}>{formatINR(Math.round((Number(x.interest) + tds) * 100) / 100)}</td>
                 </tr>
               )
             })}

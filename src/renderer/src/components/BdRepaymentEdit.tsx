@@ -370,7 +370,7 @@ export function BdRepaymentEdit({
                             inputMode="decimal"
                             value={tdsAmt}
                             onChange={(e) => setTdsAmt(e.target.value)}
-                            placeholder={`10% = ${round2(n(intr) * 0.1)}`}
+                            placeholder={`10% of gross = ${round2(n(intr) / 9)}`}
                             className={`${inp} text-right`}
                           />
                         </label>
