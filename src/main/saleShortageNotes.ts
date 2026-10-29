@@ -119,7 +119,21 @@ export async function shortageNoteCandidates(saleId: number): Promise<Row> {
       args: ids
     })
   ).rows[0] as unknown as Row | undefined
-  return { invoice_no: inv.invoice_no, invoice_key: inv.key, notes, linked, sale_account: sa ? String(sa.name) : '' }
+  // THE TRANSPORTER'S SIDE OF THE SAME SHORTAGE — the 'shortage_penalty' line
+  // the unload wrote (sales.ts postSaleShortageDebit), with where it stands:
+  // a debit note raised, netted into a booked bill, written off, or open.
+  const transporter_lines = (
+    await c.execute({
+      sql: `SELECT tl.id, tl.amount, tl.note, tl.entry_date, tl.note_id, tl.bill_id, tl.waived_at, tl.company_id,
+                   t.name AS transporter, COALESCE(t.gst_registration, 'registered') AS gst_registration,
+                   (SELECT nt.note_no FROM notes nt WHERE nt.id = tl.note_id) AS note_no
+              FROM transporter_ledger tl LEFT JOIN transporters t ON t.id = tl.transporter_id
+             WHERE tl.entry_type = 'shortage_penalty' AND tl.sale_id IN (${ids.map(() => '?').join(',')})
+             ORDER BY tl.id`,
+      args: ids
+    })
+  ).rows as unknown as Row[]
+  return { invoice_no: inv.invoice_no, invoice_key: inv.key, notes, linked, sale_account: sa ? String(sa.name) : '', transporter_lines }
 }
 
 /** Link these credit notes to the invoice's shortage (replacing the ones linked before). */

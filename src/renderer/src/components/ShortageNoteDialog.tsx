@@ -68,6 +68,22 @@ export function ShortageNoteDialog({
   }, [ask]) // eslint-disable-line react-hooks/exhaustive-deps
 
   const notes = ((data?.notes as Row[]) || []) as Row[]
+  const tLines = ((data?.transporter_lines as Row[]) || []) as Row[]
+  const reload = async (): Promise<void> => {
+    if (ask) setData(await window.api.sales.shortageNotes(ask.saleId))
+  }
+  const raiseDn = async (l: Row): Promise<void> => {
+    setBusy(true)
+    try {
+      const r = await window.api.transporterFreight.raiseShortageNote(Number(l.id), cnDate || undefined, Number(l.company_id) || undefined)
+      toast.success(`Debit note ${r.note_no} raised on ${String(l.transporter)}`)
+      await reload()
+    } catch (e) {
+      toast.error(errText(e))
+    } finally {
+      setBusy(false)
+    }
+  }
   const total = notes.filter((x) => picked.has(Number(x.entry_id))).reduce((t, x) => t + (Number(x.amount) || 0), 0)
   const save = async (): Promise<void> => {
     if (!ask) return
@@ -222,6 +238,37 @@ export function ShortageNoteDialog({
                 {busy ? 'Creating…' : 'Create credit note & link'}
               </Button>
             </div>
+          </div>
+        )}
+        {tLines.length > 0 && (
+          <div className="grid gap-2 rounded-md border border-amber-200 bg-amber-50/40 p-3">
+            <div className="text-[12.5px] font-semibold text-amber-900">Recover it from the transporter</div>
+            {tLines.map((l) => {
+              const amt = Math.abs(Number(l.amount) || 0)
+              const unreg = String(l.gst_registration) === 'unregistered'
+              return (
+                <div key={String(l.id)} className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[12px]">
+                  <span className="font-semibold">{String(l.transporter || 'Transporter')}</span>
+                  <span className="text-muted-foreground">{String(l.note || '')}</span>
+                  <span className="ml-auto font-semibold tabular-nums">{formatINR(amt)}</span>
+                  {l.note_id ? (
+                    <span className="rounded-[3px] bg-emerald-50 px-1.5 text-[11px] font-bold text-emerald-700">Debit note {String(l.note_no || '')} raised</span>
+                  ) : l.waived_at ? (
+                    <span className="text-[11px] font-semibold text-muted-foreground">Written off — not the transporter&apos;s</span>
+                  ) : l.bill_id ? (
+                    <span className="text-[11px] font-semibold text-muted-foreground">Netted into their freight bill</span>
+                  ) : unreg ? (
+                    <span className="text-[11px] font-semibold text-muted-foreground" title="Unregistered transporters get no debit note">
+                      Unregistered — comes off their freight bill (with GST) when it is booked
+                    </span>
+                  ) : (
+                    <Button size="sm" variant="outline" disabled={busy} onClick={() => void raiseDn(l)}>
+                      Raise debit note
+                    </Button>
+                  )}
+                </div>
+              )
+            })}
           </div>
         )}
         <p className="text-[12px] text-muted-foreground">
