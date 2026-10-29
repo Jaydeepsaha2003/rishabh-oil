@@ -5755,6 +5755,35 @@ export function Accounts({
    * scrolls straight to it.
    */
   const lgPaneRef = useRef<HTMLDivElement | null>(null)
+  // BACK FROM A VOUCHER AT THE SAME PLACE. Opening a line leaves the ledger (the
+  // pane unmounts) and Esc came back to the top of it. Where it was scrolled is
+  // kept as it scrolls, and put back once the same ledger's lines are on screen
+  // in the same view.
+  const lgScroll = useRef<{ id: number | null; view: string; top: number } | null>(null)
+  // Read at the click or key that leaves — before the list empties on the way
+  // out and the browser snaps the pane to the top.
+  useEffect(() => {
+    if (screen !== 'ledger') return
+    const keep = (): void => {
+      const el = lgPaneRef.current
+      if (el) lgScroll.current = { id: ledgerId, view: lgView, top: el.scrollTop }
+    }
+    window.addEventListener('mousedown', keep, true)
+    window.addEventListener('keydown', keep, true)
+    return () => {
+      window.removeEventListener('mousedown', keep, true)
+      window.removeEventListener('keydown', keep, true)
+    }
+  }, [screen, ledgerId, lgView])
+  useEffect(() => {
+    if (screen !== 'ledger') return
+    const k = lgScroll.current
+    const el = lgPaneRef.current
+    if (!k || !el || k.id !== ledgerId || k.view !== lgView || !k.top) return
+    requestAnimationFrame(() => {
+      if (Math.abs(el.scrollTop - k.top) > 2) el.scrollTop = k.top
+    })
+  }, [screen, ledgerLines, ledgerId, lgView])
   const [colScroll, setColScroll] = useState({ left: 0, view: 0, total: 0 })
   useEffect(() => {
     const el = lgPaneRef.current
@@ -18567,7 +18596,10 @@ export function Accounts({
 
                 {/* The columnar view draws its own sideways bar at the foot of
                     the table, so the browser's is suppressed there only. */}
-                <div ref={lgPaneRef} className={cn('sc-both min-h-0 flex-1 overflow-auto', lgView === 'columnar' && 'no-hscrollbar')}>
+                <div
+                  ref={lgPaneRef}
+                  className={cn('sc-both min-h-0 flex-1 overflow-auto', lgView === 'columnar' && 'no-hscrollbar')}
+                >
                   {lgView === 'vouchers' && vouchersView}
                   {lgView === 'monthly' && monthlyView}
                   {lgView === 'columnar' && columnarView}
