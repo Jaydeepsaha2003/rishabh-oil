@@ -35527,6 +35527,31 @@ async function runStartupTasks() {
     const done = await convertOpenAdjToCharge();
     if (done.length) console.log(`[bd] moved ${done.length} bill(s) to the Open amount with the Adj. as a charge: ${done.join(", ")}`);
   }).catch((e) => console.error("[bd] open adjustment conversion failed:", e));
+  await runOnce("bd_v2_received_22aug_v1", async () => {
+    const c = getClient();
+    const r = await c.execute(`
+      SELECT b.id, b.journal_entry_id, b.payment_received_date FROM bill_discountings b
+        JOIN nbfcs nb ON nb.id = b.nbfc_id JOIN companies co ON co.id = b.company_id
+       WHERE b.bd_no = 'V2' AND UPPER(nb.name) LIKE 'VANIK%' AND UPPER(co.name) LIKE 'KR FOODS%'
+         AND substr(b.payment_received_date, 1, 10) = '2026-08-23'`);
+    if (r.rows.length !== 1) return;
+    const bd = r.rows[0];
+    await c.execute(`CREATE TABLE IF NOT EXISTS accounting_repair_log (
+        repair_key TEXT PRIMARY KEY, entry_id INTEGER NOT NULL, before_json TEXT NOT NULL,
+        created_at TEXT NOT NULL DEFAULT (datetime('now')))`);
+    await c.execute({
+      sql: "INSERT OR REPLACE INTO accounting_repair_log(repair_key, entry_id, before_json) VALUES (?, ?, ?)",
+      args: [`bd_v2_received_22aug:${Number(bd.id)}`, Number(bd.journal_entry_id) || 0, JSON.stringify(bd)]
+    });
+    await c.execute({ sql: "UPDATE bill_discountings SET payment_received_date = '2026-08-22' WHERE id = ?", args: [Number(bd.id)] });
+    if (Number(bd.journal_entry_id)) {
+      await c.execute({
+        sql: "UPDATE journal_entries SET entry_date = '2026-08-22' WHERE id = ? AND substr(entry_date, 1, 10) = '2026-08-23'",
+        args: [Number(bd.journal_entry_id)]
+      });
+    }
+    console.log("[bd] V2 received date and disbursement voucher moved to 22-08-2026");
+  }).catch((e) => console.error("[bd] V2 received date fix failed:", e));
   await runOnce("lc_settlement_payment_date_v1", async () => {
     const { resyncLcSettlement: resyncLcSettlement2 } = await Promise.resolve().then(() => (init_treasury(), treasury_exports));
     const r = await getClient().execute(`
