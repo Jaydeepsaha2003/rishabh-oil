@@ -31287,7 +31287,9 @@ var init_parkingCopies = __esm({
 var bdInterestJournalFix_exports = {};
 __export(bdInterestJournalFix_exports, {
   fixBdInterestJournals: () => fixBdInterestJournals,
-  previewBdInterestJournals: () => previewBdInterestJournals
+  previewBdInterestJournals: () => previewBdInterestJournals,
+  previewBdInterestUndo: () => previewBdInterestUndo,
+  undoBdInterestJournals: () => undoBdInterestJournals
 });
 async function previewBdInterestJournals() {
   const c = getClient();
@@ -31335,10 +31337,99 @@ async function fixBdInterestJournals(ids, tdsLedger, tdsPct) {
   }
   return { changed, failed };
 }
+async function previewBdInterestUndo() {
+  const c = getClient();
+  const logs = await c.execute("SELECT entry_id, before_json FROM accounting_repair_log WHERE repair_key LIKE 'bd_repayment_edit:%' ORDER BY created_at, rowid").catch(() => null);
+  const lastBefore = /* @__PURE__ */ new Map();
+  for (const l of logs?.rows || []) {
+    try {
+      lastBefore.set(n59(l.entry_id), JSON.parse(String(l.before_json)).siblings || []);
+    } catch {
+    }
+  }
+  const res = await c.execute(`
+    SELECT r.id, r.journal_entry_id, r.interest_entry_id, r.repay_date, r.interest, r.tds_ledger, r.tds_amount,
+           b.bd_no, nb.name AS nbfc, co.name AS company, je.vch_no
+      FROM bd_repayments r
+      JOIN bill_discountings b ON b.id = r.bd_id
+      LEFT JOIN nbfcs nb ON nb.id = b.nbfc_id
+      LEFT JOIN companies co ON co.id = b.company_id
+      LEFT JOIN journal_entries je ON je.id = r.journal_entry_id
+     WHERE r.interest_entry_id IS NOT NULL AND r.journal_entry_id IS NOT NULL
+     ORDER BY r.repay_date, r.id`);
+  const findings2 = res.rows.filter((r) => {
+    const before = lastBefore.get(n59(r.journal_entry_id));
+    return !!before && before.some((s5) => n59(s5.interest) > 4e-3) && before.every((s5) => !n59(s5.interest_entry_id));
+  }).map((r) => ({
+    id: n59(r.id),
+    entry_id: n59(r.journal_entry_id),
+    bd_no: String(r.bd_no || ""),
+    nbfc: String(r.nbfc || ""),
+    company: String(r.company || ""),
+    date: String(r.repay_date || "").slice(0, 10),
+    vch_no: String(r.vch_no || ""),
+    interest: round229(n59(r.interest)),
+    tds_ledger: String(r.tds_ledger || ""),
+    tds: round229(n59(r.tds_amount))
+  }));
+  return { findings: findings2, total: round229(findings2.reduce((t, f) => t + f.interest, 0)) };
+}
+async function undoBdInterestJournals(entryIds) {
+  const want = new Set(entryIds.map(n59).filter(Boolean));
+  const list2 = (await previewBdInterestUndo()).findings.filter((f) => want.has(n59(f.entry_id)));
+  let changed = 0;
+  const failed = [];
+  for (const f of list2) {
+    try {
+      await withDbTransaction(async () => {
+        const c = getClient();
+        const payJe = n59(f.entry_id);
+        const rows2 = (await c.execute({ sql: "SELECT * FROM bd_repayments WHERE journal_entry_id = ?", args: [payJe] })).rows;
+        const intJe = n59(rows2.find((r) => n59(r.interest_entry_id))?.interest_entry_id);
+        const intLines = (await c.execute({ sql: "SELECT * FROM journal_lines WHERE entry_id = ? ORDER BY id", args: [intJe] })).rows;
+        const drLine = intLines.find((l) => n59(l.dr) > 4e-3);
+        if (!drLine || intLines.filter((l) => n59(l.dr) > 4e-3).length !== 1) throw new Error(`${f.bd_no}: its interest journal has been changed \u2014 undo it by hand`);
+        const interest = round229(n59(drLine.dr));
+        const payLines = (await c.execute({ sql: "SELECT * FROM journal_lines WHERE entry_id = ? ORDER BY id", args: [payJe] })).rows;
+        const crAccounts = new Set(intLines.filter((l) => n59(l.cr) > 4e-3).map((l) => n59(l.account_id)));
+        const payable = payLines.filter((l) => crAccounts.has(n59(l.account_id)) && n59(l.dr) >= interest - 4e-3).sort((a, b) => n59(b.dr) - n59(a.dr))[0];
+        if (!payable) throw new Error(`${f.bd_no}: the bill discounter's line is not on the payment \u2014 undo it by hand`);
+        await c.execute(`CREATE TABLE IF NOT EXISTS accounting_repair_log (
+            repair_key TEXT PRIMARY KEY, entry_id INTEGER NOT NULL, before_json TEXT NOT NULL,
+            created_at TEXT NOT NULL DEFAULT (datetime('now')))`);
+        await c.execute({
+          sql: "INSERT OR REPLACE INTO accounting_repair_log(repair_key, entry_id, before_json) VALUES (?, ?, ?)",
+          args: [`bd_interest_undo:${payJe}:${Date.now()}`, payJe, JSON.stringify({ rows: rows2, payLines, intLines })]
+        });
+        const newDr = round229(n59(payable.dr) - interest);
+        await c.execute({ sql: "UPDATE journal_lines SET dr = ? WHERE id = ?", args: [newDr, n59(payable.id)] });
+        await c.execute({ sql: "UPDATE journal_bill_allocs SET amount = ? WHERE line_id = ? AND ABS(amount - ?) < 0.01", args: [newDr, n59(payable.id), n59(payable.dr)] });
+        await c.execute({ sql: "INSERT INTO journal_lines (entry_id, account_id, dr, cr) VALUES (?, ?, ?, 0)", args: [payJe, n59(drLine.account_id), interest] });
+        await c.execute({ sql: "DELETE FROM journal_bill_allocs WHERE line_id IN (SELECT id FROM journal_lines WHERE entry_id = ?)", args: [intJe] });
+        await c.execute({ sql: "DELETE FROM journal_line_splits WHERE line_id IN (SELECT id FROM journal_lines WHERE entry_id = ?)", args: [intJe] }).catch(() => void 0);
+        await c.execute({ sql: "DELETE FROM journal_lines WHERE entry_id = ?", args: [intJe] });
+        await c.execute({ sql: "DELETE FROM voucher_numbers WHERE entry_id = ?", args: [intJe] }).catch(() => void 0);
+        await c.execute({ sql: "DELETE FROM tally_links WHERE entry_id = ?", args: [intJe] }).catch(() => void 0);
+        await c.execute({ sql: "DELETE FROM journal_entries WHERE id = ?", args: [intJe] });
+        await c.execute({
+          sql: "UPDATE bd_repayments SET interest_entry_id = NULL, tds_ledger = NULL, tds_amount = NULL WHERE journal_entry_id = ?",
+          args: [payJe]
+        });
+        const bal = (await c.execute({ sql: "SELECT ROUND(SUM(dr), 2) AS dr, ROUND(SUM(cr), 2) AS cr FROM journal_lines WHERE entry_id = ?", args: [payJe] })).rows[0];
+        if (Math.abs(n59(bal.dr) - n59(bal.cr)) > 0.01) throw new Error(`${f.bd_no}: the payment would not balance \u2014 left as it was`);
+      });
+      changed++;
+    } catch (e) {
+      failed.push({ id: n59(f.entry_id), error: e.message });
+    }
+  }
+  return { changed, failed };
+}
 var n59, round229;
 var init_bdInterestJournalFix = __esm({
   "src/main/bdInterestJournalFix.ts"() {
     init_db();
+    init_dbTransaction();
     init_billDiscounting();
     n59 = (v) => {
       const x = Number(v);
@@ -42827,6 +42918,16 @@ function registerIpc() {
     await assertAdmin("Re-posting BD repayment interest");
     const { fixBdInterestJournals: fixBdInterestJournals2 } = await Promise.resolve().then(() => (init_bdInterestJournalFix(), bdInterestJournalFix_exports));
     return fixBdInterestJournals2((a?.ids || []).map(Number), String(a?.tdsLedger || ""), Number(a?.tdsPct) || 0);
+  });
+  handle("repairs:bdInterestUndo:list", async () => {
+    await assertAdmin("The accounting checks");
+    const { previewBdInterestUndo: previewBdInterestUndo2 } = await Promise.resolve().then(() => (init_bdInterestJournalFix(), bdInterestJournalFix_exports));
+    return previewBdInterestUndo2();
+  });
+  handle("repairs:bdInterestUndoFix", async (_e, a) => {
+    await assertAdmin("Undoing the BD interest re-post");
+    const { undoBdInterestJournals: undoBdInterestJournals2 } = await Promise.resolve().then(() => (init_bdInterestJournalFix(), bdInterestJournalFix_exports));
+    return undoBdInterestJournals2((a?.ids || []).map(Number));
   });
   handle("repairs:purchaseInterest:list", async () => {
     await assertAdmin("The accounting checks");
