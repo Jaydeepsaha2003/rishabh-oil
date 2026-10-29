@@ -3901,7 +3901,7 @@ async function postBdOpening(bdId) {
       date: String(bd.payment_received_date || todayISO2()).slice(0, 10),
       vchType: route === "supplier" ? "JOURNAL" : "RECEIPT",
       vchNo: String(bd.bd_no || ""),
-      narration: `Bill Discounting ${bd.bd_no || ""} (${bd.finance_type}) opened with ${bd.nbfc_name || "the NBFC"} \u2014 ` + (leg1 ? `received in parts, ${receiptRef(bd, 1)}: ${leg1.amount.toFixed(2)} of ${amount2.toFixed(2)}, ` : "") + `margin ${calc.marginAmount.toFixed(2)}, interest ${interestHere.toFixed(2)}` + (Math.abs(calc.adjCharge) > 4e-3 ? `, adj. ${calc.adjCharge.toFixed(2)} (${adjParts.length ? adjParts.map((p) => `${bdAdjLabel(p.ledger)} ${p.amount > 0 ? "+" : ""}${p.amount.toFixed(2)}`).join(", ") : bdAdjLabel(adjLedger)})` : "") + (serviced ? ` (interest serviced ${String(bd.interest_freq || "monthly").replace("_", "-")} over the tenor)` : upfront ? " (interest settled separately on reconciliation)" : ""),
+      narration: `Bill Discounting ${bd.bd_no || ""} (${bd.finance_type}) opened with ${bd.nbfc_name || "the NBFC"} \u2014 ` + (leg1 ? `received in parts, ${receiptRef(bd, 1)}: ${leg1.amount.toFixed(2)} of ${amount2.toFixed(2)}, ` : "") + `margin ${calc.marginAmount.toFixed(2)}, interest ${interestHere.toFixed(2)}` + (Math.abs(calc.adjCharge) > 4e-3 ? `, adj. ${calc.adjCharge.toFixed(2)} (${adjParts.length ? adjParts.map((p) => `${bdAdjLabel(p.ledger)} ${p.amount > 0 ? "+" : ""}${p.amount.toFixed(2)}`).join(", ") : bdAdjLabel(adjLedger)})` : "") + (serviced ? ` (interest serviced ${String(bd.interest_freq || "monthly").replace("_", "-")} over the tenor)` : upfront ? " (interest settled separately on reconciliation)" : "") + (String(bd.received_note || "").trim() ? ` \u2014 ${String(bd.received_note).trim()}` : ""),
       companyId: n2(bd.company_id) || void 0,
       lines
     });
@@ -5454,6 +5454,9 @@ async function markBdPaymentReceived(id, dateIn, opts) {
     const m1 = String(bd.first_receipt_maturity || "").slice(0, 10);
     if (m1 && m1 < date) throw new Error("Part 1 cannot mature before it was received");
     await c.execute({ sql: "UPDATE bill_discountings SET payment_received_date = ? WHERE id = ?", args: [date, id] });
+    if (opts && opts.note !== void 0) {
+      await c.execute({ sql: "UPDATE bill_discountings SET received_note = ? WHERE id = ?", args: [String(opts.note || "").trim() || null, id] });
+    }
     await postBdOpening(id);
     for (let i = 1; i < plan.length; i++) {
       const l = plan[i];
@@ -6117,6 +6120,7 @@ __export(accounting_exports, {
   listPendingRefs: () => listPendingRefs,
   listVouchers: () => listVouchers,
   resolveRefIds: () => resolveRefIds,
+  setLineAllocs: () => setLineAllocs,
   setLineSplits: () => setLineSplits,
   tradingAccount: () => tradingAccount,
   trialBalance: () => trialBalance,
@@ -6283,6 +6287,60 @@ async function setLineSplits(lineId, splits) {
       });
     }
     return { id: n4(lineId), parts: parts.length };
+  });
+}
+async function setLineAllocs(lineId, allocs) {
+  return withDbTransaction(async () => {
+    const c = getClient();
+    const line = (await c.execute({
+      sql: `SELECT jl.id, jl.dr, jl.cr, jl.account_id, jl.entry_id, a.name, a.acc_group, je.company_id
+                FROM journal_lines jl JOIN ledger_accounts a ON a.id = jl.account_id JOIN journal_entries je ON je.id = jl.entry_id
+               WHERE jl.id = ?`,
+      args: [n4(lineId)]
+    })).rows[0];
+    if (!line) throw new Error("That voucher line no longer exists \u2014 open the voucher again");
+    const amount2 = Math.round((n4(line.dr) || n4(line.cr)) * 100) / 100;
+    const rows2 = (allocs || []).map((a) => ({
+      method: a.method,
+      ref_name: a.ref_name ? String(a.ref_name).trim() : null,
+      order_id: a.order_id ? Number(a.order_id) : null,
+      sale_invoice_group: a.sale_invoice_group ? String(a.sale_invoice_group).trim() : null,
+      amount: Math.round(n4(a.amount) * 100) / 100
+    })).filter((a) => a.amount > 4e-3);
+    const total = Math.round(rows2.reduce((t, a) => t + a.amount, 0) * 100) / 100;
+    if (rows2.length && Math.abs(total - amount2) > 5e-3) {
+      throw new Error(`Bill-wise details total ${total.toFixed(2)} but the line is ${amount2.toFixed(2)}`);
+    }
+    for (const a of rows2) {
+      if (!["agst_ref", "advance", "on_account", "new_ref"].includes(a.method)) throw new Error(`Unknown adjustment method "${a.method}"`);
+      if (a.method !== "on_account" && !a.ref_name) throw new Error(`${a.method === "agst_ref" ? "Agst Ref" : a.method === "advance" ? "Advance" : "New Ref"} needs a reference name`);
+    }
+    const before = toPlain4(await c.execute({ sql: "SELECT * FROM journal_bill_allocs WHERE line_id = ?", args: [n4(lineId)] }));
+    await c.execute(`CREATE TABLE IF NOT EXISTS accounting_repair_log (
+        repair_key TEXT PRIMARY KEY, entry_id INTEGER NOT NULL, before_json TEXT NOT NULL,
+        created_at TEXT NOT NULL DEFAULT (datetime('now')))`);
+    await c.execute({
+      sql: "INSERT OR REPLACE INTO accounting_repair_log(repair_key, entry_id, before_json) VALUES (?, ?, ?)",
+      args: [`line_allocs:${n4(lineId)}:${Date.now()}`, n4(line.entry_id), JSON.stringify(before)]
+    });
+    await c.execute({ sql: "DELETE FROM journal_bill_allocs WHERE line_id = ?", args: [n4(lineId)] });
+    const grp = await baseGroupOf(line.acc_group);
+    const side = grp === "Sundry Debtors" ? "customer" : grp === "Sundry Creditors" ? "supplier" : null;
+    for (const a of rows2) {
+      let orderId = a.order_id;
+      let saleGroup = a.sale_invoice_group;
+      if (a.method === "agst_ref" && a.ref_name && !orderId && !saleGroup && side) {
+        const ids = await resolveRefIds(String(a.ref_name), n4(line.company_id) || getActiveCompanyId(), side);
+        orderId = ids.order_id;
+        saleGroup = ids.sale_invoice_group;
+      }
+      await c.execute({
+        sql: `INSERT INTO journal_bill_allocs (line_id, account_id, method, ref_name, amount, order_id, sale_invoice_group)
+              VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        args: [n4(lineId), n4(line.account_id), a.method, a.ref_name, a.amount, orderId, saleGroup]
+      });
+    }
+    return { id: n4(lineId), allocs: rows2.length };
   });
 }
 async function writeAllocs(entryId, lines) {
@@ -6906,7 +6964,7 @@ async function billsOutstanding(accountName, companyId, opts = {}) {
     args: [name, name, cid, name]
   }).catch(() => c.execute({ sql: `SELECT credit_period_days FROM ${master} WHERE TRIM(UPPER(name)) = ? LIMIT 1`, args: [name] }));
   const creditDays = cp.rows.length ? n4(cp.rows[0].credit_period_days) : 0;
-  const bills = await listPendingRefs(accountName, cid, opts.side, !!opts.settled);
+  const bills = await listPendingRefs(accountName, cid, opts.side, true);
   const dayMs = 864e5;
   const asOfMs = Date.parse(`${asOf}T00:00:00Z`);
   const rows2 = bills.filter((b) => String(b.bill_date || "").slice(0, 10) <= asOf).map((b) => {
@@ -7015,6 +7073,7 @@ async function billsOutstanding(accountName, companyId, opts = {}) {
           vch_type: "PROVISIONAL",
           vch_no: String(p.lc_no || p.bd_no || ""),
           narration: p.narration,
+          particulars: p.particulars,
           dr: n4(p.dr),
           free: round22(n4(p.dr)),
           provisional: true
@@ -7042,8 +7101,50 @@ async function billsOutstanding(accountName, companyId, opts = {}) {
   }
   const open = rows2.filter((r) => n4(r.pending) > 5e-3);
   const totalPending = round22(open.reduce((t, r) => t + n4(r.pending), 0));
-  const billsSigned = debtor ? totalPending : -totalPending;
+  const sideOf = (r) => {
+    const s22 = String(r.origin?.side || "");
+    return (s22 === "dr" || s22 === "cr" ? s22 : debtor ? "dr" : "cr") === "dr" ? 1 : -1;
+  };
+  const billsSigned = round22(open.reduce((t, r) => t + n4(r.pending) * sideOf(r), 0));
   const onAccount = round22(balance - billsSigned);
+  const onAccountLines = [];
+  if (accountId) {
+    const explained = /* @__PURE__ */ new Map();
+    let preBooks = 0;
+    const add = (id, date, v) => {
+      if (booksFrom && String(date || "").slice(0, 10) < booksFrom) preBooks += v;
+      else if (n4(id) > 0) explained.set(n4(id), (explained.get(n4(id)) || 0) + v);
+    };
+    for (const r of rows2) {
+      const o = r.origin;
+      if (o?.entry_id) add(o.entry_id, o.entry_date, n4(r.opening) * sideOf(r));
+      for (const x of r.settlements || []) add(x.entry_id, x.entry_date, n4(x.amount) * (String(x.side) === "dr" ? 1 : -1));
+    }
+    const lines = toPlain4(
+      await c.execute({
+        sql: `SELECT je.id AS entry_id, je.entry_date, je.vch_type, je.vch_no, je.narration,
+                     ROUND(SUM(jl.dr) - SUM(jl.cr), 2) AS net
+                FROM journal_lines jl JOIN journal_entries je ON je.id = jl.entry_id
+               WHERE jl.account_id = ? AND je.company_id = ? AND je.entry_date <= ? AND je.entry_date >= ?
+               GROUP BY je.id ORDER BY je.entry_date, je.id`,
+        args: [accountId, cid, asOf, booksFrom || "0000-00-00"]
+      })
+    );
+    const opening = round22((openRes ? n4(openRes.rows[0]?.v) : 0) - preBooks);
+    if (Math.abs(opening) > 5e-3) onAccountLines.push({ entry_id: null, entry_date: booksFrom, vch_type: "OPENING", vch_no: "", narration: "Opening balance \u2014 the part no bill accounts for", amount: opening });
+    for (const l of lines) {
+      const left = round22(n4(l.net) - (explained.get(n4(l.entry_id)) || 0));
+      if (Math.abs(left) > 5e-3) onAccountLines.push({ ...l, amount: left });
+    }
+    for (const p of prov) {
+      const used = rows2.reduce(
+        (t, r) => t + (r.settlements || []).filter((x) => x.provisional && x.vch_no === String(p.lc_no || p.bd_no || "")).reduce((u, x) => u + n4(x.amount), 0),
+        0
+      );
+      const left = round22(n4(p.dr) - used);
+      if (left > 5e-3) onAccountLines.push({ entry_id: null, entry_date: p.entry_date, vch_type: "PROVISIONAL", vch_no: String(p.lc_no || p.bd_no || ""), narration: p.narration, amount: left, provisional: true });
+    }
+  }
   return {
     as_of: asOf,
     debtor,
@@ -7054,7 +7155,8 @@ async function billsOutstanding(accountName, companyId, opts = {}) {
     total_paid: round22(open.reduce((t, r) => t + n4(r.paid), 0)),
     total_pending: totalPending,
     balance: round22(balance),
-    on_account: onAccount
+    on_account: onAccount,
+    on_account_lines: onAccountLines
   };
 }
 async function tradingAccount(from, to, companyId) {
@@ -35595,6 +35697,8 @@ var REQUIRED_COLUMNS = [
   // A BD repayment's interest as its own journal, with the TDS held on it
   // (billDiscounting.ts postBdInterestJournal).
   { table: "bd_repayments", column: "interest_entry_id", type: "INTEGER" },
+  // A note typed on Mark received — kept on the bill, carried on its voucher.
+  { table: "bill_discountings", column: "received_note", type: "TEXT" },
   { table: "bd_repayments", column: "tds_ledger", type: "TEXT" },
   { table: "bd_repayments", column: "tds_amount", type: "REAL" },
   // A trading tanker's onward sale (onwardSale.ts) — always present, so the
@@ -42270,6 +42374,10 @@ function registerIpc() {
   });
   handle("vouchers:get", (_e, { id }) => getVoucher(id));
   handle(
+    "vouchers:setLineAllocs",
+    async (_e, { lineId, allocs }) => (await Promise.resolve().then(() => (init_accounting(), accounting_exports))).setLineAllocs(Number(lineId), allocs || [])
+  );
+  handle(
     "vouchers:setLineSplits",
     async (_e, { lineId, splits }) => (await Promise.resolve().then(() => (init_accounting(), accounting_exports))).setLineSplits(Number(lineId), splits || [])
   );
@@ -42932,9 +43040,10 @@ function registerIpc() {
   handle("bd:editRepayment", (_e, { id, values }) => editBdRepayment(id, values));
   handle(
     "bd:markReceived",
-    (_e, { id, date, route, account, firstPart, firstReceipt, legs }) => markBdPaymentReceived(id, date, {
+    (_e, { id, date, route, account, firstPart, firstReceipt, legs, note }) => markBdPaymentReceived(id, date, {
       route,
       account,
+      ...note === void 0 ? {} : { note },
       ...Array.isArray(legs) ? { legs } : {},
       ...firstPart === void 0 ? {} : { firstPart },
       ...firstReceipt === void 0 ? {} : { firstReceipt }
