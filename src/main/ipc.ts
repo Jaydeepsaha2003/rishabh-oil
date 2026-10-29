@@ -1077,8 +1077,8 @@ export function registerIpc(): void {
   handle('journal:setAccountsHidden', (_e, { ids, hidden, companyId }: { ids: number[]; hidden: boolean; companyId?: number }) => setAccountsHidden(ids, hidden, companyId))
   handle(
     'journal:billsOutstanding',
-    (_e, a: { account: string; companyId?: number; asOf?: string; side?: 'customer' | 'supplier'; settled?: boolean }) =>
-      billsOutstanding(a.account, a.companyId, { asOf: a.asOf, side: a.side, settled: a.settled })
+    (_e, a: { account: string; companyId?: number; asOf?: string; side?: 'customer' | 'supplier'; settled?: boolean; provisional?: boolean }) =>
+      billsOutstanding(a.account, a.companyId, { asOf: a.asOf, side: a.side, settled: a.settled, provisional: a.provisional })
   )
   handle(
     'journal:pendingRefs',

@@ -2970,12 +2970,12 @@ export function Accounts({
     const g = baseGroup(accounts.find((a2) => Number(a2.id) === ledgerId)?.acc_group)
     const side = g === 'Sundry Debtors' ? 'customer' : g === 'Sundry Creditors' ? 'supplier' : undefined
     try {
-      setBills(await window.api.journal.billsOutstanding(nm, cid, { asOf: lgTo || undefined, side, settled: bwSettled }))
+      setBills(await window.api.journal.billsOutstanding(nm, cid, { asOf: lgTo || undefined, side, settled: bwSettled, provisional: lgProv }))
     } catch {
       setBills(null)
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [lgBills, ledgerId, cid, lgTo, accounts, bwSettled])
+  }, [lgBills, ledgerId, cid, lgTo, accounts, bwSettled, lgProv])
   useEffect(() => {
     void loadBills()
   }, [loadBills])
@@ -3123,6 +3123,30 @@ export function Accounts({
         </button>
       ))}
     </div>
+  )
+  // PROVISIONAL, the same switch the voucher view carries (one state): open
+  // LCs / awaiting BDs settle bills and count in the total. Nothing is posted.
+  const provToggle = (): React.JSX.Element => (
+    <button
+      type="button"
+      onClick={() => setLgProv((v) => !v)}
+      title={
+        lgProv
+          ? 'Provisional ON — open LCs and awaiting supplier-direct BDs count as the payment they will post: they settle the oldest bills and are in the total. Nothing is posted.'
+          : 'Count open LCs and awaiting supplier-direct BDs as provisional payments'
+      }
+      className="flex h-[34px] flex-none items-center gap-1.5 whitespace-nowrap rounded-[4px] px-2.5"
+      style={{
+        border: `1px solid ${lgProv ? '#C2700A' : '#DCE7DB'}`,
+        background: lgProv ? '#FFF4E0' : '#EEF3EC',
+        color: lgProv ? '#8A5300' : '#33473E',
+        fontSize: 11,
+        fontWeight: 800
+      }}
+    >
+      <span className="inline-block h-[8px] w-[8px] rounded-full" style={{ background: lgProv ? '#C2700A' : '#B9C7BC' }} />
+      Provisional {lgProv ? 'ON' : 'OFF'}
+    </button>
   )
   // The small switch both bill-wise views carry.
   const dueToggle = (): React.JSX.Element => (
@@ -17846,6 +17870,7 @@ export function Accounts({
                 <span style={bwKey}>{chordLabel('Shift')} ↵</span> {bwDetailed ? 'fold it' : 'open it'}
               </span>
               {settledToggle()}
+              {provToggle()}
               {dueToggle()}
               <div className="flex items-center gap-[3px] rounded-[4px] p-[3px]" style={{ background: '#EEF3EC', border: '1px solid #DCE7DB' }}>
                 <span className="flex items-center pl-1 pr-0.5" title="Alt F1 switches between Detailed and Condensed">
@@ -18805,7 +18830,7 @@ export function Accounts({
                 const onAcc = Number(bills?.on_account) || 0
                 return (
                   <div className="max-h-[calc(100vh-225px)] overflow-auto">
-                    <div className="flex items-center justify-end gap-2 border-b bg-[#FBFDFA] px-4 py-1.5">{settledToggle()}{dueToggle()}</div>
+                    <div className="flex items-center justify-end gap-2 border-b bg-[#FBFDFA] px-4 py-1.5">{settledToggle()}{provToggle()}{dueToggle()}</div>
                     <table className="w-full text-[13px]">
                       <thead className="sticky top-0 bg-[#EAF0E9]">
                         <tr className="text-left text-[10px] uppercase tracking-widest text-muted-foreground">

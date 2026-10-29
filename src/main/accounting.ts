@@ -1129,7 +1129,7 @@ export async function listPendingRefs(
 export async function billsOutstanding(
   accountName: string,
   companyId?: number,
-  opts: { asOf?: string; side?: 'customer' | 'supplier'; settled?: boolean } = {}
+  opts: { asOf?: string; side?: 'customer' | 'supplier'; settled?: boolean; provisional?: boolean } = {}
 ): Promise<Row> {
   const c = getClient()
   const cid = companyId || getActiveCompanyId()
@@ -1273,7 +1273,14 @@ export async function billsOutstanding(
           args: [accountId, cid]
         })
       : null
-  const balance = round2((balRes ? n(balRes.rows[0]?.bal) : 0) + (openRes ? n(openRes.rows[0]?.v) : 0))
+  // PROVISIONAL, as on the statement: open LCs / awaiting supplier-direct BDs
+  // read as the payment they will post — in the balance, and settling the
+  // oldest bills like any payment with no Agst Ref. Nothing is posted.
+  const prov =
+    opts.provisional && accountId
+      ? (await (await import('./provisional')).provisionalEntries(accountId, cid)).filter((p) => String(p.entry_date || '') <= asOf)
+      : []
+  const balance = round2((balRes ? n(balRes.rows[0]?.bal) : 0) + (openRes ? n(openRes.rows[0]?.v) : 0) + prov.reduce((t, p) => t + n(p.dr), 0))
 
   // CREDITORS: PAYMENTS WITH NO AGST REF CLEAR THE OLDEST BILLS FIRST.
   //
@@ -1298,6 +1305,19 @@ export async function billsOutstanding(
         })
       )
         .map((x): Row => ({ ...x, free: round2(n(x.dr) - n(x.named)) }))
+        .concat(
+          prov.map((p): Row => ({
+            entry_id: null,
+            entry_date: p.entry_date,
+            vch_type: 'PROVISIONAL',
+            vch_no: String(p.lc_no || p.bd_no || ''),
+            narration: p.narration,
+            dr: n(p.dr),
+            free: round2(n(p.dr)),
+            provisional: true
+          }))
+        )
+        .sort((a, b) => String(a.entry_date).localeCompare(String(b.entry_date)))
         .filter((x) => n(x.free) > 0.005)
       let pi = 0
       for (const r of rows as Row[]) {
@@ -1306,7 +1326,7 @@ export async function billsOutstanding(
           const take = round2(Math.min(n(r.pending), n(p.free), spare))
           r.settlements = [
             ...(r.settlements as Row[]),
-            { entry_id: n(p.entry_id), entry_date: p.entry_date, vch_type: p.vch_type, vch_no: p.vch_no, side: 'dr', narration: p.narration, amount: take, fifo: true }
+            { entry_id: p.entry_id == null ? null : n(p.entry_id), entry_date: p.entry_date, vch_type: p.vch_type, vch_no: p.vch_no, side: 'dr', narration: p.narration, amount: take, fifo: true, provisional: !!p.provisional }
           ]
           r.paid = round2(n(r.paid) + take)
           r.pending = round2(n(r.pending) - take)

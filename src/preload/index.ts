@@ -357,7 +357,7 @@ const api = {
     billsOutstanding: (
       account: string,
       companyId?: number,
-      opts: { asOf?: string; side?: 'customer' | 'supplier'; settled?: boolean } = {}
+      opts: { asOf?: string; side?: 'customer' | 'supplier'; settled?: boolean; provisional?: boolean } = {}
     ): Promise<Row> => ipcRenderer.invoke('journal:billsOutstanding', { account, companyId, ...opts }),
     // `all` adds the party's settled bills (each marked `settled`), for linking.
     pendingRefs: (account: string, companyId?: number, side?: 'customer' | 'supplier', all?: boolean): Promise<Row[]> =>
