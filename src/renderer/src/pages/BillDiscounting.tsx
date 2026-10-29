@@ -6912,20 +6912,50 @@ export function BillDiscounting({
                 />
               </div>
               <fieldset disabled={!repayForm.repay_date} className={cn('m-0 grid min-w-0 gap-4 border-0 p-0', !repayForm.repay_date && 'opacity-50')}>
-              <label className="flex items-center justify-between gap-3 rounded-[4px] border border-[#D6E2D6] bg-white px-3 py-2.5">
-                <span className="text-[12.5px] font-bold text-[#33473E]">Are you paying the interest with this repayment?</span>
-                <Switch
-                  checked={!!repayForm.with_interest}
-                  onCheckedChange={(on) =>
-                    setRepayForm((p) => ({
-                      ...p,
-                      with_interest: on,
-                      interest: on ? String(repayInterestTo(String(p.repay_date || ''), n(p.tds_pct)) || '') : '',
-                      tds_amount: ''
-                    }))
-                  }
-                />
-              </label>
+              {(() => {
+                // A card, not a label: the form styles every <label> as a
+                // 10px caption, which squeezed this question into one.
+                const on = !!repayForm.with_interest
+                const flip = (v: boolean): void =>
+                  setRepayForm((p) => ({
+                    ...p,
+                    with_interest: v,
+                    interest: v ? String(repayInterestTo(String(p.repay_date || ''), n(p.tds_pct)) || '') : '',
+                    tds_amount: ''
+                  }))
+                return (
+                  <div
+                    onClick={() => !!repayForm.repay_date && flip(!on)}
+                    className={cn(
+                      'flex cursor-pointer items-center gap-3 rounded-[6px] border px-3.5 py-3 transition-colors',
+                      on ? 'border-[#1A2C56] bg-[#F4F8FD] shadow-[0_0_0_3px_rgba(26,44,86,.08)]' : 'border-[#D6E2D6] bg-white hover:border-[#A9C8EA] hover:bg-[#FAFCFF]'
+                    )}
+                  >
+                    <span
+                      className={cn(
+                        'flex h-9 w-9 flex-none items-center justify-center rounded-[6px]',
+                        on ? 'bg-[#1A2C56] text-white' : 'bg-[#EAF0FA] text-[#1B4E82]'
+                      )}
+                    >
+                      <Percent className="h-[18px] w-[18px]" />
+                    </span>
+                    <span className="min-w-0 flex-1">
+                      <span className="block text-[13.5px] font-extrabold text-[#0A1F17]">Paying the interest with this repayment?</span>
+                      <span className="mt-0.5 block text-[11.5px] font-semibold text-[#5A6B62] [text-wrap:pretty]">
+                        {on && n(repayForm.interest) > 0
+                          ? `${formatINR(n(repayForm.interest))} interest (net of TDS) on ${formatINR(dueOn(repayRow))} to ${formatDate(String(repayForm.repay_date))} — goes out in the same debit`
+                          : `Worked on the ${formatINR(dueOn(repayRow))} outstanding, up to the repay date`}
+                      </span>
+                    </span>
+                    <span className={cn('flex-none text-[10.5px] font-extrabold uppercase tracking-[.08em]', on ? 'text-[#1A2C56]' : 'text-[#8CA396]')}>
+                      {on ? 'Yes' : 'No'}
+                    </span>
+                    <span onClick={(e) => e.stopPropagation()} className="flex-none">
+                      <Switch checked={on} onCheckedChange={flip} aria-label="Paying the interest with this repayment" />
+                    </span>
+                  </div>
+                )
+              })()}
               {/* A discounted bill is often taken back in instalments, so the
                   amount is asked for rather than assumed. It opens on the whole
                   balance — the ordinary case — and Full balance puts it back. */}
