@@ -1799,6 +1799,7 @@ export function Accounts({
   onExit,
   onOpenRecord,
   resume,
+  onVoucherDone,
   onResumed
 }: {
   onExit?: () => void
@@ -1814,6 +1815,8 @@ export function Accounts({
   // voucher that was open (voucherId) is opened again over the screen it came
   // from, so Esc walks back the way it came.
   resume?: { screen: string; ledgerId: number | null; companyId?: number; voucherId?: number | null } | null
+  // Closing a voucher opened from another page ('external' resume) returns there.
+  onVoucherDone?: () => void
   onResumed?: () => void
 }): React.JSX.Element {
   const { bell: headerBell } = useHeaderExtras()
@@ -2126,10 +2129,13 @@ export function Accounts({
   const pendingCoRef = useRef<number | null>(null)
   // The voucher to open again once the book is chosen (see the effect below).
   const pendingVoucherRef = useRef<number | null>(null)
+  // Opened from another page: closing it leaves Accounting (onVoucherDone).
+  const externalVoucherRef = useRef(false)
   if (resume && !resumedRef.current) {
     resumedRef.current = true
     if (resume.voucherId) pendingVoucherRef.current = Number(resume.voucherId)
-    if (resume.screen) setScreen(resume.screen as Screen, true)
+    if (resume.screen === 'external') externalVoucherRef.current = true
+    else if (resume.screen) setScreen(resume.screen as Screen, true)
     if (resume.ledgerId != null) setLedgerId(resume.ledgerId)
     // Come back to the book the ledger was being read in, not to whichever the
     // drill-through left the app working in.
@@ -3461,6 +3467,15 @@ export function Accounts({
     if (editBaseline.current?.key !== editKey) editBaseline.current = { key: editKey, snap: draftSnapshot() }
   })
   function backFromVoucher(): void {
+    if (externalVoucherRef.current && onVoucherDone) {
+      externalVoucherRef.current = false
+      setAlterBack(null)
+      setEditingId(null)
+      setNoteEditId(null)
+      setScreen('gateway', true)
+      onVoucherDone()
+      return
+    }
     const to = vchFromLedger.current ? 'ledger' : alterBack && alterBack !== 'voucher' ? alterBack : 'gateway'
     vchFromLedger.current = false
     setAlterBack(null)
@@ -3481,6 +3496,13 @@ export function Accounts({
   }
 
   function leaveVoucher(): void {
+    if (viewOnly && externalVoucherRef.current && onVoucherDone) {
+      externalVoucherRef.current = false
+      setViewOnly(null)
+      setScreen('gateway', true)
+      onVoucherDone()
+      return
+    }
     if (viewOnly) {
       const back = String(viewOnly.back || '') as Screen
       setViewOnly(null)

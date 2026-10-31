@@ -179,6 +179,14 @@ function App(): React.JSX.Element {
     setPage(target === 'lc' || target === 'bd' ? 'treasury' : target)
   }
 
+  // A VOUCHER FROM ANOTHER PAGE (Trading payments): Accounting opens it in
+  // its own book, and closing it (Esc) comes straight back here.
+  function openVoucher(entryId: number, voucherCompanyId?: number): void {
+    setReturnTo(page)
+    setAccountsResume({ screen: 'external', ledgerId: null, companyId: voucherCompanyId ?? companyId ?? undefined, voucherId: entryId })
+    setPage('accounts')
+  }
+
   // Esc returns from a drill-through, because that is what Esc means
   // everywhere else in this app — the Back button was the only way out, and a
   // keyboard-driven desk does not reach for it.
@@ -620,6 +628,8 @@ function App(): React.JSX.Element {
             // Arrived from a trading voucher on a ledger: open that deal.
             focusId={focus?.page === 'trading' ? focus.id : null}
             onFocusHandled={() => setFocus(null)}
+            onOpenVoucher={openVoucher}
+            onOpenInstrument={(kind, id) => openRecord(kind, id)}
           />
         )}
         {view === 'accounts' && (
@@ -627,6 +637,8 @@ function App(): React.JSX.Element {
             onExit={() => setPage('dashboard')}
             resume={accountsResume}
             onResumed={() => setAccountsResume(null)}
+            // A voucher opened from another page: closing it goes back there.
+            onVoucherDone={returnTo ? goBack : undefined}
             // A ledger line is a pointer to a document, so it opens the
             // document's OWN page — the purchase in Purchases, the sale in
             // Sales — rather than a read-only copy of its voucher. Back there

@@ -867,6 +867,7 @@ export async function listTradingPayments(): Promise<Row[]> {
   const allocRes = await c.execute({
     sql: `SELECT ba.id, ba.amount, ba.order_id, ba.ref_name, ba.sale_invoice_group,
                  CASE WHEN jl.dr > 0 THEN 'dr' ELSE 'cr' END AS side,
+                 jl.dr + jl.cr AS line_amount,
                  UPPER(TRIM(a.name)) AS acct, je.id AS eid, je.vch_type, je.vch_no, je.entry_date
           FROM journal_bill_allocs ba
           JOIN journal_lines jl ON jl.id = ba.line_id
@@ -966,7 +967,11 @@ export async function listTradingPayments(): Promise<Row[]> {
           vch_type: a.vch_type ?? null,
           vch_no: a.vch_no ?? null,
           entry_id: n(a.eid),
-          instrument: owner ?? null
+          instrument: owner ?? null,
+          // The voucher's whole figure on this party: an LC/BD paying more
+          // bills than this one is SPLIT across them.
+          line_amount: n(a.line_amount) || null,
+          split: !!owner && n(a.line_amount) - Math.abs(amount) > 0.5
         }
       })
       .sort((x, y) => String(x.date || '').localeCompare(String(y.date || '')))

@@ -104,10 +104,14 @@ function DueCell({ row }: { row: Row }): React.JSX.Element {
 
 export function TradingPayments({
   range,
-  onOpenDeal
+  onOpenDeal,
+  onOpenVoucher,
+  onOpenInstrument
 }: {
   range: { from: string; to: string } | null
   onOpenDeal?: (dealId: number) => void
+  onOpenVoucher?: (entryId: number) => void
+  onOpenInstrument?: (kind: 'lc' | 'bd', id: number) => void
 }): React.JSX.Element {
   const [rows, setRows] = useState<Row[]>([])
   const [loading, setLoading] = useState(true)
@@ -115,7 +119,25 @@ export function TradingPayments({
   const [search, setSearch] = useState('')
   const [side, setSide] = useState<Side>('all')
   const [status, setStatus] = useState<StatusFilter>('open')
-  const [open, setOpen] = useState<Set<string>>(new Set())
+  // The rows left open, kept for the session: Esc back from a voucher finds
+  // the list as it was.
+  const [open, setOpenState] = useState<Set<string>>(() => {
+    try {
+      return new Set(JSON.parse(sessionStorage.getItem('trading-pay-open') || '[]') as string[])
+    } catch {
+      return new Set()
+    }
+  })
+  const setOpen = (f: (s: Set<string>) => Set<string>): void =>
+    setOpenState((s) => {
+      const next = f(s)
+      try {
+        sessionStorage.setItem('trading-pay-open', JSON.stringify([...next]))
+      } catch {
+        // private window: not remembered
+      }
+      return next
+    })
 
   const load = useCallback(async (background?: boolean) => {
     if (!background) setLoading(true)
@@ -572,8 +594,16 @@ export function TradingPayments({
                                           <tr key={i} className="border-t border-[#EAF0E9]">
                                             <td className="whitespace-nowrap px-3 py-1.5 tabular-nums">{formatDate(m.date)}</td>
                                             <td className="whitespace-nowrap px-3 py-1.5">
-                                              <span className="font-semibold capitalize text-[#33473E]">{String(m.vch_type || '').toLowerCase()}</span>
-                                              {m.vch_no ? <span className="text-[#5A6B62]"> · {m.vch_no}</span> : null}
+                                              <button
+                                                type="button"
+                                                disabled={!onOpenVoucher || !n(m.entry_id)}
+                                                onClick={() => onOpenVoucher?.(n(m.entry_id))}
+                                                title="Open this voucher — Esc comes back here"
+                                                className="rounded-[2px] text-left hover:underline disabled:cursor-default disabled:no-underline"
+                                              >
+                                                <span className="font-semibold capitalize text-[#33473E]">{String(m.vch_type || '').toLowerCase()}</span>
+                                                {m.vch_no ? <span className="text-[#5A6B62]"> · {m.vch_no}</span> : null}
+                                              </button>
                                               {m.fifo ? (
                                                 <span
                                                   className="ml-1.5 rounded-[2px] bg-[#EAF0FA] px-1 py-px text-[9.5px] font-extrabold uppercase tracking-[.06em] text-[#1B4E82]"
@@ -585,8 +615,28 @@ export function TradingPayments({
                                             </td>
                                             <td className="px-3 py-1.5">
                                               <span className="inline-flex items-center gap-1.5">
-                                                <ChannelChip kind={m.channel} text={m.instrument?.ref || undefined} />
-                                                {m.channel === 'bank' && <Landmark className="h-3.5 w-3.5 text-[#5A6B62]" />}
+                                                <button
+                                                  type="button"
+                                                  disabled={m.instrument ? !onOpenInstrument : !onOpenVoucher || !n(m.entry_id)}
+                                                  onClick={() =>
+                                                    m.instrument
+                                                      ? onOpenInstrument?.(m.instrument.kind, n(m.instrument.id))
+                                                      : onOpenVoucher?.(n(m.entry_id))
+                                                  }
+                                                  title={m.instrument ? `Open ${String(m.instrument.kind).toUpperCase()} ${m.instrument.ref} — Esc comes back here` : 'Open the voucher — Esc comes back here'}
+                                                  className="inline-flex items-center gap-1.5 rounded-[3px] hover:opacity-80 disabled:cursor-default"
+                                                >
+                                                  <ChannelChip kind={m.channel} text={m.instrument?.ref || undefined} />
+                                                  {m.channel === 'bank' && <Landmark className="h-3.5 w-3.5 text-[#5A6B62]" />}
+                                                </button>
+                                                {m.split && (
+                                                  <span
+                                                    className="rounded-[2px] bg-[#FFF4DE] px-1 py-px text-[9.5px] font-extrabold uppercase tracking-[.06em] text-[#8A5A00]"
+                                                    title={`Split — ${formatINR(Math.abs(n(m.amount)))} of this ${String(m.instrument?.kind || '').toUpperCase()}'s ${formatINR(n(m.line_amount))} went to this bill; the rest settled others`}
+                                                  >
+                                                    Split · {formatINR(Math.abs(n(m.amount)))} of {formatINR(n(m.line_amount))}
+                                                  </span>
+                                                )}
                                               </span>
                                             </td>
                                             <td className="whitespace-nowrap px-3 py-1.5 text-right font-bold tabular-nums">{formatINR(m.amount)}</td>

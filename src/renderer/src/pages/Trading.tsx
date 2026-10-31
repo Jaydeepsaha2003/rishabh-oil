@@ -1224,8 +1224,16 @@ function SideHead({ rose, label, total }: { rose: boolean; label: string; total:
 export function Trading({
   // Arrived from a trading voucher on a ledger: open that deal.
   focusId = null,
-  onFocusHandled
-}: { focusId?: number | null; onFocusHandled?: () => void } = {}): React.JSX.Element {
+  onFocusHandled,
+  onOpenVoucher,
+  onOpenInstrument
+}: {
+  focusId?: number | null
+  onFocusHandled?: () => void
+  // Payments: a voucher or an LC/BD opened from a settlement line; Esc returns.
+  onOpenVoucher?: (entryId: number) => void
+  onOpenInstrument?: (kind: 'lc' | 'bd', id: number) => void
+} = {}): React.JSX.Element {
   // How far back this user may date a new entry. The save is refused either
   // way; greying the days out just stops the form offering one it will reject.
   const minDate = useEntryWindow('trading')
@@ -1255,7 +1263,22 @@ export function Trading({
   const [detailDeal, setDetailDeal] = useState<Row | null>(null)
   // The register reads a trade as a margin; Payments reads the same trades
   // as bills — what is still owed on each side and how it is being settled.
-  const [view, setView] = useState<'deals' | 'payments'>('deals')
+  // Kept for the session, so coming back from a voucher lands on the same view.
+  const [view, setViewState] = useState<'deals' | 'payments'>(() => {
+    try {
+      return sessionStorage.getItem('trading-view') === 'payments' ? 'payments' : 'deals'
+    } catch {
+      return 'deals'
+    }
+  })
+  const setView = (v: 'deals' | 'payments'): void => {
+    try {
+      sessionStorage.setItem('trading-view', v)
+    } catch {
+      // private window: the view just is not remembered
+    }
+    setViewState(v)
+  }
   // The deal may not be in the list yet when the request arrives, so this
   // waits for the list rather than dropping the click on the floor.
   useEffect(() => {
@@ -3061,6 +3084,8 @@ export function Trading({
             const d = deals.find((x) => Number(x.id) === id)
             if (d) setDetailDeal(d)
           }}
+          onOpenVoucher={onOpenVoucher}
+          onOpenInstrument={onOpenInstrument}
         />
       ) : (<>
       {/* Summary tiles. Every figure is read off filteredDeals — the same
