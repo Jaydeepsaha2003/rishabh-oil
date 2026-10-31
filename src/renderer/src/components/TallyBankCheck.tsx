@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { toast } from 'sonner'
-import { AlertTriangle, ArrowDownLeft, ArrowRight, ArrowUpRight, CalendarCheck, Check, CheckCheck, ExternalLink, FilePlus2, FileText, Landmark, Link2, Plus, RefreshCw, RotateCcw, Search, Split, Unlink, Upload, X } from 'lucide-react'
+import { AlertTriangle, ArrowDownLeft, ArrowRight, ArrowUpRight, CalendarCheck, Check, CheckCheck, ExternalLink, FilePlus2, FileText, Landmark, Link2, Plus, RefreshCw, RotateCcw, Search, Split, StickyNote, Unlink, Upload, X } from 'lucide-react'
 import { formatDate, formatINR } from '@/lib/format'
 import { ExcelButton } from '@/components/ExcelButton'
 import { useBreakdownShown } from '@/lib/breakdownReveal'
@@ -361,6 +361,37 @@ export function TallyBankCheck({
 
   // CHECKED — the desk has looked at this line and it is fine as it stands:
   // it leaves "To look at" and waits under Checked, where it can be unmarked.
+  // NOTES ON LINES, per bank — read with every check, kept across uploads.
+  const [lineNotes, setLineNotes] = useState<Map<string, Row>>(new Map())
+  const [noteEdit, setNoteEdit] = useState<string | null>(null)
+  const [noteDraft, setNoteDraft] = useState('')
+  useEffect(() => {
+    if (!bankId || !companyId) return setLineNotes(new Map())
+    let live = true
+    window.api.tallyNotes
+      .lineNotes(companyId, `bank:${bankId}`)
+      .then((list) => live && setLineNotes(new Map(list.map((x) => [String(x.row_key), x]))))
+      .catch(() => {})
+    return () => {
+      live = false
+    }
+  }, [bankId, companyId, res])
+  async function saveNote(key: string): Promise<void> {
+    if (!bankId) return
+    try {
+      await window.api.tallyNotes.setLineNote({ company_id: companyId, scope: `bank:${bankId}`, row_key: key, note: noteDraft })
+      setLineNotes((m) => {
+        const next = new Map(m)
+        if (noteDraft.trim()) next.set(key, { row_key: key, note: noteDraft.trim() })
+        else next.delete(key)
+        return next
+      })
+      setNoteEdit(null)
+    } catch (e) {
+      toast.error((e as Error).message)
+    }
+  }
+
   async function markChecked(r: Row, on: boolean): Promise<void> {
     if (!file || !bankId) return
     try {
@@ -1366,6 +1397,57 @@ ${pairs.map((x) => String(x.own?.code || '')).join(', ')} stay, and match Tally'
                             className="flex h-[22px] items-center gap-1 rounded-[3px] border border-[#BFE3CB] bg-[#F1F8EC] px-1.5 text-[10px] font-extrabold uppercase tracking-[.04em] text-[#0B6B45] hover:bg-[#E3F2E8]"
                           >
                             <Split className="h-3 w-3" /> Break down
+                          </button>
+                        )}
+                        {/* THE LINE'S NOTE — shown, or added in place. */}
+                        {noteEdit === String(r.key) ? (
+                          <span className="flex w-full items-center gap-1" onClick={(e) => e.stopPropagation()}>
+                            <input
+                              autoFocus
+                              value={noteDraft}
+                              onChange={(e) => setNoteDraft(e.target.value)}
+                              onKeyDown={(e) => {
+                                if (e.key === 'Enter') void saveNote(String(r.key))
+                                if (e.key === 'Escape') {
+                                  e.preventDefault()
+                                  e.stopPropagation()
+                                  setNoteEdit(null)
+                                }
+                              }}
+                              placeholder="Note on this line — Enter saves, empty removes it"
+                              className="h-[24px] min-w-0 flex-1 rounded-[3px] border border-[#F1D9A6] bg-[#FFFBF2] px-1.5 text-[11.5px] font-semibold text-[#5C3A00] outline-none focus:border-[#C2700A]"
+                            />
+                            <button type="button" onClick={() => void saveNote(String(r.key))} className="h-[24px] rounded-[3px] bg-[#0B3D2E] px-2 text-[10.5px] font-extrabold text-[#C7F03F]">
+                              Save
+                            </button>
+                            <button type="button" onClick={() => setNoteEdit(null)} className="text-[#8CA396] hover:text-[#B3261E]" title="Cancel">
+                              <X className="h-3.5 w-3.5" />
+                            </button>
+                          </span>
+                        ) : lineNotes.get(String(r.key)) ? (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setNoteDraft(String(lineNotes.get(String(r.key))?.note || ''))
+                              setNoteEdit(String(r.key))
+                            }}
+                            title={`${String(lineNotes.get(String(r.key))?.note || '')}${lineNotes.get(String(r.key))?.updated_by ? ` — ${String(lineNotes.get(String(r.key))?.updated_by)}` : ''} · click to change`}
+                            className="flex max-w-[260px] items-center gap-1 rounded-[3px] border border-[#F1D9A6] bg-[#FFF8E9] px-1.5 py-[2px] text-[10.5px] font-bold text-[#8A5300]"
+                          >
+                            <StickyNote className="h-3 w-3 shrink-0" />
+                            <span className="truncate">{String(lineNotes.get(String(r.key))?.note || '')}</span>
+                          </button>
+                        ) : (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setNoteDraft('')
+                              setNoteEdit(String(r.key))
+                            }}
+                            title="Add a note on this line — kept for the next time this bank book is checked"
+                            className="flex h-[22px] items-center gap-1 rounded-[3px] px-1 text-[10px] font-extrabold uppercase tracking-[.04em] text-[#A9B8AE] hover:text-[#8A5300]"
+                          >
+                            <StickyNote className="h-3 w-3" /> Note
                           </button>
                         )}
                         {r.checked ? (

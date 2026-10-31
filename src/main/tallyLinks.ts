@@ -53,7 +53,41 @@ async function ensureTables(): Promise<void> {
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     PRIMARY KEY (company_id, scope, row_key)
   )`)
+  // A NOTE ON A LINE — "asked accounts, wait" — keyed like tally_checked, so it
+  // is there again whenever the same book is checked.
+  await c.execute(`CREATE TABLE IF NOT EXISTS tally_line_notes (
+    company_id INTEGER NOT NULL,
+    scope TEXT NOT NULL,
+    row_key TEXT NOT NULL,
+    note TEXT NOT NULL,
+    updated_by TEXT,
+    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (company_id, scope, row_key)
+  )`)
   ready = true
+}
+
+export async function lineNotesFor(companyId: number, scope: string): Promise<Row[]> {
+  await ensureTables()
+  const r = await getClient().execute({
+    sql: 'SELECT row_key, note, updated_by, updated_at FROM tally_line_notes WHERE company_id = ? AND scope = ?',
+    args: [Number(companyId), String(scope || '')]
+  })
+  return r.rows.map((x) => ({ row_key: String(x.row_key), note: String(x.note), updated_by: x.updated_by, updated_at: x.updated_at }))
+}
+
+/** Write a line's note; an empty one takes it off. */
+export async function setLineNote(v: { company_id: number; scope: string; row_key: string; note: string }): Promise<{ ok: true }> {
+  await ensureTables()
+  if (!Number(v.company_id) || !String(v.scope || '').trim() || !String(v.row_key || '').trim()) throw new Error('Nothing to note')
+  const note = String(v.note || '').trim().slice(0, 1000)
+  if (note)
+    await getClient().execute({
+      sql: `INSERT OR REPLACE INTO tally_line_notes (company_id, scope, row_key, note, updated_by, updated_at) VALUES (?, ?, ?, ?, ?, datetime('now'))`,
+      args: [Number(v.company_id), v.scope, v.row_key, note, who()]
+    })
+  else await getClient().execute({ sql: 'DELETE FROM tally_line_notes WHERE company_id = ? AND scope = ? AND row_key = ?', args: [Number(v.company_id), v.scope, v.row_key] })
+  return { ok: true }
 }
 
 export async function checkedFor(companyId: number, scope: string): Promise<Set<string>> {
