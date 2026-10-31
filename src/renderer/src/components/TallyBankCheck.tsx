@@ -5,6 +5,7 @@ import { formatDate, formatINR } from '@/lib/format'
 import { ExcelButton } from '@/components/ExcelButton'
 import { useBreakdownShown } from '@/lib/breakdownReveal'
 import { TallyBookVouchers } from '@/components/TallyBookVouchers'
+import { setVoucherReco } from '@/components/Tags'
 import { TallyBatches } from '@/components/TallyBatches'
 import { draftTime } from '@/components/TallySalesCheck'
 import { ColumnFilter } from '@/components/ui/column-filter'
@@ -361,6 +362,10 @@ export function TallyBankCheck({
 
   // CHECKED — the desk has looked at this line and it is fine as it stands:
   // it leaves "To look at" and waits under Checked, where it can be unmarked.
+  // RECO, ticked on a line before it is booked: the voucher it books is
+  // tagged RECO (a cheque to reconcile), the same tag the voucher screen sets.
+  const [recoKeys, setRecoKeys] = useState<Set<string>>(new Set())
+
   // NOTES ON LINES, per bank — read with every check, kept across uploads.
   const [lineNotes, setLineNotes] = useState<Map<string, Row>>(new Map())
   const [noteEdit, setNoteEdit] = useState<string | null>(null)
@@ -1535,6 +1540,34 @@ ${pairs.map((x) => String(x.own?.code || '')).join(', ')} stay, and match Tally'
                             {r.bookable && (
                               <button
                                 type="button"
+                                aria-pressed={recoKeys.has(String(r.key))}
+                                onClick={() =>
+                                  setRecoKeys((s) => {
+                                    const nx = new Set(s)
+                                    if (nx.has(String(r.key))) nx.delete(String(r.key))
+                                    else nx.add(String(r.key))
+                                    return nx
+                                  })
+                                }
+                                title={
+                                  recoKeys.has(String(r.key))
+                                    ? 'Reco ON — the voucher booked from this line is tagged Reco (a cheque to reconcile). Click to untick.'
+                                    : 'Tick to tag the voucher Reco when it is booked — a cheque to reconcile later (Day Book → Reco)'
+                                }
+                                className="flex h-7 items-center gap-1.5 rounded-[14px] px-2.5 text-[11px] font-extrabold"
+                                style={{
+                                  border: `1px solid ${recoKeys.has(String(r.key)) ? '#1B4E82' : '#DCE7DB'}`,
+                                  background: recoKeys.has(String(r.key)) ? '#EAF0FA' : '#fff',
+                                  color: recoKeys.has(String(r.key)) ? '#1B4E82' : '#5A6B62'
+                                }}
+                              >
+                                <span className="h-[7px] w-[7px] rounded-full" style={{ background: recoKeys.has(String(r.key)) ? '#1B4E82' : '#B9C7BC' }} />
+                                Reco
+                              </button>
+                            )}
+                            {r.bookable && (
+                              <button
+                                type="button"
                                 onClick={() => setBookKeys([String(r.key)])}
                                 className="flex h-7 items-center gap-1.5 rounded-[4px] border border-[#F1D9A6] bg-white px-2.5 text-[11px] font-extrabold text-[#8A5300] hover:bg-[#FFF8E9]"
                               >
@@ -1614,6 +1647,17 @@ ${pairs.map((x) => String(x.own?.code || '')).join(', ')} stay, and match Tally'
         }}
         onChanged={onChanged}
         onBooked={async (created) => {
+          // The lines ticked Reco: their new vouchers get the tag.
+          const tagged = (created as Row[]).filter((c) => recoKeys.has(String(c.key || '')))
+          for (const c of tagged) await setVoucherReco(Number(c.id), true, companyId).catch(() => toast.error(`Booked, but ${String(c.vch_no || 'a voucher')} could not be tagged Reco`))
+          if (tagged.length) {
+            toast.success(`${tagged.length} voucher${tagged.length === 1 ? '' : 's'} tagged Reco`)
+            setRecoKeys((s) => {
+              const nx = new Set(s)
+              for (const c of tagged) nx.delete(String(c.key))
+              return nx
+            })
+          }
           setBatchTick((x) => x + 1)
           if (file && bankId) await run(file, bankId, savedAt || undefined)
           // Booked to be broken down: open it on its lines; Esc comes back.

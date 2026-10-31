@@ -1199,7 +1199,7 @@ export async function postTallyBankVouchers(v: {
   keys: string[]
   force_keys?: string[]
   company_id?: number
-}): Promise<{ created: { vch_no: string; id: number }[]; skipped: { vch_no: string; reason: string }[] }> {
+}): Promise<{ created: { vch_no: string; id: number; key?: string }[]; skipped: { vch_no: string; reason: string }[] }> {
   const cid = await companyOf(v)
   const wanted = new Set((v.keys || []).map(String))
   if (!wanted.size) throw new Error('Pick the entries to book')
@@ -1211,7 +1211,7 @@ export async function postTallyBankVouchers(v: {
   const groups = new Map(
     toPlain(await getClient().execute('SELECT id, acc_group FROM ledger_accounts')).map((r) => [Number(r.id), String(r.acc_group || '')])
   )
-  const created: { vch_no: string; id: number }[] = []
+  const created: { vch_no: string; id: number; key?: string }[] = []
   const skipped: { vch_no: string; reason: string }[] = []
   for (const t of state.book.lines.filter((x) => wanted.has(x.key))) {
     const label = `${t.vch_type} ${t.vch_no}`
@@ -1280,7 +1280,7 @@ export async function postTallyBankVouchers(v: {
         companyId: cid,
         lines
       })
-      created.push({ vch_no: label, id: res.id })
+      created.push({ vch_no: label, id: res.id, key: t.key })
     } catch (e) {
       skipped.push({ vch_no: label, reason: (e as Error).message })
     }

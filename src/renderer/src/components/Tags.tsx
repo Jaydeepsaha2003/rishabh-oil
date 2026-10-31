@@ -466,6 +466,19 @@ export function TagDraftPicker({
  * chips without a request each and a change on one row does not reload the
  * rest.
  */
+// THE RECO TAG — a cheque to reconcile with the bank later. Put on (or taken
+// off) a voucher, its other tags kept; the tag is made the first time.
+export async function setVoucherReco(entryId: number, on: boolean, companyId?: number): Promise<void> {
+  const isReco = (t: Row): boolean => String(t.name || '').trim().toUpperCase() === 'RECO'
+  const have = ((await window.api.tags.forRefs('voucher', [entryId], companyId))?.[String(entryId)] || []) as Row[]
+  if (have.some(isReco) === on) return
+  const keep = have.filter((t) => !isReco(t)).map((t) => Number(t.id))
+  if (!on) return void (await window.api.tags.set('voucher', entryId, keep))
+  const list = (await window.api.tags.list(companyId)) as Row[]
+  const id = Number(list.find(isReco)?.id) || Number((await window.api.tags.create('RECO', undefined, companyId)).id)
+  await window.api.tags.set('voucher', entryId, [...keep, id])
+}
+
 export function useTagMap(
   entity: TagEntity,
   refs: (string | number)[],
