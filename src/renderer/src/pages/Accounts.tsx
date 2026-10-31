@@ -700,6 +700,8 @@ interface PayLine {
 }
 const CASH_BANK_GROUPS = ['Bank Accounts', 'Cash-in-Hand', 'Bank OD A/c']
 const BILLWISE_GROUPS = ['Sundry Creditors', 'Sundry Debtors']
+// The voucher types a cheque moves through — where the Reco tag is offered.
+const RECO_TYPES = ['PAYMENT', 'RECEIPT', 'CONTRA']
 // A group of the books' own sits under a standard one — SC-OIL under Sundry
 // Creditors — and reads as it: bill-wise, a supplier, Cr by nature. Filled
 // from the chart (listGroupNames' base) whenever the groups load.
@@ -1955,6 +1957,9 @@ export function Accounts({
   const [vchDate, setVchDate] = useState(todayISO())
   const [vchNo, setVchNo] = useState('')
   const [narration, setNarration] = useState('')
+  // RECO: a cheque given or taken, to be ticked off against the bank later.
+  // Kept as the "RECO" tag on the voucher, so the Day Book can list them.
+  const [vchReco, setVchReco] = useState(false)
   const [lines, setLines] = useState<VLine[]>(blankLines('PAYMENT'))
   // Which line's breakdown is open. One at a time: it is a panel under the
   // row, not a column, and two of them push the totals off the screen.
@@ -2349,6 +2354,8 @@ export function Accounts({
   const [dbQuery, setDbQuery] = useState('')
   const [dbField, setDbField] = useState(0)
   const [dbTypes, setDbTypes] = useState<string[]>([])
+  // Day Book: only the vouchers tagged RECO.
+  const [dbReco, setDbReco] = useState(false)
   const [dbDense, setDbDense] = useState(false)
   const [dbSel, setDbSel] = useState<number | null>(null)
   const [dbSum, setDbSum] = useState<{ top: number; left: number; width: number; maxH: number } | null>(null)
@@ -4143,6 +4150,22 @@ export function Accounts({
    * after a save that was refused would throw away the very work it offered
    * to keep.
    */
+  const isReco = (t: Row): boolean => String(t.name || '').trim().toUpperCase() === 'RECO'
+  async function recoTagId(): Promise<number> {
+    const list = await window.api.tags.list(cid || undefined)
+    const hit = list.find(isReco)
+    if (hit) return Number(hit.id)
+    const made = await window.api.tags.create('RECO', undefined, cid || undefined)
+    return Number(made.id)
+  }
+  // The voucher's tags with RECO put on or taken off — its other tags kept.
+  async function applyReco(entryId: number, on: boolean): Promise<void> {
+    const have = ((await window.api.tags.forRefs('voucher', [entryId], cid || undefined))?.[String(entryId)] || []) as Row[]
+    if (have.some(isReco) === on) return
+    const keep = have.filter((t) => !isReco(t)).map((t) => Number(t.id))
+    await window.api.tags.set('voucher', entryId, on ? [...keep, await recoTagId()] : keep)
+  }
+
   async function saveVoucher(): Promise<boolean> {
     if (saving) return false
     {
@@ -4441,6 +4464,7 @@ export function Accounts({
       }
       if (editingId != null) {
         await window.api.vouchers.update(editingId, payload)
+        if (RECO_TYPES.includes(vchType)) await applyReco(editingId, vchReco).catch(() => toast.error('Saved, but the Reco tag could not be set'))
         toast.success('Voucher altered')
         setEditingId(null)
         // Back where it was opened from (a ledger, a register) — not the Day Book.
@@ -4448,6 +4472,9 @@ export function Accounts({
         setAlterBack(null)
       } else {
         const made = await window.api.vouchers.create(payload)
+        if (vchReco && RECO_TYPES.includes(vchType) && Number(made?.id))
+          await applyReco(Number(made.id), true).catch(() => toast.error('Posted, but the Reco tag could not be set'))
+        setVchReco(false)
         if (__WEB__) {
           // Said on the screen, with the number it was given, rather than in a
           // toast that is gone before it is read.
@@ -4860,6 +4887,11 @@ export function Accounts({
     }
     setViewOnly(viewing ? { ...v, back: screen } : null)
     setEditingId(viewing ? null : Number(v.id))
+    setVchReco(false)
+    void window.api.tags
+      .forRefs('voucher', [Number(v.id)], cid || undefined)
+      .then((m) => setVchReco(((m?.[String(v.id)] || []) as Row[]).some(isReco)))
+      .catch(() => {})
     setAlterBack(viewing || screen === 'voucher' ? null : screen)
     setNoteEditId(null)
     // A sale or purchase voucher is not one of the entry types this screen
@@ -14904,7 +14936,28 @@ export function Accounts({
               )}
 
               <div style={{ ...card, padding: '12px 16px' }}>
-                <div style={cap}>Narration</div>
+                <div className="flex items-center gap-2">
+                  <div style={cap}>Narration</div>
+                  {RECO_TYPES.includes(vchType) && !viewOnly && (
+                    <button
+                      type="button"
+                      onClick={() => setVchReco((v) => !v)}
+                      aria-pressed={vchReco}
+                      title={vchReco ? 'Tagged Reco — a cheque to reconcile with the bank later. Click to take it off.' : 'Tag this voucher Reco — a cheque to reconcile with the bank later (Day Book → Reco lists them)'}
+                      className="ml-auto flex h-6 items-center gap-1.5 rounded-[12px] px-2.5"
+                      style={{
+                        border: `1px solid ${vchReco ? '#1B4E82' : '#DCE7DB'}`,
+                        background: vchReco ? '#EAF0FA' : '#fff',
+                        color: vchReco ? '#1B4E82' : '#5A6B62',
+                        fontSize: 10.5,
+                        fontWeight: 800
+                      }}
+                    >
+                      <span className="h-[7px] w-[7px] rounded-full" style={{ background: vchReco ? '#1B4E82' : '#B9C7BC' }} />
+                      Reco {vchReco ? 'ON' : 'OFF'}
+                    </button>
+                  )}
+                </div>
                 <input value={narration} onChange={(e) => setNarration(e.target.value)} placeholder="What this voucher is for" style={field} />
               </div>
             </div>
@@ -15169,7 +15222,8 @@ export function Accounts({
       String(a.entry_date) === String(b.entry_date) ? Number(a.id) - Number(b.id) : String(a.entry_date) < String(b.entry_date) ? -1 : 1
     )
     const pre = all.filter(match)
-    const typed = pre.filter((r) => !dbTypes.length || dbTypes.includes(String(r.vch_type || '').toUpperCase()))
+    const recoOf = (r: Row): boolean => vchTags.tagsOf(Number(r.id)).some((t) => String(t.name || '').trim().toUpperCase() === 'RECO')
+    const typed = pre.filter((r) => (!dbTypes.length || dbTypes.includes(String(r.vch_type || '').toUpperCase())) && (!dbReco || recoOf(r)))
     const money = (v: number): string => formatINR(v)
     const dbCf = colFilter<Row>(colF, 'daybook', typed, [
       { key: 'date', get: (r) => formatDate(r.entry_date), sort: 'num' },
@@ -16242,6 +16296,17 @@ export function Accounts({
             <div className="flex flex-wrap items-center gap-1.5">
               {isVch ? (
                 <>
+                  <button
+                    type="button"
+                    onClick={() => setDbReco((v) => !v)}
+                    title={dbReco ? 'Showing only vouchers tagged Reco — click to show all' : 'Show only vouchers tagged Reco (cheques to reconcile)'}
+                    className="flex h-7 items-center gap-1.5 whitespace-nowrap rounded-[14px] px-2.5"
+                    style={{ border: `1px solid ${dbReco ? '#1B4E82' : '#DCE7DB'}`, background: dbReco ? '#EAF0FA' : '#fff', color: dbReco ? '#1B4E82' : '#33473E', fontSize: 11, fontWeight: 800 }}
+                  >
+                    <span className="h-[7px] w-[7px] rounded-full" style={{ background: '#1B4E82' }} />
+                    Reco
+                    <span style={{ ...MONO_FIG, fontSize: 10, fontWeight: 600, opacity: 0.75 }}>{pre.filter(recoOf).length}</span>
+                  </button>
                   <span style={{ fontSize: 9.5, fontWeight: 800, letterSpacing: '.13em', textTransform: 'uppercase', color: '#5A6B62', marginRight: 2 }}>Voucher type</span>
                   {typeKeys.map((t) => {
                     const on = dbTypes.includes(t)
