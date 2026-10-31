@@ -82,7 +82,7 @@ function StatusPill({ row }: { row: Row }): React.JSX.Element {
   }
   const x = m[s] ?? m.pending
   return (
-    <span className="rounded-[2px] px-2 py-0.5 text-[10.5px] font-extrabold uppercase tracking-[.06em]" style={{ color: x.fg, background: x.bg }}>
+    <span className="inline-block whitespace-nowrap rounded-[2px] px-2 py-0.5 text-[10.5px] font-extrabold uppercase tracking-[.06em]" style={{ color: x.fg, background: x.bg }}>
       {x.t}
     </span>
   )
@@ -520,8 +520,8 @@ export function TradingPayments({
                                   </div>
                                 </div>
                               </td>
-                              <td className="max-w-[220px] truncate px-3 font-semibold text-[#33473E]" title={r.party_name}>
-                                {r.party_name || '—'}
+                              <td className="max-w-[240px] px-3" title={r.party_name}>
+                                <div className="line-clamp-2 font-semibold leading-snug text-[#33473E]">{r.party_name || '—'}</div>
                               </td>
                               <td className="whitespace-nowrap px-3 text-right tabular-nums font-semibold text-[#0A1F17]">{formatINR(r.amount)}</td>
                               <td className="px-3">
