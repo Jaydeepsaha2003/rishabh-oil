@@ -111,7 +111,17 @@ const ITEMS: Record<string, { label: string; icon: LucideIcon }> = {
 }
 
 // The page keys App.tsx listens for (a bare letter, nothing being typed).
-const HOTKEY: Partial<Record<string, string>> = { accounts: 'A', treasury: 'R' }
+export const HOTKEY: Partial<Record<string, string>> = {
+  dashboard: 'D',
+  bargains: 'B',
+  orders: 'P',
+  consignment: 'C',
+  gateEntry: 'G',
+  sales: 'S',
+  trading: 'T',
+  accounts: 'A',
+  treasury: 'R'
+}
 
 const GROUPS: { label: string; ids: string[] }[] = [
   { label: 'Overview', ids: ['dashboard'] },

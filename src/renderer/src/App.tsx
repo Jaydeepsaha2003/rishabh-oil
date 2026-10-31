@@ -11,7 +11,7 @@ import { Toaster, toast } from 'sonner'
     plainError(message, { duration: 4500, ...(data || {}) })) as typeof toast.error
 }
 import { Download, LogOut, RefreshCw, WifiOff } from 'lucide-react'
-import { Sidebar, type Page } from './components/Sidebar'
+import { Sidebar, HOTKEY, type Page } from './components/Sidebar'
 import { LoginScreen } from './components/LoginScreen'
 import { LoadingSplash } from './components/LoadingSplash'
 import { DbSetupScreen } from './components/DbSetupScreen'
@@ -391,25 +391,33 @@ function App(): React.JSX.Element {
   // or an open dialog keeps the letter, and a page that already handled the
   // key wins. Not on Accounting itself, where every letter is its own menu
   // (R there is Fr. Inward Working).
-  const mayAccounts = allowed.includes('accounts')
-  const mayTreasury = allowed.includes('treasury')
+  // The same goes for every page with a letter in the sidebar (HOTKEY):
+  // P Purchase, S Sales, G Gate, T Trading, B bargains, C consignment, D
+  // dashboard — each only for a user allowed that page.
+  const allowedKey = allowed.join(',')
   useEffect(() => {
     if (page === 'accounts') return
+    const byKey = new Map(
+      Object.entries(HOTKEY)
+        .filter(([id]) => allowed.includes(id) && id !== page)
+        .map(([id, k]) => [String(k).toLowerCase(), id as Page])
+    )
     function onKey(e: KeyboardEvent): void {
-      if (e.defaultPrevented || e.repeat || e.ctrlKey || e.metaKey || e.altKey) return
-      const k = e.key.toLowerCase()
-      const to: Page | null = k === 'a' && mayAccounts ? 'accounts' : k === 'r' && mayTreasury && page !== 'treasury' ? 'treasury' : null
+      if (e.defaultPrevented || e.repeat || e.ctrlKey || e.metaKey || e.altKey || e.shiftKey) return
+      const to = byKey.get(e.key.toLowerCase())
       if (!to) return
       const t = e.target as HTMLElement | null
       if (t && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName) || t.closest('[role="combobox"],[role="listbox"],[role="menu"]'))) return
       if (document.querySelector('[role="dialog"],[role="alertdialog"],[role="menu"],[role="listbox"]')) return
-      e.preventDefault()
-      navigate(to)
+      // After the page's own listeners: a page that used the letter keeps it.
+      setTimeout(() => {
+        if (!e.defaultPrevented) navigate(to)
+      }, 0)
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [mayAccounts, mayTreasury, page])
+  }, [allowedKey, page])
 
   // Tell the main process who is acting on this device, so the audit trail can
   // attribute every write. Runs on login and whenever the user is restored.
