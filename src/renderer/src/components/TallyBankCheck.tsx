@@ -1399,32 +1399,8 @@ ${pairs.map((x) => String(x.own?.code || '')).join(', ')} stay, and match Tally'
                             <Split className="h-3 w-3" /> Break down
                           </button>
                         )}
-                        {/* THE LINE'S NOTE — shown, or added in place. */}
-                        {noteEdit === String(r.key) ? (
-                          <span className="flex w-full items-center gap-1" onClick={(e) => e.stopPropagation()}>
-                            <input
-                              autoFocus
-                              value={noteDraft}
-                              onChange={(e) => setNoteDraft(e.target.value)}
-                              onKeyDown={(e) => {
-                                if (e.key === 'Enter') void saveNote(String(r.key))
-                                if (e.key === 'Escape') {
-                                  e.preventDefault()
-                                  e.stopPropagation()
-                                  setNoteEdit(null)
-                                }
-                              }}
-                              placeholder="Note on this line — Enter saves, empty removes it"
-                              className="h-[24px] min-w-0 flex-1 rounded-[3px] border border-[#F1D9A6] bg-[#FFFBF2] px-1.5 text-[11.5px] font-semibold text-[#5C3A00] outline-none focus:border-[#C2700A]"
-                            />
-                            <button type="button" onClick={() => void saveNote(String(r.key))} className="h-[24px] rounded-[3px] bg-[#0B3D2E] px-2 text-[10.5px] font-extrabold text-[#C7F03F]">
-                              Save
-                            </button>
-                            <button type="button" onClick={() => setNoteEdit(null)} className="text-[#8CA396] hover:text-[#B3261E]" title="Cancel">
-                              <X className="h-3.5 w-3.5" />
-                            </button>
-                          </span>
-                        ) : lineNotes.get(String(r.key)) ? (
+                        {/* THE LINE'S NOTE — the chip; it is written in the wide box below. */}
+                        {lineNotes.get(String(r.key)) ? (
                           <button
                             type="button"
                             onClick={() => {
@@ -1471,6 +1447,44 @@ ${pairs.map((x) => String(x.own?.code || '')).join(', ')} stay, and match Tally'
                           </span>
                         )}
                       </span>
+                      {noteEdit === String(r.key) && (
+                        // The note is written across the row, not in the
+                        // status column — that one is too narrow to type in.
+                        <div
+                          className="flex min-w-0 items-start gap-2 rounded-[4px] border border-[#F1D9A6] bg-[#FFFBF2] px-3 py-2"
+                          style={{ gridColumn: '2 / -1' }}
+                          onClick={(e) => e.stopPropagation()}
+                        >
+                          <StickyNote className="mt-1.5 h-4 w-4 shrink-0 text-[#8A5300]" />
+                          <textarea
+                            autoFocus
+                            rows={2}
+                            value={noteDraft}
+                            onChange={(e) => setNoteDraft(e.target.value)}
+                            onKeyDown={(e) => {
+                              if (e.key === 'Enter' && !e.shiftKey) {
+                                e.preventDefault()
+                                void saveNote(String(r.key))
+                              }
+                              if (e.key === 'Escape') {
+                                e.preventDefault()
+                                e.stopPropagation()
+                                setNoteEdit(null)
+                              }
+                            }}
+                            placeholder="Note on this line — e.g. asked accounts, wait. Enter saves · Shift+Enter new line · empty removes it"
+                            className="min-h-[52px] min-w-0 flex-1 resize-y rounded-[4px] border border-[#F1D9A6] bg-white px-2.5 py-1.5 text-[12.5px] font-semibold text-[#0A1F17] outline-none placeholder:text-[#B9A57A] focus:border-[#C2700A]"
+                          />
+                          <div className="flex shrink-0 flex-col gap-1.5">
+                            <button type="button" onClick={() => void saveNote(String(r.key))} className="h-8 rounded-[4px] bg-[#0B3D2E] px-3 text-[11.5px] font-extrabold text-[#C7F03F]">
+                              Save note
+                            </button>
+                            <button type="button" onClick={() => setNoteEdit(null)} className="h-7 rounded-[4px] border border-[#D6E2D6] bg-white px-3 text-[11px] font-extrabold text-[#33473E]">
+                              Cancel
+                            </button>
+                          </div>
+                        </div>
+                      )}
                       {(said.length > 0 || !!r.fix) && (
                         <div className="min-w-0 rounded-r-[4px] border border-l-[3px] border-[#E4ECE3] bg-[#F8FAF7] px-3 py-2" style={{ gridColumn: '2 / -1', borderLeftColor: quiet ? '#DCE7DB' : s.fg }}>
                           {said.length > 0 && <p className="text-[11.5px] font-semibold leading-relaxed text-[#33473E]">{said.join(' ')}</p>}
