@@ -27805,7 +27805,7 @@ async function postTallyBankVouchers(v) {
         companyId: cid,
         lines
       });
-      created.push({ vch_no: label2, id: res.id });
+      created.push({ vch_no: label2, id: res.id, key: t.key });
     } catch (e) {
       skipped.push({ vch_no: label2, reason: e.message });
     }
