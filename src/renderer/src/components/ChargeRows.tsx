@@ -15,12 +15,14 @@ export type ChargeRow = { account: string; amount: string }
 const n = (v: unknown): number => (Number.isFinite(Number(v)) ? Number(v) : 0)
 const round2 = (v: number): number => Math.round((v + Number.EPSILON) * 100) / 100
 
-// The ledgers are read once per company and shared by every row and form —
-// only the company's own (in_company), and none hidden in Masters.
+// The ledgers are shared by every row and form — only the company's own
+// (in_company), and none hidden in Masters. `fresh` reads them again: a
+// ledger made in Masters after the page opened (YES BANK LTD(PARTY),GURGAON)
+// was missing until a full reload, because the first read was kept.
 const ledgerCache = new Map<number, Promise<Row[]>>()
-function loadLedgers(companyId?: number): Promise<Row[]> {
+function loadLedgers(companyId?: number, fresh = false): Promise<Row[]> {
   const key = Number(companyId) || 0
-  let hit = ledgerCache.get(key)
+  let hit = fresh ? undefined : ledgerCache.get(key)
   if (!hit) {
     hit = window.api.journal
       .accounts(key || undefined)
@@ -110,6 +112,8 @@ export function ChargeLedgerPicker({ value, onPick, companyId }: { value: string
       onOpenChange={(o) => {
         setOpen(o)
         if (!o) setQuery('')
+        // Read again on every opening, so a ledger made since is there.
+        else void loadLedgers(companyId, true).then(setAll)
       }}
     >
       <PopoverTrigger asChild>
