@@ -148,8 +148,13 @@ export function TallyBookVouchers({
   groupNames,
   onClose,
   onBooked,
-  onChanged
+  onChanged,
+  quick
 }: {
+  // ONE CLICK: opened on a single voucher whose every ledger is already
+  // mapped, it books straight away; the window shows only if something needs
+  // a person (an unmapped name, a possible duplicate, a refusal).
+  quick?: boolean
   kind: BookKind
   /** The bank a bank book is booked into. */
   accountId?: number
@@ -183,8 +188,11 @@ export function TallyBookVouchers({
   // Opened afresh: tick what it was opened for. The preview itself is NOT
   // thrown away — it was read in the background before the click (below), and
   // keeping it is what makes the window open at once.
+  const [quickNow, setQuickNow] = useState(false)
+  const [quickBooking, setQuickBooking] = useState(false)
   useEffect(() => {
     if (!keys) return
+    setQuickNow(!!quick && keys.length === 1)
     setFixAll(false)
     setPick(new Set(keys))
     setResult(null)
@@ -303,6 +311,17 @@ export function TallyBookVouchers({
     }
   }
 
+  // The one-click path: once the file is read, book if nothing needs asking.
+  useEffect(() => {
+    if (!quickNow || !isOpen || loading || !pv) return
+    setQuickNow(false)
+    if (picked.length === 1 && unmapped.length === 0 && anyway.length === 0) {
+      setQuickBooking(true)
+      void book().finally(() => setQuickBooking(false))
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [quickNow, isOpen, loading, pv])
+
   async function book(): Promise<void> {
     if (!picked.length || unmapped.length) return
     setBusy(true)
@@ -365,7 +384,7 @@ export function TallyBookVouchers({
 
   const lbl = 'text-[10.5px] font-extrabold uppercase tracking-[.12em] text-[#0A1F17]'
   return (
-    <Dialog open={!!keys} onOpenChange={(o) => !o && !busy && onClose()}>
+    <Dialog open={!!keys && !quickNow && !quickBooking} onOpenChange={(o) => !o && !busy && onClose()}>
       <DialogContent
         // Esc closes it, as Close does — the mappings are saved as they are
         // made, so nothing typed is lost — but not mid-booking.

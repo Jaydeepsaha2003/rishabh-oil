@@ -1501,6 +1501,7 @@ ${pairs.map((x) => String(x.own?.code || '')).join(', ')} stay, and match Tally'
         </>
       )}
       <TallyBookVouchers
+        quick
         kind="bank"
         accountId={bankId || undefined}
         keys={bookKeys}
