@@ -14176,10 +14176,10 @@ export function Accounts({
 
             <div
               className="flex flex-none flex-col gap-3.5"
-              // Nothing inside a viewed voucher takes a click, a key or focus.
-              ref={(el) => {
-                if (el) el.toggleAttribute('inert', !!viewOnly)
-              }}
+              // Nothing inside a viewed voucher takes a click — except its
+              // bill-wise panels, which are saved on their own (Save bill-wise).
+              // `inert` would lock those too, and no child can undo it.
+              style={viewOnly ? { pointerEvents: 'none' } : undefined}
             >
               <div
                 style={{
@@ -14602,7 +14602,7 @@ export function Accounts({
                             so Agst Ref settles a bill that exists rather than a
                             name somebody typed. */}
                         {r.billwise && (!viewOnly || r.allocs.length > 0 || !!r.lineId) && (
-                          <div style={{ padding: `10px 16px 12px ${indent}px`, background: '#FFFCF5', borderBottom: '1px solid #F1E6CC' }}>
+                          <div style={{ padding: `10px 16px 12px ${indent}px`, background: '#FFFCF5', borderBottom: '1px solid #F1E6CC', pointerEvents: viewOnly && r.lineId ? 'auto' : undefined }}>
                             <AllocPanel
                               look="card"
                               lineAmount={lineAmt}
