@@ -319,9 +319,10 @@ function assertScopedReadings(op: string): void {
 function assertScopedSales(op: string, args: unknown): void {
   const stage = String((args as Row)?.stage || '')
   const isUnload = (op === 'setInvoiceStage' || op === 'setStage') && stage === 'unloaded'
-  if (!isUnload) {
+  // Linking the credit note that settled a short delivery — no money moves.
+  if (!isUnload && op !== 'shortageNotesSet') {
     throw new Error(
-      'Your access to Sales covers recording received quantities on deliveries only — nothing else on this page can be changed.'
+      'Your access to Sales covers recording received quantities on deliveries, and linking credit notes to short ones — nothing else on this page can be changed.'
     )
   }
 }

@@ -21,7 +21,7 @@ const round2 = (v: number): number => Math.round(v * 100) / 100
 // linked to the invoice's shortage. The link is a record of which note it was;
 // the vouchers themselves are not touched.
 let ready = false
-async function ensure(): Promise<void> {
+export async function ensure(): Promise<void> {
   if (ready) return
   await getClient().execute(`CREATE TABLE IF NOT EXISTS sale_shortage_notes (
     company_id INTEGER NOT NULL,

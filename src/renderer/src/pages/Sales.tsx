@@ -742,7 +742,8 @@ function SalesTab({
       : rows.filter(
           (r) =>
             String(r.freight_term || 'FREIGHT_ON_GOODS') === 'DLD' &&
-            String(r.dispatch_stage || (r.status === 'done' ? 'unloaded' : 'pending')) !== 'unloaded' &&
+            // Unloaded ones only while a credit note is still to be linked.
+            (String(r.dispatch_stage || (r.status === 'done' ? 'unloaded' : 'pending')) !== 'unloaded' || Number(r.cn_pending) === 1) &&
             !r.rejected_at &&
             Number(r.is_trading) !== 1
         )
@@ -2617,7 +2618,25 @@ function SalesTab({
                           // there is nothing to receive against it yet.
                           <div className="flex items-center justify-end gap-2">
                             <Badge variant={stg.badge} className="min-w-[76px] justify-center">{stg.label}</Badge>
-                            {stg.value === 'pending' ? (
+                            {stg.value === 'unloaded' ? (
+                              // Arrived short: the desk maps the credit note
+                              // raised for it. Link only — no amounts here.
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                className="h-7 gap-1 border-rose-300 px-2 text-xs text-rose-700"
+                                onClick={() =>
+                                  setShortAsk({
+                                    saleId: Number(inv.first.id),
+                                    invoiceNo: String(inv.first.invoice_no || ''),
+                                    customer: String(inv.first.customer_master || inv.first.customer || ''),
+                                    due: 0
+                                  })
+                                }
+                              >
+                                Link CN
+                              </Button>
+                            ) : stg.value === 'pending' ? (
                               <span className="text-[11px] text-muted-foreground">Not dispatched yet</span>
                             ) : (
                               <Button size="sm" className="h-7 gap-1 px-2 text-xs" onClick={() => openUnload(inv)}>
@@ -4743,7 +4762,15 @@ function SalesTab({
         }}
       />
 
-      <ShortageNoteDialog ask={shortAsk} onClose={() => setShortAsk(null)} onDone={() => void loadShortNotes()} />
+      <ShortageNoteDialog
+        ask={shortAsk}
+        onClose={() => setShortAsk(null)}
+        onDone={() => {
+          void loadShortNotes()
+          // On the desk a mapped delivery leaves the list.
+          if (unloadOnly) void load(true)
+        }}
+      />
 
       <SaleTdsDialog
         saleId={tdsAsk?.id ?? null}

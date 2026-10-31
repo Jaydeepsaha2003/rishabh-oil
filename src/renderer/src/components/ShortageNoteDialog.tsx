@@ -141,8 +141,8 @@ export function ShortageNoteDialog({
           </DialogTitle>
         </DialogHeader>
         <p className="text-[12.5px] text-muted-foreground">
-          {ask?.customer} · whole shortage (the customer has no tolerance){' '}
-          <span className="font-semibold text-rose-700">{formatINR(ask?.due || 0)}</span>. Tick the credit note(s) raised for it —
+          {ask?.customer} · {ask?.due ? <>whole shortage (the customer has no tolerance){' '}
+          <span className="font-semibold text-rose-700">{formatINR(ask?.due || 0)}</span></> : 'delivered short'}. Tick the credit note(s) raised for it —
           made here or booked from Tally. Nothing is posted; this only records which note settled it.
         </p>
         {notes.length === 0 ? (
@@ -272,7 +272,7 @@ export function ShortageNoteDialog({
           </div>
         )}
         <p className="text-[12px] text-muted-foreground">
-          Ticked {formatINR(total)} against a shortage of {formatINR(ask?.due || 0)}
+          Ticked {formatINR(total)}{ask?.due ? ` against a shortage of ${formatINR(ask.due)}` : ''}
           {picked.size > 0 && Math.abs(total - (ask?.due || 0)) > 1 ? ` (${total > (ask?.due || 0) ? 'more' : 'less'} by ${formatINR(Math.abs(total - (ask?.due || 0)))})` : ''}
         </p>
         <DialogFooter className="gap-2">

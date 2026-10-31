@@ -486,6 +486,9 @@ export async function listCustomerLedger(): Promise<Row[]> {
 // cancelled or trading invoices.
 export async function listSalesForUnloadDesk(companyIds?: number[]): Promise<Row[]> {
   const cos = (companyIds || []).map((x) => Number(x)).filter((x) => Number.isFinite(x) && x > 0)
+  // The desk also maps credit notes to short deliveries (Link CN), so it sees
+  // the unloaded ones that came in short and have no note linked yet.
+  await (await import('./saleShortageNotes')).ensure()
   const res = await getClient().execute({
     args: cos.length ? [] : [getActiveCompanyId()],
     sql: `
@@ -512,7 +515,8 @@ export async function listSalesForUnloadDesk(companyIds?: number[]): Promise<Row
            pr.name AS product_name, pr.material_type AS product_category,
            pr.category AS product_sub_category, pk.name AS packaging_name,
            cu.name AS customer_master, co.name AS company_name,
-           gv.tanker_no AS gate_vehicle_no
+           gv.tanker_no AS gate_vehicle_no,
+           CASE WHEN COALESCE(s.dispatch_stage, CASE WHEN s.status = 'done' THEN 'unloaded' ELSE 'pending' END) = 'unloaded' THEN 1 ELSE 0 END AS cn_pending
     FROM sales s
     LEFT JOIN products pr ON pr.id = s.product_id
     LEFT JOIN packagings pk ON pk.id = s.packaging_id
@@ -523,7 +527,14 @@ export async function listSalesForUnloadDesk(companyIds?: number[]): Promise<Row
     LEFT JOIN gate_entries gv ON gv.id = go2.ge_id
     WHERE ${cos.length ? `s.company_id IN (${cos.join(',')})` : 's.company_id = ?'}
       AND COALESCE(s.freight_term, 'FREIGHT_ON_GOODS') = 'DLD'
-      AND COALESCE(s.dispatch_stage, CASE WHEN s.status = 'done' THEN 'unloaded' ELSE 'pending' END) <> 'unloaded'
+      AND (
+        COALESCE(s.dispatch_stage, CASE WHEN s.status = 'done' THEN 'unloaded' ELSE 'pending' END) <> 'unloaded'
+        OR (s.received_qty IS NOT NULL AND s.received_qty < s.qty - 0.0005
+            AND COALESCE(s.sale_type, 'LOOSE') <> 'PACKED'
+            AND NOT EXISTS (SELECT 1 FROM sale_shortage_notes t
+                             WHERE t.company_id = s.company_id
+                               AND t.invoice_key = COALESCE(s.invoice_group, s.invoice_no, 'sale-' || s.id)))
+      )
       AND s.rejected_at IS NULL
       AND COALESCE(s.is_trading, 0) = 0
     ORDER BY s.sale_date DESC, s.id DESC
