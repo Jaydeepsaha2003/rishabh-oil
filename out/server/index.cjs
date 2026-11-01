@@ -22190,13 +22190,22 @@ async function accountStatement(accountId, companyId) {
                    (SELECT ip.gross FROM bd_interest_payments ip WHERE ip.journal_entry_id = je.id LIMIT 1),
                    (SELECT NULLIF(COALESCE(o.credit_interest_amount, 0) + COALESCE(o.additional_interest, 0), 0)
                       FROM orders o WHERE o.id = je.order_id)
-                 ) AS interest_amt
+                 ) AS interest_amt,
+                 ${booksFrom ? "CASE WHEN je.entry_date < ? THEN 1 ELSE 0 END" : "0"} AS pre_books
           FROM journal_lines jl
           JOIN journal_entries je ON je.id = jl.entry_id
           WHERE jl.account_id = ? AND je.company_id = ?
-            ${booksFrom ? "AND je.entry_date >= ?" : ""}
+            ${booksFrom ? (
+      // Before the books start only a PURCHASE whose oil was emptied
+      // on or after that day (or is not emptied yet): inside the
+      // opening by its invoice date, but the Empty-date view dates
+      // it by its tanker, which falls in these books (pre_books).
+      `AND (je.entry_date >= ? OR (je.order_id IS NOT NULL AND (
+                     EXISTS (SELECT 1 FROM ${ALLOC} ta JOIN purchase_tankers tp ON tp.id = ta.tanker_id
+                              WHERE ta.order_id = je.order_id AND (tp.status <> 'empty' OR tp.empty_date IS NULL OR tp.empty_date >= ?)))))`
+    ) : ""}
           ORDER BY je.entry_date ASC, je.id ASC, jl.id ASC`,
-    args: booksFrom ? [accountId, cid, booksFrom] : [accountId, cid]
+    args: booksFrom ? [booksFrom, accountId, cid, booksFrom, booksFrom] : [accountId, cid]
   });
   const lines = toPlain17(res);
   if (!lines.length) return lines;
