@@ -78,7 +78,8 @@ export function Ledgers({ onOpenRecord }: Props): React.JSX.Element {
       setStatement([])
       return
     }
-    setStatement(await window.api.journal.statement(Number(accountId)))
+    // pre_books rows are only for Accounting's Empty-date view.
+    setStatement((await window.api.journal.statement(Number(accountId))).filter((l: Record<string, unknown>) => Number(l.pre_books) !== 1))
   }, [accountId])
   useEffect(() => { loadStatement() }, [loadStatement])
   useLiveRefresh(loadStatement)

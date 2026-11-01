@@ -2935,6 +2935,7 @@ export function Accounts({
   // the entered opening has to come alongside it — otherwise the ledger would
   // start from nil and understate the party by whatever was brought forward.
   const [lgOpening, setLgOpening] = useState(0)
+  const [lgPreBooks, setLgPreBooks] = useState<Row[]>([])
   const [lgBooksFrom, setLgBooksFrom] = useState('')
   // THE OPENING'S DATE: the later of the period's start and the day the books
   // begin. A period from 01-04 on books that start 01-07 opens on 01-07 —
@@ -2954,7 +2955,11 @@ export function Accounts({
       const at = merged.findIndex((l) => String(l.entry_date) > String(p.entry_date))
       merged.splice(at < 0 ? merged.length : at, 0, p)
     }
-    setLedgerLines(merged)
+    // Purchases from before the books start that are only here for the
+    // Empty-date view (see accountStatement's pre_books) — kept apart, so
+    // every other view reads the books exactly as before.
+    setLgPreBooks(merged.filter((l) => Number(l.pre_books) === 1))
+    setLedgerLines(merged.filter((l) => Number(l.pre_books) !== 1))
     setLgOpening(Number((ob as Row).opening) || 0)
     setLgBooksFrom(String((ob as Row).books_from || ''))
   }, [screen, ledgerId, cid, lgProv])
@@ -5643,7 +5648,11 @@ export function Accounts({
     let lines = ledgerLines
     if (lgTankerEmpty) {
       const moved: Row[] = []
-      for (const l of ledgerLines) {
+      // A purchase invoiced before the books start whose tanker was emptied
+      // after: the opening counted it by its invoice date, so it comes out of
+      // the opening here and is dated by its tanker like any other bill.
+      for (const l of lgPreBooks) opening -= (Number(l.dr) || 0) - (Number(l.cr) || 0)
+      for (const l of [...lgPreBooks, ...ledgerLines]) {
         const total = Number(l.tanker_total) || 0
         if (total <= 0) {
           moved.push(l)
@@ -5683,7 +5692,7 @@ export function Accounts({
       totDr: out.reduce((sum, l) => sum + (Number(l.dr) || 0), 0),
       totCr: out.reduce((sum, l) => sum + (Number(l.cr) || 0), 0)
     }
-  }, [ledgerLines, lgFrom, lgTo, lgOpening, lgTankerEmpty])
+  }, [ledgerLines, lgPreBooks, lgFrom, lgTo, lgOpening, lgTankerEmpty])
 
   // Tally's month-wise ledger summary: Dr/Cr per month and the cumulative
   // closing, drillable into that month's vouchers.
