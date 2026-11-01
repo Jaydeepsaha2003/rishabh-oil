@@ -2284,6 +2284,23 @@ export function Accounts({
   // PROVISIONAL: open LCs and awaiting supplier-direct BDs shown as the debit
   // their payment will post, in the balance (provisional.ts). Nothing posted.
   const [lgProv, setLgProv] = useState(false)
+  // Bill-wise: money with no Agst Ref stays On Account (Tally's way); this
+  // spreads it over the bills oldest first instead. Remembered on the browser.
+  const [bwFifo, setBwFifoState] = useState(() => {
+    try {
+      return localStorage.getItem('bw-fifo') === '1'
+    } catch {
+      return false
+    }
+  })
+  const setBwFifo = (v: boolean): void => {
+    try {
+      localStorage.setItem('bw-fifo', v ? '1' : '0')
+    } catch {
+      // private window: not remembered
+    }
+    setBwFifoState(v)
+  }
   const lgOrderRef = useRef<number[]>([])
   const setLgView = useCallback((v: LgView) => {
     setLgViewRaw(v)
@@ -2995,12 +3012,12 @@ export function Accounts({
     const g = baseGroup(accounts.find((a2) => Number(a2.id) === ledgerId)?.acc_group)
     const side = g === 'Sundry Debtors' ? 'customer' : g === 'Sundry Creditors' ? 'supplier' : undefined
     try {
-      setBills(await window.api.journal.billsOutstanding(nm, cid, { asOf: lgTo || undefined, side, settled: bwSettled, provisional: lgProv }))
+      setBills(await window.api.journal.billsOutstanding(nm, cid, { asOf: lgTo || undefined, side, settled: bwSettled, provisional: lgProv, fifo: bwFifo }))
     } catch {
       setBills(null)
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [lgBills, ledgerId, cid, lgTo, accounts, bwSettled, lgProv])
+  }, [lgBills, ledgerId, cid, lgTo, accounts, bwSettled, lgProv, bwFifo])
   useEffect(() => {
     void loadBills()
   }, [loadBills])
@@ -3151,6 +3168,28 @@ export function Accounts({
   )
   // PROVISIONAL, the same switch the voucher view carries (one state): open
   // LCs / awaiting BDs settle bills and count in the total. Nothing is posted.
+  const fifoToggle = (): React.JSX.Element => (
+    <button
+      type="button"
+      onClick={() => setBwFifo(!bwFifo)}
+      title={
+        bwFifo
+          ? 'Oldest first ON — payments with no Agst Ref are spread over the open bills, oldest first. Click to keep them On Account, as Tally does.'
+          : 'Payments with no Agst Ref stay On Account, as Tally shows them. Click to spread them over the open bills oldest first instead.'
+      }
+      className="flex h-[34px] flex-none items-center gap-1.5 whitespace-nowrap rounded-[4px] px-2.5"
+      style={{
+        border: `1px solid ${bwFifo ? '#1B4E82' : '#DCE7DB'}`,
+        background: bwFifo ? '#EAF0FA' : '#EEF3EC',
+        color: bwFifo ? '#1B4E82' : '#33473E',
+        fontSize: 11,
+        fontWeight: 800
+      }}
+    >
+      <span className="inline-block h-[8px] w-[8px] rounded-full" style={{ background: bwFifo ? '#1B4E82' : '#B9C7BC' }} />
+      Oldest first {bwFifo ? 'ON' : 'OFF'}
+    </button>
+  )
   const provToggle = (): React.JSX.Element => (
     <button
       type="button"
@@ -3303,7 +3342,7 @@ export function Accounts({
     if (!party || tfBillWise[party]) return
     let alive = true
     void window.api.journal
-      .billsOutstanding(party, cid, { side: 'supplier' })
+      .billsOutstanding(party, cid, { side: 'supplier', fifo: true })
       .then((res) => {
         if (alive) setTfBillWise((p) => ({ ...p, [party]: Array.isArray(res?.rows) ? (res.rows as Row[]) : [] }))
       })
@@ -16935,7 +16974,7 @@ export function Accounts({
             : 'One row per voucher, one column per ledger it touched.'
           : lgView === 'billwise'
             ? isParty
-              ? 'Oldest bill settled first, the way an Agst Ref allocation runs.'
+              ? bwFifo ? 'Payments with no Agst Ref settle the oldest bills first.' : 'Payments with no Agst Ref stay On Account, as in Tally — open On Account to see them.'
               : ''
             : lgCondensed
               ? 'Condensed — month totals only.'
@@ -18033,6 +18072,7 @@ export function Accounts({
               </span>
               {settledToggle()}
               {provToggle()}
+              {fifoToggle()}
               {dueToggle()}
               <div className="flex items-center gap-[3px] rounded-[4px] p-[3px]" style={{ background: '#EEF3EC', border: '1px solid #DCE7DB' }}>
                 <span className="flex items-center pl-1 pr-0.5" title="Alt F1 switches between Detailed and Condensed">
@@ -19066,7 +19106,7 @@ export function Accounts({
                 const onAcc = Number(bills?.on_account) || 0
                 return (
                   <div className="max-h-[calc(100vh-225px)] overflow-auto">
-                    <div className="flex items-center justify-end gap-2 border-b bg-[#FBFDFA] px-4 py-1.5">{settledToggle()}{provToggle()}{dueToggle()}</div>
+                    <div className="flex items-center justify-end gap-2 border-b bg-[#FBFDFA] px-4 py-1.5">{settledToggle()}{provToggle()}{fifoToggle()}{dueToggle()}</div>
                     <table className="w-full text-[13px]">
                       <thead className="sticky top-0 bg-[#EAF0E9]">
                         <tr className="text-left text-[10px] uppercase tracking-widest text-muted-foreground">

@@ -1192,7 +1192,9 @@ export async function listPendingRefs(
 export async function billsOutstanding(
   accountName: string,
   companyId?: number,
-  opts: { asOf?: string; side?: 'customer' | 'supplier'; settled?: boolean; provisional?: boolean } = {}
+  // fifo: spread money with no Agst Ref over the open bills oldest first.
+  // Off (the default, Tally's way) it stays On Account.
+  opts: { asOf?: string; side?: 'customer' | 'supplier'; settled?: boolean; provisional?: boolean; fifo?: boolean } = {}
 ): Promise<Row> {
   const c = getClient()
   const cid = companyId || getActiveCompanyId()
@@ -1355,7 +1357,7 @@ export async function billsOutstanding(
   // piece named by the payment it came from, oldest payment first — the same
   // rule Trading Payments applies (fifoSettle.ts). Worked out on each read and
   // never written to the books: a payment added or deleted moves it at once.
-  if (!debtor && accountId) {
+  if (!debtor && accountId && opts.fifo) {
     const pendingNow = round2(rows.reduce((t, r) => t + n(r.pending), 0))
     let spare = round2(balance + pendingNow) // the Dr the bills do not explain
     if (spare > 0.005) {
