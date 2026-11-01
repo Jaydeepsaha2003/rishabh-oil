@@ -16720,7 +16720,20 @@ export function Accounts({
     // ── WHAT IS SHOWN: the type chips and the search narrow the rows; the
     // running balance is still carried through every voucher, so a filtered
     // row keeps the true balance at that point.
-    const allRows = stmt.rows as Row[]
+    // HIDDEN ROWS COME OUT OF THE FIGURES, as a line removed in Tally does:
+    // each later row's running balance drops what the hidden ones before it
+    // added, and the closing with them. (A search or type filter does not —
+    // there the balance stays the true one.)
+    const hiddenIds = new Set(lgHidden)
+    let hiddenDelta = 0
+    const allRows = (stmt.rows as Row[]).map((r) => {
+      if (hiddenIds.has(Number(r.id))) {
+        hiddenDelta += (Number(r.dr) || 0) - (Number(r.cr) || 0)
+        return r
+      }
+      return hiddenDelta ? { ...r, running: Number(r.running) - hiddenDelta } : r
+    })
+    const lgClosing = stmt.closing - hiddenDelta
     const typeOf = (r: Row): string => String(r.vch_type || '').toUpperCase()
     const presentTypes = [...new Set(allRows.map(typeOf).filter(Boolean))]
     const fTypes = lgFTypes.filter((t) => presentTypes.includes(t))
@@ -18313,7 +18326,7 @@ export function Accounts({
       { k: 'Opening', v: bal(stmt.opening), bg: '#fff', bd: '#DCE7DB', kFg: A.muted, fg: A.ink },
       { k: shownFoot ? 'Debits shown' : 'Debits', v: formatINR(shownFoot ? fDr : stmt.totDr), bg: '#F5F8FD', bd: '#D6E3F3', kFg: A.dr, fg: A.dr },
       { k: shownFoot ? 'Credits shown' : 'Credits', v: formatINR(shownFoot ? fCr : stmt.totCr), bg: '#FDF7F6', bd: '#F0D6D4', kFg: A.cr, fg: A.cr },
-      { k: 'Closing', v: bal(stmt.closing), bg: 'linear-gradient(160deg,#145A43,#0B3D2E)', bd: A.frame, kFg: A.inkSky, fg: A.accent }
+      { k: lgHidden.length ? 'Closing shown' : 'Closing', v: bal(lgClosing), bg: 'linear-gradient(160deg,#145A43,#0B3D2E)', bd: A.frame, kFg: A.inkSky, fg: A.accent }
     ]
 
     // THE SUMMARY, CALLED UP OVER THE REGISTER FROM THE RIGHT — F8 or the
@@ -18858,7 +18871,7 @@ export function Accounts({
                   </span>
                   <span className="flex-1" />
                   <span style={{ fontSize: 11.5, fontWeight: 800, color: A.ink }}>
-                    Closing <span style={figS(11.5, balFg(stmt.closing))}>{bal(stmt.closing)}</span>
+                    {lgHidden.length ? 'Closing shown' : 'Closing'} <span style={figS(11.5, balFg(lgClosing))}>{bal(lgClosing)}</span>
                   </span>
                 </div>
               </div>
