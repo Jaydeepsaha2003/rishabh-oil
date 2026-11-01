@@ -7053,7 +7053,7 @@ async function billsOutstanding(accountName, companyId, opts = {}) {
   }) : null;
   const prov = opts.provisional && accountId ? (await (await Promise.resolve().then(() => (init_provisional(), provisional_exports))).provisionalEntries(accountId, cid)).filter((p) => String(p.entry_date || "") <= asOf) : [];
   const balance = round22((balRes ? n4(balRes.rows[0]?.bal) : 0) + (openRes ? n4(openRes.rows[0]?.v) : 0) + prov.reduce((t, p) => t + n4(p.dr), 0));
-  if (!debtor && accountId) {
+  if (!debtor && accountId && opts.fifo) {
     const pendingNow = round22(rows2.reduce((t, r) => t + n4(r.pending), 0));
     let spare = round22(balance + pendingNow);
     if (spare > 5e-3) {
@@ -42395,7 +42395,7 @@ function registerIpc() {
   handle("journal:setAccountsHidden", (_e, { ids, hidden, companyId }) => setAccountsHidden(ids, hidden, companyId));
   handle(
     "journal:billsOutstanding",
-    (_e, a) => billsOutstanding(a.account, a.companyId, { asOf: a.asOf, side: a.side, settled: a.settled, provisional: a.provisional })
+    (_e, a) => billsOutstanding(a.account, a.companyId, { asOf: a.asOf, side: a.side, settled: a.settled, provisional: a.provisional, fifo: a.fifo })
   );
   handle(
     "journal:pendingRefs",
