@@ -2232,6 +2232,11 @@ export function Accounts({
   // rows — to move one bar, and holding the key down stuttered. Now a key
   // press moves an attribute on two rows; a render reads the ref.
   const lgRowAtRef = useRef<number | null>(null)
+  // ROWS PUT OUT OF SIGHT with Ctrl+Enter, Tally's way — this ledger, this
+  // sitting only; Alt+U brings back the last, the chip brings back all. The
+  // running balance on the rows left is untouched, as with any filter.
+  const [lgHidden, setLgHidden] = useState<number[]>([])
+  useEffect(() => setLgHidden([]), [ledgerId])
   // Line breakdowns stay out of sight until Ctrl + Alt + B (breakdownReveal.ts).
   const showBreakdowns = useBreakdownShown()
   const markLgRow = useCallback((id: number | null): void => {
@@ -5497,6 +5502,25 @@ export function Accounts({
       // ↑ ↓ WALK THE VOUCHERS, Tally's way: a highlighted row moves, Enter
       // opens it. Only on the Vouchers view, outside any box or menu.
       const inPopup = !!(e.target as HTMLElement)?.closest?.('[role="dialog"],[role="listbox"],[role="menu"],[data-radix-popper-content-wrapper]')
+      // Ctrl+Enter hides the highlighted voucher row; Alt+U brings the last back.
+      if (__WEB__ && screen === 'ledger' && lgView === 'vouchers' && !typing && !inPopup && !e.metaKey) {
+        if (e.ctrlKey && !e.altKey && e.key === 'Enter') {
+          const rows = lgVRowsRef.current
+          const at = rows.findIndex((r) => Number(r.id) === lgRowAtRef.current)
+          if (at >= 0 && !rows[at].__opening) {
+            e.preventDefault()
+            const next = rows[at + 1] || rows[at - 1]
+            setLgHidden((h) => [...h, Number(rows[at].id)])
+            markLgRow(next ? Number(next.id) : null)
+          }
+          return
+        }
+        if (e.altKey && !e.ctrlKey && e.key.toLowerCase() === 'u') {
+          e.preventDefault()
+          setLgHidden((h) => h.slice(0, -1))
+          return
+        }
+      }
       if (
         __WEB__ &&
         screen === 'ledger' &&
@@ -16728,8 +16752,9 @@ export function Accounts({
         const x = Number(v) || 0
         return x > 0 && (Math.abs(x - Number(fNum)) < 1 || String(Math.round(x * 100) / 100).startsWith(fNum))
       })
+    const hiddenSet = new Set(lgHidden)
     const toolbarOk = (r: Row): boolean =>
-      (!fTypes.length || fTypes.includes(typeOf(r))) && (!fq || rowText(r).includes(fq) || amountHit(r))
+      !hiddenSet.has(Number(r.id)) && (!fTypes.length || fTypes.includes(typeOf(r))) && (!fq || rowText(r).includes(fq) || amountHit(r))
     // The column funnels, offered from what the chips and search leave.
     const lgCf = colFilter<Row>(colF, 'ledger:vouchers', allRows.filter(toolbarOk), [
       { key: 'date', get: (r) => formatDate(r.entry_date), sort: 'num' },
@@ -16743,7 +16768,7 @@ export function Accounts({
     ])
     const lgShown = new Set(lgCf.rows)
     const keep = allRows.map((r) => lgShown.has(r))
-    const filtering = fTypes.length > 0 || !!fq || lgCf.active > 0
+    const filtering = fTypes.length > 0 || !!fq || lgCf.active > 0 || lgHidden.length > 0
     // In the funnels' order — date order, or the column clicked to sort by.
     const vRows = lgCf.rows
     const canFilter = lgView === 'vouchers' || (lgView === 'columnar' && !lgCondensed)
@@ -16959,7 +16984,7 @@ export function Accounts({
         {W >= 1240 && (
           <div className="flex flex-none items-center gap-[7px] whitespace-nowrap" style={{ fontSize: 11, fontWeight: 600, color: A.inkSky }}>
             <KeyboardIcon className="h-[15px] w-[15px]" />
-            {lgView === 'billwise' ? '↑ ↓ pick a bill' : lgView === 'vouchers' ? `↑ ↓ voucher · Enter open · ${chordLabel('Alt ↑↓')} change ledger · ${fKeyLabel('F12')} balance` : '↑ ↓ change ledger'} · {fKeyLabel('F4')} find · {[fKeyLabel('F1'), fKeyLabel('F5'), chordLabel('Alt F5'), fKeyLabel('F7')].join(' ')} change view · {fKeyLabel('F8')} summary
+            {lgView === 'billwise' ? '↑ ↓ pick a bill' : lgView === 'vouchers' ? `↑ ↓ voucher · Enter open · ${chordLabel('Ctrl Enter')} hide row · ${chordLabel('Alt U')} unhide · ${chordLabel('Alt ↑↓')} change ledger · ${fKeyLabel('F12')} balance` : '↑ ↓ change ledger'} · {fKeyLabel('F4')} find · {[fKeyLabel('F1'), fKeyLabel('F5'), chordLabel('Alt F5'), fKeyLabel('F7')].join(' ')} change view · {fKeyLabel('F8')} summary
           </div>
         )}
       </div>
@@ -18096,6 +18121,17 @@ export function Accounts({
                           {String(b.ref || '—')}
                         </span>
                       )}
+                      {/* Raised before these books start: its voucher is
+                          inside the opening, so the voucher list cannot show it. */}
+                      {!!lgBooksFrom && String(b.bill_date || '').slice(0, 10) < lgBooksFrom && (
+                        <span
+                          title={`Dated before the books start (${formatDate(lgBooksFrom)}) — its voucher is inside the opening balance, so it is not in the voucher list`}
+                          className="flex-none whitespace-nowrap rounded-[3px] px-1.5 py-[1px] text-[9.5px] font-extrabold uppercase tracking-[.05em]"
+                          style={{ background: '#EEF3EC', color: '#5A6B62', border: '1px solid #DCE7DB' }}
+                        >
+                          In opening
+                        </span>
+                      )}
                     </span>
                     <span />
                     <span style={{ ...cell('right'), ...figS(12, '#33473E', 600) }}>{dc(n(b.opening), side)}</span>
@@ -18745,6 +18781,18 @@ export function Accounts({
                           })}
                         </div>
                       </div>
+                    )}
+                    {lgHidden.length > 0 && (
+                      <button
+                        type="button"
+                        onClick={() => setLgHidden([])}
+                        title="Rows hidden with Ctrl+Enter — click to bring them all back (Alt+U brings back the last one)"
+                        className="flex h-[30px] flex-none items-center gap-[5px] whitespace-nowrap rounded-[6px] px-2.5"
+                        style={{ border: '1px solid #F1D9A6', background: '#FFF8E9', fontSize: 11, fontWeight: 800, color: '#8A5300' }}
+                      >
+                        <EyeOff className="h-[15px] w-[15px]" />
+                        {lgHidden.length} hidden · Unhide all
+                      </button>
                     )}
                     {filtering && (
                       <div className="flex flex-none items-center gap-2">
