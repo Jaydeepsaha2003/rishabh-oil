@@ -3311,6 +3311,26 @@ export async function runStartupTasks(): Promise<void> {
     console.log('[bd] V2 received date and disbursement voucher moved to 22-08-2026')
   }).catch((e) => console.error('[bd] V2 received date fix failed:', e))
 
+  // PURCHASES INVOICED BEFORE THE BOOKS START — once, at start (asked for on
+  // 2026-11-02 for TI/DL1/26/317). The opening is Tally's and does not hold
+  // them; Tally books one on its empty date, so its voucher moves there and
+  // counts in the books (journal.ts purchasePostingDate).
+  await runOnce('prebooks_purchase_date_v1', async () => {
+    const c = getClient()
+    await c.execute(`CREATE TABLE IF NOT EXISTS accounting_repair_log (
+        repair_key TEXT PRIMARY KEY, entry_id INTEGER NOT NULL, before_json TEXT NOT NULL,
+        created_at TEXT NOT NULL DEFAULT (datetime('now')))`)
+    const { redatePreBooksPurchases } = await import('./journal')
+    const { moved } = await redatePreBooksPurchases()
+    for (const m of moved) {
+      await c.execute({
+        sql: 'INSERT OR REPLACE INTO accounting_repair_log(repair_key, entry_id, before_json) VALUES (?, ?, ?)',
+        args: [`prebooks_purchase_date:${m.id}`, m.id, JSON.stringify(m)]
+      })
+    }
+    if (moved.length) console.log('[journal] purchase vouchers moved into the books:', moved)
+  }).catch((e) => console.error('[journal] pre-books purchase re-date failed:', e))
+
   // LC SETTLEMENTS DATED OFF THEIR PAYMENT-RECEIVED DATE — once, at start
   // (asked for on 2026-10-24, for 005LM02262480003/4). A re-save now dates
   // the settlement by Payment received (resyncLcSettlement); this does that

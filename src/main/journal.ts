@@ -762,6 +762,48 @@ export async function splitNames(): Promise<string[]> {
 //   Dr/Cr ROUND OFF A/C    rounding difference
 //     Cr TDS PAYABLE A/C   tds amount
 //     Cr {Supplier}        net amount (incl. round off)
+/**
+ * THE DAY A PURCHASE IS BOOKED. Its invoice date — unless that falls before
+ * the company's books start: such a bill is not in the opening (the opening
+ * is Tally's, and Tally books it when its oil was emptied), so its voucher is
+ * dated the day its last tanker was emptied, or the books' first day while a
+ * tanker is still out. TI/DL1/26/317: invoiced 27-06, emptied 03-07.
+ */
+export async function purchasePostingDate(orderId: number, invoiceDate: string, companyId: number): Promise<string> {
+  const d = String(invoiceDate || '').slice(0, 10)
+  const from = String((await getBooksFrom(companyId)) || '').slice(0, 10)
+  if (!from || !d || d >= from) return d
+  const r = await getClient().execute({
+    sql: `SELECT COUNT(*) AS total,
+                 SUM(CASE WHEN tp.status = 'empty' AND tp.empty_date IS NOT NULL THEN 1 ELSE 0 END) AS emptied,
+                 MAX(tp.empty_date) AS last_empty
+            FROM ${ALLOC} ta JOIN purchase_tankers tp ON tp.id = ta.tanker_id WHERE ta.order_id = ?`,
+    args: [orderId]
+  })
+  const t = r.rows[0] as unknown as { total?: number; emptied?: number; last_empty?: string } | undefined
+  const last = String(t?.last_empty || '').slice(0, 10)
+  return n(t?.total) > 0 && n(t?.emptied) >= n(t?.total) && last >= from ? last : from
+}
+
+/** Re-date purchase vouchers left before the books start (see purchasePostingDate). */
+export async function redatePreBooksPurchases(): Promise<{ moved: { id: number; from: string; to: string }[] }> {
+  const c = getClient()
+  const rows = (await c.execute(
+    "SELECT je.id, je.order_id, je.company_id, je.entry_date FROM journal_entries je WHERE je.order_id IS NOT NULL AND je.vch_type = 'PURCHASE OIL'"
+  )).rows as unknown as { id: number; order_id: number; company_id: number; entry_date: string }[]
+  const moved: { id: number; from: string; to: string }[] = []
+  for (const r of rows) {
+    const from = String((await getBooksFrom(n(r.company_id))) || '').slice(0, 10)
+    const was = String(r.entry_date).slice(0, 10)
+    if (!from || was >= from) continue
+    const to = await purchasePostingDate(n(r.order_id), was, n(r.company_id))
+    if (to === was) continue
+    await c.execute({ sql: 'UPDATE journal_entries SET entry_date = ? WHERE id = ?', args: [to, n(r.id)] })
+    moved.push({ id: n(r.id), from: was, to })
+  }
+  return { moved }
+}
+
 export async function postPurchaseJournal(v: {
   orderId: number
   date: string
@@ -802,7 +844,7 @@ export async function postPurchaseJournal(v: {
   }
   const ro = n(v.roundOff)
   const args: PostArgs = {
-    date: v.date,
+    date: v.orderId ? await purchasePostingDate(n(v.orderId), v.date, want) : v.date,
     vchType: 'PURCHASE OIL',
     vchNo: v.invoiceNo,
     narration: `Purchase ${v.invoiceNo}`,
