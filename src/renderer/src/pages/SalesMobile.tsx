@@ -282,8 +282,25 @@ export function SalesMobile(): React.JSX.Element {
   }
   const [ptype, setPtype] = useState('All')
   const [missingOnly, setMissingOnly] = useState(false)
+  // The numbers skipped in each invoice series — the desktop's "Missing
+  // invoice nos" check, for the period in view.
+  const [gaps, setGaps] = useState<Row | null>(null)
 
   const api = (window as unknown as { api: Record<string, any> }).api
+
+  useEffect(() => {
+    if (!missingOnly) return
+    let live = true
+    const { from, to } = rangeBounds(range)
+    setGaps(null)
+    void api.sales
+      .invoiceGaps(undefined, from, to)
+      .then((g: Row) => live && setGaps(g || {}))
+      .catch(() => live && setGaps({}))
+    return () => {
+      live = false
+    }
+  }, [missingOnly, range, rows])
 
   async function load(): Promise<void> {
     setLoading(true)
@@ -334,13 +351,12 @@ export function SalesMobile(): React.JSX.Element {
       // ANY line of that type, not just the first — a mixed invoice belongs
       // under every type it carries.
       if (ptype !== 'All' && !inv.categories.includes(ptype)) return false
-      if (missingOnly && inv.hasInvoiceNo) return false
       if (q && !(inv.invoiceNo.toLowerCase().includes(q) || inv.customer.toLowerCase().includes(q) || inv.itemsLabel.toLowerCase().includes(q))) {
         return false
       }
       return true
     })
-  }, [invoices, range, ptype, missingOnly, query, dispatchedOn])
+  }, [invoices, range, ptype, query, dispatchedOn])
 
   const totals = useMemo(() => {
     // The unit is printed only when ONE unit is in view — then it is true of
@@ -400,6 +416,7 @@ export function SalesMobile(): React.JSX.Element {
       setPtype={setPtype}
       missingOnly={missingOnly}
       setMissingOnly={setMissingOnly}
+      gaps={gaps}
       dispatchedOn={dispatchedOn}
       clearDispatched={() => setDispatchedOn(null)}
       totalCount={invoices.length}
@@ -432,6 +449,7 @@ function ListScreen(props: {
   setPtype: (v: string) => void
   missingOnly: boolean
   setMissingOnly: (v: boolean) => void
+  gaps: Row | null
   dispatchedOn: string | null
   clearDispatched: () => void
   totalCount: number
@@ -698,7 +716,9 @@ function ListScreen(props: {
       {/* 20px at the foot, not 96 — that clearance existed to keep the list
           clear of the floating New sale button, which is now in the header. */}
       <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', padding: '12px 14px 20px' }}>
-        {props.loading ? (
+        {props.missingOnly ? (
+          <GapList gaps={props.gaps} />
+        ) : props.loading ? (
           <div style={{ textAlign: 'center', padding: '32px 0', color: T.inkFaint, fontSize: 13 }}>Loading…</div>
         ) : rows.length === 0 ? (
           <div style={{ textAlign: 'center', padding: '32px 0', color: T.inkFaint, fontSize: 13 }}>No invoices in this range.</div>
@@ -709,9 +729,11 @@ function ListScreen(props: {
             ))}
           </div>
         )}
-        <div style={{ textAlign: 'center', fontSize: 11, color: T.inkFaint, fontWeight: 600, padding: '16px 0 4px', letterSpacing: '.04em' }}>
-          SHOWING {rows.length} OF {props.totalCount}
-        </div>
+        {!props.missingOnly && (
+          <div style={{ textAlign: 'center', fontSize: 11, color: T.inkFaint, fontWeight: 600, padding: '16px 0 4px', letterSpacing: '.04em' }}>
+            SHOWING {rows.length} OF {props.totalCount}
+          </div>
+        )}
       </div>
 
       {/* Nothing along the bottom. The handoff had a tab bar here (Sales /
@@ -719,6 +741,67 @@ function ListScreen(props: {
           doesn't have, and later a New sale bar — both were taking a strip of
           a phone screen permanently. New sale is a + in the header instead,
           and navigation belongs to the sidebar. */}
+    </div>
+  )
+}
+
+// Read-only list of the skipped numbers per series; booking or cancelling a
+// number stays on the desktop's Missing invoice nos dialog.
+function GapList({ gaps }: { gaps: Row | null }): React.JSX.Element {
+  const faint = { textAlign: 'center' as const, padding: '32px 0', color: T.inkFaint, fontSize: 13 }
+  if (!gaps) return <div style={faint}>Checking…</div>
+  const series = (gaps.series as Row[]) || []
+  const unparsed = (gaps.unparsed as string[]) || []
+  if (!series.length && !unparsed.length) return <div style={faint}>No numbered invoices in this range.</div>
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 9 }}>
+      {series.map((sr) => {
+        const missing = ((sr.missing as number[]) || []).slice().sort((a, b) => a - b)
+        const tag = sr.range_too_wide ? 'range too wide to check' : missing.length ? `${missing.length} missing` : 'none missing'
+        return (
+          <div key={String(sr.prefix)} style={{ background: '#fff', border: `1px solid ${T.border}`, borderRadius: 4, overflow: 'hidden' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '10px 12px', borderBottom: missing.length ? `1px solid ${T.border}` : 'none' }}>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ ...mono, fontSize: 13.5, fontWeight: 700 }}>{String(sr.prefix)}</div>
+                <div style={{ fontSize: 11, color: T.inkFaint }}>
+                  {String(sr.used)} used · {String(sr.from)}–{String(sr.to)}
+                  {Number(sr.cancelled_count) > 0 ? ` · ${sr.cancelled_count} cancelled` : ''}
+                </div>
+              </div>
+              <span
+                style={{
+                  fontSize: 11,
+                  fontWeight: 700,
+                  padding: '3px 8px',
+                  borderRadius: 3,
+                  whiteSpace: 'nowrap',
+                  background: missing.length ? '#FDE7EA' : sr.range_too_wide ? '#FEF3D6' : '#E3F4E8',
+                  color: missing.length ? '#9F1239' : sr.range_too_wide ? '#8A5300' : '#166534'
+                }}
+              >
+                {tag}
+              </span>
+            </div>
+            {missing.length > 0 && (
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, padding: '10px 12px' }}>
+                {missing.map((num) => (
+                  <span key={num} style={{ ...mono, fontSize: 12, fontWeight: 700, color: '#9F1239', background: '#FFF1F3', border: '1px solid #FBCFD7', borderRadius: 3, padding: '3px 7px' }}>
+                    {String(sr.prefix)}/{num}
+                  </span>
+                ))}
+              </div>
+            )}
+          </div>
+        )
+      })}
+      {unparsed.length > 0 && (
+        <div style={{ fontSize: 11.5, lineHeight: 1.45, color: '#8A5300', background: '#FFF8E9', border: '1px solid #F1D9A6', borderRadius: 4, padding: '8px 10px' }}>
+          <b>No number in these invoice fields:</b> {unparsed.join(' · ')}
+        </div>
+      )}
+      <div style={{ textAlign: 'center', fontSize: 11, color: T.inkFaint, padding: '8px 0 4px' }}>
+        To book or cancel a missing number, use Sales → Missing invoice nos on the desktop.
+      </div>
     </div>
   )
 }
