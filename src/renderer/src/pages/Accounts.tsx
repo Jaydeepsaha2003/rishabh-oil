@@ -1593,19 +1593,24 @@ function facilityRef(l: Row): { kind: 'LC' | 'BD'; no: string } | null {
  * book's own counter and says nothing about the world outside it.
  */
 function lineRef(l: Row): { no: string; kind: string; full: string } | null {
-  const named = Array.from(
-    new Set(((l.allocs as Row[]) || []).map((a) => String(a.ref_name || '').trim()).filter(Boolean))
-  )
+  const allocs = (l.allocs as Row[]) || []
+  const named = Array.from(new Set(allocs.map((a) => String(a.ref_name || '').trim()).filter(Boolean)))
+  // Tally's bill-wise type of the line: Agst Ref / New Ref / Advance / On Account.
+  const METHOD: Record<string, string> = { agst_ref: 'Agst Ref', new_ref: 'New Ref', advance: 'Advance', on_account: 'On Account' }
+  const methods = Array.from(new Set(allocs.map((a) => METHOD[String(a.method || '')]).filter(Boolean)))
+  const how = methods.length === 1 ? methods[0] : methods.length > 1 ? 'Mixed' : 'Bill'
   if (named.length) {
     return {
       // A lump receipt can settle six bills. The column says the first and how
       // many more; hovering says all of them, because the column is 130px wide
       // and the answer to "which bills" is sometimes six lines long.
       no: named.length > 1 ? `${named[0]} +${named.length - 1}` : named[0],
-      kind: named.length > 1 ? `${named.length} bills` : 'Bill',
+      kind: named.length > 1 ? `${how} · ${named.length} bills` : how,
       full: named.join(', ')
     }
   }
+  // Money with no bill named: On Account (or Advance), as Tally lists it.
+  if (methods.length) return { no: methods.join(' + '), kind: 'Bill-wise', full: methods.join(' + ') }
   const po = String(l.order_invoice_no || '').trim()
   if (po) return { no: po, kind: 'Purchase inv', full: po }
   const so = String(l.sale_invoice_no || '').trim()
@@ -17297,7 +17302,12 @@ export function Accounts({
           const eid = Number(r.entry_id ?? r.id)
           const open = lgOpenRow === Number(r.id)
           const hi = lgRowAtRef.current === Number(r.id)
-          const ref = lineRef(r)
+          // On a bill-wise ledger a line naming no bill (and not itself a
+          // purchase/sale bill) is On Account, as Tally's Bill-wise reads it.
+          const ref0 = lineRef(r)
+          const onAcc =
+            isParty && !r.provisional && !((r.allocs as Row[]) || []).length && !String(r.order_invoice_no || '').trim() && !String(r.sale_invoice_no || '').trim()
+          const ref = onAcc ? (ref0 ? { ...ref0, kind: `${ref0.kind} · On Account` } : { no: 'On Account', kind: 'Bill-wise', full: 'On Account' }) : ref0
           const doc = docTarget(r)
           return (
             <div key={String(r.id)}>
