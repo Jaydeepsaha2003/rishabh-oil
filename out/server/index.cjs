@@ -13805,7 +13805,6 @@ __export(sales_exports, {
   setSaleInvoiceDate: () => setSaleInvoiceDate,
   setSaleStage: () => setSaleStage,
   setSaleStatus: () => setSaleStatus,
-  setSaleTradingMark: () => setSaleTradingMark,
   uncancelInvoiceNo: () => uncancelInvoiceNo,
   unrejectSaleInvoice: () => unrejectSaleInvoice,
   updateSale: () => updateSale,
@@ -14065,16 +14064,6 @@ async function listCustomerLedger() {
   });
   return toPlain12(res);
 }
-async function setSaleTradingMark(id, on) {
-  const c = getClient();
-  const r = await c.execute({ sql: "SELECT invoice_group FROM sales WHERE id = ?", args: [Number(id)] });
-  if (!r.rows.length) throw new Error("That invoice is no longer there");
-  const grp = r.rows[0].invoice_group;
-  await c.execute(
-    grp ? { sql: "UPDATE sales SET trading_mark = ? WHERE invoice_group = ?", args: [on ? 1 : null, String(grp)] } : { sql: "UPDATE sales SET trading_mark = ? WHERE id = ?", args: [on ? 1 : null, Number(id)] }
-  );
-  return { ok: true };
-}
 async function listSalesForUnloadDesk(companyIds) {
   const cos = (companyIds || []).map((x) => Number(x)).filter((x) => Number.isFinite(x) && x > 0);
   await (await Promise.resolve().then(() => (init_saleShortageNotes(), saleShortageNotes_exports))).ensure();
@@ -14267,7 +14256,7 @@ async function salesInvoiceGaps(companyId, range) {
     args
   });
   const voidRes = await getClient().execute({
-    sql: `SELECT prefix, number, reason, cancelled_on FROM cancelled_invoice_nos
+    sql: `SELECT prefix, number, reason, cancelled_on, kind FROM cancelled_invoice_nos
            WHERE company_id = ? ORDER BY prefix, number`,
     args: [cid]
   });
@@ -14350,6 +14339,7 @@ async function salesInvoiceGaps(companyId, range) {
     }
     const missing = [];
     const cancelled = [];
+    const trading = [];
     const voucherOnly = [];
     const TOO_WIDE = 2e4;
     const rangeTooWide = hi - lo + 1 > TOO_WIDE;
@@ -14371,7 +14361,8 @@ async function salesInvoiceGaps(companyId, range) {
         }
         const v = voidHere.get(i);
         if (v) {
-          cancelled.push({ number: i, reason: v.reason ?? null, cancelled_on: v.cancelled_on ?? null });
+          ;
+          (v.kind === "trading" ? trading : cancelled).push({ number: i, reason: v.reason ?? null, cancelled_on: v.cancelled_on ?? null });
           continue;
         }
         missing.push(i);
@@ -14382,6 +14373,8 @@ async function salesInvoiceGaps(companyId, range) {
       used: keys.length,
       cancelled,
       cancelled_count: cancelled.length,
+      trading,
+      trading_count: trading.length,
       voucher_only: voucherOnly,
       voucher_only_count: voucherOnly.length,
       from: lo,
@@ -15914,8 +15907,9 @@ async function cancelInvoiceNo(v) {
   const prefix2 = String(v?.prefix || "").trim();
   const num2 = n14(v?.number);
   const reason = String(v?.reason || "").trim();
+  const kind = v?.kind === "trading" ? "trading" : null;
   if (!prefix2 || !num2) throw new Error("Pick the invoice number to cancel");
-  if (!reason) {
+  if (!reason && !kind) {
     throw new Error("Say why it was cancelled \u2014 a voided number with no reason cannot be checked later");
   }
   const c = getClient();
@@ -15933,11 +15927,11 @@ async function cancelInvoiceNo(v) {
     );
   }
   await c.execute({
-    sql: `INSERT INTO cancelled_invoice_nos (company_id, prefix, number, reason, cancelled_on, created_by)
-          VALUES (?, ?, ?, ?, ?, ?)
+    sql: `INSERT INTO cancelled_invoice_nos (company_id, prefix, number, reason, cancelled_on, created_by, kind)
+          VALUES (?, ?, ?, ?, ?, ?, ?)
           ON CONFLICT(company_id, prefix, number) DO UPDATE SET
-            reason = excluded.reason, cancelled_on = excluded.cancelled_on, created_by = excluded.created_by`,
-    args: [cid, prefix2, num2, reason, todayISO(), getCurrentUser().username || null]
+            reason = excluded.reason, cancelled_on = excluded.cancelled_on, created_by = excluded.created_by, kind = excluded.kind`,
+    args: [cid, prefix2, num2, reason || null, todayISO(), getCurrentUser().username || null, kind]
   });
   return { prefix: prefix2, number: num2 };
 }
@@ -15946,7 +15940,7 @@ async function listCancelledInvoiceNos(companyId) {
   const c = getClient();
   const voids = toPlain12(
     await c.execute({
-      sql: "SELECT id, prefix, number, reason, cancelled_on, created_by FROM cancelled_invoice_nos WHERE company_id = ? ORDER BY prefix, number",
+      sql: "SELECT id, prefix, number, reason, cancelled_on, created_by, kind FROM cancelled_invoice_nos WHERE company_id = ? ORDER BY prefix, number",
       args: [cid]
     })
   );
@@ -15981,6 +15975,7 @@ async function listCancelledInvoiceNos(companyId) {
       cancelled_on: v.cancelled_on,
       cancel_reason: v.reason,
       cancelled_by: v.created_by,
+      trading_no: v.kind === "trading" ? 1 : 0,
       company_id: cid
     };
   });
@@ -34468,6 +34463,7 @@ async function runStartupTasks() {
       cancelled_on TEXT NOT NULL,
       created_by TEXT,
       created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      kind TEXT,
       UNIQUE(company_id, prefix, number)
     )`);
     await c.execute(
@@ -35956,9 +35952,9 @@ var REQUIRED_COLUMNS = [
   { table: "customers", column: "gst_regs", type: "TEXT" },
   { table: "orders", column: "party_gstin", type: "TEXT" },
   { table: "sales", column: "party_gstin", type: "TEXT" },
-  // A label the desk puts on an invoice ("Trading sale"); nothing reads it but
-  // the lists. Not is_trading, which moves a sale out of the register.
-  { table: "sales", column: "trading_mark", type: "INTEGER" },
+  // A missing invoice number accounted for: NULL = cancelled, 'trading' = it
+  // went on a trading sale.
+  { table: "cancelled_invoice_nos", column: "kind", type: "TEXT" },
   // The desk's own voucher type (PURCHASE OTHERS under Purchase) — a label on
   // top of the basic type, which keeps the number series (voucherSubtypes.ts).
   { table: "journal_entries", column: "vch_subtype", type: "TEXT" },
@@ -42871,7 +42867,6 @@ function registerIpc() {
   handle("sales:tdsPreview", (_e, { id }) => saleTdsPreview(id));
   handle("sales:tdsPost", (_e, { values }) => postSaleTds(values));
   handle("sales:tdsRemove", (_e, { id }) => removeSaleTds(id));
-  handle("sales:setTradingMark", (_e, { id, on }) => setSaleTradingMark(id, on));
   handle("sales:tdsMap", (_e, args) => saleTdsMap(args?.companyIds));
   handle(
     "salesBargains:list",
