@@ -39,7 +39,16 @@ function chip(fg: string, bg: string, bd: string): React.CSSProperties {
   return { fontSize: 9.5, fontWeight: 800, letterSpacing: '.05em', textTransform: 'uppercase', color: fg, background: bg, border: `1px solid ${bd}`, borderRadius: 3, padding: '2px 6px', whiteSpace: 'nowrap' }
 }
 
-const kept: { filter: string; q: string; dir: string; focus: string; cols: Record<string, string[]> } = { filter: 'problems', q: '', dir: '', focus: '', cols: {} }
+// bank: the bank being worked, per company — so opening a voucher from a row
+// and pressing Esc comes back to that bank's book, not to Which bank.
+const kept: { filter: string; q: string; dir: string; focus: string; cols: Record<string, string[]>; bank: Record<number, number> } = {
+  filter: 'problems',
+  q: '',
+  dir: '',
+  focus: '',
+  cols: {},
+  bank: {}
+}
 
 export function TallyBankCheck({
   focusBank,
@@ -86,6 +95,9 @@ export function TallyBankCheck({
     [own]
   )
   const [bankId, setBankId] = useState<number | null>(null)
+  useEffect(() => {
+    if (companyId && bankId) kept.bank[companyId] = bankId
+  }, [companyId, bankId])
   const bank = own.banks.find((b) => Number(b.id) === bankId) || null
   const [picking, setPicking] = useState(false)
   const [newBank, setNewBank] = useState<string | null>(null)
@@ -248,6 +260,13 @@ export function TallyBankCheck({
     if (!companyId) return
     void Promise.all([loadDrafts(), loadBooks()]).then(([ds, bs]) => {
       if (!live || focusBank?.id) return
+      // Back from a voucher opened off a row: the same bank, straight away.
+      const back = kept.bank[companyId]
+      if (back && openBank(back, ds, bs)) {
+        setBankId(back)
+        setPicking(false)
+        return
+      }
       const withBooks = [...new Set(bs.map((b) => Number(b.account_id)).filter(Boolean))]
       if (withBooks.length > 1) {
         setBankId(null)
