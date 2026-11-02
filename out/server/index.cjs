@@ -8965,24 +8965,31 @@ async function listBargains(from, to, companyIds, forModule) {
   const ptCo = cos.length ? ` AND company_id IN (${cos.join(",")})` : "";
   const obCo = cos.length ? ` AND o2.company_id IN (${cos.join(",")})` : "";
   const vis = await visibleFromFor("bargains", forModule);
+  const rsCo = cos.length ? ` AND s9.company_id IN (${cos.join(",")})` : "";
+  const ret = (when = "") => `COALESCE((SELECT SUM(s9.qty) FROM sales s9 WHERE s9.return_bargain_id = b.id AND s9.rejected_at IS NULL${when}${rsCo}), 0)`;
   const res = await getClient().execute({
     sql: `
     SELECT b.*, s.name AS supplier_name, s.supplier_type AS supplier_type,
            br.name AS broker_name,
            o.code AS oil_code, o.name AS oil_name,
+           ${ret()} AS returned_qty,
            COALESCE((SELECT SUM(loaded_qty - COALESCE(extra_qty, 0)) FROM purchase_tankers WHERE bargain_id = b.id${ptCo}), 0)
              + COALESCE((SELECT SUM(extra_qty) FROM purchase_tankers WHERE extra_bargain_id = b.id${ptCo}), 0)
-             + COALESCE((SELECT SUM(ob.qty) FROM order_bargains ob JOIN orders o2 ON o2.id = ob.order_id WHERE ob.bargain_id = b.id${obCo}), 0) AS loaded_qty,
+             + COALESCE((SELECT SUM(ob.qty) FROM order_bargains ob JOIN orders o2 ON o2.id = ob.order_id WHERE ob.bargain_id = b.id${obCo}), 0)
+             - ${ret()} AS loaded_qty,
            b.qty
              - COALESCE((SELECT SUM(loaded_qty - COALESCE(extra_qty, 0)) FROM purchase_tankers WHERE bargain_id = b.id${ptCo}), 0)
              - COALESCE((SELECT SUM(extra_qty) FROM purchase_tankers WHERE extra_bargain_id = b.id${ptCo}), 0)
-             - COALESCE((SELECT SUM(ob.qty) FROM order_bargains ob JOIN orders o2 ON o2.id = ob.order_id WHERE ob.bargain_id = b.id${obCo}), 0) AS balance_qty,
+             - COALESCE((SELECT SUM(ob.qty) FROM order_bargains ob JOIN orders o2 ON o2.id = ob.order_id WHERE ob.bargain_id = b.id${obCo}), 0)
+             + ${ret()} AS balance_qty,
            COALESCE((SELECT SUM(loaded_qty - COALESCE(extra_qty, 0)) FROM purchase_tankers WHERE bargain_id = b.id AND substr(loaded_date, 1, 10) < ?${ptCo}), 0)
              + COALESCE((SELECT SUM(extra_qty) FROM purchase_tankers WHERE extra_bargain_id = b.id AND substr(loaded_date, 1, 10) < ?${ptCo}), 0)
-             + COALESCE((SELECT SUM(ob.qty) FROM order_bargains ob JOIN orders o2 ON o2.id = ob.order_id WHERE ob.bargain_id = b.id AND substr(o2.order_date, 1, 10) < ?${obCo}), 0) AS disp_before,
+             + COALESCE((SELECT SUM(ob.qty) FROM order_bargains ob JOIN orders o2 ON o2.id = ob.order_id WHERE ob.bargain_id = b.id AND substr(o2.order_date, 1, 10) < ?${obCo}), 0)
+             - ${ret(` AND substr(s9.sale_date, 1, 10) < '${f.replace(/'/g, "")}'`)} AS disp_before,
            COALESCE((SELECT SUM(loaded_qty - COALESCE(extra_qty, 0)) FROM purchase_tankers WHERE bargain_id = b.id AND substr(loaded_date, 1, 10) >= ? AND substr(loaded_date, 1, 10) <= ?${ptCo}), 0)
              + COALESCE((SELECT SUM(extra_qty) FROM purchase_tankers WHERE extra_bargain_id = b.id AND substr(loaded_date, 1, 10) >= ? AND substr(loaded_date, 1, 10) <= ?${ptCo}), 0)
-             + COALESCE((SELECT SUM(ob.qty) FROM order_bargains ob JOIN orders o2 ON o2.id = ob.order_id WHERE ob.bargain_id = b.id AND substr(o2.order_date, 1, 10) >= ? AND substr(o2.order_date, 1, 10) <= ?${obCo}), 0) AS disp_period,
+             + COALESCE((SELECT SUM(ob.qty) FROM order_bargains ob JOIN orders o2 ON o2.id = ob.order_id WHERE ob.bargain_id = b.id AND substr(o2.order_date, 1, 10) >= ? AND substr(o2.order_date, 1, 10) <= ?${obCo}), 0)
+             - ${ret(` AND substr(s9.sale_date, 1, 10) >= '${f.replace(/'/g, "")}' AND substr(s9.sale_date, 1, 10) <= '${t.replace(/'/g, "")}'`)} AS disp_period,
            (SELECT MAX(d) FROM (
               SELECT MAX(substr(loaded_date, 1, 10)) AS d FROM purchase_tankers WHERE bargain_id = b.id${ptCo}
               UNION ALL SELECT MAX(substr(loaded_date, 1, 10)) FROM purchase_tankers WHERE extra_bargain_id = b.id${ptCo}
@@ -9046,8 +9053,9 @@ async function bargainConsumed(id) {
             COALESCE((SELECT SUM(loaded_qty - COALESCE(extra_qty, 0)) FROM purchase_tankers WHERE bargain_id = ?), 0)
             + COALESCE((SELECT SUM(extra_qty) FROM purchase_tankers WHERE extra_bargain_id = ?), 0)
             + COALESCE((SELECT SUM(ob.qty) FROM order_bargains ob WHERE ob.bargain_id = ?), 0)
+            - COALESCE((SELECT SUM(qty) FROM sales WHERE return_bargain_id = ? AND rejected_at IS NULL), 0)
           AS consumed`,
-    args: [id, id, id]
+    args: [id, id, id, id]
   });
   return Number(r.rows[0]?.consumed) || 0;
 }
@@ -15130,6 +15138,15 @@ async function stampReturnSupplier(id, v) {
                  customer = COALESCE(?, customer) WHERE id = ?`,
     args: [sid, sid, name, id]
   });
+  if ("return_bargain_id" in v || !sid) {
+    let bid = sid ? n14(v.return_bargain_id) || null : null;
+    if (bid) {
+      const b = await getClient().execute({ sql: "SELECT supplier_id FROM bargains WHERE id = ?", args: [bid] });
+      if (!b.rows.length) throw new Error("That purchase bargain no longer exists");
+      if (n14(b.rows[0].supplier_id) !== sid) bid = null;
+    }
+    await getClient().execute({ sql: "UPDATE sales SET return_bargain_id = ? WHERE id = ?", args: [bid, id] });
+  }
 }
 async function createSale(v) {
   return withDbTransaction(async () => {
@@ -15501,7 +15518,8 @@ function mergeInvoiceItem(header, item, group) {
     purchase_invoice_no: item.purchase_invoice_no || header.purchase_invoice_no,
     // A purchase return's supplier — only when the header says, so a save that
     // does not carry it leaves the stored one (stampReturnSupplier).
-    ..."return_supplier_id" in header ? { return_supplier_id: header.return_supplier_id } : {}
+    ..."return_supplier_id" in header ? { return_supplier_id: header.return_supplier_id } : {},
+    ..."return_bargain_id" in header ? { return_bargain_id: header.return_bargain_id } : {}
   };
 }
 async function createSaleInvoice(v) {
@@ -22130,6 +22148,9 @@ async function accountStatement(accountId, companyId) {
                  -- narration, which is prose and can be edited.
                  (SELECT o.invoice_no FROM orders o WHERE o.id = je.order_id) AS order_invoice_no,
                  (SELECT o.order_date FROM orders o WHERE o.id = je.order_id) AS order_date,
+                 -- Linked on an LC as its commission or its interest refund (a link only).
+                 (SELECT x.lc_no FROM letters_of_credit x WHERE x.commission_voucher_id = je.id LIMIT 1) AS lc_commission_of,
+                 (SELECT x.lc_no FROM letters_of_credit x WHERE x.refund_voucher_id = je.id LIMIT 1) AS lc_refund_of,
                  -- THE PURCHASE'S TANKERS, and how many are emptied \u2014 so the
                  -- statement can leave out a bill whose oil is still on the
                  -- road (Tanker empty view).
@@ -29657,19 +29678,23 @@ async function pickBankVouchers(v) {
   const isNum = /^\d+(\.\d+)?$/.test(num2);
   const like = `%${raw.toUpperCase()}%`;
   const text = raw && !isNum;
+  const wide = !!raw || !!v.ledgerId;
+  const dated = !!v.from && !wide;
   const res = await c.execute({
     sql: `SELECT je.id FROM journal_entries je
            WHERE je.company_id = ?
-             ${v.from ? "AND je.entry_date >= date(?, '-15 days')" : ""}
-             AND EXISTS (SELECT 1 FROM journal_lines jl JOIN ledger_accounts a ON a.id = jl.account_id
-                          WHERE jl.entry_id = je.id AND jl.${v.dir === "in" ? "dr" : "cr"} > 0 AND a.acc_group IN ${BANKS})
+             ${dated ? "AND je.entry_date >= date(?, '-30 days')" : ""}
+             -- A bank voucher; or, when searching or by ledger, any voucher \u2014
+             -- a commission booked by journal (Tally's JV) is linked too.
+             ${wide ? "" : `AND EXISTS (SELECT 1 FROM journal_lines jl JOIN ledger_accounts a ON a.id = jl.account_id
+                          WHERE jl.entry_id = je.id AND jl.${v.dir === "in" ? "dr" : "cr"} > 0 AND a.acc_group IN ${BANKS})`}
              AND NOT EXISTS (SELECT 1 FROM letters_of_credit x WHERE x.${v.linkCol} = je.id AND x.id <> ?)
              ${v.ledgerId ? "AND EXISTS (SELECT 1 FROM journal_lines jl WHERE jl.entry_id = je.id AND jl.account_id = ?)" : ""}
              ${text ? `AND (UPPER(COALESCE(je.narration, '') || ' ' || COALESCE(je.vch_no, '')) LIKE ?
                       OR EXISTS (SELECT 1 FROM voucher_numbers nn WHERE nn.entry_id = je.id AND UPPER(nn.prefix || '/' || nn.serial) LIKE ?)
                       OR EXISTS (SELECT 1 FROM journal_lines jl JOIN ledger_accounts a ON a.id = jl.account_id WHERE jl.entry_id = je.id AND UPPER(a.name) LIKE ?))` : ""}
            ORDER BY je.entry_date DESC, je.id DESC LIMIT 600`,
-    args: [v.companyId, ...v.from ? [v.from] : [], v.lcId, ...v.ledgerId ? [v.ledgerId] : [], ...text ? [like, like, like] : []]
+    args: [v.companyId, ...dated ? [v.from] : [], v.lcId, ...v.ledgerId ? [v.ledgerId] : [], ...text ? [like, like, like] : []]
   });
   const out = [];
   const briefBanks = await moneyGroupsSql();
@@ -29680,7 +29705,7 @@ async function pickBankVouchers(v) {
     out.push(b);
   }
   out.sort((a, b) => Math.abs(n46(a.amount) - v.expected) - Math.abs(n46(b.amount) - v.expected));
-  return out.slice(0, raw || v.ledgerId ? 200 : 40);
+  return out.slice(0, wide ? 300 : 100);
 }
 async function voucherBrief(entryId, dir = "out", banks) {
   const BANKS = banks || await moneyGroupsSql();
@@ -29699,16 +29724,22 @@ async function voucherBrief(entryId, dir = "out", banks) {
               FROM journal_entries je WHERE je.id = ?`,
     args: [n46(entryId)]
   })).rows[0];
-  return r ? { ...r, amount: round222(n46(r.amount)) } : null;
+  if (!r) return null;
+  if (!(n46(r.amount) > 0)) {
+    const t = (await getClient().execute({ sql: `SELECT ROUND(SUM(jl.${other}), 2) AS t FROM journal_lines jl WHERE jl.entry_id = ?`, args: [n46(entryId)] })).rows[0];
+    return { ...r, amount: round222(n46(t?.t)) };
+  }
+  return { ...r, amount: round222(n46(r.amount)) };
 }
 async function lcCommissionCandidates(lcId, q, ledgerId) {
   const c = getClient();
   const l = (await c.execute({ sql: "SELECT id, company_id, amount, commission_pct, opened_date, open_date FROM letters_of_credit WHERE id = ?", args: [n46(lcId)] })).rows[0];
   if (!l) throw new Error("That LC no longer exists");
+  const dates = [l.open_date, l.opened_date].map((x) => String(x || "").slice(0, 10)).filter(Boolean).sort();
   return pickBankVouchers({
     lcId: n46(lcId),
     companyId: n46(l.company_id),
-    from: String(l.opened_date || l.open_date || "").slice(0, 10),
+    from: dates[0] || "",
     dir: "out",
     linkCol: "commission_voucher_id",
     expected: round222(n46(l.amount) * n46(l.commission_pct) / 100),
@@ -36047,6 +36078,9 @@ var REQUIRED_COLUMNS = [
   { table: "journal_line_splits", column: "branch", type: "TEXT" },
   // A sale billed to a SUPPLIER as a purchase return (sales.ts stampReturnSupplier).
   { table: "sales", column: "return_supplier_id", type: "INTEGER" },
+  // The purchase bargain a purchase return goes back against: its returned
+  // qty comes off what the bargain has taken, so the balance opens again.
+  { table: "sales", column: "return_bargain_id", type: "INTEGER" },
   // A BD repayment's interest as its own journal, with the TDS held on it
   // (billDiscounting.ts postBdInterestJournal).
   { table: "bd_repayments", column: "interest_entry_id", type: "INTEGER" },
