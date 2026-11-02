@@ -5695,13 +5695,15 @@ export function Accounts({
     // (at the foot, out of the balance) — its oil is not in yet. Every other
     // voucher keeps its own date. The balance runs in that order.
     const held: Row[] = []
-    let lines = ledgerLines
+    // A purchase invoiced before the books start whose tanker was emptied
+    // after (TI/DL1/26/317): the entered opening counts it, Tally's does not —
+    // Tally books it on its empty date. So it comes out of the opening in BOTH
+    // views and is listed as a line: on its invoice date in Invoice date view,
+    // on its empty date in Empty date view. The opening then reads as Tally's.
+    for (const l of lgPreBooks) opening -= (Number(l.dr) || 0) - (Number(l.cr) || 0)
+    let lines = [...lgPreBooks, ...ledgerLines]
     if (lgTankerEmpty) {
       const moved: Row[] = []
-      // A purchase invoiced before the books start whose tanker was emptied
-      // after: the opening counted it by its invoice date, so it comes out of
-      // the opening here and is dated by its tanker like any other bill.
-      for (const l of lgPreBooks) opening -= (Number(l.dr) || 0) - (Number(l.cr) || 0)
       for (const l of [...lgPreBooks, ...ledgerLines]) {
         const total = Number(l.tanker_total) || 0
         if (total <= 0) {
