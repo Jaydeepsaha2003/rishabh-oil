@@ -21851,8 +21851,9 @@ async function listAccounts(companyId) {
   await ensureLedgerHomes();
   const cid = companyId || getActiveCompanyId();
   const booksFrom = await getBooksFrom(cid);
+  const from = booksFrom || "0000-00-00";
   const res = await getClient().execute({
-    args: [cid, booksFrom || "0000-00-00", cid, cid, cid, cid, cid, cid, cid, booksFrom || "0000-00-00"],
+    args: [cid, from, from, from, from, cid, cid, cid, cid, cid, cid],
     sql: `
     WITH not_emptied AS (
       -- Purchases with a tanker still not emptied \u2014 out of the Empty-date balance.
@@ -21860,75 +21861,84 @@ async function listAccounts(companyId) {
        GROUP BY ta.order_id
       HAVING SUM(CASE WHEN tp.status = 'empty' AND tp.empty_date IS NOT NULL THEN 1 ELSE 0 END) < COUNT(*)
     ),
-    -- Their postings per ledger, summed once (a per-ledger lookup cost 0.3 s).
     held AS (
       SELECT jl.account_id, SUM(jl.dr) - SUM(jl.cr) AS v
         FROM journal_lines jl JOIN journal_entries je ON je.id = jl.entry_id
        WHERE je.company_id = ? AND je.entry_date >= ? AND je.order_id IN (SELECT order_id FROM not_emptied)
        GROUP BY jl.account_id
+    ),
+    -- This company's postings: every one (balance), and from the books' start.
+    co AS (
+      SELECT jl.account_id,
+             SUM(jl.dr) - SUM(jl.cr) AS bal,
+             SUM(CASE WHEN je.entry_date >= ? THEN jl.dr END) - SUM(CASE WHEN je.entry_date >= ? THEN jl.cr END) AS from_books,
+             MAX(je.entry_date >= ?) AS any_from
+        FROM journal_lines jl JOIN journal_entries je ON je.id = jl.entry_id
+       WHERE je.company_id = ?
+       GROUP BY jl.account_id
+    ),
+    -- Postings across EVERY company.
+    allc AS (SELECT account_id, COUNT(*) AS n FROM journal_lines GROUP BY account_id),
+    allocs AS (SELECT account_id, COUNT(*) AS n FROM journal_bill_allocs GROUP BY account_id),
+    op AS (
+      SELECT account_id,
+             SUM(CASE WHEN company_id = ? THEN dr END) - SUM(CASE WHEN company_id = ? THEN cr END) AS v,
+             MAX(company_id = ? AND (ABS(dr) > 0.004 OR ABS(cr) > 0.004)) AS here_nz,
+             MAX(ABS(dr) > 0.004 OR ABS(cr) > 0.004) AS any_nz
+        FROM ledger_openings GROUP BY account_id
+    ),
+    homes AS (SELECT account_id, MAX(company_id = ?) AS here FROM ledger_homes GROUP BY account_id),
+    hid AS (SELECT DISTINCT account_id FROM ledger_hidden WHERE company_id = ?),
+    -- The masters, by name: how many claim it, and the business type a
+    -- customer (then a supplier) of that name runs.
+    masters AS (
+      SELECT k, COUNT(*) AS n, MAX(cbt) AS cbt, MAX(sbt) AS sbt FROM (
+        SELECT TRIM(UPPER(name)) AS k, business_type AS cbt, NULL AS sbt FROM customers
+        UNION ALL SELECT TRIM(UPPER(name)), NULL, business_type FROM suppliers
+        UNION ALL SELECT TRIM(UPPER(name)), NULL, NULL FROM transporters
+        UNION ALL SELECT TRIM(UPPER(name)), NULL, NULL FROM brokers
+      ) GROUP BY k
     )
     SELECT a.*,
-      EXISTS (SELECT 1 FROM ledger_hidden lhd WHERE lhd.account_id = a.id AND lhd.company_id = ?) AS hidden_here,
+      (hid.account_id IS NOT NULL) AS hidden_here,
       -- Whether this ledger belongs to the company in view (see ensureLedgerHomes).
       CASE
-        WHEN EXISTS (SELECT 1 FROM journal_lines jl JOIN journal_entries je ON je.id = jl.entry_id
-                      WHERE jl.account_id = a.id AND je.company_id = ?) THEN 1
-        WHEN EXISTS (SELECT 1 FROM ledger_openings lo
-                      WHERE lo.account_id = a.id AND lo.company_id = ? AND (ABS(lo.dr) > 0.004 OR ABS(lo.cr) > 0.004)) THEN 1
-        WHEN EXISTS (SELECT 1 FROM ledger_homes lh WHERE lh.account_id = a.id AND lh.company_id = ?) THEN 1
-        WHEN NOT EXISTS (SELECT 1 FROM journal_lines jl WHERE jl.account_id = a.id)
-         AND NOT EXISTS (SELECT 1 FROM ledger_openings lo WHERE lo.account_id = a.id AND (ABS(lo.dr) > 0.004 OR ABS(lo.cr) > 0.004))
-         AND NOT EXISTS (SELECT 1 FROM ledger_homes lh WHERE lh.account_id = a.id) THEN 1
+        WHEN co.account_id IS NOT NULL THEN 1
+        WHEN COALESCE(op.here_nz, 0) THEN 1
+        WHEN COALESCE(homes.here, 0) THEN 1
+        WHEN allc.account_id IS NULL AND NOT COALESCE(op.any_nz, 0) AND homes.account_id IS NULL THEN 1
         ELSE 0
       END AS in_company,
-      COALESCE((SELECT SUM(jl.dr) - SUM(jl.cr)
-                FROM journal_lines jl JOIN journal_entries je ON je.id = jl.entry_id
-                WHERE jl.account_id = a.id AND je.company_id = ?), 0) AS balance,
+      COALESCE(co.bal, 0) AS balance,
       -- WHAT THE LEDGER ITSELF CLOSES AT: the opening entered for this book,
       -- plus the postings from the day the books start. \`balance\` above is
-      -- every posting ever, opening left out \u2014 a bank whose BD and LC
-      -- vouchers from before the books start were already inside its opening
-      -- read \u20B94.39 Cr Dr in the picker while the ledger closed at \u20B910.89 Cr Cr.
-      COALESCE((SELECT SUM(lo.dr) - SUM(lo.cr) FROM ledger_openings lo
-                WHERE lo.account_id = a.id AND lo.company_id = ?), 0)
-      + COALESCE((SELECT SUM(jl.dr) - SUM(jl.cr)
-                  FROM journal_lines jl JOIN journal_entries je ON je.id = jl.entry_id
-                  WHERE jl.account_id = a.id AND je.company_id = ? AND je.entry_date >= ?), 0) AS closing,
-      -- What the closing leaves out in the ledger's Empty-date view: bills
-      -- whose oil is not all emptied yet. closing \u2212 this = the Empty-date balance.
+      -- every posting ever, opening left out.
+      COALESCE(op.v, 0) + COALESCE(CASE WHEN co.any_from THEN co.from_books END, 0) AS closing,
+      -- closing \u2212 this = the Empty-date balance.
       COALESCE(hh.v, 0) AS held_not_empty,
-      -- Postings across EVERY company, not just the one in view.
-      (SELECT COUNT(*) FROM journal_lines jl2 WHERE jl2.account_id = a.id) AS line_count,
-      (SELECT COUNT(*) FROM journal_bill_allocs ba WHERE ba.account_id = a.id) AS alloc_count,
-      -- Whether a master still claims this name. A party or a standing account
-      -- with no postings YET is perfectly normal \u2014 CASH A/C, FREIGHT INWARD
-      -- A/C, a transporter not yet billed \u2014 and must never be offered for
-      -- deletion. Only a name nothing claims is a genuine leftover, which is
-      -- what a rename used to strand.
-      (SELECT COUNT(*) FROM customers m WHERE TRIM(UPPER(m.name)) = TRIM(UPPER(a.name))) +
-      (SELECT COUNT(*) FROM suppliers m WHERE TRIM(UPPER(m.name)) = TRIM(UPPER(a.name))) +
-      (SELECT COUNT(*) FROM transporters m WHERE TRIM(UPPER(m.name)) = TRIM(UPPER(a.name))) +
-      (SELECT COUNT(*) FROM brokers m WHERE TRIM(UPPER(m.name)) = TRIM(UPPER(a.name))) AS claimed_by_master,
-      -- The party behind this ledger runs a Trading or a Manufacturing book;
-      -- read off the master that names it (a debtor is a customer, a creditor a
-      -- supplier). A ledger no party claims \u2014 a purchase head, a bank \u2014 has none.
-      --
-      -- A RENAMED LEDGER STILL HAS A PARTY. Renaming the ledger does not rename
-      -- the customer or supplier, so the master keeps the old name while the
-      -- ledger wears the new one; the rename records the two in ledger_map
-      -- (posts_as = the old name, use_name = this ledger). So when the name on
-      -- the ledger finds no master, the redirected-from name is tried too.
+      COALESCE(allc.n, 0) AS line_count,
+      COALESCE(allocs.n, 0) AS alloc_count,
+      COALESCE(m.n, 0) AS claimed_by_master,
+      -- A RENAMED LEDGER STILL HAS A PARTY: the name on the ledger first, then
+      -- the name it was redirected from (ledger_map).
       COALESCE(
-        (SELECT m.business_type FROM customers m WHERE TRIM(UPPER(m.name)) = TRIM(UPPER(a.name)) LIMIT 1),
-        (SELECT m.business_type FROM suppliers m WHERE TRIM(UPPER(m.name)) = TRIM(UPPER(a.name)) LIMIT 1),
-        (SELECT m.business_type FROM customers m
-           JOIN ledger_map lm ON TRIM(UPPER(lm.posts_as)) = TRIM(UPPER(m.name))
-          WHERE TRIM(UPPER(lm.use_name)) = TRIM(UPPER(a.name)) LIMIT 1),
-        (SELECT m.business_type FROM suppliers m
-           JOIN ledger_map lm ON TRIM(UPPER(lm.posts_as)) = TRIM(UPPER(m.name))
-          WHERE TRIM(UPPER(lm.use_name)) = TRIM(UPPER(a.name)) LIMIT 1)
+        m.cbt,
+        m.sbt,
+        (SELECT m2.cbt FROM ledger_map lm JOIN masters m2 ON m2.k = TRIM(UPPER(lm.posts_as))
+          WHERE TRIM(UPPER(lm.use_name)) = TRIM(UPPER(a.name)) AND m2.cbt IS NOT NULL LIMIT 1),
+        (SELECT m2.sbt FROM ledger_map lm JOIN masters m2 ON m2.k = TRIM(UPPER(lm.posts_as))
+          WHERE TRIM(UPPER(lm.use_name)) = TRIM(UPPER(a.name)) AND m2.sbt IS NOT NULL LIMIT 1)
       ) AS business_type
-    FROM ledger_accounts a LEFT JOIN held hh ON hh.account_id = a.id ORDER BY a.name
+    FROM ledger_accounts a
+    LEFT JOIN held hh ON hh.account_id = a.id
+    LEFT JOIN co ON co.account_id = a.id
+    LEFT JOIN allc ON allc.account_id = a.id
+    LEFT JOIN allocs ON allocs.account_id = a.id
+    LEFT JOIN op ON op.account_id = a.id
+    LEFT JOIN homes ON homes.account_id = a.id
+    LEFT JOIN hid ON hid.account_id = a.id
+    LEFT JOIN masters m ON m.k = TRIM(UPPER(a.name))
+    ORDER BY a.name
   `
   });
   return toPlain17(res).map((r) => ({ ...r, is_hidden: Number(r.hidden_here) ? 1 : 0 }));
