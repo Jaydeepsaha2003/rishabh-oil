@@ -2068,8 +2068,14 @@ export function Accounts({
     useMemo(
       () => Array.from(new Set([...dayRows.map((r) => Number(r.id)), Number(viewRow?.id) || 0])).filter(Boolean),
       [dayRows, viewRow]
-    )
+    ),
+    // Tags are per company: the book in view, not the session's open company —
+    // else a Reco tag made in KR FOODS read as none while another was open.
+    cid || undefined
   )
+  // A tag set from elsewhere (Bank Book check's Reco tick, a voucher saved)
+  // leaves the same rows in view, so the map is read again on any change.
+  useLiveRefresh(vchTags.reload)
   // Debit/Credit note register — the notes raised through Alt-F5/Alt-F6, which
   // previously had nowhere to be seen or corrected once accepted.
   const [noteRows, setNoteRows] = useState<Row[]>([])
