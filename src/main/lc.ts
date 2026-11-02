@@ -704,12 +704,22 @@ async function pickBankVouchers(v: {
   const isNum = /^\d+(\.\d+)?$/.test(num)
   const like = `%${raw.toUpperCase()}%`
   const text = raw && !isNum
+  // Searching or by ledger: every date, every kind of voucher. Browsing: the
+  // bank vouchers from a month before the LC was applied for.
+  const wide = !!raw || !!v.ledgerId
+  const dated = !!v.from && !wide
   const res = await c.execute({
     sql: `SELECT je.id FROM journal_entries je
            WHERE je.company_id = ?
-             ${v.from ? "AND je.entry_date >= date(?, '-15 days')" : ''}
-             AND EXISTS (SELECT 1 FROM journal_lines jl JOIN ledger_accounts a ON a.id = jl.account_id
-                          WHERE jl.entry_id = je.id AND jl.${v.dir === 'in' ? 'dr' : 'cr'} > 0 AND a.acc_group IN ${BANKS})
+             ${dated ? "AND je.entry_date >= date(?, '-30 days')" : ''}
+             -- A bank voucher; or, when searching or by ledger, any voucher —
+             -- a commission booked by journal (Tally's JV) is linked too.
+             ${
+               wide
+                 ? ''
+                 : `AND EXISTS (SELECT 1 FROM journal_lines jl JOIN ledger_accounts a ON a.id = jl.account_id
+                          WHERE jl.entry_id = je.id AND jl.${v.dir === 'in' ? 'dr' : 'cr'} > 0 AND a.acc_group IN ${BANKS})`
+             }
              AND NOT EXISTS (SELECT 1 FROM letters_of_credit x WHERE x.${v.linkCol} = je.id AND x.id <> ?)
              ${v.ledgerId ? 'AND EXISTS (SELECT 1 FROM journal_lines jl WHERE jl.entry_id = je.id AND jl.account_id = ?)' : ''}
              ${
@@ -720,7 +730,7 @@ async function pickBankVouchers(v: {
                  : ''
              }
            ORDER BY je.entry_date DESC, je.id DESC LIMIT 600`,
-    args: [v.companyId, ...(v.from ? [v.from] : []), v.lcId, ...(v.ledgerId ? [v.ledgerId] : []), ...(text ? [like, like, like] : [])]
+    args: [v.companyId, ...(dated ? [v.from] : []), v.lcId, ...(v.ledgerId ? [v.ledgerId] : []), ...(text ? [like, like, like] : [])]
   })
   const out: Row[] = []
   const briefBanks = await moneyGroupsSql()
@@ -732,8 +742,8 @@ async function pickBankVouchers(v: {
     out.push(b)
   }
   out.sort((a, b) => Math.abs(n(a.amount) - v.expected) - Math.abs(n(b.amount) - v.expected))
-  // Browsing: the nearest 40. Searching or by ledger: everything found, to 200.
-  return out.slice(0, raw || v.ledgerId ? 200 : 40)
+  // Browsing: the nearest 100. Searching or by ledger: everything found, to 300.
+  return out.slice(0, wide ? 300 : 100)
 }
 
 async function voucherBrief(entryId: number, dir: 'out' | 'in' = 'out', banks?: string): Promise<Row | null> {
@@ -755,7 +765,13 @@ async function voucherBrief(entryId: number, dir: 'out' | 'in' = 'out', banks?: 
       args: [n(entryId)]
     })
   ).rows[0] as unknown as Row | undefined
-  return r ? { ...r, amount: round2(n(r.amount)) } : null
+  if (!r) return null
+  if (!(n(r.amount) > 0)) {
+    // No bank line (a journal): what it moved — its total on the other side.
+    const t = (await getClient().execute({ sql: `SELECT ROUND(SUM(jl.${other}), 2) AS t FROM journal_lines jl WHERE jl.entry_id = ?`, args: [n(entryId)] })).rows[0] as unknown as Row | undefined
+    return { ...r, amount: round2(n(t?.t)) }
+  }
+  return { ...r, amount: round2(n(r.amount)) }
 }
 
 /**
@@ -767,10 +783,13 @@ export async function lcCommissionCandidates(lcId: number, q?: string, ledgerId?
   const c = getClient()
   const l = (await c.execute({ sql: 'SELECT id, company_id, amount, commission_pct, opened_date, open_date FROM letters_of_credit WHERE id = ?', args: [n(lcId)] })).rows[0] as unknown as Row | undefined
   if (!l) throw new Error('That LC no longer exists')
+  // From the application (open_date), not the opening: the bank often takes
+  // its commission when the LC is applied for.
+  const dates = [l.open_date, l.opened_date].map((x) => String(x || '').slice(0, 10)).filter(Boolean).sort()
   return pickBankVouchers({
     lcId: n(lcId),
     companyId: n(l.company_id),
-    from: String(l.opened_date || l.open_date || '').slice(0, 10),
+    from: dates[0] || '',
     dir: 'out',
     linkCol: 'commission_voucher_id',
     expected: round2((n(l.amount) * n(l.commission_pct)) / 100),

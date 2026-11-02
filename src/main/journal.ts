@@ -473,6 +473,9 @@ export async function accountStatement(accountId: number, companyId?: number): P
                  -- narration, which is prose and can be edited.
                  (SELECT o.invoice_no FROM orders o WHERE o.id = je.order_id) AS order_invoice_no,
                  (SELECT o.order_date FROM orders o WHERE o.id = je.order_id) AS order_date,
+                 -- Linked on an LC as its commission or its interest refund (a link only).
+                 (SELECT x.lc_no FROM letters_of_credit x WHERE x.commission_voucher_id = je.id LIMIT 1) AS lc_commission_of,
+                 (SELECT x.lc_no FROM letters_of_credit x WHERE x.refund_voucher_id = je.id LIMIT 1) AS lc_refund_of,
                  -- THE PURCHASE'S TANKERS, and how many are emptied — so the
                  -- statement can leave out a bill whose oil is still on the
                  -- road (Tanker empty view).

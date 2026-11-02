@@ -17422,6 +17422,26 @@ export function Accounts({
                       ))}
                     </div>
                   )}
+                  {(r.lc_commission_of || r.lc_refund_of) && (
+                    <div className="flex flex-wrap gap-1" style={{ marginTop: 3 }}>
+                      {r.lc_commission_of && (
+                        <span
+                          title="Linked on this LC as the bank's commission (Treasury → LC → Commission)"
+                          style={{ fontSize: 10, fontWeight: 800, color: '#1B4E82', background: '#EAF2FC', border: '1px solid #B9D3F0', borderRadius: 3, padding: '1px 6px' }}
+                        >
+                          LC commission · {String(r.lc_commission_of)}
+                        </span>
+                      )}
+                      {r.lc_refund_of && (
+                        <span
+                          title="Linked on this LC as the bank's interest refund"
+                          style={{ fontSize: 10, fontWeight: 800, color: '#0B6B45', background: '#E9F5EE', border: '1px solid #BFE3CB', borderRadius: 3, padding: '1px 6px' }}
+                        >
+                          LC refund · {String(r.lc_refund_of)}
+                        </span>
+                      )}
+                    </div>
+                  )}
                   {!!String(r.narration || '').trim() && (
                     <div style={{ fontSize: 10.5, fontWeight: 600, color: A.muted, marginTop: 2, ...clip }}>{String(r.narration)}</div>
                   )}
