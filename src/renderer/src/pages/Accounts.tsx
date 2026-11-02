@@ -5737,8 +5737,14 @@ export function Accounts({
       run += (Number(l.dr) || 0) - (Number(l.cr) || 0)
       return { ...l, running: run }
     })
+    // The opening as the user entered it, and the purchases before the books
+    // taken out of it to be listed (see above) — shown on the opening row.
+    const preNet = lgPreBooks.reduce((t, l) => t + (Number(l.dr) || 0) - (Number(l.cr) || 0), 0)
     return {
       opening,
+      enteredOpening: opening + preNet,
+      preBooks: lgPreBooks,
+      preNet,
       rows: out,
       closing: run,
       totDr: out.reduce((sum, l) => sum + (Number(l.dr) || 0), 0),
@@ -17305,12 +17311,27 @@ export function Accounts({
         <div className="grid items-center" style={{ gridTemplateColumns: V_GRID, height: 38, background: '#F4F7F2', borderBottom: '1px solid #E4ECE3' }}>
           <span style={{ padding: '0 14px', ...figS(11.5, A.muted, 600) }}>{lgOpenDate ? formatDate(lgOpenDate) : ''}</span>
           <span style={{ gridColumn: 'span 4', padding: '0 8px', fontSize: 11.5, fontWeight: 800, color: '#33473E' }}>
-            Opening balance{lgHideBal ? <span style={{ ...figS(11.5, balFg(stmt.opening)), marginLeft: 10 }}>{bal(stmt.opening)}</span> : null}
+            Opening balance{stmt.preBooks.length ? ' (as entered)' : ''}
+            {lgHideBal ? <span style={{ ...figS(11.5, balFg(stmt.enteredOpening)), marginLeft: 10 }}>{bal(stmt.enteredOpening)}</span> : null}
           </span>
           <span />
           <span />
-          {!lgHideBal && <span style={{ padding: '0 14px', textAlign: 'right', ...figS(12, balFg(stmt.opening)) }}>{bal(stmt.opening)}</span>}
+          {!lgHideBal && <span style={{ padding: '0 14px', textAlign: 'right', ...figS(12, balFg(stmt.enteredOpening)) }}>{bal(stmt.enteredOpening)}</span>}
         </div>
+        {/* The entered opening counts a purchase invoiced before the books
+            start whose oil was emptied after; Tally books it on its empty
+            date. It comes out here and is listed on its own date below. */}
+        {stmt.preBooks.length > 0 && (
+          <div className="grid items-center" style={{ gridTemplateColumns: V_GRID, minHeight: 34, background: '#FBFCF8', borderBottom: '1px solid #E4ECE3' }}>
+            <span />
+            <span style={{ gridColumn: 'span 4', padding: '0 8px', fontSize: 11, fontWeight: 600, color: '#5A6B62', fontStyle: 'italic' }}>
+              Less {stmt.preBooks.map((l) => String(l.order_invoice_no || l.vch_no || 'purchase')).join(', ')} — in the opening, listed below on its date (Tally's opening)
+            </span>
+            <span style={{ padding: '0 12px', textAlign: 'right', ...figS(11.5, A.dr) }}>{stmt.preNet < 0 ? formatINR(-stmt.preNet) : ''}</span>
+            <span style={{ padding: '0 12px', textAlign: 'right', ...figS(11.5, A.cr) }}>{stmt.preNet > 0 ? formatINR(stmt.preNet) : ''}</span>
+            {!lgHideBal && <span style={{ padding: '0 14px', textAlign: 'right', ...figS(12, balFg(stmt.opening)) }}>{bal(stmt.opening)}</span>}
+          </div>
+        )}
         {vRows.map((r, i) => {
           const eid = Number(r.entry_id ?? r.id)
           const open = lgOpenRow === Number(r.id)
@@ -18600,7 +18621,7 @@ export function Accounts({
                     )}
                   </div>
                   <div style={{ fontSize: 11, fontWeight: 600, color: A.muted, fontVariantNumeric: FIGS }}>
-                    {stmt.rows.length} {stmt.rows.length === 1 ? 'voucher' : 'vouchers'} · opening {bal(stmt.opening)} · closing {bal(stmt.closing)}
+                    {stmt.rows.length} {stmt.rows.length === 1 ? 'voucher' : 'vouchers'} · opening {bal(stmt.enteredOpening)}{stmt.preBooks.length ? ` (Tally ${bal(stmt.opening)})` : ''} · closing {bal(stmt.closing)}
                     {lgBooksFrom ? ` · books from ${formatDate(lgBooksFrom)}` : ''}
                   </div>
                 </div>
