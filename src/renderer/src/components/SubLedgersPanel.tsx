@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import { toast } from 'sonner'
-import { ArrowLeftRight, ChevronDown, Factory, GitBranch, Merge, Pencil, Plus, Save, Unlink, X } from 'lucide-react'
+import { ArrowLeftRight, ChevronDown, Factory, GitBranch, Merge, Pencil, Plus, Save, Trash2, Unlink, X } from 'lucide-react'
 import { errText } from '@/lib/format'
 import { BUSINESS_TYPES } from '@/lib/constants'
 import { cn } from '@/lib/utils'
@@ -108,6 +108,15 @@ export function SubLedgersPanel({
   const detach = (r: Row): Promise<void> => {
     if (!window.confirm(`Detach ${String(r.name)} from this party? It stays as a party of its own, with its ledger and history, and sets its own TDS again.`)) return Promise.resolve()
     return run(() => window.api.data.update(table, Number(r.id), { ...r, linked_party_id: null }), `${String(r.name)} is a party of its own now`)
+  }
+  // A side made by mistake and never used: the server refuses one with any
+  // bargain, purchase, sale or ledger line, and takes its empty ledger with it.
+  const removeSub = (r: Row): Promise<void> => {
+    if (!window.confirm(`Delete ${String(r.name)}? Only a side never used can go — its empty ledger goes with it.`)) return Promise.resolve()
+    return run(async () => {
+      await window.api.data.remove(table, Number(r.id))
+      setOpenId(null)
+    }, `${String(r.name)} deleted`)
   }
   // FOLD AN OLD BRANCH IN, right here — the same reviewed fold as Settings →
   // Accounting checks (partyFold.ts), refused while it looks booked twice.
@@ -327,6 +336,15 @@ export function SubLedgersPanel({
                         className="flex h-9 items-center gap-1.5 rounded-[6px] border border-[#E5C9C6] bg-white px-3 text-[12px] font-bold text-[#8C2F26] hover:bg-rose-50"
                       >
                         <Unlink className="h-3.5 w-3.5" /> Detach
+                      </button>
+                      <button
+                        type="button"
+                        disabled={busy}
+                        title="Delete a side made by mistake — refused once it has any bargain, bill or entry"
+                        onClick={() => void removeSub(r)}
+                        className="flex h-9 items-center gap-1.5 rounded-[6px] border border-[#E5C9C6] bg-white px-3 text-[12px] font-bold text-[#8C2F26] hover:bg-rose-50"
+                      >
+                        <Trash2 className="h-3.5 w-3.5" /> Delete
                       </button>
                       <span className="flex-1" />
                       <button

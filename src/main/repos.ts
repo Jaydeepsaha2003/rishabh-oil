@@ -528,14 +528,17 @@ const DEPENDENTS: Record<string, { table: string; column: string; label: string 
     { table: 'purchase_tankers', column: 'supplier_id', label: 'tanker' },
     { table: 'consignment_stock', column: 'supplier_id', label: 'consignment lot' },
     { table: 'supplier_ledger', column: 'supplier_id', label: 'ledger entry' },
-    { table: 'gate_entries', column: 'supplier_id', label: 'gate entry' }
+    { table: 'gate_entries', column: 'supplier_id', label: 'gate entry' },
+    { table: 'sales', column: 'return_supplier_id', label: 'purchase return' },
+    { table: 'suppliers', column: 'linked_party_id', label: 'linked side' }
   ],
   customers: [
     { table: 'sales', column: 'customer_id', label: 'sale' },
     { table: 'sales_bargains', column: 'customer_id', label: 'sales bargain' },
     { table: 'customer_ledger', column: 'customer_id', label: 'ledger entry' },
     { table: 'gate_entries', column: 'customer_id', label: 'gate entry' },
-    { table: 'packaging_parties', column: 'customer_id', label: 'packed-SKU link' }
+    { table: 'packaging_parties', column: 'customer_id', label: 'packed-SKU link' },
+    { table: 'customers', column: 'linked_party_id', label: 'linked side' }
   ],
   products: [
     { table: 'sales', column: 'product_id', label: 'sale' },
@@ -569,6 +572,9 @@ const DEPENDENTS: Record<string, { table: string; column: string; label: string 
   ]
 }
 
+// party_openings.kind of the party masters that carry an opening.
+const PARTY_KIND: Record<string, string> = { suppliers: 'supplier', customers: 'customer', transporters: 'transporter', brokers: 'broker' }
+
 async function assertNotInUse(table: string, id: number): Promise<void> {
   const deps = DEPENDENTS[table]
   if (!deps) return
@@ -593,7 +599,21 @@ async function assertNotInUse(table: string, id: number): Promise<void> {
 export async function remove(table: string, id: number): Promise<{ id: number }> {
   assertTable(table)
   await assertNotInUse(table, id)
+  const party = PARTY_KIND[table]
+  const nameRow = party ? (await getClient().execute({ sql: `SELECT name FROM ${table} WHERE id = ?`, args: [id] })).rows[0] : null
   await getClient().execute({ sql: `DELETE FROM ${table} WHERE id = ?`, args: [id] })
+  if (party) {
+    // Its per-company opening rows, and the master ledger its save made — the
+    // ledger only when nothing is posted to it (deleteLedger refuses otherwise).
+    await getClient().execute({ sql: 'DELETE FROM party_openings WHERE kind = ? AND party_id = ?', args: [party, id] }).catch(() => undefined)
+    const led = nameRow
+      ? (await getClient().execute({ sql: 'SELECT id FROM ledger_accounts WHERE TRIM(UPPER(name)) = TRIM(UPPER(?))', args: [String(nameRow.name)] })).rows[0]
+      : null
+    if (led) {
+      const { deleteLedger } = await import('./ledgerGroups')
+      await deleteLedger(Number(led.id)).catch(() => undefined)
+    }
+  }
   return { id }
 }
 
