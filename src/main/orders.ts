@@ -114,6 +114,22 @@ export interface MoneyInput {
   // Per-unit adjustment on the billed rate. `null`/absent = the legacy
   // round-up-to-the-rupee; a number = exactly that much (0 = nothing).
   rateRoundOff?: number | null
+  // A TDS typed on the bill (orders.tds_manual): replaces the slab's figure.
+  // null/absent = worked out as always.
+  tdsManual?: number | null
+}
+
+// What the user typed as the TDS, or null when it is left to the slab.
+export function tdsManualOf(r: Row | null | undefined): number | null {
+  return r && r.tds_manual != null && r.tds_manual !== '' && Number.isFinite(Number(r.tds_manual)) ? Number(r.tds_manual) : null
+}
+
+// A typed TDS carries to the final (bargain-rate) block in the same proportion
+// the slab's own figures stand in; with no slab figure to scale, as typed.
+function withManualTds(manual: number | null | undefined, tds: number, finalTds: number): { tds: number; finalTds: number } {
+  if (manual == null) return { tds, finalTds }
+  const t = Math.round(manual * 100) / 100
+  return { tds: t, finalTds: tds > 0 ? Math.round(((finalTds * t) / tds) * 100) / 100 : t }
 }
 
 // Tiered TDS: the part of `taxable` still under the threshold (given `prior`
@@ -282,14 +298,17 @@ export function computeMoney(i: MoneyInput): MoneyResult {
   //
   // TDS is rounded to paise ONCE and the net derived from that rounded
   // figure, so the summary and the ledger cannot disagree by a paisa.
-  const tdsAmount = round2(tierTds(taxableValue, prior, threshold, i.tdsPct, abovePct))
+  const finalTaxable = i.bargainRate * i.orderedQty
+  const { tds: tdsAmount, finalTds } = withManualTds(
+    i.tdsManual,
+    round2(tierTds(taxableValue, prior, threshold, i.tdsPct, abovePct)),
+    round2(tierTds(finalTaxable, prior, threshold, i.tdsPct, abovePct))
+  )
   const netAmount = round2(roundedTotal - tdsAmount)
 
   // Final (bargain rate) block.
-  const finalTaxable = i.bargainRate * i.orderedQty
   const finalGst = (finalTaxable * i.gstPct) / 100
   const finalRounded = finalTaxable + finalGst + roundOff
-  const finalTds = round2(tierTds(finalTaxable, prior, threshold, i.tdsPct, abovePct))
   const finalNet = round2(finalRounded - finalTds)
 
   return {
@@ -926,6 +945,7 @@ export async function createOrder(v: Row): Promise<{ id: number }> {
     tdsThreshold: n(supplier?.tds_threshold),
     tdsPctAbove: n(v.tds_pct),
     tdsPrior: prior,
+    tdsManual: tdsManualOf(v),
     roundOff,
     lines: pricedLines
   })
@@ -988,6 +1008,7 @@ export async function createOrder(v: Row): Promise<{ id: number }> {
     ]
   })
   const id = Number(res.lastInsertRowid)
+  if (tdsManualOf(v) != null) await getClient().execute({ sql: 'UPDATE orders SET tds_manual = ? WHERE id = ?', args: [tdsManualOf(v), id] })
   // The supplier's GST No. this bill was made under, when it has several.
   if (v.party_gstin) await getClient().execute({ sql: 'UPDATE orders SET party_gstin = ? WHERE id = ?', args: [String(v.party_gstin).trim().toUpperCase(), id] })
   // The bill this row is one line of, when it is one of several. Written here
@@ -1331,10 +1352,13 @@ export async function updateOrder(id: number, v: Row): Promise<{ id: number }> {
     tdsThreshold: n(supplier?.tds_threshold),
     tdsPctAbove: n(v.tds_pct),
     tdsPrior: prior,
+    // Only a form that carries the field changes it (the phone does not).
+    tdsManual: 'tds_manual' in v ? tdsManualOf(v) : tdsManualOf(beforeRow),
     roundOff,
     lines: pricedLines
   })
   await saveOrderBargainInterest(id, v.bargain_interest)
+  if ('tds_manual' in v) await getClient().execute({ sql: 'UPDATE orders SET tds_manual = ? WHERE id = ?', args: [tdsManualOf(v), id] })
   await getClient().execute({
     sql: `UPDATE orders SET
       invoice_no = ?, order_date = ?, bargain_id = ?, supplier_id = ?, oil_type_id = ?, bargain_type = ?,
@@ -1580,6 +1604,7 @@ export async function rerateInvoicesForBargain(
         tdsThreshold: n(supplier?.tds_threshold),
         tdsPctAbove: n(o.tds_pct),
         tdsPrior: prior,
+        tdsManual: tdsManualOf(o),
         roundOff: n(o.round_off),
         lines
       })
@@ -1698,6 +1723,7 @@ export async function repriceSplitTankerInvoices(apply = false, onlyIds?: number
         tdsThreshold: n(supplier?.tds_threshold),
         tdsPctAbove: n(o.tds_pct),
         tdsPrior: prior,
+        tdsManual: tdsManualOf(o),
         roundOff,
         lines
       })
@@ -1824,6 +1850,7 @@ export async function refreshStalePurchaseTds(
     if (scope && (n(o.company_id) !== n(scope.companyId) || !inScope?.has(n(o.supplier_id)))) continue
     const supplier = await getSupplier(n(o.supplier_id))
     if (!supplier) continue
+    if (tdsManualOf(o) != null) continue
     const prior = await supplierFyTaxable(n(o.supplier_id), String(o.order_date), id, n(o.company_id) || undefined)
     const basePct = supplier.tds_above_only ? 0 : n(o.tds_pct)
     const tds = round2(tier(n(o.taxable_value), prior, n(supplier.tds_threshold), basePct, n(o.tds_pct)))

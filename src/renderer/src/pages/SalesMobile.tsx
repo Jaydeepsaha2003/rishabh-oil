@@ -105,6 +105,8 @@ type Invoice = {
   key: string
   invoiceNo: string
   hasInvoiceNo: boolean
+  // The desk's "Trading sale" label (sales.trading_mark) — a label only.
+  tradingMark: boolean
   date: string
   customer: string
   customerId: number | null
@@ -195,6 +197,7 @@ function groupInvoices(rows: Row[]): Invoice[] {
       key,
       invoiceNo: s(first.invoice_no) || '—',
       hasInvoiceNo: !!first.invoice_no,
+      tradingMark: n(first.trading_mark) === 1,
       date: s(first.sale_date),
       customer: s(first.customer) || s(first.customer_master),
       customerId: first.customer_id ? n(first.customer_id) : null,
@@ -282,9 +285,13 @@ export function SalesMobile(): React.JSX.Element {
   }
   const [ptype, setPtype] = useState('All')
   const [missingOnly, setMissingOnly] = useState(false)
+  const [tradingOnly, setTradingOnly] = useState(false)
   // The numbers skipped in each invoice series — the desktop's "Missing
   // invoice nos" check, for the period in view.
   const [gaps, setGaps] = useState<Row | null>(null)
+  const [gapsTick, setGapsTick] = useState(0)
+  // Set by Book on a missing number: the new sale opens carrying it.
+  const [bookNo, setBookNo] = useState<string | null>(null)
 
   const api = (window as unknown as { api: Record<string, any> }).api
 
@@ -300,7 +307,7 @@ export function SalesMobile(): React.JSX.Element {
     return () => {
       live = false
     }
-  }, [missingOnly, range, rows])
+  }, [missingOnly, range, rows, gapsTick])
 
   async function load(): Promise<void> {
     setLoading(true)
@@ -351,12 +358,13 @@ export function SalesMobile(): React.JSX.Element {
       // ANY line of that type, not just the first — a mixed invoice belongs
       // under every type it carries.
       if (ptype !== 'All' && !inv.categories.includes(ptype)) return false
+      if (tradingOnly && !inv.tradingMark) return false
       if (q && !(inv.invoiceNo.toLowerCase().includes(q) || inv.customer.toLowerCase().includes(q) || inv.itemsLabel.toLowerCase().includes(q))) {
         return false
       }
       return true
     })
-  }, [invoices, range, ptype, query, dispatchedOn])
+  }, [invoices, range, ptype, query, dispatchedOn, tradingOnly])
 
   const totals = useMemo(() => {
     // The unit is printed only when ONE unit is in view — then it is true of
@@ -378,6 +386,7 @@ export function SalesMobile(): React.JSX.Element {
     return (
       <DetailScreen
         inv={selected}
+        onChanged={load}
         onBack={() => {
           setScreen('list')
         }}
@@ -390,11 +399,18 @@ export function SalesMobile(): React.JSX.Element {
       <NewSaleScreen
         customers={customers}
         products={products}
-        onCancel={() => setScreen('list')}
+        invoiceNo={bookNo}
+        onCancel={() => {
+          setBookNo(null)
+          setScreen('list')
+        }}
         onSaved={async () => {
           await load()
         }}
-        onDone={() => setScreen('list')}
+        onDone={() => {
+          setBookNo(null)
+          setScreen('list')
+        }}
       />
     )
   }
@@ -416,7 +432,14 @@ export function SalesMobile(): React.JSX.Element {
       setPtype={setPtype}
       missingOnly={missingOnly}
       setMissingOnly={setMissingOnly}
+      tradingOnly={tradingOnly}
+      setTradingOnly={setTradingOnly}
       gaps={gaps}
+      onBookGap={(no) => {
+        setBookNo(no)
+        setScreen('new')
+      }}
+      onGapsChanged={() => setGapsTick((t) => t + 1)}
       dispatchedOn={dispatchedOn}
       clearDispatched={() => setDispatchedOn(null)}
       totalCount={invoices.length}
@@ -449,7 +472,11 @@ function ListScreen(props: {
   setPtype: (v: string) => void
   missingOnly: boolean
   setMissingOnly: (v: boolean) => void
+  tradingOnly: boolean
+  setTradingOnly: (v: boolean) => void
   gaps: Row | null
+  onBookGap: (invoiceNo: string) => void
+  onGapsChanged: () => void
   dispatchedOn: string | null
   clearDispatched: () => void
   totalCount: number
@@ -688,6 +715,33 @@ function ListScreen(props: {
                 <div style={{ width: 20, height: 20, borderRadius: 2, background: '#fff' }} />
               </div>
             </div>
+            <div
+              onClick={() => props.setTradingOnly(!props.tradingOnly)}
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+                marginTop: 3,
+                paddingTop: 12,
+                borderTop: '1px solid rgba(255,255,255,.1)',
+                cursor: 'pointer'
+              }}
+            >
+              <span style={{ fontSize: 13.5, fontWeight: 600 }}>Trading sales only</span>
+              <div
+                style={{
+                  width: 46,
+                  height: 26,
+                  borderRadius: 3,
+                  background: props.tradingOnly ? T.lime : 'rgba(255,255,255,.2)',
+                  padding: 3,
+                  display: 'flex',
+                  justifyContent: props.tradingOnly ? 'flex-end' : 'flex-start'
+                }}
+              >
+                <div style={{ width: 20, height: 20, borderRadius: 2, background: '#fff' }} />
+              </div>
+            </div>
           </div>
         )}
         <div style={{ height: 13 }} />
@@ -717,7 +771,7 @@ function ListScreen(props: {
           clear of the floating New sale button, which is now in the header. */}
       <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', padding: '12px 14px 20px' }}>
         {props.missingOnly ? (
-          <GapList gaps={props.gaps} />
+          <GapList gaps={props.gaps} onBook={props.onBookGap} onChanged={props.onGapsChanged} />
         ) : props.loading ? (
           <div style={{ textAlign: 'center', padding: '32px 0', color: T.inkFaint, fontSize: 13 }}>Loading…</div>
         ) : rows.length === 0 ? (
@@ -745,27 +799,74 @@ function ListScreen(props: {
   )
 }
 
-// Read-only list of the skipped numbers per series; booking or cancelling a
-// number stays on the desktop's Missing invoice nos dialog.
-function GapList({ gaps }: { gaps: Row | null }): React.JSX.Element {
+// The skipped numbers per series, one row each, with the desktop's two
+// answers: Book the bill that belongs to it, or record it as cancelled.
+function GapList({
+  gaps,
+  onBook,
+  onChanged
+}: {
+  gaps: Row | null
+  onBook: (invoiceNo: string) => void
+  onChanged: () => void
+}): React.JSX.Element {
+  const api = (window as unknown as { api: Record<string, any> }).api
+  const [voiding, setVoiding] = useState<string | null>(null)
+  const [reason, setReason] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [err, setErr] = useState<string | null>(null)
   const faint = { textAlign: 'center' as const, padding: '32px 0', color: T.inkFaint, fontSize: 13 }
   if (!gaps) return <div style={faint}>Checking…</div>
   const series = (gaps.series as Row[]) || []
   const unparsed = (gaps.unparsed as string[]) || []
   if (!series.length && !unparsed.length) return <div style={faint}>No numbered invoices in this range.</div>
+
+  async function run(fn: () => Promise<unknown>): Promise<void> {
+    setBusy(true)
+    setErr(null)
+    try {
+      await fn()
+      setVoiding(null)
+      setReason('')
+      onChanged()
+    } catch (e) {
+      setErr((e as Error).message || 'Could not save')
+    } finally {
+      setBusy(false)
+    }
+  }
+  const btn = (fill: string, rule: string, ink: string): React.CSSProperties => ({
+    height: 32,
+    padding: '0 11px',
+    display: 'inline-flex',
+    alignItems: 'center',
+    gap: 5,
+    borderRadius: 4,
+    border: `1px solid ${rule}`,
+    background: fill,
+    color: ink,
+    fontSize: 12,
+    fontWeight: 700,
+    cursor: 'pointer',
+    whiteSpace: 'nowrap'
+  })
+
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 9 }}>
+      {err && <div style={{ background: T.warnFill, color: T.warnText, borderRadius: 4, padding: '9px 11px', fontSize: 12.5, fontWeight: 600 }}>{err}</div>}
       {series.map((sr) => {
+        const prefix = String(sr.prefix)
         const missing = ((sr.missing as number[]) || []).slice().sort((a, b) => a - b)
+        const cancelled = (sr.cancelled as Row[]) || []
         const tag = sr.range_too_wide ? 'range too wide to check' : missing.length ? `${missing.length} missing` : 'none missing'
         return (
-          <div key={String(sr.prefix)} style={{ background: '#fff', border: `1px solid ${T.border}`, borderRadius: 4, overflow: 'hidden' }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '10px 12px', borderBottom: missing.length ? `1px solid ${T.border}` : 'none' }}>
+          <div key={prefix} style={{ background: '#fff', border: `1px solid ${T.border}`, borderRadius: 4, overflow: 'hidden' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '10px 12px' }}>
               <div style={{ flex: 1, minWidth: 0 }}>
-                <div style={{ ...mono, fontSize: 13.5, fontWeight: 700 }}>{String(sr.prefix)}</div>
+                <div style={{ ...mono, fontSize: 13.5, fontWeight: 700 }}>{prefix}</div>
                 <div style={{ fontSize: 11, color: T.inkFaint }}>
                   {String(sr.used)} used · {String(sr.from)}–{String(sr.to)}
-                  {Number(sr.cancelled_count) > 0 ? ` · ${sr.cancelled_count} cancelled` : ''}
+                  {cancelled.length ? ` · ${cancelled.length} cancelled` : ''}
                 </div>
               </div>
               <span
@@ -782,12 +883,74 @@ function GapList({ gaps }: { gaps: Row | null }): React.JSX.Element {
                 {tag}
               </span>
             </div>
-            {missing.length > 0 && (
-              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, padding: '10px 12px' }}>
-                {missing.map((num) => (
-                  <span key={num} style={{ ...mono, fontSize: 12, fontWeight: 700, color: '#9F1239', background: '#FFF1F3', border: '1px solid #FBCFD7', borderRadius: 3, padding: '3px 7px' }}>
-                    {String(sr.prefix)}/{num}
-                  </span>
+            {missing.map((num) => {
+              const no = `${prefix}/${num}`
+              const open = voiding === no
+              return (
+                <div key={num} style={{ borderTop: `1px solid ${T.divider}`, padding: '8px 12px' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                    <span style={{ ...mono, flex: 1, minWidth: 0, fontSize: 13, fontWeight: 700, color: '#9F1239' }}>{no}</span>
+                    <span onClick={() => onBook(no)} style={btn('#ECFDF3', '#A7E3C0', '#166534')}>
+                      + Book
+                    </span>
+                    <span
+                      onClick={() => {
+                        setVoiding(open ? null : no)
+                        setReason('')
+                      }}
+                      style={btn(open ? '#FDE9B8' : '#FFF8E9', '#F1D9A6', '#8A5300')}
+                    >
+                      Cancelled
+                    </span>
+                  </div>
+                  {open && (
+                    <div style={{ marginTop: 8, display: 'flex', flexDirection: 'column', gap: 7 }}>
+                      <input
+                        autoFocus
+                        value={reason}
+                        onChange={(e) => setReason(e.target.value)}
+                        placeholder="Reason — spoiled form, bill cancelled…"
+                        style={{ ...sans, height: 38, padding: '0 10px', fontSize: 13.5, border: `1px solid ${T.border}`, borderRadius: 4, outline: 0 }}
+                      />
+                      <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+                        <span onClick={() => setVoiding(null)} style={btn('#fff', T.border, T.inkMuted)}>
+                          Keep it
+                        </span>
+                        <span
+                          onClick={() => {
+                            if (!reason.trim() || busy) return
+                            void run(() => api.sales.cancelInvoiceNo({ prefix, number: num, reason }))
+                          }}
+                          style={{ ...btn(T.forest, T.forest, '#fff'), opacity: !reason.trim() || busy ? 0.5 : 1 }}
+                        >
+                          {busy ? 'Recording…' : 'Record as cancelled'}
+                        </span>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )
+            })}
+            {cancelled.length > 0 && (
+              <div style={{ borderTop: `1px solid ${T.divider}`, background: '#F7F9F6', padding: '8px 12px' }}>
+                <div style={{ fontSize: 10, fontWeight: 800, letterSpacing: '.08em', color: T.inkFaint, textTransform: 'uppercase', marginBottom: 4 }}>
+                  Cancelled — accounted for, not missing
+                </div>
+                {cancelled.map((cv) => (
+                  <div key={String(cv.number)} style={{ display: 'flex', alignItems: 'baseline', gap: 6, fontSize: 12, padding: '3px 0' }}>
+                    <span style={{ ...mono, fontWeight: 600 }}>
+                      {prefix}/{String(cv.number)}
+                    </span>
+                    <span style={{ flex: 1, minWidth: 0, color: T.inkFaint, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                      {String(cv.reason || 'no reason recorded')}
+                    </span>
+                    <span
+                      onClick={() => !busy && void run(() => api.sales.uncancelInvoiceNo({ prefix, number: Number(cv.number) }))}
+                      style={{ color: '#1D4ED8', fontWeight: 700, cursor: 'pointer' }}
+                    >
+                      Undo
+                    </span>
+                  </div>
                 ))}
               </div>
             )}
@@ -799,12 +962,15 @@ function GapList({ gaps }: { gaps: Row | null }): React.JSX.Element {
           <b>No number in these invoice fields:</b> {unparsed.join(' · ')}
         </div>
       )}
-      <div style={{ textAlign: 'center', fontSize: 11, color: T.inkFaint, padding: '8px 0 4px' }}>
-        To book or cancel a missing number, use Sales → Missing invoice nos on the desktop.
-      </div>
     </div>
   )
 }
+
+const TradingBadge = (): React.JSX.Element => (
+  <span style={{ fontSize: 9.5, fontWeight: 800, letterSpacing: '.06em', color: '#1B4E82', background: '#EAF2FC', border: '1px solid #B9D3F0', borderRadius: 3, padding: '1px 5px', fontFamily: 'inherit' }}>
+    TRADING
+  </span>
+)
 
 function InvoiceCard({ r, sno, onOpen }: { r: Invoice; sno: number; onOpen: () => void }): React.JSX.Element {
   return (
@@ -816,7 +982,10 @@ function InvoiceCard({ r, sno, onOpen }: { r: Invoice; sno: number; onOpen: () =
         <div style={{ minWidth: 0, display: 'flex', alignItems: 'flex-start', gap: 9 }}>
           <SerialNo n={sno} />
           <div style={{ minWidth: 0 }}>
-            <div style={{ fontSize: 13.5, fontWeight: 700, ...mono, letterSpacing: '-0.01em' }}>{r.invoiceNo}</div>
+            <div style={{ fontSize: 13.5, fontWeight: 700, ...mono, letterSpacing: '-0.01em', display: 'flex', alignItems: 'center', gap: 6 }}>
+              {r.invoiceNo}
+              {r.tradingMark && <TradingBadge />}
+            </div>
             <div style={{ fontSize: 11.5, color: T.inkMuted, marginTop: 2, ...mono }}>{fmtDate(r.date)}</div>
           </div>
         </div>
@@ -888,11 +1057,26 @@ function InvoiceCard({ r, sno, onOpen }: { r: Invoice; sno: number; onOpen: () =
 // ---------------------------------------------------------------------------
 function DetailScreen({
   inv,
-  onBack
+  onBack,
+  onChanged
 }: {
   inv: Invoice
   onBack: () => void
+  onChanged: () => Promise<void>
 }): React.JSX.Element {
+  const [marking, setMarking] = useState(false)
+  async function toggleTrading(): Promise<void> {
+    if (marking) return
+    setMarking(true)
+    try {
+      await (window as unknown as { api: Record<string, any> }).api.sales.setTradingMark(n(inv.lines[0]?.id), !inv.tradingMark)
+      await onChanged()
+    } catch (e) {
+      alert((e as Error).message || 'Could not change the mark')
+    } finally {
+      setMarking(false)
+    }
+  }
   // The ⋮ sheet is gone with its four placeholder actions (Edit sale, Print
   // invoice, Mark dispatched, Cancel invoice). None of them did anything —
   // they only closed the sheet. Print has no implementation anywhere in the
@@ -979,6 +1163,25 @@ function DetailScreen({
         <div style={{ padding: '4px 8px 0' }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
             <div style={{ fontSize: 19, fontWeight: 800, letterSpacing: '-0.02em', ...mono }}>{inv.invoiceNo}</div>
+            {/* Tap to mark / unmark this invoice as a Trading sale. */}
+            <div
+              onClick={() => void toggleTrading()}
+              title={inv.tradingMark ? 'Remove the Trading sale mark' : 'Mark as Trading sale'}
+              style={{
+                fontSize: 10,
+                fontWeight: 800,
+                letterSpacing: '.06em',
+                borderRadius: 3,
+                padding: '3px 7px',
+                cursor: 'pointer',
+                opacity: marking ? 0.5 : 1,
+                background: inv.tradingMark ? '#EAF2FC' : 'transparent',
+                color: inv.tradingMark ? '#1B4E82' : 'rgba(255,255,255,.75)',
+                border: inv.tradingMark ? '1px solid #B9D3F0' : '1px dashed rgba(255,255,255,.45)'
+              }}
+            >
+              {inv.tradingMark ? 'TRADING ✓' : '+ TRADING'}
+            </div>
             <div
               style={{
                 display: 'flex',
@@ -1135,12 +1338,16 @@ type CartLine = { productId: number; name: string; qty: number; rate: number }
 function NewSaleScreen({
   customers,
   products,
+  invoiceNo,
   onCancel,
   onSaved,
   onDone
 }: {
   customers: Row[]
   products: Row[]
+  // A missing number being booked from the gaps list; otherwise the server
+  // numbers the invoice as usual.
+  invoiceNo?: string | null
   onCancel: () => void
   onSaved: () => Promise<void>
   onDone: () => void
@@ -1189,6 +1396,7 @@ function NewSaleScreen({
       const gstPct = n(customer.gst_pct) || 0
       const res = await (window as unknown as { api: Record<string, any> }).api.sales.createInvoice({
         sale_date: invoiceDate,
+        ...(invoiceNo ? { invoice_no: invoiceNo } : {}),
         customer: s(customer.name),
         customer_id: n(customer.id),
         freight_term: 'EX',
@@ -1237,7 +1445,7 @@ function NewSaleScreen({
           <div onClick={onCancel} style={{ height: 44, padding: '0 10px', display: 'flex', alignItems: 'center', fontSize: 13.5, fontWeight: 700, color: T.greenMuted, cursor: 'pointer' }}>
             CANCEL
           </div>
-          <div style={{ fontSize: 14.5, fontWeight: 800, letterSpacing: '.01em' }}>New sale</div>
+          <div style={{ fontSize: 14.5, fontWeight: 800, letterSpacing: '.01em' }}>{invoiceNo ? `New sale · ${invoiceNo}` : 'New sale'}</div>
           <div style={{ height: 44, padding: '0 10px', display: 'flex', alignItems: 'center', fontSize: 12, fontWeight: 700, color: T.greenMuted }}>DRAFT</div>
         </div>
         <div style={{ display: 'flex', gap: 6, padding: '8px 8px 0' }}>

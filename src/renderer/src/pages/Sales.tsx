@@ -929,15 +929,19 @@ function SalesTab({
       .map((v) => ({ value: v, label: v || '(blank)', count: seen.get(v) || 0 }))
   }
 
+  // Only the invoices marked as a Trading sale (⋮ → Mark as Trading sale).
+  const [tradingOnly, setTradingOnly] = useState(false)
   const filteredInvoices = useMemo(
     () =>
-      invBaseRows.filter((inv) =>
-        INV_COLUMNS.every((c) => {
-          const sel = invCols[c.key]
-          return !sel?.length || sel.includes(c.of(inv))
-        })
+      invBaseRows.filter(
+        (inv) =>
+          (!tradingOnly || Number(inv.first.trading_mark) === 1) &&
+          INV_COLUMNS.every((c) => {
+            const sel = invCols[c.key]
+            return !sel?.length || sel.includes(c.of(inv))
+          })
       ),
-    [invBaseRows, invCols, INV_COLUMNS]
+    [invBaseRows, invCols, INV_COLUMNS, tradingOnly]
   )
 
   // Ten invoices to a page. The register runs to a hundred and more in a
@@ -954,7 +958,7 @@ function SalesTab({
   // otherwise a filter that leaves three invoices shows an empty page four.
   useEffect(() => {
     setInvPage(1)
-  }, [invBaseRows, invCols])
+  }, [invBaseRows, invCols, tradingOnly])
   // What a column is WORTH for sorting, which is not always what it FILTERS
   // on. Qty filters on the unit — a funnel of 149 distinct quantities is
   // useless — but sorting by unit is not what a click on Qty means. Money
@@ -2137,6 +2141,21 @@ function SalesTab({
             <ListChecks className="h-3.5 w-3.5" /> Missing invoice nos
           </Button>
         )}
+        {!unloadOnly && !tdsOnly && (
+          <Button
+            variant="outline"
+            size="sm"
+            className={cn(
+              'h-9 shrink-0 text-[12px]',
+              __WEB__ && 'h-9 rounded-[4px] px-3 text-[12.5px] font-bold',
+              tradingOnly && 'border-[#1B4E82] bg-[#EAF2FC] text-[#1B4E82] hover:bg-[#DCEAFB]'
+            )}
+            title="Show only the invoices marked as a Trading sale"
+            onClick={() => setTradingOnly((v) => !v)}
+          >
+            <Tag className="h-3.5 w-3.5" /> Trading sales{tradingOnly ? ' only' : ''}
+          </Button>
+        )}
         {unloadOnly && (
           <span className="ml-auto inline-flex items-center gap-1.5 rounded-md border border-sky-200 bg-sky-50 px-2.5 py-1.5 text-[11px] font-medium text-sky-900">
             <Truck className="h-3.5 w-3.5 shrink-0" />
@@ -2352,6 +2371,14 @@ function SalesTab({
                             </div>
                             <div className={cn('flex items-center gap-1.5 truncate text-xs text-muted-foreground', __WEB__ && 'text-[12.5px] text-[#7C9188]')}>
                               {inv.first.invoice_no || '—'}
+                              {Number(inv.first.trading_mark) === 1 && (
+                                <span
+                                  className="rounded-[3px] border border-[#B9D3F0] bg-[#EAF2FC] px-1 text-[10px] font-bold text-[#1B4E82]"
+                                  title="Marked as a Trading sale (⋮ → Remove Trading sale mark)"
+                                >
+                                  Trading
+                                </span>
+                              )}
                               {tdsOf(inv.first) && (
                                 <button
                                   type="button"
@@ -2363,6 +2390,7 @@ function SalesTab({
                                   className="rounded-[3px] border border-[#E3C58C] bg-[#FFF6E5] px-1 text-[10px] font-semibold text-[#9A5A06]"
                                 >
                                   TDS {formatINR(Number(tdsOf(inv.first)?.amount))}
+                                  {tdsOf(inv.first)?.edited ? ' · edited' : ''}
                                 </button>
                               )}
                               {/* A customer who deducts TDS, and none booked on this invoice yet. */}
@@ -2755,6 +2783,15 @@ function SalesTab({
                                 : []),
                               { label: 'Gate entries — what left the barrier', icon: DoorOpen, onClick: () => setGateInv(inv) },
                               { label: 'Edit invoice', icon: Pencil, onClick: () => openEditInvoice(inv) },
+                              {
+                                label: Number(inv.first.trading_mark) === 1 ? 'Remove Trading sale mark' : 'Mark as Trading sale',
+                                icon: Tag,
+                                onClick: () =>
+                                  void window.api.sales
+                                    .setTradingMark(Number(inv.first.id), Number(inv.first.trading_mark) !== 1)
+                                    .then(() => load(true))
+                                    .catch((e) => toast.error(errText(e)))
+                              },
                               {
                                 label: tdsOf(inv.first) ? 'Customer TDS — posted, view or change' : 'Customer TDS — post what they deducted',
                                 icon: Percent,

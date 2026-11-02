@@ -23,6 +23,8 @@ export interface MoneyInput {
   // Per-unit adjustment on the billed rate. `null`/absent = the legacy
   // round-up-to-the-rupee; a number = exactly that much (0 = nothing).
   rateRoundOff?: number | null
+  // Mirrors main: a TDS typed on the bill replaces the slab's figure.
+  tdsManual?: number | null
 }
 
 function tierTds(
@@ -44,6 +46,8 @@ export interface MoneyResult {
   taxableValue: number
   gstAmount: number
   tdsAmount: number
+  // What the slab works out, typed TDS or not — shown beside an edited one.
+  tdsCalc: number
   // taxable + GST, before the round off.
   totalExclTds: number
   // taxable + GST + round off — what TDS is charged on.
@@ -105,12 +109,15 @@ export function computeMoney(i: MoneyInput): MoneyResult {
   const round2 = (v: number): number => Math.round(v * 100) / 100
   // On the TAXABLE value, not the GST-inclusive total — see computeOrderMoney
   // in src/main/orders.ts, which this must agree with to the paisa.
-  const tdsAmount = round2(tierTds(taxableValue, prior, threshold, i.tdsPct, abovePct))
-  const netAmount = round2(roundedTotal - tdsAmount)
   const finalTaxableValue = i.bargainRate * i.orderedQty
+  const tdsCalc = round2(tierTds(taxableValue, prior, threshold, i.tdsPct, abovePct))
+  const finalCalc = round2(tierTds(finalTaxableValue, prior, threshold, i.tdsPct, abovePct))
+  const manual = i.tdsManual == null ? null : round2(i.tdsManual)
+  const tdsAmount = manual == null ? tdsCalc : manual
+  const finalTdsAmount = manual == null ? finalCalc : tdsCalc > 0 ? round2((finalCalc * manual) / tdsCalc) : manual
+  const netAmount = round2(roundedTotal - tdsAmount)
   const finalGstAmount = (finalTaxableValue * i.gstPct) / 100
   const finalRoundedTotal = finalTaxableValue + finalGstAmount + roundOff
-  const finalTdsAmount = round2(tierTds(finalTaxableValue, prior, threshold, i.tdsPct, abovePct))
   const finalNetAmount = round2(finalRoundedTotal - finalTdsAmount)
   return {
     interestPerUnit,
@@ -118,6 +125,7 @@ export function computeMoney(i: MoneyInput): MoneyResult {
     taxableValue,
     gstAmount,
     tdsAmount,
+    tdsCalc,
     totalExclTds,
     roundedTotal,
     netAmount,

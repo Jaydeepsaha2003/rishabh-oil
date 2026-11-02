@@ -745,6 +745,7 @@ const api = {
       ipcRenderer.invoke('sales:shortageNotesSet', { id, entryIds }),
     shortageNoteMap: (): Promise<Row[]> => ipcRenderer.invoke('sales:shortageNoteMap', {}),
     tdsPreview: (id: number): Promise<Row> => ipcRenderer.invoke('sales:tdsPreview', { id }),
+    setTradingMark: (id: number, on: boolean): Promise<{ ok: true }> => ipcRenderer.invoke('sales:setTradingMark', { id, on }),
     tdsPost: (values: { sale_id: number; amount: number; ledger: string; date?: string }): Promise<{ entry_id: number }> =>
       ipcRenderer.invoke('sales:tdsPost', { values }),
     tdsRemove: (id: number): Promise<{ ok: true }> => ipcRenderer.invoke('sales:tdsRemove', { id }),

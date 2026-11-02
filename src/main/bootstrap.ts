@@ -3382,6 +3382,9 @@ const REQUIRED_COLUMNS: { table: string; column: string; type: string }[] = [
   { table: 'customers', column: 'gst_regs', type: 'TEXT' },
   { table: 'orders', column: 'party_gstin', type: 'TEXT' },
   { table: 'sales', column: 'party_gstin', type: 'TEXT' },
+  // A label the desk puts on an invoice ("Trading sale"); nothing reads it but
+  // the lists. Not is_trading, which moves a sale out of the register.
+  { table: 'sales', column: 'trading_mark', type: 'INTEGER' },
   // The desk's own voucher type (PURCHASE OTHERS under Purchase) — a label on
   // top of the basic type, which keeps the number series (voucherSubtypes.ts).
   { table: 'journal_entries', column: 'vch_subtype', type: 'TEXT' },
@@ -3412,6 +3415,8 @@ const REQUIRED_COLUMNS: { table: string; column: string; type: string }[] = [
   { table: 'bd_repayments', column: 'comm_charges', type: 'REAL' },
   { table: 'bd_repayments', column: 'bank_charges', type: 'REAL' },
   { table: 'orders', column: 'bill_group', type: 'TEXT' },
+  // A TDS typed on the purchase in place of the slab's (NULL = worked out).
+  { table: 'orders', column: 'tds_manual', type: 'REAL' },
   // The parcel a part-withdrawal was cut from, so releasing the invoice can
   // put the two halves back together (see applyConsignmentDraw).
   { table: 'consignment_stock', column: 'split_from', type: 'INTEGER' }

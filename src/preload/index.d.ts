@@ -498,6 +498,7 @@ export interface Api {
     shortageNotesSet: (id: number, entryIds: number[]) => Promise<{ linked: number }>
     shortageNoteMap: () => Promise<Row[]>
     tdsPreview: (id: number) => Promise<Row>
+    setTradingMark: (id: number, on: boolean) => Promise<{ ok: true }>
     tdsPost: (values: { sale_id: number; amount: number; ledger: string; date?: string }) => Promise<{ entry_id: number }>
     tdsRemove: (id: number) => Promise<{ ok: true }>
     tdsMap: (companyIds?: number[]) => Promise<Row[]>

@@ -3034,6 +3034,8 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
       gst_pct: row.gst_pct,
       gst_type: row.gst_type || 'CGST_SGST',
       party_gstin: row.party_gstin || '',
+      // A TDS typed on the bill in place of the slab's; blank = worked out.
+      tds_manual: row.tds_manual ?? '',
       tds_pct: supplier?.tds_pct ?? row.tds_pct,
       tds_threshold: supplier?.tds_threshold ?? 0,
       tds_above_only: !!supplier?.tds_above_only,
@@ -4182,6 +4184,7 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
     tdsThreshold: Number(form.tds_threshold) || 0,
     tdsPctAbove: Number(form.tds_pct) || 0,
     tdsPrior: Number(form.tds_prior) || 0,
+    tdsManual: form.tds_manual != null && form.tds_manual !== '' ? Number(form.tds_manual) : null,
     lines: moneyLines,
     roundOff: Number(form.round_off) || 0
   }), [form, totalQty, moneyLines, multiProduct, billAvgRate, billGstPct, rateRoundOff])
@@ -7604,16 +7607,42 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
                     <Info className="h-3.5 w-3.5" />
                   </button>
                 </span>
-                <span
-                  className={cn('tabular-nums', __WEB__ && '!text-[12.5px] !font-bold !text-[#0A1F17]')}
-                  title={onBill ? `This line: ${formatINR(calc.tdsAmount)}` : undefined}
-                >
-                  {/* No minus on a nil TDS — "− ₹0.00" reads as something deducted. */}
-                  {Math.abs(onBill ? billMoney.tds : calc.tdsAmount) < 0.005
-                    ? formatINR(0)
-                    : `− ${formatINR(onBill ? billMoney.tds : calc.tdsAmount)}`}
-                </span>
+                {onBill ? (
+                  <span
+                    className={cn('tabular-nums', __WEB__ && '!text-[12.5px] !font-bold !text-[#0A1F17]')}
+                    title={`This line: ${formatINR(calc.tdsAmount)}`}
+                  >
+                    {/* No minus on a nil TDS — "− ₹0.00" reads as something deducted. */}
+                    {Math.abs(billMoney.tds) < 0.005 ? formatINR(0) : `− ${formatINR(billMoney.tds)}`}
+                  </span>
+                ) : (
+                  // Worked out off the slab; type to replace it (the bill is
+                  // then marked Edited), clear to go back to the slab's figure.
+                  <span className="flex items-center gap-1.5">
+                    {form.tds_manual !== '' && form.tds_manual != null && (
+                      <span
+                        className="whitespace-nowrap rounded bg-amber-100 px-1.5 py-0.5 text-[10.5px] font-bold text-amber-900"
+                        title={`Worked out: ${formatINR(calc.tdsCalc)} — clear the box to go back to it`}
+                      >
+                        Edited
+                      </span>
+                    )}
+                    <Input
+                      type="number"
+                      className={cn('h-7 w-28 text-right', __WEB__ && cn(NP_RAIL_INPUT, '!w-[96px]'))}
+                      placeholder={calc.tdsCalc.toFixed(2)}
+                      title="TDS worked out off the supplier's slab. Type to change it; clear to go back."
+                      value={form.tds_manual ?? ''}
+                      onChange={(e) => setForm((p) => ({ ...p, tds_manual: e.target.value }))}
+                    />
+                  </span>
+                )}
               </div>
+              {!onBill && form.tds_manual !== '' && form.tds_manual != null && (
+                <div className="-mt-1 pb-1 text-right text-[11px] text-muted-foreground">
+                  Worked out {formatINR(calc.tdsCalc)} · deducting {formatINR(calc.tdsAmount)}
+                </div>
+              )}
               </div>
               <div className={cn('my-2 border-t-2 border-[#1a2c56]', __WEB__ && '!hidden')} />
               {/* The answer, on the forest band — the one figure somebody
@@ -8339,13 +8368,21 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
                           className={cn('hover:bg-amber-50', __WEB__ && '!cursor-pointer !border-b-[#EAF0E9] hover:!bg-[#F7FAF6] [&>td]:!py-2 [&>td]:!text-[13px]')}
                         >
                           <TableCell>
-                            <div className={cn('flex items-center gap-1.5 font-medium', __WEB__ && '!text-[13.5px] !font-bold !tracking-[-0.01em]')}>
+                            <div className={cn('flex flex-wrap items-center gap-1.5 font-medium', __WEB__ && '!text-[13.5px] !font-bold !tracking-[-0.01em]')}>
                               {multi && (
                                 <ChevronDown
                                   className={cn('h-3.5 w-3.5 shrink-0 text-[#5A6B62] transition-transform', !open && '-rotate-90')}
                                 />
                               )}
                               {row.invoice_no}
+                              {(row.tds_manual != null || ((row.lines as Row[] | undefined) || []).some((l) => l.tds_manual != null)) && (
+                                <span
+                                  className="whitespace-nowrap rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-bold tracking-normal text-amber-900"
+                                  title="The TDS on this bill was typed in place of the supplier's slab"
+                                >
+                                  TDS edited
+                                </span>
+                              )}
                             </div>
                             <div className={cn('text-[11px] text-muted-foreground', __WEB__ && '!mt-0.5 !text-[12px] !font-semibold !tabular-nums !text-[#5A6B62]')}>{formatDate(row.order_date)}</div>
                             {row._shownForReceipt && (

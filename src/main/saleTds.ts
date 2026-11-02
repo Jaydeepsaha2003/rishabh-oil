@@ -40,7 +40,16 @@ async function ensureTable(): Promise<void> {
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     PRIMARY KEY (company_id, invoice_key)
   )`)
+  // What the slab worked out when it was posted, so a typed figure reads as
+  // Edited. NULL on journals posted before this was kept.
+  if (!workedOutCol) {
+    await getClient()
+      .execute('ALTER TABLE sale_tds_journals ADD COLUMN worked_out REAL')
+      .catch(() => undefined)
+    workedOutCol = true
+  }
 }
+let workedOutCol = false
 
 function fyStart(date: string): string {
   const y = Number(date.slice(0, 4))
@@ -131,7 +140,7 @@ export async function saleTdsPreview(saleId: number): Promise<Row> {
   const suggested = (onSale.find((l) => l.name.includes(fy)) || onSale[0] || ledgers.find((l) => l.name === 'TDS RECEIVABLE A/C'))?.name || ''
 
   const ex = await c.execute({
-    sql: `SELECT t.entry_id, t.amount, t.ledger, je.vch_no, je.entry_date
+    sql: `SELECT t.entry_id, t.amount, t.ledger, t.worked_out, je.vch_no, je.entry_date
             FROM sale_tds_journals t LEFT JOIN journal_entries je ON je.id = t.entry_id
            WHERE t.company_id = ? AND t.invoice_key = ?`,
     args: [cid, key]
@@ -152,7 +161,7 @@ export async function saleTdsPreview(saleId: number): Promise<Row> {
     amount,
     ledgers,
     suggested_ledger: suggested,
-    existing: e && e.entry_date ? { entry_id: n(e.entry_id), amount: n(e.amount), ledger: String(e.ledger), vch_no: String(e.vch_no || ''), date: String(e.entry_date) } : null
+    existing: e && e.entry_date ? { entry_id: n(e.entry_id), amount: n(e.amount), ledger: String(e.ledger), vch_no: String(e.vch_no || ''), date: String(e.entry_date), edited: isEdited(e) } : null
   }
 }
 
@@ -187,6 +196,7 @@ export async function postSaleTds(v: { sale_id: number; amount: number; ledger: 
     if (date < String(first.sale_date).slice(0, 10)) throw new Error('The TDS cannot be dated before the invoice')
     const led = await c.execute({ sql: 'SELECT acc_group FROM ledger_accounts WHERE name = ?', args: [ledger] })
     const ledgerGroup = led.rows.length ? String((led.rows[0] as unknown as Row).acc_group || '') : 'Current Assets'
+    const workedOut = n((await saleTdsPreview(v.sale_id)).amount)
     await dropExisting(cid, key)
     const invNo = String(first.invoice_no || '')
     const res = await createVoucher({
@@ -205,8 +215,8 @@ export async function postSaleTds(v: { sale_id: number; amount: number; ledger: 
       ]
     })
     await c.execute({
-      sql: 'INSERT INTO sale_tds_journals (invoice_key, company_id, entry_id, amount, ledger) VALUES (?, ?, ?, ?, ?)',
-      args: [key, cid, res.id, amount, ledger]
+      sql: 'INSERT INTO sale_tds_journals (invoice_key, company_id, entry_id, amount, ledger, worked_out) VALUES (?, ?, ?, ?, ?, ?)',
+      args: [key, cid, res.id, amount, ledger, workedOut]
     })
     return { entry_id: res.id }
   })
@@ -326,10 +336,15 @@ export async function saleTdsMap(companyIds?: number[]): Promise<Row[]> {
   await ensureTable()
   const ids = (companyIds || []).map(n).filter(Boolean)
   const res = await getClient().execute({
-    sql: `SELECT t.company_id, t.invoice_key, t.amount, t.ledger, t.entry_id, je.vch_no
+    sql: `SELECT t.company_id, t.invoice_key, t.amount, t.ledger, t.entry_id, t.worked_out, je.vch_no
             FROM sale_tds_journals t JOIN journal_entries je ON je.id = t.entry_id
            ${ids.length ? `WHERE t.company_id IN (${ids.map(() => '?').join(',')})` : ''}`,
     args: ids
   })
-  return res.rows.map((r) => ({ ...(r as unknown as Row) }))
+  return res.rows.map((r) => ({ ...(r as unknown as Row), edited: isEdited(r as unknown as Row) }))
+}
+
+// Posted at a figure other than the one the slab worked out.
+function isEdited(r: Row): boolean {
+  return r.worked_out != null && Math.abs(n(r.amount) - n(r.worked_out)) >= 0.005
 }

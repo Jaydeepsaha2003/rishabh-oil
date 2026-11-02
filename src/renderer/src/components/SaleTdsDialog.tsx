@@ -143,7 +143,18 @@ export function SaleTdsDialog({
             )}
             <div className="grid grid-cols-2 gap-3 [&>*]:min-w-0">
               <div className="grid gap-1.5">
-                <Label>TDS amount</Label>
+                <Label className="flex items-center gap-1.5">
+                  TDS amount
+                  {/* Typed over the figure worked out off the customer's slab. */}
+                  {amount !== '' && Math.abs(Number(amount) - Number(info.amount || 0)) >= 0.005 && (
+                    <span
+                      className="rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-bold text-amber-900"
+                      title={`Worked out: ${formatINR(Number(info.amount || 0))}`}
+                    >
+                      Edited · worked out {formatINR(Number(info.amount || 0))}
+                    </span>
+                  )}
+                </Label>
                 <Input inputMode="decimal" value={amount} onChange={(e) => setAmount(e.target.value)} autoFocus />
               </div>
               <div className="grid gap-1.5">

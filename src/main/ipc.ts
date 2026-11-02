@@ -412,6 +412,7 @@ import {
   setSaleStage,
   deleteSale,
   createSaleInvoice,
+  setSaleTradingMark,
   updateSaleInvoice,
   setSaleInvoiceDate,
   setInvoiceStage,
@@ -1536,6 +1537,7 @@ export function registerIpc(): void {
   handle('sales:tdsPreview', (_e, { id }: { id: number }) => saleTdsPreview(id))
   handle('sales:tdsPost', (_e, { values }: { values: { sale_id: number; amount: number; ledger: string; date?: string } }) => postSaleTds(values))
   handle('sales:tdsRemove', (_e, { id }: { id: number }) => removeSaleTds(id))
+  handle('sales:setTradingMark', (_e, { id, on }: { id: number; on: boolean }) => setSaleTradingMark(id, on))
   handle('sales:tdsMap', (_e, args?: { companyIds?: number[] }) => saleTdsMap(args?.companyIds))
 
   handle('salesBargains:list', (_e, args?: { from?: string; to?: string; companyIds?: number[]; forModule?: string }) =>

@@ -484,6 +484,20 @@ export async function listCustomerLedger(): Promise<Row[]> {
 // Rows: FOR deliveries only (an Ex sale is lifted by the customer, so there is
 // nothing for this desk to receive) that have not been unloaded yet, and no
 // cancelled or trading invoices.
+/** Mark (or unmark) every line of the sale's invoice as a Trading sale — a label only. */
+export async function setSaleTradingMark(id: number, on: boolean): Promise<{ ok: true }> {
+  const c = getClient()
+  const r = await c.execute({ sql: 'SELECT invoice_group FROM sales WHERE id = ?', args: [Number(id)] })
+  if (!r.rows.length) throw new Error('That invoice is no longer there')
+  const grp = r.rows[0].invoice_group
+  await c.execute(
+    grp
+      ? { sql: 'UPDATE sales SET trading_mark = ? WHERE invoice_group = ?', args: [on ? 1 : null, String(grp)] }
+      : { sql: 'UPDATE sales SET trading_mark = ? WHERE id = ?', args: [on ? 1 : null, Number(id)] }
+  )
+  return { ok: true as const }
+}
+
 export async function listSalesForUnloadDesk(companyIds?: number[]): Promise<Row[]> {
   const cos = (companyIds || []).map((x) => Number(x)).filter((x) => Number.isFinite(x) && x > 0)
   // The desk also maps credit notes to short deliveries (Link CN), so it sees
