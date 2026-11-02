@@ -105,8 +105,6 @@ type Invoice = {
   key: string
   invoiceNo: string
   hasInvoiceNo: boolean
-  // The desk's "Trading sale" label (sales.trading_mark) — a label only.
-  tradingMark: boolean
   date: string
   customer: string
   customerId: number | null
@@ -197,7 +195,6 @@ function groupInvoices(rows: Row[]): Invoice[] {
       key,
       invoiceNo: s(first.invoice_no) || '—',
       hasInvoiceNo: !!first.invoice_no,
-      tradingMark: n(first.trading_mark) === 1,
       date: s(first.sale_date),
       customer: s(first.customer) || s(first.customer_master),
       customerId: first.customer_id ? n(first.customer_id) : null,
@@ -285,7 +282,6 @@ export function SalesMobile(): React.JSX.Element {
   }
   const [ptype, setPtype] = useState('All')
   const [missingOnly, setMissingOnly] = useState(false)
-  const [tradingOnly, setTradingOnly] = useState(false)
   // The numbers skipped in each invoice series — the desktop's "Missing
   // invoice nos" check, for the period in view.
   const [gaps, setGaps] = useState<Row | null>(null)
@@ -358,13 +354,12 @@ export function SalesMobile(): React.JSX.Element {
       // ANY line of that type, not just the first — a mixed invoice belongs
       // under every type it carries.
       if (ptype !== 'All' && !inv.categories.includes(ptype)) return false
-      if (tradingOnly && !inv.tradingMark) return false
       if (q && !(inv.invoiceNo.toLowerCase().includes(q) || inv.customer.toLowerCase().includes(q) || inv.itemsLabel.toLowerCase().includes(q))) {
         return false
       }
       return true
     })
-  }, [invoices, range, ptype, query, dispatchedOn, tradingOnly])
+  }, [invoices, range, ptype, query, dispatchedOn])
 
   const totals = useMemo(() => {
     // The unit is printed only when ONE unit is in view — then it is true of
@@ -386,7 +381,6 @@ export function SalesMobile(): React.JSX.Element {
     return (
       <DetailScreen
         inv={selected}
-        onChanged={load}
         onBack={() => {
           setScreen('list')
         }}
@@ -432,8 +426,6 @@ export function SalesMobile(): React.JSX.Element {
       setPtype={setPtype}
       missingOnly={missingOnly}
       setMissingOnly={setMissingOnly}
-      tradingOnly={tradingOnly}
-      setTradingOnly={setTradingOnly}
       gaps={gaps}
       onBookGap={(no) => {
         setBookNo(no)
@@ -472,8 +464,6 @@ function ListScreen(props: {
   setPtype: (v: string) => void
   missingOnly: boolean
   setMissingOnly: (v: boolean) => void
-  tradingOnly: boolean
-  setTradingOnly: (v: boolean) => void
   gaps: Row | null
   onBookGap: (invoiceNo: string) => void
   onGapsChanged: () => void
@@ -715,33 +705,6 @@ function ListScreen(props: {
                 <div style={{ width: 20, height: 20, borderRadius: 2, background: '#fff' }} />
               </div>
             </div>
-            <div
-              onClick={() => props.setTradingOnly(!props.tradingOnly)}
-              style={{
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'space-between',
-                marginTop: 3,
-                paddingTop: 12,
-                borderTop: '1px solid rgba(255,255,255,.1)',
-                cursor: 'pointer'
-              }}
-            >
-              <span style={{ fontSize: 13.5, fontWeight: 600 }}>Trading sales only</span>
-              <div
-                style={{
-                  width: 46,
-                  height: 26,
-                  borderRadius: 3,
-                  background: props.tradingOnly ? T.lime : 'rgba(255,255,255,.2)',
-                  padding: 3,
-                  display: 'flex',
-                  justifyContent: props.tradingOnly ? 'flex-end' : 'flex-start'
-                }}
-              >
-                <div style={{ width: 20, height: 20, borderRadius: 2, background: '#fff' }} />
-              </div>
-            </div>
           </div>
         )}
         <div style={{ height: 13 }} />
@@ -811,7 +774,9 @@ function GapList({
   onChanged: () => void
 }): React.JSX.Element {
   const api = (window as unknown as { api: Record<string, any> }).api
+  // The number being answered, and how: cancelled, or gone on a trading sale.
   const [voiding, setVoiding] = useState<string | null>(null)
+  const [voidKind, setVoidKind] = useState<'cancel' | 'trading'>('cancel')
   const [reason, setReason] = useState('')
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState<string | null>(null)
@@ -858,6 +823,7 @@ function GapList({
         const prefix = String(sr.prefix)
         const missing = ((sr.missing as number[]) || []).slice().sort((a, b) => a - b)
         const cancelled = (sr.cancelled as Row[]) || []
+        const trading = (sr.trading as Row[]) || []
         const tag = sr.range_too_wide ? 'range too wide to check' : missing.length ? `${missing.length} missing` : 'none missing'
         return (
           <div key={prefix} style={{ background: '#fff', border: `1px solid ${T.border}`, borderRadius: 4, overflow: 'hidden' }}>
@@ -867,6 +833,7 @@ function GapList({
                 <div style={{ fontSize: 11, color: T.inkFaint }}>
                   {String(sr.used)} used · {String(sr.from)}–{String(sr.to)}
                   {cancelled.length ? ` · ${cancelled.length} cancelled` : ''}
+                  {trading.length ? ` · ${trading.length} trading` : ''}
                 </div>
               </div>
               <span
@@ -895,12 +862,23 @@ function GapList({
                     </span>
                     <span
                       onClick={() => {
-                        setVoiding(open ? null : no)
+                        setVoiding(open && voidKind === 'cancel' ? null : no)
+                        setVoidKind('cancel')
                         setReason('')
                       }}
-                      style={btn(open ? '#FDE9B8' : '#FFF8E9', '#F1D9A6', '#8A5300')}
+                      style={btn(open && voidKind === 'cancel' ? '#FDE9B8' : '#FFF8E9', '#F1D9A6', '#8A5300')}
                     >
                       Cancelled
+                    </span>
+                    <span
+                      onClick={() => {
+                        setVoiding(open && voidKind === 'trading' ? null : no)
+                        setVoidKind('trading')
+                        setReason('')
+                      }}
+                      style={btn(open && voidKind === 'trading' ? '#DCEAFB' : '#EAF2FC', '#B9D3F0', '#1B4E82')}
+                    >
+                      Trading
                     </span>
                   </div>
                   {open && (
@@ -909,7 +887,7 @@ function GapList({
                         autoFocus
                         value={reason}
                         onChange={(e) => setReason(e.target.value)}
-                        placeholder="Reason — spoiled form, bill cancelled…"
+                        placeholder={voidKind === 'trading' ? 'Note (optional) — party, amount…' : 'Reason — spoiled form, bill cancelled…'}
                         style={{ ...sans, height: 38, padding: '0 10px', fontSize: 13.5, border: `1px solid ${T.border}`, borderRadius: 4, outline: 0 }}
                       />
                       <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
@@ -918,12 +896,13 @@ function GapList({
                         </span>
                         <span
                           onClick={() => {
-                            if (!reason.trim() || busy) return
-                            void run(() => api.sales.cancelInvoiceNo({ prefix, number: num, reason }))
+                            const need = voidKind === 'cancel' && !reason.trim()
+                            if (need || busy) return
+                            void run(() => api.sales.cancelInvoiceNo({ prefix, number: num, reason, ...(voidKind === 'trading' ? { kind: 'trading' } : {}) }))
                           }}
-                          style={{ ...btn(T.forest, T.forest, '#fff'), opacity: !reason.trim() || busy ? 0.5 : 1 }}
+                          style={{ ...btn(T.forest, T.forest, '#fff'), opacity: (voidKind === 'cancel' && !reason.trim()) || busy ? 0.5 : 1 }}
                         >
-                          {busy ? 'Recording…' : 'Record as cancelled'}
+                          {busy ? 'Recording…' : voidKind === 'trading' ? 'Record as trading sale' : 'Record as cancelled'}
                         </span>
                       </div>
                     </div>
@@ -931,6 +910,29 @@ function GapList({
                 </div>
               )
             })}
+            {trading.length > 0 && (
+              <div style={{ borderTop: `1px solid ${T.divider}`, background: '#F3F7FD', padding: '8px 12px' }}>
+                <div style={{ fontSize: 10, fontWeight: 800, letterSpacing: '.08em', color: '#1B4E82', textTransform: 'uppercase', marginBottom: 4 }}>
+                  Trading sale — accounted for, not missing
+                </div>
+                {trading.map((tv) => (
+                  <div key={String(tv.number)} style={{ display: 'flex', alignItems: 'baseline', gap: 6, fontSize: 12, padding: '3px 0' }}>
+                    <span style={{ ...mono, fontWeight: 600 }}>
+                      {prefix}/{String(tv.number)}
+                    </span>
+                    <span style={{ flex: 1, minWidth: 0, color: T.inkFaint, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                      {String(tv.reason || 'Trading')}
+                    </span>
+                    <span
+                      onClick={() => !busy && void run(() => api.sales.uncancelInvoiceNo({ prefix, number: Number(tv.number) }))}
+                      style={{ color: '#1D4ED8', fontWeight: 700, cursor: 'pointer' }}
+                    >
+                      Undo
+                    </span>
+                  </div>
+                ))}
+              </div>
+            )}
             {cancelled.length > 0 && (
               <div style={{ borderTop: `1px solid ${T.divider}`, background: '#F7F9F6', padding: '8px 12px' }}>
                 <div style={{ fontSize: 10, fontWeight: 800, letterSpacing: '.08em', color: T.inkFaint, textTransform: 'uppercase', marginBottom: 4 }}>
@@ -966,12 +968,6 @@ function GapList({
   )
 }
 
-const TradingBadge = (): React.JSX.Element => (
-  <span style={{ fontSize: 9.5, fontWeight: 800, letterSpacing: '.06em', color: '#1B4E82', background: '#EAF2FC', border: '1px solid #B9D3F0', borderRadius: 3, padding: '1px 5px', fontFamily: 'inherit' }}>
-    TRADING
-  </span>
-)
-
 function InvoiceCard({ r, sno, onOpen }: { r: Invoice; sno: number; onOpen: () => void }): React.JSX.Element {
   return (
     <div
@@ -982,10 +978,7 @@ function InvoiceCard({ r, sno, onOpen }: { r: Invoice; sno: number; onOpen: () =
         <div style={{ minWidth: 0, display: 'flex', alignItems: 'flex-start', gap: 9 }}>
           <SerialNo n={sno} />
           <div style={{ minWidth: 0 }}>
-            <div style={{ fontSize: 13.5, fontWeight: 700, ...mono, letterSpacing: '-0.01em', display: 'flex', alignItems: 'center', gap: 6 }}>
-              {r.invoiceNo}
-              {r.tradingMark && <TradingBadge />}
-            </div>
+            <div style={{ fontSize: 13.5, fontWeight: 700, ...mono, letterSpacing: '-0.01em' }}>{r.invoiceNo}</div>
             <div style={{ fontSize: 11.5, color: T.inkMuted, marginTop: 2, ...mono }}>{fmtDate(r.date)}</div>
           </div>
         </div>
@@ -1057,26 +1050,11 @@ function InvoiceCard({ r, sno, onOpen }: { r: Invoice; sno: number; onOpen: () =
 // ---------------------------------------------------------------------------
 function DetailScreen({
   inv,
-  onBack,
-  onChanged
+  onBack
 }: {
   inv: Invoice
   onBack: () => void
-  onChanged: () => Promise<void>
 }): React.JSX.Element {
-  const [marking, setMarking] = useState(false)
-  async function toggleTrading(): Promise<void> {
-    if (marking) return
-    setMarking(true)
-    try {
-      await (window as unknown as { api: Record<string, any> }).api.sales.setTradingMark(n(inv.lines[0]?.id), !inv.tradingMark)
-      await onChanged()
-    } catch (e) {
-      alert((e as Error).message || 'Could not change the mark')
-    } finally {
-      setMarking(false)
-    }
-  }
   // The ⋮ sheet is gone with its four placeholder actions (Edit sale, Print
   // invoice, Mark dispatched, Cancel invoice). None of them did anything —
   // they only closed the sheet. Print has no implementation anywhere in the
@@ -1163,25 +1141,6 @@ function DetailScreen({
         <div style={{ padding: '4px 8px 0' }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
             <div style={{ fontSize: 19, fontWeight: 800, letterSpacing: '-0.02em', ...mono }}>{inv.invoiceNo}</div>
-            {/* Tap to mark / unmark this invoice as a Trading sale. */}
-            <div
-              onClick={() => void toggleTrading()}
-              title={inv.tradingMark ? 'Remove the Trading sale mark' : 'Mark as Trading sale'}
-              style={{
-                fontSize: 10,
-                fontWeight: 800,
-                letterSpacing: '.06em',
-                borderRadius: 3,
-                padding: '3px 7px',
-                cursor: 'pointer',
-                opacity: marking ? 0.5 : 1,
-                background: inv.tradingMark ? '#EAF2FC' : 'transparent',
-                color: inv.tradingMark ? '#1B4E82' : 'rgba(255,255,255,.75)',
-                border: inv.tradingMark ? '1px solid #B9D3F0' : '1px dashed rgba(255,255,255,.45)'
-              }}
-            >
-              {inv.tradingMark ? 'TRADING ✓' : '+ TRADING'}
-            </div>
             <div
               style={{
                 display: 'flex',

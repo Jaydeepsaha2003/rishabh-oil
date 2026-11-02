@@ -7540,7 +7540,7 @@ export function Accounts({
     // THE CANCELLED NUMBERS SIT IN THE SERIES. Each is dated with the invoice
     // before it, so in date order it lands between its neighbours; it carries
     // no money, so no total moves.
-    const voids: Row[] = cancelledNos.map((c) => ({ ...c, customer: 'Cancelled', product_name: '', qty: 0, amount: 0 }))
+    const voids: Row[] = cancelledNos.map((c) => ({ ...c, customer: c.trading_no ? 'Trading sale' : 'Cancelled', product_name: '', qty: 0, amount: 0 }))
     const num = (x: Row): number => Number(/(\d+)\s*$/.exec(String(x.invoice_no || ''))?.[1]) || 0
     return ([...saleInvoices, ...voids] as Row[])
       .filter((s) => {
@@ -7728,8 +7728,8 @@ export function Accounts({
     n(s.amount) + n(s.gst_amount) + n(s.round_off) - (Number(s.deduct_freight) ? n(s.transport_amount) : 0)
   const dSalCf = colFilter<Row>(colF, 'dreg:sales', salesRegRows, [
     { key: 'date', get: (s) => formatDate(s.sale_date), sort: 'num' },
-    { key: 'invoice', get: (s) => (s.cancelled_no ? `${String(s.invoice_no)} · Cancelled` : s.invoice_no) },
-    { key: 'vehicle', get: (s) => (s.cancelled_no ? 'Cancelled' : s.gate_vehicle_no || 'not gated out') },
+    { key: 'invoice', get: (s) => (s.cancelled_no ? `${String(s.invoice_no)} · ${s.trading_no ? 'Trading sale' : 'Cancelled'}` : s.invoice_no) },
+    { key: 'vehicle', get: (s) => (s.cancelled_no ? (s.trading_no ? 'Trading sale' : 'Cancelled') : s.gate_vehicle_no || 'not gated out') },
     { key: 'customer', get: (s) => s.customer },
     { key: 'product', get: (s) => s.product_name },
     { key: 'qty', get: (s) => `${n(s.qty)} ${String(s.uom || 'MT')}`, sort: 'num' },
@@ -7775,14 +7775,18 @@ export function Accounts({
                 dSalRows.map((s) => {
                   if (s.cancelled_no) {
                     return (
-                      <tr key={String(s.id)} className="border-b border-dotted border-[#DCE7DB] bg-rose-50/40 text-muted-foreground">
+                      <tr key={String(s.id)} className={cn('border-b border-dotted border-[#DCE7DB] text-muted-foreground', s.trading_no ? 'bg-[#F3F7FD]' : 'bg-rose-50/40')}>
                         <td className="whitespace-nowrap px-3 py-1.5 tabular-nums">{formatDate(s.sale_date)}</td>
-                        <td className="px-3 py-1.5 font-medium line-through">{s.invoice_no}</td>
+                        <td className={cn('px-3 py-1.5 font-medium', !s.trading_no && 'line-through')}>{s.invoice_no}</td>
                         <td className="px-3 py-1.5" colSpan={7}>
-                          <span className="mr-2 rounded-[3px] bg-rose-100 px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wide text-rose-700">Cancelled</span>
+                          {s.trading_no ? (
+                            <span className="mr-2 rounded-[3px] bg-[#EAF2FC] px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wide text-[#1B4E82]">Trading sale</span>
+                          ) : (
+                            <span className="mr-2 rounded-[3px] bg-rose-100 px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wide text-rose-700">Cancelled</span>
+                          )}
                           <span className="text-[11px]">
                             {String(s.cancel_reason || '')}
-                            {s.cancelled_on ? ` · voided ${formatDate(s.cancelled_on)}` : ''}
+                            {s.cancelled_on ? ` · ${s.trading_no ? 'marked' : 'voided'} ${formatDate(s.cancelled_on)}` : ''}
                           </span>
                         </td>
                       </tr>
@@ -7830,7 +7834,8 @@ export function Accounts({
                 <tr className="border-t-2 border-amber-500 bg-amber-100 font-semibold">
                   <td className="px-3 py-2 text-[11px] uppercase tracking-wide text-amber-900" colSpan={6}>
                     {dSalRows.filter((x) => !x.cancelled_no).length} sale{dSalRows.filter((x) => !x.cancelled_no).length === 1 ? '' : 's'}
-                    {dSalRows.some((x) => x.cancelled_no) ? ` · ${dSalRows.filter((x) => x.cancelled_no).length} cancelled` : ''}
+                    {dSalRows.some((x) => x.cancelled_no && !x.trading_no) ? ` · ${dSalRows.filter((x) => x.cancelled_no && !x.trading_no).length} cancelled` : ''}
+                    {dSalRows.some((x) => x.trading_no) ? ` · ${dSalRows.filter((x) => x.trading_no).length} trading` : ''}
                   </td>
                   <td className="px-3 py-2 text-right tabular-nums text-amber-900">{formatINR(salesTotals.net)}</td>
                   <td className="px-3 py-2 text-right tabular-nums text-amber-900">{formatINR(salesTotals.recd)}</td>

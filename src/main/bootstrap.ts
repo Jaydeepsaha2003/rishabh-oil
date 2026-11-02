@@ -765,6 +765,7 @@ export async function runStartupTasks(): Promise<void> {
       cancelled_on TEXT NOT NULL,
       created_by TEXT,
       created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      kind TEXT,
       UNIQUE(company_id, prefix, number)
     )`)
     await c.execute(
@@ -3382,9 +3383,9 @@ const REQUIRED_COLUMNS: { table: string; column: string; type: string }[] = [
   { table: 'customers', column: 'gst_regs', type: 'TEXT' },
   { table: 'orders', column: 'party_gstin', type: 'TEXT' },
   { table: 'sales', column: 'party_gstin', type: 'TEXT' },
-  // A label the desk puts on an invoice ("Trading sale"); nothing reads it but
-  // the lists. Not is_trading, which moves a sale out of the register.
-  { table: 'sales', column: 'trading_mark', type: 'INTEGER' },
+  // A missing invoice number accounted for: NULL = cancelled, 'trading' = it
+  // went on a trading sale.
+  { table: 'cancelled_invoice_nos', column: 'kind', type: 'TEXT' },
   // The desk's own voucher type (PURCHASE OTHERS under Purchase) — a label on
   // top of the basic type, which keeps the number series (voucherSubtypes.ts).
   { table: 'journal_entries', column: 'vch_subtype', type: 'TEXT' },

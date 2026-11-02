@@ -447,7 +447,8 @@ function SalesTab({
   // Void the number instead. A spoiled form or a cancelled bill is a complete
   // answer to a gap, and recording it is what stops the report growing a tail of
   // questions nobody can close.
-  const [voidTarget, setVoidTarget] = useState<{ prefix: string; number: number } | null>(null)
+  // kind 'trading': the number went on a trading sale (a note is optional).
+  const [voidTarget, setVoidTarget] = useState<{ prefix: string; number: number; kind?: 'trading' } | null>(null)
   const [voidReason, setVoidReason] = useState('')
   const [voidBusy, setVoidBusy] = useState(false)
 
@@ -456,7 +457,7 @@ function SalesTab({
     setVoidBusy(true)
     try {
       await window.api.sales.cancelInvoiceNo({ ...voidTarget, reason: voidReason })
-      toast.success(`${voidTarget.prefix}/${voidTarget.number} recorded as cancelled`)
+      toast.success(`${voidTarget.prefix}/${voidTarget.number} recorded as ${voidTarget.kind === 'trading' ? 'a trading sale' : 'cancelled'}`)
       setVoidTarget(null)
       setVoidReason('')
       await loadGaps()
@@ -929,19 +930,15 @@ function SalesTab({
       .map((v) => ({ value: v, label: v || '(blank)', count: seen.get(v) || 0 }))
   }
 
-  // Only the invoices marked as a Trading sale (⋮ → Mark as Trading sale).
-  const [tradingOnly, setTradingOnly] = useState(false)
   const filteredInvoices = useMemo(
     () =>
-      invBaseRows.filter(
-        (inv) =>
-          (!tradingOnly || Number(inv.first.trading_mark) === 1) &&
-          INV_COLUMNS.every((c) => {
-            const sel = invCols[c.key]
-            return !sel?.length || sel.includes(c.of(inv))
-          })
+      invBaseRows.filter((inv) =>
+        INV_COLUMNS.every((c) => {
+          const sel = invCols[c.key]
+          return !sel?.length || sel.includes(c.of(inv))
+        })
       ),
-    [invBaseRows, invCols, INV_COLUMNS, tradingOnly]
+    [invBaseRows, invCols, INV_COLUMNS]
   )
 
   // Ten invoices to a page. The register runs to a hundred and more in a
@@ -958,7 +955,7 @@ function SalesTab({
   // otherwise a filter that leaves three invoices shows an empty page four.
   useEffect(() => {
     setInvPage(1)
-  }, [invBaseRows, invCols, tradingOnly])
+  }, [invBaseRows, invCols])
   // What a column is WORTH for sorting, which is not always what it FILTERS
   // on. Qty filters on the unit — a funnel of 149 distinct quantities is
   // useless — but sorting by unit is not what a click on Qty means. Money
@@ -2141,21 +2138,6 @@ function SalesTab({
             <ListChecks className="h-3.5 w-3.5" /> Missing invoice nos
           </Button>
         )}
-        {!unloadOnly && !tdsOnly && (
-          <Button
-            variant="outline"
-            size="sm"
-            className={cn(
-              'h-9 shrink-0 text-[12px]',
-              __WEB__ && 'h-9 rounded-[4px] px-3 text-[12.5px] font-bold',
-              tradingOnly && 'border-[#1B4E82] bg-[#EAF2FC] text-[#1B4E82] hover:bg-[#DCEAFB]'
-            )}
-            title="Show only the invoices marked as a Trading sale"
-            onClick={() => setTradingOnly((v) => !v)}
-          >
-            <Tag className="h-3.5 w-3.5" /> Trading sales{tradingOnly ? ' only' : ''}
-          </Button>
-        )}
         {unloadOnly && (
           <span className="ml-auto inline-flex items-center gap-1.5 rounded-md border border-sky-200 bg-sky-50 px-2.5 py-1.5 text-[11px] font-medium text-sky-900">
             <Truck className="h-3.5 w-3.5 shrink-0" />
@@ -2371,14 +2353,6 @@ function SalesTab({
                             </div>
                             <div className={cn('flex items-center gap-1.5 truncate text-xs text-muted-foreground', __WEB__ && 'text-[12.5px] text-[#7C9188]')}>
                               {inv.first.invoice_no || '—'}
-                              {Number(inv.first.trading_mark) === 1 && (
-                                <span
-                                  className="rounded-[3px] border border-[#B9D3F0] bg-[#EAF2FC] px-1 text-[10px] font-bold text-[#1B4E82]"
-                                  title="Marked as a Trading sale (⋮ → Remove Trading sale mark)"
-                                >
-                                  Trading
-                                </span>
-                              )}
                               {tdsOf(inv.first) && (
                                 <button
                                   type="button"
@@ -2783,15 +2757,6 @@ function SalesTab({
                                 : []),
                               { label: 'Gate entries — what left the barrier', icon: DoorOpen, onClick: () => setGateInv(inv) },
                               { label: 'Edit invoice', icon: Pencil, onClick: () => openEditInvoice(inv) },
-                              {
-                                label: Number(inv.first.trading_mark) === 1 ? 'Remove Trading sale mark' : 'Mark as Trading sale',
-                                icon: Tag,
-                                onClick: () =>
-                                  void window.api.sales
-                                    .setTradingMark(Number(inv.first.id), Number(inv.first.trading_mark) !== 1)
-                                    .then(() => load(true))
-                                    .catch((e) => toast.error(errText(e)))
-                              },
                               {
                                 label: tdsOf(inv.first) ? 'Customer TDS — posted, view or change' : 'Customer TDS — post what they deducted',
                                 icon: Percent,
@@ -4418,6 +4383,11 @@ function SalesTab({
                           {String(sr.voucher_only_count)} voucher only
                         </span>
                       )}
+                      {Number(sr.trading_count) > 0 && (
+                        <span className="rounded bg-[#EAF2FC] px-2 py-0.5 text-[11.5px] font-semibold tabular-nums text-[#1B4E82]">
+                          {String(sr.trading_count)} trading
+                        </span>
+                      )}
                       {Number(sr.cancelled_count) > 0 && (
                         <span className="rounded px-2 py-0.5 text-[11.5px] font-semibold tabular-nums text-amber-900 bg-amber-100">
                           {String(sr.cancelled_count)} cancelled
@@ -4465,7 +4435,7 @@ function SalesTab({
                           <tr>
                             <th className="w-10 px-3 py-2 text-right font-semibold">Sl.</th>
                             <th className="px-3 py-2 text-left font-semibold">Invoice no</th>
-                            <th className="w-[230px] px-3 py-2 text-right font-semibold">Action</th>
+                            <th className="w-[310px] px-3 py-2 text-right font-semibold">Action</th>
                           </tr>
                         </thead>
                         <tbody>
@@ -4506,6 +4476,18 @@ function SalesTab({
                                       <Ban className="h-3.5 w-3.5 shrink-0" />
                                       Cancelled
                                     </button>
+                                    <button
+                                      type="button"
+                                      className="inline-flex h-7 items-center gap-1.5 whitespace-nowrap rounded-md border border-[#B9D3F0] bg-[#EAF2FC] px-2.5 text-[11px] font-semibold text-[#1B4E82] transition-colors hover:bg-[#DCEAFB]"
+                                      title={`Record ${sr.prefix}/${num} as used on a trading sale, so it stops reading as missing`}
+                                      onClick={() => {
+                                        setVoidTarget({ prefix: String(sr.prefix), number: num, kind: 'trading' })
+                                        setVoidReason('')
+                                      }}
+                                    >
+                                      <Tag className="h-3.5 w-3.5 shrink-0" />
+                                      Trading
+                                    </button>
                                   </div>
                                 </td>
                               </tr>
@@ -4537,6 +4519,33 @@ function SalesTab({
                               {vv.code ? String(vv.code) : 'voucher'}
                               {vv.from_tally ? ' · from Tally' : ''}
                             </span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {((sr.trading as Row[]) || []).length > 0 && (
+                    <div className="border-t bg-[#F3F7FD] px-3 py-2">
+                      <div className="mb-1 text-[10px] font-bold uppercase tracking-widest text-[#1B4E82]/80">
+                        Trading sale — accounted for, not missing
+                      </div>
+                      <div className="space-y-1">
+                        {((sr.trading as Row[]) || []).map((tv) => (
+                          <div key={String(tv.number)} className="flex flex-wrap items-baseline gap-x-2 text-[11.5px]">
+                            <span className="doc-ref font-semibold tabular-nums">
+                              {String(sr.prefix)}/{String(tv.number)}
+                            </span>
+                            <span className="rounded bg-[#EAF2FC] px-1.5 text-[10.5px] font-bold text-[#1B4E82]">Trading</span>
+                            {tv.reason ? <span className="text-muted-foreground">{String(tv.reason)}</span> : null}
+                            {tv.cancelled_on && <span className="text-muted-foreground/70">· {formatDate(String(tv.cancelled_on))}</span>}
+                            <button
+                              type="button"
+                              className="text-[11px] font-medium text-sky-700 hover:underline"
+                              onClick={() => void undoVoid(String(sr.prefix), Number(tv.number))}
+                            >
+                              Undo
+                            </button>
                           </div>
                         ))}
                       </div>
@@ -4617,23 +4626,30 @@ function SalesTab({
         <DialogContent className="sm:max-w-md">
           <DialogHeader>
             <DialogTitle>
-              Cancel {voidTarget ? `${voidTarget.prefix}/${voidTarget.number}` : 'invoice number'}
+              {voidTarget?.kind === 'trading' ? 'Trading sale' : 'Cancel'} {voidTarget ? `${voidTarget.prefix}/${voidTarget.number}` : 'invoice number'}
             </DialogTitle>
           </DialogHeader>
+          {voidTarget?.kind === 'trading' ? (
+            <p className="text-[12px] leading-relaxed text-muted-foreground">
+              This records the number as used on a trading sale. It stops reading as missing and is listed under
+              Trading sale. Nothing is posted. A note (party, amount) is optional.
+            </p>
+          ) : (
           <p className="text-[12px] leading-relaxed text-muted-foreground">
             This records the number as deliberately voided — a spoiled form, a bill cancelled before
             it went out. It stops reading as missing and starts reading as accounted for. Nothing is
             posted: no stock moves and no ledger entry is made, because no invoice ever existed.
           </p>
+          )}
           <div className="flex flex-col gap-1.5">
-            <Label className="text-[10px] uppercase tracking-wide text-muted-foreground">Reason</Label>
+            <Label className="text-[10px] uppercase tracking-wide text-muted-foreground">{voidTarget?.kind === 'trading' ? 'Note (optional)' : 'Reason'}</Label>
             <Input
               autoFocus
-              placeholder="e.g. spoiled in the printer"
+              placeholder={voidTarget?.kind === 'trading' ? 'e.g. party, amount' : 'e.g. spoiled in the printer'}
               value={voidReason}
               onChange={(e) => setVoidReason(e.target.value)}
               onKeyDown={(e) => {
-                if (e.key === 'Enter' && voidReason.trim()) void confirmVoid()
+                if (e.key === 'Enter' && (voidReason.trim() || voidTarget?.kind === 'trading')) void confirmVoid()
               }}
             />
           </div>
@@ -4641,8 +4657,8 @@ function SalesTab({
             <Button variant="outline" onClick={() => setVoidTarget(null)} disabled={voidBusy}>
               Keep it
             </Button>
-            <Button onClick={confirmVoid} disabled={voidBusy || !voidReason.trim()}>
-              {voidBusy ? 'Recording…' : 'Record as cancelled'}
+            <Button onClick={confirmVoid} disabled={voidBusy || (!voidReason.trim() && voidTarget?.kind !== 'trading')}>
+              {voidBusy ? 'Recording…' : voidTarget?.kind === 'trading' ? 'Record as trading sale' : 'Record as cancelled'}
             </Button>
           </DialogFooter>
         </DialogContent>

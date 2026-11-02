@@ -484,20 +484,6 @@ export async function listCustomerLedger(): Promise<Row[]> {
 // Rows: FOR deliveries only (an Ex sale is lifted by the customer, so there is
 // nothing for this desk to receive) that have not been unloaded yet, and no
 // cancelled or trading invoices.
-/** Mark (or unmark) every line of the sale's invoice as a Trading sale — a label only. */
-export async function setSaleTradingMark(id: number, on: boolean): Promise<{ ok: true }> {
-  const c = getClient()
-  const r = await c.execute({ sql: 'SELECT invoice_group FROM sales WHERE id = ?', args: [Number(id)] })
-  if (!r.rows.length) throw new Error('That invoice is no longer there')
-  const grp = r.rows[0].invoice_group
-  await c.execute(
-    grp
-      ? { sql: 'UPDATE sales SET trading_mark = ? WHERE invoice_group = ?', args: [on ? 1 : null, String(grp)] }
-      : { sql: 'UPDATE sales SET trading_mark = ? WHERE id = ?', args: [on ? 1 : null, Number(id)] }
-  )
-  return { ok: true as const }
-}
-
 export async function listSalesForUnloadDesk(companyIds?: number[]): Promise<Row[]> {
   const cos = (companyIds || []).map((x) => Number(x)).filter((x) => Number.isFinite(x) && x > 0)
   // The desk also maps credit notes to short deliveries (Link CN), so it sees
@@ -784,7 +770,7 @@ export async function salesInvoiceGaps(
   // "24 missing" and "18 missing, 6 cancelled" are different answers and only
   // the second one can be signed off.
   const voidRes = await getClient().execute({
-    sql: `SELECT prefix, number, reason, cancelled_on FROM cancelled_invoice_nos
+    sql: `SELECT prefix, number, reason, cancelled_on, kind FROM cancelled_invoice_nos
            WHERE company_id = ? ORDER BY prefix, number`,
     args: [cid]
   })
@@ -894,6 +880,8 @@ export async function salesInvoiceGaps(
     }
     const missing = []
     const cancelled: Row[] = []
+    // Missing numbers the desk marked as gone on a trading sale.
+    const trading: Row[] = []
     const voucherOnly: Row[] = []
     // A real invoice book is contiguous — a few hundred numbers, not millions.
     // The random-invoice placeholder (a bare 7-digit number, see
@@ -924,7 +912,7 @@ export async function salesInvoiceGaps(
         }
         const v = voidHere.get(i)
         if (v) {
-          cancelled.push({ number: i, reason: v.reason ?? null, cancelled_on: v.cancelled_on ?? null })
+          ;(v.kind === 'trading' ? trading : cancelled).push({ number: i, reason: v.reason ?? null, cancelled_on: v.cancelled_on ?? null })
           continue
         }
         missing.push(i)
@@ -936,6 +924,8 @@ export async function salesInvoiceGaps(
       used: keys.length,
       cancelled,
       cancelled_count: cancelled.length,
+      trading,
+      trading_count: trading.length,
       voucher_only: voucherOnly,
       voucher_only_count: voucherOnly.length,
       from: lo,
@@ -3100,8 +3090,10 @@ export async function cancelInvoiceNo(v: Row): Promise<{ prefix: string; number:
   const prefix = String(v?.prefix || '').trim()
   const num = n(v?.number)
   const reason = String(v?.reason || '').trim()
+  // 'trading': the number went on a trading sale — accounted for, a note optional.
+  const kind = v?.kind === 'trading' ? 'trading' : null
   if (!prefix || !num) throw new Error('Pick the invoice number to cancel')
-  if (!reason) {
+  if (!reason && !kind) {
     throw new Error('Say why it was cancelled — a voided number with no reason cannot be checked later')
   }
   const c = getClient()
@@ -3123,11 +3115,11 @@ export async function cancelInvoiceNo(v: Row): Promise<{ prefix: string; number:
   }
 
   await c.execute({
-    sql: `INSERT INTO cancelled_invoice_nos (company_id, prefix, number, reason, cancelled_on, created_by)
-          VALUES (?, ?, ?, ?, ?, ?)
+    sql: `INSERT INTO cancelled_invoice_nos (company_id, prefix, number, reason, cancelled_on, created_by, kind)
+          VALUES (?, ?, ?, ?, ?, ?, ?)
           ON CONFLICT(company_id, prefix, number) DO UPDATE SET
-            reason = excluded.reason, cancelled_on = excluded.cancelled_on, created_by = excluded.created_by`,
-    args: [cid, prefix, num, reason, todayISO(), getCurrentUser().username || null]
+            reason = excluded.reason, cancelled_on = excluded.cancelled_on, created_by = excluded.created_by, kind = excluded.kind`,
+    args: [cid, prefix, num, reason || null, todayISO(), getCurrentUser().username || null, kind]
   })
   return { prefix, number: num }
 }
@@ -3142,7 +3134,7 @@ export async function listCancelledInvoiceNos(companyId?: number): Promise<Row[]
   const c = getClient()
   const voids = toPlain(
     await c.execute({
-      sql: 'SELECT id, prefix, number, reason, cancelled_on, created_by FROM cancelled_invoice_nos WHERE company_id = ? ORDER BY prefix, number',
+      sql: 'SELECT id, prefix, number, reason, cancelled_on, created_by, kind FROM cancelled_invoice_nos WHERE company_id = ? ORDER BY prefix, number',
       args: [cid]
     })
   )
@@ -3178,6 +3170,7 @@ export async function listCancelledInvoiceNos(companyId?: number): Promise<Row[]
       cancelled_on: v.cancelled_on,
       cancel_reason: v.reason,
       cancelled_by: v.created_by,
+      trading_no: v.kind === 'trading' ? 1 : 0,
       company_id: cid
     }
   })
