@@ -1988,6 +1988,17 @@ async function stampReturnSupplier(id: number, v: Row): Promise<void> {
                  customer = COALESCE(?, customer) WHERE id = ?`,
     args: [sid, sid, name, id]
   })
+  // The bargain it goes back against — only with a supplier, and only one of
+  // that supplier's.
+  if ('return_bargain_id' in v || !sid) {
+    let bid = sid ? n(v.return_bargain_id) || null : null
+    if (bid) {
+      const b = await getClient().execute({ sql: 'SELECT supplier_id FROM bargains WHERE id = ?', args: [bid] })
+      if (!b.rows.length) throw new Error('That purchase bargain no longer exists')
+      if (n((b.rows[0] as unknown as Row).supplier_id) !== sid) bid = null
+    }
+    await getClient().execute({ sql: 'UPDATE sales SET return_bargain_id = ? WHERE id = ?', args: [bid, id] })
+  }
 }
 
 export async function createSale(v: Row): Promise<{ id: number }> {
@@ -2519,7 +2530,8 @@ function mergeInvoiceItem(header: Row, item: Row, group: string): Row {
     purchase_invoice_no: item.purchase_invoice_no || header.purchase_invoice_no,
     // A purchase return's supplier — only when the header says, so a save that
     // does not carry it leaves the stored one (stampReturnSupplier).
-    ...('return_supplier_id' in header ? { return_supplier_id: header.return_supplier_id } : {})
+    ...('return_supplier_id' in header ? { return_supplier_id: header.return_supplier_id } : {}),
+    ...('return_bargain_id' in header ? { return_bargain_id: header.return_bargain_id } : {})
   }
 }
 

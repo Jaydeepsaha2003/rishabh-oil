@@ -63,24 +63,34 @@ export async function listBargains(
   // rows are never fetched; `forModule` lets a page that only borrows this
   // register (Accounts, Treasury) keep its own window instead of this one.
   const vis = await visibleFromFor('bargains', forModule)
+  // PURCHASE RETURNS against the bargain (sales.return_bargain_id): what went
+  // back comes off what was taken, so the balance opens again.
+  const rsCo = cos.length ? ` AND s9.company_id IN (${cos.join(',')})` : ''
+  const ret = (when = ''): string =>
+    `COALESCE((SELECT SUM(s9.qty) FROM sales s9 WHERE s9.return_bargain_id = b.id AND s9.rejected_at IS NULL${when}${rsCo}), 0)`
   const res = await getClient().execute({
     sql: `
     SELECT b.*, s.name AS supplier_name, s.supplier_type AS supplier_type,
            br.name AS broker_name,
            o.code AS oil_code, o.name AS oil_name,
+           ${ret()} AS returned_qty,
            COALESCE((SELECT SUM(loaded_qty - COALESCE(extra_qty, 0)) FROM purchase_tankers WHERE bargain_id = b.id${ptCo}), 0)
              + COALESCE((SELECT SUM(extra_qty) FROM purchase_tankers WHERE extra_bargain_id = b.id${ptCo}), 0)
-             + COALESCE((SELECT SUM(ob.qty) FROM order_bargains ob JOIN orders o2 ON o2.id = ob.order_id WHERE ob.bargain_id = b.id${obCo}), 0) AS loaded_qty,
+             + COALESCE((SELECT SUM(ob.qty) FROM order_bargains ob JOIN orders o2 ON o2.id = ob.order_id WHERE ob.bargain_id = b.id${obCo}), 0)
+             - ${ret()} AS loaded_qty,
            b.qty
              - COALESCE((SELECT SUM(loaded_qty - COALESCE(extra_qty, 0)) FROM purchase_tankers WHERE bargain_id = b.id${ptCo}), 0)
              - COALESCE((SELECT SUM(extra_qty) FROM purchase_tankers WHERE extra_bargain_id = b.id${ptCo}), 0)
-             - COALESCE((SELECT SUM(ob.qty) FROM order_bargains ob JOIN orders o2 ON o2.id = ob.order_id WHERE ob.bargain_id = b.id${obCo}), 0) AS balance_qty,
+             - COALESCE((SELECT SUM(ob.qty) FROM order_bargains ob JOIN orders o2 ON o2.id = ob.order_id WHERE ob.bargain_id = b.id${obCo}), 0)
+             + ${ret()} AS balance_qty,
            COALESCE((SELECT SUM(loaded_qty - COALESCE(extra_qty, 0)) FROM purchase_tankers WHERE bargain_id = b.id AND substr(loaded_date, 1, 10) < ?${ptCo}), 0)
              + COALESCE((SELECT SUM(extra_qty) FROM purchase_tankers WHERE extra_bargain_id = b.id AND substr(loaded_date, 1, 10) < ?${ptCo}), 0)
-             + COALESCE((SELECT SUM(ob.qty) FROM order_bargains ob JOIN orders o2 ON o2.id = ob.order_id WHERE ob.bargain_id = b.id AND substr(o2.order_date, 1, 10) < ?${obCo}), 0) AS disp_before,
+             + COALESCE((SELECT SUM(ob.qty) FROM order_bargains ob JOIN orders o2 ON o2.id = ob.order_id WHERE ob.bargain_id = b.id AND substr(o2.order_date, 1, 10) < ?${obCo}), 0)
+             - ${ret(` AND substr(s9.sale_date, 1, 10) < '${f.replace(/'/g, '')}'`)} AS disp_before,
            COALESCE((SELECT SUM(loaded_qty - COALESCE(extra_qty, 0)) FROM purchase_tankers WHERE bargain_id = b.id AND substr(loaded_date, 1, 10) >= ? AND substr(loaded_date, 1, 10) <= ?${ptCo}), 0)
              + COALESCE((SELECT SUM(extra_qty) FROM purchase_tankers WHERE extra_bargain_id = b.id AND substr(loaded_date, 1, 10) >= ? AND substr(loaded_date, 1, 10) <= ?${ptCo}), 0)
-             + COALESCE((SELECT SUM(ob.qty) FROM order_bargains ob JOIN orders o2 ON o2.id = ob.order_id WHERE ob.bargain_id = b.id AND substr(o2.order_date, 1, 10) >= ? AND substr(o2.order_date, 1, 10) <= ?${obCo}), 0) AS disp_period,
+             + COALESCE((SELECT SUM(ob.qty) FROM order_bargains ob JOIN orders o2 ON o2.id = ob.order_id WHERE ob.bargain_id = b.id AND substr(o2.order_date, 1, 10) >= ? AND substr(o2.order_date, 1, 10) <= ?${obCo}), 0)
+             - ${ret(` AND substr(s9.sale_date, 1, 10) >= '${f.replace(/'/g, '')}' AND substr(s9.sale_date, 1, 10) <= '${t.replace(/'/g, '')}'`)} AS disp_period,
            (SELECT MAX(d) FROM (
               SELECT MAX(substr(loaded_date, 1, 10)) AS d FROM purchase_tankers WHERE bargain_id = b.id${ptCo}
               UNION ALL SELECT MAX(substr(loaded_date, 1, 10)) FROM purchase_tankers WHERE extra_bargain_id = b.id${ptCo}
@@ -165,8 +175,9 @@ async function bargainConsumed(id: number): Promise<number> {
             COALESCE((SELECT SUM(loaded_qty - COALESCE(extra_qty, 0)) FROM purchase_tankers WHERE bargain_id = ?), 0)
             + COALESCE((SELECT SUM(extra_qty) FROM purchase_tankers WHERE extra_bargain_id = ?), 0)
             + COALESCE((SELECT SUM(ob.qty) FROM order_bargains ob WHERE ob.bargain_id = ?), 0)
+            - COALESCE((SELECT SUM(qty) FROM sales WHERE return_bargain_id = ? AND rejected_at IS NULL), 0)
           AS consumed`,
-    args: [id, id, id]
+    args: [id, id, id, id]
   })
   return Number(r.rows[0]?.consumed) || 0
 }

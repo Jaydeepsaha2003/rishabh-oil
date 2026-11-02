@@ -375,6 +375,8 @@ function SalesTab({
   const [customers, setCustomers] = useState<Row[]>([])
   // Suppliers a sale can be billed back to as a purchase return.
   const [returnSuppliers, setReturnSuppliers] = useState<Row[]>([])
+  // Purchase bargains, for a purchase return's "Against purchase bargain".
+  const [returnBargains, setReturnBargains] = useState<Row[]>([])
   const [packagings, setPackagings] = useState<Row[]>([])
   const [transporters, setTransporters] = useState<Row[]>([])
   const [stock, setStock] = useState<Record<number, Row>>({})
@@ -592,6 +594,10 @@ function SalesTab({
       .list('suppliers')
       .then((x) => setReturnSuppliers(x.filter((r) => r.active)))
       .catch(() => setReturnSuppliers([]))
+    window.api.bargains
+      .list(undefined, undefined, undefined, 'sales')
+      .then((x) => setReturnBargains(x))
+      .catch(() => setReturnBargains([]))
     setRows(s)
     setDefaultShortagePct(String(cfg.allowed_shortage_pct ?? '0.2'))
     // Finished is what a mill sells. `use_both` adds back a product traded
@@ -993,6 +999,7 @@ function SalesTab({
       customer_id: '',
       is_return: false,
       return_supplier_id: '',
+      return_bargain_id: '',
       freight_term: 'FREIGHT_ON_GOODS',
       transporter_id: '',
       transport_rate: '',
@@ -1031,6 +1038,7 @@ function SalesTab({
       customer_id: f.customer_id ? String(f.customer_id) : '',
       is_return: !!f.return_supplier_id,
       return_supplier_id: f.return_supplier_id ? String(f.return_supplier_id) : '',
+      return_bargain_id: f.return_bargain_id ? String(f.return_bargain_id) : '',
       party_gstin: f.party_gstin ?? '',
       freight_term: f.freight_term ?? 'FREIGHT_ON_GOODS',
       transporter_id: f.transporter_id ? String(f.transporter_id) : '',
@@ -1732,6 +1740,7 @@ function SalesTab({
       customer_id: header.customer_id && !header.is_return ? Number(header.customer_id) : null,
       // PURCHASE RETURN: billed to a supplier; its ledger is debited (sales.ts).
       return_supplier_id: header.is_return ? Number(header.return_supplier_id) || null : null,
+      return_bargain_id: header.is_return ? Number(header.return_bargain_id) || null : null,
       transporter_id: header.transporter_id ? Number(header.transporter_id) : null,
       round_off: Number(header.round_off) || 0,
       round_off_manual: header.round_off_manual ? 1 : 0,
@@ -3204,7 +3213,7 @@ function SalesTab({
               <Select
                 value={header.is_return ? 'return' : 'sale'}
                 onValueChange={(v) =>
-                  setHeader((p) => ({ ...p, is_return: v === 'return', customer_id: '', customer: '', return_supplier_id: '', party_gstin: '' }))
+                  setHeader((p) => ({ ...p, is_return: v === 'return', customer_id: '', customer: '', return_supplier_id: '', return_bargain_id: '', party_gstin: '' }))
                 }
               >
                 <SelectTrigger><SelectValue /></SelectTrigger>
@@ -3221,7 +3230,7 @@ function SalesTab({
                   value={header.return_supplier_id ? String(header.return_supplier_id) : ''}
                   onValueChange={(v) => {
                     const sup = returnSuppliers.find((x) => String(x.id) === v)
-                    setHeader((p) => ({ ...p, return_supplier_id: v, customer: sup?.name ?? '' }))
+                    setHeader((p) => ({ ...p, return_supplier_id: v, return_bargain_id: '', customer: sup?.name ?? '' }))
                   }}
                 >
                   <SelectTrigger><SelectValue placeholder="Select supplier" /></SelectTrigger>
@@ -3234,7 +3243,31 @@ function SalesTab({
                   </SelectContent>
                 </Select>
               </div>
-            ) : (
+            ) : null}
+            {/* The purchase bargain it goes back against: the returned qty
+                comes off what the bargain took, so its balance opens again. */}
+            {header.is_return && header.return_supplier_id ? (
+              <div className="flex flex-col gap-1.5">
+                <Label>Against purchase bargain</Label>
+                <Select
+                  value={header.return_bargain_id ? String(header.return_bargain_id) : 'none'}
+                  onValueChange={(v) => setHeader((p) => ({ ...p, return_bargain_id: v === 'none' ? '' : v }))}
+                >
+                  <SelectTrigger><SelectValue placeholder="None" /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="none">None — bargain not affected</SelectItem>
+                    {returnBargains
+                      .filter((b) => String(b.supplier_id) === String(header.return_supplier_id))
+                      .map((b) => (
+                        <SelectItem key={b.id} value={String(b.id)}>
+                          {String(b.bargain_no)} · {formatNum(Number(b.qty) || 0)} {String(b.uom || 'MT')} · bal {formatNum(Number(b.balance_qty) || 0)}
+                        </SelectItem>
+                      ))}
+                  </SelectContent>
+                </Select>
+              </div>
+            ) : null}
+            {header.is_return ? null : (
             <div className="flex flex-col gap-1.5">
               <Label>Customer</Label>
               <Select value={header.customer_id ? String(header.customer_id) : ''} onValueChange={chooseCustomer}>

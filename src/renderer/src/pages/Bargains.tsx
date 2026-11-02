@@ -3727,7 +3727,13 @@ export function Bargains({
                             </span>
                           </TableCell>
                           <TableCell className={cn('text-right tabular-nums', __WEB__ && '!text-[12.5px] !font-bold')}>{formatINR(row.rate_per_uom)}</TableCell>
-                          <TableCell className={cn('text-right tabular-nums', Number(row._dispatch) && 'font-bold text-red-600', __WEB__ && (expanded.has(Number(row.id)) ? '!bg-white !border-l !border-l-[#EAF0E9] !border-r !border-r-[#EAF0E9]' : cn(PB_GL, PB_GR)), __WEB__ && (Number(row._dispatch) ? '!text-[13px] !font-bold !text-[#0A1F17]' : '!text-[12.5px] !font-medium !text-[#C3D2C6]'))}>{Number(row._dispatch) ? formatNum(row._dispatch) : '—'}</TableCell>
+                          <TableCell className={cn('text-right tabular-nums', Number(row._dispatch) && 'font-bold text-red-600', __WEB__ && (expanded.has(Number(row.id)) ? '!bg-white !border-l !border-l-[#EAF0E9] !border-r !border-r-[#EAF0E9]' : cn(PB_GL, PB_GR)), __WEB__ && (Number(row._dispatch) ? '!text-[13px] !font-bold !text-[#0A1F17]' : '!text-[12.5px] !font-medium !text-[#C3D2C6]'))}>{Number(row._dispatch) ? formatNum(row._dispatch) : '—'}
+                            {Number(row.returned_qty) > 0.0005 && (
+                              <span className="block text-[10.5px] font-semibold !text-[#8A5300]" title="Purchase returns against this bargain — taken off what it drew, so the balance opened again">
+                                less {formatNum(row.returned_qty)} returned
+                              </span>
+                            )}
+                          </TableCell>
                           <TableCell className={cn('text-right font-semibold tabular-nums', __WEB__ && (expanded.has(Number(row.id)) ? '!bg-white' : PB_BAL))}>
                             {__WEB__ ? (() => {
                               const b = pbBar(Number(row._opening) || 0, Number(row._addition) || 0, Number(row._adjusted) || 0, Number(row._dispatch) || 0)
