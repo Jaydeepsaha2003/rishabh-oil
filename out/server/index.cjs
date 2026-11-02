@@ -22129,6 +22129,7 @@ async function accountStatement(accountId, companyId) {
                  -- the document itself rather than guessed at from the
                  -- narration, which is prose and can be edited.
                  (SELECT o.invoice_no FROM orders o WHERE o.id = je.order_id) AS order_invoice_no,
+                 (SELECT o.order_date FROM orders o WHERE o.id = je.order_id) AS order_date,
                  -- THE PURCHASE'S TANKERS, and how many are emptied \u2014 so the
                  -- statement can leave out a bill whose oil is still on the
                  -- road (Tanker empty view).
