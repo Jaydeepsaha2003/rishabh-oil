@@ -29124,6 +29124,7 @@ __export(lc_exports, {
   deleteLC: () => deleteLC,
   deleteLCIssuance: () => deleteLCIssuance,
   deleteLastLcInstallment: () => deleteLastLcInstallment,
+  editLcPart: () => editLcPart,
   editPreclosure: () => editPreclosure,
   getLcLimit: () => getLcLimit,
   issueLC: () => issueLC,
@@ -30539,6 +30540,68 @@ async function deleteLastLcInstallment(lcId) {
     await c.execute({ sql: "DELETE FROM lc_parts WHERE lc_id = ? AND part_no = ?", args: [n46(lcId), instNo] });
     await syncPartsCharges(n46(lcId));
     return { installment_no: instNo };
+  });
+}
+async function editLcPart(lcId, partNo, v) {
+  return withDbTransaction(async () => {
+    const c = getClient();
+    const res = await c.execute({ sql: "SELECT * FROM letters_of_credit WHERE id = ?", args: [n46(lcId)] });
+    if (!res.rows.length) throw new Error("LC not found");
+    const lc = toPlain34(res)[0];
+    const parts = await lcParts(n46(lcId));
+    const no = n46(partNo);
+    const part = parts.find((p) => n46(p.part_no) === no);
+    if (!part) throw new Error(`Part ${no} is not on this LC`);
+    if (part.repaid_date) throw new Error(`Part ${no} has already been repaid to the bank \u2014 undo that repayment first`);
+    const amount2 = round222(n46(v.amount));
+    if (amount2 <= 5e-3) throw new Error("Enter this part's LC amount");
+    const others = round222(parts.filter((p) => n46(p.part_no) !== no).reduce((s5, p) => s5 + n46(p.amount), 0));
+    if (others + amount2 > n46(lc.amount) + 5e-3) {
+      throw new Error(`Only ${round222(n46(lc.amount) - others).toFixed(2)} of this LC is left for part ${no}`);
+    }
+    const date = String(v.date || part.pay_date || "").slice(0, 10);
+    if (!date) throw new Error("Pick the date the bank paid it");
+    if (date > todayISO8()) throw new Error("The payment date cannot be in the future");
+    const prev = parts.filter((p) => n46(p.part_no) < no).pop();
+    const nxt = parts.find((p) => n46(p.part_no) > no);
+    if (prev && date < String(prev.pay_date).slice(0, 10)) throw new Error(`Part ${no} cannot be paid before part ${n46(prev.part_no)} (${dmy4(String(prev.pay_date))})`);
+    if (nxt && date > String(nxt.pay_date).slice(0, 10)) throw new Error(`Part ${no} cannot be paid after part ${n46(nxt.part_no)} (${dmy4(String(nxt.pay_date))})`);
+    const maturity = String(v.maturity || part.maturity_date || "").slice(0, 10);
+    const bills = toPlain34(
+      await c.execute({ sql: "SELECT * FROM lc_issuances WHERE lc_id = ? AND installment_no = ? ORDER BY id", args: [n46(lcId), no] })
+    );
+    const entryId = bills.map((b) => n46(b.journal_entry_id)).find((x) => x > 0) || 0;
+    await c.execute(`CREATE TABLE IF NOT EXISTS accounting_repair_log (
+        repair_key TEXT PRIMARY KEY, entry_id INTEGER NOT NULL, before_json TEXT NOT NULL,
+        created_at TEXT NOT NULL DEFAULT (datetime('now')))`);
+    await c.execute({
+      sql: "INSERT OR REPLACE INTO accounting_repair_log(repair_key, entry_id, before_json) VALUES (?, ?, ?)",
+      args: [`lc_part_edit:${n46(lcId)}:${no}:${Date.now()}`, entryId, JSON.stringify({ part, bills })]
+    });
+    const note = v.note === void 0 ? String(bills.find((b) => b.note)?.note || "") : String(v.note || "").trim();
+    await c.execute({ sql: "DELETE FROM lc_issuances WHERE lc_id = ? AND installment_no = ?", args: [n46(lcId), no] });
+    await c.execute({ sql: "DELETE FROM lc_parts WHERE lc_id = ? AND part_no = ?", args: [n46(lcId), no] });
+    if (no === 1 && date !== String(lc.payment_received_date || "").slice(0, 10)) {
+      await c.execute({ sql: "UPDATE letters_of_credit SET payment_received_date = ? WHERE id = ?", args: [date, n46(lcId)] });
+    }
+    const fig = await insertLcPart(n46(lcId), no, lc, amount2, date, maturity, v);
+    const linked = await c.execute({ sql: "SELECT order_id FROM lc_linked_orders WHERE lc_id = ? ORDER BY order_id", args: [n46(lcId)] });
+    const ids = await insertInstallmentBills(
+      n46(lcId),
+      fig.net,
+      date,
+      maturity,
+      no,
+      linked.rows.map((r) => n46(r.order_id)).filter((x) => x > 0)
+    );
+    if (note) await c.execute({ sql: `UPDATE lc_issuances SET note = ? WHERE id IN (${ids.map(() => "?").join(",")})`, args: [note, ...ids] });
+    const stillThere = entryId ? (await c.execute({ sql: "SELECT 1 FROM journal_entries WHERE id = ?", args: [entryId] })).rows.length > 0 : false;
+    const je = await settleLcBillsCombined(ids, date, stillThere ? entryId : void 0);
+    if (!je) throw new Error("The part could not be posted");
+    await syncPartsCharges(n46(lcId));
+    const lastMat = (await lcParts(n46(lcId))).reduce((m, p) => String(p.maturity_date) > m ? String(p.maturity_date) : m, "");
+    if (lastMat) await c.execute({ sql: "UPDATE letters_of_credit SET expiry_date = ? WHERE id = ?", args: [lastMat, n46(lcId)] });
+    return { installment_no: no };
   });
 }
 async function editPreclosure(id, v) {
@@ -43023,6 +43086,10 @@ function registerIpc() {
     return repayLcParts(Number(id), values);
   });
   handle("lc:undoPartRepayment", (_e, { id }) => undoLcPartRepayment(Number(id)));
+  handle("lc:editPart", async (_e, { id, partNo, values }) => {
+    await assertLcNotClosed(Number(id), "changed");
+    return editLcPart(Number(id), Number(partNo), values);
+  });
   handle("lc:deleteInstallment", async (_e, { id }) => {
     await assertLcNotClosed(Number(id), "changed");
     return deleteLastLcInstallment(Number(id));
