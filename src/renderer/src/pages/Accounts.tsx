@@ -5695,16 +5695,17 @@ export function Accounts({
     // (at the foot, out of the balance) — its oil is not in yet. Every other
     // voucher keeps its own date. The balance runs in that order.
     const held: Row[] = []
-    // A purchase invoiced before the books start whose tanker was emptied
-    // after (TI/DL1/26/317): the entered opening counts it, Tally's does not —
-    // Tally books it on its empty date. So it comes out of the opening in BOTH
-    // views and is listed as a line: on its invoice date in Invoice date view,
-    // on its empty date in Empty date view. The opening then reads as Tally's.
-    for (const l of lgPreBooks) opening -= (Number(l.dr) || 0) - (Number(l.cr) || 0)
-    let lines = [...lgPreBooks, ...ledgerLines]
+    // The opening is shown exactly as entered. A purchase invoiced before the
+    // books start whose tanker was emptied after (TI/DL1/26/317) is inside
+    // it; the Empty date view still lists it on its empty date, as a memo
+    // line ("In opening") that moves neither the balance nor the totals.
+    let lines = ledgerLines
     if (lgTankerEmpty) {
       const moved: Row[] = []
-      for (const l of [...lgPreBooks, ...ledgerLines]) {
+      for (const l of lgPreBooks) {
+        if (l.tanker_last_empty) moved.push({ ...l, invoice_date: l.entry_date, entry_date: String(l.tanker_last_empty).slice(0, 10), dr: 0, cr: 0, memo_dr: l.dr, memo_cr: l.cr, in_opening: true })
+      }
+      for (const l of ledgerLines) {
         const total = Number(l.tanker_total) || 0
         if (total <= 0) {
           moved.push(l)
@@ -5737,14 +5738,8 @@ export function Accounts({
       run += (Number(l.dr) || 0) - (Number(l.cr) || 0)
       return { ...l, running: run }
     })
-    // The opening as the user entered it, and the purchases before the books
-    // taken out of it to be listed (see above) — shown on the opening row.
-    const preNet = lgPreBooks.reduce((t, l) => t + (Number(l.dr) || 0) - (Number(l.cr) || 0), 0)
     return {
       opening,
-      enteredOpening: opening + preNet,
-      preBooks: lgPreBooks,
-      preNet,
       rows: out,
       closing: run,
       totDr: out.reduce((sum, l) => sum + (Number(l.dr) || 0), 0),
@@ -17311,27 +17306,12 @@ export function Accounts({
         <div className="grid items-center" style={{ gridTemplateColumns: V_GRID, height: 38, background: '#F4F7F2', borderBottom: '1px solid #E4ECE3' }}>
           <span style={{ padding: '0 14px', ...figS(11.5, A.muted, 600) }}>{lgOpenDate ? formatDate(lgOpenDate) : ''}</span>
           <span style={{ gridColumn: 'span 4', padding: '0 8px', fontSize: 11.5, fontWeight: 800, color: '#33473E' }}>
-            Opening balance{stmt.preBooks.length ? ' (as entered)' : ''}
-            {lgHideBal ? <span style={{ ...figS(11.5, balFg(stmt.enteredOpening)), marginLeft: 10 }}>{bal(stmt.enteredOpening)}</span> : null}
+            Opening balance{lgHideBal ? <span style={{ ...figS(11.5, balFg(stmt.opening)), marginLeft: 10 }}>{bal(stmt.opening)}</span> : null}
           </span>
           <span />
           <span />
-          {!lgHideBal && <span style={{ padding: '0 14px', textAlign: 'right', ...figS(12, balFg(stmt.enteredOpening)) }}>{bal(stmt.enteredOpening)}</span>}
+          {!lgHideBal && <span style={{ padding: '0 14px', textAlign: 'right', ...figS(12, balFg(stmt.opening)) }}>{bal(stmt.opening)}</span>}
         </div>
-        {/* The entered opening counts a purchase invoiced before the books
-            start whose oil was emptied after; Tally books it on its empty
-            date. It comes out here and is listed on its own date below. */}
-        {stmt.preBooks.length > 0 && (
-          <div className="grid items-center" style={{ gridTemplateColumns: V_GRID, minHeight: 34, background: '#FBFCF8', borderBottom: '1px solid #E4ECE3' }}>
-            <span />
-            <span style={{ gridColumn: 'span 4', padding: '0 8px', fontSize: 11, fontWeight: 600, color: '#5A6B62', fontStyle: 'italic' }}>
-              Less {stmt.preBooks.map((l) => String(l.order_invoice_no || l.vch_no || 'purchase')).join(', ')} — in the opening, listed below on its date (Tally's opening)
-            </span>
-            <span style={{ padding: '0 12px', textAlign: 'right', ...figS(11.5, A.dr) }}>{stmt.preNet < 0 ? formatINR(-stmt.preNet) : ''}</span>
-            <span style={{ padding: '0 12px', textAlign: 'right', ...figS(11.5, A.cr) }}>{stmt.preNet > 0 ? formatINR(stmt.preNet) : ''}</span>
-            {!lgHideBal && <span style={{ padding: '0 14px', textAlign: 'right', ...figS(12, balFg(stmt.opening)) }}>{bal(stmt.opening)}</span>}
-          </div>
-        )}
         {vRows.map((r, i) => {
           const eid = Number(r.entry_id ?? r.id)
           const open = lgOpenRow === Number(r.id)
@@ -17396,6 +17376,14 @@ export function Accounts({
                   ) : (
                     <span title={r.invoice_date && r.invoice_date !== r.entry_date ? `Emptied ${formatDate(r.entry_date)} · invoice ${formatDate(r.invoice_date)}` : undefined}>
                       {formatDate(r.entry_date)}
+                      {r.in_opening && (
+                        <span
+                          title="Invoiced before the books start — already inside the opening balance, so it does not move the balance here"
+                          style={{ display: 'block', fontSize: 9.5, fontWeight: 800, letterSpacing: '.06em', textTransform: 'uppercase', color: '#8A5300' }}
+                        >
+                          In opening
+                        </span>
+                      )}
                     </span>
                   )}
                 </span>
@@ -17459,13 +17447,13 @@ export function Accounts({
                   title={r.tanker_held && Number(r.held_dr) > 0 ? `Bill ${formatINR(Number(r.held_dr))} — counted when its tankers are emptied` : undefined}
                   style={{ padding: '0 12px', textAlign: 'right', ...figS(12.5, A.dr) }}
                 >
-                  {Number(r.dr) > 0 ? formatINR(Number(r.dr)) : r.tanker_held && Number(r.held_dr) > 0 ? '—' : ''}
+                  {Number(r.dr) > 0 ? formatINR(Number(r.dr)) : r.tanker_held && Number(r.held_dr) > 0 ? '—' : r.in_opening && Number(r.memo_dr) > 0 ? <span style={{ color: '#8CA396' }}>({formatINR(Number(r.memo_dr))})</span> : ''}
                 </span>
                 <span
                   title={r.tanker_held && Number(r.held_cr) > 0 ? `Bill ${formatINR(Number(r.held_cr))} — counted when its tankers are emptied` : undefined}
                   style={{ padding: '0 12px', textAlign: 'right', ...figS(12.5, A.cr) }}
                 >
-                  {Number(r.cr) > 0 ? formatINR(Number(r.cr)) : r.tanker_held && Number(r.held_cr) > 0 ? '—' : ''}
+                  {Number(r.cr) > 0 ? formatINR(Number(r.cr)) : r.tanker_held && Number(r.held_cr) > 0 ? '—' : r.in_opening && Number(r.memo_cr) > 0 ? <span style={{ color: '#8CA396' }}>({formatINR(Number(r.memo_cr))})</span> : ''}
                 </span>
                 {!lgHideBal && (
                   <span
@@ -18621,7 +18609,7 @@ export function Accounts({
                     )}
                   </div>
                   <div style={{ fontSize: 11, fontWeight: 600, color: A.muted, fontVariantNumeric: FIGS }}>
-                    {stmt.rows.length} {stmt.rows.length === 1 ? 'voucher' : 'vouchers'} · opening {bal(stmt.enteredOpening)}{stmt.preBooks.length ? ` (Tally ${bal(stmt.opening)})` : ''} · closing {bal(stmt.closing)}
+                    {stmt.rows.length} {stmt.rows.length === 1 ? 'voucher' : 'vouchers'} · opening {bal(stmt.opening)} · closing {bal(stmt.closing)}
                     {lgBooksFrom ? ` · books from ${formatDate(lgBooksFrom)}` : ''}
                   </div>
                 </div>
