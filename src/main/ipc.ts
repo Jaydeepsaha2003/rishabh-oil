@@ -313,6 +313,7 @@ import {
   lcIdOfIssuance,
   payLcParty,
   deleteLastLcInstallment,
+  editLcPart,
   repayLcParts,
   undoLcPartRepayment,
   lcParts,
@@ -1715,6 +1716,10 @@ export function registerIpc(): void {
   // Not behind the closed-LC lock: undoing the repayment that closed it is
   // exactly how a closure by parts is taken back.
   handle('lc:undoPartRepayment', (_e, { id }: { id: number }) => undoLcPartRepayment(Number(id)))
+  handle('lc:editPart', async (_e, { id, partNo, values }: { id: number; partNo: number; values: Row }) => {
+    await assertLcNotClosed(Number(id), 'changed')
+    return editLcPart(Number(id), Number(partNo), values)
+  })
   handle('lc:deleteInstallment', async (_e, { id }: { id: number }) => {
     await assertLcNotClosed(Number(id), 'changed')
     return deleteLastLcInstallment(Number(id))

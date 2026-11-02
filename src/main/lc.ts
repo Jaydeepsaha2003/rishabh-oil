@@ -2042,6 +2042,80 @@ export async function deleteLastLcInstallment(lcId: number): Promise<{ installme
   })
 }
 
+/**
+ * CORRECT A PART ALREADY PAID TO THE SUPPLIER — its LC amount, the day the bank
+ * paid it, its maturity, rate, margin, charges and note. The part is worked out
+ * again exactly as when it was paid, and its settlement voucher is re-posted
+ * over the SAME entry, so its number (and any Tally link) stays. Part 1's date
+ * is the LC's Payment received date and moves with it. A part already repaid to
+ * the bank is refused — undo that repayment first.
+ */
+export async function editLcPart(lcId: number, partNo: number, v: Row): Promise<{ installment_no: number }> {
+  return withDbTransaction(async () => {
+    const c = getClient()
+    const res = await c.execute({ sql: 'SELECT * FROM letters_of_credit WHERE id = ?', args: [n(lcId)] })
+    if (!res.rows.length) throw new Error('LC not found')
+    const lc = toPlain(res)[0]
+    const parts = await lcParts(n(lcId))
+    const no = n(partNo)
+    const part = parts.find((p) => n(p.part_no) === no)
+    if (!part) throw new Error(`Part ${no} is not on this LC`)
+    if (part.repaid_date) throw new Error(`Part ${no} has already been repaid to the bank — undo that repayment first`)
+    const amount = round2(n(v.amount))
+    if (amount <= 0.005) throw new Error("Enter this part's LC amount")
+    const others = round2(parts.filter((p) => n(p.part_no) !== no).reduce((s, p) => s + n(p.amount), 0))
+    if (others + amount > n(lc.amount) + 0.005) {
+      throw new Error(`Only ${round2(n(lc.amount) - others).toFixed(2)} of this LC is left for part ${no}`)
+    }
+    const date = String(v.date || part.pay_date || '').slice(0, 10)
+    if (!date) throw new Error('Pick the date the bank paid it')
+    if (date > todayISO()) throw new Error('The payment date cannot be in the future')
+    const prev = parts.filter((p) => n(p.part_no) < no).pop()
+    const nxt = parts.find((p) => n(p.part_no) > no)
+    if (prev && date < String(prev.pay_date).slice(0, 10)) throw new Error(`Part ${no} cannot be paid before part ${n(prev.part_no)} (${dmy(String(prev.pay_date))})`)
+    if (nxt && date > String(nxt.pay_date).slice(0, 10)) throw new Error(`Part ${no} cannot be paid after part ${n(nxt.part_no)} (${dmy(String(nxt.pay_date))})`)
+    const maturity = String(v.maturity || part.maturity_date || '').slice(0, 10)
+
+    const bills = toPlain(
+      await c.execute({ sql: 'SELECT * FROM lc_issuances WHERE lc_id = ? AND installment_no = ? ORDER BY id', args: [n(lcId), no] })
+    )
+    const entryId = bills.map((b) => n(b.journal_entry_id)).find((x) => x > 0) || 0
+    // The before-state, for the record.
+    await c.execute(`CREATE TABLE IF NOT EXISTS accounting_repair_log (
+        repair_key TEXT PRIMARY KEY, entry_id INTEGER NOT NULL, before_json TEXT NOT NULL,
+        created_at TEXT NOT NULL DEFAULT (datetime('now')))`)
+    await c.execute({
+      sql: 'INSERT OR REPLACE INTO accounting_repair_log(repair_key, entry_id, before_json) VALUES (?, ?, ?)',
+      args: [`lc_part_edit:${n(lcId)}:${no}:${Date.now()}`, entryId, JSON.stringify({ part, bills })]
+    })
+    const note = v.note === undefined ? String(bills.find((b) => b.note)?.note || '') : String(v.note || '').trim()
+    await c.execute({ sql: 'DELETE FROM lc_issuances WHERE lc_id = ? AND installment_no = ?', args: [n(lcId), no] })
+    await c.execute({ sql: 'DELETE FROM lc_parts WHERE lc_id = ? AND part_no = ?', args: [n(lcId), no] })
+    if (no === 1 && date !== String(lc.payment_received_date || '').slice(0, 10)) {
+      await c.execute({ sql: 'UPDATE letters_of_credit SET payment_received_date = ? WHERE id = ?', args: [date, n(lcId)] })
+    }
+    const fig = await insertLcPart(n(lcId), no, lc, amount, date, maturity, v)
+    const linked = await c.execute({ sql: 'SELECT order_id FROM lc_linked_orders WHERE lc_id = ? ORDER BY order_id', args: [n(lcId)] })
+    const ids = await insertInstallmentBills(
+      n(lcId),
+      fig.net,
+      date,
+      maturity,
+      no,
+      linked.rows.map((r) => n((r as unknown as Row).order_id)).filter((x) => x > 0)
+    )
+    if (note) await c.execute({ sql: `UPDATE lc_issuances SET note = ? WHERE id IN (${ids.map(() => '?').join(',')})`, args: [note, ...ids] })
+    const stillThere = entryId ? (await c.execute({ sql: 'SELECT 1 FROM journal_entries WHERE id = ?', args: [entryId] })).rows.length > 0 : false
+    const je = await settleLcBillsCombined(ids, date, stillThere ? entryId : undefined)
+    if (!je) throw new Error('The part could not be posted')
+    await syncPartsCharges(n(lcId))
+    // The LC runs to its last part's maturity.
+    const lastMat = (await lcParts(n(lcId))).reduce((m, p) => (String(p.maturity_date) > m ? String(p.maturity_date) : m), '')
+    if (lastMat) await c.execute({ sql: 'UPDATE letters_of_credit SET expiry_date = ? WHERE id = ?', args: [lastMat, n(lcId)] })
+    return { installment_no: no }
+  })
+}
+
 // EDIT A PRECLOSURE IN PLACE.
 //
 // The closure's own figures — its date, what the bank debited and how that

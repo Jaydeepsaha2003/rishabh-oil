@@ -881,6 +881,8 @@ const api = {
       ipcRenderer.invoke('lc:editPreclosure', { id, values }),
     payParty: (id: number, values: Row): Promise<{ id: number; installment_no: number }> =>
       ipcRenderer.invoke('lc:payParty', { id, values }),
+    editPart: (id: number, partNo: number, values: Row): Promise<{ installment_no: number }> =>
+      ipcRenderer.invoke('lc:editPart', { id, partNo, values }),
     removeInstallment: (id: number): Promise<{ installment_no: number }> =>
       ipcRenderer.invoke('lc:deleteInstallment', { id }),
     // An LC paid in parts: each part, and repaying the bank part by part.

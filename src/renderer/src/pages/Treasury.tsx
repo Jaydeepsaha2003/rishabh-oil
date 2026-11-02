@@ -7908,6 +7908,8 @@ function LcInstallmentsDialog({
     margin: true
   })
   const [ask, setAsk] = useState<'' | 'undoPart' | 'undoRepay'>('')
+  // A part already paid, being corrected (lc:editPart).
+  const [fix, setFix] = useState<{ no: number; date: string; amount: string; maturity: string; note: string; interest_pct: string; margin_pct: string; charges: string } | null>(null)
 
   const lcAmount = round2(n(lc?.amount))
   const drawn = round2(parts.reduce((s, p) => s + n(p.amount), 0))
@@ -7976,6 +7978,34 @@ function LcInstallmentsDialog({
         charges: round2(n(next.charges))
       })
       toast.success(`Part ${r.installment_no}: ${formatINR(preview.net)} to the supplier, maturing ${formatDate(next.maturity)}`)
+      onChanged()
+      await load()
+    } catch (e) {
+      setErr((e as Error).message)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function saveFix(): Promise<void> {
+    if (!lc || !fix) return
+    if (!(n(fix.amount) > 0)) return setErr("Enter this part's LC amount")
+    if (!fix.date) return setErr('Pick the date the bank paid it')
+    if (!fix.maturity || fix.maturity < fix.date) return setErr('A part cannot mature before it was paid')
+    setBusy(true)
+    setErr(null)
+    try {
+      await window.api.lc.editPart(Number(lc.id), fix.no, {
+        date: fix.date,
+        amount: round2(n(fix.amount)),
+        maturity: fix.maturity,
+        note: fix.note,
+        interest_pct: fix.interest_pct,
+        margin_pct: fix.margin_pct,
+        charges: round2(n(fix.charges))
+      })
+      toast.success(`Part ${fix.no} corrected — its voucher re-posted`)
+      setFix(null)
       onChanged()
       await load()
     } catch (e) {
@@ -8156,8 +8186,32 @@ function LcInstallmentsDialog({
                                 {n(p.rebate) > 0.005 && <span className="block text-[10.5px] font-semibold text-[#5A6B62]">rebate {formatINR(n(p.rebate))}</span>}
                               </span>
                             ) : (
-                              <span className={cn('rounded-[3px] px-1.5 py-0.5 text-[10.5px] font-extrabold', left < 0 ? 'bg-[#FDF3F2] text-[#B3261E]' : left <= 7 ? 'bg-[#FFF4DD] text-[#8A5300]' : 'bg-[#EEF3EC] text-[#33473E]')}>
-                                {left < 0 ? `${Math.abs(left)}d overdue` : left === 0 ? 'due today' : `${left}d left`}
+                              <span className="flex items-center gap-1.5">
+                                <span className={cn('rounded-[3px] px-1.5 py-0.5 text-[10.5px] font-extrabold', left < 0 ? 'bg-[#FDF3F2] text-[#B3261E]' : left <= 7 ? 'bg-[#FFF4DD] text-[#8A5300]' : 'bg-[#EEF3EC] text-[#33473E]')}>
+                                  {left < 0 ? `${Math.abs(left)}d overdue` : left === 0 ? 'due today' : `${left}d left`}
+                                </span>
+                                {!closed && (
+                                  <button
+                                    type="button"
+                                    title={`Correct part ${no} — amount, dates, rate, charges`}
+                                    disabled={busy}
+                                    onClick={() =>
+                                      setFix({
+                                        no,
+                                        date: String(p.pay_date).slice(0, 10),
+                                        amount: String(n(p.amount)),
+                                        maturity: String(p.maturity_date).slice(0, 10),
+                                        note: '',
+                                        interest_pct: p.interest_pct == null ? String(lc?.interest_pct ?? '') : String(p.interest_pct),
+                                        margin_pct: p.margin_pct == null ? String(lc?.margin_pct ?? '') : String(p.margin_pct),
+                                        charges: n(p.charges) ? String(n(p.charges)) : ''
+                                      })
+                                    }
+                                    className="flex h-6 items-center gap-1 rounded-[4px] border border-[#D6E2D6] bg-white px-1.5 text-[10.5px] font-bold text-[#0B3D2E] hover:bg-[#F4FBF6]"
+                                  >
+                                    <Pencil className="h-3 w-3" /> Edit
+                                  </button>
+                                )}
                               </span>
                             )}
                           </td>
@@ -8207,6 +8261,61 @@ function LcInstallmentsDialog({
               </div>
             )}
           </section>
+
+          {/* Correct a part already paid */}
+          {fix && (
+            <section className={cn(card, 'border-[#F1D9A6]')}>
+              <h3 className={cn(head, 'border-b-[#F1D9A6] bg-[#FFF8E9] text-[#8A5300]')}>
+                <Pencil className="h-4 w-4" /> Correct part {fix.no}
+                <span className="ml-auto text-[10px] font-bold normal-case tracking-normal">Its voucher is re-posted under the same number</span>
+              </h3>
+              <div className="grid gap-4 p-4 sm:grid-cols-3">
+                <div className="grid content-start gap-1.5">
+                  <span className={lbl}>Paid on *</span>
+                  <DatePicker value={fix.date} max={todayISO()} onChange={(v) => setFix((f) => (f ? { ...f, date: v } : f))} />
+                </div>
+                <div className="grid content-start gap-1.5">
+                  <span className={lbl}>Part's LC amount (₹) *</span>
+                  <Input type="number" value={fix.amount} onChange={(e) => setFix((f) => (f ? { ...f, amount: e.target.value } : f))} className="!h-10 !font-bold" />
+                </div>
+                <div className="grid content-start gap-1.5">
+                  <span className={lbl}>Matures on *</span>
+                  <DatePicker value={fix.maturity} min={fix.date || undefined} onChange={(v) => setFix((f) => (f ? { ...f, maturity: v } : f))} />
+                </div>
+                <div className="grid content-start gap-1.5">
+                  <span className={lbl}>Interest % p.a.</span>
+                  <Input type="number" value={fix.interest_pct} onChange={(e) => setFix((f) => (f ? { ...f, interest_pct: e.target.value } : f))} className="!h-10" />
+                </div>
+                <div className="grid content-start gap-1.5">
+                  <span className={lbl}>Margin %</span>
+                  <Input type="number" value={fix.margin_pct} onChange={(e) => setFix((f) => (f ? { ...f, margin_pct: e.target.value } : f))} className="!h-10" />
+                </div>
+                <div className="grid content-start gap-1.5">
+                  <span className={lbl}>LC charges (₹)</span>
+                  <Input type="number" value={fix.charges} placeholder="0" onChange={(e) => setFix((f) => (f ? { ...f, charges: e.target.value } : f))} className="!h-10" />
+                </div>
+              </div>
+              {(() => {
+                const pv = lcPartPreview({ ...(lc || {}), charges: n(fix.charges) }, round2(n(fix.amount)), fix.date, fix.maturity, true, fix.interest_pct)
+                return (
+                  <div className="flex flex-wrap items-center gap-3 border-t border-[#E4ECE3] bg-[#FBFCFA] px-4 py-3 text-[12px] font-semibold text-[#33473E]">
+                    <span>
+                      Interest {pv.days}d <b className="tabular-nums">{formatINR(pv.interest)}</b>
+                    </span>
+                    <span>
+                      Supplier receives <b className="tabular-nums text-[#0B6B45]">{formatINR(n(fix.amount) > 0 ? pv.net : 0)}</b>
+                    </span>
+                    <Button variant="outline" disabled={busy} onClick={() => setFix(null)} className="ml-auto h-9 px-3 text-[12px] font-bold">
+                      Cancel
+                    </Button>
+                    <Button disabled={busy} onClick={() => void saveFix()} className="h-9 bg-[#0B3D2E] px-4 text-[12px] font-extrabold text-[#C7F03F] hover:bg-[#0F4A38]">
+                      {busy ? 'Saving…' : `Save part ${fix.no}`}
+                    </Button>
+                  </div>
+                )
+              })()}
+            </section>
+          )}
 
           {/* Repay the bank */}
           {!closed && picked.length > 0 && (

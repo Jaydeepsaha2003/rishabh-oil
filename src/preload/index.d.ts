@@ -595,6 +595,7 @@ export interface Api {
     editPreclosure: (id: number, values: Row) => Promise<{ id: number }>
     payParty: (id: number, values: Row) => Promise<{ id: number; installment_no: number }>
     removeInstallment: (id: number) => Promise<{ installment_no: number }>
+    editPart: (id: number, partNo: number, values: Row) => Promise<{ installment_no: number }>
     allRepayments: () => Promise<Row[]>
     repayments: (lcId: number) => Promise<Row[]>
     saveRepayment: (values: Row) => Promise<{ id: number }>
