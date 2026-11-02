@@ -21797,6 +21797,8 @@ __export(journal_exports, {
   postPaymentJournal: () => postPaymentJournal,
   postPurchaseJournal: () => postPurchaseJournal,
   postSaleJournal: () => postSaleJournal,
+  purchasePostingDate: () => purchasePostingDate,
+  redatePreBooksPurchases: () => redatePreBooksPurchases,
   repostJournal: () => repostJournal,
   splitNames: () => splitNames,
   voucherCodeMap: () => voucherCodeMap
@@ -22365,6 +22367,38 @@ async function splitNames() {
   ).catch(() => null);
   return r ? r.rows.map((x) => String(x.name)) : [];
 }
+async function purchasePostingDate(orderId, invoiceDate, companyId) {
+  const d = String(invoiceDate || "").slice(0, 10);
+  const from = String(await getBooksFrom(companyId) || "").slice(0, 10);
+  if (!from || !d || d >= from) return d;
+  const r = await getClient().execute({
+    sql: `SELECT COUNT(*) AS total,
+                 SUM(CASE WHEN tp.status = 'empty' AND tp.empty_date IS NOT NULL THEN 1 ELSE 0 END) AS emptied,
+                 MAX(tp.empty_date) AS last_empty
+            FROM ${ALLOC} ta JOIN purchase_tankers tp ON tp.id = ta.tanker_id WHERE ta.order_id = ?`,
+    args: [orderId]
+  });
+  const t = r.rows[0];
+  const last = String(t?.last_empty || "").slice(0, 10);
+  return n25(t?.total) > 0 && n25(t?.emptied) >= n25(t?.total) && last >= from ? last : from;
+}
+async function redatePreBooksPurchases() {
+  const c = getClient();
+  const rows2 = (await c.execute(
+    "SELECT je.id, je.order_id, je.company_id, je.entry_date FROM journal_entries je WHERE je.order_id IS NOT NULL AND je.vch_type = 'PURCHASE OIL'"
+  )).rows;
+  const moved = [];
+  for (const r of rows2) {
+    const from = String(await getBooksFrom(n25(r.company_id)) || "").slice(0, 10);
+    const was = String(r.entry_date).slice(0, 10);
+    if (!from || was >= from) continue;
+    const to = await purchasePostingDate(n25(r.order_id), was, n25(r.company_id));
+    if (to === was) continue;
+    await c.execute({ sql: "UPDATE journal_entries SET entry_date = ? WHERE id = ?", args: [to, n25(r.id)] });
+    moved.push({ id: n25(r.id), from: was, to });
+  }
+  return { moved };
+}
 async function postPurchaseJournal(v) {
   return withDbTransaction(async () => {
     const c = getClient();
@@ -22380,7 +22414,7 @@ async function postPurchaseJournal(v) {
     }
     const ro = n25(v.roundOff);
     const args = {
-      date: v.date,
+      date: v.orderId ? await purchasePostingDate(n25(v.orderId), v.date, want) : v.date,
       vchType: "PURCHASE OIL",
       vchNo: v.invoiceNo,
       narration: `Purchase ${v.invoiceNo}`,
@@ -35969,6 +36003,21 @@ async function runStartupTasks() {
     }
     console.log("[bd] V2 received date and disbursement voucher moved to 22-08-2026");
   }).catch((e) => console.error("[bd] V2 received date fix failed:", e));
+  await runOnce("prebooks_purchase_date_v1", async () => {
+    const c = getClient();
+    await c.execute(`CREATE TABLE IF NOT EXISTS accounting_repair_log (
+        repair_key TEXT PRIMARY KEY, entry_id INTEGER NOT NULL, before_json TEXT NOT NULL,
+        created_at TEXT NOT NULL DEFAULT (datetime('now')))`);
+    const { redatePreBooksPurchases: redatePreBooksPurchases2 } = await Promise.resolve().then(() => (init_journal(), journal_exports));
+    const { moved } = await redatePreBooksPurchases2();
+    for (const m of moved) {
+      await c.execute({
+        sql: "INSERT OR REPLACE INTO accounting_repair_log(repair_key, entry_id, before_json) VALUES (?, ?, ?)",
+        args: [`prebooks_purchase_date:${m.id}`, m.id, JSON.stringify(m)]
+      });
+    }
+    if (moved.length) console.log("[journal] purchase vouchers moved into the books:", moved);
+  }).catch((e) => console.error("[journal] pre-books purchase re-date failed:", e));
   await runOnce("lc_settlement_payment_date_v1", async () => {
     const { resyncLcSettlement: resyncLcSettlement2 } = await Promise.resolve().then(() => (init_treasury(), treasury_exports));
     const r = await getClient().execute(`
