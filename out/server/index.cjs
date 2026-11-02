@@ -7358,6 +7358,10 @@ async function ensureTable2() {
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     PRIMARY KEY (company_id, invoice_key)
   )`);
+  if (!workedOutCol) {
+    await getClient().execute("ALTER TABLE sale_tds_journals ADD COLUMN worked_out REAL").catch(() => void 0);
+    workedOutCol = true;
+  }
 }
 function fyStart(date) {
   const y = Number(date.slice(0, 4));
@@ -7434,7 +7438,7 @@ async function saleTdsPreview(saleId) {
   const onSale = ledgers.filter((l) => /RECE|RECOV/.test(l.name.toUpperCase()) && /SALE/.test(l.name.toUpperCase()));
   const suggested = (onSale.find((l) => l.name.includes(fy)) || onSale[0] || ledgers.find((l) => l.name === "TDS RECEIVABLE A/C"))?.name || "";
   const ex = await c.execute({
-    sql: `SELECT t.entry_id, t.amount, t.ledger, je.vch_no, je.entry_date
+    sql: `SELECT t.entry_id, t.amount, t.ledger, t.worked_out, je.vch_no, je.entry_date
             FROM sale_tds_journals t LEFT JOIN journal_entries je ON je.id = t.entry_id
            WHERE t.company_id = ? AND t.invoice_key = ?`,
     args: [cid, key3]
@@ -7455,7 +7459,7 @@ async function saleTdsPreview(saleId) {
     amount: amount2,
     ledgers,
     suggested_ledger: suggested,
-    existing: e && e.entry_date ? { entry_id: n6(e.entry_id), amount: n6(e.amount), ledger: String(e.ledger), vch_no: String(e.vch_no || ""), date: String(e.entry_date) } : null
+    existing: e && e.entry_date ? { entry_id: n6(e.entry_id), amount: n6(e.amount), ledger: String(e.ledger), vch_no: String(e.vch_no || ""), date: String(e.entry_date), edited: isEdited(e) } : null
   };
 }
 async function dropExisting(cid, key3) {
@@ -7487,6 +7491,7 @@ async function postSaleTds(v) {
     if (date < String(first.sale_date).slice(0, 10)) throw new Error("The TDS cannot be dated before the invoice");
     const led = await c.execute({ sql: "SELECT acc_group FROM ledger_accounts WHERE name = ?", args: [ledger2] });
     const ledgerGroup = led.rows.length ? String(led.rows[0].acc_group || "") : "Current Assets";
+    const workedOut = n6((await saleTdsPreview(v.sale_id)).amount);
     await dropExisting(cid, key3);
     const invNo = String(first.invoice_no || "");
     const res = await createVoucher({
@@ -7505,8 +7510,8 @@ async function postSaleTds(v) {
       ]
     });
     await c.execute({
-      sql: "INSERT INTO sale_tds_journals (invoice_key, company_id, entry_id, amount, ledger) VALUES (?, ?, ?, ?, ?)",
-      args: [key3, cid, res.id, amount2, ledger2]
+      sql: "INSERT INTO sale_tds_journals (invoice_key, company_id, entry_id, amount, ledger, worked_out) VALUES (?, ?, ?, ?, ?, ?)",
+      args: [key3, cid, res.id, amount2, ledger2, workedOut]
     });
     return { entry_id: res.id };
   });
@@ -7601,14 +7606,17 @@ async function saleTdsMap(companyIds) {
   await ensureTable2();
   const ids = (companyIds || []).map(n6).filter(Boolean);
   const res = await getClient().execute({
-    sql: `SELECT t.company_id, t.invoice_key, t.amount, t.ledger, t.entry_id, je.vch_no
+    sql: `SELECT t.company_id, t.invoice_key, t.amount, t.ledger, t.entry_id, t.worked_out, je.vch_no
             FROM sale_tds_journals t JOIN journal_entries je ON je.id = t.entry_id
            ${ids.length ? `WHERE t.company_id IN (${ids.map(() => "?").join(",")})` : ""}`,
     args: ids
   });
-  return res.rows.map((r) => ({ ...r }));
+  return res.rows.map((r) => ({ ...r, edited: isEdited(r) }));
 }
-var n6, round23;
+function isEdited(r) {
+  return r.worked_out != null && Math.abs(n6(r.amount) - n6(r.worked_out)) >= 5e-3;
+}
+var n6, round23, workedOutCol;
 var init_saleTds = __esm({
   "src/main/saleTds.ts"() {
     init_company();
@@ -7621,6 +7629,7 @@ var init_saleTds = __esm({
       return Number.isFinite(x) ? x : 0;
     };
     round23 = (v) => Math.round(v * 100) / 100;
+    workedOutCol = false;
   }
 });
 
@@ -13796,6 +13805,7 @@ __export(sales_exports, {
   setSaleInvoiceDate: () => setSaleInvoiceDate,
   setSaleStage: () => setSaleStage,
   setSaleStatus: () => setSaleStatus,
+  setSaleTradingMark: () => setSaleTradingMark,
   uncancelInvoiceNo: () => uncancelInvoiceNo,
   unrejectSaleInvoice: () => unrejectSaleInvoice,
   updateSale: () => updateSale,
@@ -14054,6 +14064,16 @@ async function listCustomerLedger() {
   `
   });
   return toPlain12(res);
+}
+async function setSaleTradingMark(id, on) {
+  const c = getClient();
+  const r = await c.execute({ sql: "SELECT invoice_group FROM sales WHERE id = ?", args: [Number(id)] });
+  if (!r.rows.length) throw new Error("That invoice is no longer there");
+  const grp = r.rows[0].invoice_group;
+  await c.execute(
+    grp ? { sql: "UPDATE sales SET trading_mark = ? WHERE invoice_group = ?", args: [on ? 1 : null, String(grp)] } : { sql: "UPDATE sales SET trading_mark = ? WHERE id = ?", args: [on ? 1 : null, Number(id)] }
+  );
+  return { ok: true };
 }
 async function listSalesForUnloadDesk(companyIds) {
   const cos = (companyIds || []).map((x) => Number(x)).filter((x) => Number.isFinite(x) && x > 0);
@@ -16386,6 +16406,7 @@ __export(orders_exports, {
   saveTankerQuality: () => saveTankerQuality,
   setSupplierPayable: () => setSupplierPayable,
   supplierFyTaxable: () => supplierFyTaxable,
+  tdsManualOf: () => tdsManualOf,
   updateOrder: () => updateOrder,
   updateTankerDetails: () => updateTankerDetails,
   updateTankerInvoice: () => updateTankerInvoice,
@@ -16417,6 +16438,14 @@ function normCondition(v) {
 function tankerIsEx(tankerCondition, bargainType) {
   const own = normCondition(tankerCondition);
   return own ? own === "EX" : !isDelivered(bargainType);
+}
+function tdsManualOf(r) {
+  return r && r.tds_manual != null && r.tds_manual !== "" && Number.isFinite(Number(r.tds_manual)) ? Number(r.tds_manual) : null;
+}
+function withManualTds(manual, tds, finalTds) {
+  if (manual == null) return { tds, finalTds };
+  const t = Math.round(manual * 100) / 100;
+  return { tds: t, finalTds: tds > 0 ? Math.round(finalTds * t / tds * 100) / 100 : t };
 }
 function tierTds(taxable, prior, threshold, basePct, abovePct) {
   if (!threshold || threshold <= 0) return taxable * basePct / 100;
@@ -16482,12 +16511,15 @@ function computeMoney(i) {
   const gstAmount = taxableValue * i.gstPct / 100;
   const roundOff = Number(i.roundOff) || 0;
   const roundedTotal = taxableValue + gstAmount + roundOff;
-  const tdsAmount = round232(tierTds(taxableValue, prior, threshold, i.tdsPct, abovePct));
-  const netAmount = round232(roundedTotal - tdsAmount);
   const finalTaxable = i.bargainRate * i.orderedQty;
+  const { tds: tdsAmount, finalTds } = withManualTds(
+    i.tdsManual,
+    round232(tierTds(taxableValue, prior, threshold, i.tdsPct, abovePct)),
+    round232(tierTds(finalTaxable, prior, threshold, i.tdsPct, abovePct))
+  );
+  const netAmount = round232(roundedTotal - tdsAmount);
   const finalGst = finalTaxable * i.gstPct / 100;
   const finalRounded = finalTaxable + finalGst + roundOff;
-  const finalTds = round232(tierTds(finalTaxable, prior, threshold, i.tdsPct, abovePct));
   const finalNet = round232(finalRounded - finalTds);
   return {
     interest_pct: interestPct,
@@ -16933,6 +16965,7 @@ async function createOrder(v) {
       tdsThreshold: n17(supplier?.tds_threshold),
       tdsPctAbove: n17(v.tds_pct),
       tdsPrior: prior,
+      tdsManual: tdsManualOf(v),
       roundOff,
       lines: pricedLines
     });
@@ -16995,6 +17028,7 @@ async function createOrder(v) {
       ]
     });
     const id = Number(res.lastInsertRowid);
+    if (tdsManualOf(v) != null) await getClient().execute({ sql: "UPDATE orders SET tds_manual = ? WHERE id = ?", args: [tdsManualOf(v), id] });
     if (v.party_gstin) await getClient().execute({ sql: "UPDATE orders SET party_gstin = ? WHERE id = ?", args: [String(v.party_gstin).trim().toUpperCase(), id] });
     const billGroup = String(v.bill_group || "").trim();
     if (billGroup) {
@@ -17221,10 +17255,13 @@ async function updateOrder(id, v) {
       tdsThreshold: n17(supplier?.tds_threshold),
       tdsPctAbove: n17(v.tds_pct),
       tdsPrior: prior,
+      // Only a form that carries the field changes it (the phone does not).
+      tdsManual: "tds_manual" in v ? tdsManualOf(v) : tdsManualOf(beforeRow),
       roundOff,
       lines: pricedLines
     });
     await saveOrderBargainInterest(id, v.bargain_interest);
+    if ("tds_manual" in v) await getClient().execute({ sql: "UPDATE orders SET tds_manual = ? WHERE id = ?", args: [tdsManualOf(v), id] });
     await getClient().execute({
       sql: `UPDATE orders SET
       invoice_no = ?, order_date = ?, bargain_id = ?, supplier_id = ?, oil_type_id = ?, bargain_type = ?,
@@ -17413,6 +17450,7 @@ async function rerateInvoicesForBargain(bargainId, rate, orderIds) {
         tdsThreshold: n17(supplier?.tds_threshold),
         tdsPctAbove: n17(o.tds_pct),
         tdsPrior: prior,
+        tdsManual: tdsManualOf(o),
         roundOff: n17(o.round_off),
         lines
       });
@@ -17502,6 +17540,7 @@ async function repriceSplitTankerInvoices(apply = false, onlyIds) {
       tdsThreshold: n17(supplier?.tds_threshold),
       tdsPctAbove: n17(o.tds_pct),
       tdsPrior: prior,
+      tdsManual: tdsManualOf(o),
       roundOff: roundOff2,
       lines
     });
@@ -17602,6 +17641,7 @@ async function refreshStalePurchaseTds(apply = false, onlyIds, scope2) {
     if (scope2 && (n17(o.company_id) !== n17(scope2.companyId) || !inScope?.has(n17(o.supplier_id)))) continue;
     const supplier = await getSupplier(n17(o.supplier_id));
     if (!supplier) continue;
+    if (tdsManualOf(o) != null) continue;
     const prior = await supplierFyTaxable(n17(o.supplier_id), String(o.order_date), id, n17(o.company_id) || void 0);
     const basePct = supplier.tds_above_only ? 0 : n17(o.tds_pct);
     const tds = round232(tier(n17(o.taxable_value), prior, n17(supplier.tds_threshold), basePct, n17(o.tds_pct)));
@@ -21358,7 +21398,17 @@ async function assertNotInUse(table, id) {
 async function remove(table, id) {
   assertTable(table);
   await assertNotInUse(table, id);
+  const party = PARTY_KIND[table];
+  const nameRow = party ? (await getClient().execute({ sql: `SELECT name FROM ${table} WHERE id = ?`, args: [id] })).rows[0] : null;
   await getClient().execute({ sql: `DELETE FROM ${table} WHERE id = ?`, args: [id] });
+  if (party) {
+    await getClient().execute({ sql: "DELETE FROM party_openings WHERE kind = ? AND party_id = ?", args: [party, id] }).catch(() => void 0);
+    const led = nameRow ? (await getClient().execute({ sql: "SELECT id FROM ledger_accounts WHERE TRIM(UPPER(name)) = TRIM(UPPER(?))", args: [String(nameRow.name)] })).rows[0] : null;
+    if (led) {
+      const { deleteLedger: deleteLedger2 } = await Promise.resolve().then(() => (init_ledgerGroups(), ledgerGroups_exports));
+      await deleteLedger2(Number(led.id)).catch(() => void 0);
+    }
+  }
   return { id };
 }
 async function getSetting(key3) {
@@ -21380,7 +21430,7 @@ async function allSettings() {
   for (const r of res.rows) out[r.key] = r.value;
   return out;
 }
-var TABLES, COMPANY_SCOPED_TABLES, masterCache, TDS_COLS, LEDGER_MASTERS, n23, DEPENDENTS;
+var TABLES, COMPANY_SCOPED_TABLES, masterCache, TDS_COLS, LEDGER_MASTERS, n23, DEPENDENTS, PARTY_KIND;
 var init_repos = __esm({
   "src/main/repos.ts"() {
     init_db();
@@ -21503,14 +21553,17 @@ var init_repos = __esm({
         { table: "purchase_tankers", column: "supplier_id", label: "tanker" },
         { table: "consignment_stock", column: "supplier_id", label: "consignment lot" },
         { table: "supplier_ledger", column: "supplier_id", label: "ledger entry" },
-        { table: "gate_entries", column: "supplier_id", label: "gate entry" }
+        { table: "gate_entries", column: "supplier_id", label: "gate entry" },
+        { table: "sales", column: "return_supplier_id", label: "purchase return" },
+        { table: "suppliers", column: "linked_party_id", label: "linked side" }
       ],
       customers: [
         { table: "sales", column: "customer_id", label: "sale" },
         { table: "sales_bargains", column: "customer_id", label: "sales bargain" },
         { table: "customer_ledger", column: "customer_id", label: "ledger entry" },
         { table: "gate_entries", column: "customer_id", label: "gate entry" },
-        { table: "packaging_parties", column: "customer_id", label: "packed-SKU link" }
+        { table: "packaging_parties", column: "customer_id", label: "packed-SKU link" },
+        { table: "customers", column: "linked_party_id", label: "linked side" }
       ],
       products: [
         { table: "sales", column: "product_id", label: "sale" },
@@ -21543,6 +21596,7 @@ var init_repos = __esm({
         { table: "purchase_tankers", column: "oil_type_id", label: "tanker" }
       ]
     };
+    PARTY_KIND = { suppliers: "supplier", customers: "customer", transporters: "transporter", brokers: "broker" };
   }
 });
 
@@ -35892,6 +35946,9 @@ var REQUIRED_COLUMNS = [
   { table: "customers", column: "gst_regs", type: "TEXT" },
   { table: "orders", column: "party_gstin", type: "TEXT" },
   { table: "sales", column: "party_gstin", type: "TEXT" },
+  // A label the desk puts on an invoice ("Trading sale"); nothing reads it but
+  // the lists. Not is_trading, which moves a sale out of the register.
+  { table: "sales", column: "trading_mark", type: "INTEGER" },
   // The desk's own voucher type (PURCHASE OTHERS under Purchase) — a label on
   // top of the basic type, which keeps the number series (voucherSubtypes.ts).
   { table: "journal_entries", column: "vch_subtype", type: "TEXT" },
@@ -35922,6 +35979,8 @@ var REQUIRED_COLUMNS = [
   { table: "bd_repayments", column: "comm_charges", type: "REAL" },
   { table: "bd_repayments", column: "bank_charges", type: "REAL" },
   { table: "orders", column: "bill_group", type: "TEXT" },
+  // A TDS typed on the purchase in place of the slab's (NULL = worked out).
+  { table: "orders", column: "tds_manual", type: "REAL" },
   // The parcel a part-withdrawal was cut from, so releasing the invoice can
   // put the two halves back together (see applyConsignmentDraw).
   { table: "consignment_stock", column: "split_from", type: "INTEGER" }
@@ -42802,6 +42861,7 @@ function registerIpc() {
   handle("sales:tdsPreview", (_e, { id }) => saleTdsPreview(id));
   handle("sales:tdsPost", (_e, { values }) => postSaleTds(values));
   handle("sales:tdsRemove", (_e, { id }) => removeSaleTds(id));
+  handle("sales:setTradingMark", (_e, { id, on }) => setSaleTradingMark(id, on));
   handle("sales:tdsMap", (_e, args) => saleTdsMap(args?.companyIds));
   handle(
     "salesBargains:list",
