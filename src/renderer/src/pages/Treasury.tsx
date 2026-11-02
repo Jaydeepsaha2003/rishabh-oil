@@ -7409,6 +7409,9 @@ function TreasuryDesk({ onCompanyChange, focusLcId, focusBdId, onFocusHandled }:
                               <th className="px-3 py-2 text-right">LC amount</th>
                               <th className="px-3 py-2 text-right">Days</th>
                               <th className="px-3 py-2 text-right">Interest</th>
+                              {/* What is still owed to the bank on each part — a repaid part owes nothing. */}
+                              <th className="px-3 py-2 text-right">Open amount</th>
+                              <th className="px-3 py-2 text-right">Open interest</th>
                               <th className="px-3 py-2 text-left">Matures</th>
                               <th className="px-4 py-2 text-left">State</th>
                             </tr>
@@ -7421,6 +7424,8 @@ function TreasuryDesk({ onCompanyChange, focusLcId, focusBdId, onFocusHandled }:
                                 <td className="px-3 py-2 text-right font-bold tabular-nums">{formatINR(p.amount)}</td>
                                 <td className="px-3 py-2 text-right tabular-nums">{p.days || '—'}</td>
                                 <td className="px-3 py-2 text-right tabular-nums">{formatINR(p.interest)}</td>
+                                <td className="px-3 py-2 text-right font-bold tabular-nums">{p.repaid_date ? '—' : formatINR(p.amount)}</td>
+                                <td className="px-3 py-2 text-right tabular-nums">{p.repaid_date ? '—' : formatINR(p.interest)}</td>
                                 <td className={cn('px-3 py-2 tabular-nums', p.repaid_date && 'line-through')}>{formatDate(p.maturity_date)}</td>
                                 <td className="px-4 py-2">
                                   {p.repaid_date ? (
@@ -7436,6 +7441,8 @@ function TreasuryDesk({ onCompanyChange, focusLcId, focusBdId, onFocusHandled }:
                               <td className="px-3 py-2 text-right tabular-nums">{formatINR(lcPartsOf(dRow).reduce((t, p) => t + p.amount, 0))}</td>
                               <td />
                               <td className="px-3 py-2 text-right tabular-nums">{formatINR(lcPartsOf(dRow).reduce((t, p) => t + p.interest, 0))}</td>
+                              <td className="px-3 py-2 text-right tabular-nums">{formatINR(lcPartsOf(dRow).filter((p) => !p.repaid_date).reduce((t, p) => t + p.amount, 0))}</td>
+                              <td className="px-3 py-2 text-right tabular-nums">{formatINR(lcPartsOf(dRow).filter((p) => !p.repaid_date).reduce((t, p) => t + p.interest, 0))}</td>
                               <td colSpan={2} className="px-3 py-2 text-[11.5px] font-semibold text-[#5A6B62]">
                                 {lcPartsOf(dRow).filter((p) => !p.repaid_date).length} open
                               </td>
