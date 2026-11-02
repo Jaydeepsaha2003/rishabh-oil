@@ -5699,7 +5699,18 @@ export function Accounts({
     // books start whose tanker was emptied after (TI/DL1/26/317) is inside
     // it; the Empty date view still lists it on its empty date, as a memo
     // line ("In opening") that moves neither the balance nor the totals.
-    let lines = ledgerLines
+    // INVOICE DATE VIEW: a purchase reads on its invoice date even where its
+    // voucher is booked on another day (one invoiced before the books start
+    // is booked on its empty date — journal.ts purchasePostingDate).
+    let lines = lgTankerEmpty
+      ? ledgerLines
+      : ledgerLines
+          .map((l, i) => {
+            const inv = String(l.order_date || '').slice(0, 10)
+            return { l: inv && inv !== String(l.entry_date).slice(0, 10) ? { ...l, posted_date: l.entry_date, entry_date: inv } : l, i }
+          })
+          .sort((a, b) => String(a.l.entry_date).localeCompare(String(b.l.entry_date)) || a.i - b.i)
+          .map((x) => x.l)
     if (lgTankerEmpty) {
       const moved: Row[] = []
       for (const l of lgPreBooks) {
@@ -17374,7 +17385,15 @@ export function Accounts({
                       Not emptied
                     </span>
                   ) : (
-                    <span title={r.invoice_date && r.invoice_date !== r.entry_date ? `Emptied ${formatDate(r.entry_date)} · invoice ${formatDate(r.invoice_date)}` : undefined}>
+                    <span
+                      title={
+                        r.posted_date
+                          ? `Invoice ${formatDate(r.entry_date)} · booked ${formatDate(r.posted_date)}`
+                          : r.invoice_date && r.invoice_date !== r.entry_date
+                            ? `Emptied ${formatDate(r.entry_date)} · invoice ${formatDate(r.invoice_date)}`
+                            : undefined
+                      }
+                    >
                       {formatDate(r.entry_date)}
                       {r.in_opening && (
                         <span
