@@ -916,6 +916,16 @@ This was one bank debit that also cleared ${others.map((g) => `${s(g.bd_no)} ${f
   const sched = Array.isArray(interest) ? interest : []
   const servicedPaid = sched.filter((x) => x.paid_id).length
   const withRepay = sched.some((x) => x.mode === 'with_repayment')
+  // SERVICED INTEREST runs on the principal still out, so the terms card reads
+  // the schedule's total (it falls with each repayment) rather than the
+  // full-principal figure the bill was opened with.
+  if (sched.length) {
+    const gross = round2(sched.reduce((t, x) => t + n(x.gross), 0))
+    const it = terms.find((t) => t.k === 'Interest')
+    if (it) it.sub = `${formatNum(n(r.intDays))} days · ${formatINR(gross)} on the balance out`
+    const tt = terms.find((t) => t.k === 'TDS')
+    if (tt) tt.sub = formatINR(round2((gross * n(r.tds_pct)) / 100))
+  }
 
   // WHAT WAS ACTUALLY PAID TO THE NBFC, PAYMENT BY PAYMENT.
   //
