@@ -16257,7 +16257,6 @@ async function assertOnwardSale(tanker, v) {
   const buyer = n16(o.buyer_company_id);
   if (!buyer) throw new Error("This tanker is a trading company's \u2014 pick the company it is sold to before marking it Empty");
   if (buyer === n16(tanker.company_id)) throw new Error("A company cannot sell the tanker to itself \u2014 pick the buying company");
-  if (!s(o.purchase_invoice_no).trim()) throw new Error("Enter the purchase invoice number the buying company books this tanker under");
   if (!s(o.sale_invoice_no).trim()) throw new Error("Enter the sale invoice number for this tanker");
   if (!(n16(o.rate) > 0)) throw new Error("Enter the sale rate per MT");
 }
@@ -16298,7 +16297,8 @@ async function raiseOnwardSale(tankerId, v) {
       customer_id: n16(cust.id),
       // Ex: the goods are handed over at our own gate — nothing to deliver.
       freight_term: "FREIGHT_ON_GOODS",
-      purchase_invoice_no: s(o.purchase_invoice_no).trim(),
+      // The buyer books its purchase under this same number (intercompany.ts).
+      purchase_invoice_no: s(o.sale_invoice_no).trim(),
       // The oil was never in a finished-goods tank to be checked against; it
       // goes from the tanker into the buyer's.
       force_no_stock: true,
@@ -19311,7 +19311,10 @@ function purchasePayload(sale, v, buyer, supplierId, terms) {
     oil_type_id: n18(sale.product_id),
     ordered_qty: n18(sale.qty),
     uom: s2(sale.uom || "MT"),
-    invoice_no: s2(v.purchase_invoice_no).trim(),
+    // ONE TRANSFER, ONE NUMBER: the buyer's purchase carries the sale's own
+    // invoice number (KRFIN/140 in both books). A number typed separately is
+    // only a fallback for a sale that has none yet.
+    invoice_no: s2(sale.invoice_no).trim() || s2(v.purchase_invoice_no).trim(),
     invoice_rate: pairedRate(sale),
     order_date: s2(sale.sale_date).slice(0, 10),
     gst_pct: terms.gst,
@@ -19333,8 +19336,8 @@ async function stampPair(orderId, saleId, group) {
 async function raisePairedPurchase(sale, v) {
   const buyer = await companyOfCustomer(n18(sale.customer_id));
   if (!buyer || buyer === n18(sale.company_id)) return 0;
-  const invoiceNo = s2(v.purchase_invoice_no).trim();
-  if (!invoiceNo) throw new Error("Enter the purchase invoice number the other company books this under");
+  const invoiceNo = s2(sale.invoice_no).trim() || s2(v.purchase_invoice_no).trim();
+  if (!invoiceNo) throw new Error("Give the sale its invoice number \u2014 the other company books its purchase under the same number");
   if (pairedRate(sale) <= 0) {
     throw new Error("This sale has no rate yet \u2014 the transfer is booked at the same rate on both sides");
   }
@@ -29673,17 +29676,21 @@ async function moneyGroupsSql(withCash = true) {
 async function pickBankVouchers(v) {
   const c = getClient();
   const BANKS = await moneyGroupsSql(false);
+  const rFrom = String(v.range?.from || "").slice(0, 10);
+  const rTo = String(v.range?.to || "").slice(0, 10);
   const raw = String(v.q || "").trim();
   const num2 = raw.replace(/[,\s₹]/g, "");
   const isNum = /^\d+(\.\d+)?$/.test(num2);
   const like = `%${raw.toUpperCase()}%`;
   const text = raw && !isNum;
-  const wide = !!raw || !!v.ledgerId;
+  const wide = !!raw || !!v.ledgerId || !!rFrom || !!rTo;
   const dated = !!v.from && !wide;
   const res = await c.execute({
     sql: `SELECT je.id FROM journal_entries je
            WHERE je.company_id = ?
              ${dated ? "AND je.entry_date >= date(?, '-30 days')" : ""}
+             ${rFrom ? "AND je.entry_date >= ?" : ""}
+             ${rTo ? "AND je.entry_date <= ?" : ""}
              -- A bank voucher; or, when searching or by ledger, any voucher \u2014
              -- a commission booked by journal (Tally's JV) is linked too.
              ${wide ? "" : `AND EXISTS (SELECT 1 FROM journal_lines jl JOIN ledger_accounts a ON a.id = jl.account_id
@@ -29693,8 +29700,8 @@ async function pickBankVouchers(v) {
              ${text ? `AND (UPPER(COALESCE(je.narration, '') || ' ' || COALESCE(je.vch_no, '')) LIKE ?
                       OR EXISTS (SELECT 1 FROM voucher_numbers nn WHERE nn.entry_id = je.id AND UPPER(nn.prefix || '/' || nn.serial) LIKE ?)
                       OR EXISTS (SELECT 1 FROM journal_lines jl JOIN ledger_accounts a ON a.id = jl.account_id WHERE jl.entry_id = je.id AND UPPER(a.name) LIKE ?))` : ""}
-           ORDER BY je.entry_date DESC, je.id DESC LIMIT 600`,
-    args: [v.companyId, ...dated ? [v.from] : [], v.lcId, ...v.ledgerId ? [v.ledgerId] : [], ...text ? [like, like, like] : []]
+           ORDER BY je.entry_date DESC, je.id DESC ${wide ? "" : "LIMIT 600"}`,
+    args: [v.companyId, ...dated ? [v.from] : [], ...rFrom ? [rFrom] : [], ...rTo ? [rTo] : [], v.lcId, ...v.ledgerId ? [v.ledgerId] : [], ...text ? [like, like, like] : []]
   });
   const out = [];
   const briefBanks = await moneyGroupsSql();
@@ -29705,7 +29712,7 @@ async function pickBankVouchers(v) {
     out.push(b);
   }
   out.sort((a, b) => Math.abs(n46(a.amount) - v.expected) - Math.abs(n46(b.amount) - v.expected));
-  return out.slice(0, wide ? 300 : 100);
+  return wide ? out : out.slice(0, 100);
 }
 async function voucherBrief(entryId, dir = "out", banks) {
   const BANKS = banks || await moneyGroupsSql();
@@ -29731,7 +29738,7 @@ async function voucherBrief(entryId, dir = "out", banks) {
   }
   return { ...r, amount: round222(n46(r.amount)) };
 }
-async function lcCommissionCandidates(lcId, q, ledgerId) {
+async function lcCommissionCandidates(lcId, q, ledgerId, range = {}) {
   const c = getClient();
   const l = (await c.execute({ sql: "SELECT id, company_id, amount, commission_pct, opened_date, open_date FROM letters_of_credit WHERE id = ?", args: [n46(lcId)] })).rows[0];
   if (!l) throw new Error("That LC no longer exists");
@@ -29742,9 +29749,11 @@ async function lcCommissionCandidates(lcId, q, ledgerId) {
     from: dates[0] || "",
     dir: "out",
     linkCol: "commission_voucher_id",
-    expected: round222(n46(l.amount) * n46(l.commission_pct) / 100),
+    // Nearest to the LC's % — or, while it has none, the bank's, as the panel shows.
+    expected: round222(n46(l.amount) * (l.commission_pct == null ? n46((await lcCommission(n46(lcId))).bank_pct) : n46(l.commission_pct)) / 100),
     q,
-    ledgerId
+    ledgerId,
+    range
   });
 }
 async function setLcCommissionPct(lcId, pct) {
@@ -29786,7 +29795,7 @@ async function lcRefund(lcId) {
     difference: voucher && expected != null ? round222(n46(voucher.amount) - expected) : null
   };
 }
-async function lcRefundCandidates(lcId, q, ledgerId) {
+async function lcRefundCandidates(lcId, q, ledgerId, range = {}) {
   const c = getClient();
   const l = (await c.execute({ sql: "SELECT id, company_id, preclosed_date, preclose_premature_interest FROM letters_of_credit WHERE id = ?", args: [n46(lcId)] })).rows[0];
   if (!l) throw new Error("That LC no longer exists");
@@ -29798,7 +29807,8 @@ async function lcRefundCandidates(lcId, q, ledgerId) {
     linkCol: "refund_voucher_id",
     expected: round222(n46(l.preclose_premature_interest)),
     q,
-    ledgerId
+    ledgerId,
+    range
   });
 }
 async function linkLcRefund(lcId, entryId) {
@@ -36050,6 +36060,33 @@ async function runStartupTasks() {
     }
     if (moved.length) console.log("[journal] purchase vouchers moved into the books:", moved);
   }).catch((e) => console.error("[journal] pre-books purchase re-date failed:", e));
+  await runOnce("intercompany_same_invoice_no_v1", async () => {
+    const c = getClient();
+    await c.execute(`CREATE TABLE IF NOT EXISTS accounting_repair_log (
+        repair_key TEXT PRIMARY KEY, entry_id INTEGER NOT NULL, before_json TEXT NOT NULL,
+        created_at TEXT NOT NULL DEFAULT (datetime('now')))`);
+    const rows2 = (await c.execute(`
+      SELECT o.id, o.invoice_no AS was, s.invoice_no AS now FROM orders o JOIN sales s ON s.id = o.intercompany_sale_id
+       WHERE TRIM(COALESCE(s.invoice_no, '')) <> '' AND TRIM(COALESCE(o.invoice_no, '')) <> TRIM(s.invoice_no)`)).rows;
+    for (const r of rows2) {
+      const was = String(r.was || "");
+      const now = String(r.now).trim();
+      await c.execute({
+        sql: "INSERT OR REPLACE INTO accounting_repair_log(repair_key, entry_id, before_json) VALUES (?, ?, ?)",
+        args: [`intercompany_same_invoice_no:${Number(r.id)}`, 0, JSON.stringify(r)]
+      });
+      await c.execute({ sql: "UPDATE orders SET invoice_no = ? WHERE id = ?", args: [now, Number(r.id)] });
+      if (was) {
+        await c.execute({
+          sql: `UPDATE journal_entries SET vch_no = CASE WHEN vch_no = ? THEN ? ELSE vch_no END,
+                       narration = REPLACE(COALESCE(narration, ''), ?, ?)
+                 WHERE order_id = ?`,
+          args: [was, now, was, now, Number(r.id)]
+        });
+      }
+    }
+    if (rows2.length) console.log("[intercompany] purchases renumbered to their sale invoice no:", rows2);
+  }).catch((e) => console.error("[intercompany] same invoice no failed:", e));
   await runOnce("lc_settlement_payment_date_v1", async () => {
     const { resyncLcSettlement: resyncLcSettlement2 } = await Promise.resolve().then(() => (init_treasury(), treasury_exports));
     const r = await getClient().execute(`
@@ -43219,7 +43256,7 @@ function registerIpc() {
   handle("lc:commission", async (_e, { id }) => (await Promise.resolve().then(() => (init_lc(), lc_exports))).lcCommission(Number(id)));
   handle(
     "lc:commissionCandidates",
-    async (_e, { id, q, ledgerId }) => (await Promise.resolve().then(() => (init_lc(), lc_exports))).lcCommissionCandidates(Number(id), q, Number(ledgerId) || void 0)
+    async (_e, { id, q, ledgerId, dateFrom, dateTo }) => (await Promise.resolve().then(() => (init_lc(), lc_exports))).lcCommissionCandidates(Number(id), q, Number(ledgerId) || void 0, { from: dateFrom, to: dateTo })
   );
   handle(
     "lc:setCommissionPct",
@@ -43232,7 +43269,7 @@ function registerIpc() {
   handle("lc:refund", async (_e, { id }) => (await Promise.resolve().then(() => (init_lc(), lc_exports))).lcRefund(Number(id)));
   handle(
     "lc:refundCandidates",
-    async (_e, { id, q, ledgerId }) => (await Promise.resolve().then(() => (init_lc(), lc_exports))).lcRefundCandidates(Number(id), q, Number(ledgerId) || void 0)
+    async (_e, { id, q, ledgerId, dateFrom, dateTo }) => (await Promise.resolve().then(() => (init_lc(), lc_exports))).lcRefundCandidates(Number(id), q, Number(ledgerId) || void 0, { from: dateFrom, to: dateTo })
   );
   handle(
     "lc:linkRefund",
