@@ -1,9 +1,11 @@
 import { useCallback, useEffect, useState } from 'react'
 import { toast } from 'sonner'
-import { AlertTriangle, Link2, Search, Unlink } from 'lucide-react'
+import { AlertTriangle, CalendarDays, Link2, Search, Unlink, X } from 'lucide-react'
 import { errText, formatDate, formatINR } from '@/lib/format'
 import { cn } from '@/lib/utils'
 import { SearchSelect } from '@/components/SearchSelect'
+import { DatePicker } from '@/components/ui/date-picker'
+import { Dialog, DialogContent, DialogTitle } from '@/components/ui/dialog'
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Row = Record<string, any>
@@ -32,6 +34,9 @@ export function LcCommissionLink({
   const [cands, setCands] = useState<Row[] | null>(null)
   // A ledger picked: only the vouchers that touch it (the bank, the charges…).
   const [ledgerId, setLedgerId] = useState('')
+  // Only the vouchers dated in this range (either end may be left open).
+  const [dFrom, setDFrom] = useState('')
+  const [dTo, setDTo] = useState('')
   const [ledgers, setLedgers] = useState<Row[]>([])
   useEffect(() => {
     if (!picking || ledgers.length) return
@@ -74,7 +79,9 @@ export function LcCommissionLink({
     setCands(null)
     const t = setTimeout(() => {
       const lid = Number(ledgerId) || undefined
-      ;(refund ? window.api.lc.refundCandidates(lcId, q, lid) : window.api.lc.commissionCandidates(lcId, q, lid))
+      const f = dFrom || undefined
+      const t2 = dTo || undefined
+      ;(refund ? window.api.lc.refundCandidates(lcId, q, lid, f, t2) : window.api.lc.commissionCandidates(lcId, q, lid, f, t2))
         .then((r) => live && setCands(r))
         .catch((e) => toast.error(errText(e)))
     }, 250)
@@ -82,7 +89,7 @@ export function LcCommissionLink({
       live = false
       clearTimeout(t)
     }
-  }, [picking, q, ledgerId, lcId, refund])
+  }, [picking, q, ledgerId, dFrom, dTo, lcId, refund])
 
   const link = async (entryId: number | null): Promise<void> => {
     setBusy(true)
@@ -270,82 +277,141 @@ export function LcCommissionLink({
           </button>
         </div>
       ) : (
-        <div className="min-w-0 overflow-hidden rounded-[6px] border border-[#DCE7DB] bg-white">
-          <div className="flex flex-wrap items-center gap-2 border-b border-[#EAF0E9] px-3 py-2">
-            <label className="flex h-9 min-w-[180px] flex-1 items-center gap-2 rounded-[5px] border border-[#C3D2C6] bg-white px-2.5">
+        <div className="flex min-w-0 items-center gap-2 rounded-[6px] border border-[#C6DAF0] bg-[#F4F8FD] px-3 py-2.5 text-[12px] font-semibold text-[#1B4E82]">
+          <Link2 className="h-4 w-4 flex-none" /> Picking the bank {refund ? 'receipt' : 'voucher'}…
+        </div>
+      )}
+
+      {/* THE PICKER — a wide window of its own, so the voucher, its bank, what it
+          paid, the narration and the figure all read on one line, with the
+          search, a ledger and a date range to narrow it. */}
+      <Dialog open={picking} onOpenChange={(o) => !o && setPicking(false)}>
+        <DialogContent className="flex max-h-[88vh] w-[min(96vw,1180px)] max-w-[1180px] flex-col gap-0 overflow-hidden p-0 sm:max-w-[1180px]">
+          <div className="flex flex-wrap items-center gap-x-4 gap-y-1 bg-[#0B3D2E] px-5 py-3.5 pr-12 text-white">
+            <div className="min-w-0">
+              <div className="text-[9.5px] font-extrabold uppercase tracking-[.14em] text-[#C7F03F]">{refund ? 'Interest refund' : 'Bank commission'}</div>
+              <DialogTitle className="text-[16px] font-extrabold text-white">Link the bank {refund ? 'receipt' : 'voucher'}</DialogTitle>
+            </div>
+            {expected != null && (
+              <div className="ml-auto text-right">
+                <div className="text-[9.5px] font-extrabold uppercase tracking-[.14em] text-white/60">{refund ? 'Should come back' : 'Calculated'}</div>
+                <div className="text-[18px] font-extrabold tabular-nums text-[#C7F03F]">{formatINR(expected)}</div>
+              </div>
+            )}
+          </div>
+
+          <div className="grid gap-2.5 border-b border-[#E4ECE3] bg-[#F7FAF6] px-5 py-3 md:grid-cols-[minmax(0,1.4fr)_minmax(0,1fr)_auto]">
+            <label className="flex h-10 min-w-0 items-center gap-2 rounded-[6px] border border-[#C3D2C6] bg-white px-3">
               <Search className="h-4 w-4 flex-none text-[#5A6B62]" />
               <input
                 autoFocus
                 value={q}
                 onChange={(e) => setQ(e.target.value)}
                 placeholder="Amount (31421 or 31,421), voucher no, narration, ledger"
-                className="min-w-0 flex-1 bg-transparent text-[12.5px] font-semibold outline-none"
+                className="min-w-0 flex-1 bg-transparent text-[13px] font-semibold outline-none"
               />
+              {q && (
+                <button type="button" onClick={() => setQ('')} className="text-[#8CA396] hover:text-[#33473E]" title="Clear">
+                  <X className="h-4 w-4" />
+                </button>
+              )}
             </label>
-            <div className="w-[230px] max-w-full">
-              <SearchSelect
-                value={ledgerId}
-                options={[{ value: '', label: 'All ledgers' }, ...ledgers.map((a) => ({ value: String(a.id), label: String(a.name) }))]}
-                onChange={setLedgerId}
-                placeholder="Filter by ledger"
-                title="Only the vouchers with a line on this ledger"
-              />
+            <SearchSelect
+              value={ledgerId}
+              options={[{ value: '', label: 'All ledgers' }, ...ledgers.map((a) => ({ value: String(a.id), label: String(a.name) }))]}
+              onChange={setLedgerId}
+              placeholder="Filter by ledger"
+              title="Only the vouchers with a line on this ledger"
+            />
+            <div className="flex flex-wrap items-center gap-2">
+              <CalendarDays className="h-4 w-4 flex-none text-[#5A6B62]" />
+              <div className="w-[150px]">
+                <DatePicker value={dFrom} max={dTo || undefined} onChange={(x) => setDFrom(String(x || ''))} placeholder="From" />
+              </div>
+              <span className="text-[11px] font-bold text-[#5A6B62]">to</span>
+              <div className="w-[150px]">
+                <DatePicker value={dTo} min={dFrom || undefined} onChange={(x) => setDTo(String(x || ''))} placeholder="To" />
+              </div>
+              {(dFrom || dTo) && (
+                <button type="button" onClick={() => { setDFrom(''); setDTo('') }} className="text-[11px] font-bold text-[#1B4E82] hover:underline">
+                  Clear dates
+                </button>
+              )}
             </div>
-            <button type="button" onClick={() => setPicking(false)} className="flex-none text-[11px] font-bold text-[#5A6B62] hover:underline">
-              Cancel
-            </button>
           </div>
-          {cands != null && cands.length > 0 && (
-            <div className="border-b border-[#F1F5F0] bg-[#FBFCFA] px-3 py-1 text-[10.5px] font-semibold text-[#5A6B62]">
-              {q.trim() || ledgerId ? `${cands.length} found` : `The ${cands.length} nearest to the figure — search or pick a ledger to see more`}
-            </div>
-          )}
-          <div className="max-h-64 overflow-auto">
+
+          <div className="flex items-center justify-between border-b border-[#EEF3ED] bg-white px-5 py-1.5 text-[11px] font-semibold text-[#5A6B62]">
+            <span>
+              {cands == null
+                ? 'Finding…'
+                : q.trim() || ledgerId || dFrom || dTo
+                  ? `${cands.length} found`
+                  : `The ${cands.length} nearest to the figure — search, pick a ledger or a date range to see more`}
+            </span>
+            <span>Click a row to link it</span>
+          </div>
+
+          <div className="min-h-0 flex-1 overflow-auto">
             {cands == null ? (
-              <div className="px-3 py-3 text-[12px] text-[#5A6B62]">Finding bank {refund ? 'receipts' : 'vouchers'}…</div>
+              <div className="px-5 py-6 text-[12.5px] text-[#5A6B62]">Finding bank {refund ? 'receipts' : 'vouchers'}…</div>
             ) : cands.length === 0 ? (
-              <div className="px-3 py-3 text-[12px] text-[#5A6B62]">
-                {q.trim() || ledgerId
-                  ? 'Nothing matches — try fewer digits, or another ledger.'
-                  : `No bank ${refund ? 'receipt' : 'voucher'} in this company's books from ${refund ? 'the closure' : "the LC's opening"} on.`}
+              <div className="px-5 py-6 text-[12.5px] text-[#5A6B62]">
+                {q.trim() || ledgerId || dFrom || dTo
+                  ? 'Nothing matches — try fewer digits, another ledger or wider dates.'
+                  : `No bank ${refund ? 'receipt' : 'voucher'} in this company's books from ${refund ? 'the closure' : "the LC's application"} on.`}
               </div>
             ) : (
-              cands.map((x) => {
-                const off = expected == null ? null : Math.round((Number(x.amount) - expected) * 100) / 100
-                return (
-                  <button
-                    key={String(x.id)}
-                    type="button"
-                    disabled={busy}
-                    onClick={() => void link(Number(x.id))}
-                    className="grid w-full grid-cols-[78px_minmax(0,1fr)_auto] items-start gap-3 border-b border-[#F1F5F0] px-3 py-2 text-left last:border-b-0 hover:bg-[#F1F8EC]"
-                  >
-                    <span className="pt-px text-[11.5px] font-semibold tabular-nums text-[#5A6B62]">{formatDate(String(x.entry_date))}</span>
-                    <span className="min-w-0">
-                      <span className="block truncate">
-                        <b>{vLabel(x)}</b> <span className="text-[11px] text-[#5A6B62]">{String(x.bank || '')}</span>
-                      </span>
-                      {x.debited ? <span className="block truncate text-[11px] font-semibold text-[#33473E]">{refund ? '← ' : '→ '}{String(x.debited)}</span> : null}
-                      {x.narration ? <span className="block truncate text-[11px] text-[#5A6B62]">{String(x.narration)}</span> : null}
-                    </span>
-                    {/* The figure always shows: the reason to pick one over another. */}
-                    <span className="whitespace-nowrap text-right">
-                      <span className={cn('block font-bold tabular-nums', off != null && Math.abs(off) < 1 ? 'text-[#0B6B45]' : 'text-[#0A1F17]')}>
-                        {formatINR(Number(x.amount))}
-                      </span>
-                      {off != null && (
-                        <span className="block text-[10px] font-semibold tabular-nums text-[#5A6B62]">
-                          {Math.abs(off) < 1 ? 'matches' : `${off > 0 ? '+' : '−'}${formatINR(Math.abs(off))}`}
-                        </span>
-                      )}
-                    </span>
-                  </button>
-                )
-              })
+              <table className="w-full border-collapse text-[12.5px]">
+                <thead className="sticky top-0 z-10 bg-[#0B3D2E] text-[9.5px] font-extrabold uppercase tracking-[.12em] text-white">
+                  <tr>
+                    <th className="w-[96px] px-4 py-2.5 text-left">Date</th>
+                    <th className="w-[120px] px-3 py-2.5 text-left">Voucher</th>
+                    <th className="px-3 py-2.5 text-left">{refund ? 'Received in' : 'Paid from'}</th>
+                    <th className="px-3 py-2.5 text-left">{refund ? 'From' : 'Paid to'}</th>
+                    <th className="px-3 py-2.5 text-left">Narration</th>
+                    <th className="w-[130px] px-3 py-2.5 text-right">Amount</th>
+                    <th className="w-[120px] px-4 py-2.5 text-right">Vs calculated</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {cands.map((x, i) => {
+                    const off = expected == null ? null : Math.round((Number(x.amount) - expected) * 100) / 100
+                    const hit = off != null && Math.abs(off) < 1
+                    return (
+                      <tr
+                        key={String(x.id)}
+                        onClick={() => !busy && void link(Number(x.id))}
+                        className={cn('cursor-pointer border-b border-[#EEF3ED] align-top hover:bg-[#F1F8EC]', i % 2 === 1 && 'bg-[#FBFCFA]', hit && 'bg-[#EFF9F2]')}
+                      >
+                        <td className="whitespace-nowrap px-4 py-2 font-semibold tabular-nums text-[#33473E]">{formatDate(String(x.entry_date))}</td>
+                        <td className="whitespace-nowrap px-3 py-2">
+                          <span className="font-extrabold text-[#0A1F17]">{vLabel(x)}</span>
+                          <span className="block text-[10.5px] font-semibold text-[#5A6B62]">{String(x.vch_type || '')}</span>
+                        </td>
+                        <td className="max-w-[220px] px-3 py-2 text-[12px] text-[#33473E]">{String(x.bank || '—')}</td>
+                        <td className="max-w-[240px] px-3 py-2 text-[12px] font-semibold text-[#0A1F17]">{String(x.debited || '—')}</td>
+                        <td className="max-w-[320px] px-3 py-2 text-[11.5px] text-[#5A6B62]">
+                          <span className="line-clamp-2">{String(x.narration || '')}</span>
+                        </td>
+                        <td className={cn('whitespace-nowrap px-3 py-2 text-right font-extrabold tabular-nums', hit ? 'text-[#0B6B45]' : 'text-[#0A1F17]')}>{formatINR(Number(x.amount))}</td>
+                        <td className="whitespace-nowrap px-4 py-2 text-right text-[11.5px] font-semibold tabular-nums">
+                          {off == null ? (
+                            <span className="text-[#9AAFA2]">—</span>
+                          ) : hit ? (
+                            <span className="rounded-[3px] bg-[#E9F5EE] px-1.5 py-0.5 font-extrabold text-[#0B6B45]">matches</span>
+                          ) : (
+                            <span className="text-[#5A6B62]">{`${off > 0 ? '+' : '−'}${formatINR(Math.abs(off))}`}</span>
+                          )}
+                        </td>
+                      </tr>
+                    )
+                  })}
+                </tbody>
+              </table>
             )}
           </div>
-        </div>
-      )}
+        </DialogContent>
+      </Dialog>
     </div>
   )
 }

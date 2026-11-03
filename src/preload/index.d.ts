@@ -621,11 +621,11 @@ export interface Api {
     getLimit: (bankId?: number, from?: string, to?: string) => Promise<Row>
     bankLimits: () => Promise<Row[]>
     commission: (id: number) => Promise<Row>
-    commissionCandidates: (id: number, q?: string, ledgerId?: number) => Promise<Row[]>
+    commissionCandidates: (id: number, q?: string, ledgerId?: number, dateFrom?: string, dateTo?: string) => Promise<Row[]>
     setCommissionPct: (id: number, pct: number | null) => Promise<{ id: number }>
     linkCommission: (id: number, entryId: number | null) => Promise<{ id: number }>
     refund: (id: number) => Promise<Row>
-    refundCandidates: (id: number, q?: string, ledgerId?: number) => Promise<Row[]>
+    refundCandidates: (id: number, q?: string, ledgerId?: number, dateFrom?: string, dateTo?: string) => Promise<Row[]>
     linkRefund: (id: number, entryId: number | null) => Promise<{ id: number }>
     saveLimit: (values: Row) => Promise<{ id: number }>
   }

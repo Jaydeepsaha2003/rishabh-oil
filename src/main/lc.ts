@@ -696,9 +696,14 @@ async function pickBankVouchers(v: {
   expected: number
   q?: string
   ledgerId?: number
+  // Dates picked on the screen: only vouchers in [from, to], instead of the
+  // default window off the LC's own dates.
+  range?: { from?: string; to?: string }
 }): Promise<Row[]> {
   const c = getClient()
   const BANKS = await moneyGroupsSql(false)
+  const rFrom = String(v.range?.from || '').slice(0, 10)
+  const rTo = String(v.range?.to || '').slice(0, 10)
   const raw = String(v.q || '').trim()
   const num = raw.replace(/[,\s₹]/g, '')
   const isNum = /^\d+(\.\d+)?$/.test(num)
@@ -707,11 +712,13 @@ async function pickBankVouchers(v: {
   // Searching or by ledger: every date, every kind of voucher. Browsing: the
   // bank vouchers from a month before the LC was applied for.
   const wide = !!raw || !!v.ledgerId
-  const dated = !!v.from && !wide
+  const dated = !!v.from && !wide && !rFrom && !rTo
   const res = await c.execute({
     sql: `SELECT je.id FROM journal_entries je
            WHERE je.company_id = ?
              ${dated ? "AND je.entry_date >= date(?, '-30 days')" : ''}
+             ${rFrom ? 'AND je.entry_date >= ?' : ''}
+             ${rTo ? 'AND je.entry_date <= ?' : ''}
              -- A bank voucher; or, when searching or by ledger, any voucher —
              -- a commission booked by journal (Tally's JV) is linked too.
              ${
@@ -730,7 +737,7 @@ async function pickBankVouchers(v: {
                  : ''
              }
            ORDER BY je.entry_date DESC, je.id DESC LIMIT 600`,
-    args: [v.companyId, ...(dated ? [v.from] : []), v.lcId, ...(v.ledgerId ? [v.ledgerId] : []), ...(text ? [like, like, like] : [])]
+    args: [v.companyId, ...(dated ? [v.from] : []), ...(rFrom ? [rFrom] : []), ...(rTo ? [rTo] : []), v.lcId, ...(v.ledgerId ? [v.ledgerId] : []), ...(text ? [like, like, like] : [])]
   })
   const out: Row[] = []
   const briefBanks = await moneyGroupsSql()
@@ -743,7 +750,7 @@ async function pickBankVouchers(v: {
   }
   out.sort((a, b) => Math.abs(n(a.amount) - v.expected) - Math.abs(n(b.amount) - v.expected))
   // Browsing: the nearest 100. Searching or by ledger: everything found, to 300.
-  return out.slice(0, wide ? 300 : 100)
+  return out.slice(0, wide || rFrom || rTo ? 300 : 100)
 }
 
 async function voucherBrief(entryId: number, dir: 'out' | 'in' = 'out', banks?: string): Promise<Row | null> {
@@ -779,7 +786,7 @@ async function voucherBrief(entryId: number, dir: 'out' | 'in' = 'out', banks?: 
  * company, from a fortnight before it opened on, not already another LC's —
  * the nearest to the expected figure first. `q` narrows by number or narration.
  */
-export async function lcCommissionCandidates(lcId: number, q?: string, ledgerId?: number): Promise<Row[]> {
+export async function lcCommissionCandidates(lcId: number, q?: string, ledgerId?: number, range: { from?: string; to?: string } = {}): Promise<Row[]> {
   const c = getClient()
   const l = (await c.execute({ sql: 'SELECT id, company_id, amount, commission_pct, opened_date, open_date FROM letters_of_credit WHERE id = ?', args: [n(lcId)] })).rows[0] as unknown as Row | undefined
   if (!l) throw new Error('That LC no longer exists')
@@ -792,9 +799,11 @@ export async function lcCommissionCandidates(lcId: number, q?: string, ledgerId?
     from: dates[0] || '',
     dir: 'out',
     linkCol: 'commission_voucher_id',
-    expected: round2((n(l.amount) * n(l.commission_pct)) / 100),
+    // Nearest to the LC's % — or, while it has none, the bank's, as the panel shows.
+    expected: round2((n(l.amount) * (l.commission_pct == null ? n((await lcCommission(n(lcId))).bank_pct) : n(l.commission_pct))) / 100),
     q,
-    ledgerId
+    ledgerId,
+    range
   })
 }
 
@@ -855,7 +864,7 @@ export async function lcRefund(lcId: number): Promise<Row> {
 }
 
 /** Bank receipts that could be the refund: money into a bank from a fortnight before the closure on. */
-export async function lcRefundCandidates(lcId: number, q?: string, ledgerId?: number): Promise<Row[]> {
+export async function lcRefundCandidates(lcId: number, q?: string, ledgerId?: number, range: { from?: string; to?: string } = {}): Promise<Row[]> {
   const c = getClient()
   const l = (
     await c.execute({ sql: 'SELECT id, company_id, preclosed_date, preclose_premature_interest FROM letters_of_credit WHERE id = ?', args: [n(lcId)] })
@@ -869,7 +878,8 @@ export async function lcRefundCandidates(lcId: number, q?: string, ledgerId?: nu
     linkCol: 'refund_voucher_id',
     expected: round2(n(l.preclose_premature_interest)),
     q,
-    ledgerId
+    ledgerId,
+    range
   })
 }
 

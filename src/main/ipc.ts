@@ -1780,8 +1780,8 @@ export function registerIpc(): void {
   )
   handle('lc:bankLimits', () => listBankLcLimits())
   handle('lc:commission', async (_e, { id }: { id: number }) => (await import('./lc')).lcCommission(Number(id)))
-  handle('lc:commissionCandidates', async (_e, { id, q, ledgerId }: { id: number; q?: string; ledgerId?: number }) =>
-    (await import('./lc')).lcCommissionCandidates(Number(id), q, Number(ledgerId) || undefined)
+  handle('lc:commissionCandidates', async (_e, { id, q, ledgerId, dateFrom, dateTo }: { id: number; q?: string; ledgerId?: number; dateFrom?: string; dateTo?: string }) =>
+    (await import('./lc')).lcCommissionCandidates(Number(id), q, Number(ledgerId) || undefined, { from: dateFrom, to: dateTo })
   )
   handle('lc:setCommissionPct', async (_e, { id, pct }: { id: number; pct: number | null }) =>
     (await import('./lc')).setLcCommissionPct(Number(id), pct == null ? null : Number(pct))
@@ -1790,8 +1790,8 @@ export function registerIpc(): void {
     (await import('./lc')).linkLcCommission(Number(id), entryId ? Number(entryId) : null)
   )
   handle('lc:refund', async (_e, { id }: { id: number }) => (await import('./lc')).lcRefund(Number(id)))
-  handle('lc:refundCandidates', async (_e, { id, q, ledgerId }: { id: number; q?: string; ledgerId?: number }) =>
-    (await import('./lc')).lcRefundCandidates(Number(id), q, Number(ledgerId) || undefined)
+  handle('lc:refundCandidates', async (_e, { id, q, ledgerId, dateFrom, dateTo }: { id: number; q?: string; ledgerId?: number; dateFrom?: string; dateTo?: string }) =>
+    (await import('./lc')).lcRefundCandidates(Number(id), q, Number(ledgerId) || undefined, { from: dateFrom, to: dateTo })
   )
   handle('lc:linkRefund', async (_e, { id, entryId }: { id: number; entryId: number | null }) =>
     (await import('./lc')).linkLcRefund(Number(id), entryId ? Number(entryId) : null)
