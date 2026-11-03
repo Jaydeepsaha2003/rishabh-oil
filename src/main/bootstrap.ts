@@ -3331,6 +3331,39 @@ export async function runStartupTasks(): Promise<void> {
     if (moved.length) console.log('[journal] purchase vouchers moved into the books:', moved)
   }).catch((e) => console.error('[journal] pre-books purchase re-date failed:', e))
 
+  // ONE TRANSFER, ONE NUMBER — once, at start (asked for on 2026-11-03). An
+  // inter-company purchase raised at a trading tanker's Empty took whatever was
+  // typed as the buyer's number (26-27/MFG-525, the original supplier's), not
+  // the sale's own (KRFIN/140). It now takes the sale's; this brings the old
+  // ones in line — the purchase's invoice no and its voucher's reference.
+  await runOnce('intercompany_same_invoice_no_v1', async () => {
+    const c = getClient()
+    await c.execute(`CREATE TABLE IF NOT EXISTS accounting_repair_log (
+        repair_key TEXT PRIMARY KEY, entry_id INTEGER NOT NULL, before_json TEXT NOT NULL,
+        created_at TEXT NOT NULL DEFAULT (datetime('now')))`)
+    const rows = (await c.execute(`
+      SELECT o.id, o.invoice_no AS was, s.invoice_no AS now FROM orders o JOIN sales s ON s.id = o.intercompany_sale_id
+       WHERE TRIM(COALESCE(s.invoice_no, '')) <> '' AND TRIM(COALESCE(o.invoice_no, '')) <> TRIM(s.invoice_no)`)).rows as unknown as { id: number; was: string; now: string }[]
+    for (const r of rows) {
+      const was = String(r.was || '')
+      const now = String(r.now).trim()
+      await c.execute({
+        sql: 'INSERT OR REPLACE INTO accounting_repair_log(repair_key, entry_id, before_json) VALUES (?, ?, ?)',
+        args: [`intercompany_same_invoice_no:${Number(r.id)}`, 0, JSON.stringify(r)]
+      })
+      await c.execute({ sql: 'UPDATE orders SET invoice_no = ? WHERE id = ?', args: [now, Number(r.id)] })
+      if (was) {
+        await c.execute({
+          sql: `UPDATE journal_entries SET vch_no = CASE WHEN vch_no = ? THEN ? ELSE vch_no END,
+                       narration = REPLACE(COALESCE(narration, ''), ?, ?)
+                 WHERE order_id = ?`,
+          args: [was, now, was, now, Number(r.id)]
+        })
+      }
+    }
+    if (rows.length) console.log('[intercompany] purchases renumbered to their sale invoice no:', rows)
+  }).catch((e) => console.error('[intercompany] same invoice no failed:', e))
+
   // LC SETTLEMENTS DATED OFF THEIR PAYMENT-RECEIVED DATE — once, at start
   // (asked for on 2026-10-24, for 005LM02262480003/4). A re-save now dates
   // the settlement by Payment received (resyncLcSettlement); this does that

@@ -368,7 +368,10 @@ function purchasePayload(
     oil_type_id: n(sale.product_id),
     ordered_qty: n(sale.qty),
     uom: s(sale.uom || 'MT'),
-    invoice_no: s(v.purchase_invoice_no).trim(),
+    // ONE TRANSFER, ONE NUMBER: the buyer's purchase carries the sale's own
+    // invoice number (KRFIN/140 in both books). A number typed separately is
+    // only a fallback for a sale that has none yet.
+    invoice_no: s(sale.invoice_no).trim() || s(v.purchase_invoice_no).trim(),
     invoice_rate: pairedRate(sale),
     order_date: s(sale.sale_date).slice(0, 10),
     gst_pct: terms.gst,
@@ -411,8 +414,8 @@ async function stampPair(orderId: number, saleId: number, group: string): Promis
 export async function raisePairedPurchase(sale: Row, v: Row): Promise<number> {
   const buyer = await companyOfCustomer(n(sale.customer_id))
   if (!buyer || buyer === n(sale.company_id)) return 0
-  const invoiceNo = s(v.purchase_invoice_no).trim()
-  if (!invoiceNo) throw new Error('Enter the purchase invoice number the other company books this under')
+  const invoiceNo = s(sale.invoice_no).trim() || s(v.purchase_invoice_no).trim()
+  if (!invoiceNo) throw new Error('Give the sale its invoice number — the other company books its purchase under the same number')
   // No rate to ask for any more — but a sale of nothing still cannot raise a
   // purchase of nothing, and saying so here beats a silent zero in two ledgers.
   if (pairedRate(sale) <= 0) {

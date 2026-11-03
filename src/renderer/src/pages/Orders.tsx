@@ -2775,7 +2775,6 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
       const o = (actionForm.onward || {}) as Row
       if (o.kind !== 'return') {
       if (!o.buyer_company_id) return void toast.error('Pick the company this tanker is sold to')
-      if (!String(o.purchase_invoice_no || '').trim()) return void toast.error('Enter the purchase invoice number the buying company books it under')
       if (!String(o.sale_invoice_no || '').trim()) return void toast.error('Enter the sale invoice number')
       if (!(Number(o.rate) > 0)) return void toast.error('Enter the sale rate per MT')
       }
@@ -2843,7 +2842,7 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
       }
       if (target === 'empty' && actionForm.onward) {
         const buyer = companies.find((c) => String(c.id) === String(actionForm.onward.buyer_company_id))
-        toast.success(`Tanker emptied and sold to ${String(buyer?.name || 'the buying company')} — sale ${String(actionForm.onward.sale_invoice_no)}, purchase ${String(actionForm.onward.purchase_invoice_no)}`)
+        toast.success(`Tanker emptied and sold to ${String(buyer?.name || 'the buying company')} — invoice ${String(actionForm.onward.sale_invoice_no)} in both books`)
         setActionRow(null)
         setExcess(null)
         await load()
@@ -9733,12 +9732,10 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
                       </Select>
                     </div>
                     <div className="flex flex-col gap-1.5">
-                      <Label>Purchase invoice no (buyer&rsquo;s) <span className="text-red-600">*</span></Label>
-                      <Input value={String(o.purchase_invoice_no || '')} placeholder="The number the buyer books it under" onChange={(e) => setO({ purchase_invoice_no: e.target.value })} />
-                    </div>
-                    <div className="flex flex-col gap-1.5">
                       <Label>Sale invoice no <span className="text-red-600">*</span></Label>
                       <Input className="doc-ref" value={String(o.sale_invoice_no || '')} onChange={(e) => setO({ sale_invoice_no: e.target.value })} />
+                      {/* One transfer, one number: the buyer's purchase carries it too. */}
+                      <span className="text-[10.5px] font-semibold text-muted-foreground">The buyer&rsquo;s purchase is booked under this same number</span>
                     </div>
                     <div className="flex flex-col gap-1.5">
                       <Label>Sale rate /MT <span className="text-red-600">*</span></Label>

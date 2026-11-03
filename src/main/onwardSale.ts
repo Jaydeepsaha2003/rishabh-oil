@@ -60,7 +60,6 @@ export async function assertOnwardSale(tanker: Row, v: Row): Promise<void> {
   const buyer = n(o.buyer_company_id)
   if (!buyer) throw new Error('This tanker is a trading company\'s — pick the company it is sold to before marking it Empty')
   if (buyer === n(tanker.company_id)) throw new Error('A company cannot sell the tanker to itself — pick the buying company')
-  if (!s(o.purchase_invoice_no).trim()) throw new Error('Enter the purchase invoice number the buying company books this tanker under')
   if (!s(o.sale_invoice_no).trim()) throw new Error('Enter the sale invoice number for this tanker')
   if (!(n(o.rate) > 0)) throw new Error('Enter the sale rate per MT')
 }
@@ -105,7 +104,8 @@ export async function raiseOnwardSale(tankerId: number, v: Row): Promise<void> {
       customer_id: n(cust.id),
       // Ex: the goods are handed over at our own gate — nothing to deliver.
       freight_term: 'FREIGHT_ON_GOODS',
-      purchase_invoice_no: s(o.purchase_invoice_no).trim(),
+      // The buyer books its purchase under this same number (intercompany.ts).
+      purchase_invoice_no: s(o.sale_invoice_no).trim(),
       // The oil was never in a finished-goods tank to be checked against; it
       // goes from the tanker into the buyer's.
       force_no_stock: true,

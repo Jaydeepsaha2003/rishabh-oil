@@ -1728,10 +1728,6 @@ function SalesTab({
     // one needs the invoice number it will be filed under — refused here
     // rather than half-written there. The rate is no longer asked for: it is
     // this invoice's own, on both sides.
-    if (interCompany > 0 && !String(header.purchase_invoice_no || '').trim()) {
-      toast.error(`Enter the purchase invoice number ${interCompanyName} books this under`)
-      return
-    }
 
     const payload: Row = {
       ...header,
@@ -3339,14 +3335,13 @@ function SalesTab({
                     it now knows they are one bill in three rows (see
                     bill_group). */}
                 <div className="flex flex-col gap-1.5">
-                  <Label>
-                    Purchase invoice no <span className="text-[#B3261E]">*</span>
-                  </Label>
-                  <Input
-                    value={String(header.purchase_invoice_no || '')}
-                    onChange={(e) => setHeaderField('purchase_invoice_no', e.target.value)}
-                    placeholder={`what ${interCompanyName} books it under`}
-                  />
+                  <Label>Purchase invoice no</Label>
+                  <div
+                    className="flex h-full min-h-9 items-center rounded-[4px] border border-dashed border-[#C3D2C6] bg-[#F7FAF6] px-3 text-[12.5px] font-semibold text-[#33473E]"
+                    title={`${interCompanyName} books its purchase under this invoice's own number`}
+                  >
+                    {String(header.invoice_no || '').trim() ? `${String(header.invoice_no)} — same as this invoice` : 'Same as this invoice'}
+                  </div>
                 </div>
               </>
             )}
