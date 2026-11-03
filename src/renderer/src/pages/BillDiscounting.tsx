@@ -6745,9 +6745,23 @@ export function BillDiscounting({
                             {formatINR(n(intWin?.gross))}
                           </div>
                           <div className="mt-1.5 text-[11px] font-semibold leading-[1.45] text-[#5A6B62] [text-wrap:pretty]">
-                            {formatNum(n(intWin?.interest_pct))}% on {formatINR(n(intWin?.open_amount))} ·{' '}
-                            {formatNum(n(intWin?.days_year))}-day year
+                            {/* On the principal still out each day — so with repayments
+                                inside the window it is the stretches, not one figure. */}
+                            {formatNum(n(intWin?.interest_pct))}% · {formatNum(n(intWin?.days_year))}-day year · on{' '}
+                            {((intWin?.parts as Row[]) || []).length > 1 ? 'the balance outstanding:' : formatINR(n(intWin?.interest_base ?? intWin?.open_amount))}
                           </div>
+                          {((intWin?.parts as Row[]) || []).length > 1 && (
+                            <div className="mt-1 grid gap-0.5 text-[11px] font-semibold tabular-nums text-[#33473E]">
+                              {((intWin?.parts as Row[]) || []).map((pt, k) => (
+                                <div key={k} className="flex justify-between gap-2">
+                                  <span>
+                                    {formatINR(n(pt.principal))} × {formatNum(n(pt.days))}d
+                                  </span>
+                                  <span>{formatINR(n(pt.interest))}</span>
+                                </div>
+                              ))}
+                            </div>
+                          )}
                         </div>
 
                         <div className="min-w-0">
