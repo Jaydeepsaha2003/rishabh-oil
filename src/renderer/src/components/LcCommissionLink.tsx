@@ -345,8 +345,8 @@ export function LcCommissionLink({
               {cands == null
                 ? 'Finding…'
                 : q.trim() || ledgerId || dFrom || dTo
-                  ? `${cands.length} found`
-                  : `The ${cands.length} nearest to the figure — search, pick a ledger or a date range to see more`}
+                  ? `All ${cands.length} found — every kind of voucher, nothing left out`
+                  : `The ${cands.length} bank vouchers nearest to the figure, from a month before the application — search, pick a ledger or set dates to see every voucher`}
             </span>
             <span>Click a row to link it</span>
           </div>

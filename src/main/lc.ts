@@ -711,8 +711,10 @@ async function pickBankVouchers(v: {
   const text = raw && !isNum
   // Searching or by ledger: every date, every kind of voucher. Browsing: the
   // bank vouchers from a month before the LC was applied for.
-  const wide = !!raw || !!v.ledgerId
-  const dated = !!v.from && !wide && !rFrom && !rTo
+  // Searching, by ledger or by dates: EVERY voucher that fits — any kind, no
+  // cap. Only the opening view (nothing typed or picked) is the nearest few.
+  const wide = !!raw || !!v.ledgerId || !!rFrom || !!rTo
+  const dated = !!v.from && !wide
   const res = await c.execute({
     sql: `SELECT je.id FROM journal_entries je
            WHERE je.company_id = ?
@@ -736,7 +738,7 @@ async function pickBankVouchers(v: {
                       OR EXISTS (SELECT 1 FROM journal_lines jl JOIN ledger_accounts a ON a.id = jl.account_id WHERE jl.entry_id = je.id AND UPPER(a.name) LIKE ?))`
                  : ''
              }
-           ORDER BY je.entry_date DESC, je.id DESC LIMIT 600`,
+           ORDER BY je.entry_date DESC, je.id DESC ${wide ? '' : 'LIMIT 600'}`,
     args: [v.companyId, ...(dated ? [v.from] : []), ...(rFrom ? [rFrom] : []), ...(rTo ? [rTo] : []), v.lcId, ...(v.ledgerId ? [v.ledgerId] : []), ...(text ? [like, like, like] : [])]
   })
   const out: Row[] = []
@@ -750,7 +752,7 @@ async function pickBankVouchers(v: {
   }
   out.sort((a, b) => Math.abs(n(a.amount) - v.expected) - Math.abs(n(b.amount) - v.expected))
   // Browsing: the nearest 100. Searching or by ledger: everything found, to 300.
-  return out.slice(0, wide || rFrom || rTo ? 300 : 100)
+  return wide ? out : out.slice(0, 100)
 }
 
 async function voucherBrief(entryId: number, dir: 'out' | 'in' = 'out', banks?: string): Promise<Row | null> {
