@@ -1157,6 +1157,23 @@ function AllocPanel({
   }
   const refs: Row[] = [...pendingRefs, ...ownBills.values()]
   const settledBills: Row[] = linkRefs.filter((r) => !pendingKeys.has(keyOf(r.ref, r.order_id, r.sale_invoice_group)))
+  // ADVANCE / NEW REF NAME THEMSELVES, as Tally fills one in: the next free
+  // ADV-n (or REF-n) on this party — its bills, settled ones and this
+  // voucher's other rows. Still editable.
+  const autoRef = (method: AllocRow['method'], j: number): string => {
+    if (method !== 'advance' && method !== 'new_ref') return ''
+    const prefix = method === 'advance' ? 'ADV-' : 'REF-'
+    const used = new Set(
+      [...pendingRefs, ...linkRefs].map((r) => String(r.ref || '').toUpperCase()).concat(allocs.filter((_, y) => y !== j).map((o) => String(o.ref_name || '').toUpperCase()))
+    )
+    let k = 1
+    for (const u of used) {
+      const m = u.startsWith(prefix) ? Number(u.slice(prefix.length)) : NaN
+      if (Number.isFinite(m) && m >= k) k = m + 1
+    }
+    while (used.has(`${prefix}${k}`)) k++
+    return `${prefix}${k}`
+  }
   // Every bill a row may name — pending or settled — for looking one up.
   const everyBill: Row[] = [...refs, ...settledBills]
   const billLabel = (r: Row): string =>
@@ -1292,7 +1309,7 @@ function AllocPanel({
               <div className="mt-2 grid items-center gap-2" style={{ gridTemplateColumns: '128px minmax(0,1fr) 170px 30px' }} title={WHY[a.method]}>
                 <Select
                   value={a.method}
-                  onValueChange={(v) => set(j, { method: v as AllocRow['method'], ref_name: '', order_id: null, sale_invoice_group: null })}
+                  onValueChange={(v) => set(j, { method: v as AllocRow['method'], ref_name: autoRef(v as AllocRow['method'], j), order_id: null, sale_invoice_group: null })}
                 >
                   <SelectTrigger className="h-8 rounded-[5px] border-[#E3C98C] bg-white px-[9px] text-left text-[11.5px] font-extrabold normal-case text-[#6B4200] shadow-none">
                     <SelectValue />
@@ -1411,7 +1428,7 @@ function AllocPanel({
         return (
         <Fragment key={j}>
         <div className="mb-1 grid grid-cols-[120px_1fr_120px_24px] items-center gap-1.5">
-          <Select value={a.method} onValueChange={(v) => set(j, { method: v as AllocRow['method'], ref_name: '', order_id: null, sale_invoice_group: null })}>
+          <Select value={a.method} onValueChange={(v) => set(j, { method: v as AllocRow['method'], ref_name: autoRef(v as AllocRow['method'], j), order_id: null, sale_invoice_group: null })}>
             <SelectTrigger className="h-7 bg-white text-[12px]"><SelectValue /></SelectTrigger>
             <SelectContent>
               {METHODS.map((m) => <SelectItem key={m.key} value={m.key}>{m.label}</SelectItem>)}
