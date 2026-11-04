@@ -6168,6 +6168,23 @@ function assertSplitsAddUp(lines) {
     }
   }
 }
+async function autoRefName(accountId, method, alsoTaken = []) {
+  const prefix2 = method === "advance" ? "ADV-" : "REF-";
+  const used = new Set(alsoTaken.map((x) => x.trim().toUpperCase()).filter(Boolean));
+  if (accountId) {
+    const r = await getClient().execute({
+      sql: "SELECT DISTINCT UPPER(TRIM(ref_name)) AS r FROM journal_bill_allocs WHERE account_id = ? AND UPPER(ref_name) LIKE ?",
+      args: [accountId, `${prefix2}%`]
+    });
+    for (const x of r.rows) used.add(String(x.r));
+  }
+  let k = 1;
+  for (const u of used) {
+    const m = u.startsWith(prefix2) ? Number(u.slice(prefix2.length)) : NaN;
+    if (Number.isFinite(m) && m >= k) k = m + 1;
+  }
+  return `${prefix2}${k}`;
+}
 async function validateVoucher(v) {
   const lines = (v.lines || []).map((l) => ({
     account: String(l.account || "").trim(),
@@ -6211,6 +6228,10 @@ async function validateVoucher(v) {
     for (const a of l.allocs) {
       if (!["agst_ref", "advance", "on_account", "new_ref"].includes(a.method)) {
         throw new Error(`Unknown adjustment method "${a.method}"`);
+      }
+      if ((a.method === "advance" || a.method === "new_ref") && !a.ref_name) {
+        const acc = await getClient().execute({ sql: "SELECT id FROM ledger_accounts WHERE UPPER(name) = UPPER(?) LIMIT 1", args: [String(l.account || "")] });
+        a.ref_name = await autoRefName(n4(acc.rows[0]?.id), a.method, l.allocs.map((x) => String(x.ref_name || "")));
       }
       if (a.method !== "on_account" && !a.ref_name) {
         throw new Error(
@@ -6313,6 +6334,9 @@ async function setLineAllocs(lineId, allocs) {
     }
     for (const a of rows2) {
       if (!["agst_ref", "advance", "on_account", "new_ref"].includes(a.method)) throw new Error(`Unknown adjustment method "${a.method}"`);
+      if ((a.method === "advance" || a.method === "new_ref") && !a.ref_name) {
+        a.ref_name = await autoRefName(n4(line.account_id), a.method, rows2.map((x) => String(x.ref_name || "")));
+      }
       if (a.method !== "on_account" && !a.ref_name) throw new Error(`${a.method === "agst_ref" ? "Agst Ref" : a.method === "advance" ? "Advance" : "New Ref"} needs a reference name`);
     }
     const before = toPlain4(await c.execute({ sql: "SELECT * FROM journal_bill_allocs WHERE line_id = ?", args: [n4(lineId)] }));
