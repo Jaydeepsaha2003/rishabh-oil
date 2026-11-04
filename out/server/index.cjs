@@ -20507,7 +20507,14 @@ async function settleLcBillsCombined(issuanceIds, dateIn, reuseEntryId) {
       ]
     });
     for (const b of bills) {
-      const ref = b.invoice_no ? String(b.invoice_no) : b.bill_no ? String(b.bill_no) : null;
+      let ref = b.invoice_no ? String(b.invoice_no) : null;
+      if (!ref && String(b.bill_no || "").trim()) {
+        const real = await c.execute({
+          sql: "SELECT 1 FROM orders WHERE UPPER(TRIM(invoice_no)) = UPPER(TRIM(?)) LIMIT 1",
+          args: [String(b.bill_no)]
+        });
+        if (real.rows.length) ref = String(b.bill_no);
+      }
       await allocAgainst2(je.id, party, ref, round27(n21(b.amount)));
     }
     await c.execute({
@@ -36060,6 +36067,25 @@ async function runStartupTasks() {
     }
     if (moved.length) console.log("[journal] purchase vouchers moved into the books:", moved);
   }).catch((e) => console.error("[journal] pre-books purchase re-date failed:", e));
+  await runOnce("lc_settlement_on_account_v1", async () => {
+    const c = getClient();
+    await c.execute(`CREATE TABLE IF NOT EXISTS accounting_repair_log (
+        repair_key TEXT PRIMARY KEY, entry_id INTEGER NOT NULL, before_json TEXT NOT NULL,
+        created_at TEXT NOT NULL DEFAULT (datetime('now')))`);
+    const rows2 = (await c.execute(`
+      SELECT ba.id, ba.ref_name, ba.amount, jl.entry_id FROM journal_bill_allocs ba JOIN journal_lines jl ON jl.id = ba.line_id
+       WHERE ba.method = 'agst_ref' AND ba.order_id IS NULL AND ba.sale_invoice_group IS NULL
+         AND jl.entry_id IN (SELECT journal_entry_id FROM lc_issuances WHERE journal_entry_id IS NOT NULL)
+         AND NOT EXISTS (SELECT 1 FROM orders o WHERE UPPER(TRIM(o.invoice_no)) = UPPER(TRIM(ba.ref_name)))`)).rows;
+    for (const r of rows2) {
+      await c.execute({
+        sql: "INSERT OR REPLACE INTO accounting_repair_log(repair_key, entry_id, before_json) VALUES (?, ?, ?)",
+        args: [`lc_settlement_on_account:${Number(r.id)}`, Number(r.entry_id), JSON.stringify(r)]
+      });
+      await c.execute({ sql: "UPDATE journal_bill_allocs SET method = 'on_account', ref_name = NULL WHERE id = ?", args: [Number(r.id)] });
+    }
+    if (rows2.length) console.log("[lc] settlements set On Account (no real bill):", rows2.length);
+  }).catch((e) => console.error("[lc] settlement On Account fix failed:", e));
   await runOnce("intercompany_same_invoice_no_v1", async () => {
     const c = getClient();
     await c.execute(`CREATE TABLE IF NOT EXISTS accounting_repair_log (
