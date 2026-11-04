@@ -275,6 +275,20 @@ export function hasWorkAccess(perms: Perms): boolean {
   return (perms || {}).workAssignments !== false
 }
 
+// LC INTEREST CREDITED TO US (a preclosed LC's premature interest): shown as
+// **** unless the login is given it here. Default-DENY — only an explicit
+// `true` shows it; admins always see it.
+export function hasLcCreditAccess(perms: Perms): boolean {
+  return (perms || {}).lcCredit === true
+}
+
+export function setLcCreditAccess(perms: Perms, on: boolean): Perms {
+  const out = { ...(perms || {}) }
+  if (on) out.lcCredit = true
+  else delete out.lcCredit
+  return out
+}
+
 export function setWorkAccess(perms: Perms, on: boolean): Perms {
   const out = { ...(perms || {}) }
   // Turning it back on DELETES the flag rather than storing `true` — "on" and

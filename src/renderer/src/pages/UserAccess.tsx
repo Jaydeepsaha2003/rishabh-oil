@@ -70,6 +70,8 @@ import { cn } from '@/lib/utils'
 import {
   FLAGS,
   hasWorkAccess,
+  hasLcCreditAccess,
+  setLcCreditAccess,
   parsePerms,
   rightsOf,
   rightsSource,
@@ -648,6 +650,7 @@ export function UserAccess(): React.JSX.Element {
         </div>
 
         <WorkAccessToggle on={workOn} admin={admin} onToggle={() => setPerms(setWorkAccess(perms, !workOn))} />
+        <LcCreditToggle on={hasLcCreditAccess(perms)} admin={admin} onToggle={() => setPerms(setLcCreditAccess(perms, !hasLcCreditAccess(perms)))} />
 
         {admin ? (
           <div className="flex flex-none items-start gap-2.5 rounded-[4px] border border-[#D6CEF5] bg-[#EDE9FB] px-3.5 py-4" style={{ borderLeft: '4px solid #5B4BA8' }}>
@@ -1375,6 +1378,7 @@ export function UserAccess(): React.JSX.Element {
           </div>
 
           <WorkAccessToggle on={workOn} admin={admin} onToggle={() => setPerms(setWorkAccess(perms, !workOn))} />
+          <LcCreditToggle on={hasLcCreditAccess(perms)} admin={admin} onToggle={() => setPerms(setLcCreditAccess(perms, !hasLcCreditAccess(perms)))} />
 
           {admin ? (
             <div className="flex flex-none items-start gap-3 rounded-[4px] border border-[#D6CEF5] bg-[#EDE9FB] px-[18px] py-5" style={{ borderLeft: '4px solid #5B4BA8' }}>
@@ -1883,6 +1887,47 @@ function WhyTip({ text, ink }: { text: string; ink?: string }): React.JSX.Elemen
         {text}
       </span>
     </span>
+  )
+}
+
+// Whether this login sees the LC interest credited to us (else ****).
+function LcCreditToggle({ on, admin, onToggle }: { on: boolean; admin: boolean; onToggle: () => void }): React.JSX.Element {
+  const active = admin || on
+  return (
+    <button
+      type="button"
+      disabled={admin}
+      onClick={onToggle}
+      className="flex flex-none items-start gap-3 rounded-[4px] border-[1.5px] px-3.5 py-3 text-left disabled:cursor-default"
+      style={{ borderColor: active ? '#0B6B45' : '#D6E2D6', borderStyle: active ? 'solid' : 'dashed', background: active ? '#E9F5EE' : '#fff' }}
+    >
+      <span
+        className="flex h-[26px] w-11 flex-none rounded-[3px] p-[3px]"
+        style={{ background: active ? '#0B6B45' : '#C3D2C6', justifyContent: active ? 'flex-end' : 'flex-start' }}
+      >
+        <span className="h-5 w-5 rounded-[2px] bg-white" />
+      </span>
+      <div className="min-w-0 flex-1">
+        <div className="flex flex-wrap items-center gap-[9px]">
+          <span className="text-[13px] font-extrabold" style={{ color: active ? '#0B6B45' : '#33473E' }}>
+            LC interest credited to us
+          </span>
+          <span
+            className="rounded-[2px] px-2 py-[3px] text-[9.5px] font-extrabold uppercase tracking-[.09em]"
+            style={active ? { background: '#0B6B45', color: '#fff' } : { background: '#DCE7DB', color: '#5A6B62' }}
+          >
+            {admin ? 'ALWAYS ON' : on ? 'SHOWN' : 'HIDDEN ****'}
+          </span>
+        </div>
+        <div className="mt-[7px] text-[12px] font-semibold leading-[1.6]" style={{ color: active ? '#0B6B45' : '#5A6B62' }}>
+          {admin
+            ? 'Admins always see it.'
+            : on
+              ? "This login sees the premature interest a preclosed LC credited to us (Treasury → LC register). Turn it off to show it as ****."
+              : 'Shown as **** in the LC register and its Excel. Turn it on to let this login see the figure.'}
+        </div>
+      </div>
+    </button>
   )
 }
 

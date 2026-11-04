@@ -120,7 +120,8 @@ export const HOTKEY: Partial<Record<string, string>> = {
   sales: 'S',
   trading: 'T',
   accounts: 'A',
-  treasury: 'R'
+  treasury: 'R',
+  workAssignments: 'W'
 }
 
 const GROUPS: { label: string; ids: string[] }[] = [

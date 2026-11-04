@@ -71,6 +71,7 @@ import { LimitHistory, type LimitTarget } from '@/components/LimitHistory'
 import { ColumnFilter } from '@/components/ui/column-filter'
 import { canAccess } from '@/lib/modules'
 import { loadUser } from '@/lib/session'
+import { hasLcCreditAccess, parsePerms } from '@/lib/userRights'
 import { useCompany } from '@/lib/companyContext'
 import { useIsMobile } from '@/lib/useIsMobile'
 import { TreasuryMobile } from './TreasuryMobile'
@@ -1363,6 +1364,9 @@ function TreasuryDesk({ onCompanyChange, focusLcId, focusBdId, onFocusHandled }:
   // the figures on these tabs are the whole content, so a disabled tab would
   // still be displaying them.
   const sessionUser = useMemo(() => loadUser(), [])
+  // The premature interest an LC credited to us reads **** unless this login
+  // was given it in User Access (admins always see it).
+  const seeLcCredit = sessionUser?.role === 'admin' || hasLcCreditAccess(parsePerms(sessionUser?.permissions))
   const TREASURY_VIEW_KEY = 'treasury.view'
   const TREASURY_TABS = useMemo(
     () =>
@@ -2753,7 +2757,10 @@ function TreasuryDesk({ onCompanyChange, focusLcId, focusBdId, onFocusHandled }:
         ? await window.api.lc.allRepayments().catch(() => [] as Row[])
         : []
       await exportLcRegister(
-        lcsFiltered,
+        // Masked for a login not given it — the Excel says no more than the screen.
+        seeLcCredit
+          ? lcsFiltered
+          : lcsFiltered.map((l) => (String(l.preclose_interest_route || '') === 'pay_to_party' ? l : { ...l, preclose_premature_interest: null, premature_masked: true })),
         `lc-register-${lcDuePeriod === 'all' ? todayISO() : `${lcDuePeriod}-${todayISO()}`}`,
         reps
       )
@@ -4072,7 +4079,7 @@ function TreasuryDesk({ onCompanyChange, focusLcId, focusBdId, onFocusHandled }:
                       <TableCell className={cn('whitespace-nowrap text-right font-semibold tabular-nums text-amber-900', __WEB__ && '!text-[14px] !font-bold !text-[#0A1F17]')}>
                         {(() => {
                           const t = lcsFiltered.reduce((a2, l) => a2 + n(l.preclose_premature_interest), 0)
-                          return t > 0.004 ? formatINR(t) : ''
+                          return t > 0.004 ? (seeLcCredit ? formatINR(t) : '****') : ''
                         })()}
                       </TableCell>
                       <TableCell className={cn('whitespace-nowrap text-right font-semibold tabular-nums text-amber-900', __WEB__ && '!text-[14px] !font-bold !text-[#0A1F17]')}>
@@ -4325,7 +4332,9 @@ function TreasuryDesk({ onCompanyChange, focusLcId, focusBdId, onFocusHandled }:
                             <TableCell className="whitespace-nowrap border-l border-[#1a2c56]/10 text-right tabular-nums">
                               {n(l.preclose_premature_interest) > 0.004 ? (
                                 <>
-                                  <div className={cn('font-semibold text-violet-800', __WEB__ && '!text-[12.5px] !font-bold')}>{formatINR(l.preclose_premature_interest)}</div>
+                                  <div className={cn('font-semibold text-violet-800', __WEB__ && '!text-[12.5px] !font-bold')}>
+                                    {seeLcCredit || String(l.preclose_interest_route || '') === 'pay_to_party' ? formatINR(l.preclose_premature_interest) : '****'}
+                                  </div>
                                   <div className={cn('text-[10px] uppercase tracking-wide text-muted-foreground', __WEB__ && '!text-[10.5px]')}>
                                     {String(l.preclose_interest_route || '') === 'pay_to_party' ? 'paid to party' : 'credited to us'}
                                   </div>

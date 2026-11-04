@@ -53,7 +53,7 @@ export async function exportLcRegister(lcs: Row[], filename: string, repayments:
       // A preclosed LC never reached its maturity: the date it actually closed
       // on, and the interest for the stretch that never happened.
       closed_date: l.preclosed_date ? formatDate(l.preclosed_date) : '',
-      premature_interest: n(l.preclose_premature_interest) || '',
+      premature_interest: l.premature_masked ? '****' : n(l.preclose_premature_interest) || '',
       premature_route: l.preclosed_date
         ? String(l.preclose_interest_route || '') === 'pay_to_party'
           ? 'Paid to party'
