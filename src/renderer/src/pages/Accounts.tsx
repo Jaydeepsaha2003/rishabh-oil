@@ -5287,7 +5287,7 @@ export function Accounts({
       { key: 'V', label: 'Accounting Vouchers', icon: ScrollText, go: () => openVoucher(firstVch() || 'PAYMENT') },
       { key: 'P', label: 'Purchase Register', icon: PackageSearch, go: () => setScreen('purchreg') },
       { key: 'S', label: 'Sales Register', icon: Receipt, go: () => setScreen('salesreg') },
-      { key: 'D', label: 'Day Book', icon: BookOpenText, go: () => setScreen('daybook') },
+      { key: 'K', label: 'Day Book', icon: BookOpenText, go: () => setScreen('daybook') },
       // Two registers, one screen: each opens the notes of its own kind.
       {
         key: 'N',
@@ -6164,7 +6164,7 @@ export function Accounts({
       <div className="my-1 border-t border-white/20" />
       {mayScreen('purchreg') && <FKey k="P" label="Purchases" active={screen === 'purchreg'} onClick={() => setScreen('purchreg')} />}
       {mayScreen('salesreg') && <FKey k="S" label="Sales" active={screen === 'salesreg'} onClick={() => setScreen('salesreg')} />}
-      {mayScreen('daybook') && <FKey k="D" label="Day Book" active={screen === 'daybook'} onClick={() => setScreen('daybook')} />}
+      {mayScreen('daybook') && <FKey k="K" label="Day Book" active={screen === 'daybook'} onClick={() => setScreen('daybook')} />}
       {mayScreen('notesreg') && <FKey k="N" label="Dr / Cr Notes" active={screen === 'notesreg'} onClick={() => setScreen('notesreg')} />}
       {mayScreen('tfpur') && <FKey k="R" label="Fr. Inward Working" active={screen === 'tfpur'} onClick={() => setScreen('tfpur')} />}
       {mayScreen('tfsal') && <FKey k="O" label="Fr. Outward Working" active={screen === 'tfsal'} onClick={() => setScreen('tfsal')} />}
@@ -20425,7 +20425,7 @@ export function Accounts({
               }
             ]
           : []),
-        { k: 'D', label: 'Day Book', on: false, go: () => setScreen('daybook'), hide: !mayScreen('daybook') },
+        { k: 'K', label: 'Day Book', on: false, go: () => setScreen('daybook'), hide: !mayScreen('daybook') },
         { k: 'T', label: 'Trial Balance', on: false, go: () => setScreen('trial'), hide: !mayScreen('trial') },
         { k: 'P', label: 'Purchases', on: false, go: () => setScreen('purchreg'), hide: !mayScreen('purchreg') },
         { k: 'S', label: 'Sales', on: false, go: () => setScreen('salesreg'), hide: !mayScreen('salesreg') },
@@ -20448,7 +20448,7 @@ export function Accounts({
           on: screen === 'voucher' && !viewOnly && vchType === v.key,
           go: () => (screen === 'voucher' ? switchType(v.key) : openVoucher(v.key))
         })),
-        { k: 'D', label: 'Day Book', on: screen === 'daybook', go: () => setScreen('daybook'), hide: !mayScreen('daybook') },
+        { k: 'K', label: 'Day Book', on: screen === 'daybook', go: () => setScreen('daybook'), hide: !mayScreen('daybook') },
         { k: 'L', label: 'Ledgers', on: false, go: () => setScreen('ledger'), hide: !mayScreen('ledger') },
         { k: 'T', label: 'Trial Balance', on: screen === 'trial', go: () => setScreen('trial'), hide: !mayScreen('trial') },
         { k: 'P', label: 'Purchases', on: screen === 'purchreg', go: () => setScreen('purchreg'), hide: !mayScreen('purchreg') },
