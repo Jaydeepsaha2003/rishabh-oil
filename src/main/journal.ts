@@ -741,6 +741,14 @@ export async function accountStatement(accountId: number, companyId?: number): P
     l.legs = rest.map((r) => ({ name: String(r.name), dr: n(r.dr), cr: n(r.cr) }))
     l.allocs = allocsByLine.get(Number(l.id)) || []
   }
+  // WHERE EACH VOUCHER CAME FROM, for the badge under its number: booked from
+  // a Tally file, posted by a document here (purchase, sale, LC, BD, note…),
+  // or keyed in by hand.
+  const { ownedVoucherIds } = await import('./voucherOwnership')
+  const owned = await ownedVoucherIds()
+  for (const l of lines) {
+    l.origin = /^imported from tally/i.test(String(l.narration || '')) ? 'tally' : owned.has(Number(l.entry_id)) ? 'auto' : 'manual'
+  }
   return lines
 }
 

@@ -17464,7 +17464,39 @@ export function Accounts({
                   )}
                 </div>
                 <span style={{ padding: '0 12px 0 8px', minWidth: 0, overflow: 'hidden' }}>{typeChip(typeOf(r))}</span>
-                <span style={{ padding: '0 8px 0 4px', ...figS(11.5), ...clip }}>{String(r.voucher_code || r.vch_no || '—')}</span>
+                <span style={{ padding: '0 8px 0 4px', minWidth: 0 }}>
+                  <span style={{ display: 'block', ...figS(11.5), ...clip }}>{String(r.voucher_code || r.vch_no || '—')}</span>
+                  {/* Where it came from: posted by a document, booked from Tally, or keyed in. */}
+                  {r.origin && !r.provisional && (
+                    <span
+                      title={
+                        r.origin === 'auto'
+                          ? 'Posted automatically by its document (purchase, sale, LC, BD, note…) — change it there'
+                          : r.origin === 'tally'
+                            ? 'Booked from a Tally file (Tally file updation)'
+                            : 'Entered by hand in Accounting'
+                      }
+                      style={{
+                        display: 'inline-block',
+                        marginTop: 2,
+                        fontSize: 9,
+                        fontWeight: 800,
+                        letterSpacing: '.06em',
+                        textTransform: 'uppercase',
+                        borderRadius: 3,
+                        padding: '0 5px',
+                        border: '1px solid',
+                        ...(r.origin === 'auto'
+                          ? { color: '#1B4E82', background: '#EAF2FC', borderColor: '#B9D3F0' }
+                          : r.origin === 'tally'
+                            ? { color: '#8A5300', background: '#FFF6E5', borderColor: '#F1D9A6' }
+                            : { color: '#33473E', background: '#EEF3EC', borderColor: '#DCE7DB' })
+                      }}
+                    >
+                      {r.origin === 'auto' ? 'Auto' : r.origin === 'tally' ? 'Tally' : 'Manual'}
+                    </span>
+                  )}
+                </span>
                 {ref ? (
                   doc ? (
                     <button
