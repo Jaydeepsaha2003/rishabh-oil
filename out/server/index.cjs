@@ -19703,11 +19703,16 @@ async function dropEntry2(entryId) {
 }
 async function allocAgainst2(entryId, partyName2, ref, amount2) {
   const c = getClient();
+  const head = await c.execute({ sql: "SELECT company_id FROM journal_entries WHERE id = ?", args: [entryId] });
+  const bare = partyName2.trim().toUpperCase();
+  const resolved = (await resolveAccountName(partyName2, n21(head.rows[0]?.company_id) || void 0)).trim().toUpperCase();
+  const names = Array.from(/* @__PURE__ */ new Set([bare, resolved, `${bare}(CR)`, `${bare} (CR)`, `${bare}(DR)`, `${bare} (DR)`]));
   const line = await c.execute({
     sql: `SELECT jl.id, jl.account_id FROM journal_lines jl
           JOIN ledger_accounts a ON a.id = jl.account_id
-          WHERE jl.entry_id = ? AND a.name = ? LIMIT 1`,
-    args: [entryId, partyName2.toUpperCase()]
+          WHERE jl.entry_id = ? AND UPPER(a.name) IN (${names.map(() => "?").join(",")})
+          ORDER BY (UPPER(a.name) = ?) DESC LIMIT 1`,
+    args: [entryId, ...names, resolved]
   });
   if (!line.rows.length) return;
   await c.execute({
@@ -20962,6 +20967,7 @@ var init_treasury = __esm({
     init_journal();
     init_lcInterest();
     init_voucherNumbers();
+    init_ledgerMap();
     init_lcLedgers();
     round27 = (v) => Math.round(v * 100) / 100;
     LC_PAYABLE_GROUP = "Current Liabilities";
@@ -22388,6 +22394,11 @@ async function accountStatement(accountId, companyId) {
     l.voucher_code = codes.get(Number(l.entry_id)) || "";
     l.legs = rest.map((r) => ({ name: String(r.name), dr: n25(r.dr), cr: n25(r.cr) }));
     l.allocs = allocsByLine.get(Number(l.id)) || [];
+  }
+  const { ownedVoucherIds: ownedVoucherIds2 } = await Promise.resolve().then(() => (init_voucherOwnership(), voucherOwnership_exports));
+  const owned = await ownedVoucherIds2();
+  for (const l of lines) {
+    l.origin = /^imported from tally/i.test(String(l.narration || "")) ? "tally" : owned.has(Number(l.entry_id)) ? "auto" : "manual";
   }
   return lines;
 }
@@ -36086,6 +36097,38 @@ async function runStartupTasks() {
     }
     if (rows2.length) console.log("[lc] settlements set On Account (no real bill):", rows2.length);
   }).catch((e) => console.error("[lc] settlement On Account fix failed:", e));
+  await runOnce("lc_settlement_missing_allocs_v1", async () => {
+    const c = getClient();
+    const entries2 = (await c.execute(`
+      SELECT je.id FROM journal_entries je
+       WHERE je.id IN (SELECT journal_entry_id FROM lc_issuances WHERE journal_entry_id IS NOT NULL)
+         AND NOT EXISTS (SELECT 1 FROM journal_bill_allocs ba JOIN journal_lines jl ON jl.id = ba.line_id WHERE jl.entry_id = je.id)`)).rows;
+    let done = 0;
+    for (const e of entries2) {
+      const line = (await c.execute({
+        sql: `SELECT jl.id, jl.account_id, jl.dr FROM journal_lines jl JOIN ledger_accounts a ON a.id = jl.account_id
+               WHERE jl.entry_id = ? AND jl.dr > 0 AND UPPER(COALESCE(a.acc_group, '')) NOT LIKE '%EXPENSE%'
+               ORDER BY jl.dr DESC LIMIT 1`,
+        args: [Number(e.id)]
+      })).rows[0];
+      if (!line) continue;
+      const bills = (await c.execute({
+        sql: "SELECT i.amount, i.order_id, o.invoice_no FROM lc_issuances i LEFT JOIN orders o ON o.id = i.order_id WHERE i.journal_entry_id = ?",
+        args: [Number(e.id)]
+      })).rows;
+      const sum = Math.round(bills.reduce((t, b) => t + Number(b.amount || 0), 0) * 100) / 100;
+      if (Math.abs(sum - Number(line.dr)) > 1) continue;
+      for (const b of bills) {
+        const ref = String(b.invoice_no || "").trim();
+        await c.execute({
+          sql: "INSERT INTO journal_bill_allocs (line_id, account_id, method, ref_name, amount, order_id) VALUES (?, ?, ?, ?, ?, ?)",
+          args: [Number(line.id), Number(line.account_id), ref ? "agst_ref" : "on_account", ref || null, Number(b.amount), ref ? Number(b.order_id) : null]
+        });
+      }
+      done++;
+    }
+    if (done) console.log("[lc] bill-wise rows added to LC settlements that had none:", done);
+  }).catch((e) => console.error("[lc] missing settlement allocs failed:", e));
   await runOnce("intercompany_same_invoice_no_v1", async () => {
     const c = getClient();
     await c.execute(`CREATE TABLE IF NOT EXISTS accounting_repair_log (
