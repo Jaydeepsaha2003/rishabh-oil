@@ -4937,6 +4937,22 @@ export function Accounts({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [cid])
 
+  // THE VOUCHER BEFORE / AFTER this one of the same type (PgUp / PgDn).
+  async function stepVoucher(dir: -1 | 1): Promise<void> {
+    if (!cid) return
+    const here = Number(viewOnly?.id || editingId || 0) || null
+    const type = String(viewOnly?.vch_type || vchType || '').toUpperCase()
+    const list = ((await window.api.vouchers.list({ companyId: cid }).catch(() => [])) as Row[])
+      .filter((r) => !type || String(r.vch_type || '').toUpperCase() === type)
+      .sort((a, b) => String(a.entry_date).localeCompare(String(b.entry_date)) || Number(a.id) - Number(b.id))
+    if (!list.length) return void toast.message(`No ${vchLabel(type as VchType)} vouchers yet`)
+    const at = here ? list.findIndex((r) => Number(r.id) === here) : list.length
+    const next = list[at + dir]
+    if (!next) return void toast.message(dir < 0 ? 'This is the first voucher of this type' : here ? 'This is the last voucher of this type' : 'Nothing after a new voucher — PgUp goes back')
+    if (!viewOnly && voucherHasWork() && !window.confirm('Leave this voucher without saving it?')) return
+    await openForAlter({ id: Number(next.id) })
+  }
+
   async function openForAlter(row: Row): Promise<void> {
     const v = await window.api.vouchers.get(Number(row.id))
     if (!v) {
@@ -5568,6 +5584,21 @@ export function Accounts({
         e.preventDefault()
         if (viewOnly) return
         void saveVoucher()
+        return
+      }
+      // PgUp / PgDn (Fn + ↑ / ↓ on a laptop) walk the vouchers of this type,
+      // Tally's way — PgUp the one before, PgDn the one after; from a new
+      // voucher, PgUp opens the last one entered. An open list keeps its keys.
+      if (
+        screen === 'voucher' &&
+        (e.key === 'PageUp' || e.key === 'PageDown') &&
+        !e.ctrlKey &&
+        !e.altKey &&
+        !e.metaKey &&
+        !document.querySelector('[role=listbox],[role=menu],[cmdk-list]')
+      ) {
+        e.preventDefault()
+        void stepVoucher(e.key === 'PageUp' ? -1 : 1)
         return
       }
       // By the key's position: Option+D on a Mac types "∂".
