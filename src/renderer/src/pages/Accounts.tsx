@@ -1626,8 +1626,19 @@ function lineRef(l: Row): { no: string; kind: string; full: string } | null {
       full: named.join(', ')
     }
   }
-  // Money with no bill named: On Account (or Advance), as Tally lists it.
-  if (methods.length) return { no: methods.join(' + '), kind: 'Bill-wise', full: methods.join(' + ') }
+  // Money with no bill named: On Account (or Advance), as Tally lists it —
+  // under the document's own number when it has one (LC no · On Account), so
+  // every LC settlement reads the same whether or not it carries an alloc row.
+  if (methods.length) {
+    const doc = docRef(l)
+    const how = methods.join(' + ')
+    return doc ? { ...doc, kind: `${doc.kind} · ${how}` } : { no: how, kind: 'Bill-wise', full: how }
+  }
+  return docRef(l)
+}
+
+/** The document a line belongs to — its invoice, LC, BD — or its voucher number. */
+function docRef(l: Row): { no: string; kind: string; full: string } | null {
   const po = String(l.order_invoice_no || '').trim()
   if (po) return { no: po, kind: 'Purchase inv', full: po }
   const so = String(l.sale_invoice_no || '').trim()
