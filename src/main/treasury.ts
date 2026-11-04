@@ -1402,7 +1402,17 @@ export async function settleLcBillsCombined(
     ]
   })
   for (const b of bills) {
-    const ref = b.invoice_no ? String(b.invoice_no) : b.bill_no ? String(b.bill_no) : null
+    // Against a REAL purchase invoice only. An LC's own bill name (LC-22) is
+    // no bill of the supplier's — settled against it, it stood in Bill-wise as
+    // a bill that does not exist. Without an invoice the money is On Account.
+    let ref: string | null = b.invoice_no ? String(b.invoice_no) : null
+    if (!ref && String(b.bill_no || '').trim()) {
+      const real = await c.execute({
+        sql: 'SELECT 1 FROM orders WHERE UPPER(TRIM(invoice_no)) = UPPER(TRIM(?)) LIMIT 1',
+        args: [String(b.bill_no)]
+      })
+      if (real.rows.length) ref = String(b.bill_no)
+    }
     await allocAgainst(je.id, party, ref, round2(n(b.amount)))
   }
   await c.execute({

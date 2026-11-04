@@ -3331,6 +3331,37 @@ export async function runStartupTasks(): Promise<void> {
     if (moved.length) console.log('[journal] purchase vouchers moved into the books:', moved)
   }).catch((e) => console.error('[journal] pre-books purchase re-date failed:', e))
 
+  // LC SETTLEMENTS AGAINST THE LC'S OWN NAME — once, at start (asked for on
+  // 2026-11-04). An automated LC settlement (JV/20) was set Agst Ref "LC-22",
+  // the LC's bill name, which no supplier bill carries. It is On Account now,
+  // as the settlement posts today (treasury.ts settleLcBillsCombined). Only
+  // Agst Ref rows naming no real invoice are changed; ones a person re-set
+  // (Advance A1) are not touched.
+  await runOnce('lc_settlement_on_account_v1', async () => {
+    const c = getClient()
+    await c.execute(`CREATE TABLE IF NOT EXISTS accounting_repair_log (
+        repair_key TEXT PRIMARY KEY, entry_id INTEGER NOT NULL, before_json TEXT NOT NULL,
+        created_at TEXT NOT NULL DEFAULT (datetime('now')))`)
+    const rows = (await c.execute(`
+      SELECT ba.id, ba.ref_name, ba.amount, jl.entry_id FROM journal_bill_allocs ba JOIN journal_lines jl ON jl.id = ba.line_id
+       WHERE ba.method = 'agst_ref' AND ba.order_id IS NULL AND ba.sale_invoice_group IS NULL
+         AND jl.entry_id IN (SELECT journal_entry_id FROM lc_issuances WHERE journal_entry_id IS NOT NULL)
+         AND NOT EXISTS (SELECT 1 FROM orders o WHERE UPPER(TRIM(o.invoice_no)) = UPPER(TRIM(ba.ref_name)))`)).rows as unknown as {
+      id: number
+      ref_name: string
+      amount: number
+      entry_id: number
+    }[]
+    for (const r of rows) {
+      await c.execute({
+        sql: 'INSERT OR REPLACE INTO accounting_repair_log(repair_key, entry_id, before_json) VALUES (?, ?, ?)',
+        args: [`lc_settlement_on_account:${Number(r.id)}`, Number(r.entry_id), JSON.stringify(r)]
+      })
+      await c.execute({ sql: "UPDATE journal_bill_allocs SET method = 'on_account', ref_name = NULL WHERE id = ?", args: [Number(r.id)] })
+    }
+    if (rows.length) console.log('[lc] settlements set On Account (no real bill):', rows.length)
+  }).catch((e) => console.error('[lc] settlement On Account fix failed:', e))
+
   // ONE TRANSFER, ONE NUMBER — once, at start (asked for on 2026-11-03). An
   // inter-company purchase raised at a trading tanker's Empty took whatever was
   // typed as the buyer's number (26-27/MFG-525, the original supplier's), not
