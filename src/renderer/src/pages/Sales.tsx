@@ -600,10 +600,11 @@ function SalesTab({
       .catch(() => setReturnBargains([]))
     setRows(s)
     setDefaultShortagePct(String(cfg.allowed_shortage_pct ?? '0.2'))
-    // Finished is what a mill sells. `use_both` adds back a product traded
-    // rather than made — a raw oil sold on, which the sub-category gate alone
-    // would never offer here.
-    setProducts(pr.filter((x) => x.active && (x.category === 'finished' || Number(x.use_both) === 1)))
+    // Finished is what a mill sells — and its WASTE (scrap, gatta, MS scrap…),
+    // which is sold off too. `use_both` adds back a product traded rather than
+    // made — a raw oil sold on, which the sub-category gate alone would never
+    // offer here.
+    setProducts(pr.filter((x) => x.active && (x.category === 'finished' || x.category === 'waste' || Number(x.use_both) === 1)))
     setBargains(sb)
     setCustomers(cu.filter((x) => x.active))
     setPackagings(pk.filter((x) => x.active))

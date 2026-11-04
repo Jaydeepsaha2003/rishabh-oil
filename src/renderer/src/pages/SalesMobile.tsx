@@ -315,7 +315,7 @@ export function SalesMobile(): React.JSX.Element {
       ])
       setRows(Array.isArray(salesRows) ? salesRows : [])
       setCustomers(Array.isArray(custRows) ? custRows.filter((c: Row) => n(c.active) !== 0) : [])
-      setProducts(Array.isArray(prodRows) ? prodRows.filter((p: Row) => n(p.active) !== 0 && s(p.category) === 'finished') : [])
+      setProducts(Array.isArray(prodRows) ? prodRows.filter((p: Row) => n(p.active) !== 0 && (s(p.category) === 'finished' || s(p.category) === 'waste')) : [])
     } finally {
       setLoading(false)
     }
