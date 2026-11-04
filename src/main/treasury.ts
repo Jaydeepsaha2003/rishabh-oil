@@ -70,11 +70,20 @@ async function dropEntry(entryId?: number | null): Promise<void> {
 // Settle the party line of an entry against a named bill reference.
 async function allocAgainst(entryId: number, partyName: string, ref: string | null, amount: number): Promise<void> {
   const c = getClient()
+  // The party's line under whatever ledger the posting resolved it to — a
+  // renamed one (ledger_map) or its split (CR)/(DR) ledger. By the bare name
+  // only, the LC settlement for DIL EXIM (posted to its "(CR)" ledger) found no
+  // line and got no bill-wise row at all.
+  const head = await c.execute({ sql: 'SELECT company_id FROM journal_entries WHERE id = ?', args: [entryId] })
+  const bare = partyName.trim().toUpperCase()
+  const resolved = (await resolveAccountName(partyName, n(head.rows[0]?.company_id) || undefined)).trim().toUpperCase()
+  const names = Array.from(new Set([bare, resolved, `${bare}(CR)`, `${bare} (CR)`, `${bare}(DR)`, `${bare} (DR)`]))
   const line = await c.execute({
     sql: `SELECT jl.id, jl.account_id FROM journal_lines jl
           JOIN ledger_accounts a ON a.id = jl.account_id
-          WHERE jl.entry_id = ? AND a.name = ? LIMIT 1`,
-    args: [entryId, partyName.toUpperCase()]
+          WHERE jl.entry_id = ? AND UPPER(a.name) IN (${names.map(() => '?').join(',')})
+          ORDER BY (UPPER(a.name) = ?) DESC LIMIT 1`,
+    args: [entryId, ...names, resolved]
   })
   if (!line.rows.length) return
   await c.execute({

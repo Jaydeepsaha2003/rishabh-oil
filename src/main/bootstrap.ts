@@ -3362,6 +3362,46 @@ export async function runStartupTasks(): Promise<void> {
     if (rows.length) console.log('[lc] settlements set On Account (no real bill):', rows.length)
   }).catch((e) => console.error('[lc] settlement On Account fix failed:', e))
 
+  // LC SETTLEMENTS WITH NO BILL-WISE ROW — once, at start (2026-11-04). The
+  // party's line was looked for by its bare name, so one posted to a renamed
+  // or (CR) ledger (JV/642, DIL EXIM) got no row and read "plain balance".
+  // Each bill under it now gets one: Agst Ref its purchase invoice, else On
+  // Account — as the settlement posts today.
+  await runOnce('lc_settlement_missing_allocs_v1', async () => {
+    const c = getClient()
+    const entries = (await c.execute(`
+      SELECT je.id FROM journal_entries je
+       WHERE je.id IN (SELECT journal_entry_id FROM lc_issuances WHERE journal_entry_id IS NOT NULL)
+         AND NOT EXISTS (SELECT 1 FROM journal_bill_allocs ba JOIN journal_lines jl ON jl.id = ba.line_id WHERE jl.entry_id = je.id)`)).rows as unknown as { id: number }[]
+    let done = 0
+    for (const e of entries) {
+      // The party's line: the biggest debit that is not an expense.
+      const line = (await c.execute({
+        sql: `SELECT jl.id, jl.account_id, jl.dr FROM journal_lines jl JOIN ledger_accounts a ON a.id = jl.account_id
+               WHERE jl.entry_id = ? AND jl.dr > 0 AND UPPER(COALESCE(a.acc_group, '')) NOT LIKE '%EXPENSE%'
+               ORDER BY jl.dr DESC LIMIT 1`,
+        args: [Number(e.id)]
+      })).rows[0] as unknown as { id: number; account_id: number; dr: number } | undefined
+      if (!line) continue
+      const bills = (await c.execute({
+        sql: 'SELECT i.amount, i.order_id, o.invoice_no FROM lc_issuances i LEFT JOIN orders o ON o.id = i.order_id WHERE i.journal_entry_id = ?',
+        args: [Number(e.id)]
+      })).rows as unknown as { amount: number; order_id: number | null; invoice_no: string | null }[]
+      const sum = Math.round(bills.reduce((t, b) => t + Number(b.amount || 0), 0) * 100) / 100
+      // Only where the bills are what the line carries — else leave it alone.
+      if (Math.abs(sum - Number(line.dr)) > 1) continue
+      for (const b of bills) {
+        const ref = String(b.invoice_no || '').trim()
+        await c.execute({
+          sql: 'INSERT INTO journal_bill_allocs (line_id, account_id, method, ref_name, amount, order_id) VALUES (?, ?, ?, ?, ?, ?)',
+          args: [Number(line.id), Number(line.account_id), ref ? 'agst_ref' : 'on_account', ref || null, Number(b.amount), ref ? Number(b.order_id) : null]
+        })
+      }
+      done++
+    }
+    if (done) console.log('[lc] bill-wise rows added to LC settlements that had none:', done)
+  }).catch((e) => console.error('[lc] missing settlement allocs failed:', e))
+
   // ONE TRANSFER, ONE NUMBER — once, at start (asked for on 2026-11-03). An
   // inter-company purchase raised at a trading tanker's Empty took whatever was
   // typed as the buyer's number (26-27/MFG-525, the original supplier's), not
