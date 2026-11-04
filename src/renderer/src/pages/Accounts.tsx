@@ -1262,8 +1262,8 @@ function AllocPanel({
       allocs.length === 0 || !(lineAmount > 0) ? '#8A5300' : Math.abs(left) < 0.005 ? '#0B6B45' : left > 0 ? '#8A5300' : '#B3261E'
     const HINT: Record<AllocRow['method'], string> = {
       agst_ref: 'Bill no being adjusted',
-      new_ref: 'New reference',
-      advance: 'Advance reference',
+      new_ref: 'New reference — blank is named REF-n on save',
+      advance: 'Advance reference — blank is named ADV-n on save',
       on_account: 'No reference needed'
     }
     // What each method MEANS — the four are not interchangeable, and the
@@ -1510,7 +1510,7 @@ function AllocPanel({
           ) : (
             <Input
               className={cn('h-7 bg-white text-[12px]', collides && 'border-red-500 focus-visible:ring-red-500')}
-              placeholder={a.method === 'advance' ? 'Advance reference (e.g. ADV-1)' : 'New reference name'}
+              placeholder={a.method === 'advance' ? 'Advance reference — blank is named ADV-n on save' : 'New reference — blank is named REF-n on save'}
               value={a.ref_name}
               onChange={(e) => set(j, { ref_name: e.target.value })}
             />
