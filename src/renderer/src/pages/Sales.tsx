@@ -604,7 +604,18 @@ function SalesTab({
     // which is sold off too. `use_both` adds back a product traded rather than
     // made — a raw oil sold on, which the sub-category gate alone would never
     // offer here.
-    setProducts(pr.filter((x) => x.active && (x.category === 'finished' || x.category === 'waste' || Number(x.use_both) === 1)))
+    // A purchase return sends back what was bought — a raw oil too — so the
+    // returned products (this one being made, and those on earlier returns)
+    // are offered as well.
+    const returnedIds = new Set([
+      ...(openIntent?.kind === 'purchaseReturn' ? (openIntent.lines as Row[]).map((l) => String(l.product_id)) : []),
+      ...s.filter((r) => r.return_supplier_id).map((r) => String(r.product_id))
+    ])
+    setProducts(
+      pr.filter(
+        (x) => x.active && (x.category === 'finished' || x.category === 'waste' || Number(x.use_both) === 1 || returnedIds.has(String(x.id)))
+      )
+    )
     setBargains(sb)
     setCustomers(cu.filter((x) => x.active))
     setPackagings(pk.filter((x) => x.active))
@@ -1025,6 +1036,36 @@ function SalesTab({
     setDirty(false)
     setFormPage(true)
   }
+  // Opened from Purchases → ⋮ Make a purchase return → Sale: a new sale billed
+  // back to the supplier, against the same bargain, with the whole qty at the
+  // same rate. Once, after the lists it picks from have loaded.
+  const returnIntentDone = useRef(false)
+  useEffect(() => {
+    if (loading || returnIntentDone.current || openIntent?.kind !== 'purchaseReturn') return
+    returnIntentDone.current = true
+    const it = openIntent
+    setEditingGroup(null)
+    setHeader({
+      ...blankHeader(),
+      is_return: true,
+      return_supplier_id: String(it.supplier_id),
+      return_bargain_id: it.bargain_id ? String(it.bargain_id) : '',
+      customer: String(it.supplier_name || '')
+    })
+    setItems(
+      (it.lines as Row[]).map((l) => ({
+        ...blankItem(),
+        product_id: String(l.product_id),
+        qty: String(l.qty || ''),
+        rate: String(l.rate || ''),
+        gst_pct: String(it.gst_pct ?? ''),
+        gst_type: String(it.gst_type || 'CGST_SGST')
+      }))
+    )
+    setDirty(true)
+    setFormPage(true)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [loading])
   useEffect(() => {
     onRegister?.({ open: openAdd, canAdd: products.length > 0 && !unloadOnly && !tdsOnly, formOpen: formPage })
   }, [products.length, formPage]) // eslint-disable-line react-hooks/exhaustive-deps

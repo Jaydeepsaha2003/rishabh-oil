@@ -619,6 +619,13 @@ function App(): React.JSX.Element {
             onFocusHandled={() => setFocus(null)}
             onBack={view === 'orders' && returnTo ? goBack : undefined}
             backLabel={backLabel}
+            onPurchaseReturn={(p, coId) => {
+              // Purchases → the return's form; closing a debit note comes back here.
+              setReturnTo('orders')
+              setFocus(null)
+              setAccountsResume(p === 'accounts' ? { screen: 'external', ledgerId: null, companyId: coId } : null)
+              setPage(p)
+            }}
           />
         )}
         {view === 'consignment' && <Consignment />}

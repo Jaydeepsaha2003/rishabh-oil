@@ -2,7 +2,7 @@ import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'rea
 import { partyGstOptions } from '@/components/GstRegsPanel'
 import { GstRateChips } from '@/components/GstRateChips'
 import { splitShare } from '@/lib/tankerShare'
-import { takePageIntent } from '@/lib/pageIntent'
+import { setPageIntent, takePageIntent } from '@/lib/pageIntent'
 import { escMayDiscard, hasOpenOverlay } from '@/lib/escape'
 import { toast } from 'sonner'
 import {
@@ -855,13 +855,16 @@ function GroupChevron({ open, tone }: { open: boolean; tone: string }): React.JS
 }
 
 interface OrdersProps {
+  // Make a purchase return: opens Sales (a sale billed back to the supplier)
+  // or Accounting (a debit note), in the bill's own company.
+  onPurchaseReturn?: (page: 'sales' | 'accounts', companyId: number) => void
   focusId?: number | null
   onFocusHandled?: () => void
   onBack?: () => void
   backLabel?: string
 }
 
-export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersProps = {}): React.JSX.Element {
+export function Orders({ focusId, onFocusHandled, onBack, backLabel, onPurchaseReturn }: OrdersProps = {}): React.JSX.Element {
   // How far back this user may date a new entry. The save is refused either
   // way; greying the days out just stops the form offering one it will reject.
   const minDate = useEntryWindow('orders')
@@ -1134,6 +1137,33 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
     { qty: number; balance: number; mode: 'new' | 'existing' | 'expand'; diffRate: boolean; rate: string; targetBargainId: string } | null
   >(null)
   const [detailRow, setDetailRow] = useState<Row | null>(null)
+  // MAKE A PURCHASE RETURN: the bill it is for, while "sale or debit note?" is asked.
+  const [returnRow, setReturnRow] = useState<Row | null>(null)
+  function startPurchaseReturn(kind: 'sales' | 'accounts'): void {
+    const r = returnRow
+    if (!r || !onPurchaseReturn) return
+    // The whole bill: its own row, or every product line of a multi-line bill.
+    const src: Row[] = Array.isArray(r.lines) && (r.lines as Row[]).length ? (r.lines as Row[]) : [r]
+    setPageIntent(kind, {
+      kind: kind === 'sales' ? 'purchaseReturn' : 'purchaseReturnNote',
+      company_id: Number(r.company_id),
+      supplier_id: Number(r.supplier_id),
+      supplier_name: String(r.supplier_name || ''),
+      bargain_id: r.bargain_id ? Number(r.bargain_id) : null,
+      invoice_no: String(r.invoice_no || ''),
+      gst_pct: Number(r.gst_pct) || 0,
+      gst_type: String(r.gst_type || 'CGST_SGST'),
+      lines: src.map((l) => ({
+        order_id: Number(l.id),
+        product_id: Number(l.oil_type_id),
+        oil_code: String(l.oil_code || ''),
+        qty: Number(l.ordered_qty) || 0,
+        rate: Number(l.invoice_rate) || 0
+      }))
+    })
+    setReturnRow(null)
+    onPurchaseReturn(kind, Number(r.company_id))
+  }
   // The purchase whose barrier events are being read. A purchase reaches its
   // gate entries through its TANKERS, so this passes the order id and lets the
   // main process walk that link.
@@ -8676,6 +8706,9 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
                                   ? []
                                   : [{ label: 'Edit purchase', icon: Pencil, onClick: () => openEditPurchase(row) }]),
                                 { label: 'History — who did what', icon: History, onClick: () => openHistory(row) },
+                                ...(onPurchaseReturn && !intercoDesk
+                                  ? [{ label: 'Make a purchase return', icon: Undo2, onClick: () => setReturnRow(row) }]
+                                  : []),
                                 ...(__WEB__ && canSeeLedgers
                                   ? [
                                       {
@@ -10849,6 +10882,47 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
               </div>
             )
           })()}
+        </DialogContent>
+      </Dialog>
+
+      {/* MAKE A PURCHASE RETURN: goods sent back as a SALE billed to the
+          supplier (whole qty, same rate, same bargain), or a DEBIT NOTE. */}
+      <Dialog open={!!returnRow} onOpenChange={(o) => !o && setReturnRow(null)}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>Make a purchase return</DialogTitle>
+          </DialogHeader>
+          <div className="text-[12.5px] font-semibold text-[#5A6B62]">
+            {String(returnRow?.invoice_no || '')} · {String(returnRow?.supplier_name || '')} ·{' '}
+            {formatNum(Number(returnRow?.ordered_qty) || 0)} {String(returnRow?.uom || 'MT')} @ {formatINR(Number(returnRow?.invoice_rate) || 0)}
+          </div>
+          <div className="grid gap-2.5">
+            <button
+              type="button"
+              onClick={() => startPurchaseReturn('sales')}
+              className="rounded-[6px] border-[1.5px] border-[#C9DCCF] bg-white px-4 py-3 text-left hover:border-[#0B6B45] hover:bg-[#F0F8F3]"
+            >
+              <div className="text-[13.5px] font-extrabold text-[#0B6B45]">Make a sale — as purchase return</div>
+              <div className="mt-1 text-[11.5px] font-semibold text-[#5A6B62]">
+                Opens a new sale billed to the supplier with the whole qty, the same rate and the same bargain — the bargain's balance opens again.
+              </div>
+            </button>
+            <button
+              type="button"
+              onClick={() => startPurchaseReturn('accounts')}
+              className="rounded-[6px] border-[1.5px] border-[#C9DCCF] bg-white px-4 py-3 text-left hover:border-[#1B4E82] hover:bg-[#F4F8FD]"
+            >
+              <div className="text-[13.5px] font-extrabold text-[#1B4E82]">Create a debit note</div>
+              <div className="mt-1 text-[11.5px] font-semibold text-[#5A6B62]">
+                Opens a debit note to the supplier against this invoice, with the same qty, rate and GST filled in.
+              </div>
+            </button>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setReturnRow(null)}>
+              Cancel
+            </Button>
+          </DialogFooter>
         </DialogContent>
       </Dialog>
 

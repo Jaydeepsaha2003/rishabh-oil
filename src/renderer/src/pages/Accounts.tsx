@@ -2,6 +2,7 @@ import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type React
 import { VoucherTypesMenu } from '@/components/VoucherTypesMenu'
 import { escMayDiscard, escToClose, hasOpenOverlay, useDrawerEscape } from '@/lib/escape'
 import { toast } from 'sonner'
+import { takePageIntent } from '@/lib/pageIntent'
 import { loadUser } from '@/lib/session'
 import { parsePerms, rightsOf, type Rights } from '@/lib/userRights'
 import { VOUCHER_SECTION, type AccountsSectionKey } from '@/lib/accessSections'
@@ -2185,6 +2186,12 @@ export function Accounts({
     // drill-through left the app working in.
     if (resume.companyId != null) pendingCoRef.current = Number(resume.companyId)
   }
+  // Purchases → ⋮ Make a purchase return → Debit note: the note to fill in once
+  // the bill's company and its ledgers are loaded (the effect further down).
+  const [returnNote, setReturnNote] = useState<Row | null>(() => {
+    const it = takePageIntent('accounts')
+    return it?.kind === 'purchaseReturnNote' ? it : null
+  })
   useEffect(() => {
     if (resumedRef.current) onResumed?.()
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -4936,6 +4943,70 @@ export function Accounts({
     void openForAlter({ id })
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [cid])
+
+  // A DEBIT NOTE FOR A PURCHASE RETURN, filled from the purchase: the supplier
+  // Dr Agst Ref the invoice, the oil's PUR A/C Cr with the same qty and rate,
+  // and the bill's GST — the grid works the tax and the party's total out.
+  useEffect(() => {
+    const it = returnNote
+    if (!it || !cid || Number(it.company_id) !== cid || !accounts.length) return
+    setReturnNote(null)
+    openVoucher('DEBIT NOTE')
+    const up = (x: unknown): string => String(x ?? '').trim().toUpperCase()
+    const r2 = (x: number): number => Math.round((x + Number.EPSILON) * 100) / 100
+    const sup = String(it.supplier_name || '')
+    // The supplier's own ledger: its (CR) side where the party was split, else its name.
+    const party =
+      accounts.find((a) => up(a.name) === up(`${sup} (CR)`)) ||
+      accounts.find((a) => up(a.name) === up(sup) && isBillwise(a.acc_group))
+    const src = (it.lines as Row[]) || []
+    const itemLines: VLine[] = src.map((l) => {
+      const name = `${String(l.oil_code || '')} PUR A/C`
+      const acc = accounts.find((a) => up(a.name) === up(name))
+      return {
+        side: 'cr',
+        account: acc ? String(acc.name) : name,
+        group: acc ? String(acc.acc_group) : 'Purchase Accounts',
+        amount: String(r2(n(l.qty) * n(l.rate))),
+        allocs: [],
+        product_id: n(l.product_id) || undefined,
+        qty: String(l.qty || ''),
+        rate: String(l.rate || '')
+      } as VLine
+    })
+    // The same sum the grid makes: GST at the bill's rate, to the rupee.
+    const base = r2(src.reduce((t, l) => t + r2(n(l.qty) * n(l.rate)), 0))
+    const pct = n(it.gst_pct)
+    const igst = String(it.gst_type) === 'IGST'
+    const gst = pct > 0 ? (igst ? r2((base * pct) / 100) : r2(r2((base * pct) / 200) * 2)) : 0
+    const total = pct > 0 ? Math.round(base + gst) : base
+    const firstOrder = src.length ? n(src[0].order_id) || null : null
+    setLines([
+      {
+        side: 'dr',
+        account: party ? String(party.name) : sup,
+        group: party ? String(party.acc_group) : 'Sundry Creditors',
+        amount: String(total),
+        allocs: it.invoice_no
+          ? [{ method: 'agst_ref', ref_name: String(it.invoice_no), order_id: firstOrder, amount: String(total) }]
+          : []
+      },
+      ...itemLines
+    ])
+    noteGstPicked.current = true
+    partyAutoAmount.current = String(total)
+    setNoteGstType(pct > 0 ? (igst ? 'IGST' : 'CGST_SGST') : 'none')
+    setNoteGstPct(pct > 0 ? String(pct) : '')
+    // The desktop's invoice-style note form reads these instead.
+    setNotePartyKind('supplier')
+    setNoteParty(String(it.supplier_id || ''))
+    setNoteInvoice(String(it.invoice_no || ''))
+    setNoteGst(String(pct))
+    setNoteItems(src.map((l) => ({ product_id: String(l.product_id || ''), qty: String(l.qty || ''), rate: String(l.rate || '') })))
+    setNarration(`Purchase return against invoice ${String(it.invoice_no || '')}`)
+    if (!party) toast.warning(`No ledger found for ${sup} — pick the supplier's ledger on the first line`)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [returnNote, cid, accounts])
 
   // THE VOUCHER BEFORE / AFTER this one of the same type (PgUp / PgDn).
   async function stepVoucher(dir: -1 | 1): Promise<void> {
