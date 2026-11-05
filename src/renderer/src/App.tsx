@@ -492,7 +492,8 @@ function App(): React.JSX.Element {
   useEffect(() => {
     if (!user) return
     void beat()
-    const id = setInterval(() => void beat(), 30000)
+    // 45 s keeps a user 'live' (sessions count as live for 90 s) at two-thirds the requests.
+    const id = setInterval(() => void beat(), 45000)
     const onFocus = (): void => void beat()
     window.addEventListener('focus', onFocus)
     return () => {

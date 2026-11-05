@@ -15,7 +15,9 @@ import { useEffect, useRef } from 'react'
 // new one restarts the wait, so a burst settles into a single reload once the
 // writing stops. The page that did the writing refreshes itself directly after
 // saving, so this delay is never what the user is waiting on.
-const COALESCE_MS = 1500
+// The website waits longer: every open tab re-reading on each write is what
+// pushed the shared hosting plan to its daily resource limit.
+const COALESCE_MS = __WEB__ ? 4000 : 1500
 
 // A reload still "in flight" after this long is presumed dead.
 //
@@ -47,7 +49,8 @@ const STALE_MS = 45000
 // nothing calls it with the flag.
 export function useLiveRefresh(
   reload: (background?: boolean) => void | Promise<void>,
-  intervalMs = 3000
+  // Website: every 10 s per open tab instead of every 3 s (hosting limits).
+  intervalMs = __WEB__ ? 10000 : 3000
 ): void {
   const last = useRef<number | null>(null)
   const busy = useRef(false)

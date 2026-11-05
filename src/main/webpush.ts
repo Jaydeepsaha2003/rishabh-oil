@@ -330,7 +330,7 @@ export async function pushPendingNotifications(): Promise<{ rows: number; sent: 
   return { rows: rows.length, sent }
 }
 
-export function startPushWatcher(intervalMs = 20000): void {
+export function startPushWatcher(intervalMs = 60000): void {
   if (pushWatcher) return
   const tick = (): void => {
     pushPendingNotifications().catch((e) => console.error('[push] watcher failed:', (e as Error).message))

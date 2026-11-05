@@ -33,7 +33,8 @@ export function DbStatus({
       }
     }
     ping()
-    const t = setInterval(ping, 20000)
+    // Each ping is a request + a query; once a minute is plenty to show the dot.
+    const t = setInterval(ping, 60000)
     window.addEventListener('online', ping)
     return () => {
       alive = false
