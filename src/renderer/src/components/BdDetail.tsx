@@ -1432,6 +1432,23 @@ This was one bank debit that also cleared ${others.map((g) => `${s(g.bd_no)} ${f
                   {sched.slice(0, 8).map((x, i) => (
                     <ServicedRow key={i} x={x} />
                   ))}
+                  {/* TOTAL BD INTEREST over every period (not just the 8 shown), paid and still due. */}
+                  {!withRepay && (() => {
+                    const total = round2(sched.reduce((t, x) => t + n(x.gross), 0))
+                    const paid = round2(sched.reduce((t, x) => t + (x.paid_id ? n(x.paid_gross || x.gross) : 0), 0))
+                    const due = round2(sched.reduce((t, x) => t + (x.paid_id ? 0 : n(x.gross)), 0))
+                    return (
+                      <div className="flex flex-wrap items-center gap-x-4 gap-y-1 border-t-[1.5px] border-t-[#C9DCCF] bg-[#F7FAF6] px-3 py-[10px]">
+                        <span className="text-[10.5px] font-extrabold uppercase tracking-[.12em] text-[#1A2C56]">Total BD interest</span>
+                        <span className="text-[11.5px] font-semibold text-[#5A6B62]">
+                          {sched.length} period{sched.length === 1 ? '' : 's'}
+                          {paid > 0.004 && <> · paid <b className="doc-ref text-[#0B6B45]">{formatINR(paid)}</b></>}
+                          {due > 0.004 && <> · due <b className="doc-ref text-[#B3261E]">{formatINR(due)}</b></>}
+                        </span>
+                        <span className="doc-ref ml-auto whitespace-nowrap pr-[34px] text-[14px] font-extrabold text-[#0A1F17]">{formatINR(total)}</span>
+                      </div>
+                    )
+                  })()}
                   {withRepay && (() => {
                     // Compared in total: an NBFC can spread the same interest
                     // differently across the repayments.
