@@ -2003,6 +2003,10 @@ export async function deleteOrder(id: number): Promise<{ id: number }> {
   await releaseConsignmentLots(id)
   await c.execute({ sql: 'DELETE FROM order_bargains WHERE order_id = ?', args: [id] })
   await c.execute({ sql: 'DELETE FROM order_bargain_interest WHERE order_id = ?', args: [id] })
+  // Other vouchers set Agst Ref this bill (a debit note, a payment journal)
+  // keep their reference by name, as in Tally — only the link to the row being
+  // deleted goes, which the foreign key would otherwise refuse the delete on.
+  await c.execute({ sql: 'UPDATE journal_bill_allocs SET order_id = NULL WHERE order_id = ?', args: [id] })
   await c.execute({ sql: 'DELETE FROM orders WHERE id = ?', args: [id] })
   return { id }
   })
