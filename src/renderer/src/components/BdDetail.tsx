@@ -35,12 +35,15 @@ import {
   Landmark,
   Pencil,
   Percent,
+  Plus,
   Trash2,
   Users,
   X
 } from 'lucide-react'
 import { formatDate, formatINR, formatNum, todayISO } from '@/lib/format'
 import { cn } from '@/lib/utils'
+import { Dialog, DialogContent, DialogTitle } from '@/components/ui/dialog'
+import { Input } from '@/components/ui/input'
 import { adjKindsLabel, adjPostsTo } from '@/components/AdjChargePicker'
 import { BdRepaymentEdit } from '@/components/BdRepaymentEdit'
 import { isRefundDue } from '@/lib/refundDue'
@@ -650,14 +653,16 @@ function BdPartiesAndEntries({ bill }: { bill: Row }): React.JSX.Element | null 
 // the later days cheaper — billDiscounting.ts bdInterestParts).
 function ServicedRow({ x }: { x: Row }): React.JSX.Element {
   const [open, setOpen] = useState(false)
+  const [splitOpen, setSplitOpen] = useState(false)
   const parts = (Array.isArray(x.parts) ? x.parts : []) as Row[]
   return (
     <div className="border-b border-b-[#EFF3EE] last:border-b-0">
+      <div className="flex items-start hover:bg-[#F7FAF6]">
       <button
         type="button"
         onClick={() => setOpen((o) => !o)}
         title="Show how this period's interest is worked out"
-        className="flex w-full items-start gap-2.5 px-3 py-[11px] text-left hover:bg-[#F7FAF6]"
+        className="flex min-w-0 flex-1 items-start gap-2.5 py-[11px] pl-3 text-left"
       >
         {x.paid_id ? (
           <ArrowDownLeft className="mt-px h-[17px] w-[17px] shrink-0 text-[#0B6B45]" />
@@ -695,6 +700,17 @@ function ServicedRow({ x }: { x: Row }): React.JSX.Element {
         </span>
         <ChevronDown className={cn('mt-0.5 h-4 w-4 flex-none text-[#8CA396] transition-transform', open && 'rotate-180')} />
       </button>
+      <button
+        type="button"
+        onClick={() => setSplitOpen(true)}
+        title="Split the principal into parts and see each part's interest"
+        aria-label="Split the principal"
+        className="mx-2 mt-[9px] flex h-[22px] w-[22px] flex-none items-center justify-center rounded-[3px] border border-[#C9DCCF] bg-white text-[#0B6B45] hover:border-[#0B6B45] hover:bg-[#E9F5EE]"
+      >
+        <Plus className="h-3.5 w-3.5" />
+      </button>
+      </div>
+      {splitOpen && <PrincipalSplit x={x} onClose={() => setSplitOpen(false)} />}
       {open && (
         <div className="mx-3 mb-3 overflow-hidden rounded-[4px] border border-[#E4ECE3] bg-[#FBFCFA]">
           <div className="grid grid-cols-[minmax(0,1fr)_auto_44px_auto] gap-x-3 border-b border-[#E4ECE3] px-3 py-1.5 text-[9.5px] font-extrabold uppercase tracking-[.1em] text-[#5A6B62]">
@@ -727,6 +743,96 @@ function ServicedRow({ x }: { x: Row }): React.JSX.Element {
         </div>
       )}
     </div>
+  )
+}
+
+// SPLIT THE PRINCIPAL (the + on a serviced-interest period): a calculator,
+// nothing is saved. The period's principal in up to 3 parts, each part's
+// interest its share of the period's interest - every stretch (balance) pro
+// rata, so a part repaid early is cheaper the same way the whole is.
+function PrincipalSplit({ x, onClose }: { x: Row; onClose: () => void }): React.JSX.Element {
+  const stretches = (Array.isArray(x.parts) ? x.parts : []) as Row[]
+  const principal = n(stretches[0]?.principal ?? x.principal)
+  const r2 = (v: number): number => Math.round((v + Number.EPSILON) * 100) / 100
+  const [amts, setAmts] = useState<string[]>(() => [String(r2(principal / 2)), String(r2(principal - r2(principal / 2)))])
+  // The last part takes whatever the others leave, so the parts always add up.
+  const fixed = amts.slice(0, -1).reduce((t, a) => t + n(a), 0)
+  const last = r2(principal - fixed)
+  const vals = [...amts.slice(0, -1).map((a) => n(a)), last]
+  const share = (v: number): number => (principal > 0 ? r2((n(x.gross) * v) / principal) : 0)
+  const setCount = (k: number): void => {
+    const each = r2(principal / k)
+    setAmts(Array.from({ length: k }, (_, i) => String(i < k - 1 ? each : r2(principal - each * (k - 1)))))
+  }
+  return (
+    <Dialog open onOpenChange={(o) => !o && onClose()}>
+      <DialogContent readOnly overlayClassName="z-[110]" className="z-[120] gap-0 overflow-hidden p-0 sm:max-w-md">
+        <div className="bg-[#0B3D2E] px-5 py-3.5 pr-12 text-white">
+          <div className="text-[9.5px] font-extrabold uppercase tracking-[.14em] text-[#C7F03F]">Split the principal</div>
+          <DialogTitle className="text-[15px] font-extrabold text-white">
+            {formatDate(s(x.from_date))} &rarr; {formatDate(s(x.to_date))} · {n(x.days)}d
+          </DialogTitle>
+        </div>
+        <div className="space-y-3 px-5 py-4">
+          <div className="flex items-baseline justify-between text-[12.5px]">
+            <span className="font-semibold text-[#5A6B62]">Principal</span>
+            <span className="doc-ref font-extrabold text-[#0A1F17]">{formatINR(principal)}</span>
+          </div>
+          <div className="flex items-baseline justify-between text-[12.5px]">
+            <span className="font-semibold text-[#5A6B62]">Interest for the period</span>
+            <span className="doc-ref font-extrabold text-[#0A1F17]">{formatINR(n(x.gross))}</span>
+          </div>
+          <div className="flex items-center gap-2">
+            <span className="text-[11px] font-extrabold uppercase tracking-[.08em] text-[#5A6B62]">Parts</span>
+            {[2, 3].map((k) => (
+              <button
+                key={k}
+                type="button"
+                onClick={() => setCount(k)}
+                className={cn(
+                  'rounded-[3px] border px-3 py-1 text-[12px] font-extrabold',
+                  amts.length === k ? 'border-[#0B6B45] bg-[#0B6B45] text-white' : 'border-[#C9DCCF] bg-white text-[#33473E] hover:border-[#0B6B45]'
+                )}
+              >
+                {k}
+              </button>
+            ))}
+          </div>
+          <div className="overflow-hidden rounded-[4px] border border-[#E4ECE3]">
+            <div className="grid grid-cols-[52px_minmax(0,1fr)_auto] gap-x-3 border-b border-[#E4ECE3] bg-[#FBFCFA] px-3 py-1.5 text-[9.5px] font-extrabold uppercase tracking-[.1em] text-[#5A6B62]">
+              <span>Part</span>
+              <span>Principal</span>
+              <span className="text-right">Interest</span>
+            </div>
+            {vals.map((v, i) => (
+              <div key={i} className="grid grid-cols-[52px_minmax(0,1fr)_auto] items-center gap-x-3 border-b border-[#EFF3EE] px-3 py-1.5 text-[12.5px] last:border-b-0">
+                <span className="font-extrabold text-[#33473E]">{i + 1}</span>
+                {i < vals.length - 1 ? (
+                  <Input
+                    inputMode="decimal"
+                    value={amts[i]}
+                    onChange={(e) => setAmts((p) => p.map((a, j) => (j === i ? e.target.value.replace(/[^0-9.]/g, '') : a)))}
+                    className="h-8 text-[12.5px] tabular-nums"
+                  />
+                ) : (
+                  <span className={cn('doc-ref px-1 font-bold tabular-nums', v < 0 ? 'text-[#B3261E]' : 'text-[#0A1F17]')}>
+                    {formatINR(v)} <span className="text-[10.5px] font-semibold text-[#8CA396]">rest</span>
+                  </span>
+                )}
+                <span className="doc-ref text-right font-extrabold tabular-nums text-[#0B6B45]">{formatINR(share(v))}</span>
+              </div>
+            ))}
+          </div>
+          {last < 0 ? (
+            <div className="text-[11.5px] font-semibold text-[#B3261E]">The parts come to more than the principal.</div>
+          ) : (
+            <div className="text-[11px] font-semibold text-[#5A6B62]">
+              Type the first part{vals.length > 2 ? 's' : ''}; the last part is what is left. Each part&apos;s interest is its share of the period&apos;s interest. Nothing is saved.
+            </div>
+          )}
+        </div>
+      </DialogContent>
+    </Dialog>
   )
 }
 
