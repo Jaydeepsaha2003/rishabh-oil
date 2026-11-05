@@ -399,6 +399,7 @@ import {
   deleteExposure
 } from './facilities'
 import { listLimitHistory, addLimitRevision, deleteLimitRevision } from './facilityLimits'
+import { explainForeignKey, isForeignKeyError } from './fkExplain'
 import { importTallyLedgers, tallyLedgerMap, mapTallyLedger, applyTallyOpenings, clearTallyLedgers, createTallyLedgers, regroupTallyLedger } from './tallyLedgers'
 import {
   listSales,
@@ -588,7 +589,14 @@ export function registerIpc(): void {
       // Writes pass the access gate first: the right itself, then the read-only
       // window on the entry's own date. Unmapped channels are untouched.
       if (!READONLY.test(channel)) await assertAllowed(channel, args)
-      const result = await fn(e, args)
+      let result: unknown
+      try {
+        result = await fn(e, args)
+      } catch (err) {
+        // "FOREIGN KEY constraint failed" tells nobody anything: say what still uses it.
+        if (isForeignKeyError(err)) throw new Error(await explainForeignKey(channel, args))
+        throw err
+      }
       if (!READONLY.test(channel)) {
         // Anything cached off the old data is now wrong. Done here as well as
         // inside bumpRevision because that call is allowed to fail on a bad
