@@ -16302,6 +16302,23 @@ export function Accounts({
                       Break down a figure
                     </button>
                   )}
+                  {/* The voucher itself, beside its document — a posted one opens
+                      view-only, with Save bill-wise and Alter there. */}
+                  {doc && !showBreakdowns && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setDbSel(null)
+                        void openForAlter({ id: Number(dv.id) })
+                      }}
+                      title="Open this voucher itself — its lines, bill-wise details and Reco tag"
+                      className="flex h-10 items-center gap-[7px] whitespace-nowrap rounded-[7px] px-3.5"
+                      style={{ border: '1.5px solid #C3D2C6', fontSize: 12, fontWeight: 800, color: '#33473E' }}
+                    >
+                      <ScrollText className="h-[17px] w-[17px]" />
+                      Open voucher
+                    </button>
+                  )}
                   <button
                     type="button"
                     onClick={() => {
