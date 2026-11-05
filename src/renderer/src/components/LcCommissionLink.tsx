@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import { toast } from 'sonner'
-import { AlertTriangle, CalendarDays, Link2, Search, Unlink, X } from 'lucide-react'
+import { AlertTriangle, ArrowDown, ArrowUp, CalendarDays, ChevronsUpDown, Link2, Search, Unlink, X } from 'lucide-react'
 import { errText, formatDate, formatINR } from '@/lib/format'
 import { cn } from '@/lib/utils'
 import { SearchSelect } from '@/components/SearchSelect'
@@ -9,6 +9,7 @@ import { Dialog, DialogContent, DialogTitle } from '@/components/ui/dialog'
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Row = Record<string, any>
+type SortKey = 'date' | 'voucher' | 'bank' | 'party' | 'narration' | 'amount' | 'off'
 
 // A BANK VOUCHER LINKED TO AN LC, AGAINST WHAT IT SHOULD HAVE BEEN.
 //
@@ -32,6 +33,8 @@ export function LcCommissionLink({
   const [picking, setPicking] = useState(false)
   const [q, setQ] = useState('')
   const [cands, setCands] = useState<Row[] | null>(null)
+  // The picker's order: any column, click again to reverse; oldest date first by default.
+  const [sort, setSort] = useState<{ key: SortKey; dir: 1 | -1 }>({ key: 'date', dir: 1 })
   // A ledger picked: only the vouchers that touch it (the bank, the charges…).
   const [ledgerId, setLedgerId] = useState('')
   // Only the vouchers dated in this range (either end may be left open).
@@ -117,6 +120,27 @@ export function LcCommissionLink({
   // What it should be: the saved figure, or — for the commission — what the %
   // typed above comes to, so the comparison reads before Save too.
   const expected = info.expected != null ? Number(info.expected) : !refund && pct.trim() !== '' ? preview : null
+  // Not a hook: this sits below the 'Reading…' early return.
+  const sorted = (() => {
+    const val = (x: Row): string | number => {
+      switch (sort.key) {
+        case 'date': return String(x.entry_date || '')
+        case 'voucher': return vLabel(x)
+        case 'bank': return String(x.bank || '')
+        case 'party': return String(x.debited || '')
+        case 'narration': return String(x.narration || '')
+        case 'amount': return Number(x.amount) || 0
+        // Nearest to the calculated figure first.
+        case 'off': return expected == null ? 0 : Math.abs((Number(x.amount) || 0) - expected)
+      }
+    }
+    return [...(cands || [])].sort((a, b) => {
+      const va = val(a)
+      const vb = val(b)
+      const c = typeof va === 'number' && typeof vb === 'number' ? va - vb : String(va).localeCompare(String(vb), undefined, { numeric: true, sensitivity: 'base' })
+      return (c || Number(a.id) - Number(b.id)) * sort.dir
+    })
+  })()
   const got = v ? Number(v.amount) : null
   const diff = got != null && expected != null ? Math.round((got - expected) * 100) / 100 : null
   const matched = diff != null && Math.abs(diff) < 1
@@ -364,17 +388,36 @@ export function LcCommissionLink({
               <table className="w-full border-collapse text-[12.5px]">
                 <thead className="sticky top-0 z-10 bg-[#0B3D2E] text-[9.5px] font-extrabold uppercase tracking-[.12em] text-white">
                   <tr>
-                    <th className="w-[96px] px-4 py-2.5 text-left">Date</th>
-                    <th className="w-[120px] px-3 py-2.5 text-left">Voucher</th>
-                    <th className="px-3 py-2.5 text-left">{refund ? 'Received in' : 'Paid from'}</th>
-                    <th className="px-3 py-2.5 text-left">{refund ? 'From' : 'Paid to'}</th>
-                    <th className="px-3 py-2.5 text-left">Narration</th>
-                    <th className="w-[130px] px-3 py-2.5 text-right">Amount</th>
-                    <th className="w-[120px] px-4 py-2.5 text-right">Vs calculated</th>
+                    {(
+                      [
+                        ['date', 'Date', 'w-[96px] px-4 text-left'],
+                        ['voucher', 'Voucher', 'w-[120px] px-3 text-left'],
+                        ['bank', refund ? 'Received in' : 'Paid from', 'px-3 text-left'],
+                        ['party', refund ? 'From' : 'Paid to', 'px-3 text-left'],
+                        ['narration', 'Narration', 'px-3 text-left'],
+                        ['amount', 'Amount', 'w-[130px] px-3 text-right'],
+                        ['off', 'Vs calculated', 'w-[120px] px-4 text-right']
+                      ] as [SortKey, string, string][]
+                    ).map(([k, label, cls]) => {
+                      const on = sort.key === k
+                      const Icon = !on ? ChevronsUpDown : sort.dir === 1 ? ArrowUp : ArrowDown
+                      return (
+                        <th key={k} className={cn('py-0', cls)} aria-sort={on ? (sort.dir === 1 ? 'ascending' : 'descending') : 'none'}>
+                          <button
+                            type="button"
+                            onClick={() => setSort((p) => ({ key: k, dir: p.key === k ? ((-p.dir) as 1 | -1) : 1 }))}
+                            className={cn('inline-flex items-center gap-1 py-2.5 uppercase hover:text-[#C7F03F]', on && 'text-[#C7F03F]', cls.includes('text-right') && 'flex-row-reverse')}
+                          >
+                            {label}
+                            <Icon className={cn('h-3 w-3', !on && 'opacity-50')} />
+                          </button>
+                        </th>
+                      )
+                    })}
                   </tr>
                 </thead>
                 <tbody>
-                  {cands.map((x, i) => {
+                  {sorted.map((x, i) => {
                     const off = expected == null ? null : Math.round((Number(x.amount) - expected) * 100) / 100
                     const hit = off != null && Math.abs(off) < 1
                     return (

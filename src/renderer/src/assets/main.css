@@ -277,3 +277,13 @@ tr.row-flash .pin-col,
 /* The chart of accounts' rows light up under the pointer. !important because
    each row's own zebra/primary ground is an inline style. */
 .acct-web .m-row:hover { background: #F4F9EF !important }
+
+/* A dialog whose header band is dark: its close × in white, so it can be seen
+   and clicked. The × is the dialog's last child; the band is its first. */
+[role='dialog']:has(> :first-child:is([class*='bg-[#0B3D2E]'], [class*='from-[#'], [class*='text-white'])) > button:last-child {
+  color: #fff;
+  opacity: 0.9;
+}
+[role='dialog']:has(> :first-child:is([class*='bg-[#0B3D2E]'], [class*='from-[#'], [class*='text-white'])) > button:last-child:hover {
+  opacity: 1;
+}
