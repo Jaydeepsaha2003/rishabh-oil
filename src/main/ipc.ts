@@ -790,7 +790,7 @@ export function registerIpc(): void {
   handle('tankers:update', (_e, { id, values }: { id: number; values: Row }) =>
     updateTankerDetails(id, values)
   )
-  handle('tankers:delete', (_e, { id }: { id: number }) => deletePurchaseTanker(id))
+  handle('tankers:delete', (_e, { id }: { id: number }) => withDbTransaction(() => deletePurchaseTanker(id)))
   handle(
     'tankers:advance',
     (_e, { id, toStatus, data }: { id: number; toStatus: string; data: Row }) =>

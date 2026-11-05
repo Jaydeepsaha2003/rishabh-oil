@@ -2396,6 +2396,14 @@ export async function deletePurchaseTanker(id: number): Promise<{ id: number }> 
   const c = getClient()
   const res = await c.execute({ sql: 'SELECT order_id FROM purchase_tankers WHERE id = ?', args: [id] })
   if (res.rows[0]?.order_id != null) throw new Error('Remove this tanker from its purchase before deleting it')
+  // A gate entry (GE/0002) is the barrier's own weighment record, so it stays —
+  // only its link to the deleted tanker goes. The tanker's lab readings, swap
+  // records and invoice shares go with it; left behind they failed the foreign key.
+  await c.execute({ sql: 'UPDATE gate_entries SET tanker_id = NULL WHERE tanker_id = ?', args: [id] })
+  await c.execute({ sql: 'DELETE FROM tanker_replacements WHERE tanker_id = ?', args: [id] })
+  await c.execute({ sql: 'DELETE FROM tanker_quality WHERE tanker_id = ?', args: [id] })
+  await ensureTankerInvoices()
+  await c.execute({ sql: 'DELETE FROM tanker_invoices WHERE tanker_id = ?', args: [id] })
   await c.execute({ sql: 'DELETE FROM purchase_tankers WHERE id = ?', args: [id] })
   return { id }
 }
