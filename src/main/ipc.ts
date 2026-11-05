@@ -1111,6 +1111,9 @@ export function registerIpc(): void {
     const { voucherSummary } = await import('./accounting')
     return voucherSummary(args?.from, args?.to, args?.companyId)
   })
+  handle('vouchers:setValueDate', async (_e, { id, valueDate }: { id: number; valueDate: string | null }) =>
+    (await import('./accounting')).setVoucherValueDate(Number(id), valueDate)
+  )
   handle('vouchers:list', (_e, args?: { from?: string; to?: string; vchType?: string | string[]; companyId?: number }) =>
     listVouchers(args?.from, args?.to, args?.vchType, args?.companyId)
   )

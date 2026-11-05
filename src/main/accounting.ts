@@ -624,6 +624,15 @@ export async function getVoucher(id: number): Promise<Row | null> {
 
 // The Day Book: every voucher in the period, one row each, with the principal
 // debit and credit ledgers as Tally shows them.
+/** The bank's value date on a voucher (Reco) — set, or cleared with null. */
+export async function setVoucherValueDate(entryId: number, valueDate: string | null): Promise<{ id: number; value_date: string | null }> {
+  const d = valueDate ? String(valueDate).slice(0, 10) : null
+  if (d && !/^\d{4}-\d{2}-\d{2}$/.test(d)) throw new Error('Pick a valid value date')
+  const r = await getClient().execute({ sql: 'UPDATE journal_entries SET value_date = ? WHERE id = ?', args: [d, n(entryId)] })
+  if (!r.rowsAffected) throw new Error('That voucher no longer exists')
+  return { id: n(entryId), value_date: d }
+}
+
 export async function listVouchers(
   from?: string,
   to?: string,
@@ -650,7 +659,7 @@ export async function listVouchers(
     }
   }
   const res = await c.execute({
-    sql: `SELECT je.id, je.entry_date, je.vch_type, je.vch_subtype, je.vch_no, je.narration,
+    sql: `SELECT je.id, je.entry_date, je.vch_type, je.vch_subtype, je.vch_no, je.narration, je.value_date,
                  je.order_id, je.sale_id, je.payment_id,
                  -- The document's own number and its own book, for the Day
                  -- Book's Ref column and for the drill-through — see the note

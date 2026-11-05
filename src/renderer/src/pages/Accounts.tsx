@@ -15744,6 +15744,14 @@ export function Accounts({
                 {tags.map((t) => (
                   <TagChip key={String(t.id)} tag={t} small />
                 ))}
+                {r.value_date && (
+                  <span
+                    title="The bank's value date (Reco)"
+                    style={{ fontSize: 10, fontWeight: 800, color: '#1B4E82', background: '#EAF2FC', border: '1px solid #B9D3F0', borderRadius: 3, padding: '0 6px' }}
+                  >
+                    Value dt {formatDate(String(r.value_date))}
+                  </span>
+                )}
               </span>
             )}
           </div>
@@ -16217,6 +16225,48 @@ export function Accounts({
                       {tags.map((t) => (
                         <TagChip key={String(t.id)} tag={t} small />
                       ))}
+                    </div>
+                  )}
+                  {/* A Reco voucher: the bank's VALUE DATE — the day the cheque
+                      cleared or the money was credited — asked here, so the
+                      Day Book's Reco list is reconciled one by one. */}
+                  {(dbReco || tags.some((t) => String(t.name || '').trim().toUpperCase() === 'RECO')) && (
+                    <div className="flex-none rounded-[8px]" style={{ background: '#F4F8FD', border: '1px solid #C6DAF0', padding: '11px 13px' }}>
+                      <div style={{ fontSize: 9.5, fontWeight: 800, letterSpacing: '.12em', textTransform: 'uppercase', color: '#1B4E82' }}>Value date (bank)</div>
+                      <div className="mt-2 flex flex-wrap items-center gap-2">
+                        <div className="w-[170px]">
+                          <DatePicker
+                            value={String(dv.value_date || '').slice(0, 10)}
+                            min={String(dv.entry_date || '').slice(0, 10) || undefined}
+                            onChange={(v) => {
+                              const next = String(v || '') || null
+                              void window.api.vouchers
+                                .setValueDate(Number(dv.id), next)
+                                .then((r) => {
+                                  setDayRows((rows) => rows.map((x) => (Number(x.id) === Number(dv.id) ? { ...x, value_date: r.value_date } : x)))
+                                  toast.success(r.value_date ? `Value date ${formatDate(r.value_date)} saved` : 'Value date cleared')
+                                })
+                                .catch((e) => toast.error((e as Error).message))
+                            }}
+                          />
+                        </div>
+                        {dv.value_date ? (
+                          <button
+                            type="button"
+                            className="text-[11px] font-bold text-[#8C2F26] hover:underline"
+                            onClick={() =>
+                              void window.api.vouchers
+                                .setValueDate(Number(dv.id), null)
+                                .then(() => setDayRows((rows) => rows.map((x) => (Number(x.id) === Number(dv.id) ? { ...x, value_date: null } : x))))
+                                .catch((e) => toast.error((e as Error).message))
+                            }
+                          >
+                            Clear
+                          </button>
+                        ) : (
+                          <span className="text-[11px] font-semibold text-[#5A6B62]">Not reconciled yet — pick the date the bank shows</span>
+                        )}
+                      </div>
                     </div>
                   )}
                 </div>
