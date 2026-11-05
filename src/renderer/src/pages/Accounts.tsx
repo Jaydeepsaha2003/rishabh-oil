@@ -1632,7 +1632,7 @@ function lineRef(l: Row): { no: string; kind: string; full: string } | null {
   if (methods.length) {
     const doc = docRef(l)
     const how = methods.join(' + ')
-    return doc ? { ...doc, kind: `${doc.kind} · ${how}` } : { no: how, kind: 'Bill-wise', full: how }
+    return doc ? { ...doc, kind: how } : { no: how, kind: 'Bill-wise', full: how }
   }
   return docRef(l)
 }
@@ -17391,7 +17391,7 @@ export function Accounts({
           const ref0 = lineRef(r)
           const onAcc =
             isParty && !r.provisional && !((r.allocs as Row[]) || []).length && !String(r.order_invoice_no || '').trim() && !String(r.sale_invoice_no || '').trim()
-          const ref = onAcc ? (ref0 ? { ...ref0, kind: `${ref0.kind} · On Account` } : { no: 'On Account', kind: 'Bill-wise', full: 'On Account' }) : ref0
+          const ref = onAcc ? (ref0 ? { ...ref0, kind: 'On Account' } : { no: 'On Account', kind: 'Bill-wise', full: 'On Account' }) : ref0
           const doc = docTarget(r)
           return (
             <div key={String(r.id)}>
