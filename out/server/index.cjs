@@ -6122,6 +6122,7 @@ __export(accounting_exports, {
   resolveRefIds: () => resolveRefIds,
   setLineAllocs: () => setLineAllocs,
   setLineSplits: () => setLineSplits,
+  setVoucherValueDate: () => setVoucherValueDate,
   tradingAccount: () => tradingAccount,
   trialBalance: () => trialBalance,
   updateVoucher: () => updateVoucher,
@@ -6526,6 +6527,13 @@ async function getVoucher(id) {
   entry.code = await voucherCodeOf(id).catch(() => null);
   return entry;
 }
+async function setVoucherValueDate(entryId, valueDate) {
+  const d = valueDate ? String(valueDate).slice(0, 10) : null;
+  if (d && !/^\d{4}-\d{2}-\d{2}$/.test(d)) throw new Error("Pick a valid value date");
+  const r = await getClient().execute({ sql: "UPDATE journal_entries SET value_date = ? WHERE id = ?", args: [d, n4(entryId)] });
+  if (!r.rowsAffected) throw new Error("That voucher no longer exists");
+  return { id: n4(entryId), value_date: d };
+}
 async function listVouchers(from, to, vchType, companyId) {
   const c = getClient();
   const cid = companyId || getActiveCompanyId();
@@ -6547,7 +6555,7 @@ async function listVouchers(from, to, vchType, companyId) {
     }
   }
   const res = await c.execute({
-    sql: `SELECT je.id, je.entry_date, je.vch_type, je.vch_subtype, je.vch_no, je.narration,
+    sql: `SELECT je.id, je.entry_date, je.vch_type, je.vch_subtype, je.vch_no, je.narration, je.value_date,
                  je.order_id, je.sale_id, je.payment_id,
                  -- The document's own number and its own book, for the Day
                  -- Book's Ref column and for the drill-through \u2014 see the note
@@ -17800,6 +17808,7 @@ async function deleteOrder(id) {
     await releaseConsignmentLots(id);
     await c.execute({ sql: "DELETE FROM order_bargains WHERE order_id = ?", args: [id] });
     await c.execute({ sql: "DELETE FROM order_bargain_interest WHERE order_id = ?", args: [id] });
+    await c.execute({ sql: "UPDATE journal_bill_allocs SET order_id = NULL WHERE order_id = ?", args: [id] });
     await c.execute({ sql: "DELETE FROM orders WHERE id = ?", args: [id] });
     return { id };
   });
@@ -36235,6 +36244,9 @@ var REQUIRED_COLUMNS = [
   // The desk's own voucher type (PURCHASE OTHERS under Purchase) — a label on
   // top of the basic type, which keeps the number series (voucherSubtypes.ts).
   { table: "journal_entries", column: "vch_subtype", type: "TEXT" },
+  // The bank's own date for a Reco voucher (cheque cleared / credited) — the
+  // value date entered from the Day Book; nothing posts on it.
+  { table: "journal_entries", column: "value_date", type: "TEXT" },
   // The bank receipt an LC's preclosure interest refund came back by — linked
   // from the LC panel (lc.ts linkLcRefund). Shown, never posted.
   { table: "letters_of_credit", column: "refund_voucher_id", type: "INTEGER" },
@@ -42760,6 +42772,10 @@ function registerIpc() {
     const { voucherSummary: voucherSummary2 } = await Promise.resolve().then(() => (init_accounting(), accounting_exports));
     return voucherSummary2(args?.from, args?.to, args?.companyId);
   });
+  handle(
+    "vouchers:setValueDate",
+    async (_e, { id, valueDate }) => (await Promise.resolve().then(() => (init_accounting(), accounting_exports))).setVoucherValueDate(Number(id), valueDate)
+  );
   handle(
     "vouchers:list",
     (_e, args) => listVouchers(args?.from, args?.to, args?.vchType, args?.companyId)
