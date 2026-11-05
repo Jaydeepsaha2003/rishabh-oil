@@ -34217,7 +34217,7 @@ async function pushPendingNotifications() {
   if (last !== marker) await setSetting(LAST_KEY, String(last));
   return { rows: rows2.length, sent };
 }
-function startPushWatcher(intervalMs = 2e4) {
+function startPushWatcher(intervalMs = 6e4) {
   if (pushWatcher) return;
   const tick = () => {
     pushPendingNotifications().catch((e) => console.error("[push] watcher failed:", e.message));
