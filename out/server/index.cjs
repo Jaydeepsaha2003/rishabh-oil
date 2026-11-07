@@ -696,6 +696,11 @@ var init_config = __esm({
 });
 
 // src/main/dbTransaction.ts
+var dbTransaction_exports = {};
+__export(dbTransaction_exports, {
+  transactionClient: () => transactionClient,
+  withDbTransaction: () => withDbTransaction
+});
 function transactionClient() {
   return context.getStore()?.client;
 }
@@ -2617,6 +2622,8 @@ __export(ledgerMap_exports, {
   dropLedgerMap: () => dropLedgerMap,
   ensureLedgerMap: () => ensureLedgerMap,
   listLedgerMap: () => listLedgerMap,
+  releaseOldName: () => releaseOldName,
+  releaseOldNamePreview: () => releaseOldNamePreview,
   renameLedger: () => renameLedger,
   resolveAccountName: () => resolveAccountName,
   setLedgerMap: () => setLedgerMap,
@@ -2746,6 +2753,60 @@ async function dropLedgerMap(id) {
   await ensureLedgerMap();
   await getClient().execute({ sql: "DELETE FROM ledger_map WHERE id = ?", args: [n(id)] });
   return { id: n(id) };
+}
+async function releaseOldNamePreview(mapId) {
+  await ensureLedgerMap();
+  const c = getClient();
+  const m = (await c.execute({ sql: "SELECT id, posts_as, use_name FROM ledger_map WHERE id = ?", args: [n(mapId)] })).rows[0];
+  if (!m) throw new Error("That old name is no longer on this ledger \u2014 refresh the page");
+  const led = (await c.execute({ sql: "SELECT id, name, acc_group FROM ledger_accounts WHERE TRIM(UPPER(name)) = ?", args: [clean(m.use_name)] })).rows[0];
+  if (!led) throw new Error(`The ledger ${String(m.use_name)} is not found`);
+  const exists = (await c.execute({ sql: "SELECT id FROM ledger_accounts WHERE TRIM(UPPER(name)) = ?", args: [clean(m.posts_as)] })).rows.length > 0;
+  const id = n(led.id);
+  const rows2 = (await c.execute({
+    sql: `SELECT co.id AS company_id, co.name,
+                   (SELECT dr FROM ledger_openings o WHERE o.company_id = co.id AND o.account_id = ?) AS opening_dr,
+                   (SELECT cr FROM ledger_openings o WHERE o.company_id = co.id AND o.account_id = ?) AS opening_cr,
+                   (SELECT COUNT(*) FROM journal_lines jl JOIN journal_entries je ON je.id = jl.entry_id
+                     WHERE jl.account_id = ? AND je.company_id = co.id) AS postings,
+                   (SELECT COUNT(*) FROM ledger_homes h WHERE h.account_id = ? AND h.company_id = co.id) AS home
+              FROM companies co ORDER BY co.id`,
+    args: [id, id, id, id]
+  })).rows.map((r) => ({ ...r }));
+  return {
+    map_id: n(m.id),
+    old_name: String(m.posts_as),
+    ledger: { id, name: String(led.name), acc_group: String(led.acc_group || "") },
+    exists,
+    companies: rows2.filter((r) => n(r.opening_dr) || n(r.opening_cr) || n(r.postings) || n(r.home))
+  };
+}
+async function releaseOldName(mapId, moveCompanyIds) {
+  const { withDbTransaction: withDbTransaction2 } = await Promise.resolve().then(() => (init_dbTransaction(), dbTransaction_exports));
+  return withDbTransaction2(async () => {
+    const p = await releaseOldNamePreview(mapId);
+    if (p.exists) throw new Error(`A ledger called ${String(p.old_name)} already exists`);
+    const c = getClient();
+    const led = p.ledger;
+    await c.execute({ sql: "DELETE FROM ledger_map WHERE id = ?", args: [n(p.map_id)] });
+    const ins = await c.execute({ sql: "INSERT INTO ledger_accounts (name, acc_group) VALUES (?, ?)", args: [clean(p.old_name), String(led.acc_group || "General")] });
+    const newId = Number(ins.lastInsertRowid);
+    const moved = [];
+    for (const cid of moveCompanyIds.map(n).filter(Boolean)) {
+      const co = p.companies.find((x) => n(x.company_id) === cid);
+      if (!co) continue;
+      if (n(co.postings) > 0) throw new Error(`${String(co.name)} has ${n(co.postings)} voucher line(s) on ${String(led.name)} \u2014 move those with the ledger tools first`);
+      await c.execute({ sql: "UPDATE ledger_openings SET account_id = ? WHERE company_id = ? AND account_id = ?", args: [newId, cid, n(led.id)] });
+      await c.execute({ sql: "UPDATE OR IGNORE ledger_homes SET account_id = ? WHERE company_id = ? AND account_id = ?", args: [newId, cid, n(led.id)] });
+      await c.execute({ sql: "DELETE FROM ledger_homes WHERE company_id = ? AND account_id = ?", args: [cid, n(led.id)] });
+      moved.push(cid);
+    }
+    if (!moved.length) {
+      await c.execute({ sql: "INSERT OR IGNORE INTO ledger_homes (account_id, company_id) VALUES (?, ?)", args: [newId, getActiveCompanyId()] }).catch(() => {
+      });
+    }
+    return { id: newId, name: clean(p.old_name), moved };
+  });
 }
 var n, clean;
 var init_ledgerMap = __esm({
@@ -42420,7 +42481,7 @@ async function recordAudit(channel, args, result) {
   );
 }
 function registerIpc() {
-  const READONLY = /:list$|:get$|:items$|:issuances$|:sheet$|:outstanding$|:all$|:summary$|:transfers$|:fyTaxable$|:needs$|:breakdown$|:nextNo$|:liveUsers$|:ips$|:logs$|:dispatchableSales$|:mine$|:pendingCount$|:pending$|:lots$|:unmapped$|:unmappedCount$|:bargainLines$|:bargainNotes$|:bargainInterest$|:consignmentDraws$|^access:heartbeat$|^db:ping$|^db:snapshot$|^app:revision$|^auth:login$|^journal:booksFrom$|^tally:map$|^journal:openings$|^journal:opening$|^journal:accounts$|^journal:statement$|^journal:splitNames$|^journal:mergePreview$|^journal:provisional$|^journal:trialBalance$|^journal:groups$|^journal:groupNames$|^journal:groupTree$|^journal:ledgerMap$|^journal:pendingRefs$|^journal:billsOutstanding$|^journal:tradingAccount$|^dashboard:stats$|^vouchers:nextCode$|^vouchers:forDocument$|^vouchers:subtypes$|^vouchers:alterInfo$|^tfreight:kpis$|^dashboard:position$|^dashboard:layout$|^dashboard:saveLayout$|^productMerge:preview$|^skuRates:parties$|^skuRates:partyCounts$|^consignment:openingLog$|^tags:list$|^tags:for$|^tags:contents$|^consignment:openingLots$|^consignment:invoices$|^tankers:quality$|^tankers:qualityMany$|^tankers:ffaHistory$|^orders:quality$|^gate:partyCategories$|^gate:waivedOuts$|^gate:forRecord$|^notify:rules$|^notify:list$|^notify:run$|^notify:preview$|^notify:people$|^notify:mutes$|^treasury:alerts$|^treasury:paymentTracker$|^facility:exposures$|^facility:headroom$|^company:setActive$|^company:getActive$|^factory:active$|^factory:companies$|^session:setUser$|^lc:repayments$|^lc:parts$|^lc:parts$|^lc:allRepayments$|^lc:getLimit$|^lc:bankLimits$|^lc:commission$|^lc:commissionCandidates$|^lc:refund$|^lc:refundCandidates$|^journal:accountNames$|^lc:paymentIns$|^lc:openTradingInvoices$|^files:pickDocument$|^files:openDocument$|^bankRecon:imports$|^bankRecon:list$|^bankRecon:suggest$|^bd:kpis$|^bd:limits$|^skuStock:adjustments$|^skuOpening:list$|^skuOpening:date$|^stockCount:previous$|^orders:intercompanySource$|^stockOpening:list$|^stockOpening:date$|^stockOpening:sets$|^stockOpening:setLines$|^stockOpening:ppStages$|^stockOpening:ppFreeTotals$|^production:ppDraws$|^bargains:linkedInvoices$|^bargains:linkedVouchers$|^bargains:voucherChoices$|^salesBargains:linkedVouchers$|^salesBargains:voucherChoices$|^bargains:adjustments$|^history:list$|^stockOpening:ppVessels$|^stockOpening:ppReceivers$|^stockOpening:ppWriteoffs$|^work:board$|^work:cutoff$|^work:processes$|^formulationSubcategory:list$|^formulations:versions$|^facility:limitHistory$|^bd:limitReductions$|^bd:allRepayments$|^bd:interestSchedule$|^bd:interestWindow$|^bd:interestPayments$|^bd:linkedOrders$|^bd:salesInvoices$|^bd:parties$|^bd:allParties$|^bd:openTradingInvoices$|^bd:paymentIns$|^bd:partyPayments$|^bd:receiptParts$|^access:entryWindows$|^access:entityHistory$|^trading:list$|^sales:series$|^sales:invoiceGaps$|^salesBargains:returns$|^salesBargains:linkedInvoices$|^salesBargains:unattributedReturns$|^tbill:orphans$|^tbill:rcmRegister$|^production:report$|^production:mix$|^repairs:splitTanker:list$|^vouchers:cashflow$|^repairs:paisa:list$|^tallyNotes:(preview|salesCheck|salesPreview|registerCheck|registerPreview|health|batches|companyBanks|bankSuggest|bankCheck|bankPreview|drafts|bankBooks|bankBook|lineNotes)$|^sales:(tdsPreview|tdsMap|cancelledNos|shortageNotes|shortageNoteMap)$|^suppliers:tdsRecalc$/;
+  const READONLY = /:list$|:get$|:items$|:issuances$|:sheet$|:outstanding$|:all$|:summary$|:transfers$|:fyTaxable$|:needs$|:breakdown$|:nextNo$|:liveUsers$|:ips$|:logs$|:dispatchableSales$|:mine$|:pendingCount$|:pending$|:lots$|:unmapped$|:unmappedCount$|:bargainLines$|:bargainNotes$|:bargainInterest$|:consignmentDraws$|^access:heartbeat$|^db:ping$|^db:snapshot$|^app:revision$|^auth:login$|^journal:booksFrom$|^tally:map$|^journal:openings$|^journal:opening$|^journal:accounts$|^journal:statement$|^journal:splitNames$|^journal:mergePreview$|^journal:releasePreview$|^journal:provisional$|^journal:trialBalance$|^journal:groups$|^journal:groupNames$|^journal:groupTree$|^journal:ledgerMap$|^journal:pendingRefs$|^journal:billsOutstanding$|^journal:tradingAccount$|^dashboard:stats$|^vouchers:nextCode$|^vouchers:forDocument$|^vouchers:subtypes$|^vouchers:alterInfo$|^tfreight:kpis$|^dashboard:position$|^dashboard:layout$|^dashboard:saveLayout$|^productMerge:preview$|^skuRates:parties$|^skuRates:partyCounts$|^consignment:openingLog$|^tags:list$|^tags:for$|^tags:contents$|^consignment:openingLots$|^consignment:invoices$|^tankers:quality$|^tankers:qualityMany$|^tankers:ffaHistory$|^orders:quality$|^gate:partyCategories$|^gate:waivedOuts$|^gate:forRecord$|^notify:rules$|^notify:list$|^notify:run$|^notify:preview$|^notify:people$|^notify:mutes$|^treasury:alerts$|^treasury:paymentTracker$|^facility:exposures$|^facility:headroom$|^company:setActive$|^company:getActive$|^factory:active$|^factory:companies$|^session:setUser$|^lc:repayments$|^lc:parts$|^lc:parts$|^lc:allRepayments$|^lc:getLimit$|^lc:bankLimits$|^lc:commission$|^lc:commissionCandidates$|^lc:refund$|^lc:refundCandidates$|^journal:accountNames$|^lc:paymentIns$|^lc:openTradingInvoices$|^files:pickDocument$|^files:openDocument$|^bankRecon:imports$|^bankRecon:list$|^bankRecon:suggest$|^bd:kpis$|^bd:limits$|^skuStock:adjustments$|^skuOpening:list$|^skuOpening:date$|^stockCount:previous$|^orders:intercompanySource$|^stockOpening:list$|^stockOpening:date$|^stockOpening:sets$|^stockOpening:setLines$|^stockOpening:ppStages$|^stockOpening:ppFreeTotals$|^production:ppDraws$|^bargains:linkedInvoices$|^bargains:linkedVouchers$|^bargains:voucherChoices$|^salesBargains:linkedVouchers$|^salesBargains:voucherChoices$|^bargains:adjustments$|^history:list$|^stockOpening:ppVessels$|^stockOpening:ppReceivers$|^stockOpening:ppWriteoffs$|^work:board$|^work:cutoff$|^work:processes$|^formulationSubcategory:list$|^formulations:versions$|^facility:limitHistory$|^bd:limitReductions$|^bd:allRepayments$|^bd:interestSchedule$|^bd:interestWindow$|^bd:interestPayments$|^bd:linkedOrders$|^bd:salesInvoices$|^bd:parties$|^bd:allParties$|^bd:openTradingInvoices$|^bd:paymentIns$|^bd:partyPayments$|^bd:receiptParts$|^access:entryWindows$|^access:entityHistory$|^trading:list$|^sales:series$|^sales:invoiceGaps$|^salesBargains:returns$|^salesBargains:linkedInvoices$|^salesBargains:unattributedReturns$|^tbill:orphans$|^tbill:rcmRegister$|^production:report$|^production:mix$|^repairs:splitTanker:list$|^vouchers:cashflow$|^repairs:paisa:list$|^tallyNotes:(preview|salesCheck|salesPreview|registerCheck|registerPreview|health|batches|companyBanks|bankSuggest|bankCheck|bankPreview|drafts|bankBooks|bankBook|lineNotes)$|^sales:(tdsPreview|tdsMap|cancelledNos|shortageNotes|shortageNoteMap)$|^suppliers:tdsRecalc$/;
   const AUDIT_SKIP = /* @__PURE__ */ new Set(["config:get", "config:save", "session:setUser"]);
   const handle = (channel, fn) => {
     ipcMain.handle(channel, async (e, args) => {
@@ -42861,6 +42922,11 @@ function registerIpc() {
     (_e, a) => setLedgerMap(a)
   );
   handle("journal:unmapLedger", (_e, { id }) => dropLedgerMap(id));
+  handle("journal:releasePreview", async (_e, { id }) => (await Promise.resolve().then(() => (init_ledgerMap(), ledgerMap_exports))).releaseOldNamePreview(Number(id)));
+  handle(
+    "journal:releaseOldName",
+    async (_e, { id, companyIds }) => (await Promise.resolve().then(() => (init_ledgerMap(), ledgerMap_exports))).releaseOldName(Number(id), Array.isArray(companyIds) ? companyIds.map(Number) : [])
+  );
   handle("journal:groupTree", (_e, args) => groupTree(args?.companyId));
   handle(
     "journal:createGroup",
