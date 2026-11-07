@@ -4218,11 +4218,16 @@ function SalesTab({
           </div>
         </div>
 
-        <Dialog open={!!excess} onOpenChange={(o) => !o && setExcess(null)}>
-          <DialogContent className="max-w-xl">
-            <DialogHeader>
-              <DialogTitle className="text-amber-900">More than the bargain has left</DialogTitle>
-            </DialogHeader>
+        <Dialog open={!!excess} onOpenChange={(o) => !o && !excessBusy && setExcess(null)}>
+          <DialogContent className="max-w-[600px] gap-0 overflow-hidden !rounded-[10px] !p-0">
+            {/* OVER THE BARGAIN: a forest band, the three figures with the bar
+                that splits the item, then the three ways out as cards. */}
+            <div className="bg-[#0B3D2E] px-6 py-4 pr-12 text-white">
+              <div className="flex items-center gap-2 text-[10px] font-extrabold uppercase tracking-[.14em] text-[#F2C94C]">
+                <AlertTriangle className="h-3.5 w-3.5" /> Bargain short
+              </div>
+              <DialogTitle className="mt-1 text-[17px] font-extrabold text-white">More than the bargain has left</DialogTitle>
+            </div>
             {excess && (() => {
               const it = items[excess.idx] || {}
               const cur = bargains.find((x) => String(x.id) === String(it.sales_bargain_id))
@@ -4235,56 +4240,80 @@ function SalesTab({
                   notExpired(b) &&
                   bargainRoom(String(b.id), -1, items) >= excess.qty - 1e-6
               )
+              const sells = calc(it).effQty
+              const leftPct = sells > 0 ? Math.max(0, Math.min(100, (excess.balance / sells) * 100)) : 0
+              const opts: { key: 'expand' | 'new' | 'existing'; title: string; sub: string; icon: LucideIcon }[] = [
+                { key: 'expand', title: 'Add to this bargain', sub: `Top ${cur?.bargain_no || 'it'} up by ${formatNum(excess.qty)} ${excess.uom}`, icon: Plus },
+                { key: 'new', title: 'Book a new bargain', sub: `A fresh bargain carries the ${formatNum(excess.qty)} ${excess.uom}`, icon: Receipt },
+                { key: 'existing', title: 'Next available bargain', sub: nextBargains.length ? `${nextBargains.length} open bargain${nextBargains.length === 1 ? '' : 's'} can take it` : 'None has room for it', icon: Shuffle }
+              ]
               return (
-                <div className="space-y-2.5 rounded-md border border-amber-300 bg-amber-50 px-3 py-2.5 text-sm text-amber-900">
-                  <p>
-                    Item {excess.idx + 1} sells <b>{formatNum(calc(it).effQty)} {excess.uom}</b> but{' '}
-                    <b>{cur?.bargain_no || 'this bargain'}</b> has only{' '}
-                    <b>{formatNum(excess.balance)} {excess.uom}</b> left. Choose where the extra{' '}
-                    <b>{formatNum(excess.qty)} {excess.uom}</b> should go:
+                <div className="space-y-4 px-6 py-5">
+                  <p className="text-[13px] font-semibold leading-[1.55] text-[#33473E]">
+                    Item {excess.idx + 1} is more than <b className="text-[#0A1F17]">{cur?.bargain_no || 'this bargain'}</b> has left. Choose where the extra goes.
                   </p>
-                  <div className="flex flex-wrap gap-2">
-                    <button
-                      type="button"
-                      onClick={() => setExcess((p) => (p ? { ...p, mode: 'new' } : p))}
-                      className={cn(
-                        'rounded-md border px-3 py-1.5 text-xs font-medium',
-                        excess.mode === 'new' ? 'border-amber-500 bg-amber-100' : 'border-amber-300 bg-white'
-                      )}
-                    >
-                      Book as a new bargain
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setExcess((p) => (p ? { ...p, mode: 'existing' } : p))}
-                      className={cn(
-                        'rounded-md border px-3 py-1.5 text-xs font-medium',
-                        excess.mode === 'existing' ? 'border-amber-500 bg-amber-100' : 'border-amber-300 bg-white'
-                      )}
-                    >
-                      Use the next available bargain
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setExcess((p) => (p ? { ...p, mode: 'expand' } : p))}
-                      className={cn(
-                        'rounded-md border px-3 py-1.5 text-xs font-medium',
-                        excess.mode === 'expand' ? 'border-amber-500 bg-amber-100' : 'border-amber-300 bg-white'
-                      )}
-                    >
-                      Add to this bargain
-                    </button>
+                  <div className="grid grid-cols-3 overflow-hidden rounded-[8px] border border-[#E4ECE3]">
+                    {[
+                      { k: 'Item sells', v: sells, c: '#0A1F17', bg: '#FFFFFF' },
+                      { k: 'Bargain has left', v: excess.balance, c: '#0B6B45', bg: '#F0F8F3' },
+                      { k: 'Extra to place', v: excess.qty, c: '#9A5B00', bg: '#FFF8E6' }
+                    ].map((t, i) => (
+                      <div key={t.k} className={cn('px-4 py-3', i > 0 && 'border-l border-[#E4ECE3]')} style={{ background: t.bg }}>
+                        <div className="text-[9.5px] font-extrabold uppercase tracking-[.12em] text-[#5A6B62]">{t.k}</div>
+                        <div className="mt-1 text-[19px] font-extrabold tabular-nums tracking-[-0.02em]" style={{ color: t.c }}>
+                          {formatNum(t.v)} <span className="text-[11px] font-bold text-[#8CA396]">{excess.uom}</span>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                  <div>
+                    <div className="flex h-2.5 overflow-hidden rounded-full bg-[#F2C94C]">
+                      <div className="h-full bg-[#0B6B45]" style={{ width: `${leftPct}%` }} />
+                    </div>
+                    <div className="mt-1.5 flex justify-between text-[10.5px] font-semibold text-[#5A6B62]">
+                      <span>on {cur?.bargain_no || 'this bargain'}</span>
+                      <span>extra</span>
+                    </div>
                   </div>
 
+                  <div className="grid gap-2 sm:grid-cols-3">
+                    {opts.map((o) => {
+                      const on = excess.mode === o.key
+                      const Icon = o.icon
+                      return (
+                        <button
+                          key={o.key}
+                          type="button"
+                          aria-pressed={on}
+                          onClick={() => setExcess((p) => (p ? { ...p, mode: o.key } : p))}
+                          className={cn(
+                            'relative rounded-[8px] border-[1.5px] px-3 py-3 text-left transition-colors',
+                            on ? 'border-[#0B6B45] bg-[#F0F8F3] shadow-[0_0_0_3px_rgba(11,107,69,.12)]' : 'border-[#D6E2D6] bg-white hover:border-[#8CA396]'
+                          )}
+                        >
+                          <span
+                            className={cn('flex h-7 w-7 items-center justify-center rounded-[6px]', on ? 'bg-[#0B6B45] text-white' : 'bg-[#EAF0E9] text-[#33473E]')}
+                          >
+                            <Icon className="h-4 w-4" />
+                          </span>
+                          {on && <Check className="absolute right-2.5 top-2.5 h-4 w-4 text-[#0B6B45]" />}
+                          <div className="mt-2 text-[12.5px] font-extrabold leading-tight text-[#0A1F17]">{o.title}</div>
+                          <div className="mt-0.5 text-[11px] font-semibold leading-snug text-[#5A6B62]">{o.sub}</div>
+                        </button>
+                      )
+                    })}
+                  </div>
+
+                  <div className="space-y-2.5 rounded-[8px] border border-[#E4ECE3] bg-[#FBFCFA] px-4 py-3 text-[12.5px] text-[#33473E]">
                   {excess.mode === 'expand' ? (
-                    <p className="text-[11px]">
+                    <p className="text-[12px] leading-[1.55] text-[#33473E]">
                       {cur?.bargain_no || 'This bargain'} will be increased by{' '}
                       <b>{formatNum(excess.qty)} {excess.uom}</b> (at its own rate) so the whole item stays on it. The
                       top-up is logged as an Addition on the bargain register.
                     </p>
                   ) : excess.mode === 'new' ? (
                     <>
-                      <p className="text-[11px]">
+                      <p className="text-[12px] leading-[1.55] text-[#33473E]">
                         The item is split in two: <b>{formatNum(excess.balance)} {excess.uom}</b> stays on{' '}
                         {cur?.bargain_no || 'this bargain'} and a new bargain is created for{' '}
                         {String(header.customer || 'the customer')} carrying the extra{' '}
@@ -4299,22 +4328,22 @@ function SalesTab({
                       </div>
                       {excess.diffRate && (
                         <div className="flex flex-col gap-1.5">
-                          <Label className="text-amber-900">Rate for the extra qty (per {excess.uom})</Label>
+                          <Label className="text-[#33473E]">Rate for the extra qty (per {excess.uom})</Label>
                           <Input
                             type="number"
                             className="bg-white"
                             value={excess.rate}
                             onChange={(e) => setExcess((p) => (p ? { ...p, rate: e.target.value } : p))}
                           />
-                          <p className="text-[11px]">The new line is invoiced at this rate.</p>
+                          <p className="text-[12px] leading-[1.55] text-[#33473E]">The new line is invoiced at this rate.</p>
                         </div>
                       )}
                     </>
                   ) : (
                     <div className="flex flex-col gap-1.5">
-                      <Label className="text-amber-900">Next bargain for the extra qty</Label>
+                      <Label className="text-[#33473E]">Next bargain for the extra qty</Label>
                       {nextBargains.length === 0 ? (
-                        <p className="text-[11px]">
+                        <p className="text-[12px] leading-[1.55] text-[#33473E]">
                           No other open bargain for {String(header.customer || 'this customer')} has{' '}
                           {formatNum(excess.qty)} {excess.uom} free — book it as a new bargain, or add it to this one.
                         </p>
@@ -4336,7 +4365,7 @@ function SalesTab({
                                 ))}
                             </SelectContent>
                           </Select>
-                          <p className="text-[11px]">
+                          <p className="text-[12px] leading-[1.55] text-[#33473E]">
                             The item is split in two and the extra line keeps the rate you typed — the chosen bargain&apos;s
                             own rate is not applied, so change it on the line if it should differ.
                           </p>
@@ -4344,12 +4373,13 @@ function SalesTab({
                       )}
                     </div>
                   )}
+                  </div>
                 </div>
               )
             })()}
-            <DialogFooter>
+            <div className="flex items-center justify-end gap-2 border-t border-[#E4ECE3] bg-white px-6 py-3.5">
               <Button variant="outline" onClick={() => setExcess(null)} disabled={excessBusy}>Cancel</Button>
-              <Button onClick={() => void resolveExcess()} disabled={excessBusy}>
+              <Button className="bg-[#0B3D2E] hover:bg-[#0B6B45]" onClick={() => void resolveExcess()} disabled={excessBusy}>
                 {excessBusy
                   ? 'Saving…'
                   : excess?.mode === 'expand'
@@ -4358,7 +4388,7 @@ function SalesTab({
                       ? 'Allocate & save'
                       : 'Add bargain & save'}
               </Button>
-            </DialogFooter>
+            </div>
           </DialogContent>
         </Dialog>
 
