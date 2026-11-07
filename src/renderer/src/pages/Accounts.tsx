@@ -90,6 +90,7 @@ import {
   Merge
 } from 'lucide-react'
 import { LedgerMergeDialog } from '@/components/LedgerMergeDialog'
+import { LedgerReleaseDialog } from '@/components/LedgerReleaseDialog'
 import { exportRowsToExcel, NUM_MONEY, NUM_QTY } from '@/lib/excel'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -2815,6 +2816,8 @@ export function Accounts({
   const [mMerge, setMMerge] = useState<{ id: number; name: string } | null>(null)
   // The ledger whose older names are listed out (Masters, the +N chip).
   const [mMapOpen, setMMapOpen] = useState<number | null>(null)
+  // An old name being released as its own ledger (LedgerReleaseDialog).
+  const [releaseMapId, setReleaseMapId] = useState<number | null>(null)
   const [mBusy, setMBusy] = useState(false)
   // The website's one form for the chart — new, rename or move, a group or a
   // ledger — as a drawer beside the tree rather than a dialog over it. The
@@ -12605,9 +12608,18 @@ export function Accounts({
                           `The app posts to “${String(m.posts_as)}” and that reaches this ledger${m.note ? ` — ${String(m.note)}` : ''}${m.created_at ? ` · ${formatDate(String(m.created_at).slice(0, 10))}` : ''}`
                         return (
                           <span className="relative flex flex-none items-center gap-1">
-                            <span title={title(maps[0])} className="flex-none" style={chip}>
+                            <button
+                              type="button"
+                              title={`${title(maps[0])} — click to make it its own ledger again`}
+                              className="flex-none hover:underline"
+                              style={chip}
+                              onClick={(e) => {
+                                e.stopPropagation()
+                                setReleaseMapId(Number(maps[0].id))
+                              }}
+                            >
                               ← {String(maps[0].posts_as)}
-                            </span>
+                            </button>
                             {maps.length > 1 && (
                               <button
                                 type="button"
@@ -12633,7 +12645,18 @@ export function Accounts({
                                 </span>
                                 {maps.slice(1).map((m) => (
                                   <span key={String(m.id)} title={title(m)} className="flex items-center justify-between gap-3">
-                                    <span style={chip}>← {String(m.posts_as)}</span>
+                                    <button
+                                      type="button"
+                                      title="Click to make it its own ledger again"
+                                      className="hover:underline"
+                                      style={chip}
+                                      onClick={() => {
+                                        setMMapOpen(null)
+                                        setReleaseMapId(Number(m.id))
+                                      }}
+                                    >
+                                      ← {String(m.posts_as)}
+                                    </button>
                                     <span style={{ fontSize: 10.5, fontWeight: 600, color: '#5A6B62' }}>
                                       {m.created_at ? formatDate(String(m.created_at).slice(0, 10)) : ''}
                                     </span>
@@ -20048,6 +20071,15 @@ export function Accounts({
       companyId={cid || undefined}
       companyName={company ? String(company.name) : undefined}
       onClose={() => setMMerge(null)}
+      onDone={() => {
+        void loadAccounts()
+        void loadGroups()
+      }}
+    />
+
+    <LedgerReleaseDialog
+      mapId={releaseMapId}
+      onClose={() => setReleaseMapId(null)}
       onDone={() => {
         void loadAccounts()
         void loadGroups()

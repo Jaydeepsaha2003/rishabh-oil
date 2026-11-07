@@ -344,6 +344,9 @@ const api = {
     mapLedger: (postsAs: string, useName: string, note?: string): Promise<{ id: number }> =>
       ipcRenderer.invoke('journal:mapLedger', { postsAs, useName, note }),
     unmapLedger: (id: number): Promise<{ id: number }> => ipcRenderer.invoke('journal:unmapLedger', { id }),
+    releasePreview: (id: number): Promise<Row> => ipcRenderer.invoke('journal:releasePreview', { id }),
+    releaseOldName: (id: number, companyIds: number[]): Promise<{ id: number; name: string; moved: number[] }> =>
+      ipcRenderer.invoke('journal:releaseOldName', { id, companyIds }),
     createGroup: (a: { name: string; under?: string | number | null; nature?: string }): Promise<{ id: number }> =>
       ipcRenderer.invoke('journal:createGroup', a),
     renameGroup: (id: number, name: string): Promise<{ id: number }> =>

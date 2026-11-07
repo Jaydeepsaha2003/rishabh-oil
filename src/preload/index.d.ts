@@ -237,6 +237,8 @@ export interface Api {
     mergeLedgers: (fromId: number, intoId: number, keepName?: string, keep?: number[], companyId?: number) => Promise<{ id: number; name: string; lines: number; removed: boolean }>
     mapLedger: (postsAs: string, useName: string, note?: string) => Promise<{ id: number }>
     unmapLedger: (id: number) => Promise<{ id: number }>
+    releasePreview: (id: number) => Promise<Row>
+    releaseOldName: (id: number, companyIds: number[]) => Promise<{ id: number; name: string; moved: number[] }>
     createGroup: (a: { name: string; under?: string | number | null; nature?: string }) => Promise<{ id: number }>
     renameGroup: (id: number, name: string) => Promise<{ id: number }>
     moveGroup: (id: number, parentId: number | null, nature?: string) => Promise<{ id: number }>

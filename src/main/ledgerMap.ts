@@ -229,3 +229,70 @@ export async function dropLedgerMap(id: number): Promise<{ id: number }> {
   await getClient().execute({ sql: 'DELETE FROM ledger_map WHERE id = ?', args: [n(id)] })
   return { id: n(id) }
 }
+
+// MAKE AN OLD NAME ITS OWN LEDGER AGAIN. A rename keeps the old name pointing
+// at the ledger, so it can never be created afresh — J K TRADING (TRADE CR),
+// renamed into J.K. TRADING (CR), could not be made again as KR FINMARK's own
+// ledger. Releasing it takes the pointer off, opens the old name as a ledger in
+// the same group, and moves the chosen companies' opening (and their claim on
+// the ledger) across. Vouchers stay where they are: they are moved, if at all,
+// with the ledger merge / Masters tools, not silently here.
+export async function releaseOldNamePreview(mapId: number): Promise<Row> {
+  await ensureLedgerMap()
+  const c = getClient()
+  const m = (await c.execute({ sql: 'SELECT id, posts_as, use_name FROM ledger_map WHERE id = ?', args: [n(mapId)] })).rows[0] as unknown as Row | undefined
+  if (!m) throw new Error('That old name is no longer on this ledger — refresh the page')
+  const led = (await c.execute({ sql: 'SELECT id, name, acc_group FROM ledger_accounts WHERE TRIM(UPPER(name)) = ?', args: [clean(m.use_name)] })).rows[0] as unknown as Row | undefined
+  if (!led) throw new Error(`The ledger ${String(m.use_name)} is not found`)
+  const exists = (await c.execute({ sql: 'SELECT id FROM ledger_accounts WHERE TRIM(UPPER(name)) = ?', args: [clean(m.posts_as)] })).rows.length > 0
+  const id = n(led.id)
+  const rows = (
+    await c.execute({
+      sql: `SELECT co.id AS company_id, co.name,
+                   (SELECT dr FROM ledger_openings o WHERE o.company_id = co.id AND o.account_id = ?) AS opening_dr,
+                   (SELECT cr FROM ledger_openings o WHERE o.company_id = co.id AND o.account_id = ?) AS opening_cr,
+                   (SELECT COUNT(*) FROM journal_lines jl JOIN journal_entries je ON je.id = jl.entry_id
+                     WHERE jl.account_id = ? AND je.company_id = co.id) AS postings,
+                   (SELECT COUNT(*) FROM ledger_homes h WHERE h.account_id = ? AND h.company_id = co.id) AS home
+              FROM companies co ORDER BY co.id`,
+      args: [id, id, id, id]
+    })
+  ).rows.map((r) => ({ ...(r as unknown as Row) }))
+  return {
+    map_id: n(m.id),
+    old_name: String(m.posts_as),
+    ledger: { id, name: String(led.name), acc_group: String(led.acc_group || '') },
+    exists,
+    companies: rows.filter((r) => n(r.opening_dr) || n(r.opening_cr) || n(r.postings) || n(r.home))
+  }
+}
+
+export async function releaseOldName(mapId: number, moveCompanyIds: number[]): Promise<{ id: number; name: string; moved: number[] }> {
+  const { withDbTransaction } = await import('./dbTransaction')
+  return withDbTransaction(async () => {
+    const p = await releaseOldNamePreview(mapId)
+    if (p.exists) throw new Error(`A ledger called ${String(p.old_name)} already exists`)
+    const c = getClient()
+    const led = p.ledger as Row
+    await c.execute({ sql: 'DELETE FROM ledger_map WHERE id = ?', args: [n(p.map_id)] })
+    const ins = await c.execute({ sql: 'INSERT INTO ledger_accounts (name, acc_group) VALUES (?, ?)', args: [clean(p.old_name), String(led.acc_group || 'General')] })
+    const newId = Number(ins.lastInsertRowid)
+    const moved: number[] = []
+    for (const cid of moveCompanyIds.map(n).filter(Boolean)) {
+      const co = (p.companies as Row[]).find((x) => n(x.company_id) === cid)
+      if (!co) continue
+      // A company that has VOUCHERS on the ledger keeps them there — only an
+      // opening-only book (KR FINMARK here) moves across whole.
+      if (n(co.postings) > 0) throw new Error(`${String(co.name)} has ${n(co.postings)} voucher line(s) on ${String(led.name)} — move those with the ledger tools first`)
+      await c.execute({ sql: 'UPDATE ledger_openings SET account_id = ? WHERE company_id = ? AND account_id = ?', args: [newId, cid, n(led.id)] })
+      await c.execute({ sql: 'UPDATE OR IGNORE ledger_homes SET account_id = ? WHERE company_id = ? AND account_id = ?', args: [newId, cid, n(led.id)] })
+      await c.execute({ sql: 'DELETE FROM ledger_homes WHERE company_id = ? AND account_id = ?', args: [cid, n(led.id)] })
+      moved.push(cid)
+    }
+    // Made from a book that keeps nothing on it: still that book's ledger.
+    if (!moved.length) {
+      await c.execute({ sql: 'INSERT OR IGNORE INTO ledger_homes (account_id, company_id) VALUES (?, ?)', args: [newId, getActiveCompanyId()] }).catch(() => {})
+    }
+    return { id: newId, name: clean(p.old_name), moved }
+  })
+}
