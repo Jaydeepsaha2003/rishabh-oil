@@ -9333,7 +9333,7 @@ async function adjustBargainQty(id, delta, note, date) {
   const consumed = Math.round(await bargainConsumed(id) * 1e3) / 1e3;
   const newQty = Math.round((Number(b.qty) + d) * 1e3) / 1e3;
   if (newQty < -1e-9) throw new Error("The resulting quantity cannot go below zero");
-  if (newQty < consumed - 1e-6) {
+  if (d < 0 && newQty < consumed - 1e-6) {
     throw new Error(`Cannot remove below the ${consumed.toFixed(3)} already loaded/consumed on this bargain`);
   }
   const rate = Number(b.rate_per_uom) || 0;
@@ -14829,7 +14829,7 @@ async function adjustSalesBargainQty(id, delta, note, date) {
   const sold = Math.round(await salesBargainSold(id) * 1e3) / 1e3;
   const newQty = Math.round((n14(b.qty) + d) * 1e3) / 1e3;
   if (newQty < -1e-9) throw new Error("The resulting quantity cannot go below zero");
-  if (newQty < sold - 1e-6) {
+  if (d < 0 && newQty < sold - 1e-6) {
     throw new Error(`Cannot remove below the ${sold.toFixed(3)} already sold on this bargain`);
   }
   const newNote = note ? `${b.note ? String(b.note) + "\n" : ""}${String(note).trim()}` : b.note;
