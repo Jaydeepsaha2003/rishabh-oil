@@ -3747,6 +3747,11 @@ export function Accounts({
       return
     }
     resetNoteGst()
+    // Every voucher reads the party's bills afresh: a bill-wise reference saved
+    // since (ADV-1 set against GT/3726), or another user's entry, changes what
+    // is pending, and the kept list went on offering ADV-1 at its full amount.
+    setRefsCache({})
+    setLinkCache({})
     setViewOnly(null)
     setEditingId(null)
     setNoteEditId(null)
@@ -5025,6 +5030,9 @@ export function Accounts({
   }
 
   async function openForAlter(row: Row): Promise<void> {
+    // Fresh bills for this voucher too (see openVoucher).
+    setRefsCache({})
+    setLinkCache({})
     const v = await window.api.vouchers.get(Number(row.id))
     if (!v) {
       // It used to return here without a word, so a row that could not be
@@ -14889,6 +14897,9 @@ export function Accounts({
                                         (r.allocs as AllocRow[]).map((a) => ({ ...a, amount: n(a.amount) }))
                                       )
                                       toast.success(res.allocs ? 'Bill-wise details saved — the bills read from them now' : 'Bill-wise details cleared')
+                                      // What is pending has just changed: the next picker must not offer the old figure.
+                                      setRefsCache({})
+                                      setLinkCache({})
                                     } catch (e) {
                                       toast.error((e as Error).message)
                                     }
