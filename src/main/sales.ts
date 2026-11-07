@@ -1424,7 +1424,11 @@ export async function adjustSalesBargainQty(
   // Zeroing out a bargain that is otherwise fully drawn is a legitimate
   // square-off, not an error — only a genuinely negative result is refused.
   if (newQty < -1e-9) throw new Error('The resulting quantity cannot go below zero')
-  if (newQty < sold - 1e-6) {
+  // Only a REDUCTION is held to the sold floor. A top-up can never leave a
+  // bargain worse off — and one already sold past its contract (RPO/07-07/
+  // SURYAFOODS/07: 350 contracted, 402.24 invoiced, 67.535 back on credit
+  // notes) was refused every top-up below the gap, with a "remove" message.
+  if (d < 0 && newQty < sold - 1e-6) {
     throw new Error(`Cannot remove below the ${sold.toFixed(3)} already sold on this bargain`)
   }
   const newNote = note ? `${b.note ? String(b.note) + '\n' : ''}${String(note).trim()}` : b.note

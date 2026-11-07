@@ -442,7 +442,8 @@ export async function adjustBargainQty(
   // an error — the register already shows 0-balance bargains (toggle "show
   // settled"). Only a genuinely negative result is refused.
   if (newQty < -1e-9) throw new Error('The resulting quantity cannot go below zero')
-  if (newQty < consumed - 1e-6) {
+  // A top-up is never refused for this — only a reduction (see adjustSalesBargainQty).
+  if (d < 0 && newQty < consumed - 1e-6) {
     throw new Error(`Cannot remove below the ${consumed.toFixed(3)} already loaded/consumed on this bargain`)
   }
   const rate = Number(b.rate_per_uom) || 0
