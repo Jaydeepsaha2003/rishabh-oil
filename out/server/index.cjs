@@ -30902,12 +30902,9 @@ async function setHostingerToken(token) {
   await assertAdmin("Setting the Hostinger API key");
   await ensureSecrets();
   const t = String(token ?? "").trim();
+  if (!t) throw new Error("The Hostinger API key cannot be removed \u2014 paste a new one to replace it");
   cache2 = null;
   alertCache = null;
-  if (!t) {
-    await getClient().execute({ sql: "DELETE FROM app_secrets WHERE key = ?", args: [KEY2] });
-    return { configured: false };
-  }
   if (t.length < 20 || /\s/.test(t)) throw new Error("That does not look like a Hostinger API token \u2014 copy it again from hPanel \u2192 Profile \u2192 API");
   await callHostinger("/api/billing/v1/subscriptions", t);
   await getClient().execute({
@@ -30963,11 +30960,12 @@ async function hostingerPlans(refresh = false) {
       billing_period: s5.billing_period != null ? `${s5.billing_period} ${String(s5.billing_period_unit ?? "")}`.trim() : ""
     };
   });
-  const domains = domainsRaw.map((d) => ({
+  const domainsAll = domainsRaw.map((d) => ({
     domain: String(d.domain ?? d.name ?? ""),
     status: String(d.status ?? ""),
     date: d.expires_at ? String(d.expires_at) : null
   }));
+  const domains = domainsAll.filter((d) => d.date || !domainsAll.some((o) => o !== d && o.domain === d.domain && o.date));
   const data = { configured: true, fetched_at: (/* @__PURE__ */ new Date()).toISOString(), subscriptions, domains, domains_error: domainsError };
   cache2 = { at: Date.now(), data };
   return data;
