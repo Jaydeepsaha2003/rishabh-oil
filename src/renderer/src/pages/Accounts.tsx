@@ -14521,9 +14521,28 @@ Delete ${doc}?`)) return
                 <div className="min-w-0">
                   <div style={cap}>Voucher no</div>
                   <div style={{ ...roBox, justifyContent: 'space-between' }} title={codeWhy}>
-                    <span className="truncate" style={fig(13)}>
+                    {/* The mouse's PgUp / PgDn: the voucher before / after of this type. */}
+                    <button
+                      type="button"
+                      title="Previous voucher of this type (PgUp)"
+                      aria-label="Previous voucher"
+                      onClick={() => void stepVoucher(-1)}
+                      className="flex h-6 w-6 flex-none items-center justify-center rounded-[4px] hover:bg-[#E4ECE3]"
+                    >
+                      <ChevronLeft className="h-4 w-4" style={{ color: '#5A6B62' }} />
+                    </button>
+                    <span className="min-w-0 flex-1 truncate" style={fig(13)}>
                       {shownCode || '—'}
                     </span>
+                    <button
+                      type="button"
+                      title="Next voucher of this type (PgDn)"
+                      aria-label="Next voucher"
+                      onClick={() => void stepVoucher(1)}
+                      className="mr-1 flex h-6 w-6 flex-none items-center justify-center rounded-[4px] hover:bg-[#E4ECE3]"
+                    >
+                      <ChevronRight className="h-4 w-4" style={{ color: '#5A6B62' }} />
+                    </button>
                     <span
                       className="flex-none"
                       style={{
@@ -17573,8 +17592,17 @@ Delete ${doc}?`)) return
           <span style={{ padding: '0 12px', display: 'flex', justifyContent: 'flex-end' }}>{lgCf.head('dr', 'Debit', { onDark: true, align: 'end' })}</span>
           <span style={{ padding: '0 12px', display: 'flex', justifyContent: 'flex-end' }}>{lgCf.head('cr', 'Credit', { onDark: true, align: 'end' })}</span>
           {!lgHideBal && (
-            <span style={{ padding: '0 14px', display: 'flex', justifyContent: 'flex-end' }} title={`${fKeyLabel('F12')} hides or shows this column`}>
+            <span style={{ padding: '0 8px 0 14px', display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: 4 }} title={`${fKeyLabel('F12')} hides or shows this column`}>
               {lgCf.head('balance', 'Balance', { onDark: true, align: 'end' })}
+              <button
+                type="button"
+                title={`Hide the Balance column (${fKeyLabel('F12')})`}
+                aria-label="Hide the Balance column"
+                onClick={() => setLgHideBal(true)}
+                className="flex h-6 w-6 items-center justify-center rounded-[4px] opacity-70 hover:bg-white/10 hover:opacity-100"
+              >
+                <EyeOff className="h-[14px] w-[14px]" />
+              </button>
             </span>
           )}
         </div>
@@ -17619,7 +17647,7 @@ Delete ${doc}?`)) return
                     void openForAlter({ id: eid })
                   }
                 }}
-                className="grid cursor-pointer items-center transition-colors hover:bg-[#F1F8EC]"
+                className="group grid cursor-pointer items-center transition-colors hover:bg-[#F1F8EC]"
                 style={{
                   gridTemplateColumns: V_GRID,
                   minHeight: 46,
@@ -17670,7 +17698,20 @@ Delete ${doc}?`)) return
                     </span>
                   )}
                 </span>
-                <div style={{ padding: '6px 8px', minWidth: 0 }}>
+                <div style={{ padding: '6px 32px 6px 8px', minWidth: 0, position: 'relative' }}>
+                  {/* The mouse's Ctrl+Enter: take this row off the screen (nothing is deleted). */}
+                  <button
+                    type="button"
+                    title={`Hide this row from the list — nothing is deleted (${chordLabel('Ctrl Enter')}); Unhide brings it back`}
+                    aria-label="Hide this row"
+                    onClick={(e) => {
+                      e.stopPropagation()
+                      setLgHidden((h) => [...h, Number(r.id)])
+                    }}
+                    className="absolute right-1.5 top-1/2 flex h-6 w-6 -translate-y-1/2 items-center justify-center rounded-[4px] opacity-0 transition-opacity hover:bg-[#E4ECE3] group-hover:opacity-100"
+                  >
+                    <EyeOff className="h-[14px] w-[14px]" style={{ color: '#8CA396' }} />
+                  </button>
                   <div style={{ fontSize: 12, fontWeight: 800, ...clip }}>{String(r.particulars || '—')}</div>
                   {/* One bank debit that repaid several discounted bills:
                       which bill took what. */}
@@ -19022,6 +19063,25 @@ Delete ${doc}?`)) return
                   Summary
                   <span style={{ ...figS(9.5, A.muted, 600), border: '1px solid #DCE7DB', borderRadius: 3, padding: '1px 5px' }}>{fKeyLabel('F8')}</span>
                 </button>
+                {[-1, 1].map((d) => (
+                  <button
+                    key={d}
+                    type="button"
+                    title={d < 0 ? 'Previous ledger (Alt ↑)' : 'Next ledger (Alt ↓)'}
+                    aria-label={d < 0 ? 'Previous ledger' : 'Next ledger'}
+                    onClick={() => {
+                      const order = lgOrderRef.current
+                      if (!order.length) return
+                      const at = order.indexOf(Number(ledgerId))
+                      const to = at < 0 ? 0 : Math.max(0, Math.min(order.length - 1, at + d))
+                      if (order[to] && order[to] !== ledgerId) setLedgerId(order[to])
+                    }}
+                    className="flex h-8 w-8 flex-none items-center justify-center rounded-[7px]"
+                    style={{ border: '1px solid #C3D2C6', background: '#fff', color: '#33473E' }}
+                  >
+                    {d < 0 ? <ChevronLeft className="h-[17px] w-[17px]" /> : <ChevronRight className="h-[17px] w-[17px]" />}
+                  </button>
+                ))}
                 <button
                   type="button"
                   title="Change ledger (F4)"
@@ -19210,6 +19270,18 @@ Delete ${doc}?`)) return
                           })}
                         </div>
                       </div>
+                    )}
+                    {lgHideBal && lgView === 'vouchers' && (
+                      <button
+                        type="button"
+                        onClick={() => setLgHideBal(false)}
+                        title={`Show the Balance column again (${fKeyLabel('F12')})`}
+                        className="flex h-[30px] flex-none items-center gap-[5px] whitespace-nowrap rounded-[6px] px-2.5"
+                        style={{ border: '1px solid #C3D2C6', background: '#fff', fontSize: 11, fontWeight: 800, color: '#33473E' }}
+                      >
+                        <Eye className="h-[15px] w-[15px]" />
+                        Show balance
+                      </button>
                     )}
                     {lgHidden.length > 0 && (
                       <button
