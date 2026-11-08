@@ -3,7 +3,7 @@ import { mainNameOf, mainPartiesOnly } from '@/lib/mainParty'
 import { toast } from 'sonner'
 import {
   AlertTriangle, Ban, Check, CheckCircle2, ChevronDown, ChevronLeft, ChevronRight, ClipboardList, Clock, Hash, Info, Lock, XCircle,
-  RotateCcw, LogIn, LogOut, Pencil, Scale, Trash2, Truck, X , Undo2, Eye
+  RotateCcw, LogIn, LogOut, Pencil, Scale, Trash2, Truck, X , Undo2, Eye, Search
 } from 'lucide-react'
 import { PageHeader } from '@/components/PageHeader'
 import { useIsMobile } from '@/lib/useIsMobile'
@@ -152,8 +152,23 @@ function RejectedTabWeb({
   // heading. Either opens on a click and stays open while the page is up.
   const [openRej, setOpenRej] = useState(false)
   const [openWaived, setOpenWaived] = useState(false)
+  // One search over both sections: any word anywhere on the row (invoice,
+  // customer, items, vehicle, party, reason, entry no). Typing opens both.
+  const [q, setQ] = useState('')
+  const words = q.trim().toUpperCase().split(/\s+/).filter(Boolean)
+  const hit = (r: Row): boolean => {
+    if (!words.length) return true
+    const hay = Object.values(r).map((v) => String(v ?? '')).join(' ').toUpperCase()
+    return words.every((w) => hay.includes(w))
+  }
+  const rejectedAll = rejected
+  const waivedAll = waived
+  rejected = rejectedAll.filter(hit)
+  waived = waivedAll.filter(hit)
+  const showRej = openRej || words.length > 0
+  const showWaived = openWaived || words.length > 0
   const today = todayISO()
-  const rejectedToday = rejected.filter((r) => String(r.rejected_at || '').slice(0, 10) === today).length
+  const rejectedToday = rejectedAll.filter((r) => String(r.rejected_at || '').slice(0, 10) === today).length
 
   // How long ago, in the words anyone uses for it. A date alone does not say
   // whether this is still live or was dealt with months back.
@@ -179,14 +194,14 @@ function RejectedTabWeb({
         {[
           {
             k: 'Rejected entries',
-            v: String(rejected.length),
+            v: String(rejectedAll.length),
             sub: 'turned away at the gate',
             accent: '#B3261E',
             fg: 'text-[#B3261E]'
           },
           {
             k: 'No gate-out required',
-            v: String(waived.length),
+            v: String(waivedAll.length),
             sub: 'invoices taken off the queue',
             accent: '#C2700A',
             fg: 'text-[#8A5300]'
@@ -211,6 +226,33 @@ function RejectedTabWeb({
         ))}
       </div>
 
+      <div className="flex flex-wrap items-center gap-2.5">
+        <div className="relative w-full max-w-[460px]">
+          <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-[#8CA396]" />
+          <Input
+            value={q}
+            onChange={(e) => setQ(e.target.value)}
+            placeholder="Search invoice, customer, vehicle, party, reason…"
+            className="h-10 bg-white pl-9 pr-9 text-[13px]"
+          />
+          {q && (
+            <button
+              type="button"
+              aria-label="Clear search"
+              onClick={() => setQ('')}
+              className="absolute right-2.5 top-1/2 -translate-y-1/2 text-[#8CA396] hover:text-[#33473E]"
+            >
+              <X className="h-4 w-4" />
+            </button>
+          )}
+        </div>
+        {words.length > 0 && (
+          <span className="text-[12px] font-semibold text-[#5A6B62]">
+            {waived.length} of {waivedAll.length} waived · {rejected.length} of {rejectedAll.length} rejected
+          </span>
+        )}
+      </div>
+
       {/* Waived invoices first: they are the ones somebody is most likely to
           have to undo, because "no gate-out needed" is a judgement and the
           lorry sometimes turns up after all. */}
@@ -226,15 +268,15 @@ function RejectedTabWeb({
               No gate-out required · {waived.length}
             </span>
             <ChevronDown
-              className={cn('ml-auto h-[22px] w-[22px] shrink-0 text-[#8A5300] transition-transform', !openWaived && '-rotate-90')}
+              className={cn('ml-auto h-[22px] w-[22px] shrink-0 text-[#8A5300] transition-transform', !showWaived && '-rotate-90')}
             />
           </div>
         </button>
-        {openWaived ? (
+        {showWaived ? (
           waived.length === 0 ? (
             <div className="flex flex-col items-center gap-2 px-5 py-9">
               <CheckCircle2 className="h-[30px] w-[30px] text-[#C3D2C6]" />
-              <span className="text-[13px] font-bold text-[#5A6B62]">Nothing waived — every dispatch is on the queue.</span>
+              <span className="text-[13px] font-bold text-[#5A6B62]">{words.length ? 'No waived invoice matches the search.' : 'Nothing waived — every dispatch is on the queue.'}</span>
             </div>
           ) : (
             <>
@@ -306,15 +348,15 @@ function RejectedTabWeb({
               Rejected gate entries · {rejected.length} {rejected.length === 1 ? 'entry' : 'entries'}
             </span>
             <ChevronDown
-              className={cn('ml-auto h-[22px] w-[22px] shrink-0 text-[#8C2F26] transition-transform', !openRej && '-rotate-90')}
+              className={cn('ml-auto h-[22px] w-[22px] shrink-0 text-[#8C2F26] transition-transform', !showRej && '-rotate-90')}
             />
           </div>
         </button>
-        {openRej ? (
+        {showRej ? (
           rejected.length === 0 ? (
             <div className="flex flex-col items-center gap-2 px-5 py-11">
               <CheckCircle2 className="h-[30px] w-[30px] text-[#C3D2C6]" />
-              <span className="text-[13px] font-bold text-[#5A6B62]">Nothing rejected.</span>
+              <span className="text-[13px] font-bold text-[#5A6B62]">{words.length ? 'No rejected entry matches the search.' : 'Nothing rejected.'}</span>
             </div>
           ) : (
             <>
