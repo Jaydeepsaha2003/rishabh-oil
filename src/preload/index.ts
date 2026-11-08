@@ -6,6 +6,11 @@ type Row = Record<string, any>
 // The single, controlled surface the UI is allowed to call.
 const api = {
   dbPing: (): Promise<{ ok: boolean; message: string; offline?: boolean }> => ipcRenderer.invoke('db:ping'),
+  hostinger: {
+    status: (): Promise<{ configured: boolean; hint: string; updated_at: string | null; updated_by: string | null }> => ipcRenderer.invoke('hostinger:status'),
+    plans: (refresh?: boolean): Promise<Row> => ipcRenderer.invoke('hostinger:plans', { refresh }),
+    setToken: (token: string | null): Promise<{ configured: boolean }> => ipcRenderer.invoke('hostinger:setToken', { token })
+  },
   revision: (): Promise<number> => ipcRenderer.invoke('app:revision'),
   db: {
     // The whole database as gzipped SQL, base64 for the trip across the

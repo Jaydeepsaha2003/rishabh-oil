@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
+import { HostingPlan } from '@/components/HostingPlan'
 import { toast } from 'sonner'
 import {
   AlertTriangle,
@@ -1763,6 +1764,7 @@ export function Settings({ user }: { user: AppUser }): React.JSX.Element {
             {isAdmin && <TabsTrigger value="database">Database</TabsTrigger>}
             {isAdmin && <TabsTrigger value="checks">Accounting checks</TabsTrigger>}
             {isAdmin && <TabsTrigger value="merge">Merge products</TabsTrigger>}
+            <TabsTrigger value="hosting">Hosting</TabsTrigger>
           </TabsList>
 
           {!__WEB__ && (
@@ -1828,6 +1830,10 @@ export function Settings({ user }: { user: AppUser }): React.JSX.Element {
               <ProductMerge />
             </TabsContent>
           )}
+          {/* When the Hostinger plan renews / expires — everyone may read it, an admin sets the key. */}
+          <TabsContent value="hosting" className="mt-6">
+            <HostingPlan isAdmin={isAdmin} />
+          </TabsContent>
         </Tabs>
       </div>
     </>

@@ -3,6 +3,11 @@ type Row = Record<string, any>
 
 export interface Api {
   dbPing: () => Promise<{ ok: boolean; message: string; offline?: boolean }>
+  hostinger: {
+    status: () => Promise<{ configured: boolean; hint: string; updated_at: string | null; updated_by: string | null }>
+    plans: (refresh?: boolean) => Promise<Row>
+    setToken: (token: string | null) => Promise<{ configured: boolean }>
+  }
   revision: () => Promise<number>
   db: {
     snapshot: () => Promise<{

@@ -92,6 +92,15 @@ export async function liveDbFile(): Promise<{ bytes: Buffer; fileName: string }>
     // A SQL string literal, so a quote in the path would end it early. Paths
     // like this are chosen by whoever deploys, not typed here.
     await getClient().execute(`VACUUM INTO '${out.replace(/'/g, "''")}'`)
+    // The server's API keys (app_secrets) do not travel in a downloaded copy.
+    // VACUUM after the drop, or the key would still sit in the freed pages.
+    const copy = createClient({ url: `file:${out}` })
+    try {
+      await copy.execute('DROP TABLE IF EXISTS app_secrets')
+      await copy.execute('VACUUM')
+    } finally {
+      copy.close()
+    }
     const bytes = readFileSync(out)
     return { bytes, fileName: `rishabh-${stampName()}.db` }
   } finally {
@@ -368,6 +377,8 @@ export async function restoreFromDump(buf: Buffer): Promise<RestoreReport> {
   const existing = await c.execute(
     `SELECT type, name FROM sqlite_master
       WHERE name NOT LIKE 'sqlite_%' AND name NOT LIKE 'libsql_%'
+        -- The server's own API keys stay: a snapshot never carries them (dbsnapshot.ts).
+        AND name <> 'app_secrets'
       ORDER BY CASE type WHEN 'trigger' THEN 0 WHEN 'view' THEN 1 WHEN 'index' THEN 2 ELSE 3 END`
   )
   const drops = existing.rows

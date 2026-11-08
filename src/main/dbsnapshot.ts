@@ -45,7 +45,8 @@ function idempotent(sql: string): string {
 function internal(name: string): boolean {
   // web_sessions is the website's sign-ins: per server, worthless anywhere
   // else, and not something a database copy should carry around.
-  return name.startsWith('sqlite_') || name.startsWith('libsql_') || name === '_litestream_seq' || name === 'web_sessions'
+  // app_secrets holds API keys (Hostinger) — a snapshot is a file people pass around.
+  return name.startsWith('sqlite_') || name.startsWith('libsql_') || name === '_litestream_seq' || name === 'web_sessions' || name === 'app_secrets'
 }
 
 export interface SnapshotMeta {
