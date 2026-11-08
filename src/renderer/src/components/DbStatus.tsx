@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { cn } from '@/lib/utils'
+import { idle } from '@/lib/useLiveRefresh'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 
 // Live database connection indicator. It pings on mount and then every 20s, and
@@ -34,7 +35,10 @@ export function DbStatus({
     }
     ping()
     // Each ping is a request + a query; once a minute is plenty to show the dot.
-    const t = setInterval(ping, 60000)
+    // Not while the tab is hidden or the screen is left alone (see useLiveRefresh).
+    const t = setInterval(() => {
+      if (!document.hidden && !idle()) void ping()
+    }, 60000)
     window.addEventListener('online', ping)
     return () => {
       alive = false

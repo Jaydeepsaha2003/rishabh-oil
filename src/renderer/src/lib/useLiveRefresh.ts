@@ -34,6 +34,24 @@ const COALESCE_MS = __WEB__ ? 4000 : 1500
 // back.
 const STALE_MS = 45000
 
+// AN UNATTENDED SCREEN STOPS ASKING. A register left open on an office PC
+// polled all day — one source sent ~22,800 requests in 24 h and pushed the
+// hosting plan to its process limit. On the website, after 5 minutes with no
+// mouse, key or touch, the checks stop; the first movement checks at once.
+const IDLE_MS = 5 * 60 * 1000
+let lastActive = Date.now()
+if (typeof window !== 'undefined' && __WEB__) {
+  const mark = (): void => {
+    const wasIdle = Date.now() - lastActive > IDLE_MS
+    lastActive = Date.now()
+    if (wasIdle) window.dispatchEvent(new Event('app:active'))
+  }
+  for (const ev of ['pointerdown', 'pointermove', 'keydown', 'wheel', 'touchstart']) {
+    window.addEventListener(ev, mark, { passive: true, capture: true })
+  }
+}
+export const idle = (): boolean => __WEB__ && Date.now() - lastActive > IDLE_MS
+
 // The reload is told that it is a BACKGROUND one.
 //
 // Every page's load() began by raising its own loading flag, which swaps the
@@ -99,7 +117,7 @@ export function useLiveRefresh(
       if (busy.current && Date.now() - busySince.current > STALE_MS) busy.current = false
       // Mid-reload, this tick has nothing to add: `last` still trails the
       // revision, so the next one picks the change up.
-      if (document.hidden || busy.current) return
+      if (document.hidden || busy.current || idle()) return
       try {
         const rev = await window.api.revision()
         if (stopped) return
@@ -140,6 +158,8 @@ export function useLiveRefresh(
     window.addEventListener('focus', wake)
     // Back from a dropped connection, likewise.
     window.addEventListener('online', wake)
+    // Back from being left alone (see IDLE_MS).
+    window.addEventListener('app:active', wake)
 
     return () => {
       stopped = true
@@ -148,6 +168,7 @@ export function useLiveRefresh(
       document.removeEventListener('visibilitychange', wake)
       window.removeEventListener('focus', wake)
       window.removeEventListener('online', wake)
+      window.removeEventListener('app:active', wake)
     }
   }, [intervalMs])
 }
