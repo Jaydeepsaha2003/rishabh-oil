@@ -2838,6 +2838,14 @@ export function Accounts({
     ids?: number[]
   }
   const [mDrawer, setMDrawer] = useState<MDrawer | null>(null)
+  // The Under list's keyboard cursor (index into its rows; -1 = on the picked group).
+  const [underAt, setUnderAt] = useState(-1)
+  const underFindRef = useRef<HTMLInputElement>(null)
+  useEffect(() => setUnderAt(-1), [mDrawer?.kind, mDrawer?.act, mDrawer?.id])
+  useEffect(() => {
+    if (underAt < 0) return
+    document.querySelector(`[data-under-i="${underAt}"]`)?.scrollIntoView({ block: 'nearest' })
+  }, [underAt])
   // Esc closes it — through the drawer hook, since the page's own key handler
   // stands aside while any dialog is up.
   const mDrawerRef = useRef<HTMLDivElement>(null)
@@ -13733,6 +13741,11 @@ Delete ${doc}?`)) return
                         e.preventDefault()
                         save()
                       }
+                      // ↓ from the name goes straight into the Under list.
+                      if (e.key === 'ArrowDown' && asksUnder) {
+                        e.preventDefault()
+                        underFindRef.current?.focus()
+                      }
                     }}
                     placeholder={isGroup ? 'e.g. Freight Payable' : 'e.g. SHREE ROADLINES'}
                     className="w-full outline-none focus:!border-[#0B3D2E]"
@@ -13762,72 +13775,180 @@ Delete ${doc}?`)) return
                 </div>
               )}
 
-              {asksUnder && (
+              {asksUnder && (() => {
+                // Where the cursor sits: moved by the keys, else on the picked group.
+                const picked = opts.findIndex((o) => (d.under || '') === o.value)
+                const at = underAt >= 0 && underAt < opts.length ? underAt : picked
+                const pick = (o: (typeof opts)[number]): void =>
+                  setMDrawer((x) =>
+                    x ? { ...x, under: o.value, nature: o.value ? x.nature : x.nature || (isGroup ? String(x.oldNature || '') : '') } : x
+                  )
+                // The picked group's whole path, Current Liabilities › Sundry Creditors.
+                const pathOf = (nm: string): string[] => {
+                  const out: string[] = []
+                  let g = groupByName.get(nm)
+                  let guard = 0
+                  while (g && guard++ < 12) {
+                    out.unshift(String(g.name))
+                    g = g.parent_id == null ? undefined : groupRows.find((x) => Number(x.id) === Number(g!.parent_id))
+                  }
+                  return out
+                }
+                const path = d.under ? pathOf(d.under) : []
+                const pickedNat = d.under ? natOf(groupByName.get(d.under)?.nature) : null
+                const mark = (label: string): React.ReactNode => {
+                  if (!f) return label
+                  const i = label.toLowerCase().indexOf(f)
+                  if (i < 0) return label
+                  return (
+                    <>
+                      {label.slice(0, i)}
+                      <mark style={{ background: '#E4F5C8', color: 'inherit', borderRadius: 2, padding: '0 1px' }}>{label.slice(i, i + f.length)}</mark>
+                      {label.slice(i + f.length)}
+                    </>
+                  )
+                }
+                const onKeys = (e: React.KeyboardEvent): void => {
+                  if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+                    e.preventDefault()
+                    if (!opts.length) return
+                    const from = at < 0 ? (e.key === 'ArrowDown' ? -1 : opts.length) : at
+                    setUnderAt(Math.max(0, Math.min(opts.length - 1, from + (e.key === 'ArrowDown' ? 1 : -1))))
+                  } else if (e.key === 'Enter') {
+                    e.preventDefault()
+                    // Enter on the row already picked saves; on another row it picks it.
+                    if (at >= 0 && opts[at] && (d.under || '') !== opts[at].value) pick(opts[at])
+                    else save()
+                  } else if (e.key === 'Home' || e.key === 'End') {
+                    if (!opts.length) return
+                    e.preventDefault()
+                    setUnderAt(e.key === 'Home' ? 0 : opts.length - 1)
+                  }
+                }
+                return (
                 <div className="flex-none overflow-hidden" style={{ background: '#fff', border: '1px solid #DCE7DB', borderRadius: 10 }}>
-                  <div className="flex items-center gap-[9px]" style={{ padding: '11px 13px', borderBottom: '1px solid #EAF0E9' }}>
-                    <span style={{ fontSize: 10.5, fontWeight: 800, letterSpacing: '.1em', textTransform: 'uppercase', color: A.muted }}>Under</span>
-                    <span className="ml-auto min-w-0 truncate" style={{ fontSize: 11.5, fontWeight: 800, color: A.frame }}>
-                      {d.under || (isGroup ? 'Top level' : 'Pick a group')}
-                    </span>
-                  </div>
-                  <div style={{ padding: '9px 11px', borderBottom: '1px solid #EAF0E9' }}>
-                    <div className="flex h-[34px] items-center gap-[7px] rounded-[7px] px-[9px]" style={{ border: '1px solid #C3D2C6' }}>
-                      <Search className="h-4 w-4 flex-none" style={{ color: A.muted }} />
-                      <input
-                        autoFocus={d.act === 'move'}
-                        value={d.find}
-                        onChange={(e) => setMDrawer((x) => (x ? { ...x, find: e.target.value } : x))}
-                        placeholder="Find a group"
-                        className="min-w-0 flex-1 border-0 bg-transparent outline-none"
-                        style={{ fontSize: 12, fontWeight: 600 }}
-                      />
+                  <div style={{ padding: '11px 13px', borderBottom: '1px solid #EAF0E9', background: d.under ? '#F7FBF1' : '#fff' }}>
+                    <div className="flex items-center gap-[9px]">
+                      <span style={{ fontSize: 10.5, fontWeight: 800, letterSpacing: '.1em', textTransform: 'uppercase', color: A.muted }}>Under</span>
+                      {pickedNat && (
+                        <span
+                          className="ml-auto flex-none"
+                          style={{ fontSize: 9, fontWeight: 800, letterSpacing: '.06em', textTransform: 'uppercase', color: pickedNat.fg, background: pickedNat.bg, borderRadius: 3, padding: '2px 6px' }}
+                        >
+                          {pickedNat.label}
+                        </span>
+                      )}
+                    </div>
+                    <div className="mt-1 flex min-w-0 flex-wrap items-center gap-1" style={{ fontSize: 13, fontWeight: 800, color: d.under ? A.frame : '#B3261E' }}>
+                      {path.length ? (
+                        path.map((pp, k) => (
+                          <span key={k} className="flex items-center gap-1" style={{ color: k === path.length - 1 ? A.frame : A.muted, fontWeight: k === path.length - 1 ? 800 : 600, fontSize: k === path.length - 1 ? 13.5 : 11.5 }}>
+                            {k > 0 && <ChevronRight className="h-3 w-3" style={{ color: '#A8B8AE' }} />}
+                            {pp}
+                          </span>
+                        ))
+                      ) : (
+                        <span>{isGroup ? 'Top level — a primary group' : 'Pick a group below'}</span>
+                      )}
                     </div>
                   </div>
-                  <div className="sc max-h-[260px] overflow-y-auto" style={{ padding: 5 }}>
-                    {opts.map((o) => {
+                  <div style={{ padding: '9px 11px', borderBottom: '1px solid #EAF0E9' }}>
+                    <div className="flex h-[36px] items-center gap-[7px] rounded-[7px] px-[9px] focus-within:!border-[#0B3D2E]" style={{ border: '1px solid #C3D2C6' }}>
+                      <Search className="h-4 w-4 flex-none" style={{ color: A.muted }} />
+                      <input
+                        ref={underFindRef}
+                        autoFocus={d.act === 'move'}
+                        value={d.find}
+                        onChange={(e) => {
+                          setMDrawer((x) => (x ? { ...x, find: e.target.value } : x))
+                          // Typing puts the cursor on the first match.
+                          setUnderAt(e.target.value.trim() ? 0 : -1)
+                        }}
+                        onKeyDown={onKeys}
+                        placeholder="Find a group — ↑ ↓ to move, Enter to pick"
+                        className="min-w-0 flex-1 border-0 bg-transparent outline-none"
+                        style={{ fontSize: 12.5, fontWeight: 600 }}
+                      />
+                      {!!d.find && (
+                        <button
+                          type="button"
+                          aria-label="Clear"
+                          onClick={() => {
+                            setMDrawer((x) => (x ? { ...x, find: '' } : x))
+                            setUnderAt(-1)
+                            underFindRef.current?.focus()
+                          }}
+                          className="flex-none rounded-[4px] p-0.5 hover:bg-[#EEF3ED]"
+                        >
+                          <X className="h-3.5 w-3.5" style={{ color: A.muted }} />
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                  <div className="sc max-h-[300px] overflow-y-auto" style={{ padding: 5 }} tabIndex={-1} onKeyDown={onKeys}>
+                    {opts.map((o, i) => {
                       const on = (d.under || '') === o.value
+                      const cur = i === at
+                      const nat = o.nature ? natOf(o.nature) : null
                       return (
                         <button
                           key={o.value || '__top__'}
                           type="button"
-                          onClick={() =>
-                            setMDrawer((x) =>
-                              x ? { ...x, under: o.value, nature: o.value ? x.nature : x.nature || (isGroup ? String(x.oldNature || '') : '') } : x
-                            )
-                          }
-                          className="flex w-full items-center gap-[9px] rounded-[7px] text-left hover:bg-[#F7FAF6]"
+                          data-under-i={i}
+                          onClick={() => {
+                            setUnderAt(i)
+                            pick(o)
+                          }}
+                          onDoubleClick={() => {
+                            pick(o)
+                            save()
+                          }}
+                          onMouseEnter={() => setUnderAt(i)}
+                          className="flex w-full items-center gap-[9px] rounded-[7px] text-left"
                           style={{
-                            padding: `8px 9px 8px ${9 + o.depth * 16}px`,
-                            background: on ? '#F3FBE2' : undefined,
-                            border: `1px solid ${on ? '#CDE89A' : 'transparent'}`
+                            padding: '7px 9px',
+                            background: on ? '#F3FBE2' : cur ? '#F1F6EE' : undefined,
+                            border: `1px solid ${on ? '#CDE89A' : cur ? '#C3D2C6' : 'transparent'}`,
+                            boxShadow: cur ? 'inset 3px 0 0 #0B6B45' : undefined
                           }}
                         >
+                          {/* Tree guides: one rule per level, so a group's place reads at a glance. */}
+                          {!f &&
+                            Array.from({ length: o.depth }).map((_, k) => (
+                              <span key={k} className="flex-none self-stretch" style={{ width: 9, borderLeft: '1px solid #DCE7DB', marginLeft: k === 0 ? 4 : 0 }} />
+                            ))}
                           <span
                             className="flex h-4 w-4 flex-none items-center justify-center rounded-full"
                             style={{ border: `1.5px solid ${on ? A.frame : '#C3D2C6'}`, background: on ? A.frame : '#fff' }}
                           >
                             {on && <Check className="h-[11px] w-[11px] text-white" />}
                           </span>
-                          <span className="min-w-0 truncate" style={{ fontSize: 12, fontWeight: o.depth === 0 ? 800 : 600 }}>
-                            {o.label}
+                          <span className="min-w-0 flex-1 truncate" style={{ fontSize: 12.5, fontWeight: o.depth === 0 ? 800 : 600, color: A.ink }}>
+                            {mark(o.label)}
                           </span>
-                          {!!o.nature && (
+                          {nat && (
                             <span
-                              className="ml-auto flex-none"
-                              style={{ fontSize: 9, fontWeight: 800, letterSpacing: '.06em', textTransform: 'uppercase', color: natOf(o.nature).fg }}
+                              className="flex-none"
+                              style={{ fontSize: 9, fontWeight: 800, letterSpacing: '.06em', textTransform: 'uppercase', color: nat.fg }}
                             >
-                              {natOf(o.nature).label}
+                              {nat.label}
                             </span>
                           )}
                         </button>
                       )
                     })}
                     {!opts.length && (
-                      <div style={{ padding: '14px 9px', fontSize: 12, fontWeight: 600, color: A.muted }}>No group matches.</div>
+                      <div style={{ padding: '14px 9px', fontSize: 12, fontWeight: 600, color: A.muted }}>No group matches “{d.find}”.</div>
                     )}
                   </div>
+                  <div className="flex items-center gap-3" style={{ padding: '7px 13px', borderTop: '1px solid #EAF0E9', background: '#FBFCFA', fontSize: 10.5, fontWeight: 700, color: A.muted }}>
+                    <span>↑ ↓ move</span>
+                    <span>Enter pick · Enter again saves</span>
+                    <span className="ml-auto">{opts.length} group{opts.length === 1 ? '' : 's'}</span>
+                  </div>
                 </div>
-              )}
+                )
+              })()}
 
               {top && (
                 <div className="flex-none">
