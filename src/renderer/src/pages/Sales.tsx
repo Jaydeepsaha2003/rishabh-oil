@@ -5174,6 +5174,8 @@ export type BargainDrawLine = {
   company: string
   companyColour: string
   companyId: number
+  // A return's credit note voucher — opens the note in Accounting.
+  entryId?: number
 }
 
 export function salesBargainDraws(
@@ -5237,7 +5239,8 @@ export function salesBargainDraws(
       uom: String(row.uom || 'MT'),
       company: coNameOf(rl.company_id),
       companyColour: coColourOf(rl.company_id),
-      companyId: Number(rl.company_id) || 0
+      companyId: Number(rl.company_id) || 0,
+      entryId: Number(rl.entry_id) || 0
     }))
   ].sort((x, y) => x.date.localeCompare(y.date) || x.key.localeCompare(y.key))
 
@@ -5254,7 +5257,7 @@ export function salesBargainDraws(
   return { lines, net }
 }
 
-function SalesBargainsTab({ onOpenSale }: { onOpenSale?: (id: number, companyId?: number) => void } = {}): React.JSX.Element {
+function SalesBargainsTab({ onOpenSale, onOpenVoucher }: { onOpenSale?: (id: number, companyId?: number) => void; onOpenVoucher?: (entryId: number, companyId?: number) => void } = {}): React.JSX.Element {
   const isMobile = useIsMobile()
   // EVERYTHING THAT HAS HAPPENED TO ONE BARGAIN.
   //
@@ -6597,8 +6600,8 @@ function SalesBargainsTab({ onOpenSale }: { onOpenSale?: (id: number, companyId?
                     <button
                       key={l.key}
                       type="button"
-                      disabled={ret || !onOpenSale}
-                      onClick={() => onOpenSale?.(l.id, l.companyId || undefined)}
+                      disabled={ret ? !onOpenVoucher || !l.entryId : !onOpenSale}
+                      onClick={() => (ret ? l.entryId && onOpenVoucher?.(l.entryId, l.companyId || undefined) : onOpenSale?.(l.id, l.companyId || undefined))}
                       className="w-full border-t border-t-[#EAF0E9] px-[13px] py-2.5 text-left"
                       style={{
                         background: ret ? '#F4FBF6' : '#fff',
@@ -7660,6 +7663,7 @@ function SalesBargainsTab({ onOpenSale }: { onOpenSale?: (id: number, companyId?
                                 company: string
                                 companyColour: string
                                 companyId: number
+                                entryId?: number
                               }
                               const lines: Line[] = [
                                 ...Array.from(byInvoice.values()).map((g): Line => ({
@@ -7694,7 +7698,8 @@ function SalesBargainsTab({ onOpenSale }: { onOpenSale?: (id: number, companyId?
                                   uom: String(row.uom || 'MT'),
                                   company: coNameOf(rl.company_id),
                                   companyColour: coColourOf(rl.company_id),
-                                  companyId: Number(rl.company_id) || 0
+                                  companyId: Number(rl.company_id) || 0,
+                                  entryId: Number(rl.entry_id) || 0
                                 }))
                               ].sort((x, y) => x.date.localeCompare(y.date) || x.key.localeCompare(y.key))
                               const net = lines.reduce(
@@ -7736,14 +7741,16 @@ function SalesBargainsTab({ onOpenSale }: { onOpenSale?: (id: number, companyId?
                                               className={cn(
                                                 'border-b last:border-0',
                                                 isRet && 'bg-emerald-50/60',
-                                                !isRet && onOpenSale && 'cursor-pointer hover:bg-muted/40',
+                                                (isRet ? !!onOpenVoucher && !!l.entryId : !!onOpenSale) && 'cursor-pointer hover:bg-muted/40',
                                                 __WEB__ && '!border-b-[#EAF0E9] [&>td]:!h-[42px] [&>td]:!py-0',
-                                                __WEB__ && (isRet ? '!bg-[#E9F5EE]/50' : onOpenSale && 'hover:!bg-[#F7FAF6]')
+                                                __WEB__ && (isRet ? '!bg-[#E9F5EE]/50 hover:!bg-[#DDF0E4]' : onOpenSale && 'hover:!bg-[#F7FAF6]')
                                               )}
-                                              title={isRet ? 'Returned on a credit note — added back to the balance' : onOpenSale ? 'Open this sale invoice' : undefined}
+                                              title={isRet ? `Open credit note ${l.label} — returned, added back to the balance` : onOpenSale ? 'Open this sale invoice' : undefined}
                                               onClick={(e) => {
                                                 e.stopPropagation()
-                                                if (!isRet) onOpenSale?.(l.id, l.companyId || undefined)
+                                                if (isRet) {
+                                                  if (l.entryId) onOpenVoucher?.(l.entryId, l.companyId || undefined)
+                                                } else onOpenSale?.(l.id, l.companyId || undefined)
                                               }}
                                             >
                                               <td className={cn('py-1.5 pr-3 tabular-nums text-muted-foreground', __WEB__ && '!pl-3 !text-[10px] !font-bold !text-[#A8B8AE]')}>{di + 1}</td>
@@ -8878,7 +8885,7 @@ function SalesPage({ focusId, onFocusHandled, onBack, backLabel, deskSwitch, onO
   )
 }
 
-export function SalesBargains({ onOpenSale }: { onOpenSale?: (id: number, companyId?: number) => void } = {}): React.JSX.Element {
+export function SalesBargains({ onOpenSale, onOpenVoucher }: { onOpenSale?: (id: number, companyId?: number) => void; onOpenVoucher?: (entryId: number, companyId?: number) => void } = {}): React.JSX.Element {
   // ONE HEADER ON A PHONE, not two.
   //
   // The page header and the phone layout's own forest bar were both rendering:
@@ -8894,7 +8901,7 @@ export function SalesBargains({ onOpenSale }: { onOpenSale?: (id: number, compan
         <PageHeader title="Sales Bargain" subtitle="Rate contracts with customers — drawn down as sales are dispatched" hint="Each sales bargain locks a rate and quantity with a customer; dispatches under Sales draw it down. The bargain number is FGCODE/DD-MM/CUSTOMER/SERIAL, resetting monthly." />
       )}
       <div className={cn(!mobile && 'px-4 py-4')}>
-        <SalesBargainsTab onOpenSale={onOpenSale} />
+        <SalesBargainsTab onOpenSale={onOpenSale} onOpenVoucher={onOpenVoucher} />
       </div>
     </>
   )

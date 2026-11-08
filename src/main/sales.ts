@@ -1013,7 +1013,7 @@ export async function listSalesBargains(
 export async function listSalesBargainReturns(companyIds?: number[]): Promise<Row[]> {
   const cos = (companyIds || []).map((x) => Number(x)).filter((x) => Number.isFinite(x) && x > 0)
   const res = await getClient().execute(`
-    SELECT b.id AS bargain_id, nt.id AS note_id, nt.note_no, nt.note_date, nt.against_ref,
+    SELECT b.id AS bargain_id, nt.id AS note_id, nt.note_no, nt.note_date, nt.against_ref, nt.journal_entry_id AS entry_id,
            nt.company_id, co.name AS company_name, ni.qty, ni.rate, ni.amount,
            nt.gst_pct,
            -- The registers show a dispatch INCLUDING GST (amount + gst_amount),

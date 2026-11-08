@@ -671,7 +671,11 @@ function App(): React.JSX.Element {
         {view === 'production' && <Production />}
         {view === 'stock' && <Stock onCompanyChange={switchCompany} />}
         {view === 'salesBargains' && (
-          <SalesBargains onOpenSale={(id, saleCompanyId) => openRecord('sales', id, { companyId: saleCompanyId })} />
+          <SalesBargains
+            onOpenSale={(id, saleCompanyId) => openRecord('sales', id, { companyId: saleCompanyId })}
+            // A return row opens its credit note (its voucher, in Accounting); Esc comes back.
+            onOpenVoucher={openVoucher}
+          />
         )}
         {view === 'sales' && (
           <Sales
