@@ -46,6 +46,7 @@ export async function setHostingerToken(token: string | null): Promise<{ configu
   await ensureSecrets()
   const t = String(token ?? '').trim()
   cache = null
+  alertCache = null
   if (!t) {
     await getClient().execute({ sql: 'DELETE FROM app_secrets WHERE key = ?', args: [KEY] })
     return { configured: false }
@@ -122,5 +123,34 @@ export async function hostingerPlans(refresh = false): Promise<Row> {
   }))
   const data = { configured: true, fetched_at: new Date().toISOString(), subscriptions, domains, domains_error: domainsError }
   cache = { at: Date.now(), data }
+  return data
+}
+
+// THE RENEWAL REMINDER every screen shows (HostingAlert): the soonest plan or
+// domain date inside 30 days. Shared by every user and cached an hour, so a
+// whole office opening the app is one call to Hostinger, not one each. Never
+// throws — no key, or Hostinger down, simply means no reminder.
+let alertCache: { at: number; data: Row | null } | null = null
+export async function hostingerAlert(): Promise<Row | null> {
+  if (alertCache && Date.now() - alertCache.at < 60 * 60 * 1000) return alertCache.data
+  let data: Row | null = null
+  try {
+    const p = await hostingerPlans()
+    const day = (iso: unknown): number | null => {
+      const t = Date.parse(String(iso || ''))
+      return Number.isFinite(t) ? Math.ceil((t - Date.now()) / 86400000) : null
+    }
+    const items: Row[] = [
+      ...((p.subscriptions as Row[]) || [])
+        .filter((s) => !['cancelled', 'transferred'].includes(String(s.status)))
+        .map((s) => ({ kind: 'plan', name: String(s.name), date: s.date, days: day(s.date), auto_renew: !!s.auto_renew })),
+      ...((p.domains as Row[]) || []).map((d) => ({ kind: 'domain', name: String(d.domain), date: d.date, days: day(d.date), auto_renew: false }))
+    ].filter((x) => x.days != null && (x.days as number) <= 30)
+    items.sort((a, b) => (a.days as number) - (b.days as number))
+    data = items.length ? { days: items[0].days, items } : null
+  } catch {
+    data = null
+  }
+  alertCache = { at: Date.now(), data }
   return data
 }

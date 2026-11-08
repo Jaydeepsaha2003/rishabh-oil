@@ -9,6 +9,7 @@ const api = {
   hostinger: {
     status: (): Promise<{ configured: boolean; hint: string; updated_at: string | null; updated_by: string | null }> => ipcRenderer.invoke('hostinger:status'),
     plans: (refresh?: boolean): Promise<Row> => ipcRenderer.invoke('hostinger:plans', { refresh }),
+    alert: (): Promise<Row | null> => ipcRenderer.invoke('hostinger:alert'),
     setToken: (token: string | null): Promise<{ configured: boolean }> => ipcRenderer.invoke('hostinger:setToken', { token })
   },
   revision: (): Promise<number> => ipcRenderer.invoke('app:revision'),

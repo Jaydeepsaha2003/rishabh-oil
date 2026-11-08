@@ -48,6 +48,7 @@ import { Companies } from './pages/Companies'
 import { Factories } from './pages/Factories'
 import { NotificationBell } from './components/NotificationBell'
 import { DailyWorkPopup } from './components/DailyWorkPopup'
+import { HostingAlert } from './components/HostingAlert'
 import { GlobalDateRangeDialog } from './components/GlobalDateRangeDialog'
 import { GlobalDateRangeProvider } from './lib/globalDateRange'
 import { CompanyProvider, HeaderExtrasProvider } from './lib/companyContext'
@@ -593,6 +594,8 @@ function App(): React.JSX.Element {
         <DailyWorkPopup user={user} onOpen={() => navigate('workAssignments')} />
       )}
       <UpdateTopBar />
+      {/* Hosting renewal: amber 30 days out, red + a pop-up from 15 (HostingAlert). */}
+      <HostingAlert isAdmin={user?.role === 'admin'} onOpenSettings={() => navigate('settings' as Page)} />
       <div className="flex flex-1 overflow-hidden">
       <Sidebar
         page={view}

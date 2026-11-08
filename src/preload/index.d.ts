@@ -6,6 +6,7 @@ export interface Api {
   hostinger: {
     status: () => Promise<{ configured: boolean; hint: string; updated_at: string | null; updated_by: string | null }>
     plans: (refresh?: boolean) => Promise<Row>
+    alert: () => Promise<Row | null>
     setToken: (token: string | null) => Promise<{ configured: boolean }>
   }
   revision: () => Promise<number>
