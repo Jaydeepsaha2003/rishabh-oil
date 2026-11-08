@@ -764,6 +764,7 @@ const api = {
       ipcRenderer.invoke('sales:setInvoiceStage', { group, stage, force, date, received }),
     removeInvoice: (group: string): Promise<{ group: string }> =>
       ipcRenderer.invoke('sales:deleteInvoice', { group }),
+    removeInvoiceOfSale: (saleId: number): Promise<{ group: string }> => ipcRenderer.invoke('sales:deleteInvoice', { saleId }),
     rejectInvoice: (group: string, reason: string): Promise<{ group: string }> =>
       ipcRenderer.invoke('sales:rejectInvoice', { group, reason }),
     cancelDelivery: (

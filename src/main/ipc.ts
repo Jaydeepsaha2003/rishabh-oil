@@ -1530,7 +1530,16 @@ export function registerIpc(): void {
       { group, stage, force, date, received }: { group: string; stage: string; force?: boolean; date?: string; received?: Record<string, number | null> }
     ) => setInvoiceStage(group, stage, force, date, received)
   )
-  handle('sales:deleteInvoice', (_e, { group }: { group: string }) => deleteSaleInvoice(group))
+  // By the invoice group, or (Alt+D on a sale's voucher in Accounting) by one of its lines.
+  handle('sales:deleteInvoice', async (_e, { group, saleId }: { group?: string; saleId?: number }) => {
+    if (group) return deleteSaleInvoice(group)
+    const r = await getClient().execute({ sql: 'SELECT id, invoice_group FROM sales WHERE id = ?', args: [Number(saleId) || 0] })
+    if (!r.rows.length) throw new Error('That sale no longer exists')
+    const g = String(r.rows[0].invoice_group || '')
+    if (g) return deleteSaleInvoice(g)
+    await withDbTransaction(() => deleteSale(Number(saleId)))
+    return { group: '' }
+  })
   handle('sales:rejectInvoice', (_e, { group, reason }: { group: string; reason: string }) => rejectSaleInvoice(group, reason))
   handle(
     'sales:cancelDelivery',

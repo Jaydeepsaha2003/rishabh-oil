@@ -506,6 +506,7 @@ export interface Api {
     tdsMap: (companyIds?: number[]) => Promise<Row[]>
     setInvoiceStage: (group: string, stage: string, force?: boolean, date?: string, received?: Record<string, number | null>) => Promise<{ group: string }>
     removeInvoice: (group: string) => Promise<{ group: string }>
+    removeInvoiceOfSale: (saleId: number) => Promise<{ group: string }>
     rejectInvoice: (group: string, reason: string) => Promise<{ group: string }>
     cancelDelivery: (
       group: string,

@@ -5172,6 +5172,39 @@ export function Accounts({
   }
 
   async function deleteVoucher(): Promise<void> {
+    // ALT+D ON A VOUCHER A DOCUMENT POSTED (SAL/95 from sale KRFIN/149): the
+    // voucher cannot go on its own — it is the document's — so, Tally's way,
+    // deleting it deletes the document, through that page's own delete.
+    if (viewOnly && editingId == null && noteEditId == null) {
+      const o = (viewOnly.owner || null) as Row | null
+      const code = String(viewOnly.code || viewOnly.vch_no || 'this voucher')
+      if (!o) return void toast.error(`${code} cannot be deleted: your access lets you read it, not alter it`)
+      const kind = String(o.kind)
+      if (kind !== 'sale' && kind !== 'order') {
+        return void toast.error(`${code} was posted by ${String(o.label)} — delete it there, and its voucher goes with it`)
+      }
+      const doc = kind === 'sale' ? `sale ${String(viewOnly.vch_no || '')}`.trim() : `purchase ${String(viewOnly.vch_no || '')}`.trim()
+      const what =
+        kind === 'sale'
+          ? 'the whole invoice (every item on it), its voucher and the stock it moved'
+          : 'the purchase, its voucher, and its tankers go back to the loaded queue'
+      if (!confirm(`${code} was posted by ${doc}.
+
+Deleting it deletes ${what}.
+
+Delete ${doc}?`)) return
+      try {
+        if (kind === 'sale') await window.api.sales.removeInvoiceOfSale(Number(o.id))
+        else await window.api.orders.remove(Number(o.id))
+        toast.success(`${doc} deleted — ${code} with it`)
+        setViewOnly(null)
+        setScreen(viewOnly.back && viewOnly.back !== 'voucher' ? (viewOnly.back as Screen) : 'daybook', true)
+        loadAccounts()
+      } catch (e) {
+        toast.error((e as Error).message)
+      }
+      return
+    }
     if (editingId == null && noteEditId == null) return
     if (!vchRights(vchType).delete) {
       toast.error(`You do not have rights to delete a ${vchLabel(vchType)} voucher`)
@@ -5684,7 +5717,7 @@ export function Accounts({
         return
       }
       // By the key's position: Option+D on a Mac types "∂".
-      if (e.altKey && e.code === 'KeyD' && screen === 'voucher' && (editingId != null || noteEditId != null)) {
+      if (e.altKey && e.code === 'KeyD' && screen === 'voucher' && (editingId != null || noteEditId != null || !!viewOnly)) {
         e.preventDefault()
         void deleteVoucher()
         return
