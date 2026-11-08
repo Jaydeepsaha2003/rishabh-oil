@@ -64,14 +64,14 @@ export function HostingPlan({ isAdmin }: { isAdmin: boolean }): React.JSX.Elemen
     void load()
   }, [load])
 
-  async function save(remove = false): Promise<void> {
-    if (remove && !confirm('Remove the Hostinger API key? The plan dates will no longer show here.')) return
+  // Replace only — the key can never be removed (hostinger.ts refuses a blank).
+  async function save(): Promise<void> {
     setBusy(true)
     try {
-      await window.api.hostinger.setToken(remove ? null : token)
+      await window.api.hostinger.setToken(token)
       setToken('')
       setEditing(false)
-      toast.success(remove ? 'Hostinger API key removed' : 'Hostinger API key saved — it works')
+      toast.success('Hostinger API key saved — it works')
       await load(true)
     } catch (e) {
       toast.error((e as Error).message)
@@ -105,9 +105,6 @@ export function HostingPlan({ isAdmin }: { isAdmin: boolean }): React.JSX.Elemen
                 <span className="ml-auto flex gap-2">
                   <Button variant="outline" size="sm" onClick={() => setEditing(true)} disabled={busy}>
                     Replace
-                  </Button>
-                  <Button variant="outline" size="sm" className="text-[#B3261E]" onClick={() => void save(true)} disabled={busy}>
-                    Remove
                   </Button>
                 </span>
               )}

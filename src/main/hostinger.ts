@@ -45,12 +45,11 @@ export async function setHostingerToken(token: string | null): Promise<{ configu
   await assertAdmin('Setting the Hostinger API key')
   await ensureSecrets()
   const t = String(token ?? '').trim()
+  // Never removed, only replaced: without it the renewal reminder goes quiet,
+  // and a lapsed plan deletes every record. A blank is refused here too.
+  if (!t) throw new Error('The Hostinger API key cannot be removed — paste a new one to replace it')
   cache = null
   alertCache = null
-  if (!t) {
-    await getClient().execute({ sql: 'DELETE FROM app_secrets WHERE key = ?', args: [KEY] })
-    return { configured: false }
-  }
   if (t.length < 20 || /\s/.test(t)) throw new Error('That does not look like a Hostinger API token — copy it again from hPanel → Profile → API')
   // Tried before it is kept, so a wrong key is said now, not on the next look.
   await callHostinger('/api/billing/v1/subscriptions', t)
@@ -116,11 +115,14 @@ export async function hostingerPlans(refresh = false): Promise<Row> {
       billing_period: s.billing_period != null ? `${s.billing_period} ${String(s.billing_period_unit ?? '')}`.trim() : ''
     }
   })
-  const domains = domainsRaw.map((d) => ({
+  const domainsAll = domainsRaw.map((d) => ({
     domain: String(d.domain ?? d.name ?? ''),
     status: String(d.status ?? ''),
     date: d.expires_at ? String(d.expires_at) : null
   }))
+  // The portfolio can list one domain twice (rrbridge.in, once with no date):
+  // a dateless entry goes when the same domain has a dated one.
+  const domains = domainsAll.filter((d) => d.date || !domainsAll.some((o) => o !== d && o.domain === d.domain && o.date))
   const data = { configured: true, fetched_at: new Date().toISOString(), subscriptions, domains, domains_error: domainsError }
   cache = { at: Date.now(), data }
   return data
