@@ -14539,7 +14539,7 @@ async function listSalesBargains(from, to, companyIds, forModule) {
 async function listSalesBargainReturns(companyIds) {
   const cos = (companyIds || []).map((x) => Number(x)).filter((x) => Number.isFinite(x) && x > 0);
   const res = await getClient().execute(`
-    SELECT b.id AS bargain_id, nt.id AS note_id, nt.note_no, nt.note_date, nt.against_ref,
+    SELECT b.id AS bargain_id, nt.id AS note_id, nt.note_no, nt.note_date, nt.against_ref, nt.journal_entry_id AS entry_id,
            nt.company_id, co.name AS company_name, ni.qty, ni.rate, ni.amount,
            nt.gst_pct,
            -- The registers show a dispatch INCLUDING GST (amount + gst_amount),
@@ -30870,6 +30870,143 @@ var init_lc = __esm({
   }
 });
 
+// src/main/hostinger.ts
+var hostinger_exports = {};
+__export(hostinger_exports, {
+  hostingerAlert: () => hostingerAlert,
+  hostingerPlans: () => hostingerPlans,
+  hostingerStatus: () => hostingerStatus,
+  setHostingerToken: () => setHostingerToken
+});
+async function ensureSecrets() {
+  await getClient().execute(`CREATE TABLE IF NOT EXISTS app_secrets (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL,
+    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_by TEXT
+  )`);
+}
+async function readToken() {
+  await ensureSecrets();
+  const r = await getClient().execute({ sql: "SELECT value FROM app_secrets WHERE key = ?", args: [KEY2] });
+  return String(r.rows[0]?.value || "");
+}
+async function hostingerStatus() {
+  await ensureSecrets();
+  const r = await getClient().execute({ sql: "SELECT value, updated_at, updated_by FROM app_secrets WHERE key = ?", args: [KEY2] });
+  const row = r.rows[0];
+  const v = String(row?.value || "");
+  return { configured: !!v, hint: v ? `\u2026${v.slice(-4)}` : "", updated_at: row?.updated_at ?? null, updated_by: row?.updated_by ?? null };
+}
+async function setHostingerToken(token) {
+  await assertAdmin("Setting the Hostinger API key");
+  await ensureSecrets();
+  const t = String(token ?? "").trim();
+  cache2 = null;
+  alertCache = null;
+  if (!t) {
+    await getClient().execute({ sql: "DELETE FROM app_secrets WHERE key = ?", args: [KEY2] });
+    return { configured: false };
+  }
+  if (t.length < 20 || /\s/.test(t)) throw new Error("That does not look like a Hostinger API token \u2014 copy it again from hPanel \u2192 Profile \u2192 API");
+  await callHostinger("/api/billing/v1/subscriptions", t);
+  await getClient().execute({
+    sql: `INSERT INTO app_secrets (key, value, updated_at, updated_by) VALUES (?, ?, datetime('now'), ?)
+          ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at, updated_by = excluded.updated_by`,
+    args: [KEY2, t, getCurrentUser().username || null]
+  });
+  return { configured: true };
+}
+async function callHostinger(path, token) {
+  const ctl = new AbortController();
+  const timer = setTimeout(() => ctl.abort(), 15e3);
+  try {
+    const res = await fetch(`${API}${path}`, {
+      headers: { Authorization: `Bearer ${token}`, Accept: "application/json" },
+      signal: ctl.signal
+    });
+    if (res.status === 401 || res.status === 403) throw new Error("Hostinger refused the API key \u2014 it may be wrong, expired or revoked. Set a new one.");
+    if (res.status === 429) throw new Error("Hostinger says too many requests \u2014 try again in a minute");
+    if (!res.ok) throw new Error(`Hostinger answered ${res.status} for ${path}`);
+    return await res.json();
+  } catch (e) {
+    if (e.name === "AbortError") throw new Error("Hostinger did not answer within 15 seconds");
+    throw e;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+async function hostingerPlans(refresh = false) {
+  if (!refresh && cache2 && Date.now() - cache2.at < 10 * 60 * 1e3) return cache2.data;
+  const token = await readToken();
+  if (!token) return { configured: false, subscriptions: [], domains: [] };
+  const subsRaw = listOf(await callHostinger("/api/billing/v1/subscriptions", token));
+  let domainsRaw = [];
+  let domainsError = null;
+  try {
+    domainsRaw = listOf(await callHostinger("/api/domains/v1/portfolio", token));
+  } catch (e) {
+    domainsError = e.message;
+  }
+  const subscriptions = subsRaw.map((s5) => {
+    const auto = !!s5.is_auto_renewed;
+    const date = auto ? s5.next_billing_at || s5.expires_at : s5.expires_at || s5.next_billing_at;
+    return {
+      id: String(s5.id ?? ""),
+      name: String(s5.name ?? "Subscription"),
+      status: String(s5.status ?? ""),
+      auto_renew: auto,
+      date: date ? String(date) : null,
+      date_kind: auto ? "renews" : "expires",
+      renewal_price: s5.renewal_price != null ? Number(s5.renewal_price) / 100 : null,
+      currency: String(s5.currency_code ?? ""),
+      billing_period: s5.billing_period != null ? `${s5.billing_period} ${String(s5.billing_period_unit ?? "")}`.trim() : ""
+    };
+  });
+  const domains = domainsRaw.map((d) => ({
+    domain: String(d.domain ?? d.name ?? ""),
+    status: String(d.status ?? ""),
+    date: d.expires_at ? String(d.expires_at) : null
+  }));
+  const data = { configured: true, fetched_at: (/* @__PURE__ */ new Date()).toISOString(), subscriptions, domains, domains_error: domainsError };
+  cache2 = { at: Date.now(), data };
+  return data;
+}
+async function hostingerAlert() {
+  if (alertCache && Date.now() - alertCache.at < 60 * 60 * 1e3) return alertCache.data;
+  let data = null;
+  try {
+    const p = await hostingerPlans();
+    const day = (iso) => {
+      const t = Date.parse(String(iso || ""));
+      return Number.isFinite(t) ? Math.ceil((t - Date.now()) / 864e5) : null;
+    };
+    const items = [
+      ...(p.subscriptions || []).filter((s5) => !["cancelled", "transferred"].includes(String(s5.status))).map((s5) => ({ kind: "plan", name: String(s5.name), date: s5.date, days: day(s5.date), auto_renew: !!s5.auto_renew })),
+      ...(p.domains || []).map((d) => ({ kind: "domain", name: String(d.domain), date: d.date, days: day(d.date), auto_renew: false }))
+    ].filter((x) => x.days != null && x.days <= 30);
+    items.sort((a, b) => a.days - b.days);
+    data = items.length ? { days: items[0].days, items } : null;
+  } catch {
+    data = null;
+  }
+  alertCache = { at: Date.now(), data };
+  return data;
+}
+var API, KEY2, cache2, listOf, alertCache;
+var init_hostinger = __esm({
+  "src/main/hostinger.ts"() {
+    init_db();
+    init_access_gate();
+    init_currentUser();
+    API = "https://developers.hostinger.com";
+    KEY2 = "hostinger_api_token";
+    cache2 = null;
+    listOf = (x) => Array.isArray(x) ? x : Array.isArray(x?.data) ? x.data : [];
+    alertCache = null;
+  }
+});
+
 // src/main/ledgerMerge.ts
 var ledgerMerge_exports = {};
 __export(ledgerMerge_exports, {
@@ -32828,7 +32965,7 @@ function idempotent(sql) {
   );
 }
 function internal(name) {
-  return name.startsWith("sqlite_") || name.startsWith("libsql_") || name === "_litestream_seq" || name === "web_sessions";
+  return name.startsWith("sqlite_") || name.startsWith("libsql_") || name === "_litestream_seq" || name === "web_sessions" || name === "app_secrets";
 }
 var ROWS_PER_INSERT = 200;
 var READ_PAGE = 2e3;
@@ -40607,13 +40744,13 @@ async function ensureLog2() {
 async function presentRefs() {
   const c = getClient();
   const out = [];
-  const cache2 = /* @__PURE__ */ new Map();
+  const cache3 = /* @__PURE__ */ new Map();
   for (const r of REFS) {
-    let cols = cache2.get(r.table);
+    let cols = cache3.get(r.table);
     if (!cols) {
       const res = await c.execute(`PRAGMA table_info("${r.table}")`).catch(() => null);
       cols = new Set((res?.rows || []).map((x) => String(x.name)));
-      cache2.set(r.table, cols);
+      cache3.set(r.table, cols);
     }
     if (cols.has(r.col)) out.push(r);
   }
@@ -42481,8 +42618,8 @@ async function recordAudit(channel, args, result) {
   );
 }
 function registerIpc() {
-  const READONLY = /:list$|:get$|:items$|:issuances$|:sheet$|:outstanding$|:all$|:summary$|:transfers$|:fyTaxable$|:needs$|:breakdown$|:nextNo$|:liveUsers$|:ips$|:logs$|:dispatchableSales$|:mine$|:pendingCount$|:pending$|:lots$|:unmapped$|:unmappedCount$|:bargainLines$|:bargainNotes$|:bargainInterest$|:consignmentDraws$|^access:heartbeat$|^db:ping$|^db:snapshot$|^app:revision$|^auth:login$|^journal:booksFrom$|^tally:map$|^journal:openings$|^journal:opening$|^journal:accounts$|^journal:statement$|^journal:splitNames$|^journal:mergePreview$|^journal:releasePreview$|^journal:provisional$|^journal:trialBalance$|^journal:groups$|^journal:groupNames$|^journal:groupTree$|^journal:ledgerMap$|^journal:pendingRefs$|^journal:billsOutstanding$|^journal:tradingAccount$|^dashboard:stats$|^vouchers:nextCode$|^vouchers:forDocument$|^vouchers:subtypes$|^vouchers:alterInfo$|^tfreight:kpis$|^dashboard:position$|^dashboard:layout$|^dashboard:saveLayout$|^productMerge:preview$|^skuRates:parties$|^skuRates:partyCounts$|^consignment:openingLog$|^tags:list$|^tags:for$|^tags:contents$|^consignment:openingLots$|^consignment:invoices$|^tankers:quality$|^tankers:qualityMany$|^tankers:ffaHistory$|^orders:quality$|^gate:partyCategories$|^gate:waivedOuts$|^gate:forRecord$|^notify:rules$|^notify:list$|^notify:run$|^notify:preview$|^notify:people$|^notify:mutes$|^treasury:alerts$|^treasury:paymentTracker$|^facility:exposures$|^facility:headroom$|^company:setActive$|^company:getActive$|^factory:active$|^factory:companies$|^session:setUser$|^lc:repayments$|^lc:parts$|^lc:parts$|^lc:allRepayments$|^lc:getLimit$|^lc:bankLimits$|^lc:commission$|^lc:commissionCandidates$|^lc:refund$|^lc:refundCandidates$|^journal:accountNames$|^lc:paymentIns$|^lc:openTradingInvoices$|^files:pickDocument$|^files:openDocument$|^bankRecon:imports$|^bankRecon:list$|^bankRecon:suggest$|^bd:kpis$|^bd:limits$|^skuStock:adjustments$|^skuOpening:list$|^skuOpening:date$|^stockCount:previous$|^orders:intercompanySource$|^stockOpening:list$|^stockOpening:date$|^stockOpening:sets$|^stockOpening:setLines$|^stockOpening:ppStages$|^stockOpening:ppFreeTotals$|^production:ppDraws$|^bargains:linkedInvoices$|^bargains:linkedVouchers$|^bargains:voucherChoices$|^salesBargains:linkedVouchers$|^salesBargains:voucherChoices$|^bargains:adjustments$|^history:list$|^stockOpening:ppVessels$|^stockOpening:ppReceivers$|^stockOpening:ppWriteoffs$|^work:board$|^work:cutoff$|^work:processes$|^formulationSubcategory:list$|^formulations:versions$|^facility:limitHistory$|^bd:limitReductions$|^bd:allRepayments$|^bd:interestSchedule$|^bd:interestWindow$|^bd:interestPayments$|^bd:linkedOrders$|^bd:salesInvoices$|^bd:parties$|^bd:allParties$|^bd:openTradingInvoices$|^bd:paymentIns$|^bd:partyPayments$|^bd:receiptParts$|^access:entryWindows$|^access:entityHistory$|^trading:list$|^sales:series$|^sales:invoiceGaps$|^salesBargains:returns$|^salesBargains:linkedInvoices$|^salesBargains:unattributedReturns$|^tbill:orphans$|^tbill:rcmRegister$|^production:report$|^production:mix$|^repairs:splitTanker:list$|^vouchers:cashflow$|^repairs:paisa:list$|^tallyNotes:(preview|salesCheck|salesPreview|registerCheck|registerPreview|health|batches|companyBanks|bankSuggest|bankCheck|bankPreview|drafts|bankBooks|bankBook|lineNotes)$|^sales:(tdsPreview|tdsMap|cancelledNos|shortageNotes|shortageNoteMap)$|^suppliers:tdsRecalc$/;
-  const AUDIT_SKIP = /* @__PURE__ */ new Set(["config:get", "config:save", "session:setUser"]);
+  const READONLY = /:list$|:get$|:items$|:issuances$|:sheet$|:outstanding$|:all$|:summary$|:transfers$|:fyTaxable$|:needs$|:breakdown$|:nextNo$|:liveUsers$|:ips$|:logs$|:dispatchableSales$|:mine$|:pendingCount$|:pending$|:lots$|:unmapped$|:unmappedCount$|:bargainLines$|:bargainNotes$|:bargainInterest$|:consignmentDraws$|^access:heartbeat$|^db:ping$|^db:snapshot$|^app:revision$|^auth:login$|^journal:booksFrom$|^tally:map$|^journal:openings$|^journal:opening$|^journal:accounts$|^journal:statement$|^journal:splitNames$|^journal:mergePreview$|^hostinger:status$|^hostinger:plans$|^hostinger:alert$|^journal:releasePreview$|^journal:provisional$|^journal:trialBalance$|^journal:groups$|^journal:groupNames$|^journal:groupTree$|^journal:ledgerMap$|^journal:pendingRefs$|^journal:billsOutstanding$|^journal:tradingAccount$|^dashboard:stats$|^vouchers:nextCode$|^vouchers:forDocument$|^vouchers:subtypes$|^vouchers:alterInfo$|^tfreight:kpis$|^dashboard:position$|^dashboard:layout$|^dashboard:saveLayout$|^productMerge:preview$|^skuRates:parties$|^skuRates:partyCounts$|^consignment:openingLog$|^tags:list$|^tags:for$|^tags:contents$|^consignment:openingLots$|^consignment:invoices$|^tankers:quality$|^tankers:qualityMany$|^tankers:ffaHistory$|^orders:quality$|^gate:partyCategories$|^gate:waivedOuts$|^gate:forRecord$|^notify:rules$|^notify:list$|^notify:run$|^notify:preview$|^notify:people$|^notify:mutes$|^treasury:alerts$|^treasury:paymentTracker$|^facility:exposures$|^facility:headroom$|^company:setActive$|^company:getActive$|^factory:active$|^factory:companies$|^session:setUser$|^lc:repayments$|^lc:parts$|^lc:parts$|^lc:allRepayments$|^lc:getLimit$|^lc:bankLimits$|^lc:commission$|^lc:commissionCandidates$|^lc:refund$|^lc:refundCandidates$|^journal:accountNames$|^lc:paymentIns$|^lc:openTradingInvoices$|^files:pickDocument$|^files:openDocument$|^bankRecon:imports$|^bankRecon:list$|^bankRecon:suggest$|^bd:kpis$|^bd:limits$|^skuStock:adjustments$|^skuOpening:list$|^skuOpening:date$|^stockCount:previous$|^orders:intercompanySource$|^stockOpening:list$|^stockOpening:date$|^stockOpening:sets$|^stockOpening:setLines$|^stockOpening:ppStages$|^stockOpening:ppFreeTotals$|^production:ppDraws$|^bargains:linkedInvoices$|^bargains:linkedVouchers$|^bargains:voucherChoices$|^salesBargains:linkedVouchers$|^salesBargains:voucherChoices$|^bargains:adjustments$|^history:list$|^stockOpening:ppVessels$|^stockOpening:ppReceivers$|^stockOpening:ppWriteoffs$|^work:board$|^work:cutoff$|^work:processes$|^formulationSubcategory:list$|^formulations:versions$|^facility:limitHistory$|^bd:limitReductions$|^bd:allRepayments$|^bd:interestSchedule$|^bd:interestWindow$|^bd:interestPayments$|^bd:linkedOrders$|^bd:salesInvoices$|^bd:parties$|^bd:allParties$|^bd:openTradingInvoices$|^bd:paymentIns$|^bd:partyPayments$|^bd:receiptParts$|^access:entryWindows$|^access:entityHistory$|^trading:list$|^sales:series$|^sales:invoiceGaps$|^salesBargains:returns$|^salesBargains:linkedInvoices$|^salesBargains:unattributedReturns$|^tbill:orphans$|^tbill:rcmRegister$|^production:report$|^production:mix$|^repairs:splitTanker:list$|^vouchers:cashflow$|^repairs:paisa:list$|^tallyNotes:(preview|salesCheck|salesPreview|registerCheck|registerPreview|health|batches|companyBanks|bankSuggest|bankCheck|bankPreview|drafts|bankBooks|bankBook|lineNotes)$|^sales:(tdsPreview|tdsMap|cancelledNos|shortageNotes|shortageNoteMap)$|^suppliers:tdsRecalc$/;
+  const AUDIT_SKIP = /* @__PURE__ */ new Set(["config:get", "config:save", "session:setUser", "hostinger:setToken"]);
   const handle = (channel, fn) => {
     ipcMain.handle(channel, async (e, args) => {
       if (!READONLY.test(channel)) await assertAllowed(channel, args);
@@ -42504,6 +42641,10 @@ function registerIpc() {
     });
   };
   handle("app:revision", () => getRevision());
+  handle("hostinger:status", async () => (await Promise.resolve().then(() => (init_hostinger(), hostinger_exports))).hostingerStatus());
+  handle("hostinger:plans", async (_e, a) => (await Promise.resolve().then(() => (init_hostinger(), hostinger_exports))).hostingerPlans(!!a?.refresh));
+  handle("hostinger:alert", async () => (await Promise.resolve().then(() => (init_hostinger(), hostinger_exports))).hostingerAlert());
+  handle("hostinger:setToken", async (_e, { token }) => (await Promise.resolve().then(() => (init_hostinger(), hostinger_exports))).setHostingerToken(token));
   handle("db:ping", () => ping());
   handle("db:snapshot", async () => {
     const user = getCurrentUser();
@@ -43332,7 +43473,15 @@ function registerIpc() {
     "sales:setInvoiceStage",
     (_e, { group, stage, force, date, received }) => setInvoiceStage(group, stage, force, date, received)
   );
-  handle("sales:deleteInvoice", (_e, { group }) => deleteSaleInvoice(group));
+  handle("sales:deleteInvoice", async (_e, { group, saleId }) => {
+    if (group) return deleteSaleInvoice(group);
+    const r = await getClient().execute({ sql: "SELECT id, invoice_group FROM sales WHERE id = ?", args: [Number(saleId) || 0] });
+    if (!r.rows.length) throw new Error("That sale no longer exists");
+    const g = String(r.rows[0].invoice_group || "");
+    if (g) return deleteSaleInvoice(g);
+    await withDbTransaction(() => deleteSale(Number(saleId)));
+    return { group: "" };
+  });
   handle("sales:rejectInvoice", (_e, { group, reason }) => rejectSaleInvoice(group, reason));
   handle(
     "sales:cancelDelivery",
@@ -43984,6 +44133,13 @@ async function liveDbFile() {
   try {
     (0, import_node_fs3.rmSync)(out, { force: true });
     await getClient().execute(`VACUUM INTO '${out.replace(/'/g, "''")}'`);
+    const copy = (0, import_client.createClient)({ url: `file:${out}` });
+    try {
+      await copy.execute("DROP TABLE IF EXISTS app_secrets");
+      await copy.execute("VACUUM");
+    } finally {
+      copy.close();
+    }
     const bytes = (0, import_node_fs3.readFileSync)(out);
     return { bytes, fileName: `rishabh-${stampName()}.db` };
   } finally {
@@ -44155,6 +44311,8 @@ async function restoreFromDump(buf) {
   const existing = await c.execute(
     `SELECT type, name FROM sqlite_master
       WHERE name NOT LIKE 'sqlite_%' AND name NOT LIKE 'libsql_%'
+        -- The server's own API keys stay: a snapshot never carries them (dbsnapshot.ts).
+        AND name <> 'app_secrets'
       ORDER BY CASE type WHEN 'trigger' THEN 0 WHEN 'view' THEN 1 WHEN 'index' THEN 2 ELSE 3 END`
   );
   const drops = existing.rows.map((r) => {
