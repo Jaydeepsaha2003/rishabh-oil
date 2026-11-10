@@ -1701,6 +1701,18 @@ function AccountPicker({
             type="button"
             // eslint-disable-next-line jsx-a11y/no-autofocus
             autoFocus={autoFocus}
+            onKeyDown={(e) => {
+              // Alt+↓ opens it, as a dropdown does; a letter opens it already searching.
+              if (e.key === 'ArrowDown' && e.altKey) {
+                e.preventDefault()
+                e.stopPropagation()
+                setOpen(true)
+              } else if (e.key.length === 1 && /\S/.test(e.key) && !e.ctrlKey && !e.metaKey && !e.altKey) {
+                e.preventDefault()
+                setQuery(e.key)
+                setOpen(true)
+              }
+            }}
             className="flex h-9 w-full min-w-0 cursor-pointer items-center gap-[9px] rounded-[6px] border border-[#C3D2C6] bg-white px-[11px] text-left shadow-[inset_0_1px_2px_rgba(10,31,23,.04)] transition-colors hover:border-[#8FA79A] focus:border-[#0B3D2E] focus:outline-none focus:ring-2 focus:ring-[#0B3D2E]/15"
           >
             <span className="flex flex-none text-[#5A6B62]">{icon}</span>
@@ -1738,7 +1750,8 @@ function AccountPicker({
           group and the closing balance share the one under it, and nothing
           has to truncate to make room for anything else. */}
       <PopoverContent align="start" className="w-[460px] p-0">
-        <Command>
+        {/* loop: ↓ on the last ledger comes back to the first, ↑ on the first goes to the last. */}
+        <Command loop>
           <CommandInput placeholder="Type a ledger name…" value={query} onValueChange={setQuery} />
           <CommandList className="max-h-[320px]">
             <CommandEmpty>
@@ -1811,6 +1824,47 @@ function AccountPicker({
  * that yanks the caret out of the field somebody chose is worse than one that
  * never fires.
  */
+// ARROWS ROUND THE VOUCHER GRID, Tally's way. ↑ ↓ go to the same field on the
+// line above / below, and wrap from the last line to the first; ← → go to the
+// field before / after on the line (from a box only when the caret is at its
+// edge), wrapping too. Inside an open ledger list the list has the arrows.
+function gridArrows(e: React.KeyboardEvent<HTMLElement>): void {
+  if (!['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(e.key) || e.altKey || e.ctrlKey || e.metaKey || e.shiftKey) return
+  const t = e.target as HTMLElement
+  if (t.closest('[cmdk-root],[role="listbox"],[role="menu"],[data-radix-popper-content-wrapper]')) return
+  const row = t.closest('[data-vrow]')
+  if (!row) return
+  const fields = (r: Element): HTMLElement[] =>
+    Array.from(r.querySelectorAll<HTMLElement>('button,input,select,textarea')).filter(
+      (x) => !x.hasAttribute('disabled') && x.tabIndex >= 0 && x.offsetParent !== null
+    )
+  const mine = fields(row)
+  const at = mine.indexOf(t)
+  if (at < 0) return
+  const isBox = t instanceof HTMLInputElement || t instanceof HTMLTextAreaElement
+  if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
+    if (isBox) {
+      const box = t as HTMLInputElement
+      const len = String(box.value || '').length
+      // Let the caret move inside the text; only leave the box from its edge.
+      if (e.key === 'ArrowLeft' && (box.selectionStart ?? 0) > 0) return
+      if (e.key === 'ArrowRight' && (box.selectionEnd ?? len) < len) return
+    }
+    e.preventDefault()
+    const n = mine.length
+    mine[(at + (e.key === 'ArrowRight' ? 1 : -1) + n) % n]?.focus()
+    return
+  }
+  if (t instanceof HTMLTextAreaElement) return
+  const rows = Array.from((e.currentTarget as HTMLElement).querySelectorAll('[data-vrow]')).filter((r) => fields(r).length)
+  const ri = rows.indexOf(row)
+  if (ri < 0 || rows.length < 2) return
+  e.preventDefault()
+  const next = rows[(ri + (e.key === 'ArrowDown' ? 1 : -1) + rows.length) % rows.length]
+  const there = fields(next)
+  there[Math.min(at, there.length - 1)]?.focus()
+}
+
 function focusWhenReady(ref: React.RefObject<HTMLInputElement | null>): () => void {
   let stopped = false
   let tries = 0
@@ -14752,7 +14806,7 @@ Delete ${doc}?`)) return
               </div>
 
               <div className="sc-x" style={{ ...card, overflowX: 'auto', overflowY: 'hidden' }}>
-                <div style={{ minWidth: 780 }}>
+                <div style={{ minWidth: 780 }} onKeyDown={gridArrows}>
                   <div
                     className="grid items-center"
                     style={{
@@ -14796,7 +14850,7 @@ Delete ${doc}?`)) return
                     const splitIsOpen = splitOpen === r.splitIndex
                     return (
                       <div key={r.key}>
-                        <div className="grid items-stretch" style={{ gridTemplateColumns: V_GRID, background: t.rowBg, borderBottom: '1px solid #EAF0E9' }}>
+                        <div data-vrow className="grid items-stretch" style={{ gridTemplateColumns: V_GRID, background: t.rowBg, borderBottom: '1px solid #EAF0E9' }}>
                           <div className="flex flex-col items-center justify-start gap-1.5" style={{ paddingTop: 12, borderLeft: `3px solid ${t.mark}` }}>
                             <button
                               type="button"
