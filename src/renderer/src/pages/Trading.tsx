@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react'
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { toast } from 'sonner'
 import { AlertTriangle, ArrowLeft, BookOpen, CalendarClock, Check, CheckCircle2, ChevronDown, Clock, Lock, Zap, ChevronRight, FileSpreadsheet, Inbox, Info, Loader2, Pencil, Plus, Receipt, Repeat, Search, TrendingDown, TrendingUp, Trash2, Users, Wallet } from 'lucide-react'
 import { Button } from '@/components/ui/button'
@@ -8,6 +8,7 @@ import { Label } from '@/components/ui/label'
 import { DatePicker } from '@/components/ui/date-picker'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
+import { escMayDiscard, escToClose, hasOpenOverlay } from '@/lib/escape'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { RowActions } from '@/components/ui/row-actions'
@@ -1251,6 +1252,26 @@ export function Trading({
   const [form, setForm] = useState<Row>(emptyForm())
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  // ESC LEAVES THE DEAL FORM, like its Back button — on one press when nothing
+  // was typed, on a second when something was (escMayDiscard). A window open
+  // over it (TDS, a picker) takes the key first.
+  const formAtOpen = useRef('')
+  useEffect(() => {
+    if (formPage) formAtOpen.current = JSON.stringify(form)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [formPage])
+  useEffect(() => {
+    if (!formPage) return
+    const onKey = (e: KeyboardEvent): void => {
+      if (e.key !== 'Escape' || e.defaultPrevented || saving || hasOpenOverlay()) return
+      if (!escMayDiscard(JSON.stringify(form) !== formAtOpen.current)) return
+      e.preventDefault()
+      setFormPage(false)
+      setEditingDeal(null)
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [formPage, form, saving])
   const [search, setSearch] = useState('')
   // Deal rows whose invoice breakdown is open. The list stays one row per
   // deal; clicking a row unfolds what it is made of.
@@ -3608,7 +3629,7 @@ export function Trading({
           desktop register keeps the in-place unfold its users know. */}
       {__WEB__ && (
         <Dialog open={!!detailDeal} onOpenChange={(o) => !o && setDetailDeal(null)}>
-          <DialogContent className="!bottom-0 !left-auto !right-0 !top-0 !grid-rows-[auto_minmax(0,1fr)_auto] !h-screen !max-h-screen !w-[1160px] !max-w-[96vw] !min-w-0 !translate-x-0 !translate-y-0 !gap-0 !overflow-hidden !rounded-none !border-0 !bg-[#F1F5EF] !p-0 sm:!rounded-none [&>button]:!right-5 [&>button]:!top-[18px] [&>button]:!text-white [&>button]:!opacity-70 [&>button]:hover:!opacity-100">
+          <DialogContent onEscapeKeyDown={escToClose()} className="!bottom-0 !left-auto !right-0 !top-0 !grid-rows-[auto_minmax(0,1fr)_auto] !h-screen !max-h-screen !w-[1160px] !max-w-[96vw] !min-w-0 !translate-x-0 !translate-y-0 !gap-0 !overflow-hidden !rounded-none !border-0 !bg-[#F1F5EF] !p-0 sm:!rounded-none [&>button]:!right-5 [&>button]:!top-[18px] [&>button]:!text-white [&>button]:!opacity-70 [&>button]:hover:!opacity-100">
             {detailDeal && (() => {
               const d = detailDeal
               const uom = String(d.purchase_uom || 'MT')

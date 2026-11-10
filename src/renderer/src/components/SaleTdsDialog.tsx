@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { escToClose } from '@/lib/escape'
 import { toast } from 'sonner'
 import { Percent } from 'lucide-react'
 import { Button } from '@/components/ui/button'
@@ -108,7 +109,8 @@ export function SaleTdsDialog({
   return (
     <Dialog open={!!saleId} onOpenChange={(o) => !o && !busy && onClose()}>
       {/* Above the window it is opened from (the trading deal is a dialog too). */}
-      <DialogContent className="z-[60] max-w-lg" overlayClassName="z-[60]">
+      {/* Esc closes it like its ×, except while saving. */}
+      <DialogContent className="z-[60] max-w-lg" overlayClassName="z-[60]" onEscapeKeyDown={busy ? (e) => e.preventDefault() : escToClose()}>
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
             <Percent className="h-4 w-4 text-[#C2700A]" />
