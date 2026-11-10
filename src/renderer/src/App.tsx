@@ -172,12 +172,25 @@ function App(): React.JSX.Element {
     // first, or the target page opens empty and looks like the click did
     // nothing.
     const want = from?.companyId
-    if (want && Number(want) !== Number(companyId)) void switchCompany(String(want))
-    setFocus({ page: target, id })
-    // Neither a letter of credit nor a discounted bill is a page of its own —
-    // both are registers inside Treasury, which opens the one it is handed on
-    // the right tab. Everything else is named the same as the page it lives on.
-    setPage(target === 'lc' || target === 'bd' ? 'treasury' : target)
+    // A login without the page cannot be sent there — say so rather than land
+    // on the Dashboard and look as if the button did nothing.
+    const dest = target === 'lc' || target === 'bd' ? 'treasury' : target
+    if (!canAccess(user, dest)) {
+      toast.error(`This login has no access to ${dest === 'orders' ? 'Purchases' : dest === 'sales' ? 'Sales' : dest === 'trading' ? 'Trading' : 'Treasury'} — ask an admin in User Access`)
+      return
+    }
+    const go = (): void => {
+      setFocus({ page: target, id })
+      // Neither a letter of credit nor a discounted bill is a page of its own —
+      // both are registers inside Treasury, which opens the one it is handed on
+      // the right tab. Everything else is named the same as the page it lives on.
+      setPage(dest)
+    }
+    // Switch FIRST and then open: opened at once, the page loaded the old
+    // company's list, did not find the record, and sat there — the "Open Sale
+    // does nothing" complaint.
+    if (want && Number(want) !== Number(companyId)) void switchCompany(String(want)).then(go)
+    else go()
   }
 
   // A VOUCHER FROM ANOTHER PAGE (Trading payments): Accounting opens it in

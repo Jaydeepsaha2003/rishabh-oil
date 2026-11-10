@@ -1148,12 +1148,17 @@ function SalesTab({
 
   // Deep-link from Ledgers: open the invoice containing the given sale line.
   useEffect(() => {
-    if (!focusId) return
+    if (!focusId || loading) return
     const inv = invoices.find((v) => v.lines.some((r) => Number(r.id) === Number(focusId)))
-    if (!inv) return
+    if (!inv) {
+      // Loaded and still not here: say why instead of sitting silent.
+      toast.error('That sale is not in your Sales list — it may be older than your working window (User Access) or on another desk')
+      onFocusHandled?.()
+      return
+    }
     openEditInvoice(inv)
     onFocusHandled?.()
-  }, [focusId, invoices]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [focusId, invoices, loading]) // eslint-disable-line react-hooks/exhaustive-deps
 
   function setHeaderField(key: string, value: unknown): void {
     setDirty(true)
