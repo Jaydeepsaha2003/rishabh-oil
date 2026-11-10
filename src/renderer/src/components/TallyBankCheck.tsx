@@ -50,6 +50,20 @@ const kept: { filter: string; q: string; dir: string; focus: string; cols: Recor
   bank: {}
 }
 
+
+// ↑ ↓ (and Home / End) walk a list of buttons — the bank cards, the Manage
+// list — and wrap round at the ends; Enter / Space press the one in focus.
+function arrowsThroughButtons(e: React.KeyboardEvent<HTMLElement>): void {
+  if (!['ArrowUp', 'ArrowDown', 'Home', 'End'].includes(e.key) || e.altKey || e.ctrlKey || e.metaKey) return
+  const all = Array.from(e.currentTarget.querySelectorAll<HTMLButtonElement>(':scope > button:not([disabled])'))
+  if (!all.length) return
+  e.preventDefault()
+  const at = all.indexOf(document.activeElement as HTMLButtonElement)
+  const n = all.length
+  const to = e.key === 'Home' ? 0 : e.key === 'End' ? n - 1 : at < 0 ? 0 : (at + (e.key === 'ArrowDown' ? 1 : -1) + n) % n
+  all[to].focus()
+}
+
 export function TallyBankCheck({
   focusBank,
   companyName,
@@ -735,7 +749,7 @@ ${pairs.map((x) => String(x.own?.code || '')).join(', ')} stay, and match Tally'
                   </button>
                 </div>
                 {managing ? (
-                  <div className="max-h-[260px] divide-y divide-[#EEF3ED] overflow-y-auto rounded-[5px] border border-[#D6E2D6]">
+                  <div className="max-h-[260px] divide-y divide-[#EEF3ED] overflow-y-auto rounded-[5px] border border-[#D6E2D6]" onKeyDown={arrowsThroughButtons}>
                     {own.banks
                       .filter((b) => !b.generic)
                       .map((b) => (
@@ -748,7 +762,7 @@ ${pairs.map((x) => String(x.own?.code || '')).join(', ')} stay, and match Tally'
                               .then(loadOwn)
                               .catch((e) => toast.error((e as Error).message))
                           }
-                          className="flex w-full items-center gap-2.5 px-3 py-2 text-left hover:bg-[#F7FAF6]"
+                          className="flex w-full items-center gap-2.5 px-3 py-2 text-left hover:bg-[#F7FAF6] focus-visible:bg-[#EEF6EA] focus-visible:outline-none"
                         >
                           <span
                             className="flex h-[18px] w-[18px] shrink-0 items-center justify-center rounded-[3px] border"
@@ -766,7 +780,7 @@ ${pairs.map((x) => String(x.own?.code || '')).join(', ')} stay, and match Tally'
                       ))}
                   </div>
                 ) : (
-                  <div className="grid gap-1.5">
+                  <div className="grid gap-1.5" onKeyDown={arrowsThroughButtons}>
                     {[
                       // Banks with a Tally book uploaded come first, and always
                       // show — even one not ticked as a business account here.
@@ -777,7 +791,7 @@ ${pairs.map((x) => String(x.own?.code || '')).join(', ')} stay, and match Tally'
                         key={b.id}
                         type="button"
                         onClick={() => pickBank(Number(b.id))}
-                        className="flex items-center gap-2.5 rounded-[5px] border px-3 py-2 text-left transition-colors hover:border-[#8FBFA8] hover:bg-[#F4FBF6]"
+                        className="flex items-center gap-2.5 rounded-[5px] border px-3 py-2 text-left transition-colors hover:border-[#8FBFA8] hover:bg-[#F4FBF6] focus-visible:bg-[#F4FBF6] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#0B6B45]/40"
                         style={{ borderColor: Number(b.id) === bankId ? '#0B6B45' : '#D6E2D6' }}
                       >
                         <Landmark className="h-4 w-4 shrink-0 text-[#0B6B45]" />
