@@ -469,6 +469,8 @@ export interface Api {
     create: (values: Row) => Promise<{ id: number; note_no: string }>
     update: (id: number, values: Row) => Promise<{ id: number; note_no: string }>
     remove: (id: number, companyId?: number) => Promise<{ id: number }>
+    relinkCandidates: (id: number) => Promise<Row[]>
+    relink: (id: number, entryId: number) => Promise<{ id: number; entry_id: number }>
   }
   production: {
     list: (forModule?: string) => Promise<Row[]>

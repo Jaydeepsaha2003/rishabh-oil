@@ -2163,6 +2163,9 @@ export function Accounts({
   // Debit/Credit note register — the notes raised through Alt-F5/Alt-F6, which
   // previously had nowhere to be seen or corrected once accepted.
   const [noteRows, setNoteRows] = useState<Row[]>([])
+  // A note whose voucher is gone (CN/3): the window that ties it to the voucher
+  // booking it now, or deletes it.
+  const [orphan, setOrphan] = useState<{ note: Row; cands: Row[] | null } | null>(null)
   // Debit and credit notes entered straight on the voucher screen (Alt F5 /
   // Alt F6). They post a DEBIT NOTE / CREDIT NOTE voucher but leave no record
   // in the notes table, so the register used to miss them while the gateway —
@@ -11562,6 +11565,14 @@ Delete ${doc}?`)) return
                   const openable = isNotes ? !!Number(r.journal_entry_id) : !!Number(r.id)
                   const onRow = (): void => {
                     if (!openable) return
+                    if (isNotes && !r.from_voucher && !Number(r.has_voucher)) {
+                      setOrphan({ note: r, cands: null })
+                      void window.api.notes
+                        .relinkCandidates(Number(r.id))
+                        .then((cands) => setOrphan((o) => (o && o.note.id === r.id ? { ...o, cands } : o)))
+                        .catch((e) => toast.error((e as Error).message))
+                      return
+                    }
                     if (isNotes) return void openForAlter({ id: Number(r.journal_entry_id) })
                     toggleEntries(r, rk)
                   }
@@ -20356,6 +20367,90 @@ Delete ${doc}?`)) return
         void loadGroups()
       }}
     />
+
+    {/* A NOTE WITHOUT ITS VOUCHER: tie it to the voucher booking it now, or delete it. */}
+    <Dialog open={!!orphan} onOpenChange={(o) => !o && setOrphan(null)}>
+      <DialogContent className="gap-0 overflow-hidden p-0 sm:max-w-[560px]">
+        <div className="bg-[#8C2F26] px-5 py-3.5 pr-12 text-white">
+          <div className="text-[10px] font-extrabold uppercase tracking-[.14em] text-[#FFD9D5]">Voucher missing</div>
+          <DialogTitle className="text-[16px] font-extrabold text-white">
+            {String(orphan?.note.note_no || 'This note')} has lost its voucher
+          </DialogTitle>
+        </div>
+        {orphan && (
+          <div className="space-y-3 px-5 py-4 text-[12.5px] leading-[1.6] text-[#33473E]">
+            <p>
+              The note is still here, with its items and its party-ledger entry, but the accounting voucher it posted was removed. That usually
+              happens when a Tally copy of the same note is kept instead. Tie the note to the voucher that books it now, and opening that voucher
+              opens this note again, with its quantities and rates.
+            </p>
+            <div className="text-[10.5px] font-extrabold uppercase tracking-[.1em] text-[#5A6B62]">
+              Vouchers of the same amount ({formatINR(Number(orphan.note.total_amount) || 0)}) near {formatDate(String(orphan.note.note_date || ''))}
+            </div>
+            <div className="overflow-hidden rounded-[6px] border border-[#E4ECE3]">
+              {orphan.cands == null ? (
+                <div className="px-3 py-3 text-[#5A6B62]">Looking…</div>
+              ) : orphan.cands.length === 0 ? (
+                <div className="px-3 py-3 text-[#5A6B62]">No voucher of that amount — delete the note if it is not wanted.</div>
+              ) : (
+                orphan.cands.map((v) => (
+                  <div key={String(v.id)} className="flex items-center gap-3 border-b border-[#EFF3EE] px-3 py-2.5 last:border-b-0">
+                    <div className="min-w-0 flex-1">
+                      <div className="font-extrabold text-[#0A1F17]">
+                        {String(v.code || v.vch_no || `#${v.id}`)}
+                        {v.vch_no && v.code && v.vch_no !== v.code ? <span className="font-semibold text-[#5A6B62]"> · ref {String(v.vch_no)}</span> : null}
+                      </div>
+                      <div className="truncate text-[11.5px] text-[#5A6B62]">
+                        {formatDate(String(v.entry_date))} · {formatINR(Number(v.amount) || 0)} · {String(v.narration || '')}
+                      </div>
+                    </div>
+                    <Button
+                      size="sm"
+                      onClick={() =>
+                        void window.api.notes
+                          .relink(Number(orphan.note.id), Number(v.id))
+                          .then(() => {
+                            toast.success(`${String(orphan.note.note_no)} is tied to ${String(v.code || v.vch_no)} — opening it opens the note`)
+                            setOrphan(null)
+                            void loadNoteRegister()
+                          })
+                          .catch((e) => toast.error((e as Error).message))
+                      }
+                    >
+                      Tie to this
+                    </Button>
+                  </div>
+                ))
+              )}
+            </div>
+          </div>
+        )}
+        <div className="flex items-center justify-between gap-2 border-t border-[#E4ECE3] px-5 py-3">
+          <Button
+            variant="outline"
+            className="text-[#B3261E]"
+            onClick={() => {
+              const nt = orphan?.note
+              if (!nt) return
+              if (!confirm(`Delete ${String(nt.note_no)}? Its items (and the stock they moved) and its party-ledger entry go too. This cannot be undone.`)) return
+              void window.api.notes
+                .remove(Number(nt.id), cid || undefined)
+                .then(() => {
+                  toast.success(`${String(nt.note_no)} deleted`)
+                  setOrphan(null)
+                  void loadNoteRegister()
+                })
+                .catch((e) => toast.error((e as Error).message))
+            }}
+          >
+            Delete the note
+          </Button>
+          <Button variant="outline" onClick={() => setOrphan(null)}>
+            Close
+          </Button>
+        </div>
+      </DialogContent>
+    </Dialog>
 
     <LedgerReleaseDialog
       mapId={releaseMapId}

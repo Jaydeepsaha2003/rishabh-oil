@@ -46,6 +46,17 @@ import { previewLcCharges, fixLcCharges, autoFixDuplicateSales } from './account
 // on first boot and an existing one "migrate" forward on every boot after,
 // with no separate code path for either case.
 export async function runStartupTasks(): Promise<void> {
+  // A NOTE'S VOUCHER GOES ONLY WITH THE NOTE. Several clean-ups delete vouchers
+  // directly; one took CN/3's (#8070) and left the note behind with its stock
+  // and ledger row. The note's own delete/re-post unlink first (notes.ts).
+  // Adds a rule, changes no row.
+  await getClient()
+    .execute(
+      `CREATE TRIGGER IF NOT EXISTS journal_entry_note_guard BEFORE DELETE ON journal_entries
+       WHEN EXISTS (SELECT 1 FROM notes WHERE journal_entry_id = OLD.id)
+       BEGIN SELECT RAISE(ABORT, 'This voucher belongs to a debit/credit note — delete or alter the note itself'); END`
+    )
+    .catch((e) => console.error('[notes] guard trigger failed:', e))
   await initDb()
   // One tanker billed on several invoices (tankerAlloc.ts). Idempotent, and on
   // every start so a database restored from an older snapshot has it too.

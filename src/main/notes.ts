@@ -52,6 +52,7 @@ export async function listNotes(companyId?: number): Promise<Row[]> {
     sql: `SELECT nt.*,
             CASE nt.party_type WHEN 'supplier' THEN s.name WHEN 'customer' THEN c.name WHEN 'transporter' THEN tr.name END AS party_name,
             (SELECT COUNT(*) FROM note_items ni WHERE ni.note_id = nt.id) AS item_count,
+            (SELECT COUNT(*) FROM journal_entries je WHERE je.id = nt.journal_entry_id) AS has_voucher,
             sb.bargain_no AS bargain_no
           FROM notes nt
           LEFT JOIN sales_bargains sb ON sb.id = nt.bargain_id
@@ -263,6 +264,7 @@ export async function createNote(v: Row, existingId?: number): Promise<{ id: num
   // reverse-then-repost shape the LC and purchase edits use.
   if (prior) {
     if (prior.journal_entry_id != null) {
+      await c.execute({ sql: 'UPDATE notes SET journal_entry_id = NULL WHERE id = ?', args: [n(existingId)] })
       await c.execute({
         sql: 'DELETE FROM journal_bill_allocs WHERE line_id IN (SELECT id FROM journal_lines WHERE entry_id = ?)',
         args: [n(prior.journal_entry_id)]
@@ -458,6 +460,7 @@ export async function deleteNote(id: number, companyId?: number): Promise<{ id: 
   const note = res.rows[0]
   // Reverse the journal voucher (both legs) and the party-ledger row.
   if (note.journal_entry_id != null) {
+    await c.execute({ sql: 'UPDATE notes SET journal_entry_id = NULL WHERE id = ?', args: [id] })
     await c.execute({
       sql: 'DELETE FROM journal_bill_allocs WHERE line_id IN (SELECT id FROM journal_lines WHERE entry_id = ?)',
       args: [Number(note.journal_entry_id)]
@@ -475,4 +478,40 @@ export async function deleteNote(id: number, companyId?: number): Promise<{ id: 
   await c.execute({ sql: 'DELETE FROM note_items WHERE note_id = ?', args: [id] })
   await c.execute({ sql: 'DELETE FROM notes WHERE id = ?', args: [id] })
   return { id }
+}
+
+// A NOTE WHOSE VOUCHER IS GONE (CN/3: its voucher #8070 was removed by a Tally
+// clean-up, which left the note — its stock return and ledger row — behind).
+// It can be tied to the voucher that books the same thing now (Tally's copy of
+// the same return), after which opening that voucher opens the note.
+export async function noteRelinkCandidates(noteId: number): Promise<Row[]> {
+  const c = getClient()
+  const note = (await c.execute({ sql: 'SELECT * FROM notes WHERE id = ?', args: [n(noteId)] })).rows[0] as Row | undefined
+  if (!note) throw new Error('That note no longer exists')
+  const vt = String(note.note_type) === 'credit' ? 'CREDIT NOTE' : 'DEBIT NOTE'
+  const res = await c.execute({
+    sql: `SELECT je.id, je.entry_date, je.vch_no, je.narration,
+                 (SELECT vn.prefix || '/' || vn.serial FROM voucher_numbers vn WHERE vn.entry_id = je.id) AS code,
+                 (SELECT SUM(jl.dr) FROM journal_lines jl WHERE jl.entry_id = je.id) AS amount
+            FROM journal_entries je
+           WHERE je.company_id = ? AND je.vch_type = ?
+             AND NOT EXISTS (SELECT 1 FROM notes o WHERE o.journal_entry_id = je.id)
+             AND ABS(julianday(je.entry_date) - julianday(?)) <= 60`,
+    args: [n(note.company_id), vt, String(note.note_date)]
+  })
+  return toPlain(res)
+    .filter((r) => Math.abs(n(r.amount) - n(note.total_amount)) <= 1)
+    .sort((a, b) => Math.abs(Date.parse(String(a.entry_date)) - Date.parse(String(note.note_date))) - Math.abs(Date.parse(String(b.entry_date)) - Date.parse(String(note.note_date))))
+}
+
+export async function relinkNote(noteId: number, entryId: number): Promise<{ id: number; entry_id: number }> {
+  const c = getClient()
+  const note = (await c.execute({ sql: 'SELECT * FROM notes WHERE id = ?', args: [n(noteId)] })).rows[0] as Row | undefined
+  if (!note) throw new Error('That note no longer exists')
+  const has = (await c.execute({ sql: 'SELECT id FROM journal_entries WHERE id = ?', args: [n(note.journal_entry_id)] })).rows.length
+  if (has) throw new Error(`${String(note.note_no)} still has its voucher — nothing to tie`)
+  const ok = (await noteRelinkCandidates(noteId)).some((r) => n(r.id) === n(entryId))
+  if (!ok) throw new Error('That voucher is not one this note can be tied to (same company, type and amount, not another note\'s)')
+  await c.execute({ sql: 'UPDATE notes SET journal_entry_id = ? WHERE id = ?', args: [n(entryId), n(noteId)] })
+  return { id: n(noteId), entry_id: n(entryId) }
 }

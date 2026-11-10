@@ -692,7 +692,9 @@ const api = {
     update: (id: number, values: Row): Promise<{ id: number; note_no: string }> =>
       ipcRenderer.invoke('notes:update', { id, values }),
     remove: (id: number, companyId?: number): Promise<{ id: number }> =>
-      ipcRenderer.invoke('notes:delete', { id, companyId })
+      ipcRenderer.invoke('notes:delete', { id, companyId }),
+    relinkCandidates: (id: number): Promise<Row[]> => ipcRenderer.invoke('notes:relinkCandidates', { id }),
+    relink: (id: number, entryId: number): Promise<{ id: number; entry_id: number }> => ipcRenderer.invoke('notes:relink', { id, entryId })
   },
   production: {
     list: (forModule?: string): Promise<Row[]> => ipcRenderer.invoke('production:list', { forModule }),
