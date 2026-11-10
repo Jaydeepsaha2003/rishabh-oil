@@ -8,7 +8,7 @@ import { Label } from '@/components/ui/label'
 import { DatePicker } from '@/components/ui/date-picker'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
-import { escMayDiscard, escToClose, hasOpenOverlay } from '@/lib/escape'
+import { escToClose, useFormPageEscape } from '@/lib/escape'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { RowActions } from '@/components/ui/row-actions'
@@ -1260,18 +1260,10 @@ export function Trading({
     if (formPage) formAtOpen.current = JSON.stringify(form)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [formPage])
-  useEffect(() => {
-    if (!formPage) return
-    const onKey = (e: KeyboardEvent): void => {
-      if (e.key !== 'Escape' || e.defaultPrevented || saving || hasOpenOverlay()) return
-      if (!escMayDiscard(JSON.stringify(form) !== formAtOpen.current)) return
-      e.preventDefault()
-      setFormPage(false)
-      setEditingDeal(null)
-    }
-    window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
-  }, [formPage, form, saving])
+  useFormPageEscape(formPage, JSON.stringify(form) !== formAtOpen.current, () => {
+    setFormPage(false)
+    setEditingDeal(null)
+  }, saving)
   const [search, setSearch] = useState('')
   // Deal rows whose invoice breakdown is open. The list stays one row per
   // deal; clicking a row unfolds what it is made of.

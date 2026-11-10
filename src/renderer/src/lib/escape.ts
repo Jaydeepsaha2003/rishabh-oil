@@ -80,3 +80,20 @@ export function useDrawerEscape(open: boolean, ref: RefObject<HTMLElement>, clos
     return () => window.removeEventListener('keydown', onKey)
   }, [open, ref, close])
 }
+
+/** ESC LEAVES A FULL-PAGE FORM (new sale, deal, note), like its Back button:
+ *  at once when nothing was typed, on a second Esc when something was. A
+ *  window open over the form takes the key first; nothing happens while saving. */
+export function useFormPageEscape(open: boolean, dirty: boolean, close: () => void, busy = false): void {
+  useEffect(() => {
+    if (!open) return
+    const onKey = (e: KeyboardEvent): void => {
+      if (e.key !== 'Escape' || e.defaultPrevented || busy || hasOpenOverlay()) return
+      // Spent either way, so the page's own "Esc goes back" does not also fire.
+      e.preventDefault()
+      if (escMayDiscard(dirty)) close()
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [open, dirty, close, busy])
+}

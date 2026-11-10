@@ -1,6 +1,7 @@
 import * as React from 'react'
 import * as DialogPrimitive from '@radix-ui/react-dialog'
 import { X } from 'lucide-react'
+import { escToClose } from '@/lib/escape'
 import { cn } from '@/lib/utils'
 
 const Dialog = DialogPrimitive.Root
@@ -35,16 +36,26 @@ const DialogContent = React.forwardRef<
     /** For a dialog opened over something already layered high (a drawer). */
     overlayClassName?: string
   }
->(({ className, children, readOnly, overlayClassName, ...props }, ref) => (
+>(({ className, children, readOnly, overlayClassName, onInput, ...props }, ref) => {
+  // Typed into since it opened? Then Esc asks twice (escToClose) before it
+  // discards; untouched, one Esc closes it like its ✕. The content mounts
+  // afresh on every open, so this starts clean each time.
+  const typed = React.useRef(false)
+  return (
   <DialogPortal>
     <DialogOverlay className={overlayClassName} />
     <DialogPrimitive.Content
       ref={ref}
-      // Don't close on click-outside or Escape — those can silently discard a
-      // half-filled form. The user closes via Cancel/Save (or the ✕). A
-      // read-only dialog has nothing to discard, so it closes on either.
+      // Click-outside never closes a form (a stray click must not discard it);
+      // a read-only dialog closes on either.
       onInteractOutside={readOnly ? undefined : (e) => e.preventDefault()}
-      onEscapeKeyDown={readOnly ? undefined : (e) => e.preventDefault()}
+      // ESC EVERYWHERE: every dialog closes on Esc like its ✕. A dialog that
+      // must stay (saving, a must-read notice) passes its own onEscapeKeyDown.
+      onEscapeKeyDown={readOnly ? undefined : (e) => escToClose(typed.current)(e)}
+      onInput={(e) => {
+        typed.current = true
+        onInput?.(e)
+      }}
       className={cn(
         'fixed left-[50%] top-[50%] z-50 grid w-full max-w-lg translate-x-[-50%] translate-y-[-50%] gap-4 border bg-background p-6 shadow-lg duration-200 data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95 sm:rounded-lg',
         className
@@ -58,7 +69,8 @@ const DialogContent = React.forwardRef<
       </DialogPrimitive.Close>
     </DialogPrimitive.Content>
   </DialogPortal>
-))
+  )
+})
 DialogContent.displayName = DialogPrimitive.Content.displayName
 
 function DialogHeader({ className, ...props }: React.HTMLAttributes<HTMLDivElement>): React.JSX.Element {

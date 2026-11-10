@@ -1,4 +1,5 @@
 import { Fragment, useCallback, useEffect, useMemo, useState, useRef } from 'react'
+import { useFormPageEscape } from '@/lib/escape'
 import { partyGstOptions } from '@/components/GstRegsPanel'
 import { GstRateChips } from '@/components/GstRateChips'
 import { takePageIntent } from '@/lib/pageIntent'
@@ -401,6 +402,8 @@ function SalesTab({
   // changes" chip in the form's own header — set by the field setters, and
   // cleared whenever a form is opened or a save lands.
   const [dirty, setDirty] = useState(false)
+  // Esc leaves the invoice form like its Back button (twice when something was typed).
+  useFormPageEscape(formPage, dirty, () => (onBack ? onBack() : setFormPage(false)), saving)
   const [search, setSearch] = useState('')
   // The desk opens with no lower bound: a load that went out last month and is
   // still not unloaded has to be on the list, not behind a date change.

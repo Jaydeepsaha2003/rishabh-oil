@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { toast } from 'sonner'
+import { useDrawerEscape } from '@/lib/escape'
 import { AlertTriangle, CalendarDays, Check, CheckCircle2, FileSpreadsheet, FolderTree, Plus, Search, Trash2, Upload, X } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
@@ -43,6 +44,9 @@ export function TallyLedgers({
   onClose: () => void
   onChanged?: () => void
 }): React.JSX.Element {
+  // Esc closes it like its ✕.
+  const shellRef = useRef<HTMLDivElement>(null)
+  useDrawerEscape(true, shellRef, onClose)
   const [data, setData] = useState<Row | null>(null)
   const [busy, setBusy] = useState(false)
   const [tab, setTab] = useState<Tab>('matched')
@@ -257,7 +261,7 @@ export function TallyLedgers({
   ]
 
   return (
-    <div className="fixed inset-0 z-[95] flex items-center justify-center p-4" role="dialog" aria-modal="true">
+    <div ref={shellRef} className="fixed inset-0 z-[95] flex items-center justify-center p-4" role="dialog" aria-modal="true">
       <button type="button" aria-label="Close" className="absolute inset-0 bg-black/45" onClick={onClose} />
       <div className="relative flex h-full max-h-[92vh] w-full max-w-[1100px] flex-col overflow-hidden rounded-[6px] bg-white shadow-2xl">
         <div className="flex flex-none items-start gap-3 bg-[#0B3D2E] px-6 py-4 text-white">

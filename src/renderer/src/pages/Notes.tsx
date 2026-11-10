@@ -1,4 +1,5 @@
-import { Fragment, useCallback, useEffect, useMemo, useState } from 'react'
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useFormPageEscape } from '@/lib/escape'
 import { toast } from 'sonner'
 import { ArrowLeft, ChevronDown, ChevronRight, Plus, Trash2 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
@@ -48,6 +49,13 @@ export function Notes({ kind }: { kind: NoteType }): React.JSX.Element {
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [form, setForm] = useState<Row>({})
+  // Esc leaves the note form like Cancel — twice when something was typed.
+  const formAtOpen = useRef('')
+  useEffect(() => {
+    if (formPage) formAtOpen.current = JSON.stringify(form)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [formPage])
+  useFormPageEscape(formPage, JSON.stringify(form) !== formAtOpen.current, () => setFormPage(false), saving)
 
   const load = useCallback(async (background = false) => {
     // Skipped on a live refresh: raising the spinner here is what made the

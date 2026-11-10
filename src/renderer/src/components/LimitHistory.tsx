@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
+import { useDrawerEscape } from '@/lib/escape'
 import { toast } from 'sonner'
 import { ArrowDownRight, ArrowLeft, ArrowUpRight, Landmark, Plus, Trash2, X } from 'lucide-react'
 import { Button } from '@/components/ui/button'
@@ -65,6 +66,9 @@ export function LimitHistory({
   onChanged?: () => void
   inline?: boolean
 }): React.JSX.Element {
+  // Esc closes the drawer like its ✕ (not when it sits inline on a page).
+  const drawerRef = useRef<HTMLDivElement>(null)
+  useDrawerEscape(!inline, drawerRef, onClose)
   const [rows, setRows] = useState<Row[]>([])
   // The sanctioned figure this drawer is changing, kept here rather than read
   // from the prop: after recording a move, the screen behind has not reloaded
@@ -434,7 +438,7 @@ export function LimitHistory({
   )
   if (inline) return body
   return (
-    <div className="fixed inset-0 z-[90] flex justify-end" role="dialog" aria-modal="true">
+    <div ref={drawerRef} className="fixed inset-0 z-[90] flex justify-end" role="dialog" aria-modal="true">
       <button type="button" aria-label="Close" className="absolute inset-0 bg-black/40" onClick={onClose} />
       {body}
     </div>
