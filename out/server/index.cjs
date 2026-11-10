@@ -29133,6 +29133,411 @@ var init_trading = __esm({
   }
 });
 
+// src/main/notes.ts
+var notes_exports = {};
+__export(notes_exports, {
+  createNote: () => createNote,
+  deleteNote: () => deleteNote,
+  listNoteItems: () => listNoteItems,
+  listNotes: () => listNotes,
+  noteRelinkCandidates: () => noteRelinkCandidates,
+  relinkNote: () => relinkNote,
+  updateNote: () => updateNote
+});
+function toPlain30(res) {
+  return res.rows.map((r) => {
+    const o = {};
+    for (const col of res.columns) o[col] = r[col];
+    return o;
+  });
+}
+function n43(v) {
+  const x = Number(v);
+  return Number.isFinite(x) ? x : 0;
+}
+function round221(x) {
+  return Math.round((x + Number.EPSILON) * 100) / 100;
+}
+async function nextNoteNo(type, companyId) {
+  const prefix2 = type === "debit" ? "DN" : "CN";
+  const res = await getClient().execute({
+    sql: "SELECT note_no FROM notes WHERE note_type = ? AND company_id = ?",
+    args: [type, companyId || getActiveCompanyId()]
+  });
+  let max = 0;
+  for (const r of res.rows) {
+    const m = /(\d+)\s*$/.exec(String(r.note_no || ""));
+    const v = m ? Number(m[1]) : 0;
+    if (v > max) max = v;
+  }
+  return `${prefix2}/${max + 1}`;
+}
+async function listNotes(companyId) {
+  const res = await getClient().execute({
+    args: [companyId ? n43(companyId) : getActiveCompanyId()],
+    sql: `SELECT nt.*,
+            CASE nt.party_type WHEN 'supplier' THEN s.name WHEN 'customer' THEN c.name WHEN 'transporter' THEN tr.name END AS party_name,
+            (SELECT COUNT(*) FROM note_items ni WHERE ni.note_id = nt.id) AS item_count,
+            (SELECT COUNT(*) FROM journal_entries je WHERE je.id = nt.journal_entry_id) AS has_voucher,
+            sb.bargain_no AS bargain_no
+          FROM notes nt
+          LEFT JOIN sales_bargains sb ON sb.id = nt.bargain_id
+          LEFT JOIN suppliers s ON nt.party_type = 'supplier' AND s.id = nt.party_id
+          LEFT JOIN customers c ON nt.party_type = 'customer' AND c.id = nt.party_id
+          LEFT JOIN transporters tr ON nt.party_type = 'transporter' AND tr.id = nt.party_id
+          WHERE nt.company_id = ?
+          ORDER BY nt.id DESC`
+  });
+  return toPlain30(res);
+}
+async function listNoteItems(noteId) {
+  const res = await getClient().execute({
+    sql: `SELECT ni.*, p.code AS product_code, p.name AS product_name
+          FROM note_items ni LEFT JOIN products p ON p.id = ni.product_id
+          WHERE ni.note_id = ? ORDER BY ni.id`,
+    args: [noteId]
+  });
+  return toPlain30(res);
+}
+async function partyByLedgerName(name, cid, preferred, group) {
+  const c = getClient();
+  const want = String(name || "").trim().toUpperCase();
+  if (!want) return null;
+  const aliases = [want];
+  const map = await c.execute({
+    sql: `SELECT posts_as FROM ledger_map
+             WHERE UPPER(TRIM(use_name)) = ? AND (company_id = ? OR company_id IS NULL)
+             ORDER BY company_id IS NULL, id`,
+    args: [want, cid]
+  }).catch(() => null);
+  for (const r of map?.rows || []) {
+    const a = String(r.posts_as || "").trim().toUpperCase();
+    if (a && !aliases.includes(a)) aliases.push(a);
+  }
+  const g = await baseGroupOf(group);
+  const kinds = g === "Sundry Debtors" ? ["customer"] : g === "Sundry Creditors" ? preferred === "transporter" ? ["transporter", "supplier"] : ["supplier", "transporter"] : [preferred, ...["supplier", "customer", "transporter"].filter((k) => k !== preferred)];
+  for (const k of kinds) {
+    for (const a of aliases) {
+      const hit = await c.execute({
+        sql: `SELECT id FROM ${PARTY_KINDS[k].master} WHERE UPPER(TRIM(name)) = ? LIMIT 1`,
+        args: [a]
+      });
+      if (hit.rows.length) return { id: n43(hit.rows[0].id), kind: k };
+    }
+  }
+  return null;
+}
+async function createNote(v, existingId) {
+  const c = getClient();
+  const cid = v.company_id ? n43(v.company_id) : getActiveCompanyId();
+  const type = v.note_type === "credit" ? "credit" : "debit";
+  const requested = String(v.party_type || "").trim().toLowerCase();
+  let partyType = requested in PARTY_KINDS ? requested : type === "debit" ? "supplier" : "customer";
+  let kind = PARTY_KINDS[partyType];
+  let partyId = n43(v.party_id);
+  if (!partyId && v.party_name) {
+    const hit = await partyByLedgerName(String(v.party_name), cid, partyType, v.party_group ? String(v.party_group) : void 0);
+    if (hit) {
+      partyId = hit.id;
+      partyType = hit.kind;
+      kind = PARTY_KINDS[partyType];
+    }
+  }
+  if (!partyId) {
+    throw new Error(
+      v.party_name ? `${String(v.party_name).trim()} is not linked to any ${partyType === "customer" ? "customer" : "supplier or transporter"} in the masters. Add it there (or rename that party's ledger from Masters so the two are linked), then save again.` : `Select the ${partyType}`
+    );
+  }
+  const rawItems = Array.isArray(v.items) ? v.items : [];
+  const items = rawItems.map((it) => {
+    const qty = n43(it.qty);
+    const rate = n43(it.rate);
+    const amount2 = qty > 0 ? round221(qty * rate) : round221(n43(it.amount));
+    return {
+      product_id: it.product_id ? n43(it.product_id) : null,
+      description: it.description ? String(it.description).trim() : null,
+      qty,
+      rate,
+      amount: amount2
+    };
+  }).filter((it) => it.amount > 0 || it.qty > 0);
+  const base = items.length ? round221(items.reduce((s5, it) => s5 + it.amount, 0)) : round221(n43(v.base_amount));
+  const gstPct = n43(v.gst_pct);
+  if (base <= 0) throw new Error("Enter a base amount (or item lines) greater than zero");
+  const gst = round221(base * (gstPct / 100));
+  const rawTotal = round221(base + gst);
+  const total = Math.round(rawTotal);
+  const roundOff = round221(total - rawTotal);
+  const METHODS = ["agst_ref", "advance", "on_account", "new_ref"];
+  const splitIn = (Array.isArray(v.allocs) ? v.allocs : []).filter((a) => Number(a?.amount) > 0);
+  for (const a of splitIn) {
+    if (!METHODS.includes(String(a.method))) throw new Error(`Unknown bill-wise method "${String(a.method)}"`);
+    if (String(a.method) !== "on_account" && !String(a.ref_name || "").trim()) {
+      throw new Error("Every bill-wise line except On Account needs a reference");
+    }
+  }
+  const againstRef = v.against_invoice ? String(v.against_invoice).trim() : String(splitIn.find((a) => String(a.method) === "agst_ref")?.ref_name || "").trim() || null;
+  const wantsBargain = type === "credit" && partyType === "customer";
+  const bargainId = wantsBargain && v.bargain_id ? n43(v.bargain_id) : 0;
+  const partyRes = await c.execute({
+    sql: `SELECT name FROM ${kind.master} WHERE id = ?`,
+    args: [partyId]
+  });
+  if (!partyRes.rows.length) throw new Error("Party not found");
+  const partyName2 = String(partyRes.rows[0].name || "").trim();
+  const purchaseSide = partyType !== "customer";
+  const defaultAgainst = purchaseSide ? "PURCHASE RETURN A/C" : "SALES RETURN A/C";
+  const againstGroup = purchaseSide ? "Purchase Accounts" : "Sales Accounts";
+  const against = (String(v.against_account || "").trim() || defaultAgainst).toUpperCase();
+  const prior = existingId ? (await c.execute({ sql: "SELECT * FROM notes WHERE id = ? AND company_id = ?", args: [existingId, cid] })).rows[0] : void 0;
+  if (existingId && !prior) throw new Error("That note no longer exists");
+  const noteNo = prior ? String(prior.note_no) : await nextNoteNo(type, cid);
+  if (prior) {
+    if (prior.journal_entry_id != null) {
+      await c.execute({ sql: "UPDATE notes SET journal_entry_id = NULL WHERE id = ?", args: [n43(existingId)] });
+      await c.execute({
+        sql: "DELETE FROM journal_bill_allocs WHERE line_id IN (SELECT id FROM journal_lines WHERE entry_id = ?)",
+        args: [n43(prior.journal_entry_id)]
+      });
+      await c.execute({ sql: "DELETE FROM journal_lines WHERE entry_id = ?", args: [n43(prior.journal_entry_id)] });
+      await c.execute({ sql: "DELETE FROM journal_entries WHERE id = ?", args: [n43(prior.journal_entry_id)] });
+    }
+    const priorLedger = String(prior.ledger_table || "");
+    if (["customer_ledger", "transporter_ledger", "supplier_ledger"].includes(priorLedger) && prior.ledger_id != null) {
+      await c.execute({ sql: `DELETE FROM ${priorLedger} WHERE id = ?`, args: [n43(prior.ledger_id)] });
+    }
+    await c.execute({ sql: "DELETE FROM note_items WHERE note_id = ?", args: [n43(existingId)] });
+  }
+  const date = String(v.note_date || todayISO()).slice(0, 10);
+  const narration = v.narration ? String(v.narration).trim() : null;
+  const noteGstType = await (async () => {
+    if (v.gst_type === "IGST" || v.gst_type === "CGST_SGST") return v.gst_type;
+    const ref = String(againstRef || "").trim();
+    if (!ref) return DEFAULT_GST_TYPE;
+    const table2 = partyType === "customer" ? "sales" : "orders";
+    const r = await c.execute({
+      sql: `SELECT gst_type FROM ${table2} WHERE TRIM(UPPER(invoice_no)) = ? LIMIT 1`,
+      args: [ref.toUpperCase()]
+    }).catch(() => null);
+    const row = r ? r.rows[0] : void 0;
+    return row ? asGstType(row.gst_type) : DEFAULT_GST_TYPE;
+  })();
+  const je = await postJournal({
+    date,
+    vchType: type === "debit" ? "DEBIT NOTE" : "CREDIT NOTE",
+    vchNo: noteNo,
+    narration: narration || `${type === "debit" ? "Debit" : "Credit"} note ${noteNo}`,
+    companyId: cid,
+    lines: type === "debit" ? [
+      { account: partyName2, group: kind.group, dr: total },
+      { account: against, group: againstGroup, cr: base },
+      ...gstLines({ side: kind.gst, pct: gstPct, type: noteGstType, cr: gst }),
+      { account: "ROUND OFF A/C", group: "Indirect Expenses", cr: roundOff > 0 ? roundOff : 0, dr: roundOff < 0 ? -roundOff : 0 }
+    ] : [
+      { account: against, group: againstGroup, dr: base },
+      ...gstLines({ side: kind.gst, pct: gstPct, type: noteGstType, dr: gst }),
+      { account: "ROUND OFF A/C", group: "Indirect Expenses", dr: roundOff > 0 ? roundOff : 0, cr: roundOff < 0 ? -roundOff : 0 },
+      { account: partyName2 || "CASH CUSTOMER A/C", group: kind.group, cr: total }
+    ]
+  });
+  const partyAccount = (await resolveAccountName(partyName2, cid)).trim().toUpperCase();
+  const partyLine = await c.execute({
+    sql: `SELECT jl.id, jl.account_id FROM journal_lines jl
+          JOIN ledger_accounts a ON a.id = jl.account_id
+          WHERE jl.entry_id = ? AND UPPER(TRIM(a.name)) IN (?, ?) LIMIT 1`,
+    args: [je.id, partyAccount, partyName2.toUpperCase()]
+  });
+  if (partyLine.rows.length && splitIn.length) {
+    const sum = Math.round(splitIn.reduce((s5, a) => s5 + Number(a.amount), 0) * 100) / 100;
+    if (Math.abs(sum - total) > 0.01) {
+      throw new Error(`The bill-wise split (${sum.toFixed(2)}) must add up to the note total (${total.toFixed(2)})`);
+    }
+    for (const a of splitIn) {
+      const method = String(a.method);
+      const ref = method === "on_account" ? null : String(a.ref_name || "").trim();
+      let ids = { order_id: a.order_id ? Number(a.order_id) : null, sale_invoice_group: a.sale_invoice_group ? String(a.sale_invoice_group) : null };
+      if (method === "agst_ref" && ref && !ids.order_id && !ids.sale_invoice_group) {
+        ids = await resolveRefIds(ref, cid, partyType === "customer" ? "customer" : "supplier");
+      }
+      await c.execute({
+        sql: `INSERT INTO journal_bill_allocs (line_id, account_id, method, ref_name, amount, order_id, sale_invoice_group)
+              VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        args: [
+          Number(partyLine.rows[0].id),
+          Number(partyLine.rows[0].account_id),
+          method,
+          ref,
+          Math.round(Number(a.amount) * 100) / 100,
+          ids.order_id,
+          ids.sale_invoice_group
+        ]
+      });
+    }
+  } else if (partyLine.rows.length) {
+    const ids = againstRef ? await resolveRefIds(againstRef, cid, partyType === "customer" ? "customer" : "supplier") : { order_id: null, sale_invoice_group: null };
+    await c.execute({
+      sql: `INSERT INTO journal_bill_allocs (line_id, account_id, method, ref_name, amount, order_id, sale_invoice_group)
+            VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      args: [
+        Number(partyLine.rows[0].id),
+        Number(partyLine.rows[0].account_id),
+        againstRef ? "agst_ref" : "on_account",
+        againstRef,
+        total,
+        ids.order_id,
+        ids.sale_invoice_group
+      ]
+    });
+  }
+  const table = kind.ledger;
+  const partyCol = kind.idCol;
+  const refCol = kind.refCol;
+  const signedAmount = type === "debit" ? -total : total;
+  const led = await c.execute({
+    sql: `INSERT INTO ${table} (${partyCol}, ${refCol}, entry_date, entry_type, amount, note, company_id)
+          VALUES (?, NULL, ?, ?, ?, ?, ?)`,
+    args: [partyId, date, type === "debit" ? "dr_note" : "cr_note", signedAmount, `${noteNo} \u2014 ${against}`, cid]
+  });
+  let noteId;
+  if (prior) {
+    await c.execute({
+      sql: `UPDATE notes SET
+        note_type = ?, note_date = ?, party_type = ?, party_id = ?, against_account = ?,
+        base_amount = ?, gst_pct = ?, gst_amount = ?, total_amount = ?, narration = ?,
+        journal_entry_id = ?, ledger_table = ?, ledger_id = ?, against_ref = ?, bargain_id = ?
+        WHERE id = ? AND company_id = ?`,
+      args: [
+        type,
+        date,
+        partyType,
+        partyId,
+        against,
+        base,
+        gstPct,
+        gst,
+        total,
+        narration,
+        je.id,
+        table,
+        Number(led.lastInsertRowid),
+        againstRef,
+        bargainId || null,
+        existingId,
+        cid
+      ]
+    });
+    noteId = existingId;
+  } else {
+    const ins = await c.execute({
+      sql: `INSERT INTO notes
+        (company_id, note_type, note_no, note_date, party_type, party_id, against_account,
+         base_amount, gst_pct, gst_amount, total_amount, narration, journal_entry_id, ledger_table, ledger_id, against_ref, bargain_id)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      args: [
+        cid,
+        type,
+        noteNo,
+        date,
+        partyType,
+        partyId,
+        against,
+        base,
+        gstPct,
+        gst,
+        total,
+        narration,
+        je.id,
+        table,
+        Number(led.lastInsertRowid),
+        againstRef,
+        bargainId || null
+      ]
+    });
+    noteId = Number(ins.lastInsertRowid);
+  }
+  for (const it of items) {
+    await c.execute({
+      sql: "INSERT INTO note_items (note_id, product_id, description, qty, rate, amount) VALUES (?, ?, ?, ?, ?, ?)",
+      args: [noteId, it.product_id, it.description, it.qty, it.rate, it.amount]
+    });
+  }
+  return { id: noteId, note_no: noteNo };
+}
+async function updateNote(id, v) {
+  return createNote(v, n43(id));
+}
+async function deleteNote(id, companyId) {
+  const c = getClient();
+  const res = await c.execute({
+    sql: "SELECT * FROM notes WHERE id = ? AND company_id = ?",
+    args: [id, companyId ? n43(companyId) : getActiveCompanyId()]
+  });
+  if (!res.rows.length) return { id };
+  const note = res.rows[0];
+  if (note.journal_entry_id != null) {
+    await c.execute({ sql: "UPDATE notes SET journal_entry_id = NULL WHERE id = ?", args: [id] });
+    await c.execute({
+      sql: "DELETE FROM journal_bill_allocs WHERE line_id IN (SELECT id FROM journal_lines WHERE entry_id = ?)",
+      args: [Number(note.journal_entry_id)]
+    });
+    await c.execute({ sql: "DELETE FROM journal_lines WHERE entry_id = ?", args: [Number(note.journal_entry_id)] });
+    await c.execute({ sql: "DELETE FROM journal_entries WHERE id = ?", args: [Number(note.journal_entry_id)] });
+  }
+  if (note.ledger_table && note.ledger_id != null) {
+    const stored = String(note.ledger_table);
+    const table = ["customer_ledger", "transporter_ledger", "supplier_ledger"].includes(stored) ? stored : "supplier_ledger";
+    await c.execute({ sql: `DELETE FROM ${table} WHERE id = ?`, args: [Number(note.ledger_id)] });
+  }
+  await c.execute({ sql: "DELETE FROM note_items WHERE note_id = ?", args: [id] });
+  await c.execute({ sql: "DELETE FROM notes WHERE id = ?", args: [id] });
+  return { id };
+}
+async function noteRelinkCandidates(noteId) {
+  const c = getClient();
+  const note = (await c.execute({ sql: "SELECT * FROM notes WHERE id = ?", args: [n43(noteId)] })).rows[0];
+  if (!note) throw new Error("That note no longer exists");
+  const vt = String(note.note_type) === "credit" ? "CREDIT NOTE" : "DEBIT NOTE";
+  const res = await c.execute({
+    sql: `SELECT je.id, je.entry_date, je.vch_no, je.narration,
+                 (SELECT vn.prefix || '/' || vn.serial FROM voucher_numbers vn WHERE vn.entry_id = je.id) AS code,
+                 (SELECT SUM(jl.dr) FROM journal_lines jl WHERE jl.entry_id = je.id) AS amount
+            FROM journal_entries je
+           WHERE je.company_id = ? AND je.vch_type = ?
+             AND NOT EXISTS (SELECT 1 FROM notes o WHERE o.journal_entry_id = je.id)
+             AND ABS(julianday(je.entry_date) - julianday(?)) <= 60`,
+    args: [n43(note.company_id), vt, String(note.note_date)]
+  });
+  return toPlain30(res).filter((r) => Math.abs(n43(r.amount) - n43(note.total_amount)) <= 1).sort((a, b) => Math.abs(Date.parse(String(a.entry_date)) - Date.parse(String(note.note_date))) - Math.abs(Date.parse(String(b.entry_date)) - Date.parse(String(note.note_date))));
+}
+async function relinkNote(noteId, entryId) {
+  const c = getClient();
+  const note = (await c.execute({ sql: "SELECT * FROM notes WHERE id = ?", args: [n43(noteId)] })).rows[0];
+  if (!note) throw new Error("That note no longer exists");
+  const has = (await c.execute({ sql: "SELECT id FROM journal_entries WHERE id = ?", args: [n43(note.journal_entry_id)] })).rows.length;
+  if (has) throw new Error(`${String(note.note_no)} still has its voucher \u2014 nothing to tie`);
+  const ok = (await noteRelinkCandidates(noteId)).some((r) => n43(r.id) === n43(entryId));
+  if (!ok) throw new Error("That voucher is not one this note can be tied to (same company, type and amount, not another note's)");
+  await c.execute({ sql: "UPDATE notes SET journal_entry_id = ? WHERE id = ?", args: [n43(entryId), n43(noteId)] });
+  return { id: n43(noteId), entry_id: n43(entryId) };
+}
+var PARTY_KINDS;
+var init_notes = __esm({
+  "src/main/notes.ts"() {
+    init_db();
+    init_company();
+    init_journal();
+    init_gstLedgers();
+    init_accounting();
+    init_ledgerMap();
+    init_ledgerGroups();
+    PARTY_KINDS = {
+      supplier: { master: "suppliers", ledger: "supplier_ledger", idCol: "supplier_id", refCol: "order_id", group: "Sundry Creditors", gst: "INPUT" },
+      customer: { master: "customers", ledger: "customer_ledger", idCol: "customer_id", refCol: "sale_id", group: "Sundry Debtors", gst: "OUTPUT" },
+      transporter: { master: "transporters", ledger: "transporter_ledger", idCol: "transporter_id", refCol: "order_id", group: "Sundry Creditors", gst: "INPUT" }
+    };
+  }
+});
+
 // src/main/facilities.ts
 function toPlain33(res) {
   return res.rows.map((r) => {
@@ -34431,6 +34836,11 @@ function startPushWatcher(intervalMs = 6e4) {
 // src/main/bootstrap.ts
 init_accountingRepairs();
 async function runStartupTasks() {
+  await getClient().execute(
+    `CREATE TRIGGER IF NOT EXISTS journal_entry_note_guard BEFORE DELETE ON journal_entries
+       WHEN EXISTS (SELECT 1 FROM notes WHERE journal_entry_id = OLD.id)
+       BEGIN SELECT RAISE(ABORT, 'This voucher belongs to a debit/credit note \u2014 delete or alter the note itself'); END`
+  ).catch((e) => console.error("[notes] guard trigger failed:", e));
   await initDb();
   await ensureTankerInvoices().catch((e) => console.error("[tankers] tanker_invoices table failed:", e));
   await ensureBdPostingFields();
@@ -39528,364 +39938,8 @@ async function adjustSkuStock(packagingId, delta, note, date, kind) {
   return { id: pid, on_hand: cur ? Number(cur.on_hand) : 0 };
 }
 
-// src/main/notes.ts
-init_db();
-init_company();
-init_journal();
-init_gstLedgers();
-init_accounting();
-init_ledgerMap();
-init_ledgerGroups();
-function toPlain30(res) {
-  return res.rows.map((r) => {
-    const o = {};
-    for (const col of res.columns) o[col] = r[col];
-    return o;
-  });
-}
-function n43(v) {
-  const x = Number(v);
-  return Number.isFinite(x) ? x : 0;
-}
-function round221(x) {
-  return Math.round((x + Number.EPSILON) * 100) / 100;
-}
-async function nextNoteNo(type, companyId) {
-  const prefix2 = type === "debit" ? "DN" : "CN";
-  const res = await getClient().execute({
-    sql: "SELECT note_no FROM notes WHERE note_type = ? AND company_id = ?",
-    args: [type, companyId || getActiveCompanyId()]
-  });
-  let max = 0;
-  for (const r of res.rows) {
-    const m = /(\d+)\s*$/.exec(String(r.note_no || ""));
-    const v = m ? Number(m[1]) : 0;
-    if (v > max) max = v;
-  }
-  return `${prefix2}/${max + 1}`;
-}
-async function listNotes(companyId) {
-  const res = await getClient().execute({
-    args: [companyId ? n43(companyId) : getActiveCompanyId()],
-    sql: `SELECT nt.*,
-            CASE nt.party_type WHEN 'supplier' THEN s.name WHEN 'customer' THEN c.name WHEN 'transporter' THEN tr.name END AS party_name,
-            (SELECT COUNT(*) FROM note_items ni WHERE ni.note_id = nt.id) AS item_count,
-            sb.bargain_no AS bargain_no
-          FROM notes nt
-          LEFT JOIN sales_bargains sb ON sb.id = nt.bargain_id
-          LEFT JOIN suppliers s ON nt.party_type = 'supplier' AND s.id = nt.party_id
-          LEFT JOIN customers c ON nt.party_type = 'customer' AND c.id = nt.party_id
-          LEFT JOIN transporters tr ON nt.party_type = 'transporter' AND tr.id = nt.party_id
-          WHERE nt.company_id = ?
-          ORDER BY nt.id DESC`
-  });
-  return toPlain30(res);
-}
-async function listNoteItems(noteId) {
-  const res = await getClient().execute({
-    sql: `SELECT ni.*, p.code AS product_code, p.name AS product_name
-          FROM note_items ni LEFT JOIN products p ON p.id = ni.product_id
-          WHERE ni.note_id = ? ORDER BY ni.id`,
-    args: [noteId]
-  });
-  return toPlain30(res);
-}
-var PARTY_KINDS = {
-  supplier: { master: "suppliers", ledger: "supplier_ledger", idCol: "supplier_id", refCol: "order_id", group: "Sundry Creditors", gst: "INPUT" },
-  customer: { master: "customers", ledger: "customer_ledger", idCol: "customer_id", refCol: "sale_id", group: "Sundry Debtors", gst: "OUTPUT" },
-  transporter: { master: "transporters", ledger: "transporter_ledger", idCol: "transporter_id", refCol: "order_id", group: "Sundry Creditors", gst: "INPUT" }
-};
-async function partyByLedgerName(name, cid, preferred, group) {
-  const c = getClient();
-  const want = String(name || "").trim().toUpperCase();
-  if (!want) return null;
-  const aliases = [want];
-  const map = await c.execute({
-    sql: `SELECT posts_as FROM ledger_map
-             WHERE UPPER(TRIM(use_name)) = ? AND (company_id = ? OR company_id IS NULL)
-             ORDER BY company_id IS NULL, id`,
-    args: [want, cid]
-  }).catch(() => null);
-  for (const r of map?.rows || []) {
-    const a = String(r.posts_as || "").trim().toUpperCase();
-    if (a && !aliases.includes(a)) aliases.push(a);
-  }
-  const g = await baseGroupOf(group);
-  const kinds = g === "Sundry Debtors" ? ["customer"] : g === "Sundry Creditors" ? preferred === "transporter" ? ["transporter", "supplier"] : ["supplier", "transporter"] : [preferred, ...["supplier", "customer", "transporter"].filter((k) => k !== preferred)];
-  for (const k of kinds) {
-    for (const a of aliases) {
-      const hit = await c.execute({
-        sql: `SELECT id FROM ${PARTY_KINDS[k].master} WHERE UPPER(TRIM(name)) = ? LIMIT 1`,
-        args: [a]
-      });
-      if (hit.rows.length) return { id: n43(hit.rows[0].id), kind: k };
-    }
-  }
-  return null;
-}
-async function createNote(v, existingId) {
-  const c = getClient();
-  const cid = v.company_id ? n43(v.company_id) : getActiveCompanyId();
-  const type = v.note_type === "credit" ? "credit" : "debit";
-  const requested = String(v.party_type || "").trim().toLowerCase();
-  let partyType = requested in PARTY_KINDS ? requested : type === "debit" ? "supplier" : "customer";
-  let kind = PARTY_KINDS[partyType];
-  let partyId = n43(v.party_id);
-  if (!partyId && v.party_name) {
-    const hit = await partyByLedgerName(String(v.party_name), cid, partyType, v.party_group ? String(v.party_group) : void 0);
-    if (hit) {
-      partyId = hit.id;
-      partyType = hit.kind;
-      kind = PARTY_KINDS[partyType];
-    }
-  }
-  if (!partyId) {
-    throw new Error(
-      v.party_name ? `${String(v.party_name).trim()} is not linked to any ${partyType === "customer" ? "customer" : "supplier or transporter"} in the masters. Add it there (or rename that party's ledger from Masters so the two are linked), then save again.` : `Select the ${partyType}`
-    );
-  }
-  const rawItems = Array.isArray(v.items) ? v.items : [];
-  const items = rawItems.map((it) => {
-    const qty = n43(it.qty);
-    const rate = n43(it.rate);
-    const amount2 = qty > 0 ? round221(qty * rate) : round221(n43(it.amount));
-    return {
-      product_id: it.product_id ? n43(it.product_id) : null,
-      description: it.description ? String(it.description).trim() : null,
-      qty,
-      rate,
-      amount: amount2
-    };
-  }).filter((it) => it.amount > 0 || it.qty > 0);
-  const base = items.length ? round221(items.reduce((s5, it) => s5 + it.amount, 0)) : round221(n43(v.base_amount));
-  const gstPct = n43(v.gst_pct);
-  if (base <= 0) throw new Error("Enter a base amount (or item lines) greater than zero");
-  const gst = round221(base * (gstPct / 100));
-  const rawTotal = round221(base + gst);
-  const total = Math.round(rawTotal);
-  const roundOff = round221(total - rawTotal);
-  const METHODS = ["agst_ref", "advance", "on_account", "new_ref"];
-  const splitIn = (Array.isArray(v.allocs) ? v.allocs : []).filter((a) => Number(a?.amount) > 0);
-  for (const a of splitIn) {
-    if (!METHODS.includes(String(a.method))) throw new Error(`Unknown bill-wise method "${String(a.method)}"`);
-    if (String(a.method) !== "on_account" && !String(a.ref_name || "").trim()) {
-      throw new Error("Every bill-wise line except On Account needs a reference");
-    }
-  }
-  const againstRef = v.against_invoice ? String(v.against_invoice).trim() : String(splitIn.find((a) => String(a.method) === "agst_ref")?.ref_name || "").trim() || null;
-  const wantsBargain = type === "credit" && partyType === "customer";
-  const bargainId = wantsBargain && v.bargain_id ? n43(v.bargain_id) : 0;
-  const partyRes = await c.execute({
-    sql: `SELECT name FROM ${kind.master} WHERE id = ?`,
-    args: [partyId]
-  });
-  if (!partyRes.rows.length) throw new Error("Party not found");
-  const partyName2 = String(partyRes.rows[0].name || "").trim();
-  const purchaseSide = partyType !== "customer";
-  const defaultAgainst = purchaseSide ? "PURCHASE RETURN A/C" : "SALES RETURN A/C";
-  const againstGroup = purchaseSide ? "Purchase Accounts" : "Sales Accounts";
-  const against = (String(v.against_account || "").trim() || defaultAgainst).toUpperCase();
-  const prior = existingId ? (await c.execute({ sql: "SELECT * FROM notes WHERE id = ? AND company_id = ?", args: [existingId, cid] })).rows[0] : void 0;
-  if (existingId && !prior) throw new Error("That note no longer exists");
-  const noteNo = prior ? String(prior.note_no) : await nextNoteNo(type, cid);
-  if (prior) {
-    if (prior.journal_entry_id != null) {
-      await c.execute({
-        sql: "DELETE FROM journal_bill_allocs WHERE line_id IN (SELECT id FROM journal_lines WHERE entry_id = ?)",
-        args: [n43(prior.journal_entry_id)]
-      });
-      await c.execute({ sql: "DELETE FROM journal_lines WHERE entry_id = ?", args: [n43(prior.journal_entry_id)] });
-      await c.execute({ sql: "DELETE FROM journal_entries WHERE id = ?", args: [n43(prior.journal_entry_id)] });
-    }
-    const priorLedger = String(prior.ledger_table || "");
-    if (["customer_ledger", "transporter_ledger", "supplier_ledger"].includes(priorLedger) && prior.ledger_id != null) {
-      await c.execute({ sql: `DELETE FROM ${priorLedger} WHERE id = ?`, args: [n43(prior.ledger_id)] });
-    }
-    await c.execute({ sql: "DELETE FROM note_items WHERE note_id = ?", args: [n43(existingId)] });
-  }
-  const date = String(v.note_date || todayISO()).slice(0, 10);
-  const narration = v.narration ? String(v.narration).trim() : null;
-  const noteGstType = await (async () => {
-    if (v.gst_type === "IGST" || v.gst_type === "CGST_SGST") return v.gst_type;
-    const ref = String(againstRef || "").trim();
-    if (!ref) return DEFAULT_GST_TYPE;
-    const table2 = partyType === "customer" ? "sales" : "orders";
-    const r = await c.execute({
-      sql: `SELECT gst_type FROM ${table2} WHERE TRIM(UPPER(invoice_no)) = ? LIMIT 1`,
-      args: [ref.toUpperCase()]
-    }).catch(() => null);
-    const row = r ? r.rows[0] : void 0;
-    return row ? asGstType(row.gst_type) : DEFAULT_GST_TYPE;
-  })();
-  const je = await postJournal({
-    date,
-    vchType: type === "debit" ? "DEBIT NOTE" : "CREDIT NOTE",
-    vchNo: noteNo,
-    narration: narration || `${type === "debit" ? "Debit" : "Credit"} note ${noteNo}`,
-    companyId: cid,
-    lines: type === "debit" ? [
-      { account: partyName2, group: kind.group, dr: total },
-      { account: against, group: againstGroup, cr: base },
-      ...gstLines({ side: kind.gst, pct: gstPct, type: noteGstType, cr: gst }),
-      { account: "ROUND OFF A/C", group: "Indirect Expenses", cr: roundOff > 0 ? roundOff : 0, dr: roundOff < 0 ? -roundOff : 0 }
-    ] : [
-      { account: against, group: againstGroup, dr: base },
-      ...gstLines({ side: kind.gst, pct: gstPct, type: noteGstType, dr: gst }),
-      { account: "ROUND OFF A/C", group: "Indirect Expenses", dr: roundOff > 0 ? roundOff : 0, cr: roundOff < 0 ? -roundOff : 0 },
-      { account: partyName2 || "CASH CUSTOMER A/C", group: kind.group, cr: total }
-    ]
-  });
-  const partyAccount = (await resolveAccountName(partyName2, cid)).trim().toUpperCase();
-  const partyLine = await c.execute({
-    sql: `SELECT jl.id, jl.account_id FROM journal_lines jl
-          JOIN ledger_accounts a ON a.id = jl.account_id
-          WHERE jl.entry_id = ? AND UPPER(TRIM(a.name)) IN (?, ?) LIMIT 1`,
-    args: [je.id, partyAccount, partyName2.toUpperCase()]
-  });
-  if (partyLine.rows.length && splitIn.length) {
-    const sum = Math.round(splitIn.reduce((s5, a) => s5 + Number(a.amount), 0) * 100) / 100;
-    if (Math.abs(sum - total) > 0.01) {
-      throw new Error(`The bill-wise split (${sum.toFixed(2)}) must add up to the note total (${total.toFixed(2)})`);
-    }
-    for (const a of splitIn) {
-      const method = String(a.method);
-      const ref = method === "on_account" ? null : String(a.ref_name || "").trim();
-      let ids = { order_id: a.order_id ? Number(a.order_id) : null, sale_invoice_group: a.sale_invoice_group ? String(a.sale_invoice_group) : null };
-      if (method === "agst_ref" && ref && !ids.order_id && !ids.sale_invoice_group) {
-        ids = await resolveRefIds(ref, cid, partyType === "customer" ? "customer" : "supplier");
-      }
-      await c.execute({
-        sql: `INSERT INTO journal_bill_allocs (line_id, account_id, method, ref_name, amount, order_id, sale_invoice_group)
-              VALUES (?, ?, ?, ?, ?, ?, ?)`,
-        args: [
-          Number(partyLine.rows[0].id),
-          Number(partyLine.rows[0].account_id),
-          method,
-          ref,
-          Math.round(Number(a.amount) * 100) / 100,
-          ids.order_id,
-          ids.sale_invoice_group
-        ]
-      });
-    }
-  } else if (partyLine.rows.length) {
-    const ids = againstRef ? await resolveRefIds(againstRef, cid, partyType === "customer" ? "customer" : "supplier") : { order_id: null, sale_invoice_group: null };
-    await c.execute({
-      sql: `INSERT INTO journal_bill_allocs (line_id, account_id, method, ref_name, amount, order_id, sale_invoice_group)
-            VALUES (?, ?, ?, ?, ?, ?, ?)`,
-      args: [
-        Number(partyLine.rows[0].id),
-        Number(partyLine.rows[0].account_id),
-        againstRef ? "agst_ref" : "on_account",
-        againstRef,
-        total,
-        ids.order_id,
-        ids.sale_invoice_group
-      ]
-    });
-  }
-  const table = kind.ledger;
-  const partyCol = kind.idCol;
-  const refCol = kind.refCol;
-  const signedAmount = type === "debit" ? -total : total;
-  const led = await c.execute({
-    sql: `INSERT INTO ${table} (${partyCol}, ${refCol}, entry_date, entry_type, amount, note, company_id)
-          VALUES (?, NULL, ?, ?, ?, ?, ?)`,
-    args: [partyId, date, type === "debit" ? "dr_note" : "cr_note", signedAmount, `${noteNo} \u2014 ${against}`, cid]
-  });
-  let noteId;
-  if (prior) {
-    await c.execute({
-      sql: `UPDATE notes SET
-        note_type = ?, note_date = ?, party_type = ?, party_id = ?, against_account = ?,
-        base_amount = ?, gst_pct = ?, gst_amount = ?, total_amount = ?, narration = ?,
-        journal_entry_id = ?, ledger_table = ?, ledger_id = ?, against_ref = ?, bargain_id = ?
-        WHERE id = ? AND company_id = ?`,
-      args: [
-        type,
-        date,
-        partyType,
-        partyId,
-        against,
-        base,
-        gstPct,
-        gst,
-        total,
-        narration,
-        je.id,
-        table,
-        Number(led.lastInsertRowid),
-        againstRef,
-        bargainId || null,
-        existingId,
-        cid
-      ]
-    });
-    noteId = existingId;
-  } else {
-    const ins = await c.execute({
-      sql: `INSERT INTO notes
-        (company_id, note_type, note_no, note_date, party_type, party_id, against_account,
-         base_amount, gst_pct, gst_amount, total_amount, narration, journal_entry_id, ledger_table, ledger_id, against_ref, bargain_id)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      args: [
-        cid,
-        type,
-        noteNo,
-        date,
-        partyType,
-        partyId,
-        against,
-        base,
-        gstPct,
-        gst,
-        total,
-        narration,
-        je.id,
-        table,
-        Number(led.lastInsertRowid),
-        againstRef,
-        bargainId || null
-      ]
-    });
-    noteId = Number(ins.lastInsertRowid);
-  }
-  for (const it of items) {
-    await c.execute({
-      sql: "INSERT INTO note_items (note_id, product_id, description, qty, rate, amount) VALUES (?, ?, ?, ?, ?, ?)",
-      args: [noteId, it.product_id, it.description, it.qty, it.rate, it.amount]
-    });
-  }
-  return { id: noteId, note_no: noteNo };
-}
-async function updateNote(id, v) {
-  return createNote(v, n43(id));
-}
-async function deleteNote(id, companyId) {
-  const c = getClient();
-  const res = await c.execute({
-    sql: "SELECT * FROM notes WHERE id = ? AND company_id = ?",
-    args: [id, companyId ? n43(companyId) : getActiveCompanyId()]
-  });
-  if (!res.rows.length) return { id };
-  const note = res.rows[0];
-  if (note.journal_entry_id != null) {
-    await c.execute({
-      sql: "DELETE FROM journal_bill_allocs WHERE line_id IN (SELECT id FROM journal_lines WHERE entry_id = ?)",
-      args: [Number(note.journal_entry_id)]
-    });
-    await c.execute({ sql: "DELETE FROM journal_lines WHERE entry_id = ?", args: [Number(note.journal_entry_id)] });
-    await c.execute({ sql: "DELETE FROM journal_entries WHERE id = ?", args: [Number(note.journal_entry_id)] });
-  }
-  if (note.ledger_table && note.ledger_id != null) {
-    const stored = String(note.ledger_table);
-    const table = ["customer_ledger", "transporter_ledger", "supplier_ledger"].includes(stored) ? stored : "supplier_ledger";
-    await c.execute({ sql: `DELETE FROM ${table} WHERE id = ?`, args: [Number(note.ledger_id)] });
-  }
-  await c.execute({ sql: "DELETE FROM note_items WHERE note_id = ?", args: [id] });
-  await c.execute({ sql: "DELETE FROM notes WHERE id = ?", args: [id] });
-  return { id };
-}
+// src/main/ipc.ts
+init_notes();
 
 // src/main/daybook.ts
 init_db();
@@ -41475,6 +41529,7 @@ init_billDiscounting();
 init_db();
 init_company();
 init_journal();
+init_notes();
 init_gstLedgers();
 init_currentUser();
 function toPlain37(res) {
@@ -42616,7 +42671,7 @@ async function recordAudit(channel, args, result) {
   );
 }
 function registerIpc() {
-  const READONLY = /:list$|:get$|:items$|:issuances$|:sheet$|:outstanding$|:all$|:summary$|:transfers$|:fyTaxable$|:needs$|:breakdown$|:nextNo$|:liveUsers$|:ips$|:logs$|:dispatchableSales$|:mine$|:pendingCount$|:pending$|:lots$|:unmapped$|:unmappedCount$|:bargainLines$|:bargainNotes$|:bargainInterest$|:consignmentDraws$|^access:heartbeat$|^db:ping$|^db:snapshot$|^app:revision$|^auth:login$|^journal:booksFrom$|^tally:map$|^journal:openings$|^journal:opening$|^journal:accounts$|^journal:statement$|^journal:splitNames$|^journal:mergePreview$|^hostinger:status$|^hostinger:plans$|^hostinger:alert$|^journal:releasePreview$|^journal:provisional$|^journal:trialBalance$|^journal:groups$|^journal:groupNames$|^journal:groupTree$|^journal:ledgerMap$|^journal:pendingRefs$|^journal:billsOutstanding$|^journal:tradingAccount$|^dashboard:stats$|^vouchers:nextCode$|^vouchers:forDocument$|^vouchers:subtypes$|^vouchers:alterInfo$|^tfreight:kpis$|^dashboard:position$|^dashboard:layout$|^dashboard:saveLayout$|^productMerge:preview$|^skuRates:parties$|^skuRates:partyCounts$|^consignment:openingLog$|^tags:list$|^tags:for$|^tags:contents$|^consignment:openingLots$|^consignment:invoices$|^tankers:quality$|^tankers:qualityMany$|^tankers:ffaHistory$|^orders:quality$|^gate:partyCategories$|^gate:waivedOuts$|^gate:forRecord$|^notify:rules$|^notify:list$|^notify:run$|^notify:preview$|^notify:people$|^notify:mutes$|^treasury:alerts$|^treasury:paymentTracker$|^facility:exposures$|^facility:headroom$|^company:setActive$|^company:getActive$|^factory:active$|^factory:companies$|^session:setUser$|^lc:repayments$|^lc:parts$|^lc:parts$|^lc:allRepayments$|^lc:getLimit$|^lc:bankLimits$|^lc:commission$|^lc:commissionCandidates$|^lc:refund$|^lc:refundCandidates$|^journal:accountNames$|^lc:paymentIns$|^lc:openTradingInvoices$|^files:pickDocument$|^files:openDocument$|^bankRecon:imports$|^bankRecon:list$|^bankRecon:suggest$|^bd:kpis$|^bd:limits$|^skuStock:adjustments$|^skuOpening:list$|^skuOpening:date$|^stockCount:previous$|^orders:intercompanySource$|^stockOpening:list$|^stockOpening:date$|^stockOpening:sets$|^stockOpening:setLines$|^stockOpening:ppStages$|^stockOpening:ppFreeTotals$|^production:ppDraws$|^bargains:linkedInvoices$|^bargains:linkedVouchers$|^bargains:voucherChoices$|^salesBargains:linkedVouchers$|^salesBargains:voucherChoices$|^bargains:adjustments$|^history:list$|^stockOpening:ppVessels$|^stockOpening:ppReceivers$|^stockOpening:ppWriteoffs$|^work:board$|^work:cutoff$|^work:processes$|^formulationSubcategory:list$|^formulations:versions$|^facility:limitHistory$|^bd:limitReductions$|^bd:allRepayments$|^bd:interestSchedule$|^bd:interestWindow$|^bd:interestPayments$|^bd:linkedOrders$|^bd:salesInvoices$|^bd:parties$|^bd:allParties$|^bd:openTradingInvoices$|^bd:paymentIns$|^bd:partyPayments$|^bd:receiptParts$|^access:entryWindows$|^access:entityHistory$|^trading:list$|^sales:series$|^sales:invoiceGaps$|^salesBargains:returns$|^salesBargains:linkedInvoices$|^salesBargains:unattributedReturns$|^tbill:orphans$|^tbill:rcmRegister$|^production:report$|^production:mix$|^repairs:splitTanker:list$|^vouchers:cashflow$|^repairs:paisa:list$|^tallyNotes:(preview|salesCheck|salesPreview|registerCheck|registerPreview|health|batches|companyBanks|bankSuggest|bankCheck|bankPreview|drafts|bankBooks|bankBook|lineNotes)$|^sales:(tdsPreview|tdsMap|cancelledNos|shortageNotes|shortageNoteMap)$|^suppliers:tdsRecalc$/;
+  const READONLY = /:list$|:get$|:items$|:issuances$|:sheet$|:outstanding$|:all$|:summary$|:transfers$|:fyTaxable$|:needs$|:breakdown$|:nextNo$|:liveUsers$|:ips$|:logs$|:dispatchableSales$|:mine$|:pendingCount$|:pending$|:lots$|:unmapped$|:unmappedCount$|:bargainLines$|:bargainNotes$|:bargainInterest$|:consignmentDraws$|^access:heartbeat$|^db:ping$|^db:snapshot$|^app:revision$|^auth:login$|^journal:booksFrom$|^tally:map$|^journal:openings$|^journal:opening$|^journal:accounts$|^journal:statement$|^journal:splitNames$|^journal:mergePreview$|^notes:relinkCandidates$|^hostinger:status$|^hostinger:plans$|^hostinger:alert$|^journal:releasePreview$|^journal:provisional$|^journal:trialBalance$|^journal:groups$|^journal:groupNames$|^journal:groupTree$|^journal:ledgerMap$|^journal:pendingRefs$|^journal:billsOutstanding$|^journal:tradingAccount$|^dashboard:stats$|^vouchers:nextCode$|^vouchers:forDocument$|^vouchers:subtypes$|^vouchers:alterInfo$|^tfreight:kpis$|^dashboard:position$|^dashboard:layout$|^dashboard:saveLayout$|^productMerge:preview$|^skuRates:parties$|^skuRates:partyCounts$|^consignment:openingLog$|^tags:list$|^tags:for$|^tags:contents$|^consignment:openingLots$|^consignment:invoices$|^tankers:quality$|^tankers:qualityMany$|^tankers:ffaHistory$|^orders:quality$|^gate:partyCategories$|^gate:waivedOuts$|^gate:forRecord$|^notify:rules$|^notify:list$|^notify:run$|^notify:preview$|^notify:people$|^notify:mutes$|^treasury:alerts$|^treasury:paymentTracker$|^facility:exposures$|^facility:headroom$|^company:setActive$|^company:getActive$|^factory:active$|^factory:companies$|^session:setUser$|^lc:repayments$|^lc:parts$|^lc:parts$|^lc:allRepayments$|^lc:getLimit$|^lc:bankLimits$|^lc:commission$|^lc:commissionCandidates$|^lc:refund$|^lc:refundCandidates$|^journal:accountNames$|^lc:paymentIns$|^lc:openTradingInvoices$|^files:pickDocument$|^files:openDocument$|^bankRecon:imports$|^bankRecon:list$|^bankRecon:suggest$|^bd:kpis$|^bd:limits$|^skuStock:adjustments$|^skuOpening:list$|^skuOpening:date$|^stockCount:previous$|^orders:intercompanySource$|^stockOpening:list$|^stockOpening:date$|^stockOpening:sets$|^stockOpening:setLines$|^stockOpening:ppStages$|^stockOpening:ppFreeTotals$|^production:ppDraws$|^bargains:linkedInvoices$|^bargains:linkedVouchers$|^bargains:voucherChoices$|^salesBargains:linkedVouchers$|^salesBargains:voucherChoices$|^bargains:adjustments$|^history:list$|^stockOpening:ppVessels$|^stockOpening:ppReceivers$|^stockOpening:ppWriteoffs$|^work:board$|^work:cutoff$|^work:processes$|^formulationSubcategory:list$|^formulations:versions$|^facility:limitHistory$|^bd:limitReductions$|^bd:allRepayments$|^bd:interestSchedule$|^bd:interestWindow$|^bd:interestPayments$|^bd:linkedOrders$|^bd:salesInvoices$|^bd:parties$|^bd:allParties$|^bd:openTradingInvoices$|^bd:paymentIns$|^bd:partyPayments$|^bd:receiptParts$|^access:entryWindows$|^access:entityHistory$|^trading:list$|^sales:series$|^sales:invoiceGaps$|^salesBargains:returns$|^salesBargains:linkedInvoices$|^salesBargains:unattributedReturns$|^tbill:orphans$|^tbill:rcmRegister$|^production:report$|^production:mix$|^repairs:splitTanker:list$|^vouchers:cashflow$|^repairs:paisa:list$|^tallyNotes:(preview|salesCheck|salesPreview|registerCheck|registerPreview|health|batches|companyBanks|bankSuggest|bankCheck|bankPreview|drafts|bankBooks|bankBook|lineNotes)$|^sales:(tdsPreview|tdsMap|cancelledNos|shortageNotes|shortageNoteMap)$|^suppliers:tdsRecalc$/;
   const AUDIT_SKIP = /* @__PURE__ */ new Set(["config:get", "config:save", "session:setUser", "hostinger:setToken"]);
   const handle = (channel, fn) => {
     ipcMain.handle(channel, async (e, args) => {
@@ -42626,6 +42681,8 @@ function registerIpc() {
         result = await fn(e, args);
       } catch (err) {
         if (isForeignKeyError(err)) throw new Error(await explainForeignKey(channel, args));
+        const rule = /SQLITE_CONSTRAINT_TRIGGER:\s*(.+)$/.exec(String(err?.message || ""));
+        if (rule) throw new Error(rule[1]);
         throw err;
       }
       if (!READONLY.test(channel)) {
@@ -43433,6 +43490,8 @@ function registerIpc() {
   handle("notes:items", (_e, { id }) => listNoteItems(id));
   handle("notes:create", (_e, { values }) => createNote(values));
   handle("notes:update", (_e, { id, values }) => updateNote(id, values));
+  handle("notes:relinkCandidates", async (_e, { id }) => (await Promise.resolve().then(() => (init_notes(), notes_exports))).noteRelinkCandidates(Number(id)));
+  handle("notes:relink", async (_e, { id, entryId }) => (await Promise.resolve().then(() => (init_notes(), notes_exports))).relinkNote(Number(id), Number(entryId)));
   handle("notes:delete", (_e, { id, companyId }) => deleteNote(id, companyId));
   handle("production:list", (_e, args) => listProduction(args?.forModule));
   handle("production:items", (_e, { id }) => getProductionItems(id));
