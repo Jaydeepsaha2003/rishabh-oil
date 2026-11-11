@@ -19,6 +19,10 @@ type SortKey = 'date' | 'voucher' | 'bank' | 'party' | 'narration' | 'amount' | 
 // lcRefund): the premature interest credited to us, against the bank receipt
 // it came in by. Either way the link only sets the two side by side; nothing
 // is posted or changed.
+// What a charge comes to as a % of the LC, to 4 places (₹12,058.42 on ₹55,00,000 → 0.2192).
+const pctOf = (charged: number | undefined, lcAmount: number): number | null =>
+  charged && charged > 0 && lcAmount > 0 ? Math.round((charged / lcAmount) * 100 * 10000) / 10000 : null
+
 export function LcCommissionLink({
   lcId,
   kind = 'commission',
@@ -56,7 +60,9 @@ export function LcCommissionLink({
     ;(refund ? window.api.lc.refund(lcId) : window.api.lc.commission(lcId))
       .then((r) => {
         setInfo(r)
-        if (!refund) setPct(r.commission_pct != null ? String(r.commission_pct) : r.bank_pct != null ? String(r.bank_pct) : '')
+        // Saved % first; else what the linked bank voucher works out to; else the bank's standard rate.
+        const fromVch = pctOf(Number((r.voucher as Row | null)?.amount), Number(r.amount))
+        if (!refund) setPct(r.commission_pct != null ? String(r.commission_pct) : fromVch != null ? String(fromVch) : r.bank_pct != null ? String(r.bank_pct) : '')
       })
       .catch((e) => toast.error(errText(e)))
   }, [lcId, refund])
@@ -94,11 +100,18 @@ export function LcCommissionLink({
     }
   }, [picking, q, ledgerId, dFrom, dTo, lcId, refund])
 
-  const link = async (entryId: number | null): Promise<void> => {
+  const link = async (entryId: number | null, amount?: number): Promise<void> => {
     setBusy(true)
     try {
       await (refund ? window.api.lc.linkRefund(lcId, entryId) : window.api.lc.linkCommission(lcId, entryId))
-      toast.success(entryId ? `Bank ${refund ? 'receipt' : 'voucher'} linked to this LC` : 'Unlinked')
+      // The commission % follows the voucher linked: charged ÷ LC amount.
+      const auto = !refund && entryId ? pctOf(amount, Number(info?.amount)) : null
+      if (auto != null) await window.api.lc.setCommissionPct(lcId, auto)
+      toast.success(
+        entryId
+          ? `Bank ${refund ? 'receipt' : 'voucher'} linked to this LC${auto != null ? ` — commission set at ${auto}%` : ''}`
+          : 'Unlinked'
+      )
       setPicking(false)
       load()
       onChanged?.()
@@ -423,7 +436,7 @@ export function LcCommissionLink({
                     return (
                       <tr
                         key={String(x.id)}
-                        onClick={() => !busy && void link(Number(x.id))}
+                        onClick={() => !busy && void link(Number(x.id), Number(x.amount))}
                         className={cn('cursor-pointer border-b border-[#EEF3ED] align-top hover:bg-[#F1F8EC]', i % 2 === 1 && 'bg-[#FBFCFA]', hit && 'bg-[#EFF9F2]')}
                       >
                         <td className="whitespace-nowrap px-4 py-2 font-semibold tabular-nums text-[#33473E]">{formatDate(String(x.entry_date))}</td>
