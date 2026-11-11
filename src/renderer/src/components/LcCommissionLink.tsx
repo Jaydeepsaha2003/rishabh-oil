@@ -37,6 +37,12 @@ export function LcCommissionLink({
   const [picking, setPicking] = useState(false)
   const [q, setQ] = useState('')
   const [cands, setCands] = useState<Row[] | null>(null)
+  // The keyboard's row in the picker: ↑ ↓ move it (wrapping), Enter links it.
+  const [at, setAt] = useState(-1)
+  useEffect(() => setAt(-1), [cands])
+  useEffect(() => {
+    if (at >= 0) document.querySelector(`[data-lci="${at}"]`)?.scrollIntoView({ block: 'nearest' })
+  }, [at])
   // The picker's order: any column, click again to reverse; oldest date first by default.
   const [sort, setSort] = useState<{ key: SortKey; dir: 1 | -1 }>({ key: 'date', dir: 1 })
   // A ledger picked: only the vouchers that touch it (the bank, the charges…).
@@ -154,6 +160,21 @@ export function LcCommissionLink({
       return (c || Number(a.id) - Number(b.id)) * sort.dir
     })
   })()
+  const pickKeys = (e: React.KeyboardEvent): void => {
+    const n = sorted.length
+    if (!n) return
+    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+      e.preventDefault()
+      const from = at < 0 ? (e.key === 'ArrowDown' ? -1 : n) : at
+      setAt((from + (e.key === 'ArrowDown' ? 1 : -1) + n) % n)
+    } else if (e.key === 'Home' || e.key === 'End') {
+      e.preventDefault()
+      setAt(e.key === 'Home' ? 0 : n - 1)
+    } else if (e.key === 'Enter' && at >= 0 && sorted[at] && !busy) {
+      e.preventDefault()
+      void link(Number(sorted[at].id), Number(sorted[at].amount))
+    }
+  }
   const got = v ? Number(v.amount) : null
   const diff = got != null && expected != null ? Math.round((got - expected) * 100) / 100 : null
   const matched = diff != null && Math.abs(diff) < 1
@@ -344,7 +365,8 @@ export function LcCommissionLink({
                 autoFocus
                 value={q}
                 onChange={(e) => setQ(e.target.value)}
-                placeholder="Amount (31421 or 31,421), voucher no, narration, ledger"
+                onKeyDown={pickKeys}
+                placeholder="Amount (31421 or 31,421), voucher no, narration, ledger — ↑ ↓ to move, Enter to link"
                 className="min-w-0 flex-1 bg-transparent text-[13px] font-semibold outline-none"
               />
               {q && (
@@ -436,8 +458,15 @@ export function LcCommissionLink({
                     return (
                       <tr
                         key={String(x.id)}
+                        data-lci={i}
                         onClick={() => !busy && void link(Number(x.id), Number(x.amount))}
-                        className={cn('cursor-pointer border-b border-[#EEF3ED] align-top hover:bg-[#F1F8EC]', i % 2 === 1 && 'bg-[#FBFCFA]', hit && 'bg-[#EFF9F2]')}
+                        onMouseEnter={() => setAt(i)}
+                        className={cn(
+                          'cursor-pointer border-b border-[#EEF3ED] align-top hover:bg-[#F1F8EC]',
+                          i % 2 === 1 && 'bg-[#FBFCFA]',
+                          hit && 'bg-[#EFF9F2]',
+                          i === at && '!bg-[#E4F5C8] shadow-[inset_4px_0_0_#9ACD2A]'
+                        )}
                       >
                         <td className="whitespace-nowrap px-4 py-2 font-semibold tabular-nums text-[#33473E]">{formatDate(String(x.entry_date))}</td>
                         <td className="whitespace-nowrap px-3 py-2">
