@@ -66,9 +66,7 @@ export function LcCommissionLink({
     ;(refund ? window.api.lc.refund(lcId) : window.api.lc.commission(lcId))
       .then((r) => {
         setInfo(r)
-        // Saved % first; else what the linked bank voucher works out to; else the bank's standard rate.
-        const fromVch = pctOf(Number((r.voucher as Row | null)?.amount), Number(r.amount))
-        if (!refund) setPct(r.commission_pct != null ? String(r.commission_pct) : fromVch != null ? String(fromVch) : r.bank_pct != null ? String(r.bank_pct) : '')
+        if (!refund) setPct(r.commission_pct != null ? String(r.commission_pct) : r.bank_pct != null ? String(r.bank_pct) : '')
       })
       .catch((e) => toast.error(errText(e)))
   }, [lcId, refund])
@@ -106,18 +104,11 @@ export function LcCommissionLink({
     }
   }, [picking, q, ledgerId, dFrom, dTo, lcId, refund])
 
-  const link = async (entryId: number | null, amount?: number): Promise<void> => {
+  const link = async (entryId: number | null): Promise<void> => {
     setBusy(true)
     try {
       await (refund ? window.api.lc.linkRefund(lcId, entryId) : window.api.lc.linkCommission(lcId, entryId))
-      // The commission % follows the voucher linked: charged ÷ LC amount.
-      const auto = !refund && entryId ? pctOf(amount, Number(info?.amount)) : null
-      if (auto != null) await window.api.lc.setCommissionPct(lcId, auto)
-      toast.success(
-        entryId
-          ? `Bank ${refund ? 'receipt' : 'voucher'} linked to this LC${auto != null ? ` — commission set at ${auto}%` : ''}`
-          : 'Unlinked'
-      )
+      toast.success(entryId ? `Bank ${refund ? 'receipt' : 'voucher'} linked to this LC` : 'Unlinked')
       setPicking(false)
       load()
       onChanged?.()
@@ -172,7 +163,7 @@ export function LcCommissionLink({
       setAt(e.key === 'Home' ? 0 : n - 1)
     } else if (e.key === 'Enter' && at >= 0 && sorted[at] && !busy) {
       e.preventDefault()
-      void link(Number(sorted[at].id), Number(sorted[at].amount))
+      void link(Number(sorted[at].id))
     }
   }
   const got = v ? Number(v.amount) : null
@@ -194,7 +185,9 @@ export function LcCommissionLink({
       k: refund ? 'Received' : 'Charged by bank',
       v: got == null ? null : formatINR(got),
       empty: 'Not linked yet',
-      sub: v ? `${vLabel(v)} · ${formatDate(String(v.entry_date))}` : `link the bank ${refund ? 'receipt' : 'voucher'} below`
+      sub: v
+        ? `${!refund && got != null && pctOf(got, lcAmt) != null ? `${pctOf(got, lcAmt)}% of ${formatINR(lcAmt)} · ` : ''}${vLabel(v)} · ${formatDate(String(v.entry_date))}`
+        : `link the bank ${refund ? 'receipt' : 'voucher'} below`
     },
     {
       k: 'Difference',
@@ -459,7 +452,7 @@ export function LcCommissionLink({
                       <tr
                         key={String(x.id)}
                         data-lci={i}
-                        onClick={() => !busy && void link(Number(x.id), Number(x.amount))}
+                        onClick={() => !busy && void link(Number(x.id))}
                         onMouseEnter={() => setAt(i)}
                         className={cn(
                           'cursor-pointer border-b border-[#EEF3ED] align-top hover:bg-[#F1F8EC]',
