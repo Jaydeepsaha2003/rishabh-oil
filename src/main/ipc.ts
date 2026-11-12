@@ -1486,11 +1486,13 @@ export function registerIpc(): void {
   handle('tbill:orphans', (_e, a: { companyId?: number } = {}) => listOrphanedTransporterBills(a?.companyId))
   handle('notes:list', (_e, a: { companyId?: number } = {}) => listNotes(a?.companyId))
   handle('notes:items', (_e, { id }: { id: number }) => listNoteItems(id))
-  handle('notes:create', (_e, { values }: { values: Row }) => createNote(values))
-  handle('notes:update', (_e, { id, values }: { id: number; values: Row }) => updateNote(id, values))
+  // ALL OR NOTHING. A re-post deletes the old voucher, ledger row and items before
+  // writing the new ones; a failure halfway left KR FOODS' CN/3 an empty shell.
+  handle('notes:create', (_e, { values }: { values: Row }) => withDbTransaction(() => createNote(values)))
+  handle('notes:update', (_e, { id, values }: { id: number; values: Row }) => withDbTransaction(() => updateNote(id, values)))
   handle('notes:relinkCandidates', async (_e, { id }: { id: number }) => (await import('./notes')).noteRelinkCandidates(Number(id)))
   handle('notes:relink', async (_e, { id, entryId }: { id: number; entryId: number }) => (await import('./notes')).relinkNote(Number(id), Number(entryId)))
-  handle('notes:delete', (_e, { id, companyId }: { id: number; companyId?: number }) => deleteNote(id, companyId))
+  handle('notes:delete', (_e, { id, companyId }: { id: number; companyId?: number }) => withDbTransaction(() => deleteNote(id, companyId)))
 
   handle('production:list', (_e, args?: { forModule?: string }) => listProduction(args?.forModule))
   handle('production:items', (_e, { id }: { id: number }) => getProductionItems(id))

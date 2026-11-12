@@ -11624,7 +11624,8 @@ Delete ${doc}?`)) return
                     }
                     onOpenRecord(isPur ? 'orders' : 'sales', Number(r.id), { screen, ledgerId: null, companyId: cid })
                   }
-                  const openable = isNotes ? !!Number(r.journal_entry_id) : !!Number(r.id)
+                  // A note always opens: with its voucher, or — none left — in the Voucher missing window.
+                  const openable = isNotes ? !!Number(r.journal_entry_id) || (!r.from_voucher && !!Number(r.id)) : !!Number(r.id)
                   const onRow = (): void => {
                     if (!openable) return
                     if (isNotes && !r.from_voucher && !Number(r.has_voucher)) {
