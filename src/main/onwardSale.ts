@@ -62,6 +62,7 @@ export async function assertOnwardSale(tanker: Row, v: Row): Promise<void> {
   if (buyer === n(tanker.company_id)) throw new Error('A company cannot sell the tanker to itself — pick the buying company')
   if (!s(o.sale_invoice_no).trim()) throw new Error('Enter the sale invoice number for this tanker')
   if (!(n(o.rate) > 0)) throw new Error('Enter the sale rate per MT')
+  if (!(Array.isArray(o.tags) && o.tags.some((t: unknown) => String(t ?? '').trim()))) throw new Error('Tag this transfer — at least one tag is required')
 }
 
 /** Raise the sale for a trading company's tanker just emptied. */

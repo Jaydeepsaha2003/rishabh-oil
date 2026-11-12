@@ -2807,6 +2807,7 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel, onPurchaseR
       if (!o.buyer_company_id) return void toast.error('Pick the company this tanker is sold to')
       if (!String(o.sale_invoice_no || '').trim()) return void toast.error('Enter the sale invoice number')
       if (!(Number(o.rate) > 0)) return void toast.error('Enter the sale rate per MT')
+      if (!(Array.isArray(o.tags) && o.tags.length)) return void toast.error('Tag this transfer — at least one tag is required')
       }
     }
     // More qty on the truck than the bargain has left: pause and ask before
@@ -9792,7 +9793,9 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel, onPurchaseR
                   {/* Tags for the transfer — put on the sale here and on the
                       buyer's purchase as they are raised. */}
                   <div className="flex flex-wrap items-center gap-2">
-                    <Label className="mr-1">Tags</Label>
+                    <Label className="mr-1">
+                      Tags <span className="text-[#B3261E]">*</span>
+                    </Label>
                     <TagDraftPicker
                       value={Array.isArray(o.tags) ? (o.tags as string[]) : []}
                       onChange={(next) => setO({ tags: next })}
