@@ -16652,9 +16652,11 @@ Delete ${doc}?`)) return
                               const next = String(v || '') || null
                               void window.api.vouchers
                                 .setValueDate(Number(dv.id), next)
-                                .then((r) => {
+                                .then(async (r) => {
                                   setDayRows((rows) => rows.map((x) => (Number(x.id) === Number(dv.id) ? { ...x, value_date: r.value_date } : x)))
-                                  toast.success(r.value_date ? `Value date ${formatDate(r.value_date)} saved` : 'Value date cleared')
+                                  // A value date means the bank has it: the voucher is reconciled, so Reco comes off.
+                                  if (r.value_date) await applyReco(Number(dv.id), false).catch(() => toast.error('Value date saved, but Reco could not be turned off'))
+                                  toast.success(r.value_date ? `Value date ${formatDate(r.value_date)} saved — Reco off` : 'Value date cleared')
                                 })
                                 .catch((e) => toast.error((e as Error).message))
                             }}
