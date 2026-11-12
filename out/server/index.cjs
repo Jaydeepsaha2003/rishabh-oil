@@ -6253,6 +6253,9 @@ async function validateVoucher(v) {
     group: l.group,
     dr: n4(l.dr),
     cr: n4(l.cr),
+    product_id: n4(l.product_id) || null,
+    qty: n4(l.qty) || null,
+    rate: n4(l.rate) || null,
     splits: (l.splits || []).map((sp) => ({
       name: String(sp?.name || "").trim().slice(0, 200),
       amount: n4(sp?.amount),
@@ -6322,6 +6325,18 @@ async function resolveRefIds(refName, companyId, side) {
     args: [companyId, ref.toUpperCase()]
   });
   return { order_id: null, sale_invoice_group: r.rows.length ? String(r.rows[0].grp) : null };
+}
+async function writeItems(entryId, lines) {
+  const c = getClient();
+  const saved = await c.execute({ sql: "SELECT id FROM journal_lines WHERE entry_id = ? ORDER BY id ASC", args: [entryId] });
+  for (let i = 0; i < lines.length && i < saved.rows.length; i++) {
+    const l = lines[i];
+    if (!l.product_id && !l.qty && !l.rate) continue;
+    await c.execute({
+      sql: "UPDATE journal_lines SET product_id = ?, qty = ?, rate = ? WHERE id = ?",
+      args: [l.product_id || null, l.qty || null, l.rate || null, n4(saved.rows[i].id)]
+    });
+  }
 }
 async function writeSplits(entryId, lines) {
   const c = getClient();
@@ -6479,6 +6494,7 @@ async function createVoucher(v) {
     });
     await writeAllocs(res.id, lines);
     await writeSplits(res.id, lines);
+    await writeItems(res.id, lines);
     if (v.subtype !== void 0) {
       const { checkedSubtype: checkedSubtype2 } = await Promise.resolve().then(() => (init_voucherSubtypes(), voucherSubtypes_exports));
       await getClient().execute({ sql: "UPDATE journal_entries SET vch_subtype = ? WHERE id = ?", args: [await checkedSubtype2(v.vchType, v.subtype), res.id] });
@@ -6532,6 +6548,7 @@ async function updateVoucher(id, v) {
     }
     await writeAllocs(id, lines);
     await writeSplits(id, lines);
+    await writeItems(id, lines);
     return { id };
   });
 }
@@ -6543,7 +6560,7 @@ async function getVoucher(id) {
   });
   if (!e.rows.length) return null;
   const lines = await c.execute({
-    sql: `SELECT jl.id, jl.dr, jl.cr, a.name AS account, a.acc_group
+    sql: `SELECT jl.id, jl.dr, jl.cr, jl.product_id, jl.qty, jl.rate, a.name AS account, a.acc_group
           FROM journal_lines jl JOIN ledger_accounts a ON a.id = jl.account_id
           -- Debits first, then credits \u2014 the way a voucher is read (Tally
           -- lists it by side too). Within a side, the order it was written.
@@ -7812,7 +7829,7 @@ async function visibleFromFor(ownModule, callerModule) {
 }
 async function salesAlsoTds() {
   const user = await currentAccessUser();
-  return !!user && moduleScope(user, "sales") === "intercompany" && !!modulePerm(user, "sales").also_tds;
+  return !!user && ["intercompany", "unload"].includes(String(moduleScope(user, "sales"))) && !!modulePerm(user, "sales").also_tds;
 }
 async function currentScope(moduleKey) {
   const user = await currentAccessUser();
@@ -7971,11 +7988,12 @@ async function assertAllowed(channel, args) {
   const user = await currentAccessUser();
   if (!user) return;
   if (user.role === "admin") return;
-  if (moduleScope(user, rule.module) === "unload" && rule.module === "sales") {
+  const tdsRide = rule.module === "sales" && ["intercompany", "unload"].includes(String(moduleScope(user, "sales"))) && !!modulePerm(user, "sales").also_tds && op === "tdsPost";
+  if (moduleScope(user, rule.module) === "unload" && rule.module === "sales" && !tdsRide) {
     assertScopedSales(op, args);
     return;
   }
-  const tdsToo = rule.module === "sales" && moduleScope(user, "sales") === "intercompany" && !!modulePerm(user, "sales").also_tds && op === "tdsPost";
+  const tdsToo = tdsRide;
   if (moduleScope(user, rule.module) === "tds" && rule.module === "sales" || tdsToo) {
     if (op !== "tdsPost") {
       throw new Error("Your access to Sales covers booking the TDS customers deducted on invoices that have none yet \u2014 nothing else on this page can be changed.");
@@ -36858,6 +36876,11 @@ var REQUIRED_COLUMNS = [
   // The bank's own date for a Reco voucher (cheque cleared / credited) — the
   // value date entered from the Day Book; nothing posts on it.
   { table: "journal_entries", column: "value_date", type: "TEXT" },
+  // The item on a plain voucher's sales/purchase line (a Tally credit note):
+  // what it was and how much — recorded with the line, no stock moves.
+  { table: "journal_lines", column: "product_id", type: "INTEGER" },
+  { table: "journal_lines", column: "qty", type: "REAL" },
+  { table: "journal_lines", column: "rate", type: "REAL" },
   // The bank receipt an LC's preclosure interest refund came back by — linked
   // from the LC panel (lc.ts linkLcRefund). Shown, never posted.
   { table: "letters_of_credit", column: "refund_voucher_id", type: "INTEGER" },
@@ -38215,7 +38238,7 @@ async function getFormulationItems(formulationId) {
   });
   return toPlain28(res);
 }
-async function writeItems(formulationId, items) {
+async function writeItems2(formulationId, items) {
   const c = getClient();
   await c.execute({ sql: "DELETE FROM formulation_items WHERE formulation_id = ?", args: [formulationId] });
   for (const it of items || []) {
@@ -38247,7 +38270,7 @@ async function createFormulation(v) {
     args: [n38(v.product_id), v.name || null, v.uom || "MT", n38(v.subcategory_id) || null, hidden]
   });
   const id = Number(res.lastInsertRowid);
-  await writeItems(id, v.items);
+  await writeItems2(id, v.items);
   await snapshotFormulation(id, "Recipe created");
   return { id };
 }
@@ -38256,7 +38279,7 @@ async function updateFormulation(id, v) {
     sql: "UPDATE formulations SET product_id = ?, name = ?, uom = ?, subcategory_id = ? WHERE id = ?",
     args: [n38(v.product_id), v.name || null, v.uom || "MT", n38(v.subcategory_id) || null, id]
   });
-  await writeItems(id, v.items);
+  await writeItems2(id, v.items);
   await snapshotFormulation(id, String(v.change_note || "").trim() || "Recipe edited");
   return { id };
 }
@@ -43505,8 +43528,8 @@ function registerIpc() {
   handle("production:delete", (_e, { id }) => deleteProduction(id));
   handle("sales:list", async (_e, args) => {
     const scope2 = await currentScope("sales");
-    if (scope2 === "unload") return listSalesForUnloadDesk(args?.companyIds);
-    if (scope2 === "tds" || scope2 === "intercompany" && args?.desk === "tds" && await salesAlsoTds()) {
+    if (scope2 === "unload" && !(args?.desk === "tds" && await salesAlsoTds())) return listSalesForUnloadDesk(args?.companyIds);
+    if (scope2 === "tds" || (scope2 === "intercompany" || scope2 === "unload") && args?.desk === "tds" && await salesAlsoTds()) {
       const { listSalesForTdsDesk: listSalesForTdsDesk2 } = await Promise.resolve().then(() => (init_saleTds(), saleTds_exports));
       return listSalesForTdsDesk2(args?.companyIds);
     }
