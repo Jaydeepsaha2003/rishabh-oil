@@ -43512,11 +43512,11 @@ function registerIpc() {
   handle("tbill:orphans", (_e, a = {}) => listOrphanedTransporterBills(a?.companyId));
   handle("notes:list", (_e, a = {}) => listNotes(a?.companyId));
   handle("notes:items", (_e, { id }) => listNoteItems(id));
-  handle("notes:create", (_e, { values }) => createNote(values));
-  handle("notes:update", (_e, { id, values }) => updateNote(id, values));
+  handle("notes:create", (_e, { values }) => withDbTransaction(() => createNote(values)));
+  handle("notes:update", (_e, { id, values }) => withDbTransaction(() => updateNote(id, values)));
   handle("notes:relinkCandidates", async (_e, { id }) => (await Promise.resolve().then(() => (init_notes(), notes_exports))).noteRelinkCandidates(Number(id)));
   handle("notes:relink", async (_e, { id, entryId }) => (await Promise.resolve().then(() => (init_notes(), notes_exports))).relinkNote(Number(id), Number(entryId)));
-  handle("notes:delete", (_e, { id, companyId }) => deleteNote(id, companyId));
+  handle("notes:delete", (_e, { id, companyId }) => withDbTransaction(() => deleteNote(id, companyId)));
   handle("production:list", (_e, args) => listProduction(args?.forModule));
   handle("production:items", (_e, { id }) => getProductionItems(id));
   handle("production:mix", (_e, { id }) => batchMix(Number(id)));
