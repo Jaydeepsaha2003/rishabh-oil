@@ -16370,6 +16370,7 @@ async function assertOnwardSale(tanker, v) {
   if (buyer === n16(tanker.company_id)) throw new Error("A company cannot sell the tanker to itself \u2014 pick the buying company");
   if (!s(o.sale_invoice_no).trim()) throw new Error("Enter the sale invoice number for this tanker");
   if (!(n16(o.rate) > 0)) throw new Error("Enter the sale rate per MT");
+  if (!(Array.isArray(o.tags) && o.tags.some((t) => String(t ?? "").trim()))) throw new Error("Tag this transfer \u2014 at least one tag is required");
 }
 async function raiseOnwardSale(tankerId, v) {
   await ensureColumns();
