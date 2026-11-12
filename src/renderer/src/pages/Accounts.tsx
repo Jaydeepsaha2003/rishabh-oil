@@ -5638,6 +5638,27 @@ Delete ${doc}?`)) return
         setLgRailOpen((o) => !o)
         return
       }
+      // INTO A REGISTER'S ROWS by the keyboard: ↓ / ↑ with nothing typed in
+      // lands on the first / last row; from there the row walks itself.
+      if (
+        (screen === 'purchreg' || screen === 'salesreg' || screen === 'notesreg') &&
+        (e.key === 'ArrowDown' || e.key === 'ArrowUp') &&
+        !typing &&
+        !e.altKey &&
+        !e.ctrlKey &&
+        !e.metaKey &&
+        !hasOpenOverlay() &&
+        !(e.target as HTMLElement)?.closest?.('[data-regrow],[role="listbox"],[role="menu"]')
+      ) {
+        const all = Array.from(regScrollEl.current?.querySelectorAll<HTMLElement>('[data-regrow]') || [])
+        if (all.length) {
+          e.preventDefault()
+          const to = e.key === 'ArrowDown' ? all[0] : all[all.length - 1]
+          to.focus()
+          to.scrollIntoView({ block: 'nearest' })
+          return
+        }
+      }
       if (__WEB__ && fk === 'F8' && !e.altKey && (screen === 'purchreg' || screen === 'salesreg' || screen === 'notesreg')) {
         e.preventDefault()
         setRegSumOpen((o) => !o)
@@ -11638,6 +11659,7 @@ Delete ${doc}?`)) return
                       <div
                         role={openable ? 'button' : undefined}
                         tabIndex={openable ? 0 : undefined}
+                        data-regrow={openable ? '' : undefined}
                         aria-expanded={isNotes ? undefined : open}
                         title={
                           openable
@@ -11653,6 +11675,18 @@ Delete ${doc}?`)) return
                           if (openable && (ev.key === 'Enter' || ev.key === ' ')) {
                             ev.preventDefault()
                             onRow()
+                            return
+                          }
+                          // ↑ ↓ (Home / End) walk the register's rows and wrap round.
+                          if (['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(ev.key) && !ev.altKey && !ev.ctrlKey && !ev.metaKey) {
+                            const all = Array.from(regScrollEl.current?.querySelectorAll<HTMLElement>('[data-regrow]') || [])
+                            const k = all.indexOf(ev.currentTarget)
+                            if (k < 0 || !all.length) return
+                            ev.preventDefault()
+                            const n = all.length
+                            const to = ev.key === 'Home' ? 0 : ev.key === 'End' ? n - 1 : (k + (ev.key === 'ArrowDown' ? 1 : -1) + n) % n
+                            all[to].focus()
+                            all[to].scrollIntoView({ block: 'nearest' })
                           }
                         }}
                         onMouseEnter={(ev) => {
@@ -11661,7 +11695,7 @@ Delete ${doc}?`)) return
                         onMouseLeave={(ev) => {
                           ev.currentTarget.style.background = stripe
                         }}
-                        className={cn('grid min-h-[46px] items-center outline-none focus-visible:bg-[#F4F9EF]', openable && 'cursor-pointer')}
+                        className={cn('grid min-h-[46px] items-center outline-none focus-visible:!bg-[#E4F5C8] focus-visible:!shadow-[inset_4px_0_0_#9ACD2A]', openable && 'cursor-pointer')}
                         style={{
                           gridTemplateColumns: grid,
                           borderBottom: '1px solid #EFF3EE',
