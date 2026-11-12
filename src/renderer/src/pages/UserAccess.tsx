@@ -330,8 +330,10 @@ export function UserAccess(): React.JSX.Element {
   // one scope; so with inter-company on, the TDS desk is a second flag on the
   // same page (sales.also_tds) and the login switches between the two lists.
   const salesPerm = (): Record<string, unknown> => ((perms as Record<string, unknown>).sales as Record<string, unknown>) || {}
+  // The TDS desk rides the same way on the unloading desk.
+  const HOSTS = ['intercompany', 'unload']
   const deskOn = (d: (typeof DESKS)[number]): boolean =>
-    rights(d.module).scope === d.key || (d.key === 'tds' && rights('sales').scope === 'intercompany' && !!salesPerm().also_tds)
+    rights(d.module).scope === d.key || (d.key === 'tds' && HOSTS.includes(String(rights('sales').scope)) && !!salesPerm().also_tds)
   // A desk may cover more than one page — the inter-company one is a job that
   // spans Sales and Purchases — so the toggle writes the grant to every page
   // it names. Written together, and lifted together: half a desk is a login
@@ -346,15 +348,14 @@ export function UserAccess(): React.JSX.Element {
     return { ...p, sales: cur } as Perms
   }
   const toggleDesk = (d: (typeof DESKS)[number], on: boolean): void => {
-    const scope = rights('sales').scope
-    const interco = DESKS.find((x) => x.key === 'intercompany')!
+    const scope = String(rights('sales').scope || '')
     const tds = DESKS.find((x) => x.key === 'tds')!
-    // TDS on or off while inter-company holds Sales: only the second flag moves.
-    if (d.key === 'tds' && scope === 'intercompany') return setPerms(withSales(perms, on ? { also_tds: true } : {}, on ? [] : ['also_tds']))
-    // Inter-company on over a TDS desk: inter-company takes the scope, TDS stays as the flag.
-    if (d.key === 'intercompany' && on && scope === 'tds') return setPerms(withSales(applyDesk(interco, true, perms), { also_tds: true }))
-    // Inter-company off with TDS riding on it: the TDS desk is left, on its own.
-    if (d.key === 'intercompany' && !on && salesPerm().also_tds) return setPerms(withSales(applyDesk(tds, true, applyDesk(interco, false, perms)), {}, ['also_tds']))
+    // TDS on or off while a host desk (inter-company / unloading) holds Sales: only the second flag moves.
+    if (d.key === 'tds' && HOSTS.includes(scope)) return setPerms(withSales(perms, on ? { also_tds: true } : {}, on ? [] : ['also_tds']))
+    // A host desk on over a TDS desk: it takes the scope, TDS stays as the flag.
+    if (HOSTS.includes(d.key) && on && scope === 'tds') return setPerms(withSales(applyDesk(d, true, perms), { also_tds: true }))
+    // A host desk off with TDS riding on it: the TDS desk is left, on its own.
+    if (HOSTS.includes(d.key) && !on && scope === d.key && salesPerm().also_tds) return setPerms(withSales(applyDesk(tds, true, applyDesk(d, false, perms)), {}, ['also_tds']))
     setPerms(applyDesk(d, on, perms))
   }
   const applyDesk = (d: (typeof DESKS)[number], on: boolean, perms: Perms): Perms =>

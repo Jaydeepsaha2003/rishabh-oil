@@ -265,10 +265,10 @@ export async function visibleFromFor(ownModule: string, callerModule?: string): 
 // The narrowed job the signed-in user holds in a module, for the readers that
 // have to hand back less than the full row set. Null for an admin, for a user
 // the app does not know (harness, first run), or for an unrestricted grant.
-/** An inter-company desk that also books customer TDS (sales.also_tds). */
+/** An inter-company or unloading desk that also books customer TDS (sales.also_tds). */
 export async function salesAlsoTds(): Promise<boolean> {
   const user = await currentAccessUser()
-  return !!user && moduleScope(user, 'sales') === 'intercompany' && !!(modulePerm(user, 'sales') as Row).also_tds
+  return !!user && ['intercompany', 'unload'].includes(String(moduleScope(user, 'sales'))) && !!(modulePerm(user, 'sales') as Row).also_tds
 }
 
 export async function currentScope(moduleKey: string): Promise<string | null> {
@@ -573,14 +573,18 @@ export async function assertAllowed(channel: string, args: unknown): Promise<voi
 
   // A narrowed job answers the whole question on its own — the ordinary
   // per-action rights below would let an 'edit' grant through everything.
-  if (moduleScope(user, rule.module) === 'unload' && rule.module === 'sales') {
+  // The TDS desk can ride on the inter-company or the unloading desk
+  // (sales.also_tds) — then booking TDS is allowed as well, and only that.
+  const tdsRide =
+    rule.module === 'sales' && ['intercompany', 'unload'].includes(String(moduleScope(user, 'sales'))) && !!(modulePerm(user, 'sales') as Row).also_tds && op === 'tdsPost'
+  if (moduleScope(user, rule.module) === 'unload' && rule.module === 'sales' && !tdsRide) {
     assertScopedSales(op, args)
     return
   }
   // The customer-TDS desk: booking the TDS a customer deducted, on an invoice
   // that has none yet, and nothing else on the page. Also held beside the
   // inter-company desk (sales.also_tds) — then only for this one act.
-  const tdsToo = rule.module === 'sales' && moduleScope(user, 'sales') === 'intercompany' && !!(modulePerm(user, 'sales') as Row).also_tds && op === 'tdsPost'
+  const tdsToo = tdsRide
   if ((moduleScope(user, rule.module) === 'tds' && rule.module === 'sales') || tdsToo) {
     if (op !== 'tdsPost') {
       throw new Error('Your access to Sales covers booking the TDS customers deducted on invoices that have none yet — nothing else on this page can be changed.')

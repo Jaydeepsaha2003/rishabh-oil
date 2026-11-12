@@ -1512,11 +1512,12 @@ export function registerIpc(): void {
   // the channel directly.
   handle('sales:list', async (_e, args?: { companyIds?: number[]; forModule?: string; desk?: string }) => {
     const scope = await currentScope('sales')
-    if (scope === 'unload') return listSalesForUnloadDesk(args?.companyIds)
+    // An unloading desk that also holds TDS asks for the TDS list by name.
+    if (scope === 'unload' && !(args?.desk === 'tds' && (await salesAlsoTds()))) return listSalesForUnloadDesk(args?.companyIds)
     // The customer-TDS desk: invoices still missing their TDS, and only the
     // figures booking it needs (saleTds.listSalesForTdsDesk). An inter-company
     // desk that also holds TDS (sales.also_tds) asks for it by name.
-    if (scope === 'tds' || (scope === 'intercompany' && args?.desk === 'tds' && (await salesAlsoTds()))) {
+    if (scope === 'tds' || ((scope === 'intercompany' || scope === 'unload') && args?.desk === 'tds' && (await salesAlsoTds()))) {
       const { listSalesForTdsDesk } = await import('./saleTds')
       return listSalesForTdsDesk(args?.companyIds)
     }

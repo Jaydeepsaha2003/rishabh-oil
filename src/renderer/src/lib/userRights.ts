@@ -242,7 +242,8 @@ export function setDesk(
 // ------------------------------------------------------------- for the list --
 
 export function scopeOf(perms: Perms): string {
-  if (rightsOf(perms, 'sales').scope === 'unload') return 'Unloading desk'
+  if (rightsOf(perms, 'sales').scope === 'unload')
+    return ((perms as Record<string, Record<string, unknown>>)?.sales as Record<string, unknown> | undefined)?.also_tds ? 'Unloading + TDS desk' : 'Unloading desk'
   if (rightsOf(perms, 'orders').scope === 'readings') return 'Readings desk'
   if (rightsOf(perms, 'salesBargains').scope === 'topup') return 'Bargain increase desk'
   // The TDS desk can ride on the inter-company one (sales.also_tds).

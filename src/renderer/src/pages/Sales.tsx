@@ -18,7 +18,8 @@ import { SalesMobile } from './SalesMobile'
 // and columns it never gets are filtered in the main process (see
 // listSalesForUnloadDesk), so this flag shapes the page to match what the data
 // already is rather than being the restriction itself.
-const UNLOAD_DESK = (): boolean => moduleScope(loadUser(), 'sales') === 'unload'
+// While an unloading desk that also holds TDS is on its TDS list, it is the TDS desk.
+const UNLOAD_DESK = (): boolean => moduleScope(loadUser(), 'sales') === 'unload' && !tdsView
 // The customer-TDS desk: the same Sales page, its rows narrowed by the server
 // to invoices still missing their TDS (saleTds.listSalesForTdsDesk), and the
 // one action Book TDS.
@@ -27,7 +28,7 @@ const UNLOAD_DESK = (): boolean => moduleScope(loadUser(), 'sales') === 'unload'
 const ALSO_TDS = (): boolean => {
   const u = loadUser()
   const p = (u?.permissions as Record<string, Record<string, unknown>> | undefined)?.sales
-  return moduleScope(u, 'sales') === 'intercompany' && !!p && typeof p === 'object' && !!p.also_tds
+  return ['intercompany', 'unload'].includes(String(moduleScope(u, 'sales'))) && !!p && typeof p === 'object' && !!p.also_tds
 }
 let tdsView = false
 const TDS_DESK = (): boolean => moduleScope(loadUser(), 'sales') === 'tds' || (tdsView && ALSO_TDS())
@@ -8704,14 +8705,14 @@ export function Sales(props: SalesProps = {}): React.JSX.Element {
   const both = ALSO_TDS()
   return (
     <SalesPage
-      key={tds ? 'tds' : 'interco'}
+      key={tds ? 'tds' : 'main'}
       {...props}
       deskSwitch={
         both ? (
           <div className="mb-3 inline-flex overflow-hidden rounded-[6px] border border-[#D6E2D6] bg-white p-1">
             {(
               [
-                [false, 'Inter-company transfers'],
+                [false, moduleScope(loadUser(), 'sales') === 'unload' ? 'Unloading desk' : 'Inter-company transfers'],
                 [true, 'Customer TDS']
               ] as const
             ).map(([v, label]) => (
