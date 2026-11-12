@@ -1699,6 +1699,7 @@ function AccountPicker({
         {icon ? (
           <button
             type="button"
+            data-vfield
             // eslint-disable-next-line jsx-a11y/no-autofocus
             autoFocus={autoFocus}
             onKeyDown={(e) => {
@@ -1829,8 +1830,24 @@ function AccountPicker({
 // field before / after on the line (from a box only when the caret is at its
 // edge), wrapping too. Inside an open ledger list the list has the arrows.
 function gridArrows(e: React.KeyboardEvent<HTMLElement>): void {
-  if (!['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(e.key) || e.altKey || e.ctrlKey || e.metaKey || e.shiftKey) return
   const t = e.target as HTMLElement
+  // ENTER IN A BOX GOES TO THE NEXT FIELD down the voucher, Tally's way — the
+  // next box or ledger field in reading order. On a ledger / dropdown Enter
+  // still opens it; a box that already used the key (defaultPrevented) keeps it.
+  if (e.key === 'Enter' && !e.altKey && !e.ctrlKey && !e.metaKey && !e.shiftKey && !e.defaultPrevented && t instanceof HTMLInputElement) {
+    if (t.closest('[cmdk-root],[role="listbox"],[role="menu"],[data-radix-popper-content-wrapper]')) return
+    const fields = Array.from((e.currentTarget as HTMLElement).querySelectorAll<HTMLElement>('input,[data-vfield]')).filter(
+      (x) => !x.hasAttribute('disabled') && !(x as HTMLInputElement).readOnly && x.tabIndex >= 0 && x.offsetParent !== null && (x as HTMLInputElement).type !== 'checkbox'
+    )
+    const at = fields.indexOf(t)
+    if (at >= 0 && at < fields.length - 1) {
+      e.preventDefault()
+      fields[at + 1].focus()
+      if (fields[at + 1] instanceof HTMLInputElement) (fields[at + 1] as HTMLInputElement).select()
+    }
+    return
+  }
+  if (!['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(e.key) || e.altKey || e.ctrlKey || e.metaKey || e.shiftKey) return
   if (t.closest('[cmdk-root],[role="listbox"],[role="menu"],[data-radix-popper-content-wrapper]')) return
   const row = t.closest('[data-vrow]')
   if (!row) return
