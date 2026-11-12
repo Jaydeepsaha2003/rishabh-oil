@@ -7317,10 +7317,11 @@ function TreasuryDesk({ onCompanyChange, focusLcId, focusBdId, onFocusHandled }:
                       />
                     </div>
                   </LcPanel>
-                  {/* THE BANK'S COMMISSION AS CHARGED — from Payment received
-                      on: the voucher it came out by, linked, against what it
-                      should have been. */}
-                  {!!dRow.payment_received_date && (
+                  {/* THE BANK'S COMMISSION AS CHARGED — at every stage from
+                      Application on (banks often debit it at opening): the
+                      voucher it came out by, linked, against what it should
+                      have been. Not on a rejected application. */}
+                  {String(dRow.workflow_status || '') !== 'rejected' && (
                     <LcPanel title="Bank commission">
                       <LcCommissionLink lcId={Number(dRow.id)} onChanged={load} />
                     </LcPanel>
