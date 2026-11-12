@@ -4636,7 +4636,11 @@ export function Accounts({
                     amount: Number(a.amount)
                   })),
                 // The working behind this figure, where one was written.
-                splits: splitsOut(l.splits)
+                splits: splitsOut(l.splits),
+                // The item on a sales/purchase line — kept with a plain voucher too.
+                product_id: l.product_id || null,
+                qty: Number(l.qty) || null,
+                rate: Number(l.rate) || null
               }))
               // The GST and round-off the note panel worked out.
               .concat(
@@ -4647,7 +4651,10 @@ export function Accounts({
                       dr: v.side === 'dr' ? v.amount : 0,
                       cr: v.side === 'cr' ? v.amount : 0,
                       allocs: [],
-                      splits: []
+                      splits: [],
+                      product_id: null,
+                      qty: null,
+                      rate: null
                     }))
                   : []
               )
@@ -5206,7 +5213,11 @@ export function Accounts({
           name: String(sp.name || ''),
           amount: String(sp.amount ?? ''),
           note: sp.note ? String(sp.note) : undefined
-        }))
+        })),
+        // And the item it was written with (plain vouchers keep it on the line).
+        product_id: l.product_id != null ? Number(l.product_id) : null,
+        qty: l.qty != null ? String(l.qty) : '',
+        rate: l.rate != null ? String(l.rate) : ''
       }))
     )
     for (const l of vLines) if (isBillwise(String(l.acc_group))) void loadRefs(String(l.account))

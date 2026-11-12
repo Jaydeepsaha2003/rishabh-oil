@@ -154,6 +154,9 @@ export interface VoucherInput {
     cr?: number
     allocs?: BillAlloc[]
     splits?: LineSplit[]
+    product_id?: number | null
+    qty?: number | null
+    rate?: number | null
   }[]
 }
 
@@ -165,7 +168,7 @@ async function accountGroupOf(name: string): Promise<string> {
   return String(res.rows[0]?.acc_group || '')
 }
 
-type LineWithAllocs = JournalLine & { allocs: BillAlloc[]; splits: LineSplit[] }
+type LineWithAllocs = JournalLine & { allocs: BillAlloc[]; splits: LineSplit[]; product_id?: number | null; qty?: number | null; rate?: number | null }
 
 /**
  * A BREAKDOWN THAT DOES NOT ADD UP IS WORSE THAN NONE.
@@ -221,6 +224,9 @@ async function validateVoucher(v: VoucherInput): Promise<LineWithAllocs[]> {
       group: l.group,
       dr: n(l.dr),
       cr: n(l.cr),
+      product_id: n(l.product_id) || null,
+      qty: n(l.qty) || null,
+      rate: n(l.rate) || null,
       splits: (l.splits || [])
         .map((sp) => ({
           name: String(sp?.name || '').trim().slice(0, 200),
@@ -313,6 +319,22 @@ export async function resolveRefIds(
 }
 
 /** The breakdown rows, against the same freshly written lines as the allocs. */
+// The item, qty and rate a plain voucher's line was written with (CN/24's
+// RPO-B 34.905 @ 1,40,000) — kept on the line, matched in written order like
+// the splits below. Recorded only; no stock moves from a plain voucher.
+async function writeItems(entryId: number, lines: LineWithAllocs[]): Promise<void> {
+  const c = getClient()
+  const saved = await c.execute({ sql: 'SELECT id FROM journal_lines WHERE entry_id = ? ORDER BY id ASC', args: [entryId] })
+  for (let i = 0; i < lines.length && i < saved.rows.length; i++) {
+    const l = lines[i]
+    if (!l.product_id && !l.qty && !l.rate) continue
+    await c.execute({
+      sql: 'UPDATE journal_lines SET product_id = ?, qty = ?, rate = ? WHERE id = ?',
+      args: [l.product_id || null, l.qty || null, l.rate || null, n((saved.rows[i] as unknown as Row).id)]
+    })
+  }
+}
+
 async function writeSplits(entryId: number, lines: LineWithAllocs[]): Promise<void> {
   const c = getClient()
   const saved = await c.execute({
@@ -497,6 +519,7 @@ export async function createVoucher(v: VoucherInput): Promise<{ id: number }> {
   })
   await writeAllocs(res.id, lines)
   await writeSplits(res.id, lines)
+  await writeItems(res.id, lines)
   if (v.subtype !== undefined) {
     const { checkedSubtype } = await import('./voucherSubtypes')
     await getClient().execute({ sql: 'UPDATE journal_entries SET vch_subtype = ? WHERE id = ?', args: [await checkedSubtype(v.vchType, v.subtype), res.id] })
@@ -555,6 +578,7 @@ export async function updateVoucher(id: number, v: VoucherInput): Promise<{ id: 
   }
   await writeAllocs(id, lines)
   await writeSplits(id, lines)
+  await writeItems(id, lines)
   return { id }
   })
 }
@@ -567,7 +591,7 @@ export async function getVoucher(id: number): Promise<Row | null> {
   })
   if (!e.rows.length) return null
   const lines = await c.execute({
-    sql: `SELECT jl.id, jl.dr, jl.cr, a.name AS account, a.acc_group
+    sql: `SELECT jl.id, jl.dr, jl.cr, jl.product_id, jl.qty, jl.rate, a.name AS account, a.acc_group
           FROM journal_lines jl JOIN ledger_accounts a ON a.id = jl.account_id
           -- Debits first, then credits — the way a voucher is read (Tally
           -- lists it by side too). Within a side, the order it was written.

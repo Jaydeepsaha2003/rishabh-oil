@@ -3530,6 +3530,11 @@ const REQUIRED_COLUMNS: { table: string; column: string; type: string }[] = [
   // The bank's own date for a Reco voucher (cheque cleared / credited) — the
   // value date entered from the Day Book; nothing posts on it.
   { table: 'journal_entries', column: 'value_date', type: 'TEXT' },
+  // The item on a plain voucher's sales/purchase line (a Tally credit note):
+  // what it was and how much — recorded with the line, no stock moves.
+  { table: 'journal_lines', column: 'product_id', type: 'INTEGER' },
+  { table: 'journal_lines', column: 'qty', type: 'REAL' },
+  { table: 'journal_lines', column: 'rate', type: 'REAL' },
   // The bank receipt an LC's preclosure interest refund came back by — linked
   // from the LC panel (lc.ts linkLcRefund). Shown, never posted.
   { table: 'letters_of_credit', column: 'refund_voucher_id', type: 'INTEGER' },
