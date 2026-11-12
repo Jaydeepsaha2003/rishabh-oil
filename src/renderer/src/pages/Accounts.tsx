@@ -2428,6 +2428,14 @@ export function Accounts({
     setBwFifoState(v)
   }
   const lgOrderRef = useRef<number[]>([])
+  // The picker opens with its highlight on the ledger being read, not on the
+  // first in the list — ↑ ↓ then step from where you are.
+  useEffect(() => {
+    if (!lgPickerOpen) return
+    const at = lgOrderRef.current.indexOf(Number(ledgerId))
+    if (at >= 0) setLgCursor(at)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [lgPickerOpen])
   const setLgView = useCallback((v: LgView) => {
     setLgViewRaw(v)
     setLgBills(v === 'billwise')
@@ -6335,10 +6343,10 @@ Delete ${doc}?`)) return
     if (!n) return
     if (e.key === 'ArrowDown') {
       e.preventDefault()
-      setLgCursor((i) => Math.min(i + 1, n - 1))
+      setLgCursor((i) => (i + 1) % n)
     } else if (e.key === 'ArrowUp') {
       e.preventDefault()
-      setLgCursor((i) => Math.max(i - 1, 0))
+      setLgCursor((i) => (i - 1 + n) % n)
     } else if (e.key === 'Home') {
       e.preventDefault()
       setLgCursor(0)
@@ -17294,8 +17302,9 @@ Delete ${doc}?`)) return
         e.preventDefault()
         setLgCursor(Math.max(0, Math.min(to, count - 1)))
       }
-      if (e.key === 'ArrowDown') step(lgCursor + 1)
-      else if (e.key === 'ArrowUp') step(lgCursor - 1)
+      // ↑ ↓ wrap round at the ends; PgUp / PgDn stop there.
+      if (e.key === 'ArrowDown') step((lgCursor + 1) % count)
+      else if (e.key === 'ArrowUp') step((lgCursor - 1 + count) % count)
       else if (e.key === 'PageDown') step(lgCursor + 10)
       else if (e.key === 'PageUp') step(lgCursor - 10)
       else if (e.key === 'Enter') {
@@ -17625,7 +17634,7 @@ Delete ${doc}?`)) return
       flatIndex += 1
       const ai = flatIndex
       const on = Number(a2.id) === ledgerId
-      const cur = ai === lgCursor && !on
+      const cur = ai === lgCursor
       // Empty date on (the ledger's default): the balance that view closes at —
       // bills whose oil is not all emptied yet are left out (held_not_empty).
       const heldOut = lgTankerEmpty ? Number(a2.held_not_empty) || 0 : 0
@@ -17644,14 +17653,16 @@ Delete ${doc}?`)) return
           className="flex w-full items-center gap-[9px] text-left transition-colors hover:bg-[#F4F7F2]"
           style={
             compact
-              ? { padding: '9px 14px', background: on ? '#F3FBE2' : cur ? '#F4F7F2' : '#fff' }
+              ? { padding: '9px 14px', background: cur ? '#E4F5C8' : on ? '#F3FBE2' : '#fff', boxShadow: cur ? 'inset 4px 0 0 #9ACD2A' : 'none' }
               : {
                   margin: '0 7px',
                   width: 'calc(100% - 14px)',
                   padding: '8px 9px',
                   borderRadius: 7,
-                  background: on ? 'linear-gradient(180deg,#F3FBE2,#E8F6CC)' : cur ? '#F4F7F2' : 'transparent',
-                  border: `1px solid ${on ? '#CDE89A' : cur ? '#DCE7DB' : 'transparent'}`,
+                  // The keyboard's row is lit the way every other list lights it;
+                  // the open ledger keeps its own soft green beneath.
+                  background: cur ? '#E4F5C8' : on ? 'linear-gradient(180deg,#F3FBE2,#E8F6CC)' : 'transparent',
+                  border: `1px solid ${cur ? '#9ACD2A' : on ? '#CDE89A' : 'transparent'}`,
                   boxShadow: on ? '0 4px 12px -8px rgba(63,90,18,.5)' : 'none'
                 }
           }
