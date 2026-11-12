@@ -1867,9 +1867,14 @@ function gridArrows(e: React.KeyboardEvent<HTMLElement>): void {
       if (e.key === 'ArrowLeft' && (box.selectionStart ?? 0) > 0) return
       if (e.key === 'ArrowRight' && (box.selectionEnd ?? len) < len) return
     }
+    // → / ← walk the same order Enter does: on to the next line's fields, and
+    // round from the last field of the voucher to the first.
+    const all = Array.from((e.currentTarget as HTMLElement).querySelectorAll<HTMLElement>('[data-vrow]')).flatMap(fields)
+    const k = all.indexOf(t)
+    if (k < 0) return
     e.preventDefault()
-    const n = mine.length
-    mine[(at + (e.key === 'ArrowRight' ? 1 : -1) + n) % n]?.focus()
+    const n = all.length
+    all[(k + (e.key === 'ArrowRight' ? 1 : -1) + n) % n]?.focus()
     return
   }
   if (t instanceof HTMLTextAreaElement) return
