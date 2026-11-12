@@ -111,6 +111,19 @@ const ITEMS: Record<string, { label: string; icon: LucideIcon }> = {
 }
 
 // The page keys App.tsx listens for (a bare letter, nothing being typed).
+// ↑ ↓ (Home / End) walk the menu and wrap round; Enter / Space open the page.
+function navKeys(e: React.KeyboardEvent<HTMLElement>): void {
+  if (!['ArrowUp', 'ArrowDown', 'Home', 'End'].includes(e.key) || e.altKey || e.ctrlKey || e.metaKey) return
+  const items = Array.from(e.currentTarget.querySelectorAll<HTMLElement>('[data-nav-item]'))
+  if (!items.length) return
+  e.preventDefault()
+  const n = items.length
+  const at = items.indexOf(document.activeElement as HTMLElement)
+  const to = e.key === 'Home' ? 0 : e.key === 'End' ? n - 1 : at < 0 ? 0 : (at + (e.key === 'ArrowDown' ? 1 : -1) + n) % n
+  items[to].focus()
+  items[to].scrollIntoView({ block: 'nearest' })
+}
+
 export const HOTKEY: Partial<Record<string, string>> = {
   dashboard: 'D',
   bargains: 'B',
@@ -227,12 +240,13 @@ export function Sidebar({
     const forestRail = __WEB__
     const btn = (
       <button
+        data-nav-item
         onClick={() => {
           onNavigate(id as Page)
           if (mobile) mobileMenu.setOpen(false)
         }}
         className={cn(
-          'flex w-full items-center gap-3 rounded-lg py-2 text-sm font-medium transition-colors',
+          'flex w-full items-center gap-3 rounded-lg py-2 text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#C7F03F]/70',
           showLabel ? 'px-3' : 'justify-center px-0',
           forestRail
             ? active
@@ -311,7 +325,7 @@ export function Sidebar({
                   (see PageHeader), and two of them invited the question of
                   whether they were the same control. */}
 
-              <nav className="flex-1 space-y-1 overflow-y-auto overflow-x-hidden p-2">
+              <nav onKeyDown={navKeys} className="flex-1 space-y-1 overflow-y-auto overflow-x-hidden p-2">
                 {visibleGroups.map((g) => (
                   <div key={g.label} className="space-y-0.5">
                     <div className="px-3 pb-1 pt-3 text-[10px] font-semibold uppercase tracking-wider text-[#6E9484]">
@@ -361,6 +375,11 @@ export function Sidebar({
       <aside
         onMouseEnter={() => setExpanded(true)}
         onMouseLeave={() => setExpanded(false)}
+        // Reached by the keyboard (Tab) the rail opens too, and shuts once focus leaves it.
+        onFocus={() => setExpanded(true)}
+        onBlur={(e) => {
+          if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setExpanded(false)
+        }}
         className={cn(
           // THE RAIL OUTRANKS EVERY PAGE.
           //
@@ -445,6 +464,7 @@ export function Sidebar({
         )}
 
         <nav
+          onKeyDown={navKeys}
           className={cn(
             'flex-1 space-y-1 overflow-y-auto overflow-x-hidden p-2',
             !expanded && 'no-scrollbar'
