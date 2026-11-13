@@ -29155,12 +29155,14 @@ var init_trading = __esm({
 // src/main/notes.ts
 var notes_exports = {};
 __export(notes_exports, {
+  applyNoteTopupUndo: () => applyNoteTopupUndo,
   createNote: () => createNote,
   deleteNote: () => deleteNote,
   listNoteItems: () => listNoteItems,
   listNotes: () => listNotes,
   noteRelinkCandidates: () => noteRelinkCandidates,
   relinkNote: () => relinkNote,
+  undoNoteTopups: () => undoNoteTopups,
   updateNote: () => updateNote
 });
 function toPlain30(res) {
@@ -29246,6 +29248,53 @@ async function partyByLedgerName(name, cid, preferred, group) {
   }
   return null;
 }
+async function undoNoteTopups(noteId) {
+  const c = getClient();
+  const rows2 = (await c.execute({ sql: "SELECT id, bargain_id, delta FROM bargain_adjustments WHERE note_id = ?", args: [n43(noteId)] })).rows;
+  for (const r of rows2) {
+    await c.execute({ sql: "UPDATE sales_bargains SET qty = ROUND(qty - ?, 3) WHERE id = ?", args: [n43(r.delta), n43(r.bargain_id)] });
+    await c.execute({ sql: "DELETE FROM bargain_adjustments WHERE id = ?", args: [n43(r.id)] });
+  }
+}
+async function applyNoteTopupUndo(noteId) {
+  const c = getClient();
+  await undoNoteTopups(noteId);
+  const note = (await c.execute({ sql: "SELECT * FROM notes WHERE id = ?", args: [n43(noteId)] })).rows[0];
+  if (!note || String(note.note_type) !== "credit" || String(note.party_type) !== "customer") return;
+  const inv = String(note.against_ref || "").trim();
+  if (!inv) return;
+  const items = (await c.execute({ sql: "SELECT product_id, qty FROM note_items WHERE note_id = ? AND qty > 0", args: [n43(noteId)] })).rows;
+  for (const it of items) {
+    const sale = (await c.execute({
+      sql: `SELECT sales_bargain_id FROM sales WHERE TRIM(UPPER(invoice_no)) = TRIM(UPPER(?)) AND product_id = ? AND sales_bargain_id IS NOT NULL LIMIT 1`,
+      args: [inv, n43(it.product_id)]
+    })).rows[0];
+    const bid = n43(sale?.sales_bargain_id);
+    if (!bid) continue;
+    const topup = n43(
+      (await c.execute({
+        sql: `SELECT COALESCE(SUM(delta), 0) AS t FROM bargain_adjustments
+               WHERE kind = 'sales' AND bargain_id = ? AND note_id IS NULL AND delta > 0
+                 AND TRIM(UPPER(note)) = TRIM(UPPER(?))`,
+        args: [bid, `Top-up for invoice ${inv}`]
+      })).rows[0]?.t
+    );
+    const undone = -n43(
+      (await c.execute({
+        sql: `SELECT COALESCE(SUM(delta), 0) AS t FROM bargain_adjustments
+               WHERE kind = 'sales' AND bargain_id = ? AND note_id IS NOT NULL AND note_id <> ? AND note LIKE ?`,
+        args: [bid, n43(noteId), `Top-up for invoice ${inv} undone%`]
+      })).rows[0]?.t
+    );
+    const take = Math.round(Math.min(Math.max(0, topup - undone), n43(it.qty)) * 1e3) / 1e3;
+    if (take <= 0) continue;
+    await c.execute({ sql: "UPDATE sales_bargains SET qty = ROUND(qty - ?, 3) WHERE id = ?", args: [take, bid] });
+    await c.execute({
+      sql: "INSERT INTO bargain_adjustments (kind, bargain_id, delta, adj_date, note, note_id) VALUES ('sales', ?, ?, ?, ?, ?)",
+      args: [bid, -take, String(note.note_date || "").slice(0, 10), `Top-up for invoice ${inv} undone \u2014 returned on ${String(note.note_no)}`, n43(noteId)]
+    });
+  }
+}
 async function createNote(v, existingId) {
   const c = getClient();
   const cid = v.company_id ? n43(v.company_id) : getActiveCompanyId();
@@ -29312,6 +29361,7 @@ async function createNote(v, existingId) {
   if (existingId && !prior) throw new Error("That note no longer exists");
   const noteNo = prior ? String(prior.note_no) : await nextNoteNo(type, cid);
   if (prior) {
+    await undoNoteTopups(n43(existingId));
     if (prior.journal_entry_id != null) {
       await c.execute({ sql: "UPDATE notes SET journal_entry_id = NULL WHERE id = ?", args: [n43(existingId)] });
       await c.execute({
@@ -29480,6 +29530,7 @@ async function createNote(v, existingId) {
       args: [noteId, it.product_id, it.description, it.qty, it.rate, it.amount]
     });
   }
+  await applyNoteTopupUndo(noteId);
   return { id: noteId, note_no: noteNo };
 }
 async function updateNote(id, v) {
@@ -29493,6 +29544,7 @@ async function deleteNote(id, companyId) {
   });
   if (!res.rows.length) return { id };
   const note = res.rows[0];
+  await undoNoteTopups(id);
   if (note.journal_entry_id != null) {
     await c.execute({ sql: "UPDATE notes SET journal_entry_id = NULL WHERE id = ?", args: [id] });
     await c.execute({
