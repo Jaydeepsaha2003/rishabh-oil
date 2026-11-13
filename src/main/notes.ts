@@ -153,6 +153,66 @@ async function partyByLedgerName(
 //     Dr Party (base+gst)  Cr {against A/C} (base)  Cr {GST A/C} (gst)
 //   Credit note (credits the party, so it reduces what they owe us):
 //     Dr {against A/C} (base)  Dr {GST A/C} (gst)  Cr Party (base+gst)
+// A RETURN UNDOES ITS INVOICE'S TOP-UP FIRST. A sale bigger than its bargain's
+// balance grows the bargain ("Top-up for invoice KRFIN/149", +19.61); when that
+// invoice comes back on a credit note, the top-up goes back off before anything
+// else, up to the quantity returned — the bargain is left where it stood before
+// the sale (RPO/07-07/SURYAFOODS/07: 15.295, not 34.905). Logged as an
+// adjustment carrying the note's id, so altering or deleting the note restores it.
+export async function undoNoteTopups(noteId: number): Promise<void> {
+  const c = getClient()
+  const rows = (await c.execute({ sql: 'SELECT id, bargain_id, delta FROM bargain_adjustments WHERE note_id = ?', args: [n(noteId)] })).rows as unknown as Row[]
+  for (const r of rows) {
+    await c.execute({ sql: 'UPDATE sales_bargains SET qty = ROUND(qty - ?, 3) WHERE id = ?', args: [n(r.delta), n(r.bargain_id)] })
+    await c.execute({ sql: 'DELETE FROM bargain_adjustments WHERE id = ?', args: [n(r.id)] })
+  }
+}
+
+export async function applyNoteTopupUndo(noteId: number): Promise<void> {
+  const c = getClient()
+  // Whatever this note undid before goes back first, so applying twice never doubles.
+  await undoNoteTopups(noteId)
+  const note = (await c.execute({ sql: 'SELECT * FROM notes WHERE id = ?', args: [n(noteId)] })).rows[0] as unknown as Row | undefined
+  if (!note || String(note.note_type) !== 'credit' || String(note.party_type) !== 'customer') return
+  const inv = String(note.against_ref || '').trim()
+  if (!inv) return
+  const items = (await c.execute({ sql: 'SELECT product_id, qty FROM note_items WHERE note_id = ? AND qty > 0', args: [n(noteId)] })).rows as unknown as Row[]
+  for (const it of items) {
+    // The bargain that invoice line drew on, for this product.
+    const sale = (
+      await c.execute({
+        sql: `SELECT sales_bargain_id FROM sales WHERE TRIM(UPPER(invoice_no)) = TRIM(UPPER(?)) AND product_id = ? AND sales_bargain_id IS NOT NULL LIMIT 1`,
+        args: [inv, n(it.product_id)]
+      })
+    ).rows[0] as unknown as Row | undefined
+    const bid = n(sale?.sales_bargain_id)
+    if (!bid) continue
+    const topup = n(
+      (await c.execute({
+        sql: `SELECT COALESCE(SUM(delta), 0) AS t FROM bargain_adjustments
+               WHERE kind = 'sales' AND bargain_id = ? AND note_id IS NULL AND delta > 0
+                 AND TRIM(UPPER(note)) = TRIM(UPPER(?))`,
+        args: [bid, `Top-up for invoice ${inv}`]
+      })).rows[0]?.t
+    )
+    // Already undone by other notes against the same invoice.
+    const undone = -n(
+      (await c.execute({
+        sql: `SELECT COALESCE(SUM(delta), 0) AS t FROM bargain_adjustments
+               WHERE kind = 'sales' AND bargain_id = ? AND note_id IS NOT NULL AND note_id <> ? AND note LIKE ?`,
+        args: [bid, n(noteId), `Top-up for invoice ${inv} undone%`]
+      })).rows[0]?.t
+    )
+    const take = Math.round(Math.min(Math.max(0, topup - undone), n(it.qty)) * 1000) / 1000
+    if (take <= 0) continue
+    await c.execute({ sql: 'UPDATE sales_bargains SET qty = ROUND(qty - ?, 3) WHERE id = ?', args: [take, bid] })
+    await c.execute({
+      sql: "INSERT INTO bargain_adjustments (kind, bargain_id, delta, adj_date, note, note_id) VALUES ('sales', ?, ?, ?, ?, ?)",
+      args: [bid, -take, String(note.note_date || '').slice(0, 10), `Top-up for invoice ${inv} undone — returned on ${String(note.note_no)}`, n(noteId)]
+    })
+  }
+}
+
 export async function createNote(v: Row, existingId?: number): Promise<{ id: number; note_no: string }> {
   const c = getClient()
   const cid = v.company_id ? n(v.company_id) : getActiveCompanyId()
@@ -263,6 +323,7 @@ export async function createNote(v: Row, existingId?: number): Promise<{ id: num
   // leaves a stale voucher, ledger row or item line behind. Same
   // reverse-then-repost shape the LC and purchase edits use.
   if (prior) {
+    await undoNoteTopups(n(existingId))
     if (prior.journal_entry_id != null) {
       await c.execute({ sql: 'UPDATE notes SET journal_entry_id = NULL WHERE id = ?', args: [n(existingId)] })
       await c.execute({
@@ -440,6 +501,7 @@ export async function createNote(v: Row, existingId?: number): Promise<{ id: num
       args: [noteId, it.product_id, it.description, it.qty, it.rate, it.amount]
     })
   }
+  await applyNoteTopupUndo(noteId)
   return { id: noteId, note_no: noteNo }
 }
 
@@ -458,6 +520,7 @@ export async function deleteNote(id: number, companyId?: number): Promise<{ id: 
   })
   if (!res.rows.length) return { id }
   const note = res.rows[0]
+  await undoNoteTopups(id)
   // Reverse the journal voucher (both legs) and the party-ledger row.
   if (note.journal_entry_id != null) {
     await c.execute({ sql: 'UPDATE notes SET journal_entry_id = NULL WHERE id = ?', args: [id] })
