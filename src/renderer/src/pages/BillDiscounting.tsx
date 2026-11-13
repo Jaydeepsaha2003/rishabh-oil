@@ -1123,6 +1123,10 @@ export function BillDiscounting({
   // (blank = the bill's). Part 1 lands on the payment received date.
   const [legPlan, setLegPlan] = useState<{ amount: string; date: string; maturity: string; interest_pct: string; margin_pct: string }[]>([])
   const [legsRow, setLegsRow] = useState<Row | null>(null)
+  // RE-DATING A LIVE BILL'S RECEIPT (B4 07-09 -> 08-09): the same Mark payment
+  // received with only the date sent, so route, bank and parts stay as they are.
+  const [redate, setRedate] = useState<{ row: Row; date: string } | null>(null)
+  const [redateBusy, setRedateBusy] = useState(false)
   // The bill whose parts paid to the supplier are open.
   const [partyRow, setPartyRow] = useState<Row | null>(null)
 
@@ -3406,6 +3410,9 @@ export function BillDiscounting({
                           disabledReason: 'Already repaid — reopen it first',
                           onClick: () => openEdit(r)
                         },
+                        ...(r.payment_received_date && !repaid
+                          ? [{ label: `Change receipt date (now ${formatDate(String(r.payment_received_date))})`, icon: CalendarRange, onClick: () => setRedate({ row: r, date: String(r.payment_received_date).slice(0, 10) }) }]
+                          : []),
                         ...(bdRefundTot[String(r.id)] ? [{ label: bdRefundTot[String(r.id)].due > 0.004 ? `Refund received — ${formatINR(bdRefundTot[String(r.id)].due)} due back` : `Refund received — ${formatINR(bdRefundTot[String(r.id)].booked)} refunded`, icon: Undo2, onClick: () => setRefundBd(Number(r.id)) }] : []),
                         {
                           label: 'Disbursement paid to…',
@@ -4135,6 +4142,9 @@ export function BillDiscounting({
                                   disabledReason: 'Already repaid — reopen it first',
                                   onClick: () => openEdit(r)
                                 },
+                                ...(r.payment_received_date && !repaid
+                                  ? [{ label: `Change receipt date (now ${formatDate(String(r.payment_received_date))})`, icon: CalendarRange, onClick: () => setRedate({ row: r, date: String(r.payment_received_date).slice(0, 10) }) }]
+                                  : []),
                                 ...(bdRefundTot[String(r.id)] ? [{ label: bdRefundTot[String(r.id)].due > 0.004 ? `Refund received — ${formatINR(bdRefundTot[String(r.id)].due)} due back` : `Refund received — ${formatINR(bdRefundTot[String(r.id)].booked)} refunded`, icon: Undo2, onClick: () => setRefundBd(Number(r.id)) }] : []),
                                 {
                                   label: 'Disbursement paid to…',
@@ -8233,6 +8243,43 @@ export function BillDiscounting({
               </Button>
             </DialogFooter>
           )}
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={!!redate} onOpenChange={(o) => !o && !redateBusy && setRedate(null)}>
+        <DialogContent className="max-w-sm">
+          <DialogHeader>
+            <DialogTitle>Change receipt date — {String(redate?.row.bd_no || '')}</DialogTitle>
+          </DialogHeader>
+          <p className="text-[12.5px] leading-relaxed text-[#5A6B62]">
+            The day {String(redate?.row.nbfc_name || 'the NBFC')}'s money landed. Interest runs from it, and the receipt voucher moves to the new date.
+            Repayments already made stay as they are.
+          </p>
+          <DatePicker value={redate?.date || ''} max={todayISO()} onChange={(v) => setRedate((x) => (x ? { ...x, date: String(v || '') } : x))} />
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setRedate(null)} disabled={redateBusy}>
+              Cancel
+            </Button>
+            <Button
+              disabled={redateBusy || !redate?.date || redate.date === String(redate.row.payment_received_date || '').slice(0, 10)}
+              onClick={async () => {
+                if (!redate) return
+                setRedateBusy(true)
+                try {
+                  await window.api.billDiscounting.markReceived(Number(redate.row.id), redate.date)
+                  toast.success(`${String(redate.row.bd_no || 'Bill')} — receipt date now ${formatDate(redate.date)}`)
+                  setRedate(null)
+                  await load()
+                } catch (e) {
+                  toast.error((e as Error).message)
+                } finally {
+                  setRedateBusy(false)
+                }
+              }}
+            >
+              {redateBusy ? 'Saving…' : 'Save date'}
+            </Button>
+          </DialogFooter>
         </DialogContent>
       </Dialog>
 
