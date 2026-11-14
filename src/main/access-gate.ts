@@ -87,6 +87,7 @@ const CHANNEL_RULES: Record<string, Rule> = {
   productionPlan: { module: 'production', label: 'Production plan' },
 
   trading: { module: 'trading', label: 'Trading', table: 'trading_deals', dateCol: 'deal_date' },
+  tradingChains: { module: 'trading', label: 'Trading', table: 'trading_chains', dateCol: 'chain_date' },
   stockCount: { module: 'stock', label: 'Stock' },
   skuStock: { module: 'stock', label: 'Stock' },
   stockAdj: { module: 'stock', label: 'Stock', table: 'stock_adjustments', dateCol: 'adj_date', createDateKey: 'date' },

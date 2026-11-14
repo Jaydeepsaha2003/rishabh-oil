@@ -381,7 +381,9 @@ function purchasePayload(
     // The sales invoice these all belong to. One transfer of three products is
     // three purchase rows under ONE number, and this is what tells the
     // Purchases form they are one bill rather than three clashing ones.
-    bill_group: s(sale.invoice_group) || null
+    bill_group: s(sale.invoice_group) || null,
+    // A chain-trading step is paper only: the purchase lands in no tank.
+    ...(v.paired_is_trading ? { is_trading: true } : {})
   }
 }
 
@@ -459,10 +461,12 @@ export async function syncPairedPurchase(sale: Row, v: Row): Promise<void> {
   // it is derived from the sale every time, so it only falls back when the
   // sale itself has none, which is a case raisePairedPurchase already refuses.
   const current = await getClient().execute({
-    sql: 'SELECT invoice_no, invoice_rate FROM orders WHERE id = ?',
+    sql: 'SELECT invoice_no, invoice_rate, is_trading FROM orders WHERE id = ?',
     args: [existing]
   })
   const cur = current.rows[0] as unknown as Row | undefined
+  // Edited from Sales, a chain step's purchase stays trading (no stock).
+  if (n(cur?.is_trading)) payload.is_trading = true
   if (!s(payload.invoice_no)) payload.invoice_no = s(cur?.invoice_no)
   if (!n(payload.invoice_rate)) payload.invoice_rate = n(cur?.invoice_rate)
   await updateOrder(existing, payload)

@@ -1170,7 +1170,12 @@ const api = {
     remove: (id: number): Promise<{ id: number }> => ipcRenderer.invoke('trading:delete', { id }),
     // Every trading invoice, both sides, with what is still open and what
     // settled the rest — LC, BD, bank or adjustment. Read-only.
-    payments: (): Promise<Row[]> => ipcRenderer.invoke('tradingPayments:list')
+    payments: (): Promise<Row[]> => ipcRenderer.invoke('tradingPayments:list'),
+    // Chain trading: steps through several hands, each booked in its company.
+    chains: (): Promise<Row[]> => ipcRenderer.invoke('tradingChains:list'),
+    chainLinkable: (values: Row): Promise<Row[]> => ipcRenderer.invoke('tradingChainLinks:list', { values }),
+    chainCreate: (values: Row): Promise<{ id: number }> => ipcRenderer.invoke('tradingChains:create', { values }),
+    chainDelete: (id: number): Promise<{ id: number }> => ipcRenderer.invoke('tradingChains:delete', { id })
   },
   tallyNotes: {
     preview: (values: Row): Promise<Row> => ipcRenderer.invoke('tallyNotes:preview', { values }),

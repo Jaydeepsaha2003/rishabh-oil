@@ -810,6 +810,10 @@ export interface Api {
     update: (id: number, values: Row) => Promise<{ id: number }>
     remove: (id: number) => Promise<{ id: number }>
     payments: () => Promise<Row[]>
+    chains: () => Promise<Row[]>
+    chainLinkable: (values: Row) => Promise<Row[]>
+    chainCreate: (values: Row) => Promise<{ id: number }>
+    chainDelete: (id: number) => Promise<{ id: number }>
   }
   tallyNotes: {
     preview: (values: Row) => Promise<Row>

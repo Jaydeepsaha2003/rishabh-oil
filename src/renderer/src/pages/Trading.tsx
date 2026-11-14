@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { toast } from 'sonner'
-import { AlertTriangle, ArrowLeft, BookOpen, CalendarClock, Check, CheckCircle2, ChevronDown, Clock, Lock, Zap, ChevronRight, FileSpreadsheet, Inbox, Info, Loader2, Pencil, Plus, Receipt, Repeat, Search, TrendingDown, TrendingUp, Trash2, Users, Wallet } from 'lucide-react'
+import { AlertTriangle, ArrowLeft, BookOpen, CalendarClock, Check, CheckCircle2, ChevronDown, Clock, Lock, Zap, ChevronRight, FileSpreadsheet, Inbox, Info, Link2, Loader2, Pencil, Plus, Receipt, Repeat, Search, TrendingDown, TrendingUp, Trash2, Users, Wallet } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Card } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
@@ -28,6 +28,7 @@ import { useEntryWindow } from '@/lib/useEntryWindow'
 import { useIsMobile } from '@/lib/useIsMobile'
 import { TradingMobile } from './TradingMobile'
 import { TradingPayments } from './TradingPayments'
+import { TradingChains } from './TradingChains'
 import { tierTds } from '@/lib/tdsSlab'
 import { TdsExplainer, type TdsParty } from '@/components/TdsExplainer'
 import { SaleTdsDialog } from '@/components/SaleTdsDialog'
@@ -1277,14 +1278,15 @@ export function Trading({
   // The register reads a trade as a margin; Payments reads the same trades
   // as bills — what is still owed on each side and how it is being settled.
   // Kept for the session, so coming back from a voucher lands on the same view.
-  const [view, setViewState] = useState<'deals' | 'payments'>(() => {
+  const [view, setViewState] = useState<'deals' | 'payments' | 'chains'>(() => {
     try {
-      return sessionStorage.getItem('trading-view') === 'payments' ? 'payments' : 'deals'
+      const v = sessionStorage.getItem('trading-view')
+      return v === 'payments' || v === 'chains' ? v : 'deals'
     } catch {
       return 'deals'
     }
   })
-  const setView = (v: 'deals' | 'payments'): void => {
+  const setView = (v: 'deals' | 'payments' | 'chains'): void => {
     try {
       sessionStorage.setItem('trading-view', v)
     } catch {
@@ -3003,7 +3005,8 @@ export function Trading({
                 {(
                   [
                     { v: 'deals', label: 'Deals', Icon: Repeat },
-                    { v: 'payments', label: 'Payments', Icon: Wallet }
+                    { v: 'payments', label: 'Payments', Icon: Wallet },
+                    { v: 'chains', label: 'Chain', Icon: Link2 }
                   ] as const
                 ).map((t) => (
                   <button
@@ -3070,7 +3073,7 @@ export function Trading({
                 </button>
               )
             })()}
-            {!(__WEB__ && view === 'payments') && <Button
+            {!(__WEB__ && (view === 'payments' || view === 'chains')) && <Button
               variant="outline"
               className="gap-1.5"
               disabled={filteredDeals.length === 0}
@@ -3083,14 +3086,16 @@ export function Trading({
             >
               <FileSpreadsheet className="h-4 w-4" /> Download Excel
             </Button>}
-            <Button className="gap-1.5" onClick={openNew}>
+            {!(__WEB__ && view === 'chains') && <Button className="gap-1.5" onClick={openNew}>
               <Plus className="h-4 w-4" /> New trading deal
-            </Button>
+            </Button>}
           </>
         }
       />
 
-      {__WEB__ && view === 'payments' ? (
+      {__WEB__ && view === 'chains' ? (
+        <TradingChains />
+      ) : __WEB__ && view === 'payments' ? (
         <TradingPayments
           range={globalRangeAppliesTo(globalRange, 'trading') ? { from: globalRange.from, to: globalRange.to } : null}
           onOpenDeal={(id) => {

@@ -2276,6 +2276,11 @@ export function registerIpc(): void {
   handle('trading:create', (_e, { values }: { values: Row }) => createTradingDeal(values))
   handle('trading:update', (_e, { id, values }: { id: number; values: Row }) => updateTradingDeal(id, values))
   handle('trading:delete', (_e, { id }: { id: number }) => deleteTradingDeal(id))
+  // Chain trading: one parcel through several hands, some of them ours.
+  handle('tradingChains:list', async () => (await import('./tradingChains')).listTradingChains())
+  handle('tradingChainLinks:list', async (_e, { values }: { values: Row }) => (await import('./tradingChains')).chainLinkable(values))
+  handle('tradingChains:create', async (_e, { values }: { values: Row }) => (await import('./tradingChains')).createTradingChain(values))
+  handle('tradingChains:delete', async (_e, { id }: { id: number }) => (await import('./tradingChains')).deleteTradingChain(id))
 
   handle('facility:list', () => listFacilities())
   handle('facility:exposures', (_e, { facilityId }: { facilityId: number }) => listFacilityExposures(facilityId))
