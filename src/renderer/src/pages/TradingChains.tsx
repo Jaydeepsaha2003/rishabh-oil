@@ -244,9 +244,10 @@ export function TradingChains({ openNewKey = 0, onFormChange }: { openNewKey?: n
         ))}
       </>
     )
-    const toOptions = (
+    // A company cannot buy from itself, so the seller is left out of Buys.
+    const toOptions = (from: string): React.JSX.Element => (
       <>
-        {companies.map((c) => (
+        {companies.filter((c) => from !== `c:${n(c.id)}`).map((c) => (
           <SelectItem key={`c${c.id}`} value={`c:${n(c.id)}`}>
             {s(c.name)} · our company
           </SelectItem>
@@ -440,7 +441,7 @@ export function TradingChains({ openNewKey = 0, onFormChange }: { openNewKey?: n
                         <Label>
                           Sells <Req />
                         </Label>
-                        <Select searchable value={st.from} onValueChange={(v) => setStep(i, { from: v, link: '' })}>
+                        <Select searchable value={st.from} onValueChange={(v) => setStep(i, { from: v, link: '', ...(v === st.to ? { to: '' } : {}) })}>
                           <SelectTrigger>
                             <SelectValue placeholder="Select company or supplier" />
                           </SelectTrigger>
@@ -456,7 +457,7 @@ export function TradingChains({ openNewKey = 0, onFormChange }: { openNewKey?: n
                           <SelectTrigger>
                             <SelectValue placeholder="Select company or customer" />
                           </SelectTrigger>
-                          <SelectContent className="max-h-64">{toOptions}</SelectContent>
+                          <SelectContent className="max-h-64">{toOptions(st.from)}</SelectContent>
                         </Select>
                       </div>
                     </div>
