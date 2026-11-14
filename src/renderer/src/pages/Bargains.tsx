@@ -3735,12 +3735,18 @@ export function Bargains({
                             const shown = !!Number(row._dispatch) || ret > 0.0005
                             return (
                               <TableCell className={cn('text-right tabular-nums', shown && 'font-bold text-red-600', __WEB__ && (expanded.has(Number(row.id)) ? '!bg-white !border-l !border-l-[#EAF0E9] !border-r !border-r-[#EAF0E9]' : cn(PB_GL, PB_GR)), __WEB__ && (shown ? '!text-[13px] !font-bold !text-[#0A1F17]' : '!text-[12.5px] !font-medium !text-[#C3D2C6]'))}>
-                                {shown ? formatNum(Number(row._dispatch) || 0) : '—'}
-                                {ret > 0.0005 && (
-                                  <span className="block whitespace-nowrap text-[10.5px] font-semibold !text-[#8A5300]" title="Purchase returns against this bargain — taken off what it drew, so the balance opened again">
-                                    {formatNum((Number(row._dispatch) || 0) + ret)} drawn · less {formatNum(ret)} returned
-                                  </span>
-                                )}
+                                {/* One line, so the row stays the height of its neighbours; the detail is on hover. */}
+                                <span className="inline-flex items-center justify-end gap-1.5 whitespace-nowrap">
+                                  {ret > 0.0005 && (
+                                    <span
+                                      className="rounded-[3px] border border-[#F0D9B5] bg-[#FFF6E8] px-1.5 py-[1px] text-[10px] font-bold leading-4 !text-[#8A5300]"
+                                      title={`${formatNum((Number(row._dispatch) || 0) + ret)} drawn · less ${formatNum(ret)} returned on purchase return — the balance opened again`}
+                                    >
+                                      ↩ {formatNum(ret)} returned
+                                    </span>
+                                  )}
+                                  {shown ? formatNum(Number(row._dispatch) || 0) : '—'}
+                                </span>
                               </TableCell>
                             )
                           })()}
