@@ -6391,7 +6391,7 @@ async function setLineAllocs(lineId, allocs) {
   return withDbTransaction(async () => {
     const c = getClient();
     const line = (await c.execute({
-      sql: `SELECT jl.id, jl.dr, jl.cr, jl.account_id, jl.entry_id, a.name, a.acc_group, je.company_id
+      sql: `SELECT jl.id, jl.dr, jl.cr, jl.account_id, jl.entry_id, a.name, a.acc_group, je.company_id, je.order_id, je.sale_id
                 FROM journal_lines jl JOIN ledger_accounts a ON a.id = jl.account_id JOIN journal_entries je ON je.id = jl.entry_id
                WHERE jl.id = ?`,
       args: [n4(lineId)]
@@ -6406,7 +6406,8 @@ async function setLineAllocs(lineId, allocs) {
       amount: Math.round(n4(a.amount) * 100) / 100
     })).filter((a) => a.amount > 4e-3);
     const total = Math.round(rows2.reduce((t, a) => t + a.amount, 0) * 100) / 100;
-    if (rows2.length && Math.abs(total - amount2) > 5e-3) {
+    const docLine = !!n4(line.order_id) || !!n4(line.sale_id);
+    if (rows2.length && (docLine ? total - amount2 > 5e-3 : Math.abs(total - amount2) > 5e-3)) {
       throw new Error(`Bill-wise details total ${total.toFixed(2)} but the line is ${amount2.toFixed(2)}`);
     }
     for (const a of rows2) {
