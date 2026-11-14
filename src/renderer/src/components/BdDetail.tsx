@@ -741,7 +741,68 @@ function ServicedRow({ x, bdId, splits = [], onSplits, cols = 0 }: { x: Row; bdI
           onClose={() => setLegSplit(null)}
         />
       )}
-      {mine.map((sp) => (
+      {/* THE SAVED SPLIT, IN THE SAME COLUMNS: each part under its Part head
+          (what it is above, its interest below), their sum under Total, and
+          the delete where the + sits. */}
+      {cols > 0 &&
+        mine.map((sp) => {
+          const pts = (sp.parts as Row[]) || []
+          const del = (): void => {
+            if (!confirm('Delete this saved split? It is a record only — nothing posted changes.')) return
+            void window.api.billDiscounting
+              .splitDelete(Number(sp.id))
+              .then(() => {
+                toast.success('Saved split deleted')
+                onSplits?.()
+              })
+              .catch((e) => toast.error((e as Error).message))
+          }
+          return (
+            <div key={String(sp.id)} className="flex items-center border-t border-dashed border-t-[#C6DAF0] bg-[#F4F8FD]">
+              <div className="flex min-w-0 flex-1 items-center gap-2.5 py-1.5 pl-3">
+                <span className="min-w-0 flex-1 pl-[27px]">
+                  <span className="block text-[9.5px] font-extrabold uppercase tracking-[.08em] text-[#1B4E82]">
+                    Saved split · {sp.mode === 'dates' ? 'by dates' : 'by amount'}
+                  </span>
+                  <span className="doc-ref block text-[10.5px] font-semibold text-[#5A6B62]">
+                    {formatDate(s(sp.from_date))} &rarr; {formatDate(s(sp.to_date))}
+                  </span>
+                </span>
+                {Array.from({ length: cols }, (_, k) => {
+                  const pt = pts[k]
+                  return (
+                    <span key={k} className={cn(SPLIT_COL, 'leading-tight')}>
+                      {pt ? (
+                        <>
+                          <span className="doc-ref block truncate text-[10.5px] font-semibold text-[#5A6B62]" title={s(pt.label)}>
+                            {sp.mode === 'dates' ? s(pt.label) : formatINR(n(pt.value))}
+                          </span>
+                          <span className="doc-ref block whitespace-nowrap text-[12px] font-bold text-[#0B6B45]">{formatINR(n(pt.interest))}</span>
+                        </>
+                      ) : (
+                        <span className="text-[12px] text-[#C3D2C6]">—</span>
+                      )}
+                    </span>
+                  )
+                })}
+                <span className={cn(SPLIT_COL, 'doc-ref whitespace-nowrap text-[12px] font-bold text-[#1B4E82]')}>
+                  {formatINR(Math.round(pts.reduce((t, pt) => t + n(pt.interest), 0) * 100) / 100)}
+                </span>
+                <span className="w-4 flex-none" />
+              </div>
+              <button
+                type="button"
+                title="Delete this saved split"
+                aria-label="Delete this saved split"
+                onClick={del}
+                className="mx-2 flex h-[22px] w-[22px] flex-none items-center justify-center rounded-[3px] text-[#8C2F26] hover:bg-[#FDECEA]"
+              >
+                <X className="h-3.5 w-3.5" />
+              </button>
+            </div>
+          )
+        })}
+      {cols === 0 && mine.map((sp) => (
         <div key={String(sp.id)} className="mx-3 mb-2 flex flex-wrap items-center gap-x-2 gap-y-1 rounded-[4px] border border-[#C6DAF0] bg-[#F4F8FD] px-3 py-1.5 text-[11.5px]">
           <span className="text-[9.5px] font-extrabold uppercase tracking-[.08em] text-[#1B4E82]">
             Saved split · {sp.mode === 'dates' ? 'by dates' : 'by amount'}
