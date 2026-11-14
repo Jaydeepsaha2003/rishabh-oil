@@ -1,7 +1,8 @@
 import React, { useEffect, useMemo, useState } from 'react'
 import { toast } from 'sonner'
-import { ArrowRight, Building2, Link2, Loader2, Plus, Trash2, User, X } from 'lucide-react'
+import { AlertTriangle, ArrowLeft, ArrowRight, Building2, Check, CheckCircle2, Link2, Loader2, Plus, Repeat, Trash2, TrendingDown, TrendingUp, User, Zap } from 'lucide-react'
 import { Input } from '@/components/ui/input'
+import { Label } from '@/components/ui/label'
 import { DatePicker } from '@/components/ui/date-picker'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { useFormPageEscape } from '@/lib/escape'
@@ -43,10 +44,16 @@ const blankStep = (date: string, qty: string, from = ''): Step => ({
   link: ''
 })
 
+// The trading deal form's section frame (Trading.tsx SECTION_WEB / SECTION_HEAD).
+const SECTION_WEB =
+  'overflow-hidden rounded-[4px] border border-[#D6E2D6] bg-white [&_label]:!text-[10px] [&_label]:!font-extrabold [&_label]:uppercase [&_label]:!tracking-[.12em] [&_label]:!text-[#5A6B62] [&_input]:!h-[46px] [&_input]:!rounded-[4px] [&_input]:!text-[13.5px] [&_[data-slot=select-trigger]]:!h-[46px] [&_[data-slot=select-trigger]]:!rounded-[4px] [&_[data-slot=select-trigger]]:!text-[13.5px] [&_[data-slot=date-picker]]:!h-[46px] [&_[data-slot=date-picker]]:!rounded-[4px] [&_[data-slot=date-picker]]:!text-[14px]'
+const SECTION_HEAD = 'border-b border-b-[#E4ECE3] bg-[#F7FAF6] px-4 py-3 text-[11.5px] font-extrabold tracking-[.14em] text-[#0A1F17]'
+const Req = (): React.JSX.Element => <span className="text-[#B3261E]">*</span>
+
 const kindOf = (v: string): 'company' | 'party' => (v.startsWith('c:') ? 'company' : 'party')
 const idOf = (v: string): number => Number(v.slice(2)) || 0
 
-export function TradingChains({ openNewKey = 0 }: { openNewKey?: number }): React.JSX.Element {
+export function TradingChains({ openNewKey = 0, onFormChange }: { openNewKey?: number; onFormChange?: (open: boolean) => void }): React.JSX.Element {
   const minDate = useEntryWindow('trading')
   const [chains, setChains] = useState<Row[]>([])
   const [loading, setLoading] = useState(true)
@@ -89,6 +96,8 @@ export function TradingChains({ openNewKey = 0 }: { openNewKey?: number }): Reac
     if (openNewKey) openNew()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [openNewKey])
+  // The page's own header steps aside while the form is open, as for a deal.
+  useEffect(() => onFormChange?.(!!form), [form, onFormChange])
   useFormPageEscape(!!form, !!form && (form.steps as Step[]).some((x) => x.from || x.to), () => setForm(null), saving)
 
   const nameOf = (v: string, side: 'from' | 'to'): string => {
@@ -219,7 +228,7 @@ export function TradingChains({ openNewKey = 0 }: { openNewKey?: number }): Reac
     </div>
   )
 
-  // ── THE FORM ────────────────────────────────────────────────────────────
+  // ── THE FORM — the same frame as New trading deal ───────────────────────
   if (form) {
     const fromOptions = (
       <>
@@ -249,166 +258,258 @@ export function TradingChains({ openNewKey = 0 }: { openNewKey?: number }): Reac
         ))}
       </>
     )
-    const lbl = 'mb-1 block text-[10px] font-extrabold uppercase tracking-[.1em] text-[#5A6B62]'
+    const prod = products.find((x) => String(x.id) === s(form.product_id))
+    const prodLabel = prod ? s(prod.code || prod.name) : ''
+    // What a step books, and its colour: a sale goes out (green), a purchase
+    // comes in (rose), a transfer is both (blue).
+    const kindOfStep = (st: Step): 'sale' | 'purchase' | 'transfer' | 'none' =>
+      !st.from || !st.to
+        ? 'none'
+        : kindOf(st.from) === 'company' && kindOf(st.to) === 'company'
+          ? 'transfer'
+          : kindOf(st.from) === 'company'
+            ? 'sale'
+            : kindOf(st.to) === 'company'
+              ? 'purchase'
+              : 'none'
+    const TONE = {
+      sale: { head: '!bg-[#F4FBF6]', chip: 'bg-[#0B6B45]', fg: 'text-[#0B6B45]', Icon: TrendingUp },
+      purchase: { head: '!bg-[#FDF3F2]', chip: 'bg-[#8C2F26]', fg: 'text-[#8C2F26]', Icon: TrendingDown },
+      transfer: { head: '!bg-[#EEF4FC]', chip: 'bg-[#1B4E82]', fg: 'text-[#1B4E82]', Icon: Repeat },
+      none: { head: '', chip: 'bg-[#0B3D2E]', fg: 'text-[#0A1F17]', Icon: Link2 }
+    } as const
+    const stepValue = (st: Step): number => {
+      if (st.mode === 'link') return n(links[linkKey(st)]?.find((r) => s(r.sale_group || r.order_id) === st.link)?.amount)
+      const taxable = n(st.qty) * n(st.rate)
+      return Math.round(taxable * (1 + n(st.gst_pct) / 100) * 100) / 100
+    }
+    // What is still to fill in, one chip each — as on a trading deal.
+    const missing: string[] = []
+    if (!form.product_id) missing.push('Product')
+    steps.forEach((st, i) => {
+      const k = `Step ${i + 1}`
+      if (!st.from) missing.push(`${k}: seller`)
+      if (!st.to) missing.push(`${k}: buyer`)
+      if (st.from && st.to && kindOfStep(st) === 'none') missing.push(`${k}: one side must be ours`)
+      if (st.mode === 'link') {
+        if (!st.link) missing.push(`${k}: invoice`)
+      } else {
+        if (!st.invoice_no.trim()) missing.push(`${k}: invoice no`)
+        if (!(n(st.qty) > 0)) missing.push(`${k}: qty`)
+        if (!(n(st.rate) > 0)) missing.push(`${k}: rate`)
+      }
+    })
+    const creates = steps.filter((st) => st.mode === 'create').length
     return (
-      <div className="rounded-[6px] border border-[#DCE7DB] bg-white">
-        <div className="flex items-center gap-3 border-b border-[#E4ECE3] bg-[#0B3D2E] px-5 py-3 text-white">
-          <div className="flex-1">
-            <div className="text-[9.5px] font-extrabold uppercase tracking-[.14em] text-[#C7F03F]">New chain</div>
-            <div className="text-[15px] font-extrabold">One parcel through several hands</div>
-          </div>
-          <button type="button" onClick={() => setForm(null)} className="rounded-[4px] p-1 hover:bg-white/10" aria-label="Close">
-            <X className="h-4 w-4" />
+      <div className="py-0">
+        <div className="sticky top-0 z-20 flex flex-wrap items-center gap-x-3.5 gap-y-2 rounded-[4px] bg-[#0B3D2E] px-5 py-3 text-white shadow-[0_8px_20px_-12px_rgba(10,31,23,0.55)]">
+          <button
+            type="button"
+            onClick={() => setForm(null)}
+            className="inline-flex h-10 items-center gap-2 rounded-[4px] border-[1.5px] border-[#C7F03F]/70 px-3.5 text-[13px] font-extrabold uppercase tracking-[.04em] text-[#C7F03F] hover:bg-[#C7F03F] hover:text-[#12280B]"
+          >
+            <ArrowLeft className="h-[19px] w-[19px]" /> Back
           </button>
+          <div className="h-6 border-l border-l-white/20" />
+          <h2 className="text-[14px] font-extrabold uppercase tracking-[.12em]">New chain</h2>
+          <span className="ml-auto flex items-center gap-2 text-[12px] font-bold text-[#8FBFA8]">
+            <span className="flex h-[26px] w-[26px] shrink-0 items-center justify-center rounded-[3px] bg-[#C7F03F]/15">
+              <Zap className="h-4 w-4 text-[#C7F03F]" />
+            </span>
+            One parcel through several hands — each step booked in its company, no stock
+          </span>
         </div>
-        <div className="space-y-4 p-5">
-          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-            <div>
-              <span className={lbl}>Date</span>
-              <DatePicker min={minDate} value={s(form.chain_date)} onChange={(v) => setForm((f) => (f ? { ...f, chain_date: v } : f))} />
-            </div>
-            <div>
-              <span className={lbl}>Product</span>
-              <Select searchable value={s(form.product_id)} onValueChange={(v) => setForm((f) => (f ? { ...f, product_id: v } : f))}>
-                <SelectTrigger>
-                  <SelectValue placeholder="Select product" />
-                </SelectTrigger>
-                <SelectContent className="max-h-64">
-                  {products.map((p) => (
-                    <SelectItem key={p.id} value={String(p.id)}>
-                      {s(p.code || p.name)}
-                      {p.code && p.name && p.code !== p.name ? ` · ${s(p.name)}` : ''}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-            <div>
-              <span className={lbl}>Quantity (MT)</span>
-              <Input
-                inputMode="decimal"
-                value={s(form.qty)}
-                onChange={(e) => {
-                  const q = e.target.value.replace(/[^0-9.]/g, '')
-                  // Steps still on the old quantity follow the chain's.
-                  setForm((f) => (f ? { ...f, qty: q, steps: (f.steps as Step[]).map((x) => (x.qty === s(f.qty) ? { ...x, qty: q } : x)) } : f))
-                }}
-              />
-            </div>
-            <div>
-              <span className={lbl}>Note</span>
-              <Input value={s(form.note)} onChange={(e) => setForm((f) => (f ? { ...f, note: e.target.value } : f))} placeholder="Optional" />
-            </div>
-          </div>
 
-          <div className="space-y-2.5">
-            {steps.map((st, i) => {
-              const opts = links[linkKey(st)] || []
-              const canLink = !!st.from && !!st.to && !(kindOf(st.from) === 'party' && kindOf(st.to) === 'party')
-              const doc =
-                !st.from || !st.to
-                  ? ''
-                  : kindOf(st.from) === 'company' && kindOf(st.to) === 'company'
-                    ? `Transfer: sale in ${nameOf(st.from, 'from')}, purchase in ${nameOf(st.to, 'to')}`
-                    : kindOf(st.from) === 'company'
-                      ? `Sale in ${nameOf(st.from, 'from')}'s books`
-                      : kindOf(st.to) === 'company'
-                        ? `Purchase in ${nameOf(st.to, 'to')}'s books`
-                        : 'One side must be one of our companies'
-              return (
-                <div key={i} className="rounded-[6px] border border-[#E4ECE3] bg-[#FBFCFA] p-3">
-                  <div className="mb-2 flex flex-wrap items-center gap-2">
-                    <span className="flex h-6 w-6 items-center justify-center rounded-full bg-[#0B3D2E] text-[11px] font-extrabold text-white">{i + 1}</span>
-                    <span className="text-[11.5px] font-bold text-[#5A6B62]">{doc}</span>
-                    <div className="ml-auto flex rounded-[4px] border border-[#C9DCCF] bg-white p-0.5">
-                      {(['create', 'link'] as const).map((m) => (
-                        <button
-                          key={m}
-                          type="button"
-                          disabled={m === 'link' && !canLink}
-                          onClick={() => setStep(i, { mode: m, link: '' })}
-                          className={cn(
-                            'rounded-[3px] px-2.5 py-1 text-[11px] font-extrabold disabled:opacity-40',
-                            st.mode === m ? 'bg-[#0B3D2E] text-white' : 'text-[#33473E] hover:bg-[#F0F8F3]'
-                          )}
-                        >
-                          {m === 'create' ? 'Create invoice' : 'Pick existing'}
-                        </button>
+        <div className="grid gap-3.5 pt-3.5 xl:grid-cols-[1fr_360px]">
+          <div className="space-y-3.5">
+            {/* 1 · CHAIN DETAILS */}
+            <section className={SECTION_WEB}>
+              <h3 className={cn(SECTION_HEAD, 'flex items-center gap-2.5 uppercase')}>
+                <span className="rounded-[2px] bg-[#0B3D2E] px-2 py-1 text-[10.5px] font-extrabold tracking-normal text-[#C7F03F]">1</span>
+                <Link2 className="h-[18px] w-[18px] text-[#0B3D2E]" />
+                Chain details
+                <span
+                  className={cn(
+                    'ml-auto rounded-[3px] border px-2.5 py-1.5 text-[12px] font-bold normal-case tabular-nums tracking-normal',
+                    prodLabel ? 'border-[#D6E2D6] bg-white text-[#0A1F17]' : 'border-[#DCE7DB] bg-[#F7FAF6] text-[#7C9188]'
+                  )}
+                >
+                  {prodLabel ? `${prodLabel} · ${formatDate(s(form.chain_date))}` : 'No product chosen yet'}
+                </span>
+              </h3>
+              <div className="grid gap-3.5 p-4 md:grid-cols-[1.4fr_1fr_160px]">
+                <div className="flex flex-col gap-1.5">
+                  <Label>
+                    Product <Req />
+                  </Label>
+                  <Select searchable value={s(form.product_id)} onValueChange={(v) => setForm((f) => (f ? { ...f, product_id: v } : f))}>
+                    <SelectTrigger>
+                      <SelectValue placeholder="Select product" />
+                    </SelectTrigger>
+                    <SelectContent className="max-h-64">
+                      {products.map((p) => (
+                        <SelectItem key={p.id} value={String(p.id)}>
+                          {s(p.code || p.name)}
+                          {p.code && p.name && p.code !== p.name ? ` · ${s(p.name)}` : ''}
+                        </SelectItem>
                       ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div className="flex flex-col gap-1.5">
+                  <Label>Chain date</Label>
+                  <DatePicker min={minDate} value={s(form.chain_date)} onChange={(v) => setForm((f) => (f ? { ...f, chain_date: v } : f))} />
+                </div>
+                <div className="flex flex-col gap-1.5">
+                  <Label>Quantity (MT)</Label>
+                  <Input
+                    inputMode="decimal"
+                    className="text-right tabular-nums"
+                    value={s(form.qty)}
+                    onChange={(e) => {
+                      const q = e.target.value.replace(/[^0-9.]/g, '')
+                      // Steps still on the old quantity follow the chain's.
+                      setForm((f) => (f ? { ...f, qty: q, steps: (f.steps as Step[]).map((x) => (x.qty === s(f.qty) ? { ...x, qty: q } : x)) } : f))
+                    }}
+                  />
+                </div>
+                <div className="flex flex-col gap-1.5 md:col-span-3">
+                  <Label>
+                    Note <span className="ml-1 rounded-[2px] bg-[#EAF0E9] px-1.5 py-0.5 text-[9px] tracking-[.08em]">Optional</span>
+                  </Label>
+                  <Input value={s(form.note)} onChange={(e) => setForm((f) => (f ? { ...f, note: e.target.value } : f))} placeholder="Anything worth recording against this chain" />
+                </div>
+              </div>
+            </section>
+
+            {/* 2… · ONE SECTION PER STEP */}
+            {steps.map((st, i) => {
+              const kind = kindOfStep(st)
+              const t = TONE[kind]
+              const opts = links[linkKey(st)] || []
+              const canLink = kind !== 'none'
+              const doc =
+                kind === 'transfer'
+                  ? `Transfer · sale in ${nameOf(st.from, 'from')}, purchase in ${nameOf(st.to, 'to')}`
+                  : kind === 'sale'
+                    ? `Sale (out) · ${nameOf(st.from, 'from')}'s books`
+                    : kind === 'purchase'
+                      ? `Purchase (in) · ${nameOf(st.to, 'to')}'s books`
+                      : st.from && st.to
+                        ? 'One side must be one of our companies'
+                        : 'Pick who sells and who buys'
+              return (
+                <section key={i} className={SECTION_WEB}>
+                  <h3 className={cn(SECTION_HEAD, t.head, 'flex flex-wrap items-center gap-2.5 uppercase')}>
+                    <span className={cn('rounded-[2px] px-2 py-1 text-[10.5px] font-extrabold tracking-normal text-white', t.chip)}>{i + 2}</span>
+                    <t.Icon className={cn('h-[18px] w-[18px]', t.fg)} />
+                    <span className={t.fg}>Step {i + 1}</span>
+                    <span className="text-[11.5px] font-bold normal-case tracking-normal text-[#5A6B62]">{doc}</span>
+                    <div className="ml-auto flex items-center gap-2 normal-case tracking-normal">
+                      <div className="flex rounded-[4px] border border-[#C9DCCF] bg-white p-0.5">
+                        {(['create', 'link'] as const).map((m) => (
+                          <button
+                            key={m}
+                            type="button"
+                            disabled={m === 'link' && !canLink}
+                            onClick={() => setStep(i, { mode: m, link: '' })}
+                            className={cn(
+                              'rounded-[3px] px-3 py-1.5 text-[11.5px] font-extrabold disabled:opacity-40',
+                              st.mode === m ? 'bg-[#0B3D2E] text-white' : 'text-[#33473E] hover:bg-[#F0F8F3]'
+                            )}
+                          >
+                            {m === 'create' ? 'Create invoice' : 'Pick existing'}
+                          </button>
+                        ))}
+                      </div>
+                      {steps.length > 1 && (
+                        <button
+                          type="button"
+                          title="Remove this step"
+                          onClick={() => setForm((f) => (f ? { ...f, steps: (f.steps as Step[]).filter((_, j) => j !== i) } : f))}
+                          className="rounded-[3px] p-1.5 text-[#8C2F26] hover:bg-[#FDECEA]"
+                        >
+                          <Trash2 className="h-4 w-4" />
+                        </button>
+                      )}
                     </div>
-                    {steps.length > 1 && (
-                      <button
-                        type="button"
-                        title="Remove this step"
-                        onClick={() => setForm((f) => (f ? { ...f, steps: (f.steps as Step[]).filter((_, j) => j !== i) } : f))}
-                        className="rounded-[3px] p-1 text-[#8C2F26] hover:bg-[#FDECEA]"
-                      >
-                        <Trash2 className="h-3.5 w-3.5" />
-                      </button>
+                  </h3>
+                  <div className="space-y-3.5 p-4">
+                    <div className="grid items-end gap-3.5 md:grid-cols-[1fr_auto_1fr]">
+                      <div className="flex flex-col gap-1.5">
+                        <Label>
+                          Sells <Req />
+                        </Label>
+                        <Select searchable value={st.from} onValueChange={(v) => setStep(i, { from: v, link: '' })}>
+                          <SelectTrigger>
+                            <SelectValue placeholder="Select company or supplier" />
+                          </SelectTrigger>
+                          <SelectContent className="max-h-64">{fromOptions}</SelectContent>
+                        </Select>
+                      </div>
+                      <ArrowRight className="mb-3.5 hidden h-5 w-5 text-[#8CA396] md:block" />
+                      <div className="flex flex-col gap-1.5">
+                        <Label>
+                          Buys <Req />
+                        </Label>
+                        <Select searchable value={st.to} onValueChange={(v) => setStep(i, { to: v, link: '' })}>
+                          <SelectTrigger>
+                            <SelectValue placeholder="Select company or customer" />
+                          </SelectTrigger>
+                          <SelectContent className="max-h-64">{toOptions}</SelectContent>
+                        </Select>
+                      </div>
+                    </div>
+                    {st.mode === 'link' ? (
+                      <div className="flex flex-col gap-1.5">
+                        <Label>
+                          Invoice already booked <Req />
+                        </Label>
+                        <Select searchable value={st.link} onValueChange={(v) => setStep(i, { link: v })}>
+                          <SelectTrigger>
+                            <SelectValue placeholder={opts.length ? 'Pick the invoice' : 'No invoices of this product between them'} />
+                          </SelectTrigger>
+                          <SelectContent className="max-h-64">
+                            {opts.map((r) => (
+                              <SelectItem key={s(r.sale_group || r.order_id)} value={s(r.sale_group || r.order_id)}>
+                                {s(r.invoice_no) || '—'} · {formatDate(s(r.date))} · {formatNum(n(r.qty))} MT @ {formatINR(n(r.rate))}
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                      </div>
+                    ) : (
+                      <div className="grid gap-3.5 sm:grid-cols-2 lg:grid-cols-[1.4fr_1fr_0.8fr_1fr_0.6fr]">
+                        <div className="flex flex-col gap-1.5">
+                          <Label>
+                            Invoice no <Req />
+                          </Label>
+                          <Input value={st.invoice_no} placeholder="Invoice no." onChange={(e) => setStep(i, { invoice_no: e.target.value })} />
+                        </div>
+                        <div className="flex flex-col gap-1.5">
+                          <Label>Date</Label>
+                          <DatePicker min={minDate} value={st.leg_date} onChange={(v) => setStep(i, { leg_date: v })} />
+                        </div>
+                        <div className="flex flex-col gap-1.5">
+                          <Label>
+                            Qty <Req />
+                          </Label>
+                          <Input inputMode="decimal" className="text-right tabular-nums" value={st.qty} onChange={(e) => setStep(i, { qty: e.target.value.replace(/[^0-9.]/g, '') })} />
+                        </div>
+                        <div className="flex flex-col gap-1.5">
+                          <Label>
+                            Rate (₹) <Req />
+                          </Label>
+                          <Input inputMode="decimal" className="text-right tabular-nums" value={st.rate} onChange={(e) => setStep(i, { rate: e.target.value.replace(/[^0-9.]/g, '') })} />
+                        </div>
+                        <div className="flex flex-col gap-1.5">
+                          <Label>GST %</Label>
+                          <Input inputMode="decimal" className="text-right tabular-nums" value={st.gst_pct} onChange={(e) => setStep(i, { gst_pct: e.target.value.replace(/[^0-9.]/g, '') })} />
+                        </div>
+                      </div>
                     )}
                   </div>
-                  <div className="grid items-end gap-2 md:grid-cols-[1fr_auto_1fr]">
-                    <div>
-                      <span className={lbl}>Sells</span>
-                      <Select searchable value={st.from} onValueChange={(v) => setStep(i, { from: v, link: '' })}>
-                        <SelectTrigger>
-                          <SelectValue placeholder="Company or supplier" />
-                        </SelectTrigger>
-                        <SelectContent className="max-h-64">{fromOptions}</SelectContent>
-                      </Select>
-                    </div>
-                    <ArrowRight className="mb-2.5 hidden h-4 w-4 text-[#8CA396] md:block" />
-                    <div>
-                      <span className={lbl}>Buys</span>
-                      <Select searchable value={st.to} onValueChange={(v) => setStep(i, { to: v, link: '' })}>
-                        <SelectTrigger>
-                          <SelectValue placeholder="Company or customer" />
-                        </SelectTrigger>
-                        <SelectContent className="max-h-64">{toOptions}</SelectContent>
-                      </Select>
-                    </div>
-                  </div>
-                  {st.mode === 'link' ? (
-                    <div className="mt-2">
-                      <span className={lbl}>Invoice already booked</span>
-                      <Select searchable value={st.link} onValueChange={(v) => setStep(i, { link: v })}>
-                        <SelectTrigger>
-                          <SelectValue placeholder={opts.length ? 'Pick the invoice' : 'No invoices of this product between them'} />
-                        </SelectTrigger>
-                        <SelectContent className="max-h-64">
-                          {opts.map((r) => (
-                            <SelectItem key={s(r.sale_group || r.order_id)} value={s(r.sale_group || r.order_id)}>
-                              {s(r.invoice_no) || '—'} · {formatDate(s(r.date))} · {formatNum(n(r.qty))} MT @ {formatINR(n(r.rate))}
-                            </SelectItem>
-                          ))}
-                        </SelectContent>
-                      </Select>
-                    </div>
-                  ) : (
-                    <div className="mt-2 grid gap-2 sm:grid-cols-2 lg:grid-cols-5">
-                      <div>
-                        <span className={lbl}>Invoice no</span>
-                        <Input value={st.invoice_no} onChange={(e) => setStep(i, { invoice_no: e.target.value })} />
-                      </div>
-                      <div>
-                        <span className={lbl}>Date</span>
-                        <DatePicker min={minDate} value={st.leg_date} onChange={(v) => setStep(i, { leg_date: v })} />
-                      </div>
-                      <div>
-                        <span className={lbl}>Qty (MT)</span>
-                        <Input inputMode="decimal" value={st.qty} onChange={(e) => setStep(i, { qty: e.target.value.replace(/[^0-9.]/g, '') })} />
-                      </div>
-                      <div>
-                        <span className={lbl}>Rate / MT</span>
-                        <Input inputMode="decimal" value={st.rate} onChange={(e) => setStep(i, { rate: e.target.value.replace(/[^0-9.]/g, '') })} />
-                      </div>
-                      <div>
-                        <span className={lbl}>GST %</span>
-                        <Input inputMode="decimal" value={st.gst_pct} onChange={(e) => setStep(i, { gst_pct: e.target.value.replace(/[^0-9.]/g, '') })} />
-                      </div>
-                    </div>
-                  )}
-                </div>
+                </section>
               )
             })}
             <button
@@ -420,33 +521,100 @@ export function TradingChains({ openNewKey = 0 }: { openNewKey?: number }): Reac
                   return { ...f, steps: [...(f.steps as Step[]), blankStep(last?.leg_date || s(f.chain_date), s(f.qty), carryFrom(last?.to || ''))] }
                 })
               }
-              className="flex items-center gap-1.5 rounded-[5px] border border-dashed border-[#9CB8A6] px-3 py-2 text-[12px] font-extrabold text-[#0B6B45] hover:bg-[#F0F8F3]"
+              className="flex h-10 items-center gap-2 rounded-[4px] border-[1.5px] border-[#0B3D2E] bg-white px-4 text-[12.5px] font-extrabold uppercase tracking-[.04em] text-[#0B3D2E] hover:bg-[#F0F8F3]"
             >
-              <Plus className="h-3.5 w-3.5" /> Add step
+              <Plus className="h-4 w-4" /> Add step
             </button>
+
+            <div className="sticky bottom-0 z-10 flex flex-wrap items-center justify-end gap-3 rounded-[4px] border border-[#D6E2D6] bg-white px-4 py-3.5 shadow-[0_-6px_18px_-8px_rgba(10,31,23,0.28)]">
+              {saving ? (
+                <span className="mr-auto text-[12px] text-muted-foreground">Posting {creates} invoice{creates === 1 ? '' : 's'} — please wait, do not close this window.</span>
+              ) : missing.length ? (
+                <span className="mr-auto flex flex-wrap items-center gap-2">
+                  <span className="flex items-center gap-1.5 text-[11px] font-extrabold uppercase tracking-[.08em] text-[#8A5300]">
+                    <AlertTriangle className="h-4 w-4 shrink-0 text-[#C2700A]" />
+                    Still needed
+                  </span>
+                  {missing.slice(0, 6).map((m) => (
+                    <span key={m} className="rounded-[3px] border border-[#F0D9AE] bg-[#FFFBF2] px-2 py-1 text-[11.5px] font-bold text-[#8A5300]">
+                      {m}
+                    </span>
+                  ))}
+                  {missing.length > 6 && <span className="text-[11.5px] font-bold text-[#8A5300]">+{missing.length - 6} more</span>}
+                </span>
+              ) : (
+                <span className="mr-auto flex items-center gap-2 rounded-[3px] border border-[#BFE3CB] bg-[#F4FBF6] px-2.5 py-1.5 text-[12px] font-extrabold uppercase tracking-[.06em] text-[#0B6B45]">
+                  <CheckCircle2 className="h-4 w-4 shrink-0 text-[#12855A]" />
+                  Ready to book
+                </span>
+              )}
+              <button
+                type="button"
+                disabled={saving}
+                onClick={() => setForm(null)}
+                className="h-12 rounded-[4px] border-[1.5px] border-[#C3D2C6] bg-white px-6 text-[13.5px] font-extrabold uppercase tracking-[.03em] text-[#33473E] hover:bg-[#F7FAF6]"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                disabled={saving}
+                onClick={() => void save()}
+                className="flex h-12 items-center gap-2 rounded-[4px] bg-[#0B3D2E] px-7 text-[13.5px] font-extrabold uppercase tracking-[.03em] text-[#C7F03F] hover:bg-[#0F4A38] disabled:opacity-80"
+              >
+                {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Check className="h-4 w-4" />}
+                {saving ? 'Booking chain…' : `Book chain · ${steps.length} step${steps.length === 1 ? '' : 's'}`}
+              </button>
+            </div>
           </div>
-        </div>
-        <div className="flex flex-wrap items-center gap-3 border-t border-[#E4ECE3] bg-[#FBFCFA] px-5 py-3">
-          <div className="mr-auto">
-            {netPreview.length > 0 && <NetStrip net={netPreview.map(([cid, q]) => [s(companies.find((c) => n(c.id) === cid)?.name), q])} />}
-            <div className="mt-1 text-[11px] font-semibold text-[#5A6B62]">Created invoices are trading only — no stock moves. Linked invoices are left as they are.</div>
-          </div>
-          <button
-            type="button"
-            onClick={() => setForm(null)}
-            className="h-9 rounded-[5px] border border-[#C9DCCF] bg-white px-4 text-[12px] font-extrabold text-[#33473E] hover:bg-[#F0F8F3]"
-          >
-            Cancel
-          </button>
-          <button
-            type="button"
-            disabled={saving}
-            onClick={() => void save()}
-            className="flex h-9 items-center gap-1.5 rounded-[5px] bg-[#0B3D2E] px-5 text-[12px] font-extrabold text-white hover:bg-[#0B6B45] disabled:opacity-50"
-          >
-            {saving && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
-            Save chain
-          </button>
+
+          {/* THE RAIL: where each company ends up, and what each step is worth. */}
+          <aside className="h-fit space-y-3 xl:sticky xl:top-20">
+            <div className="rounded-[4px] border border-l-4 border-[#BFE3CB] border-l-[#12855A] bg-[#F4FBF6] px-4 py-3.5">
+              <div className="flex items-center gap-2">
+                <Building2 className="h-[19px] w-[19px] text-[#12855A]" />
+                <span className="text-[9.5px] font-extrabold uppercase tracking-[.13em] text-[#0B6B45]">Where each company ends up</span>
+              </div>
+              {netPreview.length ? (
+                <div className="mt-2 space-y-1.5">
+                  {netPreview.map(([cid, q]) => (
+                    <div key={cid} className="flex items-baseline justify-between gap-2">
+                      <span className="truncate text-[12.5px] font-bold text-[#0A1F17]">{s(companies.find((c) => n(c.id) === cid)?.name)}</span>
+                      <span className={cn('text-[18px] font-bold tabular-nums', Math.abs(q) < 0.0005 ? 'text-[#33473E]' : q > 0 ? 'text-[#0B6B45]' : 'text-[#B3261E]')}>
+                        {q > 0.0005 ? '+' : ''}
+                        {formatNum(Math.round(q * 1000) / 1000)} MT
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <div className="mt-1.5 text-[11.5px] font-bold text-[#0B6B45]">Pick who sells and who buys on each step</div>
+              )}
+            </div>
+            <div className="overflow-hidden rounded-[4px] border border-[#D6E2D6] bg-white">
+              <div className="border-b border-[#E4ECE3] bg-[#F7FAF6] px-4 py-3 text-[11px] font-extrabold uppercase tracking-[.14em] text-[#0A1F17]">Steps</div>
+              {steps.map((st, i) => {
+                const kind = kindOfStep(st)
+                return (
+                  <div key={i} className="flex items-center gap-2.5 border-b border-[#EFF3EE] px-4 py-2.5 last:border-b-0">
+                    <span className={cn('flex h-5 w-5 flex-none items-center justify-center rounded-full text-[10px] font-extrabold text-white', TONE[kind].chip)}>{i + 1}</span>
+                    <div className="min-w-0 flex-1">
+                      <div className="truncate text-[12px] font-bold text-[#0A1F17]">
+                        {nameOf(st.from, 'from') || '—'} → {nameOf(st.to, 'to') || '—'}
+                      </div>
+                      <div className="text-[10.5px] font-semibold text-[#5A6B62]">
+                        {st.mode === 'link' ? 'Existing invoice' : `${formatNum(n(st.qty))} MT @ ${formatINR(n(st.rate))} + ${n(st.gst_pct)}% GST`}
+                      </div>
+                    </div>
+                    <span className="text-[12.5px] font-bold tabular-nums text-[#0A1F17]">{formatINR(stepValue(st))}</span>
+                  </div>
+                )
+              })}
+              <div className="bg-[#F7FAF6] px-4 py-2.5 text-[11px] font-semibold leading-snug text-[#5A6B62]">
+                Created invoices are trading only — no stock moves. Picked invoices are left as they are.
+              </div>
+            </div>
+          </aside>
         </div>
       </div>
     )

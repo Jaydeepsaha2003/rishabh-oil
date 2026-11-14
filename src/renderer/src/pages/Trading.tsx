@@ -1286,6 +1286,8 @@ export function Trading({
       return 'deals'
     }
   })
+  // A chain being booked takes the whole page, like a deal's form.
+  const [chainForm, setChainForm] = useState(false)
   const setView = (v: 'deals' | 'payments' | 'chains'): void => {
     try {
       sessionStorage.setItem('trading-view', v)
@@ -2995,7 +2997,7 @@ export function Trading({
     // padding where it is easy to miss. p-4 to match every other register,
     // which also gives the table back the width p-6 was taking.
     <div className="flex flex-col gap-4 p-4">
-      <PageHeader
+      {!(__WEB__ && view === 'chains' && chainForm) && <PageHeader
         title="Purchase & Sales Trading"
         hint="No bargain, no tanker movement, no stock entries, no interest — the purchase and sale book straight through in one step, same as ticking 'Trading' inside Purchases/Sales, just from one dedicated screen with full GST/TDS/round-off control. One deal buys from a single supplier across as many purchase invoices as it needs, and sells on to ONE OR SEVERAL buyers — each buyer with its own invoices, its own GST type, its own TDS slab and its own round off, because those belong to the party and not to the trade. GST/TDS auto-load from the supplier/customer master (highlighted amber) and can be overridden. Deleting a deal removes every purchase and sale invoice on it."
         actions={
@@ -3091,10 +3093,10 @@ export function Trading({
             </Button>}
           </>
         }
-      />
+      />}
 
       {__WEB__ && view === 'chains' ? (
-        <TradingChains />
+        <TradingChains onFormChange={setChainForm} />
       ) : __WEB__ && view === 'payments' ? (
         <TradingPayments
           range={globalRangeAppliesTo(globalRange, 'trading') ? { from: globalRange.from, to: globalRange.to } : null}
