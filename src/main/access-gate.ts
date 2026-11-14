@@ -138,7 +138,7 @@ function actionFor(op: string): Action {
       // it fell through to 'edit' and anyone who could enter packing could also
       // delete somebody else's.
       op === 'deleteAdjustment' ||
-      op === 'deleteIssuance' || op === 'removeIssuance' || op === 'deleteInstallment' || op === 'deletePartyPayment' || op === 'deleteReceiptPart' || op === 'undoPartRepayment') return 'delete'
+      op === 'deleteIssuance' || op === 'removeIssuance' || op === 'splitDelete' || op === 'deleteInstallment' || op === 'deletePartyPayment' || op === 'deleteReceiptPart' || op === 'undoPartRepayment') return 'delete'
   return 'edit'
 }
 

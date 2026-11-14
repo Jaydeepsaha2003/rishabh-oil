@@ -1082,6 +1082,9 @@ const api = {
     payParty: (id: number, values: Row): Promise<{ id: number; part_no: number }> => ipcRenderer.invoke('bd:payParty', { id, values }),
     removePartyPayment: (id: number): Promise<{ part_no: number }> => ipcRenderer.invoke('bd:deletePartyPayment', { id }),
     unmarkReceived: (id: number): Promise<{ id: number }> => ipcRenderer.invoke('bd:unmarkReceived', { id }),
+    splits: (id: number): Promise<Row[]> => ipcRenderer.invoke('bd:splits', { id }),
+    splitSave: (values: Row): Promise<{ id: number }> => ipcRenderer.invoke('bd:splitSave', { values }),
+    splitDelete: (id: number): Promise<{ id: number }> => ipcRenderer.invoke('bd:splitDelete', { id }),
     reopen: (id: number): Promise<{ id: number }> => ipcRenderer.invoke('bd:reopen', { id }),
     upfrontInterest: (id: number, date?: string, account?: string): Promise<{ id: number } | null> =>
       ipcRenderer.invoke('bd:upfrontInterest', { id, date, account }),

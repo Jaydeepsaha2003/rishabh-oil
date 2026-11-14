@@ -651,8 +651,10 @@ function BdPartiesAndEntries({ bill }: { bill: Row }): React.JSX.Element | null 
 // ONE SERVICED-INTEREST PERIOD, opened to show how it is worked out: each
 // stretch of days at the principal still out then (a part repaid early makes
 // the later days cheaper — billDiscounting.ts bdInterestParts).
-function ServicedRow({ x }: { x: Row }): React.JSX.Element {
+function ServicedRow({ x, bdId, splits = [], onSplits }: { x: Row; bdId?: number; splits?: Row[]; onSplits?: () => void }): React.JSX.Element {
   const [open, setOpen] = useState(false)
+  // Splits saved on this period or one of its legs (a record only).
+  const mine = splits.filter((sp) => String(sp.from_date) >= String(x.from_date).slice(0, 10) && String(sp.to_date) <= String(x.to_date).slice(0, 10))
   const [splitOpen, setSplitOpen] = useState(false)
   // A single leg (stretch) being split, from the + on its row.
   const [legSplit, setLegSplit] = useState<Row | null>(null)
@@ -712,14 +714,46 @@ function ServicedRow({ x }: { x: Row }): React.JSX.Element {
         <Plus className="h-3.5 w-3.5" />
       </button>
       </div>
-      {splitOpen && <PrincipalSplit x={x} onClose={() => setSplitOpen(false)} />}
+      {splitOpen && <PrincipalSplit x={x} bdId={bdId} onSaved={onSplits} onClose={() => setSplitOpen(false)} />}
       {legSplit && (
         <PrincipalSplit
           leg
+          bdId={bdId}
+          onSaved={onSplits}
           x={{ from_date: legSplit.from_date, to_date: legSplit.to_date, days: legSplit.days, principal: legSplit.principal, gross: legSplit.interest }}
           onClose={() => setLegSplit(null)}
         />
       )}
+      {mine.map((sp) => (
+        <div key={String(sp.id)} className="mx-3 mb-2 flex flex-wrap items-center gap-x-2 gap-y-1 rounded-[4px] border border-[#C6DAF0] bg-[#F4F8FD] px-3 py-1.5 text-[11.5px]">
+          <span className="text-[9.5px] font-extrabold uppercase tracking-[.08em] text-[#1B4E82]">
+            Saved split · {sp.mode === 'dates' ? 'by dates' : 'by amount'}
+          </span>
+          {((sp.parts as Row[]) || []).map((pt, k) => (
+            <span key={k} className="doc-ref rounded-[3px] bg-white px-1.5 py-0.5 font-semibold text-[#33473E]">
+              {String(pt.label)} · <b className="text-[#0B6B45]">{formatINR(Number(pt.interest) || 0)}</b>
+            </span>
+          ))}
+          <button
+            type="button"
+            title="Delete this saved split"
+            aria-label="Delete this saved split"
+            onClick={() => {
+              if (!confirm('Delete this saved split? It is a record only — nothing posted changes.')) return
+              void window.api.billDiscounting
+                .splitDelete(Number(sp.id))
+                .then(() => {
+                  toast.success('Saved split deleted')
+                  onSplits?.()
+                })
+                .catch((e) => toast.error((e as Error).message))
+            }}
+            className="ml-auto rounded-[3px] p-0.5 text-[#8C2F26] hover:bg-[#FDECEA]"
+          >
+            <X className="h-3.5 w-3.5" />
+          </button>
+        </div>
+      ))}
       {open && (
         <div className="mx-3 mb-3 overflow-hidden rounded-[4px] border border-[#E4ECE3] bg-[#FBFCFA]">
           <div className="grid grid-cols-[minmax(0,1fr)_auto_44px_auto_22px] gap-x-3 border-b border-[#E4ECE3] px-3 py-1.5 text-[9.5px] font-extrabold uppercase tracking-[.1em] text-[#5A6B62]">
@@ -771,7 +805,8 @@ function ServicedRow({ x }: { x: Row }): React.JSX.Element {
 // rata, so a part repaid early is cheaper the same way the whole is.
 // leg: one stretch at one principal (the + on a leg row), which can also be
 // split BY DATES - each leg's interest is its days' share, same principal.
-function PrincipalSplit({ x, onClose, leg = false }: { x: Row; onClose: () => void; leg?: boolean }): React.JSX.Element {
+function PrincipalSplit({ x, onClose, leg = false, bdId, onSaved }: { x: Row; onClose: () => void; leg?: boolean; bdId?: number; onSaved?: () => void }): React.JSX.Element {
+  const [saving, setSaving] = useState(false)
   const stretches = (Array.isArray(x.parts) ? x.parts : []) as Row[]
   const principal = n(stretches[0]?.principal ?? x.principal)
   const days = n(x.days)
@@ -895,8 +930,42 @@ function PrincipalSplit({ x, onClose, leg = false }: { x: Row; onClose: () => vo
           ) : (
             <div className="text-[11px] font-semibold text-[#5A6B62]">
               {byDates
-                ? `Type the days of the first leg${vals.length > 2 ? 's' : ''}; the last leg takes the rest. Same principal, so each leg's interest is its share of the days. Nothing is saved.`
-                : `Type the first part${vals.length > 2 ? 's' : ''}; the last part is what is left. Each part's interest is its share of the ${leg ? 'leg' : 'period'}'s interest. Nothing is saved.`}
+                ? `Type the days of the first leg${vals.length > 2 ? 's' : ''}; the last leg takes the rest. Same principal, so each leg's interest is its share of the days.`
+                : `Type the first part${vals.length > 2 ? 's' : ''}; the last part is what is left. Each part's interest is its share of the ${leg ? 'leg' : 'period'}'s interest.`}
+            </div>
+          )}
+          {!!bdId && (
+            <div className="flex items-center justify-end gap-2 border-t border-[#EFF3EE] pt-3">
+              <span className="mr-auto text-[11px] font-semibold text-[#5A6B62]">Saved as a record on the bill — no voucher, the interest due is unchanged.</span>
+              <button
+                type="button"
+                disabled={saving || last <= 0 || vals.some((v) => !(v > 0))}
+                onClick={() => {
+                  setSaving(true)
+                  void window.api.billDiscounting
+                    .splitSave({
+                      bd_id: bdId,
+                      from_date: String(x.from_date).slice(0, 10),
+                      to_date: String(x.to_date).slice(0, 10),
+                      mode: byDates ? 'dates' : 'amount',
+                      parts: vals.map((v, i) => ({
+                        label: byDates ? legRange(i) : `Part ${i + 1} ${formatINR(v)}`,
+                        value: v,
+                        interest: share(v)
+                      }))
+                    })
+                    .then(() => {
+                      toast.success('Split saved on the bill')
+                      onSaved?.()
+                      onClose()
+                    })
+                    .catch((e) => toast.error((e as Error).message))
+                    .finally(() => setSaving(false))
+                }}
+                className="h-8 rounded-[5px] bg-[#0B3D2E] px-4 text-[12px] font-extrabold text-white hover:bg-[#0B6B45] disabled:opacity-50"
+              >
+                {saving ? 'Saving…' : 'Save split'}
+              </button>
             </div>
           )}
         </div>
@@ -933,6 +1002,15 @@ export function BdDetail({
   // A repayment being edited (BdRepaymentEdit).
   const [editRep, setEditRep] = useState<Row | null>(null)
   const [fixingTds, setFixingTds] = useState(false)
+  // Interest splits saved on this bill (the + on a period) — a record only.
+  const [splits, setSplits] = useState<Row[]>([])
+  const billId = Number(bill?.id) || 0
+  const loadSplits = (): void => {
+    if (!billId) return setSplits([])
+    void window.api.billDiscounting.splits(billId).then(setSplits).catch(() => setSplits([]))
+  }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(loadSplits, [billId])
   // DELETE ONE REPAYMENT. Its voucher goes with it; one bank debit that also
   // cleared other bills goes as a whole (the bank was debited once), so the
   // question names every bill it takes off.
@@ -1430,7 +1508,7 @@ This was one bank debit that also cleared ${others.map((g) => `${s(g.bd_no)} ${f
                     </span>
                   </div>
                   {sched.slice(0, 8).map((x, i) => (
-                    <ServicedRow key={i} x={x} />
+                    <ServicedRow key={i} x={x} bdId={billId || undefined} splits={splits} onSplits={loadSplits} />
                   ))}
                   {/* TOTAL BD INTEREST over every period (not just the 8 shown), paid and still due. */}
                   {!withRepay && (() => {

@@ -743,6 +743,9 @@ export interface Api {
     payParty: (id: number, values: Row) => Promise<{ id: number; part_no: number }>
     removePartyPayment: (id: number) => Promise<{ part_no: number }>
     unmarkReceived: (id: number) => Promise<{ id: number }>
+    splits: (id: number) => Promise<Row[]>
+    splitSave: (values: Row) => Promise<{ id: number }>
+    splitDelete: (id: number) => Promise<{ id: number }>
     reopen: (id: number) => Promise<{ id: number }>
     upfrontInterest: (id: number, date?: string, account?: string) => Promise<{ id: number } | null>
     reverseUpfrontInterest: (id: number) => Promise<{ id: number }>
