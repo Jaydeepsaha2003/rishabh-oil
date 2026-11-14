@@ -3,6 +3,7 @@ import { toast } from 'sonner'
 import { AlertTriangle, ArrowLeft, ArrowRight, Building2, Check, CheckCircle2, Link2, Loader2, Plus, Repeat, Trash2, TrendingDown, TrendingUp, User, Zap } from 'lucide-react'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
+import { TagDraftPicker } from '@/components/Tags'
 import { DatePicker } from '@/components/ui/date-picker'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { useFormPageEscape } from '@/lib/escape'
@@ -27,6 +28,7 @@ type Step = {
   qty: string
   rate: string
   gst_pct: string
+  tds_pct: string // purchase steps; '' = the supplier master's
   invoice_no: string
   leg_date: string
   link: string // sale_group or order_id
@@ -39,6 +41,7 @@ const blankStep = (date: string, qty: string, from = ''): Step => ({
   qty,
   rate: '',
   gst_pct: '5',
+  tds_pct: '',
   invoice_no: '',
   leg_date: date,
   link: ''
@@ -90,7 +93,7 @@ export function TradingChains({ openNewKey = 0, onFormChange }: { openNewKey?: n
   const openNew = (): void => {
     const d = todayISO()
     setLinks({})
-    setForm({ chain_date: d, product_id: '', qty: '', note: '', steps: [blankStep(d, '')] })
+    setForm({ chain_date: d, product_id: '', qty: '', note: '', tags: [], steps: [blankStep(d, '')] })
   }
   useEffect(() => {
     if (openNewKey) openNew()
@@ -163,6 +166,7 @@ export function TradingChains({ openNewKey = 0, onFormChange }: { openNewKey?: n
         product_id: n(form.product_id),
         qty: n(form.qty),
         note: form.note,
+        tags: form.tags || [],
         legs: steps.map((st) => ({
           seller_kind: st.from ? kindOf(st.from) : 'company',
           seller_id: idOf(st.from),
@@ -172,6 +176,7 @@ export function TradingChains({ openNewKey = 0, onFormChange }: { openNewKey?: n
           qty: n(st.qty),
           rate: n(st.rate),
           gst_pct: n(st.gst_pct),
+          tds_pct: st.tds_pct,
           invoice_no: st.invoice_no,
           ...(st.mode === 'link' ? (kindOf(st.from) === 'company' ? { existing_sale_group: st.link } : { existing_order_id: n(st.link) }) : {})
         }))
@@ -287,6 +292,7 @@ export function TradingChains({ openNewKey = 0, onFormChange }: { openNewKey?: n
     // What is still to fill in, one chip each — as on a trading deal.
     const missing: string[] = []
     if (!form.product_id) missing.push('Product')
+    if (!((form.tags as string[]) || []).length) missing.push('Tag')
     steps.forEach((st, i) => {
       const k = `Step ${i + 1}`
       if (!st.from) missing.push(`${k}: seller`)
@@ -374,6 +380,13 @@ export function TradingChains({ openNewKey = 0, onFormChange }: { openNewKey?: n
                     }}
                   />
                 </div>
+                <div className="flex flex-wrap items-center gap-2 md:col-span-3">
+                  <Label className="mr-1">
+                    Tags <Req />
+                  </Label>
+                  <TagDraftPicker value={(form.tags as string[]) || []} onChange={(next) => setForm((f) => (f ? { ...f, tags: next } : f))} label="Tag this chain" />
+                  <span className="text-[11px] font-semibold text-[#5A6B62]">Put on every invoice the chain books, in each company</span>
+                </div>
                 <div className="flex flex-col gap-1.5 md:col-span-3">
                   <Label>
                     Note <span className="ml-1 rounded-[2px] bg-[#EAF0E9] px-1.5 py-0.5 text-[9px] tracking-[.08em]">Optional</span>
@@ -441,7 +454,19 @@ export function TradingChains({ openNewKey = 0, onFormChange }: { openNewKey?: n
                         <Label>
                           Sells <Req />
                         </Label>
-                        <Select searchable value={st.from} onValueChange={(v) => setStep(i, { from: v, link: '', ...(v === st.to ? { to: '' } : {}) })}>
+                        <Select
+                          searchable
+                          value={st.from}
+                          onValueChange={(v) =>
+                            setStep(i, {
+                              from: v,
+                              link: '',
+                              ...(v === st.to ? { to: '' } : {}),
+                              // A supplier's TDS % comes from its master, as on a purchase.
+                              tds_pct: kindOf(v) === 'party' ? s(suppliers.find((x) => n(x.id) === idOf(v))?.tds_pct ?? '') : ''
+                            })
+                          }
+                        >
                           <SelectTrigger>
                             <SelectValue placeholder="Select company or supplier" />
                           </SelectTrigger>
@@ -480,7 +505,7 @@ export function TradingChains({ openNewKey = 0, onFormChange }: { openNewKey?: n
                         </Select>
                       </div>
                     ) : (
-                      <div className="grid gap-3.5 sm:grid-cols-2 lg:grid-cols-[1.4fr_1fr_0.8fr_1fr_0.6fr]">
+                      <div className={cn('grid gap-3.5 sm:grid-cols-2', kind === 'purchase' ? 'lg:grid-cols-[1.4fr_1fr_0.8fr_1fr_0.6fr_0.6fr]' : 'lg:grid-cols-[1.4fr_1fr_0.8fr_1fr_0.6fr]')}>
                         <div className="flex flex-col gap-1.5">
                           <Label>
                             Invoice no <Req />
@@ -507,6 +532,18 @@ export function TradingChains({ openNewKey = 0, onFormChange }: { openNewKey?: n
                           <Label>GST %</Label>
                           <Input inputMode="decimal" className="text-right tabular-nums" value={st.gst_pct} onChange={(e) => setStep(i, { gst_pct: e.target.value.replace(/[^0-9.]/g, '') })} />
                         </div>
+                        {kind === 'purchase' && (
+                          <div className="flex flex-col gap-1.5">
+                            <Label>TDS %</Label>
+                            <Input
+                              inputMode="decimal"
+                              className="text-right tabular-nums"
+                              value={st.tds_pct}
+                              title="From the supplier's master — the usual slab and threshold apply when it is booked"
+                              onChange={(e) => setStep(i, { tds_pct: e.target.value.replace(/[^0-9.]/g, '') })}
+                            />
+                          </div>
+                        )}
                       </div>
                     )}
                   </div>
@@ -604,7 +641,9 @@ export function TradingChains({ openNewKey = 0, onFormChange }: { openNewKey?: n
                         {nameOf(st.from, 'from') || '—'} → {nameOf(st.to, 'to') || '—'}
                       </div>
                       <div className="text-[10.5px] font-semibold text-[#5A6B62]">
-                        {st.mode === 'link' ? 'Existing invoice' : `${formatNum(n(st.qty))} MT @ ${formatINR(n(st.rate))} + ${n(st.gst_pct)}% GST`}
+                        {st.mode === 'link'
+                          ? 'Existing invoice'
+                          : `${formatNum(n(st.qty))} MT @ ${formatINR(n(st.rate))} + ${n(st.gst_pct)}% GST${kind === 'purchase' && n(st.tds_pct) > 0 ? ` · TDS ${n(st.tds_pct)}%` : ''}`}
                       </div>
                     </div>
                     <span className="text-[12.5px] font-bold tabular-nums text-[#0A1F17]">{formatINR(stepValue(st))}</span>
@@ -654,6 +693,11 @@ export function TradingChains({ openNewKey = 0, onFormChange }: { openNewKey?: n
               </span>
               {n(ch.qty) > 0 && <span className="text-[12px] font-bold tabular-nums text-[#33473E]">{formatNum(n(ch.qty))} MT</span>}
               {s(ch.note) && <span className="text-[11.5px] font-semibold text-[#5A6B62]">{s(ch.note)}</span>}
+              {((ch.tags as string[]) || []).map((t) => (
+                <span key={t} className="rounded-[3px] border border-[#B9D3F0] bg-[#EAF2FC] px-1.5 py-0.5 text-[10.5px] font-extrabold text-[#1B4E82]">
+                  {t}
+                </span>
+              ))}
               <div className="ml-auto flex items-center gap-3">
                 <NetStrip net={(ch.net as Row[]).map((x) => [s(x.company), n(x.qty)])} />
                 <button type="button" title="Delete this chain" onClick={() => void remove(ch)} className="rounded-[3px] p-1 text-[#8C2F26] hover:bg-[#FDECEA]">

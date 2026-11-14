@@ -61,6 +61,12 @@ async function ensure(): Promise<void> {
     linked INTEGER NOT NULL DEFAULT 0
   )`)
   await c.execute('CREATE INDEX IF NOT EXISTS idx_tcl_chain ON trading_chain_legs(chain_id)')
+  // Added after the first release: the chain's tags, and a purchase step's TDS %.
+  for (const sql of ['ALTER TABLE trading_chains ADD COLUMN tags TEXT', 'ALTER TABLE trading_chain_legs ADD COLUMN tds_pct REAL']) {
+    await c.execute(sql).catch((e: unknown) => {
+      if (!/duplicate column/i.test(String((e as Error).message))) throw e
+    })
+  }
   ready = true
 }
 
@@ -73,6 +79,8 @@ type Leg = {
   qty: number
   rate: number
   gst_pct: number
+  // A purchase step's TDS %; null takes the supplier master's.
+  tds_pct: number | null
   invoice_no: string
   // Link an invoice already booked instead of creating one.
   existing_sale_group?: string
@@ -103,6 +111,7 @@ function readLegs(v: Row): Leg[] {
       qty: r3(n(l.qty)),
       rate: n(l.rate),
       gst_pct: n(l.gst_pct),
+      tds_pct: l.tds_pct === '' || l.tds_pct == null ? null : n(l.tds_pct),
       invoice_no: s(l.invoice_no).trim(),
       existing_sale_group: s(l.existing_sale_group).trim() || undefined,
       existing_order_id: n(l.existing_order_id) || undefined
@@ -215,7 +224,9 @@ async function raiseLeg(leg: Leg, productId: number, uom: string, step: number):
       bargain_rate: leg.rate,
       gst_pct: leg.gst_pct,
       gst_type: gstTypeOf(sup.state, buyerState),
-      tds_pct: n(sup.tds_pct),
+      // The usual purchase TDS: this % on the supplier's slab and threshold
+      // (createOrder), the master's own % unless the step changed it.
+      tds_pct: leg.tds_pct ?? n(sup.tds_pct),
       round_off: 0,
       charge_interest: false
     })
@@ -267,6 +278,18 @@ async function linkLeg(leg: Leg, step: number): Promise<Row> {
   }
 }
 
+async function tagDoc(names: string[], companyId: number, entity: 'sale' | 'order', ref: string): Promise<void> {
+  const { createTag, ensureTagTables } = await import('./tags')
+  await ensureTagTables()
+  for (const name of names) {
+    const t = await createTag({ name, companyId })
+    await getClient().execute({
+      sql: 'INSERT OR IGNORE INTO tag_links (tag_id, entity, ref, created_by) VALUES (?, ?, ?, ?)',
+      args: [n(t.id), entity, ref, getCurrentUser().username || null]
+    })
+  }
+}
+
 export async function createTradingChain(v: Row): Promise<{ id: number }> {
   await ensure()
   const productId = n(v.product_id)
@@ -275,11 +298,13 @@ export async function createTradingChain(v: Row): Promise<{ id: number }> {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(chainDate)) throw new Error('Pick the chain date')
   const uom = s(v.uom || 'MT')
   const legs = readLegs(v)
+  const tags = Array.from(new Set((Array.isArray(v.tags) ? v.tags : []).map((x: unknown) => s(x).replace(/\s+/g, ' ').trim()).filter(Boolean))).slice(0, 20) as string[]
+  if (!tags.length) throw new Error('Tag this chain — at least one tag is required')
   return withDbTransaction(async () => {
     const c = getClient()
     const ins = await c.execute({
-      sql: 'INSERT INTO trading_chains (chain_date, product_id, qty, uom, note, created_by) VALUES (?, ?, ?, ?, ?, ?)',
-      args: [chainDate, productId, r3(n(v.qty)), uom, s(v.note).trim() || null, getCurrentUser().username || null]
+      sql: 'INSERT INTO trading_chains (chain_date, product_id, qty, uom, note, created_by, tags) VALUES (?, ?, ?, ?, ?, ?, ?)',
+      args: [chainDate, productId, r3(n(v.qty)), uom, s(v.note).trim() || null, getCurrentUser().username || null, JSON.stringify(tags)]
     })
     const chainId = Number(ins.lastInsertRowid)
     for (let i = 0; i < legs.length; i++) {
@@ -288,8 +313,8 @@ export async function createTradingChain(v: Row): Promise<{ id: number }> {
       const got = linked ? await linkLeg(leg, i + 1) : await raiseLeg(leg, productId, uom, i + 1)
       await c.execute({
         sql: `INSERT INTO trading_chain_legs (chain_id, step, seller_kind, seller_id, buyer_kind, buyer_id, leg_date, qty, rate, gst_pct, invoice_no,
-                sale_group, sale_company_id, order_id, order_company_id, linked)
-              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                sale_group, sale_company_id, order_id, order_company_id, linked, tds_pct)
+              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         args: [
           chainId,
           i + 1,
@@ -306,9 +331,16 @@ export async function createTradingChain(v: Row): Promise<{ id: number }> {
           got.sale_company_id ?? null,
           got.order_id ?? null,
           got.order_company_id ?? null,
-          linked ? 1 : 0
+          linked ? 1 : 0,
+          leg.tds_pct
         ]
       })
+      // The chain's tags on what this step booked, each in its own company's
+      // book (tags are per company). A picked invoice is left as it was.
+      if (!linked) {
+        if (got.sale_group) await tagDoc(tags, n(got.sale_company_id), 'sale', s(got.sale_group))
+        if (got.order_id) await tagDoc(tags, n(got.order_company_id), 'order', String(n(got.order_id)))
+      }
     }
     return { id: chainId }
   })
@@ -323,6 +355,9 @@ export async function deleteTradingChain(id: number): Promise<{ id: number }> {
     const { deleteOrder } = await import('./orders')
     for (const l of legs) {
       if (n(l.linked)) continue
+      // Its tags go with it, so none is left pointing at a bill that is gone.
+      if (s(l.sale_group)) await c.execute({ sql: "DELETE FROM tag_links WHERE entity = 'sale' AND ref = ?", args: [s(l.sale_group)] }).catch(() => undefined)
+      if (n(l.order_id)) await c.execute({ sql: "DELETE FROM tag_links WHERE entity = 'order' AND ref = ?", args: [String(n(l.order_id))] }).catch(() => undefined)
       // An inter-company sale takes its paired purchase with it.
       if (s(l.sale_group)) await withCompany(n(l.sale_company_id), () => deleteSaleInvoice(s(l.sale_group)))
       else if (n(l.order_id)) await withCompany(n(l.order_company_id), () => deleteOrder(n(l.order_id)).then(() => undefined))
@@ -369,8 +404,15 @@ export async function listTradingChains(): Promise<Row[]> {
       if (l.seller_kind === 'company') net.set(n(l.seller_id), r3((net.get(n(l.seller_id)) || 0) - n(l.qty)))
       if (l.buyer_kind === 'company') net.set(n(l.buyer_id), r3((net.get(n(l.buyer_id)) || 0) + n(l.qty)))
     }
+    let tags: string[] = []
+    try {
+      tags = JSON.parse(s(ch.tags) || '[]')
+    } catch {
+      tags = []
+    }
     return {
       ...ch,
+      tags,
       legs: mine,
       net: [...net.entries()].map(([cid, q]) => ({ company_id: cid, company: companies.get(cid) || `Company ${cid}`, qty: q }))
     }
