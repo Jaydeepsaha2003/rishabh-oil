@@ -844,131 +844,170 @@ function PrincipalSplit({ x, onClose, leg = false, bdId, onSaved }: { x: Row; on
   }
   return (
     <Dialog open onOpenChange={(o) => !o && onClose()}>
-      <DialogContent readOnly overlayClassName="z-[110]" className="z-[120] gap-0 overflow-hidden p-0 sm:max-w-md">
+      <DialogContent readOnly overlayClassName="z-[110]" className="z-[120] gap-0 overflow-hidden p-0 sm:max-w-[540px]">
         <div className="bg-[#0B3D2E] px-5 py-3.5 pr-12 text-white">
           <div className="text-[9.5px] font-extrabold uppercase tracking-[.14em] text-[#C7F03F]">{leg ? 'Split this leg' : 'Split the principal'}</div>
           <DialogTitle className="text-[15px] font-extrabold text-white">
-            {formatDate(s(x.from_date))} &rarr; {formatDate(s(x.to_date))} · {n(x.days)}d
+            {formatDate(s(x.from_date))} &rarr; {formatDate(s(x.to_date))} <span className="font-semibold text-white/70">· {n(x.days)} days</span>
           </DialogTitle>
         </div>
-        <div className="space-y-3 px-5 py-4">
-          <div className="flex items-baseline justify-between text-[12.5px]">
-            <span className="font-semibold text-[#5A6B62]">Principal</span>
-            <span className="doc-ref font-extrabold text-[#0A1F17]">{formatINR(principal)}</span>
+        <div className="space-y-3.5 px-5 py-4">
+          {/* What is being split */}
+          <div className="grid grid-cols-2 gap-2.5">
+            <div className="rounded-[5px] border border-[#E4ECE3] bg-[#FBFCFA] px-3 py-2">
+              <div className="text-[9.5px] font-extrabold uppercase tracking-[.1em] text-[#5A6B62]">Principal</div>
+              <div className="doc-ref mt-0.5 text-[15px] font-extrabold tabular-nums text-[#0A1F17]">{formatINR(principal)}</div>
+            </div>
+            <div className="rounded-[5px] border border-[#CFE6D8] bg-[#F0F8F3] px-3 py-2">
+              <div className="text-[9.5px] font-extrabold uppercase tracking-[.1em] text-[#0B6B45]">Interest for the {leg ? 'leg' : 'period'}</div>
+              <div className="doc-ref mt-0.5 text-[15px] font-extrabold tabular-nums text-[#0B6B45]">{formatINR(n(x.gross))}</div>
+            </div>
           </div>
-          <div className="flex items-baseline justify-between text-[12.5px]">
-            <span className="font-semibold text-[#5A6B62]">Interest for the {leg ? 'leg' : 'period'}</span>
-            <span className="doc-ref font-extrabold text-[#0A1F17]">{formatINR(n(x.gross))}</span>
-          </div>
-          {leg && (
-            <div className="flex rounded-[4px] border border-[#C9DCCF] p-0.5">
-              {(['amount', 'dates'] as const).map((m) => (
+          {/* How, and into how many */}
+          <div className="flex flex-wrap items-center gap-2">
+            {leg && (
+              <div className="flex flex-1 rounded-[5px] border border-[#C9DCCF] p-0.5">
+                {(['amount', 'dates'] as const).map((m) => (
+                  <button
+                    key={m}
+                    type="button"
+                    onClick={() => setMode(m)}
+                    className={cn(
+                      'flex-1 whitespace-nowrap rounded-[4px] px-3 py-1.5 text-[12px] font-extrabold',
+                      mode === m ? 'bg-[#0B3D2E] text-white' : 'text-[#33473E] hover:bg-[#F0F8F3]'
+                    )}
+                  >
+                    {m === 'amount' ? 'By amount' : 'By dates'}
+                  </button>
+                ))}
+              </div>
+            )}
+            <div className="flex items-center gap-1.5">
+              <span className="mr-1 text-[10px] font-extrabold uppercase tracking-[.1em] text-[#5A6B62]">Parts</span>
+              {[2, 3].map((k) => (
                 <button
-                  key={m}
+                  key={k}
                   type="button"
-                  onClick={() => setMode(m)}
+                  onClick={() => setCount(k)}
                   className={cn(
-                    'flex-1 rounded-[3px] px-3 py-1.5 text-[12px] font-extrabold',
-                    mode === m ? 'bg-[#0B3D2E] text-white' : 'text-[#33473E] hover:bg-[#F0F8F3]'
+                    'h-8 w-9 rounded-[4px] border text-[12.5px] font-extrabold',
+                    src.length === k ? 'border-[#0B6B45] bg-[#0B6B45] text-white' : 'border-[#C9DCCF] bg-white text-[#33473E] hover:border-[#0B6B45]'
                   )}
                 >
-                  {m === 'amount' ? 'By amount' : 'By dates'}
+                  {k}
                 </button>
               ))}
             </div>
-          )}
-          <div className="flex items-center gap-2">
-            <span className="text-[11px] font-extrabold uppercase tracking-[.08em] text-[#5A6B62]">Parts</span>
-            {[2, 3].map((k) => (
-              <button
-                key={k}
-                type="button"
-                onClick={() => setCount(k)}
-                className={cn(
-                  'rounded-[3px] border px-3 py-1 text-[12px] font-extrabold',
-                  src.length === k ? 'border-[#0B6B45] bg-[#0B6B45] text-white' : 'border-[#C9DCCF] bg-white text-[#33473E] hover:border-[#0B6B45]'
-                )}
-              >
-                {k}
-              </button>
-            ))}
           </div>
-          <div className="overflow-hidden rounded-[4px] border border-[#E4ECE3]">
-            <div className="grid grid-cols-[52px_minmax(0,1fr)_auto] gap-x-3 border-b border-[#E4ECE3] bg-[#FBFCFA] px-3 py-1.5 text-[9.5px] font-extrabold uppercase tracking-[.1em] text-[#5A6B62]">
+          {/* The parts */}
+          <div className="overflow-hidden rounded-[5px] border border-[#E4ECE3]">
+            <div className="grid grid-cols-[36px_minmax(0,1fr)_120px] gap-x-3 border-b border-[#E4ECE3] bg-[#FBFCFA] px-3 py-1.5 text-[9.5px] font-extrabold uppercase tracking-[.1em] text-[#5A6B62]">
               <span>Part</span>
               <span>{byDates ? 'Days' : 'Principal'}</span>
               <span className="text-right">Interest</span>
             </div>
-            {vals.map((v, i) => (
-              <div key={i} className="grid grid-cols-[52px_minmax(0,1fr)_auto] items-center gap-x-3 border-b border-[#EFF3EE] px-3 py-1.5 text-[12.5px] last:border-b-0">
-                <span className="font-extrabold text-[#33473E]">{i + 1}</span>
-                <div className="min-w-0">
-                  {i < vals.length - 1 ? (
-                    <Input
-                      inputMode={byDates ? 'numeric' : 'decimal'}
-                      value={src[i]}
-                      onChange={(e) => {
-                        const v2 = e.target.value.replace(byDates ? /[^0-9]/g : /[^0-9.]/g, '')
-                        const set = byDates ? setLegDays : setAmts
-                        set((p) => p.map((a, j) => (j === i ? v2 : a)))
-                      }}
-                      className="h-8 text-[12.5px] tabular-nums"
-                    />
-                  ) : (
-                    <span className={cn('doc-ref px-1 font-bold tabular-nums', v < 0 ? 'text-[#B3261E]' : 'text-[#0A1F17]')}>
-                      {byDates ? `${v} d` : formatINR(v)} <span className="text-[10.5px] font-semibold text-[#8CA396]">rest</span>
-                    </span>
-                  )}
-                  {byDates && <div className="doc-ref mt-0.5 px-1 text-[10.5px] font-semibold text-[#5A6B62]">{legRange(i)}</div>}
+            {vals.map((v, i) => {
+              const isLast = i === vals.length - 1
+              const pct = whole > 0 ? Math.max(0, Math.min(100, (v / whole) * 100)) : 0
+              return (
+                <div key={i} className={cn('grid grid-cols-[36px_minmax(0,1fr)_120px] items-center gap-x-3 border-b border-[#EFF3EE] px-3 py-2 text-[12.5px]', isLast && 'bg-[#FAFCFA]')}>
+                  <span className="flex h-6 w-6 items-center justify-center rounded-full bg-[#EAF0E9] text-[11px] font-extrabold text-[#33473E]">{i + 1}</span>
+                  <div className="min-w-0">
+                    {!isLast ? (
+                      <div className="relative">
+                        {!byDates && <span className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-[12px] font-bold text-[#8CA396]">₹</span>}
+                        <Input
+                          autoFocus={i === 0}
+                          inputMode={byDates ? 'numeric' : 'decimal'}
+                          value={src[i]}
+                          onChange={(e) => {
+                            const v2 = e.target.value.replace(byDates ? /[^0-9]/g : /[^0-9.]/g, '')
+                            const set = byDates ? setLegDays : setAmts
+                            set((p) => p.map((a, j) => (j === i ? v2 : a)))
+                          }}
+                          className={cn('h-8 text-[12.5px] font-bold tabular-nums', byDates ? 'pr-12' : 'pl-6')}
+                        />
+                        {byDates && <span className="pointer-events-none absolute right-2.5 top-1/2 -translate-y-1/2 text-[11px] font-bold text-[#8CA396]">days</span>}
+                      </div>
+                    ) : (
+                      <div className={cn('doc-ref flex h-8 items-center gap-2 px-1 font-bold tabular-nums', v < 0 ? 'text-[#B3261E]' : 'text-[#0A1F17]')}>
+                        {byDates ? `${v} days` : formatINR(v)}
+                        <span className="rounded-[3px] bg-[#EAF0E9] px-1.5 py-[1px] text-[9.5px] font-extrabold uppercase tracking-[.06em] text-[#5A6B62]">rest</span>
+                      </div>
+                    )}
+                    <div className="mt-1 flex items-center gap-2 px-1">
+                      <div className="h-1 flex-1 overflow-hidden rounded-full bg-[#EAF0E9]">
+                        <div className="h-full rounded-full bg-[#0B6B45]" style={{ width: `${pct}%` }} />
+                      </div>
+                      <span className="w-10 text-right text-[10px] font-bold tabular-nums text-[#8CA396]">{Math.round(pct * 10) / 10}%</span>
+                    </div>
+                    {byDates && <div className="doc-ref mt-0.5 px-1 text-[10.5px] font-semibold text-[#5A6B62]">{legRange(i)}</div>}
+                  </div>
+                  <span className="doc-ref text-right font-extrabold tabular-nums text-[#0B6B45]">{formatINR(share(v))}</span>
                 </div>
-                <span className="doc-ref text-right font-extrabold tabular-nums text-[#0B6B45]">{formatINR(share(v))}</span>
-              </div>
-            ))}
+              )
+            })}
+            <div className="grid grid-cols-[36px_minmax(0,1fr)_120px] items-center gap-x-3 bg-[#F0F8F3] px-3 py-2 text-[12px]">
+              <span className="text-[9.5px] font-extrabold uppercase tracking-[.1em] text-[#33473E]">Total</span>
+              <span className="doc-ref px-1 font-extrabold tabular-nums text-[#0A1F17]">
+                {byDates ? `${vals.reduce((t, v) => t + v, 0)} days` : formatINR(r2(vals.reduce((t, v) => t + v, 0)))}
+              </span>
+              <span className="doc-ref text-right font-extrabold tabular-nums text-[#0B6B45]">{formatINR(r2(vals.reduce((t, v) => t + share(v), 0)))}</span>
+            </div>
           </div>
           {last < 0 ? (
-            <div className="text-[11.5px] font-semibold text-[#B3261E]">The parts come to more than the {byDates ? 'days of the leg' : 'principal'}.</div>
+            <div className="rounded-[4px] border border-[#F3C9C4] bg-[#FDECEA] px-3 py-2 text-[11.5px] font-semibold text-[#B3261E]">
+              The parts come to more than the {byDates ? 'days of the leg' : 'principal'}.
+            </div>
           ) : (
-            <div className="text-[11px] font-semibold text-[#5A6B62]">
+            <div className="text-[11px] font-semibold leading-snug text-[#5A6B62]">
               {byDates
                 ? `Type the days of the first leg${vals.length > 2 ? 's' : ''}; the last leg takes the rest. Same principal, so each leg's interest is its share of the days.`
                 : `Type the first part${vals.length > 2 ? 's' : ''}; the last part is what is left. Each part's interest is its share of the ${leg ? 'leg' : 'period'}'s interest.`}
             </div>
           )}
-          {!!bdId && (
-            <div className="flex items-center justify-end gap-2 border-t border-[#EFF3EE] pt-3">
-              <span className="mr-auto text-[11px] font-semibold text-[#5A6B62]">Saved as a record on the bill — no voucher, the interest due is unchanged.</span>
-              <button
-                type="button"
-                disabled={saving || last <= 0 || vals.some((v) => !(v > 0))}
-                onClick={() => {
-                  setSaving(true)
-                  void window.api.billDiscounting
-                    .splitSave({
-                      bd_id: bdId,
-                      from_date: String(x.from_date).slice(0, 10),
-                      to_date: String(x.to_date).slice(0, 10),
-                      mode: byDates ? 'dates' : 'amount',
-                      parts: vals.map((v, i) => ({
-                        label: byDates ? legRange(i) : `Part ${i + 1} ${formatINR(v)}`,
-                        value: v,
-                        interest: share(v)
-                      }))
-                    })
-                    .then(() => {
-                      toast.success('Split saved on the bill')
-                      onSaved?.()
-                      onClose()
-                    })
-                    .catch((e) => toast.error((e as Error).message))
-                    .finally(() => setSaving(false))
-                }}
-                className="h-8 rounded-[5px] bg-[#0B3D2E] px-4 text-[12px] font-extrabold text-white hover:bg-[#0B6B45] disabled:opacity-50"
-              >
-                {saving ? 'Saving…' : 'Save split'}
-              </button>
-            </div>
-          )}
         </div>
+        {!!bdId && (
+          <div className="flex items-center gap-3 border-t border-[#E4ECE3] bg-[#FBFCFA] px-5 py-3">
+            <span className="flex-1 text-[11px] font-semibold leading-snug text-[#5A6B62]">Kept on the bill as a record — no voucher, the interest due is unchanged.</span>
+            <button
+              type="button"
+              onClick={onClose}
+              className="h-9 whitespace-nowrap rounded-[5px] border border-[#C9DCCF] bg-white px-4 text-[12px] font-extrabold text-[#33473E] hover:bg-[#F0F8F3]"
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              disabled={saving || last <= 0 || vals.some((v) => !(v > 0))}
+              onClick={() => {
+                setSaving(true)
+                void window.api.billDiscounting
+                  .splitSave({
+                    bd_id: bdId,
+                    from_date: String(x.from_date).slice(0, 10),
+                    to_date: String(x.to_date).slice(0, 10),
+                    mode: byDates ? 'dates' : 'amount',
+                    parts: vals.map((v, i) => ({
+                      label: byDates ? legRange(i) : `Part ${i + 1} ${formatINR(v)}`,
+                      value: v,
+                      interest: share(v)
+                    }))
+                  })
+                  .then(() => {
+                    toast.success('Split saved on the bill')
+                    onSaved?.()
+                    onClose()
+                  })
+                  .catch((e) => toast.error((e as Error).message))
+                  .finally(() => setSaving(false))
+              }}
+              className="h-9 whitespace-nowrap rounded-[5px] bg-[#0B3D2E] px-5 text-[12px] font-extrabold text-white hover:bg-[#0B6B45] disabled:opacity-50"
+            >
+              {saving ? 'Saving…' : 'Save split'}
+            </button>
+          </div>
+        )}
       </DialogContent>
     </Dialog>
   )
