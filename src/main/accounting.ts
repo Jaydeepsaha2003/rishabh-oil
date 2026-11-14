@@ -403,7 +403,7 @@ export async function setLineAllocs(lineId: number, allocs: BillAlloc[]): Promis
     const c = getClient()
     const line = (
       await c.execute({
-        sql: `SELECT jl.id, jl.dr, jl.cr, jl.account_id, jl.entry_id, a.name, a.acc_group, je.company_id
+        sql: `SELECT jl.id, jl.dr, jl.cr, jl.account_id, jl.entry_id, a.name, a.acc_group, je.company_id, je.order_id, je.sale_id
                 FROM journal_lines jl JOIN ledger_accounts a ON a.id = jl.account_id JOIN journal_entries je ON je.id = jl.entry_id
                WHERE jl.id = ?`,
         args: [n(lineId)]
@@ -421,7 +421,11 @@ export async function setLineAllocs(lineId: number, allocs: BillAlloc[]): Promis
       }))
       .filter((a) => a.amount > 0.004)
     const total = Math.round(rows.reduce((t, a) => t + a.amount, 0) * 100) / 100
-    if (rows.length && Math.abs(total - amount) > 0.005) {
+    // A purchase/sale voucher's party line IS the invoice's bill: what it links
+    // elsewhere (Agst Ref ADV-1) comes off it and the rest stays pending on the
+    // invoice (billsOutstanding), so less than the line is fine — never more.
+    const docLine = !!n(line.order_id) || !!n(line.sale_id)
+    if (rows.length && (docLine ? total - amount > 0.005 : Math.abs(total - amount) > 0.005)) {
       throw new Error(`Bill-wise details total ${total.toFixed(2)} but the line is ${amount.toFixed(2)}`)
     }
     for (const a of rows) {
