@@ -1027,7 +1027,8 @@ export async function listPendingRefs(
 
   // origin_id: the voucher that RAISED the bill — the purchase, the sale, the
   // freight bill, the advance — shown as the first line of its bill-wise detail.
-  type Bill = { ref: string; bill_date: string; amount: number; order_id: number | null; sale_invoice_group: string | null; origin_id?: number | null }
+  // made: an Advance / New Ref a voucher opened, not a purchase or sale invoice.
+  type Bill = { ref: string; bill_date: string; amount: number; order_id: number | null; sale_invoice_group: string | null; origin_id?: number | null; made?: boolean }
   const bills: Bill[] = []
   if (group === 'Sundry Creditors') {
     const r = await c.execute({
@@ -1144,10 +1145,10 @@ export async function listPendingRefs(
       // Don't just drop it — a colliding New Ref/Advance is a real amount
       // someone allocated, it just can't share the real bill's row. Keep it
       // visible as its own flagged line so it gets reconciled, not lost.
-      madeRows.push({ ref: `${m.ref} (duplicate ref — check this)`, bill_date: String(m.bill_date || ''), amount: n(m.amount), order_id: null, sale_invoice_group: null, origin_id: n(m.origin_id) || null })
+      madeRows.push({ ref: `${m.ref} (duplicate ref — check this)`, bill_date: String(m.bill_date || ''), amount: n(m.amount), order_id: null, sale_invoice_group: null, origin_id: n(m.origin_id) || null, made: true })
       continue
     }
-    madeRows.push({ ref: String(m.ref), bill_date: String(m.bill_date || ''), amount: n(m.amount), order_id: null, sale_invoice_group: null, origin_id: n(m.origin_id) || null })
+    madeRows.push({ ref: String(m.ref), bill_date: String(m.bill_date || ''), amount: n(m.amount), order_id: null, sale_invoice_group: null, origin_id: n(m.origin_id) || null, made: true })
   }
 
   // THE VOUCHER EACH BILL WAS RAISED BY — its date, type, number and the side
@@ -1282,7 +1283,8 @@ export async function listPendingRefs(
         settlements,
         origin: origins.get(n(b.origin_id)) || null,
         pending: round2(n(b.amount) - paid),
-        settled: round2(n(b.amount) - paid) <= 0.005
+        settled: round2(n(b.amount) - paid) <= 0.005,
+        made: !!b.made
       }
     })
     .filter((b) => all || b.pending > 0.005)
@@ -1367,7 +1369,8 @@ export async function billsOutstanding(
         due_on: dueOn,
         overdue_days: overdue,
         order_id: b.order_id,
-        sale_invoice_group: b.sale_invoice_group
+        sale_invoice_group: b.sale_invoice_group,
+        made: !!b.made
       }
     })
 
@@ -1579,8 +1582,10 @@ export async function billsOutstanding(
     as_of: asOf,
     debtor,
     credit_days: creditDays,
-    rows: opts.settled ? (rows as Row[]).map((r) => ({ ...r, settled: n(r.pending) <= 0.005 })) : open,
-    settled_count: (rows as Row[]).length - open.length,
+    // A settled advance / New Ref (ADV-1 at Nil) is not listed even with
+    // Settled: Show — that brings back settled INVOICES only.
+    rows: opts.settled ? (rows as Row[]).filter((r) => n(r.pending) > 0.005 || !r.made).map((r) => ({ ...r, settled: n(r.pending) <= 0.005 })) : open,
+    settled_count: (rows as Row[]).filter((r) => n(r.pending) <= 0.005 && !r.made).length,
     total_opening: round2(open.reduce((t, r) => t + n(r.opening), 0)),
     total_paid: round2(open.reduce((t, r) => t + n(r.paid), 0)),
     total_pending: totalPending,

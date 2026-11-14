@@ -2401,6 +2401,10 @@ export function Accounts({
       /* private window: just not remembered */
     }
   }, [lgHideBal])
+  // RECO (Alt+R, Tally's): a Bank date column on the ledger's vouchers — the
+  // day each one went through the bank (journal_entries.value_date) — and the
+  // books-to-bank figures above it.
+  const [lgReco, setLgReco] = useState(false)
   const [lgFQuery, setLgFQuery] = useState('')
   const [lgFTypes, setLgFTypes] = useState<string[]>([])
   // Tanker empty: leave out purchase bills whose tankers are not all emptied.
@@ -5847,6 +5851,14 @@ Delete ${doc}?`)) return
       if (e.altKey && e.code === 'KeyD' && screen === 'voucher' && (editingId != null || noteEditId != null || !!viewOnly)) {
         e.preventDefault()
         void deleteVoucher()
+        return
+      }
+      // Alt+R: reconcile the ledger with the bank (Tally's Alt+R). By the
+      // key's position: Option+R on a Mac types a symbol.
+      if (__WEB__ && screen === 'ledger' && e.altKey && e.code === 'KeyR' && !e.ctrlKey && !e.metaKey) {
+        e.preventDefault()
+        setLgView('vouchers')
+        setLgReco((v) => !v)
         return
       }
       // F12: the Balance column, hidden or shown.
@@ -17844,10 +17856,41 @@ Delete ${doc}?`)) return
     // Type wide enough for the longest voucher type ("PURCHASE HUSK"), so
     // its chip never runs into the voucher number beside it.
     // Particulars straight after the date, then what kind of voucher it is.
-    const V_GRID = `128px minmax(160px,1fr) 140px 108px 116px 122px 122px${lgHideBal ? '' : ' 148px'}`
+    const V_GRID = `128px minmax(160px,1fr) 140px 108px 116px 122px 122px${lgReco ? ' 150px' : ''}${lgHideBal ? '' : ' 148px'}`
+    // Reco: what the bank has not shown yet (no bank date), and so its balance.
+    const recoLeft = vRows.filter((r) => !r.provisional && !r.value_date)
+    const recoDr = recoLeft.reduce((t, r) => t + (Number(r.dr) || 0), 0)
+    const recoCr = recoLeft.reduce((t, r) => t + (Number(r.cr) || 0), 0)
+    const setBankDate = (r: Row, d: string): void => {
+      const eid = Number(r.entry_id ?? r.id)
+      void window.api.vouchers
+        .setValueDate(eid, d || null)
+        .then(() => {
+          toast.success(d ? `Bank date ${formatDate(d)} set` : 'Bank date cleared')
+          void loadLedger()
+        })
+        .catch((e) => toast.error((e as Error).message.replace(/^Error invoking remote method '[^']+': (Error: )?/, '')))
+    }
     lgVRowsRef.current = vRows
     const vouchersView = (
-      <div style={{ minWidth: 1020 }}>
+      <div style={{ minWidth: lgReco ? 1170 : 1020 }}>
+        {lgReco && (
+          <div className="flex flex-wrap items-center gap-x-6 gap-y-1" style={{ padding: '9px 14px', background: '#EAF2FC', borderBottom: '1px solid #B9D3F0' }}>
+            <span style={{ fontSize: 10, fontWeight: 800, letterSpacing: '.12em', textTransform: 'uppercase', color: '#1B4E82' }}>Reco · Alt+R</span>
+            <span style={{ fontSize: 11.5, fontWeight: 700, color: '#33473E' }}>
+              Balance as per books <b style={figS(12, balFg(lgClosing))}>{bal(lgClosing)}</b>
+            </span>
+            <span style={{ fontSize: 11.5, fontWeight: 700, color: '#33473E' }}>
+              Not reflected in bank{' '}
+              <b style={figS(12, A.dr)}>Dr {formatINR(recoDr)}</b> · <b style={figS(12, A.cr)}>Cr {formatINR(recoCr)}</b>{' '}
+              <span style={{ color: A.muted }}>({recoLeft.length})</span>
+            </span>
+            <span style={{ fontSize: 11.5, fontWeight: 700, color: '#33473E' }}>
+              Balance as per bank <b style={figS(12, balFg(lgClosing - recoDr + recoCr))}>{bal(lgClosing - recoDr + recoCr)}</b>
+            </span>
+            <span style={{ fontSize: 10.5, fontWeight: 600, color: A.muted }}>Type a bank date on each voucher; Enter or leaving the box saves it.</span>
+          </div>
+        )}
         {/* The highlighted row, as Tally draws it: a lit bar down its edge. */}
         <style>{'[data-lghi="1"]{background:#E4F5C8!important;box-shadow:inset 4px 0 0 #9ACD2A!important;transition:none!important}'}</style>
         <div className="grid" style={{ ...headRow, gridTemplateColumns: V_GRID, height: 34 }}>
@@ -17858,6 +17901,7 @@ Delete ${doc}?`)) return
           <span style={{ padding: '0 8px' }}>{lgCf.head('ref', 'Ref', { onDark: true })}</span>
           <span style={{ padding: '0 12px', display: 'flex', justifyContent: 'flex-end' }}>{lgCf.head('dr', 'Debit', { onDark: true, align: 'end' })}</span>
           <span style={{ padding: '0 12px', display: 'flex', justifyContent: 'flex-end' }}>{lgCf.head('cr', 'Credit', { onDark: true, align: 'end' })}</span>
+          {lgReco && <span style={{ padding: '0 10px', display: 'flex', alignItems: 'center', color: '#C7F03F' }}>Bank date</span>}
           {!lgHideBal && (
             <span style={{ padding: '0 8px 0 14px', display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: 4 }} title={`${fKeyLabel('F12')} hides or shows this column`}>
               {lgCf.head('balance', 'Balance', { onDark: true, align: 'end' })}
@@ -17880,6 +17924,7 @@ Delete ${doc}?`)) return
           </span>
           <span />
           <span />
+          {lgReco && <span />}
           {!lgHideBal && <span style={{ padding: '0 14px', textAlign: 'right', ...figS(12, balFg(stmt.opening)) }}>{bal(stmt.opening)}</span>}
         </div>
         {vRows.map((r, i) => {
@@ -18098,6 +18143,28 @@ Delete ${doc}?`)) return
                 >
                   {Number(r.cr) > 0 ? formatINR(Number(r.cr)) : r.tanker_held && Number(r.held_cr) > 0 ? '—' : r.in_opening && Number(r.memo_cr) > 0 ? <span style={{ color: '#8CA396' }}>({formatINR(Number(r.memo_cr))})</span> : ''}
                 </span>
+                {lgReco && (
+                  <span style={{ padding: '0 8px' }} onClick={(e) => e.stopPropagation()} onKeyDown={(e) => e.stopPropagation()}>
+                    {r.provisional ? null : (
+                      <input
+                        type="date"
+                        aria-label="Bank date"
+                        title="The day this went through the bank — clear it to take it back off"
+                        defaultValue={String(r.value_date || '').slice(0, 10)}
+                        key={String(r.value_date || '')}
+                        onBlur={(e) => {
+                          const d = e.currentTarget.value
+                          if (d !== String(r.value_date || '').slice(0, 10)) setBankDate(r, d)
+                        }}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter') e.currentTarget.blur()
+                        }}
+                        className="h-7 w-full rounded-[4px] border px-1.5 text-[11.5px] font-bold"
+                        style={{ borderColor: r.value_date ? '#9ACD2A' : '#DCE7DB', background: r.value_date ? '#F3FBE2' : '#fff', color: '#0A1F17' }}
+                      />
+                    )}
+                  </span>
+                )}
                 {!lgHideBal && (
                   <span
                     className="flex h-full items-center justify-end"
@@ -19462,6 +19529,23 @@ Delete ${doc}?`)) return
                         }
                       )}
                     </div>
+                    {/* RECO (Alt+R): bank dates on the vouchers, books against bank. */}
+                    <button
+                      type="button"
+                      onClick={() => setLgReco((v) => !v)}
+                      title={`Reconcile with the bank (${chordLabel('Alt R')}) — a Bank date column on every voucher, and the balance as per bank`}
+                      className="flex h-[26px] flex-none items-center gap-1.5 whitespace-nowrap rounded-[13px] px-2.5"
+                      style={{
+                        border: `1px solid ${lgReco ? '#1B4E82' : '#DCE7DB'}`,
+                        background: lgReco ? '#EAF2FC' : '#F4F7F3',
+                        color: lgReco ? '#1B4E82' : '#33473E',
+                        fontSize: 11,
+                        fontWeight: 800
+                      }}
+                    >
+                      <span className="inline-block h-[8px] w-[8px] rounded-full" style={{ background: lgReco ? '#1B4E82' : '#B9C7BC' }} />
+                      Reco {lgReco ? 'ON' : 'OFF'}
+                    </button>
                     {/* PROVISIONAL: open LCs / awaiting BDs in the balance. */}
                     <button
                       type="button"

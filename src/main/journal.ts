@@ -462,7 +462,7 @@ export async function accountStatement(accountId: number, companyId?: number): P
   // company's accounts.
   const booksFrom = await getBooksFrom(cid)
   const res = await c.execute({
-    sql: `SELECT jl.id, je.id AS entry_id, je.entry_date, je.vch_type, je.vch_no, je.narration,
+    sql: `SELECT jl.id, je.id AS entry_id, je.entry_date, je.vch_type, je.vch_no, je.narration, je.value_date,
                  jl.dr, jl.cr, je.order_id, je.sale_id, je.payment_id,
                  -- THE DOCUMENT'S OWN NUMBER, for the Ref no column.
                  -- A purchase voucher's reference is the supplier's invoice
