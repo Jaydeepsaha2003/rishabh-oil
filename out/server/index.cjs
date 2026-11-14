@@ -6908,6 +6908,19 @@ async function listPendingRefs(accountName, companyId, side, all = false) {
     for (const b of tb ? toPlain4(tb) : []) {
       bills.push({ ref: String(b.ref).trim(), bill_date: String(b.bill_date || ""), amount: n4(b.amount), order_id: null, sale_invoice_group: null, origin_id: n4(b.origin_id) || null });
     }
+    const pr = await c.execute({
+      sql: `SELECT COALESCE(s.invoice_group, s.invoice_no) AS grp, MIN(s.invoice_no) AS ref, MIN(s.sale_date) AS bill_date,
+                     SUM(s.amount + s.gst_amount + s.round_off) AS amount,
+                     MIN((SELECT MIN(je.id) FROM journal_entries je WHERE je.sale_id = s.id)) AS origin_id
+                FROM sales s JOIN suppliers sp ON sp.id = s.return_supplier_id
+               WHERE s.company_id = ? AND TRIM(UPPER(sp.name)) IN ${nameIn}
+                 AND s.invoice_no IS NOT NULL AND s.invoice_no != ''
+               GROUP BY grp`,
+      args: [cid, ...names]
+    }).catch(() => null);
+    for (const b of pr ? toPlain4(pr) : []) {
+      bills.push({ ref: String(b.ref), bill_date: String(b.bill_date || ""), amount: n4(b.amount), order_id: null, sale_invoice_group: String(b.grp), origin_id: n4(b.origin_id) || null });
+    }
   } else if (group === "Sundry Debtors") {
     const r = await c.execute({
       // Match the CUSTOMER MASTER's name first, falling back to the sale's own
@@ -6928,6 +6941,23 @@ async function listPendingRefs(accountName, companyId, side, all = false) {
     for (const b of toPlain4(r)) {
       bills.push({ ref: String(b.ref), bill_date: String(b.bill_date || ""), amount: n4(b.amount), order_id: null, sale_invoice_group: String(b.grp), origin_id: n4(b.origin_id) || null });
     }
+  }
+  const originAllocIds = bills.map((b) => n4(b.origin_id)).filter((x) => x > 0);
+  if (originAllocIds.length && accountId) {
+    const oa = toPlain4(
+      await c.execute({
+        sql: `SELECT jl.entry_id, ba.method, ba.ref_name, ba.order_id, ba.sale_invoice_group, ba.amount
+                FROM journal_bill_allocs ba JOIN journal_lines jl ON jl.id = ba.line_id
+               WHERE ba.account_id = ? AND jl.entry_id IN (${[...new Set(originAllocIds)].join(",")})`,
+        args: [accountId]
+      })
+    );
+    const own = (r, b) => String(r.ref_name || "").trim().toUpperCase() === b.ref.trim().toUpperCase() || b.order_id != null && n4(r.order_id) === b.order_id || b.sale_invoice_group != null && String(r.sale_invoice_group || "") === b.sale_invoice_group;
+    for (const b of bills) {
+      const elsewhere = oa.filter((r) => n4(r.entry_id) === n4(b.origin_id) && !own(r, b)).reduce((t, r) => t + n4(r.amount), 0);
+      if (elsewhere > 5e-3) b.amount = round22(Math.max(0, b.amount - elsewhere));
+    }
+    for (let i = bills.length - 1; i >= 0; i--) if (bills[i].amount <= 5e-3) bills.splice(i, 1);
   }
   const realRefs = new Set(bills.map((b) => b.ref));
   const made = await c.execute({
