@@ -773,12 +773,13 @@ function ServicedRow({ x, bdId, splits = [], onSplits, cols = 0 }: { x: Row; bdI
                   return (
                     <span key={k} className={cn(SPLIT_COL, 'leading-tight')}>
                       {pt ? (
-                        <>
-                          <span className="doc-ref block truncate text-[10.5px] font-semibold text-[#5A6B62]" title={s(pt.label)}>
-                            {sp.mode === 'dates' ? s(pt.label) : formatINR(n(pt.value))}
-                          </span>
-                          <span className="doc-ref block whitespace-nowrap text-[12px] font-bold text-[#0B6B45]">{formatINR(n(pt.interest))}</span>
-                        </>
+                        // Interest only; what the part is (principal or dates) is on hover.
+                        <span
+                          className="doc-ref block whitespace-nowrap text-[12px] font-bold text-[#0B6B45]"
+                          title={sp.mode === 'dates' ? s(pt.label) : `Principal ${formatINR(n(pt.value))}`}
+                        >
+                          {formatINR(n(pt.interest))}
+                        </span>
                       ) : (
                         <span className="text-[12px] text-[#C3D2C6]">—</span>
                       )}
