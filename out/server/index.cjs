@@ -33420,6 +33420,11 @@ async function ensure6() {
     linked INTEGER NOT NULL DEFAULT 0
   )`);
   await c.execute("CREATE INDEX IF NOT EXISTS idx_tcl_chain ON trading_chain_legs(chain_id)");
+  for (const sql of ["ALTER TABLE trading_chains ADD COLUMN tags TEXT", "ALTER TABLE trading_chain_legs ADD COLUMN tds_pct REAL"]) {
+    await c.execute(sql).catch((e) => {
+      if (!/duplicate column/i.test(String(e.message))) throw e;
+    });
+  }
   ready7 = true;
 }
 async function companyName(id) {
@@ -33441,6 +33446,7 @@ function readLegs(v) {
       qty: r36(n64(l.qty)),
       rate: n64(l.rate),
       gst_pct: n64(l.gst_pct),
+      tds_pct: l.tds_pct === "" || l.tds_pct == null ? null : n64(l.tds_pct),
       invoice_no: s5(l.invoice_no).trim(),
       existing_sale_group: s5(l.existing_sale_group).trim() || void 0,
       existing_order_id: n64(l.existing_order_id) || void 0
@@ -33549,7 +33555,9 @@ async function raiseLeg(leg, productId, uom, step) {
       bargain_rate: leg.rate,
       gst_pct: leg.gst_pct,
       gst_type: gstTypeOf(sup.state, buyerState),
-      tds_pct: n64(sup.tds_pct),
+      // The usual purchase TDS: this % on the supplier's slab and threshold
+      // (createOrder), the master's own % unless the step changed it.
+      tds_pct: leg.tds_pct ?? n64(sup.tds_pct),
       round_off: 0,
       charge_interest: false
     })
@@ -33597,6 +33605,17 @@ async function linkLeg(leg, step) {
     rate: n64(o.invoice_rate)
   };
 }
+async function tagDoc(names, companyId, entity, ref) {
+  const { createTag: createTag2, ensureTagTables: ensureTagTables2 } = await Promise.resolve().then(() => (init_tags(), tags_exports));
+  await ensureTagTables2();
+  for (const name of names) {
+    const t = await createTag2({ name, companyId });
+    await getClient().execute({
+      sql: "INSERT OR IGNORE INTO tag_links (tag_id, entity, ref, created_by) VALUES (?, ?, ?, ?)",
+      args: [n64(t.id), entity, ref, getCurrentUser().username || null]
+    });
+  }
+}
 async function createTradingChain(v) {
   await ensure6();
   const productId = n64(v.product_id);
@@ -33605,11 +33624,13 @@ async function createTradingChain(v) {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(chainDate)) throw new Error("Pick the chain date");
   const uom = s5(v.uom || "MT");
   const legs = readLegs(v);
+  const tags = Array.from(new Set((Array.isArray(v.tags) ? v.tags : []).map((x) => s5(x).replace(/\s+/g, " ").trim()).filter(Boolean))).slice(0, 20);
+  if (!tags.length) throw new Error("Tag this chain \u2014 at least one tag is required");
   return withDbTransaction(async () => {
     const c = getClient();
     const ins = await c.execute({
-      sql: "INSERT INTO trading_chains (chain_date, product_id, qty, uom, note, created_by) VALUES (?, ?, ?, ?, ?, ?)",
-      args: [chainDate, productId, r36(n64(v.qty)), uom, s5(v.note).trim() || null, getCurrentUser().username || null]
+      sql: "INSERT INTO trading_chains (chain_date, product_id, qty, uom, note, created_by, tags) VALUES (?, ?, ?, ?, ?, ?, ?)",
+      args: [chainDate, productId, r36(n64(v.qty)), uom, s5(v.note).trim() || null, getCurrentUser().username || null, JSON.stringify(tags)]
     });
     const chainId = Number(ins.lastInsertRowid);
     for (let i = 0; i < legs.length; i++) {
@@ -33618,8 +33639,8 @@ async function createTradingChain(v) {
       const got = linked ? await linkLeg(leg, i + 1) : await raiseLeg(leg, productId, uom, i + 1);
       await c.execute({
         sql: `INSERT INTO trading_chain_legs (chain_id, step, seller_kind, seller_id, buyer_kind, buyer_id, leg_date, qty, rate, gst_pct, invoice_no,
-                sale_group, sale_company_id, order_id, order_company_id, linked)
-              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                sale_group, sale_company_id, order_id, order_company_id, linked, tds_pct)
+              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         args: [
           chainId,
           i + 1,
@@ -33636,9 +33657,14 @@ async function createTradingChain(v) {
           got.sale_company_id ?? null,
           got.order_id ?? null,
           got.order_company_id ?? null,
-          linked ? 1 : 0
+          linked ? 1 : 0,
+          leg.tds_pct
         ]
       });
+      if (!linked) {
+        if (got.sale_group) await tagDoc(tags, n64(got.sale_company_id), "sale", s5(got.sale_group));
+        if (got.order_id) await tagDoc(tags, n64(got.order_company_id), "order", String(n64(got.order_id)));
+      }
     }
     return { id: chainId };
   });
@@ -33652,6 +33678,8 @@ async function deleteTradingChain(id) {
     const { deleteOrder: deleteOrder2 } = await Promise.resolve().then(() => (init_orders(), orders_exports));
     for (const l of legs) {
       if (n64(l.linked)) continue;
+      if (s5(l.sale_group)) await c.execute({ sql: "DELETE FROM tag_links WHERE entity = 'sale' AND ref = ?", args: [s5(l.sale_group)] }).catch(() => void 0);
+      if (n64(l.order_id)) await c.execute({ sql: "DELETE FROM tag_links WHERE entity = 'order' AND ref = ?", args: [String(n64(l.order_id))] }).catch(() => void 0);
       if (s5(l.sale_group)) await withCompany(n64(l.sale_company_id), () => deleteSaleInvoice2(s5(l.sale_group)));
       else if (n64(l.order_id)) await withCompany(n64(l.order_company_id), () => deleteOrder2(n64(l.order_id)).then(() => void 0));
     }
@@ -33690,8 +33718,15 @@ async function listTradingChains() {
       if (l.seller_kind === "company") net.set(n64(l.seller_id), r36((net.get(n64(l.seller_id)) || 0) - n64(l.qty)));
       if (l.buyer_kind === "company") net.set(n64(l.buyer_id), r36((net.get(n64(l.buyer_id)) || 0) + n64(l.qty)));
     }
+    let tags = [];
+    try {
+      tags = JSON.parse(s5(ch.tags) || "[]");
+    } catch {
+      tags = [];
+    }
     return {
       ...ch,
+      tags,
       legs: mine,
       net: [...net.entries()].map(([cid, q]) => ({ company_id: cid, company: companies.get(cid) || `Company ${cid}`, qty: q }))
     };
