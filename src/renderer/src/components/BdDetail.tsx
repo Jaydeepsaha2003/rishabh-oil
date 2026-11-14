@@ -651,10 +651,18 @@ function BdPartiesAndEntries({ bill }: { bill: Row }): React.JSX.Element | null 
 // ONE SERVICED-INTEREST PERIOD, opened to show how it is worked out: each
 // stretch of days at the principal still out then (a part repaid early makes
 // the later days cheaper — billDiscounting.ts bdInterestParts).
-function ServicedRow({ x, bdId, splits = [], onSplits }: { x: Row; bdId?: number; splits?: Row[]; onSplits?: () => void }): React.JSX.Element {
+// Splits saved on a period or one of its legs (a record only).
+const splitsOf = (x: Row, splits: Row[]): Row[] =>
+  splits.filter((sp) => String(sp.from_date) >= String(x.from_date).slice(0, 10) && String(sp.to_date) <= String(x.to_date).slice(0, 10))
+// Part k's interest across a period's saved splits; null when it has none.
+const partInterest = (mine: Row[], k: number): number | null =>
+  mine.length ? Math.round(mine.reduce((t, sp) => t + n(((sp.parts as Row[]) || [])[k]?.interest), 0) * 100) / 100 : null
+// Width of a Part / Total column when splits are shown column-wise.
+const SPLIT_COL = 'w-[112px] flex-none text-right'
+
+function ServicedRow({ x, bdId, splits = [], onSplits, cols = 0 }: { x: Row; bdId?: number; splits?: Row[]; onSplits?: () => void; cols?: number }): React.JSX.Element {
   const [open, setOpen] = useState(false)
-  // Splits saved on this period or one of its legs (a record only).
-  const mine = splits.filter((sp) => String(sp.from_date) >= String(x.from_date).slice(0, 10) && String(sp.to_date) <= String(x.to_date).slice(0, 10))
+  const mine = splitsOf(x, splits)
   const [splitOpen, setSplitOpen] = useState(false)
   // A single leg (stretch) being split, from the + on its row.
   const [legSplit, setLegSplit] = useState<Row | null>(null)
@@ -696,7 +704,16 @@ function ServicedRow({ x, bdId, splits = [], onSplits }: { x: Row; bdId?: number
             )}
           </div>
         </div>
-        <span className="flex-none text-right">
+        {/* SAVED SPLITS, COLUMN-WISE: each part's interest under its own head. */}
+        {Array.from({ length: cols }, (_, k) => {
+          const v = partInterest(mine, k)
+          return (
+            <span key={k} className={cn(SPLIT_COL, 'doc-ref whitespace-nowrap text-[12.5px] font-bold', v == null ? 'text-[#C3D2C6]' : 'text-[#0B6B45]')}>
+              {v == null ? '—' : formatINR(v)}
+            </span>
+          )
+        })}
+        <span className={cn('flex-none text-right', cols > 0 && SPLIT_COL)}>
           <span className="doc-ref block whitespace-nowrap text-[13.5px] font-bold text-[#0A1F17]">{formatINR(n(x.gross))}</span>
           {x.mode === 'with_repayment' && x.paid_id && (
             <span className="doc-ref block whitespace-nowrap text-[10.5px] font-semibold text-[#0B6B45]">paid {formatINR(n(x.paid_gross))}</span>
@@ -1050,6 +1067,8 @@ export function BdDetail({
   }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(loadSplits, [billId])
+  // How many Part columns the interest list needs: the most parts any saved split has.
+  const splitCols = splits.reduce((m, sp) => Math.max(m, ((sp.parts as Row[]) || []).length), 0)
   // DELETE ONE REPAYMENT. Its voucher goes with it; one bank debit that also
   // cleared other bills goes as a whole (the bank was debited once), so the
   // question names every bill it takes off.
@@ -1546,14 +1565,55 @@ This was one bank debit that also cleared ${others.map((g) => `${s(g.bd_no)} ${f
                       {servicedPaid} of {sched.length} paid
                     </span>
                   </div>
+                  {/* Part 1 / Part 2 (/ Part 3) / Total heads, once a split is saved. */}
+                  {splitCols > 0 && (
+                    <div className="flex items-center border-b border-b-[#E4ECE3] bg-[#FBFCFA]">
+                      <div className="flex min-w-0 flex-1 items-center gap-2.5 py-1.5 pl-3 text-[9.5px] font-extrabold uppercase tracking-[.1em] text-[#5A6B62]">
+                        <span className="flex-1">Period</span>
+                        {Array.from({ length: splitCols }, (_, k) => (
+                          <span key={k} className={SPLIT_COL}>
+                            Part {k + 1}
+                          </span>
+                        ))}
+                        <span className={SPLIT_COL}>Total</span>
+                        <span className="w-4 flex-none" />
+                      </div>
+                      <span className="mx-2 w-[22px] flex-none" />
+                    </div>
+                  )}
                   {sched.slice(0, 8).map((x, i) => (
-                    <ServicedRow key={i} x={x} bdId={billId || undefined} splits={splits} onSplits={loadSplits} />
+                    <ServicedRow key={i} x={x} bdId={billId || undefined} splits={splits} onSplits={loadSplits} cols={splitCols} />
                   ))}
                   {/* TOTAL BD INTEREST over every period (not just the 8 shown), paid and still due. */}
                   {!withRepay && (() => {
                     const total = round2(sched.reduce((t, x) => t + n(x.gross), 0))
                     const paid = round2(sched.reduce((t, x) => t + (x.paid_id ? n(x.paid_gross || x.gross) : 0), 0))
                     const due = round2(sched.reduce((t, x) => t + (x.paid_id ? 0 : n(x.gross)), 0))
+                    if (splitCols > 0) {
+                      // Column totals, and how much of the interest was split and how much was not.
+                      const splitGross = round2(sched.reduce((t, x) => t + (splitsOf(x, splits).length ? n(x.gross) : 0), 0))
+                      return (
+                        <div className="flex items-center border-t-[1.5px] border-t-[#C9DCCF] bg-[#F7FAF6]">
+                          <div className="flex min-w-0 flex-1 items-center gap-2.5 py-[10px] pl-3">
+                            <span className="min-w-0 flex-1">
+                              <span className="block text-[10.5px] font-extrabold uppercase tracking-[.12em] text-[#1A2C56]">Total BD interest</span>
+                              <span className="block text-[11px] font-semibold text-[#5A6B62]">
+                                split <b className="doc-ref text-[#0B6B45]">{formatINR(splitGross)}</b> · not split <b className="doc-ref text-[#33473E]">{formatINR(round2(total - splitGross))}</b>
+                                {due > 0.004 && <> · due <b className="doc-ref text-[#B3261E]">{formatINR(due)}</b></>}
+                              </span>
+                            </span>
+                            {Array.from({ length: splitCols }, (_, k) => (
+                              <span key={k} className={cn(SPLIT_COL, 'doc-ref whitespace-nowrap text-[13px] font-extrabold text-[#0B6B45]')}>
+                                {formatINR(round2(sched.reduce((t, x) => t + (partInterest(splitsOf(x, splits), k) ?? 0), 0)))}
+                              </span>
+                            ))}
+                            <span className={cn(SPLIT_COL, 'doc-ref whitespace-nowrap text-[14px] font-extrabold text-[#0A1F17]')}>{formatINR(total)}</span>
+                            <span className="w-4 flex-none" />
+                          </div>
+                          <span className="mx-2 w-[22px] flex-none" />
+                        </div>
+                      )
+                    }
                     return (
                       <div className="flex flex-wrap items-center gap-x-4 gap-y-1 border-t-[1.5px] border-t-[#C9DCCF] bg-[#F7FAF6] px-3 py-[10px]">
                         <span className="text-[10.5px] font-extrabold uppercase tracking-[.12em] text-[#1A2C56]">Total BD interest</span>
