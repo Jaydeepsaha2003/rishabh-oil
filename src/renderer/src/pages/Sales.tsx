@@ -2849,17 +2849,18 @@ function SalesTab({
                                   Line items
                                 </div>
                                 <div className="overflow-hidden rounded-[4px] border border-[#D6E2D6] bg-white">
-                                  <div className="grid grid-cols-[minmax(0,0.8fr)_minmax(0,1.4fr)_100px_130px_150px] items-center bg-[#EAF0E9] text-[11px] font-extrabold uppercase tracking-[.08em] text-[#33473E]">
+                                  <div className="grid grid-cols-[minmax(0,0.8fr)_minmax(0,1.2fr)_90px_120px_140px_150px] items-center bg-[#EAF0E9] text-[11px] font-extrabold uppercase tracking-[.08em] text-[#33473E]">
                                     <div className="px-3 py-2.5">Product</div>
                                     <div className="px-3 py-2.5">Bargain no</div>
                                     <div className="px-3 py-2.5 text-right">Qty</div>
                                     <div className="px-3 py-2.5 text-right">Rate</div>
+                                    <div className="px-3 py-2.5 text-right">Taxable</div>
                                     <div className="px-3 py-2.5 text-right">Amount</div>
                                   </div>
                                   {inv.lines.map((r) => (
                                     <div
                                       key={r.id as number}
-                                      className={cn('grid grid-cols-[minmax(0,0.8fr)_minmax(0,1.4fr)_100px_130px_150px] items-center border-b border-[#EAF0E9] text-[13.5px] last:border-0')}
+                                      className={cn('grid grid-cols-[minmax(0,0.8fr)_minmax(0,1.2fr)_90px_120px_140px_150px] items-center border-b border-[#EAF0E9] text-[13.5px] last:border-0')}
                                     >
                                       <div className="truncate px-3 py-2.5 font-bold" title={String(r.packaging_name || r.product_name || '')}>
                                         {String(r.packaging_name || r.product_name || '—')}
@@ -2875,6 +2876,8 @@ function SalesTab({
                                       </div>
                                       <div className="px-3 py-2.5 text-right tabular-nums">{formatNum(r.qty)}</div>
                                       <div className="px-3 py-2.5 text-right tabular-nums text-[#5A6B62]">{formatINR(r.rate)}</div>
+                                      {/* Before GST — the Amount beside it carries the GST. */}
+                                      <div className="px-3 py-2.5 text-right tabular-nums">{formatINR(Number(r.amount) || 0)}</div>
                                       <div className="px-3 py-2.5 text-right font-bold tabular-nums">
                                         {formatINR(Number(r.amount) + Number(r.gst_amount || 0))}
                                       </div>
