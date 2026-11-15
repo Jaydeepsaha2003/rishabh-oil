@@ -3096,7 +3096,10 @@ export function Trading({
       />}
 
       {__WEB__ && view === 'chains' ? (
-        <TradingChains onFormChange={setChainForm} />
+        <TradingChains
+          onFormChange={setChainForm}
+          range={globalRangeAppliesTo(globalRange, 'trading') ? { from: globalRange.from, to: globalRange.to } : null}
+        />
       ) : __WEB__ && view === 'payments' ? (
         <TradingPayments
           range={globalRangeAppliesTo(globalRange, 'trading') ? { from: globalRange.from, to: globalRange.to } : null}

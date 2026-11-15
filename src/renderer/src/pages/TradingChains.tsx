@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react'
 import { toast } from 'sonner'
-import { AlertTriangle, ArrowLeft, ArrowRight, Building2, Check, CheckCircle2, Link2, Loader2, Plus, Repeat, Trash2, TrendingDown, TrendingUp, User, Zap } from 'lucide-react'
+import { AlertTriangle, ArrowLeft, ArrowRight, Building2, Check, CheckCircle2, ChevronRight, Link2, Search, Loader2, Plus, Repeat, Trash2, TrendingDown, TrendingUp, User, Zap } from 'lucide-react'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { TagDraftPicker } from '@/components/Tags'
@@ -56,7 +56,16 @@ const Req = (): React.JSX.Element => <span className="text-[#B3261E]">*</span>
 const kindOf = (v: string): 'company' | 'party' => (v.startsWith('c:') ? 'company' : 'party')
 const idOf = (v: string): number => Number(v.slice(2)) || 0
 
-export function TradingChains({ openNewKey = 0, onFormChange }: { openNewKey?: number; onFormChange?: (open: boolean) => void }): React.JSX.Element {
+export function TradingChains({
+  openNewKey = 0,
+  onFormChange,
+  range = null
+}: {
+  openNewKey?: number
+  onFormChange?: (open: boolean) => void
+  // The page's period (Alt+F2), as on Deals.
+  range?: { from: string; to: string } | null
+}): React.JSX.Element {
   const minDate = useEntryWindow('trading')
   const [chains, setChains] = useState<Row[]>([])
   const [loading, setLoading] = useState(true)
@@ -68,6 +77,9 @@ export function TradingChains({ openNewKey = 0, onFormChange }: { openNewKey?: n
   const [saving, setSaving] = useState(false)
   // Linkable invoices per step, keyed by the step's from|to|product.
   const [links, setLinks] = useState<Record<string, Row[]>>({})
+  // The register: its search, and which chains are opened out.
+  const [search, setSearch] = useState('')
+  const [openIds, setOpenIds] = useState<Set<number>>(new Set())
 
   const load = (): void => {
     void window.api.trading
@@ -660,73 +672,281 @@ export function TradingChains({ openNewKey = 0, onFormChange }: { openNewKey?: n
     )
   }
 
-  // ── THE LIST ────────────────────────────────────────────────────────────
+  // ── THE LIST — a register, like Deals ───────────────────────────────────
+  const stepKind = (l: Row): 'sale' | 'purchase' | 'transfer' =>
+    l.seller_kind === 'company' && l.buyer_kind === 'company' ? 'transfer' : l.seller_kind === 'company' ? 'sale' : 'purchase'
+  const KIND = {
+    sale: { label: 'Sale', fg: '#0B6B45', bg: '#E9F5EE', bd: '#BFE3CB' },
+    purchase: { label: 'Purchase', fg: '#8C2F26', bg: '#FDF3F2', bd: '#F0D6D4' },
+    transfer: { label: 'Transfer', fg: '#1B4E82', bg: '#EEF4FC', bd: '#C6DAF0' }
+  } as const
+  const legValue = (l: Row): number => Math.round(n(l.qty) * n(l.rate) * (1 + n(l.gst_pct) / 100) * 100) / 100
+  const chainValue = (ch: Row): number => (ch.legs as Row[]).reduce((t, l) => t + legValue(l), 0)
+  const q = search.trim().toUpperCase()
+  const shown = chains.filter((ch) => {
+    const d = s(ch.chain_date).slice(0, 10)
+    if (range && (d < range.from || d > range.to)) return false
+    if (!q) return true
+    const hay = [
+      s(ch.product_code || ch.product_name),
+      s(ch.note),
+      ...((ch.tags as string[]) || []),
+      ...(ch.legs as Row[]).flatMap((l) => [s(l.seller_name), s(l.buyer_name), s(l.invoice_no)])
+    ]
+      .join(' ')
+      .toUpperCase()
+    return hay.includes(q)
+  })
+  const allLegs = shown.flatMap((ch) => ch.legs as Row[])
+  const created = allLegs.filter((l) => !n(l.linked)).length
+  const tiles = [
+    {
+      k: 'Chains',
+      v: String(shown.length),
+      sub: `${new Set(shown.map((ch) => s(ch.product_code || ch.product_name))).size} product${new Set(shown.map((ch) => s(ch.product_code || ch.product_name))).size === 1 ? '' : 's'}`,
+      accent: '#0B3D2E',
+      Icon: Link2,
+      bg: '#EAF0E9',
+      fg: '#0B3D2E'
+    },
+    {
+      k: 'Quantity passed on',
+      v: `${formatNum(Math.round(shown.reduce((t, ch) => t + n(ch.qty), 0) * 1000) / 1000)} MT`,
+      sub: 'across the chains',
+      accent: '#1B4E82',
+      Icon: Repeat,
+      bg: '#EEF4FC',
+      fg: '#1B4E82'
+    },
+    {
+      k: 'Steps',
+      v: String(allLegs.length),
+      sub: `${created} created · ${allLegs.length - created} picked`,
+      accent: '#C2700A',
+      Icon: ArrowRight,
+      bg: '#FFF4E0',
+      fg: '#8A5300'
+    },
+    {
+      k: 'Value booked',
+      v: formatINR(shown.reduce((t, ch) => t + chainValue(ch), 0)),
+      sub: 'every step, with GST',
+      accent: '#12855A',
+      Icon: TrendingUp,
+      bg: '#E9F5EE',
+      fg: '#0B6B45'
+    }
+  ]
+  const toggle = (id: number): void =>
+    setOpenIds((p) => {
+      const next = new Set(p)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+  const HEAD = 'px-3 py-2.5 text-[10px] font-extrabold uppercase tracking-[.12em] text-[#A9CDBB]'
   return (
-    <div className="space-y-3">
-      <div className="flex items-center gap-3">
-        <div className="text-[12px] font-semibold text-[#5A6B62]">
-          A parcel passed through several hands — each step booked in the company that stands on it.
+    <div className="space-y-3.5">
+      <div className="grid gap-2.5 sm:grid-cols-2 xl:grid-cols-4">
+        {tiles.map((t) => (
+          <div key={t.k} className="flex items-center gap-3 rounded-[4px] border border-[#D6E2D6] bg-white px-3.5 py-3" style={{ borderTop: `3px solid ${t.accent}` }}>
+            <div className="flex h-[38px] w-[38px] shrink-0 items-center justify-center rounded-[3px]" style={{ background: t.bg, color: t.fg }}>
+              <t.Icon className="h-[21px] w-[21px]" />
+            </div>
+            <div className="min-w-0">
+              <div className="text-[9.5px] font-extrabold uppercase tracking-[.13em] text-[#5A6B62]">{t.k}</div>
+              <div className="mt-0.5 truncate text-[19px] font-bold leading-tight tracking-[-0.035em] tabular-nums text-[#0A1F17]" title={t.v}>
+                {t.v}
+              </div>
+              <div className="mt-0.5 text-[11.5px] font-bold text-[#5A6B62]">{t.sub}</div>
+            </div>
+          </div>
+        ))}
+      </div>
+
+      <div className="flex flex-wrap items-center gap-2.5">
+        <div className="relative min-w-[240px] flex-1 sm:max-w-[420px]">
+          <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-[#8CA396]" />
+          <Input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search party, invoice no, tag or note" className="h-10 pl-9 text-[13px]" />
         </div>
+        <span className="text-[12px] font-semibold text-[#5A6B62]">
+          {shown.length} of {chains.length} chain{chains.length === 1 ? '' : 's'}
+        </span>
         <button
           type="button"
           onClick={openNew}
-          className="ml-auto flex h-9 items-center gap-1.5 rounded-[5px] bg-[#0B3D2E] px-4 text-[12px] font-extrabold text-white hover:bg-[#0B6B45]"
+          className="ml-auto flex h-10 items-center gap-1.5 rounded-[4px] bg-[#0B3D2E] px-4 text-[12.5px] font-extrabold uppercase tracking-[.03em] text-[#C7F03F] hover:bg-[#0F4A38]"
         >
           <Plus className="h-4 w-4" /> New chain
         </button>
       </div>
-      {loading ? (
-        <div className="flex justify-center py-10">
-          <Loader2 className="h-5 w-5 animate-spin text-[#8CA396]" />
+
+      <div className="overflow-hidden rounded-[4px] border border-[#D6E2D6] bg-white">
+        <div className="overflow-x-auto">
+          <table className="w-full min-w-[980px] text-[12.5px]">
+            <thead className="bg-[#0B3D2E]">
+              <tr>
+                <th className={cn(HEAD, 'w-8')} />
+                <th className={cn(HEAD, 'text-left')}>Date</th>
+                <th className={cn(HEAD, 'text-left')}>Chain</th>
+                <th className={cn(HEAD, 'text-left')}>Product</th>
+                <th className={cn(HEAD, 'text-right')}>Qty</th>
+                <th className={cn(HEAD, 'text-right')}>Steps</th>
+                <th className={cn(HEAD, 'text-right')}>Value</th>
+                <th className={cn(HEAD, 'text-left')}>Where it ends</th>
+                <th className={cn(HEAD, 'w-10')} />
+              </tr>
+            </thead>
+            <tbody>
+              {loading ? (
+                <tr>
+                  <td colSpan={9} className="py-10 text-center">
+                    <Loader2 className="mx-auto h-5 w-5 animate-spin text-[#8CA396]" />
+                  </td>
+                </tr>
+              ) : shown.length === 0 ? (
+                <tr>
+                  <td colSpan={9} className="py-12 text-center text-[12.5px] font-semibold text-[#5A6B62]">
+                    {chains.length ? 'No chain matches the search or the period.' : 'No chains yet — New chain to book one.'}
+                  </td>
+                </tr>
+              ) : (
+                shown.map((ch) => {
+                  const legs = ch.legs as Row[]
+                  const open = openIds.has(n(ch.id))
+                  const missing = legs.some((l) => l.missing)
+                  return (
+                    <React.Fragment key={ch.id}>
+                      <tr
+                        onClick={() => toggle(n(ch.id))}
+                        className={cn('cursor-pointer border-t border-[#EFF3EE] align-middle hover:bg-[#F7FAF6]', open && 'bg-[#F3FBE2] hover:bg-[#F3FBE2]')}
+                      >
+                        <td className="pl-3">
+                          <ChevronRight className={cn('h-4 w-4 text-[#8CA396] transition-transform', open && 'rotate-90')} />
+                        </td>
+                        <td className="whitespace-nowrap px-3 py-3 font-extrabold tabular-nums text-[#0A1F17]">{formatDate(s(ch.chain_date))}</td>
+                        <td className="px-3 py-3">
+                          <div className="flex flex-wrap items-center gap-1">
+                            {legs.map((l, k) => (
+                              <React.Fragment key={l.id}>
+                                {k === 0 && <Party name={s(l.seller_name)} company={l.seller_kind === 'company'} />}
+                                <ArrowRight className="h-3.5 w-3.5 flex-none" style={{ color: KIND[stepKind(l)].fg }} />
+                                <Party name={s(l.buyer_name)} company={l.buyer_kind === 'company'} />
+                              </React.Fragment>
+                            ))}
+                          </div>
+                          {(s(ch.note) || ((ch.tags as string[]) || []).length > 0 || missing) && (
+                            <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
+                              {((ch.tags as string[]) || []).map((t) => (
+                                <span key={t} className="rounded-[3px] border border-[#B9D3F0] bg-[#EAF2FC] px-1.5 py-0.5 text-[10px] font-extrabold text-[#1B4E82]">
+                                  {t}
+                                </span>
+                              ))}
+                              {missing && (
+                                <span className="rounded-[3px] border border-[#F0C9C4] bg-[#FDECEA] px-1.5 py-0.5 text-[10px] font-extrabold text-[#B3261E]">
+                                  An invoice is no longer in the books
+                                </span>
+                              )}
+                              {s(ch.note) && <span className="text-[11px] font-semibold text-[#5A6B62]">{s(ch.note)}</span>}
+                            </div>
+                          )}
+                        </td>
+                        <td className="px-3 py-3">
+                          <span className="rounded-[3px] bg-[#EAF0E9] px-1.5 py-0.5 text-[10.5px] font-extrabold uppercase tracking-[.06em] text-[#33473E]">
+                            {s(ch.product_code || ch.product_name)}
+                          </span>
+                        </td>
+                        <td className="whitespace-nowrap px-3 py-3 text-right font-bold tabular-nums">{n(ch.qty) > 0 ? `${formatNum(n(ch.qty))} MT` : '—'}</td>
+                        <td className="px-3 py-3 text-right font-bold tabular-nums">{legs.length}</td>
+                        <td className="whitespace-nowrap px-3 py-3 text-right font-bold tabular-nums text-[#0A1F17]">{formatINR(chainValue(ch))}</td>
+                        <td className="px-3 py-3">
+                          <NetStrip net={(ch.net as Row[]).map((x) => [s(x.company), n(x.qty)])} />
+                        </td>
+                        <td className="pr-3 text-right">
+                          <button
+                            type="button"
+                            title="Delete this chain"
+                            onClick={(e) => {
+                              e.stopPropagation()
+                              void remove(ch)
+                            }}
+                            className="rounded-[3px] p-1.5 text-[#8C2F26] hover:bg-[#FDECEA]"
+                          >
+                            <Trash2 className="h-4 w-4" />
+                          </button>
+                        </td>
+                      </tr>
+                      {open && (
+                        <tr className="border-t border-[#E4ECE3] bg-[#FBFCFA]">
+                          <td />
+                          <td colSpan={8} className="px-3 pb-4 pt-2">
+                            <div className="overflow-hidden rounded-[4px] border border-[#E4ECE3] bg-white">
+                              <table className="w-full text-[12px]">
+                                <thead className="bg-[#F7FAF6] text-[9.5px] font-extrabold uppercase tracking-[.1em] text-[#5A6B62]">
+                                  <tr>
+                                    <th className="px-3 py-2 text-left">Step</th>
+                                    <th className="px-3 py-2 text-left">Sells → Buys</th>
+                                    <th className="px-3 py-2 text-left">Invoice no</th>
+                                    <th className="px-3 py-2 text-left">Date</th>
+                                    <th className="px-3 py-2 text-right">Qty</th>
+                                    <th className="px-3 py-2 text-right">Rate</th>
+                                    <th className="px-3 py-2 text-right">GST</th>
+                                    <th className="px-3 py-2 text-right">Value</th>
+                                    <th className="px-3 py-2 text-left">Booked</th>
+                                  </tr>
+                                </thead>
+                                <tbody>
+                                  {legs.map((l) => {
+                                    const kd = KIND[stepKind(l)]
+                                    return (
+                                      <tr key={l.id} className="border-t border-[#EFF3EE]">
+                                        <td className="whitespace-nowrap px-3 py-2">
+                                          <span className="mr-1.5 inline-flex h-5 w-5 items-center justify-center rounded-full text-[10px] font-extrabold text-white" style={{ background: kd.fg }}>
+                                            {n(l.step)}
+                                          </span>
+                                          <span className="rounded-[3px] border px-1.5 py-0.5 text-[10px] font-extrabold uppercase tracking-[.05em]" style={{ color: kd.fg, background: kd.bg, borderColor: kd.bd }}>
+                                            {kd.label}
+                                          </span>
+                                        </td>
+                                        <td className="px-3 py-2 font-bold text-[#0A1F17]">
+                                          {s(l.seller_name).trim()} <span className="text-[#8CA396]">→</span> {s(l.buyer_name).trim()}
+                                        </td>
+                                        <td className={cn('doc-ref whitespace-nowrap px-3 py-2 font-bold', l.missing && 'text-[#B3261E] line-through')}>{s(l.invoice_no) || '—'}</td>
+                                        <td className="whitespace-nowrap px-3 py-2 tabular-nums">{formatDate(s(l.leg_date))}</td>
+                                        <td className="whitespace-nowrap px-3 py-2 text-right tabular-nums">{formatNum(n(l.qty))} MT</td>
+                                        <td className="whitespace-nowrap px-3 py-2 text-right tabular-nums">{formatINR(n(l.rate))}</td>
+                                        <td className="whitespace-nowrap px-3 py-2 text-right tabular-nums">
+                                          {n(l.gst_pct)}%{n(l.tds_pct) > 0 ? <span className="block text-[10px] text-[#5A6B62]">TDS {n(l.tds_pct)}%</span> : null}
+                                        </td>
+                                        <td className="whitespace-nowrap px-3 py-2 text-right font-bold tabular-nums">{formatINR(legValue(l))}</td>
+                                        <td className="whitespace-nowrap px-3 py-2">
+                                          {l.missing ? (
+                                            <span className="text-[11px] font-extrabold text-[#B3261E]">Deleted from its page</span>
+                                          ) : n(l.linked) ? (
+                                            <span className="inline-flex items-center gap-1 text-[11px] font-extrabold text-[#1B4E82]">
+                                              <Link2 className="h-3.5 w-3.5" /> Picked existing
+                                            </span>
+                                          ) : (
+                                            <span className="text-[11px] font-extrabold text-[#0B6B45]">Created by the chain</span>
+                                          )}
+                                        </td>
+                                      </tr>
+                                    )
+                                  })}
+                                </tbody>
+                              </table>
+                            </div>
+                          </td>
+                        </tr>
+                      )}
+                    </React.Fragment>
+                  )
+                })
+              )}
+            </tbody>
+          </table>
         </div>
-      ) : chains.length === 0 ? (
-        <div className="rounded-[6px] border border-dashed border-[#C9DCCF] bg-white py-12 text-center text-[12.5px] font-semibold text-[#5A6B62]">
-          No chains yet — New chain to book one.
-        </div>
-      ) : (
-        chains.map((ch) => (
-          <div key={ch.id} className="rounded-[6px] border border-[#DCE7DB] bg-white">
-            <div className="flex flex-wrap items-center gap-x-3 gap-y-1 border-b border-[#EFF3EE] px-4 py-2.5">
-              <span className="text-[13px] font-extrabold text-[#0A1F17]">{formatDate(s(ch.chain_date))}</span>
-              <span className="rounded-[3px] bg-[#EAF0E9] px-1.5 py-0.5 text-[10.5px] font-extrabold uppercase tracking-[.06em] text-[#33473E]">
-                {s(ch.product_code || ch.product_name)}
-              </span>
-              {n(ch.qty) > 0 && <span className="text-[12px] font-bold tabular-nums text-[#33473E]">{formatNum(n(ch.qty))} MT</span>}
-              {s(ch.note) && <span className="text-[11.5px] font-semibold text-[#5A6B62]">{s(ch.note)}</span>}
-              {((ch.tags as string[]) || []).map((t) => (
-                <span key={t} className="rounded-[3px] border border-[#B9D3F0] bg-[#EAF2FC] px-1.5 py-0.5 text-[10.5px] font-extrabold text-[#1B4E82]">
-                  {t}
-                </span>
-              ))}
-              <div className="ml-auto flex items-center gap-3">
-                <NetStrip net={(ch.net as Row[]).map((x) => [s(x.company), n(x.qty)])} />
-                <button type="button" title="Delete this chain" onClick={() => void remove(ch)} className="rounded-[3px] p-1 text-[#8C2F26] hover:bg-[#FDECEA]">
-                  <Trash2 className="h-4 w-4" />
-                </button>
-              </div>
-            </div>
-            <div className="flex flex-wrap items-stretch gap-2 px-4 py-3">
-              {(ch.legs as Row[]).map((l, k) => (
-                <div key={l.id} className="flex items-center gap-2">
-                  {k === 0 && <Party name={s(l.seller_name)} company={l.seller_kind === 'company'} />}
-                  <div className="flex flex-col items-center px-1" title={l.missing ? 'This invoice is no longer in the books' : undefined}>
-                    <span className="flex items-center gap-1 text-[10px] font-extrabold text-[#0B6B45]">
-                      <span className="flex h-4 w-4 items-center justify-center rounded-full bg-[#0B3D2E] text-[9px] text-white">{n(l.step)}</span>
-                      {n(l.linked) ? <Link2 className="h-3 w-3" /> : null}
-                      <span className={cn('doc-ref', l.missing && 'text-[#B3261E] line-through')}>{s(l.invoice_no) || '—'}</span>
-                    </span>
-                    <ArrowRight className="h-4 w-4 text-[#8CA396]" />
-                    <span className="text-[10px] font-bold tabular-nums text-[#5A6B62]">
-                      {formatNum(n(l.qty))} @ {formatINR(n(l.rate))}
-                    </span>
-                  </div>
-                  <Party name={s(l.buyer_name)} company={l.buyer_kind === 'company'} />
-                </div>
-              ))}
-            </div>
-          </div>
-        ))
-      )}
+      </div>
     </div>
   )
 }
