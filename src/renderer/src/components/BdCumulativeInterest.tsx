@@ -100,7 +100,7 @@ export function BdCumulativeInterest({ open, onClose, nbfcs, onDone }: { open: b
   const lbl = 'mb-1 block text-[10px] font-extrabold uppercase tracking-[.1em] text-[#5A6B62]'
   return (
     <Dialog open={open} onOpenChange={(o) => !o && !busy && onClose()}>
-      <DialogContent className="gap-0 overflow-hidden p-0 sm:max-w-[1080px] [&>button]:!text-white">
+      <DialogContent className="gap-0 overflow-hidden p-0 sm:max-w-[min(1240px,96vw)] [&>button]:!text-white">
         <div className="bg-[#0B3D2E] px-5 py-3.5 pr-12 text-white">
           <div className="flex items-center gap-1.5 text-[9.5px] font-extrabold uppercase tracking-[.14em] text-[#C7F03F]">
             <Percent className="h-3.5 w-3.5" /> Bill discounting
@@ -168,6 +168,23 @@ export function BdCumulativeInterest({ open, onClose, nbfcs, onDone }: { open: b
             {upto === today && (mode === 'month' ? monthEnd(month) : to) > today ? ' — today, the period has not ended yet' : ''}.
           </div>
 
+          {/* What this payment comes to, before the bill-by-bill detail. */}
+          {nbfc && rows && payable.length > 0 && (
+            <div className="grid gap-2.5 sm:grid-cols-2 lg:grid-cols-4">
+              {[
+                { k: 'Bills ticked', v: `${sel.length} of ${payable.length}`, sub: `${rows.length - payable.length} already paid up`, accent: '#0B3D2E' },
+                { k: 'Interest', v: formatINR(tot.gross), sub: `up to ${formatDate(upto)}`, accent: '#1B4E82' },
+                { k: 'TDS withheld', v: formatINR(tot.tds), sub: 'to TDS on interest payable', accent: '#C2700A' },
+                { k: 'Net out of the bank', v: formatINR(tot.net), sub: 'one voucher', accent: '#12855A' }
+              ].map((t) => (
+                <div key={t.k} className="rounded-[4px] border border-[#D6E2D6] bg-white px-3.5 py-2.5" style={{ borderTop: `3px solid ${t.accent}` }}>
+                  <div className="text-[9.5px] font-extrabold uppercase tracking-[.13em] text-[#5A6B62]">{t.k}</div>
+                  <div className="mt-0.5 truncate text-[18px] font-bold tabular-nums tracking-[-0.02em] text-[#0A1F17]">{t.v}</div>
+                  <div className="text-[11px] font-semibold text-[#5A6B62]">{t.sub}</div>
+                </div>
+              ))}
+            </div>
+          )}
           {!nbfc ? (
             <div className="rounded-[4px] border border-dashed border-[#C9DCCF] py-10 text-center text-[12.5px] font-semibold text-[#5A6B62]">Choose the NBFC to see its bills.</div>
           ) : rows == null ? (
@@ -177,8 +194,8 @@ export function BdCumulativeInterest({ open, onClose, nbfcs, onDone }: { open: b
           ) : rows.length === 0 ? (
             <div className="rounded-[4px] border border-dashed border-[#C9DCCF] py-10 text-center text-[12.5px] font-semibold text-[#5A6B62]">No open, funded bill with this NBFC.</div>
           ) : (
-            <div className="overflow-hidden rounded-[4px] border border-[#D6E2D6]">
-              <table className="w-full text-[12.5px]">
+            <div className="overflow-x-auto rounded-[4px] border border-[#D6E2D6]">
+              <table className="w-full min-w-[980px] text-[12.5px]">
                 <thead className="bg-[#0B3D2E] text-[10px] font-extrabold uppercase tracking-[.08em] text-[#DCEFE4]">
                   <tr>
                     <th className="w-9 px-3 py-2.5 text-left">
@@ -227,17 +244,20 @@ export function BdCumulativeInterest({ open, onClose, nbfcs, onDone }: { open: b
                           <div className="max-w-[220px] truncate text-[11px] font-semibold text-[#5A6B62]">{String(r.party || '')}</div>
                         </td>
                         <td className="whitespace-nowrap px-2 py-2 text-right tabular-nums">{formatINR(n(r.principal))}</td>
-                        <td className="whitespace-nowrap px-2 py-2">
+                        <td className="px-2 py-2">
                           {r.blocked ? (
                             <span className="text-[11.5px] font-semibold">{String(r.blocked)}</span>
                           ) : (
                             <>
-                              <span className="tabular-nums">
+                              <span className="tabular-nums font-semibold text-[#0A1F17]">
                                 {formatDate(String(r.from_date))} → {formatDate(String(r.to_date))}
                               </span>
                               {early && (
-                                <span className="ml-1.5 rounded-[3px] bg-[#FFF4E0] px-1.5 py-0.5 text-[10px] font-extrabold text-[#8A5300]" title="Unpaid since before the period — interest is paid in order, so these days come too">
-                                  from before the period
+                                <span
+                                  className="mt-0.5 flex items-center gap-1 text-[10.5px] font-bold text-[#8A5300]"
+                                  title="Unpaid since before the period — interest is paid in order, so these days come too"
+                                >
+                                  <span className="h-1.5 w-1.5 rounded-full bg-[#C2700A]" /> unpaid from before the period
                                 </span>
                               )}
                             </>
@@ -266,34 +286,27 @@ export function BdCumulativeInterest({ open, onClose, nbfcs, onDone }: { open: b
             </div>
           )}
 
-          {sel.length > 0 && (
-            <div className="grid gap-3 md:grid-cols-[1.5fr_1fr]">
-              <div>
-                <span className={lbl}>Paid from bank</span>
-                <Select searchable value={bank} onValueChange={setBank}>
-                  <SelectTrigger>
-                    <SelectValue placeholder="The bill's own bank (first ticked bill)" />
-                  </SelectTrigger>
-                  <SelectContent className="max-h-64">
-                    {banks.map((b) => (
-                      <SelectItem key={String(b.name)} value={String(b.name)}>
-                        {String(b.name)}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
-              <div>
-                <span className={lbl}>Payment date</span>
-                <DatePicker value={paidOn} max={today} onChange={(v) => v && setPaidOn(v)} />
-              </div>
-            </div>
-          )}
         </div>
-        <div className="flex flex-wrap items-center gap-3 border-t border-[#E4ECE3] bg-[#FBFCFA] px-5 py-3">
-          <span className="mr-auto text-[11.5px] font-semibold text-[#5A6B62]">
-            One bank voucher: Dr Interest {formatINR(tot.gross)} · Cr TDS {formatINR(tot.tds)} · Cr bank {formatINR(tot.net)} — linked to every ticked bill.
-          </span>
+        <div className="flex flex-wrap items-end gap-3 border-t border-[#E4ECE3] bg-[#FBFCFA] px-5 py-3">
+          <div className="min-w-[260px] flex-1">
+            <span className={lbl}>Paid from bank</span>
+            <Select searchable value={bank} onValueChange={setBank}>
+              <SelectTrigger>
+                <SelectValue placeholder="The bill's own bank (first ticked bill)" />
+              </SelectTrigger>
+              <SelectContent className="max-h-64">
+                {banks.map((b) => (
+                  <SelectItem key={String(b.name)} value={String(b.name)}>
+                    {String(b.name)}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+          <div className="w-[170px]">
+            <span className={lbl}>Payment date</span>
+            <DatePicker value={paidOn} max={today} onChange={(v) => v && setPaidOn(v)} />
+          </div>
           <button
             type="button"
             disabled={busy}
@@ -306,8 +319,9 @@ export function BdCumulativeInterest({ open, onClose, nbfcs, onDone }: { open: b
             type="button"
             data-ctrl-a
             disabled={busy || !sel.length}
+            title={`One bank voucher: Dr Interest ${formatINR(tot.gross)} · Cr TDS ${formatINR(tot.tds)} · Cr bank ${formatINR(tot.net)} — linked to every ticked bill`}
             onClick={() => void pay()}
-            className="flex h-9 items-center gap-1.5 rounded-[5px] bg-[#0B3D2E] px-5 text-[12px] font-extrabold text-[#C7F03F] hover:bg-[#0F4A38] disabled:opacity-50"
+            className="flex h-9 items-center gap-1.5 whitespace-nowrap rounded-[5px] bg-[#0B3D2E] px-5 text-[12px] font-extrabold text-[#C7F03F] hover:bg-[#0F4A38] disabled:opacity-50"
           >
             {busy && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
             Pay {sel.length ? `${formatINR(tot.net)} · ${sel.length} bill${sel.length === 1 ? '' : 's'}` : ''}
