@@ -18866,7 +18866,7 @@ Delete ${doc}?`)) return
           padding: '1px 6px',
           whiteSpace: 'nowrap'
         }
-        const cell = (align: 'left' | 'right' = 'left'): React.CSSProperties => ({ padding: '0 10px', textAlign: align })
+        const cell = (align: 'left' | 'right' | 'center' = 'left'): React.CSSProperties => ({ padding: '0 10px', textAlign: align })
         return (
           <div style={{ minWidth: 980 }}>
             <div className="flex items-center gap-2.5" style={{ padding: '8px 14px', background: '#FBFDFA', borderBottom: '1px solid #EAF0E9' }}>
@@ -18918,7 +18918,7 @@ Delete ${doc}?`)) return
               <span style={{ ...cell('right'), display: 'flex', alignItems: 'center', justifyContent: 'flex-end' }}>{bwCf.head('opening', 'Opening amount', { onDark: true, align: 'end' })}</span>
               <span style={{ ...cell('right'), display: 'flex', alignItems: 'center', justifyContent: 'flex-end' }}>{bwCf.head('pending', 'Pending amount', { onDark: true, align: 'end' })}</span>
               <span style={{ ...cell(), display: 'flex', alignItems: 'center' }}>{bwCf.head('due', 'Due on', { onDark: true })}</span>
-              <span style={{ ...cell('right'), display: 'flex', alignItems: 'center', justifyContent: 'flex-end' }}>{bwCf.head('overdue', 'Overdue by days', { onDark: true, align: 'end' })}</span>
+              <span style={{ ...cell('center'), display: 'flex', alignItems: 'center', justifyContent: 'center' }}>{bwCf.head('overdue', 'Overdue by days', { onDark: true, align: 'center' })}</span>
             </div>
             {!bills && (
               <div style={{ padding: '30px 16px', textAlign: 'center', fontSize: 12, fontWeight: 600, color: A.muted }}>Reading the bills…</div>
@@ -19034,7 +19034,7 @@ Delete ${doc}?`)) return
                         </span>
                       )
                     })()}
-                    <span style={{ ...cell('right'), ...figS(12, over ? A.bad : A.muted, over ? 800 : 600), fontStyle: 'italic' }}>{pend > 0.004 && !billDue(b).held ? lateBy : ''}</span>
+                    <span style={{ ...cell('center'), ...figS(12, over ? A.bad : A.muted, over ? 800 : 600), fontStyle: 'italic' }}>{pend > 0.004 && !billDue(b).held ? lateBy : ''}</span>
                   </button>
                   {open &&
                     lines.map((x, xi) => (
@@ -19976,7 +19976,7 @@ Delete ${doc}?`)) return
                           <th className="px-2 py-1.5 text-right">{dBillCf.head('opening', 'Opening amount', { align: 'end' })}</th>
                           <th className="px-2 py-1.5 text-right">{dBillCf.head('pending', 'Pending amount', { align: 'end' })}</th>
                           <th className="px-2 py-1.5">{dBillCf.head('due', 'Due on')}</th>
-                          <th className="px-2 py-1.5 text-right">{dBillCf.head('overdue', 'Overdue by days', { align: 'end' })}</th>
+                          <th className="px-2 py-1.5 text-center">{dBillCf.head('overdue', 'Overdue by days', { align: 'center' })}</th>
                         </tr>
                       </thead>
                       <tbody>
@@ -20024,7 +20024,7 @@ Delete ${doc}?`)) return
                               <td className="whitespace-nowrap px-2 py-1.5 tabular-nums">{dDue(b)}</td>
                               <td
                                 className={cn(
-                                  'px-2 py-1.5 text-right tabular-nums',
+                                  'px-2 py-1.5 text-center tabular-nums',
                                   dLate(b) > 0 ? 'font-semibold text-rose-700' : 'text-muted-foreground'
                                 )}
                               >
