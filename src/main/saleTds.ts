@@ -66,15 +66,19 @@ async function invoiceOf(saleId: number): Promise<{ key: string; rows: Row[] }> 
   const res = s.invoice_group
     ? await c.execute({
         sql: `SELECT s.*, cu.name AS customer_master, cu.tds_pct AS cu_tds_pct, cu.tds_threshold AS cu_tds_threshold,
-                     cu.tds_above_only AS cu_tds_above_only, cu.linked_party_id AS cu_linked
+                     cu.tds_above_only AS cu_tds_above_only, cu.linked_party_id AS cu_linked,
+                     rs.name AS return_supplier, rs.tds_pct AS rs_tds_pct
                 FROM sales s LEFT JOIN customers cu ON cu.id = s.customer_id
+                LEFT JOIN suppliers rs ON rs.id = s.return_supplier_id
                WHERE s.invoice_group = ? ORDER BY s.id`,
         args: [String(s.invoice_group)]
       })
     : await c.execute({
         sql: `SELECT s.*, cu.name AS customer_master, cu.tds_pct AS cu_tds_pct, cu.tds_threshold AS cu_tds_threshold,
-                     cu.tds_above_only AS cu_tds_above_only, cu.linked_party_id AS cu_linked
+                     cu.tds_above_only AS cu_tds_above_only, cu.linked_party_id AS cu_linked,
+                     rs.name AS return_supplier, rs.tds_pct AS rs_tds_pct
                 FROM sales s LEFT JOIN customers cu ON cu.id = s.customer_id
+                LEFT JOIN suppliers rs ON rs.id = s.return_supplier_id
                WHERE s.id = ?`,
         args: [n(saleId)]
       })
@@ -115,29 +119,36 @@ export async function saleTdsPreview(saleId: number): Promise<Row> {
   const first = rows[0]
   const cid = n(first.company_id)
   const base = round2(rows.reduce((t, r) => t + n(r.amount), 0))
-  const prior = await priorTaxable(first, rows.map((r) => n(r.id)))
-  const pct = n(first.cu_tds_pct)
-  const threshold = n(first.cu_tds_threshold)
-  const aboveOnly = !!n(first.cu_tds_above_only)
+  // A PURCHASE RETURN (billed to a supplier): the TDS is the purchase TDS
+  // going back — the supplier's own % on the goods returned, no slab.
+  const isReturn = !!String(first.return_supplier || '').trim()
+  const prior = isReturn ? 0 : await priorTaxable(first, rows.map((r) => n(r.id)))
+  const pct = isReturn ? n(first.rs_tds_pct) : n(first.cu_tds_pct)
+  const threshold = isReturn ? 0 : n(first.cu_tds_threshold)
+  const aboveOnly = isReturn ? false : !!n(first.cu_tds_above_only)
   // Above-only: TDS on the part of the year's billing past the threshold that
   // falls in this invoice. Otherwise: on the whole invoice, once the year's
   // billing has passed the threshold.
-  const liable = aboveOnly ? Math.max(0, prior + base - Math.max(prior, threshold)) : prior + base > threshold ? base : 0
+  const liable = isReturn ? base : aboveOnly ? Math.max(0, prior + base - Math.max(prior, threshold)) : prior + base > threshold ? base : 0
   const amount = pct > 0 ? round2((liable * pct) / 100) : 0
 
   const led = await c.execute({
     sql: `SELECT name, acc_group FROM ledger_accounts a
-      WHERE UPPER(name) LIKE '%TDS%' AND UPPER(name) NOT LIKE '%PAYABLE%'
+      WHERE UPPER(name) LIKE '%TDS%' AND (? = 1 OR UPPER(name) NOT LIKE '%PAYABLE%')
         AND NOT EXISTS (SELECT 1 FROM ledger_hidden h WHERE h.account_id = a.id AND h.company_id = ?)
         AND UPPER(COALESCE(acc_group, '')) NOT LIKE '%EXPENSE%' AND UPPER(COALESCE(acc_group, '')) NOT LIKE '%INCOME%'
       ORDER BY name`,
-    args: [cid]
+    args: [isReturn ? 1 : 0, cid]
   })
   const ledgers = led.rows.map((r) => ({ name: String((r as unknown as Row).name), acc_group: String((r as unknown as Row).acc_group || '') }))
   // The year's "TDS receivable on sale" ledger when there is one.
   const fy = fyStart(String(first.sale_date).slice(0, 10)).slice(0, 4)
   const onSale = ledgers.filter((l) => /RECE|RECOV/.test(l.name.toUpperCase()) && /SALE/.test(l.name.toUpperCase()))
-  const suggested = (onSale.find((l) => l.name.includes(fy)) || onSale[0] || ledgers.find((l) => l.name === 'TDS RECEIVABLE A/C'))?.name || ''
+  // A return reverses the TDS we owe on the purchase: the year's TDS payable.
+  const payable = ledgers.filter((l) => /PAYABLE/.test(l.name.toUpperCase()))
+  const suggested = isReturn
+    ? (payable.find((l) => l.name.includes(fy) && /194Q|PUR/.test(l.name.toUpperCase())) || payable.find((l) => /194Q|PUR/.test(l.name.toUpperCase())) || payable[0])?.name || ''
+    : (onSale.find((l) => l.name.includes(fy)) || onSale[0] || ledgers.find((l) => l.name === 'TDS RECEIVABLE A/C'))?.name || ''
 
   const ex = await c.execute({
     sql: `SELECT t.entry_id, t.amount, t.ledger, t.worked_out, je.vch_no, je.entry_date
@@ -151,7 +162,8 @@ export async function saleTdsPreview(saleId: number): Promise<Row> {
     invoice_key: key,
     invoice_no: String(first.invoice_no || ''),
     date: String(first.sale_date).slice(0, 10),
-    customer: String(first.customer_master || first.customer || ''),
+    customer: String(first.return_supplier || first.customer_master || first.customer || ''),
+    is_return: isReturn,
     company_id: cid,
     base,
     prior: round2(prior),
@@ -188,7 +200,10 @@ export async function postSaleTds(v: { sale_id: number; amount: number; ledger: 
     const { key, rows } = await invoiceOf(v.sale_id)
     const first = rows[0]
     const cid = n(first.company_id)
-    const customer = String(first.customer_master || first.customer || '').trim()
+    // A purchase return is billed to the supplier — its TDS settles there,
+    // on the same ledger the invoice's voucher debits, not the free-text name.
+    const supplier = String(first.return_supplier || '').trim()
+    const customer = supplier || String(first.customer_master || first.customer || '').trim()
     if (!customer) throw new Error('The invoice has no customer')
     const bill = round2(rows.reduce((t, r) => t + n(r.amount) + n(r.gst_amount) + n(r.round_off), 0))
     if (bill > 0 && amount > bill) throw new Error('The TDS is more than the invoice')
@@ -203,12 +218,12 @@ export async function postSaleTds(v: { sale_id: number; amount: number; ledger: 
       date,
       vchType: 'JOURNAL',
       companyId: cid,
-      narration: `TDS deducted by ${customer} on invoice ${invNo}`,
+      narration: supplier ? `TDS on purchase return ${invNo} to ${supplier}` : `TDS deducted by ${customer} on invoice ${invNo}`,
       lines: [
         { account: ledger, group: ledgerGroup, dr: amount },
         {
           account: customer,
-          group: 'Sundry Debtors',
+          group: supplier ? 'Sundry Creditors' : 'Sundry Debtors',
           cr: amount,
           allocs: [{ method: 'agst_ref', ref_name: invNo || key, amount, sale_invoice_group: key }]
         }
