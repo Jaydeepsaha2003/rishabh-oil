@@ -35,6 +35,8 @@ export function BdCumulativeInterest({ open, onClose, nbfcs, onDone }: { open: b
   const [bank, setBank] = useState('')
   const [paidOn, setPaidOn] = useState(today)
   const [busy, setBusy] = useState(false)
+  // Interest typed over the worked-out figure, per bill (more or less).
+  const [edits, setEdits] = useState<Record<number, string>>({})
 
   // The period's last day is what each bill is paid up to — never past today.
   const upto = useMemo(() => {
@@ -60,6 +62,7 @@ export function BdCumulativeInterest({ open, onClose, nbfcs, onDone }: { open: b
       .then((r) => {
         if (!live) return
         setRows(r)
+        setEdits({})
         setPicked(new Set(r.filter((x) => !x.blocked).map((x) => n(x.bd_id))))
       })
       .catch((e) => toast.error((e as Error).message))
@@ -68,12 +71,21 @@ export function BdCumulativeInterest({ open, onClose, nbfcs, onDone }: { open: b
     }
   }, [open, nbfc, upto])
 
+  // A bill's figures as they will be paid: the typed interest when there is
+  // one, TDS at the bill's own % on it, the net what leaves the bank.
+  const fig = (r: Row): { gross: number; tds: number; net: number; edited: boolean } => {
+    const e = edits[n(r.bd_id)]
+    if (e == null || e.trim() === '' || Math.abs(n(e) - n(r.gross)) < 0.005) return { gross: n(r.gross), tds: n(r.tds), net: n(r.net), edited: false }
+    const g = r2(n(e))
+    const t = r2((g * n(r.tds_pct)) / 100)
+    return { gross: g, tds: t, net: r2(g - t), edited: true }
+  }
   const payable = (rows || []).filter((r) => !r.blocked)
   const sel = payable.filter((r) => picked.has(n(r.bd_id)))
   const tot = {
-    gross: r2(sel.reduce((t, r) => t + n(r.gross), 0)),
-    tds: r2(sel.reduce((t, r) => t + n(r.tds), 0)),
-    net: r2(sel.reduce((t, r) => t + n(r.net), 0))
+    gross: r2(sel.reduce((t, r) => t + fig(r).gross, 0)),
+    tds: r2(sel.reduce((t, r) => t + fig(r).tds, 0)),
+    net: r2(sel.reduce((t, r) => t + fig(r).net, 0))
   }
 
   async function pay(): Promise<void> {
@@ -85,7 +97,8 @@ export function BdCumulativeInterest({ open, onClose, nbfcs, onDone }: { open: b
         to_date: upto,
         paid_date: paidOn,
         bank_account: bank || null,
-        bd_ids: sel.map((r) => n(r.bd_id))
+        bd_ids: sel.map((r) => n(r.bd_id)),
+        amounts: Object.fromEntries(sel.filter((r) => fig(r).edited).map((r) => [String(n(r.bd_id)), fig(r).gross]))
       })
       toast.success(`Interest on ${res.bills} bill${res.bills === 1 ? '' : 's'} paid to ${formatDate(upto)} — one voucher, ${formatINR(res.net)} out of the bank`)
       onDone?.()
@@ -265,9 +278,43 @@ export function BdCumulativeInterest({ open, onClose, nbfcs, onDone }: { open: b
                         </td>
                         <td className="px-2 py-2 text-right tabular-nums">{r.blocked ? '—' : n(r.days)}</td>
                         <td className="px-2 py-2 text-right tabular-nums">{n(r.interest_pct)}%</td>
-                        <td className="whitespace-nowrap px-2 py-2 text-right font-bold tabular-nums">{r.blocked ? '—' : formatINR(n(r.gross))}</td>
-                        <td className="whitespace-nowrap px-2 py-2 text-right tabular-nums">{r.blocked ? '—' : formatINR(n(r.tds))}</td>
-                        <td className="whitespace-nowrap px-3 py-2 text-right font-bold tabular-nums text-[#0B6B45]">{r.blocked ? '—' : formatINR(n(r.net))}</td>
+                        <td className="whitespace-nowrap px-2 py-1.5 text-right">
+                          {r.blocked ? (
+                            '—'
+                          ) : (
+                            <>
+                              {/* Type over it to pay more or less than worked out. */}
+                              <input
+                                inputMode="decimal"
+                                aria-label={`Interest paid on ${String(r.bd_no)}`}
+                                disabled={!on}
+                                value={edits[id] ?? String(n(r.gross))}
+                                onChange={(e) => setEdits((p) => ({ ...p, [id]: e.target.value.replace(/[^0-9.]/g, '') }))}
+                                className={cn(
+                                  'h-8 w-[118px] rounded-[4px] border px-2 text-right text-[12.5px] font-bold tabular-nums disabled:opacity-60',
+                                  fig(r).edited ? 'border-[#C2700A] bg-[#FFF8EC] text-[#8A5300]' : 'border-[#C9DCCF] bg-white text-[#0A1F17]'
+                                )}
+                              />
+                              {fig(r).edited && (
+                                <button
+                                  type="button"
+                                  onClick={() => setEdits((p) => {
+                                    const next = { ...p }
+                                    delete next[id]
+                                    return next
+                                  })}
+                                  title="Back to the worked-out figure"
+                                  className="mt-0.5 block w-full text-right text-[10px] font-bold text-[#8A5300] hover:underline"
+                                >
+                                  {fig(r).gross > n(r.gross) ? '+' : '−'}
+                                  {formatINR(Math.abs(r2(fig(r).gross - n(r.gross))))} vs {formatINR(n(r.gross))} · reset
+                                </button>
+                              )}
+                            </>
+                          )}
+                        </td>
+                        <td className="whitespace-nowrap px-2 py-2 text-right tabular-nums">{r.blocked ? '—' : formatINR(fig(r).tds)}</td>
+                        <td className="whitespace-nowrap px-3 py-2 text-right font-bold tabular-nums text-[#0B6B45]">{r.blocked ? '—' : formatINR(fig(r).net)}</td>
                       </tr>
                     )
                   })}

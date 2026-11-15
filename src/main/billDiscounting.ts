@@ -3682,6 +3682,9 @@ export async function payBdCumulativeInterest(v: {
   paid_date?: string
   bank_account?: string | null
   bd_ids: number[]
+  // The interest actually paid on a bill, where it is not the worked-out
+  // figure (the NBFC's statement says more or less). Keyed by bill id.
+  amounts?: Record<string, number | string>
   note?: string | null
 }): Promise<{ entry_id: number; bills: number; gross: number; tds: number; net: number }> {
   return withDbTransaction(async () => {
@@ -3699,6 +3702,14 @@ export async function payBdCumulativeInterest(v: {
       const w = await bdInterestWindow(id, to)
       if (w.blocked) throw new Error(`${bd.bd_no}: ${String(w.blocked)}`)
       if (String(w.from_date) > to) throw new Error(`${bd.bd_no}: interest is already paid to ${String(w.paid_to)}`)
+      const typed = v.amounts && String(v.amounts[String(id)] ?? '').trim() !== '' ? round2(n(v.amounts[String(id)])) : null
+      if (typed != null) {
+        if (!(typed > 0.004)) throw new Error(`${bd.bd_no}: enter the interest being paid`)
+        const t = round2((typed * n(bd.tds_pct)) / 100)
+        w.gross = typed
+        w.tds = t
+        w.net = round2(typed - t)
+      }
       if (!(n(w.gross) > 0.004)) throw new Error(`${bd.bd_no}: that comes to no interest`)
       rows.push({ bd, w })
     }
