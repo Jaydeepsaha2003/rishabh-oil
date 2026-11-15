@@ -1272,25 +1272,40 @@ export async function listPendingRefs(
     return group === 'Sundry Debtors' ? 'dr' : 'cr'
   }
 
+  // The voucher that raised each ref, by name — what an invoice was set
+  // against (ADV-1 → JV/8) is shown as that voucher, not as the invoice's own.
+  const originByRef = new Map<string, number>()
+  for (const b of [...bills, ...madeRows]) {
+    const k = b.ref.trim().toUpperCase()
+    if (n(b.origin_id) && !originByRef.has(k)) originByRef.set(k, n(b.origin_id))
+  }
   return [...bills, ...madeRows]
     .map((b) => {
       const side = billSideOf(b)
-      const o = origins.get(n(b.origin_id))
       // What the bill's own voucher set elsewhere, as settlements on the other
-      // side — they bring Pending down; Opening stays the invoice.
-      const went: Row[] = (elsewhereOf.get(b) || []).map((w) => ({
-        entry_id: n(b.origin_id) || null,
-        entry_date: o?.entry_date ?? b.bill_date,
-        vch_type: o?.vch_type ?? null,
-        vch_no: o?.vch_no ?? null,
-        code: o?.code ?? null,
-        side: side === 'dr' ? 'cr' : 'dr',
-        narration: w.ref ? `Set against ${w.ref} on its own voucher` : 'Set elsewhere on its own voucher',
-        amount: w.amount,
-        order_id: o?.order_id ?? null,
-        sale_id: o?.sale_id ?? null,
-        own_voucher: true
-      }))
+      // side — they bring Pending down; Opening stays the invoice. Each reads
+      // as the voucher of the bill it was set against (ADV-1's JV/8), so the
+      // invoice's own number is not listed twice; calc_entry_id keeps the
+      // money on the invoice's own voucher for the On Account working.
+      const went: Row[] = (elsewhereOf.get(b) || []).map((w) => {
+        const via = originByRef.get(w.ref.toUpperCase()) || 0
+        const o = origins.get(via) || origins.get(n(b.origin_id))
+        return {
+          entry_id: n(o?.entry_id) || n(b.origin_id) || null,
+          calc_entry_id: n(b.origin_id) || null,
+          entry_date: o?.entry_date ?? b.bill_date,
+          vch_type: o?.vch_type ?? null,
+          vch_no: o?.vch_no ?? null,
+          code: o?.code ?? null,
+          side: side === 'dr' ? 'cr' : 'dr',
+          narration: w.ref ? `${w.ref} adjusted against this bill` : 'Adjusted on its own voucher',
+          adjusted_ref: w.ref || null,
+          amount: w.amount,
+          order_id: o?.order_id ?? null,
+          sale_id: o?.sale_id ?? null,
+          own_voucher: true
+        }
+      })
       const settlements = [...went, ...settlementsFor(b)]
       const paid = round2(settlements.reduce((t, x) => t + (x.side === side ? -n(x.amount) : n(x.amount)), 0))
       return {
@@ -1570,7 +1585,12 @@ export async function billsOutstanding(
     for (const r of rows as Row[]) {
       const o = r.origin as Row | null
       if (o?.entry_id) add(o.entry_id, o.entry_date, n(r.opening) * sideOf(r))
-      for (const x of (r.settlements as Row[]) || []) add(x.entry_id, x.entry_date, n(x.amount) * (String(x.side) === 'dr' ? 1 : -1))
+      for (const x of (r.settlements as Row[]) || []) {
+        // An adjustment shown as another bill's voucher still belongs, as money, to the bill's own voucher.
+        if (x.own_voucher) {
+          add(x.calc_entry_id, (o?.entry_date as string | undefined) ?? x.entry_date, n(x.amount) * (String(x.side) === 'dr' ? 1 : -1))
+        } else add(x.entry_id, x.entry_date, n(x.amount) * (String(x.side) === 'dr' ? 1 : -1))
+      }
     }
     const lines = toPlain(
       await c.execute({
