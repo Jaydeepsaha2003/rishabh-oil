@@ -88,6 +88,22 @@ export function BdCumulativeInterest({ open, onClose, nbfcs, onDone }: { open: b
     net: r2(sel.reduce((t, r) => t + fig(r).net, 0))
   }
 
+  // A LUMP SUM over the ticked bills: spread in proportion to what each one
+  // worked out to, the last bill taking the paisa left so they add up exactly.
+  const [lump, setLump] = useState<string | null>(null)
+  const spread = (total: number): void => {
+    const base = sel.reduce((t, r) => t + n(r.gross), 0)
+    if (!(base > 0) || !sel.length) return
+    let left = r2(total)
+    const next: Record<number, string> = {}
+    sel.forEach((r, i) => {
+      const share = i === sel.length - 1 ? left : r2((total * n(r.gross)) / base)
+      left = r2(left - share)
+      next[n(r.bd_id)] = String(share)
+    })
+    setEdits((p) => ({ ...p, ...next }))
+  }
+
   async function pay(): Promise<void> {
     if (!sel.length) return
     setBusy(true)
@@ -324,7 +340,27 @@ export function BdCumulativeInterest({ open, onClose, nbfcs, onDone }: { open: b
                     <td colSpan={6} className="px-3 py-2.5 text-[11px] uppercase tracking-[.1em] text-[#33473E]">
                       {sel.length} of {payable.length} bill{payable.length === 1 ? '' : 's'} ticked
                     </td>
-                    <td className="whitespace-nowrap px-2 py-2.5 text-right tabular-nums">{formatINR(tot.gross)}</td>
+                    <td className="whitespace-nowrap px-2 py-1.5 text-right">
+                      {/* Type a lump sum for all the ticked bills. */}
+                      <input
+                        inputMode="decimal"
+                        aria-label="Lump sum of interest for the ticked bills"
+                        title="Type a lump sum — it is spread over the ticked bills in proportion to their interest"
+                        disabled={!sel.length}
+                        value={lump ?? String(tot.gross)}
+                        onFocus={() => setLump(String(tot.gross))}
+                        onChange={(e) => setLump(e.target.value.replace(/[^0-9.]/g, ''))}
+                        onBlur={() => {
+                          if (lump != null && n(lump) > 0 && Math.abs(n(lump) - tot.gross) >= 0.005) spread(n(lump))
+                          setLump(null)
+                        }}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter') e.currentTarget.blur()
+                        }}
+                        className="h-8 w-[130px] rounded-[4px] border border-[#0B3D2E] bg-white px-2 text-right text-[12.5px] font-extrabold tabular-nums text-[#0A1F17] disabled:opacity-60"
+                      />
+                      <span className="mt-0.5 block text-[10px] font-bold normal-case text-[#5A6B62]">lump sum · spread</span>
+                    </td>
                     <td className="whitespace-nowrap px-2 py-2.5 text-right tabular-nums">{formatINR(tot.tds)}</td>
                     <td className="whitespace-nowrap px-3 py-2.5 text-right tabular-nums text-[#0B6B45]">{formatINR(tot.net)}</td>
                   </tr>
