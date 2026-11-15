@@ -3,6 +3,8 @@ import { toast } from 'sonner'
 import { AlertTriangle, ArrowLeft, ArrowRight, Building2, Check, CheckCircle2, ChevronRight, Link2, Search, Loader2, Plus, Repeat, Trash2, TrendingDown, TrendingUp, User, Zap } from 'lucide-react'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
+import { RowActions } from '@/components/ui/row-actions'
 import { TagDraftPicker } from '@/components/Tags'
 import { DatePicker } from '@/components/ui/date-picker'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
@@ -79,7 +81,8 @@ export function TradingChains({
   const [links, setLinks] = useState<Record<string, Row[]>>({})
   // The register: its search, and which chains are opened out.
   const [search, setSearch] = useState('')
-  const [openIds, setOpenIds] = useState<Set<number>>(new Set())
+  // The chain opened in the side panel.
+  const [detailId, setDetailId] = useState<number | null>(null)
 
   const load = (): void => {
     void window.api.trading
@@ -672,16 +675,21 @@ export function TradingChains({
     )
   }
 
-  // ── THE LIST — a register, like Deals ───────────────────────────────────
+  // ── THE LIST — a register like Deals, a chain opening in a side panel ───
   const stepKind = (l: Row): 'sale' | 'purchase' | 'transfer' =>
     l.seller_kind === 'company' && l.buyer_kind === 'company' ? 'transfer' : l.seller_kind === 'company' ? 'sale' : 'purchase'
   const KIND = {
-    sale: { label: 'Sale', fg: '#0B6B45', bg: '#E9F5EE', bd: '#BFE3CB' },
-    purchase: { label: 'Purchase', fg: '#8C2F26', bg: '#FDF3F2', bd: '#F0D6D4' },
-    transfer: { label: 'Transfer', fg: '#1B4E82', bg: '#EEF4FC', bd: '#C6DAF0' }
+    sale: { label: 'Sale', fg: '#0B6B45', bg: '#E9F5EE', bd: '#BFE3CB', solid: '#12855A', Icon: TrendingUp },
+    purchase: { label: 'Purchase', fg: '#8C2F26', bg: '#FDF3F2', bd: '#F0D6D4', solid: '#B3261E', Icon: TrendingDown },
+    transfer: { label: 'Transfer', fg: '#1B4E82', bg: '#EEF4FC', bd: '#C6DAF0', solid: '#1B4E82', Icon: Repeat }
   } as const
-  const legValue = (l: Row): number => Math.round(n(l.qty) * n(l.rate) * (1 + n(l.gst_pct) / 100) * 100) / 100
+  const legTaxable = (l: Row): number => Math.round(n(l.qty) * n(l.rate) * 100) / 100
+  const legValue = (l: Row): number => Math.round(legTaxable(l) * (1 + n(l.gst_pct) / 100) * 100) / 100
   const chainValue = (ch: Row): number => (ch.legs as Row[]).reduce((t, l) => t + legValue(l), 0)
+  const chainQty = (ch: Row): number => n(ch.qty) || n(((ch.legs as Row[])[0] || {}).qty)
+  // A chain that comes back round leaves every company at 0; one that ends
+  // with goods somewhere is marked so the eye can find it.
+  const closes = (ch: Row): boolean => ((ch.net as Row[]) || []).every((x) => Math.abs(n(x.qty)) < 0.0005)
   const q = search.trim().toUpperCase()
   const shown = chains.filter((ch) => {
     const d = s(ch.chain_date).slice(0, 10)
@@ -703,7 +711,7 @@ export function TradingChains({
     {
       k: 'Chains',
       v: String(shown.length),
-      sub: `${new Set(shown.map((ch) => s(ch.product_code || ch.product_name))).size} product${new Set(shown.map((ch) => s(ch.product_code || ch.product_name))).size === 1 ? '' : 's'}`,
+      sub: `${shown.filter(closes).length} come back round · ${shown.filter((ch) => !closes(ch)).length} end with goods`,
       accent: '#0B3D2E',
       Icon: Link2,
       bg: '#EAF0E9',
@@ -711,8 +719,8 @@ export function TradingChains({
     },
     {
       k: 'Quantity passed on',
-      v: `${formatNum(Math.round(shown.reduce((t, ch) => t + n(ch.qty), 0) * 1000) / 1000)} MT`,
-      sub: 'across the chains',
+      v: `${formatNum(Math.round(shown.reduce((t, ch) => t + chainQty(ch), 0) * 1000) / 1000)} MT`,
+      sub: `${new Set(shown.map((ch) => s(ch.product_code || ch.product_name))).size} product(s)`,
       accent: '#1B4E82',
       Icon: Repeat,
       bg: '#EEF4FC',
@@ -737,14 +745,20 @@ export function TradingChains({
       fg: '#0B6B45'
     }
   ]
-  const toggle = (id: number): void =>
-    setOpenIds((p) => {
-      const next = new Set(p)
-      if (next.has(id)) next.delete(id)
-      else next.add(id)
-      return next
-    })
-  const HEAD = 'px-3 py-2.5 text-[10px] font-extrabold uppercase tracking-[.12em] text-[#A9CDBB]'
+  const KindBadge = ({ l }: { l: Row }): React.JSX.Element => {
+    const kd = KIND[stepKind(l)]
+    return (
+      <span
+        className="inline-flex items-center gap-1 rounded-[3px] border px-1.5 py-0.5 text-[10px] font-extrabold uppercase tracking-[.05em]"
+        style={{ color: kd.fg, background: kd.bg, borderColor: kd.bd }}
+      >
+        <kd.Icon className="h-3 w-3" />
+        {kd.label}
+      </span>
+    )
+  }
+  const HEAD = 'h-11 whitespace-nowrap px-3 text-[12px] font-extrabold uppercase tracking-[.07em] text-[#DCEFE4]'
+  const detail = detailId != null ? chains.find((ch) => n(ch.id) === detailId) || null : null
   return (
     <div className="space-y-3.5">
       <div className="grid gap-2.5 sm:grid-cols-2 xl:grid-cols-4">
@@ -758,19 +772,27 @@ export function TradingChains({
               <div className="mt-0.5 truncate text-[19px] font-bold leading-tight tracking-[-0.035em] tabular-nums text-[#0A1F17]" title={t.v}>
                 {t.v}
               </div>
-              <div className="mt-0.5 text-[11.5px] font-bold text-[#5A6B62]">{t.sub}</div>
+              <div className="mt-0.5 truncate text-[11.5px] font-bold text-[#5A6B62]">{t.sub}</div>
             </div>
           </div>
         ))}
       </div>
 
-      <div className="flex flex-wrap items-center gap-2.5">
+      <div className="flex flex-wrap items-center gap-2.5 rounded-[4px] border border-[#D6E2D6] bg-white px-3 py-2.5">
         <div className="relative min-w-[240px] flex-1 sm:max-w-[420px]">
           <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-[#8CA396]" />
           <Input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search party, invoice no, tag or note" className="h-10 pl-9 text-[13px]" />
         </div>
-        <span className="text-[12px] font-semibold text-[#5A6B62]">
-          {shown.length} of {chains.length} chain{chains.length === 1 ? '' : 's'}
+        <span className="rounded-[3px] bg-[#EAF0E9] px-2 py-1 text-[11.5px] font-extrabold tabular-nums text-[#33473E]">
+          {shown.length} of {chains.length}
+        </span>
+        <span className="hidden items-center gap-3 text-[11px] font-bold text-[#5A6B62] lg:flex">
+          {(['sale', 'purchase', 'transfer'] as const).map((k) => (
+            <span key={k} className="inline-flex items-center gap-1">
+              <span className="h-2 w-2 rounded-full" style={{ background: KIND[k].solid }} />
+              {KIND[k].label}
+            </span>
+          ))}
         </span>
         <button
           type="button"
@@ -783,163 +805,123 @@ export function TradingChains({
 
       <div className="overflow-hidden rounded-[4px] border border-[#D6E2D6] bg-white">
         <div className="overflow-x-auto">
-          <table className="w-full min-w-[980px] text-[12.5px]">
+          <table className="w-full min-w-[1120px] text-[13px]">
             <thead className="bg-[#0B3D2E]">
               <tr>
-                <th className={cn(HEAD, 'w-8')} />
                 <th className={cn(HEAD, 'text-left')}>Date</th>
-                <th className={cn(HEAD, 'text-left')}>Chain</th>
                 <th className={cn(HEAD, 'text-left')}>Product</th>
                 <th className={cn(HEAD, 'text-right')}>Qty</th>
-                <th className={cn(HEAD, 'text-right')}>Steps</th>
-                <th className={cn(HEAD, 'text-right')}>Value</th>
+                <th className={cn(HEAD, 'text-left')}>Route</th>
+                <th className={cn(HEAD, 'text-left')}>Steps</th>
+                <th className={cn(HEAD, 'bg-[#1A4D2E] text-right !text-[#C7F03F]')}>Value</th>
                 <th className={cn(HEAD, 'text-left')}>Where it ends</th>
-                <th className={cn(HEAD, 'w-10')} />
+                <th className={cn(HEAD, 'w-12 text-right')}>
+                  <span className="sr-only">Actions</span>
+                </th>
               </tr>
             </thead>
             <tbody>
               {loading ? (
                 <tr>
-                  <td colSpan={9} className="py-10 text-center">
+                  <td colSpan={8} className="py-12 text-center">
                     <Loader2 className="mx-auto h-5 w-5 animate-spin text-[#8CA396]" />
                   </td>
                 </tr>
               ) : shown.length === 0 ? (
                 <tr>
-                  <td colSpan={9} className="py-12 text-center text-[12.5px] font-semibold text-[#5A6B62]">
-                    {chains.length ? 'No chain matches the search or the period.' : 'No chains yet — New chain to book one.'}
+                  <td colSpan={8} className="py-14 text-center">
+                    <Link2 className="mx-auto mb-2 h-7 w-7 text-[#C3D2C6]" />
+                    <div className="text-[13px] font-bold text-[#0A1F17]">{chains.length ? 'No chain matches' : 'No chains yet'}</div>
+                    <div className="mt-1 text-[12px] font-semibold text-[#5A6B62]">
+                      {chains.length ? 'Clear the search or widen the period.' : 'New chain to book a parcel through several hands.'}
+                    </div>
                   </td>
                 </tr>
               ) : (
                 shown.map((ch) => {
                   const legs = ch.legs as Row[]
-                  const open = openIds.has(n(ch.id))
                   const missing = legs.some((l) => l.missing)
+                  const round = closes(ch)
                   return (
-                    <React.Fragment key={ch.id}>
-                      <tr
-                        onClick={() => toggle(n(ch.id))}
-                        className={cn('cursor-pointer border-t border-[#EFF3EE] align-middle hover:bg-[#F7FAF6]', open && 'bg-[#F3FBE2] hover:bg-[#F3FBE2]')}
-                      >
-                        <td className="pl-3">
-                          <ChevronRight className={cn('h-4 w-4 text-[#8CA396] transition-transform', open && 'rotate-90')} />
-                        </td>
-                        <td className="whitespace-nowrap px-3 py-3 font-extrabold tabular-nums text-[#0A1F17]">{formatDate(s(ch.chain_date))}</td>
-                        <td className="px-3 py-3">
-                          <div className="flex flex-wrap items-center gap-1">
-                            {legs.map((l, k) => (
-                              <React.Fragment key={l.id}>
-                                {k === 0 && <Party name={s(l.seller_name)} company={l.seller_kind === 'company'} />}
-                                <ArrowRight className="h-3.5 w-3.5 flex-none" style={{ color: KIND[stepKind(l)].fg }} />
-                                <Party name={s(l.buyer_name)} company={l.buyer_kind === 'company'} />
-                              </React.Fragment>
+                    <tr
+                      key={ch.id}
+                      onClick={() => setDetailId(n(ch.id))}
+                      className={cn(
+                        'cursor-pointer border-b border-l-[3px] border-b-[#EAF0E9] align-middle hover:bg-[#F7FAF6]',
+                        round ? 'border-l-[#12855A]' : 'border-l-[#C2700A]',
+                        detailId === n(ch.id) && 'bg-[#F3FBE2] hover:bg-[#F3FBE2]'
+                      )}
+                    >
+                      <td className="whitespace-nowrap px-3 py-3">
+                        <span className="inline-flex items-center gap-1.5 font-bold tabular-nums text-[#0A1F17]">
+                          <ChevronRight className="h-[18px] w-[18px] text-[#5A6B62]" />
+                          {formatDate(s(ch.chain_date))}
+                        </span>
+                        {((ch.tags as string[]) || []).length > 0 && (
+                          <div className="mt-1 flex flex-wrap gap-1 pl-6">
+                            {((ch.tags as string[]) || []).map((t) => (
+                              <span key={t} className="rounded-[3px] border border-[#B9D3F0] bg-[#EAF2FC] px-1.5 py-0.5 text-[10px] font-extrabold text-[#1B4E82]">
+                                {t}
+                              </span>
                             ))}
                           </div>
-                          {(s(ch.note) || ((ch.tags as string[]) || []).length > 0 || missing) && (
-                            <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
-                              {((ch.tags as string[]) || []).map((t) => (
-                                <span key={t} className="rounded-[3px] border border-[#B9D3F0] bg-[#EAF2FC] px-1.5 py-0.5 text-[10px] font-extrabold text-[#1B4E82]">
-                                  {t}
-                                </span>
-                              ))}
-                              {missing && (
-                                <span className="rounded-[3px] border border-[#F0C9C4] bg-[#FDECEA] px-1.5 py-0.5 text-[10px] font-extrabold text-[#B3261E]">
-                                  An invoice is no longer in the books
-                                </span>
-                              )}
-                              {s(ch.note) && <span className="text-[11px] font-semibold text-[#5A6B62]">{s(ch.note)}</span>}
-                            </div>
-                          )}
-                        </td>
-                        <td className="px-3 py-3">
-                          <span className="rounded-[3px] bg-[#EAF0E9] px-1.5 py-0.5 text-[10.5px] font-extrabold uppercase tracking-[.06em] text-[#33473E]">
-                            {s(ch.product_code || ch.product_name)}
-                          </span>
-                        </td>
-                        <td className="whitespace-nowrap px-3 py-3 text-right font-bold tabular-nums">{n(ch.qty) > 0 ? `${formatNum(n(ch.qty))} MT` : '—'}</td>
-                        <td className="px-3 py-3 text-right font-bold tabular-nums">{legs.length}</td>
-                        <td className="whitespace-nowrap px-3 py-3 text-right font-bold tabular-nums text-[#0A1F17]">{formatINR(chainValue(ch))}</td>
-                        <td className="px-3 py-3">
-                          <NetStrip net={(ch.net as Row[]).map((x) => [s(x.company), n(x.qty)])} />
-                        </td>
-                        <td className="pr-3 text-right">
-                          <button
-                            type="button"
-                            title="Delete this chain"
-                            onClick={(e) => {
-                              e.stopPropagation()
-                              void remove(ch)
-                            }}
-                            className="rounded-[3px] p-1.5 text-[#8C2F26] hover:bg-[#FDECEA]"
-                          >
-                            <Trash2 className="h-4 w-4" />
-                          </button>
-                        </td>
-                      </tr>
-                      {open && (
-                        <tr className="border-t border-[#E4ECE3] bg-[#FBFCFA]">
-                          <td />
-                          <td colSpan={8} className="px-3 pb-4 pt-2">
-                            <div className="overflow-hidden rounded-[4px] border border-[#E4ECE3] bg-white">
-                              <table className="w-full text-[12px]">
-                                <thead className="bg-[#F7FAF6] text-[9.5px] font-extrabold uppercase tracking-[.1em] text-[#5A6B62]">
-                                  <tr>
-                                    <th className="px-3 py-2 text-left">Step</th>
-                                    <th className="px-3 py-2 text-left">Sells → Buys</th>
-                                    <th className="px-3 py-2 text-left">Invoice no</th>
-                                    <th className="px-3 py-2 text-left">Date</th>
-                                    <th className="px-3 py-2 text-right">Qty</th>
-                                    <th className="px-3 py-2 text-right">Rate</th>
-                                    <th className="px-3 py-2 text-right">GST</th>
-                                    <th className="px-3 py-2 text-right">Value</th>
-                                    <th className="px-3 py-2 text-left">Booked</th>
-                                  </tr>
-                                </thead>
-                                <tbody>
-                                  {legs.map((l) => {
-                                    const kd = KIND[stepKind(l)]
-                                    return (
-                                      <tr key={l.id} className="border-t border-[#EFF3EE]">
-                                        <td className="whitespace-nowrap px-3 py-2">
-                                          <span className="mr-1.5 inline-flex h-5 w-5 items-center justify-center rounded-full text-[10px] font-extrabold text-white" style={{ background: kd.fg }}>
-                                            {n(l.step)}
-                                          </span>
-                                          <span className="rounded-[3px] border px-1.5 py-0.5 text-[10px] font-extrabold uppercase tracking-[.05em]" style={{ color: kd.fg, background: kd.bg, borderColor: kd.bd }}>
-                                            {kd.label}
-                                          </span>
-                                        </td>
-                                        <td className="px-3 py-2 font-bold text-[#0A1F17]">
-                                          {s(l.seller_name).trim()} <span className="text-[#8CA396]">→</span> {s(l.buyer_name).trim()}
-                                        </td>
-                                        <td className={cn('doc-ref whitespace-nowrap px-3 py-2 font-bold', l.missing && 'text-[#B3261E] line-through')}>{s(l.invoice_no) || '—'}</td>
-                                        <td className="whitespace-nowrap px-3 py-2 tabular-nums">{formatDate(s(l.leg_date))}</td>
-                                        <td className="whitespace-nowrap px-3 py-2 text-right tabular-nums">{formatNum(n(l.qty))} MT</td>
-                                        <td className="whitespace-nowrap px-3 py-2 text-right tabular-nums">{formatINR(n(l.rate))}</td>
-                                        <td className="whitespace-nowrap px-3 py-2 text-right tabular-nums">
-                                          {n(l.gst_pct)}%{n(l.tds_pct) > 0 ? <span className="block text-[10px] text-[#5A6B62]">TDS {n(l.tds_pct)}%</span> : null}
-                                        </td>
-                                        <td className="whitespace-nowrap px-3 py-2 text-right font-bold tabular-nums">{formatINR(legValue(l))}</td>
-                                        <td className="whitespace-nowrap px-3 py-2">
-                                          {l.missing ? (
-                                            <span className="text-[11px] font-extrabold text-[#B3261E]">Deleted from its page</span>
-                                          ) : n(l.linked) ? (
-                                            <span className="inline-flex items-center gap-1 text-[11px] font-extrabold text-[#1B4E82]">
-                                              <Link2 className="h-3.5 w-3.5" /> Picked existing
-                                            </span>
-                                          ) : (
-                                            <span className="text-[11px] font-extrabold text-[#0B6B45]">Created by the chain</span>
-                                          )}
-                                        </td>
-                                      </tr>
-                                    )
-                                  })}
-                                </tbody>
-                              </table>
-                            </div>
-                          </td>
-                        </tr>
-                      )}
-                    </React.Fragment>
+                        )}
+                      </td>
+                      <td className="px-3 py-3">
+                        <span className="rounded-[2px] bg-[#EAF0E9] px-2 py-1 text-[11px] font-extrabold tracking-[.06em] text-[#33473E]">{s(ch.product_code || ch.product_name)}</span>
+                      </td>
+                      <td className="whitespace-nowrap px-3 py-3 text-right font-bold tabular-nums">
+                        {chainQty(ch) > 0 ? (
+                          <>
+                            {formatNum(chainQty(ch))} <span className="text-[11px] font-semibold text-[#5A6B62]">MT</span>
+                          </>
+                        ) : (
+                          '—'
+                        )}
+                      </td>
+                      <td className="px-3 py-3">
+                        <div className="flex flex-wrap items-center gap-1">
+                          {legs.map((l, k) => (
+                            <React.Fragment key={l.id}>
+                              {k === 0 && <Party name={s(l.seller_name)} company={l.seller_kind === 'company'} />}
+                              <ArrowRight className="h-3.5 w-3.5 flex-none" style={{ color: KIND[stepKind(l)].solid }} />
+                              <Party name={s(l.buyer_name)} company={l.buyer_kind === 'company'} />
+                            </React.Fragment>
+                          ))}
+                        </div>
+                        {(missing || s(ch.note)) && (
+                          <div className="mt-1 flex flex-wrap items-center gap-1.5">
+                            {missing && (
+                              <span className="inline-flex items-center gap-1 rounded-[3px] border border-[#F0C9C4] bg-[#FDECEA] px-1.5 py-0.5 text-[10px] font-extrabold text-[#B3261E]">
+                                <AlertTriangle className="h-3 w-3" /> An invoice is no longer in the books
+                              </span>
+                            )}
+                            {s(ch.note) && <span className="truncate text-[11px] font-semibold text-[#5A6B62]">{s(ch.note)}</span>}
+                          </div>
+                        )}
+                      </td>
+                      <td className="px-3 py-3">
+                        <div className="flex flex-wrap gap-1">
+                          {legs.map((l) => (
+                            <KindBadge key={l.id} l={l} />
+                          ))}
+                        </div>
+                      </td>
+                      <td className="whitespace-nowrap bg-[#F7FBF3] px-3 py-3 text-right text-[13.5px] font-bold tabular-nums text-[#0A1F17]">{formatINR(chainValue(ch))}</td>
+                      <td className="px-3 py-3">
+                        <NetStrip net={(ch.net as Row[]).map((x) => [s(x.company), n(x.qty)])} />
+                      </td>
+                      <td className="px-3 py-3 text-right" onClick={(e) => e.stopPropagation()}>
+                        <div className="flex justify-end">
+                          <RowActions
+                            actions={[
+                              { label: 'Open this chain', icon: ChevronRight, onClick: () => setDetailId(n(ch.id)) },
+                              { label: 'Delete chain', icon: Trash2, danger: true, onClick: () => void remove(ch) }
+                            ]}
+                          />
+                        </div>
+                      </td>
+                    </tr>
                   )
                 })
               )}
@@ -947,6 +929,183 @@ export function TradingChains({
           </table>
         </div>
       </div>
+
+      {/* THE CHAIN, OPENED — slides in from the right like a deal. */}
+      <Dialog open={!!detail} onOpenChange={(o) => !o && setDetailId(null)}>
+        <DialogContent
+          readOnly
+          className="!bottom-0 !left-auto !right-0 !top-0 !grid-rows-[auto_minmax(0,1fr)_auto] !h-screen !max-h-screen !w-[980px] !max-w-[96vw] !min-w-0 !translate-x-0 !translate-y-0 !gap-0 !overflow-hidden !rounded-none !border-0 !bg-[#F1F5EF] !p-0 sm:!rounded-none [&>button]:!right-5 [&>button]:!top-[18px] [&>button]:!text-white [&>button]:!opacity-70 [&>button]:hover:!opacity-100"
+        >
+          {detail &&
+            (() => {
+              const legs = detail.legs as Row[]
+              const round = closes(detail)
+              const total = chainValue(detail)
+              // What each of our companies booked on the chain.
+              const perCo = new Map<string, { sold: number; bought: number }>()
+              for (const l of legs) {
+                if (l.seller_kind === 'company') {
+                  const k = s(l.seller_name)
+                  const v = perCo.get(k) || { sold: 0, bought: 0 }
+                  v.sold += legValue(l)
+                  perCo.set(k, v)
+                }
+                if (l.buyer_kind === 'company') {
+                  const k = s(l.buyer_name)
+                  const v = perCo.get(k) || { sold: 0, bought: 0 }
+                  v.bought += legValue(l)
+                  perCo.set(k, v)
+                }
+              }
+              return (
+                <>
+                  <DialogHeader className="!block !space-y-0 !bg-[#0B3D2E] !px-5 !pb-5 !pt-5 !text-left">
+                    <div className="text-[11px] font-extrabold uppercase tracking-[.14em] text-[#8FBFA8]">Chain trading</div>
+                    <DialogTitle className="!mt-2.5 !flex !flex-wrap !items-center !gap-x-3.5 !gap-y-2 !pr-10">
+                      <span className="text-[21px] font-bold leading-none tracking-[-0.02em] tabular-nums text-white">{formatDate(s(detail.chain_date))}</span>
+                      <span className="rounded-[3px] border border-white/20 bg-white/[0.12] px-2.5 py-[5px] text-[11px] font-extrabold uppercase leading-none tracking-[.06em] text-white">
+                        {s(detail.product_code || detail.product_name)}
+                      </span>
+                      <span className="h-4 w-px shrink-0 bg-white/25" />
+                      <span className="text-[14px] font-bold leading-none tabular-nums text-[#C7F03F]">{formatNum(chainQty(detail))} MT</span>
+                      <span className="h-4 w-px shrink-0 bg-white/25" />
+                      <span className="text-[13px] font-bold leading-none text-[#DCEFE4]">
+                        {legs.length} step{legs.length === 1 ? '' : 's'}
+                      </span>
+                    </DialogTitle>
+                    {(((detail.tags as string[]) || []).length > 0 || s(detail.note)) && (
+                      <div className="mt-2.5 flex flex-wrap items-center gap-1.5">
+                        {((detail.tags as string[]) || []).map((t) => (
+                          <span key={t} className="rounded-[3px] bg-[#C7F03F]/15 px-2 py-0.5 text-[10.5px] font-extrabold text-[#C7F03F]">
+                            {t}
+                          </span>
+                        ))}
+                        {s(detail.note) && <span className="text-[12px] font-semibold text-[#A9CDBB]">{s(detail.note)}</span>}
+                      </div>
+                    )}
+                    <div
+                      className={cn(
+                        'mt-[18px] flex flex-wrap items-center gap-x-3 gap-y-2 rounded-[3px] border-l-[3px] px-3.5 py-3',
+                        round ? 'border-l-[#C7F03F] bg-[#0E5B3E]' : 'border-l-[#F2C94C] bg-[#5A4310]'
+                      )}
+                    >
+                      <span className={cn('text-[10.5px] font-extrabold uppercase tracking-[.12em]', round ? 'text-[#C7F03F]' : 'text-[#F2C94C]')}>
+                        {round ? 'Comes back round' : 'Ends with goods'}
+                      </span>
+                      <span className="flex flex-wrap items-center gap-1.5">
+                        {(detail.net as Row[]).map((x) => (
+                          <span key={s(x.company)} className="rounded-[3px] bg-white/10 px-2 py-1 text-[11.5px] font-extrabold tabular-nums text-white">
+                            {s(x.company)}{' '}
+                            <span className={Math.abs(n(x.qty)) < 0.0005 ? 'text-[#DCEFE4]' : n(x.qty) > 0 ? 'text-[#C7F03F]' : 'text-[#FFC4BE]'}>
+                              {n(x.qty) > 0.0005 ? '+' : ''}
+                              {formatNum(n(x.qty))} MT
+                            </span>
+                          </span>
+                        ))}
+                      </span>
+                      <span className="ml-auto whitespace-nowrap text-[19px] font-bold tabular-nums text-white">{formatINR(total)}</span>
+                    </div>
+                  </DialogHeader>
+
+                  <div className="flex min-h-0 flex-col gap-3 overflow-y-auto px-5 py-4 [&>*]:shrink-0">
+                    {/* Each of our companies: what it sold and bought on the chain. */}
+                    {perCo.size > 0 && (
+                      <div className="grid gap-2.5 [grid-template-columns:repeat(auto-fit,minmax(min(100%,220px),1fr))]">
+                        {[...perCo.entries()].map(([co, v]) => (
+                          <div key={co} className="rounded-[4px] border border-[#D6E2D6] bg-white px-3.5 py-3">
+                            <div className="flex items-center gap-1.5 text-[12px] font-extrabold text-[#0B3D2E]">
+                              <Building2 className="h-4 w-4" />
+                              <span className="truncate">{co}</span>
+                            </div>
+                            <div className="mt-2 grid grid-cols-2 gap-2">
+                              <div>
+                                <div className="text-[9.5px] font-extrabold uppercase tracking-[.12em] text-[#0B6B45]">Sold</div>
+                                <div className="text-[14px] font-bold tabular-nums">{formatINR(v.sold)}</div>
+                              </div>
+                              <div>
+                                <div className="text-[9.5px] font-extrabold uppercase tracking-[.12em] text-[#8C2F26]">Bought</div>
+                                <div className="text-[14px] font-bold tabular-nums">{formatINR(v.bought)}</div>
+                              </div>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+
+                    {/* THE STEPS, as a timeline. */}
+                    <div className="rounded-[4px] border border-[#D6E2D6] bg-white">
+                      <div className="border-b border-[#E4ECE3] bg-[#F7FAF6] px-4 py-2.5 text-[11px] font-extrabold uppercase tracking-[.14em] text-[#0A1F17]">Steps</div>
+                      <div className="px-4 py-3">
+                        {legs.map((l, k) => {
+                          const kd = KIND[stepKind(l)]
+                          return (
+                            <div key={l.id} className="relative flex gap-3 pb-3 last:pb-0">
+                              {k < legs.length - 1 && <span className="absolute left-[13px] top-7 bottom-0 w-[2px] bg-[#E4ECE3]" />}
+                              <span className="relative z-[1] flex h-7 w-7 flex-none items-center justify-center rounded-full text-[12px] font-extrabold text-white" style={{ background: kd.solid }}>
+                                {n(l.step)}
+                              </span>
+                              <div className="min-w-0 flex-1 overflow-hidden rounded-[4px] border" style={{ borderColor: kd.bd }}>
+                                <div className="flex flex-wrap items-center gap-2 px-3 py-2" style={{ background: kd.bg }}>
+                                  <KindBadge l={l} />
+                                  <Party name={s(l.seller_name).trim()} company={l.seller_kind === 'company'} />
+                                  <ArrowRight className="h-4 w-4" style={{ color: kd.solid }} />
+                                  <Party name={s(l.buyer_name).trim()} company={l.buyer_kind === 'company'} />
+                                  <span className="ml-auto flex items-center gap-1.5">
+                                    {l.missing ? (
+                                      <span className="rounded-[3px] bg-[#FDECEA] px-1.5 py-0.5 text-[10px] font-extrabold text-[#B3261E]">Deleted from its page</span>
+                                    ) : n(l.linked) ? (
+                                      <span className="inline-flex items-center gap-1 rounded-[3px] bg-white px-1.5 py-0.5 text-[10px] font-extrabold text-[#1B4E82]">
+                                        <Link2 className="h-3 w-3" /> Picked existing
+                                      </span>
+                                    ) : (
+                                      <span className="rounded-[3px] bg-white px-1.5 py-0.5 text-[10px] font-extrabold text-[#0B6B45]">Created by the chain</span>
+                                    )}
+                                  </span>
+                                </div>
+                                <div className="grid grid-cols-2 gap-x-4 gap-y-2 bg-white px-3 py-2.5 sm:grid-cols-6">
+                                  {[
+                                    ['Invoice no', s(l.invoice_no) || '—', true],
+                                    ['Date', formatDate(s(l.leg_date)), false],
+                                    ['Qty', `${formatNum(n(l.qty))} MT`, false],
+                                    ['Rate', formatINR(n(l.rate)), false],
+                                    ['GST', `${n(l.gst_pct)}%${n(l.tds_pct) > 0 ? ` · TDS ${n(l.tds_pct)}%` : ''}`, false],
+                                    ['Value', formatINR(legValue(l)), true]
+                                  ].map(([k2, v, strong]) => (
+                                    <div key={String(k2)} className="min-w-0">
+                                      <div className="text-[9.5px] font-extrabold uppercase tracking-[.1em] text-[#5A6B62]">{k2}</div>
+                                      <div className={cn('truncate tabular-nums', strong ? 'text-[13px] font-bold text-[#0A1F17]' : 'text-[12.5px] font-semibold text-[#33473E]', l.missing && k2 === 'Invoice no' && 'text-[#B3261E] line-through')}>
+                                        {v}
+                                      </div>
+                                    </div>
+                                  ))}
+                                </div>
+                              </div>
+                            </div>
+                          )
+                        })}
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="flex items-center gap-3 border-t border-[#D6E2D6] bg-white px-5 py-3">
+                    <span className="mr-auto text-[11.5px] font-semibold text-[#5A6B62]">Created invoices are trading only — no stock moves. Picked invoices are left as they are.</span>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const ch = detail
+                        setDetailId(null)
+                        void remove(ch)
+                      }}
+                      className="flex h-9 items-center gap-1.5 rounded-[4px] border border-[#F0C9C4] bg-white px-3.5 text-[12px] font-extrabold text-[#B3261E] hover:bg-[#FDECEA]"
+                    >
+                      <Trash2 className="h-4 w-4" /> Delete chain
+                    </button>
+                  </div>
+                </>
+              )
+            })()}
+        </DialogContent>
+      </Dialog>
     </div>
   )
 }
