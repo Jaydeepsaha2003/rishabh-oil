@@ -5569,6 +5569,20 @@ Delete ${doc}?`)) return
   useEffect(() => {
     function onKey(e: KeyboardEvent): void {
       if (e.defaultPrevented) return
+      // CTRL+A SAVES EVERY ACCOUNTING ENTRY: the save of an open window
+      // (Create ledger, alter a document's voucher), or of the screen itself
+      // (Openings) — whichever button is marked data-ctrl-a. A voucher's own
+      // Accept is handled further down.
+      if ((e.ctrlKey || e.metaKey) && !e.altKey && !e.shiftKey && e.code === 'KeyA') {
+        const dlgs = document.querySelectorAll('[role="dialog"],[role="alertdialog"]')
+        const scope: ParentNode | null = dlgs.length ? dlgs[dlgs.length - 1] : screen !== 'voucher' ? document : null
+        const btn = scope?.querySelector<HTMLButtonElement>('[data-ctrl-a]')
+        if (btn && !btn.disabled && btn.offsetParent !== null) {
+          e.preventDefault()
+          btn.click()
+          return
+        }
+      }
       if (hasOpenOverlay()) return
       const tag = (e.target as HTMLElement)?.tagName
       const typing = tag === 'INPUT' || tag === 'TEXTAREA' || (e.target as HTMLElement)?.isContentEditable
@@ -5831,7 +5845,14 @@ Delete ${doc}?`)) return
       }
       if (e.ctrlKey && (e.key === 'a' || e.key === 'A') && screen === 'voucher') {
         e.preventDefault()
-        if (viewOnly) return
+        // A view-only voucher (posted by an LC, BD, purchase…) still saves its
+        // bill-wise details — Ctrl+A presses its Save bill-wise.
+        if (viewOnly) {
+          const btns = Array.from(document.querySelectorAll<HTMLButtonElement>('[data-billwise-save]')).filter((b) => !b.disabled && b.offsetParent !== null)
+          if (btns.length) btns.forEach((b) => b.click())
+          else toast.info('This voucher is view only — change it from its document')
+          return
+        }
         void saveVoucher()
         return
       }
@@ -13267,6 +13288,7 @@ Delete ${doc}?`)) return
           <button
             type="button"
             disabled={obSaving || !obEdits}
+            data-ctrl-a
             onClick={() => void saveOpenings()}
             title={obEdits ? 'Save the openings you have changed' : 'Nothing has been changed yet'}
             className="flex h-9 flex-none items-center gap-[7px] whitespace-nowrap rounded-[7px] px-[15px]"
@@ -15244,6 +15266,8 @@ Delete ${doc}?`)) return
                               <div className="mt-2 flex justify-end">
                                 <button
                                   type="button"
+                                  data-billwise-save
+                                  title={`Save bill-wise (${chordLabel('Ctrl A')})`}
                                   onClick={async () => {
                                     try {
                                       const res = await window.api.vouchers.setLineAllocs(
@@ -20891,7 +20915,7 @@ Delete ${doc}?`)) return
         })()}
         <DialogFooter>
           <Button variant="outline" disabled={alterBusy} onClick={() => setAlterDlg(null)}>Cancel</Button>
-          <Button disabled={alterBusy} onClick={() => void saveAlterOwned()}>
+          <Button data-ctrl-a disabled={alterBusy} onClick={() => void saveAlterOwned()}>
             {alterBusy ? 'Saving…' : 'Save changes'}
           </Button>
         </DialogFooter>
@@ -20938,7 +20962,7 @@ Delete ${doc}?`)) return
         </div>
         <DialogFooter>
           <Button variant="outline" onClick={() => setNewLedger(null)}>Cancel</Button>
-          <Button className="bg-[#0B3D2E] hover:bg-[#0A3327]" onClick={() => void createLedger()}>
+          <Button data-ctrl-a className="bg-[#0B3D2E] hover:bg-[#0A3327]" onClick={() => void createLedger()}>
             <ArrowLeftRight className="h-4 w-4" /> Create
           </Button>
         </DialogFooter>
