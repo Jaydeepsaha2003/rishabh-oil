@@ -2558,6 +2558,11 @@ export async function deleteBdInterestPayment(payId: number): Promise<{ id: numb
   const res = await c.execute({ sql: 'SELECT * FROM bd_interest_payments WHERE id = ?', args: [n(payId)] })
   if (!res.rows.length) throw new Error('That interest payment no longer exists')
   const row = toPlain(res)[0]
+  // Paid as one voucher with other bills (Pay cumulative interest): the bank
+  // debit was one, so it goes back as one — every bill's row on it with it.
+  if (n(row.journal_entry_id)) {
+    await c.execute({ sql: 'DELETE FROM bd_interest_payments WHERE journal_entry_id = ? AND id <> ?', args: [n(row.journal_entry_id), n(payId)] })
+  }
   await dropEntry(n(row.journal_entry_id) || null)
   await c.execute({ sql: 'DELETE FROM bd_interest_payments WHERE id = ?', args: [n(payId)] })
   return { id: n(payId) }
@@ -3626,5 +3631,105 @@ export async function deleteLastBdReceiptPart(bdId: number): Promise<{ part_no: 
     await dropEntry(n(row.journal_entry_id) || null)
     await c.execute({ sql: 'DELETE FROM bd_receipt_parts WHERE id = ?', args: [n(row.id)] })
     return { part_no: n(row.part_no), ref: String(row.ref || receiptRef(bd, n(row.part_no))) }
+  })
+}
+
+// ---------------------------------------------------------------------------
+// PAY CUMULATIVE INTEREST — one NBFC, every open bill, one bank voucher.
+//
+// An NBFC bills its interest for the month across all its bills at once, and it
+// is paid with one bank debit. Each bill still services its own days (from the
+// day after its last payment, or its receipt day) up to the period's end, at
+// its own rate and TDS; the payment is ONE voucher —
+//   Dr  Interest on Bill Discounting      Σ gross
+//       Cr  TDS on Interest Payable             Σ tds
+//       Cr  Bank                                Σ net
+// — and every bill gets its own interest-payment row pointing at it, so each
+// bill reads as serviced to that date and the voucher reads back to all of them.
+// ---------------------------------------------------------------------------
+export async function bdCumulativeInterest(v: { nbfc_id: number; to_date: string }): Promise<Row[]> {
+  const to = String(v.to_date || '').slice(0, 10)
+  if (!n(v.nbfc_id) || !/^\d{4}-\d{2}-\d{2}$/.test(to)) return []
+  const capped = to > todayISO() ? todayISO() : to
+  const bills = (await listBd({ nbfc_id: n(v.nbfc_id) })).filter((b) => String(b.status) !== 'repaid' && !!b.payment_received_date)
+  const out: Row[] = []
+  for (const b of bills) {
+    const w = await bdInterestWindow(n(b.id), capped)
+    out.push({
+      bd_id: n(b.id),
+      bd_no: b.bd_no,
+      party: b.party_name || b.receivable_party_name || b.supplier_name || '',
+      principal: n(w.interest_base),
+      open_amount: n(w.open_amount),
+      interest_pct: n(w.interest_pct),
+      tds_pct: n(w.tds_pct),
+      from_date: w.from_date,
+      to_date: capped,
+      days: n(w.days),
+      gross: n(w.gross),
+      tds: n(w.tds),
+      net: n(w.net),
+      paid_to: w.paid_to || null,
+      blocked: w.blocked || (w.from_date > capped ? 'Interest is paid up to date.' : '') || (!(n(w.gross) > 0.004) ? 'Nothing has accrued.' : '')
+    })
+  }
+  return out
+}
+
+export async function payBdCumulativeInterest(v: {
+  nbfc_id: number
+  to_date: string
+  paid_date?: string
+  bank_account?: string | null
+  bd_ids: number[]
+  note?: string | null
+}): Promise<{ entry_id: number; bills: number; gross: number; tds: number; net: number }> {
+  return withDbTransaction(async () => {
+    const to = String(v.to_date || '').slice(0, 10)
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(to)) throw new Error('Pick the date the interest is paid up to')
+    if (to > todayISO()) throw new Error('Interest cannot be paid for days that have not happened yet')
+    const date = String(v.paid_date || to).slice(0, 10)
+    if (date > todayISO()) throw new Error('The payment cannot be dated in the future')
+    const ids = Array.from(new Set((v.bd_ids || []).map(n).filter((x) => x > 0)))
+    if (!ids.length) throw new Error('Tick at least one bill to pay')
+    const rows: { bd: Row; w: Row }[] = []
+    for (const id of ids) {
+      const bd = await loadBd(id)
+      if (n(bd.nbfc_id) !== n(v.nbfc_id)) throw new Error(`${bd.bd_no} is with another NBFC`)
+      const w = await bdInterestWindow(id, to)
+      if (w.blocked) throw new Error(`${bd.bd_no}: ${String(w.blocked)}`)
+      if (String(w.from_date) > to) throw new Error(`${bd.bd_no}: interest is already paid to ${String(w.paid_to)}`)
+      if (!(n(w.gross) > 0.004)) throw new Error(`${bd.bd_no}: that comes to no interest`)
+      rows.push({ bd, w })
+    }
+    const gross = round2(rows.reduce((t, r) => t + n(r.w.gross), 0))
+    const tds = round2(rows.reduce((t, r) => t + n(r.w.tds), 0))
+    const net = round2(gross - tds)
+    const first = rows[0].bd
+    const bank = await bdBankFor(first, v.bank_account)
+    const nos = rows.map((r) => String(r.bd.bd_no)).join(', ')
+    const je = await postJournal({
+      date,
+      vchType: 'PAYMENT',
+      vchNo: nos.slice(0, 60),
+      narration:
+        `Bill Discounting interest to ${to} paid to ${first.nbfc_name || 'the NBFC'} on ${rows.length} bill${rows.length === 1 ? '' : 's'} (${nos}) — ${inr(gross)}` +
+        (tds > 0.004 ? `, TDS ${inr(tds)} withheld` : '') +
+        (v.note ? ` · ${String(v.note)}` : ''),
+      companyId: n(first.company_id) || undefined,
+      lines: [
+        { account: 'INTEREST ON BILL DISCOUNTING A/C', group: 'Indirect Expenses', dr: gross },
+        ...(tds > 0.004 ? [{ account: 'TDS ON INTEREST PAYABLE A/C', group: 'Duties & Taxes', cr: tds }] : []),
+        { account: bank, group: 'Bank Accounts', cr: net }
+      ]
+    })
+    for (const r of rows) {
+      await getClient().execute({
+        sql: `INSERT INTO bd_interest_payments (bd_id, from_date, to_date, days, paid_date, gross, tds, net, note, journal_entry_id, bank_account)
+              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        args: [n(r.bd.id), String(r.w.from_date), to, n(r.w.days), date, n(r.w.gross), n(r.w.tds), n(r.w.net), `Cumulative interest — one voucher with ${nos}`, je.id, bank]
+      })
+    }
+    return { entry_id: je.id, bills: rows.length, gross, tds, net }
   })
 }

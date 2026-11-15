@@ -56,6 +56,7 @@ import { LedgerPostings, type PostingTarget } from '@/components/LedgerPostings'
 import { canAccess } from '@/lib/modules'
 import { BdDetail, chargesOf } from '@/components/BdDetail'
 import { BdRepaymentEdit } from '@/components/BdRepaymentEdit'
+import { BdCumulativeInterest } from '@/components/BdCumulativeInterest'
 import { AdjChargePicker, adjKindsLabel, adjParts, adjPostsTo, adjSplitOk, type AdjPart, type ChargeType } from '@/components/AdjChargePicker'
 import { LimitHistory, type LimitTarget } from '@/components/LimitHistory'
 import { formatDate, formatDateShort, formatINR, formatNum, todayISO } from '@/lib/format'
@@ -935,6 +936,8 @@ export function BillDiscounting({
   const [payInChipEveryone, setPayInChipEveryone] = useState(true)
   const iAmAdmin = loadUser()?.role === 'admin'
   const [nbfcs, setNbfcs] = useState<Row[]>([])
+  // Pay cumulative interest: one NBFC's bills, one bank voucher.
+  const [cumOpen, setCumOpen] = useState(false)
   // The kinds of charge an Adj. can be — the usual ones plus any added.
   const [chargeTypes, setChargeTypes] = useState<ChargeType[]>([])
   useEffect(() => {
@@ -2897,6 +2900,16 @@ export function BillDiscounting({
               The spacer is always here instead, so the split is a property of
               the toolbar rather than of what is in it. */}
           {__WEB__ && <span aria-hidden className="ml-auto" />}
+          {__WEB__ && (
+            <button
+              type="button"
+              onClick={() => setCumOpen(true)}
+              title="Pay one NBFC's interest on every open bill for a month or a date range — one bank voucher, linked to each bill"
+              className="flex h-[34px] items-center gap-1.5 rounded-[3px] border border-[#0B3D2E] bg-white px-3 text-[12px] font-extrabold uppercase tracking-[.05em] text-[#0B3D2E] hover:bg-[#F0F8F3]"
+            >
+              <Percent className="h-3.5 w-3.5" /> Pay cumulative int.
+            </button>
+          )}
           {__WEB__ &&
             alerts.map((a) => (
               <button
@@ -8449,6 +8462,7 @@ export function BillDiscounting({
 
       {/* WHAT THIS BILL PUT IN THE LEDGERS — see LedgerPostings. */}
       <LedgerPostings target={postings} onClose={() => setPostings(null)} />
+      <BdCumulativeInterest open={cumOpen} onClose={() => setCumOpen(false)} nbfcs={nbfcs} onDone={() => void load()} />
     </div>
   )
 }

@@ -1916,6 +1916,13 @@ export function registerIpc(): void {
   )
   handle('bd:interestSchedule', (_e, { id }: { id: number }) => bdInterestSchedule(id))
   handle('bd:interestPayments', (_e, { id }: { id: number }) => listBdInterestPayments(id))
+  // Pay cumulative interest: one NBFC's bills, one voucher.
+  handle('bdCumInterest:list', async (_e, { values }: { values: Row }) =>
+    (await import('./billDiscounting')).bdCumulativeInterest(values as never)
+  )
+  handle('bd:payCumulativeInterest', async (_e, { values }: { values: Row }) =>
+    (await import('./billDiscounting')).payBdCumulativeInterest(values as never)
+  )
   handle(
     'bd:payInterest',
     (

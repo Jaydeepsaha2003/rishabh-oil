@@ -1,0 +1,319 @@
+import { useEffect, useMemo, useState } from 'react'
+import { toast } from 'sonner'
+import { Loader2, Percent } from 'lucide-react'
+import { Dialog, DialogContent, DialogTitle } from '@/components/ui/dialog'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
+import { DatePicker } from '@/components/ui/date-picker'
+import { formatDate, formatINR, todayISO } from '@/lib/format'
+import { cn } from '@/lib/utils'
+
+// PAY CUMULATIVE INTEREST (billDiscounting.ts payBdCumulativeInterest): one
+// NBFC, a month or a date range, every open bill's interest to the period's
+// end — ticked bills paid with ONE bank voucher, linked to each bill.
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type Row = Record<string, any>
+const n = (v: unknown): number => Number(v) || 0
+const r2 = (v: number): number => Math.round(v * 100) / 100
+
+const monthEnd = (ym: string): string => {
+  const [y, m] = ym.split('-').map(Number)
+  const d = new Date(y, m, 0)
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+}
+
+export function BdCumulativeInterest({ open, onClose, nbfcs, onDone }: { open: boolean; onClose: () => void; nbfcs: Row[]; onDone?: () => void }): React.JSX.Element {
+  const today = todayISO()
+  const [nbfc, setNbfc] = useState('')
+  const [mode, setMode] = useState<'month' | 'range'>('month')
+  const [month, setMonth] = useState(today.slice(0, 7))
+  const [from, setFrom] = useState(`${today.slice(0, 7)}-01`)
+  const [to, setTo] = useState(today)
+  const [rows, setRows] = useState<Row[] | null>(null)
+  const [picked, setPicked] = useState<Set<number>>(new Set())
+  const [banks, setBanks] = useState<Row[]>([])
+  const [bank, setBank] = useState('')
+  const [paidOn, setPaidOn] = useState(today)
+  const [busy, setBusy] = useState(false)
+
+  // The period's last day is what each bill is paid up to — never past today.
+  const upto = useMemo(() => {
+    const end = mode === 'month' ? monthEnd(month) : to
+    return end > today ? today : end
+  }, [mode, month, to, today])
+  const start = mode === 'month' ? `${month}-01` : from
+
+  useEffect(() => {
+    if (!open) return
+    void window.api.journal
+      .accountNames()
+      .then((a) => setBanks(a.filter((x) => ['Bank Accounts', 'Bank OD A/c'].includes(String(x.acc_group || '')))))
+      .catch(() => setBanks([]))
+  }, [open])
+
+  useEffect(() => {
+    setRows(null)
+    if (!open || !nbfc || !/^\d{4}-\d{2}-\d{2}$/.test(upto)) return
+    let live = true
+    void window.api.billDiscounting
+      .cumulativeInterest({ nbfc_id: Number(nbfc), to_date: upto })
+      .then((r) => {
+        if (!live) return
+        setRows(r)
+        setPicked(new Set(r.filter((x) => !x.blocked).map((x) => n(x.bd_id))))
+      })
+      .catch((e) => toast.error((e as Error).message))
+    return () => {
+      live = false
+    }
+  }, [open, nbfc, upto])
+
+  const payable = (rows || []).filter((r) => !r.blocked)
+  const sel = payable.filter((r) => picked.has(n(r.bd_id)))
+  const tot = {
+    gross: r2(sel.reduce((t, r) => t + n(r.gross), 0)),
+    tds: r2(sel.reduce((t, r) => t + n(r.tds), 0)),
+    net: r2(sel.reduce((t, r) => t + n(r.net), 0))
+  }
+
+  async function pay(): Promise<void> {
+    if (!sel.length) return
+    setBusy(true)
+    try {
+      const res = await window.api.billDiscounting.payCumulativeInterest({
+        nbfc_id: Number(nbfc),
+        to_date: upto,
+        paid_date: paidOn,
+        bank_account: bank || null,
+        bd_ids: sel.map((r) => n(r.bd_id))
+      })
+      toast.success(`Interest on ${res.bills} bill${res.bills === 1 ? '' : 's'} paid to ${formatDate(upto)} — one voucher, ${formatINR(res.net)} out of the bank`)
+      onDone?.()
+      onClose()
+    } catch (e) {
+      toast.error((e as Error).message.replace(/^Error invoking remote method '[^']+': (Error: )?/, ''))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const lbl = 'mb-1 block text-[10px] font-extrabold uppercase tracking-[.1em] text-[#5A6B62]'
+  return (
+    <Dialog open={open} onOpenChange={(o) => !o && !busy && onClose()}>
+      <DialogContent className="gap-0 overflow-hidden p-0 sm:max-w-[1080px] [&>button]:!text-white">
+        <div className="bg-[#0B3D2E] px-5 py-3.5 pr-12 text-white">
+          <div className="flex items-center gap-1.5 text-[9.5px] font-extrabold uppercase tracking-[.14em] text-[#C7F03F]">
+            <Percent className="h-3.5 w-3.5" /> Bill discounting
+          </div>
+          <DialogTitle className="text-[16px] font-extrabold text-white">Pay cumulative interest</DialogTitle>
+        </div>
+        <div className="max-h-[70vh] space-y-3.5 overflow-y-auto px-5 py-4">
+          <div className="grid gap-3 md:grid-cols-[1.3fr_auto_1.4fr]">
+            <div>
+              <span className={lbl}>NBFC</span>
+              <Select searchable value={nbfc} onValueChange={setNbfc}>
+                <SelectTrigger>
+                  <SelectValue placeholder="Choose the NBFC" />
+                </SelectTrigger>
+                <SelectContent className="max-h-64">
+                  {nbfcs.map((x) => (
+                    <SelectItem key={String(x.id)} value={String(x.id)}>
+                      {String(x.name)}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div>
+              <span className={lbl}>Period</span>
+              <div className="flex h-9 rounded-[4px] border border-[#C9DCCF] p-0.5">
+                {(['month', 'range'] as const).map((m) => (
+                  <button
+                    key={m}
+                    type="button"
+                    onClick={() => setMode(m)}
+                    className={cn('rounded-[3px] px-3 text-[12px] font-extrabold', mode === m ? 'bg-[#0B3D2E] text-white' : 'text-[#33473E] hover:bg-[#F0F8F3]')}
+                  >
+                    {m === 'month' ? 'By month' : 'Date range'}
+                  </button>
+                ))}
+              </div>
+            </div>
+            {mode === 'month' ? (
+              <div>
+                <span className={lbl}>Month</span>
+                <input
+                  type="month"
+                  value={month}
+                  max={today.slice(0, 7)}
+                  onChange={(e) => e.target.value && setMonth(e.target.value)}
+                  className="h-9 w-full rounded-[4px] border border-[#C9DCCF] bg-white px-2.5 text-[13px] font-semibold"
+                />
+              </div>
+            ) : (
+              <div className="grid grid-cols-2 gap-2">
+                <div>
+                  <span className={lbl}>From</span>
+                  <DatePicker value={from} onChange={(v) => v && setFrom(v)} />
+                </div>
+                <div>
+                  <span className={lbl}>To</span>
+                  <DatePicker value={to} onChange={(v) => v && setTo(v)} />
+                </div>
+              </div>
+            )}
+          </div>
+          <div className="text-[11.5px] font-semibold text-[#5A6B62]">
+            Each bill is paid from the day after its last interest payment (or the day it was funded) up to <b className="text-[#0A1F17]">{formatDate(upto)}</b>
+            {upto === today && (mode === 'month' ? monthEnd(month) : to) > today ? ' — today, the period has not ended yet' : ''}.
+          </div>
+
+          {!nbfc ? (
+            <div className="rounded-[4px] border border-dashed border-[#C9DCCF] py-10 text-center text-[12.5px] font-semibold text-[#5A6B62]">Choose the NBFC to see its bills.</div>
+          ) : rows == null ? (
+            <div className="flex justify-center py-10">
+              <Loader2 className="h-5 w-5 animate-spin text-[#8CA396]" />
+            </div>
+          ) : rows.length === 0 ? (
+            <div className="rounded-[4px] border border-dashed border-[#C9DCCF] py-10 text-center text-[12.5px] font-semibold text-[#5A6B62]">No open, funded bill with this NBFC.</div>
+          ) : (
+            <div className="overflow-hidden rounded-[4px] border border-[#D6E2D6]">
+              <table className="w-full text-[12.5px]">
+                <thead className="bg-[#0B3D2E] text-[10px] font-extrabold uppercase tracking-[.08em] text-[#DCEFE4]">
+                  <tr>
+                    <th className="w-9 px-3 py-2.5 text-left">
+                      <input
+                        type="checkbox"
+                        aria-label="Tick every bill"
+                        checked={payable.length > 0 && sel.length === payable.length}
+                        onChange={(e) => setPicked(e.target.checked ? new Set(payable.map((r) => n(r.bd_id))) : new Set())}
+                      />
+                    </th>
+                    <th className="px-2 py-2.5 text-left">Bill</th>
+                    <th className="px-2 py-2.5 text-right">Principal</th>
+                    <th className="px-2 py-2.5 text-left">Interest from → to</th>
+                    <th className="px-2 py-2.5 text-right">Days</th>
+                    <th className="px-2 py-2.5 text-right">Rate</th>
+                    <th className="px-2 py-2.5 text-right">Interest</th>
+                    <th className="px-2 py-2.5 text-right">TDS</th>
+                    <th className="px-3 py-2.5 text-right text-[#C7F03F]">Net</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {rows.map((r) => {
+                    const id = n(r.bd_id)
+                    const on = picked.has(id)
+                    const early = !r.blocked && String(r.from_date) < start
+                    return (
+                      <tr key={id} className={cn('border-t border-[#EFF3EE]', r.blocked ? 'bg-[#FAFBF9] text-[#8CA396]' : on ? 'bg-white' : 'bg-[#FBFCFA] text-[#5A6B62]')}>
+                        <td className="px-3 py-2">
+                          <input
+                            type="checkbox"
+                            disabled={!!r.blocked}
+                            checked={on && !r.blocked}
+                            aria-label={`Pay ${String(r.bd_no)}`}
+                            onChange={(e) =>
+                              setPicked((p) => {
+                                const next = new Set(p)
+                                if (e.target.checked) next.add(id)
+                                else next.delete(id)
+                                return next
+                              })
+                            }
+                          />
+                        </td>
+                        <td className="px-2 py-2">
+                          <div className="font-extrabold text-[#0A1F17]">{String(r.bd_no)}</div>
+                          <div className="max-w-[220px] truncate text-[11px] font-semibold text-[#5A6B62]">{String(r.party || '')}</div>
+                        </td>
+                        <td className="whitespace-nowrap px-2 py-2 text-right tabular-nums">{formatINR(n(r.principal))}</td>
+                        <td className="whitespace-nowrap px-2 py-2">
+                          {r.blocked ? (
+                            <span className="text-[11.5px] font-semibold">{String(r.blocked)}</span>
+                          ) : (
+                            <>
+                              <span className="tabular-nums">
+                                {formatDate(String(r.from_date))} → {formatDate(String(r.to_date))}
+                              </span>
+                              {early && (
+                                <span className="ml-1.5 rounded-[3px] bg-[#FFF4E0] px-1.5 py-0.5 text-[10px] font-extrabold text-[#8A5300]" title="Unpaid since before the period — interest is paid in order, so these days come too">
+                                  from before the period
+                                </span>
+                              )}
+                            </>
+                          )}
+                        </td>
+                        <td className="px-2 py-2 text-right tabular-nums">{r.blocked ? '—' : n(r.days)}</td>
+                        <td className="px-2 py-2 text-right tabular-nums">{n(r.interest_pct)}%</td>
+                        <td className="whitespace-nowrap px-2 py-2 text-right font-bold tabular-nums">{r.blocked ? '—' : formatINR(n(r.gross))}</td>
+                        <td className="whitespace-nowrap px-2 py-2 text-right tabular-nums">{r.blocked ? '—' : formatINR(n(r.tds))}</td>
+                        <td className="whitespace-nowrap px-3 py-2 text-right font-bold tabular-nums text-[#0B6B45]">{r.blocked ? '—' : formatINR(n(r.net))}</td>
+                      </tr>
+                    )
+                  })}
+                </tbody>
+                <tfoot>
+                  <tr className="border-t-[1.5px] border-[#C9DCCF] bg-[#F0F8F3] font-extrabold">
+                    <td colSpan={6} className="px-3 py-2.5 text-[11px] uppercase tracking-[.1em] text-[#33473E]">
+                      {sel.length} of {payable.length} bill{payable.length === 1 ? '' : 's'} ticked
+                    </td>
+                    <td className="whitespace-nowrap px-2 py-2.5 text-right tabular-nums">{formatINR(tot.gross)}</td>
+                    <td className="whitespace-nowrap px-2 py-2.5 text-right tabular-nums">{formatINR(tot.tds)}</td>
+                    <td className="whitespace-nowrap px-3 py-2.5 text-right tabular-nums text-[#0B6B45]">{formatINR(tot.net)}</td>
+                  </tr>
+                </tfoot>
+              </table>
+            </div>
+          )}
+
+          {sel.length > 0 && (
+            <div className="grid gap-3 md:grid-cols-[1.5fr_1fr]">
+              <div>
+                <span className={lbl}>Paid from bank</span>
+                <Select searchable value={bank} onValueChange={setBank}>
+                  <SelectTrigger>
+                    <SelectValue placeholder="The bill's own bank (first ticked bill)" />
+                  </SelectTrigger>
+                  <SelectContent className="max-h-64">
+                    {banks.map((b) => (
+                      <SelectItem key={String(b.name)} value={String(b.name)}>
+                        {String(b.name)}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+              <div>
+                <span className={lbl}>Payment date</span>
+                <DatePicker value={paidOn} max={today} onChange={(v) => v && setPaidOn(v)} />
+              </div>
+            </div>
+          )}
+        </div>
+        <div className="flex flex-wrap items-center gap-3 border-t border-[#E4ECE3] bg-[#FBFCFA] px-5 py-3">
+          <span className="mr-auto text-[11.5px] font-semibold text-[#5A6B62]">
+            One bank voucher: Dr Interest {formatINR(tot.gross)} · Cr TDS {formatINR(tot.tds)} · Cr bank {formatINR(tot.net)} — linked to every ticked bill.
+          </span>
+          <button
+            type="button"
+            disabled={busy}
+            onClick={onClose}
+            className="h-9 rounded-[5px] border border-[#C9DCCF] bg-white px-4 text-[12px] font-extrabold text-[#33473E] hover:bg-[#F0F8F3]"
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            data-ctrl-a
+            disabled={busy || !sel.length}
+            onClick={() => void pay()}
+            className="flex h-9 items-center gap-1.5 rounded-[5px] bg-[#0B3D2E] px-5 text-[12px] font-extrabold text-[#C7F03F] hover:bg-[#0F4A38] disabled:opacity-50"
+          >
+            {busy && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
+            Pay {sel.length ? `${formatINR(tot.net)} · ${sel.length} bill${sel.length === 1 ? '' : 's'}` : ''}
+          </button>
+        </div>
+      </DialogContent>
+    </Dialog>
+  )
+}
