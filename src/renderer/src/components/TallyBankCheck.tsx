@@ -911,7 +911,9 @@ ${pairs.map((x) => String(x.own?.code || '')).join(', ')} stay, and match Tally'
             )}
           </div>
         </div>
-        {res && (
+        {/* The bank's own statement upload is withdrawn; a statement already
+            attached still shows, so it can be removed. */}
+        {res?.statement && (
           <div className="flex flex-wrap items-center gap-3 border-t border-[#E4ECE3] bg-[#FBFCFA] px-4 py-2.5">
             <input
               ref={stmtRef}
@@ -938,22 +940,7 @@ ${pairs.map((x) => String(x.own?.code || '')).join(', ')} stay, and match Tally'
                   <X className="h-3.5 w-3.5" /> Remove
                 </button>
               </>
-            ) : (
-              <>
-                <span className="text-[12px] font-bold text-[#0A1F17]">Add the bank&rsquo;s own statement (optional)</span>
-                <span className="text-[11px] font-semibold text-[#5A6B62]">
-                  The bank&rsquo;s .xlsx or .csv — it settles which side is right when Tally and these books disagree, and shows what neither has.
-                </span>
-                <button
-                  type="button"
-                  disabled={busy}
-                  onClick={() => stmtRef.current?.click()}
-                  className="ml-auto flex h-8 items-center gap-1.5 rounded-[4px] border border-[#DCCDF0] bg-white px-3 text-[11.5px] font-extrabold text-[#6B3FA0] hover:bg-[#F3EEFA]"
-                >
-                  <Upload className="h-3.5 w-3.5" /> Upload statement
-                </button>
-              </>
-            )}
+            ) : null}
           </div>
         )}
         {res?.bank_mismatch && (

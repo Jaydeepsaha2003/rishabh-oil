@@ -13,7 +13,7 @@
 // login will actually do. The grid states what is TICKED; the rail states what
 // that MEANS, and the two being side by side is what stops a well-meaning row
 // of ticks from handing the weighbridge the ledger.
-import React, { useCallback, useEffect, useMemo, useState } from 'react'
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   Anchor,
   ArrowLeft,
@@ -468,6 +468,21 @@ export function UserAccess(): React.JSX.Element {
       setSaving(false)
     }
   }
+  // CTRL+A SAVES the open login, Tally's Accept — as on every voucher.
+  const saveRef = useRef(save)
+  saveRef.current = save
+  useEffect(() => {
+    if (view !== 'form') return
+    const onKey = (e: KeyboardEvent): void => {
+      if (!(e.ctrlKey || e.metaKey) || e.altKey || e.shiftKey || e.code !== 'KeyA') return
+      // A window open over the form (a picker, a confirm) keeps the key.
+      if (document.querySelector('[role="dialog"],[role="alertdialog"],[role="listbox"],[role="menu"]')) return
+      e.preventDefault()
+      if (!saving) void saveRef.current()
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [view, saving])
 
   async function del(row: Row): Promise<void> {
     if (!window.confirm(`Delete the login "${row.username}"? Their access goes with it.`)) return
