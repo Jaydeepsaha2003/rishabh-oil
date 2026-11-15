@@ -1313,7 +1313,13 @@ function AllocPanel({
                   value={a.method}
                   onValueChange={(v) => set(j, { method: v as AllocRow['method'], ref_name: autoRef(v as AllocRow['method'], j), order_id: null, sale_invoice_group: null })}
                 >
-                  <SelectTrigger className="h-8 rounded-[5px] border-[#E3C98C] bg-white px-[9px] text-left text-[11.5px] font-extrabold normal-case text-[#6B4200] shadow-none">
+                  <SelectTrigger
+                    className={cn(
+                      'h-8 rounded-[5px] px-[9px] text-left text-[11.5px] font-extrabold normal-case shadow-none',
+                      // Agst Ref in its own colour, so a settlement reads apart from a new bill.
+                      a.method === 'agst_ref' ? 'border-[#B9D3F0] bg-[#EAF2FC] text-[#1B4E82]' : 'border-[#E3C98C] bg-white text-[#6B4200]'
+                    )}
+                  >
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
@@ -1431,7 +1437,7 @@ function AllocPanel({
         <Fragment key={j}>
         <div className="mb-1 grid grid-cols-[120px_1fr_120px_24px] items-center gap-1.5">
           <Select value={a.method} onValueChange={(v) => set(j, { method: v as AllocRow['method'], ref_name: autoRef(v as AllocRow['method'], j), order_id: null, sale_invoice_group: null })}>
-            <SelectTrigger className="h-7 bg-white text-[12px]"><SelectValue /></SelectTrigger>
+            <SelectTrigger className={cn('h-7 text-[12px]', a.method === 'agst_ref' ? 'border-[#B9D3F0] bg-[#EAF2FC] font-extrabold text-[#1B4E82]' : 'bg-white')}><SelectValue /></SelectTrigger>
             <SelectContent>
               {METHODS.map((m) => <SelectItem key={m.key} value={m.key}>{m.label}</SelectItem>)}
             </SelectContent>
@@ -1829,6 +1835,14 @@ function AccountPicker({
 // line above / below, and wrap from the last line to the first; ← → go to the
 // field before / after on the line (from a box only when the caret is at its
 // edge), wrapping too. Inside an open ledger list the list has the arrows.
+// AGST REF STANDS OUT in a ledger's Ref column: money set against a bill, in
+// its own blue, apart from the bills and advances that are raised.
+function refKindStyle(kind: unknown): React.CSSProperties {
+  return /agst\s*ref/i.test(String(kind || ''))
+    ? { color: '#1B4E82', background: '#EAF2FC', borderRadius: 2, padding: '0 4px', display: 'inline-block', maxWidth: '100%' }
+    : { color: '#5A6B62' }
+}
+
 function gridArrows(e: React.KeyboardEvent<HTMLElement>): void {
   const t = e.target as HTMLElement
   // ENTER IN A BOX GOES TO THE NEXT FIELD down the voucher, Tally's way — the
@@ -17453,6 +17467,8 @@ Delete ${doc}?`)) return
       { key: 'date', get: (r) => formatDate(r.entry_date), sort: 'num' },
       { key: 'type', get: (r) => (r.vch_subtype ? `${r.vch_type} · ${r.vch_subtype}` : r.vch_type) },
       { key: 'voucher', get: (r) => r.voucher_code || r.vch_no },
+      // Where it came from — the Auto / Tally / Manual chip under the number.
+      { key: 'origin', get: (r) => (r.provisional ? 'Provisional' : r.origin === 'auto' ? 'Auto' : r.origin === 'tally' ? 'Tally' : 'Manual') },
       { key: 'particulars', get: (r) => r.particulars },
       { key: 'ref', get: (r) => lineRef(r)?.full },
       { key: 'dr', get: (r) => (Number(r.dr) > 0 ? formatINR(Number(r.dr)) : ''), sort: 'num' },
@@ -17898,7 +17914,7 @@ Delete ${doc}?`)) return
     // Type wide enough for the longest voucher type ("PURCHASE HUSK"), so
     // its chip never runs into the voucher number beside it.
     // Particulars straight after the date, then what kind of voucher it is.
-    const V_GRID = `128px minmax(160px,1fr) 140px 108px 116px 122px 122px${lgReco ? ' 150px' : ''}${lgHideBal ? '' : ' 148px'}`
+    const V_GRID = `128px minmax(160px,1fr) 140px 150px 116px 122px 122px${lgReco ? ' 150px' : ''}${lgHideBal ? '' : ' 148px'}`
     // Reco: what the bank has not shown yet (no bank date), and so its balance.
     const recoLeft = vRows.filter((r) => !r.provisional && !r.value_date)
     const recoDr = recoLeft.reduce((t, r) => t + (Number(r.dr) || 0), 0)
@@ -17946,7 +17962,11 @@ Delete ${doc}?`)) return
           <span style={{ padding: '0 14px' }}>{lgCf.head('date', 'Date', { onDark: true })}</span>
           <span style={{ padding: '0 8px' }}>{lgCf.head('particulars', 'Particulars', { onDark: true })}</span>
           <span style={{ padding: '0 8px' }}>{lgCf.head('type', 'Type', { onDark: true })}</span>
-          <span style={{ padding: '0 8px' }}>{lgCf.head('voucher', 'Voucher', { onDark: true })}</span>
+          <span className="flex items-center gap-1.5" style={{ padding: '0 8px' }}>
+            {lgCf.head('voucher', 'Voucher', { onDark: true })}
+            <span style={{ opacity: 0.5 }}>·</span>
+            {lgCf.head('origin', 'Src', { onDark: true })}
+          </span>
           <span style={{ padding: '0 8px' }}>{lgCf.head('ref', 'Ref', { onDark: true })}</span>
           <span style={{ padding: '0 12px', display: 'flex', justifyContent: 'flex-end' }}>{lgCf.head('dr', 'Debit', { onDark: true, align: 'end' })}</span>
           <span style={{ padding: '0 12px', display: 'flex', justifyContent: 'flex-end' }}>{lgCf.head('cr', 'Credit', { onDark: true, align: 'end' })}</span>
@@ -18163,7 +18183,7 @@ Delete ${doc}?`)) return
                       <span className="block truncate" title={String(ref.no)} style={{ ...figS(11, A.link), textDecoration: 'underline', textUnderlineOffset: 2, direction: 'rtl', textAlign: 'left' }}>
                         <bdi>{ref.no}</bdi>
                       </span>
-                      <span className="block truncate" style={{ fontSize: 9, fontWeight: 800, letterSpacing: '.07em', textTransform: 'uppercase', color: A.muted, marginTop: 1 }}>
+                      <span className="block truncate" style={{ fontSize: 9, fontWeight: 800, letterSpacing: '.07em', textTransform: 'uppercase', marginTop: 1, ...refKindStyle(ref.kind) }}>
                         {ref.kind}
                       </span>
                     </button>
@@ -18172,7 +18192,7 @@ Delete ${doc}?`)) return
                       <span className="block truncate" style={{ ...figS(11, A.muted, 600), direction: 'rtl', textAlign: 'left' }}>
                         <bdi>{ref.no}</bdi>
                       </span>
-                      <span className="block truncate" style={{ fontSize: 9, fontWeight: 800, letterSpacing: '.07em', textTransform: 'uppercase', color: A.muted, marginTop: 1 }}>
+                      <span className="block truncate" style={{ fontSize: 9, fontWeight: 800, letterSpacing: '.07em', textTransform: 'uppercase', marginTop: 1, ...refKindStyle(ref.kind) }}>
                         {ref.kind}
                       </span>
                     </span>
