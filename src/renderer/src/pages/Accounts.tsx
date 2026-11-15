@@ -2408,6 +2408,15 @@ export function Accounts({
   // day each one went through the bank (journal_entries.value_date) — and the
   // books-to-bank figures above it.
   const [lgReco, setLgReco] = useState(false)
+  // The ledger's vouchers tagged Reco — the cheques still to reconcile — read
+  // only while Reco is on, so it lists those and not the whole ledger.
+  const lgRecoTags = useTagMap(
+    'voucher',
+    useMemo(() => (lgReco ? Array.from(new Set(ledgerLines.map((l) => Number(l.entry_id ?? l.id)))).filter(Boolean) : []), [ledgerLines, lgReco]),
+    cid || undefined
+  )
+  const lgRecoOn = (r: Row): boolean =>
+    lgRecoTags.tagsOf(Number(r.entry_id ?? r.id)).some((t) => String(t.name || '').trim().toUpperCase() === 'RECO')
   const [lgFQuery, setLgFQuery] = useState('')
   const [lgFTypes, setLgFTypes] = useState<string[]>([])
   // Tanker empty: leave out purchase bills whose tankers are not all emptied.
@@ -17434,7 +17443,11 @@ Delete ${doc}?`)) return
       })
     const hiddenSet = new Set(lgHidden)
     const toolbarOk = (r: Row): boolean =>
-      !hiddenSet.has(Number(r.id)) && (!fTypes.length || fTypes.includes(typeOf(r))) && (!fq || rowText(r).includes(fq) || amountHit(r))
+      !hiddenSet.has(Number(r.id)) &&
+      (!fTypes.length || fTypes.includes(typeOf(r))) &&
+      (!fq || rowText(r).includes(fq) || amountHit(r)) &&
+      // Reco on: only the vouchers tagged Reco.
+      (!lgReco || lgRecoOn(r))
     // The column funnels, offered from what the chips and search leave.
     const lgCf = colFilter<Row>(colF, 'ledger:vouchers', allRows.filter(toolbarOk), [
       { key: 'date', get: (r) => formatDate(r.entry_date), sort: 'num' },
@@ -17448,7 +17461,7 @@ Delete ${doc}?`)) return
     ])
     const lgShown = new Set(lgCf.rows)
     const keep = allRows.map((r) => lgShown.has(r))
-    const filtering = fTypes.length > 0 || !!fq || lgCf.active > 0 || lgHidden.length > 0
+    const filtering = fTypes.length > 0 || !!fq || lgCf.active > 0 || lgHidden.length > 0 || lgReco
     // In the funnels' order — date order, or the column clicked to sort by.
     const vRows = lgCf.rows
     const canFilter = lgView === 'vouchers' || (lgView === 'columnar' && !lgCondensed)
@@ -17894,8 +17907,13 @@ Delete ${doc}?`)) return
       const eid = Number(r.entry_id ?? r.id)
       void window.api.vouchers
         .setValueDate(eid, d || null)
-        .then(() => {
-          toast.success(d ? `Bank date ${formatDate(d)} set` : 'Bank date cleared')
+        .then(async () => {
+          // As in the Day Book: a bank date means the bank has it — Reco comes
+          // off, and the voucher leaves this list of ones still to reconcile.
+          if (d) await applyReco(eid, false).catch(() => toast.error('Bank date saved, but Reco could not be turned off'))
+          toast.success(d ? `Bank date ${formatDate(d)} set — reconciled` : 'Bank date cleared')
+          lgRecoTags.reload()
+          vchTags.reload()
           void loadLedger()
         })
         .catch((e) => toast.error((e as Error).message.replace(/^Error invoking remote method '[^']+': (Error: )?/, '')))
@@ -17917,7 +17935,9 @@ Delete ${doc}?`)) return
             <span style={{ fontSize: 11.5, fontWeight: 700, color: '#33473E' }}>
               Balance as per bank <b style={figS(12, balFg(lgClosing - recoDr + recoCr))}>{bal(lgClosing - recoDr + recoCr)}</b>
             </span>
-            <span style={{ fontSize: 10.5, fontWeight: 600, color: A.muted }}>Type a bank date on each voucher; Enter or leaving the box saves it.</span>
+            <span style={{ fontSize: 10.5, fontWeight: 600, color: A.muted }}>
+              Only the vouchers tagged Reco ({vRows.length}). Type the bank date on each — Enter or leaving the box saves it and takes it off the list.
+            </span>
           </div>
         )}
         {/* The highlighted row, as Tally draws it: a lit bar down its edge. */}
@@ -18209,7 +18229,9 @@ Delete ${doc}?`)) return
         })}
         {vRows.length === 0 && (
           <div style={{ padding: '30px 16px', textAlign: 'center', fontSize: 12, fontWeight: 600, color: A.muted }}>
-            {allRows.length === 0
+            {lgReco && allRows.length > 0
+              ? 'No voucher on this ledger is tagged Reco — nothing left to reconcile. Alt+R shows them all again.'
+              : allRows.length === 0
               ? 'Nothing posted to this ledger in the period — the opening carries straight through.'
               : `No voucher matches${fq ? ` “${lgFQuery.trim()}”` : ''}${fq && fTypes.length ? ' in' : ''}${fTypes.length ? ` ${fTypes.map((t) => t.toLowerCase()).join(', ')}` : ''}.`}
           </div>
