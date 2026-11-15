@@ -1849,16 +1849,13 @@ function gridArrows(e: React.KeyboardEvent<HTMLElement>): void {
   }
   if (!['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(e.key) || e.altKey || e.ctrlKey || e.metaKey || e.shiftKey) return
   if (t.closest('[cmdk-root],[role="listbox"],[role="menu"],[data-radix-popper-content-wrapper]')) return
-  const row = t.closest('[data-vrow]')
-  if (!row) return
   const fields = (r: Element): HTMLElement[] =>
     Array.from(r.querySelectorAll<HTMLElement>('button,input,select,textarea')).filter(
-      (x) => !x.hasAttribute('disabled') && x.tabIndex >= 0 && x.offsetParent !== null
+      (x) => !x.hasAttribute('disabled') && x.tabIndex >= 0 && x.offsetParent !== null && (x as HTMLInputElement).type !== 'checkbox'
     )
-  const mine = fields(row)
-  const at = mine.indexOf(t)
-  if (at < 0) return
   const isBox = t instanceof HTMLInputElement || t instanceof HTMLTextAreaElement
+  // A date box keeps ← → for its own day / month / year.
+  if (t instanceof HTMLInputElement && t.type === 'date') return
   if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
     if (isBox) {
       const box = t as HTMLInputElement
@@ -1867,9 +1864,10 @@ function gridArrows(e: React.KeyboardEvent<HTMLElement>): void {
       if (e.key === 'ArrowLeft' && (box.selectionStart ?? 0) > 0) return
       if (e.key === 'ArrowRight' && (box.selectionEnd ?? len) < len) return
     }
-    // → / ← walk the same order Enter does: on to the next line's fields, and
-    // round from the last field of the voucher to the first.
-    const all = Array.from((e.currentTarget as HTMLElement).querySelectorAll<HTMLElement>('[data-vrow]')).flatMap(fields)
+    // → / ← walk every field of the voucher in reading order — the head
+    // (number, date, reference), each line, its bill-wise and item boxes, the
+    // GST strip and the narration — round from the last to the first.
+    const all = fields(e.currentTarget as HTMLElement)
     const k = all.indexOf(t)
     if (k < 0) return
     e.preventDefault()
@@ -1878,6 +1876,11 @@ function gridArrows(e: React.KeyboardEvent<HTMLElement>): void {
     return
   }
   if (t instanceof HTMLTextAreaElement) return
+  // ↑ ↓ move between the voucher's lines only.
+  const row = t.closest('[data-vrow]')
+  if (!row) return
+  const at = fields(row).indexOf(t)
+  if (at < 0) return
   const rows = Array.from((e.currentTarget as HTMLElement).querySelectorAll('[data-vrow]')).filter((r) => fields(r).length)
   const ri = rows.indexOf(row)
   if (ri < 0 || rows.length < 2) return
@@ -14778,6 +14781,8 @@ Delete ${doc}?`)) return
 
             <div
               className="flex flex-none flex-col gap-3.5"
+              // ← → (and Enter) walk every field of the voucher, not only its lines.
+              onKeyDown={gridArrows}
               // Nothing inside a viewed voucher takes a click — except its
               // bill-wise panels, which are saved on their own (Save bill-wise).
               // `inert` would lock those too, and no child can undo it.
@@ -14905,7 +14910,7 @@ Delete ${doc}?`)) return
               </div>
 
               <div className="sc-x" style={{ ...card, overflowX: 'auto', overflowY: 'hidden' }}>
-                <div style={{ minWidth: 780 }} onKeyDown={gridArrows}>
+                <div style={{ minWidth: 780 }}>
                   <div
                     className="grid items-center"
                     style={{
