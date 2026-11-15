@@ -2395,32 +2395,37 @@ function SalesTab({
                       className={unloadOnly || tdsOnly ? undefined : 'cursor-pointer'}
                       onClick={unloadOnly || tdsOnly ? undefined : () => setExpanded((p) => ({ ...p, [inv.group]: !p[inv.group] }))}
                     >
+                      {/* DATE / INVOICE: the date, the number in its own box,
+                          then one line of chips — the TDS and the tags. */}
                       <TableCell className="align-top">
-                        <div className="flex items-center gap-1.5">
-                          {unloadOnly || tdsOnly ? null : isOpen ? <ChevronDown className="h-3.5 w-3.5 text-muted-foreground" /> : <ChevronRight className="h-3.5 w-3.5 text-muted-foreground" />}
-                          <div>
-                            <div className={cn('flex items-center gap-1.5 whitespace-nowrap', __WEB__ && 'text-[14px] font-semibold')}>
-                              {formatDate(inv.first.sale_date)}
-                              {inv.first.rejected_at && (
-                                <Badge variant="destructive" className="gap-1 px-1.5 py-0 text-[10px]">
-                                  <Ban className="h-2.5 w-2.5" /> Rejected
-                                </Badge>
-                              )}
+                        <div className="flex items-start gap-1.5">
+                          <span className="mt-[3px] w-3.5 flex-none">
+                            {unloadOnly || tdsOnly ? null : isOpen ? <ChevronDown className="h-3.5 w-3.5 text-muted-foreground" /> : <ChevronRight className="h-3.5 w-3.5 text-muted-foreground" />}
+                          </span>
+                          <div className="min-w-0">
+                            <div className={cn('whitespace-nowrap', __WEB__ && 'text-[14px] font-bold tracking-[-0.01em] text-[#0A1F17]')}>{formatDate(inv.first.sale_date)}</div>
+                            <div className="mt-1">
+                              <span
+                                className={cn(
+                                  'doc-ref inline-block max-w-full truncate rounded-[3px] border border-[#DCE7DB] bg-[#F4F7F2] px-1.5 py-px text-xs text-muted-foreground',
+                                  __WEB__ && 'text-[12px] font-bold text-[#33473E]'
+                                )}
+                                title={String(inv.first.invoice_no || '')}
+                              >
+                                {inv.first.invoice_no || '—'}
+                              </span>
                             </div>
-                            <div className={cn('flex items-center gap-1.5 truncate text-xs text-muted-foreground', __WEB__ && 'text-[12.5px] text-[#7C9188]')}>
-                              {inv.first.invoice_no || '—'}
+                            <div className="mt-1.5 flex flex-wrap items-center gap-1.5" onClick={(e) => e.stopPropagation()}>
                               {tdsOf(inv.first) && (
                                 <button
                                   type="button"
-                                  title={`TDS ${formatINR(Number(tdsOf(inv.first)?.amount))} — Journal ${tdsOf(inv.first)?.vch_no || ''} to ${tdsOf(inv.first)?.ledger}`}
-                                  onClick={(e) => {
-                                    e.stopPropagation()
-                                    setTdsAsk({ id: Number(inv.first.id), afterSave: false })
-                                  }}
-                                  className="rounded-[3px] border border-[#E3C58C] bg-[#FFF6E5] px-1 text-[10px] font-semibold text-[#9A5A06]"
+                                  title={`TDS ${formatINR(Number(tdsOf(inv.first)?.amount))} — Journal ${tdsOf(inv.first)?.vch_no || ''} to ${tdsOf(inv.first)?.ledger}${tdsOf(inv.first)?.edited ? ' · typed, not the slab figure' : ''}`}
+                                  onClick={() => setTdsAsk({ id: Number(inv.first.id), afterSave: false })}
+                                  className="inline-flex items-stretch overflow-hidden rounded-[3px] border border-[#E3C58C] text-[10.5px] font-bold leading-[18px] hover:border-[#C2700A]"
                                 >
-                                  TDS {formatINR(Number(tdsOf(inv.first)?.amount))}
-                                  {tdsOf(inv.first)?.edited ? ' · edited' : ''}
+                                  <span className="bg-[#9A5A06] px-1.5 text-[9.5px] font-extrabold uppercase tracking-[.06em] text-white">TDS</span>
+                                  <span className="bg-[#FFF6E5] px-1.5 tabular-nums text-[#7A4A05]">{formatINR(Number(tdsOf(inv.first)?.amount))}</span>
+                                  {tdsOf(inv.first)?.edited && <span className="border-l border-[#E3C58C] bg-white px-1 text-[9.5px] text-[#9A5A06]">edited</span>}
                                 </button>
                               )}
                               {/* A customer who deducts TDS, and none booked on this invoice yet. */}
@@ -2430,19 +2435,13 @@ function SalesTab({
                                   <button
                                     type="button"
                                     title="No TDS booked on this invoice yet — click to enter what the customer deducted"
-                                    onClick={(e) => {
-                                      e.stopPropagation()
-                                      setTdsAsk({ id: Number(inv.first.id), afterSave: false })
-                                    }}
-                                    className="rounded-[3px] border border-dashed border-rose-300 bg-white px-1 text-[10px] font-semibold text-rose-700 hover:bg-rose-50"
+                                    onClick={() => setTdsAsk({ id: Number(inv.first.id), afterSave: false })}
+                                    className="rounded-[3px] border border-dashed border-rose-300 bg-white px-1.5 text-[10.5px] font-bold leading-[18px] text-rose-700 hover:bg-rose-50"
                                   >
                                     No TDS
                                   </button>
                                 )}
-                            </div>
-                            {/* Stops the row's own click, which expands the
-                                invoice — tagging it is not opening it. */}
-                            <div className="mt-1" onClick={(e) => e.stopPropagation()}>
+                              {/* Tagging it is not opening it, so the row's click stops here. */}
                               <TagPicker
                                 entity="sale"
                                 refId={String(inv.group)}
@@ -2454,43 +2453,53 @@ function SalesTab({
                           </div>
                         </div>
                       </TableCell>
+                      {/* CUSTOMER: the name, then one row of badges about the bill. */}
                       <TableCell className="align-top">
-                        <div className={cn('truncate font-medium', __WEB__ && 'text-[14.5px] font-bold tracking-[-0.015em]')} title={inv.first.customer || ''}>{inv.first.customer || '—'}</div>
-                        {!!inv.first.return_supplier_id && (
-                          <div
-                            className="mt-1 inline-flex rounded-[3px] border border-[#F1D9A6] bg-[#FFF8E9] px-1.5 py-px text-[10.5px] font-bold text-[#8A5300]"
-                            title="Billed to a supplier as a purchase return — it comes off what we owe them"
-                          >
-                            Purchase return
-                          </div>
-                        )}
-                        {/* Raised by itself when a trading tanker was emptied — which one. */}
-                        {inv.first.onward_from &&
-                          (() => {
-                            const [tk, pur, sup, emptied, qty, orderId, orderCo] = String(inv.first.onward_from).split('|')
-                            const go = onOpenOrder && Number(orderId) ? (): void => onOpenOrder(Number(orderId), Number(orderCo) || undefined) : null
-                            return (
-                              <button
-                                type="button"
-                                disabled={!go}
-                                onClick={(e) => {
-                                  e.stopPropagation()
-                                  go?.()
-                                }}
-                                className="mt-1 inline-flex max-w-full items-center gap-1 truncate rounded-[3px] border border-[#C6DAF0] bg-[#F4F8FD] px-1.5 py-px text-[10.5px] font-bold text-[#1B4E82] enabled:hover:border-[#1B4E82] enabled:hover:bg-[#EAF0FA]"
-                                title={`Raised automatically when tanker ${tk} was emptied${emptied ? ` on ${formatDate(emptied)}` : ''}${qty ? ` (${qty} MT received)` : ''} — purchase ${pur || '—'}${sup ? ` from ${sup}` : ''}. Taking the tanker back from Empty removes this sale.${go ? ' Click to open the purchase.' : ''}`}
+                        <div className={cn('truncate font-medium', __WEB__ && 'text-[14.5px] font-bold tracking-[-0.015em] text-[#0A1F17]')} title={inv.first.customer || ''}>
+                          {inv.first.customer || '—'}
+                        </div>
+                        {(!!inv.first.return_supplier_id || !!inv.first.onward_from || !!inv.first.rejected_at) && (
+                          <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
+                            {inv.first.rejected_at && (
+                              <span
+                                className="inline-flex items-center gap-1 rounded-[3px] border border-[#F0C9C4] bg-[#FDECEA] px-1.5 text-[10.5px] font-bold leading-[18px] text-[#B3261E]"
+                                title={inv.first.rejected_reason || ''}
                               >
-                                <Truck className="h-3 w-3 flex-none" />
-                                <span className="truncate">
-                                  {tk}
-                                  {pur ? ` · ${pur}` : ''}
-                                </span>
-                              </button>
-                            )
-                          })()}
-                        {inv.first.rejected_at && (
-                          <div className="mt-0.5 flex items-center gap-1 text-[11px] text-rose-700" title={inv.first.rejected_reason || ''}>
-                            <Ban className="h-3 w-3 shrink-0" /> <span className="truncate">{inv.first.rejected_reason}</span>
+                                <Ban className="h-3 w-3 shrink-0" /> Rejected{inv.first.rejected_reason ? ` · ${String(inv.first.rejected_reason)}` : ''}
+                              </span>
+                            )}
+                            {!!inv.first.return_supplier_id && (
+                              <span
+                                className="inline-flex items-center rounded-[3px] border border-[#F1D9A6] bg-[#FFF8E9] px-1.5 text-[10.5px] font-bold leading-[18px] text-[#8A5300]"
+                                title="Billed to a supplier as a purchase return — it comes off what we owe them"
+                              >
+                                Purchase return
+                              </span>
+                            )}
+                            {/* Raised by itself when a trading tanker was emptied — which one. */}
+                            {inv.first.onward_from &&
+                              (() => {
+                                const [tk, pur, sup, emptied, qty, orderId, orderCo] = String(inv.first.onward_from).split('|')
+                                const go = onOpenOrder && Number(orderId) ? (): void => onOpenOrder(Number(orderId), Number(orderCo) || undefined) : null
+                                return (
+                                  <button
+                                    type="button"
+                                    disabled={!go}
+                                    onClick={(e) => {
+                                      e.stopPropagation()
+                                      go?.()
+                                    }}
+                                    className="inline-flex max-w-full items-center gap-1 truncate rounded-[3px] border border-[#C6DAF0] bg-[#F4F8FD] px-1.5 text-[10.5px] font-bold leading-[18px] text-[#1B4E82] enabled:hover:border-[#1B4E82] enabled:hover:bg-[#EAF0FA]"
+                                    title={`Raised automatically when tanker ${tk} was emptied${emptied ? ` on ${formatDate(emptied)}` : ''}${qty ? ` (${qty} MT received)` : ''} — purchase ${pur || '—'}${sup ? ` from ${sup}` : ''}. Taking the tanker back from Empty removes this sale.${go ? ' Click to open the purchase.' : ''}`}
+                                  >
+                                    <Truck className="h-3 w-3 flex-none" />
+                                    <span className="truncate">
+                                      {tk}
+                                      {pur ? ` · ${pur}` : ''}
+                                    </span>
+                                  </button>
+                                )
+                              })()}
                           </div>
                         )}
                       </TableCell>
