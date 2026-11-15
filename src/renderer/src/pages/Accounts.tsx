@@ -3231,7 +3231,10 @@ export function Accounts({
   // The caret belongs in the search box whenever the picker is up. Mount has to
   // settle first or it lands nowhere.
   useEffect(() => {
-    if (!lgPickerOpen) return
+    // Also on ARRIVING at Ledgers with the picker already up (it stays open
+    // between visits): the effect used to wait for the flag to change, so a
+    // second visit opened the list with the caret nowhere.
+    if (!lgPickerOpen || screen !== 'ledger') return
     // And the arrows start from the ledger that is open, not from the top.
     if (__WEB__) {
       const at = lgOrderRef.current.indexOf(Number(ledgerId))
@@ -3239,7 +3242,7 @@ export function Accounts({
     }
     return focusWhenReady(ledgerSearchRef)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [lgPickerOpen])
+  }, [lgPickerOpen, screen, company])
 
   // ARRIVING ON LEDGERS MEANS LOOKING FOR ONE.
   //
