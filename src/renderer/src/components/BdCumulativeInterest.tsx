@@ -32,6 +32,9 @@ export function BdCumulativeInterest({ open, onClose, nbfcs, onDone }: { open: b
   const [rows, setRows] = useState<Row[] | null>(null)
   const [picked, setPicked] = useState<Set<number>>(new Set())
   const [banks, setBanks] = useState<Row[]>([])
+  // The ledger the TDS goes to — blank keeps TDS ON INTEREST PAYABLE A/C.
+  const [tdsLedgers, setTdsLedgers] = useState<Row[]>([])
+  const [tdsLedger, setTdsLedger] = useState('')
   const [bank, setBank] = useState('')
   const [paidOn, setPaidOn] = useState(today)
   const [busy, setBusy] = useState(false)
@@ -49,7 +52,10 @@ export function BdCumulativeInterest({ open, onClose, nbfcs, onDone }: { open: b
     if (!open) return
     void window.api.journal
       .accountNames()
-      .then((a) => setBanks(a.filter((x) => ['Bank Accounts', 'Bank OD A/c'].includes(String(x.acc_group || '')))))
+      .then((a) => {
+        setBanks(a.filter((x) => ['Bank Accounts', 'Bank OD A/c'].includes(String(x.acc_group || ''))))
+        setTdsLedgers(a.filter((x) => /TDS/i.test(String(x.name || '')) && !/RECE|RECOV|RECIA|RECEV/i.test(String(x.name || ''))))
+      })
       .catch(() => setBanks([]))
   }, [open])
 
@@ -114,6 +120,7 @@ export function BdCumulativeInterest({ open, onClose, nbfcs, onDone }: { open: b
         paid_date: paidOn,
         bank_account: bank || null,
         bd_ids: sel.map((r) => n(r.bd_id)),
+        tds_ledger: tdsLedger || null,
         amounts: Object.fromEntries(sel.filter((r) => fig(r).edited).map((r) => [String(n(r.bd_id)), fig(r).gross]))
       })
       toast.success(`Interest on ${res.bills} bill${res.bills === 1 ? '' : 's'} paid to ${formatDate(upto)} — one voucher, ${formatINR(res.net)} out of the bank`)
@@ -371,7 +378,7 @@ export function BdCumulativeInterest({ open, onClose, nbfcs, onDone }: { open: b
 
         </div>
         <div className="flex flex-wrap items-end gap-3 border-t border-[#E4ECE3] bg-[#FBFCFA] px-5 py-3">
-          <div className="min-w-[260px] flex-1">
+          <div className="min-w-[240px] flex-1">
             <span className={lbl}>Paid from bank</span>
             <Select searchable value={bank} onValueChange={setBank}>
               <SelectTrigger>
@@ -379,6 +386,21 @@ export function BdCumulativeInterest({ open, onClose, nbfcs, onDone }: { open: b
               </SelectTrigger>
               <SelectContent className="max-h-64">
                 {banks.map((b) => (
+                  <SelectItem key={String(b.name)} value={String(b.name)}>
+                    {String(b.name)}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+          <div className="min-w-[240px] flex-1">
+            <span className={lbl}>TDS ledger</span>
+            <Select searchable value={tdsLedger} onValueChange={setTdsLedger}>
+              <SelectTrigger>
+                <SelectValue placeholder="TDS on interest payable (usual)" />
+              </SelectTrigger>
+              <SelectContent className="max-h-64">
+                {tdsLedgers.map((b) => (
                   <SelectItem key={String(b.name)} value={String(b.name)}>
                     {String(b.name)}
                   </SelectItem>

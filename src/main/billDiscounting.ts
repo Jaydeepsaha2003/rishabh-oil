@@ -3685,6 +3685,8 @@ export async function payBdCumulativeInterest(v: {
   // The interest actually paid on a bill, where it is not the worked-out
   // figure (the NBFC's statement says more or less). Keyed by bill id.
   amounts?: Record<string, number | string>
+  // The ledger the TDS goes to; blank keeps TDS ON INTEREST PAYABLE A/C.
+  tds_ledger?: string | null
   note?: string | null
 }): Promise<{ entry_id: number; bills: number; gross: number; tds: number; net: number }> {
   return withDbTransaction(async () => {
@@ -3719,6 +3721,10 @@ export async function payBdCumulativeInterest(v: {
     const first = rows[0].bd
     const bank = await bdBankFor(first, v.bank_account)
     const nos = rows.map((r) => String(r.bd.bd_no)).join(', ')
+    const tdsLedger = String(v.tds_ledger || '').trim() || 'TDS ON INTEREST PAYABLE A/C'
+    const tdsGroup = tdsLedger === 'TDS ON INTEREST PAYABLE A/C'
+      ? 'Duties & Taxes'
+      : String(((await getClient().execute({ sql: 'SELECT acc_group FROM ledger_accounts WHERE name = ?', args: [tdsLedger] })).rows[0] as Row | undefined)?.acc_group || 'Duties & Taxes')
     const je = await postJournal({
       date,
       vchType: 'PAYMENT',
@@ -3730,7 +3736,7 @@ export async function payBdCumulativeInterest(v: {
       companyId: n(first.company_id) || undefined,
       lines: [
         { account: 'INTEREST ON BILL DISCOUNTING A/C', group: 'Indirect Expenses', dr: gross },
-        ...(tds > 0.004 ? [{ account: 'TDS ON INTEREST PAYABLE A/C', group: 'Duties & Taxes', cr: tds }] : []),
+        ...(tds > 0.004 ? [{ account: tdsLedger, group: tdsGroup, cr: tds }] : []),
         { account: bank, group: 'Bank Accounts', cr: net }
       ]
     })
