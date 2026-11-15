@@ -651,18 +651,8 @@ function BdPartiesAndEntries({ bill }: { bill: Row }): React.JSX.Element | null 
 // ONE SERVICED-INTEREST PERIOD, opened to show how it is worked out: each
 // stretch of days at the principal still out then (a part repaid early makes
 // the later days cheaper — billDiscounting.ts bdInterestParts).
-// Splits saved on a period or one of its legs (a record only).
-const splitsOf = (x: Row, splits: Row[]): Row[] =>
-  splits.filter((sp) => String(sp.from_date) >= String(x.from_date).slice(0, 10) && String(sp.to_date) <= String(x.to_date).slice(0, 10))
-// Part k's interest across a period's saved splits; null when it has none.
-const partInterest = (mine: Row[], k: number): number | null =>
-  mine.length ? Math.round(mine.reduce((t, sp) => t + n(((sp.parts as Row[]) || [])[k]?.interest), 0) * 100) / 100 : null
-// Width of a Part / Total column when splits are shown column-wise.
-const SPLIT_COL = 'w-[112px] flex-none text-right'
-
-function ServicedRow({ x, bdId, splits = [], onSplits, cols = 0 }: { x: Row; bdId?: number; splits?: Row[]; onSplits?: () => void; cols?: number }): React.JSX.Element {
+function ServicedRow({ x }: { x: Row }): React.JSX.Element {
   const [open, setOpen] = useState(false)
-  const mine = splitsOf(x, splits)
   const [splitOpen, setSplitOpen] = useState(false)
   // A single leg (stretch) being split, from the + on its row.
   const [legSplit, setLegSplit] = useState<Row | null>(null)
@@ -704,16 +694,7 @@ function ServicedRow({ x, bdId, splits = [], onSplits, cols = 0 }: { x: Row; bdI
             )}
           </div>
         </div>
-        {/* SAVED SPLITS, COLUMN-WISE: each part's interest under its own head. */}
-        {Array.from({ length: cols }, (_, k) => {
-          const v = partInterest(mine, k)
-          return (
-            <span key={k} className={cn(SPLIT_COL, 'doc-ref whitespace-nowrap text-[12.5px] font-bold', v == null ? 'text-[#C3D2C6]' : 'text-[#0B6B45]')}>
-              {v == null ? '—' : formatINR(v)}
-            </span>
-          )
-        })}
-        <span className={cn('flex-none text-right', cols > 0 && SPLIT_COL)}>
+        <span className="flex-none text-right">
           <span className="doc-ref block whitespace-nowrap text-[13.5px] font-bold text-[#0A1F17]">{formatINR(n(x.gross))}</span>
           {x.mode === 'with_repayment' && x.paid_id && (
             <span className="doc-ref block whitespace-nowrap text-[10.5px] font-semibold text-[#0B6B45]">paid {formatINR(n(x.paid_gross))}</span>
@@ -731,108 +712,14 @@ function ServicedRow({ x, bdId, splits = [], onSplits, cols = 0 }: { x: Row; bdI
         <Plus className="h-3.5 w-3.5" />
       </button>
       </div>
-      {splitOpen && <PrincipalSplit x={x} bdId={bdId} onSaved={onSplits} onClose={() => setSplitOpen(false)} />}
+      {splitOpen && <PrincipalSplit x={x} onClose={() => setSplitOpen(false)} />}
       {legSplit && (
         <PrincipalSplit
           leg
-          bdId={bdId}
-          onSaved={onSplits}
           x={{ from_date: legSplit.from_date, to_date: legSplit.to_date, days: legSplit.days, principal: legSplit.principal, gross: legSplit.interest }}
           onClose={() => setLegSplit(null)}
         />
       )}
-      {/* THE SAVED SPLIT, IN THE SAME COLUMNS: each part under its Part head
-          (what it is above, its interest below), their sum under Total, and
-          the delete where the + sits. */}
-      {cols > 0 &&
-        mine.map((sp) => {
-          const pts = (sp.parts as Row[]) || []
-          const del = (): void => {
-            if (!confirm('Delete this saved split? It is a record only — nothing posted changes.')) return
-            void window.api.billDiscounting
-              .splitDelete(Number(sp.id))
-              .then(() => {
-                toast.success('Saved split deleted')
-                onSplits?.()
-              })
-              .catch((e) => toast.error((e as Error).message))
-          }
-          return (
-            <div key={String(sp.id)} className="flex items-center border-t border-dashed border-t-[#C6DAF0] bg-[#F4F8FD]">
-              <div className="flex min-w-0 flex-1 items-center gap-2.5 py-1.5 pl-3">
-                <span className="min-w-0 flex-1 pl-[27px]">
-                  <span className="block text-[9.5px] font-extrabold uppercase tracking-[.08em] text-[#1B4E82]">
-                    Saved split · {sp.mode === 'dates' ? 'by dates' : 'by amount'}
-                  </span>
-                  <span className="doc-ref block text-[10.5px] font-semibold text-[#5A6B62]">
-                    {formatDate(s(sp.from_date))} &rarr; {formatDate(s(sp.to_date))}
-                  </span>
-                </span>
-                {Array.from({ length: cols }, (_, k) => {
-                  const pt = pts[k]
-                  return (
-                    <span key={k} className={cn(SPLIT_COL, 'leading-tight')}>
-                      {pt ? (
-                        // Interest only; what the part is (principal or dates) is on hover.
-                        <span
-                          className="doc-ref block whitespace-nowrap text-[12px] font-bold text-[#0B6B45]"
-                          title={sp.mode === 'dates' ? s(pt.label) : `Principal ${formatINR(n(pt.value))}`}
-                        >
-                          {formatINR(n(pt.interest))}
-                        </span>
-                      ) : (
-                        <span className="text-[12px] text-[#C3D2C6]">—</span>
-                      )}
-                    </span>
-                  )
-                })}
-                <span className={cn(SPLIT_COL, 'doc-ref whitespace-nowrap text-[12px] font-bold text-[#1B4E82]')}>
-                  {formatINR(Math.round(pts.reduce((t, pt) => t + n(pt.interest), 0) * 100) / 100)}
-                </span>
-                <span className="w-4 flex-none" />
-              </div>
-              <button
-                type="button"
-                title="Delete this saved split"
-                aria-label="Delete this saved split"
-                onClick={del}
-                className="mx-2 flex h-[22px] w-[22px] flex-none items-center justify-center rounded-[3px] text-[#8C2F26] hover:bg-[#FDECEA]"
-              >
-                <X className="h-3.5 w-3.5" />
-              </button>
-            </div>
-          )
-        })}
-      {cols === 0 && mine.map((sp) => (
-        <div key={String(sp.id)} className="mx-3 mb-2 flex flex-wrap items-center gap-x-2 gap-y-1 rounded-[4px] border border-[#C6DAF0] bg-[#F4F8FD] px-3 py-1.5 text-[11.5px]">
-          <span className="text-[9.5px] font-extrabold uppercase tracking-[.08em] text-[#1B4E82]">
-            Saved split · {sp.mode === 'dates' ? 'by dates' : 'by amount'}
-          </span>
-          {((sp.parts as Row[]) || []).map((pt, k) => (
-            <span key={k} className="doc-ref rounded-[3px] bg-white px-1.5 py-0.5 font-semibold text-[#33473E]">
-              {String(pt.label)} · <b className="text-[#0B6B45]">{formatINR(Number(pt.interest) || 0)}</b>
-            </span>
-          ))}
-          <button
-            type="button"
-            title="Delete this saved split"
-            aria-label="Delete this saved split"
-            onClick={() => {
-              if (!confirm('Delete this saved split? It is a record only — nothing posted changes.')) return
-              void window.api.billDiscounting
-                .splitDelete(Number(sp.id))
-                .then(() => {
-                  toast.success('Saved split deleted')
-                  onSplits?.()
-                })
-                .catch((e) => toast.error((e as Error).message))
-            }}
-            className="ml-auto rounded-[3px] p-0.5 text-[#8C2F26] hover:bg-[#FDECEA]"
-          >
-            <X className="h-3.5 w-3.5" />
-          </button>
-        </div>
-      ))}
       {open && (
         <div className="mx-3 mb-3 overflow-hidden rounded-[4px] border border-[#E4ECE3] bg-[#FBFCFA]">
           <div className="grid grid-cols-[minmax(0,1fr)_auto_44px_auto_22px] gap-x-3 border-b border-[#E4ECE3] px-3 py-1.5 text-[9.5px] font-extrabold uppercase tracking-[.1em] text-[#5A6B62]">
@@ -884,8 +771,7 @@ function ServicedRow({ x, bdId, splits = [], onSplits, cols = 0 }: { x: Row; bdI
 // rata, so a part repaid early is cheaper the same way the whole is.
 // leg: one stretch at one principal (the + on a leg row), which can also be
 // split BY DATES - each leg's interest is its days' share, same principal.
-function PrincipalSplit({ x, onClose, leg = false, bdId, onSaved }: { x: Row; onClose: () => void; leg?: boolean; bdId?: number; onSaved?: () => void }): React.JSX.Element {
-  const [saving, setSaving] = useState(false)
+function PrincipalSplit({ x, onClose, leg = false }: { x: Row; onClose: () => void; leg?: boolean }): React.JSX.Element {
   const stretches = (Array.isArray(x.parts) ? x.parts : []) as Row[]
   const principal = n(stretches[0]?.principal ?? x.principal)
   const days = n(x.days)
@@ -1046,47 +932,16 @@ function PrincipalSplit({ x, onClose, leg = false, bdId, onSaved }: { x: Row; on
             </div>
           )}
         </div>
-        {!!bdId && (
-          <div className="flex items-center gap-3 border-t border-[#E4ECE3] bg-[#FBFCFA] px-5 py-3">
-            <span className="flex-1 text-[11px] font-semibold leading-snug text-[#5A6B62]">Kept on the bill as a record — no voucher, the interest due is unchanged.</span>
-            <button
-              type="button"
-              onClick={onClose}
-              className="h-9 whitespace-nowrap rounded-[5px] border border-[#C9DCCF] bg-white px-4 text-[12px] font-extrabold text-[#33473E] hover:bg-[#F0F8F3]"
-            >
-              Cancel
-            </button>
-            <button
-              type="button"
-              disabled={saving || last <= 0 || vals.some((v) => !(v > 0))}
-              onClick={() => {
-                setSaving(true)
-                void window.api.billDiscounting
-                  .splitSave({
-                    bd_id: bdId,
-                    from_date: String(x.from_date).slice(0, 10),
-                    to_date: String(x.to_date).slice(0, 10),
-                    mode: byDates ? 'dates' : 'amount',
-                    parts: vals.map((v, i) => ({
-                      label: byDates ? legRange(i) : `Part ${i + 1} ${formatINR(v)}`,
-                      value: v,
-                      interest: share(v)
-                    }))
-                  })
-                  .then(() => {
-                    toast.success('Split saved on the bill')
-                    onSaved?.()
-                    onClose()
-                  })
-                  .catch((e) => toast.error((e as Error).message))
-                  .finally(() => setSaving(false))
-              }}
-              className="h-9 whitespace-nowrap rounded-[5px] bg-[#0B3D2E] px-5 text-[12px] font-extrabold text-white hover:bg-[#0B6B45] disabled:opacity-50"
-            >
-              {saving ? 'Saving…' : 'Save split'}
-            </button>
-          </div>
-        )}
+        <div className="flex items-center gap-3 border-t border-[#E4ECE3] bg-[#FBFCFA] px-5 py-3">
+          <span className="flex-1 text-[11px] font-semibold leading-snug text-[#5A6B62]">A calculator — nothing is saved, the interest due is unchanged.</span>
+          <button
+            type="button"
+            onClick={onClose}
+            className="h-9 whitespace-nowrap rounded-[5px] bg-[#0B3D2E] px-5 text-[12px] font-extrabold text-white hover:bg-[#0B6B45]"
+          >
+            Close
+          </button>
+        </div>
       </DialogContent>
     </Dialog>
   )
@@ -1120,17 +975,6 @@ export function BdDetail({
   // A repayment being edited (BdRepaymentEdit).
   const [editRep, setEditRep] = useState<Row | null>(null)
   const [fixingTds, setFixingTds] = useState(false)
-  // Interest splits saved on this bill (the + on a period) — a record only.
-  const [splits, setSplits] = useState<Row[]>([])
-  const billId = Number(bill?.id) || 0
-  const loadSplits = (): void => {
-    if (!billId) return setSplits([])
-    void window.api.billDiscounting.splits(billId).then(setSplits).catch(() => setSplits([]))
-  }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  useEffect(loadSplits, [billId])
-  // How many Part columns the interest list needs: the most parts any saved split has.
-  const splitCols = splits.reduce((m, sp) => Math.max(m, ((sp.parts as Row[]) || []).length), 0)
   // DELETE ONE REPAYMENT. Its voucher goes with it; one bank debit that also
   // cleared other bills goes as a whole (the bank was debited once), so the
   // question names every bill it takes off.
@@ -1627,55 +1471,14 @@ This was one bank debit that also cleared ${others.map((g) => `${s(g.bd_no)} ${f
                       {servicedPaid} of {sched.length} paid
                     </span>
                   </div>
-                  {/* Part 1 / Part 2 (/ Part 3) / Total heads, once a split is saved. */}
-                  {splitCols > 0 && (
-                    <div className="flex items-center border-b border-b-[#E4ECE3] bg-[#FBFCFA]">
-                      <div className="flex min-w-0 flex-1 items-center gap-2.5 py-1.5 pl-3 text-[9.5px] font-extrabold uppercase tracking-[.1em] text-[#5A6B62]">
-                        <span className="flex-1">Period</span>
-                        {Array.from({ length: splitCols }, (_, k) => (
-                          <span key={k} className={SPLIT_COL}>
-                            Part {k + 1}
-                          </span>
-                        ))}
-                        <span className={SPLIT_COL}>Total</span>
-                        <span className="w-4 flex-none" />
-                      </div>
-                      <span className="mx-2 w-[22px] flex-none" />
-                    </div>
-                  )}
                   {sched.slice(0, 8).map((x, i) => (
-                    <ServicedRow key={i} x={x} bdId={billId || undefined} splits={splits} onSplits={loadSplits} cols={splitCols} />
+                    <ServicedRow key={i} x={x} />
                   ))}
                   {/* TOTAL BD INTEREST over every period (not just the 8 shown), paid and still due. */}
                   {!withRepay && (() => {
                     const total = round2(sched.reduce((t, x) => t + n(x.gross), 0))
                     const paid = round2(sched.reduce((t, x) => t + (x.paid_id ? n(x.paid_gross || x.gross) : 0), 0))
                     const due = round2(sched.reduce((t, x) => t + (x.paid_id ? 0 : n(x.gross)), 0))
-                    if (splitCols > 0) {
-                      // Column totals, and how much of the interest was split and how much was not.
-                      const splitGross = round2(sched.reduce((t, x) => t + (splitsOf(x, splits).length ? n(x.gross) : 0), 0))
-                      return (
-                        <div className="flex items-center border-t-[1.5px] border-t-[#C9DCCF] bg-[#F7FAF6]">
-                          <div className="flex min-w-0 flex-1 items-center gap-2.5 py-[10px] pl-3">
-                            <span className="min-w-0 flex-1">
-                              <span className="block text-[10.5px] font-extrabold uppercase tracking-[.12em] text-[#1A2C56]">Total BD interest</span>
-                              <span className="block text-[11px] font-semibold text-[#5A6B62]">
-                                split <b className="doc-ref text-[#0B6B45]">{formatINR(splitGross)}</b> · not split <b className="doc-ref text-[#33473E]">{formatINR(round2(total - splitGross))}</b>
-                                {due > 0.004 && <> · due <b className="doc-ref text-[#B3261E]">{formatINR(due)}</b></>}
-                              </span>
-                            </span>
-                            {Array.from({ length: splitCols }, (_, k) => (
-                              <span key={k} className={cn(SPLIT_COL, 'doc-ref whitespace-nowrap text-[13px] font-extrabold text-[#0B6B45]')}>
-                                {formatINR(round2(sched.reduce((t, x) => t + (partInterest(splitsOf(x, splits), k) ?? 0), 0)))}
-                              </span>
-                            ))}
-                            <span className={cn(SPLIT_COL, 'doc-ref whitespace-nowrap text-[14px] font-extrabold text-[#0A1F17]')}>{formatINR(total)}</span>
-                            <span className="w-4 flex-none" />
-                          </div>
-                          <span className="mx-2 w-[22px] flex-none" />
-                        </div>
-                      )
-                    }
                     return (
                       <div className="flex flex-wrap items-center gap-x-4 gap-y-1 border-t-[1.5px] border-t-[#C9DCCF] bg-[#F7FAF6] px-3 py-[10px]">
                         <span className="text-[10.5px] font-extrabold uppercase tracking-[.12em] text-[#1A2C56]">Total BD interest</span>
