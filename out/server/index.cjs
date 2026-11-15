@@ -6057,6 +6057,8 @@ async function payBdCumulativeInterest(v) {
     const first = rows2[0].bd;
     const bank = await bdBankFor(first, v.bank_account);
     const nos = rows2.map((r) => String(r.bd.bd_no)).join(", ");
+    const tdsLedger = String(v.tds_ledger || "").trim() || "TDS ON INTEREST PAYABLE A/C";
+    const tdsGroup = tdsLedger === "TDS ON INTEREST PAYABLE A/C" ? "Duties & Taxes" : String((await getClient().execute({ sql: "SELECT acc_group FROM ledger_accounts WHERE name = ?", args: [tdsLedger] })).rows[0]?.acc_group || "Duties & Taxes");
     const je = await postJournal({
       date,
       vchType: "PAYMENT",
@@ -6065,7 +6067,7 @@ async function payBdCumulativeInterest(v) {
       companyId: n2(first.company_id) || void 0,
       lines: [
         { account: "INTEREST ON BILL DISCOUNTING A/C", group: "Indirect Expenses", dr: gross },
-        ...tds > 4e-3 ? [{ account: "TDS ON INTEREST PAYABLE A/C", group: "Duties & Taxes", cr: tds }] : [],
+        ...tds > 4e-3 ? [{ account: tdsLedger, group: tdsGroup, cr: tds }] : [],
         { account: bank, group: "Bank Accounts", cr: net }
       ]
     });
