@@ -291,9 +291,18 @@ function Select({
   // In multi-select the tick is a toggle, so the panel stays put; a single
   // select closes as it always did.
   const multi = Array.isArray(selected)
+  // BACK TO THE FIELD once the list closes from the keyboard or a pick: the
+  // search box that had the focus goes with the panel, which left the focus
+  // nowhere — ← → / Enter then did nothing until the next click.
+  const refocus = (): void => {
+    setTimeout(() => wrapRef.current?.querySelector<HTMLElement>('[data-slot="select-trigger"]')?.focus(), 0)
+  }
   function choose(v: string): void {
     onValueChange?.(v)
-    if (!multi) setOpen(false)
+    if (!multi) {
+      setOpen(false)
+      refocus()
+    }
   }
   const isOn = (v: string): boolean => (multi ? (selected as string[]).includes(v) : current === v)
 
@@ -322,6 +331,7 @@ function Select({
       e.preventDefault()
       e.stopPropagation()
       setOpen(false)
+      refocus()
     }
   }
 
