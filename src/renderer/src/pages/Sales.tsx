@@ -4227,6 +4227,31 @@ function SalesTab({
             <span className={cn(__WEB__ && 'text-[11px] font-extrabold uppercase tracking-[.1em] text-[#2E4A0B]')}>Invoice total</span>
             <span className={cn('tabular-nums', __WEB__ && 'text-[22px] font-bold tracking-[-0.03em]')}>{formatINR(invoiceTotal)}</span>
           </div>
+          {/* THE TDS ON THIS INVOICE, when it is booked (Customer TDS — its own
+              journal, Agst Ref the invoice): what comes off, and what is left
+              on the party. Shown here so the invoice says what its ledger says. */}
+          {editingGroup &&
+            (() => {
+              const t = Object.values(tdsByInv).find((x) => String(x.invoice_key) === editingGroup)
+              if (!t || !(Number(t.amount) > 0)) return null
+              return (
+                <>
+                  <div className="flex items-center justify-between py-0.5">
+                    <span className="text-muted-foreground">
+                      Less TDS
+                      <span className="ml-1 text-[10px] uppercase tracking-wide">
+                        ({String(t.vch_no || 'journal')} · {String(t.ledger || '')})
+                      </span>
+                    </span>
+                    <span className="tabular-nums text-rose-700">−{formatINR(Number(t.amount))}</span>
+                  </div>
+                  <div className="flex items-center justify-between border-t border-[#D6E2D6] py-1.5 font-bold">
+                    <span className="text-[11px] font-extrabold uppercase tracking-[.1em] text-[#33473E]">Net on the party</span>
+                    <span className="tabular-nums">{formatINR(Math.round((invoiceTotal - Number(t.amount)) * 100) / 100)}</span>
+                  </div>
+                </>
+              )
+            })()}
           </div>
         </div>
 
