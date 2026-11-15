@@ -71,7 +71,20 @@ export function LedgerMergeDialog({
 
   const keepName = keep === 'into' ? String(into?.name || '') : keep === 'from' ? String(from?.name || '') : custom.trim()
   const copies = ((pv?.copies as Row[]) || []) as Row[]
-  const unresolved = copies.filter((x) => !kept.has(Number(x.copy_id))).length
+  // ONE ROW PER TALLY COPY. The preview pairs every copy with every app entry
+  // of the same amount, so three copies against four entries came back as
+  // twelve cards; each copy is one decision, its possible matches listed on it.
+  const groups = useMemo(() => {
+    const m = new Map<number, { x: Row; twins: Row[] }>()
+    for (const x of copies) {
+      const id = Number(x.copy_id)
+      const g = m.get(id)
+      if (g) g.twins.push(x)
+      else m.set(id, { x, twins: [x] })
+    }
+    return [...m.values()]
+  }, [copies])
+  const unresolved = groups.filter((g) => !kept.has(Number(g.x.copy_id))).length
   // Delete the Tally copy (an ordinary voucher delete) and look again.
   const dropCopy = async (x: Row): Promise<void> => {
     const no = String(x.copy_on === String(from?.name) ? x.from_code || x.from_no : x.into_code || x.into_no)
@@ -116,7 +129,7 @@ export function LedgerMergeDialog({
 
   return (
     <Dialog open={!!from} onOpenChange={(o) => !o && !busy && onClose()}>
-      <DialogContent className="max-w-2xl">
+      <DialogContent className="max-w-3xl">
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
             <Merge className="h-4 w-4 text-[#0B3D2E]" />
@@ -212,57 +225,90 @@ export function LedgerMergeDialog({
                 </div>
               )}
 
-              {copies.length > 0 && (
-                <div className="rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-[12px] text-amber-900">
-                  <div className="font-bold">
-                    The same money on both ledgers? {unresolved ? `${unresolved} to resolve before merging` : 'all resolved'}
+              {groups.length > 0 && (
+                <div className="overflow-hidden rounded-md border border-amber-300 bg-amber-50 text-[12px] text-amber-900">
+                  <div className="flex flex-wrap items-baseline gap-x-2 border-b border-amber-200 px-3 py-2">
+                    <span className="font-bold">The same money on both ledgers?</span>
+                    <span className={cn('rounded-[3px] px-1.5 py-0.5 text-[11px] font-bold', unresolved ? 'bg-amber-200 text-amber-900' : 'bg-[#E9F5EE] text-[#0B6B45]')}>
+                      {unresolved ? `${unresolved} of ${groups.length} to resolve` : 'all resolved'}
+                    </span>
+                    <span className="w-full text-[11px]">A Tally import on one ledger matches an entry the app posted on the other. Delete the Tally copy, or tick Keep both if they are different payments.</span>
                   </div>
-                  <div className="mb-1.5 text-[11px]">
-                    A Tally import on one ledger matches an entry the app posted on the other — merged as they are, the party would carry both.
+                  <div className="max-h-[300px] overflow-auto bg-white">
+                    <table className="w-full text-[11.5px]">
+                      <thead className="sticky top-0 bg-[#FBF6E9] text-[9.5px] font-extrabold uppercase tracking-[.08em] text-amber-900">
+                        <tr>
+                          <th className="px-3 py-1.5 text-left">Tally copy</th>
+                          <th className="px-2 py-1.5 text-right">Amount</th>
+                          <th className="px-2 py-1.5 text-left">Same amount in the app</th>
+                          <th className="px-3 py-1.5 text-right" />
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {groups.map(({ x, twins }) => {
+                          const id = Number(x.copy_id)
+                          const fromIsCopy = x.copy_on === String(from?.name)
+                          const no = (r: Row, side: 'from' | 'into'): string => String(side === 'from' ? r.from_code || r.from_no : r.into_code || r.into_no)
+                          const date = (r: Row, side: 'from' | 'into'): string => formatDate(String(side === 'from' ? r.from_date : r.into_date))
+                          const cs = fromIsCopy ? 'from' : 'into'
+                          const as = fromIsCopy ? 'into' : 'from'
+                          const amt = Number(x.dr) || Number(x.cr)
+                          const isKept = kept.has(id)
+                          return (
+                            <tr key={id} className={cn('border-t border-amber-100 align-middle', isKept && 'opacity-55')}>
+                              <td className="whitespace-nowrap px-3 py-1.5">
+                                <b className="tabular-nums">{no(x, cs)}</b> <span className="text-[10.5px] text-muted-foreground">{date(x, cs)}</span>
+                              </td>
+                              <td className="whitespace-nowrap px-2 py-1.5 text-right font-semibold tabular-nums">
+                                {formatINR(amt)} {Number(x.dr) > 0 ? 'Dr' : 'Cr'}
+                              </td>
+                              <td className="px-2 py-1.5">
+                                <div className="flex flex-wrap gap-1">
+                                  {twins.slice(0, 3).map((t) => (
+                                    <span key={String(t.twin_id)} className="whitespace-nowrap rounded-[3px] bg-[#EEF3EC] px-1.5 py-0.5 text-[10.5px] font-semibold text-[#33473E]">
+                                      {no(t, as)} · {date(t, as)}
+                                    </span>
+                                  ))}
+                                  {twins.length > 3 && (
+                                    <span className="text-[10.5px] font-semibold text-muted-foreground" title={twins.slice(3).map((t) => `${no(t, as)} ${date(t, as)}`).join(', ')}>
+                                      +{twins.length - 3} more
+                                    </span>
+                                  )}
+                                </div>
+                              </td>
+                              <td className="whitespace-nowrap px-3 py-1.5 text-right">
+                                <div className="flex items-center justify-end gap-2">
+                                  <button
+                                    type="button"
+                                    disabled={busy || isKept}
+                                    onClick={() => void dropCopy(x)}
+                                    className="rounded-[4px] bg-[#8C2F26] px-2 py-1 text-[10.5px] font-bold text-white disabled:opacity-40"
+                                  >
+                                    Delete copy
+                                  </button>
+                                  <label className="flex items-center gap-1 text-[10.5px] font-semibold" title="Not the same money — keep both through the merge">
+                                    <input
+                                      type="checkbox"
+                                      checked={isKept}
+                                      onChange={(e) =>
+                                        setKept((s) => {
+                                          const next = new Set(s)
+                                          if (e.target.checked) next.add(id)
+                                          else next.delete(id)
+                                          return next
+                                        })
+                                      }
+                                    />
+                                    Keep both
+                                  </label>
+                                </div>
+                              </td>
+                            </tr>
+                          )
+                        })}
+                      </tbody>
+                    </table>
                   </div>
-                  {copies.map((x) => {
-                    const id = Number(x.copy_id)
-                    const fromIsCopy = x.copy_on === String(from?.name)
-                    const one = (side: 'from' | 'into'): string =>
-                      `${String(side === 'from' ? x.from_code || x.from_no : x.into_code || x.into_no)} ${String(side === 'from' ? x.from_type : x.into_type).toLowerCase()} ${formatDate(String(side === 'from' ? x.from_date : x.into_date))}`
-                    const amt = Number(x.dr) || Number(x.cr)
-                    const isKept = kept.has(id)
-                    return (
-                      <div key={`${id}-${String(x.twin_id)}`} className={cn('mb-1 rounded border bg-white px-2 py-1.5', isKept ? 'border-[#DCE7DB] opacity-70' : 'border-amber-300')}>
-                        <div>
-                          <b>Tally copy:</b> {one(fromIsCopy ? 'from' : 'into')} · {formatINR(amt)} {Number(x.dr) > 0 ? 'Dr' : 'Cr'}
-                        </div>
-                        <div className="text-[11px]">
-                          <b>App entry:</b> {one(fromIsCopy ? 'into' : 'from')} · {formatINR(Number(x.twin_dr) || Number(x.twin_cr))}
-                        </div>
-                        <div className="mt-1 flex flex-wrap items-center gap-2">
-                          <button
-                            type="button"
-                            disabled={busy}
-                            onClick={() => void dropCopy(x)}
-                            className="rounded-[4px] bg-[#8C2F26] px-2 py-1 text-[11px] font-bold text-white disabled:opacity-40"
-                          >
-                            Delete the Tally copy
-                          </button>
-                          <label className="flex items-center gap-1 text-[11px] font-semibold">
-                            <input
-                              type="checkbox"
-                              checked={isKept}
-                              onChange={(e) =>
-                                setKept((s) => {
-                                  const next = new Set(s)
-                                  if (e.target.checked) next.add(id)
-                                  else next.delete(id)
-                                  return next
-                                })
-                              }
-                            />
-                            Not the same — keep both
-                          </label>
-                        </div>
-                      </div>
-                    )
-                  })}
                 </div>
               )}
 
