@@ -3545,6 +3545,7 @@ __export(billDiscounting_exports, {
   addBdLimitReduction: () => addBdLimitReduction,
   bdAdjParts: () => bdAdjParts,
   bdCalc: () => bdCalc,
+  bdCumulativeInterest: () => bdCumulativeInterest,
   bdInterestSchedule: () => bdInterestSchedule,
   bdInterestWindow: () => bdInterestWindow,
   bdKpis: () => bdKpis,
@@ -3573,6 +3574,7 @@ __export(billDiscounting_exports, {
   listBdSalesInvoices: () => listBdSalesInvoices,
   markBdPaymentReceived: () => markBdPaymentReceived,
   migrateBdPerNbfcLedgers: () => migrateBdPerNbfcLedgers,
+  payBdCumulativeInterest: () => payBdCumulativeInterest,
   payBdInterest: () => payBdInterest,
   payBdInterestUpto: () => payBdInterestUpto,
   payBdParty: () => payBdParty,
@@ -5183,6 +5185,9 @@ async function deleteBdInterestPayment(payId) {
     const res = await c.execute({ sql: "SELECT * FROM bd_interest_payments WHERE id = ?", args: [n2(payId)] });
     if (!res.rows.length) throw new Error("That interest payment no longer exists");
     const row = toPlain3(res)[0];
+    if (n2(row.journal_entry_id)) {
+      await c.execute({ sql: "DELETE FROM bd_interest_payments WHERE journal_entry_id = ? AND id <> ?", args: [n2(row.journal_entry_id), n2(payId)] });
+    }
     await dropEntry(n2(row.journal_entry_id) || null);
     await c.execute({ sql: "DELETE FROM bd_interest_payments WHERE id = ?", args: [n2(payId)] });
     return { id: n2(payId) };
@@ -5989,6 +5994,81 @@ async function deleteLastBdReceiptPart(bdId) {
     await dropEntry(n2(row.journal_entry_id) || null);
     await c.execute({ sql: "DELETE FROM bd_receipt_parts WHERE id = ?", args: [n2(row.id)] });
     return { part_no: n2(row.part_no), ref: String(row.ref || receiptRef(bd, n2(row.part_no))) };
+  });
+}
+async function bdCumulativeInterest(v) {
+  const to = String(v.to_date || "").slice(0, 10);
+  if (!n2(v.nbfc_id) || !/^\d{4}-\d{2}-\d{2}$/.test(to)) return [];
+  const capped = to > todayISO2() ? todayISO2() : to;
+  const bills = (await listBd({ nbfc_id: n2(v.nbfc_id) })).filter((b) => String(b.status) !== "repaid" && !!b.payment_received_date);
+  const out = [];
+  for (const b of bills) {
+    const w = await bdInterestWindow(n2(b.id), capped);
+    out.push({
+      bd_id: n2(b.id),
+      bd_no: b.bd_no,
+      party: b.party_name || b.receivable_party_name || b.supplier_name || "",
+      principal: n2(w.interest_base),
+      open_amount: n2(w.open_amount),
+      interest_pct: n2(w.interest_pct),
+      tds_pct: n2(w.tds_pct),
+      from_date: w.from_date,
+      to_date: capped,
+      days: n2(w.days),
+      gross: n2(w.gross),
+      tds: n2(w.tds),
+      net: n2(w.net),
+      paid_to: w.paid_to || null,
+      blocked: w.blocked || (w.from_date > capped ? "Interest is paid up to date." : "") || (!(n2(w.gross) > 4e-3) ? "Nothing has accrued." : "")
+    });
+  }
+  return out;
+}
+async function payBdCumulativeInterest(v) {
+  return withDbTransaction(async () => {
+    const to = String(v.to_date || "").slice(0, 10);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(to)) throw new Error("Pick the date the interest is paid up to");
+    if (to > todayISO2()) throw new Error("Interest cannot be paid for days that have not happened yet");
+    const date = String(v.paid_date || to).slice(0, 10);
+    if (date > todayISO2()) throw new Error("The payment cannot be dated in the future");
+    const ids = Array.from(new Set((v.bd_ids || []).map(n2).filter((x) => x > 0)));
+    if (!ids.length) throw new Error("Tick at least one bill to pay");
+    const rows2 = [];
+    for (const id of ids) {
+      const bd = await loadBd(id);
+      if (n2(bd.nbfc_id) !== n2(v.nbfc_id)) throw new Error(`${bd.bd_no} is with another NBFC`);
+      const w = await bdInterestWindow(id, to);
+      if (w.blocked) throw new Error(`${bd.bd_no}: ${String(w.blocked)}`);
+      if (String(w.from_date) > to) throw new Error(`${bd.bd_no}: interest is already paid to ${String(w.paid_to)}`);
+      if (!(n2(w.gross) > 4e-3)) throw new Error(`${bd.bd_no}: that comes to no interest`);
+      rows2.push({ bd, w });
+    }
+    const gross = round2(rows2.reduce((t, r) => t + n2(r.w.gross), 0));
+    const tds = round2(rows2.reduce((t, r) => t + n2(r.w.tds), 0));
+    const net = round2(gross - tds);
+    const first = rows2[0].bd;
+    const bank = await bdBankFor(first, v.bank_account);
+    const nos = rows2.map((r) => String(r.bd.bd_no)).join(", ");
+    const je = await postJournal({
+      date,
+      vchType: "PAYMENT",
+      vchNo: nos.slice(0, 60),
+      narration: `Bill Discounting interest to ${to} paid to ${first.nbfc_name || "the NBFC"} on ${rows2.length} bill${rows2.length === 1 ? "" : "s"} (${nos}) \u2014 ${inr(gross)}` + (tds > 4e-3 ? `, TDS ${inr(tds)} withheld` : "") + (v.note ? ` \xB7 ${String(v.note)}` : ""),
+      companyId: n2(first.company_id) || void 0,
+      lines: [
+        { account: "INTEREST ON BILL DISCOUNTING A/C", group: "Indirect Expenses", dr: gross },
+        ...tds > 4e-3 ? [{ account: "TDS ON INTEREST PAYABLE A/C", group: "Duties & Taxes", cr: tds }] : [],
+        { account: bank, group: "Bank Accounts", cr: net }
+      ]
+    });
+    for (const r of rows2) {
+      await getClient().execute({
+        sql: `INSERT INTO bd_interest_payments (bd_id, from_date, to_date, days, paid_date, gross, tds, net, note, journal_entry_id, bank_account)
+              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        args: [n2(r.bd.id), String(r.w.from_date), to, n2(r.w.days), date, n2(r.w.gross), n2(r.w.tds), n2(r.w.net), `Cumulative interest \u2014 one voucher with ${nos}`, je.id, bank]
+      });
+    }
+    return { entry_id: je.id, bills: rows2.length, gross, tds, net };
   });
 }
 var BD_PAYABLE_GROUP, round2, CASH_BANK_GROUPS, BD_COLS, BD_ADJ_DEFAULT, BD_ADJ_PRESETS, BD_ADJ_KEY, invoiceAdjReady, BD_REST, DRAWN_SQL;
@@ -7063,22 +7143,32 @@ async function listPendingRefs(accountName, companyId, side, all = false) {
     if (s22 === "dr" || s22 === "cr") return s22;
     return group === "Sundry Debtors" ? "dr" : "cr";
   };
+  const originByRef = /* @__PURE__ */ new Map();
+  for (const b of [...bills, ...madeRows]) {
+    const k = b.ref.trim().toUpperCase();
+    if (n4(b.origin_id) && !originByRef.has(k)) originByRef.set(k, n4(b.origin_id));
+  }
   return [...bills, ...madeRows].map((b) => {
     const side2 = billSideOf(b);
-    const o = origins.get(n4(b.origin_id));
-    const went = (elsewhereOf.get(b) || []).map((w) => ({
-      entry_id: n4(b.origin_id) || null,
-      entry_date: o?.entry_date ?? b.bill_date,
-      vch_type: o?.vch_type ?? null,
-      vch_no: o?.vch_no ?? null,
-      code: o?.code ?? null,
-      side: side2 === "dr" ? "cr" : "dr",
-      narration: w.ref ? `Set against ${w.ref} on its own voucher` : "Set elsewhere on its own voucher",
-      amount: w.amount,
-      order_id: o?.order_id ?? null,
-      sale_id: o?.sale_id ?? null,
-      own_voucher: true
-    }));
+    const went = (elsewhereOf.get(b) || []).map((w) => {
+      const via = originByRef.get(w.ref.toUpperCase()) || 0;
+      const o = origins.get(via) || origins.get(n4(b.origin_id));
+      return {
+        entry_id: n4(o?.entry_id) || n4(b.origin_id) || null,
+        calc_entry_id: n4(b.origin_id) || null,
+        entry_date: o?.entry_date ?? b.bill_date,
+        vch_type: o?.vch_type ?? null,
+        vch_no: o?.vch_no ?? null,
+        code: o?.code ?? null,
+        side: side2 === "dr" ? "cr" : "dr",
+        narration: w.ref ? `${w.ref} adjusted against this bill` : "Adjusted on its own voucher",
+        adjusted_ref: w.ref || null,
+        amount: w.amount,
+        order_id: o?.order_id ?? null,
+        sale_id: o?.sale_id ?? null,
+        own_voucher: true
+      };
+    });
     const settlements = [...went, ...settlementsFor2(b)];
     const paid = round22(settlements.reduce((t, x) => t + (x.side === side2 ? -n4(x.amount) : n4(x.amount)), 0));
     return {
@@ -7275,7 +7365,11 @@ async function billsOutstanding(accountName, companyId, opts = {}) {
     for (const r of rows2) {
       const o = r.origin;
       if (o?.entry_id) add(o.entry_id, o.entry_date, n4(r.opening) * sideOf(r));
-      for (const x of r.settlements || []) add(x.entry_id, x.entry_date, n4(x.amount) * (String(x.side) === "dr" ? 1 : -1));
+      for (const x of r.settlements || []) {
+        if (x.own_voucher) {
+          add(x.calc_entry_id, o?.entry_date ?? x.entry_date, n4(x.amount) * (String(x.side) === "dr" ? 1 : -1));
+        } else add(x.entry_id, x.entry_date, n4(x.amount) * (String(x.side) === "dr" ? 1 : -1));
+      }
     }
     const lines = toPlain4(
       await c.execute({
@@ -44447,6 +44541,14 @@ function registerIpc() {
   );
   handle("bd:interestSchedule", (_e, { id }) => bdInterestSchedule(id));
   handle("bd:interestPayments", (_e, { id }) => listBdInterestPayments(id));
+  handle(
+    "bdCumInterest:list",
+    async (_e, { values }) => (await Promise.resolve().then(() => (init_billDiscounting(), billDiscounting_exports))).bdCumulativeInterest(values)
+  );
+  handle(
+    "bd:payCumulativeInterest",
+    async (_e, { values }) => (await Promise.resolve().then(() => (init_billDiscounting(), billDiscounting_exports))).payBdCumulativeInterest(values)
+  );
   handle(
     "bd:payInterest",
     (_e, {
