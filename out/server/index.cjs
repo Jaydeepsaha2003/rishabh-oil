@@ -6040,6 +6040,14 @@ async function payBdCumulativeInterest(v) {
       const w = await bdInterestWindow(id, to);
       if (w.blocked) throw new Error(`${bd.bd_no}: ${String(w.blocked)}`);
       if (String(w.from_date) > to) throw new Error(`${bd.bd_no}: interest is already paid to ${String(w.paid_to)}`);
+      const typed = v.amounts && String(v.amounts[String(id)] ?? "").trim() !== "" ? round2(n2(v.amounts[String(id)])) : null;
+      if (typed != null) {
+        if (!(typed > 4e-3)) throw new Error(`${bd.bd_no}: enter the interest being paid`);
+        const t = round2(typed * n2(bd.tds_pct) / 100);
+        w.gross = typed;
+        w.tds = t;
+        w.net = round2(typed - t);
+      }
       if (!(n2(w.gross) > 4e-3)) throw new Error(`${bd.bd_no}: that comes to no interest`);
       rows2.push({ bd, w });
     }
