@@ -1097,10 +1097,14 @@ export async function listPendingRefs(
   }
 
   // A BILL'S OWN VOUCHER CAN SPEND IT ELSEWHERE. When the purchase/sale voucher
-  // allocates its party line — Agst Ref ADV-1 plus New Ref REF-1 on PUR/117 for
-  // ASO/26-27/87 — that money settles or opens those refs, so the invoice is
-  // a bill only for what is left (Tally's way). Counting it in full too listed
-  // a phantom bill and pushed the same sum into On Account as a Dr.
+  // allocates its party line — Agst Ref ADV-1 on PUR/117 for ASO/26-27/87 —
+  // that money settles ADV-1 (or opens a New Ref), so only the rest is still
+  // pending on the invoice. The invoice keeps its own amount as the bill's
+  // opening, and what went elsewhere is a settlement line under it ("PUR/117
+  // set against ADV-1"), so Opening reads the invoice and Pending what is left.
+  // (Counting it in full with nothing against it listed a phantom bill and
+  // pushed the same sum into On Account as a Dr.)
+  const elsewhereOf = new Map<Bill, { ref: string; amount: number }[]>()
   const originAllocIds = bills.map((b) => n(b.origin_id)).filter((x) => x > 0)
   if (originAllocIds.length && accountId) {
     const oa = toPlain(
@@ -1116,11 +1120,11 @@ export async function listPendingRefs(
       (b.order_id != null && n(r.order_id) === b.order_id) ||
       (b.sale_invoice_group != null && String(r.sale_invoice_group || '') === b.sale_invoice_group)
     for (const b of bills) {
-      const elsewhere = oa.filter((r) => n(r.entry_id) === n(b.origin_id) && !own(r, b)).reduce((t, r) => t + n(r.amount), 0)
-      if (elsewhere > 0.005) b.amount = round2(Math.max(0, b.amount - elsewhere))
+      const went = oa
+        .filter((r) => n(r.entry_id) === n(b.origin_id) && !own(r, b) && n(r.amount) > 0.005)
+        .map((r) => ({ ref: String(r.ref_name || (r.method === 'on_account' ? 'On Account' : '')).trim(), amount: round2(n(r.amount)) }))
+      if (went.length) elsewhereOf.set(b, went)
     }
-    // Spent in full elsewhere: no bill of its own at all.
-    for (let i = bills.length - 1; i >= 0; i--) if (bills[i].amount <= 0.005) bills.splice(i, 1)
   }
 
   // A real bill's ref name, before anything hand-typed can touch it — a New
@@ -1270,8 +1274,24 @@ export async function listPendingRefs(
 
   return [...bills, ...madeRows]
     .map((b) => {
-      const settlements = settlementsFor(b)
       const side = billSideOf(b)
+      const o = origins.get(n(b.origin_id))
+      // What the bill's own voucher set elsewhere, as settlements on the other
+      // side — they bring Pending down; Opening stays the invoice.
+      const went: Row[] = (elsewhereOf.get(b) || []).map((w) => ({
+        entry_id: n(b.origin_id) || null,
+        entry_date: o?.entry_date ?? b.bill_date,
+        vch_type: o?.vch_type ?? null,
+        vch_no: o?.vch_no ?? null,
+        code: o?.code ?? null,
+        side: side === 'dr' ? 'cr' : 'dr',
+        narration: w.ref ? `Set against ${w.ref} on its own voucher` : 'Set elsewhere on its own voucher',
+        amount: w.amount,
+        order_id: o?.order_id ?? null,
+        sale_id: o?.sale_id ?? null,
+        own_voucher: true
+      }))
+      const settlements = [...went, ...settlementsFor(b)]
       const paid = round2(settlements.reduce((t, x) => t + (x.side === side ? -n(x.amount) : n(x.amount)), 0))
       return {
         ref: b.ref,
