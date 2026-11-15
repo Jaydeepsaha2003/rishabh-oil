@@ -95,7 +95,10 @@ export function rightsOf(perms: Perms, key: string): Rights {
       create: !!o.create,
       edit: !!o.edit,
       delete: !!o.delete,
-      editDays: num(o.editDays),
+      // ENTRY WINDOW AS DAYS BACK: 0 = today only, 1 = yesterday too. Stored
+      // as before (days counted inclusively, 1 = today), so every grant already
+      // saved keeps exactly the window it had — only what the screen shows moves.
+      editDays: o.editDays == null || o.editDays === '' ? '' : String(Math.max(0, (Number(o.editDays) || 0) - 1)),
       viewDays: num(o.viewDays),
       scope: o.scope ? String(o.scope) : ''
     }
@@ -135,7 +138,7 @@ export function writeRights(perms: Perms, key: string, next: Rights): Perms {
   }
   const entry: Any = { view: true, create: next.create, edit: next.edit, delete: next.delete }
   if (next.editDays !== '' && Number.isFinite(Number(next.editDays))) {
-    entry.editDays = Math.max(0, Number(next.editDays))
+    entry.editDays = Math.max(0, Number(next.editDays)) + 1
   }
   if (next.viewDays !== '' && Number.isFinite(Number(next.viewDays))) {
     entry.viewDays = Math.max(0, Number(next.viewDays))

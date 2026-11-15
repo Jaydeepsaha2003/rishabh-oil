@@ -402,7 +402,7 @@ export function UserAccess(): React.JSX.Element {
     else text = `Can ${acts.join(', ')}.`
     const win: string[] = []
     if (r.viewDays !== '') win.push(`sees the last ${r.viewDays} days`)
-    if (r.editDays !== '' && acts.length) win.push(`may key back ${r.editDays} days`)
+    if (r.editDays !== '' && acts.length) win.push(Number(r.editDays) === 0 ? 'may key today only' : `may key back ${r.editDays} day${Number(r.editDays) === 1 ? '' : 's'}`)
     return {
       key: m.key,
       label: m.label,
@@ -1578,7 +1578,7 @@ export function UserAccess(): React.JSX.Element {
                       <div className="flex flex-col items-end justify-center gap-[3px] border-l border-l-[#C7F03F]/[.14] py-2 pl-[9px] pr-[18px]">
                         <span className="text-white">Entry window</span>
                         <span className="text-[8.5px] font-bold normal-case tracking-[.04em]">
-                          days · blank = no limit
+                          0 = today · 1 = yesterday too · blank = no limit
                         </span>
                       </div>
                     </div>

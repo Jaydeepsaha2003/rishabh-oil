@@ -317,20 +317,14 @@ function UsersManager(): React.JSX.Element {
   // restricts WRITING, so it would mean nothing on a view-only module.
   function setAllDays(field: 'editDays' | 'viewDays', days: string): void {
     setForm((p) => {
-      const perms = { ...(p.permissions || {}) }
+      let perms = { ...(p.permissions || {}) } as Perms
       for (const m of MODULES.filter((x) => !x.derived)) {
-        const cur = rightsOf(m.key)
+        const cur = sharedRightsOf(perms, m.key)
         const writes = cur.create || cur.edit || cur.delete
         if (field === 'editDays' ? !writes : !cur.view) continue
-        const entry: Record<string, unknown> = { view: true, create: cur.create, edit: cur.edit, delete: cur.delete }
-        // Carry the OTHER window through untouched — filling one column must
-        // not wipe the column beside it.
-        const keep = field === 'editDays' ? cur.viewDays : cur.editDays
-        const keepKey = field === 'editDays' ? 'viewDays' : 'editDays'
-        if (keep !== '') entry[keepKey] = Math.max(0, Number(keep))
-        if (days !== '' && Number.isFinite(Number(days))) entry[field] = Math.max(0, Number(days))
-        if (cur.scope) entry.scope = cur.scope
-        perms[m.key] = entry
+        // Through the shared writer, so the OTHER window is carried untouched
+        // and the entry window is stored the same way User Access stores it.
+        perms = sharedWriteRights(perms, m.key, { ...cur, [field]: days })
       }
       return { ...p, permissions: perms }
     })
