@@ -6943,6 +6943,7 @@ async function listPendingRefs(accountName, companyId, side, all = false) {
       bills.push({ ref: String(b.ref), bill_date: String(b.bill_date || ""), amount: n4(b.amount), order_id: null, sale_invoice_group: String(b.grp), origin_id: n4(b.origin_id) || null });
     }
   }
+  const elsewhereOf = /* @__PURE__ */ new Map();
   const originAllocIds = bills.map((b) => n4(b.origin_id)).filter((x) => x > 0);
   if (originAllocIds.length && accountId) {
     const oa = toPlain4(
@@ -6955,10 +6956,9 @@ async function listPendingRefs(accountName, companyId, side, all = false) {
     );
     const own = (r, b) => String(r.ref_name || "").trim().toUpperCase() === b.ref.trim().toUpperCase() || b.order_id != null && n4(r.order_id) === b.order_id || b.sale_invoice_group != null && String(r.sale_invoice_group || "") === b.sale_invoice_group;
     for (const b of bills) {
-      const elsewhere = oa.filter((r) => n4(r.entry_id) === n4(b.origin_id) && !own(r, b)).reduce((t, r) => t + n4(r.amount), 0);
-      if (elsewhere > 5e-3) b.amount = round22(Math.max(0, b.amount - elsewhere));
+      const went = oa.filter((r) => n4(r.entry_id) === n4(b.origin_id) && !own(r, b) && n4(r.amount) > 5e-3).map((r) => ({ ref: String(r.ref_name || (r.method === "on_account" ? "On Account" : "")).trim(), amount: round22(n4(r.amount)) }));
+      if (went.length) elsewhereOf.set(b, went);
     }
-    for (let i = bills.length - 1; i >= 0; i--) if (bills[i].amount <= 5e-3) bills.splice(i, 1);
   }
   const realRefs = new Set(bills.map((b) => b.ref));
   const made = await c.execute({
@@ -7064,8 +7064,22 @@ async function listPendingRefs(accountName, companyId, side, all = false) {
     return group === "Sundry Debtors" ? "dr" : "cr";
   };
   return [...bills, ...madeRows].map((b) => {
-    const settlements = settlementsFor2(b);
     const side2 = billSideOf(b);
+    const o = origins.get(n4(b.origin_id));
+    const went = (elsewhereOf.get(b) || []).map((w) => ({
+      entry_id: n4(b.origin_id) || null,
+      entry_date: o?.entry_date ?? b.bill_date,
+      vch_type: o?.vch_type ?? null,
+      vch_no: o?.vch_no ?? null,
+      code: o?.code ?? null,
+      side: side2 === "dr" ? "cr" : "dr",
+      narration: w.ref ? `Set against ${w.ref} on its own voucher` : "Set elsewhere on its own voucher",
+      amount: w.amount,
+      order_id: o?.order_id ?? null,
+      sale_id: o?.sale_id ?? null,
+      own_voucher: true
+    }));
+    const settlements = [...went, ...settlementsFor2(b)];
     const paid = round22(settlements.reduce((t, x) => t + (x.side === side2 ? -n4(x.amount) : n4(x.amount)), 0));
     return {
       ref: b.ref,
