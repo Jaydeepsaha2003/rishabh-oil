@@ -6452,7 +6452,9 @@ async function validateVoucher(v) {
       name: String(sp?.name || "").trim().slice(0, 200),
       amount: n4(sp?.amount),
       note: sp?.note ? String(sp.note).trim().slice(0, 500) : null,
-      branch: sp?.branch ? String(sp.branch).trim().slice(0, 40) : null
+      branch: sp?.branch ? String(sp.branch).trim().slice(0, 40) : null,
+      color: sp?.color ? String(sp.color).trim().slice(0, 20) : null,
+      remark: sp?.remark ? String(sp.remark).trim().slice(0, 1e3) : null
     })).filter((sp) => !!sp.name || sp.amount !== 0),
     allocs: (l.allocs || []).map((a) => ({
       method: a.method,
@@ -6542,9 +6544,9 @@ async function writeSplits(entryId, lines) {
     for (const sp of lines[i].splits) {
       order += 10;
       await c.execute({
-        sql: `INSERT INTO journal_line_splits (line_id, name, amount, note, sort_order, branch)
-              VALUES (?, ?, ?, ?, ?, ?)`,
-        args: [lineId, sp.name, n4(sp.amount), sp.note || null, order, sp.branch ? String(sp.branch).trim() : null]
+        sql: `INSERT INTO journal_line_splits (line_id, name, amount, note, sort_order, branch, color, remark)
+              VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        args: [lineId, sp.name, n4(sp.amount), sp.note || null, order, sp.branch ? String(sp.branch).trim() : null, sp.color || null, sp.remark || null]
       });
     }
   }
@@ -6559,7 +6561,9 @@ async function setLineSplits(lineId, splits) {
       name: String(s6.name || "").trim(),
       amount: Math.round(n4(s6.amount) * 100) / 100,
       note: s6.note ? String(s6.note).trim() : null,
-      branch: s6.branch ? String(s6.branch).trim() : null
+      branch: s6.branch ? String(s6.branch).trim() : null,
+      color: s6.color ? String(s6.color).trim().slice(0, 20) : null,
+      remark: s6.remark ? String(s6.remark).trim().slice(0, 1e3) : null
     })).filter((s6) => s6.name || s6.amount);
     if (parts.some((s6) => !s6.name)) throw new Error("Give every part a name");
     if (parts.some((s6) => s6.amount <= 0)) throw new Error("Every part needs an amount");
@@ -6572,8 +6576,8 @@ async function setLineSplits(lineId, splits) {
     for (const s6 of parts) {
       order += 10;
       await c.execute({
-        sql: "INSERT INTO journal_line_splits (line_id, name, amount, note, sort_order, branch) VALUES (?, ?, ?, ?, ?, ?)",
-        args: [n4(lineId), s6.name, s6.amount, s6.note, order, s6.branch]
+        sql: "INSERT INTO journal_line_splits (line_id, name, amount, note, sort_order, branch, color, remark) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        args: [n4(lineId), s6.name, s6.amount, s6.note, order, s6.branch, s6.color, s6.remark]
       });
     }
     return { id: n4(lineId), parts: parts.length };
@@ -6774,7 +6778,7 @@ async function getVoucher(id) {
     });
     l.allocs = toPlain4(al);
     const sp = await c.execute({
-      sql: "SELECT name, amount, note, branch FROM journal_line_splits WHERE line_id = ? ORDER BY sort_order, id",
+      sql: "SELECT name, amount, note, branch, color, remark FROM journal_line_splits WHERE line_id = ? ORDER BY sort_order, id",
       args: [Number(l.id)]
     });
     l.splits = toPlain4(sp);
@@ -22447,7 +22451,7 @@ async function repostJournal(entryId, a) {
     });
     const kept = /* @__PURE__ */ new Map();
     for (const s6 of (await c.execute({
-      sql: `SELECT jl.account_id, jl.dr, jl.cr, s.name, s.amount, s.note, s.sort_order, s.branch
+      sql: `SELECT jl.account_id, jl.dr, jl.cr, s.name, s.amount, s.note, s.sort_order, s.branch, s.color, s.remark
             FROM journal_line_splits s JOIN journal_lines jl ON jl.id = s.line_id
            WHERE jl.entry_id = ? ORDER BY s.line_id, s.sort_order, s.id`,
       args: [id]
@@ -22469,8 +22473,8 @@ async function repostJournal(entryId, a) {
         kept.delete(key3);
         for (const s6 of parts) {
           await c.execute({
-            sql: "INSERT INTO journal_line_splits (line_id, name, amount, note, sort_order, branch) VALUES (?, ?, ?, ?, ?, ?)",
-            args: [Number(ins.lastInsertRowid), s6.name, n25(s6.amount), s6.note ?? null, n25(s6.sort_order), s6.branch ?? null]
+            sql: "INSERT INTO journal_line_splits (line_id, name, amount, note, sort_order, branch, color, remark) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            args: [Number(ins.lastInsertRowid), s6.name, n25(s6.amount), s6.note ?? null, n25(s6.sort_order), s6.branch ?? null, s6.color ?? null, s6.remark ?? null]
           });
         }
       }
@@ -22699,7 +22703,7 @@ async function accountStatement(accountId, companyId) {
     for (let i = 0; i < entryIds.length; i += 400) {
       const chunk = entryIds.slice(i, i + 400);
       const sp = await c.execute({
-        sql: `SELECT jl.entry_id, jl.id AS line_id, s.name, s.amount, s.note, s.branch
+        sql: `SELECT jl.entry_id, jl.id AS line_id, s.name, s.amount, s.note, s.branch, s.color, s.remark
                   FROM journal_line_splits s JOIN journal_lines jl ON jl.id = s.line_id
                  WHERE jl.entry_id IN (${chunk.map(() => "?").join(",")})
                  ORDER BY jl.id, s.sort_order, s.id`,
@@ -22708,7 +22712,7 @@ async function accountStatement(accountId, companyId) {
       for (const r of sp.rows) {
         const k = Number(r.entry_id);
         if (!byEntry2.has(k)) byEntry2.set(k, []);
-        byEntry2.get(k).push({ line_id: Number(r.line_id), name: String(r.name || ""), amount: Number(r.amount) || 0, note: r.note ? String(r.note) : null, branch: r.branch ? String(r.branch) : null });
+        byEntry2.get(k).push({ line_id: Number(r.line_id), name: String(r.name || ""), amount: Number(r.amount) || 0, note: r.note ? String(r.note) : null, branch: r.branch ? String(r.branch) : null, color: r.color ? String(r.color) : null, remark: r.remark ? String(r.remark) : null });
       }
     }
     for (const l of lines) {
@@ -32054,7 +32058,7 @@ async function cashflowRegister(from, to, companyId, onlySplits = false, vchType
   );
   const splits = toPlain39(
     await c.execute({
-      sql: `SELECT s.line_id, s.name, s.amount, s.note, s.branch
+      sql: `SELECT s.line_id, s.name, s.amount, s.note, s.branch, s.color, s.remark
                 FROM journal_line_splits s JOIN journal_lines jl ON jl.id = s.line_id
                WHERE jl.entry_id IN (${inPeriod})
                ORDER BY s.line_id, s.sort_order, s.id`,
@@ -32071,7 +32075,7 @@ async function cashflowRegister(from, to, companyId, onlySplits = false, vchType
   for (const s6 of splits) {
     const k = n55(s6.line_id);
     if (!splitsOf.has(k)) splitsOf.set(k, []);
-    splitsOf.get(k).push({ name: String(s6.name || ""), amount: round226(n55(s6.amount)), note: s6.note ? String(s6.note) : "", branch: s6.branch ? String(s6.branch) : "" });
+    splitsOf.get(k).push({ name: String(s6.name || ""), amount: round226(n55(s6.amount)), note: s6.note ? String(s6.note) : "", branch: s6.branch ? String(s6.branch) : "", color: s6.color ? String(s6.color) : "", remark: s6.remark ? String(s6.remark) : "" });
   }
   const linesOf = /* @__PURE__ */ new Map();
   for (const l of lines) {
@@ -32099,7 +32103,6 @@ async function cashflowRegister(from, to, companyId, onlySplits = false, vchType
     const moneyIn = round226(money.filter((l) => l.side === "dr").reduce((t, l) => t + l.amount, 0));
     const moneyOut = round226(money.filter((l) => l.side === "cr").reduce((t, l) => t + l.amount, 0));
     const parties = ls.filter((l) => l.kind === "customer" || l.kind === "supplier");
-    const type = String(h.vch_type || "").toUpperCase();
     const refs = [...new Set(ls.flatMap((l) => l.refs.filter((r) => r.method === "agst_ref" || r.method === "new_ref").map((r) => r.ref)).filter(Boolean))];
     const issues = [];
     if (Math.abs(dr - cr) > 0.01) issues.push(`Dr ${dr.toFixed(2)} and Cr ${cr.toFixed(2)} differ by ${Math.abs(dr - cr).toFixed(2)}`);
@@ -32109,9 +32112,6 @@ async function cashflowRegister(from, to, companyId, onlySplits = false, vchType
         const t = round226(sp.reduce((s6, x) => s6 + n55(x.amount), 0));
         if (Math.abs(t - l.amount) > 0.01) issues.push(`${l.account}: its breakdown comes to ${t.toFixed(2)}, the line is ${Number(l.amount).toFixed(2)}`);
       }
-    }
-    if ((type.startsWith("PAYMENT") || type.startsWith("RECEIPT")) && parties.length && !parties.some((p) => p.refs.length)) {
-      issues.push(`${type.startsWith("PAYMENT") ? "Payment" : "Receipt"} to a party set against no bill \u2014 no Agst Ref, New Ref or On Account`);
     }
     if (!ls.length) issues.push("No lines on this voucher");
     return {
@@ -37632,6 +37632,9 @@ async function runStartupTasks() {
 var REQUIRED_COLUMNS = [
   // Which unit a breakdown part belongs to: LUDHIANA, GHAZIABAD, OTHERS, BOTH.
   { table: "journal_line_splits", column: "branch", type: "TEXT" },
+  // A breakdown part's highlight colour (a key: red, amber, green, blue, violet) and its hover remark.
+  { table: "journal_line_splits", column: "color", type: "TEXT" },
+  { table: "journal_line_splits", column: "remark", type: "TEXT" },
   // A sale billed to a SUPPLIER as a purchase return (sales.ts stampReturnSupplier).
   { table: "sales", column: "return_supplier_id", type: "INTEGER" },
   // The purchase bargain a purchase return goes back against: its returned
