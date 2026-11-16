@@ -3546,6 +3546,7 @@ __export(billDiscounting_exports, {
   bdAdjParts: () => bdAdjParts,
   bdCalc: () => bdCalc,
   bdCumulativeInterest: () => bdCumulativeInterest,
+  bdInterestBalances: () => bdInterestBalances,
   bdInterestRange: () => bdInterestRange,
   bdInterestSchedule: () => bdInterestSchedule,
   bdInterestWindow: () => bdInterestWindow,
@@ -4386,6 +4387,8 @@ async function listBd(filter) {
                  -- NBFC and still owe the last stretch of interest.
                  COALESCE((SELECT SUM(ip.gross) FROM bd_interest_payments ip
                             WHERE ip.bd_id = bd.id), 0) AS interest_paid_total,
+                 COALESCE((SELECT SUM(ip.tds) FROM bd_interest_payments ip
+                            WHERE ip.bd_id = bd.id), 0) AS interest_paid_tds,
                  (SELECT MAX(ip.to_date) FROM bd_interest_payments ip
                    WHERE ip.bd_id = bd.id) AS interest_paid_to,
                  (SELECT MAX(rr.repay_date) FROM bd_repayments rr
@@ -4891,6 +4894,9 @@ async function bdInterestSchedule(bdId) {
     charged = round2(charged + gross);
     const tds = round2(gross * n2(bd.tds_pct) / 100);
     const done = paid.find((p) => String(p.to_date).slice(0, 10) === end);
+    const onRest = paid.filter((p) => String(p.to_date).slice(0, 10) === end);
+    const paidGross = round2(onRest.reduce((t, p) => t + n2(p.gross), 0));
+    const paidNet = round2(onRest.reduce((t, p) => t + n2(p.net), 0));
     out.push({
       seq: i + 1,
       // THE DAY AFTER THE LAST ONE ENDED, which is what the payment screen
@@ -4908,8 +4914,8 @@ async function bdInterestSchedule(bdId) {
       last,
       paid_id: done ? n2(done.id) : null,
       paid_date: done ? String(done.paid_date).slice(0, 10) : null,
-      paid_gross: done ? n2(done.gross) : 0,
-      paid_net: done ? n2(done.net) : 0,
+      paid_gross: paidGross,
+      paid_net: paidNet,
       // Whether a payment recorded against this slice actually reached the
       // ledger. A slice can be serviced without being posted, when the desk
       // chose to record it and post later — see payBdInterest's `post` flag.
@@ -5004,28 +5010,69 @@ async function bdInterestRange(bdId, fromIn, toIn) {
   const mode = String(bd.interest_mode || "") || (bd.interest_upfront ? "upfront" : "discounted");
   const today = todayISO2();
   const to = String(toIn).slice(0, 10) > today ? today : String(toIn).slice(0, 10);
-  const paid = toPlain3(await getClient().execute({ sql: "SELECT from_date, to_date FROM bd_interest_payments WHERE bd_id = ? ORDER BY from_date", args: [n2(bdId)] }));
-  const out = { bd_id: n2(bdId), interest_base: calc.interestBase, open_amount: calc.openAmount, interest_pct: n2(bd.interest_pct), tds_pct: n2(bd.tds_pct), to_date: to, parts: [], gross: 0, tds: 0, net: 0, days: 0 };
+  const paid = toPlain3(await getClient().execute({ sql: "SELECT from_date, to_date, gross FROM bd_interest_payments WHERE bd_id = ? ORDER BY from_date", args: [n2(bdId)] }));
+  const daysYear = n2(bd.days_year) || 360;
+  const out = { bd_id: n2(bdId), interest_base: calc.interestBase, open_amount: calc.openAmount, interest_pct: n2(bd.interest_pct), tds_pct: n2(bd.tds_pct), days_year: daysYear, to_date: to, parts: [], gross: 0, tds: 0, net: 0, days: 0 };
   if (!received) return { ...out, from_date: fromIn, blocked: "This bill is not funded yet." };
   if (mode === "discounted") return { ...out, from_date: fromIn, blocked: "Interest was taken out when the bill was funded." };
   const A = accrualStart(bd, received);
   const from = String(fromIn).slice(0, 10) < A ? A : String(fromIn).slice(0, 10);
   out.from_date = from;
   if (from > to) return { ...out, blocked: received > to ? "Funded after this period." : "Nothing in this period." };
-  for (const p of paid) {
-    const pf = String(p.from_date).slice(0, 10) < A ? A : String(p.from_date).slice(0, 10);
-    const pt = String(p.to_date).slice(0, 10);
-    if (pf <= to && pt >= from) return { ...out, blocked: `Already paid ${pf} \u2192 ${pt}.`, paid_to: pt };
+  const steps = n2(bd.first_receipt_part) > 5e-3 ? [] : await principalRepaidByDate(bdId);
+  const worked = (f, t) => {
+    const split2 = bdInterestParts(calc.interestBase, steps, f, t, n2(bd.interest_pct), daysYear);
+    const days = daysBetween(f, t) + 1;
+    return { parts: split2.parts, days, gross: steps.length ? split2.gross : round2(calc.interestBase * n2(bd.interest_pct) * days / (100 * daysYear)) };
+  };
+  const spans = shortSpans(paid, A, worked);
+  out.short_before = spans.filter((s6) => s6.to < from && s6.short > 1);
+  for (const s6 of spans) {
+    if (!(s6.from <= to && s6.to >= from)) continue;
+    if (s6.from === from && s6.to === to && s6.short > 1) {
+      const w2 = worked(from, to);
+      const tds2 = round2(s6.short * n2(bd.tds_pct) / 100);
+      return { ...out, to_date: to, parts: w2.parts, days: w2.days, gross: s6.short, tds: tds2, net: round2(s6.short - tds2), balance_of: { from: s6.from, to: s6.to, due: s6.due, paid: s6.paid }, short_before: out.short_before, blocked: "" };
+    }
+    const bal = spans.filter((x) => x.short > 1 && x.from <= to && x.to >= from);
+    return { ...out, blocked: `Already paid ${s6.from} \u2192 ${s6.to}.` + (bal.length ? ` Balance ${inr(bal[0].short)} due \u2014 pick ${bal[0].from} \u2192 ${bal[0].to} alone to pay it.` : ""), paid_to: s6.to };
   }
   const g = firstUnpaid(paid, A);
   if (g.from < from) out.unpaid_before = { from: g.from, to: addDays(from, -1) };
+  const w = worked(from, to);
+  const gross = w.gross;
+  const tds = round2(gross * n2(bd.tds_pct) / 100);
+  return { ...out, parts: w.parts, days: w.days, gross, tds, net: round2(gross - tds), blocked: gross > 4e-3 ? "" : "Nothing has accrued." };
+}
+function shortSpans(paid, A, worked) {
+  const m = /* @__PURE__ */ new Map();
+  for (const p of paid) {
+    const f = String(p.from_date || "").slice(0, 10) < A ? A : String(p.from_date || "").slice(0, 10);
+    const t = String(p.to_date || "").slice(0, 10);
+    if (!t) continue;
+    const k = `${f}|${t}`;
+    const s6 = m.get(k) || { from: f, to: t, paid: 0 };
+    s6.paid = round2(s6.paid + n2(p.gross));
+    m.set(k, s6);
+  }
+  return Array.from(m.values()).sort((a, b) => a.from.localeCompare(b.from)).map((s6) => {
+    const due = s6.from <= s6.to ? worked(s6.from, s6.to).gross : 0;
+    return { ...s6, due, short: round2(Math.max(0, due - s6.paid)) };
+  });
+}
+async function bdInterestBalances(bdId) {
+  const bd = await loadBd(bdId);
+  const received = String(bd.payment_received_date || "").slice(0, 10);
+  const mode = String(bd.interest_mode || "") || (bd.interest_upfront ? "upfront" : "discounted");
+  if (!received || mode !== "serviced") return [];
+  const calc = bdCalc(bd);
   const daysYear = n2(bd.days_year) || 360;
   const steps = n2(bd.first_receipt_part) > 5e-3 ? [] : await principalRepaidByDate(bdId);
-  const split2 = bdInterestParts(calc.interestBase, steps, from, to, n2(bd.interest_pct), daysYear);
-  const days = daysBetween(from, to) + 1;
-  const gross = steps.length ? split2.gross : round2(calc.interestBase * n2(bd.interest_pct) * days / (100 * daysYear));
-  const tds = round2(gross * n2(bd.tds_pct) / 100);
-  return { ...out, parts: split2.parts, days, gross, tds, net: round2(gross - tds), blocked: gross > 4e-3 ? "" : "Nothing has accrued." };
+  const paid = toPlain3(await getClient().execute({ sql: "SELECT from_date, to_date, gross FROM bd_interest_payments WHERE bd_id = ?", args: [n2(bdId)] }));
+  return shortSpans(paid, accrualStart(bd, received), (f, t) => {
+    const days = daysBetween(f, t) + 1;
+    return { gross: steps.length ? bdInterestParts(calc.interestBase, steps, f, t, n2(bd.interest_pct), daysYear).gross : round2(calc.interestBase * n2(bd.interest_pct) * days / (100 * daysYear)) };
+  });
 }
 async function bdInterestWindow(bdId, toDate) {
   const bd = await loadBd(bdId);
@@ -6068,6 +6115,11 @@ async function bdCumulativeInterest(v) {
       paid_to: w.paid_to || null,
       parts: w.parts || [],
       unpaid_before: w.unpaid_before || null,
+      // A stretch picked again that was paid short: this is its balance.
+      balance_of: w.balance_of || null,
+      // Earlier stretches paid short — their balance still due.
+      short_before: w.short_before || [],
+      days_year: n2(w.days_year),
       blocked: w.blocked || ""
     });
   }
@@ -6124,7 +6176,7 @@ async function payBdCumulativeInterest(v) {
       await getClient().execute({
         sql: `INSERT INTO bd_interest_payments (bd_id, from_date, to_date, days, paid_date, gross, tds, net, note, journal_entry_id, bank_account)
               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        args: [n2(r.bd.id), String(r.w.from_date), to, n2(r.w.days), date, n2(r.w.gross), n2(r.w.tds), n2(r.w.net), `Cumulative interest \u2014 one voucher with ${nos}`, je.id, bank]
+        args: [n2(r.bd.id), String(r.w.from_date), String(r.w.to_date || to), n2(r.w.days), date, n2(r.w.gross), n2(r.w.tds), n2(r.w.net), (r.w.balance_of ? "Balance of short-paid interest \u2014 " : "Cumulative interest \u2014 ") + `one voucher with ${nos}`, je.id, bank]
       });
     }
     return { entry_id: je.id, bills: rows2.length, gross, tds, net };
