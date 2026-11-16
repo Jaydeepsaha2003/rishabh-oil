@@ -130,7 +130,8 @@ export function BdCumulativeInterest({ open, onClose, nbfcs, onDone }: { open: b
             : r2(Math.min(left, own(r)))
       const s2 = r2(Math.max(0, Math.min(share, left)))
       left = r2(left - s2)
-      m.set(n(r.bd_id), lumpAs === 'net' ? grossFromNet(s2, n(r.tds_pct)) : s2)
+      // A share equal to the bill's own net keeps its worked-out interest (two grosses can net the same).
+      m.set(n(r.bd_id), lumpAs === 'net' ? (Math.abs(s2 - n(r.net)) < 0.005 ? n(r.gross) : grossFromNet(s2, n(r.tds_pct))) : s2)
     })
     return m
     // eslint-disable-next-line react-hooks/exhaustive-deps
