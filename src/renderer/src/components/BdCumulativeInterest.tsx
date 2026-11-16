@@ -189,7 +189,7 @@ export function BdCumulativeInterest({ open, onClose, nbfcs, onDone }: { open: b
   const lbl = 'mb-1 block text-[10px] font-extrabold uppercase tracking-[.1em] text-[#5A6B62]'
   return (
     <Dialog open={open} onOpenChange={(o) => !o && !busy && onClose()}>
-      <DialogContent className="flex max-h-[94dvh] w-[96vw] max-w-[1240px] flex-col gap-0 overflow-hidden p-0 sm:max-w-[min(1240px,96vw)] [&>button]:!text-white">
+      <DialogContent className="flex max-h-[94dvh] w-[96vw] max-w-[1480px] flex-col gap-0 overflow-hidden p-0 sm:max-w-[min(1480px,96vw)] [&>button]:!text-white">
         <div className="flex-none bg-[#0B3D2E] px-5 py-3.5 pr-12 text-white">
           <div className="flex items-center gap-1.5 text-[9.5px] font-extrabold uppercase tracking-[.14em] text-[#C7F03F]">
             <Percent className="h-3.5 w-3.5" /> Bill discounting
@@ -283,8 +283,99 @@ export function BdCumulativeInterest({ open, onClose, nbfcs, onDone }: { open: b
           ) : rows.length === 0 ? (
             <div className="rounded-[4px] border border-dashed border-[#C9DCCF] py-10 text-center text-[12.5px] font-semibold text-[#5A6B62]">No open, funded bill with this NBFC.</div>
           ) : (
+            <div className="space-y-3">
+              <div className="flex flex-wrap items-end gap-x-5 gap-y-3 rounded-[6px] border border-[#DCE6DC] bg-[#F7FAF6] px-4 py-3">
+                {/* THE ONE ACTUAL PAID BOX — shared over the ticked bills below. */}
+                <div>
+                  <div className="mb-1 text-[10px] font-extrabold uppercase tracking-[.12em] text-[#0B3D2E]">Actual paid</div>
+                  <div className="flex h-11 w-[230px] items-center rounded-[6px] border-[1.5px] border-[#0B3D2E] bg-white shadow-[0_1px_2px_rgba(10,31,23,.06)] focus-within:ring-2 focus-within:ring-[#0B6B45]/20">
+                    <span className="pl-3 text-[15px] font-bold text-[#8CA396]">₹</span>
+                    <input
+                      inputMode="decimal"
+                      aria-label={lumpAs === 'net' ? 'Net paid from the bank for the ticked bills' : 'Lump sum of interest for the ticked bills'}
+                      title="Type a lump sum — it is shared over the ticked bills by the method chosen here"
+                      disabled={!sel.length}
+                      value={lump ?? inIN(lumpTotal ?? (lumpAs === 'net' ? tot.net : tot.gross))}
+                      onFocus={(e) => {
+                        setLump(String(lumpTotal ?? (lumpAs === 'net' ? tot.net : tot.gross)))
+                        const el = e.currentTarget
+                        setTimeout(() => el.select(), 0)
+                      }}
+                      onChange={(e) => {
+                        const v = e.target.value.replace(/[^0-9.]/g, '')
+                        setLump(v)
+                        // Shared out as it is typed.
+                        setLumpTotal(n(v) > 0 ? r2(n(v)) : null)
+                      }}
+                      onBlur={() => setLump(null)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') e.currentTarget.blur()
+                      }}
+                      className="h-full min-w-0 flex-1 bg-transparent pr-3 text-right text-[16px] font-extrabold tabular-nums text-[#0A1F17] outline-none disabled:opacity-60"
+                    />
+                  </div>
+                  <div className="mt-1 text-[10.5px] font-semibold text-[#5A6B62]">
+                    {lumpAs === 'net' ? (lumpTotal != null ? 'Net from the bank — shared below' : 'Type the net that left the bank') : lumpTotal != null ? 'Interest before TDS — shared below' : 'Type the interest before TDS'}
+                  </div>
+                </div>
+                <div>
+                  <div className="mb-1 text-[10px] font-extrabold uppercase tracking-[.12em] text-[#5A6B62]">The figure is</div>
+                  <span className="flex rounded-[4px] border border-[#C9DCCF] bg-white p-0.5">
+                    {(
+                      [
+                        ['net', 'Net from bank'],
+                        ['gross', 'Interest (before TDS)']
+                      ] as const
+                    ).map(([k, label]) => (
+                      <button
+                        key={k}
+                        type="button"
+                        onClick={() => {
+                          if (k === lumpAs) return
+                          setLumpAs(k)
+                          setLumpTotal(null)
+                          setLump(null)
+                        }}
+                        className={cn('whitespace-nowrap rounded-[3px] px-3 py-1.5 text-[12px] font-extrabold', lumpAs === k ? 'bg-[#0B3D2E] text-white' : 'text-[#33473E] hover:bg-[#F0F8F3]')}
+                      >
+                        {label}
+                      </button>
+                    ))}
+                  </span>
+                </div>
+                <div>
+                  <div className="mb-1 text-[10px] font-extrabold uppercase tracking-[.12em] text-[#5A6B62]">Share it</div>
+                  <span className="flex rounded-[4px] border border-[#C9DCCF] bg-white p-0.5">
+                    {(
+                      [
+                        ['fifo', 'Oldest first'],
+                        ['lifo', 'Newest first'],
+                        ['pro', 'In proportion'],
+                        ['equal', 'Equally']
+                      ] as const
+                    ).map(([k, label]) => (
+                      <button
+                        key={k}
+                        type="button"
+                        onClick={() => setHow(k)}
+                        className={cn(
+                          'whitespace-nowrap rounded-[3px] px-3 py-1.5 text-[12px] font-extrabold',
+                          how === k ? 'bg-[#0B3D2E] text-white' : 'text-[#33473E] hover:bg-[#F0F8F3]'
+                        )}
+                      >
+                        {label}
+                      </button>
+                    ))}
+                  </span>
+                </div>
+                {lumpTotal != null && (
+                  <button type="button" onClick={resetAll} className="mb-2 text-[12px] font-extrabold text-[#8A5300] hover:underline">
+                    Reset all to worked out
+                  </button>
+                )}
+              </div>
             <div className="overflow-x-auto rounded-[6px] border border-[#DCE6DC] bg-white">
-              <table className="w-full min-w-[960px] text-[12.5px]">
+              <table className="w-full min-w-[900px] text-[12.5px]">
                 <thead className="border-b border-[#DCE6DC] bg-[#F5F8F4] text-[9.5px] font-extrabold uppercase tracking-[.1em] text-[#5A6B62]">
                   <tr>
                     <th className="w-10 px-3 py-2.5 text-left">
@@ -514,95 +605,11 @@ export function BdCumulativeInterest({ open, onClose, nbfcs, onDone }: { open: b
                 </tbody>
                 <tfoot>
                   <tr className="border-t border-[#DCE6DC] bg-[#F5F8F4] font-extrabold">
-                    <td colSpan={4} className="px-3 py-2.5">
-                      <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5">
-                        <span className="text-[11px] font-extrabold uppercase tracking-[.1em] text-[#33473E]">
-                          {sel.length} of {payable.length} bill{payable.length === 1 ? '' : 's'} paid
-                        </span>
-                        {/* How a lump sum is shared — live, changeable at any time. */}
-                        <span className="flex items-center gap-1.5 normal-case">
-                          <span className="text-[10px] font-extrabold uppercase tracking-[.1em] text-[#5A6B62]">Lump sum is</span>
-                          <span className="flex rounded-[4px] border border-[#C9DCCF] bg-white p-0.5">
-                            {(
-                              [
-                                ['net', 'Net from bank'],
-                                ['gross', 'Interest (before TDS)']
-                              ] as const
-                            ).map(([k, label]) => (
-                              <button
-                                key={k}
-                                type="button"
-                                onClick={() => {
-                                  if (k === lumpAs) return
-                                  setLumpAs(k)
-                                  setLumpTotal(null)
-                                  setLump(null)
-                                }}
-                                className={cn('whitespace-nowrap rounded-[3px] px-2 py-0.5 text-[11px] font-extrabold', lumpAs === k ? 'bg-[#0B3D2E] text-white' : 'text-[#33473E] hover:bg-[#F0F8F3]')}
-                              >
-                                {label}
-                              </button>
-                            ))}
-                          </span>
-                          <span className="text-[10px] font-extrabold uppercase tracking-[.1em] text-[#5A6B62]">shared</span>
-                          <span className="flex rounded-[4px] border border-[#C9DCCF] bg-white p-0.5">
-                            {(
-                              [
-                                ['fifo', 'Oldest first'],
-                                ['lifo', 'Newest first'],
-                                ['pro', 'In proportion'],
-                                ['equal', 'Equally']
-                              ] as const
-                            ).map(([k, label]) => (
-                              <button
-                                key={k}
-                                type="button"
-                                onClick={() => setHow(k)}
-                                className={cn(
-                                  'whitespace-nowrap rounded-[3px] px-2 py-0.5 text-[11px] font-extrabold',
-                                  how === k ? 'bg-[#0B3D2E] text-white' : 'text-[#33473E] hover:bg-[#F0F8F3]'
-                                )}
-                              >
-                                {label}
-                              </button>
-                            ))}
-                          </span>
-                        </span>
-                        {lumpTotal != null && (
-                          <button type="button" onClick={resetAll} className="text-[11px] font-extrabold normal-case text-[#8A5300] hover:underline">
-                            Reset all to worked out
-                          </button>
-                        )}
-                      </div>
+                    <td colSpan={4} className="px-3 py-2.5 text-[11px] font-extrabold uppercase tracking-[.1em] text-[#33473E]">
+                      Total · {sel.length} of {payable.length} bill{payable.length === 1 ? '' : 's'} paid
                     </td>
                     <td className="whitespace-nowrap px-2 py-2.5 text-right tabular-nums text-[#33473E]">{formatINR(r2(pool.reduce((t, r) => t + n(r.gross), 0)))}</td>
-                    <td className="whitespace-nowrap px-2 py-1.5 text-right">
-                      {/* Type a lump sum for all the ticked bills. */}
-                      <input
-                        inputMode="decimal"
-                        aria-label={lumpAs === 'net' ? 'Net paid from the bank for the ticked bills' : 'Lump sum of interest for the ticked bills'}
-                        title="Type a lump sum — it is shared over the ticked bills by the method chosen on the left"
-                        disabled={!sel.length}
-                        value={lump ?? inIN(lumpTotal ?? (lumpAs === 'net' ? tot.net : tot.gross))}
-                        onFocus={(e) => {
-                          setLump(String(lumpTotal ?? (lumpAs === 'net' ? tot.net : tot.gross)))
-                          const el = e.currentTarget
-                          setTimeout(() => el.select(), 0)
-                        }}
-                        onChange={(e) => {
-                          const v = e.target.value.replace(/[^0-9.]/g, '')
-                          setLump(v)
-                          // Shared out as it is typed.
-                          setLumpTotal(n(v) > 0 ? r2(n(v)) : null)
-                        }}
-                        onBlur={() => setLump(null)}
-                        onKeyDown={(e) => {
-                          if (e.key === 'Enter') e.currentTarget.blur()
-                        }}
-                        className="h-8 w-[130px] rounded-[4px] border border-[#0B3D2E] bg-white px-2 text-right text-[12.5px] font-extrabold tabular-nums text-[#0A1F17] disabled:opacity-60"
-                      />
-                      <span className="mt-0.5 block text-[10px] font-bold normal-case text-[#5A6B62]">{lumpAs === 'net' ? (lumpTotal != null ? 'net from bank · shared' : 'type the net from bank') : lumpTotal != null ? 'interest · shared' : 'type the interest'}</span>
-                    </td>
+                    <td className={cn('whitespace-nowrap px-2 py-2.5 text-right tabular-nums', lumpTotal != null ? 'text-[#8A5300]' : 'text-[#0A1F17]')}>{formatINR(tot.gross)}</td>
                     <td className="whitespace-nowrap px-2 py-2.5 text-right tabular-nums text-[#B3261E]">
                       {(() => {
                         const left = r2(pool.reduce((t, r) => t + n(r.gross) - fig(r).gross, 0))
@@ -615,6 +622,7 @@ export function BdCumulativeInterest({ open, onClose, nbfcs, onDone }: { open: b
                   </tr>
                 </tfoot>
               </table>
+            </div>
             </div>
           )}
 
