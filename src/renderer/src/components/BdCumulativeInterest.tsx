@@ -284,7 +284,7 @@ export function BdCumulativeInterest({ open, onClose, nbfcs, onDone }: { open: b
             <div className="rounded-[4px] border border-dashed border-[#C9DCCF] py-10 text-center text-[12.5px] font-semibold text-[#5A6B62]">No open, funded bill with this NBFC.</div>
           ) : (
             <div className="overflow-x-auto rounded-[6px] border border-[#DCE6DC] bg-white">
-              <table className="w-full min-w-[1040px] text-[12.5px]">
+              <table className="w-full min-w-[960px] text-[12.5px]">
                 <thead className="border-b border-[#DCE6DC] bg-[#F5F8F4] text-[9.5px] font-extrabold uppercase tracking-[.1em] text-[#5A6B62]">
                   <tr>
                     <th className="w-10 px-3 py-2.5 text-left">
@@ -298,8 +298,6 @@ export function BdCumulativeInterest({ open, onClose, nbfcs, onDone }: { open: b
                     <th className="px-2 py-2.5 text-left">Bill</th>
                     <th className="px-2 py-2.5 text-right">Principal</th>
                     <th className="px-2 py-2.5 text-left">Period</th>
-                    <th className="px-2 py-2.5 text-right">Days</th>
-                    <th className="px-2 py-2.5 text-right">Rate</th>
                     <th className="px-2 py-2.5 text-right">Worked out</th>
                     <th className="px-2 py-2.5 text-right text-[#0B3D2E]">Actual paid</th>
                     <th className="px-2 py-2.5 text-right">Remaining</th>
@@ -354,18 +352,24 @@ export function BdCumulativeInterest({ open, onClose, nbfcs, onDone }: { open: b
                             </div>
                             <div className="mt-1 max-w-[230px] truncate text-[11px] font-semibold text-[#7A8C82]">{String(r.party || '')}</div>
                           </td>
-                          <td className="whitespace-nowrap px-2 py-2.5 text-right align-top tabular-nums">{formatINR(n(r.principal))}</td>
+                          <td className="whitespace-nowrap px-2 py-2.5 text-right align-top tabular-nums">
+                            <div className="font-semibold text-[#0A1F17]">{formatINR(n(r.principal))}</div>
+                            <div className="mt-1 text-[10.5px] font-bold text-[#7A8C82]">@ {n(r.interest_pct)}% p.a.</div>
+                          </td>
                           <td className="px-2 py-2.5 align-top">
                             {r.blocked ? (
                               <span className="text-[11.5px] font-semibold">{String(r.blocked)}</span>
                             ) : (
                               <>
-                                <span className="whitespace-nowrap font-semibold tabular-nums text-[#0A1F17]">
-                                  {formatDate(String(r.from_date))} → {formatDate(String(r.to_date))}
-                                </span>
+                                <div className="flex flex-wrap items-center gap-1.5">
+                                  <span className="whitespace-nowrap font-semibold tabular-nums text-[#0A1F17]">
+                                    {formatDate(String(r.from_date))} → {formatDate(String(r.to_date))}
+                                  </span>
+                                  <span className="whitespace-nowrap rounded-full bg-[#EEF3EE] px-2 py-0.5 text-[10.5px] font-extrabold tabular-nums text-[#33473E]">{n(r.days)} days</span>
+                                </div>
                                 {/* Days before this period still unpaid: overdue, said, not paid here. */}
                                 {r.unpaid_before && (
-                                  <span className="mt-1 flex items-center gap-1 text-[10.5px] font-bold text-[#B3261E]" title="These earlier days are still unpaid — pay them with a range that covers them">
+                                  <span className="mt-1.5 flex w-fit items-center gap-1 whitespace-nowrap rounded-[4px] border border-[#F3D0CC] bg-[#FDF3F2] px-1.5 py-0.5 text-[10.5px] font-bold tabular-nums text-[#B3261E]" title="These earlier days are still unpaid — pay them with a range that covers them">
                                     <span className="h-1.5 w-1.5 rounded-full bg-[#B3261E]" /> <span className="tracking-[.06em]">UNPAID</span> {formatDate(String(r.unpaid_before.from))} → {formatDate(String(r.unpaid_before.to))}
                                   </span>
                                 )}
@@ -373,7 +377,7 @@ export function BdCumulativeInterest({ open, onClose, nbfcs, onDone }: { open: b
                                 {shortBefore.map((s) => (
                                   <span
                                     key={`${s.from}|${s.to}`}
-                                    className="mt-1 flex items-center gap-1 text-[10.5px] font-bold text-[#B3261E]"
+                                    className="mt-1.5 flex w-fit items-center gap-1 whitespace-nowrap rounded-[4px] border border-[#F3D0CC] bg-[#FDF3F2] px-1.5 py-0.5 text-[10.5px] font-bold tabular-nums text-[#B3261E]"
                                     title={`Worked out ${formatINR(n(s.due))}, paid ${formatINR(n(s.paid))} — pick ${formatDate(String(s.from))} → ${formatDate(String(s.to))} to pay the balance`}
                                   >
                                     <span className="h-1.5 w-1.5 rounded-full bg-[#B3261E]" /> <span className="tracking-[.06em]">BALANCE</span> {formatINR(n(s.short))} for {formatDate(String(s.from))} → {formatDate(String(s.to))}
@@ -382,8 +386,6 @@ export function BdCumulativeInterest({ open, onClose, nbfcs, onDone }: { open: b
                               </>
                             )}
                           </td>
-                          <td className="px-2 py-2.5 text-right align-top tabular-nums">{r.blocked ? '—' : n(r.days)}</td>
-                          <td className="px-2 py-2.5 text-right align-top tabular-nums">{n(r.interest_pct)}%</td>
                           {/* WORKED OUT (fixed) · ACTUAL PAID (typed) · REMAINING (fixed). */}
                           <td className="whitespace-nowrap px-2 py-2.5 text-right align-top font-semibold tabular-nums text-[#33473E]">{r.blocked ? '—' : formatINR(n(r.gross))}</td>
                           <td className="whitespace-nowrap px-2 py-2.5 text-right align-top">
@@ -425,7 +427,7 @@ export function BdCumulativeInterest({ open, onClose, nbfcs, onDone }: { open: b
                         {isOpen && !r.blocked && (
                           <tr className="bg-[#F3F9F1]">
                             <td />
-                            <td colSpan={11} className="px-2 pb-3 pt-0.5">
+                            <td colSpan={9} className="px-2 pb-3 pt-0.5">
                               <div className="rounded-[6px] border border-[#DCE6DC] bg-white">
                                 <div className="flex flex-wrap items-center gap-2 border-b border-[#EEF3EE] px-3 py-2">
                                   <span className="text-[10px] font-extrabold uppercase tracking-[.12em] text-[#5A6B62]">How {String(r.bd_no)}&apos;s interest is worked out</span>
@@ -512,7 +514,7 @@ export function BdCumulativeInterest({ open, onClose, nbfcs, onDone }: { open: b
                 </tbody>
                 <tfoot>
                   <tr className="border-t border-[#DCE6DC] bg-[#F5F8F4] font-extrabold">
-                    <td colSpan={6} className="px-3 py-2.5">
+                    <td colSpan={4} className="px-3 py-2.5">
                       <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5">
                         <span className="text-[11px] font-extrabold uppercase tracking-[.1em] text-[#33473E]">
                           {sel.length} of {payable.length} bill{payable.length === 1 ? '' : 's'} paid
