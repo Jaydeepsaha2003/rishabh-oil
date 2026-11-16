@@ -8541,7 +8541,8 @@ Its bank voucher is removed too.`)) return
 
       {/* WHAT THIS BILL PUT IN THE LEDGERS — see LedgerPostings. */}
       <LedgerPostings target={postings} onClose={() => setPostings(null)} />
-      <BdCumulativeInterest open={cumOpen} onClose={() => setCumOpen(false)} nbfcs={nbfcs} onDone={() => void load()} />
+      {/* Mounted only while open: every open (and every one after a payment) starts clean. */}
+      {cumOpen && <BdCumulativeInterest open onClose={() => setCumOpen(false)} nbfcs={nbfcs} onDone={() => void load()} />}
     </div>
   )
 }
