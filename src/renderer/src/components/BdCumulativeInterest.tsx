@@ -57,6 +57,8 @@ export function BdCumulativeInterest({ open, onClose, nbfcs, onDone }: { open: b
   const [openId, setOpenId] = useState<number | null>(null)
   // Interest typed over the worked-out figure, per bill (more or less).
   const [edits, setEdits] = useState<Record<number, string>>({})
+  // The box being typed in shows plain digits; every other one shows commas.
+  const [typingId, setTypingId] = useState<number | null>(null)
 
   // The period's last day is what each bill is paid up to — never past today.
   const upto = useMemo(() => {
@@ -151,6 +153,16 @@ export function BdCumulativeInterest({ open, onClose, nbfcs, onDone }: { open: b
     gross: r2(sel.reduce((t, r) => t + fig(r).gross, 0)),
     tds: r2(sel.reduce((t, r) => t + fig(r).tds, 0)),
     net: r2(sel.reduce((t, r) => t + fig(r).net, 0))
+  }
+  // One bill's actual paid typed while a lump sum is shared: the shares become
+  // the starting figures, and the sum is let go.
+  const editOne = (id: number, v: string): void => {
+    if (lumpTotal != null) {
+      const fixed: Record<number, string> = {}
+      shares.forEach((sh, k) => (fixed[k] = String(sh)))
+      setEdits({ ...fixed, [id]: v })
+      setLumpTotal(null)
+    } else setEdits((p) => ({ ...p, [id]: v }))
   }
   const resetAll = (): void => {
     setEdits({})
@@ -280,7 +292,7 @@ export function BdCumulativeInterest({ open, onClose, nbfcs, onDone }: { open: b
             <div className="rounded-[4px] border border-dashed border-[#C9DCCF] py-10 text-center text-[12.5px] font-semibold text-[#5A6B62]">No open, funded bill with this NBFC.</div>
           ) : (
             <div className="overflow-x-auto rounded-[6px] border border-[#DCE6DC] bg-white">
-              <table className="w-full min-w-[860px] text-[12.5px]">
+              <table className="w-full min-w-[1040px] text-[12.5px]">
                 <thead className="border-b border-[#DCE6DC] bg-[#F5F8F4] text-[9.5px] font-extrabold uppercase tracking-[.1em] text-[#5A6B62]">
                   <tr>
                     <th className="w-10 px-3 py-2.5 text-left">
@@ -296,7 +308,9 @@ export function BdCumulativeInterest({ open, onClose, nbfcs, onDone }: { open: b
                     <th className="px-2 py-2.5 text-left">Period</th>
                     <th className="px-2 py-2.5 text-right">Days</th>
                     <th className="px-2 py-2.5 text-right">Rate</th>
-                    <th className="px-2 py-2.5 text-right">Interest</th>
+                    <th className="px-2 py-2.5 text-right">Worked out</th>
+                    <th className="px-2 py-2.5 text-right text-[#0B3D2E]">Actual paid</th>
+                    <th className="px-2 py-2.5 text-right">Remaining</th>
                     <th className="px-2 py-2.5 text-right">TDS</th>
                     <th className="px-3 py-2.5 text-right">Net</th>
                     <th className="w-8" />
@@ -378,33 +392,58 @@ export function BdCumulativeInterest({ open, onClose, nbfcs, onDone }: { open: b
                           </td>
                           <td className="px-2 py-2.5 text-right align-top tabular-nums">{r.blocked ? '—' : n(r.days)}</td>
                           <td className="px-2 py-2.5 text-right align-top tabular-nums">{n(r.interest_pct)}%</td>
-                          <td className="whitespace-nowrap px-2 py-2 text-right align-top">
+                          {/* WORKED OUT (fixed) · ACTUAL PAID (typed) · REMAINING (fixed). */}
+                          <td className="whitespace-nowrap px-2 py-2.5 text-right align-top font-semibold tabular-nums text-[#33473E]">{r.blocked ? '—' : formatINR(n(r.gross))}</td>
+                          <td className="whitespace-nowrap px-2 py-1.5 text-right align-top">
                             {r.blocked ? (
                               '—'
                             ) : (
                               <>
-                                {/* Worked out — not typed over; a lump sum below shares it. */}
-                                <span
-                                  aria-label={`Interest paid on ${String(r.bd_no)}`}
+                                <div
                                   className={cn(
-                                    'inline-block min-w-[110px] rounded-[5px] px-2 py-1 text-right text-[12.5px] font-bold tabular-nums',
-                                    !on && 'opacity-60',
-                                    fig(r).edited ? 'bg-[#FFF8EC] text-[#8A5300]' : 'text-[#0A1F17]'
+                                    'ml-auto flex h-9 w-[138px] items-center rounded-[6px] border bg-white shadow-[inset_0_1px_2px_rgba(10,31,23,.06)] focus-within:border-[#0B6B45] focus-within:ring-2 focus-within:ring-[#0B6B45]/15',
+                                    !on && 'opacity-50',
+                                    fig(r).edited ? 'border-[#E3B66B] bg-[#FFFBF3]' : 'border-[#C3D2C6]'
                                   )}
                                 >
-                                  {inIN(fig(r).gross)}
-                                </span>
+                                  <span className="pl-2.5 text-[12px] font-bold text-[#8CA396]">₹</span>
+                                  <input
+                                    inputMode="decimal"
+                                    aria-label={`Interest actually paid on ${String(r.bd_no)}`}
+                                    disabled={!on}
+                                    value={typingId === id ? (edits[id] ?? String(fig(r).gross)) : inIN(fig(r).gross)}
+                                    onFocus={(e) => {
+                                      setTypingId(id)
+                                      const el = e.currentTarget
+                                      setTimeout(() => el.select(), 0)
+                                    }}
+                                    onBlur={() => setTypingId(null)}
+                                    onChange={(e) => editOne(id, e.target.value.replace(/[^0-9.]/g, ''))}
+                                    onKeyDown={(e) => {
+                                      if (e.key === 'Enter') e.currentTarget.blur()
+                                    }}
+                                    className={cn('h-full min-w-0 flex-1 bg-transparent pr-2.5 text-right text-[13px] font-extrabold tabular-nums outline-none', fig(r).edited ? 'text-[#8A5300]' : 'text-[#0A1F17]')}
+                                  />
+                                </div>
                                 {lumpTotal != null && on && !(fig(r).gross > 0.004) && (
                                   <span className="mt-0.5 block text-right text-[10px] font-bold text-[#8CA396]">nothing left for this bill</span>
                                 )}
-                                {fig(r).edited && fig(r).gross > 0.004 && (
-                                  <span className="mt-0.5 block text-right text-[10px] font-bold text-[#8A5300]">
-                                    {fig(r).gross > n(r.gross) ? '+' : '−'}
-                                    {formatINR(Math.abs(r2(fig(r).gross - n(r.gross))))} vs {formatINR(n(r.gross))}
-                                  </span>
-                                )}
                               </>
                             )}
+                          </td>
+                          <td className="whitespace-nowrap px-2 py-2.5 text-right align-top tabular-nums">
+                            {r.blocked || !on ? (
+                              '—'
+                            ) : (() => {
+                              const left = r2(n(r.gross) - fig(r).gross)
+                              return Math.abs(left) < 0.005 ? (
+                                <span className="text-[#9AAFA2]">nil</span>
+                              ) : left > 0 ? (
+                                <span className="font-bold text-[#B3261E]" title="Stays due on this period — pick it again later to pay it">{formatINR(left)}</span>
+                              ) : (
+                                <span className="font-bold text-[#8A5300]" title="Paid more than worked out">+{formatINR(-left)} over</span>
+                              )
+                            })()}
                           </td>
                           <td className="whitespace-nowrap px-2 py-2.5 text-right align-top tabular-nums">{r.blocked ? '—' : formatINR(fig(r).tds)}</td>
                           <td className="whitespace-nowrap px-3 py-2.5 text-right align-top font-bold tabular-nums text-[#0B6B45]">{r.blocked ? '—' : formatINR(fig(r).net)}</td>
@@ -416,7 +455,7 @@ export function BdCumulativeInterest({ open, onClose, nbfcs, onDone }: { open: b
                         {isOpen && !r.blocked && (
                           <tr className="bg-[#F3F9F1]">
                             <td />
-                            <td colSpan={9} className="px-2 pb-3 pt-0.5">
+                            <td colSpan={11} className="px-2 pb-3 pt-0.5">
                               <div className="rounded-[6px] border border-[#DCE6DC] bg-white">
                                 <div className="flex flex-wrap items-center gap-2 border-b border-[#EEF3EE] px-3 py-2">
                                   <span className="text-[10px] font-extrabold uppercase tracking-[.12em] text-[#5A6B62]">How {String(r.bd_no)}&apos;s interest is worked out</span>
@@ -564,6 +603,7 @@ export function BdCumulativeInterest({ open, onClose, nbfcs, onDone }: { open: b
                         )}
                       </div>
                     </td>
+                    <td className="whitespace-nowrap px-2 py-2.5 text-right tabular-nums text-[#33473E]">{formatINR(r2(pool.reduce((t, r) => t + n(r.gross), 0)))}</td>
                     <td className="whitespace-nowrap px-2 py-1.5 text-right">
                       {/* Type a lump sum for all the ticked bills. */}
                       <input
@@ -590,6 +630,12 @@ export function BdCumulativeInterest({ open, onClose, nbfcs, onDone }: { open: b
                         className="h-8 w-[130px] rounded-[4px] border border-[#0B3D2E] bg-white px-2 text-right text-[12.5px] font-extrabold tabular-nums text-[#0A1F17] disabled:opacity-60"
                       />
                       <span className="mt-0.5 block text-[10px] font-bold normal-case text-[#5A6B62]">{lumpAs === 'net' ? (lumpTotal != null ? 'net from bank · shared' : 'type the net from bank') : lumpTotal != null ? 'interest · shared' : 'type the interest'}</span>
+                    </td>
+                    <td className="whitespace-nowrap px-2 py-2.5 text-right tabular-nums text-[#B3261E]">
+                      {(() => {
+                        const left = r2(pool.reduce((t, r) => t + n(r.gross) - fig(r).gross, 0))
+                        return Math.abs(left) < 0.005 ? <span className="text-[#9AAFA2]">nil</span> : left > 0 ? formatINR(left) : <span className="text-[#8A5300]">+{formatINR(-left)} over</span>
+                      })()}
                     </td>
                     <td className="whitespace-nowrap px-2 py-2.5 text-right tabular-nums">{formatINR(tot.tds)}</td>
                     <td className="whitespace-nowrap px-3 py-2.5 text-right tabular-nums text-[#0B6B45]">{formatINR(tot.net)}</td>
