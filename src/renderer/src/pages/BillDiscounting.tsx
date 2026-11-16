@@ -7622,6 +7622,15 @@ export function BillDiscounting({
                             <span className="text-[11px] font-bold text-[#0B6B45]">
                               {r.mode === 'with_repayment' ? `paid ${formatINR(n(r.paid_gross))} with the repayment` : `paid ${formatDate(String(r.paid_date))}`}
                             </span>
+                            {/* Paid short: the balance still due on this rest. */}
+                            {r.mode !== 'with_repayment' && n(r.gross) - n(r.paid_gross) > 1 && (
+                              <span
+                                className="rounded-[3px] border border-[#F0C9C5] bg-[#FDF0EE] px-1.5 py-0.5 text-[10.5px] font-extrabold text-[#B3261E]"
+                                title={`Paid ${formatINR(n(r.paid_gross))} of ${formatINR(n(r.gross))} — pay the balance from Pay cumulative interest, picking this period`}
+                              >
+                                balance {formatINR(n(r.gross) - n(r.paid_gross))}
+                              </span>
+                            )}
                             {/* RECORDED IS NOT THE SAME AS ON THE LEDGER.
                                 A slice paid without posting sits here exactly
                                 as a posted one does — the schedule has moved

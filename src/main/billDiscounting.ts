@@ -2099,6 +2099,10 @@ export async function bdInterestSchedule(bdId: number): Promise<Row[]> {
     // A payment already made is matched to its slice by the day it covers to,
     // so a schedule regenerated after an edit still knows what has been paid.
     const done = paid.find((p) => String(p.to_date).slice(0, 10) === end)
+    // A rest paid short and topped up later carries two payments: both count.
+    const onRest = paid.filter((p) => String(p.to_date).slice(0, 10) === end)
+    const paidGross = round2(onRest.reduce((t, p) => t + n(p.gross), 0))
+    const paidNet = round2(onRest.reduce((t, p) => t + n(p.net), 0))
     out.push({
       seq: i + 1,
       // THE DAY AFTER THE LAST ONE ENDED, which is what the payment screen
@@ -2116,8 +2120,8 @@ export async function bdInterestSchedule(bdId: number): Promise<Row[]> {
       last,
       paid_id: done ? n(done.id) : null,
       paid_date: done ? String(done.paid_date).slice(0, 10) : null,
-      paid_gross: done ? n(done.gross) : 0,
-      paid_net: done ? n(done.net) : 0,
+      paid_gross: paidGross,
+      paid_net: paidNet,
       // Whether a payment recorded against this slice actually reached the
       // ledger. A slice can be serviced without being posted, when the desk
       // chose to record it and post later — see payBdInterest's `post` flag.
@@ -2277,30 +2281,85 @@ export async function bdInterestRange(bdId: number, fromIn: string, toIn: string
   const mode = String(bd.interest_mode || '') || (bd.interest_upfront ? 'upfront' : 'discounted')
   const today = todayISO()
   const to = (String(toIn).slice(0, 10) > today ? today : String(toIn).slice(0, 10))
-  const paid = toPlain(await getClient().execute({ sql: 'SELECT from_date, to_date FROM bd_interest_payments WHERE bd_id = ? ORDER BY from_date', args: [n(bdId)] }))
-  const out: Row = { bd_id: n(bdId), interest_base: calc.interestBase, open_amount: calc.openAmount, interest_pct: n(bd.interest_pct), tds_pct: n(bd.tds_pct), to_date: to, parts: [], gross: 0, tds: 0, net: 0, days: 0 }
+  const paid = toPlain(await getClient().execute({ sql: 'SELECT from_date, to_date, gross FROM bd_interest_payments WHERE bd_id = ? ORDER BY from_date', args: [n(bdId)] }))
+  const daysYear = n(bd.days_year) || 360
+  const out: Row = { bd_id: n(bdId), interest_base: calc.interestBase, open_amount: calc.openAmount, interest_pct: n(bd.interest_pct), tds_pct: n(bd.tds_pct), days_year: daysYear, to_date: to, parts: [], gross: 0, tds: 0, net: 0, days: 0 }
   if (!received) return { ...out, from_date: fromIn, blocked: 'This bill is not funded yet.' }
   if (mode === 'discounted') return { ...out, from_date: fromIn, blocked: 'Interest was taken out when the bill was funded.' }
   const A = accrualStart(bd, received)
   const from = String(fromIn).slice(0, 10) < A ? A : String(fromIn).slice(0, 10)
   out.from_date = from
   if (from > to) return { ...out, blocked: received > to ? 'Funded after this period.' : 'Nothing in this period.' }
-  // Already paid inside the range? Then it cannot be paid again.
-  for (const p of paid) {
-    const pf = String(p.from_date).slice(0, 10) < A ? A : String(p.from_date).slice(0, 10)
-    const pt = String(p.to_date).slice(0, 10)
-    if (pf <= to && pt >= from) return { ...out, blocked: `Already paid ${pf} → ${pt}.`, paid_to: pt }
+  const steps = n(bd.first_receipt_part) > 0.005 ? [] : await principalRepaidByDate(bdId)
+  const worked = (f: string, t: string): { parts: Row[]; gross: number; days: number } => {
+    const split = bdInterestParts(calc.interestBase, steps, f, t, n(bd.interest_pct), daysYear)
+    const days = daysBetween(f, t) + 1
+    return { parts: split.parts, days, gross: steps.length ? split.gross : round2((calc.interestBase * n(bd.interest_pct) * days) / (100 * daysYear)) }
+  }
+  // PAID SHORT LEAVES A BALANCE. Each paid stretch (all its payments together)
+  // against what that stretch works out to — worked out live, nothing stored.
+  const spans = shortSpans(paid, A, worked)
+  out.short_before = spans.filter((s) => s.to < from && s.short > 1)
+  // Already paid inside the range? Then it cannot be paid again — except the
+  // very same stretch picked again while it was paid short: then its balance.
+  for (const s of spans) {
+    if (!(s.from <= to && s.to >= from)) continue
+    if (s.from === from && s.to === to && s.short > 1) {
+      const w = worked(from, to)
+      const tds = round2((s.short * n(bd.tds_pct)) / 100)
+      return { ...out, to_date: to, parts: w.parts, days: w.days, gross: s.short, tds, net: round2(s.short - tds), balance_of: { from: s.from, to: s.to, due: s.due, paid: s.paid }, short_before: out.short_before, blocked: '' }
+    }
+    const bal = spans.filter((x) => x.short > 1 && x.from <= to && x.to >= from)
+    return { ...out, blocked: `Already paid ${s.from} → ${s.to}.` + (bal.length ? ` Balance ${inr(bal[0].short)} due — pick ${bal[0].from} → ${bal[0].to} alone to pay it.` : ''), paid_to: s.to }
   }
   // Days before the range still unpaid — overdue, said, but not in the way.
   const g = firstUnpaid(paid, A)
   if (g.from < from) out.unpaid_before = { from: g.from, to: addDays(from, -1) }
+  const w = worked(from, to)
+  const gross = w.gross
+  const tds = round2((gross * n(bd.tds_pct)) / 100)
+  return { ...out, parts: w.parts, days: w.days, gross, tds, net: round2(gross - tds), blocked: gross > 0.004 ? '' : 'Nothing has accrued.' }
+}
+
+// Paid stretches of a bill, the payments on the same days added together, each
+// against what those days work out to: `short` is what is still to pay on it.
+function shortSpans(
+  paid: Row[],
+  A: string,
+  worked: (f: string, t: string) => { gross: number }
+): { from: string; to: string; due: number; paid: number; short: number }[] {
+  const m = new Map<string, { from: string; to: string; paid: number }>()
+  for (const p of paid) {
+    const f = String(p.from_date || '').slice(0, 10) < A ? A : String(p.from_date || '').slice(0, 10)
+    const t = String(p.to_date || '').slice(0, 10)
+    if (!t) continue
+    const k = `${f}|${t}`
+    const s = m.get(k) || { from: f, to: t, paid: 0 }
+    s.paid = round2(s.paid + n(p.gross))
+    m.set(k, s)
+  }
+  return Array.from(m.values())
+    .sort((a, b) => a.from.localeCompare(b.from))
+    .map((s) => {
+      const due = s.from <= s.to ? worked(s.from, s.to).gross : 0
+      return { ...s, due, short: round2(Math.max(0, due - s.paid)) }
+    })
+}
+
+/** Each interest payment's stretch against what it works out to — the balance on a stretch paid short. */
+export async function bdInterestBalances(bdId: number): Promise<Row[]> {
+  const bd = await loadBd(bdId)
+  const received = String(bd.payment_received_date || '').slice(0, 10)
+  const mode = String(bd.interest_mode || '') || (bd.interest_upfront ? 'upfront' : 'discounted')
+  if (!received || mode !== 'serviced') return []
+  const calc = bdCalc(bd)
   const daysYear = n(bd.days_year) || 360
   const steps = n(bd.first_receipt_part) > 0.005 ? [] : await principalRepaidByDate(bdId)
-  const split = bdInterestParts(calc.interestBase, steps, from, to, n(bd.interest_pct), daysYear)
-  const days = daysBetween(from, to) + 1
-  const gross = steps.length ? split.gross : round2((calc.interestBase * n(bd.interest_pct) * days) / (100 * daysYear))
-  const tds = round2((gross * n(bd.tds_pct)) / 100)
-  return { ...out, parts: split.parts, days, gross, tds, net: round2(gross - tds), blocked: gross > 0.004 ? '' : 'Nothing has accrued.' }
+  const paid = toPlain(await getClient().execute({ sql: 'SELECT from_date, to_date, gross FROM bd_interest_payments WHERE bd_id = ?', args: [n(bdId)] }))
+  return shortSpans(paid, accrualStart(bd, received), (f, t) => {
+    const days = daysBetween(f, t) + 1
+    return { gross: steps.length ? bdInterestParts(calc.interestBase, steps, f, t, n(bd.interest_pct), daysYear).gross : round2((calc.interestBase * n(bd.interest_pct) * days) / (100 * daysYear)) }
+  })
 }
 
 export async function bdInterestWindow(
@@ -3738,6 +3797,11 @@ export async function bdCumulativeInterest(v: { nbfc_id: number; from_date?: str
       paid_to: w.paid_to || null,
       parts: w.parts || [],
       unpaid_before: w.unpaid_before || null,
+      // A stretch picked again that was paid short: this is its balance.
+      balance_of: w.balance_of || null,
+      // Earlier stretches paid short — their balance still due.
+      short_before: w.short_before || [],
+      days_year: n(w.days_year),
       blocked: w.blocked || ''
     })
   }
@@ -3813,7 +3877,7 @@ export async function payBdCumulativeInterest(v: {
       await getClient().execute({
         sql: `INSERT INTO bd_interest_payments (bd_id, from_date, to_date, days, paid_date, gross, tds, net, note, journal_entry_id, bank_account)
               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        args: [n(r.bd.id), String(r.w.from_date), to, n(r.w.days), date, n(r.w.gross), n(r.w.tds), n(r.w.net), `Cumulative interest — one voucher with ${nos}`, je.id, bank]
+        args: [n(r.bd.id), String(r.w.from_date), String(r.w.to_date || to), n(r.w.days), date, n(r.w.gross), n(r.w.tds), n(r.w.net), (r.w.balance_of ? 'Balance of short-paid interest — ' : 'Cumulative interest — ') + `one voucher with ${nos}`, je.id, bank]
       })
     }
     return { entry_id: je.id, bills: rows.length, gross, tds, net }

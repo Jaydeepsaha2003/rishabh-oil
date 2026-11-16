@@ -699,6 +699,12 @@ function ServicedRow({ x }: { x: Row }): React.JSX.Element {
           {x.mode === 'with_repayment' && x.paid_id && (
             <span className="doc-ref block whitespace-nowrap text-[10.5px] font-semibold text-[#0B6B45]">paid {formatINR(n(x.paid_gross))}</span>
           )}
+          {/* Paid short: what is still to pay on this rest. */}
+          {x.mode !== 'with_repayment' && x.paid_id && n(x.gross) - n(x.paid_gross) > 1 && (
+            <span className="doc-ref block whitespace-nowrap text-[10.5px] font-bold text-[#B3261E]" title={`Paid ${formatINR(n(x.paid_gross))} of ${formatINR(n(x.gross))}`}>
+              balance {formatINR(n(x.gross) - n(x.paid_gross))}
+            </span>
+          )}
         </span>
         <ChevronDown className={cn('mt-0.5 h-4 w-4 flex-none text-[#8CA396] transition-transform', open && 'rotate-180')} />
       </button>

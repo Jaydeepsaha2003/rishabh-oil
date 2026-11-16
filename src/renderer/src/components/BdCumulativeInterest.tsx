@@ -1,6 +1,6 @@
-import { useEffect, useMemo, useState } from 'react'
+import { Fragment, useEffect, useMemo, useState } from 'react'
 import { toast } from 'sonner'
-import { Loader2, Percent, Plus } from 'lucide-react'
+import { ChevronDown, Loader2, Percent, Plus } from 'lucide-react'
 import { PrincipalSplit } from '@/components/BdDetail'
 import { Dialog, DialogContent, DialogTitle } from '@/components/ui/dialog'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
@@ -43,6 +43,8 @@ export function BdCumulativeInterest({ open, onClose, nbfcs, onDone }: { open: b
   const [busy, setBusy] = useState(false)
   // The split calculator open on one bill's stretch (the same one as on a bill).
   const [splitRow, setSplitRow] = useState<Row | null>(null)
+  // The bill whose legs (how its interest is worked out) are open.
+  const [openId, setOpenId] = useState<number | null>(null)
   // Interest typed over the worked-out figure, per bill (more or less).
   const [edits, setEdits] = useState<Record<number, string>>({})
   // The box being typed in shows plain digits; every other one shows commas.
@@ -245,22 +247,22 @@ export function BdCumulativeInterest({ open, onClose, nbfcs, onDone }: { open: b
           </div>
           <div className="text-[11.5px] font-semibold text-[#5A6B62]">
             Interest for exactly <b className="text-[#0A1F17]">{formatDate(start)} → {formatDate(upto)}</b> on each bill (from the day it was funded, if later)
-            {upto === today && (mode === 'month' ? monthEnd(month) : to) > today ? ' — to today, the period has not ended yet' : ''}. Earlier days still unpaid show as overdue and can be paid with a range that covers them.
+            {upto === today && (mode === 'month' ? monthEnd(month) : to) > today ? ' — to today, the period has not ended yet' : ''}. Earlier unpaid days and balances still due are flagged on the bill; a period paid short can be picked again to pay just its balance. Click a bill to see how its interest is worked out.
           </div>
 
           {/* What this payment comes to, before the bill-by-bill detail. */}
           {nbfc && rows && payable.length > 0 && (
-            <div className="grid gap-2.5 sm:grid-cols-2 lg:grid-cols-4">
+            <div className="grid grid-cols-2 overflow-hidden rounded-[6px] border border-[#DCE6DC] bg-white lg:grid-cols-4">
               {[
-                { k: 'Bills ticked', v: `${sel.length} of ${payable.length}`, sub: `${rows.length - payable.length} already paid up`, accent: '#0B3D2E' },
-                { k: 'Interest', v: formatINR(tot.gross), sub: `up to ${formatDate(upto)}`, accent: '#1B4E82' },
-                { k: 'TDS withheld', v: formatINR(tot.tds), sub: 'to TDS on interest payable', accent: '#C2700A' },
-                { k: 'Net out of the bank', v: formatINR(tot.net), sub: 'one voucher', accent: '#12855A' }
-              ].map((t) => (
-                <div key={t.k} className="rounded-[4px] border border-[#D6E2D6] bg-white px-3.5 py-2.5" style={{ borderTop: `3px solid ${t.accent}` }}>
-                  <div className="text-[9.5px] font-extrabold uppercase tracking-[.13em] text-[#5A6B62]">{t.k}</div>
-                  <div className="mt-0.5 truncate text-[18px] font-bold tabular-nums tracking-[-0.02em] text-[#0A1F17]">{t.v}</div>
-                  <div className="text-[11px] font-semibold text-[#5A6B62]">{t.sub}</div>
+                { k: 'Bills', v: `${sel.length} of ${payable.length}`, sub: rows.length - payable.length ? `${rows.length - payable.length} already paid up` : 'ticked to pay', tone: 'text-[#0A1F17]' },
+                { k: 'Interest', v: formatINR(tot.gross), sub: `${formatDate(start)} → ${formatDate(upto)}`, tone: 'text-[#0A1F17]' },
+                { k: 'TDS withheld', v: formatINR(tot.tds), sub: tdsLedger || 'TDS on interest payable', tone: 'text-[#8A5300]' },
+                { k: 'Out of the bank', v: formatINR(tot.net), sub: 'one voucher', tone: 'text-[#0B6B45]' }
+              ].map((t, i) => (
+                <div key={t.k} className={cn('min-w-0 px-4 py-3', i % 2 === 1 && 'border-l border-[#EEF3EE]', i >= 2 && 'border-t border-[#EEF3EE] lg:border-t-0', i === 2 && 'lg:border-l')}>
+                  <div className="text-[9.5px] font-extrabold uppercase tracking-[.13em] text-[#7A8C82]">{t.k}</div>
+                  <div className={cn('mt-0.5 truncate text-[19px] font-bold tabular-nums tracking-[-0.02em]', t.tone)}>{t.v}</div>
+                  <div className="truncate text-[11px] font-semibold text-[#7A8C82]">{t.sub}</div>
                 </div>
               ))}
             </div>
@@ -274,11 +276,11 @@ export function BdCumulativeInterest({ open, onClose, nbfcs, onDone }: { open: b
           ) : rows.length === 0 ? (
             <div className="rounded-[4px] border border-dashed border-[#C9DCCF] py-10 text-center text-[12.5px] font-semibold text-[#5A6B62]">No open, funded bill with this NBFC.</div>
           ) : (
-            <div className="overflow-x-auto rounded-[4px] border border-[#D6E2D6]">
-              <table className="w-full min-w-[820px] text-[12.5px]">
-                <thead className="bg-[#0B3D2E] text-[10px] font-extrabold uppercase tracking-[.08em] text-[#DCEFE4]">
+            <div className="overflow-x-auto rounded-[6px] border border-[#DCE6DC] bg-white">
+              <table className="w-full min-w-[860px] text-[12.5px]">
+                <thead className="border-b border-[#DCE6DC] bg-[#F5F8F4] text-[9.5px] font-extrabold uppercase tracking-[.1em] text-[#5A6B62]">
                   <tr>
-                    <th className="w-9 px-3 py-2.5 text-left">
+                    <th className="w-10 px-3 py-2.5 text-left">
                       <input
                         type="checkbox"
                         aria-label="Tick every bill"
@@ -288,135 +290,235 @@ export function BdCumulativeInterest({ open, onClose, nbfcs, onDone }: { open: b
                     </th>
                     <th className="px-2 py-2.5 text-left">Bill</th>
                     <th className="px-2 py-2.5 text-right">Principal</th>
-                    <th className="px-2 py-2.5 text-left">Interest from → to</th>
+                    <th className="px-2 py-2.5 text-left">Period</th>
                     <th className="px-2 py-2.5 text-right">Days</th>
                     <th className="px-2 py-2.5 text-right">Rate</th>
                     <th className="px-2 py-2.5 text-right">Interest</th>
                     <th className="px-2 py-2.5 text-right">TDS</th>
-                    <th className="px-3 py-2.5 text-right text-[#C7F03F]">Net</th>
+                    <th className="px-3 py-2.5 text-right">Net</th>
+                    <th className="w-8" />
                   </tr>
                 </thead>
                 <tbody>
                   {rows.map((r) => {
                     const id = n(r.bd_id)
                     const on = picked.has(id)
+                    const isOpen = openId === id
+                    const parts: Row[] = Array.isArray(r.parts) ? r.parts : []
+                    const shortBefore: Row[] = Array.isArray(r.short_before) ? r.short_before : []
                     return (
-                      <tr key={id} className={cn('border-t border-[#EFF3EE]', r.blocked ? 'bg-[#FAFBF9] text-[#8CA396]' : on ? 'bg-white' : 'bg-[#FBFCFA] text-[#5A6B62]')}>
-                        <td className="px-3 py-2">
-                          <input
-                            type="checkbox"
-                            disabled={!!r.blocked}
-                            checked={on && !r.blocked}
-                            aria-label={`Pay ${String(r.bd_no)}`}
-                            onChange={(e) =>
-                              setPicked((p) => {
-                                const next = new Set(p)
-                                if (e.target.checked) next.add(id)
-                                else next.delete(id)
-                                return next
-                              })
-                            }
-                          />
-                        </td>
-                        <td className="px-2 py-2">
-                          <div className="font-extrabold text-[#0A1F17]">{String(r.bd_no)}</div>
-                          <div className="max-w-[220px] truncate text-[11px] font-semibold text-[#5A6B62]">{String(r.party || '')}</div>
-                        </td>
-                        <td className="whitespace-nowrap px-2 py-2 text-right tabular-nums">{formatINR(n(r.principal))}</td>
-                        <td className="px-2 py-2">
-                          {r.blocked ? (
-                            <span className="text-[11.5px] font-semibold">{String(r.blocked)}</span>
-                          ) : (
-                            <>
-                              <span className="tabular-nums font-semibold text-[#0A1F17]">
-                                {formatDate(String(r.from_date))} → {formatDate(String(r.to_date))}
-                              </span>
-                              {/* Days before this period still unpaid: overdue, said, not paid here. */}
-                              {r.unpaid_before && (
-                                <span
-                                  className="mt-0.5 flex items-center gap-1 text-[10.5px] font-bold text-[#B3261E]"
-                                  title="These earlier days are still unpaid — pay them with a range that covers them"
-                                >
-                                  <span className="h-1.5 w-1.5 rounded-full bg-[#B3261E]" /> overdue {formatDate(String(r.unpaid_before.from))} → {formatDate(String(r.unpaid_before.to))}
+                      <Fragment key={id}>
+                        <tr
+                          onClick={(e) => {
+                            // Inputs and buttons inside the row keep their own clicks.
+                            if ((e.target as HTMLElement).closest('input,button,label')) return
+                            if (!r.blocked) setOpenId(isOpen ? null : id)
+                          }}
+                          className={cn(
+                            'border-t border-[#EFF3EE] transition-colors',
+                            r.blocked ? 'bg-[#FAFBF9] text-[#9AAAA0]' : 'cursor-pointer hover:bg-[#F7FBF5]',
+                            !r.blocked && (isOpen ? 'bg-[#F3F9F1]' : on ? 'bg-white' : 'bg-[#FBFCFA] text-[#7A8C82]')
+                          )}
+                        >
+                          <td className="px-3 py-2.5 align-top">
+                            <input
+                              type="checkbox"
+                              disabled={!!r.blocked}
+                              checked={on && !r.blocked}
+                              aria-label={`Pay ${String(r.bd_no)}`}
+                              onChange={(e) =>
+                                setPicked((p) => {
+                                  const next = new Set(p)
+                                  if (e.target.checked) next.add(id)
+                                  else next.delete(id)
+                                  return next
+                                })
+                              }
+                            />
+                          </td>
+                          <td className="px-2 py-2.5 align-top">
+                            <div className="flex items-center gap-1.5">
+                              <span className={cn('rounded-[4px] px-1.5 py-0.5 text-[11.5px] font-extrabold', r.blocked ? 'bg-[#EEF2EE] text-[#8CA396]' : 'bg-[#0B3D2E] text-[#C7F03F]')}>{String(r.bd_no)}</span>
+                              {r.balance_of && (
+                                <span className="rounded-[3px] border border-[#F0C9C5] bg-[#FDF0EE] px-1.5 py-0.5 text-[9.5px] font-extrabold uppercase tracking-[.05em] text-[#B3261E]">Balance</span>
+                              )}
+                            </div>
+                            <div className="mt-1 max-w-[230px] truncate text-[11px] font-semibold text-[#7A8C82]">{String(r.party || '')}</div>
+                          </td>
+                          <td className="whitespace-nowrap px-2 py-2.5 text-right align-top tabular-nums">{formatINR(n(r.principal))}</td>
+                          <td className="px-2 py-2.5 align-top">
+                            {r.blocked ? (
+                              <span className="text-[11.5px] font-semibold">{String(r.blocked)}</span>
+                            ) : (
+                              <>
+                                <span className="whitespace-nowrap font-semibold tabular-nums text-[#0A1F17]">
+                                  {formatDate(String(r.from_date))} → {formatDate(String(r.to_date))}
                                 </span>
-                              )}
-                            </>
-                          )}
-                        </td>
-                        <td className="px-2 py-2 text-right tabular-nums">
-                          {r.blocked ? (
-                            '—'
-                          ) : (
-                            <span className="inline-flex items-center gap-1.5">
-                              {n(r.days)}
-                              <button
-                                type="button"
-                                title="Split this stretch — by amount or by dates — and see each part's interest"
-                                aria-label={`Split ${String(r.bd_no)}`}
-                                onClick={() => setSplitRow(r)}
-                                className="flex h-[20px] w-[20px] items-center justify-center rounded-[3px] border border-[#C9DCCF] bg-white text-[#0B6B45] hover:border-[#0B6B45] hover:bg-[#E9F5EE]"
-                              >
-                                <Plus className="h-3 w-3" />
-                              </button>
-                            </span>
-                          )}
-                        </td>
-                        <td className="px-2 py-2 text-right tabular-nums">{n(r.interest_pct)}%</td>
-                        <td className="whitespace-nowrap px-2 py-1.5 text-right">
-                          {r.blocked ? (
-                            '—'
-                          ) : (
-                            <>
-                              {/* Type over it to pay more or less than worked out. */}
-                              <input
-                                inputMode="decimal"
-                                aria-label={`Interest paid on ${String(r.bd_no)}`}
-                                disabled={!on}
-                                value={typingId === id ? (edits[id] ?? String(fig(r).gross)) : inIN(fig(r).gross)}
-                                onFocus={(e) => {
-                                  setTypingId(id)
-                                  const el = e.currentTarget
-                                  setTimeout(() => el.select(), 0)
-                                }}
-                                onBlur={() => setTypingId(null)}
-                                onChange={(e) => editOne(id, e.target.value.replace(/[^0-9.]/g, ''))}
-                                className={cn(
-                                  'h-8 w-[118px] rounded-[4px] border px-2 text-right text-[12.5px] font-bold tabular-nums disabled:opacity-60',
-                                  fig(r).edited ? 'border-[#C2700A] bg-[#FFF8EC] text-[#8A5300]' : 'border-[#C9DCCF] bg-white text-[#0A1F17]'
+                                {/* Days before this period still unpaid: overdue, said, not paid here. */}
+                                {r.unpaid_before && (
+                                  <span className="mt-1 flex items-center gap-1 text-[10.5px] font-bold text-[#B3261E]" title="These earlier days are still unpaid — pay them with a range that covers them">
+                                    <span className="h-1.5 w-1.5 rounded-full bg-[#B3261E]" /> unpaid {formatDate(String(r.unpaid_before.from))} → {formatDate(String(r.unpaid_before.to))}
+                                  </span>
                                 )}
-                              />
-                              {lumpTotal != null && on && !(fig(r).gross > 0.004) && (
-                                <span className="mt-0.5 block text-right text-[10px] font-bold text-[#8CA396]">nothing left for this bill</span>
-                              )}
-                              {fig(r).edited && fig(r).gross > 0.004 && (
-                                <button
-                                  type="button"
-                                  onClick={() => {
-                                    if (lumpTotal != null) editOne(id, String(n(r.gross)))
-                                    setEdits((p) => {
-                                      const next = { ...p }
-                                      delete next[id]
-                                      return next
-                                    })
+                                {/* Earlier stretches paid short: their balance is still due. */}
+                                {shortBefore.map((s) => (
+                                  <span
+                                    key={`${s.from}|${s.to}`}
+                                    className="mt-1 flex items-center gap-1 text-[10.5px] font-bold text-[#B3261E]"
+                                    title={`Worked out ${formatINR(n(s.due))}, paid ${formatINR(n(s.paid))} — pick ${formatDate(String(s.from))} → ${formatDate(String(s.to))} to pay the balance`}
+                                  >
+                                    <span className="h-1.5 w-1.5 rounded-full bg-[#B3261E]" /> balance {formatINR(n(s.short))} for {formatDate(String(s.from))} → {formatDate(String(s.to))}
+                                  </span>
+                                ))}
+                              </>
+                            )}
+                          </td>
+                          <td className="px-2 py-2.5 text-right align-top tabular-nums">{r.blocked ? '—' : n(r.days)}</td>
+                          <td className="px-2 py-2.5 text-right align-top tabular-nums">{n(r.interest_pct)}%</td>
+                          <td className="whitespace-nowrap px-2 py-2 text-right align-top">
+                            {r.blocked ? (
+                              '—'
+                            ) : (
+                              <>
+                                {/* Type over it to pay more or less than worked out. */}
+                                <input
+                                  inputMode="decimal"
+                                  aria-label={`Interest paid on ${String(r.bd_no)}`}
+                                  disabled={!on}
+                                  value={typingId === id ? (edits[id] ?? String(fig(r).gross)) : inIN(fig(r).gross)}
+                                  onFocus={(e) => {
+                                    setTypingId(id)
+                                    const el = e.currentTarget
+                                    setTimeout(() => el.select(), 0)
                                   }}
-                                  title="Back to the worked-out figure"
-                                  className="mt-0.5 block w-full text-right text-[10px] font-bold text-[#8A5300] hover:underline"
-                                >
-                                  {fig(r).gross > n(r.gross) ? '+' : '−'}
-                                  {formatINR(Math.abs(r2(fig(r).gross - n(r.gross))))} vs {formatINR(n(r.gross))} · reset
-                                </button>
-                              )}
-                            </>
-                          )}
-                        </td>
-                        <td className="whitespace-nowrap px-2 py-2 text-right tabular-nums">{r.blocked ? '—' : formatINR(fig(r).tds)}</td>
-                        <td className="whitespace-nowrap px-3 py-2 text-right font-bold tabular-nums text-[#0B6B45]">{r.blocked ? '—' : formatINR(fig(r).net)}</td>
-                      </tr>
+                                  onBlur={() => setTypingId(null)}
+                                  onChange={(e) => editOne(id, e.target.value.replace(/[^0-9.]/g, ''))}
+                                  className={cn(
+                                    'h-8 w-[122px] rounded-[5px] border px-2 text-right text-[12.5px] font-bold tabular-nums outline-none focus:border-[#0B6B45] focus:ring-2 focus:ring-[#0B6B45]/15 disabled:opacity-60',
+                                    fig(r).edited ? 'border-[#E3B66B] bg-[#FFF8EC] text-[#8A5300]' : 'border-[#D3DFD5] bg-white text-[#0A1F17]'
+                                  )}
+                                />
+                                {lumpTotal != null && on && !(fig(r).gross > 0.004) && (
+                                  <span className="mt-0.5 block text-right text-[10px] font-bold text-[#8CA396]">nothing left for this bill</span>
+                                )}
+                                {fig(r).edited && fig(r).gross > 0.004 && (
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      if (lumpTotal != null) editOne(id, String(n(r.gross)))
+                                      setEdits((p) => {
+                                        const next = { ...p }
+                                        delete next[id]
+                                        return next
+                                      })
+                                    }}
+                                    title="Back to the worked-out figure"
+                                    className="mt-0.5 block w-full text-right text-[10px] font-bold text-[#8A5300] hover:underline"
+                                  >
+                                    {fig(r).gross > n(r.gross) ? '+' : '−'}
+                                    {formatINR(Math.abs(r2(fig(r).gross - n(r.gross))))} vs {formatINR(n(r.gross))} · reset
+                                  </button>
+                                )}
+                              </>
+                            )}
+                          </td>
+                          <td className="whitespace-nowrap px-2 py-2.5 text-right align-top tabular-nums">{r.blocked ? '—' : formatINR(fig(r).tds)}</td>
+                          <td className="whitespace-nowrap px-3 py-2.5 text-right align-top font-bold tabular-nums text-[#0B6B45]">{r.blocked ? '—' : formatINR(fig(r).net)}</td>
+                          <td className="py-2.5 pr-3 align-top">
+                            {!r.blocked && <ChevronDown className={cn('mt-0.5 h-4 w-4 text-[#8CA396] transition-transform', isOpen && 'rotate-180')} />}
+                          </td>
+                        </tr>
+                        {/* HOW THE INTEREST IS WORKED OUT — leg by leg, each at the principal outstanding then. */}
+                        {isOpen && !r.blocked && (
+                          <tr className="bg-[#F3F9F1]">
+                            <td />
+                            <td colSpan={9} className="px-2 pb-3 pt-0.5">
+                              <div className="rounded-[6px] border border-[#DCE6DC] bg-white">
+                                <div className="flex flex-wrap items-center gap-2 border-b border-[#EEF3EE] px-3 py-2">
+                                  <span className="text-[10px] font-extrabold uppercase tracking-[.12em] text-[#5A6B62]">How {String(r.bd_no)}&apos;s interest is worked out</span>
+                                  <span className="text-[11px] font-semibold text-[#7A8C82]">
+                                    principal × {n(r.interest_pct)}% × days ÷ {n(r.days_year) || 360}
+                                  </span>
+                                  <button
+                                    type="button"
+                                    onClick={() => setSplitRow(r)}
+                                    className="ml-auto inline-flex h-7 items-center gap-1 rounded-[4px] border border-[#C9DCCF] bg-white px-2.5 text-[11px] font-extrabold text-[#0B6B45] hover:border-[#0B6B45] hover:bg-[#E9F5EE]"
+                                  >
+                                    <Plus className="h-3 w-3" /> Split calculator
+                                  </button>
+                                </div>
+                                <table className="w-full text-[12px]">
+                                  <thead className="text-[9.5px] font-extrabold uppercase tracking-[.1em] text-[#7A8C82]">
+                                    <tr>
+                                      <th className="px-3 py-1.5 text-left">Leg</th>
+                                      <th className="px-2 py-1.5 text-left">From → to</th>
+                                      <th className="px-2 py-1.5 text-right">Days</th>
+                                      <th className="px-2 py-1.5 text-right">Principal outstanding</th>
+                                      <th className="px-2 py-1.5 text-left">Working</th>
+                                      <th className="px-3 py-1.5 text-right">Interest</th>
+                                    </tr>
+                                  </thead>
+                                  <tbody>
+                                    {parts.map((p, i) => (
+                                      <tr key={i} className="border-t border-[#F1F5F0]">
+                                        <td className="px-3 py-1.5">
+                                          <span className="inline-flex h-5 min-w-[20px] items-center justify-center rounded-full bg-[#E9F5EE] px-1.5 text-[10.5px] font-extrabold text-[#0B6B45]">{i + 1}</span>
+                                        </td>
+                                        <td className="whitespace-nowrap px-2 py-1.5 font-semibold tabular-nums text-[#0A1F17]">
+                                          {formatDate(String(p.from_date))} → {formatDate(String(p.to_date))}
+                                        </td>
+                                        <td className="px-2 py-1.5 text-right tabular-nums">{n(p.days)}</td>
+                                        <td className="whitespace-nowrap px-2 py-1.5 text-right tabular-nums">{formatINR(n(p.principal))}</td>
+                                        <td className="whitespace-nowrap px-2 py-1.5 text-[11px] text-[#7A8C82] tabular-nums">
+                                          {inIN(n(p.principal))} × {n(r.interest_pct)}% × {n(p.days)} ÷ {n(r.days_year) || 360}
+                                        </td>
+                                        <td className="whitespace-nowrap px-3 py-1.5 text-right font-bold tabular-nums text-[#0A1F17]">{formatINR(n(p.interest))}</td>
+                                      </tr>
+                                    ))}
+                                  </tbody>
+                                  <tfoot>
+                                    <tr className="border-t border-[#DCE6DC] bg-[#FAFCF9] font-extrabold">
+                                      <td colSpan={2} className="px-3 py-1.5 text-[11px] uppercase tracking-[.08em] text-[#5A6B62]">
+                                        {parts.length > 1 ? `${parts.length} legs — principal repaid inside the period` : 'One leg — principal unchanged'}
+                                      </td>
+                                      <td className="px-2 py-1.5 text-right tabular-nums">{n(r.days)}</td>
+                                      <td colSpan={2} />
+                                      <td className="whitespace-nowrap px-3 py-1.5 text-right tabular-nums">
+                                        {formatINR(r.balance_of ? n(r.balance_of.due) : n(r.gross))}
+                                      </td>
+                                    </tr>
+                                    {r.balance_of && (
+                                      <>
+                                        <tr className="text-[#5A6B62]">
+                                          <td colSpan={5} className="px-3 py-1 text-right text-[11px] font-bold">Already paid on these days</td>
+                                          <td className="whitespace-nowrap px-3 py-1 text-right font-bold tabular-nums">− {formatINR(n(r.balance_of.paid))}</td>
+                                        </tr>
+                                        <tr className="text-[#B3261E]">
+                                          <td colSpan={5} className="px-3 py-1 text-right text-[11px] font-extrabold">Balance to pay now</td>
+                                          <td className="whitespace-nowrap px-3 py-1 text-right font-extrabold tabular-nums">{formatINR(n(r.gross))}</td>
+                                        </tr>
+                                      </>
+                                    )}
+                                    <tr className="text-[#5A6B62]">
+                                      <td colSpan={5} className="px-3 py-1 text-right text-[11px] font-bold">TDS {n(r.tds_pct)}% withheld</td>
+                                      <td className="whitespace-nowrap px-3 py-1 text-right font-bold tabular-nums">− {formatINR(fig(r).tds)}</td>
+                                    </tr>
+                                    <tr className="text-[#0B6B45]">
+                                      <td colSpan={5} className="px-3 pb-2 pt-1 text-right text-[11px] font-extrabold">Net paid to the NBFC{fig(r).edited ? ' (as typed)' : ''}</td>
+                                      <td className="whitespace-nowrap px-3 pb-2 pt-1 text-right font-extrabold tabular-nums">{formatINR(fig(r).net)}</td>
+                                    </tr>
+                                  </tfoot>
+                                </table>
+                              </div>
+                            </td>
+                          </tr>
+                        )}
+                      </Fragment>
                     )
                   })}
                 </tbody>
                 <tfoot>
-                  <tr className="border-t-[1.5px] border-[#C9DCCF] bg-[#F0F8F3] font-extrabold">
+                  <tr className="border-t border-[#DCE6DC] bg-[#F5F8F4] font-extrabold">
                     <td colSpan={6} className="px-3 py-2.5">
                       <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5">
                         <span className="text-[11px] font-extrabold uppercase tracking-[.1em] text-[#33473E]">
@@ -484,6 +586,7 @@ export function BdCumulativeInterest({ open, onClose, nbfcs, onDone }: { open: b
                     </td>
                     <td className="whitespace-nowrap px-2 py-2.5 text-right tabular-nums">{formatINR(tot.tds)}</td>
                     <td className="whitespace-nowrap px-3 py-2.5 text-right tabular-nums text-[#0B6B45]">{formatINR(tot.net)}</td>
+                    <td />
                   </tr>
                 </tfoot>
               </table>
