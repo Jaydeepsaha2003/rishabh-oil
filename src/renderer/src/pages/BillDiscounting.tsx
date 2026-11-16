@@ -4027,12 +4027,6 @@ Its bank voucher is removed too.`)) return
                               title={`Interest paid so far: ${formatINR(servicedPaid(r).gross)} (TDS ${formatINR(servicedPaid(r).tds)})${r.interest_paid_to ? ` — serviced up to ${formatDate(String(r.interest_paid_to).slice(0, 10))}` : ''}`}
                             >
                               <span className="font-semibold">{formatINR(servicedPaid(r).gross)}</span>
-                              {r.interest_paid_to && (
-                                <span className="mt-1 inline-flex items-center gap-1 whitespace-nowrap rounded-full border border-[#BFE3CB] bg-[#E9F5EE] px-2 py-[1px] text-[10px] font-extrabold tabular-nums text-[#0B6B45]">
-                                  <span className="h-1.5 w-1.5 rounded-full bg-[#12855A]" />
-                                  PAID TO {formatDate(String(r.interest_paid_to).slice(0, 10))}
-                                </span>
-                              )}
                               {/* Settled, but interest serviced short of the day it was repaid. */}
                               {repaid && String(r.interest_paid_to || '').slice(0, 10) < String(r.last_repay_date || r.maturity_date || '').slice(0, 10) && (
                                 <span className="mt-0.5 rounded-[3px] border border-[#F0C9C4] bg-[#FDECEA] px-1.5 text-[10px] font-extrabold uppercase tracking-[.06em] text-[#B3261E]">Due</span>
