@@ -196,7 +196,7 @@ export function JournalRegister({
         ))}
       </div>
 
-      <div className="relative overflow-hidden rounded-[6px] border border-[#D6E2D6] bg-white">
+      <div className="relative shrink-0 overflow-hidden rounded-[6px] border border-[#D6E2D6] bg-white">
         {loading && !!data && (
           <div className="absolute right-3 top-2 z-10 flex items-center gap-1.5 rounded-full bg-[#C7F03F] px-2.5 py-0.5 text-[10.5px] font-extrabold text-[#0B3D2E] shadow">
             <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-[#0B3D2E]" /> Refreshing…

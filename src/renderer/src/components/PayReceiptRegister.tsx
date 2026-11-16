@@ -273,7 +273,7 @@ export function PayReceiptRegister({
         )}
       </div>
 
-      <div className="overflow-hidden rounded-[6px] border border-[#D6E2D6] bg-white">
+      <div className="shrink-0 overflow-hidden rounded-[6px] border border-[#D6E2D6] bg-white">
         <div className="overflow-x-auto">
           <table className="w-full min-w-[1050px] border-collapse text-[12.5px]">
             <thead className="bg-[#0B3D2E]">
