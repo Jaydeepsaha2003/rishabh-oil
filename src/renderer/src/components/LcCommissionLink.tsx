@@ -298,6 +298,35 @@ export function LcCommissionLink({
             </div>
           ))}
         </div>
+        {/* THE RATES SIDE BY SIDE — what it should be against what the bank charged. */}
+        {!refund && got != null && pctOf(got, lcAmt) != null && (Number(pct) || 0) > 0 && (() => {
+          const should = Number(pct)
+          const charged = pctOf(got, lcAmt) as number
+          const gap = Math.round((charged - should) * 10000) / 10000
+          const same = Math.abs(gap) < 0.00005
+          return (
+            <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 border-t border-[#E6EEE5] px-4 py-2.5">
+              <span className={cap}>Rate</span>
+              <span className="rounded-[4px] border border-[#D6E2D6] bg-white px-2 py-0.5 text-[12px] font-bold tabular-nums text-[#0A1F17]">
+                <span className="mr-1 text-[10px] font-extrabold uppercase tracking-[.08em] text-[#5A6B62]">Should be</span>
+                {should}%
+              </span>
+              <span className="text-[11px] font-bold text-[#8CA396]">vs</span>
+              <span className="rounded-[4px] border border-[#D6E2D6] bg-white px-2 py-0.5 text-[12px] font-bold tabular-nums text-[#0A1F17]">
+                <span className="mr-1 text-[10px] font-extrabold uppercase tracking-[.08em] text-[#5A6B62]">Charged</span>
+                {charged}%
+              </span>
+              <span
+                className={cn(
+                  'ml-auto rounded-[4px] px-2 py-0.5 text-[11.5px] font-extrabold tabular-nums',
+                  same ? 'bg-[#E9F5EE] text-[#0B6B45]' : gap > 0 ? 'bg-[#FDECEA] text-[#B3261E]' : 'bg-[#FFF6E5] text-[#8A5300]'
+                )}
+              >
+                {same ? 'same rate' : `${gap > 0 ? '+' : '−'}${Math.abs(gap)}% ${gap > 0 ? 'over' : 'under'}`}
+              </span>
+            </div>
+          )
+        })()}
       </div>
 
       {v ? (
