@@ -6,6 +6,8 @@ import { cn } from '@/lib/utils'
 import { SearchSelect } from '@/components/SearchSelect'
 import { DatePicker } from '@/components/ui/date-picker'
 import { Dialog, DialogContent, DialogTitle } from '@/components/ui/dialog'
+import { ColumnFilter } from '@/components/ui/column-filter'
+import { useColumnFilters, type ColumnSpec } from '@/lib/useColumnFilters'
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Row = Record<string, any>
@@ -22,6 +24,14 @@ type SortKey = 'date' | 'voucher' | 'bank' | 'party' | 'narration' | 'amount' | 
 // What a charge comes to as a % of the LC, to 4 places (₹12,058.42 on ₹55,00,000 → 0.2192).
 const pctOf = (charged: number | undefined, lcAmount: number): number | null =>
   charged && charged > 0 && lcAmount > 0 ? Math.round((charged / lcAmount) * 100 * 10000) / 10000 : null
+
+const CAND_COLS: Record<string, ColumnSpec<Row>> = {
+  date: { get: (r) => String(r.entry_date || '').slice(0, 10), label: (v) => (v ? formatDate(v) : '(blank)') },
+  voucher: { get: (r) => String(r.vch_type || '') },
+  bank: { get: (r) => String(r.bank || '') },
+  party: { get: (r) => String(r.debited || '') },
+  amount: { get: (r) => String(Number(r.amount) || 0), label: (v) => formatINR(Number(v)), numeric: true }
+}
 
 export function LcCommissionLink({
   lcId,
@@ -40,6 +50,8 @@ export function LcCommissionLink({
   // The keyboard's row in the picker: ↑ ↓ move it (wrapping), Enter links it.
   const [at, setAt] = useState(-1)
   useEffect(() => setAt(-1), [cands])
+  // Excel-style funnels on the picker's columns, built from the vouchers found.
+  const cf = useColumnFilters(cands || [], CAND_COLS)
   useEffect(() => {
     if (at >= 0) document.querySelector(`[data-lci="${at}"]`)?.scrollIntoView({ block: 'nearest' })
   }, [at])
@@ -144,7 +156,7 @@ export function LcCommissionLink({
         case 'off': return expected == null ? 0 : Math.abs((Number(x.amount) || 0) - expected)
       }
     }
-    return [...(cands || [])].sort((a, b) => {
+    return [...cf.filtered].sort((a, b) => {
       const va = val(a)
       const vb = val(b)
       const c = typeof va === 'number' && typeof vb === 'number' ? va - vb : String(va).localeCompare(String(vb), undefined, { numeric: true, sensitivity: 'base' })
@@ -396,11 +408,20 @@ export function LcCommissionLink({
             <span>
               {cands == null
                 ? 'Finding…'
-                : q.trim() || ledgerId || dFrom || dTo
+                : cf.activeCount
+                  ? `${cf.filtered.length} of ${cands.length} shown — column filter on`
+                  : q.trim() || ledgerId || dFrom || dTo
                   ? `All ${cands.length} found — every kind of voucher, nothing left out`
                   : `The ${cands.length} bank vouchers nearest to the figure, from a month before the application — search, pick a ledger or set dates to see every voucher`}
             </span>
-            <span>Click a row to link it</span>
+            <span className="flex items-center gap-3">
+              {cf.activeCount > 0 && (
+                <button type="button" onClick={cf.clear} className="font-bold text-[#1B4E82] hover:underline">
+                  Clear column filters
+                </button>
+              )}
+              Click a row to link it
+            </span>
           </div>
 
           <div className="min-h-0 flex-1 overflow-auto">
@@ -439,6 +460,11 @@ export function LcCommissionLink({
                             {label}
                             <Icon className={cn('h-3 w-3', !on && 'opacity-50')} />
                           </button>
+                          {k in CAND_COLS && (
+                            <span className="ml-1 inline-flex align-middle normal-case tracking-normal">
+                              <ColumnFilter bare onDark label={label} align={cls.includes('text-right') ? 'end' : 'start'} {...cf.props(k)} />
+                            </span>
+                          )}
                         </th>
                       )
                     })}
