@@ -284,7 +284,7 @@ export function BdCumulativeInterest({ open, onClose, nbfcs, onDone }: { open: b
             <div className="rounded-[4px] border border-dashed border-[#C9DCCF] py-10 text-center text-[12.5px] font-semibold text-[#5A6B62]">No open, funded bill with this NBFC.</div>
           ) : (
             <div className="space-y-3">
-              <div className="flex flex-wrap items-end gap-x-5 gap-y-3 rounded-[6px] border border-[#DCE6DC] bg-[#F7FAF6] px-4 py-3">
+              <div className="flex flex-wrap items-start gap-x-5 gap-y-3 rounded-[6px] border border-[#DCE6DC] bg-[#F7FAF6] px-4 py-3">
                 {/* THE ONE ACTUAL PAID BOX — shared over the ticked bills below. */}
                 <div>
                   <div className="mb-1 text-[10px] font-extrabold uppercase tracking-[.12em] text-[#0B3D2E]">Actual paid</div>
@@ -319,57 +319,41 @@ export function BdCumulativeInterest({ open, onClose, nbfcs, onDone }: { open: b
                   </div>
                 </div>
                 <div>
-                  <div className="mb-1 text-[10px] font-extrabold uppercase tracking-[.12em] text-[#5A6B62]">The figure is</div>
-                  <span className="flex rounded-[4px] border border-[#C9DCCF] bg-white p-0.5">
-                    {(
-                      [
-                        ['net', 'Net from bank'],
-                        ['gross', 'Interest (before TDS)']
-                      ] as const
-                    ).map(([k, label]) => (
-                      <button
-                        key={k}
-                        type="button"
-                        onClick={() => {
-                          if (k === lumpAs) return
-                          setLumpAs(k)
-                          setLumpTotal(null)
-                          setLump(null)
-                        }}
-                        className={cn('whitespace-nowrap rounded-[3px] px-3 py-1.5 text-[12px] font-extrabold', lumpAs === k ? 'bg-[#0B3D2E] text-white' : 'text-[#33473E] hover:bg-[#F0F8F3]')}
-                      >
-                        {label}
-                      </button>
-                    ))}
-                  </span>
+                  <div className="mb-1 text-[10px] font-extrabold uppercase tracking-[.12em] text-[#5A6B62]">Lump sum is</div>
+                  <Select
+                    value={lumpAs}
+                    onValueChange={(v) => {
+                      if (v === lumpAs) return
+                      setLumpAs(v as 'net' | 'gross')
+                      setLumpTotal(null)
+                      setLump(null)
+                    }}
+                  >
+                    <SelectTrigger className="h-11 w-[230px] text-[13px] font-bold">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="net">Net from bank (after TDS)</SelectItem>
+                      <SelectItem value="gross">Interest (before TDS)</SelectItem>
+                    </SelectContent>
+                  </Select>
                 </div>
                 <div>
-                  <div className="mb-1 text-[10px] font-extrabold uppercase tracking-[.12em] text-[#5A6B62]">Share it</div>
-                  <span className="flex rounded-[4px] border border-[#C9DCCF] bg-white p-0.5">
-                    {(
-                      [
-                        ['fifo', 'Oldest first'],
-                        ['lifo', 'Newest first'],
-                        ['pro', 'In proportion'],
-                        ['equal', 'Equally']
-                      ] as const
-                    ).map(([k, label]) => (
-                      <button
-                        key={k}
-                        type="button"
-                        onClick={() => setHow(k)}
-                        className={cn(
-                          'whitespace-nowrap rounded-[3px] px-3 py-1.5 text-[12px] font-extrabold',
-                          how === k ? 'bg-[#0B3D2E] text-white' : 'text-[#33473E] hover:bg-[#F0F8F3]'
-                        )}
-                      >
-                        {label}
-                      </button>
-                    ))}
-                  </span>
+                  <div className="mb-1 text-[10px] font-extrabold uppercase tracking-[.12em] text-[#5A6B62]">Shared</div>
+                  <Select value={how} onValueChange={(v) => setHow(v as 'fifo' | 'lifo' | 'pro' | 'equal')}>
+                    <SelectTrigger className="h-11 w-[230px] text-[13px] font-bold">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="fifo">Oldest first (FIFO)</SelectItem>
+                      <SelectItem value="lifo">Newest first</SelectItem>
+                      <SelectItem value="pro">In proportion</SelectItem>
+                      <SelectItem value="equal">Equally</SelectItem>
+                    </SelectContent>
+                  </Select>
                 </div>
                 {lumpTotal != null && (
-                  <button type="button" onClick={resetAll} className="mb-2 text-[12px] font-extrabold text-[#8A5300] hover:underline">
+                  <button type="button" onClick={resetAll} className="mt-[30px] text-[12px] font-extrabold text-[#8A5300] hover:underline">
                     Reset all to worked out
                   </button>
                 )}
