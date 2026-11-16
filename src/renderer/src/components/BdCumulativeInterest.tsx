@@ -57,10 +57,6 @@ export function BdCumulativeInterest({ open, onClose, nbfcs, onDone }: { open: b
   const [splitRow, setSplitRow] = useState<Row | null>(null)
   // The bill whose legs (how its interest is worked out) are open.
   const [openId, setOpenId] = useState<number | null>(null)
-  // Interest typed over the worked-out figure, per bill (more or less).
-  const [edits, setEdits] = useState<Record<number, string>>({})
-  // The box being typed in shows plain digits; every other one shows commas.
-  const [typingId, setTypingId] = useState<number | null>(null)
 
   // The period's last day is what each bill is paid up to — never past today.
   const upto = useMemo(() => {
@@ -89,7 +85,6 @@ export function BdCumulativeInterest({ open, onClose, nbfcs, onDone }: { open: b
       .then((r) => {
         if (!live) return
         setRows(r)
-        setEdits({})
         setLumpTotal(null)
         setPicked(new Set(r.filter((x) => !x.blocked).map((x) => n(x.bd_id))))
       })
@@ -143,7 +138,7 @@ export function BdCumulativeInterest({ open, onClose, nbfcs, onDone }: { open: b
   // typed interest, else the worked-out one; TDS at the bill's own %.
   const fig = (r: Row): { gross: number; tds: number; net: number; edited: boolean } => {
     const id = n(r.bd_id)
-    const e = lumpTotal != null && shares.has(id) ? String(shares.get(id)) : edits[id]
+    const e = lumpTotal != null && shares.has(id) ? String(shares.get(id)) : undefined
     if (e == null || e.trim() === '' || Math.abs(n(e) - n(r.gross)) < 0.005) return { gross: n(r.gross), tds: n(r.tds), net: n(r.net), edited: false }
     const g = r2(n(e))
     const t = r2((g * n(r.tds_pct)) / 100)
@@ -156,18 +151,7 @@ export function BdCumulativeInterest({ open, onClose, nbfcs, onDone }: { open: b
     tds: r2(sel.reduce((t, r) => t + fig(r).tds, 0)),
     net: r2(sel.reduce((t, r) => t + fig(r).net, 0))
   }
-  // One bill's actual paid typed while a lump sum is shared: the shares become
-  // the starting figures, and the sum is let go.
-  const editOne = (id: number, v: string): void => {
-    if (lumpTotal != null) {
-      const fixed: Record<number, string> = {}
-      shares.forEach((sh, k) => (fixed[k] = String(sh)))
-      setEdits({ ...fixed, [id]: v })
-      setLumpTotal(null)
-    } else setEdits((p) => ({ ...p, [id]: v }))
-  }
   const resetAll = (): void => {
-    setEdits({})
     setLumpTotal(null)
     setLump(null)
   }
@@ -402,37 +386,15 @@ export function BdCumulativeInterest({ open, onClose, nbfcs, onDone }: { open: b
                           <td className="px-2 py-2.5 text-right align-top tabular-nums">{n(r.interest_pct)}%</td>
                           {/* WORKED OUT (fixed) · ACTUAL PAID (typed) · REMAINING (fixed). */}
                           <td className="whitespace-nowrap px-2 py-2.5 text-right align-top font-semibold tabular-nums text-[#33473E]">{r.blocked ? '—' : formatINR(n(r.gross))}</td>
-                          <td className="whitespace-nowrap px-2 py-1.5 text-right align-top">
+                          <td className="whitespace-nowrap px-2 py-2.5 text-right align-top">
                             {r.blocked ? (
                               '—'
                             ) : (
                               <>
-                                <div
-                                  className={cn(
-                                    'ml-auto flex h-9 w-[138px] items-center rounded-[6px] border bg-white shadow-[inset_0_1px_2px_rgba(10,31,23,.06)] focus-within:border-[#0B6B45] focus-within:ring-2 focus-within:ring-[#0B6B45]/15',
-                                    !on && 'opacity-50',
-                                    fig(r).edited ? 'border-[#E3B66B] bg-[#FFFBF3]' : 'border-[#C3D2C6]'
-                                  )}
-                                >
-                                  <span className="pl-2.5 text-[12px] font-bold text-[#8CA396]">₹</span>
-                                  <input
-                                    inputMode="decimal"
-                                    aria-label={`Interest actually paid on ${String(r.bd_no)}`}
-                                    disabled={!on}
-                                    value={typingId === id ? (edits[id] ?? String(fig(r).gross)) : inIN(fig(r).gross)}
-                                    onFocus={(e) => {
-                                      setTypingId(id)
-                                      const el = e.currentTarget
-                                      setTimeout(() => el.select(), 0)
-                                    }}
-                                    onBlur={() => setTypingId(null)}
-                                    onChange={(e) => editOne(id, e.target.value.replace(/[^0-9.]/g, ''))}
-                                    onKeyDown={(e) => {
-                                      if (e.key === 'Enter') e.currentTarget.blur()
-                                    }}
-                                    className={cn('h-full min-w-0 flex-1 bg-transparent pr-2.5 text-right text-[13px] font-extrabold tabular-nums outline-none', fig(r).edited ? 'text-[#8A5300]' : 'text-[#0A1F17]')}
-                                  />
-                                </div>
+                                {/* Its share of the one Actual paid box below. */}
+                                <span className={cn('text-[13px] font-extrabold tabular-nums', !on && 'opacity-50', fig(r).edited ? 'text-[#8A5300]' : 'text-[#0A1F17]')}>
+                                  {formatINR(fig(r).gross)}
+                                </span>
                                 {lumpTotal != null && on && !(fig(r).gross > 0.004) && (
                                   <span className="mt-0.5 block text-right text-[10px] font-bold text-[#8CA396]">nothing left for this bill</span>
                                 )}
@@ -604,7 +566,7 @@ export function BdCumulativeInterest({ open, onClose, nbfcs, onDone }: { open: b
                             ))}
                           </span>
                         </span>
-                        {(lumpTotal != null || Object.keys(edits).length > 0) && (
+                        {lumpTotal != null && (
                           <button type="button" onClick={resetAll} className="text-[11px] font-extrabold normal-case text-[#8A5300] hover:underline">
                             Reset all to worked out
                           </button>
