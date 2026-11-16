@@ -393,7 +393,19 @@ export function CashflowRegister({
                         </td>
                         <td className={cn(td, 'whitespace-nowrap font-bold tabular-nums')}>{formatDate(v.date)}</td>
                         <td className={td}>
-                          <div className="whitespace-nowrap font-extrabold text-[#0A1F17]">{v.code || v.vch_no || '—'}</div>
+                          {/* The voucher number opens it straight away; the rest of the row expands. */}
+                          <button
+                            type="button"
+                            title={`Open ${v.invoice_no ? 'the document' : 'the voucher'}`}
+                            onClick={(e) => {
+                              e.stopPropagation()
+                              onOpen(v)
+                            }}
+                            className="inline-flex items-center gap-1 whitespace-nowrap font-extrabold text-[#0A1F17] underline-offset-2 hover:text-[#1B4E82] hover:underline"
+                          >
+                            {v.code || v.vch_no || '—'}
+                            <ExternalLink className="h-3 w-3 text-[#8CA396]" />
+                          </button>
                           <div className="text-[10.5px] font-bold uppercase tracking-[.04em] text-[#5A6B62]">{v.type}</div>
                         </td>
                         <td className={cn(td, 'font-semibold')}>{v.invoice_no || <span className="text-[#C3D2C6]">—</span>}</td>
