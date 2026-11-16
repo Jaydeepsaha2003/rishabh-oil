@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { toast } from 'sonner'
-import { Loader2, Percent } from 'lucide-react'
+import { Loader2, Percent, Plus } from 'lucide-react'
+import { PrincipalSplit } from '@/components/BdDetail'
 import { Dialog, DialogContent, DialogTitle } from '@/components/ui/dialog'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { DatePicker } from '@/components/ui/date-picker'
@@ -40,6 +41,8 @@ export function BdCumulativeInterest({ open, onClose, nbfcs, onDone }: { open: b
   const [bank, setBank] = useState('')
   const [paidOn, setPaidOn] = useState(today)
   const [busy, setBusy] = useState(false)
+  // The split calculator open on one bill's stretch (the same one as on a bill).
+  const [splitRow, setSplitRow] = useState<Row | null>(null)
   // Interest typed over the worked-out figure, per bill (more or less).
   const [edits, setEdits] = useState<Record<number, string>>({})
   // The box being typed in shows plain digits; every other one shows commas.
@@ -68,7 +71,7 @@ export function BdCumulativeInterest({ open, onClose, nbfcs, onDone }: { open: b
     if (!open || !nbfc || !/^\d{4}-\d{2}-\d{2}$/.test(upto)) return
     let live = true
     void window.api.billDiscounting
-      .cumulativeInterest({ nbfc_id: Number(nbfc), to_date: upto })
+      .cumulativeInterest({ nbfc_id: Number(nbfc), from_date: start, to_date: upto })
       .then((r) => {
         if (!live) return
         setRows(r)
@@ -79,7 +82,7 @@ export function BdCumulativeInterest({ open, onClose, nbfcs, onDone }: { open: b
     return () => {
       live = false
     }
-  }, [open, nbfc, upto])
+  }, [open, nbfc, upto, start])
 
   // A bill's figures as they will be paid: the typed interest when there is
   // one, TDS at the bill's own % on it, the net what leaves the bank.
@@ -120,6 +123,7 @@ export function BdCumulativeInterest({ open, onClose, nbfcs, onDone }: { open: b
     try {
       const res = await window.api.billDiscounting.payCumulativeInterest({
         nbfc_id: Number(nbfc),
+        from_date: start,
         to_date: upto,
         paid_date: paidOn,
         bank_account: bank || null,
@@ -204,8 +208,8 @@ export function BdCumulativeInterest({ open, onClose, nbfcs, onDone }: { open: b
             )}
           </div>
           <div className="text-[11.5px] font-semibold text-[#5A6B62]">
-            Each bill is paid from the day after its last interest payment (or the day it was funded) up to <b className="text-[#0A1F17]">{formatDate(upto)}</b>
-            {upto === today && (mode === 'month' ? monthEnd(month) : to) > today ? ' — today, the period has not ended yet' : ''}.
+            Interest for exactly <b className="text-[#0A1F17]">{formatDate(start)} → {formatDate(upto)}</b> on each bill (from the day it was funded, if later)
+            {upto === today && (mode === 'month' ? monthEnd(month) : to) > today ? ' — to today, the period has not ended yet' : ''}. Earlier days still unpaid show as overdue and can be paid with a range that covers them.
           </div>
 
           {/* What this payment comes to, before the bill-by-bill detail. */}
@@ -260,7 +264,6 @@ export function BdCumulativeInterest({ open, onClose, nbfcs, onDone }: { open: b
                   {rows.map((r) => {
                     const id = n(r.bd_id)
                     const on = picked.has(id)
-                    const early = !r.blocked && String(r.from_date) < start
                     return (
                       <tr key={id} className={cn('border-t border-[#EFF3EE]', r.blocked ? 'bg-[#FAFBF9] text-[#8CA396]' : on ? 'bg-white' : 'bg-[#FBFCFA] text-[#5A6B62]')}>
                         <td className="px-3 py-2">
@@ -292,18 +295,36 @@ export function BdCumulativeInterest({ open, onClose, nbfcs, onDone }: { open: b
                               <span className="tabular-nums font-semibold text-[#0A1F17]">
                                 {formatDate(String(r.from_date))} → {formatDate(String(r.to_date))}
                               </span>
-                              {early && (
+                              {/* Days before this period still unpaid: overdue, said, not paid here. */}
+                              {r.unpaid_before && (
                                 <span
-                                  className="mt-0.5 flex items-center gap-1 text-[10.5px] font-bold text-[#8A5300]"
-                                  title="Unpaid since before the period — interest is paid in order, so these days come too"
+                                  className="mt-0.5 flex items-center gap-1 text-[10.5px] font-bold text-[#B3261E]"
+                                  title="These earlier days are still unpaid — pay them with a range that covers them"
                                 >
-                                  <span className="h-1.5 w-1.5 rounded-full bg-[#C2700A]" /> unpaid from before the period
+                                  <span className="h-1.5 w-1.5 rounded-full bg-[#B3261E]" /> overdue {formatDate(String(r.unpaid_before.from))} → {formatDate(String(r.unpaid_before.to))}
                                 </span>
                               )}
                             </>
                           )}
                         </td>
-                        <td className="px-2 py-2 text-right tabular-nums">{r.blocked ? '—' : n(r.days)}</td>
+                        <td className="px-2 py-2 text-right tabular-nums">
+                          {r.blocked ? (
+                            '—'
+                          ) : (
+                            <span className="inline-flex items-center gap-1.5">
+                              {n(r.days)}
+                              <button
+                                type="button"
+                                title="Split this stretch — by amount or by dates — and see each part's interest"
+                                aria-label={`Split ${String(r.bd_no)}`}
+                                onClick={() => setSplitRow(r)}
+                                className="flex h-[20px] w-[20px] items-center justify-center rounded-[3px] border border-[#C9DCCF] bg-white text-[#0B6B45] hover:border-[#0B6B45] hover:bg-[#E9F5EE]"
+                              >
+                                <Plus className="h-3 w-3" />
+                              </button>
+                            </span>
+                          )}
+                        </td>
                         <td className="px-2 py-2 text-right tabular-nums">{n(r.interest_pct)}%</td>
                         <td className="whitespace-nowrap px-2 py-1.5 text-right">
                           {r.blocked ? (
@@ -443,6 +464,20 @@ export function BdCumulativeInterest({ open, onClose, nbfcs, onDone }: { open: b
           </button>
         </div>
       </DialogContent>
+      {splitRow && (
+        <PrincipalSplit
+          leg={!(Array.isArray(splitRow.parts) && splitRow.parts.length > 1)}
+          x={{
+            from_date: splitRow.from_date,
+            to_date: splitRow.to_date,
+            days: splitRow.days,
+            principal: n(splitRow.parts?.[0]?.principal) || n(splitRow.principal),
+            gross: fig(splitRow).gross,
+            parts: splitRow.parts
+          }}
+          onClose={() => setSplitRow(null)}
+        />
+      )}
     </Dialog>
   )
 }

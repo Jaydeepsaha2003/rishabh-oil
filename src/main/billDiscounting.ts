@@ -2243,6 +2243,66 @@ export async function listBdInterestPayments(bdId: number): Promise<Row[]> {
  * as well as greyed out on the form, because a date can arrive from a stale
  * screen and only this side is the record.
  */
+// The first day a bill's interest accrues: the receipt day itself only when the
+// terms count it (days_incl_start), else the day after.
+function accrualStart(bd: Row, received: string): string {
+  return bd.days_incl_start ? received : addDays(received, 1)
+}
+
+// The first day not covered by any interest payment, from `start` on, and the
+// day the next paid stretch begins after it (null when nothing is paid later).
+function firstUnpaid(paid: Row[], start: string): { from: string; next: string | null } {
+  let cur = start
+  const spans = paid
+    .map((p) => ({ from: String(p.from_date || '').slice(0, 10), to: String(p.to_date || '').slice(0, 10) }))
+    .filter((p) => p.to)
+    .sort((a, b) => a.from.localeCompare(b.from))
+  for (const sp of spans) {
+    const f = sp.from > start ? sp.from : start
+    if (f > cur) return { from: cur, next: f }
+    if (sp.to >= cur) cur = addDays(sp.to, 1)
+  }
+  return { from: cur, next: null }
+}
+
+/**
+ * The interest on ONE stretch of a bill, chosen by the desk (Pay cumulative
+ * interest) — paid whatever comes before it. Refused where any of its days is
+ * already paid; says when days before it are still unpaid.
+ */
+export async function bdInterestRange(bdId: number, fromIn: string, toIn: string): Promise<Row> {
+  const bd = await loadBd(bdId)
+  const calc = bdCalc(bd)
+  const received = String(bd.payment_received_date || '').slice(0, 10)
+  const mode = String(bd.interest_mode || '') || (bd.interest_upfront ? 'upfront' : 'discounted')
+  const today = todayISO()
+  const to = (String(toIn).slice(0, 10) > today ? today : String(toIn).slice(0, 10))
+  const paid = toPlain(await getClient().execute({ sql: 'SELECT from_date, to_date FROM bd_interest_payments WHERE bd_id = ? ORDER BY from_date', args: [n(bdId)] }))
+  const out: Row = { bd_id: n(bdId), interest_base: calc.interestBase, open_amount: calc.openAmount, interest_pct: n(bd.interest_pct), tds_pct: n(bd.tds_pct), to_date: to, parts: [], gross: 0, tds: 0, net: 0, days: 0 }
+  if (!received) return { ...out, from_date: fromIn, blocked: 'This bill is not funded yet.' }
+  if (mode === 'discounted') return { ...out, from_date: fromIn, blocked: 'Interest was taken out when the bill was funded.' }
+  const A = accrualStart(bd, received)
+  const from = String(fromIn).slice(0, 10) < A ? A : String(fromIn).slice(0, 10)
+  out.from_date = from
+  if (from > to) return { ...out, blocked: received > to ? 'Funded after this period.' : 'Nothing in this period.' }
+  // Already paid inside the range? Then it cannot be paid again.
+  for (const p of paid) {
+    const pf = String(p.from_date).slice(0, 10) < A ? A : String(p.from_date).slice(0, 10)
+    const pt = String(p.to_date).slice(0, 10)
+    if (pf <= to && pt >= from) return { ...out, blocked: `Already paid ${pf} → ${pt}.`, paid_to: pt }
+  }
+  // Days before the range still unpaid — overdue, said, but not in the way.
+  const g = firstUnpaid(paid, A)
+  if (g.from < from) out.unpaid_before = { from: g.from, to: addDays(from, -1) }
+  const daysYear = n(bd.days_year) || 360
+  const steps = n(bd.first_receipt_part) > 0.005 ? [] : await principalRepaidByDate(bdId)
+  const split = bdInterestParts(calc.interestBase, steps, from, to, n(bd.interest_pct), daysYear)
+  const days = daysBetween(from, to) + 1
+  const gross = steps.length ? split.gross : round2((calc.interestBase * n(bd.interest_pct) * days) / (100 * daysYear))
+  const tds = round2((gross * n(bd.tds_pct)) / 100)
+  return { ...out, parts: split.parts, days, gross, tds, net: round2(gross - tds), blocked: gross > 0.004 ? '' : 'Nothing has accrued.' }
+}
+
 export async function bdInterestWindow(
   bdId: number,
   toDate?: string
@@ -2253,7 +2313,7 @@ export async function bdInterestWindow(
   const mode = String(bd.interest_mode || '') || (bd.interest_upfront ? 'upfront' : 'discounted')
   const paid = toPlain(
     await getClient().execute({
-      sql: `SELECT to_date, gross, tds, net, paid_date FROM bd_interest_payments
+      sql: `SELECT from_date, to_date, gross, tds, net, paid_date FROM bd_interest_payments
              WHERE bd_id = ? ORDER BY to_date DESC, id DESC`,
       args: [n(bdId)]
     })
@@ -2262,9 +2322,14 @@ export async function bdInterestWindow(
   // The first stretch may count the receipt day itself, if that is the term.
   // Every stretch after it starts the day AFTER the last one ended, so each
   // calendar day is charged once and once only.
-  const first = !lastTo
-  const from = first ? received : addDays(lastTo, 1)
+  // A RANGE CAN BE PAID OUT OF ORDER (Pay cumulative interest: October while
+  // September is still overdue), so the stretch starts at the FIRST unpaid
+  // day, and stops short of the next stretch already paid.
+  const g = firstUnpaid(paid, received ? accrualStart(bd, received) : '')
+  const first = !!received && g.from === accrualStart(bd, received)
+  const from = first ? received : g.from
   const today = todayISO()
+  const ceiling = g.next ? (addDays(g.next, -1) < today ? addDays(g.next, -1) : today) : today
   // WHY THERE MAY BE NOTHING TO PAY.
   //
   // Said in words rather than left as a disabled control: a bill whose
@@ -2280,7 +2345,7 @@ export async function bdInterestWindow(
     ? 'This bill is not funded yet.'
     : mode === 'discounted'
       ? 'Interest repayment does not apply to this bill.'
-      : from > today
+      : from > ceiling
         ? 'Interest is paid up to date.'
         : ''
   const blockedNote = !received
@@ -2290,7 +2355,7 @@ export async function bdInterestWindow(
       : from > today
         ? `Nothing has accrued since the last payment, which ran to ${lastTo}.`
         : ''
-  const to = String(toDate || today).slice(0, 10)
+  const to = String(toDate || ceiling).slice(0, 10)
   const inclStart = first && bd.days_incl_start ? 1 : 1
   // daysBetween counts the gap; both ends of a stretch belong to it, except on
   // the very first one where the receipt day only counts if the terms say so.
@@ -2310,7 +2375,7 @@ export async function bdInterestWindow(
     mode,
     // What the date picker may offer.
     min_date: from,
-    max_date: today,
+    max_date: ceiling,
     from_date: from,
     to_date: to,
     first,
@@ -3647,14 +3712,15 @@ export async function deleteLastBdReceiptPart(bdId: number): Promise<{ part_no: 
 // — and every bill gets its own interest-payment row pointing at it, so each
 // bill reads as serviced to that date and the voucher reads back to all of them.
 // ---------------------------------------------------------------------------
-export async function bdCumulativeInterest(v: { nbfc_id: number; to_date: string }): Promise<Row[]> {
+export async function bdCumulativeInterest(v: { nbfc_id: number; from_date?: string; to_date: string }): Promise<Row[]> {
   const to = String(v.to_date || '').slice(0, 10)
   if (!n(v.nbfc_id) || !/^\d{4}-\d{2}-\d{2}$/.test(to)) return []
   const capped = to > todayISO() ? todayISO() : to
+  const from = /^\d{4}-\d{2}-\d{2}$/.test(String(v.from_date || '')) ? String(v.from_date).slice(0, 10) : '0000-00-00'
   const bills = (await listBd({ nbfc_id: n(v.nbfc_id) })).filter((b) => String(b.status) !== 'repaid' && !!b.payment_received_date)
   const out: Row[] = []
   for (const b of bills) {
-    const w = await bdInterestWindow(n(b.id), capped)
+    const w = await bdInterestRange(n(b.id), from, capped)
     out.push({
       bd_id: n(b.id),
       bd_no: b.bd_no,
@@ -3670,7 +3736,9 @@ export async function bdCumulativeInterest(v: { nbfc_id: number; to_date: string
       tds: n(w.tds),
       net: n(w.net),
       paid_to: w.paid_to || null,
-      blocked: w.blocked || (w.from_date > capped ? 'Interest is paid up to date.' : '') || (!(n(w.gross) > 0.004) ? 'Nothing has accrued.' : '')
+      parts: w.parts || [],
+      unpaid_before: w.unpaid_before || null,
+      blocked: w.blocked || ''
     })
   }
   return out
@@ -3678,6 +3746,7 @@ export async function bdCumulativeInterest(v: { nbfc_id: number; to_date: string
 
 export async function payBdCumulativeInterest(v: {
   nbfc_id: number
+  from_date?: string
   to_date: string
   paid_date?: string
   bank_account?: string | null
@@ -3695,15 +3764,15 @@ export async function payBdCumulativeInterest(v: {
     if (to > todayISO()) throw new Error('Interest cannot be paid for days that have not happened yet')
     const date = String(v.paid_date || to).slice(0, 10)
     if (date > todayISO()) throw new Error('The payment cannot be dated in the future')
+    const from = /^\d{4}-\d{2}-\d{2}$/.test(String(v.from_date || '')) ? String(v.from_date).slice(0, 10) : '0000-00-00'
     const ids = Array.from(new Set((v.bd_ids || []).map(n).filter((x) => x > 0)))
     if (!ids.length) throw new Error('Tick at least one bill to pay')
     const rows: { bd: Row; w: Row }[] = []
     for (const id of ids) {
       const bd = await loadBd(id)
       if (n(bd.nbfc_id) !== n(v.nbfc_id)) throw new Error(`${bd.bd_no} is with another NBFC`)
-      const w = await bdInterestWindow(id, to)
+      const w = await bdInterestRange(id, from, to)
       if (w.blocked) throw new Error(`${bd.bd_no}: ${String(w.blocked)}`)
-      if (String(w.from_date) > to) throw new Error(`${bd.bd_no}: interest is already paid to ${String(w.paid_to)}`)
       const typed = v.amounts && String(v.amounts[String(id)] ?? '').trim() !== '' ? round2(n(v.amounts[String(id)])) : null
       if (typed != null) {
         if (!(typed > 0.004)) throw new Error(`${bd.bd_no}: enter the interest being paid`)

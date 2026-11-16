@@ -771,7 +771,7 @@ function ServicedRow({ x }: { x: Row }): React.JSX.Element {
 // rata, so a part repaid early is cheaper the same way the whole is.
 // leg: one stretch at one principal (the + on a leg row), which can also be
 // split BY DATES - each leg's interest is its days' share, same principal.
-function PrincipalSplit({ x, onClose, leg = false }: { x: Row; onClose: () => void; leg?: boolean }): React.JSX.Element {
+export function PrincipalSplit({ x, onClose, leg = false }: { x: Row; onClose: () => void; leg?: boolean }): React.JSX.Element {
   const stretches = (Array.isArray(x.parts) ? x.parts : []) as Row[]
   const principal = n(stretches[0]?.principal ?? x.principal)
   const days = n(x.days)

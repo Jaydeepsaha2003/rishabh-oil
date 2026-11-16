@@ -1017,8 +1017,8 @@ const api = {
     ): Promise<{ id: number; gross: number; tds: number; net: number; days: number; posted: boolean }> =>
       ipcRenderer.invoke('bd:payInterestUpto', { id, ...v }),
     interestPayments: (id: number): Promise<Row[]> => ipcRenderer.invoke('bd:interestPayments', { id }),
-    cumulativeInterest: (values: { nbfc_id: number; to_date: string }): Promise<Row[]> => ipcRenderer.invoke('bdCumInterest:list', { values }),
-    payCumulativeInterest: (values: { nbfc_id: number; to_date: string; paid_date?: string; bank_account?: string | null; bd_ids: number[]; amounts?: Record<string, number | string>; tds_ledger?: string | null; note?: string | null }): Promise<{ entry_id: number; bills: number; gross: number; tds: number; net: number }> =>
+    cumulativeInterest: (values: { nbfc_id: number; from_date?: string; to_date: string }): Promise<Row[]> => ipcRenderer.invoke('bdCumInterest:list', { values }),
+    payCumulativeInterest: (values: { nbfc_id: number; from_date?: string; to_date: string; paid_date?: string; bank_account?: string | null; bd_ids: number[]; amounts?: Record<string, number | string>; tds_ledger?: string | null; note?: string | null }): Promise<{ entry_id: number; bills: number; gross: number; tds: number; net: number }> =>
       ipcRenderer.invoke('bd:payCumulativeInterest', { values }),
     payInterest: (
       id: number,
