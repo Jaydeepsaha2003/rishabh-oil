@@ -1920,6 +1920,9 @@ export function registerIpc(): void {
   handle('bdCumInterest:list', async (_e, { values }: { values: Row }) =>
     (await import('./billDiscounting')).bdCumulativeInterest(values as never)
   )
+  handle('bdCumPayments:list', async (_e, { nbfcId }: { nbfcId?: number | null }) =>
+    (await import('./billDiscounting')).listBdCumulativePayments(nbfcId)
+  )
   handle('bd:payCumulativeInterest', async (_e, { values }: { values: Row }) =>
     (await import('./billDiscounting')).payBdCumulativeInterest(values as never)
   )

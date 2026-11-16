@@ -2348,20 +2348,80 @@ function shortSpans(
     })
 }
 
-/** Each interest payment's stretch against what it works out to — the balance on a stretch paid short. */
-export async function bdInterestBalances(bdId: number): Promise<Row[]> {
-  const bd = await loadBd(bdId)
-  const received = String(bd.payment_received_date || '').slice(0, 10)
-  const mode = String(bd.interest_mode || '') || (bd.interest_upfront ? 'upfront' : 'discounted')
-  if (!received || mode !== 'serviced') return []
-  const calc = bdCalc(bd)
-  const daysYear = n(bd.days_year) || 360
-  const steps = n(bd.first_receipt_part) > 0.005 ? [] : await principalRepaidByDate(bdId)
-  const paid = toPlain(await getClient().execute({ sql: 'SELECT from_date, to_date, gross FROM bd_interest_payments WHERE bd_id = ?', args: [n(bdId)] }))
-  return shortSpans(paid, accrualStart(bd, received), (f, t) => {
-    const days = daysBetween(f, t) + 1
-    return { gross: steps.length ? bdInterestParts(calc.interestBase, steps, f, t, n(bd.interest_pct), daysYear).gross : round2((calc.interestBase * n(bd.interest_pct) * days) / (100 * daysYear)) }
-  })
+/**
+ * PAYMENTS MADE through Pay cumulative interest (the window's second tab): one
+ * group per voucher, each bill on it against what was due on its days when it
+ * was paid — the worked-out interest less anything paid on those same days
+ * before it. Paid less is a shortfall, paid more an excess. Worked out live.
+ */
+export async function listBdCumulativePayments(nbfcId?: number | null): Promise<Row[]> {
+  const rows = toPlain(
+    await getClient().execute({
+      sql: `SELECT p.*, b.bd_no, b.nbfc_id, nb.name AS nbfc_name, je.vch_no, je.narration
+              FROM bd_interest_payments p
+              JOIN bill_discountings b ON b.id = p.bd_id
+              LEFT JOIN nbfcs nb ON nb.id = b.nbfc_id
+              LEFT JOIN journal_entries je ON je.id = p.journal_entry_id
+             WHERE b.company_id = ? AND p.note LIKE '%one voucher with%' AND p.journal_entry_id IS NOT NULL
+               AND (? IS NULL OR b.nbfc_id = ?)
+             ORDER BY p.paid_date DESC, p.journal_entry_id DESC, p.id`,
+      args: [getActiveCompanyId(), nbfcId ? n(nbfcId) : null, nbfcId ? n(nbfcId) : null]
+    })
+  )
+  // What each bill's days work out to, and every payment on the bill (for "paid before").
+  const worker = new Map<number, { A: string; worked: (f: string, t: string) => number; paid: Row[] }>()
+  for (const id of [...new Set(rows.map((r) => n(r.bd_id)))]) {
+    const bd = await loadBd(id)
+    const received = String(bd.payment_received_date || '').slice(0, 10)
+    const calc = bdCalc(bd)
+    const daysYear = n(bd.days_year) || 360
+    const steps = n(bd.first_receipt_part) > 0.005 ? [] : await principalRepaidByDate(id)
+    const paid = toPlain(await getClient().execute({ sql: 'SELECT id, from_date, to_date, gross FROM bd_interest_payments WHERE bd_id = ?', args: [id] }))
+    worker.set(id, {
+      A: received ? accrualStart(bd, received) : '',
+      paid,
+      worked: (f, t) => {
+        const days = daysBetween(f, t) + 1
+        return steps.length ? bdInterestParts(calc.interestBase, steps, f, t, n(bd.interest_pct), daysYear).gross : round2((calc.interestBase * n(bd.interest_pct) * days) / (100 * daysYear))
+      }
+    })
+  }
+  const groups = new Map<number, Row>()
+  for (const r of rows) {
+    const w = worker.get(n(r.bd_id))!
+    const clamp = (d: unknown): string => (String(d || '').slice(0, 10) < w.A ? w.A : String(d || '').slice(0, 10))
+    const f = clamp(r.from_date)
+    const t = String(r.to_date || '').slice(0, 10)
+    const due = f <= t ? w.worked(f, t) : 0
+    const before = round2(w.paid.filter((p) => n(p.id) < n(r.id) && clamp(p.from_date) === f && String(p.to_date).slice(0, 10) === t).reduce((s, p) => s + n(p.gross), 0))
+    const expected = round2(Math.max(0, due - before))
+    const diff = round2(n(r.gross) - expected)
+    const je = n(r.journal_entry_id)
+    if (!groups.has(je)) {
+      groups.set(je, {
+        journal_entry_id: je,
+        vch_no: r.vch_no || '',
+        paid_date: String(r.paid_date || '').slice(0, 10),
+        nbfc_name: r.nbfc_name || '',
+        bank: r.bank_account || '',
+        narration: r.narration || '',
+        bills: [],
+        gross: 0,
+        tds: 0,
+        net: 0,
+        expected: 0,
+        diff: 0
+      })
+    }
+    const g = groups.get(je)!
+    ;(g.bills as Row[]).push({ id: n(r.id), bd_id: n(r.bd_id), bd_no: r.bd_no, from_date: f, to_date: t, due, before, expected, gross: n(r.gross), tds: n(r.tds), net: n(r.net), diff, balance: /^Balance/.test(String(r.note || '')) })
+    g.gross = round2(n(g.gross) + n(r.gross))
+    g.tds = round2(n(g.tds) + n(r.tds))
+    g.net = round2(n(g.net) + n(r.net))
+    g.expected = round2(n(g.expected) + expected)
+    g.diff = round2(n(g.diff) + diff)
+  }
+  return [...groups.values()]
 }
 
 export async function bdInterestWindow(

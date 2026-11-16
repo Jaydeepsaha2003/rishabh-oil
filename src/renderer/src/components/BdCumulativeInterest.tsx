@@ -2,6 +2,7 @@ import { Fragment, useEffect, useMemo, useState } from 'react'
 import { toast } from 'sonner'
 import { ChevronDown, Loader2, Percent, Plus } from 'lucide-react'
 import { PrincipalSplit } from '@/components/BdDetail'
+import { BdCumulativePayments } from '@/components/BdCumulativePayments'
 import { Dialog, DialogContent, DialogTitle } from '@/components/ui/dialog'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { DatePicker } from '@/components/ui/date-picker'
@@ -38,6 +39,7 @@ const monthEnd = (ym: string): string => {
 export function BdCumulativeInterest({ open, onClose, nbfcs, onDone }: { open: boolean; onClose: () => void; nbfcs: Row[]; onDone?: () => void }): React.JSX.Element {
   const today = todayISO()
   const [nbfc, setNbfc] = useState('')
+  const [tab, setTab] = useState<'pay' | 'paid'>('pay')
   const [mode, setMode] = useState<'month' | 'range'>('month')
   const [month, setMonth] = useState(today.slice(0, 7))
   const [from, setFrom] = useState(`${today.slice(0, 7)}-01`)
@@ -190,12 +192,56 @@ export function BdCumulativeInterest({ open, onClose, nbfcs, onDone }: { open: b
   return (
     <Dialog open={open} onOpenChange={(o) => !o && !busy && onClose()}>
       <DialogContent className="flex max-h-[94dvh] w-[96vw] max-w-[1480px] flex-col gap-0 overflow-hidden p-0 sm:max-w-[min(1480px,96vw)] [&>button]:!text-white">
-        <div className="flex-none bg-[#0B3D2E] px-5 py-3.5 pr-12 text-white">
+        <div className="flex-none bg-[#0B3D2E] px-5 pb-0 pt-3.5 pr-12 text-white">
           <div className="flex items-center gap-1.5 text-[9.5px] font-extrabold uppercase tracking-[.14em] text-[#C7F03F]">
             <Percent className="h-3.5 w-3.5" /> Bill discounting
           </div>
           <DialogTitle className="text-[16px] font-extrabold text-white">Pay cumulative interest</DialogTitle>
+          {/* Two views: pay, and what has been paid through here. */}
+          <div className="mt-2.5 flex gap-1">
+            {(
+              [
+                ['pay', 'Pay interest'],
+                ['paid', 'Payments made']
+              ] as const
+            ).map(([k, label]) => (
+              <button
+                key={k}
+                type="button"
+                onClick={() => setTab(k)}
+                className={cn(
+                  'rounded-t-[5px] px-3.5 py-1.5 text-[12px] font-extrabold',
+                  tab === k ? 'bg-white text-[#0B3D2E]' : 'text-[#C7F03F]/80 hover:bg-white/10 hover:text-[#C7F03F]'
+                )}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
         </div>
+        {tab === 'paid' ? (
+          <div className="min-h-0 flex-1 space-y-3 overflow-y-auto px-3 py-3 sm:px-5 sm:py-4">
+            <div className="flex flex-wrap items-center gap-2 text-[11.5px] font-semibold text-[#5A6B62]">
+              <span className="text-[10px] font-extrabold uppercase tracking-[.1em]">NBFC</span>
+              <Select searchable value={nbfc || 'all'} onValueChange={(v) => setNbfc(v === 'all' ? '' : v)}>
+                <SelectTrigger className="h-9 w-[300px]">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent className="max-h-64">
+                  <SelectItem value="all">All NBFCs</SelectItem>
+                  {nbfcs.map((x) => (
+                    <SelectItem key={String(x.id)} value={String(x.id)}>
+                      {String(x.name)}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <span>Each bill against what was due on its days when it was paid — less is a shortfall, more an excess.</span>
+            </div>
+            <BdCumulativePayments nbfcId={nbfc ? Number(nbfc) : null} />
+          </div>
+        ) : (
+        <>
         <div className="min-h-0 flex-1 space-y-3.5 overflow-y-auto px-3 py-3 sm:px-5 sm:py-4">
           <div className="grid gap-3 md:grid-cols-[1.3fr_auto_1.4fr]">
             <div>
@@ -681,6 +727,8 @@ export function BdCumulativeInterest({ open, onClose, nbfcs, onDone }: { open: b
             Pay {sel.length ? `${formatINR(tot.net)} · ${sel.length} bill${sel.length === 1 ? '' : 's'}` : ''}
           </button>
         </div>
+        </>
+        )}
       </DialogContent>
       {splitRow && (
         <PrincipalSplit
