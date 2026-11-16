@@ -57,8 +57,6 @@ export function BdCumulativeInterest({ open, onClose, nbfcs, onDone }: { open: b
   const [openId, setOpenId] = useState<number | null>(null)
   // Interest typed over the worked-out figure, per bill (more or less).
   const [edits, setEdits] = useState<Record<number, string>>({})
-  // The box being typed in shows plain digits; every other one shows commas.
-  const [typingId, setTypingId] = useState<number | null>(null)
 
   // The period's last day is what each bill is paid up to — never past today.
   const upto = useMemo(() => {
@@ -153,16 +151,6 @@ export function BdCumulativeInterest({ open, onClose, nbfcs, onDone }: { open: b
     gross: r2(sel.reduce((t, r) => t + fig(r).gross, 0)),
     tds: r2(sel.reduce((t, r) => t + fig(r).tds, 0)),
     net: r2(sel.reduce((t, r) => t + fig(r).net, 0))
-  }
-  // One bill typed over while a lump sum is shared: the shares become the
-  // starting figures, and the sum is let go.
-  const editOne = (id: number, v: string): void => {
-    if (lumpTotal != null) {
-      const fixed: Record<number, string> = {}
-      shares.forEach((sh, k) => (fixed[k] = String(sh)))
-      setEdits({ ...fixed, [id]: v })
-      setLumpTotal(null)
-    } else setEdits((p) => ({ ...p, [id]: v }))
   }
   const resetAll = (): void => {
     setEdits({})
@@ -395,44 +383,25 @@ export function BdCumulativeInterest({ open, onClose, nbfcs, onDone }: { open: b
                               '—'
                             ) : (
                               <>
-                                {/* Type over it to pay more or less than worked out. */}
-                                <input
-                                  inputMode="decimal"
+                                {/* Worked out — not typed over; a lump sum below shares it. */}
+                                <span
                                   aria-label={`Interest paid on ${String(r.bd_no)}`}
-                                  disabled={!on}
-                                  value={typingId === id ? (edits[id] ?? String(fig(r).gross)) : inIN(fig(r).gross)}
-                                  onFocus={(e) => {
-                                    setTypingId(id)
-                                    const el = e.currentTarget
-                                    setTimeout(() => el.select(), 0)
-                                  }}
-                                  onBlur={() => setTypingId(null)}
-                                  onChange={(e) => editOne(id, e.target.value.replace(/[^0-9.]/g, ''))}
                                   className={cn(
-                                    'h-8 w-[122px] rounded-[5px] border px-2 text-right text-[12.5px] font-bold tabular-nums outline-none focus:border-[#0B6B45] focus:ring-2 focus:ring-[#0B6B45]/15 disabled:opacity-60',
-                                    fig(r).edited ? 'border-[#E3B66B] bg-[#FFF8EC] text-[#8A5300]' : 'border-[#D3DFD5] bg-white text-[#0A1F17]'
+                                    'inline-block min-w-[110px] rounded-[5px] px-2 py-1 text-right text-[12.5px] font-bold tabular-nums',
+                                    !on && 'opacity-60',
+                                    fig(r).edited ? 'bg-[#FFF8EC] text-[#8A5300]' : 'text-[#0A1F17]'
                                   )}
-                                />
+                                >
+                                  {inIN(fig(r).gross)}
+                                </span>
                                 {lumpTotal != null && on && !(fig(r).gross > 0.004) && (
                                   <span className="mt-0.5 block text-right text-[10px] font-bold text-[#8CA396]">nothing left for this bill</span>
                                 )}
                                 {fig(r).edited && fig(r).gross > 0.004 && (
-                                  <button
-                                    type="button"
-                                    onClick={() => {
-                                      if (lumpTotal != null) editOne(id, String(n(r.gross)))
-                                      setEdits((p) => {
-                                        const next = { ...p }
-                                        delete next[id]
-                                        return next
-                                      })
-                                    }}
-                                    title="Back to the worked-out figure"
-                                    className="mt-0.5 block w-full text-right text-[10px] font-bold text-[#8A5300] hover:underline"
-                                  >
+                                  <span className="mt-0.5 block text-right text-[10px] font-bold text-[#8A5300]">
                                     {fig(r).gross > n(r.gross) ? '+' : '−'}
-                                    {formatINR(Math.abs(r2(fig(r).gross - n(r.gross))))} vs {formatINR(n(r.gross))} · reset
-                                  </button>
+                                    {formatINR(Math.abs(r2(fig(r).gross - n(r.gross))))} vs {formatINR(n(r.gross))}
+                                  </span>
                                 )}
                               </>
                             )}
