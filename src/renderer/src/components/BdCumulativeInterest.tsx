@@ -76,6 +76,7 @@ export function BdCumulativeInterest({ open, onClose, nbfcs, onDone }: { open: b
         if (!live) return
         setRows(r)
         setEdits({})
+        setLumpTotal(null)
         setPicked(new Set(r.filter((x) => !x.blocked).map((x) => n(x.bd_id))))
       })
       .catch((e) => toast.error((e as Error).message))
@@ -84,49 +85,72 @@ export function BdCumulativeInterest({ open, onClose, nbfcs, onDone }: { open: b
     }
   }, [open, nbfc, upto, start])
 
-  // A bill's figures as they will be paid: the typed interest when there is
-  // one, TDS at the bill's own % on it, the net what leaves the bank.
+  // A LUMP SUM, shared over the ticked bills the way the desk chooses — oldest
+  // first (FIFO), newest first, in proportion to each bill's interest, or
+  // equally. Worked out live from the sum, the method and the ticks; a bill
+  // whose share comes to nothing is simply not paid. Typing on one bill turns
+  // the shares into plain figures that can then be changed one by one.
+  const [lump, setLump] = useState<string | null>(null)
+  const [lumpTotal, setLumpTotal] = useState<number | null>(null)
+  const [how, setHow] = useState<'fifo' | 'lifo' | 'pro' | 'equal'>('fifo')
+  const payable = (rows || []).filter((r) => !r.blocked)
+  const pool = payable.filter((r) => picked.has(n(r.bd_id)))
+  const shares = useMemo(() => {
+    const m = new Map<number, number>()
+    if (lumpTotal == null || !pool.length) return m
+    const oldest = (r: Row): string => String(r.unpaid_before?.from || r.from_date || '')
+    const byAge = [...pool].sort((a, b) => oldest(a).localeCompare(oldest(b)) || String(a.bd_no).localeCompare(String(b.bd_no), undefined, { numeric: true }))
+    const order = how === 'lifo' ? byAge.reverse() : byAge
+    let left = r2(lumpTotal)
+    const base = order.reduce((t, r) => t + n(r.gross), 0)
+    order.forEach((r, i) => {
+      const last = i === order.length - 1
+      const share = last
+        ? left
+        : how === 'pro'
+          ? r2(base > 0 ? (lumpTotal * n(r.gross)) / base : lumpTotal / order.length)
+          : how === 'equal'
+            ? r2(lumpTotal / order.length)
+            : r2(Math.min(left, n(r.gross)))
+      const s2 = r2(Math.max(0, Math.min(share, left)))
+      left = r2(left - s2)
+      m.set(n(r.bd_id), s2)
+    })
+    return m
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [lumpTotal, how, rows, picked])
+
+  // A bill's figures as they will be paid: its lump-sum share, else the
+  // typed interest, else the worked-out one; TDS at the bill's own %.
   const fig = (r: Row): { gross: number; tds: number; net: number; edited: boolean } => {
-    const e = edits[n(r.bd_id)]
+    const id = n(r.bd_id)
+    const e = lumpTotal != null && shares.has(id) ? String(shares.get(id)) : edits[id]
     if (e == null || e.trim() === '' || Math.abs(n(e) - n(r.gross)) < 0.005) return { gross: n(r.gross), tds: n(r.tds), net: n(r.net), edited: false }
     const g = r2(n(e))
     const t = r2((g * n(r.tds_pct)) / 100)
     return { gross: g, tds: t, net: r2(g - t), edited: true }
   }
-  const payable = (rows || []).filter((r) => !r.blocked)
-  const sel = payable.filter((r) => picked.has(n(r.bd_id)))
+  // What is actually paid: the ticked bills with something on them.
+  const sel = pool.filter((r) => fig(r).gross > 0.004)
   const tot = {
     gross: r2(sel.reduce((t, r) => t + fig(r).gross, 0)),
     tds: r2(sel.reduce((t, r) => t + fig(r).tds, 0)),
     net: r2(sel.reduce((t, r) => t + fig(r).net, 0))
   }
-
-  // A LUMP SUM over the ticked bills, FIFO: the oldest unpaid bill takes its
-  // full interest first, then the next, until the sum runs out; the bill it
-  // runs out on takes what is left, and any bill left with nothing is unticked
-  // (no ₹0 payment). More than all of them is left on the last bill.
-  const [lump, setLump] = useState<string | null>(null)
-  const spread = (total: number): void => {
-    if (!sel.length) return
-    const oldest = (r: Row): string => String(r.unpaid_before?.from || r.from_date || '')
-    const order = [...sel].sort((a, b) => oldest(a).localeCompare(oldest(b)) || String(a.bd_no).localeCompare(String(b.bd_no), undefined, { numeric: true }))
-    let left = r2(total)
-    const next: Record<number, string> = {}
-    const keep = new Set<number>()
-    order.forEach((r, i) => {
-      const share = i === order.length - 1 ? left : r2(Math.min(left, n(r.gross)))
-      left = r2(left - share)
-      if (share > 0.004) {
-        next[n(r.bd_id)] = String(share)
-        keep.add(n(r.bd_id))
-      }
-    })
-    setEdits((p) => {
-      const out = { ...p }
-      for (const r of sel) delete out[n(r.bd_id)]
-      return { ...out, ...next }
-    })
-    setPicked((p) => new Set([...p].filter((id) => keep.has(id) || !sel.some((r) => n(r.bd_id) === id))))
+  // One bill typed over while a lump sum is shared: the shares become the
+  // starting figures, and the sum is let go.
+  const editOne = (id: number, v: string): void => {
+    if (lumpTotal != null) {
+      const fixed: Record<number, string> = {}
+      shares.forEach((sh, k) => (fixed[k] = String(sh)))
+      setEdits({ ...fixed, [id]: v })
+      setLumpTotal(null)
+    } else setEdits((p) => ({ ...p, [id]: v }))
+  }
+  const resetAll = (): void => {
+    setEdits({})
+    setLumpTotal(null)
+    setLump(null)
   }
 
   async function pay(): Promise<void> {
@@ -258,7 +282,7 @@ export function BdCumulativeInterest({ open, onClose, nbfcs, onDone }: { open: b
                       <input
                         type="checkbox"
                         aria-label="Tick every bill"
-                        checked={payable.length > 0 && sel.length === payable.length}
+                        checked={payable.length > 0 && pool.length === payable.length}
                         onChange={(e) => setPicked(e.target.checked ? new Set(payable.map((r) => n(r.bd_id))) : new Set())}
                       />
                     </th>
@@ -348,27 +372,33 @@ export function BdCumulativeInterest({ open, onClose, nbfcs, onDone }: { open: b
                                 inputMode="decimal"
                                 aria-label={`Interest paid on ${String(r.bd_no)}`}
                                 disabled={!on}
-                                value={typingId === id ? (edits[id] ?? String(n(r.gross))) : inIN(edits[id] ?? n(r.gross))}
+                                value={typingId === id ? (edits[id] ?? String(fig(r).gross)) : inIN(fig(r).gross)}
                                 onFocus={(e) => {
                                   setTypingId(id)
                                   const el = e.currentTarget
                                   setTimeout(() => el.select(), 0)
                                 }}
                                 onBlur={() => setTypingId(null)}
-                                onChange={(e) => setEdits((p) => ({ ...p, [id]: e.target.value.replace(/[^0-9.]/g, '') }))}
+                                onChange={(e) => editOne(id, e.target.value.replace(/[^0-9.]/g, ''))}
                                 className={cn(
                                   'h-8 w-[118px] rounded-[4px] border px-2 text-right text-[12.5px] font-bold tabular-nums disabled:opacity-60',
                                   fig(r).edited ? 'border-[#C2700A] bg-[#FFF8EC] text-[#8A5300]' : 'border-[#C9DCCF] bg-white text-[#0A1F17]'
                                 )}
                               />
-                              {fig(r).edited && (
+                              {lumpTotal != null && on && !(fig(r).gross > 0.004) && (
+                                <span className="mt-0.5 block text-right text-[10px] font-bold text-[#8CA396]">nothing left for this bill</span>
+                              )}
+                              {fig(r).edited && fig(r).gross > 0.004 && (
                                 <button
                                   type="button"
-                                  onClick={() => setEdits((p) => {
-                                    const next = { ...p }
-                                    delete next[id]
-                                    return next
-                                  })}
+                                  onClick={() => {
+                                    if (lumpTotal != null) editOne(id, String(n(r.gross)))
+                                    setEdits((p) => {
+                                      const next = { ...p }
+                                      delete next[id]
+                                      return next
+                                    })
+                                  }}
                                   title="Back to the worked-out figure"
                                   className="mt-0.5 block w-full text-right text-[10px] font-bold text-[#8A5300] hover:underline"
                                 >
@@ -387,29 +417,70 @@ export function BdCumulativeInterest({ open, onClose, nbfcs, onDone }: { open: b
                 </tbody>
                 <tfoot>
                   <tr className="border-t-[1.5px] border-[#C9DCCF] bg-[#F0F8F3] font-extrabold">
-                    <td colSpan={6} className="px-3 py-2.5 text-[11px] uppercase tracking-[.1em] text-[#33473E]">
-                      {sel.length} of {payable.length} bill{payable.length === 1 ? '' : 's'} ticked
+                    <td colSpan={6} className="px-3 py-2.5">
+                      <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5">
+                        <span className="text-[11px] font-extrabold uppercase tracking-[.1em] text-[#33473E]">
+                          {sel.length} of {payable.length} bill{payable.length === 1 ? '' : 's'} paid
+                        </span>
+                        {/* How a lump sum is shared — live, changeable at any time. */}
+                        <span className="flex items-center gap-1.5 normal-case">
+                          <span className="text-[10px] font-extrabold uppercase tracking-[.1em] text-[#5A6B62]">Share a lump sum</span>
+                          <span className="flex rounded-[4px] border border-[#C9DCCF] bg-white p-0.5">
+                            {(
+                              [
+                                ['fifo', 'Oldest first'],
+                                ['lifo', 'Newest first'],
+                                ['pro', 'In proportion'],
+                                ['equal', 'Equally']
+                              ] as const
+                            ).map(([k, label]) => (
+                              <button
+                                key={k}
+                                type="button"
+                                onClick={() => setHow(k)}
+                                className={cn(
+                                  'whitespace-nowrap rounded-[3px] px-2 py-0.5 text-[11px] font-extrabold',
+                                  how === k ? 'bg-[#0B3D2E] text-white' : 'text-[#33473E] hover:bg-[#F0F8F3]'
+                                )}
+                              >
+                                {label}
+                              </button>
+                            ))}
+                          </span>
+                        </span>
+                        {(lumpTotal != null || Object.keys(edits).length > 0) && (
+                          <button type="button" onClick={resetAll} className="text-[11px] font-extrabold normal-case text-[#8A5300] hover:underline">
+                            Reset all to worked out
+                          </button>
+                        )}
+                      </div>
                     </td>
                     <td className="whitespace-nowrap px-2 py-1.5 text-right">
                       {/* Type a lump sum for all the ticked bills. */}
                       <input
                         inputMode="decimal"
                         aria-label="Lump sum of interest for the ticked bills"
-                        title="Type a lump sum — it pays the oldest bill first (FIFO), then the next, until it runs out"
+                        title="Type a lump sum — it is shared over the ticked bills by the method chosen on the left"
                         disabled={!sel.length}
-                        value={lump ?? inIN(tot.gross)}
-                        onFocus={() => setLump(String(tot.gross))}
-                        onChange={(e) => setLump(e.target.value.replace(/[^0-9.]/g, ''))}
-                        onBlur={() => {
-                          if (lump != null && n(lump) > 0 && Math.abs(n(lump) - tot.gross) >= 0.005) spread(n(lump))
-                          setLump(null)
+                        value={lump ?? inIN(lumpTotal ?? tot.gross)}
+                        onFocus={(e) => {
+                          setLump(String(lumpTotal ?? tot.gross))
+                          const el = e.currentTarget
+                          setTimeout(() => el.select(), 0)
                         }}
+                        onChange={(e) => {
+                          const v = e.target.value.replace(/[^0-9.]/g, '')
+                          setLump(v)
+                          // Shared out as it is typed.
+                          setLumpTotal(n(v) > 0 ? r2(n(v)) : null)
+                        }}
+                        onBlur={() => setLump(null)}
                         onKeyDown={(e) => {
                           if (e.key === 'Enter') e.currentTarget.blur()
                         }}
                         className="h-8 w-[130px] rounded-[4px] border border-[#0B3D2E] bg-white px-2 text-right text-[12.5px] font-extrabold tabular-nums text-[#0A1F17] disabled:opacity-60"
                       />
-                      <span className="mt-0.5 block text-[10px] font-bold normal-case text-[#5A6B62]">lump sum · oldest first</span>
+                      <span className="mt-0.5 block text-[10px] font-bold normal-case text-[#5A6B62]">{lumpTotal != null ? 'lump sum · shared' : 'type a lump sum'}</span>
                     </td>
                     <td className="whitespace-nowrap px-2 py-2.5 text-right tabular-nums">{formatINR(tot.tds)}</td>
                     <td className="whitespace-nowrap px-3 py-2.5 text-right tabular-nums text-[#0B6B45]">{formatINR(tot.net)}</td>
