@@ -18,8 +18,7 @@ const toPlain = (rs: { rows: unknown[] }): Row[] => rs.rows.map((r) => ({ ...(r 
 // under any line ("what this line is made of"). Each voucher also states the
 // money it moved through bank or cash — in or out — and what about it is not
 // right: a voucher whose two sides differ, a breakdown that does not add up to
-// its line, a payment or receipt to a party set against no bill, a party line
-// with no party.
+// its line, a voucher with no lines.
 //
 // Read only. Three queries for the lines, the bill references and the
 // breakdowns of every voucher in the period, so a month reads as fast as a day.
@@ -160,7 +159,6 @@ export async function cashflowRegister(from?: string, to?: string, companyId?: n
     const moneyIn = round2(money.filter((l) => l.side === 'dr').reduce((t, l) => t + l.amount, 0))
     const moneyOut = round2(money.filter((l) => l.side === 'cr').reduce((t, l) => t + l.amount, 0))
     const parties = ls.filter((l) => l.kind === 'customer' || l.kind === 'supplier')
-    const type = String(h.vch_type || '').toUpperCase()
     const refs = [...new Set(ls.flatMap((l) => (l.refs as Row[]).filter((r) => r.method === 'agst_ref' || r.method === 'new_ref').map((r) => r.ref)).filter(Boolean))]
     // WHAT IS NOT RIGHT about it, said in words.
     const issues: string[] = []
@@ -172,9 +170,8 @@ export async function cashflowRegister(from?: string, to?: string, companyId?: n
         if (Math.abs(t - l.amount) > 0.01) issues.push(`${l.account}: its breakdown comes to ${t.toFixed(2)}, the line is ${Number(l.amount).toFixed(2)}`)
       }
     }
-    if ((type.startsWith('PAYMENT') || type.startsWith('RECEIPT')) && parties.length && !parties.some((p) => (p.refs as Row[]).length)) {
-      issues.push(`${type.startsWith('PAYMENT') ? 'Payment' : 'Receipt'} to a party set against no bill — no Agst Ref, New Ref or On Account`)
-    }
+    // A party payment or receipt with no bill reference is NOT flagged: money
+    // not yet set against a bill is normal (it sits On Account), not an error.
     if (!ls.length) issues.push('No lines on this voucher')
     return {
       id: n(h.id),
