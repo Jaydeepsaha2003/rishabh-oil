@@ -3546,6 +3546,7 @@ __export(billDiscounting_exports, {
   bdAdjParts: () => bdAdjParts,
   bdCalc: () => bdCalc,
   bdCumulativeInterest: () => bdCumulativeInterest,
+  bdInterestRange: () => bdInterestRange,
   bdInterestSchedule: () => bdInterestSchedule,
   bdInterestWindow: () => bdInterestWindow,
   bdKpis: () => bdKpis,
@@ -4983,6 +4984,49 @@ async function listBdInterestPayments(bdId) {
   });
   return toPlain3(res);
 }
+function accrualStart(bd, received) {
+  return bd.days_incl_start ? received : addDays(received, 1);
+}
+function firstUnpaid(paid, start) {
+  let cur = start;
+  const spans = paid.map((p) => ({ from: String(p.from_date || "").slice(0, 10), to: String(p.to_date || "").slice(0, 10) })).filter((p) => p.to).sort((a, b) => a.from.localeCompare(b.from));
+  for (const sp of spans) {
+    const f = sp.from > start ? sp.from : start;
+    if (f > cur) return { from: cur, next: f };
+    if (sp.to >= cur) cur = addDays(sp.to, 1);
+  }
+  return { from: cur, next: null };
+}
+async function bdInterestRange(bdId, fromIn, toIn) {
+  const bd = await loadBd(bdId);
+  const calc = bdCalc(bd);
+  const received = String(bd.payment_received_date || "").slice(0, 10);
+  const mode = String(bd.interest_mode || "") || (bd.interest_upfront ? "upfront" : "discounted");
+  const today = todayISO2();
+  const to = String(toIn).slice(0, 10) > today ? today : String(toIn).slice(0, 10);
+  const paid = toPlain3(await getClient().execute({ sql: "SELECT from_date, to_date FROM bd_interest_payments WHERE bd_id = ? ORDER BY from_date", args: [n2(bdId)] }));
+  const out = { bd_id: n2(bdId), interest_base: calc.interestBase, open_amount: calc.openAmount, interest_pct: n2(bd.interest_pct), tds_pct: n2(bd.tds_pct), to_date: to, parts: [], gross: 0, tds: 0, net: 0, days: 0 };
+  if (!received) return { ...out, from_date: fromIn, blocked: "This bill is not funded yet." };
+  if (mode === "discounted") return { ...out, from_date: fromIn, blocked: "Interest was taken out when the bill was funded." };
+  const A = accrualStart(bd, received);
+  const from = String(fromIn).slice(0, 10) < A ? A : String(fromIn).slice(0, 10);
+  out.from_date = from;
+  if (from > to) return { ...out, blocked: received > to ? "Funded after this period." : "Nothing in this period." };
+  for (const p of paid) {
+    const pf = String(p.from_date).slice(0, 10) < A ? A : String(p.from_date).slice(0, 10);
+    const pt = String(p.to_date).slice(0, 10);
+    if (pf <= to && pt >= from) return { ...out, blocked: `Already paid ${pf} \u2192 ${pt}.`, paid_to: pt };
+  }
+  const g = firstUnpaid(paid, A);
+  if (g.from < from) out.unpaid_before = { from: g.from, to: addDays(from, -1) };
+  const daysYear = n2(bd.days_year) || 360;
+  const steps = n2(bd.first_receipt_part) > 5e-3 ? [] : await principalRepaidByDate(bdId);
+  const split2 = bdInterestParts(calc.interestBase, steps, from, to, n2(bd.interest_pct), daysYear);
+  const days = daysBetween(from, to) + 1;
+  const gross = steps.length ? split2.gross : round2(calc.interestBase * n2(bd.interest_pct) * days / (100 * daysYear));
+  const tds = round2(gross * n2(bd.tds_pct) / 100);
+  return { ...out, parts: split2.parts, days, gross, tds, net: round2(gross - tds), blocked: gross > 4e-3 ? "" : "Nothing has accrued." };
+}
 async function bdInterestWindow(bdId, toDate) {
   const bd = await loadBd(bdId);
   const calc = bdCalc(bd);
@@ -4990,18 +5034,20 @@ async function bdInterestWindow(bdId, toDate) {
   const mode = String(bd.interest_mode || "") || (bd.interest_upfront ? "upfront" : "discounted");
   const paid = toPlain3(
     await getClient().execute({
-      sql: `SELECT to_date, gross, tds, net, paid_date FROM bd_interest_payments
+      sql: `SELECT from_date, to_date, gross, tds, net, paid_date FROM bd_interest_payments
              WHERE bd_id = ? ORDER BY to_date DESC, id DESC`,
       args: [n2(bdId)]
     })
   );
   const lastTo = paid.length ? String(paid[0].to_date).slice(0, 10) : "";
-  const first = !lastTo;
-  const from = first ? received : addDays(lastTo, 1);
+  const g = firstUnpaid(paid, received ? accrualStart(bd, received) : "");
+  const first = !!received && g.from === accrualStart(bd, received);
+  const from = first ? received : g.from;
   const today = todayISO2();
-  const blocked = !received ? "This bill is not funded yet." : mode === "discounted" ? "Interest repayment does not apply to this bill." : from > today ? "Interest is paid up to date." : "";
+  const ceiling = g.next ? addDays(g.next, -1) < today ? addDays(g.next, -1) : today : today;
+  const blocked = !received ? "This bill is not funded yet." : mode === "discounted" ? "Interest repayment does not apply to this bill." : from > ceiling ? "Interest is paid up to date." : "";
   const blockedNote = !received ? "Interest starts accruing the day the money lands, so there is nothing to pay until this bill is received." : mode === "discounted" ? "The NBFC took its interest out of the disbursement when the bill was opened, so only the principal is left \u2014 use Full repayment." : from > today ? `Nothing has accrued since the last payment, which ran to ${lastTo}.` : "";
-  const to = String(toDate || today).slice(0, 10);
+  const to = String(toDate || ceiling).slice(0, 10);
   const inclStart = first && bd.days_incl_start ? 1 : 1;
   const span2 = first ? Math.max(0, daysBetween(from, to) + (bd.days_incl_start ? 1 : 0)) : Math.max(0, daysBetween(from, to) + 1);
   const daysYear = n2(bd.days_year) || 360;
@@ -5017,7 +5063,7 @@ async function bdInterestWindow(bdId, toDate) {
     mode,
     // What the date picker may offer.
     min_date: from,
-    max_date: today,
+    max_date: ceiling,
     from_date: from,
     to_date: to,
     first,
@@ -6000,10 +6046,11 @@ async function bdCumulativeInterest(v) {
   const to = String(v.to_date || "").slice(0, 10);
   if (!n2(v.nbfc_id) || !/^\d{4}-\d{2}-\d{2}$/.test(to)) return [];
   const capped = to > todayISO2() ? todayISO2() : to;
+  const from = /^\d{4}-\d{2}-\d{2}$/.test(String(v.from_date || "")) ? String(v.from_date).slice(0, 10) : "0000-00-00";
   const bills = (await listBd({ nbfc_id: n2(v.nbfc_id) })).filter((b) => String(b.status) !== "repaid" && !!b.payment_received_date);
   const out = [];
   for (const b of bills) {
-    const w = await bdInterestWindow(n2(b.id), capped);
+    const w = await bdInterestRange(n2(b.id), from, capped);
     out.push({
       bd_id: n2(b.id),
       bd_no: b.bd_no,
@@ -6019,7 +6066,9 @@ async function bdCumulativeInterest(v) {
       tds: n2(w.tds),
       net: n2(w.net),
       paid_to: w.paid_to || null,
-      blocked: w.blocked || (w.from_date > capped ? "Interest is paid up to date." : "") || (!(n2(w.gross) > 4e-3) ? "Nothing has accrued." : "")
+      parts: w.parts || [],
+      unpaid_before: w.unpaid_before || null,
+      blocked: w.blocked || ""
     });
   }
   return out;
@@ -6031,15 +6080,15 @@ async function payBdCumulativeInterest(v) {
     if (to > todayISO2()) throw new Error("Interest cannot be paid for days that have not happened yet");
     const date = String(v.paid_date || to).slice(0, 10);
     if (date > todayISO2()) throw new Error("The payment cannot be dated in the future");
+    const from = /^\d{4}-\d{2}-\d{2}$/.test(String(v.from_date || "")) ? String(v.from_date).slice(0, 10) : "0000-00-00";
     const ids = Array.from(new Set((v.bd_ids || []).map(n2).filter((x) => x > 0)));
     if (!ids.length) throw new Error("Tick at least one bill to pay");
     const rows2 = [];
     for (const id of ids) {
       const bd = await loadBd(id);
       if (n2(bd.nbfc_id) !== n2(v.nbfc_id)) throw new Error(`${bd.bd_no} is with another NBFC`);
-      const w = await bdInterestWindow(id, to);
+      const w = await bdInterestRange(id, from, to);
       if (w.blocked) throw new Error(`${bd.bd_no}: ${String(w.blocked)}`);
-      if (String(w.from_date) > to) throw new Error(`${bd.bd_no}: interest is already paid to ${String(w.paid_to)}`);
       const typed = v.amounts && String(v.amounts[String(id)] ?? "").trim() !== "" ? round2(n2(v.amounts[String(id)])) : null;
       if (typed != null) {
         if (!(typed > 4e-3)) throw new Error(`${bd.bd_no}: enter the interest being paid`);
@@ -41061,6 +41110,8 @@ async function positionOne() {
       const since = day10(t[STAGES2[stage].dateKey] || t.loaded_date || t.created_at);
       movement.push({
         id: n47(t.id),
+        // Whose books it is in — none until billed (it shows under every company).
+        company_id: t.order_id ? n47(t.company_id) : null,
         tanker_no: t.tanker_no ?? null,
         product_name: t.oil_name ?? t.product_name ?? null,
         supplier_name: t.supplier_name ?? null,
