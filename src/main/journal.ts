@@ -330,7 +330,7 @@ export async function repostJournal(entryId: number, a: PostArgs): Promise<{ id:
   // figure changed loses it: its parts no longer make the figure.
   const kept = new Map<string, Row[]>()
   for (const s of (await c.execute({
-    sql: `SELECT jl.account_id, jl.dr, jl.cr, s.name, s.amount, s.note, s.sort_order, s.branch
+    sql: `SELECT jl.account_id, jl.dr, jl.cr, s.name, s.amount, s.note, s.sort_order, s.branch, s.color, s.remark
             FROM journal_line_splits s JOIN journal_lines jl ON jl.id = s.line_id
            WHERE jl.entry_id = ? ORDER BY s.line_id, s.sort_order, s.id`,
     args: [id]
@@ -353,8 +353,8 @@ export async function repostJournal(entryId: number, a: PostArgs): Promise<{ id:
       kept.delete(key)
       for (const s of parts) {
         await c.execute({
-          sql: 'INSERT INTO journal_line_splits (line_id, name, amount, note, sort_order, branch) VALUES (?, ?, ?, ?, ?, ?)',
-          args: [Number(ins.lastInsertRowid), s.name, n(s.amount), s.note ?? null, n(s.sort_order), s.branch ?? null]
+          sql: 'INSERT INTO journal_line_splits (line_id, name, amount, note, sort_order, branch, color, remark) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+          args: [Number(ins.lastInsertRowid), s.name, n(s.amount), s.note ?? null, n(s.sort_order), s.branch ?? null, s.color ?? null, s.remark ?? null]
         })
       }
     }
@@ -631,7 +631,7 @@ export async function accountStatement(accountId: number, companyId?: number): P
       const chunk = entryIds.slice(i, i + 400)
       const sp = await c
         .execute({
-          sql: `SELECT jl.entry_id, jl.id AS line_id, s.name, s.amount, s.note, s.branch
+          sql: `SELECT jl.entry_id, jl.id AS line_id, s.name, s.amount, s.note, s.branch, s.color, s.remark
                   FROM journal_line_splits s JOIN journal_lines jl ON jl.id = s.line_id
                  WHERE jl.entry_id IN (${chunk.map(() => '?').join(',')})
                  ORDER BY jl.id, s.sort_order, s.id`,
@@ -641,7 +641,7 @@ export async function accountStatement(accountId: number, companyId?: number): P
       for (const r of sp.rows as unknown as Row[]) {
         const k = Number(r.entry_id)
         if (!byEntry.has(k)) byEntry.set(k, [])
-        ;(byEntry.get(k) as Row[]).push({ line_id: Number(r.line_id), name: String(r.name || ''), amount: Number(r.amount) || 0, note: r.note ? String(r.note) : null, branch: r.branch ? String(r.branch) : null })
+        ;(byEntry.get(k) as Row[]).push({ line_id: Number(r.line_id), name: String(r.name || ''), amount: Number(r.amount) || 0, note: r.note ? String(r.note) : null, branch: r.branch ? String(r.branch) : null, color: r.color ? String(r.color) : null, remark: r.remark ? String(r.remark) : null })
       }
     }
     for (const l of lines) {

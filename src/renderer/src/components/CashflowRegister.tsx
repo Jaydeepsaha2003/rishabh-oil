@@ -1,9 +1,10 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { AlertTriangle, ArrowDownLeft, ArrowUpRight, CheckCircle2, ChevronRight, ExternalLink, EyeOff, Search, X } from 'lucide-react'
+import { AlertTriangle, ArrowDownLeft, ArrowUpRight, CheckCircle2, ChevronRight, ExternalLink, EyeOff, MessageSquareText, Search, X } from 'lucide-react'
 import { DatePicker } from '@/components/ui/date-picker'
 import { CashflowExcelDialog } from '@/components/CashflowExcelDialog'
 import { formatDate, formatINR, todayISO } from '@/lib/format'
 import { cn } from '@/lib/utils'
+import { splitBox } from '@/components/SplitPartTools'
 import { toast } from 'sonner'
 import { useBreakdownShown } from '@/lib/breakdownReveal'
 
@@ -447,10 +448,11 @@ export function CashflowRegister({
                                   </div>
                                   {(l.splits as Row[]).map((x, k) => (
                                     <div key={k} className="flex justify-between gap-2">
-                                      <span className="min-w-0 truncate" title={x.note ? `${x.name} · ${x.note}` : x.name}>
+                                      <span className="min-w-0 truncate" title={[x.name, x.note, x.remark].filter(Boolean).join(' · ')}>
                                         {x.name}
+                                        {x.remark ? <MessageSquareText className="ml-1 inline h-3 w-3 text-[#C2700A]" /> : null}
                                       </span>
-                                      <span className="flex-none tabular-nums">{formatINR(x.amount)}</span>
+                                      <span className={cn('flex-none rounded-[2px] border border-transparent px-1 tabular-nums', splitBox(x.color))}>{formatINR(x.amount)}</span>
                                     </div>
                                   ))}
                                 </div>
@@ -531,8 +533,13 @@ export function CashflowRegister({
                                             <span className="min-w-0 [overflow-wrap:anywhere]">
                                               {x.name}
                                               {x.note ? <span className="text-[#8CA396]"> · {x.note}</span> : null}
+                                              {x.remark ? (
+                                                <span className="ml-1 inline-flex items-center gap-0.5 text-[#8A5300]" title={String(x.remark)}>
+                                                  <MessageSquareText className="h-3 w-3" />
+                                                </span>
+                                              ) : null}
                                             </span>
-                                            <span className="flex-none tabular-nums">{formatINR(x.amount)}</span>
+                                            <span className={cn('flex-none rounded-[2px] border border-transparent px-1 tabular-nums', splitBox(x.color))}>{formatINR(x.amount)}</span>
                                           </div>
                                         ))}
                                       </div>

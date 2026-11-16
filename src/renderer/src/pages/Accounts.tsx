@@ -106,6 +106,7 @@ import { PayReceiptRegister } from '@/components/PayReceiptRegister'
 import { JournalRegister } from '@/components/JournalRegister'
 import { RcmRegister } from '@/components/RcmRegister'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
+import { SplitPartTools, splitBox } from '@/components/SplitPartTools'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { MultiSelectFilter } from '@/components/ui/multi-select-filter'
 import { Command, CommandEmpty, CommandInput, CommandItem, CommandList } from '@/components/ui/command'
@@ -657,6 +658,9 @@ interface SplitRow {
   note?: string
   // Which unit the part is for (SPLIT_BRANCHES).
   branch?: string
+  // Highlight on the amount (SPLIT_COLORS key) and a note read on hover.
+  color?: string
+  remark?: string
 }
 const SPLIT_BRANCHES = ['LUDHIANA', 'GHAZIABAD', 'OTHERS', 'BOTH'] as const
 
@@ -725,13 +729,13 @@ const METHODS:{ key: AllocRow['method']; label: string }[] = [
 const blankPayLine = (): PayLine => ({ account: '', group: '', amount: '', allocs: [] })
 // A line's breakdown, out to the voucher (rows with a name or an amount) and
 // back in from a saved one.
-const splitsOut = (rows?: SplitRow[]): { name: string; amount: number; note: string | null; branch: string | null }[] =>
+const splitsOut = (rows?: SplitRow[]): { name: string; amount: number; note: string | null; branch: string | null; color: string | null; remark: string | null }[] =>
   (rows || [])
     .filter((sp) => String(sp.name || '').trim() || Number(sp.amount) > 0 || String(sp.note || '').trim())
-    .map((sp) => ({ name: String(sp.name || '').trim(), amount: Number(sp.amount) || 0, note: String(sp.note || '').trim() || null, branch: sp.branch || null }))
+    .map((sp) => ({ name: String(sp.name || '').trim(), amount: Number(sp.amount) || 0, note: String(sp.note || '').trim() || null, branch: sp.branch || null, color: sp.color || null, remark: String(sp.remark || '').trim() || null }))
 const splitsIn = (rows: unknown): SplitRow[] =>
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  ((rows as any[]) || []).map((sp) => ({ name: String(sp.name || ''), amount: String(sp.amount ?? ''), note: sp.note ? String(sp.note) : undefined, branch: sp.branch ? String(sp.branch) : undefined }))
+  ((rows as any[]) || []).map((sp) => ({ name: String(sp.name || ''), amount: String(sp.amount ?? ''), note: sp.note ? String(sp.note) : undefined, branch: sp.branch ? String(sp.branch) : undefined, color: sp.color ? String(sp.color) : undefined, remark: sp.remark ? String(sp.remark) : undefined }))
 const typeLabelOf = (t: string): string => VCH_TYPES.find((v) => v.key === t)?.label || t
 // The number series a type falls in, by its word — PURCHASE OIL and PURCHASE
 // OTHERS are both Purchase (voucherNumbers.ts on the server says the same).
@@ -1055,7 +1059,7 @@ function SplitPanel({
               }
             }}
             placeholder="0.00"
-            className="doc-ref h-8 w-[130px] flex-none rounded-[3px] border border-[#C3D2C6] bg-white px-2 text-right text-[12px] font-bold tabular-nums outline-none focus:border-[#1B4E82]"
+            className={cn('doc-ref h-8 w-[130px] flex-none rounded-[3px] border border-[#C3D2C6] bg-white px-2 text-right text-[12px] font-bold tabular-nums outline-none focus:border-[#1B4E82]', splitBox(r.color))}
           />
           {/* A remark on this part — saved with it and printed in the Excel. */}
           <input
@@ -1071,6 +1075,7 @@ function SplitPanel({
             title="A comment on this part — saved with the voucher and printed in the Excel"
             className="h-8 w-[200px] min-w-0 flex-none rounded-[3px] border border-[#C3D2C6] bg-white px-2 text-[12px] outline-none focus:border-[#1B4E82]"
           />
+          <SplitPartTools color={r.color} remark={r.remark} onColor={(c) => set(i, { color: c })} onRemark={(x) => set(i, { remark: x })} />
           <button
             type="button"
             onClick={() => drop(i)}
@@ -5250,11 +5255,7 @@ export function Accounts({
         })),
         // The working comes back with the voucher, so altering one does not
         // quietly drop the explanation it was saved with.
-        splits: ((l.splits as Row[]) || []).map((sp) => ({
-          name: String(sp.name || ''),
-          amount: String(sp.amount ?? ''),
-          note: sp.note ? String(sp.note) : undefined
-        })),
+        splits: splitsIn(l.splits),
         // And the item it was written with (plain vouchers keep it on the line).
         product_id: l.product_id != null ? Number(l.product_id) : null,
         qty: l.qty != null ? String(l.qty) : '',

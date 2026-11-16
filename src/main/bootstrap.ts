@@ -3498,6 +3498,9 @@ export async function runStartupTasks(): Promise<void> {
 const REQUIRED_COLUMNS: { table: string; column: string; type: string }[] = [
   // Which unit a breakdown part belongs to: LUDHIANA, GHAZIABAD, OTHERS, BOTH.
   { table: 'journal_line_splits', column: 'branch', type: 'TEXT' },
+  // A breakdown part's highlight colour (a key: red, amber, green, blue, violet) and its hover remark.
+  { table: 'journal_line_splits', column: 'color', type: 'TEXT' },
+  { table: 'journal_line_splits', column: 'remark', type: 'TEXT' },
   // A sale billed to a SUPPLIER as a purchase return (sales.ts stampReturnSupplier).
   { table: 'sales', column: 'return_supplier_id', type: 'INTEGER' },
   // The purchase bargain a purchase return goes back against: its returned

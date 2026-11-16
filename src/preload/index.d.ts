@@ -210,7 +210,7 @@ export interface Api {
     subtypes: () => Promise<Row[]>
     setValueDate: (id: number, valueDate: string | null) => Promise<{ id: number; value_date: string | null }>
     setLineAllocs: (lineId: number, allocs: Row[]) => Promise<{ id: number; allocs: number }>
-    setLineSplits: (lineId: number, splits: { name: string; amount: number; note?: string | null }[]) => Promise<{ id: number; parts: number }>
+    setLineSplits: (lineId: number, splits: { name: string; amount: number; note?: string | null; branch?: string | null; color?: string | null; remark?: string | null }[]) => Promise<{ id: number; parts: number }>
     subtypeCreate: (values: { base_type: string; name: string }) => Promise<{ id: number }>
     subtypeRename: (values: { id: number; name: string }) => Promise<{ id: number }>
     subtypeDelete: (id: number) => Promise<{ id: number }>
