@@ -50,6 +50,8 @@ export function BdCumulativeInterest({ open, onClose, nbfcs, onDone }: { open: b
   const [tdsLedger, setTdsLedger] = useState('')
   const [bank, setBank] = useState('')
   const [paidOn, setPaidOn] = useState(today)
+  // Required — it goes into the voucher's narration.
+  const [note, setNote] = useState('')
   const [busy, setBusy] = useState(false)
   // The split calculator open on one bill's stretch (the same one as on a bill).
   const [splitRow, setSplitRow] = useState<Row | null>(null)
@@ -172,6 +174,11 @@ export function BdCumulativeInterest({ open, onClose, nbfcs, onDone }: { open: b
 
   async function pay(): Promise<void> {
     if (!sel.length) return
+    if (!note.trim()) {
+      toast.error('Write a note — it goes into the voucher narration')
+      document.getElementById('bdcum-note')?.focus()
+      return
+    }
     setBusy(true)
     try {
       const res = await window.api.billDiscounting.payCumulativeInterest({
@@ -182,6 +189,7 @@ export function BdCumulativeInterest({ open, onClose, nbfcs, onDone }: { open: b
         bank_account: bank || null,
         bd_ids: sel.map((r) => n(r.bd_id)),
         tds_ledger: tdsLedger || null,
+        note: note.trim(),
         amounts: Object.fromEntries(sel.filter((r) => fig(r).edited).map((r) => [String(n(r.bd_id)), fig(r).gross]))
       })
       toast.success(`Interest on ${res.bills} bill${res.bills === 1 ? '' : 's'} paid to ${formatDate(upto)} — one voucher, ${formatINR(res.net)} out of the bank`)
@@ -678,6 +686,21 @@ export function BdCumulativeInterest({ open, onClose, nbfcs, onDone }: { open: b
               </SelectContent>
             </Select>
           </div>
+          <div className="min-w-[220px] flex-[1.4] basis-[260px]">
+            <label htmlFor="bdcum-note" className={lbl}>
+              Note <span className="text-[#B3261E]">*</span> <span className="normal-case tracking-normal text-[#8CA396]">— goes into the narration</span>
+            </label>
+            <input
+              id="bdcum-note"
+              value={note}
+              onChange={(e) => setNote(e.target.value)}
+              placeholder="e.g. Blacksoil interest Oct-26, debit advice no."
+              className={cn(
+                'h-9 w-full rounded-[4px] border bg-white px-2.5 text-[13px] font-semibold outline-none focus:border-[#0B6B45] focus:ring-2 focus:ring-[#0B6B45]/15',
+                note.trim() ? 'border-[#C9DCCF]' : 'border-[#E3B66B] bg-[#FFFBF3]'
+              )}
+            />
+          </div>
           <div className="w-full sm:w-[170px]">
             <span className={lbl}>Payment date</span>
             <DatePicker value={paidOn} max={today} onChange={(v) => v && setPaidOn(v)} />
@@ -693,7 +716,7 @@ export function BdCumulativeInterest({ open, onClose, nbfcs, onDone }: { open: b
           <button
             type="button"
             data-ctrl-a
-            disabled={busy || !sel.length}
+            disabled={busy || !sel.length || !note.trim()}
             title={`One bank voucher: Dr Interest ${formatINR(tot.gross)} · Cr TDS ${formatINR(tot.tds)} · Cr bank ${formatINR(tot.net)} — linked to every ticked bill`}
             onClick={() => void pay()}
             className="flex h-9 items-center gap-1.5 whitespace-nowrap rounded-[5px] bg-[#0B3D2E] px-5 text-[12px] font-extrabold text-[#C7F03F] hover:bg-[#0F4A38] disabled:opacity-50"

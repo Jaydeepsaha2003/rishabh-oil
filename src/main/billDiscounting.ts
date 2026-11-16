@@ -3833,6 +3833,7 @@ export async function payBdCumulativeInterest(v: {
     const from = /^\d{4}-\d{2}-\d{2}$/.test(String(v.from_date || '')) ? String(v.from_date).slice(0, 10) : '0000-00-00'
     const ids = Array.from(new Set((v.bd_ids || []).map(n).filter((x) => x > 0)))
     if (!ids.length) throw new Error('Tick at least one bill to pay')
+    if (!String(v.note || '').trim()) throw new Error('Write a note — it goes into the voucher narration')
     const rows: { bd: Row; w: Row }[] = []
     for (const id of ids) {
       const bd = await loadBd(id)
