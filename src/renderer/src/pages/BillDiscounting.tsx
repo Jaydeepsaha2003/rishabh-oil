@@ -1316,8 +1316,11 @@ export function BillDiscounting({
    * runs in, and two thin buckets side by side cost more row space than
    * either was worth. One bucket, either reason.
    */
+  // Still owed back: what was drawn less what has come back — the dashboard's
+  // Payment IN pending rule (dailyPosition.ts). A bill with part of its money
+  // back (GB11, ₹1.14 Cr of ₹1.20 Cr) is still waiting on the rest.
   function bdAwaitsPayIn(r: Row): boolean {
-    return !!Number(r.payment_in_expected) && n(r.payment_in_total) <= 0.004
+    return !!Number(r.payment_in_expected) && n(r.amount) - n(r.payment_in_total) > 0.5
   }
   function bdIsAwaiting(r: Row): boolean {
     return String(r.stage) === 'awaiting' || bdAwaitsPayIn(r)
