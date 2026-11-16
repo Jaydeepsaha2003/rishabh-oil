@@ -2080,6 +2080,8 @@ export function BillDiscounting({
   // them. Loaded with the repayment parts, because both are read in the same
   // panel and a bill that services its interest has two clocks running.
   const [intSched, setIntSched] = useState<Row[]>([])
+  // Every interest payment on the bill — also ones that end on no rest (paid to a mid-month day).
+  const [intPays, setIntPays] = useState<Row[]>([])
   const [intBusy, setIntBusy] = useState(false)
   const [intPosting, setIntPosting] = useState<number | null>(null)
   /**
@@ -2102,7 +2104,12 @@ export function BillDiscounting({
   >(null)
 
   async function loadIntSched(bdId: number): Promise<void> {
-    setIntSched(await window.api.billDiscounting.interestSchedule(bdId).catch(() => [] as Row[]))
+    const [sched, pays] = await Promise.all([
+      window.api.billDiscounting.interestSchedule(bdId).catch(() => [] as Row[]),
+      window.api.billDiscounting.interestPayments(bdId).catch(() => [] as Row[])
+    ])
+    setIntSched(sched)
+    setIntPays(pays)
   }
 
   async function payInterest(toDate: string, post: boolean): Promise<void> {
@@ -2147,6 +2154,15 @@ export function BillDiscounting({
 
   async function undoInterest(payId: number): Promise<void> {
     if (!repayRow) return
+    const p = intPays.find((x) => n(x.id) === payId)
+    // A cumulative payment is one voucher for several bills: it goes as one.
+    const shared = /one voucher with (.+)$/.exec(String(p?.note || ''))?.[1]
+    const what = p ? `the interest payment ${formatDate(String(p.from_date))} → ${formatDate(String(p.to_date))} (${formatINR(n(p.gross))})` : 'this interest payment'
+    if (!window.confirm(`Delete ${what}?${shared ? `
+
+It was paid as ONE voucher with ${shared} — the payment on every one of those bills is deleted with it.` : ''}
+
+Its bank voucher is removed too.`)) return
     try {
       await window.api.billDiscounting.deleteInterest(payId)
       toast.success('Interest payment removed — its voucher is reversed')
@@ -7721,6 +7737,35 @@ export function BillDiscounting({
                       </div>
                     )
                   })}
+                  {/* EVERY PAYMENT MADE, each deletable — also one paid to a
+                      mid-month day, which sits on no rest above. */}
+                  {intPays.length > 0 && (
+                    <div className="border-t border-t-[#E4ECE3]">
+                      <div className="bg-[#FBFCFA] px-4 py-1.5 text-[10px] font-extrabold uppercase tracking-[.12em] text-[#5A6B62]">Payments made · {intPays.length}</div>
+                      {intPays.map((p) => (
+                        <div key={String(p.id)} className="flex flex-wrap items-center gap-x-3 gap-y-0.5 border-t border-dashed border-[#E4ECE3] px-4 py-1.5 text-[12px]">
+                          <span className="doc-ref font-bold tabular-nums text-[#0A1F17]">
+                            {formatDate(String(p.from_date))} → {formatDate(String(p.to_date))}
+                          </span>
+                          <span className="text-[11px] font-semibold text-[#5A6B62]">
+                            paid {formatDate(String(p.paid_date))}
+                            {p.vch_no ? ` · ${String(p.vch_no)}` : ''}
+                            {/one voucher with/.test(String(p.note || '')) ? ` · cumulative (${String(p.note).replace(/^.*one voucher with /, '')})` : ''}
+                          </span>
+                          <span className="doc-ref ml-auto font-bold tabular-nums text-[#0A1F17]">{formatINR(n(p.gross))}</span>
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            title="Delete this interest payment — its voucher goes too"
+                            className="!h-7 !w-7 !p-0 !text-[#B3261E] hover:!bg-[#FDF3F2]"
+                            onClick={() => void undoInterest(n(p.id))}
+                          >
+                            <Trash2 className="h-3.5 w-3.5" />
+                          </Button>
+                        </div>
+                      ))}
+                    </div>
+                  )}
                   <div className="flex flex-wrap items-center gap-x-3 gap-y-1 border-t border-t-[#E4ECE3] bg-[#F7FAF6] px-4 py-2.5">
                     <span className="text-[11.5px] font-bold text-[#5A6B62]">
                       {formatINR(intSched.filter((r) => r.paid_id).reduce((t, r) => t + n(r.paid_gross), 0))} serviced
