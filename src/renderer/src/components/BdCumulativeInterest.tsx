@@ -18,6 +18,16 @@ const n = (v: unknown): number => Number(v) || 0
 // 12,34,567.89 — Indian grouping in a box that is not being typed in.
 const inIN = (v: unknown): string => n(v).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
 const r2 = (v: number): number => Math.round(v * 100) / 100
+// The interest whose net after TDS (TDS rounded to the paisa) is exactly `net`.
+const grossFromNet = (net: number, pct: number): number => {
+  if (!(net > 0)) return 0
+  const g = r2(net / (1 - pct / 100))
+  for (const d of [0, -0.01, 0.01, -0.02, 0.02]) {
+    const x = r2(g + d)
+    if (r2(x - r2((x * pct) / 100)) === net) return x
+  }
+  return g
+}
 
 const monthEnd = (ym: string): string => {
   const [y, m] = ym.split('-').map(Number)
@@ -95,6 +105,8 @@ export function BdCumulativeInterest({ open, onClose, nbfcs, onDone }: { open: b
   const [lump, setLump] = useState<string | null>(null)
   const [lumpTotal, setLumpTotal] = useState<number | null>(null)
   const [how, setHow] = useState<'fifo' | 'lifo' | 'pro' | 'equal'>('fifo')
+  // What the lump sum is: the NET out of the bank (what the statement shows), or the interest before TDS.
+  const [lumpAs, setLumpAs] = useState<'net' | 'gross'>('net')
   const payable = (rows || []).filter((r) => !r.blocked)
   const pool = payable.filter((r) => picked.has(n(r.bd_id)))
   const shares = useMemo(() => {
@@ -103,24 +115,26 @@ export function BdCumulativeInterest({ open, onClose, nbfcs, onDone }: { open: b
     const oldest = (r: Row): string => String(r.unpaid_before?.from || r.from_date || '')
     const byAge = [...pool].sort((a, b) => oldest(a).localeCompare(oldest(b)) || String(a.bd_no).localeCompare(String(b.bd_no), undefined, { numeric: true }))
     const order = how === 'lifo' ? byAge.reverse() : byAge
+    // Shared in the lump sum's own terms (net or interest), each bill capped at its own figure.
+    const own = (r: Row): number => n(lumpAs === 'net' ? r.net : r.gross)
     let left = r2(lumpTotal)
-    const base = order.reduce((t, r) => t + n(r.gross), 0)
+    const base = order.reduce((t, r) => t + own(r), 0)
     order.forEach((r, i) => {
       const last = i === order.length - 1
       const share = last
         ? left
         : how === 'pro'
-          ? r2(base > 0 ? (lumpTotal * n(r.gross)) / base : lumpTotal / order.length)
+          ? r2(base > 0 ? (lumpTotal * own(r)) / base : lumpTotal / order.length)
           : how === 'equal'
             ? r2(lumpTotal / order.length)
-            : r2(Math.min(left, n(r.gross)))
+            : r2(Math.min(left, own(r)))
       const s2 = r2(Math.max(0, Math.min(share, left)))
       left = r2(left - s2)
-      m.set(n(r.bd_id), s2)
+      m.set(n(r.bd_id), lumpAs === 'net' ? grossFromNet(s2, n(r.tds_pct)) : s2)
     })
     return m
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [lumpTotal, how, rows, picked])
+  }, [lumpTotal, how, rows, picked, lumpAs])
 
   // A bill's figures as they will be paid: its lump-sum share, else the
   // typed interest, else the worked-out one; TDS at the bill's own %.
@@ -357,7 +371,7 @@ export function BdCumulativeInterest({ open, onClose, nbfcs, onDone }: { open: b
                                 {/* Days before this period still unpaid: overdue, said, not paid here. */}
                                 {r.unpaid_before && (
                                   <span className="mt-1 flex items-center gap-1 text-[10.5px] font-bold text-[#B3261E]" title="These earlier days are still unpaid — pay them with a range that covers them">
-                                    <span className="h-1.5 w-1.5 rounded-full bg-[#B3261E]" /> unpaid {formatDate(String(r.unpaid_before.from))} → {formatDate(String(r.unpaid_before.to))}
+                                    <span className="h-1.5 w-1.5 rounded-full bg-[#B3261E]" /> <span className="tracking-[.06em]">UNPAID</span> {formatDate(String(r.unpaid_before.from))} → {formatDate(String(r.unpaid_before.to))}
                                   </span>
                                 )}
                                 {/* Earlier stretches paid short: their balance is still due. */}
@@ -367,7 +381,7 @@ export function BdCumulativeInterest({ open, onClose, nbfcs, onDone }: { open: b
                                     className="mt-1 flex items-center gap-1 text-[10.5px] font-bold text-[#B3261E]"
                                     title={`Worked out ${formatINR(n(s.due))}, paid ${formatINR(n(s.paid))} — pick ${formatDate(String(s.from))} → ${formatDate(String(s.to))} to pay the balance`}
                                   >
-                                    <span className="h-1.5 w-1.5 rounded-full bg-[#B3261E]" /> balance {formatINR(n(s.short))} for {formatDate(String(s.from))} → {formatDate(String(s.to))}
+                                    <span className="h-1.5 w-1.5 rounded-full bg-[#B3261E]" /> <span className="tracking-[.06em]">BALANCE</span> {formatINR(n(s.short))} for {formatDate(String(s.from))} → {formatDate(String(s.to))}
                                   </span>
                                 ))}
                               </>
@@ -526,7 +540,30 @@ export function BdCumulativeInterest({ open, onClose, nbfcs, onDone }: { open: b
                         </span>
                         {/* How a lump sum is shared — live, changeable at any time. */}
                         <span className="flex items-center gap-1.5 normal-case">
-                          <span className="text-[10px] font-extrabold uppercase tracking-[.1em] text-[#5A6B62]">Share a lump sum</span>
+                          <span className="text-[10px] font-extrabold uppercase tracking-[.1em] text-[#5A6B62]">Lump sum is</span>
+                          <span className="flex rounded-[4px] border border-[#C9DCCF] bg-white p-0.5">
+                            {(
+                              [
+                                ['net', 'Net from bank'],
+                                ['gross', 'Interest (before TDS)']
+                              ] as const
+                            ).map(([k, label]) => (
+                              <button
+                                key={k}
+                                type="button"
+                                onClick={() => {
+                                  if (k === lumpAs) return
+                                  setLumpAs(k)
+                                  setLumpTotal(null)
+                                  setLump(null)
+                                }}
+                                className={cn('whitespace-nowrap rounded-[3px] px-2 py-0.5 text-[11px] font-extrabold', lumpAs === k ? 'bg-[#0B3D2E] text-white' : 'text-[#33473E] hover:bg-[#F0F8F3]')}
+                              >
+                                {label}
+                              </button>
+                            ))}
+                          </span>
+                          <span className="text-[10px] font-extrabold uppercase tracking-[.1em] text-[#5A6B62]">shared</span>
                           <span className="flex rounded-[4px] border border-[#C9DCCF] bg-white p-0.5">
                             {(
                               [
@@ -561,12 +598,12 @@ export function BdCumulativeInterest({ open, onClose, nbfcs, onDone }: { open: b
                       {/* Type a lump sum for all the ticked bills. */}
                       <input
                         inputMode="decimal"
-                        aria-label="Lump sum of interest for the ticked bills"
+                        aria-label={lumpAs === 'net' ? 'Net paid from the bank for the ticked bills' : 'Lump sum of interest for the ticked bills'}
                         title="Type a lump sum — it is shared over the ticked bills by the method chosen on the left"
                         disabled={!sel.length}
-                        value={lump ?? inIN(lumpTotal ?? tot.gross)}
+                        value={lump ?? inIN(lumpTotal ?? (lumpAs === 'net' ? tot.net : tot.gross))}
                         onFocus={(e) => {
-                          setLump(String(lumpTotal ?? tot.gross))
+                          setLump(String(lumpTotal ?? (lumpAs === 'net' ? tot.net : tot.gross)))
                           const el = e.currentTarget
                           setTimeout(() => el.select(), 0)
                         }}
@@ -582,7 +619,7 @@ export function BdCumulativeInterest({ open, onClose, nbfcs, onDone }: { open: b
                         }}
                         className="h-8 w-[130px] rounded-[4px] border border-[#0B3D2E] bg-white px-2 text-right text-[12.5px] font-extrabold tabular-nums text-[#0A1F17] disabled:opacity-60"
                       />
-                      <span className="mt-0.5 block text-[10px] font-bold normal-case text-[#5A6B62]">{lumpTotal != null ? 'lump sum · shared' : 'type a lump sum'}</span>
+                      <span className="mt-0.5 block text-[10px] font-bold normal-case text-[#5A6B62]">{lumpAs === 'net' ? (lumpTotal != null ? 'net from bank · shared' : 'type the net from bank') : lumpTotal != null ? 'interest · shared' : 'type the interest'}</span>
                     </td>
                     <td className="whitespace-nowrap px-2 py-2.5 text-right tabular-nums">{formatINR(tot.tds)}</td>
                     <td className="whitespace-nowrap px-3 py-2.5 text-right tabular-nums text-[#0B6B45]">{formatINR(tot.net)}</td>
