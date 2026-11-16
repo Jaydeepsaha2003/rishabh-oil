@@ -3546,7 +3546,6 @@ __export(billDiscounting_exports, {
   bdAdjParts: () => bdAdjParts,
   bdCalc: () => bdCalc,
   bdCumulativeInterest: () => bdCumulativeInterest,
-  bdInterestBalances: () => bdInterestBalances,
   bdInterestRange: () => bdInterestRange,
   bdInterestSchedule: () => bdInterestSchedule,
   bdInterestWindow: () => bdInterestWindow,
@@ -3566,6 +3565,7 @@ __export(billDiscounting_exports, {
   listAllBdRepayments: () => listAllBdRepayments,
   listBd: () => listBd,
   listBdChargeTypes: () => listBdChargeTypes,
+  listBdCumulativePayments: () => listBdCumulativePayments,
   listBdInterestPayments: () => listBdInterestPayments,
   listBdLimitReductions: () => listBdLimitReductions,
   listBdLinkedOrders: () => listBdLinkedOrders,
@@ -5060,19 +5060,73 @@ function shortSpans(paid, A, worked) {
     return { ...s6, due, short: round2(Math.max(0, due - s6.paid)) };
   });
 }
-async function bdInterestBalances(bdId) {
-  const bd = await loadBd(bdId);
-  const received = String(bd.payment_received_date || "").slice(0, 10);
-  const mode = String(bd.interest_mode || "") || (bd.interest_upfront ? "upfront" : "discounted");
-  if (!received || mode !== "serviced") return [];
-  const calc = bdCalc(bd);
-  const daysYear = n2(bd.days_year) || 360;
-  const steps = n2(bd.first_receipt_part) > 5e-3 ? [] : await principalRepaidByDate(bdId);
-  const paid = toPlain3(await getClient().execute({ sql: "SELECT from_date, to_date, gross FROM bd_interest_payments WHERE bd_id = ?", args: [n2(bdId)] }));
-  return shortSpans(paid, accrualStart(bd, received), (f, t) => {
-    const days = daysBetween(f, t) + 1;
-    return { gross: steps.length ? bdInterestParts(calc.interestBase, steps, f, t, n2(bd.interest_pct), daysYear).gross : round2(calc.interestBase * n2(bd.interest_pct) * days / (100 * daysYear)) };
-  });
+async function listBdCumulativePayments(nbfcId) {
+  const rows2 = toPlain3(
+    await getClient().execute({
+      sql: `SELECT p.*, b.bd_no, b.nbfc_id, nb.name AS nbfc_name, je.vch_no, je.narration
+              FROM bd_interest_payments p
+              JOIN bill_discountings b ON b.id = p.bd_id
+              LEFT JOIN nbfcs nb ON nb.id = b.nbfc_id
+              LEFT JOIN journal_entries je ON je.id = p.journal_entry_id
+             WHERE b.company_id = ? AND p.note LIKE '%one voucher with%' AND p.journal_entry_id IS NOT NULL
+               AND (? IS NULL OR b.nbfc_id = ?)
+             ORDER BY p.paid_date DESC, p.journal_entry_id DESC, p.id`,
+      args: [getActiveCompanyId(), nbfcId ? n2(nbfcId) : null, nbfcId ? n2(nbfcId) : null]
+    })
+  );
+  const worker = /* @__PURE__ */ new Map();
+  for (const id of [...new Set(rows2.map((r) => n2(r.bd_id)))]) {
+    const bd = await loadBd(id);
+    const received = String(bd.payment_received_date || "").slice(0, 10);
+    const calc = bdCalc(bd);
+    const daysYear = n2(bd.days_year) || 360;
+    const steps = n2(bd.first_receipt_part) > 5e-3 ? [] : await principalRepaidByDate(id);
+    const paid = toPlain3(await getClient().execute({ sql: "SELECT id, from_date, to_date, gross FROM bd_interest_payments WHERE bd_id = ?", args: [id] }));
+    worker.set(id, {
+      A: received ? accrualStart(bd, received) : "",
+      paid,
+      worked: (f, t) => {
+        const days = daysBetween(f, t) + 1;
+        return steps.length ? bdInterestParts(calc.interestBase, steps, f, t, n2(bd.interest_pct), daysYear).gross : round2(calc.interestBase * n2(bd.interest_pct) * days / (100 * daysYear));
+      }
+    });
+  }
+  const groups = /* @__PURE__ */ new Map();
+  for (const r of rows2) {
+    const w = worker.get(n2(r.bd_id));
+    const clamp = (d) => String(d || "").slice(0, 10) < w.A ? w.A : String(d || "").slice(0, 10);
+    const f = clamp(r.from_date);
+    const t = String(r.to_date || "").slice(0, 10);
+    const due = f <= t ? w.worked(f, t) : 0;
+    const before = round2(w.paid.filter((p) => n2(p.id) < n2(r.id) && clamp(p.from_date) === f && String(p.to_date).slice(0, 10) === t).reduce((s6, p) => s6 + n2(p.gross), 0));
+    const expected = round2(Math.max(0, due - before));
+    const diff = round2(n2(r.gross) - expected);
+    const je = n2(r.journal_entry_id);
+    if (!groups.has(je)) {
+      groups.set(je, {
+        journal_entry_id: je,
+        vch_no: r.vch_no || "",
+        paid_date: String(r.paid_date || "").slice(0, 10),
+        nbfc_name: r.nbfc_name || "",
+        bank: r.bank_account || "",
+        narration: r.narration || "",
+        bills: [],
+        gross: 0,
+        tds: 0,
+        net: 0,
+        expected: 0,
+        diff: 0
+      });
+    }
+    const g = groups.get(je);
+    g.bills.push({ id: n2(r.id), bd_id: n2(r.bd_id), bd_no: r.bd_no, from_date: f, to_date: t, due, before, expected, gross: n2(r.gross), tds: n2(r.tds), net: n2(r.net), diff, balance: /^Balance/.test(String(r.note || "")) });
+    g.gross = round2(n2(g.gross) + n2(r.gross));
+    g.tds = round2(n2(g.tds) + n2(r.tds));
+    g.net = round2(n2(g.net) + n2(r.net));
+    g.expected = round2(n2(g.expected) + expected);
+    g.diff = round2(n2(g.diff) + diff);
+  }
+  return [...groups.values()];
 }
 async function bdInterestWindow(bdId, toDate) {
   const bd = await loadBd(bdId);
@@ -44661,6 +44715,10 @@ function registerIpc() {
   handle(
     "bdCumInterest:list",
     async (_e, { values }) => (await Promise.resolve().then(() => (init_billDiscounting(), billDiscounting_exports))).bdCumulativeInterest(values)
+  );
+  handle(
+    "bdCumPayments:list",
+    async (_e, { nbfcId }) => (await Promise.resolve().then(() => (init_billDiscounting(), billDiscounting_exports))).listBdCumulativePayments(nbfcId)
   );
   handle(
     "bd:payCumulativeInterest",
