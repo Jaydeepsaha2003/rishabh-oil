@@ -14,6 +14,8 @@ import { cn } from '@/lib/utils'
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Row = Record<string, any>
 const n = (v: unknown): number => Number(v) || 0
+// 12,34,567.89 — Indian grouping in a box that is not being typed in.
+const inIN = (v: unknown): string => n(v).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
 const r2 = (v: number): number => Math.round(v * 100) / 100
 
 const monthEnd = (ym: string): string => {
@@ -40,6 +42,8 @@ export function BdCumulativeInterest({ open, onClose, nbfcs, onDone }: { open: b
   const [busy, setBusy] = useState(false)
   // Interest typed over the worked-out figure, per bill (more or less).
   const [edits, setEdits] = useState<Record<number, string>>({})
+  // The box being typed in shows plain digits; every other one shows commas.
+  const [typingId, setTypingId] = useState<number | null>(null)
 
   // The period's last day is what each bill is paid up to — never past today.
   const upto = useMemo(() => {
@@ -311,7 +315,13 @@ export function BdCumulativeInterest({ open, onClose, nbfcs, onDone }: { open: b
                                 inputMode="decimal"
                                 aria-label={`Interest paid on ${String(r.bd_no)}`}
                                 disabled={!on}
-                                value={edits[id] ?? String(n(r.gross))}
+                                value={typingId === id ? (edits[id] ?? String(n(r.gross))) : inIN(edits[id] ?? n(r.gross))}
+                                onFocus={(e) => {
+                                  setTypingId(id)
+                                  const el = e.currentTarget
+                                  setTimeout(() => el.select(), 0)
+                                }}
+                                onBlur={() => setTypingId(null)}
                                 onChange={(e) => setEdits((p) => ({ ...p, [id]: e.target.value.replace(/[^0-9.]/g, '') }))}
                                 className={cn(
                                   'h-8 w-[118px] rounded-[4px] border px-2 text-right text-[12.5px] font-bold tabular-nums disabled:opacity-60',
@@ -354,7 +364,7 @@ export function BdCumulativeInterest({ open, onClose, nbfcs, onDone }: { open: b
                         aria-label="Lump sum of interest for the ticked bills"
                         title="Type a lump sum — it is spread over the ticked bills in proportion to their interest"
                         disabled={!sel.length}
-                        value={lump ?? String(tot.gross)}
+                        value={lump ?? inIN(tot.gross)}
                         onFocus={() => setLump(String(tot.gross))}
                         onChange={(e) => setLump(e.target.value.replace(/[^0-9.]/g, ''))}
                         onBlur={() => {

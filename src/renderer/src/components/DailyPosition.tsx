@@ -87,7 +87,8 @@ export type PositionProps = {
   // tile reads it rather than asking again, so it cannot disagree with the
   // "Book stock by category" card further down.
   cats: Record<string, { qty: number; products: number }>
-  onNavigate: (p: Page) => void
+  /** companyId: open the page in that company first (an All-companies cell). */
+  onNavigate: (p: Page, companyId?: number) => void
   // Which of the band's pieces this person has chosen to see (Customize).
   isOn?: (key: string) => boolean
   // Every company's position together (the dashboard's All companies).
@@ -109,10 +110,18 @@ const TILE_KEY: Record<string, string> = {
 
 export function DailyPosition({ t, dark, isMobile, cats, onNavigate, isOn = ALL_ON, allCompanies = false, onOpenRecord }: PositionProps): React.JSX.Element | null {
   // A stage cell opens Purchases on the tankers at that stage.
-  const openStage = (stage: string): void => {
+  // In All companies, tankers billed to one company open in that company —
+  // opened in another, Purchases came up empty.
+  const openStage = (stage: string, cos?: Set<number>): void => {
     setPageIntent('orders', { kind: 'stage', stage })
-    onNavigate('orders')
+    onNavigate('orders', cos && cos.size === 1 ? [...cos][0] : undefined)
   }
+  const companiesAt = (stage: string, oil?: string): Set<number> =>
+    new Set(
+      moving
+        .filter((m) => s(m.status) === stage && (oil == null || (s(m.product_name) || '—') === oil) && n(m.company_id) > 0)
+        .map((m) => n(m.company_id))
+    )
   const [pos, setPos] = useState<Row | null>(null)
   const [failed, setFailed] = useState('')
   const [planDate, setPlanDate] = useState(todayISO())
@@ -447,7 +456,7 @@ export function DailyPosition({ t, dark, isMobile, cats, onNavigate, isOn = ALL_
                           onClick={(e) => {
                             if (!c?.count) return
                             e.stopPropagation()
-                            openStage(k)
+                            openStage(k, companiesAt(k, oil))
                           }}
                         >
                           {cell(c?.count || 0, c?.mt || 0)}
@@ -469,7 +478,7 @@ export function DailyPosition({ t, dark, isMobile, cats, onNavigate, isOn = ALL_
                         key={k}
                         className={isMobile ? 'cursor-pointer px-2 py-2 text-right' : 'cursor-pointer px-2.5 py-2 text-right'}
                         title={`${v.label} — open these tankers`}
-                        onClick={() => openStage(k)}
+                        onClick={() => openStage(k, companiesAt(k))}
                       >
                         {cell(v.count, v.mt, true)}
                       </td>

@@ -250,6 +250,8 @@ async function positionOne(): Promise<Row> {
       const since = day10(t[STAGES[stage].dateKey] || t.loaded_date || t.created_at)
       movement.push({
         id: n(t.id),
+        // Whose books it is in — none until billed (it shows under every company).
+        company_id: t.order_id ? n(t.company_id) : null,
         tanker_no: t.tanker_no ?? null,
         product_name: t.oil_name ?? t.product_name ?? null,
         supplier_name: t.supplier_name ?? null,

@@ -33,7 +33,7 @@ import { STATUS_LABEL } from '@/lib/orderCalc'
 type Row = Record<string, any>
 
 interface Props {
-  onNavigate: (page: Page) => void
+  onNavigate: (page: Page, companyId?: number) => void
   // Open one LC, bill or trading deal from a row on the board.
   onOpenRecord?: (target: 'lc' | 'bd' | 'trading', id: number) => void
 }
