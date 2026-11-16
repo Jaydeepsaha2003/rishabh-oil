@@ -144,14 +144,14 @@ export function BdCumulativeInterest({ open, onClose, nbfcs, onDone }: { open: b
   const lbl = 'mb-1 block text-[10px] font-extrabold uppercase tracking-[.1em] text-[#5A6B62]'
   return (
     <Dialog open={open} onOpenChange={(o) => !o && !busy && onClose()}>
-      <DialogContent className="gap-0 overflow-hidden p-0 sm:max-w-[min(1240px,96vw)] [&>button]:!text-white">
-        <div className="bg-[#0B3D2E] px-5 py-3.5 pr-12 text-white">
+      <DialogContent className="flex max-h-[94dvh] w-[96vw] max-w-[1240px] flex-col gap-0 overflow-hidden p-0 sm:max-w-[min(1240px,96vw)] [&>button]:!text-white">
+        <div className="flex-none bg-[#0B3D2E] px-5 py-3.5 pr-12 text-white">
           <div className="flex items-center gap-1.5 text-[9.5px] font-extrabold uppercase tracking-[.14em] text-[#C7F03F]">
             <Percent className="h-3.5 w-3.5" /> Bill discounting
           </div>
           <DialogTitle className="text-[16px] font-extrabold text-white">Pay cumulative interest</DialogTitle>
         </div>
-        <div className="max-h-[70vh] space-y-3.5 overflow-y-auto px-5 py-4">
+        <div className="min-h-0 flex-1 space-y-3.5 overflow-y-auto px-3 py-3 sm:px-5 sm:py-4">
           <div className="grid gap-3 md:grid-cols-[1.3fr_auto_1.4fr]">
             <div>
               <span className={lbl}>NBFC</span>
@@ -239,7 +239,7 @@ export function BdCumulativeInterest({ open, onClose, nbfcs, onDone }: { open: b
             <div className="rounded-[4px] border border-dashed border-[#C9DCCF] py-10 text-center text-[12.5px] font-semibold text-[#5A6B62]">No open, funded bill with this NBFC.</div>
           ) : (
             <div className="overflow-x-auto rounded-[4px] border border-[#D6E2D6]">
-              <table className="w-full min-w-[980px] text-[12.5px]">
+              <table className="w-full min-w-[820px] text-[12.5px]">
                 <thead className="bg-[#0B3D2E] text-[10px] font-extrabold uppercase tracking-[.08em] text-[#DCEFE4]">
                   <tr>
                     <th className="w-9 px-3 py-2.5 text-left">
@@ -408,8 +408,8 @@ export function BdCumulativeInterest({ open, onClose, nbfcs, onDone }: { open: b
           )}
 
         </div>
-        <div className="flex flex-wrap items-end gap-3 border-t border-[#E4ECE3] bg-[#FBFCFA] px-5 py-3">
-          <div className="min-w-[240px] flex-1">
+        <div className="flex flex-none flex-wrap items-end gap-2.5 border-t border-[#E4ECE3] bg-[#FBFCFA] px-3 py-3 sm:gap-3 sm:px-5">
+          <div className="min-w-[200px] flex-1 basis-[220px]">
             <span className={lbl}>Paid from bank</span>
             <Select searchable value={bank} onValueChange={setBank}>
               <SelectTrigger>
@@ -424,7 +424,7 @@ export function BdCumulativeInterest({ open, onClose, nbfcs, onDone }: { open: b
               </SelectContent>
             </Select>
           </div>
-          <div className="min-w-[240px] flex-1">
+          <div className="min-w-[200px] flex-1 basis-[220px]">
             <span className={lbl}>TDS ledger</span>
             <Select searchable value={tdsLedger} onValueChange={setTdsLedger}>
               <SelectTrigger>
@@ -439,7 +439,7 @@ export function BdCumulativeInterest({ open, onClose, nbfcs, onDone }: { open: b
               </SelectContent>
             </Select>
           </div>
-          <div className="w-[170px]">
+          <div className="w-full sm:w-[170px]">
             <span className={lbl}>Payment date</span>
             <DatePicker value={paidOn} max={today} onChange={(v) => v && setPaidOn(v)} />
           </div>
