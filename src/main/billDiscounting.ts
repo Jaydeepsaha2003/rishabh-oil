@@ -1265,6 +1265,8 @@ export async function listBd(filter?: Row): Promise<Row[]> {
                  -- NBFC and still owe the last stretch of interest.
                  COALESCE((SELECT SUM(ip.gross) FROM bd_interest_payments ip
                             WHERE ip.bd_id = bd.id), 0) AS interest_paid_total,
+                 COALESCE((SELECT SUM(ip.tds) FROM bd_interest_payments ip
+                            WHERE ip.bd_id = bd.id), 0) AS interest_paid_tds,
                  (SELECT MAX(ip.to_date) FROM bd_interest_payments ip
                    WHERE ip.bd_id = bd.id) AS interest_paid_to,
                  (SELECT MAX(rr.repay_date) FROM bd_repayments rr

@@ -277,6 +277,14 @@ function payInState(r: Row): { tone: 'awaiting' | 'in'; label: string; title: st
 }
 
 /** Interest paid across during the tenor rather than withheld up front. */
+// Interest a serviced bill has paid: with its repayments, and on its own
+// (interest payments, one bill or cumulative) — gross and its TDS.
+function servicedPaid(r: Row): { gross: number; tds: number } {
+  return {
+    gross: round2(n(r.rep_interest_net) + n(r.rep_interest_tds) + n(r.interest_paid_total)),
+    tds: round2(n(r.rep_interest_tds) + n(r.interest_paid_tds))
+  }
+}
 function isServiced(r: Row): boolean {
   return String(r?.interest_mode || '') === 'serviced'
 }
@@ -1424,7 +1432,7 @@ export function BillDiscounting({
     // already leaves those bills out of the same two columns, and a band that
     // did not was quietly contradicting the rows beneath it.
     const kept = (l: Row[], key: string): number =>
-      round2(l.reduce((t, r) => t + (isServiced(r) ? 0 : n(r[key])), 0))
+      round2(l.reduce((t, r) => t + (isServiced(r) ? (key === 'tdsAmount' ? servicedPaid(r).tds : servicedPaid(r).gross) : n(r[key])), 0))
     return {
       count: live.length,
       outstanding_total: sum(live, 'outstanding_amount'),
@@ -3635,10 +3643,10 @@ export function BillDiscounting({
                             (t, x) =>
                               t +
                               (isServiced(x) && (k === 'interestAmount' || k === 'tdsAmount')
-                                ? // Only what was paid with the repayments.
+                                ? // Only what has been paid on it so far.
                                   k === 'interestAmount'
-                                  ? n(x.rep_interest_net) + n(x.rep_interest_tds)
-                                  : n(x.rep_interest_tds)
+                                  ? servicedPaid(x).gross
+                                  : servicedPaid(x).tds
                                 : n(x[k])),
                             0
                           )
@@ -3997,7 +4005,21 @@ export function BillDiscounting({
                             periodically while the bill runs and is recorded
                             against the repayments, not withheld here. */}
                         <TableCell className={cn('whitespace-nowrap text-right tabular-nums text-rose-700', __WEB__ && cn(BD_NUM, '!bg-[#FDF8F7] !text-[#8C2F26]'))}>
-                          {isServiced(r) && n(r.rep_interest_net) > 0.004 ? (
+                          {isServiced(r) && n(r.interest_paid_total) > 0.004 ? (
+                            <span
+                              className="inline-flex flex-col items-end"
+                              title={`Interest paid so far: ${formatINR(servicedPaid(r).gross)} (TDS ${formatINR(servicedPaid(r).tds)})${r.interest_paid_to ? ` — serviced up to ${formatDate(String(r.interest_paid_to).slice(0, 10))}` : ''}`}
+                            >
+                              <span className="font-semibold">{formatINR(servicedPaid(r).gross)}</span>
+                              {r.interest_paid_to && (
+                                <span className="text-[10.5px] font-bold text-[#8FA79B]">paid to {formatDate(String(r.interest_paid_to).slice(0, 10))}</span>
+                              )}
+                              {/* Settled, but interest serviced short of the day it was repaid. */}
+                              {repaid && String(r.interest_paid_to || '').slice(0, 10) < String(r.last_repay_date || r.maturity_date || '').slice(0, 10) && (
+                                <span className="mt-0.5 rounded-[3px] border border-[#F0C9C4] bg-[#FDECEA] px-1.5 text-[10px] font-extrabold uppercase tracking-[.06em] text-[#B3261E]">Due</span>
+                              )}
+                            </span>
+                          ) : isServiced(r) && n(r.rep_interest_net) > 0.004 ? (
                             <span
                               className="font-semibold"
                               title={`Paid with the repayments: ${formatINR(n(r.rep_interest_net))} to the NBFC + ${formatINR(n(r.rep_interest_tds))} TDS`}
@@ -4061,8 +4083,8 @@ export function BillDiscounting({
                           )}
                         </TableCell>
                         <TableCell className={cn('whitespace-nowrap text-right tabular-nums', __WEB__ && cn(BD_NUM, '!bg-[#FDF8F7] !font-semibold !text-[#8C2F26]'))}>
-                          {isServiced(r) && n(r.rep_interest_net) > 0.004 ? (
-                            formatINR(n(r.rep_interest_tds))
+                          {isServiced(r) && servicedPaid(r).tds > 0.004 ? (
+                            formatINR(servicedPaid(r).tds)
                           ) : isServiced(r) ? (
                             <span className="text-[11.5px] font-semibold text-[#8FA79B]" title="Withheld with each interest payment, not here">
                               —
