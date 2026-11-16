@@ -3603,7 +3603,10 @@ function TreasuryDesk({ onCompanyChange, focusLcId, focusBdId, onFocusHandled }:
                           __WEB__ &&
                             (lcStatusFilter === p.key
                               ? LC_STATE_TONE[p.key].on
-                              : '!border-[#D5E1D4] !bg-white !text-[#5A6B62] !shadow-[0_1px_1px_rgba(10,31,23,.04)] hover:!border-[#B7CBB6] hover:!text-[#0A1F17]')
+                              : p.key === 'repaid' || p.key === 'preclosed'
+                                ? // Closed LCs stand apart from the live ones: a soft slate tint.
+                                  '!border-[#AFC0D3] !bg-[#E8EEF5] !text-[#1E3A5F] !shadow-[0_1px_1px_rgba(10,31,23,.06)] hover:!border-[#8EA6C1] hover:!bg-[#DDE6F0]'
+                                : '!border-[#D5E1D4] !bg-white !text-[#5A6B62] !shadow-[0_1px_1px_rgba(10,31,23,.04)] hover:!border-[#B7CBB6] hover:!text-[#0A1F17]')
                         )}
                       >
                         {__WEB__ && lcStatusFilter !== p.key && (
