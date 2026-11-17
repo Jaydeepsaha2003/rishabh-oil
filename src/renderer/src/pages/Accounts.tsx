@@ -19014,7 +19014,8 @@ Delete ${doc}?`)) return
                     </span>
                     <span />
                     <span style={{ ...cell('right'), ...figS(12, '#33473E', 600) }}>{dc(n(b.opening), side)}</span>
-                    <span style={{ ...cell('right'), ...figS(12.5, over ? A.bad : A.ink, 800) }}>{pend > 0.004 ? dc(pend, side) : 'Nil'}</span>
+                    {/* Coloured by side — Dr green, Cr red; how late it is reads in Overdue by days. */}
+                    <span style={{ ...cell('right'), ...figS(12.5, pend > 0.004 ? (side === 'dr' ? A.dr : A.cr) : A.muted, 800) }}>{pend > 0.004 ? dc(pend, side) : 'Nil'}</span>
                     {(() => {
                       const d = billDue(b)
                       return (
