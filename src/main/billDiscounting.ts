@@ -2376,7 +2376,13 @@ export async function listBdCumulativePayments(nbfcId?: number | null): Promise<
     const calc = bdCalc(bd)
     const daysYear = n(bd.days_year) || 360
     const steps = n(bd.first_receipt_part) > 0.005 ? [] : await principalRepaidByDate(id)
-    const paid = toPlain(await getClient().execute({ sql: 'SELECT id, from_date, to_date, gross FROM bd_interest_payments WHERE bd_id = ?', args: [id] }))
+    const paid = toPlain(
+      await getClient().execute({
+        sql: `SELECT p.id, p.from_date, p.to_date, p.gross, p.paid_date, je.vch_no FROM bd_interest_payments p
+               LEFT JOIN journal_entries je ON je.id = p.journal_entry_id WHERE p.bd_id = ?`,
+        args: [id]
+      })
+    )
     worker.set(id, {
       A: received ? accrualStart(bd, received) : '',
       paid,
@@ -2393,9 +2399,17 @@ export async function listBdCumulativePayments(nbfcId?: number | null): Promise<
     const f = clamp(r.from_date)
     const t = String(r.to_date || '').slice(0, 10)
     const due = f <= t ? w.worked(f, t) : 0
-    const before = round2(w.paid.filter((p) => n(p.id) < n(r.id) && clamp(p.from_date) === f && String(p.to_date).slice(0, 10) === t).reduce((s, p) => s + n(p.gross), 0))
+    const onSpan = w.paid.filter((p) => clamp(p.from_date) === f && String(p.to_date).slice(0, 10) === t)
+    const before = round2(onSpan.filter((p) => n(p.id) < n(r.id)).reduce((s, p) => s + n(p.gross), 0))
     const expected = round2(Math.max(0, due - before))
-    const diff = round2(n(r.gross) - expected)
+    // AT THE TIME: this payment against what was still due then.
+    const paidDiff = round2(n(r.gross) - expected)
+    // NOW: everything paid on these days against what they work out to. Only the
+    // latest payment on the days carries it; an earlier one is adjusted by the later.
+    const later = onSpan.filter((p) => n(p.id) > n(r.id)).sort((a, b) => n(a.id) - n(b.id))
+    const spanPaid = round2(onSpan.reduce((s, p) => s + n(p.gross), 0))
+    const latest = later.length === 0
+    const diff = latest ? round2(spanPaid - due) : 0
     const je = n(r.journal_entry_id)
     if (!groups.has(je)) {
       groups.set(je, {
@@ -2414,7 +2428,25 @@ export async function listBdCumulativePayments(nbfcId?: number | null): Promise<
       })
     }
     const g = groups.get(je)!
-    ;(g.bills as Row[]).push({ id: n(r.id), bd_id: n(r.bd_id), bd_no: r.bd_no, from_date: f, to_date: t, due, before, expected, gross: n(r.gross), tds: n(r.tds), net: n(r.net), diff, balance: /^Balance/.test(String(r.note || '')) })
+    ;(g.bills as Row[]).push({
+      id: n(r.id),
+      bd_id: n(r.bd_id),
+      bd_no: r.bd_no,
+      from_date: f,
+      to_date: t,
+      due,
+      before,
+      expected,
+      gross: n(r.gross),
+      tds: n(r.tds),
+      net: n(r.net),
+      paid_diff: paidDiff,
+      diff,
+      latest,
+      span_paid: spanPaid,
+      adjusted_by: latest ? null : later.map((p) => `${String(p.vch_no || `#${p.id}`)} of ${String(p.paid_date || '').slice(0, 10).split('-').reverse().join('-')}`).join(', '),
+      balance: /^Balance/.test(String(r.note || ''))
+    })
     g.gross = round2(n(g.gross) + n(r.gross))
     g.tds = round2(n(g.tds) + n(r.tds))
     g.net = round2(n(g.net) + n(r.net))
