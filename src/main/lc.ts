@@ -687,12 +687,13 @@ async function moneyGroupsSql(withCash = true): Promise<string> {
 // without commas (31421.47, 31,421) matches the amount; anything else matches
 // the voucher no, its code, the narration or any ledger on it. A ledger picked
 // keeps only the vouchers that touch it.
-async function pickBankVouchers(v: {
+export async function pickBankVouchers(v: {
   lcId: number
   companyId: number
   from: string
   dir: 'out' | 'in'
-  linkCol: 'commission_voucher_id' | 'refund_voucher_id'
+  // The LC column a voucher already linked elsewhere sits in; none for a BD refund.
+  linkCol?: 'commission_voucher_id' | 'refund_voucher_id'
   expected: number
   q?: string
   ledgerId?: number
@@ -729,7 +730,7 @@ async function pickBankVouchers(v: {
                  : `AND EXISTS (SELECT 1 FROM journal_lines jl JOIN ledger_accounts a ON a.id = jl.account_id
                           WHERE jl.entry_id = je.id AND jl.${v.dir === 'in' ? 'dr' : 'cr'} > 0 AND a.acc_group IN ${BANKS})`
              }
-             AND NOT EXISTS (SELECT 1 FROM letters_of_credit x WHERE x.${v.linkCol} = je.id AND x.id <> ?)
+             ${v.linkCol ? `AND NOT EXISTS (SELECT 1 FROM letters_of_credit x WHERE x.${v.linkCol} = je.id AND x.id <> ?)` : ''}
              ${v.ledgerId ? 'AND EXISTS (SELECT 1 FROM journal_lines jl WHERE jl.entry_id = je.id AND jl.account_id = ?)' : ''}
              ${
                text
@@ -739,7 +740,7 @@ async function pickBankVouchers(v: {
                  : ''
              }
            ORDER BY je.entry_date DESC, je.id DESC ${wide ? '' : 'LIMIT 600'}`,
-    args: [v.companyId, ...(dated ? [v.from] : []), ...(rFrom ? [rFrom] : []), ...(rTo ? [rTo] : []), v.lcId, ...(v.ledgerId ? [v.ledgerId] : []), ...(text ? [like, like, like] : [])]
+    args: [v.companyId, ...(dated ? [v.from] : []), ...(rFrom ? [rFrom] : []), ...(rTo ? [rTo] : []), ...(v.linkCol ? [v.lcId] : []), ...(v.ledgerId ? [v.ledgerId] : []), ...(text ? [like, like, like] : [])]
   })
   const out: Row[] = []
   const briefBanks = await moneyGroupsSql()

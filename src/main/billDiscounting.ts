@@ -1208,7 +1208,7 @@ async function validateBd(v: Row, cur?: Row): Promise<void> {
  * Not for a serviced bill (its interest is paid as it runs) or one received in
  * legs (each leg has its own term).
  */
-function earlyRefund(bd: Row, calc: { interestAmount: number }, reps: Row[]): Row | null {
+function earlyRefund(bd: Row, calc: { interestAmount: number }, reps: Row[], received = 0): Row | null {
   const mode = String(bd.interest_mode || '') || (bd.interest_upfront ? 'upfront' : 'discounted')
   const maturity = String(bd.maturity_date || '').slice(0, 10)
   if (mode === 'serviced' || !maturity || !(calc.interestAmount > 0.004) || n(bd.first_receipt_part) > 0.005) return null
@@ -1224,7 +1224,8 @@ function earlyRefund(bd: Row, calc: { interestAmount: number }, reps: Row[]): Ro
     .filter((l) => l.gross > 0.004)
   const gross = round2(Math.min(calc.interestAmount, lines.reduce((t, l) => t + l.gross, 0)))
   if (!(gross > 0.5)) return null
-  return { gross, net: gross, maturity, rate, days_year: daysYear, interest: calc.interestAmount, lines }
+  // What has come back already (linked bank receipts), and what is still due.
+  return { gross, net: gross, received: round2(received), due: round2(gross - received), maturity, rate, days_year: daysYear, interest: calc.interestAmount, lines }
 }
 
 export async function listBd(filter?: Row): Promise<Row[]> {
@@ -1344,6 +1345,19 @@ export async function listBd(filter?: Row): Promise<Row[]> {
       })
       .catch(() => ({ rows: [], columns: [] }) as unknown as ResultSet)
   )
+  // Interest refunds already linked to a bank receipt (bd_interest_refunds), per bill.
+  await ensureBdRefunds()
+  const gotRows = toPlain(
+    await getClient()
+      .execute({
+        sql: `SELECT f.bd_id, ROUND(SUM(f.amount), 2) AS got FROM bd_interest_refunds f
+               JOIN bill_discountings b ON b.id = f.bd_id JOIN journal_entries je ON je.id = f.journal_entry_id
+              WHERE b.company_id = ? GROUP BY f.bd_id`,
+        args: [getActiveCompanyId()]
+      })
+      .catch(() => ({ rows: [], columns: [] }) as unknown as ResultSet)
+  )
+  const gotOf = new Map<number, number>(gotRows.map((r) => [n(r.bd_id), n(r.got)]))
   const repsOf = new Map<number, Row[]>()
   for (const r of repRows) {
     const k = n(r.bd_id)
@@ -1377,7 +1391,7 @@ export async function listBd(filter?: Row): Promise<Row[]> {
       repaid_total: repaidTotal,
       outstanding_amount: round2(Math.max(0, principalDrawn(bd) - repaidTotal)),
       repay_parts: parts,
-      early_refund: earlyRefund(bd, calcRow, repsOf.get(n(bd.id)) || []),
+      early_refund: earlyRefund(bd, calcRow, repsOf.get(n(bd.id)) || [], gotOf.get(n(bd.id)) || 0),
       // Three stages, in the order a bill goes through them: opened and waiting
       // on the NBFC's money, live once it has landed, wound up once repaid.
       // Derived rather than stored, so the payment date stays the single fact
@@ -4020,4 +4034,94 @@ export async function payBdCumulativeInterest(v: {
     }
     return { entry_id: je.id, bills: rows.length, gross, tds, net }
   })
+}
+
+/* -------------------------------------------------------------------------- */
+/* Interest refunds — one bank receipt from the NBFC, mapped over its bills    */
+/* -------------------------------------------------------------------------- */
+
+// Which receipt brought back how much of which bill's early-repayment interest.
+// The receipt is already in the books (Tally / bank); this only links it.
+async function ensureBdRefunds(): Promise<void> {
+  await getClient().execute(`CREATE TABLE IF NOT EXISTS bd_interest_refunds (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    bd_id INTEGER NOT NULL,
+    journal_entry_id INTEGER NOT NULL,
+    amount REAL NOT NULL DEFAULT 0,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+  )`)
+}
+
+/** Bank receipts that could be an NBFC's refund — the LC picker's search, money in. */
+export async function bdRefundCandidates(v: { q?: string; since?: string; from?: string; to?: string; expected?: number }): Promise<Row[]> {
+  const { pickBankVouchers } = await import('./lc')
+  // `since` (the earliest early repayment) only sets the browsing window — bank
+  // receipts from a month before it; dates picked on the screen widen to every voucher.
+  const list = await pickBankVouchers({
+    lcId: 0,
+    companyId: getActiveCompanyId(),
+    from: String(v.since || '').slice(0, 10),
+    dir: 'in',
+    expected: n(v.expected),
+    q: v.q,
+    range: { from: v.from, to: v.to }
+  })
+  // What of each receipt is already mapped to refunds.
+  await ensureBdRefunds()
+  const used = toPlain(await getClient().execute('SELECT journal_entry_id, ROUND(SUM(amount), 2) AS used FROM bd_interest_refunds GROUP BY journal_entry_id'))
+  const usedOf = new Map<number, number>(used.map((r) => [n(r.journal_entry_id), n(r.used)]))
+  return list.map((r) => ({ ...r, used: usedOf.get(n(r.id)) || 0 }))
+}
+
+/** Map one bank receipt over several bills' refunds. */
+export async function linkBdRefund(v: { journal_entry_id: number; parts: { bd_id: number; amount: number }[] }): Promise<{ entry_id: number; bills: number; amount: number }> {
+  return withDbTransaction(async () => {
+    await ensureBdRefunds()
+    const c = getClient()
+    const je = (await c.execute({ sql: 'SELECT id, company_id FROM journal_entries WHERE id = ?', args: [n(v.journal_entry_id)] })).rows[0] as unknown as Row | undefined
+    if (!je) throw new Error('That bank receipt no longer exists')
+    const parts = (v.parts || []).map((p) => ({ bd_id: n(p.bd_id), amount: round2(n(p.amount)) })).filter((p) => p.bd_id > 0 && p.amount > 0.004)
+    if (!parts.length) throw new Error('Tick at least one bill and give it an amount')
+    for (const p of parts) {
+      const bd = await loadBd(p.bd_id)
+      if (n(bd.company_id) !== n(je.company_id)) throw new Error(`${bd.bd_no} is in another company than the receipt`)
+      await c.execute({ sql: 'INSERT INTO bd_interest_refunds (bd_id, journal_entry_id, amount) VALUES (?, ?, ?)', args: [p.bd_id, n(je.id), p.amount] })
+    }
+    return { entry_id: n(je.id), bills: parts.length, amount: round2(parts.reduce((t, p) => t + p.amount, 0)) }
+  })
+}
+
+/** Unlink a receipt from every bill it was mapped to. Nothing in the books changes. */
+export async function unlinkBdRefund(entryId: number): Promise<{ entry_id: number }> {
+  await ensureBdRefunds()
+  await getClient().execute({ sql: 'DELETE FROM bd_interest_refunds WHERE journal_entry_id = ?', args: [n(entryId)] })
+  return { entry_id: n(entryId) }
+}
+
+/** The receipts mapped so far, each with the bills it covered. */
+export async function listBdRefunds(): Promise<Row[]> {
+  await ensureBdRefunds()
+  const rows = toPlain(
+    await getClient().execute({
+      sql: `SELECT f.*, b.bd_no, nb.name AS nbfc_name, je.entry_date, je.vch_no, je.narration,
+                   (SELECT nn.prefix || '/' || nn.serial FROM voucher_numbers nn WHERE nn.entry_id = je.id) AS code
+              FROM bd_interest_refunds f
+              JOIN bill_discountings b ON b.id = f.bd_id
+              JOIN journal_entries je ON je.id = f.journal_entry_id
+              LEFT JOIN nbfcs nb ON nb.id = b.nbfc_id
+             WHERE b.company_id = ?
+             ORDER BY je.entry_date DESC, f.journal_entry_id DESC, f.id`,
+      args: [getActiveCompanyId()]
+    })
+  )
+  const groups = new Map<number, Row>()
+  for (const r of rows) {
+    const k = n(r.journal_entry_id)
+    if (!groups.has(k)) groups.set(k, { journal_entry_id: k, date: String(r.entry_date || '').slice(0, 10), code: r.code || r.vch_no || '', narration: r.narration || '', nbfcs: [] as string[], bills: [] as Row[], amount: 0 })
+    const g = groups.get(k)!
+    ;(g.bills as Row[]).push({ bd_id: n(r.bd_id), bd_no: r.bd_no, amount: n(r.amount) })
+    if (r.nbfc_name && !(g.nbfcs as string[]).includes(String(r.nbfc_name))) (g.nbfcs as string[]).push(String(r.nbfc_name))
+    g.amount = round2(n(g.amount) + n(r.amount))
+  }
+  return [...groups.values()]
 }

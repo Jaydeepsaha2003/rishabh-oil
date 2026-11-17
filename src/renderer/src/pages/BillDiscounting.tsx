@@ -57,6 +57,7 @@ import { canAccess } from '@/lib/modules'
 import { BdDetail, chargesOf } from '@/components/BdDetail'
 import { BdRepaymentEdit } from '@/components/BdRepaymentEdit'
 import { BdRefundDot } from '@/components/BdRefundDot'
+import { BdRefunds } from '@/components/BdRefunds'
 import { BdCumulativeInterest } from '@/components/BdCumulativeInterest'
 import { AdjChargePicker, adjKindsLabel, adjParts, adjPostsTo, adjSplitOk, type AdjPart, type ChargeType } from '@/components/AdjChargePicker'
 import { LimitHistory, type LimitTarget } from '@/components/LimitHistory'
@@ -947,6 +948,8 @@ export function BillDiscounting({
   const [nbfcs, setNbfcs] = useState<Row[]>([])
   // Pay cumulative interest: one NBFC's bills, one bank voucher.
   const [cumOpen, setCumOpen] = useState(false)
+  // Interest refunds: what NBFCs owe back on bills repaid early, mapped to bank receipts.
+  const [refundsOpen, setRefundsOpen] = useState(false)
   // The kinds of charge an Adj. can be — the usual ones plus any added.
   const [chargeTypes, setChargeTypes] = useState<ChargeType[]>([])
   useEffect(() => {
@@ -2938,6 +2941,21 @@ Its bank voucher is removed too.`)) return
               <Percent className="h-3.5 w-3.5" /> Pay cumulative int.
             </button>
           )}
+          {__WEB__ &&
+            (() => {
+              const due = rows.reduce((t, r) => t + (r.early_refund ? Math.max(0, n(r.early_refund.due)) : 0), 0)
+              return (
+                <button
+                  type="button"
+                  onClick={() => setRefundsOpen(true)}
+                  title="Interest NBFCs owe back on bills repaid before maturity — map their bank receipts to the bills"
+                  className="flex h-[34px] items-center gap-1.5 rounded-[3px] border border-[#0B6B45] bg-white px-3 text-[12px] font-extrabold uppercase tracking-[.05em] text-[#0B6B45] hover:bg-[#F0F8F3]"
+                >
+                  <Undo2 className="h-3.5 w-3.5" /> Interest refunds
+                  {due > 0.5 && <span className="rounded-full bg-[#0B6B45] px-1.5 py-[1px] text-[10.5px] normal-case tracking-normal text-white">{formatINR(due)}</span>}
+                </button>
+              )
+            })()}
           {__WEB__ &&
             alerts.map((a) => (
               <button
@@ -8544,6 +8562,7 @@ Its bank voucher is removed too.`)) return
       {/* WHAT THIS BILL PUT IN THE LEDGERS — see LedgerPostings. */}
       <LedgerPostings target={postings} onClose={() => setPostings(null)} />
       {/* Mounted only while open: every open (and every one after a payment) starts clean. */}
+      {refundsOpen && <BdRefunds bills={rows} onClose={() => setRefundsOpen(false)} onDone={() => void load()} />}
       {cumOpen && <BdCumulativeInterest open onClose={() => setCumOpen(false)} nbfcs={nbfcs} onDone={() => void load()} />}
     </div>
   )

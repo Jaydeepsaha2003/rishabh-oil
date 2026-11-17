@@ -1920,6 +1920,11 @@ export function registerIpc(): void {
   handle('bdCumInterest:list', async (_e, { values }: { values: Row }) =>
     (await import('./billDiscounting')).bdCumulativeInterest(values as never)
   )
+  // Interest refunds: one NBFC bank receipt mapped over several bills.
+  handle('bdRefunds:list', async () => (await import('./billDiscounting')).listBdRefunds())
+  handle('bdRefundCandidates:list', async (_e, { values }: { values: Row }) => (await import('./billDiscounting')).bdRefundCandidates(values as never))
+  handle('bd:linkRefund', async (_e, { values }: { values: Row }) => (await import('./billDiscounting')).linkBdRefund(values as never))
+  handle('bd:unlinkRefund', async (_e, { entryId }: { entryId: number }) => (await import('./billDiscounting')).unlinkBdRefund(Number(entryId)))
   handle('bdCumPayments:list', async (_e, { nbfcId }: { nbfcId?: number | null }) =>
     (await import('./billDiscounting')).listBdCumulativePayments(nbfcId)
   )
