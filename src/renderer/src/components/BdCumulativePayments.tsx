@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { toast } from 'sonner'
-import { CheckCircle2, ChevronDown, Loader2 } from 'lucide-react'
+import { CheckCircle2, ChevronDown, Loader2, Trash2 } from 'lucide-react'
 import { formatDate, formatINR } from '@/lib/format'
 import { cn } from '@/lib/utils'
 
@@ -34,6 +34,30 @@ const periodsOf = (g: Row): string[] => [...new Set((g.bills as Row[]).map((b) =
 export function BdCumulativePayments({ nbfcId }: { nbfcId: number | null }): React.JSX.Element {
   const [list, setList] = useState<Row[] | null>(null)
   const [open, setOpen] = useState<Set<number>>(new Set())
+  const [rev, setRev] = useState(0)
+  const [deleting, setDeleting] = useState<number | null>(null)
+  // DELETE A VOUCHER: one bank debit, so it goes as one — every bill's payment on it with it.
+  async function remove(g: Row): Promise<void> {
+    const bills = g.bills as Row[]
+    if (
+      !window.confirm(
+        `Delete the ${formatINR(n(g.net))} interest payment of ${formatDate(String(g.paid_date))}?
+
+It is one voucher for ${bills.map((b) => b.bd_no).join(', ')} — the payment on every one of those bills is deleted with it, and the bank voucher is removed.`
+      )
+    )
+      return
+    setDeleting(n(g.journal_entry_id))
+    try {
+      await window.api.billDiscounting.deleteInterest(n(bills[0].id))
+      toast.success('Interest payment deleted — its voucher is removed')
+      setRev((v) => v + 1)
+    } catch (e) {
+      toast.error((e as Error).message.replace(/^Error invoking remote method '[^']+': (Error: )?/, ''))
+    } finally {
+      setDeleting(null)
+    }
+  }
   useEffect(() => {
     let live = true
     setList(null)
@@ -49,7 +73,7 @@ export function BdCumulativePayments({ nbfcId }: { nbfcId: number | null }): Rea
     return () => {
       live = false
     }
-  }, [nbfcId])
+  }, [nbfcId, rev])
 
   if (list == null)
     return (
@@ -99,7 +123,19 @@ export function BdCumulativePayments({ nbfcId }: { nbfcId: number | null }): Rea
         return (
           <div key={id} className={cn('overflow-hidden rounded-[8px] border bg-white transition-shadow', isOpen ? 'border-[#B9CFBE] shadow-[0_2px_10px_rgba(10,31,23,.07)]' : 'border-[#DCE6DC] hover:border-[#C3D2C6]')}>
             {/* The voucher in one line — click to open its bills. */}
-            <button type="button" onClick={() => toggle(id)} aria-expanded={isOpen} className={cn('flex w-full flex-wrap items-center gap-x-4 gap-y-2 px-4 py-3 text-left', isOpen ? 'bg-[#F3F8F2]' : 'hover:bg-[#FAFCF9]')}>
+            <div
+              role="button"
+              tabIndex={0}
+              onClick={() => toggle(id)}
+              onKeyDown={(e) => {
+                if (e.target === e.currentTarget && (e.key === 'Enter' || e.key === ' ')) {
+                  e.preventDefault()
+                  toggle(id)
+                }
+              }}
+              aria-expanded={isOpen}
+              className={cn('flex w-full cursor-pointer flex-wrap items-center gap-x-4 gap-y-2 px-4 py-3 text-left', isOpen ? 'bg-[#F3F8F2]' : 'hover:bg-[#FAFCF9]')}
+            >
               <ChevronDown className={cn('h-4 w-4 flex-none text-[#8CA396] transition-transform', isOpen && 'rotate-180')} />
               <span className="flex min-w-[96px] flex-col">
                 <span className="text-[9.5px] font-extrabold uppercase tracking-[.12em] text-[#7A8C82]">Paid on</span>
@@ -130,7 +166,20 @@ export function BdCumulativePayments({ nbfcId }: { nbfcId: number | null }): Rea
                 <DiffChip diff={n(g.diff)} big />
                 {adjusted && <span className="text-[10px] font-bold text-[#0B6B45]">a later payment adjusted it</span>}
               </span>
-            </button>
+              <button
+                type="button"
+                disabled={deleting === id}
+                title="Delete this payment — its bank voucher and every bill's payment on it"
+                aria-label="Delete this payment"
+                onClick={(e) => {
+                  e.stopPropagation()
+                  void remove(g)
+                }}
+                className="flex h-8 w-8 flex-none items-center justify-center rounded-[5px] border border-[#F0C9C4] bg-white text-[#B3261E] hover:bg-[#FDECEA] disabled:opacity-50"
+              >
+                {deleting === id ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Trash2 className="h-3.5 w-3.5" />}
+              </button>
+            </div>
 
             {isOpen && (
               <div className="border-t border-[#E4ECE3]">
