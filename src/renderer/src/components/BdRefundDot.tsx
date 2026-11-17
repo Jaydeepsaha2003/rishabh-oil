@@ -39,10 +39,7 @@ export function BdRefundDot({ refund }: { refund: Row }): React.JSX.Element {
       >
         <div className="bg-[#0B3D2E] px-3.5 py-2.5 text-white">
           <div className="text-[9.5px] font-extrabold uppercase tracking-[.14em] text-[#C7F03F]">Interest to come back</div>
-          <div className="mt-0.5 flex items-baseline justify-between gap-2">
-            <span className="text-[18px] font-extrabold tabular-nums">{formatINR(n(refund.net))}</span>
-            <span className="text-[10.5px] font-semibold text-white/70">net of TDS</span>
-          </div>
+          <div className="mt-0.5 text-[18px] font-extrabold tabular-nums">{formatINR(n(refund.net))}</div>
           <div className="text-[11px] font-semibold text-white/70">
             Repaid before maturity on {formatDate(String(refund.maturity))} — the days not used were charged upfront
           </div>
@@ -68,15 +65,7 @@ export function BdRefundDot({ refund }: { refund: Row }): React.JSX.Element {
           </tbody>
         </table>
         <div className="space-y-0.5 border-t border-[#DCE6DC] bg-[#FAFCF9] px-3 py-2 text-[11.5px]">
-          <div className="flex justify-between">
-            <span className="text-[#5A6B62]">Interest on the days not used</span>
-            <span className="font-bold tabular-nums">{formatINR(n(refund.gross))}</span>
-          </div>
-          <div className="flex justify-between">
-            <span className="text-[#5A6B62]">Less TDS withheld on it</span>
-            <span className="font-bold tabular-nums">− {formatINR(n(refund.tds))}</span>
-          </div>
-          <div className="flex justify-between border-t border-[#E4ECE3] pt-1 text-[12px]">
+          <div className="flex justify-between text-[12px]">
             <span className="font-extrabold text-[#0B6B45]">To come back from the NBFC</span>
             <span className="font-extrabold tabular-nums text-[#0B6B45]">{formatINR(n(refund.net))}</span>
           </div>

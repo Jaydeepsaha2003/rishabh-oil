@@ -1203,8 +1203,8 @@ async function validateBd(v: Row, cur?: Row): Promise<void> {
 /**
  * INTEREST TAKEN UPFRONT, BILL REPAID EARLY. The NBFC kept interest to maturity
  * when it funded the bill; each part repaid before maturity stops costing from
- * the repayment day, so the interest on those days is owed back (and the TDS
- * withheld on it with it). Worked out live from the repayments, nothing stored.
+ * the repayment day, so the interest on those days is owed back in full (no
+ * TDS comes off it). Worked out live from the repayments, nothing stored.
  * Not for a serviced bill (its interest is paid as it runs) or one received in
  * legs (each leg has its own term).
  */
@@ -1224,8 +1224,7 @@ function earlyRefund(bd: Row, calc: { interestAmount: number }, reps: Row[]): Ro
     .filter((l) => l.gross > 0.004)
   const gross = round2(Math.min(calc.interestAmount, lines.reduce((t, l) => t + l.gross, 0)))
   if (!(gross > 0.5)) return null
-  const tds = round2((gross * n(bd.tds_pct)) / 100)
-  return { gross, tds, net: round2(gross - tds), maturity, rate, days_year: daysYear, interest: calc.interestAmount, lines }
+  return { gross, net: gross, maturity, rate, days_year: daysYear, interest: calc.interestAmount, lines }
 }
 
 export async function listBd(filter?: Row): Promise<Row[]> {
