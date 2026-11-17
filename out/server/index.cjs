@@ -4322,6 +4322,21 @@ async function validateBd(v, cur) {
     }
   }
 }
+function earlyRefund(bd, calc, reps) {
+  const mode = String(bd.interest_mode || "") || (bd.interest_upfront ? "upfront" : "discounted");
+  const maturity = String(bd.maturity_date || "").slice(0, 10);
+  if (mode === "serviced" || !maturity || !(calc.interestAmount > 4e-3) || n2(bd.first_receipt_part) > 5e-3) return null;
+  const daysYear = n2(bd.days_year) || 360;
+  const rate = n2(bd.interest_pct);
+  const lines = reps.map((r) => ({ date: String(r.repay_date || "").slice(0, 10), amount: n2(r.amount) })).filter((r) => r.date && r.date < maturity && r.amount > 4e-3).map((r) => {
+    const days = daysBetween(r.date, maturity);
+    return { ...r, days, gross: round2(r.amount * rate * days / (100 * daysYear)) };
+  }).filter((l) => l.gross > 4e-3);
+  const gross = round2(Math.min(calc.interestAmount, lines.reduce((t, l) => t + l.gross, 0)));
+  if (!(gross > 0.5)) return null;
+  const tds = round2(gross * n2(bd.tds_pct) / 100);
+  return { gross, tds, net: round2(gross - tds), maturity, rate, days_year: daysYear, interest: calc.interestAmount, lines };
+}
 async function listBd(filter) {
   await ensureBdPostingFields();
   const where = ["bd.company_id = ?"];
@@ -4427,6 +4442,18 @@ async function listBd(filter) {
     if (!legsOf.has(k)) legsOf.set(k, []);
     legsOf.get(k).push(r);
   }
+  const repRows = toPlain3(
+    await getClient().execute({
+      sql: `SELECT r.bd_id, r.repay_date, r.amount FROM bd_repayments r JOIN bill_discountings b ON b.id = r.bd_id WHERE b.company_id = ? ORDER BY r.bd_id, r.repay_date, r.id`,
+      args: [getActiveCompanyId()]
+    }).catch(() => ({ rows: [], columns: [] }))
+  );
+  const repsOf = /* @__PURE__ */ new Map();
+  for (const r of repRows) {
+    const k = n2(r.bd_id);
+    if (!repsOf.has(k)) repsOf.set(k, []);
+    repsOf.get(k).push(r);
+  }
   return toPlain3(res).map((raw) => {
     const bd = { ...raw, receipt_parts: legsOf.get(n2(raw.id)) || [] };
     const parts = n2(bd.repay_parts);
@@ -4450,6 +4477,7 @@ async function listBd(filter) {
       repaid_total: repaidTotal,
       outstanding_amount: round2(Math.max(0, principalDrawn(bd) - repaidTotal)),
       repay_parts: parts,
+      early_refund: earlyRefund(bd, calcRow, repsOf.get(n2(bd.id)) || []),
       // Three stages, in the order a bill goes through them: opened and waiting
       // on the NBFC's money, live once it has landed, wound up once repaid.
       // Derived rather than stored, so the payment date stays the single fact
@@ -5081,7 +5109,13 @@ async function listBdCumulativePayments(nbfcId) {
     const calc = bdCalc(bd);
     const daysYear = n2(bd.days_year) || 360;
     const steps = n2(bd.first_receipt_part) > 5e-3 ? [] : await principalRepaidByDate(id);
-    const paid = toPlain3(await getClient().execute({ sql: "SELECT id, from_date, to_date, gross FROM bd_interest_payments WHERE bd_id = ?", args: [id] }));
+    const paid = toPlain3(
+      await getClient().execute({
+        sql: `SELECT p.id, p.from_date, p.to_date, p.gross, p.paid_date, je.vch_no FROM bd_interest_payments p
+               LEFT JOIN journal_entries je ON je.id = p.journal_entry_id WHERE p.bd_id = ?`,
+        args: [id]
+      })
+    );
     worker.set(id, {
       A: received ? accrualStart(bd, received) : "",
       paid,
@@ -5098,9 +5132,14 @@ async function listBdCumulativePayments(nbfcId) {
     const f = clamp(r.from_date);
     const t = String(r.to_date || "").slice(0, 10);
     const due = f <= t ? w.worked(f, t) : 0;
-    const before = round2(w.paid.filter((p) => n2(p.id) < n2(r.id) && clamp(p.from_date) === f && String(p.to_date).slice(0, 10) === t).reduce((s6, p) => s6 + n2(p.gross), 0));
+    const onSpan = w.paid.filter((p) => clamp(p.from_date) === f && String(p.to_date).slice(0, 10) === t);
+    const before = round2(onSpan.filter((p) => n2(p.id) < n2(r.id)).reduce((s6, p) => s6 + n2(p.gross), 0));
     const expected = round2(Math.max(0, due - before));
-    const diff = round2(n2(r.gross) - expected);
+    const paidDiff = round2(n2(r.gross) - expected);
+    const later = onSpan.filter((p) => n2(p.id) > n2(r.id)).sort((a, b) => n2(a.id) - n2(b.id));
+    const spanPaid = round2(onSpan.reduce((s6, p) => s6 + n2(p.gross), 0));
+    const latest = later.length === 0;
+    const diff = latest ? round2(spanPaid - due) : 0;
     const je = n2(r.journal_entry_id);
     if (!groups.has(je)) {
       groups.set(je, {
@@ -5119,7 +5158,25 @@ async function listBdCumulativePayments(nbfcId) {
       });
     }
     const g = groups.get(je);
-    g.bills.push({ id: n2(r.id), bd_id: n2(r.bd_id), bd_no: r.bd_no, from_date: f, to_date: t, due, before, expected, gross: n2(r.gross), tds: n2(r.tds), net: n2(r.net), diff, balance: /^Balance/.test(String(r.note || "")) });
+    g.bills.push({
+      id: n2(r.id),
+      bd_id: n2(r.bd_id),
+      bd_no: r.bd_no,
+      from_date: f,
+      to_date: t,
+      due,
+      before,
+      expected,
+      gross: n2(r.gross),
+      tds: n2(r.tds),
+      net: n2(r.net),
+      paid_diff: paidDiff,
+      diff,
+      latest,
+      span_paid: spanPaid,
+      adjusted_by: latest ? null : later.map((p) => `${String(p.vch_no || `#${p.id}`)} of ${String(p.paid_date || "").slice(0, 10).split("-").reverse().join("-")}`).join(", "),
+      balance: /^Balance/.test(String(r.note || ""))
+    });
     g.gross = round2(n2(g.gross) + n2(r.gross));
     g.tds = round2(n2(g.tds) + n2(r.tds));
     g.net = round2(n2(g.net) + n2(r.net));
