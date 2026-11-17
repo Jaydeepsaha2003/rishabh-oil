@@ -962,7 +962,8 @@ export function BdDetail({
   primaryLabel,
   interest,
   repayments,
-  onChanged
+  onChanged,
+  onOpenBill
 }: {
   bill: Row | null
   onClose: () => void
@@ -976,6 +977,8 @@ export function BdDetail({
   repayments?: Row[]
   /** Something on the bill was posted from inside the panel; re-read it. */
   onChanged?: () => void
+  /** Open another bill (one that shared a bank debit with this one). */
+  onOpenBill?: (bdId: number) => void
 }): React.JSX.Element | null {
   const drawerRef = useRef<HTMLDivElement>(null)
   // A repayment being edited (BdRepaymentEdit).
@@ -1626,7 +1629,41 @@ This was one bank debit that also cleared ${others.map((g) => `${s(g.bd_no)} ${f
                                   : ''}
                               </div>
                             )}
-                            {!!s(p.note) && (
+                            {/* ONE BANK DEBIT SPLIT OVER SEVERAL BILLS — said the same on every one
+                                of them, each other bill a link to open it. */}
+                            {(() => {
+                              const group: Row[] = Array.isArray(p.debit_group) ? p.debit_group : []
+                              if (group.length < 2) return null
+                              const total = group.reduce((t, g) => t + n(g.amount), 0)
+                              return (
+                                <div className="mt-1.5 flex flex-wrap items-center gap-1.5 rounded-[5px] border border-[#C6DAF0] bg-[#F4F8FD] px-2 py-1.5">
+                                  <span className="rounded-[3px] bg-[#1B4E82] px-1.5 py-0.5 text-[9.5px] font-extrabold uppercase tracking-[.06em] text-white">
+                                    Split {group.length}
+                                  </span>
+                                  <span className="text-[11.5px] font-bold text-[#1B4E82]">one {formatINR(total)} debit</span>
+                                  <span className="text-[11px] font-semibold text-[#5A6B62]">·</span>
+                                  {group.map((g) =>
+                                    Number(g.bd_id) === Number(r.id) ? (
+                                      <span key={String(g.id)} className="rounded-[3px] border border-[#C3D2C6] bg-white px-1.5 py-0.5 text-[11px] font-extrabold text-[#0A1F17]">
+                                        {s(g.bd_no)} {formatINR(n(g.amount))} <span className="font-semibold text-[#8CA396]">(this)</span>
+                                      </span>
+                                    ) : (
+                                      <button
+                                        key={String(g.id)}
+                                        type="button"
+                                        disabled={!onOpenBill}
+                                        onClick={() => onOpenBill?.(Number(g.bd_id))}
+                                        title={`Open ${s(g.bd_no)}`}
+                                        className="inline-flex items-center gap-1 rounded-[3px] border border-[#A9C4E6] bg-white px-1.5 py-0.5 text-[11px] font-extrabold text-[#1B4E82] hover:bg-[#EAF1FB] disabled:cursor-default"
+                                      >
+                                        {s(g.bd_no)} {formatINR(n(g.amount))} <ArrowUpRight className="h-3 w-3" />
+                                      </button>
+                                    )
+                                  )}
+                                </div>
+                              )
+                            })()}
+                            {!!s(p.note) && !/^Part of one .* debit with /.test(s(p.note)) && (
                               <div className="mt-[3px] text-[11.5px] font-semibold text-[#5A6B62] [text-wrap:pretty]">
                                 {s(p.note)}
                               </div>

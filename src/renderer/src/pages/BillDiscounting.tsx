@@ -8514,6 +8514,7 @@ Its bank voucher is removed too.`)) return
                 setBdRev((v) => v + 1)
               }}
               onClose={() => setOpenBd(0)}
+              onOpenBill={(id) => setOpenBd(id)}
               onEdit={(x) => {
                 setOpenBd(0)
                 openEdit(x)
