@@ -1200,6 +1200,34 @@ async function validateBd(v: Row, cur?: Row): Promise<void> {
   }
 }
 
+/**
+ * INTEREST TAKEN UPFRONT, BILL REPAID EARLY. The NBFC kept interest to maturity
+ * when it funded the bill; each part repaid before maturity stops costing from
+ * the repayment day, so the interest on those days is owed back (and the TDS
+ * withheld on it with it). Worked out live from the repayments, nothing stored.
+ * Not for a serviced bill (its interest is paid as it runs) or one received in
+ * legs (each leg has its own term).
+ */
+function earlyRefund(bd: Row, calc: { interestAmount: number }, reps: Row[]): Row | null {
+  const mode = String(bd.interest_mode || '') || (bd.interest_upfront ? 'upfront' : 'discounted')
+  const maturity = String(bd.maturity_date || '').slice(0, 10)
+  if (mode === 'serviced' || !maturity || !(calc.interestAmount > 0.004) || n(bd.first_receipt_part) > 0.005) return null
+  const daysYear = n(bd.days_year) || 360
+  const rate = n(bd.interest_pct)
+  const lines = reps
+    .map((r) => ({ date: String(r.repay_date || '').slice(0, 10), amount: n(r.amount) }))
+    .filter((r) => r.date && r.date < maturity && r.amount > 0.004)
+    .map((r) => {
+      const days = daysBetween(r.date, maturity)
+      return { ...r, days, gross: round2((r.amount * rate * days) / (100 * daysYear)) }
+    })
+    .filter((l) => l.gross > 0.004)
+  const gross = round2(Math.min(calc.interestAmount, lines.reduce((t, l) => t + l.gross, 0)))
+  if (!(gross > 0.5)) return null
+  const tds = round2((gross * n(bd.tds_pct)) / 100)
+  return { gross, tds, net: round2(gross - tds), maturity, rate, days_year: daysYear, interest: calc.interestAmount, lines }
+}
+
 export async function listBd(filter?: Row): Promise<Row[]> {
   await ensureBdPostingFields()
   const where: string[] = ['bd.company_id = ?']
@@ -1308,6 +1336,21 @@ export async function listBd(filter?: Row): Promise<Row[]> {
     if (!legsOf.has(k)) legsOf.set(k, [])
     ;(legsOf.get(k) as Row[]).push(r)
   }
+  // Every bill's repayments, in one read — for the interest an early repayment frees.
+  const repRows = toPlain(
+    await getClient()
+      .execute({
+        sql: `SELECT r.bd_id, r.repay_date, r.amount FROM bd_repayments r JOIN bill_discountings b ON b.id = r.bd_id WHERE b.company_id = ? ORDER BY r.bd_id, r.repay_date, r.id`,
+        args: [getActiveCompanyId()]
+      })
+      .catch(() => ({ rows: [], columns: [] }) as unknown as ResultSet)
+  )
+  const repsOf = new Map<number, Row[]>()
+  for (const r of repRows) {
+    const k = n(r.bd_id)
+    if (!repsOf.has(k)) repsOf.set(k, [])
+    ;(repsOf.get(k) as Row[]).push(r)
+  }
   // A part-repaid bill stays OPEN — the facility is still live for what is left
   // — so the screen needs the two figures the status word cannot carry: what
   // has gone back and what is still outstanding.
@@ -1335,6 +1378,7 @@ export async function listBd(filter?: Row): Promise<Row[]> {
       repaid_total: repaidTotal,
       outstanding_amount: round2(Math.max(0, principalDrawn(bd) - repaidTotal)),
       repay_parts: parts,
+      early_refund: earlyRefund(bd, calcRow, repsOf.get(n(bd.id)) || []),
       // Three stages, in the order a bill goes through them: opened and waiting
       // on the NBFC's money, live once it has landed, wound up once repaid.
       // Derived rather than stored, so the payment date stays the single fact

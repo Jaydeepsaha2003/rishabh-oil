@@ -56,6 +56,7 @@ import { LedgerPostings, type PostingTarget } from '@/components/LedgerPostings'
 import { canAccess } from '@/lib/modules'
 import { BdDetail, chargesOf } from '@/components/BdDetail'
 import { BdRepaymentEdit } from '@/components/BdRepaymentEdit'
+import { BdRefundDot } from '@/components/BdRefundDot'
 import { BdCumulativeInterest } from '@/components/BdCumulativeInterest'
 import { AdjChargePicker, adjKindsLabel, adjParts, adjPostsTo, adjSplitOk, type AdjPart, type ChargeType } from '@/components/AdjChargePicker'
 import { LimitHistory, type LimitTarget } from '@/components/LimitHistory'
@@ -4092,7 +4093,10 @@ Its bank voucher is removed too.`)) return
                               )
                             })()
                           ) : (
-                            formatINR(r.interestAmount)
+                            <span className="inline-flex items-center justify-end">
+                              {formatINR(r.interestAmount)}
+                              {r.early_refund && <BdRefundDot refund={r.early_refund} />}
+                            </span>
                           )}
                         </TableCell>
                         <TableCell className={cn('whitespace-nowrap text-right tabular-nums', __WEB__ && cn(BD_NUM, '!bg-[#FDF8F7] !font-semibold !text-[#8C2F26]'))}>
