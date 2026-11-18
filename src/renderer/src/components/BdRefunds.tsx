@@ -126,7 +126,7 @@ export function BdRefunds({ bills, onClose, onDone }: { bills: Row[]; onClose: (
   const cap = 'text-[9.5px] font-extrabold uppercase tracking-[.13em] text-[#7A8C82]'
   return (
     <Dialog open onOpenChange={(o) => !o && !busy && onClose()}>
-      <DialogContent className="flex max-h-[94dvh] w-[96vw] max-w-[1440px] flex-col gap-0 overflow-hidden p-0 sm:max-w-[min(1440px,96vw)] [&>button]:!text-white">
+      <DialogContent className="flex max-h-[94dvh] w-[96vw] max-w-[1600px] flex-col gap-0 overflow-hidden p-0 sm:max-w-[min(1600px,97vw)] [&>button]:!text-white">
         <div className="flex-none bg-[#0B3D2E] px-5 pb-0 pt-3.5 pr-12 text-white">
           <div className="text-[9.5px] font-extrabold uppercase tracking-[.14em] text-[#C7F03F]">Bill discounting</div>
           <DialogTitle className="text-[16px] font-extrabold text-white">Interest refunds</DialogTitle>
@@ -194,7 +194,9 @@ export function BdRefunds({ bills, onClose, onDone }: { bills: Row[]; onClose: (
           </div>
         ) : (
           <>
-            <div className="min-h-0 flex-1 space-y-3 overflow-y-auto px-3 py-3 sm:px-5 sm:py-4">
+            <div className="flex min-h-0 flex-1 flex-col xl:flex-row">
+              {/* LEFT — what is owed back, by NBFC and bill. */}
+              <div className="min-h-0 flex-1 space-y-3 overflow-y-auto px-3 py-3 sm:px-5 sm:py-4">
               <div className="flex flex-wrap items-center gap-2 rounded-[8px] border border-[#DCE6DC] bg-[#F7FAF6] px-3 py-2.5">
                 <span className={cap}>NBFC</span>
                 <Select value={nbfc} onValueChange={setNbfc}>
@@ -216,19 +218,39 @@ export function BdRefunds({ bills, onClose, onDone }: { bills: Row[]; onClose: (
                 />
               </div>
 
-              <div className="grid grid-cols-2 overflow-hidden rounded-[6px] border border-[#DCE6DC] bg-white lg:grid-cols-4">
-                {[
-                  { k: 'Bills', v: String(shown.filter((b) => n(b.early_refund.due) > 0.5).length), tone: 'text-[#0A1F17]' },
-                  { k: 'To come back', v: formatINR(sum(shown, 'gross')), tone: 'text-[#0A1F17]' },
-                  { k: 'Received', v: formatINR(sum(shown, 'received')), tone: 'text-[#0B6B45]' },
-                  { k: 'Still due', v: formatINR(sum(shown, 'due')), tone: sum(shown, 'due') > 0.5 ? 'text-[#B3261E]' : 'text-[#9AAFA2]' }
-                ].map((t, i) => (
-                  <div key={t.k} className={cn('min-w-0 px-4 py-3', i % 2 === 1 && 'border-l border-[#EEF3EE]', i >= 2 && 'border-t border-[#EEF3EE] lg:border-t-0', i === 2 && 'lg:border-l')}>
-                    <div className={cap}>{t.k}</div>
-                    <div className={cn('mt-0.5 truncate text-[19px] font-bold tabular-nums tracking-[-0.02em]', t.tone)}>{t.v}</div>
-                  </div>
-                ))}
-              </div>
+                {/* THE POSITION in one strip: still due, and how much is back. */}
+                {(() => {
+                  const gross = sum(shown, 'gross')
+                  const got = sum(shown, 'received')
+                  const pct = gross > 0 ? Math.min(100, (got / gross) * 100) : 0
+                  return (
+                    <div className="flex flex-wrap items-center gap-x-6 gap-y-3 rounded-[8px] border border-[#DCE6DC] bg-white px-5 py-3.5">
+                      <div>
+                        <div className={cap}>Still due</div>
+                        <div className={cn('text-[24px] font-extrabold tabular-nums tracking-[-0.02em]', sum(shown, 'due') > 0.5 ? 'text-[#B3261E]' : 'text-[#0B6B45]')}>{formatINR(sum(shown, 'due'))}</div>
+                      </div>
+                      <div className="min-w-[220px] flex-1">
+                        <div className="flex justify-between text-[11px] font-bold tabular-nums">
+                          <span className="text-[#0B6B45]">{formatINR(got)} back</span>
+                          <span className="text-[#5A6B62]">{Math.round(pct)}% of {formatINR(gross)}</span>
+                        </div>
+                        <div className="mt-1.5 h-2.5 overflow-hidden rounded-full bg-[#E4F0E6]">
+                          <div className="h-full rounded-full bg-gradient-to-r from-[#12855A] to-[#7CC242]" style={{ width: `${pct}%` }} />
+                        </div>
+                      </div>
+                      {[
+                        ['Bills', String(shown.filter((b) => n(b.early_refund.due) > 0.5).length)],
+                        ['To come back', formatINR(gross)],
+                        ['Received', formatINR(got)]
+                      ].map(([k, v]) => (
+                        <div key={k} className="border-l border-[#EEF3EE] pl-5">
+                          <div className={cap}>{k}</div>
+                          <div className="text-[15px] font-bold tabular-nums text-[#0A1F17]">{v}</div>
+                        </div>
+                      ))}
+                    </div>
+                  )
+                })()}
 
               {!groups.length && <div className="rounded-[6px] border border-dashed border-[#C9DCCF] py-10 text-center text-[12.5px] font-semibold text-[#5A6B62]">No bill repaid before maturity with interest to come back.</div>}
               {groups.length > 0 && (
@@ -267,6 +289,15 @@ export function BdRefunds({ bills, onClose, onDone }: { bills: Row[]; onClose: (
                                 <span className="text-[12.5px] font-extrabold text-[#0A1F17]">{g.name}</span>
                                 <span className="ml-2 rounded-full bg-white px-2 py-0.5 text-[10.5px] font-bold text-[#5A6B62]">
                                   {g.bills.length} bill{g.bills.length === 1 ? '' : 's'}
+                                </span>
+                                {/* How much of this NBFC's refund is back. */}
+                                <span className="ml-3 inline-flex items-center gap-1.5 align-middle">
+                                  <span className="inline-block h-1.5 w-[110px] overflow-hidden rounded-full bg-[#DDEBDF]">
+                                    <span className="block h-full rounded-full bg-[#12855A]" style={{ width: `${sum(g.bills, 'gross') > 0 ? Math.min(100, (sum(g.bills, 'received') / sum(g.bills, 'gross')) * 100) : 0}%` }} />
+                                  </span>
+                                  <span className="text-[10.5px] font-bold tabular-nums text-[#5A6B62]">
+                                    {sum(g.bills, 'gross') > 0 ? Math.round((sum(g.bills, 'received') / sum(g.bills, 'gross')) * 100) : 0}% back
+                                  </span>
                                 </span>
                               </td>
                               <td className="whitespace-nowrap px-2 py-2 text-right font-bold tabular-nums text-[#33473E]">{formatINR(sum(g.bills, 'gross'))}</td>
@@ -398,107 +429,160 @@ export function BdRefunds({ bills, onClose, onDone }: { bills: Row[]; onClose: (
                   </table>
                 </div>
               )}
+              </div>
 
-              {/* THE BANK RECEIPT the ticked bills came back by. */}
-              {ticked.length > 0 && (
-                <div className="overflow-hidden rounded-[8px] border-[1.5px] border-[#0B3D2E] bg-white">
-                  <div className="flex flex-wrap items-center gap-2.5 bg-[#F3F8F2] px-4 py-2.5">
+              {/* RIGHT — map one bank receipt over the ticked bills, step by step. */}
+              <aside className="flex min-h-0 flex-none flex-col border-t border-[#DCE6DC] bg-[#F7FAF6] xl:w-[400px] xl:border-l xl:border-t-0">
+                <div className="flex-none border-b border-[#DCE6DC] bg-white px-4 py-3">
+                  <div className="flex items-center gap-2">
                     <Link2 className="h-4 w-4 text-[#0B3D2E]" />
-                    <span className="text-[11px] font-extrabold uppercase tracking-[.12em] text-[#0B3D2E]">Pick the bank receipt</span>
-                    <label className="ml-auto flex h-9 min-w-[240px] items-center gap-2 rounded-[5px] border border-[#C3D2C6] bg-white px-2.5">
-                      <Search className="h-4 w-4 text-[#5A6B62]" />
-                      <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Amount, voucher no, narration…" className="min-w-0 flex-1 bg-transparent text-[12.5px] font-semibold outline-none" />
-                      {q && (
-                        <button type="button" onClick={() => setQ('')} aria-label="Clear">
-                          <X className="h-3.5 w-3.5 text-[#8CA396]" />
+                    <span className="text-[12px] font-extrabold uppercase tracking-[.12em] text-[#0B3D2E]">Map a receipt</span>
+                  </div>
+                </div>
+                <div className="min-h-0 flex-1 space-y-3 overflow-y-auto px-4 py-3">
+                  {/* 1 — the bills */}
+                  <div className="rounded-[8px] border border-[#DCE6DC] bg-white">
+                    <div className="flex items-center gap-2 border-b border-[#EEF3EE] px-3 py-2">
+                      <span className={cn('flex h-5 w-5 items-center justify-center rounded-full text-[10.5px] font-extrabold', ticked.length ? 'bg-[#0B3D2E] text-[#C7F03F]' : 'bg-[#EEF3EE] text-[#7A8C82]')}>1</span>
+                      <span className="text-[11px] font-extrabold uppercase tracking-[.1em] text-[#33473E]">Bills</span>
+                      {ticked.length > 0 && (
+                        <button type="button" onClick={() => { setPicked({}); setReceipt(null) }} className="ml-auto inline-flex items-center gap-1 text-[11px] font-bold text-[#5A6B62] hover:underline">
+                          <Undo2 className="h-3 w-3" /> Clear
                         </button>
                       )}
-                    </label>
-                    <div className="w-[140px]">
-                      <DatePicker value={dFrom} onChange={(x) => setDFrom(String(x || ''))} placeholder="From" />
                     </div>
-                    <div className="w-[140px]">
-                      <DatePicker value={dTo} onChange={(x) => setDTo(String(x || ''))} placeholder="To" />
-                    </div>
-                  </div>
-                  <div className="max-h-[260px] overflow-y-auto">
-                    {cands == null ? (
-                      <div className="flex justify-center py-6">
-                        <Loader2 className="h-4 w-4 animate-spin text-[#8CA396]" />
-                      </div>
-                    ) : !cands.length ? (
-                      <div className="px-4 py-5 text-[12px] font-semibold text-[#5A6B62]">Nothing found — try the amount, or wider dates.</div>
+                    {!ticked.length ? (
+                      <div className="px-3 py-4 text-center text-[12px] font-semibold text-[#9AAFA2]">Tick bills on the left</div>
                     ) : (
-                      <table className="w-full text-[12.5px]">
-                        <tbody>
-                          {cands.map((c) => {
-                            const sel = n(receipt?.id) === n(c.id)
-                            const left = r2(n(c.amount) - n(c.used))
-                            return (
-                              <tr
-                                key={String(c.id)}
-                                onClick={() => setReceipt(sel ? null : c)}
-                                className={cn('cursor-pointer border-t border-[#F1F5F0] hover:bg-[#F3F9F1]', sel && '!bg-[#E4F5C8] shadow-[inset_4px_0_0_#9ACD2A]')}
-                              >
-                                <td className="whitespace-nowrap px-4 py-2 font-semibold tabular-nums">{formatDate(String(c.entry_date))}</td>
-                                <td className="whitespace-nowrap px-2 py-2 font-extrabold">{String(c.code || c.vch_no || `#${c.id}`)}</td>
-                                <td className="px-2 py-2 text-[12px] text-[#33473E]">{String(c.bank || '')}</td>
-                                <td className="max-w-[280px] px-2 py-2 text-[11.5px] text-[#5A6B62]">
-                                  <span className="line-clamp-1">{String(c.debited || c.narration || '')}</span>
-                                </td>
-                                <td className="whitespace-nowrap px-2 py-2 text-right font-extrabold tabular-nums">{formatINR(n(c.amount))}</td>
-                                <td className="whitespace-nowrap px-4 py-2 text-right text-[11px] font-bold tabular-nums text-[#8A5300]">{n(c.used) > 0.004 ? `${formatINR(left)} unmapped` : ''}</td>
-                              </tr>
-                            )
-                          })}
-                        </tbody>
-                      </table>
+                      <div className="max-h-[180px] overflow-y-auto">
+                        {ticked.map((b) => (
+                          <div key={String(b.id)} className="flex items-center gap-2 border-t border-[#F1F5F0] px-3 py-1.5 text-[12px] first:border-t-0">
+                            <span className="rounded-[4px] bg-[#0B3D2E] px-1.5 py-0.5 text-[11px] font-extrabold text-[#C7F03F]">{String(b.bd_no)}</span>
+                            <span className="min-w-0 flex-1 truncate text-[11px] text-[#7A8C82]">{String(b.nbfc_name || '')}</span>
+                            <span className="font-extrabold tabular-nums">{formatINR(n(picked[n(b.id)]))}</span>
+                            <button type="button" onClick={() => tick(b, false)} aria-label={`Untick ${String(b.bd_no)}`} className="text-[#8CA396] hover:text-[#B3261E]">
+                              <X className="h-3.5 w-3.5" />
+                            </button>
+                          </div>
+                        ))}
+                        <div className="flex justify-between border-t border-[#DCE6DC] bg-[#FAFCF9] px-3 py-1.5 text-[12px] font-extrabold">
+                          <span>{ticked.length} bill{ticked.length === 1 ? '' : 's'}</span>
+                          <span className="tabular-nums">{formatINR(mapped)}</span>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+
+                  {/* 2 — the receipt */}
+                  <div className={cn('rounded-[8px] border bg-white', ticked.length ? 'border-[#DCE6DC]' : 'border-[#EEF3EE] opacity-60')}>
+                    <div className="flex items-center gap-2 border-b border-[#EEF3EE] px-3 py-2">
+                      <span className={cn('flex h-5 w-5 items-center justify-center rounded-full text-[10.5px] font-extrabold', receipt ? 'bg-[#0B3D2E] text-[#C7F03F]' : 'bg-[#EEF3EE] text-[#7A8C82]')}>2</span>
+                      <span className="text-[11px] font-extrabold uppercase tracking-[.1em] text-[#33473E]">Bank receipt</span>
+                    </div>
+                    {ticked.length > 0 && (
+                      <div className="space-y-2 px-3 py-2.5">
+                        <label className="flex h-9 items-center gap-2 rounded-[5px] border border-[#C3D2C6] bg-white px-2.5">
+                          <Search className="h-4 w-4 text-[#5A6B62]" />
+                          <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Amount, voucher no, narration…" className="min-w-0 flex-1 bg-transparent text-[12.5px] font-semibold outline-none" />
+                          {q && (
+                            <button type="button" onClick={() => setQ('')} aria-label="Clear">
+                              <X className="h-3.5 w-3.5 text-[#8CA396]" />
+                            </button>
+                          )}
+                        </label>
+                        <div className="grid grid-cols-2 gap-2">
+                          <DatePicker value={dFrom} onChange={(x) => setDFrom(String(x || ''))} placeholder="From" />
+                          <DatePicker value={dTo} onChange={(x) => setDTo(String(x || ''))} placeholder="To" />
+                        </div>
+                        <div className="max-h-[300px] space-y-1.5 overflow-y-auto pr-0.5">
+                          {cands == null ? (
+                            <div className="flex justify-center py-6">
+                              <Loader2 className="h-4 w-4 animate-spin text-[#8CA396]" />
+                            </div>
+                          ) : !cands.length ? (
+                            <div className="py-5 text-center text-[12px] font-semibold text-[#9AAFA2]">Nothing found</div>
+                          ) : (
+                            cands.map((c) => {
+                              const sel = n(receipt?.id) === n(c.id)
+                              const left = r2(n(c.amount) - n(c.used))
+                              const close = Math.abs(left - mapped) < 1
+                              return (
+                                <button
+                                  key={String(c.id)}
+                                  type="button"
+                                  onClick={() => setReceipt(sel ? null : c)}
+                                  className={cn(
+                                    'block w-full rounded-[6px] border px-3 py-2 text-left transition-colors',
+                                    sel ? 'border-[#0B3D2E] bg-[#EEF8E4] shadow-[inset_4px_0_0_#9ACD2A]' : 'border-[#E4ECE3] bg-white hover:border-[#8FBFA8] hover:bg-[#F7FBF5]'
+                                  )}
+                                >
+                                  <div className="flex items-center gap-2">
+                                    <span className="text-[12px] font-extrabold text-[#0A1F17]">{String(c.code || c.vch_no || `#${c.id}`)}</span>
+                                    <span className="text-[11px] font-semibold tabular-nums text-[#5A6B62]">{formatDate(String(c.entry_date))}</span>
+                                    {close && <span className="rounded-full bg-[#E9F5EE] px-1.5 text-[10px] font-extrabold text-[#0B6B45]">matches</span>}
+                                    <span className="ml-auto text-[13px] font-extrabold tabular-nums text-[#0A1F17]">{formatINR(n(c.amount))}</span>
+                                  </div>
+                                  <div className="mt-0.5 flex items-center gap-2 text-[10.5px] text-[#7A8C82]">
+                                    <span className="min-w-0 flex-1 truncate">{String(c.bank || c.debited || '')}</span>
+                                    {n(c.used) > 0.004 && <span className="flex-none font-bold text-[#8A5300]">{formatINR(left)} unmapped</span>}
+                                  </div>
+                                </button>
+                              )
+                            })
+                          )}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+
+                  {/* 3 — the match */}
+                  <div className={cn('rounded-[8px] border bg-white', receipt ? 'border-[#DCE6DC]' : 'border-[#EEF3EE] opacity-60')}>
+                    <div className="flex items-center gap-2 border-b border-[#EEF3EE] px-3 py-2">
+                      <span className={cn('flex h-5 w-5 items-center justify-center rounded-full text-[10.5px] font-extrabold', receipt && Math.abs(free - mapped) <= 0.5 ? 'bg-[#0B3D2E] text-[#C7F03F]' : 'bg-[#EEF3EE] text-[#7A8C82]')}>3</span>
+                      <span className="text-[11px] font-extrabold uppercase tracking-[.1em] text-[#33473E]">Match</span>
+                    </div>
+                    {receipt && (
+                      <div className="space-y-1 px-3 py-2.5 text-[12px]">
+                        <div className="flex justify-between">
+                          <span className="text-[#5A6B62]">Receipt {String(receipt.code || receipt.vch_no)} free</span>
+                          <span className="font-bold tabular-nums">{formatINR(free)}</span>
+                        </div>
+                        <div className="flex justify-between">
+                          <span className="text-[#5A6B62]">Mapped over {ticked.length} bill{ticked.length === 1 ? '' : 's'}</span>
+                          <span className="font-bold tabular-nums">{formatINR(mapped)}</span>
+                        </div>
+                        <div className="flex justify-between border-t border-[#EEF3EE] pt-1.5">
+                          <span className="font-extrabold">Difference</span>
+                          {Math.abs(free - mapped) <= 0.5 ? (
+                            <span className="inline-flex items-center gap-1 font-extrabold text-[#0B6B45]">
+                              <CheckCircle2 className="h-3.5 w-3.5" /> matches
+                            </span>
+                          ) : (
+                            <span className={cn('font-extrabold tabular-nums', mapped > free ? 'text-[#B3261E]' : 'text-[#8A5300]')}>
+                              {mapped > free ? `${formatINR(mapped - free)} over` : `${formatINR(free - mapped)} left`}
+                            </span>
+                          )}
+                        </div>
+                      </div>
                     )}
                   </div>
                 </div>
-              )}
-            </div>
-
-            <div className="flex flex-none flex-wrap items-center gap-3 border-t border-[#E4ECE3] bg-[#FBFCFA] px-3 py-3 sm:px-5">
-              <span className="text-[12px] font-semibold text-[#5A6B62]">
-                {ticked.length ? (
-                  <>
-                    <b className="text-[#0A1F17]">{ticked.length}</b> bill{ticked.length === 1 ? '' : 's'} · <b className="tabular-nums text-[#0A1F17]">{formatINR(mapped)}</b>
-                    {receipt && (
-                      <>
-                        {' '}
-                        from <b className="text-[#0A1F17]">{String(receipt.code || receipt.vch_no)}</b> ({formatINR(free)} free)
-                        {Math.abs(free - mapped) > 0.5 && (
-                          <span className={cn('ml-2 rounded-full px-2 py-0.5 text-[11px] font-extrabold', mapped > free ? 'bg-[#FDECEA] text-[#B3261E]' : 'bg-[#FFF4DC] text-[#7A4B00]')}>
-                            {mapped > free ? `${formatINR(mapped - free)} more than the receipt` : `${formatINR(free - mapped)} of the receipt left unmapped`}
-                          </span>
-                        )}
-                      </>
-                    )}
-                  </>
-                ) : (
-                  null
-                )}
-              </span>
-              {ticked.length > 0 && (
-                <button type="button" onClick={() => { setPicked({}); setReceipt(null) }} className="inline-flex items-center gap-1 text-[11.5px] font-bold text-[#5A6B62] hover:underline">
-                  <Undo2 className="h-3.5 w-3.5" /> Clear
-                </button>
-              )}
-              <span className="flex-1" />
-              <button type="button" onClick={onClose} className="h-9 rounded-[5px] border border-[#C9DCCF] bg-white px-4 text-[12px] font-extrabold text-[#33473E] hover:bg-[#F0F8F3]">
-                Close
-              </button>
-              <button
-                type="button"
-                data-ctrl-a
-                disabled={busy || !receipt || !ticked.length || !(mapped > 0)}
-                onClick={() => void link()}
-                className="flex h-9 items-center gap-1.5 rounded-[5px] bg-[#0B3D2E] px-5 text-[12px] font-extrabold text-[#C7F03F] hover:bg-[#0F4A38] disabled:opacity-50"
-              >
-                {busy && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
-                <Link2 className="h-3.5 w-3.5" /> Map receipt to {ticked.length || ''} bill{ticked.length === 1 ? '' : 's'}
-              </button>
+                <div className="flex flex-none gap-2 border-t border-[#DCE6DC] bg-white px-4 py-3">
+                  <button type="button" onClick={onClose} className="h-10 rounded-[5px] border border-[#C9DCCF] bg-white px-4 text-[12px] font-extrabold text-[#33473E] hover:bg-[#F0F8F3]">
+                    Close
+                  </button>
+                  <button
+                    type="button"
+                    data-ctrl-a
+                    disabled={busy || !receipt || !ticked.length || !(mapped > 0)}
+                    onClick={() => void link()}
+                    className="flex h-10 flex-1 items-center justify-center gap-1.5 rounded-[5px] bg-[#0B3D2E] px-4 text-[12.5px] font-extrabold text-[#C7F03F] hover:bg-[#0F4A38] disabled:opacity-50"
+                  >
+                    {busy && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
+                    <Link2 className="h-4 w-4" /> Map {ticked.length ? `${formatINR(mapped)} · ${ticked.length} bill${ticked.length === 1 ? '' : 's'}` : 'receipt'}
+                  </button>
+                </div>
+              </aside>
             </div>
           </>
         )}
