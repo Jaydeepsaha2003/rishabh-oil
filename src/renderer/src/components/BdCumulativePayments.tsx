@@ -18,11 +18,7 @@ const n = (v: unknown): number => Number(v) || 0
 function DiffChip({ diff, big }: { diff: number; big?: boolean }): React.JSX.Element {
   const size = big ? 'px-2.5 py-1 text-[11.5px]' : 'px-2 py-0.5 text-[10.5px]'
   if (Math.abs(diff) < 0.5)
-    return (
-      <span className={cn('inline-flex items-center gap-1 whitespace-nowrap rounded-full border border-[#BFE3CB] bg-[#E9F5EE] font-extrabold text-[#0B6B45]', size)}>
-        <CheckCircle2 className="h-3 w-3" /> SETTLED
-      </span>
-    )
+    return <span className="whitespace-nowrap text-[12px] font-semibold text-[#7A8C82]">Settled</span>
   return diff < 0 ? (
     <span className={cn('whitespace-nowrap rounded-full border border-[#F0C9C4] bg-[#FDECEA] font-extrabold tabular-nums text-[#B3261E]', size)}>SHORTFALL {formatINR(-diff)}</span>
   ) : (
@@ -32,7 +28,7 @@ function DiffChip({ diff, big }: { diff: number; big?: boolean }): React.JSX.Ele
 
 const periodsOf = (g: Row): string[] => [...new Set((g.bills as Row[]).map((b) => `${formatDate(String(b.from_date))} → ${formatDate(String(b.to_date))}`))]
 
-export function BdCumulativePayments({ nbfcId }: { nbfcId: number | null }): React.JSX.Element {
+export function BdCumulativePayments({ nbfcId, toolbar }: { nbfcId: number | null; toolbar?: React.ReactNode }): React.JSX.Element {
   const [raw, setRaw] = useState<Row[] | null>(null)
   // Which payments: all, one month, or a date range (by the day paid).
   const [per, setPer] = useState<'all' | 'month' | 'range'>('all')
@@ -81,40 +77,22 @@ It is one voucher for ${bills.map((b) => b.bd_no).join(', ')} — the payment on
     }
   }, [nbfcId, rev])
 
-  if (raw == null)
-    return (
-      <div className="flex justify-center py-10">
-        <Loader2 className="h-5 w-5 animate-spin text-[#8CA396]" />
-      </div>
-    )
-  if (!raw.length)
-    return (
-      <div className="rounded-[6px] border border-dashed border-[#C9DCCF] py-10 text-center text-[12.5px] font-semibold text-[#5A6B62]">
-        No payment made through Pay cumulative interest{nbfcId ? ' with this NBFC' : ''} yet.
-      </div>
-    )
-
-  const list = raw.filter((g) => {
+  const inPeriod = (g: Row): boolean => {
     const d = String(g.paid_date || '').slice(0, 10)
     if (per === 'month') return d.slice(0, 7) === month
     if (per === 'range') return (!pFrom || d >= pFrom) && (!pTo || d <= pTo)
     return true
-  })
-  // Only what is still open: each bill's days counted once, on their latest payment.
-  const bills = list.flatMap((g) => g.bills as Row[])
-  const short = bills.reduce((t, b) => t + Math.min(0, n(b.diff)), 0)
-  const over = bills.reduce((t, b) => t + Math.max(0, n(b.diff)), 0)
-  const toggle = (id: number): void =>
-    setOpen((p) => {
-      const next = new Set(p)
-      if (next.has(id)) next.delete(id)
-      else next.add(id)
-      return next
-    })
-  return (
-    <div className="space-y-3">
-      {/* PERIOD — by the day each payment was made. */}
-      <div className="flex flex-wrap items-center gap-2">
+  }
+  // THE TOOLBAR — the NBFC on the left, the period in the right corner; shown in every state.
+  const bar = (
+    <div className="flex flex-wrap items-center gap-x-3 gap-y-2 rounded-[8px] border border-[#DCE6DC] bg-[#F7FAF6] px-3 py-2.5">
+      {toolbar}
+      {raw != null && raw.length > 0 && (
+        <span className="text-[11.5px] font-semibold text-[#7A8C82]">
+          {raw.filter(inPeriod).length} of {raw.length} voucher{raw.length === 1 ? '' : 's'}
+        </span>
+      )}
+      <span className="ml-auto flex flex-wrap items-center gap-2">
         <span className="text-[10px] font-extrabold uppercase tracking-[.1em] text-[#5A6B62]">Paid in</span>
         <span className="flex h-9 rounded-[4px] border border-[#C9DCCF] bg-white p-0.5">
           {(
@@ -154,10 +132,44 @@ It is one voucher for ${bills.map((b) => b.bd_no).join(', ')} — the payment on
             </div>
           </>
         )}
-        <span className="text-[11.5px] font-semibold text-[#7A8C82]">
-          {list.length} of {raw.length} voucher{raw.length === 1 ? '' : 's'}
-        </span>
+      </span>
+    </div>
+  )
+
+  if (raw == null)
+    return (
+      <div className="space-y-3">
+        {bar}
+        <div className="flex justify-center py-10">
+          <Loader2 className="h-5 w-5 animate-spin text-[#8CA396]" />
+        </div>
       </div>
+    )
+  if (!raw.length)
+    return (
+      <div className="space-y-3">
+        {bar}
+        <div className="rounded-[6px] border border-dashed border-[#C9DCCF] py-10 text-center text-[12.5px] font-semibold text-[#5A6B62]">
+          No payment made through Pay cumulative interest{nbfcId ? ' with this NBFC' : ''} yet.
+        </div>
+      </div>
+    )
+
+  const list = raw.filter(inPeriod)
+  // Only what is still open: each bill's days counted once, on their latest payment.
+  const bills = list.flatMap((g) => g.bills as Row[])
+  const short = bills.reduce((t, b) => t + Math.min(0, n(b.diff)), 0)
+  const over = bills.reduce((t, b) => t + Math.max(0, n(b.diff)), 0)
+  const toggle = (id: number): void =>
+    setOpen((p) => {
+      const next = new Set(p)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+  return (
+    <div className="space-y-3">
+      {bar}
       {list.length === 0 ? (
         <div className="rounded-[6px] border border-dashed border-[#C9DCCF] py-10 text-center text-[12.5px] font-semibold text-[#5A6B62]">No payment in this period.</div>
       ) : (
@@ -199,7 +211,6 @@ It is one voucher for ${bills.map((b) => b.bd_no).join(', ')} — the payment on
             {list.map((g) => {
               const id = n(g.journal_entry_id)
               const isOpen = open.has(id)
-              const adjusted = (g.bills as Row[]).some((b) => !b.latest)
               return (
                 <Fragment key={id}>
                   <tr
@@ -238,7 +249,6 @@ It is one voucher for ${bills.map((b) => b.bd_no).join(', ')} — the payment on
                     <td className="px-2 py-2.5 text-right">
                       <span className="inline-flex flex-col items-end gap-0.5">
                         <DiffChip diff={n(g.diff)} />
-                        {adjusted && <span className="text-[10px] font-bold text-[#0B6B45]">adjusted by a later payment</span>}
                       </span>
                     </td>
                     <td className="px-3 py-2.5 text-right">

@@ -221,24 +221,27 @@ export function BdCumulativeInterest({ open, onClose, nbfcs, onDone }: { open: b
         </div>
         {tab === 'paid' ? (
           <div className="min-h-0 flex-1 space-y-3 overflow-y-auto px-3 py-3 sm:px-5 sm:py-4">
-            <div className="flex flex-wrap items-center gap-2 text-[11.5px] font-semibold text-[#5A6B62]">
-              <span className="text-[10px] font-extrabold uppercase tracking-[.1em]">NBFC</span>
-              <Select searchable value={nbfc || 'all'} onValueChange={(v) => setNbfc(v === 'all' ? '' : v)}>
-                <SelectTrigger className="h-9 w-[300px]">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent className="max-h-64">
-                  <SelectItem value="all">All NBFCs</SelectItem>
-                  {nbfcs.map((x) => (
-                    <SelectItem key={String(x.id)} value={String(x.id)}>
-                      {String(x.name)}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-              <span>Each bill against what was due on its days when it was paid — less is a shortfall, more an excess.</span>
-            </div>
-            <BdCumulativePayments nbfcId={nbfc ? Number(nbfc) : null} />
+            <BdCumulativePayments
+              nbfcId={nbfc ? Number(nbfc) : null}
+              toolbar={
+                <span className="flex items-center gap-2">
+                  <span className="text-[10px] font-extrabold uppercase tracking-[.1em] text-[#5A6B62]">NBFC</span>
+                  <Select searchable value={nbfc || 'all'} onValueChange={(v) => setNbfc(v === 'all' ? '' : v)}>
+                    <SelectTrigger className="h-9 w-[280px] bg-white text-[12.5px] font-bold">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent className="max-h-64">
+                      <SelectItem value="all">All NBFCs</SelectItem>
+                      {nbfcs.map((x) => (
+                        <SelectItem key={String(x.id)} value={String(x.id)}>
+                          {String(x.name)}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </span>
+              }
+            />
           </div>
         ) : (
         <>
