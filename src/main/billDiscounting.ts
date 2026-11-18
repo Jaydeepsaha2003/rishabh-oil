@@ -2406,6 +2406,88 @@ function shortSpans(
 }
 
 /**
+ * EDIT A CUMULATIVE INTEREST PAYMENT (Payments made → Edit). What was paid on
+ * each bill, the date, the bank, the TDS ledger and the note — the voucher is
+ * re-posted in place (same id, same PAY number), so every bill stays linked.
+ */
+export async function editBdCumulativePayment(v: {
+  entry_id: number
+  paid_date?: string
+  bank_account?: string | null
+  tds_ledger?: string | null
+  note?: string | null
+  // gross interest paid, keyed by the bd_interest_payments row id
+  amounts?: Record<string, number | string>
+}): Promise<{ entry_id: number; gross: number; tds: number; net: number }> {
+  return withDbTransaction(async () => {
+    const c = getClient()
+    const eid = n(v.entry_id)
+    const rows = toPlain(
+      await c.execute({
+        sql: `SELECT p.*, b.bd_no, b.tds_pct, b.company_id, b.nbfc_id FROM bd_interest_payments p JOIN bill_discountings b ON b.id = p.bd_id
+               WHERE p.journal_entry_id = ? ORDER BY p.id`,
+        args: [eid]
+      })
+    )
+    if (!rows.length) throw new Error('That payment no longer exists')
+    const date = String(v.paid_date || rows[0].paid_date || '').slice(0, 10)
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) throw new Error('Pick the payment date')
+    if (date > todayISO()) throw new Error('The payment cannot be dated in the future')
+    const note = String(v.note ?? '').trim()
+    if (!note) throw new Error('Write a note — it goes into the voucher narration')
+    // The ledgers the voucher carries today, kept unless changed.
+    const lines = toPlain(
+      await c.execute({
+        sql: `SELECT a.name, a.acc_group, jl.dr, jl.cr FROM journal_lines jl JOIN ledger_accounts a ON a.id = jl.account_id WHERE jl.entry_id = ? ORDER BY jl.id`,
+        args: [eid]
+      })
+    )
+    const oldBank = String((lines.find((l) => n(l.cr) > 0 && /bank/i.test(String(l.acc_group || ''))) || {}).name || rows[0].bank_account || '')
+    const oldTds = lines.find((l) => n(l.cr) > 0 && !/bank/i.test(String(l.acc_group || '')))
+    const bank = String(v.bank_account || '').trim() || oldBank
+    if (!bank) throw new Error('Pick the bank the interest was paid from')
+    const tdsLedger = String(v.tds_ledger || '').trim() || String(oldTds?.name || 'TDS ON INTEREST PAYABLE A/C')
+    const tdsGroup = String(
+      ((await c.execute({ sql: 'SELECT acc_group FROM ledger_accounts WHERE name = ?', args: [tdsLedger] })).rows[0] as Row | undefined)?.acc_group || 'Duties & Taxes'
+    )
+    const upd = rows.map((r) => {
+      const typed = v.amounts && String(v.amounts[String(r.id)] ?? '').trim() !== '' ? round2(n(v.amounts[String(r.id)])) : n(r.gross)
+      if (!(typed > 0.004)) throw new Error(`${r.bd_no}: the interest paid must be more than nil — delete the payment instead`)
+      const tds = round2((typed * n(r.tds_pct)) / 100)
+      return { r, gross: typed, tds, net: round2(typed - tds) }
+    })
+    const gross = round2(upd.reduce((t, x) => t + x.gross, 0))
+    const tds = round2(upd.reduce((t, x) => t + x.tds, 0))
+    const net = round2(gross - tds)
+    const nos = rows.map((r) => String(r.bd_no)).join(', ')
+    const nb = (await c.execute({ sql: 'SELECT name FROM nbfcs WHERE id = ?', args: [n(rows[0].nbfc_id)] })).rows[0] as Row | undefined
+    const to = rows.map((r) => String(r.to_date).slice(0, 10)).sort().pop()
+    await repostJournal(eid, {
+      date,
+      vchType: 'PAYMENT',
+      vchNo: nos.slice(0, 60),
+      narration:
+        `Bill Discounting interest to ${to} paid to ${nb?.name || 'the NBFC'} on ${rows.length} bill${rows.length === 1 ? '' : 's'} (${nos}) — ${inr(gross)}` +
+        (tds > 0.004 ? `, TDS ${inr(tds)} withheld` : '') +
+        ` · ${note}`,
+      companyId: n(rows[0].company_id) || undefined,
+      lines: [
+        { account: 'INTEREST ON BILL DISCOUNTING A/C', group: 'Indirect Expenses', dr: gross },
+        ...(tds > 0.004 ? [{ account: tdsLedger, group: tdsGroup, cr: tds }] : []),
+        { account: bank, group: 'Bank Accounts', cr: net }
+      ]
+    })
+    for (const x of upd) {
+      await c.execute({
+        sql: 'UPDATE bd_interest_payments SET gross = ?, tds = ?, net = ?, paid_date = ?, bank_account = ? WHERE id = ?',
+        args: [x.gross, x.tds, x.net, date, bank, n(x.r.id)]
+      })
+    }
+    return { entry_id: eid, gross, tds, net }
+  })
+}
+
+/**
  * PAYMENTS MADE through Pay cumulative interest (the window's second tab): one
  * group per voucher, each bill on it against what was due on its days when it
  * was paid — the worked-out interest less anything paid on those same days

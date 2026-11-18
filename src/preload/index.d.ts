@@ -716,6 +716,7 @@ export interface Api {
     interestPayments: (id: number) => Promise<Row[]>
     cumulativeInterest: (values: { nbfc_id: number; from_date?: string; to_date: string }) => Promise<Row[]>
     cumulativePayments: (nbfcId?: number | null) => Promise<Row[]>
+    editCumulativePayment: (values: { entry_id: number; paid_date?: string; bank_account?: string | null; tds_ledger?: string | null; note?: string | null; amounts?: Record<string, number | string> }) => Promise<{ entry_id: number; gross: number; tds: number; net: number }>
     refunds: () => Promise<Row[]>
     refundCandidates: (values: { q?: string; since?: string; from?: string; to?: string; expected?: number }) => Promise<Row[]>
     linkRefund: (values: { journal_entry_id: number; parts: { bd_id: number; amount: number }[] }) => Promise<{ entry_id: number; bills: number; amount: number }>

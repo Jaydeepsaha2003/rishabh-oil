@@ -1,8 +1,10 @@
 import { Fragment, useEffect, useState } from 'react'
 import { toast } from 'sonner'
-import { CheckCircle2, ChevronDown, Loader2, Trash2 } from 'lucide-react'
+import { CheckCircle2, ChevronDown, Loader2, Pencil, Trash2 } from 'lucide-react'
 import { formatDate, formatINR } from '@/lib/format'
 import { DatePicker } from '@/components/ui/date-picker'
+import { Dialog, DialogContent, DialogTitle } from '@/components/ui/dialog'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { cn } from '@/lib/utils'
 
 // PAYMENTS MADE through Pay cumulative interest (listBdCumulativePayments):
@@ -38,6 +40,7 @@ export function BdCumulativePayments({ nbfcId, toolbar }: { nbfcId: number | nul
   const [open, setOpen] = useState<Set<number>>(new Set())
   const [rev, setRev] = useState(0)
   const [deleting, setDeleting] = useState<number | null>(null)
+  const [editing, setEditing] = useState<Row | null>(null)
   // DELETE A VOUCHER: one bank debit, so it goes as one — every bill's payment on it with it.
   async function remove(g: Row): Promise<void> {
     const bills = g.bills as Row[]
@@ -251,7 +254,19 @@ It is one voucher for ${bills.map((b) => b.bd_no).join(', ')} — the payment on
                         <DiffChip diff={n(g.diff)} />
                       </span>
                     </td>
-                    <td className="px-3 py-2.5 text-right">
+                    <td className="whitespace-nowrap px-3 py-2.5 text-right">
+                      <button
+                        type="button"
+                        title="Edit this payment — amounts, date, bank, TDS ledger, note"
+                        aria-label="Edit this payment"
+                        onClick={(e) => {
+                          e.stopPropagation()
+                          setEditing(g)
+                        }}
+                        className="mr-1 inline-flex h-8 w-8 items-center justify-center rounded-[5px] border border-[#C9DCCF] bg-white text-[#0B3D2E] hover:bg-[#F0F8F3]"
+                      >
+                        <Pencil className="h-3.5 w-3.5" />
+                      </button>
                       <button
                         type="button"
                         disabled={deleting === id}
@@ -376,6 +391,189 @@ It is one voucher for ${bills.map((b) => b.bd_no).join(', ')} — the payment on
       </div>
       </>
       )}
+      {editing && (
+        <EditCumulativePayment
+          g={editing}
+          onClose={() => setEditing(null)}
+          onSaved={() => {
+            setEditing(null)
+            setRev((v) => v + 1)
+          }}
+        />
+      )}
     </div>
+  )
+}
+
+/** Edit one voucher: what each bill was paid, the date, bank, TDS ledger and note. Re-posted in place. */
+function EditCumulativePayment({ g, onClose, onSaved }: { g: Row; onClose: () => void; onSaved: () => void }): React.JSX.Element {
+  const bills = g.bills as Row[]
+  const narr = String(g.narration || '')
+  const [date, setDate] = useState(String(g.paid_date || ''))
+  const [bank, setBank] = useState(String(g.bank || ''))
+  const [tdsLedger, setTdsLedger] = useState('')
+  const [note, setNote] = useState(narr.includes(' · ') ? narr.slice(narr.lastIndexOf(' · ') + 3) : '')
+  const [amt, setAmt] = useState<Record<number, string>>(() => Object.fromEntries(bills.map((b) => [n(b.id), String(n(b.gross))])))
+  const [banks, setBanks] = useState<string[]>([])
+  const [tdsLedgers, setTdsLedgers] = useState<string[]>([])
+  const [busy, setBusy] = useState(false)
+  useEffect(() => {
+    window.api.journal
+      .accountNames()
+      .then((a) => {
+        setBanks(a.filter((x) => ['Bank Accounts', 'Bank OD A/c'].includes(String(x.acc_group || ''))).map((x) => String(x.name)))
+        setTdsLedgers(a.filter((x) => /TDS/i.test(String(x.name || '')) && !/RECE|RECOV|RECIA|RECEV/i.test(String(x.name || ''))).map((x) => String(x.name)))
+      })
+      .catch(() => undefined)
+  }, [])
+  // Each bill's TDS % as it was paid (TDS ÷ interest).
+  const pct = (b: Row): number => (n(b.gross) > 0 ? (n(b.tds) / n(b.gross)) * 100 : 0)
+  const fig = (b: Row): { gross: number; tds: number; net: number } => {
+    const gross = Math.round(n(amt[n(b.id)]) * 100) / 100
+    const tds = Math.round(((gross * pct(b)) / 100) * 100) / 100
+    return { gross, tds, net: Math.round((gross - tds) * 100) / 100 }
+  }
+  const tot = bills.reduce((t, b) => ({ gross: t.gross + fig(b).gross, tds: t.tds + fig(b).tds, net: t.net + fig(b).net }), { gross: 0, tds: 0, net: 0 })
+  async function save(): Promise<void> {
+    setBusy(true)
+    try {
+      await window.api.billDiscounting.editCumulativePayment({
+        entry_id: n(g.journal_entry_id),
+        paid_date: date,
+        bank_account: bank || null,
+        tds_ledger: tdsLedger || null,
+        note,
+        amounts: Object.fromEntries(bills.map((b) => [String(n(b.id)), fig(b).gross]))
+      })
+      toast.success(`Payment updated — ${formatINR(tot.net)} out of the bank`)
+      onSaved()
+    } catch (e) {
+      toast.error((e as Error).message.replace(/^Error invoking remote method '[^']+': (Error: )?/, ''))
+    } finally {
+      setBusy(false)
+    }
+  }
+  const lbl = 'mb-1 block text-[10px] font-extrabold uppercase tracking-[.1em] text-[#5A6B62]'
+  return (
+    <Dialog open onOpenChange={(o) => !o && !busy && onClose()}>
+      <DialogContent className="flex max-h-[94dvh] w-[96vw] max-w-[860px] flex-col gap-0 overflow-hidden p-0 [&>button]:!text-white">
+        <div className="flex-none bg-[#0B3D2E] px-5 py-3.5 text-white">
+          <div className="text-[9.5px] font-extrabold uppercase tracking-[.14em] text-[#C7F03F]">Cumulative interest</div>
+          <DialogTitle className="text-[16px] font-extrabold text-white">
+            Edit payment {String(g.vch_no || '')} · {formatDate(String(g.paid_date))}
+          </DialogTitle>
+        </div>
+        <div className="min-h-0 flex-1 space-y-3 overflow-y-auto px-5 py-4">
+          <div className="overflow-x-auto rounded-[6px] border border-[#DCE6DC]">
+            <table className="w-full min-w-[620px] text-[12.5px]">
+              <thead className="bg-[#F5F8F4] text-[9.5px] font-extrabold uppercase tracking-[.1em] text-[#5A6B62]">
+                <tr>
+                  <th className="px-3 py-2 text-left">Bill</th>
+                  <th className="px-2 py-2 text-left">Period</th>
+                  <th className="px-2 py-2 text-right">Worked out</th>
+                  <th className="px-2 py-2 text-right">Interest paid</th>
+                  <th className="px-2 py-2 text-right">TDS</th>
+                  <th className="px-3 py-2 text-right">Net</th>
+                </tr>
+              </thead>
+              <tbody>
+                {bills.map((b) => (
+                  <tr key={String(b.id)} className="border-t border-[#EFF3EE]">
+                    <td className="px-3 py-2">
+                      <span className="rounded-[4px] bg-[#0B3D2E] px-1.5 py-0.5 text-[11.5px] font-extrabold text-[#C7F03F]">{String(b.bd_no)}</span>
+                    </td>
+                    <td className="whitespace-nowrap px-2 py-2 tabular-nums text-[#33473E]">
+                      {formatDate(String(b.from_date))} → {formatDate(String(b.to_date))}
+                    </td>
+                    <td className="whitespace-nowrap px-2 py-2 text-right tabular-nums text-[#5A6B62]">{formatINR(n(b.due))}</td>
+                    <td className="px-2 py-1.5 text-right">
+                      <input
+                        inputMode="decimal"
+                        value={amt[n(b.id)] ?? ''}
+                        onChange={(e) => setAmt((p) => ({ ...p, [n(b.id)]: e.target.value.replace(/[^0-9.]/g, '') }))}
+                        aria-label={`Interest paid on ${String(b.bd_no)}`}
+                        className="h-8 w-[130px] rounded-[5px] border border-[#0B3D2E] bg-white px-2 text-right text-[12.5px] font-extrabold tabular-nums outline-none focus:ring-2 focus:ring-[#0B6B45]/20"
+                      />
+                    </td>
+                    <td className="whitespace-nowrap px-2 py-2 text-right tabular-nums text-[#5A6B62]">{formatINR(fig(b).tds)}</td>
+                    <td className="whitespace-nowrap px-3 py-2 text-right font-bold tabular-nums text-[#0B6B45]">{formatINR(fig(b).net)}</td>
+                  </tr>
+                ))}
+              </tbody>
+              <tfoot>
+                <tr className="border-t border-[#DCE6DC] bg-[#F5F8F4] font-extrabold">
+                  <td colSpan={3} className="px-3 py-2 text-[10.5px] uppercase tracking-[.1em] text-[#33473E]">
+                    Total
+                  </td>
+                  <td className="whitespace-nowrap px-2 py-2 text-right tabular-nums">{formatINR(tot.gross)}</td>
+                  <td className="whitespace-nowrap px-2 py-2 text-right tabular-nums">{formatINR(tot.tds)}</td>
+                  <td className="whitespace-nowrap px-3 py-2 text-right tabular-nums text-[#0B6B45]">{formatINR(tot.net)}</td>
+                </tr>
+              </tfoot>
+            </table>
+          </div>
+          <div className="grid gap-3 sm:grid-cols-3">
+            <div>
+              <span className={lbl}>Payment date</span>
+              <DatePicker value={date} onChange={(v) => v && setDate(v)} />
+            </div>
+            <div>
+              <span className={lbl}>Paid from bank</span>
+              <Select searchable value={bank} onValueChange={setBank}>
+                <SelectTrigger className="h-9">
+                  <SelectValue placeholder="Keep the bank" />
+                </SelectTrigger>
+                <SelectContent className="max-h-64">
+                  {[...new Set([...(bank ? [bank] : []), ...banks])].map((b) => (
+                    <SelectItem key={b} value={b}>
+                      {b}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div>
+              <span className={lbl}>TDS ledger</span>
+              <Select searchable value={tdsLedger} onValueChange={setTdsLedger}>
+                <SelectTrigger className="h-9">
+                  <SelectValue placeholder="Keep the TDS ledger" />
+                </SelectTrigger>
+                <SelectContent className="max-h-64">
+                  {tdsLedgers.map((b) => (
+                    <SelectItem key={b} value={b}>
+                      {b}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+          </div>
+          <div>
+            <span className={lbl}>
+              Note <span className="text-[#B3261E]">*</span> <span className="normal-case tracking-normal text-[#8CA396]">— goes into the narration</span>
+            </span>
+            <input
+              value={note}
+              onChange={(e) => setNote(e.target.value)}
+              className="h-9 w-full rounded-[4px] border border-[#C9DCCF] bg-white px-2.5 text-[13px] font-semibold outline-none focus:border-[#0B6B45]"
+            />
+          </div>
+        </div>
+        <div className="flex flex-none justify-end gap-2 border-t border-[#E4ECE3] bg-[#FBFCFA] px-5 py-3">
+          <button type="button" onClick={onClose} className="h-9 rounded-[5px] border border-[#C9DCCF] bg-white px-4 text-[12px] font-extrabold text-[#33473E]">
+            Cancel
+          </button>
+          <button
+            type="button"
+            data-ctrl-a
+            disabled={busy || !note.trim()}
+            onClick={() => void save()}
+            className="flex h-9 items-center gap-1.5 rounded-[5px] bg-[#0B3D2E] px-5 text-[12px] font-extrabold text-[#C7F03F] hover:bg-[#0F4A38] disabled:opacity-50"
+          >
+            {busy && <Loader2 className="h-3.5 w-3.5 animate-spin" />} Save · {formatINR(tot.net)} out of the bank
+          </button>
+        </div>
+      </DialogContent>
+    </Dialog>
   )
 }
