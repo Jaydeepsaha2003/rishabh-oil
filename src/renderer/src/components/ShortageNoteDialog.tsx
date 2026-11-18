@@ -1,11 +1,11 @@
 import { useEffect, useState } from 'react'
 import { toast } from 'sonner'
-import { FileMinus } from 'lucide-react'
+import { FileMinus, Link2, Plus, Truck } from 'lucide-react'
 import { Button } from '@/components/ui/button'
-import { Input } from '@/components/ui/input'
-import { Label } from '@/components/ui/label'
 import { DatePicker } from '@/components/ui/date-picker'
-import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
+import { Dialog, DialogContent, DialogTitle } from '@/components/ui/dialog'
+import { HelpTip } from '@/components/ui/tooltip'
+import { cn } from '@/lib/utils'
 import { errText, formatDate, formatINR } from '@/lib/format'
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -131,158 +131,258 @@ export function ShortageNoteDialog({
     }
   }
 
+  // GST both ways: the figure before GST is what is saved; after GST follows it,
+  // and typing after GST works the before-GST figure back.
+  const gstPct = Number(cnGst) || 0
+  const before = Number(cnAmt) || 0
+  const gstAmt = Math.round(before * gstPct) / 100
+  const after = Math.round((before + gstAmt) * 100) / 100
+  const [afterTyping, setAfterTyping] = useState<string | null>(null)
+  const due = ask?.due || 0
+  const gap = Math.round((total - due) * 100) / 100
+  const lbl = 'mb-1 block text-[10px] font-extrabold uppercase tracking-[.1em] text-[#5A6B62]'
+  const box = 'h-10 w-full rounded-[5px] border border-[#C9DCCF] bg-white px-3 text-[13px] font-semibold outline-none focus:border-[#0B6B45] focus:ring-2 focus:ring-[#0B6B45]/15'
+
   return (
     <Dialog open={!!ask && !!data} onOpenChange={(o) => !o && !busy && onClose()}>
-      <DialogContent className="max-w-2xl">
-        <DialogHeader>
-          <DialogTitle className="flex items-center gap-2">
-            <FileMinus className="h-4 w-4 text-rose-700" />
-            Credit note for the shortage on {ask?.invoiceNo}
-          </DialogTitle>
-        </DialogHeader>
-        <p className="text-[12.5px] text-muted-foreground">
-          {ask?.customer} · {ask?.due ? <>whole shortage (the customer has no tolerance){' '}
-          <span className="font-semibold text-rose-700">{formatINR(ask?.due || 0)}</span></> : 'delivered short'}. Tick the credit note(s) raised for it —
-          made here or booked from Tally. Nothing is posted; this only records which note settled it.
-        </p>
-        {notes.length === 0 ? (
-          <p className="rounded-md border border-dashed px-3 py-6 text-center text-[12.5px] text-muted-foreground">
-            No credit note to this customer in these books yet. Create it below, or raise it in Accounting → Credit Note / book it from Tally and link it here.
-          </p>
-        ) : (
-          <div className="max-h-[50vh] overflow-auto rounded-md border">
-            <table className="w-full text-[12px]">
-              <thead className="sticky top-0 bg-[#F4F7F3] text-[10.5px] uppercase tracking-wide text-muted-foreground">
-                <tr>
-                  <th className="w-8 px-2 py-1.5" />
-                  <th className="px-2 py-1.5 text-left">Note</th>
-                  <th className="px-2 py-1.5 text-left">Date</th>
-                  <th className="px-2 py-1.5 text-left">Against / narration</th>
-                  <th className="px-2 py-1.5 text-right">Amount</th>
-                </tr>
-              </thead>
-              <tbody>
-                {notes.map((x) => {
-                  const id = Number(x.entry_id)
-                  const on = picked.has(id)
-                  const elsewhere = String(x.linked_to || '')
-                    .split(', ')
-                    .filter((k) => k && k !== String(data?.invoice_key || ''))
-                  return (
-                    <tr key={id} className="border-t">
-                      <td className="px-2 py-1.5 text-center">
-                        <input
-                          type="checkbox"
-                          checked={on}
-                          onChange={() => {
-                            const next = new Set(picked)
-                            if (on) next.delete(id)
-                            else next.add(id)
-                            setPicked(next)
-                          }}
-                        />
-                      </td>
-                      <td className="px-2 py-1.5 font-semibold">
-                        {String(x.code || x.vch_no || `#${id}`)}
-                        {x.vch_no && x.code ? <span className="ml-1 text-[10.5px] font-normal text-muted-foreground">{String(x.vch_no)}</span> : null}
-                        {x.names_invoice && (
-                          <span className="ml-1.5 rounded-[3px] bg-emerald-50 px-1 text-[10px] font-bold text-emerald-700">names this invoice</span>
-                        )}
-                      </td>
-                      <td className="px-2 py-1.5">{formatDate(String(x.entry_date))}</td>
-                      <td className="max-w-[260px] truncate px-2 py-1.5 text-muted-foreground" title={String(x.narration || '')}>
-                        {x.refs ? `Agst ${String(x.refs)} · ` : ''}
-                        {String(x.narration || '—')}
-                        {elsewhere.length > 0 && <span className="ml-1 text-amber-700">· linked to another invoice too</span>}
-                      </td>
-                      <td className="px-2 py-1.5 text-right font-semibold tabular-nums">{formatINR(Number(x.amount))}</td>
+      <DialogContent className="flex max-h-[94dvh] w-[96vw] max-w-[1040px] flex-col gap-0 overflow-hidden p-0 sm:max-w-[min(1040px,96vw)] [&>button]:!text-white">
+        {/* HEADER — whose shortage, and how much. */}
+        <div className="flex-none bg-[#0B3D2E] px-5 py-3.5 pr-12 text-white">
+          <div className="flex items-center gap-1.5 text-[9.5px] font-extrabold uppercase tracking-[.14em] text-[#C7F03F]">
+            <FileMinus className="h-3.5 w-3.5" /> Shortage credit note
+          </div>
+          <div className="mt-0.5 flex flex-wrap items-center gap-x-3 gap-y-1">
+            <DialogTitle className="text-[17px] font-extrabold text-white">{ask?.invoiceNo}</DialogTitle>
+            <span className="text-[12.5px] font-semibold text-white/75">{ask?.customer}</span>
+            <HelpTip
+              className="text-white/60 hover:text-white"
+              text="The customer has no tolerance, so the whole shortage is credited. Tick the credit note(s) raised for it — made here or booked from Tally — and Link. Nothing is posted by linking; Create posts a value-only credit note (no stock moves), Agst Ref the invoice, and links it."
+            />
+            <span className="ml-auto text-right">
+              <span className="block text-[9.5px] font-extrabold uppercase tracking-[.12em] text-white/60">Shortage</span>
+              <span className="text-[18px] font-extrabold tabular-nums text-[#FFB4AB]">{due ? formatINR(due) : 'delivered short'}</span>
+            </span>
+          </div>
+        </div>
+
+        <div className="min-h-0 flex-1 space-y-3 overflow-y-auto bg-[#F7FAF6] px-5 py-4">
+          {/* THE CREDIT NOTES THERE ARE — tick the ones for this shortage. */}
+          <div className="overflow-hidden rounded-[8px] border border-[#DCE6DC] bg-white">
+            <div className="flex items-center gap-2 border-b border-[#EEF3EE] px-4 py-2.5">
+              <Link2 className="h-4 w-4 text-[#0B3D2E]" />
+              <span className="text-[11px] font-extrabold uppercase tracking-[.12em] text-[#0B3D2E]">Credit notes to this customer</span>
+              <span className="ml-auto rounded-full bg-[#EEF3EE] px-2 py-0.5 text-[10.5px] font-bold text-[#5A6B62]">{notes.length}</span>
+            </div>
+            {notes.length === 0 ? (
+              <div className="px-4 py-6 text-center text-[12.5px] font-semibold text-[#9AAFA2]">None yet in these books — create it below</div>
+            ) : (
+              <div className="max-h-[34vh] overflow-auto">
+                <table className="w-full text-[12.5px]">
+                  <thead className="sticky top-0 bg-[#F5F8F4] text-[9.5px] font-extrabold uppercase tracking-[.1em] text-[#7A8C82]">
+                    <tr>
+                      <th className="w-10 px-3 py-2" />
+                      <th className="px-2 py-2 text-left">Note</th>
+                      <th className="px-2 py-2 text-left">Date</th>
+                      <th className="px-2 py-2 text-left">Against / narration</th>
+                      <th className="px-4 py-2 text-right">Amount</th>
                     </tr>
-                  )
-                })}
-              </tbody>
-            </table>
+                  </thead>
+                  <tbody>
+                    {notes.map((x) => {
+                      const id = Number(x.entry_id)
+                      const on = picked.has(id)
+                      const elsewhere = String(x.linked_to || '')
+                        .split(', ')
+                        .filter((k) => k && k !== String(data?.invoice_key || ''))
+                      const flip = (): void => {
+                        const next = new Set(picked)
+                        if (on) next.delete(id)
+                        else next.add(id)
+                        setPicked(next)
+                      }
+                      return (
+                        <tr key={id} onClick={(e) => !(e.target as HTMLElement).closest('input') && flip()} className={cn('cursor-pointer border-t border-[#F1F5F0] hover:bg-[#FAFCF9]', on && '!bg-[#EEF8E4]')}>
+                          <td className="px-3 py-2 text-center">
+                            <input type="checkbox" checked={on} onChange={flip} aria-label={`Link ${String(x.code || x.vch_no || id)}`} />
+                          </td>
+                          <td className="px-2 py-2">
+                            <span className="font-extrabold text-[#0A1F17]">{String(x.code || x.vch_no || `#${id}`)}</span>
+                            {x.vch_no && x.code ? <span className="ml-1 text-[10.5px] text-[#7A8C82]">{String(x.vch_no)}</span> : null}
+                            {x.names_invoice && <span className="ml-1.5 rounded-full bg-[#E9F5EE] px-1.5 py-[1px] text-[10px] font-extrabold text-[#0B6B45]">names this invoice</span>}
+                          </td>
+                          <td className="whitespace-nowrap px-2 py-2 tabular-nums">{formatDate(String(x.entry_date))}</td>
+                          <td className="max-w-[360px] truncate px-2 py-2 text-[#5A6B62]" title={String(x.narration || '')}>
+                            {x.refs ? <span className="font-semibold text-[#1B4E82]">Agst {String(x.refs)} · </span> : ''}
+                            {String(x.narration || '—')}
+                            {elsewhere.length > 0 && <span className="ml-1 font-semibold text-[#8A5300]">· linked to another invoice too</span>}
+                          </td>
+                          <td className="whitespace-nowrap px-4 py-2 text-right font-extrabold tabular-nums">{formatINR(Number(x.amount))}</td>
+                        </tr>
+                      )
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            )}
           </div>
-        )}
-        {ask?.cn && (
-          <div className="grid gap-2 rounded-md border border-rose-200 bg-rose-50/40 p-3">
-            <div className="text-[12.5px] font-semibold text-rose-800">Create the credit note from here</div>
-            <p className="text-[11.5px] text-muted-foreground">{ask.cn.detail}</p>
-            <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
-              <div className="grid gap-1">
-                <Label className="text-[11px]">Amount (before GST)</Label>
-                <Input inputMode="decimal" value={cnAmt} onChange={(e) => setCnAmt(e.target.value)} />
+
+          {/* RAISE IT HERE — value only, Agst Ref the invoice, linked in the same step. */}
+          {ask?.cn && (
+            <div className="overflow-hidden rounded-[8px] border border-[#F0C9C4] bg-white">
+              <div className="flex flex-wrap items-center gap-2 border-b border-[#F7E1DE] bg-[#FDF5F4] px-4 py-2.5">
+                <Plus className="h-4 w-4 text-[#B3261E]" />
+                <span className="text-[11px] font-extrabold uppercase tracking-[.12em] text-[#8C2F26]">Create the credit note</span>
+                <span className="ml-auto truncate text-[11.5px] font-semibold text-[#7A8C82]">{ask.cn.detail}</span>
               </div>
-              <div className="grid gap-1">
-                <Label className="text-[11px]">GST %</Label>
-                <Input inputMode="decimal" value={cnGst} onChange={(e) => setCnGst(e.target.value)} />
-              </div>
-              <div className="grid gap-1">
-                <Label className="text-[11px]">Date</Label>
-                <DatePicker value={cnDate} onChange={(v) => setCnDate(String(v || ''))} />
-              </div>
-              <div className="grid gap-1">
-                <Label className="text-[11px]">Ledger (Dr)</Label>
-                <Input value={cnAgainst} onChange={(e) => setCnAgainst(e.target.value.toUpperCase())} />
-              </div>
-            </div>
-            <p className="text-[11px] text-muted-foreground">
-              Dr {cnAgainst || 'ledger'} {formatINR(Number(cnAmt) || 0)}
-              {Number(cnGst) > 0 ? ` + GST ${cnGst}%` : ''} / Cr {ask.customer}, Agst Ref {ask.invoiceNo}. No stock moves.
-            </p>
-            <div className="flex justify-end">
-              <Button
-                className="bg-rose-700 hover:bg-rose-800"
-                disabled={busy || !(Number(cnAmt) > 0) || !cnDate || !cnAgainst.trim()}
-                onClick={() => void createCn()}
-              >
-                {busy ? 'Creating…' : 'Create credit note & link'}
-              </Button>
-            </div>
-          </div>
-        )}
-        {tLines.length > 0 && (
-          <div className="grid gap-2 rounded-md border border-amber-200 bg-amber-50/40 p-3">
-            <div className="text-[12.5px] font-semibold text-amber-900">Recover it from the transporter</div>
-            {tLines.map((l) => {
-              const amt = Math.abs(Number(l.amount) || 0)
-              const unreg = String(l.gst_registration) === 'unregistered'
-              return (
-                <div key={String(l.id)} className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[12px]">
-                  <span className="font-semibold">{String(l.transporter || 'Transporter')}</span>
-                  <span className="text-muted-foreground">{String(l.note || '')}</span>
-                  <span className="ml-auto font-semibold tabular-nums">{formatINR(amt)}</span>
-                  {l.note_id ? (
-                    <span className="rounded-[3px] bg-emerald-50 px-1.5 text-[11px] font-bold text-emerald-700">Debit note {String(l.note_no || '')} raised</span>
-                  ) : l.waived_at ? (
-                    <span className="text-[11px] font-semibold text-muted-foreground">Written off — not the transporter&apos;s</span>
-                  ) : l.bill_id ? (
-                    <span className="text-[11px] font-semibold text-muted-foreground">Netted into their freight bill</span>
-                  ) : unreg ? (
-                    <span className="text-[11px] font-semibold text-muted-foreground" title="Unregistered transporters get no debit note">
-                      Unregistered — comes off their freight bill (with GST) when it is booked
-                    </span>
-                  ) : (
-                    <Button size="sm" variant="outline" disabled={busy} onClick={() => void raiseDn(l)}>
-                      Raise debit note
-                    </Button>
-                  )}
+              <div className="space-y-3 px-4 py-3.5">
+                <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
+                  <div>
+                    <span className={lbl}>Before GST</span>
+                    <input inputMode="decimal" value={cnAmt} onChange={(e) => setCnAmt(e.target.value.replace(/[^0-9.]/g, ''))} className={cn(box, 'text-right tabular-nums')} />
+                  </div>
+                  <div>
+                    <span className={lbl}>GST %</span>
+                    <input inputMode="decimal" value={cnGst} onChange={(e) => setCnGst(e.target.value.replace(/[^0-9.]/g, ''))} className={cn(box, 'text-right tabular-nums')} />
+                  </div>
+                  <div>
+                    <span className={lbl}>GST amount</span>
+                    <div className={cn(box, 'flex items-center justify-end bg-[#F7FAF6] tabular-nums text-[#5A6B62]')}>{formatINR(gstAmt)}</div>
+                  </div>
+                  <div>
+                    <span className={lbl}>After GST</span>
+                    <input
+                      inputMode="decimal"
+                      value={afterTyping ?? String(after)}
+                      onFocus={() => setAfterTyping(String(after))}
+                      onBlur={() => setAfterTyping(null)}
+                      onChange={(e) => {
+                        const v = e.target.value.replace(/[^0-9.]/g, '')
+                        setAfterTyping(v)
+                        setCnAmt(String(Math.round(((Number(v) || 0) / (1 + gstPct / 100)) * 100) / 100))
+                      }}
+                      className={cn(box, 'border-[#B3261E] text-right font-extrabold tabular-nums text-[#8C2F26]')}
+                    />
+                  </div>
                 </div>
-              )
-            })}
-          </div>
-        )}
-        <p className="text-[12px] text-muted-foreground">
-          Ticked {formatINR(total)}{ask?.due ? ` against a shortage of ${formatINR(ask.due)}` : ''}
-          {picked.size > 0 && Math.abs(total - (ask?.due || 0)) > 1 ? ` (${total > (ask?.due || 0) ? 'more' : 'less'} by ${formatINR(Math.abs(total - (ask?.due || 0)))})` : ''}
-        </p>
-        <DialogFooter className="gap-2">
-          <Button variant="outline" onClick={onClose} disabled={busy}>
+                <div className="grid grid-cols-1 gap-3 md:grid-cols-[200px_1fr]">
+                  <div>
+                    <span className={lbl}>Date</span>
+                    <DatePicker value={cnDate} onChange={(v) => setCnDate(String(v || ''))} />
+                  </div>
+                  <div>
+                    <span className={lbl}>Ledger (Dr)</span>
+                    <input value={cnAgainst} onChange={(e) => setCnAgainst(e.target.value.toUpperCase())} className={box} />
+                  </div>
+                </div>
+                {/* What will post. */}
+                <div className="rounded-[6px] border border-[#EEF3EE] bg-[#FAFCF9] px-3 py-2 text-[12px]">
+                  <div className="flex justify-between gap-3">
+                    <span>
+                      <b className="text-[#0B6B45]">Dr</b> {cnAgainst || 'ledger'}
+                    </span>
+                    <span className="tabular-nums">{formatINR(before)}</span>
+                  </div>
+                  {gstAmt > 0 && (
+                    <div className="flex justify-between gap-3">
+                      <span>
+                        <b className="text-[#0B6B45]">Dr</b> GST {gstPct}%
+                      </span>
+                      <span className="tabular-nums">{formatINR(gstAmt)}</span>
+                    </div>
+                  )}
+                  <div className="flex justify-between gap-3 border-t border-[#EEF3EE] pt-1">
+                    <span>
+                      <b className="text-[#B3261E]">Cr</b> {ask.customer} · Agst Ref {ask.invoiceNo}
+                    </span>
+                    <span className="font-extrabold tabular-nums">{formatINR(after)}</span>
+                  </div>
+                </div>
+                <div className="flex items-center justify-end gap-3">
+                  {due > 0 && Math.abs(after - due) > 1 && (
+                    <span className="text-[11.5px] font-bold text-[#8A5300]">
+                      {after > due ? `${formatINR(after - due)} more` : `${formatINR(due - after)} less`} than the shortage
+                    </span>
+                  )}
+                  <button
+                    type="button"
+                    disabled={busy || !(Number(cnAmt) > 0) || !cnDate || !cnAgainst.trim()}
+                    onClick={() => void createCn()}
+                    className="flex h-10 items-center gap-1.5 rounded-[5px] bg-[#B3261E] px-5 text-[12.5px] font-extrabold text-white hover:bg-[#8C2F26] disabled:opacity-50"
+                  >
+                    {busy ? 'Creating…' : `Create ${formatINR(after)} credit note & link`}
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {tLines.length > 0 && (
+            <div className="overflow-hidden rounded-[8px] border border-[#E8C27A] bg-white">
+              <div className="flex items-center gap-2 border-b border-[#F4E5C4] bg-[#FFF8EA] px-4 py-2.5">
+                <Truck className="h-4 w-4 text-[#8A5300]" />
+                <span className="text-[11px] font-extrabold uppercase tracking-[.12em] text-[#7A4B00]">Recover it from the transporter</span>
+              </div>
+              {tLines.map((l) => {
+                const amt = Math.abs(Number(l.amount) || 0)
+                const unreg = String(l.gst_registration) === 'unregistered'
+                return (
+                  <div key={String(l.id)} className="flex flex-wrap items-center gap-x-3 gap-y-1 border-t border-[#F7EFDC] px-4 py-2.5 text-[12.5px] first:border-t-0">
+                    <span className="font-extrabold">{String(l.transporter || 'Transporter')}</span>
+                    <span className="text-[#7A8C82]">{String(l.note || '')}</span>
+                    <span className="ml-auto font-extrabold tabular-nums">{formatINR(amt)}</span>
+                    {l.note_id ? (
+                      <span className="rounded-full bg-[#E9F5EE] px-2 py-0.5 text-[11px] font-extrabold text-[#0B6B45]">Debit note {String(l.note_no || '')} raised</span>
+                    ) : l.waived_at ? (
+                      <span className="text-[11px] font-semibold text-[#7A8C82]">Written off — not the transporter&apos;s</span>
+                    ) : l.bill_id ? (
+                      <span className="text-[11px] font-semibold text-[#7A8C82]">Netted into their freight bill</span>
+                    ) : unreg ? (
+                      <span className="text-[11px] font-semibold text-[#7A8C82]" title="Unregistered transporters get no debit note">
+                        Unregistered — off their freight bill (with GST) when booked
+                      </span>
+                    ) : (
+                      <Button size="sm" variant="outline" disabled={busy} onClick={() => void raiseDn(l)}>
+                        Raise debit note
+                      </Button>
+                    )}
+                  </div>
+                )
+              })}
+            </div>
+          )}
+        </div>
+
+        {/* FOOTER — what is ticked against the shortage. */}
+        <div className="flex flex-none flex-wrap items-center gap-3 border-t border-[#E4ECE3] bg-white px-5 py-3">
+          <span className="text-[12px] font-semibold text-[#5A6B62]">
+            Ticked <b className="tabular-nums text-[#0A1F17]">{formatINR(total)}</b>
+            {due ? (
+              <>
+                {' '}
+                of <b className="tabular-nums text-[#0A1F17]">{formatINR(due)}</b>
+              </>
+            ) : null}
+          </span>
+          {picked.size > 0 && due > 0 && (
+            <span className={cn('rounded-full px-2 py-0.5 text-[11px] font-extrabold', Math.abs(gap) <= 1 ? 'bg-[#E9F5EE] text-[#0B6B45]' : gap > 0 ? 'bg-[#FFF4DC] text-[#7A4B00]' : 'bg-[#FDECEA] text-[#B3261E]')}>
+              {Math.abs(gap) <= 1 ? 'covers it' : gap > 0 ? `${formatINR(gap)} more` : `${formatINR(-gap)} short`}
+            </span>
+          )}
+          <span className="flex-1" />
+          <button type="button" onClick={onClose} disabled={busy} className="h-10 rounded-[5px] border border-[#C9DCCF] bg-white px-4 text-[12px] font-extrabold text-[#33473E] hover:bg-[#F0F8F3]">
             Close
-          </Button>
-          <Button onClick={() => void save()} disabled={busy || (notes.length === 0 && picked.size === 0)}>
+          </button>
+          <button
+            type="button"
+            data-ctrl-a
+            onClick={() => void save()}
+            disabled={busy || (notes.length === 0 && picked.size === 0)}
+            className="flex h-10 items-center gap-1.5 rounded-[5px] bg-[#0B3D2E] px-5 text-[12px] font-extrabold text-[#C7F03F] hover:bg-[#0F4A38] disabled:opacity-50"
+          >
+            <Link2 className="h-4 w-4" />
             {busy ? 'Saving…' : picked.size ? `Link ${picked.size} note${picked.size === 1 ? '' : 's'}` : 'Unlink'}
-          </Button>
-        </DialogFooter>
+          </button>
+        </div>
       </DialogContent>
     </Dialog>
   )
