@@ -3265,7 +3265,7 @@ function TreasuryDesk({ onCompanyChange, focusLcId, focusBdId, onFocusHandled }:
           )}
 
           <TabsContent value="fd" className={cn('mt-4', __WEB__ && '!mt-0')}>
-            {tab === 'fd' && <FixedDeposits lcs={lcs} onCount={setFdCount} />}
+            {tab === 'fd' && <FixedDeposits lcs={lcs} onCount={setFdCount} onOpenLc={(id) => setLcDetailId(id)} />}
           </TabsContent>
 
           <TabsContent value="tracker" className={cn('mt-4', __WEB__ && '!mt-0')}>

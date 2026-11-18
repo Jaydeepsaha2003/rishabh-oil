@@ -1,6 +1,6 @@
 import { Fragment, useCallback, useEffect, useMemo, useState } from 'react'
 import { toast } from 'sonner'
-import { CheckCircle2, ChevronDown, Landmark, Link2, Loader2, Lock, Pencil, PiggyBank, Plus, RotateCcw, Search, Trash2, Unlock, Wallet, X } from 'lucide-react'
+import { ArrowUpRight, CheckCircle2, ChevronDown, Landmark, Link2, Loader2, Lock, Pencil, PiggyBank, Plus, RotateCcw, Search, Trash2, Unlock, Wallet, X } from 'lucide-react'
 import { Dialog, DialogContent, DialogTitle } from '@/components/ui/dialog'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { DatePicker } from '@/components/ui/date-picker'
@@ -36,7 +36,7 @@ function DaysChip({ fd }: { fd: Row }): React.JSX.Element | null {
 }
 
 /** The register. `lcs` feeds the LC picker; `onCount` tells the tab how many FDs are held. */
-export function FixedDeposits({ lcs, onCount }: { lcs: Row[]; onCount?: (k: number) => void }): React.JSX.Element {
+export function FixedDeposits({ lcs, onCount, onOpenLc }: { lcs: Row[]; onCount?: (k: number) => void; onOpenLc?: (lcId: number) => void }): React.JSX.Element {
   const [list, setList] = useState<Row[] | null>(null)
   const [q, setQ] = useState('')
   const [st, setSt] = useState<'all' | 'active' | 'maturing' | 'matured' | 'closed'>('all')
@@ -90,44 +90,77 @@ export function FixedDeposits({ lcs, onCount }: { lcs: Row[]; onCount?: (k: numb
       return x
     })
 
+  // Status colour on the row's left edge, as the LC / BD registers mark theirs.
+  const EDGE: Record<string, string> = { active: '#12855A', maturing: '#E0A325', matured: '#D9534A', closed: '#A8B4BD' }
+  const bandCap = 'text-[9.5px] font-extrabold uppercase tracking-[.14em] text-[#5A6B62]'
+  const live = (l: Row[]): Row[] => l.filter((f) => f.status !== 'closed')
   return (
-    <div className="space-y-3">
-      {/* WHERE THE MONEY IN FDs STANDS. */}
-      <div className="grid grid-cols-2 overflow-hidden rounded-[6px] border border-[#DCE6DC] bg-white lg:grid-cols-5">
+    <div className="overflow-hidden rounded-[6px] border border-[#D6E2D6] bg-white">
+      {/* TITLE BAR — what this register is, how many, and the way in. */}
+      <div className="flex flex-wrap items-center gap-3 border-b border-[#E4ECE3] bg-[#F7FAF6] px-4 py-3">
+        <span className="flex h-8 w-8 items-center justify-center rounded-[4px] border border-[#D6E2D6] bg-white">
+          <PiggyBank className="h-4 w-4 text-[#0B3D2E]" />
+        </span>
+        <span className="text-[12.5px] font-extrabold uppercase tracking-[.16em] text-[#0A1F17]">Fixed deposits</span>
+        <span className="rounded-[3px] bg-[#EAF0E9] px-2 py-0.5 text-[11px] font-bold text-[#33473E]">
+          {held.length} of {all.length} held
+        </span>
+        {due.length > 0 && (
+          <span className="rounded-[3px] border border-[#F0C9C4] bg-[#FDF3F2] px-2 py-0.5 text-[11px] font-bold text-[#B3261E]">
+            {due.length} matured · {formatINR(sum(due, 'amount'))}
+          </span>
+        )}
+        {soon.length > 0 && (
+          <span className="rounded-[3px] border border-[#E8C27A] bg-[#FFF8EA] px-2 py-0.5 text-[11px] font-bold text-[#7A4B00]">
+            {soon.length} maturing in 30 days · {formatINR(sum(soon, 'amount'))}
+          </span>
+        )}
+        <button
+          type="button"
+          onClick={() => setForm({ start_date: todayISO(), interest_payout: 'cumulative', bank_kind: 'own' })}
+          className="ml-auto flex h-[34px] items-center gap-1.5 rounded-[3px] bg-[#0B3D2E] px-3.5 text-[12px] font-extrabold text-[#C7F03F] hover:bg-[#0F4A38]"
+        >
+          <Plus className="h-4 w-4" /> New FD
+        </button>
+      </div>
+
+      {/* FIGURE BAND */}
+      <div className="grid grid-cols-2 border-b border-[#E4ECE3] lg:grid-cols-5">
         {[
-          { k: 'Held in FDs', v: formatINR(sum(held, 'amount')), sub: `${held.length} FD${held.length === 1 ? '' : 's'} · ${formatINR(sum(held, 'accrued'))} interest so far`, tone: 'text-[#0A1F17]', Icon: PiggyBank },
-          { k: 'Under lien', v: formatINR(sum(held, 'lien_amount')), sub: `securing ${held.reduce((t, f) => t + n(f.lien_lcs), 0)} LC${held.reduce((t, f) => t + n(f.lien_lcs), 0) === 1 ? '' : 's'}`, tone: 'text-[#1B4E82]', Icon: Lock },
-          { k: 'Free', v: formatINR(sum(held, 'free_amount')), sub: 'can be put against an LC', tone: 'text-[#0B6B45]', Icon: Unlock },
-          { k: 'Maturing in 30 days', v: formatINR(sum(soon, 'amount')), sub: `${soon.length} FD${soon.length === 1 ? '' : 's'}`, tone: soon.length ? 'text-[#7A4B00]' : 'text-[#9AAFA2]', Icon: Landmark },
-          { k: 'Matured, not closed', v: formatINR(sum(due, 'amount')), sub: `${due.length} to renew or encash`, tone: due.length ? 'text-[#B3261E]' : 'text-[#9AAFA2]', Icon: Wallet }
+          { k: 'Held in FDs', v: formatINR(sum(held, 'amount')), sub: `${held.length} FD${held.length === 1 ? '' : 's'}`, tone: 'text-[#0A1F17]' },
+          { k: 'Under lien', v: formatINR(sum(held, 'lien_amount')), sub: `of ${formatINR(sum(held, 'amount'))}`, tone: 'text-[#1B4E82]' },
+          { k: 'Free', v: formatINR(sum(held, 'free_amount')), sub: `of ${formatINR(sum(held, 'amount'))}`, tone: 'text-[#0B6B45]', band: 'bg-[#F3FAF5]' },
+          { k: 'Interest so far', v: formatINR(sum(held, 'accrued')), sub: `${formatINR(sum(held, 'maturity_value'))} at maturity`, tone: 'text-[#8A5300]' },
+          { k: 'Matured, not closed', v: formatINR(sum(due, 'amount')), sub: `${due.length} to renew or encash`, tone: due.length ? 'text-[#B3261E]' : 'text-[#9AAFA2]', band: due.length ? 'bg-[#FDF6F5]' : '' }
         ].map((t, i) => (
-          <div key={t.k} className={cn('min-w-0 px-4 py-3', i > 0 && 'border-l border-[#EEF3EE]', i >= 2 && 'border-t border-[#EEF3EE] lg:border-t-0')}>
-            <div className="flex items-center gap-1.5 text-[9.5px] font-extrabold uppercase tracking-[.13em] text-[#7A8C82]">
-              <t.Icon className="h-3.5 w-3.5" /> {t.k}
-            </div>
-            <div className={cn('mt-0.5 truncate text-[19px] font-bold tabular-nums tracking-[-0.02em]', t.tone)}>{t.v}</div>
-            <div className="truncate text-[11px] font-semibold text-[#7A8C82]">{t.sub}</div>
+          <div key={t.k} className={cn('min-w-0 px-4 py-3.5', i > 0 && 'border-l border-[#E4ECE3]', i >= 2 && 'border-t border-[#E4ECE3] lg:border-t-0', t.band)}>
+            <div className={bandCap}>{t.k}</div>
+            <div className={cn('mt-1 truncate text-[19px] font-bold tabular-nums tracking-[-0.02em]', t.tone)}>{t.v}</div>
+            <div className="mt-0.5 truncate text-[11px] font-semibold text-[#5A6B62]">{t.sub}</div>
           </div>
         ))}
       </div>
 
-      {/* TOOLBAR */}
-      <div className="flex flex-wrap items-center gap-2 rounded-[8px] border border-[#DCE6DC] bg-[#F7FAF6] px-3 py-2.5">
-        <span className="flex h-9 rounded-[4px] border border-[#C9DCCF] bg-white p-0.5">
+      {/* FILTERS */}
+      <div className="flex flex-wrap items-center gap-2 border-b border-[#E4ECE3] px-4 py-3">
+        <span className="flex rounded-[5px] border border-[#CBDACB] bg-[#EDF2EC] p-[4px] shadow-[inset_0_1px_2px_rgba(10,31,23,.07)]">
           {(['all', 'active', 'maturing', 'matured', 'closed'] as const).map((k) => (
             <button
               key={k}
               type="button"
               onClick={() => setSt(k)}
-              className={cn('flex items-center gap-1.5 rounded-[3px] px-3 text-[12px] font-extrabold', st === k ? 'bg-[#0B3D2E] text-white' : 'text-[#33473E] hover:bg-[#F0F8F3]')}
+              className={cn(
+                'flex h-[30px] items-center gap-1.5 rounded-[3px] px-[11px] text-[12px] font-extrabold uppercase tracking-[.04em]',
+                st === k ? 'bg-[#0B3D2E] text-white shadow-sm' : 'text-[#5A6B62] hover:text-[#0A1F17]'
+              )}
             >
               {k === 'all' ? 'All' : STATUS[k].label}
-              <span className={cn('rounded-[2px] px-1 text-[10.5px] tabular-nums', st === k ? 'bg-white/20' : 'bg-[#EEF3EE] text-[#5A6B62]')}>{counts[k] || 0}</span>
+              <span className={cn('rounded-[2px] px-[5px] text-[10.5px] tabular-nums', st === k ? 'bg-[#C7F03F] text-[#0B3D2E]' : 'bg-white text-[#5A6B62]')}>{counts[k] || 0}</span>
             </button>
           ))}
         </span>
         <Select value={bank} onValueChange={setBank}>
-          <SelectTrigger className="h-9 w-[220px] bg-white text-[12.5px] font-bold">
+          <SelectTrigger className="h-[38px] w-[220px] bg-white text-[12.5px] font-bold">
             <SelectValue />
           </SelectTrigger>
           <SelectContent className="max-h-64">
@@ -139,22 +172,15 @@ export function FixedDeposits({ lcs, onCount }: { lcs: Row[]; onCount?: (k: numb
             ))}
           </SelectContent>
         </Select>
-        <label className="flex h-9 min-w-[220px] flex-1 items-center gap-2 rounded-[4px] border border-[#C9DCCF] bg-white px-2.5">
+        <label className="flex h-[38px] min-w-[220px] flex-1 items-center gap-2 rounded-[4px] border border-[#C9DCCF] bg-white px-3">
           <Search className="h-4 w-4 text-[#5A6B62]" />
-          <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="FD no, bank, LC no…" className="min-w-0 flex-1 bg-transparent text-[12.5px] font-semibold outline-none" />
+          <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search FD no, bank, LC no…" className="min-w-0 flex-1 bg-transparent text-[13px] font-semibold outline-none" />
           {q && (
             <button type="button" onClick={() => setQ('')} aria-label="Clear">
               <X className="h-3.5 w-3.5 text-[#8CA396]" />
             </button>
           )}
         </label>
-        <button
-          type="button"
-          onClick={() => setForm({ start_date: todayISO(), interest_payout: 'cumulative', bank_kind: 'own' })}
-          className="flex h-9 items-center gap-1.5 rounded-[4px] bg-[#0B3D2E] px-4 text-[12px] font-extrabold text-[#C7F03F] hover:bg-[#0F4A38]"
-        >
-          <Plus className="h-4 w-4" /> New FD
-        </button>
       </div>
 
       {/* REGISTER */}
@@ -163,110 +189,157 @@ export function FixedDeposits({ lcs, onCount }: { lcs: Row[]; onCount?: (k: numb
           <Loader2 className="h-5 w-5 animate-spin text-[#8CA396]" />
         </div>
       ) : !shown.length ? (
-        <div className="rounded-[8px] border border-dashed border-[#C9DCCF] bg-white py-12 text-center">
-          <PiggyBank className="mx-auto h-8 w-8 text-[#A8B8AE]" />
+        <div className="py-14 text-center">
+          <PiggyBank className="mx-auto h-9 w-9 text-[#A8B8AE]" />
           <div className="mt-2 text-[13px] font-bold text-[#33473E]">{all.length ? 'No FD in this view.' : 'No FD recorded yet.'}</div>
-          {!all.length && <div className="text-[12px] font-semibold text-[#7A8C82]">Record the FDs you hold — then put them against an LC when it asks for security.</div>}
         </div>
       ) : (
-        <div className="overflow-x-auto rounded-[8px] border border-[#DCE6DC] bg-white">
-          <table className="w-full min-w-[1180px] text-[12.5px]">
-            <thead className="bg-[#0B3D2E] text-[9.5px] font-extrabold uppercase tracking-[.1em] text-[#DCEFE4]">
-              <tr>
-                <th className="w-8 px-3 py-2.5" />
-                <th className="px-2 py-2.5 text-left">FD no</th>
-                <th className="px-2 py-2.5 text-left">Bank</th>
-                <th className="px-2 py-2.5 text-left">Term</th>
-                <th className="px-2 py-2.5 text-right">Rate</th>
-                <th className="px-2 py-2.5 text-right">Amount</th>
-                <th className="px-2 py-2.5 text-left">Held against LCs</th>
-                <th className="px-2 py-2.5 text-right text-[#C7F03F]">Free</th>
-                <th className="px-2 py-2.5 text-right">At maturity</th>
-                <th className="px-2 py-2.5 text-left">Status</th>
+        <div className="overflow-x-auto">
+          <table className="w-full min-w-[1240px] border-collapse text-[12.5px]">
+            <thead>
+              {/* Grouped heads, as on the LC and BD registers. */}
+              <tr className="bg-[#0A3328] text-[9px] font-extrabold uppercase tracking-[.16em] text-[#9FC7B0]">
+                <th className="w-9" />
+                <th colSpan={2} className="border-r border-white/10 px-3 py-1.5 text-left">The deposit</th>
+                <th colSpan={3} className="border-r border-white/10 px-3 py-1.5 text-center">The term</th>
+                <th colSpan={2} className="border-r border-white/10 px-3 py-1.5 text-center">Value</th>
+                <th colSpan={2} className="border-r border-white/10 px-3 py-1.5 text-center text-[#C7F03F]">Security</th>
+                <th colSpan={2} />
+              </tr>
+              <tr className="bg-[#0B3D2E] text-[11.5px] font-extrabold text-white">
+                <th className="w-9" />
+                <th className="px-3 py-2.5 text-left">FD no</th>
+                <th className="border-r border-white/10 px-3 py-2.5 text-left">Bank</th>
+                <th className="px-3 py-2.5 text-left">Validity</th>
+                <th className="px-3 py-2.5 text-left">Days left</th>
+                <th className="border-r border-white/10 px-3 py-2.5 text-right">Rate</th>
+                <th className="px-3 py-2.5 text-right">Amount</th>
+                <th className="border-r border-white/10 px-3 py-2.5 text-right">At maturity</th>
+                <th className="px-3 py-2.5 text-left">Under lien</th>
+                <th className="border-r border-white/10 px-3 py-2.5 text-right text-[#C7F03F]">Free</th>
+                <th className="px-3 py-2.5 text-left">Status</th>
                 <th className="px-3 py-2.5 text-right">Actions</th>
               </tr>
             </thead>
             <tbody>
+              {/* TOTAL first, as the BD register reads. */}
+              <tr className="border-b-2 border-[#C7F03F]/60 bg-[#EEF4EC] font-extrabold">
+                <td />
+                <td colSpan={5} className="px-3 py-3 text-[12.5px] uppercase tracking-[.08em] text-[#0A1F17]">
+                  Total <span className="font-semibold normal-case tracking-normal text-[#5A6B62]">· {shown.length} FD{shown.length === 1 ? '' : 's'}</span>
+                </td>
+                <td className="whitespace-nowrap px-3 py-3 text-right tabular-nums">{formatINR(sum(shown, 'amount'))}</td>
+                <td className="whitespace-nowrap px-3 py-3 text-right tabular-nums text-[#33473E]">{formatINR(sum(live(shown), 'maturity_value'))}</td>
+                <td className="whitespace-nowrap px-3 py-3 tabular-nums text-[#1B4E82]">{formatINR(sum(live(shown), 'lien_amount'))}</td>
+                <td className="whitespace-nowrap px-3 py-3 text-right tabular-nums text-[#0B6B45]">{formatINR(sum(live(shown), 'free_amount'))}</td>
+                <td colSpan={2} />
+              </tr>
               {shown.map((f) => {
                 const id = n(f.id)
                 const isOpen = open.has(id)
                 const pct = n(f.amount) > 0 ? Math.min(100, (n(f.lien_amount) / n(f.amount)) * 100) : 0
-                const live = (f.liens as Row[]).filter((l) => l.active)
+                const lienLive = (f.liens as Row[]).filter((l) => l.active)
                 const canLien = f.status !== 'closed' && f.status !== 'matured' && n(f.free_amount) > 0.004
                 return (
                   <Fragment key={id}>
-                    <tr onClick={() => toggle(id)} className={cn('cursor-pointer border-t border-[#EEF3EE] align-middle', isOpen ? 'bg-[#F3F8F2]' : 'hover:bg-[#FAFCF9]', f.status === 'closed' && 'text-[#8CA396]')}>
-                      <td className="px-3 py-2.5">
-                        <ChevronDown className={cn('h-4 w-4 text-[#8CA396] transition-transform', isOpen && 'rotate-180')} />
+                    <tr
+                      onClick={() => toggle(id)}
+                      className={cn('cursor-pointer border-b border-[#EEF3EE] align-middle', isOpen ? 'bg-[#F3F8F2]' : 'hover:bg-[#FAFCF9]', f.status === 'closed' && 'text-[#8CA396]')}
+                      style={{ boxShadow: `inset 3px 0 0 ${EDGE[f.status]}` }}
+                    >
+                      <td className="px-2 py-3.5 text-center">
+                        <ChevronDown className={cn('mx-auto h-4 w-4 text-[#8CA396] transition-transform', isOpen && 'rotate-180')} />
                       </td>
-                      <td className="px-2 py-2.5">
-                        <span className="rounded-[4px] bg-[#0B3D2E] px-1.5 py-0.5 text-[11.5px] font-extrabold text-[#C7F03F]">{String(f.fd_no)}</span>
+                      <td className="px-3 py-3.5">
+                        <div className="text-[13.5px] font-extrabold text-[#0A1F17]">{String(f.fd_no)}</div>
+                        <span className={cn('mt-1 inline-block rounded-[3px] px-1.5 py-[1px] text-[9.5px] font-extrabold uppercase tracking-[.06em]', f.bank_kind === 'lc' ? 'bg-[#EAF0FA] text-[#1B4E82]' : 'bg-[#EAF0E9] text-[#33473E]')}>
+                          {f.bank_kind === 'lc' ? 'LC bank' : 'Own bank'}
+                        </span>
                       </td>
-                      <td className="max-w-[220px] px-2 py-2.5">
+                      <td className="max-w-[220px] border-r border-[#EEF3EE] px-3 py-3.5">
                         <div className="truncate font-bold text-[#0A1F17]">{String(f.bank)}</div>
-                        <div className="text-[10px] font-extrabold uppercase tracking-[.08em] text-[#8CA396]">{f.bank_kind === 'lc' ? 'LC bank' : 'Own bank'}</div>
+                        {f.note && <div className="truncate text-[11px] text-[#7A8C82]">{String(f.note)}</div>}
                       </td>
-                      <td className="whitespace-nowrap px-2 py-2.5">
-                        <div className="font-semibold tabular-nums text-[#33473E]">
-                          {formatDate(String(f.start_date))} → {formatDate(String(f.maturity_date))}
+                      <td className="whitespace-nowrap px-3 py-3.5 tabular-nums">
+                        <div className="flex items-baseline gap-2">
+                          <span className="w-[30px] text-[9.5px] font-extrabold tracking-[.1em] text-[#8CA396]">START</span>
+                          <span className="text-[#33473E]">{formatDate(String(f.start_date))}</span>
                         </div>
-                        <div className="mt-0.5">
-                          <DaysChip fd={f} />
+                        <div className="mt-0.5 flex items-baseline gap-2">
+                          <span className="w-[30px] text-[9.5px] font-extrabold tracking-[.1em] text-[#8CA396]">MAT</span>
+                          <span className="font-bold text-[#0A1F17]">{formatDate(String(f.maturity_date))}</span>
                         </div>
                       </td>
-                      <td className="whitespace-nowrap px-2 py-2.5 text-right tabular-nums">{n(f.interest_pct)}%</td>
-                      <td className="whitespace-nowrap px-2 py-2.5 text-right font-bold tabular-nums text-[#0A1F17]">{formatINR(n(f.amount))}</td>
-                      <td className="min-w-[200px] px-2 py-2.5">
-                        {/* How much of it is frozen — a bar, and the LCs it secures. */}
+                      <td className="px-3 py-3.5">
+                        <DaysChip fd={f} />
+                      </td>
+                      <td className="border-r border-[#EEF3EE] px-3 py-3.5 text-right tabular-nums">
+                        <div className="font-bold">{n(f.interest_pct)}%</div>
+                        <div className="text-[10px] font-semibold text-[#8CA396]">{f.interest_payout === 'payout' ? 'paid out' : 'cumulative'}</div>
+                      </td>
+                      <td className="whitespace-nowrap px-3 py-3.5 text-right text-[13.5px] font-extrabold tabular-nums text-[#0A1F17]">{formatINR(n(f.amount))}</td>
+                      <td className="whitespace-nowrap border-r border-[#EEF3EE] px-3 py-3.5 text-right tabular-nums">
+                        {f.status === 'closed' ? (
+                          <span className="text-[#5A6B62]">{n(f.closed_amount) > 0 ? formatINR(n(f.closed_amount)) : '—'}</span>
+                        ) : (
+                          <>
+                            <div className="font-semibold text-[#33473E]">{formatINR(n(f.maturity_value))}</div>
+                            <div className="text-[10px] font-semibold text-[#8A5300]">+{formatINR(r2(n(f.maturity_value) - n(f.amount)))}</div>
+                          </>
+                        )}
+                      </td>
+                      <td className="min-w-[210px] px-3 py-3.5">
                         <div className="flex items-center gap-2">
-                          <div className="h-1.5 w-[90px] flex-none overflow-hidden rounded-full bg-[#E4F0E6]">
+                          <div className="h-1.5 w-[80px] flex-none overflow-hidden rounded-full bg-[#E4F0E6]">
                             <div className="h-full rounded-full bg-[#1B4E82]" style={{ width: `${pct}%` }} />
                           </div>
-                          <span className="whitespace-nowrap font-semibold tabular-nums text-[#1B4E82]">{n(f.lien_amount) > 0.004 ? formatINR(n(f.lien_amount)) : '—'}</span>
+                          <span className="whitespace-nowrap font-bold tabular-nums text-[#1B4E82]">{n(f.lien_amount) > 0.004 ? formatINR(n(f.lien_amount)) : '—'}</span>
                         </div>
-                        {live.length > 0 && (
+                        {lienLive.length > 0 && (
                           <div className="mt-1 flex flex-wrap gap-1">
-                            {live.map((l) => (
-                              <span key={String(l.id)} className="rounded-[3px] border border-[#C6DAF0] bg-[#F4F8FD] px-1.5 py-[1px] text-[10px] font-bold text-[#1B4E82]">
-                                {String(l.lc_no || `LC #${l.lc_id}`)}
-                              </span>
+                            {lienLive.map((l) => (
+                              <button
+                                key={String(l.id)}
+                                type="button"
+                                title={`Open ${String(l.lc_no || 'the LC')}`}
+                                onClick={(e) => {
+                                  e.stopPropagation()
+                                  onOpenLc?.(n(l.lc_id))
+                                }}
+                                className="inline-flex items-center gap-0.5 rounded-[3px] border border-[#C6DAF0] bg-[#F4F8FD] px-1.5 py-[1px] text-[10px] font-bold text-[#1B4E82] hover:border-[#1B4E82] hover:bg-[#EAF1FB]"
+                              >
+                                <Lock className="h-2.5 w-2.5" /> {String(l.lc_no || `LC #${l.lc_id}`)} <ArrowUpRight className="h-2.5 w-2.5" />
+                              </button>
                             ))}
                           </div>
                         )}
                       </td>
-                      <td className="whitespace-nowrap px-2 py-2.5 text-right font-extrabold tabular-nums text-[#0B6B45]">{f.status === 'closed' ? '—' : formatINR(n(f.free_amount))}</td>
-                      <td className="whitespace-nowrap px-2 py-2.5 text-right tabular-nums text-[#33473E]">
-                        {f.status === 'closed' ? (n(f.closed_amount) > 0 ? formatINR(n(f.closed_amount)) : '—') : formatINR(n(f.maturity_value))}
+                      <td className="whitespace-nowrap border-r border-[#EEF3EE] bg-[#F7FBF8] px-3 py-3.5 text-right text-[13.5px] font-extrabold tabular-nums text-[#0B6B45]">
+                        {f.status === 'closed' ? '—' : formatINR(n(f.free_amount))}
                       </td>
-                      <td className="px-2 py-2.5">
-                        <span className={cn('whitespace-nowrap rounded-full border px-2 py-0.5 text-[10.5px] font-extrabold', STATUS[f.status].cls)}>{STATUS[f.status].label}</span>
+                      <td className="px-3 py-3.5">
+                        <span className={cn('whitespace-nowrap rounded-[3px] border px-2 py-0.5 text-[10.5px] font-extrabold uppercase tracking-[.04em]', STATUS[f.status].cls)}>{STATUS[f.status].label}</span>
                       </td>
-                      <td className="px-3 py-2.5 text-right" onClick={(e) => e.stopPropagation()}>
+                      <td className="px-3 py-3.5 text-right" onClick={(e) => e.stopPropagation()}>
                         <span className="inline-flex items-center gap-1">
                           <button
                             type="button"
                             disabled={!canLien}
                             onClick={() => setLien({ fd_id: id, amount: String(n(f.free_amount)), date: todayISO() })}
                             title={canLien ? 'Put this FD against an LC' : f.status === 'matured' ? 'Matured — cannot secure an LC' : 'Nothing free on it'}
-                            className="flex h-8 items-center gap-1 rounded-[4px] border border-[#A9C4E6] bg-white px-2 text-[11px] font-extrabold text-[#1B4E82] hover:bg-[#EAF1FB] disabled:opacity-40"
+                            className="flex h-[30px] items-center gap-1 rounded-[3px] bg-[#0B3D2E] px-2.5 text-[11px] font-extrabold uppercase tracking-[.04em] text-[#C7F03F] hover:bg-[#0F4A38] disabled:bg-[#EAF0E9] disabled:text-[#9AAFA2]"
                           >
                             <Link2 className="h-3.5 w-3.5" /> Lien
                           </button>
-                          <button type="button" title="Edit" aria-label="Edit" onClick={() => setForm({ ...f, amount: String(f.amount), interest_pct: String(f.interest_pct), maturity_amount: f.maturity_amount ? String(f.maturity_amount) : '' })} className="flex h-8 w-8 items-center justify-center rounded-[4px] border border-[#C9DCCF] bg-white text-[#33473E] hover:bg-[#F0F8F3]">
+                          <button type="button" title="Edit" aria-label="Edit" onClick={() => setForm({ ...f, amount: String(f.amount), interest_pct: String(f.interest_pct), maturity_amount: f.maturity_amount ? String(f.maturity_amount) : '' })} className="flex h-[30px] w-[30px] items-center justify-center rounded-[3px] border border-[#C9DCCF] bg-white text-[#33473E] hover:bg-[#F0F8F3]">
                             <Pencil className="h-3.5 w-3.5" />
                           </button>
                           {f.status === 'closed' ? (
-                            <button type="button" title="Reopen" aria-label="Reopen" onClick={() => void act(() => window.api.fd.reopen(id), `${f.fd_no} reopened`)} className="flex h-8 w-8 items-center justify-center rounded-[4px] border border-[#C9DCCF] bg-white text-[#33473E] hover:bg-[#F0F8F3]">
+                            <button type="button" title="Reopen" aria-label="Reopen" onClick={() => void act(() => window.api.fd.reopen(id), `${f.fd_no} reopened`)} className="flex h-[30px] w-[30px] items-center justify-center rounded-[3px] border border-[#C9DCCF] bg-white text-[#33473E] hover:bg-[#F0F8F3]">
                               <RotateCcw className="h-3.5 w-3.5" />
                             </button>
                           ) : (
-                            <button
-                              type="button"
-                              title="Close / encash"
-                              aria-label="Close"
-                              onClick={() => setClosing({ id, fd_no: f.fd_no, date: todayISO(), amount: String(n(f.maturity_value)) })}
-                              className="flex h-8 w-8 items-center justify-center rounded-[4px] border border-[#C9DCCF] bg-white text-[#33473E] hover:bg-[#F0F8F3]"
-                            >
+                            <button type="button" title="Close / encash" aria-label="Close" onClick={() => setClosing({ id, fd_no: f.fd_no, date: todayISO(), amount: String(n(f.maturity_value)) })} className="flex h-[30px] w-[30px] items-center justify-center rounded-[3px] border border-[#C9DCCF] bg-white text-[#33473E] hover:bg-[#F0F8F3]">
                               <CheckCircle2 className="h-3.5 w-3.5" />
                             </button>
                           )}
@@ -275,7 +348,7 @@ export function FixedDeposits({ lcs, onCount }: { lcs: Row[]; onCount?: (k: numb
                             title="Delete"
                             aria-label="Delete"
                             onClick={() => window.confirm(`Delete ${f.fd_no}? Its lien history goes with it.`) && void act(() => window.api.fd.remove(id), `${f.fd_no} deleted`)}
-                            className="flex h-8 w-8 items-center justify-center rounded-[4px] border border-[#F0C9C4] bg-white text-[#B3261E] hover:bg-[#FDECEA]"
+                            className="flex h-[30px] w-[30px] items-center justify-center rounded-[3px] border border-[#F0C9C4] bg-white text-[#B3261E] hover:bg-[#FDECEA]"
                           >
                             <Trash2 className="h-3.5 w-3.5" />
                           </button>
@@ -285,7 +358,7 @@ export function FixedDeposits({ lcs, onCount }: { lcs: Row[]; onCount?: (k: numb
                     {isOpen && (
                       <tr className="bg-[#F3F8F2]">
                         <td />
-                        <td colSpan={10} className="px-2 pb-3 pt-0">
+                        <td colSpan={11} className="px-2 pb-3 pt-0">
                           <div className="grid gap-3 lg:grid-cols-[1fr_2fr]">
                             <div className="rounded-[6px] border border-[#DCE6DC] bg-white px-4 py-3 text-[12px]">
                               <div className="mb-2 text-[9.5px] font-extrabold uppercase tracking-[.12em] text-[#7A8C82]">The deposit</div>
@@ -325,7 +398,14 @@ export function FixedDeposits({ lcs, onCount }: { lcs: Row[]; onCount?: (k: numb
                                     {(f.liens as Row[]).map((l) => (
                                       <tr key={String(l.id)} className="border-t border-[#F1F5F0]">
                                         <td className="px-4 py-1.5">
-                                          <div className="font-extrabold text-[#0A1F17]">{String(l.lc_no || `LC #${l.lc_id}`)}</div>
+                                          <button
+                                            type="button"
+                                            onClick={() => onOpenLc?.(n(l.lc_id))}
+                                            title={`Open ${String(l.lc_no || 'the LC')}`}
+                                            className="inline-flex items-center gap-1 font-extrabold text-[#1B4E82] hover:underline"
+                                          >
+                                            {String(l.lc_no || `LC #${l.lc_id}`)} <ArrowUpRight className="h-3 w-3" />
+                                          </button>
                                           <div className="text-[10.5px] text-[#7A8C82]">
                                             {String(l.lc_bank || '')}
                                             {l.lc_maturity ? ` · matures ${formatDate(String(l.lc_maturity))}` : ''}
@@ -379,21 +459,9 @@ export function FixedDeposits({ lcs, onCount }: { lcs: Row[]; onCount?: (k: numb
                 )
               })}
             </tbody>
-            <tfoot>
-              <tr className="border-t-[1.5px] border-[#C9DCCF] bg-[#F5F8F4] font-extrabold">
-                <td colSpan={5} className="px-3 py-2.5 text-[10.5px] uppercase tracking-[.1em] text-[#33473E]">
-                  Total · {shown.length} FD{shown.length === 1 ? '' : 's'}
-                </td>
-                <td className="whitespace-nowrap px-2 py-2.5 text-right tabular-nums">{formatINR(sum(shown, 'amount'))}</td>
-                <td className="whitespace-nowrap px-2 py-2.5 tabular-nums text-[#1B4E82]">{formatINR(sum(shown.filter((f) => f.status !== 'closed'), 'lien_amount'))}</td>
-                <td className="whitespace-nowrap px-2 py-2.5 text-right tabular-nums text-[#0B6B45]">{formatINR(sum(shown.filter((f) => f.status !== 'closed'), 'free_amount'))}</td>
-                <td colSpan={3} />
-              </tr>
-            </tfoot>
           </table>
         </div>
       )}
-
       {form && <FdForm init={form} lcs={lcs} onClose={() => setForm(null)} onSaved={() => { setForm(null); load() }} />}
       {lien && <LienDialog init={lien} fds={all} lcs={lcs} onClose={() => setLien(null)} onSaved={() => { setLien(null); load() }} />}
       {closing && (
