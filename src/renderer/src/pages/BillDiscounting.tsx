@@ -2951,7 +2951,7 @@ Its bank voucher is removed too.`)) return
                   title="Interest NBFCs owe back on bills repaid before maturity — map their bank receipts to the bills"
                   className="flex h-[34px] items-center gap-1.5 rounded-[3px] border border-[#0B6B45] bg-white px-3 text-[12px] font-extrabold uppercase tracking-[.05em] text-[#0B6B45] hover:bg-[#F0F8F3]"
                 >
-                  <Undo2 className="h-3.5 w-3.5" /> Interest refunds
+                  <Undo2 className="h-3.5 w-3.5" /> Int. refunds
                   {due > 0.5 && <span className="rounded-full bg-[#0B6B45] px-1.5 py-[1px] text-[10.5px] normal-case tracking-normal text-white">{formatINR(due)}</span>}
                 </button>
               )
