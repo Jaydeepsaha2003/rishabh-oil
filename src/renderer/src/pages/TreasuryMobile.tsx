@@ -66,6 +66,7 @@ import { PaymentTrackerMobile, trackerHeadline } from '@/components/PaymentTrack
 import { canAccess } from '@/lib/modules'
 import { loadUser } from '@/lib/session'
 import { adjKindsLabel, adjPostsTo } from '@/components/AdjChargePicker'
+import { FdMobile } from '@/components/FixedDeposits'
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Row = Record<string, any>
@@ -843,12 +844,22 @@ export function TreasuryMobile({
   onFocusHandled
 }: { focusLcId?: number | null; focusBdId?: number | null; onFocusHandled?: () => void } = {}): React.JSX.Element {
   // Opened on one LC or bill (the dashboard, a ledger): its tab, and the bill.
-  const [tab, setTab] = useState<'lc' | 'bd' | 'tracker'>(() => (Number(focusBdId) ? 'bd' : 'lc'))
+  const [tab, setTab] = useState<'lc' | 'bd' | 'tracker' | 'fd'>(() => (Number(focusBdId) ? 'bd' : 'lc'))
+  // Fixed deposits — the LC grant shows them, as on the desktop.
+  const [fdList, setFdList] = useState<Row[]>([])
   // The Payment tracker, as on the desktop: every dated payment in and out.
   const [tracker, setTracker] = useState<Row[]>([])
   const [trackerLoading, setTrackerLoading] = useState(false)
   const sessionUser = useMemo(() => loadUser(), [])
   const mayTrack = !sessionUser || canAccess(sessionUser, 'treasuryTracker')
+  const mayFd = !sessionUser || canAccess(sessionUser, 'treasuryLc')
+  useEffect(() => {
+    if (!mayFd) return
+    window.api.fd
+      .list()
+      .then(setFdList)
+      .catch(() => undefined)
+  }, [mayFd])
   // Which screen the bill's Repay sheet opens on — the tracker's "Pay
   // interest" opens it on the interest side.
   const [repayKind, setRepayKind] = useState<'full' | 'interest'>('full')
@@ -1141,6 +1152,15 @@ export function TreasuryMobile({
   const kpis = useMemo(() => {
     // Late, and what moves in the next three days — the canvas's three.
     if (tab === 'tracker') return trackerHeadline(tracker)
+    if (tab === 'fd') {
+      const held = fdList.filter((f) => f.status !== 'closed')
+      const sumOf = (l: Row[], k: string): number => l.reduce((t, f) => t + (Number(f[k]) || 0), 0)
+      return [
+        { k: 'Held in FDs', v: inrShort(sumOf(held, 'amount')) },
+        { k: 'Free', v: inrShort(sumOf(held, 'free_amount')) },
+        { k: 'Under lien', v: inrShort(sumOf(held, 'lien_amount')) }
+      ]
+    }
     if (tab === 'bd') {
       // The desktop band's lead figures, for the bills on screen. "Received"
       // was the money back from customers (Payment IN), which the desktop
@@ -1160,7 +1180,7 @@ export function TreasuryMobile({
       { k: 'Open', v: inrShort(n(limit.open)), go: 'lc:open' },
       { k: 'Payment received', v: inrShort(n(limit.payment_received)), go: 'lc:payment_received' }
     ]
-  }, [tab, bdK, limit, tracker])
+  }, [tab, bdK, limit, tracker, fdList])
 
   // The facility's whole limit — fixed plus convertible when it is on — as the
   // desktop shows it. `limit_amount` is not a field getLcLimit returns.
@@ -1430,7 +1450,8 @@ export function TreasuryMobile({
         {([
           { key: 'lc' as const, label: mayTrack ? 'LCs' : 'Letters of credit', count: searchedLcs.length },
           { key: 'bd' as const, label: mayTrack ? 'Bills' : 'Bill discounting', count: lenderBills.length },
-          ...(mayTrack ? [{ key: 'tracker' as const, label: 'Due', count: tracker.filter((x) => !x.settled).length }] : [])
+          ...(mayTrack ? [{ key: 'tracker' as const, label: 'Due', count: tracker.filter((x) => !x.settled).length }] : []),
+          ...(mayFd ? [{ key: 'fd' as const, label: 'FDs', count: fdList.filter((f) => f.status !== 'closed').length }] : [])
         ]).map((t) => {
           const on = tab === t.key
           return (
@@ -1461,7 +1482,8 @@ export function TreasuryMobile({
       {tab === 'tracker' && (
         <PaymentTrackerMobile rows={tracker} loading={trackerLoading} onAction={trackerAction} canAct={trackerCanAct} preset={trackerPreset} />
       )}
-      {tab !== 'tracker' && (
+      {tab === 'fd' && <FdMobile lcs={lcs} onData={setFdList} />}
+      {tab !== 'tracker' && tab !== 'fd' && (
       <>
       {/* Search, then the quick filters as a row that scrolls sideways. */}
       <div className="flex flex-none flex-col gap-[9px] border-b bg-white px-4 py-2.5" style={{ borderColor: T.border }}>
@@ -1798,7 +1820,7 @@ export function TreasuryMobile({
 
       {/* The one thing this page is most often opened to do, pinned where the
           thumb already is. Not on the tracker, which opens nothing new. */}
-      {tab !== 'tracker' && (
+      {tab !== 'tracker' && tab !== 'fd' && (
       <div
         className="sticky bottom-0 z-10 flex flex-none gap-[9px] border-t bg-white px-4 pb-[max(20px,env(safe-area-inset-bottom))] pt-[11px]"
         style={{ borderColor: T.border }}

@@ -397,41 +397,296 @@ export function FixedDeposits({ lcs, onCount }: { lcs: Row[]; onCount?: (k: numb
       {form && <FdForm init={form} lcs={lcs} onClose={() => setForm(null)} onSaved={() => { setForm(null); load() }} />}
       {lien && <LienDialog init={lien} fds={all} lcs={lcs} onClose={() => setLien(null)} onSaved={() => { setLien(null); load() }} />}
       {closing && (
-        <Dialog open onOpenChange={(o) => !o && setClosing(null)}>
-          <DialogContent className="max-w-[420px] p-0">
-            <div className="bg-[#0B3D2E] px-5 py-3.5 text-white">
-              <div className="text-[9.5px] font-extrabold uppercase tracking-[.14em] text-[#C7F03F]">Fixed deposit</div>
-              <DialogTitle className="text-[16px] font-extrabold text-white">Close {String(closing.fd_no)}</DialogTitle>
-            </div>
-            <div className="space-y-3 px-5 py-4">
-              <div>
-                <span className={lbl}>Closed on</span>
-                <DatePicker value={String(closing.date)} onChange={(v) => v && setClosing((p) => ({ ...p, date: v }))} />
+        <CloseFdDialog
+          init={closing}
+          onClose={() => setClosing(null)}
+          onDone={(c) => {
+            setClosing(null)
+            void act(() => window.api.fd.close(n(c.id), { date: c.date, amount: n(c.amount) }), `${c.fd_no} closed`)
+          }}
+        />
+      )}
+    </div>
+  )
+}
+
+/** Close (encash) an FD: the date and what came back. A record only. */
+function CloseFdDialog({ init, onClose, onDone }: { init: Row; onClose: () => void; onDone: (c: Row) => void }): React.JSX.Element {
+  const [c, setC] = useState<Row>(init)
+  return (
+    <Dialog open onOpenChange={(o) => !o && onClose()}>
+      <DialogContent className="max-w-[420px] p-0">
+        <div className="bg-[#0B3D2E] px-5 py-3.5 text-white">
+          <div className="text-[9.5px] font-extrabold uppercase tracking-[.14em] text-[#C7F03F]">Fixed deposit</div>
+          <DialogTitle className="text-[16px] font-extrabold text-white">Close {String(c.fd_no)}</DialogTitle>
+        </div>
+        <div className="space-y-3 px-5 py-4">
+          <div>
+            <span className={lbl}>Closed on</span>
+            <DatePicker value={String(c.date)} onChange={(v) => v && setC((p) => ({ ...p, date: v }))} />
+          </div>
+          <div>
+            <span className={lbl}>Amount received</span>
+            <input inputMode="decimal" value={String(c.amount)} onChange={(e) => setC((p) => ({ ...p, amount: e.target.value.replace(/[^0-9.]/g, '') }))} className={cn(inp, 'text-right tabular-nums')} />
+          </div>
+          <div className="text-[11px] font-semibold text-[#7A8C82]">A record only — the bank receipt is booked as usual.</div>
+        </div>
+        <div className="flex justify-end gap-2 border-t border-[#E4ECE3] bg-[#FBFCFA] px-5 py-3">
+          <button type="button" onClick={onClose} className="h-9 rounded-[5px] border border-[#C9DCCF] bg-white px-4 text-[12px] font-extrabold text-[#33473E]">
+            Cancel
+          </button>
+          <button type="button" onClick={() => onDone(c)} className="h-9 rounded-[5px] bg-[#0B3D2E] px-5 text-[12px] font-extrabold text-[#C7F03F] hover:bg-[#0F4A38]">
+            Close FD
+          </button>
+        </div>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
+/**
+ * THE PHONE VIEW: one card per FD (no wide table), status chips that scroll
+ * sideways, a search, and New FD pinned at the bottom. Same windows as the
+ * desktop for adding, liens and closing. `onData` hands the list up for the
+ * page header's figures.
+ */
+export function FdMobile({ lcs, onData }: { lcs: Row[]; onData?: (list: Row[]) => void }): React.JSX.Element {
+  const [list, setList] = useState<Row[] | null>(null)
+  const [q, setQ] = useState('')
+  const [st, setSt] = useState<'all' | 'active' | 'maturing' | 'matured' | 'closed'>('all')
+  const [open, setOpen] = useState<number | null>(null)
+  const [form, setForm] = useState<Row | null>(null)
+  const [lien, setLien] = useState<Row | null>(null)
+  const [closing, setClosing] = useState<Row | null>(null)
+  const load = useCallback(() => {
+    window.api.fd
+      .list()
+      .then((r) => {
+        setList(r)
+        onData?.(r)
+      })
+      .catch((e) => toast.error(errText(e)))
+  }, [onData])
+  useEffect(load, [load])
+  async function act(fn: () => Promise<unknown>, ok: string): Promise<void> {
+    try {
+      await fn()
+      toast.success(ok)
+      load()
+    } catch (e) {
+      toast.error(errText(e))
+    }
+  }
+  const all = list || []
+  const counts: Record<string, number> = { all: all.length, active: 0, maturing: 0, matured: 0, closed: 0 }
+  all.forEach((f) => (counts[f.status] = (counts[f.status] || 0) + 1))
+  const shown = all.filter((f) => {
+    if (st !== 'all' && f.status !== st) return false
+    const t = q.trim().toUpperCase()
+    return !t || [f.fd_no, f.bank, ...(f.liens as Row[]).map((l) => l.lc_no)].some((x) => String(x || '').toUpperCase().includes(t))
+  })
+  return (
+    <div className="flex min-h-0 flex-1 flex-col">
+      <div className="flex flex-none flex-col gap-[9px] border-b border-[#DCE6DC] bg-white px-4 py-2.5">
+        <label className="flex h-10 items-center gap-2 rounded-[6px] border border-[#C9DCCF] bg-[#F7FAF6] px-3">
+          <Search className="h-4 w-4 text-[#5A6B62]" />
+          <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search FD no, bank, LC no…" className="min-w-0 flex-1 bg-transparent text-[13px] font-semibold outline-none" />
+          {q && (
+            <button type="button" onClick={() => setQ('')} aria-label="Clear">
+              <X className="h-4 w-4 text-[#8CA396]" />
+            </button>
+          )}
+        </label>
+        <div className="-mx-4 flex gap-1.5 overflow-x-auto px-4 pb-0.5">
+          {(['all', 'active', 'maturing', 'matured', 'closed'] as const).map((k) => (
+            <button
+              key={k}
+              type="button"
+              onClick={() => setSt(k)}
+              className={cn('flex h-8 flex-none items-center gap-1.5 rounded-full border px-3 text-[12px] font-extrabold', st === k ? 'border-[#0B3D2E] bg-[#0B3D2E] text-white' : 'border-[#C9DCCF] bg-white text-[#33473E]')}
+            >
+              {k === 'all' ? 'All' : STATUS[k].label}
+              <span className={cn('rounded-full px-1.5 text-[10.5px] tabular-nums', st === k ? 'bg-[#C7F03F] text-[#0B3D2E]' : 'bg-[#EEF3EE] text-[#5A6B62]')}>{counts[k] || 0}</span>
+            </button>
+          ))}
+        </div>
+      </div>
+
+      <div className="min-h-0 flex-1 space-y-2.5 overflow-y-auto bg-[#F1F5EF] px-3 py-3">
+        {list == null ? (
+          <div className="flex justify-center py-10">
+            <Loader2 className="h-5 w-5 animate-spin text-[#8CA396]" />
+          </div>
+        ) : !shown.length ? (
+          <div className="rounded-[8px] border border-dashed border-[#C9DCCF] bg-white px-4 py-10 text-center">
+            <PiggyBank className="mx-auto h-8 w-8 text-[#A8B8AE]" />
+            <div className="mt-2 text-[13px] font-bold text-[#33473E]">{all.length ? 'No FD in this view.' : 'No FD recorded yet.'}</div>
+          </div>
+        ) : (
+          shown.map((f) => {
+            const id = n(f.id)
+            const isOpen = open === id
+            const pct = n(f.amount) > 0 ? Math.min(100, (n(f.lien_amount) / n(f.amount)) * 100) : 0
+            const canLien = f.status !== 'closed' && f.status !== 'matured' && n(f.free_amount) > 0.004
+            const live = (f.liens as Row[]).filter((l) => l.active)
+            return (
+              <div key={id} className={cn('overflow-hidden rounded-[8px] border bg-white', isOpen ? 'border-[#B9CFBE] shadow-[0_2px_10px_rgba(10,31,23,.07)]' : 'border-[#DCE6DC]')}>
+                <button type="button" onClick={() => setOpen(isOpen ? null : id)} className="block w-full px-3.5 py-3 text-left" aria-expanded={isOpen}>
+                  <div className="flex items-center gap-2">
+                    <span className="rounded-[4px] bg-[#0B3D2E] px-1.5 py-0.5 text-[11.5px] font-extrabold text-[#C7F03F]">{String(f.fd_no)}</span>
+                    <span className={cn('rounded-full border px-2 py-0.5 text-[10px] font-extrabold', STATUS[f.status].cls)}>{STATUS[f.status].label}</span>
+                    <ChevronDown className={cn('ml-auto h-4 w-4 text-[#8CA396] transition-transform', isOpen && 'rotate-180')} />
+                  </div>
+                  <div className="mt-1.5 flex items-end justify-between gap-2">
+                    <div className="min-w-0">
+                      <div className="truncate text-[12.5px] font-bold text-[#0A1F17]">{String(f.bank)}</div>
+                      <div className="mt-0.5 flex items-center gap-1.5 text-[11px] font-semibold tabular-nums text-[#5A6B62]">
+                        matures {formatDate(String(f.maturity_date))} <DaysChip fd={f} />
+                      </div>
+                    </div>
+                    <div className="flex-none text-right">
+                      <div className="text-[17px] font-extrabold tabular-nums tracking-[-0.02em] text-[#0A1F17]">{formatINR(n(f.amount))}</div>
+                      <div className="text-[10.5px] font-semibold text-[#7A8C82]">@ {n(f.interest_pct)}%</div>
+                    </div>
+                  </div>
+                  {f.status !== 'closed' && (
+                    <div className="mt-2.5">
+                      <div className="h-1.5 overflow-hidden rounded-full bg-[#E4F0E6]">
+                        <div className="h-full rounded-full bg-[#1B4E82]" style={{ width: `${pct}%` }} />
+                      </div>
+                      <div className="mt-1 flex justify-between text-[11px] font-bold tabular-nums">
+                        <span className="text-[#1B4E82]">
+                          <Lock className="mr-0.5 inline h-3 w-3" /> {formatINR(n(f.lien_amount))} held{live.length ? ` · ${live.length} LC${live.length === 1 ? '' : 's'}` : ''}
+                        </span>
+                        <span className="text-[#0B6B45]">{formatINR(n(f.free_amount))} free</span>
+                      </div>
+                    </div>
+                  )}
+                </button>
+
+                {isOpen && (
+                  <div className="border-t border-[#EEF3EE] bg-[#FAFCF9] px-3.5 py-3 text-[12px]">
+                    {[
+                      ['Term', `${formatDate(String(f.start_date))} → ${formatDate(String(f.maturity_date))}`],
+                      ['Interest', `${n(f.interest_pct)}% · ${f.interest_payout === 'payout' ? 'paid out' : 'cumulative'}`],
+                      ['Interest so far', formatINR(n(f.accrued))],
+                      ['At maturity', formatINR(n(f.maturity_value))],
+                      ...(f.closed_date ? [['Closed', `${formatDate(String(f.closed_date))}${n(f.closed_amount) > 0 ? ` · ${formatINR(n(f.closed_amount))}` : ''}`]] : []),
+                      ...(f.note ? [['Note', String(f.note)]] : [])
+                    ].map(([k, v]) => (
+                      <div key={k} className="flex justify-between gap-3 py-0.5">
+                        <span className="text-[#5A6B62]">{k}</span>
+                        <span className="text-right font-bold tabular-nums text-[#0A1F17]">{v}</span>
+                      </div>
+                    ))}
+                    {(f.liens as Row[]).length > 0 && (
+                      <div className="mt-2.5 overflow-hidden rounded-[6px] border border-[#DCE6DC] bg-white">
+                        <div className="border-b border-[#EEF3EE] px-3 py-1.5 text-[9.5px] font-extrabold uppercase tracking-[.12em] text-[#1B4E82]">Liens</div>
+                        {(f.liens as Row[]).map((l) => (
+                          <div key={String(l.id)} className="flex items-center gap-2 border-t border-[#F1F5F0] px-3 py-2 first:border-t-0">
+                            <div className="min-w-0 flex-1">
+                              <div className="truncate font-extrabold text-[#0A1F17]">{String(l.lc_no || `LC #${l.lc_id}`)}</div>
+                              <div className="text-[10.5px] text-[#7A8C82]">
+                                {l.active ? 'In force' : `Released${l.released_on ? ` ${formatDate(String(l.released_on))}` : ''}${l.why && l.why !== 'released' ? ` · ${l.why}` : ''}`}
+                              </div>
+                            </div>
+                            <span className={cn('font-extrabold tabular-nums', l.active ? 'text-[#1B4E82]' : 'text-[#8CA396]')}>{formatINR(n(l.amount))}</span>
+                            {l.active && (
+                              <button
+                                type="button"
+                                onClick={() => window.confirm(`Release ${formatINR(n(l.amount))} of ${f.fd_no} from ${l.lc_no}?`) && void act(() => window.api.fd.releaseLien(n(l.id)), 'Lien released')}
+                                className="rounded-[4px] border border-[#C9DCCF] bg-white px-2 py-1 text-[11px] font-bold text-[#33473E]"
+                              >
+                                Release
+                              </button>
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                    <div className="mt-3 grid grid-cols-4 gap-1.5">
+                      <button
+                        type="button"
+                        disabled={!canLien}
+                        onClick={() => setLien({ fd_id: id, amount: String(n(f.free_amount)), date: todayISO() })}
+                        className="flex h-10 flex-col items-center justify-center rounded-[6px] border border-[#A9C4E6] bg-white text-[10.5px] font-extrabold text-[#1B4E82] disabled:opacity-40"
+                      >
+                        <Link2 className="h-4 w-4" /> Lien
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setForm({ ...f, amount: String(f.amount), interest_pct: String(f.interest_pct), maturity_amount: f.maturity_amount ? String(f.maturity_amount) : '' })}
+                        className="flex h-10 flex-col items-center justify-center rounded-[6px] border border-[#C9DCCF] bg-white text-[10.5px] font-extrabold text-[#33473E]"
+                      >
+                        <Pencil className="h-4 w-4" /> Edit
+                      </button>
+                      {f.status === 'closed' ? (
+                        <button type="button" onClick={() => void act(() => window.api.fd.reopen(id), `${f.fd_no} reopened`)} className="flex h-10 flex-col items-center justify-center rounded-[6px] border border-[#C9DCCF] bg-white text-[10.5px] font-extrabold text-[#33473E]">
+                          <RotateCcw className="h-4 w-4" /> Reopen
+                        </button>
+                      ) : (
+                        <button type="button" onClick={() => setClosing({ id, fd_no: f.fd_no, date: todayISO(), amount: String(n(f.maturity_value)) })} className="flex h-10 flex-col items-center justify-center rounded-[6px] border border-[#C9DCCF] bg-white text-[10.5px] font-extrabold text-[#33473E]">
+                          <CheckCircle2 className="h-4 w-4" /> Close
+                        </button>
+                      )}
+                      <button
+                        type="button"
+                        onClick={() => window.confirm(`Delete ${f.fd_no}? Its lien history goes with it.`) && void act(() => window.api.fd.remove(id), `${f.fd_no} deleted`)}
+                        className="flex h-10 flex-col items-center justify-center rounded-[6px] border border-[#F0C9C4] bg-white text-[10.5px] font-extrabold text-[#B3261E]"
+                      >
+                        <Trash2 className="h-4 w-4" /> Delete
+                      </button>
+                    </div>
+                  </div>
+                )}
               </div>
-              <div>
-                <span className={lbl}>Amount received</span>
-                <input inputMode="decimal" value={String(closing.amount)} onChange={(e) => setClosing((p) => ({ ...p, amount: e.target.value.replace(/[^0-9.]/g, '') }))} className={cn(inp, 'text-right tabular-nums')} />
-              </div>
-              <div className="text-[11px] font-semibold text-[#7A8C82]">A record only — the bank receipt is booked as usual.</div>
-            </div>
-            <div className="flex justify-end gap-2 border-t border-[#E4ECE3] bg-[#FBFCFA] px-5 py-3">
-              <button type="button" onClick={() => setClosing(null)} className="h-9 rounded-[5px] border border-[#C9DCCF] bg-white px-4 text-[12px] font-extrabold text-[#33473E]">
-                Cancel
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  const c = closing
-                  setClosing(null)
-                  void act(() => window.api.fd.close(n(c.id), { date: c.date, amount: n(c.amount) }), `${c.fd_no} closed`)
-                }}
-                className="h-9 rounded-[5px] bg-[#0B3D2E] px-5 text-[12px] font-extrabold text-[#C7F03F] hover:bg-[#0F4A38]"
-              >
-                Close FD
-              </button>
-            </div>
-          </DialogContent>
-        </Dialog>
+            )
+          })
+        )}
+      </div>
+
+      <div className="sticky bottom-0 z-10 flex flex-none border-t border-[#DCE6DC] bg-white px-4 pb-[max(20px,env(safe-area-inset-bottom))] pt-[11px]">
+        <button
+          type="button"
+          onClick={() => setForm({ start_date: todayISO(), interest_payout: 'cumulative', bank_kind: 'own' })}
+          className="flex h-12 flex-1 items-center justify-center gap-2 rounded-[6px] bg-[#0B3D2E] text-[14px] font-extrabold text-[#C7F03F]"
+        >
+          <Plus className="h-5 w-5" /> New FD
+        </button>
+      </div>
+
+      {form && (
+        <FdForm
+          init={form}
+          lcs={lcs}
+          onClose={() => setForm(null)}
+          onSaved={() => {
+            setForm(null)
+            load()
+          }}
+        />
+      )}
+      {lien && (
+        <LienDialog
+          init={lien}
+          fds={all}
+          lcs={lcs}
+          onClose={() => setLien(null)}
+          onSaved={() => {
+            setLien(null)
+            load()
+          }}
+        />
+      )}
+      {closing && (
+        <CloseFdDialog
+          init={closing}
+          onClose={() => setClosing(null)}
+          onDone={(c) => {
+            setClosing(null)
+            void act(() => window.api.fd.close(n(c.id), { date: c.date, amount: n(c.amount) }), `${c.fd_no} closed`)
+          }}
+        />
       )}
     </div>
   )
