@@ -2977,13 +2977,16 @@ Its bank voucher is removed too.`)) return
             variant="outline"
             className={cn(
               'ml-auto h-7 gap-1.5 border-white/30 bg-white/10 px-2 text-xs text-white hover:bg-white/20 hover:text-white',
-              __WEB__ && '!ml-0 !h-[34px] !rounded-[3px] !border-[#C3D2C6] !bg-white !px-3 !text-[12px] !font-bold !text-[#0A1F17] hover:!bg-[#F7FAF6] hover:!text-[#0A1F17]'
+              // Web: a dark icon button, so the toolbar keeps to one line.
+              __WEB__ && '!ml-0 !h-[34px] !w-[34px] !rounded-[3px] !border-[#0B3D2E] !bg-[#0B3D2E] !p-0 !text-[#C7F03F] hover:!bg-[#0F4A38] hover:!text-[#C7F03F]'
             )}
             disabled={exporting || filtered.length === 0}
-            title={filtered.length === 0 ? 'Nothing in this filter to download' : 'Download this register as Excel'}
+            title={filtered.length === 0 ? 'Nothing in this filter to download' : exporting ? 'Preparing…' : 'Download this register as Excel'}
+            aria-label="Download Excel"
             onClick={() => void downloadRegister()}
           >
-            <FileSpreadsheet className="h-3.5 w-3.5" /> {exporting ? 'Preparing…' : 'Download Excel'}
+            <FileSpreadsheet className={cn('h-3.5 w-3.5', __WEB__ && '!h-4 !w-4')} />
+            {!__WEB__ && (exporting ? 'Preparing…' : 'Download Excel')}
           </Button>
           <Button
             size="sm"
@@ -3022,11 +3025,14 @@ Its bank voucher is removed too.`)) return
             size="sm"
             className={cn(
               'h-7 bg-amber-400 px-2 text-xs font-semibold text-[#1a2c56] shadow-sm hover:bg-amber-300',
-              __WEB__ && '!h-[34px] !gap-1.5 !rounded-[3px] !bg-[#0B3D2E] !px-3.5 !text-[12px] !font-extrabold !text-[#C7F03F] !shadow-none hover:!bg-[#0F4A38]'
+              __WEB__ && '!h-[34px] !w-[34px] !rounded-[3px] !bg-[#0B3D2E] !p-0 !text-[#C7F03F] !shadow-none hover:!bg-[#0F4A38]'
             )}
+            title="Discount a bill"
+            aria-label="Discount a bill"
             onClick={openNew}
           >
-            <Plus className="h-4 w-4" /> Discount a bill
+            <Plus className={cn('h-4 w-4', __WEB__ && '!h-5 !w-5')} />
+            {!__WEB__ && ' Discount a bill'}
           </Button>
         </div>
         {/* ONE ROW OF CELLS, AND NOTHING ABOVE IT.
