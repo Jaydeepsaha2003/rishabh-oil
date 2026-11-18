@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { Fragment, useEffect, useMemo, useState } from 'react'
 import { toast } from 'sonner'
 import { CheckCircle2, Link2, Loader2, Search, Undo2, Unlink, X } from 'lucide-react'
 import { Dialog, DialogContent, DialogTitle } from '@/components/ui/dialog'
@@ -116,7 +116,7 @@ export function BdRefunds({ bills, onClose, onDone }: { bills: Row[]; onClose: (
   const cap = 'text-[9.5px] font-extrabold uppercase tracking-[.13em] text-[#7A8C82]'
   return (
     <Dialog open onOpenChange={(o) => !o && !busy && onClose()}>
-      <DialogContent className="flex max-h-[94dvh] w-[96vw] max-w-[1320px] flex-col gap-0 overflow-hidden p-0 sm:max-w-[min(1320px,96vw)] [&>button]:!text-white">
+      <DialogContent className="flex max-h-[94dvh] w-[96vw] max-w-[1440px] flex-col gap-0 overflow-hidden p-0 sm:max-w-[min(1440px,96vw)] [&>button]:!text-white">
         <div className="flex-none bg-[#0B3D2E] px-5 pb-0 pt-3.5 pr-12 text-white">
           <div className="text-[9.5px] font-extrabold uppercase tracking-[.14em] text-[#C7F03F]">Bill discounting</div>
           <DialogTitle className="text-[16px] font-extrabold text-white">Interest refunds</DialogTitle>
@@ -219,84 +219,118 @@ export function BdRefunds({ bills, onClose, onDone }: { bills: Row[]; onClose: (
               </div>
 
               {!groups.length && <div className="rounded-[6px] border border-dashed border-[#C9DCCF] py-10 text-center text-[12.5px] font-semibold text-[#5A6B62]">No bill repaid before maturity with interest to come back.</div>}
-              {groups.map((g) => (
-                <div key={g.name} className="overflow-hidden rounded-[8px] border border-[#DCE6DC] bg-white">
-                  <div className="flex flex-wrap items-center gap-3 bg-[#F7FAF6] px-4 py-2.5">
-                    <span className="text-[13px] font-extrabold text-[#0A1F17]">{g.name}</span>
-                    <span className="text-[11px] font-semibold text-[#7A8C82]">
-                      {g.bills.length} bill{g.bills.length === 1 ? '' : 's'}
-                    </span>
-                    <span className="ml-auto text-right">
-                      <span className={cn(cap, 'block')}>Still due</span>
-                      <span className={cn('text-[14.5px] font-extrabold tabular-nums', sum(g.bills, 'due') > 0.5 ? 'text-[#B3261E]' : 'text-[#0B6B45]')}>{formatINR(sum(g.bills, 'due'))}</span>
-                    </span>
-                  </div>
-                  <div className="overflow-x-auto">
-                    <table className="w-full min-w-[820px] text-[12.5px]">
-                      <thead className="text-[9.5px] font-extrabold uppercase tracking-[.1em] text-[#7A8C82]">
-                        <tr className="border-t border-[#EEF3EE]">
-                          <th className="w-10 px-4 py-2 text-left" />
-                          <th className="px-2 py-2 text-left">Bill</th>
-                          <th className="px-2 py-2 text-left">Repaid early</th>
-                          <th className="px-2 py-2 text-right">To come back</th>
-                          <th className="px-2 py-2 text-right">Received</th>
-                          <th className="px-2 py-2 text-right">Still due</th>
-                          <th className="px-4 py-2 text-right">Map from this receipt</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {g.bills.map((b) => {
-                          const er = b.early_refund as Row
-                          const done = !(n(er.due) > 0.5)
-                          const on = picked[n(b.id)] != null
-                          return (
-                            <tr key={String(b.id)} className={cn('border-t border-[#F1F5F0]', on && 'bg-[#F3F9F1]', done && 'text-[#9AAAA0]')}>
+              {groups.length > 0 && (
+                <div className="overflow-x-auto rounded-[8px] border border-[#DCE6DC] bg-white">
+                  <table className="w-full min-w-[960px] text-[12.5px]">
+                    <thead className="bg-[#0B3D2E] text-[9.5px] font-extrabold uppercase tracking-[.1em] text-[#DCEFE4]">
+                      <tr>
+                        <th className="w-10 px-4 py-2.5" />
+                        <th className="px-2 py-2.5 text-left">Bill</th>
+                        <th className="px-2 py-2.5 text-left">Maturity</th>
+                        <th className="px-2 py-2.5 text-left">Repaid early</th>
+                        <th className="px-2 py-2.5 text-right">To come back</th>
+                        <th className="px-2 py-2.5 text-right">Received</th>
+                        <th className="px-2 py-2.5 text-right">Still due</th>
+                        <th className="px-4 py-2.5 text-right text-[#C7F03F]">Map from receipt</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {groups.map((g) => {
+                        const open = g.bills.filter((b) => n(b.early_refund.due) > 0.5)
+                        const allOn = open.length > 0 && open.every((b) => picked[n(b.id)] != null)
+                        return (
+                          <Fragment key={g.name}>
+                            {/* THE NBFC — tick all its bills at once; its totals. */}
+                            <tr className="border-t-[1.5px] border-[#C9DCCF] bg-[#F3F8F2]">
                               <td className="px-4 py-2">
-                                <input type="checkbox" disabled={done} checked={on} aria-label={`Map ${String(b.bd_no)}`} onChange={(e) => tick(b, e.target.checked)} />
+                                <input
+                                  type="checkbox"
+                                  disabled={!open.length}
+                                  checked={allOn}
+                                  aria-label={`Tick every bill of ${g.name}`}
+                                  onChange={(e) => open.forEach((b) => tick(b, e.target.checked))}
+                                />
                               </td>
-                              <td className="px-2 py-2">
-                                <span className="rounded-[4px] bg-[#0B3D2E] px-1.5 py-0.5 text-[11.5px] font-extrabold text-[#C7F03F]">{String(b.bd_no)}</span>
-                                <span className="ml-2 text-[11px] font-semibold text-[#7A8C82]">mat. {formatDate(String(er.maturity))}</span>
-                              </td>
-                              <td className="px-2 py-2">
-                                <span className="flex flex-wrap gap-1">
-                                  {(er.lines as Row[]).map((l, i) => (
-                                    <span key={i} className="whitespace-nowrap rounded-full border border-[#D6E2D6] bg-white px-2 py-0.5 text-[10.5px] font-bold tabular-nums text-[#33473E]" title={`${formatINR(n(l.amount))} repaid · ${n(l.days)} days left · ${formatINR(n(l.gross))}`}>
-                                      {formatDate(String(l.date))} · {n(l.days)}d
-                                    </span>
-                                  ))}
+                              <td colSpan={3} className="px-2 py-2">
+                                <span className="text-[12.5px] font-extrabold text-[#0A1F17]">{g.name}</span>
+                                <span className="ml-2 rounded-full bg-white px-2 py-0.5 text-[10.5px] font-bold text-[#5A6B62]">
+                                  {g.bills.length} bill{g.bills.length === 1 ? '' : 's'}
                                 </span>
                               </td>
-                              <td className="whitespace-nowrap px-2 py-2 text-right tabular-nums">{formatINR(n(er.gross))}</td>
-                              <td className="whitespace-nowrap px-2 py-2 text-right tabular-nums text-[#0B6B45]">{n(er.received) > 0.004 ? formatINR(n(er.received)) : '—'}</td>
-                              <td className="whitespace-nowrap px-2 py-2 text-right font-bold tabular-nums">
-                                {done ? (
-                                  <span className="inline-flex items-center gap-1 text-[#0B6B45]">
-                                    <CheckCircle2 className="h-3.5 w-3.5" /> received
-                                  </span>
-                                ) : (
-                                  <span className="text-[#B3261E]">{formatINR(n(er.due))}</span>
-                                )}
-                              </td>
-                              <td className="px-4 py-1.5 text-right">
-                                {on && (
-                                  <input
-                                    inputMode="decimal"
-                                    value={picked[n(b.id)]}
-                                    onChange={(e) => setPicked((p) => ({ ...p, [n(b.id)]: e.target.value.replace(/[^0-9.]/g, '') }))}
-                                    aria-label={`Amount for ${String(b.bd_no)}`}
-                                    className="h-8 w-[130px] rounded-[5px] border border-[#0B3D2E] bg-white px-2 text-right text-[12.5px] font-extrabold tabular-nums outline-none focus:ring-2 focus:ring-[#0B6B45]/20"
-                                  />
-                                )}
-                              </td>
+                              <td className="whitespace-nowrap px-2 py-2 text-right font-bold tabular-nums text-[#33473E]">{formatINR(sum(g.bills, 'gross'))}</td>
+                              <td className="whitespace-nowrap px-2 py-2 text-right font-bold tabular-nums text-[#0B6B45]">{sum(g.bills, 'received') > 0.004 ? formatINR(sum(g.bills, 'received')) : '—'}</td>
+                              <td className={cn('whitespace-nowrap px-2 py-2 text-right font-extrabold tabular-nums', sum(g.bills, 'due') > 0.5 ? 'text-[#B3261E]' : 'text-[#0B6B45]')}>{formatINR(sum(g.bills, 'due'))}</td>
+                              <td />
                             </tr>
-                          )
-                        })}
-                      </tbody>
-                    </table>
-                  </div>
+                            {g.bills.map((b) => {
+                              const er = b.early_refund as Row
+                              const done = !(n(er.due) > 0.5)
+                              const on = picked[n(b.id)] != null
+                              const lines = er.lines as Row[]
+                              const days = lines.map((l) => n(l.days))
+                              const repaid = lines.reduce((t, l) => t + n(l.amount), 0)
+                              return (
+                                <tr
+                                  key={String(b.id)}
+                                  onClick={(e) => {
+                                    if (done || (e.target as HTMLElement).closest('input')) return
+                                    tick(b, !on)
+                                  }}
+                                  className={cn('border-t border-[#F1F5F0]', done ? 'text-[#9AAAA0]' : 'cursor-pointer hover:bg-[#FAFCF9]', on && '!bg-[#EEF8E4]')}
+                                >
+                                  <td className="px-4 py-2">
+                                    <input type="checkbox" disabled={done} checked={on} aria-label={`Map ${String(b.bd_no)}`} onChange={(e) => tick(b, e.target.checked)} />
+                                  </td>
+                                  <td className="px-2 py-2">
+                                    <span className={cn('rounded-[4px] px-1.5 py-0.5 text-[11.5px] font-extrabold', done ? 'bg-[#EEF2EE] text-[#8CA396]' : 'bg-[#0B3D2E] text-[#C7F03F]')}>{String(b.bd_no)}</span>
+                                  </td>
+                                  <td className="whitespace-nowrap px-2 py-2 tabular-nums text-[#33473E]">{formatDate(String(er.maturity))}</td>
+                                  <td className="px-2 py-2">
+                                    {/* Summed up; every repayment is in the tooltip. */}
+                                    <span
+                                      className="whitespace-nowrap text-[12px] font-semibold tabular-nums text-[#33473E]"
+                                      title={lines.map((l) => `${formatDate(String(l.date))}: ${formatINR(n(l.amount))} · ${n(l.days)} days left · ${formatINR(n(l.gross))}`).join('\n')}
+                                    >
+                                      {formatINR(repaid)}
+                                      <span className="ml-1.5 rounded-full border border-[#D6E2D6] bg-white px-1.5 py-[1px] text-[10.5px] font-bold text-[#5A6B62]">
+                                        {lines.length === 1 ? `${formatDate(String(lines[0].date))} · ${days[0]}d` : `${lines.length} parts · ${Math.min(...days)}–${Math.max(...days)}d`}
+                                      </span>
+                                    </span>
+                                  </td>
+                                  <td className="whitespace-nowrap px-2 py-2 text-right tabular-nums">{formatINR(n(er.gross))}</td>
+                                  <td className="whitespace-nowrap px-2 py-2 text-right tabular-nums text-[#0B6B45]">{n(er.received) > 0.004 ? formatINR(n(er.received)) : '—'}</td>
+                                  <td className="whitespace-nowrap px-2 py-2 text-right font-bold tabular-nums">
+                                    {done ? (
+                                      <span className="inline-flex items-center gap-1 text-[#0B6B45]">
+                                        <CheckCircle2 className="h-3.5 w-3.5" /> received
+                                      </span>
+                                    ) : (
+                                      <span className="text-[#B3261E]">{formatINR(n(er.due))}</span>
+                                    )}
+                                  </td>
+                                  <td className="px-4 py-1.5 text-right">
+                                    {on ? (
+                                      <input
+                                        inputMode="decimal"
+                                        value={picked[n(b.id)]}
+                                        onChange={(e) => setPicked((p) => ({ ...p, [n(b.id)]: e.target.value.replace(/[^0-9.]/g, '') }))}
+                                        aria-label={`Amount for ${String(b.bd_no)}`}
+                                        className="h-8 w-[130px] rounded-[5px] border border-[#0B3D2E] bg-white px-2 text-right text-[12.5px] font-extrabold tabular-nums outline-none focus:ring-2 focus:ring-[#0B6B45]/20"
+                                      />
+                                    ) : (
+                                      <span className="text-[#C3D2C6]">—</span>
+                                    )}
+                                  </td>
+                                </tr>
+                              )
+                            })}
+                          </Fragment>
+                        )
+                      })}
+                    </tbody>
+                  </table>
                 </div>
-              ))}
+              )}
 
               {/* THE BANK RECEIPT the ticked bills came back by. */}
               {ticked.length > 0 && (
