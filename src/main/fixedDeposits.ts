@@ -110,7 +110,10 @@ function lienState(l: Row): { active: boolean; released_on: string | null; why: 
 }
 
 const LIEN_SQL = `SELECT f.*, l.lc_no, l.bank AS lc_bank, l.amount AS lc_amount, l.expiry_date AS lc_maturity,
-                         l.preclosed_date AS lc_closed, l.workflow_status AS lc_workflow
+                         l.preclosed_date AS lc_closed, l.workflow_status AS lc_workflow, l.margin_pct AS lc_margin_pct,
+                         ROUND(CASE WHEN COALESCE(l.margin_pct, 0) > 0 THEN l.amount * l.margin_pct / 100 +
+                           COALESCE((SELECT SUM(p.amount * (p.margin_pct - COALESCE(l.margin_pct, 0)) / 100) FROM lc_parts p
+                                      WHERE p.lc_id = l.id AND p.margin_pct IS NOT NULL), 0) ELSE l.amount END, 2) AS lc_margin
                     FROM fd_liens f LEFT JOIN letters_of_credit l ON l.id = f.lc_id`
 
 /** Every FD of the company, with its liens and where it stands today. */
@@ -121,10 +124,17 @@ export async function listFds(): Promise<Row[]> {
   const fds = toPlain(await c.execute({ sql: 'SELECT * FROM fixed_deposits WHERE company_id = ? AND active = 1 ORDER BY COALESCE(maturity_date, start_date), id', args: [cid] }))
   const liens = toPlain(await c.execute({ sql: `${LIEN_SQL} WHERE f.fd_id IN (SELECT id FROM fixed_deposits WHERE company_id = ?) ORDER BY f.marked_date, f.id`, args: [cid] }))
   const today = todayISO()
+  // Held on each LC across every FD, against its margin — over it, a lien is flagged.
+  const heldOnLc = new Map<number, number>()
+  for (const l of liens) if (lienState(l).active) heldOnLc.set(n(l.lc_id), round2((heldOnLc.get(n(l.lc_id)) || 0) + n(l.amount)))
   return fds.map((fd) => {
     const mine = liens
       .filter((l) => n(l.fd_id) === n(fd.id))
-      .map((l) => ({ ...l, ...lienState(l), amount: n(l.amount) }))
+      .map((l) => {
+        const st = lienState(l)
+        const over = st.active ? round2(Math.max(0, (heldOnLc.get(n(l.lc_id)) || 0) - n(l.lc_margin))) : 0
+        return { ...l, ...st, amount: n(l.amount), over }
+      })
     const held = round2(mine.filter((l) => l.active).reduce((t, l) => t + l.amount, 0))
     const m = iso(fd.maturity_date)
     const left = m ? daysBetween(today, m) : null
@@ -245,11 +255,58 @@ export async function addFdLien(v: { fd_id: number; lc_id: number; amount: numbe
     if (!lc) throw new Error('That LC no longer exists')
     if (n(lc.company_id) !== n(fd.company_id)) throw new Error('The LC is in another company')
     if (lc.preclosed_date || String(lc.workflow_status || '') === 'rejected') throw new Error(`${lc.lc_no || 'That LC'} is already closed`)
+    // NEVER MORE THAN THE LC'S MARGIN: the bank holds the margin, not the whole FD.
+    const need = await lcSecurityNeed(n(lc.id))
+    if (amount > need.left + 0.004) {
+      throw new Error(
+        `${lc.lc_no || 'The LC'} needs ${need.margin_pct}% margin = Rs ${need.margin.toFixed(2)}` +
+          (need.held > 0.004 ? `, Rs ${need.held.toFixed(2)} already held` : '') +
+          ` — at most Rs ${need.left.toFixed(2)} more can be put against it`
+      )
+    }
     const res = await getClient().execute({
       sql: 'INSERT INTO fd_liens (fd_id, lc_id, amount, marked_date, note) VALUES (?, ?, ?, ?, ?)',
       args: [n(fd.id), n(lc.id), amount, date, v.note ? String(v.note).trim() : null]
     })
     return { id: Number(res.lastInsertRowid) }
+  })
+}
+
+/**
+ * What an LC needs held as security: its margin (amount × margin %, parts with
+ * their own margin % adjusted as the LC register works it), what FD liens in
+ * force already hold for it, and what is left. No margin % set → the LC amount.
+ */
+export async function lcSecurityNeed(lcId: number): Promise<{ margin: number; margin_pct: number; held: number; left: number }> {
+  await ensureFd()
+  const l = (
+    await getClient().execute({
+      sql: `SELECT l.amount, l.margin_pct,
+                   COALESCE((SELECT SUM(p.amount * (p.margin_pct - COALESCE(l.margin_pct, 0)) / 100) FROM lc_parts p
+                              WHERE p.lc_id = l.id AND p.margin_pct IS NOT NULL), 0) AS parts_adj
+              FROM letters_of_credit l WHERE l.id = ?`,
+      args: [n(lcId)]
+    })
+  ).rows[0] as unknown as Row | undefined
+  if (!l) return { margin: 0, margin_pct: 0, held: 0, left: 0 }
+  const pct = n(l.margin_pct)
+  const margin = round2(pct > 0 ? (n(l.amount) * pct) / 100 + n(l.parts_adj) : n(l.amount))
+  const held = round2((await lcFdLiens(lcId)).filter((x) => x.active).reduce((t, x) => t + n(x.amount), 0))
+  return { margin, margin_pct: pct, held, left: round2(Math.max(0, margin - held)) }
+}
+
+/** Cut a lien down so the LC holds no more than its margin. */
+export async function trimFdLien(id: number): Promise<{ id: number; amount: number }> {
+  return withDbTransaction(async () => {
+    const l = (await getClient().execute({ sql: 'SELECT * FROM fd_liens WHERE id = ?', args: [n(id)] })).rows[0] as unknown as Row | undefined
+    if (!l) throw new Error('That lien no longer exists')
+    const need = await lcSecurityNeed(n(l.lc_id))
+    // What the others hold is need.held less this one; this one may keep the rest of the margin.
+    const keep = round2(Math.max(0, need.margin - (need.held - n(l.amount))))
+    if (keep >= n(l.amount) - 0.004) return { id: n(id), amount: n(l.amount) }
+    if (keep <= 0.004) await getClient().execute({ sql: 'DELETE FROM fd_liens WHERE id = ?', args: [n(id)] })
+    else await getClient().execute({ sql: 'UPDATE fd_liens SET amount = ? WHERE id = ?', args: [keep, n(id)] })
+    return { id: n(id), amount: keep }
   })
 }
 

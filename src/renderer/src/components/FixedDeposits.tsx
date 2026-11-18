@@ -306,7 +306,10 @@ export function FixedDeposits({ lcs, onCount, onOpenLc }: { lcs: Row[]; onCount?
                                   e.stopPropagation()
                                   onOpenLc?.(n(l.lc_id))
                                 }}
-                                className="inline-flex items-center gap-0.5 rounded-[3px] border border-[#C6DAF0] bg-[#F4F8FD] px-1.5 py-[1px] text-[10px] font-bold text-[#1B4E82] hover:border-[#1B4E82] hover:bg-[#EAF1FB]"
+                                className={cn(
+                                  'inline-flex items-center gap-0.5 rounded-[3px] border px-1.5 py-[1px] text-[10px] font-bold',
+                                  n(l.over) > 0.004 ? 'border-[#F0C9C4] bg-[#FDF3F2] text-[#B3261E]' : 'border-[#C6DAF0] bg-[#F4F8FD] text-[#1B4E82] hover:border-[#1B4E82] hover:bg-[#EAF1FB]'
+                                )}
                               >
                                 <Lock className="h-2.5 w-2.5" /> {String(l.lc_no || `LC #${l.lc_id}`)} <ArrowUpRight className="h-2.5 w-2.5" />
                               </button>
@@ -412,7 +415,10 @@ export function FixedDeposits({ lcs, onCount, onOpenLc }: { lcs: Row[]; onCount?
                                           </div>
                                         </td>
                                         <td className="whitespace-nowrap px-2 py-1.5 tabular-nums">{l.marked_date ? formatDate(String(l.marked_date)) : '—'}</td>
-                                        <td className="whitespace-nowrap px-2 py-1.5 text-right font-bold tabular-nums">{formatINR(n(l.amount))}</td>
+                                        <td className="whitespace-nowrap px-2 py-1.5 text-right font-bold tabular-nums">
+                                          {formatINR(n(l.amount))}
+                                          {n(l.over) > 0.004 && <span className="block text-[10px] font-extrabold text-[#B3261E]">{formatINR(n(l.over))} over the margin</span>}
+                                        </td>
                                         <td className="px-2 py-1.5">
                                           {l.active ? (
                                             <span className="inline-flex items-center gap-1 rounded-full border border-[#C6DAF0] bg-[#F4F8FD] px-2 py-0.5 text-[10.5px] font-extrabold text-[#1B4E82]">
@@ -426,6 +432,16 @@ export function FixedDeposits({ lcs, onCount, onOpenLc }: { lcs: Row[]; onCount?
                                           )}
                                         </td>
                                         <td className="whitespace-nowrap px-4 py-1.5 text-right">
+                                          {l.active && n(l.over) > 0.004 && (
+                                            <button
+                                              type="button"
+                                              title={`The LC needs ${formatINR(n(l.lc_margin))} margin — this holds ${formatINR(n(l.over))} more`}
+                                              onClick={() => void act(() => window.api.fd.trimLien(n(l.id)), `Lien trimmed to the LC's margin — ${formatINR(n(l.over))} freed`)}
+                                              className="mr-1 rounded-[4px] border border-[#F0C9C4] bg-[#FDF3F2] px-2 py-0.5 text-[11px] font-extrabold text-[#B3261E] hover:bg-[#FDECEA]"
+                                            >
+                                              Trim to margin
+                                            </button>
+                                          )}
                                           {l.active && (
                                             <button
                                               type="button"
@@ -659,6 +675,15 @@ export function FdMobile({ lcs, onData }: { lcs: Row[]; onData?: (list: Row[]) =
                               </div>
                             </div>
                             <span className={cn('font-extrabold tabular-nums', l.active ? 'text-[#1B4E82]' : 'text-[#8CA396]')}>{formatINR(n(l.amount))}</span>
+                            {l.active && n(l.over) > 0.004 && (
+                              <button
+                                type="button"
+                                onClick={() => void act(() => window.api.fd.trimLien(n(l.id)), `Lien trimmed to the LC's margin — ${formatINR(n(l.over))} freed`)}
+                                className="rounded-[4px] border border-[#F0C9C4] bg-[#FDF3F2] px-2 py-1 text-[11px] font-extrabold text-[#B3261E]"
+                              >
+                                Trim
+                              </button>
+                            )}
                             {l.active && (
                               <button
                                 type="button"
@@ -900,6 +925,25 @@ export function LienDialog({ init, fds, lcs, onClose, onSaved }: { init: Row; fd
   const [v, setV] = useState<Row>(init)
   const [busy, setBusy] = useState(false)
   const fd = fds.find((x) => n(x.id) === n(v.fd_id))
+  // What the LC still needs held (its margin less liens in force) — the amount fills with it.
+  const [need, setNeed] = useState<{ margin: number; margin_pct: number; held: number; left: number } | null>(null)
+  useEffect(() => {
+    if (!n(v.lc_id)) return setNeed(null)
+    let live = true
+    window.api.fd
+      .lcNeed(n(v.lc_id))
+      .then((x) => live && setNeed(x))
+      .catch(() => live && setNeed(null))
+    return () => {
+      live = false
+    }
+  }, [v.lc_id])
+  useEffect(() => {
+    if (!need) return
+    const free = fd ? n(fd.free_amount) : need.left
+    setV((p) => ({ ...p, amount: String(r2(Math.min(need.left, free))) }))
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [need, v.fd_id])
   const usable = fds.filter((x) => x.status !== 'closed' && x.status !== 'matured' && n(x.free_amount) > 0.004)
   const open = lcs.filter(lcOpen)
   async function save(): Promise<void> {
@@ -965,13 +1009,32 @@ export function LienDialog({ init, fds, lcs, onClose, onSaved }: { init: Row; fd
             <div>
               <span className={lbl}>Amount held</span>
               <input inputMode="decimal" value={String(v.amount ?? '')} onChange={(e) => setV((p) => ({ ...p, amount: e.target.value.replace(/[^0-9.]/g, '') }))} className={cn(inp, 'text-right tabular-nums')} />
-              {fd && <span className="mt-1 block text-[10.5px] font-semibold text-[#7A8C82]">{formatINR(n(fd.free_amount))} of {formatINR(n(fd.amount))} free</span>}
+              {fd && <span className="mt-1 block text-[10.5px] font-semibold text-[#7A8C82]">{formatINR(n(fd.free_amount))} of {formatINR(n(fd.amount))} free on the FD</span>}
             </div>
             <div>
               <span className={lbl}>Marked on</span>
               <DatePicker value={String(v.date || '')} onChange={(x) => x && setV((p) => ({ ...p, date: x }))} />
             </div>
           </div>
+          {need && (
+            <div className="grid grid-cols-3 overflow-hidden rounded-[6px] border border-[#DCE6DC] text-[12px]">
+              {[
+                ['LC margin', `${need.margin_pct ? `${need.margin_pct}% · ` : ''}${formatINR(need.margin)}`, 'text-[#0A1F17]'],
+                ['Already held', formatINR(need.held), 'text-[#1B4E82]'],
+                ['Still needed', formatINR(need.left), need.left > 0.004 ? 'text-[#0B6B45]' : 'text-[#9AAFA2]']
+              ].map(([k, val, tone], i) => (
+                <div key={k} className={cn('px-3 py-2', i > 0 && 'border-l border-[#EEF3EE]')}>
+                  <div className="text-[9.5px] font-extrabold uppercase tracking-[.1em] text-[#7A8C82]">{k}</div>
+                  <div className={cn('font-extrabold tabular-nums', tone)}>{val}</div>
+                </div>
+              ))}
+            </div>
+          )}
+          {need && n(v.amount) > need.left + 0.004 && (
+            <div className="rounded-[5px] border border-[#F0C9C4] bg-[#FDF3F2] px-3 py-2 text-[11.5px] font-bold text-[#B3261E]">
+              More than the LC needs — at most {formatINR(need.left)}
+            </div>
+          )}
           <div className="rounded-[5px] border border-[#C6DAF0] bg-[#F4F8FD] px-3 py-2 text-[11.5px] font-semibold text-[#1B4E82]">
             The amount is frozen on the FD until the LC is repaid, preclosed or rejected — then it frees itself. Release it here any time the bank frees it earlier.
           </div>
@@ -983,7 +1046,7 @@ export function LienDialog({ init, fds, lcs, onClose, onSaved }: { init: Row; fd
           <button
             type="button"
             data-ctrl-a
-            disabled={busy || !v.fd_id || !v.lc_id || !(n(v.amount) > 0)}
+            disabled={busy || !v.fd_id || !v.lc_id || !(n(v.amount) > 0) || (!!need && n(v.amount) > need.left + 0.004)}
             onClick={() => void save()}
             className="flex h-9 items-center gap-1.5 rounded-[5px] bg-[#0B3D2E] px-5 text-[12px] font-extrabold text-[#C7F03F] hover:bg-[#0F4A38] disabled:opacity-50"
           >

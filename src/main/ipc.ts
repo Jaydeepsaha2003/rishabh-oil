@@ -1923,12 +1923,14 @@ export function registerIpc(): void {
   // Fixed deposits, and the liens that hold them against LCs (fixedDeposits.ts).
   handle('fd:list', async () => (await import('./fixedDeposits')).listFds())
   handle('fdLc:list', async (_e, { lcId }: { lcId: number }) => (await import('./fixedDeposits')).lcFdLiens(Number(lcId)))
+  handle('fdNeed:list', async (_e, { lcId }: { lcId: number }) => (await import('./fixedDeposits')).lcSecurityNeed(Number(lcId)))
   handle('fd:save', async (_e, { values }: { values: Row }) => (await import('./fixedDeposits')).saveFd(values))
   handle('fd:close', async (_e, { id, values }: { id: number; values: Row }) => (await import('./fixedDeposits')).closeFd(Number(id), values))
   handle('fd:reopen', async (_e, { id }: { id: number }) => (await import('./fixedDeposits')).reopenFd(Number(id)))
   handle('fd:delete', async (_e, { id }: { id: number }) => (await import('./fixedDeposits')).deleteFd(Number(id)))
   handle('fd:addLien', async (_e, { values }: { values: Row }) => (await import('./fixedDeposits')).addFdLien(values as never))
   handle('fd:releaseLien', async (_e, { id, date }: { id: number; date?: string }) => (await import('./fixedDeposits')).releaseFdLien(Number(id), date))
+  handle('fd:trimLien', async (_e, { id }: { id: number }) => (await import('./fixedDeposits')).trimFdLien(Number(id)))
   handle('fd:deleteLien', async (_e, { id }: { id: number }) => (await import('./fixedDeposits')).deleteFdLien(Number(id)))
   // Interest refunds: one NBFC bank receipt mapped over several bills.
   handle('bdRefunds:list', async () => (await import('./billDiscounting')).listBdRefunds())

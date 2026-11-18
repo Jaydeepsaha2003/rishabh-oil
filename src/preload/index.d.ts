@@ -659,6 +659,7 @@ export interface Api {
   fd: {
     list: () => Promise<Row[]>
     lcLiens: (lcId: number) => Promise<Row[]>
+    lcNeed: (lcId: number) => Promise<{ margin: number; margin_pct: number; held: number; left: number }>
     save: (values: Row) => Promise<{ id: number }>
     close: (id: number, values: Row) => Promise<{ id: number }>
     reopen: (id: number) => Promise<{ id: number }>
@@ -666,6 +667,7 @@ export interface Api {
     addLien: (values: { fd_id: number; lc_id: number; amount: number; date?: string; note?: string }) => Promise<{ id: number }>
     releaseLien: (id: number, date?: string) => Promise<{ id: number }>
     deleteLien: (id: number) => Promise<{ id: number }>
+    trimLien: (id: number) => Promise<{ id: number; amount: number }>
   }
   billDiscounting: {
     refundDues: () => Promise<Record<string, number>>

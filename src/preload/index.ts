@@ -967,13 +967,15 @@ const api = {
   fd: {
     list: (): Promise<Row[]> => ipcRenderer.invoke('fd:list'),
     lcLiens: (lcId: number): Promise<Row[]> => ipcRenderer.invoke('fdLc:list', { lcId }),
+    lcNeed: (lcId: number): Promise<{ margin: number; margin_pct: number; held: number; left: number }> => ipcRenderer.invoke('fdNeed:list', { lcId }),
     save: (values: Row): Promise<{ id: number }> => ipcRenderer.invoke('fd:save', { values }),
     close: (id: number, values: Row): Promise<{ id: number }> => ipcRenderer.invoke('fd:close', { id, values }),
     reopen: (id: number): Promise<{ id: number }> => ipcRenderer.invoke('fd:reopen', { id }),
     remove: (id: number): Promise<{ id: number }> => ipcRenderer.invoke('fd:delete', { id }),
     addLien: (values: { fd_id: number; lc_id: number; amount: number; date?: string; note?: string }): Promise<{ id: number }> => ipcRenderer.invoke('fd:addLien', { values }),
     releaseLien: (id: number, date?: string): Promise<{ id: number }> => ipcRenderer.invoke('fd:releaseLien', { id, date }),
-    deleteLien: (id: number): Promise<{ id: number }> => ipcRenderer.invoke('fd:deleteLien', { id })
+    deleteLien: (id: number): Promise<{ id: number }> => ipcRenderer.invoke('fd:deleteLien', { id }),
+    trimLien: (id: number): Promise<{ id: number; amount: number }> => ipcRenderer.invoke('fd:trimLien', { id })
   },
   billDiscounting: {
     refundDues: (): Promise<Record<string, number>> => ipcRenderer.invoke('bd:refundDues'),
