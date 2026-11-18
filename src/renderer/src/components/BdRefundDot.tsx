@@ -85,8 +85,8 @@ export function BdRefundDot({ refund }: { refund: Row }): React.JSX.Element {
                 <span className="font-bold tabular-nums">− {formatINR(n(refund.received))}</span>
               </div>
               <div className="flex justify-between text-[12px]">
-                <span className={back ? 'font-extrabold text-[#0B6B45]' : 'font-extrabold text-[#B3261E]'}>Still due</span>
-                <span className={back ? 'font-extrabold tabular-nums text-[#0B6B45]' : 'font-extrabold tabular-nums text-[#B3261E]'}>{back ? 'nil' : formatINR(n(refund.due))}</span>
+                <span className="font-extrabold text-[#0B6B45]">Still due</span>
+                <span className="font-extrabold tabular-nums text-[#0B6B45]">{back ? 'nil' : formatINR(n(refund.due))}</span>
               </div>
             </>
           )}

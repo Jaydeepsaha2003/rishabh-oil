@@ -227,7 +227,7 @@ export function BdRefunds({ bills, onClose, onDone }: { bills: Row[]; onClose: (
                     <div className="flex flex-wrap items-center gap-x-6 gap-y-3 rounded-[8px] border border-[#DCE6DC] bg-white px-5 py-3.5">
                       <div>
                         <div className={cap}>Still due</div>
-                        <div className={cn('text-[24px] font-extrabold tabular-nums tracking-[-0.02em]', sum(shown, 'due') > 0.5 ? 'text-[#B3261E]' : 'text-[#0B6B45]')}>{formatINR(sum(shown, 'due'))}</div>
+                        <div className={cn('text-[24px] font-extrabold tabular-nums tracking-[-0.02em]', 'text-[#0B6B45]')}>{formatINR(sum(shown, 'due'))}</div>
                       </div>
                       <div className="min-w-[220px] flex-1">
                         <div className="flex justify-between text-[11px] font-bold tabular-nums">
@@ -302,7 +302,7 @@ export function BdRefunds({ bills, onClose, onDone }: { bills: Row[]; onClose: (
                               </td>
                               <td className="whitespace-nowrap px-2 py-2 text-right font-bold tabular-nums text-[#33473E]">{formatINR(sum(g.bills, 'gross'))}</td>
                               <td className="whitespace-nowrap px-2 py-2 text-right font-bold tabular-nums text-[#0B6B45]">{sum(g.bills, 'received') > 0.004 ? formatINR(sum(g.bills, 'received')) : '—'}</td>
-                              <td className={cn('whitespace-nowrap px-2 py-2 text-right font-extrabold tabular-nums', sum(g.bills, 'due') > 0.5 ? 'text-[#B3261E]' : 'text-[#0B6B45]')}>{formatINR(sum(g.bills, 'due'))}</td>
+                              <td className={cn('whitespace-nowrap px-2 py-2 text-right font-extrabold tabular-nums', 'text-[#0B6B45]')}>{formatINR(sum(g.bills, 'due'))}</td>
                               <td />
                             </tr>
                             {g.bills.map((b) => {
@@ -355,7 +355,7 @@ export function BdRefunds({ bills, onClose, onDone }: { bills: Row[]; onClose: (
                                         <CheckCircle2 className="h-3.5 w-3.5" /> received
                                       </span>
                                     ) : (
-                                      <span className="text-[#B3261E]">{formatINR(n(er.due))}</span>
+                                      <span className="text-[#0B6B45]">{formatINR(n(er.due))}</span>
                                     )}
                                   </td>
                                   <td className="px-4 py-1.5 text-right">
