@@ -35,8 +35,10 @@ import {
   SlidersHorizontal,
   Trash2,
   Users,
-  Undo2
+  Undo2,
+  PiggyBank
 } from 'lucide-react'
+import { FixedDeposits, LcFdSecurity } from '@/components/FixedDeposits'
 import { RefundReceived } from '@/components/RefundReceived'
 import { ChargeRows, chargeRowsFrom, chargeRowsPayload, chargeRowsProblem, chargeRowsTotal, type ChargeRow } from '@/components/ChargeRows'
 import { Badge } from '@/components/ui/badge'
@@ -1373,7 +1375,9 @@ function TreasuryDesk({ onCompanyChange, focusLcId, focusBdId, onFocusHandled }:
       [
         { key: 'lc', module: 'treasuryLc', label: 'Letters of Credit' },
         { key: 'bd', module: 'treasuryBd', label: 'Bill Discounting' },
-        { key: 'tracker', module: 'treasuryTracker', label: 'Payment Tracker' }
+        { key: 'tracker', module: 'treasuryTracker', label: 'Payment Tracker' },
+        // FDs secure LCs, so the LC grant shows them.
+        { key: 'fd', module: 'treasuryLc', label: 'Fixed Deposits' }
       ].filter((t) => !sessionUser || canAccess(sessionUser, t.module)),
     [sessionUser]
   )
@@ -1384,7 +1388,7 @@ function TreasuryDesk({ onCompanyChange, focusLcId, focusBdId, onFocusHandled }:
   // Explicitly a string: Tabs' onValueChange hands back a plain string, and
   // letting the restore narrow this to a union makes setTab unassignable to it.
   const [tab, setTab] = useState<string>(() =>
-    readView(TREASURY_VIEW_KEY, 'tab', ['lc', 'bd', 'tracker'] as const, 'lc')
+    readView(TREASURY_VIEW_KEY, 'tab', ['lc', 'bd', 'tracker', 'fd'] as const, 'lc')
   )
   useEffect(() => {
     writeView(TREASURY_VIEW_KEY, { tab })
@@ -1398,6 +1402,14 @@ function TreasuryDesk({ onCompanyChange, focusLcId, focusBdId, onFocusHandled }:
   }, [TREASURY_TABS, tab])
   const [lcs, setLcs] = useState<Row[]>([])
   const [bills, setBills] = useState<Row[]>([])
+  // FDs held (not closed) — the count on the Fixed deposits tab.
+  const [fdCount, setFdCount] = useState(0)
+  useEffect(() => {
+    window.api.fd
+      .list()
+      .then((r) => setFdCount(r.filter((x) => x.status !== 'closed').length))
+      .catch(() => undefined)
+  }, [])
   const [alerts, setAlerts] = useState<Row | null>(null)
   const [suppliers, setSuppliers] = useState<Row[]>([])
   const [customers, setCustomers] = useState<Row[]>([])
@@ -3134,7 +3146,7 @@ function TreasuryDesk({ onCompanyChange, focusLcId, focusBdId, onFocusHandled }:
           {/* The lender in view scopes the register below it. On the LC tab
               that is a BANK — it also drives the facility limit and which bank
               a new LC opens at. On Bill Discounting it is an NBFC. */}
-          {tab === 'tracker' ? null : tab === 'bd' ? (
+          {tab === 'tracker' || tab === 'fd' ? null : tab === 'bd' ? (
             <>
               <span className="whitespace-nowrap text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
                 Active NBFC
@@ -3198,9 +3210,9 @@ function TreasuryDesk({ onCompanyChange, focusLcId, focusBdId, onFocusHandled }:
         <div className="flex flex-none flex-wrap items-stretch border-b border-b-[#D6E2D6] bg-white px-5">
           {TREASURY_TABS.map((t) => {
             const on = tab === t.key
-            const Icon = t.key === 'lc' ? Landmark : t.key === 'bd' ? FileText : CalendarClock
+            const Icon = t.key === 'lc' ? Landmark : t.key === 'bd' ? FileText : t.key === 'fd' ? PiggyBank : CalendarClock
             const count =
-              t.key === 'lc' ? lcs.length : t.key === 'bd' ? bills.length : tracker.filter((x) => !x.settled).length
+              t.key === 'lc' ? lcs.length : t.key === 'bd' ? bills.length : t.key === 'fd' ? fdCount : tracker.filter((x) => !x.settled).length
             return (
               <button
                 key={t.key}
@@ -3212,7 +3224,7 @@ function TreasuryDesk({ onCompanyChange, focusLcId, focusBdId, onFocusHandled }:
                 )}
               >
                 <Icon className={cn('h-[19px] w-[19px]', on ? 'text-[#0B3D2E]' : 'text-[#A8B8AE]')} />
-                {__WEB__ ? t.label.replace(/\bof Credit\b/, 'of credit').replace(/\bDiscounting\b/, 'discounting').replace(/\bTracker\b/, 'tracker') : t.label}
+                {__WEB__ ? t.label.replace(/\bof Credit\b/, 'of credit').replace(/\bDiscounting\b/, 'discounting').replace(/\bTracker\b/, 'tracker').replace(/\bDeposits\b/, 'deposits') : t.label}
                 <span
                   className={cn(
                     'rounded-[2px] px-[7px] py-[3px] font-mono text-[11px] font-bold tabular-nums',
@@ -3251,6 +3263,10 @@ function TreasuryDesk({ onCompanyChange, focusLcId, focusBdId, onFocusHandled }:
               ))}
             </div>
           )}
+
+          <TabsContent value="fd" className={cn('mt-4', __WEB__ && '!mt-0')}>
+            {tab === 'fd' && <FixedDeposits lcs={lcs} onCount={setFdCount} />}
+          </TabsContent>
 
           <TabsContent value="tracker" className={cn('mt-4', __WEB__ && '!mt-0')}>
             <PaymentTracker
@@ -7320,6 +7336,8 @@ function TreasuryDesk({ onCompanyChange, focusLcId, focusBdId, onFocusHandled }:
                       />
                     </div>
                   </LcPanel>
+                  {/* The FDs held as security for this LC (Fixed deposits tab). */}
+                  {__WEB__ && <LcFdSecurity lc={dRow} lcs={lcs} />}
                   {/* THE BANK'S COMMISSION AS CHARGED — at every stage from
                       Application on (banks often debit it at opening): the
                       voucher it came out by, linked, against what it should
