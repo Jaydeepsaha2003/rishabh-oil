@@ -656,6 +656,17 @@ export interface Api {
     unreconcile: (lineId: number) => Promise<{ id: number }>
     setSubEntry: (lineId: number, values: Row) => Promise<{ id: number }>
   }
+  fd: {
+    list: () => Promise<Row[]>
+    lcLiens: (lcId: number) => Promise<Row[]>
+    save: (values: Row) => Promise<{ id: number }>
+    close: (id: number, values: Row) => Promise<{ id: number }>
+    reopen: (id: number) => Promise<{ id: number }>
+    remove: (id: number) => Promise<{ id: number }>
+    addLien: (values: { fd_id: number; lc_id: number; amount: number; date?: string; note?: string }) => Promise<{ id: number }>
+    releaseLien: (id: number, date?: string) => Promise<{ id: number }>
+    deleteLien: (id: number) => Promise<{ id: number }>
+  }
   billDiscounting: {
     refundDues: () => Promise<Record<string, number>>
     refundTotals: () => Promise<Record<string, { booked: number; refunded: number; due: number }>>

@@ -964,6 +964,17 @@ const api = {
     setSubEntry: (lineId: number, values: Row): Promise<{ id: number }> =>
       ipcRenderer.invoke('bankRecon:setSubEntry', { lineId, values })
   },
+  fd: {
+    list: (): Promise<Row[]> => ipcRenderer.invoke('fd:list'),
+    lcLiens: (lcId: number): Promise<Row[]> => ipcRenderer.invoke('fdLc:list', { lcId }),
+    save: (values: Row): Promise<{ id: number }> => ipcRenderer.invoke('fd:save', { values }),
+    close: (id: number, values: Row): Promise<{ id: number }> => ipcRenderer.invoke('fd:close', { id, values }),
+    reopen: (id: number): Promise<{ id: number }> => ipcRenderer.invoke('fd:reopen', { id }),
+    remove: (id: number): Promise<{ id: number }> => ipcRenderer.invoke('fd:delete', { id }),
+    addLien: (values: { fd_id: number; lc_id: number; amount: number; date?: string; note?: string }): Promise<{ id: number }> => ipcRenderer.invoke('fd:addLien', { values }),
+    releaseLien: (id: number, date?: string): Promise<{ id: number }> => ipcRenderer.invoke('fd:releaseLien', { id, date }),
+    deleteLien: (id: number): Promise<{ id: number }> => ipcRenderer.invoke('fd:deleteLien', { id })
+  },
   billDiscounting: {
     refundDues: (): Promise<Record<string, number>> => ipcRenderer.invoke('bd:refundDues'),
     refundTotals: (): Promise<Record<string, { booked: number; refunded: number; due: number }>> => ipcRenderer.invoke('bd:refundTotals'),

@@ -79,6 +79,8 @@ const CHANNEL_RULES: Record<string, Rule> = {
   // sections now, resolved per call in accountsRule below — a freight bill by
   // its side, a note by its type.
   lc: { module: 'treasuryLc', label: 'Letters of Credit' },
+  // FDs are the LC desk's security, so they answer to the same grant.
+  fd: { module: 'treasuryLc', label: 'Fixed deposits' },
   bd: { module: 'treasuryBd', label: 'Bill Discounting' },
   billDiscounts: { module: 'treasuryBd', label: 'Bill discounts' },
   production: { module: 'production', label: 'Production', table: 'production', dateCol: 'prod_date' },
