@@ -2,6 +2,7 @@ import { Fragment, useEffect, useState } from 'react'
 import { toast } from 'sonner'
 import { CheckCircle2, ChevronDown, Loader2, Trash2 } from 'lucide-react'
 import { formatDate, formatINR } from '@/lib/format'
+import { DatePicker } from '@/components/ui/date-picker'
 import { cn } from '@/lib/utils'
 
 // PAYMENTS MADE through Pay cumulative interest (listBdCumulativePayments):
@@ -32,7 +33,12 @@ function DiffChip({ diff, big }: { diff: number; big?: boolean }): React.JSX.Ele
 const periodsOf = (g: Row): string[] => [...new Set((g.bills as Row[]).map((b) => `${formatDate(String(b.from_date))} → ${formatDate(String(b.to_date))}`))]
 
 export function BdCumulativePayments({ nbfcId }: { nbfcId: number | null }): React.JSX.Element {
-  const [list, setList] = useState<Row[] | null>(null)
+  const [raw, setRaw] = useState<Row[] | null>(null)
+  // Which payments: all, one month, or a date range (by the day paid).
+  const [per, setPer] = useState<'all' | 'month' | 'range'>('all')
+  const [month, setMonth] = useState(new Date().toISOString().slice(0, 7))
+  const [pFrom, setPFrom] = useState('')
+  const [pTo, setPTo] = useState('')
   const [open, setOpen] = useState<Set<number>>(new Set())
   const [rev, setRev] = useState(0)
   const [deleting, setDeleting] = useState<number | null>(null)
@@ -60,12 +66,12 @@ It is one voucher for ${bills.map((b) => b.bd_no).join(', ')} — the payment on
   }
   useEffect(() => {
     let live = true
-    setList(null)
+    setRaw(null)
     window.api.billDiscounting
       .cumulativePayments(nbfcId)
       .then((r) => {
         if (!live) return
-        setList(r)
+        setRaw(r)
         // The newest opens by itself; the rest wait for a click.
         setOpen(new Set(r.length ? [n(r[0].journal_entry_id)] : []))
       })
@@ -75,19 +81,25 @@ It is one voucher for ${bills.map((b) => b.bd_no).join(', ')} — the payment on
     }
   }, [nbfcId, rev])
 
-  if (list == null)
+  if (raw == null)
     return (
       <div className="flex justify-center py-10">
         <Loader2 className="h-5 w-5 animate-spin text-[#8CA396]" />
       </div>
     )
-  if (!list.length)
+  if (!raw.length)
     return (
       <div className="rounded-[6px] border border-dashed border-[#C9DCCF] py-10 text-center text-[12.5px] font-semibold text-[#5A6B62]">
         No payment made through Pay cumulative interest{nbfcId ? ' with this NBFC' : ''} yet.
       </div>
     )
 
+  const list = raw.filter((g) => {
+    const d = String(g.paid_date || '').slice(0, 10)
+    if (per === 'month') return d.slice(0, 7) === month
+    if (per === 'range') return (!pFrom || d >= pFrom) && (!pTo || d <= pTo)
+    return true
+  })
   // Only what is still open: each bill's days counted once, on their latest payment.
   const bills = list.flatMap((g) => g.bills as Row[])
   const short = bills.reduce((t, b) => t + Math.min(0, n(b.diff)), 0)
@@ -101,6 +113,55 @@ It is one voucher for ${bills.map((b) => b.bd_no).join(', ')} — the payment on
     })
   return (
     <div className="space-y-3">
+      {/* PERIOD — by the day each payment was made. */}
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="text-[10px] font-extrabold uppercase tracking-[.1em] text-[#5A6B62]">Paid in</span>
+        <span className="flex h-9 rounded-[4px] border border-[#C9DCCF] bg-white p-0.5">
+          {(
+            [
+              ['all', 'All'],
+              ['month', 'Month'],
+              ['range', 'Date range']
+            ] as const
+          ).map(([k, label]) => (
+            <button
+              key={k}
+              type="button"
+              onClick={() => setPer(k)}
+              className={cn('rounded-[3px] px-3 text-[12px] font-extrabold', per === k ? 'bg-[#0B3D2E] text-white' : 'text-[#33473E] hover:bg-[#F0F8F3]')}
+            >
+              {label}
+            </button>
+          ))}
+        </span>
+        {per === 'month' && (
+          <input
+            type="month"
+            value={month}
+            onChange={(e) => e.target.value && setMonth(e.target.value)}
+            aria-label="Month"
+            className="h-9 rounded-[4px] border border-[#C9DCCF] bg-white px-2.5 text-[13px] font-semibold"
+          />
+        )}
+        {per === 'range' && (
+          <>
+            <div className="w-[150px]">
+              <DatePicker value={pFrom} max={pTo || undefined} onChange={(x) => setPFrom(String(x || ''))} placeholder="From" />
+            </div>
+            <span className="text-[11px] font-bold text-[#5A6B62]">to</span>
+            <div className="w-[150px]">
+              <DatePicker value={pTo} min={pFrom || undefined} onChange={(x) => setPTo(String(x || ''))} placeholder="To" />
+            </div>
+          </>
+        )}
+        <span className="text-[11.5px] font-semibold text-[#7A8C82]">
+          {list.length} of {raw.length} voucher{raw.length === 1 ? '' : 's'}
+        </span>
+      </div>
+      {list.length === 0 ? (
+        <div className="rounded-[6px] border border-dashed border-[#C9DCCF] py-10 text-center text-[12.5px] font-semibold text-[#5A6B62]">No payment in this period.</div>
+      ) : (
+      <>
       <div className="grid grid-cols-2 overflow-hidden rounded-[6px] border border-[#DCE6DC] bg-white lg:grid-cols-4">
         {[
           { k: 'Vouchers', v: String(list.length), sub: `${bills.length} bill payment${bills.length === 1 ? '' : 's'}`, tone: 'text-[#0A1F17]' },
@@ -303,6 +364,8 @@ It is one voucher for ${bills.map((b) => b.bd_no).join(', ')} — the payment on
           </tfoot>
         </table>
       </div>
+      </>
+      )}
     </div>
   )
 }
