@@ -66,7 +66,7 @@ import { PaymentTrackerMobile, trackerHeadline } from '@/components/PaymentTrack
 import { canAccess } from '@/lib/modules'
 import { loadUser } from '@/lib/session'
 import { adjKindsLabel, adjPostsTo } from '@/components/AdjChargePicker'
-import { FdMobile } from '@/components/FixedDeposits'
+import { FdMobile, LcFdSecurity } from '@/components/FixedDeposits'
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Row = Record<string, any>
@@ -1841,6 +1841,7 @@ export function TreasuryMobile({
       {detail && detailRow && detail.kind === 'lc' && (
         <LcDetail
           l={detailRow}
+          lcs={lcs}
           acts={lcActions(detailRow)}
           onClose={() => setDetail(null)}
           onEdit={() => {
@@ -2621,12 +2622,14 @@ function ServicedSchedule({ id }: { id: number }): React.JSX.Element | null {
 
 function LcDetail({
   l,
+  lcs,
   acts,
   onClose,
   onEdit,
   onDelete
 }: {
   l: Row
+  lcs: Row[]
   acts: { primary: { label: string; kind: string; go: () => void }; second?: { label: string; kind: string; go: () => void } }
   onClose: () => void
   onEdit: () => void
@@ -2820,6 +2823,8 @@ function LcDetail({
           ))}
         </div>
       </Panel>
+      {/* The FDs held as security for this LC, with Assign FD. */}
+      <LcFdSecurity lc={l} lcs={lcs} />
 
       <Panel
         title="Every movement"
