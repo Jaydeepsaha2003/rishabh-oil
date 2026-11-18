@@ -255,6 +255,23 @@ export function LcCommissionLink({
                     Use bank rate {bankPct}%
                   </button>
                 )}
+                {/* What the bank actually took, as a % of the LC — beside the rate it should be. */}
+                {got != null && pctOf(got, lcAmt) != null && (
+                  <div
+                    className="flex h-10 items-center gap-1.5 rounded-[6px] border border-[#D6E2D6] bg-[#F7FAF6] px-3"
+                    title={`${formatINR(got)} charged on ${formatINR(lcAmt)}`}
+                  >
+                    <span className="text-[9.5px] font-extrabold uppercase tracking-[.1em] text-[#5A6B62]">Charged</span>
+                    <span
+                      className={cn(
+                        'text-[16px] font-extrabold tabular-nums',
+                        Math.abs((pctOf(got, lcAmt) as number) - (Number(pct) || 0)) < 0.00005 ? 'text-[#0B6B45]' : (pctOf(got, lcAmt) as number) > (Number(pct) || 0) ? 'text-[#B3261E]' : 'text-[#8A5300]'
+                      )}
+                    >
+                      {pctOf(got, lcAmt)}%
+                    </span>
+                  </div>
+                )}
               </div>
             </div>
             <div className="ml-auto min-w-0 text-right">
