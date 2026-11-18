@@ -87,6 +87,24 @@ export function TallyBankCheck({
   // LC side's, or the generic BANK A/C.
   const [own, setOwn] = useState<{ chosen: boolean; banks: Row[] }>({ chosen: false, banks: [] })
   const [managing, setManaging] = useState(false)
+  // The bank cards: up/down with nothing focused drop into the list on the
+  // bank in view (or the first); then up/down walk it and Enter picks.
+  const bankListRef = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent): void => {
+      if (!['ArrowUp', 'ArrowDown'].includes(e.key) || e.altKey || e.ctrlKey || e.metaKey) return
+      const list = bankListRef.current
+      // Only when nothing has focus — arrows already used elsewhere (a table, a box) stay theirs.
+      const ae = document.activeElement
+      if (!list || (ae && ae !== document.body)) return
+      const cards = Array.from(list.querySelectorAll<HTMLButtonElement>(':scope > button:not([disabled])'))
+      if (!cards.length) return
+      e.preventDefault()
+      ;(cards.find((b) => b.dataset.on === '1') || cards[0]).focus()
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [])
   // "Break down" on a line not here yet: book it from Tally, then open the new
   // voucher on its lines' breakdown (break this figure down, Dr or Cr).
   const splitAfterBook = useRef(false)
@@ -780,7 +798,7 @@ ${pairs.map((x) => String(x.own?.code || '')).join(', ')} stay, and match Tally'
                       ))}
                   </div>
                 ) : (
-                  <div className="grid gap-1.5" onKeyDown={arrowsThroughButtons}>
+                  <div ref={bankListRef} className="grid gap-1.5" onKeyDown={arrowsThroughButtons}>
                     {[
                       // Banks with a Tally book uploaded come first, and always
                       // show — even one not ticked as a business account here.
@@ -791,6 +809,7 @@ ${pairs.map((x) => String(x.own?.code || '')).join(', ')} stay, and match Tally'
                         key={b.id}
                         type="button"
                         onClick={() => pickBank(Number(b.id))}
+                        data-on={Number(b.id) === bankId ? '1' : undefined}
                         className="flex items-center gap-2.5 rounded-[5px] border px-3 py-2 text-left transition-colors hover:border-[#8FBFA8] hover:bg-[#F4FBF6] focus-visible:bg-[#F4FBF6] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#0B6B45]/40"
                         style={{ borderColor: Number(b.id) === bankId ? '#0B6B45' : '#D6E2D6' }}
                       >
