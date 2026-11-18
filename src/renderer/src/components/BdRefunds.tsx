@@ -1,11 +1,12 @@
 import { Fragment, useEffect, useMemo, useState } from 'react'
 import { toast } from 'sonner'
-import { CheckCircle2, Link2, Loader2, Search, Undo2, Unlink, X } from 'lucide-react'
+import { CheckCircle2, ChevronDown, Link2, Loader2, Search, Undo2, Unlink, X } from 'lucide-react'
 import { Dialog, DialogContent, DialogTitle } from '@/components/ui/dialog'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { DatePicker } from '@/components/ui/date-picker'
 import { formatDate, formatINR } from '@/lib/format'
 import { cn } from '@/lib/utils'
+import { HelpTip } from '@/components/ui/tooltip'
 
 // INTEREST REFUNDS (billDiscounting.ts earlyRefund / linkBdRefund): what each
 // NBFC owes back on bills repaid before maturity, and the bank receipt it came
@@ -30,6 +31,15 @@ export function BdRefunds({ bills, onClose, onDone }: { bills: Row[]; onClose: (
   const [busy, setBusy] = useState(false)
   const [got, setGot] = useState<Row[] | null>(null)
   const [rev, setRev] = useState(0)
+  // Bills whose legs (each early repayment and its interest) are open.
+  const [legs, setLegs] = useState<Set<number>>(new Set())
+  const flip = (id: number): void =>
+    setLegs((p) => {
+      const x = new Set(p)
+      if (x.has(id)) x.delete(id)
+      else x.add(id)
+      return x
+    })
 
   // Every bill with interest to come back, by NBFC.
   const all = useMemo(() => bills.filter((b) => b.early_refund), [bills])
@@ -185,10 +195,10 @@ export function BdRefunds({ bills, onClose, onDone }: { bills: Row[]; onClose: (
         ) : (
           <>
             <div className="min-h-0 flex-1 space-y-3 overflow-y-auto px-3 py-3 sm:px-5 sm:py-4">
-              <div className="flex flex-wrap items-center gap-2">
+              <div className="flex flex-wrap items-center gap-2 rounded-[8px] border border-[#DCE6DC] bg-[#F7FAF6] px-3 py-2.5">
                 <span className={cap}>NBFC</span>
                 <Select value={nbfc} onValueChange={setNbfc}>
-                  <SelectTrigger className="h-9 w-[300px]">
+                  <SelectTrigger className="h-9 w-[280px] bg-white text-[12.5px] font-bold">
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent className="max-h-64">
@@ -200,20 +210,22 @@ export function BdRefunds({ bills, onClose, onDone }: { bills: Row[]; onClose: (
                     ))}
                   </SelectContent>
                 </Select>
-                <span className="text-[11.5px] font-semibold text-[#5A6B62]">Interest taken upfront on bills repaid before maturity — tick the bills one bank receipt covers.</span>
+                <HelpTip
+                  className="ml-1"
+                  text="Interest the NBFC took upfront to maturity, on bills repaid early: each repayment frees the interest on the days left. Tick the bills one bank receipt covers, pick the receipt (already in the books), set each bill's share and map it. Open a bill's legs with the arrow on its repayments."
+                />
               </div>
 
               <div className="grid grid-cols-2 overflow-hidden rounded-[6px] border border-[#DCE6DC] bg-white lg:grid-cols-4">
                 {[
-                  { k: 'Bills', v: String(shown.filter((b) => n(b.early_refund.due) > 0.5).length), sub: `${shown.length} repaid early`, tone: 'text-[#0A1F17]' },
-                  { k: 'To come back', v: formatINR(sum(shown, 'gross')), sub: 'interest on the days not used', tone: 'text-[#0A1F17]' },
-                  { k: 'Received', v: formatINR(sum(shown, 'received')), sub: 'mapped to bank receipts', tone: 'text-[#0B6B45]' },
-                  { k: 'Still due', v: formatINR(sum(shown, 'due')), sub: 'from the NBFC', tone: sum(shown, 'due') > 0.5 ? 'text-[#B3261E]' : 'text-[#9AAFA2]' }
+                  { k: 'Bills', v: String(shown.filter((b) => n(b.early_refund.due) > 0.5).length), tone: 'text-[#0A1F17]' },
+                  { k: 'To come back', v: formatINR(sum(shown, 'gross')), tone: 'text-[#0A1F17]' },
+                  { k: 'Received', v: formatINR(sum(shown, 'received')), tone: 'text-[#0B6B45]' },
+                  { k: 'Still due', v: formatINR(sum(shown, 'due')), tone: sum(shown, 'due') > 0.5 ? 'text-[#B3261E]' : 'text-[#9AAFA2]' }
                 ].map((t, i) => (
                   <div key={t.k} className={cn('min-w-0 px-4 py-3', i % 2 === 1 && 'border-l border-[#EEF3EE]', i >= 2 && 'border-t border-[#EEF3EE] lg:border-t-0', i === 2 && 'lg:border-l')}>
                     <div className={cap}>{t.k}</div>
                     <div className={cn('mt-0.5 truncate text-[19px] font-bold tabular-nums tracking-[-0.02em]', t.tone)}>{t.v}</div>
-                    <div className="truncate text-[11px] font-semibold text-[#7A8C82]">{t.sub}</div>
                   </div>
                 ))}
               </div>
@@ -270,8 +282,8 @@ export function BdRefunds({ bills, onClose, onDone }: { bills: Row[]; onClose: (
                               const days = lines.map((l) => n(l.days))
                               const repaid = lines.reduce((t, l) => t + n(l.amount), 0)
                               return (
+                                <Fragment key={String(b.id)}>
                                 <tr
-                                  key={String(b.id)}
                                   onClick={(e) => {
                                     if (done || (e.target as HTMLElement).closest('input')) return
                                     tick(b, !on)
@@ -286,16 +298,23 @@ export function BdRefunds({ bills, onClose, onDone }: { bills: Row[]; onClose: (
                                   </td>
                                   <td className="whitespace-nowrap px-2 py-2 tabular-nums text-[#33473E]">{formatDate(String(er.maturity))}</td>
                                   <td className="px-2 py-2">
-                                    {/* Summed up; every repayment is in the tooltip. */}
-                                    <span
-                                      className="whitespace-nowrap text-[12px] font-semibold tabular-nums text-[#33473E]"
-                                      title={lines.map((l) => `${formatDate(String(l.date))}: ${formatINR(n(l.amount))} · ${n(l.days)} days left · ${formatINR(n(l.gross))}`).join('\n')}
+                                    {/* Summed up; the arrow opens each leg underneath. */}
+                                    <button
+                                      type="button"
+                                      onClick={(e) => {
+                                        e.stopPropagation()
+                                        flip(n(b.id))
+                                      }}
+                                      aria-expanded={legs.has(n(b.id))}
+                                      title="Show each repayment and its interest"
+                                      className="inline-flex items-center whitespace-nowrap text-[12px] font-semibold tabular-nums text-[#33473E]"
                                     >
                                       {formatINR(repaid)}
-                                      <span className="ml-1.5 rounded-full border border-[#D6E2D6] bg-white px-1.5 py-[1px] text-[10.5px] font-bold text-[#5A6B62]">
+                                      <span className={cn('ml-1.5 inline-flex items-center gap-1 rounded-full border px-1.5 py-[1px] text-[10.5px] font-bold', legs.has(n(b.id)) ? 'border-[#0B3D2E] bg-[#0B3D2E] text-[#C7F03F]' : 'border-[#D6E2D6] bg-white text-[#5A6B62] hover:border-[#8FBFA8]')}>
                                         {lines.length === 1 ? `${formatDate(String(lines[0].date))} · ${days[0]}d` : `${lines.length} parts · ${Math.min(...days)}–${Math.max(...days)}d`}
+                                        <ChevronDown className={cn('h-3 w-3 transition-transform', legs.has(n(b.id)) && 'rotate-180')} />
                                       </span>
-                                    </span>
+                                    </button>
                                   </td>
                                   <td className="whitespace-nowrap px-2 py-2 text-right tabular-nums">{formatINR(n(er.gross))}</td>
                                   <td className="whitespace-nowrap px-2 py-2 text-right tabular-nums text-[#0B6B45]">{n(er.received) > 0.004 ? formatINR(n(er.received)) : '—'}</td>
@@ -322,6 +341,54 @@ export function BdRefunds({ bills, onClose, onDone }: { bills: Row[]; onClose: (
                                     )}
                                   </td>
                                 </tr>
+                                {legs.has(n(b.id)) && (
+                                  <tr className="bg-[#F7FAF6]">
+                                    <td />
+                                    <td colSpan={7} className="px-2 pb-2.5 pt-0.5">
+                                      <div className="overflow-hidden rounded-[6px] border border-[#DCE6DC] bg-white">
+                                        <table className="w-full text-[11.5px]">
+                                          <thead className="bg-[#FAFCF9] text-[9px] font-extrabold uppercase tracking-[.1em] text-[#7A8C82]">
+                                            <tr>
+                                              <th className="px-3 py-1.5 text-left">Leg</th>
+                                              <th className="px-2 py-1.5 text-left">Repaid on</th>
+                                              <th className="px-2 py-1.5 text-right">Amount</th>
+                                              <th className="px-2 py-1.5 text-right">Days left</th>
+                                              <th className="px-2 py-1.5 text-left">Working</th>
+                                              <th className="px-3 py-1.5 text-right">Interest</th>
+                                            </tr>
+                                          </thead>
+                                          <tbody>
+                                            {lines.map((l, i) => (
+                                              <tr key={i} className="border-t border-[#F1F5F0]">
+                                                <td className="px-3 py-1.5">
+                                                  <span className="inline-flex h-5 min-w-[20px] items-center justify-center rounded-full bg-[#E9F5EE] px-1.5 text-[10.5px] font-extrabold text-[#0B6B45]">{i + 1}</span>
+                                                </td>
+                                                <td className="whitespace-nowrap px-2 py-1.5 font-semibold tabular-nums text-[#0A1F17]">{formatDate(String(l.date))}</td>
+                                                <td className="whitespace-nowrap px-2 py-1.5 text-right tabular-nums">{formatINR(n(l.amount))}</td>
+                                                <td className="px-2 py-1.5 text-right tabular-nums">{n(l.days)}</td>
+                                                <td className="whitespace-nowrap px-2 py-1.5 tabular-nums text-[#7A8C82]">
+                                                  {formatINR(n(l.amount))} × {n(er.rate)}% × {n(l.days)} ÷ {n(er.days_year)}
+                                                </td>
+                                                <td className="whitespace-nowrap px-3 py-1.5 text-right font-bold tabular-nums text-[#0A1F17]">{formatINR(n(l.gross))}</td>
+                                              </tr>
+                                            ))}
+                                          </tbody>
+                                          <tfoot>
+                                            <tr className="border-t border-[#DCE6DC] bg-[#FAFCF9] font-extrabold">
+                                              <td colSpan={2} className="px-3 py-1.5 text-[10px] uppercase tracking-[.08em] text-[#5A6B62]">
+                                                {lines.length} leg{lines.length === 1 ? '' : 's'}
+                                              </td>
+                                              <td className="whitespace-nowrap px-2 py-1.5 text-right tabular-nums">{formatINR(repaid)}</td>
+                                              <td colSpan={2} />
+                                              <td className="whitespace-nowrap px-3 py-1.5 text-right tabular-nums">{formatINR(n(er.gross))}</td>
+                                            </tr>
+                                          </tfoot>
+                                        </table>
+                                      </div>
+                                    </td>
+                                  </tr>
+                                )}
+                                </Fragment>
                               )
                             })}
                           </Fragment>
@@ -410,7 +477,7 @@ export function BdRefunds({ bills, onClose, onDone }: { bills: Row[]; onClose: (
                     )}
                   </>
                 ) : (
-                  'Tick the bills one bank receipt covers.'
+                  null
                 )}
               </span>
               {ticked.length > 0 && (
