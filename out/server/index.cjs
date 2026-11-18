@@ -13827,6 +13827,7 @@ __export(billDiscounting_exports, {
   deleteBdRepayment: () => deleteBdRepayment,
   deleteLastBdPartyPayment: () => deleteLastBdPartyPayment,
   deleteLastBdReceiptPart: () => deleteLastBdReceiptPart,
+  editBdCumulativePayment: () => editBdCumulativePayment,
   editBdRepayment: () => editBdRepayment,
   linkBdRefund: () => linkBdRefund,
   listAllBdParties: () => listAllBdParties,
@@ -15367,6 +15368,70 @@ function shortSpans(paid, A, worked) {
     return { ...s6, due, short: round29(Math.max(0, due - s6.paid)) };
   });
 }
+async function editBdCumulativePayment(v) {
+  return withDbTransaction(async () => {
+    const c = getClient();
+    const eid = n16(v.entry_id);
+    const rows2 = toPlain13(
+      await c.execute({
+        sql: `SELECT p.*, b.bd_no, b.tds_pct, b.company_id, b.nbfc_id FROM bd_interest_payments p JOIN bill_discountings b ON b.id = p.bd_id
+               WHERE p.journal_entry_id = ? ORDER BY p.id`,
+        args: [eid]
+      })
+    );
+    if (!rows2.length) throw new Error("That payment no longer exists");
+    const date = String(v.paid_date || rows2[0].paid_date || "").slice(0, 10);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) throw new Error("Pick the payment date");
+    if (date > todayISO6()) throw new Error("The payment cannot be dated in the future");
+    const note = String(v.note ?? "").trim();
+    if (!note) throw new Error("Write a note \u2014 it goes into the voucher narration");
+    const lines = toPlain13(
+      await c.execute({
+        sql: `SELECT a.name, a.acc_group, jl.dr, jl.cr FROM journal_lines jl JOIN ledger_accounts a ON a.id = jl.account_id WHERE jl.entry_id = ? ORDER BY jl.id`,
+        args: [eid]
+      })
+    );
+    const oldBank = String((lines.find((l) => n16(l.cr) > 0 && /bank/i.test(String(l.acc_group || ""))) || {}).name || rows2[0].bank_account || "");
+    const oldTds = lines.find((l) => n16(l.cr) > 0 && !/bank/i.test(String(l.acc_group || "")));
+    const bank = String(v.bank_account || "").trim() || oldBank;
+    if (!bank) throw new Error("Pick the bank the interest was paid from");
+    const tdsLedger = String(v.tds_ledger || "").trim() || String(oldTds?.name || "TDS ON INTEREST PAYABLE A/C");
+    const tdsGroup = String(
+      (await c.execute({ sql: "SELECT acc_group FROM ledger_accounts WHERE name = ?", args: [tdsLedger] })).rows[0]?.acc_group || "Duties & Taxes"
+    );
+    const upd = rows2.map((r) => {
+      const typed = v.amounts && String(v.amounts[String(r.id)] ?? "").trim() !== "" ? round29(n16(v.amounts[String(r.id)])) : n16(r.gross);
+      if (!(typed > 4e-3)) throw new Error(`${r.bd_no}: the interest paid must be more than nil \u2014 delete the payment instead`);
+      const tds2 = round29(typed * n16(r.tds_pct) / 100);
+      return { r, gross: typed, tds: tds2, net: round29(typed - tds2) };
+    });
+    const gross = round29(upd.reduce((t, x) => t + x.gross, 0));
+    const tds = round29(upd.reduce((t, x) => t + x.tds, 0));
+    const net = round29(gross - tds);
+    const nos = rows2.map((r) => String(r.bd_no)).join(", ");
+    const nb = (await c.execute({ sql: "SELECT name FROM nbfcs WHERE id = ?", args: [n16(rows2[0].nbfc_id)] })).rows[0];
+    const to = rows2.map((r) => String(r.to_date).slice(0, 10)).sort().pop();
+    await repostJournal(eid, {
+      date,
+      vchType: "PAYMENT",
+      vchNo: nos.slice(0, 60),
+      narration: `Bill Discounting interest to ${to} paid to ${nb?.name || "the NBFC"} on ${rows2.length} bill${rows2.length === 1 ? "" : "s"} (${nos}) \u2014 ${inr(gross)}` + (tds > 4e-3 ? `, TDS ${inr(tds)} withheld` : "") + ` \xB7 ${note}`,
+      companyId: n16(rows2[0].company_id) || void 0,
+      lines: [
+        { account: "INTEREST ON BILL DISCOUNTING A/C", group: "Indirect Expenses", dr: gross },
+        ...tds > 4e-3 ? [{ account: tdsLedger, group: tdsGroup, cr: tds }] : [],
+        { account: bank, group: "Bank Accounts", cr: net }
+      ]
+    });
+    for (const x of upd) {
+      await c.execute({
+        sql: "UPDATE bd_interest_payments SET gross = ?, tds = ?, net = ?, paid_date = ?, bank_account = ? WHERE id = ?",
+        args: [x.gross, x.tds, x.net, date, bank, n16(x.r.id)]
+      });
+    }
+    return { entry_id: eid, gross, tds, net };
+  });
+}
 async function listBdCumulativePayments(nbfcId) {
   const rows2 = toPlain13(
     await getClient().execute({
@@ -15426,6 +15491,7 @@ async function listBdCumulativePayments(nbfcId) {
         vch_no: r.vch_no || "",
         paid_date: String(r.paid_date || "").slice(0, 10),
         nbfc_name: r.nbfc_name || "",
+        nbfc_id: n16(r.nbfc_id),
         bank: r.bank_account || "",
         narration: r.narration || "",
         bills: [],
@@ -45129,6 +45195,10 @@ function registerIpc() {
   handle(
     "bdCumPayments:list",
     async (_e, { nbfcId }) => (await Promise.resolve().then(() => (init_billDiscounting(), billDiscounting_exports))).listBdCumulativePayments(nbfcId)
+  );
+  handle(
+    "bd:editCumulativeInterest",
+    async (_e, { values }) => (await Promise.resolve().then(() => (init_billDiscounting(), billDiscounting_exports))).editBdCumulativePayment(values)
   );
   handle(
     "bd:payCumulativeInterest",
