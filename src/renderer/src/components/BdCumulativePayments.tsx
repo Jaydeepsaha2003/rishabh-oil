@@ -1,6 +1,6 @@
 import { Fragment, useEffect, useState } from 'react'
 import { toast } from 'sonner'
-import { CheckCircle2, ChevronDown, Loader2, Pencil, Trash2 } from 'lucide-react'
+import { CheckCircle2, ChevronDown, Loader2, Pencil, Trash2, Wallet } from 'lucide-react'
 import { formatDate, formatINR } from '@/lib/format'
 import { DatePicker } from '@/components/ui/date-picker'
 import { Dialog, DialogContent, DialogTitle } from '@/components/ui/dialog'
@@ -30,7 +30,16 @@ function DiffChip({ diff, big }: { diff: number; big?: boolean }): React.JSX.Ele
 
 const periodsOf = (g: Row): string[] => [...new Set((g.bills as Row[]).map((b) => `${formatDate(String(b.from_date))} → ${formatDate(String(b.to_date))}`))]
 
-export function BdCumulativePayments({ nbfcId, toolbar }: { nbfcId: number | null; toolbar?: React.ReactNode }): React.JSX.Element {
+export function BdCumulativePayments({
+  nbfcId,
+  toolbar,
+  onPayBalance
+}: {
+  nbfcId: number | null
+  toolbar?: React.ReactNode
+  // Open Pay interest on these days for this NBFC — a short bill then offers just its balance.
+  onPayBalance?: (v: { nbfc_id: number; from: string; to: string }) => void
+}): React.JSX.Element {
   const [raw, setRaw] = useState<Row[] | null>(null)
   // Which payments: all, one month, or a date range (by the day paid).
   const [per, setPer] = useState<'all' | 'month' | 'range'>('all')
@@ -179,15 +188,15 @@ It is one voucher for ${bills.map((b) => b.bd_no).join(', ')} — the payment on
       <>
       <div className="grid grid-cols-2 overflow-hidden rounded-[6px] border border-[#DCE6DC] bg-white lg:grid-cols-4">
         {[
-          { k: 'Vouchers', v: String(list.length), sub: `${bills.length} bill payment${bills.length === 1 ? '' : 's'}`, tone: 'text-[#0A1F17]' },
+          { k: 'Vouchers', v: String(list.length), sub: `${bills.length} bill${bills.length === 1 ? '' : 's'}`, tone: 'text-[#0A1F17]' },
           { k: 'Paid out of the bank', v: formatINR(list.reduce((t, g) => t + n(g.net), 0)), sub: `interest ${formatINR(list.reduce((t, g) => t + n(g.gross), 0))}`, tone: 'text-[#0B6B45]' },
-          { k: 'Shortfall still open', v: formatINR(Math.abs(short)), sub: 'less paid than worked out', tone: short < -0.5 ? 'text-[#B3261E]' : 'text-[#9AAFA2]' },
-          { k: 'Excess', v: formatINR(over), sub: 'more paid than worked out', tone: over > 0.5 ? 'text-[#7A4B00]' : 'text-[#9AAFA2]' }
+          { k: 'Shortfall still open', v: formatINR(Math.abs(short)), sub: '', tone: short < -0.5 ? 'text-[#B3261E]' : 'text-[#9AAFA2]' },
+          { k: 'Excess', v: formatINR(over), sub: '', tone: over > 0.5 ? 'text-[#7A4B00]' : 'text-[#9AAFA2]' }
         ].map((t, i) => (
           <div key={t.k} className={cn('min-w-0 px-4 py-3', i % 2 === 1 && 'border-l border-[#EEF3EE]', i >= 2 && 'border-t border-[#EEF3EE] lg:border-t-0', i === 2 && 'lg:border-l')}>
             <div className="text-[9.5px] font-extrabold uppercase tracking-[.13em] text-[#7A8C82]">{t.k}</div>
             <div className={cn('mt-0.5 truncate text-[19px] font-bold tabular-nums tracking-[-0.02em]', t.tone)}>{t.v}</div>
-            <div className="truncate text-[11px] font-semibold text-[#7A8C82]">{t.sub}</div>
+            {t.sub && <div className="truncate text-[11px] font-semibold text-[#7A8C82]">{t.sub}</div>}
           </div>
         ))}
       </div>
@@ -255,6 +264,24 @@ It is one voucher for ${bills.map((b) => b.bd_no).join(', ')} — the payment on
                       </span>
                     </td>
                     <td className="whitespace-nowrap px-3 py-2.5 text-right">
+                      {(() => {
+                        const shortBill = (g.bills as Row[]).find((b) => n(b.diff) < -0.5)
+                        if (!shortBill || !onPayBalance) return null
+                        return (
+                          <button
+                            type="button"
+                            title="Pay what is still short on these days"
+                            aria-label="Pay balance"
+                            onClick={(e) => {
+                              e.stopPropagation()
+                              onPayBalance({ nbfc_id: n(g.nbfc_id), from: String(shortBill.from_date), to: String(shortBill.to_date) })
+                            }}
+                            className="mr-1 inline-flex h-8 items-center gap-1 rounded-[5px] border border-[#F0C9C4] bg-white px-2 text-[11px] font-extrabold text-[#B3261E] hover:bg-[#FDECEA]"
+                          >
+                            <Wallet className="h-3.5 w-3.5" /> Pay balance
+                          </button>
+                        )
+                      })()}
                       <button
                         type="button"
                         title="Edit this payment — amounts, date, bank, TDS ledger, note"
@@ -336,7 +363,18 @@ It is one voucher for ${bills.map((b) => b.bd_no).join(', ')} — the payment on
                               </td>
                               <td className="px-4 py-2.5 text-right">
                                 {b.latest ? (
-                                  <DiffChip diff={n(b.diff)} />
+                                  <span className="inline-flex flex-col items-end gap-1">
+                                    <DiffChip diff={n(b.diff)} />
+                                    {n(b.diff) < -0.5 && onPayBalance && (
+                                      <button
+                                        type="button"
+                                        onClick={() => onPayBalance({ nbfc_id: n(g.nbfc_id), from: String(b.from_date), to: String(b.to_date) })}
+                                        className="inline-flex items-center gap-1 rounded-[4px] border border-[#F0C9C4] bg-white px-2 py-0.5 text-[10.5px] font-extrabold text-[#B3261E] hover:bg-[#FDECEA]"
+                                      >
+                                        <Wallet className="h-3 w-3" /> Pay balance
+                                      </button>
+                                    )}
+                                  </span>
                                 ) : (
                                   <span className="inline-flex flex-col items-end">
                                     <span className="inline-flex items-center gap-1 whitespace-nowrap rounded-full border border-[#BFE3CB] bg-[#E9F5EE] px-2 py-0.5 text-[10.5px] font-extrabold text-[#0B6B45]">

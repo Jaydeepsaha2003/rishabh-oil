@@ -2556,6 +2556,7 @@ export async function listBdCumulativePayments(nbfcId?: number | null): Promise<
         vch_no: r.vch_no || '',
         paid_date: String(r.paid_date || '').slice(0, 10),
         nbfc_name: r.nbfc_name || '',
+        nbfc_id: n(r.nbfc_id),
         bank: r.bank_account || '',
         narration: r.narration || '',
         bills: [],

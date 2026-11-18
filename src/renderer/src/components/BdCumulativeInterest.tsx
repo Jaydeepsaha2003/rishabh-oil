@@ -223,6 +223,14 @@ export function BdCumulativeInterest({ open, onClose, nbfcs, onDone }: { open: b
           <div className="min-h-0 flex-1 space-y-3 overflow-y-auto px-3 py-3 sm:px-5 sm:py-4">
             <BdCumulativePayments
               nbfcId={nbfc ? Number(nbfc) : null}
+              onPayBalance={(v) => {
+                // To the Pay tab on exactly those days: a short bill offers its balance.
+                setNbfc(String(v.nbfc_id))
+                setMode('range')
+                setFrom(v.from)
+                setTo(v.to)
+                setTab('pay')
+              }}
               toolbar={
                 <span className="flex items-center gap-2">
                   <span className="text-[10px] font-extrabold uppercase tracking-[.1em] text-[#5A6B62]">NBFC</span>
