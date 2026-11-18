@@ -32910,10 +32910,12 @@ __export(fixedDeposits_exports, {
   deleteFd: () => deleteFd,
   deleteFdLien: () => deleteFdLien,
   lcFdLiens: () => lcFdLiens,
+  lcSecurityNeed: () => lcSecurityNeed,
   listFds: () => listFds,
   releaseFdLien: () => releaseFdLien,
   reopenFd: () => reopenFd,
-  saveFd: () => saveFd
+  saveFd: () => saveFd,
+  trimFdLien: () => trimFdLien
 });
 function toPlain41(res) {
   return res.rows.map((r) => {
@@ -33000,8 +33002,14 @@ async function listFds() {
   const fds = toPlain41(await c.execute({ sql: "SELECT * FROM fixed_deposits WHERE company_id = ? AND active = 1 ORDER BY COALESCE(maturity_date, start_date), id", args: [cid] }));
   const liens = toPlain41(await c.execute({ sql: `${LIEN_SQL} WHERE f.fd_id IN (SELECT id FROM fixed_deposits WHERE company_id = ?) ORDER BY f.marked_date, f.id`, args: [cid] }));
   const today = todayISO();
+  const heldOnLc = /* @__PURE__ */ new Map();
+  for (const l of liens) if (lienState(l).active) heldOnLc.set(n58(l.lc_id), round228((heldOnLc.get(n58(l.lc_id)) || 0) + n58(l.amount)));
   return fds.map((fd) => {
-    const mine = liens.filter((l) => n58(l.fd_id) === n58(fd.id)).map((l) => ({ ...l, ...lienState(l), amount: n58(l.amount) }));
+    const mine = liens.filter((l) => n58(l.fd_id) === n58(fd.id)).map((l) => {
+      const st = lienState(l);
+      const over = st.active ? round228(Math.max(0, (heldOnLc.get(n58(l.lc_id)) || 0) - n58(l.lc_margin))) : 0;
+      return { ...l, ...st, amount: n58(l.amount), over };
+    });
     const held = round228(mine.filter((l) => l.active).reduce((t, l) => t + l.amount, 0));
     const m = iso(fd.maturity_date);
     const left = m ? daysBetween7(today, m) : null;
@@ -33109,11 +33117,44 @@ async function addFdLien(v) {
     if (!lc) throw new Error("That LC no longer exists");
     if (n58(lc.company_id) !== n58(fd.company_id)) throw new Error("The LC is in another company");
     if (lc.preclosed_date || String(lc.workflow_status || "") === "rejected") throw new Error(`${lc.lc_no || "That LC"} is already closed`);
+    const need = await lcSecurityNeed(n58(lc.id));
+    if (amount2 > need.left + 4e-3) {
+      throw new Error(
+        `${lc.lc_no || "The LC"} needs ${need.margin_pct}% margin = Rs ${need.margin.toFixed(2)}` + (need.held > 4e-3 ? `, Rs ${need.held.toFixed(2)} already held` : "") + ` \u2014 at most Rs ${need.left.toFixed(2)} more can be put against it`
+      );
+    }
     const res = await getClient().execute({
       sql: "INSERT INTO fd_liens (fd_id, lc_id, amount, marked_date, note) VALUES (?, ?, ?, ?, ?)",
       args: [n58(fd.id), n58(lc.id), amount2, date, v.note ? String(v.note).trim() : null]
     });
     return { id: Number(res.lastInsertRowid) };
+  });
+}
+async function lcSecurityNeed(lcId) {
+  await ensureFd();
+  const l = (await getClient().execute({
+    sql: `SELECT l.amount, l.margin_pct,
+                   COALESCE((SELECT SUM(p.amount * (p.margin_pct - COALESCE(l.margin_pct, 0)) / 100) FROM lc_parts p
+                              WHERE p.lc_id = l.id AND p.margin_pct IS NOT NULL), 0) AS parts_adj
+              FROM letters_of_credit l WHERE l.id = ?`,
+    args: [n58(lcId)]
+  })).rows[0];
+  if (!l) return { margin: 0, margin_pct: 0, held: 0, left: 0 };
+  const pct = n58(l.margin_pct);
+  const margin = round228(pct > 0 ? n58(l.amount) * pct / 100 + n58(l.parts_adj) : n58(l.amount));
+  const held = round228((await lcFdLiens(lcId)).filter((x) => x.active).reduce((t, x) => t + n58(x.amount), 0));
+  return { margin, margin_pct: pct, held, left: round228(Math.max(0, margin - held)) };
+}
+async function trimFdLien(id) {
+  return withDbTransaction(async () => {
+    const l = (await getClient().execute({ sql: "SELECT * FROM fd_liens WHERE id = ?", args: [n58(id)] })).rows[0];
+    if (!l) throw new Error("That lien no longer exists");
+    const need = await lcSecurityNeed(n58(l.lc_id));
+    const keep = round228(Math.max(0, need.margin - (need.held - n58(l.amount))));
+    if (keep >= n58(l.amount) - 4e-3) return { id: n58(id), amount: n58(l.amount) };
+    if (keep <= 4e-3) await getClient().execute({ sql: "DELETE FROM fd_liens WHERE id = ?", args: [n58(id)] });
+    else await getClient().execute({ sql: "UPDATE fd_liens SET amount = ? WHERE id = ?", args: [keep, n58(id)] });
+    return { id: n58(id), amount: keep };
   });
 }
 async function releaseFdLien(id, date) {
@@ -33149,7 +33190,10 @@ var init_fixedDeposits = __esm({
     daysBetween7 = (a, b) => Math.round(((/* @__PURE__ */ new Date(`${b}T00:00:00`)).getTime() - (/* @__PURE__ */ new Date(`${a}T00:00:00`)).getTime()) / 864e5);
     ready7 = false;
     LIEN_SQL = `SELECT f.*, l.lc_no, l.bank AS lc_bank, l.amount AS lc_amount, l.expiry_date AS lc_maturity,
-                         l.preclosed_date AS lc_closed, l.workflow_status AS lc_workflow
+                         l.preclosed_date AS lc_closed, l.workflow_status AS lc_workflow, l.margin_pct AS lc_margin_pct,
+                         ROUND(CASE WHEN COALESCE(l.margin_pct, 0) > 0 THEN l.amount * l.margin_pct / 100 +
+                           COALESCE((SELECT SUM(p.amount * (p.margin_pct - COALESCE(l.margin_pct, 0)) / 100) FROM lc_parts p
+                                      WHERE p.lc_id = l.id AND p.margin_pct IS NOT NULL), 0) ELSE l.amount END, 2) AS lc_margin
                     FROM fd_liens f LEFT JOIN letters_of_credit l ON l.id = f.lc_id`;
   }
 });
@@ -45181,12 +45225,14 @@ function registerIpc() {
   );
   handle("fd:list", async () => (await Promise.resolve().then(() => (init_fixedDeposits(), fixedDeposits_exports))).listFds());
   handle("fdLc:list", async (_e, { lcId }) => (await Promise.resolve().then(() => (init_fixedDeposits(), fixedDeposits_exports))).lcFdLiens(Number(lcId)));
+  handle("fdNeed:list", async (_e, { lcId }) => (await Promise.resolve().then(() => (init_fixedDeposits(), fixedDeposits_exports))).lcSecurityNeed(Number(lcId)));
   handle("fd:save", async (_e, { values }) => (await Promise.resolve().then(() => (init_fixedDeposits(), fixedDeposits_exports))).saveFd(values));
   handle("fd:close", async (_e, { id, values }) => (await Promise.resolve().then(() => (init_fixedDeposits(), fixedDeposits_exports))).closeFd(Number(id), values));
   handle("fd:reopen", async (_e, { id }) => (await Promise.resolve().then(() => (init_fixedDeposits(), fixedDeposits_exports))).reopenFd(Number(id)));
   handle("fd:delete", async (_e, { id }) => (await Promise.resolve().then(() => (init_fixedDeposits(), fixedDeposits_exports))).deleteFd(Number(id)));
   handle("fd:addLien", async (_e, { values }) => (await Promise.resolve().then(() => (init_fixedDeposits(), fixedDeposits_exports))).addFdLien(values));
   handle("fd:releaseLien", async (_e, { id, date }) => (await Promise.resolve().then(() => (init_fixedDeposits(), fixedDeposits_exports))).releaseFdLien(Number(id), date));
+  handle("fd:trimLien", async (_e, { id }) => (await Promise.resolve().then(() => (init_fixedDeposits(), fixedDeposits_exports))).trimFdLien(Number(id)));
   handle("fd:deleteLien", async (_e, { id }) => (await Promise.resolve().then(() => (init_fixedDeposits(), fixedDeposits_exports))).deleteFdLien(Number(id)));
   handle("bdRefunds:list", async () => (await Promise.resolve().then(() => (init_billDiscounting(), billDiscounting_exports))).listBdRefunds());
   handle("bdRefundCandidates:list", async (_e, { values }) => (await Promise.resolve().then(() => (init_billDiscounting(), billDiscounting_exports))).bdRefundCandidates(values));
