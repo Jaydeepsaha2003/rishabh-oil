@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { Fragment, useEffect, useState } from 'react'
 import { toast } from 'sonner'
 import { CheckCircle2, ChevronDown, Loader2, Trash2 } from 'lucide-react'
 import { formatDate, formatINR } from '@/lib/format'
@@ -105,7 +105,7 @@ It is one voucher for ${bills.map((b) => b.bd_no).join(', ')} — the payment on
         {[
           { k: 'Vouchers', v: String(list.length), sub: `${bills.length} bill payment${bills.length === 1 ? '' : 's'}`, tone: 'text-[#0A1F17]' },
           { k: 'Paid out of the bank', v: formatINR(list.reduce((t, g) => t + n(g.net), 0)), sub: `interest ${formatINR(list.reduce((t, g) => t + n(g.gross), 0))}`, tone: 'text-[#0B6B45]' },
-          { k: 'Shortfall still open', v: formatINR(-short), sub: 'less paid than worked out', tone: short < -0.5 ? 'text-[#B3261E]' : 'text-[#9AAFA2]' },
+          { k: 'Shortfall still open', v: formatINR(Math.abs(short)), sub: 'less paid than worked out', tone: short < -0.5 ? 'text-[#B3261E]' : 'text-[#9AAFA2]' },
           { k: 'Excess', v: formatINR(over), sub: 'more paid than worked out', tone: over > 0.5 ? 'text-[#7A4B00]' : 'text-[#9AAFA2]' }
         ].map((t, i) => (
           <div key={t.k} className={cn('min-w-0 px-4 py-3', i % 2 === 1 && 'border-l border-[#EEF3EE]', i >= 2 && 'border-t border-[#EEF3EE] lg:border-t-0', i === 2 && 'lg:border-l')}>
@@ -116,156 +116,193 @@ It is one voucher for ${bills.map((b) => b.bd_no).join(', ')} — the payment on
         ))}
       </div>
 
-      {list.map((g) => {
-        const id = n(g.journal_entry_id)
-        const isOpen = open.has(id)
-        const adjusted = (g.bills as Row[]).some((b) => !b.latest)
-        return (
-          <div key={id} className={cn('overflow-hidden rounded-[8px] border bg-white transition-shadow', isOpen ? 'border-[#B9CFBE] shadow-[0_2px_10px_rgba(10,31,23,.07)]' : 'border-[#DCE6DC] hover:border-[#C3D2C6]')}>
-            {/* The voucher in one line — click to open its bills. */}
-            <div
-              role="button"
-              tabIndex={0}
-              onClick={() => toggle(id)}
-              onKeyDown={(e) => {
-                if (e.target === e.currentTarget && (e.key === 'Enter' || e.key === ' ')) {
-                  e.preventDefault()
-                  toggle(id)
-                }
-              }}
-              aria-expanded={isOpen}
-              className={cn('flex w-full cursor-pointer flex-wrap items-center gap-x-4 gap-y-2 px-4 py-3 text-left', isOpen ? 'bg-[#F3F8F2]' : 'hover:bg-[#FAFCF9]')}
-            >
-              <ChevronDown className={cn('h-4 w-4 flex-none text-[#8CA396] transition-transform', isOpen && 'rotate-180')} />
-              <span className="flex min-w-[96px] flex-col">
-                <span className="text-[9.5px] font-extrabold uppercase tracking-[.12em] text-[#7A8C82]">Paid on</span>
-                <span className="text-[13px] font-extrabold tabular-nums text-[#0A1F17]">{formatDate(String(g.paid_date))}</span>
-              </span>
-              <span className="flex flex-wrap items-center gap-1">
-                {(g.bills as Row[]).map((b) => (
-                  <span key={String(b.id)} className={cn('rounded-[4px] px-1.5 py-0.5 text-[11px] font-extrabold', b.balance ? 'border border-[#F0C9C5] bg-[#FDF0EE] text-[#B3261E]' : 'bg-[#0B3D2E] text-[#C7F03F]')}>
-                    {String(b.bd_no)}
-                  </span>
-                ))}
-              </span>
-              <span className="flex flex-wrap items-center gap-1">
-                {periodsOf(g).map((p) => (
-                  <span key={p} className="whitespace-nowrap rounded-full border border-[#D6E2D6] bg-white px-2 py-0.5 text-[10.5px] font-bold tabular-nums text-[#33473E]">
-                    {p}
-                  </span>
-                ))}
-              </span>
-              <span className="min-w-0 flex-1 truncate text-[11.5px] font-semibold text-[#7A8C82]">
-                {String(g.nbfc_name || '')} · {String(g.bank || '')}
-              </span>
-              <span className="text-right">
-                <span className="block text-[9.5px] font-extrabold uppercase tracking-[.1em] text-[#7A8C82]">Out of the bank</span>
-                <span className="text-[14.5px] font-extrabold tabular-nums text-[#0B6B45]">{formatINR(n(g.net))}</span>
-              </span>
-              <span className="flex min-w-[150px] flex-col items-end gap-0.5">
-                <DiffChip diff={n(g.diff)} big />
-                {adjusted && <span className="text-[10px] font-bold text-[#0B6B45]">a later payment adjusted it</span>}
-              </span>
-              <button
-                type="button"
-                disabled={deleting === id}
-                title="Delete this payment — its bank voucher and every bill's payment on it"
-                aria-label="Delete this payment"
-                onClick={(e) => {
-                  e.stopPropagation()
-                  void remove(g)
-                }}
-                className="flex h-8 w-8 flex-none items-center justify-center rounded-[5px] border border-[#F0C9C4] bg-white text-[#B3261E] hover:bg-[#FDECEA] disabled:opacity-50"
-              >
-                {deleting === id ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Trash2 className="h-3.5 w-3.5" />}
-              </button>
-            </div>
-
-            {isOpen && (
-              <div className="border-t border-[#E4ECE3]">
-                {g.narration && (
-                  <div className="flex gap-2 border-b border-[#F1F5F0] bg-[#FBFCFA] px-4 py-2 text-[11.5px] text-[#5A6B62]">
-                    <span className="flex-none text-[9.5px] font-extrabold uppercase tracking-[.12em] text-[#7A8C82]">Narration</span>
-                    <span className="min-w-0 italic">{String(g.narration)}</span>
-                  </div>
-                )}
-                <div className="overflow-x-auto">
-                  <table className="w-full min-w-[900px] text-[12.5px]">
-                    <thead className="bg-[#F7FAF6] text-[9.5px] font-extrabold uppercase tracking-[.1em] text-[#7A8C82]">
-                      <tr>
-                        <th className="px-4 py-2 text-left">Bill</th>
-                        <th className="px-2 py-2 text-left">Period</th>
-                        <th className="px-2 py-2 text-right">Worked out</th>
-                        <th className="px-2 py-2 text-right">Due then</th>
-                        <th className="px-2 py-2 text-right">Paid</th>
-                        <th className="px-2 py-2 text-right">TDS · Net</th>
-                        <th className="px-2 py-2 text-right">At the time</th>
-                        <th className="px-4 py-2 text-right">Now</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {(g.bills as Row[]).map((b) => (
-                        <tr key={String(b.id)} className="border-t border-[#F1F5F0] align-top">
-                          <td className="px-4 py-2.5">
-                            <span className="rounded-[4px] bg-[#EEF3EE] px-1.5 py-0.5 text-[11.5px] font-extrabold text-[#0B3D2E]">{String(b.bd_no)}</span>
-                            {b.balance && <span className="ml-1.5 rounded-[3px] border border-[#F0C9C5] bg-[#FDF0EE] px-1.5 py-0.5 text-[9.5px] font-extrabold uppercase text-[#B3261E]">Balance</span>}
-                          </td>
-                          <td className="whitespace-nowrap px-2 py-2.5 font-semibold tabular-nums text-[#0A1F17]">
-                            {formatDate(String(b.from_date))} → {formatDate(String(b.to_date))}
-                          </td>
-                          <td className="whitespace-nowrap px-2 py-2.5 text-right tabular-nums text-[#5A6B62]">{formatINR(n(b.due))}</td>
-                          <td className="whitespace-nowrap px-2 py-2.5 text-right tabular-nums text-[#33473E]">
-                            {formatINR(n(b.expected))}
-                            {n(b.before) > 0.004 && <span className="block text-[10px] font-semibold text-[#8CA396]">after {formatINR(n(b.before))} paid before</span>}
-                          </td>
-                          <td className="whitespace-nowrap px-2 py-2.5 text-right font-extrabold tabular-nums text-[#0A1F17]">{formatINR(n(b.gross))}</td>
-                          <td className="whitespace-nowrap px-2 py-2.5 text-right tabular-nums">
-                            <span className="text-[#5A6B62]">{formatINR(n(b.tds))}</span>
-                            <span className="block font-bold text-[#0B6B45]">{formatINR(n(b.net))}</span>
-                          </td>
-                          <td className="px-2 py-2.5 text-right">
-                            <span className={cn(!b.latest && Math.abs(n(b.paid_diff)) >= 0.5 && 'opacity-60 [&>span]:line-through')}>
-                              <DiffChip diff={n(b.paid_diff)} />
-                            </span>
-                          </td>
-                          <td className="px-4 py-2.5 text-right">
-                            {b.latest ? (
-                              <DiffChip diff={n(b.diff)} />
-                            ) : (
-                              <span className="inline-flex flex-col items-end">
-                                <span className="inline-flex items-center gap-1 whitespace-nowrap rounded-full border border-[#BFE3CB] bg-[#E9F5EE] px-2 py-0.5 text-[10.5px] font-extrabold text-[#0B6B45]">
-                                  <CheckCircle2 className="h-3 w-3" /> ADJUSTED
-                                </span>
-                                <span className="mt-0.5 text-[10px] font-semibold text-[#5A6B62]">by {String(b.adjusted_by)}</span>
-                              </span>
-                            )}
-                          </td>
-                        </tr>
+      {/* ONE TABLE, a row per voucher — click a row to open its bills. */}
+      <div className="overflow-x-auto rounded-[8px] border border-[#DCE6DC] bg-white">
+        <table className="w-full min-w-[1080px] text-[12.5px]">
+          <thead className="bg-[#0B3D2E] text-[9.5px] font-extrabold uppercase tracking-[.1em] text-[#DCEFE4]">
+            <tr>
+              <th className="w-8 px-3 py-2.5" />
+              <th className="px-2 py-2.5 text-left">Paid on</th>
+              <th className="px-2 py-2.5 text-left">Voucher</th>
+              <th className="px-2 py-2.5 text-left">Bills</th>
+              <th className="px-2 py-2.5 text-left">Period</th>
+              <th className="px-2 py-2.5 text-left">NBFC · bank</th>
+              <th className="px-2 py-2.5 text-right">Interest</th>
+              <th className="px-2 py-2.5 text-right">TDS</th>
+              <th className="px-2 py-2.5 text-right text-[#C7F03F]">Out of the bank</th>
+              <th className="px-2 py-2.5 text-right">Status</th>
+              <th className="w-12 px-3 py-2.5" />
+            </tr>
+          </thead>
+          <tbody>
+            {list.map((g) => {
+              const id = n(g.journal_entry_id)
+              const isOpen = open.has(id)
+              const adjusted = (g.bills as Row[]).some((b) => !b.latest)
+              return (
+                <Fragment key={id}>
+                  <tr
+                    onClick={() => toggle(id)}
+                    aria-expanded={isOpen}
+                    className={cn('cursor-pointer border-t border-[#EEF3EE] align-middle', isOpen ? 'bg-[#F3F8F2]' : 'hover:bg-[#FAFCF9]')}
+                  >
+                    <td className="px-3 py-2.5">
+                      <ChevronDown className={cn('h-4 w-4 text-[#8CA396] transition-transform', isOpen && 'rotate-180')} />
+                    </td>
+                    <td className="whitespace-nowrap px-2 py-2.5 font-extrabold tabular-nums text-[#0A1F17]">{formatDate(String(g.paid_date))}</td>
+                    <td className="whitespace-nowrap px-2 py-2.5 font-bold text-[#33473E]">{String(g.vch_no || `#${id}`)}</td>
+                    <td className="px-2 py-2.5">
+                      <span className="flex flex-wrap gap-1">
+                        {(g.bills as Row[]).map((b) => (
+                          <span key={String(b.id)} className={cn('rounded-[4px] px-1.5 py-0.5 text-[11px] font-extrabold', b.balance ? 'border border-[#F0C9C5] bg-[#FDF0EE] text-[#B3261E]' : 'bg-[#0B3D2E] text-[#C7F03F]')}>
+                            {String(b.bd_no)}
+                          </span>
+                        ))}
+                      </span>
+                    </td>
+                    <td className="px-2 py-2.5">
+                      {periodsOf(g).map((p) => (
+                        <div key={p} className="whitespace-nowrap text-[11.5px] font-semibold tabular-nums text-[#33473E]">
+                          {p}
+                        </div>
                       ))}
-                    </tbody>
-                    <tfoot>
-                      <tr className="border-t border-[#DCE6DC] bg-[#F7FAF6] font-extrabold">
-                        <td colSpan={4} className="px-4 py-2 text-[10.5px] uppercase tracking-[.1em] text-[#5A6B62]">
-                          {(g.bills as Row[]).length} bill{(g.bills as Row[]).length === 1 ? '' : 's'} on this voucher
-                        </td>
-                        <td className="whitespace-nowrap px-2 py-2 text-right tabular-nums">{formatINR(n(g.gross))}</td>
-                        <td className="whitespace-nowrap px-2 py-2 text-right tabular-nums">
-                          <span className="text-[#5A6B62]">{formatINR(n(g.tds))}</span>
-                          <span className="block text-[#0B6B45]">{formatINR(n(g.net))}</span>
-                        </td>
-                        <td />
-                        <td className="px-4 py-2 text-right">
-                          <DiffChip diff={n(g.diff)} />
-                        </td>
-                      </tr>
-                    </tfoot>
-                  </table>
-                </div>
-              </div>
-            )}
-          </div>
-        )
-      })}
+                    </td>
+                    <td className="max-w-[260px] px-2 py-2.5">
+                      <div className="truncate text-[12px] font-bold text-[#0A1F17]">{String(g.nbfc_name || '')}</div>
+                      <div className="truncate text-[10.5px] font-semibold text-[#7A8C82]">{String(g.bank || '')}</div>
+                    </td>
+                    <td className="whitespace-nowrap px-2 py-2.5 text-right tabular-nums text-[#33473E]">{formatINR(n(g.gross))}</td>
+                    <td className="whitespace-nowrap px-2 py-2.5 text-right tabular-nums text-[#5A6B62]">{formatINR(n(g.tds))}</td>
+                    <td className="whitespace-nowrap px-2 py-2.5 text-right font-extrabold tabular-nums text-[#0B6B45]">{formatINR(n(g.net))}</td>
+                    <td className="px-2 py-2.5 text-right">
+                      <span className="inline-flex flex-col items-end gap-0.5">
+                        <DiffChip diff={n(g.diff)} />
+                        {adjusted && <span className="text-[10px] font-bold text-[#0B6B45]">adjusted by a later payment</span>}
+                      </span>
+                    </td>
+                    <td className="px-3 py-2.5 text-right">
+                      <button
+                        type="button"
+                        disabled={deleting === id}
+                        title="Delete this payment — its bank voucher and every bill's payment on it"
+                        aria-label="Delete this payment"
+                        onClick={(e) => {
+                          e.stopPropagation()
+                          void remove(g)
+                        }}
+                        className="inline-flex h-8 w-8 items-center justify-center rounded-[5px] border border-[#F0C9C4] bg-white text-[#B3261E] hover:bg-[#FDECEA] disabled:opacity-50"
+                      >
+                        {deleting === id ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Trash2 className="h-3.5 w-3.5" />}
+                      </button>
+                    </td>
+                  </tr>
+                  {isOpen && (
+                    <tr className="bg-[#F3F8F2]">
+                      <td />
+                      <td colSpan={10} className="px-2 pb-3 pt-0">
+                        <div className="overflow-hidden rounded-[6px] border border-[#DCE6DC] bg-white">
+
+                  <div className="border-t border-[#E4ECE3]">
+                    {g.narration && (
+                      <div className="flex gap-2 border-b border-[#F1F5F0] bg-[#FBFCFA] px-4 py-2 text-[11.5px] text-[#5A6B62]">
+                        <span className="flex-none text-[9.5px] font-extrabold uppercase tracking-[.12em] text-[#7A8C82]">Narration</span>
+                        <span className="min-w-0 italic">{String(g.narration)}</span>
+                      </div>
+                    )}
+                    <div className="overflow-x-auto">
+                      <table className="w-full min-w-[900px] text-[12.5px]">
+                        <thead className="bg-[#F7FAF6] text-[9.5px] font-extrabold uppercase tracking-[.1em] text-[#7A8C82]">
+                          <tr>
+                            <th className="px-4 py-2 text-left">Bill</th>
+                            <th className="px-2 py-2 text-left">Period</th>
+                            <th className="px-2 py-2 text-right">Worked out</th>
+                            <th className="px-2 py-2 text-right">Due then</th>
+                            <th className="px-2 py-2 text-right">Paid</th>
+                            <th className="px-2 py-2 text-right">TDS · Net</th>
+                            <th className="px-2 py-2 text-right">At the time</th>
+                            <th className="px-4 py-2 text-right">Now</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {(g.bills as Row[]).map((b) => (
+                            <tr key={String(b.id)} className="border-t border-[#F1F5F0] align-top">
+                              <td className="px-4 py-2.5">
+                                <span className="rounded-[4px] bg-[#EEF3EE] px-1.5 py-0.5 text-[11.5px] font-extrabold text-[#0B3D2E]">{String(b.bd_no)}</span>
+                                {b.balance && <span className="ml-1.5 rounded-[3px] border border-[#F0C9C5] bg-[#FDF0EE] px-1.5 py-0.5 text-[9.5px] font-extrabold uppercase text-[#B3261E]">Balance</span>}
+                              </td>
+                              <td className="whitespace-nowrap px-2 py-2.5 font-semibold tabular-nums text-[#0A1F17]">
+                                {formatDate(String(b.from_date))} → {formatDate(String(b.to_date))}
+                              </td>
+                              <td className="whitespace-nowrap px-2 py-2.5 text-right tabular-nums text-[#5A6B62]">{formatINR(n(b.due))}</td>
+                              <td className="whitespace-nowrap px-2 py-2.5 text-right tabular-nums text-[#33473E]">
+                                {formatINR(n(b.expected))}
+                                {n(b.before) > 0.004 && <span className="block text-[10px] font-semibold text-[#8CA396]">after {formatINR(n(b.before))} paid before</span>}
+                              </td>
+                              <td className="whitespace-nowrap px-2 py-2.5 text-right font-extrabold tabular-nums text-[#0A1F17]">{formatINR(n(b.gross))}</td>
+                              <td className="whitespace-nowrap px-2 py-2.5 text-right tabular-nums">
+                                <span className="text-[#5A6B62]">{formatINR(n(b.tds))}</span>
+                                <span className="block font-bold text-[#0B6B45]">{formatINR(n(b.net))}</span>
+                              </td>
+                              <td className="px-2 py-2.5 text-right">
+                                <span className={cn(!b.latest && Math.abs(n(b.paid_diff)) >= 0.5 && 'opacity-60 [&>span]:line-through')}>
+                                  <DiffChip diff={n(b.paid_diff)} />
+                                </span>
+                              </td>
+                              <td className="px-4 py-2.5 text-right">
+                                {b.latest ? (
+                                  <DiffChip diff={n(b.diff)} />
+                                ) : (
+                                  <span className="inline-flex flex-col items-end">
+                                    <span className="inline-flex items-center gap-1 whitespace-nowrap rounded-full border border-[#BFE3CB] bg-[#E9F5EE] px-2 py-0.5 text-[10.5px] font-extrabold text-[#0B6B45]">
+                                      <CheckCircle2 className="h-3 w-3" /> ADJUSTED
+                                    </span>
+                                    <span className="mt-0.5 text-[10px] font-semibold text-[#5A6B62]">by {String(b.adjusted_by)}</span>
+                                  </span>
+                                )}
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                        <tfoot>
+                          <tr className="border-t border-[#DCE6DC] bg-[#F7FAF6] font-extrabold">
+                            <td colSpan={4} className="px-4 py-2 text-[10.5px] uppercase tracking-[.1em] text-[#5A6B62]">
+                              {(g.bills as Row[]).length} bill{(g.bills as Row[]).length === 1 ? '' : 's'} on this voucher
+                            </td>
+                            <td className="whitespace-nowrap px-2 py-2 text-right tabular-nums">{formatINR(n(g.gross))}</td>
+                            <td className="whitespace-nowrap px-2 py-2 text-right tabular-nums">
+                              <span className="text-[#5A6B62]">{formatINR(n(g.tds))}</span>
+                              <span className="block text-[#0B6B45]">{formatINR(n(g.net))}</span>
+                            </td>
+                            <td />
+                            <td className="px-4 py-2 text-right">
+                              <DiffChip diff={n(g.diff)} />
+                            </td>
+                          </tr>
+                        </tfoot>
+                      </table>
+                    </div>
+                  </div>
+                        </div>
+                      </td>
+                    </tr>
+                  )}
+                </Fragment>
+              )
+            })}
+          </tbody>
+          <tfoot>
+            <tr className="border-t-[1.5px] border-[#C9DCCF] bg-[#F5F8F4] font-extrabold">
+              <td colSpan={6} className="px-3 py-2.5 text-[10.5px] uppercase tracking-[.1em] text-[#33473E]">
+                Total · {list.length} voucher{list.length === 1 ? '' : 's'}
+              </td>
+              <td className="whitespace-nowrap px-2 py-2.5 text-right tabular-nums">{formatINR(list.reduce((t, g) => t + n(g.gross), 0))}</td>
+              <td className="whitespace-nowrap px-2 py-2.5 text-right tabular-nums text-[#5A6B62]">{formatINR(list.reduce((t, g) => t + n(g.tds), 0))}</td>
+              <td className="whitespace-nowrap px-2 py-2.5 text-right tabular-nums text-[#0B6B45]">{formatINR(list.reduce((t, g) => t + n(g.net), 0))}</td>
+              <td colSpan={2} />
+            </tr>
+          </tfoot>
+        </table>
+      </div>
     </div>
   )
 }
