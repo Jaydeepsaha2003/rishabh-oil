@@ -52,7 +52,9 @@ export function PurchaseDnDialog({ ask, onClose, onDone }: { ask: PurchaseDnAsk 
   }, [ask]) // eslint-disable-line react-hooks/exhaustive-deps
 
   const notes = ((data?.notes as Row[]) || []) as Row[]
-  const on = (id: number, k: string): boolean => !!picked.get(id)?.has(k)
+  // A note set Agst Ref this bill in Accounting is linked already — under its own type.
+  const autoOf = (id: number): string | null => (notes.find((x) => n(x.entry_id) === id)?.auto_kind as string) || null
+  const on = (id: number, k: string): boolean => autoOf(id) === k || !!picked.get(id)?.has(k)
   const flip = (id: number, k: string): void =>
     setPicked((p) => {
       const m = new Map(p)
@@ -149,6 +151,11 @@ export function PurchaseDnDialog({ ask, onClose, onDone }: { ask: PurchaseDnAsk 
                             </span>
                           )}
                           {x.names_invoice && <span className="ml-1.5 rounded-full bg-[#E9F5EE] px-1.5 py-[1px] text-[10px] font-extrabold text-[#0B6B45]">names this invoice</span>}
+                          {x.auto_kind && (
+                            <span className="ml-1.5 inline-flex items-center gap-0.5 rounded-full bg-[#0B3D2E] px-1.5 py-[1px] text-[10px] font-extrabold text-[#C7F03F]" title="Set Agst Ref this bill in Accounting — linked already">
+                              <Link2 className="h-2.5 w-2.5" /> linked in Accounting{x.auto_kind === 'other' ? ' · no type set' : ''}
+                            </span>
+                          )}
                         </td>
                         <td className="whitespace-nowrap px-2 py-2 tabular-nums">{formatDate(String(x.entry_date))}</td>
                         <td className="max-w-[320px] truncate px-2 py-2 text-[#5A6B62]" title={String(x.narration || '')}>
@@ -161,6 +168,8 @@ export function PurchaseDnDialog({ ask, onClose, onDone }: { ask: PurchaseDnAsk 
                           <td key={k.k} className="px-2 py-2 text-center">
                             <button
                               type="button"
+                              disabled={autoOf(id) === k.k}
+                              title={autoOf(id) === k.k ? 'Linked in Accounting — change it on the debit note' : undefined}
                               onClick={() => flip(id, k.k)}
                               aria-pressed={on(id, k.k)}
                               aria-label={`${k.label} — ${String(x.code || x.vch_no || id)}`}

@@ -1140,17 +1140,18 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel, onPurchaseR
   const [detailRow, setDetailRow] = useState<Row | null>(null)
   // Shortage and quality debit notes linked to each purchase (purchaseDebitNotes.ts).
   const [dnAsk, setDnAsk] = useState<PurchaseDnAsk | null>(null)
-  const [dnMap, setDnMap] = useState<Map<number, { shortage: number; quality: number }>>(new Map())
+  const [dnMap, setDnMap] = useState<Map<number, { shortage: number; quality: number; other: number }>>(new Map())
   const loadDnMap = useCallback(() => {
     void window.api.orders
       .dnNoteMap()
       .then((rows) => {
-        const m = new Map<number, { shortage: number; quality: number }>()
+        const m = new Map<number, { shortage: number; quality: number; other: number }>()
         for (const r of rows) {
           const k = Number(r.order_id)
-          const cur = m.get(k) || { shortage: 0, quality: 0 }
-          if (r.kind === 'shortage') cur.shortage += Number(r.amount) || 0
-          if (r.kind === 'quality') cur.quality += Number(r.amount) || 0
+          const cur = m.get(k) || { shortage: 0, quality: 0, other: 0 }
+          // Linked here or set Agst Ref the bill in Accounting; a note with no type is 'other'.
+          const kind = r.kind === 'shortage' || r.kind === 'quality' ? r.kind : 'other'
+          cur[kind as 'shortage' | 'quality' | 'other'] += Number(r.amount) || 0
           m.set(k, cur)
         }
         setDnMap(m)
@@ -8571,24 +8572,26 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel, onPurchaseR
                               const d = dnMap.get(Number(row.id))
                               return (
                                 <span className="mt-1 flex justify-end gap-1" onClick={(e) => e.stopPropagation()}>
-                                  {(['shortage', 'quality'] as const).map((k) => {
+                                  {(['shortage', 'quality', 'other'] as const).filter((k) => k !== 'other' || (d && d.other > 0)).map((k) => {
                                     const amt = d ? d[k] : 0
                                     return (
                                       <button
                                         key={k}
                                         type="button"
-                                        title={`${k === 'shortage' ? 'Shortage' : 'Quality'} debit note${amt ? ` — ${formatINR(amt)} linked` : ' — none linked; click to link'}`}
+                                        title={`${k === 'shortage' ? 'Shortage' : k === 'quality' ? 'Quality' : 'Debit note (no type set)'}${amt ? ` — ${formatINR(amt)} linked` : ' — none linked; click to link'}`}
                                         onClick={() => setDnAsk({ orderId: Number(row.id), invoiceNo: String(row.invoice_no || ''), supplier: String(row.supplier_name || '') })}
                                         className={cn(
                                           'whitespace-nowrap rounded-[3px] border px-1.5 py-[1px] text-[10px] font-extrabold tracking-normal',
                                           amt > 0
                                             ? k === 'shortage'
                                               ? 'border-[#F0C9C4] bg-[#FDECEA] text-[#B3261E]'
-                                              : 'border-[#C6DAF0] bg-[#EAF0FA] text-[#1B4E82]'
+                                              : k === 'quality'
+                                                ? 'border-[#C6DAF0] bg-[#EAF0FA] text-[#1B4E82]'
+                                                : 'border-[#D6E2D6] bg-[#EEF3EE] text-[#33473E]'
                                             : 'border-dashed border-[#C9DCCF] bg-white text-[#9AAFA2] hover:text-[#33473E]'
                                         )}
                                       >
-                                        {k === 'shortage' ? 'Short DN' : 'Quality DN'}
+                                        {k === 'shortage' ? 'Short DN' : k === 'quality' ? 'Quality DN' : 'DN'}
                                         {amt > 0 ? ` ${formatINR(amt)}` : ''}
                                       </button>
                                     )

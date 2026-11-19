@@ -58,6 +58,59 @@ async function supplierLedgerOf(orderId: number): Promise<number> {
 const codeSql = "(SELECT nn.prefix || '/' || nn.serial FROM voucher_numbers nn WHERE nn.entry_id = je.id)"
 
 /**
+ * LINKED IN ACCOUNTING: a DEBIT NOTE whose supplier line is set Agst Ref a
+ * purchase bill (by the bill itself, or by its number on the same supplier's
+ * ledger the purchase was posted to), or a note raised against that invoice.
+ * Read live — the note's own type (shortage / quality) decides which chip it
+ * shows as, 'other' when it has none — so editing or deleting the note in
+ * Accounting moves the Purchases page with it.
+ */
+async function accountingLinks(orderId?: number): Promise<Row[]> {
+  const c = getClient()
+  const one = orderId ? 'AND o.id = ?' : ''
+  const args = orderId ? [n(orderId)] : []
+  const viaAllocs = (
+    await c.execute({
+      sql: `SELECT o.company_id, o.id AS order_id, je.id AS entry_id, COALESCE(NULLIF(nt.dn_kind, ''), 'other') AS kind,
+                   ROUND(SUM(ba.amount), 2) AS amount, je.entry_date, je.vch_no, ${codeSql} AS code
+              FROM journal_bill_allocs ba
+              JOIN journal_lines jl ON jl.id = ba.line_id
+              JOIN journal_entries je ON je.id = jl.entry_id
+              JOIN orders o ON o.company_id = je.company_id
+                AND (ba.order_id = o.id
+                     OR (ba.order_id IS NULL AND TRIM(UPPER(ba.ref_name)) = TRIM(UPPER(o.invoice_no))
+                         AND EXISTS (SELECT 1 FROM journal_entries pj JOIN journal_lines pl ON pl.entry_id = pj.id
+                                      WHERE pj.order_id = o.id AND pl.account_id = ba.account_id AND pl.cr > 0)))
+              LEFT JOIN notes nt ON nt.journal_entry_id = je.id
+             WHERE UPPER(je.vch_type) LIKE 'DEBIT NOTE%' AND ba.method = 'agst_ref' AND jl.dr > 0 ${one}
+             GROUP BY o.id, je.id`,
+      args
+    })
+  ).rows as unknown as Row[]
+  const viaNote = (
+    await c.execute({
+      sql: `SELECT o.company_id, o.id AS order_id, je.id AS entry_id, COALESCE(NULLIF(nt.dn_kind, ''), 'other') AS kind,
+                   ROUND(nt.total_amount, 2) AS amount, je.entry_date, je.vch_no, ${codeSql} AS code
+              FROM notes nt
+              JOIN journal_entries je ON je.id = nt.journal_entry_id
+              JOIN orders o ON o.company_id = nt.company_id AND o.supplier_id = nt.party_id
+                AND TRIM(UPPER(o.invoice_no)) = TRIM(UPPER(nt.against_ref))
+             WHERE nt.note_type = 'debit' AND nt.party_type = 'supplier' AND COALESCE(nt.against_ref, '') <> '' ${one}`,
+      args
+    })
+  ).rows as unknown as Row[]
+  const seen = new Set<string>()
+  const out: Row[] = []
+  for (const r of [...viaAllocs, ...viaNote]) {
+    const k = `${n(r.order_id)}|${n(r.entry_id)}`
+    if (seen.has(k)) continue
+    seen.add(k)
+    out.push({ ...r, amount: round2(n(r.amount)), from_accounting: true })
+  }
+  return out
+}
+
+/**
  * The debit notes that could be linked to this purchase: every DEBIT NOTE
  * voucher in its book debiting the supplier's ledger, the ones naming this
  * invoice first. Each carries the type it was raised as (notes.dn_kind), and
@@ -69,6 +122,8 @@ export async function purchaseDnCandidates(orderId: number): Promise<Row> {
   const o = await orderOf(orderId)
   const acc = await supplierLedgerOf(orderId)
   const linked = (await c.execute({ sql: 'SELECT entry_id, kind, amount FROM purchase_dn_links WHERE company_id = ? AND order_id = ?', args: [n(o.company_id), n(o.id)] })).rows as unknown as Row[]
+  const auto = await accountingLinks(n(o.id))
+  const autoOf = new Map(auto.map((a) => [n(a.entry_id), a]))
   if (!acc) return { invoice_no: o.invoice_no, notes: [], linked }
   const rows = (
     await c.execute({
@@ -92,10 +147,12 @@ export async function purchaseDnCandidates(orderId: number): Promise<Row> {
     .map((r) => ({
       ...r,
       amount: round2(n(r.amount)),
-      names_invoice: !!no && (String(r.refs || '').toUpperCase().includes(no) || String(r.narration || '').toUpperCase().includes(no))
+      names_invoice: !!no && (String(r.refs || '').toUpperCase().includes(no) || String(r.narration || '').toUpperCase().includes(no)),
+      // Linked in Accounting (Agst Ref this bill) — shown ticked, under its own type.
+      auto_kind: autoOf.get(n(r.entry_id))?.kind || null
     }))
     // A note set Agst Ref ANOTHER bill settles that one — left out unless already linked here.
-    .filter((r: Row) => r.names_invoice || !String(r.refs || '').trim() || linkedIds.has(n(r.entry_id)))
+    .filter((r: Row) => r.names_invoice || r.auto_kind || !String(r.refs || '').trim() || linkedIds.has(n(r.entry_id)))
   notes.sort((a, b) => Number(b.names_invoice) - Number(a.names_invoice))
   return { invoice_no: o.invoice_no, notes, linked }
 }
@@ -128,5 +185,7 @@ export async function purchaseDnMap(): Promise<Row[]> {
     SELECT t.company_id, t.order_id, t.entry_id, t.kind, t.amount, je.entry_date, je.vch_no, ${codeSql} AS code
       FROM purchase_dn_links t JOIN journal_entries je ON je.id = t.entry_id
      ORDER BY je.entry_date`)
-  return res.rows.map((r) => ({ ...(r as unknown as Row) }))
+  const hand = res.rows.map((r) => ({ ...(r as unknown as Row) }))
+  const handKeys = new Set(hand.map((r) => `${n(r.order_id)}|${n(r.entry_id)}`))
+  return [...hand, ...(await accountingLinks()).filter((r) => !handKeys.has(`${n(r.order_id)}|${n(r.entry_id)}`))]
 }
