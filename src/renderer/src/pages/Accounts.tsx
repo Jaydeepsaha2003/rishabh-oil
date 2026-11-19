@@ -2549,6 +2549,10 @@ export function Accounts({
   const [dbReco, setDbReco] = useState(false)
   const [dbDense, setDbDense] = useState(false)
   const [dbSel, setDbSel] = useState<number | null>(null)
+  // BULK DELETE in the Day Book: Select turns the rows into tick boxes.
+  const [dbPicking, setDbPicking] = useState(false)
+  const [dbPicked, setDbPicked] = useState<Set<number>>(new Set())
+  const [dbDeleting, setDbDeleting] = useState(false)
   const [dbSum, setDbSum] = useState<{ top: number; left: number; width: number; maxH: number } | null>(null)
   const dbVisRef = useRef<Row[]>([])
   const dbScrollRef = useRef<HTMLDivElement>(null)
@@ -5381,6 +5385,53 @@ Delete ${doc}?`)) return
     } catch (e) {
       toast.error((e as Error).message)
     }
+  }
+
+  const togglePick = (id: number): void =>
+    setDbPicked((p) => {
+      const x = new Set(p)
+      if (x.has(id)) x.delete(id)
+      else x.add(id)
+      return x
+    })
+
+  // BULK DELETE (Day Book → Select). Each voucher goes through the same delete
+  // it would alone — its own rights and window checked by the server — a note
+  // through the note register, so its ledger row and stock reverse too. A
+  // voucher a purchase, sale or payment posted is left alone and named.
+  async function bulkDelete(rows: Row[]): Promise<void> {
+    if (!rows.length) return
+    const owned = rows.filter((r) => r.order_id != null || r.sale_id != null || r.payment_id != null)
+    const noRight = rows.filter((r) => !owned.includes(r) && !vchRights(String(r.vch_type || '').toUpperCase() as VchType).delete)
+    const go = rows.filter((r) => !owned.includes(r) && !noRight.includes(r))
+    const names = (l: Row[]): string => l.map((r) => String(r.vch_no || r.id)).slice(0, 12).join(', ') + (l.length > 12 ? ` … +${l.length - 12}` : '')
+    if (!go.length) {
+      toast.error(owned.length ? `Posted by a purchase, sale or payment — delete them there: ${names(owned)}` : `You do not have rights to delete: ${names(noRight)}`)
+      return
+    }
+    const msg =
+      `Delete ${go.length} voucher${go.length === 1 ? '' : 's'}?\n\n${names(go)}\n\nNotes reverse their ledger entry and any stock they moved. This cannot be undone.` +
+      (owned.length ? `\n\nLeft alone — posted by a purchase, sale or payment: ${names(owned)}` : '') +
+      (noRight.length ? `\n\nLeft alone — no delete right: ${names(noRight)}` : '')
+    if (!confirm(msg)) return
+    setDbDeleting(true)
+    const failed: string[] = []
+    let done = 0
+    for (const r of go) {
+      try {
+        if (r.note_id) await window.api.notes.remove(Number(r.note_id), cid)
+        else await window.api.vouchers.remove(Number(r.id))
+        done++
+      } catch (e) {
+        failed.push(`${String(r.vch_no || r.id)}: ${(e as Error).message.replace(/^Error invoking remote method '[^']+': (Error: )?/, '')}`)
+      }
+    }
+    setDbDeleting(false)
+    setDbPicked(new Set())
+    if (done) toast.success(`${done} voucher${done === 1 ? '' : 's'} deleted`)
+    if (failed.length) toast.error(`${failed.length} not deleted — ${failed.slice(0, 4).join(' · ')}${failed.length > 4 ? ' …' : ''}`, { duration: 12000 })
+    void loadDaybook()
+    loadAccounts()
   }
 
   async function createLedger(): Promise<void> {
@@ -16160,7 +16211,47 @@ Delete ${doc}?`)) return
           )
         })}
         <div className="flex-1" />
-        {roomy && (
+        {/* BULK DELETE — Select, tick, Delete selected. */}
+        {isVch &&
+          (dbPicking ? (
+            <div className="flex flex-none items-center gap-2">
+              <span style={{ fontSize: 12, fontWeight: 800, color: '#fff' }}>{dbPicked.size} selected</span>
+              <button
+                type="button"
+                disabled={!dbPicked.size || dbDeleting}
+                onClick={() => void bulkDelete(vis.filter((r) => dbPicked.has(Number(r.id))))}
+                className="flex h-[32px] items-center gap-1.5 rounded-[6px] px-3 text-[12px] font-extrabold disabled:opacity-50"
+                style={{ background: '#B3261E', color: '#fff' }}
+              >
+                {dbDeleting ? <Hourglass className="h-3.5 w-3.5" /> : <Trash2 className="h-3.5 w-3.5" />} Delete selected
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setDbPicking(false)
+                  setDbPicked(new Set())
+                }}
+                className="flex h-[32px] items-center rounded-[6px] px-3 text-[12px] font-extrabold"
+                style={{ background: 'rgba(255,255,255,.12)', color: '#fff' }}
+              >
+                Done
+              </button>
+            </div>
+          ) : (
+            <button
+              type="button"
+              onClick={() => {
+                setDbPicking(true)
+                setDbSel(null)
+              }}
+              title="Tick several vouchers and delete them in one go"
+              className="flex h-[32px] flex-none items-center gap-1.5 rounded-[6px] px-3 text-[12px] font-extrabold"
+              style={{ background: 'rgba(255,255,255,.12)', color: '#C7F03F' }}
+            >
+              <CheckCheck className="h-3.5 w-3.5" /> Select
+            </button>
+          ))}
+        {roomy && !dbPicking && (
           <div className="flex flex-none items-center gap-[7px] whitespace-nowrap" style={{ fontSize: 11, fontWeight: 600, color: '#8FBFA8' }}>
             <KeyboardIcon className="h-[15px] w-[15px]" />↑ ↓ move · Enter opens the document · F8 summary · Esc closes
           </div>
@@ -16197,20 +16288,38 @@ Delete ${doc}?`)) return
           role="button"
           tabIndex={0}
           data-db-row={id}
-          title="Open this voucher"
-          onClick={() => setDbSel(id)}
+          title={dbPicking ? 'Tick to select' : 'Open this voucher'}
+          onClick={() => (dbPicking ? togglePick(id) : setDbSel(id))}
           onKeyDown={(e) => {
             if (e.key === 'Enter' || e.key === ' ') {
               e.preventDefault()
-              setDbSel(id)
+              if (dbPicking) togglePick(id)
+              else setDbSel(id)
             }
           }}
           className="grid cursor-pointer items-stretch outline-none transition-colors hover:!bg-[#F6FAF4]"
-          style={{ gridTemplateColumns: GRID, borderBottom: '1px solid #EEF3EE', background: bg, boxShadow: `inset 3px 0 0 ${on ? '#12855A' : 'transparent'}` }}
+          style={{
+            gridTemplateColumns: GRID,
+            borderBottom: '1px solid #EEF3EE',
+            background: dbPicking && dbPicked.has(id) ? '#FDECEA' : bg,
+            boxShadow: `inset 3px 0 0 ${dbPicking && dbPicked.has(id) ? '#B3261E' : on ? '#12855A' : 'transparent'}`
+          }}
         >
           <div className="flex min-w-0 flex-col gap-1" style={{ padding: '9px 12px 9px 14px' }}>
             <div className="flex min-w-0 flex-col items-start gap-[3px]">
-              <div className="flex items-center gap-[7px]">{typeChip(r.vch_type)}</div>
+              <div className="flex items-center gap-[7px]">
+                {dbPicking && (
+                  <input
+                    type="checkbox"
+                    checked={dbPicked.has(id)}
+                    onClick={(e) => e.stopPropagation()}
+                    onChange={() => togglePick(id)}
+                    aria-label={`Select ${String(r.vch_no || id)}`}
+                    className="h-4 w-4 accent-[#B3261E]"
+                  />
+                )}
+                {typeChip(r.vch_type)}
+              </div>
               {!!r.vch_subtype && <span className="truncate" style={{ fontSize: 9.5, fontWeight: 800, letterSpacing: '.04em', color: A.muted }}>{String(r.vch_subtype)}</span>}
             </div>
             <span style={{ ...MONO_FIG, fontSize: 11.5, fontWeight: 700, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{String(r.vch_no || '—')}</span>
@@ -16285,6 +16394,15 @@ Delete ${doc}?`)) return
           >
             {headCell(
               <span className="inline-flex items-center gap-2" style={{ color: '#fff' }}>
+                {dbPicking && (
+                  <input
+                    type="checkbox"
+                    aria-label="Select every voucher shown"
+                    checked={vis.length > 0 && vis.every((r) => dbPicked.has(Number(r.id)))}
+                    onChange={(e) => setDbPicked(e.target.checked ? new Set(vis.map((r) => Number(r.id))) : new Set())}
+                    className="h-4 w-4 accent-[#B3261E]"
+                  />
+                )}
                 {dbCf.head('voucher', 'Voucher', { onDark: true })}
                 {dbCf.head('date', 'Date', { onDark: true })}
               </span>,
