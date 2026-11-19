@@ -22,6 +22,24 @@ const r2 = (v: number): number => Math.round(v * 100) / 100
 // One look for every dropdown in the window: left-aligned, normal case, small text, an icon chip.
 const FIELD =
   '!h-10 !w-full !justify-between !rounded-[7px] !border-[#C9DCCF] !bg-white !px-2.5 !text-[12px] !font-semibold !normal-case !tracking-normal !text-[#0A1F17] !shadow-[0_1px_2px_rgba(10,31,23,.06)] hover:!border-[#0B6B45] focus:!ring-2 focus:!ring-[#0B6B45]/15'
+// ← → WALK A ROW OF CONTROLS (dropdowns, toggles, dates, buttons). A text box
+// keeps its arrows until the caret reaches its end; an open list keeps them.
+function arrowsAcross(e: React.KeyboardEvent<HTMLElement>): void {
+  if ((e.key !== 'ArrowRight' && e.key !== 'ArrowLeft') || e.altKey || e.ctrlKey || e.metaKey || e.shiftKey) return
+  if (document.querySelector('[data-slot="select-option"]')) return
+  const t = e.target as HTMLElement
+  if (t instanceof HTMLInputElement && t.type === 'text' || t instanceof HTMLTextAreaElement) {
+    const el = t as HTMLInputElement
+    const len = el.value.length
+    if (e.key === 'ArrowRight' ? el.selectionEnd !== len : el.selectionStart !== 0) return
+  }
+  const all = Array.from(e.currentTarget.querySelectorAll<HTMLElement>('button:not([disabled]), input:not([disabled]):not([type="hidden"]), textarea')).filter((x) => x.offsetParent !== null)
+  const at = all.findIndex((x) => x === t || x.contains(t))
+  const next = all[at + (e.key === 'ArrowRight' ? 1 : -1)]
+  if (at < 0 || !next) return
+  e.preventDefault()
+  next.focus()
+}
 const FICON = 'flex h-6 w-6 flex-none items-center justify-center rounded-[5px] bg-[#EEF5EF] text-[#0B6B45]'
 // The interest whose net after TDS (TDS rounded to the paisa) is exactly `net`.
 const grossFromNet = (net: number, pct: number): number => {
@@ -261,7 +279,7 @@ export function BdCumulativeInterest({ open, onClose, nbfcs, onDone }: { open: b
         ) : (
         <>
         <div className="min-h-0 flex-1 space-y-3.5 overflow-y-auto px-3 py-3 sm:px-5 sm:py-4">
-          <div className="grid gap-3 md:grid-cols-[1.3fr_auto_1.4fr]">
+          <div className="grid gap-3 md:grid-cols-[1.3fr_auto_1.4fr]" onKeyDown={arrowsAcross}>
             <div>
               <span className={lbl}>NBFC</span>
               <Select searchable value={nbfc} onValueChange={setNbfc}>
@@ -731,7 +749,7 @@ export function BdCumulativeInterest({ open, onClose, nbfcs, onDone }: { open: b
           )}
 
         </div>
-        <div className="flex flex-none flex-wrap items-end gap-2.5 border-t border-[#E4ECE3] bg-[#FBFCFA] px-3 py-3 sm:gap-3 sm:px-5">
+        <div className="flex flex-none flex-wrap items-end gap-2.5 border-t border-[#E4ECE3] bg-[#FBFCFA] px-3 py-3 sm:gap-3 sm:px-5" onKeyDown={arrowsAcross}>
           <div className="min-w-[200px] flex-1 basis-[220px]">
             <span className={lbl}>Paid from bank</span>
             <Select searchable value={bank} onValueChange={setBank}>
