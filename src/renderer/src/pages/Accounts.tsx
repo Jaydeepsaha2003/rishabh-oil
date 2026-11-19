@@ -2555,6 +2555,9 @@ export function Accounts({
   const [dbPicking, setDbPicking] = useState(false)
   const [dbPicked, setDbPicked] = useState<Set<number>>(new Set())
   const [dbDeleting, setDbDeleting] = useState(false)
+  // The same in a ledger: Select, tick its vouchers, Delete selected.
+  const [lgPicking, setLgPicking] = useState(false)
+  const [lgPicked, setLgPicked] = useState<Set<number>>(new Set())
   const [dbSum, setDbSum] = useState<{ top: number; left: number; width: number; maxH: number } | null>(null)
   const dbVisRef = useRef<Row[]>([])
   const dbScrollRef = useRef<HTMLDivElement>(null)
@@ -5439,9 +5442,11 @@ Delete ${doc}?`)) return
     }
     setDbDeleting(false)
     setDbPicked(new Set())
+    setLgPicked(new Set())
     if (done) toast.success(`${done} voucher${done === 1 ? '' : 's'} deleted`)
     if (failed.length) toast.error(`${failed.length} not deleted — ${failed.slice(0, 4).join(' · ')}${failed.length > 4 ? ' …' : ''}`, { duration: 12000 })
     void loadDaybook()
+    void loadLedger()
     loadAccounts()
   }
 
@@ -18108,6 +18113,64 @@ Delete ${doc}?`)) return
             </span>
           </div>
         )}
+        {/* BULK DELETE — Select, tick this ledger's vouchers, Delete selected (as the Day Book). */}
+        <div className="flex flex-wrap items-center gap-2" style={{ padding: '6px 12px', background: lgPicking ? '#FDF3F2' : '#FAFCF9', borderBottom: '1px solid #E4ECE3' }}>
+          {lgPicking ? (
+            <>
+              <span style={{ fontSize: 12, fontWeight: 800, color: '#8C2F26' }}>{lgPicked.size} selected</span>
+              <button
+                type="button"
+                onClick={() => setLgPicked(new Set(vRows.filter((r) => !r.provisional).map((r) => Number(r.entry_id ?? r.id))))}
+                className="h-[28px] rounded-[5px] border px-2.5 text-[11.5px] font-bold"
+                style={{ borderColor: '#E4C9C4', background: '#fff', color: '#33473E' }}
+              >
+                Tick all shown
+              </button>
+              <button
+                type="button"
+                disabled={!lgPicked.size || dbDeleting}
+                onClick={() => {
+                  const seen = new Set<number>()
+                  const rows = vRows
+                    .filter((r) => !r.provisional && lgPicked.has(Number(r.entry_id ?? r.id)))
+                    .filter((r) => {
+                      const id = Number(r.entry_id ?? r.id)
+                      if (seen.has(id)) return false
+                      seen.add(id)
+                      return true
+                    })
+                    .map((r) => ({ ...r, id: Number(r.entry_id ?? r.id) }))
+                  void bulkDelete(rows)
+                }}
+                className="flex h-[28px] items-center gap-1.5 rounded-[5px] px-3 text-[11.5px] font-extrabold disabled:opacity-50"
+                style={{ background: '#B3261E', color: '#fff' }}
+              >
+                {dbDeleting ? <Hourglass className="h-3.5 w-3.5" /> : <Trash2 className="h-3.5 w-3.5" />} Delete selected
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setLgPicking(false)
+                  setLgPicked(new Set())
+                }}
+                className="h-[28px] rounded-[5px] border px-2.5 text-[11.5px] font-bold"
+                style={{ borderColor: '#D6E2D6', background: '#fff', color: '#33473E' }}
+              >
+                Done
+              </button>
+            </>
+          ) : (
+            <button
+              type="button"
+              onClick={() => setLgPicking(true)}
+              title="Tick several of this ledger's vouchers and delete them in one go"
+              className="flex h-[28px] items-center gap-1.5 rounded-[5px] border px-2.5 text-[11.5px] font-bold"
+              style={{ borderColor: '#D6E2D6', background: '#fff', color: '#33473E' }}
+            >
+              <CheckCheck className="h-3.5 w-3.5" /> Select
+            </button>
+          )}
+        </div>
         {/* The highlighted row, as Tally draws it: a lit bar down its edge. */}
         <style>{'[data-lghi="1"]{background:#E4F5C8!important;box-shadow:inset 4px 0 0 #9ACD2A!important;transition:none!important}'}</style>
         <div className="grid" style={{ ...headRow, gridTemplateColumns: V_GRID, height: 34 }}>
@@ -18168,6 +18231,15 @@ Delete ${doc}?`)) return
                 data-lgrow={String(r.id)}
                 data-lghi={hi ? '1' : undefined}
                 onClick={() => {
+                  if (lgPicking && !r.provisional) {
+                    setLgPicked((p) => {
+                      const x = new Set(p)
+                      if (x.has(eid)) x.delete(eid)
+                      else x.add(eid)
+                      return x
+                    })
+                    return
+                  }
                   markLgRow(Number(r.id))
                   // A provisional line has no voucher yet — it opens its LC / BD.
                   if (r.provisional) return void openRowSource(r, ledgerId)
@@ -18186,11 +18258,28 @@ Delete ${doc}?`)) return
                   minHeight: 46,
                   borderBottom: '1px solid #EFF3EE',
                   // The highlighted row, as Tally draws it: a lit bar down its edge.
-                  background: open ? '#F3FBE2' : r.provisional ? '#FFF8EC' : stripe(i),
+                  background: lgPicking && lgPicked.has(eid) ? '#FDECEA' : open ? '#F3FBE2' : r.provisional ? '#FFF8EC' : stripe(i),
                   fontStyle: r.provisional ? 'italic' : undefined
                 }}
               >
                 <span className="flex items-center gap-1.5" style={{ padding: '0 8px 0 8px', ...figS(11.5, '#33473E', 600) }}>
+                  {lgPicking && !r.provisional && (
+                    <input
+                      type="checkbox"
+                      checked={lgPicked.has(eid)}
+                      onClick={(e) => e.stopPropagation()}
+                      onChange={() =>
+                        setLgPicked((p) => {
+                          const x = new Set(p)
+                          if (x.has(eid)) x.delete(eid)
+                          else x.add(eid)
+                          return x
+                        })
+                      }
+                      aria-label="Select this voucher"
+                      className="h-4 w-4 flex-none accent-[#B3261E]"
+                    />
+                  )}
                   <button
                     type="button"
                     title={open ? 'Hide its lines' : 'Show its lines here'}

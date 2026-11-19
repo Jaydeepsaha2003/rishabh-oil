@@ -464,6 +464,7 @@ export async function accountStatement(accountId: number, companyId?: number): P
   const res = await c.execute({
     sql: `SELECT jl.id, je.id AS entry_id, je.entry_date, je.vch_type, je.vch_no, je.narration, je.value_date,
                  jl.dr, jl.cr, je.order_id, je.sale_id, je.payment_id,
+                 (SELECT nt.id FROM notes nt WHERE nt.journal_entry_id = je.id LIMIT 1) AS note_id,
                  -- THE DOCUMENT'S OWN NUMBER, for the Ref no column.
                  -- A purchase voucher's reference is the supplier's invoice
                  -- number and a sale's is the invoice raised — which is what
