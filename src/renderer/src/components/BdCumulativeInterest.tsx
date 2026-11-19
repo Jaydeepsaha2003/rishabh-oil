@@ -216,7 +216,7 @@ export function BdCumulativeInterest({ open, onClose, nbfcs, onDone }: { open: b
   const lbl = 'mb-1 block text-[10px] font-extrabold uppercase tracking-[.1em] text-[#5A6B62]'
   return (
     <Dialog open={open} onOpenChange={(o) => !o && !busy && onClose()}>
-      <DialogContent className="flex max-h-[94dvh] w-[96vw] max-w-[1480px] flex-col gap-0 overflow-hidden p-0 sm:max-w-[min(1480px,96vw)] [&>button]:!text-white">
+      <DialogContent className="flex h-[98dvh] max-h-[98dvh] w-[98vw] max-w-[98vw] flex-col gap-0 overflow-hidden p-0 sm:max-w-[98vw] [&>button]:!text-white">
         <div className="flex-none bg-[#0B3D2E] px-5 pb-0 pt-3.5 pr-12 text-white">
           <div className="flex items-center gap-1.5 text-[9.5px] font-extrabold uppercase tracking-[.14em] text-[#C7F03F]">
             <Percent className="h-3.5 w-3.5" /> Bill discounting
