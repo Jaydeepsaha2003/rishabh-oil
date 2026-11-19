@@ -2436,7 +2436,7 @@ export async function editBdCumulativePayment(v: {
     if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) throw new Error('Pick the payment date')
     if (date > todayISO()) throw new Error('The payment cannot be dated in the future')
     const note = String(v.note ?? '').trim()
-    if (!note) throw new Error('Write a note — it goes into the voucher narration')
+    if (v.note !== undefined && !note) throw new Error('Write a note — it goes into the voucher narration')
     // The ledgers the vouchers carry today, kept unless changed: the bank on the
     // payment, the TDS on the journal when booked through the NBFC.
     const linesOf = async (id: number): Promise<Row[]> =>
@@ -2498,6 +2498,43 @@ export async function editBdCumulativePayment(v: {
 }
 
 /**
+ * CONVERT OLD INTEREST PAYMENTS — one payment voucher ⇄ via the NBFC (journal +
+ * payment). Each payment keeps its amounts, date, bank, TDS ledger, PAY number
+ * and the note in its narration; only how it is booked changes. One at a time,
+ * each in its own transaction, so one refusal does not stop the rest.
+ */
+export async function convertBdInterestPayments(entryIds: number[], viaNbfc: boolean): Promise<{ converted: number; skipped: number; failed: string[] }> {
+  let converted = 0
+  let skipped = 0
+  const failed: string[] = []
+  for (const eid of [...new Set((entryIds || []).map(n).filter((x) => x > 0))]) {
+    const row = (
+      await getClient().execute({
+        sql: `SELECT p.interest_entry_id, je.narration, je.vch_no FROM bd_interest_payments p JOIN journal_entries je ON je.id = p.journal_entry_id WHERE p.journal_entry_id = ? LIMIT 1`,
+        args: [eid]
+      })
+    ).rows[0] as unknown as Row | undefined
+    if (!row) {
+      skipped++
+      continue
+    }
+    if (!!n(row.interest_entry_id) === viaNbfc) {
+      skipped++
+      continue
+    }
+    const narr = String(row.narration || '')
+    const tail = narr.includes(' · ') ? narr.slice(narr.lastIndexOf(' · ') + 3).trim() : ''
+    try {
+      await editBdCumulativePayment({ entry_id: eid, via_nbfc: viaNbfc, ...(tail ? { note: tail } : {}) })
+      converted++
+    } catch (e) {
+      failed.push(`${String(row.vch_no || eid)}: ${(e as Error).message}`)
+    }
+  }
+  return { converted, skipped, failed }
+}
+
+/**
  * PAYMENTS MADE through Pay cumulative interest (the window's second tab): one
  * group per voucher, each bill on it against what was due on its days when it
  * was paid — the worked-out interest less anything paid on those same days
@@ -2513,7 +2550,7 @@ export async function listBdCumulativePayments(nbfcId?: number | null): Promise<
               JOIN bill_discountings b ON b.id = p.bd_id
               LEFT JOIN nbfcs nb ON nb.id = b.nbfc_id
               LEFT JOIN journal_entries je ON je.id = p.journal_entry_id
-             WHERE b.company_id = ? AND p.note LIKE '%one voucher with%' AND p.journal_entry_id IS NOT NULL
+             WHERE b.company_id = ? AND p.journal_entry_id IS NOT NULL
                AND (? IS NULL OR b.nbfc_id = ?)
              ORDER BY p.paid_date DESC, p.journal_entry_id DESC, p.id`,
       args: [getActiveCompanyId(), nbfcId ? n(nbfcId) : null, nbfcId ? n(nbfcId) : null]

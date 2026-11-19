@@ -721,6 +721,7 @@ export interface Api {
     interestPayments: (id: number) => Promise<Row[]>
     cumulativeInterest: (values: { nbfc_id: number; from_date?: string; to_date: string }) => Promise<Row[]>
     cumulativePayments: (nbfcId?: number | null) => Promise<Row[]>
+    convertInterestPayments: (entryIds: number[], viaNbfc: boolean) => Promise<{ converted: number; skipped: number; failed: string[] }>
     editCumulativePayment: (values: { entry_id: number; paid_date?: string; bank_account?: string | null; tds_ledger?: string | null; note?: string | null; amounts?: Record<string, number | string>; via_nbfc?: boolean }) => Promise<{ entry_id: number; gross: number; tds: number; net: number }>
     refunds: () => Promise<Row[]>
     refundCandidates: (values: { q?: string; since?: string; from?: string; to?: string; expected?: number }) => Promise<Row[]>

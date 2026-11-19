@@ -50,6 +50,31 @@ export function BdCumulativePayments({
   const [rev, setRev] = useState(0)
   const [deleting, setDeleting] = useState<number | null>(null)
   const [editing, setEditing] = useState<Row | null>(null)
+  const [converting, setConverting] = useState(false)
+  // OLD PAYMENTS, BOOKED AS ONE VOUCHER → via the NBFC (journal + payment), all at once.
+  async function convertAll(gs: Row[]): Promise<void> {
+    const ids = gs.filter((g) => !g.via_nbfc).map((g) => n(g.journal_entry_id))
+    if (!ids.length) return
+    if (
+      !window.confirm(
+        `Book ${ids.length} interest payment${ids.length === 1 ? '' : 's'} through the NBFC?
+
+Each becomes a JOURNAL (Dr interest / Cr NBFC, Cr TDS) and its PAYMENT (Dr NBFC / Cr bank). Amounts, dates, bank, TDS ledger and PAY numbers stay the same. Each can be switched back with Edit.`
+      )
+    )
+      return
+    setConverting(true)
+    try {
+      const r = await window.api.billDiscounting.convertInterestPayments(ids, true)
+      if (r.converted) toast.success(`${r.converted} payment${r.converted === 1 ? '' : 's'} now booked via the NBFC`)
+      if (r.failed.length) toast.error(`${r.failed.length} not converted — ${r.failed.slice(0, 3).join(' · ')}`, { duration: 12000 })
+      setRev((v) => v + 1)
+    } catch (e) {
+      toast.error((e as Error).message.replace(/^Error invoking remote method '[^']+': (Error: )?/, ''))
+    } finally {
+      setConverting(false)
+    }
+  }
   // DELETE A VOUCHER: one bank debit, so it goes as one — every bill's payment on it with it.
   async function remove(g: Row): Promise<void> {
     const bills = g.bills as Row[]
@@ -186,6 +211,21 @@ It is one voucher for ${bills.map((b) => b.bd_no).join(', ')} — the payment on
         <div className="rounded-[6px] border border-dashed border-[#C9DCCF] py-10 text-center text-[12.5px] font-semibold text-[#5A6B62]">No payment in this period.</div>
       ) : (
       <>
+      {list.some((g) => !g.via_nbfc) && (
+        <div className="flex flex-wrap items-center gap-3 rounded-[8px] border border-[#C6DAF0] bg-[#F4F8FD] px-4 py-2.5">
+          <span className="text-[12.5px] font-bold text-[#1B4E82]">
+            {list.filter((g) => !g.via_nbfc).length} of {list.length} payment{list.length === 1 ? '' : 's'} shown {list.filter((g) => !g.via_nbfc).length === 1 ? 'is' : 'are'} booked as one voucher
+          </span>
+          <button
+            type="button"
+            disabled={converting}
+            onClick={() => void convertAll(list)}
+            className="ml-auto flex h-9 items-center gap-1.5 rounded-[6px] bg-[#1B4E82] px-4 text-[12px] font-extrabold text-white hover:bg-[#163F69] disabled:opacity-50"
+          >
+            {converting ? <Loader2 className="h-4 w-4 animate-spin" /> : null} Convert to via NBFC
+          </button>
+        </div>
+      )}
       <div className="grid grid-cols-2 overflow-hidden rounded-[6px] border border-[#DCE6DC] bg-white lg:grid-cols-4">
         {[
           { k: 'Vouchers', v: String(list.length), sub: `${bills.length} bill${bills.length === 1 ? '' : 's'}`, tone: 'text-[#0A1F17]' },

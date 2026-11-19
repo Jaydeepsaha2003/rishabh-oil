@@ -1946,6 +1946,9 @@ export function registerIpc(): void {
   handle('bdCumPayments:list', async (_e, { nbfcId }: { nbfcId?: number | null }) =>
     (await import('./billDiscounting')).listBdCumulativePayments(nbfcId)
   )
+  handle('bd:convertInterestPayments', async (_e, { entryIds, viaNbfc }: { entryIds: number[]; viaNbfc: boolean }) =>
+    (await import('./billDiscounting')).convertBdInterestPayments(entryIds, !!viaNbfc)
+  )
   handle('bd:editCumulativeInterest', async (_e, { values }: { values: Row }) =>
     (await import('./billDiscounting')).editBdCumulativePayment(values as never)
   )

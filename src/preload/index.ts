@@ -1035,6 +1035,8 @@ const api = {
     interestPayments: (id: number): Promise<Row[]> => ipcRenderer.invoke('bd:interestPayments', { id }),
     cumulativeInterest: (values: { nbfc_id: number; from_date?: string; to_date: string }): Promise<Row[]> => ipcRenderer.invoke('bdCumInterest:list', { values }),
     cumulativePayments: (nbfcId?: number | null): Promise<Row[]> => ipcRenderer.invoke('bdCumPayments:list', { nbfcId }),
+    convertInterestPayments: (entryIds: number[], viaNbfc: boolean): Promise<{ converted: number; skipped: number; failed: string[] }> =>
+      ipcRenderer.invoke('bd:convertInterestPayments', { entryIds, viaNbfc }),
     editCumulativePayment: (values: { entry_id: number; paid_date?: string; bank_account?: string | null; tds_ledger?: string | null; note?: string | null; amounts?: Record<string, number | string>; via_nbfc?: boolean }): Promise<{ entry_id: number; gross: number; tds: number; net: number }> =>
       ipcRenderer.invoke('bd:editCumulativeInterest', { values }),
     refunds: (): Promise<Row[]> => ipcRenderer.invoke('bdRefunds:list'),
