@@ -5427,7 +5427,17 @@ Delete ${doc}?`)) return
       `Delete ${go.length} voucher${go.length === 1 ? '' : 's'}?\n\n${names(go)}\n\nNotes reverse their ledger entry and any stock they moved. This cannot be undone.` +
       (owned.length ? `\n\nLeft alone — posted by a purchase, sale or payment: ${names(owned)}` : '') +
       (noRight.length ? `\n\nLeft alone — no delete right: ${names(noRight)}` : '')
-    if (!confirm(msg)) return
+    // A TYPED CODE, not a click: a bulk delete cannot be undone, so the user
+    // types back a fresh 4-digit code before anything goes.
+    const code = String(Math.floor(1000 + Math.random() * 9000))
+    const typed = window.prompt(`${msg}
+
+To confirm, type this code:  ${code}`, '')
+    if (typed == null) return
+    if (typed.trim() !== code) {
+      toast.error('The code did not match — nothing was deleted')
+      return
+    }
     setDbDeleting(true)
     const failed: string[] = []
     let done = 0
