@@ -314,13 +314,13 @@ export function bargainTankerLines(
 }
 
 // The purchase-return sales behind a bargain's 'returned' figure.
-const returnsOf = (row: Row): { inv: string; qty: number; id: number; co: number }[] =>
+const returnsOf = (row: Row): { inv: string; qty: number; id: number; co: number; date: string }[] =>
   String(row.returned_invoices || '')
     .split(';')
     .filter(Boolean)
     .map((x) => {
-      const [inv, qty, id, co] = x.split('|')
-      return { inv, qty: Number(qty) || 0, id: Number(id) || 0, co: Number(co) || 0 }
+      const [inv, qty, id, co, date] = x.split('|')
+      return { inv, qty: Number(qty) || 0, id: Number(id) || 0, co: Number(co) || 0, date: date || '' }
     })
 
 export function Bargains({
@@ -3877,30 +3877,11 @@ export function Bargains({
                                   ) : null
                                   const rets = returnsOf(row)
                                   const remarksLine =
-                                    row.remarks || rets.length ? (
+                                    row.remarks ? (
                                       <>
                                         {row.remarks && (
                                           <p className="pb-2 text-xs text-muted-foreground">
                                             <span className="font-semibold">Remarks:</span> {row.remarks}
-                                          </p>
-                                        )}
-                                        {/* THE SALES INVOICE(S) THAT TOOK QTY BACK — what the 'returned' figure is. */}
-                                        {rets.length > 0 && (
-                                          <p className="flex flex-wrap items-center gap-1.5 pb-2 text-xs">
-                                            <span className="font-semibold text-[#8A5300]">↩ Purchase return:</span>
-                                            {rets.map((r) => (
-                                              <button
-                                                key={r.id}
-                                                type="button"
-                                                disabled={!onOpenSale}
-                                                onClick={() => onOpenSale?.(r.id, r.co || undefined)}
-                                                title={onOpenSale ? 'Open this sales invoice' : undefined}
-                                                className="inline-flex items-center gap-1 rounded-[3px] border border-[#F0D9B5] bg-[#FFF6E8] px-1.5 py-[1px] font-bold text-[#8A5300] hover:border-[#C98A1E] disabled:cursor-default"
-                                              >
-                                                Invoice {r.inv || `#${r.id}`} · {formatNum(r.qty)} {String(row.uom || 'MT')}
-                                                {onOpenSale && <span aria-hidden>↗</span>}
-                                              </button>
-                                            ))}
                                           </p>
                                         )}
                                       </>
@@ -4083,6 +4064,40 @@ export function Bargains({
                                               </tr>
                                             )
                                           })}
+                                          {/* PURCHASE RETURNS — the sales invoice(s) that took qty back off this bargain. */}
+                                          {rets.map((r) => (
+                                            <tr
+                                              key={`ret-${r.id}`}
+                                              className={cn(
+                                                'border-b bg-[#FFF6E8] text-[#8A5300]',
+                                                onOpenSale && 'cursor-pointer hover:bg-[#FDEBD0]',
+                                                __WEB__ && '!border-b-[#F0D9B5] !border-l-[3px] !border-l-[#C98A1E] !bg-[#FFF6E8] [&>td]:!h-[48px] [&>td]:!py-0'
+                                              )}
+                                              title={onOpenSale ? 'Open this sales invoice' : undefined}
+                                              onClick={() => onOpenSale?.(r.id, r.co || undefined)}
+                                            >
+                                              <td className="py-1.5 pr-3 font-bold">↩</td>
+                                              <td className={cn('py-1.5 pr-3 font-bold', __WEB__ && '!text-[12.5px]')}>
+                                                Purchase return · {r.inv || `#${r.id}`}
+                                                {onOpenSale && <span aria-hidden className="ml-1">↗</span>}
+                                              </td>
+                                              <td className={cn('py-1.5 pr-3', __WEB__ && '!text-[12px] !font-semibold !tabular-nums')}>{r.date ? formatDate(r.date) : '—'}</td>
+                                              <td className="py-1.5 pr-3">—</td>
+                                              <td className={cn('py-1.5 pr-3 text-right tabular-nums font-bold', __WEB__ && '!text-[12.5px]')}>−{formatNum(r.qty)}</td>
+                                              <td className="py-1.5 pr-3 text-right">—</td>
+                                              <td className="py-1.5 pr-3 text-right">—</td>
+                                              <td className={cn('py-1.5 text-right', isEx && 'pr-3')}>—</td>
+                                              {isEx && (
+                                                <>
+                                                  <td className="py-1.5 pr-3 text-right">—</td>
+                                                  <td className={cn('py-1.5 text-right', __WEB__ && '!pr-3')}>
+                                                    <span className="inline-flex items-center rounded-[2px] border border-[#F0D9B5] bg-white px-2 py-1 text-[10.5px] font-extrabold">Returned</span>
+                                                  </td>
+                                                </>
+                                              )}
+                                              <td className={cn('py-1.5 pr-3', __WEB__ && '!text-[12px] !font-bold')}>{coName(r.co) || '—'}</td>
+                                            </tr>
+                                          ))}
                                           <tr className={cn('border-t-2 border-amber-500 bg-amber-50 font-semibold text-amber-900', __WEB__ && '!border-t-0 !bg-[#C7F03F] !text-[#12280B] [&>td]:!h-[46px] [&>td]:!py-0')}>
                                             <td className={cn('py-1.5 pr-3', __WEB__ && '!pl-3 !text-[10.5px] !font-extrabold !uppercase !tracking-[.09em] !text-[#2E4A0B]')} colSpan={4}>
                                               Total{__WEB__ ? ` · ${list.length} tanker${list.length === 1 ? '' : 's'}` : ''}

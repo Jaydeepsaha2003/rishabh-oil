@@ -74,8 +74,8 @@ export async function listBargains(
            br.name AS broker_name,
            o.code AS oil_code, o.name AS oil_name,
            ${ret()} AS returned_qty,
-           -- WHICH SALES TOOK IT BACK: invoice, qty, sale id and its company, one per line.
-           (SELECT GROUP_CONCAT(COALESCE(s9.invoice_no, '') || '|' || s9.qty || '|' || s9.id || '|' || COALESCE(s9.company_id, ''), ';')
+           -- WHICH SALES TOOK IT BACK: invoice, qty, sale id, its company and date, one per line.
+           (SELECT GROUP_CONCAT(COALESCE(s9.invoice_no, '') || '|' || s9.qty || '|' || s9.id || '|' || COALESCE(s9.company_id, '') || '|' || COALESCE(s9.sale_date, ''), ';')
               FROM sales s9 WHERE s9.return_bargain_id = b.id AND s9.rejected_at IS NULL${rsCo}) AS returned_invoices,
            COALESCE((SELECT SUM(loaded_qty - COALESCE(extra_qty, 0)) FROM purchase_tankers WHERE bargain_id = b.id${ptCo}), 0)
              + COALESCE((SELECT SUM(extra_qty) FROM purchase_tankers WHERE extra_bargain_id = b.id${ptCo}), 0)

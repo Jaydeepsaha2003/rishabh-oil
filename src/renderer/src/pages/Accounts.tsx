@@ -4412,6 +4412,10 @@ export function Accounts({
     await window.api.tags.set('voucher', entryId, on ? [...keep, await recoTagId()] : keep)
   }
 
+  // Ctrl+A reads this so it always saves with the CURRENT form (its key
+  // handler is an effect whose deps never listed every field).
+  const saveLatest = useRef<() => Promise<boolean>>(async () => false)
+  saveLatest.current = () => saveVoucher()
   async function saveVoucher(): Promise<boolean> {
     if (saving) return false
     {
@@ -4423,7 +4427,7 @@ export function Accounts({
       }
     }
     let ok = false
-    if (vchType === 'DEBIT NOTE' && noteEditId == null && !dnKind && (noteInvoiceMode || __WEB__)) {
+    if (vchType === 'DEBIT NOTE' && noteEditId == null && editingId == null && !dnKind && (noteInvoiceMode || __WEB__)) {
       toast.error('Choose the debit note type — Shortage, Quality or Other')
       document.getElementById('dn-kind')?.focus()
       return false
@@ -5961,7 +5965,7 @@ To confirm, type this code:  ${code}`, '')
           else toast.info('This voucher is view only — change it from its document')
           return
         }
-        void saveVoucher()
+        void saveLatest.current()
         return
       }
       // PgUp / PgDn (Fn + ↑ / ↓ on a laptop) walk the vouchers of this type,
