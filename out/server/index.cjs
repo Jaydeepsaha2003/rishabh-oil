@@ -13819,6 +13819,7 @@ __export(billDiscounting_exports, {
   bdLimits: () => bdLimits,
   bdPendingPayout: () => bdPendingPayout,
   bdRefundCandidates: () => bdRefundCandidates,
+  convertBdInterestPayments: () => convertBdInterestPayments,
   convertOpenAdjToCharge: () => convertOpenAdjToCharge,
   createBd: () => createBd,
   deleteBd: () => deleteBd,
@@ -15384,7 +15385,7 @@ async function editBdCumulativePayment(v) {
     if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) throw new Error("Pick the payment date");
     if (date > todayISO6()) throw new Error("The payment cannot be dated in the future");
     const note = String(v.note ?? "").trim();
-    if (!note) throw new Error("Write a note \u2014 it goes into the voucher narration");
+    if (v.note !== void 0 && !note) throw new Error("Write a note \u2014 it goes into the voucher narration");
     const linesOf = async (id) => toPlain13(
       await c.execute({
         sql: `SELECT a.name, a.acc_group, jl.dr, jl.cr FROM journal_lines jl JOIN ledger_accounts a ON a.id = jl.account_id WHERE jl.entry_id = ? ORDER BY jl.id`,
@@ -15440,6 +15441,34 @@ async function editBdCumulativePayment(v) {
     return { entry_id: eid, gross, tds, net };
   });
 }
+async function convertBdInterestPayments(entryIds, viaNbfc) {
+  let converted = 0;
+  let skipped = 0;
+  const failed = [];
+  for (const eid of [...new Set((entryIds || []).map(n16).filter((x) => x > 0))]) {
+    const row = (await getClient().execute({
+      sql: `SELECT p.interest_entry_id, je.narration, je.vch_no FROM bd_interest_payments p JOIN journal_entries je ON je.id = p.journal_entry_id WHERE p.journal_entry_id = ? LIMIT 1`,
+      args: [eid]
+    })).rows[0];
+    if (!row) {
+      skipped++;
+      continue;
+    }
+    if (!!n16(row.interest_entry_id) === viaNbfc) {
+      skipped++;
+      continue;
+    }
+    const narr = String(row.narration || "");
+    const tail = narr.includes(" \xB7 ") ? narr.slice(narr.lastIndexOf(" \xB7 ") + 3).trim() : "";
+    try {
+      await editBdCumulativePayment({ entry_id: eid, via_nbfc: viaNbfc, ...tail ? { note: tail } : {} });
+      converted++;
+    } catch (e) {
+      failed.push(`${String(row.vch_no || eid)}: ${e.message}`);
+    }
+  }
+  return { converted, skipped, failed };
+}
 async function listBdCumulativePayments(nbfcId) {
   const rows2 = toPlain13(
     await getClient().execute({
@@ -15450,7 +15479,7 @@ async function listBdCumulativePayments(nbfcId) {
               JOIN bill_discountings b ON b.id = p.bd_id
               LEFT JOIN nbfcs nb ON nb.id = b.nbfc_id
               LEFT JOIN journal_entries je ON je.id = p.journal_entry_id
-             WHERE b.company_id = ? AND p.note LIKE '%one voucher with%' AND p.journal_entry_id IS NOT NULL
+             WHERE b.company_id = ? AND p.journal_entry_id IS NOT NULL
                AND (? IS NULL OR b.nbfc_id = ?)
              ORDER BY p.paid_date DESC, p.journal_entry_id DESC, p.id`,
       args: [getActiveCompanyId(), nbfcId ? n16(nbfcId) : null, nbfcId ? n16(nbfcId) : null]
@@ -45476,6 +45505,10 @@ function registerIpc() {
   handle(
     "bdCumPayments:list",
     async (_e, { nbfcId }) => (await Promise.resolve().then(() => (init_billDiscounting(), billDiscounting_exports))).listBdCumulativePayments(nbfcId)
+  );
+  handle(
+    "bd:convertInterestPayments",
+    async (_e, { entryIds, viaNbfc }) => (await Promise.resolve().then(() => (init_billDiscounting(), billDiscounting_exports))).convertBdInterestPayments(entryIds, !!viaNbfc)
   );
   handle(
     "bd:editCumulativeInterest",
