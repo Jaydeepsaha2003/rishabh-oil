@@ -28,6 +28,18 @@ function DiffChip({ diff, big }: { diff: number; big?: boolean }): React.JSX.Ele
   )
 }
 
+// "Oct 2026 payout" — the month(s) the interest covers, from the bills' periods.
+const MON = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
+const payoutOf = (g: Row): string => {
+  const froms = (g.bills as Row[]).map((b) => String(b.from_date || '').slice(0, 7)).filter(Boolean).sort()
+  const tos = (g.bills as Row[]).map((b) => String(b.to_date || '').slice(0, 7)).filter(Boolean).sort()
+  if (!froms.length || !tos.length) return ''
+  const a = froms[0]
+  const z = tos[tos.length - 1]
+  const name = (ym: string): string => MON[Number(ym.slice(5, 7)) - 1] || ym
+  if (a === z) return `${name(a)} ${a.slice(0, 4)} payout`
+  return a.slice(0, 4) === z.slice(0, 4) ? `${name(a)}–${name(z)} ${z.slice(0, 4)} payout` : `${name(a)} ${a.slice(0, 4)}–${name(z)} ${z.slice(0, 4)} payout`
+}
 const periodsOf = (g: Row): string[] => [...new Set((g.bills as Row[]).map((b) => `${formatDate(String(b.from_date))} → ${formatDate(String(b.to_date))}`))]
 
 export function BdCumulativePayments({
@@ -106,7 +118,8 @@ It is one voucher for ${bills.map((b) => b.bd_no).join(', ')} — the payment on
         if (!live) return
         setRaw(r)
         // The newest opens by itself; the rest wait for a click.
-        setOpen(new Set(r.length ? [n(r[0].journal_entry_id)] : []))
+        // Every voucher starts closed; a click opens it.
+        setOpen(new Set())
       })
       .catch((e) => toast.error((e as Error).message))
     return () => {
@@ -298,6 +311,7 @@ It is one voucher for ${bills.map((b) => b.bd_no).join(', ')} — the payment on
                           </span>
                         ))}
                       </span>
+                      <span className="mt-1 block text-[10.5px] font-extrabold uppercase tracking-[.06em] text-[#5A6B62]">{payoutOf(g)}</span>
                     </td>
                     <td className="px-2 py-2.5">
                       {periodsOf(g).map((p) => (
