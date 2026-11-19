@@ -1,6 +1,6 @@
 import { Fragment, useEffect, useMemo, useState } from 'react'
 import { toast } from 'sonner'
-import { CheckCircle2, ChevronDown, Loader2, Percent, Plus } from 'lucide-react'
+import { CheckCircle2, ChevronDown, Landmark, ListOrdered, Loader2, Percent, Plus, Wallet } from 'lucide-react'
 import { PrincipalSplit } from '@/components/BdDetail'
 import { BdCumulativePayments } from '@/components/BdCumulativePayments'
 import { Dialog, DialogContent, DialogTitle } from '@/components/ui/dialog'
@@ -19,6 +19,10 @@ const n = (v: unknown): number => Number(v) || 0
 // 12,34,567.89 — Indian grouping in a box that is not being typed in.
 const inIN = (v: unknown): string => n(v).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
 const r2 = (v: number): number => Math.round(v * 100) / 100
+// One look for every dropdown in the window: left-aligned, normal case, small text, an icon chip.
+const FIELD =
+  '!h-10 !w-full !justify-between !rounded-[7px] !border-[#C9DCCF] !bg-white !px-2.5 !text-[12px] !font-semibold !normal-case !tracking-normal !text-[#0A1F17] !shadow-[0_1px_2px_rgba(10,31,23,.06)] hover:!border-[#0B6B45] focus:!ring-2 focus:!ring-[#0B6B45]/15'
+const FICON = 'flex h-6 w-6 flex-none items-center justify-center rounded-[5px] bg-[#EEF5EF] text-[#0B6B45]'
 // The interest whose net after TDS (TDS rounded to the paisa) is exactly `net`.
 const grossFromNet = (net: number, pct: number): number => {
   if (!(net > 0)) return 0
@@ -235,8 +239,8 @@ export function BdCumulativeInterest({ open, onClose, nbfcs, onDone }: { open: b
                 <span className="flex items-center gap-2">
                   <span className="text-[10px] font-extrabold uppercase tracking-[.1em] text-[#5A6B62]">NBFC</span>
                   <Select searchable value={nbfc || 'all'} onValueChange={(v) => setNbfc(v === 'all' ? '' : v)}>
-                    <SelectTrigger className="h-9 w-[280px] bg-white text-[12.5px] font-bold">
-                      <SelectValue />
+                    <SelectTrigger className={cn(FIELD, '!w-[280px]')}>
+                      <span className="flex min-w-0 items-center gap-2 text-left"><span className={FICON}><Landmark className="h-3.5 w-3.5" /></span><span className="min-w-0 truncate"><SelectValue /></span></span>
                     </SelectTrigger>
                     <SelectContent className="max-h-64">
                       <SelectItem value="all">All NBFCs</SelectItem>
@@ -258,8 +262,8 @@ export function BdCumulativeInterest({ open, onClose, nbfcs, onDone }: { open: b
             <div>
               <span className={lbl}>NBFC</span>
               <Select searchable value={nbfc} onValueChange={setNbfc}>
-                <SelectTrigger>
-                  <SelectValue placeholder="Choose the NBFC" />
+                <SelectTrigger className={FIELD}>
+                  <span className="flex min-w-0 items-center gap-2 text-left"><span className={FICON}><Landmark className="h-3.5 w-3.5" /></span><span className="min-w-0 truncate"><SelectValue placeholder="Choose the NBFC" /></span></span>
                 </SelectTrigger>
                 <SelectContent className="max-h-64">
                   {nbfcs.map((x) => (
@@ -293,7 +297,7 @@ export function BdCumulativeInterest({ open, onClose, nbfcs, onDone }: { open: b
                   value={month}
                   max={today.slice(0, 7)}
                   onChange={(e) => e.target.value && setMonth(e.target.value)}
-                  className="h-9 w-full rounded-[4px] border border-[#C9DCCF] bg-white px-2.5 text-[13px] font-semibold"
+                  className="h-10 w-full rounded-[7px] border border-[#C9DCCF] bg-white px-3 text-[12px] font-semibold text-[#0A1F17] shadow-[0_1px_2px_rgba(10,31,23,.06)] outline-none hover:border-[#0B6B45] focus:border-[#0B6B45] focus:ring-2 focus:ring-[#0B6B45]/15"
                 />
               </div>
             ) : (
@@ -419,8 +423,8 @@ export function BdCumulativeInterest({ open, onClose, nbfcs, onDone }: { open: b
                       setLump(null)
                     }}
                   >
-                    <SelectTrigger className="h-11 w-[230px] text-[13px] font-bold">
-                      <SelectValue />
+                    <SelectTrigger className={cn(FIELD, '!h-11 !w-[230px]')}>
+                      <span className="flex min-w-0 items-center gap-2 text-left"><span className={FICON}><Wallet className="h-3.5 w-3.5" /></span><span className="min-w-0 truncate"><SelectValue /></span></span>
                     </SelectTrigger>
                     <SelectContent>
                       <SelectItem value="net">Net from bank (after TDS)</SelectItem>
@@ -431,8 +435,8 @@ export function BdCumulativeInterest({ open, onClose, nbfcs, onDone }: { open: b
                 <div>
                   <div className="mb-1 text-[10px] font-extrabold uppercase tracking-[.12em] text-[#5A6B62]">Shared</div>
                   <Select value={how} onValueChange={(v) => setHow(v as 'fifo' | 'lifo' | 'pro' | 'equal')}>
-                    <SelectTrigger className="h-11 w-[230px] text-[13px] font-bold">
-                      <SelectValue />
+                    <SelectTrigger className={cn(FIELD, '!h-11 !w-[230px]')}>
+                      <span className="flex min-w-0 items-center gap-2 text-left"><span className={FICON}><ListOrdered className="h-3.5 w-3.5" /></span><span className="min-w-0 truncate"><SelectValue /></span></span>
                     </SelectTrigger>
                     <SelectContent>
                       <SelectItem value="fifo">Oldest first (FIFO)</SelectItem>
@@ -720,8 +724,8 @@ export function BdCumulativeInterest({ open, onClose, nbfcs, onDone }: { open: b
           <div className="min-w-[200px] flex-1 basis-[220px]">
             <span className={lbl}>Paid from bank</span>
             <Select searchable value={bank} onValueChange={setBank}>
-              <SelectTrigger>
-                <SelectValue placeholder="The bill's own bank (first ticked bill)" />
+              <SelectTrigger className={FIELD}>
+                <span className="flex min-w-0 items-center gap-2 text-left"><span className={FICON}><Landmark className="h-3.5 w-3.5" /></span><span className="min-w-0 truncate"><SelectValue placeholder="The first bill’s own bank" /></span></span>
               </SelectTrigger>
               <SelectContent className="max-h-64">
                 {banks.map((b) => (
@@ -735,8 +739,8 @@ export function BdCumulativeInterest({ open, onClose, nbfcs, onDone }: { open: b
           <div className="min-w-[200px] flex-1 basis-[220px]">
             <span className={lbl}>TDS ledger</span>
             <Select searchable value={tdsLedger} onValueChange={setTdsLedger}>
-              <SelectTrigger>
-                <SelectValue placeholder="TDS on interest payable (usual)" />
+              <SelectTrigger className={FIELD}>
+                <span className="flex min-w-0 items-center gap-2 text-left"><span className={FICON}><Percent className="h-3.5 w-3.5" /></span><span className="min-w-0 truncate"><SelectValue placeholder="TDS on interest payable (usual)" /></span></span>
               </SelectTrigger>
               <SelectContent className="max-h-64">
                 {tdsLedgers.map((b) => (
