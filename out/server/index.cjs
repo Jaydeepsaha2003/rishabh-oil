@@ -19877,6 +19877,9 @@ async function listBargains(from, to, companyIds, forModule) {
            br.name AS broker_name,
            o.code AS oil_code, o.name AS oil_name,
            ${ret()} AS returned_qty,
+           -- WHICH SALES TOOK IT BACK: invoice, qty, sale id and its company, one per line.
+           (SELECT GROUP_CONCAT(COALESCE(s9.invoice_no, '') || '|' || s9.qty || '|' || s9.id || '|' || COALESCE(s9.company_id, ''), ';')
+              FROM sales s9 WHERE s9.return_bargain_id = b.id AND s9.rejected_at IS NULL${rsCo}) AS returned_invoices,
            COALESCE((SELECT SUM(loaded_qty - COALESCE(extra_qty, 0)) FROM purchase_tankers WHERE bargain_id = b.id${ptCo}), 0)
              + COALESCE((SELECT SUM(extra_qty) FROM purchase_tankers WHERE extra_bargain_id = b.id${ptCo}), 0)
              + COALESCE((SELECT SUM(ob.qty) FROM order_bargains ob JOIN orders o2 ON o2.id = ob.order_id WHERE ob.bargain_id = b.id${obCo}), 0)
@@ -32760,8 +32763,19 @@ __export(purchaseDebitNotes_exports, {
   DN_KINDS: () => DN_KINDS,
   purchaseDnCandidates: () => purchaseDnCandidates,
   purchaseDnMap: () => purchaseDnMap,
+  setDebitNoteKind: () => setDebitNoteKind,
   setPurchaseDnLinks: () => setPurchaseDnLinks
 });
+async function setDebitNoteKind(entryId, kind) {
+  const k = ["shortage", "quality", "other"].includes(String(kind || "")) ? String(kind) : null;
+  const c = getClient();
+  const je = (await c.execute({ sql: "SELECT id, vch_type FROM journal_entries WHERE id = ?", args: [n57(entryId)] })).rows[0];
+  if (!je) throw new Error("That voucher no longer exists");
+  if (!/^DEBIT NOTE/i.test(String(je.vch_type || ""))) throw new Error("Only a debit note takes a debit-note type");
+  await c.execute({ sql: "UPDATE journal_entries SET dn_kind = ? WHERE id = ?", args: [k, n57(entryId)] });
+  await c.execute({ sql: "UPDATE notes SET dn_kind = ? WHERE journal_entry_id = ? AND note_type = 'debit'", args: [k, n57(entryId)] });
+  return { id: n57(entryId), kind: k };
+}
 async function ensure4() {
   if (ready6) return;
   await getClient().execute(`CREATE TABLE IF NOT EXISTS purchase_dn_links (
@@ -32796,7 +32810,7 @@ async function accountingLinks(orderId) {
   const one = orderId ? "AND o.id = ?" : "";
   const args = orderId ? [n57(orderId)] : [];
   const viaAllocs = (await c.execute({
-    sql: `SELECT o.company_id, o.id AS order_id, je.id AS entry_id, COALESCE(NULLIF(nt.dn_kind, ''), 'other') AS kind,
+    sql: `SELECT o.company_id, o.id AS order_id, je.id AS entry_id, COALESCE(NULLIF(nt.dn_kind, ''), NULLIF(je.dn_kind, ''), 'other') AS kind,
                    ROUND(SUM(ba.amount), 2) AS amount, je.entry_date, je.vch_no, ${codeSql2} AS code
               FROM journal_bill_allocs ba
               JOIN journal_lines jl ON jl.id = ba.line_id
@@ -32812,7 +32826,7 @@ async function accountingLinks(orderId) {
     args
   })).rows;
   const viaNote = (await c.execute({
-    sql: `SELECT o.company_id, o.id AS order_id, je.id AS entry_id, COALESCE(NULLIF(nt.dn_kind, ''), 'other') AS kind,
+    sql: `SELECT o.company_id, o.id AS order_id, je.id AS entry_id, COALESCE(NULLIF(nt.dn_kind, ''), NULLIF(je.dn_kind, ''), 'other') AS kind,
                    ROUND(nt.total_amount, 2) AS amount, je.entry_date, je.vch_no, ${codeSql2} AS code
               FROM notes nt
               JOIN journal_entries je ON je.id = nt.journal_entry_id
@@ -32845,7 +32859,7 @@ async function purchaseDnCandidates(orderId) {
                    (SELECT SUM(jl.dr) FROM journal_lines jl WHERE jl.entry_id = je.id AND jl.account_id = ?) AS amount,
                    (SELECT GROUP_CONCAT(ba.ref_name, ', ') FROM journal_bill_allocs ba JOIN journal_lines jl2 ON jl2.id = ba.line_id
                      WHERE jl2.entry_id = je.id AND ba.ref_name IS NOT NULL) AS refs,
-                   (SELECT nt.dn_kind FROM notes nt WHERE nt.journal_entry_id = je.id LIMIT 1) AS dn_kind,
+                   COALESCE((SELECT NULLIF(nt.dn_kind, '') FROM notes nt WHERE nt.journal_entry_id = je.id LIMIT 1), NULLIF(je.dn_kind, '')) AS dn_kind,
                    (SELECT GROUP_CONCAT(o2.invoice_no || ' (' || t.kind || ')', ', ') FROM purchase_dn_links t JOIN orders o2 ON o2.id = t.order_id
                      WHERE t.entry_id = je.id AND t.company_id = je.company_id AND t.order_id <> ?) AS linked_elsewhere
               FROM journal_entries je
@@ -32879,6 +32893,19 @@ async function setPurchaseDnLinks(orderId, links) {
     await c.execute({
       sql: "INSERT OR IGNORE INTO purchase_dn_links (company_id, order_id, entry_id, kind, amount) VALUES (?, ?, ?, ?, ?)",
       args: [n57(o.company_id), n57(o.id), l.entry_id, l.kind, allowed.get(l.entry_id) || 0]
+    });
+  }
+  const kindsOf = /* @__PURE__ */ new Map();
+  for (const l of clean7) kindsOf.set(l.entry_id, /* @__PURE__ */ new Set([...kindsOf.get(l.entry_id) || [], l.kind]));
+  for (const [eid, ks] of kindsOf) {
+    if (ks.size !== 1) continue;
+    await c.execute({
+      sql: "UPDATE notes SET dn_kind = ? WHERE journal_entry_id = ? AND note_type = 'debit' AND COALESCE(dn_kind, '') IN ('', 'other')",
+      args: [[...ks][0], eid]
+    });
+    await c.execute({
+      sql: "UPDATE journal_entries SET dn_kind = ? WHERE id = ? AND COALESCE(dn_kind, '') IN ('', 'other')",
+      args: [[...ks][0], eid]
     });
   }
   return { linked: clean7.length };
@@ -38487,6 +38514,8 @@ var REQUIRED_COLUMNS = [
   { table: "journal_line_splits", column: "color", type: "TEXT" },
   // A debit note's type: 'shortage' or 'quality' (or 'other') — asked on the Debit Note screen.
   { table: "notes", column: "dn_kind", type: "TEXT" },
+  // The same type on the VOUCHER — a debit note booked from Tally has no notes row.
+  { table: "journal_entries", column: "dn_kind", type: "TEXT" },
   // A cumulative interest payment booked through the NBFC: the JOURNAL (Dr interest /
   // Cr NBFC, Cr TDS) beside the PAYMENT (Dr NBFC / Cr bank) in journal_entry_id.
   { table: "bd_interest_payments", column: "interest_entry_id", type: "INTEGER" },
@@ -45233,6 +45262,7 @@ function registerIpc() {
     async (_e, { id, links }) => (await Promise.resolve().then(() => (init_purchaseDebitNotes(), purchaseDebitNotes_exports))).setPurchaseDnLinks(Number(id), links)
   );
   handle("orders:dnNoteMap", async () => (await Promise.resolve().then(() => (init_purchaseDebitNotes(), purchaseDebitNotes_exports))).purchaseDnMap());
+  handle("vouchers:setDnKind", async (_e, { id, kind }) => (await Promise.resolve().then(() => (init_purchaseDebitNotes(), purchaseDebitNotes_exports))).setDebitNoteKind(Number(id), kind));
   handle("sales:shortageNotesSet", (_e, { id, entryIds }) => setShortageNotes(id, entryIds));
   handle("sales:shortageNoteMap", () => shortageNoteMap());
   handle("sales:cancelledNos", (_e, args) => listCancelledInvoiceNos(args?.companyId));
