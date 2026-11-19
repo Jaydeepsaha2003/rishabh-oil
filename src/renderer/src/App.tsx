@@ -655,7 +655,10 @@ function App(): React.JSX.Element {
           />
         )}
         {view === 'bargains' && (
-          <Bargains onOpenOrder={(id, orderCompanyId) => openRecord('orders', id, { companyId: orderCompanyId })} />
+          <Bargains
+            onOpenOrder={(id, orderCompanyId) => openRecord('orders', id, { companyId: orderCompanyId })}
+            onOpenSale={(id, saleCompanyId) => openRecord('sales', id, { companyId: saleCompanyId })}
+          />
         )}
         {view === 'orders' && (
           <Orders

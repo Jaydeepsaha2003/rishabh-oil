@@ -313,9 +313,20 @@ export function bargainTankerLines(
   return { isEx, lines, tot }
 }
 
+// The purchase-return sales behind a bargain's 'returned' figure.
+const returnsOf = (row: Row): { inv: string; qty: number; id: number; co: number }[] =>
+  String(row.returned_invoices || '')
+    .split(';')
+    .filter(Boolean)
+    .map((x) => {
+      const [inv, qty, id, co] = x.split('|')
+      return { inv, qty: Number(qty) || 0, id: Number(id) || 0, co: Number(co) || 0 }
+    })
+
 export function Bargains({
-  onOpenOrder
-}: { onOpenOrder?: (orderId: number, companyId?: number) => void } = {}): React.JSX.Element {
+  onOpenOrder,
+  onOpenSale
+}: { onOpenOrder?: (orderId: number, companyId?: number) => void; onOpenSale?: (saleId: number, companyId?: number) => void } = {}): React.JSX.Element {
   // How far back this user may date a new entry. The save is refused either
   // way; greying the days out just stops the form offering one it will reject.
   const minDate = useEntryWindow('bargains')
@@ -3740,9 +3751,11 @@ export function Bargains({
                                   {ret > 0.0005 && (
                                     <span
                                       className="rounded-[3px] border border-[#F0D9B5] bg-[#FFF6E8] px-1.5 py-[1px] text-[10px] font-bold leading-4 !text-[#8A5300]"
-                                      title={`${formatNum((Number(row._dispatch) || 0) + ret)} drawn · less ${formatNum(ret)} returned on purchase return — the balance opened again`}
+                                      title={`${formatNum((Number(row._dispatch) || 0) + ret)} drawn · less ${formatNum(ret)} returned on purchase return — the balance opened again\n${returnsOf(row)
+                                        .map((r) => `Invoice ${r.inv || '#' + r.id}: ${formatNum(r.qty)}`)
+                                        .join('\n')}`}
                                     >
-                                      ↩ {formatNum(ret)} returned
+                                      ↩ {formatNum(ret)} returned{returnsOf(row).length === 1 && returnsOf(row)[0].inv ? ` · ${returnsOf(row)[0].inv}` : ''}
                                     </span>
                                   )}
                                   {shown ? formatNum(Number(row._dispatch) || 0) : '—'}
@@ -3862,9 +3875,36 @@ export function Bargains({
                                       </table>
                                     </div>
                                   ) : null
-                                  const remarksLine = row.remarks ? (
-                                    <p className="pb-2 text-xs text-muted-foreground"><span className="font-semibold">Remarks:</span> {row.remarks}</p>
-                                  ) : null
+                                  const rets = returnsOf(row)
+                                  const remarksLine =
+                                    row.remarks || rets.length ? (
+                                      <>
+                                        {row.remarks && (
+                                          <p className="pb-2 text-xs text-muted-foreground">
+                                            <span className="font-semibold">Remarks:</span> {row.remarks}
+                                          </p>
+                                        )}
+                                        {/* THE SALES INVOICE(S) THAT TOOK QTY BACK — what the 'returned' figure is. */}
+                                        {rets.length > 0 && (
+                                          <p className="flex flex-wrap items-center gap-1.5 pb-2 text-xs">
+                                            <span className="font-semibold text-[#8A5300]">↩ Purchase return:</span>
+                                            {rets.map((r) => (
+                                              <button
+                                                key={r.id}
+                                                type="button"
+                                                disabled={!onOpenSale}
+                                                onClick={() => onOpenSale?.(r.id, r.co || undefined)}
+                                                title={onOpenSale ? 'Open this sales invoice' : undefined}
+                                                className="inline-flex items-center gap-1 rounded-[3px] border border-[#F0D9B5] bg-[#FFF6E8] px-1.5 py-[1px] font-bold text-[#8A5300] hover:border-[#C98A1E] disabled:cursor-default"
+                                              >
+                                                Invoice {r.inv || `#${r.id}`} · {formatNum(r.qty)} {String(row.uom || 'MT')}
+                                                {onOpenSale && <span aria-hidden>↗</span>}
+                                              </button>
+                                            ))}
+                                          </p>
+                                        )}
+                                      </>
+                                    ) : null
                                   if (!list.length) {
                                     return (
                                       <div className={cn('bg-slate-200 px-6 py-4', __WEB__ && '!border-b !border-b-[#DCE7DB] !bg-[#F1F5EF] !py-3.5 !pl-10 !pr-4')}>
