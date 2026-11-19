@@ -108,6 +108,22 @@ function UpdateTopBar(): React.JSX.Element | null {
 type CompanyRow = Record<string, any>
 
 function App(): React.JSX.Element {
+  // CTRL+A SAVES ANY OPEN WINDOW: the topmost dialog's button marked
+  // data-ctrl-a is pressed (Tally's Accept). Pages with their own Ctrl+A
+  // (Accounting) handle it first and mark the event handled.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent): void => {
+      if (e.defaultPrevented || !(e.ctrlKey || e.metaKey) || e.altKey || e.shiftKey || e.code !== 'KeyA') return
+      const dlgs = document.querySelectorAll('[role="dialog"],[role="alertdialog"]')
+      if (!dlgs.length) return
+      const btn = dlgs[dlgs.length - 1].querySelector<HTMLButtonElement>('[data-ctrl-a]')
+      if (!btn || btn.disabled || btn.offsetParent === null) return
+      e.preventDefault()
+      btn.click()
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [])
   const [user, setUser] = useState<AppUser | null>(() => loadUser())
   const [booting, setBooting] = useState(false)
   // On the website, the URL is the source of truth for which page loads —

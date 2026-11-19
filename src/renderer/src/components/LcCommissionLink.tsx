@@ -294,6 +294,7 @@ export function LcCommissionLink({
             <button
               type="button"
               disabled={busy}
+              data-ctrl-a
               onClick={() => void savePct()}
               className="rounded-[5px] bg-[#0B3D2E] px-3.5 py-1.5 text-[11.5px] font-bold text-white hover:bg-[#0F5440] disabled:opacity-40"
             >

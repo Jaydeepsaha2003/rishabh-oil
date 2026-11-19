@@ -519,7 +519,7 @@ function CloseFdDialog({ init, onClose, onDone }: { init: Row; onClose: () => vo
           <button type="button" onClick={onClose} className="h-9 rounded-[5px] border border-[#C9DCCF] bg-white px-4 text-[12px] font-extrabold text-[#33473E]">
             Cancel
           </button>
-          <button type="button" onClick={() => onDone(c)} className="h-9 rounded-[5px] bg-[#0B3D2E] px-5 text-[12px] font-extrabold text-[#C7F03F] hover:bg-[#0F4A38]">
+          <button type="button" data-ctrl-a onClick={() => onDone(c)} className="h-9 rounded-[5px] bg-[#0B3D2E] px-5 text-[12px] font-extrabold text-[#C7F03F] hover:bg-[#0F4A38]">
             Close FD
           </button>
         </div>

@@ -5939,6 +5939,7 @@ Its bank voucher is removed too.`)) return
                     ? '!bg-[#C3D2C6] !text-[#F1F5EF] !opacity-100 hover:!bg-[#C3D2C6]'
                     : '!bg-[#0B3D2E] !text-[#C7F03F] !shadow-[0_8px_18px_-10px_rgba(7,43,32,.8)] hover:!bg-[#0F4A38]')
               )}
+              data-ctrl-a
               onClick={() => void save()}
               disabled={saving || (__WEB__ && bdMissing(form).length > 0)}
             >
