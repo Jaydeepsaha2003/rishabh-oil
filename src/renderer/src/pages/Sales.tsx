@@ -5332,7 +5332,7 @@ function SalesBargainsTab({ onOpenSale, onOpenVoucher }: { onOpenSale?: (id: num
   const [sectionCategory, setSectionCategory] = useState<string>('ALL')
   // Loose unless opened for Packed — the dashboard's open-bargains card opens
   // the tab its figure came from.
-  const [sectionType, setSectionType] = useState<'LOOSE' | 'PACKED'>(() =>
+  const [sectionType, setSectionType] = useState<'ALL' | 'LOOSE' | 'PACKED'>(() =>
     takePageIntent('salesBargains')?.saleType === 'PACKED' ? 'PACKED' : 'LOOSE'
   )
   // Remembered, like the purchase register's own. This is a way of LOOKING at
@@ -5578,7 +5578,7 @@ function SalesBargainsTab({ onOpenSale, onOpenVoucher }: { onOpenSale?: (id: num
   const matchedRows = rows.filter(
     (r) =>
       (sectionCategory === 'ALL' || String(r.sale_category || 'FINISHED_OIL') === sectionCategory) &&
-      (String(r.sale_type || 'LOOSE') === 'PACKED' ? 'PACKED' : 'LOOSE') === sectionType &&
+      (sectionType === 'ALL' || (String(r.sale_type || 'LOOSE') === 'PACKED' ? 'PACKED' : 'LOOSE') === sectionType) &&
       (!q ||
         [r.bargain_no, r.customer, r.product_name, r.note].some((f) =>
           String(f || '').toLowerCase().includes(q)
@@ -5990,6 +5990,36 @@ function SalesBargainsTab({ onOpenSale, onOpenVoucher }: { onOpenSale?: (id: num
       setRateBusy(false)
       if (rateFile.current) rateFile.current.value = ''
     }
+  }
+
+  // SQUARE OFF SEVERAL BARGAINS: tick them, and each one's whole balance is
+  // adjusted away (the same dated adjustment as Add / remove balance qty), so it settles at 0.
+  const [sqPick, setSqPick] = useState<Set<number> | null>(null)
+  const [sqAsk, setSqAsk] = useState(false)
+  const [sqNote, setSqNote] = useState('Squared off')
+  const [sqDate, setSqDate] = useState(todayISO())
+  const [sqBusy, setSqBusy] = useState(false)
+  const sqBal = (r: Row): number => round3(Number(r.balance_qty) || 0)
+  async function runSquare(list: Row[]): Promise<void> {
+    setSqBusy(true)
+    let done = 0
+    const failed: string[] = []
+    for (const r of list) {
+      const bal = sqBal(r)
+      if (Math.abs(bal) < 0.0005) continue
+      try {
+        await window.api.salesBargains.adjust(Number(r.id), -bal, sqNote.trim() || 'Squared off', sqDate || undefined)
+        done++
+      } catch (e) {
+        failed.push(`${String(r.bargain_no)}: ${errText(e)}`)
+      }
+    }
+    setSqBusy(false)
+    setSqAsk(false)
+    setSqPick(null)
+    if (done) toast.success(`${done} bargain${done === 1 ? '' : 's'} squared off`)
+    if (failed.length) toast.error(`${failed.length} not squared — ${failed.slice(0, 3).join(' · ')}`, { duration: 12000 })
+    await load()
   }
 
   function openAdjust(row: Row): void {
@@ -6775,7 +6805,7 @@ function SalesBargainsTab({ onOpenSale, onOpenVoucher }: { onOpenSale?: (id: num
               hard switch here as on the desktop, with the category chips
               beside them. */}
           <div className="flex gap-[7px] overflow-x-auto pb-0.5">
-            {(['LOOSE', 'PACKED'] as const).map((t) => {
+            {(['ALL', 'LOOSE', 'PACKED'] as const).map((t) => {
               const on = sectionType === t
               return (
                 <button
@@ -6785,7 +6815,7 @@ function SalesBargainsTab({ onOpenSale, onOpenVoucher }: { onOpenSale?: (id: num
                   className="flex h-11 flex-none items-center whitespace-nowrap rounded-[4px] border border-[#DCE7DB] px-[15px] text-[12.5px] font-extrabold"
                   style={on ? { background: '#0B3D2E', color: '#fff' } : { background: '#fff', color: '#33473E' }}
                 >
-                  {t === 'LOOSE' ? 'Loose' : 'Packed'}
+                  {t === 'ALL' ? 'All' : t === 'LOOSE' ? 'Loose' : 'Packed'}
                 </button>
               )
             })}
@@ -6901,7 +6931,7 @@ function SalesBargainsTab({ onOpenSale, onOpenVoucher }: { onOpenSale?: (id: num
             <div className="flex flex-none flex-col items-center gap-2 rounded-[4px] border border-[#D6E2D6] bg-white px-4 py-10">
               <Receipt className="h-7 w-7 text-[#C3D2C6]" />
               <span className="text-center text-[12.5px] font-bold text-[#5A6B62]">
-                No {sectionType === 'PACKED' ? 'packed' : 'loose'} bargain in this period.
+                No {sectionType === 'PACKED' ? 'packed ' : sectionType === 'LOOSE' ? 'loose ' : ''}bargain in this period.
               </span>
             </div>
           )}
@@ -7085,7 +7115,7 @@ function SalesBargainsTab({ onOpenSale, onOpenVoucher }: { onOpenSale?: (id: num
             chips beside it — it changes which register you are in, not which
             slice of one. The forest ground says so without a label. */}
         <div className={cn('inline-flex rounded-lg border p-0.5', __WEB__ && '!gap-0.5 !rounded-[4px] !border-0 !bg-[#0B3D2E] !p-[3px]')}>
-          {(['LOOSE', 'PACKED'] as const).map((t) => (
+          {(['ALL', 'LOOSE', 'PACKED'] as const).map((t) => (
             <button
               key={t}
               type="button"
@@ -7097,7 +7127,7 @@ function SalesBargainsTab({ onOpenSale, onOpenVoucher }: { onOpenSale?: (id: num
                 __WEB__ && (sectionType === t ? '!bg-[#C7F03F] !text-[#12280B]' : '!bg-transparent !text-[#8FBFA8] hover:!text-white')
               )}
             >
-              {t === 'LOOSE' ? 'Loose' : 'Packed'}
+              {t === 'ALL' ? 'All' : t === 'LOOSE' ? 'Loose' : 'Packed'}
             </button>
           ))}
         </div>
@@ -7125,7 +7155,20 @@ function SalesBargainsTab({ onOpenSale, onOpenVoucher }: { onOpenSale?: (id: num
             </button>
           ))}
         </div>
-        <label className={cn('ml-auto flex shrink-0 cursor-pointer items-center gap-2 whitespace-nowrap text-[12px] text-muted-foreground', __WEB__ && '!h-[38px] !gap-2.5 !rounded-[4px] !border !border-[#C3D2C6] !bg-white !px-3 !text-[12.5px] !font-bold !text-[#33473E] hover:!bg-[#F7FAF6]')}>
+        {!topUpDesk && (
+          <button
+            type="button"
+            onClick={() => setSqPick((p) => (p ? null : new Set()))}
+            title="Tick several bargains and take their remaining balance off, so they settle at 0"
+            className={cn(
+              'ml-auto flex h-[38px] shrink-0 items-center gap-2 whitespace-nowrap rounded-[4px] border px-3 text-[12.5px] font-bold',
+              sqPick ? 'border-[#0B3D2E] bg-[#0B3D2E] text-[#C7F03F]' : 'border-[#C3D2C6] bg-white text-[#33473E] hover:bg-[#F7FAF6]'
+            )}
+          >
+            <ListChecks className="h-4 w-4" /> {sqPick ? 'Cancel square off' : 'Square off'}
+          </button>
+        )}
+        <label className={cn(topUpDesk && 'ml-auto', 'flex shrink-0 cursor-pointer items-center gap-2 whitespace-nowrap text-[12px] text-muted-foreground', __WEB__ && '!h-[38px] !gap-2.5 !rounded-[4px] !border !border-[#C3D2C6] !bg-white !px-3 !text-[12.5px] !font-bold !text-[#33473E] hover:!bg-[#F7FAF6]')}>
           <Switch checked={showZero} onCheckedChange={setShowZero} />
           Show settled {__WEB__ ? <span className="font-semibold text-[#7C9188]">(0 balance)</span> : '(0 balance)'}
           <span
@@ -7542,6 +7585,24 @@ function SalesBargainsTab({ onOpenSale, onOpenVoucher }: { onOpenSale?: (id: num
                         >
                           <TableCell className={cn('font-medium', __WEB__ && '!min-w-[300px] !text-[13.5px] !font-bold')}>
                             <span className="inline-flex items-center gap-1.5">
+                              {sqPick && (
+                                <input
+                                  type="checkbox"
+                                  disabled={Math.abs(sqBal(row)) < 0.0005}
+                                  checked={sqPick.has(Number(row.id))}
+                                  onClick={(e) => e.stopPropagation()}
+                                  onChange={() =>
+                                    setSqPick((p) => {
+                                      const x = new Set(p || [])
+                                      if (x.has(Number(row.id))) x.delete(Number(row.id))
+                                      else x.add(Number(row.id))
+                                      return x
+                                    })
+                                  }
+                                  title={Math.abs(sqBal(row)) < 0.0005 ? 'Already at 0' : `Square off ${formatNum(sqBal(row))} ${String(row.uom || 'MT')}`}
+                                  className="h-4 w-4 cursor-pointer accent-[#0B3D2E] disabled:cursor-not-allowed disabled:opacity-30"
+                                />
+                              )}
                               {bgOpen ? <ChevronDown className={cn('h-3.5 w-3.5 text-muted-foreground', __WEB__ && '!h-4 !w-4 !text-[#A8B8AE]')} /> : <ChevronRight className={cn('h-3.5 w-3.5 text-muted-foreground', __WEB__ && '!h-4 !w-4 !text-[#A8B8AE]')} />}
                               <span className={cn('tabular-nums text-muted-foreground', __WEB__ && '!text-[11.5px] !font-bold !text-[#A8B8AE]')}>{seq}.</span>
                               {row.bargain_no}
@@ -8718,6 +8779,91 @@ function SalesBargainsTab({ onOpenSale, onOpenVoucher }: { onOpenSale?: (id: num
       </Dialog>
 
       {/* The bargain's own story — opened from the ⋮ on its row. */}
+      {sqPick && (() => {
+        const live = sortedRows.filter((r) => Math.abs(sqBal(r)) >= 0.0005)
+        const picked = live.filter((r) => sqPick.has(Number(r.id)))
+        const small = live.filter((r) => Math.abs(sqBal(r)) <= 1)
+        return (
+          <div className="fixed bottom-5 left-1/2 z-40 flex -translate-x-1/2 flex-wrap items-center gap-3 rounded-[10px] border border-[#0B3D2E] bg-[#0B3D2E] px-4 py-3 text-white shadow-[0_18px_40px_-12px_rgba(7,43,32,.7)]">
+            <span className="text-[13px] font-extrabold">
+              {picked.length} selected
+              {picked.length > 0 && <span className="ml-2 font-semibold text-[#A9CDBB]">· {formatNum(round3(picked.reduce((t, r) => t + sqBal(r), 0)))} balance</span>}
+            </span>
+            <button type="button" onClick={() => setSqPick(new Set(small.map((r) => Number(r.id))))} className="h-8 rounded-[6px] border border-white/20 px-3 text-[12px] font-bold hover:bg-white/10" title="Tick every bargain shown whose balance is 1 or less">
+              Tick small balances (≤ 1) · {small.length}
+            </button>
+            <button type="button" onClick={() => setSqPick(new Set(live.map((r) => Number(r.id))))} className="h-8 rounded-[6px] border border-white/20 px-3 text-[12px] font-bold hover:bg-white/10">
+              All shown · {live.length}
+            </button>
+            <button type="button" onClick={() => setSqPick(new Set())} className="h-8 rounded-[6px] px-2 text-[12px] font-bold text-[#A9CDBB] hover:text-white">
+              Clear
+            </button>
+            <button
+              type="button"
+              disabled={!picked.length}
+              onClick={() => {
+                setSqNote('Squared off')
+                setSqDate(todayISO())
+                setSqAsk(true)
+              }}
+              className="h-9 rounded-[6px] bg-[#C7F03F] px-4 text-[12.5px] font-extrabold text-[#0B3D2E] disabled:opacity-40"
+            >
+              Square {picked.length || ''} off
+            </button>
+          </div>
+        )
+      })()}
+      <Dialog open={sqAsk} onOpenChange={(o) => !o && !sqBusy && setSqAsk(false)}>
+        <DialogContent className="max-w-[560px]">
+          {(() => {
+            const picked = sortedRows.filter((r) => sqPick?.has(Number(r.id)) && Math.abs(sqBal(r)) >= 0.0005)
+            return (
+              <>
+                <DialogHeader>
+                  <DialogTitle>Square off {picked.length} bargain{picked.length === 1 ? '' : 's'}?</DialogTitle>
+                </DialogHeader>
+                <p className="text-[12.5px] text-[#5A6B62]">Each bargain's remaining balance is adjusted away so it settles at 0. It shows as an adjustment, and Add / remove balance qty can put it back.</p>
+                <div className="max-h-[280px] overflow-y-auto rounded-[6px] border border-[#DCE7DB]">
+                  <table className="w-full text-[12.5px]">
+                    <thead className="sticky top-0 bg-[#EAF0E9] text-[10px] font-extrabold uppercase tracking-[.08em] text-[#33473E]">
+                      <tr>
+                        <th className="px-3 py-2 text-left">Bargain</th>
+                        <th className="px-3 py-2 text-right">Balance</th>
+                        <th className="px-3 py-2 text-right">Adjusted</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {picked.map((r) => (
+                        <tr key={String(r.id)} className="border-t border-[#EEF3EC]">
+                          <td className="px-3 py-1.5 font-bold text-[#0A1F17]">{String(r.bargain_no)}</td>
+                          <td className="px-3 py-1.5 text-right tabular-nums">{formatNum(sqBal(r))} {String(r.uom || 'MT')}</td>
+                          <td className="px-3 py-1.5 text-right font-bold tabular-nums text-[#8A5300]">{sqBal(r) > 0 ? '−' : '+'}{formatNum(Math.abs(sqBal(r)))}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+                <div className="grid grid-cols-[1fr_170px] gap-3">
+                  <label className="text-[11.5px] font-bold text-[#33473E]">
+                    Note
+                    <Input value={sqNote} onChange={(e) => setSqNote(e.target.value)} className="mt-1" />
+                  </label>
+                  <label className="text-[11.5px] font-bold text-[#33473E]">
+                    Date
+                    <Input type="date" value={sqDate} onChange={(e) => setSqDate(e.target.value)} className="mt-1" />
+                  </label>
+                </div>
+                <DialogFooter>
+                  <Button variant="outline" disabled={sqBusy} onClick={() => setSqAsk(false)}>Cancel</Button>
+                  <Button data-ctrl-a disabled={sqBusy || !picked.length} onClick={() => void runSquare(picked)}>
+                    {sqBusy ? 'Squaring…' : `Square ${picked.length} off`}
+                  </Button>
+                </DialogFooter>
+              </>
+            )
+          })()}
+        </DialogContent>
+      </Dialog>
       <RecordHistory target={sbHist.target} onClose={sbHist.close} />
     </div>
   )
