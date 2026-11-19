@@ -2549,6 +2549,8 @@ export function Accounts({
   const [dbReco, setDbReco] = useState(false)
   const [dbDense, setDbDense] = useState(false)
   const [dbSel, setDbSel] = useState<number | null>(null)
+  // A debit note's type — shortage or quality (or other) — asked on the Debit Note screen.
+  const [dnKind, setDnKind] = useState('')
   // BULK DELETE in the Day Book: Select turns the rows into tick boxes.
   const [dbPicking, setDbPicking] = useState(false)
   const [dbPicked, setDbPicked] = useState<Set<number>>(new Set())
@@ -3928,6 +3930,7 @@ export function Accounts({
     }
     setEditingId(null)
     setNoteEditId(Number(r.id))
+    setDnKind(String(r.dn_kind || ''))
     setVchType(String(r.note_type) === 'credit' ? 'CREDIT NOTE' : 'DEBIT NOTE')
     setVchDate(String(r.note_date || todayISO()).slice(0, 10))
     setVchNo(String(r.note_no || ''))
@@ -4417,6 +4420,11 @@ export function Accounts({
       }
     }
     let ok = false
+    if (vchType === 'DEBIT NOTE' && noteEditId == null && !dnKind && (noteInvoiceMode || __WEB__)) {
+      toast.error('Choose the debit note type — Shortage, Quality or Other')
+      document.getElementById('dn-kind')?.focus()
+      return false
+    }
     if (noteInvoiceMode) {
       if (!noteParty) {
         toast.error(`Select the ${notePartyKind}`)
@@ -4436,6 +4444,7 @@ export function Accounts({
       try {
         const values = {
           note_type: vchType === 'DEBIT NOTE' ? 'debit' : 'credit',
+          ...(vchType === 'DEBIT NOTE' && dnKind ? { dn_kind: dnKind } : {}),
           company_id: cid || undefined,
           party_type: notePartyKind,
           party_id: Number(noteParty),
@@ -4543,6 +4552,7 @@ export function Accounts({
         const refNo = noteEditId != null ? '' : vchNo.trim()
         const noteValues = {
           note_type: vchType === 'DEBIT NOTE' ? 'debit' : 'credit',
+          ...(vchType === 'DEBIT NOTE' && dnKind ? { dn_kind: dnKind } : {}),
           company_id: cid || undefined,
           party_type: partyKind,
           party_name: partyLine.account,
@@ -5029,6 +5039,7 @@ export function Accounts({
     setEditingId(null)
     setAlterBack(screen === 'voucher' ? null : screen)
     setNoteEditId(Number(nr.id))
+    setDnKind(String(nr.dn_kind || ''))
     setNoteBargain(nr.bargain_id == null ? '' : String(nr.bargain_id))
     setVchType(t)
     setVchDate(String(nr.note_date || v.entry_date || todayISO()).slice(0, 10))
@@ -14961,6 +14972,25 @@ Delete ${doc}?`)) return
                     style={field}
                   />
                 </div>
+                {/* WHICH KIND OF DEBIT NOTE — a purchase links its shortage and quality notes separately. */}
+                {vchType === 'DEBIT NOTE' && !viewOnly && (
+                  <div className="min-w-0">
+                    <div style={cap}>
+                      Debit note type {noteEditId == null && <span style={{ color: '#B3261E' }}>*</span>}
+                    </div>
+                    <select
+                      id="dn-kind"
+                      value={dnKind}
+                      onChange={(e) => setDnKind(e.target.value)}
+                      style={{ ...field, padding: '0 8px', fontWeight: 800, ...(dnKind ? {} : { borderColor: '#E3B66B', background: '#FFFBF3' }) }}
+                    >
+                      <option value="">Choose…</option>
+                      <option value="shortage">Shortage</option>
+                      <option value="quality">Quality</option>
+                      <option value="other">Other</option>
+                    </select>
+                  </div>
+                )}
                 {/* THE DESK'S OWN TYPE, under the basic one — set while keying, or
                     given to a posted voucher (even one a purchase posted). The
                     number stays in the basic type's series. */}

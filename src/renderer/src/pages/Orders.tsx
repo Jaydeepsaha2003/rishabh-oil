@@ -60,6 +60,7 @@ import { loadUser } from '@/lib/session'
 import { moduleScope, canAccess } from '@/lib/modules'
 import { lotTint } from '@/lib/lotTint'
 import { TagDraftPicker, TagPicker, useTagMap } from '@/components/Tags'
+import { PurchaseDnDialog, type PurchaseDnAsk } from '@/components/PurchaseDnDialog'
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Row = Record<string, any>
@@ -1137,6 +1138,26 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel, onPurchaseR
     { qty: number; balance: number; mode: 'new' | 'existing' | 'expand'; diffRate: boolean; rate: string; targetBargainId: string } | null
   >(null)
   const [detailRow, setDetailRow] = useState<Row | null>(null)
+  // Shortage and quality debit notes linked to each purchase (purchaseDebitNotes.ts).
+  const [dnAsk, setDnAsk] = useState<PurchaseDnAsk | null>(null)
+  const [dnMap, setDnMap] = useState<Map<number, { shortage: number; quality: number }>>(new Map())
+  const loadDnMap = useCallback(() => {
+    void window.api.orders
+      .dnNoteMap()
+      .then((rows) => {
+        const m = new Map<number, { shortage: number; quality: number }>()
+        for (const r of rows) {
+          const k = Number(r.order_id)
+          const cur = m.get(k) || { shortage: 0, quality: 0 }
+          if (r.kind === 'shortage') cur.shortage += Number(r.amount) || 0
+          if (r.kind === 'quality') cur.quality += Number(r.amount) || 0
+          m.set(k, cur)
+        }
+        setDnMap(m)
+      })
+      .catch(() => undefined)
+  }, [])
+  useEffect(loadDnMap, [loadDnMap])
   // MAKE A PURCHASE RETURN: the bill it is for, while "sale or debit note?" is asked.
   const [returnRow, setReturnRow] = useState<Row | null>(null)
   function startPurchaseReturn(kind: 'sales' | 'accounts'): void {
@@ -8543,7 +8564,39 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel, onPurchaseR
                           <TableCell className={cn('text-right tabular-nums', __WEB__ && '!text-[13.5px] !font-semibold')}>
                             {formatNum(billQty(row))} <span className={cn(__WEB__ && '!text-[11.5px] !font-medium !text-[#7C9188]')}>{row.uom}</span>
                           </TableCell>
-                          <TableCell className={cn('text-right font-medium tabular-nums', __WEB__ && '!text-[13.5px] !font-bold !tracking-[-0.02em]')}>{formatINR(billNet(row))}</TableCell>
+                          <TableCell className={cn('text-right font-medium tabular-nums', __WEB__ && '!text-[13.5px] !font-bold !tracking-[-0.02em]')}>
+                            {formatINR(billNet(row))}
+                            {/* THE DEBIT NOTES ON IT — shortage and quality, linked or to link. */}
+                            {__WEB__ && (() => {
+                              const d = dnMap.get(Number(row.id))
+                              return (
+                                <span className="mt-1 flex justify-end gap-1" onClick={(e) => e.stopPropagation()}>
+                                  {(['shortage', 'quality'] as const).map((k) => {
+                                    const amt = d ? d[k] : 0
+                                    return (
+                                      <button
+                                        key={k}
+                                        type="button"
+                                        title={`${k === 'shortage' ? 'Shortage' : 'Quality'} debit note${amt ? ` — ${formatINR(amt)} linked` : ' — none linked; click to link'}`}
+                                        onClick={() => setDnAsk({ orderId: Number(row.id), invoiceNo: String(row.invoice_no || ''), supplier: String(row.supplier_name || '') })}
+                                        className={cn(
+                                          'whitespace-nowrap rounded-[3px] border px-1.5 py-[1px] text-[10px] font-extrabold tracking-normal',
+                                          amt > 0
+                                            ? k === 'shortage'
+                                              ? 'border-[#F0C9C4] bg-[#FDECEA] text-[#B3261E]'
+                                              : 'border-[#C6DAF0] bg-[#EAF0FA] text-[#1B4E82]'
+                                            : 'border-dashed border-[#C9DCCF] bg-white text-[#9AAFA2] hover:text-[#33473E]'
+                                        )}
+                                      >
+                                        {k === 'shortage' ? 'Short DN' : 'Quality DN'}
+                                        {amt > 0 ? ` ${formatINR(amt)}` : ''}
+                                      </button>
+                                    )
+                                  })}
+                                </span>
+                              )
+                            })()}
+                          </TableCell>
                           <TableCell onClick={(e) => e.stopPropagation()}>
                             {(() => {
                               const f = poFreight(row)
@@ -10937,6 +10990,7 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel, onPurchaseR
         query={{ orderId: Number(gateOrder?.id) || 0 }}
       />
 
+      <PurchaseDnDialog ask={dnAsk} onClose={() => setDnAsk(null)} onDone={loadDnMap} />
       <Dialog open={!!detailRow} onOpenChange={(open) => !open && setDetailRow(null)}>
         {/* min-w-0 down this whole chain, not just max-w-2xl on the dialog
             itself — a plain grid/flex item defaults to min-width:auto (its

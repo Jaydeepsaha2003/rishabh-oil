@@ -501,6 +501,10 @@ export async function createNote(v: Row, existingId?: number): Promise<{ id: num
       args: [noteId, it.product_id, it.description, it.qty, it.rate, it.amount]
     })
   }
+  // The debit note's type, when the screen says it; an alter that does not say keeps it.
+  if (type === 'debit' && ['shortage', 'quality', 'other'].includes(String(v.dn_kind || ''))) {
+    await c.execute({ sql: 'UPDATE notes SET dn_kind = ? WHERE id = ?', args: [String(v.dn_kind), noteId] }).catch(() => undefined)
+  }
   await applyNoteTopupUndo(noteId)
   return { id: noteId, note_no: noteNo }
 }

@@ -147,6 +147,9 @@ const api = {
       ipcRenderer.invoke('bargains:adjust', { id, delta, note, date })
   },
   orders: {
+    dnNotes: (id: number): Promise<Row> => ipcRenderer.invoke('orders:dnNotes', { id }),
+    dnNotesSet: (id: number, links: { entry_id: number; kind: string }[]): Promise<{ linked: number }> => ipcRenderer.invoke('orders:dnNotesSet', { id, links }),
+    dnNoteMap: (): Promise<Row[]> => ipcRenderer.invoke('orders:dnNoteMap'),
     bargainNotes: (id: number): Promise<Row[]> => ipcRenderer.invoke('orders:bargainNotes', { id }),
     list: (forModule?: string, companyId?: number): Promise<Row[]> => ipcRenderer.invoke('orders:list', { forModule, companyId }),
     intercompanySource: (id: number): Promise<Row | null> =>

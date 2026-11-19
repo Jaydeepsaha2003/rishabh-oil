@@ -109,6 +109,9 @@ export interface Api {
     moveBalance: (id: number, values: Row) => Promise<{ id: number; bargain_no: string; moved: number }>
   }
   orders: {
+    dnNotes: (id: number) => Promise<Row>
+    dnNotesSet: (id: number, links: { entry_id: number; kind: string }[]) => Promise<{ linked: number }>
+    dnNoteMap: () => Promise<Row[]>
     bargainNotes: (id: number) => Promise<Row[]>
     list: (forModule?: string, companyId?: number) => Promise<Row[]>
     intercompanySource: (id: number) => Promise<Row | null>
