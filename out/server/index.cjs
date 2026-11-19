@@ -13809,6 +13809,7 @@ __export(billDiscounting_exports, {
   BD_ADJ_DEFAULT: () => BD_ADJ_DEFAULT,
   addBdChargeType: () => addBdChargeType,
   addBdLimitReduction: () => addBdLimitReduction,
+  adminUpdateRepaidBd: () => adminUpdateRepaidBd,
   bdAdjParts: () => bdAdjParts,
   bdCalc: () => bdCalc,
   bdCumulativeInterest: () => bdCumulativeInterest,
@@ -14785,7 +14786,7 @@ async function createBd(v) {
     return { id };
   });
 }
-async function updateBd(id, v) {
+async function updateBd(id, v, opts = {}) {
   await ensureInvoiceAdj();
   return withDbTransaction(async () => {
     const cur = await loadBd(id);
@@ -14822,8 +14823,43 @@ async function updateBd(id, v) {
       );
     }
     if (Array.isArray(v.linked_order_ids)) await syncBdLinkedOrders(id, v.linked_order_ids);
-    await postBdOpening(id);
+    if (opts.repost !== false) await postBdOpening(id);
     return { id };
+  });
+}
+async function adminUpdateRepaidBd(id, v) {
+  const { assertAdmin: assertAdmin3 } = await Promise.resolve().then(() => (init_access_gate(), access_gate_exports));
+  await assertAdmin3("Editing a repaid bill");
+  return withDbTransaction(async () => {
+    const c = getClient();
+    const cur = await loadBd(id);
+    if (String(cur.status) !== "repaid") return updateBd(id, v);
+    const upId = n16(cur.upfront_interest_journal_entry_id);
+    await c.execute({ sql: "UPDATE bill_discountings SET status = 'open', upfront_interest_journal_entry_id = NULL WHERE id = ?", args: [n16(id)] });
+    const repost = !!v.admin_repost;
+    await updateBd(id, v, { repost });
+    await c.execute({
+      sql: "UPDATE bill_discountings SET status = ?, repaid_date = ?, repaid_amount = ?, upfront_interest_journal_entry_id = ? WHERE id = ?",
+      args: [String(cur.status), cur.repaid_date ?? null, cur.repaid_amount ?? null, upId || null, n16(id)]
+    });
+    if (upId && repost) {
+      const bd = await loadBd(id);
+      const calc = bdCalc(bd);
+      if (calc.interestAmount < 5e-3) throw new Error("With these terms there is no interest \u2014 reverse the upfront interest payment first");
+      await repostJournal(upId, {
+        date: String(bd.upfront_interest_paid_date || "").slice(0, 10),
+        vchType: "PAYMENT",
+        vchNo: String(bd.bd_no || ""),
+        narration: `Bill Discounting ${bd.bd_no} \u2014 interest ${calc.interestAmount.toFixed(2)} (TDS ${calc.tdsAmount.toFixed(2)}) settled upfront, per the bank statement`,
+        companyId: n16(bd.company_id) || void 0,
+        lines: [
+          { account: "INTEREST ON BILL DISCOUNTING A/C", group: "Indirect Expenses", dr: calc.interestAmount },
+          { account: "TDS ON INTEREST PAYABLE A/C", group: "Duties & Taxes", cr: calc.tdsAmount },
+          { account: String(bd.upfront_interest_account || ""), group: "Bank Accounts", cr: calc.netInterest }
+        ]
+      });
+    }
+    return { id: n16(id) };
   });
 }
 async function convertOpenAdjToCharge() {
@@ -45465,6 +45501,7 @@ function registerIpc() {
   handle("bd:list", (_e, { filter } = {}) => listBd(filter));
   handle("bd:create", (_e, { values }) => createBd(values));
   handle("bd:update", (_e, { id, values }) => updateBd(id, values));
+  handle("bd:adminUpdate", async (_e, { id, values }) => (await Promise.resolve().then(() => (init_billDiscounting(), billDiscounting_exports))).adminUpdateRepaidBd(id, values));
   handle("bd:delete", (_e, { id }) => deleteBd(id));
   handle(
     "bd:repay",
