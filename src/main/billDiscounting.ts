@@ -2418,6 +2418,8 @@ export async function editBdCumulativePayment(v: {
   note?: string | null
   // gross interest paid, keyed by the bd_interest_payments row id
   amounts?: Record<string, number | string>
+  // Book through the NBFC (journal + payment) or as one payment; left out, as it was.
+  via_nbfc?: boolean
 }): Promise<{ entry_id: number; gross: number; tds: number; net: number }> {
   return withDbTransaction(async () => {
     const c = getClient()
@@ -2435,15 +2437,23 @@ export async function editBdCumulativePayment(v: {
     if (date > todayISO()) throw new Error('The payment cannot be dated in the future')
     const note = String(v.note ?? '').trim()
     if (!note) throw new Error('Write a note — it goes into the voucher narration')
-    // The ledgers the voucher carries today, kept unless changed.
-    const lines = toPlain(
-      await c.execute({
-        sql: `SELECT a.name, a.acc_group, jl.dr, jl.cr FROM journal_lines jl JOIN ledger_accounts a ON a.id = jl.account_id WHERE jl.entry_id = ? ORDER BY jl.id`,
-        args: [eid]
-      })
-    )
-    const oldBank = String((lines.find((l) => n(l.cr) > 0 && /bank/i.test(String(l.acc_group || ''))) || {}).name || rows[0].bank_account || '')
-    const oldTds = lines.find((l) => n(l.cr) > 0 && !/bank/i.test(String(l.acc_group || '')))
+    // The ledgers the vouchers carry today, kept unless changed: the bank on the
+    // payment, the TDS on the journal when booked through the NBFC.
+    const linesOf = async (id: number): Promise<Row[]> =>
+      toPlain(
+        await c.execute({
+          sql: `SELECT a.name, a.acc_group, jl.dr, jl.cr FROM journal_lines jl JOIN ledger_accounts a ON a.id = jl.account_id WHERE jl.entry_id = ? ORDER BY jl.id`,
+          args: [id]
+        })
+      )
+    const journalId = n(rows[0].interest_entry_id) || null
+    const payLines = await linesOf(eid)
+    const oldBank = String((payLines.find((l) => n(l.cr) > 0 && /bank/i.test(String(l.acc_group || ''))) || {}).name || rows[0].bank_account || '')
+    const tdsLines = journalId ? await linesOf(journalId) : payLines
+    const firstBd = await loadBd(n(rows[0].bd_id))
+    // The TDS line: credited, not the bank, not the NBFC's own ledger (whatever group it sits in).
+    const nbfcLedger = bdPayable(firstBd).toUpperCase()
+    const oldTds = tdsLines.find((l) => n(l.cr) > 0 && !/bank/i.test(String(l.acc_group || '')) && String(l.name || '').toUpperCase() !== nbfcLedger)
     const bank = String(v.bank_account || '').trim() || oldBank
     if (!bank) throw new Error('Pick the bank the interest was paid from')
     const tdsLedger = String(v.tds_ledger || '').trim() || String(oldTds?.name || 'TDS ON INTEREST PAYABLE A/C')
@@ -2460,27 +2470,27 @@ export async function editBdCumulativePayment(v: {
     const tds = round2(upd.reduce((t, x) => t + x.tds, 0))
     const net = round2(gross - tds)
     const nos = rows.map((r) => String(r.bd_no)).join(', ')
-    const nb = (await c.execute({ sql: 'SELECT name FROM nbfcs WHERE id = ?', args: [n(rows[0].nbfc_id)] })).rows[0] as Row | undefined
-    const to = rows.map((r) => String(r.to_date).slice(0, 10)).sort().pop()
-    await repostJournal(eid, {
+    const to = String(rows.map((r) => String(r.to_date).slice(0, 10)).sort().pop() || '')
+    const posted = await postCumulativeVouchers({
+      via_nbfc: v.via_nbfc == null ? !!journalId : !!v.via_nbfc,
       date,
-      vchType: 'PAYMENT',
-      vchNo: nos.slice(0, 60),
-      narration:
-        `Bill Discounting interest to ${to} paid to ${nb?.name || 'the NBFC'} on ${rows.length} bill${rows.length === 1 ? '' : 's'} (${nos}) — ${inr(gross)}` +
-        (tds > 0.004 ? `, TDS ${inr(tds)} withheld` : '') +
-        ` · ${note}`,
-      companyId: n(rows[0].company_id) || undefined,
-      lines: [
-        { account: 'INTEREST ON BILL DISCOUNTING A/C', group: 'Indirect Expenses', dr: gross },
-        ...(tds > 0.004 ? [{ account: tdsLedger, group: tdsGroup, cr: tds }] : []),
-        { account: bank, group: 'Bank Accounts', cr: net }
-      ]
+      to,
+      first: firstBd,
+      nos,
+      count: rows.length,
+      gross,
+      tds,
+      net,
+      bank,
+      tdsLedger,
+      tdsGroup,
+      note,
+      ids: { payment: eid, journal: journalId }
     })
     for (const x of upd) {
       await c.execute({
-        sql: 'UPDATE bd_interest_payments SET gross = ?, tds = ?, net = ?, paid_date = ?, bank_account = ? WHERE id = ?',
-        args: [x.gross, x.tds, x.net, date, bank, n(x.r.id)]
+        sql: 'UPDATE bd_interest_payments SET gross = ?, tds = ?, net = ?, paid_date = ?, bank_account = ?, interest_entry_id = ? WHERE id = ?',
+        args: [x.gross, x.tds, x.net, date, bank, posted.journal, n(x.r.id)]
       })
     }
     return { entry_id: eid, gross, tds, net }
@@ -2496,7 +2506,9 @@ export async function editBdCumulativePayment(v: {
 export async function listBdCumulativePayments(nbfcId?: number | null): Promise<Row[]> {
   const rows = toPlain(
     await getClient().execute({
-      sql: `SELECT p.*, b.bd_no, b.nbfc_id, nb.name AS nbfc_name, je.vch_no, je.narration
+      sql: `SELECT p.*, b.bd_no, b.nbfc_id, nb.name AS nbfc_name, je.vch_no, je.narration,
+                   (SELECT nn.prefix || '/' || nn.serial FROM voucher_numbers nn WHERE nn.entry_id = p.journal_entry_id) AS pay_code,
+                   (SELECT nn.prefix || '/' || nn.serial FROM voucher_numbers nn WHERE nn.entry_id = p.interest_entry_id) AS journal_code
               FROM bd_interest_payments p
               JOIN bill_discountings b ON b.id = p.bd_id
               LEFT JOIN nbfcs nb ON nb.id = b.nbfc_id
@@ -2557,6 +2569,10 @@ export async function listBdCumulativePayments(nbfcId?: number | null): Promise<
         paid_date: String(r.paid_date || '').slice(0, 10),
         nbfc_name: r.nbfc_name || '',
         nbfc_id: n(r.nbfc_id),
+        // Booked through the NBFC: its journal beside the payment.
+        via_nbfc: !!n(r.interest_entry_id),
+        pay_code: r.pay_code || '',
+        journal_code: r.journal_code || '',
         bank: r.bank_account || '',
         narration: r.narration || '',
         bills: [],
@@ -2922,6 +2938,8 @@ export async function deleteBdInterestPayment(payId: number): Promise<{ id: numb
     await c.execute({ sql: 'DELETE FROM bd_interest_payments WHERE journal_entry_id = ? AND id <> ?', args: [n(row.journal_entry_id), n(payId)] })
   }
   await dropEntry(n(row.journal_entry_id) || null)
+  // Booked through the NBFC: its interest JOURNAL goes with the payment.
+  if (n(row.interest_entry_id)) await dropEntry(n(row.interest_entry_id))
   await c.execute({ sql: 'DELETE FROM bd_interest_payments WHERE id = ?', args: [n(payId)] })
   return { id: n(payId) }
   })
@@ -4042,6 +4060,78 @@ export async function bdCumulativeInterest(v: { nbfc_id: number; from_date?: str
   return out
 }
 
+/**
+ * POST A CUMULATIVE INTEREST PAYMENT — one PAYMENT voucher (Dr interest / Cr
+ * TDS, Cr bank), or, booked through the NBFC, two: a JOURNAL that books the
+ * interest as owed to the NBFC (Dr interest / Cr NBFC net, Cr TDS) and a
+ * PAYMENT that pays the NBFC (Dr NBFC / Cr bank). With ids given, re-posts
+ * them in place (Edit), keeping their numbers.
+ */
+async function postCumulativeVouchers(v: {
+  via_nbfc: boolean
+  date: string
+  to: string
+  first: Row
+  nos: string
+  count: number
+  gross: number
+  tds: number
+  net: number
+  bank: string
+  tdsLedger: string
+  tdsGroup: string
+  note: string
+  ids?: { payment: number; journal: number | null }
+}): Promise<{ payment: number; journal: number | null }> {
+  const head = `Bill Discounting interest to ${v.to} — ${v.first.nbfc_name || 'the NBFC'}, ${v.count} bill${v.count === 1 ? '' : 's'} (${v.nos})`
+  const tail = v.note ? ` · ${v.note}` : ''
+  const write = async (id: number | null | undefined, a: Parameters<typeof postJournal>[0]): Promise<number> =>
+    id ? (await repostJournal(id, a)).id : (await postJournal(a)).id
+  const companyId = n(v.first.company_id) || undefined
+  if (!v.via_nbfc) {
+    const payment = await write(v.ids?.payment, {
+      date: v.date,
+      vchType: 'PAYMENT',
+      vchNo: v.nos.slice(0, 60),
+      narration: `Bill Discounting interest to ${v.to} paid to ${v.first.nbfc_name || 'the NBFC'} on ${v.count} bill${v.count === 1 ? '' : 's'} (${v.nos}) — ${inr(v.gross)}` + (v.tds > 0.004 ? `, TDS ${inr(v.tds)} withheld` : '') + tail,
+      companyId,
+      lines: [
+        { account: 'INTEREST ON BILL DISCOUNTING A/C', group: 'Indirect Expenses', dr: v.gross },
+        ...(v.tds > 0.004 ? [{ account: v.tdsLedger, group: v.tdsGroup, cr: v.tds }] : []),
+        { account: v.bank, group: 'Bank Accounts', cr: v.net }
+      ]
+    })
+    // Was booked through the NBFC before: its journal goes.
+    if (v.ids?.journal) await dropEntry(v.ids.journal)
+    return { payment, journal: null }
+  }
+  const nbfc = bdPayable(v.first)
+  const journal = await write(v.ids?.journal, {
+    date: v.date,
+    vchType: 'JOURNAL',
+    vchNo: v.nos.slice(0, 60),
+    narration: `${head} — interest ${inr(v.gross)} booked to the NBFC` + (v.tds > 0.004 ? `, TDS ${inr(v.tds)} to ${v.tdsLedger}` : '') + tail,
+    companyId,
+    lines: [
+      { account: 'INTEREST ON BILL DISCOUNTING A/C', group: 'Indirect Expenses', dr: v.gross },
+      { account: nbfc, group: BD_PAYABLE_GROUP, cr: v.net },
+      ...(v.tds > 0.004 ? [{ account: v.tdsLedger, group: v.tdsGroup, cr: v.tds }] : [])
+    ]
+  })
+  const payment = await write(v.ids?.payment, {
+    date: v.date,
+    vchType: 'PAYMENT',
+    vchNo: v.nos.slice(0, 60),
+    narration: `${head} — interest ${inr(v.net)} paid to the NBFC` + tail,
+    companyId,
+    lines: [
+      { account: nbfc, group: BD_PAYABLE_GROUP, dr: v.net },
+      { account: v.bank, group: 'Bank Accounts', cr: v.net }
+    ]
+  })
+  return { payment, journal }
+}
+
 export async function payBdCumulativeInterest(v: {
   nbfc_id: number
   from_date?: string
@@ -4055,6 +4145,9 @@ export async function payBdCumulativeInterest(v: {
   // The ledger the TDS goes to; blank keeps TDS ON INTEREST PAYABLE A/C.
   tds_ledger?: string | null
   note?: string | null
+  // Booked through the NBFC in two vouchers: a JOURNAL (Dr interest / Cr NBFC,
+  // Cr TDS) and a PAYMENT (Dr NBFC / Cr bank). Off = the one payment voucher.
+  via_nbfc?: boolean
 }): Promise<{ entry_id: number; bills: number; gross: number; tds: number; net: number }> {
   return withDbTransaction(async () => {
     const to = String(v.to_date || '').slice(0, 10)
@@ -4093,26 +4186,27 @@ export async function payBdCumulativeInterest(v: {
     const tdsGroup = tdsLedger === 'TDS ON INTEREST PAYABLE A/C'
       ? 'Duties & Taxes'
       : String(((await getClient().execute({ sql: 'SELECT acc_group FROM ledger_accounts WHERE name = ?', args: [tdsLedger] })).rows[0] as Row | undefined)?.acc_group || 'Duties & Taxes')
-    const je = await postJournal({
+    const posted = await postCumulativeVouchers({
+      via_nbfc: !!v.via_nbfc,
       date,
-      vchType: 'PAYMENT',
-      vchNo: nos.slice(0, 60),
-      narration:
-        `Bill Discounting interest to ${to} paid to ${first.nbfc_name || 'the NBFC'} on ${rows.length} bill${rows.length === 1 ? '' : 's'} (${nos}) — ${inr(gross)}` +
-        (tds > 0.004 ? `, TDS ${inr(tds)} withheld` : '') +
-        (v.note ? ` · ${String(v.note)}` : ''),
-      companyId: n(first.company_id) || undefined,
-      lines: [
-        { account: 'INTEREST ON BILL DISCOUNTING A/C', group: 'Indirect Expenses', dr: gross },
-        ...(tds > 0.004 ? [{ account: tdsLedger, group: tdsGroup, cr: tds }] : []),
-        { account: bank, group: 'Bank Accounts', cr: net }
-      ]
+      to,
+      first,
+      nos,
+      count: rows.length,
+      gross,
+      tds,
+      net,
+      bank,
+      tdsLedger,
+      tdsGroup,
+      note: String(v.note || '')
     })
+    const je = { id: posted.payment }
     for (const r of rows) {
       await getClient().execute({
-        sql: `INSERT INTO bd_interest_payments (bd_id, from_date, to_date, days, paid_date, gross, tds, net, note, journal_entry_id, bank_account)
-              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        args: [n(r.bd.id), String(r.w.from_date), String(r.w.to_date || to), n(r.w.days), date, n(r.w.gross), n(r.w.tds), n(r.w.net), (r.w.balance_of ? 'Balance of short-paid interest — ' : 'Cumulative interest — ') + `one voucher with ${nos}`, je.id, bank]
+        sql: `INSERT INTO bd_interest_payments (bd_id, from_date, to_date, days, paid_date, gross, tds, net, note, journal_entry_id, bank_account, interest_entry_id)
+              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        args: [n(r.bd.id), String(r.w.from_date), String(r.w.to_date || to), n(r.w.days), date, n(r.w.gross), n(r.w.tds), n(r.w.net), (r.w.balance_of ? 'Balance of short-paid interest — ' : 'Cumulative interest — ') + `one voucher with ${nos}`, je.id, bank, posted.journal]
       })
     }
     return { entry_id: je.id, bills: rows.length, gross, tds, net }

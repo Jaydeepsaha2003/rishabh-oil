@@ -3502,6 +3502,9 @@ const REQUIRED_COLUMNS: { table: string; column: string; type: string }[] = [
   { table: 'journal_line_splits', column: 'color', type: 'TEXT' },
   // A debit note's type: 'shortage' or 'quality' (or 'other') — asked on the Debit Note screen.
   { table: 'notes', column: 'dn_kind', type: 'TEXT' },
+  // A cumulative interest payment booked through the NBFC: the JOURNAL (Dr interest /
+  // Cr NBFC, Cr TDS) beside the PAYMENT (Dr NBFC / Cr bank) in journal_entry_id.
+  { table: 'bd_interest_payments', column: 'interest_entry_id', type: 'INTEGER' },
   { table: 'journal_line_splits', column: 'remark', type: 'TEXT' },
   // A sale billed to a SUPPLIER as a purchase return (sales.ts stampReturnSupplier).
   { table: 'sales', column: 'return_supplier_id', type: 'INTEGER' },

@@ -58,6 +58,8 @@ export function BdCumulativeInterest({ open, onClose, nbfcs, onDone }: { open: b
   const [paidOn, setPaidOn] = useState(today)
   // Required — it goes into the voucher's narration.
   const [note, setNote] = useState('')
+  // One payment voucher, or two through the NBFC (journal: Dr interest / Cr NBFC, Cr TDS; payment: Dr NBFC / Cr bank).
+  const [viaNbfc, setViaNbfc] = useState(false)
   const [busy, setBusy] = useState(false)
   // The split calculator open on one bill's stretch (the same one as on a bill).
   const [splitRow, setSplitRow] = useState<Row | null>(null)
@@ -179,6 +181,7 @@ export function BdCumulativeInterest({ open, onClose, nbfcs, onDone }: { open: b
         bank_account: bank || null,
         bd_ids: sel.map((r) => n(r.bd_id)),
         tds_ledger: tdsLedger || null,
+        via_nbfc: viaNbfc,
         note: note.trim(),
         amounts: Object.fromEntries(sel.filter((r) => fig(r).edited).map((r) => [String(n(r.bd_id)), fig(r).gross]))
       })
@@ -765,6 +768,27 @@ export function BdCumulativeInterest({ open, onClose, nbfcs, onDone }: { open: b
                 note.trim() ? 'border-[#C9DCCF]' : 'border-[#E3B66B] bg-[#FFFBF3]'
               )}
             />
+          </div>
+          <div>
+            <span className={lbl}>Post as</span>
+            <span className="flex h-10 rounded-[7px] border border-[#C9DCCF] bg-white p-0.5">
+              {(
+                [
+                  [false, 'One payment', 'Dr Interest · Cr TDS · Cr Bank — one voucher'],
+                  [true, 'Via NBFC (2 vouchers)', 'Journal: Dr Interest · Cr NBFC · Cr TDS — then Payment: Dr NBFC · Cr Bank']
+                ] as const
+              ).map(([k, label, tip]) => (
+                <button
+                  key={String(k)}
+                  type="button"
+                  title={tip}
+                  onClick={() => setViaNbfc(k)}
+                  className={cn('whitespace-nowrap rounded-[5px] px-3 text-[12px] font-semibold', viaNbfc === k ? 'bg-[#0B3D2E] text-white' : 'text-[#33473E] hover:bg-[#F0F8F3]')}
+                >
+                  {label}
+                </button>
+              ))}
+            </span>
           </div>
           <div className="w-full sm:w-[170px]">
             <span className={lbl}>Payment date</span>

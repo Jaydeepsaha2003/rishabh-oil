@@ -234,7 +234,14 @@ It is one voucher for ${bills.map((b) => b.bd_no).join(', ')} — the payment on
                       <ChevronDown className={cn('h-4 w-4 text-[#8CA396] transition-transform', isOpen && 'rotate-180')} />
                     </td>
                     <td className="whitespace-nowrap px-2 py-2.5 font-extrabold tabular-nums text-[#0A1F17]">{formatDate(String(g.paid_date))}</td>
-                    <td className="whitespace-nowrap px-2 py-2.5 font-bold text-[#33473E]">{String(g.vch_no || `#${id}`)}</td>
+                    <td className="whitespace-nowrap px-2 py-2.5">
+                      <div className="font-bold text-[#33473E]">{String(g.pay_code || g.vch_no || `#${id}`)}</div>
+                      {g.via_nbfc && (
+                        <div className="mt-0.5 inline-flex items-center rounded-[3px] bg-[#EAF0FA] px-1.5 py-[1px] text-[10px] font-extrabold text-[#1B4E82]" title="Booked through the NBFC: a journal (Dr interest / Cr NBFC, Cr TDS) and this payment (Dr NBFC / Cr bank)">
+                          via NBFC · {String(g.journal_code || 'journal')}
+                        </div>
+                      )}
+                    </td>
                     <td className="px-2 py-2.5">
                       <span className="flex flex-wrap gap-1">
                         {(g.bills as Row[]).map((b) => (
@@ -448,6 +455,7 @@ function EditCumulativePayment({ g, onClose, onSaved }: { g: Row; onClose: () =>
   const bills = g.bills as Row[]
   const narr = String(g.narration || '')
   const [date, setDate] = useState(String(g.paid_date || ''))
+  const [viaNbfc, setViaNbfc] = useState(!!g.via_nbfc)
   const [bank, setBank] = useState(String(g.bank || ''))
   const [tdsLedger, setTdsLedger] = useState('')
   const [note, setNote] = useState(narr.includes(' · ') ? narr.slice(narr.lastIndexOf(' · ') + 3) : '')
@@ -478,6 +486,7 @@ function EditCumulativePayment({ g, onClose, onSaved }: { g: Row; onClose: () =>
       await window.api.billDiscounting.editCumulativePayment({
         entry_id: n(g.journal_entry_id),
         paid_date: date,
+        via_nbfc: viaNbfc,
         bank_account: bank || null,
         tds_ledger: tdsLedger || null,
         note,
@@ -585,6 +594,26 @@ function EditCumulativePayment({ g, onClose, onSaved }: { g: Row; onClose: () =>
                 </SelectContent>
               </Select>
             </div>
+          </div>
+          <div>
+            <span className={lbl}>Post as</span>
+            <span className="flex h-10 w-fit rounded-[7px] border border-[#C9DCCF] bg-white p-0.5">
+              {(
+                [
+                  [false, 'One payment voucher'],
+                  [true, 'Via NBFC — journal + payment']
+                ] as const
+              ).map(([k, label]) => (
+                <button
+                  key={String(k)}
+                  type="button"
+                  onClick={() => setViaNbfc(k)}
+                  className={cn('whitespace-nowrap rounded-[5px] px-3 text-[12px] font-semibold', viaNbfc === k ? 'bg-[#0B3D2E] text-white' : 'text-[#33473E] hover:bg-[#F0F8F3]')}
+                >
+                  {label}
+                </button>
+              ))}
+            </span>
           </div>
           <div>
             <span className={lbl}>

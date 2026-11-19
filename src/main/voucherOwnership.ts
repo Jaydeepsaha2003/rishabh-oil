@@ -12,7 +12,7 @@ const sources: Record<string, string[]> = {
   lc_payment_ins: ['journal_entry_id'],
   bill_discountings: ['journal_entry_id', 'repay_journal_entry_id', 'margin_release_journal_entry_id', 'upfront_interest_journal_entry_id'],
   bd_repayments: ['journal_entry_id', 'interest_entry_id'],
-  bd_interest_payments: ['journal_entry_id'],
+  bd_interest_payments: ['journal_entry_id', 'interest_entry_id'],
   bd_payment_ins: ['journal_entry_id'],
   bill_discounts: ['journal_entry_id', 'realize_entry_id'],
   transporter_ledger: ['accrual_entry_id', 'waived_entry_id']
