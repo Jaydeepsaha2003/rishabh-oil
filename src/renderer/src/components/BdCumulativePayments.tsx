@@ -37,8 +37,8 @@ const payoutOf = (g: Row): string => {
   const a = froms[0]
   const z = tos[tos.length - 1]
   const name = (ym: string): string => MON[Number(ym.slice(5, 7)) - 1] || ym
-  if (a === z) return `${name(a)} ${a.slice(0, 4)} payout`
-  return a.slice(0, 4) === z.slice(0, 4) ? `${name(a)}–${name(z)} ${z.slice(0, 4)} payout` : `${name(a)} ${a.slice(0, 4)}–${name(z)} ${z.slice(0, 4)} payout`
+  if (a === z) return `${name(a)} ${a.slice(0, 4)}`
+  return a.slice(0, 4) === z.slice(0, 4) ? `${name(a)}–${name(z)} ${z.slice(0, 4)}` : `${name(a)} ${a.slice(0, 4)}–${name(z)} ${z.slice(0, 4)}`
 }
 const periodsOf = (g: Row): string[] => [...new Set((g.bills as Row[]).map((b) => `${formatDate(String(b.from_date))} → ${formatDate(String(b.to_date))}`))]
 
@@ -252,14 +252,13 @@ It is one voucher for ${bills.map((b) => b.bd_no).join(', ')} — the payment on
           </button>
         </div>
       )}
-      <div className="grid grid-cols-2 overflow-hidden rounded-[6px] border border-[#DCE6DC] bg-white lg:grid-cols-4">
+      <div className="grid grid-cols-1 overflow-hidden rounded-[6px] border border-[#DCE6DC] bg-white sm:grid-cols-3">
         {[
-          { k: 'Vouchers', v: String(list.length), sub: `${bills.length} bill${bills.length === 1 ? '' : 's'}`, tone: 'text-[#0A1F17]' },
           { k: 'Paid out of the bank', v: formatINR(list.reduce((t, g) => t + n(g.net), 0)), sub: `interest ${formatINR(list.reduce((t, g) => t + n(g.gross), 0))}`, tone: 'text-[#0B6B45]' },
           { k: 'Shortfall still open', v: formatINR(Math.abs(short)), sub: '', tone: short < -0.5 ? 'text-[#B3261E]' : 'text-[#9AAFA2]' },
           { k: 'Excess', v: formatINR(over), sub: '', tone: over > 0.5 ? 'text-[#7A4B00]' : 'text-[#9AAFA2]' }
         ].map((t, i) => (
-          <div key={t.k} className={cn('min-w-0 px-4 py-3', i % 2 === 1 && 'border-l border-[#EEF3EE]', i >= 2 && 'border-t border-[#EEF3EE] lg:border-t-0', i === 2 && 'lg:border-l')}>
+          <div key={t.k} className={cn('min-w-0 px-4 py-3', i > 0 && 'border-t border-[#EEF3EE] sm:border-l sm:border-t-0')}>
             <div className="text-[9.5px] font-extrabold uppercase tracking-[.13em] text-[#7A8C82]">{t.k}</div>
             <div className={cn('mt-0.5 truncate text-[19px] font-bold tabular-nums tracking-[-0.02em]', t.tone)}>{t.v}</div>
             {t.sub && <div className="truncate text-[11px] font-semibold text-[#7A8C82]">{t.sub}</div>}
@@ -276,6 +275,7 @@ It is one voucher for ${bills.map((b) => b.bd_no).join(', ')} — the payment on
               <th className="px-2 py-2.5 text-left">Paid on</th>
               <th className="px-2 py-2.5 text-left">Voucher</th>
               <th className="px-2 py-2.5 text-left">Bills</th>
+              <th className="px-2 py-2.5 text-left">Payout</th>
               <th className="px-2 py-2.5 text-left">Period</th>
               <th className="px-2 py-2.5 text-left">NBFC · bank</th>
               <th className="px-2 py-2.5 text-right">Interest</th>
@@ -316,8 +316,8 @@ It is one voucher for ${bills.map((b) => b.bd_no).join(', ')} — the payment on
                           </span>
                         ))}
                       </span>
-                      <span className="mt-1 block text-[10.5px] font-extrabold uppercase tracking-[.06em] text-[#5A6B62]">{payoutOf(g)}</span>
                     </td>
+                    <td className="whitespace-nowrap px-2 py-2.5 text-[12px] font-extrabold text-[#0A1F17]">{payoutOf(g) || '—'}</td>
                     <td className="px-2 py-2.5">
                       {periodsOf(g).map((p) => (
                         <div key={p} className="whitespace-nowrap text-[11.5px] font-semibold tabular-nums text-[#33473E]">
@@ -386,7 +386,7 @@ It is one voucher for ${bills.map((b) => b.bd_no).join(', ')} — the payment on
                   {isOpen && (
                     <tr className="bg-[#F3F8F2]">
                       <td />
-                      <td colSpan={10} className="px-2 pb-3 pt-0">
+                      <td colSpan={11} className="px-2 pb-3 pt-0">
                         <div className="overflow-hidden rounded-[6px] border border-[#DCE6DC] bg-white">
 
                   <div className="border-t border-[#E4ECE3]">
@@ -490,7 +490,7 @@ It is one voucher for ${bills.map((b) => b.bd_no).join(', ')} — the payment on
           </tbody>
           <tfoot>
             <tr className="border-t-[1.5px] border-[#C9DCCF] bg-[#F5F8F4] font-extrabold">
-              <td colSpan={6} className="px-3 py-2.5 text-[10.5px] uppercase tracking-[.1em] text-[#33473E]">
+              <td colSpan={7} className="px-3 py-2.5 text-[10.5px] uppercase tracking-[.1em] text-[#33473E]">
                 Total · {list.length} voucher{list.length === 1 ? '' : 's'}
               </td>
               <td className="whitespace-nowrap px-2 py-2.5 text-right tabular-nums">{formatINR(list.reduce((t, g) => t + n(g.gross), 0))}</td>

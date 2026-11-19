@@ -2562,6 +2562,8 @@ export function Accounts({
   const [dbQuery, setDbQuery] = useState('')
   const [dbField, setDbField] = useState(0)
   const [dbTypes, setDbTypes] = useState<string[]>([])
+  // From Masters → Voucher types: one exact type — 'b:PAYMENT' (no own type) or 's:SALARY'.
+  const [dbVt, setDbVt] = useState('')
   // Day Book: only the vouchers tagged RECO.
   const [dbReco, setDbReco] = useState(false)
   const [dbDense, setDbDense] = useState(false)
@@ -14373,6 +14375,35 @@ Delete ${doc}?`)) return
         }
       }
       const pick = vtPick && list.some((l) => l.key === vtPick) ? vtPick : ''
+      // Open the Day Book on these vouchers — the type (or every one) over the period or one month.
+      const openVt = (key: string, from = vtFrom, to = vtTo): void => {
+        setDbTypes([])
+        setDbVt(key)
+        setDbFrom(from)
+        setDbTo(to)
+        setDbTab('vch')
+        setScreen('daybook')
+      }
+      const monthEnd = (ym: string): string => {
+        const [y, m] = ym.split('-').map(Number)
+        const last = `${ym}-${String(new Date(y, m, 0).getDate()).padStart(2, '0')}`
+        return last > vtTo ? vtTo : last
+      }
+      const openBtn = (key: string, k: number): React.JSX.Element => (
+        <button
+          type="button"
+          disabled={!k}
+          onClick={(e) => {
+            e.stopPropagation()
+            openVt(key)
+          }}
+          title={k ? 'Open these vouchers in the Day Book' : undefined}
+          className="ml-2 inline-flex h-6 w-6 items-center justify-center rounded-[5px] hover:bg-[#E3EFD9] disabled:opacity-0"
+          style={{ color: '#12855A' }}
+        >
+          <ArrowUpRight className="h-4 w-4" />
+        </button>
+      )
       const perMonth = new Map<string, number>()
       for (const r of rows) if (!pick || keyOf(r) === pick) perMonth.set(String(r.month), (perMonth.get(String(r.month)) || 0) + Number(r.n || 0))
       const pickTotal = [...perMonth.values()].reduce((t, v) => t + v, 0)
@@ -14383,7 +14414,7 @@ Delete ${doc}?`)) return
         return `${['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'][m - 1]} ${y}`
       }
       const rowCss = (on: boolean, sub: boolean): React.CSSProperties => ({
-        gridTemplateColumns: '1fr 110px',
+        gridTemplateColumns: '1fr 130px',
         height: sub ? 36 : 40,
         padding: '0 16px',
         borderBottom: '1px solid #EEF3EC',
@@ -14416,7 +14447,7 @@ Delete ${doc}?`)) return
           <div className="flex min-h-0 flex-1 flex-wrap">
             {/* THE TYPES — click one to see it month by month. */}
             <div className="sc flex min-h-0 min-w-[300px] flex-[3] flex-col overflow-y-auto" style={{ borderRight: '1px solid #EAF0E9' }}>
-              <div className="grid flex-none" style={{ ...headRow, gridTemplateColumns: '1fr 110px', padding: '0 16px' }}>
+              <div className="grid flex-none" style={{ ...headRow, gridTemplateColumns: '1fr 130px', padding: '0 16px' }}>
                 <span>Types of vouchers</span>
                 <span className="text-right">Vouchers</span>
               </div>
@@ -14428,7 +14459,7 @@ Delete ${doc}?`)) return
                 <>
                   <div className="grid flex-none items-center" style={rowCss(!pick, false)} onClick={() => setVtPick('')}>
                     <span style={{ fontSize: 12.5, fontWeight: 800, color: A.frame }}>All vouchers</span>
-                    <span className="text-right" style={{ ...mono, fontSize: 13, fontWeight: 800, color: A.frame }}>{total}</span>
+                    <span className="flex items-center justify-end" style={{ ...mono, fontSize: 13, fontWeight: 800, color: A.frame }}>{total}{openBtn('', total)}</span>
                   </div>
                   {list.map((l) => {
                     const k = by.get(l.key) || 0
@@ -14438,7 +14469,7 @@ Delete ${doc}?`)) return
                           {l.sub && <span style={{ color: '#B5C7BB', marginRight: 6 }}>└</span>}
                           {l.sub ? l.name : l.name.charAt(0) + l.name.slice(1).toLowerCase()}
                         </span>
-                        <span className="text-right" style={{ ...mono, fontSize: 13, fontWeight: k ? 800 : 600, color: k ? A.ink : '#B5C7BB' }}>{k}</span>
+                        <span className="flex items-center justify-end" style={{ ...mono, fontSize: 13, fontWeight: k ? 800 : 600, color: k ? A.ink : '#B5C7BB' }}>{k}{openBtn(l.key, k)}</span>
                       </div>
                     )
                   })}
@@ -14459,7 +14490,13 @@ Delete ${doc}?`)) return
               {months.map((ym) => {
                 const k = perMonth.get(ym) || 0
                 return (
-                  <div key={ym} className="grid flex-none items-center gap-3" style={{ gridTemplateColumns: '120px 1fr 80px', height: 38, padding: '0 16px', borderBottom: '1px solid #EEF3EC' }}>
+                  <div
+                    key={ym}
+                    className={cn('grid flex-none items-center gap-3', k > 0 && 'cursor-pointer hover:bg-[#F7FAF6]')}
+                    style={{ gridTemplateColumns: '120px 1fr 80px', height: 38, padding: '0 16px', borderBottom: '1px solid #EEF3EC' }}
+                    title={k ? `Open ${pickName} of ${mLabel(ym)} in the Day Book` : undefined}
+                    onClick={() => k > 0 && openVt(pick, ym + '-01' < vtFrom ? vtFrom : ym + '-01', monthEnd(ym))}
+                  >
                     <span style={{ fontSize: 12.5, fontWeight: 700, color: k ? A.ink : '#8CA396' }}>{mLabel(ym)}</span>
                     <span className="h-[7px] overflow-hidden rounded-full" style={{ background: '#EEF3EC' }}>
                       <span className="block h-full rounded-full" style={{ width: `${(k / peak) * 100}%`, background: 'linear-gradient(90deg,#9FE3BF,#12855A)' }} />
@@ -16132,7 +16169,12 @@ Delete ${doc}?`)) return
     )
     const pre = all.filter(match)
     const recoOf = (r: Row): boolean => vchTags.tagsOf(Number(r.id)).some((t) => String(t.name || '').trim().toUpperCase() === 'RECO')
-    const typed = pre.filter((r) => (!dbTypes.length || dbTypes.includes(String(r.vch_type || '').toUpperCase())) && (!dbReco || recoOf(r)))
+    const vtOk = (r: Row): boolean =>
+      !dbVt ||
+      (dbVt.startsWith('s:')
+        ? String(r.vch_subtype || '') === dbVt.slice(2)
+        : !r.vch_subtype && String(r.vch_type || '').toUpperCase() === dbVt.slice(2))
+    const typed = pre.filter((r) => (!dbTypes.length || dbTypes.includes(String(r.vch_type || '').toUpperCase())) && (!dbReco || recoOf(r)) && vtOk(r))
     const money = (v: number): string => formatINR(v)
     const dbCf = colFilter<Row>(colF, 'daybook', typed, [
       { key: 'date', get: (r) => formatDate(r.entry_date), sort: 'num' },
@@ -16209,10 +16251,11 @@ Delete ${doc}?`)) return
     const presetOn = (p: [string, string, string]): boolean => dbFrom === p[1] && dbTo === p[2]
     const anyPreset = presets.some(presetOn)
     // The period has its own presets; Clear all lets go of everything else.
-    const hasFilter = !!q || dbTypes.length > 0 || dbCf.active > 0 || gtCf.active > 0
+    const hasFilter = !!q || dbTypes.length > 0 || !!dbVt || dbCf.active > 0 || gtCf.active > 0
     const clearAll = (): void => {
       setDbQuery('')
       setDbTypes([])
+      setDbVt('')
       dbCf.clear()
       gtCf.clear()
     }
@@ -17352,6 +17395,18 @@ Delete ${doc}?`)) return
                     Reco
                     <span style={{ ...MONO_FIG, fontSize: 10, fontWeight: 600, opacity: 0.75 }}>{pre.filter(recoOf).length}</span>
                   </button>
+                  {!!dbVt && (
+                    <button
+                      type="button"
+                      onClick={() => setDbVt('')}
+                      title="Opened from Masters → Voucher types — click to show every type again"
+                      className="flex h-7 items-center gap-1.5 whitespace-nowrap rounded-[14px] px-2.5"
+                      style={{ border: '1px solid #7FB51C', background: '#F3FBE2', color: '#2E4A0B', fontSize: 11, fontWeight: 800 }}
+                    >
+                      Only {dbVt.startsWith('s:') ? dbVt.slice(2) : `${dbVt.slice(2)} (no own type)`}
+                      <X className="h-3.5 w-3.5" />
+                    </button>
+                  )}
                   <span style={{ fontSize: 9.5, fontWeight: 800, letterSpacing: '.13em', textTransform: 'uppercase', color: '#5A6B62', marginRight: 2 }}>Voucher type</span>
                   {typeKeys.map((t) => {
                     const on = dbTypes.includes(t)
