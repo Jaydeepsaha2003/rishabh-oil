@@ -1,6 +1,6 @@
 import { Fragment, useEffect, useMemo, useState } from 'react'
 import { toast } from 'sonner'
-import { ChevronDown, Loader2, Percent, Plus } from 'lucide-react'
+import { CheckCircle2, ChevronDown, Loader2, Percent, Plus } from 'lucide-react'
 import { PrincipalSplit } from '@/components/BdDetail'
 import { BdCumulativePayments } from '@/components/BdCumulativePayments'
 import { Dialog, DialogContent, DialogTitle } from '@/components/ui/dialog'
@@ -341,6 +341,39 @@ export function BdCumulativeInterest({ open, onClose, nbfcs, onDone }: { open: b
             <div className="rounded-[4px] border border-dashed border-[#C9DCCF] py-10 text-center text-[12.5px] font-semibold text-[#5A6B62]">No open, funded bill with this NBFC.</div>
           ) : (
             <div className="space-y-3">
+              {/* PAID FOR THIS PERIOD — said in words, where the eye lands first. */}
+              {(() => {
+                const paidRows = rows.filter((r) => /^Already paid/.test(String(r.blocked || '')))
+                if (!paidRows.length) return null
+                const label =
+                  mode === 'month'
+                    ? new Date(`${month}-01T00:00:00`).toLocaleString('en-IN', { month: 'long', year: 'numeric' })
+                    : `${formatDate(start)} → ${formatDate(upto)}`
+                const all = paidRows.length === rows.length
+                return (
+                  <div
+                    className={cn(
+                      'flex flex-wrap items-center gap-3 rounded-[8px] border px-4 py-3',
+                      all ? 'border-[#0B6B45] bg-[#E6F5EC]' : 'border-[#BFE3CB] bg-[#F1FAF4]'
+                    )}
+                  >
+                    <CheckCircle2 className={cn('flex-none text-[#0B6B45]', all ? 'h-7 w-7' : 'h-5 w-5')} />
+                    <div>
+                      <div className={cn('font-extrabold text-[#0B5E3C]', all ? 'text-[17px]' : 'text-[14px]')}>
+                        {all ? `${label} interest is PAID on all ${rows.length} bill${rows.length === 1 ? '' : 's'}` : `${label}: ${paidRows.length} of ${rows.length} bills already PAID`}
+                      </div>
+                      <div className="mt-0.5 flex flex-wrap gap-1">
+                        {paidRows.map((r) => (
+                          <span key={String(r.bd_id)} className="rounded-[4px] bg-[#0B6B45] px-1.5 py-0.5 text-[11px] font-extrabold text-white">
+                            {String(r.bd_no)}
+                          </span>
+                        ))}
+                      </div>
+                    </div>
+                    {all && <span className="ml-auto text-[12px] font-bold text-[#0B6B45]">Nothing left to pay for this period</span>}
+                  </div>
+                )
+              })()}
               <div className="flex flex-wrap items-start gap-x-5 gap-y-3 rounded-[6px] border border-[#DCE6DC] bg-[#F7FAF6] px-4 py-3">
                 {/* THE ONE ACTUAL PAID BOX — shared over the ticked bills below. */}
                 <div>
@@ -490,7 +523,22 @@ export function BdCumulativeInterest({ open, onClose, nbfcs, onDone }: { open: b
                           </td>
                           <td className="px-2 py-2.5 align-top">
                             {r.blocked ? (
-                              <span className="text-[11.5px] font-semibold">{String(r.blocked)}</span>
+                              /^Already paid/.test(String(r.blocked)) ? (
+                                (() => {
+                                  const m = /(\d{4}-\d{2}-\d{2}) → (\d{4}-\d{2}-\d{2})/.exec(String(r.blocked))
+                                  const rest = String(r.blocked).replace(/^Already paid [^.]*\.\s*/, '')
+                                  return (
+                                    <span className="flex flex-col items-start gap-1">
+                                      <span className="inline-flex items-center gap-1.5 rounded-[4px] bg-[#0B6B45] px-2 py-1 text-[12px] font-extrabold text-white">
+                                        <CheckCircle2 className="h-3.5 w-3.5" /> PAID{m ? ` ${formatDate(m[1])} → ${formatDate(m[2])}` : ''}
+                                      </span>
+                                      {rest && <span className="text-[11px] font-bold text-[#B3261E]">{rest}</span>}
+                                    </span>
+                                  )
+                                })()
+                              ) : (
+                                <span className="text-[11.5px] font-bold">{String(r.blocked)}</span>
+                              )
                             ) : (
                               <>
                                 <div className="flex flex-wrap items-center gap-1.5">
