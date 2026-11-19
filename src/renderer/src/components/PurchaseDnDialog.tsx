@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { toast } from 'sonner'
-import { FileMinus, Link2, Loader2 } from 'lucide-react'
+import { ArrowUpRight, FileMinus, Link2, Loader2 } from 'lucide-react'
 import { Dialog, DialogContent, DialogTitle } from '@/components/ui/dialog'
 import { HelpTip } from '@/components/ui/tooltip'
 import { errText, formatDate, formatINR } from '@/lib/format'
@@ -20,7 +20,18 @@ const KINDS = [
 // A PURCHASE'S DEBIT NOTES, AS SHORTAGE OR QUALITY (purchaseDebitNotes.ts): the
 // supplier's debit notes in the purchase's book — made here or booked from
 // Tally — each ticked under the kind it settles. Nothing is posted.
-export function PurchaseDnDialog({ ask, onClose, onDone }: { ask: PurchaseDnAsk | null; onClose: () => void; onDone?: () => void }): React.JSX.Element {
+export function PurchaseDnDialog({
+  ask,
+  onClose,
+  onDone,
+  onOpenVoucher
+}: {
+  ask: PurchaseDnAsk | null
+  onClose: () => void
+  onDone?: () => void
+  // Open the debit note itself in Accounting (Esc comes back).
+  onOpenVoucher?: (entryId: number) => void
+}): React.JSX.Element {
   const [data, setData] = useState<Row | null>(null)
   // entry_id → kinds ticked
   const [picked, setPicked] = useState<Map<number, Set<string>>>(new Map())
@@ -144,7 +155,21 @@ export function PurchaseDnDialog({ ask, onClose, onDone }: { ask: PurchaseDnAsk 
                     return (
                       <tr key={id} className={cn('border-t border-[#F1F5F0]', any && 'bg-[#F7FBF5]')}>
                         <td className="px-4 py-2">
-                          <span className="font-extrabold text-[#0A1F17]">{String(x.code || x.vch_no || `#${id}`)}</span>
+                          {onOpenVoucher ? (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                onClose()
+                                onOpenVoucher(id)
+                              }}
+                              title="Open this debit note in Accounting"
+                              className="inline-flex items-center gap-1 font-extrabold text-[#1B4E82] hover:underline"
+                            >
+                              {String(x.code || x.vch_no || `#${id}`)} <ArrowUpRight className="h-3.5 w-3.5" />
+                            </button>
+                          ) : (
+                            <span className="font-extrabold text-[#0A1F17]">{String(x.code || x.vch_no || `#${id}`)}</span>
+                          )}
                           {x.dn_kind && (
                             <span className={cn('ml-1.5 rounded-full border px-1.5 py-[1px] text-[10px] font-extrabold uppercase', KINDS.find((k) => k.k === x.dn_kind)?.soft || 'border-[#D6E2D6] bg-[#EEF3EE] text-[#5A6B62]')}>
                               {String(x.dn_kind)}
@@ -153,7 +178,7 @@ export function PurchaseDnDialog({ ask, onClose, onDone }: { ask: PurchaseDnAsk 
                           {x.names_invoice && <span className="ml-1.5 rounded-full bg-[#E9F5EE] px-1.5 py-[1px] text-[10px] font-extrabold text-[#0B6B45]">names this invoice</span>}
                           {x.auto_kind && (
                             <span className="ml-1.5 inline-flex items-center gap-0.5 rounded-full bg-[#0B3D2E] px-1.5 py-[1px] text-[10px] font-extrabold text-[#C7F03F]" title="Set Agst Ref this bill in Accounting — linked already">
-                              <Link2 className="h-2.5 w-2.5" /> linked in Accounting{x.auto_kind === 'other' ? ' · no type set' : ''}
+                              <Link2 className="h-2.5 w-2.5" /> linked in Accounting{x.auto_kind === 'other' ? ' · no type — pick Shortage or Quality' : ''}
                             </span>
                           )}
                         </td>

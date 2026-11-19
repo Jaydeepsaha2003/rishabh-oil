@@ -663,6 +663,7 @@ function App(): React.JSX.Element {
             onFocusHandled={() => setFocus(null)}
             onBack={view === 'orders' && returnTo ? goBack : undefined}
             backLabel={backLabel}
+            onOpenVoucher={(id, coId) => openVoucher(id, coId)}
             onPurchaseReturn={(p, coId) => {
               // Purchases → the return's form; closing a debit note comes back here.
               setReturnTo('orders')

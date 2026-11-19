@@ -218,6 +218,7 @@ export interface Api {
     subtypeRename: (values: { id: number; name: string }) => Promise<{ id: number }>
     subtypeDelete: (id: number) => Promise<{ id: number }>
     subtypeSet: (values: { entry_id: number; subtype: string | null }) => Promise<{ id: number; subtype: string | null }>
+    setDnKind: (id: number, kind: string) => Promise<{ id: number; kind: string | null }>
     create: (values: Row) => Promise<{ id: number }>
     update: (id: number, values: Row) => Promise<{ id: number }>
     remove: (id: number) => Promise<{ id: number }>

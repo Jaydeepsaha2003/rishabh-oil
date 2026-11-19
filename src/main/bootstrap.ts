@@ -3502,6 +3502,8 @@ const REQUIRED_COLUMNS: { table: string; column: string; type: string }[] = [
   { table: 'journal_line_splits', column: 'color', type: 'TEXT' },
   // A debit note's type: 'shortage' or 'quality' (or 'other') — asked on the Debit Note screen.
   { table: 'notes', column: 'dn_kind', type: 'TEXT' },
+  // The same type on the VOUCHER — a debit note booked from Tally has no notes row.
+  { table: 'journal_entries', column: 'dn_kind', type: 'TEXT' },
   // A cumulative interest payment booked through the NBFC: the JOURNAL (Dr interest /
   // Cr NBFC, Cr TDS) beside the PAYMENT (Dr NBFC / Cr bank) in journal_entry_id.
   { table: 'bd_interest_payments', column: 'interest_entry_id', type: 'INTEGER' },

@@ -11,6 +11,18 @@ const n = (v: unknown): number => {
 const round2 = (v: number): number => Math.round(v * 100) / 100
 
 export const DN_KINDS = ['shortage', 'quality'] as const
+
+/** Set a debit note's type on its voucher (and its note, when it has one). */
+export async function setDebitNoteKind(entryId: number, kind: string): Promise<{ id: number; kind: string | null }> {
+  const k = ['shortage', 'quality', 'other'].includes(String(kind || '')) ? String(kind) : null
+  const c = getClient()
+  const je = (await c.execute({ sql: 'SELECT id, vch_type FROM journal_entries WHERE id = ?', args: [n(entryId)] })).rows[0] as unknown as Row | undefined
+  if (!je) throw new Error('That voucher no longer exists')
+  if (!/^DEBIT NOTE/i.test(String(je.vch_type || ''))) throw new Error('Only a debit note takes a debit-note type')
+  await c.execute({ sql: 'UPDATE journal_entries SET dn_kind = ? WHERE id = ?', args: [k, n(entryId)] })
+  await c.execute({ sql: "UPDATE notes SET dn_kind = ? WHERE journal_entry_id = ? AND note_type = 'debit'", args: [k, n(entryId)] })
+  return { id: n(entryId), kind: k }
+}
 export type DnKind = (typeof DN_KINDS)[number]
 
 // A PURCHASE AND THE DEBIT NOTES RAISED ON IT — two kinds: the SHORTAGE (less
@@ -71,7 +83,7 @@ async function accountingLinks(orderId?: number): Promise<Row[]> {
   const args = orderId ? [n(orderId)] : []
   const viaAllocs = (
     await c.execute({
-      sql: `SELECT o.company_id, o.id AS order_id, je.id AS entry_id, COALESCE(NULLIF(nt.dn_kind, ''), 'other') AS kind,
+      sql: `SELECT o.company_id, o.id AS order_id, je.id AS entry_id, COALESCE(NULLIF(nt.dn_kind, ''), NULLIF(je.dn_kind, ''), 'other') AS kind,
                    ROUND(SUM(ba.amount), 2) AS amount, je.entry_date, je.vch_no, ${codeSql} AS code
               FROM journal_bill_allocs ba
               JOIN journal_lines jl ON jl.id = ba.line_id
@@ -89,7 +101,7 @@ async function accountingLinks(orderId?: number): Promise<Row[]> {
   ).rows as unknown as Row[]
   const viaNote = (
     await c.execute({
-      sql: `SELECT o.company_id, o.id AS order_id, je.id AS entry_id, COALESCE(NULLIF(nt.dn_kind, ''), 'other') AS kind,
+      sql: `SELECT o.company_id, o.id AS order_id, je.id AS entry_id, COALESCE(NULLIF(nt.dn_kind, ''), NULLIF(je.dn_kind, ''), 'other') AS kind,
                    ROUND(nt.total_amount, 2) AS amount, je.entry_date, je.vch_no, ${codeSql} AS code
               FROM notes nt
               JOIN journal_entries je ON je.id = nt.journal_entry_id
@@ -131,7 +143,7 @@ export async function purchaseDnCandidates(orderId: number): Promise<Row> {
                    (SELECT SUM(jl.dr) FROM journal_lines jl WHERE jl.entry_id = je.id AND jl.account_id = ?) AS amount,
                    (SELECT GROUP_CONCAT(ba.ref_name, ', ') FROM journal_bill_allocs ba JOIN journal_lines jl2 ON jl2.id = ba.line_id
                      WHERE jl2.entry_id = je.id AND ba.ref_name IS NOT NULL) AS refs,
-                   (SELECT nt.dn_kind FROM notes nt WHERE nt.journal_entry_id = je.id LIMIT 1) AS dn_kind,
+                   COALESCE((SELECT NULLIF(nt.dn_kind, '') FROM notes nt WHERE nt.journal_entry_id = je.id LIMIT 1), NULLIF(je.dn_kind, '')) AS dn_kind,
                    (SELECT GROUP_CONCAT(o2.invoice_no || ' (' || t.kind || ')', ', ') FROM purchase_dn_links t JOIN orders o2 ON o2.id = t.order_id
                      WHERE t.entry_id = je.id AND t.company_id = je.company_id AND t.order_id <> ?) AS linked_elsewhere
               FROM journal_entries je
@@ -173,6 +185,21 @@ export async function setPurchaseDnLinks(orderId: number, links: { entry_id: num
     await c.execute({
       sql: 'INSERT OR IGNORE INTO purchase_dn_links (company_id, order_id, entry_id, kind, amount) VALUES (?, ?, ?, ?, ?)',
       args: [n(o.company_id), n(o.id), l.entry_id, l.kind, allowed.get(l.entry_id) || 0]
+    })
+  }
+  // A note with no type yet, ticked under ONE kind here, takes that type —
+  // so it reads the same everywhere (Debit Note screen, other purchases).
+  const kindsOf = new Map<number, Set<string>>()
+  for (const l of clean) kindsOf.set(l.entry_id, new Set([...(kindsOf.get(l.entry_id) || []), l.kind]))
+  for (const [eid, ks] of kindsOf) {
+    if (ks.size !== 1) continue
+    await c.execute({
+      sql: "UPDATE notes SET dn_kind = ? WHERE journal_entry_id = ? AND note_type = 'debit' AND COALESCE(dn_kind, '') IN ('', 'other')",
+      args: [[...ks][0], eid]
+    })
+    await c.execute({
+      sql: "UPDATE journal_entries SET dn_kind = ? WHERE id = ? AND COALESCE(dn_kind, '') IN ('', 'other')",
+      args: [[...ks][0], eid]
     })
   }
   return { linked: clean.length }

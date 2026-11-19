@@ -299,6 +299,7 @@ const api = {
     subtypeRename: (values: { id: number; name: string }): Promise<{ id: number }> => ipcRenderer.invoke('vouchers:subtypeRename', { values }),
     subtypeDelete: (id: number): Promise<{ id: number }> => ipcRenderer.invoke('vouchers:subtypeDelete', { id }),
     subtypeSet: (values: { entry_id: number; subtype: string | null }): Promise<{ id: number; subtype: string | null }> => ipcRenderer.invoke('vouchers:subtypeSet', { values }),
+    setDnKind: (id: number, kind: string): Promise<{ id: number; kind: string | null }> => ipcRenderer.invoke('vouchers:setDnKind', { id, kind }),
     create: (values: Row): Promise<{ id: number }> => ipcRenderer.invoke('vouchers:create', { values }),
     update: (id: number, values: Row): Promise<{ id: number }> =>
       ipcRenderer.invoke('vouchers:update', { id, values }),

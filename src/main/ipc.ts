@@ -1576,6 +1576,7 @@ export function registerIpc(): void {
     (await import('./purchaseDebitNotes')).setPurchaseDnLinks(Number(id), links)
   )
   handle('orders:dnNoteMap', async () => (await import('./purchaseDebitNotes')).purchaseDnMap())
+  handle('vouchers:setDnKind', async (_e, { id, kind }: { id: number; kind: string }) => (await import('./purchaseDebitNotes')).setDebitNoteKind(Number(id), kind))
   handle('sales:shortageNotesSet', (_e, { id, entryIds }: { id: number; entryIds: number[] }) => setShortageNotes(id, entryIds))
   handle('sales:shortageNoteMap', () => shortageNoteMap())
   handle('sales:cancelledNos', (_e, args?: { companyId?: number }) => listCancelledInvoiceNos(args?.companyId))

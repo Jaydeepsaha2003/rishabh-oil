@@ -4724,6 +4724,7 @@ export function Accounts({
       }
       if (editingId != null) {
         await window.api.vouchers.update(editingId, payload)
+        if (vchType === 'DEBIT NOTE' && dnKind) await window.api.vouchers.setDnKind(editingId, dnKind).catch(() => toast.error('Saved, but the debit note type could not be set'))
         if (RECO_TYPES.includes(vchType)) await applyReco(editingId, vchReco).catch(() => toast.error('Saved, but the Reco tag could not be set'))
         toast.success('Voucher altered')
         setEditingId(null)
@@ -4732,6 +4733,7 @@ export function Accounts({
         setAlterBack(null)
       } else {
         const made = await window.api.vouchers.create(payload)
+        if (vchType === 'DEBIT NOTE' && dnKind && Number(made?.id)) await window.api.vouchers.setDnKind(Number(made.id), dnKind).catch(() => toast.error('Posted, but the debit note type could not be set'))
         if (vchReco && RECO_TYPES.includes(vchType) && Number(made?.id))
           await applyReco(Number(made.id), true).catch(() => toast.error('Posted, but the Reco tag could not be set'))
         setVchReco(false)
@@ -5231,6 +5233,8 @@ export function Accounts({
     }
     setViewOnly(viewing ? { ...v, back: screen } : null)
     setEditingId(viewing ? null : Number(v.id))
+    // A plain debit-note voucher (a Tally one) keeps its type on the voucher.
+    setDnKind(String(v.dn_kind || ''))
     setVchReco(false)
     void window.api.tags
       .forRefs('voucher', [Number(v.id)], cid || undefined)

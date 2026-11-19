@@ -8,7 +8,8 @@ import { toast } from 'sonner'
 import {
   Undo2, ArrowLeft, ArrowRight, ArrowUp, ArrowDown, ChevronsUpDown, AlertTriangle, BarChart3, Boxes, Building2, CalendarDays, CheckCircle2, ChevronDown, ChevronRight, ClipboardList, Clock, DoorOpen, Eye, MinusCircle, Package,
   BookOpen, FileText, FlaskConical, History, IndianRupee, Info, Landmark, Lock, Pencil, Plus, ScrollText, Search, Split, Trash2, Truck, type LucideIcon,
-  Check, Dices, X
+  Check, Dices, X,
+  FileMinus
 } from 'lucide-react'
 import { PageHeader } from '@/components/PageHeader'
 import { MobileBar } from '@/components/MobileBar'
@@ -859,13 +860,15 @@ interface OrdersProps {
   // Make a purchase return: opens Sales (a sale billed back to the supplier)
   // or Accounting (a debit note), in the bill's own company.
   onPurchaseReturn?: (page: 'sales' | 'accounts', companyId: number) => void
+  // Open a voucher in Accounting (a debit note from the debit-note window).
+  onOpenVoucher?: (entryId: number, companyId?: number) => void
   focusId?: number | null
   onFocusHandled?: () => void
   onBack?: () => void
   backLabel?: string
 }
 
-export function Orders({ focusId, onFocusHandled, onBack, backLabel, onPurchaseReturn }: OrdersProps = {}): React.JSX.Element {
+export function Orders({ focusId, onFocusHandled, onBack, backLabel, onPurchaseReturn, onOpenVoucher }: OrdersProps = {}): React.JSX.Element {
   // How far back this user may date a new entry. The save is refused either
   // way; greying the days out just stops the form offering one it will reject.
   const minDate = useEntryWindow('orders')
@@ -8572,7 +8575,7 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel, onPurchaseR
                               const d = dnMap.get(Number(row.id))
                               return (
                                 <span className="mt-1 flex justify-end gap-1" onClick={(e) => e.stopPropagation()}>
-                                  {(['shortage', 'quality', 'other'] as const).filter((k) => k !== 'other' || (d && d.other > 0)).map((k) => {
+                                  {(['shortage', 'quality', 'other'] as const).filter((k) => !!d && d[k] > 0).map((k) => {
                                     const amt = d ? d[k] : 0
                                     return (
                                       <button
@@ -8765,6 +8768,9 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel, onPurchaseR
                                 { label: 'History — who did what', icon: History, onClick: () => openHistory(row) },
                                 ...(onPurchaseReturn && !intercoDesk
                                   ? [{ label: 'Make a purchase return', icon: Undo2, onClick: () => setReturnRow(row) }]
+                                  : []),
+                                ...(__WEB__
+                                  ? [{ label: 'Debit notes — shortage / quality', icon: FileMinus, onClick: () => setDnAsk({ orderId: Number(row.id), invoiceNo: String(row.invoice_no || ''), supplier: String(row.supplier_name || '') }) }]
                                   : []),
                                 ...(__WEB__ && canSeeLedgers
                                   ? [
@@ -10993,7 +10999,7 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel, onPurchaseR
         query={{ orderId: Number(gateOrder?.id) || 0 }}
       />
 
-      <PurchaseDnDialog ask={dnAsk} onClose={() => setDnAsk(null)} onDone={loadDnMap} />
+      <PurchaseDnDialog ask={dnAsk} onClose={() => setDnAsk(null)} onDone={loadDnMap} onOpenVoucher={onOpenVoucher ? (id) => onOpenVoucher(id) : undefined} />
       <Dialog open={!!detailRow} onOpenChange={(open) => !open && setDetailRow(null)}>
         {/* min-w-0 down this whole chain, not just max-w-2xl on the dialog
             itself — a plain grid/flex item defaults to min-width:auto (its
