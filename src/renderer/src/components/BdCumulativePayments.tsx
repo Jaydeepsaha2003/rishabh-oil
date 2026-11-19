@@ -152,10 +152,18 @@ It is one voucher for ${bills.map((b) => b.bd_no).join(', ')} — the payment on
         {per === 'month' && (
           <input
             type="month"
+                  // The whole box opens the picker, not only its calendar icon.
+                  onClick={(e) => {
+                    try {
+                      e.currentTarget.showPicker?.()
+                    } catch {
+                      /* a browser without showPicker keeps the icon */
+                    }
+                  }}
             value={month}
             onChange={(e) => e.target.value && setMonth(e.target.value)}
             aria-label="Month"
-            className="h-9 rounded-[4px] border border-[#C9DCCF] bg-white px-2.5 text-[13px] font-semibold"
+            className="cursor-pointer h-9 rounded-[4px] border border-[#C9DCCF] bg-white px-2.5 text-[13px] font-semibold"
           />
         )}
         {per === 'range' && (

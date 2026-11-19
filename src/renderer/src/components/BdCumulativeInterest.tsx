@@ -297,10 +297,18 @@ export function BdCumulativeInterest({ open, onClose, nbfcs, onDone }: { open: b
                 <span className={lbl}>Month</span>
                 <input
                   type="month"
+                  // The whole box opens the picker, not only its calendar icon.
+                  onClick={(e) => {
+                    try {
+                      e.currentTarget.showPicker?.()
+                    } catch {
+                      /* a browser without showPicker keeps the icon */
+                    }
+                  }}
                   value={month}
                   max={today.slice(0, 7)}
                   onChange={(e) => e.target.value && setMonth(e.target.value)}
-                  className="h-10 w-full rounded-[7px] border border-[#C9DCCF] bg-white px-3 text-[12px] font-semibold text-[#0A1F17] shadow-[0_1px_2px_rgba(10,31,23,.06)] outline-none hover:border-[#0B6B45] focus:border-[#0B6B45] focus:ring-2 focus:ring-[#0B6B45]/15"
+                  className="cursor-pointer h-10 w-full rounded-[7px] border border-[#C9DCCF] bg-white px-3 text-[12px] font-semibold text-[#0A1F17] shadow-[0_1px_2px_rgba(10,31,23,.06)] outline-none hover:border-[#0B6B45] focus:border-[#0B6B45] focus:ring-2 focus:ring-[#0B6B45]/15"
                 />
               </div>
             ) : (
