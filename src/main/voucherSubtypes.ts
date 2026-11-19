@@ -102,3 +102,19 @@ export async function setVoucherSubtype(v: { entry_id: number; subtype: string |
   await c.execute({ sql: 'UPDATE journal_entries SET vch_subtype = ? WHERE id = ?', args: [name, Number(v.entry_id)] })
   return { id: Number(v.entry_id), subtype: name }
 }
+
+/**
+ * Vouchers per type and month for one company (Tally's Types of Vouchers):
+ * one row per basic type / own type / month. The company is passed, never the session's.
+ */
+export async function voucherTypeCounts(a: { companyId: number; from?: string; to?: string }): Promise<Row[]> {
+  const r = await getClient().execute({
+    sql: `SELECT UPPER(vch_type) AS vch_type, COALESCE(NULLIF(vch_subtype, ''), '') AS subtype,
+                 substr(entry_date, 1, 7) AS month, COUNT(*) AS n
+            FROM journal_entries
+           WHERE company_id = ? AND substr(entry_date, 1, 10) >= ? AND substr(entry_date, 1, 10) <= ?
+           GROUP BY 1, 2, 3`,
+    args: [Number(a.companyId), String(a.from || '0000-00-00'), String(a.to || '9999-12-31')]
+  })
+  return (r.rows as unknown as Row[]).map((x) => ({ vch_type: String(x.vch_type), subtype: String(x.subtype), month: String(x.month), n: Number(x.n) }))
+}

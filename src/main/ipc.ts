@@ -1181,6 +1181,7 @@ export function registerIpc(): void {
   )
   // The desk's own voucher types (voucherSubtypes.ts).
   handle('vouchers:subtypes', async () => (await import('./voucherSubtypes')).listVoucherSubtypes())
+  handle('vouchers:typeCounts:list', async (_e, a: { companyId: number; from?: string; to?: string }) => (await import('./voucherSubtypes')).voucherTypeCounts(a))
   handle('vouchers:subtypeCreate', async (_e, { values }: { values: { base_type: string; name: string } }) => (await import('./voucherSubtypes')).createVoucherSubtype(values))
   handle('vouchers:subtypeRename', async (_e, { values }: { values: { id: number; name: string } }) => (await import('./voucherSubtypes')).renameVoucherSubtype(values))
   handle('vouchers:subtypeDelete', async (_e, { id }: { id: number }) => (await import('./voucherSubtypes')).deleteVoucherSubtype(Number(id)))

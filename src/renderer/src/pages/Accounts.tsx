@@ -87,7 +87,9 @@ import {
   ChevronsUpDown,
   Eye,
   EyeOff,
-  Merge
+  Merge,
+  ListOrdered,
+  Loader2
 } from 'lucide-react'
 import { LedgerMergeDialog } from '@/components/LedgerMergeDialog'
 import { LedgerReleaseDialog } from '@/components/LedgerReleaseDialog'
@@ -98,6 +100,7 @@ import { Switch } from '@/components/ui/switch'
 import { useBreakdownShown } from '@/lib/breakdownReveal'
 import { Label } from '@/components/ui/label'
 import { DatePicker } from '@/components/ui/date-picker'
+import { fyStartYear } from '@/lib/fy'
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { TallyLedgers } from '@/components/TallyLedgers'
 import { TallyNotesImport } from '@/components/TallyNotesImport'
@@ -2181,6 +2184,20 @@ export function Accounts({
   const monthStart = `${todayISO().slice(0, 7)}-01`
   const [dbFrom, setDbFrom] = useState(monthStart)
   const [dbTo, setDbTo] = useState(todayISO())
+  // MASTERS → VOUCHER TYPES (Tally's Types of Vouchers): counts per type and month.
+  const [mVt, setMVt] = useState(false)
+  const [vtFrom, setVtFrom] = useState(() => `${fyStartYear()}-04-01`)
+  const [vtTo, setVtTo] = useState(todayISO())
+  const [vtRows, setVtRows] = useState<Row[] | null>(null)
+  const [vtPick, setVtPick] = useState<string>('')
+  useEffect(() => {
+    if (!mVt || !cid) return
+    setVtRows(null)
+    void window.api.vouchers
+      .typeCounts({ companyId: cid, from: vtFrom, to: vtTo })
+      .then(setVtRows)
+      .catch(() => setVtRows([]))
+  }, [mVt, cid, vtFrom, vtTo])
   // Empty = every voucher type.
   const [dbType, setDbType] = useState<string[]>([])
   const [dayRows, setDayRows] = useState<Row[]>([])
@@ -2555,6 +2572,8 @@ export function Accounts({
   const [dbPicking, setDbPicking] = useState(false)
   const [dbPicked, setDbPicked] = useState<Set<number>>(new Set())
   const [dbDeleting, setDbDeleting] = useState(false)
+  // The bulk-delete confirmation: what goes, what is left alone, and the code to type back.
+  const [delAsk, setDelAsk] = useState<{ go: Row[]; owned: Row[]; noRight: Row[]; code: string; typed: string } | null>(null)
   // The same in a ledger: Select, tick its vouchers, Delete selected.
   const [lgPicking, setLgPicking] = useState(false)
   const [lgPicked, setLgPicked] = useState<Set<number>>(new Set())
@@ -5431,21 +5450,12 @@ Delete ${doc}?`)) return
       toast.error(owned.length ? `Posted by a purchase, sale or payment — delete them there: ${names(owned)}` : `You do not have rights to delete: ${names(noRight)}`)
       return
     }
-    const msg =
-      `Delete ${go.length} voucher${go.length === 1 ? '' : 's'}?\n\n${names(go)}\n\nNotes reverse their ledger entry and any stock they moved. This cannot be undone.` +
-      (owned.length ? `\n\nLeft alone — posted by a purchase, sale or payment: ${names(owned)}` : '') +
-      (noRight.length ? `\n\nLeft alone — no delete right: ${names(noRight)}` : '')
     // A TYPED CODE, not a click: a bulk delete cannot be undone, so the user
-    // types back a fresh 4-digit code before anything goes.
-    const code = String(Math.floor(1000 + Math.random() * 9000))
-    const typed = window.prompt(`${msg}
+    // types back a fresh 4-digit code before anything goes (the dialog below).
+    setDelAsk({ go, owned, noRight, code: String(Math.floor(1000 + Math.random() * 9000)), typed: '' })
+  }
 
-To confirm, type this code:  ${code}`, '')
-    if (typed == null) return
-    if (typed.trim() !== code) {
-      toast.error('The code did not match — nothing was deleted')
-      return
-    }
+  async function runBulkDelete(go: Row[]): Promise<void> {
     setDbDeleting(true)
     const failed: string[] = []
     let done = 0
@@ -12507,18 +12517,23 @@ To confirm, type this code:  ${code}`, '')
     // ── THE STRIP: the two tabs ───────────────────────────────────────────
     const TABS = [
       { k: 'masters' as Screen, label: 'Chart of accounts', icon: FolderTree, key: 'M', count: groupRows.length ? `${groupRows.length} groups` : '…' },
-      { k: 'openings' as Screen, label: 'Opening balances', icon: Landmark, key: 'B', count: obRows.length ? `${obSetCount} set` : '…' }
-    ].filter((t) => mayScreen(t.k))
+      { k: 'openings' as Screen, label: 'Opening balances', icon: Landmark, key: 'B', count: obRows.length ? `${obSetCount} set` : '…' },
+      { k: 'vtypes' as Screen, label: 'Voucher types', icon: ListOrdered, key: 'V', count: vtRows ? `${vtRows.reduce((t, r) => t + Number(r.n || 0), 0)}` : '…' }
+    ].filter((t) => mayScreen(t.k === ('vtypes' as Screen) ? 'masters' : t.k))
     const strip = (
       <div className="sc flex h-12 items-center gap-1.5 overflow-x-auto">
         {TABS.map((t) => {
-          const on = screen === t.k
+          const isVt = t.k === ('vtypes' as Screen)
+          const on = isVt ? mVt && screen === 'masters' : screen === t.k && !(mVt && t.k === 'masters')
           const Icon = t.icon
           return (
             <button
               key={t.k}
               type="button"
-              onClick={() => setScreen(t.k)}
+              onClick={() => {
+                setMVt(isVt)
+                setScreen(isVt ? 'masters' : t.k)
+              }}
               className="flex h-[34px] flex-none items-center gap-2 whitespace-nowrap rounded-[7px] px-[13px]"
               style={{
                 background: on ? 'linear-gradient(180deg,#DDF97A,#B9E534)' : 'rgba(255,255,255,.05)',
@@ -14322,12 +14337,154 @@ To confirm, type this code:  ${code}`, '')
       )
     }
 
+    // ── VOUCHER TYPES: Tally's list, with a month-wise count beside it ─────
+    const vtCard = (() => {
+      const rows = vtRows || []
+      const BASE = ['CONTRA', 'CREDIT NOTE', 'DEBIT NOTE', 'JOURNAL', 'PAYMENT', 'PURCHASE', 'RECEIPT', 'SALE']
+      // Tally's way: a voucher counts under its own type when it has one, else its basic type.
+      const keyOf = (r: Row): string => (r.subtype ? `s:${r.subtype}` : `b:${r.vch_type}`)
+      const by = new Map<string, number>()
+      for (const r of rows) by.set(keyOf(r), (by.get(keyOf(r)) || 0) + Number(r.n || 0))
+      const bases = [...new Set([...BASE, ...rows.map((r) => String(r.vch_type))])].sort()
+      const subsOf = (b: string): string[] =>
+        [
+          ...new Set([
+            ...subtypes.filter((x) => String(x.base_type).toUpperCase() === b).map((x) => String(x.name)),
+            ...rows.filter((r) => r.vch_type === b && r.subtype).map((r) => String(r.subtype))
+          ])
+        ].sort()
+      const list: { key: string; name: string; sub: boolean }[] = []
+      for (const b of bases) {
+        list.push({ key: `b:${b}`, name: b, sub: false })
+        for (const x of subsOf(b)) list.push({ key: `s:${x}`, name: x, sub: true })
+      }
+      const total = rows.reduce((t, r) => t + Number(r.n || 0), 0)
+      const months: string[] = []
+      if (vtFrom && vtTo && vtFrom <= vtTo) {
+        let [y, m] = vtFrom.slice(0, 7).split('-').map(Number)
+        const end = vtTo.slice(0, 7)
+        while (`${y}-${String(m).padStart(2, '0')}` <= end && months.length < 120) {
+          months.push(`${y}-${String(m).padStart(2, '0')}`)
+          m += 1
+          if (m > 12) {
+            m = 1
+            y += 1
+          }
+        }
+      }
+      const pick = vtPick && list.some((l) => l.key === vtPick) ? vtPick : ''
+      const perMonth = new Map<string, number>()
+      for (const r of rows) if (!pick || keyOf(r) === pick) perMonth.set(String(r.month), (perMonth.get(String(r.month)) || 0) + Number(r.n || 0))
+      const pickTotal = [...perMonth.values()].reduce((t, v) => t + v, 0)
+      const peak = Math.max(1, ...perMonth.values())
+      const pickName = pick ? list.find((l) => l.key === pick)?.name || '' : 'All vouchers'
+      const mLabel = (ym: string): string => {
+        const [y, m] = ym.split('-').map(Number)
+        return `${['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'][m - 1]} ${y}`
+      }
+      const rowCss = (on: boolean, sub: boolean): React.CSSProperties => ({
+        gridTemplateColumns: '1fr 110px',
+        height: sub ? 36 : 40,
+        padding: '0 16px',
+        borderBottom: '1px solid #EEF3EC',
+        background: on ? '#F3FBE2' : '#fff',
+        boxShadow: on ? 'inset 3px 0 0 #7FB51C' : 'none',
+        cursor: 'pointer'
+      })
+      return (
+        <>
+          <div className="flex flex-none flex-wrap items-center gap-[9px]" style={toolbar}>
+            <span style={{ ...kicker, color: A.muted }}>Period</span>
+            <DatePicker value={vtFrom} onChange={(v) => setVtFrom(v || '')} max={vtTo || undefined} className="h-9 w-[9rem] bg-white text-[12px]" />
+            <span style={{ color: A.muted, fontWeight: 700 }}>to</span>
+            <DatePicker value={vtTo} onChange={(v) => setVtTo(v || '')} className="h-9 w-[9rem] bg-white text-[12px]" />
+            <button
+              type="button"
+              onClick={() => {
+                setVtFrom(`${fyStartYear()}-04-01`)
+                setVtTo(todayISO())
+              }}
+              className="h-8 rounded-[6px] px-[9px] hover:bg-[#EEF3EC]"
+              style={{ fontSize: 11.5, fontWeight: 700, color: A.muted }}
+            >
+              This year
+            </button>
+            <span className="ml-auto whitespace-nowrap" style={{ fontSize: 11.5, fontWeight: 600, color: A.muted }}>
+              {list.length} types · <b style={{ color: A.ink }}>{total}</b> vouchers
+            </span>
+          </div>
+          <div className="flex min-h-0 flex-1 flex-wrap">
+            {/* THE TYPES — click one to see it month by month. */}
+            <div className="sc flex min-h-0 min-w-[300px] flex-[3] flex-col overflow-y-auto" style={{ borderRight: '1px solid #EAF0E9' }}>
+              <div className="grid flex-none" style={{ ...headRow, gridTemplateColumns: '1fr 110px', padding: '0 16px' }}>
+                <span>Types of vouchers</span>
+                <span className="text-right">Vouchers</span>
+              </div>
+              {vtRows == null ? (
+                <div className="flex items-center gap-2 p-6" style={{ color: A.muted, fontSize: 12 }}>
+                  <Loader2 className="h-4 w-4 animate-spin" /> Counting…
+                </div>
+              ) : (
+                <>
+                  <div className="grid flex-none items-center" style={rowCss(!pick, false)} onClick={() => setVtPick('')}>
+                    <span style={{ fontSize: 12.5, fontWeight: 800, color: A.frame }}>All vouchers</span>
+                    <span className="text-right" style={{ ...mono, fontSize: 13, fontWeight: 800, color: A.frame }}>{total}</span>
+                  </div>
+                  {list.map((l) => {
+                    const k = by.get(l.key) || 0
+                    return (
+                      <div key={l.key} className="grid flex-none items-center" style={rowCss(pick === l.key, l.sub)} onClick={() => setVtPick(l.key)}>
+                        <span className="truncate" style={{ paddingLeft: l.sub ? 22 : 0, fontSize: l.sub ? 12 : 12.5, fontWeight: l.sub ? 700 : 800, color: k ? A.ink : '#8CA396' }}>
+                          {l.sub && <span style={{ color: '#B5C7BB', marginRight: 6 }}>└</span>}
+                          {l.sub ? l.name : l.name.charAt(0) + l.name.slice(1).toLowerCase()}
+                        </span>
+                        <span className="text-right" style={{ ...mono, fontSize: 13, fontWeight: k ? 800 : 600, color: k ? A.ink : '#B5C7BB' }}>{k}</span>
+                      </div>
+                    )
+                  })}
+                  <div className="grid flex-none items-center" style={{ ...rowCss(false, false), cursor: 'default', background: '#C7F03F', borderBottom: 0 }}>
+                    <span style={{ ...kicker, color: '#2E4A0B' }}>Total</span>
+                    <span className="text-right" style={{ ...mono, fontSize: 13.5, fontWeight: 800, color: '#12280B' }}>{total}</span>
+                  </div>
+                </>
+              )}
+            </div>
+            {/* MONTH-WISE — the picked type, or every voucher. */}
+            <div className="sc flex min-h-0 min-w-[300px] flex-[2] flex-col overflow-y-auto">
+              <div className="grid flex-none" style={{ ...headRow, gridTemplateColumns: '120px 1fr 80px', padding: '0 16px' }}>
+                <span>Month</span>
+                <span className="truncate" style={{ color: '#DDF97A' }}>{pickName}</span>
+                <span className="text-right">Vouchers</span>
+              </div>
+              {months.map((ym) => {
+                const k = perMonth.get(ym) || 0
+                return (
+                  <div key={ym} className="grid flex-none items-center gap-3" style={{ gridTemplateColumns: '120px 1fr 80px', height: 38, padding: '0 16px', borderBottom: '1px solid #EEF3EC' }}>
+                    <span style={{ fontSize: 12.5, fontWeight: 700, color: k ? A.ink : '#8CA396' }}>{mLabel(ym)}</span>
+                    <span className="h-[7px] overflow-hidden rounded-full" style={{ background: '#EEF3EC' }}>
+                      <span className="block h-full rounded-full" style={{ width: `${(k / peak) * 100}%`, background: 'linear-gradient(90deg,#9FE3BF,#12855A)' }} />
+                    </span>
+                    <span className="text-right" style={{ ...mono, fontSize: 13, fontWeight: k ? 800 : 600, color: k ? A.ink : '#B5C7BB' }}>{k}</span>
+                  </div>
+                )
+              })}
+              <div className="grid flex-none items-center" style={{ gridTemplateColumns: '120px 1fr 80px', height: 40, padding: '0 16px', background: '#C7F03F' }}>
+                <span style={{ ...kicker, color: '#2E4A0B' }}>Total</span>
+                <span />
+                <span className="text-right" style={{ ...mono, fontSize: 13.5, fontWeight: 800, color: '#12280B' }}>{pickTotal}</span>
+              </div>
+            </div>
+          </div>
+        </>
+      )
+    })()
+
     const body = (
       <div className="flex min-h-0 flex-1" style={{ gap: gutter, padding: bodyPad }}>
         <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden" style={card}>
-          {onOpenings ? openingsCard : mastersCard}
+          {onOpenings ? openingsCard : mVt ? vtCard : mastersCard}
         </div>
-        {showRail && (
+        {showRail && !(mVt && !onOpenings) && (
           <div className="sc flex min-h-0 flex-none flex-col gap-3 overflow-y-auto pr-0.5" style={{ width: railW }}>
             {onOpenings ? openingsRail : mastersRail}
           </div>
@@ -21221,6 +21378,96 @@ To confirm, type this code:  ${code}`, '')
             {alterBusy ? 'Saving…' : 'Save changes'}
           </Button>
         </DialogFooter>
+      </DialogContent>
+    </Dialog>
+
+    {/* Bulk delete — confirm with a typed code */}
+    <Dialog open={!!delAsk} onOpenChange={(o) => !o && !dbDeleting && setDelAsk(null)}>
+      <DialogContent className="max-w-[520px] gap-0 overflow-hidden p-0">
+        {delAsk && (() => {
+          const names = (l: Row[]): string[] => l.map((r) => String(r.vch_no || r.id))
+          const ok = delAsk.typed.trim() === delAsk.code
+          const go = (): void => {
+            if (!ok || dbDeleting) return
+            const list = delAsk.go
+            setDelAsk(null)
+            void runBulkDelete(list)
+          }
+          const chips = (l: Row[], tone: 'red' | 'grey'): React.JSX.Element => (
+            <div className="flex max-h-[110px] flex-wrap gap-1.5 overflow-y-auto">
+              {names(l).map((x, i) => (
+                <span
+                  key={`${x}-${i}`}
+                  className="rounded-[4px] border px-2 py-[2px] font-mono text-[11.5px] font-bold"
+                  style={tone === 'red' ? { background: '#FDF3F2', borderColor: '#F0D6D4', color: '#8C2F26' } : { background: '#F4F7F2', borderColor: '#DCE7DB', color: '#5A6B62' }}
+                >
+                  {x}
+                </span>
+              ))}
+            </div>
+          )
+          return (
+            <>
+              <div className="flex items-start gap-3 px-6 pb-4 pt-6">
+                <span className="flex h-10 w-10 flex-none items-center justify-center rounded-full" style={{ background: '#FDF3F2', color: '#B3261E' }}>
+                  <Trash2 className="h-5 w-5" />
+                </span>
+                <div className="min-w-0">
+                  <DialogHeader>
+                    <DialogTitle className="text-[17px] font-extrabold text-[#0A1F17]">
+                      Delete {delAsk.go.length} voucher{delAsk.go.length === 1 ? '' : 's'}?
+                    </DialogTitle>
+                  </DialogHeader>
+                  <p className="mt-1 text-[12.5px] text-[#5A6B62]">Notes reverse their ledger entry and any stock they moved. This cannot be undone.</p>
+                </div>
+              </div>
+              <div className="space-y-3 px-6 pb-4">
+                {chips(delAsk.go, 'red')}
+                {delAsk.owned.length > 0 && (
+                  <div className="rounded-[6px] border border-[#F1D9A6] bg-[#FFF8EA] p-2.5">
+                    <div className="mb-1.5 flex items-center gap-1.5 text-[11.5px] font-bold text-[#8A5300]">
+                      <TriangleAlert className="h-3.5 w-3.5" /> Left alone — posted by a purchase, sale or payment (delete there)
+                    </div>
+                    {chips(delAsk.owned, 'grey')}
+                  </div>
+                )}
+                {delAsk.noRight.length > 0 && (
+                  <div className="rounded-[6px] border border-[#DCE7DB] bg-[#F4F7F2] p-2.5">
+                    <div className="mb-1.5 text-[11.5px] font-bold text-[#5A6B62]">Left alone — no delete right</div>
+                    {chips(delAsk.noRight, 'grey')}
+                  </div>
+                )}
+              </div>
+              <div className="border-t border-[#EAF0E9] bg-[#FBFDFA] px-6 py-4">
+                <label className="mb-2 block text-[12px] font-semibold text-[#33473E]">
+                  To confirm, type <span className="rounded-[4px] bg-[#0B3D2E] px-2 py-[2px] font-mono text-[13px] font-extrabold tracking-[.2em] text-[#DDF97A]">{delAsk.code}</span>
+                </label>
+                <input
+                  autoFocus
+                  inputMode="numeric"
+                  value={delAsk.typed}
+                  onChange={(e) => setDelAsk((d) => (d ? { ...d, typed: e.target.value.replace(/\D/g, '').slice(0, 4) } : d))}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') {
+                      e.preventDefault()
+                      go()
+                    }
+                  }}
+                  placeholder="••••"
+                  className="h-11 w-full rounded-[7px] border bg-white px-3 text-center font-mono text-[18px] font-extrabold tracking-[.5em] outline-none"
+                  style={{ borderColor: ok ? '#12855A' : delAsk.typed.length === 4 ? '#B3261E' : '#C3D2C6' }}
+                />
+                {delAsk.typed.length === 4 && !ok && <p className="mt-1.5 text-[11.5px] font-semibold text-[#B3261E]">That code does not match</p>}
+                <DialogFooter className="mt-4 gap-2">
+                  <Button variant="outline" onClick={() => setDelAsk(null)}>Cancel</Button>
+                  <Button disabled={!ok || dbDeleting} onClick={go} className="bg-[#B3261E] text-white hover:bg-[#8C2F26]">
+                    <Trash2 className="mr-1.5 h-4 w-4" /> Delete {delAsk.go.length}
+                  </Button>
+                </DialogFooter>
+              </div>
+            </>
+          )
+        })()}
       </DialogContent>
     </Dialog>
 

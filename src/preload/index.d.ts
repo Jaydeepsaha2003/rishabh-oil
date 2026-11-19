@@ -211,6 +211,7 @@ export interface Api {
     summary: (args?: { from?: string; to?: string; companyId?: number }) => Promise<Row>
     get: (id: number) => Promise<Row | null>
     subtypes: () => Promise<Row[]>
+    typeCounts: (a: { companyId: number; from?: string; to?: string }) => Promise<Row[]>
     setValueDate: (id: number, valueDate: string | null) => Promise<{ id: number; value_date: string | null }>
     setLineAllocs: (lineId: number, allocs: Row[]) => Promise<{ id: number; allocs: number }>
     setLineSplits: (lineId: number, splits: { name: string; amount: number; note?: string | null; branch?: string | null; color?: string | null; remark?: string | null }[]) => Promise<{ id: number; parts: number }>

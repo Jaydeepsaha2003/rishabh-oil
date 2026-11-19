@@ -289,6 +289,7 @@ const api = {
     summary: (args?: { from?: string; to?: string; companyId?: number }): Promise<Row> => ipcRenderer.invoke('vouchers:summary', args),
     get: (id: number): Promise<Row | null> => ipcRenderer.invoke('vouchers:get', { id }),
     subtypes: (): Promise<Row[]> => ipcRenderer.invoke('vouchers:subtypes'),
+    typeCounts: (a: { companyId: number; from?: string; to?: string }): Promise<Row[]> => ipcRenderer.invoke('vouchers:typeCounts:list', a),
     setValueDate: (id: number, valueDate: string | null): Promise<{ id: number; value_date: string | null }> =>
       ipcRenderer.invoke('vouchers:setValueDate', { id, valueDate }),
     setLineAllocs: (lineId: number, allocs: Row[]): Promise<{ id: number; allocs: number }> =>
