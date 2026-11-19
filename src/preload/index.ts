@@ -991,6 +991,7 @@ const api = {
     list: (filter?: Row): Promise<Row[]> => ipcRenderer.invoke('bd:list', { filter }),
     create: (values: Row): Promise<{ id: number }> => ipcRenderer.invoke('bd:create', { values }),
     update: (id: number, values: Row): Promise<{ id: number }> => ipcRenderer.invoke('bd:update', { id, values }),
+    adminUpdate: (id: number, values: Row): Promise<{ id: number }> => ipcRenderer.invoke('bd:adminUpdate', { id, values }),
     remove: (id: number): Promise<{ id: number }> => ipcRenderer.invoke('bd:delete', { id }),
     repay: (
       id: number,

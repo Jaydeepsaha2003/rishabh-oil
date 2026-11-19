@@ -1886,6 +1886,8 @@ export function registerIpc(): void {
   handle('bd:list', (_e, { filter }: { filter?: Row } = {}) => listBd(filter))
   handle('bd:create', (_e, { values }: { values: Row }) => createBd(values))
   handle('bd:update', (_e, { id, values }: { id: number; values: Row }) => updateBd(id, values))
+  // A repaid bill corrected in place — an administrator only (checked inside).
+  handle('bd:adminUpdate', async (_e, { id, values }: { id: number; values: Row }) => (await import('./billDiscounting')).adminUpdateRepaidBd(id, values))
   handle('bd:delete', (_e, { id }: { id: number }) => deleteBd(id))
   handle(
     'bd:repay',

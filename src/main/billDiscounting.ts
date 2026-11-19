@@ -1421,7 +1421,7 @@ export async function createBd(v: Row): Promise<{ id: number }> {
   })
 }
 
-export async function updateBd(id: number, v: Row): Promise<{ id: number }> {
+export async function updateBd(id: number, v: Row, opts: { repost?: boolean } = {}): Promise<{ id: number }> {
   await ensureInvoiceAdj()
   return withDbTransaction(async () => {
   const cur = await loadBd(id)
@@ -1467,8 +1467,58 @@ export async function updateBd(id: number, v: Row): Promise<{ id: number }> {
     )
   }
   if (Array.isArray(v.linked_order_ids)) await syncBdLinkedOrders(id, v.linked_order_ids)
-  await postBdOpening(id)
+  // The admin correction of a repaid bill can leave the vouchers as booked.
+  if (opts.repost !== false) await postBdOpening(id)
   return { id }
+  })
+}
+
+/**
+ * ADMIN: CORRECT A REPAID BILL WITHOUT REOPENING IT (a maturity keyed a day
+ * out, a rate, a date). An administrator only, at their own risk. In ONE
+ * transaction: the bill is saved exactly as Edit would save an open one — its
+ * opening voucher re-posted in place — while it stays repaid (status, repaid
+ * date and amount, repayments and their vouchers untouched), and interest paid
+ * upfront is re-posted in place for the new terms (same number, date, bank).
+ * Anything worked out live — the early-repayment refund, days, the register —
+ * follows by itself.
+ */
+export async function adminUpdateRepaidBd(id: number, v: Row): Promise<{ id: number }> {
+  const { assertAdmin } = await import('./access-gate')
+  await assertAdmin('Editing a repaid bill')
+  return withDbTransaction(async () => {
+    const c = getClient()
+    const cur = await loadBd(id)
+    if (String(cur.status) !== 'repaid') return updateBd(id, v)
+    const upId = n(cur.upfront_interest_journal_entry_id)
+    // Past updateBd's two locks (repaid; upfront interest recorded) — put back below.
+    await c.execute({ sql: "UPDATE bill_discountings SET status = 'open', upfront_interest_journal_entry_id = NULL WHERE id = ?", args: [n(id)] })
+    // Vouchers carry what really moved through the bank; by default they stay as
+    // booked and only the bill's terms change. Ticked, they are re-posted for the new terms.
+    const repost = !!v.admin_repost
+    await updateBd(id, v, { repost })
+    await c.execute({
+      sql: 'UPDATE bill_discountings SET status = ?, repaid_date = ?, repaid_amount = ?, upfront_interest_journal_entry_id = ? WHERE id = ?',
+      args: [String(cur.status), cur.repaid_date ?? null, cur.repaid_amount ?? null, upId || null, n(id)]
+    })
+    if (upId && repost) {
+      const bd = await loadBd(id)
+      const calc = bdCalc(bd)
+      if (calc.interestAmount < 0.005) throw new Error('With these terms there is no interest — reverse the upfront interest payment first')
+      await repostJournal(upId, {
+        date: String(bd.upfront_interest_paid_date || '').slice(0, 10),
+        vchType: 'PAYMENT',
+        vchNo: String(bd.bd_no || ''),
+        narration: `Bill Discounting ${bd.bd_no} — interest ${calc.interestAmount.toFixed(2)} (TDS ${calc.tdsAmount.toFixed(2)}) settled upfront, per the bank statement`,
+        companyId: n(bd.company_id) || undefined,
+        lines: [
+          { account: 'INTEREST ON BILL DISCOUNTING A/C', group: 'Indirect Expenses', dr: calc.interestAmount },
+          { account: 'TDS ON INTEREST PAYABLE A/C', group: 'Duties & Taxes', cr: calc.tdsAmount },
+          { account: String(bd.upfront_interest_account || ''), group: 'Bank Accounts', cr: calc.netInterest }
+        ]
+      })
+    }
+    return { id: n(id) }
   })
 }
 

@@ -682,6 +682,7 @@ export interface Api {
     list: (filter?: Row) => Promise<Row[]>
     create: (values: Row) => Promise<{ id: number }>
     update: (id: number, values: Row) => Promise<{ id: number }>
+    adminUpdate: (id: number, values: Row) => Promise<{ id: number }>
     remove: (id: number) => Promise<{ id: number }>
     repay: (
       id: number,

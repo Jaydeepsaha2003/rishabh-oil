@@ -34,7 +34,8 @@ import {
   Clock,
   X,
   Star,
-  Undo2
+  Undo2,
+  ShieldAlert
 } from 'lucide-react'
 import { RefundReceived } from '@/components/RefundReceived'
 import { ChargeRows } from '@/components/ChargeRows'
@@ -1602,9 +1603,11 @@ export function BillDiscounting({
     }
   }
 
-  function openEdit(r: Row): void {
+  // admin: a REPAID bill corrected in place (adminUpdateRepaidBd) — administrators only.
+  function openEdit(r: Row, admin = false): void {
     setForm({
       id: r.id,
+      admin_edit: admin,
       bd_no: r.bd_no || '',
       payment_in_expected: !!Number(r.payment_in_expected),
       payment_in_days: r.payment_in_days == null ? '' : String(r.payment_in_days),
@@ -1966,6 +1969,7 @@ export function BillDiscounting({
     setSaving(true)
     try {
       const payload: Row = {
+        ...(form.admin_edit ? { admin_repost: !!form.admin_repost } : {}),
         bd_no: String(form.bd_no).trim(),
         nbfc_id: form.nbfc_id ? Number(form.nbfc_id) : null,
         finance_type: form.finance_type,
@@ -2009,7 +2013,7 @@ export function BillDiscounting({
         disbursement_route: String(form.disbursement_route || (form.id ? 'unconfirmed' : 'bank')),
         disbursement_account: String(form.disbursement_route) === 'bank' ? String(form.disbursement_account || '') || null : null
       }
-      if (form.id) await window.api.billDiscounting.update(Number(form.id), payload)
+      if (form.id) await (form.admin_edit ? window.api.billDiscounting.adminUpdate : window.api.billDiscounting.update)(Number(form.id), payload)
       else await window.api.billDiscounting.create(payload)
       toast.success(form.id ? 'Bill Discounting updated' : 'Bill discounted')
       setForm(null)
@@ -3475,6 +3479,9 @@ Its bank voucher is removed too.`)) return
                           disabledReason: 'Already repaid — reopen it first',
                           onClick: () => openEdit(r)
                         },
+                        ...(repaid && iAmAdmin
+                          ? [{ label: 'Edit repaid bill (admin)', icon: ShieldAlert, onClick: () => openEdit(r, true) }]
+                          : []),
                         ...(r.payment_received_date && !repaid
                           ? [{ label: `Change receipt date (now ${formatDate(String(r.payment_received_date))})`, icon: CalendarRange, onClick: () => setRedate({ row: r, date: String(r.payment_received_date).slice(0, 10) }) }]
                           : []),
@@ -4221,6 +4228,9 @@ Its bank voucher is removed too.`)) return
                                   disabledReason: 'Already repaid — reopen it first',
                                   onClick: () => openEdit(r)
                                 },
+                                ...(repaid && iAmAdmin
+                                  ? [{ label: 'Edit repaid bill (admin)', icon: ShieldAlert, onClick: () => openEdit(r, true) }]
+                                  : []),
                                 ...(r.payment_received_date && !repaid
                                   ? [{ label: `Change receipt date (now ${formatDate(String(r.payment_received_date))})`, icon: CalendarRange, onClick: () => setRedate({ row: r, date: String(r.payment_received_date).slice(0, 10) }) }]
                                   : []),
@@ -4343,6 +4353,25 @@ Its bank voucher is removed too.`)) return
             {__WEB__ && (
               <div className="text-[10.5px] font-extrabold uppercase tracking-[.15em] text-[#8FBFA8]">
                 {form?.id ? 'Bill discounting · edit' : 'Bill discounting'}
+              </div>
+            )}
+            {form?.admin_edit && (
+              <div className="mb-1 mt-1.5 flex items-start gap-2 rounded-[5px] border border-[#F0C9C4] bg-[#FDECEA] px-3 py-2 text-[12px] font-semibold text-[#8C2F26]">
+                <ShieldAlert className="mt-px h-4 w-4 flex-none" />
+                <span className="min-w-0">
+                  <b>Admin edit of a repaid bill — at your own risk.</b> It stays repaid and its repayments are not touched. The register, days and the early-repayment refund follow the new terms.
+                  <label className="mt-1.5 flex cursor-pointer items-start gap-2 font-bold">
+                    <input
+                      type="checkbox"
+                      checked={!!form?.admin_repost}
+                      onChange={(e) => setForm((f) => (f ? { ...f, admin_repost: e.target.checked } : f))}
+                      className="mt-0.5 h-4 w-4 accent-[#B3261E]"
+                    />
+                    <span>
+                      Also re-post its vouchers for the new terms (opening and upfront interest, same numbers). Leave off when the vouchers already match the bank — they carry what was actually paid.
+                    </span>
+                  </label>
+                </span>
               </div>
             )}
             <div className={cn('flex flex-wrap items-center gap-3', __WEB__ && '!mt-[5px] !gap-2.5')}>
