@@ -104,7 +104,9 @@ export function BdCumulativeInterest({ open, onClose, nbfcs, onDone }: { open: b
 
   useEffect(() => {
     setRows(null)
-    if (!open || !nbfc || !/^\d{4}-\d{2}-\d{2}$/.test(upto)) return
+    // Read again each time the Pay tab is shown: a payment deleted or edited on
+    // Payments made must not leave the bills here as they were.
+    if (!open || tab !== 'pay' || !nbfc || !/^\d{4}-\d{2}-\d{2}$/.test(upto)) return
     let live = true
     void window.api.billDiscounting
       .cumulativeInterest({ nbfc_id: Number(nbfc), from_date: start, to_date: upto })
@@ -118,7 +120,7 @@ export function BdCumulativeInterest({ open, onClose, nbfcs, onDone }: { open: b
     return () => {
       live = false
     }
-  }, [open, nbfc, upto, start])
+  }, [open, nbfc, upto, start, tab])
 
   // A LUMP SUM, shared over the ticked bills the way the desk chooses — oldest
   // first (FIFO), newest first, in proportion to each bill's interest, or
@@ -248,6 +250,7 @@ export function BdCumulativeInterest({ open, onClose, nbfcs, onDone }: { open: b
           <div className="min-h-0 flex-1 space-y-3 overflow-y-auto px-3 py-3 sm:px-5 sm:py-4">
             <BdCumulativePayments
               nbfcId={nbfc ? Number(nbfc) : null}
+              onChanged={onDone}
               onPayBalance={(v) => {
                 // To the Pay tab on exactly those days: a short bill offers its balance.
                 setNbfc(String(v.nbfc_id))

@@ -45,12 +45,15 @@ const periodsOf = (g: Row): string[] => [...new Set((g.bills as Row[]).map((b) =
 export function BdCumulativePayments({
   nbfcId,
   toolbar,
-  onPayBalance
+  onPayBalance,
+  onChanged
 }: {
   nbfcId: number | null
   toolbar?: React.ReactNode
   // Open Pay interest on these days for this NBFC — a short bill then offers just its balance.
   onPayBalance?: (v: { nbfc_id: number; from: string; to: string }) => void
+  // A payment deleted, edited or converted here — the page behind re-reads its bills.
+  onChanged?: () => void
 }): React.JSX.Element {
   const [raw, setRaw] = useState<Row[] | null>(null)
   // Which payments: all, one month, or a date range (by the day paid).
@@ -81,6 +84,7 @@ Each becomes a JOURNAL (Dr interest / Cr NBFC, Cr TDS) and its PAYMENT (Dr NBFC 
       if (r.converted) toast.success(`${r.converted} payment${r.converted === 1 ? '' : 's'} now booked via the NBFC`)
       if (r.failed.length) toast.error(`${r.failed.length} not converted — ${r.failed.slice(0, 3).join(' · ')}`, { duration: 12000 })
       setRev((v) => v + 1)
+      onChanged?.()
     } catch (e) {
       toast.error((e as Error).message.replace(/^Error invoking remote method '[^']+': (Error: )?/, ''))
     } finally {
@@ -103,6 +107,7 @@ It is one voucher for ${bills.map((b) => b.bd_no).join(', ')} — the payment on
       await window.api.billDiscounting.deleteInterest(n(bills[0].id))
       toast.success('Interest payment deleted — its voucher is removed')
       setRev((v) => v + 1)
+      onChanged?.()
     } catch (e) {
       toast.error((e as Error).message.replace(/^Error invoking remote method '[^']+': (Error: )?/, ''))
     } finally {
@@ -505,6 +510,7 @@ It is one voucher for ${bills.map((b) => b.bd_no).join(', ')} — the payment on
           onSaved={() => {
             setEditing(null)
             setRev((v) => v + 1)
+      onChanged?.()
           }}
         />
       )}
