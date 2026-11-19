@@ -3409,7 +3409,8 @@ __export(voucherSubtypes_exports, {
   deleteVoucherSubtype: () => deleteVoucherSubtype,
   listVoucherSubtypes: () => listVoucherSubtypes,
   renameVoucherSubtype: () => renameVoucherSubtype,
-  setVoucherSubtype: () => setVoucherSubtype
+  setVoucherSubtype: () => setVoucherSubtype,
+  voucherTypeCounts: () => voucherTypeCounts
 });
 async function ensure() {
   if (ready) return;
@@ -3483,6 +3484,17 @@ async function setVoucherSubtype(v) {
   const name = await checkedSubtype(String(e.vch_type), v.subtype);
   await c.execute({ sql: "UPDATE journal_entries SET vch_subtype = ? WHERE id = ?", args: [name, Number(v.entry_id)] });
   return { id: Number(v.entry_id), subtype: name };
+}
+async function voucherTypeCounts(a) {
+  const r = await getClient().execute({
+    sql: `SELECT UPPER(vch_type) AS vch_type, COALESCE(NULLIF(vch_subtype, ''), '') AS subtype,
+                 substr(entry_date, 1, 7) AS month, COUNT(*) AS n
+            FROM journal_entries
+           WHERE company_id = ? AND substr(entry_date, 1, 10) >= ? AND substr(entry_date, 1, 10) <= ?
+           GROUP BY 1, 2, 3`,
+    args: [Number(a.companyId), String(a.from || "0000-00-00"), String(a.to || "9999-12-31")]
+  });
+  return r.rows.map((x) => ({ vch_type: String(x.vch_type), subtype: String(x.subtype), month: String(x.month), n: Number(x.n) }));
 }
 var BASE_TYPES, ready, clean2;
 var init_voucherSubtypes = __esm({
@@ -19877,8 +19889,8 @@ async function listBargains(from, to, companyIds, forModule) {
            br.name AS broker_name,
            o.code AS oil_code, o.name AS oil_name,
            ${ret()} AS returned_qty,
-           -- WHICH SALES TOOK IT BACK: invoice, qty, sale id and its company, one per line.
-           (SELECT GROUP_CONCAT(COALESCE(s9.invoice_no, '') || '|' || s9.qty || '|' || s9.id || '|' || COALESCE(s9.company_id, ''), ';')
+           -- WHICH SALES TOOK IT BACK: invoice, qty, sale id, its company and date, one per line.
+           (SELECT GROUP_CONCAT(COALESCE(s9.invoice_no, '') || '|' || s9.qty || '|' || s9.id || '|' || COALESCE(s9.company_id, '') || '|' || COALESCE(s9.sale_date, ''), ';')
               FROM sales s9 WHERE s9.return_bargain_id = b.id AND s9.rejected_at IS NULL${rsCo}) AS returned_invoices,
            COALESCE((SELECT SUM(loaded_qty - COALESCE(extra_qty, 0)) FROM purchase_tankers WHERE bargain_id = b.id${ptCo}), 0)
              + COALESCE((SELECT SUM(extra_qty) FROM purchase_tankers WHERE extra_bargain_id = b.id${ptCo}), 0)
@@ -44905,6 +44917,7 @@ function registerIpc() {
     async (_e, { lineId, splits }) => (await Promise.resolve().then(() => (init_accounting(), accounting_exports))).setLineSplits(Number(lineId), splits || [])
   );
   handle("vouchers:subtypes", async () => (await Promise.resolve().then(() => (init_voucherSubtypes(), voucherSubtypes_exports))).listVoucherSubtypes());
+  handle("vouchers:typeCounts:list", async (_e, a) => (await Promise.resolve().then(() => (init_voucherSubtypes(), voucherSubtypes_exports))).voucherTypeCounts(a));
   handle("vouchers:subtypeCreate", async (_e, { values }) => (await Promise.resolve().then(() => (init_voucherSubtypes(), voucherSubtypes_exports))).createVoucherSubtype(values));
   handle("vouchers:subtypeRename", async (_e, { values }) => (await Promise.resolve().then(() => (init_voucherSubtypes(), voucherSubtypes_exports))).renameVoucherSubtype(values));
   handle("vouchers:subtypeDelete", async (_e, { id }) => (await Promise.resolve().then(() => (init_voucherSubtypes(), voucherSubtypes_exports))).deleteVoucherSubtype(Number(id)));
