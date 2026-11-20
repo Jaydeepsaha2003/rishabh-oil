@@ -748,7 +748,8 @@ export function BdRefunds({ bills, onClose, onDone }: { bills: Row[]; onClose: (
                             const isExact = (c: Row): boolean => Math.abs(n(c.amount) - mapped) < 1 || Math.abs(r2(n(c.amount) - n(c.used)) - mapped) < 1
                             const exact = cands.filter(isExact)
                             const others = cands.filter((c) => !isExact(c))
-                            const list = [...exact, ...others].slice(0, 150)
+                            // Exact found: only those. None: the nearest amounts.
+                            const list = exact.length ? exact : others.slice(0, 150)
                             return (
                               <>
                                 <div className={cn('flex items-center gap-2 rounded-[5px] px-2.5 py-1.5 text-[11px] font-bold', exact.length ? 'bg-[#E9F5EE] text-[#0B6B45]' : 'bg-[#FFF8EA] text-[#8A5300]')}>
@@ -764,7 +765,7 @@ export function BdRefunds({ bills, onClose, onDone }: { bills: Row[]; onClose: (
                               return (
                                 <Fragment key={String(c.id)}>
                                 {/* NEAREST — after the exact ones, closest amount first. */}
-                                {i === exact.length && others.length > 0 && (
+                                {!exact.length && i === 0 && (
                                   <div className="px-1 pt-1.5 text-[10px] font-extrabold uppercase tracking-[.1em] text-[#7A8C82]">Nearest amounts</div>
                                 )}
                                 <button
