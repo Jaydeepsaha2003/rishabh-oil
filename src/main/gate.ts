@@ -1,7 +1,7 @@
 import type { ResultSet } from '@libsql/client'
 import { ALLOC } from './tankerAlloc'
 import { getClient, todayISO } from './db'
-import { visibleFrom } from './access-gate'
+import { assertAdmin, visibleFrom } from './access-gate'
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Row = Record<string, any>
@@ -719,6 +719,18 @@ export async function updateGateEntry(id: number, v: Row): Promise<{ id: number 
       id
     ]
   })
+  // OUT date / time: stamped when the weighment closes, corrected by an admin only.
+  if (v.out_date !== undefined || v.out_time !== undefined) {
+    const cur = (await getClient().execute({ sql: 'SELECT out_date, out_time FROM gate_entries WHERE id = ?', args: [id] })).rows[0] as unknown as Row | undefined
+    const od = v.out_date ? String(v.out_date).slice(0, 10) : null
+    const ot = v.out_time ? String(v.out_time).slice(0, 5) : null
+    if (cur && (od !== (cur.out_date ? String(cur.out_date).slice(0, 10) : null) || ot !== (cur.out_time ? String(cur.out_time).slice(0, 5) : null))) {
+      await assertAdmin('Changing the out date / time')
+      if (ot && !/^([01]\d|2[0-3]):[0-5]\d$/.test(ot)) throw new Error('Out time must be HH:MM, e.g. 18:45')
+      if (od && v.entry_date && od < String(v.entry_date).slice(0, 10)) throw new Error('The vehicle cannot go out before the day it came in')
+      await getClient().execute({ sql: 'UPDATE gate_entries SET out_date = ?, out_time = ? WHERE id = ?', args: [od, ot, id] })
+    }
+  }
   return { id }
 }
 

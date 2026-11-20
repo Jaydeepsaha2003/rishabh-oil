@@ -277,7 +277,7 @@ const DESKS = [
 const DESK_BY_SCOPE: Record<string, { badge: string; digest: string; ink: string; bg: string }> =
   Object.fromEntries(DESKS.map((d) => [d.key, { badge: d.badge, digest: d.digest, ink: d.bd, bg: d.bg }]))
 
-const LIST_GRID = 'minmax(200px,1.4fr) 130px 110px minmax(150px,1fr) 130px 120px 110px'
+const LIST_GRID = 'minmax(200px,1.3fr) minmax(190px,.9fr) 110px minmax(150px,1fr) 130px 120px 110px'
 const PERM_GRID = 'minmax(200px,1fr) 76px 76px 76px 76px 128px 136px'
 
 export function UserAccess(): React.JSX.Element {
@@ -640,7 +640,7 @@ export function UserAccess(): React.JSX.Element {
             </button>
           </div>
           <div className="px-3.5 pb-3.5">
-            <div className="mb-2 text-[10px] font-extrabold uppercase tracking-[.12em] text-[#5A6B62]">Role</div>
+            <div className="mb-2 text-[10px] font-extrabold uppercase tracking-[.12em] text-[#5A6B62]">Job Role</div>
             <div className="grid grid-cols-2 gap-2">
               {ROLES.map((r) => {
                 const on = String(form.role) === r.key
@@ -1114,7 +1114,7 @@ export function UserAccess(): React.JSX.Element {
                 >
                   <span className="px-[10px] pl-[18px] text-white">Name</span>
                   <span className="px-[9px]">Username</span>
-                  <span className="px-[9px]">Role</span>
+                  <span className="px-[9px]">Job Role</span>
                   <span className="px-[9px]">Access</span>
                   <span className="px-[9px]">Windows</span>
                   <span className="px-[9px]">Status</span>
@@ -1145,7 +1145,7 @@ export function UserAccess(): React.JSX.Element {
                           </div>
                         </div>
                       </div>
-                      <div className="doc-ref min-w-0 truncate px-[9px] text-[12.5px] font-semibold text-[#33473E]">
+                      <div className="doc-ref min-w-0 break-words px-[9px] text-[12.5px] font-semibold text-[#33473E]">
                         {String(u.username)}
                       </div>
                       <div className="px-[9px]">
@@ -1354,7 +1354,7 @@ export function UserAccess(): React.JSX.Element {
             </div>
 
             <div className="px-4 pb-4">
-              <div className="mb-2 text-[10px] font-extrabold uppercase tracking-[.12em] text-[#5A6B62]">Role</div>
+              <div className="mb-2 text-[10px] font-extrabold uppercase tracking-[.12em] text-[#5A6B62]">Job Role</div>
               <div className="grid gap-[9px]" style={{ gridTemplateColumns: 'repeat(auto-fit,minmax(min(100%,180px),1fr))' }}>
                 {ROLES.map((r) => {
                   const on = String(form.role) === r.key

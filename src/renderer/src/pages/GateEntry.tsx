@@ -19,6 +19,7 @@ import { ColumnFilter } from '@/components/ui/column-filter'
 import { Switch } from '@/components/ui/switch'
 import { InfoTip, Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { cn } from '@/lib/utils'
+import { loadUser } from '@/lib/session'
 import { OutsideTankerLog } from '@/components/OutsideTankerLog'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { errText, formatDate, formatNum, todayISO } from '@/lib/format'
@@ -465,6 +466,7 @@ export function GateEntry(): React.JSX.Element {
   // How far back this user may date a new entry. The save is refused either
   // way; greying the days out just stops the form offering one it will reject.
   const minDate = useEntryWindow('gateEntry')
+  const iAmAdmin = loadUser()?.role === 'admin'
   const [rows, setRows] = useState<Row[]>([])
   // A register line's full party / note text, opened from its View button.
   const [viewNote, setViewNote] = useState<{ row: Row; full: string } | null>(null)
@@ -1224,10 +1226,10 @@ export function GateEntry(): React.JSX.Element {
               </div>
               <div>
                 <span className={EDIT_LABEL}>
-                  Date <span className="text-[#B3261E]">*</span>
+                  In date <span className="text-[#B3261E]">*</span>
                 </span>
                 <DatePicker
-                  min={minDate}
+                  min={iAmAdmin ? undefined : minDate}
                   value={editForm.entry_date || ''}
                   onChange={(v) => setEditForm((p) => ({ ...p, entry_date: v }))}
                   className={cn(EDIT_FIELD, '![&_*]:!font-bold')}
@@ -1248,6 +1250,43 @@ export function GateEntry(): React.JSX.Element {
                   />
                 </div>
               </div>
+              {/* OUT — when the vehicle left. Stamped when the weighment closes;
+                  only an admin may correct it. Others see it, read only. */}
+              {(iAmAdmin || !!editForm.out_date) && (
+                <>
+                  <div>
+                    <span className={EDIT_LABEL}>
+                      Out date {iAmAdmin && <span className="font-bold normal-case tracking-normal">(admin)</span>}
+                    </span>
+                    {iAmAdmin ? (
+                      <DatePicker
+                        min={editForm.entry_date || undefined}
+                        value={editForm.out_date || ''}
+                        onChange={(v) => setEditForm((p) => ({ ...p, out_date: v || '' }))}
+                        className={cn(EDIT_FIELD, '![&_*]:!font-bold')}
+                      />
+                    ) : (
+                      <Input value={editForm.out_date ? formatDate(editForm.out_date) : '—'} readOnly disabled className={cn(EDIT_FIELD, '!tabular-nums')} />
+                    )}
+                  </div>
+                  <div>
+                    <span className={EDIT_LABEL}>
+                      Out time {iAmAdmin && <span className="font-bold normal-case tracking-normal">(admin)</span>}
+                    </span>
+                    <div className="relative">
+                      <Clock className="pointer-events-none absolute left-3 top-1/2 h-[18px] w-[18px] -translate-y-1/2 text-[#5A6B62]" />
+                      <Input
+                        value={String(editForm.out_time || '').slice(0, 5)}
+                        placeholder="18:45"
+                        readOnly={!iAmAdmin}
+                        disabled={!iAmAdmin}
+                        onChange={(e) => setEditForm((p) => ({ ...p, out_time: e.target.value }))}
+                        className={cn(EDIT_FIELD, '!pl-10 !tabular-nums')}
+                      />
+                    </div>
+                  </div>
+                </>
+              )}
               <label
                 className={cn(
                   'flex cursor-pointer items-center gap-2.5 rounded-[4px] border px-3 py-2.5 sm:col-span-2 lg:col-span-4',
@@ -1618,6 +1657,9 @@ export function GateEntry(): React.JSX.Element {
       gate_entry_no: row.gate_entry_no,
       ref_no: row.ref_no || '',
       entry_date: row.entry_date,
+      entry_time: row.entry_time ? String(row.entry_time).slice(0, 5) : '',
+      out_date: row.out_date ? String(row.out_date).slice(0, 10) : '',
+      out_time: row.out_time ? String(row.out_time).slice(0, 5) : '',
       rec_type: row.rec_type || 'OIL',
       tanker_id: row.tanker_id ? String(row.tanker_id) : '',
       tanker_no: row.tanker_no || '',
@@ -1662,7 +1704,10 @@ export function GateEntry(): React.JSX.Element {
         received_qty: Number(editForm.received_qty) || 0,
         is_direct_mnc: !!editForm.is_direct_mnc,
         supplier_id: supplierId,
-        customer_id: customerId
+        customer_id: customerId,
+        // Out date / time go only from an admin (the server checks it too).
+        out_date: iAmAdmin ? editForm.out_date || null : undefined,
+        out_time: iAmAdmin ? editForm.out_time || null : undefined
       })
       toast.success('Gate entry updated')
       setEditRow(null)
