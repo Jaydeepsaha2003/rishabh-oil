@@ -2784,27 +2784,27 @@ function SalesTab({
                                       onClick: () => void restoreInvoice(inv)
                                     }
                                   ]
-                                : stg.value !== 'unloaded'
-                                  ? [
-                                      // Only a FOR delivery has a journey to
-                                      // call off; an Ex sale leaves with the
-                                      // customer at invoicing.
-                                      ...(exTerm
-                                        ? []
-                                        : [
-                                            {
-                                              label: 'Cancel delivery — called off in transit',
-                                              icon: Truck,
-                                              onClick: () => openCancel(inv)
-                                            }
-                                          ]),
-                                      {
-                                        label: 'Reject — customer refused it',
-                                        icon: Ban,
-                                        onClick: () => { setRejectInv(inv); setRejectReason('') }
-                                      }
-                                    ]
-                                  : []),
+                                : [
+                                    // Only a FOR delivery still on the road has a
+                                    // journey to call off; an Ex sale leaves with
+                                    // the customer at invoicing.
+                                    ...(exTerm || stg.value === 'unloaded'
+                                      ? []
+                                      : [
+                                          {
+                                            label: 'Cancel delivery — called off in transit',
+                                            icon: Truck,
+                                            onClick: () => openCancel(inv)
+                                          }
+                                        ]),
+                                    // At any stage — a load can be refused at the
+                                    // customer's gate after it was weighed in.
+                                    {
+                                      label: 'Reject — customer refused it',
+                                      icon: Ban,
+                                      onClick: () => { setRejectInv(inv); setRejectReason('') }
+                                    }
+                                  ]),
                               // Only on a delivered load that has actually left:
                               // there is nothing weighed in at the far end of an
                               // Ex sale, and nothing at all on one still pending.
