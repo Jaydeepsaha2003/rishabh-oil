@@ -244,7 +244,7 @@ export function BdRefunds({ bills, onClose, onDone }: { bills: Row[]; onClose: (
   const cap = 'text-[9.5px] font-extrabold uppercase tracking-[.13em] text-[#7A8C82]'
   return (
     <Dialog open onOpenChange={(o) => !o && !busy && onClose()}>
-      <DialogContent className="flex max-h-[94dvh] w-[96vw] max-w-[1600px] flex-col gap-0 overflow-hidden p-0 sm:max-w-[min(1600px,97vw)] [&>button]:!text-white">
+      <DialogContent className="flex h-[98dvh] max-h-[98dvh] w-[98vw] max-w-[98vw] flex-col gap-0 overflow-hidden p-0 sm:max-w-[98vw] [&>button]:!text-white">
         <div className="flex-none bg-[#0B3D2E] px-5 pb-0 pt-3.5 pr-12 text-white">
           <div className="text-[9.5px] font-extrabold uppercase tracking-[.14em] text-[#C7F03F]">Bill discounting</div>
           <DialogTitle className="text-[16px] font-extrabold text-white">Interest refunds</DialogTitle>
@@ -580,7 +580,7 @@ export function BdRefunds({ bills, onClose, onDone }: { bills: Row[]; onClose: (
               </div>
 
               {/* RIGHT — map one bank receipt over the ticked bills, step by step. */}
-              <aside className="flex min-h-0 flex-none flex-col border-t border-[#DCE6DC] bg-[#F7FAF6] xl:w-[400px] xl:border-l xl:border-t-0">
+              <aside className="flex min-h-0 flex-none flex-col border-t border-[#DCE6DC] bg-[#F7FAF6] xl:w-[clamp(400px,28vw,520px)] xl:border-l xl:border-t-0">
                 <div className="flex-none border-b border-[#DCE6DC] bg-white px-4 py-3">
                   <div className="flex items-center gap-2">
                     <Link2 className="h-4 w-4 text-[#0B3D2E]" />
@@ -602,7 +602,7 @@ export function BdRefunds({ bills, onClose, onDone }: { bills: Row[]; onClose: (
                     {!ticked.length ? (
                       <div className="px-3 py-4 text-center text-[12px] font-semibold text-[#9AAFA2]">Tick bills on the left</div>
                     ) : (
-                      <div className="max-h-[180px] overflow-y-auto">
+                      <div className="max-h-[max(180px,22dvh)] overflow-y-auto">
                         {ticked.map((b) => (
                           <div key={String(b.id)} className="flex items-center gap-2 border-t border-[#F1F5F0] px-3 py-1.5 text-[12px] first:border-t-0">
                             <span className="rounded-[4px] bg-[#0B3D2E] px-1.5 py-0.5 text-[11px] font-extrabold text-[#C7F03F]">{String(b.bd_no)}</span>
@@ -735,7 +735,7 @@ export function BdRefunds({ bills, onClose, onDone }: { bills: Row[]; onClose: (
                           <DatePicker value={dFrom} onChange={(x) => setDFrom(String(x || ''))} placeholder="From" />
                           <DatePicker value={dTo} onChange={(x) => setDTo(String(x || ''))} placeholder="To" />
                         </div>
-                        <div className="max-h-[300px] space-y-1.5 overflow-y-auto pr-0.5">
+                        <div className="max-h-[max(300px,calc(98dvh-640px))] space-y-1.5 overflow-y-auto pr-0.5">
                           {cands == null ? (
                             <div className="flex justify-center py-6">
                               <Loader2 className="h-4 w-4 animate-spin text-[#8CA396]" />
