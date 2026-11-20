@@ -1947,6 +1947,8 @@ export function registerIpc(): void {
   handle('bdRefundCandidates:list', async (_e, { values }: { values: Row }) => (await import('./billDiscounting')).bdRefundCandidates(values as never))
   handle('bd:linkRefund', async (_e, { values }: { values: Row }) => (await import('./billDiscounting')).linkBdRefund(values as never))
   handle('bd:unlinkRefund', async (_e, { entryId }: { entryId: number }) => (await import('./billDiscounting')).unlinkBdRefund(Number(entryId)))
+  handle('bd:closeRefunds', async (_e, { values }: { values: { bd_ids: number[]; note?: string } }) => (await import('./billDiscounting')).closeBdRefunds(values))
+  handle('bd:reopenRefund', async (_e, { bdId }: { bdId: number }) => (await import('./billDiscounting')).reopenBdRefund(Number(bdId)))
   handle('bdCumPayments:list', async (_e, { nbfcId }: { nbfcId?: number | null }) =>
     (await import('./billDiscounting')).listBdCumulativePayments(nbfcId)
   )

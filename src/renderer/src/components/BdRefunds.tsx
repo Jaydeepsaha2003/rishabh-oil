@@ -1,6 +1,6 @@
 import { Fragment, useEffect, useMemo, useState } from 'react'
 import { toast } from 'sonner'
-import { CheckCircle2, ChevronDown, Link2, Loader2, Search, Undo2, Unlink, X } from 'lucide-react'
+import { Ban, CheckCircle2, ChevronDown, Link2, Loader2, Search, Undo2, Unlink, X } from 'lucide-react'
 import { Dialog, DialogContent, DialogTitle } from '@/components/ui/dialog'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { DatePicker } from '@/components/ui/date-picker'
@@ -29,6 +29,11 @@ export function BdRefunds({ bills, onClose, onDone }: { bills: Row[]; onClose: (
   const [cands, setCands] = useState<Row[] | null>(null)
   const [receipt, setReceipt] = useState<Row | null>(null)
   const [busy, setBusy] = useState(false)
+  // What the NBFC actually paid in — spread over the ticked bills, oldest maturity first.
+  const [recv, setRecv] = useState('')
+  // Received less: close the short bills fully (the rest is let go).
+  const [closeShort, setCloseShort] = useState(false)
+  const [closeNote, setCloseNote] = useState('')
   const [got, setGot] = useState<Row[] | null>(null)
   const [rev, setRev] = useState(0)
   // Bills whose legs (each early repayment and its interest) are open.
@@ -50,6 +55,22 @@ export function BdRefunds({ bills, onClose, onDone }: { bills: Row[]; onClose: (
 
   const ticked = all.filter((b) => picked[n(b.id)] != null)
   const mapped = r2(ticked.reduce((t, b) => t + n(picked[n(b.id)]), 0))
+  const dueTicked = r2(ticked.reduce((t, b) => t + n(b.early_refund.due), 0))
+  // Bills mapped less than their due — what Close fully would let go.
+  const shortBills = ticked.filter((b) => n(picked[n(b.id)]) < n(b.early_refund.due) - 0.5)
+  const shortBy = r2(shortBills.reduce((t, b) => t + n(b.early_refund.due) - n(picked[n(b.id)]), 0))
+  // Spread an amount over the ticked bills, oldest maturity first, each up to its due.
+  const spread = (amt: number): void => {
+    let left = r2(amt)
+    const order = [...ticked].sort((a, b) => String(a.early_refund.maturity).localeCompare(String(b.early_refund.maturity)))
+    const next: Record<number, string> = {}
+    for (const b of order) {
+      const take = r2(Math.max(0, Math.min(n(b.early_refund.due), left)))
+      next[n(b.id)] = String(take)
+      left = r2(left - take)
+    }
+    setPicked(next)
+  }
   const free = receipt ? r2(n(receipt.amount) - n(receipt.used)) : 0
   const since = useMemo(() => {
     const ds = ticked.flatMap((b) => (b.early_refund.lines as Row[]).map((l) => String(l.date))).sort()
@@ -97,17 +118,45 @@ export function BdRefunds({ bills, onClose, onDone }: { bills: Row[]; onClose: (
     try {
       const res = await window.api.billDiscounting.linkRefund({
         journal_entry_id: n(receipt.id),
-        parts: ticked.map((b) => ({ bd_id: n(b.id), amount: n(picked[n(b.id)]) }))
+        parts: ticked.map((b) => ({ bd_id: n(b.id), amount: n(picked[n(b.id)]) })),
+        close_ids: closeShort ? shortBills.map((b) => n(b.id)) : [],
+        note: closeNote
       })
       toast.success(`${formatINR(res.amount)} of ${String(receipt.code || receipt.vch_no)} mapped over ${res.bills} bill${res.bills === 1 ? '' : 's'}`)
       setPicked({})
       setReceipt(null)
+      setRecv('')
+      setCloseShort(false)
+      setCloseNote('')
       setRev((v) => v + 1)
       onDone()
     } catch (e) {
       toast.error(errText(e))
     } finally {
       setBusy(false)
+    }
+  }
+
+  // Close without a receipt — the NBFC will not pay the rest.
+  async function closeBill(b: Row): Promise<void> {
+    const note = window.prompt(`Close ${String(b.bd_no)} fully? ${formatINR(n(b.early_refund.due))} still due will be let go.\n\nNote (optional):`, '')
+    if (note == null) return
+    try {
+      await window.api.billDiscounting.closeRefunds({ bd_ids: [n(b.id)], note })
+      toast.success(`${String(b.bd_no)} closed`)
+      tick(b, false)
+      onDone()
+    } catch (e) {
+      toast.error(errText(e))
+    }
+  }
+  async function reopenBill(b: Row): Promise<void> {
+    try {
+      await window.api.billDiscounting.reopenRefund(n(b.id))
+      toast.success(`${String(b.bd_no)} reopened — ${formatINR(n(b.early_refund.written_off))} is due again`)
+      onDone()
+    } catch (e) {
+      toast.error(errText(e))
     }
   }
 
@@ -350,7 +399,14 @@ export function BdRefunds({ bills, onClose, onDone }: { bills: Row[]; onClose: (
                                   <td className="whitespace-nowrap px-2 py-2 text-right tabular-nums">{formatINR(n(er.gross))}</td>
                                   <td className="whitespace-nowrap px-2 py-2 text-right tabular-nums text-[#0B6B45]">{n(er.received) > 0.004 ? formatINR(n(er.received)) : '—'}</td>
                                   <td className="whitespace-nowrap px-2 py-2 text-right font-bold tabular-nums">
-                                    {done ? (
+                                    {er.closed ? (
+                                      <span
+                                        className="inline-flex items-center gap-1 rounded-full border border-[#E3D3B0] bg-[#FFF8EA] px-2 py-0.5 text-[11px] font-extrabold text-[#8A5300]"
+                                        title={`Closed fully${er.closed_at ? ` on ${formatDate(String(er.closed_at))}` : ''}${er.closed_note ? ` — ${String(er.closed_note)}` : ''}`}
+                                      >
+                                        <Ban className="h-3 w-3" /> closed · {formatINR(n(er.written_off))} short
+                                      </span>
+                                    ) : done ? (
                                       <span className="inline-flex items-center gap-1 text-[#0B6B45]">
                                         <CheckCircle2 className="h-3.5 w-3.5" /> received
                                       </span>
@@ -367,6 +423,29 @@ export function BdRefunds({ bills, onClose, onDone }: { bills: Row[]; onClose: (
                                         aria-label={`Amount for ${String(b.bd_no)}`}
                                         className="h-8 w-[130px] rounded-[5px] border border-[#0B3D2E] bg-white px-2 text-right text-[12.5px] font-extrabold tabular-nums outline-none focus:ring-2 focus:ring-[#0B6B45]/20"
                                       />
+                                    ) : er.closed ? (
+                                      <button
+                                        type="button"
+                                        onClick={(e) => {
+                                          e.stopPropagation()
+                                          void reopenBill(b)
+                                        }}
+                                        className="text-[11.5px] font-bold text-[#1B4E82] hover:underline"
+                                      >
+                                        Reopen
+                                      </button>
+                                    ) : !done ? (
+                                      <button
+                                        type="button"
+                                        onClick={(e) => {
+                                          e.stopPropagation()
+                                          void closeBill(b)
+                                        }}
+                                        title="The NBFC will not pay the rest — close this bill's refund fully"
+                                        className="inline-flex items-center gap-1 text-[11.5px] font-bold text-[#8A5300] hover:underline"
+                                      >
+                                        <Ban className="h-3 w-3" /> Close fully
+                                      </button>
                                     ) : (
                                       <span className="text-[#C3D2C6]">—</span>
                                     )}
@@ -543,6 +622,32 @@ export function BdRefunds({ bills, onClose, onDone }: { bills: Row[]; onClose: (
                     </div>
                     {receipt && (
                       <div className="space-y-1 px-3 py-2.5 text-[12px]">
+                        {/* WHAT CAME IN — typed once, spread over the bills (oldest first). */}
+                        <label className="mb-2 block">
+                          <span className="text-[10px] font-extrabold uppercase tracking-[.1em] text-[#5A6B62]">Interest received</span>
+                          <span className="mt-1 flex h-10 items-center rounded-[6px] border-[1.5px] border-[#0B3D2E] bg-white px-2.5 focus-within:ring-2 focus-within:ring-[#0B6B45]/20">
+                            <span className="mr-1 text-[13px] font-bold text-[#5A6B62]">₹</span>
+                            <input
+                              inputMode="decimal"
+                              value={recv}
+                              placeholder={String(Math.min(free, dueTicked))}
+                              onChange={(e) => {
+                                const v = e.target.value.replace(/[^0-9.]/g, '')
+                                setRecv(v)
+                                if (v !== '') spread(n(v))
+                              }}
+                              className="min-w-0 flex-1 bg-transparent text-right text-[15px] font-extrabold tabular-nums outline-none"
+                            />
+                          </span>
+                          <span className="mt-1 flex gap-2 text-[10.5px] font-bold">
+                            <button type="button" onClick={() => { setRecv(String(dueTicked)); spread(dueTicked) }} className="text-[#1B4E82] hover:underline">
+                              Full due {formatINR(dueTicked)}
+                            </button>
+                            <button type="button" onClick={() => { setRecv(String(free)); spread(free) }} className="text-[#1B4E82] hover:underline">
+                              Receipt free {formatINR(free)}
+                            </button>
+                          </span>
+                        </label>
                         <div className="flex justify-between">
                           <span className="text-[#5A6B62]">Receipt {String(receipt.code || receipt.vch_no)} free</span>
                           <span className="font-bold tabular-nums">{formatINR(free)}</span>
@@ -563,6 +668,28 @@ export function BdRefunds({ bills, onClose, onDone }: { bills: Row[]; onClose: (
                             </span>
                           )}
                         </div>
+                        {/* RECEIVED LESS — close those bills fully, or leave the rest due. */}
+                        {shortBills.length > 0 && (
+                          <div className={cn('mt-2 rounded-[6px] border p-2.5', closeShort ? 'border-[#E3B66B] bg-[#FFF8EA]' : 'border-[#EEF3EE] bg-[#FAFCF9]')}>
+                            <label className="flex cursor-pointer items-start gap-2">
+                              <input type="checkbox" checked={closeShort} onChange={(e) => setCloseShort(e.target.checked)} className="mt-0.5 h-4 w-4 accent-[#8A5300]" />
+                              <span>
+                                <span className="block text-[12px] font-extrabold text-[#0A1F17]">Close fully — let {formatINR(shortBy)} go</span>
+                                <span className="block text-[11px] text-[#5A6B62]">
+                                  {shortBills.map((b) => String(b.bd_no)).join(', ')} got less than due. Ticked: nothing more is due on them. Unticked: the rest stays due.
+                                </span>
+                              </span>
+                            </label>
+                            {closeShort && (
+                              <input
+                                value={closeNote}
+                                onChange={(e) => setCloseNote(e.target.value)}
+                                placeholder="Note — why the rest is let go (optional)"
+                                className="mt-2 h-8 w-full rounded-[5px] border border-[#E3D3B0] bg-white px-2 text-[12px] outline-none"
+                              />
+                            )}
+                          </div>
+                        )}
                       </div>
                     )}
                   </div>
@@ -579,7 +706,7 @@ export function BdRefunds({ bills, onClose, onDone }: { bills: Row[]; onClose: (
                     className="flex h-10 flex-1 items-center justify-center gap-1.5 rounded-[5px] bg-[#0B3D2E] px-4 text-[12.5px] font-extrabold text-[#C7F03F] hover:bg-[#0F4A38] disabled:opacity-50"
                   >
                     {busy && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
-                    <Link2 className="h-4 w-4" /> Map {ticked.length ? `${formatINR(mapped)} · ${ticked.length} bill${ticked.length === 1 ? '' : 's'}` : 'receipt'}
+                    <Link2 className="h-4 w-4" /> Map {ticked.length ? `${formatINR(mapped)} · ${ticked.length} bill${ticked.length === 1 ? '' : 's'}${closeShort && shortBills.length ? ` · close ${shortBills.length}` : ''}` : 'receipt'}
                   </button>
                 </div>
               </aside>

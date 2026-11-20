@@ -1208,7 +1208,7 @@ async function validateBd(v: Row, cur?: Row): Promise<void> {
  * Not for a serviced bill (its interest is paid as it runs) or one received in
  * legs (each leg has its own term).
  */
-function earlyRefund(bd: Row, calc: { interestAmount: number }, reps: Row[], received = 0): Row | null {
+function earlyRefund(bd: Row, calc: { interestAmount: number }, reps: Row[], received = 0, closed: Row | null = null): Row | null {
   const mode = String(bd.interest_mode || '') || (bd.interest_upfront ? 'upfront' : 'discounted')
   const maturity = String(bd.maturity_date || '').slice(0, 10)
   if (mode === 'serviced' || !maturity || !(calc.interestAmount > 0.004) || n(bd.first_receipt_part) > 0.005) return null
@@ -1225,7 +1225,23 @@ function earlyRefund(bd: Row, calc: { interestAmount: number }, reps: Row[], rec
   const gross = round2(Math.min(calc.interestAmount, lines.reduce((t, l) => t + l.gross, 0)))
   if (!(gross > 0.5)) return null
   // What has come back already (linked bank receipts), and what is still due.
-  return { gross, net: gross, received: round2(received), due: round2(gross - received), maturity, rate, days_year: daysYear, interest: calc.interestAmount, lines }
+  // Closed fully: the NBFC paid what it paid and the rest is let go — nothing more is due.
+  const short = round2(Math.max(0, gross - received))
+  return {
+    gross,
+    net: gross,
+    received: round2(received),
+    due: closed ? 0 : short,
+    closed: !!closed,
+    written_off: closed ? short : 0,
+    closed_note: closed ? String(closed.note || '') : '',
+    closed_at: closed ? String(closed.closed_at || '').slice(0, 10) : '',
+    maturity,
+    rate,
+    days_year: daysYear,
+    interest: calc.interestAmount,
+    lines
+  }
 }
 
 export async function listBd(filter?: Row): Promise<Row[]> {
@@ -1358,6 +1374,16 @@ export async function listBd(filter?: Row): Promise<Row[]> {
       .catch(() => ({ rows: [], columns: [] }) as unknown as ResultSet)
   )
   const gotOf = new Map<number, number>(gotRows.map((r) => [n(r.bd_id), n(r.got)]))
+  // Refunds closed fully (received short and the rest let go).
+  const closedRows = toPlain(
+    await getClient()
+      .execute({
+        sql: `SELECT c.* FROM bd_refund_closures c JOIN bill_discountings b ON b.id = c.bd_id WHERE b.company_id = ?`,
+        args: [getActiveCompanyId()]
+      })
+      .catch(() => ({ rows: [], columns: [] }) as unknown as ResultSet)
+  )
+  const closedOf = new Map<number, Row>(closedRows.map((r) => [n(r.bd_id), r]))
   const repsOf = new Map<number, Row[]>()
   for (const r of repRows) {
     const k = n(r.bd_id)
@@ -1391,7 +1417,7 @@ export async function listBd(filter?: Row): Promise<Row[]> {
       repaid_total: repaidTotal,
       outstanding_amount: round2(Math.max(0, principalDrawn(bd) - repaidTotal)),
       repay_parts: parts,
-      early_refund: earlyRefund(bd, calcRow, repsOf.get(n(bd.id)) || [], gotOf.get(n(bd.id)) || 0),
+      early_refund: earlyRefund(bd, calcRow, repsOf.get(n(bd.id)) || [], gotOf.get(n(bd.id)) || 0, closedOf.get(n(bd.id)) || null),
       // Three stages, in the order a bill goes through them: opened and waiting
       // on the NBFC's money, live once it has landed, wound up once repaid.
       // Derived rather than stored, so the payment date stays the single fact
@@ -4314,6 +4340,36 @@ async function ensureBdRefunds(): Promise<void> {
     amount REAL NOT NULL DEFAULT 0,
     created_at TEXT DEFAULT CURRENT_TIMESTAMP
   )`)
+  // A bill's refund closed fully — the NBFC paid less and the rest is let go.
+  // journal_entry_id: the receipt it was closed with (unlinking that receipt reopens it).
+  await getClient().execute(`CREATE TABLE IF NOT EXISTS bd_refund_closures (
+    bd_id INTEGER PRIMARY KEY,
+    journal_entry_id INTEGER,
+    note TEXT,
+    closed_at TEXT DEFAULT CURRENT_TIMESTAMP
+  )`)
+}
+
+/** Close bills' refunds fully: what came back is all that will; nothing more is due. */
+export async function closeBdRefunds(v: { bd_ids: number[]; note?: string }): Promise<{ closed: number }> {
+  await ensureBdRefunds()
+  const ids = [...new Set((v.bd_ids || []).map(n).filter((x) => x > 0))]
+  if (!ids.length) throw new Error('Pick the bill(s) to close')
+  for (const id of ids) {
+    await loadBd(id)
+    await getClient().execute({
+      sql: 'INSERT OR REPLACE INTO bd_refund_closures (bd_id, journal_entry_id, note, closed_at) VALUES (?, NULL, ?, CURRENT_TIMESTAMP)',
+      args: [id, String(v.note || '').trim() || null]
+    })
+  }
+  return { closed: ids.length }
+}
+
+/** Reopen a closed refund — its short part is due again. */
+export async function reopenBdRefund(bdId: number): Promise<{ bd_id: number }> {
+  await ensureBdRefunds()
+  await getClient().execute({ sql: 'DELETE FROM bd_refund_closures WHERE bd_id = ?', args: [n(bdId)] })
+  return { bd_id: n(bdId) }
 }
 
 /** Bank receipts that could be an NBFC's refund — the LC picker's search, money in. */
@@ -4338,7 +4394,7 @@ export async function bdRefundCandidates(v: { q?: string; since?: string; from?:
 }
 
 /** Map one bank receipt over several bills' refunds. */
-export async function linkBdRefund(v: { journal_entry_id: number; parts: { bd_id: number; amount: number }[] }): Promise<{ entry_id: number; bills: number; amount: number }> {
+export async function linkBdRefund(v: { journal_entry_id: number; parts: { bd_id: number; amount: number }[]; close_ids?: number[]; note?: string }): Promise<{ entry_id: number; bills: number; amount: number }> {
   return withDbTransaction(async () => {
     await ensureBdRefunds()
     const c = getClient()
@@ -4351,6 +4407,13 @@ export async function linkBdRefund(v: { journal_entry_id: number; parts: { bd_id
       if (n(bd.company_id) !== n(je.company_id)) throw new Error(`${bd.bd_no} is in another company than the receipt`)
       await c.execute({ sql: 'INSERT INTO bd_interest_refunds (bd_id, journal_entry_id, amount) VALUES (?, ?, ?)', args: [p.bd_id, n(je.id), p.amount] })
     }
+    // Received less and closed fully: these bills' refunds end with this receipt.
+    for (const id of [...new Set((v.close_ids || []).map(n).filter((x) => parts.some((p) => p.bd_id === x)))]) {
+      await c.execute({
+        sql: 'INSERT OR REPLACE INTO bd_refund_closures (bd_id, journal_entry_id, note, closed_at) VALUES (?, ?, ?, CURRENT_TIMESTAMP)',
+        args: [id, n(je.id), String(v.note || '').trim() || null]
+      })
+    }
     return { entry_id: n(je.id), bills: parts.length, amount: round2(parts.reduce((t, p) => t + p.amount, 0)) }
   })
 }
@@ -4359,6 +4422,8 @@ export async function linkBdRefund(v: { journal_entry_id: number; parts: { bd_id
 export async function unlinkBdRefund(entryId: number): Promise<{ entry_id: number }> {
   await ensureBdRefunds()
   await getClient().execute({ sql: 'DELETE FROM bd_interest_refunds WHERE journal_entry_id = ?', args: [n(entryId)] })
+  // A close made with this receipt goes with it.
+  await getClient().execute({ sql: 'DELETE FROM bd_refund_closures WHERE journal_entry_id = ?', args: [n(entryId)] })
   return { entry_id: n(entryId) }
 }
 
