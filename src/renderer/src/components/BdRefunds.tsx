@@ -27,6 +27,8 @@ export function BdRefunds({ bills, onClose, onDone }: { bills: Row[]; onClose: (
   const [dFrom, setDFrom] = useState('')
   const [dTo, setDTo] = useState('')
   const [cands, setCands] = useState<Row[] | null>(null)
+  // Exact matches show alone; the rest open on demand.
+  const [showOthers, setShowOthers] = useState(false)
   const [receipt, setReceipt] = useState<Row | null>(null)
   const [busy, setBusy] = useState(false)
   // What the NBFC actually paid in — spread over the ticked bills, oldest maturity first.
@@ -127,7 +129,8 @@ export function BdRefunds({ bills, onClose, onDone }: { bills: Row[]; onClose: (
       clearTimeout(t)
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tab, q, dFrom, dTo, since, ticked.length > 0, rev, bankId])
+    // The amount too — the list follows what is typed in Interest received.
+  }, [tab, q, dFrom, dTo, since, ticked.length > 0, rev, bankId, Math.round(mapped)])
 
   useEffect(() => {
     if (tab !== 'got') return
@@ -742,11 +745,29 @@ export function BdRefunds({ bills, onClose, onDone }: { bills: Row[]; onClose: (
                             </div>
                           ) : !cands.length ? (
                             <div className="py-5 text-center text-[12px] font-semibold text-[#9AAFA2]">Nothing found</div>
-                          ) : (
-                            cands.slice(0, 150).map((c) => {
+                          ) : (() => {
+                            // EXACT first: a receipt of this very amount (or with exactly this much unmapped).
+                            const isExact = (c: Row): boolean => Math.abs(n(c.amount) - mapped) < 1 || Math.abs(r2(n(c.amount) - n(c.used)) - mapped) < 1
+                            const exact = cands.filter(isExact)
+                            const others = cands.filter((c) => !isExact(c))
+                            const list = exact.length && !showOthers ? exact : [...exact, ...others].slice(0, 150)
+                            return (
+                              <>
+                                <div className={cn('flex items-center gap-2 rounded-[5px] px-2.5 py-1.5 text-[11px] font-bold', exact.length ? 'bg-[#E9F5EE] text-[#0B6B45]' : 'bg-[#FFF8EA] text-[#8A5300]')}>
+                                  {exact.length ? <CheckCircle2 className="h-3.5 w-3.5" /> : null}
+                                  {exact.length
+                                    ? `${exact.length} exact match${exact.length === 1 ? '' : 'es'} for ${formatINR(mapped)}`
+                                    : `No receipt of exactly ${formatINR(mapped)} — nearest shown`}
+                                  {exact.length > 0 && others.length > 0 && (
+                                    <button type="button" onClick={() => setShowOthers((v) => !v)} className="ml-auto text-[#1B4E82] hover:underline">
+                                      {showOthers ? 'Exact only' : `Show ${others.length} other${others.length === 1 ? '' : 's'}`}
+                                    </button>
+                                  )}
+                                </div>
+                                {list.map((c) => {
                               const sel = n(receipt?.id) === n(c.id)
                               const left = r2(n(c.amount) - n(c.used))
-                              const close = Math.abs(left - mapped) < 1
+                              const close = isExact(c)
                               return (
                                 <button
                                   key={String(c.id)}
@@ -769,8 +790,10 @@ export function BdRefunds({ bills, onClose, onDone }: { bills: Row[]; onClose: (
                                   </div>
                                 </button>
                               )
-                            })
-                          )}
+                            })}
+                              </>
+                            )
+                          })()}
                         </div>
                         </>
                         )}
