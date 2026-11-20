@@ -4373,7 +4373,7 @@ export async function reopenBdRefund(bdId: number): Promise<{ bd_id: number }> {
 }
 
 /** Bank receipts that could be an NBFC's refund — the LC picker's search, money in. */
-export async function bdRefundCandidates(v: { q?: string; since?: string; from?: string; to?: string; expected?: number }): Promise<Row[]> {
+export async function bdRefundCandidates(v: { q?: string; since?: string; from?: string; to?: string; expected?: number; ledgerId?: number }): Promise<Row[]> {
   const { pickBankVouchers } = await import('./lc')
   // `since` (the earliest early repayment) only sets the browsing window — bank
   // receipts from a month before it; dates picked on the screen widen to every voucher.
@@ -4384,6 +4384,7 @@ export async function bdRefundCandidates(v: { q?: string; since?: string; from?:
     dir: 'in',
     expected: n(v.expected),
     q: v.q,
+    ledgerId: n(v.ledgerId) || undefined,
     range: { from: v.from, to: v.to }
   })
   // What of each receipt is already mapped to refunds.
@@ -4415,6 +4416,74 @@ export async function linkBdRefund(v: { journal_entry_id: number; parts: { bd_id
       })
     }
     return { entry_id: n(je.id), bills: parts.length, amount: round2(parts.reduce((t, p) => t + p.amount, 0)) }
+  })
+}
+
+/**
+ * The refund is not in the books yet: book it from here in two entries, the
+ * way the desk does in Tally, then map the receipt over the bills.
+ *   1. JOURNAL  — NBFC (BILLS DISCOUNTED - <NBFC>) Dr  /  interest income Cr
+ *   2. RECEIPT  — bank Dr  /  NBFC Cr
+ */
+export async function createBdRefundReceipt(v: {
+  date: string
+  bank: string
+  income_ledger: string
+  note?: string
+  parts: { bd_id: number; amount: number }[]
+  close_ids?: number[]
+}): Promise<{ entry_id: number; journal_id: number; bills: number; amount: number }> {
+  return withDbTransaction(async () => {
+    await ensureBdRefunds()
+    const date = String(v.date || '').slice(0, 10)
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) throw new Error('Pick the date the refund came in')
+    if (date > todayISO()) throw new Error('The receipt cannot be dated in the future')
+    const bank = String(v.bank || '').trim()
+    if (!bank) throw new Error('Pick the bank it came into')
+    const income = String(v.income_ledger || '').trim().toUpperCase()
+    if (!income) throw new Error('Pick the interest income ledger')
+    const parts = (v.parts || []).map((p) => ({ bd_id: n(p.bd_id), amount: round2(n(p.amount)) })).filter((p) => p.bd_id > 0 && p.amount > 0.004)
+    if (!parts.length) throw new Error('Tick at least one bill and give it an amount')
+    const bds = [] as Row[]
+    for (const p of parts) bds.push(await loadBd(p.bd_id))
+    const first = bds[0]
+    if (bds.some((b) => n(b.nbfc_id) !== n(first.nbfc_id))) throw new Error('One receipt books one NBFC — tick bills of the same NBFC')
+    if (bds.some((b) => n(b.company_id) !== n(first.company_id))) throw new Error('The bills are in different companies')
+    const amount = round2(parts.reduce((t, p) => t + p.amount, 0))
+    const nos = bds.map((b) => String(b.bd_no)).join(', ')
+    const nbfc = bdPayable(first)
+    const c = getClient()
+    const groupOf = async (name: string, dflt: string): Promise<string> =>
+      String((await c.execute({ sql: 'SELECT acc_group FROM ledger_accounts WHERE UPPER(name) = ?', args: [name.toUpperCase()] })).rows[0]?.acc_group || dflt)
+    const bankGroup = await groupOf(bank, 'Bank Accounts')
+    const incomeGroup = await groupOf(income, 'Indirect Incomes')
+    const tail = String(v.note || '').trim() ? ` · ${String(v.note).trim()}` : ''
+    const companyId = n(first.company_id) || undefined
+    const head = `Interest refund on early repayment — ${first.nbfc_name || 'the NBFC'}, ${bds.length} bill${bds.length === 1 ? '' : 's'} (${nos}) ${inr(amount)}`
+    const journal = await postJournal({
+      date,
+      vchType: 'JOURNAL',
+      vchNo: nos.slice(0, 60),
+      narration: `${head} — booked to interest income${tail}`,
+      companyId,
+      lines: [
+        { account: nbfc, group: BD_PAYABLE_GROUP, dr: amount },
+        { account: income, group: incomeGroup, cr: amount }
+      ]
+    })
+    const receipt = await postJournal({
+      date,
+      vchType: 'RECEIPT',
+      vchNo: nos.slice(0, 60),
+      narration: `${head} — received from the NBFC${tail}`,
+      companyId,
+      lines: [
+        { account: bank, group: bankGroup, dr: amount },
+        { account: nbfc, group: BD_PAYABLE_GROUP, cr: amount }
+      ]
+    })
+    await linkBdRefund({ journal_entry_id: receipt.id, parts, close_ids: v.close_ids, note: v.note })
+    return { entry_id: receipt.id, journal_id: journal.id, bills: parts.length, amount }
   })
 }
 

@@ -1,6 +1,6 @@
 import { Fragment, useEffect, useMemo, useState } from 'react'
 import { toast } from 'sonner'
-import { Ban, CheckCircle2, ChevronDown, Link2, Loader2, Search, Undo2, Unlink, X } from 'lucide-react'
+import { Ban, CheckCircle2, ChevronDown, Link2, Loader2, Plus, Search, Undo2, Unlink, X } from 'lucide-react'
 import { Dialog, DialogContent, DialogTitle } from '@/components/ui/dialog'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { DatePicker } from '@/components/ui/date-picker'
@@ -34,6 +34,40 @@ export function BdRefunds({ bills, onClose, onDone }: { bills: Row[]; onClose: (
   // Received less: close the short bills fully (the rest is let go).
   const [closeShort, setCloseShort] = useState(false)
   const [closeNote, setCloseNote] = useState('')
+  // The bank the refund came into: its receipts are listed (same amount first),
+  // and a new receipt is booked into it.
+  const [banks, setBanks] = useState<Row[]>([])
+  const [incomes, setIncomes] = useState<Row[]>([])
+  const [bankId, setBankId] = useState('all')
+  // Book the receipt from here (Journal NBFC → interest income, Receipt bank ← NBFC).
+  const [making, setMaking] = useState(false)
+  const [mkDate, setMkDate] = useState(() => new Date().toISOString().slice(0, 10))
+  const [mkIncome, setMkIncome] = useState('')
+  const [mkNote, setMkNote] = useState('')
+  useEffect(() => {
+    void window.api.journal
+      .accountNames()
+      .then((a) => {
+        setBanks(a.filter((x) => ['Bank Accounts', 'Bank OD A/c'].includes(String(x.acc_group || '')) && !x.is_hidden))
+        const inc = a.filter((x) => /INCOME/i.test(String(x.acc_group || '')) && !x.is_hidden)
+        setIncomes(inc)
+        // Last one used here, else INTEREST INCOME, else any interest income that is not FD interest.
+        let last = ''
+        try {
+          last = localStorage.getItem('bdRefundIncomeLedger') || ''
+        } catch {
+          /* no storage */
+        }
+        const pick =
+          inc.find((x) => String(x.name) === last) ||
+          inc.find((x) => /^INTEREST INCOME/i.test(String(x.name))) ||
+          inc.find((x) => /INTEREST/i.test(String(x.name)) && !/FD/i.test(String(x.name))) ||
+          inc[0]
+        setMkIncome((cur) => cur || String(pick?.name || ''))
+      })
+      .catch(() => setBanks([]))
+  }, [])
+  const bankName = bankId === 'all' ? '' : String(banks.find((b) => String(b.id) === bankId)?.name || '')
   const [got, setGot] = useState<Row[] | null>(null)
   const [rev, setRev] = useState(0)
   // Bills whose legs (each early repayment and its interest) are open.
@@ -84,7 +118,7 @@ export function BdRefunds({ bills, onClose, onDone }: { bills: Row[]; onClose: (
     setCands(null)
     const t = setTimeout(() => {
       window.api.billDiscounting
-        .refundCandidates({ q, since, from: dFrom || undefined, to: dTo || undefined, expected: mapped })
+        .refundCandidates({ q, since, from: dFrom || undefined, to: dTo || undefined, expected: mapped, ledgerId: bankId === 'all' ? undefined : Number(bankId) })
         .then((r) => live && setCands(r))
         .catch((e) => toast.error(errText(e)))
     }, 250)
@@ -93,7 +127,7 @@ export function BdRefunds({ bills, onClose, onDone }: { bills: Row[]; onClose: (
       clearTimeout(t)
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tab, q, dFrom, dTo, since, ticked.length > 0, rev])
+  }, [tab, q, dFrom, dTo, since, ticked.length > 0, rev, bankId])
 
   useEffect(() => {
     if (tab !== 'got') return
@@ -126,6 +160,41 @@ export function BdRefunds({ bills, onClose, onDone }: { bills: Row[]; onClose: (
       setPicked({})
       setReceipt(null)
       setRecv('')
+      setCloseShort(false)
+      setCloseNote('')
+      setRev((v) => v + 1)
+      onDone()
+    } catch (e) {
+      toast.error(errText(e))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  // Book the receipt from here, then map it.
+  async function makeReceipt(): Promise<void> {
+    if (!ticked.length || !bankName || !mkIncome) return
+    setBusy(true)
+    try {
+      const res = await window.api.billDiscounting.createRefundReceipt({
+        date: mkDate,
+        bank: bankName,
+        income_ledger: mkIncome,
+        note: [mkNote.trim(), closeShort ? closeNote.trim() : ''].filter(Boolean).join(' · '),
+        parts: ticked.map((b) => ({ bd_id: n(b.id), amount: n(picked[n(b.id)]) })),
+        close_ids: closeShort ? shortBills.map((b) => n(b.id)) : []
+      })
+      try {
+        localStorage.setItem('bdRefundIncomeLedger', mkIncome)
+      } catch {
+        /* no storage */
+      }
+      toast.success(`Journal and receipt booked for ${formatINR(res.amount)}, mapped over ${res.bills} bill${res.bills === 1 ? '' : 's'}`)
+      setPicked({})
+      setReceipt(null)
+      setMaking(false)
+      setRecv('')
+      setMkNote('')
       setCloseShort(false)
       setCloseNote('')
       setRev((v) => v + 1)
@@ -550,6 +619,36 @@ export function BdRefunds({ bills, onClose, onDone }: { bills: Row[]; onClose: (
                         </div>
                       </div>
                     )}
+                    {/* WHAT CAME IN — typed once, spread over the bills (oldest first). */}
+                    {ticked.length > 0 && (
+                        <label className="block border-t border-[#DCE6DC] px-3 py-2.5">
+                          <span className="text-[10px] font-extrabold uppercase tracking-[.1em] text-[#5A6B62]">Interest received</span>
+                          <span className="mt-1 flex h-10 items-center rounded-[6px] border-[1.5px] border-[#0B3D2E] bg-white px-2.5 focus-within:ring-2 focus-within:ring-[#0B6B45]/20">
+                            <span className="mr-1 text-[13px] font-bold text-[#5A6B62]">₹</span>
+                            <input
+                              inputMode="decimal"
+                              value={recv}
+                              placeholder={String(dueTicked)}
+                              onChange={(e) => {
+                                const v = e.target.value.replace(/[^0-9.]/g, '')
+                                setRecv(v)
+                                if (v !== '') spread(n(v))
+                              }}
+                              className="min-w-0 flex-1 bg-transparent text-right text-[15px] font-extrabold tabular-nums outline-none"
+                            />
+                          </span>
+                          <span className="mt-1 flex gap-2 text-[10.5px] font-bold">
+                            <button type="button" onClick={() => { setRecv(String(dueTicked)); spread(dueTicked) }} className="text-[#1B4E82] hover:underline">
+                              Full due {formatINR(dueTicked)}
+                            </button>
+                            {receipt && (
+                              <button type="button" onClick={() => { setRecv(String(free)); spread(free) }} className="text-[#1B4E82] hover:underline">
+                                Receipt free {formatINR(free)}
+                              </button>
+                            )}
+                          </span>
+                        </label>
+                    )}
                   </div>
 
                   {/* 2 — the receipt */}
@@ -560,6 +659,69 @@ export function BdRefunds({ bills, onClose, onDone }: { bills: Row[]; onClose: (
                     </div>
                     {ticked.length > 0 && (
                       <div className="space-y-2 px-3 py-2.5">
+                        <div className="flex gap-2">
+                          <Select value={bankId} onValueChange={(v) => { setBankId(v); setReceipt(null) }}>
+                            <SelectTrigger className="h-9 min-w-0 flex-1 bg-white text-[12px] font-bold">
+                              <SelectValue />
+                            </SelectTrigger>
+                            <SelectContent className="max-h-64">
+                              <SelectItem value="all">All banks</SelectItem>
+                              {banks.map((b) => (
+                                <SelectItem key={String(b.id)} value={String(b.id)}>
+                                  {String(b.name)}
+                                </SelectItem>
+                              ))}
+                            </SelectContent>
+                          </Select>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setMaking((m) => !m)
+                              setReceipt(null)
+                            }}
+                            title="Not in the books yet — book the journal and the receipt from here"
+                            className={cn('flex h-9 flex-none items-center gap-1 rounded-[5px] border px-2.5 text-[11.5px] font-extrabold', making ? 'border-[#0B3D2E] bg-[#0B3D2E] text-[#C7F03F]' : 'border-[#C3D2C6] bg-white text-[#0B3D2E] hover:bg-[#F0F8F3]')}
+                          >
+                            {making ? <X className="h-3.5 w-3.5" /> : <Plus className="h-3.5 w-3.5" />} {making ? 'Pick existing' : 'New receipt'}
+                          </button>
+                        </div>
+                        {making ? (
+                          <div className="space-y-2 rounded-[6px] border border-[#C6DAF0] bg-[#F4F8FD] p-2.5">
+                            <div className="text-[11px] font-bold text-[#1B4E82]">Books two entries, then maps the receipt:</div>
+                            <div className="rounded-[5px] bg-white px-2.5 py-1.5 text-[11px] leading-[1.6] text-[#33473E]">
+                              <div>
+                                <b>1 · Journal</b> — {String(ticked[0]?.nbfc_name || 'NBFC')} Dr / {mkIncome || 'interest income'} Cr
+                              </div>
+                              <div>
+                                <b>2 · Receipt</b> — {bankName || 'bank'} Dr / {String(ticked[0]?.nbfc_name || 'NBFC')} Cr
+                              </div>
+                              <div className="mt-0.5 font-extrabold text-[#0A1F17]">{formatINR(mapped)}</div>
+                            </div>
+                            {!bankName && <div className="text-[11px] font-bold text-[#B3261E]">Pick the bank above</div>}
+                            <div className="grid grid-cols-2 gap-2">
+                              <DatePicker value={mkDate} onChange={(x) => setMkDate(String(x || ''))} />
+                              <Select value={mkIncome} onValueChange={setMkIncome}>
+                                <SelectTrigger className="h-9 bg-white text-[11.5px] font-bold">
+                                  <SelectValue placeholder="Income ledger" />
+                                </SelectTrigger>
+                                <SelectContent className="max-h-64">
+                                  {incomes.map((x) => (
+                                    <SelectItem key={String(x.id)} value={String(x.name)}>
+                                      {String(x.name)}
+                                    </SelectItem>
+                                  ))}
+                                </SelectContent>
+                              </Select>
+                            </div>
+                            <input
+                              value={mkNote}
+                              onChange={(e) => setMkNote(e.target.value)}
+                              placeholder="Narration note (optional)"
+                              className="h-8 w-full rounded-[5px] border border-[#C3D2C6] bg-white px-2 text-[12px] outline-none"
+                            />
+                          </div>
+                        ) : (
+                        <>
                         <label className="flex h-9 items-center gap-2 rounded-[5px] border border-[#C3D2C6] bg-white px-2.5">
                           <Search className="h-4 w-4 text-[#5A6B62]" />
                           <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Amount, voucher no, narration…" className="min-w-0 flex-1 bg-transparent text-[12.5px] font-semibold outline-none" />
@@ -581,7 +743,7 @@ export function BdRefunds({ bills, onClose, onDone }: { bills: Row[]; onClose: (
                           ) : !cands.length ? (
                             <div className="py-5 text-center text-[12px] font-semibold text-[#9AAFA2]">Nothing found</div>
                           ) : (
-                            cands.map((c) => {
+                            cands.slice(0, 150).map((c) => {
                               const sel = n(receipt?.id) === n(c.id)
                               const left = r2(n(c.amount) - n(c.used))
                               const close = Math.abs(left - mapped) < 1
@@ -610,6 +772,8 @@ export function BdRefunds({ bills, onClose, onDone }: { bills: Row[]; onClose: (
                             })
                           )}
                         </div>
+                        </>
+                        )}
                       </div>
                     )}
                   </div>
@@ -622,32 +786,6 @@ export function BdRefunds({ bills, onClose, onDone }: { bills: Row[]; onClose: (
                     </div>
                     {receipt && (
                       <div className="space-y-1 px-3 py-2.5 text-[12px]">
-                        {/* WHAT CAME IN — typed once, spread over the bills (oldest first). */}
-                        <label className="mb-2 block">
-                          <span className="text-[10px] font-extrabold uppercase tracking-[.1em] text-[#5A6B62]">Interest received</span>
-                          <span className="mt-1 flex h-10 items-center rounded-[6px] border-[1.5px] border-[#0B3D2E] bg-white px-2.5 focus-within:ring-2 focus-within:ring-[#0B6B45]/20">
-                            <span className="mr-1 text-[13px] font-bold text-[#5A6B62]">₹</span>
-                            <input
-                              inputMode="decimal"
-                              value={recv}
-                              placeholder={String(Math.min(free, dueTicked))}
-                              onChange={(e) => {
-                                const v = e.target.value.replace(/[^0-9.]/g, '')
-                                setRecv(v)
-                                if (v !== '') spread(n(v))
-                              }}
-                              className="min-w-0 flex-1 bg-transparent text-right text-[15px] font-extrabold tabular-nums outline-none"
-                            />
-                          </span>
-                          <span className="mt-1 flex gap-2 text-[10.5px] font-bold">
-                            <button type="button" onClick={() => { setRecv(String(dueTicked)); spread(dueTicked) }} className="text-[#1B4E82] hover:underline">
-                              Full due {formatINR(dueTicked)}
-                            </button>
-                            <button type="button" onClick={() => { setRecv(String(free)); spread(free) }} className="text-[#1B4E82] hover:underline">
-                              Receipt free {formatINR(free)}
-                            </button>
-                          </span>
-                        </label>
                         <div className="flex justify-between">
                           <span className="text-[#5A6B62]">Receipt {String(receipt.code || receipt.vch_no)} free</span>
                           <span className="font-bold tabular-nums">{formatINR(free)}</span>
@@ -668,9 +806,12 @@ export function BdRefunds({ bills, onClose, onDone }: { bills: Row[]; onClose: (
                             </span>
                           )}
                         </div>
+                      </div>
+                    )}
+                  </div>
                         {/* RECEIVED LESS — close those bills fully, or leave the rest due. */}
                         {shortBills.length > 0 && (
-                          <div className={cn('mt-2 rounded-[6px] border p-2.5', closeShort ? 'border-[#E3B66B] bg-[#FFF8EA]' : 'border-[#EEF3EE] bg-[#FAFCF9]')}>
+                          <div className={cn('rounded-[8px] border p-2.5', closeShort ? 'border-[#E3B66B] bg-[#FFF8EA]' : 'border-[#EEF3EE] bg-[#FAFCF9]')}>
                             <label className="flex cursor-pointer items-start gap-2">
                               <input type="checkbox" checked={closeShort} onChange={(e) => setCloseShort(e.target.checked)} className="mt-0.5 h-4 w-4 accent-[#8A5300]" />
                               <span>
@@ -690,9 +831,6 @@ export function BdRefunds({ bills, onClose, onDone }: { bills: Row[]; onClose: (
                             )}
                           </div>
                         )}
-                      </div>
-                    )}
-                  </div>
                 </div>
                 <div className="flex flex-none gap-2 border-t border-[#DCE6DC] bg-white px-4 py-3">
                   <button type="button" onClick={onClose} className="h-10 rounded-[5px] border border-[#C9DCCF] bg-white px-4 text-[12px] font-extrabold text-[#33473E] hover:bg-[#F0F8F3]">
@@ -701,12 +839,12 @@ export function BdRefunds({ bills, onClose, onDone }: { bills: Row[]; onClose: (
                   <button
                     type="button"
                     data-ctrl-a
-                    disabled={busy || !receipt || !ticked.length || !(mapped > 0)}
-                    onClick={() => void link()}
+                    disabled={busy || !ticked.length || !(mapped > 0) || (making ? !bankName || !mkIncome || !ticked.every((b) => b.nbfc_id === ticked[0].nbfc_id) : !receipt)}
+                    onClick={() => void (making ? makeReceipt() : link())}
                     className="flex h-10 flex-1 items-center justify-center gap-1.5 rounded-[5px] bg-[#0B3D2E] px-4 text-[12.5px] font-extrabold text-[#C7F03F] hover:bg-[#0F4A38] disabled:opacity-50"
                   >
                     {busy && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
-                    <Link2 className="h-4 w-4" /> Map {ticked.length ? `${formatINR(mapped)} · ${ticked.length} bill${ticked.length === 1 ? '' : 's'}${closeShort && shortBills.length ? ` · close ${shortBills.length}` : ''}` : 'receipt'}
+                    {making ? <Plus className="h-4 w-4" /> : <Link2 className="h-4 w-4" />} {making ? 'Book & map' : 'Map'} {ticked.length ? `${formatINR(mapped)} · ${ticked.length} bill${ticked.length === 1 ? '' : 's'}${closeShort && shortBills.length ? ` · close ${shortBills.length}` : ''}` : 'receipt'}
                   </button>
                 </div>
               </aside>
