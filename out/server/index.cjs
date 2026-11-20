@@ -13832,9 +13832,11 @@ __export(billDiscounting_exports, {
   bdLimits: () => bdLimits,
   bdPendingPayout: () => bdPendingPayout,
   bdRefundCandidates: () => bdRefundCandidates,
+  closeBdRefunds: () => closeBdRefunds,
   convertBdInterestPayments: () => convertBdInterestPayments,
   convertOpenAdjToCharge: () => convertOpenAdjToCharge,
   createBd: () => createBd,
+  createBdRefundReceipt: () => createBdRefundReceipt,
   deleteBd: () => deleteBd,
   deleteBdInterestPayment: () => deleteBdInterestPayment,
   deleteBdLimitReduction: () => deleteBdLimitReduction,
@@ -13869,6 +13871,7 @@ __export(billDiscounting_exports, {
   postBdUpfrontInterest: () => postBdUpfrontInterest,
   receiveBdPart: () => receiveBdPart,
   reopenBd: () => reopenBd,
+  reopenBdRefund: () => reopenBdRefund,
   repayBd: () => repayBd,
   reverseBdUpfrontInterest: () => reverseBdUpfrontInterest,
   setBdCombinedLimit: () => setBdCombinedLimit,
@@ -14607,7 +14610,7 @@ async function validateBd(v, cur) {
     }
   }
 }
-function earlyRefund(bd, calc, reps, received = 0) {
+function earlyRefund(bd, calc, reps, received = 0, closed = null) {
   const mode = String(bd.interest_mode || "") || (bd.interest_upfront ? "upfront" : "discounted");
   const maturity = String(bd.maturity_date || "").slice(0, 10);
   if (mode === "serviced" || !maturity || !(calc.interestAmount > 4e-3) || n16(bd.first_receipt_part) > 5e-3) return null;
@@ -14619,7 +14622,22 @@ function earlyRefund(bd, calc, reps, received = 0) {
   }).filter((l) => l.gross > 4e-3);
   const gross = round29(Math.min(calc.interestAmount, lines.reduce((t, l) => t + l.gross, 0)));
   if (!(gross > 0.5)) return null;
-  return { gross, net: gross, received: round29(received), due: round29(gross - received), maturity, rate, days_year: daysYear, interest: calc.interestAmount, lines };
+  const short = round29(Math.max(0, gross - received));
+  return {
+    gross,
+    net: gross,
+    received: round29(received),
+    due: closed ? 0 : short,
+    closed: !!closed,
+    written_off: closed ? short : 0,
+    closed_note: closed ? String(closed.note || "") : "",
+    closed_at: closed ? String(closed.closed_at || "").slice(0, 10) : "",
+    maturity,
+    rate,
+    days_year: daysYear,
+    interest: calc.interestAmount,
+    lines
+  };
 }
 async function listBd(filter) {
   await ensureBdPostingFields();
@@ -14742,6 +14760,13 @@ async function listBd(filter) {
     }).catch(() => ({ rows: [], columns: [] }))
   );
   const gotOf = new Map(gotRows.map((r) => [n16(r.bd_id), n16(r.got)]));
+  const closedRows = toPlain13(
+    await getClient().execute({
+      sql: `SELECT c.* FROM bd_refund_closures c JOIN bill_discountings b ON b.id = c.bd_id WHERE b.company_id = ?`,
+      args: [getActiveCompanyId()]
+    }).catch(() => ({ rows: [], columns: [] }))
+  );
+  const closedOf = new Map(closedRows.map((r) => [n16(r.bd_id), r]));
   const repsOf = /* @__PURE__ */ new Map();
   for (const r of repRows) {
     const k = n16(r.bd_id);
@@ -14771,7 +14796,7 @@ async function listBd(filter) {
       repaid_total: repaidTotal,
       outstanding_amount: round29(Math.max(0, principalDrawn(bd) - repaidTotal)),
       repay_parts: parts,
-      early_refund: earlyRefund(bd, calcRow, repsOf.get(n16(bd.id)) || [], gotOf.get(n16(bd.id)) || 0),
+      early_refund: earlyRefund(bd, calcRow, repsOf.get(n16(bd.id)) || [], gotOf.get(n16(bd.id)) || 0, closedOf.get(n16(bd.id)) || null),
       // Three stages, in the order a bill goes through them: opened and waiting
       // on the NBFC's money, live once it has landed, wound up once repaid.
       // Derived rather than stored, so the payment date stays the single fact
@@ -16790,6 +16815,30 @@ async function ensureBdRefunds() {
     amount REAL NOT NULL DEFAULT 0,
     created_at TEXT DEFAULT CURRENT_TIMESTAMP
   )`);
+  await getClient().execute(`CREATE TABLE IF NOT EXISTS bd_refund_closures (
+    bd_id INTEGER PRIMARY KEY,
+    journal_entry_id INTEGER,
+    note TEXT,
+    closed_at TEXT DEFAULT CURRENT_TIMESTAMP
+  )`);
+}
+async function closeBdRefunds(v) {
+  await ensureBdRefunds();
+  const ids = [...new Set((v.bd_ids || []).map(n16).filter((x) => x > 0))];
+  if (!ids.length) throw new Error("Pick the bill(s) to close");
+  for (const id of ids) {
+    await loadBd(id);
+    await getClient().execute({
+      sql: "INSERT OR REPLACE INTO bd_refund_closures (bd_id, journal_entry_id, note, closed_at) VALUES (?, NULL, ?, CURRENT_TIMESTAMP)",
+      args: [id, String(v.note || "").trim() || null]
+    });
+  }
+  return { closed: ids.length };
+}
+async function reopenBdRefund(bdId) {
+  await ensureBdRefunds();
+  await getClient().execute({ sql: "DELETE FROM bd_refund_closures WHERE bd_id = ?", args: [n16(bdId)] });
+  return { bd_id: n16(bdId) };
 }
 async function bdRefundCandidates(v) {
   const { pickBankVouchers: pickBankVouchers2 } = await Promise.resolve().then(() => (init_lc(), lc_exports));
@@ -16800,6 +16849,7 @@ async function bdRefundCandidates(v) {
     dir: "in",
     expected: n16(v.expected),
     q: v.q,
+    ledgerId: n16(v.ledgerId) || void 0,
     range: { from: v.from, to: v.to }
   });
   await ensureBdRefunds();
@@ -16820,12 +16870,72 @@ async function linkBdRefund(v) {
       if (n16(bd.company_id) !== n16(je.company_id)) throw new Error(`${bd.bd_no} is in another company than the receipt`);
       await c.execute({ sql: "INSERT INTO bd_interest_refunds (bd_id, journal_entry_id, amount) VALUES (?, ?, ?)", args: [p.bd_id, n16(je.id), p.amount] });
     }
+    for (const id of [...new Set((v.close_ids || []).map(n16).filter((x) => parts.some((p) => p.bd_id === x)))]) {
+      await c.execute({
+        sql: "INSERT OR REPLACE INTO bd_refund_closures (bd_id, journal_entry_id, note, closed_at) VALUES (?, ?, ?, CURRENT_TIMESTAMP)",
+        args: [id, n16(je.id), String(v.note || "").trim() || null]
+      });
+    }
     return { entry_id: n16(je.id), bills: parts.length, amount: round29(parts.reduce((t, p) => t + p.amount, 0)) };
+  });
+}
+async function createBdRefundReceipt(v) {
+  return withDbTransaction(async () => {
+    await ensureBdRefunds();
+    const date = String(v.date || "").slice(0, 10);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) throw new Error("Pick the date the refund came in");
+    if (date > todayISO6()) throw new Error("The receipt cannot be dated in the future");
+    const bank = String(v.bank || "").trim();
+    if (!bank) throw new Error("Pick the bank it came into");
+    const income = String(v.income_ledger || "").trim().toUpperCase();
+    if (!income) throw new Error("Pick the interest income ledger");
+    const parts = (v.parts || []).map((p) => ({ bd_id: n16(p.bd_id), amount: round29(n16(p.amount)) })).filter((p) => p.bd_id > 0 && p.amount > 4e-3);
+    if (!parts.length) throw new Error("Tick at least one bill and give it an amount");
+    const bds = [];
+    for (const p of parts) bds.push(await loadBd(p.bd_id));
+    const first = bds[0];
+    if (bds.some((b) => n16(b.nbfc_id) !== n16(first.nbfc_id))) throw new Error("One receipt books one NBFC \u2014 tick bills of the same NBFC");
+    if (bds.some((b) => n16(b.company_id) !== n16(first.company_id))) throw new Error("The bills are in different companies");
+    const amount2 = round29(parts.reduce((t, p) => t + p.amount, 0));
+    const nos = bds.map((b) => String(b.bd_no)).join(", ");
+    const nbfc = bdPayable(first);
+    const c = getClient();
+    const groupOf = async (name, dflt) => String((await c.execute({ sql: "SELECT acc_group FROM ledger_accounts WHERE UPPER(name) = ?", args: [name.toUpperCase()] })).rows[0]?.acc_group || dflt);
+    const bankGroup = await groupOf(bank, "Bank Accounts");
+    const incomeGroup = await groupOf(income, "Indirect Incomes");
+    const tail = String(v.note || "").trim() ? ` \xB7 ${String(v.note).trim()}` : "";
+    const companyId = n16(first.company_id) || void 0;
+    const head = `Interest refund on early repayment \u2014 ${first.nbfc_name || "the NBFC"}, ${bds.length} bill${bds.length === 1 ? "" : "s"} (${nos}) ${inr(amount2)}`;
+    const journal = await postJournal({
+      date,
+      vchType: "JOURNAL",
+      vchNo: nos.slice(0, 60),
+      narration: `${head} \u2014 booked to interest income${tail}`,
+      companyId,
+      lines: [
+        { account: nbfc, group: BD_PAYABLE_GROUP, dr: amount2 },
+        { account: income, group: incomeGroup, cr: amount2 }
+      ]
+    });
+    const receipt = await postJournal({
+      date,
+      vchType: "RECEIPT",
+      vchNo: nos.slice(0, 60),
+      narration: `${head} \u2014 received from the NBFC${tail}`,
+      companyId,
+      lines: [
+        { account: bank, group: bankGroup, dr: amount2 },
+        { account: nbfc, group: BD_PAYABLE_GROUP, cr: amount2 }
+      ]
+    });
+    await linkBdRefund({ journal_entry_id: receipt.id, parts, close_ids: v.close_ids, note: v.note });
+    return { entry_id: receipt.id, journal_id: journal.id, bills: parts.length, amount: amount2 };
   });
 }
 async function unlinkBdRefund(entryId) {
   await ensureBdRefunds();
   await getClient().execute({ sql: "DELETE FROM bd_interest_refunds WHERE journal_entry_id = ?", args: [n16(entryId)] });
+  await getClient().execute({ sql: "DELETE FROM bd_refund_closures WHERE journal_entry_id = ?", args: [n16(entryId)] });
   return { entry_id: n16(entryId) };
 }
 async function listBdRefunds() {
@@ -19625,6 +19735,17 @@ async function updateGateEntry(id, v) {
       id
     ]
   });
+  if (v.out_date !== void 0 || v.out_time !== void 0) {
+    const cur = (await getClient().execute({ sql: "SELECT out_date, out_time FROM gate_entries WHERE id = ?", args: [id] })).rows[0];
+    const od = v.out_date ? String(v.out_date).slice(0, 10) : null;
+    const ot = v.out_time ? String(v.out_time).slice(0, 5) : null;
+    if (cur && (od !== (cur.out_date ? String(cur.out_date).slice(0, 10) : null) || ot !== (cur.out_time ? String(cur.out_time).slice(0, 5) : null))) {
+      await assertAdmin("Changing the out date / time");
+      if (ot && !/^([01]\d|2[0-3]):[0-5]\d$/.test(ot)) throw new Error("Out time must be HH:MM, e.g. 18:45");
+      if (od && v.entry_date && od < String(v.entry_date).slice(0, 10)) throw new Error("The vehicle cannot go out before the day it came in");
+      await getClient().execute({ sql: "UPDATE gate_entries SET out_date = ?, out_time = ? WHERE id = ?", args: [od, ot, id] });
+    }
+  }
   return { id };
 }
 async function deleteGateEntry(id) {
@@ -45583,6 +45704,9 @@ function registerIpc() {
   handle("bdRefundCandidates:list", async (_e, { values }) => (await Promise.resolve().then(() => (init_billDiscounting(), billDiscounting_exports))).bdRefundCandidates(values));
   handle("bd:linkRefund", async (_e, { values }) => (await Promise.resolve().then(() => (init_billDiscounting(), billDiscounting_exports))).linkBdRefund(values));
   handle("bd:unlinkRefund", async (_e, { entryId }) => (await Promise.resolve().then(() => (init_billDiscounting(), billDiscounting_exports))).unlinkBdRefund(Number(entryId)));
+  handle("bd:closeRefunds", async (_e, { values }) => (await Promise.resolve().then(() => (init_billDiscounting(), billDiscounting_exports))).closeBdRefunds(values));
+  handle("bd:reopenRefund", async (_e, { bdId }) => (await Promise.resolve().then(() => (init_billDiscounting(), billDiscounting_exports))).reopenBdRefund(Number(bdId)));
+  handle("bd:createRefundReceipt", async (_e, { values }) => (await Promise.resolve().then(() => (init_billDiscounting(), billDiscounting_exports))).createBdRefundReceipt(values));
   handle(
     "bdCumPayments:list",
     async (_e, { nbfcId }) => (await Promise.resolve().then(() => (init_billDiscounting(), billDiscounting_exports))).listBdCumulativePayments(nbfcId)
