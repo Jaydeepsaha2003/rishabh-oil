@@ -5580,6 +5580,22 @@ function SalesBargainsTab({ onOpenSale, onOpenVoucher }: { onOpenSale?: (id: num
     for (const arr of m.values()) arr.sort((a, b) => String(a.sale_date).localeCompare(String(b.sale_date)))
     return m
   }, [sales])
+  // SPLIT: an invoice whose lines draw on more than one bargain (KRFL/703 on
+  // PANGHAT …/07 and …/06). Per invoice, each bargain it draws on and how much.
+  const bargainsOfInvoice = useMemo(() => {
+    const m = new Map<string, Map<number, { no: string; qty: number }>>()
+    for (const s of sales) {
+      const bid = Number(s.sales_bargain_id)
+      if (!bid) continue
+      const k = String(s.invoice_group || s.invoice_no || s.id)
+      if (!m.has(k)) m.set(k, new Map())
+      const g = m.get(k)!
+      const cur = g.get(bid) || { no: String(s.sales_bargain_no || `#${bid}`), qty: 0 }
+      cur.qty += Number(s.qty) || 0
+      g.set(bid, cur)
+    }
+    return m
+  }, [sales])
 
   useEffect(() => {
     load()
@@ -7803,6 +7819,8 @@ function SalesBargainsTab({ onOpenSale, onOpenVoucher }: { onOpenSale?: (id: num
                                 companyColour: string
                                 companyId: number
                                 entryId?: number
+                                // The other bargains this invoice also draws on.
+                                splitWith?: { no: string; qty: number }[]
                               }
                               const lines: Line[] = [
                                 ...Array.from(byInvoice.values()).map((g): Line => ({
@@ -7818,7 +7836,10 @@ function SalesBargainsTab({ onOpenSale, onOpenVoucher }: { onOpenSale?: (id: num
                                   uom: String(g.sample.uom || row.uom || 'MT'),
                                   company: coNameOf(g.sample.company_id),
                                   companyColour: coColourOf(g.sample.company_id),
-                                  companyId: Number(g.sample.company_id) || 0
+                                  companyId: Number(g.sample.company_id) || 0,
+                                  splitWith: [...(bargainsOfInvoice.get(String(g.sample.invoice_group || g.invoice_no || g.id))?.entries() || [])]
+                                    .filter(([bid]) => bid !== Number(row.id))
+                                    .map(([, b]) => b)
                                 })),
                                 ...retLines.map((rl, ri): Line => ({
                                   key: `r${rl.note_id}-${ri}`,
@@ -7896,6 +7917,14 @@ function SalesBargainsTab({ onOpenSale, onOpenVoucher }: { onOpenSale?: (id: num
                                               <td className={cn('py-1.5 pr-3 font-medium', __WEB__ && '!text-[13px] !font-bold')}>
                                                 <span className="inline-flex items-center gap-1.5">
                                                   {l.label}
+                                                  {!!l.splitWith?.length && (
+                                                    <span
+                                                      className="rounded-[2px] border border-[#C6DAF0] bg-[#EAF0FA] px-1.5 py-[2px] text-[9.5px] font-extrabold uppercase tracking-[.05em] text-[#1B4E82]"
+                                                      title={`Split — this invoice also draws on ${l.splitWith.map((b) => `${b.no} (${formatNum(b.qty)} ${l.uom})`).join(', ')}. Only its ${formatNum(l.qty)} ${l.uom} on this bargain is counted here.`}
+                                                    >
+                                                      Split {l.splitWith.length + 1}
+                                                    </span>
+                                                  )}
                                                   {isRet && (
                                                     <span className={cn('rounded bg-emerald-100 px-1 py-px text-[9px] font-bold uppercase tracking-wide text-emerald-800', __WEB__ && '!rounded-[2px] !bg-[#BFE3CB] !px-1.5 !py-[2px] !text-[9.5px] !font-extrabold !tracking-[.05em] !text-[#0B6B45]')}>
                                                       return
