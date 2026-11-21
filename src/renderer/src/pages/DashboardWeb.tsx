@@ -44,6 +44,7 @@ import { cn } from '@/lib/utils'
 import { sortCompanies } from '@/lib/companyOrder'
 import { DASH_KEYFRAMES, DASH_THEMES, storeDashTheme, storedDashTheme, type DashTheme } from '@/lib/dashTheme'
 import { formatNum } from '@/lib/format'
+import { DatePicker } from '@/components/ui/date-picker'
 import { useIsMobile } from '@/lib/useIsMobile'
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -136,7 +137,7 @@ export function DashboardWeb(props: DashProps): React.JSX.Element {
     if (!layout.isOn('m.production')) return
     if (!/^\d{4}-\d{2}-\d{2}$/.test(pFrom) || !/^\d{4}-\d{2}-\d{2}$/.test(pTo) || pFrom > pTo) return
     let live = true
-    setProd(null)
+    // The old figures stay until the new ones arrive (no blank flash on each change).
     window.api.dashboard
       .production({ all: !!props.allCompanies, from: pFrom, to: pTo })
       .then((r) => live && setProd(r))
@@ -617,7 +618,12 @@ export function DashboardWeb(props: DashProps): React.JSX.Element {
       )
     }
     return (
-      <Card className={mobile ? 'flex-none px-3.5 py-3.5' : 'flex flex-col px-[17px] py-[15px]'} style={mobile ? { borderRadius: 5 } : undefined}>
+      // A plain frame, not the Card helper: Card is re-created on every render,
+      // which remounted the date boxes and shut the calendar after each pick.
+      <div
+        className={mobile ? 'flex-none px-3.5 py-3.5' : 'flex flex-col px-[17px] py-[15px]'}
+        style={{ background: t.card, border: `1px solid ${t.bd}`, boxShadow: t.shadow, borderRadius: mobile ? 5 : 6 }}
+      >
         <CardHead
           icon={Factory}
           title="Production till date"
@@ -647,15 +653,16 @@ export function DashboardWeb(props: DashProps): React.JSX.Element {
             ['Last month', lmStart, lmEnd],
             ['Last FY', lastFy, lastFyEnd]
           ]
-          const dateBox = (v: string, set: (x: string) => void, label: string): React.JSX.Element => (
-            <input
-              type="date"
-              value={v}
-              aria-label={label}
-              onChange={(e) => e.target.value && set(e.target.value)}
-              className="doc-ref h-7 min-w-0 rounded-[4px] px-1.5 text-[11px] font-bold outline-none"
-              style={{ background: t.inset, border: `1px solid ${t.bd}`, color: t.ink, colorScheme: theme === 'dark' ? 'dark' : 'light' }}
-            />
+          const dateBox = (v: string, set: (x: string) => void, label: string, lim: { min?: string; max?: string }): React.JSX.Element => (
+            <span aria-label={label} className="inline-block w-[8.6rem] rounded-[4px]" style={{ color: t.ink, background: t.inset, border: `1px solid ${t.bd}` }}>
+              <DatePicker
+                value={v}
+                onChange={(x) => x && set(x)}
+                min={lim.min}
+                max={lim.max}
+                className="!h-7 w-full !rounded-[4px] !border-0 !bg-transparent !px-2 !text-[11px] !font-bold !text-inherit hover:!bg-transparent"
+              />
+            </span>
           )
           return (
             <div className="mt-2.5 flex flex-wrap items-center gap-1.5">
@@ -677,9 +684,9 @@ export function DashboardWeb(props: DashProps): React.JSX.Element {
                 )
               })}
               <span className="flex items-center gap-1">
-                {dateBox(pFrom, setPFrom, 'From')}
+                {dateBox(pFrom, setPFrom, 'From', { max: pTo })}
                 <span className="text-[10.5px] font-bold" style={{ color: t.faint }}>to</span>
-                {dateBox(pTo, setPTo, 'To')}
+                {dateBox(pTo, setPTo, 'To', { min: pFrom })}
               </span>
               {pFrom > pTo && <span className="text-[10.5px] font-bold" style={{ color: t.red }}>From is after To</span>}
             </div>
@@ -718,7 +725,7 @@ export function DashboardWeb(props: DashProps): React.JSX.Element {
           </button>
         )}
         <Deeper label="Open Sales" page="sales" fg={t.accent} />
-      </Card>
+      </div>
     )
   }
 
