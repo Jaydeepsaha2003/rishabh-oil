@@ -18322,8 +18322,14 @@ Delete ${doc}?`)) return
         .catch((e) => toast.error((e as Error).message.replace(/^Error invoking remote method '[^']+': (Error: )?/, '')))
     }
     lgVRowsRef.current = vRows
+    // The ticked rows' own figures, so what is about to go is seen before it goes.
+    const lgPickedRows = lgPicking ? vRows.filter((r) => !r.provisional && lgPicked.has(Number(r.entry_id ?? r.id))) : []
+    const lgPickDr = lgPickedRows.reduce((t, r) => t + (Number(r.dr) || 0), 0)
+    const lgPickCr = lgPickedRows.reduce((t, r) => t + (Number(r.cr) || 0), 0)
     const vouchersView = (
       <div style={{ minWidth: lgReco ? 1170 : 1020 }}>
+        {/* FROZEN while the rows scroll: the Reco strip, the select bar and the column heads. */}
+        <div style={{ position: 'sticky', top: 0, zIndex: 4 }}>
         {lgReco && (
           <div className="flex flex-wrap items-center gap-x-6 gap-y-1" style={{ padding: '9px 14px', background: '#EAF2FC', borderBottom: '1px solid #B9D3F0' }}>
             <span style={{ fontSize: 10, fontWeight: 800, letterSpacing: '.12em', textTransform: 'uppercase', color: '#1B4E82' }}>Reco · Alt+R</span>
@@ -18348,6 +18354,19 @@ Delete ${doc}?`)) return
           {lgPicking ? (
             <>
               <span style={{ fontSize: 12, fontWeight: 800, color: '#8C2F26' }}>{lgPicked.size} selected</span>
+              {lgPickedRows.length > 0 && (
+                <span className="flex items-center gap-2 rounded-[5px] px-2 py-[3px]" style={{ background: '#fff', border: '1px solid #E4C9C4' }}>
+                  <span style={{ fontSize: 11, fontWeight: 700, color: '#5A6B62' }}>
+                    Dr <b style={figS(12, A.dr)}>{formatINR(lgPickDr)}</b>
+                  </span>
+                  <span style={{ fontSize: 11, fontWeight: 700, color: '#5A6B62' }}>
+                    Cr <b style={figS(12, A.cr)}>{formatINR(lgPickCr)}</b>
+                  </span>
+                  <span style={{ fontSize: 11, fontWeight: 700, color: '#5A6B62' }} title="Debit less credit of the ticked rows">
+                    Net <b style={figS(12, balFg(lgPickDr - lgPickCr))}>{bal(lgPickDr - lgPickCr)}</b>
+                  </span>
+                </span>
+              )}
               <button
                 type="button"
                 onClick={() => setLgPicked(new Set(vRows.filter((r) => !r.provisional).map((r) => Number(r.entry_id ?? r.id))))}
@@ -18430,6 +18449,7 @@ Delete ${doc}?`)) return
               </button>
             </span>
           )}
+        </div>
         </div>
         <div className="grid items-center" style={{ gridTemplateColumns: V_GRID, height: 38, background: '#F4F7F2', borderBottom: '1px solid #E4ECE3' }}>
           <span style={{ padding: '0 14px', ...figS(11.5, A.muted, 600) }}>{lgOpenDate ? formatDate(lgOpenDate) : ''}</span>
