@@ -123,20 +123,29 @@ export function DashboardWeb(props: DashProps): React.JSX.Element {
     const y = d.getMonth() >= 3 ? d.getFullYear() : d.getFullYear() - 1
     return `${y}-04-01`
   })()
-  const prodTo = new Date().toISOString().slice(0, 10)
+  // Local date (toISOString is UTC — before 05:30 IST it would read yesterday).
+  const todayIso = (() => {
+    const d = new Date()
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+  })()
+  // The card's own dates: this FY to today unless picked otherwise.
+  const [pFrom, setPFrom] = useState(fyFrom)
+  const [pTo, setPTo] = useState(todayIso)
+  const prodTo = pTo
   useEffect(() => {
     if (!layout.isOn('m.production')) return
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(pFrom) || !/^\d{4}-\d{2}-\d{2}$/.test(pTo) || pFrom > pTo) return
     let live = true
     setProd(null)
     window.api.dashboard
-      .production({ all: !!props.allCompanies, from: fyFrom, to: prodTo })
+      .production({ all: !!props.allCompanies, from: pFrom, to: pTo })
       .then((r) => live && setProd(r))
       .catch(() => live && setProd([]))
     return () => {
       live = false
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [props.allCompanies, layout.isOn('m.production'), String(companyId || '')])
+  }, [props.allCompanies, layout.isOn('m.production'), String(companyId || ''), pFrom, pTo])
   const [theme, setTheme] = useState<'dark' | 'light'>(storedDashTheme)
   const t: DashTheme = DASH_THEMES[theme]
 
@@ -540,7 +549,7 @@ export function DashboardWeb(props: DashProps): React.JSX.Element {
     const fattyAll = sumOf((r) => !!Number(r.fatty))
     // Open the Sales list on exactly the invoices behind a line.
     const open = (label: string, f: { cats?: string[]; scope?: 'out' | 'interco' | 'return'; fatty?: 'only' | 'exclude' }): void => {
-      setPageIntent('sales', { kind: 'production', from: fyFrom, to: prodTo, label, cats: f.cats || ['raw', 'intermediate', 'finished'], scope: f.scope || null, fatty: f.fatty || 'exclude' })
+      setPageIntent('sales', { kind: 'production', from: pFrom, to: prodTo, label, cats: f.cats || ['raw', 'intermediate', 'finished'], scope: f.scope || null, fatty: f.fatty || 'exclude' })
       props.onNavigate('sales')
     }
     const line = (
@@ -620,12 +629,62 @@ export function DashboardWeb(props: DashProps): React.JSX.Element {
                   Show all
                 </button>
               )}
-              <span className="text-[10px] font-bold" style={{ color: t.faint }}>
-                FY from {fyFrom.slice(8, 10)}-{fyFrom.slice(5, 7)}-{fyFrom.slice(0, 4)}
-              </span>
             </span>
           }
         />
+        {/* THE DATES — quick picks, or any From / To. */}
+        {(() => {
+          const d = new Date()
+          const iso = (x: Date): string => `${x.getFullYear()}-${String(x.getMonth() + 1).padStart(2, '0')}-${String(x.getDate()).padStart(2, '0')}`
+          const mStart = iso(new Date(d.getFullYear(), d.getMonth(), 1))
+          const lmStart = iso(new Date(d.getFullYear(), d.getMonth() - 1, 1))
+          const lmEnd = iso(new Date(d.getFullYear(), d.getMonth(), 0))
+          const lastFy = `${Number(fyFrom.slice(0, 4)) - 1}-04-01`
+          const lastFyEnd = `${fyFrom.slice(0, 4)}-03-31`
+          const presets: [string, string, string][] = [
+            ['This FY', fyFrom, todayIso],
+            ['This month', mStart, todayIso],
+            ['Last month', lmStart, lmEnd],
+            ['Last FY', lastFy, lastFyEnd]
+          ]
+          const dateBox = (v: string, set: (x: string) => void, label: string): React.JSX.Element => (
+            <input
+              type="date"
+              value={v}
+              aria-label={label}
+              onChange={(e) => e.target.value && set(e.target.value)}
+              className="doc-ref h-7 min-w-0 rounded-[4px] px-1.5 text-[11px] font-bold outline-none"
+              style={{ background: t.inset, border: `1px solid ${t.bd}`, color: t.ink, colorScheme: theme === 'dark' ? 'dark' : 'light' }}
+            />
+          )
+          return (
+            <div className="mt-2.5 flex flex-wrap items-center gap-1.5">
+              {presets.map(([label, f, to]) => {
+                const on = pFrom === f && pTo === to
+                return (
+                  <button
+                    key={label}
+                    type="button"
+                    onClick={() => {
+                      setPFrom(f)
+                      setPTo(to)
+                    }}
+                    className="h-7 rounded-[4px] px-2 text-[10.5px] font-extrabold"
+                    style={on ? { background: t.accentSoft, color: t.accent, border: `1px solid ${t.accentBd}` } : { color: t.muted, border: `1px solid ${t.bd}` }}
+                  >
+                    {label}
+                  </button>
+                )
+              })}
+              <span className="flex items-center gap-1">
+                {dateBox(pFrom, setPFrom, 'From')}
+                <span className="text-[10.5px] font-bold" style={{ color: t.faint }}>to</span>
+                {dateBox(pTo, setPTo, 'To')}
+              </span>
+              {pFrom > pTo && <span className="text-[10.5px] font-bold" style={{ color: t.red }}>From is after To</span>}
+            </div>
+          )
+        })()}
         {prod == null ? (
           <div className="mt-4 text-[11.5px] font-semibold" style={{ color: t.faint }}>
             Working it out…
