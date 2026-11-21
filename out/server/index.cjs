@@ -14380,6 +14380,7 @@ __export(billDiscounting_exports, {
   bdLimits: () => bdLimits,
   bdPendingPayout: () => bdPendingPayout,
   bdRefundCandidates: () => bdRefundCandidates,
+  bookBdRefundIncome: () => bookBdRefundIncome,
   closeBdRefunds: () => closeBdRefunds,
   convertBdInterestPayments: () => convertBdInterestPayments,
   convertOpenAdjToCharge: () => convertOpenAdjToCharge,
@@ -17363,6 +17364,12 @@ async function ensureBdRefunds() {
     amount REAL NOT NULL DEFAULT 0,
     created_at TEXT DEFAULT CURRENT_TIMESTAMP
   )`);
+  await getClient().execute(`CREATE TABLE IF NOT EXISTS bd_refund_vouchers (
+    receipt_id INTEGER PRIMARY KEY,
+    journal_id INTEGER,
+    journal_made INTEGER NOT NULL DEFAULT 0,
+    receipt_made INTEGER NOT NULL DEFAULT 0
+  )`);
   await getClient().execute(`CREATE TABLE IF NOT EXISTS bd_refund_closures (
     bd_id INTEGER PRIMARY KEY,
     journal_entry_id INTEGER,
@@ -17424,8 +17431,66 @@ async function linkBdRefund(v) {
         args: [id, n17(je.id), String(v.note || "").trim() || null]
       });
     }
-    return { entry_id: n17(je.id), bills: parts.length, amount: round210(parts.reduce((t, p) => t + p.amount, 0)) };
+    const journal = v.income_ledger ? await bookBdRefundIncome(n17(je.id), v.income_ledger) : void 0;
+    return { entry_id: n17(je.id), bills: parts.length, amount: round210(parts.reduce((t, p) => t + p.amount, 0)), journal };
   });
+}
+async function bookBdRefundIncome(receiptId, incomeLedger) {
+  await ensureBdRefunds();
+  const c = getClient();
+  const rid = n17(receiptId);
+  const je = (await c.execute({ sql: "SELECT id, company_id, entry_date FROM journal_entries WHERE id = ?", args: [rid] })).rows[0];
+  if (!je) throw new Error("That bank receipt no longer exists");
+  const parts = toPlain14(await c.execute({ sql: "SELECT bd_id, amount FROM bd_interest_refunds WHERE journal_entry_id = ?", args: [rid] }));
+  const amount2 = round210(parts.reduce((t, p) => t + n17(p.amount), 0));
+  if (!parts.length || !(amount2 > 4e-3)) return { journal_id: null, adopted: false, amount: 0 };
+  const first = await loadBd(n17(parts[0].bd_id));
+  const nbfc = bdPayable(first);
+  const creditsNbfc = (await c.execute({
+    sql: `SELECT 1 FROM journal_lines jl JOIN ledger_accounts a ON a.id = jl.account_id WHERE jl.entry_id = ? AND jl.cr > 0 AND UPPER(a.name) = ?`,
+    args: [rid, nbfc.toUpperCase()]
+  })).rows.length > 0;
+  if (!creditsNbfc) return { journal_id: null, adopted: false, amount: amount2 };
+  const cur = (await c.execute({ sql: "SELECT * FROM bd_refund_vouchers WHERE receipt_id = ?", args: [rid] })).rows[0];
+  const curJv = cur?.journal_id && (await c.execute({ sql: "SELECT 1 FROM journal_entries WHERE id = ?", args: [n17(cur.journal_id)] })).rows.length ? n17(cur.journal_id) : 0;
+  const income = String(incomeLedger || "").trim().toUpperCase() || "INTEREST INCOME";
+  const incomeGroup = String((await c.execute({ sql: "SELECT acc_group FROM ledger_accounts WHERE UPPER(name) = ?", args: [income] })).rows[0]?.acc_group || "Indirect Incomes");
+  const lines = [
+    { account: nbfc, group: BD_PAYABLE_GROUP, dr: amount2 },
+    { account: income, group: incomeGroup, cr: amount2 }
+  ];
+  const nos = (await Promise.all(parts.map(async (p) => String((await loadBd(n17(p.bd_id))).bd_no)))).join(", ");
+  const narration = `Interest refund on early repayment \u2014 ${first.nbfc_name || "the NBFC"}, ${parts.length} bill${parts.length === 1 ? "" : "s"} (${nos}) ${inr(amount2)} \u2014 booked to interest income`;
+  if (curJv) {
+    if (n17(cur.journal_made)) await repostJournal(curJv, { date: String(je.entry_date).slice(0, 10), vchType: "JOURNAL", vchNo: nos.slice(0, 60), narration, companyId: n17(je.company_id), lines });
+    return { journal_id: curJv, adopted: !n17(cur.journal_made), amount: amount2 };
+  }
+  const found = (await c.execute({
+    sql: `SELECT je.id FROM journal_entries je
+             WHERE je.company_id = ? AND UPPER(je.vch_type) LIKE 'JOURNAL%'
+               AND EXISTS (SELECT 1 FROM journal_lines jl JOIN ledger_accounts a ON a.id = jl.account_id
+                            WHERE jl.entry_id = je.id AND UPPER(a.name) = ? AND ABS(jl.dr - ?) < 0.01)
+               AND EXISTS (SELECT 1 FROM journal_lines jl JOIN ledger_accounts a ON a.id = jl.account_id
+                            WHERE jl.entry_id = je.id AND jl.cr > 0 AND UPPER(COALESCE(a.acc_group, '')) LIKE '%INCOME%')
+               AND NOT EXISTS (SELECT 1 FROM bd_refund_vouchers v WHERE v.journal_id = je.id AND v.receipt_id <> ?)
+             ORDER BY ABS(julianday(je.entry_date) - julianday(?)), je.id LIMIT 1`,
+    args: [n17(je.company_id), nbfc.toUpperCase(), amount2, rid, String(je.entry_date).slice(0, 10)]
+  })).rows[0];
+  if (found) {
+    await c.execute({
+      sql: `INSERT INTO bd_refund_vouchers (receipt_id, journal_id, journal_made, receipt_made) VALUES (?, ?, 0, COALESCE((SELECT receipt_made FROM bd_refund_vouchers WHERE receipt_id = ?), 0))
+            ON CONFLICT(receipt_id) DO UPDATE SET journal_id = excluded.journal_id, journal_made = 0`,
+      args: [rid, n17(found.id), rid]
+    });
+    return { journal_id: n17(found.id), adopted: true, amount: amount2 };
+  }
+  const made = await postJournal({ date: String(je.entry_date).slice(0, 10), vchType: "JOURNAL", vchNo: nos.slice(0, 60), narration, companyId: n17(je.company_id), lines });
+  await c.execute({
+    sql: `INSERT INTO bd_refund_vouchers (receipt_id, journal_id, journal_made, receipt_made) VALUES (?, ?, 1, COALESCE((SELECT receipt_made FROM bd_refund_vouchers WHERE receipt_id = ?), 0))
+          ON CONFLICT(receipt_id) DO UPDATE SET journal_id = excluded.journal_id, journal_made = 1`,
+    args: [rid, made.id, rid]
+  });
+  return { journal_id: made.id, adopted: false, amount: amount2 };
 }
 async function createBdRefundReceipt(v) {
   return withDbTransaction(async () => {
@@ -17477,14 +17542,35 @@ async function createBdRefundReceipt(v) {
       ]
     });
     await linkBdRefund({ journal_entry_id: receipt.id, parts, close_ids: v.close_ids, note: v.note });
+    await getClient().execute({
+      sql: "INSERT OR REPLACE INTO bd_refund_vouchers (receipt_id, journal_id, journal_made, receipt_made) VALUES (?, ?, 1, 1)",
+      args: [receipt.id, journal.id]
+    });
     return { entry_id: receipt.id, journal_id: journal.id, bills: parts.length, amount: amount2 };
   });
 }
 async function unlinkBdRefund(entryId) {
   await ensureBdRefunds();
-  await getClient().execute({ sql: "DELETE FROM bd_interest_refunds WHERE journal_entry_id = ?", args: [n17(entryId)] });
-  await getClient().execute({ sql: "DELETE FROM bd_refund_closures WHERE journal_entry_id = ?", args: [n17(entryId)] });
-  return { entry_id: n17(entryId) };
+  return withDbTransaction(async () => {
+    const c = getClient();
+    const rid = n17(entryId);
+    await c.execute({ sql: "DELETE FROM bd_interest_refunds WHERE journal_entry_id = ?", args: [rid] });
+    await c.execute({ sql: "DELETE FROM bd_refund_closures WHERE journal_entry_id = ?", args: [rid] });
+    let dropped = 0;
+    const v = (await c.execute({ sql: "SELECT * FROM bd_refund_vouchers WHERE receipt_id = ?", args: [rid] })).rows[0];
+    if (v) {
+      if (n17(v.journal_made) && n17(v.journal_id)) {
+        await dropEntry2(n17(v.journal_id));
+        dropped++;
+      }
+      if (n17(v.receipt_made)) {
+        await dropEntry2(rid);
+        dropped++;
+      }
+      await c.execute({ sql: "DELETE FROM bd_refund_vouchers WHERE receipt_id = ?", args: [rid] });
+    }
+    return { entry_id: rid, dropped };
+  });
 }
 async function listBdRefunds() {
   await ensureBdRefunds();
@@ -17504,11 +17590,20 @@ async function listBdRefunds() {
   const groups = /* @__PURE__ */ new Map();
   for (const r of rows2) {
     const k = n17(r.journal_entry_id);
-    if (!groups.has(k)) groups.set(k, { journal_entry_id: k, date: String(r.entry_date || "").slice(0, 10), code: r.code || r.vch_no || "", narration: r.narration || "", nbfcs: [], bills: [], amount: 0 });
+    if (!groups.has(k)) groups.set(k, { journal_entry_id: k, date: String(r.entry_date || "").slice(0, 10), code: r.code || r.vch_no || "", narration: r.narration || "", nbfcs: [], bills: [], amount: 0, income: null, receipt_made: false });
     const g = groups.get(k);
     g.bills.push({ bd_id: n17(r.bd_id), bd_no: r.bd_no, amount: n17(r.amount) });
     if (r.nbfc_name && !g.nbfcs.includes(String(r.nbfc_name))) g.nbfcs.push(String(r.nbfc_name));
     g.amount = round210(n17(g.amount) + n17(r.amount));
+  }
+  for (const g of groups.values()) {
+    const v = (await getClient().execute({
+      sql: `SELECT v.journal_id, v.journal_made, v.receipt_made, (SELECT nn.prefix || '/' || nn.serial FROM voucher_numbers nn WHERE nn.entry_id = v.journal_id) AS code
+                FROM bd_refund_vouchers v JOIN journal_entries je ON je.id = v.journal_id WHERE v.receipt_id = ?`,
+      args: [n17(g.journal_entry_id)]
+    })).rows[0];
+    g.income = v ? { journal_id: n17(v.journal_id), code: v.code || "", made: !!n17(v.journal_made) } : null;
+    g.receipt_made = !!(v && n17(v.receipt_made));
   }
   return [...groups.values()];
 }
@@ -19041,6 +19136,7 @@ __export(saleTds_exports, {
   autoIntercompanyTds: () => autoIntercompanyTds,
   dropSaleTdsForInvoice: () => dropSaleTdsForInvoice,
   listSalesForTdsDesk: () => listSalesForTdsDesk,
+  markSaleNoTds: () => markSaleNoTds,
   postSaleTds: () => postSaleTds,
   removeSaleTds: () => removeSaleTds,
   saleHasTds: () => saleHasTds,
@@ -19054,6 +19150,12 @@ async function ensureTable2() {
     entry_id INTEGER NOT NULL,
     amount REAL NOT NULL,
     ledger TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (company_id, invoice_key)
+  )`);
+  await getClient().execute(`CREATE TABLE IF NOT EXISTS sale_tds_none (
+    company_id INTEGER NOT NULL,
+    invoice_key TEXT NOT NULL,
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     PRIMARY KEY (company_id, invoice_key)
   )`);
@@ -19149,7 +19251,9 @@ async function saleTdsPreview(saleId) {
     args: [cid, key3]
   });
   const e = ex.rows[0];
+  const none = (await c.execute({ sql: "SELECT 1 FROM sale_tds_none WHERE company_id = ? AND invoice_key = ?", args: [cid, key3] })).rows.length > 0;
   return {
+    none,
     sale_id: n21(first.id),
     invoice_key: key3,
     invoice_no: String(first.invoice_no || ""),
@@ -19220,6 +19324,7 @@ async function postSaleTds(v) {
       sql: "INSERT INTO sale_tds_journals (invoice_key, company_id, entry_id, amount, ledger, worked_out) VALUES (?, ?, ?, ?, ?, ?)",
       args: [key3, cid, res.id, amount2, ledger2, workedOut]
     });
+    await c.execute({ sql: "DELETE FROM sale_tds_none WHERE company_id = ? AND invoice_key = ?", args: [cid, key3] });
     return { entry_id: res.id };
   });
 }
@@ -19234,6 +19339,20 @@ async function removeSaleTds(saleId) {
 async function dropSaleTdsForInvoice(companyId, key3) {
   await ensureTable2();
   await dropExisting(n21(companyId), key3);
+}
+async function markSaleNoTds(saleId, on) {
+  await ensureTable2();
+  return withDbTransaction(async () => {
+    const { key: key3, rows: rows2 } = await invoiceOf2(saleId);
+    const cid = n21(rows2[0].company_id);
+    if (on) {
+      await dropExisting(cid, key3);
+      await getClient().execute({ sql: "INSERT OR IGNORE INTO sale_tds_none (company_id, invoice_key) VALUES (?, ?)", args: [cid, key3] });
+    } else {
+      await getClient().execute({ sql: "DELETE FROM sale_tds_none WHERE company_id = ? AND invoice_key = ?", args: [cid, key3] });
+    }
+    return { ok: true };
+  });
 }
 async function listSalesForTdsDesk(companyIds) {
   await ensureTable2();
@@ -19253,7 +19372,9 @@ async function listSalesForTdsDesk(companyIds) {
   });
   const all = res.rows.map((r) => ({ ...r }));
   const booked = new Set(
-    (await c.execute("SELECT t.company_id, t.invoice_key FROM sale_tds_journals t JOIN journal_entries je ON je.id = t.entry_id")).rows.map(
+    (await c.execute(
+      "SELECT t.company_id, t.invoice_key FROM sale_tds_journals t JOIN journal_entries je ON je.id = t.entry_id UNION SELECT company_id, invoice_key FROM sale_tds_none"
+    )).rows.map(
       (r) => `${n21(r.company_id)}|${String(r.invoice_key)}`
     )
   );
@@ -19318,7 +19439,14 @@ async function saleTdsMap(companyIds) {
            ${ids.length ? `WHERE t.company_id IN (${ids.map(() => "?").join(",")})` : ""}`,
     args: ids
   });
-  return res.rows.map((r) => ({ ...r, edited: isEdited(r) }));
+  const none = await getClient().execute({
+    sql: `SELECT company_id, invoice_key FROM sale_tds_none ${ids.length ? `WHERE company_id IN (${ids.map(() => "?").join(",")})` : ""}`,
+    args: ids
+  });
+  return [
+    ...res.rows.map((r) => ({ ...r, edited: isEdited(r) })),
+    ...none.rows.map((r) => ({ ...r, amount: 0, none: true }))
+  ];
 }
 function isEdited(r) {
   return r.worked_out != null && Math.abs(n21(r.amount) - n21(r.worked_out)) >= 5e-3;
@@ -19340,6 +19468,7 @@ async function autoIntercompanyTds(saleId) {
   );
   if (!(tds > 4e-3)) return 0;
   const p = await saleTdsPreview(ids[0]);
+  if (p.none) return 0;
   if (!p.suggested_ledger) {
     console.warn(`[sales] inter-company TDS on ${String(p.invoice_no)}: no TDS receivable ledger to post to \u2014 book it from the TDS desk`);
     return 0;
@@ -45565,6 +45694,7 @@ function registerIpc() {
   handle("sales:tdsPreview", (_e, { id }) => saleTdsPreview(id));
   handle("sales:tdsPost", (_e, { values }) => postSaleTds(values));
   handle("sales:tdsRemove", (_e, { id }) => removeSaleTds(id));
+  handle("sales:tdsNone", async (_e, { id, on }) => (await Promise.resolve().then(() => (init_saleTds(), saleTds_exports))).markSaleNoTds(Number(id), !!on));
   handle("sales:tdsMap", (_e, args) => saleTdsMap(args?.companyIds));
   handle(
     "salesBargains:list",
@@ -45868,6 +45998,7 @@ function registerIpc() {
   handle("bd:unlinkRefund", async (_e, { entryId }) => (await Promise.resolve().then(() => (init_billDiscounting(), billDiscounting_exports))).unlinkBdRefund(Number(entryId)));
   handle("bd:closeRefunds", async (_e, { values }) => (await Promise.resolve().then(() => (init_billDiscounting(), billDiscounting_exports))).closeBdRefunds(values));
   handle("bd:reopenRefund", async (_e, { bdId }) => (await Promise.resolve().then(() => (init_billDiscounting(), billDiscounting_exports))).reopenBdRefund(Number(bdId)));
+  handle("bd:bookRefundIncome", async (_e, { receiptId, ledger: ledger2 }) => (await Promise.resolve().then(() => (init_billDiscounting(), billDiscounting_exports))).bookBdRefundIncome(Number(receiptId), ledger2));
   handle("bd:createRefundReceipt", async (_e, { values }) => (await Promise.resolve().then(() => (init_billDiscounting(), billDiscounting_exports))).createBdRefundReceipt(values));
   handle(
     "bdCumPayments:list",
