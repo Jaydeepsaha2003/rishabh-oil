@@ -9315,7 +9315,11 @@ async function shortageNoteCandidates(saleId) {
                    (SELECT SUM(jl.cr) FROM journal_lines jl WHERE jl.entry_id = je.id AND jl.account_id = ?) AS amount,
                    (SELECT GROUP_CONCAT(ba.ref_name, ', ') FROM journal_bill_allocs ba JOIN journal_lines jl2 ON jl2.id = ba.line_id
                      WHERE jl2.entry_id = je.id AND ba.ref_name IS NOT NULL) AS refs,
-                   (SELECT GROUP_CONCAT(t.invoice_key, ', ') FROM sale_shortage_notes t WHERE t.entry_id = je.id AND t.company_id = je.company_id) AS linked_to
+                   (SELECT GROUP_CONCAT(t.invoice_key, ', ') FROM sale_shortage_notes t WHERE t.entry_id = je.id AND t.company_id = je.company_id) AS linked_to,
+                   -- Where the note came from: imported from Tally, or made in this app (it has a notes row).
+                   CASE WHEN je.narration LIKE 'Imported from Tally%' THEN 'tally'
+                        WHEN EXISTS (SELECT 1 FROM notes nt WHERE nt.journal_entry_id = je.id) THEN 'app'
+                        ELSE 'other' END AS origin
               FROM journal_entries je
              WHERE je.company_id = ? AND UPPER(je.vch_type) LIKE 'CREDIT NOTE%'
                AND EXISTS (SELECT 1 FROM journal_lines jl WHERE jl.entry_id = je.id AND jl.account_id = ? AND jl.cr > 0)
