@@ -1532,11 +1532,19 @@ export function registerIpc(): void {
   handle('sales:invoiceGaps', (_e, args?: { companyId?: number; from?: string; to?: string }) =>
     salesInvoiceGaps(args?.companyId, { from: args?.from, to: args?.to })
   )
-  handle('sales:create', (_e, { values }: { values: Row }) => createSale(values))
+  handle('sales:create', async (_e, { values }: { values: Row }) => {
+    const r = await createSale(values)
+    await (await import('./saleTds')).autoIntercompanyTds(r.id)
+    return r
+  })
   handle('sales:randomInvoiceNo', (_e, { companyId }: { companyId?: number }) =>
     randomSalesInvoiceNo(companyId || getActiveCompanyId())
   )
-  handle('sales:update', (_e, { id, values }: { id: number; values: Row }) => updateSale(id, values))
+  handle('sales:update', async (_e, { id, values }: { id: number; values: Row }) => {
+    const r = await updateSale(id, values)
+    await (await import('./saleTds')).autoIntercompanyTds(r.id)
+    return r
+  })
   handle('sales:createInvoice', (_e, { values }: { values: Row }) => createSaleInvoice(values))
   handle('sales:updateInvoice', (_e, { group, values }: { group: string; values: Row }) => updateSaleInvoice(group, values))
   handle('sales:fixDate', (_e, { id, date }: { id: number; date: string }) => setSaleInvoiceDate(id, date))

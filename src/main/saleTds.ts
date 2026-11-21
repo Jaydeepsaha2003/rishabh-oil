@@ -363,3 +363,40 @@ export async function saleTdsMap(companyIds?: number[]): Promise<Row[]> {
 function isEdited(r: Row): boolean {
   return r.worked_out != null && Math.abs(n(r.amount) - n(r.worked_out)) >= 0.005
 }
+
+/**
+ * AN INTER-COMPANY SALE BOOKS ITS OWN TDS (asked for on 2026-11-21).
+ *
+ * The buying company's purchase — raised with the sale — already works out the
+ * TDS it deducts (orders.tds_amount, its own rate and slab). The seller's side
+ * of the same deduction, "TDS deducted by <buyer> on invoice …", was keyed by
+ * hand on the TDS desk; it is now posted here for that very amount, so both
+ * books carry one figure. An ordinary customer, or a purchase with no TDS,
+ * leaves the invoice as it is (nothing posted, nothing removed).
+ */
+export async function autoIntercompanyTds(saleId: number): Promise<number> {
+  await ensureTable()
+  const c = getClient()
+  const { rows } = await invoiceOf(saleId)
+  const ids = rows.map((r) => n(r.id))
+  if (!ids.length) return 0
+  const tds = round2(
+    n(
+      (
+        await c.execute({
+          sql: `SELECT COALESCE(SUM(COALESCE(NULLIF(final_tds_amount, 0), tds_amount, 0)), 0) AS t
+                  FROM orders WHERE intercompany_sale_id IN (${ids.map(() => '?').join(',')})`,
+          args: ids
+        })
+      ).rows[0]?.t
+    )
+  )
+  if (!(tds > 0.004)) return 0
+  const p = await saleTdsPreview(ids[0])
+  if (!p.suggested_ledger) {
+    console.warn(`[sales] inter-company TDS on ${String(p.invoice_no)}: no TDS receivable ledger to post to — book it from the TDS desk`)
+    return 0
+  }
+  await postSaleTds({ sale_id: ids[0], amount: tds, ledger: String(p.suggested_ledger), date: String(p.date) })
+  return tds
+}

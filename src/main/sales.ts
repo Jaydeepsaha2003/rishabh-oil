@@ -2578,6 +2578,8 @@ export async function createSaleInvoice(v: Row): Promise<{ group: string; ids: n
   if ('party_gstin' in v) {
     await getClient().execute({ sql: 'UPDATE sales SET party_gstin = ? WHERE invoice_group = ?', args: [v.party_gstin ? String(v.party_gstin).trim().toUpperCase() : null, group] })
   }
+  // Sold to one of our own companies: its TDS is booked with it.
+  if (ids.length) await (await import('./saleTds')).autoIntercompanyTds(ids[0])
   return { group, ids }
   })
 }
@@ -2674,6 +2676,8 @@ export async function updateSaleInvoice(group: string, v: Row): Promise<{ group:
   const priorGstin = (existing.rows[0] as unknown as Row | undefined)?.party_gstin ?? null
   const gstinNow = 'party_gstin' in v ? (v.party_gstin ? String(v.party_gstin).trim().toUpperCase() : null) : priorGstin
   await getClient().execute({ sql: 'UPDATE sales SET party_gstin = ? WHERE invoice_group = ?', args: [gstinNow, group] })
+  // Sold to one of our own companies: its TDS is booked again with the rebuilt lines.
+  if (ids.length) await (await import('./saleTds')).autoIntercompanyTds(ids[0])
   return { group, ids }
   })
 }
