@@ -67,6 +67,7 @@ export function BdCumulativeInterest({ open, onClose, nbfcs, onDone }: { open: b
   const [from, setFrom] = useState(`${today.slice(0, 7)}-01`)
   const [to, setTo] = useState(today)
   const [rows, setRows] = useState<Row[] | null>(null)
+  const [paidList, setPaidList] = useState<Row[]>([])
   const [picked, setPicked] = useState<Set<number>>(new Set())
   const [banks, setBanks] = useState<Row[]>([])
   // The ledger the TDS goes to — blank keeps TDS ON INTEREST PAYABLE A/C.
@@ -117,6 +118,12 @@ export function BdCumulativeInterest({ open, onClose, nbfcs, onDone }: { open: b
         setPicked(new Set(r.filter((x) => !x.blocked).map((x) => n(x.bd_id))))
       })
       .catch((e) => toast.error((e as Error).message))
+    // The payments already made to this NBFC — the PAID banner names the ones
+    // that covered this period (date, voucher, amount, bills).
+    void window.api.billDiscounting
+      .cumulativePayments(Number(nbfc))
+      .then((p) => live && setPaidList(p))
+      .catch(() => live && setPaidList([]))
     return () => {
       live = false
     }
@@ -407,6 +414,84 @@ export function BdCumulativeInterest({ open, onClose, nbfcs, onDone }: { open: b
                       </div>
                     </div>
                     {all && <span className="ml-auto text-[12px] font-bold text-[#0B6B45]">Nothing left to pay for this period</span>}
+                    {/* HOW IT WAS PAID — each payment that covered this period. */}
+                    {(() => {
+                      const ids = new Set(paidRows.map((r) => n(r.bd_id)))
+                      const tokens = paidList
+                        .map((g) => {
+                          const bills = ((g.bills as Row[]) || []).filter(
+                            (b) => ids.has(n(b.bd_id)) && String(b.from_date) <= upto && String(b.to_date) >= start
+                          )
+                          return {
+                            g,
+                            bills,
+                            gross: bills.reduce((t, b) => t + n(b.gross), 0),
+                            tds: bills.reduce((t, b) => t + n(b.tds), 0),
+                            net: bills.reduce((t, b) => t + n(b.net), 0)
+                          }
+                        })
+                        .filter((x) => x.bills.length)
+                        .sort((a, b) => String(a.g.paid_date).localeCompare(String(b.g.paid_date)))
+                      if (!tokens.length) return null
+                      const tNet = tokens.reduce((t, x) => t + x.net, 0)
+                      const tGross = tokens.reduce((t, x) => t + x.gross, 0)
+                      return (
+                        <div className="basis-full overflow-hidden rounded-[6px] border border-[#BFE3CB] bg-white">
+                          <div className="flex flex-wrap items-center gap-x-3 gap-y-1 border-b border-[#E4F0E6] bg-[#F4FBF6] px-3 py-2">
+                            <span className="text-[11px] font-extrabold uppercase tracking-[.1em] text-[#0B5E3C]">
+                              Paid in {tokens.length} payment{tokens.length === 1 ? '' : 's'}
+                            </span>
+                            <span className="text-[12px] font-bold text-[#33473E]">
+                              {formatINR(tNet)} out of the bank <span className="font-semibold text-[#7A8C82]">· interest {formatINR(tGross)}</span>
+                            </span>
+                          </div>
+                          <table className="w-full text-[12px]">
+                            <thead className="text-[9.5px] font-extrabold uppercase tracking-[.1em] text-[#7A8C82]">
+                              <tr>
+                                <th className="px-3 py-1.5 text-left">#</th>
+                                <th className="px-2 py-1.5 text-left">Paid on</th>
+                                <th className="px-2 py-1.5 text-left">Voucher</th>
+                                <th className="px-2 py-1.5 text-left">Bills · period</th>
+                                <th className="px-2 py-1.5 text-right">Interest</th>
+                                <th className="px-2 py-1.5 text-right">TDS</th>
+                                <th className="px-3 py-1.5 text-right">Out of the bank</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {tokens.map((x, i) => (
+                                <tr key={String(x.g.journal_entry_id)} className="border-t border-[#F1F5F0] align-top">
+                                  <td className="px-3 py-1.5">
+                                    <span className="inline-flex h-5 min-w-[20px] items-center justify-center rounded-full bg-[#0B6B45] px-1.5 text-[10.5px] font-extrabold text-white">{i + 1}</span>
+                                  </td>
+                                  <td className="whitespace-nowrap px-2 py-1.5 font-extrabold tabular-nums text-[#0A1F17]">{formatDate(String(x.g.paid_date))}</td>
+                                  <td className="whitespace-nowrap px-2 py-1.5">
+                                    <span className="font-bold text-[#33473E]">{String(x.g.pay_code || x.g.vch_no || '')}</span>
+                                    {x.g.via_nbfc && <span className="ml-1 text-[10.5px] font-bold text-[#1B4E82]">via NBFC · {String(x.g.journal_code || '')}</span>}
+                                  </td>
+                                  <td className="px-2 py-1.5">
+                                    <span className="flex flex-wrap gap-1">
+                                      {x.bills.map((b) => (
+                                        <span
+                                          key={String(b.id)}
+                                          className="rounded-[4px] border border-[#D6E2D6] bg-[#F7FAF6] px-1.5 py-0.5 text-[10.5px] font-bold tabular-nums text-[#33473E]"
+                                          title={`${String(b.bd_no)}: ${formatDate(String(b.from_date))} → ${formatDate(String(b.to_date))} · interest ${formatINR(n(b.gross))}`}
+                                        >
+                                          <b className="text-[#0B3D2E]">{String(b.bd_no)}</b> {formatINR(n(b.gross))}
+                                          {b.balance ? <span className="ml-1 text-[#8A5300]">balance</span> : null}
+                                        </span>
+                                      ))}
+                                    </span>
+                                  </td>
+                                  <td className="whitespace-nowrap px-2 py-1.5 text-right tabular-nums">{formatINR(x.gross)}</td>
+                                  <td className="whitespace-nowrap px-2 py-1.5 text-right tabular-nums text-[#7A8C82]">{formatINR(x.tds)}</td>
+                                  <td className="whitespace-nowrap px-3 py-1.5 text-right font-extrabold tabular-nums text-[#0B6B45]">{formatINR(x.net)}</td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </div>
+                      )
+                    })()}
                   </div>
                 )
               })()}
