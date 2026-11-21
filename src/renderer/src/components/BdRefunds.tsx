@@ -44,6 +44,9 @@ export function BdRefunds({ bills, onClose, onDone }: { bills: Row[]; onClose: (
   const [mkDate, setMkDate] = useState(() => new Date().toISOString().slice(0, 10))
   const [mkIncome, setMkIncome] = useState('')
   const [mkNote, setMkNote] = useState('')
+  // An existing receipt (Bank Dr / NBFC Cr) mapped: also book stage 1,
+  // NBFC Dr / interest income Cr — on unless the desk says otherwise.
+  const [withIncome, setWithIncome] = useState(true)
   useEffect(() => {
     void window.api.journal
       .accountNames()
@@ -155,9 +158,13 @@ export function BdRefunds({ bills, onClose, onDone }: { bills: Row[]; onClose: (
         journal_entry_id: n(receipt.id),
         parts: ticked.map((b) => ({ bd_id: n(b.id), amount: n(picked[n(b.id)]) })),
         close_ids: closeShort ? shortBills.map((b) => n(b.id)) : [],
-        note: closeNote
+        note: closeNote,
+        income_ledger: withIncome ? mkIncome || 'INTEREST INCOME' : null
       })
-      toast.success(`${formatINR(res.amount)} of ${String(receipt.code || receipt.vch_no)} mapped over ${res.bills} bill${res.bills === 1 ? '' : 's'}`)
+      toast.success(
+        `${formatINR(res.amount)} of ${String(receipt.code || receipt.vch_no)} mapped over ${res.bills} bill${res.bills === 1 ? '' : 's'}` +
+          (res.journal?.journal_id ? (res.journal.adopted ? ' · income journal already in the books, tied to it' : ' · interest income journal booked') : withIncome ? ' · no income journal (the receipt does not credit the NBFC)' : '')
+      )
       setPicked({})
       setReceipt(null)
       setRecv('')
@@ -231,10 +238,31 @@ export function BdRefunds({ bills, onClose, onDone }: { bills: Row[]; onClose: (
   }
 
   async function unlink(g: Row): Promise<void> {
-    if (!window.confirm(`Unlink ${String(g.code)} (${formatINR(n(g.amount))}) from ${(g.bills as Row[]).map((b) => b.bd_no).join(', ')}?\n\nThe receipt stays in the books; those bills show their interest as due again.`)) return
+    const inc = g.income as Row | null
+    const goes = [inc?.made ? `the income journal ${String(inc.code || '')}` : '', g.receipt_made ? `the receipt ${String(g.code)} (booked here)` : ''].filter(Boolean)
+    if (
+      !window.confirm(
+        `Unlink ${String(g.code)} (${formatINR(n(g.amount))}) from ${(g.bills as Row[]).map((b) => b.bd_no).join(', ')}?\n\n` +
+          (goes.length ? `Deleted with it — booked by this window: ${goes.join(' and ')}.\n` : 'The receipt stays in the books.\n') +
+          'Those bills show their interest as due again.'
+      )
+    )
+      return
     try {
-      await window.api.billDiscounting.unlinkRefund(n(g.journal_entry_id))
-      toast.success('Receipt unlinked')
+      const r = await window.api.billDiscounting.unlinkRefund(n(g.journal_entry_id))
+      toast.success(r.dropped ? `Receipt unlinked · ${r.dropped} voucher${r.dropped === 1 ? '' : 's'} deleted` : 'Receipt unlinked')
+      setRev((v) => v + 1)
+      onDone()
+    } catch (e) {
+      toast.error(errText(e))
+    }
+  }
+
+  async function bookIncome(g: Row): Promise<void> {
+    try {
+      const r = await window.api.billDiscounting.bookRefundIncome(n(g.journal_entry_id), mkIncome || 'INTEREST INCOME')
+      if (!r.journal_id) toast.info(`${String(g.code)} does not credit the NBFC's ledger — no income journal is booked for it`)
+      else toast.success(r.adopted ? 'An income journal already in the books was tied to it' : `Interest income journal booked — ${formatINR(r.amount)}`)
       setRev((v) => v + 1)
       onDone()
     } catch (e) {
@@ -293,6 +321,23 @@ export function BdRefunds({ bills, onClose, onDone }: { bills: Row[]; onClose: (
                         </span>
                       ))}
                     </span>
+                    {g.income ? (
+                      <span
+                        className="rounded-[4px] border border-[#BFE3CB] bg-[#E9F5EE] px-2 py-0.5 text-[11px] font-extrabold text-[#0B6B45]"
+                        title={(g.income as Row).made ? 'Interest income journal booked by this window' : 'Interest income journal found in the books'}
+                      >
+                        Income · {String((g.income as Row).code || 'journal')}
+                      </span>
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={() => void bookIncome(g)}
+                        title={`Book stage 1 — NBFC Dr / ${mkIncome || 'INTEREST INCOME'} Cr for ${formatINR(n(g.amount))} (an existing one in the books is used instead)`}
+                        className="flex h-7 items-center gap-1 rounded-[5px] border border-[#E3B66B] bg-[#FFF8EA] px-2 text-[11px] font-extrabold text-[#8A5300] hover:bg-[#FFF1D6]"
+                      >
+                        <Plus className="h-3.5 w-3.5" /> Book income journal
+                      </button>
+                    )}
                     <span className="ml-auto text-right">
                       <span className={cn(cap, 'block')}>Mapped</span>
                       <span className="text-[14.5px] font-extrabold tabular-nums text-[#0B6B45]">{formatINR(n(g.amount))}</span>
@@ -808,6 +853,30 @@ export function BdRefunds({ bills, onClose, onDone }: { bills: Row[]; onClose: (
                     </div>
                     {receipt && (
                       <div className="space-y-1 px-3 py-2.5 text-[12px]">
+                        {/* STAGE 1 with the receipt: NBFC Dr / interest income Cr. */}
+                        <div className={cn('mb-2 rounded-[6px] border p-2', withIncome ? 'border-[#C6DAF0] bg-[#F4F8FD]' : 'border-[#EEF3EE] bg-[#FAFCF9]')}>
+                          <label className="flex cursor-pointer items-start gap-2">
+                            <input type="checkbox" checked={withIncome} onChange={(e) => setWithIncome(e.target.checked)} className="mt-0.5 h-4 w-4 accent-[#1B4E82]" />
+                            <span className="text-[11.5px] font-bold text-[#1B4E82]">
+                              Also book the interest income journal — {String(ticked[0]?.nbfc_name || 'NBFC')} Dr / {mkIncome || 'INTEREST INCOME'} Cr
+                              <span className="block text-[10.5px] font-semibold text-[#5A6B62]">One already in the books for this amount is used instead of a second.</span>
+                            </span>
+                          </label>
+                          {withIncome && incomes.length > 0 && (
+                            <Select value={mkIncome} onValueChange={setMkIncome}>
+                              <SelectTrigger className="mt-1.5 h-8 bg-white text-[11.5px] font-bold">
+                                <SelectValue placeholder="Income ledger" />
+                              </SelectTrigger>
+                              <SelectContent className="max-h-64">
+                                {incomes.map((x) => (
+                                  <SelectItem key={String(x.id)} value={String(x.name)}>
+                                    {String(x.name)}
+                                  </SelectItem>
+                                ))}
+                              </SelectContent>
+                            </Select>
+                          )}
+                        </div>
                         <div className="flex justify-between">
                           <span className="text-[#5A6B62]">Receipt {String(receipt.code || receipt.vch_no)} free</span>
                           <span className="font-bold tabular-nums">{formatINR(free)}</span>

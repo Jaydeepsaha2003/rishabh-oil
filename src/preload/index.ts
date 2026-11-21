@@ -1046,9 +1046,10 @@ const api = {
       ipcRenderer.invoke('bd:editCumulativeInterest', { values }),
     refunds: (): Promise<Row[]> => ipcRenderer.invoke('bdRefunds:list'),
     refundCandidates: (values: { q?: string; since?: string; from?: string; to?: string; expected?: number; ledgerId?: number }): Promise<Row[]> => ipcRenderer.invoke('bdRefundCandidates:list', { values }),
-    linkRefund: (values: { journal_entry_id: number; parts: { bd_id: number; amount: number }[]; close_ids?: number[]; note?: string }): Promise<{ entry_id: number; bills: number; amount: number }> =>
+    linkRefund: (values: { journal_entry_id: number; parts: { bd_id: number; amount: number }[]; close_ids?: number[]; note?: string; income_ledger?: string | null }): Promise<{ entry_id: number; bills: number; amount: number; journal?: { journal_id: number | null; adopted: boolean } }> =>
       ipcRenderer.invoke('bd:linkRefund', { values }),
-    unlinkRefund: (entryId: number): Promise<{ entry_id: number }> => ipcRenderer.invoke('bd:unlinkRefund', { entryId }),
+    unlinkRefund: (entryId: number): Promise<{ entry_id: number; dropped: number }> => ipcRenderer.invoke('bd:unlinkRefund', { entryId }),
+    bookRefundIncome: (receiptId: number, ledger?: string): Promise<{ journal_id: number | null; adopted: boolean; amount: number }> => ipcRenderer.invoke('bd:bookRefundIncome', { receiptId, ledger }),
     closeRefunds: (values: { bd_ids: number[]; note?: string }): Promise<{ closed: number }> => ipcRenderer.invoke('bd:closeRefunds', { values }),
     reopenRefund: (bdId: number): Promise<{ bd_id: number }> => ipcRenderer.invoke('bd:reopenRefund', { bdId }),
     createRefundReceipt: (values: { date: string; bank: string; income_ledger: string; note?: string; parts: { bd_id: number; amount: number }[]; close_ids?: number[] }): Promise<{ entry_id: number; journal_id: number; bills: number; amount: number }> =>

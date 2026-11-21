@@ -1959,6 +1959,7 @@ export function registerIpc(): void {
   handle('bd:unlinkRefund', async (_e, { entryId }: { entryId: number }) => (await import('./billDiscounting')).unlinkBdRefund(Number(entryId)))
   handle('bd:closeRefunds', async (_e, { values }: { values: { bd_ids: number[]; note?: string } }) => (await import('./billDiscounting')).closeBdRefunds(values))
   handle('bd:reopenRefund', async (_e, { bdId }: { bdId: number }) => (await import('./billDiscounting')).reopenBdRefund(Number(bdId)))
+  handle('bd:bookRefundIncome', async (_e, { receiptId, ledger }: { receiptId: number; ledger?: string }) => (await import('./billDiscounting')).bookBdRefundIncome(Number(receiptId), ledger))
   handle('bd:createRefundReceipt', async (_e, { values }: { values: Row }) => (await import('./billDiscounting')).createBdRefundReceipt(values as never))
   handle('bdCumPayments:list', async (_e, { nbfcId }: { nbfcId?: number | null }) =>
     (await import('./billDiscounting')).listBdCumulativePayments(nbfcId)

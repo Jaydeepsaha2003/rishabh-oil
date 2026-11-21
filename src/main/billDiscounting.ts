@@ -4342,6 +4342,15 @@ async function ensureBdRefunds(): Promise<void> {
   )`)
   // A bill's refund closed fully — the NBFC paid less and the rest is let go.
   // journal_entry_id: the receipt it was closed with (unlinking that receipt reopens it).
+  // The vouchers that go with a refund receipt: the interest-income journal
+  // (NBFC Dr / income Cr) — posted here (journal_made) or found in the books —
+  // and whether the receipt itself was booked here (New receipt, receipt_made).
+  await getClient().execute(`CREATE TABLE IF NOT EXISTS bd_refund_vouchers (
+    receipt_id INTEGER PRIMARY KEY,
+    journal_id INTEGER,
+    journal_made INTEGER NOT NULL DEFAULT 0,
+    receipt_made INTEGER NOT NULL DEFAULT 0
+  )`)
   await getClient().execute(`CREATE TABLE IF NOT EXISTS bd_refund_closures (
     bd_id INTEGER PRIMARY KEY,
     journal_entry_id INTEGER,
@@ -4395,7 +4404,7 @@ export async function bdRefundCandidates(v: { q?: string; since?: string; from?:
 }
 
 /** Map one bank receipt over several bills' refunds. */
-export async function linkBdRefund(v: { journal_entry_id: number; parts: { bd_id: number; amount: number }[]; close_ids?: number[]; note?: string }): Promise<{ entry_id: number; bills: number; amount: number }> {
+export async function linkBdRefund(v: { journal_entry_id: number; parts: { bd_id: number; amount: number }[]; close_ids?: number[]; note?: string; income_ledger?: string | null }): Promise<{ entry_id: number; bills: number; amount: number; journal?: { journal_id: number | null; adopted: boolean } }> {
   return withDbTransaction(async () => {
     await ensureBdRefunds()
     const c = getClient()
@@ -4415,8 +4424,82 @@ export async function linkBdRefund(v: { journal_entry_id: number; parts: { bd_id
         args: [id, n(je.id), String(v.note || '').trim() || null]
       })
     }
-    return { entry_id: n(je.id), bills: parts.length, amount: round2(parts.reduce((t, p) => t + p.amount, 0)) }
+    // Stage 1 for a receipt from the books (asked for with income_ledger).
+    const journal = v.income_ledger ? await bookBdRefundIncome(n(je.id), v.income_ledger) : undefined
+    return { entry_id: n(je.id), bills: parts.length, amount: round2(parts.reduce((t, p) => t + p.amount, 0)), journal }
   })
+}
+
+/**
+ * STAGE 1 FOR A RECEIPT ALREADY IN THE BOOKS. A refund receipt from Tally is
+ * Bank Dr / NBFC Cr; the interest it brings back still has to reach income:
+ * JOURNAL NBFC Dr / interest income Cr, for what is mapped off the receipt.
+ * A journal already in the books for it (same company, NBFC Dr / an income
+ * ledger Cr, the same amount, not tied to another receipt) is adopted rather
+ * than posted twice. Only a receipt that credits the bills' NBFC ledger gets one.
+ */
+export async function bookBdRefundIncome(receiptId: number, incomeLedger?: string): Promise<{ journal_id: number | null; adopted: boolean; amount: number }> {
+  await ensureBdRefunds()
+  const c = getClient()
+  const rid = n(receiptId)
+  const je = (await c.execute({ sql: 'SELECT id, company_id, entry_date FROM journal_entries WHERE id = ?', args: [rid] })).rows[0] as unknown as Row | undefined
+  if (!je) throw new Error('That bank receipt no longer exists')
+  const parts = toPlain(await c.execute({ sql: 'SELECT bd_id, amount FROM bd_interest_refunds WHERE journal_entry_id = ?', args: [rid] }))
+  const amount = round2(parts.reduce((t, p) => t + n(p.amount), 0))
+  if (!parts.length || !(amount > 0.004)) return { journal_id: null, adopted: false, amount: 0 }
+  const first = await loadBd(n(parts[0].bd_id))
+  const nbfc = bdPayable(first)
+  const creditsNbfc = (
+    await c.execute({
+      sql: `SELECT 1 FROM journal_lines jl JOIN ledger_accounts a ON a.id = jl.account_id WHERE jl.entry_id = ? AND jl.cr > 0 AND UPPER(a.name) = ?`,
+      args: [rid, nbfc.toUpperCase()]
+    })
+  ).rows.length > 0
+  if (!creditsNbfc) return { journal_id: null, adopted: false, amount }
+  const cur = (await c.execute({ sql: 'SELECT * FROM bd_refund_vouchers WHERE receipt_id = ?', args: [rid] })).rows[0] as unknown as Row | undefined
+  const curJv = cur?.journal_id && (await c.execute({ sql: 'SELECT 1 FROM journal_entries WHERE id = ?', args: [n(cur.journal_id)] })).rows.length ? n(cur.journal_id) : 0
+  const income = String(incomeLedger || '').trim().toUpperCase() || 'INTEREST INCOME'
+  const incomeGroup = String((await c.execute({ sql: 'SELECT acc_group FROM ledger_accounts WHERE UPPER(name) = ?', args: [income] })).rows[0]?.acc_group || 'Indirect Incomes')
+  const lines = [
+    { account: nbfc, group: BD_PAYABLE_GROUP, dr: amount },
+    { account: income, group: incomeGroup, cr: amount }
+  ]
+  const nos = (await Promise.all(parts.map(async (p) => String((await loadBd(n(p.bd_id))).bd_no)))).join(', ')
+  const narration = `Interest refund on early repayment — ${first.nbfc_name || 'the NBFC'}, ${parts.length} bill${parts.length === 1 ? '' : 's'} (${nos}) ${inr(amount)} — booked to interest income`
+  if (curJv) {
+    // Ours: kept at what is mapped now. Adopted from the books: left as it is.
+    if (n(cur!.journal_made)) await repostJournal(curJv, { date: String(je.entry_date).slice(0, 10), vchType: 'JOURNAL', vchNo: nos.slice(0, 60), narration, companyId: n(je.company_id), lines })
+    return { journal_id: curJv, adopted: !n(cur!.journal_made), amount }
+  }
+  // One already in the books (keyed in Tally, or left behind by an unlink)?
+  const found = (
+    await c.execute({
+      sql: `SELECT je.id FROM journal_entries je
+             WHERE je.company_id = ? AND UPPER(je.vch_type) LIKE 'JOURNAL%'
+               AND EXISTS (SELECT 1 FROM journal_lines jl JOIN ledger_accounts a ON a.id = jl.account_id
+                            WHERE jl.entry_id = je.id AND UPPER(a.name) = ? AND ABS(jl.dr - ?) < 0.01)
+               AND EXISTS (SELECT 1 FROM journal_lines jl JOIN ledger_accounts a ON a.id = jl.account_id
+                            WHERE jl.entry_id = je.id AND jl.cr > 0 AND UPPER(COALESCE(a.acc_group, '')) LIKE '%INCOME%')
+               AND NOT EXISTS (SELECT 1 FROM bd_refund_vouchers v WHERE v.journal_id = je.id AND v.receipt_id <> ?)
+             ORDER BY ABS(julianday(je.entry_date) - julianday(?)), je.id LIMIT 1`,
+      args: [n(je.company_id), nbfc.toUpperCase(), amount, rid, String(je.entry_date).slice(0, 10)]
+    })
+  ).rows[0] as unknown as Row | undefined
+  if (found) {
+    await c.execute({
+      sql: `INSERT INTO bd_refund_vouchers (receipt_id, journal_id, journal_made, receipt_made) VALUES (?, ?, 0, COALESCE((SELECT receipt_made FROM bd_refund_vouchers WHERE receipt_id = ?), 0))
+            ON CONFLICT(receipt_id) DO UPDATE SET journal_id = excluded.journal_id, journal_made = 0`,
+      args: [rid, n(found.id), rid]
+    })
+    return { journal_id: n(found.id), adopted: true, amount }
+  }
+  const made = await postJournal({ date: String(je.entry_date).slice(0, 10), vchType: 'JOURNAL', vchNo: nos.slice(0, 60), narration, companyId: n(je.company_id), lines })
+  await c.execute({
+    sql: `INSERT INTO bd_refund_vouchers (receipt_id, journal_id, journal_made, receipt_made) VALUES (?, ?, 1, COALESCE((SELECT receipt_made FROM bd_refund_vouchers WHERE receipt_id = ?), 0))
+          ON CONFLICT(receipt_id) DO UPDATE SET journal_id = excluded.journal_id, journal_made = 1`,
+    args: [rid, made.id, rid]
+  })
+  return { journal_id: made.id, adopted: false, amount }
 }
 
 /**
@@ -4483,17 +4566,41 @@ export async function createBdRefundReceipt(v: {
       ]
     })
     await linkBdRefund({ journal_entry_id: receipt.id, parts, close_ids: v.close_ids, note: v.note })
+    await getClient().execute({
+      sql: 'INSERT OR REPLACE INTO bd_refund_vouchers (receipt_id, journal_id, journal_made, receipt_made) VALUES (?, ?, 1, 1)',
+      args: [receipt.id, journal.id]
+    })
     return { entry_id: receipt.id, journal_id: journal.id, bills: parts.length, amount }
   })
 }
 
 /** Unlink a receipt from every bill it was mapped to. Nothing in the books changes. */
-export async function unlinkBdRefund(entryId: number): Promise<{ entry_id: number }> {
+export async function unlinkBdRefund(entryId: number): Promise<{ entry_id: number; dropped: number }> {
   await ensureBdRefunds()
-  await getClient().execute({ sql: 'DELETE FROM bd_interest_refunds WHERE journal_entry_id = ?', args: [n(entryId)] })
-  // A close made with this receipt goes with it.
-  await getClient().execute({ sql: 'DELETE FROM bd_refund_closures WHERE journal_entry_id = ?', args: [n(entryId)] })
-  return { entry_id: n(entryId) }
+  return withDbTransaction(async () => {
+    const c = getClient()
+    const rid = n(entryId)
+    await c.execute({ sql: 'DELETE FROM bd_interest_refunds WHERE journal_entry_id = ?', args: [rid] })
+    // A close made with this receipt goes with it.
+    await c.execute({ sql: 'DELETE FROM bd_refund_closures WHERE journal_entry_id = ?', args: [rid] })
+    // The vouchers this window booked for it go too: the income journal it
+    // posted, and the receipt itself when New receipt made it. A receipt or
+    // journal that came from the books stays.
+    let dropped = 0
+    const v = (await c.execute({ sql: 'SELECT * FROM bd_refund_vouchers WHERE receipt_id = ?', args: [rid] })).rows[0] as unknown as Row | undefined
+    if (v) {
+      if (n(v.journal_made) && n(v.journal_id)) {
+        await dropEntry(n(v.journal_id))
+        dropped++
+      }
+      if (n(v.receipt_made)) {
+        await dropEntry(rid)
+        dropped++
+      }
+      await c.execute({ sql: 'DELETE FROM bd_refund_vouchers WHERE receipt_id = ?', args: [rid] })
+    }
+    return { entry_id: rid, dropped }
+  })
 }
 
 /** The receipts mapped so far, each with the bills it covered. */
@@ -4515,11 +4622,23 @@ export async function listBdRefunds(): Promise<Row[]> {
   const groups = new Map<number, Row>()
   for (const r of rows) {
     const k = n(r.journal_entry_id)
-    if (!groups.has(k)) groups.set(k, { journal_entry_id: k, date: String(r.entry_date || '').slice(0, 10), code: r.code || r.vch_no || '', narration: r.narration || '', nbfcs: [] as string[], bills: [] as Row[], amount: 0 })
+    if (!groups.has(k)) groups.set(k, { journal_entry_id: k, date: String(r.entry_date || '').slice(0, 10), code: r.code || r.vch_no || '', narration: r.narration || '', nbfcs: [] as string[], bills: [] as Row[], amount: 0, income: null as Row | null, receipt_made: false })
     const g = groups.get(k)!
     ;(g.bills as Row[]).push({ bd_id: n(r.bd_id), bd_no: r.bd_no, amount: n(r.amount) })
     if (r.nbfc_name && !(g.nbfcs as string[]).includes(String(r.nbfc_name))) (g.nbfcs as string[]).push(String(r.nbfc_name))
     g.amount = round2(n(g.amount) + n(r.amount))
+  }
+  // Each receipt's income journal (stage 1), when it has one.
+  for (const g of groups.values()) {
+    const v = (
+      await getClient().execute({
+        sql: `SELECT v.journal_id, v.journal_made, v.receipt_made, (SELECT nn.prefix || '/' || nn.serial FROM voucher_numbers nn WHERE nn.entry_id = v.journal_id) AS code
+                FROM bd_refund_vouchers v JOIN journal_entries je ON je.id = v.journal_id WHERE v.receipt_id = ?`,
+        args: [n(g.journal_entry_id)]
+      })
+    ).rows[0] as unknown as Row | undefined
+    g.income = v ? { journal_id: n(v.journal_id), code: v.code || '', made: !!n(v.journal_made) } : null
+    g.receipt_made = !!(v && n(v.receipt_made))
   }
   return [...groups.values()]
 }

@@ -730,8 +730,9 @@ export interface Api {
     editCumulativePayment: (values: { entry_id: number; paid_date?: string; bank_account?: string | null; tds_ledger?: string | null; note?: string | null; amounts?: Record<string, number | string>; via_nbfc?: boolean }) => Promise<{ entry_id: number; gross: number; tds: number; net: number }>
     refunds: () => Promise<Row[]>
     refundCandidates: (values: { q?: string; since?: string; from?: string; to?: string; expected?: number; ledgerId?: number }) => Promise<Row[]>
-    linkRefund: (values: { journal_entry_id: number; parts: { bd_id: number; amount: number }[]; close_ids?: number[]; note?: string }) => Promise<{ entry_id: number; bills: number; amount: number }>
-    unlinkRefund: (entryId: number) => Promise<{ entry_id: number }>
+    linkRefund: (values: { journal_entry_id: number; parts: { bd_id: number; amount: number }[]; close_ids?: number[]; note?: string; income_ledger?: string | null }) => Promise<{ entry_id: number; bills: number; amount: number; journal?: { journal_id: number | null; adopted: boolean } }>
+    unlinkRefund: (entryId: number) => Promise<{ entry_id: number; dropped: number }>
+    bookRefundIncome: (receiptId: number, ledger?: string) => Promise<{ journal_id: number | null; adopted: boolean; amount: number }>
     closeRefunds: (values: { bd_ids: number[]; note?: string }) => Promise<{ closed: number }>
     reopenRefund: (bdId: number) => Promise<{ bd_id: number }>
     createRefundReceipt: (values: { date: string; bank: string; income_ledger: string; note?: string; parts: { bd_id: number; amount: number }[]; close_ids?: number[] }) => Promise<{ entry_id: number; journal_id: number; bills: number; amount: number }>
