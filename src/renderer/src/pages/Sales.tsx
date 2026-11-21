@@ -2445,7 +2445,19 @@ function SalesTab({
                               </span>
                             </div>
                             <div className="mt-1.5 flex flex-wrap items-center gap-1.5" onClick={(e) => e.stopPropagation()}>
-                              {tdsOf(inv.first) && (
+                              {tdsOf(inv.first)?.none && (
+                                <button
+                                  type="button"
+                                  title="The customer deducted no TDS on this invoice — click to change"
+                                  onClick={() => setTdsAsk({ id: Number(inv.first.id), afterSave: false })}
+                                  className="inline-flex items-stretch overflow-hidden rounded-[3px] border border-[#BFE3CB] text-[10.5px] font-bold leading-[18px] hover:border-[#0B6B45]"
+                                >
+                                  <span className="bg-[#0B6B45] px-1.5 text-[9.5px] font-extrabold uppercase tracking-[.06em] text-white">TDS</span>
+                                  <span className="bg-[#E9F5EE] px-1.5 tabular-nums text-[#0B6B45]">₹0</span>
+                                  <span className="border-l border-[#BFE3CB] bg-white px-1 text-[9.5px] text-[#0B6B45]">none deducted</span>
+                                </button>
+                              )}
+                              {tdsOf(inv.first) && !tdsOf(inv.first)?.none && (
                                 <button
                                   type="button"
                                   title={`TDS ${formatINR(Number(tdsOf(inv.first)?.amount))} — Journal ${tdsOf(inv.first)?.vch_no || ''} to ${tdsOf(inv.first)?.ledger}${tdsOf(inv.first)?.edited ? ' · typed, not the slab figure' : ''}`}

@@ -517,6 +517,7 @@ export interface Api {
     tdsPreview: (id: number) => Promise<Row>
     tdsPost: (values: { sale_id: number; amount: number; ledger: string; date?: string }) => Promise<{ entry_id: number }>
     tdsRemove: (id: number) => Promise<{ ok: true }>
+    tdsNone: (id: number, on: boolean) => Promise<{ ok: true }>
     tdsMap: (companyIds?: number[]) => Promise<Row[]>
     setInvoiceStage: (group: string, stage: string, force?: boolean, date?: string, received?: Record<string, number | null>) => Promise<{ group: string }>
     removeInvoice: (group: string) => Promise<{ group: string }>

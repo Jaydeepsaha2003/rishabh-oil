@@ -40,6 +40,14 @@ async function ensureTable(): Promise<void> {
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     PRIMARY KEY (company_id, invoice_key)
   )`)
+  // The customer deducted NO TDS on this invoice — said once, so it stops
+  // showing as "No TDS" to be done and reads TDS ₹0. No journal (nothing to post).
+  await getClient().execute(`CREATE TABLE IF NOT EXISTS sale_tds_none (
+    company_id INTEGER NOT NULL,
+    invoice_key TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (company_id, invoice_key)
+  )`)
   // What the slab worked out when it was posted, so a typed figure reads as
   // Edited. NULL on journals posted before this was kept.
   if (!workedOutCol) {
@@ -157,7 +165,9 @@ export async function saleTdsPreview(saleId: number): Promise<Row> {
     args: [cid, key]
   })
   const e = ex.rows[0] as unknown as Row | undefined
+  const none = (await c.execute({ sql: 'SELECT 1 FROM sale_tds_none WHERE company_id = ? AND invoice_key = ?', args: [cid, key] })).rows.length > 0
   return {
+    none,
     sale_id: n(first.id),
     invoice_key: key,
     invoice_no: String(first.invoice_no || ''),
@@ -233,6 +243,7 @@ export async function postSaleTds(v: { sale_id: number; amount: number; ledger: 
       sql: 'INSERT INTO sale_tds_journals (invoice_key, company_id, entry_id, amount, ledger, worked_out) VALUES (?, ?, ?, ?, ?, ?)',
       args: [key, cid, res.id, amount, ledger, workedOut]
     })
+    await c.execute({ sql: 'DELETE FROM sale_tds_none WHERE company_id = ? AND invoice_key = ?', args: [cid, key] })
     return { entry_id: res.id }
   })
 }
@@ -250,6 +261,24 @@ export async function removeSaleTds(saleId: number): Promise<{ ok: true }> {
 export async function dropSaleTdsForInvoice(companyId: number, key: string): Promise<void> {
   await ensureTable()
   await dropExisting(n(companyId), key)
+  // The "no TDS deducted" mark stays: editing an invoice rebuilds its lines
+  // through here under the same key, and must not forget it.
+}
+
+/** The customer deducted no TDS on this invoice (on), or that is taken back (off). Marking it removes any TDS journal. */
+export async function markSaleNoTds(saleId: number, on: boolean): Promise<{ ok: true }> {
+  await ensureTable()
+  return withDbTransaction(async () => {
+    const { key, rows } = await invoiceOf(saleId)
+    const cid = n(rows[0].company_id)
+    if (on) {
+      await dropExisting(cid, key)
+      await getClient().execute({ sql: 'INSERT OR IGNORE INTO sale_tds_none (company_id, invoice_key) VALUES (?, ?)', args: [cid, key] })
+    } else {
+      await getClient().execute({ sql: 'DELETE FROM sale_tds_none WHERE company_id = ? AND invoice_key = ?', args: [cid, key] })
+    }
+    return { ok: true as const }
+  })
 }
 
 // THE CUSTOMER-TDS DESK'S OWN READ. A user granted the 'tds' scope on Sales
@@ -281,7 +310,11 @@ export async function listSalesForTdsDesk(companyIds?: number[]): Promise<Row[]>
   })
   const all = res.rows.map((r) => ({ ...(r as unknown as Row) }))
   const booked = new Set(
-    (await c.execute('SELECT t.company_id, t.invoice_key FROM sale_tds_journals t JOIN journal_entries je ON je.id = t.entry_id')).rows.map(
+    (
+      await c.execute(
+        'SELECT t.company_id, t.invoice_key FROM sale_tds_journals t JOIN journal_entries je ON je.id = t.entry_id UNION SELECT company_id, invoice_key FROM sale_tds_none'
+      )
+    ).rows.map(
       (r) => `${n((r as unknown as Row).company_id)}|${String((r as unknown as Row).invoice_key)}`
     )
   )
@@ -356,7 +389,14 @@ export async function saleTdsMap(companyIds?: number[]): Promise<Row[]> {
            ${ids.length ? `WHERE t.company_id IN (${ids.map(() => '?').join(',')})` : ''}`,
     args: ids
   })
-  return res.rows.map((r) => ({ ...(r as unknown as Row), edited: isEdited(r as unknown as Row) }))
+  const none = await getClient().execute({
+    sql: `SELECT company_id, invoice_key FROM sale_tds_none ${ids.length ? `WHERE company_id IN (${ids.map(() => '?').join(',')})` : ''}`,
+    args: ids
+  })
+  return [
+    ...res.rows.map((r) => ({ ...(r as unknown as Row), edited: isEdited(r as unknown as Row) })),
+    ...none.rows.map((r) => ({ ...(r as unknown as Row), amount: 0, none: true }))
+  ]
 }
 
 // Posted at a figure other than the one the slab worked out.
@@ -393,6 +433,7 @@ export async function autoIntercompanyTds(saleId: number): Promise<number> {
   )
   if (!(tds > 0.004)) return 0
   const p = await saleTdsPreview(ids[0])
+  if (p.none) return 0 // marked: the buyer deducted none
   if (!p.suggested_ledger) {
     console.warn(`[sales] inter-company TDS on ${String(p.invoice_no)}: no TDS receivable ledger to post to — book it from the TDS desk`)
     return 0

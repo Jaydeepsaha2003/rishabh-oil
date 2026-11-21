@@ -90,6 +90,22 @@ export function SaleTdsDialog({
       setBusy(false)
     }
   }
+  // The customer deducted nothing: marked once, the chip reads TDS ₹0.
+  const markNone = async (on: boolean): Promise<void> => {
+    if (!info) return
+    if (on && ex && !window.confirm(`Mark ${info.invoice_no} as NO TDS deducted? Its TDS journal of ${formatINR(Number(ex.amount))} is removed.`)) return
+    setBusy(true)
+    try {
+      await window.api.sales.tdsNone(Number(info.sale_id), on)
+      toast.success(on ? `${info.invoice_no}: no TDS deducted — marked ₹0` : `${info.invoice_no}: back to TDS not booked`)
+      onDone?.()
+      onClose()
+    } catch (e) {
+      toast.error(errText(e))
+    } finally {
+      setBusy(false)
+    }
+  }
   const remove = async (): Promise<void> => {
     if (!info || !window.confirm(`Remove the TDS journal on ${info.invoice_no}?`)) return
     setBusy(true)
@@ -184,7 +200,20 @@ export function SaleTdsDialog({
             </div>
           </div>
         )}
+        {info?.none && (
+          <div className="flex items-center gap-2 rounded-[6px] border border-[#BFE3CB] bg-[#E9F5EE] px-3 py-2 text-[12px] font-bold text-[#0B6B45]">
+            Marked: the customer deducted NO TDS on this invoice (TDS ₹0).
+            <button type="button" onClick={() => void markNone(false)} disabled={busy} className="ml-auto text-[11.5px] font-extrabold text-[#1B4E82] hover:underline">
+              Undo
+            </button>
+          </div>
+        )}
         <DialogFooter className="flex-wrap gap-2 sm:space-x-0">
+          {!info?.none && (
+            <Button variant="outline" className="border-[#BFE3CB] text-[#0B6B45]" onClick={() => void markNone(true)} disabled={busy || !info} title="The customer did not deduct any TDS on this invoice — mark it ₹0">
+              No TDS deducted
+            </Button>
+          )}
           {ex && (
             <Button variant="outline" className="mr-auto text-rose-600" onClick={() => void remove()} disabled={busy}>
               Remove

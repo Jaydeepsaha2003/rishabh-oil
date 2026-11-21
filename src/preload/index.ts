@@ -767,6 +767,7 @@ const api = {
     tdsPost: (values: { sale_id: number; amount: number; ledger: string; date?: string }): Promise<{ entry_id: number }> =>
       ipcRenderer.invoke('sales:tdsPost', { values }),
     tdsRemove: (id: number): Promise<{ ok: true }> => ipcRenderer.invoke('sales:tdsRemove', { id }),
+    tdsNone: (id: number, on: boolean): Promise<{ ok: true }> => ipcRenderer.invoke('sales:tdsNone', { id, on }),
     tdsMap: (companyIds?: number[]): Promise<Row[]> => ipcRenderer.invoke('sales:tdsMap', { companyIds }),
     setInvoiceStage: (
       group: string,
