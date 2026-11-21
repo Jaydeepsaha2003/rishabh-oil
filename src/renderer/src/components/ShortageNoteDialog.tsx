@@ -106,15 +106,23 @@ export function ShortageNoteDialog({
 
   const createCn = async (): Promise<void> => {
     if (!ask?.cn || busy) return
-    // ONE shortage, ONE note: a credit note already naming this invoice is offered
-    // to link instead — retrying a failed link must not post another.
-    const same = notes.filter((x) => x.names_invoice && Math.abs(Number(x.amount) - after) < 1)
+    // ONE shortage, ONE note: a credit note for the same amount already on the
+    // list — made here, or imported from Tally (which rarely names the invoice) —
+    // is offered to link instead. Notes already linked to another invoice don't count.
+    const same = notes.filter((x) => {
+      const other = String(x.linked_to || '')
+        .split(', ')
+        .some((k) => k && k !== String(data?.invoice_key || ''))
+      return !other && Math.abs(Number(x.amount) - after) < 1
+    })
     if (
       same.length &&
       !window.confirm(
-        `${same.map((x) => String(x.code || x.vch_no)).join(', ')} already credit${same.length === 1 ? 's' : ''} ${formatINR(after)} against ${ask.invoiceNo}.
-
-Tick ${same.length === 1 ? 'it' : 'one'} in the list and Link instead. Create ANOTHER credit note anyway?`
+        `A credit note for ${formatINR(after)} is already in the books for this customer:\n\n` +
+          same
+            .map((x) => `• ${String(x.code || x.vch_no)} of ${formatDate(String(x.entry_date))} — ${x.origin === 'tally' ? 'imported from Tally' : x.origin === 'app' ? 'made here' : 'in the books'}${x.names_invoice ? `, names ${ask.invoiceNo}` : ''}`)
+            .join('\n') +
+          `\n\nTick it in the list and Link instead. Create ANOTHER credit note anyway?`
       )
     )
       return
@@ -224,6 +232,15 @@ Tick ${same.length === 1 ? 'it' : 'one'} in the list and Link instead. Create AN
                           <td className="px-2 py-2">
                             <span className="font-extrabold text-[#0A1F17]">{String(x.code || x.vch_no || `#${id}`)}</span>
                             {x.vch_no && x.code ? <span className="ml-1 text-[10.5px] text-[#7A8C82]">{String(x.vch_no)}</span> : null}
+                            {x.origin === 'tally' ? (
+                              <span className="ml-1.5 rounded-[3px] border border-[#E3C58C] bg-[#FFF6E5] px-1.5 py-[1px] text-[9.5px] font-extrabold uppercase tracking-[.05em] text-[#8A5300]" title="Imported from Tally">
+                                Tally
+                              </span>
+                            ) : x.origin === 'app' ? (
+                              <span className="ml-1.5 rounded-[3px] border border-[#C6DAF0] bg-[#EAF0FA] px-1.5 py-[1px] text-[9.5px] font-extrabold uppercase tracking-[.05em] text-[#1B4E82]" title="Made in this app">
+                                Made here
+                              </span>
+                            ) : null}
                             {x.names_invoice && <span className="ml-1.5 rounded-full bg-[#E9F5EE] px-1.5 py-[1px] text-[10px] font-extrabold text-[#0B6B45]">names this invoice</span>}
                           </td>
                           <td className="whitespace-nowrap px-2 py-2 tabular-nums">{formatDate(String(x.entry_date))}</td>
