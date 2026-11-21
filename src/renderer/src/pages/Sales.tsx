@@ -414,9 +414,13 @@ function SalesTab({
   const [dispatchedOn, setDispatchedOn] = useState<string | null>(
     openIntent?.kind === 'dispatched' ? String(openIntent.date) : null
   )
-  const skipGlobalOnce = useRef(!!dispatchedOn)
-  const [dateFrom, setDateFrom] = useState(dispatchedOn || (UNLOAD_DESK() || TDS_DESK() ? '' : monthStartISO()))
-  const [dateTo, setDateTo] = useState(dispatchedOn || todayISO())
+  // Opened from the dashboard's "Production till date" card: exactly the sales
+  // behind the line clicked (its categories, inter-company / purchase return /
+  // the rest, Fatty Acid in or out), over the card's dates.
+  const [prodScope, setProdScope] = useState<Row | null>(openIntent?.kind === 'production' ? openIntent : null)
+  const skipGlobalOnce = useRef(!!dispatchedOn || !!prodScope)
+  const [dateFrom, setDateFrom] = useState(dispatchedOn || (prodScope ? String(prodScope.from) : '') || (UNLOAD_DESK() || TDS_DESK() ? '' : monthStartISO()))
+  const [dateTo, setDateTo] = useState(dispatchedOn || (prodScope ? String(prodScope.to) : '') || todayISO())
   // Empty = every product type.
   const [productType, setProductType] = useState<string[]>([])
   // Which numbers the invoice series has skipped. A number nobody used is a
@@ -852,6 +856,20 @@ function SalesTab({
       if (productType.length && !inv.lines.some((r) => productType.includes(String(r.product_category || '')))) {
         return false
       }
+      // The dashboard's production rule, line by line (same as the card's sum).
+      if (prodScope) {
+        const cats = (prodScope.cats as string[]) || []
+        const fits = inv.lines.some((r) => {
+          if (r.rejected_at || Number(r.affects_stock ?? 1) === 0) return false
+          if (String(r.uom || 'MT').toUpperCase() !== 'MT') return false
+          if (!cats.includes(String(r.product_stage || ''))) return false
+          const fatty = /FATTY ACID/i.test(String(r.product_name || ''))
+          if (prodScope.fatty === 'only' ? !fatty : fatty) return false
+          const kind = r.return_supplier_id ? 'return' : Number(r.is_interco) === 1 ? 'interco' : 'out'
+          return !prodScope.scope || prodScope.scope === kind
+        })
+        if (!fits) return false
+      }
       if (!q) return true
       const hay = [
         inv.first.invoice_no,
@@ -863,7 +881,7 @@ function SalesTab({
         .toLowerCase()
       return hay.includes(q)
     })
-  }, [invoices, dateFrom, dateTo, search, productType, dispatchedOn])
+  }, [invoices, dateFrom, dateTo, search, productType, dispatchedOn, prodScope])
 
   // The invoice-register columns that carry a header filter, and how each one
   // reads its value off a grouped invoice. Money/qty format the same way the
@@ -2146,6 +2164,17 @@ function SalesTab({
           <DatePicker value={dateFrom} onChange={(v) => setDateFrom(v || '')} max={dateTo || undefined} className={cn('h-8 w-[9.5rem] shrink-0 text-[11px]', __WEB__ && 'h-9 w-[8.25rem] rounded-[4px] border-[#C3D2C6] text-[12.5px]')} />
           <span className={cn('shrink-0 text-[10px] text-muted-foreground', __WEB__ && 'text-[12.5px] font-semibold text-[#5A6B62]')}>to</span>
           <DatePicker value={dateTo} onChange={(v) => setDateTo(v || '')} min={dateFrom || undefined} className={cn('h-8 w-[9.5rem] shrink-0 text-[11px]', __WEB__ && 'h-9 w-[8.25rem] rounded-[4px] border-[#C3D2C6] text-[12.5px]')} />
+          {prodScope && (
+            <button
+              type="button"
+              onClick={() => setProdScope(null)}
+              title="Opened from the dashboard's Production till date — only the sales behind that line. Click to show every invoice in the dates."
+              className="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-[4px] border border-[#C6DAF0] bg-[#EAF0FA] px-2.5 text-[11.5px] font-extrabold text-[#1B4E82]"
+            >
+              Production · {String(prodScope.label || '')}
+              <X className="h-3.5 w-3.5" />
+            </button>
+          )}
           {dispatchedOn && (
             <button
               type="button"

@@ -586,7 +586,7 @@ export async function listSales(companyIds?: number[], forModule?: string): Prom
           JOIN gate_entries ge ON ge.id = gs.gate_entry_id AND ge.direction = 'out'
       ) GROUP BY grp
     )
-    SELECT s.*, pr.name AS product_name, pr.material_type AS product_category,
+    SELECT s.*, pr.name AS product_name, pr.material_type AS product_category, LOWER(COALESCE(pr.category, 'raw')) AS product_stage,
            pr.category AS product_sub_category, sb.bargain_no AS sales_bargain_no,
            -- The allowance falls back invoice -> bargain -> mill default, so
            -- the bargain's figure has to travel with the line.
@@ -601,6 +601,8 @@ export async function listSales(companyIds?: number[], forModule?: string): Prom
            -- without it every line would reopen blank and the save would be
            -- refused for a number that already exists.
            (SELECT o2.invoice_no FROM orders o2 WHERE o2.intercompany_sale_id = s.id LIMIT 1) AS paired_invoice_no,
+           -- Sold to one of our own companies (the dashboard's inter-company line).
+           CASE WHEN cu.company_link_id IS NOT NULL AND cu.company_link_id <> s.company_id THEN 1 ELSE 0 END AS is_interco,
            -- The vehicle that actually carried this invoice out, from the
            -- gate register — Gate Out already links to a sale by invoice
            -- group; this is that link read back onto the invoice itself.

@@ -18,6 +18,8 @@ import {
   Building2,
   Contact,
   Droplets,
+  Eye,
+  EyeOff,
   Factory,
   Landmark,
   Minus,
@@ -94,6 +96,28 @@ export function DashboardWeb(props: DashProps): React.JSX.Element {
   const { companies, companyId, onCompanyChange } = useCompany()
   // PRODUCTION TILL DATE — this financial year, for the board's company scope.
   const [prod, setProd] = useState<Record<string, unknown>[] | null>(null)
+  // Lines left out of the sum (the eye on each), remembered in this browser.
+  const [prodOff, setProdOff] = useState<Set<string>>(() => {
+    try {
+      return new Set(JSON.parse(localStorage.getItem('dash.production.off') || '[]') as string[])
+    } catch {
+      return new Set()
+    }
+  })
+  const setProdOffSaved = (x: Set<string>): void => {
+    setProdOff(x)
+    try {
+      localStorage.setItem('dash.production.off', JSON.stringify([...x]))
+    } catch {
+      /* private window */
+    }
+  }
+  const flipProd = (k: string): void => {
+    const x = new Set(prodOff)
+    if (x.has(k)) x.delete(k)
+    else x.add(k)
+    setProdOffSaved(x)
+  }
   const fyFrom = (() => {
     const d = new Date()
     const y = d.getMonth() >= 3 ? d.getFullYear() : d.getFullYear() - 1
@@ -500,38 +524,89 @@ export function DashboardWeb(props: DashProps): React.JSX.Element {
   // The client's sum, as a statement: dispatches by category, less what was only
   // passed on, equals production. Fatty Acid is kept out of it and shown apart.
   const productionCard = (mobile: boolean): React.JSX.Element => {
-    const rows = (prod || []) as { cat: string; fatty: number; kind: string; qty: number }[]
-    const sumOf = (f: (r: { cat: string; fatty: number; kind: string; qty: number }) => boolean): number =>
-      Math.round(rows.filter(f).reduce((s, r) => s + Number(r.qty || 0), 0) * 1000) / 1000
-    const inSum = (r: { cat: string; fatty: number }): boolean => !Number(r.fatty) && ['raw', 'intermediate', 'finished'].includes(String(r.cat))
-    const byCat = (c: string): number => sumOf((r) => inSum(r) && r.cat === c)
+    type PR = { cat: string; fatty: number; kind: string; qty: number }
+    const rows = (prod || []) as PR[]
+    const sumOf = (f: (r: PR) => boolean): number => Math.round(rows.filter(f).reduce((s, r) => s + Number(r.qty || 0), 0) * 1000) / 1000
+    // The eye on each line: a category switched off leaves the sum altogether
+    // (its transfers and returns with it); a "less" line switched off is not taken off.
+    const cats = (['raw', 'intermediate', 'finished'] as const).filter((c) => !prodOff.has(c))
+    const inSum = (r: PR): boolean => !Number(r.fatty) && (cats as readonly string[]).includes(String(r.cat))
+    const byCat = (c: string): number => sumOf((r) => !Number(r.fatty) && r.cat === c)
     const total = sumOf(inSum)
     const interco = sumOf((r) => inSum(r) && r.kind === 'interco')
     const ret = sumOf((r) => inSum(r) && r.kind === 'return')
-    const production = Math.round((total - interco - ret) * 1000) / 1000
+    const production = Math.round((total - (prodOff.has('interco') ? 0 : interco) - (prodOff.has('return') ? 0 : ret)) * 1000) / 1000
     const fatty = sumOf((r) => !!Number(r.fatty) && r.kind === 'out')
     const fattyAll = sumOf((r) => !!Number(r.fatty))
-    const line = (label: React.ReactNode, v: number, o: { sign?: string; strong?: boolean; sub?: boolean; fg?: string } = {}): React.JSX.Element => (
-      <div
-        className="flex items-baseline justify-between gap-2.5"
-        style={{
-          padding: o.strong ? '9px 10px' : '6px 10px',
-          paddingLeft: o.sub ? 22 : 10,
-          borderTop: o.strong ? `1.5px solid ${t.accentBd}` : `1px solid ${t.hair}`,
-          background: o.strong ? t.accentSoft : 'transparent',
-          borderRadius: o.strong ? 4 : 0
-        }}
-      >
-        <span className={o.strong ? 'text-[12px] font-extrabold' : o.sub ? 'text-[11.5px] font-semibold' : 'text-[11.5px] font-bold'} style={{ color: o.strong ? t.accent : o.sub ? t.muted : t.ink2 }}>
-          {label}
-        </span>
-        <span className="doc-ref whitespace-nowrap font-bold" style={{ fontSize: o.strong ? 14 : 12.5, color: o.fg || (o.strong ? t.accent : t.ink) }}>
-          {o.sign || ''}
-          {formatNum(v)}
-          <span className="text-[9.5px]" style={{ color: t.faint }}> MT</span>
-        </span>
-      </div>
-    )
+    // Open the Sales list on exactly the invoices behind a line.
+    const open = (label: string, f: { cats?: string[]; scope?: 'out' | 'interco' | 'return'; fatty?: 'only' | 'exclude' }): void => {
+      setPageIntent('sales', { kind: 'production', from: fyFrom, to: prodTo, label, cats: f.cats || ['raw', 'intermediate', 'finished'], scope: f.scope || null, fatty: f.fatty || 'exclude' })
+      props.onNavigate('sales')
+    }
+    const line = (
+      label: React.ReactNode,
+      v: number,
+      o: { sign?: string; strong?: boolean; sub?: boolean; fg?: string; eye?: string; go?: () => void; tip?: string } = {}
+    ): React.JSX.Element => {
+      const off = !!o.eye && prodOff.has(o.eye)
+      return (
+        <div
+          role={o.go ? 'button' : undefined}
+          tabIndex={o.go ? 0 : undefined}
+          onClick={o.go}
+          onKeyDown={(e) => {
+            if (o.go && (e.key === 'Enter' || e.key === ' ')) {
+              e.preventDefault()
+              o.go()
+            }
+          }}
+          title={o.tip}
+          className={cn('group flex items-center justify-between gap-2', o.go && 'cursor-pointer')}
+          style={{
+            padding: o.strong ? '9px 10px' : '6px 10px',
+            paddingLeft: o.sub ? 14 : 10,
+            borderTop: o.strong ? `1.5px solid ${t.accentBd}` : `1px solid ${t.hair}`,
+            background: o.strong ? t.accentSoft : 'transparent',
+            borderRadius: o.strong ? 4 : 0,
+            opacity: off ? 0.45 : 1
+          }}
+        >
+          <span className="flex min-w-0 items-center gap-1.5">
+            {o.eye ? (
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation()
+                  flipProd(o.eye as string)
+                }}
+                title={off ? 'Left out of the sum — click to count it' : 'Counted in the sum — click to leave it out'}
+                aria-pressed={!off}
+                className="flex h-5 w-5 flex-none items-center justify-center rounded-[3px] hover:opacity-80"
+                style={{ color: off ? t.faint : t.accent }}
+              >
+                {off ? <EyeOff className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}
+              </button>
+            ) : (
+              <span className="w-5 flex-none" />
+            )}
+            <span
+              className={cn(o.strong ? 'text-[12px] font-extrabold' : o.sub ? 'text-[11.5px] font-semibold' : 'text-[11.5px] font-bold', o.go && 'group-hover:underline', off && 'line-through')}
+              style={{ color: o.strong ? t.accent : o.sub ? t.muted : t.ink2 }}
+            >
+              {label}
+            </span>
+          </span>
+          <span className="flex items-center gap-1">
+            <span className={cn('doc-ref whitespace-nowrap font-bold', off && 'line-through')} style={{ fontSize: o.strong ? 14 : 12.5, color: o.fg || (o.strong ? t.accent : t.ink) }}>
+              {o.sign || ''}
+              {formatNum(v)}
+              <span className="text-[9.5px]" style={{ color: t.faint }}> MT</span>
+            </span>
+            {o.go && <ArrowRight className="h-3.5 w-3.5 opacity-0 transition-opacity group-hover:opacity-100" style={{ color: t.faint }} />}
+          </span>
+        </div>
+      )
+    }
     return (
       <Card className={mobile ? 'flex-none px-3.5 py-3.5' : 'flex flex-col px-[17px] py-[15px]'} style={mobile ? { borderRadius: 5 } : undefined}>
         <CardHead
@@ -539,8 +614,15 @@ export function DashboardWeb(props: DashProps): React.JSX.Element {
           title="Production till date"
           fg={t.accent}
           right={
-            <span className="text-[10px] font-bold" style={{ color: t.faint }}>
-              FY from {fyFrom.slice(8, 10)}-{fyFrom.slice(5, 7)}-{fyFrom.slice(0, 4)}
+            <span className="flex items-center gap-2">
+              {prodOff.size > 0 && (
+                <button type="button" onClick={() => setProdOffSaved(new Set())} className="text-[10px] font-extrabold hover:underline" style={{ color: t.accent }} title="Count every line again">
+                  Show all
+                </button>
+              )}
+              <span className="text-[10px] font-bold" style={{ color: t.faint }}>
+                FY from {fyFrom.slice(8, 10)}-{fyFrom.slice(5, 7)}-{fyFrom.slice(0, 4)}
+              </span>
             </span>
           }
         />
@@ -550,25 +632,31 @@ export function DashboardWeb(props: DashProps): React.JSX.Element {
           </div>
         ) : (
           <div className="mt-[11px] flex flex-col overflow-hidden rounded-[4px]" style={{ border: `1px solid ${t.hair}`, background: t.inset }}>
-            {line('Raw dispatched', byCat('raw'), { sub: true })}
-            {line('Intermediate dispatched', byCat('intermediate'), { sub: true })}
-            {line('Finished dispatched', byCat('finished'), { sub: true })}
-            {line('Total dispatches', total)}
-            {line('Less: Inter-company transfer', interco, { sign: '− ', fg: t.red })}
-            {line('Less: Purchase return', ret, { sign: '− ', fg: t.red })}
-            {line('Total production till date', production, { strong: true })}
+            {line('Raw dispatched', byCat('raw'), { sub: true, eye: 'raw', go: () => open('Raw dispatched', { cats: ['raw'] }), tip: 'Open these sales' })}
+            {line('Intermediate dispatched', byCat('intermediate'), { sub: true, eye: 'intermediate', go: () => open('Intermediate dispatched', { cats: ['intermediate'] }), tip: 'Open these sales' })}
+            {line('Finished dispatched', byCat('finished'), { sub: true, eye: 'finished', go: () => open('Finished dispatched', { cats: ['finished'] }), tip: 'Open these sales' })}
+            {line('Total dispatches', total, { go: () => open('Total dispatches', { cats: [...cats] }), tip: 'Open every sale counted here' })}
+            {line('Less: Inter-company transfer', interco, { sign: '− ', fg: t.red, eye: 'interco', go: () => open('Inter-company transfer', { cats: [...cats], scope: 'interco' }), tip: 'Open the sales to our own companies' })}
+            {line('Less: Purchase return', ret, { sign: '− ', fg: t.red, eye: 'return', go: () => open('Purchase return', { cats: [...cats], scope: 'return' }), tip: 'Open the purchase returns' })}
+            {line('Total production till date', production, { strong: true, go: () => open('Production', { cats: [...cats], scope: 'out' }), tip: 'Open the sales that make up production' })}
           </div>
         )}
         {prod != null && (
-          <div className="mt-2.5 flex items-baseline justify-between gap-2.5 rounded-[4px] px-2.5 py-2" style={{ border: `1px dashed ${t.bd}` }}>
-            <span className="text-[11.5px] font-bold" style={{ color: t.muted }}>
+          <button
+            type="button"
+            onClick={() => open('Fatty Acid dispatched', { cats: ['raw', 'intermediate', 'finished'], scope: 'out', fatty: 'only' })}
+            className="group mt-2.5 flex items-baseline justify-between gap-2.5 rounded-[4px] px-2.5 py-2 text-left"
+            style={{ border: `1px dashed ${t.bd}` }}
+            title="Open the Fatty Acid sales"
+          >
+            <span className="text-[11.5px] font-bold group-hover:underline" style={{ color: t.muted }}>
               Fatty Acid dispatched <span className="text-[10px] font-semibold">(not in the sum)</span>
             </span>
             <span className="doc-ref whitespace-nowrap text-[12.5px] font-bold" style={{ color: t.violet }} title={fattyAll > fatty ? `${formatNum(fattyAll)} MT including inter-company / returns` : undefined}>
               {formatNum(fatty)}
               <span className="text-[9.5px]" style={{ color: t.faint }}> MT</span>
             </span>
-          </div>
+          </button>
         )}
         <Deeper label="Open Sales" page="sales" fg={t.accent} />
       </Card>
