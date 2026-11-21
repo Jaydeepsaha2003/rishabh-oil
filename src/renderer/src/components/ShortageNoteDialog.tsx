@@ -240,6 +240,39 @@ Tick ${same.length === 1 ? 'it' : 'one'} in the list and Link instead. Create AN
                 </table>
               </div>
             )}
+            {/* LINK — what is ticked above against the shortage, and the button that links it. */}
+            <div className="flex flex-wrap items-center gap-3 border-t border-[#E4ECE3] bg-[#F7FAF6] px-4 py-2.5">
+              <span className="text-[12px] font-semibold text-[#5A6B62]">
+                Ticked <b className="tabular-nums text-[#0A1F17]">{formatINR(total)}</b>
+                {due ? (
+                  <>
+                    {' '}
+                    of <b className="tabular-nums text-[#0A1F17]">{formatINR(due)}</b>
+                  </>
+                ) : null}
+              </span>
+              {live.length > 0 && due > 0 && (
+                <span className={cn('rounded-full px-2 py-0.5 text-[11px] font-extrabold', Math.abs(gap) <= 1 ? 'bg-[#E9F5EE] text-[#0B6B45]' : gap > 0 ? 'bg-[#FFF4DC] text-[#7A4B00]' : 'bg-[#FDECEA] text-[#B3261E]')}>
+                  {Math.abs(gap) <= 1 ? 'covers it' : gap > 0 ? `${formatINR(gap)} more` : `${formatINR(-gap)} short`}
+                </span>
+              )}
+              {stale > 0 && (
+                <span className="text-[11px] font-bold text-[#8A5300]" title="Linked before, but that voucher was deleted or is no longer a credit note to this customer">
+                  {stale} old link{stale === 1 ? '' : 's'} to a removed note — dropped on save
+                </span>
+              )}
+              <span className="flex-1" />
+              <button
+                type="button"
+                data-ctrl-a
+                onClick={() => void save()}
+                disabled={busy || (notes.length === 0 && live.length === 0 && !stale)}
+                className="flex h-9 items-center gap-1.5 rounded-[5px] bg-[#0B3D2E] px-5 text-[12px] font-extrabold text-[#C7F03F] hover:bg-[#0F4A38] disabled:opacity-50"
+              >
+                <Link2 className="h-4 w-4" />
+                {busy ? 'Saving…' : live.length ? `Link ${live.length} note${live.length === 1 ? '' : 's'}` : 'Unlink'}
+              </button>
+            </div>
           </div>
 
           {/* RAISE IT HERE — value only, Agst Ref the invoice, linked in the same step. */}
@@ -368,40 +401,10 @@ Tick ${same.length === 1 ? 'it' : 'one'} in the list and Link instead. Create AN
           )}
         </div>
 
-        {/* FOOTER — what is ticked against the shortage. */}
-        <div className="flex flex-none flex-wrap items-center gap-3 border-t border-[#E4ECE3] bg-white px-5 py-3">
-          <span className="text-[12px] font-semibold text-[#5A6B62]">
-            Ticked <b className="tabular-nums text-[#0A1F17]">{formatINR(total)}</b>
-            {due ? (
-              <>
-                {' '}
-                of <b className="tabular-nums text-[#0A1F17]">{formatINR(due)}</b>
-              </>
-            ) : null}
-          </span>
-          {live.length > 0 && due > 0 && (
-            <span className={cn('rounded-full px-2 py-0.5 text-[11px] font-extrabold', Math.abs(gap) <= 1 ? 'bg-[#E9F5EE] text-[#0B6B45]' : gap > 0 ? 'bg-[#FFF4DC] text-[#7A4B00]' : 'bg-[#FDECEA] text-[#B3261E]')}>
-              {Math.abs(gap) <= 1 ? 'covers it' : gap > 0 ? `${formatINR(gap)} more` : `${formatINR(-gap)} short`}
-            </span>
-          )}
-          {stale > 0 && (
-            <span className="text-[11px] font-bold text-[#8A5300]" title="Linked before, but that voucher was deleted or is no longer a credit note to this customer">
-              {stale} old link{stale === 1 ? '' : 's'} to a removed note — dropped on save
-            </span>
-          )}
-          <span className="flex-1" />
+        {/* FOOTER — just Close; linking sits under the list it acts on. */}
+        <div className="flex flex-none items-center justify-end border-t border-[#E4ECE3] bg-white px-5 py-3">
           <button type="button" onClick={onClose} disabled={busy} className="h-10 rounded-[5px] border border-[#C9DCCF] bg-white px-4 text-[12px] font-extrabold text-[#33473E] hover:bg-[#F0F8F3]">
             Close
-          </button>
-          <button
-            type="button"
-            data-ctrl-a
-            onClick={() => void save()}
-            disabled={busy || (notes.length === 0 && live.length === 0 && !stale)}
-            className="flex h-10 items-center gap-1.5 rounded-[5px] bg-[#0B3D2E] px-5 text-[12px] font-extrabold text-[#C7F03F] hover:bg-[#0F4A38] disabled:opacity-50"
-          >
-            <Link2 className="h-4 w-4" />
-            {busy ? 'Saving…' : live.length ? `Link ${live.length} note${live.length === 1 ? '' : 's'}` : 'Unlink'}
           </button>
         </div>
       </DialogContent>
