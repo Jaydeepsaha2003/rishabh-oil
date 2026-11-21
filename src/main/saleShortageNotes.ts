@@ -176,3 +176,106 @@ export async function shortageNoteMap(): Promise<Row[]> {
      ORDER BY je.entry_date`)
   return res.rows.map((r) => ({ ...(r as unknown as Row) }))
 }
+
+/**
+ * ONE-TIME CLEAN-UP (asked for on 2026-11-21). A shortage link left pointing at
+ * a deleted voucher made "Create & link" post the credit note, fail the link,
+ * and post another on every retry (KRFIN/105 got CN/48–54, KRFIN/137 CN/45–46).
+ *   1. Links to deleted vouchers are cleared (their amounts are kept to re-link by).
+ *   2. Copies are removed: app-made notes (a notes row) with the same company,
+ *      date, narration "Shortage on …", party and amount — the first is kept,
+ *      each copy archived in accounting_repair_log, then deleted as the note
+ *      register deletes (voucher, party-ledger row, note).
+ *   3. An invoice left with no link is linked when exactly one credit note
+ *      Agst Ref it fits: the one at the old link's amount, else the one app-made
+ *      "Shortage on <invoice>" note. Anything else (e.g. two notes of the same
+ *      amount) is left for a person and logged.
+ */
+export async function repairShortageNoteDupes(): Promise<{ cleared: number; removed: string[]; linked: string[]; left: string[] }> {
+  await ensure()
+  const c = getClient()
+  const out = { cleared: 0, removed: [] as string[], linked: [] as string[], left: [] as string[] }
+  const code = async (id: number): Promise<string> =>
+    String((await c.execute({ sql: "SELECT prefix || '/' || serial AS k FROM voucher_numbers WHERE entry_id = ?", args: [id] })).rows[0]?.k || `#${id}`)
+
+  // 1. Dead links.
+  const stale = (
+    await c.execute(`SELECT company_id, invoice_key, entry_id, amount FROM sale_shortage_notes t
+                      WHERE NOT EXISTS (SELECT 1 FROM journal_entries je WHERE je.id = t.entry_id)`)
+  ).rows as unknown as Row[]
+  const oldAmt = new Map<string, number[]>()
+  for (const s of stale) {
+    const k = `${n(s.company_id)}|${String(s.invoice_key)}`
+    oldAmt.set(k, [...(oldAmt.get(k) || []), n(s.amount)])
+  }
+  await c.execute('DELETE FROM sale_shortage_notes WHERE NOT EXISTS (SELECT 1 FROM journal_entries je WHERE je.id = sale_shortage_notes.entry_id)')
+  out.cleared = stale.length
+
+  // 2. Copies of an app-made shortage credit note.
+  await c.execute(`CREATE TABLE IF NOT EXISTS accounting_repair_log (
+      repair_key TEXT PRIMARY KEY, entry_id INTEGER NOT NULL, before_json TEXT NOT NULL,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')))`)
+  const made = (
+    await c.execute(`SELECT nt.id AS note_id, nt.company_id, nt.party_id, je.id AS entry_id, je.entry_date, je.narration,
+                            (SELECT ROUND(SUM(jl.cr), 2) FROM journal_lines jl WHERE jl.entry_id = je.id) AS amount
+                       FROM notes nt JOIN journal_entries je ON je.id = nt.journal_entry_id
+                      WHERE nt.note_type = 'credit' AND UPPER(je.vch_type) LIKE 'CREDIT NOTE%' AND je.narration LIKE 'Shortage on %'
+                      ORDER BY je.id`)
+  ).rows as unknown as Row[]
+  const seen = new Map<string, Row>()
+  const { deleteNote } = await import('./notes')
+  for (const r of made) {
+    const k = [n(r.company_id), n(r.party_id), String(r.entry_date), String(r.narration), round2(n(r.amount))].join('|')
+    if (!seen.has(k)) {
+      seen.set(k, r)
+      continue
+    }
+    const eid = n(r.entry_id)
+    if ((await c.execute({ sql: 'SELECT 1 FROM sale_shortage_notes WHERE entry_id = ?', args: [eid] })).rows.length) continue
+    const k2 = await code(eid)
+    const before = {
+      entry: (await c.execute({ sql: 'SELECT * FROM journal_entries WHERE id = ?', args: [eid] })).rows[0],
+      lines: (await c.execute({ sql: 'SELECT * FROM journal_lines WHERE entry_id = ?', args: [eid] })).rows,
+      allocs: (await c.execute({ sql: 'SELECT ba.* FROM journal_bill_allocs ba JOIN journal_lines jl ON jl.id = ba.line_id WHERE jl.entry_id = ?', args: [eid] })).rows,
+      note: (await c.execute({ sql: 'SELECT * FROM notes WHERE id = ?', args: [n(r.note_id)] })).rows[0],
+      code: k2,
+      copy_of: await code(n(seen.get(k)!.entry_id))
+    }
+    await c.execute({
+      sql: 'INSERT OR REPLACE INTO accounting_repair_log(repair_key, entry_id, before_json) VALUES (?, ?, ?)',
+      args: [`shortage_cn_copy_v1:${eid}`, eid, JSON.stringify(before)]
+    })
+    await deleteNote(n(r.note_id), n(r.company_id))
+    out.removed.push(`${k2} (copy of ${before.copy_of})`)
+  }
+
+  // 3. Re-link the invoices that lost their link, and those with a surviving shortage note unlinked.
+  const keys = new Set<string>(oldAmt.keys())
+  for (const r of seen.values()) {
+    const m = String(r.narration).match(/^Shortage on (\S+)/)
+    if (!m) continue
+    const s = (await c.execute({ sql: 'SELECT id, invoice_group, invoice_no FROM sales WHERE company_id = ? AND invoice_no = ? ORDER BY id LIMIT 1', args: [n(r.company_id), m[1]] })).rows[0] as unknown as Row | undefined
+    if (s) keys.add(`${n(r.company_id)}|${String(s.invoice_group || s.invoice_no || `sale-${s.id}`)}`)
+  }
+  for (const k of keys) {
+    const co = n(k.split('|')[0])
+    const key = k.slice(k.indexOf('|') + 1)
+    if ((await c.execute({ sql: 'SELECT 1 FROM sale_shortage_notes WHERE company_id = ? AND invoice_key = ?', args: [co, key] })).rows.length) continue
+    const sale = (
+      await c.execute({ sql: "SELECT id, invoice_no FROM sales WHERE company_id = ? AND COALESCE(invoice_group, invoice_no, 'sale-' || id) = ? ORDER BY id LIMIT 1", args: [co, key] })
+    ).rows[0] as unknown as Row | undefined
+    if (!sale) continue
+    const no = String(sale.invoice_no || '')
+    const cand = ((await shortageNoteCandidates(n(sale.id))).notes as Row[]).filter((x) => x.names_invoice && !String(x.linked_to || '').trim())
+    const olds = oldAmt.get(k) || []
+    let pick = cand.filter((x) => olds.some((a) => Math.abs(n(x.amount) - a) < 0.01))
+    if (pick.length !== 1) pick = cand.filter((x) => String(x.narration || '').startsWith(`Shortage on ${no} `))
+    if (pick.length !== 1) {
+      if (cand.length || olds.length) out.left.push(`${no}: ${cand.length ? cand.map((x) => `${x.code || x.vch_no} ${x.amount}`).join(', ') : 'no credit note against it'}`)
+      continue
+    }
+    await setShortageNotes(n(sale.id), [n(pick[0].entry_id)])
+    out.linked.push(`${no} -> ${pick[0].code || pick[0].vch_no}`)
+  }
+  return out
+}

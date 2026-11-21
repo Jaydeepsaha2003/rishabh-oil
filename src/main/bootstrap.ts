@@ -3204,6 +3204,18 @@ export async function runStartupTasks(): Promise<void> {
     if (moved.length) console.log(`[vouchers] renumbered ${moved.length}: ${moved.join(', ')}`)
   }).catch((e) => console.error('[vouchers] series realign failed:', e))
 
+  // SHORTAGE CREDIT NOTES POSTED TWICE — once, at start (asked for on 2026-11-21).
+  // A dead link made Create & link post copies (KRFIN/105 CN/48–54, KRFIN/137
+  // CN/45–46); copies archived and removed, dead links cleared, the survivors
+  // linked. See repairShortageNoteDupes. A failure leaves the flag unset.
+  await runOnce('shortage_cn_copies_v1', async () => {
+    const r = await (await import('./saleShortageNotes')).repairShortageNoteDupes()
+    console.log(
+      `[shortage CN] dead links cleared ${r.cleared}; copies removed: ${r.removed.join(', ') || 'none'}; linked: ${r.linked.join(', ') || 'none'}` +
+        (r.left.length ? `; left for review: ${r.left.join(' | ')}` : '')
+    )
+  }).catch((e) => console.error('[shortage CN] copy clean-up failed:', e))
+
   // DUPLICATE SALES VOUCHERS — once, at start (asked for on 2026-09-30).
   //
   // The extra component vouchers the 2026-09-03 catch-up bug left on grouped
