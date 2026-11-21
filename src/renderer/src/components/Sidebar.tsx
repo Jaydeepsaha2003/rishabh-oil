@@ -130,6 +130,8 @@ export const HOTKEY: Partial<Record<string, string>> = {
   orders: 'P',
   consignment: 'C',
   gateEntry: 'G',
+  // O: stock (S is taken by sales).
+  stock: 'O',
   // L: sales bargain (B is taken by the purchase bargain).
   salesBargains: 'L',
   sales: 'S',
