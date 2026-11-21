@@ -268,6 +268,7 @@ const api = {
   dashboard: {
     // `all`: every company's figures together (the dashboard's All companies).
     stats: (all?: boolean): Promise<Row> => ipcRenderer.invoke('dashboard:stats', { all }),
+    production: (a: { all?: boolean; from: string; to: string }): Promise<Row[]> => ipcRenderer.invoke('dashboard:production:list', a),
     position: (all?: boolean): Promise<Row> => ipcRenderer.invoke('dashboard:position', { all }),
     layout: (): Promise<Row> => ipcRenderer.invoke('dashboard:layout'),
     saveLayout: (hidden: string[]): Promise<Row> => ipcRenderer.invoke('dashboard:saveLayout', { hidden })

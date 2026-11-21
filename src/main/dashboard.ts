@@ -233,3 +233,33 @@ export async function dashboardStats(opts: { all?: boolean } = {}): Promise<Row>
     negatives: negatives.sort((a, b) => a.stock - b.stock)
   }
 }
+
+/**
+ * PRODUCTION TILL DATE (the client's sum): what went out, less what was only
+ * passed on — Raw + Intermediate + Finished dispatches, less inter-company
+ * transfers (a sale to our own other company) and purchase returns (a sale
+ * billing a supplier). Fatty Acid is left out of it and reported on its own.
+ * MT sales only (packaging lines in KG / pieces are not oil); rejected and
+ * trading (off-stock) sales are not dispatches of ours.
+ */
+export async function productionTillDate(opts: { all?: boolean; from: string; to: string }): Promise<Row[]> {
+  const ids = opts.all ? await allCompanyIds() : [getActiveCompanyId()]
+  if (!ids.length) return []
+  const res = await getClient().execute({
+    sql: `SELECT LOWER(COALESCE(pr.category, 'raw')) AS cat,
+                 CASE WHEN UPPER(COALESCE(pr.name, '')) LIKE '%FATTY ACID%' THEN 1 ELSE 0 END AS fatty,
+                 CASE WHEN s.return_supplier_id IS NOT NULL THEN 'return'
+                      WHEN EXISTS (SELECT 1 FROM customers cu WHERE cu.id = s.customer_id
+                                     AND cu.company_link_id IS NOT NULL AND cu.company_link_id <> s.company_id) THEN 'interco'
+                      ELSE 'out' END AS kind,
+                 ROUND(SUM(s.qty), 3) AS qty, COUNT(*) AS lines
+            FROM sales s JOIN products pr ON pr.id = s.product_id
+           WHERE s.company_id IN (${ids.map(() => '?').join(',')})
+             AND s.rejected_at IS NULL AND COALESCE(s.affects_stock, 1) = 1
+             AND UPPER(COALESCE(s.uom, 'MT')) = 'MT'
+             AND substr(s.sale_date, 1, 10) >= ? AND substr(s.sale_date, 1, 10) <= ?
+           GROUP BY 1, 2, 3`,
+    args: [...ids, String(opts.from).slice(0, 10), String(opts.to).slice(0, 10)]
+  })
+  return toPlain(res)
+}

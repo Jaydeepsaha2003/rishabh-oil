@@ -192,6 +192,7 @@ export interface Api {
   }
   dashboard: {
     stats: (all?: boolean) => Promise<Row>
+    production: (a: { all?: boolean; from: string; to: string }) => Promise<Row[]>
     position: (all?: boolean) => Promise<Row>
     layout: () => Promise<Row>
     saveLayout: (hidden: string[]) => Promise<Row>

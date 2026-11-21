@@ -1118,6 +1118,7 @@ export function registerIpc(): void {
     tradingAccount(from, to, companyId)
   )
   handle('dashboard:stats', (_e, a?: { all?: boolean }) => dashboardStats({ all: !!a?.all }))
+  handle('dashboard:production:list', async (_e, a: { all?: boolean; from: string; to: string }) => (await import('./dashboard')).productionTillDate(a))
   handle('dashboard:position', (_e, a?: { all?: boolean }) => dailyPosition({ all: !!a?.all }))
   handle('dashboard:layout', () => getDashLayout())
   handle('dashboard:saveLayout', (_e, { hidden }: { hidden: string[] }) => saveDashLayout(hidden))

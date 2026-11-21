@@ -49,6 +49,7 @@ export const DASH_ITEMS: DashItem[] = [
   { key: 'm.topSup', label: 'Top suppliers', group: 'month', kind: 'card', hint: 'By value' },
   { key: 'm.topCus', label: 'Top customers', group: 'month', kind: 'card', hint: 'By value' },
   { key: 'm.duties', label: 'Duties & taxes', group: 'month', kind: 'card', hint: 'TDS and GST from the books' },
+  { key: 'm.production', label: 'Production till date', group: 'month', kind: 'card', hint: 'Dispatches less inter-company and purchase returns, this FY; Fatty Acid apart' },
   { key: 'm.stock', label: 'Book stock by category', group: 'month', kind: 'card', hint: 'Raw, intermediate, finished, consignment' },
   { key: 'm.exposure', label: 'Open exposure', group: 'month', kind: 'card', hint: 'Open bargains and tankers on the move' },
   { key: 'm.attention', label: 'Attention', group: 'month', kind: 'card', hint: 'Products below nil' },

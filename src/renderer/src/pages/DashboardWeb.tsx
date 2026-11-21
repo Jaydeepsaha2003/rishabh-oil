@@ -10,7 +10,7 @@
 // It takes the derived values as props instead of loading again. One data path,
 // one refresh, and the Electron build keeps the render it has — see the
 // __WEB__ fork at the bottom of Dashboard.tsx.
-import React, { useMemo, useState } from 'react'
+import React, { useEffect, useMemo, useState } from 'react'
 import {
   ArrowDownRight,
   ArrowRight,
@@ -92,6 +92,27 @@ export function DashboardWeb(props: DashProps): React.JSX.Element {
   const [customizing, setCustomizing] = useState(false)
   const isMobile = useIsMobile()
   const { companies, companyId, onCompanyChange } = useCompany()
+  // PRODUCTION TILL DATE — this financial year, for the board's company scope.
+  const [prod, setProd] = useState<Record<string, unknown>[] | null>(null)
+  const fyFrom = (() => {
+    const d = new Date()
+    const y = d.getMonth() >= 3 ? d.getFullYear() : d.getFullYear() - 1
+    return `${y}-04-01`
+  })()
+  const prodTo = new Date().toISOString().slice(0, 10)
+  useEffect(() => {
+    if (!layout.isOn('m.production')) return
+    let live = true
+    setProd(null)
+    window.api.dashboard
+      .production({ all: !!props.allCompanies, from: fyFrom, to: prodTo })
+      .then((r) => live && setProd(r))
+      .catch(() => live && setProd([]))
+    return () => {
+      live = false
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [props.allCompanies, layout.isOn('m.production'), String(companyId || '')])
   const [theme, setTheme] = useState<'dark' | 'light'>(storedDashTheme)
   const t: DashTheme = DASH_THEMES[theme]
 
@@ -476,6 +497,84 @@ export function DashboardWeb(props: DashProps): React.JSX.Element {
     </button>
   )
 
+  // The client's sum, as a statement: dispatches by category, less what was only
+  // passed on, equals production. Fatty Acid is kept out of it and shown apart.
+  const productionCard = (mobile: boolean): React.JSX.Element => {
+    const rows = (prod || []) as { cat: string; fatty: number; kind: string; qty: number }[]
+    const sumOf = (f: (r: { cat: string; fatty: number; kind: string; qty: number }) => boolean): number =>
+      Math.round(rows.filter(f).reduce((s, r) => s + Number(r.qty || 0), 0) * 1000) / 1000
+    const inSum = (r: { cat: string; fatty: number }): boolean => !Number(r.fatty) && ['raw', 'intermediate', 'finished'].includes(String(r.cat))
+    const byCat = (c: string): number => sumOf((r) => inSum(r) && r.cat === c)
+    const total = sumOf(inSum)
+    const interco = sumOf((r) => inSum(r) && r.kind === 'interco')
+    const ret = sumOf((r) => inSum(r) && r.kind === 'return')
+    const production = Math.round((total - interco - ret) * 1000) / 1000
+    const fatty = sumOf((r) => !!Number(r.fatty) && r.kind === 'out')
+    const fattyAll = sumOf((r) => !!Number(r.fatty))
+    const line = (label: React.ReactNode, v: number, o: { sign?: string; strong?: boolean; sub?: boolean; fg?: string } = {}): React.JSX.Element => (
+      <div
+        className="flex items-baseline justify-between gap-2.5"
+        style={{
+          padding: o.strong ? '9px 10px' : '6px 10px',
+          paddingLeft: o.sub ? 22 : 10,
+          borderTop: o.strong ? `1.5px solid ${t.accentBd}` : `1px solid ${t.hair}`,
+          background: o.strong ? t.accentSoft : 'transparent',
+          borderRadius: o.strong ? 4 : 0
+        }}
+      >
+        <span className={o.strong ? 'text-[12px] font-extrabold' : o.sub ? 'text-[11.5px] font-semibold' : 'text-[11.5px] font-bold'} style={{ color: o.strong ? t.accent : o.sub ? t.muted : t.ink2 }}>
+          {label}
+        </span>
+        <span className="doc-ref whitespace-nowrap font-bold" style={{ fontSize: o.strong ? 14 : 12.5, color: o.fg || (o.strong ? t.accent : t.ink) }}>
+          {o.sign || ''}
+          {formatNum(v)}
+          <span className="text-[9.5px]" style={{ color: t.faint }}> MT</span>
+        </span>
+      </div>
+    )
+    return (
+      <Card className={mobile ? 'flex-none px-3.5 py-3.5' : 'flex flex-col px-[17px] py-[15px]'} style={mobile ? { borderRadius: 5 } : undefined}>
+        <CardHead
+          icon={Factory}
+          title="Production till date"
+          fg={t.accent}
+          right={
+            <span className="text-[10px] font-bold" style={{ color: t.faint }}>
+              FY from {fyFrom.slice(8, 10)}-{fyFrom.slice(5, 7)}-{fyFrom.slice(0, 4)}
+            </span>
+          }
+        />
+        {prod == null ? (
+          <div className="mt-4 text-[11.5px] font-semibold" style={{ color: t.faint }}>
+            Working it out…
+          </div>
+        ) : (
+          <div className="mt-[11px] flex flex-col overflow-hidden rounded-[4px]" style={{ border: `1px solid ${t.hair}`, background: t.inset }}>
+            {line('Raw dispatched', byCat('raw'), { sub: true })}
+            {line('Intermediate dispatched', byCat('intermediate'), { sub: true })}
+            {line('Finished dispatched', byCat('finished'), { sub: true })}
+            {line('Total dispatches', total)}
+            {line('Less: Inter-company transfer', interco, { sign: '− ', fg: t.red })}
+            {line('Less: Purchase return', ret, { sign: '− ', fg: t.red })}
+            {line('Total production till date', production, { strong: true })}
+          </div>
+        )}
+        {prod != null && (
+          <div className="mt-2.5 flex items-baseline justify-between gap-2.5 rounded-[4px] px-2.5 py-2" style={{ border: `1px dashed ${t.bd}` }}>
+            <span className="text-[11.5px] font-bold" style={{ color: t.muted }}>
+              Fatty Acid dispatched <span className="text-[10px] font-semibold">(not in the sum)</span>
+            </span>
+            <span className="doc-ref whitespace-nowrap text-[12.5px] font-bold" style={{ color: t.violet }} title={fattyAll > fatty ? `${formatNum(fattyAll)} MT including inter-company / returns` : undefined}>
+              {formatNum(fatty)}
+              <span className="text-[9.5px]" style={{ color: t.faint }}> MT</span>
+            </span>
+          </div>
+        )}
+        <Deeper label="Open Sales" page="sales" fg={t.accent} />
+      </Card>
+    )
+  }
+
   const MonthChart = ({ height, barW, gap, labels }: { height: number; barW: number; gap: number; labels: boolean }): React.JSX.Element => (
     <div
       className="relative flex w-full items-end justify-between"
@@ -820,6 +919,8 @@ export function DashboardWeb(props: DashProps): React.JSX.Element {
               </Card>
             )
           })}
+
+          {on('m.production') && productionCard(true)}
 
           {on('m.stock') && (
           <Card className="flex-none px-3.5 py-3.5" style={{ borderRadius: 5 }}>
@@ -1298,8 +1399,9 @@ export function DashboardWeb(props: DashProps): React.JSX.Element {
         </div>
         )}
 
-        {['m.stock', 'm.exposure', 'm.attention'].some(on) && (
-        <div className="grid flex-none gap-3.5" style={{ gridTemplateColumns: cols(['m.stock', 'm.exposure', 'm.attention'].filter(on).length) }}>
+        {['m.production', 'm.stock', 'm.exposure', 'm.attention'].some(on) && (
+        <div className="grid flex-none gap-3.5" style={{ gridTemplateColumns: cols(['m.production', 'm.stock', 'm.exposure', 'm.attention'].filter(on).length) }}>
+          {on('m.production') && productionCard(false)}
           {on('m.stock') && (
           <Card className="flex flex-col px-[17px] py-[15px]">
             <CardHead icon={Warehouse} title="Book stock by category" fg={t.accent} />
