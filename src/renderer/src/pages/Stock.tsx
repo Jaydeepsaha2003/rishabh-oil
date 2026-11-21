@@ -1,4 +1,5 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { peekPageIntent, takePageIntent } from '@/lib/pageIntent'
 import { toast } from 'sonner'
 import { AlertTriangle, ArrowRightLeft, BookOpen, Boxes, Info, Search, Building2, CalendarCheck, CalendarRange, ClipboardCheck, Factory, Check, ChevronDown, ChevronLeft, ChevronRight, Copy, Download, Eye, EyeOff, History as HistoryIcon, Layers, Loader2, Plus, SlidersHorizontal, TrendingDown, TrendingUp, Trash2, Upload, X, Database } from 'lucide-react'
 import { RowActions } from '@/components/ui/row-actions'
@@ -8597,16 +8598,26 @@ function DrawnFromCard({
 export function Stock({ onCompanyChange }: { onCompanyChange?: (id: string) => void }): React.JSX.Element {
   const isMobile = useIsMobile()
   const [stockGroup, setStockGroup] = useState<'book' | 'actual'>(() =>
-    readStockView('group', ['book', 'actual'] as const, 'book')
+    peekPageIntent('stock') ? 'book' : readStockView('group', ['book', 'actual'] as const, 'book')
   )
   // Explicitly a string: Tabs' onValueChange hands back a plain string, and
   // letting the restore narrow this to a union makes setTab unassignable to it.
+  // Opened from the dashboard's Production card: its dates, and the category
+  // line clicked (Raw / Intermediate / Finished) — the Dispatch column there.
+  const [stockIntent] = useState(() => takePageIntent('stock'))
   const [tab, setTab] = useState<string>(() =>
-    readStockView(
-      'tab',
-      ['raw', 'intermediate', 'finished', 'sku', 'mnc', 'transfers', 'dayclose'] as const,
-      'raw'
-    )
+    ['raw', 'intermediate', 'finished'].includes(String(stockIntent?.cat || ''))
+      ? String(stockIntent?.cat)
+      : stockIntent
+        ? (() => {
+            const t = readStockView('tab', ['raw', 'intermediate', 'finished', 'sku', 'mnc', 'transfers', 'dayclose'] as const, 'raw')
+            return ['raw', 'intermediate', 'finished'].includes(t) ? t : 'finished'
+          })()
+        : readStockView(
+            'tab',
+            ['raw', 'intermediate', 'finished', 'sku', 'mnc', 'transfers', 'dayclose'] as const,
+            'raw'
+          )
   )
   // Which product the Opening Stock sheet should scroll to and flash, when it
   // was reached by clicking a name on the Book register. Beside the two view
@@ -8616,7 +8627,7 @@ export function Stock({ onCompanyChange }: { onCompanyChange?: (id: string) => v
   // found on the register.
   const [jumpBookProduct, setJumpBookProduct] = useState<number | null>(null)
   const [bookView, setBookView] = useState<'register' | 'opening'>(() =>
-    readStockView('bookView', ['register', 'opening'] as const, 'register')
+    stockIntent ? 'register' : readStockView('bookView', ['register', 'opening'] as const, 'register')
   )
   // Which opening sheet: the tanks, or the packed shelf. The packed one used
   // to hide behind a picker on the Packed SKU strip, which put "where the
@@ -8647,10 +8658,12 @@ export function Stock({ onCompanyChange }: { onCompanyChange?: (id: string) => v
   }, [])
   const [rows, setRows] = useState<Row[]>([])
   const [breakdown, setBreakdown] = useState<Record<number, { receipt: Row[]; dispatch: Row[]; packed: Row[]; produced: Row[]; consumed: Row[]; recirculated: Row[] }>>({})
-  const [range, setRange] = useState({ from: '', to: '' })
+  const [range, setRange] = useState(() => (stockIntent ? { from: String(stockIntent.from || ''), to: String(stockIntent.to || '') } : { from: '', to: '' }))
   const ranged = !!(range.from || range.to)
   // Alt+F2 broadcasts a period from anywhere.
   const globalRangeStock = useGlobalDateRange()
+  // The dashboard's dates hold until a new period is broadcast.
+  const intentVersion = useRef(globalRangeStock.version)
 
   // The morning the opening stock was struck is where this page's period
   // starts.
@@ -8679,6 +8692,7 @@ export function Stock({ onCompanyChange }: { onCompanyChange?: (id: string) => v
   }, [])
 
   useEffect(() => {
+    if (stockIntent && globalRangeStock.version === intentVersion.current) return
     if (!globalRangeAppliesTo(globalRangeStock, 'stock')) return
     const asked = globalRangeStock.from
     // Named for this page = deliberate, so nothing is raised.

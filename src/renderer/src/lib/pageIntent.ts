@@ -18,3 +18,8 @@ export function takePageIntent(page: string): Row | null {
   intents.delete(page)
   return it
 }
+
+/** Look at a page's intent without taking it. */
+export function peekPageIntent(page: string): Row | null {
+  return intents.get(page) ?? null
+}

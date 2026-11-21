@@ -549,9 +549,12 @@ export function DashboardWeb(props: DashProps): React.JSX.Element {
     const fatty = sumOf((r) => !!Number(r.fatty) && r.kind === 'out')
     const fattyAll = sumOf((r) => !!Number(r.fatty))
     // Open the Sales list on exactly the invoices behind a line.
+    // Open the Stock register over the card's dates — on the category's tab
+    // (its Dispatch column) for a category line; Fatty Acid sits under Finished.
     const open = (label: string, f: { cats?: string[]; scope?: 'out' | 'interco' | 'return'; fatty?: 'only' | 'exclude' }): void => {
-      setPageIntent('sales', { kind: 'production', from: pFrom, to: prodTo, label, cats: f.cats || ['raw', 'intermediate', 'finished'], scope: f.scope || null, fatty: f.fatty || 'exclude' })
-      props.onNavigate('sales')
+      const one = f.fatty === 'only' ? 'finished' : f.cats && f.cats.length === 1 ? f.cats[0] : ''
+      setPageIntent('stock', { kind: 'production', from: pFrom, to: prodTo, label, cat: one })
+      props.onNavigate('stock')
     }
     const line = (
       label: React.ReactNode,
@@ -724,7 +727,7 @@ export function DashboardWeb(props: DashProps): React.JSX.Element {
             </span>
           </button>
         )}
-        <Deeper label="Open Sales" page="sales" fg={t.accent} />
+        <Deeper label="Open Stock" page="stock" fg={t.accent} />
       </div>
     )
   }
