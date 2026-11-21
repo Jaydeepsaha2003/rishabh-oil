@@ -4885,7 +4885,7 @@ function SalesTab({
               <span className="text-right">Shortage</span>
               <span className="text-right">Allowed</span>
             </div>
-            {(unloadInv?.lines || []).map((l) => {
+            {(unloadInv?.lines || []).map((l, li) => {
               const raw = unloadQty[String(l.id)]
               const short = raw === '' || raw == null ? null : Number(l.qty) - Number(raw)
               // Judged as it is typed, so the desk knows at the keyboard whether
@@ -4901,6 +4901,9 @@ function SalesTab({
                     type="number"
                     className={cn('h-8 text-right tabular-nums', (raw ?? '') === '' && 'border-rose-400')}
                     placeholder="Required"
+                    // The cursor starts in the first line's received qty, selected so typing replaces it.
+                    autoFocus={li === 0}
+                    onFocus={(e) => e.currentTarget.select()}
                     value={raw ?? ''}
                     onChange={(e) => setUnloadQty((p) => ({ ...p, [String(l.id)]: e.target.value }))}
                   />

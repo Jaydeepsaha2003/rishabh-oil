@@ -68,6 +68,10 @@ export function ShortageNoteDialog({
   }, [ask]) // eslint-disable-line react-hooks/exhaustive-deps
 
   const notes = ((data?.notes as Row[]) || []) as Row[]
+  // Only notes still on the list count: a link to a note since deleted or changed
+  // (no longer a credit note to this customer) is not shown, and saving drops it.
+  const live = [...picked].filter((id) => notes.some((x) => Number(x.entry_id) === id))
+  const stale = picked.size - live.length
   const tLines = ((data?.transporter_lines as Row[]) || []) as Row[]
   const reload = async (): Promise<void> => {
     if (ask) setData(await window.api.sales.shortageNotes(ask.saleId))
@@ -89,7 +93,7 @@ export function ShortageNoteDialog({
     if (!ask) return
     setBusy(true)
     try {
-      const r = await window.api.sales.shortageNotesSet(ask.saleId, [...picked])
+      const r = await window.api.sales.shortageNotesSet(ask.saleId, live)
       toast.success(r.linked ? `Shortage on ${ask.invoiceNo} linked to ${r.linked} credit note${r.linked === 1 ? '' : 's'}` : `Shortage on ${ask.invoiceNo} unlinked`)
       onDone?.()
       onClose()
@@ -363,9 +367,14 @@ export function ShortageNoteDialog({
               </>
             ) : null}
           </span>
-          {picked.size > 0 && due > 0 && (
+          {live.length > 0 && due > 0 && (
             <span className={cn('rounded-full px-2 py-0.5 text-[11px] font-extrabold', Math.abs(gap) <= 1 ? 'bg-[#E9F5EE] text-[#0B6B45]' : gap > 0 ? 'bg-[#FFF4DC] text-[#7A4B00]' : 'bg-[#FDECEA] text-[#B3261E]')}>
               {Math.abs(gap) <= 1 ? 'covers it' : gap > 0 ? `${formatINR(gap)} more` : `${formatINR(-gap)} short`}
+            </span>
+          )}
+          {stale > 0 && (
+            <span className="text-[11px] font-bold text-[#8A5300]" title="Linked before, but that voucher was deleted or is no longer a credit note to this customer">
+              {stale} old link{stale === 1 ? '' : 's'} to a removed note — dropped on save
             </span>
           )}
           <span className="flex-1" />
@@ -376,11 +385,11 @@ export function ShortageNoteDialog({
             type="button"
             data-ctrl-a
             onClick={() => void save()}
-            disabled={busy || (notes.length === 0 && picked.size === 0)}
+            disabled={busy || (notes.length === 0 && live.length === 0 && !stale)}
             className="flex h-10 items-center gap-1.5 rounded-[5px] bg-[#0B3D2E] px-5 text-[12px] font-extrabold text-[#C7F03F] hover:bg-[#0F4A38] disabled:opacity-50"
           >
             <Link2 className="h-4 w-4" />
-            {busy ? 'Saving…' : picked.size ? `Link ${picked.size} note${picked.size === 1 ? '' : 's'}` : 'Unlink'}
+            {busy ? 'Saving…' : live.length ? `Link ${live.length} note${live.length === 1 ? '' : 's'}` : 'Unlink'}
           </button>
         </div>
       </DialogContent>
