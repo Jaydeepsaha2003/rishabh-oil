@@ -105,7 +105,19 @@ export function ShortageNoteDialog({
   }
 
   const createCn = async (): Promise<void> => {
-    if (!ask?.cn) return
+    if (!ask?.cn || busy) return
+    // ONE shortage, ONE note: a credit note already naming this invoice is offered
+    // to link instead — retrying a failed link must not post another.
+    const same = notes.filter((x) => x.names_invoice && Math.abs(Number(x.amount) - after) < 1)
+    if (
+      same.length &&
+      !window.confirm(
+        `${same.map((x) => String(x.code || x.vch_no)).join(', ')} already credit${same.length === 1 ? 's' : ''} ${formatINR(after)} against ${ask.invoiceNo}.
+
+Tick ${same.length === 1 ? 'it' : 'one'} in the list and Link instead. Create ANOTHER credit note anyway?`
+      )
+    )
+      return
     setBusy(true)
     try {
       const made = await window.api.notes.create({
@@ -124,7 +136,7 @@ export function ShortageNoteDialog({
       const r = await window.api.sales.shortageNotes(ask.saleId)
       const hit = ((r.notes as Row[]) || []).find((x) => String(x.vch_no) === String(made.note_no))
       if (!hit) throw new Error(`Credit note ${made.note_no} was made but could not be found to link — link it from the list`)
-      await window.api.sales.shortageNotesSet(ask.saleId, [...picked, Number(hit.entry_id)])
+      await window.api.sales.shortageNotesSet(ask.saleId, [...live, Number(hit.entry_id)])
       toast.success(`Credit note ${made.note_no} made and linked to the shortage on ${ask.invoiceNo}`)
       onDone?.()
       onClose()

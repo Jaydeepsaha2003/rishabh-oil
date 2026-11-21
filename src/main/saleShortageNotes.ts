@@ -76,8 +76,13 @@ export async function shortageNoteCandidates(saleId: number): Promise<Row> {
   const c = getClient()
   const inv = await invoiceOf(saleId)
   const acc = await customerLedgerOf(inv)
+  // A link to a voucher since deleted is left out (and cleared on the next save).
   const linked = (
-    await c.execute({ sql: 'SELECT entry_id, amount FROM sale_shortage_notes WHERE company_id = ? AND invoice_key = ?', args: [n(inv.company_id), inv.key] })
+    await c.execute({
+      sql: `SELECT t.entry_id, t.amount FROM sale_shortage_notes t
+             WHERE t.company_id = ? AND t.invoice_key = ? AND EXISTS (SELECT 1 FROM journal_entries je WHERE je.id = t.entry_id)`,
+      args: [n(inv.company_id), inv.key]
+    })
   ).rows as unknown as Row[]
   if (!acc) return { invoice_no: inv.invoice_no, notes: [], linked }
   const rows = (
@@ -143,8 +148,15 @@ export async function setShortageNotes(saleId: number, entryIds: number[]): Prom
   const inv = await invoiceOf(saleId)
   const cand = await shortageNoteCandidates(saleId)
   const allowed = new Map((cand.notes as Row[]).map((x) => [n(x.entry_id), n(x.amount)]))
-  const ids = [...new Set(entryIds.map(n).filter((x) => x > 0))]
-  for (const id of ids) if (!allowed.has(id)) throw new Error('That is not a credit note to this customer in this book')
+  // A voucher deleted since it was linked is simply dropped — it must not block
+  // linking the notes that do exist (it made a new credit note fail to link).
+  const exists = async (id: number): Promise<boolean> =>
+    (await c.execute({ sql: 'SELECT 1 FROM journal_entries WHERE id = ?', args: [id] })).rows.length > 0
+  const ids: number[] = []
+  for (const id of [...new Set(entryIds.map(n).filter((x) => x > 0))]) {
+    if (allowed.has(id)) ids.push(id)
+    else if (await exists(id)) throw new Error('That is not a credit note to this customer in this book')
+  }
   await c.execute({ sql: 'DELETE FROM sale_shortage_notes WHERE company_id = ? AND invoice_key = ?', args: [n(inv.company_id), inv.key] })
   for (const id of ids) {
     await c.execute({
