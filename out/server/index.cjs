@@ -3139,6 +3139,11 @@ async function ownedVoucherIds() {
     const sql = table === "journal_entries" ? `SELECT id AS entry_id FROM journal_entries WHERE ${cols.map((col) => `${col} IS NOT NULL`).join(" OR ")}` : cols.map((col) => `SELECT ${col} AS entry_id FROM ${table} WHERE ${col} IS NOT NULL`).join(" UNION ");
     queries.push(sql);
   }
+  const rv = new Set(schema.rows.filter((r) => r.table_name === "bd_refund_vouchers").map((r) => String(r.column_name)));
+  if (rv.has("journal_made") && rv.has("receipt_made")) {
+    queries.push("SELECT journal_id AS entry_id FROM bd_refund_vouchers WHERE journal_made = 1 AND journal_id IS NOT NULL");
+    queries.push("SELECT receipt_id AS entry_id FROM bd_refund_vouchers WHERE receipt_made = 1");
+  }
   if (queries.length) {
     for (const row of (await c.execute(queries.join(" UNION "))).rows) if (Number(row.entry_id)) ids.add(Number(row.entry_id));
   }
@@ -3188,6 +3193,24 @@ async function voucherOwner(entryId) {
     if (hit = await first(t, sources[t], "lc_id")) return { kind: "lc", id: hit, label: await lcNo(hit) };
   }
   if (hit = await first("notes", sources.notes, "id")) return { kind: "note", id: hit, label: "Debit / Credit note" };
+  if (has("sale_tds_journals", "entry_id")) {
+    const t = (await c.execute({ sql: "SELECT company_id, invoice_key FROM sale_tds_journals WHERE entry_id = ? LIMIT 1", args: [id] })).rows[0];
+    if (t) {
+      const sid = (await c.execute({
+        sql: "SELECT id FROM sales WHERE company_id = ? AND COALESCE(invoice_group, invoice_no, 'sale-' || id) = ? ORDER BY id LIMIT 1",
+        args: [Number(t.company_id), String(t.invoice_key)]
+      })).rows[0];
+      if (sid) return { kind: "sale", id: Number(sid.id), label: "Customer TDS" };
+    }
+  }
+  if (has("bd_refund_vouchers", "receipt_id")) {
+    const r = (await c.execute({
+      sql: `SELECT f.bd_id FROM bd_refund_vouchers v JOIN bd_interest_refunds f ON f.journal_entry_id = v.receipt_id
+               WHERE (v.journal_id = ? AND v.journal_made = 1) OR (v.receipt_id = ? AND v.receipt_made = 1) LIMIT 1`,
+      args: [id, id]
+    })).rows[0];
+    if (r) return { kind: "bd", id: Number(r.bd_id), label: `Interest refund \xB7 ${await bdNo(Number(r.bd_id))}` };
+  }
   if (hit = await first("transporter_bills", sources.transporter_bills, "id")) return { kind: "freight", id: hit, label: "Transporter bill" };
   if (hit = await first("bill_discounts", sources.bill_discounts, "id")) return { kind: "discount", id: hit, label: "Discounted bill" };
   if (hit = await first("transporter_ledger", sources.transporter_ledger, "id")) return { kind: "transporter", id: hit, label: "Transporter ledger" };
@@ -3210,7 +3233,9 @@ var init_voucherOwnership = __esm({
       bd_interest_payments: ["journal_entry_id", "interest_entry_id"],
       bd_payment_ins: ["journal_entry_id"],
       bill_discounts: ["journal_entry_id", "realize_entry_id"],
-      transporter_ledger: ["accrual_entry_id", "waived_entry_id"]
+      transporter_ledger: ["accrual_entry_id", "waived_entry_id"],
+      // The customer's TDS on an invoice, posted from Sales (its TDS window / desk).
+      sale_tds_journals: ["entry_id"]
     };
   }
 });
@@ -19279,12 +19304,12 @@ async function saleTdsPreview(saleId) {
 async function dropExisting(cid, key3) {
   const c = getClient();
   const ex = await c.execute({ sql: "SELECT entry_id FROM sale_tds_journals WHERE company_id = ? AND invoice_key = ?", args: [cid, key3] });
+  await c.execute({ sql: "DELETE FROM sale_tds_journals WHERE company_id = ? AND invoice_key = ?", args: [cid, key3] });
   for (const r of ex.rows) {
     const id = n21(r.entry_id);
     const still = await c.execute({ sql: "SELECT id FROM journal_entries WHERE id = ?", args: [id] });
     if (still.rows.length) await deleteManualEntry(id);
   }
-  await c.execute({ sql: "DELETE FROM sale_tds_journals WHERE company_id = ? AND invoice_key = ?", args: [cid, key3] });
 }
 async function postSaleTds(v) {
   await ensureTable2();
