@@ -262,7 +262,7 @@ export function FixedDeposits({ lcs, onCount, onOpenLc }: { lcs: Row[]; onCount?
                       </td>
                       <td className="whitespace-nowrap px-3 py-3.5 tabular-nums">
                         <div className="flex items-baseline gap-2">
-                          <span className="w-[30px] text-[9.5px] font-extrabold tracking-[.1em] text-[#8CA396]">START</span>
+                          <span className="w-[30px] text-[9.5px] font-extrabold tracking-[.1em] text-[#8CA396]">OP</span>
                           <span className="text-[#33473E]">{formatDate(String(f.start_date))}</span>
                         </div>
                         <div className="mt-0.5 flex items-baseline gap-2">
