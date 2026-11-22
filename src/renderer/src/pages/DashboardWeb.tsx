@@ -17,6 +17,7 @@ import {
   ArrowUpRight,
   Building2,
   Contact,
+  ChevronDown,
   Droplets,
   Eye,
   EyeOff,
@@ -109,6 +110,23 @@ export function DashboardWeb(props: DashProps): React.JSX.Element {
     setProdOff(x)
     try {
       localStorage.setItem('dash.production.off', JSON.stringify([...x]))
+    } catch {
+      /* private window */
+    }
+  }
+  // The card folded to its title and the production figure (remembered per browser).
+  const [prodShut, setProdShut] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem('dash.production.shut') === '1'
+    } catch {
+      return false
+    }
+  })
+  const toggleProdShut = (): void => {
+    const v = !prodShut
+    setProdShut(v)
+    try {
+      localStorage.setItem('dash.production.shut', v ? '1' : '0')
     } catch {
       /* private window */
     }
@@ -633,14 +651,32 @@ export function DashboardWeb(props: DashProps): React.JSX.Element {
           fg={t.accent}
           right={
             <span className="flex items-center gap-2">
-              {prodOff.size > 0 && (
+              {prodShut && prod != null && (
+                <span className="doc-ref whitespace-nowrap text-[13px] font-bold" style={{ color: t.accent }}>
+                  {formatNum(production)}
+                  <span className="text-[9.5px]" style={{ color: t.faint }}> MT</span>
+                </span>
+              )}
+              {!prodShut && prodOff.size > 0 && (
                 <button type="button" onClick={() => setProdOffSaved(new Set())} className="text-[10px] font-extrabold hover:underline" style={{ color: t.accent }} title="Count every line again">
                   Show all
                 </button>
               )}
+              <button
+                type="button"
+                onClick={toggleProdShut}
+                aria-expanded={!prodShut}
+                title={prodShut ? 'Expand' : 'Collapse'}
+                className="flex h-6 w-6 items-center justify-center rounded-[4px] hover:opacity-80"
+                style={{ color: t.muted, border: `1px solid ${t.bd}` }}
+              >
+                <ChevronDown className="h-4 w-4 transition-transform" style={{ transform: prodShut ? 'rotate(-90deg)' : 'none' }} />
+              </button>
             </span>
           }
         />
+        {!prodShut && (
+        <>
         {/* THE DATES — quick picks, or any From / To. */}
         {(() => {
           const d = new Date()
@@ -728,6 +764,8 @@ export function DashboardWeb(props: DashProps): React.JSX.Element {
           </button>
         )}
         <Deeper label="Open Stock" page="stock" fg={t.accent} />
+        </>
+        )}
       </div>
     )
   }
