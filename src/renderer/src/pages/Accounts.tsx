@@ -2462,6 +2462,8 @@ export function Accounts({
   // PROVISIONAL: open LCs and awaiting supplier-direct BDs shown as the debit
   // their payment will post, in the balance (provisional.ts). Nothing posted.
   const [lgProv, setLgProv] = useState(false)
+  // Vouchers of rejected sale invoices (and those set against them): shown, hidden, or only those.
+  const [lgRej, setLgRej] = useState<'show' | 'hide' | 'only'>('show')
   // Bill-wise: money with no Agst Ref stays On Account (Tally's way); this
   // spreads it over the bills oldest first instead. Remembered on the browser.
   const [bwFifo, setBwFifoState] = useState(() => {
@@ -17848,7 +17850,8 @@ Delete ${doc}?`)) return
       (!fTypes.length || fTypes.includes(typeOf(r))) &&
       (!fq || rowText(r).includes(fq) || amountHit(r)) &&
       // Reco on: only the vouchers tagged Reco.
-      (!lgReco || lgRecoOn(r))
+      (!lgReco || lgRecoOn(r)) &&
+      (lgRej === 'show' || (lgRej === 'hide' ? !r.rejected_of : !!r.rejected_of))
     // The column funnels, offered from what the chips and search leave.
     const lgCf = colFilter<Row>(colF, 'ledger:vouchers', allRows.filter(toolbarOk), [
       { key: 'date', get: (r) => formatDate(r.entry_date), sort: 'num' },
@@ -17864,7 +17867,7 @@ Delete ${doc}?`)) return
     ])
     const lgShown = new Set(lgCf.rows)
     const keep = allRows.map((r) => lgShown.has(r))
-    const filtering = fTypes.length > 0 || !!fq || lgCf.active > 0 || lgHidden.length > 0 || lgReco
+    const filtering = fTypes.length > 0 || !!fq || lgCf.active > 0 || lgHidden.length > 0 || lgReco || lgRej !== 'show'
     // In the funnels' order — date order, or the column clicked to sort by.
     const vRows = lgCf.rows
     const canFilter = lgView === 'vouchers' || (lgView === 'columnar' && !lgCondensed)
@@ -18584,7 +18587,17 @@ Delete ${doc}?`)) return
                   >
                     <EyeOff className="h-[14px] w-[14px]" style={{ color: '#8CA396' }} />
                   </button>
-                  <div style={{ fontSize: 12, fontWeight: 800, ...clip }}>{String(r.particulars || '—')}</div>
+                  <div style={{ fontSize: 12, fontWeight: 800, ...clip }}>
+                    {String(r.particulars || '—')}
+                    {r.rejected_of && (
+                      <span
+                        title={`Invoice ${String(r.rejected_of).split('|')[0]} was rejected by the customer${String(r.rejected_of).split('|')[1] ? ` — ${String(r.rejected_of).split('|')[1]}` : ''}`}
+                        style={{ marginLeft: 6, padding: '1px 6px', borderRadius: 3, border: '1px solid #F0C9C4', background: '#FDF0EE', color: '#B3261E', fontSize: 9.5, fontWeight: 800, letterSpacing: '.05em', verticalAlign: 'middle' }}
+                      >
+                        REJECTED{r.sale_id ? '' : ` · ${String(r.rejected_of).split('|')[0]}`}
+                      </span>
+                    )}
+                  </div>
                   {/* One bank debit that repaid several discounted bills:
                       which bill took what. */}
                   {Array.isArray(r.bd_split) && r.bd_split.length > 1 && (
@@ -20141,6 +20154,26 @@ Delete ${doc}?`)) return
                         </span>
                       )}
                     </button>
+                    {/* REJECTED invoices on this ledger: show them, hide them, or only them. */}
+                    {allRows.some((r) => r.rejected_of) && (
+                      <button
+                        type="button"
+                        onClick={() => setLgRej((v) => (v === 'show' ? 'hide' : v === 'hide' ? 'only' : 'show'))}
+                        title="Vouchers of invoices the customer rejected (and those set against them) — click: Show → Hide → Only"
+                        className="flex h-[26px] flex-none items-center gap-1.5 whitespace-nowrap rounded-[13px] px-2.5"
+                        style={{
+                          border: `1px solid ${lgRej === 'show' ? '#DCE7DB' : '#B3261E'}`,
+                          background: lgRej === 'show' ? '#F4F7F3' : '#FDF0EE',
+                          color: lgRej === 'show' ? '#33473E' : '#B3261E',
+                          fontSize: 11,
+                          fontWeight: 800
+                        }}
+                      >
+                        <span className="inline-block h-[8px] w-[8px] rounded-full" style={{ background: '#B3261E' }} />
+                        Rejected {lgRej === 'show' ? 'shown' : lgRej === 'hide' ? 'hidden' : 'only'}
+                        <span style={{ ...figS(10, 'currentColor', 700), opacity: 0.85 }}>{allRows.filter((r) => r.rejected_of).length}</span>
+                      </button>
+                    )}
                     {/* DATE: the invoice's own, or the day its tankers were
                         emptied — a bill whose oil is still on the road then reads —. */}
                     {allRows.some((r) => Number(r.tanker_total) > 0) && (
@@ -20221,6 +20254,7 @@ Delete ${doc}?`)) return
                             setLgFQuery('')
                             setLgTankerEmpty(false)
                             lgCf.clear()
+                            setLgRej('show')
                           }}
                           className="flex h-[30px] items-center gap-[5px] whitespace-nowrap rounded-[6px] px-2.5"
                           style={{ border: '1px solid #C3D2C6', background: '#fff', fontSize: 11, fontWeight: 800, color: '#33473E' }}
