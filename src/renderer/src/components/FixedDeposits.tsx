@@ -7,6 +7,7 @@ import { DatePicker } from '@/components/ui/date-picker'
 import { formatDate, formatINR, todayISO } from '@/lib/format'
 import { cn } from '@/lib/utils'
 import { RowActions } from '@/components/ui/row-actions'
+import { colFilter, useColFilterStore } from '@/lib/colFilters'
 
 // FIXED DEPOSITS (fixedDeposits.ts): every FD the company holds, how much of it
 // is held as security against LCs, and how much is free. A lien releases by
@@ -54,6 +55,7 @@ export function FixedDeposits({ lcs, onCount, onOpenLc }: { lcs: Row[]; onCount?
   const [list, setList] = useState<Row[] | null>(null)
   const [q, setQ] = useState('')
   const [st, setSt] = useState<'all' | 'active' | 'matured' | 'closed'>('all')
+  const colF = useColFilterStore()
   const [bank, setBank] = useState('all')
   const [open, setOpen] = useState<Set<number>>(new Set())
   const [form, setForm] = useState<Row | null>(null)
@@ -73,13 +75,27 @@ export function FixedDeposits({ lcs, onCount, onOpenLc }: { lcs: Row[]; onCount?
 
   const all = list || []
   const banks = useMemo(() => [...new Set(all.map((f) => String(f.bank)))].sort(), [all])
-  const shown = all.filter((f) => {
+  const pre = all.filter((f) => {
     if (st !== 'all' && tabOf(f) !== st) return false
     if (bank !== 'all' && String(f.bank) !== bank) return false
     const t = q.trim().toUpperCase()
     if (!t) return true
     return [f.fd_no, f.bank, f.note, ...(f.liens as Row[]).map((l) => l.lc_no)].some((x) => String(x || '').toUpperCase().includes(t))
   })
+  // A funnel on every column, as the LC register has (pick values, sort).
+  const fdCf = colFilter<Row>(colF, 'fd:register', pre, [
+    { key: 'fd', get: (f) => String(f.fd_no || '') },
+    { key: 'bank', get: (f) => String(f.bank || '') },
+    { key: 'validity', get: (f) => (f.maturity_date ? formatDate(String(f.maturity_date)) : ''), sort: 'num' },
+    { key: 'days', get: (f) => (f.days_left == null ? '' : String(f.days_left)), sort: 'num' },
+    { key: 'rate', get: (f) => `${n(f.interest_pct)}%`, sort: 'num' },
+    { key: 'amount', get: (f) => formatINR(n(f.amount)), sort: 'num' },
+    { key: 'maturity', get: (f) => formatINR(n(f.maturity_value)), sort: 'num' },
+    { key: 'lien', get: (f) => ((f.liens as Row[]) || []).filter((l) => l.active).map((l) => String(l.lc_no || '')) },
+    { key: 'free', get: (f) => formatINR(n(f.free_amount)), sort: 'num' },
+    { key: 'status', get: (f) => pillOf(f).label }
+  ])
+  const shown = fdCf.rows
   const held = all.filter((f) => f.status !== 'closed')
   const sum = (l: Row[], k: string): number => r2(l.reduce((t, f) => t + n(f[k]), 0))
   const soon = held.filter((f) => f.status === 'maturing')
@@ -202,7 +218,7 @@ export function FixedDeposits({ lcs, onCount, onOpenLc }: { lcs: Row[]; onCount?
         <div className="flex justify-center py-12">
           <Loader2 className="h-5 w-5 animate-spin text-[#8CA396]" />
         </div>
-      ) : !shown.length ? (
+      ) : !pre.length ? (
         <div className="py-14 text-center">
           <PiggyBank className="mx-auto h-9 w-9 text-[#A8B8AE]" />
           <div className="mt-2 text-[13px] font-bold text-[#33473E]">{all.length ? 'No FD in this view.' : 'No FD recorded yet.'}</div>
@@ -222,16 +238,16 @@ export function FixedDeposits({ lcs, onCount, onOpenLc }: { lcs: Row[]; onCount?
               </tr>
               <tr className="bg-[#0B3D2E] text-[11.5px] font-extrabold text-white">
                 <th className="w-9" />
-                <th className="px-3 py-2.5 text-left">FD no</th>
-                <th className="border-r border-white/10 px-3 py-2.5 text-left">Bank</th>
-                <th className="px-3 py-2.5 text-left">Validity</th>
-                <th className="px-3 py-2.5 text-left">Days left</th>
-                <th className="border-r border-white/10 px-3 py-2.5 text-right">Rate</th>
-                <th className="px-3 py-2.5 text-right">Amount</th>
-                <th className="border-r border-white/10 px-3 py-2.5 text-right">At maturity</th>
-                <th className="px-3 py-2.5 text-left">Under lien</th>
-                <th className="border-r border-white/10 px-3 py-2.5 text-right text-[#C7F03F]">Free</th>
-                <th className="px-3 py-2.5 text-left">Status</th>
+                <th className="px-3 py-2.5 text-left">{fdCf.head('fd', 'FD no', { onDark: true })}</th>
+                <th className="border-r border-white/10 px-3 py-2.5 text-left">{fdCf.head('bank', 'Bank', { onDark: true })}</th>
+                <th className="px-3 py-2.5 text-left">{fdCf.head('validity', 'Validity', { onDark: true })}</th>
+                <th className="px-3 py-2.5 text-left">{fdCf.head('days', 'Days left', { onDark: true })}</th>
+                <th className="border-r border-white/10 px-3 py-2.5 text-right">{fdCf.head('rate', 'Rate', { onDark: true, align: 'end' })}</th>
+                <th className="px-3 py-2.5 text-right">{fdCf.head('amount', 'Amount', { onDark: true, align: 'end' })}</th>
+                <th className="border-r border-white/10 px-3 py-2.5 text-right">{fdCf.head('maturity', 'At maturity', { onDark: true, align: 'end' })}</th>
+                <th className="px-3 py-2.5 text-left">{fdCf.head('lien', 'Under lien', { onDark: true })}</th>
+                <th className="border-r border-white/10 px-3 py-2.5 text-right text-[#C7F03F]">{fdCf.head('free', 'Free', { onDark: true, align: 'end' })}</th>
+                <th className="px-3 py-2.5 text-left">{fdCf.head('status', 'Status', { onDark: true })}</th>
                 <th className="px-3 py-2.5 text-right">Actions</th>
               </tr>
             </thead>
