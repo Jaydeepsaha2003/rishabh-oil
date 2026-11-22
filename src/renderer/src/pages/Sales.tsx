@@ -69,6 +69,7 @@ import { BargainVouchersDialog } from '@/components/BargainVouchers'
 import { BargainMoveBalanceDialog } from '@/components/BargainMoveBalance'
 import { BargainNote } from '@/components/BargainNote'
 import { SaleTdsDialog } from '@/components/SaleTdsDialog'
+import { SupplyTransferDialog } from '@/components/SupplyTransferDialog'
 import { ShortageNoteDialog } from '@/components/ShortageNoteDialog'
 import { SerialNo } from '@/components/SerialNo'
 import { GateEntriesDialog } from '@/components/GateEntriesDialog'
@@ -513,6 +514,11 @@ function SalesTab({
   // Keyed company|invoice key, as the server stores it.
   const [tdsAsk, setTdsAsk] = useState<{ id: number; afterSave: boolean } | null>(null)
   const [tdsByInv, setTdsByInv] = useState<Record<string, Row>>({})
+  // THE TRANSFER BEHIND AN OUTSIDE SALE (SupplyTransferDialog): both ends,
+  // keyed company|invoice key — the outside sale (its transfer) and the
+  // transfer (the sale it fed).
+  const [supplyAsk, setSupplyAsk] = useState<number | null>(null)
+  const [supplyByInv, setSupplyByInv] = useState<Record<string, Row>>({})
   const loadTds = useCallback(async () => {
     try {
       const m: Record<string, Row> = {}
@@ -521,7 +527,19 @@ function SalesTab({
     } catch {
       /* the chip is a hint only */
     }
+    try {
+      const m: Record<string, Row> = {}
+      for (const l of await window.api.sales.supplyLinks()) {
+        m[`${l.sale_company_id}|${l.sale_key}`] = { side: 'sale', ...l }
+        m[`${l.supply_company_id}|${l.supply_group}`] = { side: 'supply', ...l }
+      }
+      setSupplyByInv(m)
+    } catch {
+      /* the chip is a hint only */
+    }
   }, [])
+  const supplyOf = (first: Row): Row | undefined =>
+    supplyByInv[`${first.company_id}|${String(first.invoice_group || first.invoice_no || `sale-${first.id}`)}`]
   // The credit notes linked to an invoice's tanker shortage (ShortageNoteDialog),
   // keyed company|invoice key.
   const [shortNotes, setShortNotes] = useState<Record<string, Row[]>>({})
@@ -2445,6 +2463,24 @@ function SalesTab({
                               </span>
                             </div>
                             <div className="mt-1.5 flex flex-wrap items-center gap-1.5" onClick={(e) => e.stopPropagation()}>
+                              {supplyOf(inv.first) && (
+                                <button
+                                  type="button"
+                                  onClick={() =>
+                                    setSupplyAsk(Number(supplyOf(inv.first)?.side === 'sale' ? inv.first.id : supplyOf(inv.first)?.sale_id))
+                                  }
+                                  title={
+                                    supplyOf(inv.first)?.side === 'sale'
+                                      ? `Bought from our own company under ${String(supplyOf(inv.first)?.supply_invoice_no || '')} — click to see or remove it`
+                                      : `The transfer behind ${String(supplyOf(inv.first)?.sale_invoice_no || '')} (an outside sale of the buying company)`
+                                  }
+                                  className="rounded-[3px] border border-[#C6DAF0] bg-[#EAF0FA] px-1.5 text-[10.5px] font-extrabold leading-[18px] text-[#1B4E82] hover:border-[#1B4E82]"
+                                >
+                                  {supplyOf(inv.first)?.side === 'sale'
+                                    ? `From ${String(supplyOf(inv.first)?.supply_invoice_no || '')}`
+                                    : `For ${String(supplyOf(inv.first)?.sale_invoice_no || '')}`}
+                                </button>
+                              )}
                               {tdsOf(inv.first)?.none && (
                                 <button
                                   type="button"
@@ -2844,7 +2880,19 @@ function SalesTab({
                                       label: 'Reject — customer refused it',
                                       icon: Ban,
                                       onClick: () => { setRejectInv(inv); setRejectReason('') }
-                                    }
+                                    },
+                                    // The oil came from our own other company: the transfer behind this sale.
+                                    ...(Number(inv.first.is_interco) !== 1 && !inv.first.return_supplier_id
+                                      ? [
+                                          {
+                                            label: supplyOf(inv.first)
+                                              ? `Inter-company transfer — ${String(supplyOf(inv.first)?.supply_invoice_no || 'view')}`
+                                              : 'Inter-company transfer — bought from our own company',
+                                            icon: Truck,
+                                            onClick: () => setSupplyAsk(Number(inv.first.id))
+                                          }
+                                        ]
+                                      : [])
                                   ]),
                               // Only on a delivered load that has actually left:
                               // there is nothing weighed in at the far end of an
@@ -5015,6 +5063,14 @@ function SalesTab({
         }}
       />
 
+      <SupplyTransferDialog
+        saleId={supplyAsk}
+        onClose={() => setSupplyAsk(null)}
+        onDone={() => {
+          void loadTds()
+          void load(true)
+        }}
+      />
       <SaleTdsDialog
         saleId={tdsAsk?.id ?? null}
         afterSave={tdsAsk?.afterSave}

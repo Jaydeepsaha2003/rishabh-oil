@@ -768,6 +768,11 @@ const api = {
       ipcRenderer.invoke('sales:tdsPost', { values }),
     tdsRemove: (id: number): Promise<{ ok: true }> => ipcRenderer.invoke('sales:tdsRemove', { id }),
     tdsNone: (id: number, on: boolean): Promise<{ ok: true }> => ipcRenderer.invoke('sales:tdsNone', { id, on }),
+    supplyInfo: (id: number): Promise<Row> => ipcRenderer.invoke('supplyInfo:list', { id }),
+    supplyLinks: (): Promise<Row[]> => ipcRenderer.invoke('supplyLinks:list'),
+    supplyRaise: (values: { sale_id: number; from_company_id: number; invoice_no: string; date?: string; lines: { id: number; qty: number; rate: number }[]; tags: string[] }): Promise<{ group: string }> =>
+      ipcRenderer.invoke('sales:supplyRaise', { values }),
+    supplyRemove: (id: number): Promise<{ ok: true }> => ipcRenderer.invoke('sales:supplyRemove', { id }),
     tdsMap: (companyIds?: number[]): Promise<Row[]> => ipcRenderer.invoke('sales:tdsMap', { companyIds }),
     setInvoiceStage: (
       group: string,

@@ -139,7 +139,7 @@ export async function raiseOnwardSale(tankerId: number, v: Row): Promise<void> {
  * found (or made) in the seller's book for the sale and in the buyer's book
  * for its paired purchase: one label, read the same on both.
  */
-async function tagTransfer(names: unknown, sellerId: number, group: string, saleIds: number[], buyerId: number): Promise<void> {
+export async function tagTransfer(names: unknown, sellerId: number, group: string, saleIds: number[], buyerId: number): Promise<void> {
   const list = Array.from(
     new Set((Array.isArray(names) ? names : []).map((x) => String(x ?? '').replace(/\s+/g, ' ').trim()).filter(Boolean))
   ).slice(0, 20)

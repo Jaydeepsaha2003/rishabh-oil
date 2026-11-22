@@ -1593,6 +1593,10 @@ export function registerIpc(): void {
   handle('sales:tdsPreview', (_e, { id }: { id: number }) => saleTdsPreview(id))
   handle('sales:tdsPost', (_e, { values }: { values: { sale_id: number; amount: number; ledger: string; date?: string } }) => postSaleTds(values))
   handle('sales:tdsRemove', (_e, { id }: { id: number }) => removeSaleTds(id))
+  handle('supplyInfo:list', async (_e, { id }: { id: number }) => (await import('./supplyTransfer')).supplyTransferInfo(Number(id)))
+  handle('supplyLinks:list', async () => (await import('./supplyTransfer')).supplyLinks())
+  handle('sales:supplyRaise', async (_e, { values }: { values: Row }) => (await import('./supplyTransfer')).raiseSupplyTransfer(values as never))
+  handle('sales:supplyRemove', async (_e, { id }: { id: number }) => (await import('./supplyTransfer')).removeSupplyTransfer(Number(id)))
   handle('sales:tdsNone', async (_e, { id, on }: { id: number; on: boolean }) => (await import('./saleTds')).markSaleNoTds(Number(id), !!on))
   handle('sales:tdsMap', (_e, args?: { companyIds?: number[] }) => saleTdsMap(args?.companyIds))
 

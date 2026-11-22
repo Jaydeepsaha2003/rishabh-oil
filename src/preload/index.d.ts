@@ -518,6 +518,10 @@ export interface Api {
     tdsPost: (values: { sale_id: number; amount: number; ledger: string; date?: string }) => Promise<{ entry_id: number }>
     tdsRemove: (id: number) => Promise<{ ok: true }>
     tdsNone: (id: number, on: boolean) => Promise<{ ok: true }>
+    supplyInfo: (id: number) => Promise<Row>
+    supplyLinks: () => Promise<Row[]>
+    supplyRaise: (values: { sale_id: number; from_company_id: number; invoice_no: string; date?: string; lines: { id: number; qty: number; rate: number }[]; tags: string[] }) => Promise<{ group: string }>
+    supplyRemove: (id: number) => Promise<{ ok: true }>
     tdsMap: (companyIds?: number[]) => Promise<Row[]>
     setInvoiceStage: (group: string, stage: string, force?: boolean, date?: string, received?: Record<string, number | null>) => Promise<{ group: string }>
     removeInvoice: (group: string) => Promise<{ group: string }>
