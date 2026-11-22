@@ -26891,6 +26891,15 @@ async function accountStatement(accountId, companyId) {
                  (SELECT MAX(tp.empty_date) FROM ${ALLOC} ta JOIN purchase_tankers tp ON tp.id = ta.tanker_id
                    WHERE ta.order_id = je.order_id AND tp.status = 'empty') AS tanker_last_empty,
                  (SELECT sl.invoice_no FROM sales sl WHERE sl.id = je.sale_id) AS sale_invoice_no,
+                 -- A REJECTED INVOICE: the sale voucher itself, or a voucher set Agst
+                 -- Ref it (its credit note, TDS, receipt) \u2014 its number and reason.
+                 COALESCE(
+                   (SELECT sl.invoice_no || '|' || COALESCE(sl.rejected_reason, '') FROM sales sl WHERE sl.id = je.sale_id AND sl.rejected_at IS NOT NULL),
+                   (SELECT sl.invoice_no || '|' || COALESCE(sl.rejected_reason, '')
+                      FROM journal_bill_allocs ba JOIN journal_lines jl3 ON jl3.id = ba.line_id
+                      JOIN sales sl ON sl.invoice_no = ba.ref_name AND sl.company_id = je.company_id AND sl.rejected_at IS NOT NULL
+                     WHERE jl3.entry_id = je.id LIMIT 1)
+                 ) AS rejected_of,
                  -- AND WHOSE BOOK THE DOCUMENT IS IN.
                  -- Almost always this ledger's own, and once in a while not:
                  -- an inter-company transfer can post its voucher in one
