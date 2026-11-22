@@ -1369,6 +1369,8 @@ export async function precloseLC(
     premature_interest?: number
     premature_interest_direction?: 'credit_to_us' | 'pay_to_party'
     release_margin?: boolean
+    // What happens to each FD under lien (fixedDeposits.settleLcFds).
+    fd_choices?: { lien_id: number; mode: 'free' | 'mature' | 'setoff'; amount?: number | string }[]
   }
 ): Promise<{ id: number }> {
   return withDbTransaction(async () => {
@@ -1445,7 +1447,8 @@ export async function precloseLC(
     charges: v.charges || [],
     repay_date: precloseDate,
     posted: true,
-    note: 'Preclosure repayment'
+    note: 'Preclosure repayment',
+    fd_choices: v.fd_choices || []
   })
   if (v.release_margin) {
     const margin = round2((n(lc.amount) * n(lc.margin_pct)) / 100)
@@ -1512,6 +1515,7 @@ export async function unPrecloseLC(id: number): Promise<{ id: number; removed: s
     args: [id, String(lc.preclosed_date).slice(0, 10)]
   })
   for (const r of reps.rows) {
+    await (await import('./fixedDeposits')).unsettleLcFds(n(r.id))
     if (r.journal_entry_id) await dropTreasuryEntry(n(r.journal_entry_id))
     await c.execute({ sql: 'DELETE FROM lc_repayments WHERE id = ?', args: [n(r.id)] })
   }
@@ -1783,6 +1787,8 @@ export async function repayLcParts(
     rebate_route?: 'credit_to_us' | 'pay_to_party'
     release_margin?: boolean
     note?: string
+    // The FDs under lien — applied when this repayment closes the LC.
+    fd_choices?: { lien_id: number; mode: 'free' | 'mature' | 'setoff'; amount?: number | string }[]
   }
 ): Promise<{ repayment_id: number; closed: boolean; rebate: number }> {
   return withDbTransaction(async () => {
@@ -1834,6 +1840,10 @@ export async function repayLcParts(
         sql: 'UPDATE lc_repayments SET charges = ?, charges_total = ? WHERE id = ?',
         args: [JSON.stringify(chargeRows), rowsTotal, repId]
       })
+    }
+    // The last parts: the LC closes with this repayment — its FDs are settled first.
+    if (!all.some((p) => !p.repaid_date && !want.has(n(p.part_no))) && (v.fd_choices || []).length) {
+      await (await import('./fixedDeposits')).settleLcFds(n(lcId), repId, date, v.fd_choices || [])
     }
     const { postLcRepaymentEntry } = await import('./treasury')
     await postLcRepaymentEntry(repId)
@@ -1891,6 +1901,7 @@ export async function undoLcPartRepayment(lcId: number): Promise<{ parts: number
         args: [n(p.id)]
       })
     }
+    await (await import('./fixedDeposits')).unsettleLcFds(repId)
     const rep = toPlain(await c.execute({ sql: 'SELECT journal_entry_id, fee_journal_entry_id FROM lc_repayments WHERE id = ?', args: [repId] }))[0] || {}
     if (n(rep.journal_entry_id)) await dropTreasuryEntry(n(rep.journal_entry_id))
     if (n(rep.fee_journal_entry_id)) await dropTreasuryEntry(n(rep.fee_journal_entry_id))
@@ -2165,7 +2176,15 @@ export async function editPreclosure(
     const res = await getClient().execute({ sql: 'SELECT preclosed_date FROM letters_of_credit WHERE id = ?', args: [n(id)] })
     if (!res.rows.length) throw new Error('LC not found')
     if (!res.rows[0].preclosed_date) throw new Error('This LC is not closed — use Preclose instead')
+    // The FD choices made at closing carry over unless the edit gives new ones.
+    let fdChoices = v.fd_choices
+    if (!fdChoices) {
+      const kept = await getClient()
+        .execute({ sql: 'SELECT id AS lien_id, on_close AS mode, setoff_amount AS amount FROM fd_liens WHERE lc_id = ? AND on_close IS NOT NULL', args: [n(id)] })
+        .catch(() => ({ rows: [] }))
+      fdChoices = (kept.rows as unknown as { lien_id: number; mode: 'free' | 'mature' | 'setoff'; amount: number }[]).map((r) => ({ lien_id: n(r.lien_id), mode: r.mode, amount: n(r.amount) }))
+    }
     await unPrecloseLC(n(id))
-    return precloseLC(n(id), v)
+    return precloseLC(n(id), { ...v, fd_choices: fdChoices })
   })
 }

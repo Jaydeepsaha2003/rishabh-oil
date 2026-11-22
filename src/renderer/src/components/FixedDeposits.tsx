@@ -1123,3 +1123,95 @@ export function LcFdSecurity({ lc, lcs }: { lc: Row; lcs: Row[] }): React.JSX.El
     </div>
   )
 }
+
+/**
+ * WHAT HAPPENS TO THE LC'S FDs AS IT IS REPAID / PRECLOSED (fixedDeposits.settleLcFds).
+ * One choice per FD under lien: free it (keeps earning), close it with the LC,
+ * or close it and set its money off against the LC — the bank then pays only
+ * the rest. Records only; no FD entry is posted.
+ */
+export type FdCloseChoice = { lien_id: number; mode: 'free' | 'mature' | 'setoff'; amount?: number }
+export function LcFdCloseChoices({ lcId, onChange }: { lcId: number; onChange: (c: FdCloseChoice[]) => void }): React.JSX.Element | null {
+  const [liens, setLiens] = useState<Row[]>([])
+  const [pick, setPick] = useState<Record<number, { mode: 'free' | 'mature' | 'setoff'; amount: string }>>({})
+  useEffect(() => {
+    let live = true
+    window.api.fd
+      .lcLiens(lcId)
+      .then((r) => {
+        if (!live) return
+        const act = r.filter((l) => l.active)
+        setLiens(act)
+        const init = Object.fromEntries(act.map((l) => [Number(l.id), { mode: 'free' as const, amount: String(Number(l.amount) || '') }]))
+        setPick(init)
+        onChange(act.map((l) => ({ lien_id: Number(l.id), mode: 'free' })))
+      })
+      .catch(() => setLiens([]))
+    return () => {
+      live = false
+    }
+  }, [lcId]) // eslint-disable-line react-hooks/exhaustive-deps
+  if (!liens.length) return null
+  const set = (id: number, p: Partial<{ mode: 'free' | 'mature' | 'setoff'; amount: string }>): void => {
+    const next = { ...pick, [id]: { ...pick[id], ...p } }
+    setPick(next)
+    onChange(liens.map((l) => ({ lien_id: Number(l.id), mode: next[Number(l.id)].mode, amount: Number(next[Number(l.id)].amount) || undefined })))
+  }
+  const setoff = liens.reduce((t, l) => t + (pick[Number(l.id)]?.mode === 'setoff' ? Number(pick[Number(l.id)]?.amount) || 0 : 0), 0)
+  const opts: [string, string, string][] = [
+    ['free', 'Free the FD', 'Lien released — the FD stays and keeps earning interest'],
+    ['mature', 'FD matures with the LC', 'The FD is closed along with this LC'],
+    ['setoff', 'FD matures + set off', 'The FD closes and its money pays part of the LC; the bank pays the rest']
+  ]
+  return (
+    <div className="space-y-2 rounded-[6px] border border-[#C6DAF0] bg-[#F4F8FD] p-3">
+      <div className="text-[11px] font-extrabold uppercase tracking-[.1em] text-[#1B4E82]">FDs under lien on this LC</div>
+      {liens.map((l) => {
+        const p = pick[Number(l.id)] || { mode: 'free', amount: '' }
+        return (
+          <div key={String(l.id)} className="space-y-1.5 rounded-[5px] border border-[#DCE6F2] bg-white p-2.5">
+            <div className="flex flex-wrap items-center gap-2 text-[12px]">
+              <b className="text-[#0A1F17]">{String(l.fd_no)}</b>
+              <span className="text-[#5A6B62]">{String(l.fd_bank || '')}</span>
+              <span className="ml-auto tabular-nums text-[#33473E]">
+                lien {formatINR(Number(l.amount))} · FD {formatINR(Number(l.fd_amount))}
+              </span>
+            </div>
+            <div className="flex flex-wrap gap-1.5">
+              {opts.map(([k, label, tip]) => (
+                <button
+                  key={k}
+                  type="button"
+                  title={tip}
+                  onClick={() => set(Number(l.id), { mode: k as 'free' | 'mature' | 'setoff' })}
+                  className={cn(
+                    'h-8 rounded-[5px] border px-2.5 text-[11.5px] font-extrabold',
+                    p.mode === k ? 'border-[#1B4E82] bg-[#1B4E82] text-white' : 'border-[#C6DAF0] bg-white text-[#1B4E82] hover:bg-[#EAF0FA]'
+                  )}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+            {p.mode === 'setoff' && (
+              <label className="flex flex-wrap items-center gap-2 text-[11.5px] font-bold text-[#33473E]">
+                Amount set off against the LC
+                <input
+                  inputMode="decimal"
+                  value={p.amount}
+                  onChange={(e) => set(Number(l.id), { amount: e.target.value.replace(/[^0-9.]/g, '') })}
+                  className="h-8 w-40 rounded-[5px] border border-[#C6DAF0] px-2 text-right tabular-nums outline-none"
+                />
+              </label>
+            )}
+          </div>
+        )
+      })}
+      {setoff > 0 && (
+        <div className="text-[11.5px] font-bold text-[#1B4E82]">
+          {formatINR(setoff)} comes from the FD — the repayment voucher takes only the rest from the bank. No FD entry is posted.
+        </div>
+      )}
+    </div>
+  )
+}

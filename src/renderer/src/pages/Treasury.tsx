@@ -38,7 +38,7 @@ import {
   Undo2,
   PiggyBank
 } from 'lucide-react'
-import { FixedDeposits, LcFdSecurity } from '@/components/FixedDeposits'
+import { FixedDeposits, LcFdCloseChoices, LcFdSecurity, type FdCloseChoice } from '@/components/FixedDeposits'
 import { RefundReceived } from '@/components/RefundReceived'
 import { ChargeRows, chargeRowsFrom, chargeRowsPayload, chargeRowsProblem, chargeRowsTotal, type ChargeRow } from '@/components/ChargeRows'
 import { Badge } from '@/components/ui/badge'
@@ -1901,6 +1901,8 @@ function TreasuryDesk({ onCompanyChange, focusLcId, focusBdId, onFocusHandled }:
   // True when the sheet is correcting a closure already booked, not making one.
   const [precloseEditing, setPrecloseEditing] = useState(false)
   const [precloseForm, setPrecloseForm] = useState<Row>({})
+  // What happens to each FD under lien as the LC closes (LcFdCloseChoices).
+  const [fdChoices, setFdChoices] = useState<FdCloseChoice[]>([])
   const [precloseSaving, setPrecloseSaving] = useState(false)
   const [precloseError, setPrecloseError] = useState<string | null>(null)
 
@@ -2078,7 +2080,8 @@ function TreasuryDesk({ onCompanyChange, focusLcId, focusBdId, onFocusHandled }:
         premature_interest_direction: (precloseForm.premature_interest_direction === 'pay_to_party' ? 'pay_to_party' : 'credit_to_us') as
           | 'pay_to_party'
           | 'credit_to_us',
-        release_margin: !!precloseForm.release_margin
+        release_margin: !!precloseForm.release_margin,
+        ...(fdChoices.length ? { fd_choices: fdChoices } : {})
       }
       if (precloseEditing) await window.api.lc.editPreclosure(Number(precloseRow.id), values)
       else await window.api.lc.preclose(Number(precloseRow.id), values)
@@ -2421,7 +2424,8 @@ function TreasuryDesk({ onCompanyChange, focusLcId, focusBdId, onFocusHandled }:
         comm_charges: 0,
         bank_charges: 0,
         charges: excess > 0.005 ? chargeRowsPayload(rows) : [],
-        posted: !!repayForm.posted
+        posted: !!repayForm.posted,
+        ...(!repayForm.id && fdChoices.length ? { fd_choices: fdChoices } : {})
       })
       toast.success(repayForm.posted ? 'Repayment posted to the books' : 'Repayment logged')
       const lcId = Number(repayForm.lc_id)
@@ -5087,6 +5091,9 @@ function TreasuryDesk({ onCompanyChange, focusLcId, focusBdId, onFocusHandled }:
                     </div>
                   </section>
 
+                  {/* THE FDs UNDER LIEN — freed, closed with the LC, or set off against it. */}
+                  {precloseRow && <LcFdCloseChoices lcId={Number(precloseRow.id)} onChange={setFdChoices} />}
+
                   {/* The supplier paid in installments and not yet in full: closing
                       now leaves the rest unpaid, so say so before it happens. */}
                   {n(r.installment_count) > 0 && partyLeft(r) > 0.5 && (
@@ -5319,6 +5326,11 @@ function TreasuryDesk({ onCompanyChange, focusLcId, focusBdId, onFocusHandled }:
                   />
                   Also release the margin FD ({formatINR(preclosePreview.margin)}) — a separate Dr Bank / Cr LC Margin entry
                 </label>
+              )}
+              {precloseRow && (
+                <div className="mt-3">
+                  <LcFdCloseChoices lcId={Number(precloseRow.id)} onChange={setFdChoices} />
+                </div>
               )}
               <p className="mt-3 text-[10px] text-muted-foreground">
                 Posts Dr LC Repayment (+ the charge ledgers) / Cr Bank the moment you confirm below.
@@ -7767,6 +7779,11 @@ function TreasuryDesk({ onCompanyChange, focusLcId, focusBdId, onFocusHandled }:
                   on a line of 13px text it read like a preference; boxed, and
                   turning green when it is on, it reads as the decision it is
                   — the footer's own label changes with it. */}
+              {!repayForm.id && Number(repayForm.lc_id) > 0 && (
+                <div className="sm:col-span-2">
+                  <LcFdCloseChoices lcId={Number(repayForm.lc_id)} onChange={setFdChoices} />
+                </div>
+              )}
               <label
                 className={cn(
                   'flex cursor-pointer items-center gap-2 text-[13px] sm:col-span-2',
@@ -7930,6 +7947,7 @@ function LcInstallmentsDialog({
     charges: ''
   })
   const [pick, setPick] = useState<Set<number>>(new Set())
+  const [partFd, setPartFd] = useState<FdCloseChoice[]>([])
   const [rep, setRep] = useState<{ date: string; comm: string; bank: string; chg: ChargeRow[]; route: 'credit_to_us' | 'pay_to_party'; margin: boolean }>({
     date: todayISO(),
     comm: '',
@@ -8061,7 +8079,8 @@ function LcInstallmentsDialog({
         bank_charges: 0,
         charges: chargeRowsPayload(rep.chg),
         rebate_route: rep.route,
-        release_margin: rep.margin
+        release_margin: rep.margin,
+        ...(partFd.length ? { fd_choices: partFd } : {})
       })
       toast.success(
         `${formatINR(principal)} repaid to the bank${r.rebate > 0.005 ? ` · ${formatINR(r.rebate)} interest rebate` : ''}${r.closed ? ' — the LC is now closed' : ''}`
@@ -8389,6 +8408,11 @@ function LcInstallmentsDialog({
                     <input type="checkbox" checked={rep.margin} onChange={(e) => setRep((r) => ({ ...r, margin: e.target.checked }))} />
                     This clears the last part — close the LC and release the margin
                   </label>
+                )}
+                {closesLc && !!lc && (
+                  <div className="sm:col-span-3">
+                    <LcFdCloseChoices lcId={Number(lc?.id)} onChange={setPartFd} />
+                  </div>
                 )}
               </div>
               <div className="flex flex-wrap items-center gap-3 border-t border-[#E4ECE3] bg-[#FBFCFA] px-4 py-3 text-[12px] font-semibold text-[#33473E]">

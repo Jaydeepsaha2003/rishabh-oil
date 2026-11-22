@@ -336,3 +336,77 @@ export async function lcFdLiens(lcId: number): Promise<Row[]> {
   )
   return rows.map((l) => ({ ...l, ...lienState(l), amount: n(l.amount) }))
 }
+
+/* -------------------------------------------------------------------------- */
+/* An LC repaid or preclosed: what happens to each FD under lien on it         */
+/* -------------------------------------------------------------------------- */
+//   free   — the lien is released; the FD stays and keeps earning interest
+//   mature — the FD is closed with the LC (encashed), its money comes to us
+//   setoff — the FD is closed and its money pays part of the LC; the bank pays
+//            the rest. The repayment's voucher then takes only the bank's part
+//            (lc_repayments.fd_setoff) — no FD entry is posted anywhere.
+// Records only: nothing here writes a voucher. Undone with the repayment.
+async function ensureFdClose(): Promise<void> {
+  await ensureFd()
+  const c = getClient()
+  const lien = new Set(toPlain(await c.execute('PRAGMA table_info(fd_liens)')).map((r) => String(r.name)))
+  for (const [col, type] of [['on_close', 'TEXT'], ['setoff_amount', 'REAL'], ['repayment_id', 'INTEGER']]) {
+    if (!lien.has(col)) await c.execute(`ALTER TABLE fd_liens ADD COLUMN ${col} ${type}`)
+  }
+  const fd = new Set(toPlain(await c.execute('PRAGMA table_info(fixed_deposits)')).map((r) => String(r.name)))
+  if (!fd.has('closed_by_lien')) await c.execute('ALTER TABLE fixed_deposits ADD COLUMN closed_by_lien INTEGER')
+  const rep = new Set(toPlain(await c.execute('PRAGMA table_info(lc_repayments)')).map((r) => String(r.name)))
+  if (!rep.has('fd_setoff')) await c.execute('ALTER TABLE lc_repayments ADD COLUMN fd_setoff REAL')
+}
+
+export type FdCloseChoice = { lien_id: number; mode: 'free' | 'mature' | 'setoff'; amount?: number | string }
+
+/** Apply the choices for an LC's FDs as it is repaid; returns the total set off against the LC. */
+export async function settleLcFds(lcId: number, repaymentId: number, date: string, choices: FdCloseChoice[]): Promise<number> {
+  await ensureFdClose()
+  const c = getClient()
+  const d = iso(date) || todayISO()
+  const liens = (await lcFdLiens(n(lcId))).filter((l) => l.active)
+  let setoff = 0
+  for (const ch of choices || []) {
+    const l = liens.find((x) => n(x.id) === n(ch.lien_id))
+    if (!l) continue
+    const mode = ch.mode === 'mature' || ch.mode === 'setoff' ? ch.mode : 'free'
+    let amt = 0
+    if (mode !== 'free') {
+      // Closing the FD: it must not still secure another LC.
+      const others = (await listFds()).find((f) => n(f.id) === n(l.fd_id))
+      const otherLiens = ((others?.liens as Row[]) || []).filter((x) => x.active && n(x.lc_id) !== n(lcId))
+      if (otherLiens.length) throw new Error(`${l.fd_no} also secures LC ${otherLiens.map((x) => x.lc_no).join(', ')} — it can only be freed here`)
+      if (mode === 'setoff') {
+        amt = round2(n(ch.amount))
+        if (!(amt > 0)) throw new Error(`Enter how much of ${l.fd_no} is set off against the LC`)
+        setoff = round2(setoff + amt)
+      }
+      await c.execute({
+        sql: 'UPDATE fixed_deposits SET closed_date = ?, closed_amount = COALESCE(?, closed_amount), closed_by_lien = ? WHERE id = ?',
+        args: [d, mode === 'setoff' ? amt : n(ch.amount) > 0 ? round2(n(ch.amount)) : null, n(l.id), n(l.fd_id)]
+      })
+    }
+    await c.execute({
+      sql: 'UPDATE fd_liens SET released_date = ?, on_close = ?, setoff_amount = ?, repayment_id = ? WHERE id = ?',
+      args: [d, mode, mode === 'setoff' ? amt : null, n(repaymentId) || null, n(l.id)]
+    })
+  }
+  if (n(repaymentId)) await c.execute({ sql: 'UPDATE lc_repayments SET fd_setoff = ? WHERE id = ?', args: [setoff > 0 ? setoff : null, n(repaymentId)] })
+  return setoff
+}
+
+/** Take back what a repayment did to its LC's FDs (the repayment is being removed). */
+export async function unsettleLcFds(repaymentId: number): Promise<void> {
+  if (!n(repaymentId)) return
+  await ensureFdClose()
+  const c = getClient()
+  const liens = toPlain(await c.execute({ sql: 'SELECT id, fd_id, on_close FROM fd_liens WHERE repayment_id = ?', args: [n(repaymentId)] }))
+  for (const l of liens) {
+    if (l.on_close === 'mature' || l.on_close === 'setoff') {
+      await c.execute({ sql: 'UPDATE fixed_deposits SET closed_date = NULL, closed_amount = NULL, closed_by_lien = NULL WHERE id = ? AND closed_by_lien = ?', args: [n(l.fd_id), n(l.id)] })
+    }
+    await c.execute({ sql: 'UPDATE fd_liens SET released_date = NULL, on_close = NULL, setoff_amount = NULL, repayment_id = NULL WHERE id = ?', args: [n(l.id)] })
+  }
+}

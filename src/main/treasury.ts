@@ -1663,6 +1663,9 @@ export async function postLcRepaymentEntry(repaymentId: number): Promise<void> {
   if (principal < -0.004) {
     throw new Error(`The charges (${(comm + bankCharges + rowsTotal).toFixed(2)}) are more than the ${total.toFixed(2)} debited — check the repayment amount`)
   }
+  // An FD set off against the LC paid part of the principal: the voucher takes
+  // only the bank's part (the FD part is left for the FD's own entry — none here).
+  const fdSetoff = round2(Math.min(Math.max(0, n(rep.fd_setoff)), Math.max(0, principal)))
   // A rescued upfront interest (and the LC's own charges with it) is the one
   // thing still raised against the payable in a voucher of its own: it was
   // owed on the LC, never reconciled, and this is where it is caught.
@@ -1700,19 +1703,20 @@ export async function postLcRepaymentEntry(repaymentId: number): Promise<void> {
   // One lump out of the account, exactly what the statement shows — the
   // principal off the payable and the day's charges to expense beside it.
   const payLines: { account: string; group: string; dr?: number; cr?: number }[] = []
-  if (principal > 0.004) payLines.push({ account: payable, group: LC_PAYABLE_GROUP, dr: principal })
+  if (principal - fdSetoff > 0.004) payLines.push({ account: payable, group: LC_PAYABLE_GROUP, dr: round2(principal - fdSetoff) })
   if (comm > 0.004) payLines.push({ account: L.comm, group: 'Indirect Expenses', dr: comm })
   if (bankCharges > 0.004) payLines.push({ account: L.charges, group: 'Indirect Expenses', dr: bankCharges })
   for (const x of rows) payLines.push({ account: x.account, group: x.group || 'Indirect Expenses', dr: x.amount })
-  payLines.push({ account: bankAcc, group: 'Bank Accounts', cr: total })
+  if (total - fdSetoff > 0.004) payLines.push({ account: bankAcc, group: 'Bank Accounts', cr: round2(total - fdSetoff) })
   const je = await postJournal({
     date,
     vchType: 'PAYMENT',
     vchNo: rep.lc_no ? String(rep.lc_no) : null,
     narration:
-      comm + bankCharges + rowsTotal > 0.004
+      (comm + bankCharges + rowsTotal > 0.004
         ? `LC ${rep.lc_no} repaid to ${rep.bank || 'the bank'} (incl. ${(comm + bankCharges + rowsTotal).toFixed(2)} charges)`
-        : `LC ${rep.lc_no} repaid to ${rep.bank || 'the bank'}`,
+        : `LC ${rep.lc_no} repaid to ${rep.bank || 'the bank'}`) +
+      (fdSetoff > 0.004 ? ` — ${fdSetoff.toFixed(2)} set off from FD, the rest from the bank` : ''),
     companyId: n(rep.company_id) || undefined,
     lines: payLines
   })
@@ -1961,6 +1965,12 @@ export async function saveLcRepayment(v: Row): Promise<{ id: number }> {
     sql: 'UPDATE lc_repayments SET charges = ?, charges_total = ? WHERE id = ?',
     args: [chargeRows.length ? JSON.stringify(chargeRows) : null, rowsTotal > 0.004 ? rowsTotal : null, id]
   })
+  // The FDs under lien on this LC — freed, closed with it, or set off against it.
+  if (Array.isArray(v.fd_choices) && v.fd_choices.length) {
+    const { settleLcFds, unsettleLcFds } = await import('./fixedDeposits')
+    await unsettleLcFds(id)
+    await settleLcFds(lcId, id, v.repay_date ? String(v.repay_date).slice(0, 10) : todayISO(), v.fd_choices)
+  }
   if (posted) {
     try {
       await postLcRepaymentEntry(id)
@@ -1978,6 +1988,7 @@ export async function saveLcRepayment(v: Row): Promise<{ id: number }> {
 export async function deleteLcRepayment(id: number): Promise<{ id: number }> {
   return withDbTransaction(async () => {
   const c = getClient()
+  await (await import('./fixedDeposits')).unsettleLcFds(id)
   const res = await c.execute({
     sql: 'SELECT journal_entry_id, fee_journal_entry_id FROM lc_repayments WHERE id = ?',
     args: [id]
