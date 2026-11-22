@@ -23,8 +23,21 @@ const STATUS: Record<string, { label: string; cls: string }> = {
   active: { label: 'Active', cls: 'border-[#BFE3CB] bg-[#E9F5EE] text-[#0B6B45]' },
   maturing: { label: 'Maturing soon', cls: 'border-[#E8C27A] bg-[#FFF4DC] text-[#7A4B00]' },
   matured: { label: 'Matured', cls: 'border-[#F0C9C4] bg-[#FDECEA] text-[#B3261E]' },
-  closed: { label: 'Closed', cls: 'border-[#D6DDE3] bg-[#EEF2F5] text-[#3E4C57]' }
+  closed: { label: 'Preclosed', cls: 'border-[#D6DDE3] bg-[#EEF2F5] text-[#3E4C57]' }
 }
+// Which tab an FD sits under: an FD closed BEFORE its maturity is Preclosed,
+// one closed on or after it is Matured; maturing soon is still Active.
+const tabOf = (f: Row): 'active' | 'matured' | 'closed' => {
+  if (f.status === 'closed') {
+    const m = String(f.maturity_date || '').slice(0, 10)
+    const c = String(f.closed_date || '').slice(0, 10)
+    return m && c && c >= m ? 'matured' : 'closed'
+  }
+  return f.status === 'matured' ? 'matured' : 'active'
+}
+// The row's own pill: a matured FD closed is 'Matured · closed'.
+const pillOf = (f: Row): { label: string; cls: string } =>
+  f.status === 'closed' && tabOf(f) === 'matured' ? { label: 'Matured · closed', cls: STATUS.closed.cls } : STATUS[f.status] || STATUS.active
 const lbl = 'mb-1 block text-[10px] font-extrabold uppercase tracking-[.1em] text-[#5A6B62]'
 const inp = 'h-9 w-full rounded-[4px] border border-[#C9DCCF] bg-white px-2.5 text-[13px] font-semibold outline-none focus:border-[#0B6B45] focus:ring-2 focus:ring-[#0B6B45]/15'
 
@@ -40,7 +53,7 @@ function DaysChip({ fd }: { fd: Row }): React.JSX.Element | null {
 export function FixedDeposits({ lcs, onCount, onOpenLc }: { lcs: Row[]; onCount?: (k: number) => void; onOpenLc?: (lcId: number) => void }): React.JSX.Element {
   const [list, setList] = useState<Row[] | null>(null)
   const [q, setQ] = useState('')
-  const [st, setSt] = useState<'all' | 'active' | 'maturing' | 'matured' | 'closed'>('all')
+  const [st, setSt] = useState<'all' | 'active' | 'matured' | 'closed'>('all')
   const [bank, setBank] = useState('all')
   const [open, setOpen] = useState<Set<number>>(new Set())
   const [form, setForm] = useState<Row | null>(null)
@@ -61,7 +74,7 @@ export function FixedDeposits({ lcs, onCount, onOpenLc }: { lcs: Row[]; onCount?
   const all = list || []
   const banks = useMemo(() => [...new Set(all.map((f) => String(f.bank)))].sort(), [all])
   const shown = all.filter((f) => {
-    if (st !== 'all' && f.status !== st) return false
+    if (st !== 'all' && tabOf(f) !== st) return false
     if (bank !== 'all' && String(f.bank) !== bank) return false
     const t = q.trim().toUpperCase()
     if (!t) return true
@@ -72,7 +85,7 @@ export function FixedDeposits({ lcs, onCount, onOpenLc }: { lcs: Row[]; onCount?
   const soon = held.filter((f) => f.status === 'maturing')
   const due = held.filter((f) => f.status === 'matured')
   const counts: Record<string, number> = { all: all.length, active: 0, maturing: 0, matured: 0, closed: 0 }
-  all.forEach((f) => (counts[f.status] = (counts[f.status] || 0) + 1))
+  all.forEach((f) => (counts[tabOf(f)] = (counts[tabOf(f)] || 0) + 1))
 
   async function act(fn: () => Promise<unknown>, ok: string): Promise<void> {
     try {
@@ -145,7 +158,7 @@ export function FixedDeposits({ lcs, onCount, onOpenLc }: { lcs: Row[]; onCount?
       {/* FILTERS */}
       <div className="flex flex-wrap items-center gap-2 border-b border-[#E4ECE3] px-4 py-3">
         <span className="flex rounded-[5px] border border-[#CBDACB] bg-[#EDF2EC] p-[4px] shadow-[inset_0_1px_2px_rgba(10,31,23,.07)]">
-          {(['all', 'active', 'maturing', 'matured', 'closed'] as const).map((k) => (
+          {(['all', 'active', 'matured', 'closed'] as const).map((k) => (
             <button
               key={k}
               type="button"
@@ -322,7 +335,7 @@ export function FixedDeposits({ lcs, onCount, onOpenLc }: { lcs: Row[]; onCount?
                         {f.status === 'closed' ? '—' : formatINR(n(f.free_amount))}
                       </td>
                       <td className="px-3 py-3.5">
-                        <span className={cn('whitespace-nowrap rounded-[3px] border px-2 py-0.5 text-[10.5px] font-extrabold uppercase tracking-[.04em]', STATUS[f.status].cls)}>{STATUS[f.status].label}</span>
+                        <span className={cn('whitespace-nowrap rounded-[3px] border px-2 py-0.5 text-[10.5px] font-extrabold uppercase tracking-[.04em]', pillOf(f).cls)}>{pillOf(f).label}</span>
                       </td>
                       <td className="px-3 py-3.5 text-right" onClick={(e) => e.stopPropagation()}>
                         {/* Every action in the one menu. */}
@@ -343,7 +356,7 @@ export function FixedDeposits({ lcs, onCount, onOpenLc }: { lcs: Row[]; onCount?
                               },
                               f.status === 'closed'
                                 ? { label: 'Reopen', icon: RotateCcw, onClick: () => void act(() => window.api.fd.reopen(id), `${f.fd_no} reopened`) }
-                                : { label: 'Close / encash', icon: CheckCircle2, onClick: () => setClosing({ id, fd_no: f.fd_no, date: todayISO(), amount: String(n(f.maturity_value)) }) },
+                                : { label: n(f.days_left) > 0 ? 'Preclose / encash' : 'Close — matured', icon: CheckCircle2, onClick: () => setClosing({ id, fd_no: f.fd_no, date: todayISO(), amount: String(n(f.maturity_value)) }) },
                               {
                                 label: 'Delete',
                                 icon: Trash2,
@@ -368,7 +381,7 @@ export function FixedDeposits({ lcs, onCount, onOpenLc }: { lcs: Row[]; onCount?
                                 ['Interest', `${n(f.interest_pct)}% · ${f.interest_payout === 'payout' ? 'paid out' : 'compounded quarterly'}`],
                                 ['Interest till date', formatINR(n(f.accrued))],
                                 ['At maturity', `${formatINR(n(f.maturity_value))}${n(f.maturity_amount) > 0 ? ' (bank figure)' : ''}`],
-                                ...(f.closed_date ? [['Closed', `${formatDate(String(f.closed_date))}${n(f.closed_amount) > 0 ? ` · ${formatINR(n(f.closed_amount))} received` : ''}`]] : []),
+                                ...(f.closed_date ? [[tabOf(f) === 'closed' ? 'Preclosed' : 'Closed at maturity', `${formatDate(String(f.closed_date))}${n(f.closed_amount) > 0 ? ` · ${formatINR(n(f.closed_amount))} received` : ''}`]] : []),
                                 ...(f.note ? [['Note', String(f.note)]] : [])
                               ].map(([k, v]) => (
                                 <div key={k} className="flex justify-between gap-3 border-t border-[#F1F5F0] py-1 first:border-t-0">
@@ -536,7 +549,7 @@ function CloseFdDialog({ init, onClose, onDone }: { init: Row; onClose: () => vo
 export function FdMobile({ lcs, onData }: { lcs: Row[]; onData?: (list: Row[]) => void }): React.JSX.Element {
   const [list, setList] = useState<Row[] | null>(null)
   const [q, setQ] = useState('')
-  const [st, setSt] = useState<'all' | 'active' | 'maturing' | 'matured' | 'closed'>('all')
+  const [st, setSt] = useState<'all' | 'active' | 'matured' | 'closed'>('all')
   const [open, setOpen] = useState<number | null>(null)
   const [form, setForm] = useState<Row | null>(null)
   const [lien, setLien] = useState<Row | null>(null)
@@ -562,9 +575,9 @@ export function FdMobile({ lcs, onData }: { lcs: Row[]; onData?: (list: Row[]) =
   }
   const all = list || []
   const counts: Record<string, number> = { all: all.length, active: 0, maturing: 0, matured: 0, closed: 0 }
-  all.forEach((f) => (counts[f.status] = (counts[f.status] || 0) + 1))
+  all.forEach((f) => (counts[tabOf(f)] = (counts[tabOf(f)] || 0) + 1))
   const shown = all.filter((f) => {
-    if (st !== 'all' && f.status !== st) return false
+    if (st !== 'all' && tabOf(f) !== st) return false
     const t = q.trim().toUpperCase()
     return !t || [f.fd_no, f.bank, ...(f.liens as Row[]).map((l) => l.lc_no)].some((x) => String(x || '').toUpperCase().includes(t))
   })
@@ -581,7 +594,7 @@ export function FdMobile({ lcs, onData }: { lcs: Row[]; onData?: (list: Row[]) =
           )}
         </label>
         <div className="-mx-4 flex gap-1.5 overflow-x-auto px-4 pb-0.5">
-          {(['all', 'active', 'maturing', 'matured', 'closed'] as const).map((k) => (
+          {(['all', 'active', 'matured', 'closed'] as const).map((k) => (
             <button
               key={k}
               type="button"
@@ -617,7 +630,7 @@ export function FdMobile({ lcs, onData }: { lcs: Row[]; onData?: (list: Row[]) =
                 <button type="button" onClick={() => setOpen(isOpen ? null : id)} className="block w-full px-3.5 py-3 text-left" aria-expanded={isOpen}>
                   <div className="flex items-center gap-2">
                     <span className="rounded-[4px] bg-[#0B3D2E] px-1.5 py-0.5 text-[11.5px] font-extrabold text-[#C7F03F]">{String(f.fd_no)}</span>
-                    <span className={cn('rounded-full border px-2 py-0.5 text-[10px] font-extrabold', STATUS[f.status].cls)}>{STATUS[f.status].label}</span>
+                    <span className={cn('rounded-full border px-2 py-0.5 text-[10px] font-extrabold', pillOf(f).cls)}>{pillOf(f).label}</span>
                     <ChevronDown className={cn('ml-auto h-4 w-4 text-[#8CA396] transition-transform', isOpen && 'rotate-180')} />
                   </div>
                   <div className="mt-1.5 flex items-end justify-between gap-2">
@@ -654,7 +667,7 @@ export function FdMobile({ lcs, onData }: { lcs: Row[]; onData?: (list: Row[]) =
                       ['Interest', `${n(f.interest_pct)}% · ${f.interest_payout === 'payout' ? 'paid out' : 'compounded quarterly'}`],
                       ['Interest till date', formatINR(n(f.accrued))],
                       ['At maturity', formatINR(n(f.maturity_value))],
-                      ...(f.closed_date ? [['Closed', `${formatDate(String(f.closed_date))}${n(f.closed_amount) > 0 ? ` · ${formatINR(n(f.closed_amount))}` : ''}`]] : []),
+                      ...(f.closed_date ? [[tabOf(f) === 'closed' ? 'Preclosed' : 'Closed at maturity', `${formatDate(String(f.closed_date))}${n(f.closed_amount) > 0 ? ` · ${formatINR(n(f.closed_amount))}` : ''}`]] : []),
                       ...(f.note ? [['Note', String(f.note)]] : [])
                     ].map(([k, v]) => (
                       <div key={k} className="flex justify-between gap-3 py-0.5">
