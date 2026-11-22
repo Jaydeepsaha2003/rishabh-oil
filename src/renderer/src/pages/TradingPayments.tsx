@@ -460,7 +460,7 @@ export function TradingPayments({
                               className="text-[12.5px] font-extrabold text-[#0A1F17] underline-offset-2 hover:underline"
                               title="Open this deal"
                             >
-                              Deal · {formatDate(f.deal_date)}
+                              {f.chain_id ? 'Chain' : 'Deal'} · {formatDate(f.deal_date)}
                             </button>
                             <span className="rounded-[2px] bg-[#EAF0E9] px-2 py-0.5 text-[11px] font-extrabold tracking-[.06em] text-[#33473E]">
                               {String(f.product_code || f.product_name || '—')}
@@ -873,7 +873,7 @@ export function TradingPaymentsMobile({
                 onClick={() => onOpenDeal?.(dealId)}
                 className="flex flex-wrap items-center gap-x-2 gap-y-1 rounded-[4px] bg-[#0B3D2E] px-3 py-2 text-left text-white"
               >
-                <span className="text-[12.5px] font-extrabold">Deal · {formatDate(f.deal_date)}</span>
+                <span className="text-[12.5px] font-extrabold">{f.chain_id ? 'Chain' : 'Deal'} · {formatDate(f.deal_date)}</span>
                 <span className="rounded-[2px] bg-white/10 px-1.5 py-0.5 text-[10.5px] font-extrabold text-[#C7F03F]">
                   {String(f.product_code || f.product_name || '—')}
                 </span>

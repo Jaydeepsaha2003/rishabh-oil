@@ -823,9 +823,40 @@ export async function listTradingPayments(): Promise<Row[]> {
     args: from ? [cid, from] : [cid]
   })
   const deals = toPlain(dealRes)
-  if (!deals.length) return []
   const dealIds = deals.map((d) => n(d.id)).filter(Boolean)
   const { orders, sales } = await dealLineIds(dealIds, deals)
+  // CHAINS (tradingChains.ts) are paid and received like deals: each chain's
+  // steps booked in this company — its purchases (what we owe) and its sales
+  // (what is owed to us) — come in under the chain, keyed by a negative id so
+  // they never meet a deal's.
+  const chainRes = await c
+    .execute({
+      sql: `SELECT ch.id, ch.chain_date, p.code AS product_code, p.name AS product_name,
+                   l.order_id, l.order_company_id, l.sale_group, l.sale_company_id
+              FROM trading_chains ch
+              JOIN trading_chain_legs l ON l.chain_id = ch.id
+              LEFT JOIN products p ON p.id = ch.product_id
+             WHERE (l.order_company_id = ? OR l.sale_company_id = ?)${from ? ' AND ch.chain_date >= ?' : ''}
+             ORDER BY ch.chain_date DESC, ch.id DESC, l.step`,
+      args: from ? [cid, cid, from] : [cid, cid]
+    })
+    .catch(() => null)
+  const chainSaleGroups = new Map<number, string[]>()
+  for (const r of chainRes ? toPlain(chainRes) : []) {
+    const key = -n(r.id)
+    if (!deals.some((d) => n(d.id) === key)) {
+      deals.push({ id: key, chain_id: n(r.id), deal_date: r.chain_date, product_code: r.product_code, product_name: r.product_name })
+    }
+    if (n(r.order_company_id) === cid && n(r.order_id)) orders.set(key, [...(orders.get(key) ?? []), n(r.order_id)])
+    if (n(r.sale_company_id) === cid && r.sale_group) chainSaleGroups.set(key, [...(chainSaleGroups.get(key) ?? []), String(r.sale_group)])
+  }
+  for (const [key, groups] of chainSaleGroups) {
+    const ids = toPlain(
+      await c.execute({ sql: `SELECT id FROM sales WHERE invoice_group IN (${groups.map(() => '?').join(',')}) ORDER BY id`, args: groups })
+    ).map((r) => n(r.id))
+    if (ids.length) sales.set(key, [...(sales.get(key) ?? []), ...ids])
+  }
+  if (!deals.length) return []
   const orderIds = Array.from(new Set(Array.from(orders.values()).flat()))
   const saleIds = Array.from(new Set(Array.from(sales.values()).flat()))
 
@@ -998,6 +1029,8 @@ export async function listTradingPayments(): Promise<Row[]> {
     const id = n(d.id)
     const dealInfo = {
       deal_id: id,
+      // A chain's rows: its id, so the screen says "Chain" and opens it there.
+      chain_id: n(d.chain_id) || null,
       deal_date: d.deal_date ?? null,
       product_code: d.product_code ?? null,
       product_name: d.product_name ?? null,

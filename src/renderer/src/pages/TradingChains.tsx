@@ -734,15 +734,6 @@ export function TradingChains({
       Icon: ArrowRight,
       bg: '#FFF4E0',
       fg: '#8A5300'
-    },
-    {
-      k: 'Value booked',
-      v: formatINR(shown.reduce((t, ch) => t + chainValue(ch), 0)),
-      sub: 'every step, with GST',
-      accent: '#12855A',
-      Icon: TrendingUp,
-      bg: '#E9F5EE',
-      fg: '#0B6B45'
     }
   ]
   const KindBadge = ({ l }: { l: Row }): React.JSX.Element => {
@@ -761,7 +752,7 @@ export function TradingChains({
   const detail = detailId != null ? chains.find((ch) => n(ch.id) === detailId) || null : null
   return (
     <div className="space-y-3.5">
-      <div className="grid gap-2.5 sm:grid-cols-2 xl:grid-cols-4">
+      <div className="grid gap-2.5 sm:grid-cols-2 xl:grid-cols-3">
         {tiles.map((t) => (
           <div key={t.k} className="flex items-center gap-3 rounded-[4px] border border-[#D6E2D6] bg-white px-3.5 py-3" style={{ borderTop: `3px solid ${t.accent}` }}>
             <div className="flex h-[38px] w-[38px] shrink-0 items-center justify-center rounded-[3px]" style={{ background: t.bg, color: t.fg }}>
@@ -942,21 +933,34 @@ export function TradingChains({
               const round = closes(detail)
               const total = chainValue(detail)
               // What each of our companies booked on the chain.
-              const perCo = new Map<string, { sold: number; bought: number }>()
+              // Value with GST, quantity, and the taxable value (P&L is before GST —
+              // GST passes through). 'paper' = a step the chain created: a trading
+              // invoice, which moves no tank stock.
+              type Co = { sold: number; bought: number; soldQty: number; boughtQty: number; soldTax: number; boughtTax: number; picked: boolean }
+              const perCo = new Map<string, Co>()
+              const blank = (): Co => ({ sold: 0, bought: 0, soldQty: 0, boughtQty: 0, soldTax: 0, boughtTax: 0, picked: false })
               for (const l of legs) {
+                const tax = n(l.qty) * n(l.rate)
                 if (l.seller_kind === 'company') {
                   const k = s(l.seller_name)
-                  const v = perCo.get(k) || { sold: 0, bought: 0 }
+                  const v = perCo.get(k) || blank()
                   v.sold += legValue(l)
+                  v.soldQty += n(l.qty)
+                  v.soldTax += tax
+                  if (n(l.linked)) v.picked = true
                   perCo.set(k, v)
                 }
                 if (l.buyer_kind === 'company') {
                   const k = s(l.buyer_name)
-                  const v = perCo.get(k) || { sold: 0, bought: 0 }
+                  const v = perCo.get(k) || blank()
                   v.bought += legValue(l)
+                  v.boughtQty += n(l.qty)
+                  v.boughtTax += tax
+                  if (n(l.linked)) v.picked = true
                   perCo.set(k, v)
                 }
               }
+              const groupPl = [...perCo.values()].reduce((t, v) => t + v.soldTax - v.boughtTax, 0)
               return (
                 <>
                   <DialogHeader className="!block !space-y-0 !bg-[#0B3D2E] !px-5 !pb-5 !pt-5 !text-left">
@@ -1021,14 +1025,54 @@ export function TradingChains({
                               <div>
                                 <div className="text-[9.5px] font-extrabold uppercase tracking-[.12em] text-[#0B6B45]">Sold</div>
                                 <div className="text-[14px] font-bold tabular-nums">{formatINR(v.sold)}</div>
+                                <div className="text-[11px] font-semibold tabular-nums text-[#5A6B62]">{formatNum(v.soldQty)} MT</div>
                               </div>
                               <div>
                                 <div className="text-[9.5px] font-extrabold uppercase tracking-[.12em] text-[#8C2F26]">Bought</div>
                                 <div className="text-[14px] font-bold tabular-nums">{formatINR(v.bought)}</div>
+                                <div className="text-[11px] font-semibold tabular-nums text-[#5A6B62]">{formatNum(v.boughtQty)} MT</div>
                               </div>
                             </div>
+                            {(() => {
+                              const qty = v.boughtQty - v.soldQty
+                              const pl = v.soldTax - v.boughtTax
+                              return (
+                                <div className="mt-2.5 grid grid-cols-2 gap-2 border-t border-[#EEF3EC] pt-2.5">
+                                  <div>
+                                    <div className="text-[9.5px] font-extrabold uppercase tracking-[.12em] text-[#1B4E82]">Qty effect</div>
+                                    <div className={cn('text-[14px] font-bold tabular-nums', Math.abs(qty) < 0.0005 ? 'text-[#5A6B62]' : qty > 0 ? 'text-[#0B6B45]' : 'text-[#B3261E]')}>
+                                      {qty > 0.0005 ? '+' : ''}
+                                      {formatNum(qty)} MT
+                                    </div>
+                                    <div className="text-[10.5px] font-semibold text-[#7A8C82]">
+                                      {v.picked ? 'picked invoices move stock as booked' : 'trading — no tank stock moves'}
+                                    </div>
+                                  </div>
+                                  <div>
+                                    <div className="text-[9.5px] font-extrabold uppercase tracking-[.12em] text-[#5A6B62]">{pl >= 0 ? 'Profit' : 'Loss'}</div>
+                                    <div className={cn('text-[14px] font-bold tabular-nums', Math.abs(pl) < 0.5 ? 'text-[#5A6B62]' : pl > 0 ? 'text-[#0B6B45]' : 'text-[#B3261E]')}>
+                                      {pl < -0.5 ? '−' : ''}
+                                      {formatINR(Math.abs(pl))}
+                                    </div>
+                                    <div className="text-[10.5px] font-semibold text-[#7A8C82]">before GST</div>
+                                  </div>
+                                </div>
+                              )
+                            })()}
                           </div>
                         ))}
+                      </div>
+                    )}
+                    {perCo.size > 0 && (
+                      <div className="flex flex-wrap items-center justify-between gap-2 rounded-[4px] border border-[#D6E2D6] bg-white px-3.5 py-2.5">
+                        <span className="text-[11px] font-extrabold uppercase tracking-[.12em] text-[#0A1F17]">Group P&amp;L on this chain</span>
+                        <span className="text-[12px] font-semibold text-[#5A6B62]">
+                          {[...perCo.entries()].map(([co, v]) => `${co} ${v.soldTax - v.boughtTax < 0 ? '−' : '+'}${formatINR(Math.abs(v.soldTax - v.boughtTax))}`).join(' · ')}
+                        </span>
+                        <span className={cn('text-[16px] font-bold tabular-nums', groupPl >= 0 ? 'text-[#0B6B45]' : 'text-[#B3261E]')}>
+                          {groupPl < -0.5 ? '−' : ''}
+                          {formatINR(Math.abs(groupPl))} {groupPl >= 0 ? 'profit' : 'loss'}
+                        </span>
                       </div>
                     )}
 
