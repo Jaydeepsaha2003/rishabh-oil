@@ -32609,23 +32609,49 @@ async function dashboardStats(opts = {}) {
 async function productionTillDate(opts) {
   const ids = opts.all ? await allCompanyIds() : [getActiveCompanyId()];
   if (!ids.length) return [];
+  const from = String(opts.from).slice(0, 10);
+  const to = String(opts.to).slice(0, 10);
+  const levels = await stockLevels({ from, to }, ids);
+  const isFatty = (name) => /FATTY ACID/i.test(String(name || ""));
   const res = await getClient().execute({
-    sql: `SELECT LOWER(COALESCE(pr.category, 'raw')) AS cat,
-                 CASE WHEN UPPER(COALESCE(pr.name, '')) LIKE '%FATTY ACID%' THEN 1 ELSE 0 END AS fatty,
-                 CASE WHEN s.return_supplier_id IS NOT NULL THEN 'return'
-                      WHEN EXISTS (SELECT 1 FROM customers cu WHERE cu.id = s.customer_id
-                                     AND cu.company_link_id IS NOT NULL AND cu.company_link_id <> s.company_id) THEN 'interco'
-                      ELSE 'out' END AS kind,
-                 ROUND(SUM(s.qty), 3) AS qty, COUNT(*) AS lines
-            FROM sales s JOIN products pr ON pr.id = s.product_id
+    sql: `SELECT s.product_id AS pid,
+                 CASE WHEN s.return_supplier_id IS NOT NULL THEN 'return' ELSE 'interco' END AS kind,
+                 ROUND(SUM(s.qty), 3) AS qty
+            FROM sales s
+            LEFT JOIN packagings pk ON pk.id = s.packaging_id
            WHERE s.company_id IN (${ids.map(() => "?").join(",")})
-             AND s.rejected_at IS NULL AND COALESCE(s.affects_stock, 1) = 1
-             AND UPPER(COALESCE(s.uom, 'MT')) = 'MT'
+             AND s.status = 'done' AND COALESCE(s.affects_stock, 1) = 1
+             AND NOT (COALESCE(s.sale_type, 'LOOSE') = 'PACKED' AND pk.product_id IS NOT NULL)
              AND substr(s.sale_date, 1, 10) >= ? AND substr(s.sale_date, 1, 10) <= ?
-           GROUP BY 1, 2, 3`,
-    args: [...ids, String(opts.from).slice(0, 10), String(opts.to).slice(0, 10)]
+             AND (s.return_supplier_id IS NOT NULL
+                  OR EXISTS (SELECT 1 FROM customers cu WHERE cu.id = s.customer_id
+                               AND cu.company_link_id IS NOT NULL AND cu.company_link_id <> s.company_id))
+           GROUP BY 1, 2`,
+    args: [...ids, from, to]
   });
-  return toPlain34(res);
+  const part = /* @__PURE__ */ new Map();
+  for (const r of toPlain34(res)) part.set(`${Number(r.pid)}|${String(r.kind)}`, Number(r.qty) || 0);
+  const acc = /* @__PURE__ */ new Map();
+  const add = (cat, fatty, kind, qty) => {
+    if (!qty) return;
+    const k = `${cat}|${fatty}|${kind}`;
+    const cur = acc.get(k) || { cat, fatty, kind, qty: 0 };
+    cur.qty += qty;
+    acc.set(k, cur);
+  };
+  for (const r of levels) {
+    if (String(r.uom || "MT").toUpperCase() !== "MT") continue;
+    const sold = Number(r.sold) || 0;
+    if (!sold) continue;
+    const cat = String(r.category || "raw").toLowerCase();
+    const fatty = isFatty(r.name) ? 1 : 0;
+    const ic = part.get(`${Number(r.id)}|interco`) || 0;
+    const rt = part.get(`${Number(r.id)}|return`) || 0;
+    add(cat, fatty, "interco", ic);
+    add(cat, fatty, "return", rt);
+    add(cat, fatty, "out", sold - ic - rt);
+  }
+  return [...acc.values()].map((x) => ({ ...x, qty: Math.round(x.qty * 1e3) / 1e3 }));
 }
 var n46, MT_ONLY;
 var init_dashboard = __esm({
