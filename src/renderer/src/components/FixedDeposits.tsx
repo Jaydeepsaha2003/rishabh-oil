@@ -6,6 +6,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { DatePicker } from '@/components/ui/date-picker'
 import { formatDate, formatINR, todayISO } from '@/lib/format'
 import { cn } from '@/lib/utils'
+import { RowActions } from '@/components/ui/row-actions'
 
 // FIXED DEPOSITS (fixedDeposits.ts): every FD the company holds, how much of it
 // is held as security against LCs, and how much is free. A lien releases by
@@ -130,7 +131,7 @@ export function FixedDeposits({ lcs, onCount, onOpenLc }: { lcs: Row[]; onCount?
           { k: 'Held in FDs', v: formatINR(sum(held, 'amount')), sub: `${held.length} FD${held.length === 1 ? '' : 's'}`, tone: 'text-[#0A1F17]' },
           { k: 'Under lien', v: formatINR(sum(held, 'lien_amount')), sub: `of ${formatINR(sum(held, 'amount'))}`, tone: 'text-[#1B4E82]' },
           { k: 'Free', v: formatINR(sum(held, 'free_amount')), sub: `of ${formatINR(sum(held, 'amount'))}`, tone: 'text-[#0B6B45]', band: 'bg-[#F3FAF5]' },
-          { k: 'Interest so far', v: formatINR(sum(held, 'accrued')), sub: `${formatINR(sum(held, 'maturity_value'))} at maturity`, tone: 'text-[#8A5300]' },
+          { k: 'Interest till date', v: formatINR(sum(held, 'accrued')), sub: `${formatINR(sum(held, 'maturity_value'))} at maturity`, tone: 'text-[#8A5300]' },
           { k: 'Matured, not closed', v: formatINR(sum(due, 'amount')), sub: `${due.length} to renew or encash`, tone: due.length ? 'text-[#B3261E]' : 'text-[#9AAFA2]', band: due.length ? 'bg-[#FDF6F5]' : '' }
         ].map((t, i) => (
           <div key={t.k} className={cn('min-w-0 px-4 py-3.5', i > 0 && 'border-l border-[#E4ECE3]', i >= 2 && 'border-t border-[#E4ECE3] lg:border-t-0', t.band)}>
@@ -275,7 +276,7 @@ export function FixedDeposits({ lcs, onCount, onOpenLc }: { lcs: Row[]; onCount?
                       </td>
                       <td className="border-r border-[#EEF3EE] px-3 py-3.5 text-right tabular-nums">
                         <div className="font-bold">{n(f.interest_pct)}%</div>
-                        <div className="text-[10px] font-semibold text-[#8CA396]">{f.interest_payout === 'payout' ? 'paid out' : 'cumulative'}</div>
+                        <div className="text-[10px] font-semibold text-[#8CA396]">{f.interest_payout === 'payout' ? 'paid out' : 'compounded quarterly'}</div>
                       </td>
                       <td className="whitespace-nowrap px-3 py-3.5 text-right text-[13.5px] font-extrabold tabular-nums text-[#0A1F17]">{formatINR(n(f.amount))}</td>
                       <td className="whitespace-nowrap border-r border-[#EEF3EE] px-3 py-3.5 text-right tabular-nums">
@@ -324,37 +325,35 @@ export function FixedDeposits({ lcs, onCount, onOpenLc }: { lcs: Row[]; onCount?
                         <span className={cn('whitespace-nowrap rounded-[3px] border px-2 py-0.5 text-[10.5px] font-extrabold uppercase tracking-[.04em]', STATUS[f.status].cls)}>{STATUS[f.status].label}</span>
                       </td>
                       <td className="px-3 py-3.5 text-right" onClick={(e) => e.stopPropagation()}>
-                        <span className="inline-flex items-center gap-1">
-                          <button
-                            type="button"
-                            disabled={!canLien}
-                            onClick={() => setLien({ fd_id: id, amount: String(n(f.free_amount)), date: todayISO() })}
-                            title={canLien ? 'Put this FD against an LC' : f.status === 'matured' ? 'Matured — cannot secure an LC' : 'Nothing free on it'}
-                            className="flex h-[30px] items-center gap-1 rounded-[3px] bg-[#0B3D2E] px-2.5 text-[11px] font-extrabold uppercase tracking-[.04em] text-[#C7F03F] hover:bg-[#0F4A38] disabled:bg-[#EAF0E9] disabled:text-[#9AAFA2]"
-                          >
-                            <Link2 className="h-3.5 w-3.5" /> Lien
-                          </button>
-                          <button type="button" title="Edit" aria-label="Edit" onClick={() => setForm({ ...f, amount: String(f.amount), interest_pct: String(f.interest_pct), maturity_amount: f.maturity_amount ? String(f.maturity_amount) : '' })} className="flex h-[30px] w-[30px] items-center justify-center rounded-[3px] border border-[#C9DCCF] bg-white text-[#33473E] hover:bg-[#F0F8F3]">
-                            <Pencil className="h-3.5 w-3.5" />
-                          </button>
-                          {f.status === 'closed' ? (
-                            <button type="button" title="Reopen" aria-label="Reopen" onClick={() => void act(() => window.api.fd.reopen(id), `${f.fd_no} reopened`)} className="flex h-[30px] w-[30px] items-center justify-center rounded-[3px] border border-[#C9DCCF] bg-white text-[#33473E] hover:bg-[#F0F8F3]">
-                              <RotateCcw className="h-3.5 w-3.5" />
-                            </button>
-                          ) : (
-                            <button type="button" title="Close / encash" aria-label="Close" onClick={() => setClosing({ id, fd_no: f.fd_no, date: todayISO(), amount: String(n(f.maturity_value)) })} className="flex h-[30px] w-[30px] items-center justify-center rounded-[3px] border border-[#C9DCCF] bg-white text-[#33473E] hover:bg-[#F0F8F3]">
-                              <CheckCircle2 className="h-3.5 w-3.5" />
-                            </button>
-                          )}
-                          <button
-                            type="button"
-                            title="Delete"
-                            aria-label="Delete"
-                            onClick={() => window.confirm(`Delete ${f.fd_no}? Its lien history goes with it.`) && void act(() => window.api.fd.remove(id), `${f.fd_no} deleted`)}
-                            className="flex h-[30px] w-[30px] items-center justify-center rounded-[3px] border border-[#F0C9C4] bg-white text-[#B3261E] hover:bg-[#FDECEA]"
-                          >
-                            <Trash2 className="h-3.5 w-3.5" />
-                          </button>
+                        {/* Every action in the one menu. */}
+                        <span className="inline-flex justify-end">
+                          <RowActions
+                            actions={[
+                              {
+                                label: 'Lien — put against an LC',
+                                icon: Link2,
+                                disabled: !canLien,
+                                disabledReason: f.status === 'matured' ? 'Matured — cannot secure an LC' : 'Nothing free on it',
+                                onClick: () => setLien({ fd_id: id, amount: String(n(f.free_amount)), date: todayISO() })
+                              },
+                              {
+                                label: 'Edit',
+                                icon: Pencil,
+                                onClick: () => setForm({ ...f, amount: String(f.amount), interest_pct: String(f.interest_pct), maturity_amount: f.maturity_amount ? String(f.maturity_amount) : '' })
+                              },
+                              f.status === 'closed'
+                                ? { label: 'Reopen', icon: RotateCcw, onClick: () => void act(() => window.api.fd.reopen(id), `${f.fd_no} reopened`) }
+                                : { label: 'Close / encash', icon: CheckCircle2, onClick: () => setClosing({ id, fd_no: f.fd_no, date: todayISO(), amount: String(n(f.maturity_value)) }) },
+                              {
+                                label: 'Delete',
+                                icon: Trash2,
+                                danger: true,
+                                onClick: () => {
+                                  if (window.confirm(`Delete ${f.fd_no}? Its lien history goes with it.`)) void act(() => window.api.fd.remove(id), `${f.fd_no} deleted`)
+                                }
+                              }
+                            ]}
+                          />
                         </span>
                       </td>
                     </tr>
@@ -366,8 +365,8 @@ export function FixedDeposits({ lcs, onCount, onOpenLc }: { lcs: Row[]; onCount?
                             <div className="rounded-[6px] border border-[#DCE6DC] bg-white px-4 py-3 text-[12px]">
                               <div className="mb-2 text-[9.5px] font-extrabold uppercase tracking-[.12em] text-[#7A8C82]">The deposit</div>
                               {[
-                                ['Interest', `${n(f.interest_pct)}% · ${f.interest_payout === 'payout' ? 'paid out' : 'cumulative (quarterly)'}`],
-                                ['Interest so far', formatINR(n(f.accrued))],
+                                ['Interest', `${n(f.interest_pct)}% · ${f.interest_payout === 'payout' ? 'paid out' : 'compounded quarterly'}`],
+                                ['Interest till date', formatINR(n(f.accrued))],
                                 ['At maturity', `${formatINR(n(f.maturity_value))}${n(f.maturity_amount) > 0 ? ' (bank figure)' : ''}`],
                                 ...(f.closed_date ? [['Closed', `${formatDate(String(f.closed_date))}${n(f.closed_amount) > 0 ? ` · ${formatINR(n(f.closed_amount))} received` : ''}`]] : []),
                                 ...(f.note ? [['Note', String(f.note)]] : [])
@@ -652,8 +651,8 @@ export function FdMobile({ lcs, onData }: { lcs: Row[]; onData?: (list: Row[]) =
                   <div className="border-t border-[#EEF3EE] bg-[#FAFCF9] px-3.5 py-3 text-[12px]">
                     {[
                       ['Term', `${formatDate(String(f.start_date))} → ${formatDate(String(f.maturity_date))}`],
-                      ['Interest', `${n(f.interest_pct)}% · ${f.interest_payout === 'payout' ? 'paid out' : 'cumulative'}`],
-                      ['Interest so far', formatINR(n(f.accrued))],
+                      ['Interest', `${n(f.interest_pct)}% · ${f.interest_payout === 'payout' ? 'paid out' : 'compounded quarterly'}`],
+                      ['Interest till date', formatINR(n(f.accrued))],
                       ['At maturity', formatINR(n(f.maturity_value))],
                       ...(f.closed_date ? [['Closed', `${formatDate(String(f.closed_date))}${n(f.closed_amount) > 0 ? ` · ${formatINR(n(f.closed_amount))}` : ''}`]] : []),
                       ...(f.note ? [['Note', String(f.note)]] : [])
@@ -892,7 +891,7 @@ function FdForm({ init, lcs, onClose, onSaved }: { init: Row; lcs: Row[]; onClos
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="cumulative">Cumulative (quarterly)</SelectItem>
+                  <SelectItem value="cumulative">Compounded quarterly</SelectItem>
                   <SelectItem value="payout">Paid out</SelectItem>
                 </SelectContent>
               </Select>
