@@ -190,12 +190,14 @@ export async function saleTdsPreview(saleId: number): Promise<Row> {
 async function dropExisting(cid: number, key: string): Promise<void> {
   const c = getClient()
   const ex = await c.execute({ sql: 'SELECT entry_id FROM sale_tds_journals WHERE company_id = ? AND invoice_key = ?', args: [cid, key] })
+  // The link goes first: while it stands the journal is the invoice's own
+  // (AUTO), and the voucher delete refuses an owned voucher.
+  await c.execute({ sql: 'DELETE FROM sale_tds_journals WHERE company_id = ? AND invoice_key = ?', args: [cid, key] })
   for (const r of ex.rows) {
     const id = n((r as unknown as Row).entry_id)
     const still = await c.execute({ sql: 'SELECT id FROM journal_entries WHERE id = ?', args: [id] })
     if (still.rows.length) await deleteManualEntry(id)
   }
-  await c.execute({ sql: 'DELETE FROM sale_tds_journals WHERE company_id = ? AND invoice_key = ?', args: [cid, key] })
 }
 
 /** Post (or re-post) the customer's TDS on this invoice as a Journal, Agst Ref the invoice. */
