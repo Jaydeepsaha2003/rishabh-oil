@@ -2490,7 +2490,6 @@ function SalesTab({
                                 >
                                   <span className="bg-[#0B6B45] px-1.5 text-[9.5px] font-extrabold uppercase tracking-[.06em] text-white">TDS</span>
                                   <span className="bg-[#E9F5EE] px-1.5 tabular-nums text-[#0B6B45]">₹0</span>
-                                  <span className="border-l border-[#BFE3CB] bg-white px-1 text-[9.5px] text-[#0B6B45]">none deducted</span>
                                 </button>
                               )}
                               {tdsOf(inv.first) && !tdsOf(inv.first)?.none && (
