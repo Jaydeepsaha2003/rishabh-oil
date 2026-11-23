@@ -5,7 +5,7 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { RowActions } from '@/components/ui/row-actions'
-import { TagDraftPicker } from '@/components/Tags'
+import { TagChip, TagDraftPicker } from '@/components/Tags'
 import { DatePicker } from '@/components/ui/date-picker'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { useFormPageEscape } from '@/lib/escape'
@@ -83,6 +83,15 @@ export function TradingChains({
   const [search, setSearch] = useState('')
   // The chain opened in the side panel.
   const [detailId, setDetailId] = useState<number | null>(null)
+  // The tag master, so a chain's tags wear their own colour (BOOK is yellow everywhere).
+  const [tagRows, setTagRows] = useState<Row[]>([])
+  useEffect(() => {
+    window.api.tags
+      .list()
+      .then(setTagRows)
+      .catch(() => setTagRows([]))
+  }, [])
+  const tagOf = (name: string): Row => tagRows.find((t) => String(t.name || '').toUpperCase() === String(name).toUpperCase()) || { name }
 
   const load = (): void => {
     void window.api.trading
@@ -851,9 +860,7 @@ export function TradingChains({
                         {((ch.tags as string[]) || []).length > 0 && (
                           <div className="mt-1 flex flex-wrap gap-1 pl-6">
                             {((ch.tags as string[]) || []).map((t) => (
-                              <span key={t} className="rounded-[3px] border border-[#B9D3F0] bg-[#EAF2FC] px-1.5 py-0.5 text-[10px] font-extrabold text-[#1B4E82]">
-                                {t}
-                              </span>
+                              <TagChip key={t} tag={tagOf(t)} small />
                             ))}
                           </div>
                         )}
@@ -980,9 +987,7 @@ export function TradingChains({
                     {(((detail.tags as string[]) || []).length > 0 || s(detail.note)) && (
                       <div className="mt-2.5 flex flex-wrap items-center gap-1.5">
                         {((detail.tags as string[]) || []).map((t) => (
-                          <span key={t} className="rounded-[3px] bg-[#C7F03F]/15 px-2 py-0.5 text-[10.5px] font-extrabold text-[#C7F03F]">
-                            {t}
-                          </span>
+                          <TagChip key={t} tag={tagOf(t)} />
                         ))}
                         {s(detail.note) && <span className="text-[12px] font-semibold text-[#A9CDBB]">{s(detail.note)}</span>}
                       </div>
