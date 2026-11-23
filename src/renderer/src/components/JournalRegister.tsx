@@ -251,7 +251,11 @@ export function JournalRegister({
                     <td className={cn(td, 'whitespace-nowrap font-bold tabular-nums')}>{formatDate(e.date)}</td>
                     <td className={td}>
                       <div className="whitespace-nowrap font-extrabold text-[#0A1F17]">{e.code || e.vch_no || '—'}</div>
-                      {e.from_tally && <span className="rounded-[2px] bg-[#FFF4DD] px-1 text-[9.5px] font-bold uppercase text-[#8A5300]">Tally</span>}
+                      {e.origin === 'tally' || e.from_tally ? (
+                        <span title="Booked from a Tally file" className="rounded-[2px] border border-[#F1D9A6] bg-[#FFF4DD] px-1 text-[9.5px] font-bold uppercase text-[#8A5300]">Tally</span>
+                      ) : e.origin === 'auto' ? (
+                        <span title="Posted automatically by its document (purchase, sale, LC, BD, note…) — change it there" className="rounded-[2px] border border-[#B9D3F0] bg-[#EAF2FC] px-1 text-[9.5px] font-bold uppercase text-[#1B4E82]">Auto</span>
+                      ) : null}
                     </td>
                     <td className={cn(td, 'min-w-[220px] max-w-[300px] text-[#0B6B45]')}>{legs(e.drs as Row[], 'text-[#0B6B45]')}</td>
                     <td className={cn(td, 'min-w-[220px] max-w-[300px] text-[#B3261E]')}>{legs(e.crs as Row[], 'text-[#B3261E]')}</td>

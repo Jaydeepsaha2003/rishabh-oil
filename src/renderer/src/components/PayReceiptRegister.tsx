@@ -338,7 +338,11 @@ export function PayReceiptRegister({
                       <div className="whitespace-nowrap font-extrabold text-[#0A1F17]">{e.code || e.vch_no || '—'}</div>
                       <div className="flex items-center gap-1 text-[10.5px] font-bold uppercase tracking-[.04em] text-[#5A6B62]">
                         {e.type}
-                        {e.from_tally && <span className="rounded-[2px] bg-[#FFF4DD] px-1 text-[9.5px] text-[#8A5300]">Tally</span>}
+                        {e.origin === 'tally' || e.from_tally ? (
+                        <span title="Booked from a Tally file" className="rounded-[2px] border border-[#F1D9A6] bg-[#FFF4DD] px-1 text-[9.5px] font-bold uppercase text-[#8A5300]">Tally</span>
+                      ) : e.origin === 'auto' ? (
+                        <span title="Posted automatically by its document (purchase, sale, LC, BD, note…) — change it there" className="rounded-[2px] border border-[#B9D3F0] bg-[#EAF2FC] px-1 text-[9.5px] font-bold uppercase text-[#1B4E82]">Auto</span>
+                      ) : null}
                       </div>
                     </td>
                     <td className={cn(td, 'max-w-[260px]')}>

@@ -151,6 +151,8 @@ export async function cashflowRegister(from?: string, to?: string, companyId?: n
     })
   }
 
+  // Where each voucher came from: booked from Tally, posted by a document here (AUTO), or keyed in.
+  const owned = await (await import('./voucherOwnership')).ownedVoucherIds().catch(() => new Set<number>())
   const vouchers = heads.map((h) => {
     const ls = linesOf.get(n(h.id)) || []
     const dr = round2(ls.filter((l) => l.side === 'dr').reduce((t, l) => t + l.amount, 0))
@@ -175,6 +177,7 @@ export async function cashflowRegister(from?: string, to?: string, companyId?: n
     if (!ls.length) issues.push('No lines on this voucher')
     return {
       id: n(h.id),
+      origin: /^imported from tally/i.test(String(h.narration || '')) ? 'tally' : owned.has(n(h.id)) ? 'auto' : 'manual',
       date: String(h.entry_date || '').slice(0, 10),
       type: String(h.vch_type || ''),
       code: String(h.voucher_code || h.vch_no || ''),
