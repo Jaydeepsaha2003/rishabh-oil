@@ -83,19 +83,29 @@ type Item = {
   src: 'lc' | 'bd'
   src_id: number
   action: TrackerAction
+  // An LC's financing bank, when our own account (lender) is a different one.
+  via?: string | null
 }
 
 // ── LETTERS OF CREDIT ─────────────────────────────────────────────────────
 async function lcItems(): Promise<Item[]> {
   const out: Item[] = []
   const lcs = await listLCs().catch(() => [] as Row[])
+  // OUR bank — the account the LC is repaid from — is the name the list
+  // reads by; the bank that financed it (`bank`) follows underneath.
+  const viaOf = new Map<number, string>()
+  for (const l of lcs) {
+    const ours = String(l.our_bank_name || '').trim()
+    const fin = String(l.bank_name || l.bank || '').trim()
+    if (ours && fin && ours.toUpperCase() !== fin.toUpperCase()) viaOf.set(n(l.id), fin)
+  }
   for (const l of lcs) {
     if (String(l.facility_type || 'lc') !== 'lc') continue
     // Only once the bank has paid under the credit is anything owed to it.
     if (String(l.stage || '') !== 'payment_received') continue
     const id = n(l.id)
     const ref = String(l.lc_no || '').trim() || 'LC (no number)'
-    const lender = String(l.bank_name || l.bank || '').trim()
+    const lender = String(l.our_bank_name || l.bank_name || l.bank || '').trim()
     const supplier = String(l.supplier_name || '').trim()
     const maturity = day10(l.expiry_date)
     const drawn = day10(l.payment_received_date)
@@ -182,6 +192,7 @@ async function lcItems(): Promise<Item[]> {
       })
     }
   }
+  for (const x of out) x.via = viaOf.get(x.src_id) ?? null
   return out
 }
 

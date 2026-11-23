@@ -152,7 +152,7 @@ function useTrackerView(rows: Row[], firstSort: 'due' | 'amount' | 'lender' = 'd
           (skip === 'dir' || dir === 'all' || x.dir === dir) &&
           (skip === 'kind' || !kinds.length || kinds.includes(x.kind as Kind)) &&
           (skip === 'lender' || lender === 'all' || x.lender === lender) &&
-          (!query || `${x.ref} ${x.party} ${x.lender} ${x.detail}`.toLowerCase().includes(query))
+          (!query || `${x.ref} ${x.party} ${x.lender} ${x.via || ''} ${x.detail}`.toLowerCase().includes(query))
       )
     const byCol = (a: Row, b: Row): number => {
       if (!colSort) return 0
@@ -798,9 +798,10 @@ function TrackerRow({
           {String(r.detail || '')}
         </div>
       </div>
-      <span className="truncate px-2.5 text-[11.5px] font-bold text-[#33473E]" title={String(r.lender || '')}>
-        {String(r.lender || '—')}
-      </span>
+      <div className="min-w-0 px-2.5" title={r.via ? `Our bank ${String(r.lender)} — financed by ${String(r.via)}` : String(r.lender || '')}>
+        <div className="truncate text-[11.5px] font-bold text-[#33473E]">{String(r.lender || '—')}</div>
+        {!!r.via && <div className="mt-0.5 truncate text-[10.5px] font-semibold text-[#8CA396]">via {String(r.via)}</div>}
+      </div>
       <div className="px-2.5 text-right">
         <div className="whitespace-nowrap text-[13px] font-bold tabular-nums" style={{ color: amtFg }}>
           {formatINR(n(r.amount))}
