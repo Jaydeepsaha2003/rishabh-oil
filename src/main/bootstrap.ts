@@ -3208,6 +3208,14 @@ export async function runStartupTasks(): Promise<void> {
   // A dead link made Create & link post copies (KRFIN/105 CN/48–54, KRFIN/137
   // CN/45–46); copies archived and removed, dead links cleared, the survivors
   // linked. See repairShortageNoteDupes. A failure leaves the flag unset.
+  // LEGACY'S DUPLICATE SUPPLIER MASTER — once, at start (asked for on 2026-11-23).
+  // "LEGACY COMMODITIES PVT. LTD" folded into "LEGACY COMMODITIES PVT LTD" (its
+  // bargain, bill, tankers, LCs move; no voucher changes) and the unused
+  // "LEGACY COMMODITIES PRIVATE LIMITED" ledger hidden. See supplierMerge.ts.
+  await runOnce('legacy_supplier_merge_v1', async () => {
+    console.log('[suppliers] Legacy clean-up:', await (await import('./supplierMerge')).legacySupplierCleanup())
+  }).catch((e) => console.error('[suppliers] Legacy clean-up failed:', e))
+
   await runOnce('shortage_cn_copies_v1', async () => {
     const r = await (await import('./saleShortageNotes')).repairShortageNoteDupes()
     console.log(
