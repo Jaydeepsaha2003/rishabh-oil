@@ -787,6 +787,11 @@ const api = {
     removeInvoiceOfSale: (saleId: number): Promise<{ group: string }> => ipcRenderer.invoke('sales:deleteInvoice', { saleId }),
     rejectInvoice: (group: string, reason: string): Promise<{ group: string }> =>
       ipcRenderer.invoke('sales:rejectInvoice', { group, reason }),
+    comments: (): Promise<Record<string, unknown>[]> => ipcRenderer.invoke('sales:comments:list'),
+    commentAdd: (group: string, body: string): Promise<{ id: number }> => ipcRenderer.invoke('sales:commentAdd', { group, body }),
+    commentDelete: (id: number): Promise<{ id: number }> => ipcRenderer.invoke('sales:commentDelete', { id }),
+    rejectReasons: (): Promise<string[]> => ipcRenderer.invoke('sales:rejectReasons:list'),
+    rejectReasonFav: (reason: string, on: boolean): Promise<string[]> => ipcRenderer.invoke('sales:rejectReasonFav', { reason, on }),
     cancelDelivery: (
       group: string,
       reason: string,

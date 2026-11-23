@@ -1566,6 +1566,12 @@ export function registerIpc(): void {
     return { group: '' }
   })
   handle('sales:rejectInvoice', (_e, { group, reason }: { group: string; reason: string }) => rejectSaleInvoice(group, reason))
+  // Comments on an invoice, and the Reject window's favourite reasons (saleComments.ts).
+  handle('sales:comments:list', async () => (await import('./saleComments')).listSaleComments())
+  handle('sales:commentAdd', async (_e, { group, body }: { group: string; body: string }) => (await import('./saleComments')).addSaleComment(group, body))
+  handle('sales:commentDelete', async (_e, { id }: { id: number }) => (await import('./saleComments')).deleteSaleComment(Number(id)))
+  handle('sales:rejectReasons:list', async () => (await import('./saleComments')).listRejectReasons())
+  handle('sales:rejectReasonFav', async (_e, { reason, on }: { reason: string; on: boolean }) => (await import('./saleComments')).setRejectReasonFav(reason, !!on))
   handle(
     'sales:cancelDelivery',
     (_e, { group, reason, freightQty }: { group: string; reason: string; freightQty?: Record<string, number | null> }) =>

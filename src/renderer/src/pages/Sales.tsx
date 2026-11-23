@@ -4,7 +4,7 @@ import { partyGstOptions } from '@/components/GstRegsPanel'
 import { GstRateChips } from '@/components/GstRateChips'
 import { takePageIntent } from '@/lib/pageIntent'
 import { toast } from 'sonner'
-import { AlertTriangle, ArrowLeft, ArrowUp, ArrowDown, BookOpen, ChevronsUpDown, Ban, Building2, Check, CheckCircle2, ChevronDown, ChevronLeft, ChevronRight, Clock, Dices, DoorOpen, Download, History, Link2, Lock, LogIn, Shuffle, LogOut, Maximize2, Pencil, Plus, Receipt, RotateCcw, Search, SlidersHorizontal, Tag, Tags, Trash2, Truck, Undo2, Upload, X, ListChecks, Info, Percent, type LucideIcon} from 'lucide-react'
+import { AlertTriangle, ArrowLeft, ArrowUp, ArrowDown, BookOpen, ChevronsUpDown, Ban, Building2, Check, CheckCircle2, ChevronDown, ChevronLeft, ChevronRight, Clock, Dices, DoorOpen, Download, History, Link2, Lock, LogIn, Shuffle, LogOut, Maximize2, Pencil, Plus, Receipt, RotateCcw, Search, SlidersHorizontal, Tag, Tags, Trash2, Truck, Undo2, Upload, X, ListChecks, Info, Percent, MessageSquare, Star, type LucideIcon} from 'lucide-react'
 import { HelpTip, InfoTip, Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { moduleScope, canAccess } from '@/lib/modules'
 import { useCategories } from '@/lib/useCategories'
@@ -2014,6 +2014,47 @@ function SalesTab({
   const [gateInv, setGateInv] = useState<{ group: string; first: Row; lines: Row[] } | null>(null)
   const [rejectReason, setRejectReason] = useState('')
   const [rejecting, setRejecting] = useState(false)
+  // The Reject window's favourite reasons — one shared list, starred from the window.
+  const [rejectFavs, setRejectFavs] = useState<string[]>([])
+  useEffect(() => {
+    if (rejectInv) void window.api.sales.rejectReasons().then(setRejectFavs).catch(() => undefined)
+  }, [rejectInv])
+  const rejectStarred = rejectFavs.some((f) => f.toLowerCase() === rejectReason.trim().toLowerCase())
+  const starReject = async (): Promise<void> => {
+    try {
+      setRejectFavs(await window.api.sales.rejectReasonFav(rejectReason.trim(), !rejectStarred))
+      toast.success(rejectStarred ? 'Taken off the favourite reasons' : 'Saved as a favourite reason')
+    } catch (e) {
+      toast.error(errText(e))
+    }
+  }
+  // COMMENTS on an invoice: notes anyone can add, with who and when.
+  const [comments, setComments] = useState<Row[]>([])
+  const loadComments = useCallback(() => {
+    void window.api.sales.comments().then((r) => setComments(r as Row[])).catch(() => undefined)
+  }, [])
+  useEffect(() => loadComments(), [loadComments])
+  const commentsOf = useMemo(() => {
+    const m = new Map<string, Row[]>()
+    for (const c of comments) m.set(String(c.invoice_group), [...(m.get(String(c.invoice_group)) || []), c])
+    return m
+  }, [comments])
+  const [commentInv, setCommentInv] = useState<{ group: string; first: Row } | null>(null)
+  const [commentText, setCommentText] = useState('')
+  const [commentBusy, setCommentBusy] = useState(false)
+  const addComment = async (): Promise<void> => {
+    if (!commentInv || !commentText.trim()) return
+    setCommentBusy(true)
+    try {
+      await window.api.sales.commentAdd(commentInv.group, commentText.trim())
+      setCommentText('')
+      loadComments()
+    } catch (e) {
+      toast.error(errText(e))
+    } finally {
+      setCommentBusy(false)
+    }
+  }
   async function saveReject(): Promise<void> {
     if (!rejectInv) return
     if (!rejectReason.trim()) return void toast.error('Enter a reason')
@@ -2560,8 +2601,23 @@ function SalesTab({
                         <div className={cn('truncate font-medium', __WEB__ && 'text-[14.5px] font-bold tracking-[-0.015em] text-[#0A1F17]')} title={inv.first.customer || ''}>
                           {inv.first.customer || '—'}
                         </div>
-                        {(!!inv.first.return_supplier_id || !!inv.first.onward_from || !!inv.first.rejected_at) && (
+                        {(!!inv.first.return_supplier_id || !!inv.first.onward_from || !!inv.first.rejected_at || !!commentsOf.get(String(inv.group))?.length) && (
                           <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
+                            {!!commentsOf.get(String(inv.group))?.length && (
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation()
+                                  setCommentInv({ group: String(inv.group), first: inv.first })
+                                  setCommentText('')
+                                }}
+                                title={`Latest: ${String(commentsOf.get(String(inv.group))![0].body)} — click for all comments`}
+                                className="inline-flex max-w-[260px] items-center gap-1 rounded-[3px] border border-[#B9D3F0] bg-[#EAF2FC] px-1.5 text-[10.5px] font-bold leading-[18px] text-[#1B4E82] hover:bg-[#DCEAFA]"
+                              >
+                                <MessageSquare className="h-3 w-3 shrink-0" />
+                                <span className="truncate">{commentsOf.get(String(inv.group))!.length} · {String(commentsOf.get(String(inv.group))![0].body)}</span>
+                              </button>
+                            )}
                             {inv.first.rejected_at && (
                               <span
                                 className="inline-flex items-center gap-1 rounded-[3px] border border-[#F0C9C4] bg-[#FDECEA] px-1.5 text-[10.5px] font-bold leading-[18px] text-[#B3261E]"
@@ -2905,6 +2961,11 @@ function SalesTab({
                                       label: 'Reject — customer refused it',
                                       icon: Ban,
                                       onClick: () => { setRejectInv(inv); setRejectReason('') }
+                                    },
+                                    {
+                                      label: `Comments — notes on this invoice${commentsOf.get(String(inv.group))?.length ? ` (${commentsOf.get(String(inv.group))!.length})` : ''}`,
+                                      icon: MessageSquare,
+                                      onClick: () => { setCommentInv({ group: String(inv.group), first: inv.first }); setCommentText('') }
                                     },
                                     // The oil came from our own other company: the transfer behind this sale.
                                     ...(Number(inv.first.is_interco) !== 1 && !inv.first.return_supplier_id
@@ -5107,6 +5168,59 @@ function SalesTab({
         }}
       />
 
+      <Dialog open={!!commentInv} onOpenChange={(o) => !o && setCommentInv(null)}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>Comments · {commentInv?.first.invoice_no || 'this invoice'}</DialogTitle>
+          </DialogHeader>
+          <div className="max-h-[50vh] space-y-2 overflow-y-auto">
+            {!(commentsOf.get(String(commentInv?.group))?.length) && <p className="py-3 text-center text-[12px] text-muted-foreground">No comment yet.</p>}
+            {(commentsOf.get(String(commentInv?.group)) || []).map((c) => (
+              <div key={String(c.id)} className="rounded-md border border-[#DCE7DB] bg-[#F7FAF6] px-3 py-2">
+                <div className="flex items-center gap-2 text-[11px] font-semibold text-[#5A6B62]">
+                  <span className="font-bold text-[#0A1F17]">{String(c.created_by || '—')}</span>
+                  <span>{String(c.created_at || '').replace('T', ' ').slice(0, 16)}</span>
+                  <span className="flex-1" />
+                  <button
+                    type="button"
+                    title="Delete this comment"
+                    onClick={() =>
+                      void window.api.sales
+                        .commentDelete(Number(c.id))
+                        .then(loadComments)
+                        .catch((e) => toast.error(errText(e)))
+                    }
+                    className="text-[#8CA396] hover:text-[#B3261E]"
+                  >
+                    <Trash2 className="h-3.5 w-3.5" />
+                  </button>
+                </div>
+                <div className="mt-1 whitespace-pre-wrap text-[13px] text-[#0A1F17]">{String(c.body)}</div>
+              </div>
+            ))}
+          </div>
+          <textarea
+            className="min-h-[4rem] w-full rounded-md border border-input bg-transparent px-3 py-2 text-sm shadow-sm focus:outline-none focus:ring-1 focus:ring-ring"
+            placeholder="Write a comment… (Ctrl Enter adds it)"
+            value={commentText}
+            onChange={(e) => setCommentText(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' && e.ctrlKey) {
+                e.preventDefault()
+                void addComment()
+              }
+            }}
+            autoFocus
+          />
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setCommentInv(null)}>Close</Button>
+            <Button onClick={() => void addComment()} disabled={commentBusy || !commentText.trim()}>
+              {commentBusy ? 'Saving…' : 'Add comment'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
       <Dialog open={!!rejectInv} onOpenChange={(o) => !o && !rejecting && setRejectInv(null)}>
         <DialogContent className="max-w-sm">
           <DialogHeader>
@@ -5119,13 +5233,39 @@ function SalesTab({
           </p>
           <div className="flex flex-col gap-1.5">
             <Label>Reason <span className="text-red-600">*</span></Label>
-            <textarea
-              className="min-h-[5rem] w-full rounded-md border border-input bg-transparent px-3 py-2 text-sm shadow-sm placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-ring"
-              placeholder="e.g. Customer refused the consignment — diverted to another party"
-              value={rejectReason}
-              onChange={(e) => setRejectReason(e.target.value)}
-              autoFocus
-            />
+            {rejectFavs.length > 0 && (
+              <select
+                value=""
+                onChange={(e) => e.target.value && setRejectReason(e.target.value)}
+                className="h-9 w-full rounded-md border border-input bg-transparent px-2 text-sm"
+                title="Pick one of the reasons saved with ★"
+              >
+                <option value="">★ Pick a favourite reason…</option>
+                {rejectFavs.map((f) => (
+                  <option key={f} value={f}>
+                    {f}
+                  </option>
+                ))}
+              </select>
+            )}
+            <div className="relative">
+              <textarea
+                className="min-h-[5rem] w-full rounded-md border border-input bg-transparent px-3 py-2 pr-9 text-sm shadow-sm placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-ring"
+                placeholder="e.g. Customer refused the consignment — diverted to another party"
+                value={rejectReason}
+                onChange={(e) => setRejectReason(e.target.value)}
+                autoFocus
+              />
+              <button
+                type="button"
+                disabled={!rejectReason.trim()}
+                onClick={() => void starReject()}
+                title={rejectStarred ? 'Take this reason off the favourites' : 'Save this reason as a favourite — pick it from the list next time'}
+                className="absolute right-2 top-2 rounded p-0.5 disabled:opacity-30"
+              >
+                <Star className={cn('h-4 w-4', rejectStarred ? 'fill-[#E0A100] text-[#E0A100]' : 'text-[#8CA396]')} />
+              </button>
+            </div>
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setRejectInv(null)} disabled={rejecting}>Cancel</Button>

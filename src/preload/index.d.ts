@@ -527,6 +527,11 @@ export interface Api {
     removeInvoice: (group: string) => Promise<{ group: string }>
     removeInvoiceOfSale: (saleId: number) => Promise<{ group: string }>
     rejectInvoice: (group: string, reason: string) => Promise<{ group: string }>
+    comments: () => Promise<Record<string, unknown>[]>
+    commentAdd: (group: string, body: string) => Promise<{ id: number }>
+    commentDelete: (id: number) => Promise<{ id: number }>
+    rejectReasons: () => Promise<string[]>
+    rejectReasonFav: (reason: string, on: boolean) => Promise<string[]>
     cancelDelivery: (
       group: string,
       reason: string,
