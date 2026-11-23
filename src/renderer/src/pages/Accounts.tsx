@@ -12917,7 +12917,7 @@ Delete ${doc}?`)) return
                       transition: 'background .4s'
                     }}
                   >
-                    <div className="flex min-w-0 items-center gap-2" style={{ padding: `6px 10px 6px ${14 + ln.depth * 20}px` }}>
+                    <div className="flex min-w-0 flex-wrap items-center gap-2" style={{ padding: `6px 10px 6px ${14 + ln.depth * 20}px` }}>
                       <input
                         type="checkbox"
                         checked={mPicked.has(id)}
@@ -12939,7 +12939,7 @@ Delete ${doc}?`)) return
                         type="button"
                         onClick={() => openStatement(id)}
                         title={`Open the statement of ${String(ln.a.name)}`}
-                        className="min-w-0 truncate text-left hover:underline"
+                        className="min-w-0 break-words text-left hover:underline"
                         style={{ fontSize: 12, fontWeight: 600, color: '#33473E' }}
                       >
                         {String(ln.a.name)}
@@ -13000,7 +13000,7 @@ Delete ${doc}?`)) return
                         const title = (m: Row): string =>
                           `The app posts to “${String(m.posts_as)}” and that reaches this ledger${m.note ? ` — ${String(m.note)}` : ''}${m.created_at ? ` · ${formatDate(String(m.created_at).slice(0, 10))}` : ''}`
                         return (
-                          <span className="relative flex flex-none items-center gap-1">
+                          <span className="contents">
                             <button
                               type="button"
                               title={`${title(maps[0])} — click to make it its own ledger again`}
@@ -13029,8 +13029,8 @@ Delete ${doc}?`)) return
                             )}
                             {open && (
                               <span
-                                className="absolute left-0 top-full z-20 mt-1 flex flex-col gap-1 rounded-md border bg-white p-2 shadow-lg"
-                                style={{ minWidth: 260 }}
+                                className="flex basis-full flex-col items-start gap-1 rounded-md border bg-white p-2"
+                                style={{ marginLeft: 52 }}
                                 onClick={(e) => e.stopPropagation()}
                               >
                                 <span style={{ fontSize: 9, fontWeight: 800, letterSpacing: '.1em', textTransform: 'uppercase', color: '#5A6B62' }}>
