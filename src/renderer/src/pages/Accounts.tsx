@@ -664,7 +664,11 @@ interface SplitRow {
   // Highlight on the amount (SPLIT_COLORS key) and a note read on hover.
   color?: string
   remark?: string
+  // "Keep the rest as balance": the part that takes whatever the others leave.
+  // Saved as a plain BALANCE part (no branch), its amount worked out on save.
+  rest?: boolean
 }
+const REST_NAME = 'BALANCE'
 const SPLIT_BRANCHES = ['LUDHIANA', 'GHAZIABAD', 'OTHERS', 'BOTH'] as const
 
 interface VLine {
@@ -732,13 +736,21 @@ const METHODS:{ key: AllocRow['method']; label: string }[] = [
 const blankPayLine = (): PayLine => ({ account: '', group: '', amount: '', allocs: [] })
 // A line's breakdown, out to the voucher (rows with a name or an amount) and
 // back in from a saved one.
-const splitsOut = (rows?: SplitRow[]): { name: string; amount: number; note: string | null; branch: string | null; color: string | null; remark: string | null }[] =>
-  (rows || [])
+const splitsOut = (rows?: SplitRow[], lineAmount?: number): { name: string; amount: number; note: string | null; branch: string | null; color: string | null; remark: string | null }[] =>
+  withRest(rows || [], lineAmount)
     .filter((sp) => String(sp.name || '').trim() || Number(sp.amount) > 0 || String(sp.note || '').trim())
     .map((sp) => ({ name: String(sp.name || '').trim(), amount: Number(sp.amount) || 0, note: String(sp.note || '').trim() || null, branch: sp.branch || null, color: sp.color || null, remark: String(sp.remark || '').trim() || null }))
 const splitsIn = (rows: unknown): SplitRow[] =>
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  ((rows as any[]) || []).map((sp) => ({ name: String(sp.name || ''), amount: String(sp.amount ?? ''), note: sp.note ? String(sp.note) : undefined, branch: sp.branch ? String(sp.branch) : undefined, color: sp.color ? String(sp.color) : undefined, remark: sp.remark ? String(sp.remark) : undefined }))
+  ((rows as any[]) || []).map((sp) => ({ name: String(sp.name || ''), amount: String(sp.amount ?? ''), note: sp.note ? String(sp.note) : undefined, branch: sp.branch ? String(sp.branch) : undefined, color: sp.color ? String(sp.color) : undefined, remark: sp.remark ? String(sp.remark) : undefined, rest: String(sp.name || '').trim().toUpperCase() === REST_NAME && !sp.branch }))
+// The rest part's amount = the line less every other part (dropped when nothing is left).
+function withRest(rows: SplitRow[], lineAmount?: number): SplitRow[] {
+  const ri = rows.findIndex((r) => r.rest)
+  if (ri < 0 || lineAmount == null) return rows
+  const others = rows.filter((r) => !r.rest)
+  const left = Math.round((lineAmount - others.reduce((t, r) => t + (Number(r.amount) || 0), 0)) * 100) / 100
+  return left > 0.005 ? [...others, { ...rows[ri], name: REST_NAME, branch: undefined, amount: String(left) }] : others
+}
 const typeLabelOf = (t: string): string => VCH_TYPES.find((v) => v.key === t)?.label || t
 // The number series a type falls in, by its word — PURCHASE OIL and PURCHASE
 // OTHERS are both Purchase (voucherNumbers.ts on the server says the same).
@@ -971,8 +983,14 @@ function SplitPanel({
   // own, the ledgers and amounts untouched.
   onSave?: () => Promise<void>
 }): React.JSX.Element {
-  const total = rows.reduce((t, r) => t + (Number(r.amount) || 0), 0)
+  // The rest part follows the line: whatever the written parts leave.
+  const restOn = rows.some((r) => r.rest)
+  const written = rows.filter((r) => !r.rest)
+  const writtenTotal = written.reduce((t, r) => t + (Number(r.amount) || 0), 0)
+  const restAmt = restOn ? Math.max(0, Math.round((lineAmount - writtenTotal) * 100) / 100) : 0
+  const total = writtenTotal + restAmt
   const diff = Math.round((lineAmount - total) * 100) / 100
+  const toggleRest = (): void => onChange(restOn ? written : [...written, { name: REST_NAME, amount: '', rest: true }])
   // Names used on earlier breakdowns, offered as the part is typed.
   const [names, setNames] = useState<string[]>([])
   useEffect(() => {
@@ -987,7 +1005,8 @@ function SplitPanel({
   }, [])
   const set = (i: number, patch: Partial<SplitRow>): void =>
     onChange(rows.map((r, k) => (k === i ? { ...r, ...patch } : r)))
-  const add = (): void => onChange([...rows, { name: '', amount: '' }])
+  // New parts go above the rest part, which always reads last.
+  const add = (): void => onChange([...written, { name: '', amount: '' }, ...rows.filter((r) => r.rest)])
   const drop = (i: number): void => onChange(rows.filter((_, k) => k !== i))
 
   return (
@@ -1023,7 +1042,25 @@ function SplitPanel({
           Nothing written down yet — add a part for each person, head or item this figure covers.
         </div>
       )}
-      {rows.map((r, i) => (
+      {rows.map((r, i) => r.rest ? (
+        <div key={i} className="mb-1.5 flex items-center gap-1.5" title="Whatever the parts above leave — follows the line's figure">
+          <span className="w-[14px] flex-none text-right text-[10.5px] font-extrabold tabular-nums text-[#8CA396]">{i + 1}</span>
+          <span className="flex h-8 min-w-0 flex-1 items-center rounded-[3px] border border-dashed border-[#B6CBE4] bg-[#EEF4FB] px-2 text-[12px] font-extrabold uppercase tracking-[.04em] text-[#1B4E82]">
+            Balance · the rest
+          </span>
+          <span className="doc-ref flex h-8 w-[130px] flex-none items-center justify-end rounded-[3px] border border-dashed border-[#B6CBE4] bg-[#EEF4FB] px-2 text-[12px] font-extrabold tabular-nums text-[#1B4E82]">
+            {formatINR(restAmt)}
+          </span>
+          <button
+            type="button"
+            onClick={toggleRest}
+            title="Stop keeping the rest as balance"
+            className="flex h-8 w-8 flex-none items-center justify-center rounded-[3px] border border-[#C3D2C6] bg-white text-[#8CA396] hover:border-[#B3261E] hover:text-[#B3261E]"
+          >
+            <X className="h-3.5 w-3.5" />
+          </button>
+        </div>
+      ) : (
         <div key={i} className="mb-1.5 flex items-center gap-1.5">
           <span className="w-[14px] flex-none text-right text-[10.5px] font-extrabold tabular-nums text-[#8CA396]">
             {i + 1}
@@ -1097,6 +1134,14 @@ function SplitPanel({
         >
           <Plus className="h-3.5 w-3.5" /> Add a part
         </button>
+        {/* The parts need not cover the whole line: what they leave stays as balance. */}
+        <label
+          className="flex h-8 cursor-pointer items-center gap-1.5 rounded-[3px] px-1.5 text-[11.5px] font-extrabold text-[#1B4E82] hover:bg-[#EAF0FA]"
+          title="The parts above need not cover the whole line — whatever they leave is kept as one BALANCE part"
+        >
+          <input type="checkbox" checked={restOn} onChange={toggleRest} className="h-[14px] w-[14px] accent-[#1B4E82]" />
+          Keep the rest as balance
+        </label>
         <span className="min-w-0 flex-1" />
         <span className="doc-ref text-[11.5px] font-bold tabular-nums text-[#33473E]">
           {formatINR(total)} of {formatINR(lineAmount)}
@@ -4690,14 +4735,14 @@ export function Accounts({
             allocs: l.allocs
               .filter((a) => Number(a.amount) > 0)
               .map((a) => ({ method: a.method, ref_name: a.ref_name || null, order_id: a.order_id || null, sale_invoice_group: a.sale_invoice_group || null, amount: Number(a.amount) })),
-            splits: splitsOut(l.splits)
+            splits: splitsOut(l.splits, Number(l.amount) || 0)
           })),
           ...money.map((l, i) => ({
             account: l.account,
             group: l.group || undefined,
             dr: vchType === 'RECEIPT' ? moneyAmounts[i] : 0,
             cr: vchType === 'PAYMENT' ? moneyAmounts[i] : 0,
-            splits: splitsOut(l.splits)
+            splits: splitsOut(l.splits, moneyAmounts[i])
           }))
         ]
       }
@@ -4730,7 +4775,7 @@ export function Accounts({
                     amount: Number(a.amount)
                   })),
                 // The working behind this figure, where one was written.
-                splits: splitsOut(l.splits),
+                splits: splitsOut(l.splits, Number(l.amount) || 0),
                 // The item on a sales/purchase line — kept with a plain voucher too.
                 product_id: l.product_id || null,
                 qty: Number(l.qty) || null,
@@ -15603,7 +15648,7 @@ Delete ${doc}?`)) return
                                 viewOnly && r.lineId
                                   ? async () => {
                                       try {
-                                        const res = await window.api.vouchers.setLineSplits(Number(r.lineId), splitsOut(r.splits))
+                                        const res = await window.api.vouchers.setLineSplits(Number(r.lineId), splitsOut(r.splits, lineAmt))
                                         toast.success(res.parts ? `Breakdown saved — ${res.parts} ${res.parts === 1 ? 'part' : 'parts'}` : 'Breakdown cleared')
                                         setSplitOpen(-1)
                                       } catch (e) {
