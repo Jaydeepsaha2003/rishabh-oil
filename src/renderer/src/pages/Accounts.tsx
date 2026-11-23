@@ -2462,6 +2462,8 @@ export function Accounts({
   // PROVISIONAL: open LCs and awaiting supplier-direct BDs shown as the debit
   // their payment will post, in the balance (provisional.ts). Nothing posted.
   const [lgProv, setLgProv] = useState(false)
+  // Sales Register: rejected invoices shown, hidden, or only those.
+  const [regRej, setRegRej] = useState<'show' | 'hide' | 'only'>('show')
   // Vouchers of rejected sale invoices (and those set against them): shown, hidden, or only those.
   const [lgRej, setLgRej] = useState<'show' | 'hide' | 'only'>('show')
   // Bill-wise: money with no Agst Ref stays On Account (Tally's way); this
@@ -10902,6 +10904,7 @@ Delete ${doc}?`)) return
       if (isNotes && !__WEB__) setNoteKindFilter('all')
       else setRegFunding([])
       setRegEmptyOnly(false)
+      setRegRej('show')
       colF.clear(`reg:${tab}`)
     }
 
@@ -10930,7 +10933,11 @@ Delete ${doc}?`)) return
       n(o.lc_bills_open) > 0 && !!o.lc_next_due && String(o.lc_next_due).slice(0, 10) < today
 
     const base: Row[] = isPur ? purchases : isSal ? [...saleInvoices, ...cancelledNos] : [...noteRows, ...noteVchRows]
-    const preRows: Row[] = isPur ? purchaseRows : isSal ? salesRegRows : noteRegRowsWeb
+    const preRows: Row[] = isPur
+      ? purchaseRows
+      : isSal
+        ? salesRegRows.filter((r) => regRej === 'show' || (regRej === 'only') === !!r.rejected_at)
+        : noteRegRowsWeb
     // A funnel on every column; the sums below read the rows they leave.
     const regCf = colFilter<Row>(
       colF,
@@ -10953,7 +10960,7 @@ Delete ${doc}?`)) return
               // A cancelled number is "Cancelled" in both funnels, so the
               // voided numbers can be picked out (or left out) of the series.
               { key: 'Invoice', get: (r) => (r.cancelled_no ? `${String(r.invoice_no)} · Cancelled` : r.invoice_no) },
-              { key: 'Vehicle', get: (r) => (r.cancelled_no ? 'Cancelled' : r.gate_vehicle_no || 'Not gated out') },
+              { key: 'Vehicle', get: (r) => (r.cancelled_no ? 'Cancelled' : [r.gate_vehicle_no || 'Not gated out', ...(r.rejected_at ? ['Rejected'] : [])]) },
               { key: 'Customer', get: (r) => r.customer },
               { key: 'Product', get: (r) => r.product_name },
               { key: 'Qty', get: (r) => `${formatNum(n(r.qty))} ${String(r.uom || 'MT')}`, sort: 'num' },
@@ -11099,7 +11106,7 @@ Delete ${doc}?`)) return
     // would show before it is pressed.
     const inPer = (d: string): boolean => (!fFrom || d >= fFrom) && (!fTo || d <= fTo)
     const periodPur = isPur ? purchases.filter((o) => inPer(String(o.order_date || '').slice(0, 10))) : []
-    const hasFilter = !!(fFrom || fTo || fQuery.trim() || (isPur && (regFunding.length || regEmptyOnly)) || (!__WEB__ && isNotes && noteKindFilter !== 'all') || regCf.active > 0)
+    const hasFilter = !!(fFrom || fTo || fQuery.trim() || (isPur && (regFunding.length || regEmptyOnly)) || (!__WEB__ && isNotes && noteKindFilter !== 'all') || regCf.active > 0 || (isSal && regRej !== 'show'))
 
     // ── the table ─────────────────────────────────────────────────────────
     // EVERY COLUMN WIDE ENOUGH FOR WHAT IS IN IT. The number columns — the
@@ -11282,6 +11289,11 @@ Delete ${doc}?`)) return
               </>
             ) : (
               <span style={chipStyle('#8A5300', '#FFF4DD', '#F1D9A6')}>Not gated out</span>
+            )}
+            {!!r.rejected_at && (
+              <div style={{ marginTop: 3 }} title={`Rejected by the customer${r.rejected_reason ? ` — ${String(r.rejected_reason)}` : ''}`}>
+                <span style={chipStyle('#B3261E', '#FDF0EE', '#F0C9C4')}>Rejected{r.rejected_reason ? ` · ${String(r.rejected_reason)}` : ''}</span>
+              </div>
             )}
           </div>,
           <span key="c" style={{ ...cellPad, fontSize: 12, fontWeight: 800, whiteSpace: 'normal', overflowWrap: 'anywhere', lineHeight: 1.35, padding: '6px 10px' }}>
@@ -11719,6 +11731,26 @@ Delete ${doc}?`)) return
                 <span style={chipStyle(noteKindFilter === 'debit' ? '#0B6B45' : '#B3261E', noteKindFilter === 'debit' ? '#E9F5EE' : '#FDF3F2', noteKindFilter === 'debit' ? '#BFE3CB' : '#F0D6D4')}>
                   {noteKindFilter === 'debit' ? 'Debit notes only' : 'Credit notes only'}
                 </span>
+              )}
+              {/* REJECTED invoices: shown → hidden → only. */}
+              {isSal && salesRegRows.some((r) => r.rejected_at) && (
+                <button
+                  type="button"
+                  onClick={() => setRegRej((v) => (v === 'show' ? 'hide' : v === 'hide' ? 'only' : 'show'))}
+                  title="Invoices the customer rejected — click: Shown → Hidden → Only"
+                  className="flex h-8 items-center gap-1.5 whitespace-nowrap rounded-full px-3"
+                  style={{
+                    border: `1px solid ${regRej === 'show' ? '#DCE7DB' : '#B3261E'}`,
+                    background: regRej === 'show' ? '#fff' : '#FDF0EE',
+                    color: regRej === 'show' ? '#33473E' : '#B3261E',
+                    fontSize: 11.5,
+                    fontWeight: 800
+                  }}
+                >
+                  <span className="inline-block h-[8px] w-[8px] rounded-full" style={{ background: '#B3261E' }} />
+                  Rejected {regRej === 'show' ? 'shown' : regRej === 'hide' ? 'hidden' : 'only'}
+                  <span style={{ ...fig(10.5, 700), opacity: 0.85 }}>{salesRegRows.filter((r) => r.rejected_at).length}</span>
+                </button>
               )}
               {hasFilter && (
                 <button
