@@ -5,6 +5,7 @@ import { SearchSelect } from '@/components/SearchSelect'
 import { exportRowsToExcel, NUM_MONEY } from '@/lib/excel'
 import { formatDate, formatINR, todayISO } from '@/lib/format'
 import { cn } from '@/lib/utils'
+import { useRowKeys } from '@/lib/useRowKeys'
 import { toast } from 'sonner'
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -102,6 +103,11 @@ export function JournalRegister({
     })
   }, [entries, ledger, q])
   const total = rows.reduce((t, e) => t + n(e.dr), 0)
+  // ↑ ↓ pick a journal, Enter opens it.
+  const { sel, setSel } = useRowKeys(rows.length, (i) => onOpen(rows[i]), { resetOn: [q, ledger, from, to] })
+  useEffect(() => {
+    if (sel >= shown) setShown(sel + 1)
+  }, [sel, shown])
   const fromTally = rows.filter((e) => e.from_tally).length
 
   async function download(): Promise<void> {
@@ -234,8 +240,13 @@ export function JournalRegister({
                 rows.slice(0, shown).map((e, i) => (
                   <tr
                     key={n(e.id)}
-                    onClick={() => onOpen(e)}
-                    className={cn('cursor-pointer border-t border-[#EAF0E9] hover:bg-[#F4F9EF]', i % 2 ? 'bg-[#FBFDFA]' : 'bg-white')}
+                    data-rk={i}
+                    onClick={() => {
+                      setSel(i)
+                      onOpen(e)
+                    }}
+                    className={cn('cursor-pointer border-t border-[#EAF0E9] hover:bg-[#F4F9EF]', sel === i ? 'bg-[#EEF6E8]' : i % 2 ? 'bg-[#FBFDFA]' : 'bg-white')}
+                    style={sel === i ? { boxShadow: 'inset 3px 0 0 #12855A' } : undefined}
                   >
                     <td className={cn(td, 'whitespace-nowrap font-bold tabular-nums')}>{formatDate(e.date)}</td>
                     <td className={td}>

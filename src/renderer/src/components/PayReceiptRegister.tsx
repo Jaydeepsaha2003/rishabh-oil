@@ -5,6 +5,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { exportRowsToExcel, NUM_MONEY } from '@/lib/excel'
 import { formatDate, formatINR, todayISO } from '@/lib/format'
 import { cn } from '@/lib/utils'
+import { useRowKeys } from '@/lib/useRowKeys'
 import { toast } from 'sonner'
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -158,6 +159,17 @@ export function PayReceiptRegister({
       rows
     })
   }
+
+  // ↑ ↓ pick a voucher, Enter opens it, ← → step through All / Payments / Receipts / Contra.
+  const KINDS: Kind[] = ['all', 'payment', 'receipt', 'contra']
+  const { sel, setSel } = useRowKeys(rows.length, (i) => onOpen(rows[i]), {
+    resetOn: [q, kind, bank, from, to],
+    onLeft: () => setKind((k) => KINDS[(KINDS.indexOf(k) + KINDS.length - 1) % KINDS.length]),
+    onRight: () => setKind((k) => KINDS[(KINDS.indexOf(k) + 1) % KINDS.length])
+  })
+  useEffect(() => {
+    if (sel >= shown) setShown(sel + 1)
+  }, [sel, shown])
 
   const chip = (k: Kind, label: string): React.JSX.Element => {
     const on = kind === k
@@ -313,7 +325,14 @@ export function PayReceiptRegister({
                 </tr>
               ) : (
                 rows.slice(0, shown).map((e, i) => (
-                  <tr key={n(e.id)} className={cn('border-t border-[#EAF0E9]', i % 2 ? 'bg-[#FBFDFA]' : 'bg-white')}>
+                  <tr
+                    key={n(e.id)}
+                    data-rk={i}
+                    onClick={() => setSel(i)}
+                    onDoubleClick={() => onOpen(e)}
+                    className={cn('border-t border-[#EAF0E9]', sel === i ? 'bg-[#EEF6E8]' : i % 2 ? 'bg-[#FBFDFA]' : 'bg-white')}
+                    style={sel === i ? { boxShadow: 'inset 3px 0 0 #12855A' } : undefined}
+                  >
                     <td className={cn(td, 'whitespace-nowrap font-bold tabular-nums')}>{formatDate(e.date)}</td>
                     <td className={td}>
                       <div className="whitespace-nowrap font-extrabold text-[#0A1F17]">{e.code || e.vch_no || '—'}</div>
