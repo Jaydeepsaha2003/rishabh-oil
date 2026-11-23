@@ -672,7 +672,7 @@ export function TradingPayments({
                                                   title={m.instrument ? `Open ${String(m.instrument.kind).toUpperCase()} ${m.instrument.ref} — Esc comes back here` : 'Open the voucher — Esc comes back here'}
                                                   className="inline-flex items-center gap-1.5 rounded-[3px] hover:opacity-80 disabled:cursor-default"
                                                 >
-                                                  <ChannelChip kind={m.channel} text={m.instrument?.ref || undefined} />
+                                                  <span title={m.bank ? String(m.bank) : undefined}><ChannelChip kind={m.channel} text={m.instrument?.ref || (m.bank_last4 ? `··${String(m.bank_last4)}` : undefined)} /></span>
                                                   {m.channel === 'bank' && <Landmark className="h-3.5 w-3.5 text-[#5A6B62]" />}
                                                 </button>
                                                 {m.split && (
@@ -1056,7 +1056,7 @@ export function TradingPaymentsMobile({
                                   ) : null}
                                 </div>
                                 <div className="mt-0.5">
-                                  <ChannelChip kind={m.channel} text={m.instrument?.ref || undefined} />
+                                  <span title={m.bank ? String(m.bank) : undefined}><ChannelChip kind={m.channel} text={m.instrument?.ref || (m.bank_last4 ? `··${String(m.bank_last4)}` : undefined)} /></span>
                                 </div>
                               </div>
                               <span className="shrink-0 text-[12.5px] font-bold tabular-nums text-[#0A1F17]">{formatINR(m.amount)}</span>

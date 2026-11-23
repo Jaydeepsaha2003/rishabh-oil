@@ -6,6 +6,7 @@ import { getActiveCompanyId } from './company'
 import { createOrder, updateOrder, deleteOrder } from './orders'
 import { createSale, updateSale, deleteSale } from './sales'
 import { visibleFromFor } from './access-gate'
+import { groupsUnder } from './ledgerGroups'
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Row = Record<string, any>
@@ -967,6 +968,34 @@ export async function listTradingPayments(): Promise<Row[]> {
   const supDays = new Map(supTerms.map((r) => [n(r.id), n(r.credit_period_days)]))
   const cusDays = new Map(cusTerms.map((r) => [n(r.id), n(r.credit_period_days)]))
 
+  // WHICH BANK each payment / receipt went through: the bank ledger on the
+  // voucher, and the last 4 digits of its account number (the longest digit
+  // run in the ledger's name — HDFC50200022765385 → 5385).
+  const bankOf = new Map<number, { name: string; last4: string }>()
+  {
+    const groups = [
+      ...(await groupsUnder('Bank Accounts').catch(() => ['Bank Accounts'])),
+      ...(await groupsUnder('Bank OD A/c').catch(() => ['Bank OD A/c']))
+    ]
+    const rows = await c
+      .execute({
+        sql: `SELECT jl.entry_id AS eid, a.name FROM journal_lines jl
+                JOIN ledger_accounts a ON a.id = jl.account_id
+                JOIN journal_entries je ON je.id = jl.entry_id
+               WHERE je.company_id = ? AND UPPER(je.vch_type) IN ('PAYMENT', 'RECEIPT', 'CONTRA')
+                 AND a.acc_group IN (${groups.map(() => '?').join(',')})
+               ORDER BY jl.id`,
+        args: [cid, ...groups]
+      })
+      .catch(() => null)
+    for (const r of rows ? toPlain(rows) : []) {
+      if (bankOf.has(n(r.eid))) continue
+      const name = String(r.name || '')
+      const run = (name.match(/\d{4,}/g) || []).sort((x, y) => y.length - x.length)[0] || ''
+      bankOf.set(n(r.eid), { name, last4: run.slice(-4) })
+    }
+  }
+
   // Turn the allocations that settled one invoice into its figures. An
   // allocation on the bill's OWN side (a journal crediting a supplier against
   // its purchase bill, debiting a customer against a sale) adds to what is
@@ -999,6 +1028,9 @@ export async function listTradingPayments(): Promise<Row[]> {
           vch_no: a.vch_no ?? null,
           entry_id: n(a.eid),
           instrument: owner ?? null,
+          // The bank it went through (Bank movements only).
+          bank: channel === 'bank' ? bankOf.get(n(a.eid))?.name ?? null : null,
+          bank_last4: channel === 'bank' ? bankOf.get(n(a.eid))?.last4 || null : null,
           // The voucher's whole figure on this party: an LC/BD paying more
           // bills than this one is SPLIT across them.
           line_amount: n(a.line_amount) || null,
