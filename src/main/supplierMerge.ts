@@ -96,3 +96,53 @@ export async function legacySupplierCleanup(): Promise<string> {
   }
   return out.join('; ') || 'nothing to do'
 }
+
+/**
+ * UNDO legacy_supplier_merge_v1 from its own log (accounting_repair_log
+ * 'supplier_merge_v1:<id>'): the supplier row comes back with its own id, every
+ * row it moved goes back, its opening billing is taken off the kept master again,
+ * and the ledger the clean-up hid is shown again. No log, nothing done.
+ */
+export async function undoLegacySupplierMerge(): Promise<string> {
+  return withDbTransaction(async () => {
+    const c = getClient()
+    const has = (await c.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'accounting_repair_log'")).rows.length > 0
+    if (!has) return 'no merge to undo'
+    const logs = (await c.execute("SELECT repair_key, before_json FROM accounting_repair_log WHERE repair_key LIKE 'supplier_merge_v1:%'")).rows as unknown as Row[]
+    const out: string[] = []
+    for (const l of logs) {
+      const b = JSON.parse(String(l.before_json)) as { from: Row; to: { id: number; name: string }; moved: Record<string, number[]> }
+      const from = b.from
+      const fromId = n(from.id)
+      const toId = n(b.to.id)
+      if ((await c.execute({ sql: 'SELECT 1 FROM suppliers WHERE id = ?', args: [fromId] })).rows.length) continue
+      // The supplier, column for column as it was.
+      const cols = (await c.execute('PRAGMA table_info(suppliers)')).rows.map((r) => String((r as unknown as Row).name)).filter((k) => k in from)
+      await c.execute({ sql: `INSERT INTO suppliers (${cols.join(', ')}) VALUES (${cols.map(() => '?').join(', ')})`, args: cols.map((k) => from[k] ?? null) })
+      // Every row the merge moved, back.
+      for (const [key, ids] of Object.entries(b.moved)) {
+        if (key === 'party_openings' || !ids.length) continue
+        const [t, col] = key.split('.')
+        await c.execute({ sql: `UPDATE ${t} SET ${col} = ? WHERE rowid IN (${ids.map(() => '?').join(',')}) AND ${col} = ?`, args: [fromId, ...ids, toId] })
+      }
+      // The opening billing it added to the kept master, per company, split off again.
+      const amt = n(from.opening_purchase_amount)
+      for (const co of b.moved.party_openings || []) {
+        await c.execute({ sql: "UPDATE party_openings SET amount = amount - ? WHERE kind = 'supplier' AND party_id = ? AND company_id = ?", args: [amt, toId, n(co)] })
+        await c.execute({
+          sql: "INSERT INTO party_openings (kind, party_id, company_id, amount, as_on) VALUES ('supplier', ?, ?, ?, ?)",
+          args: [fromId, n(co), amt, from.opening_purchase_date ?? null]
+        })
+      }
+      await c.execute({ sql: 'DELETE FROM accounting_repair_log WHERE repair_key = ?', args: [String(l.repair_key)] })
+      out.push(`restored ${String(from.name)} (#${fromId})`)
+    }
+    // The ledger the clean-up hid.
+    const led = (await c.execute("SELECT id FROM ledger_accounts WHERE UPPER(TRIM(name)) = 'LEGACY COMMODITIES PRIVATE LIMITED'")).rows[0] as unknown as Row | undefined
+    if (led && out.length) {
+      await c.execute({ sql: 'DELETE FROM ledger_hidden WHERE account_id = ?', args: [n(led.id)] })
+      out.push('LEGACY COMMODITIES PRIVATE LIMITED shown again')
+    }
+    return out.join('; ') || 'no merge to undo'
+  })
+}
