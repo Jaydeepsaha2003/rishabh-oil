@@ -13,6 +13,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { RowActions } from '@/components/ui/row-actions'
 import { TagPicker, useTagMap } from '@/components/Tags'
+import { MultiSelectFilter } from '@/components/ui/multi-select-filter'
 import { LedgerPostings, type PostingTarget } from '@/components/LedgerPostings'
 import { loadUser } from '@/lib/session'
 import { canAccess } from '@/lib/modules'
@@ -1818,7 +1819,7 @@ export function Trading({
     await load()
   }
 
-  const filteredDeals = useMemo(() => {
+  const baseDeals = useMemo(() => {
     const q = search.trim().toLowerCase()
     const inRange = globalRangeAppliesTo(globalRange, 'trading')
     return deals.filter((d) => {
@@ -1891,7 +1892,18 @@ export function Trading({
   // the FILTERED list, so narrowing to a product or a date range asks only for
   // what is on screen. A deal is keyed by its own id: unlike a sale invoice it
   // is one row, so there is no group to stand in for it.
-  const dealTags = useTagMap('trading', filteredDeals.map((d) => Number(d.id)))
+  const dealTags = useTagMap('trading', baseDeals.map((d) => Number(d.id)))
+  // BY TAG: the deals carrying any of the picked tags (BOOK, or whatever the desk assigned).
+  const [dealTagSel, setDealTagSel] = useState<string[]>([])
+  const dealTagOptions = useMemo(() => {
+    const m = new Map<string, number>()
+    for (const d of baseDeals) for (const t of dealTags.tagsOf(Number(d.id))) m.set(String(t.name), (m.get(String(t.name)) || 0) + 1)
+    return [...m.entries()].sort((a, b) => a[0].localeCompare(b[0])).map(([v, c]) => ({ value: v, label: v, count: c }))
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [baseDeals, dealTags.tagsOf])
+  const filteredDeals = dealTagSel.length
+    ? baseDeals.filter((d) => dealTags.tagsOf(Number(d.id)).some((t) => dealTagSel.includes(String(t.name))))
+    : baseDeals
 
   // WHAT THIS DEAL PUT IN THE LEDGERS.
   // A trade is two invoices and the difference between them, so the two
@@ -3222,6 +3234,9 @@ export function Trading({
             className={cn('h-9 pl-8', __WEB__ && '!h-[42px] !rounded-[4px] !border-[#C3D2C6] !pl-9 !text-[13px]')}
           />
         </div>
+        {dealTagOptions.length > 0 && (
+          <MultiSelectFilter options={dealTagOptions} value={dealTagSel} onApply={setDealTagSel} allLabel="All tags" label="Tags" className="h-[42px] shrink-0" />
+        )}
         {/* Products this book trades, as a segmented control rather than a
             dropdown: two or three is the usual number, they fit, and a count
             on each says what picking one is going to leave. Hidden when

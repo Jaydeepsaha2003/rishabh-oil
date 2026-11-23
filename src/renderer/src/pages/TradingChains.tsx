@@ -6,6 +6,7 @@ import { Label } from '@/components/ui/label'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { RowActions } from '@/components/ui/row-actions'
 import { TagChip, TagDraftPicker } from '@/components/Tags'
+import { MultiSelectFilter } from '@/components/ui/multi-select-filter'
 import { DatePicker } from '@/components/ui/date-picker'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { useFormPageEscape } from '@/lib/escape'
@@ -83,6 +84,8 @@ export function TradingChains({
   const [search, setSearch] = useState('')
   // The chain opened in the side panel.
   const [detailId, setDetailId] = useState<number | null>(null)
+  // Chains carrying any of the picked tags.
+  const [chainTagSel, setChainTagSel] = useState<string[]>([])
   // The tag master, so a chain's tags wear their own colour (BOOK is yellow everywhere).
   const [tagRows, setTagRows] = useState<Row[]>([])
   useEffect(() => {
@@ -700,9 +703,13 @@ export function TradingChains({
   // with goods somewhere is marked so the eye can find it.
   const closes = (ch: Row): boolean => ((ch.net as Row[]) || []).every((x) => Math.abs(n(x.qty)) < 0.0005)
   const q = search.trim().toUpperCase()
+  const chainTagOptions = [...new Map(chains.flatMap((ch) => ((ch.tags as string[]) || []).map((t) => [t, t] as const))).keys()]
+    .sort()
+    .map((t) => ({ value: t, label: t, count: chains.filter((ch) => ((ch.tags as string[]) || []).includes(t)).length }))
   const shown = chains.filter((ch) => {
     const d = s(ch.chain_date).slice(0, 10)
     if (range && (d < range.from || d > range.to)) return false
+    if (chainTagSel.length && !((ch.tags as string[]) || []).some((t) => chainTagSel.includes(t))) return false
     if (!q) return true
     const hay = [
       s(ch.product_code || ch.product_name),
@@ -783,6 +790,9 @@ export function TradingChains({
           <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-[#8CA396]" />
           <Input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search party, invoice no, tag or note" className="h-10 pl-9 text-[13px]" />
         </div>
+        {chainTagOptions.length > 0 && (
+          <MultiSelectFilter options={chainTagOptions} value={chainTagSel} onApply={setChainTagSel} allLabel="All tags" label="Tags" className="h-10 shrink-0" />
+        )}
         <span className="rounded-[3px] bg-[#EAF0E9] px-2 py-1 text-[11.5px] font-extrabold tabular-nums text-[#33473E]">
           {shown.length} of {chains.length}
         </span>
