@@ -897,7 +897,10 @@ function SalesTab({
         inv.first.customer,
         ...inv.lines.map((r) => r.product_name),
         // "rejected" and the reason find a rejected invoice.
-        ...(inv.first.rejected_at ? ['rejected', inv.first.rejected_reason] : [])
+        ...(inv.first.rejected_at ? ['rejected', inv.first.rejected_reason] : []),
+        // A quantity typed finds it: each line's, and the invoice's total.
+        ...inv.lines.map((r) => String(Number(r.qty) || 0)),
+        String(Math.round(inv.lines.reduce((t, r) => t + (Number(r.qty) || 0), 0) * 1000) / 1000)
       ]
         .filter(Boolean)
         .join(' ')
@@ -2170,7 +2173,7 @@ function SalesTab({
           <Input
             type="search"
             className={cn('h-9 pl-8', __WEB__ && 'h-9 rounded-[4px] border-[#C3D2C6] pl-9 text-[13px]')}
-            placeholder="Search invoice no, customer, product…"
+            placeholder="Search invoice no, customer, product, qty…"
             value={search}
             onChange={(e) => setSearch(e.target.value)}
           />
