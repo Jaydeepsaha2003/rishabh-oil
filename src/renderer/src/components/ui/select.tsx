@@ -62,8 +62,7 @@ interface SelectProps {
   onValueChange?: (value: string) => void
   disabled?: boolean
   children?: React.ReactNode
-  // Show the search box. Defaults to auto: only when the list is long enough to
-  // warrant it (short lists like a status/type picker don't need a search box).
+  // Show the search box. On by default for every dropdown; pass false to hide it.
   searchable?: boolean
   // Off by default — almost every use of this component is a data-entry field
   // (pick one supplier/product/customer/etc. to save into a record), where a
@@ -140,7 +139,8 @@ function Select({
   const items: ItemDef[] = []
   collectItems(contentChildren, items)
   const current = String(value ?? '')
-  const showSearch = searchable ?? items.length > 8
+  // Every dropdown can be searched (asked for 2026-11-23) — a caller may still turn it off.
+  const showSearch = searchable ?? true
 
   const toggle = React.useCallback(() => {
     if (!disabled) setOpen((o) => !o)

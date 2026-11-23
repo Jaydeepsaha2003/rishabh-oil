@@ -4306,9 +4306,9 @@ export function Accounts({
   function refsKey(name: string, side?: 'customer' | 'supplier'): string {
     return side ? `${side}:${name}` : name
   }
-  async function loadRefs(name: string, side?: 'customer' | 'supplier'): Promise<void> {
+  async function loadRefs(name: string, side?: 'customer' | 'supplier', fresh = false): Promise<void> {
     const key = refsKey(name, side)
-    if (!name || refsCache[key]) return
+    if (!name || (!fresh && refsCache[key])) return
     try {
       // Every bill in one fetch: the pending ones are what every picker has
       // always offered (refsCache); the settled ones go beside them, offered
@@ -5127,7 +5127,12 @@ export function Accounts({
       out.push(base)
     }
     setLines(out)
-    for (const l of vLines) if (isBillwise(String(l.acc_group))) void loadRefs(String(l.account))
+    // Bills read afresh for every line of the voucher being opened: the group
+    // list (SC-OIL → Sundry Creditors) may not have loaded yet, and a list kept
+    // from earlier in the session (or the other book) must not stand in.
+    setRefsCache({})
+    setLinkCache({})
+    for (const l of vLines) void loadRefs(String(l.account), undefined, true)
     setNoteMode(false)
     setRawAlter(false)
     setScreen('voucher')
@@ -5315,7 +5320,12 @@ export function Accounts({
         rate: l.rate != null ? String(l.rate) : ''
       }))
     )
-    for (const l of vLines) if (isBillwise(String(l.acc_group))) void loadRefs(String(l.account))
+    // Bills read afresh for every line of the voucher being opened: the group
+    // list (SC-OIL → Sundry Creditors) may not have loaded yet, and a list kept
+    // from earlier in the session (or the other book) must not stand in.
+    setRefsCache({})
+    setLinkCache({})
+    for (const l of vLines) void loadRefs(String(l.account), undefined, true)
     setNoteMode(false)
     // Payment/receipt vouchers whose money side is all cash/bank reopen in the
     // Tally format (one line or a split across several), bill-wise details
