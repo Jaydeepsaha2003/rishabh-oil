@@ -19440,6 +19440,19 @@ Delete ${doc}?`)) return
           { key: 'overdue', get: (b) => (Math.abs(n(b.pending)) > 0.004 && !billDue(b).held ? String(overdueOf(b)) : ''), sort: 'num' }
         ])
         const rows = bwCf.rows
+        // SPLIT: a voucher set against more than one bill. Each such voucher
+        // gets one bold colour, the same under every bill it appears in.
+        const splitOf = new Map<number, string[]>()
+        for (const b of allBills)
+          for (const x of [...(b.origin ? [b.origin as Row] : []), ...((b.settlements as Row[]) || [])]) {
+            const eid = Number(x.entry_id)
+            if (!eid) continue
+            const refs = splitOf.get(eid) || []
+            if (!refs.includes(String(b.ref))) splitOf.set(eid, [...refs, String(b.ref)])
+          }
+        for (const [k, v] of splitOf) if (v.length < 2) splitOf.delete(k)
+        const SPLIT_TINTS = ['#C2410C', '#7C3AED', '#0369A1', '#BE185D', '#15803D', '#A16207', '#4338CA', '#B91C1C']
+        const splitTint = new Map([...splitOf.keys()].sort((a, b) => a - b).map((k, i) => [k, SPLIT_TINTS[i % SPLIT_TINTS.length]]))
         // What the keys walk: these bills, while this view is the one open.
         bwNav.current = { on: lgView === 'billwise', keys: rows.map((b, i) => `${String(b.ref)}-${i}`) }
         const subOpen = rows.reduce((t, b) => t + Math.abs(n(b.opening)) * sgn(billSide(b)), 0)
@@ -19658,6 +19671,14 @@ Delete ${doc}?`)) return
                           >
                             {vNo(x)}
                           </span>
+                          {splitOf.has(Number(x.entry_id)) && (
+                            <span
+                              title={`This voucher is split over ${splitOf.get(Number(x.entry_id))!.length} bills: ${splitOf.get(Number(x.entry_id))!.join(', ')}`}
+                              style={{ fontStyle: 'normal', fontSize: 9, fontWeight: 900, letterSpacing: '.06em', color: '#fff', background: splitTint.get(Number(x.entry_id)), borderRadius: 3, padding: '1px 6px', whiteSpace: 'nowrap' }}
+                            >
+                              SPLIT · {splitOf.get(Number(x.entry_id))!.length} bills
+                            </span>
+                          )}
                           {x.fifo && (
                             <span
                               title="Paid with no Agst Ref — set against this party's oldest open bills first"
