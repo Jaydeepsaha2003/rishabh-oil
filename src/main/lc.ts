@@ -118,6 +118,16 @@ export async function listLCs(companyId?: number): Promise<Row[]> {
     ORDER BY l.id DESC
   `
   })
+  // THE FDs LIENED TO EACH LC (Treasury → FD), for the register's FD mark.
+  const lienRows = await getClient()
+    .execute({
+      sql: `SELECT f.lc_id, f.amount, d.fd_no, d.bank FROM fd_liens f JOIN fixed_deposits d ON d.id = f.fd_id
+             WHERE d.company_id = ? AND d.active = 1 ORDER BY f.id`,
+      args: [Number(companyId) || getActiveCompanyId()]
+    })
+    .catch(() => null)
+  const liensOf = new Map<number, Row[]>()
+  for (const r of lienRows ? toPlain(lienRows) : []) liensOf.set(n(r.lc_id), [...(liensOf.get(n(r.lc_id)) || []), { fd_no: String(r.fd_no || ''), bank: String(r.bank || ''), amount: n(r.amount) }])
   return toPlain(res).map((l) => {
     const linkedCount = n(l.linked_invoice_count)
     // Margin is the security deposit the bank asks for on the LC's own open
@@ -134,6 +144,7 @@ export async function listLCs(companyId?: number): Promise<Row[]> {
     const compliant = String(l.purpose || '') !== 'trading' || (linkedCount > 0 && !!l.receivable_party_id)
     return {
       ...l,
+      fd_liens: liensOf.get(n(l.id)) || [],
       linked_order_ids: String(l.linked_order_ids_csv || '')
         .split(',')
         .map((x) => Number(x))

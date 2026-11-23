@@ -4191,6 +4191,28 @@ function TreasuryDesk({ onCompanyChange, focusLcId, focusBdId, onFocusHandled }:
                                         <span className="relative inline-flex h-2.5 w-2.5 rounded-full bg-[#D92D20]" />
                                       </span>
                                     )}
+                                    {/* FD LINKING: a blue FD tag once an FD is liened to the LC; a
+                                        blinking amber dot while the LC asks for margin and no FD is linked. */}
+                                    {(l.fd_liens as Row[] | undefined)?.length ? (
+                                      <span
+                                        className="flex-none rounded-[2px] border border-[#B9D3F0] bg-[#EAF2FC] px-1 text-[9px] font-extrabold leading-[14px] tracking-[.06em] text-[#1B4E82]"
+                                        title={`FD linked — ${(l.fd_liens as Row[]).map((x) => `${String(x.fd_no)} (${String(x.bank)}) ₹${n(x.amount).toLocaleString('en-IN')}`).join(', ')}`}
+                                      >
+                                        FD
+                                      </span>
+                                    ) : (
+                                      !!l.lc_no &&
+                                      n(l.margin_pct) > 0 &&
+                                      !l.preclosed_date &&
+                                      closureKind(l) === 'none' &&
+                                      String(l.workflow_status || '') !== 'rejected' &&
+                                      String(l.status || '') !== 'closed' && (
+                                        <span className="relative flex h-2.5 w-2.5 flex-none" title="No FD linked for this LC's margin — Treasury → FD, mark a lien on it">
+                                          <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-[#F5A524] opacity-75" />
+                                          <span className="relative inline-flex h-2.5 w-2.5 rounded-full bg-[#D98A00]" />
+                                        </span>
+                                      )
+                                    )}
                                     {!__WEB__ && currentStageBadge(l)}
                                     {!__WEB__ && <ClosureBadge l={l} />}
                                     {!__WEB__ && <RefundDueChip tot={lcRefundTot[String(l.id)]} />}
