@@ -424,6 +424,8 @@ function SalesTab({
   const [dateTo, setDateTo] = useState(dispatchedOn || (prodScope ? String(prodScope.to) : '') || todayISO())
   // Empty = every product type.
   const [productType, setProductType] = useState<string[]>([])
+  // Rejected invoices: shown with the rest, hidden, or only those.
+  const [rejView, setRejView] = useState<'show' | 'hide' | 'only'>('show')
   // Which numbers the invoice series has skipped. A number nobody used is a
   // number somebody has to account for — a cancelled bill, a spoiled form, or
   // one written and never keyed — so it is worth being able to ask.
@@ -874,6 +876,7 @@ function SalesTab({
       if (productType.length && !inv.lines.some((r) => productType.includes(String(r.product_category || '')))) {
         return false
       }
+      if (rejView !== 'show' && (rejView === 'only') !== !!inv.first.rejected_at) return false
       // The dashboard's production rule, line by line (same as the card's sum).
       if (prodScope) {
         const cats = (prodScope.cats as string[]) || []
@@ -892,14 +895,16 @@ function SalesTab({
       const hay = [
         inv.first.invoice_no,
         inv.first.customer,
-        ...inv.lines.map((r) => r.product_name)
+        ...inv.lines.map((r) => r.product_name),
+        // "rejected" and the reason find a rejected invoice.
+        ...(inv.first.rejected_at ? ['rejected', inv.first.rejected_reason] : [])
       ]
         .filter(Boolean)
         .join(' ')
         .toLowerCase()
       return hay.includes(q)
     })
-  }, [invoices, dateFrom, dateTo, search, productType, dispatchedOn, prodScope])
+  }, [invoices, dateFrom, dateTo, search, productType, dispatchedOn, prodScope, rejView])
 
   // The invoice-register columns that carry a header filter, and how each one
   // reads its value off a grouped invoice. Money/qty format the same way the
@@ -2240,6 +2245,24 @@ function SalesTab({
           >
             <ListChecks className="h-3.5 w-3.5" /> Missing invoice nos
           </Button>
+        )}
+        {/* REJECTED: shown with the rest → hidden → only those. */}
+        {!unloadOnly && !tdsOnly && (
+          <button
+            type="button"
+            onClick={() => setRejView((v) => (v === 'show' ? 'hide' : v === 'hide' ? 'only' : 'show'))}
+            title="Invoices the customer rejected — click: Shown → Hidden → Only"
+            className={cn(
+              'inline-flex h-9 shrink-0 items-center gap-1.5 rounded-[4px] border px-3 text-[12.5px] font-bold',
+              rejView === 'show' ? 'border-[#D6E2D6] bg-white text-[#33473E] hover:bg-[#F7FAF6]' : 'border-[#B3261E] bg-[#FDF0EE] text-[#B3261E]'
+            )}
+          >
+            <Ban className="h-3.5 w-3.5" />
+            Rejected {rejView === 'show' ? 'shown' : rejView === 'hide' ? 'hidden' : 'only'}
+            <span className="rounded-full bg-[#FDF0EE] px-1.5 text-[11px] font-extrabold tabular-nums text-[#B3261E]">
+              {invoices.filter((inv) => !!inv.first.rejected_at).length}
+            </span>
+          </button>
         )}
         {unloadOnly && (
           <span className="ml-auto inline-flex items-center gap-1.5 rounded-md border border-sky-200 bg-sky-50 px-2.5 py-1.5 text-[11px] font-medium text-sky-900">
