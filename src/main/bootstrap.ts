@@ -3216,6 +3216,10 @@ export async function runStartupTasks(): Promise<void> {
   await runOnce('legacy_supplier_unmerge_v1', async () => {
     console.log('[suppliers] Legacy merge undo:', await (await import('./supplierMerge')).undoLegacySupplierMerge())
   }).catch((e) => console.error('[suppliers] Legacy merge undo failed:', e))
+  // Legacy's Manufacturing master posts to the RAJKOT ledger (its bills moved over, logged).
+  await runOnce('legacy_mfg_ledger_v1', async () => {
+    console.log('[suppliers] Legacy Manufacturing ledger:', await (await import('./supplierMerge')).legacyMfgLedger())
+  }).catch((e) => console.error('[suppliers] Legacy Manufacturing ledger failed:', e))
 
   await runOnce('shortage_cn_copies_v1', async () => {
     const r = await (await import('./saleShortageNotes')).repairShortageNoteDupes()

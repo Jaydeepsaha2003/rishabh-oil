@@ -146,3 +146,51 @@ export async function undoLegacySupplierMerge(): Promise<string> {
     return out.join('; ') || 'no merge to undo'
   })
 }
+
+/**
+ * One-time (asked for 2026-11-23): LEGACY's Manufacturing master ("LEGACY
+ * COMMODITIES PVT. LTD") posts to LEGACY COMMODITIES PRIVATE LIMITED(RAJKOT),
+ * not the Trading ledger ", TRAD.". The site-wide redirect is re-pointed and the
+ * party lines of that master's own purchase bills move over (logged first).
+ * The LC-14 / LC-15 journals stay on TRAD.: Tally settles RAJKOT's opening with
+ * its own two payments, so those LCs paid the Trading account.
+ */
+export async function legacyMfgLedger(): Promise<string> {
+  return withDbTransaction(async () => {
+    const c = getClient()
+    const MFG = 'LEGACY COMMODITIES PVT. LTD'
+    const RAJKOT = 'LEGACY COMMODITIES PRIVATE LIMITED(RAJKOT)'
+    const TRAD = 'LEGACY COMMODITIES PVT LTD, TRAD.'
+    const sup = n((await c.execute({ sql: 'SELECT id FROM suppliers WHERE UPPER(TRIM(name)) = ? ORDER BY id LIMIT 1', args: [MFG] })).rows[0]?.id)
+    const led = async (name: string): Promise<number> =>
+      n((await c.execute({ sql: 'SELECT id FROM ledger_accounts WHERE UPPER(TRIM(name)) = ? ORDER BY id LIMIT 1', args: [name] })).rows[0]?.id)
+    const raj = await led(RAJKOT)
+    const trad = await led(TRAD)
+    if (!sup || !raj) return 'nothing to do'
+    const out: string[] = []
+    const up = await c.execute({ sql: 'UPDATE ledger_map SET use_name = ? WHERE company_id IS NULL AND TRIM(UPPER(posts_as)) = ?', args: [RAJKOT, MFG] })
+    if (!up.rowsAffected) {
+      await c.execute({ sql: "INSERT INTO ledger_map (company_id, posts_as, use_name, note) VALUES (NULL, ?, ?, 'Manufacturing master posts to Rajkot')", args: [MFG, RAJKOT] })
+    }
+    out.push(`${MFG} → ${RAJKOT}`)
+    if (trad) {
+      const lines = (await c.execute({
+        sql: `SELECT jl.id, jl.entry_id, jl.dr, jl.cr FROM journal_lines jl JOIN journal_entries je ON je.id = jl.entry_id
+              WHERE jl.account_id = ? AND je.order_id IN (SELECT id FROM orders WHERE supplier_id = ?)`,
+        args: [trad, sup]
+      })).rows as unknown as Row[]
+      if (lines.length) {
+        await c.execute(`CREATE TABLE IF NOT EXISTS accounting_repair_log (
+          repair_key TEXT PRIMARY KEY, entry_id INTEGER NOT NULL, before_json TEXT NOT NULL,
+          created_at TEXT NOT NULL DEFAULT (datetime('now')))`)
+        await c.execute({
+          sql: 'INSERT OR REPLACE INTO accounting_repair_log(repair_key, entry_id, before_json) VALUES (?, ?, ?)',
+          args: ['legacy_mfg_ledger_v1', 0, JSON.stringify({ from: trad, to: raj, lines })]
+        })
+        await c.execute({ sql: `UPDATE journal_lines SET account_id = ? WHERE id IN (${lines.map(() => '?').join(',')})`, args: [raj, ...lines.map((l) => n(l.id))] })
+        out.push(`${lines.length} bill line(s) moved to RAJKOT`)
+      }
+    }
+    return out.join('; ')
+  })
+}
