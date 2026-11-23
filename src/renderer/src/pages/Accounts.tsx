@@ -2466,6 +2466,8 @@ export function Accounts({
   const [regRej, setRegRej] = useState<'show' | 'hide' | 'only'>('show')
   // Vouchers of rejected sale invoices (and those set against them): shown, hidden, or only those.
   const [lgRej, setLgRej] = useState<'show' | 'hide' | 'only'>('show')
+  // Ledger: only the entries that look booked twice.
+  const [lgDup, setLgDup] = useState(false)
   // Bill-wise: money with no Agst Ref stays On Account (Tally's way); this
   // spreads it over the bills oldest first instead. Remembered on the browser.
   const [bwFifo, setBwFifoState] = useState(() => {
@@ -17877,13 +17879,52 @@ Delete ${doc}?`)) return
         return x > 0 && (Math.abs(x - Number(fNum)) < 1 || String(Math.round(x * 100) / 100).startsWith(fNum))
       })
     const hiddenSet = new Set(lgHidden)
+    // POSSIBLE DUPLICATES: the same side, the same amount to the rupee, within
+    // 10 days, on different vouchers — the shape of a Tally copy beside the
+    // app's, or one note posted twice. Each set gets a number to read them by.
+    const dupOf = new Map<number, number>()
+    {
+      const byAmt = new Map<string, Row[]>()
+      for (const r of allRows) {
+        if (r.provisional) continue
+        const side = Number(r.dr) > 0 ? 'dr' : 'cr'
+        const amt = Math.round(Number(side === 'dr' ? r.dr : r.cr) || 0)
+        if (!amt) continue
+        const k = `${side}|${amt}`
+        byAmt.set(k, [...(byAmt.get(k) || []), r])
+      }
+      const day = (r: Row): number => new Date(`${String(r.entry_date).slice(0, 10)}T00:00:00`).getTime() / 86400000
+      let set = 0
+      for (const list of byAmt.values()) {
+        if (list.length < 2) continue
+        const sorted = [...list].sort((a, b) => day(a) - day(b))
+        let cur: Row[] = []
+        const flush = (): void => {
+          const ids = new Set(cur.map((r) => Number(r.entry_id ?? r.id)))
+          if (cur.length > 1 && ids.size > 1) {
+            set++
+            for (const r of cur) dupOf.set(Number(r.id), set)
+          }
+        }
+        for (const r of sorted) {
+          if (cur.length && day(r) - day(cur[cur.length - 1]) > 10) {
+            flush()
+            cur = []
+          }
+          cur.push(r)
+        }
+        flush()
+      }
+    }
+    const dupSets = new Set(dupOf.values()).size
     const toolbarOk = (r: Row): boolean =>
       !hiddenSet.has(Number(r.id)) &&
       (!fTypes.length || fTypes.includes(typeOf(r))) &&
       (!fq || rowText(r).includes(fq) || amountHit(r)) &&
       // Reco on: only the vouchers tagged Reco.
       (!lgReco || lgRecoOn(r)) &&
-      (lgRej === 'show' || (lgRej === 'hide' ? !r.rejected_of : !!r.rejected_of))
+      (lgRej === 'show' || (lgRej === 'hide' ? !r.rejected_of : !!r.rejected_of)) &&
+      (!lgDup || dupOf.has(Number(r.id)))
     // The column funnels, offered from what the chips and search leave.
     const lgCf = colFilter<Row>(colF, 'ledger:vouchers', allRows.filter(toolbarOk), [
       { key: 'date', get: (r) => formatDate(r.entry_date), sort: 'num' },
@@ -17899,9 +17940,13 @@ Delete ${doc}?`)) return
     ])
     const lgShown = new Set(lgCf.rows)
     const keep = allRows.map((r) => lgShown.has(r))
-    const filtering = fTypes.length > 0 || !!fq || lgCf.active > 0 || lgHidden.length > 0 || lgReco || lgRej !== 'show'
+    const filtering = fTypes.length > 0 || !!fq || lgCf.active > 0 || lgHidden.length > 0 || lgReco || lgRej !== 'show' || lgDup
     // In the funnels' order — date order, or the column clicked to sort by.
-    const vRows = lgCf.rows
+    // Duplicates only: each set together, then by date.
+    const vRows =
+      lgDup && !lgCf.sorted
+        ? [...lgCf.rows].sort((a, b) => (dupOf.get(Number(a.id)) || 0) - (dupOf.get(Number(b.id)) || 0) || String(a.entry_date).localeCompare(String(b.entry_date)))
+        : lgCf.rows
     const canFilter = lgView === 'vouchers' || (lgView === 'columnar' && !lgCondensed)
     // The columnar rows are one per statement row, in the same order, until
     // they are condensed into months — so the same filter applies to them.
@@ -18543,7 +18588,8 @@ Delete ${doc}?`)) return
                   minHeight: 46,
                   borderBottom: '1px solid #EFF3EE',
                   // The highlighted row, as Tally draws it: a lit bar down its edge.
-                  background: lgPicking && lgPicked.has(eid) ? '#FDECEA' : open ? '#F3FBE2' : r.provisional ? '#FFF8EC' : stripe(i),
+                  background: lgPicking && lgPicked.has(eid) ? '#FDECEA' : open ? '#F3FBE2' : r.provisional ? '#FFF8EC' : lgDup && dupOf.has(Number(r.id)) ? (dupOf.get(Number(r.id))! % 2 ? '#FFF6E0' : '#FFEFD0') : stripe(i),
+                  boxShadow: lgDup && dupOf.has(Number(r.id)) ? 'inset 3px 0 0 #C2700A' : undefined,
                   fontStyle: r.provisional ? 'italic' : undefined
                 }}
               >
@@ -20186,6 +20232,26 @@ Delete ${doc}?`)) return
                         </span>
                       )}
                     </button>
+                    {/* POSSIBLE DUPLICATES — the same amount on the same side within 10 days. */}
+                    {dupSets > 0 && (
+                      <button
+                        type="button"
+                        onClick={() => setLgDup((v) => !v)}
+                        title="Entries that look booked twice: the same Dr or Cr amount within 10 days, on different vouchers. Click to show only those, set by set."
+                        className="flex h-[26px] flex-none items-center gap-1.5 whitespace-nowrap rounded-[13px] px-2.5"
+                        style={{
+                          border: `1px solid ${lgDup ? '#C2700A' : '#DCE7DB'}`,
+                          background: lgDup ? '#FFF4E0' : '#F4F7F3',
+                          color: lgDup ? '#8A5300' : '#33473E',
+                          fontSize: 11,
+                          fontWeight: 800
+                        }}
+                      >
+                        <span className="inline-block h-[8px] w-[8px] rounded-full" style={{ background: '#C2700A' }} />
+                        Duplicates {lgDup ? 'only' : ''}
+                        <span style={{ ...figS(10, 'currentColor', 700), opacity: 0.85 }}>{dupSets}</span>
+                      </button>
+                    )}
                     {/* REJECTED invoices on this ledger: show them, hide them, or only them. */}
                     {allRows.some((r) => r.rejected_of) && (
                       <button
@@ -20287,6 +20353,7 @@ Delete ${doc}?`)) return
                             setLgTankerEmpty(false)
                             lgCf.clear()
                             setLgRej('show')
+                            setLgDup(false)
                           }}
                           className="flex h-[30px] items-center gap-[5px] whitespace-nowrap rounded-[6px] px-2.5"
                           style={{ border: '1px solid #C3D2C6', background: '#fff', fontSize: 11, fontWeight: 800, color: '#33473E' }}
