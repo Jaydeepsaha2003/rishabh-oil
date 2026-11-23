@@ -28953,8 +28953,10 @@ var init_accountingRepairs = __esm({
 // src/main/supplierMerge.ts
 var supplierMerge_exports = {};
 __export(supplierMerge_exports, {
+  legacyMfgLedger: () => legacyMfgLedger,
   legacySupplierCleanup: () => legacySupplierCleanup,
-  mergeSupplier: () => mergeSupplier
+  mergeSupplier: () => mergeSupplier,
+  undoLegacySupplierMerge: () => undoLegacySupplierMerge
 });
 async function mergeSupplier(fromId, toId) {
   return withDbTransaction(async () => {
@@ -29016,6 +29018,83 @@ async function legacySupplierCleanup() {
     }
   }
   return out.join("; ") || "nothing to do";
+}
+async function undoLegacySupplierMerge() {
+  return withDbTransaction(async () => {
+    const c = getClient();
+    const has = (await c.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'accounting_repair_log'")).rows.length > 0;
+    if (!has) return "no merge to undo";
+    const logs = (await c.execute("SELECT repair_key, before_json FROM accounting_repair_log WHERE repair_key LIKE 'supplier_merge_v1:%'")).rows;
+    const out = [];
+    for (const l of logs) {
+      const b = JSON.parse(String(l.before_json));
+      const from = b.from;
+      const fromId = n34(from.id);
+      const toId = n34(b.to.id);
+      if ((await c.execute({ sql: "SELECT 1 FROM suppliers WHERE id = ?", args: [fromId] })).rows.length) continue;
+      const cols = (await c.execute("PRAGMA table_info(suppliers)")).rows.map((r) => String(r.name)).filter((k) => k in from);
+      await c.execute({ sql: `INSERT INTO suppliers (${cols.join(", ")}) VALUES (${cols.map(() => "?").join(", ")})`, args: cols.map((k) => from[k] ?? null) });
+      for (const [key3, ids] of Object.entries(b.moved)) {
+        if (key3 === "party_openings" || !ids.length) continue;
+        const [t, col] = key3.split(".");
+        await c.execute({ sql: `UPDATE ${t} SET ${col} = ? WHERE rowid IN (${ids.map(() => "?").join(",")}) AND ${col} = ?`, args: [fromId, ...ids, toId] });
+      }
+      const amt = n34(from.opening_purchase_amount);
+      for (const co of b.moved.party_openings || []) {
+        await c.execute({ sql: "UPDATE party_openings SET amount = amount - ? WHERE kind = 'supplier' AND party_id = ? AND company_id = ?", args: [amt, toId, n34(co)] });
+        await c.execute({
+          sql: "INSERT INTO party_openings (kind, party_id, company_id, amount, as_on) VALUES ('supplier', ?, ?, ?, ?)",
+          args: [fromId, n34(co), amt, from.opening_purchase_date ?? null]
+        });
+      }
+      await c.execute({ sql: "DELETE FROM accounting_repair_log WHERE repair_key = ?", args: [String(l.repair_key)] });
+      out.push(`restored ${String(from.name)} (#${fromId})`);
+    }
+    const led = (await c.execute("SELECT id FROM ledger_accounts WHERE UPPER(TRIM(name)) = 'LEGACY COMMODITIES PRIVATE LIMITED'")).rows[0];
+    if (led && out.length) {
+      await c.execute({ sql: "DELETE FROM ledger_hidden WHERE account_id = ?", args: [n34(led.id)] });
+      out.push("LEGACY COMMODITIES PRIVATE LIMITED shown again");
+    }
+    return out.join("; ") || "no merge to undo";
+  });
+}
+async function legacyMfgLedger() {
+  return withDbTransaction(async () => {
+    const c = getClient();
+    const MFG = "LEGACY COMMODITIES PVT. LTD";
+    const RAJKOT = "LEGACY COMMODITIES PRIVATE LIMITED(RAJKOT)";
+    const TRAD = "LEGACY COMMODITIES PVT LTD, TRAD.";
+    const sup = n34((await c.execute({ sql: "SELECT id FROM suppliers WHERE UPPER(TRIM(name)) = ? ORDER BY id LIMIT 1", args: [MFG] })).rows[0]?.id);
+    const led = async (name) => n34((await c.execute({ sql: "SELECT id FROM ledger_accounts WHERE UPPER(TRIM(name)) = ? ORDER BY id LIMIT 1", args: [name] })).rows[0]?.id);
+    const raj = await led(RAJKOT);
+    const trad = await led(TRAD);
+    if (!sup || !raj) return "nothing to do";
+    const out = [];
+    const up5 = await c.execute({ sql: "UPDATE ledger_map SET use_name = ? WHERE company_id IS NULL AND TRIM(UPPER(posts_as)) = ?", args: [RAJKOT, MFG] });
+    if (!up5.rowsAffected) {
+      await c.execute({ sql: "INSERT INTO ledger_map (company_id, posts_as, use_name, note) VALUES (NULL, ?, ?, 'Manufacturing master posts to Rajkot')", args: [MFG, RAJKOT] });
+    }
+    out.push(`${MFG} \u2192 ${RAJKOT}`);
+    if (trad) {
+      const lines = (await c.execute({
+        sql: `SELECT jl.id, jl.entry_id, jl.dr, jl.cr FROM journal_lines jl JOIN journal_entries je ON je.id = jl.entry_id
+              WHERE jl.account_id = ? AND je.order_id IN (SELECT id FROM orders WHERE supplier_id = ?)`,
+        args: [trad, sup]
+      })).rows;
+      if (lines.length) {
+        await c.execute(`CREATE TABLE IF NOT EXISTS accounting_repair_log (
+          repair_key TEXT PRIMARY KEY, entry_id INTEGER NOT NULL, before_json TEXT NOT NULL,
+          created_at TEXT NOT NULL DEFAULT (datetime('now')))`);
+        await c.execute({
+          sql: "INSERT OR REPLACE INTO accounting_repair_log(repair_key, entry_id, before_json) VALUES (?, ?, ?)",
+          args: ["legacy_mfg_ledger_v1", 0, JSON.stringify({ from: trad, to: raj, lines })]
+        });
+        await c.execute({ sql: `UPDATE journal_lines SET account_id = ? WHERE id IN (${lines.map(() => "?").join(",")})`, args: [raj, ...lines.map((l) => n34(l.id))] });
+        out.push(`${lines.length} bill line(s) moved to RAJKOT`);
+      }
+    }
+    return out.join("; ");
+  });
 }
 var n34, REFS;
 var init_supplierMerge = __esm({
@@ -39331,9 +39410,12 @@ async function runStartupTasks() {
     const moved = await realignVoucherSeries();
     if (moved.length) console.log(`[vouchers] renumbered ${moved.length}: ${moved.join(", ")}`);
   }).catch((e) => console.error("[vouchers] series realign failed:", e));
-  await runOnce("legacy_supplier_merge_v1", async () => {
-    console.log("[suppliers] Legacy clean-up:", await (await Promise.resolve().then(() => (init_supplierMerge(), supplierMerge_exports))).legacySupplierCleanup());
-  }).catch((e) => console.error("[suppliers] Legacy clean-up failed:", e));
+  await runOnce("legacy_supplier_unmerge_v1", async () => {
+    console.log("[suppliers] Legacy merge undo:", await (await Promise.resolve().then(() => (init_supplierMerge(), supplierMerge_exports))).undoLegacySupplierMerge());
+  }).catch((e) => console.error("[suppliers] Legacy merge undo failed:", e));
+  await runOnce("legacy_mfg_ledger_v1", async () => {
+    console.log("[suppliers] Legacy Manufacturing ledger:", await (await Promise.resolve().then(() => (init_supplierMerge(), supplierMerge_exports))).legacyMfgLedger());
+  }).catch((e) => console.error("[suppliers] Legacy Manufacturing ledger failed:", e));
   await runOnce("shortage_cn_copies_v1", async () => {
     const r = await (await Promise.resolve().then(() => (init_saleShortageNotes(), saleShortageNotes_exports))).repairShortageNoteDupes();
     console.log(
