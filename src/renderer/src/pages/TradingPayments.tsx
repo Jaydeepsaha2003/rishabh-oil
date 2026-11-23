@@ -118,6 +118,22 @@ export function TradingPayments({
   const [error, setError] = useState<string | null>(null)
   const [search, setSearch] = useState('')
   const [side, setSide] = useState<Side>('all')
+  // Two lists: the deals' own bills, and the chain deals' (rows carrying chain_id).
+  const [source, setSourceState] = useState<'deal' | 'chain'>(() => {
+    try {
+      return sessionStorage.getItem('trading-pay-source') === 'chain' ? 'chain' : 'deal'
+    } catch {
+      return 'deal'
+    }
+  })
+  const setSource = (v: 'deal' | 'chain'): void => {
+    setSourceState(v)
+    try {
+      sessionStorage.setItem('trading-pay-source', v)
+    } catch {
+      // private window: not remembered
+    }
+  }
   const [status, setStatus] = useState<StatusFilter>('open')
   // The rows left open, kept for the session: Esc back from a voucher finds
   // the list as it was.
@@ -160,6 +176,7 @@ export function TradingPayments({
   const scoped = useMemo(() => {
     const q = search.trim().toLowerCase()
     return rows.filter((r) => {
+      if (!!r.chain_id !== (source === 'chain')) return false
       if (range) {
         const dd = String(r.deal_date || '').slice(0, 10)
         if (dd < range.from || dd > range.to) return false
@@ -170,7 +187,12 @@ export function TradingPayments({
         String(f || '').toLowerCase().includes(q)
       )
     })
-  }, [rows, range, search])
+  }, [rows, range, search, source])
+  const sourceCount = useMemo(() => {
+    const k = { deal: 0, chain: 0 }
+    for (const r of rows) k[r.chain_id ? 'chain' : 'deal']++
+    return k
+  }, [rows])
 
   const sideRows = useMemo(() => (side === 'all' ? scoped : scoped.filter((r) => r.side === side)), [scoped, side])
   const matches = (r: Row, s: StatusFilter): boolean =>
@@ -335,6 +357,30 @@ export function TradingPayments({
             placeholder="Search invoice no, party, product, LC / BD no…"
             className="!h-[42px] !rounded-[4px] !border-[#C3D2C6] !pl-9 !text-[13px]"
           />
+        </div>
+        {/* DEALS or CHAIN DEALS — each its own list, tiles included. */}
+        <div className="flex shrink-0 items-center gap-[3px] rounded-[4px] border border-[#DCE7DB] bg-[#EAF0E9] p-[3px]">
+          {(
+            [
+              { v: 'deal', label: 'Deals' },
+              { v: 'chain', label: 'Chain Deal' }
+            ] as Array<{ v: 'deal' | 'chain'; label: string }>
+          ).map((c) => (
+            <button
+              key={c.v}
+              type="button"
+              onClick={() => setSource(c.v)}
+              className={cn(
+                'flex h-[34px] items-center gap-1.5 rounded-[2px] px-3 text-[12px] font-extrabold transition-colors',
+                source === c.v ? 'bg-[#0B3D2E] text-white' : 'text-[#5A6B62] hover:bg-white/70'
+              )}
+            >
+              {c.label}
+              <span className={cn('rounded-[2px] px-1.5 py-0.5 text-[10.5px] tabular-nums', source === c.v ? 'bg-[#C7F03F]/20 text-[#C7F03F]' : 'bg-[#DCE7DB] text-[#33473E]')}>
+                {sourceCount[c.v]}
+              </span>
+            </button>
+          ))}
         </div>
         <div className="flex shrink-0 items-center gap-[3px] rounded-[4px] border border-[#DCE7DB] bg-[#EAF0E9] p-[3px]">
           {(
@@ -680,6 +726,22 @@ export function TradingPaymentsMobile({
   const [error, setError] = useState<string | null>(null)
   const [search, setSearch] = useState('')
   const [side, setSide] = useState<Side>('all')
+  // Two lists: the deals' own bills, and the chain deals' (rows carrying chain_id).
+  const [source, setSourceState] = useState<'deal' | 'chain'>(() => {
+    try {
+      return sessionStorage.getItem('trading-pay-source') === 'chain' ? 'chain' : 'deal'
+    } catch {
+      return 'deal'
+    }
+  })
+  const setSource = (v: 'deal' | 'chain'): void => {
+    setSourceState(v)
+    try {
+      sessionStorage.setItem('trading-pay-source', v)
+    } catch {
+      // private window: not remembered
+    }
+  }
   const [status, setStatus] = useState<StatusFilter>('open')
   const [open, setOpen] = useState<Set<string>>(new Set())
 
@@ -702,6 +764,7 @@ export function TradingPaymentsMobile({
   const scoped = useMemo(() => {
     const q = search.trim().toLowerCase()
     return rows.filter((r) => {
+      if (!!r.chain_id !== (source === 'chain')) return false
       if (range) {
         const dd = String(r.deal_date || '').slice(0, 10)
         if (dd < range.from || dd > range.to) return false
@@ -712,7 +775,12 @@ export function TradingPaymentsMobile({
         String(f || '').toLowerCase().includes(q)
       )
     })
-  }, [rows, range, search])
+  }, [rows, range, search, source])
+  const sourceCount = useMemo(() => {
+    const k = { deal: 0, chain: 0 }
+    for (const r of rows) k[r.chain_id ? 'chain' : 'deal']++
+    return k
+  }, [rows])
   const sideRows = useMemo(() => (side === 'all' ? scoped : scoped.filter((r) => r.side === side)), [scoped, side])
   const matches = (r: Row, s: StatusFilter): boolean =>
     s === 'all' ? true : s === 'open' ? r.status !== 'settled' : s === 'overdue' ? !!r.overdue : s === 'part' ? r.status === 'part' : r.status === 'settled'
@@ -793,6 +861,24 @@ export function TradingPaymentsMobile({
         </div>
       </div>
 
+      {/* DEALS or CHAIN DEALS. */}
+      <div className="flex shrink-0 gap-1 rounded-[4px] border border-[#DCE7DB] bg-[#EAF0E9] p-1">
+        {(
+          [
+            { v: 'deal', label: 'Deals' },
+            { v: 'chain', label: 'Chain Deal' }
+          ] as Array<{ v: 'deal' | 'chain'; label: string }>
+        ).map((c) => (
+          <button
+            key={c.v}
+            type="button"
+            onClick={() => setSource(c.v)}
+            className={cn('h-9 flex-1 rounded-[3px] text-[12px] font-extrabold', source === c.v ? 'bg-[#0B3D2E] text-white' : 'text-[#5A6B62]')}
+          >
+            {c.label} · {sourceCount[c.v]}
+          </button>
+        ))}
+      </div>
       {/* Search, side, status. */}
       <div className="flex h-11 shrink-0 items-center gap-2 rounded-[4px] border border-[#C3D2C6] bg-white px-3">
         <Search className="h-[18px] w-[18px] shrink-0 text-[#5A6B62]" />
