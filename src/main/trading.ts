@@ -832,7 +832,7 @@ export async function listTradingPayments(): Promise<Row[]> {
   // they never meet a deal's.
   const chainRes = await c
     .execute({
-      sql: `SELECT ch.id, ch.chain_date, p.code AS product_code, p.name AS product_name,
+      sql: `SELECT ch.id, ch.chain_date, ch.tags AS chain_tags, p.code AS product_code, p.name AS product_name,
                    l.order_id, l.order_company_id, l.sale_group, l.sale_company_id
               FROM trading_chains ch
               JOIN trading_chain_legs l ON l.chain_id = ch.id
@@ -846,7 +846,13 @@ export async function listTradingPayments(): Promise<Row[]> {
   for (const r of chainRes ? toPlain(chainRes) : []) {
     const key = -n(r.id)
     if (!deals.some((d) => n(d.id) === key)) {
-      deals.push({ id: key, chain_id: n(r.id), deal_date: r.chain_date, product_code: r.product_code, product_name: r.product_name })
+      let tags: string[] = []
+      try {
+        tags = (JSON.parse(String(r.chain_tags || '[]')) as unknown[]).map(String)
+      } catch {
+        tags = []
+      }
+      deals.push({ id: key, chain_id: n(r.id), chain_tags: tags, deal_date: r.chain_date, product_code: r.product_code, product_name: r.product_name })
     }
     if (n(r.order_company_id) === cid && n(r.order_id)) orders.set(key, [...(orders.get(key) ?? []), n(r.order_id)])
     if (n(r.sale_company_id) === cid && r.sale_group) chainSaleGroups.set(key, [...(chainSaleGroups.get(key) ?? []), String(r.sale_group)])
@@ -1063,6 +1069,7 @@ export async function listTradingPayments(): Promise<Row[]> {
       deal_id: id,
       // A chain's rows: its id, so the screen says "Chain" and opens it there.
       chain_id: n(d.chain_id) || null,
+      chain_tags: (d.chain_tags as string[] | undefined) ?? [],
       deal_date: d.deal_date ?? null,
       product_code: d.product_code ?? null,
       product_name: d.product_name ?? null,

@@ -6,6 +6,7 @@ import { cn } from '@/lib/utils'
 import { useLiveRefresh } from '@/lib/useLiveRefresh'
 import { ExcelButton } from '@/components/ExcelButton'
 import { NUM_MONEY, NUM_QTY } from '@/lib/excel'
+import { TagChip, useTagMap } from '@/components/Tags'
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Row = Record<string, any>
@@ -37,6 +38,19 @@ const byChannel = (r: Row): Record<Channel, number> => ({
   bank: n(r.settled_bank),
   adjustment: n(r.settled_adjustment)
 })
+
+// DEAL or CHAIN DEAL, said on every group header, and the tags the desk gave it.
+function KindChip({ chain }: { chain: boolean }): React.JSX.Element {
+  return (
+    <span
+      className="rounded-[2px] border px-1.5 py-0.5 text-[10px] font-extrabold uppercase tracking-[.08em]"
+      style={chain ? { color: '#6B3FA0', background: '#F2ECFA', borderColor: '#D9C8F0' } : { color: '#0B6B45', background: '#E9F5EE', borderColor: '#BFE3CB' }}
+      title={chain ? 'A chain deal (Trading → Chain)' : 'A normal trading deal (Trading → Deals)'}
+    >
+      {chain ? 'Chain deal' : 'Deal'}
+    </span>
+  )
+}
 
 function ChannelChip({ kind, text }: { kind: Channel; text?: string }): React.JSX.Element {
   const c = CH[kind]
@@ -118,6 +132,19 @@ export function TradingPayments({
   const [error, setError] = useState<string | null>(null)
   const [search, setSearch] = useState('')
   const [side, setSide] = useState<Side>('all')
+  // Each group's tags: a deal's from the tag map, a chain's from the chain itself (coloured by the tag master).
+  const dealTags = useTagMap('trading', Array.from(new Set(rows.filter((r) => !r.chain_id && n(r.deal_id) > 0).map((r) => n(r.deal_id)))))
+  const [tagMaster, setTagMaster] = useState<Row[]>([])
+  useEffect(() => {
+    window.api.tags
+      .list()
+      .then(setTagMaster)
+      .catch(() => setTagMaster([]))
+  }, [])
+  const tagsFor = (f: Row): Row[] =>
+    f.chain_id
+      ? ((f.chain_tags as string[]) || []).map((t) => tagMaster.find((m) => String(m.name || '').toUpperCase() === String(t).toUpperCase()) || { name: t })
+      : dealTags.tagsOf(n(f.deal_id))
   // Two lists: the deals' own bills, and the chain deals' (rows carrying chain_id).
   const [source, setSourceState] = useState<'deal' | 'chain'>(() => {
     try {
@@ -508,6 +535,10 @@ export function TradingPayments({
                             >
                               {f.chain_id ? 'Chain' : 'Deal'} · {formatDate(f.deal_date)}
                             </button>
+                            <KindChip chain={!!f.chain_id} />
+                            {tagsFor(f).map((t) => (
+                              <TagChip key={String(t.name)} tag={t} small />
+                            ))}
                             <span className="rounded-[2px] bg-[#EAF0E9] px-2 py-0.5 text-[11px] font-extrabold tracking-[.06em] text-[#33473E]">
                               {String(f.product_code || f.product_name || '—')}
                             </span>
@@ -960,6 +991,8 @@ export function TradingPaymentsMobile({
                 className="flex flex-wrap items-center gap-x-2 gap-y-1 rounded-[4px] bg-[#0B3D2E] px-3 py-2 text-left text-white"
               >
                 <span className="text-[12.5px] font-extrabold">{f.chain_id ? 'Chain' : 'Deal'} · {formatDate(f.deal_date)}</span>
+                <KindChip chain={!!f.chain_id} />
+                {!!f.chain_id && ((f.chain_tags as string[]) || []).map((t) => <TagChip key={t} tag={{ name: t }} small />)}
                 <span className="rounded-[2px] bg-white/10 px-1.5 py-0.5 text-[10.5px] font-extrabold text-[#C7F03F]">
                   {String(f.product_code || f.product_name || '—')}
                 </span>
