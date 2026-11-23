@@ -559,13 +559,16 @@ export function DashboardWeb(props: DashProps): React.JSX.Element {
     // (its transfers and returns with it); a "less" line switched off is not taken off.
     const cats = (['raw', 'intermediate', 'finished'] as const).filter((c) => !prodOff.has(c))
     const inSum = (r: PR): boolean => !Number(r.fatty) && (cats as readonly string[]).includes(String(r.cat))
-    const byCat = (c: string): number => sumOf((r) => !Number(r.fatty) && r.cat === c)
-    const total = sumOf(inSum)
+    const byCat = (c: string): number => sumOf((r) => !Number(r.fatty) && r.cat === c && r.kind !== 'packed')
+    // Dispatches only — Packed is its own line (and its own eye).
+    const total = sumOf((r) => inSum(r) && r.kind !== 'packed')
+    const packedIn = sumOf((r) => inSum(r) && r.kind === 'packed')
     const interco = sumOf((r) => inSum(r) && r.kind === 'interco')
     const ret = sumOf((r) => inSum(r) && r.kind === 'return')
-    const production = Math.round((total - (prodOff.has('interco') ? 0 : interco) - (prodOff.has('return') ? 0 : ret)) * 1000) / 1000
+    const production =
+      Math.round((total + (prodOff.has('packed') ? 0 : packedIn) - (prodOff.has('interco') ? 0 : interco) - (prodOff.has('return') ? 0 : ret)) * 1000) / 1000
     const fatty = sumOf((r) => !!Number(r.fatty) && r.kind === 'out')
-    const fattyAll = sumOf((r) => !!Number(r.fatty))
+    const fattyAll = sumOf((r) => !!Number(r.fatty) && r.kind !== 'packed')
     // Open the Sales list on exactly the invoices behind a line.
     // Open the Stock register over the card's dates — on the category's tab
     // (its Dispatch column) for a category line; Fatty Acid sits under Finished.
@@ -741,6 +744,7 @@ export function DashboardWeb(props: DashProps): React.JSX.Element {
             {line('Intermediate dispatched', byCat('intermediate'), { sub: true, eye: 'intermediate', go: () => open('Intermediate dispatched', { cats: ['intermediate'] }), tip: 'Open these sales' })}
             {line('Finished dispatched', byCat('finished'), { sub: true, eye: 'finished', go: () => open('Finished dispatched', { cats: ['finished'] }), tip: 'Open these sales' })}
             {line('Total dispatches', total, { go: () => open('Total dispatches', { cats: [...cats] }), tip: 'Open every sale counted here' })}
+            {line('Add: Packed into SKUs', packedIn, { sign: '+ ', fg: t.green, eye: 'packed', go: () => open('Packed into SKUs', { cats: ['finished'] }), tip: "Oil packed into cartons / pouches — the Stock page's Packed column" })}
             {line('Less: Inter-company transfer', interco, { sign: '− ', fg: t.red, eye: 'interco', go: () => open('Inter-company transfer', { cats: [...cats], scope: 'interco' }), tip: 'Open the sales to our own companies' })}
             {line('Less: Purchase return', ret, { sign: '− ', fg: t.red, eye: 'return', go: () => open('Purchase return', { cats: [...cats], scope: 'return' }), tip: 'Open the purchase returns' })}
             {line('Total production till date', production, { strong: true, go: () => open('Production', { cats: [...cats], scope: 'out' }), tip: 'Open the sales that make up production' })}
