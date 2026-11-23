@@ -12729,7 +12729,7 @@ async function listTradingPayments() {
   const dealIds = deals.map((d) => n15(d.id)).filter(Boolean);
   const { orders, sales } = await dealLineIds(dealIds, deals);
   const chainRes = await c.execute({
-    sql: `SELECT ch.id, ch.chain_date, p.code AS product_code, p.name AS product_name,
+    sql: `SELECT ch.id, ch.chain_date, ch.tags AS chain_tags, p.code AS product_code, p.name AS product_name,
                    l.order_id, l.order_company_id, l.sale_group, l.sale_company_id
               FROM trading_chains ch
               JOIN trading_chain_legs l ON l.chain_id = ch.id
@@ -12742,7 +12742,13 @@ async function listTradingPayments() {
   for (const r of chainRes ? toPlain12(chainRes) : []) {
     const key3 = -n15(r.id);
     if (!deals.some((d) => n15(d.id) === key3)) {
-      deals.push({ id: key3, chain_id: n15(r.id), deal_date: r.chain_date, product_code: r.product_code, product_name: r.product_name });
+      let tags = [];
+      try {
+        tags = JSON.parse(String(r.chain_tags || "[]")).map(String);
+      } catch {
+        tags = [];
+      }
+      deals.push({ id: key3, chain_id: n15(r.id), chain_tags: tags, deal_date: r.chain_date, product_code: r.product_code, product_name: r.product_name });
     }
     if (n15(r.order_company_id) === cid && n15(r.order_id)) orders.set(key3, [...orders.get(key3) ?? [], n15(r.order_id)]);
     if (n15(r.sale_company_id) === cid && r.sale_group) chainSaleGroups.set(key3, [...chainSaleGroups.get(key3) ?? [], String(r.sale_group)]);
@@ -12907,6 +12913,7 @@ async function listTradingPayments() {
       deal_id: id,
       // A chain's rows: its id, so the screen says "Chain" and opens it there.
       chain_id: n15(d.chain_id) || null,
+      chain_tags: d.chain_tags ?? [],
       deal_date: d.deal_date ?? null,
       product_code: d.product_code ?? null,
       product_name: d.product_name ?? null,
