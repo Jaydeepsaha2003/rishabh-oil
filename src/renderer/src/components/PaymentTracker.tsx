@@ -122,11 +122,12 @@ function actionOf(r: Row): { label: string; Icon: typeof Check; primary: boolean
   }
 }
 
-const GRID = '150px minmax(260px,1.6fr) minmax(170px,1fr) 150px 140px 132px 150px'
+const GRID = '175px minmax(260px,1.6fr) minmax(170px,1fr) 150px 140px 132px 150px'
 
 // The filters and everything derived from them — one set of rules for the
 // desktop table and the phone cards, so the two cannot count differently.
-function useTrackerView(rows: Row[]) {
+type ColSort = { key: 'ref' | 'lender' | 'amount' | 'due'; asc: boolean } | null
+function useTrackerView(rows: Row[], firstSort: 'due' | 'amount' | 'lender' = 'due') {
   const [win, setWin] = useState<Win>('all')
   const [dir, setDir] = useState<Dir>('all')
   const [kinds, setKinds] = useState<Kind[]>([])
@@ -134,7 +135,9 @@ function useTrackerView(rows: Row[]) {
   const [lenderOpen, setLenderOpen] = useState(false)
   const [q, setQ] = useState('')
   const [showSettled, setShowSettled] = useState(false)
-  const [sort, setSort] = useState<'due' | 'amount'>('due')
+  const [sort, setSort] = useState<'due' | 'amount' | 'lender'>(firstSort)
+  // A click on a column head: sorts the rows inside every group by that column.
+  const [colSort, setColSort] = useState<ColSort>(null)
 
   const v = useMemo(() => {
     const all = rows
@@ -151,12 +154,23 @@ function useTrackerView(rows: Row[]) {
           (skip === 'lender' || lender === 'all' || x.lender === lender) &&
           (!query || `${x.ref} ${x.party} ${x.lender} ${x.detail}`.toLowerCase().includes(query))
       )
+    const byCol = (a: Row, b: Row): number => {
+      if (!colSort) return 0
+      const k = colSort.key
+      const d =
+        k === 'amount'
+          ? n(a.amount) - n(b.amount)
+          : k === 'due'
+            ? (dOf(a) ?? Infinity) - (dOf(b) ?? Infinity)
+            : String((k === 'ref' ? `${a.ref} ${a.party}` : a.lender) || '').localeCompare(String((k === 'ref' ? `${b.ref} ${b.party}` : b.lender) || ''), 'en', { numeric: true })
+      return colSort.asc ? d : -d
+    }
     const shown = base(null)
       .slice()
-      .sort((a, b) =>
-        sort === 'amount'
-          ? n(b.amount) - n(a.amount)
-          : (dOf(a) ?? Infinity) - (dOf(b) ?? Infinity) || n(b.amount) - n(a.amount)
+      .sort(
+        (a, b) =>
+          byCol(a, b) ||
+          (sort === 'amount' ? n(b.amount) - n(a.amount) : (dOf(a) ?? Infinity) - (dOf(b) ?? Infinity) || n(b.amount) - n(a.amount))
       )
     const sum = (arr: Row[]): number => arr.reduce((t, x) => t + n(x.amount), 0)
     const outSum = (arr: Row[]): number => sum(arr.filter((x) => x.dir === 'out'))
@@ -173,18 +187,32 @@ function useTrackerView(rows: Row[]) {
       { key: 'nodate', label: 'No due date set', Icon: CalendarX2, test: (x) => !x.settled && dOf(x) == null, fg: '#5A6B62', bg: '#F7FAF6', bd: '#E4ECE3' },
       { key: 'settled', label: 'Settled', Icon: CircleCheck, test: (x) => !!x.settled, fg: '#0B6B45', bg: '#F4FBF6', bd: '#BFE3CB' }
     ]
+    // BY NBFC: one group per bank / NBFC, the one with the most overdue first.
+    const lenderGroups = Array.from(new Set(shown.map((x) => String(x.lender || '')))).map((l) => ({
+      key: `lender:${l}`,
+      label: l || 'No bank / NBFC',
+      Icon: Landmark,
+      test: (x: Row) => String(x.lender || '') === l,
+      fg: '#0B3D2E',
+      bg: '#F1F6EF',
+      bd: '#DCE7DB'
+    }))
     const order =
       sort === 'amount'
         ? [{ key: 'all', label: 'Largest first', Icon: ArrowDownWideNarrow, test: () => true, fg: '#33473E', bg: '#F7FAF6', bd: '#E4ECE3' }]
-        : BUCKETS
+        : sort === 'lender'
+          ? lenderGroups
+          : BUCKETS
     const placed = new Set<string>()
     const groups = order
       .map((bk) => {
         const list = shown.filter((x) => !placed.has(String(x.key)) && bk.test(x))
         list.forEach((x) => placed.add(String(x.key)))
-        return { ...bk, rows: list, out: outSum(list.filter((x) => !x.settled)), in: inSum(list.filter((x) => !x.settled)) }
+        const lateN = list.filter((x) => !x.settled && dOf(x) != null && (dOf(x) as number) < 0).length
+        return { ...bk, rows: list, lateN, out: outSum(list.filter((x) => !x.settled)), in: inSum(list.filter((x) => !x.settled)) }
       })
       .filter((g) => g.rows.length)
+      .sort((a, b) => (sort === 'lender' ? b.lateN - a.lateN || b.out + b.in - (a.out + a.in) : 0))
 
     const live = all.filter((x) => !x.settled)
     const late = live.filter((x) => dOf(x) != null && (dOf(x) as number) < 0)
@@ -210,7 +238,7 @@ function useTrackerView(rows: Row[]) {
       footOut: outSum(liveShown),
       footIn: inSum(liveShown)
     }
-  }, [rows, q, win, dir, kinds, lender, showSettled, sort])
+  }, [rows, q, win, dir, kinds, lender, showSettled, sort, colSort])
 
   const filtered = win !== 'all' || dir !== 'all' || kinds.length > 0 || lender !== 'all' || !!q.trim()
   const clear = (): void => {
@@ -220,7 +248,7 @@ function useTrackerView(rows: Row[]) {
     setLender('all')
     setQ('')
   }
-  return { win, setWin, dir, setDir, kinds, setKinds, lender, setLender, lenderOpen, setLenderOpen, q, setQ, showSettled, setShowSettled, sort, setSort, v, filtered, clear }
+  return { win, setWin, dir, setDir, kinds, setKinds, lender, setLender, lenderOpen, setLenderOpen, q, setQ, showSettled, setShowSettled, sort, setSort, colSort, setColSort, v, filtered, clear }
 }
 
 export function PaymentTracker({
@@ -228,6 +256,7 @@ export function PaymentTracker({
   onAction,
   canAct,
   onReject,
+  onRejectMany,
   onRestore
 }: {
   rows: Row[]
@@ -235,13 +264,54 @@ export function PaymentTracker({
   onAction: (r: Row) => void
   // Reject: never to be paid/received, so off the list; Restore undoes it.
   onReject?: (r: Row) => void
+  // The ticked rows rejected together, under one reason.
+  onRejectMany?: (rows: Row[]) => Promise<void>
   onRestore?: (r: Row) => void
   // Whether this viewer may open that register at all.
   canAct: (r: Row) => boolean
 }): React.JSX.Element {
-  const { win, setWin, dir, setDir, kinds, setKinds, lender, setLender, lenderOpen, setLenderOpen, q, setQ, showSettled, setShowSettled, sort, setSort, v, filtered, clear } =
-    useTrackerView(rows)
+  const { win, setWin, dir, setDir, kinds, setKinds, lender, setLender, lenderOpen, setLenderOpen, q, setQ, showSettled, setShowSettled, sort, setSort, colSort, setColSort, v, filtered, clear } =
+    useTrackerView(rows, 'lender')
   const [helpOpen, setHelpOpen] = useState(false)
+  // FOLDED GROUPS: by NBFC every group starts folded (its header carries the
+  // count and the money); by date every group starts open. A click flips one.
+  const [flip, setFlip] = useState<Set<string>>(new Set())
+  const folded = (key: string): boolean => (sort === 'lender') !== flip.has(key)
+  const toggleGroup = (key: string): void =>
+    setFlip((p) => {
+      const x = new Set(p)
+      if (x.has(key)) x.delete(key)
+      else x.add(key)
+      return x
+    })
+  // TICKED ROWS, for Reject selected. Only rows that can be rejected tick.
+  const [picked, setPicked] = useState<Set<string>>(new Set())
+  const canPick = (r: Row): boolean => !!onRejectMany && !r.settled && !r.rejected && canAct(r)
+  const pickedRows = v.shown.filter((r) => picked.has(String(r.key)) && canPick(r))
+  const pickToggle = (keys: string[], on: boolean): void =>
+    setPicked((p) => {
+      const x = new Set(p)
+      for (const k of keys) {
+        if (on) x.add(k)
+        else x.delete(k)
+      }
+      return x
+    })
+  const [busy, setBusy] = useState(false)
+  const head = (key: NonNullable<ColSort>['key'], label: string, cls: string): React.JSX.Element => {
+    const on = colSort?.key === key
+    return (
+      <button
+        type="button"
+        onClick={() => setColSort(on ? (colSort!.asc ? { key, asc: false } : null) : { key, asc: key !== 'amount' })}
+        title={`Sort by ${label.toLowerCase()} — click again to turn it round, a third time to clear`}
+        className={cn('flex items-center gap-1 uppercase hover:text-[#C7F03F]', cls, on && 'text-[#C7F03F]')}
+      >
+        {label}
+        {on ? (colSort!.asc ? ' ▲' : ' ▼') : <ArrowUpDown className="h-3 w-3 opacity-50" />}
+      </button>
+    )
+  }
   const net = v.footIn - v.footOut
   const monthNet = v.inSum(v.month) - v.outSum(v.month)
 
@@ -413,12 +483,25 @@ export function PaymentTracker({
             <div className="flex-1" />
             <button
               type="button"
-              onClick={() => setSort((s) => (s === 'amount' ? 'due' : 'amount'))}
+              onClick={() => {
+                setSort((s) => (s === 'lender' ? 'due' : s === 'due' ? 'amount' : 'lender'))
+                setFlip(new Set())
+              }}
+              title="Group the list: By NBFC (folded, one group per bank / NBFC) → By due date → Largest first"
               className="flex h-9 items-center gap-[7px] whitespace-nowrap rounded-[4px] border border-[#C3D2C6] bg-white px-[11px] text-[12px] font-extrabold text-[#0A1F17]"
             >
               <ArrowDownWideNarrow className="h-[17px] w-[17px] text-[#5A6B62]" />
-              {sort === 'amount' ? 'Largest first' : 'By due date'}
+              {sort === 'amount' ? 'Largest first' : sort === 'lender' ? 'By NBFC' : 'By due date'}
             </button>
+            {v.groups.length > 1 && (
+              <button
+                type="button"
+                onClick={() => setFlip(v.groups.every((g) => folded(g.key)) === (sort === 'lender') ? new Set(v.groups.map((g) => g.key)) : new Set())}
+                className="flex h-9 items-center whitespace-nowrap rounded-[4px] border border-[#C3D2C6] bg-white px-[11px] text-[12px] font-extrabold text-[#0A1F17]"
+              >
+                {v.groups.every((g) => folded(g.key)) ? 'Expand all' : 'Collapse all'}
+              </button>
+            )}
             <button
               type="button"
               role="switch"
@@ -465,10 +548,13 @@ export function PaymentTracker({
                 </button>
               )
             })}
-            {filtered && (
+            {(filtered || colSort) && (
               <button
                 type="button"
-                onClick={clear}
+                onClick={() => {
+                  clear()
+                  setColSort(null)
+                }}
                 className="flex h-[34px] items-center gap-[5px] px-2 text-[11.5px] font-extrabold text-[#0B6B45]"
               >
                 <FilterX className="h-4 w-4" />
@@ -485,32 +571,109 @@ export function PaymentTracker({
               style={{ gridTemplateColumns: GRID }}
             >
               <span className="px-3.5">Type</span>
-              <span className="px-2.5">Reference · party</span>
-              <span className="px-2.5">Bank / NBFC</span>
-              <span className="px-2.5 text-right">Amount</span>
-              <span className="px-2.5">Due</span>
+              {head('ref', 'Reference · party', 'px-2.5')}
+              {head('lender', 'Bank / NBFC', 'px-2.5')}
+              {head('amount', 'Amount', 'justify-end px-2.5')}
+              {head('due', 'Due', 'px-2.5')}
               <span className="px-2.5">Status</span>
               <span className="px-3.5 text-right">Action</span>
             </div>
-            {v.groups.map((g) => (
-              <div key={g.key}>
-                <div className="flex h-[34px] items-center gap-2.5 border-b px-3.5" style={{ background: g.bg, borderColor: g.bd }}>
-                  <g.Icon className="h-4 w-4" style={{ color: g.fg }} />
-                  <span className="text-[10.5px] font-extrabold uppercase tracking-[.12em]" style={{ color: g.fg }}>
-                    {g.label}
-                  </span>
-                  <span className="rounded-[9px] border bg-white px-[7px] py-px text-[10.5px] font-bold tabular-nums" style={{ color: g.fg, borderColor: g.bd }}>
-                    {g.rows.length}
-                  </span>
-                  <span className="flex-1" />
-                  {g.out > 0.004 && <span className="whitespace-nowrap text-[11.5px] font-bold tabular-nums text-[#8C2F26]">out {formatINR(g.out)}</span>}
-                  {g.in > 0.004 && <span className="whitespace-nowrap text-[11.5px] font-bold tabular-nums text-[#0B6B45]">in {formatINR(g.in)}</span>}
-                </div>
-                {g.rows.map((r) => (
-                  <TrackerRow key={String(r.key)} r={r} onAction={onAction} canAct={canAct(r)} onReject={onReject} onRestore={onRestore} />
-                ))}
+            {/* REJECT SELECTED — the ticked rows, under one reason. */}
+            {pickedRows.length > 0 && (
+              <div className="sticky top-0 z-10 flex h-11 items-center gap-3 border-b border-b-[#F0D6D4] bg-[#FDF3F2] px-3.5">
+                <span className="text-[12px] font-extrabold text-[#8C2F26]">
+                  {pickedRows.length} selected · {formatINR(pickedRows.reduce((t, x) => t + n(x.amount), 0))}
+                </span>
+                <span className="flex-1" />
+                <button
+                  type="button"
+                  onClick={() => setPicked(new Set())}
+                  className="flex h-8 items-center rounded-[4px] border border-[#C3D2C6] bg-white px-[11px] text-[11.5px] font-extrabold text-[#33473E]"
+                >
+                  Clear
+                </button>
+                <button
+                  type="button"
+                  disabled={busy}
+                  onClick={async () => {
+                    setBusy(true)
+                    try {
+                      await onRejectMany!(pickedRows)
+                      setPicked(new Set())
+                    } finally {
+                      setBusy(false)
+                    }
+                  }}
+                  className="flex h-8 items-center gap-1.5 rounded-[4px] bg-[#B3261E] px-[11px] text-[11.5px] font-extrabold text-white disabled:opacity-60"
+                >
+                  <Ban className="h-4 w-4" />
+                  {busy ? 'Rejecting…' : `Reject ${pickedRows.length} selected`}
+                </button>
               </div>
-            ))}
+            )}
+            {v.groups.map((g) => {
+              const isFolded = folded(g.key)
+              const pickable = g.rows.filter(canPick).map((r) => String(r.key))
+              const allOn = pickable.length > 0 && pickable.every((k) => picked.has(k))
+              return (
+                <div key={g.key}>
+                  <div
+                    role="button"
+                    tabIndex={0}
+                    onClick={() => toggleGroup(g.key)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter' || e.key === ' ') {
+                        e.preventDefault()
+                        toggleGroup(g.key)
+                      }
+                    }}
+                    title={isFolded ? 'Show the rows' : 'Fold the rows away'}
+                    className="flex h-[34px] cursor-pointer items-center gap-2.5 border-b px-3.5 hover:brightness-[.98]"
+                    style={{ background: g.bg, borderColor: g.bd }}
+                  >
+                    {pickable.length > 0 && (
+                      <input
+                        type="checkbox"
+                        checked={allOn}
+                        onClick={(e) => e.stopPropagation()}
+                        onChange={() => pickToggle(pickable, !allOn)}
+                        title={allOn ? 'Untick every row in this group' : 'Tick every row in this group, to reject them together'}
+                        className="h-[15px] w-[15px] flex-none cursor-pointer accent-[#B3261E]"
+                      />
+                    )}
+                    <ChevronDown className="h-4 w-4 flex-none transition-transform" style={{ color: g.fg, transform: isFolded ? 'rotate(-90deg)' : 'none' }} />
+                    <g.Icon className="h-4 w-4" style={{ color: g.fg }} />
+                    <span className="text-[10.5px] font-extrabold uppercase tracking-[.12em]" style={{ color: g.fg }}>
+                      {g.label}
+                    </span>
+                    <span className="rounded-[9px] border bg-white px-[7px] py-px text-[10.5px] font-bold tabular-nums" style={{ color: g.fg, borderColor: g.bd }}>
+                      {g.rows.length}
+                    </span>
+                    {sort === 'lender' && g.lateN > 0 && (
+                      <span className="rounded-[9px] border border-[#F0D6D4] bg-[#FDF3F2] px-[7px] py-px text-[10.5px] font-extrabold tabular-nums text-[#B3261E]">
+                        {g.lateN} overdue
+                      </span>
+                    )}
+                    <span className="flex-1" />
+                    {g.out > 0.004 && <span className="whitespace-nowrap text-[11.5px] font-bold tabular-nums text-[#8C2F26]">out {formatINR(g.out)}</span>}
+                    {g.in > 0.004 && <span className="whitespace-nowrap text-[11.5px] font-bold tabular-nums text-[#0B6B45]">in {formatINR(g.in)}</span>}
+                  </div>
+                  {!isFolded &&
+                    g.rows.map((r) => (
+                      <TrackerRow
+                        key={String(r.key)}
+                        r={r}
+                        onAction={onAction}
+                        canAct={canAct(r)}
+                        onReject={onReject}
+                        onRestore={onRestore}
+                        picked={canPick(r) ? picked.has(String(r.key)) : undefined}
+                        onPick={canPick(r) ? (on) => pickToggle([String(r.key)], on) : undefined}
+                      />
+                    ))}
+                </div>
+              )
+            })}
             {v.groups.length === 0 && (
               <div className="flex flex-col items-center gap-2 px-4 py-[34px]">
                 <CalendarCheck2 className="h-7 w-7 text-[#C3D2C6]" />
@@ -540,13 +703,17 @@ function TrackerRow({
   onAction,
   canAct,
   onReject,
-  onRestore
+  onRestore,
+  picked,
+  onPick
 }: {
   r: Row
   onAction: (r: Row) => void
   canAct: boolean
   onReject?: (r: Row) => void
   onRestore?: (r: Row) => void
+  picked?: boolean
+  onPick?: (on: boolean) => void
 }): React.JSX.Element {
   const m = KIND[(r.kind as Kind) || 'lc_mat'] || KIND.lc_mat
   const d = dOf(r)
@@ -601,7 +768,19 @@ function TrackerRow({
       className="grid min-h-[52px] items-center border-b border-b-[#EAF0E9] hover:!bg-[#F7FAF6]"
       style={{ gridTemplateColumns: GRID, background: bg, boxShadow: `inset 3px 0 0 ${edge}`, opacity: settled ? 0.72 : 1 }}
     >
-      <div className="pl-3.5 pr-2.5">
+      <div className="flex items-center gap-2 pl-3.5 pr-2.5">
+        {onPick ? (
+          <input
+            type="checkbox"
+            checked={!!picked}
+            onChange={(e) => onPick(e.target.checked)}
+            title="Tick to reject together with other rows"
+            aria-label={`Select ${String(r.ref || '')}`}
+            className="h-[15px] w-[15px] flex-none cursor-pointer accent-[#B3261E]"
+          />
+        ) : (
+          <span className="w-[15px] flex-none" />
+        )}
         <span
           className="inline-flex items-center gap-1.5 whitespace-nowrap rounded-[3px] border px-[7px] py-1 text-[10px] font-extrabold uppercase tracking-[.05em]"
           style={{ color: m.fg, background: m.bg, borderColor: m.bd }}

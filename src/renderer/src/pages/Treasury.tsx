@@ -3286,6 +3286,21 @@ function TreasuryDesk({ onCompanyChange, focusLcId, focusBdId, onFocusHandled }:
                   .then(() => toast.success('Rejected — off the tracker'))
                   .catch((e) => toast.error((e as Error).message))
               }}
+              onRejectMany={async (rs) => {
+                const reason = window.prompt(`Reject ${rs.length} rows? They come off the tracker for everyone (Show settled → Restore brings each back). Reason (optional):`, '')
+                if (reason === null) return
+                let done = 0
+                try {
+                  for (const r of rs) {
+                    await window.api.treasury.trackerReject(String(r.key), reason)
+                    done++
+                  }
+                  toast.success(`Rejected ${done} — off the tracker`)
+                } catch (e) {
+                  toast.error(`${done} rejected, then: ${(e as Error).message}`)
+                }
+                setTracker(await window.api.treasury.paymentTracker())
+              }}
               onRestore={(r) =>
                 void window.api.treasury
                   .trackerRestore(String(r.key))
