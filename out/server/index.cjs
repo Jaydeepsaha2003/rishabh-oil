@@ -33051,10 +33051,11 @@ async function productionTillDate(opts) {
   };
   for (const r of levels) {
     if (String(r.uom || "MT").toUpperCase() !== "MT") continue;
-    const sold = Number(r.sold) || 0;
-    if (!sold) continue;
     const cat = String(r.category || "raw").toLowerCase();
     const fatty = isFatty(r.name) ? 1 : 0;
+    add(cat, fatty, "packed", Number(r.packed_out) || 0);
+    const sold = Number(r.sold) || 0;
+    if (!sold) continue;
     const ic = part.get(`${Number(r.id)}|interco`) || 0;
     const rt = part.get(`${Number(r.id)}|return`) || 0;
     add(cat, fatty, "interco", ic);
