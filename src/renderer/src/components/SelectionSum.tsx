@@ -130,25 +130,25 @@ export function SelectionSum(): React.JSX.Element | null {
       <style>{CSS_RULE}</style>
       <div
         data-sum-bar=""
-        className="fixed bottom-4 left-1/2 z-[100] flex -translate-x-1/2 items-center gap-4 rounded-[6px] border border-[#12553F] bg-[#0B3D2E] px-4 py-2 text-[12px] font-semibold text-[#DCEFE4] shadow-[0_10px_30px_rgba(10,31,23,.35)]"
+        className="fixed bottom-[68px] left-1/2 z-[100] flex -translate-x-1/2 items-center gap-4 rounded-[8px] border-2 border-[#1B4E82] bg-[#EAF2FC] px-4 py-2 text-[12px] font-semibold text-[#1B4E82] shadow-[0_10px_30px_rgba(27,78,130,.35)]"
       >
-        {label && <span className="text-[10px] font-extrabold uppercase tracking-[.12em] text-[#C7F03F]">{label}</span>}
+        {label && <span className="rounded-[3px] bg-[#1B4E82] px-1.5 py-0.5 text-[10px] font-extrabold uppercase tracking-[.12em] text-white">{label}</span>}
         <span>
           {sel.length} selected
         </span>
         <span>
-          Sum <b className="text-[14px] tabular-nums text-white">{fmt(sum)}</b>
+          Sum <b className="text-[14px] tabular-nums text-[#0A1F17]">{fmt(sum)}</b>
         </span>
         {sel.length > 1 && (
           <>
             <span>
-              Avg <b className="tabular-nums text-white">{fmt(sum / sel.length)}</b>
+              Avg <b className="tabular-nums text-[#0A1F17]">{fmt(sum / sel.length)}</b>
             </span>
             <span>
-              Min <b className="tabular-nums text-white">{fmt(Math.min(...vals))}</b>
+              Min <b className="tabular-nums text-[#0A1F17]">{fmt(Math.min(...vals))}</b>
             </span>
             <span>
-              Max <b className="tabular-nums text-white">{fmt(Math.max(...vals))}</b>
+              Max <b className="tabular-nums text-[#0A1F17]">{fmt(Math.max(...vals))}</b>
             </span>
           </>
         )}
@@ -160,7 +160,7 @@ export function SelectionSum(): React.JSX.Element | null {
             live.current = []
             setSel([])
           }}
-          className="rounded p-0.5 text-[#DCEFE4] hover:bg-white/10"
+          className="rounded p-0.5 text-[#1B4E82] hover:bg-[#D3E3F7]"
         >
           <X className="h-4 w-4" />
         </button>
