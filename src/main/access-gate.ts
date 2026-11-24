@@ -574,6 +574,22 @@ export async function assertAllowed(channel: string, args: unknown): Promise<voi
   if (!user) return
   if (user.role === 'admin') return
 
+  // THE CUSTOMER-TDS DESK ALSO RAISES SHORTAGE CREDIT NOTES (asked 2026-11-24):
+  // whoever holds it — on its own, or riding on the inter-company / unloading
+  // desk — may create a customer CREDIT note set Agst Ref an invoice (the
+  // Link CN window), and link it to the invoice's shortage. Nothing wider:
+  // no debit notes, no edits, no deletes, no note without a bill reference.
+  const scopeNow = String(moduleScope(user, 'sales') || '')
+  const tdsDesk = scopeNow === 'tds' || (['intercompany', 'unload'].includes(scopeNow) && !!(modulePerm(user, 'sales') as Row).also_tds)
+  if (tdsDesk && ns === 'notes' && op === 'create') {
+    const v = ((args as Row)?.values || {}) as Row
+    const agst =
+      !!String(v.against_invoice || '').trim() ||
+      (Array.isArray(v.allocs) && (v.allocs as Row[]).some((x) => String(x?.method) === 'agst_ref' && String(x?.ref_name || '').trim()))
+    if (String(v.note_type).toLowerCase() === 'credit' && String(v.party_type) === 'customer' && agst) return
+  }
+  if (tdsDesk && rule.module === 'sales' && ['shortageNotesSet', 'shortageNotes', 'shortageNoteMap'].includes(op)) return
+
   // A narrowed job answers the whole question on its own — the ordinary
   // per-action rights below would let an 'edit' grant through everything.
   // The TDS desk can ride on the inter-company or the unloading desk

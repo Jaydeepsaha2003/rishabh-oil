@@ -6,6 +6,8 @@ import { DatePicker } from '@/components/ui/date-picker'
 import { Dialog, DialogContent, DialogTitle } from '@/components/ui/dialog'
 import { HelpTip } from '@/components/ui/tooltip'
 import { cn } from '@/lib/utils'
+import { canWrite, moduleScope } from '@/lib/modules'
+import { loadUser } from '@/lib/session'
 import { errText, formatDate, formatINR } from '@/lib/format'
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -21,6 +23,16 @@ export type ShortageAsk = {
   // The same customer's other invoices whose shortage has no credit note yet —
   // one credit note can cover several, Agst Ref each (before-GST shortage each).
   others?: { saleId: number; invoiceNo: string; due: number; date: string }[]
+}
+
+// Who may raise the credit note here: Accounting · Credit Note, or the customer-TDS
+// desk (on its own or riding on the inter-company / unloading desk).
+function mayRaiseCn(): boolean {
+  const u = loadUser()
+  if (canWrite(u, 'accountsCreditNote')) return true
+  const scope = String(moduleScope(u, 'sales') || '')
+  const p = (u?.permissions as Record<string, Record<string, unknown>> | undefined)?.sales
+  return scope === 'tds' || (['intercompany', 'unload'].includes(scope) && !!p && typeof p === 'object' && !!p.also_tds)
 }
 
 // WHICH CREDIT NOTE SETTLED THIS TANKER'S SHORTAGE. The customer's credit notes
@@ -334,8 +346,15 @@ export function ShortageNoteDialog({
             </div>
           </div>
 
-          {/* RAISE IT HERE — value only, Agst Ref the invoice, linked in the same step. */}
-          {ask?.cn && (
+          {/* RAISE IT HERE — value only, Agst Ref the invoice, linked in the same step.
+              Only for a login that may make credit notes (Accounting · Credit Note);
+              the unloading desk links the one Accounts raised. */}
+          {ask?.cn && !mayRaiseCn() && (
+            <div className="rounded-[8px] border border-[#F1D9A6] bg-[#FFF8E9] px-4 py-3 text-[12px] font-semibold text-[#8A5300]">
+              Raising the credit note needs Accounting → Credit Note rights (or the customer TDS desk). Once it is raised (here or in Tally), tick it above and Link.
+            </div>
+          )}
+          {ask?.cn && mayRaiseCn() && (
             <div className="overflow-hidden rounded-[8px] border border-[#F0C9C4] bg-white">
               <div className="flex flex-wrap items-center gap-2 border-b border-[#F7E1DE] bg-[#FDF5F4] px-4 py-2.5">
                 <Plus className="h-4 w-4 text-[#B3261E]" />
