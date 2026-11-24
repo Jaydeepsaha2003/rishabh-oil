@@ -1042,7 +1042,9 @@ export async function listPendingRefs(
       sql: `SELECT o.id AS order_id, o.invoice_no AS ref, o.order_date AS bill_date, o.net_amount AS amount,
                    (SELECT je.id FROM journal_entries je WHERE je.order_id = o.id ORDER BY je.id LIMIT 1) AS origin_id
             FROM orders o JOIN suppliers s ON s.id = o.supplier_id
-            WHERE o.company_id = ? AND TRIM(UPPER(s.name)) IN ${nameIn} AND o.invoice_no IS NOT NULL AND o.invoice_no != ''`,
+            WHERE o.company_id = ? AND (TRIM(UPPER(s.name)) IN ${nameIn} OR ${accountId ? `EXISTS (SELECT 1 FROM journal_entries je JOIN journal_lines jl ON jl.entry_id = je.id
+                                                                                                 WHERE je.order_id = o.id AND jl.account_id = ${accountId})` : '0'})
+              AND o.invoice_no IS NOT NULL AND o.invoice_no != ''`,
       args: [cid, ...names]
     })
     for (const b of toPlain(r)) {
@@ -1093,7 +1095,13 @@ export async function listPendingRefs(
                    MIN((SELECT MIN(je.id) FROM journal_entries je WHERE je.sale_id = s.id)) AS origin_id
             FROM sales s
             LEFT JOIN customers cu ON cu.id = s.customer_id
-            WHERE s.company_id = ? AND TRIM(UPPER(COALESCE(cu.name, s.customer, ''))) IN ${nameIn}
+            -- …or whose own sale voucher posts to THIS ledger: a customer split onto
+            -- its own (DR) ledger, or renamed, keeps its master name ("LEGACY
+            -- COMMODITIES PVT LTD") while its sales post to "…, TRAD. (DR.)" —
+            -- matched on the name alone, every bill read as On Account.
+            WHERE s.company_id = ? AND (TRIM(UPPER(COALESCE(cu.name, s.customer, ''))) IN ${nameIn}
+                  OR ${accountId ? `EXISTS (SELECT 1 FROM journal_entries je JOIN journal_lines jl ON jl.entry_id = je.id
+                                    WHERE je.sale_id = s.id AND jl.account_id = ${accountId})` : '0'})
               AND s.invoice_no IS NOT NULL AND s.invoice_no != ''
             GROUP BY grp`,
       args: [cid, ...names]
