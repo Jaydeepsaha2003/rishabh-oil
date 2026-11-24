@@ -4071,6 +4071,8 @@ async function releaseFdLien(id, date) {
 }
 async function deleteFdLien(id) {
   await ensureFd();
+  const used = await getClient().execute({ sql: "SELECT repayment_id FROM fd_liens WHERE id = ? AND repayment_id IS NOT NULL", args: [n4(id)] }).then((r) => r.rows.length > 0).catch(() => false);
+  if (used) throw new Error("This lien was settled by the LC's repayment / preclosure \u2014 undo that first");
   await getClient().execute({ sql: "DELETE FROM fd_liens WHERE id = ?", args: [n4(id)] });
   return { id: n4(id) };
 }
@@ -17567,10 +17569,11 @@ async function bdCumulativeInterest(v) {
   if (!n17(v.nbfc_id) || !/^\d{4}-\d{2}-\d{2}$/.test(to)) return [];
   const capped = to > todayISO6() ? todayISO6() : to;
   const from = /^\d{4}-\d{2}-\d{2}$/.test(String(v.from_date || "")) ? String(v.from_date).slice(0, 10) : "0000-00-00";
-  const bills = (await listBd({ nbfc_id: n17(v.nbfc_id) })).filter((b) => String(b.status) !== "repaid" && !!b.payment_received_date);
+  const bills = (await listBd({ nbfc_id: n17(v.nbfc_id) })).filter((b) => !!b.payment_received_date);
   const out = [];
   for (const b of bills) {
     const w = await bdInterestRange(n17(b.id), from, capped);
+    if (String(b.status) === "repaid" && w.blocked && !/^Already paid/.test(String(w.blocked)) && !(w.short_before || []).length) continue;
     out.push({
       bd_id: n17(b.id),
       bd_no: b.bd_no,
