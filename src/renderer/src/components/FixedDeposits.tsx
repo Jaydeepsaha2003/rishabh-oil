@@ -1100,7 +1100,7 @@ export function LcFdSecurity({ lc, lcs }: { lc: Row; lcs: Row[] }): React.JSX.El
   const live = (liens || []).filter((l) => l.active)
   const held = r2(live.reduce((t, l) => t + n(l.amount), 0))
   return (
-    <div className="overflow-hidden rounded-[6px] border border-[#DCE6DC] bg-white">
+    <div className="self-start overflow-hidden rounded-[6px] border border-[#DCE6DC] bg-white">
       <div className="flex items-center gap-2 border-b border-[#EEF3EE] bg-[#F7FAF6] px-4 py-2.5">
         <PiggyBank className="h-4 w-4 text-[#0B3D2E]" />
         <span className="text-[11px] font-extrabold uppercase tracking-[.12em] text-[#0B3D2E]">FD security</span>
@@ -1118,60 +1118,65 @@ export function LcFdSecurity({ lc, lcs }: { lc: Row; lcs: Row[] }): React.JSX.El
           No FD put against this LC yet{lc.fd_no ? ` — the LC names FD ${String(lc.fd_no)}` : ''}.
         </div>
       ) : (
-        liens.map((l) => (
-          <div key={String(l.id)} className="flex flex-wrap items-center gap-x-3 gap-y-1 border-t border-[#F1F5F0] px-4 py-2 text-[12px] first:border-t-0">
-            <span className="rounded-[4px] bg-[#0B3D2E] px-1.5 py-0.5 text-[11px] font-extrabold text-[#C7F03F]">{String(l.fd_no)}</span>
-            <span className="font-semibold text-[#33473E]">{String(l.fd_bank || '')}</span>
-            <span className="text-[11px] text-[#7A8C82]">matures {formatDate(String(l.fd_maturity))}</span>
-            <span className="ml-auto font-extrabold tabular-nums">{formatINR(n(l.amount))}</span>
-            {l.active ? (
-              <span className="inline-flex items-center gap-1 rounded-full border border-[#C6DAF0] bg-[#F4F8FD] px-2 py-0.5 text-[10.5px] font-extrabold text-[#1B4E82]">
-                <Lock className="h-3 w-3" /> In force
-              </span>
-            ) : (
-              <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-[#5A6B62]">
-                <Unlock className="h-3 w-3" /> Released{l.released_on ? ` ${formatDate(String(l.released_on))}` : ''}
-              </span>
-            )}
-            {/* Release (the FD is free again from today) or delete (a lien marked by mistake). */}
-            {l.active && (
-              <button
-                type="button"
-                title="Release — the FD is free from today; the lien stays on record"
-                onClick={() =>
-                  window.confirm(`Release ${formatINR(n(l.amount))} of FD ${String(l.fd_no)} from this LC?`) &&
-                  void window.api.fd
-                    .releaseLien(n(l.id))
-                    .then(() => {
-                      toast.success('Lien released')
-                      load()
-                    })
-                    .catch((e) => toast.error((e as Error).message))
-                }
-                className="flex h-7 w-7 items-center justify-center rounded-[4px] border border-[#C3D2C6] bg-white text-[#33473E] hover:bg-[#F7FAF6]"
-              >
-                <Unlock className="h-3.5 w-3.5" />
-              </button>
-            )}
-            <button
-              type="button"
-              title="Delete this lien — for one marked by mistake"
-              onClick={() =>
-                window.confirm(`Delete the lien of FD ${String(l.fd_no)} (${formatINR(n(l.amount))}) on this LC altogether?`) &&
-                void window.api.fd
-                  .deleteLien(n(l.id))
-                  .then(() => {
-                    toast.success('Lien deleted')
-                    load()
-                  })
-                  .catch((e) => toast.error((e as Error).message))
-              }
-              className="flex h-7 w-7 items-center justify-center rounded-[4px] border border-[#F0D6D4] bg-white text-[#B3261E] hover:bg-[#FDF3F2]"
-            >
-              <Trash2 className="h-3.5 w-3.5" />
-            </button>
-          </div>
-        ))
+        <div className="divide-y divide-[#F1F5F0]">
+          {liens.map((l) => {
+            const release = (): void => {
+              if (!window.confirm(`Release ${formatINR(n(l.amount))} of FD ${String(l.fd_no)} from this LC?`)) return
+              void window.api.fd
+                .releaseLien(n(l.id))
+                .then(() => {
+                  toast.success('Lien released')
+                  load()
+                })
+                .catch((e) => toast.error((e as Error).message))
+            }
+            const remove = (): void => {
+              if (!window.confirm(`Delete the lien of FD ${String(l.fd_no)} (${formatINR(n(l.amount))}) on this LC altogether?`)) return
+              void window.api.fd
+                .deleteLien(n(l.id))
+                .then(() => {
+                  toast.success('Lien deleted')
+                  load()
+                })
+                .catch((e) => toast.error((e as Error).message))
+            }
+            return (
+              <div key={String(l.id)} className={cn('flex items-center gap-3 px-4 py-3', !l.active && 'opacity-70')}>
+                {/* The FD: its number as a badge, the bank, and when it matures. */}
+                <span className="flex h-9 min-w-9 flex-none items-center justify-center rounded-[6px] bg-[#0B3D2E] px-2 text-[12px] font-extrabold text-[#C7F03F]">
+                  {String(l.fd_no)}
+                </span>
+                <div className="min-w-0 flex-1">
+                  <div className="truncate text-[12.5px] font-bold text-[#0A1F17]" title={String(l.fd_bank || '')}>
+                    {String(l.fd_bank || 'FD')}
+                  </div>
+                  <div className="mt-0.5 text-[11px] font-semibold text-[#7A8C82]">
+                    {l.fd_maturity ? `Matures ${formatDate(String(l.fd_maturity))}` : 'No maturity date'}
+                  </div>
+                </div>
+                {/* What it holds against this LC, and whether it still does. */}
+                <div className="flex flex-none flex-col items-end gap-1">
+                  <span className="text-[13.5px] font-extrabold tabular-nums text-[#0A1F17]">{formatINR(n(l.amount))}</span>
+                  {l.active ? (
+                    <span className="inline-flex items-center gap-1 rounded-full border border-[#C6DAF0] bg-[#F4F8FD] px-2 py-px text-[10px] font-extrabold text-[#1B4E82]">
+                      <Lock className="h-3 w-3" /> In force
+                    </span>
+                  ) : (
+                    <span className="inline-flex items-center gap-1 rounded-full border border-[#DCE7DB] bg-[#F4F7F3] px-2 py-px text-[10px] font-bold text-[#5A6B62]">
+                      <Unlock className="h-3 w-3" /> Released{l.released_on ? ` ${formatDate(String(l.released_on))}` : ''}
+                    </span>
+                  )}
+                </div>
+                <RowActions
+                  actions={[
+                    ...(l.active ? [{ label: 'Release — FD free from today', icon: Unlock, onClick: release }] : []),
+                    { label: 'Delete lien — marked by mistake', icon: Trash2, danger: true, onClick: remove }
+                  ]}
+                />
+              </div>
+            )
+          })}
+        </div>
       )}
       {adding && (
         <LienDialog
