@@ -162,10 +162,25 @@ export async function setShortageNotes(saleId: number, entryIds: number[]): Prom
     else if (await exists(id)) throw new Error('That is not a credit note to this customer in this book')
   }
   await c.execute({ sql: 'DELETE FROM sale_shortage_notes WHERE company_id = ? AND invoice_key = ?', args: [n(inv.company_id), inv.key] })
+  // A note Agst Ref several invoices counts here only for this invoice's share.
+  const no = String(inv.invoice_no || '').trim().toUpperCase()
   for (const id of ids) {
+    const share = no
+      ? n(
+          (
+            await c.execute({
+              sql: `SELECT SUM(ba.amount) AS amt FROM journal_bill_allocs ba JOIN journal_lines jl ON jl.id = ba.line_id
+                     WHERE jl.entry_id = ? AND ba.method = 'agst_ref' AND UPPER(TRIM(ba.ref_name)) = ?
+                       AND (SELECT COUNT(DISTINCT UPPER(TRIM(b2.ref_name))) FROM journal_bill_allocs b2 JOIN journal_lines j2 ON j2.id = b2.line_id
+                             WHERE j2.entry_id = jl.entry_id AND b2.method = 'agst_ref') > 1`,
+              args: [id, no]
+            })
+          ).rows[0]?.amt
+        )
+      : 0
     await c.execute({
       sql: 'INSERT INTO sale_shortage_notes (company_id, invoice_key, entry_id, amount) VALUES (?, ?, ?, ?)',
-      args: [n(inv.company_id), inv.key, id, allowed.get(id) || 0]
+      args: [n(inv.company_id), inv.key, id, share > 0 ? round2(share) : allowed.get(id) || 0]
     })
   }
   return { linked: ids.length }

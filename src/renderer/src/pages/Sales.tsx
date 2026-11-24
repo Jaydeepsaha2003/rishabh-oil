@@ -560,7 +560,28 @@ function SalesTab({
       .filter((x) => x.sh.applies && x.sh.shortage > 0.0000005)
     const due = Math.round(parts.reduce((t, x) => t + x.sh.shortage * x.sh.rate, 0) * 100) / 100
     if (!(due > 0)) return null
+    // The same customer's other invoices (same book) with a shortage and no credit note linked yet.
+    const dueOf = (o: { first: Row; lines: Row[] }): number =>
+      Math.round(
+        o.lines
+          .filter((l) => String(l.sale_type || 'LOOSE').toUpperCase() !== 'PACKED')
+          .map((l) => saleShortage(l, defaultShortagePct))
+          .filter((sh) => sh.applies && sh.shortage > 0.0000005)
+          .reduce((t, sh) => t + sh.shortage * sh.rate, 0) * 100
+      ) / 100
+    const others = (received ? [] : invoices)
+      .filter(
+        (o) =>
+          o.group !== (inv as Row).group &&
+          Number(o.first.customer_id) === Number(inv.first.customer_id) &&
+          Number(o.first.company_id) === Number(inv.first.company_id) &&
+          !o.first.rejected_at &&
+          !shortNotesOf(o.first).length
+      )
+      .map((o) => ({ saleId: Number(o.first.id), invoiceNo: String(o.first.invoice_no || ''), due: dueOf(o), date: String(o.first.sale_date || '').slice(0, 10) }))
+      .filter((o) => o.due > 0)
     return {
+      others,
       saleId: Number(inv.first.id),
       invoiceNo: String(inv.first.invoice_no || ''),
       customer: String(inv.first.customer_master || inv.first.customer || ''),
@@ -2767,7 +2788,8 @@ function SalesTab({
                               invoiceNo: String(inv.first.invoice_no || ''),
                               customer: String(inv.first.customer_master || inv.first.customer || ''),
                               due: custDue,
-                              cn: shortageAskFor(inv)?.cn
+                              cn: shortageAskFor(inv)?.cn,
+                              others: shortageAskFor(inv)?.others
                             })
                           }
                           return (

@@ -18,6 +18,9 @@ export type ShortageAsk = {
   due: number
   // What a credit note raised from here needs; absent, only linking is offered.
   cn?: { customerId: number; companyId: number; date: string; gstPct: number; detail: string }
+  // The same customer's other invoices whose shortage has no credit note yet —
+  // one credit note can cover several, Agst Ref each (before-GST shortage each).
+  others?: { saleId: number; invoiceNo: string; due: number; date: string }[]
 }
 
 // WHICH CREDIT NOTE SETTLED THIS TANKER'S SHORTAGE. The customer's credit notes
@@ -42,11 +45,24 @@ export function ShortageNoteDialog({
   const [cnGst, setCnGst] = useState('')
   const [cnDate, setCnDate] = useState('')
   const [cnAgainst, setCnAgainst] = useState('')
+  // Other invoices ticked to go on the same credit note.
+  const [also, setAlso] = useState<Set<number>>(new Set())
+  const alsoRows = (ask?.others || []).filter((o) => also.has(o.saleId))
+  const toggleAlso = (id: number): void => {
+    const next = new Set(also)
+    if (next.has(id)) next.delete(id)
+    else next.add(id)
+    setAlso(next)
+    // The amount follows: this invoice's shortage plus each ticked one's.
+    const sum = (ask?.due || 0) + (ask?.others || []).filter((o) => next.has(o.saleId)).reduce((t, o) => t + o.due, 0)
+    setCnAmt(String(Math.round(sum * 100) / 100))
+  }
 
   useEffect(() => {
     setData(null)
     if (!ask) return
     setCnAmt(String(Math.round((ask.due || 0) * 100) / 100))
+    setAlso(new Set())
     setCnGst(String(ask.cn?.gstPct ?? 0))
     setCnDate(ask.cn?.date || '')
     let live = true
@@ -128,7 +144,21 @@ export function ShortageNoteDialog({
       return
     setBusy(true)
     try {
+      // SEVERAL INVOICES ON ONE NOTE: an Agst Ref line each, the note's total
+      // shared by each invoice's shortage (the last takes the rupee rounding).
+      const total = Math.round(after)
+      const parts = [{ saleId: ask.saleId, invoiceNo: ask.invoiceNo, due: ask.due || 0 }, ...alsoRows]
+      const dueSum = parts.reduce((t, p) => t + p.due, 0)
+      let left = total
+      const allocs = alsoRows.length
+        ? parts.map((p, i) => {
+            const amt = i === parts.length - 1 ? Math.round(left * 100) / 100 : Math.round(((dueSum > 0 ? p.due / dueSum : 1 / parts.length) * total) * 100) / 100
+            left -= amt
+            return { method: 'agst_ref', ref_name: p.invoiceNo, amount: amt }
+          })
+        : undefined
       const made = await window.api.notes.create({
+        ...(allocs ? { allocs } : {}),
         note_type: 'credit',
         party_type: 'customer',
         party_id: ask.cn.customerId,
@@ -138,14 +168,26 @@ export function ShortageNoteDialog({
         gst_pct: Number(cnGst) || 0,
         against_account: cnAgainst,
         against_invoice: ask.invoiceNo,
-        narration: `Shortage on ${ask.invoiceNo} — ${ask.cn.detail}`
+        narration: alsoRows.length
+          ? `Shortage on ${[ask.invoiceNo, ...alsoRows.map((o) => o.invoiceNo)].join(', ')} — ${ask.cn.detail}`
+          : `Shortage on ${ask.invoiceNo} — ${ask.cn.detail}`
       })
       // The new note's voucher, found among the customer's notes, joins the links.
       const r = await window.api.sales.shortageNotes(ask.saleId)
       const hit = ((r.notes as Row[]) || []).find((x) => String(x.vch_no) === String(made.note_no))
       if (!hit) throw new Error(`Credit note ${made.note_no} was made but could not be found to link — link it from the list`)
       await window.api.sales.shortageNotesSet(ask.saleId, [...live, Number(hit.entry_id)])
-      toast.success(`Credit note ${made.note_no} made and linked to the shortage on ${ask.invoiceNo}`)
+      // …and to every other invoice it covers.
+      for (const o of alsoRows) {
+        const r2 = await window.api.sales.shortageNotes(o.saleId)
+        const keep = ((r2.linked as Row[]) || []).map((l) => Number(l.entry_id))
+        await window.api.sales.shortageNotesSet(o.saleId, [...keep, Number(hit.entry_id)])
+      }
+      toast.success(
+        alsoRows.length
+          ? `Credit note ${made.note_no} made, Agst Ref ${[ask.invoiceNo, ...alsoRows.map((o) => o.invoiceNo)].join(', ')}, and linked to each`
+          : `Credit note ${made.note_no} made and linked to the shortage on ${ask.invoiceNo}`
+      )
       onDone?.()
       onClose()
     } catch (e) {
@@ -340,6 +382,33 @@ export function ShortageNoteDialog({
                     <input value={cnAgainst} onChange={(e) => setCnAgainst(e.target.value.toUpperCase())} className={box} />
                   </div>
                 </div>
+                {/* ONE NOTE, SEVERAL INVOICES: the customer's other unsettled shortages. */}
+                {!!ask.others?.length && (
+                  <div className="rounded-[6px] border border-[#EEF3EE] bg-[#FAFCF9] px-3 py-2">
+                    <div className="mb-1.5 text-[10px] font-extrabold uppercase tracking-[.1em] text-[#5A6B62]">
+                      Also cover on this credit note (Agst Ref each)
+                    </div>
+                    <div className="flex flex-wrap gap-2">
+                      {ask.others.map((o) => {
+                        const on = also.has(o.saleId)
+                        return (
+                          <label
+                            key={o.saleId}
+                            className={cn(
+                              'flex cursor-pointer items-center gap-2 rounded-[5px] border px-2.5 py-1.5 text-[12px] font-semibold',
+                              on ? 'border-[#B3261E] bg-[#FDF5F4] text-[#8C2F26]' : 'border-[#DCE7DB] bg-white text-[#33473E]'
+                            )}
+                          >
+                            <input type="checkbox" checked={on} onChange={() => toggleAlso(o.saleId)} className="h-[14px] w-[14px] accent-[#B3261E]" />
+                            <span className="font-extrabold">{o.invoiceNo}</span>
+                            <span className="text-[11px] text-[#7A8C82]">{formatDate(o.date)}</span>
+                            <span className="tabular-nums">{formatINR(o.due)}</span>
+                          </label>
+                        )
+                      })}
+                    </div>
+                  </div>
+                )}
                 {/* What will post. */}
                 <div className="rounded-[6px] border border-[#EEF3EE] bg-[#FAFCF9] px-3 py-2 text-[12px]">
                   <div className="flex justify-between gap-3">
@@ -358,7 +427,7 @@ export function ShortageNoteDialog({
                   )}
                   <div className="flex justify-between gap-3 border-t border-[#EEF3EE] pt-1">
                     <span>
-                      <b className="text-[#B3261E]">Cr</b> {ask.customer} · Agst Ref {ask.invoiceNo}
+                      <b className="text-[#B3261E]">Cr</b> {ask.customer} · Agst Ref {[ask.invoiceNo, ...alsoRows.map((o) => o.invoiceNo)].join(', ')}
                     </span>
                     <span className="font-extrabold tabular-nums">{formatINR(after)}</span>
                   </div>
