@@ -9651,10 +9651,20 @@ async function setShortageNotes(saleId, entryIds) {
     else if (await exists(id)) throw new Error("That is not a credit note to this customer in this book");
   }
   await c.execute({ sql: "DELETE FROM sale_shortage_notes WHERE company_id = ? AND invoice_key = ?", args: [n12(inv.company_id), inv.key] });
+  const no = String(inv.invoice_no || "").trim().toUpperCase();
   for (const id of ids) {
+    const share = no ? n12(
+      (await c.execute({
+        sql: `SELECT SUM(ba.amount) AS amt FROM journal_bill_allocs ba JOIN journal_lines jl ON jl.id = ba.line_id
+                     WHERE jl.entry_id = ? AND ba.method = 'agst_ref' AND UPPER(TRIM(ba.ref_name)) = ?
+                       AND (SELECT COUNT(DISTINCT UPPER(TRIM(b2.ref_name))) FROM journal_bill_allocs b2 JOIN journal_lines j2 ON j2.id = b2.line_id
+                             WHERE j2.entry_id = jl.entry_id AND b2.method = 'agst_ref') > 1`,
+        args: [id, no]
+      })).rows[0]?.amt
+    ) : 0;
     await c.execute({
       sql: "INSERT INTO sale_shortage_notes (company_id, invoice_key, entry_id, amount) VALUES (?, ?, ?, ?)",
-      args: [n12(inv.company_id), inv.key, id, allowed.get(id) || 0]
+      args: [n12(inv.company_id), inv.key, id, share > 0 ? round25(share) : allowed.get(id) || 0]
     });
   }
   return { linked: ids.length };
@@ -13501,10 +13511,10 @@ async function lcParts(lcId) {
   const r = await getClient().execute({ sql: "SELECT * FROM lc_parts WHERE lc_id = ? ORDER BY part_no", args: [n16(lcId)] }).catch(() => null);
   return r ? toPlain13(r) : [];
 }
-function partFigures(lc, amount2, payDate, maturity, first, ratePct, ownCharges) {
+function partFigures(lc, amount2, payDate, maturity, first, ratePct, ownCharges, adj = 0) {
   const days = Math.max(0, daysBetween3(payDate, maturity));
   const charges = ownCharges != null ? round29(ownCharges) : first ? round29(n16(lc.charges)) : 0;
-  const base = Math.max(0, round29(amount2 - (lc.interest_excl_charges ? charges : 0)));
+  const base = Math.max(0, round29(amount2 - (lc.interest_excl_charges ? charges : 0) + n16(adj)));
   const interest = round29(base * n16(ratePct == null ? lc.interest_pct : ratePct) * days / (100 * 365));
   return { days, interest, charges, net: round29(amount2 - interest - charges) };
 }
@@ -13517,12 +13527,13 @@ async function insertLcPart(lcId, partNo, lc, amount2, payDate, maturity, rates 
   const ip = partRate(rates.interest_pct);
   const mp = partRate(rates.margin_pct);
   const ch = partRate(rates.charges);
-  const f = partFigures(lc, amount2, payDate, maturity, partNo === 1, ip, ch);
+  const adj = round29(n16(rates.interest_adj));
+  const f = partFigures(lc, amount2, payDate, maturity, partNo === 1, ip, ch, adj);
   if (f.net <= 5e-3) throw new Error(`Part ${partNo}'s interest and charges are more than its amount`);
   await getClient().execute({
-    sql: `INSERT INTO lc_parts (lc_id, part_no, pay_date, amount, maturity_date, days, interest, charges, net, interest_pct, margin_pct)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    args: [n16(lcId), partNo, payDate, round29(amount2), maturity, f.days, f.interest, f.charges, f.net, ip, mp]
+    sql: `INSERT INTO lc_parts (lc_id, part_no, pay_date, amount, maturity_date, days, interest, charges, net, interest_pct, margin_pct, interest_adj)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    args: [n16(lcId), partNo, payDate, round29(amount2), maturity, f.days, f.interest, f.charges, f.net, ip, mp, Math.abs(adj) > 4e-3 ? adj : null]
   });
   return { net: f.net, interest: f.interest };
 }
@@ -38701,7 +38712,7 @@ async function runStartupTasks() {
   await getClient().execute("ALTER TABLE companies ADD COLUMN onward_sale_at_empty INTEGER NOT NULL DEFAULT 1").catch((e) => {
     if (!/duplicate column/i.test(String(e.message))) console.error("[companies] onward_sale_at_empty failed:", e);
   });
-  for (const col of ["interest_pct REAL", "margin_pct REAL"]) {
+  for (const col of ["interest_pct REAL", "margin_pct REAL", "interest_adj REAL"]) {
     await getClient().execute(`ALTER TABLE lc_parts ADD COLUMN ${col}`).catch((e) => {
       if (!/duplicate column/i.test(String(e.message))) console.error("[lc] lc_parts rate column failed:", e);
     });
