@@ -9549,6 +9549,7 @@ __export(saleShortageNotes_exports, {
   ensure: () => ensure2,
   repairShortageNoteDupes: () => repairShortageNoteDupes,
   setShortageNotes: () => setShortageNotes,
+  shortageCnInfo: () => shortageCnInfo,
   shortageNoteCandidates: () => shortageNoteCandidates,
   shortageNoteMap: () => shortageNoteMap
 });
@@ -9751,6 +9752,57 @@ async function repairShortageNoteDupes() {
     out.linked.push(`${no} -> ${pick[0].code || pick[0].vch_no}`);
   }
   return out;
+}
+async function shortageCnInfo(saleId) {
+  await ensure2();
+  const c = getClient();
+  const inv = await invoiceOf(saleId);
+  const linesOf = async (key3, id) => (await c.execute({
+    sql: `SELECT s.id, s.invoice_no, s.sale_date, s.unloaded_date, s.customer_id, s.company_id, s.qty, s.received_qty, s.rate, s.gst_pct,
+                     s.uom, s.sale_type, s.freight_term, s.is_trading, s.rejected_at, p.name AS product_name
+                FROM sales s LEFT JOIN products p ON p.id = s.product_id
+               WHERE ${key3 ? "s.invoice_group = ?" : "s.id = ?"}`,
+    args: [key3 || id]
+  })).rows;
+  const dueOf = (ls) => {
+    const parts2 = ls.filter(
+      (l) => String(l.sale_type || "LOOSE").toUpperCase() !== "PACKED" && String(l.freight_term || "") === "DLD" && l.received_qty != null && n12(l.qty) > 0 && Number(l.is_trading) !== 1 && n12(l.qty) - n12(l.received_qty) > 5e-7
+    );
+    return { due: round25(parts2.reduce((t, l) => t + (n12(l.qty) - n12(l.received_qty)) * n12(l.rate), 0)), parts: parts2 };
+  };
+  const mine = await linesOf(String(inv.invoice_group || ""), n12(inv.id));
+  const { due, parts } = dueOf(mine);
+  if (!(due > 0)) return null;
+  const first = mine[0];
+  const groups = (await c.execute({
+    sql: `SELECT COALESCE(s.invoice_group, 'sale-' || s.id) AS g, MIN(s.id) AS id FROM sales s
+             WHERE s.customer_id = ? AND s.company_id = ? AND s.rejected_at IS NULL AND COALESCE(s.freight_term, '') = 'DLD'
+               AND s.received_qty IS NOT NULL AND s.qty > s.received_qty
+               AND COALESCE(s.invoice_group, 'sale-' || s.id) <> ?
+               AND NOT EXISTS (SELECT 1 FROM sale_shortage_notes t WHERE t.company_id = s.company_id
+                                AND t.invoice_key = COALESCE(s.invoice_group, s.invoice_no, 'sale-' || s.id))
+             GROUP BY g ORDER BY MIN(s.sale_date) DESC LIMIT 40`,
+    args: [n12(first.customer_id), n12(first.company_id), String(inv.invoice_group || `sale-${inv.id}`)]
+  })).rows;
+  const others = [];
+  for (const g of groups) {
+    const ls = await linesOf(String(g.g).startsWith("sale-") ? "" : String(g.g), n12(g.id));
+    const d = dueOf(ls).due;
+    if (d > 0) others.push({ saleId: n12(ls[0].id), invoiceNo: String(ls[0].invoice_no || ""), due: d, date: String(ls[0].sale_date || "").slice(0, 10) });
+  }
+  return {
+    saleId: n12(inv.id),
+    invoiceNo: String(inv.invoice_no || ""),
+    due,
+    cn: {
+      customerId: n12(first.customer_id),
+      companyId: n12(first.company_id),
+      date: String(first.unloaded_date || (/* @__PURE__ */ new Date()).toISOString()).slice(0, 10),
+      gstPct: n12(parts[0]?.gst_pct),
+      detail: parts.map((l) => `${String(l.product_name || "Item")} ${round25((n12(l.qty) - n12(l.received_qty)) * 1e3) / 1e3} ${String(l.uom || "")} short @ ${n12(l.rate)}`).join("; ")
+    },
+    others
+  };
 }
 var n12, round25, ready4, codeSql;
 var init_saleShortageNotes = __esm({
@@ -20110,7 +20162,7 @@ async function assertAllowed(channel, args) {
     const agst = !!String(v.against_invoice || "").trim() || Array.isArray(v.allocs) && v.allocs.some((x) => String(x?.method) === "agst_ref" && String(x?.ref_name || "").trim());
     if (String(v.note_type).toLowerCase() === "credit" && String(v.party_type) === "customer" && agst) return;
   }
-  if (tdsDesk && rule.module === "sales" && ["shortageNotesSet", "shortageNotes", "shortageNoteMap"].includes(op)) return;
+  if (tdsDesk && rule.module === "sales" && ["shortageNotesSet", "shortageNotes", "shortageNoteMap", "shortageCnInfo"].includes(op)) return;
   const tdsRide = rule.module === "sales" && ["intercompany", "unload"].includes(String(moduleScope(user, "sales"))) && !!modulePerm(user, "sales").also_tds && op === "tdsPost";
   if (moduleScope(user, rule.module) === "unload" && rule.module === "sales" && !tdsRide) {
     assertScopedSales(op, args);
@@ -46221,6 +46273,7 @@ function registerIpc() {
   );
   handle("sales:delete", (_e, { id }) => deleteSale(id));
   handle("sales:shortageNotes", (_e, { id }) => shortageNoteCandidates(id));
+  handle("sales:shortageCnInfo", async (_e, { id }) => (await Promise.resolve().then(() => (init_saleShortageNotes(), saleShortageNotes_exports))).shortageCnInfo(Number(id)));
   handle("orders:dnNotes", async (_e, { id }) => (await Promise.resolve().then(() => (init_purchaseDebitNotes(), purchaseDebitNotes_exports))).purchaseDnCandidates(Number(id)));
   handle(
     "orders:dnNotesSet",
