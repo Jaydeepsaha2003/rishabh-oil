@@ -17938,6 +17938,20 @@ Delete ${doc}?`)) return
     // 10 days, on different vouchers — the shape of a Tally copy beside the
     // app's, or one note posted twice. Each set gets a number to read them by.
     const dupOf = new Map<number, number>()
+    // ONE COLOUR PER AMOUNT: every row of the same figure wears the same tint
+    // (and stripe), so ₹3,00,000 reads apart from ₹1,50,000 at a glance.
+    const dupTint = new Map<number, { bg: string; edge: string }>()
+    const DUP_TINTS = [
+      { bg: '#FFF1D6', edge: '#C2700A' },
+      { bg: '#E3F0FF', edge: '#1B4E82' },
+      { bg: '#EDE4FB', edge: '#6B3FA0' },
+      { bg: '#DDF3E6', edge: '#0B6B45' },
+      { bg: '#FCE1EC', edge: '#B0306A' },
+      { bg: '#DDF2F5', edge: '#0E6E7E' },
+      { bg: '#F7E7D9', edge: '#8A4B14' },
+      { bg: '#ECEFD6', edge: '#5E6B12' }
+    ]
+    let tintNo = 0
     {
       const byAmt = new Map<string, Row[]>()
       for (const r of allRows) {
@@ -17953,12 +17967,17 @@ Delete ${doc}?`)) return
       for (const list of byAmt.values()) {
         if (list.length < 2) continue
         const sorted = [...list].sort((a, b) => day(a) - day(b))
+        let amtTint: { bg: string; edge: string } | null = null
         let cur: Row[] = []
         const flush = (): void => {
           const ids = new Set(cur.map((r) => Number(r.entry_id ?? r.id)))
           if (cur.length > 1 && ids.size > 1) {
             set++
-            for (const r of cur) dupOf.set(Number(r.id), set)
+            if (!amtTint) amtTint = DUP_TINTS[tintNo++ % DUP_TINTS.length]
+            for (const r of cur) {
+              dupOf.set(Number(r.id), set)
+              dupTint.set(Number(r.id), amtTint)
+            }
           }
         }
         for (const r of sorted) {
@@ -18643,8 +18662,8 @@ Delete ${doc}?`)) return
                   minHeight: 46,
                   borderBottom: '1px solid #EFF3EE',
                   // The highlighted row, as Tally draws it: a lit bar down its edge.
-                  background: lgPicking && lgPicked.has(eid) ? '#FDECEA' : open ? '#F3FBE2' : r.provisional ? '#FFF8EC' : lgDup && dupOf.has(Number(r.id)) ? (dupOf.get(Number(r.id))! % 2 ? '#FFF6E0' : '#FFEFD0') : stripe(i),
-                  boxShadow: lgDup && dupOf.has(Number(r.id)) ? 'inset 3px 0 0 #C2700A' : undefined,
+                  background: lgPicking && lgPicked.has(eid) ? '#FDECEA' : open ? '#F3FBE2' : r.provisional ? '#FFF8EC' : lgDup && dupTint.has(Number(r.id)) ? dupTint.get(Number(r.id))!.bg : stripe(i),
+                  boxShadow: lgDup && dupTint.has(Number(r.id)) ? `inset 4px 0 0 ${dupTint.get(Number(r.id))!.edge}` : undefined,
                   fontStyle: r.provisional ? 'italic' : undefined
                 }}
               >
