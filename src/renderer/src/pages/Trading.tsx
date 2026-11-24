@@ -19,6 +19,7 @@ import { loadUser } from '@/lib/session'
 import { canAccess } from '@/lib/modules'
 import { PageHeader } from '@/components/PageHeader'
 import { formatDate, formatINR, formatNum, todayISO } from '@/lib/format'
+import { colFilter, useColFilterStore } from '@/lib/colFilters'
 import { cn } from '@/lib/utils'
 import { useLiveRefresh } from '@/lib/useLiveRefresh'
 import { useGlobalDateRange, globalRangeAppliesTo } from '@/lib/globalDateRange'
@@ -1901,9 +1902,27 @@ export function Trading({
     return [...m.entries()].sort((a, b) => a[0].localeCompare(b[0])).map(([v, c]) => ({ value: v, label: v, count: c }))
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [baseDeals, dealTags.tagsOf])
-  const filteredDeals = dealTagSel.length
+  const taggedDeals = dealTagSel.length
     ? baseDeals.filter((d) => dealTags.tagsOf(Number(d.id)).some((t) => dealTagSel.includes(String(t.name))))
     : baseDeals
+  // A FUNNEL ON EVERY COLUMN (filter + sort, Excel style). Tiles, totals and
+  // the Excel read what is left.
+  const dealColF = useColFilterStore()
+  const dealCf = colFilter<Row>(dealColF, 'trading:deals', taggedDeals, [
+    { key: 'date', get: (d) => (d.deal_date ? formatDate(String(d.deal_date)) : ''), sort: 'num' },
+    { key: 'product', get: (d) => String(d.product_code || d.product_name || '') },
+    { key: 'qty', get: (d) => formatNum(n(d.purchase_qty)), sort: 'num' },
+    { key: 'supplier', get: (d) => String(d.supplier_name || '') },
+    { key: 'purchase', get: (d) => formatINR(n(d.purchase_taxable)), sort: 'num' },
+    {
+      key: 'customer',
+      get: (d) => (Array.isArray(d.sale_parties) && d.sale_parties.length ? (d.sale_parties as Row[]).map((p) => String(p.customer_name || p.name || '')) : String(d.customer_name || ''))
+    },
+    { key: 'sale', get: (d) => formatINR(n(d.sale_amount)), sort: 'num' },
+    { key: 'margin', get: (d) => formatINR(n(d.margin)), sort: 'num' },
+    { key: 'marginPct', get: (d) => `${n(d.margin_pct).toFixed(2)}%`, sort: 'num' }
+  ])
+  const filteredDeals = dealCf.rows
 
   // WHAT THIS DEAL PUT IN THE LEDGERS.
   // A trade is two invoices and the difference between them, so the two
@@ -3303,16 +3322,16 @@ export function Trading({
             <TableHeader>
               <TableRow className={cn('bg-[#dce6f5] hover:bg-[#dce6f5]', __WEB__ && '!border-b-0 !bg-[#0B3D2E] hover:!bg-[#0B3D2E]')}>
                 {[
-                  { label: 'Date' },
-                  { label: 'Product' },
-                  { label: 'Qty', right: true },
-                  { label: 'Supplier' },
-                  { label: 'Purchase (taxable)', right: true },
-                  { label: 'Customer' },
-                  { label: 'Sale (taxable)', right: true },
-                  { label: 'Margin', right: true },
-                  { label: 'Margin %', right: true },
-                  { label: 'Actions', right: true }
+                  { label: 'Date', key: 'date' },
+                  { label: 'Product', key: 'product' },
+                  { label: 'Qty', key: 'qty', right: true },
+                  { label: 'Supplier', key: 'supplier' },
+                  { label: 'Purchase (taxable)', key: 'purchase', right: true },
+                  { label: 'Customer', key: 'customer' },
+                  { label: 'Sale (taxable)', key: 'sale', right: true },
+                  { label: 'Margin', key: 'margin', right: true },
+                  { label: 'Margin %', key: 'marginPct', right: true },
+                  { label: 'Actions', key: '', right: true }
                 ].map((h) => (
                   <TableHead
                     key={h.label}
@@ -3326,7 +3345,7 @@ export function Trading({
                       __WEB__ && (h.label === 'Margin' || h.label === 'Margin %') && '!bg-[#1A4D2E] !text-[#C7F03F]'
                     )}
                   >
-                    {h.label}
+                    {h.key ? dealCf.head(h.key, h.label, { onDark: __WEB__, align: h.right ? 'end' : 'start' }) : h.label}
                   </TableHead>
                 ))}
               </TableRow>

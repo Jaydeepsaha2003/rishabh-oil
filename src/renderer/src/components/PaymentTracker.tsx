@@ -36,6 +36,7 @@ import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover
 import { formatINR } from '@/lib/format'
 import { useDrawerEscape } from '@/lib/escape'
 import { cn } from '@/lib/utils'
+import { colFilter, useColFilterStore } from '@/lib/colFilters'
 
 type Row = Record<string, unknown>
 
@@ -126,7 +127,16 @@ const GRID = '175px minmax(260px,1.6fr) minmax(170px,1fr) 150px 140px 132px 150p
 
 // The filters and everything derived from them — one set of rules for the
 // desktop table and the phone cards, so the two cannot count differently.
-type ColSort = { key: 'ref' | 'lender' | 'amount' | 'due'; asc: boolean } | null
+// What a row's Status column says — the same words the row shows.
+const statusWord = (r: Row): string => {
+  const d = dOf(r)
+  if (r.rejected) return 'Rejected'
+  if (r.settled) return 'Settled'
+  if (d == null) return 'No date'
+  if (d < 0) return 'Overdue'
+  if (d === 0) return 'Due today'
+  return d <= 3 ? 'Maturing' : 'Upcoming'
+}
 function useTrackerView(rows: Row[], firstSort: 'due' | 'amount' | 'lender' = 'due') {
   const [win, setWin] = useState<Win>('all')
   const [dir, setDir] = useState<Dir>('all')
@@ -136,8 +146,8 @@ function useTrackerView(rows: Row[], firstSort: 'due' | 'amount' | 'lender' = 'd
   const [q, setQ] = useState('')
   const [showSettled, setShowSettled] = useState(false)
   const [sort, setSort] = useState<'due' | 'amount' | 'lender'>(firstSort)
-  // A click on a column head: sorts the rows inside every group by that column.
-  const [colSort, setColSort] = useState<ColSort>(null)
+  // A FUNNEL ON EVERY COLUMN (filter + sort, Excel style) — on the rows inside every group.
+  const cfStore = useColFilterStore()
 
   const v = useMemo(() => {
     const all = rows
@@ -154,24 +164,19 @@ function useTrackerView(rows: Row[], firstSort: 'due' | 'amount' | 'lender' = 'd
           (skip === 'lender' || lender === 'all' || x.lender === lender) &&
           (!query || `${x.ref} ${x.party} ${x.lender} ${x.via || ''} ${x.detail}`.toLowerCase().includes(query))
       )
-    const byCol = (a: Row, b: Row): number => {
-      if (!colSort) return 0
-      const k = colSort.key
-      const d =
-        k === 'amount'
-          ? n(a.amount) - n(b.amount)
-          : k === 'due'
-            ? (dOf(a) ?? Infinity) - (dOf(b) ?? Infinity)
-            : String((k === 'ref' ? `${a.ref} ${a.party}` : a.lender) || '').localeCompare(String((k === 'ref' ? `${b.ref} ${b.party}` : b.lender) || ''), 'en', { numeric: true })
-      return colSort.asc ? d : -d
-    }
-    const shown = base(null)
+    const ordered = base(null)
       .slice()
-      .sort(
-        (a, b) =>
-          byCol(a, b) ||
-          (sort === 'amount' ? n(b.amount) - n(a.amount) : (dOf(a) ?? Infinity) - (dOf(b) ?? Infinity) || n(b.amount) - n(a.amount))
-      )
+      .sort((a, b) => (sort === 'amount' ? n(b.amount) - n(a.amount) : (dOf(a) ?? Infinity) - (dOf(b) ?? Infinity) || n(b.amount) - n(a.amount)))
+    const cf = colFilter<Row>(cfStore, 'treasury:tracker', ordered, [
+      { key: 'type', get: (r) => (KIND[(r.kind as Kind) || 'lc_mat'] || KIND.lc_mat).label },
+      { key: 'ref', get: (r) => `${String(r.ref || '')}${r.party ? ` · ${String(r.party)}` : ''}` },
+      { key: 'party', get: (r) => String(r.party || '') },
+      { key: 'lender', get: (r) => String(r.lender || '') },
+      { key: 'amount', get: (r) => formatINR(n(r.amount)), sort: 'num' },
+      { key: 'due', get: (r) => (r.due_date ? dmy(String(r.due_date)) : ''), sort: 'num' },
+      { key: 'status', get: (r) => statusWord(r) }
+    ])
+    const shown = cf.rows
     const sum = (arr: Row[]): number => arr.reduce((t, x) => t + n(x.amount), 0)
     const outSum = (arr: Row[]): number => sum(arr.filter((x) => x.dir === 'out'))
     const inSum = (arr: Row[]): number => sum(arr.filter((x) => x.dir === 'in'))
@@ -222,6 +227,7 @@ function useTrackerView(rows: Row[], firstSort: 'due' | 'amount' | 'lender' = 'd
     const lenders = Array.from(new Set(all.map((x) => String(x.lender || '')).filter(Boolean))).sort()
     const presentKinds = KIND_ORDER.filter((k) => all.some((x) => x.kind === k))
     return {
+      cf,
       shown,
       groups,
       late,
@@ -238,7 +244,7 @@ function useTrackerView(rows: Row[], firstSort: 'due' | 'amount' | 'lender' = 'd
       footOut: outSum(liveShown),
       footIn: inSum(liveShown)
     }
-  }, [rows, q, win, dir, kinds, lender, showSettled, sort, colSort])
+  }, [rows, q, win, dir, kinds, lender, showSettled, sort, cfStore.state])
 
   const filtered = win !== 'all' || dir !== 'all' || kinds.length > 0 || lender !== 'all' || !!q.trim()
   const clear = (): void => {
@@ -248,7 +254,7 @@ function useTrackerView(rows: Row[], firstSort: 'due' | 'amount' | 'lender' = 'd
     setLender('all')
     setQ('')
   }
-  return { win, setWin, dir, setDir, kinds, setKinds, lender, setLender, lenderOpen, setLenderOpen, q, setQ, showSettled, setShowSettled, sort, setSort, colSort, setColSort, v, filtered, clear }
+  return { win, setWin, dir, setDir, kinds, setKinds, lender, setLender, lenderOpen, setLenderOpen, q, setQ, showSettled, setShowSettled, sort, setSort, v, filtered, clear }
 }
 
 export function PaymentTracker({
@@ -270,7 +276,7 @@ export function PaymentTracker({
   // Whether this viewer may open that register at all.
   canAct: (r: Row) => boolean
 }): React.JSX.Element {
-  const { win, setWin, dir, setDir, kinds, setKinds, lender, setLender, lenderOpen, setLenderOpen, q, setQ, showSettled, setShowSettled, sort, setSort, colSort, setColSort, v, filtered, clear } =
+  const { win, setWin, dir, setDir, kinds, setKinds, lender, setLender, lenderOpen, setLenderOpen, q, setQ, showSettled, setShowSettled, sort, setSort, v, filtered, clear } =
     useTrackerView(rows, 'lender')
   const [helpOpen, setHelpOpen] = useState(false)
   // FOLDED GROUPS: by NBFC every group starts folded (its header carries the
@@ -298,20 +304,6 @@ export function PaymentTracker({
       return x
     })
   const [busy, setBusy] = useState(false)
-  const head = (key: NonNullable<ColSort>['key'], label: string, cls: string): React.JSX.Element => {
-    const on = colSort?.key === key
-    return (
-      <button
-        type="button"
-        onClick={() => setColSort(on ? (colSort!.asc ? { key, asc: false } : null) : { key, asc: key !== 'amount' })}
-        title={`Sort by ${label.toLowerCase()} — click again to turn it round, a third time to clear`}
-        className={cn('flex items-center gap-1 uppercase hover:text-[#C7F03F]', cls, on && 'text-[#C7F03F]')}
-      >
-        {label}
-        {on ? (colSort!.asc ? ' ▲' : ' ▼') : <ArrowUpDown className="h-3 w-3 opacity-50" />}
-      </button>
-    )
-  }
   const net = v.footIn - v.footOut
   const monthNet = v.inSum(v.month) - v.outSum(v.month)
 
@@ -548,12 +540,13 @@ export function PaymentTracker({
                 </button>
               )
             })}
-            {(filtered || colSort) && (
+            {(filtered || v.cf.active > 0 || !!v.cf.sorted) && (
               <button
                 type="button"
                 onClick={() => {
                   clear()
-                  setColSort(null)
+                  v.cf.clear()
+                  v.cf.clearSort()
                 }}
                 className="flex h-[34px] items-center gap-[5px] px-2 text-[11.5px] font-extrabold text-[#0B6B45]"
               >
@@ -570,12 +563,16 @@ export function PaymentTracker({
               className="grid h-9 items-center bg-[#0B3D2E] text-[9.5px] font-extrabold uppercase tracking-[.12em] text-white"
               style={{ gridTemplateColumns: GRID }}
             >
-              <span className="px-3.5">Type</span>
-              {head('ref', 'Reference · party', 'px-2.5')}
-              {head('lender', 'Bank / NBFC', 'px-2.5')}
-              {head('amount', 'Amount', 'justify-end px-2.5')}
-              {head('due', 'Due', 'px-2.5')}
-              <span className="px-2.5">Status</span>
+              <span className="px-3.5">{v.cf.head('type', 'Type', { onDark: true })}</span>
+              <span className="flex items-center gap-2 px-2.5">
+                {v.cf.head('ref', 'Reference', { onDark: true })}
+                <span className="opacity-60">·</span>
+                {v.cf.head('party', 'Party', { onDark: true })}
+              </span>
+              <span className="px-2.5">{v.cf.head('lender', 'Bank / NBFC', { onDark: true })}</span>
+              <span className="flex justify-end px-2.5">{v.cf.head('amount', 'Amount', { onDark: true, align: 'end' })}</span>
+              <span className="px-2.5">{v.cf.head('due', 'Due', { onDark: true })}</span>
+              <span className="px-2.5">{v.cf.head('status', 'Status', { onDark: true })}</span>
               <span className="px-3.5 text-right">Action</span>
             </div>
             {/* REJECT SELECTED — the ticked rows, under one reason. */}
