@@ -2873,12 +2873,17 @@ function SalesTab({
                                 variant="outline"
                                 className="h-7 gap-1 border-rose-300 px-2 text-xs text-rose-700"
                                 onClick={() =>
-                                  setShortAsk({
-                                    saleId: Number(inv.first.id),
-                                    invoiceNo: String(inv.first.invoice_no || ''),
-                                    customer: String(inv.first.customer_master || inv.first.customer || ''),
-                                    due: 0
-                                  })
+                                  // The same window as the full desk: the shortage, Create, and the
+                                  // customer's other invoices — it was link-only here, so it read
+                                  // "delivered short" with nothing to create.
+                                  setShortAsk(
+                                    shortageAskFor(inv) || {
+                                      saleId: Number(inv.first.id),
+                                      invoiceNo: String(inv.first.invoice_no || ''),
+                                      customer: String(inv.first.customer_master || inv.first.customer || ''),
+                                      due: 0
+                                    }
+                                  )
                                 }
                               >
                                 Link CN
