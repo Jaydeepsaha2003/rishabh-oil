@@ -1133,6 +1133,43 @@ export function LcFdSecurity({ lc, lcs }: { lc: Row; lcs: Row[] }): React.JSX.El
                 <Unlock className="h-3 w-3" /> Released{l.released_on ? ` ${formatDate(String(l.released_on))}` : ''}
               </span>
             )}
+            {/* Release (the FD is free again from today) or delete (a lien marked by mistake). */}
+            {l.active && (
+              <button
+                type="button"
+                title="Release — the FD is free from today; the lien stays on record"
+                onClick={() =>
+                  window.confirm(`Release ${formatINR(n(l.amount))} of FD ${String(l.fd_no)} from this LC?`) &&
+                  void window.api.fd
+                    .releaseLien(n(l.id))
+                    .then(() => {
+                      toast.success('Lien released')
+                      load()
+                    })
+                    .catch((e) => toast.error((e as Error).message))
+                }
+                className="flex h-7 w-7 items-center justify-center rounded-[4px] border border-[#C3D2C6] bg-white text-[#33473E] hover:bg-[#F7FAF6]"
+              >
+                <Unlock className="h-3.5 w-3.5" />
+              </button>
+            )}
+            <button
+              type="button"
+              title="Delete this lien — for one marked by mistake"
+              onClick={() =>
+                window.confirm(`Delete the lien of FD ${String(l.fd_no)} (${formatINR(n(l.amount))}) on this LC altogether?`) &&
+                void window.api.fd
+                  .deleteLien(n(l.id))
+                  .then(() => {
+                    toast.success('Lien deleted')
+                    load()
+                  })
+                  .catch((e) => toast.error((e as Error).message))
+              }
+              className="flex h-7 w-7 items-center justify-center rounded-[4px] border border-[#F0D6D4] bg-white text-[#B3261E] hover:bg-[#FDF3F2]"
+            >
+              <Trash2 className="h-3.5 w-3.5" />
+            </button>
           </div>
         ))
       )}

@@ -320,6 +320,12 @@ export async function releaseFdLien(id: number, date?: string): Promise<{ id: nu
 /** Remove a lien marked by mistake. */
 export async function deleteFdLien(id: number): Promise<{ id: number }> {
   await ensureFd()
+  // A lien an LC repayment / preclosure already settled stays: undo that repayment first.
+  const used = await getClient()
+    .execute({ sql: 'SELECT repayment_id FROM fd_liens WHERE id = ? AND repayment_id IS NOT NULL', args: [n(id)] })
+    .then((r) => r.rows.length > 0)
+    .catch(() => false)
+  if (used) throw new Error('This lien was settled by the LC\'s repayment / preclosure — undo that first')
   await getClient().execute({ sql: 'DELETE FROM fd_liens WHERE id = ?', args: [n(id)] })
   return { id: n(id) }
 }
