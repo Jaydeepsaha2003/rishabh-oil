@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import { hasOpenOverlay } from '@/lib/escape'
 import { Toaster, toast } from 'sonner'
+import { SelectionSum } from '@/components/SelectionSum'
 
 // An error says what went wrong and what to do about it — longer than the
 // two seconds a confirmation needs. Set once here so every toast.error in the
@@ -755,6 +756,8 @@ function App(): React.JSX.Element {
           card lingering over the corner of the page gets in the way. Errors
           stay longer (see below): a refusal has to be read. */}
       <Toaster richColors position="bottom-right" duration={2000} />
+      {/* Drag over figures in a column → their total, Excel style. */}
+      <SelectionSum />
     </div>
     </MobileMenuProvider>
     </GlobalDateRangeProvider>

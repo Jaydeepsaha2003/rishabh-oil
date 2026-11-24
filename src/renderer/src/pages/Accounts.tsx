@@ -18839,12 +18839,18 @@ Delete ${doc}?`)) return
                 )}
                 <span
                   title={r.tanker_held && Number(r.held_dr) > 0 ? `Bill ${formatINR(Number(r.held_dr))} — counted when its tankers are emptied` : undefined}
+                  data-sum={Number(r.dr) || 0}
+                  data-sum-col="lg:dr"
+                  data-sum-label="Debit"
                   style={{ padding: '0 12px', textAlign: 'right', ...figS(12.5, A.dr) }}
                 >
                   {Number(r.dr) > 0 ? formatINR(Number(r.dr)) : r.tanker_held && Number(r.held_dr) > 0 ? '—' : r.in_opening && Number(r.memo_dr) > 0 ? <span style={{ color: '#8CA396' }}>({formatINR(Number(r.memo_dr))})</span> : ''}
                 </span>
                 <span
                   title={r.tanker_held && Number(r.held_cr) > 0 ? `Bill ${formatINR(Number(r.held_cr))} — counted when its tankers are emptied` : undefined}
+                  data-sum={Number(r.cr) || 0}
+                  data-sum-col="lg:cr"
+                  data-sum-label="Credit"
                   style={{ padding: '0 12px', textAlign: 'right', ...figS(12.5, A.cr) }}
                 >
                   {Number(r.cr) > 0 ? formatINR(Number(r.cr)) : r.tanker_held && Number(r.held_cr) > 0 ? '—' : r.in_opening && Number(r.memo_cr) > 0 ? <span style={{ color: '#8CA396' }}>({formatINR(Number(r.memo_cr))})</span> : ''}
@@ -19229,12 +19235,24 @@ Delete ${doc}?`)) return
                 )}
               </span>
               {r.cells.map((v, j) => (
-                <span key={j} style={{ padding: '0 10px', textAlign: 'right', ...figS(12, v > 0.004 ? sideInk(r) : '#C3D2C6', v > 0.004 ? 700 : 500) }}>
+                <span
+                  key={j}
+                  data-sum={v > 0.004 ? v : 0}
+                  data-sum-col={`col:c:${j}`}
+                  data-sum-label={lgContras[j]}
+                  style={{ padding: '0 10px', textAlign: 'right', ...figS(12, v > 0.004 ? sideInk(r) : '#C3D2C6', v > 0.004 ? 700 : 500) }}
+                >
                   {v > 0.004 ? formatINR(v) : '—'}
                 </span>
               ))}
               {lgContras.length === 0 && <span style={{ padding: '0 10px', textAlign: 'right', color: A.none }}>—</span>}
-              <span className="flex h-full items-center justify-end" style={{ padding: '0 14px', background: 'rgba(199,240,63,.08)', borderRight: '1px solid #EAF0E9', ...figS(12.5, sideInk(r)) }}>
+              <span
+                className="flex h-full items-center justify-end"
+                data-sum={r.total}
+                data-sum-col="col:total"
+                data-sum-label="Total"
+                style={{ padding: '0 14px', background: 'rgba(199,240,63,.08)', borderRight: '1px solid #EAF0E9', ...figS(12.5, sideInk(r)) }}
+              >
                 {formatINR(r.total)}
               </span>
               {detailCols.map((d) => {
@@ -19243,7 +19261,14 @@ Delete ${doc}?`)) return
                   const v = dt ? Number(dt[d.key as 'rate' | 'qty' | 'interest']) || 0 : 0
                   const shownV = d.key === 'qty' ? formatNum(v) : formatINR(v)
                   return (
-                    <span key={d.key} style={{ padding: '0 10px', textAlign: 'right', ...figS(11.5, v > 0.004 ? A.ink : A.none, v > 0.004 ? 700 : 500) }}>
+                    <span
+                      key={d.key}
+                      data-sum={v}
+                      data-sum-col={`col:d:${d.key}`}
+                      data-sum-label={d.label}
+                      data-sum-kind={d.key === 'qty' ? 'qty' : 'money'}
+                      style={{ padding: '0 10px', textAlign: 'right', ...figS(11.5, v > 0.004 ? A.ink : A.none, v > 0.004 ? 700 : 500) }}
+                    >
                       {v > 0.004 ? shownV : '—'}
                     </span>
                   )
