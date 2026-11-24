@@ -1586,6 +1586,8 @@ export function registerIpc(): void {
   )
   handle('sales:delete', (_e, { id }: { id: number }) => deleteSale(id))
   handle('sales:shortageNotes', (_e, { id }: { id: number }) => shortageNoteCandidates(id))
+  // The shortage credit note worked out here, for a desk whose rows carry no rates (gated: TDS desk / full Sales).
+  handle('sales:shortageCnInfo', async (_e, { id }: { id: number }) => (await import('./saleShortageNotes')).shortageCnInfo(Number(id)))
   // A purchase's shortage and quality debit notes (purchaseDebitNotes.ts).
   handle('orders:dnNotes', async (_e, { id }: { id: number }) => (await import('./purchaseDebitNotes')).purchaseDnCandidates(Number(id)))
   handle('orders:dnNotesSet', async (_e, { id, links }: { id: number; links: { entry_id: number; kind: string }[] }) =>

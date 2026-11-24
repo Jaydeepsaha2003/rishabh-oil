@@ -298,3 +298,77 @@ export async function repairShortageNoteDupes(): Promise<{ cleared: number; remo
   }
   return out
 }
+
+/**
+ * THE SHORTAGE CREDIT NOTE, worked out on the server — for a desk whose Sales
+ * rows carry no rates (the unloading desk), so the Link CN window can still
+ * show the amount and Create. The customer has no tolerance: the whole
+ * shortage × rate on every loose line. Also the same customer's other
+ * unloaded invoices (same book) with a shortage and no credit note linked yet.
+ * Only the figures the note needs leave the server.
+ */
+export async function shortageCnInfo(saleId: number): Promise<Row | null> {
+  await ensure()
+  const c = getClient()
+  const inv = await invoiceOf(saleId)
+  const linesOf = async (key: string, id: number): Promise<Row[]> =>
+    (
+      await c.execute({
+        sql: `SELECT s.id, s.invoice_no, s.sale_date, s.unloaded_date, s.customer_id, s.company_id, s.qty, s.received_qty, s.rate, s.gst_pct,
+                     s.uom, s.sale_type, s.freight_term, s.is_trading, s.rejected_at, p.name AS product_name
+                FROM sales s LEFT JOIN products p ON p.id = s.product_id
+               WHERE ${key ? 's.invoice_group = ?' : 's.id = ?'}`,
+        args: [key || id]
+      })
+    ).rows as unknown as Row[]
+  const dueOf = (ls: Row[]): { due: number; parts: Row[] } => {
+    const parts = ls.filter(
+      (l) =>
+        String(l.sale_type || 'LOOSE').toUpperCase() !== 'PACKED' &&
+        String(l.freight_term || '') === 'DLD' &&
+        l.received_qty != null &&
+        n(l.qty) > 0 &&
+        Number(l.is_trading) !== 1 &&
+        n(l.qty) - n(l.received_qty) > 0.0000005
+    )
+    return { due: round2(parts.reduce((t, l) => t + (n(l.qty) - n(l.received_qty)) * n(l.rate), 0)), parts }
+  }
+  const mine = await linesOf(String(inv.invoice_group || ''), n(inv.id))
+  const { due, parts } = dueOf(mine)
+  if (!(due > 0)) return null
+  const first = mine[0]
+  // The customer's other invoices in this book with a shortage and nothing linked.
+  const groups = (
+    await c.execute({
+      sql: `SELECT COALESCE(s.invoice_group, 'sale-' || s.id) AS g, MIN(s.id) AS id FROM sales s
+             WHERE s.customer_id = ? AND s.company_id = ? AND s.rejected_at IS NULL AND COALESCE(s.freight_term, '') = 'DLD'
+               AND s.received_qty IS NOT NULL AND s.qty > s.received_qty
+               AND COALESCE(s.invoice_group, 'sale-' || s.id) <> ?
+               AND NOT EXISTS (SELECT 1 FROM sale_shortage_notes t WHERE t.company_id = s.company_id
+                                AND t.invoice_key = COALESCE(s.invoice_group, s.invoice_no, 'sale-' || s.id))
+             GROUP BY g ORDER BY MIN(s.sale_date) DESC LIMIT 40`,
+      args: [n(first.customer_id), n(first.company_id), String(inv.invoice_group || `sale-${inv.id}`)]
+    })
+  ).rows as unknown as Row[]
+  const others: Row[] = []
+  for (const g of groups) {
+    const ls = await linesOf(String(g.g).startsWith('sale-') ? '' : String(g.g), n(g.id))
+    const d = dueOf(ls).due
+    if (d > 0) others.push({ saleId: n(ls[0].id), invoiceNo: String(ls[0].invoice_no || ''), due: d, date: String(ls[0].sale_date || '').slice(0, 10) })
+  }
+  return {
+    saleId: n(inv.id),
+    invoiceNo: String(inv.invoice_no || ''),
+    due,
+    cn: {
+      customerId: n(first.customer_id),
+      companyId: n(first.company_id),
+      date: String(first.unloaded_date || new Date().toISOString()).slice(0, 10),
+      gstPct: n(parts[0]?.gst_pct),
+      detail: parts
+        .map((l) => `${String(l.product_name || 'Item')} ${round2((n(l.qty) - n(l.received_qty)) * 1000) / 1000} ${String(l.uom || '')} short @ ${n(l.rate)}`)
+        .join('; ')
+    },
+    others
+  }
+}

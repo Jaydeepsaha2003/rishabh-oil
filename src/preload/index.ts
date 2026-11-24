@@ -760,6 +760,7 @@ const api = {
       ipcRenderer.invoke('sales:fixDate', { id, date }),
     cancelledNos: (companyId?: number): Promise<Row[]> => ipcRenderer.invoke('sales:cancelledNos', { companyId }),
     shortageNotes: (id: number): Promise<Row> => ipcRenderer.invoke('sales:shortageNotes', { id }),
+    shortageCnInfo: (id: number): Promise<Row | null> => ipcRenderer.invoke('sales:shortageCnInfo', { id }),
     shortageNotesSet: (id: number, entryIds: number[]): Promise<{ linked: number }> =>
       ipcRenderer.invoke('sales:shortageNotesSet', { id, entryIds }),
     shortageNoteMap: (): Promise<Row[]> => ipcRenderer.invoke('sales:shortageNoteMap', {}),

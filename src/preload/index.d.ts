@@ -512,6 +512,7 @@ export interface Api {
     fixDate: (id: number, date: string) => Promise<{ id: number; from: string; to: string }>
     cancelledNos: (companyId?: number) => Promise<Row[]>
     shortageNotes: (id: number) => Promise<Row>
+    shortageCnInfo: (id: number) => Promise<Row | null>
     shortageNotesSet: (id: number, entryIds: number[]) => Promise<{ linked: number }>
     shortageNoteMap: () => Promise<Row[]>
     tdsPreview: (id: number) => Promise<Row>

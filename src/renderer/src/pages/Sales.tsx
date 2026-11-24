@@ -2872,19 +2872,20 @@ function SalesTab({
                                 size="sm"
                                 variant="outline"
                                 className="h-7 gap-1 border-rose-300 px-2 text-xs text-rose-700"
-                                onClick={() =>
+                                onClick={async () => {
                                   // The same window as the full desk: the shortage, Create, and the
-                                  // customer's other invoices — it was link-only here, so it read
-                                  // "delivered short" with nothing to create.
-                                  setShortAsk(
-                                    shortageAskFor(inv) || {
-                                      saleId: Number(inv.first.id),
-                                      invoiceNo: String(inv.first.invoice_no || ''),
-                                      customer: String(inv.first.customer_master || inv.first.customer || ''),
-                                      due: 0
-                                    }
-                                  )
-                                }
+                                  // customer's other invoices. This desk's rows carry no rates, so the
+                                  // server works the figures out (only for a login allowed to raise it);
+                                  // otherwise the window opens to link only.
+                                  const base = {
+                                    saleId: Number(inv.first.id),
+                                    invoiceNo: String(inv.first.invoice_no || ''),
+                                    customer: String(inv.first.customer_master || inv.first.customer || ''),
+                                    due: 0
+                                  }
+                                  const got = await window.api.sales.shortageCnInfo(Number(inv.first.id)).catch(() => null)
+                                  setShortAsk(got ? ({ ...base, ...got, customer: base.customer } as ShortageAsk) : base)
+                                }}
                               >
                                 Link CN
                               </Button>

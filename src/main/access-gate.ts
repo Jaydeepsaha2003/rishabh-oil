@@ -588,7 +588,7 @@ export async function assertAllowed(channel: string, args: unknown): Promise<voi
       (Array.isArray(v.allocs) && (v.allocs as Row[]).some((x) => String(x?.method) === 'agst_ref' && String(x?.ref_name || '').trim()))
     if (String(v.note_type).toLowerCase() === 'credit' && String(v.party_type) === 'customer' && agst) return
   }
-  if (tdsDesk && rule.module === 'sales' && ['shortageNotesSet', 'shortageNotes', 'shortageNoteMap'].includes(op)) return
+  if (tdsDesk && rule.module === 'sales' && ['shortageNotesSet', 'shortageNotes', 'shortageNoteMap', 'shortageCnInfo'].includes(op)) return
 
   // A narrowed job answers the whole question on its own — the ordinary
   // per-action rights below would let an 'edit' grant through everything.
