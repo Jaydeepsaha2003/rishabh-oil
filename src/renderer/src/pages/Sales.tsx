@@ -6409,10 +6409,10 @@ function SalesBargainsTab({ onOpenSale, onOpenVoucher }: { onOpenSale?: (id: num
 
   const rateCard = __WEB__ ? (
     <Dialog open={!!rateRow} onOpenChange={(o) => { if (!o) closeRateCard() }}>
-      <DialogContent className="grid !max-w-[1020px] !grid-rows-[auto_auto_auto_minmax(0,1fr)_auto] !gap-0 !overflow-hidden !rounded-[4px] !border-0 !bg-[#F1F5EF] !p-0 h-[88vh] w-[calc(100vw-3rem)] [&>button]:!right-5 [&>button]:!top-5 [&>button]:!text-white [&>button]:!opacity-70 [&>button]:hover:!opacity-100">
-        <DialogHeader className="!block !space-y-0 !bg-[#0B3D2E] !px-[22px] !py-4 !text-left">
+      <DialogContent className="grid !max-w-[1020px] !grid-rows-[auto_auto_auto_minmax(0,1fr)_auto] !gap-0 !overflow-hidden !rounded-[4px] !border-0 !bg-[#F1F5EF] !p-0 h-[88vh] w-[calc(100vw-1rem)] sm:w-[calc(100vw-3rem)] [&>button]:!right-5 [&>button]:!top-5 [&>button]:!text-white [&>button]:!opacity-70 [&>button]:hover:!opacity-100">
+        <DialogHeader className="!block !space-y-0 !bg-[#0B3D2E] !px-4 !py-4 !text-left sm:!px-[22px]">
           <div className="text-[11.5px] font-extrabold uppercase tracking-[.14em] text-[#8FBFA8]">SKU rate card</div>
-          <DialogTitle className="!mt-1.5 !truncate !text-[19px] !font-bold !tracking-[-0.02em] !text-white">
+          <DialogTitle className="!mt-1.5 !break-all !pr-8 !text-[17px] !font-bold !tracking-[-0.02em] !text-white sm:!truncate sm:!text-[19px]">
             {rateRow?.bargain_no}
           </DialogTitle>
           <div className="mt-2 flex flex-wrap items-center gap-2">
@@ -6431,8 +6431,8 @@ function SalesBargainsTab({ onOpenSale, onOpenVoucher }: { onOpenSale?: (id: num
           </div>
         </DialogHeader>
 
-        <div className="flex flex-wrap items-center gap-4 border-b border-[#D6E2D6] bg-white px-[22px] py-3.5">
-          <div className="min-w-[240px] flex-1">
+        <div className="flex flex-wrap items-center gap-3 border-b border-[#D6E2D6] bg-white px-4 py-3.5 sm:gap-4 sm:px-[22px]">
+          <div className="min-w-0 basis-full sm:min-w-[240px] sm:basis-0 sm:flex-1">
             <div className="flex flex-wrap items-baseline justify-between gap-3">
               <span className="text-[13.5px] font-extrabold">{ratePriced.length} of {rateRows.length} SKUs priced</span>
               <div className="flex items-center gap-2">
@@ -6453,7 +6453,7 @@ function SalesBargainsTab({ onOpenSale, onOpenVoucher }: { onOpenSale?: (id: num
               <div className="h-full" style={{ width: `${ratePct}%`, background: ratePct === 100 ? '#12855A' : '#C2700A' }} />
             </div>
           </div>
-          <div className="flex shrink-0 items-center gap-2.5">
+          <div className="flex w-full items-center gap-2.5 sm:w-auto sm:shrink-0">
             <input
               ref={rateFile}
               type="file"
@@ -6468,7 +6468,7 @@ function SalesBargainsTab({ onOpenSale, onOpenVoucher }: { onOpenSale?: (id: num
               type="button"
               onClick={downloadRateCard}
               disabled={!rateRows.length}
-              className="flex h-10 items-center gap-2 rounded-[4px] border-[1.5px] border-[#0B3D2E] px-3.5 text-[13px] font-extrabold tracking-[.02em] text-[#0B3D2E] transition-colors hover:bg-[#EAF0E9] disabled:cursor-not-allowed disabled:opacity-40"
+              className="flex h-10 flex-1 items-center justify-center gap-2 whitespace-nowrap rounded-[4px] border-[1.5px] border-[#0B3D2E] px-3.5 text-[13px] font-extrabold tracking-[.02em] text-[#0B3D2E] transition-colors hover:bg-[#EAF0E9] disabled:cursor-not-allowed disabled:opacity-40 sm:flex-none"
             >
               <Download className="h-[18px] w-[18px]" /> Download card
             </button>
@@ -6476,14 +6476,14 @@ function SalesBargainsTab({ onOpenSale, onOpenVoucher }: { onOpenSale?: (id: num
               type="button"
               onClick={() => rateFile.current?.click()}
               disabled={rateBusy}
-              className="flex h-10 items-center gap-2 rounded-[4px] bg-[#0B3D2E] px-3.5 text-[13px] font-extrabold tracking-[.02em] text-[#C7F03F] transition-colors hover:bg-[#0F4A38] disabled:cursor-not-allowed disabled:opacity-60"
+              className="flex h-10 flex-1 items-center justify-center gap-2 whitespace-nowrap rounded-[4px] bg-[#0B3D2E] px-3.5 text-[13px] font-extrabold tracking-[.02em] text-[#C7F03F] transition-colors hover:bg-[#0F4A38] disabled:cursor-not-allowed disabled:opacity-60 sm:flex-none"
             >
-              <Upload className="h-[18px] w-[18px]" /> {rateBusy ? 'Uploading…' : 'Upload filled card'}
+              <Upload className="h-[18px] w-[18px]" /> {rateBusy ? 'Uploading…' : isMobile ? 'Upload card' : 'Upload filled card'}
             </button>
           </div>
         </div>
 
-        <div className="flex items-center gap-2.5 border-b border-[#D6E2D6] bg-white px-[22px] py-3">
+        <div className="flex items-center gap-2.5 border-b border-[#D6E2D6] bg-white px-4 py-3 sm:px-[22px]">
           <div className="relative min-w-0 flex-1">
             <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-[#8AA096]" />
             <input
@@ -6501,14 +6501,15 @@ function SalesBargainsTab({ onOpenSale, onOpenVoucher }: { onOpenSale?: (id: num
               rateUnpricedOnly ? 'border-[#0B3D2E] bg-[#0B3D2E] text-[#C7F03F]' : 'border-[#C3D2C6] bg-white text-[#33473E] hover:bg-[#F7FAF6]'
             )}
           >
-            <SlidersHorizontal className="h-4 w-4" /> Unpriced only
+            <SlidersHorizontal className="h-4 w-4" />
+            <span className="hidden sm:inline">Unpriced only</span>
           </button>
         </div>
 
-        <div className="flex min-h-0 flex-col px-[22px] pt-4">
+        <div className="flex min-h-0 flex-col px-3 pt-3 sm:px-[22px] sm:pt-4">
           <div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-[4px] border border-[#D6E2D6] bg-white">
             <div
-              className="grid h-10 shrink-0 items-center bg-[#0B3D2E] text-[11px] font-extrabold uppercase tracking-[.1em] text-white"
+              className="hidden h-10 shrink-0 items-center bg-[#0B3D2E] text-[11px] font-extrabold uppercase tracking-[.1em] text-white sm:grid"
               style={{ gridTemplateColumns: 'minmax(280px,1.6fr) 140px 160px 170px 44px' }}
             >
               <div className="px-3.5">SKU</div>
@@ -6533,13 +6534,15 @@ function SalesBargainsTab({ onOpenSale, onOpenVoucher }: { onOpenSale?: (id: num
                       key={String(r.packaging_id)}
                       className={cn(
                         'grid min-h-[50px] items-center border-b border-[#EAF0E9] border-l-[3px]',
+                        isMobile && 'gap-y-1.5 py-2.5 [&>div]:!px-3 [&>div:nth-child(n+2)]:text-left',
                         priced ? 'bg-white' : 'bg-[#FFFBF2]',
                         off ? 'border-l-[#B3261E]' : priced ? 'border-l-transparent' : 'border-l-[#C2700A]'
                       )}
-                      style={{ gridTemplateColumns: 'minmax(280px,1.6fr) 140px 160px 170px 44px' }}
+                      style={{ gridTemplateColumns: isMobile ? '1fr 1fr 1fr' : 'minmax(280px,1.6fr) 140px 160px 170px 44px' }}
                     >
-                      <div className="flex min-w-0 items-center gap-2 px-3.5">
-                        <span className="truncate text-[13.5px] font-bold tracking-[-0.01em]" title={String(r.name || '')}>{String(r.name || '')}</span>
+                      <div className={cn('flex min-w-0 items-center gap-2 px-3.5', isMobile && 'col-span-3 flex-wrap')}>
+                        {isMobile && off && <AlertTriangle className="h-4 w-4 shrink-0 text-[#B3261E]" />}
+                        <span className={cn('text-[13.5px] font-bold tracking-[-0.01em]', isMobile ? 'break-words' : 'truncate')} title={String(r.name || '')}>{String(r.name || '')}</span>
                         {Number(r.party_linked) === 1 ? (
                           <span className="shrink-0 rounded-[2px] bg-[#E9F5EE] px-1.5 py-[3px] text-[10px] font-extrabold uppercase tracking-[.05em] text-[#0B6B45]">Linked</span>
                         ) : Number(r.free) === 1 ? (
@@ -6553,13 +6556,18 @@ function SalesBargainsTab({ onOpenSale, onOpenVoucher }: { onOpenSale?: (id: num
                           </span>
                         )}
                       </div>
-                      <div className="px-3 text-right text-[13px] font-medium tabular-nums text-[#5A6B62]">{caseMT(r).toFixed(5)}</div>
+                      <div className="px-3 text-right text-[13px] font-medium tabular-nums text-[#5A6B62]">
+                        {isMobile && <span className="block text-[9.5px] font-extrabold uppercase tracking-[.08em] text-[#8AA096]">MT / case</span>}
+                        {caseMT(r).toFixed(5)}
+                      </div>
                       {priced ? (
                         <>
                           <div className={cn('px-3 text-right text-[14px] font-bold tabular-nums', off && 'text-[#B3261E]')}>
+                            {isMobile && <span className="block text-[9.5px] font-extrabold uppercase tracking-[.08em] text-[#8AA096]">Rate / case</span>}
                             {r.rate_per_case != null ? formatINR(r.rate_per_case) : '—'}
                           </div>
                           <div className={cn('px-3 text-right text-[14px] font-bold tabular-nums', off && 'text-[#B3261E]')}>
+                            {isMobile && <span className="block text-[9.5px] font-extrabold uppercase tracking-[.08em] text-[#8AA096]">Rate / MT</span>}
                             {ratePerMt(r) != null ? formatINR(Number(ratePerMt(r))) : '—'}
                           </div>
                         </>
@@ -6575,7 +6583,8 @@ function SalesBargainsTab({ onOpenSale, onOpenVoucher }: { onOpenSale?: (id: num
                           const preview = typed.trim() && Number.isFinite(n) && n > 0 ? derivedPerMt(r, n) : null
                           return (
                             <>
-                              <div className="flex justify-end px-3">
+                              <div className={cn('flex justify-end px-3', isMobile && 'flex-col items-start')}>
+                                {isMobile && <span className="block text-[9.5px] font-extrabold uppercase tracking-[.08em] text-[#8AA096]">Rate / case</span>}
                                 <input
                                   value={typed}
                                   inputMode="decimal"
@@ -6583,19 +6592,20 @@ function SalesBargainsTab({ onOpenSale, onOpenVoucher }: { onOpenSale?: (id: num
                                   onChange={(e) => setRateEdits((p) => ({ ...p, [pid]: e.target.value }))}
                                   onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); void saveInlineRates() } }}
                                   className={cn(
-                                    'h-8 w-[110px] rounded-[3px] border bg-white px-2.5 text-right text-[13px] font-bold tabular-nums text-[#0A1F17] outline-none placeholder:font-semibold placeholder:text-[#A8B8AE]',
+                                    'h-8 w-[110px] max-w-full rounded-[3px] border bg-white px-2.5 text-right text-[13px] font-bold tabular-nums text-[#0A1F17] outline-none placeholder:font-semibold placeholder:text-[#A8B8AE]',
                                     typed.trim() ? 'border-[#0B3D2E] ring-1 ring-[#0B3D2E]/20' : 'border-[#E3C58C] focus:border-[#0B3D2E]'
                                   )}
                                 />
                               </div>
                               <div className={cn('px-3 text-right text-[11.5px] font-bold', preview != null ? 'text-[#0B6B45] tabular-nums' : 'text-[#8A5300]')}>
+                                {isMobile && <span className="block text-[9.5px] font-extrabold uppercase tracking-[.08em] text-[#8AA096]">Rate / MT</span>}
                                 {preview != null ? formatINR(preview) : 'from MT / case'}
                               </div>
                             </>
                           )
                         })()
                       )}
-                      <div className="flex items-center justify-center">
+                      <div className={cn('flex items-center justify-center', isMobile && 'hidden')}>
                         {off && <span title="Rate per MT is far off the other SKUs"><AlertTriangle className="h-[18px] w-[18px] text-[#B3261E]" /></span>}
                       </div>
                     </div>
@@ -6625,7 +6635,7 @@ function SalesBargainsTab({ onOpenSale, onOpenVoucher }: { onOpenSale?: (id: num
           </div>
         </div>
 
-        <div className="flex items-center justify-between gap-3 border-t border-[#D6E2D6] bg-white px-[22px] py-3.5">
+        <div className="flex flex-wrap items-center justify-between gap-3 border-t border-[#D6E2D6] bg-white px-4 py-3.5 sm:px-[22px]">
           <div className="text-[12.5px] font-semibold text-[#5A6B62]">
             Showing <b className="font-extrabold text-[#0A1F17]">{shownRateRows.length}</b> SKU{shownRateRows.length === 1 ? '' : 's'} ·{' '}
             {ratePriced.length} of {rateRows.length} priced
