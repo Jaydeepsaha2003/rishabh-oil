@@ -506,7 +506,8 @@ function partFigures(
   maturity: string,
   first: boolean,
   ratePct?: number | null,
-  ownCharges?: number | null
+  ownCharges?: number | null,
+  adj = 0
 ): { days: number; interest: number; charges: number; net: number } {
   const days = Math.max(0, daysBetween(payDate, maturity))
   // Each part's own bank charges where it was given them; otherwise, as
@@ -514,7 +515,9 @@ function partFigures(
   const charges = ownCharges != null ? round2(ownCharges) : first ? round2(n(lc.charges)) : 0
   // The same base the whole-LC interest uses: the amount, less the bank's
   // charges where the LC says interest runs on what was actually advanced.
-  const base = Math.max(0, round2(amount - (lc.interest_excl_charges ? charges : 0)))
+  // …plus or minus the part's own Adj. amount, as the bank's advice shows it
+  // (the same rule as the LC's): it moves only what interest is struck on.
+  const base = Math.max(0, round2(amount - (lc.interest_excl_charges ? charges : 0) + n(adj)))
   const interest = round2((base * n(ratePct == null ? lc.interest_pct : ratePct) * days) / (100 * 365))
   return { days, interest, charges, net: round2(amount - interest - charges) }
 }
@@ -526,7 +529,7 @@ async function insertLcPart(
   amount: number,
   payDate: string,
   maturity: string,
-  rates: { interest_pct?: unknown; margin_pct?: unknown; charges?: unknown } = {}
+  rates: { interest_pct?: unknown; margin_pct?: unknown; charges?: unknown; interest_adj?: unknown } = {}
 ): Promise<{ net: number; interest: number }> {
   if (lc.interest_upfront) {
     throw new Error("This LC's interest is paid upfront from the bank account, so it cannot be split into parts with their own maturities.")
@@ -536,12 +539,13 @@ async function insertLcPart(
   const ip = partRate(rates.interest_pct)
   const mp = partRate(rates.margin_pct)
   const ch = partRate(rates.charges)
-  const f = partFigures(lc, amount, payDate, maturity, partNo === 1, ip, ch)
+  const adj = round2(n(rates.interest_adj))
+  const f = partFigures(lc, amount, payDate, maturity, partNo === 1, ip, ch, adj)
   if (f.net <= 0.005) throw new Error(`Part ${partNo}'s interest and charges are more than its amount`)
   await getClient().execute({
-    sql: `INSERT INTO lc_parts (lc_id, part_no, pay_date, amount, maturity_date, days, interest, charges, net, interest_pct, margin_pct)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    args: [n(lcId), partNo, payDate, round2(amount), maturity, f.days, f.interest, f.charges, f.net, ip, mp]
+    sql: `INSERT INTO lc_parts (lc_id, part_no, pay_date, amount, maturity_date, days, interest, charges, net, interest_pct, margin_pct, interest_adj)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    args: [n(lcId), partNo, payDate, round2(amount), maturity, f.days, f.interest, f.charges, f.net, ip, mp, Math.abs(adj) > 0.004 ? adj : null]
   })
   return { net: f.net, interest: f.interest }
 }

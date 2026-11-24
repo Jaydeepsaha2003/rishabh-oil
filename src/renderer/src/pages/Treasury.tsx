@@ -169,14 +169,15 @@ const dayGap = (a: string, b: string): number => {
 }
 // One part's interest and what reaches the supplier — the server's own sum
 // (lc.ts partFigures), shown before saving.
-function lcPartPreview(lc: Row, amount: number, payDate: string, maturity: string, first: boolean, ratePct?: unknown): { days: number; interest: number; charges: number; net: number } {
+function lcPartPreview(lc: Row, amount: number, payDate: string, maturity: string, first: boolean, ratePct?: unknown, adj?: unknown): { days: number; interest: number; charges: number; net: number; base: number } {
   const days = payDate && maturity ? Math.max(0, dayGap(payDate, maturity)) : 0
   const charges = first ? round2(n(lc?.charges)) : 0
-  const base = Math.max(0, round2(amount - (lc?.interest_excl_charges ? charges : 0)))
+  // The part's own Adj. amount moves only the interest base (as on the LC).
+  const base = Math.max(0, round2(amount - (lc?.interest_excl_charges ? charges : 0) + n(adj)))
   // A part's own rate where it has one; blank falls back to the LC's.
   const rate = ratePct == null || String(ratePct).trim() === '' ? n(lc?.interest_pct) : n(ratePct)
   const interest = round2((base * rate * days) / 36500)
-  return { days, interest, charges, net: round2(amount - interest - charges) }
+  return { days, interest, charges, net: round2(amount - interest - charges), base }
 }
 // THE PARTS AT PAYMENT RECEIVED — one row per part the bank has paid so far.
 // Blank interest / margin % means the LC's own.
@@ -7974,14 +7975,15 @@ function LcInstallmentsDialog({
   const [parts, setParts] = useState<Row[]>([])
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState<string | null>(null)
-  const [next, setNext] = useState<{ date: string; amount: string; maturity: string; note: string; interest_pct: string; margin_pct: string; charges: string }>({
+  const [next, setNext] = useState<{ date: string; amount: string; maturity: string; note: string; interest_pct: string; margin_pct: string; charges: string; interest_adj: string }>({
     date: todayISO(),
     amount: '',
     maturity: '',
     note: '',
     interest_pct: '',
     margin_pct: '',
-    charges: ''
+    charges: '',
+    interest_adj: ''
   })
   const [pick, setPick] = useState<Set<number>>(new Set())
   const [partFd, setPartFd] = useState<FdCloseChoice[]>([])
@@ -7995,7 +7997,7 @@ function LcInstallmentsDialog({
   })
   const [ask, setAsk] = useState<'' | 'undoPart' | 'undoRepay'>('')
   // A part already paid, being corrected (lc:editPart).
-  const [fix, setFix] = useState<{ no: number; date: string; amount: string; maturity: string; note: string; interest_pct: string; margin_pct: string; charges: string } | null>(null)
+  const [fix, setFix] = useState<{ no: number; date: string; amount: string; maturity: string; note: string; interest_pct: string; margin_pct: string; charges: string; interest_adj: string } | null>(null)
 
   const lcAmount = round2(n(lc?.amount))
   const drawn = round2(parts.reduce((s, p) => s + n(p.amount), 0))
@@ -8017,7 +8019,8 @@ function LcInstallmentsDialog({
       note: '',
       interest_pct: String(lc.interest_pct ?? ''),
       margin_pct: String(lc.margin_pct ?? ''),
-      charges: ''
+      charges: '',
+      interest_adj: ''
     })
     // The parts due first are the ones a repayment usually clears.
     const open = rows.filter((p) => !p.repaid_date)
@@ -8031,7 +8034,7 @@ function LcInstallmentsDialog({
     void load()
   }, [load])
 
-  const preview = lcPartPreview({ ...(lc || {}), charges: n(next.charges) }, round2(n(next.amount)), next.date, next.maturity, true, next.interest_pct)
+  const preview = lcPartPreview({ ...(lc || {}), charges: n(next.charges) }, round2(n(next.amount)), next.date, next.maturity, true, next.interest_pct, next.interest_adj)
   const picked = parts.filter((p) => pick.has(n(p.part_no)) && !p.repaid_date)
   const principal = round2(picked.reduce((s, p) => s + n(p.amount), 0))
   const rebateOf = (p: Row): number => {
@@ -8061,7 +8064,8 @@ function LcInstallmentsDialog({
         note: next.note,
         interest_pct: next.interest_pct,
         margin_pct: next.margin_pct,
-        charges: round2(n(next.charges))
+        charges: round2(n(next.charges)),
+        interest_adj: round2(n(next.interest_adj))
       })
       toast.success(`Part ${r.installment_no}: ${formatINR(preview.net)} to the supplier, maturing ${formatDate(next.maturity)}`)
       onChanged()
@@ -8088,7 +8092,8 @@ function LcInstallmentsDialog({
         note: fix.note,
         interest_pct: fix.interest_pct,
         margin_pct: fix.margin_pct,
-        charges: round2(n(fix.charges))
+        charges: round2(n(fix.charges)),
+        interest_adj: round2(n(fix.interest_adj))
       })
       toast.success(`Part ${fix.no} corrected — its voucher re-posted`)
       setFix(null)
@@ -8164,9 +8169,9 @@ function LcInstallmentsDialog({
     <Dialog open={!!lc} onOpenChange={(o) => !o && onClose()}>
       <DialogContent
         className={cn(
-          'max-w-3xl max-h-[90vh] overflow-y-auto p-0 shadow-2xl [&>button]:text-white [&>button]:opacity-90 [&>button:hover]:opacity-100',
+          'max-w-5xl max-h-[94vh] overflow-y-auto p-0 shadow-2xl [&>button]:text-white [&>button]:opacity-90 [&>button:hover]:opacity-100',
           LC_DRAWER,
-          __WEB__ && 'lg:!w-[min(94vw,880px)] xl:!w-[min(92vw,880px)] 2xl:!w-[min(90vw,880px)]'
+          __WEB__ && '!w-[min(96vw,1180px)] !max-w-[min(96vw,1180px)] lg:!w-[min(94vw,1180px)] xl:!w-[min(92vw,1240px)] 2xl:!w-[min(88vw,1320px)]'
         )}
       >
         <div className={cn('flex items-center gap-3 bg-gradient-to-r from-[#1a2c56] to-[#24407e] px-6 py-4 text-white', LC_BAND)}>
@@ -8264,6 +8269,9 @@ function LcInstallmentsDialog({
                               @ {p.interest_pct == null ? n(lc?.interest_pct) : n(p.interest_pct)}% · margin {p.margin_pct == null ? n(lc?.margin_pct) : n(p.margin_pct)}%
                             </div>
                             {n(p.charges) > 0.005 && <div className="text-[10.5px] text-[#5A6B62]">+ {formatINR(n(p.charges))} charges</div>}
+                            {Math.abs(n(p.interest_adj)) > 0.004 && (
+                              <div className="text-[10.5px] font-bold text-[#8A5300]">adj {n(p.interest_adj) > 0 ? '+' : '−'}{formatINR(Math.abs(n(p.interest_adj)))} on the base</div>
+                            )}
                           </td>
                           <td className="whitespace-nowrap px-2 py-2.5 text-right font-semibold tabular-nums text-[#0B6B45]">{formatINR(n(p.net))}</td>
                           <td className="whitespace-nowrap px-3 py-2.5">
@@ -8291,7 +8299,8 @@ function LcInstallmentsDialog({
                                         note: '',
                                         interest_pct: p.interest_pct == null ? String(lc?.interest_pct ?? '') : String(p.interest_pct),
                                         margin_pct: p.margin_pct == null ? String(lc?.margin_pct ?? '') : String(p.margin_pct),
-                                        charges: n(p.charges) ? String(n(p.charges)) : ''
+                                        charges: n(p.charges) ? String(n(p.charges)) : '',
+                                        interest_adj: n(p.interest_adj) ? String(n(p.interest_adj)) : ''
                                       })
                                     }
                                     className="flex h-6 items-center gap-1 rounded-[4px] border border-[#D6E2D6] bg-white px-1.5 text-[10.5px] font-bold text-[#0B3D2E] hover:bg-[#F4FBF6]"
@@ -8356,7 +8365,7 @@ function LcInstallmentsDialog({
                 <Pencil className="h-4 w-4" /> Correct part {fix.no}
                 <span className="ml-auto text-[10px] font-bold normal-case tracking-normal">Its voucher is re-posted under the same number</span>
               </h3>
-              <div className="grid gap-4 p-4 sm:grid-cols-3">
+              <div className="grid gap-4 p-4 sm:grid-cols-3 lg:grid-cols-4">
                 <div className="grid content-start gap-1.5">
                   <span className={lbl}>Paid on *</span>
                   <DatePicker value={fix.date} max={todayISO()} onChange={(v) => setFix((f) => (f ? { ...f, date: v } : f))} />
@@ -8381,9 +8390,16 @@ function LcInstallmentsDialog({
                   <span className={lbl}>LC charges (₹)</span>
                   <Input type="number" value={fix.charges} placeholder="0" onChange={(e) => setFix((f) => (f ? { ...f, charges: e.target.value } : f))} className="!h-10" />
                 </div>
+                <div className="grid content-start gap-1.5">
+                  <span className={cn(lbl, 'flex items-center gap-1')}>
+                    Adj. amount (₹)
+                    <InfoTip text="Where the bank strikes this part's interest on something other than its LC amount, put the difference here — signed, so −2 on 100 charges interest on 98. It moves the interest base only." />
+                  </span>
+                  <Input type="number" value={fix.interest_adj} placeholder="0.00" onChange={(e) => setFix((f) => (f ? { ...f, interest_adj: e.target.value } : f))} className="!h-10" />
+                </div>
               </div>
               {(() => {
-                const pv = lcPartPreview({ ...(lc || {}), charges: n(fix.charges) }, round2(n(fix.amount)), fix.date, fix.maturity, true, fix.interest_pct)
+                const pv = lcPartPreview({ ...(lc || {}), charges: n(fix.charges) }, round2(n(fix.amount)), fix.date, fix.maturity, true, fix.interest_pct, fix.interest_adj)
                 return (
                   <div className="flex flex-wrap items-center gap-3 border-t border-[#E4ECE3] bg-[#FBFCFA] px-4 py-3 text-[12px] font-semibold text-[#33473E]">
                     <span>
@@ -8483,7 +8499,7 @@ function LcInstallmentsDialog({
                 <Plus className="h-4 w-4" /> Pay the supplier the next part
                 <span className="ml-auto rounded-[3px] bg-[#EAF6EC] px-2 py-1 text-[11px] font-bold normal-case tracking-normal text-[#0B6B45]">Part {parts.length + 1}</span>
               </h3>
-              <div className="grid gap-4 p-4 sm:grid-cols-3">
+              <div className="grid gap-4 p-4 sm:grid-cols-3 lg:grid-cols-4">
                 <div className="grid content-start gap-1.5">
                   <span className={lbl}>Paid on *</span>
                   <DatePicker value={next.date} onChange={(v) => setNext((f) => ({ ...f, date: v }))} min={lastPaid || undefined} max={todayISO()} />
@@ -8519,12 +8535,24 @@ function LcInstallmentsDialog({
                   <span className={lbl}>LC charges (₹)</span>
                   <Input type="number" value={next.charges} placeholder="0" onChange={(e) => setNext((f) => ({ ...f, charges: e.target.value }))} className="!h-10" />
                 </div>
-                <div className="grid gap-1.5 sm:col-span-3">
+                <div className="grid content-start gap-1.5">
+                  <span className={cn(lbl, 'flex items-center gap-1')}>
+                    Adj. amount (₹)
+                    <InfoTip text="Where the bank strikes this part's interest on something other than its LC amount, put the difference here — signed, so −2 on 100 charges interest on 98. It moves the interest base only: the LC amount, margin and limit stay." />
+                  </span>
+                  <Input type="number" value={next.interest_adj} placeholder="0.00" onChange={(e) => setNext((f) => ({ ...f, interest_adj: e.target.value }))} className="!h-10" />
+                </div>
+                <div className="grid gap-1.5 sm:col-span-3 lg:col-span-1">
                   <span className={lbl}>Note</span>
                   <Input value={next.note} placeholder="Bank advice no., remarks" onChange={(e) => setNext((f) => ({ ...f, note: e.target.value }))} className="!h-10" />
                 </div>
               </div>
               <div className="flex flex-wrap items-center gap-3 border-t border-[#E4ECE3] bg-[#FBFCFA] px-4 py-3 text-[12px] font-semibold text-[#33473E]">
+                {Math.abs(n(next.interest_adj)) > 0.004 && n(next.amount) > 0 && (
+                  <span className="text-[#8A5300]">
+                    Interest on <b className="tabular-nums">{formatINR(preview.base)}</b>
+                  </span>
+                )}
                 <span>
                   Interest {preview.days}d <b className="tabular-nums">{formatINR(preview.interest)}</b>
                 </span>

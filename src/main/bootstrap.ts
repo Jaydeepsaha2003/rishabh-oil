@@ -1981,7 +1981,8 @@ export async function runStartupTasks(): Promise<void> {
     })
   // Each part's own interest and margin rate. NULL on every part already paid,
   // which reads as the LC's own rate — so no existing part's figures move.
-  for (const col of ['interest_pct REAL', 'margin_pct REAL']) {
+  // interest_adj: the part's own Adj. amount (signed), moving only its interest base. NULL = none.
+  for (const col of ['interest_pct REAL', 'margin_pct REAL', 'interest_adj REAL']) {
     await getClient()
       .execute(`ALTER TABLE lc_parts ADD COLUMN ${col}`)
       .catch((e: unknown) => {
