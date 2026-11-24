@@ -7,6 +7,7 @@ import { useLiveRefresh } from '@/lib/useLiveRefresh'
 import { ExcelButton } from '@/components/ExcelButton'
 import { NUM_MONEY, NUM_QTY } from '@/lib/excel'
 import { TagChip, useTagMap } from '@/components/Tags'
+import { colFilter, useColFilterStore } from '@/lib/colFilters'
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Row = Record<string, any>
@@ -271,14 +272,31 @@ export function TradingPayments({
 
   // Invoices under the deal they belong to, in the order the server sent the
   // deals (newest first) — a trade is read as one round trip, both sides at once.
+  // A FUNNEL ON EVERY COLUMN (filter + sort, Excel style); the groups, totals
+  // row and Excel read what is left.
+  const colF = useColFilterStore()
+  const statusWord = (r: Row): string => (r.overdue ? 'Overdue' : r.status === 'settled' ? 'Settled' : r.status === 'part' ? 'Part paid' : 'Pending')
+  const payCf = colFilter<Row>(colF, 'trading:payments', visible, [
+    { key: 'invoice', get: (r) => String(r.invoice_no || r.ref_key || '') },
+    { key: 'party', get: (r) => String(r.party_name || '') },
+    { key: 'amount', get: (r) => formatINR(n(r.amount)), sort: 'num' },
+    { key: 'via', get: (r) => [...CHANNELS.filter((k) => byChannel(r)[k] > 0.005).map((k) => CH[k].label), ...(n(r.settled_total) > 0.005 ? [] : ['Nothing paid yet'])] },
+    { key: 'settled', get: (r) => formatINR(n(r.settled_total)), sort: 'num' },
+    { key: 'pending', get: (r) => formatINR(n(r.pending)), sort: 'num' },
+    { key: 'pendingMt', get: (r) => (isMt(r) ? formatNum(round3(n(r.pending_qty))) : ''), sort: 'num' },
+    { key: 'status', get: (r) => statusWord(r) },
+    { key: 'due', get: (r) => (r.due_date ? formatDate(r.due_date) : 'No credit term'), sort: 'num' },
+    { key: 'fin', get: (r) => ((r.financed_by ?? []) as Row[]).map((x) => String(x.ref)).concat((r.financed_by ?? []).length ? [] : ['Own funds']) }
+  ])
+  const cfRows = payCf.rows
   const groups = useMemo(() => {
     const m = new Map<number, Row[]>()
-    for (const r of visible) {
+    for (const r of cfRows) {
       const id = n(r.deal_id)
       m.set(id, [...(m.get(id) ?? []), r])
     }
     return Array.from(m.entries())
-  }, [visible])
+  }, [cfRows])
 
   const toggle = (k: string): void =>
     setOpen((s) => {
@@ -463,7 +481,7 @@ export function TradingPayments({
           sheetName="Trading payments"
           title="Purchase & Sales Trading — payments"
           subtitle={range ? `${formatDate(range.from)} to ${formatDate(range.to)}` : undefined}
-          rows={[...visible].sort((a, b) => String(b.deal_date || '').localeCompare(String(a.deal_date || '')) || n(a.deal_id) - n(b.deal_id))}
+          rows={[...cfRows].sort((a, b) => String(b.deal_date || '').localeCompare(String(a.deal_date || '')) || n(a.deal_id) - n(b.deal_id))}
           columns={[
             { header: 'Deal date', key: 'deal_date', width: 12, value: (r) => formatDate(r.deal_date) },
             { header: 'Product', key: 'product_code', width: 16, value: (r) => r.product_code || r.product_name || '' },
@@ -500,18 +518,18 @@ export function TradingPayments({
             <table className="w-full min-w-[1180px] border-collapse text-[13px]">
               <thead>
                 <tr className="bg-[#0B3D2E] text-left text-[12px] font-extrabold uppercase tracking-[.07em] text-[#DCEFE4]">
-                  <th className="h-11 whitespace-nowrap px-3">Invoice</th>
-                  <th className="whitespace-nowrap px-3">Party</th>
-                  <th className="whitespace-nowrap px-3 text-right">Bill amount</th>
-                  <th className="w-[230px] whitespace-nowrap px-3">Paid via</th>
-                  <th className="whitespace-nowrap px-3 text-right">Settled</th>
-                  <th className="whitespace-nowrap bg-[#1A4D2E] px-3 text-right text-[#C7F03F]">Pending</th>
+                  <th className="h-11 whitespace-nowrap px-3">{payCf.head('invoice', 'Invoice', { onDark: true })}</th>
+                  <th className="whitespace-nowrap px-3">{payCf.head('party', 'Party', { onDark: true })}</th>
+                  <th className="whitespace-nowrap px-3 text-right">{payCf.head('amount', 'Bill amount', { onDark: true, align: 'end' })}</th>
+                  <th className="w-[230px] whitespace-nowrap px-3">{payCf.head('via', 'Paid via', { onDark: true })}</th>
+                  <th className="whitespace-nowrap px-3 text-right">{payCf.head('settled', 'Settled', { onDark: true, align: 'end' })}</th>
+                  <th className="whitespace-nowrap bg-[#1A4D2E] px-3 text-right text-[#C7F03F]">{payCf.head('pending', 'Pending', { onDark: true, align: 'end' })}</th>
                   <th className="whitespace-nowrap bg-[#1A4D2E] px-3 text-right text-[#C7F03F]" title="The pending amount in tonnes, at the invoice's own price: qty × pending ÷ bill amount">
-                    Pending (MT)
+                    {payCf.head('pendingMt', 'Pending (MT)', { onDark: true, align: 'end' })}
                   </th>
-                  <th className="whitespace-nowrap px-3">Status</th>
-                  <th className="whitespace-nowrap px-3">Due</th>
-                  <th className="whitespace-nowrap px-3">Financed by</th>
+                  <th className="whitespace-nowrap px-3">{payCf.head('status', 'Status', { onDark: true })}</th>
+                  <th className="whitespace-nowrap px-3">{payCf.head('due', 'Due', { onDark: true })}</th>
+                  <th className="whitespace-nowrap px-3">{payCf.head('fin', 'Financed by', { onDark: true })}</th>
                 </tr>
               </thead>
               <tbody>
