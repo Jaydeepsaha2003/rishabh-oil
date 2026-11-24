@@ -20103,6 +20103,14 @@ async function assertAllowed(channel, args) {
   const user = await currentAccessUser();
   if (!user) return;
   if (user.role === "admin") return;
+  const scopeNow = String(moduleScope(user, "sales") || "");
+  const tdsDesk = scopeNow === "tds" || ["intercompany", "unload"].includes(scopeNow) && !!modulePerm(user, "sales").also_tds;
+  if (tdsDesk && ns === "notes" && op === "create") {
+    const v = args?.values || {};
+    const agst = !!String(v.against_invoice || "").trim() || Array.isArray(v.allocs) && v.allocs.some((x) => String(x?.method) === "agst_ref" && String(x?.ref_name || "").trim());
+    if (String(v.note_type).toLowerCase() === "credit" && String(v.party_type) === "customer" && agst) return;
+  }
+  if (tdsDesk && rule.module === "sales" && ["shortageNotesSet", "shortageNotes", "shortageNoteMap"].includes(op)) return;
   const tdsRide = rule.module === "sales" && ["intercompany", "unload"].includes(String(moduleScope(user, "sales"))) && !!modulePerm(user, "sales").also_tds && op === "tdsPost";
   if (moduleScope(user, rule.module) === "unload" && rule.module === "sales" && !tdsRide) {
     assertScopedSales(op, args);
