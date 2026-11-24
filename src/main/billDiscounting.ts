@@ -4141,10 +4141,14 @@ export async function bdCumulativeInterest(v: { nbfc_id: number; from_date?: str
   if (!n(v.nbfc_id) || !/^\d{4}-\d{2}-\d{2}$/.test(to)) return []
   const capped = to > todayISO() ? todayISO() : to
   const from = /^\d{4}-\d{2}-\d{2}$/.test(String(v.from_date || '')) ? String(v.from_date).slice(0, 10) : '0000-00-00'
-  const bills = (await listBd({ nbfc_id: n(v.nbfc_id) })).filter((b) => String(b.status) !== 'repaid' && !!b.payment_received_date)
+  // Repaid bills too: interest up to the day each was repaid is still owed for
+  // the months it ran (B1 repaid 10-09 still owes August). A repaid bill with
+  // nothing in the period (and nothing paid in it) is left off the list.
+  const bills = (await listBd({ nbfc_id: n(v.nbfc_id) })).filter((b) => !!b.payment_received_date)
   const out: Row[] = []
   for (const b of bills) {
     const w = await bdInterestRange(n(b.id), from, capped)
+    if (String(b.status) === 'repaid' && w.blocked && !/^Already paid/.test(String(w.blocked)) && !(w.short_before || []).length) continue
     out.push({
       bd_id: n(b.id),
       bd_no: b.bd_no,
