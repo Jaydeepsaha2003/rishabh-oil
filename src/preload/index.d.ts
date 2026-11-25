@@ -818,6 +818,8 @@ export interface Api {
     lcCharges: () => Promise<Row>
     outwardFreight: () => Promise<Row>
     fixOutwardFreight: (ids: number[]) => Promise<{ fixed: number; freight: number }>
+    loadedFreight: () => Promise<Row>
+    fixLoadedFreight: (ids: number[]) => Promise<{ fixed: number; cut: number }>
     wrongCompany: () => Promise<Row>
     splitTanker: () => Promise<Row>
     paisa: () => Promise<Row>

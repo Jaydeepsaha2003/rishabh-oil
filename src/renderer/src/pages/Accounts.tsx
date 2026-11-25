@@ -10164,7 +10164,8 @@ Delete ${doc}?`)) return
             </div>
 
             <div className="sc min-h-0 flex-1 overflow-auto">
-              <div style={{ minWidth: 1714 }}>
+              {/* = the GRID columns' minimum widths added up; any less and the rows' colour stops short of the last columns on a narrow screen */}
+              <div style={{ minWidth: 1818 }}>
                 <div
                   className="sticky top-0 z-[2] grid items-center"
                   style={{

@@ -1,3 +1,4 @@
+import { ALLOC } from './tankerAlloc'
 import { getClient } from './db'
 import { withDbTransaction } from './dbTransaction'
 import { ensureVoucherNumbers } from './voucherNumbers'
@@ -1519,4 +1520,94 @@ export async function fixPaisaImbalance(ids: number[]): Promise<{ fixed: number 
     fixed++
   }
   return { fixed }
+}
+
+// ── PURCHASE FREIGHT ON THE LOADED QTY ──────────────────────────────────────
+// Freight is earned on what ARRIVED (orders.ts), but tankers emptied by an
+// older build were charged on the LOADED qty (GT/4378: 38.8 MT × ₹4,200 =
+// ₹1,62,960, not 38.535 × ₹4,200 = ₹1,61,847). Only lines still open — no
+// bill, no note, not waived, not accrued — so no voucher depends on them.
+type LoadedFreightFinding = {
+  line_id: number
+  tanker_id: number
+  company_id: number
+  invoice_no: string
+  tanker_no: string
+  transporter: string
+  loaded: number
+  received: number
+  rate: number
+  amount: number
+  new_amount: number
+}
+async function scanLoadedFreight(): Promise<LoadedFreightFinding[]> {
+  const r = await getClient().execute(`
+    SELECT l.id AS line_id, l.amount, o.company_id, o.invoice_no, t.name AS transporter,
+           pt.id AS tanker_id, pt.tanker_no, pt.loaded_qty, pt.received_qty, pt.transport_rate_per_ton AS rate
+      FROM transporter_ledger l
+      JOIN orders o ON o.id = l.order_id
+      LEFT JOIN transporters t ON t.id = l.transporter_id
+      JOIN purchase_tankers pt ON pt.status = 'empty'
+       AND UPPER(REPLACE(pt.tanker_no, ' ', '')) = UPPER(REPLACE(TRIM(SUBSTR(l.note, 8, INSTR(l.note, ':') - 8)), ' ', ''))
+       AND (pt.order_id = o.id OR pt.id IN (SELECT a.tanker_id FROM ${ALLOC} a WHERE a.order_id = o.id))
+     WHERE l.entry_type = 'freight' AND l.note LIKE 'Tanker %:%'
+       AND l.bill_id IS NULL AND l.note_id IS NULL AND l.waived_at IS NULL AND COALESCE(l.accrued, 0) = 0
+       AND pt.transport_rate_per_ton > 0 AND pt.loaded_qty > pt.received_qty + 0.0005
+       AND ABS(pt.transport_amount - pt.loaded_qty * pt.transport_rate_per_ton) < 1
+     ORDER BY o.company_id, l.id`)
+  return r.rows.map((x) => {
+    const loaded = Number(x.loaded_qty)
+    const received = Number(x.received_qty)
+    const rate = Number(x.rate)
+    const amount = Number(x.amount)
+    return {
+      line_id: Number(x.line_id),
+      tanker_id: Number(x.tanker_id),
+      company_id: Number(x.company_id),
+      invoice_no: String(x.invoice_no || ''),
+      tanker_no: String(x.tanker_no || ''),
+      transporter: String(x.transporter || ''),
+      loaded,
+      received,
+      rate,
+      amount,
+      // Only the loaded-vs-received part comes off; a shortage netted into an
+      // old "freight less shortage" line stays netted.
+      new_amount: Math.round((amount - (loaded - received) * rate) * 100) / 100
+    }
+  })
+}
+
+/** Open purchase freight lines charged on the loaded qty — read only. */
+export async function previewLoadedFreight(): Promise<{ findings: LoadedFreightFinding[]; cut: number }> {
+  const findings = await scanLoadedFreight()
+  return { findings, cut: Math.round(findings.reduce((s, f) => s + f.amount - f.new_amount, 0) * 100) / 100 }
+}
+
+/** Re-work the listed lines on the received qty. Refuses anything a fresh scan no longer offers. */
+export async function fixLoadedFreight(lineIds: number[]): Promise<{ fixed: number; cut: number }> {
+  const wanted = new Set((lineIds || []).map(Number).filter(Boolean))
+  if (!wanted.size) throw new Error('Pick the freight lines to fix')
+  return withDbTransaction(async () => {
+    const c = getClient()
+    await ensureLog()
+    const allowed = new Map((await scanLoadedFreight()).map((f) => [f.line_id, f]))
+    const stale = [...wanted].filter((id) => !allowed.has(id))
+    if (stale.length) throw new Error(`${stale.length} line${stale.length === 1 ? ' has' : 's have'} changed since the list was shown — check again`)
+    let cut = 0
+    for (const id of wanted) {
+      const f = allowed.get(id) as LoadedFreightFinding
+      await c.execute({
+        sql: 'INSERT OR IGNORE INTO accounting_repair_log(repair_key, entry_id, before_json) VALUES (?, ?, ?)',
+        args: [`freight-received-v1:${id}`, id, JSON.stringify(f)]
+      })
+      await c.execute({ sql: 'UPDATE transporter_ledger SET amount = ? WHERE id = ?', args: [f.new_amount, id] })
+      await c.execute({
+        sql: 'UPDATE purchase_tankers SET transport_amount = ? WHERE id = ?',
+        args: [Math.round(f.received * f.rate * 100) / 100, f.tanker_id]
+      })
+      cut += f.amount - f.new_amount
+    }
+    return { fixed: wanted.size, cut: Math.round(cut * 100) / 100 }
+  })
 }

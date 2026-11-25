@@ -91,6 +91,8 @@ import {
   repairDuplicateInvoicePostings,
   previewOutwardFreight,
   fixOutwardFreight,
+  previewLoadedFreight,
+  fixLoadedFreight,
   previewSharedLedgers,
   fixSharedLedgers
 } from './accountingRepairs'
@@ -2132,6 +2134,15 @@ export function registerIpc(): void {
   handle('repairs:outwardFreightFix', async (_e, a: { ids: number[] }) => {
     await assertAdmin('Taking delivery freight off sale vouchers')
     return fixOutwardFreight(a?.ids || [])
+  })
+  // Purchase freight lines still charged on the loaded qty.
+  handle('repairs:loadedFreight:list', async () => {
+    await assertAdmin('The accounting checks')
+    return previewLoadedFreight()
+  })
+  handle('repairs:loadedFreightFix', async (_e, a: { ids: number[] }) => {
+    await assertAdmin('Re-working purchase freight on the received qty')
+    return fixLoadedFreight(a?.ids || [])
   })
   // Purchase / sale vouchers filed in the other company's books.
   handle('repairs:wrongCompany:list', async () => {

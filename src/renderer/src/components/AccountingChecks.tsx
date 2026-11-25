@@ -89,6 +89,9 @@ export function AccountingChecks(): React.JSX.Element {
   // Sale vouchers still carrying their delivery freight.
   const [outFreight, setOutFreight] = useState<Row | null>(null)
   const [fixingFreight, setFixingFreight] = useState(false)
+  // Purchase freight lines still charged on the loaded qty.
+  const [loadedFr, setLoadedFr] = useState<Row | null>(null)
+  const [fixingLoaded, setFixingLoaded] = useState(false)
   const [shared, setShared] = useState<Row | null>(null)
   const [splitting, setSplitting] = useState(false)
   // Purchase / sale vouchers filed in the other company's books.
@@ -160,6 +163,7 @@ export function AccountingChecks(): React.JSX.Element {
       setSaleTds(st)
       setLcCharges(await window.api.repairs.lcCharges().catch(() => null))
       setOutFreight(await window.api.repairs.outwardFreight().catch(() => null))
+      setLoadedFr(await window.api.repairs.loadedFreight().catch(() => null))
       setShared(await window.api.repairs.sharedLedgers().catch(() => null))
       setWrongCo(await window.api.repairs.wrongCompany().catch(() => null))
       const sh = await window.api.repairs.shadowedRedirects().catch(() => null)
@@ -342,6 +346,27 @@ export function AccountingChecks(): React.JSX.Element {
       toast.error((e as Error).message)
     } finally {
       setFixingFreight(false)
+    }
+  }
+
+  const lfFindings: Row[] = useMemo(() => (loadedFr?.findings as Row[]) || [], [loadedFr])
+  async function fixLoaded(): Promise<void> {
+    const ids = lfFindings.map((x) => Number(x.line_id))
+    if (!ids.length) return
+    const ok = window.confirm(
+      `Re-work ${ids.length} tanker freight line${ids.length === 1 ? '' : 's'} on the received qty (${formatINR(Number(loadedFr?.cut || 0))} less freight)?\n\n` +
+        'Only lines not yet on a transporter bill are touched, so no voucher changes. Each line is logged first. Take a database snapshot if you want a copy you can restore.'
+    )
+    if (!ok) return
+    setFixingLoaded(true)
+    try {
+      const r = await window.api.repairs.fixLoadedFreight(ids)
+      toast.success(`${r.fixed} freight line${r.fixed === 1 ? '' : 's'} now on the received qty — ${formatINR(r.cut)} less freight`)
+      await load()
+    } catch (e) {
+      toast.error((e as Error).message)
+    } finally {
+      setFixingLoaded(false)
     }
   }
 
@@ -1036,6 +1061,55 @@ export function AccountingChecks(): React.JSX.Element {
           <Button className="ml-auto gap-1.5" disabled={!frFixable.length || fixingFreight} onClick={() => void fixFreight()}>
             {fixingFreight && <Loader2 className="h-4 w-4 animate-spin" />}
             Take freight off {frFixable.length} sale voucher{frFixable.length === 1 ? '' : 's'}
+          </Button>
+        </div>
+      </Section>
+
+      <Section
+        title="Tanker freight charged on the loaded qty"
+        count={lfFindings.length}
+        tone={lfFindings.length ? 'warn' : 'ok'}
+        note={
+          lfFindings.length
+            ? 'Freight is earned on the qty received, but these tankers were emptied by an older version that charged it on the qty loaded. None is on a transporter bill yet. The fix re-works each on the received qty (received × rate) — any shortage stays as it is.'
+            : 'Every open tanker freight line is on the received qty.'
+        }
+      >
+        <table className="w-full border-collapse">
+          <thead className="bg-muted/40">
+            <tr>
+              <th className={th}>Invoice</th>
+              <th className={th}>Tanker</th>
+              <th className={th}>Transporter</th>
+              <th className={cn(th, 'text-right')}>Loaded</th>
+              <th className={cn(th, 'text-right')}>Received</th>
+              <th className={cn(th, 'text-right')}>Rate</th>
+              <th className={cn(th, 'text-right')}>Freight now</th>
+              <th className={cn(th, 'text-right')}>On received</th>
+            </tr>
+          </thead>
+          <tbody>
+            {lfFindings.map((x) => (
+              <tr key={String(x.line_id)} className="border-t">
+                <td className={cn(td, 'font-semibold')}>{x.invoice_no}</td>
+                <td className={td}>{x.tanker_no}</td>
+                <td className={td}>{x.transporter}</td>
+                <td className={cn(td, 'text-right tabular-nums')}>{Number(x.loaded).toFixed(3)}</td>
+                <td className={cn(td, 'text-right tabular-nums')}>{Number(x.received).toFixed(3)}</td>
+                <td className={cn(td, 'text-right tabular-nums')}>{formatINR(x.rate)}</td>
+                <td className={cn(td, 'text-right tabular-nums')}>{formatINR(x.amount)}</td>
+                <td className={cn(td, 'text-right tabular-nums font-semibold')}>{formatINR(x.new_amount)}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+        <div className="flex flex-wrap items-center gap-3 border-t bg-muted/30 px-4 py-3">
+          <span className="text-[12.5px] text-muted-foreground">
+            {lfFindings.length} line{lfFindings.length === 1 ? '' : 's'} · {formatINR(Number(loadedFr?.cut || 0))} less freight
+          </span>
+          <Button className="ml-auto gap-1.5" disabled={!lfFindings.length || fixingLoaded} onClick={() => void fixLoaded()}>
+            {fixingLoaded && <Loader2 className="h-4 w-4 animate-spin" />}
+            Re-work {lfFindings.length} on received qty
           </Button>
         </div>
       </Section>
