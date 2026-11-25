@@ -1090,8 +1090,17 @@ export async function listPendingRefs(
       // invoice booked against a customer record with that text blank or
       // spelled differently invisible here — whole customers offered no
       // invoices at all to a credit note.
+      // THE BILL IS WHAT ITS VOUCHER DEBITED TO THIS LEDGER. A FOR sale whose
+      // freight goes to Freight Outward debits the customer the invoice LESS the
+      // freight (CITY VANASPATI: KRFL/396 ₹7,14,001 invoiced, ₹7,08,901 debited);
+      // taking the sale's own total left ₹5,100 "pending" on every such bill and
+      // the same again as a false On Account. The sale's total stands in only
+      // where its voucher did not post to this ledger.
       sql: `SELECT COALESCE(s.invoice_group, s.invoice_no) AS grp, MIN(s.invoice_no) AS ref, MIN(s.sale_date) AS bill_date,
-                   SUM(s.amount + s.gst_amount + s.round_off) AS amount,
+                   COALESCE(${accountId ? `(SELECT NULLIF(ROUND(SUM(jl.dr) - SUM(jl.cr), 2), 0) FROM journal_entries je JOIN journal_lines jl ON jl.entry_id = je.id
+                              WHERE jl.account_id = ${accountId} AND je.sale_id IN (SELECT s2.id FROM sales s2
+                                    WHERE s2.company_id = s.company_id AND COALESCE(s2.invoice_group, s2.invoice_no) = COALESCE(s.invoice_group, s.invoice_no)))` : 'NULL'},
+                            SUM(s.amount + s.gst_amount + s.round_off)) AS amount,
                    MIN((SELECT MIN(je.id) FROM journal_entries je WHERE je.sale_id = s.id)) AS origin_id
             FROM sales s
             LEFT JOIN customers cu ON cu.id = s.customer_id
