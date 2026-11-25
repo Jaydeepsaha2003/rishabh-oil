@@ -2200,6 +2200,19 @@ export async function bdInterestSchedule(bdId: number): Promise<Row[]> {
     }
   }
   marks.push(to)
+  // REPAID BEFORE MATURITY: interest stops the day the bill was cleared, so the
+  // schedule ends there — no rest past it (a ₹0 "Due" December on B4, cleared
+  // 23-11), and the rest it falls in runs to that day.
+  if (String(bd.status || '') === 'repaid') {
+    const lastRepay = String(
+      (await getClient().execute({ sql: 'SELECT MAX(repay_date) AS d FROM bd_repayments WHERE bd_id = ?', args: [n(bdId)] })).rows[0]?.d || bd.repaid_date || ''
+    ).slice(0, 10)
+    if (lastRepay && lastRepay < to && lastRepay >= from) {
+      const kept = marks.filter((m) => m < lastRepay)
+      marks.length = 0
+      marks.push(...kept, lastRepay)
+    }
+  }
 
   const daysYear = n(bd.days_year) || 360
   const rate = n(bd.interest_pct)
@@ -2212,6 +2225,20 @@ export async function bdInterestSchedule(bdId: number): Promise<Row[]> {
   // funded in legs keeps the flat schedule — its principal grows, not shrinks.
   const steps = n(bd.first_receipt_part) > 0.005 ? [] : (await principalRepaidByDate(bdId)).filter((x) => x.date < to)
   const reducing = steps.length > 0
+  // EVERY STRETCH PAID — interest payments AND interest paid with a repayment
+  // (bdPaidStretches) — matched to a rest by the days it covers, not only by
+  // ending on the rest's last day: PAY/1603 ran to 24-11 and left November
+  // reading "Due"; the ₹15,284 paid with B4's repayment was not linked at all.
+  const stretches = await bdPaidStretches(n(bdId), bd)
+  // Interest paid with a repayment on days ALREADY paid — counted twice.
+  const repInt = toPlain(
+    await getClient().execute({
+      sql: 'SELECT id, repay_date, interest, tds_amount FROM bd_repayments WHERE bd_id = ? AND COALESCE(interest, 0) > 0.004',
+      args: [n(bdId)]
+    })
+  )
+  const extra = repInt.filter((r) => !stretches.some((s) => s.via_repayment && String(s.to_date) === String(r.repay_date).slice(0, 10)))
+  const lastMark = marks[marks.length - 1]
   const out: Row[] = []
   let start = from
   let charged = 0
@@ -2235,11 +2262,21 @@ export async function bdInterestSchedule(bdId: number): Promise<Row[]> {
     const tds = round2((gross * n(bd.tds_pct)) / 100)
     // A payment already made is matched to its slice by the day it covers to,
     // so a schedule regenerated after an edit still knows what has been paid.
-    const done = paid.find((p) => String(p.to_date).slice(0, 10) === end)
-    // A rest paid short and topped up later carries two payments: both count.
-    const onRest = paid.filter((p) => String(p.to_date).slice(0, 10) === end)
-    const paidGross = round2(onRest.reduce((t, p) => t + n(p.gross), 0))
-    const paidNet = round2(onRest.reduce((t, p) => t + n(p.net), 0))
+    // Every paid stretch ending inside this rest counts towards it; the rest is
+    // paid once the stretches reach its last day.
+    const lo = i === 0 ? '0000-00-00' : start
+    // The last rest also takes a stretch paid past it (B4 cleared 23-11, paid to 24-11).
+    const hi = end === lastMark ? '9999-12-31' : end
+    const onRest = stretches.filter((p) => String(p.to_date).slice(0, 10) > lo && String(p.to_date).slice(0, 10) <= hi)
+    const reach = onRest.reduce((m, p) => (String(p.to_date).slice(0, 10) > m ? String(p.to_date).slice(0, 10) : m), '')
+    const fully = !!reach && (reach >= end || stretches.some((p) => String(p.to_date).slice(0, 10) >= end && String(p.from_date).slice(0, 10) <= end))
+    const lead = onRest.find((p) => String(p.to_date).slice(0, 10) === reach) || onRest[onRest.length - 1]
+    const done = fully ? (paid.find((p) => String(p.to_date).slice(0, 10) === reach) as Row | undefined) || ({ ...lead, id: -1, journal_entry_id: 1 } as Row) : undefined
+    // Paid twice: a repayment's interest on days this rest's payments already cover.
+    const twice = extra.filter((r) => String(r.repay_date).slice(0, 10) > lo && String(r.repay_date).slice(0, 10) <= (end === lastMark ? '9999-12-31' : end))
+    const twiceGross = round2(twice.reduce((t, r) => t + n(r.interest) + n(r.tds_amount), 0))
+    const paidGross = round2(onRest.reduce((t, p) => t + n(p.gross), 0) + twiceGross)
+    const paidNet = round2(onRest.reduce((t, p) => t + n(p.net), 0) + twice.reduce((t, r) => t + n(r.interest), 0))
     out.push({
       seq: i + 1,
       // THE DAY AFTER THE LAST ONE ENDED, which is what the payment screen
@@ -2259,6 +2296,10 @@ export async function bdInterestSchedule(bdId: number): Promise<Row[]> {
       paid_date: done ? String(done.paid_date).slice(0, 10) : null,
       paid_gross: paidGross,
       paid_net: paidNet,
+      // Interest also paid with a repayment on days already paid — shown so it is checked.
+      paid_twice: twiceGross > 0.004 ? { gross: twiceGross, dates: twice.map((r) => String(r.repay_date).slice(0, 10)) } : null,
+      // The paid stretches that make up this rest — payments and repayments.
+      paid_by: onRest.map((p) => ({ from: String(p.from_date).slice(0, 10), to: String(p.to_date).slice(0, 10), gross: n(p.gross), with_repayment: !!p.via_repayment })),
       // Whether a payment recorded against this slice actually reached the
       // ledger. A slice can be serviced without being posted, when the desk
       // chose to record it and post later — see payBdInterest's `post` flag.

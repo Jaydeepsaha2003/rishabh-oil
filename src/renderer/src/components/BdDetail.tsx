@@ -699,6 +699,15 @@ function ServicedRow({ x }: { x: Row }): React.JSX.Element {
           {x.mode === 'with_repayment' && x.paid_id && (
             <span className="doc-ref block whitespace-nowrap text-[10.5px] font-semibold text-[#0B6B45]">paid {formatINR(n(x.paid_gross))}</span>
           )}
+          {/* Paid twice: a repayment's interest on days already paid. */}
+          {!!x.paid_twice && (
+            <span
+              className="doc-ref block whitespace-nowrap text-[10.5px] font-extrabold text-[#B3261E]"
+              title={`Interest of ${formatINR(n(x.paid_twice.gross))} was also paid with the repayment on ${((x.paid_twice.dates as string[]) || []).map((d) => formatDate(d)).join(', ')} — on days already paid. Check the NBFC's statement: remove one, or claim it back.`}
+            >
+              paid twice +{formatINR(n(x.paid_twice.gross))}
+            </span>
+          )}
           {/* Paid short: what is still to pay on this rest. */}
           {x.mode !== 'with_repayment' && x.paid_id && n(x.gross) - n(x.paid_gross) > 1 && (
             <span className="doc-ref block whitespace-nowrap text-[10.5px] font-bold text-[#B3261E]" title={`Paid ${formatINR(n(x.paid_gross))} of ${formatINR(n(x.gross))}`}>
