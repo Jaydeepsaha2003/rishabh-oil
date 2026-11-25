@@ -49,7 +49,7 @@ import { DatePicker } from '@/components/ui/date-picker'
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Switch } from '@/components/ui/switch'
-import { HelpTip, InfoTip } from '@/components/ui/tooltip'
+import { HelpTip, InfoTip, Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { EntityManager, type ColumnDef, type FieldDef } from '@/components/EntityManager'
 import { RowActions } from '@/components/ui/row-actions'
@@ -327,10 +327,52 @@ function InterestStatusChip({ r, repaid }: { r: Row; repaid: boolean }): React.J
         : st.label === 'Unpaid'
           ? 'border-[#F0C9C4] bg-[#FDECEA] text-[#B3261E]'
           : 'border-[#DCE7DB] bg-[#F1F5EF] text-[#5A6B62]'
+  // THE DETAIL ON HOVER: what the interest is, what is paid, when, from where, what is left.
+  const mode = String(r.interest_mode || '') || (r.interest_upfront ? 'upfront' : 'discounted')
+  const lines: [string, string, string?][] = []
+  if (mode === 'serviced') {
+    const p = servicedPaid(r)
+    lines.push(['Interest paid (gross)', formatINR(p.gross)])
+    lines.push(['TDS on it', formatINR(p.tds)])
+    lines.push(['Net to the NBFC', formatINR(round2(p.gross - p.tds)), 'b'])
+    if (n(r.rep_interest_net) > 0.004) lines.push(['… with repayments', formatINR(round2(n(r.rep_interest_net) + n(r.rep_interest_tds)))])
+    if (n(r.interest_paid_total) > 0.004) lines.push(['… as interest payments', formatINR(n(r.interest_paid_total))])
+    lines.push(['Paid up to', r.interest_paid_to ? formatDate(String(r.interest_paid_to).slice(0, 10)) : '—'])
+    lines.push([repaid ? 'Owed up to (repaid on)' : 'Running — accrues daily', repaid ? formatDate(String(r.last_repay_date || r.maturity_date || '').slice(0, 10)) : '', st.label === 'Paid' ? undefined : 'w'])
+  } else {
+    const gross = n(r.interestAmount)
+    const tds = n(r.tdsAmount)
+    lines.push(['Interest (gross)', formatINR(gross)])
+    lines.push(['TDS', formatINR(tds)])
+    lines.push(['Net', formatINR(round2(gross - tds)), 'b'])
+    if (mode === 'discounted') lines.push(['How', 'kept by the NBFC at funding'])
+    else if (st.label === 'Paid') {
+      if (r.upfront_interest_paid_date) lines.push(['Paid on', formatDate(String(r.upfront_interest_paid_date).slice(0, 10))])
+      if (r.upfront_interest_account) lines.push(['From', String(r.upfront_interest_account)])
+    } else lines.push(['Still to record', formatINR(round2(gross - tds)), 'w'])
+  }
   return (
-    <span title={st.title} className={cn('mt-0.5 inline-flex rounded-[3px] border px-1.5 text-[9.5px] font-extrabold uppercase leading-[16px] tracking-[.06em]', tone)}>
-      {st.label}
-    </span>
+    <Tooltip delayDuration={80}>
+      <TooltipTrigger asChild>
+        <span className={cn('mt-0.5 inline-flex cursor-help rounded-[3px] border px-1.5 text-[9.5px] font-extrabold uppercase leading-[16px] tracking-[.06em]', tone)}>
+          {st.label}
+        </span>
+      </TooltipTrigger>
+      <TooltipContent side="left" className="w-[280px] max-w-none !rounded-[8px] !bg-[#0B3D2E] !px-3.5 !py-3 shadow-xl">
+        <div className="mb-1.5 text-[10px] font-extrabold uppercase tracking-[.12em] text-[#C7F03F]">
+          {String(r.bd_no || 'Bill')} · interest {st.label.toLowerCase()}
+        </div>
+        <div className="space-y-0.5">
+          {lines.map(([k, v, t]) => (
+            <div key={k} className="flex items-baseline justify-between gap-3 text-[11.5px]">
+              <span className="text-white/70">{k}</span>
+              <span className={cn('text-right tabular-nums', t === 'b' ? 'font-extrabold text-white' : t === 'w' ? 'font-extrabold text-[#FFB4AB]' : 'font-semibold text-white')}>{v}</span>
+            </div>
+          ))}
+        </div>
+        <div className="mt-2 border-t border-white/15 pt-1.5 text-[10.5px] font-semibold text-white/70">{st.title}</div>
+      </TooltipContent>
+    </Tooltip>
   )
 }
 
