@@ -2630,6 +2630,15 @@ export function Accounts({
   // The same in a ledger: Select, tick its vouchers, Delete selected.
   const [lgPicking, setLgPicking] = useState(false)
   const [lgPicked, setLgPicked] = useState<Set<number>>(new Set())
+  // CHECK MODE — tick rows off while going through the ledger with someone;
+  // only colour, never saved, gone on Stop. Keyed by the row (one ledger line).
+  const [lgChecking, setLgChecking] = useState(false)
+  const [lgChecked, setLgChecked] = useState<Set<number>>(new Set())
+  // Another ledger: the ticks were for this one, so they go.
+  useEffect(() => {
+    setLgChecking(false)
+    setLgChecked(new Set())
+  }, [ledgerId])
   const [dbSum, setDbSum] = useState<{ top: number; left: number; width: number; maxH: number } | null>(null)
   const dbVisRef = useRef<Row[]>([])
   const dbScrollRef = useRef<HTMLDivElement>(null)
@@ -18480,6 +18489,9 @@ Delete ${doc}?`)) return
     const lgPickedRows = lgPicking ? vRows.filter((r) => !r.provisional && lgPicked.has(Number(r.entry_id ?? r.id))) : []
     const lgPickDr = lgPickedRows.reduce((t, r) => t + (Number(r.dr) || 0), 0)
     const lgPickCr = lgPickedRows.reduce((t, r) => t + (Number(r.cr) || 0), 0)
+    const lgCheckedRows = lgChecking ? vRows.filter((r) => lgChecked.has(Number(r.id))) : []
+    const lgChkDr = lgCheckedRows.reduce((t, r) => t + (Number(r.dr) || 0), 0)
+    const lgChkCr = lgCheckedRows.reduce((t, r) => t + (Number(r.cr) || 0), 0)
     const vouchersView = (
       <div style={{ minWidth: lgReco ? 1170 : 1020 }}>
         {/* FROZEN while the rows scroll: the Reco strip, the select bar and the column heads. */}
@@ -18562,16 +18574,72 @@ Delete ${doc}?`)) return
                 Done
               </button>
             </>
+          ) : lgChecking ? (
+            // CHECK MODE BAR — what has been ticked off so far.
+            <>
+              <span className="flex items-center gap-1.5" style={{ fontSize: 12, fontWeight: 800, color: '#0B6B45' }}>
+                <Check className="h-4 w-4" /> Checking — {lgChecked.size} of {vRows.length} ticked
+              </span>
+              {lgCheckedRows.length > 0 && (
+                <span className="flex items-center gap-2 rounded-[5px] px-2 py-[3px]" style={{ background: '#fff', border: '1px solid #BFE3CB' }}>
+                  <span style={{ fontSize: 11, fontWeight: 700, color: '#5A6B62' }}>
+                    Dr <b style={figS(12, A.dr)}>{formatINR(lgChkDr)}</b>
+                  </span>
+                  <span style={{ fontSize: 11, fontWeight: 700, color: '#5A6B62' }}>
+                    Cr <b style={figS(12, A.cr)}>{formatINR(lgChkCr)}</b>
+                  </span>
+                  <span style={{ fontSize: 11, fontWeight: 700, color: '#5A6B62' }}>
+                    Net <b style={figS(12, balFg(lgChkDr - lgChkCr))}>{bal(lgChkDr - lgChkCr)}</b>
+                  </span>
+                </span>
+              )}
+              <span style={{ fontSize: 11, fontWeight: 600, color: '#5A6B62' }}>Click a row to tick or untick it · nothing is saved</span>
+              <span className="flex-1" />
+              <button
+                type="button"
+                onClick={() => setLgChecked(new Set())}
+                disabled={!lgChecked.size}
+                className="h-[28px] rounded-[5px] border px-2.5 text-[11.5px] font-bold disabled:opacity-50"
+                style={{ borderColor: '#BFE3CB', background: '#fff', color: '#33473E' }}
+              >
+                Clear ticks
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setLgChecking(false)
+                  setLgChecked(new Set())
+                }}
+                className="h-[28px] rounded-[5px] px-3 text-[11.5px] font-extrabold"
+                style={{ background: '#0B3D2E', color: '#C7F03F' }}
+              >
+                Stop checking
+              </button>
+            </>
           ) : (
-            <button
-              type="button"
-              onClick={() => setLgPicking(true)}
-              title="Tick several of this ledger's vouchers and delete them in one go"
-              className="flex h-[28px] items-center gap-1.5 rounded-[5px] border px-2.5 text-[11.5px] font-bold"
-              style={{ borderColor: '#D6E2D6', background: '#fff', color: '#33473E' }}
-            >
-              <CheckCheck className="h-3.5 w-3.5" /> Select
-            </button>
+            <>
+              <button
+                type="button"
+                onClick={() => setLgPicking(true)}
+                title="Tick several of this ledger's vouchers and delete them in one go"
+                className="flex h-[28px] items-center gap-1.5 rounded-[5px] border px-2.5 text-[11.5px] font-bold"
+                style={{ borderColor: '#D6E2D6', background: '#fff', color: '#33473E' }}
+              >
+                <CheckCheck className="h-3.5 w-3.5" /> Select
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setLgChecked(new Set())
+                  setLgChecking(true)
+                }}
+                title="Go through the ledger and tick rows off as you check them with someone — colour only, nothing is saved, cleared on Stop"
+                className="flex h-[28px] items-center gap-1.5 rounded-[5px] border px-2.5 text-[11.5px] font-bold"
+                style={{ borderColor: '#BFE3CB', background: '#F4FBF6', color: '#0B6B45' }}
+              >
+                <Check className="h-3.5 w-3.5" /> Check off
+              </button>
+            </>
           )}
         </div>
         {/* The highlighted row, as Tally draws it: a lit bar down its edge. */}
@@ -18635,6 +18703,15 @@ Delete ${doc}?`)) return
                 data-lgrow={String(r.id)}
                 data-lghi={hi ? '1' : undefined}
                 onClick={() => {
+                  if (lgChecking) {
+                    setLgChecked((p) => {
+                      const x = new Set(p)
+                      if (x.has(Number(r.id))) x.delete(Number(r.id))
+                      else x.add(Number(r.id))
+                      return x
+                    })
+                    return
+                  }
                   if (lgPicking && !r.provisional) {
                     setLgPicked((p) => {
                       const x = new Set(p)
@@ -18662,12 +18739,20 @@ Delete ${doc}?`)) return
                   minHeight: 46,
                   borderBottom: '1px solid #EFF3EE',
                   // The highlighted row, as Tally draws it: a lit bar down its edge.
-                  background: lgPicking && lgPicked.has(eid) ? '#FDECEA' : open ? '#F3FBE2' : r.provisional ? '#FFF8EC' : lgDup && dupTint.has(Number(r.id)) ? dupTint.get(Number(r.id))!.bg : stripe(i),
-                  boxShadow: lgDup && dupTint.has(Number(r.id)) ? `inset 4px 0 0 ${dupTint.get(Number(r.id))!.edge}` : undefined,
+                  background: lgChecking && lgChecked.has(Number(r.id)) ? '#D9F2E1' : lgPicking && lgPicked.has(eid) ? '#FDECEA' : open ? '#F3FBE2' : r.provisional ? '#FFF8EC' : lgDup && dupTint.has(Number(r.id)) ? dupTint.get(Number(r.id))!.bg : stripe(i),
+                  boxShadow: lgChecking && lgChecked.has(Number(r.id)) ? 'inset 4px 0 0 #12855A' : lgDup && dupTint.has(Number(r.id)) ? `inset 4px 0 0 ${dupTint.get(Number(r.id))!.edge}` : undefined,
                   fontStyle: r.provisional ? 'italic' : undefined
                 }}
               >
                 <span className="flex items-center gap-1.5" style={{ padding: '0 8px 0 8px', ...figS(11.5, '#33473E', 600) }}>
+                  {lgChecking && (
+                    <span
+                      className="flex h-4 w-4 flex-none items-center justify-center rounded-[3px] border"
+                      style={lgChecked.has(Number(r.id)) ? { background: '#12855A', borderColor: '#12855A', color: '#fff' } : { borderColor: '#9FC2AC', background: '#fff' }}
+                    >
+                      {lgChecked.has(Number(r.id)) && <Check className="h-3 w-3" />}
+                    </span>
+                  )}
                   {lgPicking && !r.provisional && (
                     <input
                       type="checkbox"
