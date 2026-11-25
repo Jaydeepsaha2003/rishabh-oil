@@ -2453,12 +2453,23 @@ function firstUnpaid(paid: Row[], start: string): { from: string; next: string |
  * interest) — paid whatever comes before it. Refused where any of its days is
  * already paid; says when days before it are still unpaid.
  */
-export async function bdInterestRange(bdId: number, fromIn: string, toIn: string): Promise<Row> {
+// The last day interest may be worked to: today — or, asked for, the end of
+// this month (Pay cumulative interest → Till month end).
+function interestCap(monthEnd?: boolean): string {
+  const t = todayISO()
+  if (!monthEnd) return t
+  const d = new Date(`${t.slice(0, 7)}-01T00:00:00Z`)
+  d.setUTCMonth(d.getUTCMonth() + 1)
+  d.setUTCDate(0)
+  return d.toISOString().slice(0, 10)
+}
+
+export async function bdInterestRange(bdId: number, fromIn: string, toIn: string, tillMonthEnd = false): Promise<Row> {
   const bd = await loadBd(bdId)
   const calc = bdCalc(bd)
   const received = String(bd.payment_received_date || '').slice(0, 10)
   const mode = String(bd.interest_mode || '') || (bd.interest_upfront ? 'upfront' : 'discounted')
-  const today = todayISO()
+  const today = interestCap(tillMonthEnd)
   const to = (String(toIn).slice(0, 10) > today ? today : String(toIn).slice(0, 10))
   const paid = await bdPaidStretches(n(bdId), bd)
   const daysYear = n(bd.days_year) || 360
@@ -4190,10 +4201,11 @@ export async function deleteLastBdReceiptPart(bdId: number): Promise<{ part_no: 
 // — and every bill gets its own interest-payment row pointing at it, so each
 // bill reads as serviced to that date and the voucher reads back to all of them.
 // ---------------------------------------------------------------------------
-export async function bdCumulativeInterest(v: { nbfc_id: number; from_date?: string; to_date: string }): Promise<Row[]> {
+export async function bdCumulativeInterest(v: { nbfc_id: number; from_date?: string; to_date: string; till_month_end?: boolean }): Promise<Row[]> {
   const to = String(v.to_date || '').slice(0, 10)
   if (!n(v.nbfc_id) || !/^\d{4}-\d{2}-\d{2}$/.test(to)) return []
-  const capped = to > todayISO() ? todayISO() : to
+  const cap = interestCap(!!v.till_month_end)
+  const capped = to > cap ? cap : to
   const from = /^\d{4}-\d{2}-\d{2}$/.test(String(v.from_date || '')) ? String(v.from_date).slice(0, 10) : '0000-00-00'
   // Repaid bills too: interest up to the day each was repaid is still owed for
   // the months it ran (B1 repaid 10-09 still owes August). A repaid bill with
@@ -4201,7 +4213,7 @@ export async function bdCumulativeInterest(v: { nbfc_id: number; from_date?: str
   const bills = (await listBd({ nbfc_id: n(v.nbfc_id) })).filter((b) => !!b.payment_received_date)
   const out: Row[] = []
   for (const b of bills) {
-    const w = await bdInterestRange(n(b.id), from, capped)
+    const w = await bdInterestRange(n(b.id), from, capped, !!v.till_month_end)
     if (String(b.status) === 'repaid' && w.blocked && !/^Already paid/.test(String(w.blocked)) && !(w.short_before || []).length) continue
     out.push({
       bd_id: n(b.id),
@@ -4319,11 +4331,13 @@ export async function payBdCumulativeInterest(v: {
   // Booked through the NBFC in two vouchers: a JOURNAL (Dr interest / Cr NBFC,
   // Cr TDS) and a PAYMENT (Dr NBFC / Cr bank). Off = the one payment voucher.
   via_nbfc?: boolean
+  // Paid up to the end of this month, ahead of today (the NBFC's month-end debit).
+  till_month_end?: boolean
 }): Promise<{ entry_id: number; bills: number; gross: number; tds: number; net: number }> {
   return withDbTransaction(async () => {
     const to = String(v.to_date || '').slice(0, 10)
     if (!/^\d{4}-\d{2}-\d{2}$/.test(to)) throw new Error('Pick the date the interest is paid up to')
-    if (to > todayISO()) throw new Error('Interest cannot be paid for days that have not happened yet')
+    if (to > interestCap(!!v.till_month_end)) throw new Error(v.till_month_end ? 'Interest can be paid ahead only to the end of this month' : 'Interest cannot be paid for days that have not happened yet')
     const date = String(v.paid_date || to).slice(0, 10)
     if (date > todayISO()) throw new Error('The payment cannot be dated in the future')
     const from = /^\d{4}-\d{2}-\d{2}$/.test(String(v.from_date || '')) ? String(v.from_date).slice(0, 10) : '0000-00-00'
@@ -4334,7 +4348,7 @@ export async function payBdCumulativeInterest(v: {
     for (const id of ids) {
       const bd = await loadBd(id)
       if (n(bd.nbfc_id) !== n(v.nbfc_id)) throw new Error(`${bd.bd_no} is with another NBFC`)
-      const w = await bdInterestRange(id, from, to)
+      const w = await bdInterestRange(id, from, to, !!v.till_month_end)
       if (w.blocked) throw new Error(`${bd.bd_no}: ${String(w.blocked)}`)
       const typed = v.amounts && String(v.amounts[String(id)] ?? '').trim() !== '' ? round2(n(v.amounts[String(id)])) : null
       if (typed != null) {

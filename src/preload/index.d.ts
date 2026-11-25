@@ -736,7 +736,7 @@ export interface Api {
       v: { to_date: string; note?: string | null; post?: boolean; bank_account?: string | null }
     ) => Promise<{ id: number; gross: number; tds: number; net: number; days: number; posted: boolean }>
     interestPayments: (id: number) => Promise<Row[]>
-    cumulativeInterest: (values: { nbfc_id: number; from_date?: string; to_date: string }) => Promise<Row[]>
+    cumulativeInterest: (values: { nbfc_id: number; from_date?: string; to_date: string; till_month_end?: boolean }) => Promise<Row[]>
     cumulativePayments: (nbfcId?: number | null) => Promise<Row[]>
     convertInterestPayments: (entryIds: number[], viaNbfc: boolean) => Promise<{ converted: number; skipped: number; failed: string[] }>
     editCumulativePayment: (values: { entry_id: number; paid_date?: string; bank_account?: string | null; tds_ledger?: string | null; note?: string | null; amounts?: Record<string, number | string>; via_nbfc?: boolean }) => Promise<{ entry_id: number; gross: number; tds: number; net: number }>
@@ -748,7 +748,7 @@ export interface Api {
     closeRefunds: (values: { bd_ids: number[]; note?: string }) => Promise<{ closed: number }>
     reopenRefund: (bdId: number) => Promise<{ bd_id: number }>
     createRefundReceipt: (values: { date: string; bank: string; income_ledger: string; note?: string; parts: { bd_id: number; amount: number }[]; close_ids?: number[] }) => Promise<{ entry_id: number; journal_id: number; bills: number; amount: number }>
-    payCumulativeInterest: (values: { nbfc_id: number; from_date?: string; to_date: string; paid_date?: string; bank_account?: string | null; bd_ids: number[]; amounts?: Record<string, number | string>; tds_ledger?: string | null; note?: string | null; via_nbfc?: boolean }) => Promise<{ entry_id: number; bills: number; gross: number; tds: number; net: number }>
+    payCumulativeInterest: (values: { nbfc_id: number; from_date?: string; to_date: string; paid_date?: string; bank_account?: string | null; bd_ids: number[]; amounts?: Record<string, number | string>; tds_ledger?: string | null; note?: string | null; via_nbfc?: boolean; till_month_end?: boolean }) => Promise<{ entry_id: number; bills: number; gross: number; tds: number; net: number }>
     payInterest: (
       id: number,
       values: {

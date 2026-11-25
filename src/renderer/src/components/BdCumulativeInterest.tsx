@@ -8,6 +8,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { DatePicker } from '@/components/ui/date-picker'
 import { formatDate, formatINR, todayISO } from '@/lib/format'
 import { cn } from '@/lib/utils'
+import { HelpTip } from '@/components/ui/tooltip'
 
 // PAY CUMULATIVE INTEREST (billDiscounting.ts payBdCumulativeInterest): one
 // NBFC, a month or a date range, every open bill's interest to the period's
@@ -66,6 +67,12 @@ export function BdCumulativeInterest({ open, onClose, nbfcs, onDone }: { open: b
   const [month, setMonth] = useState(today.slice(0, 7))
   const [from, setFrom] = useState(`${today.slice(0, 7)}-01`)
   const [to, setTo] = useState(today)
+  // TILL TODAY or TILL MONTH END — the current month's interest to date, or the
+  // whole month (what the NBFC debits at its end). Only a choice while the
+  // period runs past today.
+  const [tillEnd, setTillEnd] = useState(false)
+  // The PAID banner's payment table, folded to one line until asked for.
+  const [paidOpen, setPaidOpen] = useState(false)
   const [rows, setRows] = useState<Row[] | null>(null)
   const [paidList, setPaidList] = useState<Row[]>([])
   const [picked, setPicked] = useState<Set<number>>(new Set())
@@ -86,10 +93,12 @@ export function BdCumulativeInterest({ open, onClose, nbfcs, onDone }: { open: b
   const [openId, setOpenId] = useState<number | null>(null)
 
   // The period's last day is what each bill is paid up to — never past today.
+  const periodEnd = mode === 'month' ? monthEnd(month) : to
+  const runsAhead = periodEnd > today
   const upto = useMemo(() => {
-    const end = mode === 'month' ? monthEnd(month) : to
-    return end > today ? today : end
-  }, [mode, month, to, today])
+    const cap = tillEnd ? monthEnd(today.slice(0, 7)) : today
+    return periodEnd > cap ? cap : periodEnd
+  }, [periodEnd, today, tillEnd])
   const start = mode === 'month' ? `${month}-01` : from
 
   useEffect(() => {
@@ -110,7 +119,7 @@ export function BdCumulativeInterest({ open, onClose, nbfcs, onDone }: { open: b
     if (!open || tab !== 'pay' || !nbfc || !/^\d{4}-\d{2}-\d{2}$/.test(upto)) return
     let live = true
     void window.api.billDiscounting
-      .cumulativeInterest({ nbfc_id: Number(nbfc), from_date: start, to_date: upto })
+      .cumulativeInterest({ nbfc_id: Number(nbfc), from_date: start, to_date: upto, till_month_end: tillEnd && runsAhead })
       .then((r) => {
         if (!live) return
         setRows(r)
@@ -209,6 +218,7 @@ export function BdCumulativeInterest({ open, onClose, nbfcs, onDone }: { open: b
         bd_ids: sel.map((r) => n(r.bd_id)),
         tds_ledger: tdsLedger || null,
         via_nbfc: viaNbfc,
+        till_month_end: tillEnd && runsAhead,
         note: note.trim(),
         amounts: Object.fromEntries(sel.filter((r) => fig(r).edited).map((r) => [String(n(r.bd_id)), fig(r).gross]))
       })
@@ -288,7 +298,7 @@ export function BdCumulativeInterest({ open, onClose, nbfcs, onDone }: { open: b
           </div>
         ) : (
         <>
-        <div className="min-h-0 flex-1 space-y-3.5 overflow-y-auto px-3 py-3 sm:px-5 sm:py-4">
+        <div className="min-h-0 flex-1 space-y-2.5 overflow-y-auto px-3 py-2.5 sm:px-4 sm:py-3">
           <div className="grid gap-3 md:grid-cols-[1.3fr_auto_1.4fr]" onKeyDown={arrowsAcross}>
             <div>
               <span className={lbl}>NBFC</span>
@@ -352,9 +362,30 @@ export function BdCumulativeInterest({ open, onClose, nbfcs, onDone }: { open: b
               </div>
             )}
           </div>
-          <div className="text-[11.5px] font-semibold text-[#5A6B62]">
-            Interest for exactly <b className="text-[#0A1F17]">{formatDate(start)} → {formatDate(upto)}</b> on each bill (from the day it was funded, if later)
-            {upto === today && (mode === 'month' ? monthEnd(month) : to) > today ? ' — to today, the period has not ended yet' : ''}. Earlier unpaid days and balances still due are flagged on the bill; a period paid short can be picked again to pay just its balance. Click a bill to see how its interest is worked out.
+          <div className="flex flex-wrap items-center gap-2 text-[11.5px] font-semibold text-[#5A6B62]">
+            <span>
+              Interest <b className="text-[#0A1F17]">{formatDate(start)} → {formatDate(upto)}</b> on each bill
+              {runsAhead ? (tillEnd ? ' — to the month end, ahead of today' : ' — to today') : ''}
+            </span>
+            {/* TILL TODAY / TILL MONTH END — while the period is still running. */}
+            {runsAhead && (
+              <span className="inline-flex rounded-[4px] border border-[#C9DCCF] p-0.5">
+                {[
+                  { v: false, t: 'Till today' },
+                  { v: true, t: 'Till month end' }
+                ].map((o) => (
+                  <button
+                    key={o.t}
+                    type="button"
+                    onClick={() => setTillEnd(o.v)}
+                    className={cn('rounded-[3px] px-2 py-0.5 text-[11px] font-extrabold', tillEnd === o.v ? 'bg-[#0B3D2E] text-white' : 'text-[#33473E] hover:bg-[#F0F8F3]')}
+                  >
+                    {o.t}
+                  </button>
+                ))}
+              </span>
+            )}
+            <HelpTip text="From the day a bill was funded, if later. Earlier unpaid days and balances still due are flagged on the bill; a period paid short can be picked again to pay just its balance. Click a bill to see how its interest is worked out. Till month end works the current month to its last day — what the NBFC debits at month end." />
           </div>
 
           {/* What this payment comes to, before the bill-by-bill detail. */}
@@ -366,9 +397,9 @@ export function BdCumulativeInterest({ open, onClose, nbfcs, onDone }: { open: b
                 { k: 'TDS withheld', v: formatINR(tot.tds), sub: tdsLedger || 'TDS on interest payable', tone: 'text-[#8A5300]' },
                 { k: 'Out of the bank', v: formatINR(tot.net), sub: 'one voucher', tone: 'text-[#0B6B45]' }
               ].map((t, i) => (
-                <div key={t.k} className={cn('min-w-0 px-4 py-3', i % 2 === 1 && 'border-l border-[#EEF3EE]', i >= 2 && 'border-t border-[#EEF3EE] lg:border-t-0', i === 2 && 'lg:border-l')}>
+                <div key={t.k} className={cn('min-w-0 px-3.5 py-2', i % 2 === 1 && 'border-l border-[#EEF3EE]', i >= 2 && 'border-t border-[#EEF3EE] lg:border-t-0', i === 2 && 'lg:border-l')}>
                   <div className="text-[9.5px] font-extrabold uppercase tracking-[.13em] text-[#7A8C82]">{t.k}</div>
-                  <div className={cn('mt-0.5 truncate text-[19px] font-bold tabular-nums tracking-[-0.02em]', t.tone)}>{t.v}</div>
+                  <div className={cn('truncate text-[16px] font-bold tabular-nums tracking-[-0.02em]', t.tone)}>{t.v}</div>
                   <div className="truncate text-[11px] font-semibold text-[#7A8C82]">{t.sub}</div>
                 </div>
               ))}
@@ -396,16 +427,16 @@ export function BdCumulativeInterest({ open, onClose, nbfcs, onDone }: { open: b
                 return (
                   <div
                     className={cn(
-                      'flex flex-wrap items-center gap-3 rounded-[8px] border px-4 py-3',
+                      'flex flex-wrap items-center gap-2.5 rounded-[6px] border px-3 py-2',
                       all ? 'border-[#0B6B45] bg-[#E6F5EC]' : 'border-[#BFE3CB] bg-[#F1FAF4]'
                     )}
                   >
-                    <CheckCircle2 className={cn('flex-none text-[#0B6B45]', all ? 'h-7 w-7' : 'h-5 w-5')} />
-                    <div>
-                      <div className={cn('font-extrabold text-[#0B5E3C]', all ? 'text-[17px]' : 'text-[14px]')}>
+                    <CheckCircle2 className="h-5 w-5 flex-none text-[#0B6B45]" />
+                    <div className="flex flex-wrap items-center gap-2">
+                      <div className={cn('font-extrabold text-[#0B5E3C]', all ? 'text-[14px]' : 'text-[13px]')}>
                         {all ? `${label} interest is PAID on all ${rows.length} bill${rows.length === 1 ? '' : 's'}` : `${label}: ${paidRows.length} of ${rows.length} bills already PAID`}
                       </div>
-                      <div className="mt-0.5 flex flex-wrap gap-1">
+                      <div className="flex flex-wrap gap-1">
                         {paidRows.map((r) => (
                           <span key={String(r.bd_id)} className="rounded-[4px] bg-[#0B6B45] px-1.5 py-0.5 text-[11px] font-extrabold text-white">
                             {String(r.bd_no)}
@@ -413,7 +444,14 @@ export function BdCumulativeInterest({ open, onClose, nbfcs, onDone }: { open: b
                         ))}
                       </div>
                     </div>
-                    {all && <span className="ml-auto text-[12px] font-bold text-[#0B6B45]">Nothing left to pay for this period</span>}
+                    {all && <span className="text-[12px] font-bold text-[#0B6B45]">Nothing left to pay for this period</span>}
+                    <button
+                      type="button"
+                      onClick={() => setPaidOpen((v) => !v)}
+                      className="ml-auto rounded-[4px] border border-[#BFE3CB] bg-white px-2 py-0.5 text-[11px] font-bold text-[#0B5E3C] hover:bg-[#F1FAF4]"
+                    >
+                      {paidOpen ? 'Hide payments' : 'Show payments'}
+                    </button>
                     {/* HOW IT WAS PAID — each payment that covered this period. */}
                     {(() => {
                       const ids = new Set(paidRows.map((r) => n(r.bd_id)))
@@ -432,7 +470,7 @@ export function BdCumulativeInterest({ open, onClose, nbfcs, onDone }: { open: b
                         })
                         .filter((x) => x.bills.length)
                         .sort((a, b) => String(a.g.paid_date).localeCompare(String(b.g.paid_date)))
-                      if (!tokens.length) return null
+                      if (!tokens.length || !paidOpen) return null
                       const tNet = tokens.reduce((t, x) => t + x.net, 0)
                       const tGross = tokens.reduce((t, x) => t + x.gross, 0)
                       return (
@@ -495,11 +533,11 @@ export function BdCumulativeInterest({ open, onClose, nbfcs, onDone }: { open: b
                   </div>
                 )
               })()}
-              <div className="flex flex-wrap items-start gap-x-5 gap-y-3 rounded-[6px] border border-[#DCE6DC] bg-[#F7FAF6] px-4 py-3">
+              <div className="flex flex-wrap items-start gap-x-4 gap-y-2 rounded-[6px] border border-[#DCE6DC] bg-[#F7FAF6] px-3 py-2">
                 {/* THE ONE ACTUAL PAID BOX — shared over the ticked bills below. */}
                 <div>
                   <div className="mb-1 text-[10px] font-extrabold uppercase tracking-[.12em] text-[#0B3D2E]">Actual paid</div>
-                  <div className="flex h-11 w-[230px] items-center rounded-[6px] border-[1.5px] border-[#0B3D2E] bg-white shadow-[0_1px_2px_rgba(10,31,23,.06)] focus-within:ring-2 focus-within:ring-[#0B6B45]/20">
+                  <div className="flex h-9 w-[210px] items-center rounded-[6px] border-[1.5px] border-[#0B3D2E] bg-white shadow-[0_1px_2px_rgba(10,31,23,.06)] focus-within:ring-2 focus-within:ring-[#0B6B45]/20">
                     <span className="pl-3 text-[15px] font-bold text-[#8CA396]">₹</span>
                     <input
                       inputMode="decimal"
@@ -522,7 +560,7 @@ export function BdCumulativeInterest({ open, onClose, nbfcs, onDone }: { open: b
                       onKeyDown={(e) => {
                         if (e.key === 'Enter') e.currentTarget.blur()
                       }}
-                      className="h-full min-w-0 flex-1 bg-transparent pr-3 text-right text-[16px] font-extrabold tabular-nums text-[#0A1F17] outline-none disabled:opacity-60"
+                      className="h-full min-w-0 flex-1 bg-transparent pr-3 text-right text-[15px] font-extrabold tabular-nums text-[#0A1F17] outline-none disabled:opacity-60"
                     />
                   </div>
                   <div className="mt-1 text-[10.5px] font-semibold text-[#5A6B62]">
@@ -540,7 +578,7 @@ export function BdCumulativeInterest({ open, onClose, nbfcs, onDone }: { open: b
                       setLump(null)
                     }}
                   >
-                    <SelectTrigger className={cn(FIELD, '!h-11 !w-[230px]')}>
+                    <SelectTrigger className={cn(FIELD, '!h-9 !w-[210px]')}>
                       <span className="flex min-w-0 items-center gap-2 text-left"><span className={FICON}><Wallet className="h-3.5 w-3.5" /></span><span className="min-w-0 truncate"><SelectValue /></span></span>
                     </SelectTrigger>
                     <SelectContent>
@@ -552,7 +590,7 @@ export function BdCumulativeInterest({ open, onClose, nbfcs, onDone }: { open: b
                 <div>
                   <div className="mb-1 text-[10px] font-extrabold uppercase tracking-[.12em] text-[#5A6B62]">Shared</div>
                   <Select value={how} onValueChange={(v) => setHow(v as 'fifo' | 'lifo' | 'pro' | 'equal')}>
-                    <SelectTrigger className={cn(FIELD, '!h-11 !w-[230px]')}>
+                    <SelectTrigger className={cn(FIELD, '!h-9 !w-[210px]')}>
                       <span className="flex min-w-0 items-center gap-2 text-left"><span className={FICON}><ListOrdered className="h-3.5 w-3.5" /></span><span className="min-w-0 truncate"><SelectValue /></span></span>
                     </SelectTrigger>
                     <SelectContent>
@@ -573,7 +611,7 @@ export function BdCumulativeInterest({ open, onClose, nbfcs, onDone }: { open: b
               <table className="w-full min-w-[900px] text-[12.5px]">
                 <thead className="border-b border-[#DCE6DC] bg-[#F5F8F4] text-[9.5px] font-extrabold uppercase tracking-[.1em] text-[#5A6B62]">
                   <tr>
-                    <th className="w-10 px-3 py-2.5 text-left">
+                    <th className="w-10 px-3 py-1.5 text-left">
                       <input
                         type="checkbox"
                         aria-label="Tick every bill"
@@ -581,14 +619,14 @@ export function BdCumulativeInterest({ open, onClose, nbfcs, onDone }: { open: b
                         onChange={(e) => setPicked(e.target.checked ? new Set(payable.map((r) => n(r.bd_id))) : new Set())}
                       />
                     </th>
-                    <th className="px-2 py-2.5 text-left">Bill</th>
-                    <th className="px-2 py-2.5 text-right">Principal</th>
-                    <th className="px-2 py-2.5 text-left">Period</th>
-                    <th className="px-2 py-2.5 text-right">Worked out</th>
-                    <th className="px-2 py-2.5 text-right text-[#0B3D2E]">Actual paid</th>
-                    <th className="px-2 py-2.5 text-right">Remaining</th>
-                    <th className="px-2 py-2.5 text-right">TDS</th>
-                    <th className="px-3 py-2.5 text-right">Net</th>
+                    <th className="px-2 py-1.5 text-left">Bill</th>
+                    <th className="px-2 py-1.5 text-right">Principal</th>
+                    <th className="px-2 py-1.5 text-left">Period</th>
+                    <th className="px-2 py-1.5 text-right">Worked out</th>
+                    <th className="px-2 py-1.5 text-right text-[#0B3D2E]">Actual paid</th>
+                    <th className="px-2 py-1.5 text-right">Remaining</th>
+                    <th className="px-2 py-1.5 text-right">TDS</th>
+                    <th className="px-3 py-1.5 text-right">Net</th>
                     <th className="w-8" />
                   </tr>
                 </thead>
@@ -613,7 +651,7 @@ export function BdCumulativeInterest({ open, onClose, nbfcs, onDone }: { open: b
                             !r.blocked && (isOpen ? 'bg-[#F3F9F1]' : on ? 'bg-white' : 'bg-[#FBFCFA] text-[#7A8C82]')
                           )}
                         >
-                          <td className="px-3 py-2.5 align-top">
+                          <td className="px-3 py-1.5 align-top">
                             <input
                               type="checkbox"
                               disabled={!!r.blocked}
@@ -629,7 +667,7 @@ export function BdCumulativeInterest({ open, onClose, nbfcs, onDone }: { open: b
                               }
                             />
                           </td>
-                          <td className="px-2 py-2.5 align-top">
+                          <td className="px-2 py-1.5 align-top">
                             <div className="flex items-center gap-1.5">
                               <span className={cn('rounded-[4px] px-1.5 py-0.5 text-[11.5px] font-extrabold', r.blocked ? 'bg-[#EEF2EE] text-[#8CA396]' : 'bg-[#0B3D2E] text-[#C7F03F]')}>{String(r.bd_no)}</span>
                               {r.balance_of && (
@@ -638,11 +676,11 @@ export function BdCumulativeInterest({ open, onClose, nbfcs, onDone }: { open: b
                             </div>
                             <div className="mt-1 max-w-[230px] truncate text-[11px] font-semibold text-[#7A8C82]">{String(r.party || '')}</div>
                           </td>
-                          <td className="whitespace-nowrap px-2 py-2.5 text-right align-top tabular-nums">
+                          <td className="whitespace-nowrap px-2 py-1.5 text-right align-top tabular-nums">
                             <div className="font-semibold text-[#0A1F17]">{formatINR(n(r.principal))}</div>
                             <div className="mt-1 text-[10.5px] font-bold text-[#7A8C82]">@ {n(r.interest_pct)}% p.a.</div>
                           </td>
-                          <td className="px-2 py-2.5 align-top">
+                          <td className="px-2 py-1.5 align-top">
                             {r.blocked ? (
                               /^Already paid/.test(String(r.blocked)) ? (
                                 (() => {
@@ -688,8 +726,8 @@ export function BdCumulativeInterest({ open, onClose, nbfcs, onDone }: { open: b
                             )}
                           </td>
                           {/* WORKED OUT (fixed) · ACTUAL PAID (typed) · REMAINING (fixed). */}
-                          <td className="whitespace-nowrap px-2 py-2.5 text-right align-top font-semibold tabular-nums text-[#33473E]">{r.blocked ? '—' : formatINR(n(r.gross))}</td>
-                          <td className="whitespace-nowrap px-2 py-2.5 text-right align-top">
+                          <td className="whitespace-nowrap px-2 py-1.5 text-right align-top font-semibold tabular-nums text-[#33473E]">{r.blocked ? '—' : formatINR(n(r.gross))}</td>
+                          <td className="whitespace-nowrap px-2 py-1.5 text-right align-top">
                             {r.blocked ? (
                               '—'
                             ) : (
@@ -704,7 +742,7 @@ export function BdCumulativeInterest({ open, onClose, nbfcs, onDone }: { open: b
                               </>
                             )}
                           </td>
-                          <td className="whitespace-nowrap px-2 py-2.5 text-right align-top tabular-nums">
+                          <td className="whitespace-nowrap px-2 py-1.5 text-right align-top tabular-nums">
                             {r.blocked || !on ? (
                               '—'
                             ) : (() => {
@@ -718,9 +756,9 @@ export function BdCumulativeInterest({ open, onClose, nbfcs, onDone }: { open: b
                               )
                             })()}
                           </td>
-                          <td className="whitespace-nowrap px-2 py-2.5 text-right align-top tabular-nums">{r.blocked ? '—' : formatINR(fig(r).tds)}</td>
-                          <td className="whitespace-nowrap px-3 py-2.5 text-right align-top font-bold tabular-nums text-[#0B6B45]">{r.blocked ? '—' : formatINR(fig(r).net)}</td>
-                          <td className="py-2.5 pr-3 align-top">
+                          <td className="whitespace-nowrap px-2 py-1.5 text-right align-top tabular-nums">{r.blocked ? '—' : formatINR(fig(r).tds)}</td>
+                          <td className="whitespace-nowrap px-3 py-1.5 text-right align-top font-bold tabular-nums text-[#0B6B45]">{r.blocked ? '—' : formatINR(fig(r).net)}</td>
+                          <td className="py-1.5 pr-3 align-top">
                             {!r.blocked && <ChevronDown className={cn('mt-0.5 h-4 w-4 text-[#8CA396] transition-transform', isOpen && 'rotate-180')} />}
                           </td>
                         </tr>
@@ -815,19 +853,19 @@ export function BdCumulativeInterest({ open, onClose, nbfcs, onDone }: { open: b
                 </tbody>
                 <tfoot>
                   <tr className="border-t border-[#DCE6DC] bg-[#F5F8F4] font-extrabold">
-                    <td colSpan={4} className="px-3 py-2.5 text-[11px] font-extrabold uppercase tracking-[.1em] text-[#33473E]">
+                    <td colSpan={4} className="px-3 py-1.5 text-[11px] font-extrabold uppercase tracking-[.1em] text-[#33473E]">
                       Total · {sel.length} of {payable.length} bill{payable.length === 1 ? '' : 's'} paid
                     </td>
-                    <td className="whitespace-nowrap px-2 py-2.5 text-right tabular-nums text-[#33473E]">{formatINR(r2(pool.reduce((t, r) => t + n(r.gross), 0)))}</td>
-                    <td className={cn('whitespace-nowrap px-2 py-2.5 text-right tabular-nums', lumpTotal != null ? 'text-[#8A5300]' : 'text-[#0A1F17]')}>{formatINR(tot.gross)}</td>
-                    <td className="whitespace-nowrap px-2 py-2.5 text-right tabular-nums text-[#B3261E]">
+                    <td className="whitespace-nowrap px-2 py-1.5 text-right tabular-nums text-[#33473E]">{formatINR(r2(pool.reduce((t, r) => t + n(r.gross), 0)))}</td>
+                    <td className={cn('whitespace-nowrap px-2 py-1.5 text-right tabular-nums', lumpTotal != null ? 'text-[#8A5300]' : 'text-[#0A1F17]')}>{formatINR(tot.gross)}</td>
+                    <td className="whitespace-nowrap px-2 py-1.5 text-right tabular-nums text-[#B3261E]">
                       {(() => {
                         const left = r2(pool.reduce((t, r) => t + n(r.gross) - fig(r).gross, 0))
                         return Math.abs(left) < 0.005 ? <span className="text-[#9AAFA2]">nil</span> : left > 0 ? formatINR(left) : <span className="text-[#8A5300]">+{formatINR(-left)} over</span>
                       })()}
                     </td>
-                    <td className="whitespace-nowrap px-2 py-2.5 text-right tabular-nums">{formatINR(tot.tds)}</td>
-                    <td className="whitespace-nowrap px-3 py-2.5 text-right tabular-nums text-[#0B6B45]">{formatINR(tot.net)}</td>
+                    <td className="whitespace-nowrap px-2 py-1.5 text-right tabular-nums">{formatINR(tot.tds)}</td>
+                    <td className="whitespace-nowrap px-3 py-1.5 text-right tabular-nums text-[#0B6B45]">{formatINR(tot.net)}</td>
                     <td />
                   </tr>
                 </tfoot>
