@@ -13184,6 +13184,7 @@ var init_facilityLimits = __esm({
 var lc_exports = {};
 __export(lc_exports, {
   assertLcNotClosed: () => assertLcNotClosed,
+  changeLcParty: () => changeLcParty,
   createLC: () => createLC,
   deleteLC: () => deleteLC,
   deleteLCIssuance: () => deleteLCIssuance,
@@ -13208,6 +13209,7 @@ __export(lc_exports, {
   payLcParty: () => payLcParty,
   pickBankVouchers: () => pickBankVouchers,
   precloseLC: () => precloseLC,
+  recloseLc17: () => recloseLc17,
   reinstateLC: () => reinstateLC,
   rejectLC: () => rejectLC,
   repayLcParts: () => repayLcParts,
@@ -14176,7 +14178,7 @@ async function precloseLC(id, v) {
     const prematureInterest = round29(n16(v.premature_interest));
     const rebateDirection = v.premature_interest_direction === "pay_to_party" ? "pay_to_party" : "credit_to_us";
     await c.execute({
-      sql: `UPDATE letters_of_credit SET usance_days = ?, preclosed_date = ?, preclose_premature_interest = ?,
+      sql: `UPDATE letters_of_credit SET reopened_json = NULL, usance_days = ?, preclosed_date = ?, preclose_premature_interest = ?,
           preclose_interest_route = ? WHERE id = ?`,
       args: [actualDays, precloseDate, prematureInterest, rebateDirection, id]
     });
@@ -14237,10 +14239,20 @@ async function unPrecloseLC(id) {
       removed.push("margin-release voucher");
     }
     const reps = await c.execute({
-      sql: `SELECT id, journal_entry_id FROM lc_repayments
+      sql: `SELECT id, journal_entry_id, amount, comm_charges, bank_charges FROM lc_repayments
            WHERE lc_id = ? AND substr(repay_date, 1, 10) = ? AND COALESCE(note, '') = 'Preclosure repayment'`,
       args: [id, String(lc.preclosed_date).slice(0, 10)]
     });
+    const reopened = {
+      on: (/* @__PURE__ */ new Date()).toISOString().slice(0, 10),
+      preclose_date: String(lc.preclosed_date).slice(0, 10),
+      debited: round29(toPlain13(reps).reduce((t, r) => t + n16(r.amount), 0)),
+      comm_charges: round29(toPlain13(reps).reduce((t, r) => t + n16(r.comm_charges), 0)),
+      bank_charges: round29(toPlain13(reps).reduce((t, r) => t + n16(r.bank_charges), 0)),
+      rebate: n16(lc.preclose_premature_interest),
+      rebate_route: lc.preclose_interest_route || null,
+      margin_released: String(lc.preclose_settlement_direction || "") === "margin_released"
+    };
     for (const r of reps.rows) {
       await (await Promise.resolve().then(() => (init_fixedDeposits(), fixedDeposits_exports))).unsettleLcFds(n16(r.id));
       if (r.journal_entry_id) await dropTreasuryEntry(n16(r.journal_entry_id));
@@ -14255,9 +14267,9 @@ async function unPrecloseLC(id) {
                  preclose_interest_route = NULL, preclose_interest_journal_entry_id = NULL,
                  preclose_payout_journal_entry_id = NULL,
                  preclose_settlement_direction = NULL, preclose_settlement_amount = NULL,
-                 preclose_journal_entry_id = NULL, workflow_status = 'in_progress'
+                 preclose_journal_entry_id = NULL, workflow_status = 'in_progress', reopened_json = ?
            WHERE id = ?`,
-      args: [plannedDays, id]
+      args: [plannedDays, JSON.stringify(reopened), id]
     });
     await postLcOpening(id);
     removed.push(`interest days back to ${plannedDays}`);
@@ -14776,6 +14788,51 @@ async function editPreclosure(id, v) {
     }
     await unPrecloseLC(n16(id));
     return precloseLC(n16(id), { ...v, fd_choices: fdChoices });
+  });
+}
+async function recloseLc17() {
+  const c = getClient();
+  const r = (await c.execute(
+    "SELECT id, preclosed_date, (SELECT COUNT(*) FROM lc_repayments WHERE lc_id = l.id) AS reps FROM letters_of_credit l WHERE lc_no = '027LC03261800012' AND amount = 4600000"
+  )).rows[0];
+  if (!r) return "LC not in this database";
+  if (r.preclosed_date || n16(r.reps) > 0) return "already closed \u2014 nothing to do";
+  await precloseLC(n16(r.id), {
+    preclose_date: "2026-09-28",
+    amount: 4601180,
+    comm_charges: 0,
+    bank_charges: 1180,
+    premature_interest: 0,
+    premature_interest_direction: "credit_to_us",
+    release_margin: false
+  });
+  const je = n16((await c.execute({ sql: "SELECT journal_entry_id FROM lc_repayments WHERE lc_id = ? ORDER BY id DESC LIMIT 1", args: [n16(r.id)] })).rows[0]?.journal_entry_id);
+  const old = (await c.execute({
+    sql: "SELECT entry_id, company_id FROM voucher_numbers WHERE prefix = 'PAY' AND serial = 550 AND company_id = (SELECT company_id FROM letters_of_credit WHERE id = ?)",
+    args: [n16(r.id)]
+  })).rows[0];
+  let renum = "";
+  if (je && old && !(await c.execute({ sql: "SELECT 1 FROM journal_entries WHERE id = ?", args: [n16(old.entry_id)] })).rows.length) {
+    await c.execute({ sql: "DELETE FROM voucher_numbers WHERE entry_id = ?", args: [n16(old.entry_id)] });
+    await c.execute({ sql: "UPDATE voucher_numbers SET serial = 550 WHERE entry_id = ? AND prefix = 'PAY'", args: [je] });
+    renum = " as PAY/550";
+  }
+  return `LC-17 closed again on 28-09-2026 (\u20B946,01,180)${renum}`;
+}
+async function changeLcParty(id, partyId) {
+  return withDbTransaction(async () => {
+    const c = getClient();
+    const lc = (await c.execute({ sql: "SELECT id, party_type, party_id, company_id, preclosed_date FROM letters_of_credit WHERE id = ?", args: [n16(id)] })).rows[0];
+    if (!lc) throw new Error("LC not found");
+    if (String(lc.party_type || "supplier") !== "supplier") throw new Error("Only a supplier LC can change its party here");
+    const to = n16(partyId);
+    if (!to) throw new Error("Pick the new party");
+    if (!(await c.execute({ sql: "SELECT 1 FROM suppliers WHERE id = ?", args: [to] })).rows.length) throw new Error("That supplier is not in the masters");
+    if (n16(lc.party_id) === to) return { id: n16(id), moved: 0 };
+    await c.execute({ sql: "UPDATE letters_of_credit SET party_id = ? WHERE id = ?", args: [to, n16(id)] });
+    if (!lc.preclosed_date) await syncLcVouchers(n16(id));
+    const moved = await moveLcPartyLines(n16(id), n16(lc.party_id), to, n16(lc.company_id) || getActiveCompanyId());
+    return { id: n16(id), moved };
   });
 }
 var partRate, LC_COLS;
@@ -39590,6 +39647,12 @@ async function runStartupTasks() {
   await runOnce("legacy_supplier_unmerge_v1", async () => {
     console.log("[suppliers] Legacy merge undo:", await (await Promise.resolve().then(() => (init_supplierMerge(), supplierMerge_exports))).undoLegacySupplierMerge());
   }).catch((e) => console.error("[suppliers] Legacy merge undo failed:", e));
+  await getClient().execute("ALTER TABLE letters_of_credit ADD COLUMN reopened_json TEXT").catch((e) => {
+    if (!/duplicate column/i.test(String(e.message))) console.error("[lc] reopened_json failed:", e);
+  });
+  await runOnce("lc17_reclose_v1", async () => {
+    console.log("[lc] LC-17 re-close:", await (await Promise.resolve().then(() => (init_lc(), lc_exports))).recloseLc17());
+  }).catch((e) => console.error("[lc] LC-17 re-close failed:", e));
   await runOnce("legacy_mfg_ledger_v1", async () => {
     console.log("[suppliers] Legacy Manufacturing ledger:", await (await Promise.resolve().then(() => (init_supplierMerge(), supplierMerge_exports))).legacyMfgLedger());
   }).catch((e) => console.error("[suppliers] Legacy Manufacturing ledger failed:", e));
@@ -46565,6 +46628,7 @@ function registerIpc() {
     return deleteLCIssuance(id);
   });
   handle("lc:unpreclose", (_e, { id }) => unPrecloseLC(id));
+  handle("lc:changeParty", async (_e, { id, partyId }) => (await Promise.resolve().then(() => (init_lc(), lc_exports))).changeLcParty(Number(id), Number(partyId)));
   handle(
     "lc:editPreclosure",
     (_e, { id, values }) => editPreclosure(Number(id), values)
