@@ -2636,6 +2636,16 @@ export function Accounts({
   // only colour, never saved, gone on Stop. Keyed by the row (one ledger line).
   const [lgChecking, setLgChecking] = useState(false)
   const [lgChecked, setLgChecked] = useState<Set<number>>(new Set())
+  // DRAG TO TICK (Check off / Select): press on a row and run down the list —
+  // every row passed takes the first row's new state; the bar sums Dr, Cr, Net.
+  const lgDragRef = useRef<boolean | null>(null)
+  useEffect(() => {
+    const up = (): void => {
+      lgDragRef.current = null
+    }
+    window.addEventListener('mouseup', up)
+    return () => window.removeEventListener('mouseup', up)
+  }, [])
   // Another ledger: the ticks were for this one, so they go.
   useEffect(() => {
     setLgChecking(false)
@@ -18659,7 +18669,7 @@ Delete ${doc}?`)) return
                   </span>
                 </span>
               )}
-              <span style={{ fontSize: 11, fontWeight: 600, color: '#5A6B62' }}>Click a row to tick or untick it · nothing is saved</span>
+              <span style={{ fontSize: 11, fontWeight: 600, color: '#5A6B62' }}>Click a row, or press and drag over rows, to tick or untick · nothing is saved</span>
               <span className="flex-1" />
               <button
                 type="button"
@@ -18768,25 +18778,52 @@ Delete ${doc}?`)) return
                 title={voucherTitle(r)}
                 data-lgrow={String(r.id)}
                 data-lghi={hi ? '1' : undefined}
-                onClick={() => {
+                onMouseDown={(e) => {
+                  if (e.button !== 0) return
+                  if (lgChecking) {
+                    e.preventDefault()
+                    const on = !lgChecked.has(Number(r.id))
+                    lgDragRef.current = on
+                    setLgChecked((p) => {
+                      const x = new Set(p)
+                      if (on) x.add(Number(r.id))
+                      else x.delete(Number(r.id))
+                      return x
+                    })
+                  } else if (lgPicking && !r.provisional) {
+                    e.preventDefault()
+                    const on = !lgPicked.has(eid)
+                    lgDragRef.current = on
+                    setLgPicked((p) => {
+                      const x = new Set(p)
+                      if (on) x.add(eid)
+                      else x.delete(eid)
+                      return x
+                    })
+                  }
+                }}
+                onMouseEnter={() => {
+                  const on = lgDragRef.current
+                  if (on == null) return
                   if (lgChecking) {
                     setLgChecked((p) => {
                       const x = new Set(p)
-                      if (x.has(Number(r.id))) x.delete(Number(r.id))
-                      else x.add(Number(r.id))
+                      if (on) x.add(Number(r.id))
+                      else x.delete(Number(r.id))
                       return x
                     })
-                    return
-                  }
-                  if (lgPicking && !r.provisional) {
+                  } else if (lgPicking && !r.provisional) {
                     setLgPicked((p) => {
                       const x = new Set(p)
-                      if (x.has(eid)) x.delete(eid)
-                      else x.add(eid)
+                      if (on) x.add(eid)
+                      else x.delete(eid)
                       return x
                     })
-                    return
                   }
+                }}
+                onClick={() => {
+                  // Ticking is done on press (and drag) above.
+                  if (lgChecking || (lgPicking && !r.provisional)) return
                   markLgRow(Number(r.id))
                   // A provisional line has no voucher yet — it opens its LC / BD.
                   if (r.provisional) return void openRowSource(r, ledgerId)
