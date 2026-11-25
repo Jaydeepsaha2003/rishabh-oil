@@ -2413,3 +2413,56 @@ export async function previewLcPartyChange(id: number, partyId: number): Promise
   }
   return { closed: !!lc.preclosed_date, rows }
 }
+
+/**
+ * One-time (asked 2026-11-25): an LC's settlement must debit its SUPPLIER's
+ * ledger. When SIDDHARTH OILS' one mixed ledger was split into a customer
+ * "SIDDHARTH OILS" (SD-OIL) and a supplier "SIDDHARTH OILS (CR)", the closed
+ * LC 027LC03262290005 kept its JV/24 on the customer side (a closed LC's
+ * vouchers are not re-posted on save). Every LC settlement whose party line sits
+ * on a Sundry Debtors ledger moves, in place, to the supplier's own ledger —
+ * same voucher number, date and amount; logged first.
+ */
+export async function lcSettlementsOffDebtorLedgers(): Promise<string> {
+  const c = getClient()
+  const { baseGroupOf } = await import('./ledgerGroups')
+  const { partyAccountName } = await import('./partyLedgers')
+  const { resolveAccountName } = await import('./ledgerMap')
+  const { getOrCreateAccount } = await import('./journal')
+  const rows = toPlain(
+    await c.execute(`SELECT DISTINCT i.lc_id, i.journal_entry_id AS e, l.company_id, s.name AS supplier
+                       FROM lc_issuances i JOIN letters_of_credit l ON l.id = i.lc_id
+                       JOIN suppliers s ON l.party_type = 'supplier' AND s.id = l.party_id
+                      WHERE i.journal_entry_id IS NOT NULL`)
+  )
+  const out: string[] = []
+  for (const r of rows) {
+    const lines = toPlain(
+      await c.execute({
+        sql: `SELECT jl.id, jl.dr, a.id AS acc, a.name, a.acc_group FROM journal_lines jl JOIN ledger_accounts a ON a.id = jl.account_id
+               WHERE jl.entry_id = ? AND jl.dr > 0`,
+        args: [n(r.e)]
+      })
+    )
+    for (const l of lines) {
+      if ((await baseGroupOf(String(l.acc_group))) !== 'Sundry Debtors') continue
+      const cid = n(r.company_id)
+      const want = String(await resolveAccountName(await partyAccountName(String(r.supplier), 'Sundry Creditors', cid), cid)).trim().toUpperCase()
+      const wantAcc = n((await c.execute({ sql: 'SELECT id, acc_group FROM ledger_accounts WHERE name = ?', args: [want] })).rows[0]?.id)
+      const target = wantAcc || (await getOrCreateAccount(want, 'Sundry Creditors', cid))
+      const tGroup = String((await c.execute({ sql: 'SELECT acc_group FROM ledger_accounts WHERE id = ?', args: [target] })).rows[0]?.acc_group || '')
+      if (target === n(l.acc) || (await baseGroupOf(tGroup)) !== 'Sundry Creditors') continue
+      await c.execute(`CREATE TABLE IF NOT EXISTS accounting_repair_log (
+          repair_key TEXT PRIMARY KEY, entry_id INTEGER NOT NULL, before_json TEXT NOT NULL,
+          created_at TEXT NOT NULL DEFAULT (datetime('now')))`)
+      await c.execute({
+        sql: 'INSERT OR REPLACE INTO accounting_repair_log(repair_key, entry_id, before_json) VALUES (?, ?, ?)',
+        args: [`lc_settlement_off_debtor_v1:${n(l.id)}`, n(r.e), JSON.stringify({ line: l, to: target })]
+      })
+      await c.execute({ sql: 'UPDATE journal_lines SET account_id = ? WHERE id = ?', args: [target, n(l.id)] })
+      await c.execute({ sql: 'UPDATE journal_bill_allocs SET account_id = ? WHERE line_id = ?', args: [target, n(l.id)] })
+      out.push(`LC ${n(r.lc_id)} entry ${n(r.e)}: ${String(l.name)} → ${want} (${round2(n(l.dr))})`)
+    }
+  }
+  return out.join('; ') || 'nothing on a customer ledger'
+}

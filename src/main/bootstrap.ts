@@ -3224,6 +3224,10 @@ export async function runStartupTasks(): Promise<void> {
     .catch((e: unknown) => {
       if (!/duplicate column/i.test(String((e as Error).message))) console.error('[lc] reopened_json failed:', e)
     })
+  // An LC settlement left on a customer ledger (SIDDHARTH OILS split, 25-11) back on its supplier's.
+  await runOnce('lc_settlement_off_debtor_v1', async () => {
+    console.log('[lc] settlements off customer ledgers:', await (await import('./lc')).lcSettlementsOffDebtorLedgers())
+  }).catch((e) => console.error('[lc] settlements off customer ledgers failed:', e))
   // LC-17 (SIDDHARTH OILS) closed again after the 24-11 Undo preclosure was left undone.
   await runOnce('lc17_reclose_v1', async () => {
     console.log('[lc] LC-17 re-close:', await (await import('./lc')).recloseLc17())
