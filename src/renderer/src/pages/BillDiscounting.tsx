@@ -2054,7 +2054,8 @@ export function BillDiscounting({
   // BANK DEBITED IN TOTAL: the statement's one figure. The interest (net),
   // any penalty and charges come out of it first; the balance is the principal
   // off the bill — kept in step as the interest or charges change.
-  const debitTotalTyped = String(repayForm.debit_total ?? '').trim()
+  const debitTotalTyped =
+    repayForm.amt_mode === 'total' && (!!repayForm.with_interest || chargesTotal > 0 || penaltyAmt > 0) ? String(repayForm.debit_total ?? '').trim() : ''
   const principalFromDebit = debitTotalTyped
     ? round2(Math.max(0, n(repayForm.debit_total) - n(repayForm.interest) - penaltyAmt - chargesTotal))
     : null
@@ -7116,27 +7117,28 @@ Its bank voucher is removed too.`)) return
                   </div>
                 )
               })()}
-              {/* A discounted bill is often taken back in instalments, so the
-                  amount is asked for rather than assumed. It opens on the whole
-                  balance — the ordinary case — and Full balance puts it back. */}
               <div className="flex flex-col gap-1.5">
-                <Label className="flex items-center gap-1">
-                  Amount being repaid
-                  <InfoTip text="Pay the bill off in one go, or a part of it. Anything less than the outstanding balance leaves the bill open for the rest, and each part posts its own dated voucher." />
-                </Label>
-                {/* FULL BALANCE, INSIDE THE FIELD IT FILLS.
-                    It was a rounded 36px button standing beside a 44px box —
-                    two different objects on one line, neither the size of the
-                    other. It belongs IN the field: it is not a second thing to
-                    do, it is a shortcut for typing the figure, and putting it
-                    where that figure goes says so. Square, like every other
-                    chip on this page.
-
-                    It also answers as well as acts: once the field holds the
-                    whole balance the chip says so in the affirmative rather
-                    than sitting there inviting a click that changes nothing. */}
-                {(() => {
-                  const due = dueOn(repayRow)
+              {/* WHICH FIGURE IS IN HAND — the bank's one total debit, or the
+                  principal alone. Asked once, plainly, whenever something rides
+                  with the principal (interest, penalty, charges); each answer
+                  gets its own field and the working under it, so nobody types a
+                  total where a principal was meant. */}
+              {(() => {
+                const extras = !!repayForm.with_interest || chargesTotal > 0 || penaltyAmt > 0
+                const mode: 'total' | 'principal' = extras && repayForm.amt_mode === 'total' ? 'total' : 'principal'
+                const due = dueOn(repayRow)
+                const bdNo = String(repayRow?.bd_no || 'this bill')
+                const setMode = (m: 'total' | 'principal'): void =>
+                  setRepayForm((p) => ({
+                    ...p,
+                    amt_mode: m,
+                    // Switching to Total starts from what the form already adds up to.
+                    debit_total:
+                      m === 'total'
+                        ? String(round2(n(p.amount) + n(p.interest) + penaltyAmt + chargesTotal) || '')
+                        : ''
+                  }))
+                const amountField = (() => {
                   const isFull = due > 0 && Math.abs(round2(n(repayForm.amount)) - round2(due)) < 0.005
                   const input = (
                     <Input
@@ -7145,7 +7147,6 @@ Its bank voucher is removed too.`)) return
                       data-raw={__WEB__ ? '' : undefined}
                       className={cn('tabular-nums', __WEB__ && cn(FIELD_FIG, FIELD_BARE))}
                       value={repayForm.amount ?? ''}
-                      // Typing the principal itself lets go of a total typed below.
                       onChange={(e) => setRepayForm((p) => ({ ...p, amount: e.target.value, debit_total: '' }))}
                     />
                   )
@@ -7153,12 +7154,7 @@ Its bank voucher is removed too.`)) return
                     return (
                       <div className="flex items-center gap-2">
                         {input}
-                        <Button
-                          type="button"
-                          variant="outline"
-                          className="h-9 shrink-0 px-2 text-xs"
-                          onClick={() => setRepayForm((p) => ({ ...p, amount: String(due) }))}
-                        >
+                        <Button type="button" variant="outline" className="h-9 shrink-0 px-2 text-xs" onClick={() => setRepayForm((p) => ({ ...p, amount: String(due) }))}>
                           Full balance
                         </Button>
                       </div>
@@ -7177,32 +7173,102 @@ Its bank voucher is removed too.`)) return
                       </button>
                     </div>
                   )
-                })()}
-                {/* THE STATEMENT'S ONE FIGURE. Type what the bank debited in all;
-                    interest (and any penalty / charges) comes out of it first and
-                    the balance goes off the principal above. */}
-                {(!!repayForm.with_interest || chargesTotal > 0 || penaltyAmt > 0 || debitTotalTyped !== '') && (
-                  <div className="flex flex-wrap items-center gap-2 rounded-[4px] border border-dashed border-[#B6CBE4] bg-[#F7FAFE] px-3 py-2">
-                    <span className="text-[11.5px] font-bold text-[#1B4E82]">Bank debited in total (₹)</span>
-                    <Input
-                      type="number"
-                      step="0.01"
-                      placeholder="e.g. the statement figure"
-                      value={repayForm.debit_total ?? ''}
-                      onChange={(e) => setRepayForm((p) => ({ ...p, debit_total: e.target.value }))}
-                      className="!h-8 w-[170px] tabular-nums"
-                    />
-                    <span className="min-w-0 flex-1 text-[11px] font-semibold text-[#5A6B62]">
-                      {principalFromDebit != null
-                        ? `${formatINR(n(repayForm.debit_total))} − ${formatINR(n(repayForm.interest))} interest${penaltyAmt > 0 ? ` − ${formatINR(penaltyAmt)} penalty` : ''}${chargesTotal > 0 ? ` − ${formatINR(chargesTotal)} charges` : ''} = ${formatINR(principalFromDebit)} off the principal`
-                        : 'Interest comes out of it first; the balance goes off the principal'}
+                })()
+                const line = (label: string, v: number, sign: string, tone = 'text-[#33473E]'): React.JSX.Element => (
+                  <div className="flex items-baseline justify-between gap-3 py-[3px]">
+                    <span className="text-[12px] font-semibold text-[#5A6B62]">{label}</span>
+                    <span className={cn('text-[13px] font-bold tabular-nums', tone)}>
+                      {sign}
+                      {formatINR(v)}
                     </span>
                   </div>
-                )}
+                )
+                return (
+                  <div className="flex flex-col gap-2">
+                    {extras && (
+                      <div className="flex flex-col gap-1.5">
+                        <Label>Which figure are you entering for {bdNo}?</Label>
+                        <div className="grid grid-cols-2 gap-1 rounded-[6px] border border-[#D6E2D6] bg-[#F1F5EF] p-1">
+                          {(
+                            [
+                              { v: 'total', t: 'Total debited by the bank', d: 'Principal + interest — the one figure on the bank statement' },
+                              { v: 'principal', t: 'Principal only', d: `Only what comes off ${bdNo} — interest is added on top` }
+                            ] as const
+                          ).map((o) => (
+                            <button
+                              key={o.v}
+                              type="button"
+                              onClick={() => setMode(o.v)}
+                              className={cn(
+                                'rounded-[4px] px-3 py-2 text-left transition-colors',
+                                mode === o.v ? 'bg-[#1A2C56] text-white shadow-sm' : 'text-[#33473E] hover:bg-white'
+                              )}
+                            >
+                              <span className="block text-[12.5px] font-extrabold">{o.t}</span>
+                              <span className={cn('block text-[10.5px] font-semibold', mode === o.v ? 'text-white/70' : 'text-[#7A8C82]')}>{o.d}</span>
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                    {mode === 'total' ? (
+                      <>
+                        <Label className="flex items-center gap-1">
+                          Total debited by the bank for {bdNo} (₹)
+                          <InfoTip text="Type the one figure on the bank statement. The interest (net of TDS), any penalty and charges are taken out of it first; whatever is left is repaid against the bill's principal." />
+                        </Label>
+                        <Input
+                          type="number"
+                          step="0.01"
+                          placeholder="e.g. 1,03,115"
+                          data-raw={__WEB__ ? '' : undefined}
+                          className={cn('tabular-nums', __WEB__ && FIELD_FIG)}
+                          value={repayForm.debit_total ?? ''}
+                          onChange={(e) => setRepayForm((p) => ({ ...p, debit_total: e.target.value }))}
+                        />
+                        {/* The working, top to bottom, ending on the one figure that matters. */}
+                        <div className="rounded-[6px] border border-[#C6DAF0] bg-[#F7FAFE] px-3.5 py-2.5">
+                          {line('Bank debited in total', n(repayForm.debit_total), '')}
+                          {n(repayForm.interest) > 0 && line('Less: interest paid (net of TDS)', n(repayForm.interest), '− ', 'text-[#8C2F26]')}
+                          {penaltyAmt > 0 && line('Less: penalty interest', penaltyAmt, '− ', 'text-[#8C2F26]')}
+                          {chargesTotal > 0 && line('Less: bank charges', chargesTotal, '− ', 'text-[#8C2F26]')}
+                          <div className="mt-1 flex items-baseline justify-between gap-3 border-t border-[#C6DAF0] pt-1.5">
+                            <span className="text-[12.5px] font-extrabold text-[#0A1F17]">Principal repaid against {bdNo}</span>
+                            <span className="text-[16px] font-extrabold tabular-nums text-[#0B6B45]">{formatINR(principalFromDebit ?? 0)}</span>
+                          </div>
+                          {(principalFromDebit ?? 0) > 0.004 && (
+                            <div className="mt-0.5 flex items-baseline justify-between gap-3">
+                              <span className="text-[11.5px] font-semibold text-[#5A6B62]">{bdNo} still open after this</span>
+                              <span className="text-[12px] font-bold tabular-nums text-[#1B4E82]">{formatINR(round2(Math.max(0, due - (principalFromDebit ?? 0))))}</span>
+                            </div>
+                          )}
+                          {n(repayForm.debit_total) > 0 && (principalFromDebit ?? 0) <= 0.004 && (
+                            <div className="mt-1 text-[11px] font-bold text-[#B3261E]">This total does not even cover the interest — nothing would be repaid against {bdNo}'s principal. Check the figure.</div>
+                          )}
+                        </div>
+                      </>
+                    ) : (
+                      <>
+                        <Label className="flex items-center gap-1">
+                          {extras ? `Principal being repaid against ${bdNo}` : `Amount being repaid against ${bdNo}`}
+                          <InfoTip text="Repay the bill in one go (Full balance) or a part of it. Anything less than the outstanding leaves the bill open for the rest; each part posts its own dated voucher." />
+                        </Label>
+                        {amountField}
+                        {extras && round2(n(repayForm.amount)) > 0 && (
+                          <div className="text-[11px] font-semibold text-[#1B4E82]">
+                            So the bank debits {formatINR(round2(n(repayForm.amount) + n(repayForm.interest) + penaltyAmt + chargesTotal))} in all — this principal plus the interest
+                            {penaltyAmt > 0 ? ', penalty' : ''}
+                            {chargesTotal > 0 ? ' and charges' : ''}. If your statement shows a different single figure, pick “Total debited by the bank” above.
+                          </div>
+                        )}
+                      </>
+                    )}
+                  </div>
+                )
+              })()}
                 {round2(n(repayForm.amount)) > 0 && round2(n(repayForm.amount)) < dueOn(repayRow) && (
                   <div className="text-[11px] text-muted-foreground">
-                    Part payment — {formatINR(round2(dueOn(repayRow) - round2(n(repayForm.amount))))} would still be outstanding,
-                    and the bill stays open for it.
+                    Part repayment — {String(repayRow?.bd_no || 'the bill')} stays open for the remaining {formatINR(round2(dueOn(repayRow) - round2(n(repayForm.amount))))}.
                   </div>
                 )}
                 {/* WHAT THE BANK TOOK ON TOP.
