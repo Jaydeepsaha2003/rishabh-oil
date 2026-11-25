@@ -92,6 +92,9 @@ export function AccountingChecks(): React.JSX.Element {
   // Purchase freight lines still charged on the loaded qty.
   const [loadedFr, setLoadedFr] = useState<Row | null>(null)
   const [fixingLoaded, setFixingLoaded] = useState(false)
+  // Open tanker shortage lines not at the invoice's adjusted rate.
+  const [shRep, setShRep] = useState<Row | null>(null)
+  const [fixingShRep, setFixingShRep] = useState(false)
   const [shared, setShared] = useState<Row | null>(null)
   const [splitting, setSplitting] = useState(false)
   // Purchase / sale vouchers filed in the other company's books.
@@ -164,6 +167,7 @@ export function AccountingChecks(): React.JSX.Element {
       setLcCharges(await window.api.repairs.lcCharges().catch(() => null))
       setOutFreight(await window.api.repairs.outwardFreight().catch(() => null))
       setLoadedFr(await window.api.repairs.loadedFreight().catch(() => null))
+      setShRep(await window.api.repairs.shortageReprice().catch(() => null))
       setShared(await window.api.repairs.sharedLedgers().catch(() => null))
       setWrongCo(await window.api.repairs.wrongCompany().catch(() => null))
       const sh = await window.api.repairs.shadowedRedirects().catch(() => null)
@@ -367,6 +371,27 @@ export function AccountingChecks(): React.JSX.Element {
       toast.error((e as Error).message)
     } finally {
       setFixingLoaded(false)
+    }
+  }
+
+  const srFindings: Row[] = useMemo(() => (shRep?.findings as Row[]) || [], [shRep])
+  async function fixShRep(): Promise<void> {
+    const ids = srFindings.map((x) => Number(x.line_id))
+    if (!ids.length) return
+    const ok = window.confirm(
+      `Re-price ${ids.length} tanker shortage line${ids.length === 1 ? '' : 's'} at the invoice's adjusted rate?\n\n` +
+        'Only lines not yet on a transporter bill or debit note are touched, so no voucher changes. Each line is logged first. Take a database snapshot if you want a copy you can restore.'
+    )
+    if (!ok) return
+    setFixingShRep(true)
+    try {
+      const r = await window.api.repairs.fixShortageReprice(ids)
+      toast.success(`${r.fixed} shortage line${r.fixed === 1 ? '' : 's'} now at the adjusted invoice rate`)
+      await load()
+    } catch (e) {
+      toast.error((e as Error).message)
+    } finally {
+      setFixingShRep(false)
     }
   }
 
@@ -1110,6 +1135,51 @@ export function AccountingChecks(): React.JSX.Element {
           <Button className="ml-auto gap-1.5" disabled={!lfFindings.length || fixingLoaded} onClick={() => void fixLoaded()}>
             {fixingLoaded && <Loader2 className="h-4 w-4 animate-spin" />}
             Re-work {lfFindings.length} on received qty
+          </Button>
+        </div>
+      </Section>
+
+      <Section
+        title="Tanker shortage not at the adjusted invoice rate"
+        count={srFindings.length}
+        tone={srFindings.length ? 'warn' : 'ok'}
+        note={
+          srFindings.length
+            ? 'A tanker shortage is charged on the qty beyond tolerance at the invoice’s adjusted rate. These open lines were charged at the bargain rate, or their note gives the whole shortage instead of the part beyond tolerance. None is on a bill or debit note yet.'
+            : 'Every open tanker shortage is at its invoice’s adjusted rate.'
+        }
+      >
+        <table className="w-full border-collapse">
+          <thead className="bg-muted/40">
+            <tr>
+              <th className={th}>Invoice</th>
+              <th className={th}>Tanker</th>
+              <th className={th}>Transporter</th>
+              <th className={cn(th, 'text-right')}>Beyond tolerance</th>
+              <th className={cn(th, 'text-right')}>Adjusted rate</th>
+              <th className={cn(th, 'text-right')}>Shortage now</th>
+              <th className={cn(th, 'text-right')}>Re-priced</th>
+            </tr>
+          </thead>
+          <tbody>
+            {srFindings.map((x) => (
+              <tr key={String(x.line_id)} className="border-t">
+                <td className={cn(td, 'font-semibold')}>{x.invoice_no}</td>
+                <td className={td}>{x.tanker_no}</td>
+                <td className={td}>{x.transporter}</td>
+                <td className={cn(td, 'text-right tabular-nums')}>{Number(x.excess).toFixed(3)} MT · {String(x.pct)}%</td>
+                <td className={cn(td, 'text-right tabular-nums')}>{formatINR(x.rate)}</td>
+                <td className={cn(td, 'text-right tabular-nums')}>{formatINR(Math.abs(Number(x.amount)))}</td>
+                <td className={cn(td, 'text-right tabular-nums font-semibold')}>{formatINR(Math.abs(Number(x.new_amount)))}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+        <div className="flex flex-wrap items-center gap-3 border-t bg-muted/30 px-4 py-3">
+          <span className="text-[12.5px] text-muted-foreground">{srFindings.length} line{srFindings.length === 1 ? '' : 's'}</span>
+          <Button className="ml-auto gap-1.5" disabled={!srFindings.length || fixingShRep} onClick={() => void fixShRep()}>
+            {fixingShRep && <Loader2 className="h-4 w-4 animate-spin" />}
+            Re-price {srFindings.length} shortage line{srFindings.length === 1 ? '' : 's'}
           </Button>
         </div>
       </Section>

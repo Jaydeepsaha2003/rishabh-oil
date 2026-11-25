@@ -100,8 +100,8 @@ export async function listTransporterFreight(
              AND (pt.order_id = o.id OR pt.id IN (SELECT a.tanker_id FROM ${ALLOC} a WHERE a.order_id = o.id))
            ORDER BY pt.id LIMIT 1) AS tanker_received,
          o.status AS dispatch_stage,
-         -- The oil rate a shortage is charged at — the bargain's.
-         (SELECT b.rate_per_uom FROM bargains b WHERE b.id = o.bargain_id) AS oil_rate,
+         -- The oil rate a shortage is charged at — the invoice's adjusted rate.
+         COALESCE(NULLIF(o.adjusted_rate, 0), NULLIF(o.invoice_rate, 0), (SELECT b.rate_per_uom FROM bargains b WHERE b.id = o.bargain_id)) AS oil_rate,
          CASE WHEN o.status != 'received' THEN 1 ELSE 0 END AS provisional`
       : `sa.invoice_no AS doc_no, sa.sale_date AS doc_date, COALESCE(cu.name, sa.customer) AS party_name, sa.gst_pct AS oil_gst_pct,
          p.name AS product_name,

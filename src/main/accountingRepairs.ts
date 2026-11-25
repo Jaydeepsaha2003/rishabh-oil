@@ -1,3 +1,4 @@
+import { scanShortageReprice, applyShortageReprice } from './tankerShortage'
 import { ALLOC } from './tankerAlloc'
 import { getClient } from './db'
 import { withDbTransaction } from './dbTransaction'
@@ -1609,5 +1610,33 @@ export async function fixLoadedFreight(lineIds: number[]): Promise<{ fixed: numb
       cut += f.amount - f.new_amount
     }
     return { fixed: wanted.size, cut: Math.round(cut * 100) / 100 }
+  })
+}
+
+// ── TANKER SHORTAGE AT THE INVOICE'S ADJUSTED RATE ──────────────────────────
+// Open shortage lines charged at the bare bargain rate (or noting the whole
+// shortage, not the part beyond tolerance) — re-priced only on review.
+export async function previewShortageReprice(): Promise<{ findings: Row[]; diff: number }> {
+  const findings = await scanShortageReprice()
+  return { findings, diff: Math.round(findings.reduce((s, f) => s + f.new_amount - f.amount, 0) * 100) / 100 }
+}
+
+export async function fixShortageReprice(lineIds: number[]): Promise<{ fixed: number }> {
+  const wanted = new Set((lineIds || []).map(Number).filter(Boolean))
+  if (!wanted.size) throw new Error('Pick the shortage lines to fix')
+  return withDbTransaction(async () => {
+    await ensureLog()
+    const all = await scanShortageReprice()
+    const allowed = new Map(all.map((f) => [f.line_id, f]))
+    const stale = [...wanted].filter((id) => !allowed.has(id))
+    if (stale.length) throw new Error(`${stale.length} line${stale.length === 1 ? ' has' : 's have'} changed since the list was shown — check again`)
+    const picked = all.filter((f) => wanted.has(f.line_id))
+    for (const f of picked) {
+      await getClient().execute({
+        sql: 'INSERT OR IGNORE INTO accounting_repair_log(repair_key, entry_id, before_json) VALUES (?, ?, ?)',
+        args: [`shortage-adjrate-v1:${f.line_id}`, f.line_id, JSON.stringify(f)]
+      })
+    }
+    return { fixed: await applyShortageReprice(picked) }
   })
 }

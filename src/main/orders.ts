@@ -6,6 +6,7 @@ import type { InValue, ResultSet } from '@libsql/client'
 import { getClient, todayISO } from './db'
 import { getSetting } from './repos'
 import { tankerGateReceived } from './gate'
+import { shortageOilRate, repriceOpenShortage } from './tankerShortage'
 import { createBargain, ensureOilType, adjustBargainQty } from './bargains'
 import {
   consignmentAvailable,
@@ -1047,6 +1048,8 @@ export async function createOrder(v: Row): Promise<{ id: number }> {
   // Raised. Kept as an event in its own right so the history starts where the
   // invoice does, rather than at whatever was edited first.
   await recordChanges('orders', id, String(v.invoice_no || ''), null, null, ORDER_FIELDS, 'raised')
+  // Its tankers' open shortage lines go to this invoice's adjusted rate.
+  await repriceOpenShortage(id)
   return { id }
   })
 }
@@ -1462,6 +1465,7 @@ export async function updateOrder(id: number, v: Row): Promise<{ id: number }> {
     .then((r) => (r.rows.length ? (toPlain(r)[0] as Row) : null))
     .catch(() => null)
   await recordChanges('orders', id, String(v.invoice_no || beforeRow?.invoice_no || ''), beforeRow, afterRow, ORDER_FIELDS)
+  await repriceOpenShortage(id)
   return { id }
   })
 }
@@ -2304,7 +2308,8 @@ export async function updateTankerDetails(id: number, v: Row): Promise<{ id: num
     }
     const shortage = Math.max(0, loadedQty - receivedQty)
     const excess = Math.max(0, shortage - (loadedQty * pct) / 100)
-    penalty = isEx ? excess * n(b.rate_per_uom) : 0
+    // At the invoice's adjusted rate (tankerShortage.ts), not the bare bargain rate.
+    penalty = isEx ? excess * (await shortageOilRate(t.order_id, n(b.rate_per_uom))) : 0
     transporterId = isEx ? transporterId : null
 
     // Refresh this tanker's freight entry in the transporter ledger — unless
@@ -3295,7 +3300,7 @@ export async function advancePurchaseTanker(id: number, toStatus: string, data: 
     // not being paid. Read off the row as a fallback: the rate was agreed at
     // transit and need not be re-sent here.
     const agreedRate = n(data.transport_rate_per_ton ?? tanker.transport_rate_per_ton)
-    const penalty = isEx && agreedRate > 0 ? excess * n(b.rate_per_uom) : 0
+    const penalty = isEx && agreedRate > 0 ? excess * (await shortageOilRate(tanker.order_id, n(b.rate_per_uom))) : 0
     const transporterId = isEx ? n(data.transporter_id) : null
     await c.execute({
       sql: `UPDATE purchase_tankers SET status = 'empty', empty_date = ?, received_qty = ?,
@@ -3457,7 +3462,7 @@ export async function advanceOrder(
     // nothing to dock it from. A tanker that came with no rate agreed used to
     // be charged the shortage anyway — against a transporter who was never
     // going to be paid a rupee.
-    const shortageCharge = isEx && transportRate > 0 ? excessShortage * bargainRate : 0
+    const shortageCharge = isEx && transportRate > 0 ? excessShortage * (n(order.adjusted_rate) || n(order.invoice_rate) || bargainRate) : 0
     const transporterId = isEx ? n(data.transporter_id) : null
 
     sets.push(

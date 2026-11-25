@@ -820,6 +820,8 @@ export interface Api {
     fixOutwardFreight: (ids: number[]) => Promise<{ fixed: number; freight: number }>
     loadedFreight: () => Promise<Row>
     fixLoadedFreight: (ids: number[]) => Promise<{ fixed: number; cut: number }>
+    shortageReprice: () => Promise<Row>
+    fixShortageReprice: (ids: number[]) => Promise<{ fixed: number }>
     wrongCompany: () => Promise<Row>
     splitTanker: () => Promise<Row>
     paisa: () => Promise<Row>

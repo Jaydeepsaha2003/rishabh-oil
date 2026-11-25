@@ -93,6 +93,8 @@ import {
   fixOutwardFreight,
   previewLoadedFreight,
   fixLoadedFreight,
+  previewShortageReprice,
+  fixShortageReprice,
   previewSharedLedgers,
   fixSharedLedgers
 } from './accountingRepairs'
@@ -2143,6 +2145,15 @@ export function registerIpc(): void {
   handle('repairs:loadedFreightFix', async (_e, a: { ids: number[] }) => {
     await assertAdmin('Re-working purchase freight on the received qty')
     return fixLoadedFreight(a?.ids || [])
+  })
+  // Open tanker shortage lines not at the invoice's adjusted rate.
+  handle('repairs:shortageReprice:list', async () => {
+    await assertAdmin('The accounting checks')
+    return previewShortageReprice()
+  })
+  handle('repairs:shortageRepriceFix', async (_e, a: { ids: number[] }) => {
+    await assertAdmin('Re-pricing tanker shortages')
+    return fixShortageReprice(a?.ids || [])
   })
   // Purchase / sale vouchers filed in the other company's books.
   handle('repairs:wrongCompany:list', async () => {
