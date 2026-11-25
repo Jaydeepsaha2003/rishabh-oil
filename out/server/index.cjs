@@ -44533,6 +44533,7 @@ init_bankRecon();
 init_billDiscounting();
 
 // src/main/transporterBilling.ts
+init_tankerAlloc();
 init_db();
 init_company();
 init_journal();
@@ -44581,7 +44582,25 @@ async function listTransporterFreight(side, opts = {}) {
            o.tanker_no
          ) AS vehicle_no,
          o.ordered_qty AS dispatch_qty, o.received_qty AS received_qty,
+         -- THE TANKER'S OWN FREIGHT TERMS. A freight row is one tanker's, so
+         -- its rate and quantities are that tanker's \u2014 not the whole invoice's,
+         -- and not a "rate" worked back from the amount (GT/4378 read \u20B94,228.88
+         -- on a \u20B94,200 tanker, dividing loaded-qty freight by the received qty).
+         (SELECT pt.transport_rate_per_ton FROM purchase_tankers pt
+           WHERE UPPER(REPLACE(pt.tanker_no, ' ', '')) = UPPER(REPLACE(COALESCE(NULLIF(TRIM(SUBSTR(l.note, 8, INSTR(l.note, ':') - 8)), ''), o.tanker_no), ' ', ''))
+             AND (pt.order_id = o.id OR pt.id IN (SELECT a.tanker_id FROM ${ALLOC} a WHERE a.order_id = o.id))
+           ORDER BY pt.id LIMIT 1) AS freight_rate,
+         (SELECT pt.loaded_qty FROM purchase_tankers pt
+           WHERE UPPER(REPLACE(pt.tanker_no, ' ', '')) = UPPER(REPLACE(COALESCE(NULLIF(TRIM(SUBSTR(l.note, 8, INSTR(l.note, ':') - 8)), ''), o.tanker_no), ' ', ''))
+             AND (pt.order_id = o.id OR pt.id IN (SELECT a.tanker_id FROM ${ALLOC} a WHERE a.order_id = o.id))
+           ORDER BY pt.id LIMIT 1) AS tanker_loaded,
+         (SELECT pt.received_qty FROM purchase_tankers pt
+           WHERE UPPER(REPLACE(pt.tanker_no, ' ', '')) = UPPER(REPLACE(COALESCE(NULLIF(TRIM(SUBSTR(l.note, 8, INSTR(l.note, ':') - 8)), ''), o.tanker_no), ' ', ''))
+             AND (pt.order_id = o.id OR pt.id IN (SELECT a.tanker_id FROM ${ALLOC} a WHERE a.order_id = o.id))
+           ORDER BY pt.id LIMIT 1) AS tanker_received,
          o.status AS dispatch_stage,
+         -- The oil rate a shortage is charged at \u2014 the bargain's.
+         (SELECT b.rate_per_uom FROM bargains b WHERE b.id = o.bargain_id) AS oil_rate,
          CASE WHEN o.status != 'received' THEN 1 ELSE 0 END AS provisional` : `sa.invoice_no AS doc_no, sa.sale_date AS doc_date, COALESCE(cu.name, sa.customer) AS party_name, sa.gst_pct AS oil_gst_pct,
          p.name AS product_name,
          -- A sale has no tanker record of its own; the vehicle that carried it
@@ -44589,6 +44608,10 @@ async function listTransporterFreight(side, opts = {}) {
          -- Resolved through the join below rather than a subquery per row.
          gv.tanker_no AS vehicle_no,
          sa.qty AS dispatch_qty, sa.received_qty AS received_qty, sa.dispatch_stage AS dispatch_stage,
+         -- The sale's own freight rate, where one was set.
+         NULLIF(sa.transport_rate, 0) AS freight_rate, NULL AS tanker_loaded, NULL AS tanker_received,
+         -- The rate we sold the oil at \u2014 what a shortage is charged at.
+         sa.rate AS oil_rate,
          -- Until the invoice is unloaded there is no weighed-in quantity, so the
          -- freight is still an estimate off the dispatched qty. Flagged so the
          -- register can say "valuation" rather than presenting a provisional
