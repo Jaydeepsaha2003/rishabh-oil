@@ -42311,14 +42311,17 @@ var OUTSIDE_SLOTS = ["08:00", "16:00", "20:00"];
 async function listOutsideTankers(date) {
   const c = getClient();
   const day = String(date || "").slice(0, 10);
-  const args = [getActiveCompanyId()];
-  let where = "WHERE t.company_id = ?";
+  const active = getActiveCompanyId();
+  const args = [active];
+  let where = "WHERE 1 = 1";
   if (day) {
     where += " AND t.log_date = ?";
     args.push(day);
   }
   const res = await c.execute({
     sql: `SELECT t.*,
+                 CASE WHEN t.company_id = ? THEN 1 ELSE 0 END AS own_company,
+                 (SELECT co.name FROM companies co WHERE co.id = t.company_id) AS company_name,
                  p.name AS product_name,
                  p.code AS product_code,
                  COALESCE(NULLIF(TRIM(t.category), ''), p.name) AS category_label,
