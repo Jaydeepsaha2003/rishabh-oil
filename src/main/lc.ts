@@ -1374,7 +1374,7 @@ export async function updateLC(id: number, v: Row): Promise<{ id: number; warnin
  * rupee, onto the new party's ledger; their bill-wise lines follow, and a
  * reference to one of the old party's invoices becomes On Account. Logged first.
  */
-async function moveLcPartyLines(lcId: number, oldSupplierId: number, newSupplierId: number, cid: number): Promise<number> {
+async function moveLcPartyLines(lcId: number, oldSupplierId: number, newSupplierId: number, cid: number, preview?: Row[]): Promise<number> {
   const c = getClient()
   const nameOf = async (sid: number): Promise<string> =>
     String((await c.execute({ sql: 'SELECT name FROM suppliers WHERE id = ?', args: [sid] })).rows[0]?.name || '').trim()
@@ -1386,7 +1386,11 @@ async function moveLcPartyLines(lcId: number, oldSupplierId: number, newSupplier
   const { getOrCreateAccount } = await import('./journal')
   const oldLedger = String(await resolveAccountName(await partyAccountName(oldName, 'Sundry Creditors', cid), cid)).trim().toUpperCase()
   const oldAcc = n((await c.execute({ sql: 'SELECT id FROM ledger_accounts WHERE name = ?', args: [oldLedger] })).rows[0]?.id)
-  const newAcc = await getOrCreateAccount(await partyAccountName(newName, 'Sundry Creditors', cid), 'Sundry Creditors', cid)
+  // A preview names the new ledger without creating it.
+  const newLedger = String(await resolveAccountName(await partyAccountName(newName, 'Sundry Creditors', cid), cid)).trim().toUpperCase()
+  const newAcc = preview
+    ? n((await c.execute({ sql: 'SELECT id FROM ledger_accounts WHERE name = ?', args: [newLedger] })).rows[0]?.id) || -1
+    : await getOrCreateAccount(await partyAccountName(newName, 'Sundry Creditors', cid), 'Sundry Creditors', cid)
   if (!oldAcc || !newAcc || oldAcc === newAcc) return 0
   // Every voucher this LC posted that can carry the party.
   const ids = new Set<number>()
@@ -1420,6 +1424,36 @@ async function moveLcPartyLines(lcId: number, oldSupplierId: number, newSupplier
   const lineIds = lines.map((l) => n(l.id))
   const lineIn = lineIds.map(() => '?').join(',')
   const allocs = toPlain(await c.execute({ sql: `SELECT * FROM journal_bill_allocs WHERE line_id IN (${lineIn})`, args: lineIds }))
+  // WHAT WOULD MOVE — for the Change party window, before anything is written.
+  if (preview) {
+    const newOrders = new Set(
+      toPlain(await c.execute({ sql: 'SELECT id FROM orders WHERE supplier_id = ?', args: [newSupplierId] })).map((o) => n(o.id))
+    )
+    for (const l of lines) {
+      const h = (
+        await c.execute({
+          sql: `SELECT je.entry_date, je.vch_type, COALESCE((SELECT prefix || '/' || serial FROM voucher_numbers WHERE entry_id = je.id), je.vch_no) AS code
+                  FROM journal_entries je WHERE je.id = ?`,
+          args: [n(l.entry_id)]
+        })
+      ).rows[0] as unknown as Row | undefined
+      const mine = allocs.filter((a) => n(a.line_id) === n(l.id))
+      preview.push({
+        entry_id: n(l.entry_id),
+        code: String(h?.code || ''),
+        date: String(h?.entry_date || '').slice(0, 10),
+        type: String(h?.vch_type || ''),
+        dr: round2(n(l.dr)),
+        cr: round2(n(l.cr)),
+        from: oldLedger,
+        to: newLedger,
+        to_is_new: newAcc === -1,
+        refs_kept: mine.filter((a) => !a.order_id || newOrders.has(n(a.order_id))).map((a) => String(a.ref_name || (a.method === 'on_account' ? 'On Account' : ''))),
+        refs_to_on_account: mine.filter((a) => a.order_id && !newOrders.has(n(a.order_id))).map((a) => String(a.ref_name || ''))
+      })
+    }
+    return lines.length
+  }
   await c.execute(`CREATE TABLE IF NOT EXISTS accounting_repair_log (
       repair_key TEXT PRIMARY KEY, entry_id INTEGER NOT NULL, before_json TEXT NOT NULL,
       created_at TEXT NOT NULL DEFAULT (datetime('now')))`)
@@ -2365,4 +2399,17 @@ export async function changeLcParty(id: number, partyId: number): Promise<{ id: 
     const moved = await moveLcPartyLines(n(id), n(lc.party_id), to, n(lc.company_id) || getActiveCompanyId())
     return { id: n(id), moved }
   })
+}
+
+
+/** What Change party would do to this LC's vouchers — nothing is written. */
+export async function previewLcPartyChange(id: number, partyId: number): Promise<Row> {
+  const c = getClient()
+  const lc = (await c.execute({ sql: 'SELECT id, party_id, company_id, preclosed_date FROM letters_of_credit WHERE id = ?', args: [n(id)] })).rows[0] as unknown as Row | undefined
+  if (!lc) throw new Error('LC not found')
+  const rows: Row[] = []
+  if (n(partyId) && n(partyId) !== n(lc.party_id)) {
+    await moveLcPartyLines(n(id), n(lc.party_id), n(partyId), n(lc.company_id) || getActiveCompanyId(), rows)
+  }
+  return { closed: !!lc.preclosed_date, rows }
 }

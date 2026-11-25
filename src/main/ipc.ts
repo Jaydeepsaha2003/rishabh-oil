@@ -1799,6 +1799,7 @@ export function registerIpc(): void {
   })
   handle('lc:unpreclose', (_e, { id }: { id: number }) => unPrecloseLC(id))
   // The party alone, on any LC — closed ones too, with no Undo preclosure.
+  handle('lc:partyPreview:list', async (_e, { id, partyId }: { id: number; partyId: number }) => (await import('./lc')).previewLcPartyChange(Number(id), Number(partyId)))
   handle('lc:changeParty', async (_e, { id, partyId }: { id: number; partyId: number }) => (await import('./lc')).changeLcParty(Number(id), Number(partyId)))
   // Corrects a closure's own figures and re-posts its vouchers, in one go.
   handle('lc:editPreclosure', (_e, { id, values }: { id: number; values: Parameters<typeof editPreclosure>[1] }) =>

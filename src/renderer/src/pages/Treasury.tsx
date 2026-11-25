@@ -2012,6 +2012,20 @@ function TreasuryDesk({ onCompanyChange, focusLcId, focusBdId, onFocusHandled }:
   const [partyRow, setPartyRow] = useState<Row | null>(null)
   const [partyPick, setPartyPick] = useState('')
   const [partyBusy, setPartyBusy] = useState(false)
+  // What the change would do, read as soon as a party is picked.
+  const [partyPrev, setPartyPrev] = useState<Row[] | null>(null)
+  useEffect(() => {
+    setPartyPrev(null)
+    if (!partyRow || !partyPick || partyPick === String(partyRow.party_id || '')) return
+    let live = true
+    window.api.lc
+      .partyPreview(Number(partyRow.id), Number(partyPick))
+      .then((r) => live && setPartyPrev(((r as Row).rows as Row[]) || []))
+      .catch(() => live && setPartyPrev([]))
+    return () => {
+      live = false
+    }
+  }, [partyRow, partyPick])
   async function saveParty(): Promise<void> {
     if (!partyRow || !partyPick) return
     setPartyBusy(true)
@@ -7265,7 +7279,7 @@ function TreasuryDesk({ onCompanyChange, focusLcId, focusBdId, onFocusHandled }:
       </Dialog>
 
       <Dialog open={!!partyRow} onOpenChange={(o) => !o && !partyBusy && setPartyRow(null)}>
-        <DialogContent className="max-w-md">
+        <DialogContent className="max-w-xl">
           <DialogHeader>
             <DialogTitle>Change the party on {String(partyRow?.lc_no || 'this LC')}</DialogTitle>
           </DialogHeader>
@@ -7286,6 +7300,47 @@ function TreasuryDesk({ onCompanyChange, focusLcId, focusBdId, onFocusHandled }:
               ))}
             </SelectContent>
           </Select>
+          {/* WHAT HAPPENS TO THE VOUCHERS — before anything is saved. */}
+          {partyPick && partyPick !== String(partyRow?.party_id || '') && (
+            <div className="rounded-[6px] border border-[#C6DAF0] bg-[#F7FAFE] px-3 py-2.5">
+              <div className="mb-1.5 text-[10.5px] font-extrabold uppercase tracking-[.1em] text-[#1B4E82]">What changes in the books</div>
+              {partyPrev == null ? (
+                <div className="text-[12px] text-muted-foreground">Reading…</div>
+              ) : partyPrev.length === 0 ? (
+                <div className="text-[12px] font-semibold text-[#33473E]">No voucher of this LC is on the party's ledger — only the LC's party changes.</div>
+              ) : (
+                <div className="space-y-2">
+                  {partyPrev.map((p, i) => (
+                    <div key={i} className="rounded-[4px] border border-[#DCE7F7] bg-white px-2.5 py-2 text-[12px]">
+                      <div className="flex items-baseline justify-between gap-2">
+                        <span className="font-extrabold text-[#0A1F17]">
+                          {String(p.code)} <span className="font-semibold text-[#5A6B62]">· {String(p.type)} · {formatDate(String(p.date))}</span>
+                        </span>
+                        <span className="font-bold tabular-nums">
+                          {n(p.dr) > 0 ? `Dr ${formatINR(n(p.dr))}` : `Cr ${formatINR(n(p.cr))}`}
+                        </span>
+                      </div>
+                      <div className="mt-1 text-[11.5px]">
+                        <span className="text-[#B3261E] line-through">{String(p.from)}</span>
+                        <span className="mx-1.5 text-[#5A6B62]">→</span>
+                        <b className="text-[#0B6B45]">{String(p.to)}</b>
+                        {!!p.to_is_new && <span className="ml-1.5 rounded-[2px] bg-[#FFF4DD] px-1 text-[10px] font-bold text-[#8A5300]">new ledger</span>}
+                      </div>
+                      {((p.refs_to_on_account as string[]) || []).length > 0 && (
+                        <div className="mt-1 text-[11px] font-semibold text-[#8A5300]">
+                          Bill-wise: {(p.refs_to_on_account as string[]).join(', ')} is the old party's invoice — becomes On Account
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                  <div className="text-[11px] font-semibold text-[#5A6B62]">
+                    Same voucher numbers, dates and amounts — only the party's ledger changes.
+                    {partyRow?.preclosed_date ? ' The LC stays closed; its repayment is untouched.' : ''}
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
           <DialogFooter>
             <Button variant="outline" onClick={() => setPartyRow(null)} disabled={partyBusy}>
               Cancel
