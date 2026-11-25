@@ -10201,13 +10201,25 @@ Delete ${doc}?`)) return
                   <span style={{ padding: '0 12px' }}>{tfCf.head('bill', 'Bill', { onDark: true })}</span>
                 </div>
 
-                {shown.map((r, i) => {
-                  const id = Number(r.id)
+                {(() => {
                   // GROUPED BY TANKER: a shortage line sits folded under its freight
-                  // line (which already shows the shortage and the net) until opened.
+                  // line (which already shows the shortage and the net), and opens
+                  // straight beneath it — never somewhere else in the list.
+                  const leads = new Set(shown.filter((x) => !isShort(x)).map(tfTankerKey))
+                  const out: { r: Row; child: boolean; band: number }[] = []
+                  let band = 0
+                  for (const r of shown) {
+                    const k = tfTankerKey(r)
+                    if (isShort(r) && leads.has(k)) continue
+                    out.push({ r, child: false, band: band++ })
+                    if (!isShort(r) && tfOpenGroups.has(k)) for (const x of shown) if (isShort(x) && tfTankerKey(x) === k) out.push({ r: x, child: true, band: band - 1 })
+                  }
+                  return out
+                })().map(({ r, child, band }) => {
+                  const id = Number(r.id)
+                  const i = band
                   const gKey = tfTankerKey(r)
-                  const gHasLead = shown.some((x) => tfTankerKey(x) === gKey && !isShort(x))
-                  if (isShort(r) && gHasLead && !tfOpenGroups.has(gKey)) return null
+                  const gOpen = tfOpenGroups.has(gKey)
                   const gSubs = !isShort(r) ? shown.filter((x) => tfTankerKey(x) === gKey && isShort(x)) : []
                   const booked = bookedOf(r)
                   const settled = settledOf(r)
@@ -10232,10 +10244,10 @@ Delete ${doc}?`)) return
                         className="grid items-center hover:!bg-[#F4F9EF]"
                         style={{
                           gridTemplateColumns: GRID,
-                          minHeight: 48,
-                          borderBottom: '1px solid #EFF3EE',
-                          background: picked ? '#F3FBE2' : openRow ? '#F4F9EF' : i % 2 ? '#FBFDFA' : '#fff',
-                          boxShadow: `inset 3px 0 0 ${picked ? '#9ACD2A' : orphan ? A.bad : 'transparent'}`,
+                          minHeight: child ? 40 : 52,
+                          borderBottom: child || (gOpen && gSubs.length) ? '1px dashed #EBDCDA' : '1px solid #E8EFE7',
+                          background: picked ? '#F3FBE2' : openRow ? '#F4F9EF' : child ? '#FFF9F8' : i % 2 ? '#FBFDFA' : '#fff',
+                          boxShadow: `inset 3px 0 0 ${picked ? '#9ACD2A' : orphan ? A.bad : child ? '#F0C9C4' : 'transparent'}`,
                           cursor: settled ? 'default' : 'pointer'
                         }}
                       >
@@ -10254,6 +10266,11 @@ Delete ${doc}?`)) return
                           )}
                         </div>
                         {/* The tag under the name, so a long name keeps its width. */}
+                        {child ? (
+                          <span className="flex items-center gap-1.5" style={{ padding: '0 10px 0 22px', fontSize: 10.5, fontWeight: 800, letterSpacing: '.06em', color: A.cr }}>
+                            <span style={{ color: '#D9A9A3' }}>└</span> OIL SHORTAGE
+                          </span>
+                        ) : (
                         <div className="flex min-w-0 flex-col items-start justify-center gap-0.5" style={{ padding: '0 10px' }}>
                           <span className="max-w-full truncate" style={{ fontSize: 12, fontWeight: 800 }} title={String(r.transporter_name || '')}>
                             {String(r.transporter_name || '—')}
@@ -10268,12 +10285,12 @@ Delete ${doc}?`)) return
                             </span>
                           )}
                         </div>
-                        <span className="truncate" style={{ padding: '0 10px', ...mono, fontSize: 11.5, fontWeight: 600, color: A.inkMid }}>
-                          {String(r.vehicle_no || '—')}
+                        )}
+                        <span className="truncate" style={{ padding: '0 10px', ...mono, fontSize: 11.5, fontWeight: 600, color: child ? A.none : A.inkMid }}>
+                          {child ? '' : String(r.vehicle_no || '—')}
                         </span>
-                        <span className="flex min-w-0 items-center gap-1.5" style={{ padding: '0 10px', ...mono, fontSize: 12, fontWeight: 700 }}>
-                          {isShort(r) && gHasLead && <span style={{ color: A.muted }}>↳</span>}
-                          <span className="truncate">{String(r.doc_no || '—')}</span>
+                        <span className="flex min-w-0 flex-col items-start justify-center gap-[3px]" style={{ padding: '0 10px', ...mono, fontSize: 12, fontWeight: 700 }}>
+                          <span className="max-w-full truncate" style={child ? { fontSize: 11, color: A.muted } : undefined}>{String(r.doc_no || '—')}</span>
                           {gSubs.length > 0 && (
                             <button
                               type="button"
@@ -10286,17 +10303,24 @@ Delete ${doc}?`)) return
                                   return x
                                 })
                               }}
-                              title={tfOpenGroups.has(gKey) ? 'Fold the shortage line away' : 'Show the shortage line behind this tanker'}
-                              className="flex-none rounded-[3px] px-1.5"
-                              style={{ fontSize: 9.5, fontWeight: 800, letterSpacing: '.04em', color: A.cr, background: '#FDF3F2', border: '1px solid #F0D6D4' }}
+                              title={gOpen ? 'Fold the shortage line away' : 'Show the shortage line behind this tanker'}
+                              className="flex flex-none items-center gap-1 rounded-[4px] px-1.5 py-[1px] hover:brightness-95"
+                              style={{ fontFamily: 'inherit', fontSize: 9.5, fontWeight: 800, letterSpacing: '.05em', color: A.cr, background: gOpen ? '#FBE7E4' : '#FDF3F2', border: '1px solid #F0D6D4' }}
                             >
-                              {tfOpenGroups.has(gKey) ? '▾' : '▸'} {gSubs.length === 1 ? 'shortage' : `${gSubs.length} lines`}
+                              <ChevronRight className="h-3 w-3" style={{ transform: gOpen ? 'rotate(90deg)' : 'none', transition: 'transform .15s' }} />
+                              {gSubs.length === 1 ? `${q3(shortQty(gSubs[0]))} MT SHORT` : `${gSubs.length} SHORTAGES`}
                             </button>
                           )}
                         </span>
                         <span className="truncate" style={{ padding: '0 10px', ...mono, fontSize: 11.5, fontWeight: 600, color: A.inkMid }}>
-                          {r.doc_date ? formatDate(String(r.doc_date).slice(0, 10)) : '—'}
+                          {child ? '' : r.doc_date ? formatDate(String(r.doc_date).slice(0, 10)) : '—'}
                         </span>
+                        {child ? (
+                          <div className="min-w-0" style={{ padding: '4px 10px', fontSize: 11, fontWeight: 600, color: A.muted }}>
+                            <span style={{ color: A.inkMid, fontWeight: 700 }}>{q3(qq)} MT</span> beyond tolerance at the oil rate
+                            {unreg ? ' + GST, off the freight' : ' — claimed on a debit note'}
+                          </div>
+                        ) : (
                         <div className="min-w-0" style={{ padding: '6px 10px' }}>
                           <div className="truncate" style={{ fontSize: 12, fontWeight: 700 }}>
                             {String(r.party_name || '—')}
@@ -10304,7 +10328,6 @@ Delete ${doc}?`)) return
                           <div className="flex min-w-0 items-center gap-1.5" style={{ marginTop: 3 }}>
                             <span className="truncate" style={{ fontSize: 10.5, fontWeight: 600, color: A.muted }}>
                               {String(r.product_name || '')}
-                              {short && qq > 0 ? ` · ${q3(qq)} MT short` : ''}
                             </span>
                             {short && (
                               <span
@@ -10316,6 +10339,7 @@ Delete ${doc}?`)) return
                             )}
                           </div>
                         </div>
+                        )}
                         <span style={{ padding: '0 10px', textAlign: 'right', ...mono, fontSize: 12, fontWeight: 600, color: short ? A.bad : qq > 0 ? A.ink : A.none }}>
                           {qq > 0 ? `${q3(qq)}${short ? ' short' : ''}` : '—'}
                           {!!rcvdNote(r) && (
@@ -10364,7 +10388,7 @@ Delete ${doc}?`)) return
                             </>
                           )
                         })()}
-                        <div style={{ padding: '0 10px' }}>
+                        <div style={{ padding: '0 10px', visibility: child ? 'hidden' : undefined }}>
                           <span
                             title={
                               weighed
