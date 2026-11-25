@@ -13209,6 +13209,7 @@ __export(lc_exports, {
   payLcParty: () => payLcParty,
   pickBankVouchers: () => pickBankVouchers,
   precloseLC: () => precloseLC,
+  previewLcPartyChange: () => previewLcPartyChange,
   recloseLc17: () => recloseLc17,
   reinstateLC: () => reinstateLC,
   rejectLC: () => rejectLC,
@@ -14089,7 +14090,7 @@ async function updateLC(id, v) {
     return { id, warning };
   });
 }
-async function moveLcPartyLines(lcId, oldSupplierId, newSupplierId, cid) {
+async function moveLcPartyLines(lcId, oldSupplierId, newSupplierId, cid, preview) {
   const c = getClient();
   const nameOf = async (sid) => String((await c.execute({ sql: "SELECT name FROM suppliers WHERE id = ?", args: [sid] })).rows[0]?.name || "").trim();
   const oldName = await nameOf(oldSupplierId);
@@ -14100,7 +14101,8 @@ async function moveLcPartyLines(lcId, oldSupplierId, newSupplierId, cid) {
   const { getOrCreateAccount: getOrCreateAccount2 } = await Promise.resolve().then(() => (init_journal(), journal_exports));
   const oldLedger = String(await resolveAccountName2(await partyAccountName2(oldName, "Sundry Creditors", cid), cid)).trim().toUpperCase();
   const oldAcc = n16((await c.execute({ sql: "SELECT id FROM ledger_accounts WHERE name = ?", args: [oldLedger] })).rows[0]?.id);
-  const newAcc = await getOrCreateAccount2(await partyAccountName2(newName, "Sundry Creditors", cid), "Sundry Creditors", cid);
+  const newLedger = String(await resolveAccountName2(await partyAccountName2(newName, "Sundry Creditors", cid), cid)).trim().toUpperCase();
+  const newAcc = preview ? n16((await c.execute({ sql: "SELECT id FROM ledger_accounts WHERE name = ?", args: [newLedger] })).rows[0]?.id) || -1 : await getOrCreateAccount2(await partyAccountName2(newName, "Sundry Creditors", cid), "Sundry Creditors", cid);
   if (!oldAcc || !newAcc || oldAcc === newAcc) return 0;
   const ids = /* @__PURE__ */ new Set();
   const add = (rows2) => rows2.forEach((r) => n16(r.e) && ids.add(n16(r.e)));
@@ -14131,6 +14133,33 @@ async function moveLcPartyLines(lcId, oldSupplierId, newSupplierId, cid) {
   const lineIds = lines.map((l) => n16(l.id));
   const lineIn = lineIds.map(() => "?").join(",");
   const allocs = toPlain13(await c.execute({ sql: `SELECT * FROM journal_bill_allocs WHERE line_id IN (${lineIn})`, args: lineIds }));
+  if (preview) {
+    const newOrders = new Set(
+      toPlain13(await c.execute({ sql: "SELECT id FROM orders WHERE supplier_id = ?", args: [newSupplierId] })).map((o) => n16(o.id))
+    );
+    for (const l of lines) {
+      const h = (await c.execute({
+        sql: `SELECT je.entry_date, je.vch_type, COALESCE((SELECT prefix || '/' || serial FROM voucher_numbers WHERE entry_id = je.id), je.vch_no) AS code
+                  FROM journal_entries je WHERE je.id = ?`,
+        args: [n16(l.entry_id)]
+      })).rows[0];
+      const mine = allocs.filter((a) => n16(a.line_id) === n16(l.id));
+      preview.push({
+        entry_id: n16(l.entry_id),
+        code: String(h?.code || ""),
+        date: String(h?.entry_date || "").slice(0, 10),
+        type: String(h?.vch_type || ""),
+        dr: round29(n16(l.dr)),
+        cr: round29(n16(l.cr)),
+        from: oldLedger,
+        to: newLedger,
+        to_is_new: newAcc === -1,
+        refs_kept: mine.filter((a) => !a.order_id || newOrders.has(n16(a.order_id))).map((a) => String(a.ref_name || (a.method === "on_account" ? "On Account" : ""))),
+        refs_to_on_account: mine.filter((a) => a.order_id && !newOrders.has(n16(a.order_id))).map((a) => String(a.ref_name || ""))
+      });
+    }
+    return lines.length;
+  }
   await c.execute(`CREATE TABLE IF NOT EXISTS accounting_repair_log (
       repair_key TEXT PRIMARY KEY, entry_id INTEGER NOT NULL, before_json TEXT NOT NULL,
       created_at TEXT NOT NULL DEFAULT (datetime('now')))`);
@@ -14834,6 +14863,16 @@ async function changeLcParty(id, partyId) {
     const moved = await moveLcPartyLines(n16(id), n16(lc.party_id), to, n16(lc.company_id) || getActiveCompanyId());
     return { id: n16(id), moved };
   });
+}
+async function previewLcPartyChange(id, partyId) {
+  const c = getClient();
+  const lc = (await c.execute({ sql: "SELECT id, party_id, company_id, preclosed_date FROM letters_of_credit WHERE id = ?", args: [n16(id)] })).rows[0];
+  if (!lc) throw new Error("LC not found");
+  const rows2 = [];
+  if (n16(partyId) && n16(partyId) !== n16(lc.party_id)) {
+    await moveLcPartyLines(n16(id), n16(lc.party_id), n16(partyId), n16(lc.company_id) || getActiveCompanyId(), rows2);
+  }
+  return { closed: !!lc.preclosed_date, rows: rows2 };
 }
 var partRate, LC_COLS;
 var init_lc = __esm({
@@ -46628,6 +46667,7 @@ function registerIpc() {
     return deleteLCIssuance(id);
   });
   handle("lc:unpreclose", (_e, { id }) => unPrecloseLC(id));
+  handle("lc:partyPreview:list", async (_e, { id, partyId }) => (await Promise.resolve().then(() => (init_lc(), lc_exports))).previewLcPartyChange(Number(id), Number(partyId)));
   handle("lc:changeParty", async (_e, { id, partyId }) => (await Promise.resolve().then(() => (init_lc(), lc_exports))).changeLcParty(Number(id), Number(partyId)));
   handle(
     "lc:editPreclosure",
