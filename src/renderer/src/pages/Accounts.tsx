@@ -10412,14 +10412,22 @@ Delete ${doc}?`)) return
                   style={{ gridTemplateColumns: GRID, minHeight: 42, background: 'linear-gradient(180deg,#0F4A38,#0B3D2E)' }}
                   title="What the rows on screen come to — the filtered set, so it agrees with the list rather than with the tiles above."
                 >
+                  {/* One cell per column, so each total sits under its own heading:
+                      lines · (date) · against | Qty | Rate | Freight | Oil shortage | Net payable | Basis | Bill. */}
                   <span />
-                  <span style={{ gridColumn: 'span 4', padding: '0 10px', fontSize: 10, fontWeight: 800, letterSpacing: '.1em', textTransform: 'uppercase', color: '#A9CDBB' }}>
+                  <span style={{ gridColumn: 'span 5', padding: '0 10px', fontSize: 10, fontWeight: 800, letterSpacing: '.1em', textTransform: 'uppercase', color: '#A9CDBB' }}>
                     {shown.length} line{shown.length === 1 ? '' : 's'} shown
                   </span>
                   <span style={{ padding: '0 10px', textAlign: 'right', ...mono, fontSize: 12, fontWeight: 700, color: '#DCEFE4' }}>
                     {q3(shown.filter((r) => !isShort(r)).reduce((t, r) => t + qtyOf(r), 0))}
                   </span>
                   <span />
+                  <span className="whitespace-nowrap" style={{ padding: '0 10px', textAlign: 'right', ...mono, fontSize: 12, fontWeight: 700, color: '#DCEFE4' }}>
+                    {money(sum(shown.filter((r) => !isShort(r))))}
+                  </span>
+                  <span className="whitespace-nowrap" style={{ padding: '0 10px', textAlign: 'right', ...mono, fontSize: 12, fontWeight: 700, color: '#FFB4AB' }}>
+                    {shown.some(isShort) ? money(sum(shown.filter(isShort))) : ''}
+                  </span>
                   <span className="whitespace-nowrap" style={{ padding: '0 10px', textAlign: 'right', ...mono, fontSize: 13, fontWeight: 700, color: A.accent }}>
                     {money(sum(shown))}
                   </span>
