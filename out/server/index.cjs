@@ -14072,6 +14072,7 @@ async function updateLC(id, v) {
     if (!String(v.fd_no || "").trim()) throw new Error("FD No is required");
     await assertWithinFacility(v, id);
     await assertWithinInvoiceCover(v);
+    const before = (await getClient().execute({ sql: "SELECT party_type, party_id, company_id FROM letters_of_credit WHERE id = ?", args: [id] })).rows[0];
     await getClient().execute({
       sql: `UPDATE letters_of_credit SET ${LC_COLS.map((k) => `${k} = ?`).join(", ")} WHERE id = ?`,
       args: [...lcArgs(v), id]
@@ -14080,8 +14081,70 @@ async function updateLC(id, v) {
     await linkTradingDealsToLc(id, v.linked_deal_ids);
     await syncPaymentReceivedIssuance(id, v);
     const warning = await syncLcVouchers(id);
+    if (before && String(before.party_type) === "supplier" && String(v.party_type || "supplier") === "supplier" && n16(before.party_id) && n16(v.party_id) && n16(before.party_id) !== n16(v.party_id)) {
+      await moveLcPartyLines(id, n16(before.party_id), n16(v.party_id), n16(before.company_id) || getActiveCompanyId());
+    }
     return { id, warning };
   });
+}
+async function moveLcPartyLines(lcId, oldSupplierId, newSupplierId, cid) {
+  const c = getClient();
+  const nameOf = async (sid) => String((await c.execute({ sql: "SELECT name FROM suppliers WHERE id = ?", args: [sid] })).rows[0]?.name || "").trim();
+  const oldName = await nameOf(oldSupplierId);
+  const newName = await nameOf(newSupplierId);
+  if (!oldName || !newName) return 0;
+  const { partyAccountName: partyAccountName2 } = await Promise.resolve().then(() => (init_partyLedgers(), partyLedgers_exports));
+  const { resolveAccountName: resolveAccountName2 } = await Promise.resolve().then(() => (init_ledgerMap(), ledgerMap_exports));
+  const { getOrCreateAccount: getOrCreateAccount2 } = await Promise.resolve().then(() => (init_journal(), journal_exports));
+  const oldLedger = String(await resolveAccountName2(await partyAccountName2(oldName, "Sundry Creditors", cid), cid)).trim().toUpperCase();
+  const oldAcc = n16((await c.execute({ sql: "SELECT id FROM ledger_accounts WHERE name = ?", args: [oldLedger] })).rows[0]?.id);
+  const newAcc = await getOrCreateAccount2(await partyAccountName2(newName, "Sundry Creditors", cid), "Sundry Creditors", cid);
+  if (!oldAcc || !newAcc || oldAcc === newAcc) return 0;
+  const ids = /* @__PURE__ */ new Set();
+  const add = (rows2) => rows2.forEach((r) => n16(r.e) && ids.add(n16(r.e)));
+  add(toPlain13(await c.execute({ sql: "SELECT journal_entry_id AS e FROM lc_issuances WHERE lc_id = ?", args: [lcId] })));
+  add(
+    toPlain13(
+      await c.execute({
+        sql: `SELECT journal_entry_id AS e FROM letters_of_credit WHERE id = ?
+              UNION ALL SELECT preclose_interest_journal_entry_id FROM letters_of_credit WHERE id = ?
+              UNION ALL SELECT preclose_payout_journal_entry_id FROM letters_of_credit WHERE id = ?
+              UNION ALL SELECT fee_adjust_journal_entry_id FROM letters_of_credit WHERE id = ?`,
+        args: [lcId, lcId, lcId, lcId]
+      })
+    )
+  );
+  add(
+    toPlain13(
+      await c.execute({ sql: "SELECT rebate_journal_entry_id AS e FROM lc_parts WHERE lc_id = ? UNION ALL SELECT rebate_payout_journal_entry_id FROM lc_parts WHERE lc_id = ?", args: [lcId, lcId] }).catch(() => ({ rows: [] }))
+    )
+  );
+  if (!ids.size) return 0;
+  const list2 = [...ids];
+  const inList = list2.map(() => "?").join(",");
+  const lines = toPlain13(
+    await c.execute({ sql: `SELECT id, entry_id, dr, cr FROM journal_lines WHERE account_id = ? AND entry_id IN (${inList})`, args: [oldAcc, ...list2] })
+  );
+  if (!lines.length) return 0;
+  const lineIds = lines.map((l) => n16(l.id));
+  const lineIn = lineIds.map(() => "?").join(",");
+  const allocs = toPlain13(await c.execute({ sql: `SELECT * FROM journal_bill_allocs WHERE line_id IN (${lineIn})`, args: lineIds }));
+  await c.execute(`CREATE TABLE IF NOT EXISTS accounting_repair_log (
+      repair_key TEXT PRIMARY KEY, entry_id INTEGER NOT NULL, before_json TEXT NOT NULL,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')))`);
+  await c.execute({
+    sql: "INSERT OR REPLACE INTO accounting_repair_log(repair_key, entry_id, before_json) VALUES (?, ?, ?)",
+    args: [`lc_party_move:${lcId}:${Date.now()}`, n16(lines[0].entry_id), JSON.stringify({ lcId, from: { supplier: oldSupplierId, account: oldAcc }, to: { supplier: newSupplierId, account: newAcc }, lines, allocs })]
+  });
+  await c.execute({ sql: `UPDATE journal_lines SET account_id = ? WHERE id IN (${lineIn})`, args: [newAcc, ...lineIds] });
+  await c.execute({ sql: `UPDATE journal_bill_allocs SET account_id = ? WHERE line_id IN (${lineIn})`, args: [newAcc, ...lineIds] });
+  await c.execute({
+    sql: `UPDATE journal_bill_allocs SET method = 'on_account', ref_name = NULL, order_id = NULL
+           WHERE line_id IN (${lineIn}) AND order_id IS NOT NULL
+             AND order_id NOT IN (SELECT id FROM orders WHERE supplier_id = ?)`,
+    args: [...lineIds, newSupplierId]
+  });
+  return lines.length;
 }
 function todayISO5() {
   const d = /* @__PURE__ */ new Date();
