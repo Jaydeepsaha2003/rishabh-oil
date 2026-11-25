@@ -15671,8 +15671,10 @@ async function listBd(filter) {
                             WHERE ip.bd_id = bd.id), 0) AS interest_paid_total,
                  COALESCE((SELECT SUM(ip.tds) FROM bd_interest_payments ip
                             WHERE ip.bd_id = bd.id), 0) AS interest_paid_tds,
-                 (SELECT MAX(ip.to_date) FROM bd_interest_payments ip
-                   WHERE ip.bd_id = bd.id) AS interest_paid_to,
+                 -- \u2026or a repayment that paid the interest with it (to its repay date).
+                 NULLIF(MAX(COALESCE((SELECT MAX(ip.to_date) FROM bd_interest_payments ip WHERE ip.bd_id = bd.id), ''),
+                            COALESCE((SELECT MAX(rr.repay_date) FROM bd_repayments rr
+                                       WHERE rr.bd_id = bd.id AND COALESCE(rr.interest, 0) > 0.004), '')), '') AS interest_paid_to,
                  (SELECT MAX(rr.repay_date) FROM bd_repayments rr
                    WHERE rr.bd_id = bd.id) AS last_repay_date,
                  -- Interest paid WITH the repayments (net) and its TDS \u2014 the
@@ -16337,6 +16339,32 @@ async function listBdInterestPayments(bdId) {
   });
   return toPlain14(res);
 }
+async function bdPaidStretches(bdId, bd) {
+  const c = getClient();
+  const paid = toPlain14(
+    await c.execute({ sql: "SELECT from_date, to_date, gross, tds, net, paid_date FROM bd_interest_payments WHERE bd_id = ? ORDER BY from_date", args: [n17(bdId)] })
+  );
+  const reps = toPlain14(
+    await c.execute({
+      sql: "SELECT repay_date, interest, tds_amount FROM bd_repayments WHERE bd_id = ? AND COALESCE(interest, 0) > 0.004 ORDER BY repay_date, id",
+      args: [n17(bdId)]
+    }).catch(() => ({ rows: [] }))
+  );
+  if (!reps.length) return paid;
+  const received = String(bd.payment_received_date || "").slice(0, 10);
+  const A = received ? accrualStart(bd, received) : "0000-00-00";
+  const out = [...paid];
+  for (const r of reps) {
+    const on = String(r.repay_date || "").slice(0, 10);
+    if (!on) continue;
+    const from = firstUnpaid(out, A).from;
+    if (from > on) continue;
+    const net = round210(n17(r.interest));
+    const tds = r.tds_amount != null && String(r.tds_amount) !== "" ? round210(n17(r.tds_amount)) : n17(bd.tds_pct) > 0 && n17(bd.tds_pct) < 100 ? round210(net * n17(bd.tds_pct) / (100 - n17(bd.tds_pct))) : 0;
+    out.push({ from_date: from, to_date: on, gross: round210(net + tds), tds, net, paid_date: on, via_repayment: 1 });
+  }
+  return out.sort((a, b) => String(a.from_date).localeCompare(String(b.from_date)));
+}
 function accrualStart(bd, received) {
   return bd.days_incl_start ? received : addDays2(received, 1);
 }
@@ -16357,13 +16385,24 @@ async function bdInterestRange(bdId, fromIn, toIn) {
   const mode = String(bd.interest_mode || "") || (bd.interest_upfront ? "upfront" : "discounted");
   const today = todayISO6();
   const to = String(toIn).slice(0, 10) > today ? today : String(toIn).slice(0, 10);
-  const paid = toPlain14(await getClient().execute({ sql: "SELECT from_date, to_date, gross FROM bd_interest_payments WHERE bd_id = ? ORDER BY from_date", args: [n17(bdId)] }));
+  const paid = await bdPaidStretches(n17(bdId), bd);
   const daysYear = n17(bd.days_year) || 360;
   const out = { bd_id: n17(bdId), interest_base: calc.interestBase, open_amount: calc.openAmount, interest_pct: n17(bd.interest_pct), tds_pct: n17(bd.tds_pct), days_year: daysYear, to_date: to, parts: [], gross: 0, tds: 0, net: 0, days: 0 };
   if (!received) return { ...out, from_date: fromIn, blocked: "This bill is not funded yet." };
   if (mode === "discounted") return { ...out, from_date: fromIn, blocked: "Interest was taken out when the bill was funded." };
   const A = accrualStart(bd, received);
-  const from = String(fromIn).slice(0, 10) < A ? A : String(fromIn).slice(0, 10);
+  let from = String(fromIn).slice(0, 10) < A ? A : String(fromIn).slice(0, 10);
+  for (let moved = true; moved; ) {
+    moved = false;
+    for (const p of paid) {
+      const pf = String(p.from_date || "").slice(0, 10);
+      const pt = String(p.to_date || "").slice(0, 10);
+      if (p.via_repayment && pf <= from && pt >= from && pt < to) {
+        from = addDays2(pt, 1);
+        moved = true;
+      }
+    }
+  }
   out.from_date = from;
   if (from > to) return { ...out, blocked: received > to ? "Funded after this period." : "Nothing in this period." };
   const steps = n17(bd.first_receipt_part) > 5e-3 ? [] : await principalRepaidByDate(bdId);
@@ -16616,13 +16655,7 @@ async function bdInterestWindow(bdId, toDate) {
   const calc = bdCalc(bd);
   const received = String(bd.payment_received_date || "").slice(0, 10);
   const mode = String(bd.interest_mode || "") || (bd.interest_upfront ? "upfront" : "discounted");
-  const paid = toPlain14(
-    await getClient().execute({
-      sql: `SELECT from_date, to_date, gross, tds, net, paid_date FROM bd_interest_payments
-             WHERE bd_id = ? ORDER BY to_date DESC, id DESC`,
-      args: [n17(bdId)]
-    })
-  );
+  const paid = (await bdPaidStretches(n17(bdId), bd)).sort((a, b) => String(b.to_date).localeCompare(String(a.to_date)));
   const lastTo = paid.length ? String(paid[0].to_date).slice(0, 10) : "";
   const g = firstUnpaid(paid, received ? accrualStart(bd, received) : "");
   const first = !!received && g.from === accrualStart(bd, received);
