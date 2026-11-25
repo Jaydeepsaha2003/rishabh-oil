@@ -16581,12 +16581,20 @@ function firstUnpaid(paid, start) {
   }
   return { from: cur, next: null };
 }
-async function bdInterestRange(bdId, fromIn, toIn) {
+function interestCap(monthEnd2) {
+  const t = todayISO6();
+  if (!monthEnd2) return t;
+  const d = /* @__PURE__ */ new Date(`${t.slice(0, 7)}-01T00:00:00Z`);
+  d.setUTCMonth(d.getUTCMonth() + 1);
+  d.setUTCDate(0);
+  return d.toISOString().slice(0, 10);
+}
+async function bdInterestRange(bdId, fromIn, toIn, tillMonthEnd = false) {
   const bd = await loadBd(bdId);
   const calc = bdCalc(bd);
   const received = String(bd.payment_received_date || "").slice(0, 10);
   const mode = String(bd.interest_mode || "") || (bd.interest_upfront ? "upfront" : "discounted");
-  const today = todayISO6();
+  const today = interestCap(tillMonthEnd);
   const to = String(toIn).slice(0, 10) > today ? today : String(toIn).slice(0, 10);
   const paid = await bdPaidStretches(n17(bdId), bd);
   const daysYear = n17(bd.days_year) || 360;
@@ -17866,12 +17874,13 @@ async function deleteLastBdReceiptPart(bdId) {
 async function bdCumulativeInterest(v) {
   const to = String(v.to_date || "").slice(0, 10);
   if (!n17(v.nbfc_id) || !/^\d{4}-\d{2}-\d{2}$/.test(to)) return [];
-  const capped = to > todayISO6() ? todayISO6() : to;
+  const cap = interestCap(!!v.till_month_end);
+  const capped = to > cap ? cap : to;
   const from = /^\d{4}-\d{2}-\d{2}$/.test(String(v.from_date || "")) ? String(v.from_date).slice(0, 10) : "0000-00-00";
   const bills = (await listBd({ nbfc_id: n17(v.nbfc_id) })).filter((b) => !!b.payment_received_date);
   const out = [];
   for (const b of bills) {
-    const w = await bdInterestRange(n17(b.id), from, capped);
+    const w = await bdInterestRange(n17(b.id), from, capped, !!v.till_month_end);
     if (String(b.status) === "repaid" && w.blocked && !/^Already paid/.test(String(w.blocked)) && !(w.short_before || []).length) continue;
     out.push({
       bd_id: n17(b.id),
@@ -17951,7 +17960,7 @@ async function payBdCumulativeInterest(v) {
   return withDbTransaction(async () => {
     const to = String(v.to_date || "").slice(0, 10);
     if (!/^\d{4}-\d{2}-\d{2}$/.test(to)) throw new Error("Pick the date the interest is paid up to");
-    if (to > todayISO6()) throw new Error("Interest cannot be paid for days that have not happened yet");
+    if (to > interestCap(!!v.till_month_end)) throw new Error(v.till_month_end ? "Interest can be paid ahead only to the end of this month" : "Interest cannot be paid for days that have not happened yet");
     const date = String(v.paid_date || to).slice(0, 10);
     if (date > todayISO6()) throw new Error("The payment cannot be dated in the future");
     const from = /^\d{4}-\d{2}-\d{2}$/.test(String(v.from_date || "")) ? String(v.from_date).slice(0, 10) : "0000-00-00";
@@ -17962,7 +17971,7 @@ async function payBdCumulativeInterest(v) {
     for (const id of ids) {
       const bd = await loadBd(id);
       if (n17(bd.nbfc_id) !== n17(v.nbfc_id)) throw new Error(`${bd.bd_no} is with another NBFC`);
-      const w = await bdInterestRange(id, from, to);
+      const w = await bdInterestRange(id, from, to, !!v.till_month_end);
       if (w.blocked) throw new Error(`${bd.bd_no}: ${String(w.blocked)}`);
       const typed = v.amounts && String(v.amounts[String(id)] ?? "").trim() !== "" ? round210(n17(v.amounts[String(id)])) : null;
       if (typed != null) {
