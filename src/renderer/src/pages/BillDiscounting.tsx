@@ -2051,6 +2051,19 @@ export function BillDiscounting({
     : 0
   const penaltyAmt = penaltyDays > 0 ? (String(repayForm.penalty ?? '').trim() === '' ? penaltyWorked : round2(n(repayForm.penalty))) : 0
   const unallocated = round2(spill - round2(n(repayForm.interest) + penaltyAmt + chargesTotal + alsoTotal))
+  // BANK DEBITED IN TOTAL: the statement's one figure. The interest (net),
+  // any penalty and charges come out of it first; the balance is the principal
+  // off the bill — kept in step as the interest or charges change.
+  const debitTotalTyped = String(repayForm.debit_total ?? '').trim()
+  const principalFromDebit = debitTotalTyped
+    ? round2(Math.max(0, n(repayForm.debit_total) - n(repayForm.interest) - penaltyAmt - chargesTotal))
+    : null
+  useEffect(() => {
+    if (principalFromDebit == null) return
+    if (Math.abs(round2(n(repayForm.amount)) - principalFromDebit) < 0.005 && String(repayForm.amount ?? '') !== '') return
+    setRepayForm((p) => ({ ...p, amount: String(principalFromDebit) }))
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [principalFromDebit])
   const repayTds =
     String(repayForm.tds_amount ?? '').trim() === ''
       ? // The interest typed is what was paid, net of TDS: gross = net / (1 - TDS%).
@@ -7132,7 +7145,8 @@ Its bank voucher is removed too.`)) return
                       data-raw={__WEB__ ? '' : undefined}
                       className={cn('tabular-nums', __WEB__ && cn(FIELD_FIG, FIELD_BARE))}
                       value={repayForm.amount ?? ''}
-                      onChange={(e) => setRepayForm((p) => ({ ...p, amount: e.target.value }))}
+                      // Typing the principal itself lets go of a total typed below.
+                      onChange={(e) => setRepayForm((p) => ({ ...p, amount: e.target.value, debit_total: '' }))}
                     />
                   )
                   if (!__WEB__)
@@ -7155,7 +7169,7 @@ Its bank voucher is removed too.`)) return
                       <button
                         type="button"
                         title={isFull ? 'The whole outstanding balance' : `Fill in the whole ${formatINR(due)} outstanding`}
-                        onClick={() => setRepayForm((p) => ({ ...p, amount: String(due) }))}
+                        onClick={() => setRepayForm((p) => ({ ...p, amount: String(due), debit_total: '' }))}
                         className={cn('ml-2', CHIP_BTN, isFull ? CHIP_BTN_DONE : CHIP_BTN_PLAIN)}
                       >
                         {isFull ? <Check className="h-3.5 w-3.5" /> : null}
@@ -7164,6 +7178,27 @@ Its bank voucher is removed too.`)) return
                     </div>
                   )
                 })()}
+                {/* THE STATEMENT'S ONE FIGURE. Type what the bank debited in all;
+                    interest (and any penalty / charges) comes out of it first and
+                    the balance goes off the principal above. */}
+                {(!!repayForm.with_interest || chargesTotal > 0 || penaltyAmt > 0 || debitTotalTyped !== '') && (
+                  <div className="flex flex-wrap items-center gap-2 rounded-[4px] border border-dashed border-[#B6CBE4] bg-[#F7FAFE] px-3 py-2">
+                    <span className="text-[11.5px] font-bold text-[#1B4E82]">Bank debited in total (₹)</span>
+                    <Input
+                      type="number"
+                      step="0.01"
+                      placeholder="e.g. the statement figure"
+                      value={repayForm.debit_total ?? ''}
+                      onChange={(e) => setRepayForm((p) => ({ ...p, debit_total: e.target.value }))}
+                      className="!h-8 w-[170px] tabular-nums"
+                    />
+                    <span className="min-w-0 flex-1 text-[11px] font-semibold text-[#5A6B62]">
+                      {principalFromDebit != null
+                        ? `${formatINR(n(repayForm.debit_total))} − ${formatINR(n(repayForm.interest))} interest${penaltyAmt > 0 ? ` − ${formatINR(penaltyAmt)} penalty` : ''}${chargesTotal > 0 ? ` − ${formatINR(chargesTotal)} charges` : ''} = ${formatINR(principalFromDebit)} off the principal`
+                        : 'Interest comes out of it first; the balance goes off the principal'}
+                    </span>
+                  </div>
+                )}
                 {round2(n(repayForm.amount)) > 0 && round2(n(repayForm.amount)) < dueOn(repayRow) && (
                   <div className="text-[11px] text-muted-foreground">
                     Part payment — {formatINR(round2(dueOn(repayRow) - round2(n(repayForm.amount))))} would still be outstanding,
