@@ -2305,6 +2305,8 @@ export function Accounts({
   const [tfTo, setTfTo] = useState('')
   const [tfPicked, setTfPicked] = useState<number[]>([])
   const [tfPickBy, setTfPickBy] = useState<'tanker' | 'invoice'>('tanker')
+  // ONE ROW PER TANKER: its shortage line folds under its freight line; these are the opened ones.
+  const [tfOpenGroups, setTfOpenGroups] = useState<Set<string>>(new Set())
   const [tfBillOpen, setTfBillOpen] = useState(false)
   // WHICH BOOKED LINE IS OPEN, AND WHAT ITS BILL STILL OWES.
   //
@@ -8805,19 +8807,18 @@ Delete ${doc}?`)) return
     const id = Number(row.id)
     // "By oil invoice" ticks every line of that document at once — one bill
     // usually covers a whole invoice's tankers.
+    const pickable = (r: Row): boolean =>
+      String(r.transporter_name) === String(row.transporter_name) &&
+      r.bill_id == null &&
+      r.note_id == null &&
+      r.waived_at == null &&
+      !(String(r.entry_type) === 'shortage_penalty' && String(r.gst_registration || '') !== 'unregistered')
     const ids =
-      tfPickBy === 'invoice'
-        ? tfRows
-            .filter(
-              (r) =>
-                String(r.doc_no || '') === String(row.doc_no || '') &&
-                String(r.transporter_name) === String(row.transporter_name) &&
-                r.bill_id == null &&
-                r.note_id == null &&
-                r.waived_at == null &&
-                !(String(r.entry_type) === 'shortage_penalty' && String(r.gst_registration || '') !== 'unregistered')
-            )
-            .map((r) => Number(r.id))
+      tfPickBy === 'tanker'
+        ? // The tanker's lines go together — its freight and the shortage folded under it.
+          tfRows.filter((r) => tfTankerKey(r) === tfTankerKey(row) && pickable(r)).map((r) => Number(r.id)).concat(pickable(row) ? [] : [id])
+        : tfPickBy === 'invoice'
+        ? tfRows.filter((r) => String(r.doc_no || '') === String(row.doc_no || '') && pickable(r)).map((r) => Number(r.id))
         : [id]
     setTfPicked((p) => (p.includes(id) ? p.filter((x) => !ids.includes(x)) : [...new Set([...p, ...ids])]))
   }
@@ -9690,11 +9691,27 @@ Delete ${doc}?`)) return
       const m = /shortage\s+([\d.]+)\s*MT/i.exec(String(r.note || ''))
       return m ? Number(m[1]) || 0 : 0
     }
-    const qtyOf = (r: Row): number =>
-      isShort(r) ? shortQty(r) : n(r.provisional) === 1 ? n(r.dispatch_qty) : n(r.received_qty) || n(r.dispatch_qty)
+    // A freight row's quantity is what its freight was charged on: its amount at
+    // its own rate (₹1,62,960 at ₹4,200 = 38.8 MT loaded). Without a rate on
+    // record, the tanker's (else the invoice's) received or dispatched qty.
+    const qtyOf = (r: Row): number => {
+      if (isShort(r)) return shortQty(r)
+      if (n(r.freight_rate) > 0 && n(r.amount) > 0) return Math.round((n(r.amount) / n(r.freight_rate)) * 1000) / 1000
+      const rec = n(r.tanker_received) || n(r.received_qty)
+      const disp = n(r.tanker_loaded) || n(r.dispatch_qty)
+      return n(r.provisional) === 1 ? disp : rec || disp
+    }
+    // The rate agreed for the tanker, not one worked back from the amount.
     const rateOf = (r: Row): number => {
+      if (!isShort(r) && n(r.freight_rate) > 0) return n(r.freight_rate)
       const qq = qtyOf(r)
       return qq > 0 ? Math.abs(n(r.amount)) / qq : 0
+    }
+    // Received less than freight was charged on — said under the qty.
+    const rcvdNote = (r: Row): string => {
+      if (isShort(r)) return ''
+      const rec = n(r.tanker_received) || n(r.received_qty)
+      return rec > 0 && Math.abs(rec - qtyOf(r)) > 0.0005 ? `rcvd ${q3(rec)}` : ''
     }
     const bookedOf = (r: Row): boolean => r.bill_id != null
     const settledOf = (r: Row): boolean => !bookedOf(r) && (r.note_id != null || r.waived_at != null)
@@ -10172,6 +10189,12 @@ Delete ${doc}?`)) return
 
                 {shown.map((r, i) => {
                   const id = Number(r.id)
+                  // GROUPED BY TANKER: a shortage line sits folded under its freight
+                  // line (which already shows the shortage and the net) until opened.
+                  const gKey = tfTankerKey(r)
+                  const gHasLead = shown.some((x) => tfTankerKey(x) === gKey && !isShort(x))
+                  if (isShort(r) && gHasLead && !tfOpenGroups.has(gKey)) return null
+                  const gSubs = !isShort(r) ? shown.filter((x) => tfTankerKey(x) === gKey && isShort(x)) : []
                   const booked = bookedOf(r)
                   const settled = settledOf(r)
                   // A registered transporter's shortage is claimed on a debit
@@ -10234,8 +10257,28 @@ Delete ${doc}?`)) return
                         <span className="truncate" style={{ padding: '0 10px', ...mono, fontSize: 11.5, fontWeight: 600, color: A.inkMid }}>
                           {String(r.vehicle_no || '—')}
                         </span>
-                        <span className="truncate" style={{ padding: '0 10px', ...mono, fontSize: 12, fontWeight: 700 }}>
-                          {String(r.doc_no || '—')}
+                        <span className="flex min-w-0 items-center gap-1.5" style={{ padding: '0 10px', ...mono, fontSize: 12, fontWeight: 700 }}>
+                          {isShort(r) && gHasLead && <span style={{ color: A.muted }}>↳</span>}
+                          <span className="truncate">{String(r.doc_no || '—')}</span>
+                          {gSubs.length > 0 && (
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation()
+                                setTfOpenGroups((p) => {
+                                  const x = new Set(p)
+                                  if (x.has(gKey)) x.delete(gKey)
+                                  else x.add(gKey)
+                                  return x
+                                })
+                              }}
+                              title={tfOpenGroups.has(gKey) ? 'Fold the shortage line away' : 'Show the shortage line behind this tanker'}
+                              className="flex-none rounded-[3px] px-1.5"
+                              style={{ fontSize: 9.5, fontWeight: 800, letterSpacing: '.04em', color: A.cr, background: '#FDF3F2', border: '1px solid #F0D6D4' }}
+                            >
+                              {tfOpenGroups.has(gKey) ? '▾' : '▸'} {gSubs.length === 1 ? 'shortage' : `${gSubs.length} lines`}
+                            </button>
+                          )}
                         </span>
                         <span className="truncate" style={{ padding: '0 10px', ...mono, fontSize: 11.5, fontWeight: 600, color: A.inkMid }}>
                           {r.doc_date ? formatDate(String(r.doc_date).slice(0, 10)) : '—'}
@@ -10261,6 +10304,11 @@ Delete ${doc}?`)) return
                         </div>
                         <span style={{ padding: '0 10px', textAlign: 'right', ...mono, fontSize: 12, fontWeight: 600, color: short ? A.bad : qq > 0 ? A.ink : A.none }}>
                           {qq > 0 ? `${q3(qq)}${short ? ' short' : ''}` : '—'}
+                          {!!rcvdNote(r) && (
+                            <span className="block" style={{ fontSize: 10, fontWeight: 600, color: A.muted }} title="Freight is charged on the loaded quantity; this is what was weighed in">
+                              {rcvdNote(r)}
+                            </span>
+                          )}
                         </span>
                         <span style={{ padding: '0 10px', textAlign: 'right', ...mono, fontSize: 11.5, fontWeight: 600, color: qq > 0 ? A.muted : A.none }}>
                           {qq > 0 ? `${formatINR(rateOf(r))}${short ? '/MT' : ''}` : '—'}
