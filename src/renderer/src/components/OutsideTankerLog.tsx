@@ -416,7 +416,13 @@ export function OutsideTankerLog({
                           </span>
                         </TableCell>
                         <TableCell className="font-bold text-[#0A1F17]">{String(r.category_label || '—')}</TableCell>
-                        <TableCell className="text-[#33473E]">{String(r.party_name || '—')}</TableCell>
+                        <TableCell className="text-[#33473E]">
+                          {String(r.party_name || '—')}
+                          {/* Counted under another company — shown, so nobody reads the gate as empty. */}
+                          {Number(r.own_company) === 0 && !!r.company_name && (
+                            <span className="ml-1.5 rounded-[2px] bg-[#EAF0FA] px-1 text-[9.5px] font-bold uppercase text-[#1B4E82]">{String(r.company_name)}</span>
+                          )}
+                        </TableCell>
                         <TableCell className="text-right text-[13px] font-bold tabular-nums text-[#0A1F17]">
                           {Number(r.tankers) || 0}
                         </TableCell>

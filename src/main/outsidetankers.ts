@@ -32,14 +32,21 @@ export const OUTSIDE_SLOTS = ['08:00', '16:00', '20:00'] as const
 export async function listOutsideTankers(date?: string): Promise<Row[]> {
   const c = getClient()
   const day = String(date || '').slice(0, 10)
-  const args: (string | number)[] = [getActiveCompanyId()]
-  let where = 'WHERE t.company_id = ?'
+  // EVERY COMPANY'S COUNT. A tanker outside the gate is a fact about the
+  // factory, not about whichever company the reader has open — the gate counted
+  // under KR FOODS read as nothing to someone on KR FINMARK. Each row says its
+  // company (company_name) and whether it is the one open (own_company).
+  const active = getActiveCompanyId()
+  const args: (string | number)[] = [active]
+  let where = 'WHERE 1 = 1'
   if (day) {
     where += ' AND t.log_date = ?'
     args.push(day)
   }
   const res = await c.execute({
     sql: `SELECT t.*,
+                 CASE WHEN t.company_id = ? THEN 1 ELSE 0 END AS own_company,
+                 (SELECT co.name FROM companies co WHERE co.id = t.company_id) AS company_name,
                  p.name AS product_name,
                  p.code AS product_code,
                  COALESCE(NULLIF(TRIM(t.category), ''), p.name) AS category_label,
