@@ -1311,8 +1311,10 @@ export async function listBd(filter?: Row): Promise<Row[]> {
                             WHERE ip.bd_id = bd.id), 0) AS interest_paid_total,
                  COALESCE((SELECT SUM(ip.tds) FROM bd_interest_payments ip
                             WHERE ip.bd_id = bd.id), 0) AS interest_paid_tds,
-                 (SELECT MAX(ip.to_date) FROM bd_interest_payments ip
-                   WHERE ip.bd_id = bd.id) AS interest_paid_to,
+                 -- …or a repayment that paid the interest with it (to its repay date).
+                 NULLIF(MAX(COALESCE((SELECT MAX(ip.to_date) FROM bd_interest_payments ip WHERE ip.bd_id = bd.id), ''),
+                            COALESCE((SELECT MAX(rr.repay_date) FROM bd_repayments rr
+                                       WHERE rr.bd_id = bd.id AND COALESCE(rr.interest, 0) > 0.004), '')), '') AS interest_paid_to,
                  (SELECT MAX(rr.repay_date) FROM bd_repayments rr
                    WHERE rr.bd_id = bd.id) AS last_repay_date,
                  -- Interest paid WITH the repayments (net) and its TDS — the
@@ -2384,6 +2386,48 @@ export async function listBdInterestPayments(bdId: number): Promise<Row[]> {
  */
 // The first day a bill's interest accrues: the receipt day itself only when the
 // terms count it (days_incl_start), else the day after.
+/**
+ * EVERY STRETCH OF INTEREST PAID ON A BILL — the cumulative / per-bill interest
+ * payments, AND the interest paid inside a repayment (Repay → "Paying the
+ * interest with this repayment?"). The latter lives only on bd_repayments, so
+ * Pay cumulative interest offered the same days again. A repayment's interest
+ * covers from the first day not yet paid up to its repay date; gross = what was
+ * paid (net) + its TDS.
+ */
+async function bdPaidStretches(bdId: number, bd: Row): Promise<Row[]> {
+  const c = getClient()
+  const paid = toPlain(
+    await c.execute({ sql: 'SELECT from_date, to_date, gross, tds, net, paid_date FROM bd_interest_payments WHERE bd_id = ? ORDER BY from_date', args: [n(bdId)] })
+  )
+  const reps = toPlain(
+    await c
+      .execute({
+        sql: 'SELECT repay_date, interest, tds_amount FROM bd_repayments WHERE bd_id = ? AND COALESCE(interest, 0) > 0.004 ORDER BY repay_date, id',
+        args: [n(bdId)]
+      })
+      .catch(() => ({ rows: [] }) as never)
+  )
+  if (!reps.length) return paid
+  const received = String(bd.payment_received_date || '').slice(0, 10)
+  const A = received ? accrualStart(bd, received) : '0000-00-00'
+  const out = [...paid]
+  for (const r of reps) {
+    const on = String(r.repay_date || '').slice(0, 10)
+    if (!on) continue
+    const from = firstUnpaid(out, A).from
+    if (from > on) continue
+    const net = round2(n(r.interest))
+    const tds =
+      r.tds_amount != null && String(r.tds_amount) !== ''
+        ? round2(n(r.tds_amount))
+        : n(bd.tds_pct) > 0 && n(bd.tds_pct) < 100
+          ? round2((net * n(bd.tds_pct)) / (100 - n(bd.tds_pct)))
+          : 0
+    out.push({ from_date: from, to_date: on, gross: round2(net + tds), tds, net, paid_date: on, via_repayment: 1 })
+  }
+  return out.sort((a, b) => String(a.from_date).localeCompare(String(b.from_date)))
+}
+
 function accrualStart(bd: Row, received: string): string {
   return bd.days_incl_start ? received : addDays(received, 1)
 }
@@ -2416,13 +2460,28 @@ export async function bdInterestRange(bdId: number, fromIn: string, toIn: string
   const mode = String(bd.interest_mode || '') || (bd.interest_upfront ? 'upfront' : 'discounted')
   const today = todayISO()
   const to = (String(toIn).slice(0, 10) > today ? today : String(toIn).slice(0, 10))
-  const paid = toPlain(await getClient().execute({ sql: 'SELECT from_date, to_date, gross FROM bd_interest_payments WHERE bd_id = ? ORDER BY from_date', args: [n(bdId)] }))
+  const paid = await bdPaidStretches(n(bdId), bd)
   const daysYear = n(bd.days_year) || 360
   const out: Row = { bd_id: n(bdId), interest_base: calc.interestBase, open_amount: calc.openAmount, interest_pct: n(bd.interest_pct), tds_pct: n(bd.tds_pct), days_year: daysYear, to_date: to, parts: [], gross: 0, tds: 0, net: 0, days: 0 }
   if (!received) return { ...out, from_date: fromIn, blocked: 'This bill is not funded yet.' }
   if (mode === 'discounted') return { ...out, from_date: fromIn, blocked: 'Interest was taken out when the bill was funded.' }
   const A = accrualStart(bd, received)
-  const from = String(fromIn).slice(0, 10) < A ? A : String(fromIn).slice(0, 10)
+  let from = String(fromIn).slice(0, 10) < A ? A : String(fromIn).slice(0, 10)
+  // A REPAYMENT THAT PAID THE INTEREST covers the start of the period (B7
+  // repaid 24-11 with its interest): the period runs on from the day after,
+  // so the month's last days can still be paid, rather than the whole month
+  // being refused as already paid.
+  for (let moved = true; moved; ) {
+    moved = false
+    for (const p of paid) {
+      const pf = String(p.from_date || '').slice(0, 10)
+      const pt = String(p.to_date || '').slice(0, 10)
+      if (p.via_repayment && pf <= from && pt >= from && pt < to) {
+        from = addDays(pt, 1)
+        moved = true
+      }
+    }
+  }
   out.from_date = from
   if (from > to) return { ...out, blocked: received > to ? 'Funded after this period.' : 'Nothing in this period.' }
   const steps = n(bd.first_receipt_part) > 0.005 ? [] : await principalRepaidByDate(bdId)
@@ -2733,13 +2792,8 @@ export async function bdInterestWindow(
   const calc = bdCalc(bd)
   const received = String(bd.payment_received_date || '').slice(0, 10)
   const mode = String(bd.interest_mode || '') || (bd.interest_upfront ? 'upfront' : 'discounted')
-  const paid = toPlain(
-    await getClient().execute({
-      sql: `SELECT from_date, to_date, gross, tds, net, paid_date FROM bd_interest_payments
-             WHERE bd_id = ? ORDER BY to_date DESC, id DESC`,
-      args: [n(bdId)]
-    })
-  )
+  // Repayment interest counts as paid too (bdPaidStretches); latest first.
+  const paid = (await bdPaidStretches(n(bdId), bd)).sort((a, b) => String(b.to_date).localeCompare(String(a.to_date)))
   const lastTo = paid.length ? String(paid[0].to_date).slice(0, 10) : ''
   // The first stretch may count the receipt day itself, if that is the term.
   // Every stretch after it starts the day AFTER the last one ended, so each
