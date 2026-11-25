@@ -13201,6 +13201,7 @@ __export(lc_exports, {
   lcPartsMargin: () => lcPartsMargin,
   lcRefund: () => lcRefund,
   lcRefundCandidates: () => lcRefundCandidates,
+  lcSettlementsOffDebtorLedgers: () => lcSettlementsOffDebtorLedgers,
   linkLcCommission: () => linkLcCommission,
   linkLcRefund: () => linkLcRefund,
   listBankLcLimits: () => listBankLcLimits,
@@ -14873,6 +14874,49 @@ async function previewLcPartyChange(id, partyId) {
     await moveLcPartyLines(n16(id), n16(lc.party_id), n16(partyId), n16(lc.company_id) || getActiveCompanyId(), rows2);
   }
   return { closed: !!lc.preclosed_date, rows: rows2 };
+}
+async function lcSettlementsOffDebtorLedgers() {
+  const c = getClient();
+  const { baseGroupOf: baseGroupOf2 } = await Promise.resolve().then(() => (init_ledgerGroups(), ledgerGroups_exports));
+  const { partyAccountName: partyAccountName2 } = await Promise.resolve().then(() => (init_partyLedgers(), partyLedgers_exports));
+  const { resolveAccountName: resolveAccountName2 } = await Promise.resolve().then(() => (init_ledgerMap(), ledgerMap_exports));
+  const { getOrCreateAccount: getOrCreateAccount2 } = await Promise.resolve().then(() => (init_journal(), journal_exports));
+  const rows2 = toPlain13(
+    await c.execute(`SELECT DISTINCT i.lc_id, i.journal_entry_id AS e, l.company_id, s.name AS supplier
+                       FROM lc_issuances i JOIN letters_of_credit l ON l.id = i.lc_id
+                       JOIN suppliers s ON l.party_type = 'supplier' AND s.id = l.party_id
+                      WHERE i.journal_entry_id IS NOT NULL`)
+  );
+  const out = [];
+  for (const r of rows2) {
+    const lines = toPlain13(
+      await c.execute({
+        sql: `SELECT jl.id, jl.dr, a.id AS acc, a.name, a.acc_group FROM journal_lines jl JOIN ledger_accounts a ON a.id = jl.account_id
+               WHERE jl.entry_id = ? AND jl.dr > 0`,
+        args: [n16(r.e)]
+      })
+    );
+    for (const l of lines) {
+      if (await baseGroupOf2(String(l.acc_group)) !== "Sundry Debtors") continue;
+      const cid = n16(r.company_id);
+      const want = String(await resolveAccountName2(await partyAccountName2(String(r.supplier), "Sundry Creditors", cid), cid)).trim().toUpperCase();
+      const wantAcc = n16((await c.execute({ sql: "SELECT id, acc_group FROM ledger_accounts WHERE name = ?", args: [want] })).rows[0]?.id);
+      const target = wantAcc || await getOrCreateAccount2(want, "Sundry Creditors", cid);
+      const tGroup = String((await c.execute({ sql: "SELECT acc_group FROM ledger_accounts WHERE id = ?", args: [target] })).rows[0]?.acc_group || "");
+      if (target === n16(l.acc) || await baseGroupOf2(tGroup) !== "Sundry Creditors") continue;
+      await c.execute(`CREATE TABLE IF NOT EXISTS accounting_repair_log (
+          repair_key TEXT PRIMARY KEY, entry_id INTEGER NOT NULL, before_json TEXT NOT NULL,
+          created_at TEXT NOT NULL DEFAULT (datetime('now')))`);
+      await c.execute({
+        sql: "INSERT OR REPLACE INTO accounting_repair_log(repair_key, entry_id, before_json) VALUES (?, ?, ?)",
+        args: [`lc_settlement_off_debtor_v1:${n16(l.id)}`, n16(r.e), JSON.stringify({ line: l, to: target })]
+      });
+      await c.execute({ sql: "UPDATE journal_lines SET account_id = ? WHERE id = ?", args: [target, n16(l.id)] });
+      await c.execute({ sql: "UPDATE journal_bill_allocs SET account_id = ? WHERE line_id = ?", args: [target, n16(l.id)] });
+      out.push(`LC ${n16(r.lc_id)} entry ${n16(r.e)}: ${String(l.name)} \u2192 ${want} (${round29(n16(l.dr))})`);
+    }
+  }
+  return out.join("; ") || "nothing on a customer ledger";
 }
 var partRate, LC_COLS;
 var init_lc = __esm({
@@ -39689,6 +39733,9 @@ async function runStartupTasks() {
   await getClient().execute("ALTER TABLE letters_of_credit ADD COLUMN reopened_json TEXT").catch((e) => {
     if (!/duplicate column/i.test(String(e.message))) console.error("[lc] reopened_json failed:", e);
   });
+  await runOnce("lc_settlement_off_debtor_v1", async () => {
+    console.log("[lc] settlements off customer ledgers:", await (await Promise.resolve().then(() => (init_lc(), lc_exports))).lcSettlementsOffDebtorLedgers());
+  }).catch((e) => console.error("[lc] settlements off customer ledgers failed:", e));
   await runOnce("lc17_reclose_v1", async () => {
     console.log("[lc] LC-17 re-close:", await (await Promise.resolve().then(() => (init_lc(), lc_exports))).recloseLc17());
   }).catch((e) => console.error("[lc] LC-17 re-close failed:", e));
