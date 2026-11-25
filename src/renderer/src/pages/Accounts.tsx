@@ -9718,6 +9718,8 @@ Delete ${doc}?`)) return
       { key: 'transporter', get: (r) => r.transporter_name },
       { key: 'vehicle', get: (r) => r.vehicle_no },
       { key: 'invoice', get: (r) => String(r.doc_no || '—') },
+      // The invoice's own date — the purchase's order date, the sale's date.
+      { key: 'invdate', get: (r) => (r.doc_date ? formatDate(String(r.doc_date).slice(0, 10)) : ''), sort: 'num' },
       { key: 'against', get: (r) => [String(r.party_name || ''), String(r.product_name || '')].filter(Boolean) },
       {
         key: 'qty',
@@ -9757,7 +9759,7 @@ Delete ${doc}?`)) return
     const est = sum(tfRows.filter((r) => !bookedOf(r) && !settledOf(r) && !weighedOf(r)))
     const trBase = tfRows.filter((r) => stateOk(r, tfState) && matchQ(r))
     const trList = Array.from(new Set(tfRows.map((r) => String(r.transporter_name || '')).filter(Boolean))).sort()
-    const GRID = '40px minmax(230px,1.1fr) 124px 150px minmax(200px,1.4fr) 110px 120px 130px 130px 140px 110px 230px'
+    const GRID = '40px minmax(230px,1.1fr) 124px 150px 104px minmax(200px,1.4fr) 110px 120px 130px 130px 140px 110px 230px'
     const bodyPad = W >= 1400 ? '16px 20px' : '12px 14px'
     const cap: React.CSSProperties = { fontSize: 9.5, fontWeight: 800, letterSpacing: '.12em', textTransform: 'uppercase' }
     const mono: React.CSSProperties = { fontFamily: MONO, fontVariantNumeric: FIGS }
@@ -10142,7 +10144,7 @@ Delete ${doc}?`)) return
             </div>
 
             <div className="sc min-h-0 flex-1 overflow-auto">
-              <div style={{ minWidth: 1610 }}>
+              <div style={{ minWidth: 1714 }}>
                 <div
                   className="sticky top-0 z-[2] grid items-center"
                   style={{
@@ -10157,6 +10159,7 @@ Delete ${doc}?`)) return
                   <span style={{ padding: '0 10px' }}>{tfCf.head('transporter', 'Transporter', { onDark: true })}</span>
                   <span style={{ padding: '0 10px' }}>{tfCf.head('vehicle', 'Vehicle', { onDark: true })}</span>
                   <span style={{ padding: '0 10px' }}>{tfCf.head('invoice', 'Invoice no', { onDark: true })}</span>
+                  <span style={{ padding: '0 10px' }}>{tfCf.head('invdate', 'Invoice date', { onDark: true })}</span>
                   <span style={{ padding: '0 10px' }}>{tfCf.head('against', inward ? 'Supplier · product' : 'Customer · product', { onDark: true })}</span>
                   <span style={{ padding: '0 10px', display: 'flex', justifyContent: 'flex-end' }}>{tfCf.head('qty', 'Qty MT', { onDark: true, align: 'end' })}</span>
                   <span style={{ padding: '0 10px', display: 'flex', justifyContent: 'flex-end' }}>{tfCf.head('rate', 'Rate', { onDark: true, align: 'end' })}</span>
@@ -10233,6 +10236,9 @@ Delete ${doc}?`)) return
                         </span>
                         <span className="truncate" style={{ padding: '0 10px', ...mono, fontSize: 12, fontWeight: 700 }}>
                           {String(r.doc_no || '—')}
+                        </span>
+                        <span className="truncate" style={{ padding: '0 10px', ...mono, fontSize: 11.5, fontWeight: 600, color: A.inkMid }}>
+                          {r.doc_date ? formatDate(String(r.doc_date).slice(0, 10)) : '—'}
                         </span>
                         <div className="min-w-0" style={{ padding: '6px 10px' }}>
                           <div className="truncate" style={{ fontSize: 12, fontWeight: 700 }}>
@@ -10407,7 +10413,7 @@ Delete ${doc}?`)) return
                   title="What the rows on screen come to — the filtered set, so it agrees with the list rather than with the tiles above."
                 >
                   <span />
-                  <span style={{ gridColumn: 'span 3', padding: '0 10px', fontSize: 10, fontWeight: 800, letterSpacing: '.1em', textTransform: 'uppercase', color: '#A9CDBB' }}>
+                  <span style={{ gridColumn: 'span 4', padding: '0 10px', fontSize: 10, fontWeight: 800, letterSpacing: '.1em', textTransform: 'uppercase', color: '#A9CDBB' }}>
                     {shown.length} line{shown.length === 1 ? '' : 's'} shown
                   </span>
                   <span style={{ padding: '0 10px', textAlign: 'right', ...mono, fontSize: 12, fontWeight: 700, color: '#DCEFE4' }}>
