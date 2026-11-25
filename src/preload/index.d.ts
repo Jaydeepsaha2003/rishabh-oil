@@ -647,6 +647,7 @@ export interface Api {
       }
     ) => Promise<{ id: number }>
     unpreclose: (id: number) => Promise<{ id: number; removed: string[] }>
+    changeParty: (id: number, partyId: number) => Promise<{ id: number; moved: number }>
     getLimit: (bankId?: number, from?: string, to?: string) => Promise<Row>
     bankLimits: () => Promise<Row[]>
     commission: (id: number) => Promise<Row>

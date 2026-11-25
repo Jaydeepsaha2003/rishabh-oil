@@ -2008,6 +2008,25 @@ function TreasuryDesk({ onCompanyChange, focusLcId, focusBdId, onFocusHandled }:
     }
   }
 
+  // CHANGE PARTY — on any LC, closed ones too; no Undo preclosure needed.
+  const [partyRow, setPartyRow] = useState<Row | null>(null)
+  const [partyPick, setPartyPick] = useState('')
+  const [partyBusy, setPartyBusy] = useState(false)
+  async function saveParty(): Promise<void> {
+    if (!partyRow || !partyPick) return
+    setPartyBusy(true)
+    try {
+      const r = await window.api.lc.changeParty(Number(partyRow.id), Number(partyPick))
+      toast.success(`${String(partyRow.lc_no || 'LC')}: party changed${r.moved ? ` — ${r.moved} voucher line${r.moved === 1 ? '' : 's'} moved to the new party's ledger` : ''}`)
+      setPartyRow(null)
+      await load()
+    } catch (e) {
+      toast.error((e as Error).message)
+    } finally {
+      setPartyBusy(false)
+    }
+  }
+
   async function confirmUnpreclose(): Promise<void> {
     const l = unpreRow
     if (!l) return
@@ -4192,6 +4211,23 @@ function TreasuryDesk({ onCompanyChange, focusLcId, focusBdId, onFocusHandled }:
                                         <span className="relative inline-flex h-2.5 w-2.5 rounded-full bg-[#D92D20]" />
                                       </span>
                                     )}
+                                    {/* REOPENED — a preclosure was undone and the LC not closed again. */}
+                                    {!l.preclosed_date && !!l.reopened_json && (() => {
+                                      let r: Row = {}
+                                      try {
+                                        r = JSON.parse(String(l.reopened_json))
+                                      } catch {
+                                        r = {}
+                                      }
+                                      return (
+                                        <span
+                                          className="flex-none animate-pulse rounded-[2px] border border-[#F0C9C4] bg-[#FDECEA] px-1 text-[9px] font-extrabold uppercase leading-[14px] tracking-[.04em] text-[#B3261E]"
+                                          title={`Preclosure undone on ${formatDate(String(r.on || ''))} and not closed again. Close it again from ⋮ → Preclose: ${formatDate(String(r.preclose_date || ''))}, ₹${n(r.debited).toLocaleString('en-IN')} debited${n(r.bank_charges) ? ` (incl. ₹${n(r.bank_charges).toLocaleString('en-IN')} bank charges)` : ''}${n(r.comm_charges) ? `, ₹${n(r.comm_charges).toLocaleString('en-IN')} commission` : ''}.`}
+                                        >
+                                          Reopened — close it again
+                                        </span>
+                                      )
+                                    })()}
                                     {/* FD LINKING: a blue FD tag once an FD is liened to the LC; a
                                         blinking amber dot while the LC asks for margin and no FD is linked. */}
                                     {(l.fd_liens as Row[] | undefined)?.length ? (
@@ -4509,6 +4545,14 @@ function TreasuryDesk({ onCompanyChange, focusLcId, focusBdId, onFocusHandled }:
                                             label: 'Edit preclosure — date, amount, rebate',
                                             icon: Pencil,
                                             onClick: () => void openEditPreclose(l)
+                                          },
+                                          {
+                                            label: 'Change party — no undo needed',
+                                            icon: Pencil,
+                                            onClick: () => {
+                                              setPartyRow(l)
+                                              setPartyPick(String(l.party_id || ''))
+                                            }
                                           },
                                           {
                                             label: 'Undo preclosure — put this LC back',
@@ -7195,10 +7239,59 @@ function TreasuryDesk({ onCompanyChange, focusLcId, focusBdId, onFocusHandled }:
           <p className="text-[12px] text-muted-foreground">
             Bills issued under this LC and any Payment IN are left untouched — they are not part of the preclosure.
           </p>
+          {/* WHAT THE USER MUST DO NEXT, said before they do it. */}
+          <div className="rounded-[6px] border border-[#F1D9A6] bg-[#FFF8E9] px-3.5 py-3 text-[12px] text-[#8A5300]">
+            <div className="mb-1 font-extrabold">Only undo if you must change the LC's own figures.</div>
+            <ul className="ml-4 list-disc space-y-0.5">
+              <li>
+                To change the <b>party</b>, use <b>⋮ → Change party</b> instead — no undo needed.
+              </li>
+              <li>
+                To change the closing <b>date, amount or rebate</b>, use <b>⋮ → Edit preclosure</b> instead.
+              </li>
+              <li>
+                If you do undo: make your change, then <b>⋮ → Preclose</b> again on {formatDate(unpreRow?.preclosed_date)} — otherwise the
+                repayment stays out of the bank book and the LC reads as overdue. The register will show <b>Reopened — close it again</b> until you do.
+              </li>
+            </ul>
+          </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setUnpreRow(null)} disabled={unpreBusy}>Leave it preclosed</Button>
             <Button onClick={() => void confirmUnpreclose()} disabled={unpreBusy}>
               {unpreBusy ? 'Restoring…' : 'Undo preclosure'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={!!partyRow} onOpenChange={(o) => !o && !partyBusy && setPartyRow(null)}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>Change the party on {String(partyRow?.lc_no || 'this LC')}</DialogTitle>
+          </DialogHeader>
+          <p className="text-[12px] text-muted-foreground">
+            Only the party changes. {partyRow?.preclosed_date ? 'The LC stays closed with the same figures; ' : ''}its vouchers move from{' '}
+            <b>{String(partyRow?.supplier_name || '—')}</b> to the party you pick — same voucher numbers and amounts.
+          </p>
+          <Select value={partyPick} onValueChange={setPartyPick}>
+            <SelectTrigger>
+              <SelectValue placeholder="Pick the supplier" />
+            </SelectTrigger>
+            <SelectContent>
+              {suppliers.map((sp) => (
+                <SelectItem key={String(sp.id)} value={String(sp.id)}>
+                  {String(sp.name)}
+                  {sp.business_type ? ` · ${String(sp.business_type)}` : ''}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setPartyRow(null)} disabled={partyBusy}>
+              Cancel
+            </Button>
+            <Button onClick={() => void saveParty()} disabled={partyBusy || !partyPick || partyPick === String(partyRow?.party_id || '')}>
+              {partyBusy ? 'Saving…' : 'Change party'}
             </Button>
           </DialogFooter>
         </DialogContent>

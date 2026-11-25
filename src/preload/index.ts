@@ -948,6 +948,7 @@ const api = {
     ): Promise<{ id: number }> => ipcRenderer.invoke('lc:preclose', { id, values }),
     unpreclose: (id: number): Promise<{ id: number; removed: string[] }> =>
       ipcRenderer.invoke('lc:unpreclose', { id }),
+    changeParty: (id: number, partyId: number): Promise<{ id: number; moved: number }> => ipcRenderer.invoke('lc:changeParty', { id, partyId }),
     getLimit: (bankId?: number, from?: string, to?: string): Promise<Row> =>
       ipcRenderer.invoke('lc:getLimit', { bankId, from, to }),
     bankLimits: (): Promise<Row[]> => ipcRenderer.invoke('lc:bankLimits'),

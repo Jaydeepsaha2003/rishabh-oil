@@ -1502,7 +1502,7 @@ export async function precloseLC(
   const prematureInterest = round2(n(v.premature_interest))
   const rebateDirection = v.premature_interest_direction === 'pay_to_party' ? 'pay_to_party' : 'credit_to_us'
   await c.execute({
-    sql: `UPDATE letters_of_credit SET usance_days = ?, preclosed_date = ?, preclose_premature_interest = ?,
+    sql: `UPDATE letters_of_credit SET reopened_json = NULL, usance_days = ?, preclosed_date = ?, preclose_premature_interest = ?,
           preclose_interest_route = ? WHERE id = ?`,
     args: [actualDays, precloseDate, prematureInterest, rebateDirection, id]
   })
@@ -1606,10 +1606,23 @@ export async function unPrecloseLC(id: number): Promise<{ id: number; removed: s
   // preclosure date and the note it was written with, so a repayment the user
   // entered by hand on the same day is not swept up with it.
   const reps = await c.execute({
-    sql: `SELECT id, journal_entry_id FROM lc_repayments
+    sql: `SELECT id, journal_entry_id, amount, comm_charges, bank_charges FROM lc_repayments
            WHERE lc_id = ? AND substr(repay_date, 1, 10) = ? AND COALESCE(note, '') = 'Preclosure repayment'`,
     args: [id, String(lc.preclosed_date).slice(0, 10)]
   })
+  // WHAT IS BEING UNDONE, kept on the LC until it is closed again — the
+  // register then says "Reopened — close it again" with these very figures,
+  // so an undo done to change something is never left half-way.
+  const reopened = {
+    on: new Date().toISOString().slice(0, 10),
+    preclose_date: String(lc.preclosed_date).slice(0, 10),
+    debited: round2(toPlain(reps).reduce((t, r) => t + n(r.amount), 0)),
+    comm_charges: round2(toPlain(reps).reduce((t, r) => t + n(r.comm_charges), 0)),
+    bank_charges: round2(toPlain(reps).reduce((t, r) => t + n(r.bank_charges), 0)),
+    rebate: n(lc.preclose_premature_interest),
+    rebate_route: lc.preclose_interest_route || null,
+    margin_released: String(lc.preclose_settlement_direction || '') === 'margin_released'
+  }
   for (const r of reps.rows) {
     await (await import('./fixedDeposits')).unsettleLcFds(n(r.id))
     if (r.journal_entry_id) await dropTreasuryEntry(n(r.journal_entry_id))
@@ -1628,9 +1641,9 @@ export async function unPrecloseLC(id: number): Promise<{ id: number; removed: s
                  preclose_interest_route = NULL, preclose_interest_journal_entry_id = NULL,
                  preclose_payout_journal_entry_id = NULL,
                  preclose_settlement_direction = NULL, preclose_settlement_amount = NULL,
-                 preclose_journal_entry_id = NULL, workflow_status = 'in_progress'
+                 preclose_journal_entry_id = NULL, workflow_status = 'in_progress', reopened_json = ?
            WHERE id = ?`,
-    args: [plannedDays, id]
+    args: [plannedDays, JSON.stringify(reopened), id]
   })
   // Re-strikes margin/interest/charges on the restored period.
   await postLcOpening(id)
@@ -2282,5 +2295,74 @@ export async function editPreclosure(
     }
     await unPrecloseLC(n(id))
     return precloseLC(n(id), { ...v, fd_choices: fdChoices })
+  })
+}
+
+/**
+ * One-time (asked 2026-11-25): LC 027LC03261800012 (bill LC-17, SIDDHARTH OILS)
+ * had its preclosure undone on 24-11 to change its party, and was never closed
+ * again — PAY/550 (₹46,01,180 out of HDFC Swasthya Vihar on 28-09) was gone and
+ * the LC read as overdue. Closed again with exactly the figures it had: 28-09-2026,
+ * ₹46,01,180 debited = ₹46,00,000 + ₹1,180 bank charges, no rebate, margin kept.
+ * Only while it is still open with no repayment — re-closed by hand first, nothing done.
+ */
+export async function recloseLc17(): Promise<string> {
+  const c = getClient()
+  const r = (
+    await c.execute(
+      "SELECT id, preclosed_date, (SELECT COUNT(*) FROM lc_repayments WHERE lc_id = l.id) AS reps FROM letters_of_credit l WHERE lc_no = '027LC03261800012' AND amount = 4600000"
+    )
+  ).rows[0] as unknown as Row | undefined
+  if (!r) return 'LC not in this database'
+  if (r.preclosed_date || n(r.reps) > 0) return 'already closed — nothing to do'
+  await precloseLC(n(r.id), {
+    preclose_date: '2026-09-28',
+    amount: 4601180,
+    comm_charges: 0,
+    bank_charges: 1180,
+    premature_interest: 0,
+    premature_interest_direction: 'credit_to_us',
+    release_margin: false
+  })
+  // Its old number back: PAY/550 is still held by the deleted voucher's
+  // leftover number row (no entry behind it) — freed, then given to the new one.
+  const je = n((await c.execute({ sql: 'SELECT journal_entry_id FROM lc_repayments WHERE lc_id = ? ORDER BY id DESC LIMIT 1', args: [n(r.id)] })).rows[0]?.journal_entry_id)
+  const old = (
+    await c.execute({
+      sql: "SELECT entry_id, company_id FROM voucher_numbers WHERE prefix = 'PAY' AND serial = 550 AND company_id = (SELECT company_id FROM letters_of_credit WHERE id = ?)",
+      args: [n(r.id)]
+    })
+  ).rows[0] as unknown as Row | undefined
+  let renum = ''
+  if (je && old && !(await c.execute({ sql: 'SELECT 1 FROM journal_entries WHERE id = ?', args: [n(old.entry_id)] })).rows.length) {
+    await c.execute({ sql: 'DELETE FROM voucher_numbers WHERE entry_id = ?', args: [n(old.entry_id)] })
+    await c.execute({ sql: "UPDATE voucher_numbers SET serial = 550 WHERE entry_id = ? AND prefix = 'PAY'", args: [je] })
+    renum = ' as PAY/550'
+  }
+  return `LC-17 closed again on 28-09-2026 (₹46,01,180)${renum}`
+}
+
+
+/**
+ * CHANGE AN LC'S PARTY — on any LC, closed ones included, with no Undo
+ * preclosure. Only the party changes: a closed LC's figures stay as the bank
+ * paid them, and its vouchers' party lines move onto the new party's ledger
+ * (moveLcPartyLines); a live LC is saved and re-posted as on Edit.
+ */
+export async function changeLcParty(id: number, partyId: number): Promise<{ id: number; moved: number }> {
+  return withDbTransaction(async () => {
+    const c = getClient()
+    const lc = (await c.execute({ sql: 'SELECT id, party_type, party_id, company_id, preclosed_date FROM letters_of_credit WHERE id = ?', args: [n(id)] })).rows[0] as unknown as Row | undefined
+    if (!lc) throw new Error('LC not found')
+    if (String(lc.party_type || 'supplier') !== 'supplier') throw new Error('Only a supplier LC can change its party here')
+    const to = n(partyId)
+    if (!to) throw new Error('Pick the new party')
+    if (!(await c.execute({ sql: 'SELECT 1 FROM suppliers WHERE id = ?', args: [to] })).rows.length) throw new Error('That supplier is not in the masters')
+    if (n(lc.party_id) === to) return { id: n(id), moved: 0 }
+    await c.execute({ sql: 'UPDATE letters_of_credit SET party_id = ? WHERE id = ?', args: [to, n(id)] })
+    // A live LC re-posts its settlement with the new party; a closed one keeps it and moves its lines.
+    if (!lc.preclosed_date) await syncLcVouchers(n(id))
+    const moved = await moveLcPartyLines(n(id), n(lc.party_id), to, n(lc.company_id) || getActiveCompanyId())
+    return { id: n(id), moved }
   })
 }

@@ -3218,6 +3218,16 @@ export async function runStartupTasks(): Promise<void> {
     console.log('[suppliers] Legacy merge undo:', await (await import('./supplierMerge')).undoLegacySupplierMerge())
   }).catch((e) => console.error('[suppliers] Legacy merge undo failed:', e))
   // Legacy's Manufacturing master posts to the RAJKOT ledger (its bills moved over, logged).
+  // An undone preclosure, remembered until the LC is closed again (lc.ts unPrecloseLC).
+  await getClient()
+    .execute('ALTER TABLE letters_of_credit ADD COLUMN reopened_json TEXT')
+    .catch((e: unknown) => {
+      if (!/duplicate column/i.test(String((e as Error).message))) console.error('[lc] reopened_json failed:', e)
+    })
+  // LC-17 (SIDDHARTH OILS) closed again after the 24-11 Undo preclosure was left undone.
+  await runOnce('lc17_reclose_v1', async () => {
+    console.log('[lc] LC-17 re-close:', await (await import('./lc')).recloseLc17())
+  }).catch((e) => console.error('[lc] LC-17 re-close failed:', e))
   await runOnce('legacy_mfg_ledger_v1', async () => {
     console.log('[suppliers] Legacy Manufacturing ledger:', await (await import('./supplierMerge')).legacyMfgLedger())
   }).catch((e) => console.error('[suppliers] Legacy Manufacturing ledger failed:', e))
