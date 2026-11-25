@@ -292,6 +292,48 @@ function isServiced(r: Row): boolean {
   return String(r?.interest_mode || '') === 'serviced'
 }
 
+/**
+ * IS THIS BILL'S INTEREST PAID? One word on the register, whatever the mode:
+ * - upfront: Paid once its upfront interest voucher is recorded, else Unpaid;
+ * - kept by the NBFC at funding (discounted): Deducted — nothing to pay;
+ * - serviced: Paid once it is paid up to the day the bill was repaid (or to
+ *   today while it runs), Part paid when only some of it is, Unpaid when none.
+ */
+function interestStatus(r: Row, repaid: boolean): { label: 'Paid' | 'Part paid' | 'Unpaid' | 'Deducted'; title: string } | null {
+  if (!r?.payment_received_date) return null
+  const mode = String(r.interest_mode || '') || (r.interest_upfront ? 'upfront' : 'discounted')
+  if (mode === 'discounted') return { label: 'Deducted', title: 'The NBFC kept the interest when it funded the bill — nothing to pay' }
+  if (mode === 'upfront') {
+    return r.upfront_interest_journal_entry_id || r.upfront_interest_paid_date
+      ? { label: 'Paid', title: `Upfront interest recorded${r.upfront_interest_paid_date ? ` on ${formatDate(String(r.upfront_interest_paid_date).slice(0, 10))}` : ''}` }
+      : { label: 'Unpaid', title: 'Upfront interest not recorded yet — record it from the Payment tracker (link the Tally entry if it is already booked there)' }
+  }
+  const paidTo = String(r.interest_paid_to || '').slice(0, 10)
+  const paid = servicedPaid(r).gross
+  const due = repaid ? String(r.last_repay_date || r.maturity_date || '').slice(0, 10) : new Date().toISOString().slice(0, 10)
+  if (paid <= 0.004 && !paidTo) return { label: 'Unpaid', title: 'No interest paid on this bill yet' }
+  if (paidTo && due && paidTo >= due) return { label: 'Paid', title: `Interest paid up to ${formatDate(paidTo)}` }
+  return { label: 'Part paid', title: `Interest paid ${formatINR(paid)}${paidTo ? ` — up to ${formatDate(paidTo)}` : ''}; ${repaid ? `owed to ${formatDate(due)}` : 'still running'}` }
+}
+
+function InterestStatusChip({ r, repaid }: { r: Row; repaid: boolean }): React.JSX.Element | null {
+  const st = interestStatus(r, repaid)
+  if (!st) return null
+  const tone =
+    st.label === 'Paid'
+      ? 'border-[#BFE3CB] bg-[#E9F5EE] text-[#0B6B45]'
+      : st.label === 'Part paid'
+        ? 'border-[#F1D9A6] bg-[#FFF4DD] text-[#8A5300]'
+        : st.label === 'Unpaid'
+          ? 'border-[#F0C9C4] bg-[#FDECEA] text-[#B3261E]'
+          : 'border-[#DCE7DB] bg-[#F1F5EF] text-[#5A6B62]'
+  return (
+    <span title={st.title} className={cn('mt-0.5 inline-flex rounded-[3px] border px-1.5 text-[9.5px] font-extrabold uppercase leading-[16px] tracking-[.06em]', tone)}>
+      {st.label}
+    </span>
+  )
+}
+
 function bdCalc(f: Row): {
   serviced: boolean
   intDays: number
@@ -4067,16 +4109,13 @@ Its bank voucher is removed too.`)) return
                             periodically while the bill runs and is recorded
                             against the repayments, not withheld here. */}
                         <TableCell className={cn('whitespace-nowrap text-right tabular-nums text-rose-700', __WEB__ && cn(BD_NUM, '!bg-[#FDF8F7] !text-[#8C2F26]'))}>
+                          <span className="inline-flex flex-col items-end">
                           {isServiced(r) && n(r.interest_paid_total) > 0.004 ? (
                             <span
                               className="inline-flex flex-col items-end"
                               title={`Interest paid so far: ${formatINR(servicedPaid(r).gross)} (TDS ${formatINR(servicedPaid(r).tds)})${r.interest_paid_to ? ` — serviced up to ${formatDate(String(r.interest_paid_to).slice(0, 10))}` : ''}`}
                             >
                               <span className="font-semibold">{formatINR(servicedPaid(r).gross)}</span>
-                              {/* Settled, but interest serviced short of the day it was repaid. */}
-                              {repaid && String(r.interest_paid_to || '').slice(0, 10) < String(r.last_repay_date || r.maturity_date || '').slice(0, 10) && (
-                                <span className="mt-0.5 rounded-[3px] border border-[#F0C9C4] bg-[#FDECEA] px-1.5 text-[10px] font-extrabold uppercase tracking-[.06em] text-[#B3261E]">Due</span>
-                              )}
                             </span>
                           ) : isServiced(r) && n(r.rep_interest_net) > 0.004 ? (
                             <span
@@ -4126,14 +4165,14 @@ Its bank voucher is removed too.`)) return
                               }
                               return (
                                 <span
-                                  className="inline-flex items-center rounded-[3px] border border-[#F0C9C4] bg-[#FDECEA] px-1.5 py-[1px] text-[11px] font-extrabold uppercase tracking-[.06em] text-[#B3261E]"
+                                  className="text-[11.5px] font-semibold text-[#8FA79B]"
                                   title={
                                     upto
                                       ? `The bill is settled but its interest is only serviced to ${formatDate(upto)} — the stretch to ${formatDate(upTill)} is still owed`
                                       : 'The bill is settled but no interest has been serviced on it at all'
                                   }
                                 >
-                                  Due
+                                  serviced
                                 </span>
                               )
                             })()
@@ -4143,6 +4182,9 @@ Its bank voucher is removed too.`)) return
                               {r.early_refund && <BdRefundDot refund={r.early_refund} />}
                             </span>
                           )}
+                          {/* PAID / PART PAID / UNPAID — one word under the figure. */}
+                          <InterestStatusChip r={r} repaid={repaid} />
+                          </span>
                         </TableCell>
                         <TableCell className={cn('whitespace-nowrap text-right tabular-nums', __WEB__ && cn(BD_NUM, '!bg-[#FDF8F7] !font-semibold !text-[#8C2F26]'))}>
                           {isServiced(r) && servicedPaid(r).tds > 0.004 ? (
