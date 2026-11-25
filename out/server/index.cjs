@@ -16424,6 +16424,16 @@ async function bdInterestSchedule(bdId) {
     }
   }
   marks.push(to);
+  if (String(bd.status || "") === "repaid") {
+    const lastRepay = String(
+      (await getClient().execute({ sql: "SELECT MAX(repay_date) AS d FROM bd_repayments WHERE bd_id = ?", args: [n17(bdId)] })).rows[0]?.d || bd.repaid_date || ""
+    ).slice(0, 10);
+    if (lastRepay && lastRepay < to && lastRepay >= from) {
+      const kept = marks.filter((m) => m < lastRepay);
+      marks.length = 0;
+      marks.push(...kept, lastRepay);
+    }
+  }
   const daysYear = n17(bd.days_year) || 360;
   const rate = n17(bd.interest_pct);
   const paid = await listBdInterestPayments(bdId);
@@ -16433,6 +16443,15 @@ async function bdInterestSchedule(bdId) {
   }
   const steps = n17(bd.first_receipt_part) > 5e-3 ? [] : (await principalRepaidByDate(bdId)).filter((x) => x.date < to);
   const reducing = steps.length > 0;
+  const stretches = await bdPaidStretches(n17(bdId), bd);
+  const repInt = toPlain14(
+    await getClient().execute({
+      sql: "SELECT id, repay_date, interest, tds_amount FROM bd_repayments WHERE bd_id = ? AND COALESCE(interest, 0) > 0.004",
+      args: [n17(bdId)]
+    })
+  );
+  const extra = repInt.filter((r) => !stretches.some((s7) => s7.via_repayment && String(s7.to_date) === String(r.repay_date).slice(0, 10)));
+  const lastMark = marks[marks.length - 1];
   const out = [];
   let start = from;
   let charged = 0;
@@ -16445,10 +16464,17 @@ async function bdInterestSchedule(bdId) {
     if (!reducing && split2.parts.length === 1) split2.parts[0].interest = gross;
     charged = round210(charged + gross);
     const tds = round210(gross * n17(bd.tds_pct) / 100);
-    const done = paid.find((p) => String(p.to_date).slice(0, 10) === end);
-    const onRest = paid.filter((p) => String(p.to_date).slice(0, 10) === end);
-    const paidGross = round210(onRest.reduce((t, p) => t + n17(p.gross), 0));
-    const paidNet = round210(onRest.reduce((t, p) => t + n17(p.net), 0));
+    const lo = i === 0 ? "0000-00-00" : start;
+    const hi = end === lastMark ? "9999-12-31" : end;
+    const onRest = stretches.filter((p) => String(p.to_date).slice(0, 10) > lo && String(p.to_date).slice(0, 10) <= hi);
+    const reach = onRest.reduce((m, p) => String(p.to_date).slice(0, 10) > m ? String(p.to_date).slice(0, 10) : m, "");
+    const fully = !!reach && (reach >= end || stretches.some((p) => String(p.to_date).slice(0, 10) >= end && String(p.from_date).slice(0, 10) <= end));
+    const lead = onRest.find((p) => String(p.to_date).slice(0, 10) === reach) || onRest[onRest.length - 1];
+    const done = fully ? paid.find((p) => String(p.to_date).slice(0, 10) === reach) || { ...lead, id: -1, journal_entry_id: 1 } : void 0;
+    const twice = extra.filter((r) => String(r.repay_date).slice(0, 10) > lo && String(r.repay_date).slice(0, 10) <= (end === lastMark ? "9999-12-31" : end));
+    const twiceGross = round210(twice.reduce((t, r) => t + n17(r.interest) + n17(r.tds_amount), 0));
+    const paidGross = round210(onRest.reduce((t, p) => t + n17(p.gross), 0) + twiceGross);
+    const paidNet = round210(onRest.reduce((t, p) => t + n17(p.net), 0) + twice.reduce((t, r) => t + n17(r.interest), 0));
     out.push({
       seq: i + 1,
       // THE DAY AFTER THE LAST ONE ENDED, which is what the payment screen
@@ -16468,6 +16494,10 @@ async function bdInterestSchedule(bdId) {
       paid_date: done ? String(done.paid_date).slice(0, 10) : null,
       paid_gross: paidGross,
       paid_net: paidNet,
+      // Interest also paid with a repayment on days already paid — shown so it is checked.
+      paid_twice: twiceGross > 4e-3 ? { gross: twiceGross, dates: twice.map((r) => String(r.repay_date).slice(0, 10)) } : null,
+      // The paid stretches that make up this rest — payments and repayments.
+      paid_by: onRest.map((p) => ({ from: String(p.from_date).slice(0, 10), to: String(p.to_date).slice(0, 10), gross: n17(p.gross), with_repayment: !!p.via_repayment })),
       // Whether a payment recorded against this slice actually reached the
       // ledger. A slice can be serviced without being posted, when the desk
       // chose to record it and post later — see payBdInterest's `post` flag.
@@ -19213,8 +19243,17 @@ async function listPendingRefs(accountName, companyId, side, all = false) {
       // invoice booked against a customer record with that text blank or
       // spelled differently invisible here — whole customers offered no
       // invoices at all to a credit note.
+      // THE BILL IS WHAT ITS VOUCHER DEBITED TO THIS LEDGER. A FOR sale whose
+      // freight goes to Freight Outward debits the customer the invoice LESS the
+      // freight (CITY VANASPATI: KRFL/396 ₹7,14,001 invoiced, ₹7,08,901 debited);
+      // taking the sale's own total left ₹5,100 "pending" on every such bill and
+      // the same again as a false On Account. The sale's total stands in only
+      // where its voucher did not post to this ledger.
       sql: `SELECT COALESCE(s.invoice_group, s.invoice_no) AS grp, MIN(s.invoice_no) AS ref, MIN(s.sale_date) AS bill_date,
-                   SUM(s.amount + s.gst_amount + s.round_off) AS amount,
+                   COALESCE(${accountId ? `(SELECT NULLIF(ROUND(SUM(jl.dr) - SUM(jl.cr), 2), 0) FROM journal_entries je JOIN journal_lines jl ON jl.entry_id = je.id
+                              WHERE jl.account_id = ${accountId} AND je.sale_id IN (SELECT s2.id FROM sales s2
+                                    WHERE s2.company_id = s.company_id AND COALESCE(s2.invoice_group, s2.invoice_no) = COALESCE(s.invoice_group, s.invoice_no)))` : "NULL"},
+                            SUM(s.amount + s.gst_amount + s.round_off)) AS amount,
                    MIN((SELECT MIN(je.id) FROM journal_entries je WHERE je.sale_id = s.id)) AS origin_id
             FROM sales s
             LEFT JOIN customers cu ON cu.id = s.customer_id
