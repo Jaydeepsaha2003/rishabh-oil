@@ -1346,6 +1346,8 @@ export async function updateLC(id: number, v: Row): Promise<{ id: number; warnin
   if (!String(v.fd_no || '').trim()) throw new Error('FD No is required')
   await assertWithinFacility(v, id)
   await assertWithinInvoiceCover(v)
+  // The party before this save — a changed party moves the LC's vouchers too.
+  const before = (await getClient().execute({ sql: 'SELECT party_type, party_id, company_id FROM letters_of_credit WHERE id = ?', args: [id] })).rows[0] as unknown as Row | undefined
   await getClient().execute({
     sql: `UPDATE letters_of_credit SET ${LC_COLS.map((k) => `${k} = ?`).join(', ')} WHERE id = ?`,
     args: [...lcArgs(v), id]
@@ -1354,8 +1356,87 @@ export async function updateLC(id: number, v: Row): Promise<{ id: number; warnin
   await linkTradingDealsToLc(id, v.linked_deal_ids)
   await syncPaymentReceivedIssuance(id, v)
   const warning = await syncLcVouchers(id)
+  if (before && String(before.party_type) === 'supplier' && String(v.party_type || 'supplier') === 'supplier' && n(before.party_id) && n(v.party_id) && n(before.party_id) !== n(v.party_id)) {
+    await moveLcPartyLines(id, n(before.party_id), n(v.party_id), n(before.company_id) || getActiveCompanyId())
+  }
   return { id, warning }
   })
+}
+
+/**
+ * AN LC'S PARTY CHANGED: ITS VOUCHERS FOLLOW.
+ *
+ * A live LC's settlement is re-posted on save, so it already carries the new
+ * party. A repaid or preclosed one is history — its figures are what the bank
+ * actually paid and are NOT re-derived — so a party change left its settlement
+ * (and any rebate passed on to the supplier) on the OLD party's ledger. Here
+ * the party lines of every voucher this LC posted move, in place and to the
+ * rupee, onto the new party's ledger; their bill-wise lines follow, and a
+ * reference to one of the old party's invoices becomes On Account. Logged first.
+ */
+async function moveLcPartyLines(lcId: number, oldSupplierId: number, newSupplierId: number, cid: number): Promise<number> {
+  const c = getClient()
+  const nameOf = async (sid: number): Promise<string> =>
+    String((await c.execute({ sql: 'SELECT name FROM suppliers WHERE id = ?', args: [sid] })).rows[0]?.name || '').trim()
+  const oldName = await nameOf(oldSupplierId)
+  const newName = await nameOf(newSupplierId)
+  if (!oldName || !newName) return 0
+  const { partyAccountName } = await import('./partyLedgers')
+  const { resolveAccountName } = await import('./ledgerMap')
+  const { getOrCreateAccount } = await import('./journal')
+  const oldLedger = String(await resolveAccountName(await partyAccountName(oldName, 'Sundry Creditors', cid), cid)).trim().toUpperCase()
+  const oldAcc = n((await c.execute({ sql: 'SELECT id FROM ledger_accounts WHERE name = ?', args: [oldLedger] })).rows[0]?.id)
+  const newAcc = await getOrCreateAccount(await partyAccountName(newName, 'Sundry Creditors', cid), 'Sundry Creditors', cid)
+  if (!oldAcc || !newAcc || oldAcc === newAcc) return 0
+  // Every voucher this LC posted that can carry the party.
+  const ids = new Set<number>()
+  const add = (rows: Row[]): void => rows.forEach((r) => n(r.e) && ids.add(n(r.e)))
+  add(toPlain(await c.execute({ sql: 'SELECT journal_entry_id AS e FROM lc_issuances WHERE lc_id = ?', args: [lcId] })))
+  add(
+    toPlain(
+      await c.execute({
+        sql: `SELECT journal_entry_id AS e FROM letters_of_credit WHERE id = ?
+              UNION ALL SELECT preclose_interest_journal_entry_id FROM letters_of_credit WHERE id = ?
+              UNION ALL SELECT preclose_payout_journal_entry_id FROM letters_of_credit WHERE id = ?
+              UNION ALL SELECT fee_adjust_journal_entry_id FROM letters_of_credit WHERE id = ?`,
+        args: [lcId, lcId, lcId, lcId]
+      })
+    )
+  )
+  add(
+    toPlain(
+      await c
+        .execute({ sql: 'SELECT rebate_journal_entry_id AS e FROM lc_parts WHERE lc_id = ? UNION ALL SELECT rebate_payout_journal_entry_id FROM lc_parts WHERE lc_id = ?', args: [lcId, lcId] })
+        .catch(() => ({ rows: [] }) as never)
+    )
+  )
+  if (!ids.size) return 0
+  const list = [...ids]
+  const inList = list.map(() => '?').join(',')
+  const lines = toPlain(
+    await c.execute({ sql: `SELECT id, entry_id, dr, cr FROM journal_lines WHERE account_id = ? AND entry_id IN (${inList})`, args: [oldAcc, ...list] })
+  )
+  if (!lines.length) return 0
+  const lineIds = lines.map((l) => n(l.id))
+  const lineIn = lineIds.map(() => '?').join(',')
+  const allocs = toPlain(await c.execute({ sql: `SELECT * FROM journal_bill_allocs WHERE line_id IN (${lineIn})`, args: lineIds }))
+  await c.execute(`CREATE TABLE IF NOT EXISTS accounting_repair_log (
+      repair_key TEXT PRIMARY KEY, entry_id INTEGER NOT NULL, before_json TEXT NOT NULL,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')))`)
+  await c.execute({
+    sql: 'INSERT OR REPLACE INTO accounting_repair_log(repair_key, entry_id, before_json) VALUES (?, ?, ?)',
+    args: [`lc_party_move:${lcId}:${Date.now()}`, n(lines[0].entry_id), JSON.stringify({ lcId, from: { supplier: oldSupplierId, account: oldAcc }, to: { supplier: newSupplierId, account: newAcc }, lines, allocs })]
+  })
+  await c.execute({ sql: `UPDATE journal_lines SET account_id = ? WHERE id IN (${lineIn})`, args: [newAcc, ...lineIds] })
+  await c.execute({ sql: `UPDATE journal_bill_allocs SET account_id = ? WHERE line_id IN (${lineIn})`, args: [newAcc, ...lineIds] })
+  // A reference to one of the OLD party's invoices is no bill of the new one.
+  await c.execute({
+    sql: `UPDATE journal_bill_allocs SET method = 'on_account', ref_name = NULL, order_id = NULL
+           WHERE line_id IN (${lineIn}) AND order_id IS NOT NULL
+             AND order_id NOT IN (SELECT id FROM orders WHERE supplier_id = ?)`,
+    args: [...lineIds, newSupplierId]
+  })
+  return lines.length
 }
 
 function todayISO(): string {
