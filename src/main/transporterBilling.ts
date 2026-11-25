@@ -100,6 +100,8 @@ export async function listTransporterFreight(
              AND (pt.order_id = o.id OR pt.id IN (SELECT a.tanker_id FROM ${ALLOC} a WHERE a.order_id = o.id))
            ORDER BY pt.id LIMIT 1) AS tanker_received,
          o.status AS dispatch_stage,
+         -- The oil rate a shortage is charged at — the bargain's.
+         (SELECT b.rate_per_uom FROM bargains b WHERE b.id = o.bargain_id) AS oil_rate,
          CASE WHEN o.status != 'received' THEN 1 ELSE 0 END AS provisional`
       : `sa.invoice_no AS doc_no, sa.sale_date AS doc_date, COALESCE(cu.name, sa.customer) AS party_name, sa.gst_pct AS oil_gst_pct,
          p.name AS product_name,
@@ -110,6 +112,8 @@ export async function listTransporterFreight(
          sa.qty AS dispatch_qty, sa.received_qty AS received_qty, sa.dispatch_stage AS dispatch_stage,
          -- The sale's own freight rate, where one was set.
          NULLIF(sa.transport_rate, 0) AS freight_rate, NULL AS tanker_loaded, NULL AS tanker_received,
+         -- The rate we sold the oil at — what a shortage is charged at.
+         sa.rate AS oil_rate,
          -- Until the invoice is unloaded there is no weighed-in quantity, so the
          -- freight is still an estimate off the dispatched qty. Flagged so the
          -- register can say "valuation" rather than presenting a provisional
