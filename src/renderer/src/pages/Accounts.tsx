@@ -10452,7 +10452,23 @@ Delete ${doc}?`)) return
                           {child ? '' : String(r.vehicle_no || '—')}
                         </span>
                         <span className="flex min-w-0 flex-col items-start justify-center gap-[3px]" style={{ padding: '0 10px', ...mono, fontSize: 12, fontWeight: 700 }}>
-                          <span className="max-w-full truncate" style={child ? { fontSize: 11, color: A.muted } : undefined}>{String(r.doc_no || '—')}</span>
+                          {/* The invoice opens straight from here — the purchase (or sale) it belongs to. */}
+                          {onOpenRecord && (r.order_id || r.sale_id) ? (
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation()
+                                onOpenRecord(r.order_id ? 'orders' : 'sales', Number(r.order_id || r.sale_id), { screen, ledgerId: null, companyId: cid })
+                              }}
+                              title={`Open ${r.order_id ? 'purchase' : 'sale'} invoice ${String(r.doc_no || '')}`}
+                              className="max-w-full truncate text-left underline-offset-2 hover:underline"
+                              style={child ? { fontSize: 11, color: A.muted } : { color: A.dr }}
+                            >
+                              {String(r.doc_no || '—')}
+                            </button>
+                          ) : (
+                            <span className="max-w-full truncate" style={child ? { fontSize: 11, color: A.muted } : undefined}>{String(r.doc_no || '—')}</span>
+                          )}
                           {gSubs.length > 0 && (
                             <button
                               type="button"
