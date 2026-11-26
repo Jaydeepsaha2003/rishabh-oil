@@ -9750,7 +9750,9 @@ Delete ${doc}?`)) return
     // shortage line reads the oil's own rate (sold / bargained at), not its
     // amount over the rounded qty (₹2,990.40 / 0.021 showed ₹1,42,400, not ₹1,40,000).
     const rateOf = (r: Row): number => {
-      if (!isShort(r) && n(r.freight_rate) > 0) return n(r.freight_rate)
+      // No rate on the tanker / sale: 0, never one worked back from the amount
+      // (ASO/26-27/99 read ₹8,104.71 with no rate saved on its tanker).
+      if (!isShort(r)) return n(r.freight_rate)
       if (isShort(r) && n(r.oil_rate) > 0) return n(r.oil_rate)
       const qq = qtyOf(r)
       return qq > 0 ? Math.abs(n(r.amount)) / qq : 0
