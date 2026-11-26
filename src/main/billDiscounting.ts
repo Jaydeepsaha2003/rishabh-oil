@@ -4547,7 +4547,14 @@ export async function bdPeriodInterestSummary(v: { nbfc_id: number; from_date: s
       sql: 'SELECT COALESCE(SUM(COALESCE(interest, 0) + COALESCE(tds_amount, 0)), 0) AS g FROM bd_repayments WHERE bd_id = ? AND substr(repay_date, 1, 10) BETWEEN ? AND ?',
       args: [n(b.id), from, to0]
     })
-    const paid = round2(n(p1.rows[0]?.g) + n(p2.rows[0]?.g))
+    // Paid-twice interest set over to another bill counts on that bill (B4 → B5).
+    await ensureBdAdjust()
+    const p3 = await c.execute({
+      sql: `SELECT COALESCE(SUM(CASE WHEN to_bd_id = ? THEN gross ELSE -gross END), 0) AS g FROM bd_interest_adjustments
+             WHERE (to_bd_id = ? OR from_bd_id = ?) AND substr(on_date, 1, 10) BETWEEN ? AND ?`,
+      args: [n(b.id), n(b.id), n(b.id), from, to0]
+    })
+    const paid = round2(n(p1.rows[0]?.g) + n(p2.rows[0]?.g) + n(p3.rows[0]?.g))
     if (due <= 0.004 && paid <= 0.004) continue
     out.push({ bd_id: n(b.id), bd_no: b.bd_no, due: round2(due), paid, pending: round2(due - paid) })
   }
