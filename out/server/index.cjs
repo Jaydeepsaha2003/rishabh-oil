@@ -18156,7 +18156,13 @@ async function bdPeriodInterestSummary(v) {
       sql: "SELECT COALESCE(SUM(COALESCE(interest, 0) + COALESCE(tds_amount, 0)), 0) AS g FROM bd_repayments WHERE bd_id = ? AND substr(repay_date, 1, 10) BETWEEN ? AND ?",
       args: [n17(b.id), from, to0]
     });
-    const paid2 = round210(n17(p1.rows[0]?.g) + n17(p2.rows[0]?.g));
+    await ensureBdAdjust();
+    const p3 = await c.execute({
+      sql: `SELECT COALESCE(SUM(CASE WHEN to_bd_id = ? THEN gross ELSE -gross END), 0) AS g FROM bd_interest_adjustments
+             WHERE (to_bd_id = ? OR from_bd_id = ?) AND substr(on_date, 1, 10) BETWEEN ? AND ?`,
+      args: [n17(b.id), n17(b.id), n17(b.id), from, to0]
+    });
+    const paid2 = round210(n17(p1.rows[0]?.g) + n17(p2.rows[0]?.g) + n17(p3.rows[0]?.g));
     if (due2 <= 4e-3 && paid2 <= 4e-3) continue;
     out.push({ bd_id: n17(b.id), bd_no: b.bd_no, due: round210(due2), paid: paid2, pending: round210(due2 - paid2) });
   }
