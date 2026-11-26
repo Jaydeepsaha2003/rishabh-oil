@@ -45641,7 +45641,7 @@ async function createTransporterBill(v, existingId) {
   const deductions = (Array.isArray(v.deductions) ? v.deductions : n54(v.others_amount) > 4e-3 ? [{ amount: v.others_amount, ledger: v.others_ledger, note: v.others_note }] : []).map((d) => ({
     amount: round224(Math.max(0, n54(d.amount))),
     ledger: (String(d.ledger || "").trim() || frAccount).toUpperCase(),
-    note: String(d.note || "").trim()
+    note: String(d.note || "").trim().toUpperCase()
   })).filter((d) => d.amount > 4e-3);
   const othersAmt = round224(deductions.reduce((t, d) => t + d.amount, 0));
   const frDeds = round224(deductions.filter((d) => d.ledger === frAccount).reduce((t, d) => t + d.amount, 0));
