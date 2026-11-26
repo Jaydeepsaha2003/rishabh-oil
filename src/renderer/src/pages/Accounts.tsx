@@ -2319,7 +2319,8 @@ export function Accounts({
   const [tfBillWise, setTfBillWise] = useState<Record<string, Row[]>>({})
   const [tfBill, setTfBill] = useState<Row>({ bill_no: '', bill_date: todayISO(), gst_pct: '5', tds_pct: '', tds_ledger: 'TDS PAYABLE A/C', adjustment: '', adjustment_note: '', note: '', others_amount: '', others_ledger: '', others_note: '', rcm_pct: '5' })
   // The bill's deductions — as many as it has, each to its own ledger.
-  const [tfDeds, setTfDeds] = useState<{ amount: string; ledger: string; note: string }[]>([])
+  // pct: an amount worked out as a % of the freight after shortage (cash discount), until typed over.
+  const [tfDeds, setTfDeds] = useState<{ amount: string; ledger: string; note: string; pct?: number }[]>([])
   const [tfSaving, setTfSaving] = useState(false)
   const [nrFrom, setNrFrom] = useState(() => regBack.current?.nrFrom ?? '')
   const [nrTo, setNrTo] = useState(() => regBack.current?.nrTo ?? '')
@@ -8813,6 +8814,26 @@ Delete ${doc}?`)) return
     const rcm = Math.round(taxable * rcmPct) / 100
     return { lines, adj, taxable, gstPct, gst, tds, others, net: Math.round((taxable - others) * 100) / 100, ro: Math.round((total - raw) * 100) / 100, total, rcmPct, rcm }
   })()
+  // EVERY BILL STARTS WITH THE USUAL DEDUCTIONS (the user's rule): cash discount
+  // 0.5% of the freight after shortage, and dala charge ₹150 — each can be
+  // changed or removed on the bill.
+  useEffect(() => {
+    if (tfBillOpen) setTfDeds((p) => (p.length ? p : [{ amount: '', ledger: '', note: 'cash discount', pct: 0.5 }, { amount: '150', ledger: '', note: 'dala charge' }]))
+  }, [tfBillOpen])
+  const tfCdBase = tfBillCalc.taxable
+  useEffect(() => {
+    setTfDeds((p) => {
+      let changed = false
+      const next = p.map((d) => {
+        if (!d.pct) return d
+        const amt = String(Math.round(Math.max(0, tfCdBase) * d.pct) / 100)
+        if (amt === d.amount) return d
+        changed = true
+        return { ...d, amount: amt }
+      })
+      return changed ? next : p
+    })
+  }, [tfCdBase, tfDeds.length])
 
   function tfToggle(row: Row): void {
     const id = Number(row.id)
@@ -9474,7 +9495,8 @@ Delete ${doc}?`)) return
                 <input
                   type="number"
                   value={d.amount}
-                  onChange={(e) => setTfDeds((p) => p.map((x, j) => (j === k ? { ...x, amount: e.target.value } : x)))}
+                  onChange={(e) => setTfDeds((p) => p.map((x, j) => (j === k ? { ...x, amount: e.target.value, pct: undefined } : x)))}
+                  title={d.pct ? `${d.pct}% of the freight after shortage — type to change` : undefined}
                   placeholder="0.00"
                   style={{ ...field, fontFamily: MONO, textAlign: 'right', border: '1px solid #C3D2C6' }}
                 />
