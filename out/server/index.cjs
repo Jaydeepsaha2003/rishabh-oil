@@ -17117,6 +17117,12 @@ async function listBdCumulativePayments(nbfcId) {
     const d = String(r.repay_date || "").slice(0, 10);
     const st = (await bdPaidStretches(n17(r.bd_id), bd)).find((x) => x.via_repayment && String(x.to_date).slice(0, 10) === d);
     const gross = round210(n17(r.interest) + n17(r.tds_amount));
+    const f0 = st ? String(st.from_date).slice(0, 10) : d;
+    const steps = n17(bd.first_receipt_part) > 5e-3 ? [] : await principalRepaidByDate(n17(r.bd_id));
+    const calc = bdCalc(bd);
+    const dy = n17(bd.days_year) || 360;
+    const due = f0 <= d ? steps.length ? bdInterestParts(calc.interestBase, steps, f0, d, n17(bd.interest_pct), dy).gross : round210(calc.interestBase * n17(bd.interest_pct) * (daysBetween4(f0, d) + 1) / (100 * dy)) : 0;
+    const diff = round210(gross - due);
     out.push({
       journal_entry_id: -n17(r.id),
       rep_only: true,
@@ -17129,14 +17135,14 @@ async function listBdCumulativePayments(nbfcId) {
       journal_code: r.journal_code || "",
       bank: r.bank_account || "",
       narration: "",
-      bills: [{ id: -n17(r.id), bd_id: n17(r.bd_id), bd_no: r.bd_no, from_date: st ? String(st.from_date).slice(0, 10) : d, to_date: d, gross, tds: n17(r.tds_amount), net: n17(r.interest), diff: 0, latest: true }],
+      bills: [{ id: -n17(r.id), bd_id: n17(r.bd_id), bd_no: r.bd_no, from_date: f0, to_date: d, due, gross, tds: n17(r.tds_amount), net: n17(r.interest), diff, latest: true }],
       gross,
       tds: n17(r.tds_amount),
       net: n17(r.interest),
-      expected: gross,
-      diff: 0,
-      short: 0,
-      over: 0,
+      expected: due,
+      diff,
+      short: diff < 0 ? diff : 0,
+      over: diff > 0 ? diff : 0,
       reps: [],
       rep_gross: 0,
       rep_net: 0
