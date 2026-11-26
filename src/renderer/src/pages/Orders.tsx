@@ -8656,12 +8656,18 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel, onPurchaseR
                                   </PopoverTrigger>
                                   {/* WHETHER THE TRANSPORTER HAS BILLED IT — the freight bill's no., or still to bill. */}
                                   {String(row.freight_bill_nos || '').trim() ? (
-                                    <span
-                                      className="mt-1 block whitespace-nowrap text-[10.5px] font-bold text-[#0B6B45]"
-                                      title="Transporter freight bill booked — open the invoice to see it"
+                                    <button
+                                      type="button"
+                                      disabled={!onOpenVoucher || !Number(row.freight_bill_je)}
+                                      onClick={(e) => {
+                                        e.stopPropagation()
+                                        if (onOpenVoucher && Number(row.freight_bill_je)) onOpenVoucher(Number(row.freight_bill_je), Number(row.company_id) || undefined)
+                                      }}
+                                      className="mt-1 block whitespace-nowrap text-[10.5px] font-bold text-[#0B6B45] underline-offset-2 hover:underline disabled:no-underline"
+                                      title="Open the transporter freight bill"
                                     >
                                       Fr. bill {String(row.freight_bill_nos)}
-                                    </span>
+                                    </button>
                                   ) : Number(row.freight_unbilled) > 0 ? (
                                     <span className="mt-1 block whitespace-nowrap text-[10.5px] font-bold text-[#8A5300]" title="Freight not on a transporter bill yet">
                                       Fr. bill pending
