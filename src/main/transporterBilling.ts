@@ -348,6 +348,7 @@ export async function createTransporterBill(v: Row, existingId?: number): Promis
     }))
     .filter((d) => d.amount > 0.004)
   const othersAmt = round2(deductions.reduce((t, d) => t + d.amount, 0))
+  const frDeds = round2(deductions.filter((d) => d.ledger === frAccount).reduce((t, d) => t + d.amount, 0))
   // TDS ON THE NET FREIGHT — after the deductions (cash discount, dala…), the user's rule.
   const tds = round2((Math.max(0, taxable - othersAmt) * tdsPct) / 100)
   // The first deduction's ledger, kept on the bill row as before.
@@ -405,8 +406,10 @@ export async function createTransporterBill(v: Row, existingId?: number): Promis
         group: 'Direct Expenses',
         // The adjustment is freight too, so it lands on the same expense —
         // positive as more cost, negative as less.
-        dr: round2(unaccrued + adjustment) > 0 ? round2(unaccrued + adjustment) : 0,
-        cr: round2(unaccrued + adjustment) < 0 ? -round2(unaccrued + adjustment) : 0
+        // A deduction left on the freight ledger (none picked) just makes the
+        // freight smaller — no Cr line of its own.
+        dr: round2(unaccrued + adjustment - frDeds) > 0 ? round2(unaccrued + adjustment - frDeds) : 0,
+        cr: round2(unaccrued + adjustment - frDeds) < 0 ? -round2(unaccrued + adjustment - frDeds) : 0
       },
       // A freight bill records no head of its own. A carrier billing this
       // site is in the same state, which is the conservative reading anyway:
@@ -416,7 +419,7 @@ export async function createTransporterBill(v: Row, existingId?: number): Promis
       ...rcmJournalLines(rcmPct, rcm),
       { account: 'ROUND OFF A/C', group: 'Indirect Expenses', dr: roundOff > 0 ? roundOff : 0, cr: roundOff < 0 ? -roundOff : 0 },
       { account: 'TDS PAYABLE A/C', group: 'Duties & Taxes', cr: tds },
-      ...deductions.map((d) => ({ account: d.ledger, group: d.ledger === frAccount ? 'Direct Expenses' : 'Indirect Incomes', cr: d.amount })),
+      ...deductions.filter((d) => d.ledger !== frAccount).map((d) => ({ account: d.ledger, group: 'Indirect Incomes', cr: d.amount })),
       { account: partyName, group: 'Sundry Creditors', cr: total }
     ]
   })

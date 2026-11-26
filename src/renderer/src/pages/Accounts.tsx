@@ -9252,8 +9252,13 @@ Delete ${doc}?`)) return
       // part already accrued at dispatch comes off FREIGHT PAYABLE, the rest
       // (and the adjustment) is the expense, GST is input tax, TDS is withheld.
       const accrued = Math.round(tfPickedRows.filter((r) => n(r.accrued) === 1).reduce((t, r) => t + n(r.amount), 0) * 100) / 100
-      const expense = Math.round((c.lines - accrued + c.adj) * 100) / 100
-      const frLedger = tfPostedName(inward ? 'FREIGHT INWARD A/C' : 'FREIGHT OUTWARD A/C')
+      const frName = inward ? 'FREIGHT INWARD A/C' : 'FREIGHT OUTWARD A/C'
+      // A deduction with no ledger picked (or the freight ledger itself) just
+      // makes the freight smaller — no line of its own on any ledger.
+      const onFreight = (d: { ledger: string }): boolean => !d.ledger.trim() || d.ledger.trim().toUpperCase() === frName
+      const frDeds = Math.round(tfDeds.filter(onFreight).reduce((t, d) => t + Math.max(0, Number(d.amount) || 0), 0) * 100) / 100
+      const expense = Math.round((c.lines - accrued + c.adj - frDeds) * 100) / 100
+      const frLedger = tfPostedName(frName)
       const jr: { side: 'Dr' | 'Cr'; ledger: string; amount: number }[] = []
       if (accrued > 0.004) jr.push({ side: 'Dr', ledger: tfPostedName('FREIGHT PAYABLE A/C'), amount: accrued })
       if (Math.abs(expense) > 0.004) jr.push({ side: expense > 0 ? 'Dr' : 'Cr', ledger: frLedger, amount: Math.abs(expense) })
@@ -9266,7 +9271,7 @@ Delete ${doc}?`)) return
       if (c.tds > 0.004) jr.push({ side: 'Cr', ledger: tfPostedName('TDS PAYABLE A/C'), amount: c.tds })
       for (const d of tfDeds) {
         const a = Math.max(0, Number(d.amount) || 0)
-        if (a > 0.004) jr.push({ side: 'Cr', ledger: d.ledger.trim().toUpperCase() || frLedger, amount: a })
+        if (a > 0.004 && !onFreight(d)) jr.push({ side: 'Cr', ledger: d.ledger.trim().toUpperCase(), amount: a })
       }
       jr.push({ side: 'Cr', ledger: party, amount: c.total })
       if (c.total <= 0) need.push('less in Others than the bill comes to')
@@ -9536,7 +9541,7 @@ Delete ${doc}?`)) return
                       {row(
                         <>
                           {d.note.trim() || 'Deduction'}
-                          {small(`→ ${d.ledger.trim() || (inward ? 'FREIGHT INWARD A/C' : 'FREIGHT OUTWARD A/C')}`)}
+                          {small(d.ledger.trim() && d.ledger.trim().toUpperCase() !== (inward ? 'FREIGHT INWARD A/C' : 'FREIGHT OUTWARD A/C') ? `→ ${d.ledger.trim()}` : 'off the freight — no ledger line')}
                         </>,
                         `− ${formatINR(Number(d.amount) || 0)}`,
                         A.cr
