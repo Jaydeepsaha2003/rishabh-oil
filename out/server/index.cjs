@@ -3229,7 +3229,7 @@ var init_voucherOwnership = __esm({
       lc_repayments: ["journal_entry_id", "fee_journal_entry_id"],
       lc_payment_ins: ["journal_entry_id"],
       bill_discountings: ["journal_entry_id", "repay_journal_entry_id", "margin_release_journal_entry_id", "upfront_interest_journal_entry_id"],
-      bd_repayments: ["journal_entry_id", "interest_entry_id"],
+      bd_repayments: ["journal_entry_id", "interest_entry_id", "charges_entry_id"],
       bd_interest_payments: ["journal_entry_id", "interest_entry_id"],
       bd_payment_ins: ["journal_entry_id"],
       bill_discounts: ["journal_entry_id", "realize_entry_id"],
@@ -12655,6 +12655,7 @@ async function entryOwners(cid) {
   }
   await add("bd", `SELECT r.journal_entry_id AS eid, b.id AS iid, b.bd_no AS ref FROM bd_repayments r JOIN ${BD} b ON b.id = r.bd_id WHERE b.company_id = ? AND r.journal_entry_id IS NOT NULL`);
   await add("bd", `SELECT r.interest_entry_id AS eid, b.id AS iid, b.bd_no AS ref FROM bd_repayments r JOIN ${BD} b ON b.id = r.bd_id WHERE b.company_id = ? AND r.interest_entry_id IS NOT NULL`);
+  await add("bd", `SELECT r.charges_entry_id AS eid, b.id AS iid, b.bd_no AS ref FROM bd_repayments r JOIN ${BD} b ON b.id = r.bd_id WHERE b.company_id = ? AND r.charges_entry_id IS NOT NULL`);
   await add("bd", `SELECT x.journal_entry_id AS eid, b.id AS iid, b.bd_no AS ref FROM bd_interest_payments x JOIN ${BD} b ON b.id = x.bd_id WHERE b.company_id = ? AND x.journal_entry_id IS NOT NULL`);
   await add("bd", `SELECT p.journal_entry_id AS eid, b.id AS iid, b.bd_no AS ref FROM bd_payment_ins p JOIN ${BD} b ON b.id = p.bd_id WHERE b.company_id = ? AND p.journal_entry_id IS NOT NULL`);
   return m;
@@ -15000,7 +15001,9 @@ __export(billDiscounting_exports, {
   bdInterestWindow: () => bdInterestWindow,
   bdKpis: () => bdKpis,
   bdLimits: () => bdLimits,
+  bdPayable: () => bdPayable,
   bdPendingPayout: () => bdPendingPayout,
+  bdPeriodInterestSummary: () => bdPeriodInterestSummary,
   bdRefundCandidates: () => bdRefundCandidates,
   bookBdRefundIncome: () => bookBdRefundIncome,
   closeBdRefunds: () => closeBdRefunds,
@@ -15248,8 +15251,9 @@ async function dropRepayEntries(bd) {
     args: [Number(bd.id)]
   });
   if (shared.rows.length) throw new Error("This bill shares a repayment with another bill \u2014 undo that combined repayment first");
-  const parts = await c.execute({ sql: "SELECT journal_entry_id, interest_entry_id FROM bd_repayments WHERE bd_id = ?", args: [Number(bd.id)] });
+  const parts = await c.execute({ sql: "SELECT journal_entry_id, interest_entry_id, charges_entry_id FROM bd_repayments WHERE bd_id = ?", args: [Number(bd.id)] });
   for (const r of parts.rows) {
+    await dropEntry2(n17(r.charges_entry_id) || null);
     await dropEntry2(n17(r.interest_entry_id) || null);
     await dropEntry2(n17(r.journal_entry_id) || null);
   }
@@ -16262,13 +16266,12 @@ async function repayBd(id, v) {
       }
     }
     const paidOut = spill > 4e-3 || others.length ? typed : round210(asked + comm + bankCharges + interestPaid + penaltyPaid + extra);
-    const lines = [
-      { account: bdPayable(bd), group: BD_PAYABLE_GROUP, dr: round210(asked + toOthers + interestPaid) }
-    ];
-    if (comm > 4e-3) lines.push({ account: "COMM. CHARGES A/C", group: "Indirect Expenses", dr: comm });
-    if (bankCharges > 4e-3) lines.push({ account: "BANK CHARGES A/C", group: "Indirect Expenses", dr: bankCharges });
-    if (penaltyPaid > 4e-3) lines.push({ account: "PENAL INTEREST ON BILL DISCOUNTING A/C", group: "Indirect Expenses", dr: penaltyPaid });
-    for (const ch of charges) lines.push({ account: ch.account, group: ch.group, dr: ch.amount });
+    const costLines = [];
+    if (comm > 4e-3) costLines.push({ account: "COMM. CHARGES A/C", group: "Indirect Expenses", dr: comm });
+    if (bankCharges > 4e-3) costLines.push({ account: "BANK CHARGES A/C", group: "Indirect Expenses", dr: bankCharges });
+    if (penaltyPaid > 4e-3) costLines.push({ account: "PENAL INTEREST ON BILL DISCOUNTING A/C", group: "Indirect Expenses", dr: penaltyPaid });
+    for (const ch of charges) if (!isRefundDue(ch.account)) costLines.push({ account: ch.account, group: ch.group, dr: ch.amount });
+    const lines = [{ account: bdPayable(bd), group: BD_PAYABLE_GROUP, dr: paidOut }];
     if (settleVia === "party") {
       lines.push({
         account: party,
@@ -16311,6 +16314,18 @@ async function repayBd(id, v) {
         repayBank
       ]
     });
+    if (costLines.length) {
+      const costTotal = round210(costLines.reduce((t, l) => t + n17(l.dr), 0));
+      const cj = await postJournal({
+        date,
+        vchType: "JOURNAL",
+        vchNo: String(bd.bd_no || ""),
+        narration: `Charges on Bill Discounting ${bd.bd_no} repayment to ${bd.nbfc_name || "the NBFC"} \u2014 ${costLines.map((l) => `${inr(n17(l.dr))} ${l.account}`).join(", ")}`,
+        companyId: n17(bd.company_id) || void 0,
+        lines: [...costLines, { account: bdPayable(bd), group: BD_PAYABLE_GROUP, cr: costTotal }]
+      });
+      await c.execute({ sql: "UPDATE bd_repayments SET charges_entry_id = ? WHERE id = ?", args: [cj.id, Number(insRep.lastInsertRowid || 0)] });
+    }
     if (interestPaid > 4e-3) {
       await c.execute({ sql: "UPDATE bd_repayments SET interest = ? WHERE id = ?", args: [interestPaid, Number(insRep.lastInsertRowid || 0)] });
       const ij = await postBdInterestJournal(bd, date, interestPaid, tdsAmt, tdsLedger);
@@ -16813,6 +16828,13 @@ async function bdInterestRange(bdId, fromIn, toIn, tillMonthEnd = false) {
       const w2 = worked(from, to);
       const tds2 = round210(s7.short * n17(bd.tds_pct) / 100);
       return { ...out, to_date: to, parts: w2.parts, days: w2.days, gross: s7.short, tds: tds2, net: round210(s7.short - tds2), balance_of: { from: s7.from, to: s7.to, due: s7.due, paid: s7.paid }, short_before: out.short_before, blocked: "" };
+    }
+    const repaidOn = String(bd.status) === "repaid" ? String(bd.repaid_date || "").slice(0, 10) : "";
+    const endEff = repaidOn && repaidOn < to ? repaidOn : to;
+    if (s7.short > 1 && s7.from >= from && s7.to >= endEff) {
+      const w2 = worked(s7.from, s7.to);
+      const tds2 = round210(s7.short * n17(bd.tds_pct) / 100);
+      return { ...out, from_date: s7.from, to_date: s7.to, parts: w2.parts, days: w2.days, gross: s7.short, tds: tds2, net: round210(s7.short - tds2), balance_of: { from: s7.from, to: s7.to, due: s7.due, paid: s7.paid }, short_before: out.short_before, blocked: "" };
     }
     const bal = spans.filter((x) => x.short > 1 && x.from <= to && x.to >= from);
     return { ...out, blocked: `Already paid ${s7.from} \u2192 ${s7.to}.` + (bal.length ? ` Balance ${inr(bal[0].short)} due \u2014 pick ${bal[0].from} \u2192 ${bal[0].to} alone to pay it.` : ""), paid_to: s7.to };
@@ -17359,6 +17381,8 @@ async function deleteBdRepayment(repaymentId) {
     const touched = Array.from(new Set(siblings.map((x) => n17(x.bd_id)).filter((x) => x > 0)));
     const interestJes = je ? toPlain14(await c.execute({ sql: "SELECT interest_entry_id FROM bd_repayments WHERE journal_entry_id = ? AND interest_entry_id IS NOT NULL", args: [je] })) : n17(part.interest_entry_id) ? [{ interest_entry_id: part.interest_entry_id }] : [];
     for (const x of interestJes) await dropEntry2(n17(x.interest_entry_id) || null);
+    const chargeJes = je ? toPlain14(await c.execute({ sql: "SELECT charges_entry_id FROM bd_repayments WHERE journal_entry_id = ? AND charges_entry_id IS NOT NULL", args: [je] })) : n17(part.charges_entry_id) ? [{ charges_entry_id: part.charges_entry_id }] : [];
+    for (const x of chargeJes) await dropEntry2(n17(x.charges_entry_id) || null);
     await dropEntry2(je || null);
     await ensureBdAdjust();
     if (je) {
@@ -17406,6 +17430,7 @@ async function editBdRepayment(repaymentId, v) {
     const primaryId = n17(primary.bd_id);
     const oldHead = oldJe ? toPlain14(await c.execute({ sql: "SELECT vch_type FROM journal_entries WHERE id = ?", args: [oldJe] }))[0] : null;
     const oldIntJe = n17(primary.interest_entry_id);
+    const oldChJe = n17(primary.charges_entry_id);
     const mergeRows = [];
     const seenJe = /* @__PURE__ */ new Set([oldJe]);
     for (const mid of (v.merge_ids || []).map((x) => n17(x)).filter(Boolean)) {
@@ -17494,6 +17519,7 @@ async function editBdRepayment(repaymentId, v) {
       await c.execute({ sql: "UPDATE journal_lines SET entry_id = ? WHERE entry_id = ?", args: [to, from] });
       await c.execute({ sql: "UPDATE bd_repayments SET journal_entry_id = ? WHERE journal_entry_id = ?", args: [to, from] });
       await c.execute({ sql: "UPDATE bd_repayments SET interest_entry_id = ? WHERE interest_entry_id = ?", args: [to, from] });
+      await c.execute({ sql: "UPDATE bd_repayments SET charges_entry_id = ? WHERE charges_entry_id = ?", args: [to, from] });
       await c.execute({ sql: "UPDATE bill_discountings SET margin_release_journal_entry_id = ? WHERE margin_release_journal_entry_id = ?", args: [to, from] });
       await c.execute({ sql: "DELETE FROM voucher_numbers WHERE entry_id = ?", args: [from] }).catch(() => {
       });
@@ -17507,6 +17533,10 @@ async function editBdRepayment(repaymentId, v) {
     if (oldIntJe) {
       const ni = toPlain14(await c.execute({ sql: "SELECT interest_entry_id FROM bd_repayments WHERE journal_entry_id = ? AND interest_entry_id IS NOT NULL LIMIT 1", args: [entry] }))[0];
       if (n17(ni?.interest_entry_id)) await moveEntry(n17(ni.interest_entry_id), oldIntJe, "JOURNAL");
+    }
+    if (oldChJe) {
+      const nc = toPlain14(await c.execute({ sql: "SELECT charges_entry_id FROM bd_repayments WHERE journal_entry_id = ? AND charges_entry_id IS NOT NULL LIMIT 1", args: [entry] }))[0];
+      if (n17(nc?.charges_entry_id)) await moveEntry(n17(nc.charges_entry_id), oldChJe, "JOURNAL");
     }
     for (const [id, oldM] of oldMargins) {
       const b = await loadBd(id);
@@ -18092,6 +18122,48 @@ async function deleteLastBdReceiptPart(bdId) {
     return { part_no: n17(row.part_no), ref: String(row.ref || receiptRef(bd, n17(row.part_no))) };
   });
 }
+async function bdPeriodInterestSummary(v) {
+  const c = getClient();
+  const to0 = String(v.to_date || "").slice(0, 10);
+  const from = String(v.from_date || "").slice(0, 10);
+  if (!n17(v.nbfc_id) || !/^\d{4}-\d{2}-\d{2}$/.test(to0) || !/^\d{4}-\d{2}-\d{2}$/.test(from)) return { due: 0, paid: 0, pending: 0, bills: [] };
+  const cap = interestCap(!!v.till_month_end);
+  const to = to0 > cap ? cap : to0;
+  const bills = (await listBd({ nbfc_id: n17(v.nbfc_id) })).filter((b) => !!b.payment_received_date);
+  const out = [];
+  for (const b of bills) {
+    const bd = await loadBd(n17(b.id));
+    const mode = String(bd.interest_mode || "") || (bd.interest_upfront ? "upfront" : "discounted");
+    if (mode === "discounted") continue;
+    const received = String(bd.payment_received_date || "").slice(0, 10);
+    const A = accrualStart(bd, received);
+    const repaid = String(bd.status) === "repaid" ? String(bd.repaid_date || "").slice(0, 10) : "";
+    const f = from < A ? A : from;
+    const t = repaid && repaid < to ? repaid : to;
+    let due2 = 0;
+    if (f <= t) {
+      const calc = bdCalc(bd);
+      const daysYear = n17(bd.days_year) || 360;
+      const steps = n17(bd.first_receipt_part) > 5e-3 ? [] : await principalRepaidByDate(n17(b.id));
+      const days = daysBetween4(f, t) + 1;
+      due2 = steps.length ? bdInterestParts(calc.interestBase, steps, f, t, n17(bd.interest_pct), daysYear).gross : round210(calc.interestBase * n17(bd.interest_pct) * days / (100 * daysYear));
+    }
+    const p1 = await c.execute({
+      sql: "SELECT COALESCE(SUM(gross), 0) AS g FROM bd_interest_payments WHERE bd_id = ? AND substr(to_date, 1, 10) BETWEEN ? AND ?",
+      args: [n17(b.id), from, to0]
+    });
+    const p2 = await c.execute({
+      sql: "SELECT COALESCE(SUM(COALESCE(interest, 0) + COALESCE(tds_amount, 0)), 0) AS g FROM bd_repayments WHERE bd_id = ? AND substr(repay_date, 1, 10) BETWEEN ? AND ?",
+      args: [n17(b.id), from, to0]
+    });
+    const paid2 = round210(n17(p1.rows[0]?.g) + n17(p2.rows[0]?.g));
+    if (due2 <= 4e-3 && paid2 <= 4e-3) continue;
+    out.push({ bd_id: n17(b.id), bd_no: b.bd_no, due: round210(due2), paid: paid2, pending: round210(due2 - paid2) });
+  }
+  const due = round210(out.reduce((s7, x) => s7 + n17(x.due), 0));
+  const paid = round210(out.reduce((s7, x) => s7 + n17(x.paid), 0));
+  return { from, to, due, paid, pending: round210(due - paid), bills: out };
+}
 async function bdCumulativeInterest(v) {
   const to = String(v.to_date || "").slice(0, 10);
   if (!n17(v.nbfc_id) || !/^\d{4}-\d{2}-\d{2}$/.test(to)) return [];
@@ -18112,7 +18184,8 @@ async function bdCumulativeInterest(v) {
       interest_pct: n17(w.interest_pct),
       tds_pct: n17(w.tds_pct),
       from_date: w.from_date,
-      to_date: capped,
+      // A balance is for the stretch paid short, not the whole range.
+      to_date: w.balance_of ? String(w.to_date || capped) : capped,
       days: n17(w.days),
       gross: n17(w.gross),
       tds: n17(w.tds),
@@ -19261,7 +19334,7 @@ async function docLinks() {
   const bdNo = new Map(bds.map((x) => [Number(x.id), x.bd_no == null ? "" : String(x.bd_no)]));
   for (const x of bds)
     for (const col of ["journal_entry_id", "repay_journal_entry_id", "margin_release_journal_entry_id"]) put(bd, x[col], Number(x.id), bdNo.get(Number(x.id)) || "");
-  for (const sql of ["SELECT bd_id, journal_entry_id AS je FROM bd_repayments ORDER BY rowid", "SELECT bd_id, interest_entry_id AS je FROM bd_repayments WHERE interest_entry_id IS NOT NULL ORDER BY rowid", "SELECT bd_id, journal_entry_id AS je FROM bd_interest_payments ORDER BY rowid"]) {
+  for (const sql of ["SELECT bd_id, journal_entry_id AS je FROM bd_repayments ORDER BY rowid", "SELECT bd_id, interest_entry_id AS je FROM bd_repayments WHERE interest_entry_id IS NOT NULL ORDER BY rowid", "SELECT bd_id, charges_entry_id AS je FROM bd_repayments WHERE charges_entry_id IS NOT NULL ORDER BY rowid", "SELECT bd_id, journal_entry_id AS je FROM bd_interest_payments ORDER BY rowid"]) {
     const rs = await safe(sql);
     for (const r of rs) {
       const id = Number(r.bd_id);
@@ -27555,7 +27628,7 @@ async function accountStatement(accountId, companyId) {
                         OR bd.repay_journal_entry_id = je.id
                         OR bd.margin_release_journal_entry_id = je.id
                      LIMIT 1),
-                   (SELECT r2.bd_id FROM bd_repayments r2 WHERE r2.journal_entry_id = je.id OR r2.interest_entry_id = je.id LIMIT 1),
+                   (SELECT r2.bd_id FROM bd_repayments r2 WHERE r2.journal_entry_id = je.id OR r2.interest_entry_id = je.id OR r2.charges_entry_id = je.id LIMIT 1),
                    (SELECT ip.bd_id FROM bd_interest_payments ip WHERE ip.journal_entry_id = je.id LIMIT 1)
                  ) AS bd_id,
                  (SELECT b3.bd_no FROM bill_discountings b3 WHERE b3.id = COALESCE(
@@ -27564,7 +27637,7 @@ async function accountStatement(accountId, companyId) {
                         OR bd.repay_journal_entry_id = je.id
                         OR bd.margin_release_journal_entry_id = je.id
                      LIMIT 1),
-                   (SELECT r2.bd_id FROM bd_repayments r2 WHERE r2.journal_entry_id = je.id OR r2.interest_entry_id = je.id LIMIT 1),
+                   (SELECT r2.bd_id FROM bd_repayments r2 WHERE r2.journal_entry_id = je.id OR r2.interest_entry_id = je.id OR r2.charges_entry_id = je.id LIMIT 1),
                    (SELECT ip.bd_id FROM bd_interest_payments ip WHERE ip.journal_entry_id = je.id LIMIT 1)
                  )) AS bd_no,
                  -- A TRADING DEAL IS TWO INVOICES, so its vouchers are their
@@ -28434,6 +28507,7 @@ __export(accountingRepairs_exports, {
   accountingChecks: () => accountingChecks,
   autoFixDuplicateSales: () => autoFixDuplicateSales,
   clearSaleTds: () => clearSaleTds,
+  fixBdThrough: () => fixBdThrough,
   fixLcCharges: () => fixLcCharges,
   fixLoadedFreight: () => fixLoadedFreight,
   fixOutwardFreight: () => fixOutwardFreight,
@@ -28443,6 +28517,7 @@ __export(accountingRepairs_exports, {
   genericBankPostings: () => genericBankPostings,
   moveGenericBankPostings: () => moveGenericBankPostings,
   moveWrongCompany: () => moveWrongCompany,
+  previewBdThrough: () => previewBdThrough,
   previewDuplicateInvoicePostings: () => previewDuplicateInvoicePostings,
   previewLcCharges: () => previewLcCharges,
   previewLoadedFreight: () => previewLoadedFreight,
@@ -29586,6 +29661,123 @@ async function fixShortageReprice(lineIds) {
       });
     }
     return { fixed: await applyShortageReprice(picked) };
+  });
+}
+async function scanBdThrough() {
+  const c = getClient();
+  const heads = (await c.execute(`
+      SELECT r.journal_entry_id AS je, MIN(r.id) AS rid, je.entry_date, je.company_id, nb.name AS nbfc,
+             GROUP_CONCAT(b.bd_no, ', ') AS bills, MAX(COALESCE(r.charges_entry_id, 0)) AS has_ch,
+             (SELECT nn.prefix || '/' || nn.serial FROM voucher_numbers nn WHERE nn.entry_id = r.journal_entry_id) AS code
+        FROM bd_repayments r
+        JOIN bill_discountings b ON b.id = r.bd_id
+        LEFT JOIN nbfcs nb ON nb.id = b.nbfc_id
+        JOIN journal_entries je ON je.id = r.journal_entry_id
+       GROUP BY r.journal_entry_id
+       ORDER BY je.entry_date, r.journal_entry_id`)).rows.map((x) => ({ ...x }));
+  const out = [];
+  for (const h of heads) {
+    if (Number(h.has_ch)) continue;
+    const je = Number(h.je);
+    const nb = String(h.nbfc || "").trim().replace(/\s+/g, " ").toUpperCase();
+    const bdLedger = nb ? `BILLS DISCOUNTED - ${nb}` : "BILLS DISCOUNTED A/C";
+    const lines = (await c.execute({
+      sql: `SELECT jl.id, jl.dr, jl.cr, UPPER(TRIM(la.name)) AS account FROM journal_lines jl JOIN ledger_accounts la ON la.id = jl.account_id WHERE jl.entry_id = ? ORDER BY jl.id`,
+      args: [je]
+    })).rows.map((x) => ({ ...x }));
+    const drs = lines.filter((l) => Number(l.dr) > 4e-3);
+    const isBd = (l) => String(l.account).startsWith("BILLS DISCOUNTED");
+    const bdDr = drs.filter(isBd);
+    const others = drs.filter((l) => !isBd(l));
+    if (!others.length) continue;
+    const ledger2 = bdDr.length === 1 ? String(bdDr[0].account) : bdLedger;
+    const total = Math.round(lines.reduce((t, l) => t + Number(l.cr), 0) * 100) / 100;
+    const refund = others.filter((l) => String(l.account).startsWith("REFUND DUE - "));
+    const costs = others.filter((l) => !String(l.account).startsWith("REFUND DUE - "));
+    let review = "";
+    if (bdDr.length !== 1) review = bdDr.length ? "the voucher debits the BD ledger on more than one line" : `the voucher has no debit to ${bdLedger}`;
+    out.push({
+      entry_id: je,
+      repayment_id: Number(h.rid),
+      company_id: Number(h.company_id),
+      date: String(h.entry_date || "").slice(0, 10),
+      code: String(h.code || ""),
+      bills: String(h.bills || ""),
+      bd_ledger: ledger2,
+      bd_dr: bdDr.length ? Number(bdDr[0].dr) : 0,
+      total,
+      costs: costs.map((l) => ({ account: String(l.account), amount: Number(l.dr) })),
+      refund_due: Math.round(refund.reduce((t, l) => t + Number(l.dr), 0) * 100) / 100,
+      refund_ledger: refund.length ? String(refund[0].account) : "",
+      review
+    });
+  }
+  return out;
+}
+async function previewBdThrough() {
+  return { findings: await scanBdThrough() };
+}
+async function fixBdThrough(entryIds) {
+  const wanted = new Set((entryIds || []).map(Number).filter(Boolean));
+  if (!wanted.size) throw new Error("Pick the repayments to re-post");
+  return withDbTransaction(async () => {
+    const c = getClient();
+    await ensureLog();
+    const { getOrCreateAccount: getOrCreateAccount2, postJournal: postJournal2 } = await Promise.resolve().then(() => (init_journal(), journal_exports));
+    const allowed = new Map((await scanBdThrough()).filter((f) => !f.review).map((f) => [f.entry_id, f]));
+    const stale = [...wanted].filter((id) => !allowed.has(id));
+    if (stale.length) throw new Error(`${stale.length} payment${stale.length === 1 ? " has" : "s have"} changed since the list was shown \u2014 check again`);
+    let journals = 0;
+    for (const je of wanted) {
+      const f = allowed.get(je);
+      const before = (await c.execute({ sql: "SELECT * FROM journal_lines WHERE entry_id = ? ORDER BY id", args: [je] })).rows.map((x) => ({ ...x }));
+      await c.execute({
+        sql: "INSERT OR IGNORE INTO accounting_repair_log(repair_key, entry_id, before_json) VALUES (?, ?, ?)",
+        args: [`bd-through-v1:${je}`, je, JSON.stringify({ lines: before, finding: f })]
+      });
+      const bdAcc = await getOrCreateAccount2(f.bd_ledger, "Loans (Liability)", f.company_id || void 0);
+      const lines = (await c.execute({
+        sql: `SELECT jl.id, jl.dr, UPPER(TRIM(la.name)) AS account FROM journal_lines jl JOIN ledger_accounts la ON la.id = jl.account_id WHERE jl.entry_id = ? AND jl.dr > 0.004`,
+        args: [je]
+      })).rows.map((x) => ({ ...x }));
+      const bdLine = lines.find((l) => String(l.account) === f.bd_ledger);
+      const moved = lines.filter((l) => l !== bdLine);
+      if (!bdLine || !moved.length) throw new Error(`${f.code || je} no longer looks the same \u2014 nothing was changed`);
+      const add = Math.round(moved.reduce((t, l) => t + Number(l.dr), 0) * 100) / 100;
+      const ids = moved.map((l) => Number(l.id));
+      await c.execute({ sql: `DELETE FROM journal_bill_allocs WHERE line_id IN (${ids.join(",")})`, args: [] });
+      await c.execute({ sql: `DELETE FROM journal_lines WHERE id IN (${ids.join(",")})`, args: [] });
+      await c.execute({ sql: "UPDATE journal_lines SET dr = ROUND(dr + ?, 2) WHERE id = ?", args: [add, Number(bdLine.id)] });
+      const costs = moved.filter((l) => !String(l.account).startsWith("REFUND DUE - "));
+      if (costs.length) {
+        const ct = Math.round(costs.reduce((t, l) => t + Number(l.dr), 0) * 100) / 100;
+        const bill = String(f.bills.split(",")[0] || "").trim();
+        const cj = await postJournal2({
+          date: f.date,
+          vchType: "JOURNAL",
+          vchNo: bill,
+          narration: `Charges on Bill Discounting ${f.bills} repayment ${f.code} \u2014 ${costs.map((l) => `\u20B9${Number(l.dr).toFixed(2)} ${String(l.account)}`).join(", ")}`,
+          companyId: f.company_id || void 0,
+          lines: [...costs.map((l) => ({ account: String(l.account), group: "Indirect Expenses", dr: Number(l.dr) })), { account: f.bd_ledger, group: "Loans (Liability)", cr: ct }]
+        });
+        await c.execute({ sql: "UPDATE bd_repayments SET charges_entry_id = ? WHERE id = ?", args: [cj.id, f.repayment_id] });
+        journals++;
+      }
+      if (f.refund_due > 4e-3 && f.refund_ledger) {
+        const ref = (await c.execute({ sql: "SELECT id FROM ledger_accounts WHERE UPPER(TRIM(name)) = ? LIMIT 1", args: [f.refund_ledger] })).rows[0];
+        if (ref) {
+          const bills = (await c.execute({ sql: "SELECT DISTINCT bd_id FROM bd_repayments WHERE journal_entry_id = ?", args: [je] })).rows.map((x) => Number(x.bd_id));
+          const refunds = (await c.execute({ sql: `SELECT entry_id, line_id FROM facility_refunds WHERE kind = 'bd' AND facility_id IN (${bills.join(",")})`, args: [] }).catch(() => ({ rows: [] }))).rows.map((x) => ({ ...x }));
+          for (const r of refunds) {
+            await c.execute({
+              sql: `UPDATE journal_lines SET account_id = ? WHERE account_id = ? AND cr > 0.004 AND (id = ? OR entry_id = ?)`,
+              args: [bdAcc, Number(ref.id), Number(r.line_id) || -1, Number(r.entry_id)]
+            });
+          }
+        }
+      }
+    }
+    return { fixed: wanted.size, journals };
   });
 }
 var TOL, GENERIC_BANK, CASH_BANK_GROUPS2, TDS_LEDGER, SALE_OTHER_DEBITS, CHARGE_LEDGERS, plainRows;
@@ -32031,6 +32223,7 @@ async function bdMovableEntryIds() {
     "SELECT journal_entry_id AS id FROM bill_discountings WHERE journal_entry_id IS NOT NULL",
     "SELECT journal_entry_id AS id FROM bd_repayments WHERE journal_entry_id IS NOT NULL",
     "SELECT interest_entry_id AS id FROM bd_repayments WHERE interest_entry_id IS NOT NULL",
+    "SELECT charges_entry_id AS id FROM bd_repayments WHERE charges_entry_id IS NOT NULL",
     "SELECT journal_entry_id AS id FROM bd_interest_payments WHERE journal_entry_id IS NOT NULL"
   ]) {
     const r = await c.execute(sql).catch(() => null);
@@ -32056,7 +32249,7 @@ async function moveBdVoucherDate(entryId, from, to) {
     await c.execute({ sql: "UPDATE journal_entries SET entry_date = ? WHERE id = ?", args: [to, entryId] });
     return `${String(bd.bd_no)}'s payment received date`;
   }
-  const ofInterest = await one("SELECT journal_entry_id FROM bd_repayments WHERE interest_entry_id = ? AND journal_entry_id IS NOT NULL");
+  const ofInterest = await one("SELECT journal_entry_id FROM bd_repayments WHERE interest_entry_id = ? AND journal_entry_id IS NOT NULL") || await one("SELECT journal_entry_id FROM bd_repayments WHERE charges_entry_id = ? AND journal_entry_id IS NOT NULL");
   if (ofInterest) return moveBdVoucherDate(Number(ofInterest.journal_entry_id), from, to);
   const rep = await one("SELECT * FROM bd_repayments WHERE journal_entry_id = ?");
   if (rep) {
@@ -32068,6 +32261,7 @@ async function moveBdVoucherDate(entryId, from, to) {
     for (const r of rows2) {
       await c.execute({ sql: "UPDATE bd_repayments SET repay_date = ? WHERE id = ?", args: [to, Number(r.id)] });
       if (n36(r.interest_entry_id)) await c.execute({ sql: "UPDATE journal_entries SET entry_date = ? WHERE id = ?", args: [to, n36(r.interest_entry_id)] });
+      if (n36(r.charges_entry_id)) await c.execute({ sql: "UPDATE journal_entries SET entry_date = ? WHERE id = ?", args: [to, n36(r.charges_entry_id)] });
       if (String(r.bill_repaid || "").slice(0, 10) === from) {
         await c.execute({ sql: "UPDATE bill_discountings SET repaid_date = ? WHERE id = ?", args: [to, Number(r.bd_id)] });
       }
@@ -35258,6 +35452,20 @@ async function refundInfo(kind, id) {
     candidates
   };
 }
+async function refundAccount(kind, id, lender) {
+  if (kind === "bd") {
+    const old = await getClient().execute({
+      sql: `SELECT 1 FROM journal_lines jl JOIN ledger_accounts la ON la.id = jl.account_id
+             WHERE jl.entry_id IN (SELECT journal_entry_id FROM bd_repayments WHERE bd_id = ?) AND UPPER(la.name) LIKE 'REFUND DUE - %' LIMIT 1`,
+      args: [id]
+    });
+    if (!old.rows.length) {
+      const nb = String(lender || "").trim().replace(/\s+/g, " ").toUpperCase();
+      return { name: nb ? `BILLS DISCOUNTED - ${nb}` : "BILLS DISCOUNTED A/C", group: "Loans (Liability)" };
+    }
+  }
+  return { name: refundLedgerFor(lender), group: REFUND_DUE_GROUP };
+}
 async function linkRefund(kind, id, entryId) {
   return withDbTransaction(async () => {
     await ensure7();
@@ -35268,7 +35476,8 @@ async function linkRefund(kind, id, entryId) {
     const line = toPlain40(await c.execute({ sql: "SELECT id, account_id, cr FROM journal_lines WHERE entry_id = ? AND cr > 0", args: [entryId] }));
     if (line.length !== 1) throw new Error("That receipt has more than one credit line \u2014 record the refund instead");
     const f = await facility(kind, id);
-    const acc = await getOrCreateAccount(refundLedgerFor(f.lender), REFUND_DUE_GROUP, f.company_id || void 0);
+    const ra = await refundAccount(kind, id, f.lender);
+    const acc = await getOrCreateAccount(ra.name, ra.group, f.company_id || void 0);
     await c.execute({ sql: "DELETE FROM journal_bill_allocs WHERE line_id = ?", args: [n61(line[0].id)] });
     await c.execute({ sql: "UPDATE journal_lines SET account_id = ? WHERE id = ?", args: [acc, n61(line[0].id)] });
     const ins = await c.execute({
@@ -35276,7 +35485,7 @@ async function linkRefund(kind, id, entryId) {
             VALUES (?, ?, ?, ?, ?, 'linked', ?, ?)`,
       args: [kind, id, entryId, round229(n61(cand.amount)), String(cand.date), n61(line[0].account_id), n61(line[0].id)]
     });
-    console.log(`[refunds] ${kind} ${id}: receipt ${String(cand.code)} (${n61(cand.amount)}) linked as the bank's refund \u2014 credit moved from ${String(cand.from_ledger)} to ${refundLedgerFor(f.lender)}`);
+    console.log(`[refunds] ${kind} ${id}: receipt ${String(cand.code)} (${n61(cand.amount)}) linked as the bank's refund \u2014 credit moved from ${String(cand.from_ledger)} to ${ra.name}`);
     return { id: Number(ins.lastInsertRowid || 0) };
   });
 }
@@ -35294,6 +35503,7 @@ async function recordRefund(kind, id, v) {
     const bank = String(v.bank || info.bank || "").trim();
     if (!bank) throw new Error("Pick the bank the refund came into");
     const f = await facility(kind, id);
+    const ra = await refundAccount(kind, id, f.lender);
     const je = await postJournal({
       date,
       vchType: "RECEIPT",
@@ -35301,7 +35511,7 @@ async function recordRefund(kind, id, v) {
       companyId: f.company_id || void 0,
       lines: [
         { account: bank, group: "Bank Accounts", dr: amount2 },
-        { account: refundLedgerFor(f.lender), group: REFUND_DUE_GROUP, cr: amount2 }
+        { account: ra.name, group: ra.group, cr: amount2 }
       ]
     });
     const ins = await c.execute({
@@ -40382,6 +40592,9 @@ var REQUIRED_COLUMNS = [
   // A BD repayment's interest as its own journal, with the TDS held on it
   // (billDiscounting.ts postBdInterestJournal).
   { table: "bd_repayments", column: "interest_entry_id", type: "INTEGER" },
+  // A BD repayment's costs (penalty, commission, bank charges) as their own
+  // journal onto the BD ledger — the payment is the BD ledger's for the whole debit.
+  { table: "bd_repayments", column: "charges_entry_id", type: "INTEGER" },
   // A note typed on Mark received — kept on the bill, carried on its voucher.
   { table: "bill_discountings", column: "received_note", type: "TEXT" },
   { table: "bd_repayments", column: "tds_ledger", type: "TEXT" },
@@ -40619,7 +40832,7 @@ async function voucherAlterInfo(entryId) {
   }
   if (owner.kind === "transporter") return { mode: "waiver", line_id: owner.id };
   if (owner.kind === "bd") {
-    const viaInt = (await rows("SELECT journal_entry_id FROM bd_repayments WHERE interest_entry_id = ? LIMIT 1", [id]))[0];
+    const viaInt = (await rows("SELECT journal_entry_id FROM bd_repayments WHERE interest_entry_id = ? OR charges_entry_id = ? LIMIT 1", [id, id]))[0];
     const payJe = n39(viaInt?.journal_entry_id) || id;
     const rep = await rows("SELECT * FROM bd_repayments WHERE journal_entry_id = ? ORDER BY id", [payJe]);
     if (rep.length) {
@@ -41324,7 +41537,8 @@ async function documentPostings(a) {
         id,
         [
           ["journal_entry_id", (r) => `Repayment${s3(r.repay_date) ? ` \xB7 ${dmy4(r.repay_date)}` : ""}`],
-          ["interest_entry_id", (r) => `Repayment interest${s3(r.repay_date) ? ` \xB7 ${dmy4(r.repay_date)}` : ""}`]
+          ["interest_entry_id", (r) => `Repayment interest${s3(r.repay_date) ? ` \xB7 ${dmy4(r.repay_date)}` : ""}`],
+          ["charges_entry_id", (r) => `Repayment charges${s3(r.repay_date) ? ` \xB7 ${dmy4(r.repay_date)}` : ""}`]
         ],
         ["repay_date"]
       ),
@@ -47286,6 +47500,10 @@ function registerIpc() {
     "bdCumInterest:list",
     async (_e, { values }) => (await Promise.resolve().then(() => (init_billDiscounting(), billDiscounting_exports))).bdCumulativeInterest(values)
   );
+  handle(
+    "bdCumInterest:summary",
+    async (_e, { values }) => (await Promise.resolve().then(() => (init_billDiscounting(), billDiscounting_exports))).bdPeriodInterestSummary(values)
+  );
   handle("fd:list", async () => (await Promise.resolve().then(() => (init_fixedDeposits(), fixedDeposits_exports))).listFds());
   handle("fdLc:list", async (_e, { lcId }) => (await Promise.resolve().then(() => (init_fixedDeposits(), fixedDeposits_exports))).lcFdLiens(Number(lcId)));
   handle("fdNeed:list", async (_e, { lcId }) => (await Promise.resolve().then(() => (init_fixedDeposits(), fixedDeposits_exports))).lcSecurityNeed(Number(lcId)));
@@ -47447,6 +47665,14 @@ function registerIpc() {
   handle("repairs:shortageRepriceFix", async (_e, a) => {
     await assertAdmin("Re-pricing tanker shortages");
     return fixShortageReprice(a?.ids || []);
+  });
+  handle("repairs:bdThrough:list", async () => {
+    await assertAdmin("The accounting checks");
+    return previewBdThrough();
+  });
+  handle("repairs:bdThroughFix", async (_e, a) => {
+    await assertAdmin("Re-posting BD repayments through the BD ledger");
+    return fixBdThrough(a?.ids || []);
   });
   handle("repairs:wrongCompany:list", async () => {
     await assertAdmin("The accounting checks");
