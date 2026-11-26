@@ -407,10 +407,24 @@ export function BdCumulativeInterest({ open, onClose, nbfcs, onDone }: { open: b
                   sub: `${formatDate(String(period.from))} → ${formatDate(String(period.to))} · ${((period.bills as Row[]) || []).length} bill${((period.bills as Row[]) || []).length === 1 ? '' : 's'}, worked out`,
                   tone: 'text-[#0A1F17]'
                 },
-                { k: 'Paid', v: formatINR(n(period.paid)), sub: 'interest payments + interest with repayments (gross)', tone: 'text-[#0B6B45]' },
-                n(period.pending) < -0.5
-                  ? { k: 'Paid more', v: formatINR(-n(period.pending)), sub: 'paid over what the period works out to', tone: 'text-[#7A4B00]' }
-                  : { k: 'Pending', v: formatINR(Math.max(0, n(period.pending))), sub: n(period.pending) > 0.5 ? 'still to pay for the period' : 'nothing pending', tone: n(period.pending) > 0.5 ? 'text-[#B3261E]' : 'text-[#9AAFA2]' }
+                // WITH THE BILLS TICKED NOW: paid and pending move as bills are
+                // ticked, so the tiles say where the month stands after this payment.
+                {
+                  k: tot.gross > 0.004 ? 'Paid, with this payment' : 'Paid',
+                  v: formatINR(n(period.paid) + tot.gross),
+                  sub:
+                    tot.gross > 0.004
+                      ? `${formatINR(n(period.paid))} paid + ${formatINR(tot.gross)} ticked now (gross)`
+                      : 'interest payments + interest with repayments (gross)',
+                  tone: 'text-[#0B6B45]'
+                },
+                (() => {
+                  const after = n(period.pending) - tot.gross
+                  const before = tot.gross > 0.004 ? ` · ${formatINR(n(period.pending))} before this payment` : ''
+                  return after < -0.5
+                    ? { k: 'Paid more', v: formatINR(-after), sub: `over what the period works out to${before}`, tone: 'text-[#7A4B00]' }
+                    : { k: tot.gross > 0.004 ? 'Pending after this payment' : 'Pending', v: formatINR(Math.max(0, after)), sub: after > 0.5 ? `still to pay for the period${before}` : `nothing pending${before}`, tone: after > 0.5 ? 'text-[#B3261E]' : 'text-[#9AAFA2]' }
+                })()
               ].map((t, i) => (
                 <div
                   key={t.k}
