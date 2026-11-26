@@ -730,7 +730,7 @@ function ServicedRow({ x, bdId, onChanged }: { x: Row; bdId?: number; onChanged?
                 'flex-none rounded-[2px] border px-1.5 py-0.5 text-[9.5px] font-extrabold tracking-[.05em] uppercase',
                 // DUE IN RED: interest not yet paid is money owed on a date
                 // that is coming, not a column heading.
-                x.paid_id
+                x.paid_id || n(x.paid_gross) >= n(x.gross) - 0.5
                   ? 'border-[#BFE3CB] bg-[#E9F5EE] text-[#0B6B45]'
                   : n(x.paid_gross) > 0.5
                     ? 'border-[#E8C27A] bg-[#FFF4DC] text-[#7A4B00]'
@@ -739,7 +739,8 @@ function ServicedRow({ x, bdId, onChanged }: { x: Row; bdId?: number; onChanged?
             >
               {/* PART PAID: money paid on the period that does not reach its last
                   day (B7's ₹1,11,537.78 with its 24-11 repayment, November to 30-11). */}
-              {x.paid_id ? 'Paid' : n(x.paid_gross) > 0.5 ? 'Part paid' : 'Due'}
+              {/* Paid in full by money that stops short of the last day still IS paid. */}
+              {x.paid_id || n(x.paid_gross) >= n(x.gross) - 0.5 ? 'Paid' : n(x.paid_gross) > 0.5 ? 'Part paid' : 'Due'}
             </span>
             <span className="doc-ref flex-none text-[10.5px] font-semibold text-[#5A6B62]">{n(x.days)}d</span>
             {parts.length > 1 && (
