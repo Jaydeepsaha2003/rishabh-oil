@@ -16497,7 +16497,27 @@ async function bdInterestSchedule(bdId) {
       // Interest also paid with a repayment on days already paid — shown so it is checked.
       paid_twice: twiceGross > 4e-3 ? { gross: twiceGross, dates: twice.map((r) => String(r.repay_date).slice(0, 10)) } : null,
       // The paid stretches that make up this rest — payments and repayments.
-      paid_by: onRest.map((p) => ({ from: String(p.from_date).slice(0, 10), to: String(p.to_date).slice(0, 10), gross: n17(p.gross), with_repayment: !!p.via_repayment })),
+      // The one paid twice is listed too, so the screen can show where the extra came from.
+      paid_by: [
+        ...onRest.map((p) => ({
+          from: String(p.from_date).slice(0, 10),
+          to: String(p.to_date).slice(0, 10),
+          paid_on: String(p.paid_date || p.to_date).slice(0, 10),
+          gross: n17(p.gross),
+          net: n17(p.net),
+          with_repayment: !!p.via_repayment,
+          twice: false
+        })),
+        ...twice.map((r) => ({
+          from: null,
+          to: null,
+          paid_on: String(r.repay_date).slice(0, 10),
+          gross: round210(n17(r.interest) + n17(r.tds_amount)),
+          net: n17(r.interest),
+          with_repayment: true,
+          twice: true
+        }))
+      ],
       // Whether a payment recorded against this slice actually reached the
       // ledger. A slice can be serviced without being posted, when the desk
       // chose to record it and post later — see payBdInterest's `post` flag.
@@ -16888,6 +16908,41 @@ async function listBdCumulativePayments(nbfcId) {
     g.net = round210(n17(g.net) + n17(r.net));
     g.expected = round210(n17(g.expected) + expected);
     g.diff = round210(n17(g.diff) + diff);
+  }
+  const ids = [...worker.keys()];
+  const reps = ids.length ? toPlain14(
+    await getClient().execute({
+      sql: `SELECT r.id, r.bd_id, r.repay_date, r.interest, r.tds_amount, b.bd_no,
+                       (SELECT nn.prefix || '/' || nn.serial FROM voucher_numbers nn WHERE nn.entry_id = r.journal_entry_id) AS pay_code
+                  FROM bd_repayments r JOIN bill_discountings b ON b.id = r.bd_id
+                 WHERE r.bd_id IN (${ids.join(",")}) AND COALESCE(r.interest, 0) > 0.004`,
+      args: []
+    })
+  ) : [];
+  for (const g of groups.values()) {
+    g.reps = [];
+    g.rep_gross = 0;
+    g.rep_net = 0;
+  }
+  for (const r of reps) {
+    const d = String(r.repay_date || "").slice(0, 10);
+    const g = [...groups.values()].find(
+      (x) => x.bills.some((b) => n17(b.bd_id) === n17(r.bd_id) && b.latest && String(b.from_date) <= d && d <= String(b.to_date))
+    );
+    if (!g) continue;
+    const gross = round210(n17(r.interest) + n17(r.tds_amount));
+    g.reps.push({ id: n17(r.id), bd_no: r.bd_no, repay_date: d, gross, tds: n17(r.tds_amount), net: n17(r.interest), pay_code: r.pay_code || "" });
+    g.rep_gross = round210(n17(g.rep_gross) + gross);
+    g.rep_net = round210(n17(g.rep_net) + n17(r.interest));
+  }
+  for (const g of groups.values()) {
+    const bills = g.bills;
+    const short0 = bills.reduce((t, b) => t + Math.min(0, n17(b.diff)), 0);
+    const over0 = bills.reduce((t, b) => t + Math.max(0, n17(b.diff)), 0);
+    const left = short0 + n17(g.rep_gross);
+    g.short = round210(Math.min(0, left));
+    g.over = round210(over0 + Math.max(0, left));
+    g.diff = round210(n17(g.short) + n17(g.over));
   }
   return [...groups.values()];
 }
