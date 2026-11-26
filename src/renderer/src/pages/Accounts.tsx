@@ -2321,6 +2321,11 @@ export function Accounts({
   // The bill's deductions — as many as it has, each to its own ledger.
   // pct: an amount worked out as a % of the freight after shortage (cash discount), until typed over.
   const [tfDeds, setTfDeds] = useState<{ amount: string; ledger: string; note: string; pct?: number }[]>([])
+  // EDITING A BOOKED BILL: its id, and its own lines (a register showing only
+  // unbilled lines would not have them). A ledger voucher opens one here too.
+  const [tfEditBill, setTfEditBill] = useState<number | null>(null)
+  const [tfEditRows, setTfEditRows] = useState<Row[]>([])
+  const [tfEditPending, setTfEditPending] = useState<number | null>(null)
   const [tfSaving, setTfSaving] = useState(false)
   const [nrFrom, setNrFrom] = useState(() => regBack.current?.nrFrom ?? '')
   const [nrTo, setNrTo] = useState(() => regBack.current?.nrTo ?? '')
@@ -5068,12 +5073,9 @@ export function Accounts({
     if (mode === 'freight' || mode === 'waiver') {
       setViewRow(null)
       setViewOnly(null)
-      setScreen(String(info.side) === 'sale' ? 'tfsal' : 'tfpur')
-      toast.info(
-        mode === 'freight'
-          ? 'A transporter bill is changed here: remove it and raise it again — its voucher and the freight dues follow.'
-          : 'A waived shortage is changed here: un-waive it and waive it again.'
-      )
+      setScreen(String(info.side) === 'sale' || String(info.side) === 'sales' ? 'tfsal' : 'tfpur')
+      if (mode === 'freight') setTfEditPending(Number(info.bill_id))
+      else toast.info('A waived shortage is changed here: un-waive it and waive it again.')
       return
     }
     if (mode === 'lc' || mode === 'bd') {
@@ -8754,7 +8756,10 @@ Delete ${doc}?`)) return
 
   // ---- Transporter freight register (both sides share this) ----
   const tfLabel = tfSide === 'purchase' ? 'Fr. Inward Working' : 'Fr. Outward Working'
-  const tfPickedRows = useMemo(() => tfRows.filter((r) => tfPicked.includes(Number(r.id))), [tfRows, tfPicked])
+  const tfPickedRows = useMemo(() => {
+    const seen = new Set(tfRows.map((r) => Number(r.id)))
+    return [...tfRows, ...tfEditRows.filter((r) => !seen.has(Number(r.id)))].filter((r) => tfPicked.includes(Number(r.id)))
+  }, [tfRows, tfEditRows, tfPicked])
   const tfPickedTotal = useMemo(() => tfPickedRows.reduce((t, r) => t + (Number(r.amount) || 0), 0), [tfPickedRows])
   // Every line on one bill has to be the same transporter — the backend
   // enforces it, so the button says why rather than letting the save fail.
@@ -8818,8 +8823,69 @@ Delete ${doc}?`)) return
   // 0.5% of the freight after shortage, and dala charge ₹150 — each can be
   // changed or removed on the bill.
   useEffect(() => {
-    if (tfBillOpen) setTfDeds((p) => (p.length ? p : [{ amount: '', ledger: '', note: 'CASH DISCOUNT', pct: 0.5 }, { amount: '150', ledger: '', note: 'DALA CHARGE' }]))
-  }, [tfBillOpen])
+    if (tfBillOpen && !tfEditBill) setTfDeds((p) => (p.length ? p : [{ amount: '', ledger: '', note: 'CASH DISCOUNT', pct: 0.5 }, { amount: '150', ledger: '', note: 'DALA CHARGE' }]))
+    // A transporter's TDS goes to the contractor TDS ledger (194C) when the
+    // books have one — picked for a new bill, still changeable.
+    if (tfBillOpen && !tfEditBill) {
+      const contractor = (accounts as Row[]).find((a) => /TDS/i.test(String(a.name || '')) && /CONTRACTOR/i.test(String(a.name || '')) && !/OTHER THAN/i.test(String(a.name || '')))
+      if (contractor) setTfBill((p) => (!p.tds_ledger || p.tds_ledger === 'TDS PAYABLE A/C' ? { ...p, tds_ledger: String(contractor.name) } : p))
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tfBillOpen, tfEditBill])
+
+  // OPEN A BOOKED BILL FOR EDITING — its figures, deductions and lines put
+  // back on the Book bill panel; saving re-books it in place (same bill).
+  async function tfStartEdit(billId: number): Promise<void> {
+    try {
+      const bills = await window.api.transporterFreight.bills(cid || undefined)
+      const b = bills.find((x) => Number(x.id) === Number(billId))
+      if (!b) return void toast.error('That transporter bill could not be found in this company')
+      const side: 'purchase' | 'sales' = String(b.side) === 'sales' ? 'sales' : 'purchase'
+      const lines = (await window.api.transporterFreight.list(side, { companyId: cid || undefined, state: 'billed' })).filter(
+        (r) => Number(r.bill_id) === Number(billId)
+      )
+      const frName = side === 'purchase' ? 'FREIGHT INWARD A/C' : 'FREIGHT OUTWARD A/C'
+      let deds: { amount: string; ledger: string; note: string }[] = []
+      try {
+        deds = (JSON.parse(String(b.deductions_json || '[]')) as Row[]).map((d) => ({
+          amount: String(Number(d.amount) || ''),
+          ledger: String(d.ledger || '').toUpperCase() === frName ? '' : String(d.ledger || ''),
+          note: String(d.note || '')
+        }))
+      } catch {
+        deds = []
+      }
+      setTfEditRows(lines)
+      setTfPicked(lines.map((r) => Number(r.id)))
+      setTfBill({
+        bill_no: String(b.bill_no || ''),
+        bill_date: String(b.bill_date || todayISO()).slice(0, 10),
+        gst_pct: String(b.gst_pct ?? '5'),
+        tds_pct: String(b.tds_pct ?? ''),
+        tds_ledger: String(b.tds_ledger || 'TDS PAYABLE A/C'),
+        adjustment: b.adjustment ? String(b.adjustment) : '',
+        adjustment_note: String(b.adjustment_note || ''),
+        note: String(b.note || ''),
+        others_amount: '',
+        others_ledger: '',
+        others_note: '',
+        rcm_pct: String(b.rcm_pct ?? '5')
+      })
+      setTfDeds(deds)
+      setTfEditBill(Number(billId))
+      setTfBillOpen(true)
+    } catch (e) {
+      toast.error(errText(e))
+    }
+  }
+  // Opened from a ledger voucher: wait for this register to be on screen.
+  useEffect(() => {
+    if (!tfEditPending || (screen !== 'tfpur' && screen !== 'tfsal')) return
+    const id = tfEditPending
+    setTfEditPending(null)
+    void tfStartEdit(id)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tfEditPending, screen])
   const tfCdBase = tfBillCalc.taxable
   useEffect(() => {
     setTfDeds((p) => {
@@ -8860,7 +8926,9 @@ Delete ${doc}?`)) return
     if (tfPickedParties.length > 1) return void toast.error('All the lines on one bill must be the same transporter')
     setTfSaving(true)
     try {
-      await window.api.transporterFreight.createBill({
+      const save = (v: Row): Promise<{ id: number }> =>
+        tfEditBill ? window.api.transporterFreight.updateBill(tfEditBill, v) : window.api.transporterFreight.createBill(v)
+      await save({
         company_id: cid,
         transporter_id: Number(tfPickedRows[0].transporter_id),
         side: tfSide,
@@ -8878,8 +8946,10 @@ Delete ${doc}?`)) return
         rcm_pct: tfBillCalc.rcmPct,
         line_ids: tfPickedRows.map((r) => Number(r.id))
       })
-      toast.success(`Booked ${formatINR(tfBillCalc.total)} to ${tfPickedRows[0].transporter_name}`)
+      toast.success(`${tfEditBill ? 'Saved' : 'Booked'} ${formatINR(tfBillCalc.total)} to ${tfPickedRows[0].transporter_name}`)
       setTfBillOpen(false)
+      setTfEditBill(null)
+      setTfEditRows([])
       setTfPicked([])
       setTfBill({ bill_no: '', bill_date: todayISO(), gst_pct: '5', tds_pct: '', tds_ledger: 'TDS PAYABLE A/C', adjustment: '', adjustment_note: '', note: '', others_amount: '', others_ledger: '', others_note: '', rcm_pct: '5' })
       setTfDeds([])
@@ -9301,11 +9371,19 @@ Delete ${doc}?`)) return
       const estimated = tfPickedRows.filter((r) => n(r.provisional) === 1).length
       book = shell(
         tfBookRef,
-        `${inward ? 'Freight inward' : 'Freight outward'} · book bill`,
+        `${inward ? 'Freight inward' : 'Freight outward'} · ${tfEditBill ? `edit bill ${String(tfBill.bill_no || '')}` : 'book bill'}`,
         party,
         `${tfPickedRows.length} line${tfPickedRows.length === 1 ? '' : 's'} · ${money(c.lines)}`,
         () => {
-          if (!tfSaving) setTfBillOpen(false)
+          if (tfSaving) return
+          setTfBillOpen(false)
+          // An edit closed unsaved leaves the bill as it was.
+          if (tfEditBill) {
+            setTfEditBill(null)
+            setTfEditRows([])
+            setTfPicked([])
+            setTfDeds([])
+          }
         },
         <>
           <div className="grid flex-none grid-cols-2 gap-3">
@@ -9669,7 +9747,7 @@ Delete ${doc}?`)) return
           </div>
         </>,
         need.length ? `Needs ${need.join(' and ')}.` : '',
-        'Book bill',
+        tfEditBill ? 'Save bill' : 'Book bill',
         () => void tfSaveBill(),
         tfSaving,
         `Ready to book ${formatINR(c.total)}.`
@@ -10010,6 +10088,16 @@ Delete ${doc}?`)) return
               <Trash2 className="h-4 w-4" />
               Unbook
             </button>
+            <button
+              type="button"
+              onClick={() => void tfStartEdit(Number(r.bill_id))}
+              title="Change this bill — bill no, date, TDS, deductions, adjustment; its voucher is re-posted in place"
+              className="flex h-8 items-center gap-1.5 whitespace-nowrap rounded-[7px] px-[11px]"
+              style={{ border: '1px solid #C3D2C6', background: '#fff', color: A.frame, fontSize: 11.5, fontWeight: 800 }}
+            >
+              <Pencil className="h-4 w-4" />
+              Edit
+            </button>
           </div>
         </div>
       )
@@ -10227,7 +10315,22 @@ Delete ${doc}?`)) return
                   })}
                 </div>
               </div>
-              <span className="ml-auto whitespace-nowrap" style={{ fontSize: 11.5, fontWeight: 600, color: A.muted }}>
+              {(tfCf.active > 0 || !!tfQuery.trim() || tfTr !== 'all') && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    tfCf.clear()
+                    setTfQuery('')
+                    setTfTr('all')
+                  }}
+                  title="Clear the search, the transporter and every column filter"
+                  className="ml-auto flex h-8 items-center gap-1.5 whitespace-nowrap rounded-[7px] px-3"
+                  style={{ border: '1px solid #F0D6D4', background: '#FDF3F2', color: A.bad, fontSize: 11.5, fontWeight: 800 }}
+                >
+                  <X className="h-3.5 w-3.5" /> Clear filters
+                </button>
+              )}
+              <span className={cn('whitespace-nowrap', !(tfCf.active > 0 || !!tfQuery.trim() || tfTr !== 'all') && 'ml-auto')} style={{ fontSize: 11.5, fontWeight: 600, color: A.muted }}>
                 {shown.length} line{shown.length === 1 ? '' : 's'} shown
               </span>
             </div>
