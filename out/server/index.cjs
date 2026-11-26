@@ -14988,10 +14988,13 @@ __export(billDiscounting_exports, {
   BD_ADJ_DEFAULT: () => BD_ADJ_DEFAULT,
   addBdChargeType: () => addBdChargeType,
   addBdLimitReduction: () => addBdLimitReduction,
+  adjustAllBdExcessInterest: () => adjustAllBdExcessInterest,
+  adjustBdExcessInterest: () => adjustBdExcessInterest,
   adminUpdateRepaidBd: () => adminUpdateRepaidBd,
   bdAdjParts: () => bdAdjParts,
   bdCalc: () => bdCalc,
   bdCumulativeInterest: () => bdCumulativeInterest,
+  bdExcessInterest: () => bdExcessInterest,
   bdInterestRange: () => bdInterestRange,
   bdInterestSchedule: () => bdInterestSchedule,
   bdInterestWindow: () => bdInterestWindow,
@@ -15038,6 +15041,7 @@ __export(billDiscounting_exports, {
   postBdOpening: () => postBdOpening,
   postBdUpfrontInterest: () => postBdUpfrontInterest,
   receiveBdPart: () => receiveBdPart,
+  removeBdInterestAdjustment: () => removeBdInterestAdjustment,
   reopenBd: () => reopenBd,
   reopenBdRefund: () => reopenBdRefund,
   repayBd: () => repayBd,
@@ -15249,6 +15253,8 @@ async function dropRepayEntries(bd) {
     await dropEntry2(n17(r.interest_entry_id) || null);
     await dropEntry2(n17(r.journal_entry_id) || null);
   }
+  await ensureBdAdjust();
+  await c.execute({ sql: "DELETE FROM bd_interest_adjustments WHERE repayment_id IN (SELECT id FROM bd_repayments WHERE bd_id = ?)", args: [Number(bd.id)] });
   await c.execute({ sql: "DELETE FROM bd_repayments WHERE bd_id = ?", args: [Number(bd.id)] });
   await dropEntry2(n17(bd.repay_journal_entry_id) || null);
 }
@@ -16451,6 +16457,8 @@ async function bdInterestSchedule(bdId) {
     })
   );
   const extra = repInt.filter((r) => !stretches.some((s7) => s7.via_repayment && String(s7.to_date) === String(r.repay_date).slice(0, 10)));
+  const movedOut = await bdAdjustmentsOutOf(n17(bdId));
+  const movedOf = (repId) => movedOut.filter((m) => n17(m.repayment_id) === n17(repId));
   const lastMark = marks[marks.length - 1];
   const out = [];
   let start = from;
@@ -16472,9 +16480,11 @@ async function bdInterestSchedule(bdId) {
     const lead = onRest.find((p) => String(p.to_date).slice(0, 10) === reach) || onRest[onRest.length - 1];
     const done = fully ? paid.find((p) => String(p.to_date).slice(0, 10) === reach) || { ...lead, id: -1, journal_entry_id: 1 } : void 0;
     const twice = extra.filter((r) => String(r.repay_date).slice(0, 10) > lo && String(r.repay_date).slice(0, 10) <= (end === lastMark ? "9999-12-31" : end));
-    const twiceGross = round210(twice.reduce((t, r) => t + n17(r.interest) + n17(r.tds_amount), 0));
+    const movedGross = round210(twice.reduce((t, r) => t + movedOf(n17(r.id)).reduce((s7, m) => s7 + n17(m.gross), 0), 0));
+    const movedNet = round210(twice.reduce((t, r) => t + movedOf(n17(r.id)).reduce((s7, m) => s7 + n17(m.net), 0), 0));
+    const twiceGross = round210(twice.reduce((t, r) => t + n17(r.interest) + n17(r.tds_amount), 0) - movedGross);
     const paidGross = round210(onRest.reduce((t, p) => t + n17(p.gross), 0) + twiceGross);
-    const paidNet = round210(onRest.reduce((t, p) => t + n17(p.net), 0) + twice.reduce((t, r) => t + n17(r.interest), 0));
+    const paidNet = round210(onRest.reduce((t, p) => t + n17(p.net), 0) + twice.reduce((t, r) => t + n17(r.interest), 0) - movedNet);
     out.push({
       seq: i + 1,
       // THE DAY AFTER THE LAST ONE ENDED, which is what the payment screen
@@ -16506,17 +16516,26 @@ async function bdInterestSchedule(bdId) {
           gross: n17(p.gross),
           net: n17(p.net),
           with_repayment: !!p.via_repayment,
+          adjusted_from: p.via_adjust ? p.adjusted_from : null,
+          adjust_id: p.via_adjust ? n17(p.adjust_id) : null,
           twice: false
         })),
-        ...twice.map((r) => ({
-          from: null,
-          to: null,
-          paid_on: String(r.repay_date).slice(0, 10),
-          gross: round210(n17(r.interest) + n17(r.tds_amount)),
-          net: n17(r.interest),
-          with_repayment: true,
-          twice: true
-        }))
+        ...twice.map((r) => {
+          const mv = movedOf(n17(r.id));
+          const g = round210(n17(r.interest) + n17(r.tds_amount));
+          const moved = round210(mv.reduce((t, m) => t + n17(m.gross), 0));
+          return {
+            from: null,
+            to: null,
+            paid_on: String(r.repay_date).slice(0, 10),
+            gross: g,
+            net: n17(r.interest),
+            with_repayment: true,
+            // Still paid twice once what was set against other bills is taken off.
+            twice: g - moved > 0.5,
+            moved_to: mv.map((m) => ({ id: n17(m.id), bd_no: m.to_bd_no, gross: n17(m.gross) }))
+          };
+        })
       ],
       // Whether a payment recorded against this slice actually reached the
       // ledger. A slice can be serviced without being posted, when the desk
@@ -16603,7 +16622,6 @@ async function bdPaidStretches(bdId, bd) {
       args: [n17(bdId)]
     }).catch(() => ({ rows: [] }))
   );
-  if (!reps.length) return paid;
   const received = String(bd.payment_received_date || "").slice(0, 10);
   const A = received ? accrualStart(bd, received) : "0000-00-00";
   const out = [...paid];
@@ -16616,7 +16634,122 @@ async function bdPaidStretches(bdId, bd) {
     const tds = r.tds_amount != null && String(r.tds_amount) !== "" ? round210(n17(r.tds_amount)) : n17(bd.tds_pct) > 0 && n17(bd.tds_pct) < 100 ? round210(net * n17(bd.tds_pct) / (100 - n17(bd.tds_pct))) : 0;
     out.push({ from_date: from, to_date: on, gross: round210(net + tds), tds, net, paid_date: on, via_repayment: 1 });
   }
+  for (const a of await bdAdjustmentsInto(n17(bdId))) {
+    const on = String(a.on_date).slice(0, 10);
+    const host = out.find((p) => !p.via_adjust && String(p.from_date).slice(0, 10) <= on && on <= String(p.to_date).slice(0, 10));
+    if (!host) continue;
+    out.push({ from_date: host.from_date, to_date: host.to_date, gross: n17(a.gross), tds: n17(a.tds), net: n17(a.net), paid_date: on, via_adjust: 1, adjust_id: n17(a.id), adjusted_from: a.from_bd_no });
+  }
   return out.sort((a, b) => String(a.from_date).localeCompare(String(b.from_date)));
+}
+async function ensureBdAdjust() {
+  await getClient().execute(`CREATE TABLE IF NOT EXISTS bd_interest_adjustments (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    repayment_id INTEGER NOT NULL,
+    from_bd_id INTEGER NOT NULL,
+    to_bd_id INTEGER NOT NULL,
+    on_date TEXT NOT NULL,
+    gross REAL NOT NULL DEFAULT 0,
+    tds REAL NOT NULL DEFAULT 0,
+    net REAL NOT NULL DEFAULT 0,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+  )`);
+}
+async function bdAdjustmentsInto(bdId) {
+  await ensureBdAdjust();
+  return toPlain14(
+    await getClient().execute({
+      sql: `SELECT a.*, b.bd_no AS from_bd_no FROM bd_interest_adjustments a JOIN bill_discountings b ON b.id = a.from_bd_id WHERE a.to_bd_id = ? ORDER BY a.id`,
+      args: [n17(bdId)]
+    })
+  );
+}
+async function bdAdjustmentsOutOf(bdId) {
+  await ensureBdAdjust();
+  return toPlain14(
+    await getClient().execute({
+      sql: `SELECT a.*, b.bd_no AS to_bd_no FROM bd_interest_adjustments a JOIN bill_discountings b ON b.id = a.to_bd_id WHERE a.from_bd_id = ? ORDER BY a.id`,
+      args: [n17(bdId)]
+    })
+  );
+}
+async function bdExcessInterest(bdId) {
+  const c = getClient();
+  const bd = await loadBd(bdId);
+  const stretches = await bdPaidStretches(n17(bdId), bd);
+  const reps = toPlain14(
+    await c.execute({
+      sql: "SELECT id, repay_date, interest, tds_amount FROM bd_repayments WHERE bd_id = ? AND COALESCE(interest, 0) > 0.004 ORDER BY repay_date, id",
+      args: [n17(bdId)]
+    })
+  );
+  const moved = await bdAdjustmentsOutOf(n17(bdId));
+  const out = [];
+  for (const r of reps) {
+    const on = String(r.repay_date).slice(0, 10);
+    if (stretches.some((s7) => s7.via_repayment && String(s7.to_date).slice(0, 10) === on)) continue;
+    const gross = round210(n17(r.interest) + n17(r.tds_amount));
+    const left = round210(gross - moved.filter((m) => n17(m.repayment_id) === n17(r.id)).reduce((t, m) => t + n17(m.gross), 0));
+    if (left <= 0.5) continue;
+    const sibs = toPlain14(
+      await c.execute({
+        sql: "SELECT id, bd_no FROM bill_discountings WHERE company_id = ? AND nbfc_id = ? AND id <> ? ORDER BY id",
+        args: [n17(bd.company_id), n17(bd.nbfc_id), n17(bdId)]
+      })
+    );
+    let room = left;
+    const targets = [];
+    for (const s7 of sibs) {
+      for (const rest of await bdInterestSchedule(n17(s7.id))) {
+        if (!(String(rest.from_date) <= on && on <= String(rest.to_date))) continue;
+        if (!rest.paid_id) continue;
+        const short = round210(n17(rest.gross) - n17(rest.paid_gross));
+        if (short <= 0.5) continue;
+        const take = round210(Math.min(room, short));
+        targets.push({ bd_id: n17(s7.id), bd_no: s7.bd_no, from_date: rest.from_date, to_date: rest.to_date, short, take });
+        room = round210(room - take);
+      }
+      if (room <= 0.5) break;
+    }
+    out.push({ repayment_id: n17(r.id), bd_id: n17(bdId), bd_no: bd.bd_no, on_date: on, gross, tds: n17(r.tds_amount), excess: left, targets, unplaced: round210(Math.max(0, room)) });
+  }
+  return out;
+}
+async function adjustBdExcessInterest(bdId) {
+  await ensureBdAdjust();
+  const c = getClient();
+  let adjusted = 0;
+  let total = 0;
+  for (const x of await bdExcessInterest(bdId)) {
+    const ratio = n17(x.gross) > 0 ? n17(x.tds) / n17(x.gross) : 0;
+    for (const t of x.targets || []) {
+      const gross = n17(t.take);
+      if (gross <= 4e-3) continue;
+      const tds = round210(gross * ratio);
+      await c.execute({
+        sql: "INSERT INTO bd_interest_adjustments (repayment_id, from_bd_id, to_bd_id, on_date, gross, tds, net) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        args: [n17(x.repayment_id), n17(bdId), n17(t.bd_id), String(x.on_date), gross, tds, round210(gross - tds)]
+      });
+      adjusted++;
+      total = round210(total + gross);
+    }
+  }
+  return { adjusted, gross: total };
+}
+async function removeBdInterestAdjustment(id) {
+  await ensureBdAdjust();
+  await getClient().execute({ sql: "DELETE FROM bd_interest_adjustments WHERE id = ?", args: [n17(id)] });
+}
+async function adjustAllBdExcessInterest() {
+  const ids = toPlain14(
+    await getClient().execute("SELECT DISTINCT bd_id FROM bd_repayments WHERE COALESCE(interest, 0) > 0.004 ORDER BY bd_id")
+  ).map((r) => n17(r.bd_id));
+  const done = [];
+  for (const id of ids) {
+    const r = await adjustBdExcessInterest(id);
+    if (r.adjusted) done.push(`bill ${id}: ${r.adjusted} (${r.gross})`);
+  }
+  return done;
 }
 function accrualStart(bd, received) {
   return bd.days_incl_start ? received : addDays2(received, 1);
@@ -17227,9 +17360,12 @@ async function deleteBdRepayment(repaymentId) {
     const interestJes = je ? toPlain14(await c.execute({ sql: "SELECT interest_entry_id FROM bd_repayments WHERE journal_entry_id = ? AND interest_entry_id IS NOT NULL", args: [je] })) : n17(part.interest_entry_id) ? [{ interest_entry_id: part.interest_entry_id }] : [];
     for (const x of interestJes) await dropEntry2(n17(x.interest_entry_id) || null);
     await dropEntry2(je || null);
+    await ensureBdAdjust();
     if (je) {
+      await c.execute({ sql: "DELETE FROM bd_interest_adjustments WHERE repayment_id IN (SELECT id FROM bd_repayments WHERE journal_entry_id = ?)", args: [je] });
       await c.execute({ sql: "DELETE FROM bd_repayments WHERE journal_entry_id = ?", args: [je] });
     } else {
+      await c.execute({ sql: "DELETE FROM bd_interest_adjustments WHERE repayment_id = ?", args: [repaymentId] });
       await c.execute({ sql: "DELETE FROM bd_repayments WHERE id = ?", args: [repaymentId] });
     }
     for (const oneId of touched.length ? touched : [bdId]) {
@@ -40079,6 +40215,11 @@ async function runStartupTasks() {
     const done = await convertOpenAdjToCharge();
     if (done.length) console.log(`[bd] moved ${done.length} bill(s) to the Open amount with the Adj. as a charge: ${done.join(", ")}`);
   }).catch((e) => console.error("[bd] open adjustment conversion failed:", e));
+  await runOnce("bd_interest_auto_adjust_v1", async () => {
+    const { adjustAllBdExcessInterest: adjustAllBdExcessInterest2 } = await Promise.resolve().then(() => (init_billDiscounting(), billDiscounting_exports));
+    const done = await adjustAllBdExcessInterest2();
+    if (done.length) console.log(`[bd] paid-twice interest set against short bills: ${done.join("; ")}`);
+  }).catch((e) => console.error("[bd] interest auto-adjust failed:", e));
   await runOnce("bd_v2_received_22aug_v1", async () => {
     const c = getClient();
     const r = await c.execute(`
@@ -47137,6 +47278,9 @@ function registerIpc() {
     (_e, { id, ...v }) => payBdInterestUpto(id, v)
   );
   handle("bd:interestSchedule", (_e, { id }) => bdInterestSchedule(id));
+  handle("bd:excessInterest", async (_e, { id }) => (await Promise.resolve().then(() => (init_billDiscounting(), billDiscounting_exports))).bdExcessInterest(id));
+  handle("bd:adjustExcessInterest", async (_e, { id }) => (await Promise.resolve().then(() => (init_billDiscounting(), billDiscounting_exports))).adjustBdExcessInterest(id));
+  handle("bd:removeInterestAdjustment", async (_e, { id }) => (await Promise.resolve().then(() => (init_billDiscounting(), billDiscounting_exports))).removeBdInterestAdjustment(id));
   handle("bd:interestPayments", (_e, { id }) => listBdInterestPayments(id));
   handle(
     "bdCumInterest:list",
