@@ -730,10 +730,16 @@ function ServicedRow({ x, bdId, onChanged }: { x: Row; bdId?: number; onChanged?
                 'flex-none rounded-[2px] border px-1.5 py-0.5 text-[9.5px] font-extrabold tracking-[.05em] uppercase',
                 // DUE IN RED: interest not yet paid is money owed on a date
                 // that is coming, not a column heading.
-                x.paid_id ? 'border-[#BFE3CB] bg-[#E9F5EE] text-[#0B6B45]' : 'border-[#F0C9C4] bg-[#FDECEA] text-[#B3261E]'
+                x.paid_id
+                  ? 'border-[#BFE3CB] bg-[#E9F5EE] text-[#0B6B45]'
+                  : n(x.paid_gross) > 0.5
+                    ? 'border-[#E8C27A] bg-[#FFF4DC] text-[#7A4B00]'
+                    : 'border-[#F0C9C4] bg-[#FDECEA] text-[#B3261E]'
               )}
             >
-              {x.paid_id ? 'Paid' : 'Due'}
+              {/* PART PAID: money paid on the period that does not reach its last
+                  day (B7's ₹1,11,537.78 with its 24-11 repayment, November to 30-11). */}
+              {x.paid_id ? 'Paid' : n(x.paid_gross) > 0.5 ? 'Part paid' : 'Due'}
             </span>
             <span className="doc-ref flex-none text-[10.5px] font-semibold text-[#5A6B62]">{n(x.days)}d</span>
             {parts.length > 1 && (
@@ -748,6 +754,25 @@ function ServicedRow({ x, bdId, onChanged }: { x: Row; bdId?: number; onChanged?
           {x.mode === 'with_repayment' && x.paid_id && (
             <span className="doc-ref block whitespace-nowrap text-[10.5px] font-semibold text-[#0B6B45]">paid {formatINR(n(x.paid_gross))}</span>
           )}
+          {/* Part paid: what was paid, up to which day, and over or short. */}
+          {!x.paid_id && n(x.paid_gross) > 0.5 && (() => {
+            const upto = ((x.paid_by as Row[]) || []).reduce((m, p) => (s(p.to) > m ? s(p.to) : m), '')
+            const diff = n(x.paid_gross) - n(x.gross)
+            return (
+              <>
+                <span className="doc-ref block whitespace-nowrap text-[10.5px] font-semibold text-[#0B6B45]">
+                  paid {formatINR(n(x.paid_gross))}{upto ? ` to ${formatDate(upto)}` : ''}
+                </span>
+                {diff > 0.5 ? (
+                  <span className="doc-ref block whitespace-nowrap text-[10.5px] font-extrabold text-[#7A4B00]" title="More was paid for this period than it works out to — check with the NBFC">
+                    paid {formatINR(diff)} more
+                  </span>
+                ) : (
+                  <span className="doc-ref block whitespace-nowrap text-[10.5px] font-bold text-[#B3261E]">balance {formatINR(-diff)}</span>
+                )}
+              </>
+            )
+          })()}
           {/* Paid twice: a repayment's interest on days already paid. */}
           {!!x.paid_twice && (
             <span
@@ -1628,8 +1653,9 @@ This was one bank debit that also cleared ${others.map((g) => `${s(g.bd_no)} ${f
                   {/* TOTAL BD INTEREST over every period (not just the 8 shown), paid and still due. */}
                   {!withRepay && (() => {
                     const total = round2(sched.reduce((t, x) => t + n(x.gross), 0))
-                    const paid = round2(sched.reduce((t, x) => t + (x.paid_id ? n(x.paid_gross || x.gross) : 0), 0))
-                    const due = round2(sched.reduce((t, x) => t + (x.paid_id ? 0 : n(x.gross)), 0))
+                    // Part-paid periods count what was paid, and owe only what is left.
+                    const paid = round2(sched.reduce((t, x) => t + (x.paid_id ? n(x.paid_gross || x.gross) : n(x.paid_gross)), 0))
+                    const due = round2(sched.reduce((t, x) => t + (x.paid_id ? 0 : Math.max(0, n(x.gross) - n(x.paid_gross))), 0))
                     return (
                       <div className="flex flex-wrap items-center gap-x-4 gap-y-1 border-t-[1.5px] border-t-[#C9DCCF] bg-[#F7FAF6] px-3 py-[10px]">
                         <span className="text-[10.5px] font-extrabold uppercase tracking-[.12em] text-[#1A2C56]">Total BD interest</span>
