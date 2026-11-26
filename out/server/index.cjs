@@ -45635,7 +45635,6 @@ async function createTransporterBill(v, existingId) {
   const rcmPct = reg === "unregistered" ? v.rcm_pct == null || v.rcm_pct === "" ? RCM_DEFAULT_PCT : Math.max(0, n54(v.rcm_pct)) : 0;
   const rcm = round224(taxable * rcmPct / 100);
   const tdsPct = n54(v.tds_pct);
-  const tds = round224(taxable * tdsPct / 100);
   const frAccount = side === "purchase" ? "FREIGHT INWARD A/C" : "FREIGHT OUTWARD A/C";
   const deductions = (Array.isArray(v.deductions) ? v.deductions : n54(v.others_amount) > 4e-3 ? [{ amount: v.others_amount, ledger: v.others_ledger, note: v.others_note }] : []).map((d) => ({
     amount: round224(Math.max(0, n54(d.amount))),
@@ -45643,6 +45642,8 @@ async function createTransporterBill(v, existingId) {
     note: String(d.note || "").trim()
   })).filter((d) => d.amount > 4e-3);
   const othersAmt = round224(deductions.reduce((t, d) => t + d.amount, 0));
+  const frDeds = round224(deductions.filter((d) => d.ledger === frAccount).reduce((t, d) => t + d.amount, 0));
+  const tds = round224(Math.max(0, taxable - othersAmt) * tdsPct / 100);
   const othersLedger = deductions.length ? deductions[0].ledger : null;
   const raw = round224(taxable + gst - tds - othersAmt);
   if (raw <= 0) throw new Error("After the deductions nothing is left to pay the transporter \u2014 check the Others amount");
@@ -45677,8 +45678,10 @@ async function createTransporterBill(v, existingId) {
         group: "Direct Expenses",
         // The adjustment is freight too, so it lands on the same expense —
         // positive as more cost, negative as less.
-        dr: round224(unaccrued + adjustment) > 0 ? round224(unaccrued + adjustment) : 0,
-        cr: round224(unaccrued + adjustment) < 0 ? -round224(unaccrued + adjustment) : 0
+        // A deduction left on the freight ledger (none picked) just makes the
+        // freight smaller — no Cr line of its own.
+        dr: round224(unaccrued + adjustment - frDeds) > 0 ? round224(unaccrued + adjustment - frDeds) : 0,
+        cr: round224(unaccrued + adjustment - frDeds) < 0 ? -round224(unaccrued + adjustment - frDeds) : 0
       },
       // A freight bill records no head of its own. A carrier billing this
       // site is in the same state, which is the conservative reading anyway:
@@ -45688,7 +45691,7 @@ async function createTransporterBill(v, existingId) {
       ...rcmJournalLines(rcmPct, rcm),
       { account: "ROUND OFF A/C", group: "Indirect Expenses", dr: roundOff > 0 ? roundOff : 0, cr: roundOff < 0 ? -roundOff : 0 },
       { account: "TDS PAYABLE A/C", group: "Duties & Taxes", cr: tds },
-      ...deductions.map((d) => ({ account: d.ledger, group: d.ledger === frAccount ? "Direct Expenses" : "Indirect Incomes", cr: d.amount })),
+      ...deductions.filter((d) => d.ledger !== frAccount).map((d) => ({ account: d.ledger, group: "Indirect Incomes", cr: d.amount })),
       { account: partyName2, group: "Sundry Creditors", cr: total }
     ]
   });
