@@ -69,13 +69,21 @@ async function dealLineIds(
   return { orders, sales }
 }
 
+// The buyer's GST No. on each sale row (createSale / updateSale do not take
+// it — the sale invoice form sets it the same way, after the rows are made).
+async function stampSaleGstins(ids: number[], payloads: Row[]): Promise<void> {
+  for (let i = 0; i < ids.length; i++) {
+    await getClient().execute({ sql: 'UPDATE sales SET party_gstin = ? WHERE id = ?', args: [payloads[i]?.party_gstin ?? null, ids[i]] })
+  }
+}
+
 async function fetchOrderLines(ids: number[]): Promise<Map<number, Row>> {
   const m = new Map<number, Row>()
   if (!ids.length) return m
   const res = await getClient().execute(
     `SELECT o.id, o.invoice_no, o.order_date, o.invoice_rate, o.ordered_qty, o.uom,
             o.taxable_value, o.gst_amount, o.gst_pct, o.gst_type, o.tds_pct, o.tds_amount,
-            o.round_off, o.net_amount, o.supplier_id, s.name AS supplier_name
+            o.round_off, o.net_amount, o.supplier_id, s.name AS supplier_name, o.party_gstin
      FROM orders o LEFT JOIN suppliers s ON s.id = o.supplier_id
      WHERE o.id IN (${ids.join(',')})`
   )
@@ -89,7 +97,7 @@ async function fetchSaleLines(ids: number[]): Promise<Map<number, Row>> {
   const res = await getClient().execute(
     `SELECT sl.id, sl.invoice_no, sl.invoice_group, sl.sale_date, sl.rate, sl.qty, sl.uom, sl.amount,
             sl.gst_pct, sl.gst_type, sl.gst_amount, sl.round_off, sl.tds_pct, sl.tds_amount,
-            sl.customer_id, cu.name AS customer_name
+            sl.customer_id, cu.name AS customer_name, sl.party_gstin
      FROM sales sl LEFT JOIN customers cu ON cu.id = sl.customer_id
      WHERE sl.id IN (${ids.join(',')})`
   )
@@ -158,6 +166,7 @@ function groupSaleParties(sLines: Row[], receiptsByKey: Map<string, number>): Ro
     return {
       customer_id: cid || null,
       customer_name: first.customer_name ?? null,
+      party_gstin: first.party_gstin ?? null,
       invoice_count: ls.length,
       qty,
       rate: qty > 0 ? ls.reduce((a, l) => a + n(l.qty) * n(l.rate), 0) / qty : 0,
@@ -287,6 +296,7 @@ export async function listTradingDeals(forModule?: string): Promise<Row[]> {
       customer_name: firstSale.customer_name ?? null,
       purchase_gst_pct: n(first.gst_pct),
       purchase_gst_type: first.gst_type ?? 'CGST_SGST',
+      purchase_gstin: first.party_gstin ?? null,
       purchase_tds_pct: n(first.tds_pct),
       purchase_round_off: pLines.reduce((s, l) => s + n(l.round_off), 0),
       sale_gst_pct: n(firstSale.gst_pct),
@@ -362,6 +372,7 @@ type SaleParty = {
   customerId: number
   gstPct: number
   gstType: 'IGST' | 'CGST_SGST'
+  partyGstin: string | null
   tdsPct: number
   roundOff: number
   lines: DealLine[]
@@ -408,6 +419,8 @@ function toSaleParties(v: Row): SaleParty[] {
       customerId: n(g.customer_id),
       gstPct: n(g.gst_pct),
       gstType: g.gst_type === 'IGST' ? ('IGST' as const) : ('CGST_SGST' as const),
+      // The buyer's GST No. these invoices are under, when it has several.
+      partyGstin: String(g.party_gstin || '').trim().toUpperCase() || null,
       tdsPct: n(g.tds_pct),
       roundOff: n(g.round_off),
       lines: toLines(g.lines, (i) => `${label} invoice ${i + 1}`, `${label}: add at least one sale invoice`)
@@ -474,6 +487,8 @@ function dealFields(v: Row): {
     bargain_rate: l.rate,
     gst_pct: n(v.purchase_gst_pct),
     gst_type: v.purchase_gst_type === 'IGST' ? 'IGST' : 'CGST_SGST',
+    // The supplier's GST No. this bill is under, when it has several.
+    party_gstin: String(v.purchase_gstin || '').trim().toUpperCase() || null,
     tds_pct: n(v.purchase_tds_pct),
     // Round-off is entered once for the deal and belongs to it as a whole, so
     // it rides on the first invoice rather than being repeated on each.
@@ -499,6 +514,7 @@ function dealFields(v: Row): {
       rate: l.rate,
       gst_pct: sp.gstPct,
       gst_type: sp.gstType,
+      party_gstin: sp.partyGstin,
       tds_pct: sp.tdsPct,
       // Round off belongs to a buyer's own invoice total, so it rides that
       // buyer's first invoice — not the deal's, which would round one party's
@@ -569,6 +585,7 @@ export async function createTradingDeal(v: Row): Promise<{ id: number }> {
     ])
     const failed = settled.find((r) => r.status === 'rejected')
     if (failed) throw (failed as PromiseRejectedResult).reason
+    await stampSaleGstins(saleIds, salePayloads)
   } catch (e) {
     await rollback()
     throw e
@@ -664,6 +681,7 @@ export async function updateTradingDeal(id: number, v: Row): Promise<{ id: numbe
     }
   }
 
+  await stampSaleGstins(saleIds, salePayloads)
   await c.execute({
     sql: 'UPDATE trading_deals SET deal_date = ?, product_id = ?, order_id = ?, sale_id = ?, note = ? WHERE id = ?',
     args: [dealDate, productId, orderIds[0], saleIds[0], v.note ? String(v.note).trim() : null, id]

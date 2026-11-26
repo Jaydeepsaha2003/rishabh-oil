@@ -1,3 +1,4 @@
+import { partyGstOptions } from '@/components/GstRegsPanel'
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { toast } from 'sonner'
 import { AlertTriangle, ArrowLeft, BookOpen, CalendarClock, Check, CheckCircle2, ChevronDown, Clock, Lock, Zap, ChevronRight, FileSpreadsheet, Inbox, Info, Link2, Loader2, Pencil, Plus, Receipt, Repeat, Search, TrendingDown, TrendingUp, Trash2, Users, Wallet } from 'lucide-react'
@@ -1407,6 +1408,7 @@ export function Trading({
         lines: toLines(sp.lines),
         gst_pct: sp.gst_pct ?? '',
         gst_type: sp.gst_type || 'CGST_SGST',
+        party_gstin: sp.party_gstin || '',
         tds_pct: sp.tds_pct ?? '',
         round_off: sp.round_off ?? '',
         round_off_manual: !!(sp.round_off && Number(sp.round_off) !== 0)
@@ -1425,6 +1427,7 @@ export function Trading({
       purchase_lines: toLines(d.purchase_lines),
       purchase_gst_pct: d.purchase_gst_pct ?? '',
       purchase_gst_type: d.purchase_gst_type || 'CGST_SGST',
+      purchase_gstin: d.purchase_gstin || '',
       purchase_tds_pct: d.purchase_tds_pct ?? '',
       purchase_round_off: d.purchase_round_off ?? '',
       // A non-zero saved round off was a deliberate override — preserve it as
@@ -2272,6 +2275,33 @@ export function Trading({
                         '!col-span-full !flex !flex-wrap !items-end !gap-x-4 !gap-y-3 !rounded-[4px] !border !border-[#F0D6D4] !bg-[#FDF7F6] !px-3.5 !py-3'
                     )}
                   >
+                    {/* THE SUPPLIER'S GST No. this bill is under, when it has several. */}
+                    {(() => {
+                      const opts = partyGstOptions(suppliers.find((s) => String(s.id) === String(form.supplier_id || '')))
+                      if (!opts.some((o) => !o.own)) return null
+                      return (
+                        <div className={cn('flex flex-col gap-1.5', __WEB__ && '!w-[260px]')}>
+                          <Label>GST No.</Label>
+                          <Select
+                            value={String(form.purchase_gstin || (opts[0].own ? opts[0].gstin : ''))}
+                            onValueChange={(v) => {
+                              const reg = opts.find((o) => o.gstin === v)
+                              setForm((p) => ({ ...p, purchase_gstin: v, ...(reg && !reg.own ? { purchase_gst_type: reg.gst_type } : {}) }))
+                            }}
+                          >
+                            <SelectTrigger><SelectValue placeholder="Choose the GST No." /></SelectTrigger>
+                            <SelectContent>
+                              {opts.map((o) => (
+                                <SelectItem key={o.gstin} value={o.gstin}>
+                                  <span className="font-mono">{o.gstin}</span>
+                                  {o.state ? ` · ${o.state}` : ''}
+                                </SelectItem>
+                              ))}
+                            </SelectContent>
+                          </Select>
+                        </div>
+                      )
+                    })()}
                     <div className={cn('flex flex-col gap-1.5', __WEB__ && '!w-[130px]')}>
                       <Label>GST % {autoFields.has('purchase_gst_pct') && <span className="text-amber-700">(auto)</span>}</Label>
                       <Input
@@ -2554,6 +2584,33 @@ export function Trading({
                                 onChange={(e) => setPartyField(pi, 'gst_pct', e.target.value)}
                               />
                             </div>
+                            {/* THE BUYER'S GST No. these invoices are under, when it has several. */}
+                            {(() => {
+                              const opts = partyGstOptions(customers.find((c) => String(c.id) === String(sp?.customer_id || '')))
+                              if (!opts.some((o) => !o.own)) return null
+                              return (
+                                <div className={cn('flex items-center gap-1.5', __WEB__ && '!w-[260px] !flex-col !items-stretch !gap-1.5')}>
+                                  <Label className="whitespace-nowrap">GST No.</Label>
+                                  <Select
+                                    value={String(sp?.party_gstin || (opts[0].own ? opts[0].gstin : ''))}
+                                    onValueChange={(v) => {
+                                      const reg = opts.find((o) => o.gstin === v)
+                                      patchParty(pi, { party_gstin: v, ...(reg && !reg.own ? { gst_type: reg.gst_type } : {}) })
+                                    }}
+                                  >
+                                    <SelectTrigger className={cn('h-8 text-[12px]', __WEB__ && '!w-full')}><SelectValue placeholder="Choose the GST No." /></SelectTrigger>
+                                    <SelectContent>
+                                      {opts.map((o) => (
+                                        <SelectItem key={o.gstin} value={o.gstin}>
+                                          <span className="font-mono">{o.gstin}</span>
+                                          {o.state ? ` · ${o.state}` : ''}
+                                        </SelectItem>
+                                      ))}
+                                    </SelectContent>
+                                  </Select>
+                                </div>
+                              )
+                            })()}
                             <div className={cn('flex items-center gap-1.5', __WEB__ && '!w-[210px] !flex-col !items-stretch !gap-1.5')}>
                               <Label className="whitespace-nowrap">GST type</Label>
                               <Select searchable
