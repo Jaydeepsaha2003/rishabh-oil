@@ -774,6 +774,58 @@ function ServicedRow({ x }: { x: Row }): React.JSX.Element {
               : 'Charged on the full principal — nothing was repaid early.'}
             {x.paid_id && Math.abs(n(x.paid_gross) - n(x.gross)) > 0.5 ? ` Recorded as paid: ${formatINR(n(x.paid_gross))}.` : ''}
           </div>
+          {/* PAID BY — every payment counted against this period, so "paid twice"
+              or a balance can be traced to the voucher behind it. */}
+          {((x.paid_by as Row[]) || []).length > 0 && (
+            <div className="border-t border-[#E4ECE3] bg-white">
+              <div className="px-3 pb-1 pt-2 text-[9.5px] font-extrabold uppercase tracking-[.1em] text-[#5A6B62]">Paid by</div>
+              {((x.paid_by as Row[]) || []).map((p, k) => (
+                <div
+                  key={k}
+                  className={cn(
+                    'doc-ref grid grid-cols-[minmax(0,1fr)_auto] items-center gap-x-3 border-t border-[#EFF3EE] px-3 py-1.5 text-[12px] font-semibold',
+                    p.twice ? 'bg-[#FDF3F2] text-[#B3261E]' : 'text-[#33473E]'
+                  )}
+                >
+                  <span className="min-w-0">
+                    {p.with_repayment ? 'Interest with the repayment' : 'Interest payment'} on {formatDate(s(p.paid_on))}
+                    {p.from && p.to && (
+                      <span className="text-[#5A6B62]">
+                        {' '}
+                        · for {formatDate(s(p.from))} &rarr; {formatDate(s(p.to))}
+                      </span>
+                    )}
+                    {p.twice && (
+                      <span className="block text-[10.5px] font-bold">
+                        For days this period&rsquo;s payment above already covers — so these days are paid twice. Check the NBFC&rsquo;s statement: move it to the bill it belongs to, or claim it back.
+                      </span>
+                    )}
+                  </span>
+                  <span className="text-right tabular-nums">
+                    <b className={p.twice ? 'text-[#B3261E]' : 'text-[#0A1F17]'}>{formatINR(n(p.gross))}</b>
+                    <span className="block text-[10.5px] text-[#5A6B62]">net {formatINR(n(p.net))}</span>
+                  </span>
+                </div>
+              ))}
+              <div className="grid grid-cols-[minmax(0,1fr)_auto] gap-x-3 border-t border-[#E4ECE3] bg-[#FBFCFA] px-3 py-1.5 text-[11.5px] font-bold text-[#33473E]">
+                <span>
+                  Interest for this period {formatINR(n(x.gross))} · paid {formatINR(n(x.paid_gross))}
+                </span>
+                <span
+                  className={cn(
+                    'text-right tabular-nums',
+                    n(x.paid_gross) - n(x.gross) > 0.5 ? 'text-[#B3261E]' : n(x.gross) - n(x.paid_gross) > 0.5 ? 'text-[#8A5A00]' : 'text-[#0B6B45]'
+                  )}
+                >
+                  {n(x.paid_gross) - n(x.gross) > 0.5
+                    ? `paid ${formatINR(n(x.paid_gross) - n(x.gross))} more`
+                    : n(x.gross) - n(x.paid_gross) > 0.5
+                      ? `${formatINR(n(x.gross) - n(x.paid_gross))} still to pay`
+                      : 'settled'}
+                </span>
+              </div>
+            </div>
+          )}
         </div>
       )}
     </div>

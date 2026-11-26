@@ -2299,7 +2299,27 @@ export async function bdInterestSchedule(bdId: number): Promise<Row[]> {
       // Interest also paid with a repayment on days already paid — shown so it is checked.
       paid_twice: twiceGross > 0.004 ? { gross: twiceGross, dates: twice.map((r) => String(r.repay_date).slice(0, 10)) } : null,
       // The paid stretches that make up this rest — payments and repayments.
-      paid_by: onRest.map((p) => ({ from: String(p.from_date).slice(0, 10), to: String(p.to_date).slice(0, 10), gross: n(p.gross), with_repayment: !!p.via_repayment })),
+      // The one paid twice is listed too, so the screen can show where the extra came from.
+      paid_by: [
+        ...onRest.map((p) => ({
+          from: String(p.from_date).slice(0, 10),
+          to: String(p.to_date).slice(0, 10),
+          paid_on: String(p.paid_date || p.to_date).slice(0, 10),
+          gross: n(p.gross),
+          net: n(p.net),
+          with_repayment: !!p.via_repayment,
+          twice: false
+        })),
+        ...twice.map((r) => ({
+          from: null,
+          to: null,
+          paid_on: String(r.repay_date).slice(0, 10),
+          gross: round2(n(r.interest) + n(r.tds_amount)),
+          net: n(r.interest),
+          with_repayment: true,
+          twice: true
+        }))
+      ],
       // Whether a payment recorded against this slice actually reached the
       // ledger. A slice can be serviced without being posted, when the desk
       // chose to record it and post later — see payBdInterest's `post` flag.
