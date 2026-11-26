@@ -1055,6 +1055,7 @@ const api = {
       ipcRenderer.invoke('bd:payInterestUpto', { id, ...v }),
     interestPayments: (id: number): Promise<Row[]> => ipcRenderer.invoke('bd:interestPayments', { id }),
     cumulativeInterest: (values: { nbfc_id: number; from_date?: string; to_date: string; till_month_end?: boolean }): Promise<Row[]> => ipcRenderer.invoke('bdCumInterest:list', { values }),
+    periodInterestSummary: (values: { nbfc_id: number; from_date: string; to_date: string; till_month_end?: boolean }): Promise<Row> => ipcRenderer.invoke('bdCumInterest:summary', { values }),
     cumulativePayments: (nbfcId?: number | null): Promise<Row[]> => ipcRenderer.invoke('bdCumPayments:list', { nbfcId }),
     convertInterestPayments: (entryIds: number[], viaNbfc: boolean): Promise<{ converted: number; skipped: number; failed: string[] }> =>
       ipcRenderer.invoke('bd:convertInterestPayments', { entryIds, viaNbfc }),

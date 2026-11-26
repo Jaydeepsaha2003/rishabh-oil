@@ -4493,6 +4493,58 @@ export async function deleteLastBdReceiptPart(bdId: number): Promise<{ part_no: 
 // — and every bill gets its own interest-payment row pointing at it, so each
 // bill reads as serviced to that date and the voucher reads back to all of them.
 // ---------------------------------------------------------------------------
+/**
+ * THE PERIOD AT A GLANCE (Pay cumulative interest): what the NBFC's bills'
+ * interest works out to over the month / range — each bill from the day it
+ * accrues, to the day it was repaid if sooner — what was paid for it
+ * (interest payments running to a day in the range, and interest paid with a
+ * repayment in the range, gross), and what is still pending.
+ */
+export async function bdPeriodInterestSummary(v: { nbfc_id: number; from_date: string; to_date: string; till_month_end?: boolean }): Promise<Row> {
+  const c = getClient()
+  const to0 = String(v.to_date || '').slice(0, 10)
+  const from = String(v.from_date || '').slice(0, 10)
+  if (!n(v.nbfc_id) || !/^\d{4}-\d{2}-\d{2}$/.test(to0) || !/^\d{4}-\d{2}-\d{2}$/.test(from)) return { due: 0, paid: 0, pending: 0, bills: [] }
+  const cap = interestCap(!!v.till_month_end)
+  const to = to0 > cap ? cap : to0
+  const bills = (await listBd({ nbfc_id: n(v.nbfc_id) })).filter((b) => !!b.payment_received_date)
+  const out: Row[] = []
+  for (const b of bills) {
+    const bd = await loadBd(n(b.id))
+    const mode = String(bd.interest_mode || '') || (bd.interest_upfront ? 'upfront' : 'discounted')
+    if (mode === 'discounted') continue
+    const received = String(bd.payment_received_date || '').slice(0, 10)
+    const A = accrualStart(bd, received)
+    const repaid = String(bd.status) === 'repaid' ? String(bd.repaid_date || '').slice(0, 10) : ''
+    const f = from < A ? A : from
+    const t = repaid && repaid < to ? repaid : to
+    let due = 0
+    if (f <= t) {
+      const calc = bdCalc(bd)
+      const daysYear = n(bd.days_year) || 360
+      const steps = n(bd.first_receipt_part) > 0.005 ? [] : await principalRepaidByDate(n(b.id))
+      const days = daysBetween(f, t) + 1
+      due = steps.length
+        ? bdInterestParts(calc.interestBase, steps, f, t, n(bd.interest_pct), daysYear).gross
+        : round2((calc.interestBase * n(bd.interest_pct) * days) / (100 * daysYear))
+    }
+    const p1 = await c.execute({
+      sql: 'SELECT COALESCE(SUM(gross), 0) AS g FROM bd_interest_payments WHERE bd_id = ? AND substr(to_date, 1, 10) BETWEEN ? AND ?',
+      args: [n(b.id), from, to0]
+    })
+    const p2 = await c.execute({
+      sql: 'SELECT COALESCE(SUM(COALESCE(interest, 0) + COALESCE(tds_amount, 0)), 0) AS g FROM bd_repayments WHERE bd_id = ? AND substr(repay_date, 1, 10) BETWEEN ? AND ?',
+      args: [n(b.id), from, to0]
+    })
+    const paid = round2(n(p1.rows[0]?.g) + n(p2.rows[0]?.g))
+    if (due <= 0.004 && paid <= 0.004) continue
+    out.push({ bd_id: n(b.id), bd_no: b.bd_no, due: round2(due), paid, pending: round2(due - paid) })
+  }
+  const due = round2(out.reduce((s, x) => s + n(x.due), 0))
+  const paid = round2(out.reduce((s, x) => s + n(x.paid), 0))
+  return { from, to, due, paid, pending: round2(due - paid), bills: out }
+}
+
 export async function bdCumulativeInterest(v: { nbfc_id: number; from_date?: string; to_date: string; till_month_end?: boolean }): Promise<Row[]> {
   const to = String(v.to_date || '').slice(0, 10)
   if (!n(v.nbfc_id) || !/^\d{4}-\d{2}-\d{2}$/.test(to)) return []

@@ -75,6 +75,8 @@ export function BdCumulativeInterest({ open, onClose, nbfcs, onDone }: { open: b
   const [paidOpen, setPaidOpen] = useState(false)
   const [rows, setRows] = useState<Row[] | null>(null)
   const [paidList, setPaidList] = useState<Row[]>([])
+  // The period at a glance: interest worked out, paid, pending.
+  const [period, setPeriod] = useState<Row | null>(null)
   const [picked, setPicked] = useState<Set<number>>(new Set())
   const [banks, setBanks] = useState<Row[]>([])
   // The ledger the TDS goes to — blank keeps TDS ON INTEREST PAYABLE A/C.
@@ -133,6 +135,11 @@ export function BdCumulativeInterest({ open, onClose, nbfcs, onDone }: { open: b
       .cumulativePayments(Number(nbfc))
       .then((p) => live && setPaidList(p))
       .catch(() => live && setPaidList([]))
+    setPeriod(null)
+    void window.api.billDiscounting
+      .periodInterestSummary({ nbfc_id: Number(nbfc), from_date: start, to_date: upto, till_month_end: tillEnd && runsAhead })
+      .then((p) => live && setPeriod(p))
+      .catch(() => live && setPeriod(null))
     return () => {
       live = false
     }
@@ -388,6 +395,33 @@ export function BdCumulativeInterest({ open, onClose, nbfcs, onDone }: { open: b
             <HelpTip text="From the day a bill was funded, if later. Earlier unpaid days and balances still due are flagged on the bill; a period paid short can be picked again to pay just its balance. Click a bill to see how its interest is worked out. Till month end works the current month to its last day — what the NBFC debits at month end." />
           </div>
 
+          {/* THE PERIOD AT A GLANCE — every bill of the NBFC over the month / range. */}
+          {nbfc && period && (n(period.due) > 0.004 || n(period.paid) > 0.004) && (
+            <div className="grid grid-cols-1 overflow-hidden rounded-[6px] border border-[#DCE6DC] bg-white sm:grid-cols-3">
+              {[
+                {
+                  k: 'Interest for the period',
+                  v: formatINR(n(period.due)),
+                  sub: `${formatDate(String(period.from))} → ${formatDate(String(period.to))} · ${((period.bills as Row[]) || []).length} bill${((period.bills as Row[]) || []).length === 1 ? '' : 's'}, worked out`,
+                  tone: 'text-[#0A1F17]'
+                },
+                { k: 'Paid', v: formatINR(n(period.paid)), sub: 'interest payments + interest with repayments (gross)', tone: 'text-[#0B6B45]' },
+                n(period.pending) < -0.5
+                  ? { k: 'Paid more', v: formatINR(-n(period.pending)), sub: 'paid over what the period works out to', tone: 'text-[#7A4B00]' }
+                  : { k: 'Pending', v: formatINR(Math.max(0, n(period.pending))), sub: n(period.pending) > 0.5 ? 'still to pay for the period' : 'nothing pending', tone: n(period.pending) > 0.5 ? 'text-[#B3261E]' : 'text-[#9AAFA2]' }
+              ].map((t, i) => (
+                <div
+                  key={t.k}
+                  title={((period.bills as Row[]) || []).map((b) => `${String(b.bd_no)}: worked out ${formatINR(n(b.due))} · paid ${formatINR(n(b.paid))} · pending ${formatINR(n(b.pending))}`).join('\n')}
+                  className={cn('min-w-0 px-3.5 py-2', i > 0 && 'border-t border-[#EEF3EE] sm:border-l sm:border-t-0')}
+                >
+                  <div className="text-[9.5px] font-extrabold uppercase tracking-[.13em] text-[#7A8C82]">{t.k}</div>
+                  <div className={cn('truncate text-[16px] font-bold tabular-nums tracking-[-0.02em]', t.tone)}>{t.v}</div>
+                  <div className="truncate text-[11px] font-semibold text-[#7A8C82]">{t.sub}</div>
+                </div>
+              ))}
+            </div>
+          )}
           {/* What this payment comes to, before the bill-by-bill detail. */}
           {nbfc && rows && payable.length > 0 && (
             <div className="grid grid-cols-2 overflow-hidden rounded-[6px] border border-[#DCE6DC] bg-white lg:grid-cols-4">
@@ -462,6 +496,8 @@ export function BdCumulativeInterest({ open, onClose, nbfcs, onDone }: { open: b
                           )
                           return {
                             g,
+                            rep: null as Row | null,
+                            date: String(g.paid_date),
                             bills,
                             gross: bills.reduce((t, b) => t + n(b.gross), 0),
                             tds: bills.reduce((t, b) => t + n(b.tds), 0),
@@ -469,7 +505,24 @@ export function BdCumulativeInterest({ open, onClose, nbfcs, onDone }: { open: b
                           }
                         })
                         .filter((x) => x.bills.length)
-                        .sort((a, b) => String(a.g.paid_date).localeCompare(String(b.g.paid_date)))
+                        // Interest paid WITH A REPAYMENT on these days is a payment too
+                        // (B4's ₹15,284 in its 23-11 debit) — a line of its own.
+                        .concat(
+                          paidList.flatMap((g) =>
+                            ((g.reps as Row[]) || [])
+                              .filter((r) => String(r.repay_date) >= start && String(r.repay_date) <= upto && (g.bills as Row[]).some((b) => ids.has(n(b.bd_id))))
+                              .map((r) => ({
+                                g,
+                                rep: r,
+                                date: String(r.repay_date),
+                                bills: [{ id: `rep${String(r.id)}`, bd_no: r.bd_no, gross: n(r.gross), from_date: r.repay_date, to_date: r.repay_date }] as Row[],
+                                gross: n(r.gross),
+                                tds: n(r.tds),
+                                net: n(r.net)
+                              }))
+                          )
+                        )
+                        .sort((a, b) => a.date.localeCompare(b.date) || (a.rep ? 1 : 0) - (b.rep ? 1 : 0))
                       if (!tokens.length || !paidOpen) return null
                       const tNet = tokens.reduce((t, x) => t + x.net, 0)
                       const tGross = tokens.reduce((t, x) => t + x.gross, 0)
@@ -497,14 +550,23 @@ export function BdCumulativeInterest({ open, onClose, nbfcs, onDone }: { open: b
                             </thead>
                             <tbody>
                               {tokens.map((x, i) => (
-                                <tr key={String(x.g.journal_entry_id)} className="border-t border-[#F1F5F0] align-top">
+                                <tr key={x.rep ? `rep${String(x.rep.id)}` : String(x.g.journal_entry_id)} className={cn('border-t border-[#F1F5F0] align-top', x.rep && 'bg-[#F6F9FD]')}>
                                   <td className="px-3 py-1.5">
                                     <span className="inline-flex h-5 min-w-[20px] items-center justify-center rounded-full bg-[#0B6B45] px-1.5 text-[10.5px] font-extrabold text-white">{i + 1}</span>
                                   </td>
-                                  <td className="whitespace-nowrap px-2 py-1.5 font-extrabold tabular-nums text-[#0A1F17]">{formatDate(String(x.g.paid_date))}</td>
+                                  <td className="whitespace-nowrap px-2 py-1.5 font-extrabold tabular-nums text-[#0A1F17]">{formatDate(x.date)}</td>
                                   <td className="whitespace-nowrap px-2 py-1.5">
-                                    <span className="font-bold text-[#33473E]">{String(x.g.pay_code || x.g.vch_no || '')}</span>
-                                    {x.g.via_nbfc && <span className="ml-1 text-[10.5px] font-bold text-[#1B4E82]">via NBFC · {String(x.g.journal_code || '')}</span>}
+                                    {x.rep ? (
+                                      <>
+                                        <span className="font-bold text-[#33473E]">{String(x.rep.pay_code || '')}</span>
+                                        <span className="ml-1 text-[10.5px] font-bold text-[#1B4E82]">with {String(x.rep.bd_no)}&rsquo;s repayment</span>
+                                      </>
+                                    ) : (
+                                      <>
+                                        <span className="font-bold text-[#33473E]">{String(x.g.pay_code || x.g.vch_no || '')}</span>
+                                        {x.g.via_nbfc && <span className="ml-1 text-[10.5px] font-bold text-[#1B4E82]">via NBFC · {String(x.g.journal_code || '')}</span>}
+                                      </>
+                                    )}
                                   </td>
                                   <td className="px-2 py-1.5">
                                     <span className="flex flex-wrap gap-1">

@@ -1965,6 +1965,9 @@ export function registerIpc(): void {
   handle('bdCumInterest:list', async (_e, { values }: { values: Row }) =>
     (await import('./billDiscounting')).bdCumulativeInterest(values as never)
   )
+  handle('bdCumInterest:summary', async (_e, { values }: { values: Row }) =>
+    (await import('./billDiscounting')).bdPeriodInterestSummary(values as never)
+  )
   // Fixed deposits, and the liens that hold them against LCs (fixedDeposits.ts).
   handle('fd:list', async () => (await import('./fixedDeposits')).listFds())
   handle('fdLc:list', async (_e, { lcId }: { lcId: number }) => (await import('./fixedDeposits')).lcFdLiens(Number(lcId)))
