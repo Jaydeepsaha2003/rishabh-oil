@@ -5213,7 +5213,18 @@ export function Accounts({
     const id = pendingVoucherRef.current
     if (!id || !cid) return
     pendingVoucherRef.current = null
-    void openForAlter({ id })
+    // A transporter freight bill's voucher (Purchases → FR. BILL 104) opens
+    // the bill itself — its working with CD, dala and the rest — for editing.
+    void (async () => {
+      const info = await window.api.vouchers.alterInfo(id).catch(() => null)
+      if (info && String(info.mode) === 'freight') {
+        externalVoucherRef.current = false
+        setScreen(String(info.side) === 'sale' || String(info.side) === 'sales' ? 'tfsal' : 'tfpur')
+        setTfEditPending(Number(info.bill_id))
+        return
+      }
+      await openForAlter({ id })
+    })()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [cid])
 
