@@ -308,7 +308,11 @@ It is one voucher for ${bills.map((b) => b.bd_no).join(', ')} — the payment on
                     <td className="whitespace-nowrap px-2 py-2.5 font-extrabold tabular-nums text-[#0A1F17]">{formatDate(String(g.paid_date))}</td>
                     <td className="whitespace-nowrap px-2 py-2.5">
                       <div className="font-bold text-[#33473E]">{String(g.pay_code || g.vch_no || `#${id}`)}</div>
-                      {g.via_nbfc && (
+                      {g.rep_only ? (
+                        <div className="mt-0.5 inline-flex items-center rounded-[3px] bg-[#EAF0FA] px-1.5 py-[1px] text-[10px] font-extrabold text-[#1B4E82]" title="Interest paid in the same bank debit as the bill's repayment">
+                          with {String(((g.bills as Row[])[0] || {}).bd_no || '')}&rsquo;s repayment{g.journal_code ? ` · ${String(g.journal_code)}` : ''}
+                        </div>
+                      ) : g.via_nbfc && (
                         <div className="mt-0.5 inline-flex items-center rounded-[3px] bg-[#EAF0FA] px-1.5 py-[1px] text-[10px] font-extrabold text-[#1B4E82]" title="Booked through the NBFC: a journal (Dr interest / Cr NBFC, Cr TDS) and this payment (Dr NBFC / Cr bank)">
                           via NBFC · {String(g.journal_code || 'journal')}
                         </div>
@@ -369,6 +373,10 @@ It is one voucher for ${bills.map((b) => b.bd_no).join(', ')} — the payment on
                           </button>
                         )
                       })()}
+                      {g.rep_only ? (
+                        <span className="text-[10.5px] font-semibold text-[#7A8C82]">edit it on the bill&rsquo;s repayment</span>
+                      ) : (
+                      <>
                       <button
                         type="button"
                         title="Edit this payment — amounts, date, bank, TDS ledger, note"
@@ -394,6 +402,8 @@ It is one voucher for ${bills.map((b) => b.bd_no).join(', ')} — the payment on
                       >
                         {deleting === id ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Trash2 className="h-3.5 w-3.5" />}
                       </button>
+                      </>
+                      )}
                     </td>
                   </tr>
                   {/* INTEREST PAID WITH A REPAYMENT on these days — a payment of its

@@ -3057,18 +3057,18 @@ export async function listBdCumulativePayments(nbfcId?: number | null): Promise<
   // with that payment: PAY/1603 paid ₹1,25,235 for B5 + B4 to 24-11, and B4's
   // ₹1.5 Cr repayment on 23-11 carried another ₹15,284 — ₹1,40,519 paid in all.
   // Shown on the payment as its own token and set against its shortfall first.
-  const ids = [...worker.keys()]
-  const reps = ids.length
-    ? toPlain(
-        await getClient().execute({
-          sql: `SELECT r.id, r.bd_id, r.repay_date, r.interest, r.tds_amount, b.bd_no,
-                       (SELECT nn.prefix || '/' || nn.serial FROM voucher_numbers nn WHERE nn.entry_id = r.journal_entry_id) AS pay_code
-                  FROM bd_repayments r JOIN bill_discountings b ON b.id = r.bd_id
-                 WHERE r.bd_id IN (${ids.join(',')}) AND COALESCE(r.interest, 0) > 0.004`,
-          args: []
-        })
-      )
-    : []
+  // Every repayment with interest in it, on this company's (and NBFC's) bills.
+  const reps = toPlain(
+    await getClient().execute({
+      sql: `SELECT r.id, r.bd_id, r.repay_date, r.interest, r.tds_amount, r.bank_account, r.journal_entry_id, b.bd_no, b.nbfc_id, nb.name AS nbfc_name,
+                   (SELECT nn.prefix || '/' || nn.serial FROM voucher_numbers nn WHERE nn.entry_id = r.journal_entry_id) AS pay_code,
+                   (SELECT nn.prefix || '/' || nn.serial FROM voucher_numbers nn WHERE nn.entry_id = r.interest_entry_id) AS journal_code
+              FROM bd_repayments r JOIN bill_discountings b ON b.id = r.bd_id LEFT JOIN nbfcs nb ON nb.id = b.nbfc_id
+             WHERE b.company_id = ? AND (? IS NULL OR b.nbfc_id = ?) AND COALESCE(r.interest, 0) > 0.004`,
+      args: [getActiveCompanyId(), nbfcId ? n(nbfcId) : null, nbfcId ? n(nbfcId) : null]
+    })
+  )
+  const loose: Row[] = []
   for (const g of groups.values()) {
     g.reps = []
     g.rep_gross = 0
@@ -3079,7 +3079,10 @@ export async function listBdCumulativePayments(nbfcId?: number | null): Promise<
     const g = [...groups.values()].find((x) =>
       (x.bills as Row[]).some((b) => n(b.bd_id) === n(r.bd_id) && b.latest && String(b.from_date) <= d && d <= String(b.to_date))
     )
-    if (!g) continue
+    if (!g) {
+      loose.push(r)
+      continue
+    }
     const gross = round2(n(r.interest) + n(r.tds_amount))
     ;(g.reps as Row[]).push({ id: n(r.id), bd_no: r.bd_no, repay_date: d, gross, tds: n(r.tds_amount), net: n(r.interest), pay_code: r.pay_code || '' })
     g.rep_gross = round2(n(g.rep_gross) + gross)
@@ -3095,7 +3098,41 @@ export async function listBdCumulativePayments(nbfcId?: number | null): Promise<
     g.over = round2(over0 + Math.max(0, left))
     g.diff = round2(n(g.short) + n(g.over))
   }
-  return [...groups.values()]
+  // INTEREST PAID WITH A REPAYMENT, ON DAYS NO INTEREST PAYMENT COVERS (B7's
+  // ₹1,00,384 on its 24-11 repayment): a payment of its own, so a row of its
+  // own — otherwise it counts in the month's paid and shows nowhere here.
+  const out = [...groups.values()]
+  for (const r of loose) {
+    const bd = await loadBd(n(r.bd_id))
+    const d = String(r.repay_date || '').slice(0, 10)
+    const st = (await bdPaidStretches(n(r.bd_id), bd)).find((x) => x.via_repayment && String(x.to_date).slice(0, 10) === d)
+    const gross = round2(n(r.interest) + n(r.tds_amount))
+    out.push({
+      journal_entry_id: -n(r.id),
+      rep_only: true,
+      vch_no: '',
+      paid_date: d,
+      nbfc_name: r.nbfc_name || '',
+      nbfc_id: n(r.nbfc_id),
+      via_nbfc: true,
+      pay_code: r.pay_code || '',
+      journal_code: r.journal_code || '',
+      bank: r.bank_account || '',
+      narration: '',
+      bills: [{ id: -n(r.id), bd_id: n(r.bd_id), bd_no: r.bd_no, from_date: st ? String(st.from_date).slice(0, 10) : d, to_date: d, gross, tds: n(r.tds_amount), net: n(r.interest), diff: 0, latest: true }],
+      gross,
+      tds: n(r.tds_amount),
+      net: n(r.interest),
+      expected: gross,
+      diff: 0,
+      short: 0,
+      over: 0,
+      reps: [],
+      rep_gross: 0,
+      rep_net: 0
+    })
+  }
+  return out.sort((a, b) => String(b.paid_date).localeCompare(String(a.paid_date)))
 }
 
 export async function bdInterestWindow(
