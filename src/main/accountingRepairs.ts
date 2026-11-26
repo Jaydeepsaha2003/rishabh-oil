@@ -1898,3 +1898,132 @@ export async function fixBdSplit(entryIds: number[]): Promise<{ fixed: number }>
     return { fixed: wanted.size }
   })
 }
+
+// ── EXCESS PAID ON A BD, REFUNDED AS INTEREST ───────────────────────────────
+// V1: PAY/1054 debited ₹3,00,000 over the balance and Vanik gave it back
+// (RCP/560). The user books it as interest charged and refunded: Interest on
+// BD Dr / To Vanik BD (the excess as interest), then Vanik BD Dr / To
+// INTEREST INCOME (the refund), the receipt staying HDFC Dr / To Vanik BD.
+// Vanik BD nets to nil; P&L shows the interest paid and the income. Per bill,
+// on review — the excess may also be a plain overpayment.
+async function ensureExcessInt(): Promise<void> {
+  await getClient().execute(`CREATE TABLE IF NOT EXISTS bd_excess_interest (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    repayment_id INTEGER NOT NULL UNIQUE,
+    bd_id INTEGER NOT NULL,
+    amount REAL NOT NULL,
+    expense_entry_id INTEGER,
+    income_entry_id INTEGER,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+  )`)
+}
+type ExcessIntFinding = { repayment_id: number; bd_id: number; bd_no: string; company_id: number; pay_entry: number; code: string; date: string; refund_date: string; amount: number; bd_ledger: string; refunded: number }
+async function scanExcessInt(): Promise<ExcessIntFinding[]> {
+  const c = getClient()
+  await ensureExcessInt()
+  const rows = (
+    await c.execute(`
+      SELECT r.id, r.bd_id, r.repay_date, r.charges, r.journal_entry_id, b.bd_no, b.company_id,
+             (SELECT nn.prefix || '/' || nn.serial FROM voucher_numbers nn WHERE nn.entry_id = r.journal_entry_id) AS code
+        FROM bd_repayments r JOIN bill_discountings b ON b.id = r.bd_id
+       WHERE r.charges LIKE '%REFUND DUE%' AND r.id NOT IN (SELECT repayment_id FROM bd_excess_interest)
+       ORDER BY r.repay_date`)
+  ).rows.map((x) => ({ ...x }) as Record<string, unknown>)
+  const out: ExcessIntFinding[] = []
+  for (const r of rows) {
+    let amount = 0
+    try {
+      for (const x of JSON.parse(String(r.charges || '[]'))) if (/^REFUND DUE/i.test(String(x?.account || ''))) amount += Number(x.amount) || 0
+    } catch {
+      continue
+    }
+    amount = Math.round(amount * 100) / 100
+    if (amount <= 0.004) continue
+    // The BD ledger as the payment names it.
+    const bdl = (
+      await c.execute({
+        sql: `SELECT la.name FROM journal_lines jl JOIN ledger_accounts la ON la.id = jl.account_id
+               WHERE jl.entry_id = ? AND jl.dr > 0.004 AND UPPER(la.name) LIKE 'BILLS DISCOUNTED%' LIMIT 1`,
+        args: [Number(r.journal_entry_id)]
+      })
+    ).rows[0]
+    if (!bdl) continue // still on REFUND DUE — re-post it through the BD ledger first
+    const ref = (
+      await c.execute({
+        sql: `SELECT MIN(refund_date) AS d, COALESCE(SUM(amount), 0) AS a FROM facility_refunds WHERE kind = 'bd' AND facility_id = ?`,
+        args: [Number(r.bd_id)]
+      }).catch(() => ({ rows: [] as unknown[] }))
+    ).rows[0] as Record<string, unknown> | undefined
+    out.push({
+      repayment_id: Number(r.id),
+      bd_id: Number(r.bd_id),
+      bd_no: String(r.bd_no || ''),
+      company_id: Number(r.company_id),
+      pay_entry: Number(r.journal_entry_id),
+      code: String(r.code || ''),
+      date: String(r.repay_date || '').slice(0, 10),
+      refund_date: String(ref?.d || r.repay_date || '').slice(0, 10),
+      amount,
+      bd_ledger: String(bdl.name),
+      refunded: Math.round(Number(ref?.a || 0) * 100) / 100
+    })
+  }
+  return out
+}
+
+export async function previewExcessInt(): Promise<{ findings: ExcessIntFinding[] }> {
+  return { findings: await scanExcessInt() }
+}
+
+export async function fixExcessInt(repaymentIds: number[]): Promise<{ fixed: number }> {
+  const wanted = new Set((repaymentIds || []).map(Number).filter(Boolean))
+  if (!wanted.size) throw new Error('Pick the bills to book')
+  return withDbTransaction(async () => {
+    const c = getClient()
+    await ensureLog()
+    const { postJournal } = await import('./journal')
+    const allowed = new Map((await scanExcessInt()).map((f) => [f.repayment_id, f]))
+    const stale = [...wanted].filter((id) => !allowed.has(id))
+    if (stale.length) throw new Error(`${stale.length} bill${stale.length === 1 ? ' has' : 's have'} changed since the list was shown — check again`)
+    for (const id of wanted) {
+      const f = allowed.get(id) as ExcessIntFinding
+      const amt = `₹${f.amount.toFixed(2)}`
+      const exp = await postJournal({
+        date: f.date,
+        vchType: 'JOURNAL',
+        vchNo: f.bd_no,
+        narration: `Bill Discounting ${f.bd_no} — ${amt} taken over the balance on ${f.code} is interest charged by the NBFC (refunded later)`,
+        companyId: f.company_id || undefined,
+        lines: [
+          { account: 'INTEREST ON BILL DISCOUNTING A/C', group: 'Indirect Expenses', dr: f.amount },
+          { account: f.bd_ledger, group: 'Loans (Liability)', cr: f.amount }
+        ]
+      })
+      const inc = await postJournal({
+        date: f.refund_date,
+        vchType: 'JOURNAL',
+        vchNo: f.bd_no,
+        narration: `Bill Discounting ${f.bd_no} — ${amt} interest refunded by the NBFC — booked to interest income`,
+        companyId: f.company_id || undefined,
+        lines: [
+          { account: f.bd_ledger, group: 'Loans (Liability)', dr: f.amount },
+          { account: 'INTEREST INCOME', group: 'Indirect Incomes', cr: f.amount }
+        ]
+      })
+      await c.execute({
+        sql: 'INSERT INTO bd_excess_interest (repayment_id, bd_id, amount, expense_entry_id, income_entry_id) VALUES (?, ?, ?, ?, ?)',
+        args: [f.repayment_id, f.bd_id, f.amount, exp.id, inc.id]
+      })
+      // The payment's own line says what that part now is.
+      await c.execute({
+        sql: `UPDATE journal_lines SET note = 'interest — refunded later' WHERE entry_id = ? AND note LIKE 'excess%' AND ABS(dr - ?) < 0.01`,
+        args: [f.pay_entry, f.amount]
+      }).catch(() => {})
+      await c.execute({
+        sql: 'INSERT OR IGNORE INTO accounting_repair_log(repair_key, entry_id, before_json) VALUES (?, ?, ?)',
+        args: [`bd-excess-interest-v1:${f.repayment_id}`, f.pay_entry, JSON.stringify(f)]
+      })
+    }
+    return { fixed: wanted.size }
+  })
+}

@@ -99,6 +99,8 @@ import {
   fixBdThrough,
   previewBdSplit,
   fixBdSplit,
+  previewExcessInt,
+  fixExcessInt,
   previewSharedLedgers,
   fixSharedLedgers
 } from './accountingRepairs'
@@ -2183,6 +2185,15 @@ export function registerIpc(): void {
   handle('repairs:bdSplitFix', async (_e, a: { ids: number[] }) => {
     await assertAdmin('Splitting BD repayment payments')
     return fixBdSplit(a?.ids || [])
+  })
+  // Excess paid on a BD, refunded as interest: booked to interest and income.
+  handle('repairs:excessInt:list', async () => {
+    await assertAdmin('The accounting checks')
+    return previewExcessInt()
+  })
+  handle('repairs:excessIntFix', async (_e, a: { ids: number[] }) => {
+    await assertAdmin('Booking a BD excess as refunded interest')
+    return fixExcessInt(a?.ids || [])
   })
   // Purchase / sale vouchers filed in the other company's books.
   handle('repairs:wrongCompany:list', async () => {

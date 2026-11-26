@@ -101,6 +101,10 @@ export function AccountingChecks(): React.JSX.Element {
   // BD repayment payments still on one BD line.
   const [bdSplit, setBdSplit] = useState<Row | null>(null)
   const [fixingBdSplit, setFixingBdSplit] = useState(false)
+  // BD excess over the balance, refunded — book as interest + income (picked per bill).
+  const [exInt, setExInt] = useState<Row | null>(null)
+  const [exPick, setExPick] = useState<Set<number>>(new Set())
+  const [fixingExInt, setFixingExInt] = useState(false)
   const [shared, setShared] = useState<Row | null>(null)
   const [splitting, setSplitting] = useState(false)
   // Purchase / sale vouchers filed in the other company's books.
@@ -176,6 +180,7 @@ export function AccountingChecks(): React.JSX.Element {
       setShRep(await window.api.repairs.shortageReprice().catch(() => null))
       setBdThru(await window.api.repairs.bdThrough().catch(() => null))
       setBdSplit(await window.api.repairs.bdSplit().catch(() => null))
+      setExInt(await window.api.repairs.excessInt().catch(() => null))
       setShared(await window.api.repairs.sharedLedgers().catch(() => null))
       setWrongCo(await window.api.repairs.wrongCompany().catch(() => null))
       const sh = await window.api.repairs.shadowedRedirects().catch(() => null)
@@ -440,6 +445,29 @@ export function AccountingChecks(): React.JSX.Element {
       toast.error((e as Error).message)
     } finally {
       setFixingBdSplit(false)
+    }
+  }
+
+  const exFindings: Row[] = useMemo(() => (exInt?.findings as Row[]) || [], [exInt])
+  async function fixExIntNow(): Promise<void> {
+    const ids = [...exPick]
+    if (!ids.length) return
+    if (
+      !window.confirm(
+        `Book the excess on ${ids.length} bill${ids.length === 1 ? '' : 's'} as interest the NBFC charged and refunded?\n\nFor each: a journal Interest on BD Dr / To the BD ledger on the repayment date, and a journal BD ledger Dr / To INTEREST INCOME on the refund date. The payment and the refund receipt stay as they are; the BD ledger nets to nil.`
+      )
+    )
+      return
+    setFixingExInt(true)
+    try {
+      const r = await window.api.repairs.fixExcessInt(ids)
+      toast.success(`${r.fixed} bill${r.fixed === 1 ? '' : 's'}: excess booked as interest charged and refunded`)
+      setExPick(new Set())
+      await load()
+    } catch (e) {
+      toast.error((e as Error).message)
+    } finally {
+      setFixingExInt(false)
     }
   }
 
@@ -1328,6 +1356,67 @@ export function AccountingChecks(): React.JSX.Element {
           <Button className="ml-auto gap-1.5" disabled={!bsFixable.length || fixingBdSplit} onClick={() => void fixBdSplitNow()}>
             {fixingBdSplit && <Loader2 className="h-4 w-4 animate-spin" />}
             Split {bsFixable.length} into parts
+          </Button>
+        </div>
+      </Section>
+
+      <Section
+        title="BD excess refunded — book as interest?"
+        count={exFindings.length}
+        tone={exFindings.length ? 'warn' : 'ok'}
+        note={
+          exFindings.length
+            ? 'These BD repayments took more than the balance and the NBFC refunds it. Tick the ones where the excess was really interest the NBFC charged: it is booked as interest paid (Interest on BD Dr / To BD) and its refund as income (BD Dr / To INTEREST INCOME). Leave a plain overpayment unticked.'
+            : 'No BD excess left to classify.'
+        }
+      >
+        <table className="w-full border-collapse">
+          <thead className="bg-muted/40">
+            <tr>
+              <th className={th} />
+              <th className={th}>Bill</th>
+              <th className={th}>Payment</th>
+              <th className={th}>Repaid on</th>
+              <th className={th}>Refund on</th>
+              <th className={cn(th, 'text-right')}>Excess</th>
+              <th className={cn(th, 'text-right')}>Refunded so far</th>
+            </tr>
+          </thead>
+          <tbody>
+            {exFindings.map((x) => {
+              const id = Number(x.repayment_id)
+              return (
+                <tr key={id} className="border-t">
+                  <td className={td}>
+                    <input
+                      type="checkbox"
+                      checked={exPick.has(id)}
+                      onChange={() =>
+                        setExPick((p) => {
+                          const q = new Set(p)
+                          if (q.has(id)) q.delete(id)
+                          else q.add(id)
+                          return q
+                        })
+                      }
+                    />
+                  </td>
+                  <td className={cn(td, 'font-semibold')}>{String(x.bd_no)}</td>
+                  <td className={td}>{String(x.code)}</td>
+                  <td className={cn(td, 'tabular-nums')}>{formatDate(String(x.date))}</td>
+                  <td className={cn(td, 'tabular-nums')}>{formatDate(String(x.refund_date))}</td>
+                  <td className={cn(td, 'text-right tabular-nums font-semibold')}>{formatINR(Number(x.amount))}</td>
+                  <td className={cn(td, 'text-right tabular-nums')}>{formatINR(Number(x.refunded))}</td>
+                </tr>
+              )
+            })}
+          </tbody>
+        </table>
+        <div className="flex flex-wrap items-center gap-3 border-t bg-muted/30 px-4 py-3">
+          <span className="text-[12.5px] text-muted-foreground">{exPick.size} ticked</span>
+          <Button className="ml-auto gap-1.5" disabled={!exPick.size || fixingExInt} onClick={() => void fixExIntNow()}>
+            {fixingExInt && <Loader2 className="h-4 w-4 animate-spin" />}
+            Book {exPick.size} as interest + income
           </Button>
         </div>
       </Section>

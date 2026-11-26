@@ -521,7 +521,17 @@ export async function documentPostings(a: {
       )),
       // The NBFC's refund of what was paid over the balance (bankRefunds.ts) —
       // V1's ₹3,00,000 came back on RCP/560 and was nowhere on the bill.
-      ...(await facilityRefundRows('bd', id))
+      ...(await facilityRefundRows('bd', id)),
+      // That excess booked as interest charged, and its refund as income.
+      ...(await childRows(
+        'bd_excess_interest',
+        'bd_id',
+        id,
+        [
+          ['expense_entry_id', () => 'Excess as interest charged'],
+          ['income_entry_id', () => 'Interest refunded · income']
+        ]
+      ))
     ]
   } else if (entity === 'trading') {
     // A TRADING DEAL IS TWO INVOICES, AND THAT IS THE WHOLE POINT OF IT.

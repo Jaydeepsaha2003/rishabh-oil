@@ -830,6 +830,8 @@ export interface Api {
     fixBdThrough: (ids: number[]) => Promise<{ fixed: number; journals: number }>
     bdSplit: () => Promise<Row>
     fixBdSplit: (ids: number[]) => Promise<{ fixed: number }>
+    excessInt: () => Promise<Row>
+    fixExcessInt: (ids: number[]) => Promise<{ fixed: number }>
     wrongCompany: () => Promise<Row>
     splitTanker: () => Promise<Row>
     paisa: () => Promise<Row>
