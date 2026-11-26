@@ -155,6 +155,17 @@ async function ownColumns(
  * issuances and interest payments, each of which keeps the id of the voucher
  * it posted.
  */
+/** Refund receipts linked to / recorded for a bill or LC (facility_refunds). */
+async function facilityRefundRows(kind: 'bd' | 'lc', id: number): Promise<Source[]> {
+  const res = await getClient()
+    .execute({ sql: 'SELECT entry_id, refund_date, how FROM facility_refunds WHERE kind = ? AND facility_id = ? ORDER BY id', args: [kind, id] })
+    .catch(() => null)
+  if (!res) return []
+  return toPlain(res)
+    .filter((r) => n(r.entry_id) > 0)
+    .map((r) => ({ id: n(r.entry_id), role: `Refund received${s(r.refund_date) ? ` · ${dmy(r.refund_date)}` : ''}` }))
+}
+
 async function childRows(
   table: string,
   parentCol: string,
@@ -463,7 +474,8 @@ export async function documentPostings(a: {
         id,
         [['journal_entry_id', (r) => `Payment IN${s(r.pay_date) ? ` · ${dmy(r.pay_date)}` : ''}`]],
         ['pay_date']
-      ))
+      )),
+      ...(await facilityRefundRows('lc', id))
     ]
   } else if (entity === 'bd') {
     sources = [
@@ -503,7 +515,10 @@ export async function documentPostings(a: {
         id,
         [['journal_entry_id', (r) => `Payment IN${s(r.pay_date) ? ` · ${dmy(r.pay_date)}` : ''}`]],
         ['pay_date']
-      ))
+      )),
+      // The NBFC's refund of what was paid over the balance (bankRefunds.ts) —
+      // V1's ₹3,00,000 came back on RCP/560 and was nowhere on the bill.
+      ...(await facilityRefundRows('bd', id))
     ]
   } else if (entity === 'trading') {
     // A TRADING DEAL IS TWO INVOICES, AND THAT IS THE WHOLE POINT OF IT.
