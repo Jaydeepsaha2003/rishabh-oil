@@ -9325,20 +9325,23 @@ Delete ${doc}?`)) return
             {/* THE TDS LEDGER — the user's pick; TDS PAYABLE A/C unless changed. */}
             <div style={{ gridColumn: '1 / -1' }}>
               {label('TDS ledger')}
-              <input
-                list="tf-tds-ledgers"
-                value={String(tfBill.tds_ledger ?? '')}
-                onChange={(e) => setTfBill((p) => ({ ...p, tds_ledger: e.target.value }))}
-                placeholder="TDS PAYABLE A/C"
-                style={{ ...field, fontWeight: 600, border: '1px solid #C3D2C6' }}
-              />
-              <datalist id="tf-tds-ledgers">
-                {(accounts as Row[])
-                  .filter((a) => /TDS/i.test(String(a.name || '')))
-                  .map((a) => (
-                    <option key={String(a.id)} value={String(a.name)} />
-                  ))}
-              </datalist>
+              {(() => {
+                const names = [...new Set(['TDS PAYABLE A/C', ...(accounts as Row[]).filter((a) => /TDS/i.test(String(a.name || ''))).map((a) => String(a.name))])]
+                const cur = String(tfBill.tds_ledger || 'TDS PAYABLE A/C')
+                if (!names.includes(cur)) names.unshift(cur)
+                return (
+                  <Select searchable value={cur} onValueChange={(v) => setTfBill((p) => ({ ...p, tds_ledger: v }))}>
+                    <SelectTrigger className="bg-white"><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      {names.map((nm) => (
+                        <SelectItem key={nm} value={nm}>
+                          {nm}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                )
+              })()}
             </div>
           </div>
 
