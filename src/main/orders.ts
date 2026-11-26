@@ -2285,6 +2285,18 @@ export async function updateTankerDetails(id: number, v: Row): Promise<{ id: num
   // Freight / shortage recompute for emptied tankers.
   let transporterId =
     v.transporter_id !== undefined ? (v.transporter_id ? n(v.transporter_id) : null) : (t.transporter_id ?? null)
+  // A TANKER THAT LOST ITS TRANSPORTER but still has its freight line (ASO/26-27/99:
+  // oberoi bulk carrier on the line, none on the tanker): a rate typed without
+  // naming one keeps the line's transporter rather than deleting the freight.
+  if (!transporterId && v.transporter_id === undefined && t.order_id) {
+    const was = (
+      await c.execute({
+        sql: `SELECT transporter_id FROM transporter_ledger WHERE order_id = ? AND entry_type = 'freight' AND note LIKE ? AND transporter_id IS NOT NULL LIMIT 1`,
+        args: [n(t.order_id), `Tanker ${t.tanker_no}:%`]
+      })
+    ).rows[0]
+    if (was) transporterId = n(was.transporter_id)
+  }
   let rate = pickNum('transport_rate_per_ton', n(t.transport_rate_per_ton))
   let transport = n(t.transport_amount)
   let penalty = n(t.shortage_charge_amount)
