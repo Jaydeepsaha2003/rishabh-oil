@@ -25199,6 +25199,13 @@ async function updateTankerDetails(id, v) {
     expected = d.toISOString().slice(0, 10);
   }
   let transporterId = v.transporter_id !== void 0 ? v.transporter_id ? n27(v.transporter_id) : null : t.transporter_id ?? null;
+  if (!transporterId && v.transporter_id === void 0 && t.order_id) {
+    const was = (await c.execute({
+      sql: `SELECT transporter_id FROM transporter_ledger WHERE order_id = ? AND entry_type = 'freight' AND note LIKE ? AND transporter_id IS NOT NULL LIMIT 1`,
+      args: [n27(t.order_id), `Tanker ${t.tanker_no}:%`]
+    })).rows[0];
+    if (was) transporterId = n27(was.transporter_id);
+  }
   let rate = pickNum("transport_rate_per_ton", n27(t.transport_rate_per_ton));
   let transport = n27(t.transport_amount);
   let penalty = n27(t.shortage_charge_amount);
