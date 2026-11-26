@@ -16271,7 +16271,15 @@ async function repayBd(id, v) {
     if (bankCharges > 4e-3) costLines.push({ account: "BANK CHARGES A/C", group: "Indirect Expenses", dr: bankCharges });
     if (penaltyPaid > 4e-3) costLines.push({ account: "PENAL INTEREST ON BILL DISCOUNTING A/C", group: "Indirect Expenses", dr: penaltyPaid });
     for (const ch of charges) if (!isRefundDue(ch.account)) costLines.push({ account: ch.account, group: ch.group, dr: ch.amount });
-    const lines = [{ account: bdPayable(bd), group: BD_PAYABLE_GROUP, dr: paidOut }];
+    const lbl = (x) => x.toLowerCase().replace(/ a\/c$/, "");
+    const parts = [
+      { note: `principal ${[bd.bd_no, ...others.map((o) => o.bd.bd_no)].filter(Boolean).join(", ")}`.trim(), amount: round210(asked + toOthers) },
+      { note: "interest", amount: interestPaid },
+      ...costLines.map((l) => ({ note: lbl(l.account), amount: n17(l.dr) })),
+      ...charges.filter((ch) => isRefundDue(ch.account)).map((ch) => ({ note: "excess \u2014 to be refunded", amount: ch.amount }))
+    ].filter((p) => p.amount > 4e-3);
+    const partSum = round210(parts.reduce((t, p) => t + p.amount, 0));
+    const lines = parts.length > 1 && Math.abs(partSum - paidOut) <= 0.01 ? parts.map((p) => ({ account: bdPayable(bd), group: BD_PAYABLE_GROUP, dr: p.amount, note: p.note })) : [{ account: bdPayable(bd), group: BD_PAYABLE_GROUP, dr: paidOut }];
     if (settleVia === "party") {
       lines.push({
         account: party,
@@ -17064,16 +17072,17 @@ async function listBdCumulativePayments(nbfcId) {
     g.expected = round210(n17(g.expected) + expected);
     g.diff = round210(n17(g.diff) + diff);
   }
-  const ids = [...worker.keys()];
-  const reps = ids.length ? toPlain14(
+  const reps = toPlain14(
     await getClient().execute({
-      sql: `SELECT r.id, r.bd_id, r.repay_date, r.interest, r.tds_amount, b.bd_no,
-                       (SELECT nn.prefix || '/' || nn.serial FROM voucher_numbers nn WHERE nn.entry_id = r.journal_entry_id) AS pay_code
-                  FROM bd_repayments r JOIN bill_discountings b ON b.id = r.bd_id
-                 WHERE r.bd_id IN (${ids.join(",")}) AND COALESCE(r.interest, 0) > 0.004`,
-      args: []
+      sql: `SELECT r.id, r.bd_id, r.repay_date, r.interest, r.tds_amount, r.bank_account, r.journal_entry_id, b.bd_no, b.nbfc_id, nb.name AS nbfc_name,
+                   (SELECT nn.prefix || '/' || nn.serial FROM voucher_numbers nn WHERE nn.entry_id = r.journal_entry_id) AS pay_code,
+                   (SELECT nn.prefix || '/' || nn.serial FROM voucher_numbers nn WHERE nn.entry_id = r.interest_entry_id) AS journal_code
+              FROM bd_repayments r JOIN bill_discountings b ON b.id = r.bd_id LEFT JOIN nbfcs nb ON nb.id = b.nbfc_id
+             WHERE b.company_id = ? AND (? IS NULL OR b.nbfc_id = ?) AND COALESCE(r.interest, 0) > 0.004`,
+      args: [getActiveCompanyId(), nbfcId ? n17(nbfcId) : null, nbfcId ? n17(nbfcId) : null]
     })
-  ) : [];
+  );
+  const loose = [];
   for (const g of groups.values()) {
     g.reps = [];
     g.rep_gross = 0;
@@ -17084,7 +17093,10 @@ async function listBdCumulativePayments(nbfcId) {
     const g = [...groups.values()].find(
       (x) => x.bills.some((b) => n17(b.bd_id) === n17(r.bd_id) && b.latest && String(b.from_date) <= d && d <= String(b.to_date))
     );
-    if (!g) continue;
+    if (!g) {
+      loose.push(r);
+      continue;
+    }
     const gross = round210(n17(r.interest) + n17(r.tds_amount));
     g.reps.push({ id: n17(r.id), bd_no: r.bd_no, repay_date: d, gross, tds: n17(r.tds_amount), net: n17(r.interest), pay_code: r.pay_code || "" });
     g.rep_gross = round210(n17(g.rep_gross) + gross);
@@ -17099,7 +17111,38 @@ async function listBdCumulativePayments(nbfcId) {
     g.over = round210(over0 + Math.max(0, left));
     g.diff = round210(n17(g.short) + n17(g.over));
   }
-  return [...groups.values()];
+  const out = [...groups.values()];
+  for (const r of loose) {
+    const bd = await loadBd(n17(r.bd_id));
+    const d = String(r.repay_date || "").slice(0, 10);
+    const st = (await bdPaidStretches(n17(r.bd_id), bd)).find((x) => x.via_repayment && String(x.to_date).slice(0, 10) === d);
+    const gross = round210(n17(r.interest) + n17(r.tds_amount));
+    out.push({
+      journal_entry_id: -n17(r.id),
+      rep_only: true,
+      vch_no: "",
+      paid_date: d,
+      nbfc_name: r.nbfc_name || "",
+      nbfc_id: n17(r.nbfc_id),
+      via_nbfc: true,
+      pay_code: r.pay_code || "",
+      journal_code: r.journal_code || "",
+      bank: r.bank_account || "",
+      narration: "",
+      bills: [{ id: -n17(r.id), bd_id: n17(r.bd_id), bd_no: r.bd_no, from_date: st ? String(st.from_date).slice(0, 10) : d, to_date: d, gross, tds: n17(r.tds_amount), net: n17(r.interest), diff: 0, latest: true }],
+      gross,
+      tds: n17(r.tds_amount),
+      net: n17(r.interest),
+      expected: gross,
+      diff: 0,
+      short: 0,
+      over: 0,
+      reps: [],
+      rep_gross: 0,
+      rep_net: 0
+    });
+  }
+  return out.sort((a, b) => String(b.paid_date).localeCompare(String(a.paid_date)));
 }
 async function bdInterestWindow(bdId, toDate) {
   const bd = await loadBd(bdId);
@@ -27394,10 +27437,9 @@ async function postJournal(a) {
     const entryId = Number(ins.lastInsertRowid);
     for (const l of lines) {
       const accountId = await getOrCreateAccount(await partyAccountName(l.account, l.group, a.companyId), l.group, a.companyId);
-      await c.execute({
-        sql: "INSERT INTO journal_lines (entry_id, account_id, dr, cr) VALUES (?, ?, ?, ?)",
-        args: [entryId, accountId, n31(l.dr), n31(l.cr)]
-      });
+      await c.execute(
+        l.note ? { sql: "INSERT INTO journal_lines (entry_id, account_id, dr, cr, note) VALUES (?, ?, ?, ?, ?)", args: [entryId, accountId, n31(l.dr), n31(l.cr), l.note] } : { sql: "INSERT INTO journal_lines (entry_id, account_id, dr, cr) VALUES (?, ?, ?, ?)", args: [entryId, accountId, n31(l.dr), n31(l.cr)] }
+      );
     }
     await ensureVoucherNumbers();
     return { id: entryId };
@@ -28513,6 +28555,7 @@ __export(accountingRepairs_exports, {
   accountingChecks: () => accountingChecks,
   autoFixDuplicateSales: () => autoFixDuplicateSales,
   clearSaleTds: () => clearSaleTds,
+  fixBdSplit: () => fixBdSplit,
   fixBdThrough: () => fixBdThrough,
   fixLcCharges: () => fixLcCharges,
   fixLoadedFreight: () => fixLoadedFreight,
@@ -28523,6 +28566,7 @@ __export(accountingRepairs_exports, {
   genericBankPostings: () => genericBankPostings,
   moveGenericBankPostings: () => moveGenericBankPostings,
   moveWrongCompany: () => moveWrongCompany,
+  previewBdSplit: () => previewBdSplit,
   previewBdThrough: () => previewBdThrough,
   previewDuplicateInvoicePostings: () => previewDuplicateInvoicePostings,
   previewLcCharges: () => previewLcCharges,
@@ -29784,6 +29828,91 @@ async function fixBdThrough(entryIds) {
       }
     }
     return { fixed: wanted.size, journals };
+  });
+}
+async function scanBdSplit() {
+  const c = getClient();
+  const cols = new Set((await c.execute("PRAGMA table_info(journal_lines)")).rows.map((r) => String(r.name)));
+  if (!cols.has("note")) return [];
+  const heads = (await c.execute(`
+      SELECT r.journal_entry_id AS je, je.entry_date, GROUP_CONCAT(b.bd_no, ', ') AS bills,
+             SUM(r.amount) AS principal, SUM(COALESCE(r.interest, 0)) AS interest,
+             MAX(COALESCE(r.charges_entry_id, 0)) AS ch, GROUP_CONCAT(COALESCE(r.charges, ''), '|') AS charges_json,
+             (SELECT nn.prefix || '/' || nn.serial FROM voucher_numbers nn WHERE nn.entry_id = r.journal_entry_id) AS code
+        FROM bd_repayments r JOIN bill_discountings b ON b.id = r.bd_id JOIN journal_entries je ON je.id = r.journal_entry_id
+       GROUP BY r.journal_entry_id ORDER BY je.entry_date`)).rows.map((x) => ({ ...x }));
+  const out = [];
+  for (const h of heads) {
+    const je = Number(h.je);
+    const bdLines = (await c.execute({
+      sql: `SELECT jl.id, jl.dr, jl.note FROM journal_lines jl JOIN ledger_accounts la ON la.id = jl.account_id
+               WHERE jl.entry_id = ? AND jl.dr > 0.004 AND UPPER(la.name) LIKE 'BILLS DISCOUNTED%'`,
+      args: [je]
+    })).rows.map((x) => ({ ...x }));
+    if (bdLines.length !== 1 || bdLines[0].note) continue;
+    const parts = [
+      { note: `principal ${String(h.bills || "")}`, amount: Math.round(Number(h.principal) * 100) / 100 },
+      { note: "interest", amount: Math.round(Number(h.interest) * 100) / 100 }
+    ];
+    if (Number(h.ch)) {
+      const cl = (await c.execute({ sql: `SELECT jl.dr, la.name FROM journal_lines jl JOIN ledger_accounts la ON la.id = jl.account_id WHERE jl.entry_id = ? AND jl.dr > 0.004`, args: [Number(h.ch)] })).rows;
+      for (const l of cl) parts.push({ note: String(l.name).toLowerCase().replace(/ a\/c$/, ""), amount: Number(l.dr) });
+    }
+    let refund = 0;
+    for (const js of String(h.charges_json || "").split("|")) {
+      try {
+        for (const x of JSON.parse(js || "[]")) if (/^REFUND DUE/i.test(String(x?.account || ""))) refund += Number(x.amount) || 0;
+      } catch {
+      }
+    }
+    if (refund > 4e-3) parts.push({ note: "excess \u2014 to be refunded", amount: Math.round(refund * 100) / 100 });
+    const keep = parts.filter((p) => p.amount > 4e-3);
+    if (keep.length < 2) continue;
+    const total = Number(bdLines[0].dr);
+    const sum = Math.round(keep.reduce((t, p) => t + p.amount, 0) * 100) / 100;
+    out.push({
+      entry_id: je,
+      date: String(h.entry_date || "").slice(0, 10),
+      code: String(h.code || ""),
+      bills: String(h.bills || ""),
+      line_id: Number(bdLines[0].id),
+      total,
+      parts: keep,
+      review: Math.abs(sum - total) > 0.01 ? `the parts add to \u20B9${sum.toFixed(2)}, not the \u20B9${total.toFixed(2)} debited` : ""
+    });
+  }
+  return out;
+}
+async function previewBdSplit() {
+  return { findings: await scanBdSplit() };
+}
+async function fixBdSplit(entryIds) {
+  const wanted = new Set((entryIds || []).map(Number).filter(Boolean));
+  if (!wanted.size) throw new Error("Pick the payments to split");
+  return withDbTransaction(async () => {
+    const c = getClient();
+    await ensureLog();
+    const allowed = new Map((await scanBdSplit()).filter((f) => !f.review).map((f) => [f.entry_id, f]));
+    const stale = [...wanted].filter((id) => !allowed.has(id));
+    if (stale.length) throw new Error(`${stale.length} payment${stale.length === 1 ? " has" : "s have"} changed since the list was shown \u2014 check again`);
+    for (const je of wanted) {
+      const f = allowed.get(je);
+      const line = (await c.execute({ sql: "SELECT * FROM journal_lines WHERE id = ?", args: [f.line_id] })).rows[0];
+      if (!line) throw new Error(`${f.code || je} no longer looks the same \u2014 nothing was changed`);
+      await c.execute({
+        sql: "INSERT OR IGNORE INTO accounting_repair_log(repair_key, entry_id, before_json) VALUES (?, ?, ?)",
+        args: [`bd-split-v1:${je}`, je, JSON.stringify({ line: { ...line }, finding: f })]
+      });
+      await c.execute({ sql: "UPDATE journal_lines SET dr = ?, note = ? WHERE id = ?", args: [f.parts[0].amount, f.parts[0].note, f.line_id] });
+      await c.execute({ sql: "UPDATE journal_bill_allocs SET amount = ? WHERE line_id = ? AND ABS(amount - ?) < 0.01", args: [f.parts[0].amount, f.line_id, f.total] });
+      for (const p of f.parts.slice(1)) {
+        await c.execute({
+          sql: "INSERT INTO journal_lines (entry_id, account_id, dr, cr, note) VALUES (?, ?, ?, 0, ?)",
+          args: [je, Number(line.account_id), p.amount, p.note]
+        });
+      }
+    }
+    return { fixed: wanted.size };
   });
 }
 var TOL, GENERIC_BANK, CASH_BANK_GROUPS2, TDS_LEDGER, SALE_OTHER_DEBITS, CHARGE_LEDGERS, plainRows;
@@ -40601,6 +40730,9 @@ var REQUIRED_COLUMNS = [
   // A BD repayment's costs (penalty, commission, bank charges) as their own
   // journal onto the BD ledger — the payment is the BD ledger's for the whole debit.
   { table: "bd_repayments", column: "charges_entry_id", type: "INTEGER" },
+  // A short label on one voucher line — what that part of it is ("principal
+  // V1", "interest", "bounce & penalty") when one ledger takes several lines.
+  { table: "journal_lines", column: "note", type: "TEXT" },
   // A note typed on Mark received — kept on the bill, carried on its voucher.
   { table: "bill_discountings", column: "received_note", type: "TEXT" },
   { table: "bd_repayments", column: "tds_ledger", type: "TEXT" },
@@ -41343,9 +41475,10 @@ async function loadEntries(ids) {
     })
   );
   if (!entries2.length) return out;
+  const withNote = (await columnsOf("journal_lines")).has("note");
   const lines = toPlain29(
     await c.execute({
-      sql: `SELECT jl.entry_id, jl.dr, jl.cr, a.name AS account, a.acc_group
+      sql: `SELECT jl.entry_id, jl.dr, jl.cr, a.name AS account, a.acc_group${withNote ? ", jl.note" : ""}
               FROM journal_lines jl
               JOIN ledger_accounts a ON a.id = jl.account_id
              WHERE jl.entry_id IN (${marks})
@@ -41362,7 +41495,8 @@ async function loadEntries(ids) {
       account: s3(l.account),
       acc_group: s3(l.acc_group) || "General",
       dr: round223(n41(l.dr)),
-      cr: round223(n41(l.cr))
+      cr: round223(n41(l.cr)),
+      ...l.note ? { note: s3(l.note) } : {}
     });
     const t = rawSum.get(k) || { dr: 0, cr: 0 };
     t.dr += n41(l.dr);
@@ -47688,6 +47822,14 @@ function registerIpc() {
   handle("repairs:bdThroughFix", async (_e, a) => {
     await assertAdmin("Re-posting BD repayments through the BD ledger");
     return fixBdThrough(a?.ids || []);
+  });
+  handle("repairs:bdSplit:list", async () => {
+    await assertAdmin("The accounting checks");
+    return previewBdSplit();
+  });
+  handle("repairs:bdSplitFix", async (_e, a) => {
+    await assertAdmin("Splitting BD repayment payments");
+    return fixBdSplit(a?.ids || []);
   });
   handle("repairs:wrongCompany:list", async () => {
     await assertAdmin("The accounting checks");
