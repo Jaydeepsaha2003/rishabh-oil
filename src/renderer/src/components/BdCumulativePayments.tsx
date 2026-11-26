@@ -312,7 +312,12 @@ It is one voucher for ${bills.map((b) => b.bd_no).join(', ')} — the payment on
                         <div className="mt-0.5 inline-flex items-center rounded-[3px] bg-[#EAF0FA] px-1.5 py-[1px] text-[10px] font-extrabold text-[#1B4E82]" title="Interest paid in the same bank debit as the bill's repayment">
                           with {String(((g.bills as Row[])[0] || {}).bd_no || '')}&rsquo;s repayment{g.journal_code ? ` · ${String(g.journal_code)}` : ''}
                         </div>
-                      ) : g.via_nbfc && (
+                      ) : null}
+                      {g.rep_only && Number(g.moved) > 0.5 ? (
+                        <div className="mt-0.5 text-[10px] font-bold text-[#7A4B00]" title="Interest over this bill's own days, split FIFO over the NBFC's other bills">
+                          {formatINR(Number(g.moved))} split over other bills
+                        </div>
+                      ) : !g.rep_only && g.via_nbfc && (
                         <div className="mt-0.5 inline-flex items-center rounded-[3px] bg-[#EAF0FA] px-1.5 py-[1px] text-[10px] font-extrabold text-[#1B4E82]" title="Booked through the NBFC: a journal (Dr interest / Cr NBFC, Cr TDS) and this payment (Dr NBFC / Cr bank)">
                           via NBFC · {String(g.journal_code || 'journal')}
                         </div>

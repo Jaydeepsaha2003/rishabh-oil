@@ -3338,6 +3338,14 @@ export async function runStartupTasks(): Promise<void> {
   // and only while both still read the 23rd. The row as it was is logged first.
   // Interest paid twice with a repayment set against the NBFC's bills still
   // short on those days (B4's ₹15,284 of 23-11 → B5) — the user's rule.
+  // v2: also interest a repayment paid OVER its own days (B7's ₹56,653.28 on
+  // 24-11), split FIFO over the NBFC's other bills — asked for Blacksoil only;
+  // other NBFCs' small day-count differences are left for the user to decide.
+  await runOnce('bd_interest_auto_adjust_v2', async () => {
+    const { adjustAllBdExcessInterest } = await import('./billDiscounting')
+    const done = await adjustAllBdExcessInterest('BLACKSOIL%')
+    if (done.length) console.log(`[bd] repayment interest over its own days split over the NBFC's bills: ${done.join('; ')}`)
+  }).catch((e) => console.error('[bd] interest auto-adjust v2 failed:', e))
   await runOnce('bd_interest_auto_adjust_v1', async () => {
     const { adjustAllBdExcessInterest } = await import('./billDiscounting')
     const done = await adjustAllBdExcessInterest()

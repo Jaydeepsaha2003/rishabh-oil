@@ -2511,11 +2511,12 @@ async function bdPaidStretches(bdId: number, bd: Row): Promise<Row[]> {
   const reps = toPlain(
     await c
       .execute({
-        sql: 'SELECT repay_date, interest, tds_amount FROM bd_repayments WHERE bd_id = ? AND COALESCE(interest, 0) > 0.004 ORDER BY repay_date, id',
+        sql: 'SELECT id, repay_date, interest, tds_amount FROM bd_repayments WHERE bd_id = ? AND COALESCE(interest, 0) > 0.004 ORDER BY repay_date, id',
         args: [n(bdId)]
       })
       .catch(() => ({ rows: [] }) as never)
   )
+  const movedOut = reps.length ? await bdAdjustmentsOutOf(n(bdId)) : []
   const received = String(bd.payment_received_date || '').slice(0, 10)
   const A = received ? accrualStart(bd, received) : '0000-00-00'
   const out = [...paid]
@@ -2531,7 +2532,12 @@ async function bdPaidStretches(bdId: number, bd: Row): Promise<Row[]> {
         : n(bd.tds_pct) > 0 && n(bd.tds_pct) < 100
           ? round2((net * n(bd.tds_pct)) / (100 - n(bd.tds_pct)))
           : 0
-    out.push({ from_date: from, to_date: on, gross: round2(net + tds), tds, net, paid_date: on, via_repayment: 1 })
+    // Set over to other bills of the NBFC (B7's ₹56,653.28 over its own days):
+    // what stays here is only what this bill's days took.
+    const mv = movedOut.filter((m) => n(m.repayment_id) === n(r.id))
+    const mvNet = round2(mv.reduce((t, m) => t + n(m.net), 0))
+    const mvTds = round2(mv.reduce((t, m) => t + n(m.tds), 0))
+    out.push({ from_date: from, to_date: on, gross: round2(net - mvNet + tds - mvTds), tds: round2(tds - mvTds), net: round2(net - mvNet), paid_date: on, via_repayment: 1, rep_id: n(r.id), rep_gross: round2(net + tds) })
   }
   // INTEREST SET OVER FROM ANOTHER BILL (bd_interest_adjustments): counts on
   // the paid stretch it was set against, as if paid with it — it covers no days
@@ -2539,8 +2545,11 @@ async function bdPaidStretches(bdId: number, bd: Row): Promise<Row[]> {
   for (const a of await bdAdjustmentsInto(n(bdId))) {
     const on = String(a.on_date).slice(0, 10)
     const host = out.find((p) => !p.via_adjust && String(p.from_date).slice(0, 10) <= on && on <= String(p.to_date).slice(0, 10))
-    if (!host) continue
-    out.push({ from_date: host.from_date, to_date: host.to_date, gross: n(a.gross), tds: n(a.tds), net: n(a.net), paid_date: on, via_adjust: 1, adjust_id: n(a.id), adjusted_from: a.from_bd_no })
+    // No payment of its own on those days: it pays the period it was set against.
+    const from = host ? host.from_date : a.rest_from
+    const to = host ? host.to_date : a.rest_to
+    if (!from || !to) continue
+    out.push({ from_date: from, to_date: to, gross: n(a.gross), tds: n(a.tds), net: n(a.net), paid_date: on, via_adjust: 1, adjust_id: n(a.id), adjusted_from: a.from_bd_no })
   }
   return out.sort((a, b) => String(a.from_date).localeCompare(String(b.from_date)))
 }
@@ -2564,6 +2573,10 @@ async function ensureBdAdjust(): Promise<void> {
     net REAL NOT NULL DEFAULT 0,
     created_at TEXT DEFAULT CURRENT_TIMESTAMP
   )`)
+  // The target's period (its rest) when it had no payment there to stand on.
+  for (const col of ['rest_from TEXT', 'rest_to TEXT']) {
+    await getClient().execute(`ALTER TABLE bd_interest_adjustments ADD COLUMN ${col}`).catch(() => {})
+  }
 }
 
 async function bdAdjustmentsInto(bdId: number): Promise<Row[]> {
@@ -2603,12 +2616,24 @@ export async function bdExcessInterest(bdId: number): Promise<Row[]> {
   )
   const moved = await bdAdjustmentsOutOf(n(bdId))
   const out: Row[] = []
+  const calc = bdCalc(bd)
+  const daysYear = n(bd.days_year) || 360
+  const steps = n(bd.first_receipt_part) > 0.005 ? [] : await principalRepaidByDate(n(bdId))
+  const worked = (f: string, t: string): number =>
+    f > t
+      ? 0
+      : steps.length
+        ? bdInterestParts(calc.interestBase, steps, f, t, n(bd.interest_pct), daysYear).gross
+        : round2((calc.interestBase * n(bd.interest_pct) * (daysBetween(f, t) + 1)) / (100 * daysYear))
   for (const r of reps) {
     const on = String(r.repay_date).slice(0, 10)
-    // A repayment that paid new days is a stretch of its own, not paid twice.
-    if (stretches.some((s) => s.via_repayment && String(s.to_date).slice(0, 10) === on)) continue
     const gross = round2(n(r.interest) + n(r.tds_amount))
-    const left = round2(gross - moved.filter((m) => n(m.repayment_id) === n(r.id)).reduce((t, m) => t + n(m.gross), 0))
+    const movedHere = round2(moved.filter((m) => n(m.repayment_id) === n(r.id)).reduce((t, m) => t + n(m.gross), 0))
+    // A repayment that paid new days of its own: only what is OVER those days'
+    // interest is left to place (B7: ₹1,11,537.78 for 01-11 → 24-11, which
+    // work out to ₹54,884.50). One on days already paid: all of it.
+    const own = stretches.find((s) => s.via_repayment && n(s.rep_id) === n(r.id))
+    const left = own ? round2(gross - movedHere - worked(String(own.from_date).slice(0, 10), on)) : round2(gross - movedHere)
     if (left <= 0.5) continue
     const sibs = toPlain(
       await c.execute({
@@ -2616,18 +2641,19 @@ export async function bdExcessInterest(bdId: number): Promise<Row[]> {
         args: [n(bd.company_id), n(bd.nbfc_id), n(bdId)]
       })
     )
+    // FIFO over the NBFC's bills, oldest first: each takes what its period
+    // covering that day is still short — paid short or not paid at all.
     let room = left
     const targets: Row[] = []
     for (const s of sibs) {
       for (const rest of await bdInterestSchedule(n(s.id))) {
         if (!(String(rest.from_date) <= on && on <= String(rest.to_date))) continue
-        // Only a rest already paid short has a payment to set it against.
-        if (!rest.paid_id) continue
         const short = round2(n(rest.gross) - n(rest.paid_gross))
         if (short <= 0.5) continue
         const take = round2(Math.min(room, short))
         targets.push({ bd_id: n(s.id), bd_no: s.bd_no, from_date: rest.from_date, to_date: rest.to_date, short, take })
         room = round2(room - take)
+        if (room <= 0.5) break
       }
       if (room <= 0.5) break
     }
@@ -2649,8 +2675,8 @@ export async function adjustBdExcessInterest(bdId: number): Promise<{ adjusted: 
       if (gross <= 0.004) continue
       const tds = round2(gross * ratio)
       await c.execute({
-        sql: 'INSERT INTO bd_interest_adjustments (repayment_id, from_bd_id, to_bd_id, on_date, gross, tds, net) VALUES (?, ?, ?, ?, ?, ?, ?)',
-        args: [n(x.repayment_id), n(bdId), n(t.bd_id), String(x.on_date), gross, tds, round2(gross - tds)]
+        sql: 'INSERT INTO bd_interest_adjustments (repayment_id, from_bd_id, to_bd_id, on_date, gross, tds, net, rest_from, rest_to) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+        args: [n(x.repayment_id), n(bdId), n(t.bd_id), String(x.on_date), gross, tds, round2(gross - tds), String(t.from_date), String(t.to_date)]
       })
       adjusted++
       total = round2(total + gross)
@@ -2666,9 +2692,13 @@ export async function removeBdInterestAdjustment(id: number): Promise<void> {
 }
 
 /** Every bill's paid-twice repayment interest set against its NBFC's short bills (one-time startup pass). */
-export async function adjustAllBdExcessInterest(): Promise<string[]> {
+export async function adjustAllBdExcessInterest(nbfcLike?: string): Promise<string[]> {
   const ids = toPlain(
-    await getClient().execute('SELECT DISTINCT bd_id FROM bd_repayments WHERE COALESCE(interest, 0) > 0.004 ORDER BY bd_id')
+    await getClient().execute({
+      sql: `SELECT DISTINCT r.bd_id FROM bd_repayments r JOIN bill_discountings b ON b.id = r.bd_id LEFT JOIN nbfcs nb ON nb.id = b.nbfc_id
+             WHERE COALESCE(r.interest, 0) > 0.004 AND (? IS NULL OR UPPER(nb.name) LIKE ?) ORDER BY r.bd_id`,
+      args: [nbfcLike ?? null, nbfcLike ?? null]
+    })
   ).map((r) => n(r.bd_id))
   const done: string[] = []
   for (const id of ids) {
@@ -3118,10 +3148,13 @@ export async function listBdCumulativePayments(nbfcId?: number | null): Promise<
         ? bdInterestParts(calc.interestBase, steps, f0, d, n(bd.interest_pct), dy).gross
         : round2((calc.interestBase * n(bd.interest_pct) * (daysBetween(f0, d) + 1)) / (100 * dy))
       : 0
-    const diff = round2(gross - due)
+    // What was split over the NBFC's other bills is theirs now (B7 → B5, B6).
+    const moved = round2((await bdAdjustmentsOutOf(n(r.bd_id))).filter((m) => n(m.repayment_id) === n(r.id)).reduce((t, m) => t + n(m.gross), 0))
+    const diff = round2(gross - moved - due)
     out.push({
       journal_entry_id: -n(r.id),
       rep_only: true,
+      moved,
       vch_no: '',
       paid_date: d,
       nbfc_name: r.nbfc_name || '',
