@@ -41287,6 +41287,11 @@ async function ownColumns(table, id, spec) {
   }
   return out;
 }
+async function facilityRefundRows(kind, id) {
+  const res = await getClient().execute({ sql: "SELECT entry_id, refund_date, how FROM facility_refunds WHERE kind = ? AND facility_id = ? ORDER BY id", args: [kind, id] }).catch(() => null);
+  if (!res) return [];
+  return toPlain29(res).filter((r) => n41(r.entry_id) > 0).map((r) => ({ id: n41(r.entry_id), role: `Refund received${s3(r.refund_date) ? ` \xB7 ${dmy4(r.refund_date)}` : ""}` }));
+}
 async function childRows(table, parentCol, parentId, jeCols, extra = []) {
   const have = await columnsOf(table);
   if (!have.has(parentCol)) return [];
@@ -41527,7 +41532,8 @@ async function documentPostings(a) {
         id,
         [["journal_entry_id", (r) => `Payment IN${s3(r.pay_date) ? ` \xB7 ${dmy4(r.pay_date)}` : ""}`]],
         ["pay_date"]
-      )
+      ),
+      ...await facilityRefundRows("lc", id)
     ];
   } else if (entity === "bd") {
     sources2 = [
@@ -41566,7 +41572,10 @@ async function documentPostings(a) {
         id,
         [["journal_entry_id", (r) => `Payment IN${s3(r.pay_date) ? ` \xB7 ${dmy4(r.pay_date)}` : ""}`]],
         ["pay_date"]
-      )
+      ),
+      // The NBFC's refund of what was paid over the balance (bankRefunds.ts) —
+      // V1's ₹3,00,000 came back on RCP/560 and was nowhere on the bill.
+      ...await facilityRefundRows("bd", id)
     ];
   } else if (entity === "trading") {
     const oIds = await dealSideIds("trading_deal_orders", "order_id", "order_id", id);
