@@ -200,6 +200,9 @@ const api = {
       ipcRenderer.invoke('consignment:summary', { range }),
     invoices: (range?: { from?: string; to?: string }): Promise<Row[]> =>
       ipcRenderer.invoke('consignment:invoices', { range }),
+    outs: (range?: { from?: string; to?: string }): Promise<Row[]> => ipcRenderer.invoke('consignment:outs:list', { range }),
+    outCreate: (values: Row): Promise<{ id: number }> => ipcRenderer.invoke('consignment:outCreate', { values }),
+    outDelete: (id: number): Promise<{ id: number }> => ipcRenderer.invoke('consignment:outDelete', { id }),
     pending: (): Promise<Row[]> => ipcRenderer.invoke('consignment:pending'),
     lots: (supplierId?: number, productId?: number): Promise<Row[]> =>
       ipcRenderer.invoke('consignment:lots', { supplierId, productId }),

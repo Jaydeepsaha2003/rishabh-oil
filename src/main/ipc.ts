@@ -890,6 +890,10 @@ export function registerIpc(): void {
   )
   handle('consignment:list', (_e, args?: { forModule?: string }) => listConsignment(args?.forModule))
   handle('consignment:summary', (_e, args?: { range?: { from?: string; to?: string } }) => consignmentSummary(args?.range))
+  // Stock out to the party — the MNC taking its own consigned stock back.
+  handle('consignment:outs:list', async (_e, args?: { range?: { from?: string; to?: string } }) => (await import('./consignment')).listConsignmentOuts(args?.range))
+  handle('consignment:outCreate', async (_e, { values }: { values: Row }) => (await import('./consignment')).createConsignmentOut(values))
+  handle('consignment:outDelete', async (_e, { id }: { id: number }) => (await import('./consignment')).deleteConsignmentOut(id))
   handle('consignment:pending', () => listPendingGateArrivals())
   handle('consignment:invoices', (_e, args?: { range?: { from?: string; to?: string } }) =>
     listConsignmentInvoices(args?.range)

@@ -6843,6 +6843,10 @@ function MncStock(): React.JSX.Element {
   const [rows, setRows] = useState<Row[]>([])
   const [lots, setLots] = useState<Row[]>([])
   const [invoices, setInvoices] = useState<Row[]>([])
+  // STOCK OUT TO THE PARTY — the MNC taking its own stock back; and the open form (by party:product).
+  const [mncOuts, setMncOuts] = useState<Row[]>([])
+  const [outForm, setOutForm] = useState<{ key: string; date: string; qty: string; note: string } | null>(null)
+  const [outSaving, setOutSaving] = useState(false)
   const [loading, setLoading] = useState(true)
   const [open, setOpen] = useState<Set<string>>(new Set())
   // Opening stock: what the MNC already held with us when the books started.
@@ -6883,6 +6887,7 @@ function MncStock(): React.JSX.Element {
     setRows(sm)
     setLots(ls)
     setInvoices(inv)
+    setMncOuts(await window.api.consignment.outs(mncRanged ? { from: mncFrom, to: mncTo } : undefined).catch(() => [] as Row[]))
     setLoading(false)
   }, [mncRanged, mncFrom, mncTo])
 
@@ -7496,6 +7501,112 @@ function MncStock(): React.JSX.Element {
               </div>
             )}
           </div>
+
+          {/* TAKEN BACK BY THE PARTY — the MNC taking its own stock out. Never in
+              our books; it leaves the party's balance here. */}
+          {(() => {
+            const key = `${String(r.supplier_id)}:${String(r.product_id)}`
+            const outs = mncOuts.filter((o) => `${String(o.supplier_id)}:${String(o.product_id)}` === key)
+            const outQty = outs.reduce((t, o) => t + (Number(o.qty) || 0), 0)
+            const open = outForm?.key === key ? outForm : null
+            const save = async (): Promise<void> => {
+              if (!open) return
+              setOutSaving(true)
+              try {
+                await window.api.consignment.outCreate({ supplier_id: r.supplier_id, product_id: r.product_id, out_date: open.date, qty: Number(open.qty), note: open.note, uom })
+                toast.success(`${q3(Number(open.qty))} ${uom} taken out by ${String(r.supplier_name || 'the party')}`)
+                setOutForm(null)
+                await load(true)
+              } catch (e) {
+                toast.error((e as Error).message)
+              } finally {
+                setOutSaving(false)
+              }
+            }
+            return (
+              <div>
+                <div className="mb-[9px] flex items-center gap-[9px]">
+                  <span className="h-2 w-2 rounded-full bg-[#6D5BD0]" />
+                  <span className="text-[10.5px] font-extrabold uppercase tracking-[.14em] text-[#3D3179]">Taken back by the party — stock out</span>
+                  <span className="doc-ref rounded-[10px] bg-[#ECE8FB] px-2 py-px text-[10.5px] font-bold text-[#3D3179]">{outs.length}</span>
+                  {!open && (
+                    <button
+                      type="button"
+                      onClick={() => setOutForm({ key, date: new Date().toISOString().slice(0, 10), qty: '', note: '' })}
+                      className="ml-auto flex h-7 items-center gap-1 rounded-[6px] px-2.5 text-[11px] font-extrabold text-white"
+                      style={{ background: V.deep }}
+                      title="The party takes its own stock back — record the quantity; it comes off what is still theirs"
+                    >
+                      <Plus className="h-3.5 w-3.5" /> Stock out to party
+                    </button>
+                  )}
+                </div>
+                {open && (
+                  <div className="mb-2 flex flex-wrap items-end gap-3 rounded-[10px] bg-white px-3 py-3" style={{ border: `1px solid ${V.edge}` }}>
+                    <label className="flex flex-col gap-1 text-[10px] font-extrabold uppercase tracking-[.1em]" style={{ color: V.muted }}>
+                      Date
+                      <input type="date" value={open.date} onChange={(e) => setOutForm({ ...open, date: e.target.value })} className="h-8 rounded-[6px] border px-2 text-[12.5px] font-semibold text-[#0A1F17]" />
+                    </label>
+                    <label className="flex flex-col gap-1 text-[10px] font-extrabold uppercase tracking-[.1em]" style={{ color: V.muted }}>
+                      Qty ({uom}) · max {q3(Number(r.balance) || 0)}
+                      <input type="number" step="any" autoFocus value={open.qty} onChange={(e) => setOutForm({ ...open, qty: e.target.value })} className="h-8 w-36 rounded-[6px] border px-2 text-right text-[12.5px] font-bold text-[#0A1F17]" />
+                    </label>
+                    <label className="flex min-w-[220px] flex-1 flex-col gap-1 text-[10px] font-extrabold uppercase tracking-[.1em]" style={{ color: V.muted }}>
+                      Note
+                      <input value={open.note} onChange={(e) => setOutForm({ ...open, note: e.target.value })} placeholder="Tanker, who took it, reason…" className="h-8 rounded-[6px] border px-2 text-[12.5px] font-semibold text-[#0A1F17]" />
+                    </label>
+                    <button type="button" onClick={() => setOutForm(null)} disabled={outSaving} className="h-8 rounded-[6px] border px-3 text-[11.5px] font-bold">
+                      Cancel
+                    </button>
+                    <button type="button" onClick={() => void save()} disabled={outSaving || !(Number(open.qty) > 0)} className="h-8 rounded-[6px] px-3 text-[11.5px] font-extrabold text-white disabled:opacity-50" style={{ background: V.deep }}>
+                      {outSaving ? 'Saving…' : 'Save stock out'}
+                    </button>
+                  </div>
+                )}
+                {outs.length === 0 ? (
+                  !open && (
+                    <p className="text-[12px] font-semibold" style={{ color: V.muted }}>
+                      Nothing taken back{mncRanged ? ' in this period' : ''}.
+                    </p>
+                  )
+                ) : (
+                  <div className="overflow-hidden rounded-[10px] bg-white" style={{ border: `1px solid ${V.edge}` }}>
+                    {outs.map((o, i) => (
+                      <div key={String(o.id)} className="flex items-center gap-3 px-3 py-2 text-[12px]" style={{ borderBottom: '1px solid #F1EFF7' }}>
+                        <span className="doc-ref w-6 text-[11px] font-semibold" style={{ color: V.faint }}>{i + 1}</span>
+                        <span className="doc-ref w-24 font-semibold">{formatDate(String(o.out_date))}</span>
+                        <span className="doc-ref w-32 text-right font-bold text-[#3D3179]">{q3(Number(o.qty) || 0)} {String(o.uom || uom)}</span>
+                        <span className="min-w-0 flex-1 truncate font-semibold" style={{ color: V.muted }} title={String(o.note || '')}>{String(o.note || '—')}</span>
+                        <span className="text-[10.5px] font-bold" style={{ color: o.gate_entry_no ? '#0B6B45' : V.faint }}>
+                          {o.gate_entry_no ? `Gate out ${String(o.gate_entry_no)}` : 'gate out — to link'}
+                        </span>
+                        <button
+                          type="button"
+                          title="Delete this stock out — the quantity is the party's again"
+                          onClick={async () => {
+                            if (!window.confirm(`Delete the stock out of ${q3(Number(o.qty) || 0)} ${uom} on ${formatDate(String(o.out_date))}?`)) return
+                            try {
+                              await window.api.consignment.outDelete(Number(o.id))
+                              await load(true)
+                            } catch (e) {
+                              toast.error((e as Error).message)
+                            }
+                          }}
+                          className="flex h-7 w-7 items-center justify-center rounded-[6px] text-[#B3261E] hover:bg-[#FDECEA]"
+                        >
+                          <Trash2 className="h-3.5 w-3.5" />
+                        </button>
+                      </div>
+                    ))}
+                    <div className="flex items-center gap-3 bg-[#F3F0FC] px-3 py-2 text-[11.5px] font-extrabold text-[#3D3179]">
+                      <span className="flex-1 uppercase tracking-[.1em] text-[10px]">{outs.length} stock out{outs.length === 1 ? '' : 's'}</span>
+                      <span className="doc-ref">{q3(outQty)} {uom}</span>
+                    </div>
+                  </div>
+                )}
+              </div>
+            )
+          })()}
         </div>
       )
     }
@@ -7505,7 +7616,7 @@ function MncStock(): React.JSX.Element {
         {/* THE FOUR TILES: what is still the party's first, in the dark tile,
             because that is the figure this register exists to report. */}
         <div className="grid gap-3" style={{ gridTemplateColumns: 'repeat(auto-fit,minmax(min(100%,170px),1fr))' }}>
-          {tile({ k: 'Closing — still the party’s', v: formatNum(tot.balance), unit: 'MT', sub: 'opening + deposited − invoiced', icon: Layers, accent: V.deep, dark: true })}
+          {tile({ k: 'Closing — still the party’s', v: formatNum(tot.balance), unit: 'MT', sub: 'opening + deposited − invoiced − taken back', icon: Layers, accent: V.deep, dark: true })}
           {tile({
             k: 'Deposited',
             v: formatNum(tot.deposited),

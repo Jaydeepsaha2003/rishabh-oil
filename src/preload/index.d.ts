@@ -145,6 +145,9 @@ export interface Api {
     list: (forModule?: string) => Promise<Row[]>
     summary: (range?: { from?: string; to?: string }) => Promise<Row[]>
     invoices: (range?: { from?: string; to?: string }) => Promise<Row[]>
+    outs: (range?: { from?: string; to?: string }) => Promise<Row[]>
+    outCreate: (values: Row) => Promise<{ id: number }>
+    outDelete: (id: number) => Promise<{ id: number }>
     pending: () => Promise<Row[]>
     lots: (supplierId?: number, productId?: number) => Promise<Row[]>
     create: (values: Row) => Promise<{ id: number }>

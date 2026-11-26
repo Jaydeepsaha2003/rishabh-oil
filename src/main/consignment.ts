@@ -221,7 +221,81 @@ export async function consignmentAvailable(supplierId: number, productId: number
     sql: 'SELECT COALESCE(SUM(ordered_qty), 0) AS q FROM orders WHERE company_id = ? AND is_consignment = 1 AND supplier_id = ? AND oil_type_id = ?',
     args: [cid, supplierId, productId]
   })
-  return n(dep.rows[0]?.q) - n(inv.rows[0]?.q)
+  await ensureOuts()
+  const out = await c.execute({
+    sql: 'SELECT COALESCE(SUM(qty), 0) AS q FROM consignment_outs WHERE company_id = ? AND supplier_id = ? AND product_id = ?',
+    args: [cid, supplierId, productId]
+  })
+  return n(dep.rows[0]?.q) - n(inv.rows[0]?.q) - n(out.rows[0]?.q)
+}
+
+/* -------------------------------------------------------------------------- */
+/* STOCK OUT TO THE PARTY — the MNC taking its own consigned stock back.      */
+/* -------------------------------------------------------------------------- */
+// It never enters our books: it leaves the party's balance here (Deposited −
+// Invoiced − Taken back). gate_entry_id is kept for the gate-out it will be
+// matched with once the gate side records it.
+let outsReady = false
+async function ensureOuts(): Promise<void> {
+  if (outsReady) return
+  await getClient().execute(`CREATE TABLE IF NOT EXISTS consignment_outs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    company_id INTEGER NOT NULL,
+    supplier_id INTEGER NOT NULL,
+    product_id INTEGER NOT NULL,
+    out_date TEXT NOT NULL,
+    qty REAL NOT NULL,
+    uom TEXT DEFAULT 'MT',
+    note TEXT,
+    gate_entry_id INTEGER,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+  )`)
+  outsReady = true
+}
+
+export async function listConsignmentOuts(range?: { from?: string; to?: string }): Promise<Row[]> {
+  await ensureOuts()
+  const where = ['co.company_id = ?']
+  const args: (string | number)[] = [getActiveCompanyId()]
+  if (range?.from) {
+    where.push('co.out_date >= ?')
+    args.push(String(range.from))
+  }
+  if (range?.to) {
+    where.push('co.out_date <= ?')
+    args.push(String(range.to))
+  }
+  const res = await getClient().execute({
+    sql: `SELECT co.*, ge.gate_entry_no FROM consignment_outs co LEFT JOIN gate_entries ge ON ge.id = co.gate_entry_id
+           WHERE ${where.join(' AND ')} ORDER BY co.out_date DESC, co.id DESC`,
+    args
+  })
+  return toPlain(res)
+}
+
+export async function createConsignmentOut(v: Row): Promise<{ id: number }> {
+  await ensureOuts()
+  const supplierId = n(v.supplier_id)
+  const productId = n(v.product_id)
+  const qty = Math.round(n(v.qty) * 1000) / 1000
+  const date = String(v.out_date || todayISO()).slice(0, 10)
+  if (!supplierId || !productId) throw new Error('Pick the party and the product')
+  if (!(qty > 0)) throw new Error('Enter the quantity taken out')
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) throw new Error('Pick the date it went out')
+  // Never more than the party still holds with us.
+  const left = await consignmentAvailable(supplierId, productId)
+  if (qty - left > 0.0005) throw new Error(`Only ${left.toFixed(3)} is still the party's — it cannot take out ${qty.toFixed(3)}`)
+  const res = await getClient().execute({
+    sql: 'INSERT INTO consignment_outs (company_id, supplier_id, product_id, out_date, qty, uom, note) VALUES (?, ?, ?, ?, ?, ?, ?)',
+    args: [getActiveCompanyId(), supplierId, productId, date, qty, String(v.uom || 'MT'), String(v.note || '').trim() || null]
+  })
+  return { id: Number(res.lastInsertRowid) }
+}
+
+export async function deleteConsignmentOut(id: number): Promise<{ id: number }> {
+  await ensureOuts()
+  await getClient().execute({ sql: 'DELETE FROM consignment_outs WHERE id = ? AND company_id = ?', args: [n(id), getActiveCompanyId()] })
+  return { id: n(id) }
 }
 
 // Individual deposit lots for the active company.
@@ -905,19 +979,41 @@ export async function consignmentSummary(range?: { from?: string; to?: string })
     return m
   }
 
-  const [depOpening, depPeriod, invOpening, invPeriod] = await Promise.all([
+  // Taken back by the party (consignment_outs), sliced the same way.
+  await ensureOuts()
+  const outSlice = async (kind: 'opening' | 'period'): Promise<Map<string, number>> => {
+    if (kind === 'opening' && !from) return new Map()
+    let sql = 'SELECT supplier_id, product_id, SUM(qty) AS q FROM consignment_outs WHERE company_id = ?'
+    const args: (string | number)[] = [cid]
+    if (kind === 'opening') {
+      sql += ' AND out_date < ?'
+      args.push(from)
+    } else {
+      if (from) { sql += ' AND out_date >= ?'; args.push(from) }
+      if (to) { sql += ' AND out_date <= ?'; args.push(to) }
+    }
+    const res = await c.execute({ sql: `${sql} GROUP BY supplier_id, product_id`, args })
+    const m = new Map<string, number>()
+    for (const r of res.rows) m.set(`${r.supplier_id}:${r.product_id}`, n(r.q))
+    return m
+  }
+
+  const [depOpening, depPeriod, invOpening, invPeriod, outOpening, outPeriod] = await Promise.all([
     depositSlice('opening'),
     depositSlice('period'),
     invoicedSlice('opening'),
-    invoicedSlice('period')
+    invoicedSlice('period'),
+    outSlice('opening'),
+    outSlice('period')
   ])
 
   return toPlain(base).map((r) => {
     const key = `${r.supplier_id}:${r.product_id}`
-    const opening = (depOpening.get(key) || 0) - (invOpening.get(key) || 0)
+    const opening = (depOpening.get(key) || 0) - (invOpening.get(key) || 0) - (outOpening.get(key) || 0)
     const deposited = depPeriod.get(key) || 0
     const invoiced = invPeriod.get(key) || 0
-    return { ...r, opening, deposited, invoiced, balance: opening + deposited - invoiced }
+    const taken_out = outPeriod.get(key) || 0
+    return { ...r, opening, deposited, invoiced, taken_out, balance: opening + deposited - invoiced - taken_out }
   })
 }
 
