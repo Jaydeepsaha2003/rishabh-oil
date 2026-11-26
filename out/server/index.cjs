@@ -23837,6 +23837,8 @@ async function listOrders(forModule, companyId) {
            -- it, and how much is still waiting for one (the Freight column says so).
            (SELECT GROUP_CONCAT(DISTINCT b.bill_no) FROM transporter_ledger l JOIN transporter_bills b ON b.id = l.bill_id
              WHERE l.order_id = o.id AND l.entry_type = 'freight') AS freight_bill_nos,
+           (SELECT b.journal_entry_id FROM transporter_ledger l JOIN transporter_bills b ON b.id = l.bill_id
+             WHERE l.order_id = o.id AND l.entry_type = 'freight' ORDER BY b.id LIMIT 1) AS freight_bill_je,
            (SELECT ROUND(COALESCE(SUM(l.amount), 0), 2) FROM transporter_ledger l
              WHERE l.order_id = o.id AND l.entry_type = 'freight' AND l.bill_id IS NULL) AS freight_unbilled,
            (SELECT GROUP_CONCAT(pt.tanker_no, ', ') FROM ${ALLOC} a JOIN purchase_tankers pt ON pt.id = a.tanker_id WHERE a.order_id = o.id) AS tanker_nos,
