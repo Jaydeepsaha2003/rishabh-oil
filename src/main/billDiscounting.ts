@@ -2853,6 +2853,48 @@ export async function listBdCumulativePayments(nbfcId?: number | null): Promise<
     g.expected = round2(n(g.expected) + expected)
     g.diff = round2(n(g.diff) + diff)
   }
+  // INTEREST PAID WITH A REPAYMENT on days a cumulative payment covers belongs
+  // with that payment: PAY/1603 paid ₹1,25,235 for B5 + B4 to 24-11, and B4's
+  // ₹1.5 Cr repayment on 23-11 carried another ₹15,284 — ₹1,40,519 paid in all.
+  // Shown on the payment as its own token and set against its shortfall first.
+  const ids = [...worker.keys()]
+  const reps = ids.length
+    ? toPlain(
+        await getClient().execute({
+          sql: `SELECT r.id, r.bd_id, r.repay_date, r.interest, r.tds_amount, b.bd_no,
+                       (SELECT nn.prefix || '/' || nn.serial FROM voucher_numbers nn WHERE nn.entry_id = r.journal_entry_id) AS pay_code
+                  FROM bd_repayments r JOIN bill_discountings b ON b.id = r.bd_id
+                 WHERE r.bd_id IN (${ids.join(',')}) AND COALESCE(r.interest, 0) > 0.004`,
+          args: []
+        })
+      )
+    : []
+  for (const g of groups.values()) {
+    g.reps = []
+    g.rep_gross = 0
+    g.rep_net = 0
+  }
+  for (const r of reps) {
+    const d = String(r.repay_date || '').slice(0, 10)
+    const g = [...groups.values()].find((x) =>
+      (x.bills as Row[]).some((b) => n(b.bd_id) === n(r.bd_id) && b.latest && String(b.from_date) <= d && d <= String(b.to_date))
+    )
+    if (!g) continue
+    const gross = round2(n(r.interest) + n(r.tds_amount))
+    ;(g.reps as Row[]).push({ id: n(r.id), bd_no: r.bd_no, repay_date: d, gross, tds: n(r.tds_amount), net: n(r.interest), pay_code: r.pay_code || '' })
+    g.rep_gross = round2(n(g.rep_gross) + gross)
+    g.rep_net = round2(n(g.rep_net) + n(r.interest))
+  }
+  // The payment's standing with that money counted: shortfall first, then excess.
+  for (const g of groups.values()) {
+    const bills = g.bills as Row[]
+    const short0 = bills.reduce((t, b) => t + Math.min(0, n(b.diff)), 0)
+    const over0 = bills.reduce((t, b) => t + Math.max(0, n(b.diff)), 0)
+    const left = short0 + n(g.rep_gross)
+    g.short = round2(Math.min(0, left))
+    g.over = round2(over0 + Math.max(0, left))
+    g.diff = round2(n(g.short) + n(g.over))
+  }
   return [...groups.values()]
 }
 
