@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useMemo, useState } from 'react'
+import { Fragment, useEffect, useMemo, useRef, useState } from 'react'
 import { toast } from 'sonner'
 import { CheckCircle2, ChevronDown, Landmark, ListOrdered, Loader2, Percent, Plus, Wallet } from 'lucide-react'
 import { PrincipalSplit } from '@/components/BdDetail'
@@ -79,6 +79,8 @@ export function BdCumulativeInterest({ open, onClose, nbfcs, onDone }: { open: b
   const [period, setPeriod] = useState<Row | null>(null)
   // The whole month / range, said beside the figure that follows Till today.
   const [periodFull, setPeriodFull] = useState<Row | null>(null)
+  // Bills already paid over this period — left unticked whichever load lands last.
+  const overIdsRef = useRef<Set<number>>(new Set())
   // Bills already paid more than the period works out to (B7's repayment interest).
   const overOf = (bdId: unknown): number => {
     const b = ((period?.bills as Row[]) || []).find((x) => n(x.bd_id) === n(bdId))
@@ -134,7 +136,7 @@ export function BdCumulativeInterest({ open, onClose, nbfcs, onDone }: { open: b
         setRows(r)
         setLumpTotal(null)
         // A balance of an earlier short payment is shown, but ticked only on purpose.
-        setPicked(new Set(r.filter((x) => !x.blocked && !x.balance_of).map((x) => n(x.bd_id))))
+        setPicked(new Set(r.filter((x) => !x.blocked && !x.balance_of && !overIdsRef.current.has(n(x.bd_id))).map((x) => n(x.bd_id))))
       })
       .catch((e) => toast.error((e as Error).message))
     // The payments already made to this NBFC — the PAID banner names the ones
@@ -153,6 +155,7 @@ export function BdCumulativeInterest({ open, onClose, nbfcs, onDone }: { open: b
         // A bill already paid over for these days is left unticked — paying it
         // again only adds to what is to be claimed back.
         const over = new Set(((p?.bills as Row[]) || []).filter((b) => n(b.paid) - n(b.due) > 0.5).map((b) => n(b.bd_id)))
+        overIdsRef.current = over
         if (over.size) setPicked((x) => new Set([...x].filter((id) => !over.has(id))))
       })
       .catch(() => live && setPeriod(null))
@@ -429,15 +432,30 @@ export function BdCumulativeInterest({ open, onClose, nbfcs, onDone }: { open: b
                 },
                 // WITH THE BILLS TICKED NOW: paid and pending move as bills are
                 // ticked, so the tiles say where the month stands after this payment.
-                { k: 'Paid till now', v: formatINR(n(period.paid)), sub: 'Interest paid (incl. TDS)', tone: 'text-[#0B6B45]' },
-                {
-                  k: 'Paid, with this payment',
-                  v: formatINR(n(period.paid) + tot.gross),
-                  sub:
-                    (tot.gross > 0.004 ? `+ ${formatINR(tot.gross)} ticked now (gross)` : 'nothing ticked yet') +
-                    (n(period.paid) + tot.gross - n(period.due) > 0.5 ? ` · ${formatINR(n(period.paid) + tot.gross - n(period.due))} over the period` : ''),
-                  tone: tot.gross > 0.004 ? 'text-[#0B6B45]' : 'text-[#9AAFA2]'
-                },
+                ...(() => {
+                  // EACH BILL COUNTS ONLY UP TO ITS OWN INTEREST: B7's repayment
+                  // interest over its days is not this period's interest paid —
+                  // it is said apart, so Paid never reads more than the period.
+                  const bills = (period.bills as Row[]) || []
+                  const tickOf = (id: unknown): number => sel.filter((r) => n(r.bd_id) === n(id)).reduce((t, r) => t + fig(r).gross, 0)
+                  const now = bills.reduce((t, b) => t + Math.min(n(b.paid), n(b.due)), 0)
+                  const after = bills.reduce((t, b) => t + Math.min(n(b.paid) + tickOf(b.bd_id), n(b.due)), 0)
+                  const overNow = bills.filter((b) => n(b.paid) - n(b.due) > 0.5).map((b) => `${String(b.bd_no)} ${formatINR(n(b.paid) - n(b.due))}`)
+                  return [
+                    {
+                      k: 'Paid till now',
+                      v: formatINR(now),
+                      sub: `Interest paid (incl. TDS)${overNow.length ? ` · + paid over: ${overNow.join(', ')}` : ''}`,
+                      tone: 'text-[#0B6B45]'
+                    },
+                    {
+                      k: 'Paid, with this payment',
+                      v: formatINR(after),
+                      sub: tot.gross > 0.004 ? `+ ${formatINR(after - now)} of the ${formatINR(tot.gross)} ticked now counts for the period` : 'nothing ticked yet',
+                      tone: tot.gross > 0.004 ? 'text-[#0B6B45]' : 'text-[#9AAFA2]'
+                    }
+                  ]
+                })(),
                 (() => {
                   // BILL BY BILL: one bill paid over (B7's repayment interest) is
                   // not a reason to read another bill's days as paid — the excess
