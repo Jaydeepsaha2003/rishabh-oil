@@ -22267,6 +22267,39 @@ var init_bargains = __esm({
 });
 
 // src/main/consignment.ts
+var consignment_exports = {};
+__export(consignment_exports, {
+  applyConsignmentDraw: () => applyConsignmentDraw,
+  assignConsignmentGroup: () => assignConsignmentGroup,
+  assignConsignmentLots: () => assignConsignmentLots,
+  autoAssignConsignmentLots: () => autoAssignConsignmentLots,
+  backfillConsignmentDraws: () => backfillConsignmentDraws,
+  consignmentAvailable: () => consignmentAvailable,
+  consignmentDeposited: () => consignmentDeposited,
+  consignmentKin: () => consignmentKin,
+  consignmentSummary: () => consignmentSummary,
+  createConsignment: () => createConsignment,
+  createConsignmentOut: () => createConsignmentOut,
+  deleteConsignment: () => deleteConsignment,
+  deleteConsignmentOut: () => deleteConsignmentOut,
+  listConsignment: () => listConsignment,
+  listConsignmentInvoices: () => listConsignmentInvoices,
+  listConsignmentOuts: () => listConsignmentOuts,
+  listOpeningLog: () => listOpeningLog,
+  listOpeningLots: () => listOpeningLots,
+  listPendingGateArrivals: () => listPendingGateArrivals,
+  listUnbookedLots: () => listUnbookedLots,
+  planConsignmentDraw: () => planConsignmentDraw,
+  releaseConsignmentLots: () => releaseConsignmentLots,
+  renameConsignmentLot: () => renameConsignmentLot,
+  saveOpeningStock: () => saveOpeningStock,
+  tankerKin: () => tankerKin,
+  toLotPicks: () => toLotPicks,
+  unlinkConsignmentDraw: () => unlinkConsignmentDraw,
+  unlinkConsignmentDrawsFor: () => unlinkConsignmentDrawsFor,
+  updateConsignment: () => updateConsignment,
+  validateConsignmentLots: () => validateConsignmentLots
+});
 function toPlain19(res) {
   return res.rows.map((r) => {
     const o = {};
@@ -22409,7 +22442,69 @@ async function consignmentAvailable(supplierId, productId, companyId) {
     sql: "SELECT COALESCE(SUM(ordered_qty), 0) AS q FROM orders WHERE company_id = ? AND is_consignment = 1 AND supplier_id = ? AND oil_type_id = ?",
     args: [cid, supplierId, productId]
   });
-  return n24(dep.rows[0]?.q) - n24(inv.rows[0]?.q);
+  await ensureOuts();
+  const out = await c.execute({
+    sql: "SELECT COALESCE(SUM(qty), 0) AS q FROM consignment_outs WHERE company_id = ? AND supplier_id = ? AND product_id = ?",
+    args: [cid, supplierId, productId]
+  });
+  return n24(dep.rows[0]?.q) - n24(inv.rows[0]?.q) - n24(out.rows[0]?.q);
+}
+async function ensureOuts() {
+  if (outsReady) return;
+  await getClient().execute(`CREATE TABLE IF NOT EXISTS consignment_outs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    company_id INTEGER NOT NULL,
+    supplier_id INTEGER NOT NULL,
+    product_id INTEGER NOT NULL,
+    out_date TEXT NOT NULL,
+    qty REAL NOT NULL,
+    uom TEXT DEFAULT 'MT',
+    note TEXT,
+    gate_entry_id INTEGER,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+  )`);
+  outsReady = true;
+}
+async function listConsignmentOuts(range) {
+  await ensureOuts();
+  const where = ["co.company_id = ?"];
+  const args = [getActiveCompanyId()];
+  if (range?.from) {
+    where.push("co.out_date >= ?");
+    args.push(String(range.from));
+  }
+  if (range?.to) {
+    where.push("co.out_date <= ?");
+    args.push(String(range.to));
+  }
+  const res = await getClient().execute({
+    sql: `SELECT co.*, ge.gate_entry_no FROM consignment_outs co LEFT JOIN gate_entries ge ON ge.id = co.gate_entry_id
+           WHERE ${where.join(" AND ")} ORDER BY co.out_date DESC, co.id DESC`,
+    args
+  });
+  return toPlain19(res);
+}
+async function createConsignmentOut(v) {
+  await ensureOuts();
+  const supplierId = n24(v.supplier_id);
+  const productId = n24(v.product_id);
+  const qty = Math.round(n24(v.qty) * 1e3) / 1e3;
+  const date = String(v.out_date || todayISO()).slice(0, 10);
+  if (!supplierId || !productId) throw new Error("Pick the party and the product");
+  if (!(qty > 0)) throw new Error("Enter the quantity taken out");
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) throw new Error("Pick the date it went out");
+  const left = await consignmentAvailable(supplierId, productId);
+  if (qty - left > 5e-4) throw new Error(`Only ${left.toFixed(3)} is still the party's \u2014 it cannot take out ${qty.toFixed(3)}`);
+  const res = await getClient().execute({
+    sql: "INSERT INTO consignment_outs (company_id, supplier_id, product_id, out_date, qty, uom, note) VALUES (?, ?, ?, ?, ?, ?, ?)",
+    args: [getActiveCompanyId(), supplierId, productId, date, qty, String(v.uom || "MT"), String(v.note || "").trim() || null]
+  });
+  return { id: Number(res.lastInsertRowid) };
+}
+async function deleteConsignmentOut(id) {
+  await ensureOuts();
+  await getClient().execute({ sql: "DELETE FROM consignment_outs WHERE id = ? AND company_id = ?", args: [n24(id), getActiveCompanyId()] });
+  return { id: n24(id) };
 }
 async function listConsignment(forModule) {
   const from = await visibleFromFor("consignment", forModule);
@@ -22693,6 +22788,27 @@ async function applyConsignmentDraw(orderId, plan, companyId) {
 function round3(x) {
   return Math.round((Number(x) || 0) * 1e3) / 1e3;
 }
+async function assignConsignmentLots(orderId, picks, supplierId, productId, companyId) {
+  const list2 = toLotPicks(picks);
+  if (!list2.length) return { total: 0, lines: [], primaryBargainId: 0 };
+  const alloc = await validateConsignmentLots(list2, supplierId, productId, orderId, companyId);
+  const c = getClient();
+  for (const p of list2) {
+    await c.execute({
+      sql: `UPDATE consignment_stock
+            SET order_id = ?, bargain_id = ?, extra_bargain_id = ?, extra_qty = ?
+            WHERE id = ?`,
+      args: [
+        orderId,
+        p.bargain_id || null,
+        p.extra_bargain_id || null,
+        p.extra_bargain_id ? n24(p.extra_qty) : null,
+        p.id
+      ]
+    });
+  }
+  return alloc;
+}
 async function autoAssignConsignmentLots(orderId, supplierId, productId, qty, bargainId = 0, companyId) {
   const free = await getClient().execute({
     sql: `SELECT id, qty FROM consignment_stock
@@ -22848,18 +22964,44 @@ async function consignmentSummary(range) {
     for (const r of res.rows) m.set(`${r.supplier_id}:${r.product_id}`, n24(r.q));
     return m;
   };
-  const [depOpening, depPeriod, invOpening, invPeriod] = await Promise.all([
+  await ensureOuts();
+  const outSlice = async (kind) => {
+    if (kind === "opening" && !from) return /* @__PURE__ */ new Map();
+    let sql = "SELECT supplier_id, product_id, SUM(qty) AS q FROM consignment_outs WHERE company_id = ?";
+    const args = [cid];
+    if (kind === "opening") {
+      sql += " AND out_date < ?";
+      args.push(from);
+    } else {
+      if (from) {
+        sql += " AND out_date >= ?";
+        args.push(from);
+      }
+      if (to) {
+        sql += " AND out_date <= ?";
+        args.push(to);
+      }
+    }
+    const res = await c.execute({ sql: `${sql} GROUP BY supplier_id, product_id`, args });
+    const m = /* @__PURE__ */ new Map();
+    for (const r of res.rows) m.set(`${r.supplier_id}:${r.product_id}`, n24(r.q));
+    return m;
+  };
+  const [depOpening, depPeriod, invOpening, invPeriod, outOpening, outPeriod] = await Promise.all([
     depositSlice("opening"),
     depositSlice("period"),
     invoicedSlice("opening"),
-    invoicedSlice("period")
+    invoicedSlice("period"),
+    outSlice("opening"),
+    outSlice("period")
   ]);
   return toPlain19(base).map((r) => {
     const key3 = `${r.supplier_id}:${r.product_id}`;
-    const opening = (depOpening.get(key3) || 0) - (invOpening.get(key3) || 0);
+    const opening = (depOpening.get(key3) || 0) - (invOpening.get(key3) || 0) - (outOpening.get(key3) || 0);
     const deposited = depPeriod.get(key3) || 0;
     const invoiced = invPeriod.get(key3) || 0;
-    return { ...r, opening, deposited, invoiced, balance: opening + deposited - invoiced };
+    const taken_out = outPeriod.get(key3) || 0;
+    return { ...r, opening, deposited, invoiced, taken_out, balance: opening + deposited - invoiced - taken_out };
   });
 }
 async function listConsignmentInvoices(range) {
@@ -23263,7 +23405,7 @@ async function consignmentKin(id) {
     kin: out.slice(0, 12)
   };
 }
-var n24, label, lotKey2, CONSIGNMENT_UOMS, GATE_BUFFER;
+var n24, label, lotKey2, outsReady, CONSIGNMENT_UOMS, GATE_BUFFER;
 var init_consignment = __esm({
   "src/main/consignment.ts"() {
     init_partyFamily();
@@ -23273,6 +23415,7 @@ var init_consignment = __esm({
     n24 = (v) => Number(v) || 0;
     label = (v) => String(v ?? "").trim().toUpperCase().slice(0, 40) || null;
     lotKey2 = (l) => `${l.lot_no || ""}@@${l.terminal_no || ""}`;
+    outsReady = false;
     CONSIGNMENT_UOMS = ["MT", "KG", "L"];
     GATE_BUFFER = 1;
   }
@@ -46917,6 +47060,9 @@ function registerIpc() {
   );
   handle("consignment:list", (_e, args) => listConsignment(args?.forModule));
   handle("consignment:summary", (_e, args) => consignmentSummary(args?.range));
+  handle("consignment:outs:list", async (_e, args) => (await Promise.resolve().then(() => (init_consignment(), consignment_exports))).listConsignmentOuts(args?.range));
+  handle("consignment:outCreate", async (_e, { values }) => (await Promise.resolve().then(() => (init_consignment(), consignment_exports))).createConsignmentOut(values));
+  handle("consignment:outDelete", async (_e, { id }) => (await Promise.resolve().then(() => (init_consignment(), consignment_exports))).deleteConsignmentOut(id));
   handle("consignment:pending", () => listPendingGateArrivals());
   handle(
     "consignment:invoices",
