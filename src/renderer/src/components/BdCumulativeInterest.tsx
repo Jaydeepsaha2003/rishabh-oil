@@ -409,7 +409,7 @@ export function BdCumulativeInterest({ open, onClose, nbfcs, onDone }: { open: b
                 },
                 // WITH THE BILLS TICKED NOW: paid and pending move as bills are
                 // ticked, so the tiles say where the month stands after this payment.
-                { k: 'Paid till now', v: formatINR(n(period.paid)), sub: 'interest payments + interest with repayments (gross)', tone: 'text-[#0B6B45]' },
+                { k: 'Paid till now', v: formatINR(n(period.paid)), sub: 'Interest paid (incl. TDS)', tone: 'text-[#0B6B45]' },
                 {
                   k: 'Paid, with this payment',
                   v: formatINR(n(period.paid) + tot.gross),
