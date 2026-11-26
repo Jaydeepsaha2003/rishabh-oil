@@ -417,11 +417,23 @@ export function BdCumulativeInterest({ open, onClose, nbfcs, onDone }: { open: b
                   tone: tot.gross > 0.004 ? 'text-[#0B6B45]' : 'text-[#9AAFA2]'
                 },
                 (() => {
-                  const after = n(period.pending) - tot.gross
-                  const before = tot.gross > 0.004 ? ` · ${formatINR(n(period.pending))} before this payment` : ''
-                  return after < -0.5
-                    ? { k: 'Paid more', v: formatINR(-after), sub: `over what the period works out to${before}`, tone: 'text-[#7A4B00]' }
-                    : { k: tot.gross > 0.004 ? 'Pending after this payment' : 'Pending', v: formatINR(Math.max(0, after)), sub: after > 0.5 ? `still to pay for the period${before}` : `nothing pending${before}`, tone: after > 0.5 ? 'text-[#B3261E]' : 'text-[#9AAFA2]' }
+                  // BILL BY BILL: one bill paid over (B7's repayment interest) is
+                  // not a reason to read another bill's days as paid — the excess
+                  // is said apart, against the bill it is on.
+                  let pend = 0
+                  const over: string[] = []
+                  for (const b of (period.bills as Row[]) || []) {
+                    const tick = sel.filter((r) => n(r.bd_id) === n(b.bd_id)).reduce((t, r) => t + fig(r).gross, 0)
+                    const rem = n(b.due) - n(b.paid) - tick
+                    if (rem > 0.5) pend += rem
+                    else if (rem < -0.5) over.push(`${String(b.bd_no)} paid ${formatINR(-rem)} more`)
+                  }
+                  return {
+                    k: tot.gross > 0.004 ? 'Pending after this payment' : 'Pending',
+                    v: formatINR(pend),
+                    sub: over.length ? `${over.join(' · ')} — check with the NBFC` : pend > 0.5 ? 'still to pay for the period' : 'nothing pending',
+                    tone: pend > 0.5 ? 'text-[#B3261E]' : 'text-[#9AAFA2]'
+                  }
                 })()
               ].map((t, i) => (
                 <div
