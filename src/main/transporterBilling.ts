@@ -344,7 +344,7 @@ export async function createTransporterBill(v: Row, existingId?: number): Promis
     .map((d) => ({
       amount: round2(Math.max(0, n(d.amount))),
       ledger: (String(d.ledger || '').trim() || frAccount).toUpperCase(),
-      note: String(d.note || '').trim()
+      note: String(d.note || '').trim().toUpperCase()
     }))
     .filter((d) => d.amount > 0.004)
   const othersAmt = round2(deductions.reduce((t, d) => t + d.amount, 0))

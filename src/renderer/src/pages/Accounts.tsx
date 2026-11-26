@@ -8818,7 +8818,7 @@ Delete ${doc}?`)) return
   // 0.5% of the freight after shortage, and dala charge ₹150 — each can be
   // changed or removed on the bill.
   useEffect(() => {
-    if (tfBillOpen) setTfDeds((p) => (p.length ? p : [{ amount: '', ledger: '', note: 'cash discount', pct: 0.5 }, { amount: '150', ledger: '', note: 'dala charge' }]))
+    if (tfBillOpen) setTfDeds((p) => (p.length ? p : [{ amount: '', ledger: '', note: 'CASH DISCOUNT', pct: 0.5 }, { amount: '150', ledger: '', note: 'DALA CHARGE' }]))
   }, [tfBillOpen])
   const tfCdBase = tfBillCalc.taxable
   useEffect(() => {
@@ -9502,7 +9502,7 @@ Delete ${doc}?`)) return
                 />
                 <input
                   value={d.note}
-                  onChange={(e) => setTfDeds((p) => p.map((x, j) => (j === k ? { ...x, note: e.target.value } : x)))}
+                  onChange={(e) => setTfDeds((p) => p.map((x, j) => (j === k ? { ...x, note: e.target.value.toUpperCase() } : x)))}
                   placeholder="Detention, damage, short drum…"
                   style={{ ...field, fontWeight: 600, border: '1px solid #C3D2C6' }}
                 />
