@@ -138,13 +138,14 @@ export function BdCumulativeInterest({ open, onClose, nbfcs, onDone }: { open: b
       .catch(() => live && setPaidList([]))
     setPeriod(null)
     void window.api.billDiscounting
-      .periodInterestSummary({ nbfc_id: Number(nbfc), from_date: start, to_date: upto, till_month_end: tillEnd && runsAhead })
+      // The whole month / range picked, whatever Till today says for paying.
+      .periodInterestSummary({ nbfc_id: Number(nbfc), from_date: start, to_date: periodEnd, till_month_end: true })
       .then((p) => live && setPeriod(p))
       .catch(() => live && setPeriod(null))
     return () => {
       live = false
     }
-  }, [open, nbfc, upto, start, tab])
+  }, [open, nbfc, upto, start, tab, periodEnd])
 
   // A LUMP SUM, shared over the ticked bills the way the desk chooses — oldest
   // first (FIFO), newest first, in proportion to each bill's interest, or
