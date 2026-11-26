@@ -77,6 +77,8 @@ export function BdCumulativeInterest({ open, onClose, nbfcs, onDone }: { open: b
   const [paidList, setPaidList] = useState<Row[]>([])
   // The period at a glance: interest worked out, paid, pending.
   const [period, setPeriod] = useState<Row | null>(null)
+  // The whole month / range, said beside the figure that follows Till today.
+  const [periodFull, setPeriodFull] = useState<Row | null>(null)
   const [picked, setPicked] = useState<Set<number>>(new Set())
   const [banks, setBanks] = useState<Row[]>([])
   // The ledger the TDS goes to — blank keeps TDS ON INTEREST PAYABLE A/C.
@@ -137,11 +139,15 @@ export function BdCumulativeInterest({ open, onClose, nbfcs, onDone }: { open: b
       .then((p) => live && setPaidList(p))
       .catch(() => live && setPaidList([]))
     setPeriod(null)
+    // Up to the day Till today / Till month end says — the same days being paid.
     void window.api.billDiscounting
-      // The whole month / range picked, whatever Till today says for paying.
-      .periodInterestSummary({ nbfc_id: Number(nbfc), from_date: start, to_date: periodEnd, till_month_end: true })
+      .periodInterestSummary({ nbfc_id: Number(nbfc), from_date: start, to_date: upto, till_month_end: tillEnd && runsAhead })
       .then((p) => live && setPeriod(p))
       .catch(() => live && setPeriod(null))
+    void window.api.billDiscounting
+      .periodInterestSummary({ nbfc_id: Number(nbfc), from_date: start, to_date: periodEnd, till_month_end: true })
+      .then((p) => live && setPeriodFull(p))
+      .catch(() => live && setPeriodFull(null))
     return () => {
       live = false
     }
@@ -404,7 +410,9 @@ export function BdCumulativeInterest({ open, onClose, nbfcs, onDone }: { open: b
                 {
                   k: 'Interest for the period',
                   v: formatINR(n(period.due)),
-                  sub: `${formatDate(String(period.from))} → ${formatDate(String(period.to))} · ${((period.bills as Row[]) || []).length} bill${((period.bills as Row[]) || []).length === 1 ? '' : 's'}, worked out`,
+                  sub:
+                    `${formatDate(String(period.from))} → ${formatDate(String(period.to))} · ${((period.bills as Row[]) || []).length} bill${((period.bills as Row[]) || []).length === 1 ? '' : 's'}` +
+                    (periodFull && String(periodFull.to) !== String(period.to) ? ` · to ${formatDate(String(periodFull.to))}: ${formatINR(n(periodFull.due))}` : ''),
                   tone: 'text-[#0A1F17]'
                 },
                 // WITH THE BILLS TICKED NOW: paid and pending move as bills are
