@@ -55,7 +55,7 @@ import { EntityManager, type ColumnDef, type FieldDef } from '@/components/Entit
 import { RowActions } from '@/components/ui/row-actions'
 import { LedgerPostings, type PostingTarget } from '@/components/LedgerPostings'
 import { canAccess } from '@/lib/modules'
-import { BdDetail, chargesOf } from '@/components/BdDetail'
+import { BdDetail, chargesOf, askAdjustExcess } from '@/components/BdDetail'
 import { BdRepaymentEdit } from '@/components/BdRepaymentEdit'
 import { BdRefundDot } from '@/components/BdRefundDot'
 import { BdRefunds } from '@/components/BdRefunds'
@@ -2462,6 +2462,8 @@ Its bank voucher is removed too.`)) return
       // instalment can go straight in; a full repayment closes it.
       const fresh = await load()
       setBdRev((v) => v + 1)
+      // Interest with this repayment on days already paid: ask how to treat it.
+      if (n(repayForm.interest) > 0) await askAdjustExcess(Number(repayRow.id), () => setBdRev((v) => v + 1))
       if (res.closed) {
         setRepayRow(null)
       } else {

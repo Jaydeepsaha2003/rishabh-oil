@@ -730,6 +730,9 @@ export interface Api {
     ) => Promise<{ id: number; amount: number; outstanding: number; closed: boolean }>
     repayments: (id: number) => Promise<Row[]>
     interestSchedule: (id: number) => Promise<Row[]>
+    excessInterest: (id: number) => Promise<Row[]>
+    adjustExcessInterest: (id: number) => Promise<{ adjusted: number; gross: number }>
+    removeInterestAdjustment: (id: number) => Promise<void>
     interestWindow: (id: number, toDate?: string) => Promise<Row>
     payInterestUpto: (
       id: number,

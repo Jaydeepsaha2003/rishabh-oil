@@ -1954,6 +1954,10 @@ export function registerIpc(): void {
       payBdInterestUpto(id, v)
   )
   handle('bd:interestSchedule', (_e, { id }: { id: number }) => bdInterestSchedule(id))
+  // Interest paid twice with a repayment, set against the NBFC's short bills.
+  handle('bd:excessInterest', async (_e, { id }: { id: number }) => (await import('./billDiscounting')).bdExcessInterest(id))
+  handle('bd:adjustExcessInterest', async (_e, { id }: { id: number }) => (await import('./billDiscounting')).adjustBdExcessInterest(id))
+  handle('bd:removeInterestAdjustment', async (_e, { id }: { id: number }) => (await import('./billDiscounting')).removeBdInterestAdjustment(id))
   handle('bd:interestPayments', (_e, { id }: { id: number }) => listBdInterestPayments(id))
   // Pay cumulative interest: one NBFC's bills, one voucher.
   handle('bdCumInterest:list', async (_e, { values }: { values: Row }) =>

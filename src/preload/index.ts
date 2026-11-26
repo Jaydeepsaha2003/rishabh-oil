@@ -1042,6 +1042,9 @@ const api = {
       ipcRenderer.invoke('bd:repay', { id, values }),
     repayments: (id: number): Promise<Row[]> => ipcRenderer.invoke('bd:repayments', { id }),
     interestSchedule: (id: number): Promise<Row[]> => ipcRenderer.invoke('bd:interestSchedule', { id }),
+    excessInterest: (id: number): Promise<Row[]> => ipcRenderer.invoke('bd:excessInterest', { id }),
+    adjustExcessInterest: (id: number): Promise<{ adjusted: number; gross: number }> => ipcRenderer.invoke('bd:adjustExcessInterest', { id }),
+    removeInterestAdjustment: (id: number): Promise<void> => ipcRenderer.invoke('bd:removeInterestAdjustment', { id }),
     // The stretch of days that is payable right now, and what it comes to.
     interestWindow: (id: number, toDate?: string): Promise<Row> =>
       ipcRenderer.invoke('bd:interestWindow', { id, toDate }),

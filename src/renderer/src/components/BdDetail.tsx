@@ -651,7 +651,56 @@ function BdPartiesAndEntries({ bill }: { bill: Row }): React.JSX.Element | null 
 // ONE SERVICED-INTEREST PERIOD, opened to show how it is worked out: each
 // stretch of days at the principal still out then (a part repaid early makes
 // the later days cheaper — billDiscounting.ts bdInterestParts).
-function ServicedRow({ x }: { x: Row }): React.JSX.Element {
+/**
+ * INTEREST PAID TWICE WITH A REPAYMENT — ask what to do with it: set it against
+ * the NBFC's other bills still short on those days (it then counts as paid
+ * there), or keep it on this bill to claim back. Asked after every repayment
+ * that carries interest, and from the Paid by list.
+ */
+export async function askAdjustExcess(bdId: number, onDone?: () => void): Promise<void> {
+  const xs = ((await window.api.billDiscounting.excessInterest(bdId).catch(() => [])) || []) as Row[]
+  if (!xs.length) return
+  const no = String(xs[0].bd_no || 'this bill')
+  const placeable = xs.some((x) => ((x.targets as Row[]) || []).length > 0)
+  const lines = xs
+    .map((x) => {
+      const ts = (x.targets as Row[]) || []
+      return (
+        `${formatINR(n(x.excess))} of the interest paid with the repayment on ${formatDate(String(x.on_date))} is for days already paid.` +
+        (ts.length ? `\n   → ${ts.map((t) => `${String(t.bd_no)} ${formatINR(n(t.take))} (short ${formatINR(n(t.short))})`).join(', ')}` : '\n   No other bill of this NBFC is short on that day.') +
+        (n(x.unplaced) > 0.5 && ts.length ? `\n   ${formatINR(n(x.unplaced))} stays on ${no} to claim back.` : '')
+      )
+    })
+    .join('\n\n')
+  if (!placeable) {
+    toast.message(`Interest paid twice on ${no}`, { description: 'No other bill of this NBFC is short on those days — it stays on this bill to claim back from the NBFC.' })
+    return
+  }
+  const ok = window.confirm(
+    `Interest paid twice on ${no}\n\n${lines}\n\nOK — set it against those bills: it counts as their interest paid, and their balance comes down.\nCancel — keep it on ${no}, to claim back from the NBFC.\n\nNo voucher changes either way.`
+  )
+  if (!ok) return
+  try {
+    const r = await window.api.billDiscounting.adjustExcessInterest(bdId)
+    toast.success(`${formatINR(r.gross)} set against ${r.adjusted} other bill${r.adjusted === 1 ? '' : 's'} of the NBFC`)
+    onDone?.()
+  } catch (e) {
+    toast.error((e as Error).message)
+  }
+}
+
+async function undoAdjust(id: number, onDone?: () => void): Promise<void> {
+  if (!window.confirm('Take this adjustment back? The interest counts on the bill it was paid with again (paid twice there), and the other bill is short again.')) return
+  try {
+    await window.api.billDiscounting.removeInterestAdjustment(id)
+    toast.success('Adjustment taken back')
+    onDone?.()
+  } catch (e) {
+    toast.error((e as Error).message)
+  }
+}
+
+function ServicedRow({ x, bdId, onChanged }: { x: Row; bdId?: number; onChanged?: () => void }): React.JSX.Element {
   const [open, setOpen] = useState(false)
   const [splitOpen, setSplitOpen] = useState(false)
   // A single leg (stretch) being split, from the + on its row.
@@ -788,16 +837,48 @@ function ServicedRow({ x }: { x: Row }): React.JSX.Element {
                   )}
                 >
                   <span className="min-w-0">
-                    {p.with_repayment ? 'Interest with the repayment' : 'Interest payment'} on {formatDate(s(p.paid_on))}
+                    {p.adjusted_from ? `Set over from ${String(p.adjusted_from)} — paid with its repayment` : p.with_repayment ? 'Interest with the repayment' : 'Interest payment'} on {formatDate(s(p.paid_on))}
+                    {!!p.adjust_id && onChanged && (
+                      <button
+                        type="button"
+                        onClick={() => void undoAdjust(n(p.adjust_id), onChanged)}
+                        className="ml-2 rounded-[3px] border border-[#DCE7DB] bg-white px-1.5 text-[10px] font-bold text-[#5A6B62] hover:bg-[#F4F7F2]"
+                      >
+                        Undo
+                      </button>
+                    )}
                     {p.from && p.to && (
                       <span className="text-[#5A6B62]">
                         {' '}
                         · for {formatDate(s(p.from))} &rarr; {formatDate(s(p.to))}
                       </span>
                     )}
+                    {((p.moved_to as Row[]) || []).map((m) => (
+                      <span key={String(m.id)} className="block text-[10.5px] font-bold text-[#1B4E82]">
+                        {formatINR(n(m.gross))} set against {String(m.bd_no)} — counts as its interest paid
+                        {onChanged && (
+                          <button
+                            type="button"
+                            onClick={() => void undoAdjust(n(m.id), onChanged)}
+                            className="ml-2 rounded-[3px] border border-[#DCE7DB] bg-white px-1.5 text-[10px] font-bold text-[#5A6B62] hover:bg-[#F4F7F2]"
+                          >
+                            Undo
+                          </button>
+                        )}
+                      </span>
+                    ))}
                     {p.twice && (
                       <span className="block text-[10.5px] font-bold">
-                        For days this period&rsquo;s payment above already covers — so these days are paid twice. Check the NBFC&rsquo;s statement: move it to the bill it belongs to, or claim it back.
+                        For days this period&rsquo;s payment above already covers — so these days are paid twice. Set it against another bill of the NBFC still short on them, or claim it back.
+                        {bdId && onChanged && (
+                          <button
+                            type="button"
+                            onClick={() => void askAdjustExcess(bdId, onChanged)}
+                            className="ml-2 rounded-[3px] border border-[#F0C9C4] bg-white px-1.5 text-[10px] font-extrabold text-[#B3261E] hover:bg-[#FDECEA]"
+                          >
+                            Set against other bills
+                          </button>
+                        )}
                       </span>
                     )}
                   </span>
@@ -1542,7 +1623,7 @@ This was one bank debit that also cleared ${others.map((g) => `${s(g.bd_no)} ${f
                     </span>
                   </div>
                   {sched.slice(0, 8).map((x, i) => (
-                    <ServicedRow key={i} x={x} />
+                    <ServicedRow key={i} x={x} bdId={n(r.id)} onChanged={onChanged} />
                   ))}
                   {/* TOTAL BD INTEREST over every period (not just the 8 shown), paid and still due. */}
                   {!withRepay && (() => {

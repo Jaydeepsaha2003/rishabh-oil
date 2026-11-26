@@ -3336,6 +3336,13 @@ export async function runStartupTasks(): Promise<void> {
   // (₹3,337 gross) over what the app worked out. The received date and the
   // disbursement voucher move to the 22nd — only on KR FOODS' V2 with Vanik,
   // and only while both still read the 23rd. The row as it was is logged first.
+  // Interest paid twice with a repayment set against the NBFC's bills still
+  // short on those days (B4's ₹15,284 of 23-11 → B5) — the user's rule.
+  await runOnce('bd_interest_auto_adjust_v1', async () => {
+    const { adjustAllBdExcessInterest } = await import('./billDiscounting')
+    const done = await adjustAllBdExcessInterest()
+    if (done.length) console.log(`[bd] paid-twice interest set against short bills: ${done.join('; ')}`)
+  }).catch((e) => console.error('[bd] interest auto-adjust failed:', e))
   await runOnce('bd_v2_received_22aug_v1', async () => {
     const c = getClient()
     const r = await c.execute(`
