@@ -399,7 +399,7 @@ export function BdCumulativeInterest({ open, onClose, nbfcs, onDone }: { open: b
 
           {/* THE PERIOD AT A GLANCE — every bill of the NBFC over the month / range. */}
           {nbfc && period && (n(period.due) > 0.004 || n(period.paid) > 0.004) && (
-            <div className="grid grid-cols-1 overflow-hidden rounded-[6px] border border-[#DCE6DC] bg-white sm:grid-cols-3">
+            <div className="grid grid-cols-2 overflow-hidden rounded-[6px] border border-[#DCE6DC] bg-white lg:grid-cols-4">
               {[
                 {
                   k: 'Interest for the period',
@@ -409,14 +409,12 @@ export function BdCumulativeInterest({ open, onClose, nbfcs, onDone }: { open: b
                 },
                 // WITH THE BILLS TICKED NOW: paid and pending move as bills are
                 // ticked, so the tiles say where the month stands after this payment.
+                { k: 'Paid till now', v: formatINR(n(period.paid)), sub: 'interest payments + interest with repayments (gross)', tone: 'text-[#0B6B45]' },
                 {
-                  k: tot.gross > 0.004 ? 'Paid, with this payment' : 'Paid',
+                  k: 'Paid, with this payment',
                   v: formatINR(n(period.paid) + tot.gross),
-                  sub:
-                    tot.gross > 0.004
-                      ? `${formatINR(n(period.paid))} paid + ${formatINR(tot.gross)} ticked now (gross)`
-                      : 'interest payments + interest with repayments (gross)',
-                  tone: 'text-[#0B6B45]'
+                  sub: tot.gross > 0.004 ? `+ ${formatINR(tot.gross)} ticked now (gross)` : 'nothing ticked yet',
+                  tone: tot.gross > 0.004 ? 'text-[#0B6B45]' : 'text-[#9AAFA2]'
                 },
                 (() => {
                   const after = n(period.pending) - tot.gross
@@ -429,7 +427,7 @@ export function BdCumulativeInterest({ open, onClose, nbfcs, onDone }: { open: b
                 <div
                   key={t.k}
                   title={((period.bills as Row[]) || []).map((b) => `${String(b.bd_no)}: worked out ${formatINR(n(b.due))} · paid ${formatINR(n(b.paid))} · pending ${formatINR(n(b.pending))}`).join('\n')}
-                  className={cn('min-w-0 px-3.5 py-2', i > 0 && 'border-t border-[#EEF3EE] sm:border-l sm:border-t-0')}
+                  className={cn('min-w-0 px-3.5 py-2', i % 2 === 1 && 'border-l border-[#EEF3EE]', i >= 2 && 'border-t border-[#EEF3EE] lg:border-t-0', i === 2 && 'lg:border-l')}
                 >
                   <div className="text-[9.5px] font-extrabold uppercase tracking-[.13em] text-[#7A8C82]">{t.k}</div>
                   <div className={cn('truncate text-[16px] font-bold tabular-nums tracking-[-0.02em]', t.tone)}>{t.v}</div>
