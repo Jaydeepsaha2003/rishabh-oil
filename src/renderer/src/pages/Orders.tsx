@@ -1,3 +1,4 @@
+import { FreightBillsStrip } from '@/components/FreightBillsStrip'
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { partyGstOptions } from '@/components/GstRegsPanel'
 import { GstRateChips } from '@/components/GstRateChips'
@@ -6173,6 +6174,14 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel, onPurchaseR
                         Agreed when the tanker goes In transit. Freight is priced on the received quantity.
                       </span>
                     </div>
+                  )}
+                  {/* Which transporter freight bill took this invoice's freight. */}
+                  {editing && (
+                    <FreightBillsStrip
+                      kind="order"
+                      ids={[Number(editing.id), ...((Array.isArray(editing.lines) ? (editing.lines as Row[]) : []).map((l) => Number(l.id)))]}
+                      onOpenVoucher={onOpenVoucher}
+                    />
                   )}
                   <div className={cn('flex flex-col gap-1.5', !tankerTransporterId && 'opacity-50')}>
                     <Label>Allowed shortage %</Label>

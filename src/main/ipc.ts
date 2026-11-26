@@ -1472,6 +1472,7 @@ export function registerIpc(): void {
     transporterFreightKpis(a.side, a)
   )
   handle('tbill:list', (_e, a: { companyId?: number } = {}) => listTransporterBills(a?.companyId))
+  handle('tbill:of', async (_e, a: { kind: 'order' | 'sale'; ids: number[] }) => (await import('./transporterBilling')).freightBillsOf(a.kind, a.ids))
   handle('tbill:create', (_e, { values }: { values: Row }) => createTransporterBill(values))
   handle('tbill:rcmRegister', (_e, a: { companyId?: number; from?: string; to?: string } = {}) => rcmRegister(a))
   handle('tbill:postRcm', (_e, a: { id: number; pct?: number; companyId?: number }) => postBillRcm(a.id, a.pct, a.companyId))

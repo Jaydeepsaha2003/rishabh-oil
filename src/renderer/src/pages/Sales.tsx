@@ -1,3 +1,4 @@
+import { FreightBillsStrip } from '@/components/FreightBillsStrip'
 import { Fragment, useCallback, useEffect, useMemo, useState, useRef } from 'react'
 import { useFormPageEscape } from '@/lib/escape'
 import { partyGstOptions } from '@/components/GstRegsPanel'
@@ -343,7 +344,8 @@ function SalesTab({
   onRegister,
   onBack,
   backLabel,
-  onOpenOrder
+  onOpenOrder,
+  onOpenVoucher
 }: {
   focusId?: number | null
   onFocusHandled?: () => void
@@ -351,6 +353,7 @@ function SalesTab({
   onBack?: () => void
   backLabel?: string
   onOpenOrder?: (orderId: number, companyId?: number) => void
+  onOpenVoucher?: (entryId: number, companyId?: number) => void
 }): React.JSX.Element {
   // How far back this user may date a new entry. The save is refused either
   // way; greying the days out just stops the form offering one it will reject.
@@ -3730,6 +3733,14 @@ function SalesTab({
                 <Input type="number" className="bg-white" value={header.transport_rate ?? ''} onChange={(e) => setHeaderField('transport_rate', e.target.value)} />
                 {!__WEB__ && <span className="text-[10px] text-muted-foreground">per case for a packed item, per MT for a loose one</span>}
               </div>
+              {/* Which transporter freight bill took this invoice's freight. */}
+              {editingGroup && (
+                <FreightBillsStrip
+                  kind="sale"
+                  ids={rows.filter((r) => String(r.invoice_group || `LEGACY-${r.id}`) === editingGroup).map((r) => Number(r.id))}
+                  onOpenVoucher={onOpenVoucher}
+                />
+              )}
               {/* The tolerance this delivery is judged by when it is weighed in
                   at the other end. Left blank it falls back to the sales
                   bargain, and then to the mill-wide default — so it only needs
@@ -9210,6 +9221,8 @@ type SalesProps = {
   backLabel?: string
   /** Open a purchase on the Purchases page, in its own company (the tanker chip). */
   onOpenOrder?: (orderId: number, companyId?: number) => void
+  /** Open a voucher in Accounting (the freight bill on an invoice). */
+  onOpenVoucher?: (entryId: number, companyId?: number) => void
 }
 
 // The two lists of a login holding both desks — remounted on a switch, so each
@@ -9247,7 +9260,7 @@ export function Sales(props: SalesProps = {}): React.JSX.Element {
   )
 }
 
-function SalesPage({ focusId, onFocusHandled, onBack, backLabel, deskSwitch, onOpenOrder }: SalesProps & { deskSwitch?: React.ReactNode }): React.JSX.Element {
+function SalesPage({ focusId, onFocusHandled, onBack, backLabel, deskSwitch, onOpenOrder, onOpenVoucher }: SalesProps & { deskSwitch?: React.ReactNode }): React.JSX.Element {
   const isMobile = useIsMobile()
   const [needs, setNeeds] = useState<Row[]>([])
   const [needsOpen, setNeedsOpen] = useState(false)
@@ -9331,7 +9344,7 @@ function SalesPage({ focusId, onFocusHandled, onBack, backLabel, deskSwitch, onO
       {/* Website runs the register full-bleed — no side gutter, so the table
           gets the whole width. The desktop app keeps its padded page. */}
       <div className={__WEB__ ? 'py-4 pl-4' : 'px-4 py-4'}>
-        <SalesTab focusId={focusId} onFocusHandled={onFocusHandled} onRegister={setSalesAdd} onBack={onBack} backLabel={backLabel} onOpenOrder={onOpenOrder} />
+        <SalesTab focusId={focusId} onFocusHandled={onFocusHandled} onRegister={setSalesAdd} onBack={onBack} backLabel={backLabel} onOpenOrder={onOpenOrder} onOpenVoucher={onOpenVoucher} />
       </div>
 
       <Dialog open={needsOpen} onOpenChange={setNeedsOpen}>

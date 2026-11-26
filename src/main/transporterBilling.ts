@@ -749,3 +749,27 @@ export async function deleteTransporterBill(id: number, companyId?: number): Pro
   await c.execute({ sql: 'DELETE FROM transporter_bills WHERE id = ?', args: [id] })
   return { id }
 }
+
+/**
+ * The freight on these purchase / sale rows, by the transporter bill that took
+ * it (or still waiting for one) — the invoice forms show which freight bill
+ * covers them. Amounts are the lines' own (freight less any shortage).
+ */
+export async function freightBillsOf(kind: 'order' | 'sale', ids: number[]): Promise<Row[]> {
+  const list = (ids || []).map(Number).filter((x) => x > 0)
+  if (!list.length) return []
+  const col = kind === 'sale' ? 'sale_id' : 'order_id'
+  const res = await getClient().execute(
+    `SELECT l.bill_id, b.bill_no, b.bill_date, b.journal_entry_id, b.company_id, t.name AS transporter_name,
+            (SELECT nn.prefix || '/' || nn.serial FROM voucher_numbers nn WHERE nn.entry_id = b.journal_entry_id) AS code,
+            ROUND(SUM(l.amount), 2) AS amount
+       FROM transporter_ledger l
+       LEFT JOIN transporter_bills b ON b.id = l.bill_id
+       LEFT JOIN transporters t ON t.id = l.transporter_id
+      WHERE l.${col} IN (${list.join(',')}) AND l.entry_type IN ('freight', 'shortage_penalty')
+        AND l.waived_at IS NULL AND l.note_id IS NULL
+      GROUP BY l.bill_id, l.transporter_id
+      ORDER BY l.bill_id IS NULL, b.bill_date`
+  )
+  return toPlain(res)
+}

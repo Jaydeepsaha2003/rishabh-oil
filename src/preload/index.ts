@@ -672,6 +672,7 @@ const api = {
     kpis: (side: 'purchase' | 'sales', opts: { companyId?: number; from?: string; to?: string } = {}): Promise<Row> =>
       ipcRenderer.invoke('tfreight:kpis', { side, ...opts }),
     bills: (companyId?: number): Promise<Row[]> => ipcRenderer.invoke('tbill:list', { companyId }),
+    billsOf: (kind: 'order' | 'sale', ids: number[]): Promise<Row[]> => ipcRenderer.invoke('tbill:of', { kind, ids }),
     createBill: (values: Row): Promise<{ id: number }> => ipcRenderer.invoke('tbill:create', { values }),
     updateBill: (id: number, values: Row): Promise<{ id: number }> => ipcRenderer.invoke('tbill:update', { id, values }),
     deleteBill: (id: number, companyId?: number): Promise<{ id: number }> =>

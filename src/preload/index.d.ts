@@ -458,6 +458,7 @@ export interface Api {
     ) => Promise<Row[]>
     kpis: (side: 'purchase' | 'sales', opts?: { companyId?: number; from?: string; to?: string }) => Promise<Row>
     bills: (companyId?: number) => Promise<Row[]>
+    billsOf: (kind: 'order' | 'sale', ids: number[]) => Promise<Row[]>
     createBill: (values: Row) => Promise<{ id: number }>
     updateBill: (id: number, values: Row) => Promise<{ id: number }>
     deleteBill: (id: number, companyId?: number) => Promise<{ id: number }>
