@@ -9182,7 +9182,8 @@ Delete ${doc}?`)) return
           role="dialog"
           aria-modal="true"
           data-escape-layer="drawer"
-          className="flex flex-none flex-col"
+          // relative: a dropdown inside places itself against this panel (ui/select).
+          className="relative flex flex-none flex-col"
           style={{ width: 'min(100%,760px)', background: '#F4F7F2', boxShadow: '-18px 0 40px rgba(7,43,32,.28)' }}
         >
           <div className="flex-none text-white" style={{ background: 'linear-gradient(180deg,#11503C,#0B3D2E)', padding: '16px 20px' }}>
