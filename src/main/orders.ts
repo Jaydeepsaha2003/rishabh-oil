@@ -425,6 +425,12 @@ export async function listOrders(forModule?: string, companyId?: number): Promis
            src.name AS source_name,
            t.name AS transporter_name,
            (SELECT COUNT(*) FROM ${ALLOC} a WHERE a.order_id = o.id) AS tanker_count,
+           -- The transporter's freight on this invoice: the freight bill(s) that took
+           -- it, and how much is still waiting for one (the Freight column says so).
+           (SELECT GROUP_CONCAT(DISTINCT b.bill_no) FROM transporter_ledger l JOIN transporter_bills b ON b.id = l.bill_id
+             WHERE l.order_id = o.id AND l.entry_type = 'freight') AS freight_bill_nos,
+           (SELECT ROUND(COALESCE(SUM(l.amount), 0), 2) FROM transporter_ledger l
+             WHERE l.order_id = o.id AND l.entry_type = 'freight' AND l.bill_id IS NULL) AS freight_unbilled,
            (SELECT GROUP_CONCAT(pt.tanker_no, ', ') FROM ${ALLOC} a JOIN purchase_tankers pt ON pt.id = a.tanker_id WHERE a.order_id = o.id) AS tanker_nos,
            -- A tanker split over several invoices: where ELSE each of this
            -- invoice's tankers is billed — "tanker|invoice|qty|this qty" per
