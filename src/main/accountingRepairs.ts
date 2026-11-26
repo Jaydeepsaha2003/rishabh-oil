@@ -1796,3 +1796,105 @@ export async function fixBdThrough(entryIds: number[]): Promise<{ fixed: number;
     return { fixed: wanted.size, journals }
   })
 }
+
+// ── BD REPAYMENT PAYMENTS, ONE LINE PER PART ────────────────────────────────
+// Since 2026-11-26 a repayment's payment debits the BD ledger on one line per
+// part (principal, interest, each charge, the excess to come back), each
+// labelled. Older ones have it on one line — re-split only on review, the
+// voucher's total, number and date unchanged.
+type BdSplitFinding = { entry_id: number; date: string; code: string; bills: string; line_id: number; total: number; parts: { note: string; amount: number }[]; review: string }
+async function scanBdSplit(): Promise<BdSplitFinding[]> {
+  const c = getClient()
+  const cols = new Set((await c.execute('PRAGMA table_info(journal_lines)')).rows.map((r) => String(r.name)))
+  if (!cols.has('note')) return []
+  const heads = (
+    await c.execute(`
+      SELECT r.journal_entry_id AS je, je.entry_date, GROUP_CONCAT(b.bd_no, ', ') AS bills,
+             SUM(r.amount) AS principal, SUM(COALESCE(r.interest, 0)) AS interest,
+             MAX(COALESCE(r.charges_entry_id, 0)) AS ch, GROUP_CONCAT(COALESCE(r.charges, ''), '|') AS charges_json,
+             (SELECT nn.prefix || '/' || nn.serial FROM voucher_numbers nn WHERE nn.entry_id = r.journal_entry_id) AS code
+        FROM bd_repayments r JOIN bill_discountings b ON b.id = r.bd_id JOIN journal_entries je ON je.id = r.journal_entry_id
+       GROUP BY r.journal_entry_id ORDER BY je.entry_date`)
+  ).rows.map((x) => ({ ...x }) as Record<string, unknown>)
+  const out: BdSplitFinding[] = []
+  for (const h of heads) {
+    const je = Number(h.je)
+    const bdLines = (
+      await c.execute({
+        sql: `SELECT jl.id, jl.dr, jl.note FROM journal_lines jl JOIN ledger_accounts la ON la.id = jl.account_id
+               WHERE jl.entry_id = ? AND jl.dr > 0.004 AND UPPER(la.name) LIKE 'BILLS DISCOUNTED%'`,
+        args: [je]
+      })
+    ).rows.map((x) => ({ ...x }) as Record<string, unknown>)
+    if (bdLines.length !== 1 || bdLines[0].note) continue
+    const parts: { note: string; amount: number }[] = [
+      { note: `principal ${String(h.bills || '')}`, amount: Math.round(Number(h.principal) * 100) / 100 },
+      { note: 'interest', amount: Math.round(Number(h.interest) * 100) / 100 }
+    ]
+    if (Number(h.ch)) {
+      const cl = (
+        await c.execute({ sql: `SELECT jl.dr, la.name FROM journal_lines jl JOIN ledger_accounts la ON la.id = jl.account_id WHERE jl.entry_id = ? AND jl.dr > 0.004`, args: [Number(h.ch)] })
+      ).rows
+      for (const l of cl) parts.push({ note: String(l.name).toLowerCase().replace(/ a\/c$/, ''), amount: Number(l.dr) })
+    }
+    let refund = 0
+    for (const js of String(h.charges_json || '').split('|')) {
+      try {
+        for (const x of JSON.parse(js || '[]')) if (/^REFUND DUE/i.test(String(x?.account || ''))) refund += Number(x.amount) || 0
+      } catch {
+        /* not a list */
+      }
+    }
+    if (refund > 0.004) parts.push({ note: 'excess — to be refunded', amount: Math.round(refund * 100) / 100 })
+    const keep = parts.filter((p) => p.amount > 0.004)
+    if (keep.length < 2) continue
+    const total = Number(bdLines[0].dr)
+    const sum = Math.round(keep.reduce((t, p) => t + p.amount, 0) * 100) / 100
+    out.push({
+      entry_id: je,
+      date: String(h.entry_date || '').slice(0, 10),
+      code: String(h.code || ''),
+      bills: String(h.bills || ''),
+      line_id: Number(bdLines[0].id),
+      total,
+      parts: keep,
+      review: Math.abs(sum - total) > 0.01 ? `the parts add to ₹${sum.toFixed(2)}, not the ₹${total.toFixed(2)} debited` : ''
+    })
+  }
+  return out
+}
+
+export async function previewBdSplit(): Promise<{ findings: BdSplitFinding[] }> {
+  return { findings: await scanBdSplit() }
+}
+
+export async function fixBdSplit(entryIds: number[]): Promise<{ fixed: number }> {
+  const wanted = new Set((entryIds || []).map(Number).filter(Boolean))
+  if (!wanted.size) throw new Error('Pick the payments to split')
+  return withDbTransaction(async () => {
+    const c = getClient()
+    await ensureLog()
+    const allowed = new Map((await scanBdSplit()).filter((f) => !f.review).map((f) => [f.entry_id, f]))
+    const stale = [...wanted].filter((id) => !allowed.has(id))
+    if (stale.length) throw new Error(`${stale.length} payment${stale.length === 1 ? ' has' : 's have'} changed since the list was shown — check again`)
+    for (const je of wanted) {
+      const f = allowed.get(je) as BdSplitFinding
+      const line = (await c.execute({ sql: 'SELECT * FROM journal_lines WHERE id = ?', args: [f.line_id] })).rows[0]
+      if (!line) throw new Error(`${f.code || je} no longer looks the same — nothing was changed`)
+      await c.execute({
+        sql: 'INSERT OR IGNORE INTO accounting_repair_log(repair_key, entry_id, before_json) VALUES (?, ?, ?)',
+        args: [`bd-split-v1:${je}`, je, JSON.stringify({ line: { ...line }, finding: f })]
+      })
+      // The first part keeps the line (and anything allocated to it); the rest are new lines.
+      await c.execute({ sql: 'UPDATE journal_lines SET dr = ?, note = ? WHERE id = ?', args: [f.parts[0].amount, f.parts[0].note, f.line_id] })
+      await c.execute({ sql: 'UPDATE journal_bill_allocs SET amount = ? WHERE line_id = ? AND ABS(amount - ?) < 0.01', args: [f.parts[0].amount, f.line_id, f.total] })
+      for (const p of f.parts.slice(1)) {
+        await c.execute({
+          sql: 'INSERT INTO journal_lines (entry_id, account_id, dr, cr, note) VALUES (?, ?, ?, 0, ?)',
+          args: [je, Number(line.account_id), p.amount, p.note]
+        })
+      }
+    }
+    return { fixed: wanted.size }
+  })
+}

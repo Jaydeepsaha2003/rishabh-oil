@@ -98,6 +98,9 @@ export function AccountingChecks(): React.JSX.Element {
   // BD repayments still carrying their costs / refund due on the payment.
   const [bdThru, setBdThru] = useState<Row | null>(null)
   const [fixingBdThru, setFixingBdThru] = useState(false)
+  // BD repayment payments still on one BD line.
+  const [bdSplit, setBdSplit] = useState<Row | null>(null)
+  const [fixingBdSplit, setFixingBdSplit] = useState(false)
   const [shared, setShared] = useState<Row | null>(null)
   const [splitting, setSplitting] = useState(false)
   // Purchase / sale vouchers filed in the other company's books.
@@ -172,6 +175,7 @@ export function AccountingChecks(): React.JSX.Element {
       setLoadedFr(await window.api.repairs.loadedFreight().catch(() => null))
       setShRep(await window.api.repairs.shortageReprice().catch(() => null))
       setBdThru(await window.api.repairs.bdThrough().catch(() => null))
+      setBdSplit(await window.api.repairs.bdSplit().catch(() => null))
       setShared(await window.api.repairs.sharedLedgers().catch(() => null))
       setWrongCo(await window.api.repairs.wrongCompany().catch(() => null))
       const sh = await window.api.repairs.shadowedRedirects().catch(() => null)
@@ -418,6 +422,24 @@ export function AccountingChecks(): React.JSX.Element {
       toast.error((e as Error).message)
     } finally {
       setFixingBdThru(false)
+    }
+  }
+
+  const bsFindings: Row[] = useMemo(() => (bdSplit?.findings as Row[]) || [], [bdSplit])
+  const bsFixable = useMemo(() => bsFindings.filter((x) => !x.review), [bsFindings])
+  async function fixBdSplitNow(): Promise<void> {
+    const ids = bsFixable.map((x) => Number(x.entry_id))
+    if (!ids.length) return
+    if (!window.confirm(`Split ${ids.length} BD repayment payment${ids.length === 1 ? '' : 's'} into a line per part?\n\nThe BD ledger debit becomes one line each for principal, interest, every charge and any excess — same ledger, same total, number and date kept. Every voucher is logged first.`)) return
+    setFixingBdSplit(true)
+    try {
+      const r = await window.api.repairs.fixBdSplit(ids)
+      toast.success(`${r.fixed} payment${r.fixed === 1 ? '' : 's'} split into parts`)
+      await load()
+    } catch (e) {
+      toast.error((e as Error).message)
+    } finally {
+      setFixingBdSplit(false)
     }
   }
 
@@ -1259,6 +1281,53 @@ export function AccountingChecks(): React.JSX.Element {
           <Button className="ml-auto gap-1.5" disabled={!btFixable.length || fixingBdThru} onClick={() => void fixBdThru()}>
             {fixingBdThru && <Loader2 className="h-4 w-4 animate-spin" />}
             Re-post {btFixable.length} through the BD ledger
+          </Button>
+        </div>
+      </Section>
+
+      <Section
+        title="BD repayment payments on one line"
+        count={bsFindings.length}
+        tone={bsFindings.length ? 'warn' : 'ok'}
+        note={
+          bsFindings.length
+            ? 'These BD repayment payments debit the BD ledger on one line. Splitting shows each part on its own line — principal, interest, each charge, any excess — like the bank’s advice. Same ledger, same total.'
+            : 'Every BD repayment payment shows its parts.'
+        }
+      >
+        <table className="w-full border-collapse">
+          <thead className="bg-muted/40">
+            <tr>
+              <th className={th}>Date</th>
+              <th className={th}>Payment</th>
+              <th className={th}>Bills</th>
+              <th className={th}>Parts</th>
+              <th className={cn(th, 'text-right')}>Total</th>
+            </tr>
+          </thead>
+          <tbody>
+            {bsFindings.map((x) => (
+              <tr key={String(x.entry_id)} className={cn('border-t', x.review && 'bg-amber-50/60')}>
+                <td className={cn(td, 'tabular-nums')}>{formatDate(String(x.date))}</td>
+                <td className={cn(td, 'font-semibold')}>
+                  {String(x.code || x.entry_id)}
+                  {x.review && <div className="whitespace-normal text-[11px] font-medium text-amber-800">Needs review — {String(x.review)}</div>}
+                </td>
+                <td className={td}>{String(x.bills)}</td>
+                <td className={cn(td, 'whitespace-normal')}>{((x.parts as Row[]) || []).map((p) => `${String(p.note)} ${formatINR(Number(p.amount))}`).join(' · ')}</td>
+                <td className={cn(td, 'text-right tabular-nums font-semibold')}>{formatINR(Number(x.total))}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+        <div className="flex flex-wrap items-center gap-3 border-t bg-muted/30 px-4 py-3">
+          <span className="text-[12.5px] text-muted-foreground">
+            {bsFixable.length} payment{bsFixable.length === 1 ? '' : 's'} can be split
+            {bsFindings.length - bsFixable.length ? ` · ${bsFindings.length - bsFixable.length} left for review (not touched)` : ''}
+          </span>
+          <Button className="ml-auto gap-1.5" disabled={!bsFixable.length || fixingBdSplit} onClick={() => void fixBdSplitNow()}>
+            {fixingBdSplit && <Loader2 className="h-4 w-4 animate-spin" />}
+            Split {bsFixable.length} into parts
           </Button>
         </div>
       </Section>

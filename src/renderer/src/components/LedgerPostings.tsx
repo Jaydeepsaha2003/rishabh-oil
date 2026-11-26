@@ -204,6 +204,8 @@ function Voucher({ p, no }: { p: Row; no?: number }): React.JSX.Element {
                 </span>
                 <div className="mt-[1px] text-[10.5px] font-semibold text-[#8CA396] [overflow-wrap:anywhere]">
                   {s(l.acc_group)}
+                  {/* What this part of the voucher is, when one ledger takes several lines. */}
+                  {s(l.note) && <span className="ml-1.5 rounded-[3px] bg-[#EAF0FA] px-1.5 py-[1px] text-[10px] font-bold text-[#1B4E82]">{s(l.note)}</span>}
                 </div>
               </td>
               <td className="w-px whitespace-nowrap px-3 py-2 text-right align-top font-bold tabular-nums text-[#0A1F17]">

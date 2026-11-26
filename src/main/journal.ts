@@ -211,6 +211,8 @@ export interface JournalLine {
   group?: string
   dr?: number
   cr?: number
+  /** What this line is, when one ledger takes several lines (journal_lines.note). */
+  note?: string
 }
 
 interface PostArgs {
@@ -256,10 +258,11 @@ export async function postJournal(a: PostArgs): Promise<{ id: number }> {
   for (const l of lines) {
     // A party line never lands on the other side's ledger (partyLedgers.ts).
     const accountId = await getOrCreateAccount(await partyAccountName(l.account, l.group, a.companyId), l.group, a.companyId)
-    await c.execute({
-      sql: 'INSERT INTO journal_lines (entry_id, account_id, dr, cr) VALUES (?, ?, ?, ?)',
-      args: [entryId, accountId, n(l.dr), n(l.cr)]
-    })
+    await c.execute(
+      l.note
+        ? { sql: 'INSERT INTO journal_lines (entry_id, account_id, dr, cr, note) VALUES (?, ?, ?, ?, ?)', args: [entryId, accountId, n(l.dr), n(l.cr), l.note] }
+        : { sql: 'INSERT INTO journal_lines (entry_id, account_id, dr, cr) VALUES (?, ?, ?, ?)', args: [entryId, accountId, n(l.dr), n(l.cr)] }
+    )
   }
   await ensureVoucherNumbers()
   return { id: entryId }

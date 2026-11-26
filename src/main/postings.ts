@@ -58,6 +58,7 @@ export interface PostingLine {
   acc_group: string
   dr: number
   cr: number
+  note?: string
 }
 
 export interface Posting {
@@ -235,9 +236,10 @@ async function loadEntries(ids: number[]): Promise<Map<number, Posting>> {
     })
   )
   if (!entries.length) return out
+  const withNote = (await columnsOf('journal_lines')).has('note')
   const lines = toPlain(
     await c.execute({
-      sql: `SELECT jl.entry_id, jl.dr, jl.cr, a.name AS account, a.acc_group
+      sql: `SELECT jl.entry_id, jl.dr, jl.cr, a.name AS account, a.acc_group${withNote ? ', jl.note' : ''}
               FROM journal_lines jl
               JOIN ledger_accounts a ON a.id = jl.account_id
              WHERE jl.entry_id IN (${marks})
@@ -262,7 +264,8 @@ async function loadEntries(ids: number[]): Promise<Map<number, Posting>> {
       account: s(l.account),
       acc_group: s(l.acc_group) || 'General',
       dr: round2(n(l.dr)),
-      cr: round2(n(l.cr))
+      cr: round2(n(l.cr)),
+      ...(l.note ? { note: s(l.note) } : {})
     })
     const t = rawSum.get(k) || { dr: 0, cr: 0 }
     t.dr += n(l.dr)

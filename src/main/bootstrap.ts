@@ -3566,6 +3566,9 @@ const REQUIRED_COLUMNS: { table: string; column: string; type: string }[] = [
   // A BD repayment's costs (penalty, commission, bank charges) as their own
   // journal onto the BD ledger — the payment is the BD ledger's for the whole debit.
   { table: 'bd_repayments', column: 'charges_entry_id', type: 'INTEGER' },
+  // A short label on one voucher line — what that part of it is ("principal
+  // V1", "interest", "bounce & penalty") when one ledger takes several lines.
+  { table: 'journal_lines', column: 'note', type: 'TEXT' },
   // A note typed on Mark received — kept on the bill, carried on its voucher.
   { table: 'bill_discountings', column: 'received_note', type: 'TEXT' },
   { table: 'bd_repayments', column: 'tds_ledger', type: 'TEXT' },

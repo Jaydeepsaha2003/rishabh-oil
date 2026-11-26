@@ -1,7 +1,7 @@
 import { getClient } from './db'
 import { resolveAccountName } from './ledgerMap'
 
-export interface VoucherLine { account: string; group?: string; dr?: number; cr?: number }
+export interface VoucherLine { account: string; group?: string; dr?: number; cr?: number; note?: string }
 const amount = (v: unknown): number => v == null ? 0 : Number(v)
 const round = (v: number): number => Math.round((v + Number.EPSILON) * 100) / 100
 

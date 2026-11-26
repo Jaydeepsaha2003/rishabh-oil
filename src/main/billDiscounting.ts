@@ -1910,7 +1910,21 @@ export async function repayBd(
   if (bankCharges > 0.004) costLines.push({ account: 'BANK CHARGES A/C', group: 'Indirect Expenses', dr: bankCharges })
   if (penaltyPaid > 0.004) costLines.push({ account: 'PENAL INTEREST ON BILL DISCOUNTING A/C', group: 'Indirect Expenses', dr: penaltyPaid })
   for (const ch of charges) if (!isRefundDue(ch.account)) costLines.push({ account: ch.account, group: ch.group, dr: ch.amount })
-  const lines: JournalLine[] = [{ account: bdPayable(bd), group: BD_PAYABLE_GROUP, dr: paidOut }]
+  // ONE LINE PER PART of the debit, all on the BD ledger, each saying what it
+  // is — principal, interest, each charge, the excess to come back — so the
+  // payment reads like the bank's advice (the user's ask, V1 PAY/1054).
+  const lbl = (x: string): string => x.toLowerCase().replace(/ a\/c$/, '')
+  const parts: { note: string; amount: number }[] = [
+    { note: `principal ${[bd.bd_no, ...others.map((o) => o.bd.bd_no)].filter(Boolean).join(', ')}`.trim(), amount: round2(asked + toOthers) },
+    { note: 'interest', amount: interestPaid },
+    ...costLines.map((l) => ({ note: lbl(l.account), amount: n(l.dr) })),
+    ...charges.filter((ch) => isRefundDue(ch.account)).map((ch) => ({ note: 'excess — to be refunded', amount: ch.amount }))
+  ].filter((p) => p.amount > 0.004)
+  const partSum = round2(parts.reduce((t, p) => t + p.amount, 0))
+  const lines: JournalLine[] =
+    parts.length > 1 && Math.abs(partSum - paidOut) <= 0.01
+      ? parts.map((p) => ({ account: bdPayable(bd), group: BD_PAYABLE_GROUP, dr: p.amount, note: p.note }))
+      : [{ account: bdPayable(bd), group: BD_PAYABLE_GROUP, dr: paidOut }]
   if (settleVia === 'party') {
     lines.push({
       account: party,

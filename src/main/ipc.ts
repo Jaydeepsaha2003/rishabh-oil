@@ -97,6 +97,8 @@ import {
   fixShortageReprice,
   previewBdThrough,
   fixBdThrough,
+  previewBdSplit,
+  fixBdSplit,
   previewSharedLedgers,
   fixSharedLedgers
 } from './accountingRepairs'
@@ -2172,6 +2174,15 @@ export function registerIpc(): void {
   handle('repairs:bdThroughFix', async (_e, a: { ids: number[] }) => {
     await assertAdmin('Re-posting BD repayments through the BD ledger')
     return fixBdThrough(a?.ids || [])
+  })
+  // BD repayment payments still on one BD line — split per part.
+  handle('repairs:bdSplit:list', async () => {
+    await assertAdmin('The accounting checks')
+    return previewBdSplit()
+  })
+  handle('repairs:bdSplitFix', async (_e, a: { ids: number[] }) => {
+    await assertAdmin('Splitting BD repayment payments')
+    return fixBdSplit(a?.ids || [])
   })
   // Purchase / sale vouchers filed in the other company's books.
   handle('repairs:wrongCompany:list', async () => {
