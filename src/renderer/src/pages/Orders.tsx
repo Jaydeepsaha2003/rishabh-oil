@@ -8654,7 +8654,7 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel, onPurchaseR
                                       {label}
                                     </button>
                                   </PopoverTrigger>
-                                  {/* WHETHER THE TRANSPORTER HAS BILLED IT — the freight bill's no., or still to bill. */}
+                                  {/* WHETHER THE TRANSPORTER HAS BILLED IT — a chip: the freight bill's no. (opens it), or still to bill. */}
                                   {String(row.freight_bill_nos || '').trim() ? (
                                     <button
                                       type="button"
@@ -8663,14 +8663,17 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel, onPurchaseR
                                         e.stopPropagation()
                                         if (onOpenVoucher && Number(row.freight_bill_je)) onOpenVoucher(Number(row.freight_bill_je), Number(row.company_id) || undefined)
                                       }}
-                                      className="mt-1 block whitespace-nowrap text-[10.5px] font-bold text-[#0B6B45] underline-offset-2 hover:underline disabled:no-underline"
-                                      title="Open the transporter freight bill"
+                                      className="mt-1.5 flex w-fit items-center gap-1 whitespace-nowrap rounded-full border border-[#BFE3CB] bg-[#E9F5EE] px-2 py-[2px] text-[10px] font-extrabold uppercase tracking-[.05em] text-[#0B6B45] hover:bg-[#D8EFE1] disabled:cursor-default"
+                                      title="Transporter freight bill booked — click to open it"
                                     >
-                                      Fr. bill {String(row.freight_bill_nos)}
+                                      <Truck className="h-3 w-3" /> Fr. bill {String(row.freight_bill_nos)}
                                     </button>
                                   ) : Number(row.freight_unbilled) > 0 ? (
-                                    <span className="mt-1 block whitespace-nowrap text-[10.5px] font-bold text-[#8A5300]" title="Freight not on a transporter bill yet">
-                                      Fr. bill pending
+                                    <span
+                                      className="mt-1.5 flex w-fit items-center gap-1 whitespace-nowrap rounded-full border border-[#F1D9A6] bg-[#FFF4DD] px-2 py-[2px] text-[10px] font-extrabold uppercase tracking-[.05em] text-[#8A5300]"
+                                      title="Freight worked out, not on a transporter bill yet — book it on Accounting → Fr. inward working"
+                                    >
+                                      <span className="h-1.5 w-1.5 rounded-full bg-[#C98A00]" /> Fr. bill pending
                                     </span>
                                   ) : null}
                                   <PopoverContent align="end" className="w-64 p-3 text-[12px]">
