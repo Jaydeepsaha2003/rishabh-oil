@@ -2750,6 +2750,17 @@ export async function bdInterestRange(bdId: number, fromIn: string, toIn: string
       const tds = round2((s.short * n(bd.tds_pct)) / 100)
       return { ...out, to_date: to, parts: w.parts, days: w.days, gross: s.short, tds, net: round2(s.short - tds), balance_of: { from: s.from, to: s.to, due: s.due, paid: s.paid }, short_before: out.short_before, blocked: '' }
     }
+    // PAID SHORT, AND NOTHING AFTER IT IN THE RANGE: the balance is what this
+    // range still owes, so it is offered straight away (B5 November: paid to
+    // 24-11, repaid that day, ₹4,046.41 short — it read "PAID" with nothing in
+    // Worked out / Actual paid).
+    const repaidOn = String(bd.status) === 'repaid' ? String(bd.repaid_date || '').slice(0, 10) : ''
+    const endEff = repaidOn && repaidOn < to ? repaidOn : to
+    if (s.short > 1 && s.from >= from && s.to >= endEff) {
+      const w = worked(s.from, s.to)
+      const tds = round2((s.short * n(bd.tds_pct)) / 100)
+      return { ...out, from_date: s.from, to_date: s.to, parts: w.parts, days: w.days, gross: s.short, tds, net: round2(s.short - tds), balance_of: { from: s.from, to: s.to, due: s.due, paid: s.paid }, short_before: out.short_before, blocked: '' }
+    }
     const bal = spans.filter((x) => x.short > 1 && x.from <= to && x.to >= from)
     return { ...out, blocked: `Already paid ${s.from} → ${s.to}.` + (bal.length ? ` Balance ${inr(bal[0].short)} due — pick ${bal[0].from} → ${bal[0].to} alone to pay it.` : ''), paid_to: s.to }
   }
@@ -4568,7 +4579,8 @@ export async function bdCumulativeInterest(v: { nbfc_id: number; from_date?: str
       interest_pct: n(w.interest_pct),
       tds_pct: n(w.tds_pct),
       from_date: w.from_date,
-      to_date: capped,
+      // A balance is for the stretch paid short, not the whole range.
+      to_date: w.balance_of ? String(w.to_date || capped) : capped,
       days: n(w.days),
       gross: n(w.gross),
       tds: n(w.tds),

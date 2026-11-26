@@ -126,7 +126,8 @@ export function BdCumulativeInterest({ open, onClose, nbfcs, onDone }: { open: b
         if (!live) return
         setRows(r)
         setLumpTotal(null)
-        setPicked(new Set(r.filter((x) => !x.blocked).map((x) => n(x.bd_id))))
+        // A balance of an earlier short payment is shown, but ticked only on purpose.
+        setPicked(new Set(r.filter((x) => !x.blocked && !x.balance_of).map((x) => n(x.bd_id))))
       })
       .catch((e) => toast.error((e as Error).message))
     // The payments already made to this NBFC — the PAID banner names the ones
