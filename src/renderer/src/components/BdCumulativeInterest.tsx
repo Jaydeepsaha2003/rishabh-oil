@@ -79,6 +79,11 @@ export function BdCumulativeInterest({ open, onClose, nbfcs, onDone }: { open: b
   const [period, setPeriod] = useState<Row | null>(null)
   // The whole month / range, said beside the figure that follows Till today.
   const [periodFull, setPeriodFull] = useState<Row | null>(null)
+  // Bills already paid more than the period works out to (B7's repayment interest).
+  const overOf = (bdId: unknown): number => {
+    const b = ((period?.bills as Row[]) || []).find((x) => n(x.bd_id) === n(bdId))
+    return b ? Math.max(0, n(b.paid) - n(b.due)) : 0
+  }
   const [picked, setPicked] = useState<Set<number>>(new Set())
   const [banks, setBanks] = useState<Row[]>([])
   // The ledger the TDS goes to — blank keeps TDS ON INTEREST PAYABLE A/C.
@@ -142,7 +147,14 @@ export function BdCumulativeInterest({ open, onClose, nbfcs, onDone }: { open: b
     // Up to the day Till today / Till month end says — the same days being paid.
     void window.api.billDiscounting
       .periodInterestSummary({ nbfc_id: Number(nbfc), from_date: start, to_date: upto, till_month_end: tillEnd && runsAhead })
-      .then((p) => live && setPeriod(p))
+      .then((p) => {
+        if (!live) return
+        setPeriod(p)
+        // A bill already paid over for these days is left unticked — paying it
+        // again only adds to what is to be claimed back.
+        const over = new Set(((p?.bills as Row[]) || []).filter((b) => n(b.paid) - n(b.due) > 0.5).map((b) => n(b.bd_id)))
+        if (over.size) setPicked((x) => new Set([...x].filter((id) => !over.has(id))))
+      })
       .catch(() => live && setPeriod(null))
     void window.api.billDiscounting
       .periodInterestSummary({ nbfc_id: Number(nbfc), from_date: start, to_date: periodEnd, till_month_end: true })
@@ -421,7 +433,9 @@ export function BdCumulativeInterest({ open, onClose, nbfcs, onDone }: { open: b
                 {
                   k: 'Paid, with this payment',
                   v: formatINR(n(period.paid) + tot.gross),
-                  sub: tot.gross > 0.004 ? `+ ${formatINR(tot.gross)} ticked now (gross)` : 'nothing ticked yet',
+                  sub:
+                    (tot.gross > 0.004 ? `+ ${formatINR(tot.gross)} ticked now (gross)` : 'nothing ticked yet') +
+                    (n(period.paid) + tot.gross - n(period.due) > 0.5 ? ` · ${formatINR(n(period.paid) + tot.gross - n(period.due))} over the period` : ''),
                   tone: tot.gross > 0.004 ? 'text-[#0B6B45]' : 'text-[#9AAFA2]'
                 },
                 (() => {
@@ -802,6 +816,15 @@ export function BdCumulativeInterest({ open, onClose, nbfcs, onDone }: { open: b
                                   </span>
                                   <span className="whitespace-nowrap rounded-full bg-[#EEF3EE] px-2 py-0.5 text-[10.5px] font-extrabold tabular-nums text-[#33473E]">{n(r.days)} days</span>
                                 </div>
+                                {/* Already paid over for these days — ticking it pays it twice. */}
+                                {overOf(r.bd_id) > 0.5 && (
+                                  <span
+                                    className="mt-1.5 flex w-fit items-center gap-1 whitespace-nowrap rounded-[4px] border border-[#E8C27A] bg-[#FFF4DC] px-1.5 py-0.5 text-[10.5px] font-bold tabular-nums text-[#7A4B00]"
+                                    title="Interest already paid on this bill for the period is more than it works out to — check with the NBFC before paying these days again"
+                                  >
+                                    <span className="h-1.5 w-1.5 rounded-full bg-[#C98A00]" /> <span className="tracking-[.06em]">ALREADY PAID</span> {formatINR(overOf(r.bd_id))} more this period
+                                  </span>
+                                )}
                                 {/* Days before this period still unpaid: overdue, said, not paid here. */}
                                 {r.unpaid_before && (
                                   <span className="mt-1.5 flex w-fit items-center gap-1 whitespace-nowrap rounded-[4px] border border-[#F3D0CC] bg-[#FDF3F2] px-1.5 py-0.5 text-[10.5px] font-bold tabular-nums text-[#B3261E]" title="These earlier days are still unpaid — pay them with a range that covers them">
