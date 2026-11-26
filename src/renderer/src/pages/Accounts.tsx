@@ -10610,6 +10610,12 @@ Delete ${doc}?`)) return
                                 ? `${String(r.bill_no || 'Booked')}${orphan ? ' · no voucher' : ''}`
                                 : 'Not billed'}
                           </span>
+                          {/* The freight bill's own date, beside its number. */}
+                          {booked && r.bill_date && (
+                            <span className="whitespace-nowrap" style={{ ...mono, fontSize: 11, fontWeight: 600, color: A.inkMid }}>
+                              {formatDate(String(r.bill_date).slice(0, 10))}
+                            </span>
+                          )}
                           {short && !booked && !settled && (
                             <>
                               {!unreg && (
