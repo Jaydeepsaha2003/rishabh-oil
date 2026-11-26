@@ -40866,6 +40866,8 @@ var REQUIRED_COLUMNS = [
   // A short label on one voucher line — what that part of it is ("principal
   // V1", "interest", "bounce & penalty") when one ledger takes several lines.
   { table: "journal_lines", column: "note", type: "TEXT" },
+  // The TDS ledger a transporter bill withholds to (picked on the bill).
+  { table: "transporter_bills", column: "tds_ledger", type: "TEXT" },
   // A note typed on Mark received — kept on the bill, carried on its voucher.
   { table: "bill_discountings", column: "received_note", type: "TEXT" },
   { table: "bd_repayments", column: "tds_ledger", type: "TEXT" },
@@ -45661,6 +45663,7 @@ async function createTransporterBill(v, existingId) {
     await dropEntry3(n54(prior.journal_entry_id) || null);
     await c.execute({ sql: "UPDATE transporter_ledger SET bill_id = NULL WHERE bill_id = ?", args: [existingId] });
   }
+  const tdsLedger = String(v.tds_ledger || prior?.tds_ledger || "").trim().toUpperCase() || "TDS PAYABLE A/C";
   const je = await postJournal({
     date: billDate,
     // A freight bill IS a purchase of a service, so it belongs in the purchase
@@ -45690,7 +45693,7 @@ async function createTransporterBill(v, existingId) {
       ...gstLines({ side: "INPUT", pct: n54(v.gst_pct), type: DEFAULT_GST_TYPE, dr: gst }),
       ...rcmJournalLines(rcmPct, rcm),
       { account: "ROUND OFF A/C", group: "Indirect Expenses", dr: roundOff > 0 ? roundOff : 0, cr: roundOff < 0 ? -roundOff : 0 },
-      { account: "TDS PAYABLE A/C", group: "Duties & Taxes", cr: tds },
+      { account: tdsLedger, group: "Duties & Taxes", cr: tds },
       ...deductions.filter((d) => d.ledger !== frAccount).map((d) => ({ account: d.ledger, group: "Indirect Incomes", cr: d.amount })),
       { account: partyName2, group: "Sundry Creditors", cr: total }
     ]
@@ -45762,6 +45765,8 @@ async function createTransporterBill(v, existingId) {
     });
     billId = Number(ins.lastInsertRowid);
   }
+  await c.execute({ sql: "UPDATE transporter_bills SET tds_ledger = ? WHERE id = ?", args: [tds > 4e-3 ? tdsLedger : null, billId] }).catch(() => {
+  });
   await c.execute({ sql: `UPDATE transporter_ledger SET bill_id = ? WHERE id IN (${ph})`, args: [billId, ...lineIds] });
   return { id: billId };
 }
