@@ -339,18 +339,10 @@ It is one voucher for ${bills.map((b) => b.bd_no).join(', ')} — the payment on
                     <td className="whitespace-nowrap px-2 py-2.5 text-right tabular-nums text-[#5A6B62]">{formatINR(n(g.tds))}</td>
                     <td className="whitespace-nowrap px-2 py-2.5 text-right tabular-nums">
                       <span className="block font-extrabold text-[#0B6B45]">{formatINR(n(g.net))}</span>
-                      {/* Interest paid with a repayment on these days — its own token. */}
-                      {((g.reps as Row[]) || []).map((r) => (
-                        <span
-                          key={String(r.id)}
-                          title={`Interest of ${formatINR(n(r.gross))} (${formatINR(n(r.net))} + ${formatINR(n(r.tds))} TDS) paid with ${String(r.bd_no)}'s repayment${r.pay_code ? ` ${String(r.pay_code)}` : ''} on ${formatDate(String(r.repay_date))} — on these days, so counted with this payment.`}
-                          className="mt-0.5 inline-flex items-center gap-1 rounded-[3px] border border-[#C6DAF0] bg-[#EAF0FA] px-1.5 py-[1px] text-[10px] font-extrabold text-[#1B4E82]"
-                        >
-                          + {formatINR(n(r.net))} · {String(r.bd_no)} repay
-                        </span>
-                      ))}
                       {n(g.rep_net) > 0 && (
-                        <span className="block text-[10.5px] font-bold text-[#33473E]">= {formatINR(n(g.net) + n(g.rep_net))}</span>
+                        <span className="block text-[10.5px] font-bold text-[#5A6B62]" title="With the interest paid in the repayment, on the line below">
+                          with the line below {formatINR(n(g.net) + n(g.rep_net))}
+                        </span>
                       )}
                     </td>
                     <td className="px-2 py-2.5 text-right">
@@ -404,6 +396,35 @@ It is one voucher for ${bills.map((b) => b.bd_no).join(', ')} — the payment on
                       </button>
                     </td>
                   </tr>
+                  {/* INTEREST PAID WITH A REPAYMENT on these days — a payment of its
+                      own (its own bank debit), so a line of its own, hung off the
+                      payment it is counted with. */}
+                  {((g.reps as Row[]) || []).map((r) => (
+                    <tr key={`rep${String(r.id)}`} className="border-t border-dashed border-[#D5E2EE] bg-[#F6F9FD] align-middle">
+                      <td className="px-3 py-2 text-right text-[#9FB6CF]">&#8627;</td>
+                      <td className="whitespace-nowrap px-2 py-2 font-bold tabular-nums text-[#0A1F17]">{formatDate(String(r.repay_date))}</td>
+                      <td className="whitespace-nowrap px-2 py-2">
+                        <div className="font-bold text-[#33473E]">{String(r.pay_code || '—')}</div>
+                        <div className="mt-0.5 inline-flex items-center rounded-[3px] bg-[#EAF0FA] px-1.5 py-[1px] text-[10px] font-extrabold text-[#1B4E82]">
+                          with {String(r.bd_no)}&rsquo;s repayment
+                        </div>
+                      </td>
+                      <td className="px-2 py-2">
+                        <span className="rounded-[4px] border border-[#C6DAF0] bg-white px-1.5 py-0.5 text-[11px] font-extrabold text-[#1B4E82]">{String(r.bd_no)}</span>
+                      </td>
+                      <td className="whitespace-nowrap px-2 py-2 text-[12px] font-extrabold text-[#0A1F17]">{payoutOf(g) || '—'}</td>
+                      <td className="px-2 py-2 text-[11.5px] font-semibold text-[#5A6B62]">counted with {String(g.pay_code || g.vch_no || 'the payment above')}</td>
+                      <td className="max-w-[260px] px-2 py-2">
+                        <div className="truncate text-[12px] font-bold text-[#0A1F17]">{String(g.nbfc_name || '')}</div>
+                        <div className="truncate text-[10.5px] font-semibold text-[#7A8C82]">in the repayment&rsquo;s bank debit</div>
+                      </td>
+                      <td className="whitespace-nowrap px-2 py-2 text-right tabular-nums text-[#33473E]">{formatINR(n(r.gross))}</td>
+                      <td className="whitespace-nowrap px-2 py-2 text-right tabular-nums text-[#5A6B62]">{formatINR(n(r.tds))}</td>
+                      <td className="whitespace-nowrap px-2 py-2 text-right font-extrabold tabular-nums text-[#0B6B45]">{formatINR(n(r.net))}</td>
+                      <td className="px-2 py-2 text-right text-[10.5px] font-semibold text-[#7A8C82]">status on the line above</td>
+                      <td />
+                    </tr>
+                  ))}
                   {isOpen && (
                     <tr className="bg-[#F3F8F2]">
                       <td />
@@ -513,10 +534,13 @@ It is one voucher for ${bills.map((b) => b.bd_no).join(', ')} — the payment on
             <tr className="border-t-[1.5px] border-[#C9DCCF] bg-[#F5F8F4] font-extrabold">
               <td colSpan={7} className="px-3 py-2.5 text-[10.5px] uppercase tracking-[.1em] text-[#33473E]">
                 Total · {list.length} voucher{list.length === 1 ? '' : 's'}
+                {list.some((g) => ((g.reps as Row[]) || []).length) ? ` + ${list.reduce((t, g) => t + ((g.reps as Row[]) || []).length, 0)} with repayments` : ''}
               </td>
-              <td className="whitespace-nowrap px-2 py-2.5 text-right tabular-nums">{formatINR(list.reduce((t, g) => t + n(g.gross), 0))}</td>
-              <td className="whitespace-nowrap px-2 py-2.5 text-right tabular-nums text-[#5A6B62]">{formatINR(list.reduce((t, g) => t + n(g.tds), 0))}</td>
-              <td className="whitespace-nowrap px-2 py-2.5 text-right tabular-nums text-[#0B6B45]">{formatINR(list.reduce((t, g) => t + n(g.net), 0))}</td>
+              <td className="whitespace-nowrap px-2 py-2.5 text-right tabular-nums">{formatINR(list.reduce((t, g) => t + n(g.gross) + n(g.rep_gross), 0))}</td>
+              <td className="whitespace-nowrap px-2 py-2.5 text-right tabular-nums text-[#5A6B62]">
+                {formatINR(list.reduce((t, g) => t + n(g.tds) + ((g.reps as Row[]) || []).reduce((s, r) => s + n(r.tds), 0), 0))}
+              </td>
+              <td className="whitespace-nowrap px-2 py-2.5 text-right tabular-nums text-[#0B6B45]">{formatINR(list.reduce((t, g) => t + n(g.net) + n(g.rep_net), 0))}</td>
               <td colSpan={2} />
             </tr>
           </tfoot>
