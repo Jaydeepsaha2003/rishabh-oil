@@ -8801,16 +8801,17 @@ Delete ${doc}?`)) return
     const taxable = Math.round((lines + adj) * 100) / 100
     const gstPct = tfUnreg ? 0 : Number(tfBill.gst_pct) || 0
     const gst = Math.round(taxable * gstPct) / 100
-    const tds = Math.round(taxable * (Number(tfBill.tds_pct) || 0)) / 100
     // Deductions: recovered on the bill, off what the transporter is paid.
     const others = Math.round(tfDeds.reduce((t, d) => t + Math.max(0, Number(d.amount) || 0), 0) * 100) / 100
+    // TDS ON THE NET FREIGHT — after the deductions (cash discount, dala…), the user's rule.
+    const tds = Math.round(Math.max(0, taxable - others) * (Number(tfBill.tds_pct) || 0)) / 100
     const raw = Math.round((taxable + gst - tds - others) * 100) / 100
     const total = Math.round(raw)
     // RCM: the tax WE owe on an unregistered transporter's freight — booked
     // as payable and as input credit, so it leaves what they are paid alone.
     const rcmPct = tfUnreg ? Math.max(0, String(tfBill.rcm_pct ?? '') === '' ? 0 : Number(tfBill.rcm_pct) || 0) : 0
     const rcm = Math.round(taxable * rcmPct) / 100
-    return { lines, adj, taxable, gstPct, gst, tds, others, ro: Math.round((total - raw) * 100) / 100, total, rcmPct, rcm }
+    return { lines, adj, taxable, gstPct, gst, tds, others, net: Math.round((taxable - others) * 100) / 100, ro: Math.round((total - raw) * 100) / 100, total, rcmPct, rcm }
   })()
 
   function tfToggle(row: Row): void {
@@ -9181,7 +9182,7 @@ Delete ${doc}?`)) return
           aria-modal="true"
           data-escape-layer="drawer"
           className="flex flex-none flex-col"
-          style={{ width: 'min(100%,520px)', background: '#F4F7F2', boxShadow: '-18px 0 40px rgba(7,43,32,.28)' }}
+          style={{ width: 'min(100%,760px)', background: '#F4F7F2', boxShadow: '-18px 0 40px rgba(7,43,32,.28)' }}
         >
           <div className="flex-none text-white" style={{ background: 'linear-gradient(180deg,#11503C,#0B3D2E)', padding: '16px 20px' }}>
             <div className="flex items-start justify-between gap-3">
@@ -9527,8 +9528,6 @@ Delete ${doc}?`)) return
                 {!!c.adj && row('Adjustment', `${c.adj > 0 ? '+ ' : '− '}${formatINR(Math.abs(c.adj))}`, c.adj < 0 ? A.cr : undefined)}
                 <div style={{ borderTop: '1px dashed #DCE7DB', margin: '4px 0' }} />
                 {row(tfUnreg ? 'Freight after shortage' : 'Taxable freight', money(c.taxable), undefined, true)}
-                {!tfUnreg && row(`GST on freight @ ${c.gstPct}%`, `+ ${formatINR(c.gst)}`)}
-                {c.tds > 0.004 && row(`TDS @ ${Number(tfBill.tds_pct) || 0}%`, `− ${formatINR(c.tds)}`, A.cr)}
                 {/* Each deduction on its own line, by what it is for. */}
                 {tfDeds
                   .filter((d) => (Number(d.amount) || 0) > 0.004)
@@ -9544,6 +9543,14 @@ Delete ${doc}?`)) return
                       )}
                     </div>
                   ))}
+                {c.others > 0.004 && (
+                  <>
+                    <div style={{ borderTop: '1px dashed #DCE7DB', margin: '4px 0' }} />
+                    {row('Net freight', money(c.net), undefined, true)}
+                  </>
+                )}
+                {!tfUnreg && row(`GST on freight @ ${c.gstPct}%`, `+ ${formatINR(c.gst)}`)}
+                {c.tds > 0.004 && row(<>TDS @ {Number(tfBill.tds_pct) || 0}%{small(`on ${formatINR(c.net)} net freight`)}</>, `− ${formatINR(c.tds)}`, A.cr)}
                 {Math.abs(c.ro) > 0.004 && row('Round off', `${c.ro > 0 ? '+ ' : '− '}${formatINR(Math.abs(c.ro))}`)}
                 <div className="flex items-baseline justify-between gap-3" style={{ borderTop: '2px solid #0B3D2E', marginTop: 4, paddingTop: 6 }}>
                   <span style={{ fontSize: 11, fontWeight: 800, letterSpacing: '.08em', textTransform: 'uppercase', color: A.ink }}>Net payable to {party}</span>

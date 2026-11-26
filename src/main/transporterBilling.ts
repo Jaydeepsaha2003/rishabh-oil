@@ -327,10 +327,9 @@ export async function createTransporterBill(v: Row, existingId?: number): Promis
   const rcmPct = reg === 'unregistered' ? (v.rcm_pct == null || v.rcm_pct === '' ? RCM_DEFAULT_PCT : Math.max(0, n(v.rcm_pct))) : 0
   const rcm = round2((taxable * rcmPct) / 100)
   const tdsPct = n(v.tds_pct)
-  const tds = round2((taxable * tdsPct) / 100)
   // OTHERS: anything else recovered on this bill — damage, detention, a
   // short-loaded drum — taken off what the transporter is paid and credited to
-  // the ledger named. It is not freight, so it leaves the GST and TDS alone.
+  // the ledger named. It is not freight, so it leaves the GST alone; TDS is on what is left.
   const frAccount = side === 'purchase' ? 'FREIGHT INWARD A/C' : 'FREIGHT OUTWARD A/C'
   // AS MANY DEDUCTIONS AS THE BILL HAS — detention, damage, a short drum —
   // each its own JV line on the ledger it names (freight by default). The
@@ -349,6 +348,8 @@ export async function createTransporterBill(v: Row, existingId?: number): Promis
     }))
     .filter((d) => d.amount > 0.004)
   const othersAmt = round2(deductions.reduce((t, d) => t + d.amount, 0))
+  // TDS ON THE NET FREIGHT — after the deductions (cash discount, dala…), the user's rule.
+  const tds = round2((Math.max(0, taxable - othersAmt) * tdsPct) / 100)
   // The first deduction's ledger, kept on the bill row as before.
   const othersLedger = deductions.length ? deductions[0].ledger : null
   const raw = round2(taxable + gst - tds - othersAmt)
