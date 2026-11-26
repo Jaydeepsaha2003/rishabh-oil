@@ -2317,7 +2317,7 @@ export function Accounts({
   // freight is a handful of parties.
   const [tfBillRow, setTfBillRow] = useState(0)
   const [tfBillWise, setTfBillWise] = useState<Record<string, Row[]>>({})
-  const [tfBill, setTfBill] = useState<Row>({ bill_no: '', bill_date: todayISO(), gst_pct: '5', tds_pct: '', adjustment: '', adjustment_note: '', note: '', others_amount: '', others_ledger: '', others_note: '', rcm_pct: '5' })
+  const [tfBill, setTfBill] = useState<Row>({ bill_no: '', bill_date: todayISO(), gst_pct: '5', tds_pct: '', tds_ledger: 'TDS PAYABLE A/C', adjustment: '', adjustment_note: '', note: '', others_amount: '', others_ledger: '', others_note: '', rcm_pct: '5' })
   // The bill's deductions — as many as it has, each to its own ledger.
   const [tfDeds, setTfDeds] = useState<{ amount: string; ledger: string; note: string }[]>([])
   const [tfSaving, setTfSaving] = useState(false)
@@ -8847,6 +8847,7 @@ Delete ${doc}?`)) return
         bill_date: tfBill.bill_date || todayISO(),
         gst_pct: tfBillCalc.gstPct,
         tds_pct: Number(tfBill.tds_pct) || 0,
+        tds_ledger: String(tfBill.tds_ledger || '').trim() || null,
         adjustment: Number(tfBill.adjustment) || 0,
         adjustment_note: tfBill.adjustment_note || null,
         deductions: tfDeds
@@ -8859,7 +8860,7 @@ Delete ${doc}?`)) return
       toast.success(`Booked ${formatINR(tfBillCalc.total)} to ${tfPickedRows[0].transporter_name}`)
       setTfBillOpen(false)
       setTfPicked([])
-      setTfBill({ bill_no: '', bill_date: todayISO(), gst_pct: '5', tds_pct: '', adjustment: '', adjustment_note: '', note: '', others_amount: '', others_ledger: '', others_note: '', rcm_pct: '5' })
+      setTfBill({ bill_no: '', bill_date: todayISO(), gst_pct: '5', tds_pct: '', tds_ledger: 'TDS PAYABLE A/C', adjustment: '', adjustment_note: '', note: '', others_amount: '', others_ledger: '', others_note: '', rcm_pct: '5' })
       setTfDeds([])
       await loadTFreight()
       loadAccounts()
@@ -9268,7 +9269,7 @@ Delete ${doc}?`)) return
         jr.push({ side: 'Cr', ledger: `RCM Payable GST ${c.rcmPct}% (CGST + SGST)`, amount: c.rcm })
       }
       if (Math.abs(c.ro) > 0.004) jr.push({ side: c.ro > 0 ? 'Dr' : 'Cr', ledger: tfPostedName('ROUND OFF A/C'), amount: Math.abs(c.ro) })
-      if (c.tds > 0.004) jr.push({ side: 'Cr', ledger: tfPostedName('TDS PAYABLE A/C'), amount: c.tds })
+      if (c.tds > 0.004) jr.push({ side: 'Cr', ledger: tfPostedName(String(tfBill.tds_ledger || '').trim().toUpperCase() || 'TDS PAYABLE A/C'), amount: c.tds })
       for (const d of tfDeds) {
         const a = Math.max(0, Number(d.amount) || 0)
         if (a > 0.004 && !onFreight(d)) jr.push({ side: 'Cr', ledger: d.ledger.trim().toUpperCase(), amount: a })
@@ -9320,6 +9321,24 @@ Delete ${doc}?`)) return
                 placeholder="0"
                 style={{ ...field, fontFamily: MONO, textAlign: 'right', border: '1px solid #C3D2C6' }}
               />
+            </div>
+            {/* THE TDS LEDGER — the user's pick; TDS PAYABLE A/C unless changed. */}
+            <div style={{ gridColumn: '1 / -1' }}>
+              {label('TDS ledger')}
+              <input
+                list="tf-tds-ledgers"
+                value={String(tfBill.tds_ledger ?? '')}
+                onChange={(e) => setTfBill((p) => ({ ...p, tds_ledger: e.target.value }))}
+                placeholder="TDS PAYABLE A/C"
+                style={{ ...field, fontWeight: 600, border: '1px solid #C3D2C6' }}
+              />
+              <datalist id="tf-tds-ledgers">
+                {(accounts as Row[])
+                  .filter((a) => /TDS/i.test(String(a.name || '')))
+                  .map((a) => (
+                    <option key={String(a.id)} value={String(a.name)} />
+                  ))}
+              </datalist>
             </div>
           </div>
 

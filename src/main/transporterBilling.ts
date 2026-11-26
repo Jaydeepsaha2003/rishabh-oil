@@ -376,6 +376,8 @@ export async function createTransporterBill(v: Row, existingId?: number): Promis
     await c.execute({ sql: 'UPDATE transporter_ledger SET bill_id = NULL WHERE bill_id = ?', args: [existingId as number] })
   }
 
+  // The TDS ledger picked on the bill; an edit keeps the one it had.
+  const tdsLedger = String(v.tds_ledger || prior?.tds_ledger || '').trim().toUpperCase() || 'TDS PAYABLE A/C'
   const je = await postJournal({
     date: billDate,
     // A freight bill IS a purchase of a service, so it belongs in the purchase
@@ -418,7 +420,7 @@ export async function createTransporterBill(v: Row, existingId?: number): Promis
       ...gstLines({ side: 'INPUT', pct: n(v.gst_pct), type: DEFAULT_GST_TYPE, dr: gst }),
       ...rcmJournalLines(rcmPct, rcm),
       { account: 'ROUND OFF A/C', group: 'Indirect Expenses', dr: roundOff > 0 ? roundOff : 0, cr: roundOff < 0 ? -roundOff : 0 },
-      { account: 'TDS PAYABLE A/C', group: 'Duties & Taxes', cr: tds },
+      { account: tdsLedger, group: 'Duties & Taxes', cr: tds },
       ...deductions.filter((d) => d.ledger !== frAccount).map((d) => ({ account: d.ledger, group: 'Indirect Incomes', cr: d.amount })),
       { account: partyName, group: 'Sundry Creditors', cr: total }
     ]
@@ -450,6 +452,7 @@ export async function createTransporterBill(v: Row, existingId?: number): Promis
     })
     billId = Number(ins.lastInsertRowid)
   }
+  await c.execute({ sql: 'UPDATE transporter_bills SET tds_ledger = ? WHERE id = ?', args: [tds > 0.004 ? tdsLedger : null, billId] }).catch(() => {})
   await c.execute({ sql: `UPDATE transporter_ledger SET bill_id = ? WHERE id IN (${ph})`, args: [billId, ...lineIds] })
   return { id: billId }
 }

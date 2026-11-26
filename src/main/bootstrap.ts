@@ -3569,6 +3569,8 @@ const REQUIRED_COLUMNS: { table: string; column: string; type: string }[] = [
   // A short label on one voucher line — what that part of it is ("principal
   // V1", "interest", "bounce & penalty") when one ledger takes several lines.
   { table: 'journal_lines', column: 'note', type: 'TEXT' },
+  // The TDS ledger a transporter bill withholds to (picked on the bill).
+  { table: 'transporter_bills', column: 'tds_ledger', type: 'TEXT' },
   // A note typed on Mark received — kept on the bill, carried on its voucher.
   { table: 'bill_discountings', column: 'received_note', type: 'TEXT' },
   { table: 'bd_repayments', column: 'tds_ledger', type: 'TEXT' },
