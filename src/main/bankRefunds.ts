@@ -232,6 +232,27 @@ export async function refundInfo(kind: Kind, id: number): Promise<Row> {
   }
 }
 
+/**
+ * The ledger the refund clears. A BD repayment posted since 2026-11-26 leaves
+ * what was paid over the balance on the NBFC's BD ledger, so its refund is
+ * credited there; one still carrying a REFUND DUE line (not yet moved by the
+ * Accounting check) keeps clearing that ledger.
+ */
+async function refundAccount(kind: Kind, id: number, lender: string): Promise<{ name: string; group: string }> {
+  if (kind === 'bd') {
+    const old = await getClient().execute({
+      sql: `SELECT 1 FROM journal_lines jl JOIN ledger_accounts la ON la.id = jl.account_id
+             WHERE jl.entry_id IN (SELECT journal_entry_id FROM bd_repayments WHERE bd_id = ?) AND UPPER(la.name) LIKE 'REFUND DUE - %' LIMIT 1`,
+      args: [id]
+    })
+    if (!old.rows.length) {
+      const nb = String(lender || '').trim().replace(/\s+/g, ' ').toUpperCase()
+      return { name: nb ? `BILLS DISCOUNTED - ${nb}` : 'BILLS DISCOUNTED A/C', group: 'Loans (Liability)' }
+    }
+  }
+  return { name: refundLedgerFor(lender), group: REFUND_DUE_GROUP }
+}
+
 /** A receipt already in the books is the refund: its credit line moves onto the refund-due ledger. */
 export async function linkRefund(kind: Kind, id: number, entryId: number): Promise<{ id: number }> {
   return withDbTransaction(async () => {
@@ -243,7 +264,8 @@ export async function linkRefund(kind: Kind, id: number, entryId: number): Promi
     const line = toPlain(await c.execute({ sql: 'SELECT id, account_id, cr FROM journal_lines WHERE entry_id = ? AND cr > 0', args: [entryId] }))
     if (line.length !== 1) throw new Error('That receipt has more than one credit line — record the refund instead')
     const f = await facility(kind, id)
-    const acc = await getOrCreateAccount(refundLedgerFor(f.lender), REFUND_DUE_GROUP, f.company_id || undefined)
+    const ra = await refundAccount(kind, id, f.lender)
+    const acc = await getOrCreateAccount(ra.name, ra.group, f.company_id || undefined)
     await c.execute({ sql: 'DELETE FROM journal_bill_allocs WHERE line_id = ?', args: [n(line[0].id)] })
     await c.execute({ sql: 'UPDATE journal_lines SET account_id = ? WHERE id = ?', args: [acc, n(line[0].id)] })
     const ins = await c.execute({
@@ -251,7 +273,7 @@ export async function linkRefund(kind: Kind, id: number, entryId: number): Promi
             VALUES (?, ?, ?, ?, ?, 'linked', ?, ?)`,
       args: [kind, id, entryId, round2(n(cand.amount)), String(cand.date), n(line[0].account_id), n(line[0].id)]
     })
-    console.log(`[refunds] ${kind} ${id}: receipt ${String(cand.code)} (${n(cand.amount)}) linked as the bank's refund — credit moved from ${String(cand.from_ledger)} to ${refundLedgerFor(f.lender)}`)
+    console.log(`[refunds] ${kind} ${id}: receipt ${String(cand.code)} (${n(cand.amount)}) linked as the bank's refund — credit moved from ${String(cand.from_ledger)} to ${ra.name}`)
     return { id: Number(ins.lastInsertRowid || 0) }
   })
 }
@@ -271,6 +293,7 @@ export async function recordRefund(kind: Kind, id: number, v: { date: string; am
     const bank = String(v.bank || info.bank || '').trim()
     if (!bank) throw new Error('Pick the bank the refund came into')
     const f = await facility(kind, id)
+    const ra = await refundAccount(kind, id, f.lender)
     const je = await postJournal({
       date,
       vchType: 'RECEIPT',
@@ -278,7 +301,7 @@ export async function recordRefund(kind: Kind, id: number, v: { date: string; am
       companyId: f.company_id || undefined,
       lines: [
         { account: bank, group: 'Bank Accounts', dr: amount },
-        { account: refundLedgerFor(f.lender), group: REFUND_DUE_GROUP, cr: amount }
+        { account: ra.name, group: ra.group, cr: amount }
       ]
     })
     const ins = await c.execute({

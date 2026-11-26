@@ -21,7 +21,7 @@ import { resolveAccountName } from './ledgerMap'
 // The bare fallback is kept for a bill with no NBFC on it — nothing should
 // reach here without one, but a name is not a thing to assume.
 const BD_PAYABLE_GROUP = 'Loans (Liability)'
-function bdPayable(bd: Row): string {
+export function bdPayable(bd: Row): string {
   const nb = String(bd.nbfc_name || '').trim().replace(/\s+/g, ' ').toUpperCase()
   return nb ? `BILLS DISCOUNTED - ${nb}` : 'BILLS DISCOUNTED A/C'
 }
@@ -356,8 +356,9 @@ async function dropRepayEntries(bd: Row): Promise<void> {
       WHERE mine.bd_id=? LIMIT 1`, args: [Number(bd.id)]
   })
   if (shared.rows.length) throw new Error('This bill shares a repayment with another bill — undo that combined repayment first')
-  const parts = await c.execute({ sql: 'SELECT journal_entry_id, interest_entry_id FROM bd_repayments WHERE bd_id = ?', args: [Number(bd.id)] })
+  const parts = await c.execute({ sql: 'SELECT journal_entry_id, interest_entry_id, charges_entry_id FROM bd_repayments WHERE bd_id = ?', args: [Number(bd.id)] })
   for (const r of parts.rows) {
+    await dropEntry(n(r.charges_entry_id) || null)
     await dropEntry(n(r.interest_entry_id) || null)
     await dropEntry(n(r.journal_entry_id) || null)
   }
@@ -1898,13 +1899,18 @@ export async function repayBd(
   // interest — Bills Discounted A/C To Bank A/C — and the interest is put on
   // that ledger by a journal of its own (Interest To Bills Discounted, To TDS),
   // the way Tally books it.
-  const lines: JournalLine[] = [
-    { account: bdPayable(bd), group: BD_PAYABLE_GROUP, dr: round2(asked + toOthers + interestPaid) }
-  ]
-  if (comm > 0.004) lines.push({ account: 'COMM. CHARGES A/C', group: 'Indirect Expenses', dr: comm })
-  if (bankCharges > 0.004) lines.push({ account: 'BANK CHARGES A/C', group: 'Indirect Expenses', dr: bankCharges })
-  if (penaltyPaid > 0.004) lines.push({ account: 'PENAL INTEREST ON BILL DISCOUNTING A/C', group: 'Indirect Expenses', dr: penaltyPaid })
-  for (const ch of charges) lines.push({ account: ch.account, group: ch.group, dr: ch.amount })
+  // THE WHOLE DEBIT GOES THROUGH THE NBFC'S BD LEDGER (since 2026-11-26, the
+  // user's rule): the payment is Bills Discounted Dr / Bank Cr for every rupee
+  // that left; the costs in it come onto that ledger by a journal of their own
+  // (Penalty / Commission / Bank charges Dr, To Bills Discounted), like the
+  // interest journal. Money paid over the balance stays a debit on the BD
+  // ledger until the NBFC refunds it (Bank Dr / To Bills Discounted).
+  const costLines: JournalLine[] = []
+  if (comm > 0.004) costLines.push({ account: 'COMM. CHARGES A/C', group: 'Indirect Expenses', dr: comm })
+  if (bankCharges > 0.004) costLines.push({ account: 'BANK CHARGES A/C', group: 'Indirect Expenses', dr: bankCharges })
+  if (penaltyPaid > 0.004) costLines.push({ account: 'PENAL INTEREST ON BILL DISCOUNTING A/C', group: 'Indirect Expenses', dr: penaltyPaid })
+  for (const ch of charges) if (!isRefundDue(ch.account)) costLines.push({ account: ch.account, group: ch.group, dr: ch.amount })
+  const lines: JournalLine[] = [{ account: bdPayable(bd), group: BD_PAYABLE_GROUP, dr: paidOut }]
   if (settleVia === 'party') {
     lines.push({
       account: party,
@@ -1969,6 +1975,18 @@ export async function repayBd(
   })
   // The interest in this debit, on this bill's repayment row (column added at
   // startup — bd_repay_interest_v1).
+  if (costLines.length) {
+    const costTotal = round2(costLines.reduce((t, l) => t + n(l.dr), 0))
+    const cj = await postJournal({
+      date,
+      vchType: 'JOURNAL',
+      vchNo: String(bd.bd_no || ''),
+      narration: `Charges on Bill Discounting ${bd.bd_no} repayment to ${bd.nbfc_name || 'the NBFC'} — ${costLines.map((l) => `${inr(n(l.dr))} ${l.account}`).join(', ')}`,
+      companyId: n(bd.company_id) || undefined,
+      lines: [...costLines, { account: bdPayable(bd), group: BD_PAYABLE_GROUP, cr: costTotal }]
+    })
+    await c.execute({ sql: 'UPDATE bd_repayments SET charges_entry_id = ? WHERE id = ?', args: [cj.id, Number(insRep.lastInsertRowid || 0)] })
+  }
   if (interestPaid > 0.004) {
     await c.execute({ sql: 'UPDATE bd_repayments SET interest = ? WHERE id = ?', args: [interestPaid, Number(insRep.lastInsertRowid || 0)] })
     const ij = await postBdInterestJournal(bd, date, interestPaid, tdsAmt, tdsLedger)
@@ -3490,6 +3508,11 @@ export async function deleteBdRepayment(repaymentId: number): Promise<{ id: numb
     ? toPlain(await c.execute({ sql: 'SELECT interest_entry_id FROM bd_repayments WHERE journal_entry_id = ? AND interest_entry_id IS NOT NULL', args: [je] }))
     : n(part.interest_entry_id) ? [{ interest_entry_id: part.interest_entry_id }] : []
   for (const x of interestJes) await dropEntry(n(x.interest_entry_id) || null)
+  // And its charges journal.
+  const chargeJes = je
+    ? toPlain(await c.execute({ sql: 'SELECT charges_entry_id FROM bd_repayments WHERE journal_entry_id = ? AND charges_entry_id IS NOT NULL', args: [je] }))
+    : n(part.charges_entry_id) ? [{ charges_entry_id: part.charges_entry_id }] : []
+  for (const x of chargeJes) await dropEntry(n(x.charges_entry_id) || null)
   await dropEntry(je || null)
   await ensureBdAdjust()
   if (je) {
@@ -3581,6 +3604,7 @@ export async function editBdRepayment(
       : null
     // The interest journal keeps its number too.
     const oldIntJe = n(primary.interest_entry_id)
+    const oldChJe = n(primary.charges_entry_id)
     // The repayments being folded in — each a debit of its own today.
     const mergeRows: Row[] = []
     const seenJe = new Set<number>([oldJe])
@@ -3684,6 +3708,7 @@ export async function editBdRepayment(
       await c.execute({ sql: 'UPDATE journal_lines SET entry_id = ? WHERE entry_id = ?', args: [to, from] })
       await c.execute({ sql: 'UPDATE bd_repayments SET journal_entry_id = ? WHERE journal_entry_id = ?', args: [to, from] })
       await c.execute({ sql: 'UPDATE bd_repayments SET interest_entry_id = ? WHERE interest_entry_id = ?', args: [to, from] })
+      await c.execute({ sql: 'UPDATE bd_repayments SET charges_entry_id = ? WHERE charges_entry_id = ?', args: [to, from] })
       await c.execute({ sql: 'UPDATE bill_discountings SET margin_release_journal_entry_id = ? WHERE margin_release_journal_entry_id = ?', args: [to, from] })
       await c.execute({ sql: 'DELETE FROM voucher_numbers WHERE entry_id = ?', args: [from] }).catch(() => {})
       await c.execute({ sql: 'DELETE FROM journal_entries WHERE id = ?', args: [from] })
@@ -3696,6 +3721,10 @@ export async function editBdRepayment(
     if (oldIntJe) {
       const ni = toPlain(await c.execute({ sql: 'SELECT interest_entry_id FROM bd_repayments WHERE journal_entry_id = ? AND interest_entry_id IS NOT NULL LIMIT 1', args: [entry] }))[0]
       if (n(ni?.interest_entry_id)) await moveEntry(n(ni.interest_entry_id), oldIntJe, 'JOURNAL')
+    }
+    if (oldChJe) {
+      const nc = toPlain(await c.execute({ sql: 'SELECT charges_entry_id FROM bd_repayments WHERE journal_entry_id = ? AND charges_entry_id IS NOT NULL LIMIT 1', args: [entry] }))[0]
+      if (n(nc?.charges_entry_id)) await moveEntry(n(nc.charges_entry_id), oldChJe, 'JOURNAL')
     }
     for (const [id, oldM] of oldMargins) {
       const b = await loadBd(id)

@@ -75,7 +75,7 @@ export async function voucherAlterInfo(entryId: number): Promise<AlterInfo> {
 
   if (owner.kind === 'bd') {
     // The interest journal of a repayment opens its payment's form.
-    const viaInt = (await rows('SELECT journal_entry_id FROM bd_repayments WHERE interest_entry_id = ? LIMIT 1', [id]))[0]
+    const viaInt = (await rows('SELECT journal_entry_id FROM bd_repayments WHERE interest_entry_id = ? OR charges_entry_id = ? LIMIT 1', [id, id]))[0]
     const payJe = n(viaInt?.journal_entry_id) || id
     const rep = await rows('SELECT * FROM bd_repayments WHERE journal_entry_id = ? ORDER BY id', [payJe])
     if (rep.length) {

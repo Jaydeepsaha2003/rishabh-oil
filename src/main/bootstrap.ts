@@ -3563,6 +3563,9 @@ const REQUIRED_COLUMNS: { table: string; column: string; type: string }[] = [
   // A BD repayment's interest as its own journal, with the TDS held on it
   // (billDiscounting.ts postBdInterestJournal).
   { table: 'bd_repayments', column: 'interest_entry_id', type: 'INTEGER' },
+  // A BD repayment's costs (penalty, commission, bank charges) as their own
+  // journal onto the BD ledger — the payment is the BD ledger's for the whole debit.
+  { table: 'bd_repayments', column: 'charges_entry_id', type: 'INTEGER' },
   // A note typed on Mark received — kept on the bill, carried on its voucher.
   { table: 'bill_discountings', column: 'received_note', type: 'TEXT' },
   { table: 'bd_repayments', column: 'tds_ledger', type: 'TEXT' },

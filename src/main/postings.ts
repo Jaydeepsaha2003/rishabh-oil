@@ -479,7 +479,8 @@ export async function documentPostings(a: {
         id,
         [
           ['journal_entry_id', (r) => `Repayment${s(r.repay_date) ? ` · ${dmy(r.repay_date)}` : ''}`],
-          ['interest_entry_id', (r) => `Repayment interest${s(r.repay_date) ? ` · ${dmy(r.repay_date)}` : ''}`]
+          ['interest_entry_id', (r) => `Repayment interest${s(r.repay_date) ? ` · ${dmy(r.repay_date)}` : ''}`],
+          ['charges_entry_id', (r) => `Repayment charges${s(r.repay_date) ? ` · ${dmy(r.repay_date)}` : ''}`]
         ],
         ['repay_date']
       )),

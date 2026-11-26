@@ -1409,6 +1409,7 @@ export async function bdMovableEntryIds(): Promise<Set<number>> {
     'SELECT journal_entry_id AS id FROM bill_discountings WHERE journal_entry_id IS NOT NULL',
     'SELECT journal_entry_id AS id FROM bd_repayments WHERE journal_entry_id IS NOT NULL',
     'SELECT interest_entry_id AS id FROM bd_repayments WHERE interest_entry_id IS NOT NULL',
+    'SELECT charges_entry_id AS id FROM bd_repayments WHERE charges_entry_id IS NOT NULL',
     'SELECT journal_entry_id AS id FROM bd_interest_payments WHERE journal_entry_id IS NOT NULL'
   ]) {
     const r = await c.execute(sql).catch(() => null)
@@ -1442,7 +1443,9 @@ async function moveBdVoucherDate(entryId: number, from: string, to: string): Pro
   }
 
   // A repayment's interest journal moves with its payment.
-  const ofInterest = await one('SELECT journal_entry_id FROM bd_repayments WHERE interest_entry_id = ? AND journal_entry_id IS NOT NULL')
+  const ofInterest =
+    (await one('SELECT journal_entry_id FROM bd_repayments WHERE interest_entry_id = ? AND journal_entry_id IS NOT NULL')) ||
+    (await one('SELECT journal_entry_id FROM bd_repayments WHERE charges_entry_id = ? AND journal_entry_id IS NOT NULL'))
   if (ofInterest) return moveBdVoucherDate(Number(ofInterest.journal_entry_id), from, to)
 
   // A repayment — one bank debit can be several bills' repayment rows.
@@ -1456,6 +1459,7 @@ async function moveBdVoucherDate(entryId: number, from: string, to: string): Pro
     for (const r of rows) {
       await c.execute({ sql: 'UPDATE bd_repayments SET repay_date = ? WHERE id = ?', args: [to, Number(r.id)] })
       if (n(r.interest_entry_id)) await c.execute({ sql: 'UPDATE journal_entries SET entry_date = ? WHERE id = ?', args: [to, n(r.interest_entry_id)] })
+      if (n(r.charges_entry_id)) await c.execute({ sql: 'UPDATE journal_entries SET entry_date = ? WHERE id = ?', args: [to, n(r.charges_entry_id)] })
       // A bill this repayment closed carries its closing date too.
       if (String(r.bill_repaid || '').slice(0, 10) === from) {
         await c.execute({ sql: 'UPDATE bill_discountings SET repaid_date = ? WHERE id = ?', args: [to, Number(r.bd_id)] })

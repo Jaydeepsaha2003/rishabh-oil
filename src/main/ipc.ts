@@ -95,6 +95,8 @@ import {
   fixLoadedFreight,
   previewShortageReprice,
   fixShortageReprice,
+  previewBdThrough,
+  fixBdThrough,
   previewSharedLedgers,
   fixSharedLedgers
 } from './accountingRepairs'
@@ -2158,6 +2160,15 @@ export function registerIpc(): void {
   handle('repairs:shortageRepriceFix', async (_e, a: { ids: number[] }) => {
     await assertAdmin('Re-pricing tanker shortages')
     return fixShortageReprice(a?.ids || [])
+  })
+  // BD repayments still carrying their costs / refund due on the payment itself.
+  handle('repairs:bdThrough:list', async () => {
+    await assertAdmin('The accounting checks')
+    return previewBdThrough()
+  })
+  handle('repairs:bdThroughFix', async (_e, a: { ids: number[] }) => {
+    await assertAdmin('Re-posting BD repayments through the BD ledger')
+    return fixBdThrough(a?.ids || [])
   })
   // Purchase / sale vouchers filed in the other company's books.
   handle('repairs:wrongCompany:list', async () => {

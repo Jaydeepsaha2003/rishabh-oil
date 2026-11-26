@@ -95,6 +95,9 @@ export function AccountingChecks(): React.JSX.Element {
   // Open tanker shortage lines not at the invoice's adjusted rate.
   const [shRep, setShRep] = useState<Row | null>(null)
   const [fixingShRep, setFixingShRep] = useState(false)
+  // BD repayments still carrying their costs / refund due on the payment.
+  const [bdThru, setBdThru] = useState<Row | null>(null)
+  const [fixingBdThru, setFixingBdThru] = useState(false)
   const [shared, setShared] = useState<Row | null>(null)
   const [splitting, setSplitting] = useState(false)
   // Purchase / sale vouchers filed in the other company's books.
@@ -168,6 +171,7 @@ export function AccountingChecks(): React.JSX.Element {
       setOutFreight(await window.api.repairs.outwardFreight().catch(() => null))
       setLoadedFr(await window.api.repairs.loadedFreight().catch(() => null))
       setShRep(await window.api.repairs.shortageReprice().catch(() => null))
+      setBdThru(await window.api.repairs.bdThrough().catch(() => null))
       setShared(await window.api.repairs.sharedLedgers().catch(() => null))
       setWrongCo(await window.api.repairs.wrongCompany().catch(() => null))
       const sh = await window.api.repairs.shadowedRedirects().catch(() => null)
@@ -392,6 +396,28 @@ export function AccountingChecks(): React.JSX.Element {
       toast.error((e as Error).message)
     } finally {
       setFixingShRep(false)
+    }
+  }
+
+  const btFindings: Row[] = useMemo(() => (bdThru?.findings as Row[]) || [], [bdThru])
+  const btFixable = useMemo(() => btFindings.filter((x) => !x.review), [btFindings])
+  async function fixBdThru(): Promise<void> {
+    const ids = btFixable.map((x) => Number(x.entry_id))
+    if (!ids.length) return
+    const ok = window.confirm(
+      `Re-post ${ids.length} BD repayment${ids.length === 1 ? '' : 's'} through the BD ledger?\n\n` +
+        'Each payment becomes Bills Discounted Dr / Bank Cr for the whole debit (number and date kept). Penalty, commission and bank charges move to a journal of their own (Dr the charge, To Bills Discounted). Money paid over the balance stays on the BD ledger instead of REFUND DUE, and any refund already received is credited to the BD ledger too. Every voucher is logged first. Take a database snapshot if you want a copy you can restore.'
+    )
+    if (!ok) return
+    setFixingBdThru(true)
+    try {
+      const r = await window.api.repairs.fixBdThrough(ids)
+      toast.success(`${r.fixed} repayment${r.fixed === 1 ? '' : 's'} re-posted through the BD ledger · ${r.journals} charges journal${r.journals === 1 ? '' : 's'}`)
+      await load()
+    } catch (e) {
+      toast.error((e as Error).message)
+    } finally {
+      setFixingBdThru(false)
     }
   }
 
@@ -1180,6 +1206,59 @@ export function AccountingChecks(): React.JSX.Element {
           <Button className="ml-auto gap-1.5" disabled={!srFindings.length || fixingShRep} onClick={() => void fixShRep()}>
             {fixingShRep && <Loader2 className="h-4 w-4 animate-spin" />}
             Re-price {srFindings.length} shortage line{srFindings.length === 1 ? '' : 's'}
+          </Button>
+        </div>
+      </Section>
+
+      <Section
+        title="BD repayments not through the BD ledger"
+        count={btFindings.length}
+        tone={btFindings.length ? 'warn' : 'ok'}
+        note={
+          btFindings.length
+            ? 'These BD repayment payments still debit penalty, commission, charges or REFUND DUE themselves. Re-posting makes the payment the BD ledger’s for the whole debit, with the charges on a journal of their own — like the interest journal — and leaves any excess on the BD ledger until the NBFC refunds it.'
+            : 'Every BD repayment goes through its BD ledger.'
+        }
+      >
+        <table className="w-full border-collapse">
+          <thead className="bg-muted/40">
+            <tr>
+              <th className={th}>Date</th>
+              <th className={th}>Payment</th>
+              <th className={th}>Bills</th>
+              <th className={th}>Moves to a journal</th>
+              <th className={cn(th, 'text-right')}>Refund due → BD ledger</th>
+              <th className={cn(th, 'text-right')}>BD ledger Dr now → after</th>
+            </tr>
+          </thead>
+          <tbody>
+            {btFindings.map((x) => (
+              <tr key={String(x.entry_id)} className={cn('border-t', x.review && 'bg-amber-50/60')}>
+                <td className={cn(td, 'tabular-nums')}>{formatDate(String(x.date))}</td>
+                <td className={cn(td, 'font-semibold')}>
+                  {String(x.code || x.entry_id)}
+                  {x.review && <div className="whitespace-normal text-[11px] font-medium text-amber-800">Needs review — {String(x.review)}</div>}
+                </td>
+                <td className={td}>{String(x.bills)}</td>
+                <td className={cn(td, 'whitespace-normal')}>
+                  {((x.costs as Row[]) || []).map((k) => `${String(k.account)} ${formatINR(Number(k.amount))}`).join(' · ') || '—'}
+                </td>
+                <td className={cn(td, 'text-right tabular-nums')}>{Number(x.refund_due) > 0 ? formatINR(Number(x.refund_due)) : '—'}</td>
+                <td className={cn(td, 'text-right tabular-nums font-semibold')}>
+                  {formatINR(Number(x.bd_dr))} → {formatINR(Number(x.total))}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+        <div className="flex flex-wrap items-center gap-3 border-t bg-muted/30 px-4 py-3">
+          <span className="text-[12.5px] text-muted-foreground">
+            {btFixable.length} payment{btFixable.length === 1 ? '' : 's'} can be re-posted
+            {btFindings.length - btFixable.length ? ` · ${btFindings.length - btFixable.length} left for review (not touched)` : ''}
+          </span>
+          <Button className="ml-auto gap-1.5" disabled={!btFixable.length || fixingBdThru} onClick={() => void fixBdThru()}>
+            {fixingBdThru && <Loader2 className="h-4 w-4 animate-spin" />}
+            Re-post {btFixable.length} through the BD ledger
           </Button>
         </div>
       </Section>

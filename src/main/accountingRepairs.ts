@@ -1640,3 +1640,159 @@ export async function fixShortageReprice(lineIds: number[]): Promise<{ fixed: nu
     return { fixed: await applyShortageReprice(picked) }
   })
 }
+
+// ── BD REPAYMENTS THROUGH THE BD LEDGER ─────────────────────────────────────
+// Since 2026-11-26 a BD repayment's payment is the NBFC's BD ledger's for the
+// whole bank debit, and its costs (penalty, commission, bank charges, other
+// ledger charges) come onto that ledger by a journal of their own; money paid
+// over the balance stays on the BD ledger instead of REFUND DUE - <NBFC>.
+// Older payments still carry those lines themselves — V1's PAY/1054: Dr BD
+// ₹43,92,031.78, Dr REFUND DUE ₹3,00,000, Dr BOUNCE & PENALTY ₹7,633.97, Cr
+// HDFC ₹46,99,665.75. Re-posted only on review; voucher number kept.
+type BdThroughFinding = {
+  entry_id: number
+  repayment_id: number
+  company_id: number
+  date: string
+  code: string
+  bills: string
+  bd_ledger: string
+  bd_dr: number
+  total: number
+  costs: { account: string; amount: number }[]
+  refund_due: number
+  refund_ledger: string
+  review: string
+}
+async function scanBdThrough(): Promise<BdThroughFinding[]> {
+  const c = getClient()
+  const heads = (
+    await c.execute(`
+      SELECT r.journal_entry_id AS je, MIN(r.id) AS rid, je.entry_date, je.company_id, nb.name AS nbfc,
+             GROUP_CONCAT(b.bd_no, ', ') AS bills, MAX(COALESCE(r.charges_entry_id, 0)) AS has_ch,
+             (SELECT nn.prefix || '/' || nn.serial FROM voucher_numbers nn WHERE nn.entry_id = r.journal_entry_id) AS code
+        FROM bd_repayments r
+        JOIN bill_discountings b ON b.id = r.bd_id
+        LEFT JOIN nbfcs nb ON nb.id = b.nbfc_id
+        JOIN journal_entries je ON je.id = r.journal_entry_id
+       GROUP BY r.journal_entry_id
+       ORDER BY je.entry_date, r.journal_entry_id`)
+  ).rows.map((x) => ({ ...x }) as Record<string, unknown>)
+  const out: BdThroughFinding[] = []
+  for (const h of heads) {
+    if (Number(h.has_ch)) continue
+    const je = Number(h.je)
+    const nb = String(h.nbfc || '').trim().replace(/\s+/g, ' ').toUpperCase()
+    const bdLedger = nb ? `BILLS DISCOUNTED - ${nb}` : 'BILLS DISCOUNTED A/C'
+    const lines = (
+      await c.execute({
+        sql: `SELECT jl.id, jl.dr, jl.cr, UPPER(TRIM(la.name)) AS account FROM journal_lines jl JOIN ledger_accounts la ON la.id = jl.account_id WHERE jl.entry_id = ? ORDER BY jl.id`,
+        args: [je]
+      })
+    ).rows.map((x) => ({ ...x }) as Record<string, unknown>)
+    const drs = lines.filter((l) => Number(l.dr) > 0.004)
+    // The BD ledger as the voucher names it (TYGER's reads 'BILLS DISCOUNTED- TYGER …').
+    const isBd = (l: Record<string, unknown>): boolean => String(l.account).startsWith('BILLS DISCOUNTED')
+    const bdDr = drs.filter(isBd)
+    const others = drs.filter((l) => !isBd(l))
+    if (!others.length) continue
+    const ledger = bdDr.length === 1 ? String(bdDr[0].account) : bdLedger
+    const total = Math.round(lines.reduce((t, l) => t + Number(l.cr), 0) * 100) / 100
+    const refund = others.filter((l) => String(l.account).startsWith('REFUND DUE - '))
+    const costs = others.filter((l) => !String(l.account).startsWith('REFUND DUE - '))
+    let review = ''
+    if (bdDr.length !== 1) review = bdDr.length ? 'the voucher debits the BD ledger on more than one line' : `the voucher has no debit to ${bdLedger}`
+    out.push({
+      entry_id: je,
+      repayment_id: Number(h.rid),
+      company_id: Number(h.company_id),
+      date: String(h.entry_date || '').slice(0, 10),
+      code: String(h.code || ''),
+      bills: String(h.bills || ''),
+      bd_ledger: ledger,
+      bd_dr: bdDr.length ? Number(bdDr[0].dr) : 0,
+      total,
+      costs: costs.map((l) => ({ account: String(l.account), amount: Number(l.dr) })),
+      refund_due: Math.round(refund.reduce((t, l) => t + Number(l.dr), 0) * 100) / 100,
+      refund_ledger: refund.length ? String(refund[0].account) : '',
+      review
+    })
+  }
+  return out
+}
+
+/** BD repayment payments still carrying their costs / refund due themselves — read only. */
+export async function previewBdThrough(): Promise<{ findings: BdThroughFinding[] }> {
+  return { findings: await scanBdThrough() }
+}
+
+/** Re-post the listed payments through the BD ledger. Refuses anything a fresh scan no longer offers. */
+export async function fixBdThrough(entryIds: number[]): Promise<{ fixed: number; journals: number }> {
+  const wanted = new Set((entryIds || []).map(Number).filter(Boolean))
+  if (!wanted.size) throw new Error('Pick the repayments to re-post')
+  return withDbTransaction(async () => {
+    const c = getClient()
+    await ensureLog()
+    const { getOrCreateAccount, postJournal } = await import('./journal')
+    const allowed = new Map((await scanBdThrough()).filter((f) => !f.review).map((f) => [f.entry_id, f]))
+    const stale = [...wanted].filter((id) => !allowed.has(id))
+    if (stale.length) throw new Error(`${stale.length} payment${stale.length === 1 ? ' has' : 's have'} changed since the list was shown — check again`)
+    let journals = 0
+    for (const je of wanted) {
+      const f = allowed.get(je) as BdThroughFinding
+      const before = (await c.execute({ sql: 'SELECT * FROM journal_lines WHERE entry_id = ? ORDER BY id', args: [je] })).rows.map((x) => ({ ...x }))
+      await c.execute({
+        sql: 'INSERT OR IGNORE INTO accounting_repair_log(repair_key, entry_id, before_json) VALUES (?, ?, ?)',
+        args: [`bd-through-v1:${je}`, je, JSON.stringify({ lines: before, finding: f })]
+      })
+      const bdAcc = await getOrCreateAccount(f.bd_ledger, 'Loans (Liability)', f.company_id || undefined)
+      const lines = (
+        await c.execute({
+          sql: `SELECT jl.id, jl.dr, UPPER(TRIM(la.name)) AS account FROM journal_lines jl JOIN ledger_accounts la ON la.id = jl.account_id WHERE jl.entry_id = ? AND jl.dr > 0.004`,
+          args: [je]
+        })
+      ).rows.map((x) => ({ ...x }) as Record<string, unknown>)
+      const bdLine = lines.find((l) => String(l.account) === f.bd_ledger)
+      const moved = lines.filter((l) => l !== bdLine)
+      if (!bdLine || !moved.length) throw new Error(`${f.code || je} no longer looks the same — nothing was changed`)
+      const add = Math.round(moved.reduce((t, l) => t + Number(l.dr), 0) * 100) / 100
+      const ids = moved.map((l) => Number(l.id))
+      await c.execute({ sql: `DELETE FROM journal_bill_allocs WHERE line_id IN (${ids.join(',')})`, args: [] })
+      await c.execute({ sql: `DELETE FROM journal_lines WHERE id IN (${ids.join(',')})`, args: [] })
+      await c.execute({ sql: 'UPDATE journal_lines SET dr = ROUND(dr + ?, 2) WHERE id = ?', args: [add, Number(bdLine.id)] })
+      // The costs: their own journal onto the BD ledger.
+      const costs = moved.filter((l) => !String(l.account).startsWith('REFUND DUE - '))
+      if (costs.length) {
+        const ct = Math.round(costs.reduce((t, l) => t + Number(l.dr), 0) * 100) / 100
+        const bill = String(f.bills.split(',')[0] || '').trim()
+        const cj = await postJournal({
+          date: f.date,
+          vchType: 'JOURNAL',
+          vchNo: bill,
+          narration: `Charges on Bill Discounting ${f.bills} repayment ${f.code} — ${costs.map((l) => `₹${Number(l.dr).toFixed(2)} ${String(l.account)}`).join(', ')}`,
+          companyId: f.company_id || undefined,
+          lines: [...costs.map((l) => ({ account: String(l.account), group: 'Indirect Expenses', dr: Number(l.dr) })), { account: f.bd_ledger, group: 'Loans (Liability)', cr: ct }]
+        })
+        await c.execute({ sql: 'UPDATE bd_repayments SET charges_entry_id = ? WHERE id = ?', args: [cj.id, f.repayment_id] })
+        journals++
+      }
+      // A refund already back on REFUND DUE comes off the BD ledger instead.
+      if (f.refund_due > 0.004 && f.refund_ledger) {
+        const ref = (await c.execute({ sql: 'SELECT id FROM ledger_accounts WHERE UPPER(TRIM(name)) = ? LIMIT 1', args: [f.refund_ledger] })).rows[0]
+        if (ref) {
+          const bills = (await c.execute({ sql: 'SELECT DISTINCT bd_id FROM bd_repayments WHERE journal_entry_id = ?', args: [je] })).rows.map((x) => Number(x.bd_id))
+          const refunds = (
+            await c.execute({ sql: `SELECT entry_id, line_id FROM facility_refunds WHERE kind = 'bd' AND facility_id IN (${bills.join(',')})`, args: [] }).catch(() => ({ rows: [] }))
+          ).rows.map((x) => ({ ...x }) as Record<string, unknown>)
+          for (const r of refunds) {
+            await c.execute({
+              sql: `UPDATE journal_lines SET account_id = ? WHERE account_id = ? AND cr > 0.004 AND (id = ? OR entry_id = ?)`,
+              args: [bdAcc, Number(ref.id), Number(r.line_id) || -1, Number(r.entry_id)]
+            })
+          }
+        }
+      }
+    }
+    return { fixed: wanted.size, journals }
+  })
+}

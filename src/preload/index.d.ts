@@ -825,6 +825,8 @@ export interface Api {
     fixLoadedFreight: (ids: number[]) => Promise<{ fixed: number; cut: number }>
     shortageReprice: () => Promise<Row>
     fixShortageReprice: (ids: number[]) => Promise<{ fixed: number }>
+    bdThrough: () => Promise<Row>
+    fixBdThrough: (ids: number[]) => Promise<{ fixed: number; journals: number }>
     wrongCompany: () => Promise<Row>
     splitTanker: () => Promise<Row>
     paisa: () => Promise<Row>
