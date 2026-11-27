@@ -20863,7 +20863,19 @@ async function assertAllowed(channel, args) {
   if (ns === "gate" && action === "edit" && GATE_FINISH_OPS.has(op) && await gateEntryUnfinished(Number(args?.id) || 0)) {
     action = "create";
   }
+  const va = args?.values || {};
+  const newRepay = ns === "bd" && op === "repay" || ns === "lc" && (op === "repayParts" || op === "saveRepayment" && !Number(va.id));
+  const repayRow = ns === "bd" && (op === "editRepayment" || op === "deleteRepayment") ? { table: "bd_repayments", id: Number(args?.id) || 0 } : ns === "lc" && op === "saveRepayment" && Number(va.id) ? { table: "lc_repayments", id: Number(va.id) } : ns === "lc" && op === "deleteRepayment" ? { table: "lc_repayments", id: Number(args?.id) || 0 } : null;
+  if (newRepay) action = "create";
   let entryDate;
+  if (newRepay) entryDate = va.repay_date || va.date || todayISO();
+  if (repayRow && repayRow.id) {
+    try {
+      entryDate = (await getClient().execute({ sql: `SELECT repay_date AS d FROM ${repayRow.table} WHERE id = ? LIMIT 1`, args: [repayRow.id] })).rows[0]?.d;
+    } catch {
+      entryDate = void 0;
+    }
+  }
   const id = Number(args?.id) || 0;
   if (action === "create" && rule.dateCol) {
     const a = args;
