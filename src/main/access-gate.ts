@@ -647,9 +647,32 @@ export async function assertAllowed(channel: string, args: unknown): Promise<voi
   ) {
     action = 'create'
   }
+  // A NEW REPAYMENT of a BD / LC is a new entry, not a change to the bill or
+  // the LC (asked 2026-11-27): a user without Edit may still repay, dated
+  // inside the working window. Changing or deleting a repayment afterwards
+  // needs Edit / Delete and its own date inside the window.
+  const va = ((args as Row)?.values || {}) as Row
+  const newRepay = (ns === 'bd' && op === 'repay') || (ns === 'lc' && (op === 'repayParts' || (op === 'saveRepayment' && !Number(va.id))))
+  const repayRow =
+    ns === 'bd' && (op === 'editRepayment' || op === 'deleteRepayment')
+      ? { table: 'bd_repayments', id: Number((args as Row)?.id) || 0 }
+      : ns === 'lc' && op === 'saveRepayment' && Number(va.id)
+        ? { table: 'lc_repayments', id: Number(va.id) }
+        : ns === 'lc' && op === 'deleteRepayment'
+          ? { table: 'lc_repayments', id: Number((args as Row)?.id) || 0 }
+          : null
+  if (newRepay) action = 'create'
   // The row's own date decides the read-only window; without one, only the
   // right itself is checked.
   let entryDate: unknown
+  if (newRepay) entryDate = va.repay_date || va.date || todayISO()
+  if (repayRow && repayRow.id) {
+    try {
+      entryDate = (await getClient().execute({ sql: `SELECT repay_date AS d FROM ${repayRow.table} WHERE id = ? LIMIT 1`, args: [repayRow.id] })).rows[0]?.d
+    } catch {
+      entryDate = undefined
+    }
+  }
   const id = Number((args as Row)?.id) || 0
   // For a create there is no row yet, so the date being written IS the date to
   // judge. It arrives on the values object under its own column name.
