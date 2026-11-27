@@ -1476,6 +1476,15 @@ export function registerIpc(): void {
     transporterFreightKpis(a.side, a)
   )
   handle('tbill:list', (_e, a: { companyId?: number } = {}) => listTransporterBills(a?.companyId))
+  // Bank book verification — admin only (bankVerify.ts).
+  handle('bankVerify:list', async (_e, a: { companyId?: number; from?: string; to?: string; state?: 'pending' | 'done' | 'all' } = {}) => {
+    await assertAdmin('Bank book verification')
+    return (await import('./bankVerify')).listBankVerify(a)
+  })
+  handle('bankVerify:set', async (_e, a: { id: number; done: boolean; note?: string }) => {
+    await assertAdmin('Bank book verification')
+    return (await import('./bankVerify')).setBankVerified(a.id, a.done, a.note)
+  })
   handle('tbill:of', async (_e, a: { kind: 'order' | 'sale'; ids: number[] }) => (await import('./transporterBilling')).freightBillsOf(a.kind, a.ids))
   handle('tbill:create', (_e, { values }: { values: Row }) => createTransporterBill(values))
   handle('tbill:rcmRegister', (_e, a: { companyId?: number; from?: string; to?: string } = {}) => rcmRegister(a))

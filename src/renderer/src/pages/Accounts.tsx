@@ -1,3 +1,4 @@
+import { BankVerify } from '@/components/BankVerify'
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { VoucherTypesMenu } from '@/components/VoucherTypesMenu'
 import { escMayDiscard, escToClose, hasOpenOverlay, useDrawerEscape } from '@/lib/escape'
@@ -309,7 +310,8 @@ const SCREEN_TITLE: Record<string, string> = {
   cashflow: 'Cashflow Register',
   payreg: 'Payment / Receipt Register',
   jvreg: 'Journal Register',
-  rcmreg: 'RCM Register'
+  rcmreg: 'RCM Register',
+  bankverify: 'Bank Book Verification'
 }
 
 // What each gateway card is FOR, and the colour of its edge. A list of eleven
@@ -582,7 +584,7 @@ function AmountInput({
 // The Trading Account screen (U) was taken out at the client's request on
 // 30 Sep 2026; journal:tradingAccount on the server is left for any report
 // that wants the roll-up.
-type Screen = 'gateway' | 'voucher' | 'daybook' | 'ledger' | 'trial' | 'purchreg' | 'salesreg' | 'notesreg' | 'tfpur' | 'tfsal' | 'openings' | 'masters' | 'tallyimport' | 'cashflow' | 'payreg' | 'jvreg' | 'rcmreg'
+type Screen = 'gateway' | 'voucher' | 'daybook' | 'ledger' | 'trial' | 'purchreg' | 'salesreg' | 'notesreg' | 'tfpur' | 'tfsal' | 'openings' | 'masters' | 'tallyimport' | 'cashflow' | 'payreg' | 'jvreg' | 'rcmreg' | 'bankverify'
 type VchType = 'CONTRA' | 'PAYMENT' | 'RECEIPT' | 'JOURNAL' | 'SALE' | 'PURCHASE' | 'DEBIT NOTE' | 'CREDIT NOTE'
 
 // `label` names the VOUCHER TYPE and is used wherever one is named — the tab
@@ -626,7 +628,9 @@ const SCREEN_SECTION: Record<Screen, AccountsSectionKey | null> = {
   cashflow: 'accountsCashflow',
   payreg: 'accountsPayReg',
   jvreg: 'accountsJvReg',
-  rcmreg: 'accountsRcmReg'
+  rcmreg: 'accountsRcmReg',
+  // Admin only — gated on the role below, not a User Access row.
+  bankverify: null
 }
 const SCREEN_LABEL: Record<Screen, string> = {
   gateway: 'the Gateway',
@@ -645,12 +649,13 @@ const SCREEN_LABEL: Record<Screen, string> = {
   cashflow: 'the Cashflow Register',
   payreg: 'the Payment / Receipt Register',
   jvreg: 'the Journal Register',
-  rcmreg: 'the RCM Register'
+  rcmreg: 'the RCM Register',
+  bankverify: 'Bank Book Verification'
 }
 // The gateway letters that open a screen ('V' opens a voucher instead).
 const GATE_SCREEN: Record<string, Screen> = {
   P: 'purchreg', S: 'salesreg', D: 'daybook', N: 'notesreg', C: 'notesreg', R: 'tfpur', O: 'tfsal',
-  L: 'ledger', T: 'trial', B: 'openings', M: 'masters', U: 'tallyimport', F: 'cashflow', Y: 'payreg', J: 'jvreg', G: 'rcmreg'
+  L: 'ledger', T: 'trial', B: 'openings', M: 'masters', U: 'tallyimport', F: 'cashflow', Y: 'payreg', J: 'jvreg', G: 'rcmreg', Q: 'bankverify'
 }
 const ALL_RIGHTS: Rights = { view: true, create: true, edit: true, delete: true, editDays: '', viewDays: '', scope: '' }
 
@@ -2564,7 +2569,7 @@ export function Accounts({
   // drill-through return uses. replaceState, not pushState: moving about
   // inside Accounting should not fill the browser's Back button with steps.
   // An unsaved voucher's lines are not in the URL — only which voucher it is.
-  const ACCT_SCREENS: Screen[] = ['gateway', 'voucher', 'daybook', 'ledger', 'trial', 'purchreg', 'salesreg', 'notesreg', 'tfpur', 'tfsal', 'openings', 'masters', 'cashflow', 'payreg', 'jvreg', 'rcmreg']
+  const ACCT_SCREENS: Screen[] = ['gateway', 'voucher', 'daybook', 'ledger', 'trial', 'purchreg', 'salesreg', 'notesreg', 'tfpur', 'tfsal', 'openings', 'masters', 'cashflow', 'payreg', 'jvreg', 'rcmreg', 'bankverify']
   const urlVoucher = useRef<{ t: string; id: number } | null>(null)
   const urlRead = useRef(false)
   if (__WEB__ && !urlRead.current) {
@@ -5791,6 +5796,8 @@ Delete ${doc}?`)) return
       { key: 'J', label: 'Journal Register', icon: ScrollText, go: () => setScreen('jvreg') },
       // Reverse-charge GST on unregistered transporters' freight bills.
       { key: 'G', label: 'RCM Register', icon: Truck, go: () => setScreen('rcmreg') },
+      // Admin only: verify each bank payment / receipt and its Agst Ref.
+      ...(me?.role === 'admin' ? [{ key: 'Q', label: 'Bank Book Verification', icon: Banknote, go: () => setScreen('bankverify') }] : []),
       ...(__WEB__
         ? [
             { key: 'M', label: 'Masters', icon: FolderTree, go: () => setScreen('masters') },
@@ -22644,6 +22651,8 @@ Delete ${doc}?`)) return
         { k: 'Y', label: 'Pay / Receipt', on: screen === 'payreg', go: () => setScreen('payreg'), hide: !mayScreen('payreg') },
         { k: 'J', label: 'Journals', on: screen === 'jvreg', go: () => setScreen('jvreg'), hide: !mayScreen('jvreg') },
         { k: 'G', label: 'RCM', on: screen === 'rcmreg', go: () => setScreen('rcmreg'), hide: !mayScreen('rcmreg') },
+        // Admin only: check each bank payment / receipt, set its Agst Ref, mark done.
+        { k: 'Q', label: 'Bank verify', on: screen === 'bankverify', go: () => setScreen('bankverify'), hide: me?.role !== 'admin' },
         {
           k: 'Esc',
           label: screen === 'gateway' ? 'Companies' : 'Gateway',
@@ -22739,6 +22748,7 @@ Delete ${doc}?`)) return
     const onPayreg = !!company && screen === 'payreg'
     const onJvreg = !!company && screen === 'jvreg'
     const onRcmreg = !!company && screen === 'rcmreg'
+    const onBankVerify = !!company && screen === 'bankverify' && me?.role === 'admin'
     const chip: React.CSSProperties = {
       height: 34,
       display: 'flex',
@@ -22981,6 +22991,8 @@ Delete ${doc}?`)) return
           tfWeb.body
         ) : onDaybook ? (
           daybookWeb.body
+        ) : onBankVerify ? (
+          <BankVerify period={{ from: dbFrom, to: dbTo }} companyId={company ? Number(company.id) : undefined} onOpen={(id) => void openForAlter({ id })} />
         ) : onRcmreg ? (
           <RcmRegister
             period={{ from: dbFrom, to: dbTo }}
@@ -23155,6 +23167,9 @@ Delete ${doc}?`)) return
             {screen === 'purchreg' && purchaseRegisterScreen}
             {screen === 'salesreg' && salesRegisterScreen}
             {screen === 'daybook' && daybookScreen}
+            {screen === 'bankverify' && me?.role === 'admin' && (
+              <BankVerify period={{ from: dbFrom, to: dbTo }} companyId={company ? Number(company.id) : undefined} onOpen={(id) => void openForAlter({ id })} />
+            )}
             {screen === 'rcmreg' && (
               <RcmRegister
             period={{ from: dbFrom, to: dbTo }}

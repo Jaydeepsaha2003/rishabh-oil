@@ -454,6 +454,10 @@ export interface Api {
       kind?: string
     ) => Promise<{ id: number; on_hand: number }>
   }
+  bankVerify: {
+    list: (opts?: { companyId?: number; from?: string; to?: string; state?: 'pending' | 'done' | 'all' }) => Promise<Row[]>
+    set: (id: number, done: boolean, note?: string) => Promise<{ id: number; done: boolean }>
+  }
   transporterFreight: {
     list: (
       side: 'purchase' | 'sales',

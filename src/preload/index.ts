@@ -667,6 +667,10 @@ const api = {
     ): Promise<{ id: number; on_hand: number }> =>
       ipcRenderer.invoke('skuStock:adjust', { id, delta, note, date, kind })
   },
+  bankVerify: {
+    list: (opts: { companyId?: number; from?: string; to?: string; state?: 'pending' | 'done' | 'all' } = {}): Promise<Row[]> => ipcRenderer.invoke('bankVerify:list', opts),
+    set: (id: number, done: boolean, note?: string): Promise<{ id: number; done: boolean }> => ipcRenderer.invoke('bankVerify:set', { id, done, note })
+  },
   transporterFreight: {
     list: (
       side: 'purchase' | 'sales',
