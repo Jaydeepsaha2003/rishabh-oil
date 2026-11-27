@@ -657,6 +657,14 @@ const GATE_SCREEN: Record<string, Screen> = {
   P: 'purchreg', S: 'salesreg', D: 'daybook', N: 'notesreg', C: 'notesreg', R: 'tfpur', O: 'tfsal',
   L: 'ledger', T: 'trial', B: 'openings', M: 'masters', U: 'tallyimport', F: 'cashflow', Y: 'payreg', J: 'jvreg', G: 'rcmreg', Q: 'bankverify'
 }
+// Combine ledger: the colour of each numbered ledger (1 = the one opened).
+const LG_COMBINE_TONES = [
+  { bg: '#0B3D2E', fg: '#C7F03F' },
+  { bg: '#1B4E82', fg: '#fff' },
+  { bg: '#8A5300', fg: '#fff' },
+  { bg: '#6D2E8C', fg: '#fff' },
+  { bg: '#B3261E', fg: '#fff' }
+]
 const ALL_RIGHTS: Rights = { view: true, create: true, edit: true, delete: true, editDays: '', viewDays: '', scope: '' }
 
 /** One row of the working behind a line's figure. See SplitPanel. */
@@ -3266,13 +3274,13 @@ export function Accounts({
     const ob: Row = { ...(ob0 as Row) }
     if (lgWith.length) {
       const extra = await Promise.all(
-        lgWith.map(async (id) => {
+        lgWith.map(async (id, wi) => {
           const [ls, o] = await Promise.all([
             window.api.journal.statement(id, cid).catch(() => [] as Row[]),
             window.api.journal.opening(id, cid).catch(() => ({ opening: 0 }))
           ])
           const nm = String(accounts.find((a2) => Number(a2.id) === id)?.name || '')
-          return { ls: ls.map((l): Row => ({ ...l, combined_from: nm, id: -Number(l.id) })), opening: Number((o as Row).opening) || 0 }
+          return { ls: ls.map((l): Row => ({ ...l, combined_from: nm, combined_no: wi + 2, id: -Number(l.id) })), opening: Number((o as Row).opening) || 0 }
         })
       )
       ob.opening = (Number(ob.opening) || 0) + extra.reduce((t, x) => t + x.opening, 0)
@@ -19151,15 +19159,23 @@ Delete ${doc}?`)) return
                       }
                     >
                       {formatDate(r.entry_date)}
-                      {r.combined_from && (
-                        <span
-                          title={`From ${String(r.combined_from)} — combined into this view`}
-                          className="block max-w-[110px] truncate"
-                          style={{ fontSize: 9, fontWeight: 800, letterSpacing: '.04em', textTransform: 'uppercase', color: '#1B4E82' }}
-                        >
-                          + {String(r.combined_from)}
-                        </span>
-                      )}
+                      {/* COMBINED VIEW: which ledger the line is from, as a number
+                          (1 = this ledger, 2… = combined) — the name on hover. */}
+                      {lgWith.length > 0 &&
+                        (() => {
+                          const no = Number(r.combined_no) || 1
+                          const tone = LG_COMBINE_TONES[(no - 1) % LG_COMBINE_TONES.length]
+                          const nm = r.combined_from ? String(r.combined_from) : String(accounts.find((a2) => Number(a2.id) === ledgerId)?.name || 'This ledger')
+                          return (
+                            <span
+                              title={`${no} · ${nm}`}
+                              className="ml-1.5 inline-flex h-[18px] min-w-[18px] items-center justify-center rounded-full px-1 align-middle text-[10px] font-extrabold"
+                              style={{ background: tone.bg, color: tone.fg }}
+                            >
+                              {no}
+                            </span>
+                          )
+                        })()}
                       {r.in_opening && (
                         <span
                           title="Invoiced before the books start — already inside the opening balance, so it does not move the balance here"
@@ -20651,7 +20667,7 @@ Delete ${doc}?`)) return
                   <span style={{ ...figS(9.5, A.muted, 600), border: '1px solid #DCE7DB', borderRadius: 3, padding: '1px 5px' }}>{fKeyLabel('F4')}</span>
                 </button>
                 {/* COMBINE — read another ledger together with this one, for now only. */}
-                <div className="w-[240px] flex-none" title="Combine another ledger into this view — its lines and balance join this one's. View only; nothing is changed.">
+                <div className="w-[300px] flex-none" title="Combine another ledger into this view — its lines and balance join this one's. View only; nothing is changed.">
                   <Select
                     searchable
                     value=""
@@ -20672,12 +20688,15 @@ Delete ${doc}?`)) return
                         const ordered = [...list.filter((a2) => same(String(a2.name))), ...list.filter((a2) => !same(String(a2.name)))]
                         return ordered.map((a2) => (
                           <SelectItem key={String(a2.id)} value={String(a2.id)}>
-                            <span className="flex w-full min-w-0 items-center gap-2">
-                              {same(String(a2.name)) && (
-                                <span className="flex-none rounded-[3px] bg-[#E9F5EE] px-1 text-[9px] font-extrabold uppercase tracking-[.06em] text-[#0B6B45]">same party</span>
-                              )}
-                              <span className="min-w-0 truncate font-semibold">{String(a2.name)}</span>
-                              <span className="ml-auto flex-none text-[10px] font-semibold text-[#8CA396]">{String(a2.acc_group || '')}</span>
+                            {/* Two lines: the whole name, then its group — a long name is never cut. */}
+                            <span className="flex w-full min-w-0 flex-col py-0.5">
+                              <span className="whitespace-normal break-words text-[12.5px] font-bold leading-snug text-[#0A1F17]">{String(a2.name)}</span>
+                              <span className="mt-0.5 flex items-center gap-1.5">
+                                {same(String(a2.name)) && (
+                                  <span className="rounded-[3px] bg-[#E9F5EE] px-1 text-[9px] font-extrabold uppercase tracking-[.06em] text-[#0B6B45]">same party</span>
+                                )}
+                                <span className="text-[10.5px] font-semibold text-[#8CA396]">{String(a2.acc_group || '')}</span>
+                              </span>
                             </span>
                           </SelectItem>
                         ))
@@ -20685,14 +20704,27 @@ Delete ${doc}?`)) return
                     </SelectContent>
                   </Select>
                 </div>
-                {lgWith.map((id) => (
+                {lgWith.length > 0 && (
+                  <span
+                    className="flex h-8 flex-none items-center gap-1.5 rounded-[7px] px-2.5"
+                    style={{ border: '1px solid #DCE7DB', background: '#fff', fontSize: 11.5, fontWeight: 800, color: '#33473E' }}
+                    title={String(accounts.find((a2) => Number(a2.id) === ledgerId)?.name || '')}
+                  >
+                    <span className="inline-flex h-[18px] w-[18px] items-center justify-center rounded-full text-[10px]" style={{ background: LG_COMBINE_TONES[0].bg, color: LG_COMBINE_TONES[0].fg }}>1</span>
+                    This ledger
+                  </span>
+                )}
+                {lgWith.map((id, wi) => (
                   <span
                     key={id}
-                    className="flex h-8 flex-none items-center gap-1.5 rounded-[7px] px-2.5"
+                    className="flex h-8 max-w-[260px] flex-none items-center gap-1.5 rounded-[7px] px-2.5"
                     style={{ border: '1px solid #C6DAF0', background: '#EAF0FA', fontSize: 11.5, fontWeight: 800, color: '#1B4E82' }}
-                    title="Combined into this view — not merged in the books"
+                    title={`${wi + 2} · ${String(accounts.find((a2) => Number(a2.id) === id)?.name || id)} — combined into this view, not merged in the books`}
                   >
-                    + {String(accounts.find((a2) => Number(a2.id) === id)?.name || id)}
+                    <span className="inline-flex h-[18px] w-[18px] flex-none items-center justify-center rounded-full text-[10px]" style={{ background: LG_COMBINE_TONES[(wi + 1) % LG_COMBINE_TONES.length].bg, color: LG_COMBINE_TONES[(wi + 1) % LG_COMBINE_TONES.length].fg }}>
+                      {wi + 2}
+                    </span>
+                    <span className="truncate">{String(accounts.find((a2) => Number(a2.id) === id)?.name || id)}</span>
                     <button type="button" aria-label="Stop combining" onClick={() => setLgWith((p) => p.filter((x) => x !== id))} className="rounded-[4px] px-1 hover:bg-white">
                       ×
                     </button>
