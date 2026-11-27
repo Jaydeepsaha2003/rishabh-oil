@@ -20651,7 +20651,7 @@ Delete ${doc}?`)) return
                   <span style={{ ...figS(9.5, A.muted, 600), border: '1px solid #DCE7DB', borderRadius: 3, padding: '1px 5px' }}>{fKeyLabel('F4')}</span>
                 </button>
                 {/* COMBINE — read another ledger together with this one, for now only. */}
-                <div className="w-[220px] flex-none" title="Combine another ledger into this view — its lines and balance join this one's. View only; nothing is changed.">
+                <div className="w-[240px] flex-none" title="Combine another ledger into this view — its lines and balance join this one's. View only; nothing is changed.">
                   <Select
                     searchable
                     value=""
@@ -20662,13 +20662,26 @@ Delete ${doc}?`)) return
                   >
                     <SelectTrigger className="h-8 bg-white text-[12px] font-extrabold"><SelectValue placeholder="+ Combine ledger" /></SelectTrigger>
                     <SelectContent>
-                      {(accounts as Row[])
-                        .filter((a2) => Number(a2.id) !== ledgerId && !lgWith.includes(Number(a2.id)))
-                        .map((a2) => (
+                      {(() => {
+                        // The same party's other ledgers first (ASHOK SOAP & OIL (DEBTORS)
+                        // → ASHOK SOAP & OILS), each with its group and balance side.
+                        const cur = String(accounts.find((a2) => Number(a2.id) === ledgerId)?.name || '').toUpperCase()
+                        const key = cur.replace(/[^A-Z0-9 ]/g, ' ').split(/\s+/).filter((w) => w.length >= 3).slice(0, 2).join(' ')
+                        const same = (nm: string): boolean => !!key && nm.toUpperCase().replace(/[^A-Z0-9 ]/g, ' ').replace(/\s+/g, ' ').includes(key)
+                        const list = (accounts as Row[]).filter((a2) => Number(a2.id) !== ledgerId && !lgWith.includes(Number(a2.id)))
+                        const ordered = [...list.filter((a2) => same(String(a2.name))), ...list.filter((a2) => !same(String(a2.name)))]
+                        return ordered.map((a2) => (
                           <SelectItem key={String(a2.id)} value={String(a2.id)}>
-                            {String(a2.name)}
+                            <span className="flex w-full min-w-0 items-center gap-2">
+                              {same(String(a2.name)) && (
+                                <span className="flex-none rounded-[3px] bg-[#E9F5EE] px-1 text-[9px] font-extrabold uppercase tracking-[.06em] text-[#0B6B45]">same party</span>
+                              )}
+                              <span className="min-w-0 truncate font-semibold">{String(a2.name)}</span>
+                              <span className="ml-auto flex-none text-[10px] font-semibold text-[#8CA396]">{String(a2.acc_group || '')}</span>
+                            </span>
                           </SelectItem>
-                        ))}
+                        ))
+                      })()}
                     </SelectContent>
                   </Select>
                 </div>
