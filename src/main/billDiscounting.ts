@@ -787,6 +787,8 @@ const BD_COLS = [
   'receivable_party_id',
   'amount',
   'invoice_amount',
+  // The party's own invoice no. the bill is drawn against, typed by hand.
+  'party_invoice_no',
   // + or − on the invoice value (see bdCalc). Added lazily; 0 on every bill
   // recorded before it existed, which is why none of their figures move.
   // No longer entered — the adjustment moved to the open amount (open_adj) —
@@ -1398,8 +1400,33 @@ export async function listBd(filter?: Row): Promise<Row[]> {
   // A part-repaid bill stays OPEN — the facility is still live for what is left
   // — so the screen needs the two figures the status word cannot carry: what
   // has gone back and what is still outstanding.
-  return toPlain(res).map((raw) => {
+  // THE PARTY'S INVOICE SERIES: the letters its invoices start with (DIL EXIM
+  // "GT", ASHOK SOAP "ASO"), from its purchase (or sale) invoices — a typed
+  // invoice no. outside them is flagged for the admin, not refused.
+  const series = (no: unknown): string => /^[A-Z]*/.exec(String(no || '').trim().toUpperCase())?.[0] || ''
+  const plainRows = toPlain(res)
+  const seriesOf = new Map<string, Set<string>>()
+  for (const kind of ['supplier', 'customer'] as const) {
+    const ids = [...new Set(plainRows.filter((r) => String(r.party_type || 'supplier') === kind && n(r.party_id)).map((r) => n(r.party_id)))]
+    if (!ids.length) continue
+    const inv = await getClient().execute(
+      kind === 'supplier'
+        ? `SELECT supplier_id AS pid, invoice_no FROM orders WHERE supplier_id IN (${ids.join(',')}) AND COALESCE(invoice_no, '') <> ''`
+        : `SELECT customer_id AS pid, invoice_no FROM sales WHERE customer_id IN (${ids.join(',')}) AND COALESCE(invoice_no, '') <> ''`
+    )
+    for (const r of inv.rows) {
+      const k = `${kind}:${n(r.pid)}`
+      if (!seriesOf.has(k)) seriesOf.set(k, new Set())
+      seriesOf.get(k)!.add(series(r.invoice_no))
+    }
+  }
+  return plainRows.map((raw) => {
     const bd: Row = { ...raw, receipt_parts: legsOf.get(n(raw.id)) || [] }
+    const known = seriesOf.get(`${String(raw.party_type || 'supplier')}:${n(raw.party_id)}`)
+    const typed = String(raw.party_invoice_no || '').trim()
+    // null: nothing typed, or no invoice of the party's to judge by.
+    bd.party_invoice_ok = !typed || !known || !known.size ? null : known.has(series(typed))
+    bd.party_series = known ? [...known].filter(Boolean).join(', ') : ''
     const parts = n(bd.repay_parts)
     const repaidTotal = round2(
       parts > 0 ? n(bd.parts_paid) : String(bd.status) === 'repaid' ? n(bd.repaid_amount) : 0

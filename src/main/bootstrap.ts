@@ -3579,6 +3579,8 @@ const REQUIRED_COLUMNS: { table: string; column: string; type: string }[] = [
   { table: 'journal_lines', column: 'note', type: 'TEXT' },
   // The TDS ledger a transporter bill withholds to (picked on the bill).
   { table: 'transporter_bills', column: 'tds_ledger', type: 'TEXT' },
+  // The party's invoice no. a bill discounting is drawn against (typed).
+  { table: 'bill_discountings', column: 'party_invoice_no', type: 'TEXT' },
   // A note typed on Mark received — kept on the bill, carried on its voucher.
   { table: 'bill_discountings', column: 'received_note', type: 'TEXT' },
   { table: 'bd_repayments', column: 'tds_ledger', type: 'TEXT' },

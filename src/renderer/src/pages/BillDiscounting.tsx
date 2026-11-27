@@ -1617,6 +1617,7 @@ export function BillDiscounting({
       purpose: 'manufacturing',
       maturity_date: '',
       invoice_amount: '',
+      party_invoice_no: '',
       invoice_adj: '',
       open_adj: '',
       open_adj_ledger: '',
@@ -1717,6 +1718,7 @@ export function BillDiscounting({
       ),
       purpose: r.purpose,
       invoice_amount: r.invoice_amount ?? '',
+      party_invoice_no: r.party_invoice_no ?? '',
       invoice_adj: n(r.invoice_adj) ? r.invoice_adj : '',
       // The Open amount the form shows. A bill on the charge basis stores it as
       // is; an older one stored Open ± Adj, so its open figure is taken back
@@ -2067,6 +2069,7 @@ export function BillDiscounting({
         // Adj. is a charge on the payout (open_adj_charge), not on the draw.
         amount: round2(Number(form.amount) || 0),
         invoice_amount: String(form.invoice_amount ?? '').trim() === '' ? null : Number(form.invoice_amount),
+        party_invoice_no: String(form.party_invoice_no || '').trim().toUpperCase() || null,
         invoice_adj: Number(form.invoice_adj) || 0,
         open_adj: round2(Number(form.open_adj) || 0),
         open_adj_charge: 1,
@@ -3960,6 +3963,22 @@ Its bank voucher is removed too.`)) return
                               word — trading being the bill with a round trip
                               behind it, money going out to the NBFC and coming
                               back from a customer. */}
+                          {/* The party's invoice no. typed on the bill — red to the admin
+                              when it is outside the party's usual series. */}
+                          {!!String(r.party_invoice_no || '').trim() && (
+                            <div
+                              className="mt-0.5 font-mono text-[11px] font-bold"
+                              style={{ color: iAmAdmin && r.party_invoice_ok === false ? '#B3261E' : '#33473E' }}
+                              title={
+                                r.party_invoice_ok === false
+                                  ? `Not in ${String(r.party_name || 'the party')}'s usual series${r.party_series ? ` (${String(r.party_series)}…)` : ''} — check it`
+                                  : 'Invoice no. on the bill'
+                              }
+                            >
+                              Inv {String(r.party_invoice_no)}
+                              {iAmAdmin && r.party_invoice_ok === false && <span className="ml-1 rounded-[3px] bg-[#FDECEA] px-1 text-[9.5px] uppercase">not {String(r.party_series || 'its series')}</span>}
+                            </div>
+                          )}
                           <div className="mt-0.5">
                             {String(r.purpose) === 'trading' ? (
                               <span
@@ -5150,6 +5169,21 @@ Its bank voucher is removed too.`)) return
                         '!grid !grid-cols-1 min-[560px]:!grid-cols-2 min-[960px]:!grid-cols-4 !items-start !gap-x-[14px] !gap-y-3'
                     )}
                   >
+                  {/* THE PARTY'S INVOICE NO. — typed; a no. outside the party's
+                      usual series (DIL EXIM GT…, ASHOK SOAP ASO/…) is saved but
+                      shown in red to the admin. */}
+                  <div className="flex flex-col gap-1.5">
+                    <Label className="flex items-center gap-1">
+                      Invoice no.
+                      <InfoTip text="The party's invoice this bill is drawn against. A number outside the party's usual series is still saved, and shown in red on the register." />
+                    </Label>
+                    <Input
+                      value={String(form.party_invoice_no ?? '')}
+                      placeholder="e.g. GT/4378"
+                      className={cn(__WEB__ && FIELD_FIG)}
+                      onChange={(e) => setForm((p) => ({ ...p, party_invoice_no: e.target.value.toUpperCase() }))}
+                    />
+                  </div>
                   {/* The invoice behind the bill, and the part of it actually
                       being discounted. They are often not the same figure, and
                       only the second one is priced — the invoice value is kept
