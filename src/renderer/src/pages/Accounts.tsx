@@ -21161,7 +21161,86 @@ Delete ${doc}?`)) return
                 </Button>
               </div>
             </div>
-            {lgBills ? (
+            {lgBills && lgWith.length ? (
+              // COMBINED BILL-WISE, FIFO (temporary view): every bill of the
+              // combined ledgers on this party's side, the money the other way
+              // set against them oldest first; what is left over is on account.
+              (() => {
+                const main = accounts.find((a2) => Number(a2.id) === ledgerId)
+                const debtor = baseGroup(main?.acc_group) !== 'Sundry Creditors'
+                const dc = debtor ? 'Dr' : 'Cr'
+                const sideOf = (l: Row): number => (debtor ? Number(l.dr) || 0 : Number(l.cr) || 0)
+                const otherOf = (l: Row): number => (debtor ? Number(l.cr) || 0 : Number(l.dr) || 0)
+                const live = ledgerLines.filter((l) => !lgTo || String(l.entry_date).slice(0, 10) <= lgTo)
+                const op = debtor ? lgOpening : -lgOpening
+                const billsF: { date: string; ref: string; from: string; amount: number; pending: number }[] = []
+                if (op > 0.004) billsF.push({ date: lgOpenDate || '', ref: 'Opening', from: '', amount: op, pending: op })
+                let pool = op < -0.004 ? -op : 0
+                for (const l of live) {
+                  const a2 = sideOf(l)
+                  if (a2 > 0.004) billsF.push({ date: String(l.entry_date).slice(0, 10), ref: String(l.code || l.vch_no || ''), from: String(l.combined_from || ''), amount: a2, pending: a2 })
+                  pool += otherOf(l)
+                }
+                for (const b of billsF) {
+                  const take = Math.min(pool, b.pending)
+                  b.pending = Math.round((b.pending - take) * 100) / 100
+                  pool -= take
+                }
+                const open = billsF.filter((b) => b.pending > 0.004)
+                const pend = open.reduce((t, b) => t + b.pending, 0)
+                const today = new Date(todayISO()).getTime()
+                return (
+                  <div className="overflow-auto rounded-[10px] bg-white" style={{ border: '1px solid #DCE7DB' }}>
+                    <div className="px-4 py-2.5 text-[11px] font-bold" style={{ background: '#EAF0FA', color: '#1B4E82' }}>
+                      Combined bill-wise · FIFO — money set against the oldest bills first, across {1 + lgWith.length} ledgers (view only)
+                    </div>
+                    <table className="w-full text-[12.5px]">
+                      <thead className="text-[10px] font-extrabold uppercase tracking-[.1em]" style={{ background: '#0B3D2E', color: '#DCEFE4' }}>
+                        <tr>
+                          <th className="px-3 py-2 text-left">Date</th>
+                          <th className="px-3 py-2 text-left">Voucher / ref</th>
+                          <th className="px-3 py-2 text-left">Ledger</th>
+                          <th className="px-3 py-2 text-right">Bill</th>
+                          <th className="px-3 py-2 text-right">Pending</th>
+                          <th className="px-3 py-2 text-right">Age</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {open.map((b, i) => (
+                          <tr key={i} className="border-t border-[#EFF3EE]">
+                            <td className="px-3 py-1.5 tabular-nums">{b.date ? formatDate(b.date) : '—'}</td>
+                            <td className="px-3 py-1.5 font-semibold">{b.ref || '—'}</td>
+                            <td className="px-3 py-1.5 text-[11px] font-semibold text-[#1B4E82]">{b.from ? `+ ${b.from}` : 'this ledger'}</td>
+                            <td className="px-3 py-1.5 text-right tabular-nums">{formatINR(b.amount)}</td>
+                            <td className="px-3 py-1.5 text-right font-bold tabular-nums">{formatINR(b.pending)} {dc}</td>
+                            <td className="px-3 py-1.5 text-right tabular-nums text-[#5A6B62]">{b.date ? `${Math.max(0, Math.round((today - new Date(b.date).getTime()) / 86400000))}d` : '—'}</td>
+                          </tr>
+                        ))}
+                        {open.length === 0 && (
+                          <tr>
+                            <td colSpan={6} className="px-3 py-6 text-center font-semibold text-[#5A6B62]">No bill left open — everything is settled oldest first.</td>
+                          </tr>
+                        )}
+                      </tbody>
+                      <tfoot className="font-extrabold">
+                        <tr className="border-t-2 border-[#0B3D2E]">
+                          <td colSpan={4} className="px-3 py-2">Pending bills</td>
+                          <td className="px-3 py-2 text-right tabular-nums">{formatINR(pend)} {dc}</td>
+                          <td />
+                        </tr>
+                        {pool > 0.004 && (
+                          <tr>
+                            <td colSpan={4} className="px-3 py-2 text-[#8A5300]">On account — paid over the bills</td>
+                            <td className="px-3 py-2 text-right tabular-nums text-[#8A5300]">{formatINR(pool)} {debtor ? 'Cr' : 'Dr'}</td>
+                            <td />
+                          </tr>
+                        )}
+                      </tfoot>
+                    </table>
+                  </div>
+                )
+              })()
+            ) : lgBills ? (
               // Tally's Ledger Voucher Outstanding: a line per open bill, then a
               // sub total, then whatever the bills do not account for.
               (() => {
