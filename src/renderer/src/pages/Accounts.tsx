@@ -21218,19 +21218,22 @@ Delete ${doc}?`)) return
               // combined ledgers on this party's side, the money the other way
               // set against them oldest first; what is left over is on account.
               (() => {
-                const main = accounts.find((a2) => Number(a2.id) === ledgerId)
-                const debtor = baseGroup(main?.acc_group) !== 'Sundry Creditors'
+                const live = ledgerLines.filter((l) => !lgTo || String(l.entry_date).slice(0, 10) <= lgTo)
+                // The bills are on the side the COMBINED balance runs: a debtor
+                // ledger read with its creditor ledger can end either way, and
+                // its group alone would list the wrong side.
+                const net = lgOpening + live.reduce((t, l) => t + (Number(l.dr) || 0) - (Number(l.cr) || 0), 0)
+                const debtor = net >= 0
                 const dc = debtor ? 'Dr' : 'Cr'
                 const sideOf = (l: Row): number => (debtor ? Number(l.dr) || 0 : Number(l.cr) || 0)
                 const otherOf = (l: Row): number => (debtor ? Number(l.cr) || 0 : Number(l.dr) || 0)
-                const live = ledgerLines.filter((l) => !lgTo || String(l.entry_date).slice(0, 10) <= lgTo)
                 const op = debtor ? lgOpening : -lgOpening
-                const billsF: { date: string; ref: string; from: string; amount: number; pending: number }[] = []
-                if (op > 0.004) billsF.push({ date: lgOpenDate || '', ref: 'Opening', from: '', amount: op, pending: op })
+                const billsF: { date: string; ref: string; from: string; no: number; amount: number; pending: number }[] = []
+                if (op > 0.004) billsF.push({ date: lgOpenDate || '', ref: 'Opening', from: '', no: 0, amount: op, pending: op })
                 let pool = op < -0.004 ? -op : 0
                 for (const l of live) {
                   const a2 = sideOf(l)
-                  if (a2 > 0.004) billsF.push({ date: String(l.entry_date).slice(0, 10), ref: String(l.code || l.vch_no || ''), from: String(l.combined_from || ''), amount: a2, pending: a2 })
+                  if (a2 > 0.004) billsF.push({ date: String(l.entry_date).slice(0, 10), ref: String(l.code || l.vch_no || ''), from: String(l.combined_from || ''), no: Number(l.combined_no) || 1, amount: a2, pending: a2 })
                   pool += otherOf(l)
                 }
                 for (const b of billsF) {
@@ -21262,7 +21265,19 @@ Delete ${doc}?`)) return
                           <tr key={i} className="border-t border-[#EFF3EE]">
                             <td className="px-3 py-1.5 tabular-nums">{b.date ? formatDate(b.date) : '—'}</td>
                             <td className="px-3 py-1.5 font-semibold">{b.ref || '—'}</td>
-                            <td className="px-3 py-1.5 text-[11px] font-semibold text-[#1B4E82]">{b.from ? `+ ${b.from}` : 'this ledger'}</td>
+                            <td className="px-3 py-1.5">
+                              {b.no ? (
+                                <span
+                                  title={b.from || String(accounts.find((a2) => Number(a2.id) === ledgerId)?.name || 'This ledger')}
+                                  className="inline-flex h-[18px] min-w-[18px] items-center justify-center rounded-full px-1 text-[10px] font-extrabold"
+                                  style={{ background: LG_COMBINE_TONES[(b.no - 1) % LG_COMBINE_TONES.length].bg, color: LG_COMBINE_TONES[(b.no - 1) % LG_COMBINE_TONES.length].fg }}
+                                >
+                                  {b.no}
+                                </span>
+                              ) : (
+                                <span className="text-[11px] font-semibold text-[#5A6B62]">opening</span>
+                              )}
+                            </td>
                             <td className="px-3 py-1.5 text-right tabular-nums">{formatINR(b.amount)}</td>
                             <td className="px-3 py-1.5 text-right font-bold tabular-nums">{formatINR(b.pending)} {dc}</td>
                             <td className="px-3 py-1.5 text-right tabular-nums text-[#5A6B62]">{b.date ? `${Math.max(0, Math.round((today - new Date(b.date).getTime()) / 86400000))}d` : '—'}</td>
