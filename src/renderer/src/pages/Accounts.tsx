@@ -3239,6 +3239,10 @@ export function Accounts({
   // the entered opening has to come alongside it — otherwise the ledger would
   // start from nil and understate the party by whatever was brought forward.
   const [lgOpening, setLgOpening] = useState(0)
+  // COMBINE (temporary, view only): other ledgers read together with this one —
+  // their lines in date order and one running balance. Nothing is changed.
+  const [lgWith, setLgWith] = useState<number[]>([])
+  useEffect(() => setLgWith([]), [ledgerId])
   const [lgPreBooks, setLgPreBooks] = useState<Row[]>([])
   const [lgBooksFrom, setLgBooksFrom] = useState('')
   // THE OPENING'S DATE: the later of the period's start and the day the books
@@ -3248,11 +3252,29 @@ export function Accounts({
   const lgOpenDate = lgBooksFrom && (!lgFrom || lgFrom < lgBooksFrom) ? lgBooksFrom : lgFrom
   const loadLedger = useCallback(async () => {
     if (screen !== 'ledger' || !ledgerId || !cid) return
-    const [lines, ob, prov] = await Promise.all([
+    const [lines0, ob0, prov] = await Promise.all([
       window.api.journal.statement(ledgerId, cid),
       window.api.journal.opening(ledgerId, cid).catch(() => ({ opening: 0, books_from: '' })),
       lgProv ? window.api.journal.provisional(ledgerId, cid).catch(() => [] as Row[]) : Promise.resolve([] as Row[])
     ])
+    let lines = lines0
+    const ob: Row = { ...(ob0 as Row) }
+    if (lgWith.length) {
+      const extra = await Promise.all(
+        lgWith.map(async (id) => {
+          const [ls, o] = await Promise.all([
+            window.api.journal.statement(id, cid).catch(() => [] as Row[]),
+            window.api.journal.opening(id, cid).catch(() => ({ opening: 0 }))
+          ])
+          const nm = String(accounts.find((a2) => Number(a2.id) === id)?.name || '')
+          return { ls: ls.map((l): Row => ({ ...l, combined_from: nm, id: -Number(l.id) })), opening: Number((o as Row).opening) || 0 }
+        })
+      )
+      ob.opening = (Number(ob.opening) || 0) + extra.reduce((t, x) => t + x.opening, 0)
+      lines = [...lines, ...extra.flatMap((x) => x.ls as Row[])].sort(
+        (a2, b2) => String(a2.entry_date).localeCompare(String(b2.entry_date)) || Number(a2.entry_id) - Number(b2.entry_id)
+      )
+    }
     // Each provisional line after the real entries of its own date.
     const merged = [...lines]
     for (const p of prov) {
@@ -3264,9 +3286,10 @@ export function Accounts({
     // every other view reads the books exactly as before.
     setLgPreBooks(merged.filter((l) => Number(l.pre_books) === 1))
     setLedgerLines(merged.filter((l) => Number(l.pre_books) !== 1))
-    setLgOpening(Number((ob as Row).opening) || 0)
-    setLgBooksFrom(String((ob as Row).books_from || ''))
-  }, [screen, ledgerId, cid, lgProv])
+    setLgOpening(Number(ob.opening) || 0)
+    setLgBooksFrom(String(ob.books_from || ''))
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [screen, ledgerId, cid, lgProv, lgWith])
   useEffect(() => {
     loadLedger()
   }, [loadLedger])
@@ -19121,6 +19144,15 @@ Delete ${doc}?`)) return
                       }
                     >
                       {formatDate(r.entry_date)}
+                      {r.combined_from && (
+                        <span
+                          title={`From ${String(r.combined_from)} — combined into this view`}
+                          className="block max-w-[110px] truncate"
+                          style={{ fontSize: 9, fontWeight: 800, letterSpacing: '.04em', textTransform: 'uppercase', color: '#1B4E82' }}
+                        >
+                          + {String(r.combined_from)}
+                        </span>
+                      )}
                       {r.in_opening && (
                         <span
                           title="Invoiced before the books start — already inside the opening balance, so it does not move the balance here"
@@ -20611,6 +20643,41 @@ Delete ${doc}?`)) return
                   Change ledger
                   <span style={{ ...figS(9.5, A.muted, 600), border: '1px solid #DCE7DB', borderRadius: 3, padding: '1px 5px' }}>{fKeyLabel('F4')}</span>
                 </button>
+                {/* COMBINE — read another ledger together with this one, for now only. */}
+                <div className="w-[220px] flex-none" title="Combine another ledger into this view — its lines and balance join this one's. View only; nothing is changed.">
+                  <Select
+                    searchable
+                    value=""
+                    onValueChange={(v) => {
+                      const id = Number(v)
+                      if (id && id !== ledgerId && !lgWith.includes(id)) setLgWith((p) => [...p, id])
+                    }}
+                  >
+                    <SelectTrigger className="h-8 bg-white text-[12px] font-extrabold"><SelectValue placeholder="+ Combine ledger" /></SelectTrigger>
+                    <SelectContent>
+                      {(accounts as Row[])
+                        .filter((a2) => Number(a2.id) !== ledgerId && !lgWith.includes(Number(a2.id)))
+                        .map((a2) => (
+                          <SelectItem key={String(a2.id)} value={String(a2.id)}>
+                            {String(a2.name)}
+                          </SelectItem>
+                        ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+                {lgWith.map((id) => (
+                  <span
+                    key={id}
+                    className="flex h-8 flex-none items-center gap-1.5 rounded-[7px] px-2.5"
+                    style={{ border: '1px solid #C6DAF0', background: '#EAF0FA', fontSize: 11.5, fontWeight: 800, color: '#1B4E82' }}
+                    title="Combined into this view — not merged in the books"
+                  >
+                    + {String(accounts.find((a2) => Number(a2.id) === id)?.name || id)}
+                    <button type="button" aria-label="Stop combining" onClick={() => setLgWith((p) => p.filter((x) => x !== id))} className="rounded-[4px] px-1 hover:bg-white">
+                      ×
+                    </button>
+                  </span>
+                ))}
               </div>
 
               {narrowRail && (
