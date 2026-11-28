@@ -7924,27 +7924,31 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel, onPurchaseR
                       value={form.tds_manual ?? ''}
                       onChange={(e) => setForm((p) => ({ ...p, tds_manual: e.target.value }))}
                     />
-                    {/* ROUND THE TDS: up to the next whole rupee / down to the last (a whole
-                        figure steps by ₹1). Sets it as Edited, like typing it. */}
-                    <span className="flex flex-col overflow-hidden rounded-[4px] border border-[#C3D2C6]">
-                      {(['up', 'down'] as const).map((dir) => (
-                        <button
-                          key={dir}
-                          type="button"
-                          title={dir === 'up' ? 'Round the TDS up to the next rupee' : 'Round the TDS down to the rupee'}
-                          aria-label={dir === 'up' ? 'Round TDS up' : 'Round TDS down'}
-                          className="flex h-[14px] w-5 items-center justify-center bg-white text-[#33473E] hover:bg-[#E9F5EE] hover:text-[#0B6B45]"
-                          onClick={() => {
-                            const cur = form.tds_manual !== '' && form.tds_manual != null ? Number(form.tds_manual) || 0 : calc.tdsCalc
-                            const whole = Math.abs(cur - Math.round(cur)) < 0.005
-                            const next = dir === 'up' ? (whole ? Math.round(cur) + 1 : Math.ceil(cur)) : whole ? Math.round(cur) - 1 : Math.floor(cur)
-                            setForm((p) => ({ ...p, tds_manual: String(Math.max(0, next)) }))
-                          }}
-                        >
-                          <ChevronDown className={cn('h-3 w-3', dir === 'up' && 'rotate-180')} />
-                        </button>
-                      ))}
-                    </span>
+                    {/* ROUND THE TDS — two plain arrows: ↑ to the next whole rupee, ↓ to the
+                        last one (4,205.02 → 4,206 / 4,205); on a whole figure each steps ₹1.
+                        Sets it as Edited, like typing it. */}
+                    {(() => {
+                      const cur = form.tds_manual !== '' && form.tds_manual != null ? Number(form.tds_manual) || 0 : calc.tdsCalc
+                      const whole = Math.abs(cur - Math.round(cur)) < 0.005
+                      const upTo = whole ? Math.round(cur) + 1 : Math.ceil(cur)
+                      const downTo = Math.max(0, whole ? Math.round(cur) - 1 : Math.floor(cur))
+                      return (
+                        <span className="flex items-center gap-1">
+                          {([['up', upTo, ArrowUp], ['down', downTo, ArrowDown]] as const).map(([dir, to, Icon]) => (
+                            <button
+                              key={dir}
+                              type="button"
+                              title={`Round ${dir} to ${formatINR(to)}`}
+                              aria-label={dir === 'up' ? 'Round TDS up' : 'Round TDS down'}
+                              className="flex h-7 w-7 items-center justify-center rounded-[5px] border border-[#C3D2C6] bg-white text-[#33473E] hover:border-[#0B6B45] hover:bg-[#E9F5EE] hover:text-[#0B6B45]"
+                              onClick={() => setForm((p) => ({ ...p, tds_manual: String(to) }))}
+                            >
+                              <Icon className="h-4 w-4" />
+                            </button>
+                          ))}
+                        </span>
+                      )
+                    })()}
                   </span>
                 )}
               </div>
