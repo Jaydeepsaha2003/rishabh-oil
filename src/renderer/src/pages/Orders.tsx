@@ -1141,6 +1141,16 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel, onPurchaseR
   // ONE LORRY, SEVERAL BARGAINS: parts of the load booked on other bargains
   // (any supplier, same oil); this tanker keeps the rest.
   const [splitParts, setSplitParts] = useState<{ bargain_id: string; qty: string }[]>([])
+  // With parts, the tanker's own bargain is the first row and the lorry total
+  // is the sum of the rows (typed per bargain, never worked back from a total).
+  const [mainQty, setMainQty] = useState('')
+  const setSplit = (main: string, parts: { bargain_id: string; qty: string }[]): void => {
+    setExcess(null)
+    setMainQty(main)
+    setSplitParts(parts)
+    const sum = (Number(main) || 0) + parts.reduce((t, p) => t + (Number(p.qty) || 0), 0)
+    setActionForm((f) => ({ ...f, loaded_qty: parts.length ? String(Math.round(sum * 1000) / 1000) : main }))
+  }
   const [excess, setExcess] = useState<
     { qty: number; balance: number; mode: 'new' | 'existing' | 'expand'; diffRate: boolean; rate: string; targetBargainId: string } | null
   >(null)
@@ -2311,6 +2321,7 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel, onPurchaseR
     setActionForm(next)
     setExcess(null)
     setSplitParts([])
+    setMainQty('')
     setActionRow(row)
   }
 
@@ -9420,7 +9431,16 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel, onPurchaseR
                 />
                 <StageDateNote row={actionRow} dateKey="loaded_date" />
               </div>
-              <div className="flex flex-col gap-1.5"><Label>Actual loaded quantity *</Label><Input type="number" value={actionForm.loaded_qty || ''} onChange={(e) => { setExcess(null); setActionForm((p) => ({ ...p, loaded_qty: e.target.value })) }} /></div>
+              <div className="flex flex-col gap-1.5">
+                <Label>{splitParts.length ? 'Lorry total (sum of the bargains below)' : 'Actual loaded quantity *'}</Label>
+                <Input
+                  type="number"
+                  readOnly={splitParts.length > 0}
+                  className={cn(splitParts.length > 0 && 'bg-[#F3F7FC] font-bold')}
+                  value={actionForm.loaded_qty || ''}
+                  onChange={(e) => { setExcess(null); setActionForm((p) => ({ ...p, loaded_qty: e.target.value })) }}
+                />
+              </div>
             </div>
             {(() => {
               const oilBargains = bargains.filter(
@@ -9432,16 +9452,35 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel, onPurchaseR
                 <div className="space-y-2 rounded-md border border-[#C6DAF0] bg-[#F3F7FC] px-3 py-2.5 text-sm">
                   <div className="flex flex-wrap items-center justify-between gap-2">
                     <span className="text-[12px] font-bold text-[#1B4E82]">
-                      One lorry, several bargains{splitParts.length ? ` · this bargain keeps ${formatNum(Math.round((total - partsQty) * 1000) / 1000)} ${actionRow.uom}` : ''}
+                      One lorry, several bargains{splitParts.length ? ` · ${splitParts.length + 1} bargains · lorry total ${formatNum(total)} ${actionRow.uom}` : ''}
                     </span>
                     <button
                       type="button"
-                      onClick={() => { setExcess(null); setSplitParts((p) => [...p, { bargain_id: '', qty: '' }]) }}
+                      onClick={() => setSplit(splitParts.length ? mainQty : String(actionForm.loaded_qty || ''), [...splitParts, { bargain_id: '', qty: '' }])}
                       className="rounded-md border border-[#C6DAF0] bg-white px-2.5 py-1 text-xs font-bold text-[#1B4E82] hover:bg-[#EAF0FA]"
                     >
                       + Part on another bargain
                     </button>
                   </div>
+                  {splitParts.length > 0 && (() => {
+                    const own = bargains.find((b) => String(b.id) === String(actionForm.bargain_id))
+                    return (
+                      <div className="flex items-center gap-2">
+                        <div className="flex h-9 min-w-0 flex-1 items-center truncate rounded-md border border-[#C6DAF0] bg-white px-3 text-[12.5px] font-semibold" title="This tanker's own bargain — change it in Bargain above">
+                          <span className="mr-2 rounded-[3px] bg-[#1B4E82] px-1 text-[10px] font-extrabold text-white">1</span>
+                          {own ? `${own.bargain_no} · ${own.supplier_name} · BAL ${formatNum(own.balance_qty)}` : 'This tanker’s bargain'}
+                        </div>
+                        <Input
+                          type="number"
+                          className="w-28 bg-white"
+                          placeholder="Qty"
+                          value={mainQty}
+                          onChange={(e) => setSplit(e.target.value, splitParts)}
+                        />
+                        <span className="w-[22px]" />
+                      </div>
+                    )
+                  })()}
                   {splitParts.map((p, i) => (
                     <div key={i} className="flex items-center gap-2">
                       <div className="min-w-0 flex-1">
@@ -9467,16 +9506,16 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel, onPurchaseR
                         className="w-28 bg-white"
                         placeholder="Qty"
                         value={p.qty}
-                        onChange={(e) => { setExcess(null); setSplitParts((xs) => xs.map((x, j) => (j === i ? { ...x, qty: e.target.value } : x))) }}
+                        onChange={(e) => setSplit(mainQty, splitParts.map((x, j) => (j === i ? { ...x, qty: e.target.value } : x)))}
                       />
-                      <button type="button" aria-label="Remove part" onClick={() => { setExcess(null); setSplitParts((xs) => xs.filter((_, j) => j !== i)) }} className="rounded px-1.5 text-[#8A2B2B] hover:bg-white">
+                      <button type="button" aria-label="Remove part" onClick={() => setSplit(mainQty, splitParts.filter((_, j) => j !== i))} className="rounded px-1.5 text-[#8A2B2B] hover:bg-white">
                         ×
                       </button>
                     </div>
                   ))}
                   {splitParts.length > 0 && (
                     <p className="text-[11px] text-[#33473E]">
-                      Each part becomes its own tanker line on its bargain (same lorry no.), invoiced by its own supplier. The lorry moves stage by stage as one; the received qty is shared in proportion to what each part loaded, and the freight follows each part's qty.
+                      Type each bargain's own qty — row 1 is this tanker's bargain (change it in Bargain above); the lorry total adds itself up. Each part becomes its own tanker line on its bargain (same lorry no.), invoiced by its own supplier. The lorry moves stage by stage as one; the received qty is shared in proportion to what each part loaded, and the freight follows each part's qty.
                     </p>
                   )}
                 </div>
