@@ -15033,6 +15033,7 @@ __export(billDiscounting_exports, {
   deleteLastBdReceiptPart: () => deleteLastBdReceiptPart,
   editBdCumulativePayment: () => editBdCumulativePayment,
   editBdRepayment: () => editBdRepayment,
+  ensureBdAdjust: () => ensureBdAdjust,
   linkBdRefund: () => linkBdRefund,
   listAllBdParties: () => listAllBdParties,
   listAllBdRepayments: () => listAllBdRepayments,
@@ -15066,6 +15067,7 @@ __export(billDiscounting_exports, {
   setBdCombinedLimit: () => setBdCombinedLimit,
   setBdDisbursementRoute: () => setBdDisbursementRoute,
   setBdVoucherBank: () => setBdVoucherBank,
+  splitDebitInterest: () => splitDebitInterest,
   unlinkBdRefund: () => unlinkBdRefund,
   unmarkBdPaymentReceived: () => unmarkBdPaymentReceived,
   updateBd: () => updateBd
@@ -15833,6 +15835,7 @@ function earlyRefund(bd, calc, reps, received = 0, closed = null) {
 }
 async function listBd(filter) {
   await ensureBdPostingFields();
+  await ensureBdAdjust();
   const where = ["bd.company_id = ?"];
   const args = [getActiveCompanyId()];
   if (filter?.status) {
@@ -15901,17 +15904,24 @@ async function listBd(filter) {
                  -- \u2026or a repayment that paid the interest with it (to its repay date).
                  NULLIF(MAX(COALESCE((SELECT MAX(ip.to_date) FROM bd_interest_payments ip WHERE ip.bd_id = bd.id), ''),
                             COALESCE((SELECT MAX(rr.repay_date) FROM bd_repayments rr
-                                       WHERE rr.bd_id = bd.id AND COALESCE(rr.interest, 0) > 0.004), '')), '') AS interest_paid_to,
+                                       WHERE rr.bd_id = bd.id AND COALESCE(rr.interest, 0) > 0.004), ''),
+                            COALESCE((SELECT MAX(substr(ia.on_date, 1, 10)) FROM bd_interest_adjustments ia WHERE ia.to_bd_id = bd.id
+                                       AND EXISTS (SELECT 1 FROM bd_repayments r2 WHERE r2.bd_id = bd.id AND substr(r2.repay_date, 1, 10) = substr(ia.on_date, 1, 10))), '')), '') AS interest_paid_to,
                  (SELECT MAX(rr.repay_date) FROM bd_repayments rr
                    WHERE rr.bd_id = bd.id) AS last_repay_date,
                  -- Interest paid WITH the repayments (net) and its TDS \u2014 the
                  -- one on the repayment, or worked off the gross for one
                  -- entered before TDS was asked (bdInterestWithRepayments).
-                 COALESCE((SELECT SUM(rr.interest) FROM bd_repayments rr WHERE rr.bd_id = bd.id), 0) AS rep_interest_net,
+                 -- \u2026with interest set over from / to another bill (bd_interest_adjustments).
+                 COALESCE((SELECT SUM(rr.interest) FROM bd_repayments rr WHERE rr.bd_id = bd.id), 0)
+                   + COALESCE((SELECT SUM(ia.net) FROM bd_interest_adjustments ia WHERE ia.to_bd_id = bd.id), 0)
+                   - COALESCE((SELECT SUM(ia.net) FROM bd_interest_adjustments ia WHERE ia.from_bd_id = bd.id), 0) AS rep_interest_net,
                  COALESCE((SELECT SUM(CASE WHEN rr.tds_amount IS NOT NULL THEN rr.tds_amount
                                            WHEN COALESCE(rr.interest, 0) > 0 AND bd.tds_pct > 0 AND bd.tds_pct < 100
                                            THEN ROUND(rr.interest * bd.tds_pct / (100 - bd.tds_pct), 2) ELSE 0 END)
-                            FROM bd_repayments rr WHERE rr.bd_id = bd.id), 0) AS rep_interest_tds,
+                            FROM bd_repayments rr WHERE rr.bd_id = bd.id), 0)
+                   + COALESCE((SELECT SUM(ia.tds) FROM bd_interest_adjustments ia WHERE ia.to_bd_id = bd.id), 0)
+                   - COALESCE((SELECT SUM(ia.tds) FROM bd_interest_adjustments ia WHERE ia.from_bd_id = bd.id), 0) AS rep_interest_tds,
                  -- The later parts the NBFC paid the supplier (the first is on the bill).
                  COALESCE((SELECT SUM(pp.amount) FROM bd_party_payments pp WHERE pp.bd_id = bd.id), 0) AS party_parts_paid,
                  (SELECT COUNT(*) FROM bd_party_payments pp WHERE pp.bd_id = bd.id) AS party_parts_count
@@ -16412,6 +16422,7 @@ async function repayBd(id, v) {
       });
     }
     const paid = round210(already + asked);
+    const splitInterestRep = interestPaid > 4e-3 && others.length ? Number(insRep.lastInsertRowid || 0) : 0;
     await c.execute({
       sql: `UPDATE bill_discountings
           SET status = ?, repaid_date = ?, repaid_amount = ?, repay_journal_entry_id = NULL
@@ -16422,6 +16433,7 @@ async function repayBd(id, v) {
       const fresh = await loadBd(id);
       await postBdMarginRelease(fresh, repayBank);
     }
+    if (splitInterestRep) await splitDebitInterest(splitInterestRep);
     return { id, amount: asked, outstanding: left, closed };
   });
 }
@@ -16614,7 +16626,22 @@ async function bdInterestWithRepayments(bd, from, to, rate, daysYear) {
             FROM bd_repayments WHERE bd_id = ? GROUP BY substr(repay_date, 1, 10) ORDER BY d`,
     args: [n17(bd.id)]
   });
-  const days = r.rows;
+  const days = r.rows.map((x) => ({ ...x }));
+  await ensureBdAdjust();
+  const adj = toPlain14(
+    await getClient().execute({
+      sql: `SELECT substr(a.on_date, 1, 10) AS d, SUM(CASE WHEN a.to_bd_id = ? THEN a.net ELSE -a.net END) AS net,
+                   SUM(CASE WHEN a.to_bd_id = ? THEN a.tds ELSE -a.tds END) AS tds
+              FROM bd_interest_adjustments a WHERE a.to_bd_id = ? OR a.from_bd_id = ? GROUP BY substr(a.on_date, 1, 10)`,
+      args: [n17(bd.id), n17(bd.id), n17(bd.id), n17(bd.id)]
+    })
+  );
+  for (const a of adj) {
+    const x = days.find((y) => String(y.d) === String(a.d));
+    if (!x) continue;
+    x.net = round210(n17(x.net) + n17(a.net));
+    x.tds = round210(n17(x.tds) + n17(a.tds));
+  }
   if (!days.some((x) => n17(x.net) > 4e-3)) return null;
   const pct = n17(bd.tds_pct);
   const tdsOn = (net) => pct > 0 && pct < 100 ? round210(net * pct / (100 - pct)) : 0;
@@ -16755,7 +16782,16 @@ async function bdExcessInterest(bdId) {
   const daysYear = n17(bd.days_year) || 360;
   const steps = n17(bd.first_receipt_part) > 5e-3 ? [] : await principalRepaidByDate(n17(bdId));
   const worked = (f, t) => f > t ? 0 : steps.length ? bdInterestParts(calc.interestBase, steps, f, t, n17(bd.interest_pct), daysYear).gross : round210(calc.interestBase * n17(bd.interest_pct) * (daysBetween4(f, t) + 1) / (100 * daysYear));
+  const shared = new Set(
+    toPlain14(
+      await c.execute({
+        sql: `SELECT r.id FROM bd_repayments r WHERE r.bd_id = ? AND EXISTS (SELECT 1 FROM bd_repayments o WHERE o.journal_entry_id = r.journal_entry_id AND o.bd_id <> r.bd_id)`,
+        args: [n17(bdId)]
+      })
+    ).map((x) => n17(x.id))
+  );
   for (const r of reps) {
+    if (shared.has(n17(r.id))) continue;
     const on = String(r.repay_date).slice(0, 10);
     const gross = round210(n17(r.interest) + n17(r.tds_amount));
     const movedHere = round210(moved.filter((m) => n17(m.repayment_id) === n17(r.id)).reduce((t, m) => t + n17(m.gross), 0));
@@ -16806,6 +16842,64 @@ async function adjustBdExcessInterest(bdId) {
     }
   }
   return { adjusted, gross: total };
+}
+async function splitDebitInterest(repId) {
+  await ensureBdAdjust();
+  const c = getClient();
+  const rep = toPlain14(await c.execute({ sql: "SELECT * FROM bd_repayments WHERE id = ?", args: [n17(repId)] }))[0];
+  if (!rep || n17(rep.interest) <= 4e-3 || !rep.journal_entry_id) return { moved: 0, shares: [] };
+  const sis = toPlain14(
+    await c.execute({
+      sql: "SELECT DISTINCT bd_id FROM bd_repayments WHERE journal_entry_id = ? AND bd_id <> ? ORDER BY bd_id",
+      args: [n17(rep.journal_entry_id), n17(rep.bd_id)]
+    })
+  ).map((x) => n17(x.bd_id));
+  if (!sis.length) return { moved: 0, shares: [] };
+  const on = String(rep.repay_date).slice(0, 10);
+  const own = async (bdId) => {
+    const bd = await loadBd(bdId);
+    const rec = String(bd.payment_received_date || "").slice(0, 10);
+    if (!rec) return { from: on, gross: 0 };
+    const A = accrualStart(bd, rec);
+    const spans = [
+      ...toPlain14(await c.execute({ sql: "SELECT from_date, to_date FROM bd_interest_payments WHERE bd_id = ?", args: [bdId] })),
+      ...toPlain14(
+        await c.execute({
+          sql: `SELECT ? AS from_date, repay_date AS to_date FROM bd_repayments
+                 WHERE bd_id = ? AND id <> ? AND COALESCE(interest, 0) > 0.004 AND substr(repay_date, 1, 10) < ?`,
+          args: [A, bdId, n17(repId), on]
+        })
+      )
+    ];
+    const from = firstUnpaid(spans, A).from;
+    const steps = (await principalRepaidByDate(bdId)).filter((x) => x.date < on);
+    return { from, gross: bdInterestParts(bdCalc(bd).interestBase, steps, from, on, n17(bd.interest_pct), n17(bd.days_year) || 360).gross };
+  };
+  const bills = [n17(rep.bd_id), ...sis];
+  const w = await Promise.all(bills.map(own));
+  const W = w.reduce((t, x) => t + x.gross, 0);
+  if (W <= 4e-3) return { moved: 0, shares: [] };
+  const net = round210(n17(rep.interest));
+  const tds = round210(n17(rep.tds_amount));
+  const gross = round210(net + tds);
+  await c.execute({ sql: "DELETE FROM bd_interest_adjustments WHERE repayment_id = ?", args: [n17(repId)] });
+  const shares = [];
+  let moved = 0;
+  let tdsLeft = tds;
+  for (let i = 1; i < bills.length; i++) {
+    const g = round210(gross * w[i].gross / W);
+    const t = round210(gross > 0 ? tds * g / gross : 0);
+    tdsLeft = round210(tdsLeft - t);
+    if (g <= 4e-3) continue;
+    await c.execute({
+      sql: "INSERT INTO bd_interest_adjustments (repayment_id, from_bd_id, to_bd_id, on_date, gross, tds, net, rest_from, rest_to) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+      args: [n17(repId), n17(rep.bd_id), bills[i], on, g, t, round210(g - t), w[i].from, on]
+    });
+    moved = round210(moved + g);
+    shares.push({ bd_id: bills[i], gross: g, tds: t, own: w[i].gross });
+  }
+  shares.unshift({ bd_id: bills[0], gross: round210(gross - moved), tds: tdsLeft, own: w[0].gross });
+  return { moved, shares };
 }
 async function removeBdInterestAdjustment(id) {
   await ensureBdAdjust();
@@ -20589,6 +20683,14 @@ __export(access_gate_exports, {
   visibleFrom: () => visibleFrom,
   visibleFromFor: () => visibleFromFor
 });
+async function bdReceivedAlready(id) {
+  if (!id) return false;
+  try {
+    return !!(await getClient().execute({ sql: "SELECT payment_received_date AS d FROM bill_discountings WHERE id = ?", args: [id] })).rows[0]?.d;
+  } catch {
+    return false;
+  }
+}
 function actionFor(op) {
   if (op === "create" || op === "record" || op === "issue" || op === "transfer" || op === "createInvoice") return "create";
   if (op === "delete" || op === "remove" || op === "removeInvoice" || op === "deleteEntry" || op === "deleteTransfer" || // Removing a packed-stock entry is a deletion, not an edit. Without this
@@ -20866,9 +20968,12 @@ async function assertAllowed(channel, args) {
   const va = args?.values || {};
   const newRepay = ns === "bd" && op === "repay" || ns === "lc" && (op === "repayParts" || op === "saveRepayment" && !Number(va.id));
   const repayRow = ns === "bd" && (op === "editRepayment" || op === "deleteRepayment") ? { table: "bd_repayments", id: Number(args?.id) || 0 } : ns === "lc" && op === "saveRepayment" && Number(va.id) ? { table: "lc_repayments", id: Number(va.id) } : ns === "lc" && op === "deleteRepayment" ? { table: "lc_repayments", id: Number(args?.id) || 0 } : null;
-  if (newRepay) action = "create";
+  const a0 = args || {};
+  const newBdEntry = ns === "bd" && (["receivePart", "payParty", "paymentIn", "payInterest", "payInterestUpto", "payCumulativeInterest", "createRefundReceipt"].includes(op) || op === "markReceived" && !await bdReceivedAlready(Number(a0.id) || 0));
+  if (newRepay || newBdEntry) action = "create";
   let entryDate;
   if (newRepay) entryDate = va.repay_date || va.date || todayISO();
+  if (newBdEntry) entryDate = va.date || va.pay_date || va.paid_date || va.receipt_date || a0.date || a0.pay_date || a0.paid_date || a0.to_date || todayISO();
   if (repayRow && repayRow.id) {
     try {
       entryDate = (await getClient().execute({ sql: `SELECT repay_date AS d FROM ${repayRow.table} WHERE id = ? LIMIT 1`, args: [repayRow.id] })).rows[0]?.d;
@@ -25760,6 +25865,26 @@ async function revertPurchaseTanker(id) {
   const current2 = TANKER_STAGES.indexOf(String(tanker.status));
   if (current2 <= 0) throw new Error("Already at the supplier factory \u2014 nothing to undo");
   const prev = TANKER_STAGES[current2 - 1];
+  if (n27(tanker.split_group)) {
+    const g = n27(tanker.split_group);
+    const parts = toPlain21(await c.execute({ sql: "SELECT id, order_id FROM purchase_tankers WHERE split_group = ? ORDER BY id", args: [g] }));
+    if (String(tanker.status) === "loaded") {
+      if (parts.some((p) => n27(p.id) !== g && p.order_id)) throw new Error("A part of this tanker is already on a purchase invoice \u2014 remove it from the invoice first");
+      await c.execute({ sql: "DELETE FROM purchase_tankers WHERE split_group = ? AND id <> ?", args: [g, g] });
+      await c.execute({ sql: "UPDATE purchase_tankers SET split_group = NULL WHERE id = ?", args: [g] });
+    } else {
+      for (const p of parts) if (n27(p.id) !== n27(id)) await revertPurchaseTanker0(n27(p.id));
+    }
+  }
+  return revertPurchaseTanker0(id);
+}
+async function revertPurchaseTanker0(id) {
+  const c = getClient();
+  const tanker = toPlain21(await c.execute({ sql: "SELECT * FROM purchase_tankers WHERE id = ?", args: [id] }))[0];
+  if (!tanker) throw new Error("Tanker not found");
+  const current2 = TANKER_STAGES.indexOf(String(tanker.status));
+  if (current2 <= 0) throw new Error("Already at the supplier factory \u2014 nothing to undo");
+  const prev = TANKER_STAGES[current2 - 1];
   const dateCol = {
     transit: "transit_date",
     outside_factory: "outside_factory_date",
@@ -25942,6 +26067,34 @@ async function advancePurchaseTanker(id, toStatus, data) {
   const res = await c.execute({ sql: "SELECT * FROM purchase_tankers WHERE id = ?", args: [id] });
   if (!res.rows.length) throw new Error("Tanker not found");
   const tanker = toPlain21(res)[0];
+  if (n27(tanker.split_group) && !data._part) {
+    const parts = toPlain21(
+      await c.execute({ sql: "SELECT id, loaded_qty FROM purchase_tankers WHERE split_group = ? ORDER BY id", args: [n27(tanker.split_group)] })
+    );
+    let shares = parts.map(() => n27(data.received_qty));
+    if (toStatus === "empty") {
+      const total = n27(data.received_qty);
+      const loaded = parts.reduce((t, p) => t + n27(p.loaded_qty), 0);
+      if (total <= 0 || total > loaded + 1e-6) throw new Error("Enter a valid empty quantity");
+      const gates = (await Promise.all(parts.map((p) => tankerGateReceived(n27(p.id))))).filter((g) => g != null);
+      const gateQty = gates.length ? gates.reduce((t, g) => t + g, 0) : null;
+      if (gateQty == null) throw new Error("No gate entry found for this tanker. Record the gate receipt first.");
+      if (Math.abs(gateQty - total) > GATE_MATCH_BUFFER) {
+        throw new Error(`Received qty (${total}) is more than ${GATE_MATCH_BUFFER} MT away from the gate received qty (${gateQty}) for this tanker.`);
+      }
+      let left = total;
+      shares = parts.map((p, i) => {
+        if (i === parts.length - 1) return Math.round(left * 1e3) / 1e3;
+        const s7 = Math.round(total * n27(p.loaded_qty) / loaded * 1e3) / 1e3;
+        left -= s7;
+        return s7;
+      });
+    }
+    for (let i = 0; i < parts.length; i++) {
+      await advancePurchaseTanker(n27(parts[i].id), toStatus, { ...data, received_qty: shares[i], _part: true });
+    }
+    return { id };
+  }
   const current2 = TANKER_STAGES.indexOf(String(tanker.status));
   const target = TANKER_STAGES.indexOf(toStatus);
   if (target !== current2 + 1) throw new Error("That is not the next tanker stage");
@@ -25953,11 +26106,30 @@ async function advancePurchaseTanker(id, toStatus, data) {
     empty_date: data.empty_date ?? tanker.empty_date
   });
   if (toStatus === "loaded") {
-    const qty = n27(data.loaded_qty);
-    if (qty <= 0) throw new Error("Enter the actual loaded quantity");
+    const splitParts = (Array.isArray(data.split_parts) ? data.split_parts : []).map((p) => ({ bargain_id: n27(p.bargain_id), qty: Math.round(n27(p.qty) * 1e3) / 1e3 })).filter((p) => p.bargain_id && p.qty > 0);
+    const qty = Math.round((n27(data.loaded_qty) - splitParts.reduce((t, p) => t + p.qty, 0)) * 1e3) / 1e3;
+    if (qty <= 0) throw new Error(splitParts.length ? "The parts on other bargains take the whole load \u2014 leave some on this bargain" : "Enter the actual loaded quantity");
+    const partBargains = /* @__PURE__ */ new Map();
+    for (const p of splitParts) {
+      const b = toPlain21(
+        await c.execute({
+          sql: `SELECT b.id, b.supplier_id, b.oil_type_id, b.uom, b.bargain_no,
+                  b.qty
+                    - COALESCE((SELECT SUM(loaded_qty - COALESCE(extra_qty, 0)) FROM purchase_tankers WHERE bargain_id = b.id), 0)
+                    - COALESCE((SELECT SUM(extra_qty) FROM purchase_tankers WHERE extra_bargain_id = b.id), 0)
+                    - COALESCE((SELECT SUM(ordered_qty) FROM orders WHERE bargain_id = b.id AND is_consignment = 1), 0) AS balance
+                FROM bargains b WHERE b.id = ?`,
+          args: [p.bargain_id]
+        })
+      )[0];
+      if (!b) throw new Error("A bargain picked for a part was not found");
+      if (p.qty > n27(b.balance) + 1e-6) throw new Error(`${String(b.bargain_no)} has only ${n27(b.balance).toFixed(3)} left for its ${p.qty.toFixed(3)} part`);
+      partBargains.set(p.bargain_id, b);
+    }
     const tankerNo = String(data.tanker_no ?? tanker.tanker_no ?? "").trim();
     if (!tankerNo) throw new Error("Tanker number is required at loading");
     const bargainId = data.bargain_id ? n27(data.bargain_id) : n27(tanker.bargain_id);
+    if (splitParts.some((p) => p.bargain_id === bargainId)) throw new Error("A part can't go on this tanker's own bargain \u2014 change the loaded qty instead");
     const balance = await c.execute({
       sql: `SELECT b.qty
               - COALESCE((SELECT SUM(loaded_qty - COALESCE(extra_qty, 0)) FROM purchase_tankers WHERE bargain_id = b.id AND id != ?), 0)
@@ -26045,6 +26217,30 @@ async function advancePurchaseTanker(id, toStatus, data) {
         id
       ]
     });
+    if (splitParts.length) {
+      for (const p of splitParts) {
+        const b = partBargains.get(p.bargain_id);
+        await c.execute({
+          sql: `INSERT INTO purchase_tankers (tanker_no, bargain_id, supplier_id, oil_type_id, loaded_date, loaded_qty, uom, payment_mode, status, source_id, company_id, condition, split_group)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'loaded', ?, ?, ?, ?)`,
+          args: [
+            tankerNo,
+            p.bargain_id,
+            n27(b.supplier_id),
+            n27(b.oil_type_id),
+            data.loaded_date || null,
+            p.qty,
+            String(b.uom || tanker.uom || "MT"),
+            data.payment_mode === "supplier_finance" ? "supplier_finance" : "paid_by_us",
+            loadSourceId,
+            tanker.company_id ?? null,
+            tanker.condition ?? null,
+            id
+          ]
+        });
+      }
+      await c.execute({ sql: "UPDATE purchase_tankers SET split_group = ? WHERE id = ?", args: [id, id] });
+    }
   } else if (toStatus === "transit") {
     const sourceId = data.source_id ? n27(data.source_id) : tanker.source_id ?? null;
     const transitDate = String(data.transit_date || "");
@@ -26098,7 +26294,7 @@ async function advancePurchaseTanker(id, toStatus, data) {
     if (Array.isArray(data.quality)) await saveTankerQuality(id, data.quality);
     const receivedQty = n27(data.received_qty);
     if (receivedQty <= 0 || receivedQty > n27(tanker.loaded_qty) + 1e-6) throw new Error("Enter a valid empty quantity");
-    const gateQty = await tankerGateReceived(id);
+    const gateQty = data._part ? receivedQty : await tankerGateReceived(id);
     if (gateQty == null) {
       throw new Error("No gate entry found for this tanker. Record the gate receipt first.");
     }
@@ -41639,6 +41835,16 @@ async function runStartupTasks() {
     const done = await convertOpenAdjToCharge();
     if (done.length) console.log(`[bd] moved ${done.length} bill(s) to the Open amount with the Adj. as a charge: ${done.join(", ")}`);
   }).catch((e) => console.error("[bd] open adjustment conversion failed:", e));
+  await runOnce("bd_split_debit_interest_v1", async () => {
+    const { splitDebitInterest: splitDebitInterest2 } = await Promise.resolve().then(() => (init_billDiscounting(), billDiscounting_exports));
+    const reps = (await getClient().execute(`SELECT r.id FROM bd_repayments r
+        WHERE COALESCE(r.interest, 0) > 0.004 AND r.journal_entry_id IS NOT NULL
+          AND EXISTS (SELECT 1 FROM bd_repayments o WHERE o.journal_entry_id = r.journal_entry_id AND o.bd_id <> r.bd_id)`)).rows;
+    for (const r of reps) {
+      const res = await splitDebitInterest2(Number(r.id));
+      if (res.moved) console.log(`[bd] split-debit interest of repayment ${String(r.id)} shared: ${JSON.stringify(res.shares)}`);
+    }
+  }).catch((e) => console.error("[bd] split-debit interest failed:", e));
   await runOnce("bd_interest_auto_adjust_v2", async () => {
     const { adjustAllBdExcessInterest: adjustAllBdExcessInterest2 } = await Promise.resolve().then(() => (init_billDiscounting(), billDiscounting_exports));
     const done = await adjustAllBdExcessInterest2("BLACKSOIL%");
@@ -41821,6 +42027,10 @@ var REQUIRED_COLUMNS = [
   { table: "transporter_bills", column: "tds_ledger", type: "TEXT" },
   // The party's invoice no. a bill discounting is drawn against (typed).
   { table: "bill_discountings", column: "party_invoice_no", type: "TEXT" },
+  // ONE LORRY, SEVERAL BARGAINS (any supplier): one tanker record per bargain
+  // part, all carrying the first part's id here; they move stage by stage
+  // together (orders.ts advancePurchaseTanker).
+  { table: "purchase_tankers", column: "split_group", type: "INTEGER" },
   // A note typed on Mark received — kept on the bill, carried on its voucher.
   { table: "bill_discountings", column: "received_note", type: "TEXT" },
   { table: "bd_repayments", column: "tds_ledger", type: "TEXT" },
