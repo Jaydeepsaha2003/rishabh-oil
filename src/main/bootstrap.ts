@@ -3601,6 +3601,9 @@ const REQUIRED_COLUMNS: { table: string; column: string; type: string }[] = [
   // The other bargains named for this lorry when it was sent (JSON list of
   // bargain ids) — offered as part rows at Loaded, qty typed there.
   { table: 'purchase_tankers', column: 'planned_parts', type: 'TEXT' },
+  // The LR no.(s) of the tanker this purchase invoice covers — picked from the
+  // tanker's own LR list when one lorry is billed on several invoices.
+  { table: 'orders', column: 'lr_no', type: 'TEXT' },
   // A note typed on Mark received — kept on the bill, carried on its voucher.
   { table: 'bill_discountings', column: 'received_note', type: 'TEXT' },
   { table: 'bd_repayments', column: 'tds_ledger', type: 'TEXT' },

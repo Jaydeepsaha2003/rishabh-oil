@@ -1020,6 +1020,8 @@ export async function createOrder(v: Row): Promise<{ id: number }> {
   if (tdsManualOf(v) != null) await getClient().execute({ sql: 'UPDATE orders SET tds_manual = ? WHERE id = ?', args: [tdsManualOf(v), id] })
   // The supplier's GST No. this bill was made under, when it has several.
   if (v.party_gstin) await getClient().execute({ sql: 'UPDATE orders SET party_gstin = ? WHERE id = ?', args: [String(v.party_gstin).trim().toUpperCase(), id] })
+  // The tanker LR(s) this invoice covers.
+  if (v.lr_no !== undefined) await getClient().execute({ sql: 'UPDATE orders SET lr_no = ? WHERE id = ?', args: [String(v.lr_no || '').trim() || null, id] })
   // The bill this row is one line of, when it is one of several. Written here
   // rather than in the INSERT above because two callers in the whole app set
   // it, and the column list of the one function that books every purchase
@@ -1423,6 +1425,8 @@ export async function updateOrder(id: number, v: Row): Promise<{ id: number }> {
   if ('party_gstin' in v) {
     await getClient().execute({ sql: 'UPDATE orders SET party_gstin = ? WHERE id = ?', args: [v.party_gstin ? String(v.party_gstin).trim().toUpperCase() : null, id] })
   }
+  // The tanker LR(s) this invoice covers (the phone does not send it).
+  if ('lr_no' in v) await getClient().execute({ sql: 'UPDATE orders SET lr_no = ? WHERE id = ?', args: [String(v.lr_no || '').trim() || null, id] })
   // A direct/consignment invoice has no tankers of its own; keep the received
   // qty locked to the invoiced qty instead of walking the movement stages, and
   // re-assert status='received' — createOrder sets this at booking time, but

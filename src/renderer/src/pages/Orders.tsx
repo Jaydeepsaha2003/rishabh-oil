@@ -3274,6 +3274,7 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel, onPurchaseR
       gst_pct: row.gst_pct,
       gst_type: row.gst_type || 'CGST_SGST',
       party_gstin: row.party_gstin || '',
+      lr_no: row.lr_no || '',
       // A TDS typed on the bill in place of the slab's; blank = worked out.
       tds_manual: row.tds_manual ?? '',
       tds_pct: supplier?.tds_pct ?? row.tds_pct,
@@ -6243,6 +6244,46 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel, onPurchaseR
                       {directMode || isTrading ? 'No tanker movement, so no transporter.' : 'Taken from the selected tankers.'}
                     </span>
                   </div>
+                  {/* WHICH LR THIS INVOICE COVERS — one lorry billed on several
+                      invoices carries several LRs; tick this bill's own. */}
+                  {!directMode && !isTrading && (() => {
+                    const lrs = Array.from(
+                      new Set(chosenTankers.flatMap((t) => String(t.lr_no || '').split(/[,/;]+/).map((x) => x.trim()).filter(Boolean)))
+                    )
+                    if (!lrs.length) return null
+                    const picked = String(form.lr_no || '').split(',').map((x) => x.trim()).filter(Boolean)
+                    const toggle = (lr: string): void => {
+                      const next = picked.includes(lr) ? picked.filter((x) => x !== lr) : [...picked, lr]
+                      setForm((p) => ({ ...p, lr_no: lrs.filter((x) => next.includes(x)).join(', ') }))
+                    }
+                    return (
+                      <div className="flex flex-col gap-1.5 sm:col-span-2 lg:col-span-3">
+                        <Label>LR no. on this invoice</Label>
+                        <div className="flex flex-wrap items-center gap-2">
+                          {lrs.map((lr) => {
+                            const on = picked.includes(lr)
+                            return (
+                              <button
+                                key={lr}
+                                type="button"
+                                onClick={() => toggle(lr)}
+                                className={cn(
+                                  'inline-flex items-center gap-1.5 rounded-full border px-3 py-1 text-[12px] font-extrabold transition-colors',
+                                  on ? 'border-[#0B3D2E] bg-[#0B3D2E] text-[#C7F03F]' : 'border-[#C3D2C6] bg-white text-[#33473E] hover:bg-[#F0F8F3]'
+                                )}
+                              >
+                                {on && <CheckCircle2 className="h-3.5 w-3.5" />}
+                                LR {lr}
+                              </button>
+                            )
+                          })}
+                          <span className={cn('text-[11px] text-muted-foreground', NP_NOTE)}>
+                            {picked.length ? `Linked: LR ${picked.join(', ')}` : 'Tick the LR(s) this bill is for — from the tanker’s LR list'}
+                          </span>
+                        </div>
+                      </div>
+                    )
+                  })()}
                   {/* Freight per vehicle. Every tanker carries its own rate, so
                       one field on the invoice could never show it — this lists
                       them, and the pencil opens that tanker to change it. Only
@@ -7883,6 +7924,27 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel, onPurchaseR
                       value={form.tds_manual ?? ''}
                       onChange={(e) => setForm((p) => ({ ...p, tds_manual: e.target.value }))}
                     />
+                    {/* ROUND THE TDS: up to the next whole rupee / down to the last (a whole
+                        figure steps by ₹1). Sets it as Edited, like typing it. */}
+                    <span className="flex flex-col overflow-hidden rounded-[4px] border border-[#C3D2C6]">
+                      {(['up', 'down'] as const).map((dir) => (
+                        <button
+                          key={dir}
+                          type="button"
+                          title={dir === 'up' ? 'Round the TDS up to the next rupee' : 'Round the TDS down to the rupee'}
+                          aria-label={dir === 'up' ? 'Round TDS up' : 'Round TDS down'}
+                          className="flex h-[14px] w-5 items-center justify-center bg-white text-[#33473E] hover:bg-[#E9F5EE] hover:text-[#0B6B45]"
+                          onClick={() => {
+                            const cur = form.tds_manual !== '' && form.tds_manual != null ? Number(form.tds_manual) || 0 : calc.tdsCalc
+                            const whole = Math.abs(cur - Math.round(cur)) < 0.005
+                            const next = dir === 'up' ? (whole ? Math.round(cur) + 1 : Math.ceil(cur)) : whole ? Math.round(cur) - 1 : Math.floor(cur)
+                            setForm((p) => ({ ...p, tds_manual: String(Math.max(0, next)) }))
+                          }}
+                        >
+                          <ChevronDown className={cn('h-3 w-3', dir === 'up' && 'rotate-180')} />
+                        </button>
+                      ))}
+                    </span>
                   </span>
                 )}
               </div>
@@ -11374,11 +11436,28 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel, onPurchaseR
                   )}
                 >
                   <FileText className="h-4 w-4 shrink-0" />
-                  {t.order_id ? (
+                  {t.order_id && tankerInvoices(t).length > 1 ? (
+                    // One lorry on several invoices: each with its qty and the LR it covers.
+                    <span className="grid gap-0.5">
+                      {tankerInvoices(t).map((iv) => {
+                        const lr = rows.find((o) => Number(o.id) === iv.order_id)?.lr_no
+                        return (
+                          <span key={iv.order_id}>
+                            Invoiced as <span className="font-semibold">{iv.invoice_no || '—'}</span> · {formatNum(iv.qty)} {t.uom || 'MT'}
+                            {lr ? <> · LR <span className="font-semibold">{String(lr)}</span></> : <span className="text-emerald-700/70"> · no LR linked</span>}
+                          </span>
+                        )
+                      })}
+                    </span>
+                  ) : t.order_id ? (
                     <span>
                       Invoiced as <span className="font-semibold">{t.invoice_no}</span>
                       {t.invoice_date && <> on {formatDate(t.invoice_date)}</>}
                       {invoiceCompany && <> under <span className="font-semibold">{invoiceCompany.name}</span></>}
+                      {(() => {
+                        const lr = rows.find((o) => Number(o.id) === Number(t.order_id))?.lr_no
+                        return lr ? <> · LR <span className="font-semibold">{String(lr)}</span></> : null
+                      })()}
                     </span>
                   ) : (
                     <span>Not yet invoiced — not tied to any company until it is.</span>
