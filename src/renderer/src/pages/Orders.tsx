@@ -7759,7 +7759,9 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel, onPurchaseR
                         ratePremium
                 )
                 if (exact <= 0) return null
-                const toWhole = r2(Math.ceil(exact) - exact)
+                // NEAREST whole rupee (the normal rule): paise under 50 round down
+                // (−0.25 on 1,34,216.25), 50 and over round up (+0.75 on ...216.25 would be wrong).
+                const toWhole = r2(Math.round(exact) - exact)
                 const billedAvg =
                   rateAlloc.length > 1
                     ? r2(
@@ -7773,7 +7775,7 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel, onPurchaseR
                   <div className={cn('flex items-center justify-between gap-2 py-1.5 text-sm', __WEB__ && '!items-start !gap-2.5 !py-[5px]')}>
                     <span
                       className={cn('min-w-0 text-muted-foreground', __WEB__ && '!text-[12.5px] !font-semibold !leading-[1.45] !text-[#33473E]')}
-                      title={`Exact ${formatINR(exact)} per ${form.uom || 'MT'}. Nil bills that rate as it stands. Type an amount, or use ↑ to round up to the whole rupee the way the supplier does.`}
+                      title={`Exact ${formatINR(exact)} per ${form.uom || 'MT'}. Nil bills that rate as it stands. Type an amount, or use the button to round to the nearest whole rupee (under 50 paise down, 50 and over up).`}
                     >
                       Rate adjustment{' '}
                       <span className="text-[11px]">
@@ -7783,15 +7785,15 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel, onPurchaseR
                       </span>
                     </span>
                     <div className="flex shrink-0 items-center gap-1">
-                      {toWhole > 0.004 && r2(rateRoundOff ?? -1) !== toWhole && (
+                      {Math.abs(toWhole) > 0.004 && r2(rateRoundOff ?? -1) !== toWhole && (
                         <Button
                           type="button"
                           variant="outline"
                           className={cn('h-7 bg-white px-1.5 text-[11px]', __WEB__ && '!h-[34px] !gap-1 !rounded-[3px] !border-[#C3B78F] !px-[9px] !text-[11.5px] !font-bold !text-[#8A5300]')}
-                          title={`Round up to ${formatINR(Math.ceil(exact))} — the whole rupee`}
+                          title={`Round ${toWhole > 0 ? 'up' : 'down'} to ${formatINR(Math.round(exact))} — the nearest whole rupee`}
                           onClick={() => setForm((p) => ({ ...p, rate_round_off: String(toWhole) }))}
                         >
-                          ↑ {formatINR(toWhole)}
+                          {toWhole > 0 ? `↑ +${formatINR(toWhole)}` : `↓ −${formatINR(-toWhole)}`}
                         </Button>
                       )}
                       <Input
