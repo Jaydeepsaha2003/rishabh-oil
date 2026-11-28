@@ -9127,6 +9127,27 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel, onPurchaseR
               return SUP_TONES[(i < 0 ? 0 : i) % SUP_TONES.length]
             }
             const shortName = (nm: unknown): string => String(nm || '').replace(/\s+(PRIVATE|PVT\.?)\s+(LIMITED|LTD\.?)$/i, '').trim()
+            // Open bargains first (oldest first, as routeBargains orders them); used-up ones last, greyed.
+            const openFirst = (a: Row, b: Row): number => Number(Number(b.balance_qty) > 0.005) - Number(Number(a.balance_qty) > 0.005)
+            // One dropdown line: supplier colour, bargain no., supplier, date, and the balance as a chip.
+            const optionOf = (x: Row): React.JSX.Element => {
+              const bal = Number(x.balance_qty) || 0
+              const open = bal > 0.005
+              const tone = toneOf(x.supplier_id)
+              return (
+                <span className={cn('flex w-full min-w-0 items-center gap-2', !open && 'opacity-55')}>
+                  <span className="h-2.5 w-2.5 flex-none rounded-full" style={{ background: tone }} />
+                  <span className="flex-none font-extrabold text-[#0A1F17]">{String(x.bargain_no)}</span>
+                  <span className="min-w-0 truncate text-[11.5px] font-bold" style={{ color: tone }}>{shortName(x.supplier_name)}</span>
+                  {!!x.bargain_date && <span className="flex-none text-[10.5px] font-semibold text-[#8CA396]">{formatDate(String(x.bargain_date).slice(0, 10))}</span>}
+                  <span
+                    className={cn('ml-auto flex-none rounded-full px-2 py-0.5 text-[10.5px] font-extrabold tabular-nums', open ? 'bg-[#E9F5EE] text-[#0B6B45]' : 'bg-[#F1F1EF] text-[#8A8F8C]')}
+                  >
+                    {open ? `${formatNum(bal)} ${String(x.uom || 'MT')} left` : 'used up'}
+                  </span>
+                </span>
+              )
+            }
             return (
               <>
                 <div className="bg-[#0B3D2E] px-6 pb-4 pt-5">
@@ -9270,12 +9291,13 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel, onPurchaseR
                                         <SelectTrigger className="h-9 bg-white text-left" style={{ borderLeft: `4px solid ${tone}` }}>
                                           <SelectValue placeholder={picks.length ? 'Select bargain' : 'Pick oil & supplier above'} />
                                         </SelectTrigger>
-                                        <SelectContent className="w-[min(36rem,85vw)]">
+                                        <SelectContent className="w-[min(42rem,90vw)]">
                                           {pool
                                             .filter((x) => !taken.includes(String(x.id)))
+                                            .sort(openFirst)
                                             .map((x) => (
                                               <SelectItem key={x.id} value={String(x.id)}>
-                                                {x.bargain_no} · {shortName(x.supplier_name)} · BAL {formatNum(x.balance_qty)}
+                                                {optionOf(x)}
                                               </SelectItem>
                                             ))}
                                         </SelectContent>
@@ -9310,10 +9332,10 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel, onPurchaseR
                                   onValueChange={(v) => setLoadingRows((current) => current.map((item, i) => (i === index ? { ...item, planned_parts: [...parts, v] } : item)))}
                                 >
                                   <SelectTrigger className="h-8 border-dashed bg-white text-[12px] font-extrabold text-[#1B4E82]"><SelectValue placeholder="+ Add another bargain" /></SelectTrigger>
-                                  <SelectContent className="w-[min(36rem,85vw)]">
+                                  <SelectContent className="w-[min(42rem,90vw)]">
                                     {others.map((x) => (
                                       <SelectItem key={x.id} value={String(x.id)}>
-                                        {x.bargain_no} · {shortName(x.supplier_name)} · BAL {formatNum(x.balance_qty)}
+                                        {optionOf(x)}
                                       </SelectItem>
                                     ))}
                                   </SelectContent>
